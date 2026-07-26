@@ -1,6 +1,7 @@
 /** @file Command-line option parsing and process entry point. */
 #include <errno.h>
 #include <getopt.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,14 +19,17 @@ usage (FILE       *out,
 	        "  -A, --a-model NAME       model A name/alias\n"
 	        "  -B, --b-model NAME       model B name/alias\n"
 	        "  -s, --system TEXT        common system message\n"
-	        "  -p, --prompt TEXT        run one turn and exit\n"
+	        "  -p, --prompt TEXT        run one seeded conversation and exit\n"
 	        "  -t, --temperature N      sampling temperature\n"
-	        "  -n, --max-tokens N       max output tokens per model\n"
+	        "  -n, --max-tokens N       output cap; final-answer cap in rapid mode\n"
 	        "  -H, --history MODE       split, shared-a, or shared-b\n"
-	        "  -d, --debug              print both reasoning traces\n"
+	        "  -q, --rapid N            causal thought-swap quantum, in tokens\n"
+	        "  -R, --rapid-budget N     rapid reasoning budget/model (default 512)\n"
+	        "  -C, --crosstalk N        autonomous answer cross-feed rounds (-1 forever)\n"
+	        "  -d, --debug              print reasoning and rapid-swap quanta\n"
 	        "  -P, --no-template-check  skip llama.cpp template validation\n"
 	        "  -h, --help               show this help\n"
-	        "\nInteractive command: :quit\n",
+	        "\nInteractive commands: :stop, :quit\n",
 	        argv0);
 }
 
@@ -41,6 +45,33 @@ parse_history_mode (char const            *str,
 		*mode = APP_HISTORY_SHARED_B;
 	else
 		return EINVAL;
+	return 0;
+}
+
+static int
+parse_long (char const *str,
+            long       *value,
+            long        min)
+{
+	char *end;
+	errno = 0;
+	long n = strtol(str, &end, 10);
+	if (errno || *end || n < min)
+		return EINVAL;
+	*value = n;
+	return 0;
+}
+
+static int
+parse_u32 (char const *str,
+           uint32_t   *value)
+{
+	char *end;
+	errno = 0;
+	unsigned long n = strtoul(str, &end, 10);
+	if (errno || *end || !n || n > UINT32_MAX)
+		return EINVAL;
+	*value = (uint32_t)n;
 	return 0;
 }
 
@@ -69,6 +100,9 @@ main (int   argc,
 		{ "temperature",       required_argument, nullptr, 't' },
 		{ "max-tokens",        required_argument, nullptr, 'n' },
 		{ "history",           required_argument, nullptr, 'H' },
+		{ "rapid",             required_argument, nullptr, 'q' },
+		{ "rapid-budget",      required_argument, nullptr, 'R' },
+		{ "crosstalk",         required_argument, nullptr, 'C' },
 		{ "debug",             no_argument,       nullptr, 'd' },
 		{ "no-template-check", no_argument,       nullptr, 'P' },
 		{ "help",              no_argument,       nullptr, 'h' },
@@ -76,7 +110,7 @@ main (int   argc,
 	};
 
 	for (;;) {
-		int opt = getopt_long(argc, argv, "a:b:A:B:s:p:t:n:H:dPh",
+		int opt = getopt_long(argc, argv, "a:b:A:B:s:p:t:n:H:q:R:C:dPh",
 		                      options, nullptr);
 		if (opt < 0)
 			break;
@@ -96,6 +130,24 @@ main (int   argc,
 				return 2;
 			}
 			break;
+		case 'q':
+			if (parse_u32(optarg, &cfg.rapid_quantum)) {
+				fprintf(stderr, "invalid rapid quantum: %s\n", optarg);
+				return 2;
+			}
+			break;
+		case 'R':
+			if (parse_u32(optarg, &cfg.rapid_budget)) {
+				fprintf(stderr, "invalid rapid budget: %s\n", optarg);
+				return 2;
+			}
+			break;
+		case 'C':
+			if (parse_long(optarg, &cfg.crosstalk_rounds, -1)) {
+				fprintf(stderr, "invalid crosstalk round count: %s\n", optarg);
+				return 2;
+			}
+			break;
 		case 't': {
 			char *end;
 			errno = 0;
@@ -106,16 +158,12 @@ main (int   argc,
 			}
 			break;
 		}
-		case 'n': {
-			char *end;
-			errno = 0;
-			cfg.max_tokens = strtol(optarg, &end, 10);
-			if (errno || *end || cfg.max_tokens <= 0) {
+		case 'n':
+			if (parse_long(optarg, &cfg.max_tokens, 1)) {
 				fprintf(stderr, "invalid max token count: %s\n", optarg);
 				return 2;
 			}
 			break;
-		}
 		case 'h':
 			usage(stdout, argv[0]);
 			return 0;
@@ -129,6 +177,13 @@ main (int   argc,
 		usage(stderr, argv[0]);
 		return 2;
 	}
+
+	if (cfg.rapid_budget && !cfg.rapid_quantum) {
+		fputs("--rapid-budget requires --rapid\n", stderr);
+		return 2;
+	}
+	if (cfg.rapid_quantum && !cfg.rapid_budget)
+		cfg.rapid_budget = 512;
 
 	int e = app_run(&cfg);
 	if (e) {

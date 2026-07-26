@@ -2,6 +2,8 @@
 #ifndef TWINCEPTION_SRC_APP_H_
 #define TWINCEPTION_SRC_APP_H_
 
+#include <stdint.h>
+
 enum app_history_mode {
 	APP_HISTORY_SPLIT,
 	APP_HISTORY_SHARED_A,
@@ -15,6 +17,9 @@ struct app_cfg {
 	char const *prompt;
 	double      temperature;
 	long        max_tokens;
+	long        crosstalk_rounds;
+	uint32_t    rapid_quantum;
+	uint32_t    rapid_budget;
 	enum app_history_mode history_mode;
 	unsigned    debug : 1;
 	unsigned    template_check : 1;
