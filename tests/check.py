@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 RAPID_R = "__TWINCEPTION_RAPID_REASONING_8E6A09B3__"
 RAPID_A = "__TWINCEPTION_RAPID_ANSWER_71C4F052__"
 RAPID_TRANSITION = "<FINAL>"
+RAPID_GENERATION = "<GEN>"
+RAPID_REASONING = "<ANALYSIS>"
 
 
 class State:
@@ -67,16 +69,21 @@ def handler_for(state):
                     state.probes.append(request)
 
                 messages = request["messages"]
+                if (len(messages) == 1 and
+                        messages[0].get("content") == "rapid template probe"):
+                    self.send_json({"prompt": "HEAD" + RAPID_GENERATION})
+                    return
                 if any(m.get("reasoning_content") == RAPID_R for m in messages):
-                    self.send_json({"prompt": "HEAD" + RAPID_R +
-                                              RAPID_TRANSITION + RAPID_A})
+                    self.send_json({"prompt": "HEAD" + RAPID_REASONING +
+                                              RAPID_R + RAPID_TRANSITION + RAPID_A})
                     return
 
                 # A non-probe /apply-template request is a rapid turn render.
                 # Normal inference uses /v1/chat/completions directly.
                 if messages[-1].get("content") != "template probe 2":
                     user = messages[-1]["content"]
-                    self.send_json({"prompt": f"BASE-{state.name}:{user}<THINK>"})
+                    self.send_json({"prompt": f"BASE-{state.name}:{user}" +
+                                              RAPID_GENERATION})
                     return
 
                 prompt = []
@@ -244,12 +251,12 @@ def check_rapid_swap(binary):
 
     a, b = (state.completions for state in states)
     assert len(a) == len(b) == 3
-    assert a[0]["prompt"] == "BASE-A:seed<THINK>"
-    assert b[0]["prompt"] == "BASE-B:seed<THINK>"
-    assert a[1]["prompt"] == "BASE-A:seed<THINK>b1 "
-    assert b[1]["prompt"] == "BASE-B:seed<THINK>a1 "
-    assert a[2]["prompt"] == "BASE-A:seed<THINK>b1 b2 " + RAPID_TRANSITION
-    assert b[2]["prompt"] == "BASE-B:seed<THINK>a1 a2 " + RAPID_TRANSITION
+    assert a[0]["prompt"] == "BASE-A:seed" + RAPID_REASONING
+    assert b[0]["prompt"] == "BASE-B:seed" + RAPID_REASONING
+    assert a[1]["prompt"] == "BASE-A:seed" + RAPID_REASONING + "b1 "
+    assert b[1]["prompt"] == "BASE-B:seed" + RAPID_REASONING + "a1 "
+    assert a[2]["prompt"] == "BASE-A:seed" + RAPID_REASONING + "b1 b2 " + RAPID_TRANSITION
+    assert b[2]["prompt"] == "BASE-B:seed" + RAPID_REASONING + "a1 a2 " + RAPID_TRANSITION
     assert all(req["cache_prompt"] is True for req in a + b)
     assert [req["n_predict"] for req in a] == [2, 2, 8]
     assert [req.get("stop") for req in a] == [
@@ -278,12 +285,12 @@ def check_rapid_crosstalk(binary):
                       if p["messages"][-1].get("content") != RAPID_A]
     turn_renders_b = [p for p in b.probes
                       if p["messages"][-1].get("content") != RAPID_A]
-    # Startup rapid probe + two turn renders.
-    assert len(a.probes) == len(b.probes) == 3
+    # Two startup rapid probes + two turn renders.
+    assert len(a.probes) == len(b.probes) == 4
     assert turn_renders_a[-1]["messages"][-1] == {"role": "user", "content": "FB1"}
     assert turn_renders_b[-1]["messages"][-1] == {"role": "user", "content": "FA1"}
-    assert a.completions[2]["prompt"].startswith("BASE-A:FB1<THINK>")
-    assert b.completions[2]["prompt"].startswith("BASE-B:FA1<THINK>")
+    assert a.completions[2]["prompt"].startswith("BASE-A:FB1" + RAPID_REASONING)
+    assert b.completions[2]["prompt"].startswith("BASE-B:FA1" + RAPID_REASONING)
 
     print("rapid swap + crosstalk: PASS")
     return 0

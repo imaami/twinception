@@ -61,8 +61,11 @@ model in one turn; it defaults to 512 when `-q` is present.  `-n` becomes the
 final-answer token cap.
 
 For each user turn, twinception first asks `/apply-template` for each model's
-native prompt.  It then uses llama.cpp's raw `/completion` endpoint with
-`cache_prompt=true`:
+native prompt.  At startup it has already compared a user-only generation prompt
+with a synthetic completed assistant turn, so it knows both the model-specific
+generation-to-reasoning prefix and the reasoning-to-answer transition.  It
+replaces/prefills the former before using llama.cpp's raw `/completion` endpoint
+with `cache_prompt=true`:
 
 ```text
 round 0:  A sees base_A                 B sees base_B
@@ -79,13 +82,20 @@ A model's own emitted reasoning is never appended to its next prompt.  The
 plain text is crossed; each destination server tokenizes it with its own
 vocabulary.
 
-Rapid mode also probes `/apply-template` differently.  It renders a synthetic
-assistant prefill containing a reasoning sentinel followed by an answer
-sentinel and captures the model-specific bytes between them.  After the rapid
-reasoning budget (or an early reasoning stop), that native
+Rapid mode therefore makes two startup `/apply-template` probes per model.  A
+user-only render identifies the ordinary generation tail; a synthetic completed
+assistant turn contains a reasoning sentinel followed by an answer sentinel.
+Their differing tails identify the native reasoning-entry prefix, while the
+bytes between the two sentinels identify the reasoning-to-answer transition.
+This matters for Harmony/GPT-OSS: raw generation would otherwise begin with
+`<|channel|>analysis<|message|>`, which is protocol syntax rather than reasoning
+payload.  Twinception now prefills that syntax itself, so it is never crossed or
+stored as thought.
+
+After the rapid reasoning budget (or an early reasoning stop), the native
 reasoning-to-answer transition is appended to each destination prompt and a
-final `/completion` is requested.  Consequently rapid mode does not require
-old reasoning traces to survive historical chat-template rendering, but it does
+final `/completion` is requested.  Consequently rapid mode does not require old
+reasoning traces to survive historical chat-template rendering, but it does
 require llama.cpp-compatible `/apply-template` and `/completion` endpoints;
 `-P` is therefore invalid with `-q`.
 
@@ -147,7 +157,9 @@ history advances and autonomous crosstalk is stopped.
 
 ### Native reasoning delimiters
 
-Rapid reasoning requests stop on the model-specific reasoning-to-answer transition
-discovered by `/apply-template`. llama-server excludes the matched stop string from
-`content`, preventing template control syntax such as GPT-OSS Harmony `<|channel|>`
-tags from being stored or crossed as plain reasoning text.
+Rapid prompts are bracketed by model-specific delimiters discovered from
+`/apply-template`: Twinception prefills the generation-to-reasoning prefix and
+stops on the reasoning-to-answer transition.  llama-server excludes the matched
+stop string from `content`.  Thus protocol syntax such as GPT-OSS Harmony's
+`<|channel|>analysis<|message|>` opening prefix and final-channel transition never
+becomes crossed reasoning payload.

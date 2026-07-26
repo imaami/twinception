@@ -31,12 +31,20 @@ struct prompt {
 
 struct app;
 
+enum template_probe_stage {
+	TEMPLATE_PROBE_HISTORY,
+	TEMPLATE_PROBE_RAPID_BASE,
+	TEMPLATE_PROBE_RAPID_FULL
+};
+
 struct template_probe {
-	struct http_request *request;
-	struct buf           response;
-	struct app          *app;
-	size_t               index;
-	int                  done;
+	struct http_request       *request;
+	struct buf                 response;
+	struct app                *app;
+	char                      *rapid_base;
+	size_t                     index;
+	enum template_probe_stage  stage;
+	int                        done;
 };
 
 struct model_run {
@@ -91,6 +99,8 @@ struct app {
 	struct http           *http;
 	struct loop            loop;
 	struct buf             stdin_buf;
+	char                  *generation_tail[2];
+	char                  *reasoning_tail[2];
 	char                  *transition[2];
 	long                   crosstalk_left;
 	uint32_t               rapid_used;
@@ -116,6 +126,7 @@ static void app_advance (struct app *app);
 static void app_maybe_finish (struct app *app);
 static void app_turn_committed (struct app *app, struct turn *turn);
 static void rapid_maybe_advance (struct app *app);
+static void template_probe_done (CURLcode, long, char const *, void *);
 
 static void
 turn_destroy (struct turn **p_turn)
@@ -267,7 +278,8 @@ json_add_history (struct json_object *messages,
 }
 
 static char *
-template_probe_body (struct app const *app)
+template_probe_body (struct app const *app,
+                     enum template_probe_stage stage)
 {
 	struct json_object *root = json_object_new_object();
 	struct json_object *messages = json_object_new_array();
@@ -279,8 +291,14 @@ template_probe_body (struct app const *app)
 	json_object_object_add(root, "messages", messages);
 
 	int error;
-	if (app->cfg.rapid_quantum) {
-		error = json_add_message(messages, "user", "rapid template probe", nullptr) ||
+	if (stage == TEMPLATE_PROBE_RAPID_BASE) {
+		error = (app->cfg.system &&
+		         json_add_message(messages, "system", app->cfg.system, nullptr)) ||
+		        json_add_message(messages, "user", "rapid template probe", nullptr);
+	} else if (stage == TEMPLATE_PROBE_RAPID_FULL) {
+		error = (app->cfg.system &&
+		         json_add_message(messages, "system", app->cfg.system, nullptr)) ||
+		        json_add_message(messages, "user", "rapid template probe", nullptr) ||
 		        json_add_message(messages, "assistant", probe_rapid_answer,
 		                         probe_rapid_reasoning);
 	} else {
@@ -372,41 +390,69 @@ template_probe_validate_history (struct template_probe *probe,
 	return 0;
 }
 
+static size_t
+common_prefix_len (char const *a,
+                   char const *b)
+{
+	size_t n = 0;
+	while (a[n] && b[n] && a[n] == b[n])
+		++n;
+	return n;
+}
+
 static int
 template_probe_validate_rapid (struct template_probe *probe,
                                char const             *prompt)
 {
+	char const *base = probe->rapid_base;
 	char const *reasoning = strstr(prompt, probe_rapid_reasoning);
 	char const *answer = reasoning
 		? strstr(reasoning + sizeof probe_rapid_reasoning - 1, probe_rapid_answer)
 		: nullptr;
-	if (!reasoning || !answer) {
+	if (!base || !reasoning || !answer) {
 		fprintf(stderr,
-		        "model %c rapid template check failed: cannot locate reasoning "
-		        "and answer prefills in /apply-template output\n",
+		        "model %c rapid template check failed: cannot locate generation, "
+		        "reasoning and answer prefills in /apply-template output\n",
 		        (int)('A' + probe->index));
 		return EPROTO;
 	}
 
+	size_t common = common_prefix_len(base, prompt);
+	size_t base_len = strlen(base);
+	size_t reasoning_off = (size_t)(reasoning - prompt);
+	if (common > reasoning_off) {
+		fprintf(stderr,
+		        "model %c rapid template check failed: generation prompt overlaps "
+		        "reasoning payload\n",
+		        (int)('A' + probe->index));
+		return EPROTO;
+	}
+
+	char *generation_tail = strdup(base + common);
+	char *reasoning_tail = strndup(prompt + common, reasoning_off - common);
 	char const *begin = reasoning + sizeof probe_rapid_reasoning - 1;
-	size_t len = (size_t)(answer - begin);
-	if (!len) {
-		fprintf(stderr,
-		        "model %c rapid template check failed: template has no "
-		        "reasoning-to-answer transition\n",
-		        (int)('A' + probe->index));
-		return EPROTO;
+	size_t transition_len = (size_t)(answer - begin);
+	char *transition = transition_len ? strndup(begin, transition_len) : nullptr;
+	if (!generation_tail || !reasoning_tail || !transition) {
+		free(generation_tail);
+		free(reasoning_tail);
+		free(transition);
+		return transition_len ? ENOMEM : EPROTO;
 	}
 
-	probe->app->transition[probe->index] = strndup(begin, len);
-	if (!probe->app->transition[probe->index])
-		return ENOMEM;
+	free(probe->app->generation_tail[probe->index]);
+	free(probe->app->reasoning_tail[probe->index]);
+	free(probe->app->transition[probe->index]);
+	probe->app->generation_tail[probe->index] = generation_tail;
+	probe->app->reasoning_tail[probe->index] = reasoning_tail;
+	probe->app->transition[probe->index] = transition;
 
 	if (probe->app->cfg.debug)
 		fprintf(stderr,
-		        "model %c rapid template check: captured %zu-byte "
-		        "reasoning-to-answer transition\n",
-		        (int)('A' + probe->index), len);
+		        "model %c rapid template check: generation tail %zu bytes, "
+		        "reasoning prefix %zu bytes, reasoning-to-answer transition %zu bytes\n",
+		        (int)('A' + probe->index), base_len - common,
+		        reasoning_off - common, transition_len);
 	return 0;
 }
 
@@ -425,6 +471,35 @@ template_probe_validate (struct template_probe *probe)
 	return error;
 }
 
+static int
+template_probe_start (struct template_probe *probe)
+{
+	struct app *app = probe->app;
+	char *body = template_probe_body(app, probe->stage);
+	if (!body)
+		return ENOMEM;
+
+	char *url = endpoint_url(app->cfg.url[probe->index], "/apply-template");
+	if (!url) {
+		free(body);
+		fprintf(stderr,
+		        "cannot derive /apply-template from model %c URL%s\n",
+		        (int)('A' + probe->index),
+		        app->cfg.rapid_quantum
+		        ? "; rapid mode requires llama-server-compatible endpoints"
+		        : "; use -P to skip template validation");
+		return EINVAL;
+	}
+
+	buf_reset(&probe->response);
+	int error = http_post_json(app->http, url, body,
+	                           template_probe_write, template_probe_done, probe,
+	                           &probe->request);
+	free(url);
+	free(body);
+	return error;
+}
+
 static void
 template_probe_done (CURLcode    result,
                      long        status,
@@ -434,23 +509,38 @@ template_probe_done (CURLcode    result,
 	struct template_probe *probe = user;
 	struct app *app = probe->app;
 	probe->request = nullptr;
-	probe->done = 1;
 
-	int error = 0;
 	if (result != CURLE_OK || status < 200 || status >= 300) {
 		fprintf(stderr, "model %c template check failed: HTTP %ld, curl=%s%s%s\n",
 		        (int)('A' + probe->index), status, curl_easy_strerror(result),
 		        curl_error && *curl_error ? ": " : "",
 		        curl_error && *curl_error ? curl_error : "");
-		error = EIO;
-	} else {
-		error = template_probe_validate(probe);
+		app_fail(app, EIO);
+		return;
 	}
 
+	if (probe->stage == TEMPLATE_PROBE_RAPID_BASE) {
+		char *prompt;
+		int error = template_probe_prompt(probe, &prompt);
+		if (error) {
+			app_fail(app, error);
+			return;
+		}
+		free(probe->rapid_base);
+		probe->rapid_base = prompt;
+		probe->stage = TEMPLATE_PROBE_RAPID_FULL;
+		error = template_probe_start(probe);
+		if (error)
+			app_fail(app, error);
+		return;
+	}
+
+	int error = template_probe_validate(probe);
 	if (error) {
 		app_fail(app, error);
 		return;
 	}
+	probe->done = 1;
 	if (!app->probe[0].done || !app->probe[1].done)
 		return;
 
@@ -471,38 +561,15 @@ app_start_template_probes (struct app *app)
 		return 0;
 	}
 
-	char *body = template_probe_body(app);
-	if (!body)
-		return ENOMEM;
-
-	int error = 0;
 	for (size_t i = 0; i < ARRAY_SIZE(app->probe); ++i) {
 		struct template_probe *probe = &app->probe[i];
-		probe->app = app;
-		probe->index = i;
-
-		char *url = endpoint_url(app->cfg.url[i], "/apply-template");
-		if (!url) {
-			fprintf(stderr,
-			        "cannot derive /apply-template from model %c URL%s\n",
-			        (int)('A' + i),
-			        app->cfg.rapid_quantum
-			        ? "; rapid mode requires llama-server-compatible endpoints"
-			        : "; use -P to skip template validation");
-			error = EINVAL;
-			break;
-		}
-
-		error = http_post_json(app->http, url, body,
-		                       template_probe_write, template_probe_done, probe,
-		                       &probe->request);
-		free(url);
+		probe->stage = app->cfg.rapid_quantum
+			? TEMPLATE_PROBE_RAPID_BASE : TEMPLATE_PROBE_HISTORY;
+		int error = template_probe_start(probe);
 		if (error)
-			break;
+			return error;
 	}
-
-	free(body);
-	return error;
+	return 0;
 }
 
 static char *
@@ -1007,8 +1074,27 @@ rapid_start_raw (struct app *app,
 	model->requested = n_predict > 0 ? (uint32_t)n_predict : 0;
 	sse_init(&model->sse, rapid_sse_event, model);
 
+	char const *generation_tail = app->generation_tail[model->index];
+	char const *reasoning_tail = app->reasoning_tail[model->index];
+	if (!generation_tail || !reasoning_tail)
+		return EPROTO;
+
+	size_t generation_len = strlen(generation_tail);
+	if (generation_len > model->base.len ||
+	    (generation_len &&
+	     memcmp(model->base.data + model->base.len - generation_len,
+	            generation_tail, generation_len))) {
+		fprintf(stderr,
+		        "model %c rapid turn template no longer matches probed generation tail\n",
+		        (int)('A' + model->index));
+		return EPROTO;
+	}
+
 	struct buf prompt = {0};
-	int e = buf_append(&prompt, model->base.data, model->base.len);
+	size_t base_prefix_len = model->base.len - generation_len;
+	int e = buf_append(&prompt, model->base.data, base_prefix_len);
+	if (!e && *reasoning_tail)
+		e = buf_append(&prompt, reasoning_tail, strlen(reasoning_tail));
 	if (!e && foreign && foreign->len)
 		e = buf_append(&prompt, foreign->data, foreign->len);
 	if (!e && suffix)
@@ -1513,9 +1599,12 @@ app_fini (struct app *app)
 		if (app->probe[i].request)
 			http_cancel(app->http, &app->probe[i].request);
 		buf_fini(&app->probe[i].response);
+		free(app->probe[i].rapid_base);
 		model_reset(&app->model[i]);
 		sse_fini(&app->model[i].sse);
 		rapid_reset_turn(&app->rapid[i]);
+		free(app->generation_tail[i]);
+		free(app->reasoning_tail[i]);
 		free(app->transition[i]);
 	}
 
