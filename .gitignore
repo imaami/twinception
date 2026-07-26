@@ -1,0 +1,17 @@
+*.d
+*.exe
+*.o
+*.o.json
+*~
+.cache/
+/*.creator.user
+/.qtc_clangd/
+/.vscode/
+/build/
+/doc/html/
+/doc/latex/
+/doc/man/
+/doc/rtf/
+/doc/xml/
+compile_commands.json
+twinception
