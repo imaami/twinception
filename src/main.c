@@ -18,6 +18,8 @@ usage (FILE       *out,
 	        "  -b, --b-url URL          model B chat-completions URL\n"
 	        "  -A, --a-model NAME       model A name/alias\n"
 	        "  -B, --b-model NAME       model B name/alias\n"
+	        "      --a-provider NAME    llama or groq (default llama)\n"
+	        "      --b-provider NAME    llama or groq (default llama)\n"
 	        "  -s, --system TEXT        common system message\n"
 	        "  -p, --prompt TEXT        run one seeded conversation and exit\n"
 	        "  -t, --temperature N      sampling temperature\n"
@@ -49,6 +51,19 @@ parse_history_mode (char const            *str,
 }
 
 static int
+parse_provider (char const        *str,
+                enum app_provider *provider)
+{
+	if (!strcmp(str, "llama"))
+		*provider = APP_PROVIDER_LLAMA;
+	else if (!strcmp(str, "groq"))
+		*provider = APP_PROVIDER_GROQ;
+	else
+		return EINVAL;
+	return 0;
+}
+
+static int
 parse_long (char const *str,
             long       *value,
             long        min)
@@ -56,7 +71,7 @@ parse_long (char const *str,
 	char *end;
 	errno = 0;
 	long n = strtol(str, &end, 10);
-	if (errno || *end || n < min)
+	if (errno || end == str || *end || n < min)
 		return EINVAL;
 	*value = n;
 	return 0;
@@ -80,21 +95,21 @@ main (int   argc,
       char *argv[])
 {
 	struct app_cfg cfg = {
-		.url = {
-			"http://127.0.0.1:8080/v1/chat/completions",
-			"http://127.0.0.1:8081/v1/chat/completions"
-		},
 		.temperature = -1,
 		.max_tokens = -1,
 		.history_mode = APP_HISTORY_SPLIT,
 		.template_check = 1
 	};
+	unsigned url_set = 0;
+	enum { OPT_A_PROVIDER = 0x100, OPT_B_PROVIDER };
 
 	static struct option const options[] = {
 		{ "a-url",             required_argument, nullptr, 'a' },
 		{ "b-url",             required_argument, nullptr, 'b' },
 		{ "a-model",           required_argument, nullptr, 'A' },
 		{ "b-model",           required_argument, nullptr, 'B' },
+		{ "a-provider",        required_argument, nullptr, OPT_A_PROVIDER },
+		{ "b-provider",        required_argument, nullptr, OPT_B_PROVIDER },
 		{ "system",            required_argument, nullptr, 's' },
 		{ "prompt",            required_argument, nullptr, 'p' },
 		{ "temperature",       required_argument, nullptr, 't' },
@@ -116,14 +131,26 @@ main (int   argc,
 			break;
 
 		switch (opt) {
-		case 'a': cfg.url[0] = optarg; break;
-		case 'b': cfg.url[1] = optarg; break;
+		case 'a': cfg.url[0] = optarg; url_set |= 1u; break;
+		case 'b': cfg.url[1] = optarg; url_set |= 2u; break;
 		case 'A': cfg.model[0] = optarg; break;
 		case 'B': cfg.model[1] = optarg; break;
 		case 's': cfg.system = optarg; break;
 		case 'p': cfg.prompt = optarg; break;
 		case 'd': cfg.debug = 1; break;
 		case 'P': cfg.template_check = 0; break;
+		case OPT_A_PROVIDER:
+			if (parse_provider(optarg, &cfg.provider[0])) {
+				fprintf(stderr, "invalid model A provider: %s\n", optarg);
+				return 2;
+			}
+			break;
+		case OPT_B_PROVIDER:
+			if (parse_provider(optarg, &cfg.provider[1])) {
+				fprintf(stderr, "invalid model B provider: %s\n", optarg);
+				return 2;
+			}
+			break;
 		case 'H':
 			if (parse_history_mode(optarg, &cfg.history_mode)) {
 				fprintf(stderr, "invalid history mode: %s\n", optarg);
@@ -152,7 +179,7 @@ main (int   argc,
 			char *end;
 			errno = 0;
 			cfg.temperature = strtod(optarg, &end);
-			if (errno || *end || cfg.temperature < 0) {
+			if (errno || end == optarg || *end || cfg.temperature < 0) {
 				fprintf(stderr, "invalid temperature: %s\n", optarg);
 				return 2;
 			}
@@ -184,6 +211,35 @@ main (int   argc,
 	}
 	if (cfg.rapid_quantum && !cfg.rapid_budget)
 		cfg.rapid_budget = 512;
+
+	static char const *llama_url[] = {
+		"http://127.0.0.1:8080/v1/chat/completions",
+		"http://127.0.0.1:8081/v1/chat/completions"
+	};
+	for (size_t i = 0; i < 2; ++i) {
+		if (!(url_set & (1u << i)))
+			cfg.url[i] = cfg.provider[i] == APP_PROVIDER_GROQ
+				? "https://api.groq.com/openai/v1/chat/completions"
+				: llama_url[i];
+		if (cfg.provider[i] == APP_PROVIDER_GROQ && !cfg.model[i])
+			cfg.model[i] = "qwen/qwen3.6-27b";
+		if (cfg.provider[i] == APP_PROVIDER_GROQ &&
+		    strncmp(cfg.model[i], "qwen/", sizeof "qwen/" - 1)) {
+			fprintf(stderr,
+			        "Groq model %c must currently be a Qwen reasoning model; "
+			        "raw reasoning re-injection is not defined for %s\n",
+			        (int)('A' + i), cfg.model[i]);
+			return 2;
+		}
+	}
+	if (cfg.provider[0] == APP_PROVIDER_GROQ ||
+	    cfg.provider[1] == APP_PROVIDER_GROQ) {
+		cfg.groq_key = getenv("GROQ_API_KEY");
+		if (!cfg.groq_key || !*cfg.groq_key) {
+			fputs("GROQ_API_KEY is required for Groq providers\n", stderr);
+			return 2;
+		}
+	}
 
 	int e = app_run(&cfg);
 	if (e) {

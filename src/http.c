@@ -29,6 +29,7 @@ struct http_request {
 	http_done_cb      *done_cb;
 	void              *user;
 	char              *body;
+	size_t             body_len;
 	CURL              *easy;
 	char               error[CURL_ERROR_SIZE];
 };
@@ -341,6 +342,7 @@ int
 http_post_json (struct http       *http,
                 char const        *url,
                 char const        *body,
+                char const        *bearer,
                 http_write_cb     *write_cb,
                 http_done_cb      *done_cb,
                 void              *user,
@@ -354,6 +356,7 @@ http_post_json (struct http       *http,
 		return errno ? errno : ENOMEM;
 	list_init(&request->hook);
 
+	request->body_len = strlen(body);
 	request->body = strdup(body);
 	request->easy = curl_easy_init();
 	request->write_cb = write_cb;
@@ -370,6 +373,29 @@ http_post_json (struct http       *http,
 		http_cancel(http, &request);
 		return ENOMEM;
 	}
+	if (bearer) {
+		static char const prefix[] = "Authorization: Bearer ";
+		size_t key_len = strlen(bearer);
+		if (key_len > SIZE_MAX - sizeof prefix) {
+			http_cancel(http, &request);
+			return EOVERFLOW;
+		}
+		char *authorization = malloc(sizeof prefix + key_len);
+		if (!authorization) {
+			http_cancel(http, &request);
+			return errno ? errno : ENOMEM;
+		}
+		memcpy(authorization, prefix, sizeof prefix - 1);
+		memcpy(authorization + sizeof prefix - 1, bearer, key_len + 1);
+		struct curl_slist *headers = curl_slist_append(request->headers,
+		                                                authorization);
+		free(authorization);
+		if (!headers) {
+			http_cancel(http, &request);
+			return ENOMEM;
+		}
+		request->headers = headers;
+	}
 
 #define SETOPT(opt, value) \
 	do { \
@@ -383,7 +409,7 @@ http_post_json (struct http       *http,
 	SETOPT(CURLOPT_HTTPHEADER, request->headers);
 	SETOPT(CURLOPT_POST, 1L);
 	SETOPT(CURLOPT_POSTFIELDS, request->body);
-	SETOPT(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)strlen(request->body));
+	SETOPT(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)request->body_len);
 	SETOPT(CURLOPT_WRITEFUNCTION, http_write_adapter);
 	SETOPT(CURLOPT_WRITEDATA, request);
 	SETOPT(CURLOPT_PRIVATE, request);

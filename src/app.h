@@ -10,9 +10,15 @@ enum app_history_mode {
 	APP_HISTORY_SHARED_B
 };
 
+enum app_provider {
+	APP_PROVIDER_LLAMA,
+	APP_PROVIDER_GROQ
+};
+
 struct app_cfg {
 	char const *url[2];
 	char const *model[2];
+	char const *groq_key;
 	char const *system;
 	char const *prompt;
 	double      temperature;
@@ -21,6 +27,7 @@ struct app_cfg {
 	uint32_t    rapid_quantum;
 	uint32_t    rapid_budget;
 	enum app_history_mode history_mode;
+	enum app_provider provider[2];
 	unsigned    debug : 1;
 	unsigned    template_check : 1;
 };

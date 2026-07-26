@@ -31,6 +31,7 @@ extern int
 http_post_json (struct http       *http,
                 char const        *url,
                 char const        *body,
+                char const        *bearer,
                 http_write_cb     *write_cb,
                 http_done_cb      *done_cb,
                 void              *user,

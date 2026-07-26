@@ -2,6 +2,7 @@
 """End-to-end checks for crossed history, rapid swapping, and crosstalk."""
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -15,11 +16,13 @@ RAPID_REASONING = "<ANALYSIS>"
 
 
 class State:
-    def __init__(self, name, drop_reasoning=False, prune_old=False):
+    def __init__(self, name, drop_reasoning=False, prune_old=False, groq=False):
         self.name = name
         self.drop_reasoning = drop_reasoning
         self.prune_old = prune_old
+        self.groq = groq
         self.requests = []
+        self.authorization = []
         self.probes = []
         self.completions = []
         self.quantum_count = 0
@@ -126,7 +129,49 @@ def handler_for(state):
 
             with state.lock:
                 state.requests.append(request)
+                state.authorization.append(self.headers.get("Authorization"))
                 turn = len(state.requests)
+
+            if state.groq:
+                rapid = request["messages"][-1].get("role") == "assistant"
+                if rapid:
+                    with state.lock:
+                        if request.get("max_completion_tokens") == 2:
+                            state.quantum_count += 1
+                            number = state.quantum_count
+                            text = f"{state.name.lower()}{number} "
+                            finish = "length"
+                        else:
+                            state.final_count += 1
+                            number = state.final_count
+                            text = f"F{state.name}{number}"
+                            finish = "stop"
+                    chunks = ({"choices": [{"index": 0,
+                                             "delta": {"content": text},
+                                             "finish_reason": finish}]},)
+                else:
+                    chunks = (
+                        {"choices": [{"index": 0,
+                                      "delta": {"reasoning": f"R{state.name}{turn}"},
+                                      "finish_reason": None}]},
+                        {"choices": [{"index": 0,
+                                      "delta": {"content": f"A{state.name}{turn}"},
+                                      "finish_reason": "stop"}]},
+                    )
+                body = "".join(
+                    "data: " + json.dumps(chunk, separators=(",", ":")) + "\n\n"
+                    for chunk in chunks
+                ) + "data: [DONE]\n\n"
+                wire = body.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(wire)))
+                self.end_headers()
+                try:
+                    self.wfile.write(wire)
+                except BrokenPipeError:
+                    pass
+                return
 
             chunks = (
                 {"choices": [{"index": 0,
@@ -154,8 +199,15 @@ def handler_for(state):
     return Handler
 
 
+class TestHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], ConnectionResetError):
+            return
+        super().handle_error(request, client_address)
+
+
 def servers_for(states):
-    servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler_for(state))
+    servers = [TestHTTPServer(("127.0.0.1", 0), handler_for(state))
                for state in states]
     threads = [threading.Thread(target=server.serve_forever, daemon=True)
                for server in servers]
@@ -175,10 +227,13 @@ def urls_for(servers):
             for server in servers]
 
 
-def run_client(binary, states, *args, input_text=None):
+def run_client(binary, states, *args, input_text=None, env=None):
     servers = servers_for(states)
     try:
         urls = urls_for(servers)
+        child_env = os.environ.copy()
+        if env:
+            child_env.update(env)
         run = subprocess.run(
             [binary, "-a", urls[0], "-b", urls[1], *args],
             input=input_text,
@@ -187,6 +242,7 @@ def run_client(binary, states, *args, input_text=None):
             stderr=subprocess.PIPE,
             check=False,
             timeout=10,
+            env=child_env,
         )
         return run
     finally:
@@ -308,6 +364,92 @@ def check_rejected_template(binary):
     return 0
 
 
+def check_groq_history(binary):
+    states = (State("A", groq=True), State("B", groq=True))
+    run = run_client(binary, states,
+                     "--a-provider", "groq", "--b-provider", "groq",
+                     input_text="first\nsecond\n",
+                     env={"GROQ_API_KEY": "test-key"})
+    if run.returncode:
+        sys.stderr.write(run.stdout)
+        sys.stderr.write(run.stderr)
+        return run.returncode
+
+    a, b = (state.requests for state in states)
+    assert len(a) == len(b) == 2
+    assert not states[0].probes and not states[1].probes
+    assert a[1]["messages"][-2] == {
+        "role": "assistant", "content": "AA1", "reasoning": "RB1"
+    }
+    assert b[1]["messages"][-2] == {
+        "role": "assistant", "content": "AB1", "reasoning": "RA1"
+    }
+    assert a[0]["model"] == b[0]["model"] == "qwen/qwen3.6-27b"
+    assert a[0]["reasoning_format"] == b[0]["reasoning_format"] == "parsed"
+    assert all(h == "Bearer test-key"
+               for state in states for h in state.authorization)
+
+    print("Groq crossed-reasoning history: PASS")
+    return 0
+
+
+def check_groq_rapid(binary):
+    states = (State("A", groq=True), State("B", groq=True))
+    run = run_client(binary, states,
+                     "--a-provider", "groq", "--b-provider", "groq",
+                     "-q", "2", "-R", "4", "-n", "8", "-p", "seed",
+                     env={"GROQ_API_KEY": "test-key"})
+    if run.returncode:
+        sys.stderr.write(run.stdout)
+        sys.stderr.write(run.stderr)
+        return run.returncode
+
+    a, b = (state.requests for state in states)
+    assert len(a) == len(b) == 3
+    assert not states[0].probes and not states[1].probes
+    assert a[0]["messages"][-1] == {"role": "assistant", "content": "<think>\n"}
+    assert b[0]["messages"][-1] == {"role": "assistant", "content": "<think>\n"}
+    assert a[1]["messages"][-1]["content"] == "<think>\nb1 "
+    assert b[1]["messages"][-1]["content"] == "<think>\na1 "
+    assert a[2]["messages"][-1]["content"] == "<think>\nb1 b2 </think>\n"
+    assert b[2]["messages"][-1]["content"] == "<think>\na1 a2 </think>\n"
+    assert [r.get("max_completion_tokens") for r in a] == [2, 2, 8]
+    assert [r.get("stop") for r in a] == ["</think>", "</think>", None]
+    assert all(r["reasoning_format"] == "raw" for r in a + b)
+    assert all(h == "Bearer test-key"
+               for state in states for h in state.authorization)
+
+    print("Groq causal rapid thought swap: PASS")
+    return 0
+
+
+def check_mixed_rapid(binary):
+    states = (State("A"), State("B", groq=True))
+    run = run_client(binary, states,
+                     "--b-provider", "groq",
+                     "-q", "2", "-R", "4", "-n", "8", "-p", "seed",
+                     env={"GROQ_API_KEY": "test-key"})
+    if run.returncode:
+        sys.stderr.write(run.stdout)
+        sys.stderr.write(run.stderr)
+        return run.returncode
+
+    local, groq = states
+    assert len(local.probes) == 3
+    assert not groq.probes
+    assert len(local.completions) == len(groq.requests) == 3
+    assert local.completions[1]["prompt"] == \
+        "BASE-A:seed" + RAPID_REASONING + "b1 "
+    assert groq.requests[1]["messages"][-1]["content"] == "<think>\na1 "
+    assert local.completions[2]["prompt"] == \
+        "BASE-A:seed" + RAPID_REASONING + "b1 b2 " + RAPID_TRANSITION
+    assert groq.requests[2]["messages"][-1]["content"] == \
+        "<think>\na1 a2 </think>\n"
+
+    print("mixed llama/Groq rapid thought swap: PASS")
+    return 0
+
+
 def check_pruned_old_reasoning(binary):
     states = (State("A", prune_old=True), State("B"))
     run = run_client(binary, states, "-p", "still runs")
@@ -325,6 +467,9 @@ def main():
             check_crosstalk(binary) or
             check_rapid_swap(binary) or
             check_rapid_crosstalk(binary) or
+            check_groq_history(binary) or
+            check_groq_rapid(binary) or
+            check_mixed_rapid(binary) or
             check_pruned_old_reasoning(binary) or
             check_rejected_template(binary))
 

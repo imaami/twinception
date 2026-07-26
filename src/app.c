@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <json-c/json.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,6 +127,8 @@ static void app_advance (struct app *app);
 static void app_maybe_finish (struct app *app);
 static void app_turn_committed (struct app *app, struct turn *turn);
 static void rapid_maybe_advance (struct app *app);
+static size_t rapid_write (char const *, size_t, void *);
+static void rapid_done (CURLcode, long, char const *, void *);
 static void template_probe_done (CURLcode, long, char const *, void *);
 
 static void
@@ -192,27 +195,91 @@ prompt_create (char const *text_a,
 }
 
 static int
-json_add_message (struct json_object *messages,
-                  char const         *role,
-                  char const         *content,
-                  char const         *reasoning)
+json_add_message_key (struct json_object *messages,
+                      char const         *role,
+                      char const         *content,
+                      char const         *reasoning,
+                      char const         *reasoning_key)
 {
 	struct json_object *msg = json_object_new_object();
-	if (!msg)
+	struct json_object *role_obj = json_object_new_string(role);
+	struct json_object *content_obj = json_object_new_string(content ? content : "");
+	struct json_object *reasoning_obj = reasoning
+		? json_object_new_string(reasoning) : nullptr;
+	if (!msg || !role_obj || !content_obj || (reasoning && !reasoning_obj)) {
+		json_object_put(reasoning_obj);
+		json_object_put(content_obj);
+		json_object_put(role_obj);
+		json_object_put(msg);
 		return ENOMEM;
+	}
 
-	json_object_object_add(msg, "role", json_object_new_string(role));
-	json_object_object_add(msg, "content",
-	                       json_object_new_string(content ? content : ""));
+	json_object_object_add(msg, "role", role_obj);
+	json_object_object_add(msg, "content", content_obj);
 	if (reasoning)
-		json_object_object_add(msg, "reasoning_content",
-		                       json_object_new_string(reasoning));
+		json_object_object_add(msg, reasoning_key, reasoning_obj);
 
 	if (json_object_array_add(messages, msg)) {
 		json_object_put(msg);
 		return ENOMEM;
 	}
 	return 0;
+}
+
+static int
+json_add_value (struct json_object *object,
+                char const         *key,
+                struct json_object *value)
+{
+	if (!value)
+		return ENOMEM;
+	json_object_object_add(object, key, value);
+	return 0;
+}
+
+static int
+json_add_message (struct json_object *messages,
+                  char const         *role,
+                  char const         *content,
+                  char const         *reasoning)
+{
+	return json_add_message_key(messages, role, content, reasoning,
+	                            "reasoning_content");
+}
+
+static int
+json_add_model_message (struct json_object *messages,
+                        struct app const   *app,
+                        size_t              model,
+                        char const         *role,
+                        char const         *content,
+                        char const         *reasoning)
+{
+	char const *key = app->cfg.provider[model] == APP_PROVIDER_GROQ
+		? "reasoning" : "reasoning_content";
+	return json_add_message_key(messages, role, content, reasoning, key);
+}
+
+static char const *
+model_bearer (struct app const *app,
+              size_t            model)
+{
+	return app->cfg.provider[model] == APP_PROVIDER_GROQ
+		? app->cfg.groq_key : nullptr;
+}
+
+static int
+model_post_json (struct app        *app,
+                 size_t             model,
+                 char const        *url,
+                 char const        *body,
+                 http_write_cb     *write_cb,
+                 http_done_cb      *done_cb,
+                 void              *user,
+                 struct http_request **request)
+{
+	return http_post_json(app->http, url, body, model_bearer(app, model),
+	                      write_cb, done_cb, user, request);
 }
 
 static void
@@ -268,10 +335,11 @@ json_add_history (struct json_object *messages,
 	struct list *node;
 	list_foreach (node, &app->history) {
 		struct turn *turn = container_of(node, struct turn, hook);
-		if (json_add_message(messages, "user", turn->user[model], nullptr) ||
-		    json_add_message(messages, "assistant",
-		                     turn_answer_for(app, turn, model),
-		                     turn->reasoning[1 - model]))
+		if (json_add_model_message(messages, app, model, "user",
+		                           turn->user[model], nullptr) ||
+		    json_add_model_message(messages, app, model, "assistant",
+		                           turn_answer_for(app, turn, model),
+		                           turn->reasoning[1 - model]))
 			return ENOMEM;
 	}
 	return 0;
@@ -492,7 +560,7 @@ template_probe_start (struct template_probe *probe)
 	}
 
 	buf_reset(&probe->response);
-	int error = http_post_json(app->http, url, body,
+	int error = model_post_json(app, probe->index, url, body,
 	                           template_probe_write, template_probe_done, probe,
 	                           &probe->request);
 	free(url);
@@ -552,9 +620,11 @@ static int
 app_start_template_probes (struct app *app)
 {
 	if (!app->cfg.template_check) {
-		if (app->cfg.rapid_quantum) {
+		if (app->cfg.rapid_quantum &&
+		    (app->cfg.provider[0] == APP_PROVIDER_LLAMA ||
+		     app->cfg.provider[1] == APP_PROVIDER_LLAMA)) {
 			fputs("rapid mode requires template transition discovery; "
-			      "-P cannot be used with --rapid\n", stderr);
+			      "-P cannot be used with --rapid for llama providers\n", stderr);
 			return EINVAL;
 		}
 		app->template_ready = 1;
@@ -563,12 +633,18 @@ app_start_template_probes (struct app *app)
 
 	for (size_t i = 0; i < ARRAY_SIZE(app->probe); ++i) {
 		struct template_probe *probe = &app->probe[i];
+		if (app->cfg.provider[i] == APP_PROVIDER_GROQ) {
+			probe->done = 1;
+			continue;
+		}
 		probe->stage = app->cfg.rapid_quantum
 			? TEMPLATE_PROBE_RAPID_BASE : TEMPLATE_PROBE_HISTORY;
 		int error = template_probe_start(probe);
 		if (error)
 			return error;
 	}
+	if (app->probe[0].done && app->probe[1].done)
+		app->template_ready = 1;
 	return 0;
 }
 
@@ -586,23 +662,32 @@ chat_request_body (struct app const *app,
 	}
 
 	json_object_object_add(root, "messages", messages);
-	json_object_object_add(root, "stream", json_object_new_boolean(1));
-	json_object_object_add(root, "reasoning_format",
-	                       json_object_new_string("deepseek"));
+	if (json_add_value(root, "stream", json_object_new_boolean(1)) ||
+	    json_add_value(root, "reasoning_format",
+	                   json_object_new_string(
+	                           app->cfg.provider[model] == APP_PROVIDER_GROQ
+	                           ? "parsed" : "deepseek")))
+		goto fail;
 	if (app->cfg.model[model])
-		json_object_object_add(root, "model",
-		                       json_object_new_string(app->cfg.model[model]));
+		if (json_add_value(root, "model",
+		                   json_object_new_string(app->cfg.model[model])))
+			goto fail;
 	if (app->cfg.temperature >= 0)
-		json_object_object_add(root, "temperature",
-		                       json_object_new_double(app->cfg.temperature));
+		if (json_add_value(root, "temperature",
+		                   json_object_new_double(app->cfg.temperature)))
+			goto fail;
 	if (app->cfg.max_tokens > 0)
-		json_object_object_add(root, "max_tokens",
-		                       json_object_new_int64(app->cfg.max_tokens));
+		if (json_add_value(root,
+		                   app->cfg.provider[model] == APP_PROVIDER_GROQ
+		                   ? "max_completion_tokens" : "max_tokens",
+		                   json_object_new_int64(app->cfg.max_tokens)))
+			goto fail;
 
 	if ((app->cfg.system &&
-	     json_add_message(messages, "system", app->cfg.system, nullptr)) ||
+	     json_add_model_message(messages, app, model, "system",
+	                            app->cfg.system, nullptr)) ||
 	    json_add_history(messages, app, model) ||
-	    json_add_message(messages, "user", user, nullptr))
+	    json_add_model_message(messages, app, model, "user", user, nullptr))
 		goto fail;
 
 	char const *json = json_object_to_json_string_ext(root,
@@ -803,7 +888,7 @@ app_start_chat (struct app *app)
 		char *body = chat_request_body(app, i, app->pending->user[i]);
 		if (!body)
 			return ENOMEM;
-		int e = http_post_json(app->http, app->cfg.url[i], body,
+		int e = model_post_json(app, i, app->cfg.url[i], body,
 		                       model_write, model_done, model,
 		                       &model->request);
 		free(body);
@@ -934,6 +1019,40 @@ rapid_sse_event (char const *data,
 		return EREMOTEIO;
 	}
 
+	if (model->app->cfg.provider[model->index] == APP_PROVIDER_GROQ) {
+		struct json_object *choices;
+		struct json_object *choice;
+		struct json_object *delta;
+		if (!json_object_object_get_ex(root, "choices", &choices) ||
+		    json_object_get_type(choices) != json_type_array ||
+		    !json_object_array_length(choices) ||
+		    !(choice = json_object_array_get_idx(choices, 0))) {
+			json_object_put(root);
+			return 0;
+		}
+
+		int e = 0;
+		struct json_object *value;
+		if (json_object_object_get_ex(choice, "delta", &delta) &&
+		    json_object_object_get_ex(delta, "content", &value) &&
+		    json_object_get_type(value) == json_type_string) {
+			char const *str = json_object_get_string(value);
+			size_t n = (size_t)json_object_get_string_len(value);
+			struct buf *out = model->app->rapid_stage == RAPID_ANSWER
+				? &model->answer : &model->chunk;
+			e = buf_append(out, str, n);
+		}
+		if (!e && json_object_object_get_ex(choice, "finish_reason", &value) &&
+		    json_object_get_type(value) == json_type_string) {
+			model->stop_type_seen = 1;
+			model->hit_limit = !strcmp(json_object_get_string(value), "length");
+			if (model->hit_limit)
+				model->tokens = model->requested;
+		}
+		json_object_put(root);
+		return e;
+	}
+
 	struct json_object *value;
 	int e = 0;
 	if (json_object_object_get_ex(root, "content", &value) &&
@@ -966,6 +1085,87 @@ rapid_sse_event (char const *data,
 		model->saw_stop = 1;
 
 	json_object_put(root);
+	return e;
+}
+
+static char *
+groq_rapid_body (struct app const *app,
+                 size_t            model,
+                 struct buf const  *foreign,
+                 long              n_predict)
+{
+	struct json_object *root = json_object_new_object();
+	struct json_object *messages = json_object_new_array();
+	if (!root || !messages) {
+		json_object_put(root);
+		json_object_put(messages);
+		return nullptr;
+	}
+	json_object_object_add(root, "messages", messages);
+	if (json_add_value(root, "stream", json_object_new_boolean(1)) ||
+	    json_add_value(root, "reasoning_format", json_object_new_string("raw")) ||
+	    json_add_value(root, "model", json_object_new_string(app->cfg.model[model])))
+		goto fail;
+	if (app->cfg.temperature >= 0)
+		if (json_add_value(root, "temperature",
+		                   json_object_new_double(app->cfg.temperature)))
+			goto fail;
+	if (n_predict > 0)
+		if (json_add_value(root, "max_completion_tokens",
+		                   json_object_new_int64(n_predict)))
+			goto fail;
+	if (app->rapid_stage == RAPID_THINK)
+		if (json_add_value(root, "stop", json_object_new_string("</think>")))
+			goto fail;
+
+	if ((app->cfg.system &&
+	     json_add_model_message(messages, app, model, "system",
+	                            app->cfg.system, nullptr)) ||
+	    json_add_history(messages, app, model) ||
+	    json_add_model_message(messages, app, model, "user",
+	                           app->pending->user[model], nullptr))
+		goto fail;
+
+	struct buf prefill = {0};
+	int e = buf_append(&prefill, "<think>\n", sizeof "<think>\n" - 1);
+	if (!e && foreign && foreign->len)
+		e = buf_append(&prefill, foreign->data, foreign->len);
+	if (!e && app->rapid_stage == RAPID_ANSWER)
+		e = buf_append(&prefill, "</think>\n", sizeof "</think>\n" - 1);
+	if (!e)
+		e = json_add_model_message(messages, app, model, "assistant",
+		                           prefill.data ? prefill.data : "", nullptr);
+	buf_fini(&prefill);
+	if (e)
+		goto fail;
+
+	char const *json = json_object_to_json_string_ext(root,
+	                                                  JSON_C_TO_STRING_PLAIN);
+	char *body = strdup(json);
+	json_object_put(root);
+	return body;
+
+fail:
+	json_object_put(root);
+	return nullptr;
+}
+
+static int
+rapid_start_groq (struct app         *app,
+                  struct rapid_model *model,
+                  struct buf const   *foreign,
+                  long                n_predict)
+{
+	rapid_reset_request(model);
+	model->requested = n_predict > 0 ? (uint32_t)n_predict : 0;
+	sse_init(&model->sse, rapid_sse_event, model);
+
+	char *body = groq_rapid_body(app, model->index, foreign, n_predict);
+	if (!body)
+		return ENOMEM;
+	int e = model_post_json(app, model->index, app->cfg.url[model->index], body,
+	                        rapid_write, rapid_done, model, &model->request);
+	free(body);
 	return e;
 }
 
@@ -1028,18 +1228,30 @@ rapid_body (struct app const *app,
             char const       *stop,
             long              n_predict)
 {
+	if (prompt_len > INT_MAX)
+		return nullptr;
 	struct json_object *root = json_object_new_object();
 	if (!root)
 		return nullptr;
 
-	json_object_object_add(root, "prompt",
-	                       json_object_new_string_len(prompt, (int)prompt_len));
-	json_object_object_add(root, "stream", json_object_new_boolean(1));
-	json_object_object_add(root, "cache_prompt", json_object_new_boolean(1));
+	if (json_add_value(root, "prompt",
+	                   json_object_new_string_len(prompt, (int)prompt_len)) ||
+	    json_add_value(root, "stream", json_object_new_boolean(1)) ||
+	    json_add_value(root, "cache_prompt", json_object_new_boolean(1))) {
+		json_object_put(root);
+		return nullptr;
+	}
 	if (stop) {
 		struct json_object *stops = json_object_new_array();
-		if (!stops ||
-		    json_object_array_add(stops, json_object_new_string(stop))) {
+		struct json_object *stop_obj = json_object_new_string(stop);
+		if (!stops || !stop_obj) {
+			json_object_put(stop_obj);
+			json_object_put(stops);
+			json_object_put(root);
+			return nullptr;
+		}
+		if (json_object_array_add(stops, stop_obj)) {
+			json_object_put(stop_obj);
 			json_object_put(stops);
 			json_object_put(root);
 			return nullptr;
@@ -1047,20 +1259,26 @@ rapid_body (struct app const *app,
 		json_object_object_add(root, "stop", stops);
 	}
 	if (n_predict > 0)
-		json_object_object_add(root, "n_predict",
-		                       json_object_new_int64(n_predict));
+		if (json_add_value(root, "n_predict", json_object_new_int64(n_predict)))
+			goto fail;
 	if (app->cfg.model[model])
-		json_object_object_add(root, "model",
-		                       json_object_new_string(app->cfg.model[model]));
+		if (json_add_value(root, "model",
+		                   json_object_new_string(app->cfg.model[model])))
+			goto fail;
 	if (app->cfg.temperature >= 0)
-		json_object_object_add(root, "temperature",
-		                       json_object_new_double(app->cfg.temperature));
+		if (json_add_value(root, "temperature",
+		                   json_object_new_double(app->cfg.temperature)))
+			goto fail;
 
 	char const *json = json_object_to_json_string_ext(root,
 	                                                  JSON_C_TO_STRING_PLAIN);
 	char *body = strdup(json);
 	json_object_put(root);
 	return body;
+
+fail:
+	json_object_put(root);
+	return nullptr;
 }
 
 static int
@@ -1117,7 +1335,7 @@ rapid_start_raw (struct app *app,
 		free(body);
 		return EINVAL;
 	}
-	e = http_post_json(app->http, url, body, rapid_write, rapid_done, model,
+	e = model_post_json(app, model->index, url, body, rapid_write, rapid_done, model,
 	                   &model->request);
 	free(url);
 	free(body);
@@ -1136,8 +1354,11 @@ rapid_start_quantum (struct app *app)
 	app->rapid_stage = RAPID_THINK;
 	++app->rapid_round;
 	for (size_t i = 0; i < ARRAY_SIZE(app->rapid); ++i) {
-		int e = rapid_start_raw(app, &app->rapid[i],
-		                        &app->rapid[1 - i].emitted, nullptr, n);
+		int e = app->cfg.provider[i] == APP_PROVIDER_GROQ
+			? rapid_start_groq(app, &app->rapid[i],
+			                   &app->rapid[1 - i].emitted, (long)n)
+			: rapid_start_raw(app, &app->rapid[i],
+			                  &app->rapid[1 - i].emitted, nullptr, (long)n);
 		if (e)
 			return e;
 	}
@@ -1149,9 +1370,12 @@ rapid_start_answers (struct app *app)
 {
 	app->rapid_stage = RAPID_ANSWER;
 	for (size_t i = 0; i < ARRAY_SIZE(app->rapid); ++i) {
-		int e = rapid_start_raw(app, &app->rapid[i],
-		                        &app->rapid[1 - i].emitted,
-		                        app->transition[i], app->cfg.max_tokens);
+		int e = app->cfg.provider[i] == APP_PROVIDER_GROQ
+			? rapid_start_groq(app, &app->rapid[i],
+			                   &app->rapid[1 - i].emitted, app->cfg.max_tokens)
+			: rapid_start_raw(app, &app->rapid[i],
+			                  &app->rapid[1 - i].emitted,
+			                  app->transition[i], app->cfg.max_tokens);
 		if (e)
 			return e;
 	}
@@ -1273,6 +1497,10 @@ app_start_rapid (struct app *app)
 		rapid_reset_turn(model);
 		model->app = app;
 		model->index = i;
+		if (app->cfg.provider[i] == APP_PROVIDER_GROQ) {
+			model->done = 1;
+			continue;
+		}
 
 		char *body = template_turn_body(app, i, app->pending->user[i]);
 		if (!body)
@@ -1282,7 +1510,7 @@ app_start_rapid (struct app *app)
 			free(body);
 			return EINVAL;
 		}
-		int e = http_post_json(app->http, url, body,
+		int e = model_post_json(app, i, url, body,
 		                       rapid_template_write, rapid_template_done, model,
 		                       &model->request);
 		free(url);
@@ -1290,6 +1518,8 @@ app_start_rapid (struct app *app)
 		if (e)
 			return e;
 	}
+	if (app->rapid[0].done && app->rapid[1].done)
+		rapid_maybe_advance(app);
 	return 0;
 }
 
