@@ -958,6 +958,7 @@ rapid_body (struct app const *app,
             size_t            model,
             char const       *prompt,
             size_t            prompt_len,
+            char const       *stop,
             long              n_predict)
 {
 	struct json_object *root = json_object_new_object();
@@ -968,6 +969,16 @@ rapid_body (struct app const *app,
 	                       json_object_new_string_len(prompt, (int)prompt_len));
 	json_object_object_add(root, "stream", json_object_new_boolean(1));
 	json_object_object_add(root, "cache_prompt", json_object_new_boolean(1));
+	if (stop) {
+		struct json_object *stops = json_object_new_array();
+		if (!stops ||
+		    json_object_array_add(stops, json_object_new_string(stop))) {
+			json_object_put(stops);
+			json_object_put(root);
+			return nullptr;
+		}
+		json_object_object_add(root, "stop", stops);
+	}
 	if (n_predict > 0)
 		json_object_object_add(root, "n_predict",
 		                       json_object_new_int64(n_predict));
@@ -1007,7 +1018,10 @@ rapid_start_raw (struct app *app,
 		return e;
 	}
 
-	char *body = rapid_body(app, model->index, prompt.data, prompt.len, n_predict);
+	char *body = rapid_body(app, model->index, prompt.data, prompt.len,
+	                        app->rapid_stage == RAPID_THINK
+	                        ? app->transition[model->index] : nullptr,
+	                        n_predict);
 	buf_fini(&prompt);
 	if (!body)
 		return ENOMEM;

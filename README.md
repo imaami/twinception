@@ -144,3 +144,10 @@ history advances and autonomous crosstalk is stopped.
 -d, --debug              show reasoning and rapid quanta
 -P, --no-template-check  skip ordinary template validation
 ```
+
+### Native reasoning delimiters
+
+Rapid reasoning requests stop on the model-specific reasoning-to-answer transition
+discovered by `/apply-template`. llama-server excludes the matched stop string from
+`content`, preventing template control syntax such as GPT-OSS Harmony `<|channel|>`
+tags from being stored or crossed as plain reasoning text.

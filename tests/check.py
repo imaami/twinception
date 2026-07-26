@@ -252,6 +252,12 @@ def check_rapid_swap(binary):
     assert b[2]["prompt"] == "BASE-B:seed<THINK>a1 a2 " + RAPID_TRANSITION
     assert all(req["cache_prompt"] is True for req in a + b)
     assert [req["n_predict"] for req in a] == [2, 2, 8]
+    assert [req.get("stop") for req in a] == [
+        [RAPID_TRANSITION], [RAPID_TRANSITION], None
+    ]
+    assert [req.get("stop") for req in b] == [
+        [RAPID_TRANSITION], [RAPID_TRANSITION], None
+    ]
 
     print("causal rapid thought swap: PASS")
     return 0
