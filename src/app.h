@@ -17,6 +17,7 @@ struct app_cfg {
 	long        max_tokens;
 	enum app_history_mode history_mode;
 	unsigned    debug : 1;
+	unsigned    template_check : 1;
 };
 
 extern int

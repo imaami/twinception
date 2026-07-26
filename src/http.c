@@ -364,20 +364,12 @@ http_post_json (struct http       *http,
 		return ENOMEM;
 	}
 
-	struct curl_slist *headers = curl_slist_append(nullptr,
-	                                                "Content-Type: application/json");
-	if (!headers) {
+	request->headers = curl_slist_append(nullptr,
+	                                     "Content-Type: application/json");
+	if (!request->headers) {
 		http_cancel(http, &request);
 		return ENOMEM;
 	}
-	struct curl_slist *next = curl_slist_append(headers,
-	                                           "Accept: text/event-stream");
-	if (!next) {
-		curl_slist_free_all(headers);
-		http_cancel(http, &request);
-		return ENOMEM;
-	}
-	request->headers = next;
 
 #define SETOPT(opt, value) \
 	do { \

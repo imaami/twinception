@@ -23,6 +23,7 @@ usage (FILE       *out,
 	        "  -n, --max-tokens N       max output tokens per model\n"
 	        "  -H, --history MODE       split, shared-a, or shared-b\n"
 	        "  -d, --debug              print both reasoning traces\n"
+	        "  -P, --no-template-check  skip llama.cpp template validation\n"
 	        "  -h, --help               show this help\n"
 	        "\nInteractive command: :quit\n",
 	        argv0);
@@ -54,26 +55,28 @@ main (int   argc,
 		},
 		.temperature = -1,
 		.max_tokens = -1,
-		.history_mode = APP_HISTORY_SPLIT
+		.history_mode = APP_HISTORY_SPLIT,
+		.template_check = 1
 	};
 
 	static struct option const options[] = {
-		{ "a-url",       required_argument, nullptr, 'a' },
-		{ "b-url",       required_argument, nullptr, 'b' },
-		{ "a-model",     required_argument, nullptr, 'A' },
-		{ "b-model",     required_argument, nullptr, 'B' },
-		{ "system",      required_argument, nullptr, 's' },
-		{ "prompt",      required_argument, nullptr, 'p' },
-		{ "temperature", required_argument, nullptr, 't' },
-		{ "max-tokens",  required_argument, nullptr, 'n' },
-		{ "history",     required_argument, nullptr, 'H' },
-		{ "debug",       no_argument,       nullptr, 'd' },
-		{ "help",        no_argument,       nullptr, 'h' },
+		{ "a-url",             required_argument, nullptr, 'a' },
+		{ "b-url",             required_argument, nullptr, 'b' },
+		{ "a-model",           required_argument, nullptr, 'A' },
+		{ "b-model",           required_argument, nullptr, 'B' },
+		{ "system",            required_argument, nullptr, 's' },
+		{ "prompt",            required_argument, nullptr, 'p' },
+		{ "temperature",       required_argument, nullptr, 't' },
+		{ "max-tokens",        required_argument, nullptr, 'n' },
+		{ "history",           required_argument, nullptr, 'H' },
+		{ "debug",             no_argument,       nullptr, 'd' },
+		{ "no-template-check", no_argument,       nullptr, 'P' },
+		{ "help",              no_argument,       nullptr, 'h' },
 		{ nullptr, 0, nullptr, 0 }
 	};
 
 	for (;;) {
-		int opt = getopt_long(argc, argv, "a:b:A:B:s:p:t:n:H:dh",
+		int opt = getopt_long(argc, argv, "a:b:A:B:s:p:t:n:H:dPh",
 		                      options, nullptr);
 		if (opt < 0)
 			break;
@@ -86,6 +89,7 @@ main (int   argc,
 		case 's': cfg.system = optarg; break;
 		case 'p': cfg.prompt = optarg; break;
 		case 'd': cfg.debug = 1; break;
+		case 'P': cfg.template_check = 0; break;
 		case 'H':
 			if (parse_history_mode(optarg, &cfg.history_mode)) {
 				fprintf(stderr, "invalid history mode: %s\n", optarg);

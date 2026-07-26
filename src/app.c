@@ -30,6 +30,14 @@ struct prompt {
 
 struct app;
 
+struct template_probe {
+	struct http_request *request;
+	struct buf           response;
+	struct app          *app;
+	size_t               index;
+	int                  done;
+};
+
 struct model_run {
 	struct http_request *request;
 	struct sse           sse;
@@ -44,18 +52,21 @@ struct model_run {
 };
 
 struct app {
-	struct app_cfg    cfg;
-	struct loop_ref   stdin_ref;
-	struct list       history;
-	struct list       prompts;
-	struct model_run  model[2];
-	struct turn      *pending;
-	struct http      *http;
-	struct loop       loop;
-	struct buf        stdin_buf;
-	int               stdin_flags;
-	int               stdin_eof;
-	int               exit_after_turn;
+	struct template_probe  probe[2];
+	struct model_run       model[2];
+	struct app_cfg         cfg;
+	struct loop_ref        stdin_ref;
+	struct list            history;
+	struct list            prompts;
+	struct turn           *pending;
+	struct http           *http;
+	struct loop            loop;
+	struct buf             stdin_buf;
+	int                    stdin_flags;
+	int                    stdin_eof;
+	int                    exit_after_turn;
+	int                    error;
+	int                    template_ready;
 };
 
 static void
@@ -106,6 +117,209 @@ json_add_message (struct json_object *messages,
 		return ENOMEM;
 	}
 	return 0;
+}
+
+static char const probe_reasoning_old[] =
+	"__TWINCEPTION_REASONING_PROBE_OLD_196F89C7__";
+static char const probe_reasoning_new[] =
+	"__TWINCEPTION_REASONING_PROBE_NEW_5A2E4D31__";
+
+static void app_advance (struct app *app);
+
+static void
+app_fail (struct app *app,
+          int         error)
+{
+	if (!app->error)
+		app->error = error;
+	loop_exit(&app->loop);
+}
+
+static char *
+template_url (char const *chat_url)
+{
+	static char const suffix[] = "/v1/chat/completions";
+	static char const endpoint[] = "/apply-template";
+	size_t len = strlen(chat_url);
+	size_t suffix_len = sizeof suffix - 1;
+	if (len < suffix_len || memcmp(chat_url + len - suffix_len,
+	                               suffix, suffix_len))
+		return nullptr;
+
+	size_t prefix_len = len - suffix_len;
+	char *url = malloc(prefix_len + sizeof endpoint);
+	if (!url)
+		return nullptr;
+	memcpy(url, chat_url, prefix_len);
+	memcpy(url + prefix_len, endpoint, sizeof endpoint);
+	return url;
+}
+
+static char *
+template_probe_body (struct app const *app)
+{
+	struct json_object *root = json_object_new_object();
+	struct json_object *messages = json_object_new_array();
+	if (!root || !messages) {
+		json_object_put(root);
+		json_object_put(messages);
+		return nullptr;
+	}
+	json_object_object_add(root, "messages", messages);
+
+	if ((app->cfg.system &&
+	     json_add_message(messages, "system", app->cfg.system, nullptr)) ||
+	    json_add_message(messages, "user", "template probe 0", nullptr) ||
+	    json_add_message(messages, "assistant", "template probe answer 0",
+	                     probe_reasoning_old) ||
+	    json_add_message(messages, "user", "template probe 1", nullptr) ||
+	    json_add_message(messages, "assistant", "template probe answer 1",
+	                     probe_reasoning_new) ||
+	    json_add_message(messages, "user", "template probe 2", nullptr)) {
+		json_object_put(root);
+		return nullptr;
+	}
+
+	char const *json = json_object_to_json_string_ext(root,
+	                                                  JSON_C_TO_STRING_PLAIN);
+	char *body = strdup(json);
+	json_object_put(root);
+	return body;
+}
+
+static size_t
+template_probe_write (char const *data,
+                      size_t      len,
+                      void       *user)
+{
+	struct template_probe *probe = user;
+	return buf_append(&probe->response, data, len) ? 0 : len;
+}
+
+static int
+template_probe_validate (struct template_probe *probe)
+{
+	if (!probe->response.data) {
+		fprintf(stderr, "model %c template check failed: empty response\n",
+		        (int)('A' + probe->index));
+		return EPROTO;
+	}
+
+	struct json_object *root = json_tokener_parse(probe->response.data);
+	if (!root) {
+		fprintf(stderr, "model %c template check failed: invalid JSON response\n",
+		        (int)('A' + probe->index));
+		return EPROTO;
+	}
+
+	struct json_object *value;
+	int error = 0;
+	if (!json_object_object_get_ex(root, "prompt", &value) ||
+	    json_object_get_type(value) != json_type_string) {
+		fprintf(stderr,
+		        "model %c template check failed: response has no prompt string\n",
+		        (int)('A' + probe->index));
+		error = EPROTO;
+		goto out;
+	}
+
+	char const *prompt = json_object_get_string(value);
+	if (!strstr(prompt, probe_reasoning_new)) {
+		fprintf(stderr,
+		        "model %c template check failed: reasoning_content is absent "
+		        "from /apply-template output\n",
+		        (int)('A' + probe->index));
+		error = EPROTO;
+		goto out;
+	}
+
+	if (!strstr(prompt, probe_reasoning_old)) {
+		fprintf(stderr,
+		        "model %c template check: older reasoning is pruned; "
+		        "use --reasoning-preserve for full-history swapping\n",
+		        (int)('A' + probe->index));
+	} else if (probe->app->cfg.debug) {
+		fprintf(stderr,
+		        "model %c template check: reasoning_content survives full history\n",
+		        (int)('A' + probe->index));
+	}
+
+out:
+	json_object_put(root);
+	return error;
+}
+
+static void
+template_probe_done (CURLcode    result,
+                     long        status,
+                     char const *curl_error,
+                     void       *user)
+{
+	struct template_probe *probe = user;
+	struct app *app = probe->app;
+	probe->request = nullptr;
+	probe->done = 1;
+
+	int error = 0;
+	if (result != CURLE_OK || status < 200 || status >= 300) {
+		fprintf(stderr, "model %c template check failed: HTTP %ld, curl=%s%s%s\n",
+		        (int)('A' + probe->index), status, curl_easy_strerror(result),
+		        curl_error && *curl_error ? ": " : "",
+		        curl_error && *curl_error ? curl_error : "");
+		error = EIO;
+	} else {
+		error = template_probe_validate(probe);
+	}
+
+	if (error) {
+		app_fail(app, error);
+		return;
+	}
+	if (!app->probe[0].done || !app->probe[1].done)
+		return;
+
+	app->template_ready = 1;
+	app_advance(app);
+}
+
+static int
+app_start_template_probes (struct app *app)
+{
+	if (!app->cfg.template_check) {
+		app->template_ready = 1;
+		return 0;
+	}
+
+	char *body = template_probe_body(app);
+	if (!body)
+		return ENOMEM;
+
+	int error = 0;
+	for (size_t i = 0; i < ARRAY_SIZE(app->probe); ++i) {
+		struct template_probe *probe = &app->probe[i];
+		probe->app = app;
+		probe->index = i;
+
+		char *url = template_url(app->cfg.url[i]);
+		if (!url) {
+			fprintf(stderr,
+			        "cannot derive /apply-template from model %c URL; "
+			        "use -P to skip template validation\n",
+			        (int)('A' + i));
+			error = EINVAL;
+			break;
+		}
+
+		error = http_post_json(app->http, url, body,
+		                       template_probe_write, template_probe_done, probe,
+		                       &probe->request);
+		free(url);
+		if (error)
+			break;
+	}
+
+	free(body);
+	return error;
 }
 
 static char const *
@@ -409,7 +623,7 @@ app_pop_prompt (struct app *app)
 static void
 app_advance (struct app *app)
 {
-	if (app->pending)
+	if (!app->template_ready || app->pending)
 		return;
 
 	struct prompt *prompt = app_pop_prompt(app);
@@ -418,7 +632,7 @@ app_advance (struct app *app)
 		prompt_destroy(&prompt);
 		if (e) {
 			fprintf(stderr, "cannot start request pair: %s\n", strerror(e));
-			loop_exit(&app->loop);
+			app_fail(app, e);
 		}
 		return;
 	}
@@ -555,6 +769,7 @@ app_init (struct app           *app,
 		.stdin_flags = -1
 	};
 	app->stdin_ref.fd = -1;
+	list_init(&app->loop.refs);
 	list_init(&app->history);
 	list_init(&app->prompts);
 
@@ -569,6 +784,8 @@ app_init (struct app           *app,
 	for (size_t i = 0; i < 2; ++i) {
 		app->model[i].app = app;
 		app->model[i].index = i;
+		app->probe[i].app = app;
+		app->probe[i].index = i;
 		sse_init(&app->model[i].sse, model_sse_event, &app->model[i]);
 	}
 
@@ -597,6 +814,9 @@ app_fini (struct app *app)
 	for (size_t i = 0; i < 2; ++i) {
 		if (app->model[i].request)
 			http_cancel(app->http, &app->model[i].request);
+		if (app->probe[i].request)
+			http_cancel(app->http, &app->probe[i].request);
+		buf_fini(&app->probe[i].response);
 		model_reset(&app->model[i]);
 		sse_fini(&app->model[i].sse);
 	}
@@ -635,8 +855,13 @@ app_run (struct app_cfg const *cfg)
 		return e;
 	}
 
-	app_advance(&app);
-	e = loop_exec(&app.loop);
+	e = app_start_template_probes(&app);
+	if (!e) {
+		app_advance(&app);
+		e = loop_exec(&app.loop);
+	}
+	if (!e)
+		e = app.error;
 	app_fini(&app);
 	return e;
 }
