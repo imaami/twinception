@@ -12,13 +12,13 @@ enum app_history_mode {
 
 enum app_provider {
 	APP_PROVIDER_LLAMA,
-	APP_PROVIDER_GROQ
+	APP_PROVIDER_DEEPINFRA
 };
 
 struct app_cfg {
 	char const *url[2];
 	char const *model[2];
-	char const *groq_key;
+	char const *deepinfra_key;
 	char const *system;
 	char const *prompt;
 	double      temperature;

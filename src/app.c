@@ -248,24 +248,37 @@ json_add_message (struct json_object *messages,
 }
 
 static int
-json_add_model_message (struct json_object *messages,
-                        struct app const   *app,
-                        size_t              model,
-                        char const         *role,
-                        char const         *content,
-                        char const         *reasoning)
+json_add_deepinfra_reasoning (struct json_object *root)
 {
-	char const *key = app->cfg.provider[model] == APP_PROVIDER_GROQ
-		? "reasoning" : "reasoning_content";
-	return json_add_message_key(messages, role, content, reasoning, key);
+	struct json_object *reasoning = json_object_new_object();
+	struct json_object *kwargs = json_object_new_object();
+	struct json_object *enabled = json_object_new_boolean(1);
+	struct json_object *enable_thinking = json_object_new_boolean(1);
+	struct json_object *preserve_thinking = json_object_new_boolean(1);
+	if (!reasoning || !kwargs || !enabled || !enable_thinking ||
+	    !preserve_thinking) {
+		json_object_put(preserve_thinking);
+		json_object_put(enable_thinking);
+		json_object_put(enabled);
+		json_object_put(kwargs);
+		json_object_put(reasoning);
+		return ENOMEM;
+	}
+
+	json_object_object_add(reasoning, "enabled", enabled);
+	json_object_object_add(kwargs, "enable_thinking", enable_thinking);
+	json_object_object_add(kwargs, "preserve_thinking", preserve_thinking);
+	json_object_object_add(root, "reasoning", reasoning);
+	json_object_object_add(root, "chat_template_kwargs", kwargs);
+	return 0;
 }
 
 static char const *
 model_bearer (struct app const *app,
               size_t            model)
 {
-	return app->cfg.provider[model] == APP_PROVIDER_GROQ
-		? app->cfg.groq_key : nullptr;
+	return app->cfg.provider[model] == APP_PROVIDER_DEEPINFRA
+		? app->cfg.deepinfra_key : nullptr;
 }
 
 static int
@@ -335,11 +348,10 @@ json_add_history (struct json_object *messages,
 	struct list *node;
 	list_foreach (node, &app->history) {
 		struct turn *turn = container_of(node, struct turn, hook);
-		if (json_add_model_message(messages, app, model, "user",
-		                           turn->user[model], nullptr) ||
-		    json_add_model_message(messages, app, model, "assistant",
-		                           turn_answer_for(app, turn, model),
-		                           turn->reasoning[1 - model]))
+		if (json_add_message(messages, "user", turn->user[model], nullptr) ||
+		    json_add_message(messages, "assistant",
+		                     turn_answer_for(app, turn, model),
+		                     turn->reasoning[1 - model]))
 			return ENOMEM;
 	}
 	return 0;
@@ -633,7 +645,7 @@ app_start_template_probes (struct app *app)
 
 	for (size_t i = 0; i < ARRAY_SIZE(app->probe); ++i) {
 		struct template_probe *probe = &app->probe[i];
-		if (app->cfg.provider[i] == APP_PROVIDER_GROQ) {
+		if (app->cfg.provider[i] == APP_PROVIDER_DEEPINFRA) {
 			probe->done = 1;
 			continue;
 		}
@@ -662,11 +674,13 @@ chat_request_body (struct app const *app,
 	}
 
 	json_object_object_add(root, "messages", messages);
-	if (json_add_value(root, "stream", json_object_new_boolean(1)) ||
-	    json_add_value(root, "reasoning_format",
-	                   json_object_new_string(
-	                           app->cfg.provider[model] == APP_PROVIDER_GROQ
-	                           ? "parsed" : "deepseek")))
+	if (json_add_value(root, "stream", json_object_new_boolean(1)))
+		goto fail;
+	if (app->cfg.provider[model] == APP_PROVIDER_LLAMA &&
+	    json_add_value(root, "reasoning_format", json_object_new_string("deepseek")))
+		goto fail;
+	if (app->cfg.provider[model] == APP_PROVIDER_DEEPINFRA &&
+	    json_add_deepinfra_reasoning(root))
 		goto fail;
 	if (app->cfg.model[model])
 		if (json_add_value(root, "model",
@@ -677,17 +691,14 @@ chat_request_body (struct app const *app,
 		                   json_object_new_double(app->cfg.temperature)))
 			goto fail;
 	if (app->cfg.max_tokens > 0)
-		if (json_add_value(root,
-		                   app->cfg.provider[model] == APP_PROVIDER_GROQ
-		                   ? "max_completion_tokens" : "max_tokens",
+		if (json_add_value(root, "max_tokens",
 		                   json_object_new_int64(app->cfg.max_tokens)))
 			goto fail;
 
 	if ((app->cfg.system &&
-	     json_add_model_message(messages, app, model, "system",
-	                            app->cfg.system, nullptr)) ||
+	     json_add_message(messages, "system", app->cfg.system, nullptr)) ||
 	    json_add_history(messages, app, model) ||
-	    json_add_model_message(messages, app, model, "user", user, nullptr))
+	    json_add_message(messages, "user", user, nullptr))
 		goto fail;
 
 	char const *json = json_object_to_json_string_ext(root,
@@ -1019,7 +1030,7 @@ rapid_sse_event (char const *data,
 		return EREMOTEIO;
 	}
 
-	if (model->app->cfg.provider[model->index] == APP_PROVIDER_GROQ) {
+	if (model->app->cfg.provider[model->index] == APP_PROVIDER_DEEPINFRA) {
 		struct json_object *choices;
 		struct json_object *choice;
 		struct json_object *delta;
@@ -1032,15 +1043,21 @@ rapid_sse_event (char const *data,
 		}
 
 		int e = 0;
-		struct json_object *value;
-		if (json_object_object_get_ex(choice, "delta", &delta) &&
-		    json_object_object_get_ex(delta, "content", &value) &&
-		    json_object_get_type(value) == json_type_string) {
-			char const *str = json_object_get_string(value);
-			size_t n = (size_t)json_object_get_string_len(value);
-			struct buf *out = model->app->rapid_stage == RAPID_ANSWER
-				? &model->answer : &model->chunk;
-			e = buf_append(out, str, n);
+		struct json_object *value = nullptr;
+		if (json_object_object_get_ex(choice, "delta", &delta)) {
+			if (model->app->rapid_stage == RAPID_ANSWER)
+				json_object_object_get_ex(delta, "content", &value);
+			else if (!json_object_object_get_ex(delta, "reasoning_content", &value) &&
+			         !json_object_object_get_ex(delta, "reasoning", &value))
+				json_object_object_get_ex(delta, "content", &value);
+
+			if (value && json_object_get_type(value) == json_type_string) {
+				char const *str = json_object_get_string(value);
+				size_t n = (size_t)json_object_get_string_len(value);
+				struct buf *out = model->app->rapid_stage == RAPID_ANSWER
+					? &model->answer : &model->chunk;
+				e = buf_append(out, str, n);
+			}
 		}
 		if (!e && json_object_object_get_ex(choice, "finish_reason", &value) &&
 		    json_object_get_type(value) == json_type_string) {
@@ -1089,10 +1106,10 @@ rapid_sse_event (char const *data,
 }
 
 static char *
-groq_rapid_body (struct app const *app,
-                 size_t            model,
-                 struct buf const  *foreign,
-                 long              n_predict)
+deepinfra_rapid_body (struct app const *app,
+                      size_t            model,
+                      struct buf const  *foreign,
+                      long              n_predict)
 {
 	struct json_object *root = json_object_new_object();
 	struct json_object *messages = json_object_new_array();
@@ -1103,15 +1120,16 @@ groq_rapid_body (struct app const *app,
 	}
 	json_object_object_add(root, "messages", messages);
 	if (json_add_value(root, "stream", json_object_new_boolean(1)) ||
-	    json_add_value(root, "reasoning_format", json_object_new_string("raw")) ||
-	    json_add_value(root, "model", json_object_new_string(app->cfg.model[model])))
+	    json_add_value(root, "model", json_object_new_string(app->cfg.model[model])) ||
+	    json_add_value(root, "continue_final_message", json_object_new_boolean(1)) ||
+	    json_add_deepinfra_reasoning(root))
 		goto fail;
 	if (app->cfg.temperature >= 0)
 		if (json_add_value(root, "temperature",
 		                   json_object_new_double(app->cfg.temperature)))
 			goto fail;
 	if (n_predict > 0)
-		if (json_add_value(root, "max_completion_tokens",
+		if (json_add_value(root, "max_tokens",
 		                   json_object_new_int64(n_predict)))
 			goto fail;
 	if (app->rapid_stage == RAPID_THINK)
@@ -1119,11 +1137,9 @@ groq_rapid_body (struct app const *app,
 			goto fail;
 
 	if ((app->cfg.system &&
-	     json_add_model_message(messages, app, model, "system",
-	                            app->cfg.system, nullptr)) ||
+	     json_add_message(messages, "system", app->cfg.system, nullptr)) ||
 	    json_add_history(messages, app, model) ||
-	    json_add_model_message(messages, app, model, "user",
-	                           app->pending->user[model], nullptr))
+	    json_add_message(messages, "user", app->pending->user[model], nullptr))
 		goto fail;
 
 	struct buf prefill = {0};
@@ -1133,8 +1149,8 @@ groq_rapid_body (struct app const *app,
 	if (!e && app->rapid_stage == RAPID_ANSWER)
 		e = buf_append(&prefill, "</think>\n", sizeof "</think>\n" - 1);
 	if (!e)
-		e = json_add_model_message(messages, app, model, "assistant",
-		                           prefill.data ? prefill.data : "", nullptr);
+		e = json_add_message(messages, "assistant",
+		                     prefill.data ? prefill.data : "", nullptr);
 	buf_fini(&prefill);
 	if (e)
 		goto fail;
@@ -1151,16 +1167,16 @@ fail:
 }
 
 static int
-rapid_start_groq (struct app         *app,
-                  struct rapid_model *model,
-                  struct buf const   *foreign,
-                  long                n_predict)
+rapid_start_deepinfra (struct app         *app,
+                       struct rapid_model *model,
+                       struct buf const   *foreign,
+                       long                n_predict)
 {
 	rapid_reset_request(model);
 	model->requested = n_predict > 0 ? (uint32_t)n_predict : 0;
 	sse_init(&model->sse, rapid_sse_event, model);
 
-	char *body = groq_rapid_body(app, model->index, foreign, n_predict);
+	char *body = deepinfra_rapid_body(app, model->index, foreign, n_predict);
 	if (!body)
 		return ENOMEM;
 	int e = model_post_json(app, model->index, app->cfg.url[model->index], body,
@@ -1354,8 +1370,8 @@ rapid_start_quantum (struct app *app)
 	app->rapid_stage = RAPID_THINK;
 	++app->rapid_round;
 	for (size_t i = 0; i < ARRAY_SIZE(app->rapid); ++i) {
-		int e = app->cfg.provider[i] == APP_PROVIDER_GROQ
-			? rapid_start_groq(app, &app->rapid[i],
+		int e = app->cfg.provider[i] == APP_PROVIDER_DEEPINFRA
+			? rapid_start_deepinfra(app, &app->rapid[i],
 			                   &app->rapid[1 - i].emitted, (long)n)
 			: rapid_start_raw(app, &app->rapid[i],
 			                  &app->rapid[1 - i].emitted, nullptr, (long)n);
@@ -1370,8 +1386,8 @@ rapid_start_answers (struct app *app)
 {
 	app->rapid_stage = RAPID_ANSWER;
 	for (size_t i = 0; i < ARRAY_SIZE(app->rapid); ++i) {
-		int e = app->cfg.provider[i] == APP_PROVIDER_GROQ
-			? rapid_start_groq(app, &app->rapid[i],
+		int e = app->cfg.provider[i] == APP_PROVIDER_DEEPINFRA
+			? rapid_start_deepinfra(app, &app->rapid[i],
 			                   &app->rapid[1 - i].emitted, app->cfg.max_tokens)
 			: rapid_start_raw(app, &app->rapid[i],
 			                  &app->rapid[1 - i].emitted,
@@ -1497,7 +1513,7 @@ app_start_rapid (struct app *app)
 		rapid_reset_turn(model);
 		model->app = app;
 		model->index = i;
-		if (app->cfg.provider[i] == APP_PROVIDER_GROQ) {
+		if (app->cfg.provider[i] == APP_PROVIDER_DEEPINFRA) {
 			model->done = 1;
 			continue;
 		}

@@ -18,8 +18,8 @@ usage (FILE       *out,
 	        "  -b, --b-url URL          model B chat-completions URL\n"
 	        "  -A, --a-model NAME       model A name/alias\n"
 	        "  -B, --b-model NAME       model B name/alias\n"
-	        "      --a-provider NAME    llama or groq (default llama)\n"
-	        "      --b-provider NAME    llama or groq (default llama)\n"
+	        "      --a-provider NAME    llama or deepinfra (default llama)\n"
+	        "      --b-provider NAME    llama or deepinfra (default llama)\n"
 	        "  -s, --system TEXT        common system message\n"
 	        "  -p, --prompt TEXT        run one seeded conversation and exit\n"
 	        "  -t, --temperature N      sampling temperature\n"
@@ -56,8 +56,8 @@ parse_provider (char const        *str,
 {
 	if (!strcmp(str, "llama"))
 		*provider = APP_PROVIDER_LLAMA;
-	else if (!strcmp(str, "groq"))
-		*provider = APP_PROVIDER_GROQ;
+	else if (!strcmp(str, "deepinfra"))
+		*provider = APP_PROVIDER_DEEPINFRA;
 	else
 		return EINVAL;
 	return 0;
@@ -218,25 +218,29 @@ main (int   argc,
 	};
 	for (size_t i = 0; i < 2; ++i) {
 		if (!(url_set & (1u << i)))
-			cfg.url[i] = cfg.provider[i] == APP_PROVIDER_GROQ
-				? "https://api.groq.com/openai/v1/chat/completions"
+			cfg.url[i] = cfg.provider[i] == APP_PROVIDER_DEEPINFRA
+				? "https://api.deepinfra.com/v1/openai/chat/completions"
 				: llama_url[i];
-		if (cfg.provider[i] == APP_PROVIDER_GROQ && !cfg.model[i])
-			cfg.model[i] = "qwen/qwen3.6-27b";
-		if (cfg.provider[i] == APP_PROVIDER_GROQ &&
+		if (cfg.provider[i] == APP_PROVIDER_DEEPINFRA && !cfg.model[i])
+			cfg.model[i] = "Qwen/Qwen3.6-35B-A3B";
+		if (cfg.provider[i] == APP_PROVIDER_DEEPINFRA && cfg.rapid_quantum &&
+		    strncmp(cfg.model[i], "Qwen/", sizeof "Qwen/" - 1) &&
 		    strncmp(cfg.model[i], "qwen/", sizeof "qwen/" - 1)) {
 			fprintf(stderr,
-			        "Groq model %c must currently be a Qwen reasoning model; "
-			        "raw reasoning re-injection is not defined for %s\n",
+			        "DeepInfra model %c must currently be a Qwen reasoning model "
+			        "in rapid mode; raw reasoning re-injection is not defined for %s\n",
 			        (int)('A' + i), cfg.model[i]);
 			return 2;
 		}
 	}
-	if (cfg.provider[0] == APP_PROVIDER_GROQ ||
-	    cfg.provider[1] == APP_PROVIDER_GROQ) {
-		cfg.groq_key = getenv("GROQ_API_KEY");
-		if (!cfg.groq_key || !*cfg.groq_key) {
-			fputs("GROQ_API_KEY is required for Groq providers\n", stderr);
+	if (cfg.provider[0] == APP_PROVIDER_DEEPINFRA ||
+	    cfg.provider[1] == APP_PROVIDER_DEEPINFRA) {
+		cfg.deepinfra_key = getenv("DEEPINFRA_API_KEY");
+		if (!cfg.deepinfra_key || !*cfg.deepinfra_key)
+			cfg.deepinfra_key = getenv("DEEPINFRA_TOKEN");
+		if (!cfg.deepinfra_key || !*cfg.deepinfra_key) {
+			fputs("DEEPINFRA_API_KEY or DEEPINFRA_TOKEN is required for "
+			      "DeepInfra providers\n", stderr);
 			return 2;
 		}
 	}

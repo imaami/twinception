@@ -16,11 +16,11 @@ RAPID_REASONING = "<ANALYSIS>"
 
 
 class State:
-    def __init__(self, name, drop_reasoning=False, prune_old=False, groq=False):
+    def __init__(self, name, drop_reasoning=False, prune_old=False, deepinfra=False):
         self.name = name
         self.drop_reasoning = drop_reasoning
         self.prune_old = prune_old
-        self.groq = groq
+        self.deepinfra = deepinfra
         self.requests = []
         self.authorization = []
         self.probes = []
@@ -132,27 +132,29 @@ def handler_for(state):
                 state.authorization.append(self.headers.get("Authorization"))
                 turn = len(state.requests)
 
-            if state.groq:
+            if state.deepinfra:
                 rapid = request["messages"][-1].get("role") == "assistant"
                 if rapid:
                     with state.lock:
-                        if request.get("max_completion_tokens") == 2:
+                        if request.get("max_tokens") == 2:
                             state.quantum_count += 1
                             number = state.quantum_count
                             text = f"{state.name.lower()}{number} "
                             finish = "length"
+                            delta = {"reasoning_content": text}
                         else:
                             state.final_count += 1
                             number = state.final_count
-                            text = f"F{state.name}{number}"
                             finish = "stop"
+                            delta = {"content": f"F{state.name}{number}"}
                     chunks = ({"choices": [{"index": 0,
-                                             "delta": {"content": text},
+                                             "delta": delta,
                                              "finish_reason": finish}]},)
                 else:
                     chunks = (
                         {"choices": [{"index": 0,
-                                      "delta": {"reasoning": f"R{state.name}{turn}"},
+                                      "delta": {"reasoning_content":
+                                                f"R{state.name}{turn}"},
                                       "finish_reason": None}]},
                         {"choices": [{"index": 0,
                                       "delta": {"content": f"A{state.name}{turn}"},
@@ -364,12 +366,12 @@ def check_rejected_template(binary):
     return 0
 
 
-def check_groq_history(binary):
-    states = (State("A", groq=True), State("B", groq=True))
+def check_deepinfra_history(binary):
+    states = (State("A", deepinfra=True), State("B", deepinfra=True))
     run = run_client(binary, states,
-                     "--a-provider", "groq", "--b-provider", "groq",
+                     "--a-provider", "deepinfra", "--b-provider", "deepinfra",
                      input_text="first\nsecond\n",
-                     env={"GROQ_API_KEY": "test-key"})
+                     env={"DEEPINFRA_API_KEY": "", "DEEPINFRA_TOKEN": "test-key"})
     if run.returncode:
         sys.stderr.write(run.stdout)
         sys.stderr.write(run.stderr)
@@ -379,26 +381,30 @@ def check_groq_history(binary):
     assert len(a) == len(b) == 2
     assert not states[0].probes and not states[1].probes
     assert a[1]["messages"][-2] == {
-        "role": "assistant", "content": "AA1", "reasoning": "RB1"
+        "role": "assistant", "content": "AA1", "reasoning_content": "RB1"
     }
     assert b[1]["messages"][-2] == {
-        "role": "assistant", "content": "AB1", "reasoning": "RA1"
+        "role": "assistant", "content": "AB1", "reasoning_content": "RA1"
     }
-    assert a[0]["model"] == b[0]["model"] == "qwen/qwen3.6-27b"
-    assert a[0]["reasoning_format"] == b[0]["reasoning_format"] == "parsed"
+    assert a[0]["model"] == b[0]["model"] == "Qwen/Qwen3.6-35B-A3B"
+    assert all("reasoning_format" not in request for request in a + b)
+    assert all(request["reasoning"] == {"enabled": True} for request in a + b)
+    assert all(request["chat_template_kwargs"] == {
+        "enable_thinking": True, "preserve_thinking": True
+    } for request in a + b)
     assert all(h == "Bearer test-key"
                for state in states for h in state.authorization)
 
-    print("Groq crossed-reasoning history: PASS")
+    print("DeepInfra crossed-reasoning history: PASS")
     return 0
 
 
-def check_groq_rapid(binary):
-    states = (State("A", groq=True), State("B", groq=True))
+def check_deepinfra_rapid(binary):
+    states = (State("A", deepinfra=True), State("B", deepinfra=True))
     run = run_client(binary, states,
-                     "--a-provider", "groq", "--b-provider", "groq",
+                     "--a-provider", "deepinfra", "--b-provider", "deepinfra",
                      "-q", "2", "-R", "4", "-n", "8", "-p", "seed",
-                     env={"GROQ_API_KEY": "test-key"})
+                     env={"DEEPINFRA_API_KEY": "test-key"})
     if run.returncode:
         sys.stderr.write(run.stdout)
         sys.stderr.write(run.stderr)
@@ -413,40 +419,45 @@ def check_groq_rapid(binary):
     assert b[1]["messages"][-1]["content"] == "<think>\na1 "
     assert a[2]["messages"][-1]["content"] == "<think>\nb1 b2 </think>\n"
     assert b[2]["messages"][-1]["content"] == "<think>\na1 a2 </think>\n"
-    assert [r.get("max_completion_tokens") for r in a] == [2, 2, 8]
+    assert [r.get("max_tokens") for r in a] == [2, 2, 8]
     assert [r.get("stop") for r in a] == ["</think>", "</think>", None]
-    assert all(r["reasoning_format"] == "raw" for r in a + b)
+    assert all(request["continue_final_message"] is True for request in a + b)
+    assert all("reasoning_format" not in request for request in a + b)
+    assert all(request["reasoning"] == {"enabled": True} for request in a + b)
+    assert all(request["chat_template_kwargs"] == {
+        "enable_thinking": True, "preserve_thinking": True
+    } for request in a + b)
     assert all(h == "Bearer test-key"
                for state in states for h in state.authorization)
 
-    print("Groq causal rapid thought swap: PASS")
+    print("DeepInfra causal rapid thought swap: PASS")
     return 0
 
 
 def check_mixed_rapid(binary):
-    states = (State("A"), State("B", groq=True))
+    states = (State("A"), State("B", deepinfra=True))
     run = run_client(binary, states,
-                     "--b-provider", "groq",
+                     "--b-provider", "deepinfra",
                      "-q", "2", "-R", "4", "-n", "8", "-p", "seed",
-                     env={"GROQ_API_KEY": "test-key"})
+                     env={"DEEPINFRA_API_KEY": "test-key"})
     if run.returncode:
         sys.stderr.write(run.stdout)
         sys.stderr.write(run.stderr)
         return run.returncode
 
-    local, groq = states
+    local, deepinfra = states
     assert len(local.probes) == 3
-    assert not groq.probes
-    assert len(local.completions) == len(groq.requests) == 3
+    assert not deepinfra.probes
+    assert len(local.completions) == len(deepinfra.requests) == 3
     assert local.completions[1]["prompt"] == \
         "BASE-A:seed" + RAPID_REASONING + "b1 "
-    assert groq.requests[1]["messages"][-1]["content"] == "<think>\na1 "
+    assert deepinfra.requests[1]["messages"][-1]["content"] == "<think>\na1 "
     assert local.completions[2]["prompt"] == \
         "BASE-A:seed" + RAPID_REASONING + "b1 b2 " + RAPID_TRANSITION
-    assert groq.requests[2]["messages"][-1]["content"] == \
+    assert deepinfra.requests[2]["messages"][-1]["content"] == \
         "<think>\na1 a2 </think>\n"
 
-    print("mixed llama/Groq rapid thought swap: PASS")
+    print("mixed llama/DeepInfra rapid thought swap: PASS")
     return 0
 
 
@@ -467,8 +478,8 @@ def main():
             check_crosstalk(binary) or
             check_rapid_swap(binary) or
             check_rapid_crosstalk(binary) or
-            check_groq_history(binary) or
-            check_groq_rapid(binary) or
+            check_deepinfra_history(binary) or
+            check_deepinfra_rapid(binary) or
             check_mixed_rapid(binary) or
             check_pruned_old_reasoning(binary) or
             check_rejected_template(binary))

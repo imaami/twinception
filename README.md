@@ -98,7 +98,7 @@ final `/completion` is requested.  Consequently rapid mode does not require old
 reasoning traces to survive historical chat-template rendering, but it does
 require llama.cpp-compatible `/apply-template` and `/completion` endpoints on
 each local side.  `-P` is therefore invalid with `-q` when either provider is
-llama.cpp; an all-Groq rapid run has no template probe to skip.
+llama.cpp; an all-DeepInfra rapid run has no template probe to skip.
 
 Small quanta increase causal coupling but also increase HTTP/task scheduling
 and prompt-suffix processing overhead.  `16` or `32` is a sensible first test;
@@ -137,38 +137,44 @@ Rapid swapping and crosstalk can be combined:
 A paired turn is transactional in both modes.  If either backend fails, neither
 history advances and autonomous crosstalk is stopped.
 
-## Groq
+## DeepInfra
 
-Either side can use Groq instead of llama.cpp.  The Groq provider currently
-targets Qwen reasoning models; `qwen/qwen3.6-27b` is the default because its
-reasoning can be both returned in a structured field and exposed as raw
-`<think>` text for rapid prefilling.
+Either side can use DeepInfra instead of llama.cpp.  `Qwen/Qwen3.6-35B-A3B`
+is the default hosted model.  Ordinary turns use DeepInfra's OpenAI-compatible
+reasoning stream; crossed historical thought is replayed as
+`reasoning_content`, with Qwen `preserve_thinking` explicitly enabled through
+`chat_template_kwargs`.
 
 Set the API key in the environment rather than putting it on the command line:
 
 ```sh
-export GROQ_API_KEY='...'
+export DEEPINFRA_API_KEY='...'
 ```
 
-For two Groq-hosted models:
+`DEEPINFRA_TOKEN` is accepted as an alias because DeepInfra's documentation uses
+both names in examples.
+
+For two DeepInfra-hosted models:
 
 ```sh
-./twinception --a-provider groq --b-provider groq -d
+./twinception --a-provider deepinfra --b-provider deepinfra -d
 ```
 
-For one local llama.cpp model and one Groq model:
+For one local llama.cpp model and one DeepInfra model:
 
 ```sh
-./twinception --b-provider groq -d
+./twinception --b-provider deepinfra -d
 ```
 
-`-A`/`-B` override the Groq model ID, and `-a`/`-b` can override the API URL
-(useful for compatible proxies).  When omitted, a Groq side uses
-`qwen/qwen3.6-27b` and `https://api.groq.com/openai/v1/chat/completions`.
+`-A`/`-B` override the DeepInfra model ID, and `-a`/`-b` can override the API
+URL.  The default endpoint is
+`https://api.deepinfra.com/v1/openai/chat/completions`.  DeepInfra automatically
+caches repeated prompt prefixes, which is useful for rapid mode.
 
-Ordinary Groq turns request `reasoning_format=parsed`; crossed historical
-thought is sent back in the Qwen assistant-message `reasoning` field.  Rapid
-mode instead requests `reasoning_format=raw` and uses assistant prefilling:
+DeepInfra does not expose a documented raw reasoning-format extension.  Rapid mode
+therefore uses the documented assistant-continuation behavior instead: it sets
+`continue_final_message=true` and prefills a Qwen reasoning response with the
+other model's accumulated trace.
 
 ```text
 round 0:  assistant prefill = <think>\n
@@ -177,16 +183,13 @@ round 1:  assistant prefill = <think>\n + foreign quantum 0
 answer:   assistant prefill = <think>\n + foreign trace + </think>\n
 ```
 
-Thinking quanta stop on `</think>`.  This is the hosted analogue of the local
-raw-prompt splice: each new request continues the other model's accumulated
-reasoning text rather than the text it generated itself.  Larger quanta such as
-64 or 128 are more sensible for a remote provider because each quantum is a new
-HTTP request.
-
-Groq GPT-OSS is intentionally rejected for now.  Groq exposes GPT-OSS reasoning
-separately but does not define the raw reasoning/prefill representation needed
-to prove that foreign text is being reinserted into the reasoning channel.  The
-program fails rather than silently weakening the experiment.
+Thinking quanta stop on `</think>`.  DeepInfra may return the continued thought
+as `delta.reasoning_content` or as raw `delta.content`; Twinception accepts both
+for the thinking phase, but only ordinary `content` is accepted as the final
+answer.  Rapid DeepInfra mode is currently restricted to Qwen model IDs because
+that is the model family for which the `<think>` prefill representation is known.
+Larger quanta such as 64 or 128 are more sensible for a remote provider because
+each quantum is a separate request.
 
 ## Selected options
 
@@ -195,8 +198,8 @@ program fails rather than silently weakening the experiment.
 -b, --b-url URL          model B /v1/chat/completions URL
 -A, --a-model NAME       model A alias
 -B, --b-model NAME       model B alias
-    --a-provider NAME    llama or groq (default llama)
-    --b-provider NAME    llama or groq (default llama)
+    --a-provider NAME    llama or deepinfra (default llama)
+    --b-provider NAME    llama or deepinfra (default llama)
 -s, --system TEXT        common system message
 -p, --prompt TEXT        seed from the command line
 -t, --temperature N      sampling temperature
