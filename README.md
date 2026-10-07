@@ -9,6 +9,9 @@ than its own.
 The program uses libcurl's multi-socket interface with epoll/timerfd; there are
 no HTTP worker threads or polling loops.
 
+The same machinery also drives [`askai`](#askai-an-ask-an-ai-mcp-server), an MCP
+server that gives a model running in `llama-server` a tool for asking another AI.
+
 ## Dependencies
 
 - C23 compiler
@@ -19,7 +22,7 @@ no HTTP worker threads or polling loops.
 ## Build
 
 ```sh
-make
+make        # builds twinception and askai
 make check
 ```
 
@@ -220,3 +223,115 @@ stops on the reasoning-to-answer transition.  llama-server excludes the matched
 stop string from `content`.  Thus protocol syntax such as GPT-OSS Harmony's
 `<|channel|>analysis<|message|>` opening prefix and final-channel transition never
 becomes crossed reasoning payload.
+
+## askai: an "ask an AI" MCP server
+
+`askai` is an [MCP](https://modelcontextprotocol.io) server with a single tool,
+`ask_ai`, that forwards a prompt to another AI model and returns its answer.  A
+small local model in `llama-server` can use it for a second opinion, or to hand
+a hard sub-problem to a bigger model.  The other model sees only the prompt, so
+the tool description asks the caller to make it self-contained.
+
+It speaks MCP's Streamable HTTP transport, which is what the `llama-server` web
+UI's MCP client uses, and serves both protocol eras on one endpoint:
+
+- revisions 2024-11-05 through 2025-11-25, which open with an `initialize`
+  handshake (current llama.cpp and the official SDKs);
+- revision 2026-07-28, which is stateless and checks the mirrored
+  `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers against the body.
+
+### Upstream protocols
+
+| `-p`        | API                      | Default endpoint (without `-u`)                                                 | Key variable                       |
+| ----------- | ------------------------ | ------------------------------------------------------------------------------- | ---------------------------------- |
+| `openai`    | Chat Completions         | `https://api.openai.com/v1/chat/completions`                                    | `OPENAI_API_KEY`                   |
+| `responses` | OpenAI Responses         | `https://api.openai.com/v1/responses`                                           | `OPENAI_API_KEY`                   |
+| `anthropic` | Anthropic Messages       | `https://api.anthropic.com/v1/messages`                                         | `ANTHROPIC_API_KEY`                |
+| `gemini`    | Gemini `generateContent` | `https://generativelanguage.googleapis.com/v1beta/models/MODEL:generateContent` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+
+`openai` also covers every OpenAI-compatible server: another `llama-server`,
+vLLM, Ollama, LM Studio, OpenRouter, Groq, DeepInfra and so on.  Reasoning or
+thinking output is dropped; only the answer is returned.  An answer cut off by
+the token limit is marked as such, and upstream failures (HTTP errors, refusals,
+timeouts) come back as tool errors the model can read and react to.
+
+API keys are read from the environment, never from the command line.  A
+provider's usual variable is only used for its own endpoint: with `-u`, name the
+variable explicitly with `-k`, so a key is never sent somewhere you did not ask
+for.
+
+```sh
+# Ask an Anthropic model.
+export ANTHROPIC_API_KEY=...
+./askai -p anthropic -m MODEL
+
+# Ask a model served by a second llama-server (no key needed).
+./askai -u http://127.0.0.1:8081/v1/chat/completions
+
+# Ask a model on OpenRouter.
+export OPENROUTER_API_KEY=...
+./askai -u https://openrouter.ai/api/v1/chat/completions -k OPENROUTER_API_KEY -m MODEL
+
+# Ask a Gemini model.
+export GEMINI_API_KEY=...
+./askai -p gemini -m MODEL
+```
+
+`-x` deep-merges a JSON object into every request body, which reaches any
+provider-specific parameter; `null` members delete keys.  For example, OpenAI
+reasoning models want `max_completion_tokens` instead of `max_tokens`:
+
+```sh
+./askai -m MODEL -n 4096 -x '{"max_tokens": null, "max_completion_tokens": 4096}'
+```
+
+### Connecting llama-server
+
+Start `askai`, then add `http://127.0.0.1:8090/mcp` as an MCP server in the
+`llama-server` web UI.  The UI calls it straight from the browser, which `askai`
+permits for pages served from `localhost`, `127.0.0.1` or `[::1]`.  If the UI is
+served from another origin, either allow that origin with `-o`, or start
+`llama-server` with `--ui-mcp-proxy` and enable the proxy for this server.
+
+Each tool call is one upstream request; if the user stops generation, the
+web UI sends `notifications/cancelled` and `askai` aborts the upstream request.
+The web UI waits five minutes for a tool result by default, `askai` ten minutes
+for the upstream answer (`-T`).  Raise both for slow reasoning models.
+
+Running several instances with different `--tool-name` values (and ports) gives
+the model a choice of advisers, e.g. `ask_reasoner` and `ask_coder`.
+
+### Security
+
+`askai` spends your API credits, so by default it listens on 127.0.0.1 only and
+refuses browser requests whose `Origin` is neither loopback nor allowed by `-o`,
+which defeats DNS-rebinding attacks.  Before listening anywhere else, set
+`ASKAI_TOKEN`; clients must then send `Authorization: Bearer <token>`, which the
+web UI can add as a custom header.
+
+### askai options
+
+```text
+Upstream AI:
+  -p, --protocol NAME       openai (chat completions), responses,
+                            anthropic or gemini (default openai)
+  -u, --url URL             endpoint URL (default: the provider's API)
+  -m, --model NAME          model to ask
+  -k, --key-env VAR         environment variable holding the API key;
+                            without -u the provider's usual one is used
+  -H, --header LINE         extra request header (repeatable)
+  -s, --system TEXT         default system prompt
+  -t, --temperature N       sampling temperature
+  -n, --max-tokens N        output token limit
+  -x, --extra JSON          object deep-merged into each request body;
+                            null members delete keys
+  -T, --timeout SECONDS     upstream timeout (default 600, 0 = none)
+
+MCP server:
+  -l, --listen ADDR         [host:]port (default 127.0.0.1:8090)
+  -o, --allow-origin URL    allow a non-loopback browser Origin
+                            (repeatable; '*' allows any)
+      --tool-name NAME      tool name (default ask_ai)
+      --tool-description TEXT
+  -v, --verbose             log every tool call
+```

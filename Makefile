@@ -10,32 +10,48 @@ override LDLIBS = $(eval override LDLIBS := \
 override CPPFLAGS = $(eval override CPPFLAGS := \
  $$(shell pkg-config --cflags libcurl json-c))$(CPPFLAGS)
 
-override SRC := \
-  src/app.c     \
+override COMMON := \
   src/buf.c     \
   src/http.c    \
-  src/loop.c    \
+  src/loop.c
+
+override TWINCEPTION := \
+  src/app.c     \
   src/main.c    \
   src/sse.c
 
+override ASKAI := \
+  src/ai.c      \
+  src/askai.c   \
+  src/httpd.c   \
+  src/jb.c      \
+  src/mcp.c
+
+override SRC := $(COMMON) $(TWINCEPTION) $(ASKAI)
 override OBJ := $(SRC:=.o)
 override DEP := $(SRC:=.d)
 
-twinception: $(OBJ)
+all: twinception askai
+
+twinception: $(TWINCEPTION:=.o) $(COMMON:=.o)
+	$(CC) $(CFLAGS) -MMD -o $@ $^ $(LDLIBS)
+
+askai: $(ASKAI:=.o) $(COMMON:=.o)
 	$(CC) $(CFLAGS) -MMD -o $@ $^ $(LDLIBS)
 
 %.c.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -c -o $@ $<
 
-check: twinception
+check: twinception askai
 	python3 tests/check.py ./twinception
+	python3 tests/askai.py ./askai
 
 purge: | clean
 	$(RM) $(DEP)
 
 clean:
-	$(RM) twinception $(OBJ)
+	$(RM) twinception askai $(OBJ)
 
-.PHONY: check clean purge
+.PHONY: all check clean purge
 
 -include $(DEP)

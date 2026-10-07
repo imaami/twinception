@@ -23,6 +23,12 @@ extern int
 buf_append_char (struct buf *buf,
                  char        ch);
 
+[[gnu::format(printf, 2, 3)]]
+extern int
+buf_printf (struct buf *buf,
+            char const *fmt,
+            ...);
+
 extern void
 buf_consume (struct buf *buf,
              size_t      len);

@@ -1,6 +1,8 @@
 /** @file Growable byte-buffer implementation. */
 #include <errno.h>
+#include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -62,6 +64,28 @@ buf_append_char (struct buf *buf,
                  char        ch)
 {
 	return buf_append(buf, &ch, 1);
+}
+
+int
+buf_printf (struct buf *buf,
+            char const *fmt,
+            ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(nullptr, 0, fmt, ap);
+	va_end(ap);
+	if (n < 0)
+		return EINVAL;
+
+	int e = buf_reserve(buf, (size_t)n);
+	if (e)
+		return e;
+	va_start(ap, fmt);
+	vsnprintf(buf->data + buf->len, (size_t)n + 1, fmt, ap);
+	va_end(ap);
+	buf->len += (size_t)n;
+	return 0;
 }
 
 void
