@@ -7,18 +7,29 @@
 #include "loop.h"
 #include "util.h"
 
+static void
+loop_reap (struct loop *loop)
+{
+	while (!list_is_empty(&loop->dead)) {
+		struct loop_ref *ref = container_of(loop->dead.next, struct loop_ref,
+		                                    hook);
+		list_del(&ref->hook);
+		ref->release(ref);
+	}
+}
+
 int
 loop_init (struct loop *loop)
 {
 	int epfd = epoll_create1(EPOLL_CLOEXEC);
-	if (epfd < 0)
-		return errno;
+	int e = epfd < 0 ? errno : 0;
 
 	*loop = (struct loop){
 		.epfd = epfd
 	};
 	list_init(&loop->refs);
-	return 0;
+	list_init(&loop->dead);
+	return e;
 }
 
 void
@@ -30,6 +41,7 @@ loop_fini (struct loop *loop)
 		struct loop_ref *ref = container_of(node, struct loop_ref, hook);
 		loop_unwatch(loop, ref);
 	}
+	loop_reap(loop);
 
 	if (loop->epfd >= 0)
 		close(loop->epfd);
@@ -102,6 +114,16 @@ loop_unwatch (struct loop     *loop,
 	*ref = (struct loop_ref){ .fd = -1 };
 }
 
+void
+loop_release (struct loop     *loop,
+              struct loop_ref *ref,
+              loop_release_cb *release)
+{
+	loop_unwatch(loop, ref);
+	ref->release = release;
+	list_append(&loop->dead, &ref->hook);
+}
+
 int
 loop_exec (struct loop *loop)
 {
@@ -126,6 +148,7 @@ loop_exec (struct loop *loop)
 			if (loop->exit)
 				break;
 		}
+		loop_reap(loop);
 	}
 
 	return loop->error;

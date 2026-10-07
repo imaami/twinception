@@ -27,14 +27,20 @@ http_init (struct http **p_http,
 extern void
 http_fini (struct http **p_http);
 
+/**
+ * Start an asynchronous JSON POST.  @p headers is an optional nullptr-terminated
+ * list of complete header lines; @p timeout_ms <= 0 means no total timeout.
+ * The body and headers are copied.
+ */
 extern int
-http_post_json (struct http       *http,
-                char const        *url,
-                char const        *body,
-                char const        *bearer,
-                http_write_cb     *write_cb,
-                http_done_cb      *done_cb,
-                void              *user,
+http_post_json (struct http         *http,
+                char const          *url,
+                char const          *body,
+                char const *const   *headers,
+                long                 timeout_ms,
+                http_write_cb       *write_cb,
+                http_done_cb        *done_cb,
+                void                *user,
                 struct http_request **p_request);
 
 extern void

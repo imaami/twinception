@@ -1,6 +1,7 @@
 /** @file Command-line option parsing and process entry point. */
 #include <errno.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -245,6 +246,8 @@ main (int   argc,
 		}
 	}
 
+	/* libcurl leaves SIGPIPE to us because CURLOPT_NOSIGNAL is set. */
+	signal(SIGPIPE, SIG_IGN);
 	int e = app_run(&cfg);
 	if (e) {
 		fprintf(stderr, "%s: %s\n", argv[0], strerror(e));

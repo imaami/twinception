@@ -3,7 +3,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 #include <time.h>
@@ -28,8 +27,6 @@ struct http_request {
 	http_write_cb     *write_cb;
 	http_done_cb      *done_cb;
 	void              *user;
-	char              *body;
-	size_t             body_len;
 	CURL              *easy;
 	char               error[CURL_ERROR_SIZE];
 };
@@ -72,7 +69,6 @@ http_check_done (struct http *http)
 		snprintf(error, sizeof error, "%s", request->error);
 
 		curl_slist_free_all(request->headers);
-		free(request->body);
 		free(request);
 		done(result, status, error, user);
 	}
@@ -122,6 +118,12 @@ http_timer_event (struct loop     *loop,
 	return http_action(http, CURL_SOCKET_TIMEOUT, 0);
 }
 
+static void
+http_socket_release (struct loop_ref *ref)
+{
+	free(container_of(ref, struct http_socket, ref));
+}
+
 static uint32_t
 curl_events (int what)
 {
@@ -150,9 +152,9 @@ http_socket_cb (CURL   *easy,
 
 	if (what == CURL_POLL_REMOVE) {
 		if (hs) {
-			loop_unwatch(http->loop, &hs->ref);
 			curl_multi_assign(http->multi, socket, nullptr);
-			hs->socket = CURL_SOCKET_BAD;
+			list_del(&hs->hook);
+			loop_release(http->loop, &hs->ref, http_socket_release);
 		}
 		return 0;
 	}
@@ -299,7 +301,6 @@ http_cancel (struct http         *http,
 	if (request->hook.next && request->hook.prev)
 		list_del(&request->hook);
 	curl_slist_free_all(request->headers);
-	free(request->body);
 	free(request);
 }
 
@@ -320,32 +321,32 @@ http_fini (struct http **p_http)
 		http_cancel(http, &request);
 	}
 
-	if (http->timer_ref.fd >= 0)
-		loop_unwatch(http->loop, &http->timer_ref);
+	/* Cleanup may still invoke the socket and timer callbacks. */
+	if (http->multi)
+		curl_multi_cleanup(http->multi);
 
 	list_foreach_safe (node, tmp, &http->sockets) {
 		struct http_socket *socket = container_of(node, struct http_socket, hook);
-		if (socket->ref.fd >= 0)
-			loop_unwatch(http->loop, &socket->ref);
+		loop_unwatch(http->loop, &socket->ref);
 		list_del(&socket->hook);
 		free(socket);
 	}
+	loop_unwatch(http->loop, &http->timer_ref);
 	if (http->timerfd >= 0)
 		close(http->timerfd);
-	if (http->multi)
-		curl_multi_cleanup(http->multi);
 	free(http);
 	curl_global_cleanup();
 }
 
 int
-http_post_json (struct http       *http,
-                char const        *url,
-                char const        *body,
-                char const        *bearer,
-                http_write_cb     *write_cb,
-                http_done_cb      *done_cb,
-                void              *user,
+http_post_json (struct http         *http,
+                char const          *url,
+                char const          *body,
+                char const *const   *headers,
+                long                 timeout_ms,
+                http_write_cb       *write_cb,
+                http_done_cb        *done_cb,
+                void                *user,
                 struct http_request **p_request)
 {
 	if (!http || !url || !body || !write_cb || !done_cb || !p_request)
@@ -356,45 +357,22 @@ http_post_json (struct http       *http,
 		return errno ? errno : ENOMEM;
 	list_init(&request->hook);
 
-	request->body_len = strlen(body);
-	request->body = strdup(body);
 	request->easy = curl_easy_init();
 	request->write_cb = write_cb;
 	request->done_cb = done_cb;
 	request->user = user;
-	if (!request->body || !request->easy) {
-		http_cancel(http, &request);
-		return ENOMEM;
-	}
-
 	request->headers = curl_slist_append(nullptr,
 	                                     "Content-Type: application/json");
-	if (!request->headers) {
+	if (!request->easy || !request->headers) {
 		http_cancel(http, &request);
 		return ENOMEM;
 	}
-	if (bearer) {
-		static char const prefix[] = "Authorization: Bearer ";
-		size_t key_len = strlen(bearer);
-		if (key_len > SIZE_MAX - sizeof prefix) {
-			http_cancel(http, &request);
-			return EOVERFLOW;
-		}
-		char *authorization = malloc(sizeof prefix + key_len);
-		if (!authorization) {
-			http_cancel(http, &request);
-			return errno ? errno : ENOMEM;
-		}
-		memcpy(authorization, prefix, sizeof prefix - 1);
-		memcpy(authorization + sizeof prefix - 1, bearer, key_len + 1);
-		struct curl_slist *headers = curl_slist_append(request->headers,
-		                                                authorization);
-		free(authorization);
-		if (!headers) {
+	for (; headers && *headers; ++headers) {
+		/* Appending keeps the head, which stays owned by the request. */
+		if (!curl_slist_append(request->headers, *headers)) {
 			http_cancel(http, &request);
 			return ENOMEM;
 		}
-		request->headers = headers;
 	}
 
 #define SETOPT(opt, value) \
@@ -407,15 +385,14 @@ http_post_json (struct http       *http,
 
 	SETOPT(CURLOPT_URL, url);
 	SETOPT(CURLOPT_HTTPHEADER, request->headers);
-	SETOPT(CURLOPT_POST, 1L);
-	SETOPT(CURLOPT_POSTFIELDS, request->body);
-	SETOPT(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)request->body_len);
+	SETOPT(CURLOPT_COPYPOSTFIELDS, body);
 	SETOPT(CURLOPT_WRITEFUNCTION, http_write_adapter);
 	SETOPT(CURLOPT_WRITEDATA, request);
 	SETOPT(CURLOPT_PRIVATE, request);
 	SETOPT(CURLOPT_ERRORBUFFER, request->error);
 	SETOPT(CURLOPT_NOSIGNAL, 1L);
 	SETOPT(CURLOPT_CONNECTTIMEOUT_MS, 10'000L);
+	SETOPT(CURLOPT_TIMEOUT_MS, timeout_ms > 0 ? timeout_ms : 0L);
 	SETOPT(CURLOPT_TCP_KEEPALIVE, 1L);
 
 #undef SETOPT

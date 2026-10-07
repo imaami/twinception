@@ -100,6 +100,7 @@ struct app {
 	struct http           *http;
 	struct loop            loop;
 	struct buf             stdin_buf;
+	char                  *bearer;
 	char                  *generation_tail[2];
 	char                  *reasoning_tail[2];
 	char                  *transition[2];
@@ -273,14 +274,6 @@ json_add_deepinfra_reasoning (struct json_object *root)
 	return 0;
 }
 
-static char const *
-model_bearer (struct app const *app,
-              size_t            model)
-{
-	return app->cfg.provider[model] == APP_PROVIDER_DEEPINFRA
-		? app->cfg.deepinfra_key : nullptr;
-}
-
 static int
 model_post_json (struct app        *app,
                  size_t             model,
@@ -291,8 +284,11 @@ model_post_json (struct app        *app,
                  void              *user,
                  struct http_request **request)
 {
-	return http_post_json(app->http, url, body, model_bearer(app, model),
-	                      write_cb, done_cb, user, request);
+	char const *headers[] = { app->bearer, nullptr };
+	return http_post_json(app->http, url, body,
+	                      app->cfg.provider[model] == APP_PROVIDER_DEEPINFRA
+	                      ? headers : nullptr,
+	                      0, write_cb, done_cb, user, request);
 }
 
 static void
@@ -1790,17 +1786,26 @@ app_init (struct app           *app,
 {
 	*app = (struct app){
 		.cfg = *cfg,
-		.loop.epfd = -1,
 		.stdin_flags = -1
 	};
 	app->stdin_ref.fd = -1;
-	list_init(&app->loop.refs);
 	list_init(&app->history);
 	list_init(&app->prompts);
 
 	int e = loop_init(&app->loop);
 	if (e)
 		return e;
+
+	if (cfg->deepinfra_key) {
+		static char const prefix[] = "Authorization: Bearer ";
+		struct buf bearer = {0};
+		e = buf_append(&bearer, prefix, sizeof prefix - 1);
+		e = e ? e : buf_append(&bearer, cfg->deepinfra_key,
+		                       strlen(cfg->deepinfra_key));
+		app->bearer = buf_take(&bearer);
+		if (e)
+			return e;
+	}
 
 	e = http_init(&app->http, &app->loop);
 	if (e)
@@ -1870,6 +1875,7 @@ app_fini (struct app *app)
 	}
 
 	buf_fini(&app->stdin_buf);
+	free(app->bearer);
 	if (app->stdin_ref.fd >= 0)
 		loop_unwatch(&app->loop, &app->stdin_ref);
 	if (app->stdin_flags >= 0)
