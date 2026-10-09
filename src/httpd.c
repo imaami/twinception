@@ -22,7 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "buf.h"
+#include "dstr.h"
 #include "httpd.h"
 #include "list.h"
 #include "loop.h"
@@ -55,9 +55,9 @@ struct req {
 struct conn {
 	struct list      hook;
 	struct loop_ref  ref;
-	struct buf       in;
-	struct buf       out;
-	struct buf       head;   /* parsed copy of the current request head */
+	struct dstr      in;
+	struct dstr      out;
+	struct dstr      head;   /* parsed copy of the current request head */
 	struct req       req;
 	struct httpd    *srv;
 	struct mcp_call *call;
@@ -380,9 +380,9 @@ conn_close (struct conn *conn)
 	--srv->nconns;
 	loop_release(srv->loop, &conn->ref, conn_release);
 	close(conn->fd);
-	buf_fini(&conn->head);
-	buf_fini(&conn->out);
-	buf_fini(&conn->in);
+	dstr_cleanup(&conn->head);
+	dstr_cleanup(&conn->out);
+	dstr_cleanup(&conn->in);
 	srv_resume(srv);
 }
 
@@ -397,26 +397,26 @@ conn_respond (struct conn *conn,
 		return;
 
 	struct req const *req = &conn->req;
-	struct buf *out = &conn->out;
+	struct dstr *out = &conn->out;
 	conn->closing |= req->close;
 	conn->done = conn->parsed;
 
-	int e = buf_printf(out, "HTTP/1.1 %u %s\r\n%s%s", status, reason(status),
-	                   body ? "Content-Type: application/json\r\n" : "",
-	                   conn->closing ? "Connection: close\r\n" : "");
-	if (!e && status != 204)
-		e = buf_printf(out, "Content-Length: %zu\r\n", len);
-	if (!e && req->origin)
-		e = buf_printf(out, "Access-Control-Allow-Origin: %s\r\n"
-		                    "Access-Control-Allow-Credentials: true\r\n"
-		                    "Access-Control-Expose-Headers: Mcp-Session-Id, "
-		                    "WWW-Authenticate\r\n"
-		                    "Vary: Origin\r\n", req->origin);
-	if (!e)
-		e = buf_printf(out, "%s\r\n", extra ? extra : "");
-	if (!e)
-		e = buf_append(out, body, len);
-	if (e)
+	bool ok = dstr_printf(out, "HTTP/1.1 %u %s\r\n%s%s", status, reason(status),
+	                      body ? "Content-Type: application/json\r\n" : "",
+	                      conn->closing ? "Connection: close\r\n" : "");
+	if (ok && status != 204)
+		ok = dstr_printf(out, "Content-Length: %zu\r\n", len);
+	if (ok && req->origin)
+		ok = dstr_printf(out, "Access-Control-Allow-Origin: %s\r\n"
+		                      "Access-Control-Allow-Credentials: true\r\n"
+		                      "Access-Control-Expose-Headers: Mcp-Session-Id, "
+		                      "WWW-Authenticate\r\n"
+		                      "Vary: Origin\r\n", req->origin);
+	if (ok)
+		ok = dstr_printf(out, "%s\r\n", extra ? extra : "");
+	if (ok)
+		ok = dstr_cat_n(out, body, len);
+	if (!ok)
 		conn_close(conn);
 }
 
@@ -436,7 +436,7 @@ static void
 conn_rearm (struct conn *conn)
 {
 	uint32_t events = conn->eof ? 0 : EPOLLRDHUP;
-	if (conn->sent < conn->out.len)
+	if (conn->sent < dstr_len(&conn->out))
 		events |= EPOLLOUT;
 	else if (!conn->call && !conn->eof)
 		events |= EPOLLIN;
@@ -469,19 +469,18 @@ conn_preflight (struct conn *conn)
 		return;
 	}
 
-	struct buf extra = {0};
-	if (buf_printf(&extra,
-	               "Access-Control-Allow-Methods: POST, GET, DELETE, OPTIONS\r\n"
-	               "Access-Control-Allow-Headers: %s\r\n"
-	               "Access-Control-Max-Age: 600\r\n%s"
-	               "Vary: Access-Control-Request-Headers\r\n",
-	               req->acrh ? req->acrh : "Content-Type, Authorization",
-	               req->pna ? "Access-Control-Allow-Private-Network: true\r\n"
-	                        : ""))
+	dstr_auto extra = DSTR_INIT;
+	if (!dstr_printf(&extra,
+	                 "Access-Control-Allow-Methods: POST, GET, DELETE, OPTIONS\r\n"
+	                 "Access-Control-Allow-Headers: %s\r\n"
+	                 "Access-Control-Max-Age: 600\r\n%s"
+	                 "Vary: Access-Control-Request-Headers\r\n",
+	                 req->acrh ? req->acrh : "Content-Type, Authorization",
+	                 req->pna ? "Access-Control-Allow-Private-Network: true\r\n"
+	                          : ""))
 		conn_close(conn);
 	else
-		conn_respond(conn, 204, nullptr, 0, extra.data);
-	buf_fini(&extra);
+		conn_respond(conn, 204, nullptr, 0, dstr_get(&extra));
 }
 
 static void
@@ -508,7 +507,7 @@ conn_dispatch (struct conn *conn)
 		conn_error(conn, 415, nullptr);
 	} else {
 		conn->dispatching = true;
-		mcp_post(srv->mcp, &req->mcp, conn->in.data + req->head, req->body,
+		mcp_post(srv->mcp, &req->mcp, dstr_get(&conn->in) + req->head, req->body,
 		         conn_reply, conn, &conn->call);
 		conn->dispatching = false;
 	}
@@ -520,26 +519,27 @@ conn_next (struct conn *conn)
 {
 	struct req *req = &conn->req;
 	if (conn->done) {
-		buf_consume(&conn->in, req->head + req->body);
+		dstr_erase(&conn->in, 0, req->head + req->body);
 		*req = (struct req){0};
 		conn->parsed = conn->done = conn->cont = false;
 		conn->scan = 0;
 	}
 
+	size_t in_len = dstr_len(&conn->in);
 	if (!conn->parsed) {
-		size_t head = conn->in.len
-			? head_length(conn->in.data, conn->in.len, &conn->scan) : 0;
-		unsigned status = head > MAX_HEAD || (!head && conn->in.len > MAX_HEAD)
+		char const *in = dstr_get(&conn->in);
+		size_t head = head_length(in, in_len, &conn->scan);
+		unsigned status = head > MAX_HEAD || (!head && in_len > MAX_HEAD)
 			? 431 : 0;
 		if (!head && !status)
 			return false;
 		if (!status) {
-			buf_reset(&conn->head);
-			if (buf_append(&conn->head, conn->in.data, head)) {
+			dstr_clear(&conn->head);
+			if (!dstr_cat_n(&conn->head, in, head)) {
 				conn_close(conn);
 				return false;
 			}
-			status = parse_head(conn->head.data, head, req);
+			status = parse_head((char *)dstr_raw(&conn->head), head, req);
 		}
 		if (status) {
 			*req = (struct req){0};
@@ -550,12 +550,12 @@ conn_next (struct conn *conn)
 		conn->parsed = true;
 	}
 
-	if (conn->in.len - req->head < req->body) {
+	if (in_len - req->head < req->body) {
 		if (!req->expect || conn->cont)
 			return false;
 		conn->cont = true;
 		static char const cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
-		if (buf_append(&conn->out, cont, sizeof cont - 1))
+		if (!dstr_cat_n(&conn->out, cont, sizeof cont - 1))
 			conn_close(conn);
 		return true;
 	}
@@ -568,9 +568,11 @@ conn_next (struct conn *conn)
 static bool
 conn_flush (struct conn *conn)
 {
-	while (!conn->dead && conn->sent < conn->out.len) {
-		ssize_t n = send(conn->fd, conn->out.data + conn->sent,
-		                 conn->out.len - conn->sent, MSG_NOSIGNAL);
+	char const *out = dstr_get(&conn->out);
+	size_t len = dstr_len(&conn->out);
+	while (!conn->dead && conn->sent < len) {
+		ssize_t n = send(conn->fd, out + conn->sent, len - conn->sent,
+		                 MSG_NOSIGNAL);
 		if (n >= 0) {
 			conn->sent += (size_t)n;
 			conn->active = now();
@@ -582,7 +584,7 @@ conn_flush (struct conn *conn)
 	}
 	if (conn->dead)
 		return false;
-	buf_reset(&conn->out);
+	dstr_clear(&conn->out);
 	conn->sent = 0;
 	if (conn->closing) {
 		conn_close(conn);
@@ -597,7 +599,7 @@ conn_pump (struct conn *conn)
 	while (conn_flush(conn) && !conn->call && conn_next(conn)) {}
 	if (conn->dead)
 		return;
-	if (conn->eof && !conn->call && conn->sent == conn->out.len)
+	if (conn->eof && !conn->call && conn->sent == dstr_len(&conn->out))
 		conn_close(conn);
 	else
 		conn_rearm(conn);
@@ -608,16 +610,17 @@ conn_read (struct conn *conn)
 {
 	while (!conn->eof) {
 		/* More than one maximal request buffered is abuse. */
-		if (conn->in.len > MAX_HEAD + MAX_BODY ||
-		    buf_reserve(&conn->in, 16 << 10)) {
+		if (dstr_len(&conn->in) > MAX_HEAD + MAX_BODY) {
 			conn_close(conn);
 			return;
 		}
-		ssize_t n = recv(conn->fd, conn->in.data + conn->in.len,
-		                 conn->in.cap - conn->in.len - 1, 0);
+		char chunk[16 << 10];
+		ssize_t n = recv(conn->fd, chunk, sizeof chunk, 0);
 		if (n > 0) {
-			conn->in.len += (size_t)n;
-			conn->in.data[conn->in.len] = '\0';
+			if (!dstr_cat_n(&conn->in, chunk, (size_t)n)) {
+				conn_close(conn);
+				return;
+			}
 			conn->active = now();
 		} else if (!n) {
 			conn->eof = true;
@@ -671,16 +674,22 @@ srv_accept (struct loop     *loop,
 			break;
 		}
 
-		struct conn *conn = calloc(1, sizeof *conn);
+		struct conn *conn = malloc(sizeof *conn);
+		if (conn)
+			*conn = (struct conn){
+				.in = DSTR_INIT,
+				.out = DSTR_INIT,
+				.head = DSTR_INIT,
+				.srv = srv,
+				.fd = fd,
+				.active = now()
+			};
 		if (!conn || loop_watch(loop, &conn->ref, fd, EPOLLIN | EPOLLRDHUP,
 		                        conn_event, conn)) {
 			free(conn);
 			close(fd);
 			break;
 		}
-		conn->srv = srv;
-		conn->fd = fd;
-		conn->active = now();
 		list_append(&srv->conns, &conn->hook);
 		++srv->nconns;
 	}

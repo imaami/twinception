@@ -1,8 +1,8 @@
 /** @file Upstream AI endpoint protocols: request bodies and answer parsing. */
 #include <errno.h>
-#include <string.h>
 
 #include "ai.h"
+#include "dstr.h"
 #include "jb.h"
 
 /** Anthropic requires max_tokens; this fits every model's output limit. */
@@ -122,17 +122,17 @@ fail:
 }
 
 static int
-append (struct buf         *text,
+append (struct dstr        *text,
         struct json_object *val)
 {
 	char const *str = jb_text(val);
-	return str ? buf_append(text, str, (size_t)json_object_get_string_len(val))
-	           : 0;
+	return str && !dstr_cat_n(text, str, (size_t)json_object_get_string_len(val))
+	       ? ENOMEM : 0;
 }
 
 static int
 openai_answer (struct json_object *root,
-               struct buf         *text,
+               struct dstr        *text,
                struct answer      *answer)
 {
 	struct json_object *choice = jb_at(jb_get(root, "choices"), 0);
@@ -144,7 +144,7 @@ openai_answer (struct json_object *root,
 	struct json_object *part;
 	for (size_t i = 0; !e && (part = jb_at(content, i)); ++i)
 		e = append(text, jb_get(part, "text"));
-	if (!e && !text->len)
+	if (!e && !dstr_len(text))
 		e = append(text, jb_get(msg, "refusal"));
 
 	answer->reason = jb_text(jb_get(choice, "finish_reason"));
@@ -154,7 +154,7 @@ openai_answer (struct json_object *root,
 
 static int
 responses_answer (struct json_object *root,
-                  struct buf         *text,
+                  struct dstr        *text,
                   struct answer      *answer)
 {
 	int e = 0;
@@ -178,7 +178,7 @@ responses_answer (struct json_object *root,
 
 static int
 anthropic_answer (struct json_object *root,
-                  struct buf         *text,
+                  struct dstr        *text,
                   struct answer      *answer)
 {
 	int e = 0;
@@ -194,7 +194,7 @@ anthropic_answer (struct json_object *root,
 
 static int
 gemini_answer (struct json_object *root,
-               struct buf         *text,
+               struct dstr        *text,
                struct answer      *answer)
 {
 	struct json_object *candidate = jb_at(jb_get(root, "candidates"), 0);
@@ -214,7 +214,7 @@ gemini_answer (struct json_object *root,
 }
 
 static int
-describe_error (struct buf         *text,
+describe_error (struct dstr        *text,
                 long                status,
                 struct json_object *root,
                 char const         *body,
@@ -229,18 +229,17 @@ describe_error (struct buf         *text,
 	if (!msg)
 		msg = jb_text(jb_get(root, "detail"));
 
-	int e = buf_printf(text, "Upstream error (HTTP %ld): ", status);
-	if (e)
-		return e;
+	if (!dstr_printf(text, "Upstream error (HTTP %ld): ", status))
+		return ENOMEM;
 	if (msg)
-		return buf_append(text, msg, strlen(msg));
+		return dstr_cat(text, msg) ? 0 : ENOMEM;
 
 	/* Quote the start of an unparsable body, not splitting a UTF-8 sequence. */
 	size_t cut = len < 512 ? len : 512;
 	while (cut < len && cut && ((unsigned char)body[cut] & 0xC0) == 0x80)
 		--cut;
-	return cut ? buf_append(text, body, cut)
-	           : buf_append(text, "empty response", sizeof "empty response" - 1);
+	return dstr_cat_n(text, cut ? body : "empty response",
+	                  cut ? cut : sizeof "empty response" - 1) ? 0 : ENOMEM;
 }
 
 int
@@ -248,7 +247,7 @@ ai_response (enum ai_protocol  protocol,
              long              status,
              char const       *body,
              size_t            len,
-             struct buf       *text,
+             struct dstr      *text,
              bool             *failed)
 {
 	static char const cut_note[] =
@@ -279,14 +278,14 @@ ai_response (enum ai_protocol  protocol,
 		break;
 	}
 
-	if (!e && !text->len) {
+	if (!e && !dstr_len(text)) {
 		*failed = true;
-		e = buf_printf(text, "The model returned no answer%s%s%s.",
-		               answer.reason ? " (stop reason: " : "",
-		               answer.reason ? answer.reason : "",
-		               answer.reason ? ")" : "");
+		e = dstr_printf(text, "The model returned no answer%s%s%s.",
+		                answer.reason ? " (stop reason: " : "",
+		                answer.reason ? answer.reason : "",
+		                answer.reason ? ")" : "") ? 0 : ENOMEM;
 	} else if (!e && answer.truncated) {
-		e = buf_append(text, cut_note, sizeof cut_note - 1);
+		e = dstr_cat_n(text, cut_note, sizeof cut_note - 1) ? 0 : ENOMEM;
 	}
 	json_object_put(root);
 	return e;

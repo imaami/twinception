@@ -4,23 +4,26 @@
 
 #include <stddef.h>
 
-#include "buf.h"
+#include "dstr.h"
 
 typedef int sse_event_cb (char const *data,
                           size_t      len,
                           void       *user);
 
 struct sse {
-	struct buf input;
-	struct buf data;
+	struct dstr   input;
+	struct dstr   data;
 	sse_event_cb *event;
 	void         *user;
 };
 
-extern void
-sse_init (struct sse *sse,
-          sse_event_cb *event,
-          void         *user);
+/**
+ * RAII-style initializer: an empty parser that reports events to @p event.
+ * Assigning it over a parser that holds input leaks; sse_fini() it first.
+ */
+extern struct sse
+sse (sse_event_cb *event,
+     void         *user);
 
 extern int
 sse_feed (struct sse *sse,

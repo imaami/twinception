@@ -1,57 +1,69 @@
-# Recursive (`=`) and conditional assignments (`?=`) capture env variables,
-# simple assignments (`:=`) without `override` only command line arguments.
-CC     := gcc
-CFLAGS := -O3 -flto=auto -march=native -mtune=native -std=gnu23 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+override REPO_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 
-# This lazy-eval oneshot assignment trick prevents unnecessary shell churn;
-# each `pkg-config` command runs only once when the variable is referenced.
-override LDLIBS = $(eval override LDLIBS := \
- $$(shell pkg-config --libs libcurl json-c))$(LDLIBS)
-override CPPFLAGS = $(eval override CPPFLAGS := \
- $$(shell pkg-config --cflags libcurl json-c))$(CPPFLAGS)
+include $(REPO_DIR)mk/o.mk
+$(call set-build-dir,$(REPO_DIR)build)
 
-override COMMON := \
-  src/buf.c     \
-  src/http.c    \
-  src/loop.c
+override import-sub-dir =$(sort $(shell \
+  $(MAKE) -Rpqrs MAKECMDGOALS:=.DEFAULT \
+          -f "$(strip $1)" 2> /dev/null \
+  | grep ^\\.PHONY:| xargs printf %s\\n \
+  | grep '^[a-z][0-9A-Z_a-z.-]*$$'))
 
-override TWINCEPTION := \
-  src/app.c     \
-  src/main.c    \
-  src/sse.c
+override SUB_DIRS = \
+  $(eval override SUB_DIRS:=$$(patsubst \
+    $(REPO_DIR)%/Makefile,%,$$(wildcard \
+    $(REPO_DIR)*/Makefile)))$(SUB_DIRS)
 
-override ASKAI := \
-  src/ai.c      \
-  src/askai.c   \
-  src/httpd.c   \
-  src/jb.c      \
-  src/mcp.c
+$(foreach d,$(SUB_DIRS),$(eval override \
+  TARGETS_$d := $$(call import-sub-dir, \
+    $(REPO_DIR)$d/Makefile)))
 
-override SRC := $(COMMON) $(TWINCEPTION) $(ASKAI)
-override OBJ := $(SRC:=.o)
-override DEP := $(SRC:=.d)
+$(eval override TARGETS := $$(sort \
+  $$(filter-out default, \
+    $(SUB_DIRS:%=$$(TARGETS_%)) \
+  ) \
+))
 
-all: twinception askai
+.PHONY: default $(TARGETS)
+default $(TARGETS):; @:
 
-twinception: $(TWINCEPTION:=.o) $(COMMON:=.o)
-	$(CC) $(CFLAGS) -MMD -o $@ $^ $(LDLIBS)
+$(foreach d,$(SUB_DIRS), \
+  $(if $(TARGETS_$d), \
+    $(if $(filter default,$(TARGETS_$d)),, \
+      $(eval \
+        default: | $(REPO_DIR)$d/default \
+      ) \
+      $(eval \
+        .PHONY: $(REPO_DIR)$d/default \
+      ) \
+      $(eval \
+        $(REPO_DIR)$d/default:; \
+          @+$$(MAKE) -C "$$(@D)" O="$$O" \
+      ) \
+    ) \
+    $(eval \
+      .PHONY: $$(TARGETS_$d:%=$(REPO_DIR)$d/%) \
+    ) \
+    $(eval \
+      $$(TARGETS_$d:%=$(REPO_DIR)$d/%):; \
+        @+$$(MAKE) -C "$$(@D)" $$(@F) O="$$O" \
+    ) \
+    $(foreach x,$(TARGETS_$d), \
+      $(eval \
+        $x: | $(REPO_DIR)$d/$x \
+      ) \
+    ) \
+  ) \
+)
 
-askai: $(ASKAI:=.o) $(COMMON:=.o)
-	$(CC) $(CFLAGS) -MMD -o $@ $^ $(LDLIBS)
-
-%.c.o: %.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -c -o $@ $<
-
-check: twinception askai
-	python3 tests/check.py ./twinception
-	python3 tests/askai.py ./askai
-
-purge: | clean
-	$(RM) $(DEP)
-
-clean:
-	$(RM) twinception askai $(OBJ)
-
-.PHONY: all check clean purge
-
--include $(DEP)
+$(if $(filter purge,$(TARGETS)), \
+  $(foreach d,$(SUB_DIRS), \
+    $(if $(filter purge,$(TARGETS_$d)),, \
+      $(if $(filter clean,$(TARGETS_$d)), \
+        $(eval \
+          purge: | $(REPO_DIR)$d/clean \
+        ) \
+      ) \
+    ) \
+  ) \
+)

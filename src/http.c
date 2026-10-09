@@ -1,4 +1,7 @@
-/** @file libcurl multi-socket integration for the epoll loop. */
+/**
+ * @file http.c
+ * libcurl multi-socket integration for the epoll loop.
+ */
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -7,8 +10,6 @@
 #include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
-
-#include <curl/curl.h>
 
 #include "http.h"
 #include "list.h"

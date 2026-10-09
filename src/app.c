@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 #include "app.h"
-#include "buf.h"
+#include "dstr.h"
 #include "http.h"
 #include "list.h"
 #include "loop.h"
@@ -19,15 +19,15 @@
 #include "util.h"
 
 struct turn {
-	struct list  hook;
-	char        *user[2];
-	char        *answer[2];
-	char        *reasoning[2];
+	struct list hook;
+	struct dstr user[2];
+	struct dstr answer[2];
+	struct dstr reasoning[2];
 };
 
 struct prompt {
-	struct list  hook;
-	char        *text[2];
+	struct list hook;
+	struct dstr text;
 };
 
 struct app;
@@ -40,9 +40,9 @@ enum template_probe_stage {
 
 struct template_probe {
 	struct http_request       *request;
-	struct buf                 response;
+	struct dstr                response;
 	struct app                *app;
-	char                      *rapid_base;
+	struct dstr                rapid_base;
 	size_t                     index;
 	enum template_probe_stage  stage;
 	int                        done;
@@ -51,9 +51,9 @@ struct template_probe {
 struct model_run {
 	struct http_request *request;
 	struct sse           sse;
-	struct buf           answer;
-	struct buf           reasoning;
-	struct buf           tail;
+	struct dstr          answer;
+	struct dstr          reasoning;
+	struct dstr          tail;
 	struct app          *app;
 	size_t               index;
 	int                  error;
@@ -71,12 +71,12 @@ enum rapid_stage {
 struct rapid_model {
 	struct http_request *request;
 	struct sse           sse;
-	struct buf           response;
-	struct buf           base;
-	struct buf           emitted;
-	struct buf           chunk;
-	struct buf           answer;
-	struct buf           tail;
+	struct dstr          response;
+	struct dstr          base;
+	struct dstr          emitted;
+	struct dstr          chunk;
+	struct dstr          answer;
+	struct dstr          tail;
 	struct app          *app;
 	size_t               index;
 	uint32_t             tokens;
@@ -99,11 +99,11 @@ struct app {
 	struct turn           *pending;
 	struct http           *http;
 	struct loop            loop;
-	struct buf             stdin_buf;
-	char                  *bearer;
-	char                  *generation_tail[2];
-	char                  *reasoning_tail[2];
-	char                  *transition[2];
+	struct dstr            stdin_buf;
+	struct dstr            bearer;
+	struct dstr            generation_tail[2];
+	struct dstr            reasoning_tail[2];
+	struct dstr            transition[2];
 	long                   crosstalk_left;
 	uint32_t               rapid_used;
 	uint32_t               rapid_round;
@@ -140,25 +140,29 @@ turn_destroy (struct turn **p_turn)
 	struct turn *turn = *p_turn;
 	*p_turn = nullptr;
 	for (size_t i = 0; i < ARRAY_SIZE(turn->user); ++i) {
-		free(turn->reasoning[i]);
-		free(turn->answer[i]);
-		free(turn->user[i]);
+		dstr_cleanup(&turn->reasoning[i]);
+		dstr_cleanup(&turn->answer[i]);
+		dstr_cleanup(&turn->user[i]);
 	}
 	free(turn);
 }
 
 static struct turn *
-turn_create (char const *user_a,
-             char const *user_b)
+turn_create (struct dstr const *user_a,
+             struct dstr const *user_b)
 {
-	struct turn *turn = calloc(1, sizeof *turn);
+	struct turn *turn = malloc(sizeof *turn);
 	if (!turn)
 		return nullptr;
+	*turn = (struct turn){
+		.user = { DSTR_INIT, DSTR_INIT },
+		.answer = { DSTR_INIT, DSTR_INIT },
+		.reasoning = { DSTR_INIT, DSTR_INIT }
+	};
 	list_init(&turn->hook);
 
-	turn->user[0] = strdup(user_a);
-	turn->user[1] = strdup(user_b);
-	if (!turn->user[0] || !turn->user[1]) {
+	if (!dstr_cat_n(&turn->user[0], dstr_get(user_a), dstr_len(user_a)) ||
+	    !dstr_cat_n(&turn->user[1], dstr_get(user_b), dstr_len(user_b))) {
 		turn_destroy(&turn);
 		return nullptr;
 	}
@@ -172,23 +176,21 @@ prompt_destroy (struct prompt **p_prompt)
 		return;
 	struct prompt *prompt = *p_prompt;
 	*p_prompt = nullptr;
-	free(prompt->text[1]);
-	free(prompt->text[0]);
+	dstr_cleanup(&prompt->text);
 	free(prompt);
 }
 
 static struct prompt *
-prompt_create (char const *text_a,
-               char const *text_b)
+prompt_create (char const *text,
+               size_t      len)
 {
-	struct prompt *prompt = calloc(1, sizeof *prompt);
+	struct prompt *prompt = malloc(sizeof *prompt);
 	if (!prompt)
 		return nullptr;
+	*prompt = (struct prompt){ .text = DSTR_INIT };
 	list_init(&prompt->hook);
 
-	prompt->text[0] = strdup(text_a);
-	prompt->text[1] = strdup(text_b);
-	if (!prompt->text[0] || !prompt->text[1]) {
+	if (!dstr_cat_n(&prompt->text, text, len)) {
 		prompt_destroy(&prompt);
 		return nullptr;
 	}
@@ -204,7 +206,7 @@ json_add_message_key (struct json_object *messages,
 {
 	struct json_object *msg = json_object_new_object();
 	struct json_object *role_obj = json_object_new_string(role);
-	struct json_object *content_obj = json_object_new_string(content ? content : "");
+	struct json_object *content_obj = json_object_new_string(content);
 	struct json_object *reasoning_obj = reasoning
 		? json_object_new_string(reasoning) : nullptr;
 	if (!msg || !role_obj || !content_obj || (reasoning && !reasoning_obj)) {
@@ -274,21 +276,30 @@ json_add_deepinfra_reasoning (struct json_object *root)
 	return 0;
 }
 
+/** POST @p body and release it; a null @p body, which failed to build, is ENOMEM. */
 static int
-model_post_json (struct app        *app,
-                 size_t             model,
-                 char const        *url,
-                 char const        *body,
-                 http_write_cb     *write_cb,
-                 http_done_cb      *done_cb,
-                 void              *user,
+model_post_json (struct app          *app,
+                 size_t               model,
+                 char const          *url,
+                 struct json_object  *body,
+                 http_write_cb       *write_cb,
+                 http_done_cb        *done_cb,
+                 void                *user,
                  struct http_request **request)
 {
-	char const *headers[] = { app->bearer, nullptr };
-	return http_post_json(app->http, url, body,
-	                      app->cfg.provider[model] == APP_PROVIDER_DEEPINFRA
-	                      ? headers : nullptr,
-	                      0, write_cb, done_cb, user, request);
+	if (!body)
+		return ENOMEM;
+
+	char const *json = json_object_to_json_string_ext(body,
+	                                                  JSON_C_TO_STRING_PLAIN);
+	char const *headers[] = { dstr_get(&app->bearer), nullptr };
+	int e = json ? http_post_json(app->http, url, json,
+	                              app->cfg.provider[model] == APP_PROVIDER_DEEPINFRA
+	                              ? headers : nullptr,
+	                              0, write_cb, done_cb, user, request)
+	             : ENOMEM;
+	json_object_put(body);
+	return e;
 }
 
 static void
@@ -300,39 +311,38 @@ app_fail (struct app *app,
 	loop_exit(&app->loop);
 }
 
-static char *
-endpoint_url (char const *chat_url,
-              char const *endpoint)
+/**
+ * Append @p chat_url to @p url, with @p endpoint replacing its chat-completions
+ * path; EINVAL if it has none.
+ */
+static int
+endpoint_url (struct dstr *url,
+              char const  *chat_url,
+              char const  *endpoint)
 {
 	static char const suffix[] = "/v1/chat/completions";
 	size_t len = strlen(chat_url);
 	size_t suffix_len = sizeof suffix - 1;
-	size_t endpoint_len = strlen(endpoint);
 	if (len < suffix_len || memcmp(chat_url + len - suffix_len,
 	                               suffix, suffix_len))
-		return nullptr;
+		return EINVAL;
 
-	size_t prefix_len = len - suffix_len;
-	char *url = malloc(prefix_len + endpoint_len + 1);
-	if (!url)
-		return nullptr;
-	memcpy(url, chat_url, prefix_len);
-	memcpy(url + prefix_len, endpoint, endpoint_len + 1);
-	return url;
+	return dstr_cat_n(url, chat_url, len - suffix_len) &&
+	       dstr_cat(url, endpoint) ? 0 : ENOMEM;
 }
 
-static char const *
+static struct dstr const *
 turn_answer_for (struct app const  *app,
                  struct turn const *turn,
                  size_t             model)
 {
 	switch (app->cfg.history_mode) {
 	case APP_HISTORY_SHARED_A:
-		return turn->answer[0];
+		return &turn->answer[0];
 	case APP_HISTORY_SHARED_B:
-		return turn->answer[1];
+		return &turn->answer[1];
 	default:
-		return turn->answer[model];
+		return &turn->answer[model];
 	}
 }
 
@@ -344,16 +354,17 @@ json_add_history (struct json_object *messages,
 	struct list *node;
 	list_foreach (node, &app->history) {
 		struct turn *turn = container_of(node, struct turn, hook);
-		if (json_add_message(messages, "user", turn->user[model], nullptr) ||
+		if (json_add_message(messages, "user", dstr_get(&turn->user[model]),
+		                     nullptr) ||
 		    json_add_message(messages, "assistant",
-		                     turn_answer_for(app, turn, model),
-		                     turn->reasoning[1 - model]))
+		                     dstr_get(turn_answer_for(app, turn, model)),
+		                     dstr_get(&turn->reasoning[1 - model])))
 			return ENOMEM;
 	}
 	return 0;
 }
 
-static char *
+static struct json_object *
 template_probe_body (struct app const *app,
                      enum template_probe_stage stage)
 {
@@ -392,12 +403,7 @@ template_probe_body (struct app const *app,
 		json_object_put(root);
 		return nullptr;
 	}
-
-	char const *json = json_object_to_json_string_ext(root,
-	                                                  JSON_C_TO_STRING_PLAIN);
-	char *body = strdup(json);
-	json_object_put(root);
-	return body;
+	return root;
 }
 
 static size_t
@@ -406,20 +412,21 @@ template_probe_write (char const *data,
                       void       *user)
 {
 	struct template_probe *probe = user;
-	return buf_append(&probe->response, data, len) ? 0 : len;
+	return dstr_cat_n(&probe->response, data, len) ? len : 0;
 }
 
+/** Append the prompt from the probe's response to @p prompt. */
 static int
 template_probe_prompt (struct template_probe *probe,
-                       char                  **p_prompt)
+                       struct dstr           *prompt)
 {
-	if (!probe->response.data) {
+	if (!dstr_len(&probe->response)) {
 		fprintf(stderr, "model %c template check failed: empty response\n",
 		        (int)('A' + probe->index));
 		return EPROTO;
 	}
 
-	struct json_object *root = json_tokener_parse(probe->response.data);
+	struct json_object *root = json_tokener_parse(dstr_get(&probe->response));
 	if (!root) {
 		fprintf(stderr, "model %c template check failed: invalid JSON response\n",
 		        (int)('A' + probe->index));
@@ -436,9 +443,9 @@ template_probe_prompt (struct template_probe *probe,
 		return EPROTO;
 	}
 
-	*p_prompt = strdup(json_object_get_string(value));
+	int error = dstr_cat(prompt, json_object_get_string(value)) ? 0 : ENOMEM;
 	json_object_put(root);
-	return *p_prompt ? 0 : ENOMEM;
+	return error;
 }
 
 static int
@@ -480,12 +487,12 @@ static int
 template_probe_validate_rapid (struct template_probe *probe,
                                char const             *prompt)
 {
-	char const *base = probe->rapid_base;
+	char const *base = dstr_get(&probe->rapid_base);
 	char const *reasoning = strstr(prompt, probe_rapid_reasoning);
 	char const *answer = reasoning
 		? strstr(reasoning + sizeof probe_rapid_reasoning - 1, probe_rapid_answer)
 		: nullptr;
-	if (!base || !reasoning || !answer) {
+	if (!reasoning || !answer) {
 		fprintf(stderr,
 		        "model %c rapid template check failed: cannot locate generation, "
 		        "reasoning and answer prefills in /apply-template output\n",
@@ -494,7 +501,7 @@ template_probe_validate_rapid (struct template_probe *probe,
 	}
 
 	size_t common = common_prefix_len(base, prompt);
-	size_t base_len = strlen(base);
+	size_t base_len = dstr_len(&probe->rapid_base);
 	size_t reasoning_off = (size_t)(reasoning - prompt);
 	if (common > reasoning_off) {
 		fprintf(stderr,
@@ -504,26 +511,21 @@ template_probe_validate_rapid (struct template_probe *probe,
 		return EPROTO;
 	}
 
-	char *generation_tail = strdup(base + common);
-	char *reasoning_tail = strndup(prompt + common, reasoning_off - common);
 	char const *begin = reasoning + sizeof probe_rapid_reasoning - 1;
 	size_t transition_len = (size_t)(answer - begin);
-	char *transition = transition_len ? strndup(begin, transition_len) : nullptr;
-	if (!generation_tail || !reasoning_tail || !transition) {
-		free(generation_tail);
-		free(reasoning_tail);
-		free(transition);
-		return transition_len ? ENOMEM : EPROTO;
-	}
+	if (!transition_len)
+		return EPROTO;
 
-	free(probe->app->generation_tail[probe->index]);
-	free(probe->app->reasoning_tail[probe->index]);
-	free(probe->app->transition[probe->index]);
-	probe->app->generation_tail[probe->index] = generation_tail;
-	probe->app->reasoning_tail[probe->index] = reasoning_tail;
-	probe->app->transition[probe->index] = transition;
+	/* Each probe gets here once, so these start out empty. */
+	struct app *app = probe->app;
+	size_t i = probe->index;
+	if (!dstr_cat_n(&app->generation_tail[i], base + common, base_len - common) ||
+	    !dstr_cat_n(&app->reasoning_tail[i], prompt + common,
+	                reasoning_off - common) ||
+	    !dstr_cat_n(&app->transition[i], begin, transition_len))
+		return ENOMEM;
 
-	if (probe->app->cfg.debug)
+	if (app->cfg.debug)
 		fprintf(stderr,
 		        "model %c rapid template check: generation tail %zu bytes, "
 		        "reasoning prefix %zu bytes, reasoning-to-answer transition %zu bytes\n",
@@ -535,45 +537,37 @@ template_probe_validate_rapid (struct template_probe *probe,
 static int
 template_probe_validate (struct template_probe *probe)
 {
-	char *prompt;
+	dstr_auto prompt = DSTR_INIT;
 	int error = template_probe_prompt(probe, &prompt);
 	if (error)
 		return error;
 
-	error = probe->app->cfg.rapid_quantum
-		? template_probe_validate_rapid(probe, prompt)
-		: template_probe_validate_history(probe, prompt);
-	free(prompt);
-	return error;
+	return probe->app->cfg.rapid_quantum
+		? template_probe_validate_rapid(probe, dstr_get(&prompt))
+		: template_probe_validate_history(probe, dstr_get(&prompt));
 }
 
 static int
 template_probe_start (struct template_probe *probe)
 {
 	struct app *app = probe->app;
-	char *body = template_probe_body(app, probe->stage);
-	if (!body)
-		return ENOMEM;
-
-	char *url = endpoint_url(app->cfg.url[probe->index], "/apply-template");
-	if (!url) {
-		free(body);
+	dstr_auto url = DSTR_INIT;
+	int error = endpoint_url(&url, app->cfg.url[probe->index], "/apply-template");
+	if (error == EINVAL)
 		fprintf(stderr,
 		        "cannot derive /apply-template from model %c URL%s\n",
 		        (int)('A' + probe->index),
 		        app->cfg.rapid_quantum
 		        ? "; rapid mode requires llama-server-compatible endpoints"
 		        : "; use -P to skip template validation");
-		return EINVAL;
-	}
+	if (error)
+		return error;
 
-	buf_reset(&probe->response);
-	int error = model_post_json(app, probe->index, url, body,
-	                           template_probe_write, template_probe_done, probe,
-	                           &probe->request);
-	free(url);
-	free(body);
-	return error;
+	dstr_clear(&probe->response);
+	return model_post_json(app, probe->index, dstr_get(&url),
+	                       template_probe_body(app, probe->stage),
+	                       template_probe_write, template_probe_done, probe,
+	                       &probe->request);
 }
 
 static void
@@ -596,14 +590,12 @@ template_probe_done (CURLcode    result,
 	}
 
 	if (probe->stage == TEMPLATE_PROBE_RAPID_BASE) {
-		char *prompt;
-		int error = template_probe_prompt(probe, &prompt);
+		/* The base stage runs once, so rapid_base starts out empty. */
+		int error = template_probe_prompt(probe, &probe->rapid_base);
 		if (error) {
 			app_fail(app, error);
 			return;
 		}
-		free(probe->rapid_base);
-		probe->rapid_base = prompt;
 		probe->stage = TEMPLATE_PROBE_RAPID_FULL;
 		error = template_probe_start(probe);
 		if (error)
@@ -656,7 +648,7 @@ app_start_template_probes (struct app *app)
 	return 0;
 }
 
-static char *
+static struct json_object *
 chat_request_body (struct app const *app,
                    size_t            model,
                    char const       *user)
@@ -696,19 +688,14 @@ chat_request_body (struct app const *app,
 	    json_add_history(messages, app, model) ||
 	    json_add_message(messages, "user", user, nullptr))
 		goto fail;
-
-	char const *json = json_object_to_json_string_ext(root,
-	                                                  JSON_C_TO_STRING_PLAIN);
-	char *ret = strdup(json);
-	json_object_put(root);
-	return ret;
+	return root;
 
 fail:
 	json_object_put(root);
 	return nullptr;
 }
 
-static char *
+static struct json_object *
 template_turn_body (struct app const *app,
                     size_t            model,
                     char const       *user)
@@ -732,29 +719,25 @@ template_turn_body (struct app const *app,
 		json_object_put(root);
 		return nullptr;
 	}
-
-	char const *json = json_object_to_json_string_ext(root,
-	                                                  JSON_C_TO_STRING_PLAIN);
-	char *body = strdup(json);
-	json_object_put(root);
-	return body;
+	return root;
 }
 
 static void
-model_tail_append (struct buf *tail,
-                   char const *data,
-                   size_t      len)
+model_tail_append (struct dstr *tail,
+                   char const  *data,
+                   size_t       len)
 {
 	enum { MAX_TAIL = 8192 };
 	if (len >= MAX_TAIL) {
-		buf_reset(tail);
-		buf_append(tail, data + len - MAX_TAIL, MAX_TAIL);
+		dstr_clear(tail);
+		dstr_cat_n(tail, data + len - MAX_TAIL, MAX_TAIL);
 		return;
 	}
 
-	if (tail->len + len > MAX_TAIL)
-		buf_consume(tail, tail->len + len - MAX_TAIL);
-	buf_append(tail, data, len);
+	size_t tail_len = dstr_len(tail);
+	if (tail_len + len > MAX_TAIL)
+		dstr_erase(tail, 0, tail_len + len - MAX_TAIL);
+	dstr_cat_n(tail, data, len);
 }
 
 static int
@@ -803,19 +786,19 @@ model_sse_event (char const *data,
 	    json_object_get_type(value) == json_type_string) {
 		char const *str = json_object_get_string(value);
 		size_t n = (size_t)json_object_get_string_len(value);
-		e = buf_append(&model->reasoning, str, n);
+		e = dstr_cat_n(&model->reasoning, str, n) ? 0 : ENOMEM;
 	} else if (json_object_object_get_ex(delta, "reasoning", &value) &&
 	           json_object_get_type(value) == json_type_string) {
 		char const *str = json_object_get_string(value);
 		size_t n = (size_t)json_object_get_string_len(value);
-		e = buf_append(&model->reasoning, str, n);
+		e = dstr_cat_n(&model->reasoning, str, n) ? 0 : ENOMEM;
 	}
 
 	if (!e && json_object_object_get_ex(delta, "content", &value) &&
 	    json_object_get_type(value) == json_type_string) {
 		char const *str = json_object_get_string(value);
 		size_t n = (size_t)json_object_get_string_len(value);
-		e = buf_append(&model->answer, str, n);
+		e = dstr_cat_n(&model->answer, str, n) ? 0 : ENOMEM;
 	}
 
 	json_object_put(root);
@@ -864,10 +847,11 @@ model_done (CURLcode    result,
 		        curl_easy_strerror(result),
 		        curl_error && *curl_error ? ": " : "",
 		        curl_error && *curl_error ? curl_error : "");
-		if (model->tail.len)
+		int tail_len = (int)dstr_len(&model->tail);
+		if (tail_len)
 			fprintf(stderr, "model %c response tail:\n%.*s\n",
 			        (int)('A' + model->index),
-			        (int)model->tail.len, model->tail.data);
+			        tail_len, dstr_get(&model->tail));
 	}
 
 	app_maybe_finish(model->app);
@@ -877,13 +861,13 @@ static void
 model_reset (struct model_run *model)
 {
 	sse_fini(&model->sse);
-	buf_fini(&model->tail);
-	buf_fini(&model->reasoning);
-	buf_fini(&model->answer);
+	dstr_cleanup(&model->tail);
+	dstr_cleanup(&model->reasoning);
+	dstr_cleanup(&model->answer);
 	model->error = 0;
 	model->done = 0;
 	model->saw_done = 0;
-	sse_init(&model->sse, model_sse_event, model);
+	model->sse = sse(model_sse_event, model);
 }
 
 static int
@@ -892,13 +876,11 @@ app_start_chat (struct app *app)
 	for (size_t i = 0; i < ARRAY_SIZE(app->model); ++i) {
 		struct model_run *model = &app->model[i];
 		model_reset(model);
-		char *body = chat_request_body(app, i, app->pending->user[i]);
-		if (!body)
-			return ENOMEM;
+		struct json_object *body =
+			chat_request_body(app, i, dstr_get(&app->pending->user[i]));
 		int e = model_post_json(app, i, app->cfg.url[i], body,
-		                       model_write, model_done, model,
-		                       &model->request);
-		free(body);
+		                        model_write, model_done, model,
+		                        &model->request);
 		if (e)
 			return e;
 	}
@@ -909,8 +891,8 @@ static void
 rapid_reset_request (struct rapid_model *model)
 {
 	sse_fini(&model->sse);
-	buf_reset(&model->chunk);
-	buf_reset(&model->tail);
+	dstr_clear(&model->chunk);
+	dstr_clear(&model->tail);
 	model->tokens = 0;
 	model->requested = 0;
 	model->error = 0;
@@ -924,12 +906,12 @@ static void
 rapid_reset_turn (struct rapid_model *model)
 {
 	sse_fini(&model->sse);
-	buf_fini(&model->response);
-	buf_fini(&model->base);
-	buf_fini(&model->emitted);
-	buf_fini(&model->chunk);
-	buf_fini(&model->answer);
-	buf_fini(&model->tail);
+	dstr_cleanup(&model->response);
+	dstr_cleanup(&model->base);
+	dstr_cleanup(&model->emitted);
+	dstr_cleanup(&model->chunk);
+	dstr_cleanup(&model->answer);
+	dstr_cleanup(&model->tail);
 	model->tokens = 0;
 	model->requested = 0;
 	model->error = 0;
@@ -945,15 +927,13 @@ rapid_template_write (char const *data,
                       void       *user)
 {
 	struct rapid_model *model = user;
-	return buf_append(&model->response, data, len) ? 0 : len;
+	return dstr_cat_n(&model->response, data, len) ? len : 0;
 }
 
 static int
 rapid_template_parse (struct rapid_model *model)
 {
-	if (!model->response.data)
-		return EPROTO;
-	struct json_object *root = json_tokener_parse(model->response.data);
+	struct json_object *root = json_tokener_parse(dstr_get(&model->response));
 	if (!root)
 		return EPROTO;
 
@@ -965,7 +945,7 @@ rapid_template_parse (struct rapid_model *model)
 	} else {
 		char const *str = json_object_get_string(value);
 		size_t len = (size_t)json_object_get_string_len(value);
-		error = buf_append(&model->base, str, len);
+		error = dstr_cat_n(&model->base, str, len) ? 0 : ENOMEM;
 	}
 	json_object_put(root);
 	return error;
@@ -1050,9 +1030,9 @@ rapid_sse_event (char const *data,
 			if (value && json_object_get_type(value) == json_type_string) {
 				char const *str = json_object_get_string(value);
 				size_t n = (size_t)json_object_get_string_len(value);
-				struct buf *out = model->app->rapid_stage == RAPID_ANSWER
+				struct dstr *out = model->app->rapid_stage == RAPID_ANSWER
 					? &model->answer : &model->chunk;
-				e = buf_append(out, str, n);
+				e = dstr_cat_n(out, str, n) ? 0 : ENOMEM;
 			}
 		}
 		if (!e && json_object_object_get_ex(choice, "finish_reason", &value) &&
@@ -1072,9 +1052,9 @@ rapid_sse_event (char const *data,
 	    json_object_get_type(value) == json_type_string) {
 		char const *str = json_object_get_string(value);
 		size_t n = (size_t)json_object_get_string_len(value);
-		struct buf *out = model->app->rapid_stage == RAPID_ANSWER
+		struct dstr *out = model->app->rapid_stage == RAPID_ANSWER
 			? &model->answer : &model->chunk;
-		e = buf_append(out, str, n);
+		e = dstr_cat_n(out, str, n) ? 0 : ENOMEM;
 	}
 
 	if (!e && model->app->rapid_stage == RAPID_THINK &&
@@ -1101,11 +1081,11 @@ rapid_sse_event (char const *data,
 	return e;
 }
 
-static char *
-deepinfra_rapid_body (struct app const *app,
-                      size_t            model,
-                      struct buf const  *foreign,
-                      long              n_predict)
+static struct json_object *
+deepinfra_rapid_body (struct app const  *app,
+                      size_t             model,
+                      struct dstr const *foreign,
+                      long               n_predict)
 {
 	struct json_object *root = json_object_new_object();
 	struct json_object *messages = json_object_new_array();
@@ -1135,27 +1115,20 @@ deepinfra_rapid_body (struct app const *app,
 	if ((app->cfg.system &&
 	     json_add_message(messages, "system", app->cfg.system, nullptr)) ||
 	    json_add_history(messages, app, model) ||
-	    json_add_message(messages, "user", app->pending->user[model], nullptr))
+	    json_add_message(messages, "user", dstr_get(&app->pending->user[model]),
+	                     nullptr))
 		goto fail;
 
-	struct buf prefill = {0};
-	int e = buf_append(&prefill, "<think>\n", sizeof "<think>\n" - 1);
-	if (!e && foreign && foreign->len)
-		e = buf_append(&prefill, foreign->data, foreign->len);
-	if (!e && app->rapid_stage == RAPID_ANSWER)
-		e = buf_append(&prefill, "</think>\n", sizeof "</think>\n" - 1);
-	if (!e)
-		e = json_add_message(messages, "assistant",
-		                     prefill.data ? prefill.data : "", nullptr);
-	buf_fini(&prefill);
+	struct dstr prefill = dstr("<think>\n");
+	int e = ENOMEM;
+	if (dstr_cat_n(&prefill, dstr_get(foreign), dstr_len(foreign)) &&
+	    (app->rapid_stage != RAPID_ANSWER ||
+	     dstr_cat_n(&prefill, "</think>\n", sizeof "</think>\n" - 1)))
+		e = json_add_message(messages, "assistant", dstr_get(&prefill), nullptr);
+	dstr_cleanup(&prefill);
 	if (e)
 		goto fail;
-
-	char const *json = json_object_to_json_string_ext(root,
-	                                                  JSON_C_TO_STRING_PLAIN);
-	char *body = strdup(json);
-	json_object_put(root);
-	return body;
+	return root;
 
 fail:
 	json_object_put(root);
@@ -1165,20 +1138,17 @@ fail:
 static int
 rapid_start_deepinfra (struct app         *app,
                        struct rapid_model *model,
-                       struct buf const   *foreign,
+                       struct dstr const  *foreign,
                        long                n_predict)
 {
 	rapid_reset_request(model);
 	model->requested = n_predict > 0 ? (uint32_t)n_predict : 0;
-	sse_init(&model->sse, rapid_sse_event, model);
+	model->sse = sse(rapid_sse_event, model);
 
-	char *body = deepinfra_rapid_body(app, model->index, foreign, n_predict);
-	if (!body)
-		return ENOMEM;
-	int e = model_post_json(app, model->index, app->cfg.url[model->index], body,
-	                        rapid_write, rapid_done, model, &model->request);
-	free(body);
-	return e;
+	return model_post_json(app, model->index, app->cfg.url[model->index],
+	                       deepinfra_rapid_body(app, model->index, foreign,
+	                                            n_predict),
+	                       rapid_write, rapid_done, model, &model->request);
 }
 
 static size_t
@@ -1223,23 +1193,24 @@ rapid_done (CURLcode    result,
 		        curl_easy_strerror(result),
 		        curl_error && *curl_error ? ": " : "",
 		        curl_error && *curl_error ? curl_error : "");
-		if (model->tail.len)
+		int tail_len = (int)dstr_len(&model->tail);
+		if (tail_len)
 			fprintf(stderr, "model %c response tail:\n%.*s\n",
 			        (int)('A' + model->index),
-			        (int)model->tail.len, model->tail.data);
+			        tail_len, dstr_get(&model->tail));
 	}
 
 	rapid_maybe_advance(model->app);
 }
 
-static char *
-rapid_body (struct app const *app,
-            size_t            model,
-            char const       *prompt,
-            size_t            prompt_len,
-            char const       *stop,
-            long              n_predict)
+static struct json_object *
+rapid_body (struct app const  *app,
+            size_t             model,
+            struct dstr const *prompt,
+            char const        *stop,
+            long               n_predict)
 {
+	size_t prompt_len = dstr_len(prompt);
 	if (prompt_len > INT_MAX)
 		return nullptr;
 	struct json_object *root = json_object_new_object();
@@ -1247,7 +1218,8 @@ rapid_body (struct app const *app,
 		return nullptr;
 
 	if (json_add_value(root, "prompt",
-	                   json_object_new_string_len(prompt, (int)prompt_len)) ||
+	                   json_object_new_string_len(dstr_get(prompt),
+	                                              (int)prompt_len)) ||
 	    json_add_value(root, "stream", json_object_new_boolean(1)) ||
 	    json_add_value(root, "cache_prompt", json_object_new_boolean(1))) {
 		json_object_put(root);
@@ -1281,12 +1253,7 @@ rapid_body (struct app const *app,
 		if (json_add_value(root, "temperature",
 		                   json_object_new_double(app->cfg.temperature)))
 			goto fail;
-
-	char const *json = json_object_to_json_string_ext(root,
-	                                                  JSON_C_TO_STRING_PLAIN);
-	char *body = strdup(json);
-	json_object_put(root);
-	return body;
+	return root;
 
 fail:
 	json_object_put(root);
@@ -1294,64 +1261,53 @@ fail:
 }
 
 static int
-rapid_start_raw (struct app *app,
+rapid_start_raw (struct app         *app,
                  struct rapid_model *model,
-                 struct buf const   *foreign,
-                 char const         *suffix,
+                 struct dstr const  *foreign,
+                 struct dstr const  *suffix,
                  long                n_predict)
 {
 	rapid_reset_request(model);
 	model->requested = n_predict > 0 ? (uint32_t)n_predict : 0;
-	sse_init(&model->sse, rapid_sse_event, model);
+	model->sse = sse(rapid_sse_event, model);
 
-	char const *generation_tail = app->generation_tail[model->index];
-	char const *reasoning_tail = app->reasoning_tail[model->index];
-	if (!generation_tail || !reasoning_tail)
+	/* The probe stores a nonempty transition along with both tails. */
+	struct dstr const *transition = &app->transition[model->index];
+	if (!dstr_len(transition))
 		return EPROTO;
 
-	size_t generation_len = strlen(generation_tail);
-	if (generation_len > model->base.len ||
-	    (generation_len &&
-	     memcmp(model->base.data + model->base.len - generation_len,
-	            generation_tail, generation_len))) {
+	struct dstr const *generation_tail = &app->generation_tail[model->index];
+	struct dstr const *reasoning_tail = &app->reasoning_tail[model->index];
+	char const *base = dstr_get(&model->base);
+	size_t base_len = dstr_len(&model->base);
+	size_t generation_len = dstr_len(generation_tail);
+	if (generation_len > base_len ||
+	    memcmp(base + base_len - generation_len, dstr_get(generation_tail),
+	           generation_len)) {
 		fprintf(stderr,
 		        "model %c rapid turn template no longer matches probed generation tail\n",
 		        (int)('A' + model->index));
 		return EPROTO;
 	}
 
-	struct buf prompt = {0};
-	size_t base_prefix_len = model->base.len - generation_len;
-	int e = buf_append(&prompt, model->base.data, base_prefix_len);
-	if (!e && *reasoning_tail)
-		e = buf_append(&prompt, reasoning_tail, strlen(reasoning_tail));
-	if (!e && foreign && foreign->len)
-		e = buf_append(&prompt, foreign->data, foreign->len);
-	if (!e && suffix)
-		e = buf_append(&prompt, suffix, strlen(suffix));
-	if (e) {
-		buf_fini(&prompt);
-		return e;
-	}
-
-	char *body = rapid_body(app, model->index, prompt.data, prompt.len,
-	                        app->rapid_stage == RAPID_THINK
-	                        ? app->transition[model->index] : nullptr,
-	                        n_predict);
-	buf_fini(&prompt);
-	if (!body)
+	dstr_auto prompt = DSTR_INIT;
+	if (!dstr_cat_n(&prompt, base, base_len - generation_len) ||
+	    !dstr_cat_n(&prompt, dstr_get(reasoning_tail), dstr_len(reasoning_tail)) ||
+	    !dstr_cat_n(&prompt, dstr_get(foreign), dstr_len(foreign)) ||
+	    !dstr_cat_n(&prompt, dstr_get(suffix), dstr_len(suffix)))
 		return ENOMEM;
 
-	char *url = endpoint_url(app->cfg.url[model->index], "/completion");
-	if (!url) {
-		free(body);
-		return EINVAL;
-	}
-	e = model_post_json(app, model->index, url, body, rapid_write, rapid_done, model,
-	                   &model->request);
-	free(url);
-	free(body);
-	return e;
+	dstr_auto url = DSTR_INIT;
+	int e = endpoint_url(&url, app->cfg.url[model->index], "/completion");
+	if (e)
+		return e;
+
+	struct json_object *body =
+		rapid_body(app, model->index, &prompt,
+		           app->rapid_stage == RAPID_THINK ? dstr_get(transition) : nullptr,
+		           n_predict);
+	return model_post_json(app, model->index, dstr_get(&url), body,
+	                       rapid_write, rapid_done, model, &model->request);
 }
 
 static int
@@ -1387,7 +1343,7 @@ rapid_start_answers (struct app *app)
 			                   &app->rapid[1 - i].emitted, app->cfg.max_tokens)
 			: rapid_start_raw(app, &app->rapid[i],
 			                  &app->rapid[1 - i].emitted,
-			                  app->transition[i], app->cfg.max_tokens);
+			                  &app->transition[i], app->cfg.max_tokens);
 		if (e)
 			return e;
 	}
@@ -1402,10 +1358,8 @@ rapid_print_quantum (struct app const *app)
 	fprintf(stdout,
 	        "\n--- rapid %u: A -> B (%u tokens) ---\n%s\n"
 	        "\n--- rapid %u: B -> A (%u tokens) ---\n%s\n",
-	        app->rapid_round, app->rapid[0].tokens,
-	        app->rapid[0].chunk.data ? app->rapid[0].chunk.data : "",
-	        app->rapid_round, app->rapid[1].tokens,
-	        app->rapid[1].chunk.data ? app->rapid[1].chunk.data : "");
+	        app->rapid_round, app->rapid[0].tokens, dstr_get(&app->rapid[0].chunk),
+	        app->rapid_round, app->rapid[1].tokens, dstr_get(&app->rapid[1].chunk));
 	fflush(stdout);
 }
 
@@ -1416,17 +1370,8 @@ rapid_commit (struct app *app)
 	app->pending = nullptr;
 
 	for (size_t i = 0; i < 2; ++i) {
-		turn->answer[i] = buf_take(&app->rapid[i].answer);
-		turn->reasoning[i] = buf_take(&app->rapid[i].emitted);
-		if (!turn->answer[i])
-			turn->answer[i] = strdup("");
-		if (!turn->reasoning[i])
-			turn->reasoning[i] = strdup("");
-		if (!turn->answer[i] || !turn->reasoning[i]) {
-			turn_destroy(&turn);
-			app_fail(app, ENOMEM);
-			return;
-		}
+		turn->answer[i] = dstr_move(&app->rapid[i].answer);
+		turn->reasoning[i] = dstr_move(&app->rapid[i].emitted);
 	}
 	list_append(&app->history, &turn->hook);
 	app->rapid_stage = RAPID_IDLE;
@@ -1458,10 +1403,10 @@ rapid_maybe_advance (struct app *app)
 	if (app->rapid_stage == RAPID_THINK) {
 		rapid_print_quantum(app);
 		int e = 0;
-		for (size_t i = 0; i < 2; ++i)
-			e = e ? e : buf_append(&app->rapid[i].emitted,
-			                       app->rapid[i].chunk.data,
-			                       app->rapid[i].chunk.len);
+		for (size_t i = 0; i < 2 && !e; ++i)
+			e = dstr_cat_n(&app->rapid[i].emitted,
+			               dstr_get(&app->rapid[i].chunk),
+			               dstr_len(&app->rapid[i].chunk)) ? 0 : ENOMEM;
 		if (e) {
 			app_fail(app, e);
 			return;
@@ -1514,19 +1459,15 @@ app_start_rapid (struct app *app)
 			continue;
 		}
 
-		char *body = template_turn_body(app, i, app->pending->user[i]);
-		if (!body)
-			return ENOMEM;
-		char *url = endpoint_url(app->cfg.url[i], "/apply-template");
-		if (!url) {
-			free(body);
-			return EINVAL;
-		}
-		int e = model_post_json(app, i, url, body,
-		                       rapid_template_write, rapid_template_done, model,
-		                       &model->request);
-		free(url);
-		free(body);
+		dstr_auto url = DSTR_INIT;
+		int e = endpoint_url(&url, app->cfg.url[i], "/apply-template");
+		if (e)
+			return e;
+		e = model_post_json(app, i, dstr_get(&url),
+		                    template_turn_body(app, i,
+		                                       dstr_get(&app->pending->user[i])),
+		                    rapid_template_write, rapid_template_done, model,
+		                    &model->request);
 		if (e)
 			return e;
 	}
@@ -1536,10 +1477,10 @@ app_start_rapid (struct app *app)
 }
 
 static int
-app_start_prompt (struct app *app,
-                  char const *user_a,
-                  char const *user_b,
-                  int         human)
+app_start_prompt (struct app        *app,
+                  struct dstr const *user_a,
+                  struct dstr const *user_b,
+                  int                human)
 {
 	struct turn *turn = turn_create(user_a, user_b);
 	if (!turn)
@@ -1555,32 +1496,13 @@ static void
 app_print_turn (struct app const  *app,
                 struct turn const *turn)
 {
-	struct q {
-		char const *a;
-		char const *b;
-		char const *c;
-	};
+	if (app->cfg.debug)
+		printf("\n--- A reasoning -> B ---\n\033[1;35m%s\033[0m\n"
+		       "\n--- B reasoning -> A ---\n\033[1;36m%s\033[0m\n",
+		       dstr_get(&turn->reasoning[0]), dstr_get(&turn->reasoning[1]));
 
-	if (app->cfg.debug) {
-		struct q r0 = turn->reasoning[0]
-			? (typeof(r0)){"\033[1;35m", turn->reasoning[0], "\033[0m"}
-			: (typeof(r0)){"", "", ""};
-		struct q r1 = turn->reasoning[1]
-			? (typeof(r1)){"\033[1;36m", turn->reasoning[1], "\033[0m"}
-			: (typeof(r1)){"", "", ""};
-		printf("\n--- A reasoning -> B ---\n%s%s%s\n"
-		       "\n--- B reasoning -> A ---\n%s%s%s\n",
-		       r0.a, r0.b, r0.c, r1.a, r1.b, r1.c);
-	}
-
-	struct q a0 = turn->answer[0]
-		? (typeof(a0)){"\033[1;35m", turn->answer[0], "\033[0m"}
-		: (typeof(a0)){"", "", ""};
-	struct q a1 = turn->answer[1]
-		? (typeof(a1)){"\033[1;36m", turn->answer[1], "\033[0m"}
-		: (typeof(a1)){"", "", ""};
-	printf("\n[A]\n%s%s%s\n\n[B]\n%s%s%s\n",
-	       a0.a, a0.b, a0.c, a1.a, a1.b, a1.c);
+	printf("\n[A]\n\033[1;35m%s\033[0m\n\n[B]\n\033[1;36m%s\033[0m\n",
+	       dstr_get(&turn->answer[0]), dstr_get(&turn->answer[1]));
 	fflush(stdout);
 }
 
@@ -1598,7 +1520,7 @@ app_start_crosstalk (struct app *app,
 	if (app->cfg.debug)
 		fprintf(stderr, "crosstalk: A <- B, B <- A%s\n",
 		        app->crosstalk_left < 0 ? " (unbounded)" : "");
-	int e = app_start_prompt(app, turn->answer[1], turn->answer[0], 0);
+	int e = app_start_prompt(app, &turn->answer[1], &turn->answer[0], 0);
 	if (!e)
 		*started = 1;
 	return e;
@@ -1622,7 +1544,7 @@ app_advance (struct app *app)
 
 	struct prompt *prompt = app_pop_prompt(app);
 	if (prompt) {
-		int e = app_start_prompt(app, prompt->text[0], prompt->text[1], 1);
+		int e = app_start_prompt(app, &prompt->text, &prompt->text, 1);
 		prompt_destroy(&prompt);
 		if (e) {
 			fprintf(stderr, "cannot start request pair: %s\n", strerror(e));
@@ -1669,17 +1591,8 @@ app_maybe_finish (struct app *app)
 
 	if (!app->model[0].error && !app->model[1].error) {
 		for (size_t i = 0; i < 2; ++i) {
-			turn->answer[i] = buf_take(&app->model[i].answer);
-			turn->reasoning[i] = buf_take(&app->model[i].reasoning);
-			if (!turn->answer[i])
-				turn->answer[i] = strdup("");
-			if (!turn->reasoning[i])
-				turn->reasoning[i] = strdup("");
-			if (!turn->answer[i] || !turn->reasoning[i]) {
-				turn_destroy(&turn);
-				app_fail(app, ENOMEM);
-				return;
-			}
+			turn->answer[i] = dstr_move(&app->model[i].answer);
+			turn->reasoning[i] = dstr_move(&app->model[i].reasoning);
 		}
 		list_append(&app->history, &turn->hook);
 		app_turn_committed(app, turn);
@@ -1713,11 +1626,7 @@ app_queue_prompt (struct app *app,
 		return 0;
 	}
 
-	char *str = strndup(text, len);
-	if (!str)
-		return ENOMEM;
-	struct prompt *prompt = prompt_create(str, str);
-	free(str);
+	struct prompt *prompt = prompt_create(text, len);
 	if (!prompt)
 		return ENOMEM;
 	list_append(&app->prompts, &prompt->hook);
@@ -1739,9 +1648,8 @@ app_stdin_event (struct loop     *loop,
 	for (;;) {
 		ssize_t n = read(STDIN_FILENO, data, sizeof data);
 		if (n > 0) {
-			int e = buf_append(&app->stdin_buf, data, (size_t)n);
-			if (e)
-				return e;
+			if (!dstr_cat_n(&app->stdin_buf, data, (size_t)n))
+				return ENOMEM;
 		} else if (!n) {
 			app->stdin_eof = 1;
 			break;
@@ -1754,10 +1662,12 @@ app_stdin_event (struct loop     *loop,
 		}
 	}
 
+	char const *input = dstr_get(&app->stdin_buf);
+	size_t input_len = dstr_len(&app->stdin_buf);
 	size_t used = 0;
-	while (used < app->stdin_buf.len) {
-		char *line = app->stdin_buf.data + used;
-		char *nl = memchr(line, '\n', app->stdin_buf.len - used);
+	while (used < input_len) {
+		char const *line = input + used;
+		char const *nl = memchr(line, '\n', input_len - used);
 		if (!nl)
 			break;
 		size_t len = (size_t)(nl - line);
@@ -1766,18 +1676,61 @@ app_stdin_event (struct loop     *loop,
 			return e;
 		used += len + 1;
 	}
-	if (used)
-		buf_consume(&app->stdin_buf, used);
+	dstr_erase(&app->stdin_buf, 0, used);
 
-	if (app->stdin_eof && app->stdin_buf.len) {
-		int e = app_queue_prompt(app, app->stdin_buf.data, app->stdin_buf.len);
+	size_t rest = dstr_len(&app->stdin_buf);
+	if (app->stdin_eof && rest) {
+		int e = app_queue_prompt(app, dstr_get(&app->stdin_buf), rest);
 		if (e)
 			return e;
-		buf_reset(&app->stdin_buf);
+		dstr_clear(&app->stdin_buf);
 	}
 
 	app_advance(app);
 	return 0;
+}
+
+static struct template_probe
+template_probe (struct app *app,
+                size_t      index)
+{
+	return (struct template_probe){
+		.response = DSTR_INIT,
+		.app = app,
+		.rapid_base = DSTR_INIT,
+		.index = index
+	};
+}
+
+static struct model_run
+model_run (struct app *app,
+           size_t      index)
+{
+	return (struct model_run){
+		.sse = sse(model_sse_event, &app->model[index]),
+		.answer = DSTR_INIT,
+		.reasoning = DSTR_INIT,
+		.tail = DSTR_INIT,
+		.app = app,
+		.index = index
+	};
+}
+
+static struct rapid_model
+rapid_model (struct app *app,
+             size_t      index)
+{
+	return (struct rapid_model){
+		.sse = sse(rapid_sse_event, &app->rapid[index]),
+		.response = DSTR_INIT,
+		.base = DSTR_INIT,
+		.emitted = DSTR_INIT,
+		.chunk = DSTR_INIT,
+		.answer = DSTR_INIT,
+		.tail = DSTR_INIT,
+		.app = app,
+		.index = index
+	};
 }
 
 static int
@@ -1785,7 +1738,15 @@ app_init (struct app           *app,
           struct app_cfg const *cfg)
 {
 	*app = (struct app){
+		.probe = { template_probe(app, 0), template_probe(app, 1) },
+		.model = { model_run(app, 0), model_run(app, 1) },
+		.rapid = { rapid_model(app, 0), rapid_model(app, 1) },
 		.cfg = *cfg,
+		.stdin_buf = DSTR_INIT,
+		.bearer = DSTR_INIT,
+		.generation_tail = { DSTR_INIT, DSTR_INIT },
+		.reasoning_tail = { DSTR_INIT, DSTR_INIT },
+		.transition = { DSTR_INIT, DSTR_INIT },
 		.stdin_flags = -1
 	};
 	app->stdin_ref.fd = -1;
@@ -1796,30 +1757,14 @@ app_init (struct app           *app,
 	if (e)
 		return e;
 
-	if (cfg->deepinfra_key) {
-		static char const prefix[] = "Authorization: Bearer ";
-		struct buf bearer = {0};
-		e = buf_append(&bearer, prefix, sizeof prefix - 1);
-		e = e ? e : buf_append(&bearer, cfg->deepinfra_key,
-		                       strlen(cfg->deepinfra_key));
-		app->bearer = buf_take(&bearer);
-		if (e)
-			return e;
-	}
+	if (cfg->deepinfra_key &&
+	    !dstr_printf(&app->bearer, "Authorization: Bearer %s",
+	                 cfg->deepinfra_key))
+		return ENOMEM;
 
 	e = http_init(&app->http, &app->loop);
 	if (e)
 		return e;
-
-	for (size_t i = 0; i < 2; ++i) {
-		app->model[i].app = app;
-		app->model[i].index = i;
-		app->probe[i].app = app;
-		app->probe[i].index = i;
-		app->rapid[i].app = app;
-		app->rapid[i].index = i;
-		sse_init(&app->model[i].sse, model_sse_event, &app->model[i]);
-	}
 
 	if (cfg->prompt) {
 		app->stdin_eof = 1;
@@ -1849,14 +1794,14 @@ app_fini (struct app *app)
 			http_cancel(app->http, &app->rapid[i].request);
 		if (app->probe[i].request)
 			http_cancel(app->http, &app->probe[i].request);
-		buf_fini(&app->probe[i].response);
-		free(app->probe[i].rapid_base);
+		dstr_cleanup(&app->probe[i].response);
+		dstr_cleanup(&app->probe[i].rapid_base);
 		model_reset(&app->model[i]);
 		sse_fini(&app->model[i].sse);
 		rapid_reset_turn(&app->rapid[i]);
-		free(app->generation_tail[i]);
-		free(app->reasoning_tail[i]);
-		free(app->transition[i]);
+		dstr_cleanup(&app->generation_tail[i]);
+		dstr_cleanup(&app->reasoning_tail[i]);
+		dstr_cleanup(&app->transition[i]);
 	}
 
 	turn_destroy(&app->pending);
@@ -1874,8 +1819,8 @@ app_fini (struct app *app)
 		turn_destroy(&turn);
 	}
 
-	buf_fini(&app->stdin_buf);
-	free(app->bearer);
+	dstr_cleanup(&app->stdin_buf);
+	dstr_cleanup(&app->bearer);
 	if (app->stdin_ref.fd >= 0)
 		loop_unwatch(&app->loop, &app->stdin_ref);
 	if (app->stdin_flags >= 0)

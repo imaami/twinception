@@ -22,8 +22,9 @@ server that gives a model running in `llama-server` a tool for asking another AI
 ## Build
 
 ```sh
-make        # builds twinception and askai
-make check
+make            # builds twinception and askai
+make check      # end-to-end tests of both, plus the dstr trials
+make check-dstr # only the dstr trials
 ```
 
 ## Ordinary whole-turn swapping
@@ -334,4 +335,36 @@ MCP server:
       --tool-name NAME      tool name (default ask_ai)
       --tool-description TEXT
   -v, --verbose             log every tool call
+```
+
+## dstr
+
+Strings are handled with `dstr` ([`src/dstr.h`](src/dstr.h)), a dynamic string
+with Short String Optimization.  A `struct dstr` is a value, not a handle: a
+string that fits in the object (23 bytes on 64-bit targets by default) lives in
+place, and a longer one in a heap buffer allocated in 256-byte blocks, which is
+wiped before it is freed.  An all-zero object is *not* an empty string;
+initialize every object with `dstr()` or `DSTR_INIT`.
+
+A `dstr` holds UTF-8 text only; anything in another encoding is converted at
+the boundary before it goes in (the library doesn't validate this yet).  The
+null character U+0000 is valid UTF-8, and since a `dstr` keeps its own length,
+its content may contain nulls: `dstr_len()` counts every byte, while
+`dstr_get()` read as a C string stops at the first null.
+
+The object size can be chosen per translation unit by defining `DSTR_OBJ_SIZE`
+(a multiple of `sizeof (uintptr_t)`, from `3 * sizeof (uintptr_t)` to 128)
+before including `dstr.h`.  The library functions in `dstr.c` take the object
+size at run time, so translation units that use different sizes link against
+the same `dstr.c.o`.
+
+The test trials live in [`tests/dstr`](tests/dstr): API contracts, a boundary
+sweep and a randomized model check at every legal object size, allocation
+failure injection, header hygiene, big-endian and 32-bit targets under
+qemu-user, and constant folding of short literals.
+
+```sh
+tests/dstr/run.sh                        # every trial, with clang and gcc
+tests/dstr/run.sh -l 03 -t gcc -S address,undefined
+tests/dstr/run.sh -h                     # all options
 ```

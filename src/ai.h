@@ -4,8 +4,7 @@
 
 #include <stddef.h>
 
-#include "buf.h"
-
+struct dstr;
 struct json_object;
 
 enum ai_protocol {
@@ -34,15 +33,16 @@ ai_request (struct ai_endpoint const *ep,
             char const               *prompt);
 
 /**
- * Turn an upstream HTTP response into tool output.  @p *failed is set when
- * @p text explains an error instead of carrying an answer.
+ * Turn an upstream HTTP response into tool output in @p text, which must start
+ * empty.  @p *failed is set when @p text explains an error instead of carrying
+ * an answer.
  */
 extern int
 ai_response (enum ai_protocol  protocol,
              long              status,
              char const       *body,
              size_t            len,
-             struct buf       *text,
+             struct dstr      *text,
              bool             *failed);
 
 #endif /* TWINCEPTION_SRC_AI_H_ */

@@ -2,27 +2,27 @@
 #include <errno.h>
 #include <string.h>
 
+#include "dstr.h"
 #include "sse.h"
 
 static int
 sse_dispatch (struct sse *sse)
 {
-	if (!sse->data.len)
+	size_t len = dstr_len(&sse->data);
+	if (!len)
 		return 0;
 
-	if (sse->data.data[sse->data.len - 1] == '\n') {
-		--sse->data.len;
-		sse->data.data[sse->data.len] = '\0';
-	}
+	if (dstr_get(&sse->data)[len - 1] == '\n')
+		dstr_erase(&sse->data, --len, 1);
 
-	int e = sse->event(sse->data.data, sse->data.len, sse->user);
-	buf_reset(&sse->data);
+	int e = sse->event(dstr_get(&sse->data), len, sse->user);
+	dstr_clear(&sse->data);
 	return e;
 }
 
 static int
 sse_line (struct sse *sse,
-          char       *line,
+          char const *line,
           size_t      len)
 {
 	if (len && line[len - 1] == '\r')
@@ -41,16 +41,17 @@ sse_line (struct sse *sse,
 		--len;
 	}
 
-	int e = buf_append(&sse->data, line, len);
-	return e ? e : buf_append_char(&sse->data, '\n');
+	return dstr_cat_n(&sse->data, line, len) &&
+	       dstr_cat_n(&sse->data, "\n", 1) ? 0 : ENOMEM;
 }
 
-void
-sse_init (struct sse *sse,
-          sse_event_cb *event,
-          void         *user)
+struct sse
+sse (sse_event_cb *event,
+     void         *user)
 {
-	*sse = (struct sse){
+	return (struct sse){
+		.input = DSTR_INIT,
+		.data = DSTR_INIT,
 		.event = event,
 		.user = user
 	};
@@ -61,14 +62,16 @@ sse_feed (struct sse *sse,
           void const *data,
           size_t      len)
 {
-	int e = buf_append(&sse->input, data, len);
-	if (e)
-		return e;
+	if (!dstr_cat_n(&sse->input, data, len))
+		return ENOMEM;
 
+	char const *input = dstr_get(&sse->input);
+	size_t input_len = dstr_len(&sse->input);
 	size_t used = 0;
-	while (used < sse->input.len) {
-		char *line = sse->input.data + used;
-		char *nl = memchr(line, '\n', sse->input.len - used);
+	int e = 0;
+	while (used < input_len) {
+		char const *line = input + used;
+		char const *nl = memchr(line, '\n', input_len - used);
 		if (!nl)
 			break;
 
@@ -79,25 +82,24 @@ sse_feed (struct sse *sse,
 			break;
 	}
 
-	if (used)
-		buf_consume(&sse->input, used);
+	dstr_erase(&sse->input, 0, used);
 	return e;
 }
 
 int
 sse_finish (struct sse *sse)
 {
-	int e = 0;
-	if (sse->input.len)
-		e = sse_line(sse, sse->input.data, sse->input.len);
-	buf_reset(&sse->input);
+	size_t len = dstr_len(&sse->input);
+	int e = len ? sse_line(sse, dstr_get(&sse->input), len) : 0;
+	dstr_clear(&sse->input);
 	return e ? e : sse_dispatch(sse);
 }
 
 void
 sse_fini (struct sse *sse)
 {
-	buf_fini(&sse->data);
-	buf_fini(&sse->input);
-	*sse = (struct sse){0};
+	dstr_cleanup(&sse->data);
+	dstr_cleanup(&sse->input);
+	sse->event = nullptr;
+	sse->user = nullptr;
 }

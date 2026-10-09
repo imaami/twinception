@@ -13,7 +13,7 @@
 #include <time.h>
 
 #include "ai.h"
-#include "buf.h"
+#include "dstr.h"
 #include "http.h"
 #include "jb.h"
 #include "list.h"
@@ -60,14 +60,15 @@ struct target {
 
 struct mcp_call {
 	struct list          hook;
-	struct buf           response;
+	struct dstr          response;
+	struct dstr          session;
 	struct target        to;
 	struct timespec      start;
 	struct mcp          *mcp;
 	struct http_request *request;
 	struct mcp_call    **owner;
-	char                *session;
 	bool                 overflow;
+	bool                 has_session;  /* Mcp-Session-Id sent, maybe empty */
 };
 
 struct mcp {
@@ -198,7 +199,7 @@ tool_result (char const *text,
 {
 	struct json_object *result = jb_object("content", jb_list(jb_object(
 		"type", json_object_new_string("text"),
-		"text", json_object_new_string_len(text ? text : "", (int)len),
+		"text", json_object_new_string_len(text, (int)len),
 		nullptr)), nullptr);
 	if (failed && !jb_set(result, "isError", json_object_new_boolean(1))) {
 		json_object_put(result);
@@ -212,8 +213,8 @@ call_free (struct mcp_call *call)
 {
 	list_del(&call->hook);
 	json_object_put(call->to.id);
-	buf_fini(&call->response);
-	free(call->session);
+	dstr_cleanup(&call->response);
+	dstr_cleanup(&call->session);
 	free(call);
 }
 
@@ -223,11 +224,11 @@ call_write (char const *data,
             void       *user)
 {
 	struct mcp_call *call = user;
-	if (len > MAX_RESPONSE - call->response.len) {
+	if (len > MAX_RESPONSE - dstr_len(&call->response)) {
 		call->overflow = true;
 		return 0;
 	}
-	return buf_append(&call->response, data, len) ? 0 : len;
+	return dstr_cat_n(&call->response, data, len) ? len : 0;
 }
 
 static void
@@ -240,37 +241,36 @@ call_done (CURLcode    result,
 	struct mcp *mcp = call->mcp;
 	call->request = nullptr;
 
-	struct buf text = {0};
+	dstr_auto text = DSTR_INIT;
 	bool failed = true;
-	int e;
+	bool ok;
 	if (result == CURLE_OK)
-		e = ai_response(mcp->ep->protocol, status,
-		                call->response.data ? call->response.data : "",
-		                call->response.len, &text, &failed);
+		ok = !ai_response(mcp->ep->protocol, status, dstr_get(&call->response),
+		                  dstr_len(&call->response), &text, &failed);
 	else if (call->overflow)
-		e = buf_printf(&text, "Upstream response exceeds %d MiB.",
-		               MAX_RESPONSE >> 20);
+		ok = dstr_printf(&text, "Upstream response exceeds %d MiB.",
+		                 MAX_RESPONSE >> 20);
 	else if (result == CURLE_OPERATION_TIMEDOUT)
-		e = buf_printf(&text, "Upstream request timed out after %.0f s.",
-		               elapsed(&call->start));
+		ok = dstr_printf(&text, "Upstream request timed out after %.0f s.",
+		                 elapsed(&call->start));
 	else
-		e = buf_printf(&text, "Upstream request failed: %s%s%s",
-		               curl_easy_strerror(result),
-		               curl_error && *curl_error ? ": " : "",
-		               curl_error ? curl_error : "");
+		ok = dstr_printf(&text, "Upstream request failed: %s%s%s",
+		                 curl_easy_strerror(result),
+		                 curl_error && *curl_error ? ": " : "",
+		                 curl_error ? curl_error : "");
 
-	if (!e && failed)
+	char const *str = dstr_get(&text);
+	size_t len = dstr_len(&text);
+	if (ok && failed)
 		fprintf(stderr, "askai: tool call failed after %.1f s: %.*s\n",
-		        elapsed(&call->start), (int)(text.len < 300 ? text.len : 300),
-		        text.data);
-	else if (!e && mcp->verbose)
+		        elapsed(&call->start), (int)(len < 300 ? len : 300), str);
+	else if (ok && mcp->verbose)
 		fprintf(stderr, "askai: tool call answered after %.1f s (%zu bytes)\n",
-		        elapsed(&call->start), text.len);
+		        elapsed(&call->start), len);
 
 	*call->owner = nullptr;
-	send_result(mcp, &call->to,
-	            e ? nullptr : tool_result(text.data, text.len, failed), nullptr);
-	buf_fini(&text);
+	send_result(mcp, &call->to, ok ? tool_result(str, len, failed) : nullptr,
+	            nullptr);
 	call_free(call);
 }
 
@@ -309,7 +309,7 @@ tools_call (struct mcp             *mcp,
 	                                         prompt);
 	char const *body = request
 		? json_object_to_json_string_ext(request, JB_WIRE) : nullptr;
-	struct mcp_call *call = body ? calloc(1, sizeof *call) : nullptr;
+	struct mcp_call *call = body ? malloc(sizeof *call) : nullptr;
 	if (!call) {
 		json_object_put(request);
 		send_error(to, 500, INTERNAL_ERROR, "Out of memory", nullptr);
@@ -317,16 +317,18 @@ tools_call (struct mcp             *mcp,
 	}
 
 	*call = (struct mcp_call){
+		.response = DSTR_INIT,
+		.session = DSTR_INIT,
 		.to = *to,
 		.mcp = mcp,
 		.owner = p_call,
-		.session = meta->session ? strdup(meta->session) : nullptr
+		.has_session = meta->session
 	};
 	json_object_get(call->to.id);
 	clock_gettime(CLOCK_MONOTONIC, &call->start);
 	list_append(&mcp->calls, &call->hook);
 
-	int e = meta->session && !call->session ? ENOMEM
+	int e = meta->session && !dstr_cat(&call->session, meta->session) ? ENOMEM
 		: http_post_json(mcp->http, mcp->ep->url, body, mcp->ep->headers,
 		                 mcp->ep->timeout_ms, call_write, call_done, call,
 		                 &call->request);
@@ -380,7 +382,8 @@ cancel (struct mcp            *mcp,
 	struct list *tmp;
 	list_foreach_safe (node, tmp, &mcp->calls) {
 		struct mcp_call *call = container_of(node, struct mcp_call, hook);
-		if (!same(call->session, meta->session) ||
+		if (!same(call->has_session ? dstr_get(&call->session) : nullptr,
+		          meta->session) ||
 		    !json_object_equal(call->to.id, id))
 			continue;
 

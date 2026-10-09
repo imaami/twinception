@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #include "ai.h"
-#include "buf.h"
+#include "dstr.h"
 #include "http.h"
 #include "httpd.h"
 #include "jb.h"
@@ -210,9 +210,9 @@ main (int   argc,
 	};
 	struct mcp_tool tool = { .name = "ask_ai" };
 	struct httpd_cfg hcfg = { .listen = "127.0.0.1:8090" };
-	struct buf url = {0};
-	struct buf auth = {0};
-	struct buf description = {0};
+	dstr_auto url = DSTR_INIT;
+	dstr_auto auth = DSTR_INIT;
+	dstr_auto description = DSTR_INIT;
 	char const *key_env = nullptr;
 	bool verbose = false;
 	int status = 2;
@@ -360,16 +360,16 @@ main (int   argc,
 			goto out;
 		}
 		bool gemini = ep.protocol == AI_GEMINI;
-		if (buf_printf(&url, "%s%s%s", protocols[ep.protocol].url,
-		               gemini ? ep.model : "", gemini ? ":generateContent" : ""))
+		if (!dstr_printf(&url, "%s%s%s", protocols[ep.protocol].url,
+		                 gemini ? ep.model : "", gemini ? ":generateContent" : ""))
 			goto oom;
-		ep.url = url.data;
+		ep.url = dstr_get(&url);
 	}
 
 	if (key && !has_header(headers, prefix)) {
-		if (buf_printf(&auth, "%s%s", prefix, key))
+		if (!dstr_printf(&auth, "%s%s", prefix, key))
 			goto oom;
-		headers[n_headers++] = auth.data;
+		headers[n_headers++] = dstr_get(&auth);
 	}
 	if (ep.protocol == AI_ANTHROPIC && !has_header(headers, "anthropic-version:"))
 		headers[n_headers++] = "anthropic-version: 2023-06-01";
@@ -378,16 +378,16 @@ main (int   argc,
 	ep.headers = headers;
 
 	if (!tool.description) {
-		if (buf_printf(&description,
-		               "Ask %s%s a question or give it a task, and get its "
-		               "answer. It cannot see this conversation, your files or "
-		               "your tools, so write a complete, self-contained prompt. "
-		               "Use it for a second opinion, for hard problems, or for "
-		               "knowledge you lack.",
-		               ep.model ? "the AI model " : "another AI model",
-		               ep.model ? ep.model : ""))
+		if (!dstr_printf(&description,
+		                 "Ask %s%s a question or give it a task, and get its "
+		                 "answer. It cannot see this conversation, your files or "
+		                 "your tools, so write a complete, self-contained prompt. "
+		                 "Use it for a second opinion, for hard problems, or for "
+		                 "knowledge you lack.",
+		                 ep.model ? "the AI model " : "another AI model",
+		                 ep.model ? ep.model : ""))
 			goto oom;
-		tool.description = description.data;
+		tool.description = dstr_get(&description);
 	}
 
 	hcfg.origins = origins;
@@ -400,9 +400,6 @@ oom:
 	fputs("askai: out of memory\n", stderr);
 	status = 1;
 out:
-	buf_fini(&description);
-	buf_fini(&auth);
-	buf_fini(&url);
 	json_object_put(ep.extra);
 	json_object_put(ep.temperature);
 	free(origins);
