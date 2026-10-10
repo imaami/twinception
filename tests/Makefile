@@ -3,10 +3,11 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-askai check-buf check-dstr check-load \
-        check-twinception load load-build
+.PHONY: default check check-askai check-buf check-dstr check-handle \
+        check-load check-twinception load load-build
 default:; @:
-check: | check-twinception check-askai check-buf check-dstr check-load
+check: | check-twinception check-askai check-buf check-handle check-dstr \
+         check-load
 
 # Nothing below this comment is defined when tab-completing.
 
@@ -48,6 +49,16 @@ check-buf: $Otests/buf
 $Otests/buf: $(TEST_DIR)buf.c $(SRC_DIR)buf.c $(SRC_DIR)buf.h | $Otests
 	$(CC) $(TEST_FLAGS) -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	      -o "$@" $(filter %.c,$^)
+
+# Unit tests of the event loop's handles, which include src/loop.c to reach
+# its slot table.
+check-handle: $Otests/handle
+	$<
+
+$Otests/handle: $(TEST_DIR)handle.c $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
+                $(SRC_DIR)log.c | $Otests
+	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
+	      -o "$@" $(TEST_DIR)handle.c $(SRC_DIR)log.c
 
 # e.g. make check-dstr DSTR_CHECKFLAGS='-t gcc -S address'
 check-dstr:

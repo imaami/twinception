@@ -1813,6 +1813,7 @@ httpd_init (struct httpd            **p_httpd,
 	if (!srv || !clients) {
 		free(clients);
 		free(srv);
+		LOG(LOG_ERROR, "cannot start the server: %s", strerror(ENOMEM));
 		return ENOMEM;
 	}
 

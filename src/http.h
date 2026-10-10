@@ -31,9 +31,12 @@ struct http_metrics {
 	_Atomic uint64_t lookups[2];  /**< host lookups that failed, succeeded */
 };
 
+/** A bridge on @p loop that counts into @p metrics, whose atomic members
+ *  are valid, unless that is nullptr. */
 extern int
-http_init (struct http **p_http,
-           struct loop  *loop);
+http_init (struct http         **p_http,
+           struct loop          *loop,
+           struct http_metrics  *metrics);
 
 extern void
 http_fini (struct http **p_http);
@@ -48,9 +51,6 @@ http_fini (struct http **p_http);
 extern void
 http_resolver (struct http     *http,
                struct blockers *blockers);
-
-extern struct http_metrics const *
-http_metrics (struct http const *http);
 
 /**
  * Start an asynchronous JSON POST of the @p len bytes at @p body, on a later
@@ -75,5 +75,21 @@ http_post_json (struct http         *http,
 extern void
 http_cancel (struct http         *http,
              struct http_request **p_request);
+
+/** End @p request now with @p result, as if curl had: its done callback
+ *  reports it. */
+extern void
+http_end (struct http         *http,
+          struct http_request **p_request,
+          CURLcode              result);
+
+/**
+ * Let @p request go on after its write callback returned
+ * CURL_WRITEFUNC_PAUSE: the callback may take what curl held back before
+ * this returns, and hold it back again.  An error leaves the request to the
+ * caller to end, as with http_end().
+ */
+extern CURLcode
+http_resume (struct http_request *request);
 
 #endif /* TWINCEPTION_SRC_HTTP_H_ */

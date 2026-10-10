@@ -7,6 +7,7 @@
 #include "blocker.h"
 #include "brainstem.h"
 #include "buf.h"
+#include "home.h"
 #include "http.h"
 #include "log.h"
 #include "loop.h"
@@ -17,18 +18,22 @@
  * histogram's buckets take a pass over all of its own. */
 enum { BUDGET = 32 };
 
+/* Where a series is: those before PER_LOOP are each loop's, rendered for
+ * every loop that has them, labelled with its name. */
 enum source {
-	LOOP, HTTP, BLOCKERS, STASH, KEPT, METHODS, BRAINSTEM, LOGGER, PSI, CGROUP,
+	LOOP, STASH, KEPT, CALLS, PER_LOOP,
+	HTTP = PER_LOOP, BLOCKERS, JOBS, METHODS, BRAINSTEM, LOGGER, PSI, CGROUP,
 	SOURCES
 };
 enum kind { COUNTER, GAUGE, HISTOGRAM };
 enum scale { ONE, NS, US, PERMYRIAD };
 
-/* A series; help, given for the first of a family only, starts the family. */
+/* A series, or a loop's; help, given for the first of a family only, starts
+ * the family. */
 struct entry {
 	char const *name;
 	char const *help;
-	char const *labels;  /* within the braces, or "" */
+	char const *labels;  /* within the braces, but for a loop's, or "" */
 	uint32_t    off;     /* into its source */
 	uint8_t     source;
 	uint8_t     kind;
@@ -55,11 +60,10 @@ static struct {
 	{ 300'000'000'000, "300" },
 };
 
-#define L "loop=\"0\""
 #define LOOP_HIST(name, help, labels, field) \
-	{ name, help, L labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NS }
+	{ name, help, labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NS }
 #define WORK(help, unit, u) \
-	{ "askai_loop_step_work_max", help, L ",unit=\"" unit "\"", \
+	{ "askai_loop_step_work_max", help, "unit=\"" unit "\"", \
 	  offsetof(struct loop_metrics, work[u]), LOOP, GAUGE, ONE }
 #define METHOD(help, method, m) \
 	{ "askai_request_seconds", help, "method=\"" method "\"", \
@@ -67,9 +71,13 @@ static struct {
 #define VALUE(name, help, labels, type, field, source, kind, scale) \
 	{ name, help, labels, offsetof(type, field), source, kind, scale }
 #define STASHED(name, help, labels, field, kind, scale) \
-	VALUE(name, help, L labels, struct buf_stash_metrics, field, STASH, kind, scale)
+	VALUE(name, help, labels, struct buf_stash_metrics, field, STASH, kind, scale)
 #define KEPT(name, help, labels, field) \
-	VALUE(name, help, L labels, struct metrics_kept, field, KEPT, GAUGE, ONE)
+	VALUE(name, help, labels, struct metrics_kept, field, KEPT, GAUGE, ONE)
+#define CALLS(name, help, field) \
+	VALUE(name, help, "", struct metrics_calls, field, CALLS, COUNTER, ONE)
+#define JOBS(name, help, labels, field, kind) \
+	VALUE(name, help, labels, struct home_metrics, field, JOBS, kind, ONE)
 #define INPUT(help, input, i) \
 	VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
 	      struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
@@ -77,8 +85,8 @@ static struct {
 static struct entry const table[] = {
 	LOOP_HIST("askai_loop_turn_seconds", "Time an event loop turn took.", "", turn),
 	LOOP_HIST("askai_loop_step_seconds", "Time a step took.",
-	          ",kind=\"interactive\"", step[0]),
-	LOOP_HIST("askai_loop_step_seconds", nullptr, ",kind=\"bulk\"", step[1]),
+	          "kind=\"interactive\"", step[0]),
+	LOOP_HIST("askai_loop_step_seconds", nullptr, "kind=\"bulk\"", step[1]),
 	LOOP_HIST("askai_loop_timer_lateness_seconds", "How late a timer fired.", "",
 	          late),
 	LOOP_HIST("askai_loop_inbox_delay_seconds",
@@ -104,6 +112,21 @@ static struct entry const table[] = {
 	METHOD(nullptr, "notification", METHOD_NOTIFY),
 	METHOD(nullptr, "metrics", METHOD_METRICS),
 	METHOD(nullptr, "other", METHOD_OTHER),
+	CALLS("askai_calls_cancelled_total", "Tool calls a loop cancelled while their "
+	      "job ran: hang-ups, closed streams, notifications/cancelled, drains.",
+	      cancelled),
+	CALLS("askai_calls_dropped_total", "Job completions a loop dropped, their "
+	      "call gone (a stale handle).", dropped),
+	JOBS("askai_jobs_submitted_total", "Jobs (upstream calls) submitted to home.",
+	     "", submitted, COUNTER),
+	JOBS("askai_jobs_ended_total", "Jobs home ended: completed with the "
+	     "upstream's answer or error, cancelled, or rejected (busy, or shutting "
+	     "down).", "end=\"completed\"", completed, COUNTER),
+	JOBS("askai_jobs_ended_total", nullptr, "end=\"cancelled\"", cancelled,
+	     COUNTER),
+	JOBS("askai_jobs_ended_total", nullptr, "end=\"rejected\"", rejected, COUNTER),
+	JOBS("askai_jobs_in_flight", "Jobs home has admitted and not ended.", "",
+	     in_flight, GAUGE),
 	VALUE("askai_upstream_wait_seconds", "Time from an upstream request to its "
 	      "start in libcurl, its host's lookup included.", "", struct http_metrics,
 	      wait, HTTP, HISTOGRAM, NS),
@@ -173,19 +196,20 @@ static struct entry const table[] = {
 	STASHED("askai_stash_retained_bytes", "Buffer storage a loop keeps for reuse.", "",
 	        retained, GAUGE, ONE),
 	STASHED("askai_stash_takes_total", "Buffer storage taken: from the stash, or "
-	        "from the allocator when the stash had none.", ",result=\"hit\"", hits,
+	        "from the allocator when the stash had none.", "result=\"hit\"", hits,
 	        COUNTER, ONE),
-	STASHED("askai_stash_takes_total", nullptr, ",result=\"miss\"", misses, COUNTER,
+	STASHED("askai_stash_takes_total", nullptr, "result=\"miss\"", misses, COUNTER,
 	        ONE),
 	STASHED("askai_stash_released_bytes_total", "Buffer storage given back to the "
 	        "allocator: under memory pressure, or past twice the most its buffers "
 	        "held at once.", "", released, COUNTER, ONE),
 	KEPT("askai_spare_requests", "Finished requests a loop keeps for reuse.", "",
 	     spares),
+	KEPT("askai_spare_jobs", "Jobs a loop keeps for reuse.", "", jobs),
 	KEPT("askai_kept_bytes", "Storage a loop keeps for reuse besides its stash: "
 	     "finished requests, with their answers' text, and pooled JSON tokeners' "
-	     "string buffers.", ",kind=\"requests\"", bytes[0]),
-	KEPT("askai_kept_bytes", nullptr, ",kind=\"tokeners\"", bytes[1]),
+	     "string buffers.", "kind=\"requests\"", bytes[0]),
+	KEPT("askai_kept_bytes", nullptr, "kind=\"tokeners\"", bytes[1]),
 	STASHED("askai_memory_reliefs_total", "Reliefs of memory pressure a loop began.",
 	        "", reliefs, COUNTER, ONE),
 	STASHED("askai_memory_trims_total", "Allocator trims that ended them.", "", trims,
@@ -195,13 +219,14 @@ static struct entry const table[] = {
 };
 
 #undef INPUT
+#undef JOBS
+#undef CALLS
 #undef KEPT
 #undef STASHED
 #undef VALUE
 #undef METHOD
 #undef WORK
 #undef LOOP_HIST
-#undef L
 
 /* Append text, formatted as by printf(); false if out of memory. */
 [[gnu::format(printf, 2, 3)]]
@@ -233,85 +258,117 @@ put (struct buf *out,
  * from meanwhile. */
 static bool
 put_hist (struct buf         *out,
-          struct entry const *e,
+          char const         *name,
+          char const         *labels,
           struct hist const  *h)
 {
-	char const *sep = *e->labels ? "," : "";
+	char const *sep = *labels ? "," : "";
 	uint64_t n = 0;
 	size_t i = 0;
 	for (size_t b = 0; b < ARRAY_SIZE(bounds); ++b) {
 		for (size_t end = hist_index(bounds[b].ns); i <= end; ++i)
 			n += hist_get(&h->bucket[i]);
-		if (!put(out, "%s_bucket{%s%sle=\"%s\"} %" PRIu64 "\n", e->name, e->labels,
-		         sep, bounds[b].le, n))
+		if (!put(out, "%s_bucket{%s%sle=\"%s\"} %" PRIu64 "\n", name, labels, sep,
+		         bounds[b].le, n))
 			return false;
 	}
 	for (; i < HIST_BUCKETS; ++i)
 		n += hist_get(&h->bucket[i]);
-	char const *open = *e->labels ? "{" : "";
-	char const *close = *e->labels ? "}" : "";
+	char const *open = *labels ? "{" : "";
+	char const *close = *labels ? "}" : "";
 	return put(out, "%s_bucket{%s%sle=\"+Inf\"} %" PRIu64 "\n"
 	           "%s_sum%s%s%s %.9g\n%s_count%s%s%s %" PRIu64 "\n",
-	           e->name, e->labels, sep, n,
-	           e->name, open, e->labels, close, (double)hist_get(&h->sum) / 1e9,
-	           e->name, open, e->labels, close, n);
+	           name, labels, sep, n,
+	           name, open, labels, close, (double)hist_get(&h->sum) / 1e9,
+	           name, open, labels, close, n);
 }
 
 static bool
 put_value (struct buf             *out,
-           struct entry const     *e,
+           char const             *name,
+           char const             *labels,
+           uint16_t                scale,
            _Atomic uint64_t const *p)
 {
 	uint64_t v = hist_get(p);
-	char const *open = *e->labels ? "{" : "";
-	char const *close = *e->labels ? "}" : "";
-	switch (e->scale) {
+	char const *open = *labels ? "{" : "";
+	char const *close = *labels ? "}" : "";
+	switch (scale) {
 	case NS:
-		return put(out, "%s%s%s%s %.9f\n", e->name, open, e->labels, close,
+		return put(out, "%s%s%s%s %.9f\n", name, open, labels, close,
 		           (double)v / 1e9);
 	case US:
-		return put(out, "%s%s%s%s %.6f\n", e->name, open, e->labels, close,
+		return put(out, "%s%s%s%s %.6f\n", name, open, labels, close,
 		           (double)v / 1e6);
 	case PERMYRIAD:
-		return put(out, "%s%s%s%s %.4f\n", e->name, open, e->labels, close,
+		return put(out, "%s%s%s%s %.4f\n", name, open, labels, close,
 		           (double)v / 1e4);
 	default:
-		return put(out, "%s%s%s%s %" PRIu64 "\n", e->name, open, e->labels, close, v);
+		return put(out, "%s%s%s%s %" PRIu64 "\n", name, open, labels, close, v);
 	}
 }
 
+/* Where loop @p l's series of @p source are, if it has them. */
+static void const *
+loop_source (struct metrics_loop const *l,
+             unsigned                   source)
+{
+	void const *const at[PER_LOOP] = {
+		[LOOP] = l->loop,
+		[STASH] = l->stash,
+		[KEPT] = l->kept,
+		[CALLS] = l->calls,
+	};
+	return at[source];
+}
+
+/* The metrics are series, from @p *pos on: an entry's for each loop in turn,
+ * which only a loop's have more than one of. */
 int
 metrics_render (struct metrics_src const *src,
                 size_t                   *pos,
                 struct buf               *out)
 {
 	void const *const base[SOURCES] = {
-		[LOOP] = src->loop,
 		[HTTP] = src->http,
 		[BLOCKERS] = src->blockers,
-		[STASH] = src->stash,
-		[KEPT] = src->kept,
+		[JOBS] = src->jobs,
 		[METHODS] = src->methods,
 		[BRAINSTEM] = &brainstem_metrics,
 		[LOGGER] = &log_metrics,
 		[PSI] = hist_get(&brainstem_metrics.psi_ok) ? &brainstem_metrics : nullptr,
 		[CGROUP] = hist_get(&brainstem_metrics.cg_limit) ? &brainstem_metrics : nullptr,
 	};
-	for (unsigned cost = 0; *pos < ARRAY_SIZE(table) && cost < BUDGET; ++*pos) {
-		struct entry const *e = &table[*pos];
-		char const *at = base[e->source];
+	size_t const end = ARRAY_SIZE(table) * METRICS_LOOPS;
+	for (unsigned cost = 0; *pos < end && cost < BUDGET; ++*pos) {
+		struct entry const *e = &table[*pos / METRICS_LOOPS];
+		size_t l = *pos % METRICS_LOOPS;
+		bool looped = e->source < PER_LOOP;
+		char const *at = !looped ? l ? nullptr : base[e->source]
+		               : loop_source(&src->loops[l], e->source);
 		if (!at)
 			continue;
 		at += e->off;
-		if (e->help && !put(out, "# HELP %s %s\n# TYPE %s %s\n", e->name, e->help,
-		                    e->name, kinds[e->kind]))
+		/* A loop's series start their family at the first loop that has
+		 * them. */
+		bool first = e->help;
+		for (size_t k = 0; looped && first && k < l; ++k)
+			first = !loop_source(&src->loops[k], e->source);
+		char labels[128];
+		if (looped)
+			snprintf(labels, sizeof labels, "loop=\"%s\"%s%s", src->loops[l].name,
+			         *e->labels ? "," : "", e->labels);
+		if (first && !put(out, "# HELP %s %s\n# TYPE %s %s\n", e->name, e->help,
+		                  e->name, kinds[e->kind]))
 			return ENOMEM;
+		char const *ls = looped ? labels : e->labels;
 		bool ok = e->kind == HISTOGRAM
-		        ? put_hist(out, e, (struct hist const *)(void const *)at)
-		        : put_value(out, e, (_Atomic uint64_t const *)(void const *)at);
+		        ? put_hist(out, e->name, ls, (struct hist const *)(void const *)at)
+		        : put_value(out, e->name, ls, e->scale,
+		                    (_Atomic uint64_t const *)(void const *)at);
 		if (!ok)
 			return ENOMEM;
 		cost += e->kind == HISTOGRAM ? 8 : 1;
 	}
-	return *pos < ARRAY_SIZE(table) ? EAGAIN : 0;
+	return *pos < end ? EAGAIN : 0;
 }

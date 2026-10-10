@@ -1784,7 +1784,7 @@ app_init (struct app *app)
 	                 cfg->deepinfra_key))
 		return ENOMEM;
 
-	e = http_init(&app->http, &app->loop);
+	e = http_init(&app->http, &app->loop, nullptr);
 	if (e)
 		return e;
 

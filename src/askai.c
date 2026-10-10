@@ -14,6 +14,7 @@
 #include "brainstem.h"
 #include "buf.h"
 #include "dstr.h"
+#include "home.h"
 #include "http.h"
 #include "httpd.h"
 #include "jb.h"
@@ -69,6 +70,9 @@ usage (FILE       *out,
 	        "  -x, --extra JSON          object deep-merged into each request body;\n"
 	        "                            null members delete keys\n"
 	        "  -T, --timeout SECONDS     upstream timeout (default 600, 0 = none)\n"
+	        "      --max-calls N         upstream calls under way at most (default\n"
+	        "                            256); a tool call past those is answered at\n"
+	        "                            once as an error that says to try again\n"
 	        "\n"
 	        "MCP server:\n"
 	        "  -l, --listen ADDR         [host:]port (default 127.0.0.1:8090)\n"
@@ -79,9 +83,9 @@ usage (FILE       *out,
 	        "  -v, --verbose             log every tool call\n"
 	        "      --grace SECONDS       to finish what is under way on SIGINT,\n"
 	        "                            SIGTERM or SIGHUP (default 5)\n"
-	        "      --watchdog MS         log a turn of the event loop longer than\n"
+	        "      --watchdog MS         log a turn of an event loop longer than\n"
 	        "                            this (default 20, 0 = none)\n"
-	        "      --test-stall MS       test aid: SIGUSR2 holds the event loop in\n"
+	        "      --test-stall MS       test aid: SIGUSR2 holds each event loop in\n"
 	        "                            one turn this long\n"
 	        "      --memory-high BYTES   resident memory from which memory pressure\n"
 	        "                            is high (default: a sixteenth of RAM, or of\n"
@@ -132,13 +136,15 @@ usage (FILE       *out,
 	        "GET /metrics gives metrics in Prometheus's text format to clients\n"
 	        "on loopback that name it as localhost, 127.0.0.1 or [::1], or with\n"
 	        "the token when one is set.\n"
-	        "SIGUSR1 prints the event loop's turn and step times, its timers'\n"
+	        "SIGUSR1 prints each event loop's turn and step times, its timers'\n"
 	        "lateness and the most work a step did, since the previous SIGUSR1,\n"
-	        "to stderr.  The first SIGINT, SIGTERM or SIGHUP, unless askai\n"
-	        "started with it ignored, ends tool calls with an error, finishes\n"
-	        "other requests and exits 0; a second, or a grace period run out, or\n"
-	        "an event loop stuck, exits at once with %d.  Invalid options or\n"
-	        "environment exit 2, and a failure to start or to serve 1.\n",
+	        "to stderr: the client loop's, and home's, which runs the upstream\n"
+	        "calls, in lines that say so.  The first SIGINT, SIGTERM or SIGHUP,\n"
+	        "unless askai started with it ignored, ends tool calls with an\n"
+	        "error, finishes other requests and exits 0; a second, or a grace\n"
+	        "period run out, or an event loop stuck, exits at once with %d.\n"
+	        "Invalid options or environment exit 2, and a failure to start or\n"
+	        "to serve 1.\n",
 	        BRAINSTEM_FORCED);
 }
 
@@ -230,19 +236,20 @@ enum { MMAP_MIN = 32 << 20, TOP_PAD = 64 << 20 };
 static int top_pad = 128 << 10;
 
 /*
- * Give what the allocator keeps free back to the system (glibc): malloc_trim()
- * gives back the free pages within every arena's heaps and the top of the main
- * arena's, and freeing 64 KiB under a low threshold and pad the top of this
- * thread's arena, which malloc_trim() leaves.
+ * Give what the allocator keeps free back to the system (glibc): freeing
+ * 64 KiB under a low threshold and pad gives back the top of this thread's
+ * arena, and malloc_trim(), if @p walk, the free pages within every arena's
+ * heaps and the top of the main arena's.
  */
 static void
-trim (void)
+trim (bool walk)
 {
 	mallopt(M_TOP_PAD, 0);
 	mallopt(M_TRIM_THRESHOLD, 0);
 	void *volatile block = malloc(64 << 10);
 	free(block);
-	malloc_trim(0);
+	if (walk)
+		malloc_trim(0);
 	mallopt(M_TRIM_THRESHOLD, -1);
 	mallopt(M_TOP_PAD, top_pad);
 }
@@ -258,53 +265,89 @@ strict_commit (void)
 	return mode == '2';
 }
 
-/* What serves on the event loop's thread. */
+/* Trims change glibc's settings for the whole process, so the loops take
+ * turns: one that finds another trimming tries again a millisecond later.
+ * Nobody waits on the flag.  A walk of every arena that begins after a loop
+ * has released what it gives back finds that too, so the loop leaves the
+ * walk out of its own trim. */
+static _Atomic bool trimming;
+static _Atomic uint64_t walks;  /* begun, counted under the flag */
+
+/* What a loop thread keeps for reuse, and its reliefs of memory pressure
+ * (design section 5); first in each loop's app, which it stands for. */
+struct keep {
+	struct buf_stash   stash;
+	struct loop_step   relief;
+	struct loop_timer  age;       /* the windows of reuse */
+	struct loop_timer  retry;     /* a trim that found another under way */
+	struct mcp        *mcp;       /* what the client loop keeps besides */
+	uint64_t           released;  /* the stash's count as the relief began */
+	uint64_t           walks;     /* begun as its release ended */
+	uint64_t           phase;     /* the relief's, widened over the padding */
+};
+
+/* What runs on home: the jobs (src/home.h). */
+struct home_app {
+	struct keep               keep;
+	struct http_metrics       http;  /* here, as the client loop renders it */
+	struct home_metrics       jobs;  /* likewise */
+	struct ai_endpoint const *ep;
+	struct loop              *loop;  /* home's: the client loop's jobs go there */
+	struct home              *home;
+	uint32_t                  max;   /* jobs in flight */
+};
+
+/* What runs on the client loop: MCP over HTTP. */
 struct app {
-	struct buf_stash         stash;
-	struct loop_step         relief;
-	struct loop_timer        age;       /* the windows of reuse */
+	struct keep              keep;
+	struct home_app const   *home;
 	struct mcp_static const *st;
 	struct httpd_cfg const  *hcfg;
-	struct http             *http;
-	struct mcp              *mcp;
 	struct httpd            *httpd;
-	uint64_t                 released;  /* the stash's count as the relief
-	                                       began */
-	uint64_t                 phase;     /* the relief's, widened over the
-	                                       padding */
 };
 
 /*
  * Relieve memory pressure, in bulk steps (design section 5): free the
- * requests kept for reuse, then the stash's storage, as much of each a step
- * as its share of release work allows and as much in all as the level says;
- * then have the allocator give what is free back to the system, in a step of
- * its own, as that one call cannot be split.  It stops if the pressure clears.
+ * requests and jobs kept for reuse, then the stash's storage, as much of each
+ * a step as its share of release work allows and as much in all as the level
+ * says; then have the allocator give what is free back to the system, in a
+ * step of its own, as that one call cannot be split.  It stops if the
+ * pressure clears.
  */
 static void
 relief_step (struct loop      *loop,
              struct loop_step *step)
 {
-	struct app *app = container_of(step, struct app, relief);
-	struct buf_stash_metrics *m = &app->stash.metrics;
+	struct keep *keep = container_of(step, struct keep, relief);
+	struct buf_stash_metrics *m = &keep->stash.metrics;
 	enum buf_pressure level = atomic_load_explicit(&buf_pressure, memory_order_relaxed);
 	size_t room = loop_room(loop, LOOP_RELEASE);
 	size_t n;
-	switch (level ? app->phase : RELIEVED) {
+	switch (level ? keep->phase : RELIEVED) {
 	case RELIEVE_MCP:
-		n = mcp_relieve(app->mcp, level, room);
+		n = keep->mcp ? mcp_relieve(keep->mcp, level, room) : 0;
 		break;
 	case RELIEVE_STASH:
-		n = buf_stash_release(&app->stash, level, room);
+		n = buf_stash_release(&keep->stash, level, room);
+		keep->walks = atomic_load_explicit(&walks, memory_order_relaxed);
 		break;
 	case RELIEVE_TRIM: {
+		if (atomic_exchange_explicit(&trimming, true, memory_order_acquire)) {
+			if (loop_timer_set(loop, &keep->retry, loop->now + 1'000'000))
+				loop_ready_bulk(loop, step);
+			return;
+		}
+		bool walk = atomic_load_explicit(&walks, memory_order_relaxed) == keep->walks;
+		if (walk)
+			atomic_store_explicit(&walks, keep->walks + 1, memory_order_relaxed);
 		uint64_t start = loop_clock();
-		trim();
+		trim(walk);
 		uint64_t ns = loop_clock() - start;
-		uint64_t bytes = hist_get(&m->released) - app->released;
+		atomic_store_explicit(&trimming, false, memory_order_release);
+		uint64_t bytes = hist_get(&m->released) - keep->released;
 		hist_add(&m->trims, 1);
 		hist_add(&m->trim_ns, ns);
-		app->phase = RELIEVED;
+		keep->phase = RELIEVED;
 		/* A relief that found little to do is routine while pressure lasts. */
 		LOG(bytes || ns >= 1'000'000 ? LOG_INFO : LOG_VERBOSE, "memory pressure "
 		    "relieved: %.1f MiB of buffers released, then a trim of %.1f ms",
@@ -315,31 +358,109 @@ relief_step (struct loop      *loop,
 		return;
 	}
 	loop_work(loop, LOOP_RELEASE, n);
-	app->phase += !n;
+	keep->phase += !n;
 	loop_ready_bulk(loop, step);
+}
+
+static void
+keep_retry (struct loop       *loop,
+            struct loop_timer *timer)
+{
+	loop_ready_bulk(loop, &container_of(timer, struct keep, retry)->relief);
 }
 
 /* Begin a window of reuse, over which a relief at high pressure finds what
  * went unused: as long as the brainstem waits between reliefs. */
 static void
-app_age (struct loop       *loop,
-         struct loop_timer *timer)
+keep_age (struct loop       *loop,
+          struct loop_timer *timer)
 {
-	struct app *app = container_of(timer, struct app, age);
-	buf_stash_age(&app->stash);
-	mcp_age(app->mcp);
+	struct keep *keep = container_of(timer, struct keep, age);
+	buf_stash_age(&keep->stash);
+	if (keep->mcp)
+		mcp_age(keep->mcp);
 	(void)loop_timer_set(loop, timer, loop->now + BRAINSTEM_RELIEF_MS * 1'000'000ULL);
 }
 
+/* The loop's app, whose keep comes first. */
 static void
-app_relieve (void        *ctx,
-             struct loop *loop)
+keep_relieve (void        *ctx,
+              struct loop *loop)
 {
-	struct app *app = ctx;
-	app->phase = RELIEVE_MCP;
-	app->released = hist_get(&app->stash.metrics.released);
-	hist_add(&app->stash.metrics.reliefs, 1);
-	loop_ready_bulk(loop, &app->relief);
+	struct keep *keep = ctx;
+	keep->phase = RELIEVE_MCP;
+	keep->released = hist_get(&keep->stash.metrics.released);
+	hist_add(&keep->stash.metrics.reliefs, 1);
+	loop_ready_bulk(loop, &keep->relief);
+}
+
+/* Give the calling thread @p keep's stash, and begin its windows of reuse. */
+static int
+keep_start (struct keep *keep,
+            struct loop *loop)
+{
+	keep->relief.fn = relief_step;
+	keep->age.fn = keep_age;
+	keep->retry.fn = keep_retry;
+	keep->phase = RELIEVED;
+	buf_stash_attach(&keep->stash);
+	return loop_timer_set(loop, &keep->age,
+	                      loop->now + BRAINSTEM_RELIEF_MS * 1'000'000ULL);
+}
+
+/* Give back all that @p keep's stash keeps, and leave the thread without. */
+static void
+keep_stop (struct keep *keep,
+           struct loop *loop)
+{
+	loop_unready(&keep->relief);
+	loop_timer_stop(loop, &keep->age);
+	loop_timer_stop(loop, &keep->retry);
+	(void)buf_stash_release(&keep->stash, BUF_CRITICAL, SIZE_MAX);
+	buf_stash_attach(nullptr);
+}
+
+static int
+home_app_start (void            *ctx,
+                struct loop     *loop,
+                struct blockers *blockers)
+{
+	struct home_app *app = ctx;
+	app->loop = loop;
+	int e = keep_start(&app->keep, loop);
+	if (!e)
+		e = home_init(&app->home, loop, blockers, app->ep, app->max, &app->jobs,
+		              &app->http);
+	if (e)
+		LOG(LOG_ERROR, "cannot start home: %s", strerror(e));
+	return e;
+}
+
+static void
+home_app_drain (void        *ctx,
+                struct loop *loop,
+                uint64_t     deadline)
+{
+	(void)loop;
+	(void)deadline;
+	home_drain(((struct home_app *)ctx)->home);
+}
+
+static void
+home_app_alone (void        *ctx,
+                struct loop *loop)
+{
+	(void)loop;
+	home_alone(((struct home_app *)ctx)->home);
+}
+
+static void
+home_app_stop (void        *ctx,
+               struct loop *loop)
+{
+	struct home_app *app = ctx;
+	home_fini(&app->home);
+	keep_stop(&app->keep, loop);
 }
 
 static int
@@ -348,25 +469,24 @@ app_start (void            *ctx,
            struct blockers *blockers)
 {
 	struct app *app = ctx;
-	app->relief.fn = relief_step;
-	app->age.fn = app_age;
-	app->phase = RELIEVED;
-	buf_stash_attach(&app->stash);
-	int e = http_init(&app->http, loop);
-	if (!e) {
-		http_resolver(app->http, blockers);
-		e = mcp_init(&app->mcp, loop, app->http, app->st, &(struct metrics_src){
-			.loop = loop->metrics,
-			.http = http_metrics(app->http),
-			.blockers = blockers_metrics(blockers),
-			.stash = &app->stash.metrics
-		});
-	}
+	struct home_app const *home = app->home;
+	struct metrics_src const metrics = {
+		.loops = {
+			{ .name = "1", .loop = loop->metrics, .stash = &app->keep.stash.metrics },
+			{ .name = "home", .loop = home->loop->metrics,
+			  .stash = &home->keep.stash.metrics },
+		},
+		.http = &home->http,
+		.blockers = blockers_metrics(blockers),
+		.jobs = &home->jobs
+	};
+	int e = keep_start(&app->keep, loop);
+	if (!e)
+		e = mcp_init(&app->keep.mcp, loop, home->loop, app->st, &metrics);
 	if (e)
-		LOG(LOG_ERROR, "%s", strerror(e));
-	else if (!(e = httpd_init(&app->httpd, loop, mcp_app(app->mcp), app->hcfg)))
-		e = loop_timer_set(loop, &app->age,
-		                   loop->now + BRAINSTEM_RELIEF_MS * 1'000'000ULL);
+		LOG(LOG_ERROR, "cannot start the client loop: %s", strerror(e));
+	else
+		e = httpd_init(&app->httpd, loop, mcp_app(app->keep.mcp), app->hcfg);
 	return e;
 }
 
@@ -378,7 +498,7 @@ app_drain (void        *ctx,
 	(void)loop;
 	struct app *app = ctx;
 	httpd_drain(app->httpd, deadline);
-	mcp_drain(app->mcp);
+	mcp_drain(app->keep.mcp);
 }
 
 static void
@@ -387,21 +507,19 @@ app_stop (void        *ctx,
 {
 	struct app *app = ctx;
 	httpd_fini(&app->httpd);
-	mcp_fini(&app->mcp);
-	http_fini(&app->http);
-	loop_unready(&app->relief);
-	loop_timer_stop(loop, &app->age);
-	(void)buf_stash_release(&app->stash, BUF_CRITICAL, SIZE_MAX);
-	buf_stash_attach(nullptr);
+	mcp_fini(&app->keep.mcp);
+	keep_stop(&app->keep, loop);
 }
 
-/* Serve until shut down; returns the exit status. */
+/* Serve until shut down, with at most @p calls jobs in flight; returns the
+ * exit status. */
 static int
 serve (struct ai_endpoint const *ep,
        struct mcp_tool const    *tool,
        struct mcp_limits const  *mlim,
        struct httpd_cfg const   *hcfg,
-       struct brainstem_cfg     *bcfg)
+       struct brainstem_cfg     *bcfg,
+       uint32_t                  calls)
 {
 	/* Keep what is freed for reuse, and give memory back to the system only
 	 * under memory pressure (design section 5).  glibc would otherwise map
@@ -437,15 +555,28 @@ serve (struct ai_endpoint const *ep,
 		fprintf(stderr, "askai: %s\n", strerror(e));
 		return 1;
 	}
+	struct home_app home = {
+		.ep = ep,
+		.max = calls
+	};
 	struct app app = {
+		.home = &home,
 		.st = st,
 		.hcfg = hcfg
 	};
-	bcfg->app = (struct brainstem_app){
+	bcfg->home = (struct brainstem_app){
+		.ctx = &home,
+		.start = home_app_start,
+		.drain = home_app_drain,
+		.relieve = keep_relieve,
+		.alone = home_app_alone,
+		.stop = home_app_stop
+	};
+	bcfg->client = (struct brainstem_app){
 		.ctx = &app,
 		.start = app_start,
 		.drain = app_drain,
-		.relieve = app_relieve,
+		.relieve = keep_relieve,
 		.stop = app_stop
 	};
 	int status = brainstem_run(bcfg);
@@ -463,7 +594,8 @@ main (int   argc,
 		OPT_BODY_BUDGET, OPT_CLIENT_BUDGET, OPT_MAX_DEPTH, OPT_MAX_VALUES,
 		OPT_MAX_MEMBERS, OPT_SSE_KEEPALIVE, OPT_MAX_CLIENT_CONNS,
 		OPT_IDLE_TIMEOUT, OPT_OUTPUT_PAUSE, OPT_MAX_OUTPUT, OPT_SEND_TIMEOUT,
-		OPT_GRACE, OPT_WATCHDOG, OPT_TEST_STALL, OPT_MEMORY_HIGH, OPT_TEST_PRESSURE
+		OPT_GRACE, OPT_WATCHDOG, OPT_TEST_STALL, OPT_MEMORY_HIGH, OPT_TEST_PRESSURE,
+		OPT_MAX_CALLS
 	};
 	static struct option const options[] = {
 		{ "protocol",         required_argument, nullptr, 'p' },
@@ -476,6 +608,7 @@ main (int   argc,
 		{ "max-tokens",       required_argument, nullptr, 'n' },
 		{ "extra",            required_argument, nullptr, 'x' },
 		{ "timeout",          required_argument, nullptr, 'T' },
+		{ "max-calls",        required_argument, nullptr, OPT_MAX_CALLS },
 		{ "listen",           required_argument, nullptr, 'l' },
 		{ "allow-origin",     required_argument, nullptr, 'o' },
 		{ "tool-name",        required_argument, nullptr, OPT_TOOL_NAME },
@@ -526,6 +659,7 @@ main (int   argc,
 	dstr_auto auth = DSTR_INIT;
 	dstr_auto description = DSTR_INIT;
 	char const *key_env = nullptr;
+	uint32_t calls = 256;
 	bool verbose = false;
 	int status = 2;
 
@@ -700,6 +834,9 @@ main (int   argc,
 		case OPT_TEST_PRESSURE:
 			bcfg.pressure = optarg;
 			break;
+		case OPT_MAX_CALLS:
+			ok = parse_u32(optarg, 1, 1'000'000, &calls);
+			break;
 		case 'h':
 			usage(stdout, argv[0]);
 			status = 0;
@@ -800,7 +937,7 @@ main (int   argc,
 	char const *token = getenv("ASKAI_TOKEN");
 	hcfg.token = token && *token ? token : nullptr;
 	log_threshold = verbose ? LOG_VERBOSE : LOG_INFO;
-	status = serve(&ep, &tool, &mlim, &hcfg, &bcfg);
+	status = serve(&ep, &tool, &mlim, &hcfg, &bcfg, calls);
 	goto out;
 
 oom:

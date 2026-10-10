@@ -982,6 +982,32 @@ enum burst_mode { BURST_MALFORMED, BURST_HOSTILE, BURST_DENSE };
 enum { BURST_OPENED, BURST_ANSWERED, BURST_REFUSED, BURST_SENT, BURST_OK };
 static_assert((int)DENSE_KINDS <= (int)HOSTILE_KINDS);
 
+/* Send a JSON body of @p len bytes whole on @p fd, after its head, unless
+ * the stop cuts it short; whether it went whole. */
+static bool
+burst_send (struct bg  *b,
+            int         fd,
+            char const *body,
+            size_t      len)
+{
+	char head[160];
+	int k = snprintf(head, sizeof head, "POST /mcp HTTP/1.1\r\nHost: x\r\n"
+	                 "Content-Type: application/json\r\n"
+	                 "Accept: application/json, text/event-stream\r\n"
+	                 "Content-Length: %zu\r\n\r\n", len);
+	b->t->send(fd, head, (size_t)k);
+	size_t off = 0;
+	while (off < len && !atomic_load(&g_stop)) {
+		ssize_t s = b->t->send(fd, body + off, len - off);
+		if (s > 0)
+			off += (size_t)s;
+		else if (s < 0 && errno != EINTR &&
+		         !(errno == EAGAIN && wait_writable(fd, 1000)))
+			break;
+	}
+	return off == len;
+}
+
 /* Back-to-back connections, each carrying one malformed request, or one
  * hostile or dense JSON body (rotating through the kinds).  A hostile tool
  * call hangs up once its event stream opens, which cancels it. */
@@ -1009,34 +1035,19 @@ burst_thread (void *arg)
 		}
 		b->n[BURST_OPENED]++;
 		uint64_t t0 = now_ns();
-		if (b->mode == BURST_MALFORMED) {
-			static char const bad[] = "POST /mcp HTTP/1.1\r\nBad Header\r\n\r\n";
-			b->n[BURST_SENT] += b->t->send(fd, bad, sizeof bad - 1) ==
-			                    (ssize_t)(sizeof bad - 1);
-		} else {
-			size_t m = i % (uint64_t)kinds;
-			char head[160];
-			int k = snprintf(head, sizeof head, "POST /mcp HTTP/1.1\r\nHost: x\r\n"
-			                 "Content-Type: application/json\r\n"
-			                 "Accept: application/json, text/event-stream\r\n"
-			                 "Content-Length: %zu\r\n\r\n", hlen[m]);
-			b->t->send(fd, head, (size_t)k);
-			size_t off = 0;
-			while (off < hlen[m] && !atomic_load(&g_stop)) {
-				ssize_t s = b->t->send(fd, host[m] + off, hlen[m] - off);
-				if (s > 0)
-					off += (size_t)s;
-				else if (s < 0 && errno != EINTR &&
-				         !(errno == EAGAIN && wait_writable(fd, 1000)))
-					break;
-			}
-			b->n[BURST_SENT] += off == hlen[m];
-		}
+		static char const bad[] = "POST /mcp HTTP/1.1\r\nBad Header\r\n\r\n";
+		size_t m = kinds ? i % (uint64_t)kinds : 0;
+		bool sent = b->mode == BURST_MALFORMED
+		          ? b->t->send(fd, bad, sizeof bad - 1) == (ssize_t)(sizeof bad - 1)
+		          : burst_send(b, fd, host[m], hlen[m]);
+		b->n[BURST_SENT] += sent;
 		/* A reply's first bytes, which for a tool call open its event
-		 * stream: hanging up then cancels the call. */
+		 * stream: hanging up then cancels the call.  A body over a limit
+		 * may be answered before it is all sent; one the stop cut short
+		 * counts neither way. */
 		struct pollfd pfd = { .fd = fd, .events = POLLIN };
 		char junk[512];
-		ssize_t r = poll(&pfd, 1, b->mode == BURST_DENSE ? 10'000 : 2000) == 1
+		ssize_t r = sent && poll(&pfd, 1, b->mode == BURST_DENSE ? 10'000 : 2000) == 1
 		          ? b->t->recv(fd, junk, sizeof junk) : 0;
 		if (r > 0) {
 			b->n[BURST_ANSWERED]++;
@@ -1148,7 +1159,9 @@ out:
  * alternately in the legacy and the 2026-07-28 era; askai answers them on
  * event streams, which a job reads to their last chunk.  In hang-up mode
  * (b->mode) a job instead waits for its event stream to open, then hangs up
- * HANGUP_MS later, which askai must pass upstream as a cancellation.
+ * about HANGUP_MS later, from a half to one and a half times that, which
+ * askai must pass upstream as a cancellation unless the answer came first:
+ * against an upstream that takes about as long, hang-ups race answers.
  */
 enum job_state { JOB_DEAD, JOB_CONNECTING, JOB_SENDING, JOB_READING, JOB_HOLDING };
 enum { JOB_SUBMITTED, JOB_COMPLETED, JOB_FAILED, JOB_DROPPED, JOB_HUNGUP };
@@ -1247,6 +1260,7 @@ jobs_thread (void *arg)
 {
 	struct bg *b = arg;
 	bool hangup = b->mode;
+	uint64_t rng = 0x2545F4914F6CDD1Du ^ now_ns();
 	int ep = epoll_create1(EPOLL_CLOEXEC);
 	struct job_conn *jc = calloc((size_t)b->count, sizeof *jc);
 	b->per = calloc((size_t)b->count, sizeof *b->per);
@@ -1334,7 +1348,8 @@ jobs_thread (void *arg)
 			} else if (hangup && head &&
 			           memmem(c->buf, head, "text/event-stream", 17)) {
 				c->state = JOB_HOLDING;
-				c->due_ns = now_ns() + HANGUP_MS * 1'000'000u;
+				c->due_ns = now_ns() + (uint64_t)((0.5 + rng_unit(&rng)) *
+				                                  HANGUP_MS * 1e6);
 			}
 		}
 		/* Hang up on the jobs held long enough; re-establish any

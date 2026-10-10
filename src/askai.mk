@@ -5,6 +5,7 @@ override SRC_askai := \
   brainstem.c         \
   buf.c               \
   dstr.c              \
+  home.c              \
   http.c              \
   httpd.c             \
   jb.c                \

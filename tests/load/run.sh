@@ -3,8 +3,9 @@
 # judge it.
 #
 # Usage: run.sh PROFILE [ASKAI_BIN [LOAD_DIR [DURATION]]]
-#   PROFILE    baseline | idle | jobs | answers | sse | loris | slowread |
-#              pipeline | hostile | dense | malformed | storm | check | stall
+#   PROFILE    baseline | idle | jobs | answers | sse | race | loris |
+#              slowread | pipeline | hostile | dense | malformed | storm |
+#              check | stall
 #   ASKAI_BIN  the askai executable to test (default: $ASKAI or ./askai)
 #   LOAD_DIR   directory holding the built gen and mock (default: this dir)
 #   DURATION   seconds of load (default: 10)
@@ -34,10 +35,11 @@
 # AFTER: SUMMARY, CONTROL, PROBE, FAIR, MOCK and BG), askai's loop statistics
 # for each phase (LOOP idle, load and after: turn and step times, timer
 # lateness, and the most work of each unit a step did, which SIGUSR1 makes
-# askai print), its RSS and descriptors (RESOURCES: idle, peak, kept before
-# the pressure, and after the last phase), the mock's final counters, latency
-# RATIOs of the load and after phases against the idle phase, a CHECK line per
-# clause of the verdict, and the VERDICT.
+# askai print, from S4 for home too, as LOOP PHASE home), its RSS and
+# descriptors (RESOURCES: idle, peak, kept before the pressure, and after the
+# last phase), the mock's final counters, from S4 askai's count of jobs as it
+# exits, latency RATIOs of the load and after phases against the idle phase,
+# a CHECK line per clause of the verdict, and the VERDICT.
 #
 # The verdict follows the latency policy of doc/core-design.md section 8: the
 # daemon runs on whatever machine it is given, busy or slow, and its clients
@@ -68,12 +70,21 @@
 #    land on it; the p99 spreads are printed too.  Heavy work yields to cheap
 #    requests by design, so its factor is the larger;
 #  - unbounded work: a unit of work done in a step over its bound (loop.h),
-#    in any phase; units count work that cannot be split in full;
+#    in any phase, on any loop; units count work that cannot be split in
+#    full;
+#  - jobs (from S4): askai's jobs not accounted for as it exits, submitted
+#    not completed + cancelled + rejected, or fewer cancelled than the
+#    upstream saw;
 #  - gross outliers against the idle phase: the probe's p99 in the load or
 #    the after phase over RTT_GROSS times (default 100) the idle p99, or a
-#    turn in either over TURN_GROSS times (default 1000) the idle phase's p99
-#    turn and over RTT_GROSS times its probe p99, for a machine that preempts
-#    askai stretches every turn and every reply alike.
+#    turn of either loop in either over TURN_GROSS times (default 1000) the
+#    idle phase's p99 turn of the client loop and over RTT_GROSS times its
+#    probe p99, for a machine that preempts askai stretches every turn and
+#    every reply alike.
+# The "race" profile has tool calls hang up about when the upstream answers
+# them (S4), so that cancellations race completions; its mock closes each
+# connection after the reply, as libcurl would keep those of a race's many
+# answers until S6 caps them (design section 4).
 # The "check" profile is a light mix of every mode, short deadlines and a few
 # thousand connections for `make check-load`.  The "stall" profile instead
 # runs the coordinated-omission self-check: it
@@ -115,6 +126,7 @@ idle)      mock_args=(-s 4 -d 5 -z 2);   gen_args=(--idle 5000) ;;
 jobs)      mock_args=(-s 1 -d 50 -z 16); gen_args=(--jobs 64) ;;
 answers)   mock_args=(-s 2 -d 5 -z 262144); gen_args=(--jobs 16) ;;
 sse)       mock_args=(-s 4 -d 60000);    gen_args=(--hangup 64) ;;
+race)      mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --hangup 48 --churn 200) ;;
 loris)     mock_args=(-s 4 -d 5);        gen_args=(--loris 128 --slowbody 128) ;;
 slowread)  mock_args=(-s 4 -d 5);        gen_args=(--slowread 128) ;;
 pipeline)  mock_args=(-s 4 -d 5);        gen_args=(--pipeline 4) ;;
@@ -184,24 +196,27 @@ resources () {
 }
 
 # Have askai print its loop statistics since the previous SIGUSR1, wait up to
-# 1 s for them in its log, and print them as LOOP lines labelled PHASE, if
-# given.
-stats=${STATS:-full} dumps=0
+# 1 s for them in its log, home's too if it has home (S4), and print them as
+# LOOP lines labelled PHASE, if given.
+stats=${STATS:-full} dumps=0 homes=0
 loop_stats () {
 	local phase=${1-} i
 	[[ $stats == none ]] && return 0
 	kill -USR1 "$askai_pid" 2> /dev/null || return 1
 	((++dumps))
 	for ((i = 0; i < 100; ++i)); do
-		(($(grep -c '^askai: stats timer_late ' "$tmp/askai.err") >= dumps)) &&
-			break
+		(($(grep -c '^askai: stats timer_late ' "$tmp/askai.err") >= dumps &&
+		  $(grep -c '^askai: stats home timer_late ' "$tmp/askai.err") >=
+		  dumps * homes)) && break
 		sleep 0.01
 	done
 	((i < 100)) || return 1
 	sleep 0.05
 	[[ -z $phase ]] || awk '/^askai: stats turn / { last = "" }
+	                       /^askai: stats home turn / { home = "" }
+	                       /^askai: stats home / { home = home $0 "\n"; next }
 	                       /^askai: stats / { last = last $0 "\n" }
-	                       END { printf "%s", last }' "$tmp/askai.err" |
+	                       END { printf "%s%s", last, home }' "$tmp/askai.err" |
 		sed "s/^askai: stats /LOOP $phase /"
 }
 
@@ -228,6 +243,8 @@ mock_port=$(wait_port "$tmp/mock.err") || {
 askai_pid=$!
 askai_port=$(wait_port "$tmp/askai.err") || {
 	echo "$self: askai did not start" >&2; cat "$tmp/askai.err" >&2; exit 1; }
+# Home, the thread of S4 on that runs the jobs, logs statistics of its own.
+grep -qx home "/proc/$askai_pid/task/"*/comm 2> /dev/null && homes=1
 
 printf '=== profile %s: rate=%s/s base=%ss duration=%ss askai_port=%s ' \
        "$profile" "$rate" "$base" "$dur" "$askai_port"
@@ -340,6 +357,7 @@ wait "$mock_pid" 2> /dev/null
 mock_rc=$?
 mock_pid=
 grep -E '^mock: (requests|http)' "$tmp/mock.err" | tee -a "$tmp/gen.out"
+grep -E '^askai: jobs: ' "$tmp/askai.err" | tee -a "$tmp/gen.out"
 
 printf 'PROFILE %s askai_exit=%s gen_exit=%s/%s/%s/%s mock_exit=%s\n' "$profile" \
        "$askai_rc" "$idle_rc" "$solo_rc" "$gen_rc" "$after_rc" "$mock_rc"
@@ -370,13 +388,24 @@ $1 == "CONTROL" { kv(c, 2) }
 $1 == "LOOP" && $2 == "idle" && $3 == "turn" { kv(it, 4) }
 $1 == "LOOP" && $2 == "load" && $3 == "turn" { kv(t, 4) }
 $1 == "LOOP" && $2 == "after" && $3 == "turn" { kv(ta, 4) }
-$1 == "LOOP" && $3 == "work" {
+$1 == "LOOP" && $3 == "home" && $4 == "turn" {
+	kv(ht, 5)
+	home_max[$2] = ht["max_us"]
+}
+$1 == "LOOP" && ($3 == "work" || ($3 == "home" && $4 == "work")) {
 	work_seen = 1
-	for (i = 4; i <= NF; ++i) {
+	for (i = $3 == "home" ? 5 : 4; i <= NF; ++i) {
 		split($i, f, "[=/]")
 		if (f[3] != "" && f[2] + 0 > f[3] + 0)
-			over = over " " $2 ":" $i
+			over = over " " $2 ($3 == "home" ? "/home" : "") ":" $i
 	}
+}
+$1 == "askai:" && $2 == "jobs:" {
+	jobs_seen = 1
+	js["submitted"] = $3
+	js["completed"] = $5
+	js["cancelled"] = $7
+	js["rejected"] = $9
 }
 $1 == "FAIR" && $2 == "probe" { kv(fp, 3) }
 $1 == "FAIR" && $2 == "jobs" { kv(fj, 3); jobs_fair = 1 }
@@ -555,19 +584,33 @@ END {
 	else
 		printf "CHECK work=n/a askai reports no units of work\n"
 
+	# Every job ends once, and no upstream call is cancelled but by one.
+	if (jobs_seen)
+		check("jobs", js["submitted"] == js["completed"] + js["cancelled"] + \
+		      js["rejected"] && mf["cancelled"] <= js["cancelled"],
+		      sprintf("submitted=%d completed=%d cancelled=%d rejected=%d; " \
+		              "upstream cancels=%d", js["submitted"], js["completed"],
+		              js["cancelled"], js["rejected"], mf["cancelled"]))
+	else
+		printf "CHECK jobs=n/a askai reports no jobs\n"
+
 	turn_limit = turn_gross * it["p99_us"]
 	if (rtt_gross * idle["p99_us"] > turn_limit)
 		turn_limit = rtt_gross * idle["p99_us"]
 	gross = ratio(v["p99_us"], idle["p99_us"]) > rtt_gross ||
 	        ratio(aft["p99_us"], idle["p99_us"]) > rtt_gross ||
 	        (stats != "none" && (t["max_us"] > turn_limit || !t["n"] ||
-	                             ta["max_us"] > turn_limit || !ta["n"]))
+	                             ta["max_us"] > turn_limit || !ta["n"] ||
+	                             home_max["load"] > turn_limit ||
+	                             home_max["after"] > turn_limit))
 	check("outliers", !gross, sprintf("p99 %.1fx idle, after %.1fx (limit %dx), " \
 	      (stats == "none" ? "turns n/a" : "turn max %.1fx idle p99 turn, " \
-	       "after %.1fx (limit %.0f us: %dx that or %dx the idle p99)"),
+	       "after %.1fx, on home %.1fx and %.1fx (limit %.0f us: %dx that or %dx " \
+	       "the idle p99)"),
 	      ratio(v["p99_us"], idle["p99_us"]), ratio(aft["p99_us"], idle["p99_us"]),
 	      rtt_gross, ratio(t["max_us"], it["p99_us"]),
-	      ratio(ta["max_us"], it["p99_us"]), turn_limit, turn_gross, rtt_gross))
+	      ratio(ta["max_us"], it["p99_us"]), ratio(home_max["load"], it["p99_us"]),
+	      ratio(home_max["after"], it["p99_us"]), turn_limit, turn_gross, rtt_gross))
 
 	printf "VERDICT %s profile=%s failed_checks=%d\n", failed ? "fail" : "pass",
 	       profile, failed

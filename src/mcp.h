@@ -9,7 +9,6 @@
 #include "buf.h"
 
 struct ai_endpoint;
-struct http;
 struct loop;
 struct mcp;
 struct mcp_static;
@@ -56,12 +55,15 @@ mcp_static_new (struct mcp_static        **p_static,
 extern void
 mcp_static_free (struct mcp_static **p_static);
 
-/** MCP on @p loop, asking upstream through @p http; GET /metrics renders
- *  @p metrics, with MCP's request times. */
+/**
+ * MCP on @p loop, whose tool calls are jobs that home runs on its loop
+ * @p home (src/job.h).  GET /metrics renders @p metrics, the first of whose
+ * loops is @p loop, with what MCP counts.
+ */
 extern int
 mcp_init (struct mcp               **p_mcp,
           struct loop               *loop,
-          struct http               *http,
+          struct loop               *home,
           struct mcp_static const   *st,
           struct metrics_src const  *metrics);
 
@@ -75,10 +77,10 @@ mcp_age (struct mcp *mcp);
 
 /**
  * Free some of what is kept for reuse: a pooled tokener, at BUF_HIGH one
- * whose string buffer outgrew a slice, or else finished requests, up to
- * @p max units of release work (buf_units()) or one request if that is more,
- * at BUF_HIGH those unused since the last window began.  Returns the units;
- * 0 once none are left to free.
+ * whose string buffer outgrew a slice, or else finished requests, then jobs,
+ * up to @p max units of release work (buf_units()) or one request if that is
+ * more, at BUF_HIGH those unused since the last window began.  Returns the
+ * units; 0 once none are left to free.
  */
 extern size_t
 mcp_relieve (struct mcp        *mcp,

@@ -110,7 +110,7 @@ http_finish (struct http         *http,
 	curl_multi_remove_handle(http->multi, request->easy);
 	curl_easy_cleanup(request->easy);
 	list_del(&request->hook);
-	if (request->started)
+	if (request->started && http->metrics)
 		hist_record(&http->metrics->run, loop_clock() - request->started);
 
 	http_done_cb *done = request->done_cb;
@@ -199,7 +199,8 @@ http_start_step (struct loop      *loop,
 		list_del(&request->hook);
 		list_append(&http->requests, &request->hook);
 		request->started = loop_clock();
-		hist_record(&http->metrics->wait, request->started - request->since);
+		if (http->metrics)
+			hist_record(&http->metrics->wait, request->started - request->since);
 		if (curl_multi_add_handle(http->multi, request->easy) != CURLM_OK) {
 			request->started = 0;
 			request->fail = CURLE_FAILED_INIT;
@@ -413,7 +414,8 @@ http_looked_up (struct loop *loop,
 		char const *why = l->job.error ? strerror(l->job.error)
 		                : l->entry ? "" : gai_strerror(l->gai);
 		host->lookup = nullptr;
-		hist_add(&http->metrics->lookups[l->entry != nullptr], 1);
+		if (http->metrics)
+			hist_add(&http->metrics->lookups[l->entry != nullptr], 1);
 		if (l->entry) {
 			free(host->entry);
 			host->entry = l->entry;
@@ -516,8 +518,9 @@ http_host (struct http *http,
 }
 
 int
-http_init (struct http **p_http,
-           struct loop  *loop)
+http_init (struct http         **p_http,
+           struct loop          *loop,
+           struct http_metrics  *metrics)
 {
 	if (!p_http || !loop)
 		return EFAULT;
@@ -535,23 +538,17 @@ http_init (struct http **p_http,
 		.start.fn = http_start_step,
 		.fail.fn = http_fail_step,
 		.loop = loop,
-		.metrics = malloc(sizeof *http->metrics),
+		.metrics = metrics,
 		.multi = curl_multi_init()
 	};
-	if (http->metrics) {
-		hist_init(&http->metrics->wait);
-		hist_init(&http->metrics->run);
-		atomic_init(&http->metrics->lookups[0], 0);
-		atomic_init(&http->metrics->lookups[1], 0);
-	}
 	list_init(&http->queued);
 	list_init(&http->requests);
 	list_init(&http->sockets);
 	list_init(&http->hosts);
 	*p_http = http;
 
-	int e = !http->multi || !http->metrics ||
-	        loop_timer_set(loop, &http->timer, UINT64_MAX) ? ENOMEM : 0;
+	int e = !http->multi || loop_timer_set(loop, &http->timer, UINT64_MAX)
+	      ? ENOMEM : 0;
 	if (!e &&
 	    (curl_multi_setopt(http->multi, CURLMOPT_SOCKETFUNCTION, http_socket_cb) != CURLM_OK ||
 	     curl_multi_setopt(http->multi, CURLMOPT_SOCKETDATA, http) != CURLM_OK ||
@@ -584,16 +581,26 @@ http_cancel (struct http         *http,
 }
 
 void
+http_end (struct http         *http,
+          struct http_request **p_request,
+          CURLcode              result)
+{
+	struct http_request *request = *p_request;
+	*p_request = nullptr;
+	http_finish(http, request, result);
+}
+
+CURLcode
+http_resume (struct http_request *request)
+{
+	return curl_easy_pause(request->easy, CURLPAUSE_CONT);
+}
+
+void
 http_resolver (struct http     *http,
                struct blockers *blockers)
 {
 	http->blockers = blockers;
-}
-
-struct http_metrics const *
-http_metrics (struct http const *http)
-{
-	return http->metrics;
 }
 
 void
@@ -643,7 +650,6 @@ http_fini (struct http **p_http)
 	loop_unready(&http->start);
 	loop_unready(&http->fail);
 	loop_timer_stop(http->loop, &http->timer);
-	free(http->metrics);
 	free(http);
 	curl_global_cleanup();
 }

@@ -29,6 +29,15 @@ enum {
 	                              page faults and preemption */
 	HEAP_MIN       = 64,       /* timer slots the heap begins with; it keeps
 	                              those it grows to (design section 5) */
+	SLOTS_MIN      = 64,       /* the same for the table of handles */
+	SLOTS_MAX      = 1 << 24,  /* as many as a handle's slot field holds */
+};
+
+/* A slot of the table of handles. */
+struct loop_slot {
+	void    *obj;     /* what it names; nullptr while free */
+	uint32_t gen;     /* the generation its handles carry, never 0 */
+	uint32_t vacant;  /* while free: the slot freed before it + 1, or 0 */
 };
 
 /* What the loop times, in ns: a turn from epoll returning to its end, an
@@ -290,9 +299,68 @@ loop_fini (struct loop *loop)
 	if (loop->epfd >= 0)
 		close(loop->epfd);
 	free(loop->heap);
+	free(loop->slots);
 	free(loop->stats);
 	free(loop->metrics);
 	loop_blank(loop);
+}
+
+/* The slot @p h names, if it names one of @p loop's; else nullptr. */
+static struct loop_slot *
+slot_of (struct loop const *loop,
+         struct handle      h)
+{
+	uint32_t i = (uint32_t)(h.bits >> 32) & (SLOTS_MAX - 1);
+	struct loop_slot *slot = h.bits >> 56 == loop->id && i < loop->used
+	                       ? &loop->slots[i] : nullptr;
+	return slot && slot->gen == (uint32_t)h.bits && slot->obj ? slot : nullptr;
+}
+
+int
+loop_handle (struct loop   *loop,
+             void          *obj,
+             struct handle *h)
+{
+	uint32_t i = loop->vacant;
+	if (i--) {
+		loop->vacant = loop->slots[i].vacant;
+	} else {
+		if (loop->used == loop->slots_cap) {
+			size_t cap = loop->slots_cap ? 2 * loop->slots_cap : SLOTS_MIN;
+			struct loop_slot *slots = cap > SLOTS_MAX ? nullptr
+			                        : realloc(loop->slots, cap * sizeof *slots);
+			if (!slots)
+				return ENOMEM;
+			loop->slots = slots;
+			loop->slots_cap = cap;
+		}
+		i = loop->used++;
+		loop->slots[i].gen = 1;
+	}
+	loop->slots[i].obj = obj;
+	*h = (struct handle){ loop->id << 56 | (uint64_t)i << 32 | loop->slots[i].gen };
+	return 0;
+}
+
+void *
+loop_lookup (struct loop const *loop,
+             struct handle      h)
+{
+	struct loop_slot const *slot = slot_of(loop, h);
+	return slot ? slot->obj : nullptr;
+}
+
+void
+loop_forget (struct loop   *loop,
+             struct handle  h)
+{
+	struct loop_slot *slot = slot_of(loop, h);
+	if (!slot)
+		return;
+	slot->obj = nullptr;
+	slot->gen += 1 + (slot->gen == UINT32_MAX);
+	slot->vacant = loop->vacant;
+	loop->vacant = (uint32_t)(slot - loop->slots) + 1;
 }
 
 int
@@ -558,7 +626,8 @@ loop_timeout (struct loop const *loop,
 }
 
 void
-loop_log_stats (struct loop *loop)
+loop_log_stats (struct loop *loop,
+                char const  *label)
 {
 	static char const *const name[TIMINGS] = {
 		[TIME_TURN] = "turn",
@@ -569,8 +638,8 @@ loop_log_stats (struct loop *loop)
 	struct loop_stats *s = loop->stats;
 	for (size_t t = 0; t < TIMINGS; ++t) {
 		struct hist const *h = &s->time[t];
-		log_put(nullptr, "stats %s n=%" PRIu64 " over_1ms=%" PRIu64 " p50_us=%.1f "
-		        "p90_us=%.1f p99_us=%.1f p99_9_us=%.1f max_us=%.1f", name[t],
+		log_put(nullptr, "stats %s%s n=%" PRIu64 " over_1ms=%" PRIu64 " p50_us=%.1f "
+		        "p90_us=%.1f p99_us=%.1f p99_9_us=%.1f max_us=%.1f", label, name[t],
 		        hist_get(&h->count), s->over[t],
 		        (double)hist_pct(h, 0.5) / 1e3, (double)hist_pct(h, 0.9) / 1e3,
 		        (double)hist_pct(h, 0.99) / 1e3, (double)hist_pct(h, 0.999) / 1e3,
@@ -583,7 +652,7 @@ loop_log_stats (struct loop *loop)
 	for (size_t u = 0; u < LOOP_UNITS && n > 0 && (size_t)n < sizeof work; ++u)
 		n += snprintf(work + n, sizeof work - (size_t)n, " %s=%" PRIu64 "/%" PRIu64,
 		              unit_name[u], s->work[u], bound[u]);
-	log_put(nullptr, "stats work %s", work);
+	log_put(nullptr, "stats %swork %s", label, work);
 	stats_empty(s, false);
 }
 

@@ -363,27 +363,33 @@ kernel's pressure stall information.  It then frees what went unused for
 the allocator returns what is free to the system in one call that takes about
 55 µs per MB.
 
-Sending `askai` SIGUSR1 prints statistics of its event loop since the
-previous SIGUSR1: how long its turns and steps took, how late its timers
-fired, and the most work of each kind a step did against its bound.
+Sending `askai` SIGUSR1 prints statistics of its event loops since the
+previous SIGUSR1, the client loop's and home's, whose lines say so: how long
+their turns and steps took, how late their timers fired, and the most work of
+each kind a step did against its bound.
 
 ### Running
 
-`askai` serves clients on an event loop thread of its own.  Its main thread
-minds signals, the process's memory and descriptors (and the kernel's
-pressure stall information where there is some), and a watchdog that logs a
-loop turn longer than 20 ms (`--watchdog`).  A logger thread alone writes
-stderr: a reader of stderr that stops reading holds up no client, as lines
-that do not fit in its buffers are dropped and counted.  Two more threads
-look up the upstream host, so libcurl starts no threads of its own.
+`askai` serves clients on an event loop thread of its own, and asks the other
+model from another, home: a tool call hands its upstream request to home as a
+job, which home runs and hands back.  At most `--max-calls` (256) run at once;
+a tool call past those is answered at once with a tool error that says to try
+again.  A client that goes while its call runs cancels the upstream request.
+The main thread minds signals, the process's memory and descriptors (and the
+kernel's pressure stall information where there is some), and a watchdog that
+logs a loop turn longer than 20 ms (`--watchdog`).  A logger thread alone
+writes stderr: a reader of stderr that stops reading holds up no client, as
+lines that do not fit in its buffers are dropped and counted.  Two more
+threads look up the upstream host, so libcurl starts no threads of its own.
 
-`GET /metrics` returns metrics in Prometheus's text format: the loop's turn
-and step times, timer lateness and inbox delay, request times by MCP method,
-upstream wait and run times, host lookups, log lines dropped, watchdog
-reports, memory and descriptors, memory pressure and its inputs, and what the
-loop keeps for reuse and gave back.  It answers clients on loopback that name
-it as `localhost`, `127.0.0.1` or `[::1]` (or send no `Host`), and with
-`ASKAI_TOKEN` set, those that send the token.
+`GET /metrics` returns metrics in Prometheus's text format: each loop's turn
+and step times, timer lateness and inbox delay (`loop="1"`, `loop="home"`),
+request times by MCP method, home's jobs, upstream wait and run times, host
+lookups, log lines dropped, watchdog reports, memory and descriptors, memory
+pressure and its inputs, and what the loops keep for reuse and gave back.
+It answers clients on loopback that name it as `localhost`, `127.0.0.1` or
+`[::1]` (or send no `Host`), and with `ASKAI_TOKEN` set, those that send the
+token.
 
 The first SIGINT, SIGTERM or SIGHUP makes `askai` drain: it stops accepting
 clients, closes idle connections, answers tool calls that wait for the other
@@ -411,6 +417,9 @@ Upstream AI:
   -x, --extra JSON          object deep-merged into each request body;
                             null members delete keys
   -T, --timeout SECONDS     upstream timeout (default 600, 0 = none)
+      --max-calls N         upstream calls under way at most (default
+                            256); a tool call past those is answered at
+                            once as an error that says to try again
 
 MCP server:
   -l, --listen ADDR         [host:]port (default 127.0.0.1:8090)
@@ -421,9 +430,9 @@ MCP server:
   -v, --verbose             log every tool call
       --grace SECONDS       to finish what is under way on SIGINT,
                             SIGTERM or SIGHUP (default 5)
-      --watchdog MS         log a turn of the event loop longer than
+      --watchdog MS         log a turn of an event loop longer than
                             this (default 20, 0 = none)
-      --test-stall MS       test aid: SIGUSR2 holds the event loop in
+      --test-stall MS       test aid: SIGUSR2 holds each event loop in
                             one turn this long
       --memory-high BYTES   resident memory from which memory pressure
                             is high (default: a sixteenth of RAM, or of

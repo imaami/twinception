@@ -19,7 +19,16 @@
  * the transport has room for it.  A finished request is kept for reuse, its
  * buffers' storage given back to the loop's stash (src/buf.h) and that of its
  * answer and pre-scan kept, until memory pressure has it freed; the one that
- * ended last is reused first, so steady requests reuse the same few.
+ * ended last is reused first, so steady requests reuse the same few.  So are
+ * jobs.
+ *
+ * A tool call's upstream request is a job that home runs (src/job.h): the
+ * request writes the upstream body, then hands it to a job, names itself by a
+ * handle (src/loop.h) and submits the job.  The job's completion looks the
+ * request up by that handle, and is dropped if the request has gone; else the
+ * request parses the answer as before, on this loop, and then lets go of the
+ * job.  A request that goes while it waits cancels its job, freeing its
+ * handle.
  *
  * A tool call answers on an event stream (SSE) when the client accepts one
  * and its era has them (all but 2024-11-05): id-less data: events, and a ':'
@@ -45,8 +54,8 @@
 #include "ai.h"
 #include "buf.h"
 #include "dstr.h"
-#include "http.h"
 #include "jb.h"
+#include "job.h"
 #include "list.h"
 #include "log.h"
 #include "loop.h"
@@ -66,7 +75,6 @@ enum {
 };
 
 enum {
-	MAX_RESPONSE = 16 << 20,  /* upstream response bytes */
 	MAX_ID       = 1 << 10,   /* string request id bytes: every reply repeats it */
 	MAX_ECHO     = 256,       /* bytes of a client's string an error repeats */
 	MAX_SCALAR   = 1 << 10,   /* bytes of a JSON number or literal, which json-c
@@ -141,12 +149,12 @@ struct splice {
 /** A request, from its stream's head to its end or cancellation. */
 struct mcp_req {
 	struct list          hook;       /* on mcp->calls while a tool call runs,
-	                                    then on mcp->freeing */
+	                                    then on mcp->freeing, then spare */
 	struct loop_step     step;       /* the phase's work, and keep-alives */
 	struct loop_timer    timer;      /* the next keep-alive */
 	struct buf           body;       /* the request body */
-	struct buf           upload;     /* the upstream request */
-	struct buf           response;   /* the upstream body as it arrives */
+	struct buf           upload;     /* the upstream request, until its job
+	                                    takes it */
 	struct buf           reply;      /* our response body, until sent */
 	struct jb_parser     parser;     /* of the body, then of the answer */
 	struct jb_reaper     reaper;     /* what is freed a slice a step */
@@ -156,6 +164,8 @@ struct mcp_req {
 	                                    with the request for reuse */
 	struct stream       *s;          /* nullptr once it is gone */
 	struct mcp          *mcp;
+	struct job          *job;        /* the tool call's, once submitted, until
+	                                    let go of */
 	struct json_object  *msg;        /* parsed, until dispatched; then the
 	                                    upstream's answer, until read */
 	struct json_object  *id;         /* the request's id, if any */
@@ -167,9 +177,9 @@ struct mcp_req {
 	                                    the answer escaped, or metrics done */
 	size_t               values;     /* of msg */
 	uint64_t             head;       /* loop_clock() at the request's head */
-	struct http_request *request;
+	struct handle        call;       /* names the request to its job's
+	                                    completion, while it waits for that */
 	struct jb_scan       scan;       /* the body's pre-scan */
-	long                 status;     /* the upstream's HTTP status */
 	int                  error;      /* to end the stream with */
 	uint16_t             splices;
 	uint16_t             next;       /* the splice to write next */
@@ -179,7 +189,6 @@ struct mcp_req {
 	bool                 sse_ok;     /* the client takes an event stream */
 	bool                 sse;        /* the response is one */
 	bool                 failed;     /* the answer reports an error */
-	bool                 overflow;   /* the upstream response was too large */
 	bool                 ping;       /* a keep-alive is due */
 	bool                 nomem;      /* building the reply ran out of memory */
 	bool                 blocked;    /* waiting for on_writable() */
@@ -188,15 +197,25 @@ struct mcp_req {
 /* What the server counts, for any thread to read: allocated apart, so that
  * its atomic members are initialized where they stay (hist.h). */
 struct mcp_counts {
-	struct metrics_kept kept;
-	struct hist         methods[METHOD_N];  /* by enum metrics_method */
+	struct metrics_kept  kept;
+	struct metrics_calls calls;
+	struct hist          methods[METHOD_N];  /* by enum metrics_method */
+};
+
+/* Finished objects kept for reuse, the last kept last, and the fewest kept
+ * through windows of reuse: those went unused. */
+struct shelf {
+	struct list list;
+	size_t      n;
+	size_t      low;   /* fewest on it in this window */
+	size_t      idle;  /* fewest on it in the window before */
 };
 
 struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
 	struct list              freeing;   /* requests freeing their message */
-	struct list              spare;     /* finished requests, kept for reuse,
-	                                       the last ended last */
+	struct shelf             spare;     /* finished requests */
+	struct shelf             jobs;      /* jobs let go of */
 	struct loop_step         drain;     /* ends the calls, draining */
 	struct stream_app        app;
 	struct jb_pool           pool;      /* for request bodies */
@@ -204,13 +223,17 @@ struct mcp {
 	struct metrics_src       metrics;   /* counts' */
 	struct mcp_counts       *counts;
 	struct loop             *loop;
-	struct http             *http;
+	struct loop             *home;      /* where jobs run */
 	struct mcp_static const *st;
-	size_t                   spares;    /* on spare */
-	size_t                   low;       /* fewest on spare in this window */
-	size_t                   idle;      /* fewest on spare in the window before */
 	uint64_t                 draining;  /* bool, widened over the padding */
 };
+
+/* The thread's MCP: the handler of jobs' completions finds it here. */
+static thread_local struct mcp *self;
+
+/* Tool output for a call refused for want of room (design section 10). */
+static char const busy[] = "Too many tool calls are under way; try again in a "
+                           "few seconds.";
 
 /* A run of reply bytes. */
 struct frag {
@@ -368,6 +391,58 @@ req_dispose (struct mcp_req *req)
 	}
 }
 
+static void
+shelf_put (struct shelf *shelf,
+           struct list  *node)
+{
+	list_append(&shelf->list, node);
+	++shelf->n;
+}
+
+/* Take the object kept last off the shelf, whose storage is the likeliest to
+ * fit; nullptr if none is kept. */
+static struct list *
+shelf_take (struct shelf *shelf)
+{
+	struct list *node = shelf->n ? shelf->list.prev : nullptr;
+	if (node) {
+		list_del(node);
+		if (--shelf->n < shelf->low)
+			shelf->low = shelf->n;
+	}
+	return node;
+}
+
+/* Take the object kept first off the shelf, to free it: it counts as one that
+ * went unused, if any did. */
+static struct list *
+shelf_drop (struct shelf *shelf)
+{
+	struct list *node = shelf->list.next;
+	list_del(node);
+	--shelf->n;
+	shelf->low -= shelf->low > 0;
+	shelf->idle -= shelf->idle > 0;
+	return node;
+}
+
+/* How many of the objects kept a relief at @p level frees: at BUF_HIGH those
+ * unused through the window before and this one so far, at BUF_CRITICAL all. */
+static size_t
+shelf_unused (struct shelf const *shelf,
+              enum buf_pressure   level)
+{
+	return level >= BUF_CRITICAL ? shelf->n
+	     : shelf->low < shelf->idle ? shelf->low : shelf->idle;
+}
+
+static void
+shelf_age (struct shelf *shelf)
+{
+	shelf->idle = shelf->low;
+	shelf->low = shelf->n;
+}
+
 /* The bytes a finished request keeps for reuse. */
 static uint64_t
 req_kept (struct mcp_req const *req)
@@ -389,30 +464,27 @@ req_end (struct mcp_req *req)
 	if (req->hook.next)
 		list_del(&req->hook);
 	loop_unready(&req->step);
-	list_append(&mcp->spare, &req->hook);
-	++mcp->spares;
+	shelf_put(&mcp->spare, &req->hook);
 	hist_add(&mcp->counts->kept.spares, 1);
 	hist_add(&mcp->counts->kept.bytes[0], req_kept(req));
 	atomic_store_explicit(&mcp->counts->kept.bytes[1],
 	                      mcp->pool.bytes + mcp->answers.bytes, memory_order_relaxed);
 }
 
-/* A request to begin, the spare one that ended last if there is one, whose
- * storage is the likeliest to fit; nullptr if out of memory.  Its answer,
- * pre-scan and reaper are empty, their storage kept. */
+/* A request to begin, the spare one that ended last if there is one;
+ * nullptr if out of memory.  Its answer, pre-scan and reaper are empty, their
+ * storage kept. */
 static struct mcp_req *
 req_new (struct mcp *mcp)
 {
-	if (list_is_empty(&mcp->spare)) {
+	struct list *node = shelf_take(&mcp->spare);
+	if (!node) {
 		struct mcp_req *req = malloc(sizeof *req);
 		if (req)
 			*req = (struct mcp_req){ .answer = DSTR_INIT };
 		return req;
 	}
-	struct mcp_req *req = container_of(mcp->spare.prev, struct mcp_req, hook);
-	list_del(&req->hook);
-	if (--mcp->spares < mcp->low)
-		mcp->low = mcp->spares;
+	struct mcp_req *req = container_of(node, struct mcp_req, hook);
 	hist_add(&mcp->counts->kept.spares, -1ULL);
 	hist_add(&mcp->counts->kept.bytes[0], -req_kept(req));
 	return req;
@@ -423,17 +495,71 @@ req_new (struct mcp *mcp)
 static void
 req_free (struct mcp *mcp)
 {
-	struct mcp_req *req = container_of(mcp->spare.next, struct mcp_req, hook);
-	list_del(&req->hook);
-	--mcp->spares;
-	mcp->low -= mcp->low > 0;
-	mcp->idle -= mcp->idle > 0;
+	struct mcp_req *req = container_of(shelf_drop(&mcp->spare), struct mcp_req,
+	                                   hook);
 	hist_add(&mcp->counts->kept.spares, -1ULL);
 	hist_add(&mcp->counts->kept.bytes[0], -req_kept(req));
 	jb_reaper_fini(&req->reaper);
 	jb_scan_end(&req->scan);
 	dstr_cleanup(&req->answer);
 	free(req);
+}
+
+static void call_done (struct loop *loop, struct msg *msg);
+
+/* A job for a tool call: the one let go of last if there is one; nullptr if
+ * out of memory. */
+static struct job *
+job_take (struct mcp *mcp)
+{
+	struct list *node = shelf_take(&mcp->jobs);
+	if (node) {
+		hist_add(&mcp->counts->kept.jobs, -1ULL);
+		return container_of(node, struct job, spare);
+	}
+	struct job *job = malloc(sizeof *job);
+	if (job)
+		job_init(job, mcp->loop, call_done);
+	return job;
+}
+
+/* Keep @p job, whose last reference has gone, for reuse; once the loop has
+ * stopped, with no MCP left, free it. */
+static void
+job_shelve (struct mcp *mcp,
+            struct job *job)
+{
+	buf_free(&job->request);
+	if (mcp) {
+		shelf_put(&mcp->jobs, &job->spare);
+		hist_add(&mcp->counts->kept.jobs, 1);
+	} else {
+		buf_free(&job->result);
+		free(job);
+	}
+}
+
+/* Let go of the request's job, if it has one: cancel it while the request
+ * waits for it, freeing the request's handle, so that its completion finds
+ * no request; else tell home the result has been read. */
+static void
+call_drop (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct job *job = req->job;
+	if (!job)
+		return;
+	req->job = nullptr;
+	bool waits = req->call.bits;
+	if (waits) {
+		loop_forget(mcp->loop, req->call);
+		req->call = (struct handle){};
+		hist_add(&mcp->counts->calls.cancelled, 1);
+	}
+	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_CANCEL);
+	/* A job that waits keeps the front's reference for its completion. */
+	if (!waits && job_put(job, 1))
+		job_shelve(mcp, job);
 }
 
 /* The reply is queued, or the stream gone: let go of everything at once but
@@ -446,7 +572,7 @@ req_finish (struct mcp_req *req)
 		list_del(&req->hook);
 		req->hook = (struct list){};
 	}
-	http_cancel(mcp->http, &req->request);
+	call_drop(req);
 	loop_timer_stop(mcp->loop, &req->timer);
 	jb_parse_end(&req->parser, req->phase == PHASE_ANSWER ? &mcp->answers
 	                                                      : &mcp->pool,
@@ -458,7 +584,6 @@ req_finish (struct mcp_req *req)
 	jb_scan_reset(&req->scan);
 	buf_free(&req->body);
 	buf_free(&req->upload);
-	buf_free(&req->response);
 	buf_free(&req->reply);
 	dstr_clear(&req->answer);
 	if (!req->reaper.n) {
@@ -723,24 +848,6 @@ req_reply (struct mcp_req *req)
 		tool_close(req);
 }
 
-static size_t
-call_write (char const *data,
-            size_t      len,
-            void       *user)
-{
-	struct mcp_req *req = user;
-	if (!len)
-		return 0;
-	struct span s = buf_reserve(&req->response, len, MAX_RESPONSE);
-	if (!s.len) {
-		req->overflow = errno == ENOBUFS;
-		return 0;
-	}
-	memcpy(s.ptr, data, len);
-	buf_commit(&req->response, len);
-	return len;
-}
-
 /* Reply with the tool's output, in req->answer unless building that ran out
  * of memory (@p ok false); it goes out a slice at a time. */
 static void
@@ -769,37 +876,60 @@ call_reply (struct mcp_req *req,
 	req_reply(req);
 }
 
-/* The upstream has answered: parse that a slice a step, or say why it did
- * not. */
+/*
+ * A job's completion, or the job itself, handed back by home.  A completion
+ * goes to the request that waits for it, which parses the answer a slice a
+ * step, or replies with why there is none, and lets go of the job; one whose
+ * request has gone is dropped, the request having let go as it went.  Once
+ * the loop has stopped, MCP is gone, and jobs are freed.
+ */
 static void
-call_done (CURLcode    result,
-           long        status,
-           char const *curl_error,
-           void       *user)
+call_done (struct loop *loop,
+           struct msg  *msg)
 {
-	struct mcp_req *req = user;
-	req->request = nullptr;
-	list_del(&req->hook);
-	req->hook = (struct list){};
-	req->status = status;
-	if (result == CURLE_OK) {
-		req->phase = PHASE_ANSWER;
-		loop_ready_bulk(req->mcp->loop, &req->step);
+	struct job *job = container_of(msg, struct job, to_front);
+	uint32_t bits = atomic_exchange(&job->front_bits, 0);
+	struct mcp *mcp = loop->exit ? nullptr : self;
+	if (bits & JOB_RETURN) {
+		job_shelve(mcp, job);
 		return;
 	}
-
-	struct dstr *text = &req->answer;
-	bool ok = req->overflow
-	        ? dstr_printf(text, "Upstream response exceeds %d MiB.", MAX_RESPONSE >> 20)
-	        : result == CURLE_OPERATION_TIMEDOUT
-	        ? dstr_printf(text, "Upstream request timed out after %.0f s.",
-	                      elapsed(&req->start))
-	        : dstr_printf(text, "Upstream request failed: %s%s%s",
-	                      curl_easy_strerror(result),
-	                      curl_error && *curl_error ? ": " : "",
-	                      curl_error ? curl_error : "");
-	buf_free(&req->response);
-	call_reply(req, ok, true);
+	/* Home is done with the upstream request. */
+	buf_free(&job->request);
+	struct mcp_req *req = mcp ? loop_lookup(loop, job->call) : nullptr;
+	if (!req) {
+		if (mcp)
+			hist_add(&mcp->counts->calls.dropped, 1);
+		if (job_put(job, 2))
+			job_shelve(mcp, job);
+		return;
+	}
+	/* The message's reference; the request keeps the front's. */
+	(void)job_put(job, 1);
+	loop_forget(loop, req->call);
+	req->call = (struct handle){};
+	list_del(&req->hook);
+	req->hook = (struct list){};
+	enum job_status status = job->status;
+	if (status == JOB_ANSWERED) {
+		req->phase = PHASE_ANSWER;
+		loop_ready_bulk(loop, &req->step);
+		return;
+	}
+	/* A failed call's result says why, unless it never started. */
+	struct span why = buf_peek(&job->result);
+	struct dstr const *text =
+		status == JOB_BUSY ? dstr_cat_n(&req->answer, busy, sizeof busy - 1)
+		: why.len ? dstr_cat_n(&req->answer, (char const *)why.ptr, why.len)
+		: nullptr;
+	call_drop(req);
+	if (status == JOB_CANCELLED)
+		reply_error(req, 503, INTERNAL_ERROR, "Server is shutting down", nullptr, 0);
+	else if (status == JOB_FAILED && !why.len)
+		reply_error(req, 500, INTERNAL_ERROR, "Cannot start the upstream request",
+		            nullptr, 0);
+	else
+		call_reply(req, text, true);
 }
 
 /* Serialize a client's string as "", noting where its text goes:
@@ -837,9 +967,36 @@ call_copy (struct mcp_req *req,
 	return true;
 }
 
+/* Hand the upstream request to a job, which the request names itself to for
+ * the job's completion, and submit the job to home. */
+static void
+call_submit (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct loop *loop = mcp->loop;
+	struct job *job = job_take(mcp);
+	if (!job || loop_handle(loop, req, &req->call)) {
+		if (job)
+			job_shelve(mcp, job);
+		reply_error(req, 500, INTERNAL_ERROR, "Cannot start the upstream request",
+		            nullptr, 0);
+		return;
+	}
+	long ms = mcp->st->ep->timeout_ms;
+	job->request = req->upload;
+	req->upload = (struct buf){};
+	job->call = req->call;
+	job->deadline = ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
+	/* The front's and home's, and the post adds the message's. */
+	atomic_store_explicit(&job->refs, 2, memory_order_relaxed);
+	req->job = job;
+	req->phase = PHASE_CALL;
+	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_SUBMIT);
+}
+
 /* Escape as much of a client's string into the upstream request as the step
  * has the share for, with the draft that follows it; once all is written,
- * start it. */
+ * submit it. */
 static void
 call_build (struct mcp_req *req)
 {
@@ -871,14 +1028,11 @@ call_build (struct mcp_req *req)
 		return;
 	}
 
-	struct ai_endpoint const *ep = mcp->st->ep;
-	struct span body = buf_peek(&req->upload);
 	json_object_put(req->draft);
 	req->draft = nullptr;
-	req->phase = PHASE_CALL;
-	if (!ok || http_post_json(mcp->http, ep->url, (char const *)body.ptr, body.len,
-	                          false, ep->headers, ep->timeout_ms, call_write,
-	                          call_done, req, &req->request))
+	if (ok)
+		call_submit(req);
+	else
 		reply_error(req, 500, INTERNAL_ERROR, "Cannot start the upstream request",
 		            nullptr, 0);
 }
@@ -1215,7 +1369,7 @@ req_parse (struct mcp_req *req)
 static void
 req_answer (struct mcp_req *req)
 {
-	struct span json = buf_peek(&req->response);
+	struct span json = buf_peek(&req->job->result);
 	char const *text = json.len ? (char const *)json.ptr : "";
 	size_t off = req->parser.off;
 	bool over = req_slice(req, &req->mcp->answers, (struct span){
@@ -1231,18 +1385,19 @@ req_answer (struct mcp_req *req)
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
-/* Read the tool's output from the answer, then let go of that. */
+/* Read the tool's output from the answer, then let go of that, and of the
+ * job. */
 static void
 req_text (struct mcp_req *req)
 {
-	struct span body = buf_peek(&req->response);
+	struct span body = buf_peek(&req->job->result);
 	bool failed = true;
-	bool ok = !ai_answer(req->mcp->st->ep->protocol, req->status, req->msg,
+	bool ok = !ai_answer(req->mcp->st->ep->protocol, req->job->http, req->msg,
 	                     body.len ? (char const *)body.ptr : "", body.len,
 	                     &req->answer, &failed);
 	loop_work(req->mcp->loop, LOOP_COPY, dstr_len(&req->answer));
 	req_dispose(req);
-	buf_free(&req->response);
+	call_drop(req);
 	call_reply(req, ok, failed);
 }
 
@@ -1435,7 +1590,7 @@ static void
 mcp_on_cancel (struct stream *s)
 {
 	struct mcp_req *req = s->user;
-	if (req->request)
+	if (req->call.bits)
 		LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", elapsed(&req->start));
 	req->s = nullptr;
 	req_finish(req);
@@ -1462,7 +1617,7 @@ drain_calls (struct loop      *loop,
 		struct mcp_req *req = container_of(mcp->calls.next, struct mcp_req, hook);
 		list_del(&req->hook);
 		req->hook = (struct list){};
-		http_cancel(mcp->http, &req->request);
+		call_drop(req);
 		loop_timer_stop(loop, &req->timer);
 		reply_error(req, 503, INTERNAL_ERROR, "Server is shutting down", nullptr, 0);
 	}
@@ -1471,7 +1626,7 @@ drain_calls (struct loop      *loop,
 int
 mcp_init (struct mcp               **p_mcp,
           struct loop               *loop,
-          struct http               *http,
+          struct loop               *home,
           struct mcp_static const   *st,
           struct metrics_src const  *metrics)
 {
@@ -1483,8 +1638,11 @@ mcp_init (struct mcp               **p_mcp,
 		return ENOMEM;
 	}
 	atomic_init(&counts->kept.spares, 0);
+	atomic_init(&counts->kept.jobs, 0);
 	atomic_init(&counts->kept.bytes[0], 0);
 	atomic_init(&counts->kept.bytes[1], 0);
+	atomic_init(&counts->calls.cancelled, 0);
+	atomic_init(&counts->calls.dropped, 0);
 	for (size_t i = 0; i < METHOD_N; ++i)
 		hist_init(&counts->methods[i]);
 	*mcp = (struct mcp){
@@ -1510,16 +1668,18 @@ mcp_init (struct mcp               **p_mcp,
 		},
 		.metrics = *metrics,
 		.loop = loop,
-		.http = http,
+		.home = home,
 		.st = st,
 		.counts = counts
 	};
 	mcp->metrics.methods = counts->methods;
-	mcp->metrics.kept = &counts->kept;
+	mcp->metrics.loops[0].kept = &counts->kept;
+	mcp->metrics.loops[0].calls = &counts->calls;
 	list_init(&mcp->calls);
 	list_init(&mcp->freeing);
-	list_init(&mcp->spare);
-	*p_mcp = mcp;
+	list_init(&mcp->spare.list);
+	list_init(&mcp->jobs.list);
+	self = *p_mcp = mcp;
 	return 0;
 }
 
@@ -1538,6 +1698,7 @@ mcp_fini (struct mcp **p_mcp)
 	while (mcp_relieve(mcp, BUF_CRITICAL, SIZE_MAX))
 		;
 	loop_unready(&mcp->drain);
+	self = nullptr;
 	free(mcp->counts);
 	free(mcp);
 }
@@ -1545,8 +1706,8 @@ mcp_fini (struct mcp **p_mcp)
 void
 mcp_age (struct mcp *mcp)
 {
-	mcp->idle = mcp->low;
-	mcp->low = mcp->spares;
+	shelf_age(&mcp->spare);
+	shelf_age(&mcp->jobs);
 }
 
 size_t
@@ -1565,14 +1726,18 @@ mcp_relieve (struct mcp        *mcp,
 		return buf_units(size);
 	}
 	size_t done = 0;
-	for (size_t n = level >= BUF_CRITICAL ? mcp->spares
-	              : mcp->low < mcp->idle ? mcp->low : mcp->idle; n; --n) {
-		size_t units = buf_units(req_kept(container_of(mcp->spare.next,
+	for (size_t n = shelf_unused(&mcp->spare, level); n; --n) {
+		size_t units = buf_units(req_kept(container_of(mcp->spare.list.next,
 		                                               struct mcp_req, hook)));
 		if (done && done + units > max)
-			break;
+			return done;
 		req_free(mcp);
 		done += units;
+	}
+	/* Jobs keep no storage, so each is a unit. */
+	for (size_t n = shelf_unused(&mcp->jobs, level); n && done < max; --n, ++done) {
+		hist_add(&mcp->counts->kept.jobs, -1ULL);
+		free(container_of(shelf_drop(&mcp->jobs), struct job, spare));
 	}
 	return done;
 }

@@ -5,22 +5,25 @@
  * alone takes them, through a signalfd; grows the descriptor table while the
  * process has one thread, as the kernel stalls a threaded process for an RCU
  * grace period each time its table grows; starts the logger, the blockers and
- * the event loop's thread, each of which reports back within a time limit;
- * watches the loop's turns and the process's resources; and shuts down.  It
- * never takes a lock the loop holds nor waits for the loop, so it stays
- * responsive when everything else is stuck.
+ * the two event loops' threads, home, the sidekick that runs the jobs, and
+ * then the client loop, each of which reports back within a time limit;
+ * watches their turns and the process's resources; and shuts down.  It never
+ * takes a lock a loop holds nor waits for a loop, so it stays responsive when
+ * everything else is stuck.
  *
  * Memory pressure (design section 5) is a level, enum buf_pressure, that the
  * brainstem works out each second from its inputs, each with hysteresis, and
  * publishes in buf_pressure.  When it rises, and every 10 s while it
- * lasts, the brainstem has the loop relieve it; the loop gives back what it
- * keeps, and the brainstem itself frees nothing of the loop's.
+ * lasts, the brainstem has the loops relieve it; each gives back what it
+ * keeps, and the brainstem itself frees nothing of theirs.
  *
- * Shutdown: the first SIGINT, SIGTERM or SIGHUP has the loop drain within the
- * grace period; a second signal, the grace period running out, or a loop
- * stuck in one turn while it should drain, ends the process at once, after the
- * logger has had a moment to write what it holds, with BRAINSTEM_FORCED.  Of
- * those signals, any the process started with ignored, as under nohup, stays
+ * Shutdown: the first SIGINT, SIGTERM or SIGHUP has the loops drain within
+ * the grace period, as does a loop that exits on its own.  Once the client
+ * loop has exited, home is told it is alone, and exits once its jobs have
+ * ended.  A second signal, the grace period running out, or a loop stuck in
+ * one turn while it should drain, ends the process at once, after the logger
+ * has had a moment to write what it holds, with BRAINSTEM_FORCED.  Of those
+ * signals, any the process started with ignored, as under nohup, stays
  * ignored.
  */
 #ifndef TWINCEPTION_SRC_BRAINSTEM_H_
@@ -33,7 +36,7 @@ struct blockers;
 struct loop;
 
 /** The exit status of a shutdown the brainstem forced; the time between the
- *  loop's reliefs of memory pressure that lasts. */
+ *  loops' reliefs of memory pressure that lasts. */
 enum { BRAINSTEM_FORCED = 3, BRAINSTEM_RELIEF_MS = 10'000 };
 
 /** The least default resident threshold: the default body budget, which
@@ -51,34 +54,38 @@ enum brainstem_input {
 	PRESSURE_INPUTS
 };
 
-/** What runs on the loop's thread. */
+/** What runs on a loop's thread. */
 struct brainstem_app {
 	void *ctx;
 	/** Set up on @p loop, before its first turn; an error fails the start.
 	 *  stop() follows, whatever it returns. */
-	int  (*start) (void            *ctx,
-	               struct loop     *loop,
-	               struct blockers *blockers);
+	int  (*start)   (void            *ctx,
+	                 struct loop     *loop,
+	                 struct blockers *blockers);
 	/** Drain: wind down, and have the loop exit, by @p deadline (ns). */
-	void (*drain) (void            *ctx,
-	               struct loop     *loop,
-	               uint64_t         deadline);
+	void (*drain)   (void            *ctx,
+	                 struct loop     *loop,
+	                 uint64_t         deadline);
 	/** Relieve memory pressure, as buf_pressure says. */
-	void (*relieve) (void          *ctx,
-	                 struct loop   *loop);
+	void (*relieve) (void            *ctx,
+	                 struct loop     *loop);
+	/** Home's only: the client loop has exited; exit once no work is left. */
+	void (*alone)   (void            *ctx,
+	                 struct loop     *loop);
 	/** Tear down, after the loop's last turn. */
-	void (*stop)  (void            *ctx,
-	               struct loop     *loop);
+	void (*stop)    (void            *ctx,
+	                 struct loop     *loop);
 };
 
 struct brainstem_cfg {
-	struct brainstem_app app;
+	struct brainstem_app home;         /**< runs on home, whose loop is 0 */
+	struct brainstem_app client;       /**< runs on the client loop, 1 */
 	uint64_t             memory_high;  /**< resident bytes from which memory
 	                                        pressure is high; 0: a sixteenth of
 	                                        the memory the process may use, at
 	                                        least MEMORY_HIGH_MIN */
-	uint64_t             stall_ms;     /**< test aid: SIGUSR2 holds the loop in
-	                                        one turn this long; 0: off */
+	uint64_t             stall_ms;     /**< test aid: SIGUSR2 holds each loop
+	                                        in one turn this long; 0: off */
 	char const          *pressure;     /**< test aid: a file holding a memory
 	                                        pressure level, which the level is
 	                                        at least; nullptr: none */

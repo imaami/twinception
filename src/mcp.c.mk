@@ -1,1 +1,1 @@
-override INC_mcp.c := json-c libcurl
+override INC_mcp.c := json-c

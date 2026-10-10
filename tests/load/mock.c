@@ -7,7 +7,8 @@
  * before their reply is sent, whether queued for a slot or holding one),
  * reporting them on exit and at GET /stats; requests = served + cancelled +
  * active + queued at all times.  All I/O is non-blocking on one epoll loop, so
- * a disconnect is noticed at once.
+ * a disconnect is noticed at once.  With -c it closes each connection after
+ * its reply, saying so, so that a client keeps none idle.
  */
 #define _GNU_SOURCE
 
@@ -84,6 +85,7 @@ static struct {
 	int          epfd;
 	int          listen_fd;
 	volatile sig_atomic_t stop;
+	uint64_t     closing;      /**< bool, widened over the padding: -c */
 } mock;
 
 static uint64_t
@@ -318,10 +320,9 @@ reply_begin (struct conn *c)
 	if (c->stream) {
 		c->state = ST_STREAM;
 		c->due_ns = 0;
-		char const head[] = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream"
-		                    "\r\nCache-Control: no-cache\r\n"
-		                    "Transfer-Encoding: chunked\r\n\r\n";
-		if (!out_add(c, head, sizeof head - 1))
+		if (!out_printf(c, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream"
+		                "\r\nCache-Control: no-cache\r\n%sTransfer-Encoding: "
+		                "chunked\r\n\r\n", c->keep ? "" : "Connection: close\r\n"))
 			conn_free(c);
 		else
 			flush(c);
@@ -336,7 +337,8 @@ reply_begin (struct conn *c)
 	size_t content = c->tokens_left ? c->tokens_left * 2 - 1 : 0;
 	size_t len = sizeof pre - 1 + content + sizeof tail - 1;
 	bool ok = out_printf(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-	                     "Content-Length: %zu\r\n\r\n", len) &&
+	                     "%sContent-Length: %zu\r\n\r\n",
+	                     c->keep ? "" : "Connection: close\r\n", len) &&
 	          out_add(c, pre, sizeof pre - 1);
 	for (uint32_t i = 0; ok && i < c->tokens_left; ++i)
 		ok = out_add(c, i ? " A" : "A", i ? 2 : 1);
@@ -373,7 +375,7 @@ handle_request (struct conn *c,
 	bool stats = !post && c->in_len >= 4 && !memcmp(c->in, "GET ", 4) &&
 	             memmem(c->in, head, "/stats", 6);
 	unsigned char *body = c->in + head;
-	c->keep = !memmem(c->in, head, "Connection: close", 17) &&
+	c->keep = !mock.closing && !memmem(c->in, head, "Connection: close", 17) &&
 	          !memmem(c->in, head, "connection: close", 17);
 	c->stream = post && (memmem(body, clen, "\"stream\":true", 13) ||
 	                     memmem(body, clen, "\"stream\": true", 14));
@@ -562,16 +564,17 @@ main (int   argc,
 {
 	char const *addr = "127.0.0.1:0";
 	mock.answer_tok = 1;
-	for (int o; (o = getopt(argc, argv, "l:s:d:r:z:h")) >= 0; ) {
+	for (int o; (o = getopt(argc, argv, "l:s:d:r:z:ch")) >= 0; ) {
 		switch (o) {
 		case 'l': addr = optarg; break;
+		case 'c': mock.closing = true; break;
 		case 's': mock.slots = (uint32_t)strtoul(optarg, nullptr, 10); break;
 		case 'd': mock.delay_ms = (uint32_t)strtoul(optarg, nullptr, 10); break;
 		case 'r': mock.tok_per_s = (uint32_t)strtoul(optarg, nullptr, 10); break;
 		case 'z': mock.answer_tok = (uint32_t)strtoul(optarg, nullptr, 10); break;
 		default:
 			fprintf(stderr, "usage: %s [-l host:port] [-s slots] [-d delay_ms] "
-			        "[-r tokens_per_s] [-z answer_tokens]\n", argv[0]);
+			        "[-r tokens_per_s] [-z answer_tokens] [-c]\n", argv[0]);
 			return 2;
 		}
 	}

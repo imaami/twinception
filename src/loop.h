@@ -12,7 +12,18 @@
 
 struct loop;
 struct loop_ref;
+struct loop_slot;
 struct loop_stats;
+
+/**
+ * The name another thread holds of an object of a loop's: never a pointer,
+ * never an fd (design section 1, R2).  It names a slot of the loop's table,
+ * whose generation advances as the slot is freed, so a handle kept after that
+ * names nothing.  0 is no handle.
+ */
+struct handle {
+	uint64_t bits;  /**< loop:8 | slot:24 | gen:32 */
+};
 
 /**
  * The units of work a step may do, and at most how many of each (design
@@ -136,8 +147,11 @@ struct loop {
 	_Atomic uint64_t       asleep;            /**< bool, widened over the padding:
 	                                               waiting with the inbox empty */
 	_Atomic(struct msg *)  inbox;             /**< posted, newest first */
-	/* The atomic members come first: loop_init() and loop_fini() blank the
-	 * rest, from here on, with one memset(). */
+	uint64_t               id;                /**< which loop of the process, < 256,
+	                                               that its handles name: set
+	                                               before loop_init() */
+	/* The atomic members and the id come first: loop_init() and loop_fini()
+	 * blank the rest, from here on, with one memset(). */
 	struct list            refs;
 	struct list            dead;
 	struct list            ready[3];          /**< interactive fresh and ongoing, bulk */
@@ -145,10 +159,12 @@ struct loop {
 	struct loop_timer    **heap;              /**< 4-ary min-heap by due time */
 	struct loop_stats     *stats;
 	struct loop_metrics   *metrics;           /**< read elsewhere */
+	struct loop_slot      *slots;             /**< what its handles name */
 	struct msg            *mail;              /**< taken from the inbox, oldest first */
 	struct msg            *mail_last;
 	size_t                 timers;            /**< armed, the heap's length */
 	size_t                 heap_cap;
+	size_t                 slots_cap;
 	uint64_t               now;               /**< when the turn began, CLOCK_MONOTONIC ns */
 	uint64_t               work[LOOP_UNITS];  /**< done by the step under way */
 	int                    epfd;
@@ -156,6 +172,10 @@ struct loop {
 	uint32_t               stepping;          /**< nonzero while steps run: theirs
 	                                               are not fresh */
 	uint32_t               exit;
+	uint32_t               used;              /**< slots ever used */
+	uint32_t               vacant;            /**< the last slot freed + 1, whose
+	                                               own vacant links the next;
+	                                               0: none */
 };
 
 /**
@@ -189,6 +209,29 @@ loop_fini (struct loop *loop);
 extern void
 loop_post (struct loop *loop,
            struct msg  *msg);
+
+/**
+ * Name @p obj for other threads with a slot of the loop's table, the slot
+ * freed last if there is one: the table grows only past the most named at
+ * once, and keeps its slots.  ENOMEM if it cannot grow, which past 2^24 slots
+ * it never does.
+ */
+extern int
+loop_handle (struct loop   *loop,
+             void          *obj,
+             struct handle *h);
+
+/** What @p h names on @p loop, or nullptr if its slot was freed since it was
+ *  made, or it is another loop's. */
+extern void *
+loop_lookup (struct loop const *loop,
+             struct handle      h);
+
+/** Free the slot @p h names, if it still does: its generation advances, so no
+ *  copy of @p h names anything any more. */
+extern void
+loop_forget (struct loop   *loop,
+             struct handle  h);
 
 extern int
 loop_watch (struct loop     *loop,
@@ -269,10 +312,11 @@ loop_clock (void);
  * and the timers' lateness since the previous call, then one of the work
  * done: the most events, timers and steps in a turn, and the most of each
  * unit in a step against its bound, as "name=most/bound".  Each line starts
- * with "stats "; counting then starts afresh.
+ * with "stats " and @p label; counting then starts afresh.
  */
 extern void
-loop_log_stats (struct loop *loop);
+loop_log_stats (struct loop *loop,
+                char const  *label);
 
 /**
  * Run turns until loop_exit().  Returns the error that stopped it, which only

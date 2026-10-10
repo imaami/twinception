@@ -19,7 +19,8 @@ askai or the mock did not exit 0 or the generator lost arrivals.
 | idle | 5000 keep-alives, one answered ping each, then silence |
 | jobs | 64 connections looping on tool calls; the mock has 1 slot, 50 ms |
 | answers | 16 job connections with 512 KiB answers (S2b) |
-| sse | 64 connections whose tool calls hang up 20 ms after the event stream opens; the mock holds calls 60 s (S2b) |
+| sse | 64 connections whose tool calls hang up 20 ms after the event stream opens (from S4 10–30 ms); the mock holds calls 60 s (S2b) |
+| race | 16 job connections and 48 whose calls hang up 10–30 ms after the event stream opens, against a mock that answers each in 20 ms and closes the connection; churn at 200/s (S4) |
 | loris | 128 loris heads and 128 slow bodies, one byte a second |
 | slowread | 128 clients that pipeline 64 KiB of `tools/list` each and never read |
 | pipeline | 4 MiB batches of 24 966 pings, back to back on one connection |
@@ -50,8 +51,9 @@ back (`LEAK_S` s at most). `run.sh` prints `RATIO`, a `CHECK` per clause and
 | limits | loris or slow-body clients still open once their deadline has passed; an upstream call that outlived its client by 3 s; in the `sse` profile, where every client hangs up on its event stream, any call answered rather than cancelled |
 | leaks | descriptors not back at the idle count + 2, or RSS not back within `RSS_SLACK_KIB` (4096), by the end of the after phase: what askai keeps for reuse it gives back under the induced pressure |
 | fairness | a probe connection's p90 over `FAIR_CONN` (10) × the median connection's, each connection taking its turn of the arrivals; a probe kind's p90 over `FAIR_KIND` (10) × the median kind's; a tool-call connection with no call done while the median one did 3; a heavy mode's p90 batch or body over `FAIR_HEAVY` (50) × its p90 alone, or none done |
-| work | any unit of work in a step over its bound (`loop.h`, design §1), in any phase; work that cannot be split counts in full |
-| outliers | probe p99 in the load or the after phase over `RTT_GROSS` (100) × the idle p99; a turn in either over `TURN_GROSS` (1000) × the idle phase's p99 turn and over `RTT_GROSS` × its probe p99 |
+| work | any unit of work in a step over its bound (`loop.h`, design §1), in any phase, on either loop from S4; work that cannot be split counts in full |
+| jobs | from S4, askai's count of jobs as it exits: submitted not completed + cancelled + rejected, or more upstream cancels than cancelled jobs |
+| outliers | probe p99 in the load or the after phase over `RTT_GROSS` (100) × the idle p99; a turn in either, of either loop from S4, over `TURN_GROSS` (1000) × the idle phase's p99 turn of the client loop and over `RTT_GROSS` × its probe p99 |
 
 Fairness judges the p90: a client held back is slow throughout, while a
 machine hiccup hits everyone alike. `STATS=loop` serves S2a (no work line)
@@ -475,6 +477,129 @@ idle).
     askai now fails no request S3 served, and a relief lowers neither (glibc
     keeps a thread's heap writable); glibc's free memory as a metric
     (`mallinfo2` walks every arena under its lock).
+
+## S4 — handles, jobs and home
+
+Gate "TSan clean under churn; job accounting holds; the §8 verdict on the
+check and storm profiles, ratios to idle beside S3m's; make check green;
+warning-free gcc and clang builds": met. Design §1, §2, §4 and §6 give what
+was built ("as built in S4"), §11.1 the decision on home.
+
+The table is from one run of each profile with the final binary (after the
+review of S4, below), at load average 0.8–1.5, and 1.5–11.7 for storm and
+check, as other programs on the machine got busy; every run passed, and the
+stall self-check gave 241 / 72. Columns as for S3m, with home's longest turn
+in the load and the after phase.
+
+| Profile | Idle p99 | p99 | p99 / idle | Spread | Turn max | Home load / after | After | RSS idle / peak / kept / after |
+|---|---|---|---|---|---|---|---|---|
+| baseline | 92.4 | 90.4 | 1.0 | 1.07 | 234 | 24 / 30 | 194 | 11.9 / 11.9 / 11.9 / 11.9 |
+| idle (5000) | 93.4 | 93.4 | 1.0 | 1.08 | 516 | 21 / 29 | 538 | 11.9 / 13.9 / 13.9 / 13.9 |
+| jobs | 92.4 | 90.4 | 1.0 | 1.07 | 522 | 247 / 447 | 167 | 11.8 / 17.1 / 17.1 / 12.5 |
+| answers | 90.9 | 185.9 | 2.0 | 1.17 | 541 | 354 / 895 | 635 | 11.9 / 26.0 / 26.0 / 12.4 |
+| sse | 89.9 | 205.3 | 2.3 | 1.26 | 533 | 326 / 536 | 266 | 12.0 / 17.2 / 17.3 / 12.8 |
+| race | 96.0 | 94.5 | 1.0 | 1.06 | 457 | 251 / 616 | 208 | 12.0 / 17.1 / 17.1 / 12.7 |
+| loris | 91.4 | 91.9 | 1.0 | 1.10 | 245 | 21 / 29 | 156 | 12.0 / 13.9 / 13.9 / 13.9 |
+| slowread | 91.4 | 96.0 | 1.1 | 1.10 | 524 | 22 / 34 | 174 | 12.0 / 13.6 / 13.6 / 13.6 |
+| pipeline | 96.5 | 119.6 | 1.2 | 1.10 | 268 | 23 / 27 | 231 | 11.9 / 12.0 / 12.0 / 12.0 |
+| hostile | 94.5 | 179.7 | 1.9 | 1.08 | 450 | 24 / 273 | 188 | 12.0 / 16.4 / 16.4 / 12.2 |
+| dense | 91.4 | 228.9 | 2.5 | 1.14 | 280 | 25 / 18.7 ms | 18.4 ms | 12.0 / 292.2 / 292.2 / 12.5 |
+| malformed + churn | 92.4 | 125.7 | 1.4 | 1.06 | 201 | 21 / 22 | 202 | 11.8 / 11.9 / 11.9 / 11.9 |
+| storm | 102.7 | 277.5 | 2.7 | 1.08 | 1.8 ms | 306 / 962 | 638 | 12.1 / 30.7 / 30.7 / 13.1 |
+| check | 90.9 | 420.9 | 4.6 | 1.13 | 1.0 ms | 183 / 24.7 ms | 23.9 ms | 12.1 / 358.8 / 358.8 / 13.1 |
+
+Beside S3m (the commit before S4), three rounds of each profile under S4's
+harness, the binaries taking turns, at load average 1.3–6.6 (ranges over
+the rounds; turn max is the client loop's):
+
+| Profile | p99 / idle, S3m | S4 | Spread, S3m | S4 | Turn max, S3m | S4 |
+|---|---|---|---|---|---|---|
+| check | 4.21–4.63 | 4.23–4.56 | 1.08–1.18 | 1.12–1.15 | 0.96–1.99 ms | 0.83–0.98 ms |
+| storm | 3.04–3.11 | 2.85–2.90 | 1.06–1.11 | 1.07–1.15 | 0.78–2.76 ms | 0.69–0.78 ms |
+| race | 2.10–2.17 | 1.00–1.02 | 1.11–1.13 | 1.05–1.10 | 0.68–1.24 ms | 0.41–0.52 ms |
+| sse | 4.72–5.00 | 2.07–2.10 | 1.10–1.18 | 1.19–1.32 | 0.67–0.78 ms | 0.52–0.60 ms |
+
+`make load` passed at 2.9× idle, turn max 0.59 ms, home's 0.23 ms.
+
+- **Off the client loop:** with libcurl on home, the client loop no longer
+  starts, reads or cancels upstream transfers. Beside hang-ups the probe
+  barely moves: `sse` 2.1× idle against S3m's 4.7–5.0× in the same rounds,
+  `race` 1.0× against 2.1×. (S3m's own table gave `sse` 8.8×, with the
+  harness of the time, whose hang-ups all came 20 ms in.)
+- **Long turns:** both binaries show a turn of 1–2 ms now and then. In a
+  10 s storm the client loop was preempted 56 063 times (S3m's loop
+  58 814), home 100 times: they are the busy machine's, not home's.
+- **Allocator calls** (S3m's shim, 2000 tool calls on one connection, in
+  JSON and on an event stream): askai's own code makes 4 / 6 a call, as in
+  S3m, none of them for the job, its handle or its buffers: the job is the
+  spare one, and home's stash gives its result storage (2199 hits, 1 miss
+  in 2200 calls). Cheap requests: 0 / 0.
+- **Jobs:** every run's count held at exit, submitted = completed +
+  cancelled + rejected with none in flight, and the mock saw no more cancels
+  than askai cancelled jobs: `sse` 29 602 of 29 602 calls cancelled, all
+  upstream (a job cancelled before home sends it never reaches the upstream:
+  the review of S4 saw 6 of 15 498 so); `race` 33 481 submitted, 20 698
+  completed, 12 783 cancelled, of which the mock saw 12 755, the rest
+  cancelled after its answer had gone out. `tests/askai.py` checks,
+  besides, that the calls a client loop cancelled while they waited match
+  the completions it dropped as stale.
+- **Races:** stopping askai while an answer arrives and its client hangs up
+  makes home finish the job in 8 of 10 tries, its completion then finding
+  the call's handle stale, and cancel it in 2; the `race` profile's
+  hang-ups, 10–30 ms in, against a 20 ms upstream, do both by the thousand.
+- **Home's turns:** the first version handled each SUBMIT and CANCEL by
+  calling into libcurl at once, some tens of µs each, and with the inbox's
+  256 messages a turn made home turns of 3.3–4.6 ms in `race`; its messages
+  now only admit, refuse or move jobs, and bulk steps start and cancel them
+  eight at a time: 0.23–0.30 ms. Home's after phase includes its own trim,
+  which, under pressure only, also gives back what the client loop's arena
+  has free.
+- **Sanitizers** (clang, final code): `tests/askai.py`, 22 suites, under
+  ASan/UBSan and under TSan with `halt_on_error`, reports written to files:
+  none, every askai exit as expected; the check, race, jobs and sse
+  profiles under both, malformed with churn under TSan and answers under
+  ASan: every verdict passes, no report; and 30 stress runs that stop
+  askai, with SIGTERM or two signals, 0.8–2.3 s into 32 tool calls, 32
+  hang-ups and 300 connections a second against an upstream of 1–60 ms (20
+  under TSan, 10 under ASan): every exit 0, every job accounted for, 8 jobs
+  refused while home drained, no report.
+- **Harness:** the hang-up mode waits 10–30 ms rather than 20; the `race`
+  profile; the mock's `-c`, as the first `race` under TSan kept 5 idle
+  upstream connections in libcurl's cache and failed the descriptor check
+  (S6 caps the cache); `answers` under TSan fails that check the same way
+  (17–18 descriptors, idle + 2 being 16), with or without the review's
+  fixes, and is not among the sanitizer runs; home's statistics in the
+  `work` and `outliers` clauses; the `jobs` clause. A hostile body over a
+  limit is answered before it is all sent, and one that the generator's
+  stop cut short was counted answered but not sent (171 of 170 in one
+  `check`): it now counts neither way.
+- **Review of S4**, each fix measured on the plain build:
+  - Home counted no work as it took answers in, so the `work` clause passed
+    it unseen; counted, a step took in up to 352 KiB. Home now takes 64 KiB
+    a step and has libcurl hold the rest back: `recv` 65 536 / 65 536 in
+    `answers` and `check`, as many calls done as before.
+  - A job a drain cancelled kept its partial answer, which the front copied
+    in its completion handler: with the client loop's drain held back
+    0.3 s, 16 of 16 calls copied 3 MB each; now none does.
+  - With 1 in 10 of home's allocations failing, libcurl's included, a
+    transfer lost its timeout and its job stayed in flight past its deadline
+    (`-T 3`: 3 of 3 runs); home now ends running jobs at their deadline
+    itself: 4 of 4 runs accounted for every job, the stuck calls timing out
+    after 3 s.
+  - A loop whose release ended before another loop's walk of the arenas
+    began now leaves its own walk out: 1 of 4 critical reliefs after 16
+    cut-off 3 MB answers; in the others the second release ended later, and
+    its walk was needed.
+  - A client loop that could not allocate its server exited 1 without a
+    reason; it says so now.
+  - Tests: `tests/handle.c` (a slot named again under a stale handle,
+    another loop's handle, the generation's wrap, growth), which fails when
+    the generation does not advance, where `check_jobs` passed; home's
+    relief under critical pressure; home's `recv` within its bound, and a
+    17 MiB answer cut off at 16 MiB.
+- **Deviations:** see design §4 (CANCEL also lets go, RETURN, four messages
+  a job; home ends jobs at their deadline; answers paused at a step's
+  share) and §5 (no storage moves between stashes; trims take turns).
 
 ## Open decisions
 
