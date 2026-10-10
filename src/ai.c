@@ -14,23 +14,33 @@ struct answer {
 };
 
 static struct json_object *
-message (char const *role,
-         char const *content)
+message (char const         *role,
+         struct json_object *content)
 {
 	return jb_object("role", json_object_new_string(role),
-	                 "content", json_object_new_string(content),
+	                 "content", json_object_get(content),
 	                 nullptr);
 }
 
 static struct json_object *
-gemini_content (char const *role,
-                char const *text)
+gemini_content (char const         *role,
+                struct json_object *text)
 {
 	struct json_object *parts = jb_list(jb_object(
-		"text", json_object_new_string(text), nullptr));
+		"text", json_object_get(text), nullptr));
 	return role ? jb_object("role", json_object_new_string(role),
 	                        "parts", parts, nullptr)
 	            : jb_object("parts", parts, nullptr);
+}
+
+/* A copy of @p val, which the configuration holds: every loop reads it, so no
+ * request may take a reference, whose count is not atomic.  nullptr if out of
+ * memory. */
+static struct json_object *
+copy (struct json_object *val)
+{
+	struct json_object *dup = nullptr;
+	return json_object_deep_copy(val, &dup, nullptr) ? nullptr : dup;
 }
 
 /* Deep-merge @p src into @p dst; a null value removes the key. */
@@ -47,7 +57,7 @@ merge (struct json_object *dst,
 		           json_object_is_type(cur, json_type_object)) {
 			if (merge(cur, it.val))
 				return ENOMEM;
-		} else if (!jb_set(dst, it.key, json_object_get(it.val))) {
+		} else if (!jb_set(dst, it.key, copy(it.val))) {
 			return ENOMEM;
 		}
 	}
@@ -56,8 +66,8 @@ merge (struct json_object *dst,
 
 struct json_object *
 ai_request (struct ai_endpoint const *ep,
-            char const               *system,
-            char const               *prompt)
+            struct json_object       *system,
+            struct json_object       *prompt)
 {
 	struct json_object *root = json_object_new_object();
 	if (!root)
@@ -80,9 +90,8 @@ ai_request (struct ai_endpoint const *ep,
 	}
 	case AI_RESPONSES:
 		max_key = "max_output_tokens";
-		if (!jb_set(root, "input", json_object_new_string(prompt)) ||
-		    (system && !jb_set(root, "instructions",
-		                       json_object_new_string(system))) ||
+		if (!jb_set(root, "input", json_object_get(prompt)) ||
+		    (system && !jb_set(root, "instructions", json_object_get(system))) ||
 		    !jb_set(root, "store", json_object_new_boolean(0)))
 			goto fail;
 		break;
@@ -90,7 +99,7 @@ ai_request (struct ai_endpoint const *ep,
 		if (max_tokens <= 0)
 			max_tokens = ANTHROPIC_MAX_TOKENS;
 		if (!jb_set(root, "messages", jb_list(message("user", prompt))) ||
-		    (system && !jb_set(root, "system", json_object_new_string(system))))
+		    (system && !jb_set(root, "system", json_object_get(system))))
 			goto fail;
 		break;
 	case AI_GEMINI:
@@ -111,7 +120,7 @@ ai_request (struct ai_endpoint const *ep,
 	if ((max_tokens > 0 &&
 	     !jb_set(options, max_key, json_object_new_int64(max_tokens))) ||
 	    (ep->temperature &&
-	     !jb_set(options, "temperature", json_object_get(ep->temperature))) ||
+	     !jb_set(options, "temperature", copy(ep->temperature))) ||
 	    (ep->extra && merge(root, ep->extra)))
 		goto fail;
 	return root;
@@ -234,32 +243,31 @@ describe_error (struct dstr        *text,
 	if (msg)
 		return dstr_cat(text, msg) ? 0 : ENOMEM;
 
-	/* Quote the start of an unparsable body, not splitting a UTF-8 sequence. */
-	size_t cut = len < 512 ? len : 512;
-	while (cut < len && cut && ((unsigned char)body[cut] & 0xC0) == 0x80)
-		--cut;
-	return dstr_cat_n(text, cut ? body : "empty response",
-	                  cut ? cut : sizeof "empty response" - 1) ? 0 : ENOMEM;
+	/* Quote the start of an unparsable body, as far as it is UTF-8 text. */
+	size_t cut = jb_utf8(body, len < 512 ? len : 512);
+#define QUOTE(s) dstr_cat_n(text, s, sizeof s - 1)
+	bool ok = cut ? dstr_cat_n(text, body, cut)
+	        : len ? QUOTE("a response that is not text")
+	              : QUOTE("empty response");
+#undef QUOTE
+	return ok ? 0 : ENOMEM;
 }
 
 int
-ai_response (enum ai_protocol  protocol,
-             long              status,
-             char const       *body,
-             size_t            len,
-             struct dstr      *text,
-             bool             *failed)
+ai_answer (enum ai_protocol    protocol,
+           long                status,
+           struct json_object *root,
+           char const         *body,
+           size_t              len,
+           struct dstr        *text,
+           bool               *failed)
 {
 	static char const cut_note[] =
 		"\n\n[The answer was cut short by the output token limit.]";
 
-	struct json_object *root = jb_parse(body, len, 0);
 	*failed = status < 200 || status > 299 || !root || jb_get(root, "error");
-	if (*failed) {
-		int e = describe_error(text, status, root, body, len);
-		json_object_put(root);
-		return e;
-	}
+	if (*failed)
+		return describe_error(text, status, root, body, len);
 
 	struct answer answer = {0};
 	int e = 0;
@@ -287,6 +295,5 @@ ai_response (enum ai_protocol  protocol,
 	} else if (!e && answer.truncated) {
 		e = dstr_cat_n(text, cut_note, sizeof cut_note - 1) ? 0 : ENOMEM;
 	}
-	json_object_put(root);
 	return e;
 }

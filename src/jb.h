@@ -3,6 +3,7 @@
 #define TWINCEPTION_SRC_JB_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <json-c/json.h>
 
@@ -53,10 +54,156 @@ extern bool
 jb_is (struct json_object *val,
        char const         *str);
 
-/** Parse exactly one JSON value spanning @p len bytes; nullptr on error. */
+/**
+ * Parse exactly one JSON value spanning @p len bytes; nullptr on error.  At
+ * most @p depth containers may be open at once; 0 leaves json-c's default.
+ */
 extern struct json_object *
 jb_parse (char const *data,
           size_t      len,
-          int         flags);
+          int         flags,
+          uint32_t    depth);
+
+/** What jb_scan() has seen of a JSON text so far; zeroed to begin. */
+struct jb_scan {
+	uint32_t *members;  /**< members of each container open, when counted */
+	size_t    copied;   /**< bytes of the strings ended, keys included: json-c
+	                         copies each whole as it ends */
+	size_t    run;      /**< bytes of the string or scalar under way */
+	uint32_t  cap;      /**< of members */
+	uint32_t  values;   /**< values begun, object keys included */
+	uint32_t  depth;    /**< containers open */
+	enum {
+		JB_SCAN_GAP,
+		JB_SCAN_STRING,
+		JB_SCAN_ESCAPE,
+		JB_SCAN_SCALAR
+	}         state;
+};
+
+/**
+ * Scan up to @p len more bytes of a JSON text, which may arrive in any pieces,
+ * for what parsing it would cost.  Stops before a byte that would open more
+ * than @p depth containers at once, begin more than @p values values, give an
+ * object more than @p members members, or take a number or literal past
+ * @p scalar bytes (UINT32_MAX: no limit), and returns how many bytes it
+ * scanned: @p len unless it stopped.  It does not validate.
+ */
+extern size_t
+jb_scan (struct jb_scan *scan,
+         char const     *data,
+         size_t          len,
+         uint32_t        depth,
+         uint32_t        values,
+         uint32_t        members,
+         uint32_t        scalar);
+
+/** Free what a scan holds. */
+extern void
+jb_scan_end (struct jb_scan *scan);
+
+/** json-c values to free a few at a time; zeroed to begin. */
+struct jb_reaper {
+	struct json_object **stack;  /**< containers being taken apart */
+	size_t               n;
+	size_t               cap;
+};
+
+/**
+ * Hand @p val to @p reaper to free; nothing else may hold a container within
+ * it.  Should memory run out, it is freed at once.
+ */
+extern void
+jb_reap (struct jb_reaper   *reaper,
+         struct json_object *val);
+
+/** Free up to @p values values; returns how many it freed. */
+extern size_t
+jb_reap_some (struct jb_reaper *reaper,
+              size_t            values);
+
+/** Free what is left, all at once. */
+extern void
+jb_reaper_fini (struct jb_reaper *reaper);
+
+/**
+ * Tokeners to reuse, all with the same limits; zeroed but for those.  A
+ * tokener keeps the buffer of the longest string it has parsed, so only one
+ * that has parsed at most @p keep bytes is kept for reuse.
+ */
+struct jb_pool {
+	struct json_tokener *free[4];
+	size_t               keep;
+	uint32_t             n;
+	uint32_t             depth;   /**< containers open at once, at most;
+	                                   0: json-c's default */
+	uint32_t             scalar;  /**< bytes of a number or literal, at most,
+	                                   as json-c converts one whole; 0: any */
+	int                  flags;   /**< json_tokener_set_flags() */
+};
+
+extern void
+jb_pool_fini (struct jb_pool *pool);
+
+/** A parse a slice at a time; zeroed to begin. */
+struct jb_parser {
+	struct json_tokener *tok;
+	struct json_object  *root;    /**< once the value has ended */
+	size_t               off;     /**< bytes parsed */
+	struct jb_scan       cut;     /**< where slices end; cut.values: values
+	                                   parsed, cut.copied: string bytes copied */
+	uint32_t             done;    /**< bool, widened over the padding */
+	uint32_t             failed;  /**< bool, likewise */
+};
+
+/**
+ * Parse the next slice of the @p len bytes at @p data, as jb_parse() would,
+ * with a tokener from @p pool and within its limits: at most @p bytes bytes,
+ * 4 at least, and @p values values.  Returns true once the parse is over,
+ * when jb_parse_take() gives the value, nullptr on error.  A slice never ends
+ * within a character, whose bytes it leaves to the next.
+ */
+extern bool
+jb_parse_some (struct jb_parser *parser,
+               struct jb_pool   *pool,
+               char const       *data,
+               size_t            len,
+               size_t            bytes,
+               uint32_t          values);
+
+/** The parsed value, which the caller now owns; nullptr after an error. */
+static inline struct json_object *
+jb_parse_take (struct jb_parser *parser)
+{
+	struct json_object *root = parser->failed ? nullptr : parser->root;
+	if (root)
+		parser->root = nullptr;
+	return root;
+}
+
+/**
+ * End a parse, over or not, giving its tokener back to @p pool and what it
+ * built and nobody took to @p reaper, or, with none, freeing that at once.
+ */
+extern void
+jb_parse_end (struct jb_parser *parser,
+              struct jb_pool   *pool,
+              struct jb_reaper *reaper);
+
+/** Length of the longest prefix of the @p len bytes at @p str that is UTF-8
+ *  text (RFC 3629), which json-c checks more leniently. */
+extern size_t
+jb_utf8 (char const *str,
+         size_t      len);
+
+/**
+ * Write @p len bytes of UTF-8 text to @p dst, which has room for 6 * @p len,
+ * as the inside of a JSON string, escaped as json-c would with JB_WIRE.
+ * Returns the bytes written.
+ */
+extern size_t
+jb_escape (char       *dst,
+           char const *src,
+           size_t      len);
 
 #endif /* TWINCEPTION_SRC_JB_H_ */

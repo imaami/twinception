@@ -23,8 +23,10 @@ server that gives a model running in `llama-server` a tool for asking another AI
 
 ```sh
 make            # builds twinception and askai
-make check      # end-to-end tests of both, plus the dstr trials
+make check      # end-to-end tests of both, the dstr trials and check-load
 make check-dstr # only the dstr trials
+make check-load # only askai's load verdict on a light mix (10-20 s)
+make load       # askai's load verdict on the storm (doc/core-measurements.md)
 ```
 
 ## Ordinary whole-turn swapping
@@ -241,6 +243,13 @@ UI's MCP client uses, and serves both protocol eras on one endpoint:
 - revision 2026-07-28, which is stateless and checks the mirrored
   `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers against the body.
 
+A tool call answers on an event stream (SSE) when the client accepts
+`text/event-stream` and its revision has them (all but 2024-11-05): the stream
+opens as the call starts, carries a `:` comment every 15 s while the other
+model works (`--sse-keepalive`), and ends with the result as one `data:`
+event.  Other requests, and clients that accept only JSON, get JSON.  Request
+bodies may come with a `Content-Length` or in chunks.
+
 ### Upstream protocols
 
 | `-p`        | API                      | Default endpoint (without `-u`)                                                 | Key variable                       |
@@ -295,7 +304,8 @@ served from another origin, either allow that origin with `-o`, or start
 `llama-server` with `--ui-mcp-proxy` and enable the proxy for this server.
 
 Each tool call is one upstream request; if the user stops generation, the
-web UI sends `notifications/cancelled` and `askai` aborts the upstream request.
+web UI sends `notifications/cancelled`, or closes the call's connection, and
+`askai` aborts the upstream request.
 The web UI waits five minutes for a tool result by default, `askai` ten minutes
 for the upstream answer (`-T`).  Raise both for slow reasoning models.
 
@@ -309,6 +319,69 @@ refuses browser requests whose `Origin` is neither loopback nor allowed by `-o`,
 which defeats DNS-rebinding attacks.  Before listening anywhere else, set
 `ASKAI_TOKEN`; clients must then send `Authorization: Bearer <token>`, which the
 web UI can add as a custom header.
+
+### Limits
+
+`askai` bounds what each client may send and hold, so that slow, oversized or
+abusive clients cannot tie up its event loop, its memory or its descriptors.
+Every limit is an option (see below); a breach gets the HTTP status a client
+can act on:
+
+| Limit | Default | Breach |
+| ----- | ------- | ------ |
+| request line and headers | 16 KiB, 64 fields, sent within 10 s | 431, 408 |
+| request body | 1 MiB, averaging at least 4 KiB/s after 5 s | 413, 408 |
+| JSON in a body | 32 levels deep, 1024 values, 1024 members in an object, numbers of 1 KiB | 400 |
+| bodies held for all clients | 256 MiB | 503 |
+| bodies held for one client address | a quarter of those | 503 |
+| connections per client address (IPv4, or IPv6 /64) | 256 | 503 |
+| idle keep-alive | 30 s | close |
+| pending output | 256 KiB holds requests back, 1 MiB unless one response is all of it | close |
+| output stalled | 30 s | close |
+
+Bytes trickling in or out never extend a deadline.  When `askai` ends a
+connection, it half-closes it and discards what the client still sends for up
+to 2 s, so that a client that sent too much still reads the error.  With
+`ASKAI_TOKEN` set, a request without the token is refused before its body.
+Raise `--max-body` (and `--body-budget`) to pass large documents to the other
+model.  Bodies and answers are parsed and freed, prompts and answers passed
+on, and replies sent, a slice at a time, so a large one hardly holds up other
+clients: only copying its longest string takes a single step, of about 0.4 ms
+per MiB, as does copying an answer's text (answers may take up to 16 MiB).
+Raising `--max-values` lets a body hold more values, each of which json-c
+holds in up to 0.7 KiB while the request runs.  Memory freed goes back to the
+system once `askai` is quiet, in one call that takes about 55 µs per MB freed
+since the last.
+
+Sending `askai` SIGUSR1 prints statistics of its event loop since the
+previous SIGUSR1: how long its turns and steps took, how late its timers
+fired, and the most work of each kind a step did against its bound.
+
+### Running
+
+`askai` serves clients on an event loop thread of its own.  Its main thread
+minds signals, the process's memory and descriptors (and the kernel's
+pressure stall information where there is some), and a watchdog that logs a
+loop turn longer than 20 ms (`--watchdog`).  A logger thread alone writes
+stderr: a reader of stderr that stops reading holds up no client, as lines
+that do not fit in its buffers are dropped and counted.  Two more threads
+look up the upstream host, so libcurl starts no threads of its own.
+
+`GET /metrics` returns metrics in Prometheus's text format: the loop's turn
+and step times, timer lateness and inbox delay, request times by MCP method,
+upstream wait and run times, host lookups, log lines dropped, watchdog
+reports, memory and descriptors.  It answers clients on loopback that name
+it as `localhost`, `127.0.0.1` or `[::1]` (or send no `Host`), and with
+`ASKAI_TOKEN` set, those that send the token.
+
+The first SIGINT, SIGTERM or SIGHUP makes `askai` drain: it stops accepting
+clients, closes idle connections, answers tool calls that wait for the other
+model with an error (on an event stream, as its last event), finishes other
+requests, and exits 0, all within a grace period of 5 s (`--grace`).  A second
+signal, the grace period running out, or an event loop stuck in one turn for
+a second ends it at once, with exit status 3.  A signal that `askai` started
+with ignored, as under `nohup` or in a shell's background job, stays ignored.
+Invalid options or environment exit 2, and a failure to start or to serve 1.
 
 ### askai options
 
@@ -335,6 +408,49 @@ MCP server:
       --tool-name NAME      tool name (default ask_ai)
       --tool-description TEXT
   -v, --verbose             log every tool call
+      --grace SECONDS       to finish what is under way on SIGINT,
+                            SIGTERM or SIGHUP (default 5)
+      --watchdog MS         log a turn of the event loop longer than
+                            this (default 20, 0 = none)
+      --test-stall MS       test aid: SIGUSR2 holds the event loop in
+                            one turn this long
+  -h, --help                show this help
+
+Limits on clients (BYTES may end in K, M or G; 0 = none where noted):
+      --max-head BYTES      request line and headers (default 16K,
+                            at most 65535)
+      --max-fields N        header fields (default 64)
+      --head-timeout SECONDS
+                            time to send those in (default 10, 0 = none)
+      --max-body BYTES      request body (default 1M)
+      --min-body-rate RATE  bytes per second a body must average from
+                            its start (default 4K, 0 = none),
+      --body-grace SECONDS  once this has passed (default 5)
+      --body-budget BYTES   bodies held for all clients (default 256M)
+      --client-budget BYTES
+                            of those, held for one client address
+                            (default: a quarter, at least --max-body)
+      --max-depth N         JSON nesting in a request (default 32)
+      --max-values N        JSON values in a request, keys included
+                            (default 1024; json-c takes up to 0.7 KiB
+                            for each while it holds them)
+      --max-members N       members of one JSON object in a request
+                            (default 1024)
+      --sse-keepalive SECONDS
+                            between comments that keep an event stream
+                            open (default 15, 0 = none)
+      --max-client-conns N  connections per client address
+                            (default 256, 0 = none)
+      --idle-timeout SECONDS
+                            keep-alive idle time (default 30, 0 = none)
+      --output-pause BYTES  pending output that holds back a connection's
+                            requests until it drains (default 256K)
+      --max-output BYTES    close a connection whose pending output a
+                            response would take past this, unless it
+                            is all that is pending (default 1M)
+      --send-timeout SECONDS
+                            longest stall of pending output
+                            (default 30, 0 = none)
 ```
 
 ## dstr

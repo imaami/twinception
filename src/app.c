@@ -290,10 +290,12 @@ model_post_json (struct app          *app,
 	if (!body)
 		return ENOMEM;
 
-	char const *json = json_object_to_json_string_ext(body,
-	                                                  JSON_C_TO_STRING_PLAIN);
+	size_t len;
+	char const *json = json_object_to_json_string_length(body,
+	                                                     JSON_C_TO_STRING_PLAIN,
+	                                                     &len);
 	char const *headers[] = { dstr_get(&app->bearer), nullptr };
-	int e = json ? http_post_json(app->http, url, json,
+	int e = json ? http_post_json(app->http, url, json, len, true,
 	                              app->cfg.provider[model] == APP_PROVIDER_DEEPINFRA
 	                              ? headers : nullptr,
 	                              0, write_cb, done_cb, user, request)
@@ -1634,12 +1636,9 @@ app_queue_prompt (struct app *app,
 }
 
 static int
-app_stdin_event (struct loop     *loop,
-                 struct loop_ref *ref,
-                 uint32_t         events)
+app_stdin_read (struct app *app,
+                uint32_t    events)
 {
-	(void)loop;
-	struct app *app = ref->owner;
 	char data[4096];
 
 	if (events & (EPOLLHUP | EPOLLRDHUP))
@@ -1688,6 +1687,18 @@ app_stdin_event (struct loop     *loop,
 
 	app_advance(app);
 	return 0;
+}
+
+static void
+app_stdin_event (struct loop     *loop,
+                 struct loop_ref *ref,
+                 uint32_t         events)
+{
+	(void)loop;
+	struct app *app = ref->owner;
+	int e = app_stdin_read(app, events);
+	if (e)
+		app_fail(app, e);
 }
 
 static struct template_probe

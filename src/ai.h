@@ -26,23 +26,30 @@ struct ai_endpoint {
 	enum ai_protocol    protocol;
 };
 
-/** Build the request body asking @p prompt; nullptr if out of memory. */
+/**
+ * Build the request body asking @p prompt, with @p system instructions unless
+ * that is nullptr; nullptr if out of memory.  Both are JSON strings, which the
+ * body takes references to; what it takes from @p ep, it copies.
+ */
 extern struct json_object *
 ai_request (struct ai_endpoint const *ep,
-            char const               *system,
-            char const               *prompt);
+            struct json_object       *system,
+            struct json_object       *prompt);
 
 /**
- * Turn an upstream HTTP response into tool output in @p text, which must start
- * empty.  @p *failed is set when @p text explains an error instead of carrying
- * an answer.
+ * Turn an upstream HTTP response, the @p len bytes at @p body, into tool
+ * output in @p text, which must start empty.  @p root is the body parsed as
+ * UTF-8 JSON, or nullptr if it is not that; it stays the caller's.
+ * @p *failed is set when @p text explains an error instead of carrying an
+ * answer.
  */
 extern int
-ai_response (enum ai_protocol  protocol,
-             long              status,
-             char const       *body,
-             size_t            len,
-             struct dstr      *text,
-             bool             *failed);
+ai_answer (enum ai_protocol    protocol,
+           long                status,
+           struct json_object *root,
+           char const         *body,
+           size_t              len,
+           struct dstr        *text,
+           bool               *failed);
 
 #endif /* TWINCEPTION_SRC_AI_H_ */

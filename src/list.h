@@ -38,6 +38,20 @@ list_del (struct list *node)
 	list_init(node);
 }
 
+/** Move every node of @p src to the end of @p list, leaving @p src empty. */
+static inline void
+list_transplant (struct list *list,
+                 struct list *src)
+{
+	if (list_is_empty(src))
+		return;
+	src->next->prev = list->prev;
+	list->prev->next = src->next;
+	src->prev->next = list;
+	list->prev = src->prev;
+	list_init(src);
+}
+
 #define list_foreach(pos, head) \
 	for ((pos) = (head)->next; (pos) != (head); (pos) = (pos)->next)
 

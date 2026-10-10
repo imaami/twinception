@@ -1,0 +1,252 @@
+/** @file Prometheus text exposition of the core's metrics (metrics.h). */
+#include <errno.h>
+#include <inttypes.h>
+#include <stdarg.h>
+#include <stdio.h>
+
+#include "blocker.h"
+#include "brainstem.h"
+#include "http.h"
+#include "log.h"
+#include "loop.h"
+#include "metrics.h"
+#include "util.h"
+
+/* What a call renders at most, a histogram costing 8 and a value 1: a
+ * histogram's buckets take a pass over all of its own. */
+enum { BUDGET = 32 };
+
+enum source { LOOP, HTTP, BLOCKERS, METHODS, BRAINSTEM, LOGGER, PSI, SOURCES };
+enum kind { COUNTER, GAUGE, HISTOGRAM };
+enum scale { ONE, NS, US, PERMYRIAD };
+
+/* A series; help, given for the first of a family only, starts the family. */
+struct entry {
+	char const *name;
+	char const *help;
+	char const *labels;  /* within the braces, or "" */
+	uint32_t    off;     /* into its source */
+	uint8_t     source;
+	uint8_t     kind;
+	uint16_t    scale;
+};
+
+static char const *const kinds[] = { "counter", "gauge", "histogram" };
+
+static struct {
+	uint64_t    ns;
+	char const *le;
+} const bounds[] = {
+	{ 1'000, "1e-06" },               { 10'000, "1e-05" },
+	{ 25'000, "2.5e-05" },            { 50'000, "5e-05" },
+	{ 100'000, "0.0001" },            { 250'000, "0.00025" },
+	{ 500'000, "0.0005" },            { 1'000'000, "0.001" },
+	{ 2'500'000, "0.0025" },          { 5'000'000, "0.005" },
+	{ 10'000'000, "0.01" },           { 25'000'000, "0.025" },
+	{ 50'000'000, "0.05" },           { 100'000'000, "0.1" },
+	{ 250'000'000, "0.25" },          { 500'000'000, "0.5" },
+	{ 1'000'000'000, "1" },           { 2'500'000'000, "2.5" },
+	{ 5'000'000'000, "5" },           { 10'000'000'000, "10" },
+	{ 30'000'000'000, "30" },         { 60'000'000'000, "60" },
+	{ 300'000'000'000, "300" },
+};
+
+#define L "loop=\"0\""
+#define LOOP_HIST(name, help, labels, field) \
+	{ name, help, L labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NS }
+#define WORK(help, unit, u) \
+	{ "askai_loop_step_work_max", help, L ",unit=\"" unit "\"", \
+	  offsetof(struct loop_metrics, work[u]), LOOP, GAUGE, ONE }
+#define METHOD(help, method, m) \
+	{ "askai_request_seconds", help, "method=\"" method "\"", \
+	  (m) * sizeof (struct hist), METHODS, HISTOGRAM, NS }
+#define VALUE(name, help, labels, type, field, source, kind, scale) \
+	{ name, help, labels, offsetof(type, field), source, kind, scale }
+
+static struct entry const table[] = {
+	LOOP_HIST("askai_loop_turn_seconds", "Time an event loop turn took.", "", turn),
+	LOOP_HIST("askai_loop_step_seconds", "Time a step took.",
+	          ",kind=\"interactive\"", step[0]),
+	LOOP_HIST("askai_loop_step_seconds", nullptr, ",kind=\"bulk\"", step[1]),
+	LOOP_HIST("askai_loop_timer_lateness_seconds", "How late a timer fired.", "",
+	          late),
+	LOOP_HIST("askai_loop_inbox_delay_seconds",
+	          "Time from a message's post to its handler.", "", inbox),
+	WORK("The most of a unit of work one step did (design section 1).", "reqs",
+	     LOOP_REQS),
+	WORK(nullptr, "recv", LOOP_RECV),
+	WORK(nullptr, "send", LOOP_SEND),
+	WORK(nullptr, "body", LOOP_BODY),
+	WORK(nullptr, "parse", LOOP_PARSE),
+	WORK(nullptr, "values", LOOP_VALUES),
+	WORK(nullptr, "escape", LOOP_ESCAPE),
+	WORK(nullptr, "copy", LOOP_COPY),
+	WORK(nullptr, "accepts", LOOP_ACCEPTS),
+	WORK(nullptr, "closes", LOOP_CLOSES),
+	METHOD("Time from a request's head to its end, by MCP method.", "initialize",
+	       METHOD_INITIALIZE),
+	METHOD(nullptr, "ping", METHOD_PING),
+	METHOD(nullptr, "tools/list", METHOD_TOOLS_LIST),
+	METHOD(nullptr, "tools/call", METHOD_TOOLS_CALL),
+	METHOD(nullptr, "server/discover", METHOD_DISCOVER),
+	METHOD(nullptr, "notification", METHOD_NOTIFY),
+	METHOD(nullptr, "metrics", METHOD_METRICS),
+	METHOD(nullptr, "other", METHOD_OTHER),
+	VALUE("askai_upstream_wait_seconds", "Time from an upstream request to its "
+	      "start in libcurl, its host's lookup included.", "", struct http_metrics,
+	      wait, HTTP, HISTOGRAM, NS),
+	VALUE("askai_upstream_run_seconds", "Time an upstream request ran in libcurl.",
+	      "", struct http_metrics, run, HTTP, HISTOGRAM, NS),
+	VALUE("askai_upstream_lookups_total", "Upstream host lookups, by result.",
+	      "result=\"ok\"", struct http_metrics, lookups[1], HTTP, COUNTER, ONE),
+	VALUE("askai_upstream_lookups_total", nullptr, "result=\"failed\"",
+	      struct http_metrics, lookups[0], HTTP, COUNTER, ONE),
+	VALUE("askai_blocker_jobs_total", "Jobs the blockers did.", "",
+	      struct blocker_metrics, done, BLOCKERS, COUNTER, ONE),
+	VALUE("askai_blocker_refused_total", "Jobs a full blocker queue refused.", "",
+	      struct blocker_metrics, refused, BLOCKERS, COUNTER, ONE),
+	VALUE("askai_log_lines_total", "Lines logged.", "", struct log_metrics, lines,
+	      LOGGER, COUNTER, ONE),
+	VALUE("askai_log_dropped_total", "Lines lost to a full log ring.", "",
+	      struct log_metrics, dropped, LOGGER, COUNTER, ONE),
+	VALUE("askai_log_suppressed_total", "Lines a rate limit held back.", "",
+	      struct log_metrics, suppressed, LOGGER, COUNTER, ONE),
+	VALUE("askai_watchdog_reports_total", "Turns the watchdog found too long.", "",
+	      struct brainstem_metrics, reports, BRAINSTEM, COUNTER, ONE),
+	VALUE("askai_watchdog_late_wakes_total", "Times the watchdog woke late, and "
+	      "vouched for no turn's time before.", "", struct brainstem_metrics, late,
+	      BRAINSTEM, COUNTER, ONE),
+	VALUE("askai_resident_bytes", "Resident memory.", "", struct brainstem_metrics,
+	      rss, BRAINSTEM, GAUGE, ONE),
+	VALUE("askai_open_fds", "Descriptors open.", "", struct brainstem_metrics, fds,
+	      BRAINSTEM, GAUGE, ONE),
+	VALUE("askai_max_fds", "The descriptor limit.", "", struct brainstem_metrics,
+	      fd_limit, BRAINSTEM, GAUGE, ONE),
+	VALUE("askai_pressure_ratio", "Share of the last 10 s in which some task "
+	      "stalled on the resource (PSI some avg10).", "resource=\"cpu\"",
+	      struct brainstem_metrics, psi[0], PSI, GAUGE, PERMYRIAD),
+	VALUE("askai_pressure_ratio", nullptr, "resource=\"memory\"",
+	      struct brainstem_metrics, psi[1], PSI, GAUGE, PERMYRIAD),
+	VALUE("askai_pressure_ratio", nullptr, "resource=\"io\"",
+	      struct brainstem_metrics, psi[2], PSI, GAUGE, PERMYRIAD),
+	VALUE("askai_pressure_stalled_seconds_total", "Time some task stalled on the "
+	      "resource (PSI some total).", "resource=\"cpu\"", struct brainstem_metrics,
+	      psi_total[0], PSI, COUNTER, US),
+	VALUE("askai_pressure_stalled_seconds_total", nullptr, "resource=\"memory\"",
+	      struct brainstem_metrics, psi_total[1], PSI, COUNTER, US),
+	VALUE("askai_pressure_stalled_seconds_total", nullptr, "resource=\"io\"",
+	      struct brainstem_metrics, psi_total[2], PSI, COUNTER, US),
+};
+
+#undef VALUE
+#undef METHOD
+#undef WORK
+#undef LOOP_HIST
+#undef L
+
+/* Append text, formatted as by printf(); false if out of memory. */
+[[gnu::format(printf, 2, 3)]]
+static bool
+put (struct buf *out,
+     char const *fmt,
+     ...)
+{
+	for (size_t room = 256;;) {
+		struct span s = buf_reserve(out, room, SIZE_MAX);
+		if (!s.len)
+			return false;
+		va_list ap;
+		va_start(ap, fmt);
+		int n = vsnprintf((char *)s.ptr, s.len, fmt, ap);
+		va_end(ap);
+		if (n < 0)
+			return false;
+		if ((size_t)n < s.len) {
+			buf_commit(out, (size_t)n);
+			return true;
+		}
+		room = (size_t)n + 1;
+	}
+}
+
+/* A histogram's cumulative buckets, to its own resolution, then its sum and
+ * count; the count is the buckets' total, which a writer may have moved on
+ * from meanwhile. */
+static bool
+put_hist (struct buf         *out,
+          struct entry const *e,
+          struct hist const  *h)
+{
+	char const *sep = *e->labels ? "," : "";
+	uint64_t n = 0;
+	size_t i = 0;
+	for (size_t b = 0; b < ARRAY_SIZE(bounds); ++b) {
+		for (size_t end = hist_index(bounds[b].ns); i <= end; ++i)
+			n += hist_get(&h->bucket[i]);
+		if (!put(out, "%s_bucket{%s%sle=\"%s\"} %" PRIu64 "\n", e->name, e->labels,
+		         sep, bounds[b].le, n))
+			return false;
+	}
+	for (; i < HIST_BUCKETS; ++i)
+		n += hist_get(&h->bucket[i]);
+	char const *open = *e->labels ? "{" : "";
+	char const *close = *e->labels ? "}" : "";
+	return put(out, "%s_bucket{%s%sle=\"+Inf\"} %" PRIu64 "\n"
+	           "%s_sum%s%s%s %.9g\n%s_count%s%s%s %" PRIu64 "\n",
+	           e->name, e->labels, sep, n,
+	           e->name, open, e->labels, close, (double)hist_get(&h->sum) / 1e9,
+	           e->name, open, e->labels, close, n);
+}
+
+static bool
+put_value (struct buf             *out,
+           struct entry const     *e,
+           _Atomic uint64_t const *p)
+{
+	uint64_t v = hist_get(p);
+	char const *open = *e->labels ? "{" : "";
+	char const *close = *e->labels ? "}" : "";
+	switch (e->scale) {
+	case US:
+		return put(out, "%s%s%s%s %.6f\n", e->name, open, e->labels, close,
+		           (double)v / 1e6);
+	case PERMYRIAD:
+		return put(out, "%s%s%s%s %.4f\n", e->name, open, e->labels, close,
+		           (double)v / 1e4);
+	default:
+		return put(out, "%s%s%s%s %" PRIu64 "\n", e->name, open, e->labels, close, v);
+	}
+}
+
+int
+metrics_render (struct metrics_src const *src,
+                size_t                   *pos,
+                struct buf               *out)
+{
+	void const *const base[SOURCES] = {
+		[LOOP] = src->loop,
+		[HTTP] = src->http,
+		[BLOCKERS] = src->blockers,
+		[METHODS] = src->methods,
+		[BRAINSTEM] = &brainstem_metrics,
+		[LOGGER] = &log_metrics,
+		[PSI] = hist_get(&brainstem_metrics.psi_ok) ? &brainstem_metrics : nullptr,
+	};
+	for (unsigned cost = 0; *pos < ARRAY_SIZE(table) && cost < BUDGET; ++*pos) {
+		struct entry const *e = &table[*pos];
+		char const *at = base[e->source];
+		if (!at)
+			continue;
+		at += e->off;
+		if (e->help && !put(out, "# HELP %s %s\n# TYPE %s %s\n", e->name, e->help,
+		                    e->name, kinds[e->kind]))
+			return ENOMEM;
+		bool ok = e->kind == HISTOGRAM
+		        ? put_hist(out, e, (struct hist const *)(void const *)at)
+		        : put_value(out, e, (_Atomic uint64_t const *)(void const *)at);
+		if (!ok)
+			return ENOMEM;
+		cost += e->kind == HISTOGRAM ? 8 : 1;
+	}
+	return *pos < ARRAY_SIZE(table) ? EAGAIN : 0;
+}
