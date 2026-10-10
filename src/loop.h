@@ -130,6 +130,14 @@ struct loop_timer {
  * any thread may call, and the fields marked as read elsewhere.
  */
 struct loop {
+	_Atomic uint64_t       turn;              /**< when the turn under way began, or 0
+	                                               while waiting for events: read by
+	                                               a watchdog */
+	_Atomic uint64_t       asleep;            /**< bool, widened over the padding:
+	                                               waiting with the inbox empty */
+	_Atomic(struct msg *)  inbox;             /**< posted, newest first */
+	/* The atomic members come first: loop_init() and loop_fini() blank the
+	 * rest, from here on, with one memset(). */
 	struct list            refs;
 	struct list            dead;
 	struct list            ready[3];          /**< interactive fresh and ongoing, bulk */
@@ -139,16 +147,10 @@ struct loop {
 	struct loop_metrics   *metrics;           /**< read elsewhere */
 	struct msg            *mail;              /**< taken from the inbox, oldest first */
 	struct msg            *mail_last;
-	_Atomic(struct msg *)  inbox;             /**< posted, newest first */
 	size_t                 timers;            /**< armed, the heap's length */
 	size_t                 heap_cap;
 	uint64_t               now;               /**< when the turn began, CLOCK_MONOTONIC ns */
 	uint64_t               work[LOOP_UNITS];  /**< done by the step under way */
-	_Atomic uint64_t       turn;              /**< when the turn under way began, or 0
-	                                               while waiting for events: read by
-	                                               a watchdog */
-	_Atomic uint64_t       asleep;            /**< bool, widened over the padding:
-	                                               waiting with the inbox empty */
 	int                    epfd;
 	int                    error;
 	uint32_t               stepping;          /**< nonzero while steps run: theirs
@@ -156,12 +158,26 @@ struct loop {
 	uint32_t               exit;
 };
 
+/**
+ * A loop at rest, to declare where it is to stay, `struct loop l = loop();`,
+ * or as a member of a struct so declared: its atomic members are then valid
+ * (hist.h), as loop_init() needs.
+ */
+extern struct loop
+loop (void);
+
+/**
+ * Start @p loop, whose atomic members are valid: it was declared from loop(),
+ * is of static or thread storage duration, or loop_fini() ended it.  It resets
+ * them by atomic stores.  On failure, loop_fini() releases what it has.
+ */
 extern int
 loop_init (struct loop *loop);
 
 /**
  * Free the loop, after handling what its inbox still holds, its exit flag
  * set: a handler takes its message back then, and leaves the rest alone.
+ * Its atomic members stay valid, and the rest is blanked.
  */
 extern void
 loop_fini (struct loop *loop);

@@ -612,8 +612,8 @@ probe_init (struct probe           *p,
 {
 	*p = (struct probe){
 		.t = t,
-		.hist = calloc(H_N, sizeof *p->hist),
-		.conn_hist = calloc((size_t)nka + 1, sizeof *p->conn_hist),
+		.hist = malloc(H_N * sizeof *p->hist),
+		.conn_hist = malloc(((size_t)nka + 1) * sizeof *p->conn_hist),
 		.pool = calloc((size_t)(nka + nfresh), sizeof *p->pool),
 		.rng = 0x2545F4914F6CDD1Du ^ now_ns(),
 		.timeout_ns = timeout_ns,
@@ -623,6 +623,10 @@ probe_init (struct probe           *p,
 		.kind_first = nka ? PK_PING : PK_FRESH,
 		.kind_end = nfresh ? PK_N : PK_FRESH,
 	};
+	for (int i = 0; p->hist && i < H_N; ++i)
+		hist_init(&p->hist[i]);
+	for (int i = 0; p->conn_hist && i <= nka; ++i)
+		hist_init(&p->conn_hist[i]);
 	for (int i = 0; p->pool && i < p->npool; ++i) {
 		p->pool[i].fd = -1;
 		p->pool[i].fresh = i >= nka;

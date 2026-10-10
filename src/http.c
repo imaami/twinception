@@ -535,9 +535,15 @@ http_init (struct http **p_http,
 		.start.fn = http_start_step,
 		.fail.fn = http_fail_step,
 		.loop = loop,
-		.metrics = calloc(1, sizeof *http->metrics),
+		.metrics = malloc(sizeof *http->metrics),
 		.multi = curl_multi_init()
 	};
+	if (http->metrics) {
+		hist_init(&http->metrics->wait);
+		hist_init(&http->metrics->run);
+		atomic_init(&http->metrics->lookups[0], 0);
+		atomic_init(&http->metrics->lookups[1], 0);
+	}
 	list_init(&http->queued);
 	list_init(&http->requests);
 	list_init(&http->sockets);

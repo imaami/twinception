@@ -249,10 +249,14 @@ log_start (size_t rings,
 	lg.rings = aligned_alloc(alignof(struct ring), rings * sizeof *lg.rings);
 	if (!lg.rings)
 		return ENOMEM;
-	memset(lg.rings, 0, rings * sizeof *lg.rings);
 	int e = 0;
-	for (size_t i = 0; !e && i < rings; ++i, ++lg.n)
-		e = (lg.rings[i].data = malloc(RING)) ? 0 : ENOMEM;
+	for (size_t i = 0; !e && i < rings; ++i, ++lg.n) {
+		struct ring *r = &lg.rings[i];
+		atomic_init(&r->head, 0);
+		atomic_init(&r->tail, 0);
+		r->seen = 0;
+		e = (r->data = malloc(RING)) ? 0 : ENOMEM;
+	}
 	if (!e && (lg.wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) < 0)
 		e = errno;
 	lg.notify_fd = notify_fd;

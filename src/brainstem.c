@@ -617,17 +617,19 @@ brainstem_run (struct brainstem_cfg const *cfg)
 	/* Static, as a blocker stuck in a call may post to the loop until the
 	 * process exits. */
 	uint64_t now = loop_clock();
-	static struct brainstem bs;
-	bs = (struct brainstem){
+	static struct brainstem bs = {
 		.order.fn = loop_order,
-		.cfg = cfg,
 		.deadline = UINT64_MAX,
-		.tick = now,
-		.resumed = now,
-		.sample = now,
-		.sig_fd = signalfd(-1, &mine, SFD_NONBLOCK | SFD_CLOEXEC),
-		.wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)
+		.state = STARTING,
+		.sig_fd = -1,
+		.wake_fd = -1
 	};
+	bs.cfg = cfg;
+	bs.tick = now;
+	bs.resumed = now;
+	bs.sample = now;
+	bs.sig_fd = signalfd(-1, &mine, SFD_NONBLOCK | SFD_CLOEXEC);
+	bs.wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 	int e = bs.sig_fd < 0 || bs.wake_fd < 0 ? errno : 0;
 	fd_table(bs.wake_fd);
 	cgroup_dir(&bs);

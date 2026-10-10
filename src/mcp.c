@@ -185,6 +185,13 @@ struct mcp_req {
 	bool                 blocked;    /* waiting for on_writable() */
 };
 
+/* What the server counts, for any thread to read: allocated apart, so that
+ * its atomic members are initialized where they stay (hist.h). */
+struct mcp_counts {
+	struct metrics_kept kept;
+	struct hist         methods[METHOD_N];  /* by enum metrics_method */
+};
+
 struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
 	struct list              freeing;   /* requests freeing their message */
@@ -194,12 +201,11 @@ struct mcp {
 	struct stream_app        app;
 	struct jb_pool           pool;      /* for request bodies */
 	struct jb_pool           answers;   /* for upstream answers */
-	struct metrics_src       metrics;   /* methods and kept: below */
-	struct metrics_kept      kept;
+	struct metrics_src       metrics;   /* counts' */
+	struct mcp_counts       *counts;
 	struct loop             *loop;
 	struct http             *http;
 	struct mcp_static const *st;
-	struct hist             *methods;   /* METHOD_N, by enum metrics_method */
 	size_t                   spares;    /* on spare */
 	size_t                   low;       /* fewest on spare in this window */
 	size_t                   idle;      /* fewest on spare in the window before */
@@ -377,7 +383,7 @@ static void
 req_end (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
-	hist_record(&mcp->methods[req->method], loop_clock() - req->head);
+	hist_record(&mcp->counts->methods[req->method], loop_clock() - req->head);
 	if (req->s)
 		req->s->ops->end(req->s, req->error);
 	if (req->hook.next)
@@ -385,10 +391,10 @@ req_end (struct mcp_req *req)
 	loop_unready(&req->step);
 	list_append(&mcp->spare, &req->hook);
 	++mcp->spares;
-	hist_add(&mcp->kept.spares, 1);
-	hist_add(&mcp->kept.bytes[0], req_kept(req));
-	atomic_store_explicit(&mcp->kept.bytes[1], mcp->pool.bytes + mcp->answers.bytes,
-	                      memory_order_relaxed);
+	hist_add(&mcp->counts->kept.spares, 1);
+	hist_add(&mcp->counts->kept.bytes[0], req_kept(req));
+	atomic_store_explicit(&mcp->counts->kept.bytes[1],
+	                      mcp->pool.bytes + mcp->answers.bytes, memory_order_relaxed);
 }
 
 /* A request to begin, the spare one that ended last if there is one, whose
@@ -407,8 +413,8 @@ req_new (struct mcp *mcp)
 	list_del(&req->hook);
 	if (--mcp->spares < mcp->low)
 		mcp->low = mcp->spares;
-	hist_add(&mcp->kept.spares, -1ULL);
-	hist_add(&mcp->kept.bytes[0], -req_kept(req));
+	hist_add(&mcp->counts->kept.spares, -1ULL);
+	hist_add(&mcp->counts->kept.bytes[0], -req_kept(req));
 	return req;
 }
 
@@ -422,8 +428,8 @@ req_free (struct mcp *mcp)
 	--mcp->spares;
 	mcp->low -= mcp->low > 0;
 	mcp->idle -= mcp->idle > 0;
-	hist_add(&mcp->kept.spares, -1ULL);
-	hist_add(&mcp->kept.bytes[0], -req_kept(req));
+	hist_add(&mcp->counts->kept.spares, -1ULL);
+	hist_add(&mcp->counts->kept.bytes[0], -req_kept(req));
 	jb_reaper_fini(&req->reaper);
 	jb_scan_end(&req->scan);
 	dstr_cleanup(&req->answer);
@@ -1470,12 +1476,17 @@ mcp_init (struct mcp               **p_mcp,
           struct metrics_src const  *metrics)
 {
 	struct mcp *mcp = malloc(sizeof *mcp);
-	struct hist *methods = calloc(METHOD_N, sizeof *methods);
-	if (!mcp || !methods) {
-		free(methods);
+	struct mcp_counts *counts = malloc(sizeof *counts);
+	if (!mcp || !counts) {
+		free(counts);
 		free(mcp);
 		return ENOMEM;
 	}
+	atomic_init(&counts->kept.spares, 0);
+	atomic_init(&counts->kept.bytes[0], 0);
+	atomic_init(&counts->kept.bytes[1], 0);
+	for (size_t i = 0; i < METHOD_N; ++i)
+		hist_init(&counts->methods[i]);
 	*mcp = (struct mcp){
 		.drain.fn = drain_calls,
 		.app = {
@@ -1501,10 +1512,10 @@ mcp_init (struct mcp               **p_mcp,
 		.loop = loop,
 		.http = http,
 		.st = st,
-		.methods = methods
+		.counts = counts
 	};
-	mcp->metrics.methods = methods;
-	mcp->metrics.kept = &mcp->kept;
+	mcp->metrics.methods = counts->methods;
+	mcp->metrics.kept = &counts->kept;
 	list_init(&mcp->calls);
 	list_init(&mcp->freeing);
 	list_init(&mcp->spare);
@@ -1527,7 +1538,7 @@ mcp_fini (struct mcp **p_mcp)
 	while (mcp_relieve(mcp, BUF_CRITICAL, SIZE_MAX))
 		;
 	loop_unready(&mcp->drain);
-	free(mcp->methods);
+	free(mcp->counts);
 	free(mcp);
 }
 
@@ -1549,7 +1560,7 @@ mcp_relieve (struct mcp        *mcp,
 	size_t keep = level >= BUF_CRITICAL ? 0 : LOOP_STEP_PARSE;
 	size_t size = jb_pool_release(&mcp->pool, keep);
 	if (size || (size = jb_pool_release(&mcp->answers, keep))) {
-		atomic_store_explicit(&mcp->kept.bytes[1], mcp->pool.bytes +
+		atomic_store_explicit(&mcp->counts->kept.bytes[1], mcp->pool.bytes +
 		                      mcp->answers.bytes, memory_order_relaxed);
 		return buf_units(size);
 	}

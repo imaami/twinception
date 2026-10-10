@@ -68,6 +68,9 @@ blockers_start (struct blockers **p_blockers,
 	struct blockers *b = calloc(1, sizeof *b);
 	if (!b)
 		return ENOMEM;
+	atomic_init(&b->metrics.done, 0);
+	atomic_init(&b->metrics.refused, 0);
+	atomic_init(&b->exited, 0);
 	list_init(&b->queue);
 	b->notify_fd = notify_fd;
 	int e = pthread_mutex_init(&b->lock, nullptr);

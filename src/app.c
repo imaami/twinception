@@ -1744,15 +1744,15 @@ rapid_model (struct app *app,
 	};
 }
 
-static int
-app_init (struct app           *app,
-          struct app_cfg const *cfg)
+/* What of the app does not depend on where it is; app_init() does the rest
+ * in place. */
+static struct app
+app (struct app_cfg const *cfg)
 {
-	*app = (struct app){
-		.probe = { template_probe(app, 0), template_probe(app, 1) },
-		.model = { model_run(app, 0), model_run(app, 1) },
-		.rapid = { rapid_model(app, 0), rapid_model(app, 1) },
+	struct app ret = {
 		.cfg = *cfg,
+		.stdin_ref.fd = -1,
+		.loop = loop(),
 		.stdin_buf = DSTR_INIT,
 		.bearer = DSTR_INIT,
 		.generation_tail = { DSTR_INIT, DSTR_INIT },
@@ -1760,9 +1760,20 @@ app_init (struct app           *app,
 		.transition = { DSTR_INIT, DSTR_INIT },
 		.stdin_flags = -1
 	};
-	app->stdin_ref.fd = -1;
+	return ret;
+}
+
+static int
+app_init (struct app *app)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(app->probe); ++i) {
+		app->probe[i] = template_probe(app, i);
+		app->model[i] = model_run(app, i);
+		app->rapid[i] = rapid_model(app, i);
+	}
 	list_init(&app->history);
 	list_init(&app->prompts);
+	struct app_cfg const *cfg = &app->cfg;
 
 	int e = loop_init(&app->loop);
 	if (e)
@@ -1843,20 +1854,20 @@ app_fini (struct app *app)
 int
 app_run (struct app_cfg const *cfg)
 {
-	struct app app;
-	int e = app_init(&app, cfg);
+	struct app a = app(cfg);
+	int e = app_init(&a);
 	if (e) {
-		app_fini(&app);
+		app_fini(&a);
 		return e;
 	}
 
-	e = app_start_template_probes(&app);
+	e = app_start_template_probes(&a);
 	if (!e) {
-		app_advance(&app);
-		e = loop_exec(&app.loop);
+		app_advance(&a);
+		e = loop_exec(&a.loop);
 	}
 	if (!e)
-		e = app.error;
-	app_fini(&app);
+		e = a.error;
+	app_fini(&a);
 	return e;
 }

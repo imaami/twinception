@@ -10,6 +10,24 @@
  * atomic, and the writer updates them with relaxed loads and stores, which
  * cost what plain ones do: a reader sees each field whole, though not all of
  * them as of one instant.
+ *
+ * Atomic objects need care to be valid (C23, N3220 7.17.2).  Those of static
+ * or thread storage duration are, as are those declared with an initializer,
+ * a struct value such as loop()'s included.  Allocated ones, uninitialized
+ * automatic ones, and any whose bytes a non-atomic store such as memset()
+ * reached have an indeterminate representation until atomic_init().  The
+ * standard leaves two cases open, which the program steers clear of:
+ * - atomic_init() on an object initialized before.  7.17.2.1 sets no limit,
+ *   and 7.17.2 has memset() leave an object as indeterminate as fresh storage,
+ *   which atomic_init() is for, but it does not say that initializing again
+ *   is sound.  Here an atomic object is initialized once, as its storage is
+ *   declared or allocated, and later reset by atomic stores; wipes skip it.
+ * - Assigning a struct over an atomic member.  That is a non-atomic store, and
+ *   producing a non-value representation through an lvalue other than of
+ *   character type is undefined (6.2.6.1p5), though storing a value is never
+ *   to generate one (6.2.6.1p8).  Here no struct with atomic members is
+ *   assigned: it is declared from a value, or allocated and its atomic
+ *   members initialized one by one.
  */
 #ifndef TWINCEPTION_SRC_HIST_H_
 #define TWINCEPTION_SRC_HIST_H_
@@ -33,6 +51,31 @@ struct hist {
 	_Atomic uint64_t max;
 	_Atomic uint64_t bucket[HIST_BUCKETS];
 };
+
+/** Initialize @p h, empty, in storage just allocated (the file's note on
+ *  atomics); hist_clear() empties it after that. */
+static inline void
+hist_init (struct hist *h)
+{
+	atomic_init(&h->count, 0);
+	atomic_init(&h->sum, 0);
+	atomic_init(&h->min, 0);
+	atomic_init(&h->max, 0);
+	for (size_t i = 0; i < HIST_BUCKETS; ++i)
+		atomic_init(&h->bucket[i], 0);
+}
+
+/** Empty @p h; only the histogram's one writer may. */
+static inline void
+hist_clear (struct hist *h)
+{
+	atomic_store_explicit(&h->count, 0, memory_order_relaxed);
+	atomic_store_explicit(&h->sum, 0, memory_order_relaxed);
+	atomic_store_explicit(&h->min, 0, memory_order_relaxed);
+	atomic_store_explicit(&h->max, 0, memory_order_relaxed);
+	for (size_t i = 0; i < HIST_BUCKETS; ++i)
+		atomic_store_explicit(&h->bucket[i], 0, memory_order_relaxed);
+}
 
 /** A relaxed load of @p p, for readers of a histogram or a single-writer
  *  counter. */

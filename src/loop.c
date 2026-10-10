@@ -31,21 +31,23 @@ enum {
 	                              those it grows to (design section 5) */
 };
 
-/* Times in ns; those over 1 ms are also counted exactly, as the histogram's
- * bucket around 1 ms straddles it. */
-struct timing {
-	struct hist hist;
-	uint64_t    over;
-};
+/* What the loop times, in ns: a turn from epoll returning to its end, an
+ * interactive step and a bulk one (TIME_STEP + bulk), and how long after its
+ * due time a timer fired. */
+enum { TIME_TURN, TIME_STEP, TIME_BULK, TIME_LATE, TIMINGS };
 
+/* The statistics since the last report.  The histograms come first and the
+ * plain counts after them, so that a new window wipes the counts with one
+ * memset() and clears the histograms by atomic stores (stats_empty()). */
 struct loop_stats {
-	struct timing turn;              /* from epoll returning to the end of the turn */
-	struct timing step[2];           /* interactive, bulk */
-	struct timing late;              /* how long after its due time a timer fired */
-	uint64_t      work[LOOP_UNITS];  /* the most a step did */
-	uint64_t      events;            /* the most a turn had */
-	uint64_t      timers;
-	uint64_t      steps;
+	struct hist time[TIMINGS];
+	uint64_t    over[TIMINGS];     /* those over 1 ms, counted exactly, as the
+	                                  histogram's bucket around 1 ms
+	                                  straddles it */
+	uint64_t    work[LOOP_UNITS];  /* the most a step did */
+	uint64_t    events;            /* the most a turn had */
+	uint64_t    timers;
+	uint64_t    steps;
 };
 
 static constexpr uint64_t bound[LOOP_UNITS] = {
@@ -76,15 +78,41 @@ static char const *const unit_name[LOOP_UNITS] = {
 	[LOOP_RELEASE] = "release",
 };
 
-/* Record @p ns in the statistics since the last report, and in @p metric. */
+/* Record @p ns as timing @p t in the statistics since the last report, and in
+ * @p metric. */
 static void
-timing_record (struct timing *t,
-               struct hist   *metric,
-               uint64_t       ns)
+timing_record (struct loop_stats *s,
+               size_t             t,
+               struct hist       *metric,
+               uint64_t           ns)
 {
-	hist_record(&t->hist, ns);
-	t->over += ns > 1'000'000;
+	hist_record(&s->time[t], ns);
+	s->over[t] += ns > 1'000'000;
 	hist_record(metric, ns);
+}
+
+/* Empty @p s for a window of statistics: if it was just allocated, its
+ * histograms are initialized, and otherwise only cleared. */
+static void
+stats_empty (struct loop_stats *s,
+             bool               fresh)
+{
+	for (size_t t = 0; t < TIMINGS; ++t)
+		(fresh ? hist_init : hist_clear)(&s->time[t]);
+	size_t at = offsetof(struct loop_stats, over);
+	memset((unsigned char *)s + at, 0, sizeof *s - at);
+}
+
+static void
+metrics_init (struct loop_metrics *m)
+{
+	hist_init(&m->turn);
+	for (size_t i = 0; i < ARRAY_SIZE(m->step); ++i)
+		hist_init(&m->step[i]);
+	hist_init(&m->late);
+	hist_init(&m->inbox);
+	for (size_t u = 0; u < LOOP_UNITS; ++u)
+		atomic_init(&m->work[u], 0);
 }
 
 static void
@@ -133,14 +161,35 @@ loop_wake (struct loop     *loop,
 	(void)eventfd_read(ref->fd, &n);
 }
 
+struct loop
+loop (void)
+{
+	struct loop ret = {
+		.wake.fd = -1,
+		.epfd = -1
+	};
+	return ret;
+}
+
+/* Blank all but @p loop's atomic members, which come first (loop.h). */
+static void
+loop_blank (struct loop *loop)
+{
+	size_t at = offsetof(struct loop, refs);
+	memset((unsigned char *)loop + at, 0, sizeof *loop - at);
+	loop->wake.fd = -1;
+	loop->epfd = -1;
+}
+
 int
 loop_init (struct loop *loop)
 {
-	*loop = (struct loop){
-		.wake.fd = -1,
-		.now = loop_clock(),
-		.epfd = epoll_create1(EPOLL_CLOEXEC)
-	};
+	atomic_store_explicit(&loop->turn, 0, memory_order_relaxed);
+	atomic_store_explicit(&loop->asleep, 0, memory_order_relaxed);
+	atomic_store_explicit(&loop->inbox, nullptr, memory_order_relaxed);
+	loop_blank(loop);
+	loop->now = loop_clock();
+	loop->epfd = epoll_create1(EPOLL_CLOEXEC);
 	list_init(&loop->refs);
 	list_init(&loop->dead);
 	for (size_t i = 0; i < ARRAY_SIZE(loop->ready); ++i)
@@ -156,9 +205,13 @@ loop_init (struct loop *loop)
 		close(fd);
 		return e;
 	}
-	loop->stats = calloc(1, sizeof *loop->stats);
-	loop->metrics = calloc(1, sizeof *loop->metrics);
-	return loop->stats && loop->metrics ? 0 : ENOMEM;
+	loop->stats = malloc(sizeof *loop->stats);
+	loop->metrics = malloc(sizeof *loop->metrics);
+	if (!loop->stats || !loop->metrics)
+		return ENOMEM;
+	stats_empty(loop->stats, true);
+	metrics_init(loop->metrics);
+	return 0;
 }
 
 void
@@ -239,7 +292,7 @@ loop_fini (struct loop *loop)
 	free(loop->heap);
 	free(loop->stats);
 	free(loop->metrics);
-	*loop = (struct loop){ .wake.fd = -1, .epfd = -1 };
+	loop_blank(loop);
 }
 
 int
@@ -419,7 +472,7 @@ loop_fire (struct loop *loop)
 		struct loop_timer *timer = loop->heap[0];
 		if (timer->due > loop->now)
 			break;
-		timing_record(&loop->stats->late, &loop->metrics->late,
+		timing_record(loop->stats, TIME_LATE, &loop->metrics->late,
 		              loop->now - timer->due);
 		timer->due = UINT64_MAX;
 		heap_fix(loop, timer);
@@ -465,7 +518,8 @@ loop_run (struct loop *loop,
 			loop->work[u] = 0;
 		step->fn(loop, step);
 		uint64_t end = loop_clock();
-		timing_record(&loop->stats->step[bulk], &loop->metrics->step[bulk], end - t);
+		timing_record(loop->stats, TIME_STEP + bulk, &loop->metrics->step[bulk],
+		              end - t);
 		for (size_t u = 0; u < LOOP_UNITS; ++u) {
 			most(&loop->stats->work[u], loop->work[u]);
 			if (loop->work[u] > hist_get(&loop->metrics->work[u]))
@@ -506,21 +560,18 @@ loop_timeout (struct loop const *loop,
 void
 loop_log_stats (struct loop *loop)
 {
-	struct loop_stats *s = loop->stats;
-	struct {
-		char const          *name;
-		struct timing const *timing;
-	} const lines[] = {
-		{ "turn",        &s->turn },
-		{ "interactive", &s->step[0] },
-		{ "bulk",        &s->step[1] },
-		{ "timer_late",  &s->late },
+	static char const *const name[TIMINGS] = {
+		[TIME_TURN] = "turn",
+		[TIME_STEP] = "interactive",
+		[TIME_BULK] = "bulk",
+		[TIME_LATE] = "timer_late",
 	};
-	for (size_t i = 0; i < ARRAY_SIZE(lines); ++i) {
-		struct hist const *h = &lines[i].timing->hist;
+	struct loop_stats *s = loop->stats;
+	for (size_t t = 0; t < TIMINGS; ++t) {
+		struct hist const *h = &s->time[t];
 		log_put(nullptr, "stats %s n=%" PRIu64 " over_1ms=%" PRIu64 " p50_us=%.1f "
-		        "p90_us=%.1f p99_us=%.1f p99_9_us=%.1f max_us=%.1f", lines[i].name,
-		        hist_get(&h->count), lines[i].timing->over,
+		        "p90_us=%.1f p99_us=%.1f p99_9_us=%.1f max_us=%.1f", name[t],
+		        hist_get(&h->count), s->over[t],
 		        (double)hist_pct(h, 0.5) / 1e3, (double)hist_pct(h, 0.9) / 1e3,
 		        (double)hist_pct(h, 0.99) / 1e3, (double)hist_pct(h, 0.999) / 1e3,
 		        (double)hist_get(&h->max) / 1e3);
@@ -533,7 +584,7 @@ loop_log_stats (struct loop *loop)
 		n += snprintf(work + n, sizeof work - (size_t)n, " %s=%" PRIu64 "/%" PRIu64,
 		              unit_name[u], s->work[u], bound[u]);
 	log_put(nullptr, "stats work %s", work);
-	memset(s, 0, sizeof *s);
+	stats_empty(s, false);
 }
 
 int
@@ -591,7 +642,7 @@ loop_exec (struct loop *loop)
 		loop->stepping = false;
 		most(&s->steps, steps);
 		loop_reap(loop);
-		timing_record(&s->turn, &loop->metrics->turn, loop_clock() - start);
+		timing_record(s, TIME_TURN, &loop->metrics->turn, loop_clock() - start);
 	}
 
 	/* What follows the last turn is no turn to a watchdog. */
