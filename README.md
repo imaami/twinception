@@ -349,9 +349,19 @@ on, and replies sent, a slice at a time, so a large one hardly holds up other
 clients: only copying its longest string takes a single step, of about 0.4 ms
 per MiB, as does copying an answer's text (answers may take up to 16 MiB).
 Raising `--max-values` lets a body hold more values, each of which json-c
-holds in up to 0.7 KiB while the request runs.  Memory freed goes back to the
-system once `askai` is quiet, in one call that takes about 55 µs per MB freed
-since the last.
+holds in up to 0.7 KiB while the request runs.
+
+`askai` keeps the memory its work has used for the work to come: buffers go
+back to a stash of the event loop and come out of it again, up to twice the
+most they held at once, and finished requests are kept for reuse too, so a
+steady load allocates none.  It gives memory back to the system only under
+memory pressure: resident memory over `--memory-high` (by default a sixteenth
+of RAM, or of the lowest cgroup limit, at least 256 MiB), RAM or a cgroup's
+limit nearly used up (file cache the kernel can reclaim aside), or the
+kernel's pressure stall information.  It then frees what went unused for
+10 s or more, or under critical pressure all it keeps, a slice at a time, and
+the allocator returns what is free to the system in one call that takes about
+55 µs per MB.
 
 Sending `askai` SIGUSR1 prints statistics of its event loop since the
 previous SIGUSR1: how long its turns and steps took, how late its timers
@@ -370,7 +380,8 @@ look up the upstream host, so libcurl starts no threads of its own.
 `GET /metrics` returns metrics in Prometheus's text format: the loop's turn
 and step times, timer lateness and inbox delay, request times by MCP method,
 upstream wait and run times, host lookups, log lines dropped, watchdog
-reports, memory and descriptors.  It answers clients on loopback that name
+reports, memory and descriptors, memory pressure and its inputs, and what the
+loop keeps for reuse and gave back.  It answers clients on loopback that name
 it as `localhost`, `127.0.0.1` or `[::1]` (or send no `Host`), and with
 `ASKAI_TOKEN` set, those that send the token.
 
@@ -414,6 +425,12 @@ MCP server:
                             this (default 20, 0 = none)
       --test-stall MS       test aid: SIGUSR2 holds the event loop in
                             one turn this long
+      --memory-high BYTES   resident memory from which memory pressure
+                            is high (default: a sixteenth of RAM, or of
+                            the lowest cgroup limit, at least 256M)
+      --test-pressure FILE  test aid: memory pressure is at least the
+                            level FILE holds, 0 (none), 1 (high) or 2
+                            (critical), read each second
   -h, --help                show this help
 
 Limits on clients (BYTES may end in K, M or G; 0 = none where noted):

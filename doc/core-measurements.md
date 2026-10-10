@@ -37,16 +37,18 @@ From S2b the latency policy of design §8 and §11.5 judges every run: no
 absolute latency fails one, and latencies are compared only as ratios to the
 same run's idle baseline. A run's phases are the probe alone (`BASE` s, 3
 by default); the heavy modes (pipeline, malformed, hostile, dense) alone
-(`SOLO`); the load; and the probe alone again while askai gives the memory
-back (`AFTER_S`, `LEAK_S`). `run.sh` prints `RATIO`, a `CHECK` per clause
-and `VERDICT`.
+(`SOLO`); the load; and the probe alone again, for `AFTER_S` s while askai
+keeps the load's memory, then (from S3m) under critical memory pressure,
+which `run.sh` induces through `--test-pressure`, until askai has given it
+back (`LEAK_S` s at most). `run.sh` prints `RATIO`, a `CHECK` per clause and
+`VERDICT`.
 
 | Clause | A run fails on |
 |---|---|
 | errors | a probe arrival that failed, timed out or was lost, in any phase; a background request sent whole but not answered (idle, malformed, hostile, dense; dense ones not answered 200); a tool call failed or cut off; mock counters that do not add up |
 | lockout | a fresh connection not served: the fresh-ping probe kind, and churn |
 | limits | loris or slow-body clients still open once their deadline has passed; an upstream call that outlived its client by 3 s; in the `sse` profile, where every client hangs up on its event stream, any call answered rather than cancelled |
-| leaks | descriptors not back at the idle count + 2, or RSS not back within `RSS_SLACK_KIB` (4096), by the end of the after phase |
+| leaks | descriptors not back at the idle count + 2, or RSS not back within `RSS_SLACK_KIB` (4096), by the end of the after phase: what askai keeps for reuse it gives back under the induced pressure |
 | fairness | a probe connection's p90 over `FAIR_CONN` (10) × the median connection's, each connection taking its turn of the arrivals; a probe kind's p90 over `FAIR_KIND` (10) × the median kind's; a tool-call connection with no call done while the median one did 3; a heavy mode's p90 batch or body over `FAIR_HEAVY` (50) × its p90 alone, or none done |
 | work | any unit of work in a step over its bound (`loop.h`, design §1), in any phase; work that cannot be split counts in full |
 | outliers | probe p99 in the load or the after phase over `RTT_GROSS` (100) × the idle p99; a turn in either over `TURN_GROSS` (1000) × the idle phase's p99 turn and over `RTT_GROSS` × its probe p99 |
@@ -54,7 +56,8 @@ and `VERDICT`.
 Fairness judges the p90: a client held back is slow throughout, while a
 machine hiccup hits everyone alike. `STATS=loop` serves S2a (no work line)
 and `STATS=none` S0 and S1 (SIGUSR1 would end them); clauses they cannot
-report are n/a. Against ASan, which keeps freed memory, raise `RSS_SLACK_KIB`
+report are n/a. `MEMORY=trim` serves S0–S3, which gave memory back by
+themselves once quiet and take no `--test-pressure`. Against ASan, which keeps freed memory, raise `RSS_SLACK_KIB`
 and let LeakSanitizer judge leaks. S0–S2a were gated by design §8's former
 absolute objectives; all verdicts below are the current one's.
 
@@ -62,7 +65,7 @@ absolute objectives; all verdicts below are the current one's.
 
 - **Machine:** 32 logical CPUs, Linux 7.2.6-zz3, Debian, glibc. S0 and S1
   ran quiet (S1 counts only runs at a 1-minute load average below 1.0), S2a
-  to S3 on a busy desktop (a browser, a GPU process, two `llama-server`).
+  to S3m on a busy desktop (a browser, a GPU process, two `llama-server`).
 - **Build and runs:** default `make` (clang 23.1.2, `-O3 -march=native
   -flto=auto -DNDEBUG=1`); harness from `make load-build` (clang, `-O2`).
   10 s of load a run; `check` 2 s idle + 5 s load, about 15 s in all.
@@ -302,15 +305,16 @@ S2b.
   on a blocker; curl's own resolver started two threads for the same lookup.
 - **Metrics:** 26 224 bytes, rendered in five bulk steps of at most 78 µs.
 - **Sanitizers:** `tests/askai.py` (20 suites) passes under ASan/UBSan,
-  clang's TSan and gcc's TSan, and the check profile under all three, with
-  no report. Before the review gcc's TSan, about ten times slower, failed
-  the check profile's "answered" in three runs of three: one hostile body's
-  reply began after 2.13 s, past the generator's 2 s wait, and a scratch
-  copy waiting 20 s passed. TSan found three things, all fixed: glibc's
-  `mtx_t`/`cnd_t` hide the blocker queue's lock from it (now POSIX's own);
-  the logger, finished but unjoined at a forced exit, was a thread leak (now
-  detached); and freeing the logger on that path raced threads still logging
-  (no longer freed there).
+  clang's TSan and gcc's TSan, and the check profile under ASan/UBSan and
+  clang's TSan, with no report. Under gcc's TSan, about ten times slower,
+  the check profile fails "answered" now and then, with no report (3 runs
+  of 3 before the review, 2 of 4 after): a hostile body's reply begins
+  after the generator's fixed 2 s wait (once at 2.13 s), and a scratch copy
+  waiting 20 s passed all 3 runs. TSan found three things, all fixed:
+  glibc's `mtx_t`/`cnd_t` hide the blocker queue's lock from it (now POSIX's
+  own); the logger, finished but unjoined at a forced exit, was a thread
+  leak (now detached); and freeing the logger on that path raced threads
+  still logging (no longer freed there).
 - **Review (19 findings, all confirmed; one part declined):** the drain did
   all its work in the order's handler, one turn of 50–100 ms for 10 000 idle
   keep-alives, 10–25 ms for 2000 waiting tool calls and 250–500 ms for
@@ -327,19 +331,162 @@ S2b.
   whose lock `malloc_trim` takes. Under TSan, exits raced on the eventfd
   (2 of 300 start-and-SIGTERM runs) and leaked finished threads on a second
   signal (8 of 8) and with a blocker stuck in `getaddrinfo` (exit 66). All
-  fixed: SANITIZER_COUNTS. Declined: caching the upstream URL's parse, at
-  0.23 µs a tool call, which libcurl repeats for every transfer anyway.
+  fixed: since, clang's TSan saw none in 300 start-and-SIGTERM runs, 60 runs
+  each of a second signal, a stall and statistics before SIGTERM, and 3
+  stuck blockers, nor gcc's TSan and ASan in 20 of each. Declined: caching
+  the upstream URL's parse, at 0.23 µs a tool call, which libcurl repeats
+  for every transfer anyway.
+
+## S3m — memory retention
+
+Gate, under the latency policy: "no allocator call for buffers per request
+once warm, in steady keep-alive requests and in tool calls; RSS plateaus at
+the working set's peak without pressure and is not trimmed; under induced
+pressure what is kept goes back, RSS falling toward the idle phase's, in
+bounded steps and fairly; the §8 verdict on every profile, with what askai
+keeps not taken for a leak; make check green; sanitizers clean": met. Design
+§5 gives the policy and what was built, §11.6 the user's directive.
+
+**Allocator calls** per request, counted by an `LD_PRELOAD` shim that puts
+each call down to the object it returns to (askai; json-c; libcurl; libc,
+which calls them on behalf of the libraries), after 200 requests of a kind
+and over 2000 more on one keep-alive connection, the mock answering at once.
+Allocations (`malloc`, `calloc`, `realloc`) / frees:
+
+| Request | askai, S3 | askai, S3m | json-c | libc | libcurl |
+|---|---|---|---|---|---|
+| ping, tools/list | 10 / 6 | 0 / 0 | 8 / 15 | 8 / 1 | — |
+| initialize | 11 / 6 | 0 / 0 | 20 / 39 | 20 / 1 | — |
+| server/discover | 10 / 6 | 0 / 0 | 18 / 33 | 16 / 1 | — |
+| tools/call, JSON or event stream | 18–21 / 14–15 | 4 / 6 | 49–56 / 83–96 | 42–48 / 2 | 47 / 45 |
+| GET /metrics | 12 / 4 | 0 / 0 | — | — | — |
+
+Of a tool call's 4 / 6 at askai's call sites none is a buffer: http.c's
+request (1 / 1) and two watches of the upstream socket (2 / 2) are objects,
+and libcurl's URL parse returns there through tail calls (1 / 3). json-c's,
+and libc's for it, are its values and keys: the known remaining churn.
+libcurl's are its transfer's: reusing easy handles saved 3 of its 47 in a
+trial, not adopted. With a 300 KB prompt and a 65 536-token answer, a tool
+call made 22 memory syscalls in S3 (9 `mmap`, 9 `munmap`, 2 `mremap`, 2
+`madvise`; `strace -c`) and none in S3m, and askai's own calls fell from 23 /
+17 to 4 / 6, json-c's from 68 / 115 to 49 / 109: since the review every
+tokener is pooled, where each such call built two and regrew their string
+buffers (12 `realloc`s, 1.5 MB). Cheap requests made no memory syscall in
+either.
+
+**glibc's tuning** (design §5), in a test program whose thread allocates
+230 MB in 48-byte blocks: its arena grew with 58 757 `mprotect` calls by
+default, 0.18 s, and with 7 at `M_TOP_PAD` 64 MiB, 0.12 s, as that pad makes
+a heap writable whole when glibc creates it; a pad of 1 or 4 MiB saved none,
+as glibc pads only a heap's creation. Without the pad, glibc also deletes a
+thread's heap once all of it is free: one `check` run in five kept 336 of
+its 361 MB peak. Since the review the pad applies only without RLIMIT_DATA,
+RLIMIT_AS or strict overcommit. Freed first in first out under
+`M_TRIM_THRESHOLD` −1, the blocks left a 64 MiB heap resident that
+`malloc_trim(0)` left too (98.6 MB before and after), and that a free of
+64 KiB under a low threshold and pad gave back (33 MB, the program's own
+array).
+
+**Retention and release:** every profile kept its peak through the after
+phase's unpressured part (`kept` = peak), and with RSS over idle + 4 MiB the
+induced critical pressure gave it back in one relief. After `dense`
+(299 MB), the relief released the stash's 1.1 MiB, 256 units a step at
+most, then trimmed in one 16.7–18.8 ms step, down to 12.0–12.5 MB; later
+reliefs, every 10 s while the pressure lasted, trimmed in 0.1 ms. At high
+pressure a relief releases what went unused for a window (10–20 s): one a
+second after `dense` released nothing, its blocks just used, but its trim
+gave back the 285 MB json-c had freed (298 → 13.2 MB, 17.2 ms); the one
+20 s later released the stash's unused 1.0 MiB.
+
+**Where the trim runs**, three `check` runs each: in a loop step the after
+phase's probe max was 18.0–21.2 ms and its turn max 20.9–21.9 ms; on a
+blocker 20.3–21.6 ms and 20.3–21.6 ms, the loop waiting for its arena's lock
+in the turn. It stays a loop step.
+
+The table is from one run of each profile with the binary after the review,
+at load average 1.2–2.0; the campaigns before the review gave the same
+picture. Every run passed; the stall self-check gave 258 / 74. Columns as for
+S2b, then RSS in MB: idle, peak, kept through the unpressured after phase,
+and after the induced pressure (not needed where RSS stayed within 4 MiB of
+idle).
+
+| Profile | Idle p99 | p99 | p99 / idle | Spread | Turn max | After | RSS idle / peak / kept / after |
+|---|---|---|---|---|---|---|---|
+| baseline | 101.6 | 100.1 | 1.0 | 1.05 | 154 | 195 | 11.9 / 11.9 / 11.9 / 11.9 |
+| idle (5000) | 99.6 | 100.1 | 1.0 | 1.08 | 531 | 515 | 11.7 / 13.7 / 13.7 / 13.7 |
+| jobs | 99.1 | 100.6 | 1.0 | 1.11 | 678 | 517 | 11.8 / 17.0 / 17.0 / 12.3 |
+| answers | 100.1 | 224.8 | 2.2 | 1.12 | 463 | 1 091 | 11.6 / 26.1 / 26.1 / 12.0 |
+| sse | 102.7 | 907.3 | 8.8 | 1.29 | 729 | 436 | 11.5 / 16.9 / 16.9 / 12.2 |
+| loris | 100.1 | 100.6 | 1.0 | 1.07 | 280 | 200 | 11.7 / 13.7 / 13.7 / 13.7 |
+| slowread | 94.5 | 100.1 | 1.1 | 1.07 | 530 | 245 | 11.8 / 13.4 / 13.4 / 13.4 |
+| pipeline | 98.0 | 124.7 | 1.3 | 1.06 | 281 | 157 | 11.6 / 11.6 / 11.6 / 11.6 |
+| hostile | 98.6 | 188.9 | 1.9 | 1.09 | 575 | 339 | 11.7 / 16.2 / 16.2 / 11.9 |
+| dense | 95.0 | 227.8 | 2.4 | 1.08 | 298 | 18.1 ms | 11.7 / 298.6 / 298.6 / 12.1 |
+| malformed + churn | 95.5 | 127.7 | 1.3 | 1.08 | 255 | 215 | 11.8 / 11.8 / 11.8 / 11.8 |
+| storm | 99.1 | 293.9 | 3.0 | 1.09 | 848 | 1 510 | 11.8 / 31.4 / 31.4 / 12.8 |
+| check | 97.5 | 439.3 | 4.5 | 1.16 | 798 | 21.4 ms | 11.9 / 357.9 / 357.9 / 12.9 |
+
+- **Large buffers:** with no map and unmap per buffer over 128 KiB, the p99
+  beside 256 KiB answers fell from 5.2× idle (S3) to 2.2–2.4×, beside
+  hostile 1 MiB bodies from 5.5× to 1.9×, and in the storm from 5.6–5.8× to
+  2.8–3.1× (three campaigns).
+- **Sanitizers:** `tests/askai.py` (21 suites, the memory suite new) passes
+  under ASan/UBSan and clang's TSan, and the check profile under both
+  (`RSS_SLACK_KIB` raised, as their allocators keep what is freed), with no
+  report and askai exiting 0, before the review and after.
+- **Deviations:** a tool call still makes 3 allocator calls of askai's own
+  (http.c's objects above); the trim stays a loop step, which the brainstem
+  orders.
+- **Review (19 findings, two of them the same; all confirmed, three parts
+  declined):** before → after, each measured on the same machine.
+  - Spare requests were reused first in, first out, each keeping its
+    answer's text: 250 pings at once, then 100 calls with 1 MB answers, left
+    RSS at 113 MiB; reused last in, first out, 19 MiB.
+  - Each stash class kept its own peak: waves of 32 MiB of bodies in seven
+    classes kept 216 MiB (RSS 229 MiB); within twice the peak held, 79 MiB
+    descending and 86 MiB ascending (RSS 94 and 102 MiB).
+  - Parses over 16 KiB freed their tokener (above).
+  - Under critical pressure a trimmed buffer's large block went into the
+    emptied stash and stayed; storage given up then goes back at once.
+  - The SIGUSR1 statistics' fresh `calloc` was memset under the new mmap
+    threshold, 232 kB resident more; now zeroed in place, no growth.
+  - The cgroup input counted reclaimable file cache: a 192 MiB scope full of
+    it read critical, with a relief every 10 s; now it reads 5–6 MB, and
+    no relief runs.
+  - `M_TOP_PAD` 64 MiB made thread heaps writable whole: under RLIMIT_DATA
+    128 MiB, all of 40 pings with 1 MB bodies failed (3 without a reply, 21
+    with a 500, 16 with a 400), under RLIMIT_AS 160 MiB 37. Under such
+    limits, or strict overcommit, the pad is now glibc's: all 40 passed
+    under each, VmData 79–82 MB (164 MB with the pad, unlimited).
+  - The default `--memory-high` followed the fullest cgroup's limit: in a
+    5 GiB cgroup within an 8 GiB scope it moved from 512 to 320 MiB as RSS
+    grew; it is now the lowest limit's sixteenth, 320 MiB throughout.
+  - A release step counted blocks: sixteen 32 MiB blocks went in one 19 ms
+    step; weighed per 128 KiB, sixteen steps of 1.1–1.4 ms.
+  - At high pressure an episode's first relief gave back nothing of a stash
+    idle for 20 s; with windows of reuse it gave back all 42.3 MB.
+  - Spare requests and pooled tokeners' storage now show at `/metrics`, a
+    missing MemAvailable no longer reads as RAM all used, and the memory
+    suite holds a waiting tool call, a pipelined head and a slow reader under
+    critical pressure, whose buffers move (2 048, 2 715 and 194 636 bytes).
+  - Declined: freeing a large answer's text as its request ends, an
+    allocation and a free per call, which reuse last in, first out makes
+    needless; a pressure input for RLIMIT_DATA and RLIMIT_AS, as under them
+    askai now fails no request S3 served, and a relief lowers neither (glibc
+    keeps a thread's heap writable); glibc's free memory as a metric
+    (`mallinfo2` walks every arena under its lock).
 
 ## Open decisions
 
 Measured, not settled, and left as they are:
-- **Allocator and the post-burst trim:** glibc keeps freed small chunks;
-  `malloc_trim(0)` releases them in one step once quiet, about 50 µs per MB:
-  15.9–18.9 ms after `dense` (297 MB), 19.4–22.3 ms after `check` (340 MB),
-  53–67 ms beside 32 hogs; the verdict passes it. Trimming every 512 to
-  32 768 values freed cost up to 1.6 ms a call; jemalloc's background purge
-  kept 5.1–5.2 MB over idle in `check` (a leak) and had 9.2 and 11.0 ms
-  turns; mimalloc purged in a 19.8 ms step.
+- **Allocator and the trim:** glibc, tuned to keep what is freed (S3m),
+  gives it back only under memory pressure, in one `malloc_trim(0)` step of
+  about 50 µs per MB: 15.9–18.9 ms after `dense` (297 MB), 19.4–22.3 ms after
+  `check` (340 MB), 53–67 ms beside 32 hogs (S2b); the verdict passes it. The
+  tuning leans on glibc's internals (design §5). Trimming every 512 to 32 768
+  values freed cost up to 1.6 ms a call; jemalloc's background purge kept
+  5.1–5.2 MB over idle in `check` (a leak) and had 9.2 and 11.0 ms turns;
+  mimalloc purged in a 19.8 ms step.
 - **`--max-values` default (1024):** slices bound steps at any count (`dense`
   at 1000000 passes), but json-c takes about 0.65 KiB per empty object, so
   memory and the trim grow with it (297 MB, 15.9–18.9 ms).

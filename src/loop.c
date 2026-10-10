@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/prctl.h>
@@ -26,7 +27,8 @@ enum {
 	BULK_NS        = 650'000,  /* further bulk steps: a step of up to 250 µs
 	                              then ends by 1 ms, with time to spare for
 	                              page faults and preemption */
-	HEAP_MIN       = 64,       /* timer slots the heap does not shrink below */
+	HEAP_MIN       = 64,       /* timer slots the heap begins with; it keeps
+	                              those it grows to (design section 5) */
 };
 
 /* Times in ns; those over 1 ms are also counted exactly, as the histogram's
@@ -57,6 +59,7 @@ static constexpr uint64_t bound[LOOP_UNITS] = {
 	[LOOP_COPY]    = LOOP_STEP_COPY,
 	[LOOP_ACCEPTS] = LOOP_STEP_ACCEPTS,
 	[LOOP_CLOSES]  = LOOP_STEP_CLOSES,
+	[LOOP_RELEASE] = LOOP_STEP_RELEASE,
 };
 
 static char const *const unit_name[LOOP_UNITS] = {
@@ -70,6 +73,7 @@ static char const *const unit_name[LOOP_UNITS] = {
 	[LOOP_COPY]    = "copy",
 	[LOOP_ACCEPTS] = "accepts",
 	[LOOP_CLOSES]  = "closes",
+	[LOOP_RELEASE] = "release",
 };
 
 /* Record @p ns in the statistics since the last report, and in @p metric. */
@@ -96,13 +100,6 @@ loop_room (struct loop const *loop,
            enum loop_unit     u)
 {
 	return loop->work[u] < bound[u] ? bound[u] - loop->work[u] : 0;
-}
-
-bool
-loop_quiet (struct loop const *loop)
-{
-	return !loop->events && list_is_empty(&loop->ready[FRESH]) &&
-	       list_is_empty(&loop->ready[ONGOING]) && list_is_empty(&loop->ready[BULK]);
 }
 
 uint64_t
@@ -411,17 +408,6 @@ loop_timer_stop (struct loop       *loop,
 		heap_put(loop, last, i);
 		heap_fix(loop, last);
 	}
-
-	/* Give memory back once a crowd has gone, halving at a quarter so that
-	 * the heap does not reallocate back and forth. */
-	if (loop->heap_cap > HEAP_MIN && loop->timers <= loop->heap_cap / 4) {
-		struct loop_timer **heap = realloc(loop->heap, loop->heap_cap / 2 *
-		                                               sizeof *heap);
-		if (heap) {
-			loop->heap = heap;
-			loop->heap_cap /= 2;
-		}
-	}
 }
 
 /* Fire up to TIMERS timers due by the start of the turn; returns how many. */
@@ -547,13 +533,7 @@ loop_log_stats (struct loop *loop)
 		n += snprintf(work + n, sizeof work - (size_t)n, " %s=%" PRIu64 "/%" PRIu64,
 		              unit_name[u], s->work[u], bound[u]);
 	log_put(nullptr, "stats work %s", work);
-	/* Fresh pages rather than a memset, which would make every page of the
-	 * mostly empty histograms resident.  Should that fail, keep counting. */
-	struct loop_stats *fresh = calloc(1, sizeof *fresh);
-	if (fresh) {
-		free(s);
-		loop->stats = fresh;
-	}
+	memset(s, 0, sizeof *s);
 }
 
 int
@@ -588,7 +568,6 @@ loop_exec (struct loop *loop)
 
 		uint64_t start = loop->now = loop_clock();
 		atomic_store_explicit(&loop->turn, start, memory_order_relaxed);
-		loop->events = (uint64_t)n;
 		for (int i = 0; i < n && !loop->exit; ++i) {
 			struct loop_ref *ref = events[i].data.ptr;
 			if (ref && ref->cb)

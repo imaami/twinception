@@ -6,8 +6,10 @@
  * rendering takes no lock and stops no one: per-loop histograms of turn and
  * step times, timer lateness and inbox delay, the most work a step did,
  * request times by MCP method, upstream wait and run times, host lookups,
- * blocker jobs, log lines dropped, watchdog reports, and the brainstem's
- * resource gauges.  Histograms have fixed buckets, from 1 µs to 300 s.
+ * blocker jobs, log lines dropped, watchdog reports, the brainstem's
+ * resource gauges, memory pressure and its inputs, and per loop the storage
+ * its stash and its requests keep and what it gave back.  Histograms have
+ * fixed buckets, from 1 µs to 300 s.
  */
 #ifndef TWINCEPTION_SRC_METRICS_H_
 #define TWINCEPTION_SRC_METRICS_H_
@@ -34,12 +36,22 @@ enum metrics_method {
 	METHOD_N
 };
 
+/** What a loop keeps for reuse besides its stash's storage: the loop
+ *  writes, any thread reads (hist.h). */
+struct metrics_kept {
+	_Atomic uint64_t spares;    /**< finished requests */
+	_Atomic uint64_t bytes[2];  /**< what those hold, and the pooled
+	                                 tokeners' string buffers */
+};
+
 /** Where a loop's metrics are; the brainstem's and the logger's are global. */
 struct metrics_src {
-	struct loop_metrics const    *loop;
-	struct http_metrics const    *http;
-	struct blocker_metrics const *blockers;
-	struct hist const            *methods;   /**< METHOD_N, by enum metrics_method */
+	struct loop_metrics const      *loop;
+	struct http_metrics const      *http;
+	struct blocker_metrics const   *blockers;
+	struct buf_stash_metrics const *stash;
+	struct metrics_kept const      *kept;
+	struct hist const              *methods;   /**< METHOD_N, by enum metrics_method */
 };
 
 /**

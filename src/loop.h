@@ -35,6 +35,9 @@ enum loop_unit {
 	                    parsed, or an answer's text */
 	LOOP_ACCEPTS,  /**< connections accepted */
 	LOOP_CLOSES,   /**< connections closed */
+	LOOP_RELEASE,  /**< blocks or objects kept for reuse that are given back
+	                    to the allocator under memory pressure, a block a
+	                    unit per 128 KiB (buf_stash_release()) */
 	LOOP_UNITS
 };
 
@@ -50,6 +53,7 @@ enum {
 	LOOP_STEP_COPY    = 1 << 20,
 	LOOP_STEP_ACCEPTS = 32,
 	LOOP_STEP_CLOSES  = 32,
+	LOOP_STEP_RELEASE = 256,
 };
 
 /**
@@ -139,7 +143,6 @@ struct loop {
 	size_t                 timers;            /**< armed, the heap's length */
 	size_t                 heap_cap;
 	uint64_t               now;               /**< when the turn began, CLOCK_MONOTONIC ns */
-	uint64_t               events;            /**< reported for the turn */
 	uint64_t               work[LOOP_UNITS];  /**< done by the step under way */
 	_Atomic uint64_t       turn;              /**< when the turn under way began, or 0
 	                                               while waiting for events: read by
@@ -240,14 +243,6 @@ loop_work (struct loop    *loop,
 extern uint64_t
 loop_room (struct loop const *loop,
            enum loop_unit     u);
-
-/**
- * Whether the turn under way had no events and has no steps queued: work
- * that no step can share, such as giving memory back to the system, then
- * holds nobody up.
- */
-extern bool
-loop_quiet (struct loop const *loop);
 
 /** CLOCK_MONOTONIC in nanoseconds. */
 extern uint64_t

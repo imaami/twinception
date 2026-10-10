@@ -61,7 +61,8 @@ struct stream_ops {
 	 *  shuts down its sending side cancels the stream from now on. */
 	void        (*waiting) (struct stream *s);
 	/** The value of request header field @p i of the application's list,
-	 *  empty if absent.  Valid until the transport next reads. */
+	 *  empty if absent.  Valid during the callback or step that asks: the
+	 *  transport may move its input between steps. */
 	struct span (*field)   (struct stream const *s,
 	                        size_t               i);
 };

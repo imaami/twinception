@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -20,6 +21,7 @@
 
 #include "blocker.h"
 #include "brainstem.h"
+#include "buf.h"
 #include "log.h"
 #include "loop.h"
 #include "util.h"
@@ -43,10 +45,29 @@ enum {
 enum { STARTING, RUNNING, EXITED, JOINED };
 
 /* Orders to the loop: the bits of one message (design section 2). */
-enum { DRAIN = 1, STATS = 2, STALL = 4 };
+enum { DRAIN = 1, STATS = 2, STALL = 4, RELIEVE = 8 };
 
 /* Resources found over their threshold, as bits: descriptors, then PSI. */
 enum { HIGH_FDS = 1, HIGH_PSI = 2 };
+
+/* Where cgroup v2 is mounted. */
+static char const cgroup_root[] = "/sys/fs/cgroup";
+
+/*
+ * Where each input's memory pressure level rises to high and to critical,
+ * and where it falls back below each: the input's fullness, in hundredths of
+ * a percent of what it is measured against (design section 5).
+ */
+static struct {
+	uint32_t up[2];
+	uint32_t down[2];
+} const marks[PRESSURE_INPUTS] = {
+	[PRESSURE_RESIDENT] = { { 10'000, 20'000 }, { 7'500, 15'000 } },  /* of memory_high */
+	[PRESSURE_SYSTEM]   = { {  9'000,  9'500 }, { 8'500,  9'000 } },  /* of RAM */
+	[PRESSURE_CGROUP]   = { {  9'000,  9'500 }, { 8'500,  9'000 } },  /* of the limit */
+	[PRESSURE_PSI]      = { {  1'000,  4'000 }, {   500,  2'000 } },  /* of the time */
+	[PRESSURE_TEST]     = { {      1,      2 }, {     1,      2 } },  /* the level */
+};
 
 struct brainstem {
 	struct loop                 loop;
@@ -61,14 +82,21 @@ struct brainstem {
 	                                          since then only */
 	uint64_t                    flagged;   /* the turn it last reported */
 	uint64_t                    sample;    /* when to sample resources next */
+	uint64_t                    relief;    /* when the loop is to relieve memory
+	                                          pressure again, if it lasts */
 	uint64_t                    stopping;  /* bool, widened over the padding:
 	                                          a shutdown signal has come */
+	size_t                      cg_len;    /* of cgroup */
 	_Atomic uint32_t            orders;
 	_Atomic uint32_t            state;     /* the loop thread's */
 	int                         error;     /* the loop thread's, before state */
 	int                         sig_fd;
 	int                         wake_fd;   /* threads report through it */
 	uint32_t                    high;      /* HIGH_* bits */
+	uint32_t                    level;     /* memory pressure, as published */
+	uint8_t                     levels[PRESSURE_INPUTS];  /* each input's */
+	char                        cgroup[PATH_MAX];  /* the process's cgroup v2
+	                                                  directory */
 };
 
 struct brainstem_metrics brainstem_metrics;
@@ -116,6 +144,8 @@ loop_order (struct loop *loop,
 		while (nanosleep(&ts, &ts) && errno == EINTR)
 			;
 	}
+	if (orders & RELIEVE)
+		app->relieve(app->ctx, loop);
 	if (orders & DRAIN)
 		app->drain(app->ctx, loop, bs->drain_by);
 }
@@ -297,8 +327,145 @@ crossed (struct brainstem *bs,
 	return 0;
 }
 
-/* Once a second: resident memory, descriptors against their limit, and the
- * pressure stall information where the kernel has it. */
+/* The number the file at @p path starts with, or @p none if it starts with
+ * none, as a cgroup's "max" does, or is unreadable. */
+static uint64_t
+number (char const *path,
+        char       *buf,
+        size_t      size,
+        uint64_t    none)
+{
+	unsigned long long n;
+	return slurp(path, buf, size) && sscanf(buf, "%llu", &n) == 1 ? n : none;
+}
+
+/* The number after field @p name in @p text, or @p none if it has none. */
+static uint64_t
+field (char const *text,
+       char const *name,
+       uint64_t    none)
+{
+	char const *at = strstr(text, name);
+	unsigned long long n;
+	return at && sscanf(at, "%*s %llu", &n) == 1 ? n : none;
+}
+
+/*
+ * Of the process's cgroup and its ancestors, the one whose memory use is
+ * nearest its limit, the lower of memory.high and memory.max: its use, less
+ * the inactive file cache the kernel reclaims as it needs, and that limit go
+ * to @p *usage and @p *limit, the lowest limit of all to @p *least, 0 if none
+ * has a limit, and its fullness, in hundredths of a percent, is returned.
+ */
+static uint64_t
+cgroup (struct brainstem *bs,
+        char             *buf,
+        size_t            size,
+        uint64_t         *usage,
+        uint64_t         *limit,
+        uint64_t         *least)
+{
+	char path[sizeof bs->cgroup + sizeof "/memory.current"];
+	uint64_t most = 0;
+	*usage = *limit = *least = 0;
+	for (size_t len = bs->cg_len; len >= sizeof cgroup_root - 1; ) {
+		memcpy(path, bs->cgroup, len);
+		strcpy(path + len, "/memory.high");
+		uint64_t high = number(path, buf, size, UINT64_MAX);
+		strcpy(path + len, "/memory.max");
+		uint64_t max = number(path, buf, size, UINT64_MAX);
+		uint64_t cap = high < max ? high : max;
+		uint64_t use = 0;
+		if (cap && cap < UINT64_MAX) {
+			strcpy(path + len, "/memory.stat");
+			uint64_t cache = slurp(path, buf, size)
+			               ? field(buf, "\ninactive_file ", 0) : 0;
+			strcpy(path + len, "/memory.current");
+			use = number(path, buf, size, 0);
+			use -= cache < use ? cache : use;
+			*least = *least && *least < cap ? *least : cap;
+		}
+		if (use && use * 10'000 / cap >= most) {
+			most = use * 10'000 / cap;
+			*usage = use;
+			*limit = cap;
+		}
+		if (len == sizeof cgroup_root - 1)
+			break;
+		while (bs->cgroup[--len] != '/')
+			;
+	}
+	return most;
+}
+
+/*
+ * Work out the memory pressure level from each input's, which moves with
+ * hysteresis, and publish it; when it rises, and every BRAINSTEM_RELIEF_MS
+ * while it lasts, have the loop relieve it.
+ */
+static void
+pressure (struct brainstem *bs,
+          uint64_t          now,
+          char             *buf,
+          size_t            size)
+{
+	static char const *const names[] = { "none", "high", "critical" };
+	uint64_t total = 0;
+	uint64_t avail = 0;
+	if (slurp("/proc/meminfo", buf, size)) {
+		total = field(buf, "MemTotal:", 0) << 10;
+		avail = field(buf, "MemAvailable:", 0) << 10;
+	}
+	uint64_t usage;
+	uint64_t limit;
+	uint64_t least;
+	uint64_t cg = cgroup(bs, buf, size, &usage, &limit, &least);
+	uint64_t room = least && least < total ? least : total;
+	uint64_t high = bs->cfg->memory_high ? bs->cfg->memory_high
+	              : room / 16 > MEMORY_HIGH_MIN ? room / 16 : MEMORY_HIGH_MIN;
+	uint64_t rss = hist_get(&brainstem_metrics.rss);
+	uint64_t const fullness[PRESSURE_INPUTS] = {
+		[PRESSURE_RESIDENT] = rss * 10'000 / high,
+		/* MemAvailable reads 0 where it is absent, as before Linux 3.14. */
+		[PRESSURE_SYSTEM] = avail && avail < total ? (total - avail) * 10'000 / total
+		                                           : 0,
+		[PRESSURE_CGROUP] = cg,
+		[PRESSURE_PSI] = hist_get(&brainstem_metrics.psi[1]),
+		[PRESSURE_TEST] = bs->cfg->pressure ? number(bs->cfg->pressure, buf, size, 0)
+		                                    : 0,
+	};
+	uint32_t level = BUF_EASY;
+	for (size_t i = 0; i < PRESSURE_INPUTS; ++i) {
+		uint32_t l = bs->levels[i];
+		while (l < BUF_CRITICAL && fullness[i] >= marks[i].up[l])
+			++l;
+		while (l && fullness[i] < marks[i].down[l - 1])
+			--l;
+		bs->levels[i] = (uint8_t)l;
+		set(&brainstem_metrics.inputs[i], l);
+		level = l > level ? l : level;
+	}
+	set(&brainstem_metrics.mem_high, high);
+	set(&brainstem_metrics.mem_total, total);
+	set(&brainstem_metrics.mem_avail, avail);
+	set(&brainstem_metrics.cg_usage, usage);
+	set(&brainstem_metrics.cg_limit, limit);
+	set(&brainstem_metrics.pressure, level);
+	atomic_store_explicit(&buf_pressure, level, memory_order_relaxed);
+	if (level != bs->level)
+		LOG(level > bs->level ? LOG_WARN : LOG_INFO, "memory pressure %s: resident "
+		    "%" PRIu64 " MiB, high from %" PRIu64 " MiB; RAM %" PRIu64 " %% in use%s",
+		    names[level], rss >> 20, high >> 20, fullness[PRESSURE_SYSTEM] / 100,
+		    bs->levels[PRESSURE_TEST] ? "; the test aid's level" : "");
+	if (level && loop_state(bs) == RUNNING && (level > bs->level || now >= bs->relief)) {
+		bs->relief = now + BRAINSTEM_RELIEF_MS * MS;
+		order(bs, RELIEVE);
+	}
+	bs->level = level;
+}
+
+/* Once a second: resident memory, descriptors against their limit, the
+ * pressure stall information where the kernel has it, and memory pressure. */
 static void
 sample (struct brainstem *bs,
         uint64_t          now)
@@ -355,6 +522,7 @@ sample (struct brainstem *bs,
 			    "%.2f %% of the last 10 s%s", psi[i], avg10,
 			    c > 0 ? "" : ", less again");
 	}
+	pressure(bs, now, buf, sizeof buf);
 }
 
 /* Wait at most until @p until, then mind signals, the watchdog, resources
@@ -396,6 +564,21 @@ fd_table (int fd)
 	int last = (int)(nofile.rlim_cur < FD_TABLE ? nofile.rlim_cur : FD_TABLE) - 1;
 	if (last > fd && fcntl(last, F_GETFD) < 0 && dup2(fd, last) == last)
 		close(last);
+}
+
+/* Find the process's cgroup v2 directory, for its memory limits: the path
+ * of /proc/self/cgroup's "0::" line, under where cgroup v2 is mounted. */
+static void
+cgroup_dir (struct brainstem *bs)
+{
+	char buf[4096];
+	char const *line = slurp("/proc/self/cgroup", buf, sizeof buf) ? buf : "";
+	if (strncmp(line, "0::/", 4) && (line = strstr(line, "\n0::/")))
+		++line;
+	size_t n = line && *line ? strcspn(line + 3, "\n") : 0;
+	int len = snprintf(bs->cgroup, sizeof bs->cgroup, "%s%.*s", cgroup_root,
+	                   n > 1 ? (int)n : 0, line ? line + 3 : "");
+	bs->cg_len = len > 0 && (size_t)len < sizeof bs->cgroup ? (size_t)len : 0;
 }
 
 int
@@ -447,6 +630,7 @@ brainstem_run (struct brainstem_cfg const *cfg)
 	};
 	int e = bs.sig_fd < 0 || bs.wake_fd < 0 ? errno : 0;
 	fd_table(bs.wake_fd);
+	cgroup_dir(&bs);
 	if (!e && !(e = log_start(RINGS, bs.wake_fd)))
 		log_attach();
 	if (!e)

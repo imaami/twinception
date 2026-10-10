@@ -6,6 +6,7 @@
 
 #include "blocker.h"
 #include "brainstem.h"
+#include "buf.h"
 #include "http.h"
 #include "log.h"
 #include "loop.h"
@@ -16,7 +17,10 @@
  * histogram's buckets take a pass over all of its own. */
 enum { BUDGET = 32 };
 
-enum source { LOOP, HTTP, BLOCKERS, METHODS, BRAINSTEM, LOGGER, PSI, SOURCES };
+enum source {
+	LOOP, HTTP, BLOCKERS, STASH, KEPT, METHODS, BRAINSTEM, LOGGER, PSI, CGROUP,
+	SOURCES
+};
 enum kind { COUNTER, GAUGE, HISTOGRAM };
 enum scale { ONE, NS, US, PERMYRIAD };
 
@@ -62,6 +66,13 @@ static struct {
 	  (m) * sizeof (struct hist), METHODS, HISTOGRAM, NS }
 #define VALUE(name, help, labels, type, field, source, kind, scale) \
 	{ name, help, labels, offsetof(type, field), source, kind, scale }
+#define STASHED(name, help, labels, field, kind, scale) \
+	VALUE(name, help, L labels, struct buf_stash_metrics, field, STASH, kind, scale)
+#define KEPT(name, help, labels, field) \
+	VALUE(name, help, L labels, struct metrics_kept, field, KEPT, GAUGE, ONE)
+#define INPUT(help, input, i) \
+	VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
+	      struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
 
 static struct entry const table[] = {
 	LOOP_HIST("askai_loop_turn_seconds", "Time an event loop turn took.", "", turn),
@@ -83,6 +94,7 @@ static struct entry const table[] = {
 	WORK(nullptr, "copy", LOOP_COPY),
 	WORK(nullptr, "accepts", LOOP_ACCEPTS),
 	WORK(nullptr, "closes", LOOP_CLOSES),
+	WORK(nullptr, "release", LOOP_RELEASE),
 	METHOD("Time from a request's head to its end, by MCP method.", "initialize",
 	       METHOD_INITIALIZE),
 	METHOD(nullptr, "ping", METHOD_PING),
@@ -136,8 +148,55 @@ static struct entry const table[] = {
 	      struct brainstem_metrics, psi_total[1], PSI, COUNTER, US),
 	VALUE("askai_pressure_stalled_seconds_total", nullptr, "resource=\"io\"",
 	      struct brainstem_metrics, psi_total[2], PSI, COUNTER, US),
+	VALUE("askai_memory_pressure_level", "Memory pressure: 0 none, 1 high, 2 "
+	      "critical (design section 5).", "", struct brainstem_metrics, pressure,
+	      BRAINSTEM, GAUGE, ONE),
+	INPUT("The memory pressure level each input gives.", "resident",
+	      PRESSURE_RESIDENT),
+	INPUT(nullptr, "system", PRESSURE_SYSTEM),
+	INPUT(nullptr, "cgroup", PRESSURE_CGROUP),
+	INPUT(nullptr, "psi", PRESSURE_PSI),
+	INPUT(nullptr, "test", PRESSURE_TEST),
+	VALUE("askai_memory_high_bytes", "Resident memory from which memory pressure "
+	      "is high.", "", struct brainstem_metrics, mem_high, BRAINSTEM, GAUGE, ONE),
+	VALUE("askai_memory_total_bytes", "The system's memory (MemTotal).", "",
+	      struct brainstem_metrics, mem_total, BRAINSTEM, GAUGE, ONE),
+	VALUE("askai_memory_available_bytes", "The system's memory available "
+	      "(MemAvailable).", "", struct brainstem_metrics, mem_avail, BRAINSTEM,
+	      GAUGE, ONE),
+	VALUE("askai_cgroup_memory_bytes", "Memory use of the cgroup nearest its "
+	      "limit, less its inactive file cache (memory.current, memory.stat).", "",
+	      struct brainstem_metrics, cg_usage, CGROUP, GAUGE, ONE),
+	VALUE("askai_cgroup_memory_limit_bytes", "That limit, the lower of memory.high "
+	      "and memory.max.", "", struct brainstem_metrics, cg_limit, CGROUP, GAUGE,
+	      ONE),
+	STASHED("askai_stash_retained_bytes", "Buffer storage a loop keeps for reuse.", "",
+	        retained, GAUGE, ONE),
+	STASHED("askai_stash_takes_total", "Buffer storage taken: from the stash, or "
+	        "from the allocator when the stash had none.", ",result=\"hit\"", hits,
+	        COUNTER, ONE),
+	STASHED("askai_stash_takes_total", nullptr, ",result=\"miss\"", misses, COUNTER,
+	        ONE),
+	STASHED("askai_stash_released_bytes_total", "Buffer storage given back to the "
+	        "allocator: under memory pressure, or past twice the most its buffers "
+	        "held at once.", "", released, COUNTER, ONE),
+	KEPT("askai_spare_requests", "Finished requests a loop keeps for reuse.", "",
+	     spares),
+	KEPT("askai_kept_bytes", "Storage a loop keeps for reuse besides its stash: "
+	     "finished requests, with their answers' text, and pooled JSON tokeners' "
+	     "string buffers.", ",kind=\"requests\"", bytes[0]),
+	KEPT("askai_kept_bytes", nullptr, ",kind=\"tokeners\"", bytes[1]),
+	STASHED("askai_memory_reliefs_total", "Reliefs of memory pressure a loop began.",
+	        "", reliefs, COUNTER, ONE),
+	STASHED("askai_memory_trims_total", "Allocator trims that ended them.", "", trims,
+	        COUNTER, ONE),
+	STASHED("askai_memory_trim_seconds_total", "The time those took.", "", trim_ns,
+	        COUNTER, NS),
 };
 
+#undef INPUT
+#undef KEPT
+#undef STASHED
 #undef VALUE
 #undef METHOD
 #undef WORK
@@ -207,6 +266,9 @@ put_value (struct buf             *out,
 	char const *open = *e->labels ? "{" : "";
 	char const *close = *e->labels ? "}" : "";
 	switch (e->scale) {
+	case NS:
+		return put(out, "%s%s%s%s %.9f\n", e->name, open, e->labels, close,
+		           (double)v / 1e9);
 	case US:
 		return put(out, "%s%s%s%s %.6f\n", e->name, open, e->labels, close,
 		           (double)v / 1e6);
@@ -227,10 +289,13 @@ metrics_render (struct metrics_src const *src,
 		[LOOP] = src->loop,
 		[HTTP] = src->http,
 		[BLOCKERS] = src->blockers,
+		[STASH] = src->stash,
+		[KEPT] = src->kept,
 		[METHODS] = src->methods,
 		[BRAINSTEM] = &brainstem_metrics,
 		[LOGGER] = &log_metrics,
 		[PSI] = hist_get(&brainstem_metrics.psi_ok) ? &brainstem_metrics : nullptr,
+		[CGROUP] = hist_get(&brainstem_metrics.cg_limit) ? &brainstem_metrics : nullptr,
 	};
 	for (unsigned cost = 0; *pos < ARRAY_SIZE(table) && cost < BUDGET; ++*pos) {
 		struct entry const *e = &table[*pos];

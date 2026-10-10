@@ -12,6 +12,7 @@
 #include "ai.h"
 #include "blocker.h"
 #include "brainstem.h"
+#include "buf.h"
 #include "dstr.h"
 #include "http.h"
 #include "httpd.h"
@@ -82,6 +83,12 @@ usage (FILE       *out,
 	        "                            this (default 20, 0 = none)\n"
 	        "      --test-stall MS       test aid: SIGUSR2 holds the event loop in\n"
 	        "                            one turn this long\n"
+	        "      --memory-high BYTES   resident memory from which memory pressure\n"
+	        "                            is high (default: a sixteenth of RAM, or of\n"
+	        "                            the lowest cgroup limit, at least 256M)\n"
+	        "      --test-pressure FILE  test aid: memory pressure is at least the\n"
+	        "                            level FILE holds, 0 (none), 1 (high) or 2\n"
+	        "                            (critical), read each second\n"
 	        "  -h, --help                show this help\n"
 	        "\n", argv0);
 	fprintf(out,
@@ -211,46 +218,129 @@ valid_tool_name (char const *name)
 	return n && n <= 128 && !name[n];
 }
 
+/* The phases of a relief of memory pressure. */
+enum { RELIEVE_MCP, RELIEVE_STASH, RELIEVE_TRIM, RELIEVED };
+
+/* glibc's tuning (see serve()): blocks from this size up get mappings of
+ * their own, and where nothing limits the address space, heaps keep this
+ * much of their tops. */
+enum { MMAP_MIN = 32 << 20, TOP_PAD = 64 << 20 };
+
+/* The heaps' top pad: glibc's default, or TOP_PAD (see serve()). */
+static int top_pad = 128 << 10;
+
 /*
- * Give freed memory back to the system once the loop is quiet.  glibc keeps
- * what small allocations free, and a large message freed leaves much of it.
- * malloc_trim() returns it all, at about 55 us per MB, in one call that no
- * step can share, so it waits for a turn with nothing else to do.
+ * Give what the allocator keeps free back to the system (glibc): malloc_trim()
+ * gives back the free pages within every arena's heaps and the top of the main
+ * arena's, and freeing 64 KiB under a low threshold and pad the top of this
+ * thread's arena, which malloc_trim() leaves.
  */
-enum { TRIM_S = 5 };
-
-struct trim {
-	struct loop_timer timer;
-	struct loop_step  step;
-};
-
 static void
-trim_step (struct loop      *loop,
-           struct loop_step *step)
+trim (void)
 {
-	(void)loop;
-	(void)step;
+	mallopt(M_TOP_PAD, 0);
+	mallopt(M_TRIM_THRESHOLD, 0);
+	void *volatile block = malloc(64 << 10);
+	free(block);
 	malloc_trim(0);
+	mallopt(M_TRIM_THRESHOLD, -1);
+	mallopt(M_TOP_PAD, top_pad);
 }
 
-static void
-trim_timer (struct loop       *loop,
-            struct loop_timer *timer)
+/* Whether the kernel commits memory strictly (vm.overcommit_memory 2). */
+static bool
+strict_commit (void)
 {
-	if (loop_quiet(loop))
-		loop_ready_bulk(loop, &container_of(timer, struct trim, timer)->step);
-	(void)loop_timer_set(loop, timer, loop->now + TRIM_S * 1'000'000'000ULL);
+	FILE *f = fopen("/proc/sys/vm/overcommit_memory", "re");
+	int mode = f ? fgetc(f) : EOF;
+	if (f)
+		fclose(f);
+	return mode == '2';
 }
 
 /* What serves on the event loop's thread. */
 struct app {
-	struct trim              trim;
+	struct buf_stash         stash;
+	struct loop_step         relief;
+	struct loop_timer        age;       /* the windows of reuse */
 	struct mcp_static const *st;
 	struct httpd_cfg const  *hcfg;
 	struct http             *http;
 	struct mcp              *mcp;
 	struct httpd            *httpd;
+	uint64_t                 released;  /* the stash's count as the relief
+	                                       began */
+	uint64_t                 phase;     /* the relief's, widened over the
+	                                       padding */
 };
+
+/*
+ * Relieve memory pressure, in bulk steps (design section 5): free the
+ * requests kept for reuse, then the stash's storage, as much of each a step
+ * as its share of release work allows and as much in all as the level says;
+ * then have the allocator give what is free back to the system, in a step of
+ * its own, as that one call cannot be split.  It stops if the pressure clears.
+ */
+static void
+relief_step (struct loop      *loop,
+             struct loop_step *step)
+{
+	struct app *app = container_of(step, struct app, relief);
+	struct buf_stash_metrics *m = &app->stash.metrics;
+	enum buf_pressure level = atomic_load_explicit(&buf_pressure, memory_order_relaxed);
+	size_t room = loop_room(loop, LOOP_RELEASE);
+	size_t n;
+	switch (level ? app->phase : RELIEVED) {
+	case RELIEVE_MCP:
+		n = mcp_relieve(app->mcp, level, room);
+		break;
+	case RELIEVE_STASH:
+		n = buf_stash_release(&app->stash, level, room);
+		break;
+	case RELIEVE_TRIM: {
+		uint64_t start = loop_clock();
+		trim();
+		uint64_t ns = loop_clock() - start;
+		uint64_t bytes = hist_get(&m->released) - app->released;
+		hist_add(&m->trims, 1);
+		hist_add(&m->trim_ns, ns);
+		app->phase = RELIEVED;
+		/* A relief that found little to do is routine while pressure lasts. */
+		LOG(bytes || ns >= 1'000'000 ? LOG_INFO : LOG_VERBOSE, "memory pressure "
+		    "relieved: %.1f MiB of buffers released, then a trim of %.1f ms",
+		    (double)bytes / (1 << 20), (double)ns / 1e6);
+		return;
+	}
+	default:
+		return;
+	}
+	loop_work(loop, LOOP_RELEASE, n);
+	app->phase += !n;
+	loop_ready_bulk(loop, step);
+}
+
+/* Begin a window of reuse, over which a relief at high pressure finds what
+ * went unused: as long as the brainstem waits between reliefs. */
+static void
+app_age (struct loop       *loop,
+         struct loop_timer *timer)
+{
+	struct app *app = container_of(timer, struct app, age);
+	buf_stash_age(&app->stash);
+	mcp_age(app->mcp);
+	(void)loop_timer_set(loop, timer, loop->now + BRAINSTEM_RELIEF_MS * 1'000'000ULL);
+}
+
+static void
+app_relieve (void        *ctx,
+             struct loop *loop)
+{
+	struct app *app = ctx;
+	app->phase = RELIEVE_MCP;
+	app->released = hist_get(&app->stash.metrics.released);
+	hist_add(&app->stash.metrics.reliefs, 1);
+	loop_ready_bulk(loop, &app->relief);
+}
 
 static int
 app_start (void            *ctx,
@@ -258,23 +348,25 @@ app_start (void            *ctx,
            struct blockers *blockers)
 {
 	struct app *app = ctx;
-	app->trim = (struct trim){
-		.timer.fn = trim_timer,
-		.step.fn = trim_step
-	};
-	int e = loop_timer_set(loop, &app->trim.timer, loop->now + TRIM_S * 1'000'000'000ULL);
-	if (!e && !(e = http_init(&app->http, loop))) {
+	app->relief.fn = relief_step;
+	app->age.fn = app_age;
+	app->phase = RELIEVED;
+	buf_stash_attach(&app->stash);
+	int e = http_init(&app->http, loop);
+	if (!e) {
 		http_resolver(app->http, blockers);
 		e = mcp_init(&app->mcp, loop, app->http, app->st, &(struct metrics_src){
 			.loop = loop->metrics,
 			.http = http_metrics(app->http),
-			.blockers = blockers_metrics(blockers)
+			.blockers = blockers_metrics(blockers),
+			.stash = &app->stash.metrics
 		});
 	}
 	if (e)
 		LOG(LOG_ERROR, "%s", strerror(e));
-	else
-		e = httpd_init(&app->httpd, loop, mcp_app(app->mcp), app->hcfg);
+	else if (!(e = httpd_init(&app->httpd, loop, mcp_app(app->mcp), app->hcfg)))
+		e = loop_timer_set(loop, &app->age,
+		                   loop->now + BRAINSTEM_RELIEF_MS * 1'000'000ULL);
 	return e;
 }
 
@@ -297,8 +389,10 @@ app_stop (void        *ctx,
 	httpd_fini(&app->httpd);
 	mcp_fini(&app->mcp);
 	http_fini(&app->http);
-	loop_unready(&app->trim.step);
-	loop_timer_stop(loop, &app->trim.timer);
+	loop_unready(&app->relief);
+	loop_timer_stop(loop, &app->age);
+	(void)buf_stash_release(&app->stash, BUF_CRITICAL, SIZE_MAX);
+	buf_stash_attach(nullptr);
 }
 
 /* Serve until shut down; returns the exit status. */
@@ -309,9 +403,25 @@ serve (struct ai_endpoint const *ep,
        struct httpd_cfg const   *hcfg,
        struct brainstem_cfg     *bcfg)
 {
-	/* Hand large buffers back to the system when freed: after the first such
-	 * free, glibc would raise its mmap threshold and keep the next ones. */
-	mallopt(M_MMAP_THRESHOLD, 128 << 10);
+	/* Keep what is freed for reuse, and give memory back to the system only
+	 * under memory pressure (design section 5).  glibc would otherwise map
+	 * and unmap each block over 128 KiB of its own, give back the top of a
+	 * heap as it is freed and a thread's heap once all of it is, and grow a
+	 * thread's heap a page and an mprotect() at a time.  Blocks of up to
+	 * 32 MiB, the most the threshold takes and the largest stash class, come
+	 * from the heaps.  A top pad as large as a heap keeps a thread's heaps,
+	 * and makes each writable whole as glibc creates it; as that counts
+	 * against RLIMIT_DATA, RLIMIT_AS and a strict commit limit, under any of
+	 * those the pad stays glibc's. */
+	mallopt(M_MMAP_THRESHOLD, MMAP_MIN);
+	mallopt(M_TRIM_THRESHOLD, -1);
+	struct rlimit data;
+	struct rlimit space;
+	if (!getrlimit(RLIMIT_DATA, &data) && data.rlim_cur == RLIM_INFINITY &&
+	    !getrlimit(RLIMIT_AS, &space) && space.rlim_cur == RLIM_INFINITY &&
+	    !strict_commit())
+		top_pad = TOP_PAD;
+	mallopt(M_TOP_PAD, top_pad);
 
 	/* Only descriptors limit the connections: take all the hard limit allows. */
 	struct rlimit nofile;
@@ -335,6 +445,7 @@ serve (struct ai_endpoint const *ep,
 		.ctx = &app,
 		.start = app_start,
 		.drain = app_drain,
+		.relieve = app_relieve,
 		.stop = app_stop
 	};
 	int status = brainstem_run(bcfg);
@@ -352,7 +463,7 @@ main (int   argc,
 		OPT_BODY_BUDGET, OPT_CLIENT_BUDGET, OPT_MAX_DEPTH, OPT_MAX_VALUES,
 		OPT_MAX_MEMBERS, OPT_SSE_KEEPALIVE, OPT_MAX_CLIENT_CONNS,
 		OPT_IDLE_TIMEOUT, OPT_OUTPUT_PAUSE, OPT_MAX_OUTPUT, OPT_SEND_TIMEOUT,
-		OPT_GRACE, OPT_WATCHDOG, OPT_TEST_STALL
+		OPT_GRACE, OPT_WATCHDOG, OPT_TEST_STALL, OPT_MEMORY_HIGH, OPT_TEST_PRESSURE
 	};
 	static struct option const options[] = {
 		{ "protocol",         required_argument, nullptr, 'p' },
@@ -389,6 +500,8 @@ main (int   argc,
 		{ "grace",            required_argument, nullptr, OPT_GRACE },
 		{ "watchdog",         required_argument, nullptr, OPT_WATCHDOG },
 		{ "test-stall",       required_argument, nullptr, OPT_TEST_STALL },
+		{ "memory-high",      required_argument, nullptr, OPT_MEMORY_HIGH },
+		{ "test-pressure",    required_argument, nullptr, OPT_TEST_PRESSURE },
 		{ "verbose",          no_argument,       nullptr, 'v' },
 		{ "help",             no_argument,       nullptr, 'h' },
 		{ nullptr, 0, nullptr, 0 }
@@ -580,6 +693,13 @@ main (int   argc,
 			bcfg.stall_ms = ms;
 			break;
 		}
+		case OPT_MEMORY_HIGH:
+			ok = parse_size(optarg, 1, SIZE_MAX / 2, &size);
+			bcfg.memory_high = size;
+			break;
+		case OPT_TEST_PRESSURE:
+			bcfg.pressure = optarg;
+			break;
 		case 'h':
 			usage(stdout, argv[0]);
 			status = 0;

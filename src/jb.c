@@ -1,4 +1,5 @@
 /** @file Terse, leak-safe helpers for building and reading json-c values. */
+#include <json-c/printbuf.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -108,7 +109,7 @@ jb_parse (char const *data,
 		;
 	struct json_object *root = jb_parse_take(&parser);
 	jb_parse_end(&parser, &pool, nullptr);
-	jb_pool_fini(&pool);
+	(void)jb_pool_release(&pool, 0);
 	return root;
 }
 
@@ -304,11 +305,21 @@ jb_reaper_fini (struct jb_reaper *reaper)
 	*reaper = (struct jb_reaper){};
 }
 
-void
-jb_pool_fini (struct jb_pool *pool)
+size_t
+jb_pool_release (struct jb_pool *pool,
+                 size_t          keep)
 {
-	while (pool->n)
-		json_tokener_free(pool->free[--pool->n]);
+	for (uint32_t i = pool->n; i--; ) {
+		struct json_tokener *tok = pool->free[i];
+		size_t size = (size_t)tok->pb->size;
+		if (size > keep) {
+			pool->bytes -= size;
+			pool->free[i] = pool->free[--pool->n];
+			json_tokener_free(tok);
+			return size;
+		}
+	}
+	return 0;
 }
 
 /* A tokener whose stack holds nothing, from @p pool or new; nullptr if out of
@@ -316,8 +327,11 @@ jb_pool_fini (struct jb_pool *pool)
 static struct json_tokener *
 pool_take (struct jb_pool *pool)
 {
-	if (pool->n)
-		return pool->free[--pool->n];
+	if (pool->n) {
+		struct json_tokener *tok = pool->free[--pool->n];
+		pool->bytes -= (size_t)tok->pb->size;
+		return tok;
+	}
 	/* json-c counts a value inside the innermost container as a level too. */
 	struct json_tokener *tok = pool->depth && pool->depth < INT_MAX
 	                           ? json_tokener_new_ex((int)pool->depth + 1)
@@ -408,10 +422,12 @@ jb_parse_end (struct jb_parser *parser,
 	}
 	if (tok) {
 		json_tokener_reset(tok);
-		if (pool->n < ARRAY_SIZE(pool->free) && parser->off <= pool->keep)
+		if (pool->n < ARRAY_SIZE(pool->free)) {
+			pool->bytes += (size_t)tok->pb->size;
 			pool->free[pool->n++] = tok;
-		else
+		} else {
 			json_tokener_free(tok);
+		}
 	}
 	*parser = (struct jb_parser){};
 }

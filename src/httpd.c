@@ -16,7 +16,10 @@
  * which reads once, does at most the step's share of requests, body bytes and
  * sends (loop.h), and sends once.  A connection with more requests buffered
  * queues its step again rather than reading, so a deep pipeline cannot hold
- * up other clients.
+ * up other clients.  The output's storage goes back to the loop's stash
+ * (src/buf.h) once sent, and the input's once the connection is idle, so an
+ * idle connection holds none; under critical memory pressure, one that waits
+ * keeps no more than its bytes need.
  *
  * Each connection has one timer, for the deadline that applies to it: idle
  * keep-alive, the head, the body's minimum rate, a write stall, or lingering.
@@ -74,7 +77,6 @@
 
 enum {
 	READ_MIN       = 4 << 10,   /* free space a read asks for */
-	TRIM_AFTER     = 64 << 10,  /* shrink the input after it grew larger */
 	CHUNK_LINE     = 1 << 10,   /* longest chunk-size line, extensions included */
 	STEP_NS        = 100'000,   /* requests and accepts stop starting after
 	                               this, within the step's units of work */
@@ -1193,8 +1195,6 @@ conn_next (struct conn *conn,
 	struct req *req = &conn->req;
 	if (conn->done && conn->body_in) {
 		buf_consume(&conn->in, req->head);
-		if (conn->in.cap > TRIM_AFTER)
-			buf_trim(&conn->in, READ_MIN);
 		conn_unhold(conn);
 		*req = (struct req){};
 		conn->since = srv->loop->now;
@@ -1279,7 +1279,7 @@ conn_flush (struct conn *conn)
 	while (!conn->dead) {
 		struct span out = buf_peek(&conn->out);
 		if (!out.len) {
-			buf_trim(&conn->out, 0);
+			buf_free(&conn->out);
 			if (conn->stall)
 				conn->since = loop->now;
 			conn->stall = 0;
@@ -1437,9 +1437,6 @@ conn_pump (struct conn *conn)
 		conn_end(conn);
 		return;
 	}
-	bool idle = starved && !pending && !buf_peek(&conn->in).len;
-	if (idle)
-		buf_trim(&conn->in, 0);
 
 	/* Input that ended stays readable: watching it then would spin. */
 	bool paused = pending >= srv->lim.out_pause || conn->closing;
@@ -1452,10 +1449,20 @@ conn_pump (struct conn *conn)
 		conn_close(conn);
 		return;
 	}
-	if (!again && (next == NEXT_INPUT || next == NEXT_WAIT || paused))
+	bool waiting = !again && (next == NEXT_INPUT || next == NEXT_WAIT || paused);
+	if (waiting)
 		loop_unready(&conn->step);
 	else
 		loop_ready(loop, &conn->step);
+
+	/* An idle connection keeps no storage, and under critical memory
+	 * pressure one that waits keeps no more than its bytes need. */
+	bool idle = starved && !pending && !buf_peek(&conn->in).len;
+	if (idle)
+		buf_free(&conn->in);
+	else if (waiting && atomic_load_explicit(&buf_pressure, memory_order_relaxed) >=
+	                    BUF_CRITICAL)
+		loop_work(loop, LOOP_COPY, buf_trim(&conn->in) + buf_trim(&conn->out));
 
 	/* Waiting may need a descriptor upstream, as a new client would. */
 	bool crowded = conn->waits && !conn->calling && srv_full(srv);

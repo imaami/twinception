@@ -10,27 +10,32 @@
 #   DURATION   seconds of load (default: 10)
 #
 # Env: RATE, the probe's Hz (default 1000); BASE, the seconds of the idle
-# phase (default 3); AFTER_S and LEAK_S, the least and most seconds of the
-# phase after the load (defaults DURATION, so that the two phases weigh
-# alike, and 10); ASKAI_CPUS and LOAD_CPUS,
-# taskset(1) CPU lists for askai and for the generator and mock; STATS, what
-# askai reports on SIGUSR1: full (the default), loop (S2a: no work line) or
-# none (S0, S1: none, and the signal would end it), the clauses it cannot
-# report then being n/a; and the verdict's factors below.
+# phase (default 3); AFTER_S, the seconds of the phase after the load before
+# memory pressure (default DURATION, so that the two phases weigh alike), and
+# LEAK_S, the most seconds of it under pressure (default 10); ASKAI_CPUS and
+# LOAD_CPUS, taskset(1) CPU lists for askai and for the generator and mock;
+# STATS, what askai reports on SIGUSR1: full (the default), loop (S2a: no work
+# line) or none (S0, S1: none, and the signal would end it), the clauses it
+# cannot report then being n/a; MEMORY, how askai gives memory back: pressure
+# (the default, from S3m: it keeps it for reuse until memory pressure, which
+# the after phase induces through --test-pressure) or trim (S0 to S3: by
+# itself once quiet, the after phase lasting AFTER_S at least and LEAK_S at
+# most); and the verdict's factors below.
 #
 # A run has up to four phases on one askai: the probe alone for BASE seconds,
 # which measures this machine as it is now; for a profile with heavy modes
 # (pipeline, malformed, hostile, dense), those alone, a few rounds each, which
 # time their batches and bodies on it (SOLO lines); the profile's load with the
 # probe for DURATION seconds; and the probe alone again while the load's
-# connections go and askai gives their memory back, which it does in one call
-# once quiet, for AFTER_S seconds at least and until its RSS is back near the
-# idle phase's, LEAK_S at most.  It prints the generator's lines (the idle and
-# after phases' prefixed IDLE and AFTER: SUMMARY, CONTROL, PROBE, FAIR, MOCK
-# and BG), askai's loop statistics for each phase (LOOP idle, load and after:
-# turn and step times, timer lateness, and the most work of each unit a step
-# did, which SIGUSR1 makes askai print), its RSS and descriptors (RESOURCES:
-# idle, peak, and after the last phase), the mock's final counters, latency
+# connections go, for AFTER_S seconds, in which askai keeps their memory for
+# reuse, then under critical memory pressure, which has askai give it back,
+# until its RSS is back near the idle phase's, LEAK_S seconds at most.  It
+# prints the generator's lines (the idle and after phases' prefixed IDLE and
+# AFTER: SUMMARY, CONTROL, PROBE, FAIR, MOCK and BG), askai's loop statistics
+# for each phase (LOOP idle, load and after: turn and step times, timer
+# lateness, and the most work of each unit a step did, which SIGUSR1 makes
+# askai print), its RSS and descriptors (RESOURCES: idle, peak, kept before
+# the pressure, and after the last phase), the mock's final counters, latency
 # RATIOs of the load and after phases against the idle phase, a CHECK line per
 # clause of the verdict, and the VERDICT.
 #
@@ -48,8 +53,9 @@
 #    call answered rather than cancelled);
 #  - leaks: descriptors not back at the idle count + 2 (libcurl may keep
 #    upstream connections), or RSS not back within RSS_SLACK_KIB (default
-#    4096) of the idle phase, by the end of the after phase.  ASan's
-#    allocator keeps what is freed: against a sanitized askai set
+#    4096) of the idle phase, by the end of the after phase: what askai keeps
+#    for reuse it gives back under the pressure, so what stays is a leak.
+#    ASan's allocator keeps what is freed: against a sanitized askai set
 #    RSS_SLACK_KIB high and let LeakSanitizer, at askai's exit, judge leaks;
 #  - unfairness: a probe connection's p90 over FAIR_CONN times (default 10)
 #    the median connection's, each connection having taken its turn of the
@@ -153,6 +159,12 @@ pin_askai=() pin_load=()
 
 tmp=$(mktemp -d)
 mock_pid= askai_pid= stall_pid= sample_pid= after_pid=
+pressure=
+if [[ ${MEMORY:-pressure} == pressure ]]; then
+	pressure=$tmp/pressure
+	echo 0 > "$pressure"
+	askai_args+=(--test-pressure "$pressure")
+fi
 cleanup () {
 	[[ -n $sample_pid ]] && kill "$sample_pid" 2> /dev/null
 	[[ -n $stall_pid ]] && kill "$stall_pid" 2> /dev/null
@@ -269,19 +281,31 @@ cat "$tmp/idle.err" "$tmp/gen.err"
 loop_stats load | tee -a "$tmp/gen.out"
 
 # The after phase: the probe alone again, while the load's connections go and
-# askai gives their memory back, until its RSS is back near the idle phase's;
-# then the probe's own connections go too, and its descriptors must follow.
+# askai keeps their memory, then under memory pressure, until its RSS is back
+# near the idle phase's; then the probe's own connections go too, and its
+# descriptors must follow.
 after_s=${AFTER_S:-$dur} leak_s=${LEAK_S:-10}
-((leak_s > after_s)) || leak_s=$after_s
+if [[ -n $pressure ]]; then
+	probe_s=$((after_s + leak_s))
+else
+	((leak_s > after_s)) || leak_s=$after_s
+	probe_s=$leak_s
+fi
 read -r rss0 fds0 <<< "${idle_res:-0 0}"
-"${pin_load[@]}" "$gen" -H 127.0.0.1 -p "$askai_port" -r "$rate" -d "$leak_s" \
+"${pin_load[@]}" "$gen" -H 127.0.0.1 -p "$askai_port" -r "$rate" -d "$probe_s" \
 	> "$tmp/after.out" 2> "$tmp/after.err" &
 after_pid=$!
-for ((i = 1; i <= leak_s * 5; ++i)); do
+kept=
+for ((i = 1; i <= probe_s * 5; ++i)); do
 	sleep 0.2
 	read -r rss fds <<< "$(resources)" || break
+	if [[ -n $pressure && -z $kept ]] && ((i >= after_s * 5)); then
+		kept=$rss
+		echo 2 > "$pressure"
+	fi
 	((i >= after_s * 5 && rss <= rss0 + ${RSS_SLACK_KIB:-4096})) && break
 done
+[[ -n $pressure ]] && echo 0 > "$pressure"
 kill -INT "$after_pid" 2> /dev/null
 wait "$after_pid"
 after_rc=$?
@@ -297,13 +321,13 @@ for ((i = 0; i < 25; ++i)); do
 	((fds <= fds0 + 2)) && break
 	sleep 0.2
 done
-awk -v idle="${idle_res:-0 0}" -v after="${after:-0 0}" '
+awk -v idle="${idle_res:-0 0}" -v after="${after:-0 0}" -v kept="${kept:-0}" '
 { if ($1 > rss) rss = $1; if ($2 > fds) fds = $2 }
 END {
 	split(idle, i, " ")
 	split(after, a, " ")
-	printf "RESOURCES askai rss_kib idle=%d peak=%d after=%d fds idle=%d " \
-	       "peak=%d after=%d\n", i[1], rss, a[1], i[2], fds, a[2]
+	printf "RESOURCES askai rss_kib idle=%d peak=%d kept=%d after=%d fds " \
+	       "idle=%d peak=%d after=%d\n", i[1], rss, kept, a[1], i[2], fds, a[2]
 }' "$tmp/res" | tee -a "$tmp/gen.out"
 
 # Drain askai's upstream work, then read the mock's final counters.
@@ -383,11 +407,11 @@ $1 == "MOCK" && $2 == "end" {
 }
 $1 == "mock:" && $2 ~ /^requests=/ { kv(mf, 2) }
 $1 == "RESOURCES" {
-	for (i = 4; i <= 6; ++i) {
+	for (i = 4; i <= 7; ++i) {
 		split($i, f, "=")
 		res[f[1]] = f[2]
 	}
-	for (i = 8; i <= 10; ++i) {
+	for (i = 9; i <= 11; ++i) {
 		split($i, f, "=")
 		fd[f[1]] = f[2]
 	}
@@ -496,8 +520,8 @@ END {
 	check("limits", !open, detail)
 
 	leak = fd["after"] > fd["idle"] + 2 || res["after"] > res["idle"] + rss_slack
-	check("leaks", !leak, sprintf("rss_kib idle=%d after=%d fds idle=%d after=%d",
-	      res["idle"], res["after"], fd["idle"], fd["after"]))
+	check("leaks", !leak, sprintf("rss_kib idle=%d kept=%d after=%d fds idle=%d " \
+	      "after=%d", res["idle"], res["kept"], res["after"], fd["idle"], fd["after"]))
 
 	unfair = fp["conn_p90_us_ratio"] > fair_conn || fp["kind_p90_us_ratio"] > fair_kind
 	detail = sprintf("conn p90 median=%sus max=%sus ratio=%s (p99 ratio %s); " \

@@ -10,6 +10,12 @@
  * never takes a lock the loop holds nor waits for the loop, so it stays
  * responsive when everything else is stuck.
  *
+ * Memory pressure (design section 5) is a level, enum buf_pressure, that the
+ * brainstem works out each second from its inputs, each with hysteresis, and
+ * publishes in buf_pressure.  When it rises, and every 10 s while it
+ * lasts, the brainstem has the loop relieve it; the loop gives back what it
+ * keeps, and the brainstem itself frees nothing of the loop's.
+ *
  * Shutdown: the first SIGINT, SIGTERM or SIGHUP has the loop drain within the
  * grace period; a second signal, the grace period running out, or a loop
  * stuck in one turn while it should drain, ends the process at once, after the
@@ -26,8 +32,24 @@
 struct blockers;
 struct loop;
 
-/** The exit status of a shutdown the brainstem forced. */
-enum { BRAINSTEM_FORCED = 3 };
+/** The exit status of a shutdown the brainstem forced; the time between the
+ *  loop's reliefs of memory pressure that lasts. */
+enum { BRAINSTEM_FORCED = 3, BRAINSTEM_RELIEF_MS = 10'000 };
+
+/** The least default resident threshold: the default body budget, which
+ *  bounds the working set the default limits allow. */
+static constexpr uint64_t MEMORY_HIGH_MIN = 256 << 20;
+
+/** The inputs to the memory pressure level. */
+enum brainstem_input {
+	PRESSURE_RESIDENT,  /**< resident memory, against memory_high */
+	PRESSURE_SYSTEM,    /**< RAM in use: MemTotal less MemAvailable */
+	PRESSURE_CGROUP,    /**< a cgroup's memory.current less its inactive
+	                         file cache, against its limit */
+	PRESSURE_PSI,       /**< memory pressure stall information */
+	PRESSURE_TEST,      /**< the test aid's file */
+	PRESSURE_INPUTS
+};
 
 /** What runs on the loop's thread. */
 struct brainstem_app {
@@ -41,6 +63,9 @@ struct brainstem_app {
 	void (*drain) (void            *ctx,
 	               struct loop     *loop,
 	               uint64_t         deadline);
+	/** Relieve memory pressure, as buf_pressure says. */
+	void (*relieve) (void          *ctx,
+	                 struct loop   *loop);
 	/** Tear down, after the loop's last turn. */
 	void (*stop)  (void            *ctx,
 	               struct loop     *loop);
@@ -48,8 +73,15 @@ struct brainstem_app {
 
 struct brainstem_cfg {
 	struct brainstem_app app;
+	uint64_t             memory_high;  /**< resident bytes from which memory
+	                                        pressure is high; 0: a sixteenth of
+	                                        the memory the process may use, at
+	                                        least MEMORY_HIGH_MIN */
 	uint64_t             stall_ms;     /**< test aid: SIGUSR2 holds the loop in
 	                                        one turn this long; 0: off */
+	char const          *pressure;     /**< test aid: a file holding a memory
+	                                        pressure level, which the level is
+	                                        at least; nullptr: none */
 	uint32_t             grace_ms;     /**< for draining */
 	uint32_t             watchdog_ms;  /**< a turn longer than this is reported */
 };
@@ -63,6 +95,16 @@ struct brainstem_metrics {
 	                                     hundredths of a percent */
 	_Atomic uint64_t psi_total[3];  /**< their some total, in µs */
 	_Atomic uint64_t psi_ok;        /**< bool: /proc/pressure is there */
+	_Atomic uint64_t pressure;      /**< memory pressure, enum buf_pressure */
+	_Atomic uint64_t inputs[PRESSURE_INPUTS];  /**< the level each gives */
+	_Atomic uint64_t mem_high;      /**< resident bytes from which memory
+	                                     pressure is high */
+	_Atomic uint64_t mem_total;     /**< MemTotal, bytes */
+	_Atomic uint64_t mem_avail;     /**< MemAvailable, bytes */
+	_Atomic uint64_t cg_usage;      /**< memory.current, less inactive file
+	                                     cache, of the cgroup nearest its
+	                                     limit */
+	_Atomic uint64_t cg_limit;      /**< that limit; 0: none */
 	_Atomic uint64_t reports;       /**< long turns the watchdog reported */
 	_Atomic uint64_t late;          /**< times the brainstem woke late */
 };

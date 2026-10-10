@@ -102,6 +102,13 @@ jb_scan (struct jb_scan *scan,
 extern void
 jb_scan_end (struct jb_scan *scan);
 
+/** Begin a scan anew, keeping the storage @p scan holds. */
+static inline void
+jb_scan_reset (struct jb_scan *scan)
+{
+	*scan = (struct jb_scan){ .members = scan->members, .cap = scan->cap };
+}
+
 /** json-c values to free a few at a time; zeroed to begin. */
 struct jb_reaper {
 	struct json_object **stack;  /**< containers being taken apart */
@@ -128,12 +135,12 @@ jb_reaper_fini (struct jb_reaper *reaper);
 
 /**
  * Tokeners to reuse, all with the same limits; zeroed but for those.  A
- * tokener keeps the buffer of the longest string it has parsed, so only one
- * that has parsed at most @p keep bytes is kept for reuse.
+ * tokener keeps the buffer of the longest string it has parsed, which
+ * jb_pool_release() frees.
  */
 struct jb_pool {
 	struct json_tokener *free[4];
-	size_t               keep;
+	size_t               bytes;   /**< of the tokeners' string buffers */
 	uint32_t             n;
 	uint32_t             depth;   /**< containers open at once, at most;
 	                                   0: json-c's default */
@@ -142,8 +149,11 @@ struct jb_pool {
 	int                  flags;   /**< json_tokener_set_flags() */
 };
 
-extern void
-jb_pool_fini (struct jb_pool *pool);
+/** Free a tokener whose string buffer is over @p keep bytes; returns that
+ *  buffer's size, 0 if there is none. */
+extern size_t
+jb_pool_release (struct jb_pool *pool,
+                 size_t          keep);
 
 /** A parse a slice at a time; zeroed to begin. */
 struct jb_parser {

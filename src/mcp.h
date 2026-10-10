@@ -3,7 +3,10 @@
 #ifndef TWINCEPTION_SRC_MCP_H_
 #define TWINCEPTION_SRC_MCP_H_
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include "buf.h"
 
 struct ai_endpoint;
 struct http;
@@ -65,6 +68,22 @@ mcp_init (struct mcp               **p_mcp,
 /** Cancels every request under way. */
 extern void
 mcp_fini (struct mcp **p_mcp);
+
+/** Begin a window of reuse, as buf_stash_age() does for a stash. */
+extern void
+mcp_age (struct mcp *mcp);
+
+/**
+ * Free some of what is kept for reuse: a pooled tokener, at BUF_HIGH one
+ * whose string buffer outgrew a slice, or else finished requests, up to
+ * @p max units of release work (buf_units()) or one request if that is more,
+ * at BUF_HIGH those unused since the last window began.  Returns the units;
+ * 0 once none are left to free.
+ */
+extern size_t
+mcp_relieve (struct mcp        *mcp,
+             enum buf_pressure  level,
+             size_t             max);
 
 /** End the tool calls that wait for the upstream with an error, a share a
  *  step, and refuse new ones: the server drains. */

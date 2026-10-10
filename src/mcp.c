@@ -16,7 +16,10 @@
  * in slices too.  Replies are built from fragments, the unchanging ones
  * serialized once in the shared, immutable mcp_static, so no json-c value is
  * shared between replies or loops, and go out a piece a step, each piece once
- * the transport has room for it.
+ * the transport has room for it.  A finished request is kept for reuse, its
+ * buffers' storage given back to the loop's stash (src/buf.h) and that of its
+ * answer and pre-scan kept, until memory pressure has it freed; the one that
+ * ended last is reused first, so steady requests reuse the same few.
  *
  * A tool call answers on an event stream (SSE) when the client accepts one
  * and its era has them (all but 2024-11-05): id-less data: events, and a ':'
@@ -149,7 +152,8 @@ struct mcp_req {
 	struct jb_reaper     reaper;     /* what is freed a slice a step */
 	struct timespec      start;
 	struct splice        splice[2];  /* prompt and system, in draft order */
-	struct dstr          answer;     /* the tool's output */
+	struct dstr          answer;     /* the tool's output; its storage stays
+	                                    with the request for reuse */
 	struct stream       *s;          /* nullptr once it is gone */
 	struct mcp          *mcp;
 	struct json_object  *msg;        /* parsed, until dispatched; then the
@@ -164,7 +168,6 @@ struct mcp_req {
 	size_t               values;     /* of msg */
 	uint64_t             head;       /* loop_clock() at the request's head */
 	struct http_request *request;
-	char                *session;    /* Mcp-Session-Id, maybe empty */
 	struct jb_scan       scan;       /* the body's pre-scan */
 	long                 status;     /* the upstream's HTTP status */
 	int                  error;      /* to end the stream with */
@@ -185,15 +188,21 @@ struct mcp_req {
 struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
 	struct list              freeing;   /* requests freeing their message */
+	struct list              spare;     /* finished requests, kept for reuse,
+	                                       the last ended last */
 	struct loop_step         drain;     /* ends the calls, draining */
 	struct stream_app        app;
 	struct jb_pool           pool;      /* for request bodies */
 	struct jb_pool           answers;   /* for upstream answers */
-	struct metrics_src       metrics;   /* methods: the request times below */
+	struct metrics_src       metrics;   /* methods and kept: below */
+	struct metrics_kept      kept;
 	struct loop             *loop;
 	struct http             *http;
 	struct mcp_static const *st;
 	struct hist             *methods;   /* METHOD_N, by enum metrics_method */
+	size_t                   spares;    /* on spare */
+	size_t                   low;       /* fewest on spare in this window */
+	size_t                   idle;      /* fewest on spare in the window before */
 	uint64_t                 draining;  /* bool, widened over the padding */
 };
 
@@ -220,6 +229,14 @@ same (struct span  f,
       char const  *str)
 {
 	return !str ? !f.ptr : f.ptr && span_is(f, str);
+}
+
+/* Whether fields @p a and @p b are equal, both being absent alike. */
+static bool
+same_field (struct span a,
+            struct span b)
+{
+	return !a.ptr ? !b.ptr : b.ptr && a.len == b.len && !memcmp(a.ptr, b.ptr, a.len);
 }
 
 /* Index into versions[], ARRAY_SIZE(versions) if @p v is unknown or absent. */
@@ -345,17 +362,71 @@ req_dispose (struct mcp_req *req)
 	}
 }
 
-/* End the stream, if the request still has it, and free the request. */
+/* The bytes a finished request keeps for reuse. */
+static uint64_t
+req_kept (struct mcp_req const *req)
+{
+	return sizeof *req + dstr_get_block_count(&req->answer) * DSTR_BLK_SIZE +
+	       req->scan.cap * sizeof *req->scan.members +
+	       req->reaper.cap * sizeof *req->reaper.stack;
+}
+
+/* End the stream, if the request still has it, and keep the request for
+ * reuse. */
 static void
 req_end (struct mcp_req *req)
 {
-	hist_record(&req->mcp->methods[req->method], loop_clock() - req->head);
+	struct mcp *mcp = req->mcp;
+	hist_record(&mcp->methods[req->method], loop_clock() - req->head);
 	if (req->s)
 		req->s->ops->end(req->s, req->error);
 	if (req->hook.next)
 		list_del(&req->hook);
 	loop_unready(&req->step);
+	list_append(&mcp->spare, &req->hook);
+	++mcp->spares;
+	hist_add(&mcp->kept.spares, 1);
+	hist_add(&mcp->kept.bytes[0], req_kept(req));
+	atomic_store_explicit(&mcp->kept.bytes[1], mcp->pool.bytes + mcp->answers.bytes,
+	                      memory_order_relaxed);
+}
+
+/* A request to begin, the spare one that ended last if there is one, whose
+ * storage is the likeliest to fit; nullptr if out of memory.  Its answer,
+ * pre-scan and reaper are empty, their storage kept. */
+static struct mcp_req *
+req_new (struct mcp *mcp)
+{
+	if (list_is_empty(&mcp->spare)) {
+		struct mcp_req *req = malloc(sizeof *req);
+		if (req)
+			*req = (struct mcp_req){ .answer = DSTR_INIT };
+		return req;
+	}
+	struct mcp_req *req = container_of(mcp->spare.prev, struct mcp_req, hook);
+	list_del(&req->hook);
+	if (--mcp->spares < mcp->low)
+		mcp->low = mcp->spares;
+	hist_add(&mcp->kept.spares, -1ULL);
+	hist_add(&mcp->kept.bytes[0], -req_kept(req));
+	return req;
+}
+
+/* Free the spare request that ended first, and the values it was left to
+ * free. */
+static void
+req_free (struct mcp *mcp)
+{
+	struct mcp_req *req = container_of(mcp->spare.next, struct mcp_req, hook);
+	list_del(&req->hook);
+	--mcp->spares;
+	mcp->low -= mcp->low > 0;
+	mcp->idle -= mcp->idle > 0;
+	hist_add(&mcp->kept.spares, -1ULL);
+	hist_add(&mcp->kept.bytes[0], -req_kept(req));
 	jb_reaper_fini(&req->reaper);
+	jb_scan_end(&req->scan);
+	dstr_cleanup(&req->answer);
 	free(req);
 }
 
@@ -378,14 +449,12 @@ req_finish (struct mcp_req *req)
 	json_object_put(req->draft);
 	json_object_put(req->id);
 	req->draft = req->id = nullptr;
-	jb_scan_end(&req->scan);
+	jb_scan_reset(&req->scan);
 	buf_free(&req->body);
 	buf_free(&req->upload);
 	buf_free(&req->response);
 	buf_free(&req->reply);
-	dstr_cleanup(&req->answer);
-	free(req->session);
-	req->session = nullptr;
+	dstr_clear(&req->answer);
 	if (!req->reaper.n) {
 		req_end(req);
 		return;
@@ -463,7 +532,7 @@ req_send (struct mcp_req *req)
 static void
 reply_open (struct mcp_req *req)
 {
-	buf_free(&req->reply);
+	buf_consume(&req->reply, buf_peek(&req->reply).len);
 	req->nomem = false;
 	if (req->sse) {
 		struct span s = buf_reserve(&req->reply, 6, SIZE_MAX);
@@ -866,12 +935,6 @@ tools_call (struct mcp_req     *req,
 		return false;
 	}
 
-	struct span session = req->s->ops->field(req->s, F_SESSION);
-	if (session.ptr && !(req->session = strndup((char const *)session.ptr,
-	                                            session.len))) {
-		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
-		return false;
-	}
 	clock_gettime(CLOCK_MONOTONIC, &req->start);
 	list_append(&mcp->calls, &req->hook);
 
@@ -931,7 +994,8 @@ initialize (struct mcp_req     *req,
 	reply_result(req, f, ARRAY_SIZE(f), *session ? session : nullptr);
 }
 
-/* A legacy client gave up on a call: end its stream quietly. */
+/* A legacy client gave up on a call: end its stream quietly.  A call
+ * under way has its stream, and so its session's field. */
 static void
 cancel (struct mcp         *mcp,
         struct span         session,
@@ -945,7 +1009,8 @@ cancel (struct mcp         *mcp,
 	struct list *tmp;
 	list_foreach_safe (node, tmp, &mcp->calls) {
 		struct mcp_req *req = container_of(node, struct mcp_req, hook);
-		if (!same(session, req->session) || !json_object_equal(req->id, id))
+		if (!same_field(session, req->s->ops->field(req->s, F_SESSION)) ||
+		    !json_object_equal(req->id, id))
 			continue;
 		if (!req->sse)
 			(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
@@ -1284,7 +1349,7 @@ mcp_on_head (void          *ctx,
 		http_error(s, 415, "Unsupported Media Type", "");
 		return;
 	}
-	struct mcp_req *req = malloc(sizeof *req);
+	struct mcp_req *req = req_new(mcp);
 	if (!req) {
 		http_error(s, 500, "Out of memory", "");
 		return;
@@ -1292,7 +1357,9 @@ mcp_on_head (void          *ctx,
 	*req = (struct mcp_req){
 		.step.fn = req_step,
 		.timer.fn = req_timer,
-		.answer = DSTR_INIT,
+		.reaper = req->reaper,
+		.scan = req->scan,
+		.answer = req->answer,
 		.s = s,
 		.mcp = mcp,
 		.head = loop_clock(),
@@ -1422,13 +1489,11 @@ mcp_init (struct mcp               **p_mcp,
 			.on_cancel = mcp_on_cancel
 		},
 		.pool = {
-			.keep = LOOP_STEP_PARSE,
 			.depth = st->lim.depth,
 			.scalar = MAX_SCALAR,
 			.flags = JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8
 		},
 		.answers = {
-			.keep = LOOP_STEP_PARSE,
 			.scalar = MAX_SCALAR,
 			.flags = JSON_TOKENER_VALIDATE_UTF8
 		},
@@ -1439,8 +1504,10 @@ mcp_init (struct mcp               **p_mcp,
 		.methods = methods
 	};
 	mcp->metrics.methods = methods;
+	mcp->metrics.kept = &mcp->kept;
 	list_init(&mcp->calls);
 	list_init(&mcp->freeing);
+	list_init(&mcp->spare);
 	*p_mcp = mcp;
 	return 0;
 }
@@ -1457,11 +1524,46 @@ mcp_fini (struct mcp **p_mcp)
 	 * still freeing their message are left. */
 	while (!list_is_empty(&mcp->freeing))
 		req_end(container_of(mcp->freeing.next, struct mcp_req, hook));
+	while (mcp_relieve(mcp, BUF_CRITICAL, SIZE_MAX))
+		;
 	loop_unready(&mcp->drain);
-	jb_pool_fini(&mcp->answers);
-	jb_pool_fini(&mcp->pool);
 	free(mcp->methods);
 	free(mcp);
+}
+
+void
+mcp_age (struct mcp *mcp)
+{
+	mcp->idle = mcp->low;
+	mcp->low = mcp->spares;
+}
+
+size_t
+mcp_relieve (struct mcp        *mcp,
+             enum buf_pressure  level,
+             size_t             max)
+{
+	/* A tokener keeps the buffer of the longest string it parsed, which
+	 * may be mapped: at high pressure one longer than a slice goes, at
+	 * critical any, each in a call of its own. */
+	size_t keep = level >= BUF_CRITICAL ? 0 : LOOP_STEP_PARSE;
+	size_t size = jb_pool_release(&mcp->pool, keep);
+	if (size || (size = jb_pool_release(&mcp->answers, keep))) {
+		atomic_store_explicit(&mcp->kept.bytes[1], mcp->pool.bytes +
+		                      mcp->answers.bytes, memory_order_relaxed);
+		return buf_units(size);
+	}
+	size_t done = 0;
+	for (size_t n = level >= BUF_CRITICAL ? mcp->spares
+	              : mcp->low < mcp->idle ? mcp->low : mcp->idle; n; --n) {
+		size_t units = buf_units(req_kept(container_of(mcp->spare.next,
+		                                               struct mcp_req, hook)));
+		if (done && done + units > max)
+			break;
+		req_free(mcp);
+		done += units;
+	}
+	return done;
 }
 
 void

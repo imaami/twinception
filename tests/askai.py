@@ -128,10 +128,10 @@ class Askai:
     """An askai process on an ephemeral port; stop() expects a clean exit.
     With nofile, it starts with that descriptor limit, soft and hard; with
     preload, with that library preloaded; with ignore, with those signals
-    ignored."""
+    ignored; with data, with that data segment limit."""
 
     def __init__(self, binary, *args, env=None, nofile=None, preload=None,
-                 ignore=()):
+                 ignore=(), data=None):
         child_env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
         child_env.update(env or {})
         if preload:
@@ -142,6 +142,8 @@ class Askai:
         def setup():
             if nofile:
                 resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
+            if data:
+                resource.setrlimit(resource.RLIMIT_DATA, (data, data))
             for sig in ignore:
                 signal.signal(sig, signal.SIG_IGN)
 
@@ -149,16 +151,19 @@ class Askai:
             [binary, "-l", "127.0.0.1:0", *args], env=child_env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, text=True,
-            preexec_fn=setup if nofile or ignore else None)
-        line = self.proc.stderr.readline()
-        match = re.search(r"http://([\d.]+):(\d+)/mcp$", line.strip())
-        if not match:
+            preexec_fn=setup if nofile or ignore or data else None)
+        # Lines may come before the endpoint's, such as memory pressure's.
+        self.log = []
+        for line in self.proc.stderr:
+            match = re.search(r"http://([\d.]+):(\d+)/mcp$", line.strip())
+            if match:
+                break
+            self.log.append(line)
+        else:
             self.proc.kill()
-            raise AssertionError("askai did not start: " + line +
-                                 self.proc.stderr.read())
+            raise AssertionError("askai did not start: " + "".join(self.log))
         self.host = match.group(1)
         self.port = int(match.group(2))
-        self.log = []
         threading.Thread(target=self.drain, daemon=True).start()
 
     def drain(self):
@@ -1388,7 +1393,9 @@ def check_dense(binary, up):
                         "params": {"a": [0] * values,
                                    "o": [{f"k{i}": [] for i in range(1000)}] * 20}},
                        separators=(",", ":")).encode()
-    with Askai(binary, "-u", up.url(), "--max-values", "1000000", "--max-body", "4M") as ai:
+    level = tempfile.NamedTemporaryFile("w", prefix="askai-pressure-")
+    with Askai(binary, "-u", up.url(), "--max-values", "1000000", "--max-body", "4M",
+               "--test-pressure", level.name) as ai:
         with open(f"/proc/{ai.proc.pid}/status") as f:
             start_rss = int(re.search(r"VmRSS:\s+(\d+)", f.read()).group(1))
         work(ai)
@@ -1428,19 +1435,30 @@ def check_dense(binary, up):
         assert units["values"][0] <= units["values"][1], units
         assert ai.rpc("ping")[0] == 200
 
-        # Once the loop is quiet, the memory those took goes back; ASan's
-        # and TSan's allocators keep it.
+        # The memory those took stays for reuse, without memory pressure,
+        # and goes back under it, which the test aid induces; ASan's and
+        # TSan's allocators keep it.
         def rss():
             with open(f"/proc/{ai.proc.pid}/status") as f:
                 return int(re.search(r"VmRSS:\s+(\d+)", f.read()).group(1))
         with open(f"/proc/{ai.proc.pid}/exe", "rb") as f:
             exe = f.read()
             sanitized = b"__asan_init" in exe or b"__tsan_init" in exe
+        kept = rss()
+        time.sleep(1.5)
+        if memory_calm():
+            values = ai.metrics()
+            assert values["askai_memory_trims_total{loop=\"0\"}"] == 0, values
+            assert sanitized or rss() > max(kept - 2048, start_rss + 16384), \
+                (start_rss, kept, rss())
+        set_pressure(level, 2)
         for _ in range(0 if sanitized else 80):
             if rss() < start_rss + 16384:
                 break
             time.sleep(0.1)
-        assert sanitized or rss() < start_rss + 16384, (start_rss, rss())
+        assert sanitized or rss() < start_rss + 16384, (start_rss, kept, rss())
+        wait_for(lambda: ai.metrics()["askai_memory_trims_total{loop=\"0\"}"] >= 1)
+        set_pressure(level, 0)
 
         # Its JSON's limits hold however a chunked body is cut up.
         deep = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping",
@@ -1457,6 +1475,30 @@ def check_dense(binary, up):
             assert replies.next()[1]["id"] == 2
 
     print("dense bodies, parsed and freed a slice at a time: PASS")
+
+
+def memory_calm():
+    """Whether the machine has memory to spare, a fifth of it, far from any
+    pressure askai acts on of itself."""
+    with open("/proc/meminfo") as f:
+        info = dict(re.findall(r"(\w+):\s+(\d+) kB", f.read()))
+    return int(info["MemAvailable"]) * 5 > int(info["MemTotal"])
+
+
+def set_pressure(file, level):
+    """Have the test aid's file give memory pressure @p level."""
+    file.seek(0)
+    file.truncate()
+    file.write(f"{level}\n")
+    file.flush()
+
+
+def wait_for(cond, seconds=5):
+    """Wait up to @p seconds for @p cond() to hold, and assert that it does."""
+    end = time.monotonic() + seconds
+    while not cond():
+        assert time.monotonic() < end, "timed out"
+        time.sleep(0.05)
 
 
 def check_turn_order(binary, up):
@@ -1656,6 +1698,222 @@ def check_metrics(binary, up):
                 assert status == expected, (env, auth, status, text)
 
     print("metrics: Prometheus text, for loopback or the token only: PASS")
+
+
+def check_memory(binary, up):
+    """Buffers' storage goes back to the loop's stash and is taken from there
+    again, so steady requests make no allocator calls for it, and nothing goes
+    back to the system without memory pressure.  Under it, a relief at a time
+    gives back, in bounded steps, what the level says: at high pressure what
+    went unused for a window (10 s), at critical all the stash keeps; then the
+    allocator is trimmed.  While pressure is critical, storage given up goes
+    back at once, and connections that wait shrink their buffers to their
+    bytes, which requests read on correctly.  The pressure comes from resident
+    memory against --memory-high, from the system's and the cgroup's memory,
+    or from the test aid's file."""
+    loop = '{loop="0"}'
+    hits = 'askai_stash_takes_total{loop="0",result="hit"}'
+    misses = 'askai_stash_takes_total{loop="0",result="miss"}'
+    retained = "askai_stash_retained_bytes" + loop
+    released = "askai_stash_released_bytes_total" + loop
+    reliefs = "askai_memory_reliefs_total" + loop
+    trims = "askai_memory_trims_total" + loop
+    with open("/proc/meminfo") as f:
+        total = int(re.search(r"MemTotal:\s+(\d+) kB", f.read()).group(1)) << 10
+    # Real pressure would add reliefs of its own.
+    calm = memory_calm()
+    level = tempfile.NamedTemporaryFile("w", prefix="askai-pressure-")
+    set_pressure(level, 0)
+    call = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
+    with Askai(binary, "-u", up.url(), "--test-pressure", level.name,
+               "--max-client-conns", "0", "--output-pause", "16K") as ai:
+        started = time.monotonic()
+        conn = ai.connect()
+
+        def burst(n):
+            for _ in range(n):
+                assert ai.rpc("ping", conn=conn)[0] == 200
+                assert ai.rpc("tools/call", call, conn=conn)[0] == 200
+
+        burst(20)
+        ai.metrics()  # its reply grows as it is rendered
+        before = ai.metrics()
+        burst(100)
+        after = ai.metrics()
+        assert after[hits] - before[hits] >= 800, (before[hits], after[hits])
+        # Rarely, a turn holds more storage at once than any before it.
+        assert after[misses] - before[misses] <= 2, (before[misses], after[misses])
+        assert after[retained] > 0
+        assert after["askai_memory_total_bytes"] == total
+        assert 0 < after["askai_memory_available_bytes"] <= \
+            after["askai_memory_total_bytes"]
+        assert after["askai_memory_high_bytes"] >= 256 << 20
+        assert after['askai_kept_bytes{loop="0",kind="tokeners"}'] > 0
+        if calm:
+            assert after["askai_memory_pressure_level"] == 0, after
+            assert after[reliefs] == after[trims] == after[released] == 0, after
+
+        # Requests are kept for reuse, eight after eight at once; steady
+        # calls after those reuse the one that ended last, so only that one
+        # keeps a large answer's text.
+        socks = [socket.create_connection(("127.0.0.1", ai.port), 10)
+                 for _ in range(8)]
+        for i, sock in enumerate(socks):
+            sock.sendall(rpc_request(i)[:-1])
+        time.sleep(0.2)
+        for i, sock in enumerate(socks):
+            sock.sendall(rpc_request(i)[-1:])
+        for sock in socks:
+            assert Replies(sock).next()[0] == 200
+            sock.close()
+        up.reply = lambda request: (200, {"choices": [{"message": {
+            "content": "z" * 100_000}, "finish_reason": "stop"}]})
+        for _ in range(16):
+            assert ai.rpc("tools/call", call, conn=conn)[0] == 200
+        up.reply = lambda request: (200, ANSWERS["openai"])
+        values = ai.metrics()
+        assert values["askai_spare_requests" + loop] >= 7, values
+        assert 0 < values['askai_kept_bytes{loop="0",kind="requests"}'] < 300_000, values
+        given = values[released]
+
+        # High: no window has passed, so nothing counts as unused yet, and
+        # only the allocator is trimmed; once one has, what the tool calls
+        # alone took went unused through it, and goes.
+        set_pressure(level, 1)
+        wait_for(lambda: ai.metrics()[trims] >= 1)
+        values = ai.metrics()
+        assert values['askai_memory_pressure_input_level{input="test"}'] == 1
+        assert values["askai_memory_pressure_level"] >= 1
+        assert not calm or values[reliefs] == 1, values[reliefs]
+        assert values["askai_memory_trim_seconds_total" + loop] > 0
+        assert not calm or values[released] == given, (given, values[released])
+        set_pressure(level, 0)
+        wait_for(lambda: ai.metrics()["askai_memory_pressure_level"] == 0 or not calm)
+        time.sleep(max(0, started + 21 - time.monotonic()))
+        set_pressure(level, 1)
+        wait_for(lambda: ai.metrics()[trims] >= 2)
+        assert ai.metrics()[released] > values[released]
+        assert any("memory pressure high" in line for line in ai.log), ai.log
+
+        # Critical: all goes, a bounded share a step, from a stash that
+        # connections cut short have filled.
+        set_pressure(level, 0)
+        wait_for(lambda: ai.metrics()["askai_memory_pressure_level"] == 0 or not calm)
+        socks = [socket.create_connection(("127.0.0.1", ai.port), 10)
+                 for _ in range(400)]
+        for sock in socks:
+            sock.sendall(b"POST /mcp HTTP/1.1\r\n")
+        time.sleep(0.5)
+        for sock in socks:
+            sock.close()
+        wait_for(lambda: ai.metrics()[retained] >= 400 << 12)
+        work(ai)
+        set_pressure(level, 2)
+        wait_for(lambda: ai.metrics()[trims] >= 3)
+        values = ai.metrics()
+        assert values[retained] < 256 << 10, values[retained]
+        assert values[released] >= 400 << 12, values[released]
+        units, _ = work(ai)
+        assert units["release"] == (256, 256), units
+
+        # A connection that waits for the rest of a pipelined head moves it
+        # into a smaller block, and then reads it on.
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            pad = {"X-Pad": "p" * 2800}
+            sock.sendall(rpc_request(1, headers=pad) + rpc_request(2, headers=pad)[:2048])
+            replies = Replies(sock)
+            assert replies.next()[1]["id"] == 1
+            time.sleep(0.2)
+            units, _ = work(ai)
+            assert units["copy"][0] >= 2000, units
+            sock.sendall(rpc_request(2, headers=pad)[2048:])
+            assert replies.next() == (200, {"jsonrpc": "2.0", "id": 2, "result": {}})
+        assert not ai.metrics()[retained]
+
+        # A tool call that waits for the upstream moves its head, whose
+        # session another session's cancellation reads, and so does its own.
+        big = "x" * 6_000_000
+
+        def reply(request):
+            raw = request["raw"].decode()
+            if "SLOW" in raw:
+                return 200, ANSWERS["openai"], 5.0
+            return 200, {"choices": [{"message": {"content": big if "BIG" in raw
+                                                  else "A"}, "finish_reason": "stop"}]}
+
+        up.reply = reply
+        _, headers, _ = ai.rpc("initialize", {"protocolVersion": LEGACY})
+        session = {"Mcp-Session-Id": headers["mcp-session-id"],
+                   "MCP-Protocol-Version": LEGACY, "X-Pad": "p" * 2500}
+        up.arrived.clear()
+        up.cancelled.clear()
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(rpc_request(42, {"name": "ask_ai", "arguments": {
+                "prompt": "SLOW" + "y" * 20_000}}, "tools/call", accept_sse=True,
+                headers=session))
+            assert up.arrived.wait(5)
+            time.sleep(0.2)
+            for other, cancels in (("f" * 32, False), (session["Mcp-Session-Id"], True)):
+                assert ai.rpc("notifications/cancelled", {"requestId": 42}, rpc_id=None,
+                              headers={"Mcp-Session-Id": other,
+                                       "MCP-Protocol-Version": LEGACY})[0] == 202
+                assert up.cancelled.wait(0.5 if not cancels else 5) == cancels
+            sock.settimeout(5)
+            stream = b""
+            while not stream.endswith(b"\r\n0\r\n\r\n"):
+                chunk = sock.recv(65536)
+                assert chunk, stream
+                stream += chunk
+            assert stream.startswith(b"HTTP/1.1 200 OK\r\n") and b"data:" not in stream
+
+        # An answer larger than the sockets' buffers, which a slow reader
+        # drains, goes out whole, its output moved into smaller blocks as it
+        # drains.
+        with socket.socket() as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            sock.connect(("127.0.0.1", ai.port))
+            sock.sendall(rpc_request(5, {"name": "ask_ai", "arguments": {
+                "prompt": "BIG"}}, "tools/call"))
+            time.sleep(0.5)
+            status, body = Replies(sock).next()
+            assert status == 200 and text_of(body["result"]) == big
+        up.reply = lambda request: (200, ANSWERS["openai"])
+        trimmed = ai.metrics()[trims]
+        set_pressure(level, 0)
+
+        # Without pressure, storage is kept again.
+        wait_for(lambda: ai.metrics()["askai_memory_pressure_level"] == 0 or not calm)
+        burst(10)
+        values = ai.metrics()
+        assert values[retained] > 0 and values[trims] == trimmed or not calm, values
+
+    # Under a data segment limit glibc's heaps keep their own top pad, which
+    # leaves room for the work: one as large as a heap would make each
+    # thread's heap count whole.  The sanitizers' shadow memory counts too.
+    with open(binary, "rb") as f:
+        exe = f.read()
+    if b"__asan_init" not in exe and b"__tsan_init" not in exe:
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping",
+                           "params": {"x": "a" * 1_000_000}}).encode()
+        with Askai(binary, "-u", up.url(), data=128 << 20) as ai:
+            results = []
+            threads = [threading.Thread(target=lambda: results.append(
+                ai.post(body)[0])) for _ in range(20)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+            assert results == [200] * 20, results
+
+    # Resident memory far over --memory-high is critical pressure.
+    with Askai(binary, "-u", up.url(), "--memory-high", "1M") as ai:
+        wait_for(lambda: ai.metrics()[trims] >= 1)
+        values = ai.metrics()
+        assert values["askai_memory_high_bytes"] == 1 << 20
+        assert values['askai_memory_pressure_input_level{input="resident"}'] == 2
+        assert values["askai_memory_pressure_level"] == 2
+
+    print("memory: buffers kept for reuse, given back under pressure: PASS")
 
 
 def check_lookups(binary, up):
@@ -1892,7 +2150,7 @@ def main():
                       check_answers, check_dense, check_connections,
                       check_cancellation, check_limits, check_turn_order,
                       check_isolation, check_configuration, check_metrics,
-                      check_lookups, check_shutdown, check_watchdog,
+                      check_memory, check_lookups, check_shutdown, check_watchdog,
                       check_stalled_stderr):
             check(binary, up)
     finally:
