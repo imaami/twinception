@@ -24,6 +24,14 @@
  *
  * The front names the call that waits for the job by a handle (loop.h), which
  * it frees as it cancels: a completion that finds the handle stale is dropped.
+ *
+ * A job also carries its call's key, the session and request id a legacy
+ * notifications/cancelled names, and the key's hash, by which home finds it
+ * in the registry of jobs in flight, whatever loop the notification came to.
+ * That loop posts home the key in a job of its own, a carrier, with WITHDRAW:
+ * home ends the job it names as WITHDRAWN, and returns the carrier to its
+ * front at once.  The front works the hash out, so that home's handling of
+ * a message costs the same whatever the key's length.
  */
 #ifndef TWINCEPTION_SRC_JOB_H_
 #define TWINCEPTION_SRC_JOB_H_
@@ -39,8 +47,10 @@ struct http_request;
 
 /** The bits of the messages to home. */
 enum {
-	JOB_SUBMIT = 1,  /**< run the job */
-	JOB_CANCEL = 2,  /**< the front lets go: stop the job if it runs */
+	JOB_SUBMIT   = 1,  /**< run the job */
+	JOB_CANCEL   = 2,  /**< the front lets go: stop the job if it runs */
+	JOB_WITHDRAW = 4,  /**< the job is a carrier: end the one its key names,
+	                        as its client asked */
 };
 
 /** The bits of the messages to the front. */
@@ -57,6 +67,8 @@ enum job_status {
 	JOB_BUSY,       /**< refused: too many jobs in flight */
 	JOB_CANCELLED,  /**< cancelled, or refused by a home that drains; the
 	                     result is empty */
+	JOB_WITHDRAWN,  /**< cancelled as its client asked, by its key; the
+	                     result is empty */
 };
 
 /** An upstream call, shared by its front and home (R4). */
@@ -71,13 +83,22 @@ struct job {
 	                                       read by home until DONE */
 	struct buf           result;      /**< home's: written before DONE, read
 	                                       by the front until CANCEL */
+	struct buf           key;         /**< the front's: written before SUBMIT
+	                                       or WITHDRAW, read by home until
+	                                       DONE or RETURN: the call's session,
+	                                       a line break and its id's JSON */
 	struct loop         *front;       /**< the front's loop, set as it is made */
+	struct job          *chain;       /**< home's: the next in its registry's
+	                                       bucket */
 	struct http_request *transfer;    /**< home's: the request upstream */
 	struct handle        call;        /**< the front's: what waits for it */
 	uint64_t             deadline;    /**< the front writes, before SUBMIT: when
 	                                       the call times out, CLOCK_MONOTONIC
 	                                       ns; 0: never */
 	uint64_t             since;       /**< home's: when it was admitted */
+	uint64_t             hash;        /**< the front's, with the key: its hash,
+	                                       seeded, which home's registry
+	                                       buckets the job by */
 	_Atomic uint32_t     home_bits;   /**< pending to home */
 	_Atomic uint32_t     front_bits;  /**< pending to the front */
 	_Atomic uint32_t     refs;        /**< the front, home, each message queued */
@@ -108,11 +129,12 @@ job_init (struct job  *job,
 	list_init(&job->spare);
 	list_init(&job->queue);
 	list_init(&job->held);
-	job->request = job->result = (struct buf){};
+	job->request = job->result = job->key = (struct buf){};
 	job->front = front;
+	job->chain = nullptr;
 	job->transfer = nullptr;
 	job->call = (struct handle){};
-	job->deadline = job->since = 0;
+	job->deadline = job->since = job->hash = 0;
 	job->http = 0;
 	job->status = job->flags = 0;
 	atomic_init(&job->home_bits, 0);

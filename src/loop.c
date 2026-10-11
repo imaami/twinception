@@ -147,7 +147,7 @@ loop_clock (void)
 	return (uint64_t)ts.tv_sec * 1'000'000'000 + (uint64_t)ts.tv_nsec;
 }
 
-static void
+void
 loop_reap (struct loop *loop)
 {
 	while (!list_is_empty(&loop->dead)) {
@@ -188,6 +188,16 @@ loop_blank (struct loop *loop)
 	memset((unsigned char *)loop + at, 0, sizeof *loop - at);
 	loop->wake.fd = -1;
 	loop->epfd = -1;
+}
+
+void
+loop_place (struct loop *loop)
+{
+	atomic_init(&loop->turn, 0);
+	atomic_init(&loop->asleep, 0);
+	atomic_init(&loop->inbox, nullptr);
+	loop->id = 0;
+	loop_blank(loop);
 }
 
 int

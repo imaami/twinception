@@ -70,7 +70,8 @@ struct buf_stash_metrics {
 	_Atomic uint64_t misses;    /**< storage it lacked, which malloc() gave */
 	_Atomic uint64_t released;  /**< bytes given back to the allocator */
 	_Atomic uint64_t reliefs;   /**< pressure reliefs its thread began */
-	_Atomic uint64_t trims;     /**< allocator trims that ended them */
+	_Atomic uint64_t trims;     /**< allocator trims it ran, as the last
+	                                 thread of a relief, for them all */
 	_Atomic uint64_t trim_ns;   /**< the time those took */
 };
 
@@ -170,6 +171,21 @@ buf_wipe (struct buf *buf);
  *  empty buffer. */
 extern void
 buf_free (struct buf *buf);
+
+/** Make @p stash, in zeroed storage just allocated, valid: its atomic
+ *  members are initialized in place (src/hist.h). */
+static inline void
+buf_stash_init (struct buf_stash *stash)
+{
+	struct buf_stash_metrics *m = &stash->metrics;
+	atomic_init(&m->retained, 0);
+	atomic_init(&m->hits, 0);
+	atomic_init(&m->misses, 0);
+	atomic_init(&m->released, 0);
+	atomic_init(&m->reliefs, 0);
+	atomic_init(&m->trims, 0);
+	atomic_init(&m->trim_ns, 0);
+}
 
 /** Make @p stash, zeroed to begin, the calling thread's; nullptr leaves the
  *  thread with none. */

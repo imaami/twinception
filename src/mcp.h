@@ -12,6 +12,7 @@ struct ai_endpoint;
 struct loop;
 struct mcp;
 struct mcp_static;
+struct metrics_mcp;
 struct metrics_src;
 struct stream_app;
 
@@ -57,15 +58,16 @@ mcp_static_free (struct mcp_static **p_static);
 
 /**
  * MCP on @p loop, whose tool calls are jobs that home runs on its loop
- * @p home (src/job.h).  GET /metrics renders @p metrics, the first of whose
- * loops is @p loop, with what MCP counts.
+ * @p home (src/job.h).  It counts into @p counts, whose atomic members are
+ * valid, and GET /metrics renders @p metrics.
  */
 extern int
 mcp_init (struct mcp               **p_mcp,
           struct loop               *loop,
           struct loop               *home,
           struct mcp_static const   *st,
-          struct metrics_src const  *metrics);
+          struct metrics_src const  *metrics,
+          struct metrics_mcp        *counts);
 
 /** Cancels every request under way. */
 extern void

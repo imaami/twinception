@@ -129,12 +129,13 @@ class Upstream:
 
 class Askai:
     """An askai process on an ephemeral port; stop() expects a clean exit.
-    With nofile, it starts with that descriptor limit, soft and hard; with
-    preload, with that library preloaded; with ignore, with those signals
-    ignored; with data, with that data segment limit."""
+    It serves clients on that many loops, or with loops=None as many as it
+    has CPUs.  With nofile, it starts with that descriptor limit, soft and
+    hard; with preload, with that library preloaded; with ignore, with those
+    signals ignored; with data, with that data segment limit."""
 
-    def __init__(self, binary, *args, env=None, nofile=None, preload=None,
-                 ignore=(), data=None):
+    def __init__(self, binary, *args, loops=4, env=None, nofile=None,
+                 preload=None, ignore=(), data=None):
         child_env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
         child_env.update(env or {})
         if preload:
@@ -150,6 +151,8 @@ class Askai:
             for sig in ignore:
                 signal.signal(sig, signal.SIG_IGN)
 
+        if loops is not None:
+            args = ("--loops", str(loops), *args)
         self.proc = subprocess.Popen(
             [binary, "-l", "127.0.0.1:0", *args], env=child_env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -172,6 +175,17 @@ class Askai:
     def drain(self):
         for line in self.proc.stderr:
             self.log.append(line)
+
+    def loops(self):
+        """The names of its event loops' threads, home's last: once a request
+        has been served, every loop runs."""
+        task = f"/proc/{self.proc.pid}/task"
+        names = []
+        for tid in os.listdir(task):
+            with open(f"{task}/{tid}/comm") as f:
+                names.append(f.read().strip())
+        return sorted((n for n in names if re.fullmatch(r"loop\d+", n)),
+                      key=lambda n: int(n[4:])) + ["home"]
 
     def connect(self):
         return http.client.HTTPConnection(self.host, self.port, timeout=10)
@@ -357,6 +371,18 @@ def prometheus(text):
 def text_of(result):
     assert [c["type"] for c in result["content"]] == ["text"], result
     return result["content"][0]["text"]
+
+
+def total(values, name, **labels):
+    """The sum of the series @p name with @p labels, over its other labels,
+    such as each loop's."""
+    found = 0
+    for series, value in values.items():
+        base, _, rest = series.partition("{")
+        have = dict(re.findall(r'(\w+)="([^"]*)"', rest))
+        if base == name and all(have.get(k) == v for k, v in labels.items()):
+            found += value
+    return found
 
 
 def check_legacy_session(binary, up):
@@ -808,7 +834,7 @@ def check_connections(binary, up):
 
     # Out of descriptors, the least recently active idle connection makes
     # room; with none idle, the spare descriptor turns the newcomer away.
-    with Askai(binary, "-u", up.url()) as ai:
+    with Askai(binary, "-u", up.url(), loops=1) as ai:
         fds = f"/proc/{ai.proc.pid}/fd"
         used = {int(fd) for fd in os.listdir(fds)}
         room = [fd for fd in range(max(used) + 9) if fd not in used][:8]
@@ -841,12 +867,13 @@ def check_connections(binary, up):
         settle()
         assert ai.rpc("ping")[0] == 200
 
-    # Clients may hold all but 64 descriptors, a tool call counting one more
-    # for its upstream connection.  New clients and calls beyond that make
-    # room by closing the least recently active idle connection, so idle
-    # clients cannot leave tool calls without a descriptor.
+    # Clients may hold all but 64 descriptors and the client loop's two, 128
+    # here, a tool call counting one more for its upstream connection.  New
+    # clients and calls beyond that make room by closing the least recently
+    # active idle connection, so idle clients cannot leave tool calls without
+    # a descriptor.
     up.reply = lambda request: (200, ANSWERS["openai"], 0.5)
-    with Askai(binary, "-u", up.url(), nofile=192) as ai:
+    with Askai(binary, "-u", up.url(), nofile=194, loops=1) as ai:
         held = [held_ping(ai.port, i) for i in range(128)]
         held.append(held_ping(ai.port, 128))
         assert closed_by_peer(held[0])
@@ -872,15 +899,29 @@ def check_cancellation(binary, up):
     def slow(request):
         return 200, ANSWERS["openai"], 1.0 if "SLOW" in request["raw"].decode() else 0
 
-    with Askai(binary, "-u", up.url()) as ai:
+    # With two loops, home places a connection that comes while a call waits
+    # on the loop that has none, so each notification reaches the call's job
+    # from the other loop, through home's registry.
+    with Askai(binary, "-u", up.url(), loops=2) as ai:
+        def served(method):
+            """How many requests of @p method each loop has served."""
+            return {k: v for k, v in ai.metrics().items()
+                    if k.startswith("askai_request_seconds_count{") and
+                    f'method="{method}"' in k}
+
+        def one_loop_more(before, after):
+            more = [k.split('"')[1] for k in after if after[k] > before[k]]
+            assert len(more) == 1, (before, after)
+            return more[0]
+
         _, headers, _ = ai.rpc("initialize", {"protocolVersion": LEGACY})
         session = {"Mcp-Session-Id": headers["mcp-session-id"],
                    "MCP-Protocol-Version": LEGACY}
         up.reply = slow
 
-        def call(results):
+        def call(results, rpc_id=42):
             results.append(ai.rpc("tools/call", {"name": "ask_ai", "arguments": {
-                "prompt": "SLOW"}}, rpc_id=42, headers=session))
+                "prompt": "SLOW"}}, rpc_id=rpc_id, headers=session))
 
         for other in ({"Mcp-Session-Id": "f" * 32}, {}):
             up.arrived.clear()
@@ -895,6 +936,7 @@ def check_cancellation(binary, up):
             thread.join(5)
             assert text_of(results[0][2]["result"]) == "A", \
                 "another session must not cancel the call"
+            assert not up.cancelled.is_set()
 
         # A legacy client may cancel by notification.  On an event stream
         # the stream then ends without an event; a JSON POST gets a 202.
@@ -904,6 +946,7 @@ def check_cancellation(binary, up):
             up.cancelled.clear()
             results = []
             session["Accept"] = accept
+            calls, notes = served("tools/call"), served("notification")
             thread = threading.Thread(target=call, args=(results,))
             thread.start()
             assert up.arrived.wait(5)
@@ -917,7 +960,23 @@ def check_cancellation(binary, up):
             assert (headers.get("content-type") == "text/event-stream") == \
                 (status == 200)
             assert up.cancelled.wait(2), "upstream request was not cancelled"
+            assert one_loop_more(calls, served("tools/call")) != \
+                one_loop_more(notes, served("notification")), \
+                "the call and its cancellation came to one loop"
         del session["Accept"]
+
+        # The longest id a request may have names a call too.
+        up.arrived.clear()
+        up.cancelled.clear()
+        results = []
+        thread = threading.Thread(target=call, args=(results, "i" * 1024))
+        thread.start()
+        assert up.arrived.wait(5)
+        assert ai.rpc("notifications/cancelled", {"requestId": "i" * 1024},
+                      rpc_id=None, headers=session)[0] == 202
+        thread.join(5)
+        assert (results[0][0], results[0][2]) == (200, None), results
+        assert up.cancelled.wait(2), "upstream request was not cancelled"
 
         # Closing an event stream cancels the call in every era.
         for headers in ({"MCP-Protocol-Version": LEGACY}, {}):
@@ -962,7 +1021,8 @@ def check_cancellation(binary, up):
         assert ai.rpc("ping")[0] == 200
     up.reply = lambda request: (200, ANSWERS["openai"])
 
-    print("cancellation by notification, hang-up and half-close: PASS")
+    print("cancellation by notification, from another loop too, hang-up and "
+          "half-close: PASS")
 
 
 def check_limits(binary, up):
@@ -1191,23 +1251,28 @@ def check_limits(binary, up):
                 list(range(count))
             assert replies.next() is None
 
-    # SIGUSR1 prints each loop's statistics since the previous one: the
-    # client loop's, and home's, which say so.
+    # SIGUSR1 prints each loop's statistics since the previous one, in lines
+    # that name it: each client loop's, and home's.
     with Askai(binary, "-u", up.url()) as ai:
         assert ai.rpc("ping")[0] == 200
         ai.proc.send_signal(signal.SIGUSR1)
+        loops = ai.loops()
+        assert len(loops) == 5, loops
         for _ in range(100):
-            if sum(line.startswith(("askai: stats work ", "askai: stats home work "))
-                   for line in ai.log) == 2:
+            if sum(re.match(r"askai: stats \w+ work ", line) is not None
+                   for line in ai.log) == len(loops):
                 break
             time.sleep(0.01)
         stats = [line.split()[2:4] for line in ai.log if line.startswith("askai: stats ")]
         names = ["turn", "interactive", "bulk", "timer_late", "work"]
-        assert [s[0] for s in stats if s[0] != "home"] == names, ai.log
-        assert [s[1] for s in stats if s[0] == "home"] == names, ai.log
-        assert re.search(r"^askai: stats turn n=[1-9]\d* ", "".join(ai.log), re.M)
-        # The most work of each unit a step did, against its bound.
-        line = next(line for line in ai.log if line.startswith("askai: stats work "))
+        for loop in loops:
+            assert [s[1] for s in stats if s[0] == loop] == names, (loop, ai.log)
+        assert re.search(r"^askai: stats loop\d+ turn n=[1-9]\d* ", "".join(ai.log),
+                         re.M)
+        # The most work of each unit a step did, against its bound, on the
+        # loop that served the ping.
+        line = next(line for line in ai.log
+                    if re.match(r"askai: stats loop\d+ work .* reqs=1/", line))
         units = {k: tuple(map(int, v.split("/")))
                  for k, v in re.findall(r" (\w+)=(\d+/\d+)", line)}
         assert set(units) >= {"events", "timers", "reqs", "recv", "send", "body",
@@ -1226,6 +1291,139 @@ def check_limits(binary, up):
         assert units["parse"][0] <= units["parse"][1], units
 
     print("limits, deadlines, lingering and loop statistics: PASS")
+
+
+def check_loops(binary, up):
+    """Home accepts the clients and places each on the lighter of two client
+    loops (design section 3), and the limits that hold for the process hold
+    across the loops: connections per client address, the bodies held, for
+    all and for an address, and the descriptors, which run short no matter
+    which loops' clients hold them."""
+    def connect_from(ai, addr):
+        sock = socket.socket()
+        sock.bind((addr, 0))
+        sock.connect(("127.0.0.1", ai.port))
+        return sock
+
+    def ping_from(ai, addr, rpc_id=0):
+        sock = connect_from(ai, addr)
+        sock.sendall(rpc_request(rpc_id))
+        return sock, Replies(sock).next()[0]
+
+    def per_loop(ai):
+        """Each client loop's connections, the metrics' own among them."""
+        return [v for k, v in sorted(ai.metrics().items())
+                if k.startswith("askai_connections{")]
+
+    def post(body, length=None):
+        return (b"POST /mcp HTTP/1.1\r\nContent-Type: application/json\r\n"
+                b"Content-Length: %d\r\n\r\n" % (len(body) if length is None
+                                                  else length) + body)
+
+    # Placement spreads the connections over the loops: the lighter of two
+    # leaves them a few apart, where random placement would pass one time in
+    # twelve.
+    with Askai(binary, "-u", up.url()) as ai:
+        held = [held_ping(ai.port, i) for i in range(200)]
+        conns = per_loop(ai)
+        assert len(conns) == 4 and sum(conns) == 201, conns
+        assert max(conns) - min(conns) <= 6, conns
+        for sock in held:
+            sock.close()
+        values = ai.metrics()
+        assert total(values, "askai_connections_placed_total") >= 202, values
+
+    # An address's connections, spread over the loops, are capped all the
+    # same, while another address is served.
+    with Askai(binary, "-u", up.url(), "--max-client-conns", "6") as ai:
+        held = []
+        for i in range(6):
+            sock, status = ping_from(ai, "127.0.0.2", i)
+            assert status == 200
+            held.append(sock)
+        assert sum(n > 0 for n in per_loop(ai)) >= 3
+        sock, status = ping_from(ai, "127.0.0.2")
+        assert status == 503, "a seventh connection was served"
+        sock.close()
+        sock, status = ping_from(ai, "127.0.0.3")
+        assert status == 200
+        sock.close()
+        held.pop().close()
+        time.sleep(0.2)
+        sock, status = ping_from(ai, "127.0.0.2")
+        assert status == 200
+        sock.close()
+        for sock in held:
+            sock.close()
+
+    # Bodies held on several loops share a budget, of which one address may
+    # hold its share: eight connections of one address, spread over the
+    # loops, each hold a body's length, a tenth of the address's share,
+    # 1600 bytes in all.
+    with Askai(binary, "-u", up.url(), "--body-budget", "3000", "--max-body", "1500",
+               "--client-budget", "2000") as ai:
+        held = [connect_from(ai, "127.0.0.2") for _ in range(8)]
+        for sock in held:
+            sock.sendall(post(b"{", 200))
+        time.sleep(0.2)
+        assert sum(n > 0 for n in per_loop(ai)) >= 3
+        with connect_from(ai, "127.0.0.2") as sock:
+            sock.sendall(post(b" " * 500))
+            assert Replies(sock).next()[0] == 503, "an address took over its share"
+        with connect_from(ai, "127.0.0.3") as sock:
+            sock.sendall(post(b" " * 500))
+            assert Replies(sock).next()[0] == 400, "another address was refused"
+        with connect_from(ai, "127.0.0.3") as other:
+            other.sendall(post(b"{", 1000))
+            time.sleep(0.2)
+            with connect_from(ai, "127.0.0.4") as sock:
+                sock.sendall(post(b" " * 500))
+                assert Replies(sock).next()[0] == 503, "the bodies took over the budget"
+        for sock in held:
+            sock.close()
+        time.sleep(0.2)
+        assert ai.post(b" " * 1000)[0] == 400
+
+    # Clients and jobs hold all but 64 descriptors and the client loops' own,
+    # two a loop, 128 here: past that, the loops close idle connections, the
+    # least recently active first, as near as the loops can tell home.
+    up.reply = lambda request: (200, ANSWERS["openai"], 0.5)
+    call = rpc_request(1, {"name": "ask_ai", "arguments": {"prompt": "Q"}},
+                       "tools/call")
+    with Askai(binary, "-u", up.url(), nofile=200) as ai:
+        held = [held_ping(ai.port, i) for i in range(129)]
+        assert closed_by_peer(held[0])
+        for sock in held[-60:]:
+            sock.sendall(call)
+        for sock in held[-60:]:
+            _, body = Replies(sock).next()
+            assert text_of(body["result"]) == "A", body
+        kept = [i for i in range(1, 69) if not closed_by_peer(held[i], 0.1)]
+        assert len(kept) == 8 and min(kept) >= 40, kept
+        assert ai.rpc("ping")[0] == 200
+        for sock in held:
+            sock.close()
+
+    # With 32 loops, whose own descriptors are more than the 64, clients and
+    # jobs may hold half of 192, as the loops' and the 64 are over half: 115
+    # idle clients and 10 tool calls close 29 idle connections, or nearly,
+    # most of them the oldest, and every call gets a descriptor for its
+    # upstream connection.
+    with Askai(binary, "-u", up.url(), loops=32, nofile=192) as ai:
+        held = [held_ping(ai.port, i) for i in range(115)]
+        for sock in held[-10:]:
+            sock.sendall(call)
+        for sock in held[-10:]:
+            _, body = Replies(sock).next()
+            assert text_of(body["result"]) == "A", body
+        closed = [i for i in range(105) if closed_by_peer(held[i], 0.1)]
+        assert 27 <= len(closed) <= 29 and sum(closed) < 25 * len(closed), closed
+        for sock in held:
+            sock.close()
+    up.reply = lambda request: (200, ANSWERS["openai"])
+
+    print("loops: placement, and connections, bodies and descriptors limited "
+          "across loops: PASS")
 
 
 def check_large_bodies(binary, up):
@@ -1332,22 +1530,26 @@ def check_sse(binary, up):
 
 def work(ai):
     """The most work of each unit a step did since the last call, as (most,
-    bound), home's named "home_" and its unit, and how many bulk steps the
-    client loop ran."""
+    bound), the client loops' the most any did, home's named "home_" and its
+    unit, and how many bulk steps the client loops ran."""
     ai.log.clear()
     ai.proc.send_signal(signal.SIGUSR1)
-    lines = ("askai: stats work ", "askai: stats home work ")
+    loops = ai.loops()
+    lines = tuple(f"askai: stats {loop} work " for loop in loops)
     for _ in range(200):
-        if sum(line.startswith(lines) for line in ai.log) == 2:
+        if sum(line.startswith(lines) for line in ai.log) == len(lines):
             break
         time.sleep(0.01)
     units = {}
-    for prefix, name in zip(lines, ("", "home_")):
+    for prefix, loop in zip(lines, loops):
         line = next(line for line in ai.log if line.startswith(prefix))
-        units |= {name + k: tuple(map(int, v.split("/")))
-                  for k, v in re.findall(r" (\w+)=(\d+/\d+)", line)}
-    steps = next(line for line in ai.log if line.startswith("askai: stats bulk "))
-    return units, int(re.search(r" n=(\d+)", steps).group(1))
+        name = "home_" if loop == "home" else ""
+        for k, v in re.findall(r" (\w+)=(\d+/\d+)", line):
+            most, bound = map(int, v.split("/"))
+            units[name + k] = (max(most, units.get(name + k, (0,))[0]), bound)
+    steps = sum(int(re.search(r" n=(\d+)", line).group(1)) for line in ai.log
+                if re.match(r"askai: stats loop\d+ bulk ", line))
+    return units, steps
 
 
 def check_answers(binary, up):
@@ -1472,7 +1674,7 @@ def check_dense(binary, up):
         time.sleep(1.5)
         if memory_calm():
             values = ai.metrics()
-            assert values["askai_memory_trims_total{loop=\"1\"}"] == 0, values
+            assert total(values, "askai_memory_trims_total") == 0, values
             assert sanitized or rss() > max(kept - 2048, start_rss + 16384), \
                 (start_rss, kept, rss())
         set_pressure(level, 2)
@@ -1481,7 +1683,7 @@ def check_dense(binary, up):
                 break
             time.sleep(0.1)
         assert sanitized or rss() < start_rss + 16384, (start_rss, kept, rss())
-        wait_for(lambda: ai.metrics()["askai_memory_trims_total{loop=\"1\"}"] >= 1)
+        wait_for(lambda: total(ai.metrics(), "askai_memory_trims_total") >= 1)
         set_pressure(level, 0)
 
         # Its JSON's limits hold however a chunked body is cut up.
@@ -1535,7 +1737,7 @@ def check_turn_order(binary, up):
                        "tools/call")
     up.reply = lambda request: (200, ANSWERS["openai"], 0.2)
     up.arrived.clear()
-    with Askai(binary, "-u", up.url(), "--max-client-conns", "0") as ai:
+    with Askai(binary, "-u", up.url(), "--max-client-conns", "0", loops=1) as ai:
         held = [held_ping(ai.port, i) for i in range(count)]
         caller = socket.create_connection(("127.0.0.1", ai.port), 10)
         caller.sendall(call)
@@ -1599,8 +1801,21 @@ def check_isolation(binary, up):
             assert ai.rpc("ping")[0] == 200
         assert not any("watchdog" in line for line in ai.log), ai.log
 
+        # A client loop that cannot start, the second of four, shuts the
+        # others down, which have started, and askai exits 1.
+        env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
+        env.update(LD_PRELOAD=shim, EPFAIL_EPOLL="3", ASAN_OPTIONS=":".join(filter(
+            None, (env.get("ASAN_OPTIONS"), "verify_asan_link_order=0"))))
+        start = time.monotonic()
+        run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(), "--loops",
+                              "4"], env=env, stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=10, check=False)
+        assert run.returncode == 1 and "cannot start loop2's event loop" in \
+            run.stderr, (run.returncode, run.stderr)
+        assert time.monotonic() - start < 3, run.stderr
+
     print("failure isolation: an unwatchable upstream socket, accept errors, "
-          "a slow teardown: PASS")
+          "a slow teardown, a loop that cannot start: PASS")
 
 
 def check_configuration(binary, up):
@@ -1634,6 +1849,8 @@ def check_configuration(binary, up):
           message="--max-body exceeds --client-budget")
     fails("--output-pause", "2M", message="--output-pause exceeds --max-output")
     fails("--max-calls", "0", message="invalid --max-calls")
+    for loops in ("256", "-1", "x", ""):
+        fails("--loops", loops, message="invalid --loops")
 
     with Askai(binary, "-p", "gemini", "-m", "m",
                env={"GOOGLE_API_KEY": "fallback-key"}) as ai:
@@ -1673,18 +1890,29 @@ def check_metrics(binary, up):
         assert text_of(ai.ask()) == "A"
         ai.post(b"{not json")
         values = ai.metrics()
-        for series, least in (('askai_loop_turn_seconds_count{loop="1"}', 1),
-                              ('askai_loop_step_seconds_count{loop="1",'
-                               'kind="interactive"}', 1),
-                              ('askai_loop_step_work_max{loop="1",unit="reqs"}', 1),
-                              ('askai_request_seconds_count{method="ping"}', 1),
-                              ('askai_request_seconds_count{method="tools/call"}', 1),
-                              ('askai_request_seconds_count{method="other"}', 1),
-                              ("askai_upstream_wait_seconds_count", 1),
-                              ("askai_upstream_run_seconds_count", 1),
-                              ("askai_resident_bytes", 1 << 20),
-                              ("askai_open_fds", 4)):
-            assert values[series] >= least, (series, values.get(series))
+        loops = [f'loop="{k}"' for k in range(1, 5)] + ['loop="home"']
+        for series in ("askai_loop_turn_seconds_count", "askai_stash_retained_bytes"):
+            assert [x for x in values if x.startswith(series + "{")] == \
+                [f"{series}{{{loop}}}" for loop in loops], values
+        assert [x for x in values if x.startswith("askai_connections{")] == \
+            [f"askai_connections{{{loop}}}" for loop in loops[:4]], values
+        for series, labels, least in (("askai_loop_turn_seconds_count", {}, 1),
+                                      ("askai_loop_step_seconds_count",
+                                       {"kind": "interactive"}, 1),
+                                      ("askai_loop_step_work_max", {"unit": "reqs"}, 1),
+                                      ("askai_request_seconds_count",
+                                       {"method": "ping"}, 1),
+                                      ("askai_request_seconds_count",
+                                       {"method": "tools/call"}, 1),
+                                      ("askai_request_seconds_count",
+                                       {"method": "other"}, 1),
+                                      ("askai_connections_placed_total", {}, 4),
+                                      ("askai_connections", {}, 1),
+                                      ("askai_upstream_wait_seconds_count", {}, 1),
+                                      ("askai_upstream_run_seconds_count", {}, 1),
+                                      ("askai_resident_bytes", {}, 1 << 20),
+                                      ("askai_open_fds", {}, 4)):
+            assert total(values, series, **labels) >= least, (series, labels, values)
         assert values["askai_max_fds"] >= values["askai_open_fds"]
         # The descriptor table was grown before threads shared it: growing it
         # after makes the kernel wait for an RCU grace period, in a step.
@@ -1694,7 +1922,7 @@ def check_metrics(binary, up):
         assert values["askai_log_dropped_total"] == 0
         assert values['askai_upstream_lookups_total{result="ok"}'] == 0
         # Rendering one is a request too.
-        assert ai.metrics()['askai_request_seconds_count{method="metrics"}'] >= 1
+        assert total(ai.metrics(), "askai_request_seconds_count", method="metrics") >= 1
         assert ai.get("/metrics?x=1")[0] == 200
         assert ai.get("/mcp")[0] == 405
         # A page whose name was rebound to 127.0.0.1 names its own host, and
@@ -1743,16 +1971,19 @@ def check_memory(binary, up):
     retained = "askai_stash_retained_bytes" + loop
     released = "askai_stash_released_bytes_total" + loop
     reliefs = "askai_memory_reliefs_total" + loop
-    trims = "askai_memory_trims_total" + loop
+
+    def trims(values):
+        """The trims every loop ran: the last loop of a relief runs one."""
+        return total(values, "askai_memory_trims_total")
     with open("/proc/meminfo") as f:
-        total = int(re.search(r"MemTotal:\s+(\d+) kB", f.read()).group(1)) << 10
+        ram = int(re.search(r"MemTotal:\s+(\d+) kB", f.read()).group(1)) << 10
     # Real pressure would add reliefs of its own.
     calm = memory_calm()
     level = tempfile.NamedTemporaryFile("w", prefix="askai-pressure-")
     set_pressure(level, 0)
     call = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
     with Askai(binary, "-u", up.url(), "--test-pressure", level.name,
-               "--max-client-conns", "0", "--output-pause", "16K") as ai:
+               "--max-client-conns", "0", "--output-pause", "16K", loops=1) as ai:
         started = time.monotonic()
         conn = ai.connect()
 
@@ -1770,14 +2001,14 @@ def check_memory(binary, up):
         # Rarely, a turn holds more storage at once than any before it.
         assert after[misses] - before[misses] <= 2, (before[misses], after[misses])
         assert after[retained] > 0
-        assert after["askai_memory_total_bytes"] == total
+        assert after["askai_memory_total_bytes"] == ram
         assert 0 < after["askai_memory_available_bytes"] <= \
             after["askai_memory_total_bytes"]
         assert after["askai_memory_high_bytes"] >= 256 << 20
         assert after['askai_kept_bytes{loop="1",kind="tokeners"}'] > 0
         if calm:
             assert after["askai_memory_pressure_level"] == 0, after
-            assert after[reliefs] == after[trims] == after[released] == 0, after
+            assert after[reliefs] == trims(after) == after[released] == 0, after
 
         # Requests are kept for reuse, eight after eight at once; steady
         # calls after those reuse the one that ended last, so only that one
@@ -1806,18 +2037,18 @@ def check_memory(binary, up):
         # only the allocator is trimmed; once one has, what the tool calls
         # alone took went unused through it, and goes.
         set_pressure(level, 1)
-        wait_for(lambda: ai.metrics()[trims] >= 1)
+        wait_for(lambda: trims(ai.metrics()) >= 1)
         values = ai.metrics()
         assert values['askai_memory_pressure_input_level{input="test"}'] == 1
         assert values["askai_memory_pressure_level"] >= 1
         assert not calm or values[reliefs] == 1, values[reliefs]
-        assert values["askai_memory_trim_seconds_total" + loop] > 0
+        assert total(values, "askai_memory_trim_seconds_total") > 0
         assert not calm or values[released] == given, (given, values[released])
         set_pressure(level, 0)
         wait_for(lambda: ai.metrics()["askai_memory_pressure_level"] == 0 or not calm)
         time.sleep(max(0, started + 21 - time.monotonic()))
         set_pressure(level, 1)
-        wait_for(lambda: ai.metrics()[trims] >= 2)
+        wait_for(lambda: trims(ai.metrics()) >= 2)
         assert ai.metrics()[released] > values[released]
         assert any("memory pressure high" in line for line in ai.log), ai.log
 
@@ -1843,9 +2074,7 @@ def check_memory(binary, up):
         assert before["askai_stash_retained_bytes" + home] >= 300_000, before
         work(ai)
         set_pressure(level, 2)
-        wait_for(lambda: ai.metrics()[trims] >= 3)
-        wait_for(lambda: ai.metrics()["askai_memory_trims_total" + home] >
-                 before["askai_memory_trims_total" + home])
+        wait_for(lambda: trims(ai.metrics()) >= 3)
         values = ai.metrics()
         assert values[retained] < 256 << 10, values[retained]
         assert values[released] >= 400 << 12, values[released]
@@ -1919,24 +2148,48 @@ def check_memory(binary, up):
             status, body = Replies(sock).next()
             assert status == 200 and text_of(body["result"]) == big
         up.reply = lambda request: (200, ANSWERS["openai"])
-        trimmed = ai.metrics()[trims]
+        trimmed = trims(ai.metrics())
         set_pressure(level, 0)
 
         # Without pressure, storage is kept again.
         wait_for(lambda: ai.metrics()["askai_memory_pressure_level"] == 0 or not calm)
         burst(10)
         values = ai.metrics()
-        assert values[retained] > 0 and values[trims] == trimmed or not calm, values
+        assert values[retained] > 0 and trims(values) == trimmed or not calm, values
+
+    # With several loops, a relief has each give back what it keeps, home
+    # too, and the last of them to end its share trims the allocator, once
+    # for all.
+    if calm:
+        set_pressure(level, 0)
+        with Askai(binary, "-u", up.url(), "--test-pressure", level.name) as ai:
+            for _ in range(8):
+                assert text_of(ai.ask()) == "A"
+            for rounds in (1, 2):
+                set_pressure(level, 2)
+                wait_for(lambda: trims(ai.metrics()) >= rounds)
+                time.sleep(1.5)
+                values = ai.metrics()
+                assert trims(values) == rounds, values
+                assert [v for k, v in values.items()
+                        if k.startswith("askai_memory_reliefs_total{")] == \
+                    [rounds] * 5, values
+                set_pressure(level, 0)
+                wait_for(lambda: ai.metrics()["askai_memory_pressure_level"] == 0)
+            assert any("memory pressure relieved: " in line for line in ai.log), \
+                ai.log
 
     # Under a data segment limit glibc's heaps keep their own top pad, which
     # leaves room for the work: one as large as a heap would make each
-    # thread's heap count whole.  The sanitizers' shadow memory counts too.
+    # thread's heap count whole.  The sanitizers' shadow memory counts too,
+    # and so does each client loop, about 2.3 MiB: its stack, its histograms
+    # and its log ring.
     with open(binary, "rb") as f:
         exe = f.read()
     if b"__asan_init" not in exe and b"__tsan_init" not in exe:
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping",
                            "params": {"x": "a" * 1_000_000}}).encode()
-        with Askai(binary, "-u", up.url(), data=128 << 20) as ai:
+        with Askai(binary, "-u", up.url(), data=128 << 20, loops=8) as ai:
             results = []
             threads = [threading.Thread(target=lambda: results.append(
                 ai.post(body)[0])) for _ in range(20)]
@@ -1948,7 +2201,7 @@ def check_memory(binary, up):
 
     # Resident memory far over --memory-high is critical pressure.
     with Askai(binary, "-u", up.url(), "--memory-high", "1M") as ai:
-        wait_for(lambda: ai.metrics()[trims] >= 1)
+        wait_for(lambda: trims(ai.metrics()) >= 1)
         values = ai.metrics()
         assert values["askai_memory_high_bytes"] == 1 << 20
         assert values['askai_memory_pressure_input_level{input="resident"}'] == 2
@@ -2037,8 +2290,9 @@ def check_shutdown(binary, up):
         while chunk := late.recv(65536):
             text += chunk
         values = prometheus(text.split(b"\r\n\r\n", 1)[1].decode())
-        closes = values['askai_loop_step_work_max{loop="1",unit="closes"}']
-        assert 1 < closes <= 32, closes
+        closes = [v for k, v in values.items()
+                  if k.startswith("askai_loop_step_work_max{") and 'unit="closes"' in k]
+        assert 1 < max(closes) <= 32, closes
         for sock in (idle, sse, plain, late, *crowd):
             sock.close()
         assert ai.proc.wait(5) == 0, "".join(ai.log)
@@ -2051,6 +2305,49 @@ def check_shutdown(binary, up):
     with socket.socket() as sock:
         assert sock.connect_ex(("127.0.0.1", ai.port)) != 0, "still listening"
     up.reply = lambda request: (200, ANSWERS["openai"])
+
+    # Clients that come as the drain begins, some of them on their way from
+    # home to a client loop then, are each served or closed, none lost or
+    # left open: askai is stopped while they connect and ask.  A head part way
+    # on every loop holds the drain open until its deadline, so each client
+    # must have been closed by askai, not by its exit.
+    ai = Askai(binary, "-u", up.url())
+    try:
+        parts = [socket.create_connection(("127.0.0.1", ai.port), 10)
+                 for _ in range(32)]
+        for sock in parts:
+            sock.sendall(b"POST /mcp HTTP/1.1\r\n")
+        time.sleep(0.1)
+        conns = [v for k, v in ai.metrics().items()
+                 if k.startswith("askai_connections{")]
+        assert min(conns) >= 2, conns
+        ai.proc.send_signal(signal.SIGSTOP)
+        try:
+            socks = [socket.create_connection(("127.0.0.1", ai.port), 10)
+                     for _ in range(256)]
+            for i, sock in enumerate(socks):
+                sock.sendall(rpc_request(i))
+            ai.proc.send_signal(signal.SIGTERM)
+        finally:
+            ai.proc.send_signal(signal.SIGCONT)
+        for sock in socks:
+            sock.settimeout(2)
+            rest = b""
+            try:
+                while chunk := sock.recv(65536):
+                    rest += chunk
+            except ConnectionResetError:
+                pass
+            assert not rest or rest.startswith(b"HTTP/1.1 200 "), rest
+            sock.close()
+        assert ai.proc.poll() is None, "".join(ai.log)
+        for sock in parts:
+            sock.close()
+        assert ai.proc.wait(5) == 0, "".join(ai.log)
+    finally:
+        if ai.proc.poll() is None:
+            ai.proc.kill()
+            ai.proc.wait()
 
     # Ctrl-C does the same.
     ai = Askai(binary, "-u", up.url())
@@ -2079,42 +2376,48 @@ def check_jobs(binary, up):
     cancelled while it waited is dropped.  /metrics shows home's loop and
     stash, and the jobs.  Shutting down cancels the jobs in flight."""
     call = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
-    cancelled = 'askai_calls_cancelled_total{loop="1"}'
-    dropped = 'askai_calls_dropped_total{loop="1"}'
-
     def ended(values, end):
         return values[f'askai_jobs_ended_total{{end="{end}"}}']
 
+    def cancelled(values):
+        return total(values, "askai_calls_cancelled_total")
+
+    def dropped(values):
+        return total(values, "askai_calls_dropped_total")
+
     def settled(ai):
         """The metrics once no job is in flight and each cancelled call's
-        completion has come back, which must account for every job."""
+        completion has come back to its loop, which must account for every
+        job."""
         for _ in range(250):
             values = ai.metrics()
             if not values["askai_jobs_in_flight"] and \
-                    values[cancelled] == values[dropped]:
+                    cancelled(values) == dropped(values):
                 break
             time.sleep(0.02)
         assert values["askai_jobs_submitted_total"] == sum(
             ended(values, end) for end in ("completed", "cancelled", "rejected")), \
             values
         assert not values["askai_jobs_in_flight"], values
-        assert values[cancelled] == values[dropped], values
+        assert cancelled(values) == dropped(values), values
         return values
 
     with Askai(binary, "-u", up.url(), "--max-calls", "2") as ai:
         assert text_of(ai.ask()) == "A"
         values = settled(ai)
         for series, expected in (("askai_jobs_submitted_total", 1),
-                                 ('askai_jobs_ended_total{end="completed"}', 1),
-                                 ('askai_spare_jobs{loop="1"}', 1)):
+                                 ('askai_jobs_ended_total{end="completed"}', 1)):
             assert values[series] == expected, (series, values)
+        assert total(values, "askai_spare_jobs") == 1, values
         for series in ('askai_loop_turn_seconds_count{loop="home"}',
                        'askai_loop_step_seconds_count{loop="home",kind="bulk"}',
                        'askai_loop_inbox_delay_seconds_count{loop="home"}',
                        'askai_stash_takes_total{loop="home",result="miss"}',
-                       'askai_loop_inbox_delay_seconds_count{loop="1"}',
                        "askai_upstream_run_seconds_count"):
             assert values[series] >= 1, (series, values)
+        # The call's loop had its completion.
+        assert total(values, "askai_loop_inbox_delay_seconds_count") > \
+            values['askai_loop_inbox_delay_seconds_count{loop="home"}'], values
         assert 'askai_spare_jobs{loop="home"}' not in values
 
         # Busy: with two calls under way, a third is refused at once, in
@@ -2164,7 +2467,7 @@ def check_jobs(binary, up):
             wait_for(lambda: len(up.requests) and "SLOW" in up.last()["raw"].decode())
         wait_for(lambda: up.hangups > hangups)
         values = settled(ai)
-        assert (values[cancelled], values[dropped], ended(values, "cancelled")) == \
+        assert (cancelled(values), dropped(values), ended(values, "cancelled")) == \
             (1, 1, 1), values
 
         # The answer comes as the client goes, askai stopped meanwhile: home
@@ -2202,7 +2505,7 @@ def check_jobs(binary, up):
         for thread in threads:
             thread.join(10)
         values = settled(ai)
-        assert values[cancelled] > 1 and values["askai_jobs_submitted_total"] >= 69, \
+        assert cancelled(values) > 1 and values["askai_jobs_submitted_total"] >= 69, \
             values
         assert text_of(ai.ask("B")) == "B"
 
@@ -2366,7 +2669,7 @@ def main():
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
                       check_modern, check_http, check_large_bodies, check_sse,
                       check_answers, check_dense, check_connections,
-                      check_cancellation, check_limits, check_turn_order,
+                      check_cancellation, check_limits, check_loops, check_turn_order,
                       check_isolation, check_configuration, check_metrics,
                       check_memory, check_lookups, check_jobs, check_shutdown,
                       check_watchdog, check_stalled_stderr):

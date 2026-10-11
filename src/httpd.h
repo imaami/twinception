@@ -1,12 +1,19 @@
-/** @file HTTP/1.1 transport for request streams (src/stream.h). */
+/** @file HTTP/1.1 transport for request streams (src/stream.h): home's door,
+ *  which accepts the clients and places each on a client loop, and the client
+ *  loops' servers, which serve them (design section 3). */
 #ifndef TWINCEPTION_SRC_HTTPD_H_
 #define TWINCEPTION_SRC_HTTPD_H_
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include "buf.h"
+
 struct httpd;
+struct httpd_home;
+struct httpd_hub;
 struct loop;
+struct metrics_conns;
 struct stream_app;
 
 /**
@@ -61,20 +68,86 @@ struct httpd_cfg {
 	char const         *token;    /**< bearer token clients must send, or nullptr */
 };
 
-/** Serve @p app, whose fields may number STREAM_FIELDS at most. */
+/**
+ * What home's door and the client loops' servers share, for @p loops client
+ * loops: made before any loop starts, freed once every loop is finished
+ * (loop_fini()), as messages in the loops' inboxes may point into it.
+ */
+extern int
+httpd_hub_new (struct httpd_hub **p_hub,
+               size_t             loops);
+
+extern void
+httpd_hub_free (struct httpd_hub **p_hub);
+
+/** What client loop @p i counts of its connections, for GET /metrics. */
+extern struct metrics_conns const *
+httpd_hub_metrics (struct httpd_hub const *hub,
+                   size_t                  i);
+
+/**
+ * Home's door on home's @p loop: listen on cfg->listen, and from
+ * httpd_home_open() on, accept clients and place each on a client loop of
+ * @p hub.  Descriptors are budgeted for the connections and for @p calls,
+ * the jobs in flight, which each may need one upstream.
+ */
+extern int
+httpd_home_init (struct httpd_home      **p_home,
+                 struct loop             *loop,
+                 struct httpd_hub        *hub,
+                 struct httpd_cfg const  *cfg,
+                 _Atomic uint64_t const  *calls);
+
+extern void
+httpd_home_fini (struct httpd_home **p_home);
+
+/** Every client loop's server runs: accept clients, unless the door has
+ *  drained already. */
+extern void
+httpd_home_open (struct httpd_home *home);
+
+/** Stop accepting clients: close the listener. */
+extern void
+httpd_home_drain (struct httpd_home *home);
+
+/** A job was admitted, which may need a descriptor upstream: if clients and
+ *  calls hold the descriptors they may, have the least recently active idle
+ *  connection closed. */
+extern void
+httpd_home_crowd (struct httpd_home *home);
+
+/** Begin a window of reuse of what home keeps, as buf_stash_age() does for
+ *  a stash. */
+extern void
+httpd_home_age (struct httpd_home *home);
+
+/** Free the connections and client addresses' entries kept for reuse, up
+ *  to @p max units of release work, at BUF_HIGH those unused since the last
+ *  window began; returns the units, 0 once none are left to free. */
+extern size_t
+httpd_home_relieve (struct httpd_home *home,
+                    enum buf_pressure  level,
+                    size_t             max);
+
+/** Serve @p app, whose fields may number STREAM_FIELDS at most, on client
+ *  loop @p i of @p hub, its @p loop. */
 extern int
 httpd_init (struct httpd            **p_httpd,
             struct loop              *loop,
+            struct httpd_hub         *hub,
+            size_t                    i,
             struct stream_app const  *app,
             struct httpd_cfg const   *cfg);
 
+/** Close every connection, and give each back to home. */
 extern void
 httpd_fini (struct httpd **p_httpd);
 
 /**
- * Stop accepting clients, close the idle ones and end the others once their
- * response is sent, or at @p deadline (CLOCK_MONOTONIC ns), a share a step,
- * and have the loop exit once none is left.
+ * Close the idle connections and end the others once their response is
+ * sent, or at @p deadline (CLOCK_MONOTONIC ns), a share a step, and have the
+ * loop exit once none is left.  A connection home places from now on closes
+ * at once.
  */
 extern void
 httpd_drain (struct httpd *srv,

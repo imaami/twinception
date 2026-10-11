@@ -339,6 +339,7 @@ can act on:
 | pending output | 256 KiB holds requests back, 1 MiB unless one response is all of it | close |
 | output stalled | 30 s | close |
 
+The limits hold for the whole process, whichever event loop serves a client.
 Bytes trickling in or out never extend a deadline.  When `askai` ends a
 connection, it half-closes it and discards what the client still sends for up
 to 2 s, so that a client that sent too much still reads the error.  With
@@ -364,17 +365,22 @@ the allocator returns what is free to the system in one call that takes about
 55 µs per MB.
 
 Sending `askai` SIGUSR1 prints statistics of its event loops since the
-previous SIGUSR1, the client loop's and home's, whose lines say so: how long
-their turns and steps took, how late their timers fired, and the most work of
-each kind a step did against its bound.
+previous SIGUSR1, each loop's in lines that name it (`loop1` to `loopN`, and
+`home`): how long their turns and steps took, how late their timers fired,
+and the most work of each kind a step did against its bound.
 
 ### Running
 
-`askai` serves clients on an event loop thread of its own, and asks the other
-model from another, home: a tool call hands its upstream request to home as a
-job, which home runs and hands back.  At most `--max-calls` (256) run at once;
-a tool call past those is answered at once with a tool error that says to try
-again.  A client that goes while its call runs cancels the upstream request.
+`askai` serves clients on event loop threads, by default one fewer than the
+CPUs it may use, as its affinity and its cgroup's CPU quota allow (`--loops`),
+and asks the other model from another, home.  Home accepts the clients and
+places each on the lighter of two client loops, by the connections they hold
+and how busy they are; the client stays with that loop.  A tool call hands its
+upstream request to home as a job, which home runs and hands back.  At most
+`--max-calls` (256) run at once; a tool call past those is answered at once
+with a tool error that says to try again.  A client that goes while its call
+runs cancels the upstream request, as does a `notifications/cancelled` for it
+that comes on any connection.
 The main thread minds signals, the process's memory and descriptors (and the
 kernel's pressure stall information where there is some), and a watchdog that
 logs a loop turn longer than 20 ms (`--watchdog`).  A logger thread alone
@@ -383,10 +389,11 @@ lines that do not fit in its buffers are dropped and counted.  Two more
 threads look up the upstream host, so libcurl starts no threads of its own.
 
 `GET /metrics` returns metrics in Prometheus's text format: each loop's turn
-and step times, timer lateness and inbox delay (`loop="1"`, `loop="home"`),
-request times by MCP method, home's jobs, upstream wait and run times, host
-lookups, log lines dropped, watchdog reports, memory and descriptors, memory
-pressure and its inputs, and what the loops keep for reuse and gave back.
+and step times, timer lateness and inbox delay (`loop="1"` to `loop="N"`, and
+`loop="home"`), each client loop's request times by MCP method and its
+connections, home's jobs, upstream wait and run times, host lookups, log
+lines dropped, watchdog reports, memory and descriptors, memory pressure and
+its inputs, and what the loops keep for reuse and gave back.
 It answers clients on loopback that name it as `localhost`, `127.0.0.1` or
 `[::1]` (or send no `Host`), and with `ASKAI_TOKEN` set, those that send the
 token.
@@ -428,6 +435,9 @@ MCP server:
       --tool-name NAME      tool name (default ask_ai)
       --tool-description TEXT
   -v, --verbose             log every tool call
+      --loops N             event loops that serve clients (default 0:
+                            one fewer than the CPUs askai may use, at
+                            least 1, at most 255)
       --grace SECONDS       to finish what is under way on SIGINT,
                             SIGTERM or SIGHUP (default 5)
       --watchdog MS         log a turn of an event loop longer than

@@ -21,9 +21,8 @@ enum { BUDGET = 32 };
 /* Where a series is: those before PER_LOOP are each loop's, rendered for
  * every loop that has them, labelled with its name. */
 enum source {
-	LOOP, STASH, KEPT, CALLS, PER_LOOP,
-	HTTP = PER_LOOP, BLOCKERS, JOBS, METHODS, BRAINSTEM, LOGGER, PSI, CGROUP,
-	SOURCES
+	LOOP, STASH, KEPT, CALLS, METHODS, CONNS, PER_LOOP,
+	HTTP = PER_LOOP, BLOCKERS, JOBS, BRAINSTEM, LOGGER, PSI, CGROUP, SOURCES
 };
 enum kind { COUNTER, GAUGE, HISTOGRAM };
 enum scale { ONE, NS, US, PERMYRIAD };
@@ -76,6 +75,8 @@ static struct {
 	VALUE(name, help, labels, struct metrics_kept, field, KEPT, GAUGE, ONE)
 #define CALLS(name, help, field) \
 	VALUE(name, help, "", struct metrics_calls, field, CALLS, COUNTER, ONE)
+#define CONNS(name, help, field, kind) \
+	VALUE(name, help, "", struct metrics_conns, field, CONNS, kind, ONE)
 #define JOBS(name, help, labels, field, kind) \
 	VALUE(name, help, labels, struct home_metrics, field, JOBS, kind, ONE)
 #define INPUT(help, input, i) \
@@ -113,10 +114,13 @@ static struct entry const table[] = {
 	METHOD(nullptr, "metrics", METHOD_METRICS),
 	METHOD(nullptr, "other", METHOD_OTHER),
 	CALLS("askai_calls_cancelled_total", "Tool calls a loop cancelled while their "
-	      "job ran: hang-ups, closed streams, notifications/cancelled, drains.",
-	      cancelled),
+	      "job ran: hang-ups, closed streams, drains (home ends those that "
+	      "notifications/cancelled names).", cancelled),
 	CALLS("askai_calls_dropped_total", "Job completions a loop dropped, their "
 	      "call gone (a stale handle).", dropped),
+	CONNS("askai_connections", "Connections a client loop serves.", open, GAUGE),
+	CONNS("askai_connections_placed_total", "Connections home placed on a "
+	      "client loop.", taken, COUNTER),
 	JOBS("askai_jobs_submitted_total", "Jobs (upstream calls) submitted to home.",
 	     "", submitted, COUNTER),
 	JOBS("askai_jobs_ended_total", "Jobs home ended: completed with the "
@@ -212,14 +216,15 @@ static struct entry const table[] = {
 	KEPT("askai_kept_bytes", nullptr, "kind=\"tokeners\"", bytes[1]),
 	STASHED("askai_memory_reliefs_total", "Reliefs of memory pressure a loop began.",
 	        "", reliefs, COUNTER, ONE),
-	STASHED("askai_memory_trims_total", "Allocator trims that ended them.", "", trims,
-	        COUNTER, ONE),
+	STASHED("askai_memory_trims_total", "Allocator trims a loop ran, the last of a "
+	        "relief's, for every loop.", "", trims, COUNTER, ONE),
 	STASHED("askai_memory_trim_seconds_total", "The time those took.", "", trim_ns,
 	        COUNTER, NS),
 };
 
 #undef INPUT
 #undef JOBS
+#undef CONNS
 #undef CALLS
 #undef KEPT
 #undef STASHED
@@ -318,12 +323,15 @@ loop_source (struct metrics_loop const *l,
 		[STASH] = l->stash,
 		[KEPT] = l->kept,
 		[CALLS] = l->calls,
+		[METHODS] = l->methods,
+		[CONNS] = l->conns,
 	};
 	return at[source];
 }
 
 /* The metrics are series, from @p *pos on: an entry's for each loop in turn,
- * which only a loop's have more than one of. */
+ * which only a loop's have more than one of.  A loop that lacks an entry's
+ * series, which only home does, is passed over. */
 int
 metrics_render (struct metrics_src const *src,
                 size_t                   *pos,
@@ -333,33 +341,31 @@ metrics_render (struct metrics_src const *src,
 		[HTTP] = src->http,
 		[BLOCKERS] = src->blockers,
 		[JOBS] = src->jobs,
-		[METHODS] = src->methods,
 		[BRAINSTEM] = &brainstem_metrics,
 		[LOGGER] = &log_metrics,
 		[PSI] = hist_get(&brainstem_metrics.psi_ok) ? &brainstem_metrics : nullptr,
 		[CGROUP] = hist_get(&brainstem_metrics.cg_limit) ? &brainstem_metrics : nullptr,
 	};
-	size_t const end = ARRAY_SIZE(table) * METRICS_LOOPS;
-	for (unsigned cost = 0; *pos < end && cost < BUDGET; ++*pos) {
-		struct entry const *e = &table[*pos / METRICS_LOOPS];
-		size_t l = *pos % METRICS_LOOPS;
+	size_t const n = src->n_loops;
+	size_t const end = ARRAY_SIZE(table) * n;
+	for (unsigned cost = 0; *pos < end && cost < BUDGET; ) {
+		struct entry const *e = &table[*pos / n];
+		size_t l = *pos % n;
 		bool looped = e->source < PER_LOOP;
-		char const *at = !looped ? l ? nullptr : base[e->source]
-		               : loop_source(&src->loops[l], e->source);
+		char const *at = looped ? loop_source(&src->loops[l], e->source)
+		                        : base[e->source];
+		/* An entry that is no loop's has a series once. */
+		*pos = looped ? *pos + 1 : (*pos / n + 1) * n;
 		if (!at)
 			continue;
 		at += e->off;
-		/* A loop's series start their family at the first loop that has
-		 * them. */
-		bool first = e->help;
-		for (size_t k = 0; looped && first && k < l; ++k)
-			first = !loop_source(&src->loops[k], e->source);
+		/* A loop's family starts with the first loop, which has them all. */
 		char labels[128];
 		if (looped)
 			snprintf(labels, sizeof labels, "loop=\"%s\"%s%s", src->loops[l].name,
 			         *e->labels ? "," : "", e->labels);
-		if (first && !put(out, "# HELP %s %s\n# TYPE %s %s\n", e->name, e->help,
-		                  e->name, kinds[e->kind]))
+		if (e->help && !l && !put(out, "# HELP %s %s\n# TYPE %s %s\n", e->name,
+		                          e->help, e->name, kinds[e->kind]))
 			return ENOMEM;
 		char const *ls = looped ? labels : e->labels;
 		bool ok = e->kind == HISTOGRAM

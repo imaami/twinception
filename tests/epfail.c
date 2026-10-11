@@ -6,7 +6,8 @@
  * EPFAIL_ACCEPT set, every other accept4() fails with EPROTO, as when Linux
  * passes on a pending connection's network error.  With EPFAIL_CLEANUP_MS
  * set, curl_multi_cleanup() takes that many milliseconds longer, as a
- * teardown may on a busy machine.
+ * teardown may on a busy machine.  With EPFAIL_EPOLL set to N, the Nth
+ * epoll_create1() fails with EMFILE, as when an event loop cannot start.
  */
 #define _GNU_SOURCE
 
@@ -36,6 +37,23 @@ accept4 (int              fd,
 		return -1;
 	}
 	return real(fd, addr, len, flags);
+}
+
+int
+epoll_create1 (int flags)
+{
+	static int (*real) (int);
+	static long calls;
+	if (!real) {
+		void *sym = dlsym(RTLD_NEXT, "epoll_create1");
+		memcpy(&real, &sym, sizeof real);
+	}
+	char const *n = getenv("EPFAIL_EPOLL");
+	if (n && ++calls == atol(n)) {
+		errno = EMFILE;
+		return -1;
+	}
+	return real(flags);
 }
 
 int

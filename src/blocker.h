@@ -1,5 +1,6 @@
 /** @file Blockers: threads for calls that can only block, such as regular-file
- *  I/O and getaddrinfo(), off the loops (design sections 1 and 2).
+ *  I/O, getaddrinfo() and malloc_trim(), off the loops (design sections 1, 2
+ *  and 5).
  *
  * A loop submits a job to a bounded queue, a mutex and a condition variable
  * over a list, which a full queue refuses.  One of the blockers runs the

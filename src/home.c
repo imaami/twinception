@@ -2,6 +2,7 @@
  *  runs over the curl bridge (home.h). */
 #include <errno.h>
 #include <inttypes.h>
+#include <stdbit.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,19 +12,24 @@
 #include "hist.h"
 #include "home.h"
 #include "http.h"
+#include "httpd.h"
 #include "job.h"
 #include "list.h"
 #include "log.h"
 #include "loop.h"
 #include "util.h"
 
-/* The most bytes of an answer, until S6's 1 MiB (design section 4). */
-enum { MAX_RESPONSE = 16 << 20 };
+enum {
+	MAX_RESPONSE = 16 << 20,  /* the most bytes of an answer, until S6's
+	                             1 MiB (design section 4) */
+	KEYS_MAX     = 1 << 16,   /* the registry's buckets at most */
+};
 
 /* What home notes of a job's run, in its flags. */
 enum {
-	OVERFLOW = 1,  /* the answer passed MAX_RESPONSE */
-	DROPPED  = 2,  /* its front let go of it while it ran */
+	OVERFLOW  = 1,  /* the answer passed MAX_RESPONSE */
+	DROPPED   = 2,  /* its front let go of it while it ran */
+	WITHDRAWN = 4,  /* its client cancelled it, by its key, while it ran */
 };
 
 /* The jobs in flight are on one of three lists, each oldest first: admitted,
@@ -33,7 +39,8 @@ enum {
  * costs some tens of µs.  The running jobs are in the order of their
  * deadlines, as a front gives each job it submits the same timeout and home
  * starts them first in first out (with several fronts, nearly so): home
- * ends them as those pass, whatever libcurl does. */
+ * ends them as those pass, whatever libcurl does.  The jobs in flight are
+ * in the registry too, chained in buckets by a hash of their keys. */
 struct home {
 	struct loop_step          start;     /* starts the jobs admitted */
 	struct loop_step          stop;      /* cancels the jobs dropped */
@@ -50,7 +57,10 @@ struct home {
 	struct home_metrics      *metrics;
 	struct loop              *loop;
 	struct http              *http;
+	struct httpd_home        *door;      /* to make room for descriptors */
 	struct ai_endpoint const *ep;
+	struct job              **keys;      /* the registry's buckets */
+	size_t                    mask;      /* buckets - 1 */
 	uint32_t                  max;       /* jobs in flight at most */
 	uint16_t                  draining;  /* bool */
 	uint16_t                  alone;     /* bool: the client loops have exited */
@@ -58,6 +68,16 @@ struct home {
 
 /* The thread's home: the handler of jobs' messages finds it here. */
 static thread_local struct home *self;
+
+/* The link that heads the registry's bucket of the keys of @p hash, which
+ * the front works out, seeded, so that no client can pick keys that crowd
+ * one. */
+static struct job **
+home_bucket (struct home const *home,
+             uint64_t           hash)
+{
+	return &home->keys[hash & home->mask];
+}
 
 /* Drop @p n references to @p job, and hand it back to its front if they were
  * the last. */
@@ -84,13 +104,17 @@ job_end (struct home      *home,
 {
 	if (!list_is_empty(&job->queue)) {
 		list_del(&job->queue);
+		struct job **p = home_bucket(home, job->hash);
+		while (*p != job)
+			p = &(*p)->chain;
+		*p = job->chain;
 		hist_add(&home->metrics->in_flight, -1ULL);
 	}
 	list_del(&job->held);
 	if (count)
 		hist_add(count, 1);
 	bool dropped = job->flags & DROPPED;
-	if (dropped || status == JOB_CANCELLED)
+	if (dropped || status == JOB_CANCELLED || status == JOB_WITHDRAWN)
 		buf_free(&job->result);
 	job->status = (uint8_t)status;
 	job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DONE);
@@ -254,7 +278,8 @@ cancel_some (struct home *home,
 			return false;
 		struct job *job = container_of(list->next, struct job, queue);
 		http_cancel(home->http, &job->transfer);
-		job_end(home, job, JOB_CANCELLED, &home->metrics->cancelled);
+		job_end(home, job, job->flags & WITHDRAWN ? JOB_WITHDRAWN : JOB_CANCELLED,
+		        &home->metrics->cancelled);
 	}
 	return true;
 }
@@ -280,6 +305,33 @@ drain_step (struct loop      *loop,
 		loop_ready_bulk(loop, step);
 }
 
+/* End the jobs in flight that the key of @p carrier names, as their client
+ * asked: at once those not started, and by a step those running, the same
+ * that cancels those their front let go of.  One its front let go of ends so
+ * already. */
+static void
+home_withdraw (struct home      *home,
+               struct job const *carrier)
+{
+	struct span key = buf_peek(&carrier->key);
+	struct job *next;
+	for (struct job *job = *home_bucket(home, carrier->hash); job; job = next) {
+		struct span k = buf_peek(&job->key);
+		next = job->chain;
+		if (job->hash != carrier->hash || k.len != key.len ||
+		    memcmp(k.ptr, key.ptr, key.len) || job->flags & (DROPPED | WITHDRAWN))
+			continue;
+		if (!job->transfer) {
+			job_end(home, job, JOB_WITHDRAWN, &home->metrics->cancelled);
+			continue;
+		}
+		job->flags |= WITHDRAWN;
+		list_del(&job->queue);
+		list_append(&home->dropped, &job->queue);
+		loop_ready_bulk(home->loop, &home->stop);
+	}
+}
+
 void
 home_job (struct loop *loop,
           struct msg  *msg)
@@ -289,6 +341,13 @@ home_job (struct loop *loop,
 	/* Once the loop has stopped, jobs end at once, and nothing counts. */
 	struct home *home = loop->exit ? nullptr : self;
 	struct home_metrics *m = home ? home->metrics : nullptr;
+	if (bits & JOB_WITHDRAW) {
+		/* A carrier, which goes back to its front at once. */
+		if (home)
+			home_withdraw(home, job);
+		home_put(job, 2);
+		return;
+	}
 	if (bits & JOB_SUBMIT) {
 		/* A job may come back for another run: what home noted of the
 		 * last goes before any end. */
@@ -302,10 +361,15 @@ home_job (struct loop *loop,
 		} else if (hist_get(&m->in_flight) >= home->max) {
 			job_end(home, job, JOB_BUSY, &m->rejected);
 		} else {
+			struct job **p = home_bucket(home, job->hash);
+			job->chain = *p;
+			*p = job;
 			list_append(&home->admitted, &job->queue);
 			hist_add(&m->in_flight, 1);
 			job->since = loop->now;
 			loop_ready_bulk(loop, &home->start);
+			/* It may need a descriptor upstream. */
+			httpd_home_crowd(home->door);
 		}
 	} else if (bits & JOB_CANCEL && job->transfer) {
 		/* Cancelling it takes a step, which then lets go of it. */
@@ -329,14 +393,20 @@ int
 home_init (struct home               **p_home,
            struct loop                *loop,
            struct blockers            *blockers,
+           struct httpd_home          *door,
            struct ai_endpoint const   *ep,
            uint32_t                    max,
            struct home_metrics        *metrics,
            struct http_metrics        *http)
 {
+	size_t buckets = stdc_bit_ceil(max < KEYS_MAX ? max : (uint32_t)KEYS_MAX);
 	struct home *home = malloc(sizeof *home);
-	if (!home)
+	struct job **keys = calloc(buckets, sizeof *keys);
+	if (!home || !keys) {
+		free(keys);
+		free(home);
 		return ENOMEM;
+	}
 	*home = (struct home){
 		.start.fn = start_step,
 		.stop.fn = stop_step,
@@ -346,7 +416,10 @@ home_init (struct home               **p_home,
 		.deadline.fn = deadline_event,
 		.metrics = metrics,
 		.loop = loop,
+		.door = door,
 		.ep = ep,
+		.keys = keys,
+		.mask = buckets - 1,
 		.max = max
 	};
 	list_init(&home->admitted);
@@ -359,6 +432,7 @@ home_init (struct home               **p_home,
 		e = http_init(&home->http, loop, http);
 	if (e) {
 		loop_timer_stop(loop, &home->deadline);
+		free(keys);
 		free(home);
 		return e;
 	}
@@ -394,6 +468,7 @@ home_fini (struct home **p_home)
 	loop_timer_stop(home->loop, &home->deadline);
 	http_fini(&home->http);
 	self = nullptr;
+	free(home->keys);
 	free(home);
 }
 

@@ -187,9 +187,18 @@ extern struct loop
 loop (void);
 
 /**
+ * Lay a loop at rest in @p loop, storage just allocated, as loop() would
+ * give it: its atomic members are initialized in place (hist.h), once, so
+ * that loop_init() may follow.
+ */
+extern void
+loop_place (struct loop *loop);
+
+/**
  * Start @p loop, whose atomic members are valid: it was declared from loop(),
- * is of static or thread storage duration, or loop_fini() ended it.  It resets
- * them by atomic stores.  On failure, loop_fini() releases what it has.
+ * laid with loop_place(), is of static or thread storage duration, or
+ * loop_fini() ended it.  It resets them by atomic stores.  On failure,
+ * loop_fini() releases what it has.
  */
 extern int
 loop_init (struct loop *loop);
@@ -259,6 +268,11 @@ extern void
 loop_release (struct loop     *loop,
               struct loop_ref *ref,
               loop_release_cb *release);
+
+/** Call the release callbacks loop_release() deferred, now: only outside the
+ *  dispatch of events, as each turn's end and loop_fini() do. */
+extern void
+loop_reap (struct loop *loop);
 
 /** Queue @p step for an interactive step, unless it is queued already. */
 extern void

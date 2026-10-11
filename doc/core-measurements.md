@@ -21,6 +21,7 @@ askai or the mock did not exit 0 or the generator lost arrivals.
 | answers | 16 job connections with 512 KiB answers (S2b) |
 | sse | 64 connections whose tool calls hang up 20 ms after the event stream opens (from S4 10–30 ms); the mock holds calls 60 s (S2b) |
 | race | 16 job connections and 48 whose calls hang up 10–30 ms after the event stream opens, against a mock that answers each in 20 ms and closes the connection; churn at 200/s (S4) |
+| cancel | as `race`, but the 48 make legacy calls, each in a session of its own, which a `notifications/cancelled` on a new connection cancels 10–30 ms after the event stream opens (S5) |
 | loris | 128 loris heads and 128 slow bodies, one byte a second |
 | slowread | 128 clients that pipeline 64 KiB of `tools/list` each and never read |
 | pipeline | 4 MiB batches of 24 966 pings, back to back on one connection |
@@ -49,11 +50,11 @@ back (`LEAK_S` s at most). `run.sh` prints `RATIO`, a `CHECK` per clause and
 | errors | a probe arrival that failed, timed out or was lost, in any phase; a background request sent whole but not answered (idle, malformed, hostile, dense; dense ones not answered 200); a tool call failed or cut off; mock counters that do not add up |
 | lockout | a fresh connection not served: the fresh-ping probe kind, and churn |
 | limits | loris or slow-body clients still open once their deadline has passed; an upstream call that outlived its client by 3 s; in the `sse` profile, where every client hangs up on its event stream, any call answered rather than cancelled |
-| leaks | descriptors not back at the idle count + 2, or RSS not back within `RSS_SLACK_KIB` (4096), by the end of the after phase: what askai keeps for reuse it gives back under the induced pressure |
+| leaks | descriptors not back at the idle count + 2, or RSS not back within `RSS_SLACK_KIB` (4096, and from S5 256 more per client loop, for glibc's per-thread cache), by the end of the after phase: what askai keeps for reuse it gives back under the induced pressure |
 | fairness | a probe connection's p90 over `FAIR_CONN` (10) × the median connection's, each connection taking its turn of the arrivals; a probe kind's p90 over `FAIR_KIND` (10) × the median kind's; a tool-call connection with no call done while the median one did 3; a heavy mode's p90 batch or body over `FAIR_HEAVY` (50) × its p90 alone, or none done |
-| work | any unit of work in a step over its bound (`loop.h`, design §1), in any phase, on either loop from S4; work that cannot be split counts in full |
+| work | any unit of work in a step over its bound (`loop.h`, design §1), in any phase, on either loop from S4, on any loop from S5; work that cannot be split counts in full |
 | jobs | from S4, askai's count of jobs as it exits: submitted not completed + cancelled + rejected, or more upstream cancels than cancelled jobs |
-| outliers | probe p99 in the load or the after phase over `RTT_GROSS` (100) × the idle p99; a turn in either, of either loop from S4, over `TURN_GROSS` (1000) × the idle phase's p99 turn of the client loop and over `RTT_GROSS` × its probe p99 |
+| outliers | probe p99 in the load or the after phase over `RTT_GROSS` (100) × the idle p99; a turn in either, of either loop from S4 and of any from S5, over `TURN_GROSS` (1000) × the idle phase's p99 turn of the client loop (from S5 the most of the client loops') and over `RTT_GROSS` × its probe p99 |
 
 Fairness judges the p90: a client held back is slow throughout, while a
 machine hiccup hits everyone alike. `STATS=loop` serves S2a (no work line)
@@ -600,6 +601,211 @@ the rounds; turn max is the client loop's):
 - **Deviations:** see design §4 (CANCEL also lets go, RETURN, four messages
   a job; home ends jobs at their deadline; answers paused at a step's
   share) and §5 (no storage moves between stashes; trims take turns).
+
+## S5 — N client loops, placement and process-wide limits
+
+Gate "the §8 verdict on the storm and check profiles with several client
+loops; ratios to idle no worse than one loop's; placement fair; TSan and
+ASan/UBSan clean with at least 4 client loops on `tests/askai.py`, on churn,
+tool-call, hang-up, race and legacy-cancel loads and under shutdown stress;
+job accounting holds; make check green; warning-free gcc and clang builds":
+met. `make load` (the storm, 31 client loops on all 32 CPUs, unpinned)
+passed at 0.93 times the idle p99, turn max 0.88 ms, home's 0.42 ms,
+placement 1.64; `make check`, whose `check-load` ran 31 loops, passed.
+After the review's fixes (below), again: `make load` at 0.85 times the idle
+p99, turn max 0.73 ms, home's 0.47 ms, placement 1.77; `make check` green;
+and three alternating rounds on 16 CPUs (method below), one client loop
+against 15, every verdict passing, load average 1.0–3.3, idle p99
+91–106 µs:
+
+| Profile | p99 / idle: 1 loop | 15 loops | Turn max, ms: 1 loop | 15 loops | Placement, 15 loops |
+|---|---|---|---|---|---|
+| storm | 2.67–2.74 | 1.07–1.13 | 0.60–0.61 | 0.59–0.66 | 1.18–1.32 |
+| race | 1.10–1.13 | 1.04–1.08 | 0.46–0.57 | 0.10–0.21 | 1.09–1.14 |
+| check | 3.81–3.87 | 1.30–1.45 | 0.83–1.06 | 0.93; 3.50, 16.9 | 3.96–4.46 |
+
+The storm's 0.66 ms is within the rounds' noise. The exception is
+`check`'s 3.5 and 16.9 ms: in those two rounds the 15 loops' kept memory,
+4170–4187 MiB at its peak, passed the high-pressure threshold (4014 MiB)
+during the load, and the relief's walk of the arenas held one loop for
+3.5 ms in one round and 8 loops for 2.1–16.9 ms in the other; in the third
+the peak, 3924 MiB, stayed under (one loop keeps 0.37 GB and never reaches
+it; below). Design §1 and
+§3–§6 give what was built ("as built in S5"), §10 risks 2 and 7, §11.1 the
+decisions.
+
+**Method.** From S5 a comparison pins askai and the load on separate cores
+of the 5950X's two core complexes (`ASKAI_CPUS`, `LOAD_CPUS`): askai on
+cores 0–7, CPUs 0–7 and their SMT siblings 16–23 (16 CPUs), or on cores 0–3
+(0–3, 16–19: 8 CPUs), the generator and the mock on cores 8–15 (8–15,
+24–31); the loops by `--loops` (`ASKAI_ARGS`). Five configurations took
+turns within each of three rounds of `storm`, `race` and `check`, at load
+average 0.9–3.8 but for one round at 19.5; all 45 runs passed the verdict.
+Ranges over the rounds; turn max is the longest of the client loops', in ms;
+the heavy work is the storm's malformed requests and pipeline batches in
+10 s:
+
+| CPUs, client loops | p99 / idle: storm | race | check | Turn max: storm | race | check | Home's, storm | Storm's heavy work |
+|---|---|---|---|---|---|---|---|---|
+| 16, 1 | 2.58–2.78 | 1.09–1.13 | 3.79–3.89 | 0.59–0.61 | 0.48–0.55 | 0.81–0.96 | 0.25–0.30 | 69–72 k / 61–62 |
+| 16, 15 | 1.06–1.19 | 1.03–1.09 | 1.20–1.42 | 0.58–0.69, 2.17 | 0.10–0.11 | 0.87–0.95 | 0.42–0.45 | 180–184 k / 127–130 |
+| 16, 16 | 0.79–1.09 | 1.01–1.09 | 1.20–1.50 | 0.58, 5.38, 6.36 | 0.10–0.12 | 11.3–13.2 | 0.43–0.45, 5.60 | 131–180 k / 104–132 |
+| 8, 8 | 0.97–1.24 | 1.12–1.14 | 1.61–1.74 | 0.70–1.98 | 0.06–0.11 | 1.63–2.01 | 0.50–1.02 | 162–170 k / 124–127 |
+| 8, 7 | 1.24–1.31 | 1.10–1.16 | 1.60–1.77 | 0.67–0.92 | 0.09–0.22 | 1.46–2.05 | 1.26–1.80 | 158–164 k / 119–123 |
+
+- **N or N − 1** (design §1), a trade. With N the storm's probe p99 over
+  idle was a little lower: 1.04–1.09 against 1.06–1.19 at 16 CPUs, 1.21–1.24
+  against 1.24–1.31 at 8 (one round of each N reads 0.79 and 0.97, its idle
+  p99 high, 284 and 129 µs), the absolute p99 in the same 100–126 µs but for
+  that round of 16 (224 µs); at 8 CPUs seven loops did 2–4 % less of the
+  storm's heavy work than eight, and home's longest storm turn was
+  1.26–1.80 ms with seven against 0.50–1.02 ms with eight. With N − 1 the
+  client loops' turns were shorter: sixteen loops on 16 CPUs had several
+  loops in 2.9–6.4 ms turns at once in five storms of six (with three more
+  rounds of the storm alone, at load average 1.1–1.4: 3.61, 3.20 and
+  2.88 ms), where home, which accepted some 18 000 connections a second
+  besides running the jobs, wanted a CPU too; fifteen had none such
+  (0.57–0.79 ms, but 2.17 ms in the round at load average 19.5), and did as
+  much heavy work or more (one storm of sixteen lost a quarter). At 8 CPUs
+  the longest turn of any loop was a wash: 0.70–1.98 ms with eight (client
+  loops), 1.26–1.80 ms with seven (home). So askai runs one client loop
+  fewer than its CPUs, for the turn max the gate judges, at the cost above.
+  `check`'s turn max is no guide either way: its 11–13 ms with 16 came from
+  a relief in the load, whose kept memory, about 4 GB, passed the
+  high-pressure threshold (4014 MiB) with 16 loops in all three rounds and
+  with 15 in none, but did with 15 in a later run, with the same 11.5 ms
+  (below).
+- **Against one loop**, on the same 16 CPUs, 15 loops cut the probe's p99
+  over idle from 2.58–2.78 to 1.06–1.19 in the storm and from 3.79–3.89 to
+  1.20–1.42 in `check`, kept `race` at 1.03–1.09 (1.09–1.13), did 2.5 times
+  the storm's heavy work, and kept turn max at the one loop's in the storm
+  (0.58–0.69 ms against 0.59–0.61) and `check` (0.87–0.95 against
+  0.81–0.96), well under in `race` (0.10–0.11 against 0.48–0.55). The
+  exceptions: the storm round at load average 19.5, other programs on the
+  machine, 2.17 ms, with its own idle p99 at 94 µs; and `check` whenever the
+  loops' kept memory reaches high pressure in the load, which one loop's
+  0.37 GB never does: a relief's walk of the arenas then holds loops for up
+  to 13 ms (below). Over the 45 runs the idle p99 itself ranged
+  87.8–130.3 µs. One loop now is S4 but that home accepts: its storm ratio 2.58–2.78,
+  pinned, against S4's 2.85–2.90.
+- **Placement** (`PLACE`: connections home placed on each client loop by the
+  end of the load, the most over the least): 1.09–1.11 in `race`, whose
+  churn and tool calls come and go; 1.22–1.29 in the storm, 10 000 idle
+  connections and churn, the loop with the pipeline taking the fewest; 15
+  loops in all. In `check`, about 150 connections a loop, 4.9–5.4: the loops
+  that parsed a `dense` body or ran the pipeline were busy for seconds and
+  took few. With 32 loops, the storm's was 14.7 before a connection placed
+  counted until the next look at the utilisation (design §3), 1.6 after.
+  Under churn alone (`malformed`: churn at 1000/s and malformed requests,
+  each on a new connection, 207 006 of them in 10 s), 15 loops took 14 044
+  to 14 937 connections each: 1.06.
+- **Memory.** Each loop's arena keeps its own peak: `check`'s peak was
+  2.1–2.4 GB with 7–8 loops and 3.7–4.2 GB with 15–16, against 0.37 GB with
+  one, and with 15–16 it may pass the high-pressure threshold, a sixteenth
+  of the 62 GB (4014 MiB), during the load. The trim's walk of every arena
+  then took 185–217 ms: on the loop, as first built, a 178 ms turn and a
+  failed `outliers` clause; on a blocker, where each loop waits only for its
+  own arena, at most 13 ms (16.9 ms in the rerun after the review; design
+  §5). The arenas' tops held little: each block freed into one took under
+  0.1 ms. After a storm and critical
+  pressure 5.4 MB more than idle stayed resident with 32 loops, 0.9 MB with
+  one; with glibc's tcache turned off, 1.8 MB: each thread's tcache, which
+  no call empties, kept about 110 KiB, so the `leaks` clause allows 256 KiB
+  a client loop. Idle, askai held 11.8 MB with one client loop and 28.9 MB
+  with 32, mostly histograms; under a 128 MiB RLIMIT_DATA its data segment
+  was 30.8 MiB with one, 46.8 with 8 and 101.4 with 32 (S4: 45.2), each loop
+  taking 1 MiB of stack where RLIMIT_STACK's 8 MiB would have been 264 MiB
+  for 33 threads. `tests/askai.py`'s data-limit check runs 8 loops.
+- **Sanitizers** (clang, final code after the review's fixes, 4 client
+  loops): `tests/askai.py`, 23 suites, under ASan/UBSan and under TSan with
+  `halt_on_error`, reports written to files: none, every exit as expected.
+  Under both, 4 client loops: churn (`malformed`, churn at 1000/s), tool
+  calls (`jobs`), hang-ups (`sse`), `race` and `cancel`, every verdict passed
+  with no report and every job accounted for (TSan's `cancel`: 32 686
+  submitted, 20 308 completed, 12 378 cancelled, 12 298 cancelled
+  upstream); under ASan the
+  `leaks` clause had 1 GiB of slack, as its allocator keeps what is freed
+  (256 MiB was too little for the hang-up profiles), and LeakSanitizer found
+  nothing at askai's exit. Shutdown stress, 20 runs under each: askai with 4
+  client loops stopped 0.8–2.3 s into 32 tool calls, 32 hang-ups, 16 legacy
+  cancels and 300 connections a second against an upstream of 1–60 ms, by
+  SIGTERM, or by SIGTERM and then SIGINT up to 40 ms later: every exit 0,
+  every job accounted for (253 245 submitted, 11 refused as home drained),
+  no report. Under TSan, 255 loops on one CPU beside two busy programs and
+  memory pressure critical from the start: 3 reliefs in 25 s in 6 runs of 6,
+  the countdown back at 0 (the review: 1 relief in 3 runs of 9). The first version freed a client loop's MCP counts as it stopped
+  while another loop rendered `/metrics` (both sanitizers, in
+  `check_shutdown`); every per-loop object that another loop reads now lasts
+  until all are finished.
+- **Conntrack:** with 15 loops askai took the `malformed` profile's
+  requests, each on a new connection, 2.5 times as fast as one loop, 207 006
+  in 10 s; started with a third of netfilter's table (262 144) in use, as
+  `run.sh` allowed, the table filled, the kernel dropped SYNs ("table full,
+  dropping packet") and fresh connections timed out, askai seeing none of
+  them. `run.sh` now waits for all but 16 384 entries free before a storm or
+  `malformed`.
+- **Drain with connections on their way:** askai stopped (SIGSTOP), 256
+  clients connected and sent a ping, then SIGTERM and SIGCONT, five times:
+  every client was closed or answered and askai exited 0; in one round 31
+  connections home had placed were still in client loops' inboxes as the
+  loops exited, and `loop_fini()` closed them. The test now holds every
+  loop's drain open with a head part way, so each client must be closed or
+  answered while askai runs (review of S5: closed by its exit, a lost one
+  passed too); with the drain's close of a connection placed on a draining
+  loop removed, it failed in 3 runs of 4.
+- **Tests** (`tests/askai.py`, most suites with 4 loops, the fd-pressure,
+  turn-order and memory-accounting ones with 1, the data-limit one with 8,
+  the stalled-stderr one with the default): placement spreads 200 held
+  connections over 4 loops within 6 of each other (simulated, the lighter
+  of two gives 1–2 apart 96 times in 100, random placement passes 8 times;
+  review of S5: 8–24 of 65 each passed random placement 93 times); an address's 6 connections over 3 or
+  more loops are capped at 6; eight of an address's bodies, held on 3 or
+  more loops, cap its share and the budget; 129 held connections and 60 tool
+  calls under 200 descriptors close 60 of the 68 idle connections, the 8
+  kept among the newest (in 3 runs of 3 the 8 newest), and with 32 loops 115
+  held connections and 10 calls under 192 close 27–29, the oldest nearly,
+  every call answered (review of S5: 7 of 10 calls failed there with 31
+  loops); a legacy cancel sent on the other of two loops ends the call, the
+  call and the notification counted on different loops, and so does one
+  naming the longest id a request may have, 1 KiB; a relief with 4 loops counts one relief on
+  each of the 5 loops and one trim; `--loops` above 255, negative or not a
+  number fails; the second of four client loops failing to start ends askai
+  with 1 within 3 s; clients connecting as the drain begins are closed or
+  answered.
+- **Review of S5**, each finding reproduced or shown from the code, and
+  fixed (design §1–§6):
+  - 16 connections sent 320 legacy cancels with `requestId`s of 1 MB, which
+    nothing checked, to 8 loops: home, hashing each carrier's key in its
+    handler, had turns of up to 233 ms. A `requestId` no request may have
+    now names no call, and the front hashes the key: home's turn max 62 µs.
+  - With 31 loops, this machine's default, 115 idle clients and 10 tool
+    calls under 192 descriptors: 7 calls failed ("Could not connect to
+    server"), the loops' own 62 descriptors having used up the 64 kept from
+    clients, so no idle client was closed. Two a client loop are now kept
+    too: 10 of 10.
+  - A relief begun while a loop started could wrap its countdown, after
+    which none ran again (the review: 3 runs of 9 under TSan, 255 loops on a
+    busy CPU); none begins while a loop starts.
+  - The listener was added to home's epoll only at OPEN: failing there
+    (ENOSPC, by a shim), askai ran on without a door, where S4 exited 1, as
+    it now does again; an OPEN after the drain logged an error.
+  - Also: askai crashed when the loops' threads' array could not be
+    allocated (now exit 1); hand-overs were set up in the inbox handler, up
+    to 256 a turn in no unit (now a step, 32 `accepts`); the trim's blocker
+    job lived in a loop's storage, which a blocker busy past shutdown would
+    write after it was freed (now static); a lane's atomic idle count was
+    never initialized; a client loop that exited on its own just before a
+    join started no shutdown; the drain and placement tests could not fail
+    on what they test; and the N − 1 decision read as free (above).
+- **Deviations** (each in design §1, §3–§5): N − 1 client loops; home works
+  each loop's utilisation out from its turn times rather than the loop
+  publishing it, and counts a connection placed once more until its next
+  look; home, not the loops, budgets descriptors, for its connections and
+  its jobs, and makes room as a job is admitted rather than as a call waits;
+  eviction under descriptor pressure is least recently used per loop, as
+  near global as the loops tell home; the trim's walk runs on a blocker;
+  reload moved to S7; the endpoint's log line comes once the door opens;
+  loop threads have 1 MiB stacks.
 
 ## Open decisions
 

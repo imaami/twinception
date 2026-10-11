@@ -35,7 +35,8 @@
  * comment every keepalive seconds while the upstream works.  Closing the
  * stream, which in HTTP/1.1 means closing the connection or its sending side,
  * cancels the call in every era; legacy clients may also cancel it with
- * notifications/cancelled.
+ * notifications/cancelled, on any connection of any loop, which home finds
+ * the call's job by (src/job.h).
  *
  * GET /metrics answers a trusted client (src/stream.h) with the metrics,
  * rendered a share a step (src/metrics.h).  Draining, tool calls that wait
@@ -61,6 +62,7 @@
 #include "loop.h"
 #include "mcp.h"
 #include "metrics.h"
+#include "shelf.h"
 #include "stream.h"
 #include "util.h"
 
@@ -122,6 +124,7 @@ struct mcp_static {
 	                                             version */
 	struct dstr               modern_tail;  /**< closes a modern result */
 	struct dstr               versions;     /**< the supported versions, an array */
+	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
 };
 
@@ -194,23 +197,6 @@ struct mcp_req {
 	bool                 blocked;    /* waiting for on_writable() */
 };
 
-/* What the server counts, for any thread to read: allocated apart, so that
- * its atomic members are initialized where they stay (hist.h). */
-struct mcp_counts {
-	struct metrics_kept  kept;
-	struct metrics_calls calls;
-	struct hist          methods[METHOD_N];  /* by enum metrics_method */
-};
-
-/* Finished objects kept for reuse, the last kept last, and the fewest kept
- * through windows of reuse: those went unused. */
-struct shelf {
-	struct list list;
-	size_t      n;
-	size_t      low;   /* fewest on it in this window */
-	size_t      idle;  /* fewest on it in the window before */
-};
-
 struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
 	struct list              freeing;   /* requests freeing their message */
@@ -220,8 +206,8 @@ struct mcp {
 	struct stream_app        app;
 	struct jb_pool           pool;      /* for request bodies */
 	struct jb_pool           answers;   /* for upstream answers */
-	struct metrics_src       metrics;   /* counts' */
-	struct mcp_counts       *counts;
+	struct metrics_src       metrics;   /* every loop's */
+	struct metrics_mcp      *counts;
 	struct loop             *loop;
 	struct loop             *home;      /* where jobs run */
 	struct mcp_static const *st;
@@ -258,14 +244,6 @@ same (struct span  f,
       char const  *str)
 {
 	return !str ? !f.ptr : f.ptr && span_is(f, str);
-}
-
-/* Whether fields @p a and @p b are equal, both being absent alike. */
-static bool
-same_field (struct span a,
-            struct span b)
-{
-	return !a.ptr ? !b.ptr : b.ptr && a.len == b.len && !memcmp(a.ptr, b.ptr, a.len);
 }
 
 /* Index into versions[], ARRAY_SIZE(versions) if @p v is unknown or absent. */
@@ -391,58 +369,6 @@ req_dispose (struct mcp_req *req)
 	}
 }
 
-static void
-shelf_put (struct shelf *shelf,
-           struct list  *node)
-{
-	list_append(&shelf->list, node);
-	++shelf->n;
-}
-
-/* Take the object kept last off the shelf, whose storage is the likeliest to
- * fit; nullptr if none is kept. */
-static struct list *
-shelf_take (struct shelf *shelf)
-{
-	struct list *node = shelf->n ? shelf->list.prev : nullptr;
-	if (node) {
-		list_del(node);
-		if (--shelf->n < shelf->low)
-			shelf->low = shelf->n;
-	}
-	return node;
-}
-
-/* Take the object kept first off the shelf, to free it: it counts as one that
- * went unused, if any did. */
-static struct list *
-shelf_drop (struct shelf *shelf)
-{
-	struct list *node = shelf->list.next;
-	list_del(node);
-	--shelf->n;
-	shelf->low -= shelf->low > 0;
-	shelf->idle -= shelf->idle > 0;
-	return node;
-}
-
-/* How many of the objects kept a relief at @p level frees: at BUF_HIGH those
- * unused through the window before and this one so far, at BUF_CRITICAL all. */
-static size_t
-shelf_unused (struct shelf const *shelf,
-              enum buf_pressure   level)
-{
-	return level >= BUF_CRITICAL ? shelf->n
-	     : shelf->low < shelf->idle ? shelf->low : shelf->idle;
-}
-
-static void
-shelf_age (struct shelf *shelf)
-{
-	shelf->idle = shelf->low;
-	shelf->low = shelf->n;
-}
-
 /* The bytes a finished request keeps for reuse. */
 static uint64_t
 req_kept (struct mcp_req const *req)
@@ -530,6 +456,7 @@ job_shelve (struct mcp *mcp,
             struct job *job)
 {
 	buf_free(&job->request);
+	buf_free(&job->key);
 	if (mcp) {
 		shelf_put(&mcp->jobs, &job->spare);
 		hist_add(&mcp->counts->kept.jobs, 1);
@@ -894,8 +821,9 @@ call_done (struct loop *loop,
 		job_shelve(mcp, job);
 		return;
 	}
-	/* Home is done with the upstream request. */
+	/* Home is done with the upstream request and the key. */
 	buf_free(&job->request);
+	buf_free(&job->key);
 	struct mcp_req *req = mcp ? loop_lookup(loop, job->call) : nullptr;
 	if (!req) {
 		if (mcp)
@@ -914,6 +842,14 @@ call_done (struct loop *loop,
 	if (status == JOB_ANSWERED) {
 		req->phase = PHASE_ANSWER;
 		loop_ready_bulk(loop, &req->step);
+		return;
+	}
+	if (status == JOB_WITHDRAWN) {
+		/* Its client gave up on it: the stream ends quietly. */
+		if (!req->sse)
+			(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
+		LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", elapsed(&req->start));
+		req_finish(req);
 		return;
 	}
 	/* A failed call's result says why, unless it never started. */
@@ -967,15 +903,48 @@ call_copy (struct mcp_req *req,
 	return true;
 }
 
+/* Write the key a legacy notifications/cancelled names a call by into
+ * @p job: the session field, if present, and a line break, which no field
+ * holds, then the JSON of the request id @p id; and its hash, seeded so that
+ * no client can pick keys that crowd one of home's buckets.  False if out of
+ * memory. */
+static bool
+call_key (struct job         *job,
+          uint64_t            seed,
+          struct span         session,
+          struct json_object *id)
+{
+	size_t len = 0;
+	char const *json = json_object_to_json_string_length(id, JB_WIRE, &len);
+	size_t head = session.ptr ? session.len + 1 : 0;
+	struct span s = json ? buf_reserve(&job->key, head + len, SIZE_MAX)
+	                     : (struct span){};
+	if (!s.len)
+		return false;
+	if (head) {
+		memcpy(s.ptr, session.ptr, session.len);
+		s.ptr[session.len] = '\n';
+	}
+	memcpy(s.ptr + head, json, len);
+	buf_commit(&job->key, head + len);
+	uint64_t h = seed ^ (head + len);
+	for (size_t i = 0; i < head + len; ++i)
+		h = (h ^ s.ptr[i]) * 0x100000001b3;
+	h = (h ^ h >> 33) * 0xff51afd7ed558ccd;
+	job->hash = h ^ h >> 33;
+	return true;
+}
+
 /* Hand the upstream request to a job, which the request names itself to for
- * the job's completion, and submit the job to home. */
+ * the job's completion, with the call's key, and submit the job to home. */
 static void
 call_submit (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
 	struct job *job = job_take(mcp);
-	if (!job || loop_handle(loop, req, &req->call)) {
+	if (!job || !call_key(job, mcp->st->seed, req->s->ops->field(req->s, F_SESSION),
+	                      req->id) || loop_handle(loop, req, &req->call)) {
 		if (job)
 			job_shelve(mcp, job);
 		reply_error(req, 500, INTERNAL_ERROR, "Cannot start the upstream request",
@@ -1154,29 +1123,37 @@ initialize (struct mcp_req     *req,
 	reply_result(req, f, ARRAY_SIZE(f), *session ? session : nullptr);
 }
 
-/* A legacy client gave up on a call: end its stream quietly.  A call
- * under way has its stream, and so its session's field. */
+/* Whether @p id may name a request: a number, or a string of at most MAX_ID
+ * bytes, as every reply repeats it. */
+static bool
+id_valid (struct json_object const *id)
+{
+	return json_object_is_type(id, json_type_string)
+	     ? json_object_get_string_len(id) <= MAX_ID
+	     : json_object_is_type(id, json_type_int) ||
+	       json_object_is_type(id, json_type_double);
+}
+
+/* A legacy client gave up on a call, which may wait on any loop: hand its
+ * key to home in a carrier job, and home ends the call's job, whose
+ * completion ends the call's stream quietly.  An id no request may have
+ * names no call, and out of memory nothing does. */
 static void
 cancel (struct mcp         *mcp,
         struct span         session,
         struct json_object *params)
 {
 	struct json_object *id = jb_get(params, "requestId");
-	if (!id)
+	struct job *job = id_valid(id) ? job_take(mcp) : nullptr;
+	if (!job)
 		return;
-
-	struct list *node;
-	struct list *tmp;
-	list_foreach_safe (node, tmp, &mcp->calls) {
-		struct mcp_req *req = container_of(node, struct mcp_req, hook);
-		if (!same_field(session, req->s->ops->field(req->s, F_SESSION)) ||
-		    !json_object_equal(req->id, id))
-			continue;
-		if (!req->sse)
-			(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
-		LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", elapsed(&req->start));
-		req_finish(req);
+	if (!call_key(job, mcp->st->seed, session, id)) {
+		job_shelve(mcp, job);
+		return;
 	}
+	/* Home's, and the post adds the message's. */
+	atomic_store_explicit(&job->refs, 1, memory_order_relaxed);
+	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_WITHDRAW);
 }
 
 /* Validate the per-request metadata of a modern request. */
@@ -1257,10 +1234,7 @@ dispatch (struct mcp_req *req)
 		req_finish(req);
 		return false;
 	}
-	if (json_object_is_type(id, json_type_string)
-	    ? json_object_get_string_len(id) > MAX_ID
-	    : !json_object_is_type(id, json_type_int) &&
-	      !json_object_is_type(id, json_type_double)) {
+	if (!id_valid(id)) {
 		reply_error(req, 400, INVALID_REQUEST, "Invalid request id", nullptr, 0);
 		return false;
 	}
@@ -1628,23 +1602,12 @@ mcp_init (struct mcp               **p_mcp,
           struct loop               *loop,
           struct loop               *home,
           struct mcp_static const   *st,
-          struct metrics_src const  *metrics)
+          struct metrics_src const  *metrics,
+          struct metrics_mcp        *counts)
 {
 	struct mcp *mcp = malloc(sizeof *mcp);
-	struct mcp_counts *counts = malloc(sizeof *counts);
-	if (!mcp || !counts) {
-		free(counts);
-		free(mcp);
+	if (!mcp)
 		return ENOMEM;
-	}
-	atomic_init(&counts->kept.spares, 0);
-	atomic_init(&counts->kept.jobs, 0);
-	atomic_init(&counts->kept.bytes[0], 0);
-	atomic_init(&counts->kept.bytes[1], 0);
-	atomic_init(&counts->calls.cancelled, 0);
-	atomic_init(&counts->calls.dropped, 0);
-	for (size_t i = 0; i < METHOD_N; ++i)
-		hist_init(&counts->methods[i]);
 	*mcp = (struct mcp){
 		.drain.fn = drain_calls,
 		.app = {
@@ -1672,9 +1635,6 @@ mcp_init (struct mcp               **p_mcp,
 		.st = st,
 		.counts = counts
 	};
-	mcp->metrics.methods = counts->methods;
-	mcp->metrics.loops[0].kept = &counts->kept;
-	mcp->metrics.loops[0].calls = &counts->calls;
 	list_init(&mcp->calls);
 	list_init(&mcp->freeing);
 	list_init(&mcp->spare.list);
@@ -1699,7 +1659,6 @@ mcp_fini (struct mcp **p_mcp)
 		;
 	loop_unready(&mcp->drain);
 	self = nullptr;
-	free(mcp->counts);
 	free(mcp);
 }
 
@@ -1829,8 +1788,10 @@ mcp_static_new (struct mcp_static        **p_static,
 		.init_tail = DSTR_INIT,
 		.modern_tail = DSTR_INIT,
 		.versions = DSTR_INIT,
+		.seed = loop_clock(),
 		.lim = *limits
 	};
+	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
 	*p_static = st;
 
 	/* Built with json-c, which escapes as replies need, then kept as text. */

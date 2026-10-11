@@ -3,9 +3,9 @@
 # judge it.
 #
 # Usage: run.sh PROFILE [ASKAI_BIN [LOAD_DIR [DURATION]]]
-#   PROFILE    baseline | idle | jobs | answers | sse | race | loris |
-#              slowread | pipeline | hostile | dense | malformed | storm |
-#              check | stall
+#   PROFILE    baseline | idle | jobs | answers | sse | race | cancel |
+#              loris | slowread | pipeline | hostile | dense | malformed |
+#              storm | check | stall
 #   ASKAI_BIN  the askai executable to test (default: $ASKAI or ./askai)
 #   LOAD_DIR   directory holding the built gen and mock (default: this dir)
 #   DURATION   seconds of load (default: 10)
@@ -15,6 +15,7 @@
 # memory pressure (default DURATION, so that the two phases weigh alike), and
 # LEAK_S, the most seconds of it under pressure (default 10); ASKAI_CPUS and
 # LOAD_CPUS, taskset(1) CPU lists for askai and for the generator and mock;
+# ASKAI_ARGS, more options for askai, such as --loops N;
 # STATS, what askai reports on SIGUSR1: full (the default), loop (S2a: no work
 # line) or none (S0, S1: none, and the signal would end it), the clauses it
 # cannot report then being n/a; MEMORY, how askai gives memory back: pressure
@@ -33,11 +34,13 @@
 # until its RSS is back near the idle phase's, LEAK_S seconds at most.  It
 # prints the generator's lines (the idle and after phases' prefixed IDLE and
 # AFTER: SUMMARY, CONTROL, PROBE, FAIR, MOCK and BG), askai's loop statistics
-# for each phase (LOOP idle, load and after: turn and step times, timer
-# lateness, and the most work of each unit a step did, which SIGUSR1 makes
-# askai print, from S4 for home too, as LOOP PHASE home), its RSS and
-# descriptors (RESOURCES: idle, peak, kept before the pressure, and after the
-# last phase), the mock's final counters, from S4 askai's count of jobs as it
+# for each phase, each loop's (LOOP PHASE LOOP, PHASE idle, load or after,
+# LOOP loop1 to loopN or, from S4, home: turn and step times, timer lateness,
+# and the most work of each unit a step did, which SIGUSR1 makes askai
+# print), from S5 how evenly home placed the connections on the client loops
+# by the end of the load (PLACE, from GET /metrics), its RSS and descriptors
+# (RESOURCES: idle, peak, kept before the pressure, and after the last
+# phase), the mock's final counters, from S4 askai's count of jobs as it
 # exits, latency RATIOs of the load and after phases against the idle phase,
 # a CHECK line per clause of the verdict, and the VERDICT.
 #
@@ -55,7 +58,9 @@
 #    call answered rather than cancelled);
 #  - leaks: descriptors not back at the idle count + 2 (libcurl may keep
 #    upstream connections), or RSS not back within RSS_SLACK_KIB (default
-#    4096) of the idle phase, by the end of the after phase: what askai keeps
+#    4096, and from S5 256 more for each client loop, as each loop's thread
+#    keeps glibc's per-thread cache of small blocks, which no call gives
+#    back) of the idle phase, by the end of the after phase: what askai keeps
 #    for reuse it gives back under the pressure, so what stays is a leak.
 #    ASan's allocator keeps what is freed: against a sanitized askai set
 #    RSS_SLACK_KIB high and let LeakSanitizer, at askai's exit, judge leaks;
@@ -70,21 +75,23 @@
 #    land on it; the p99 spreads are printed too.  Heavy work yields to cheap
 #    requests by design, so its factor is the larger;
 #  - unbounded work: a unit of work done in a step over its bound (loop.h),
-#    in any phase, on any loop; units count work that cannot be split in
-#    full;
+#    in any phase, on any loop, home and every client loop; units count work
+#    that cannot be split in full;
 #  - jobs (from S4): askai's jobs not accounted for as it exits, submitted
 #    not completed + cancelled + rejected, or fewer cancelled than the
 #    upstream saw;
 #  - gross outliers against the idle phase: the probe's p99 in the load or
 #    the after phase over RTT_GROSS times (default 100) the idle p99, or a
-#    turn of either loop in either over TURN_GROSS times (default 1000) the
-#    idle phase's p99 turn of the client loop and over RTT_GROSS times its
-#    probe p99, for a machine that preempts askai stretches every turn and
-#    every reply alike.
+#    turn of any loop in either over TURN_GROSS times (default 1000) the
+#    idle phase's p99 turn of the client loops (the most of theirs) and over
+#    RTT_GROSS times its probe p99, for a machine that preempts askai
+#    stretches every turn and every reply alike.
 # The "race" profile has tool calls hang up about when the upstream answers
 # them (S4), so that cancellations race completions; its mock closes each
 # connection after the reply, as libcurl would keep those of a race's many
-# answers until S6 caps them (design section 4).
+# answers until S6 caps them (design section 4).  The "cancel" profile (S5)
+# has legacy tool calls cancelled by notifications/cancelled on connections
+# of their own, likely served by other loops, about when the answers come.
 # The "check" profile is a light mix of every mode, short deadlines and a few
 # thousand connections for `make check-load`.  The "stall" profile instead
 # runs the coordinated-omission self-check: it
@@ -127,6 +134,7 @@ jobs)      mock_args=(-s 1 -d 50 -z 16); gen_args=(--jobs 64) ;;
 answers)   mock_args=(-s 2 -d 5 -z 262144); gen_args=(--jobs 16) ;;
 sse)       mock_args=(-s 4 -d 60000);    gen_args=(--hangup 64) ;;
 race)      mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --hangup 48 --churn 200) ;;
+cancel)    mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --cancel 48 --churn 200) ;;
 loris)     mock_args=(-s 4 -d 5);        gen_args=(--loris 128 --slowbody 128) ;;
 slowread)  mock_args=(-s 4 -d 5);        gen_args=(--slowread 128) ;;
 pipeline)  mock_args=(-s 4 -d 5);        gen_args=(--pipeline 4) ;;
@@ -134,13 +142,13 @@ hostile)   mock_args=(-s 4 -d 5);        gen_args=(--hostile) ;;
 dense)     mock_args=(-s 4 -d 5);        gen_args=(--dense)
            askai_args=(--max-values 1000000) ;;
 malformed) mock_args=(-s 4 -d 5);        gen_args=(--malformed --churn 1000)
-           ct_free='ct_max * 2 / 3' ;;
+           ct_free='ct_max - 16384' ;;
 stall)     mock_args=(-s 4 -d 5 -z 2);   gen_args=(); stall=1 ;;
 storm)     mock_args=(-s 1 -d 20 -z 64)
            gen_args=(--idle 10000 --jobs 64 --loris 64 --slowbody 64
                      --slowread 64 --pipeline 4 --churn 1000 --malformed
                      --hostile)
-           ct_free='ct_max * 2 / 3' ;;
+           ct_free='ct_max - 16384' ;;
 check)     mock_args=(-s 2 -d 50 -z 131072)
            gen_args=(--idle 500 --jobs 8 --hangup 4 --loris 16 --slowbody 16
                      --slowread 8 --pipeline 1 --churn 200 --hostile --dense)
@@ -150,10 +158,12 @@ check)     mock_args=(-s 2 -d 50 -z 131072)
 esac
 
 # Netfilter, where loaded, tracks every connection, closed ones for 120 s,
-# and a storm makes up to 140 000: back to back, storms fill its table, and
-# new connections then stall on dropped SYNs.  Start only with room for a run:
-# two thirds of the table free for the profiles that open the most
-# connections (half left too little for a storm that followed another).
+# and a storm makes up to 140 000, from S5 up to 210 000 as several client
+# loops take the malformed requests faster: back to back, storms fill its
+# table, and new connections then stall on dropped SYNs.  Start only with
+# room for a run: all but 16 384 entries free for the profiles that open the
+# most connections (two thirds left too little for a malformed profile with
+# 15 client loops, half for a storm that followed another).
 ct=/proc/sys/net/netfilter/nf_conntrack_count
 if [[ -r $ct ]]; then
 	ct_max=$(< /proc/sys/net/netfilter/nf_conntrack_max)
@@ -196,28 +206,62 @@ resources () {
 }
 
 # Have askai print its loop statistics since the previous SIGUSR1, wait up to
-# 1 s for them in its log, home's too if it has home (S4), and print them as
-# LOOP lines labelled PHASE, if given.
-stats=${STATS:-full} dumps=0 homes=0
+# 1 s for them in its log, every loop's, and print each loop's last as LOOP
+# lines labelled PHASE, if given, and the loop's name: from S5 the lines name
+# it, and before, a line naming none is the client loop's, loop1.
+stats=${STATS:-full} dumps=0 loops=1
 loop_stats () {
 	local phase=${1-} i
 	[[ $stats == none ]] && return 0
 	kill -USR1 "$askai_pid" 2> /dev/null || return 1
 	((++dumps))
 	for ((i = 0; i < 100; ++i)); do
-		(($(grep -c '^askai: stats timer_late ' "$tmp/askai.err") >= dumps &&
-		  $(grep -c '^askai: stats home timer_late ' "$tmp/askai.err") >=
-		  dumps * homes)) && break
+		(($(grep -cE '^askai: stats ([a-z0-9]+ )?timer_late ' "$tmp/askai.err") >=
+		  dumps * loops)) && break
 		sleep 0.01
 	done
 	((i < 100)) || return 1
 	sleep 0.05
-	[[ -z $phase ]] || awk '/^askai: stats turn / { last = "" }
-	                       /^askai: stats home turn / { home = "" }
-	                       /^askai: stats home / { home = home $0 "\n"; next }
-	                       /^askai: stats / { last = last $0 "\n" }
-	                       END { printf "%s%s", last, home }' "$tmp/askai.err" |
-		sed "s/^askai: stats /LOOP $phase /"
+	[[ -z $phase ]] || awk -v phase="$phase" '
+	$1 == "askai:" && $2 == "stats" {
+		named = $3 !~ /^(turn|interactive|bulk|timer_late|work)$/
+		name = named ? $3 : "loop1"
+		kind = named ? $4 : $3
+		if (kind == "turn") {
+			if (!(name in last))
+				order[n++] = name
+			last[name] = ""
+		}
+		sub(named ? "^askai: stats [a-z0-9]+ " : "^askai: stats ", "")
+		last[name] = last[name] "LOOP " phase " " name " " $0 "\n"
+	}
+	END {
+		for (i = 0; i < n; ++i)
+			if (order[i] != "home")
+				printf "%s", last[order[i]]
+		printf "%s", last["home"]
+	}' "$tmp/askai.err"
+}
+
+# Print how many connections home placed on each client loop (S5), from GET
+# /metrics, as a PLACE line: the least, the median and the most, and the
+# ratio of the most to the least.
+place () {
+	local port=$1
+	exec 3<> "/dev/tcp/127.0.0.1/$port" || return 1
+	printf 'GET /metrics HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3
+	awk -F '[ ]' '/^askai_connections_placed_total\{/ { v[n++] = $2 }
+	END {
+		if (!n)
+			exit
+		for (i = 1; i < n; ++i)
+			for (j = i; j > 0 && v[j - 1] + 0 > v[j] + 0; --j) {
+				t = v[j]; v[j] = v[j - 1]; v[j - 1] = t
+			}
+		printf "PLACE loops=%d placed min=%d median=%d max=%d ratio=%.2f\n",
+		       n, v[0], v[int(n / 2)], v[n - 1], (v[0] > 0 ? v[n - 1] / v[0] : 0)
+	}' <&3
+	exec 3<&-
 }
 
 # Wait up to 5 s for a "127.0.0.1:PORT" line in FILE; echo the first PORT.
@@ -237,14 +281,21 @@ mock_pid=$!
 mock_port=$(wait_port "$tmp/mock.err") || {
 	echo "$self: mock did not start" >&2; cat "$tmp/mock.err" >&2; exit 1; }
 
+read -ra extra <<< "${ASKAI_ARGS-}"
+askai_args+=("${extra[@]}")
 "${pin_askai[@]}" "$askai" -l 127.0.0.1:0 "${askai_args[@]}" \
 	-u "http://127.0.0.1:$mock_port/v1/chat/completions" -m m \
 	2> "$tmp/askai.err" &
 askai_pid=$!
 askai_port=$(wait_port "$tmp/askai.err") || {
 	echo "$self: askai did not start" >&2; cat "$tmp/askai.err" >&2; exit 1; }
-# Home, the thread of S4 on that runs the jobs, logs statistics of its own.
-grep -qx home "/proc/$askai_pid/task/"*/comm 2> /dev/null && homes=1
+# Each loop's thread logs statistics of its own: from S4 home, which runs the
+# jobs, and from S5 the client loops, loop1 to loopN.  Each client loop's
+# thread keeps glibc's per-thread cache of small blocks, which no call gives
+# back: it may keep 256 KiB more.
+loops=$(cat "/proc/$askai_pid/task/"*/comm 2> /dev/null | grep -cxE 'home|loop[0-9]+')
+((loops)) || loops=1
+slack=${RSS_SLACK_KIB:-$((4096 + 256 * (loops - 1)))}
 
 printf '=== profile %s: rate=%s/s base=%ss duration=%ss askai_port=%s ' \
        "$profile" "$rate" "$base" "$dur" "$askai_port"
@@ -296,6 +347,7 @@ kill "$sample_pid" 2> /dev/null
 sample_pid=
 cat "$tmp/idle.err" "$tmp/gen.err"
 loop_stats load | tee -a "$tmp/gen.out"
+place "$askai_port" | tee -a "$tmp/gen.out"
 
 # The after phase: the probe alone again, while the load's connections go and
 # askai keeps their memory, then under memory pressure, until its RSS is back
@@ -320,7 +372,7 @@ for ((i = 1; i <= probe_s * 5; ++i)); do
 		kept=$rss
 		echo 2 > "$pressure"
 	fi
-	((i >= after_s * 5 && rss <= rss0 + ${RSS_SLACK_KIB:-4096})) && break
+	((i >= after_s * 5 && rss <= rss0 + slack)) && break
 done
 [[ -n $pressure ]] && echo 0 > "$pressure"
 kill -INT "$after_pid" 2> /dev/null
@@ -366,7 +418,7 @@ awk -v stall="$stall" -v r="$rate" -v s="${stall_s:-0}" -v dur="$dur" \
 	-v fair_conn="${FAIR_CONN:-10}" -v fair_kind="${FAIR_KIND:-10}" \
 	-v fair_heavy="${FAIR_HEAVY:-50}" \
 	-v rtt_gross="${RTT_GROSS:-100}" -v turn_gross="${TURN_GROSS:-1000}" \
-	-v rss_slack="${RSS_SLACK_KIB:-4096}" -v profile="$profile" '
+	-v rss_slack="$slack" -v profile="$profile" '
 function kv(a, from,  i, f) {
 	for (i = from; i <= NF; ++i) {
 		split($i, f, "=")
@@ -385,19 +437,34 @@ $1 == "AFTER" && $2 == "SUMMARY" && $3 == "kind=all" { kv(aft, 4) }
 $1 == "SUMMARY" && $2 == "kind=all" { kv(v, 3) }
 $1 == "SUMMARY" && $2 == "kind=fresh-ping" { kv(fresh, 3) }
 $1 == "CONTROL" { kv(c, 2) }
-$1 == "LOOP" && $2 == "idle" && $3 == "turn" { kv(it, 4) }
-$1 == "LOOP" && $2 == "load" && $3 == "turn" { kv(t, 4) }
-$1 == "LOOP" && $2 == "after" && $3 == "turn" { kv(ta, 4) }
-$1 == "LOOP" && $3 == "home" && $4 == "turn" {
-	kv(ht, 5)
-	home_max[$2] = ht["max_us"]
+# The turns of the client loops: the most of each figure over the loops,
+# but for the counts, summed; the longest of home apart.
+function turns(a, b) {
+	b["n"] += a["n"]
+	b["over_1ms"] += a["over_1ms"]
+	split("p99_us p99_9_us max_us", keys, " ")
+	for (k in keys)
+		if (a[keys[k]] + 0 > b[keys[k]] + 0)
+			b[keys[k]] = a[keys[k]]
 }
-$1 == "LOOP" && ($3 == "work" || ($3 == "home" && $4 == "work")) {
+$1 == "LOOP" && $4 == "turn" {
+	delete lt
+	kv(lt, 5)
+	if ($3 == "home")
+		home_max[$2] = lt["max_us"]
+	else if ($2 == "idle")
+		turns(lt, it)
+	else if ($2 == "load")
+		turns(lt, t)
+	else if ($2 == "after")
+		turns(lt, ta)
+}
+$1 == "LOOP" && $4 == "work" {
 	work_seen = 1
-	for (i = $3 == "home" ? 5 : 4; i <= NF; ++i) {
+	for (i = 5; i <= NF; ++i) {
 		split($i, f, "[=/]")
 		if (f[3] != "" && f[2] + 0 > f[3] + 0)
-			over = over " " $2 ($3 == "home" ? "/home" : "") ":" $i
+			over = over " " $2 "/" $3 ":" $i
 	}
 }
 $1 == "askai:" && $2 == "jobs:" {
@@ -515,6 +582,13 @@ END {
 		unanswered += bg["hangup", "failed"] + bg["hangup", "dropped"]
 		detail = detail sprintf(" hangup failed=%d dropped=%d",
 		                        bg["hangup", "failed"], bg["hangup", "dropped"])
+	}
+	if ("cancel" in bgs) {
+		unanswered += bg["cancel", "failed"] + bg["cancel", "dropped"]
+		detail = detail sprintf(" cancel withdrawn=%d completed=%d failed=%d " \
+		                        "dropped=%d", bg["cancel", "withdrawn"],
+		                        bg["cancel", "completed"], bg["cancel", "failed"],
+		                        bg["cancel", "dropped"])
 	}
 	sum = mf["served"] + mf["cancelled"] + mf["active"] + mf["queued"]
 	mock_ok = mf["requests"] == sum && !mf["active"] && !mf["queued"]

@@ -8,9 +8,12 @@
  * upstream, gathers the answer into the job's result, which it never parses,
  * a step's share of receiving at a time, and completes the job (src/job.h),
  * at its deadline if not before.  The messages of jobs only admit, refuse or
- * note them; bulk steps start and cancel them, a share at a time.  A home
- * that drains cancels the jobs in flight and refuses new ones; once the
- * client loops have all exited and no job is in flight, it has its loop exit.
+ * note them; bulk steps start and cancel them, a share at a time.  The
+ * registry finds the jobs a legacy notifications/cancelled names by their
+ * keys, in O(1).  Each job admitted counts against the descriptors, which
+ * home's door (src/httpd.h) budgets.  A home that drains cancels the jobs in
+ * flight and refuses new ones; once the client loops have all exited and no
+ * job is in flight, it has its loop exit.
  */
 #ifndef TWINCEPTION_SRC_HOME_H_
 #define TWINCEPTION_SRC_HOME_H_
@@ -22,6 +25,7 @@ struct ai_endpoint;
 struct blockers;
 struct home;
 struct http_metrics;
+struct httpd_home;
 struct loop;
 
 /** What home counts of its jobs: home writes, any thread reads (hist.h).
@@ -38,14 +42,15 @@ struct home_metrics {
 
 /**
  * Home on @p loop, asking @p ep through a curl bridge that looks host names
- * up on @p blockers, with at most @p max jobs in flight.  It counts into
- * @p metrics and @p http, whose atomic members are valid, and which outlive
- * every loop that renders them.
+ * up on @p blockers, with at most @p max jobs in flight, each of which
+ * @p door makes room for.  It counts into @p metrics and @p http, whose
+ * atomic members are valid, and which outlive every loop that renders them.
  */
 extern int
 home_init (struct home               **p_home,
            struct loop                *loop,
            struct blockers            *blockers,
+           struct httpd_home          *door,
            struct ai_endpoint const   *ep,
            uint32_t                    max,
            struct home_metrics        *metrics,

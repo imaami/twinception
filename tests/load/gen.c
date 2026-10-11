@@ -17,8 +17,10 @@
  *
  * Background modes (idle keep-alive, slow loris, slow bodies, slow readers, a
  * repeated request pipeline, malformed, hostile and dense requests, connection
- * churn, tool-call jobs and tool calls that hang up on their event stream) run
- * alongside to stress the server while the probe measures the damage.  The
+ * churn, tool-call jobs, tool calls that hang up on their event stream, and
+ * legacy tool calls that a notifications/cancelled on another connection
+ * cancels) run alongside to stress the server while the probe measures the
+ * damage.  The
  * pipeline and the malformed, hostile and dense modes time each batch or body
  * they send; with --solo, they run one after another, alone and without the
  * probe, a few rounds each, for a baseline of those times (SOLO lines).
@@ -736,7 +738,7 @@ probe_run (struct probe *p,
 /* --- background load modes ----------------------------------------------- */
 
 enum {
-	BG_MAX  = 11, /**< one thread per mode */
+	BG_MAX  = 12, /**< one thread per mode */
 	BG_KEYS = 5, /**< counters per mode */
 };
 
@@ -1158,26 +1160,86 @@ out:
  * Tool-call jobs: b->count concurrent connections, each looping tools/call,
  * alternately in the legacy and the 2026-07-28 era; askai answers them on
  * event streams, which a job reads to their last chunk.  In hang-up mode
- * (b->mode) a job instead waits for its event stream to open, then hangs up
- * about HANGUP_MS later, from a half to one and a half times that, which
- * askai must pass upstream as a cancellation unless the answer came first:
- * against an upstream that takes about as long, hang-ups race answers.
+ * (b->mode JOBS_HANGUP) a job instead waits for its event stream to open,
+ * then hangs up about HANGUP_MS later, from a half to one and a half times
+ * that, which askai must pass upstream as a cancellation unless the answer
+ * came first: against an upstream that takes about as long, hang-ups race
+ * answers.  In cancel mode (JOBS_CANCEL) a job's legacy call carries a
+ * session of its connection's own, and as long after its stream opens, a
+ * notifications/cancelled for it goes on a new connection, which askai may
+ * well serve on another loop; the call's stream then ends without an event,
+ * withdrawn, unless the answer came first.
  */
 enum job_state { JOB_DEAD, JOB_CONNECTING, JOB_SENDING, JOB_READING, JOB_HOLDING };
 enum { JOB_SUBMITTED, JOB_COMPLETED, JOB_FAILED, JOB_DROPPED, JOB_HUNGUP };
-enum { HANGUP_MS = 20 };
+enum { JOBS, JOBS_HANGUP, JOBS_CANCEL };
+enum { HANGUP_MS = 20, JOB_REQ = 512 };
 
 struct job_conn {
 	uint64_t done;     /**< calls completed on this connection */
-	uint64_t due_ns;   /**< when a holding job hangs up */
+	uint64_t due_ns;   /**< when a holding job hangs up, or cancels */
 	size_t   sent;
 	size_t   rx;
 	size_t   skipped;  /**< reply bytes dropped from the middle of buf */
+	size_t   call_len;
+	size_t   cancel_len;
 	int      fd;
 	uint8_t  state;
 	uint8_t  req;
+	bool     cancelled;  /**< the call's cancellation has gone */
+	char     call[JOB_REQ];    /**< cancel mode: the call, with a session */
+	char     cancel[JOB_REQ];  /**< and its notifications/cancelled */
 	char     buf[8 << 10];
 };
+
+/* Build @p c's call and cancellation, in a session of its own, @p i. */
+static bool
+job_session (struct job_conn *c,
+             int              i)
+{
+	static char const call[] = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":"
+	                           "\"tools/call\",\"params\":{\"name\":\"ask_ai\","
+	                           "\"arguments\":{\"prompt\":\"Q\"}}}";
+	static char const cancel[] = "{\"jsonrpc\":\"2.0\",\"method\":"
+	                             "\"notifications/cancelled\",\"params\":"
+	                             "{\"requestId\":7,\"reason\":\"load\"}}";
+	static char const head[] = "POST /mcp HTTP/1.1\r\nHost: x\r\n"
+	                           "Content-Type: application/json\r\n"
+	                           "Accept: application/json, text/event-stream\r\n"
+	                           "MCP-Protocol-Version: 2025-11-25\r\n"
+	                           "Mcp-Session-Id: %032x\r\n%s"
+	                           "Content-Length: %zu\r\n\r\n%s";
+	int n = snprintf(c->call, sizeof c->call, head, (unsigned)i, "",
+	                 sizeof call - 1, call);
+	int m = snprintf(c->cancel, sizeof c->cancel, head, (unsigned)i,
+	                 "Connection: close\r\n", sizeof cancel - 1, cancel);
+	c->call_len = n > 0 ? (size_t)n : 0;
+	c->cancel_len = m > 0 ? (size_t)m : 0;
+	return n > 0 && (size_t)n < sizeof c->call && m > 0 && (size_t)m < sizeof c->cancel;
+}
+
+/* Send @p c's cancellation on a new connection, and wait for its 202; false
+ * if it does not come within a second or two. */
+static bool
+job_cancel (struct bg       *b,
+            struct job_conn *c)
+{
+	int fd = b->t->dial(b->t);
+	bool ok = fd >= 0 && wait_writable(fd, 1000) &&
+	          b->t->send(fd, c->cancel, c->cancel_len) == (ssize_t)c->cancel_len;
+	char got[512];
+	size_t len = 0;
+	for (struct pollfd pfd = { .fd = fd, .events = POLLIN };
+	     ok && len < sizeof got && poll(&pfd, 1, 1000) == 1; ) {
+		ssize_t r = b->t->recv(fd, got + len, sizeof got - len);
+		if (r <= 0)
+			break;
+		len += (size_t)r;
+	}
+	if (fd >= 0)
+		b->t->close(fd);
+	return ok && len >= 12 && !memcmp(got, "HTTP/1.1 202", 12);
+}
 
 static void
 job_dial (struct bg       *b,
@@ -1259,7 +1321,7 @@ static void *
 jobs_thread (void *arg)
 {
 	struct bg *b = arg;
-	bool hangup = b->mode;
+	bool hangup = b->mode != JOBS;
 	uint64_t rng = 0x2545F4914F6CDD1Du ^ now_ns();
 	int ep = epoll_create1(EPOLL_CLOEXEC);
 	struct job_conn *jc = calloc((size_t)b->count, sizeof *jc);
@@ -1272,6 +1334,8 @@ jobs_thread (void *arg)
 	}
 	for (int i = 0; i < b->count; ++i) {
 		jc[i].req = i & 1 ? RQ_CALL26 : RQ_CALL;
+		if (b->mode == JOBS_CANCEL && !job_session(&jc[i], i))
+			continue;
 		job_dial(b, ep, &jc[i]);
 	}
 
@@ -1282,8 +1346,9 @@ jobs_thread (void *arg)
 		for (int i = 0; i < n; ++i) {
 			struct job_conn *c = evs[i].data.ptr;
 			uint32_t e = evs[i].events;
-			char const *req = req_buf[c->req];
-			size_t need = req_len[c->req];
+			bool own = b->mode == JOBS_CANCEL;
+			char const *req = own ? c->call : req_buf[c->req];
+			size_t need = own ? c->call_len : req_len[c->req];
 			if (c->state == JOB_HOLDING)
 				continue;
 			if (e & (EPOLLERR | EPOLLHUP) && c->state != JOB_READING) {
@@ -1316,6 +1381,7 @@ jobs_thread (void *arg)
 				b->n[JOB_SUBMITTED]++;
 				c->state = JOB_READING;
 				c->rx = c->skipped = 0;
+				c->cancelled = false;
 				job_arm(ep, c, EPOLLIN);
 			}
 			if (c->state != JOB_READING || !(e & (EPOLLIN | EPOLLHUP | EPOLLERR)))
@@ -1340,12 +1406,15 @@ jobs_thread (void *arg)
 			head = job_head(c);
 			bool ok;
 			if (head && job_complete(c, head, &ok)) {
-				b->n[ok ? JOB_COMPLETED : JOB_FAILED]++;
+				/* A cancelled call's stream ends without an event. */
+				bool quiet = c->cancelled && !ok && atoi(c->buf + 9) == 200 &&
+				             !memmem(c->buf + head, c->rx - head, "data:", 5);
+				b->n[ok ? JOB_COMPLETED : quiet ? JOB_HUNGUP : JOB_FAILED]++;
 				c->done += ok;
 				c->state = JOB_SENDING;
 				c->sent = 0;
 				job_arm(ep, c, EPOLLOUT);
-			} else if (hangup && head &&
+			} else if (hangup && head && !c->cancelled &&
 			           memmem(c->buf, head, "text/event-stream", 17)) {
 				c->state = JOB_HOLDING;
 				c->due_ns = now_ns() + (uint64_t)((0.5 + rng_unit(&rng)) *
@@ -1356,12 +1425,19 @@ jobs_thread (void *arg)
 		 * connections closed or refused. */
 		uint64_t now = now_ns();
 		for (int i = 0; i < b->count; ++i) {
-			if (jc[i].state == JOB_HOLDING && jc[i].due_ns <= now) {
+			struct job_conn *c = &jc[i];
+			if (c->state == JOB_HOLDING && c->due_ns <= now &&
+			    b->mode == JOBS_CANCEL) {
+				/* Read the call's stream on, to its end. */
+				b->n[JOB_DROPPED] += !job_cancel(b, c);
+				c->cancelled = true;
+				c->state = JOB_READING;
+			} else if (c->state == JOB_HOLDING && c->due_ns <= now) {
 				b->n[JOB_HUNGUP]++;
-				job_kill(b, ep, &jc[i], false);
+				job_kill(b, ep, c, false);
 			}
-			if (jc[i].state == JOB_DEAD)
-				job_dial(b, ep, &jc[i]);
+			if (c->state == JOB_DEAD && (b->mode != JOBS_CANCEL || c->call_len))
+				job_dial(b, ep, c);
 		}
 	}
 	for (int i = 0; i < b->count; ++i) {
@@ -1518,7 +1594,7 @@ main (int   argc,
 	enum {
 		OPT_IDLE = 0x100, OPT_LORIS, OPT_GAP, OPT_SLOWBODY, OPT_SLOWREAD,
 		OPT_PIPELINE, OPT_MALFORMED, OPT_HOSTILE, OPT_DENSE, OPT_CHURN, OPT_JOBS,
-		OPT_HANGUP, OPT_FRESH, OPT_STATS, OPT_SLOW, OPT_SOLO,
+		OPT_HANGUP, OPT_CANCEL, OPT_FRESH, OPT_STATS, OPT_SLOW, OPT_SOLO,
 	};
 	static struct option const opts[] = {
 		{ "host",      required_argument, nullptr, 'H' },
@@ -1540,6 +1616,7 @@ main (int   argc,
 		{ "churn",     required_argument, nullptr, OPT_CHURN },
 		{ "jobs",      required_argument, nullptr, OPT_JOBS },
 		{ "hangup",    required_argument, nullptr, OPT_HANGUP },
+		{ "cancel",    required_argument, nullptr, OPT_CANCEL },
 		{ "stats",     required_argument, nullptr, OPT_STATS },
 		{ "slow",      required_argument, nullptr, OPT_SLOW },
 		{ "solo",      no_argument,       nullptr, OPT_SOLO },
@@ -1556,7 +1633,7 @@ main (int   argc,
 	long slow_us = 1000;
 	int conns = 32, fresh = 64;
 	int idle = 0, loris = 0, gap = 1000, slowbody = 0, slowread = 0;
-	int pipeline = 0, jobs = 0, hangup = 0;
+	int pipeline = 0, jobs = 0, hangup = 0, cancel = 0;
 	bool malformed = false, hostile = false, dense = false, solo = false;
 
 	for (int o; (o = getopt_long(argc, argv, "H:p:r:d:T:c:", opts, nullptr)) >= 0; )
@@ -1578,6 +1655,7 @@ main (int   argc,
 		case OPT_HOSTILE: hostile = true; break;
 		case OPT_DENSE: dense = true; break;
 		case OPT_HANGUP: hangup = atoi(optarg); break;
+		case OPT_CANCEL: cancel = atoi(optarg); break;
 		case OPT_CHURN: churn = atof(optarg); break;
 		case OPT_JOBS: jobs = atoi(optarg); break;
 		case OPT_STATS: stats = optarg; break;
@@ -1679,8 +1757,12 @@ main (int   argc,
 	      .key = { "opened", "answered", "refused", "sent", "ok" });
 	START(jobs > 0, jobs_thread, .name = "jobs", .count = jobs,
 	      .key = { "submitted", "completed", "failed", "dropped" });
-	START(hangup > 0, jobs_thread, .name = "hangup", .count = hangup, .mode = 1,
+	START(hangup > 0, jobs_thread, .name = "hangup", .count = hangup,
+	      .mode = JOBS_HANGUP,
 	      .key = { "submitted", "completed", "failed", "dropped", "hungup" });
+	START(cancel > 0, jobs_thread, .name = "cancel", .count = cancel,
+	      .mode = JOBS_CANCEL,
+	      .key = { "submitted", "completed", "failed", "dropped", "withdrawn" });
 	START(pipeline > 0, pipeline_thread, .name = "pipeline", .count = pipeline,
 	      .key = { "batches", "reqs", "got", "drain_total_us", "drain_max_us" });
 #undef START

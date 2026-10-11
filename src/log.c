@@ -19,7 +19,8 @@
 
 enum {
 	RING      = 256 << 10,  /* bytes a thread's ring holds: a power of two */
-	RINGS_MAX = 16,
+	RINGS_MAX = 511,        /* a writev() takes two pieces of each and a
+	                           note, of IOV_MAX (1024) at most */
 	LINE      = 1 << 10,    /* the longest line; the rest is cut */
 	BURST     = 32,         /* lines a call site may log a second */
 };
