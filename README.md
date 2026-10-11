@@ -394,8 +394,8 @@ places each on the lighter of two client loops, by the connections they hold
 and how busy they are; the client stays with that loop.  A tool call hands its
 upstream request to home as a job, which home runs and hands back.  Home makes
 as many upstream requests at once as the upstream has slots (`--slots`; by
-default what `llama-server`'s `/props` says for the `openai` and `responses`
-protocols, else 4).  The other calls wait, each in its principal's queue, its
+default what `llama-server`'s `/props` says for every protocol but `gemini`,
+else 4).  The other calls wait, each in its principal's queue, its
 MCP session's or, without one, its client address's, and the principals take
 turns, a call each, so that one flooding client leaves the others their share.
 At most `--max-calls` (256) are under way, and eight queued for one principal

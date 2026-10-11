@@ -3004,8 +3004,9 @@ def check_breaker(binary, up):
 
 def check_slots(binary, up):
     """Home asks llama-server's /props for its slots, the upstream calls it
-    makes at once; --slots says so instead, and without an answer, in time
-    or at all, or for another protocol, it makes four."""
+    makes at once, in any protocol llama-server speaks; --slots says so
+    instead, and without an answer, in time or at all, or for Gemini's
+    protocol, it makes four."""
     up.props = {"total_slots": 2, "chat_template": "{{x}}" * 4000,
                 "default_generation_settings": {"n_ctx": 4096}}
     up.reply = lambda request: (200, ANSWERS["openai"],
@@ -3032,9 +3033,12 @@ def check_slots(binary, up):
     gets = up.gets
     with Askai(binary, "-u", up.url(), "--slots", "3") as ai:
         ai.wait_log(r"upstream slots: 3 \(--slots\)")
-    with Askai(binary, "-p", "anthropic", "-u", up.url("/v1/messages")) as ai:
+    with Askai(binary, "-p", "gemini", "-u", up.url("/v1beta/models/m")) as ai:
         ai.wait_log(r"upstream slots: 4 \(the default\)")
     assert up.gets == gets
+    up.props = {"total_slots": 2}
+    with Askai(binary, "-p", "anthropic", "-u", up.url("/v1/messages")) as ai:
+        ai.wait_log(r"upstream slots: 2 \(llama-server's /props\)")
     # /props may take the calls' timeout at most.
     up.props = "hang"
     with Askai(binary, "-u", up.url(), "-T", "1") as ai:

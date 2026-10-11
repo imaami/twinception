@@ -1104,19 +1104,20 @@ props_step (struct loop      *loop,
 }
 
 /* Ask the upstream how many slots it has, as llama-server says at GET /props
- * of its endpoint's server, unless it speaks another protocol than
- * llama-server's or is a well-known cloud API; false if not asked.  The
- * answer may take PROPS_MS, or the calls' timeout if shorter. */
+ * of its endpoint's server, unless it speaks Gemini's protocol, which
+ * llama-server does not, or is a well-known cloud API; false if not asked.
+ * The answer may take PROPS_MS, or the calls' timeout if shorter. */
 static bool
 props_ask (struct home *home)
 {
 	static char const *const clouds[] = {
-		"api.openai.com", "openrouter.ai", "api.groq.com", "api.mistral.ai",
-		"api.together.xyz", "api.deepseek.com", "api.x.ai", "api.fireworks.ai",
+		"api.openai.com", "api.anthropic.com", "openrouter.ai", "api.groq.com",
+		"api.mistral.ai", "api.together.xyz", "api.deepseek.com", "api.x.ai",
+		"api.fireworks.ai",
 	};
 	static char const azure[] = ".openai.azure.com";
 	struct ai_endpoint const *ep = home->ep;
-	if (ep->protocol != AI_OPENAI && ep->protocol != AI_RESPONSES)
+	if (ep->protocol == AI_GEMINI)
 		return false;
 	long ms = ep->timeout_ms > 0 && ep->timeout_ms < PROPS_MS ? ep->timeout_ms : PROPS_MS;
 	CURLU *u = curl_url();
