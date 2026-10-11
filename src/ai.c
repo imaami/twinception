@@ -1,5 +1,8 @@
-/** @file Upstream AI endpoint protocols: request bodies and answer parsing. */
+/** @file Upstream AI endpoint protocols: request bodies and answer parsing,
+ *  whole or streamed. */
 #include <errno.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "ai.h"
 #include "dstr.h"
@@ -117,11 +120,15 @@ ai_request (struct ai_endpoint const *ep,
 		break;
 	}
 
+	/* Gemini streams by its URL; the others by the body, whatever
+	 * --extra says. */
 	if ((max_tokens > 0 &&
 	     !jb_set(options, max_key, json_object_new_int64(max_tokens))) ||
 	    (ep->temperature &&
 	     !jb_set(options, "temperature", copy(ep->temperature))) ||
-	    (ep->extra && merge(root, ep->extra)))
+	    (ep->extra && merge(root, ep->extra)) ||
+	    (ep->protocol != AI_GEMINI &&
+	     !jb_set(root, "stream", json_object_new_boolean(1))))
 		goto fail;
 	return root;
 
@@ -222,6 +229,119 @@ gemini_answer (struct json_object *root,
 	return e;
 }
 
+static char const no_answer[] = "The model returned no answer%s%s%s.";
+
+int
+ai_no_answer (char       *buf,
+              size_t      size,
+              char const *reason)
+{
+	return snprintf(buf, size, no_answer, reason ? " (stop reason: " : "",
+	                reason ? reason : "", reason ? ")" : "");
+}
+
+/* Hand @p val's text to @p put, if it is a string. */
+static int
+put_text (int               (*put) (void       *user,
+                                    char const *text,
+                                    size_t      len),
+          void               *user,
+          struct json_object *val)
+{
+	char const *str = jb_text(val);
+	return str ? put(user, str, (size_t)json_object_get_string_len(val)) : 0;
+}
+
+/* The message of an error event, or of one that carries an error. */
+static char const *
+event_error (struct json_object *ev)
+{
+	struct json_object *type = jb_get(ev, "type");
+	struct json_object *error = jb_get(ev, "error");
+	if (!error && jb_is(type, "response.failed"))
+		error = jb_get(jb_get(ev, "response"), "error");
+	bool erred = error || jb_is(type, "error");
+	char const *msg = jb_text(jb_get(error, "message"));
+	if (!msg)
+		msg = jb_text(error);
+	if (!msg && erred)
+		msg = jb_text(jb_get(ev, "message"));
+	return msg ? msg : erred ? "an error event" : nullptr;
+}
+
+int
+ai_event (enum ai_protocol    protocol,
+          struct json_object *ev,
+          int               (*put) (void       *user,
+                                    char const *text,
+                                    size_t      len),
+          void               *user,
+          struct ai_event    *out)
+{
+	if ((out->error = event_error(ev)))
+		return 0;
+	int e = 0;
+	struct json_object *type = jb_get(ev, "type");
+	struct json_object *reason = nullptr;
+	char const *limit = nullptr;
+	switch (protocol) {
+	case AI_OPENAI: {
+		/* The first completion's, should --extra ask for more (n). */
+		struct json_object *choices = jb_get(ev, "choices");
+		struct json_object *choice;
+		for (size_t i = 0; (choice = jb_at(choices, i)) &&
+		                   json_object_get_int64(jb_get(choice, "index")); ++i)
+			;
+		struct json_object *delta = jb_get(choice, "delta");
+		struct json_object *content = jb_get(delta, "content");
+		/* Some servers send content as an array of text parts. */
+		e = put_text(put, user, content);
+		struct json_object *part;
+		for (size_t i = 0; !e && (part = jb_at(content, i)); ++i)
+			e = put_text(put, user, jb_get(part, "text"));
+		if (!e)
+			e = put_text(put, user, jb_get(delta, "refusal"));
+		reason = jb_get(choice, "finish_reason");
+		limit = "length";
+		break;
+	}
+	case AI_RESPONSES:
+		if (jb_is(type, "response.output_text.delta") ||
+		    jb_is(type, "response.refusal.delta"))
+			e = put_text(put, user, jb_get(ev, "delta"));
+		reason = jb_get(jb_get(jb_get(ev, "response"), "incomplete_details"),
+		                "reason");
+		limit = "max_output_tokens";
+		break;
+	case AI_ANTHROPIC: {
+		struct json_object *delta = jb_get(ev, "delta");
+		if (jb_is(type, "content_block_delta") &&
+		    jb_is(jb_get(delta, "type"), "text_delta"))
+			e = put_text(put, user, jb_get(delta, "text"));
+		reason = jb_get(delta, "stop_reason");
+		limit = "max_tokens";
+		break;
+	}
+	case AI_GEMINI: {
+		struct json_object *candidate = jb_at(jb_get(ev, "candidates"), 0);
+		struct json_object *parts = jb_get(jb_get(candidate, "content"), "parts");
+		struct json_object *part;
+		for (size_t i = 0; !e && (part = jb_at(parts, i)); ++i)
+			if (!json_object_get_boolean(jb_get(part, "thought")))
+				e = put_text(put, user, jb_get(part, "text"));
+		reason = candidate ? jb_get(candidate, "finishReason")
+		       : jb_get(jb_get(ev, "promptFeedback"), "blockReason");
+		limit = "MAX_TOKENS";
+		break;
+	}
+	}
+	if ((out->reason = jb_text(reason)))
+		out->truncated = !strcmp(out->reason, limit);
+	out->end = out->reason || jb_is(type, "response.completed") ||
+	           jb_is(type, "response.incomplete") || jb_is(type, "message_stop");
+	return e;
+}
+
 static int
 describe_error (struct dstr        *text,
                 long                status,
@@ -262,9 +382,6 @@ ai_answer (enum ai_protocol    protocol,
            struct dstr        *text,
            bool               *failed)
 {
-	static char const cut_note[] =
-		"\n\n[The answer was cut short by the output token limit.]";
-
 	*failed = status < 200 || status > 299 || !root || jb_get(root, "error");
 	if (*failed)
 		return describe_error(text, status, root, body, len);
@@ -288,12 +405,11 @@ ai_answer (enum ai_protocol    protocol,
 
 	if (!e && !dstr_len(text)) {
 		*failed = true;
-		e = dstr_printf(text, "The model returned no answer%s%s%s.",
-		                answer.reason ? " (stop reason: " : "",
+		e = dstr_printf(text, no_answer, answer.reason ? " (stop reason: " : "",
 		                answer.reason ? answer.reason : "",
 		                answer.reason ? ")" : "") ? 0 : ENOMEM;
 	} else if (!e && answer.truncated) {
-		e = dstr_cat_n(text, cut_note, sizeof cut_note - 1) ? 0 : ENOMEM;
+		e = dstr_cat_n(text, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1) ? 0 : ENOMEM;
 	}
 	return e;
 }

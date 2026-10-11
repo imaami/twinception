@@ -7,7 +7,8 @@ on the machine below. Raw run logs stay out of the repository.
 ## Harness
 
 `tests/load/` holds `gen.c` (the open-loop probe and the load modes),
-`mock.c` (an upstream with slots, token rate, SSE and cancel counting) and
+`mock.c` (an upstream with slots, `/props`, token rate, SSE and cancel
+counting) and
 `run.sh`, whose header documents profiles, phases, output and environment.
 `make load-build` builds it; `tests/load/run.sh PROFILE <askai> <dir>
 [seconds]` runs a profile, `make load` the storm, `make check-load` (in
@@ -17,11 +18,12 @@ askai or the mock did not exit 0 or the generator lost arrivals.
 | Profile | Load beside the probe |
 |---|---|
 | idle | 5000 keep-alives, one answered ping each, then silence |
-| jobs | 64 connections looping on tool calls; the mock has 1 slot, 50 ms |
+| jobs | 64 connections looping on tool calls; the mock has 1 slot, 50 ms; from S6 each connection from an address of its own, a principal of its own |
 | answers | 16 job connections with 512 KiB answers (S2b) |
-| sse | 64 connections whose tool calls hang up 20 ms after the event stream opens (from S4 10–30 ms); the mock holds calls 60 s (S2b) |
-| race | 16 job connections and 48 whose calls hang up 10–30 ms after the event stream opens, against a mock that answers each in 20 ms and closes the connection; churn at 200/s (S4) |
+| sse | 64 connections whose tool calls hang up 20 ms after the event stream opens (from S4 10–30 ms); the mock holds calls 60 s (S2b), from S6 streams them for 60 s |
+| race | 16 job connections and 48 whose calls hang up 10–30 ms after the event stream opens, against a mock that answers each in 20 ms and closes the connection; churn at 200/s (S4); from S6 askai has `--slots 64` |
 | cancel | as `race`, but the 48 make legacy calls, each in a session of its own, which a `notifications/cancelled` on a new connection cancels 10–30 ms after the event stream opens (S5) |
+| flood | 16 connections calling in one session, again 10 ms after a busy refusal, and 4 interactive sessions a call at a time; the mock has 2 slots and streams 20 tokens at 100/s (S6) |
 | loris | 128 loris heads and 128 slow bodies, one byte a second |
 | slowread | 128 clients that pipeline 64 KiB of `tools/list` each and never read |
 | pipeline | 4 MiB batches of 24 966 pings, back to back on one connection |
@@ -53,7 +55,8 @@ back (`LEAK_S` s at most). `run.sh` prints `RATIO`, a `CHECK` per clause and
 | leaks | descriptors not back at the idle count + 2, or RSS not back within `RSS_SLACK_KIB` (4096, and from S5 256 more per client loop, for glibc's per-thread cache), by the end of the after phase: what askai keeps for reuse it gives back under the induced pressure |
 | fairness | a probe connection's p90 over `FAIR_CONN` (10) × the median connection's, each connection taking its turn of the arrivals; a probe kind's p90 over `FAIR_KIND` (10) × the median kind's; a tool-call connection with no call done while the median one did 3; a heavy mode's p90 batch or body over `FAIR_HEAVY` (50) × its p90 alone, or none done |
 | work | any unit of work in a step over its bound (`loop.h`, design §1), in any phase, on either loop from S4, on any loop from S5; work that cannot be split counts in full |
-| jobs | from S4, askai's count of jobs as it exits: submitted not completed + cancelled + rejected, or more upstream cancels than cancelled jobs |
+| jobs | from S4, askai's count of jobs as it exits: submitted not completed + cancelled + rejected, or more upstream cancels than cancelled jobs; from S6, read once the load's calls have ended while askai still runs, a job in flight or an upstream request under way or queued, more upstream cancels than calls askai cancelled upstream once their request had gone, or fewer by over 10 and `CANCEL_SLACK` (5 %) of them, and in `sse` not as many |
+| scheduler | from S6, in `flood`: an interactive session that completed under `FAIR_SHARE` (0.5) of its fair share of calls (the calls the run completed shared among the sessions and the flooder, a call at a time at most), or whose calls' p90 waited over `FAIR_WAIT` (4) service times beyond their own |
 | outliers | probe p99 in the load or the after phase over `RTT_GROSS` (100) × the idle p99; a turn in either, of either loop from S4 and of any from S5, over `TURN_GROSS` (1000) × the idle phase's p99 turn of the client loop (from S5 the most of the client loops') and over `RTT_GROSS` × its probe p99 |
 
 Fairness judges the p90: a client held back is slow throughout, while a
@@ -807,6 +810,141 @@ the heavy work is the storm's malformed requests and pipeline batches in
   reload moved to S7; the endpoint's log line comes once the door opens;
   loop threads have 1 MiB stacks.
 
+## S6 — scheduler, streamed answers, breaker, progress
+
+Gate "a flooder leaves interactive clients a fair share; cancels match; the
+§8 verdict on storm, check, race, cancel, sse, answers and jobs with
+several client loops; TSan and ASan/UBSan clean on `tests/askai.py`, on
+flood, race, cancel, sse and answers loads with 4 client loops and under
+shutdown stress with queued and streaming jobs; job accounting holds; make
+check green; warning-free gcc and clang builds": met. Design §4 gives what
+was built ("as built in S6"), §8 the harness, §10 the decisions and risks 9
+and 10, §11.1 what is left. The figures below are from the code after the
+review of S6.
+
+**Flood** (`flood`: 16 connections calling in one session, 4 interactive
+sessions a call at a time, a mock of 2 slots streaming 20 tokens at 100/s,
+a 200 ms service time; askai on 16 CPUs, 15 client loops, the load on the
+other 16, load average 0.7–1.0), three rounds each, alternating with one
+queue first in first out (`--test-fifo`). Each round completed 110 calls,
+the nominal 100 and a tenth more, as the mock sends a stream's first token
+at once; the fair share of an interactive session is a fifth of them, 22.
+
+| Queue | Interactive calls a session (min–max) | Of the fair share | Call p50 / p90, ms | p90 wait beyond service, ms | Flooder's calls / busy refusals | `scheduler` |
+|---|---|---|---|---|---|---|
+| per principal, round-robin | 18–19 | 0.82 | 571 / 571 | 371 (1.9 service times) | 36 / 7 529–7 535 | pass |
+| one, first in first out | 6 | 0.27 | 1 900 / 1 904–1 906 | 1 704–1 706 (8.5) | 86 / 0 | fail |
+
+The rounds agreed to the millisecond: with streams paced by the mock, the
+round-robin is a fixed rotation. The flooder kept its two slots' worth of
+calls queued and the rest refused as busy, 750 a second, which cost the
+probe nothing (p99 0.97–1.01 times idle). It still completed about twice an
+interactive session's calls: a round has only the principals with calls
+queued, and while a session's client sends its next call, a slot that frees
+goes to the flooder (design §10, risk 10). Under first in first out each
+interactive call waited behind the flooder's 16. The same profile under
+TSan and under ASan with 4 client loops gave the same 18–19 calls.
+
+**Cancels match** (the `jobs` clause): askai counts the upstream calls it
+cancelled once their request had gone, and the mock the requests it saw
+hang up (including a request that came with its hang-up), both read once
+the load's calls have ended, while askai still runs: then no job was in
+flight and no upstream request under way or queued, in every profile and
+run.
+
+| Profile | Calls cancelled by askai | Of them upstream | Upstream saw | Of those, streams under way |
+|---|---|---|---|---|
+| sse (answers stream 60 s) | 31 722 | 10 515 | 10 515 | 10 515 |
+| race | 12 820 | 12 746 | 12 718 | 21 |
+| cancel | 12 647 | 12 580 | 12 548 | 20 |
+
+In `sse` no hang-up races an answer, and every one is a stream cancelled
+mid-answer: equal in all 3 runs (plain, TSan, ASan). In `race` and `cancel`
+a hang-up races an answer that takes 20 ms: the difference, 0.2–0.6 %
+(TSan's `race` 80 of 13 033), is calls cancelled as their answer was
+finishing, which the mock counts as served; the clause allows 10 and 5 %.
+Calls cancelled in the queue or before their request went never reach the
+upstream and count in neither.
+
+**Verdicts** (pinned as above, 15 client loops, load average 0.9–1.5; probe
+p99 and turn max over idle):
+
+| Profile | p99 / idle | Turn max / idle p99 turn | Home's turn max, ms |
+|---|---|---|---|
+| storm | 1.12 | 13.36 | 0.16 |
+| check | 1.37 | 267 (a relief in the load, as in S5) | 0.21 |
+| race | 1.02 | 2.79 | 0.30 |
+| cancel | 1.00 | 2.18 | 0.26 |
+| sse | 0.94 | 2.13 | 0.17 |
+| answers | 0.87 | 4.15 | 0.17 |
+| jobs | 0.97 | 2.18 | 0.09 |
+| flood | 0.97–1.01 | — | — |
+
+All passed; `make load` (the storm, 31 client loops, unpinned, load
+average 1.4) at 0.93 times the idle p99, turn max 0.83 ms; `make check`
+green. With 64 principals on the mock's one slot each completed 3–4 calls
+in `jobs` (50 ms a call) and 8–9 in the storm (20 ms), none more than one
+fewer than the median: the round-robin, where S5's mock queued them first
+in first out.
+
+- **Mock and Nagle** (review of S6): from S6 every answer streams, and the
+  mock sent a stream's head, events and tail in sends of its own without
+  `TCP_NODELAY`, which Nagle held back for askai's delayed ACKs: serial calls
+  from 4 sessions to one 50 ms slot completed 58 in 5 s, 103 with it set.
+  The first figures above, 1–2 calls a connection in `jobs` and 2–3 in the
+  storm, were that stall, not the round-robin; a median of 2 also kept the
+  `fairness` clause's tool-call test (none done while the median did 3) from
+  firing in `jobs`. `flood`, whose tokens are paced 10 ms apart, did not
+  change.
+- **Memory** (measured at S6): `check`'s peak with 15 client loops was again
+  4.2 GB, the json-c values of its `dense` bodies, which only `--max-values`
+  raised admits, freed into the arenas: the 15 loops' stashes held at most
+  63 MiB of it. With the default limit the loads stay small: 15 loops peaked
+  at 118–132 MiB resident in `storm` (in one run 103 MiB of it their
+  stashes) and 27–28 MiB in `race`.
+- **Sanitizers** (clang, 4 client loops): `tests/askai.py`, 28 suites, under
+  ASan/UBSan and under TSan with `halt_on_error`, reports to files: none,
+  every exit as expected. `flood`, `race`, `cancel`, `sse` and `answers`
+  under both: every verdict passed, no report, every job accounted for and
+  none in flight once the calls had ended (TSan's `race`: 33 296 submitted,
+  20 056 completed, 13 240 cancelled, 13 033 of them upstream, the upstream
+  seeing 12 953). Shutdown stress, 20 runs under each: askai stopped
+  0.8–2.3 s into 16 tool-call connections, 16 hang-ups, 8 legacy cancels, 8
+  flooding and 4 interactive connections and churn at 300/s, against a mock
+  of 2 slots streaming 100 tokens at 200/s, with 48–50 jobs queued and 2
+  streaming as it was stopped, by SIGTERM, or SIGTERM and SIGINT up to
+  40 ms later: no report; every single signal and 7 of the double ones
+  exited 0 with every job accounted for (953–2 428 submitted a run, 46 415
+  in all, 2 of them rejected), and 13 double ones exited 3 at once, as a
+  second signal does, by design without the count. (The first stress ran
+  askai as a background job of a script without job control, which left
+  SIGINT ignored, so no second signal took effect.)
+- **Streamed answers** cost home its events' parsing: in `answers` (16
+  calls of 512 KiB, 1 024 events each) home's longest turn was 0.17 ms and
+  every unit stayed within its bound; a 1.1 MB answer in three chunks
+  copied 0.98 MB in a step on home, under the 1 MiB bound, where the plain
+  answer's text, copied whole on the client loop, broke it.
+- **Load harness:** one address's 64 tool calls would now be refused past
+  eight queued, so the generator's tool-call connections each come from an
+  address of their own, as clients do; and `race` and `cancel`, against a
+  mock of unlimited slots, give askai `--slots 64`, as with the default of 4
+  their hang-ups mostly ended calls in the queue.
+- **Review of S6** (design §4 has each): a streamed probe closes the breaker
+  as its answer begins, where its end left the other slots idle for its
+  whole generation (5.7 s for three calls behind a 6 s probe; now at once);
+  a home that drains starts no queued job; a principal's queue holds eight
+  at most, a job that a free slot takes at once queuing for none (a
+  half-open breaker let one session queue 71 with `--slots 64`); `/props`
+  may take 10 s at most, and libcurl's cache is bounded from the start; an
+  event that is not JSON text ends the call with an error, where it was
+  skipped (an LD_PRELOAD failing one allocation in 300 on home cut a third
+  of the text from 12 of 120 answers, which passed as whole; now 102 came
+  whole and 18 as errors), and so does a
+  stream that ends before it says the answer has; chat completions' text is
+  the first completion's; stop reasons keep up to 37 bytes; a Gemini URL's
+  `alt` becomes `sse`; progress counts the events that carry text, and none
+  is posted for a call withdrawn.
+
 ## Open decisions
 
 Measured, not settled, and left as they are:
@@ -824,9 +962,13 @@ Measured, not settled, and left as they are:
 - **`TCP_NODELAY`:** 400 pipelined pings take 2.2–2.5 ms with it, 42–43 ms
   in two of three runs without; 64 loopback pipelines get 2.9–3.0 million
   answers in 14 s, against 4.9 million without, at the same probe latency.
-- **16 MiB upstream answer cap** (`MAX_RESPONSE`, until S6's 1 MiB, design
-  §4): a 16 MB answer costs a 7.2 ms step for its two whole copies, flagged
-  as `copy=16000016/1048576`; any answer over 1 MiB breaks the copy bound.
+- **16 MiB upstream answer cap** (`MAX_RESPONSE`; design §4 planned 1 MiB
+  for S6, which kept 16 MiB, now of a streamed answer's text): a plain 16 MB
+  answer costs a 7.2 ms step for its two whole copies, flagged as
+  `copy=16000016/1048576`, and any plain answer over 1 MiB breaks the copy
+  bound; a streamed one breaks it only with a chunk over 0.5 MiB, which home
+  copies whole twice (json-c's string, then the text), as the front escapes
+  the text straight from the result.
 - **Repeated list headers:** `field()` gives a list's first line (Accept is
   the only list). A split Accept is served, but a tool call streams only if
   the first line lists `text/event-stream`. No cost measured.

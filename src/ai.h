@@ -3,6 +3,7 @@
 #define TWINCEPTION_SRC_AI_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 struct dstr;
 struct json_object;
@@ -22,7 +23,12 @@ struct ai_endpoint {
 	char const         *system;       /**< default system prompt, or nullptr */
 	char const *const  *headers;      /**< nullptr-terminated header lines */
 	long                max_tokens;   /**< <= 0 leaves the provider default */
-	long                timeout_ms;
+	long                timeout_ms;   /**< a call's in the queue, and then
+	                                       upstream; <= 0: none */
+	long                chunk_ms;     /**< the longest pause in an answer once
+	                                       it has begun; <= 0: none */
+	uint32_t            slots;        /**< upstream calls at once; 0: as
+	                                       llama-server's /props says, else 4 */
 	enum ai_protocol    protocol;
 };
 
@@ -35,6 +41,42 @@ extern struct json_object *
 ai_request (struct ai_endpoint const *ep,
             struct json_object       *system,
             struct json_object       *prompt);
+
+/** What an event of a streamed answer says besides its text. */
+struct ai_event {
+	char const *error;      /**< the upstream's error message, or nullptr */
+	char const *reason;     /**< the answer's stop reason, or nullptr */
+	uint32_t    truncated;  /**< bool: the reason is the output token limit */
+	uint32_t    end;        /**< bool, widened over the padding: the answer
+	                             says it has ended */
+};
+
+/** What ends an answer the output token limit cut short. */
+#define AI_CUT_NOTE "\n\n[The answer was cut short by the output token limit.]"
+
+/**
+ * Read an event of a streamed answer, its data parsed as @p ev: hand each
+ * piece of the answer's text it carries to @p put, and say what else it
+ * says in @p out, zeroed to begin, which then points into @p ev.  Returns
+ * the first nonzero that @p put returned, else 0.  An answer whose stream
+ * ends before an event says it has ended, or chat completions' [DONE], is
+ * cut off.
+ */
+extern int
+ai_event (enum ai_protocol    protocol,
+          struct json_object *ev,
+          int               (*put) (void       *user,
+                                    char const *text,
+                                    size_t      len),
+          void               *user,
+          struct ai_event    *out);
+
+/** Say in the @p size bytes at @p buf that the model gave no answer, and
+ *  why, if its stop @p reason is not nullptr; returns snprintf()'s count. */
+extern int
+ai_no_answer (char       *buf,
+              size_t      size,
+              char const *reason);
 
 /**
  * Turn an upstream HTTP response, the @p len bytes at @p body, into tool

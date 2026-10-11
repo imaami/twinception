@@ -8,7 +8,9 @@
  * the most work a step did, and the storage its stash keeps and what it gave
  * back; per client loop the storage it keeps besides, its tool calls'
  * cancellations, its request times by MCP method and its connections; home's
- * jobs, and its upstream wait and run times and host lookups; blocker jobs;
+ * jobs, its scheduler's queue and slots, the upstream breaker, streamed
+ * answers' chunks, and its upstream wait and run times and host lookups;
+ * blocker jobs;
  * log lines dropped; watchdog reports; the brainstem's resource gauges, and
  * memory pressure and its inputs.  Histograms have fixed buckets, from 1 µs
  * to 300 s.

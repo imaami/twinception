@@ -60,12 +60,131 @@ class QuietServer(ThreadingHTTPServer):
             super().handle_error(request, client_address)
 
 
+def sse_of(payload):
+    """The events of a streamed answer equal to the whole answer @p payload,
+    in its protocol, each piece of text in up to three deltas: (event name or
+    None, data) pairs."""
+    def pieces(text):
+        cut = [0, len(text) // 3, 2 * len(text) // 3, len(text)]
+        return [text[a:b] for a, b in zip(cut, cut[1:]) if b > a] or [text]
+
+    events = []
+    if "error" in payload:
+        events.append(("error", payload))
+    elif "choices" in payload:
+        for choice in payload["choices"][:1]:
+            message = choice.get("message", {})
+            events.append((None, {"choices": [{"index": 0, "delta": {
+                "role": "assistant", "content": ""}}]}))
+            if message.get("reasoning_content"):
+                events.append((None, {"choices": [{"index": 0, "delta": {
+                    "reasoning_content": message["reasoning_content"]}}]}))
+            content = message.get("content")
+            texts = [content] if isinstance(content, str) else \
+                [p["text"] for p in content or []]
+            for text in texts:
+                for piece in pieces(text):
+                    events.append((None, {"choices": [{"index": 0, "delta": {
+                        "content": piece}}]}))
+            if message.get("refusal"):
+                events.append((None, {"choices": [{"index": 0, "delta": {
+                    "refusal": message["refusal"]}}]}))
+            events.append((None, {"choices": [{"index": 0, "delta": {},
+                                               "finish_reason":
+                                               choice.get("finish_reason")}]}))
+        events.append((None, "[DONE]"))
+    elif "output" in payload:
+        events.append(("response.created", {"type": "response.created"}))
+        for item in payload["output"]:
+            for part in item.get("content", []) if item["type"] == "message" else []:
+                kind = "refusal" if part["type"] == "refusal" else "output_text"
+                for piece in pieces(part.get("refusal") or part.get("text") or ""):
+                    events.append((f"response.{kind}.delta", {
+                        "type": f"response.{kind}.delta", "delta": piece}))
+        done = "response.incomplete" if payload.get("status") == "incomplete" \
+            else "response.completed"
+        events.append((done, {"type": done, "response": payload}))
+    elif "content" in payload:
+        events.append(("message_start", {"type": "message_start", "message": {
+            "content": [], "stop_reason": None}}))
+        for i, block in enumerate(payload["content"]):
+            kind = block["type"]
+            events.append(("content_block_start", {
+                "type": "content_block_start", "index": i,
+                "content_block": {"type": kind, kind: ""}}))
+            for piece in pieces(block.get(kind, "")):
+                events.append(("content_block_delta", {
+                    "type": "content_block_delta", "index": i,
+                    "delta": {"type": f"{kind}_delta", kind: piece}}))
+            events.append(("content_block_stop", {"type": "content_block_stop",
+                                                  "index": i}))
+        events.append(("message_delta", {"type": "message_delta", "delta": {
+            "stop_reason": payload.get("stop_reason")}}))
+        events.append(("message_stop", {"type": "message_stop"}))
+    else:
+        for candidate in payload.get("candidates", [])[:1]:
+            for part in candidate.get("content", {}).get("parts", []):
+                for piece in pieces(part["text"]):
+                    events.append((None, {"candidates": [{"content": {
+                        "role": "model", "parts": [dict(part, text=piece)]}}]}))
+            events.append((None, {"candidates": [{"content": {
+                "role": "model", "parts": []},
+                "finishReason": candidate.get("finishReason")}]}))
+        if "promptFeedback" in payload:
+            events.append((None, {"promptFeedback": payload["promptFeedback"]}))
+    return events
+
+
+def sse_wire(events, lines=False):
+    """Events as an event stream's bytes; with @p lines, each JSON line on a
+    data line of its own."""
+    out = []
+    for name, data in events:
+        text = data if isinstance(data, str) else json.dumps(
+            data, indent=1 if lines else None)
+        out.append((f"event: {name}\n" if name else "") +
+                   "".join(f"data: {line}\n" for line in text.split("\n")) + "\n")
+    return "".join(out).encode()
+
+
+class Stream:
+    """A streamed answer: @p wire's bytes, or else the events of @p payload
+    (sse_of()), written in pieces of the @p sizes in turn (all at once without
+    them), @p gap seconds apart, and then @p stall seconds of silence before
+    the end."""
+
+    def __init__(self, payload=None, wire=None, sizes=(), gap=0, stall=0):
+        self.wire = wire if wire is not None else sse_wire(sse_of(payload))
+        self.sizes = sizes
+        self.gap = gap
+        self.stall = stall
+
+    def pieces(self):
+        at = 0
+        for size in self.sizes:
+            if at >= len(self.wire):
+                return
+            yield self.wire[at:at + size]
+            at += size
+        if at < len(self.wire):
+            yield self.wire[at:]
+
+
 class Upstream:
-    """Fake AI endpoint; reply(request) gives (status, payload[, delay])."""
+    """Fake AI endpoint; reply(request) gives (status, payload[, delay]).  A
+    request that asks for a stream, as askai's do, gets a 200's JSON payload
+    as the events of the same answer, unless plain is set, and a Stream as
+    it says; other answers carry the fields in headers.  GET /props gives
+    props, if set, else a 404, two seconds late if props is "hang", and
+    counts in gets."""
 
     def __init__(self):
         self.requests = []
         self.reply = lambda request: (200, ANSWERS["openai"])
+        self.plain = False
+        self.props = None
+        self.headers = {}
+        self.gets = 0
         self.arrived = threading.Event()
         self.cancelled = threading.Event()
         self.hangups = 0
@@ -77,6 +196,20 @@ class Upstream:
 
             def log_message(self, fmt, *args):
                 pass
+
+            def do_GET(self):
+                with upstream.lock:
+                    upstream.gets += 1
+                props = upstream.props
+                if props == "hang":
+                    time.sleep(2)
+                    props = None
+                wire = json.dumps(props).encode() if props is not None else b""
+                self.send_response(200 if props is not None else 404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(wire)))
+                self.end_headers()
+                self.wfile.write(wire)
 
             def do_POST(self):
                 raw = self.rfile.read(int(self.headers["Content-Length"]))
@@ -91,27 +224,64 @@ class Upstream:
                 upstream.arrived.set()
                 status, payload, *delay = upstream.reply(request)
                 if delay and upstream.wait_for_hangup(self.connection, delay[0]):
-                    with upstream.lock:
-                        upstream.hangups += 1
-                    upstream.cancelled.set()
+                    upstream.hung_up()
+                    return
+                streamed = request["body"].get("stream") is True or \
+                    "streamGenerateContent" in self.path
+                if streamed and status == 200 and isinstance(payload, dict) and \
+                        not upstream.plain:
+                    payload = Stream(payload)
+                if isinstance(payload, Stream):
+                    self.stream(payload)
                     return
                 wire = payload if isinstance(payload, bytes) else \
                     json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(wire)))
+                for name, value in upstream.headers.items():
+                    self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(wire)
 
+            def stream(self, answer):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                try:
+                    for i, piece in enumerate(answer.pieces()):
+                        if i and answer.gap and upstream.wait_for_hangup(
+                                self.connection, answer.gap):
+                            raise ConnectionResetError
+                        self.wfile.write(b"%x\r\n%s\r\n" % (len(piece), piece))
+                        self.wfile.flush()
+                    if answer.stall and upstream.wait_for_hangup(self.connection,
+                                                                 answer.stall):
+                        raise ConnectionResetError
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                except (ConnectionError, OSError):
+                    upstream.hung_up()
+                    self.close_connection = True
+
         self.server = QuietServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def hung_up(self):
+        with self.lock:
+            self.hangups += 1
+        self.cancelled.set()
 
     @staticmethod
     def wait_for_hangup(conn, seconds):
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             readable, _, _ = select.select([conn], [], [], 0.02)
-            if readable and conn.recv(1, socket.MSG_PEEK) == b"":
+            try:
+                if readable and conn.recv(1, socket.MSG_PEEK) == b"":
+                    return True
+            except ConnectionError:
                 return True
         return False
 
@@ -171,6 +341,9 @@ class Askai:
         self.host = match.group(1)
         self.port = int(match.group(2))
         threading.Thread(target=self.drain, daemon=True).start()
+        # Home knows the upstream's slots, from /props or not, before it
+        # makes connections of its own.
+        self.wait_log(r"upstream slots: ")
 
     def drain(self):
         for line in self.proc.stderr:
@@ -414,7 +587,7 @@ def check_legacy_session(binary, up):
 
         assert text_of(ai.ask("What is 6*7?")) == "A"
         request = up.last()
-        assert request["body"] == {"model": "m", "messages": [
+        assert request["body"] == {"model": "m", "stream": True, "messages": [
             {"role": "user", "content": "What is 6*7?"}]}
         assert "authorization" not in request["headers"], "key leaked to -u URL"
         assert request["headers"]["user-agent"].startswith("askai/")
@@ -441,31 +614,37 @@ def check_legacy_session(binary, up):
 
 
 def check_protocols(binary, up):
+    # Every protocol asks for a streamed answer, which --extra cannot turn
+    # off; gemini by its URL.
     expect = {
         "openai": ("/v1/chat/completions", "authorization", "Bearer secret", {
             "model": "m", "max_tokens": 77, "temperature": 0.25, "top_p": 0.5,
-            "messages": [{"role": "system", "content": "SYS"},
-                         {"role": "user", "content": "Q"}]}),
+            "stream": True, "messages": [{"role": "system", "content": "SYS"},
+                                         {"role": "user", "content": "Q"}]}),
         "responses": ("/v1/responses", "authorization", "Bearer secret", {
             "model": "m", "input": "Q", "instructions": "SYS", "store": False,
-            "max_output_tokens": 77, "temperature": 0.25, "top_p": 0.5}),
+            "max_output_tokens": 77, "temperature": 0.25, "top_p": 0.5,
+            "stream": True}),
         "anthropic": ("/v1/messages", "x-api-key", "secret", {
             "model": "m", "max_tokens": 77, "temperature": 0.25, "top_p": 0.5,
-            "system": "SYS", "messages": [{"role": "user", "content": "Q"}]}),
+            "stream": True, "system": "SYS",
+            "messages": [{"role": "user", "content": "Q"}]}),
         "gemini": ("/v1beta/models/m:generateContent", "x-goog-api-key", "secret", {
             "contents": [{"role": "user", "parts": [{"text": "Q"}]}],
             "systemInstruction": {"parts": [{"text": "SYS"}]},
             "generationConfig": {"maxOutputTokens": 77, "temperature": 0.25},
-            "top_p": 0.5}),
+            "top_p": 0.5, "stream": False}),
     }
     for protocol, (path, auth, value, body) in expect.items():
         with Askai(binary, "-p", protocol, "-u", up.url(path), "-m", "m",
                    "-k", "TEST_KEY", "-s", "SYS", "-n", "77", "-t", "0.25",
-                   "-x", '{"top_p": 0.5, "store": null}',
+                   "-x", '{"top_p": 0.5, "store": null, "stream": false}',
                    env={"TEST_KEY": "secret"}) as ai:
             up.reply = lambda request, p=protocol: (200, ANSWERS[p])
             assert text_of(ai.ask()) == "A", protocol
             request = up.last()
+            if protocol == "gemini":
+                path = "/v1beta/models/m:streamGenerateContent?alt=sse"
             assert request["path"] == path, (protocol, request["path"])
             assert request["headers"][auth] == value, protocol
             if protocol == "responses":
@@ -486,6 +665,15 @@ def check_protocols(binary, up):
         ai.ask()
         assert up.last()["body"]["max_tokens"] == 4096
         assert "model" not in up.last()["body"]
+
+    # A Gemini URL's alt, whatever it was, is sse.
+    for query, want in (("?alt=json&x=1", "?alt=sse&x=1"),
+                        ("?x=1&alt=json", "?x=1&alt=sse"), ("?x=1", "?x=1&alt=sse")):
+        with Askai(binary, "-p", "gemini",
+                   "-u", up.url("/v1beta/models/m:generateContent" + query)) as ai:
+            up.reply = lambda request: (200, ANSWERS["gemini"])
+            assert text_of(ai.ask()) == "A"
+            assert up.last()["path"] == "/v1beta/models/m:streamGenerateContent" + want
 
     print("openai/responses/anthropic/gemini requests and answers: PASS")
 
@@ -758,6 +946,14 @@ def rpc_request(rpc_id, params=None, method="ping", accept_sse=False, headers=No
                      for k, v in fields.items()) + b"\r\n" + body)
 
 
+def session_call(i, rpc_id=1, prompt="Q", **headers):
+    """A legacy tool call of session @p i's own."""
+    return rpc_request(rpc_id, {"name": "ask_ai", "arguments": {"prompt": prompt}},
+                       "tools/call", headers={"Mcp-Session-Id": f"{i:032x}",
+                                              "MCP-Protocol-Version": LEGACY,
+                                              **headers})
+
+
 def held_ping(port, rpc_id=0):
     """A keep-alive connection that has been answered once."""
     sock = socket.create_connection(("127.0.0.1", port), 10)
@@ -871,17 +1067,16 @@ def check_connections(binary, up):
     # here, a tool call counting one more for its upstream connection.  New
     # clients and calls beyond that make room by closing the least recently
     # active idle connection, so idle clients cannot leave tool calls without
-    # a descriptor.
+    # a descriptor.  Each call is a session's, as one principal may have but
+    # eight queued.
     up.reply = lambda request: (200, ANSWERS["openai"], 0.5)
-    with Askai(binary, "-u", up.url(), nofile=194, loops=1) as ai:
+    with Askai(binary, "-u", up.url(), "--slots", "64", nofile=194, loops=1) as ai:
         held = [held_ping(ai.port, i) for i in range(128)]
         held.append(held_ping(ai.port, 128))
         assert closed_by_peer(held[0])
-        call = rpc_request(1, {"name": "ask_ai", "arguments": {"prompt": "Q"}},
-                           "tools/call")
         callers = held[-60:]
-        for sock in callers:
-            sock.sendall(call)
+        for i, sock in enumerate(callers):
+            sock.sendall(session_call(i))
         for sock in callers:
             _, body = Replies(sock).next()
             assert text_of(body["result"]) == "A", body
@@ -1390,11 +1585,11 @@ def check_loops(binary, up):
     up.reply = lambda request: (200, ANSWERS["openai"], 0.5)
     call = rpc_request(1, {"name": "ask_ai", "arguments": {"prompt": "Q"}},
                        "tools/call")
-    with Askai(binary, "-u", up.url(), nofile=200) as ai:
+    with Askai(binary, "-u", up.url(), "--slots", "64", nofile=200) as ai:
         held = [held_ping(ai.port, i) for i in range(129)]
         assert closed_by_peer(held[0])
-        for sock in held[-60:]:
-            sock.sendall(call)
+        for i, sock in enumerate(held[-60:]):
+            sock.sendall(session_call(i))
         for sock in held[-60:]:
             _, body = Replies(sock).next()
             assert text_of(body["result"]) == "A", body
@@ -1457,7 +1652,7 @@ def check_large_bodies(binary, up):
 
     with Askai(binary, "-u", up.url(), "-s", "SYS", "-x", '{"messages": null}') as ai:
         assert text_of(ai.ask("Q" * 100_000)) == "A"
-        assert up.last()["body"] == {}
+        assert up.last()["body"] == {"stream": True}
     with Askai(binary, "-u", up.url()) as ai:
         ping = b'{"jsonrpc":"2.0","id":1,"method":"ping"}'
         assert ai.post(ping + b" " * 100_000)[0] == 200
@@ -1556,54 +1751,71 @@ def check_answers(binary, up):
     """An upstream answer is parsed a slice at a time, however many values it
     holds, and its reply goes out a piece at a time as the client reads it,
     however large: a response on its own may take the pending output past
-    --max-output.  Reading the answer's text copies it whole, which the work
-    line shows once that passes a step's bound.  Home takes an answer in as
+    --max-output.  A plain answer is parsed on the client loop, and reading
+    its text copies it whole, which the work line shows once that passes a
+    step's bound; home reads a streamed one's events a slice at a time into
+    its text, which the client loop only escapes.  Home takes an answer in as
     much a step as it may receive, holding the rest back in libcurl, up to
     16 MiB."""
     call = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
-    for args, size in ((("--output-pause", "16K", "--max-output", "64K"), 100_000),
-                       ((), 1_100_000)):
-        text = "x\n\"" * (size // 3)
-        up.reply = lambda request, t=text: (200, {"choices": [{
-            "message": {"content": t}, "finish_reason": "stop"}]})
-        with Askai(binary, "-u", up.url(), *args) as ai:
-            work(ai)
-            for accept in ("application/json", "application/json, text/event-stream"):
-                status, headers, body = ai.rpc("tools/call", call,
-                                               headers={"Accept": accept})
-                assert status == 200 and text_of(body["result"]) == text, accept
-                assert headers["content-type"] == accept.split(",")[-1].strip()
-            with socket.socket() as sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
-                sock.connect(("127.0.0.1", ai.port))
-                sock.sendall(rpc_request(5, call, method="tools/call"))
-                time.sleep(0.5)
-                status, body = Replies(sock).next()
-                assert status == 200 and text_of(body["result"]) == text
-            units, _ = work(ai)
-            assert units["send"][0] <= units["send"][1], units
-            assert (units["copy"][0] > units["copy"][1]) == (size > 1 << 20), units
-            assert 0 < units["home_recv"][0] <= units["home_recv"][1], units
+    for plain in (False, True):
+        up.plain = plain
+        for args, size in ((("--output-pause", "16K", "--max-output", "64K"),
+                            100_000), ((), 1_100_000)):
+            text = "x\n\"" * (size // 3)
+            up.reply = lambda request, t=text: (200, {"choices": [{
+                "message": {"content": t}, "finish_reason": "stop"}]})
+            with Askai(binary, "-u", up.url(), *args) as ai:
+                work(ai)
+                for accept in ("application/json",
+                               "application/json, text/event-stream"):
+                    status, headers, body = ai.rpc("tools/call", call,
+                                                   headers={"Accept": accept})
+                    assert status == 200 and text_of(body["result"]) == text, accept
+                    assert headers["content-type"] == accept.split(",")[-1].strip()
+                with socket.socket() as sock:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+                    sock.connect(("127.0.0.1", ai.port))
+                    sock.sendall(rpc_request(5, call, method="tools/call"))
+                    time.sleep(0.5)
+                    status, body = Replies(sock).next()
+                    assert status == 200 and text_of(body["result"]) == text
+                units, _ = work(ai)
+                assert units["send"][0] <= units["send"][1], units
+                assert (units["copy"][0] > units["copy"][1]) == \
+                    (plain and size > 1 << 20), units
+                assert all(units["home_" + unit][0] <= units["home_" + unit][1]
+                           for unit in ("recv", "parse", "values", "copy")), units
+                assert units["home_recv"][0] > 0, units
+                if not plain:
+                    assert units["home_parse"][0] > 0, units
 
     values = 200_000
-    up.reply = lambda request: (200, {"choices": [{
-        "message": {"content": "A"}, "finish_reason": "stop",
-        "logprobs": {"content": [0] * values}}]})
-    with Askai(binary, "-u", up.url()) as ai:
-        work(ai)
-        assert text_of(ai.ask()) == "A"
-        units, bulk = work(ai)
-        assert all(most <= bound for most, bound in units.values()), units
-        assert bulk >= values // units["values"][1], (bulk, units)
+    dense = {"choices": [{"message": {"content": "A"}, "finish_reason": "stop",
+                          "logprobs": {"content": [0] * values}}]}
+    event = {"choices": [{"index": 0, "delta": {"content": "A"},
+                          "logprobs": {"content": [0] * values}}]}
+    for plain, reply in ((True, (200, dense)),
+                         (False, (200, Stream(wire=sse_wire([(None, event),
+                                                             (None, "[DONE]")]))))):
+        up.plain = plain
+        up.reply = lambda request, r=reply: r
+        with Askai(binary, "-u", up.url()) as ai:
+            work(ai)
+            assert text_of(ai.ask()) == "A"
+            units, bulk = work(ai)
+            assert all(most <= bound for most, bound in units.values()), units
+            assert not plain or bulk >= values // units["values"][1], (bulk, units)
 
-        # Past 16 MiB an answer is cut off, a share a step at a time too.
-        up.reply = lambda request: (200, {"choices": [{"message": {
-            "content": "x" * (17 << 20)}, "finish_reason": "stop"}]})
-        result = ai.ask()
-        assert result["isError"] and \
-            text_of(result) == "Upstream response exceeds 16 MiB.", text_of(result)
-        units, _ = work(ai)
-        assert 0 < units["home_recv"][0] <= units["home_recv"][1], units
+            # Past 16 MiB an answer is cut off, a share a step at a time too.
+            up.reply = lambda request: (200, {"choices": [{"message": {
+                "content": "x" * (17 << 20)}, "finish_reason": "stop"}]})
+            result = ai.ask()
+            assert result["isError"] and \
+                text_of(result) == "Upstream response exceeds 16 MiB.", text_of(result)
+            units, _ = work(ai)
+            assert 0 < units["home_recv"][0] <= units["home_recv"][1], units
+    up.plain = False
     up.reply = lambda request: (200, ANSWERS["openai"])
 
     print("answers parsed, and replies sent, a slice at a time: PASS")
@@ -1849,6 +2061,9 @@ def check_configuration(binary, up):
           message="--max-body exceeds --client-budget")
     fails("--output-pause", "2M", message="--output-pause exceeds --max-output")
     fails("--max-calls", "0", message="invalid --max-calls")
+    fails("--slots", "0", message="invalid --slots")
+    fails("--slots", "65536", message="invalid --slots")
+    fails("--chunk-timeout", "-1", message="invalid --chunk-timeout")
     for loops in ("256", "-1", "x", ""):
         fails("--loops", loops, message="invalid --loops")
 
@@ -1921,6 +2136,13 @@ def check_metrics(binary, up):
         assert size >= min(values["askai_max_fds"], 65536), size
         assert values["askai_log_dropped_total"] == 0
         assert values['askai_upstream_lookups_total{result="ok"}'] == 0
+        # Home's scheduler and upstream: one call went upstream, streamed, and
+        # nothing waits.
+        assert (values["askai_jobs_dispatched_total"], values["askai_upstream_slots"],
+                values["askai_jobs_queued"], values["askai_principals_queued"],
+                values["askai_upstream_calls"], values["askai_breaker_state"]) == \
+            (1, 4, 0, 0, 0, 0), values
+        assert values["askai_upstream_chunks_total"] >= 3, values
         # Rendering one is a request too.
         assert total(ai.metrics(), "askai_request_seconds_count", method="metrics") >= 1
         assert ai.get("/metrics?x=1")[0] == 200
@@ -2222,11 +2444,13 @@ def check_lookups(binary, up):
         assert values["askai_blocker_jobs_total"] == 1, values
         assert values['askai_upstream_lookups_total{result="failed"}'] == 0
 
+    # One lookup fails as home asks for /props, and one for the call.
     with Askai(binary, "-u", "http://nonexistent.invalid:1/v1/chat/completions") as ai:
         result = ai.ask()
         assert result["isError"] and \
             "cannot look up nonexistent.invalid: " in text_of(result), result
-        assert ai.metrics()['askai_upstream_lookups_total{result="failed"}'] == 1
+        assert ai.metrics()['askai_upstream_lookups_total{result="failed"}'] == 2
+        ai.wait_log(r"upstream slots: 4 \(the default: /props: cannot look up ")
 
     print("upstream host lookups on a blocker thread: PASS")
 
@@ -2365,6 +2589,555 @@ def check_shutdown(binary, up):
     print("shutdown: draining, tool calls ended with an error: PASS")
 
 
+def check_streaming(binary, up):
+    """Every protocol asks for a streamed answer, and home reads its events
+    into the answer's text, however the bytes are cut up on the way, with CRLF
+    line ends or JSON over several data lines, and without a line break at the
+    end; a plain answer to a streamed request is read as before.  An error
+    event ends the call with its message, and the upstream sees the hang-up;
+    so does an answer that is not UTF-8 text, an event that is not JSON text,
+    or a pause longer than --chunk-timeout once the answer has begun.  One
+    that ends before it says the answer has is cut off.  A stop reason is the
+    same, streamed or not, and the text is the first completion's.  The
+    deadline counts from the start upstream."""
+    text = 'Hé, € \U0001f600 "quoted"\n\\ ' * 40
+    answers = {
+        "openai": {"choices": [{"message": {"content": text},
+                                "finish_reason": "stop"}]},
+        "responses": {"status": "completed", "output": [
+            {"type": "message", "content": [{"type": "output_text", "text": text}]}]},
+        "anthropic": {"content": [{"type": "thinking", "thinking": "hmm"},
+                                  {"type": "text", "text": text}],
+                      "stop_reason": "end_turn"},
+        "gemini": {"candidates": [{"content": {"parts": [
+            {"text": "hmm", "thought": True}, {"text": text}]},
+            "finishReason": "STOP"}]},
+    }
+    errors = {
+        "openai": (None, {"error": {"message": "boom"}}),
+        "responses": ("error", {"type": "error", "code": "x", "message": "boom"}),
+        "anthropic": ("error", {"type": "error", "error": {
+            "type": "overloaded_error", "message": "boom"}}),
+        "gemini": (None, {"error": {"code": 500, "message": "boom"}}),
+    }
+    paths = {"openai": "/v1/chat/completions", "responses": "/v1/responses",
+             "anthropic": "/v1/messages", "gemini": "/v1beta/models/m:generateContent"}
+    # Stop reasons longer than most, of answers with no text.
+    empty = {"openai": {"choices": [{"message": {"content": ""},
+                                     "finish_reason": "content_filter"}]},
+             "responses": {"status": "incomplete", "output": [],
+                           "incomplete_details": {"reason": "content_filter"}},
+             "anthropic": {"content": [],
+                           "stop_reason": "model_context_window_exceeded"},
+             "gemini": {"candidates": [{"content": {"parts": []},
+                                        "finishReason": "IMAGE_PROHIBITED_CONTENT"}]}}
+    cuts = (1,) * 300 + (7, 13, 2, 31, 5, 64) * 200
+    for protocol, answer in answers.items():
+        with Askai(binary, "-p", protocol, "-u", up.url(paths[protocol]), "-m", "m",
+                   "--chunk-timeout", "1") as ai:
+            events = sse_of(answer)
+            wire = sse_wire(events)
+            for variant in (wire, wire.replace(b"\n", b"\r\n"), sse_wire(events, True),
+                            wire.rstrip(b"\n")):
+                up.reply = lambda request, w=variant: (200, Stream(wire=w, sizes=cuts))
+                assert text_of(ai.ask()) == text, (protocol, variant[:100])
+            up.plain = True
+            up.reply = lambda request, p=protocol: (200, ANSWERS[p])
+            assert text_of(ai.ask()) == "A", protocol
+            # No text: the same stop reason, streamed or not.
+            up.reply = lambda request, p=protocol: (200, empty[p])
+            plain = ai.ask()
+            up.plain = False
+            streamed = ai.ask()
+            assert streamed == plain and plain["isError"], (protocol, streamed, plain)
+
+            # A stream that ends before it says the answer has: cut off.
+            up.reply = lambda request: (200, Stream(wire=sse_wire(events[:3])))
+            result = ai.ask()
+            assert result["isError"] and text_of(result) == \
+                "Upstream request failed: Transferred a partial file: the stream " \
+                "ended before the answer did", (protocol, result)
+
+            # An error event: the text so far gives way to its message.
+            up.cancelled.clear()
+            up.reply = lambda request, p=protocol: (200, Stream(
+                wire=sse_wire(events[:3] + [errors[p]]), stall=3))
+            result = ai.ask()
+            assert result["isError"] and \
+                text_of(result) == "Upstream error (HTTP 200): boom", result
+            assert up.cancelled.wait(2), "the upstream did not see the hang-up"
+            values = ai.metrics()
+            assert values["askai_upstream_chunks_total"] >= 4 * (len(events) - 1), \
+                values
+
+    with Askai(binary, "-u", up.url(), "--chunk-timeout", "1", "-T", "2") as ai:
+        wire = sse_wire(sse_of(answers["openai"]))
+        # A pause past the chunk timeout ends the call, and the upstream sees
+        # the hang-up; a stream that keeps coming does not.
+        up.cancelled.clear()
+        up.reply = lambda request: (200, Stream(wire=wire, sizes=(40,), stall=3))
+        start = time.monotonic()
+        result = ai.ask()
+        assert result["isError"] and text_of(result) == \
+            "Upstream answer stalled: nothing came for 1 s.", result
+        assert time.monotonic() - start < 2.5
+        assert up.cancelled.wait(2), "the upstream did not see the hang-up"
+        assert ai.metrics()["askai_upstream_stalls_total"] == 1
+        up.reply = lambda request: (200, Stream(wire=wire, sizes=(len(wire) // 4,) * 4,
+                                                gap=0.4))
+        assert text_of(ai.ask()) == text
+        # The deadline counts from the start upstream, whatever comes.
+        up.reply = lambda request: (200, Stream(wire=wire, sizes=(20,) * 200, gap=0.1))
+        result = ai.ask()
+        assert result["isError"] and "timed out after 2 s" in text_of(result), result
+        # Text that is not UTF-8, which json-c lets through, ends the call;
+        # so does an event that is not JSON text, with text that json-c
+        # finds no UTF-8 or cut short.
+        bad = b'data: {"choices":[{"delta":{"content":"\xc0\xa0"}}]}\n\n'
+        up.reply = lambda request: (200, Stream(wire=bad + wire))
+        result = ai.ask()
+        assert result["isError"] and text_of(result) == \
+            "Upstream error (HTTP 200): an answer that is not text", result
+        for bad in (b'data: {"choices":[{"delta":{"content":"BAD\xff"}}]}\n\n',
+                    b'data: {"choices":[{"delta":{"content":"LOST"}}\n\n'):
+            up.reply = lambda request, b=bad: (200, Stream(
+                wire=wire[:60] + b + wire[60:]))
+            result = ai.ask()
+            assert result["isError"] and text_of(result) == \
+                "Upstream error (HTTP 200): an event that is not JSON text", result
+        # The first completion's text, should --extra ask for more.
+        events = [(None, {"choices": [{"index": i % 2, "delta": {"content": c}}]})
+                  for i, c in enumerate("HwEoLrLlOd")]
+        events += [(None, {"choices": [{"index": i, "delta": {},
+                                        "finish_reason": "stop"}]})
+                   for i in (1, 0)] + [(None, "[DONE]")]
+        up.reply = lambda request: (200, Stream(wire=sse_wire(events)))
+        assert text_of(ai.ask()) == "HELLO"
+    up.reply = lambda request: (200, ANSWERS["openai"])
+
+    print("streamed answers in every protocol, error events, stalls: PASS")
+
+
+def check_scheduler(binary, up):
+    """Home starts the jobs of the principals with jobs queued round-robin, a
+    job each, as its slots free: a session's, or else a client address's.
+    One principal may have eight queued beyond the slots free, and the next
+    is refused at once as busy; a flooder's queued calls then delay another
+    session's call by one service time at most, where one queue, first in
+    first out, would hold it behind them all.  A call that goes while queued
+    never reaches the upstream, whether its client hangs up or withdraws it;
+    one that goes while its answer streams is cancelled upstream.  --timeout
+    bounds a call's wait in its queue, and then its upstream call apart."""
+    service = 0.3
+
+    chunk = sse_wire([(None, {"choices": [{"index": 0, "delta": {"content": "x"}}]})])
+
+    def reply(request):
+        raw = request["raw"].decode()
+        if "STREAM" in raw:
+            return 200, Stream(wire=chunk * 200, sizes=(len(chunk),) * 200, gap=0.02)
+        return 200, ANSWERS["openai"], 2.0 if "HOLD" in raw else \
+            service if "SLOW" in raw else 0
+
+    def finish(socks):
+        for sock in socks:
+            sock.settimeout(10)
+            assert text_of(Replies(sock).next()[1]["result"]) == "A"
+            sock.close()
+
+    def contend(ai, fifo):
+        """The flooder's nine calls, then another session's: its latency, and
+        its place among the upstream's requests."""
+        count = len(up.requests)
+        socks = []
+        for i in range(9):
+            socks.append(socket.create_connection(("127.0.0.1", ai.port), 10))
+            socks[-1].sendall(session_call(1, i, f"SLOW F{i}"))
+        wait_for(lambda: ai.metrics()["askai_jobs_queued"] == 8)
+        values = ai.metrics()
+        assert values["askai_principals_queued"] == 1, values
+        if not fifo:
+            with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+                start = time.monotonic()
+                sock.sendall(session_call(1, 99, "SLOW F99"))
+                busy = Replies(sock).next()[1]["result"]
+                assert busy["isError"] and "try again" in text_of(busy), busy
+                assert time.monotonic() - start < 0.5
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            start = time.monotonic()
+            sock.sendall(session_call(2, 1, "SLOW I"))
+            assert text_of(Replies(sock).next()[1]["result"]) == "A"
+            took = time.monotonic() - start
+        finish(socks)
+        raws = [r["raw"].decode() for r in up.requests[count:]]
+        return took, next(i for i, raw in enumerate(raws) if "SLOW I" in raw)
+
+    up.reply = reply
+    with Askai(binary, "-u", up.url(), "--slots", "1") as ai:
+        took, place = contend(ai, False)
+        assert place <= 2 and took < 3 * service + 0.4, (place, took)
+        values = ai.metrics()
+        assert values["askai_jobs_dispatched_total"] == 10, values
+        assert values["askai_principals_queued"] == 0, values
+
+        # Gone while queued: the upstream never sees the call.
+        count = len(up.requests)
+        hold = socket.create_connection(("127.0.0.1", ai.port), 10)
+        hold.sendall(session_call(3, 1, "HOLD"))
+        wait_for(lambda: len(up.requests) == count + 1)
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(session_call(4, 1, "GONE", Accept="text/event-stream"))
+            assert b"text/event-stream" in sock.recv(4096)
+            wait_for(lambda: ai.metrics()["askai_jobs_queued"] == 1)
+        wait_for(lambda: ai.metrics()["askai_jobs_queued"] == 0)
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(session_call(5, 7, "WITHDRAWN", Accept="text/event-stream"))
+            assert b"text/event-stream" in sock.recv(4096)
+            wait_for(lambda: ai.metrics()["askai_jobs_queued"] == 1)
+            assert ai.rpc("notifications/cancelled", {"requestId": 7}, rpc_id=None,
+                          headers={"Mcp-Session-Id": f"{5:032x}",
+                                   "MCP-Protocol-Version": LEGACY})[0] == 202
+            sock.settimeout(5)
+            rest = b""
+            while not rest.endswith(b"0\r\n\r\n"):
+                piece = sock.recv(4096)
+                assert piece, rest
+                rest += piece
+            assert b"data:" not in rest, rest
+        finish([hold])
+        raws = [r["raw"].decode() for r in up.requests[count:]]
+        assert not any("GONE" in raw or "WITHDRAWN" in raw for raw in raws), raws
+
+        # Gone while its answer streams, in either way: cancelled upstream.
+        for withdraw in (False, True):
+            up.cancelled.clear()
+            sock = socket.create_connection(("127.0.0.1", ai.port), 10)
+            sock.sendall(session_call(6, 8, "STREAM", Accept="text/event-stream"))
+            wait_for(lambda: ai.metrics()["askai_upstream_chunks_total"] >= 20 +
+                     values["askai_upstream_chunks_total"])
+            if withdraw:
+                assert ai.rpc("notifications/cancelled", {"requestId": 8}, rpc_id=None,
+                              headers={"Mcp-Session-Id": f"{6:032x}",
+                                       "MCP-Protocol-Version": LEGACY})[0] == 202
+            else:
+                sock.close()
+            assert up.cancelled.wait(3), "the stream was not cancelled upstream"
+            sock.close()
+            values = ai.metrics()
+        assert values["askai_upstream_cancels_total"] >= 2, values
+
+    # One queue for all, first in first out: the call waits for all nine.
+    with Askai(binary, "-u", up.url(), "--slots", "1", "--test-fifo") as ai:
+        took, place = contend(ai, True)
+        assert place == 9 and took > 8 * service, (place, took)
+
+    # Without a session, a call's principal is its client's address: one
+    # address's tenth call is refused, while another's starts within a round.
+    with Askai(binary, "-u", up.url(), "--slots", "1") as ai:
+        count = len(up.requests)
+        socks = []
+        for i in range(10):
+            socks.append(socket.create_connection(("127.0.0.1", ai.port), 10))
+            socks[-1].sendall(rpc_request(i, {"name": "ask_ai", "arguments": {
+                "prompt": f"SLOW A{i}"}}, "tools/call"))
+            if i == 8:
+                wait_for(lambda: ai.metrics()["askai_jobs_queued"] == 8)
+        busy = Replies(socks.pop()).next()[1]["result"]
+        assert busy["isError"] and "try again" in text_of(busy), busy
+        with socket.create_connection(("127.0.0.1", ai.port), 10,
+                                      source_address=("127.0.0.2", 0)) as sock:
+            sock.sendall(rpc_request(99, {"name": "ask_ai", "arguments": {
+                "prompt": "SLOW B"}}, "tools/call"))
+            assert text_of(Replies(sock).next()[1]["result"]) == "A"
+        finish(socks)
+        raws = [r["raw"].decode() for r in up.requests[count:]]
+        assert next(i for i, raw in enumerate(raws) if "SLOW B" in raw) <= 2, raws
+
+    # --timeout counts a call's wait in the queue from its submission, and
+    # its upstream call from its start: the second call waits 0.8 s and is
+    # answered 0.7 s later, while the third's second in the queue runs out.
+    up.reply = lambda request: (200, ANSWERS["openai"],
+                                0.8 if "FIRST" in request["raw"].decode() else 0.7)
+    with Askai(binary, "-u", up.url(), "--slots", "1", "-T", "1") as ai:
+        count = len(up.requests)
+        socks = []
+        for i, prompt in enumerate(("FIRST", "SECOND", "THIRD")):
+            socks.append(socket.create_connection(("127.0.0.1", ai.port), 10))
+            socks[-1].sendall(session_call(i, i, prompt))
+            if not i:
+                wait_for(lambda: len(up.requests) == count + 1)
+        results = [Replies(sock).next()[1]["result"] for sock in socks]
+        for sock in socks:
+            sock.close()
+        assert [text_of(result) for result in results] == [
+            "A", "A", "Timed out after 1 s waiting for an upstream slot."], results
+        values = ai.metrics()
+        assert values['askai_jobs_ended_total{end="rejected"}'] == 1, values
+        assert len(up.requests) == count + 2
+    up.reply = lambda request: (200, ANSWERS["openai"])
+
+    print("scheduler: principals' queues, round-robin, cancelled while queued "
+          "or streaming: PASS")
+
+
+def check_breaker(binary, up):
+    """Five upstream failures in a row open the breaker: tool calls are then
+    refused at once, saying when to try again, and those queued end so too;
+    after a backoff of a second, doubling to a minute, one probe goes, alone,
+    whose failure opens it again and whose success, as soon as its answer
+    begins, closes it.  An answer's Retry-After opens it at once, for as
+    long."""
+    def failing(delay=0):
+        return lambda request: (503, {"error": {"message": "down"}}, delay)
+
+    up.reply = failing()
+    with Askai(binary, "-u", up.url()) as ai:
+        for _ in range(5):
+            result = ai.ask()
+            assert text_of(result) == "Upstream error (HTTP 503): down", result
+        count = len(up.requests)
+        result = ai.ask()
+        assert result["isError"] and text_of(result) == \
+            "The upstream is unavailable; try again in 1 s.", result
+        assert len(up.requests) == count
+        values = ai.metrics()
+        assert (values["askai_breaker_state"], values["askai_breaker_opens_total"]) \
+            == (1, 1), values
+        ai.wait_log(r"upstream unavailable: tool calls refused for 1 s")
+        time.sleep(1.1)
+        # Half-open: the probe fails, and the breaker opens for two seconds.
+        assert text_of(ai.ask()) == "Upstream error (HTTP 503): down"
+        assert len(up.requests) == count + 1
+        assert text_of(ai.ask()) == "The upstream is unavailable; try again in 2 s."
+        time.sleep(2.1)
+        up.reply = lambda request: (200, ANSWERS["openai"])
+        assert text_of(ai.ask()) == "A"
+        values = ai.metrics()
+        assert (values["askai_breaker_state"], values["askai_breaker_opens_total"],
+                values["askai_breaker_probes_total"]) == (0, 2, 2), values
+        ai.wait_log(r"upstream breaker closed")
+
+        # Retry-After opens it at once.
+        up.reply = lambda request: (429, {"error": {"message": "slow down"}})
+        up.headers = {"Retry-After": "3"}
+        assert text_of(ai.ask()) == "Upstream error (HTTP 429): slow down"
+        assert text_of(ai.ask()) == "The upstream is unavailable; try again in 3 s."
+        up.headers = {}
+
+    # The calls queued when it opens end at once.
+    up.reply = failing(0.1)
+    with Askai(binary, "-u", up.url(), "--slots", "1") as ai:
+        results = []
+        threads = [threading.Thread(target=lambda i=i: results.append(ai.rpc(
+            "tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}},
+            headers={"Mcp-Session-Id": f"{i:032x}"})[2]["result"]))
+            for i in range(7)]
+        for thread in threads:
+            thread.start()
+            time.sleep(0.02)
+        for thread in threads:
+            thread.join(10)
+        texts = sorted(text_of(result) for result in results)
+        assert texts == ["The upstream is unavailable; try again in 1 s."] * 2 + \
+            ["Upstream error (HTTP 503): down"] * 5, texts
+
+    # Half-open, exactly one probe goes; the calls queued meanwhile, eight a
+    # session though slots are free, wait for it.  Its failure ends them;
+    # its streamed answer, once begun, starts them, however long it goes on.
+    chunk = sse_wire([(None, {"choices": [{"index": 0, "delta": {"content": "x"}}]})])
+    probe = Stream(wire=chunk * 30 + sse_wire([(None, "[DONE]")]),
+                   sizes=(len(chunk),) * 30, gap=0.1)
+    state = {"fail": True}
+
+    def reply(request):
+        probing = "PROBE" in request["raw"].decode()
+        if state["fail"]:
+            return 503, {"error": {"message": "down"}}, 0.8 if probing else 0
+        return (200, probe if probing else ANSWERS["openai"])
+
+    up.reply = reply
+    with Askai(binary, "-u", up.url(), "--slots", "4") as ai:
+        for _ in range(5):
+            ai.ask()
+        time.sleep(1.1)
+        count = len(up.requests)
+        first = socket.create_connection(("127.0.0.1", ai.port), 10)
+        first.sendall(session_call(1, 1, "PROBE"))
+        wait_for(lambda: len(up.requests) == count + 1)
+        socks = []
+        for i in range(10):
+            socks.append(socket.create_connection(("127.0.0.1", ai.port), 10))
+            socks[-1].sendall(session_call(2, i))
+        wait_for(lambda: ai.metrics()["askai_jobs_queued"] == 8)
+        texts = [text_of(Replies(sock).next()[1]["result"]) for sock in [first] + socks]
+        assert texts[0] == "Upstream error (HTTP 503): down", texts
+        assert sorted(texts[1:]) == \
+            ["The upstream is unavailable; try again in 2 s."] * 8 + \
+            ["Too many tool calls are under way; try again in a few seconds."] * 2, texts
+        assert len(up.requests) == count + 1
+        for sock in [first] + socks:
+            sock.close()
+
+        state["fail"] = False
+        time.sleep(2.1)
+        first = socket.create_connection(("127.0.0.1", ai.port), 10)
+        first.sendall(session_call(3, 1, "PROBE"))
+        wait_for(lambda: ai.metrics()["askai_breaker_state"] == 0)
+        start = time.monotonic()
+        socks = []
+        for i in range(3):
+            socks.append(socket.create_connection(("127.0.0.1", ai.port), 10))
+            socks[-1].sendall(session_call(4 + i, i))
+        texts = [text_of(Replies(sock).next()[1]["result"]) for sock in socks]
+        assert texts == ["A"] * 3, texts
+        assert time.monotonic() - start < 1.5
+        assert text_of(Replies(first).next()[1]["result"]) == "x" * 30
+        for sock in [first] + socks:
+            sock.close()
+        values = ai.metrics()
+        assert (values["askai_breaker_opens_total"],
+                values["askai_breaker_probes_total"]) == (2, 2), values
+    up.reply = lambda request: (200, ANSWERS["openai"])
+
+    print("breaker: open after failures, refusals, probes, Retry-After: PASS")
+
+
+def check_slots(binary, up):
+    """Home asks llama-server's /props for its slots, the upstream calls it
+    makes at once; --slots says so instead, and without an answer, in time
+    or at all, or for another protocol, it makes four."""
+    up.props = {"total_slots": 2, "chat_template": "{{x}}" * 4000,
+                "default_generation_settings": {"n_ctx": 4096}}
+    up.reply = lambda request: (200, ANSWERS["openai"],
+                                0.5 if "SLOW" in request["raw"].decode() else 0)
+    with Askai(binary, "-u", up.url()) as ai:
+        ai.wait_log(r"upstream slots: 2 \(llama-server's /props\)")
+        assert ai.metrics()["askai_upstream_slots"] == 2
+        count = len(up.requests)
+        socks = []
+        for i in range(3):
+            socks.append(socket.create_connection(("127.0.0.1", ai.port), 10))
+            socks[-1].sendall(session_call(i, i, "SLOW"))
+        wait_for(lambda: len(up.requests) == count + 2)
+        time.sleep(0.2)
+        assert len(up.requests) == count + 2
+        for sock in socks:
+            assert text_of(Replies(sock).next()[1]["result"]) == "A"
+            sock.close()
+    for props, why in (({"total_slots": "2"}, r"/props gives no total_slots"),
+                       (None, r"/props: HTTP 404")):
+        up.props = props
+        with Askai(binary, "-u", up.url()) as ai:
+            ai.wait_log(r"upstream slots: 4 \(the default: " + why + r"\)")
+    gets = up.gets
+    with Askai(binary, "-u", up.url(), "--slots", "3") as ai:
+        ai.wait_log(r"upstream slots: 3 \(--slots\)")
+    with Askai(binary, "-p", "anthropic", "-u", up.url("/v1/messages")) as ai:
+        ai.wait_log(r"upstream slots: 4 \(the default\)")
+    assert up.gets == gets
+    # /props may take the calls' timeout at most.
+    up.props = "hang"
+    with Askai(binary, "-u", up.url(), "-T", "1") as ai:
+        ai.wait_log(r"upstream slots: 4 \(the default: /props: Operation timed out")
+    up.props = None
+    up.reply = lambda request: (200, ANSWERS["openai"])
+
+    print("upstream slots: from /props, --slots, or the default: PASS")
+
+
+def read_events(sock, timeout=10):
+    """The events of an event stream read off @p sock to its end, each with
+    when it came."""
+    sock.settimeout(timeout)
+    raw = b""
+    seen = 0
+    events = []
+    while not raw.endswith(b"\r\n0\r\n\r\n"):
+        chunk = sock.recv(65536)
+        assert chunk, raw
+        raw += chunk
+        found = re.findall(rb"data: (.*?)\n\n", raw[raw.index(b"\r\n\r\n"):])
+        events += [(time.monotonic(), json.loads(e)) for e in found[seen:]]
+        seen = len(found)
+    return events
+
+
+def check_progress(binary, up):
+    """A call whose request has a progressToken gets notifications/progress on
+    its event stream, at most one every 100 ms, their progress growing: its
+    place in its session's queue, then the tokens of its answer.  None comes
+    after the result, or once the call is cancelled, nor to a call without a
+    token, nor in a JSON reply."""
+    chunk = sse_wire([(None, {"choices": [{"index": 0, "delta": {"content": "x"}}]})])
+    wire = chunk * 30 + sse_wire([(None, "[DONE]")])
+
+    def reply(request):
+        raw = request["raw"].decode()
+        if "SLOW" in raw:
+            return 200, ANSWERS["openai"], 0.6
+        return 200, Stream(wire=wire, sizes=(len(chunk),) * 30, gap=0.05)
+
+    def call(i, rpc_id, token=None, accept="application/json, text/event-stream"):
+        params = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
+        if token is not None:
+            params["_meta"] = {"progressToken": token}
+        return rpc_request(rpc_id, params, "tools/call",
+                           headers={"Mcp-Session-Id": f"{i:032x}",
+                                    "MCP-Protocol-Version": LEGACY, "Accept": accept})
+
+    up.reply = reply
+    with Askai(binary, "-u", up.url(), "--slots", "1") as ai:
+        count = len(up.requests)
+        slow = socket.create_connection(("127.0.0.1", ai.port), 10)
+        slow.sendall(session_call(1, 1, "SLOW"))
+        wait_for(lambda: len(up.requests) == count + 1)
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(call(2, 5, "tok"))
+            events = read_events(sock)
+        notes = [(t, e["params"]) for t, e in events
+                 if e.get("method") == "notifications/progress"]
+        assert events[-1][1]["id"] == 5 and text_of(events[-1][1]["result"]) == "x" * 30
+        assert all("method" in e for _, e in events[:-1]), events
+        assert notes[0][1]["message"] == "queued, position 1", notes
+        assert all(n["progressToken"] == "tok" for _, n in notes), notes
+        progress = [n["progress"] for _, n in notes]
+        assert progress == sorted(set(progress)) and progress[0] == 0, progress
+        assert re.fullmatch(r"generating, \d+ tokens", notes[-1][1]["message"]), notes
+        times = [t for t, _ in notes]
+        assert len(notes) <= (times[-1] - times[0]) / 0.1 + 2, times
+        assert text_of(Replies(slow).next()[1]["result"]) == "A"
+        slow.close()
+
+        # Without a token, or in a JSON reply, none comes; a numeric token
+        # is repeated as a number.
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(call(3, 6))
+            events = read_events(sock)
+            assert len(events) == 1 and "result" in events[0][1], events
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(call(3, 7, "tok", "application/json"))
+            assert text_of(Replies(sock).next()[1]["result"]) == "x" * 30
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(call(3, 8, 42))
+            events = read_events(sock)
+            assert events[0][1]["params"]["progressToken"] == 42, events
+
+        # Withdrawn as its answer streams: the stream ends, no result.
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(call(4, 9, "tok"))
+            wait_for(lambda: ai.metrics()["askai_upstream_calls"] == 1)
+            time.sleep(0.3)
+            assert ai.rpc("notifications/cancelled", {"requestId": 9}, rpc_id=None,
+                          headers={"Mcp-Session-Id": f"{4:032x}",
+                                   "MCP-Protocol-Version": LEGACY})[0] == 202
+            events = read_events(sock)
+            assert events and all(e.get("method") == "notifications/progress"
+                                  for _, e in events), events
+    up.reply = lambda request: (200, ANSWERS["openai"])
+
+    print("progress: notifications on the event stream, rate-limited: PASS")
+
+
 def check_jobs(binary, up):
     """Home runs the upstream calls as jobs (design section 4).  A call past
     --max-calls is answered at once as busy, a tool error that says to try
@@ -2456,7 +3229,7 @@ def check_jobs(binary, up):
                                   "finish_reason": "stop"}]}, delay
 
     up.reply = reply
-    with Askai(binary, "-u", up.url()) as ai:
+    with Askai(binary, "-u", up.url(), "--slots", "64") as ai:
         # A client that goes while its call waits: the job is cancelled
         # upstream, and its completion dropped.
         hangups = up.hangups
@@ -2491,7 +3264,10 @@ def check_jobs(binary, up):
             assert text_of(ai.ask("B")) == "B"
         settled(ai)
 
-        # Many at once, each hanging up about when its answer comes.
+        # Many at once, each hanging up about when its answer comes: one
+        # address's, which slots free take at once, none refused.
+        rejected = ended(ai.metrics(), "rejected")
+
         def racer(i):
             with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
                 sock.sendall(rpc_request(i, {"name": "ask_ai", "arguments": {
@@ -2507,21 +3283,25 @@ def check_jobs(binary, up):
         values = settled(ai)
         assert cancelled(values) > 1 and values["askai_jobs_submitted_total"] >= 69, \
             values
+        assert ended(values, "rejected") == rejected, values
         assert text_of(ai.ask("B")) == "B"
 
     # Shutting down with jobs in flight: each call ends with the error, in
-    # either kind of reply, each job is cancelled upstream, and home's count
-    # says so.
+    # either kind of reply, each job running is cancelled upstream and none
+    # queued starts, and home's count says so.  The calls are sessions' of
+    # their own, half of them with a slot each.
     hangups = up.hangups
     count = len(up.requests)
-    ai = Askai(binary, "-u", up.url())
+    ai = Askai(binary, "-u", up.url(), "--slots", "8")
     try:
         socks = []
         for i in range(16):
             socks.append(socket.create_connection(("127.0.0.1", ai.port), 10))
-            socks[-1].sendall(rpc_request(i, {"name": "ask_ai", "arguments": {
-                "prompt": "SLOW"}}, "tools/call", accept_sse=i % 2 == 0))
-        wait_for(lambda: len(up.requests) == count + 16)
+            socks[-1].sendall(session_call(
+                i, i, "SLOW", Accept="application/json" +
+                (", text/event-stream" if i % 2 == 0 else "")))
+        wait_for(lambda: len(up.requests) == count + 8 and
+                 ai.metrics()["askai_jobs_queued"] == 8)
         ai.proc.send_signal(signal.SIGTERM)
         for i, sock in enumerate(socks):
             sock.settimeout(5)
@@ -2536,8 +3316,10 @@ def check_jobs(binary, up):
         if ai.proc.poll() is None:
             ai.proc.kill()
             ai.proc.wait()
-    wait_for(lambda: up.hangups == hangups + 16)
-    ai.wait_log(r"jobs: 16 submitted, 0 completed, 16 cancelled, 0 rejected$")
+    wait_for(lambda: up.hangups == hangups + 8)
+    assert len(up.requests) == count + 8
+    ai.wait_log(r"jobs: 16 submitted, 0 completed, 16 cancelled, 0 rejected; "
+                r"8 cancelled upstream$")
     up.reply = lambda request: (200, ANSWERS["openai"])
 
     print("jobs: busy, stale handles, cancels racing completions, shutdown: PASS")
@@ -2671,7 +3453,9 @@ def main():
                       check_answers, check_dense, check_connections,
                       check_cancellation, check_limits, check_loops, check_turn_order,
                       check_isolation, check_configuration, check_metrics,
-                      check_memory, check_lookups, check_jobs, check_shutdown,
+                      check_memory, check_lookups, check_jobs, check_streaming,
+                      check_scheduler, check_breaker, check_slots, check_progress,
+                      check_shutdown,
                       check_watchdog, check_stalled_stderr):
             check(binary, up)
     finally:

@@ -102,6 +102,9 @@ struct stream {
 	                                        being set, is on loopback and names
 	                                        no other host, and may see
 	                                        diagnostics */
+	uint64_t                 peer[2];  /**< the client's address, as the
+	                                        limits per address key it: IPv4,
+	                                        mapped, or an IPv6 /64 */
 };
 
 #endif /* TWINCEPTION_SRC_STREAM_H_ */

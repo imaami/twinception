@@ -247,8 +247,11 @@ A tool call answers on an event stream (SSE) when the client accepts
 `text/event-stream` and its revision has them (all but 2024-11-05): the stream
 opens as the call starts, carries a `:` comment every 15 s while the other
 model works (`--sse-keepalive`), and ends with the result as one `data:`
-event.  Other requests, and clients that accept only JSON, get JSON.  Request
-bodies may come with a `Content-Length` or in chunks.
+event.  A call whose `params._meta` has a `progressToken` also gets
+`notifications/progress` on its stream, at most one every 100 ms: its place in
+its session's queue while it waits for the upstream, then the tokens of the
+answer as they come.  Other requests, and clients that accept only JSON, get
+JSON.  Request bodies may come with a `Content-Length` or in chunks.
 
 ### Upstream protocols
 
@@ -257,13 +260,23 @@ bodies may come with a `Content-Length` or in chunks.
 | `openai`    | Chat Completions         | `https://api.openai.com/v1/chat/completions`                                    | `OPENAI_API_KEY`                   |
 | `responses` | OpenAI Responses         | `https://api.openai.com/v1/responses`                                           | `OPENAI_API_KEY`                   |
 | `anthropic` | Anthropic Messages       | `https://api.anthropic.com/v1/messages`                                         | `ANTHROPIC_API_KEY`                |
-| `gemini`    | Gemini `generateContent` | `https://generativelanguage.googleapis.com/v1beta/models/MODEL:generateContent` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| `gemini`    | Gemini `streamGenerateContent` | `https://generativelanguage.googleapis.com/v1beta/models/MODEL:streamGenerateContent?alt=sse` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 
 `openai` also covers every OpenAI-compatible server: another `llama-server`,
 vLLM, Ollama, LM Studio, OpenRouter, Groq, DeepInfra and so on.  Reasoning or
 thinking output is dropped; only the answer is returned.  An answer cut off by
-the token limit is marked as such, and upstream failures (HTTP errors, refusals,
-timeouts) come back as tool errors the model can read and react to.
+the token limit is marked as such, and upstream failures (HTTP errors, error
+events, refusals, timeouts) come back as tool errors the model can read and
+react to.
+
+Every protocol asks for a streamed answer: `stream: true` in the body, which
+`-x` cannot turn off, and for Gemini `:streamGenerateContent?alt=sse`, which a
+`-u` URL ending in `:generateContent` is asked as instead, with `alt=sse`
+whatever `alt` it had.  The tool still
+returns the whole answer at once; streaming lets `askai` report progress,
+notice a stalled answer (`--chunk-timeout`, 60 s between chunks once it has
+begun) and cancel generation upstream as soon as the client goes.  A server
+that answers with plain JSON all the same is understood too.
 
 API keys are read from the environment, never from the command line.  A
 provider's usual variable is only used for its own endpoint: with `-u`, name the
@@ -305,9 +318,12 @@ served from another origin, either allow that origin with `-o`, or start
 
 Each tool call is one upstream request; if the user stops generation, the
 web UI sends `notifications/cancelled`, or closes the call's connection, and
-`askai` aborts the upstream request.
-The web UI waits five minutes for a tool result by default, `askai` ten minutes
-for the upstream answer (`-T`).  Raise both for slow reasoning models.
+`askai` aborts the upstream request.  `askai` asks the other `llama-server`'s
+`/props` how many slots it has (`-np`), and makes as many upstream requests at
+once; the rest wait their turn (`--slots` says how many instead).
+The web UI waits five minutes for a tool result by default; `askai` lets a
+call wait ten minutes for a slot and ten more for the upstream answer (`-T`).
+Raise both for slow reasoning models.
 
 Running several instances with different `--tool-name` values (and ports) gives
 the model a choice of advisers, e.g. `ask_reasoner` and `ask_coder`.
@@ -376,11 +392,22 @@ CPUs it may use, as its affinity and its cgroup's CPU quota allow (`--loops`),
 and asks the other model from another, home.  Home accepts the clients and
 places each on the lighter of two client loops, by the connections they hold
 and how busy they are; the client stays with that loop.  A tool call hands its
-upstream request to home as a job, which home runs and hands back.  At most
-`--max-calls` (256) run at once; a tool call past those is answered at once
-with a tool error that says to try again.  A client that goes while its call
-runs cancels the upstream request, as does a `notifications/cancelled` for it
-that comes on any connection.
+upstream request to home as a job, which home runs and hands back.  Home makes
+as many upstream requests at once as the upstream has slots (`--slots`; by
+default what `llama-server`'s `/props` says for the `openai` and `responses`
+protocols, else 4).  The other calls wait, each in its principal's queue, its
+MCP session's or, without one, its client address's, and the principals take
+turns, a call each, so that one flooding client leaves the others their share.
+At most `--max-calls` (256) are under way, and eight queued for one principal
+(a call that a free slot takes at once waits in no queue); a tool call past
+those is answered at once with a tool error that says to try again.  A client that goes while its call waits or
+runs cancels it, upstream too, as does a `notifications/cancelled` for it that
+comes on any connection.  After five upstream failures in a row (connection
+errors, timeouts, HTTP 5xx and 429), or an answer's `Retry-After`, tool calls
+are refused at once, saying when to try again: for a second, or as long as
+`Retry-After` asked.  Then one call probes the upstream, and the wait doubles,
+up to a minute, until one goes through: as soon as its answer begins, the
+others go too.
 The main thread minds signals, the process's memory and descriptors (and the
 kernel's pressure stall information where there is some), and a watchdog that
 logs a loop turn longer than 20 ms (`--watchdog`).  A logger thread alone
@@ -391,9 +418,10 @@ threads look up the upstream host, so libcurl starts no threads of its own.
 `GET /metrics` returns metrics in Prometheus's text format: each loop's turn
 and step times, timer lateness and inbox delay (`loop="1"` to `loop="N"`, and
 `loop="home"`), each client loop's request times by MCP method and its
-connections, home's jobs, upstream wait and run times, host lookups, log
-lines dropped, watchdog reports, memory and descriptors, memory pressure and
-its inputs, and what the loops keep for reuse and gave back.
+connections, home's jobs, its queue, slots and breaker, streamed answers'
+chunks, upstream wait and run times, host lookups, log lines dropped,
+watchdog reports, memory and descriptors, memory pressure and its inputs, and
+what the loops keep for reuse and gave back.
 It answers clients on loopback that name it as `localhost`, `127.0.0.1` or
 `[::1]` (or send no `Host`), and with `ASKAI_TOKEN` set, those that send the
 token.
@@ -423,10 +451,18 @@ Upstream AI:
   -n, --max-tokens N        output token limit
   -x, --extra JSON          object deep-merged into each request body;
                             null members delete keys
-  -T, --timeout SECONDS     upstream timeout (default 600, 0 = none)
-      --max-calls N         upstream calls under way at most (default
-                            256); a tool call past those is answered at
-                            once as an error that says to try again
+  -T, --timeout SECONDS     a tool call's wait for an upstream slot, and
+                            then its upstream call's (default 600,
+                            0 = none)
+      --chunk-timeout SECONDS
+                            longest pause in an answer once it has
+                            begun (default 60, 0 = none)
+      --slots N             upstream calls at once (default: what
+                            llama-server's /props says, else 4)
+      --max-calls N         tool calls under way at most (default 256),
+                            8 of them queued per session or client
+                            address; a tool call past those is answered
+                            at once as an error that says to try again
 
 MCP server:
   -l, --listen ADDR         [host:]port (default 127.0.0.1:8090)
@@ -450,6 +486,8 @@ MCP server:
       --test-pressure FILE  test aid: memory pressure is at least the
                             level FILE holds, 0 (none), 1 (high) or 2
                             (critical), read each second
+      --test-fifo           test aid: tool calls wait for the upstream
+                            in one queue, first in first out
   -h, --help                show this help
 
 Limits on clients (BYTES may end in K, M or G; 0 = none where noted):

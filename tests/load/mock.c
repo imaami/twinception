@@ -2,19 +2,25 @@
  *
  * Serves POST /v1/chat/completions with a configurable number of slots, a
  * per-request delay, a streaming token rate and an answer size, in JSON or in
- * SSE (when the request body carries stream:true).  It counts requests, the
- * concurrency peak, completed replies and cancellations (clients that hang up
- * before their reply is sent, whether queued for a slot or holding one),
- * reporting them on exit and at GET /stats; requests = served + cancelled +
- * active + queued at all times.  All I/O is non-blocking on one epoll loop, so
- * a disconnect is noticed at once.  With -c it closes each connection after
- * its reply, saying so, so that a client keeps none idle.
+ * SSE (when the request body carries stream:true): paced, a token an event,
+ * or in a burst, up to BURST tokens an event.  GET /props gives the slots as
+ * llama-server does, total_slots, when they are limited.  It counts requests,
+ * the concurrency peak, completed replies and cancellations (clients that
+ * hang up before their reply is sent, whether queued for a slot or holding
+ * one, a request that comes with its hang-up included), of them those of
+ * streams under way, reporting them on exit and at GET /stats; requests =
+ * served + cancelled + active + queued at all times.  All I/O is non-blocking
+ * on one epoll loop, so a disconnect is noticed at once.  With -c it closes
+ * each connection after its reply, saying so, so that a client keeps none
+ * idle.
  */
 #define _GNU_SOURCE
 
 #include <errno.h>
 #include <getopt.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -29,6 +35,7 @@
 
 enum {
 	MAX_IN = 8 << 20, /**< request bytes buffered per connection */
+	BURST  = 256,     /**< tokens an event at most, unpaced */
 };
 
 enum conn_state {
@@ -75,6 +82,7 @@ static struct {
 	uint64_t     requests;
 	uint64_t     served;
 	uint64_t     cancelled;
+	uint64_t     streams;      /**< of those, streams under way */
 	uint32_t     active;
 	uint32_t     queued;
 	uint32_t     peak;
@@ -212,6 +220,7 @@ conn_free (struct conn *c)
 {
 	/* A request still holding or waiting for a slot was cancelled. */
 	mock.cancelled += c->chat || c->state == ST_QUEUED;
+	mock.streams += c->chat && c->state == ST_STREAM;
 	if (c->on)
 		fifo_del(c);
 	if (c->state == ST_QUEUED)
@@ -269,11 +278,25 @@ static bool
 stream_next (struct conn *c)
 {
 	if (c->tokens_left) {
-		char const ev[] = "data: {\"choices\":[{\"index\":0,"
-		                  "\"delta\":{\"content\":\"A\"}}]}\n\n";
-		if (!sse_chunk(c, ev, sizeof ev - 1))
+		/* The tokens of the JSON answer: "A", then " A" each. */
+		static char const head[] = "data: {\"choices\":[{\"index\":0,"
+		                           "\"delta\":{\"content\":\"";
+		static char const tail[] = "\"}}]}\n\n";
+		char ev[sizeof head + 2 * BURST + sizeof tail];
+		uint32_t n = mock.tok_per_s ? 1 : c->tokens_left < BURST ? c->tokens_left
+		                                                         : BURST;
+		bool first = c->tokens_left == mock.answer_tok;
+		size_t len = sizeof head - 1;
+		memcpy(ev, head, len);
+		for (uint32_t i = 0; i < n; ++i) {
+			if (i || !first)
+				ev[len++] = ' ';
+			ev[len++] = 'A';
+		}
+		memcpy(ev + len, tail, sizeof tail - 1);
+		if (!sse_chunk(c, ev, len + sizeof tail - 1))
 			c->keep = false;
-		c->tokens_left--;
+		c->tokens_left -= n;
 		c->due_ns = mock.tok_per_s ? now_ns() + 1'000'000'000u / mock.tok_per_s : 0;
 		return true;
 	}
@@ -372,8 +395,9 @@ handle_request (struct conn *c,
                 size_t       clen)
 {
 	bool post = c->in_len >= 5 && !memcmp(c->in, "POST ", 5);
-	bool stats = !post && c->in_len >= 4 && !memcmp(c->in, "GET ", 4) &&
-	             memmem(c->in, head, "/stats", 6);
+	bool get = !post && c->in_len >= 4 && !memcmp(c->in, "GET ", 4);
+	bool stats = get && memmem(c->in, head, "/stats", 6);
+	bool props = get && mock.slots && memmem(c->in, head, "/props", 6);
 	unsigned char *body = c->in + head;
 	c->keep = !mock.closing && !memmem(c->in, head, "Connection: close", 17) &&
 	          !memmem(c->in, head, "connection: close", 17);
@@ -388,11 +412,17 @@ handle_request (struct conn *c,
 		char buf[256];
 		int n = snprintf(buf, sizeof buf, "{\"requests\":%llu,\"served\":%llu,"
 		                 "\"cancelled\":%llu,\"active\":%u,\"queued\":%u,"
-		                 "\"peak\":%u,\"slots\":%u}",
+		                 "\"peak\":%u,\"slots\":%u,\"streams\":%llu}",
 		                 (unsigned long long)mock.requests,
 		                 (unsigned long long)mock.served,
 		                 (unsigned long long)mock.cancelled, mock.active,
-		                 mock.queued, mock.peak, mock.slots);
+		                 mock.queued, mock.peak, mock.slots,
+		                 (unsigned long long)mock.streams);
+		return serve_fixed(c, "200 OK", buf, (size_t)n);
+	}
+	if (props) {
+		char buf[64];
+		int n = snprintf(buf, sizeof buf, "{\"total_slots\":%u}", mock.slots);
 		return serve_fixed(c, "200 OK", buf, (size_t)n);
 	}
 	if (!post)
@@ -433,6 +463,7 @@ content_length (unsigned char const *in,
 static void
 on_readable (struct conn *c)
 {
+	bool eof = false;
 	for (;;) {
 		if (c->in_len == c->in_cap) {
 			size_t cap = c->in_cap ? c->in_cap * 2 : 4096;
@@ -448,8 +479,8 @@ on_readable (struct conn *c)
 		if (n > 0) {
 			c->in_len += (size_t)n;
 		} else if (!n) {
-			conn_free(c); /* clean close; cancels an in-flight request */
-			return;
+			eof = true; /* a clean close cancels a request in flight */
+			break;
 		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
 			break;
 		} else if (errno != EINTR) {
@@ -458,10 +489,11 @@ on_readable (struct conn *c)
 		}
 	}
 
+	/* A request that came whole with the hang-up counts, as cancelled. */
 	while (c->state == ST_RECV && c->in_len) {
 		unsigned char *end = memmem(c->in, c->in_len, "\r\n\r\n", 4);
 		if (!end)
-			return;
+			break;
 		size_t head = (size_t)(end - c->in) + 4;
 		size_t clen = content_length(c->in, head);
 		if (clen == SIZE_MAX) {
@@ -469,17 +501,22 @@ on_readable (struct conn *c)
 			return;
 		}
 		if (c->in_len - head < clen)
-			return;
+			break;
 		if (!handle_request(c, head, clen))
 			return;
 	}
+	if (eof)
+		conn_free(c);
 }
 
 static void
 on_event (struct conn *c,
           uint32_t     events)
 {
-	if (events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
+	/* A request may come in the same event as its hang-up: read it first. */
+	if (events & EPOLLIN && c->state == ST_RECV)
+		on_readable(c);
+	else if (events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
 		conn_free(c);
 	else if (events & EPOLLIN)
 		on_readable(c);
@@ -502,6 +539,9 @@ accept_conns (void)
 		}
 		c->fd = fd;
 		c->state = ST_RECV;
+		/* A stream's head, events and tail go in sends of their own,
+		 * which Nagle would hold back for the client's delayed ACKs. */
+		(void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
 		struct epoll_event ev = { .events = EPOLLIN | EPOLLRDHUP, .data.ptr = c };
 		if (epoll_ctl(mock.epfd, EPOLL_CTL_ADD, fd, &ev))
 			conn_free(c);
@@ -648,8 +688,8 @@ main (int   argc,
 	}
 
 	fprintf(stderr, "mock: requests=%llu served=%llu cancelled=%llu active=%u "
-	        "queued=%u peak=%u\n", (unsigned long long)mock.requests,
+	        "queued=%u peak=%u streams=%llu\n", (unsigned long long)mock.requests,
 	        (unsigned long long)mock.served, (unsigned long long)mock.cancelled,
-	        mock.active, mock.queued, mock.peak);
+	        mock.active, mock.queued, mock.peak, (unsigned long long)mock.streams);
 	return 0;
 }

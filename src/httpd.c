@@ -1699,7 +1699,10 @@ conn_setup (struct httpd *srv,
 		.msg.fn = conn_back,
 		.step.fn = conn_step,
 		.timer.fn = conn_timer,
-		.stream.ops = &stream_ops,
+		.stream = {
+			.ops = &stream_ops,
+			.peer = { client->addr[0], client->addr[1] }
+		},
 		.srv = srv,
 		.lane = lane,
 		.client = client,

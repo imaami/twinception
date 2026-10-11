@@ -54,10 +54,11 @@ http_resolver (struct http     *http,
 
 /**
  * Start an asynchronous JSON POST of the @p len bytes at @p body, on a later
- * step.  @p headers is an optional nullptr-terminated list of complete header
- * lines; @p timeout_ms <= 0 means no total timeout.  The headers are copied,
- * and so is the body if @p copy; otherwise it must stay as it is until
- * @p done_cb runs or the request is cancelled.
+ * step, or a GET if @p body is nullptr.  @p headers is an optional
+ * nullptr-terminated list of complete header lines; @p timeout_ms <= 0 means
+ * no total timeout.  The headers are copied, and so is the body if @p copy;
+ * otherwise it must stay as it is until @p done_cb runs or the request is
+ * cancelled.
  */
 extern int
 http_post_json (struct http         *http,
@@ -75,6 +76,29 @@ http_post_json (struct http         *http,
 extern void
 http_cancel (struct http         *http,
              struct http_request **p_request);
+
+/** Whether all of @p request has gone to the server, as far as libcurl can
+ *  tell: its head and body are written. */
+extern bool
+http_sent (struct http_request const *request);
+
+/** The status and Content-Type of the answer to @p request, once its head
+ *  is in, as in a write callback; the type is nullptr if it has none. */
+extern void
+http_response (struct http_request const  *request,
+               long                       *status,
+               char const                **type);
+
+/** In a done callback: the seconds the answer's Retry-After asked for, 0 if
+ *  none. */
+extern long
+http_retry_after (struct http const *http);
+
+/** Keep at most @p n connections to a host at once, and @p n + 1 in all,
+ *  idle ones included. */
+extern void
+http_connections (struct http *http,
+                  long         n);
 
 /** End @p request now with @p result, as if curl had: its done callback
  *  reports it. */

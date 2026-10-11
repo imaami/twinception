@@ -4,8 +4,8 @@
 #
 # Usage: run.sh PROFILE [ASKAI_BIN [LOAD_DIR [DURATION]]]
 #   PROFILE    baseline | idle | jobs | answers | sse | race | cancel |
-#              loris | slowread | pipeline | hostile | dense | malformed |
-#              storm | check | stall
+#              flood | loris | slowread | pipeline | hostile | dense |
+#              malformed | storm | check | stall
 #   ASKAI_BIN  the askai executable to test (default: $ASKAI or ./askai)
 #   LOAD_DIR   directory holding the built gen and mock (default: this dir)
 #   DURATION   seconds of load (default: 10)
@@ -40,8 +40,9 @@
 # print), from S5 how evenly home placed the connections on the client loops
 # by the end of the load (PLACE, from GET /metrics), its RSS and descriptors
 # (RESOURCES: idle, peak, kept before the pressure, and after the last
-# phase), the mock's final counters, from S4 askai's count of jobs as it
-# exits, latency RATIOs of the load and after phases against the idle phase,
+# phase), from S6 askai's and the mock's counts once the load's calls have
+# ended (SETTLED), the mock's final counters, from S4 askai's count of jobs
+# as it exits, latency RATIOs of the load and after phases against the idle phase,
 # a CHECK line per clause of the verdict, and the VERDICT.
 #
 # The verdict follows the latency policy of doc/core-design.md section 8: the
@@ -78,8 +79,19 @@
 #    in any phase, on any loop, home and every client loop; units count work
 #    that cannot be split in full;
 #  - jobs (from S4): askai's jobs not accounted for as it exits, submitted
-#    not completed + cancelled + rejected, or fewer cancelled than the
-#    upstream saw;
+#    not completed + cancelled + rejected; or (from S6), once the load's
+#    calls have ended (the SETTLED line, before askai stops), a job in
+#    flight or an upstream request under way or queued, fewer upstream calls
+#    cancelled once their request had gone than the upstream saw cancelled,
+#    or more by over 10 and CANCEL_SLACK (default 0.05) of them, the answers
+#    done as their hang-up came, and in the sse profile, whose answers
+#    stream for longer than the run, so that no hang-up races an answer, not
+#    as many;
+#  - the scheduler (from S6, the flood profile): an interactive session that
+#    completed fewer than FAIR_SHARE (default 0.5) of its fair share of calls,
+#    the calls the run completed shared among the sessions and the flooder,
+#    or whose calls' p90 waited over FAIR_WAIT (default 4) service times
+#    beyond their own;
 #  - gross outliers against the idle phase: the probe's p99 in the load or
 #    the after phase over RTT_GROSS times (default 100) the idle p99, or a
 #    turn of any loop in either over TURN_GROSS times (default 1000) the
@@ -89,9 +101,13 @@
 # The "race" profile has tool calls hang up about when the upstream answers
 # them (S4), so that cancellations race completions; its mock closes each
 # connection after the reply, as libcurl would keep those of a race's many
-# answers until S6 caps them (design section 4).  The "cancel" profile (S5)
+# answers, and askai has a slot for each call.  The "cancel" profile (S5)
 # has legacy tool calls cancelled by notifications/cancelled on connections
 # of their own, likely served by other loops, about when the answers come.
+# The "flood" profile (S6) has one session flood askai with tool calls while
+# interactive sessions each make one at a time, against an upstream of two
+# slots that streams its answers at a token rate; ASKAI_ARGS=--test-fifo
+# shows the same with one queue, first in first out.
 # The "check" profile is a light mix of every mode, short deadlines and a few
 # thousand connections for `make check-load`.  The "stall" profile instead
 # runs the coordinated-omission self-check: it
@@ -126,15 +142,18 @@ done
 
 # Seconds of load after which loris and slow-body clients must be closed, and
 # the conntrack entries a run needs free (see below), of the table's ct_max.
-stall=0 askai_args=() hold_s=10 ct_free='ct_max / 2'
+stall=0 askai_args=() hold_s=10 ct_free='ct_max / 2' exact=0
 case $profile in
 baseline)  mock_args=(-s 4 -d 5 -z 2);   gen_args=() ;;
 idle)      mock_args=(-s 4 -d 5 -z 2);   gen_args=(--idle 5000) ;;
 jobs)      mock_args=(-s 1 -d 50 -z 16); gen_args=(--jobs 64) ;;
 answers)   mock_args=(-s 2 -d 5 -z 262144); gen_args=(--jobs 16) ;;
-sse)       mock_args=(-s 4 -d 60000);    gen_args=(--hangup 64) ;;
-race)      mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --hangup 48 --churn 200) ;;
-cancel)    mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --cancel 48 --churn 200) ;;
+sse)       mock_args=(-s 4 -r 10 -z 600); gen_args=(--hangup 64); exact=1 ;;
+race)      mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --hangup 48 --churn 200)
+           askai_args=(--slots 64) ;;
+cancel)    mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --cancel 48 --churn 200)
+           askai_args=(--slots 64) ;;
+flood)     mock_args=(-s 2 -r 100 -z 20); gen_args=(--flood 16 --interactive 4) ;;
 loris)     mock_args=(-s 4 -d 5);        gen_args=(--loris 128 --slowbody 128) ;;
 slowread)  mock_args=(-s 4 -d 5);        gen_args=(--slowread 128) ;;
 pipeline)  mock_args=(-s 4 -d 5);        gen_args=(--pipeline 4) ;;
@@ -243,13 +262,20 @@ loop_stats () {
 	}' "$tmp/askai.err"
 }
 
+# Print what GET PATH at 127.0.0.1:PORT answers, head and all.
+get () {
+	exec 3<> "/dev/tcp/127.0.0.1/$1" || return 1
+	printf 'GET %s HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' \
+	       "$2" >&3
+	cat <&3
+	exec 3<&-
+}
+
 # Print how many connections home placed on each client loop (S5), from GET
 # /metrics, as a PLACE line: the least, the median and the most, and the
 # ratio of the most to the least.
 place () {
-	local port=$1
-	exec 3<> "/dev/tcp/127.0.0.1/$port" || return 1
-	printf 'GET /metrics HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3
+	get "$1" /metrics |
 	awk -F '[ ]' '/^askai_connections_placed_total\{/ { v[n++] = $2 }
 	END {
 		if (!n)
@@ -260,8 +286,38 @@ place () {
 			}
 		printf "PLACE loops=%d placed min=%d median=%d max=%d ratio=%.2f\n",
 		       n, v[0], v[int(n / 2)], v[n - 1], (v[0] > 0 ? v[n - 1] / v[0] : 0)
-	}' <&3
-	exec 3<&-
+	}'
+}
+
+# Once the load's calls have ended, no upstream call may outlive its job:
+# wait up to 5 s for askai to have no job in flight and the mock no request
+# under way, then print both sides' counts as a SETTLED line, askai's of the
+# calls it cancelled once their request had gone upstream, and the mock's of
+# the requests it saw hang up, of them streams under way.
+settled () {
+	local i line
+	for ((i = 0; i < 25; ++i)); do
+		line=$({ get "$mock_port" /stats; echo; get "$askai_port" /metrics; } |
+		       awk '
+		/^\{/ {
+			gsub(/[{}"]/, "")
+			n = split($0, f, ",")
+			for (i = 1; i <= n; ++i) {
+				split(f[i], g, ":")
+				m[g[1]] = g[2]
+			}
+		}
+		$1 == "askai_jobs_in_flight" { jobs = $2 }
+		$1 == "askai_upstream_cancels_total" { up = $2 }
+		END {
+			printf "SETTLED active=%d queued=%d cancelled=%d streams=%d " \
+			       "in_flight=%d upstream=%d\n", m["active"], m["queued"],
+			       m["cancelled"], m["streams"], jobs, up
+		}')
+		[[ $line == *' active=0 queued=0 '*' in_flight=0 '* ]] && break
+		sleep 0.2
+	done
+	echo "$line"
 }
 
 # Wait up to 5 s for a "127.0.0.1:PORT" line in FILE; echo the first PORT.
@@ -398,6 +454,7 @@ END {
 	printf "RESOURCES askai rss_kib idle=%d peak=%d kept=%d after=%d fds " \
 	       "idle=%d peak=%d after=%d\n", i[1], rss, kept, a[1], i[2], fds, a[2]
 }' "$tmp/res" | tee -a "$tmp/gen.out"
+settled | tee -a "$tmp/gen.out"
 
 # Drain askai's upstream work, then read the mock's final counters.
 kill -TERM "$askai_pid" 2> /dev/null
@@ -413,7 +470,21 @@ grep -E '^askai: jobs: ' "$tmp/askai.err" | tee -a "$tmp/gen.out"
 
 printf 'PROFILE %s askai_exit=%s gen_exit=%s/%s/%s/%s mock_exit=%s\n' "$profile" \
        "$askai_rc" "$idle_rc" "$solo_rc" "$gen_rc" "$after_rc" "$mock_rc"
+# The flood profile's fair share: the mock's slots, and its service time,
+# its tokens at its rate (ms).
+mock_slots=0 service_ms=0
+for ((i = 0; i < ${#mock_args[@]}; ++i)); do
+	case ${mock_args[i]} in
+	-s) mock_slots=${mock_args[i + 1]} ;;
+	-r) tok_rate=${mock_args[i + 1]} ;;
+	-z) tok_n=${mock_args[i + 1]} ;;
+	esac
+done
+((${tok_rate:-0} > 0)) && service_ms=$((1000 * ${tok_n:-1} / tok_rate))
 awk -v stall="$stall" -v r="$rate" -v s="${stall_s:-0}" -v dur="$dur" \
+	-v exact="$exact" -v slots="$mock_slots" -v service_ms="$service_ms" \
+	-v fair_share="${FAIR_SHARE:-0.5}" -v fair_wait="${FAIR_WAIT:-4}" \
+	-v cancel_slack="${CANCEL_SLACK:-0.05}" \
 	-v hold_s="$hold_s" -v stats="$stats" \
 	-v fair_conn="${FAIR_CONN:-10}" -v fair_kind="${FAIR_KIND:-10}" \
 	-v fair_heavy="${FAIR_HEAVY:-50}" \
@@ -473,9 +544,11 @@ $1 == "askai:" && $2 == "jobs:" {
 	js["completed"] = $5
 	js["cancelled"] = $7
 	js["rejected"] = $9
+	js["upstream"] = NF >= 11 ? $11 : $7
 }
 $1 == "FAIR" && $2 == "probe" { kv(fp, 3) }
 $1 == "FAIR" && $2 == "jobs" { kv(fj, 3); jobs_fair = 1 }
+$1 == "FAIR" && $2 == "interactive" { kv(fi, 3); sched = 1 }
 $1 == "BG" {
 	name = substr($2, 6)
 	bgs[name] = 1
@@ -502,6 +575,7 @@ $1 == "MOCK" && $2 == "end" {
 	}
 }
 $1 == "mock:" && $2 ~ /^requests=/ { kv(mf, 2) }
+$1 == "SETTLED" { kv(st, 2) }
 $1 == "RESOURCES" {
 	for (i = 4; i <= 7; ++i) {
 		split($i, f, "=")
@@ -583,6 +657,16 @@ END {
 		detail = detail sprintf(" hangup failed=%d dropped=%d",
 		                        bg["hangup", "failed"], bg["hangup", "dropped"])
 	}
+	split("flood interactive", calls, " ")
+	for (i = 1; i <= 2; ++i) {
+		m = calls[i]
+		if (!(m in bgs))
+			continue
+		unanswered += bg[m, "failed"] + bg[m, "dropped"]
+		detail = detail sprintf(" %s completed=%d failed=%d dropped=%d%s", m,
+		                        bg[m, "completed"], bg[m, "failed"], bg[m, "dropped"],
+		                        m == "flood" ? sprintf(" busy=%d", bg[m, "busy"]) : "")
+	}
 	if ("cancel" in bgs) {
 		unanswered += bg["cancel", "failed"] + bg["cancel", "dropped"]
 		detail = detail sprintf(" cancel withdrawn=%d completed=%d failed=%d " \
@@ -658,15 +742,52 @@ END {
 	else
 		printf "CHECK work=n/a askai reports no units of work\n"
 
-	# Every job ends once, and no upstream call is cancelled but by one.
-	if (jobs_seen)
+	# Every job ends once; once the calls have ended, no upstream call is
+	# under way, and none was cancelled there but by a job whose request had
+	# gone; and the upstream saw each such cancelled, but for the few whose
+	# answer was done as the hang-up came, and exactly where no hang-up races
+	# an answer (sse).
+	if (jobs_seen) {
+		lost = st["upstream"] - st["cancelled"]
 		check("jobs", js["submitted"] == js["completed"] + js["cancelled"] + \
-		      js["rejected"] && mf["cancelled"] <= js["cancelled"],
+		      js["rejected"] && !st["active"] && !st["queued"] && \
+		      !st["in_flight"] && lost >= 0 && st["upstream"] <= js["cancelled"] && \
+		      (exact ? !lost : lost <= 10 + cancel_slack * st["upstream"]),
 		      sprintf("submitted=%d completed=%d cancelled=%d rejected=%d; " \
-		              "upstream cancels=%d", js["submitted"], js["completed"],
-		              js["cancelled"], js["rejected"], mf["cancelled"]))
-	else
+		              "settled: in flight %d, upstream under way %d, queued %d; " \
+		              "cancelled upstream=%d, the upstream saw %d (of streams %d), " \
+		              "%s", js["submitted"], js["completed"], js["cancelled"],
+		              js["rejected"], st["in_flight"], st["active"], st["queued"],
+		              st["upstream"], st["cancelled"], st["streams"],
+		              exact ? "all" : sprintf("at most %d fewer",
+		                                      10 + cancel_slack * st["upstream"])))
+	} else {
 		printf "CHECK jobs=n/a askai reports no jobs\n"
+	}
+
+	# Each interactive session completes its fair share of calls, or near:
+	# the calls the run completed, shared among the sessions and the
+	# flooder, at most one call at a time; and the p90 of its calls waits
+	# but a few service times.
+	if (sched) {
+		done = bg["flood", "completed"] + bg["interactive", "completed"]
+		fair = done / (fi["conns"] + 1)
+		if (fair > dur * 1000 / service_ms)
+			fair = dur * 1000 / service_ms
+		wait_ms = bg["interactive", "p90_us"] / 1000 - service_ms
+		check("scheduler", fi["calls_min"] >= fair_share * fair &&
+		      wait_ms <= fair_wait * service_ms,
+		      sprintf("interactive sessions=%d calls min=%d median=%s max=%s, " \
+		              "fair share %.1f (%d calls done on %d slots, the " \
+		              "flooder %d of them), %.2f of it, at least %.2f; p90 wait " \
+		              "%.0f ms (call p50 %.0f ms, p90 %.0f ms), service %d ms, " \
+		              "at most %d ms", fi["conns"], fi["calls_min"], fi["calls_median"],
+		              fi["calls_max"], fair, done, slots, bg["flood", "completed"],
+		              ratio(fi["calls_min"], fair), fair_share, wait_ms,
+		              bg["interactive", "p50_us"] / 1000,
+		              bg["interactive", "p90_us"] / 1000, service_ms,
+		              fair_wait * service_ms))
+	}
 
 	turn_limit = turn_gross * it["p99_us"]
 	if (rtt_gross * idle["p99_us"] > turn_limit)

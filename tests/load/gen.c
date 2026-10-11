@@ -17,10 +17,11 @@
  *
  * Background modes (idle keep-alive, slow loris, slow bodies, slow readers, a
  * repeated request pipeline, malformed, hostile and dense requests, connection
- * churn, tool-call jobs, tool calls that hang up on their event stream, and
+ * churn, tool-call jobs, tool calls that hang up on their event stream,
  * legacy tool calls that a notifications/cancelled on another connection
- * cancels) run alongside to stress the server while the probe measures the
- * damage.  The
+ * cancels, a flooder's many tool calls in one session and interactive
+ * sessions' one at a time) run alongside to stress the server while the
+ * probe measures the damage.  The
  * pipeline and the malformed, hostile and dense modes time each batch or body
  * they send; with --solo, they run one after another, alone and without the
  * probe, a few rounds each, for a baseline of those times (SOLO lines).
@@ -68,6 +69,7 @@ struct transport {
 	void    (*close) (int fd);
 	uint32_t    src;   /**< IPv4 base the dials take source addresses after; 0: any */
 	uint32_t    dials; /**< connects started, which pick the source address */
+	uint32_t    per;   /**< dials per source address; 0: PER_SRC */
 };
 
 /** Wire requests: the probe kinds' and the tool-call jobs', in both eras. */
@@ -193,7 +195,8 @@ tcp_dial (struct transport *t)
 		if (t->src && ai->ai_family == AF_INET) {
 			struct sockaddr_in const src = {
 				.sin_family = AF_INET,
-				.sin_addr.s_addr = htonl(t->src + 1 + t->dials++ / PER_SRC)
+				.sin_addr.s_addr = htonl(t->src + 1 + t->dials++ /
+				                         (t->per ? t->per : PER_SRC))
 			};
 			setsockopt(fd, IPPROTO_IP, IP_BIND_ADDRESS_NO_PORT, &one, sizeof one);
 			(void)bind(fd, (struct sockaddr const *)&src, sizeof src);
@@ -738,7 +741,7 @@ probe_run (struct probe *p,
 /* --- background load modes ----------------------------------------------- */
 
 enum {
-	BG_MAX  = 12, /**< one thread per mode */
+	BG_MAX  = 14, /**< one thread per mode */
 	BG_KEYS = 5, /**< counters per mode */
 };
 
@@ -1159,25 +1162,34 @@ out:
 /*
  * Tool-call jobs: b->count concurrent connections, each looping tools/call,
  * alternately in the legacy and the 2026-07-28 era; askai answers them on
- * event streams, which a job reads to their last chunk.  In hang-up mode
- * (b->mode JOBS_HANGUP) a job instead waits for its event stream to open,
- * then hangs up about HANGUP_MS later, from a half to one and a half times
- * that, which askai must pass upstream as a cancellation unless the answer
- * came first: against an upstream that takes about as long, hang-ups race
- * answers.  In cancel mode (JOBS_CANCEL) a job's legacy call carries a
- * session of its connection's own, and as long after its stream opens, a
- * notifications/cancelled for it goes on a new connection, which askai may
- * well serve on another loop; the call's stream then ends without an event,
- * withdrawn, unless the answer came first.
+ * event streams, which a job reads to their last chunk.  Each connection
+ * comes from an address of its own, so that each is a principal of its own
+ * to askai's scheduler.  In hang-up mode (b->mode JOBS_HANGUP) a job instead
+ * waits for its event stream to open, then hangs up about HANGUP_MS later,
+ * from a half to one and a half times that, which askai must pass upstream
+ * as a cancellation unless the answer came first: against an upstream that
+ * takes about as long, hang-ups race answers.  In cancel mode (JOBS_CANCEL)
+ * a job's legacy call carries a session of its connection's own, and as long
+ * after its stream opens, a notifications/cancelled for it goes on a new
+ * connection, which askai may well serve on another loop; the call's stream
+ * then ends without an event, withdrawn, unless the answer came first.  In
+ * flood mode (JOBS_FLOOD) every connection's legacy call is in one session,
+ * one principal's, which askai refuses as busy past what it queues for one,
+ * whereupon the connection calls again BUSY_MS later.  In interactive mode
+ * (JOBS_INTERACTIVE) each connection is a session of its own, which calls
+ * again once answered, and each call's time from its sending to its answer
+ * counts in the mode's latencies.
  */
 enum job_state { JOB_DEAD, JOB_CONNECTING, JOB_SENDING, JOB_READING, JOB_HOLDING };
 enum { JOB_SUBMITTED, JOB_COMPLETED, JOB_FAILED, JOB_DROPPED, JOB_HUNGUP };
-enum { JOBS, JOBS_HANGUP, JOBS_CANCEL };
-enum { HANGUP_MS = 20, JOB_REQ = 512 };
+enum { JOBS, JOBS_HANGUP, JOBS_CANCEL, JOBS_FLOOD, JOBS_INTERACTIVE };
+enum { HANGUP_MS = 20, BUSY_MS = 10, JOB_REQ = 512 };
 
 struct job_conn {
 	uint64_t done;     /**< calls completed on this connection */
-	uint64_t due_ns;   /**< when a holding job hangs up, or cancels */
+	uint64_t due_ns;   /**< when a holding job hangs up, cancels, or calls
+	                        again */
+	uint64_t sent_ns;  /**< when its call went */
 	size_t   sent;
 	size_t   rx;
 	size_t   skipped;  /**< reply bytes dropped from the middle of buf */
@@ -1321,7 +1333,8 @@ static void *
 jobs_thread (void *arg)
 {
 	struct bg *b = arg;
-	bool hangup = b->mode != JOBS;
+	bool hangup = b->mode == JOBS_HANGUP || b->mode == JOBS_CANCEL;
+	bool own = b->mode >= JOBS_CANCEL;
 	uint64_t rng = 0x2545F4914F6CDD1Du ^ now_ns();
 	int ep = epoll_create1(EPOLL_CLOEXEC);
 	struct job_conn *jc = calloc((size_t)b->count, sizeof *jc);
@@ -1334,7 +1347,8 @@ jobs_thread (void *arg)
 	}
 	for (int i = 0; i < b->count; ++i) {
 		jc[i].req = i & 1 ? RQ_CALL26 : RQ_CALL;
-		if (b->mode == JOBS_CANCEL && !job_session(&jc[i], i))
+		if (own && !job_session(&jc[i], b->mode == JOBS_FLOOD ? 0xf100d
+		                                : b->mode == JOBS_CANCEL ? i : 0x1000 + i))
 			continue;
 		job_dial(b, ep, &jc[i]);
 	}
@@ -1342,11 +1356,10 @@ jobs_thread (void *arg)
 	while (!atomic_load(&g_stop)) {
 		struct epoll_event evs[128];
 		int n = epoll_pwait2(ep, evs, 128, &(struct timespec){
-			.tv_nsec = hangup ? 5'000'000 : 100'000'000 }, nullptr);
+			.tv_nsec = b->mode ? 2'000'000 : 100'000'000 }, nullptr);
 		for (int i = 0; i < n; ++i) {
 			struct job_conn *c = evs[i].data.ptr;
 			uint32_t e = evs[i].events;
-			bool own = b->mode == JOBS_CANCEL;
 			char const *req = own ? c->call : req_buf[c->req];
 			size_t need = own ? c->call_len : req_len[c->req];
 			if (c->state == JOB_HOLDING)
@@ -1382,6 +1395,7 @@ jobs_thread (void *arg)
 				c->state = JOB_READING;
 				c->rx = c->skipped = 0;
 				c->cancelled = false;
+				c->sent_ns = now_ns();
 				job_arm(ep, c, EPOLLIN);
 			}
 			if (c->state != JOB_READING || !(e & (EPOLLIN | EPOLLHUP | EPOLLERR)))
@@ -1406,14 +1420,21 @@ jobs_thread (void *arg)
 			head = job_head(c);
 			bool ok;
 			if (head && job_complete(c, head, &ok)) {
-				/* A cancelled call's stream ends without an event. */
+				/* A cancelled call's stream ends without an event; a
+				 * flooder's call refused as busy calls again a little
+				 * later. */
 				bool quiet = c->cancelled && !ok && atoi(c->buf + 9) == 200 &&
 				             !memmem(c->buf + head, c->rx - head, "data:", 5);
-				b->n[ok ? JOB_COMPLETED : quiet ? JOB_HUNGUP : JOB_FAILED]++;
+				bool busy = b->mode == JOBS_FLOOD && !ok &&
+				            memmem(c->buf + head, c->rx - head, "try again", 9);
+				b->n[ok ? JOB_COMPLETED : quiet || busy ? JOB_HUNGUP : JOB_FAILED]++;
 				c->done += ok;
-				c->state = JOB_SENDING;
+				if (ok && b->mode == JOBS_INTERACTIVE)
+					hist_record(b->lat, now_ns() - c->sent_ns);
+				c->state = busy ? JOB_HOLDING : JOB_SENDING;
 				c->sent = 0;
-				job_arm(ep, c, EPOLLOUT);
+				c->due_ns = now_ns() + BUSY_MS * 1'000'000u;
+				job_arm(ep, c, busy ? 0 : EPOLLOUT);
 			} else if (hangup && head && !c->cancelled &&
 			           memmem(c->buf, head, "text/event-stream", 17)) {
 				c->state = JOB_HOLDING;
@@ -1427,6 +1448,10 @@ jobs_thread (void *arg)
 		for (int i = 0; i < b->count; ++i) {
 			struct job_conn *c = &jc[i];
 			if (c->state == JOB_HOLDING && c->due_ns <= now &&
+			    b->mode == JOBS_FLOOD) {
+				c->state = JOB_SENDING;
+				job_arm(ep, c, EPOLLOUT);
+			} else if (c->state == JOB_HOLDING && c->due_ns <= now &&
 			    b->mode == JOBS_CANCEL) {
 				/* Read the call's stream on, to its end. */
 				b->n[JOB_DROPPED] += !job_cancel(b, c);
@@ -1436,7 +1461,7 @@ jobs_thread (void *arg)
 				b->n[JOB_HUNGUP]++;
 				job_kill(b, ep, c, false);
 			}
-			if (c->state == JOB_DEAD && (b->mode != JOBS_CANCEL || c->call_len))
+			if (c->state == JOB_DEAD && (!own || c->call_len))
 				job_dial(b, ep, c);
 		}
 	}
@@ -1595,6 +1620,7 @@ main (int   argc,
 		OPT_IDLE = 0x100, OPT_LORIS, OPT_GAP, OPT_SLOWBODY, OPT_SLOWREAD,
 		OPT_PIPELINE, OPT_MALFORMED, OPT_HOSTILE, OPT_DENSE, OPT_CHURN, OPT_JOBS,
 		OPT_HANGUP, OPT_CANCEL, OPT_FRESH, OPT_STATS, OPT_SLOW, OPT_SOLO,
+		OPT_FLOOD, OPT_INTERACTIVE,
 	};
 	static struct option const opts[] = {
 		{ "host",      required_argument, nullptr, 'H' },
@@ -1617,6 +1643,8 @@ main (int   argc,
 		{ "jobs",      required_argument, nullptr, OPT_JOBS },
 		{ "hangup",    required_argument, nullptr, OPT_HANGUP },
 		{ "cancel",    required_argument, nullptr, OPT_CANCEL },
+		{ "flood",     required_argument, nullptr, OPT_FLOOD },
+		{ "interactive", required_argument, nullptr, OPT_INTERACTIVE },
 		{ "stats",     required_argument, nullptr, OPT_STATS },
 		{ "slow",      required_argument, nullptr, OPT_SLOW },
 		{ "solo",      no_argument,       nullptr, OPT_SOLO },
@@ -1633,7 +1661,7 @@ main (int   argc,
 	long slow_us = 1000;
 	int conns = 32, fresh = 64;
 	int idle = 0, loris = 0, gap = 1000, slowbody = 0, slowread = 0;
-	int pipeline = 0, jobs = 0, hangup = 0, cancel = 0;
+	int pipeline = 0, jobs = 0, hangup = 0, cancel = 0, flood = 0, interactive = 0;
 	bool malformed = false, hostile = false, dense = false, solo = false;
 
 	for (int o; (o = getopt_long(argc, argv, "H:p:r:d:T:c:", opts, nullptr)) >= 0; )
@@ -1656,6 +1684,8 @@ main (int   argc,
 		case OPT_DENSE: dense = true; break;
 		case OPT_HANGUP: hangup = atoi(optarg); break;
 		case OPT_CANCEL: cancel = atoi(optarg); break;
+		case OPT_FLOOD: flood = atoi(optarg); break;
+		case OPT_INTERACTIVE: interactive = atoi(optarg); break;
 		case OPT_CHURN: churn = atof(optarg); break;
 		case OPT_JOBS: jobs = atoi(optarg); break;
 		case OPT_STATS: stats = optarg; break;
@@ -1736,6 +1766,7 @@ main (int   argc,
 		if (cond) { \
 			bgs[nth] = (struct bg){ .tcp = tcp, .lat = &lat[nth], __VA_ARGS__ }; \
 			bgs[nth].tcp.src = (uint32_t)(127 << 24 | (nth + 1) << 16); \
+			bgs[nth].tcp.per = bgs[nth].count && fn == jobs_thread; \
 			bgs[nth].t = &bgs[nth].tcp; \
 			nth += !pthread_create(&th[nth], nullptr, fn, &bgs[nth]); \
 		} \
@@ -1763,6 +1794,12 @@ main (int   argc,
 	START(cancel > 0, jobs_thread, .name = "cancel", .count = cancel,
 	      .mode = JOBS_CANCEL,
 	      .key = { "submitted", "completed", "failed", "dropped", "withdrawn" });
+	START(flood > 0, jobs_thread, .name = "flood", .count = flood,
+	      .mode = JOBS_FLOOD,
+	      .key = { "submitted", "completed", "failed", "dropped", "busy" });
+	START(interactive > 0, jobs_thread, .name = "interactive", .count = interactive,
+	      .mode = JOBS_INTERACTIVE,
+	      .key = { "submitted", "completed", "failed", "dropped" });
 	START(pipeline > 0, pipeline_thread, .name = "pipeline", .count = pipeline,
 	      .key = { "batches", "reqs", "got", "drain_total_us", "drain_max_us" });
 #undef START
@@ -1850,7 +1887,7 @@ main (int   argc,
 	putchar('\n');
 	for (int i = 0; i < nth; ++i) {
 		struct bg *b = &bgs[i];
-		if (!b->per || b->mode)
+		if (!b->per || (b->mode != JOBS && b->mode != JOBS_INTERACTIVE))
 			continue;
 		nv = 0;
 		for (int k = 0; k < b->count && k < 1024; ++k)

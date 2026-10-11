@@ -27,7 +27,8 @@
 
 static struct {
 	char const *name;
-	char const *url;      /* gemini: the model and ":generateContent" follow */
+	char const *url;      /* gemini: the model and ":streamGenerateContent"
+	                         follow */
 	char const *auth;     /* header line prefix for the API key */
 	char const *keys[2];  /* variables tried for the provider's own endpoint */
 } const protocols[] = {
@@ -70,10 +71,18 @@ usage (FILE       *out,
 	        "  -n, --max-tokens N        output token limit\n"
 	        "  -x, --extra JSON          object deep-merged into each request body;\n"
 	        "                            null members delete keys\n"
-	        "  -T, --timeout SECONDS     upstream timeout (default 600, 0 = none)\n"
-	        "      --max-calls N         upstream calls under way at most (default\n"
-	        "                            256); a tool call past those is answered at\n"
-	        "                            once as an error that says to try again\n"
+	        "  -T, --timeout SECONDS     a tool call's wait for an upstream slot, and\n"
+	        "                            then its upstream call's (default 600,\n"
+	        "                            0 = none)\n"
+	        "      --chunk-timeout SECONDS\n"
+	        "                            longest pause in an answer once it has\n"
+	        "                            begun (default 60, 0 = none)\n"
+	        "      --slots N             upstream calls at once (default: what\n"
+	        "                            llama-server's /props says, else 4)\n"
+	        "      --max-calls N         tool calls under way at most (default 256),\n"
+	        "                            8 of them queued per session or client\n"
+	        "                            address; a tool call past those is answered\n"
+	        "                            at once as an error that says to try again\n"
 	        "\n"
 	        "MCP server:\n"
 	        "  -l, --listen ADDR         [host:]port (default 127.0.0.1:8090)\n"
@@ -97,6 +106,8 @@ usage (FILE       *out,
 	        "      --test-pressure FILE  test aid: memory pressure is at least the\n"
 	        "                            level FILE holds, 0 (none), 1 (high) or 2\n"
 	        "                            (critical), read each second\n"
+	        "      --test-fifo           test aid: tool calls wait for the upstream\n"
+	        "                            in one queue, first in first out\n"
 	        "  -h, --help                show this help\n"
 	        "\n", argv0);
 	fprintf(out,
@@ -279,6 +290,7 @@ struct keep {
 	struct loop_timer   age;       /* the windows of reuse */
 	struct mcp         *mcp;       /* what a client loop keeps besides */
 	struct httpd_home  *door;      /* what home keeps besides */
+	struct home        *home;      /* and its scheduler */
 	struct blockers    *blockers;  /* where the walk goes */
 	void               *tops;      /* the trim's blocks yet to free */
 	uint64_t            released;  /* the stash's count as the relief began */
@@ -307,8 +319,8 @@ struct home_app {
 	struct httpd_hub         *hub;
 	struct metrics_src       *metrics;
 	struct loop              *loop;  /* home's: the client loops' jobs go there */
-	struct home              *home;
 	uint32_t                  max;   /* jobs in flight */
+	bool                      fifo;  /* the test aid's one queue */
 };
 
 /* What runs on a client loop: MCP over HTTP. */
@@ -343,6 +355,8 @@ relief_step (struct loop      *loop,
 	case RELIEVE_KEPT:
 		n = keep->mcp ? mcp_relieve(keep->mcp, level, room)
 		  : keep->door ? httpd_home_relieve(keep->door, level, room) : 0;
+		if (!n && keep->home)
+			n = home_relieve(keep->home, level, room);
 		break;
 	case RELIEVE_STASH:
 		n = buf_stash_release(&keep->stash, level, room);
@@ -459,6 +473,8 @@ keep_age (struct loop       *loop,
 		mcp_age(keep->mcp);
 	if (keep->door)
 		httpd_home_age(keep->door);
+	if (keep->home)
+		home_age(keep->home);
 	(void)loop_timer_set(loop, timer, loop->now + BRAINSTEM_RELIEF_MS * 1'000'000ULL);
 }
 
@@ -526,8 +542,8 @@ home_app_start (void            *ctx,
 		e = httpd_home_init(&app->keep.door, loop, app->hub, app->hcfg,
 		                    &app->jobs.in_flight);
 	if (!e)
-		e = home_init(&app->home, loop, blockers, app->keep.door, app->ep, app->max,
-		              &app->jobs, &app->http);
+		e = home_init(&app->keep.home, loop, blockers, app->keep.door, app->ep,
+		              app->max, app->fifo, &app->jobs, &app->http);
 	if (e)
 		LOG(LOG_ERROR, "cannot start home: %s", strerror(e));
 	return e;
@@ -550,7 +566,7 @@ home_app_drain (void        *ctx,
 	(void)deadline;
 	struct home_app *app = ctx;
 	httpd_home_drain(app->keep.door);
-	home_drain(app->home);
+	home_drain(app->keep.home);
 }
 
 static void
@@ -558,7 +574,7 @@ home_app_alone (void        *ctx,
                 struct loop *loop)
 {
 	(void)loop;
-	home_alone(((struct home_app *)ctx)->home);
+	home_alone(((struct home_app *)ctx)->keep.home);
 }
 
 static void
@@ -566,7 +582,7 @@ home_app_stop (void        *ctx,
                struct loop *loop)
 {
 	struct home_app *app = ctx;
-	home_fini(&app->home);
+	home_fini(&app->keep.home);
 	httpd_home_fini(&app->keep.door);
 	keep_stop(&app->keep, loop);
 }
@@ -619,15 +635,16 @@ app_stop (void        *ctx,
 	keep_stop(&app->keep, loop);
 }
 
-/* Serve until shut down, with at most @p calls jobs in flight; returns the
- * exit status. */
+/* Serve until shut down, with at most @p calls jobs in flight, with @p fifo
+ * in one queue; returns the exit status. */
 static int
 serve (struct ai_endpoint const *ep,
        struct mcp_tool const    *tool,
        struct mcp_limits const  *mlim,
        struct httpd_cfg const   *hcfg,
        struct brainstem_cfg     *bcfg,
-       uint32_t                  calls)
+       uint32_t                  calls,
+       bool                      fifo)
 {
 	/* Keep what is freed for reuse, and give memory back to the system only
 	 * under memory pressure (design section 5).  glibc would otherwise map
@@ -677,7 +694,8 @@ serve (struct ai_endpoint const *ep,
 		.hcfg = hcfg,
 		.hub = hub,
 		.metrics = &metrics,
-		.max = calls
+		.max = calls,
+		.fifo = fifo
 	};
 	metrics.http = &home.http;
 	metrics.jobs = &home.jobs;
@@ -729,7 +747,7 @@ main (int   argc,
 		OPT_MAX_MEMBERS, OPT_SSE_KEEPALIVE, OPT_MAX_CLIENT_CONNS,
 		OPT_IDLE_TIMEOUT, OPT_OUTPUT_PAUSE, OPT_MAX_OUTPUT, OPT_SEND_TIMEOUT,
 		OPT_GRACE, OPT_WATCHDOG, OPT_TEST_STALL, OPT_MEMORY_HIGH, OPT_TEST_PRESSURE,
-		OPT_MAX_CALLS, OPT_LOOPS
+		OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO
 	};
 	static struct option const options[] = {
 		{ "protocol",         required_argument, nullptr, 'p' },
@@ -742,6 +760,8 @@ main (int   argc,
 		{ "max-tokens",       required_argument, nullptr, 'n' },
 		{ "extra",            required_argument, nullptr, 'x' },
 		{ "timeout",          required_argument, nullptr, 'T' },
+		{ "chunk-timeout",    required_argument, nullptr, OPT_CHUNK_TIMEOUT },
+		{ "slots",            required_argument, nullptr, OPT_SLOTS },
 		{ "max-calls",        required_argument, nullptr, OPT_MAX_CALLS },
 		{ "listen",           required_argument, nullptr, 'l' },
 		{ "allow-origin",     required_argument, nullptr, 'o' },
@@ -770,6 +790,7 @@ main (int   argc,
 		{ "test-stall",       required_argument, nullptr, OPT_TEST_STALL },
 		{ "memory-high",      required_argument, nullptr, OPT_MEMORY_HIGH },
 		{ "test-pressure",    required_argument, nullptr, OPT_TEST_PRESSURE },
+		{ "test-fifo",        no_argument,       nullptr, OPT_TEST_FIFO },
 		{ "verbose",          no_argument,       nullptr, 'v' },
 		{ "help",             no_argument,       nullptr, 'h' },
 		{ nullptr, 0, nullptr, 0 }
@@ -777,6 +798,7 @@ main (int   argc,
 
 	struct ai_endpoint ep = {
 		.timeout_ms = 600'000,
+		.chunk_ms = 60'000,
 		.protocol = AI_OPENAI
 	};
 	struct mcp_tool tool = { .name = "ask_ai" };
@@ -797,6 +819,7 @@ main (int   argc,
 	uint32_t calls = 256;
 	uint32_t loops = 0;
 	bool verbose = false;
+	bool fifo = false;
 	int status = 2;
 
 	/* Repeatable options are bounded by argc; headers get 3 spare slots. */
@@ -973,6 +996,16 @@ main (int   argc,
 		case OPT_MAX_CALLS:
 			ok = parse_u32(optarg, 1, 1'000'000, &calls);
 			break;
+		case OPT_SLOTS:
+			ok = parse_u32(optarg, 1, UINT16_MAX, &ep.slots);
+			break;
+		case OPT_CHUNK_TIMEOUT:
+			ok = parse_long(optarg, 0, INT32_MAX / 1000, &ep.chunk_ms);
+			ep.chunk_ms *= 1000;
+			break;
+		case OPT_TEST_FIFO:
+			fifo = true;
+			break;
 		case OPT_LOOPS:
 			/* As many as a handle's loop field names, home being 0. */
 			ok = parse_u32(optarg, 0, 255, &loops);
@@ -1044,7 +1077,30 @@ main (int   argc,
 		}
 		bool gemini = ep.protocol == AI_GEMINI;
 		if (!dstr_printf(&url, "%s%s%s", protocols[ep.protocol].url,
-		                 gemini ? ep.model : "", gemini ? ":generateContent" : ""))
+		                 gemini ? ep.model : "",
+		                 gemini ? ":streamGenerateContent?alt=sse" : ""))
+			goto oom;
+		ep.url = dstr_get(&url);
+	} else if (ep.protocol == AI_GEMINI) {
+		/* Gemini streams from :streamGenerateContent, in SSE with alt=sse,
+		 * whatever alt the URL had. */
+		static char const method[] = ":generateContent";
+		size_t m = sizeof method - 1;
+		size_t len = strlen(ep.url);
+		char const *query = strchr(ep.url, '?');
+		size_t path = query ? (size_t)(query - ep.url) : len;
+		bool plain = path >= m && !memcmp(ep.url + path - m, method, m);
+		char const *alt = query ? strstr(query, "?alt=") : nullptr;
+		if (query && !alt)
+			alt = strstr(query, "&alt=");
+		/* The query up to its alt's value, and what follows that. */
+		size_t head = alt ? (size_t)(alt - ep.url) + 1 : len;
+		char const *tail = alt ? alt + 5 + strcspn(alt + 5, "&") : "";
+		if (!dstr_printf(&url, "%.*s%s%.*s%salt=sse%s",
+		                 (int)(path - (plain ? m : 0)), ep.url,
+		                 plain ? ":streamGenerateContent" : "",
+		                 (int)(head - path), ep.url + path,
+		                 alt ? "" : query ? "&" : "?", tail))
 			goto oom;
 		ep.url = dstr_get(&url);
 	}
@@ -1081,7 +1137,7 @@ main (int   argc,
 	 * mostly sleep (design section 1). */
 	size_t cpus = brainstem_cpus() - 1;
 	bcfg.loops = loops ? loops : cpus < 1 ? 1 : cpus < 255 ? cpus : 255;
-	status = serve(&ep, &tool, &mlim, &hcfg, &bcfg, calls);
+	status = serve(&ep, &tool, &mlim, &hcfg, &bcfg, calls, fifo);
 	goto out;
 
 oom:

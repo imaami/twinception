@@ -11,16 +11,19 @@
  * home and each message queued.
  *
  * The front writes the request and posts SUBMIT.  Home admits the job, or
- * ends it at once (BUSY when too many are in flight), runs it until its
- * deadline at most, writes the result and its status, and posts DONE: every
- * job ends in exactly one completion.  The front posts CANCEL exactly once:
- * before DONE it cancels the job, which home then stops and ends as
- * CANCELLED, and after DONE it lets go of the job, having read the result.
- * Home keeps its reference until then, and gives the result's storage back
- * to its own stash, so that each buffer's storage is taken and given back by
- * one thread.  Whoever drops the last reference returns the job to its
- * front, which keeps it for reuse: home does so through the front's inbox
- * (RETURN).
+ * ends it at once (BUSY when too many are in flight or queued for its
+ * principal), queues it for an upstream slot, runs it until its deadline at
+ * most, writes the result and its status, and posts DONE: every job ends in
+ * exactly one completion.  Meanwhile home publishes the job's progress, its
+ * place in its principal's queue and then the chunks of its answer, and
+ * posts PROGRESS for a front that asked for it, a burst being one message.
+ * The front posts CANCEL exactly once: before DONE it cancels the job, which
+ * home then stops and ends as CANCELLED, and after DONE it lets go of the
+ * job, having read the result.  Home keeps its reference until then, and
+ * gives the result's storage back to its own stash, so that each buffer's
+ * storage is taken and given back by one thread.  Whoever drops the last
+ * reference returns the job to its front, which keeps it for reuse: home does
+ * so through the front's inbox (RETURN).
  *
  * The front names the call that waits for the job by a handle (loop.h), which
  * it frees as it cancels: a completion that finds the handle stale is dropped.
@@ -31,7 +34,9 @@
  * That loop posts home the key in a job of its own, a carrier, with WITHDRAW:
  * home ends the job it names as WITHDRAWN, and returns the carrier to its
  * front at once.  The front works the hash out, so that home's handling of
- * a message costs the same whatever the key's length.
+ * a message costs the same whatever the key's length.  So does the
+ * principal's: the call's session, which begins the key, or else its
+ * client's address.
  */
 #ifndef TWINCEPTION_SRC_JOB_H_
 #define TWINCEPTION_SRC_JOB_H_
@@ -40,10 +45,12 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "jb.h"
 #include "list.h"
 #include "loop.h"
 
 struct http_request;
+struct principal;
 
 /** The bits of the messages to home. */
 enum {
@@ -56,15 +63,17 @@ enum {
 /** The bits of the messages to the front. */
 enum {
 	JOB_DONE     = 1,  /**< the job has ended: its status and result are set */
-	JOB_PROGRESS = 2,  /**< reserved for S6 */
+	JOB_PROGRESS = 2,  /**< the job's progress moved on */
 	JOB_RETURN   = 4,  /**< home dropped the last reference, without one */
 };
 
 /** How a job ended. */
 enum job_status {
-	JOB_ANSWERED,   /**< the result holds the upstream's answer */
+	JOB_ANSWERED,   /**< the result holds the upstream's answer, as it came */
+	JOB_TEXT,       /**< the result holds the text of a streamed answer */
 	JOB_FAILED,     /**< the result says why the upstream call failed */
-	JOB_BUSY,       /**< refused: too many jobs in flight */
+	JOB_BUSY,       /**< refused: too many jobs in flight, or queued for its
+	                     principal */
 	JOB_CANCELLED,  /**< cancelled, or refused by a home that drains; the
 	                     result is empty */
 	JOB_WITHDRAWN,  /**< cancelled as its client asked, by its key; the
@@ -74,11 +83,17 @@ enum job_status {
 /** An upstream call, shared by its front and home (R4). */
 struct job {
 	struct msg           to_home;     /**< SUBMIT, CANCEL: the front posts it */
-	struct msg           to_front;    /**< DONE, RETURN: home posts it */
+	struct msg           to_front;    /**< DONE, PROGRESS, RETURN: home posts it */
 	struct list          spare;       /**< the front's: on its spare list */
-	struct list          queue;       /**< home's: among the jobs in flight */
+	struct list          queue;       /**< home's: on its principal's queue, or
+	                                       among the jobs dropped */
+	struct list          due;         /**< home's: among the jobs in flight, by
+	                                       deadline */
 	struct list          held;        /**< home's: among those whose answer
 	                                       waits for a step's share */
+	struct list          idle;        /**< home's: among the answers under way,
+	                                       by when they last sent */
+	struct list          feed;        /**< home's: among the streams to read */
 	struct buf           request;     /**< the front's: written before SUBMIT,
 	                                       read by home until DONE */
 	struct buf           result;      /**< home's: written before DONE, read
@@ -87,26 +102,55 @@ struct job {
 	                                       or WITHDRAW, read by home until
 	                                       DONE or RETURN: the call's session,
 	                                       a line break and its id's JSON */
+	struct buf           wire;        /**< home's: a streamed answer's bytes
+	                                       yet to read */
+	struct jb_parser     parser;      /**< home's: of the stream's event */
 	struct loop         *front;       /**< the front's loop, set as it is made */
 	struct job          *chain;       /**< home's: the next in its registry's
 	                                       bucket */
 	struct http_request *transfer;    /**< home's: the request upstream */
+	struct principal    *who;         /**< home's: whose queue it is on */
 	struct handle        call;        /**< the front's: what waits for it */
-	uint64_t             deadline;    /**< the front writes, before SUBMIT: when
-	                                       the call times out, CLOCK_MONOTONIC
-	                                       ns; 0: never */
-	uint64_t             since;       /**< home's: when it was admitted */
+	uint64_t             deadline;    /**< the front writes, before SUBMIT, when
+	                                       the call times out waiting, and home
+	                                       as it starts the job, when the
+	                                       upstream does: CLOCK_MONOTONIC ns;
+	                                       0: never */
+	uint64_t             since;       /**< home's: when it started upstream */
+	uint64_t             active;      /**< home's: when its answer last sent */
 	uint64_t             hash;        /**< the front's, with the key: its hash,
 	                                       seeded, which home's registry
 	                                       buckets the job by */
+	uint64_t             principal;   /**< the front's, with the key: the hash,
+	                                       seeded, of whom the call is for */
+	uint64_t             peer[2];     /**< the front's: the client's address,
+	                                       which is the principal without a
+	                                       session */
+	_Atomic uint64_t     progress;    /**< home writes, the front reads: the
+	                                       answer's chunks << 32 | the place in
+	                                       its principal's queue, from 1 */
 	_Atomic uint32_t     home_bits;   /**< pending to home */
 	_Atomic uint32_t     front_bits;  /**< pending to the front */
 	_Atomic uint32_t     refs;        /**< the front, home, each message queued */
+	uint32_t             session;     /**< the front's, with the key: the bytes
+	                                       of the session and its line break
+	                                       that begin it; 0: none */
+	uint32_t             ev;          /**< home's: where the event's data
+	                                       begins in the wire */
+	uint32_t             evlen;       /**< and its length so far */
+	uint32_t             line;        /**< where the line read begins */
+	uint32_t             scan;        /**< how far it has been looked at */
+	uint32_t             chunks;      /**< home's: the answer's events */
 	uint16_t             http;        /**< home writes before DONE: the answer's
 	                                       HTTP status */
+	uint16_t             flags;       /**< home's: what it notes of the run */
 	uint8_t              status;      /**< home writes before DONE: enum
 	                                       job_status */
-	uint8_t              flags;       /**< home's: what it notes of the run */
+	uint8_t              notify;      /**< the front's, before SUBMIT: bool,
+	                                       post PROGRESS */
+	char                 reason[38];  /**< home's: the answer's stop reason,
+	                                       longer than any the providers
+	                                       name */
 };
 
 /** Home's handler of the messages to it (home.c). */
@@ -128,15 +172,24 @@ job_init (struct job  *job,
 	job->to_front = (struct msg){ .fn = done };
 	list_init(&job->spare);
 	list_init(&job->queue);
+	list_init(&job->due);
 	list_init(&job->held);
-	job->request = job->result = job->key = (struct buf){};
+	list_init(&job->idle);
+	list_init(&job->feed);
+	job->request = job->result = job->key = job->wire = (struct buf){};
+	job->parser = (struct jb_parser){};
 	job->front = front;
 	job->chain = nullptr;
 	job->transfer = nullptr;
+	job->who = nullptr;
 	job->call = (struct handle){};
-	job->deadline = job->since = job->hash = 0;
-	job->http = 0;
-	job->status = job->flags = 0;
+	job->deadline = job->since = job->active = job->hash = job->principal = 0;
+	job->peer[0] = job->peer[1] = 0;
+	job->session = job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
+	job->http = job->flags = 0;
+	job->status = job->notify = 0;
+	job->reason[0] = '\0';
+	atomic_init(&job->progress, 0);
 	atomic_init(&job->home_bits, 0);
 	atomic_init(&job->front_bits, 0);
 	atomic_init(&job->refs, 0);

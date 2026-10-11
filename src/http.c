@@ -4,7 +4,8 @@
  *
  * Socket events and curl's timer, which lives on the loop's heap, only queue
  * bulk steps, and the steps drive curl.  An error fails at most the transfer
- * it belongs to, never the loop or the other transfers.
+ * it belongs to, never the loop or the other transfers.  A done callback may
+ * ask what Retry-After its answer said.
  *
  * With a resolver set, host names are looked up on a blocker thread rather
  * than by libcurl, whose resolver would start a thread of its own for each
@@ -14,6 +15,7 @@
  */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdint.h>
@@ -56,6 +58,7 @@ struct http_request {
 	CURL              *easy;
 	uint64_t           since;    /* when it was made */
 	uint64_t           started;  /* when curl got it; 0 until then */
+	size_t             len;      /* the body's bytes */
 	CURLcode           fail;     /* to fail it with, from http->fail */
 	char               error[CURL_ERROR_SIZE];
 };
@@ -73,6 +76,8 @@ struct http {
 	struct blockers     *blockers;  /* that look host names up, or nullptr */
 	struct http_metrics *metrics;
 	CURLM               *multi;
+	long                 retry;     /* the Retry-After of the request that
+	                                   ended last, in seconds */
 };
 
 /* An upstream host by name and port, and its addresses. */
@@ -106,7 +111,10 @@ http_finish (struct http         *http,
              CURLcode             result)
 {
 	long status = 0;
+	curl_off_t retry = 0;
 	curl_easy_getinfo(request->easy, CURLINFO_RESPONSE_CODE, &status);
+	curl_easy_getinfo(request->easy, CURLINFO_RETRY_AFTER, &retry);
+	http->retry = retry > 0 && retry < LONG_MAX ? (long)retry : 0;
 	curl_multi_remove_handle(http->multi, request->easy);
 	curl_easy_cleanup(request->easy);
 	list_del(&request->hook);
@@ -596,6 +604,42 @@ http_resume (struct http_request *request)
 	return curl_easy_pause(request->easy, CURLPAUSE_CONT);
 }
 
+bool
+http_sent (struct http_request const *request)
+{
+	curl_off_t body = 0;
+	long head = 0;
+	return request->started &&
+	       !curl_easy_getinfo(request->easy, CURLINFO_REQUEST_SIZE, &head) && head &&
+	       !curl_easy_getinfo(request->easy, CURLINFO_SIZE_UPLOAD_T, &body) &&
+	       body >= (curl_off_t)request->len;
+}
+
+void
+http_response (struct http_request const  *request,
+               long                       *status,
+               char const                **type)
+{
+	*status = 0;
+	*type = nullptr;
+	curl_easy_getinfo(request->easy, CURLINFO_RESPONSE_CODE, status);
+	curl_easy_getinfo(request->easy, CURLINFO_CONTENT_TYPE, type);
+}
+
+long
+http_retry_after (struct http const *http)
+{
+	return http->retry;
+}
+
+void
+http_connections (struct http *http,
+                  long         n)
+{
+	(void)curl_multi_setopt(http->multi, CURLMOPT_MAX_HOST_CONNECTIONS, n);
+	(void)curl_multi_setopt(http->multi, CURLMOPT_MAXCONNECTS, n + 1);
+}
+
 void
 http_resolver (struct http     *http,
                struct blockers *blockers)
@@ -667,7 +711,7 @@ http_post_json (struct http         *http,
                 void                *user,
                 struct http_request **p_request)
 {
-	if (!http || !url || !body || !write_cb || !done_cb || !p_request)
+	if (!http || !url || !write_cb || !done_cb || !p_request)
 		return EFAULT;
 
 	struct http_request *request = calloc(1, sizeof *request);
@@ -679,18 +723,20 @@ http_post_json (struct http         *http,
 	request->write_cb = write_cb;
 	request->done_cb = done_cb;
 	request->user = user;
-	request->headers = curl_slist_append(nullptr,
-	                                     "Content-Type: application/json");
-	if (!request->easy || !request->headers) {
+	request->len = body ? len : 0;
+	/* A body is JSON.  Appending keeps the list's head, the request's. */
+	bool ok = request->easy &&
+	          (!body || (request->headers = curl_slist_append(
+	                     nullptr, "Content-Type: application/json")));
+	for (; ok && headers && *headers; ++headers) {
+		struct curl_slist *list = curl_slist_append(request->headers, *headers);
+		ok = list;
+		if (!request->headers)
+			request->headers = list;
+	}
+	if (!ok) {
 		http_cancel(http, &request);
 		return ENOMEM;
-	}
-	for (; headers && *headers; ++headers) {
-		/* Appending keeps the head, which stays owned by the request. */
-		if (!curl_slist_append(request->headers, *headers)) {
-			http_cancel(http, &request);
-			return ENOMEM;
-		}
 	}
 
 #define SETOPT(opt, value) \
@@ -703,8 +749,10 @@ http_post_json (struct http         *http,
 
 	SETOPT(CURLOPT_URL, url);
 	SETOPT(CURLOPT_HTTPHEADER, request->headers);
-	SETOPT(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)len);
-	SETOPT(copy ? CURLOPT_COPYPOSTFIELDS : CURLOPT_POSTFIELDS, body);
+	if (body) {
+		SETOPT(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)len);
+		SETOPT(copy ? CURLOPT_COPYPOSTFIELDS : CURLOPT_POSTFIELDS, body);
+	}
 	SETOPT(CURLOPT_WRITEFUNCTION, http_write_adapter);
 	SETOPT(CURLOPT_WRITEDATA, request);
 	SETOPT(CURLOPT_PRIVATE, request);

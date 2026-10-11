@@ -131,6 +131,28 @@ static struct entry const table[] = {
 	JOBS("askai_jobs_ended_total", nullptr, "end=\"rejected\"", rejected, COUNTER),
 	JOBS("askai_jobs_in_flight", "Jobs home has admitted and not ended.", "",
 	     in_flight, GAUGE),
+	JOBS("askai_jobs_queued", "Jobs that wait for an upstream slot in their "
+	     "principals' queues.", "", queued, GAUGE),
+	JOBS("askai_principals_queued", "Principals, sessions or else client "
+	     "addresses, with jobs that wait for an upstream slot.", "", principals,
+	     GAUGE),
+	JOBS("askai_jobs_dispatched_total", "Jobs started upstream, a principal's at "
+	     "a time, round-robin.", "", dispatched, COUNTER),
+	JOBS("askai_upstream_calls", "Upstream calls under way.", "", running, GAUGE),
+	JOBS("askai_upstream_slots", "Upstream calls at once at most: --slots, "
+	     "llama-server's /props, or 4.", "", slots, GAUGE),
+	JOBS("askai_upstream_cancels_total", "Upstream calls of cancelled jobs, "
+	     "cancelled once their request had gone.", "", aborted, COUNTER),
+	JOBS("askai_upstream_chunks_total", "Events of streamed answers.", "", chunks,
+	     COUNTER),
+	JOBS("askai_upstream_stalls_total", "Answers ended by the chunk timeout.", "",
+	     stalls, COUNTER),
+	JOBS("askai_breaker_state", "The upstream breaker: 0 closed, 1 open, 2 "
+	     "half-open.", "", breaker, GAUGE),
+	JOBS("askai_breaker_opens_total", "Times the upstream breaker opened.", "",
+	     opens, COUNTER),
+	JOBS("askai_breaker_probes_total", "Jobs the half-open breaker let through "
+	     "as probes.", "", probes, COUNTER),
 	VALUE("askai_upstream_wait_seconds", "Time from an upstream request to its "
 	      "start in libcurl, its host's lookup included.", "", struct http_metrics,
 	      wait, HTTP, HISTOGRAM, NS),

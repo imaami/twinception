@@ -39,7 +39,7 @@ enum loop_unit {
 	LOOP_RECV,     /**< bytes received */
 	LOOP_SEND,     /**< bytes sent, or queued to send by an application */
 	LOOP_BODY,     /**< request body bytes taken in and pre-scanned */
-	LOOP_PARSE,    /**< JSON bytes parsed */
+	LOOP_PARSE,    /**< JSON bytes parsed, or SSE lines' bytes read */
 	LOOP_VALUES,   /**< JSON values parsed or freed */
 	LOOP_ESCAPE,   /**< bytes escaped into JSON */
 	LOOP_COPY,     /**< bytes copied whole, as json-c does a string it

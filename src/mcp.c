@@ -32,7 +32,12 @@
  *
  * A tool call answers on an event stream (SSE) when the client accepts one
  * and its era has them (all but 2024-11-05): id-less data: events, and a ':'
- * comment every keepalive seconds while the upstream works.  Closing the
+ * comment every keepalive seconds while the upstream works.  A call whose
+ * params._meta has a progressToken gets notifications/progress on its event
+ * stream while it waits, at most one each PROGRESS_NS, as home's PROGRESS
+ * messages say how far it is: its place in its principal's queue, then the
+ * chunks of its answer, which home reads from a streamed answer into its
+ * text, so that the request only escapes that into the reply.  Closing the
  * stream, which in HTTP/1.1 means closing the connection or its sending side,
  * cancels the call in every era; legacy clients may also cancel it with
  * notifications/cancelled, on any connection of any loop, which home finds
@@ -44,6 +49,7 @@
  * event stream is its last event.
  */
 #include <errno.h>
+#include <inttypes.h>
 #include <json-c/printbuf.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,6 +91,8 @@ enum {
 };
 
 static constexpr uint64_t NS = 1'000'000'000;
+static constexpr uint64_t PROGRESS_NS = 100'000'000;  /* between a call's
+                                                         notifications */
 
 /** Newest first; the first MODERN revisions carry their version in _meta. */
 static char const *const versions[] = {
@@ -172,6 +180,7 @@ struct mcp_req {
 	struct json_object  *msg;        /* parsed, until dispatched; then the
 	                                    upstream's answer, until read */
 	struct json_object  *id;         /* the request's id, if any */
+	struct json_object  *token;      /* a tool call's progressToken, if any */
 	struct json_object  *draft;      /* the upstream request without the
 	                                    client's strings, until written */
 	char const          *text;       /* the draft serialized */
@@ -180,10 +189,16 @@ struct mcp_req {
 	                                    the answer escaped, or metrics done */
 	size_t               values;     /* of msg */
 	uint64_t             head;       /* loop_clock() at the request's head */
+	uint64_t             ping_at;    /* when the next keep-alive is due */
+	uint64_t             noted;      /* when the last notification went */
 	struct handle        call;       /* names the request to its job's
 	                                    completion, while it waits for that */
 	struct jb_scan       scan;       /* the body's pre-scan */
 	int                  error;      /* to end the stream with */
+	uint32_t             place;      /* its first place in the queue that a
+	                                    notification gave */
+	uint32_t             next_note;  /* 1 + the last progress it gave; 0:
+	                                    none */
 	uint16_t             splices;
 	uint16_t             next;       /* the splice to write next */
 	uint8_t              phase;      /* enum phase */
@@ -192,7 +207,9 @@ struct mcp_req {
 	bool                 sse_ok;     /* the client takes an event stream */
 	bool                 sse;        /* the response is one */
 	bool                 failed;     /* the answer reports an error */
-	bool                 ping;       /* a keep-alive is due */
+	bool                 tick;       /* a keep-alive or notification may be
+	                                    due */
+	bool                 progress;   /* the job's progress moved on */
 	bool                 nomem;      /* building the reply ran out of memory */
 	bool                 blocked;    /* waiting for on_writable() */
 };
@@ -507,7 +524,8 @@ req_finish (struct mcp_req *req)
 	req_dispose(req);
 	json_object_put(req->draft);
 	json_object_put(req->id);
-	req->draft = req->id = nullptr;
+	json_object_put(req->token);
+	req->draft = req->id = req->token = nullptr;
 	jb_scan_reset(&req->scan);
 	buf_free(&req->body);
 	buf_free(&req->upload);
@@ -757,39 +775,53 @@ tool_result (struct mcp_req *req,
 	tool_close(req);
 }
 
-/* Escape as much of the answer into the reply as the step has the share
- * for; the rest goes on in bulk steps. */
+/* The tool's output: a streamed answer's text, in the job's result while
+ * the request holds the job, else what the request read or built. */
+static struct span
+req_output (struct mcp_req const *req)
+{
+	return req->job ? buf_peek(&req->job->result)
+	     : (struct span){ (unsigned char *)(uintptr_t)dstr_get(&req->answer),
+	                      dstr_len(&req->answer) };
+}
+
+/* Escape as much of the output into the reply as the step has the share
+ * for; the rest goes on in bulk steps.  Then let go of the job, if the
+ * output was its. */
 static void
 req_reply (struct mcp_req *req)
 {
 	struct loop *loop = req->mcp->loop;
-	size_t len = dstr_len(&req->answer) - req->off;
+	struct span text = req_output(req);
+	size_t len = text.len - req->off;
 	size_t room = loop_room(loop, LOOP_ESCAPE);
 	size_t n = len < room ? len : room;
-	reply_escape(req, dstr_get(&req->answer) + req->off, n);
+	reply_escape(req, (char const *)text.ptr + req->off, n);
 	loop_work(loop, LOOP_ESCAPE, n);
 	req->off += n;
-	if (n < len && !req->nomem)
+	if (n < len && !req->nomem) {
 		loop_ready_bulk(loop, &req->step);
-	else
-		tool_close(req);
+		return;
+	}
+	call_drop(req);
+	tool_close(req);
 }
 
-/* Reply with the tool's output, in req->answer unless building that ran out
- * of memory (@p ok false); it goes out a slice at a time. */
+/* Reply with the tool's output, unless building that ran out of memory
+ * (@p ok false); it goes out a slice at a time. */
 static void
 call_reply (struct mcp_req *req,
             bool            ok,
             bool            failed)
 {
-	char const *str = dstr_get(&req->answer);
-	size_t len = dstr_len(&req->answer);
+	struct span text = req_output(req);
+	char const *str = (char const *)text.ptr;
 	if (ok && failed)
 		LOG(LOG_WARN, "tool call failed after %.1f s: %.*s", elapsed(&req->start),
-		    (int)clip(str, len, 300), str);
+		    (int)clip(str, text.len, 300), str);
 	else if (ok)
 		LOG(LOG_VERBOSE, "tool call answered after %.1f s (%zu bytes)",
-		    elapsed(&req->start), len);
+		    elapsed(&req->start), text.len);
 	if (!ok) {
 		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
 		return;
@@ -801,6 +833,91 @@ call_reply (struct mcp_req *req,
 	req->off = 0;
 	tool_open(req);
 	req_reply(req);
+}
+
+/* Notify the client how far the call has come, as its job's progress says:
+ * its place in its principal's queue, then the chunks of its answer, as a
+ * progress that grows with each notification.  Held back by output the
+ * client has yet to read, it goes in a later step. */
+static void
+call_progress (struct mcp_req *req)
+{
+	uint64_t progress = atomic_load_explicit(&req->job->progress,
+	                                         memory_order_relaxed);
+	uint32_t place = (uint32_t)progress;
+	uint32_t chunks = (uint32_t)(progress >> 32);
+	if (place > req->place)
+		req->place = place;
+	uint64_t value = place ? req->place - place : (uint64_t)req->place + chunks;
+	req->progress = false;
+	if (value < req->next_note)
+		return;
+	char num[24];
+	char text[48];
+	int n = snprintf(num, sizeof num, "%" PRIu64, value);
+	int m = place ? snprintf(text, sizeof text, "queued, position %" PRIu32, place)
+	              : snprintf(text, sizeof text, "generating, %" PRIu32 " tokens",
+	                         chunks);
+	size_t len = 0;
+	char const *token = json_object_to_json_string_length(req->token, JB_WIRE, &len);
+	struct frag const f[] = {
+		FRAG("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+		     "\"params\":{\"progressToken\":"),
+		{ token, len },
+		FRAG(",\"progress\":"),
+		{ num, (size_t)n },
+		FRAG(",\"message\":\""),
+		{ text, (size_t)m },
+		FRAG("\"}}\n\n"),
+	};
+	req->nomem = !token;
+	reply_put(req, f, ARRAY_SIZE(f));
+	if (!req->nomem)
+		(void)req_write(req, buf_peek(&req->reply));
+	buf_consume(&req->reply, buf_peek(&req->reply).len);
+	req->nomem = false;
+	req->noted = req->mcp->loop->now;
+	req->next_note = value + 1;
+}
+
+/* While a call waits: a keep-alive, if one is due, and a notification of its
+ * progress, if that moved on, the last went PROGRESS_NS ago and the client
+ * has read what it was sent; then the timer for the next of them. */
+static void
+call_tick (struct mcp_req *req)
+{
+	struct loop *loop = req->mcp->loop;
+	uint32_t keepalive = req->mcp->st->lim.keepalive;
+	if (keepalive && req->ping_at <= loop->now) {
+		if (!req->blocked)
+			(void)req_write(req, (struct span){ (unsigned char *)":\n\n", 3 });
+		req->ping_at = loop->now + keepalive * NS;
+	}
+	req->progress &= req->phase == PHASE_CALL;
+	if (req->progress && req->noted + PROGRESS_NS <= loop->now && !req->blocked)
+		call_progress(req);
+	/* Held back, it waits for on_writable(). */
+	uint64_t next = req->progress && !req->blocked ? req->noted + PROGRESS_NS
+	                                               : UINT64_MAX;
+	(void)loop_timer_set(loop, &req->timer, next < req->ping_at ? next : req->ping_at);
+}
+
+/* The job's progress moved on: notify the client, now or once PROGRESS_NS
+ * have passed since the last time, if the call has an event stream and a
+ * progressToken, and waits for its job. */
+static void
+call_noted (struct mcp_req *req)
+{
+	struct loop *loop = req->mcp->loop;
+	if (!req->token || !req->sse || req->phase != PHASE_CALL)
+		return;
+	req->progress = true;
+	uint64_t due = req->noted + PROGRESS_NS;
+	if (due <= loop->now ||
+	    loop_timer_set(loop, &req->timer, due < req->timer.due ? due : req->timer.due)) {
+		req->tick = true;
+		loop_ready(loop, &req->step);
+	}
 }
 
 /*
@@ -821,6 +938,14 @@ call_done (struct loop *loop,
 		job_shelve(mcp, job);
 		return;
 	}
+	if (!(bits & JOB_DONE)) {
+		struct mcp_req *req = mcp ? loop_lookup(loop, job->call) : nullptr;
+		if (req)
+			call_noted(req);
+		if (job_put(job, 1))
+			job_shelve(mcp, job);
+		return;
+	}
 	/* Home is done with the upstream request and the key. */
 	buf_free(&job->request);
 	buf_free(&job->key);
@@ -839,8 +964,8 @@ call_done (struct loop *loop,
 	list_del(&req->hook);
 	req->hook = (struct list){};
 	enum job_status status = job->status;
-	if (status == JOB_ANSWERED) {
-		req->phase = PHASE_ANSWER;
+	if (status == JOB_ANSWERED || status == JOB_TEXT) {
+		req->phase = status == JOB_TEXT ? PHASE_TEXT : PHASE_ANSWER;
 		loop_ready_bulk(loop, &req->step);
 		return;
 	}
@@ -903,11 +1028,24 @@ call_copy (struct mcp_req *req,
 	return true;
 }
 
+/* A hash of the @p len bytes at @p data, seeded with @p seed, which no client
+ * knows: none can pick keys that crowd one of home's buckets. */
+static uint64_t
+hash (uint64_t             seed,
+      unsigned char const *data,
+      size_t               len)
+{
+	uint64_t h = seed ^ len;
+	for (size_t i = 0; i < len; ++i)
+		h = (h ^ data[i]) * 0x100000001b3;
+	h = (h ^ h >> 33) * 0xff51afd7ed558ccd;
+	return h ^ h >> 33;
+}
+
 /* Write the key a legacy notifications/cancelled names a call by into
  * @p job: the session field, if present, and a line break, which no field
- * holds, then the JSON of the request id @p id; and its hash, seeded so that
- * no client can pick keys that crowd one of home's buckets.  False if out of
- * memory. */
+ * holds, then the JSON of the request id @p id; and its hash, seeded.  False
+ * if out of memory. */
 static bool
 call_key (struct job         *job,
           uint64_t            seed,
@@ -927,24 +1065,24 @@ call_key (struct job         *job,
 	}
 	memcpy(s.ptr + head, json, len);
 	buf_commit(&job->key, head + len);
-	uint64_t h = seed ^ (head + len);
-	for (size_t i = 0; i < head + len; ++i)
-		h = (h ^ s.ptr[i]) * 0x100000001b3;
-	h = (h ^ h >> 33) * 0xff51afd7ed558ccd;
-	job->hash = h ^ h >> 33;
+	job->hash = hash(seed, s.ptr, head + len);
+	job->session = (uint32_t)head;
 	return true;
 }
 
 /* Hand the upstream request to a job, which the request names itself to for
- * the job's completion, with the call's key, and submit the job to home. */
+ * the job's completion, with the call's key and principal, its session or
+ * else its client's address, and submit the job to home. */
 static void
 call_submit (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
+	struct stream *s = req->s;
+	uint64_t seed = mcp->st->seed;
 	struct job *job = job_take(mcp);
-	if (!job || !call_key(job, mcp->st->seed, req->s->ops->field(req->s, F_SESSION),
-	                      req->id) || loop_handle(loop, req, &req->call)) {
+	if (!job || !call_key(job, seed, s->ops->field(s, F_SESSION), req->id) ||
+	    loop_handle(loop, req, &req->call)) {
 		if (job)
 			job_shelve(mcp, job);
 		reply_error(req, 500, INTERNAL_ERROR, "Cannot start the upstream request",
@@ -956,6 +1094,11 @@ call_submit (struct mcp_req *req)
 	req->upload = (struct buf){};
 	job->call = req->call;
 	job->deadline = ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
+	job->peer[0] = s->peer[0];
+	job->peer[1] = s->peer[1];
+	job->principal = job->session ? hash(seed, buf_peek(&job->key).ptr, job->session)
+	               : hash(~seed, (unsigned char const *)job->peer, sizeof job->peer);
+	job->notify = req->token && req->sse;
 	/* The front's and home's, and the post adds the message's. */
 	atomic_store_explicit(&job->refs, 2, memory_order_relaxed);
 	req->job = job;
@@ -1007,7 +1150,8 @@ call_build (struct mcp_req *req)
 }
 
 /* Open the reply as an event stream, which keep-alives keep open while the
- * upstream works. */
+ * upstream works.  The timer, for those and the notifications of progress,
+ * is in the heap from now on, so setting it cannot fail. */
 static void
 req_stream (struct mcp_req *req)
 {
@@ -1019,9 +1163,21 @@ req_stream (struct mcp_req *req)
 	req->sse = !s->ops->head(s, 200, (struct span){ (unsigned char *)fields,
 	                                                sizeof fields - 1 }, STREAM_OPEN);
 	uint32_t keepalive = mcp->st->lim.keepalive;
-	if (req->sse && keepalive)
-		(void)loop_timer_set(mcp->loop, &req->timer,
-		                     mcp->loop->now + keepalive * NS);
+	req->ping_at = keepalive ? mcp->loop->now + keepalive * NS : UINT64_MAX;
+	if (req->sse)
+		(void)loop_timer_set(mcp->loop, &req->timer, req->ping_at);
+}
+
+/* Whether @p id may name a request, or a progress token: a number, or a
+ * string of at most MAX_ID bytes, as every reply or notification repeats
+ * it. */
+static bool
+id_valid (struct json_object const *id)
+{
+	return json_object_is_type(id, json_type_string)
+	     ? json_object_get_string_len(id) <= MAX_ID
+	     : json_object_is_type(id, json_type_int) ||
+	       json_object_is_type(id, json_type_double);
 }
 
 /* Start a tool call; false if the request is finished instead. */
@@ -1066,6 +1222,8 @@ tools_call (struct mcp_req     *req,
 
 	clock_gettime(CLOCK_MONOTONIC, &req->start);
 	list_append(&mcp->calls, &req->hook);
+	struct json_object *token = jb_get(jb_get(params, "_meta"), "progressToken");
+	req->token = id_valid(token) ? json_object_get(token) : nullptr;
 
 	/* The client's strings, which may be long, are left out of the draft
 	 * request, and call_build() escapes them in; a default system prompt
@@ -1121,17 +1279,6 @@ initialize (struct mcp_req     *req,
 		TEXT(&req->mcp->st->init_tail),
 	};
 	reply_result(req, f, ARRAY_SIZE(f), *session ? session : nullptr);
-}
-
-/* Whether @p id may name a request: a number, or a string of at most MAX_ID
- * bytes, as every reply repeats it. */
-static bool
-id_valid (struct json_object const *id)
-{
-	return json_object_is_type(id, json_type_string)
-	     ? json_object_get_string_len(id) <= MAX_ID
-	     : json_object_is_type(id, json_type_int) ||
-	       json_object_is_type(id, json_type_double);
 }
 
 /* A legacy client gave up on a call, which may wait on any loop: hand its
@@ -1360,10 +1507,14 @@ req_answer (struct mcp_req *req)
 }
 
 /* Read the tool's output from the answer, then let go of that, and of the
- * job. */
+ * job; a streamed answer's text, home read already. */
 static void
 req_text (struct mcp_req *req)
 {
+	if (req->job->status == JOB_TEXT) {
+		call_reply(req, true, false);
+		return;
+	}
 	struct span body = buf_peek(&req->job->result);
 	bool failed = true;
 	bool ok = !ai_answer(req->mcp->st->ep->protocol, req->job->http, req->msg,
@@ -1405,13 +1556,9 @@ req_step (struct loop      *loop,
           struct loop_step *step)
 {
 	struct mcp_req *req = container_of(step, struct mcp_req, step);
-	if (req->ping && req->phase < PHASE_REPLY) {
-		/* Output the client has yet to read keeps the stream open too. */
-		req->ping = false;
-		if (!req->blocked)
-			(void)req_write(req, (struct span){ (unsigned char *)":\n\n", 3 });
-		(void)loop_timer_set(loop, &req->timer,
-		                     loop->now + req->mcp->st->lim.keepalive * NS);
+	if (req->tick && req->phase < PHASE_REPLY) {
+		req->tick = false;
+		call_tick(req);
 	}
 	if (req->reaper.n) {
 		loop_work(loop, LOOP_VALUES, jb_reap_some(&req->reaper,
@@ -1458,7 +1605,7 @@ req_timer (struct loop       *loop,
            struct loop_timer *timer)
 {
 	struct mcp_req *req = container_of(timer, struct mcp_req, timer);
-	req->ping = true;
+	req->tick = true;
 	loop_ready(loop, &req->step);
 }
 
@@ -1557,6 +1704,7 @@ mcp_on_writable (struct stream *s)
 {
 	struct mcp_req *req = s->user;
 	req->blocked = false;
+	req->tick = true;
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 

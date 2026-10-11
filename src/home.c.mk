@@ -1,1 +1,1 @@
-override INC_home.c := libcurl
+override INC_home.c := libcurl json-c
