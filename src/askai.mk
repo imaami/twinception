@@ -4,6 +4,7 @@ override SRC_askai := \
   blocker.c           \
   brainstem.c         \
   buf.c               \
+  child.c             \
   dstr.c              \
   home.c              \
   http.c              \
@@ -11,6 +12,7 @@ override SRC_askai := \
   jb.c                \
   log.c               \
   loop.c              \
+  manual.c            \
   mcp.c               \
   metrics.c
 

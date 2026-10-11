@@ -1,4 +1,5 @@
-/** @file askai: an MCP server whose one tool asks another AI. */
+/** @file askai: an MCP server whose tool asks another AI, and whose other,
+ *  optional one reads the manual. */
 #include <errno.h>
 #include <getopt.h>
 #include <inttypes.h>
@@ -14,6 +15,7 @@
 #include "blocker.h"
 #include "brainstem.h"
 #include "buf.h"
+#include "config.h"
 #include "dstr.h"
 #include "home.h"
 #include "http.h"
@@ -21,6 +23,7 @@
 #include "jb.h"
 #include "log.h"
 #include "loop.h"
+#include "manual.h"
 #include "mcp.h"
 #include "metrics.h"
 #include "util.h"
@@ -56,7 +59,7 @@ usage (FILE       *out,
 {
 	fprintf(out,
 	        "Usage: %s [options]\n"
-	        "MCP server (Streamable HTTP) with one tool that asks another AI.\n"
+	        "MCP server (Streamable HTTP) with a tool that asks another AI.\n"
 	        "\n"
 	        "Upstream AI:\n"
 	        "  -p, --protocol NAME       openai (chat completions), responses,\n"
@@ -90,6 +93,13 @@ usage (FILE       *out,
 	        "                            (repeatable; '*' allows any)\n"
 	        "      --tool-name NAME      tool name (default ask_ai)\n"
 	        "      --tool-description TEXT\n"
+	        "      --man                 also offer the tool man, which gives a page\n"
+	        "                            of the manual as man(1) renders it, in\n"
+	        "                            plain UTF-8 text; each page is rendered\n"
+	        "                            once and kept\n"
+	        "      --test-man-recheck SECONDS\n"
+	        "                            test aid: how long man's finding of a\n"
+	        "                            page's file holds (default 600)\n"
 	        "  -v, --verbose             log every tool call\n"
 	        "      --loops N             event loops that serve clients (default 0:\n"
 	        "                            one fewer than the CPUs askai may use, at\n"
@@ -318,9 +328,8 @@ struct home_app {
 	struct httpd_cfg const   *hcfg;
 	struct httpd_hub         *hub;
 	struct metrics_src       *metrics;
+	struct config const      *cfg;
 	struct loop              *loop;  /* home's: the client loops' jobs go there */
-	uint32_t                  max;   /* jobs in flight */
-	bool                      fifo;  /* the test aid's one queue */
 };
 
 /* What runs on a client loop: MCP over HTTP. */
@@ -543,7 +552,7 @@ home_app_start (void            *ctx,
 		                    &app->jobs.in_flight);
 	if (!e)
 		e = home_init(&app->keep.home, loop, blockers, app->keep.door, app->ep,
-		              app->max, app->fifo, &app->jobs, &app->http);
+		              app->cfg, &app->jobs, &app->http);
 	if (e)
 		LOG(LOG_ERROR, "cannot start home: %s", strerror(e));
 	return e;
@@ -635,16 +644,14 @@ app_stop (void        *ctx,
 	keep_stop(&app->keep, loop);
 }
 
-/* Serve until shut down, with at most @p calls jobs in flight, with @p fifo
- * in one queue; returns the exit status. */
+/* Serve until shut down, as @p cfg says; returns the exit status. */
 static int
 serve (struct ai_endpoint const *ep,
        struct mcp_tool const    *tool,
        struct mcp_limits const  *mlim,
        struct httpd_cfg const   *hcfg,
        struct brainstem_cfg     *bcfg,
-       uint32_t                  calls,
-       bool                      fifo)
+       struct config const      *cfg)
 {
 	/* Keep what is freed for reuse, and give memory back to the system only
 	 * under memory pressure (design section 5).  glibc would otherwise map
@@ -678,15 +685,21 @@ serve (struct ai_endpoint const *ep,
 	 * sets its metrics as it starts, and home opens its door only once all
 	 * have, so that no request renders them before. */
 	size_t n = bcfg->loops;
+	struct manual *manual = nullptr;
 	struct mcp_static *st = nullptr;
 	struct httpd_hub *hub = nullptr;
 	struct app *apps = calloc(n, sizeof *apps);
 	struct metrics_loop *loops = calloc(n + 1, sizeof *loops);
-	int e = !apps || !loops ? ENOMEM : mcp_static_new(&st, ep, tool, mlim);
+	int e = !apps || !loops ? ENOMEM : 0;
+	if (!e && cfg->flags & CFG_MAN)
+		e = manual_new(&manual, cfg->man_recheck);
+	if (!e)
+		e = mcp_static_new(&st, ep, tool, manual, mlim);
 	if (!e)
 		e = httpd_hub_new(&hub, n);
 	struct metrics_src metrics = {
 		.loops = loops,
+		.man = manual ? manual_metrics(manual) : nullptr,
 		.n_loops = n + 1
 	};
 	struct home_app home = {
@@ -694,8 +707,7 @@ serve (struct ai_endpoint const *ep,
 		.hcfg = hcfg,
 		.hub = hub,
 		.metrics = &metrics,
-		.max = calls,
-		.fifo = fifo
+		.cfg = cfg
 	};
 	metrics.http = &home.http;
 	metrics.jobs = &home.jobs;
@@ -731,6 +743,7 @@ serve (struct ai_endpoint const *ep,
 		fprintf(stderr, "askai: %s\n", strerror(e));
 	httpd_hub_free(&hub);
 	mcp_static_free(&st);
+	manual_free(&manual);
 	free(loops);
 	free(apps);
 	return status;
@@ -747,7 +760,8 @@ main (int   argc,
 		OPT_MAX_MEMBERS, OPT_SSE_KEEPALIVE, OPT_MAX_CLIENT_CONNS,
 		OPT_IDLE_TIMEOUT, OPT_OUTPUT_PAUSE, OPT_MAX_OUTPUT, OPT_SEND_TIMEOUT,
 		OPT_GRACE, OPT_WATCHDOG, OPT_TEST_STALL, OPT_MEMORY_HIGH, OPT_TEST_PRESSURE,
-		OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO
+		OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO,
+		OPT_MAN, OPT_TEST_MAN_RECHECK
 	};
 	static struct option const options[] = {
 		{ "protocol",         required_argument, nullptr, 'p' },
@@ -767,6 +781,8 @@ main (int   argc,
 		{ "allow-origin",     required_argument, nullptr, 'o' },
 		{ "tool-name",        required_argument, nullptr, OPT_TOOL_NAME },
 		{ "tool-description", required_argument, nullptr, OPT_TOOL_DESCRIPTION },
+		{ "man",              no_argument,       nullptr, OPT_MAN },
+		{ "test-man-recheck", required_argument, nullptr, OPT_TEST_MAN_RECHECK },
 		{ "max-head",         required_argument, nullptr, OPT_MAX_HEAD },
 		{ "max-fields",       required_argument, nullptr, OPT_MAX_FIELDS },
 		{ "head-timeout",     required_argument, nullptr, OPT_HEAD_TIMEOUT },
@@ -815,11 +831,13 @@ main (int   argc,
 	dstr_auto url = DSTR_INIT;
 	dstr_auto auth = DSTR_INIT;
 	dstr_auto description = DSTR_INIT;
+	struct config cfg = {
+		.calls = 256,
+		.man_recheck = 600
+	};
 	char const *key_env = nullptr;
-	uint32_t calls = 256;
 	uint32_t loops = 0;
 	bool verbose = false;
-	bool fifo = false;
 	int status = 2;
 
 	/* Repeatable options are bounded by argc; headers get 3 spare slots. */
@@ -994,7 +1012,7 @@ main (int   argc,
 			bcfg.pressure = optarg;
 			break;
 		case OPT_MAX_CALLS:
-			ok = parse_u32(optarg, 1, 1'000'000, &calls);
+			ok = parse_u32(optarg, 1, 1'000'000, &cfg.calls);
 			break;
 		case OPT_SLOTS:
 			ok = parse_u32(optarg, 1, UINT16_MAX, &ep.slots);
@@ -1004,7 +1022,13 @@ main (int   argc,
 			ep.chunk_ms *= 1000;
 			break;
 		case OPT_TEST_FIFO:
-			fifo = true;
+			cfg.flags |= CFG_TEST_FIFO;
+			break;
+		case OPT_MAN:
+			cfg.flags |= CFG_MAN;
+			break;
+		case OPT_TEST_MAN_RECHECK:
+			ok = parse_u32(optarg, 0, 86'400, &cfg.man_recheck);
 			break;
 		case OPT_LOOPS:
 			/* As many as a handle's loop field names, home being 0. */
@@ -1037,6 +1061,10 @@ main (int   argc,
 	}
 	if (lim->out_pause > lim->out_max) {
 		fputs("askai: --output-pause exceeds --max-output\n", stderr);
+		goto out;
+	}
+	if (cfg.flags & CFG_MAN && !strcmp(tool.name, "man")) {
+		fputs("askai: --man needs a --tool-name other than man\n", stderr);
 		goto out;
 	}
 
@@ -1137,7 +1165,7 @@ main (int   argc,
 	 * mostly sleep (design section 1). */
 	size_t cpus = brainstem_cpus() - 1;
 	bcfg.loops = loops ? loops : cpus < 1 ? 1 : cpus < 255 ? cpus : 255;
-	status = serve(&ep, &tool, &mlim, &hcfg, &bcfg, calls, fifo);
+	status = serve(&ep, &tool, &mlim, &hcfg, &bcfg, &cfg);
 	goto out;
 
 oom:

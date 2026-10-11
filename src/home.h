@@ -33,6 +33,7 @@
 
 struct ai_endpoint;
 struct blockers;
+struct config;
 struct home;
 struct http_metrics;
 struct httpd_home;
@@ -65,10 +66,11 @@ struct home_metrics {
 
 /**
  * Home on @p loop, asking @p ep through a curl bridge that looks host names
- * up on @p blockers, with at most @p max jobs in flight, each of which
- * @p door makes room for, and with @p fifo, as a test aid, in one queue for
- * all, first in first out.  It counts into @p metrics and @p http, whose
- * atomic members are valid, and which outlive every loop that renders them.
+ * up on @p blockers, with at most @p cfg's calls jobs in flight, each of
+ * which @p door makes room for, and with CFG_TEST_FIFO, as a test aid, in
+ * one queue for all, first in first out.  It counts into @p metrics and
+ * @p http, whose atomic members are valid, and which outlive every loop that
+ * renders them.
  */
 extern int
 home_init (struct home               **p_home,
@@ -76,8 +78,7 @@ home_init (struct home               **p_home,
            struct blockers            *blockers,
            struct httpd_home          *door,
            struct ai_endpoint const   *ep,
-           uint32_t                    max,
-           bool                        fifo,
+           struct config const        *cfg,
            struct home_metrics        *metrics,
            struct http_metrics        *http);
 

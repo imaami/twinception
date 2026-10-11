@@ -15,8 +15,9 @@
  * principal), queues it for an upstream slot, runs it until its deadline at
  * most, writes the result and its status, and posts DONE: every job ends in
  * exactly one completion.  Meanwhile home publishes the job's progress, its
- * place in its principal's queue and then the chunks of its answer, and
- * posts PROGRESS for a front that asked for it, a burst being one message.
+ * place in its principal's queue and then the tokens of its answer, thinking
+ * or text, and posts PROGRESS for a front that asked for it, a burst being
+ * one message.
  * The front posts CANCEL exactly once: before DONE it cancels the job, which
  * home then stops and ends as CANCELLED, and after DONE it lets go of the
  * job, having read the result.  Home keeps its reference until then, and
@@ -66,6 +67,9 @@ enum {
 	JOB_PROGRESS = 2,  /**< the job's progress moved on */
 	JOB_RETURN   = 4,  /**< home dropped the last reference, without one */
 };
+
+/** In a running job's progress, beside its tokens: the latest was thinking. */
+static constexpr uint32_t JOB_THINKING = UINT32_C(1) << 31;
 
 /** How a job ended. */
 enum job_status {
@@ -127,8 +131,9 @@ struct job {
 	                                       which is the principal without a
 	                                       session */
 	_Atomic uint64_t     progress;    /**< home writes, the front reads: the
-	                                       answer's chunks << 32 | the place in
-	                                       its principal's queue, from 1 */
+	                                       answer's tokens << 32 | the place in
+	                                       its principal's queue, from 1, or,
+	                                       once it runs, JOB_THINKING or 0 */
 	_Atomic uint32_t     home_bits;   /**< pending to home */
 	_Atomic uint32_t     front_bits;  /**< pending to the front */
 	_Atomic uint32_t     refs;        /**< the front, home, each message queued */
@@ -140,7 +145,8 @@ struct job {
 	uint32_t             evlen;       /**< and its length so far */
 	uint32_t             line;        /**< where the line read begins */
 	uint32_t             scan;        /**< how far it has been looked at */
-	uint32_t             chunks;      /**< home's: the answer's events */
+	uint32_t             chunks;      /**< home's: the answer's tokens, its
+	                                       events with text or thinking */
 	uint16_t             http;        /**< home writes before DONE: the answer's
 	                                       HTTP status */
 	uint16_t             flags;       /**< home's: what it notes of the run */

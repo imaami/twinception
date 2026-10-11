@@ -12,6 +12,7 @@
 
 #include "ai.h"
 #include "buf.h"
+#include "config.h"
 #include "hist.h"
 #include "home.h"
 #include "http.h"
@@ -787,13 +788,15 @@ read_event (struct home *home,
 		              json_tokener_get_error(parser->tok) == json_tokener_error_memory))
 			e = ENOMEM;
 		jb_parse_end(parser, &home->pool, &home->reaper);
-		/* Each event is a chunk, and one with text a token. */
+		/* Each event is a chunk, and one with text or thinking a token. */
 		if (json) {
 			size_t had = buf_peek(&job->result).len;
 			e = ai_event(home->ep->protocol, root, put_text, job, &ev);
 			hist_add(&home->metrics->chunks, 1);
-			if (buf_peek(&job->result).len > had)
-				job_progress(job, (uint64_t)++job->chunks << 32);
+			bool text = buf_peek(&job->result).len > had;
+			if (text || ev.thought)
+				job_progress(job, (uint64_t)++job->chunks << 32 |
+				                  (text ? 0 : JOB_THINKING));
 		}
 		if (ev.reason) {
 			size_t len = jb_utf8(ev.reason, strnlen(ev.reason, sizeof job->reason - 1));
@@ -1285,11 +1288,11 @@ home_init (struct home               **p_home,
            struct blockers            *blockers,
            struct httpd_home          *door,
            struct ai_endpoint const   *ep,
-           uint32_t                    max,
-           bool                        fifo,
+           struct config const        *cfg,
            struct home_metrics        *metrics,
            struct http_metrics        *http)
 {
+	uint32_t max = cfg->calls;
 	size_t buckets = stdc_bit_ceil(max < KEYS_MAX ? max : (uint32_t)KEYS_MAX);
 	struct home *home = malloc(sizeof *home);
 	struct job **keys = calloc(buckets, sizeof *keys);
@@ -1329,7 +1332,7 @@ home_init (struct home               **p_home,
 		.silence = ep->chunk_ms > 0 ? (uint64_t)ep->chunk_ms * 1'000'000 : 0,
 		.backoff = BACKOFF_MIN,
 		.max = max,
-		.fifo = fifo
+		.fifo = (cfg->flags & CFG_TEST_FIFO) != 0
 	};
 	list_init(&home->ring);
 	list_init(&home->ready);

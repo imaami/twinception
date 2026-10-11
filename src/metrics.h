@@ -10,7 +10,7 @@
  * cancellations, its request times by MCP method and its connections; home's
  * jobs, its scheduler's queue and slots, the upstream breaker, streamed
  * answers' chunks, and its upstream wait and run times and host lookups;
- * blocker jobs;
+ * blocker jobs; the man tool's manual, its pages, hits and runs of man;
  * log lines dropped; watchdog reports; the brainstem's resource gauges, and
  * memory pressure and its inputs.  Histograms have fixed buckets, from 1 µs
  * to 300 s.
@@ -27,6 +27,7 @@ struct blocker_metrics;
 struct home_metrics;
 struct http_metrics;
 struct loop_metrics;
+struct manual_metrics;
 
 /** MCP methods, whose request times are kept apart. */
 enum metrics_method {
@@ -107,6 +108,7 @@ struct metrics_src {
 	struct http_metrics const    *http;
 	struct blocker_metrics const *blockers;
 	struct home_metrics const    *jobs;
+	struct manual_metrics const  *man;       /**< if askai offers man */
 	size_t                        n_loops;
 };
 

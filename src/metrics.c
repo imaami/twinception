@@ -11,6 +11,7 @@
 #include "http.h"
 #include "log.h"
 #include "loop.h"
+#include "manual.h"
 #include "metrics.h"
 #include "util.h"
 
@@ -22,7 +23,7 @@ enum { BUDGET = 32 };
  * every loop that has them, labelled with its name. */
 enum source {
 	LOOP, STASH, KEPT, CALLS, METHODS, CONNS, PER_LOOP,
-	HTTP = PER_LOOP, BLOCKERS, JOBS, BRAINSTEM, LOGGER, PSI, CGROUP, SOURCES
+	HTTP = PER_LOOP, BLOCKERS, JOBS, MAN, BRAINSTEM, LOGGER, PSI, CGROUP, SOURCES
 };
 enum kind { COUNTER, GAUGE, HISTOGRAM };
 enum scale { ONE, NS, US, PERMYRIAD };
@@ -79,6 +80,8 @@ static struct {
 	VALUE(name, help, "", struct metrics_conns, field, CONNS, kind, ONE)
 #define JOBS(name, help, labels, field, kind) \
 	VALUE(name, help, labels, struct home_metrics, field, JOBS, kind, ONE)
+#define MAN(name, help, labels, field, kind) \
+	VALUE(name, help, labels, struct manual_metrics, field, MAN, kind, ONE)
 #define INPUT(help, input, i) \
 	VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
 	      struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
@@ -153,6 +156,15 @@ static struct entry const table[] = {
 	     opens, COUNTER),
 	JOBS("askai_breaker_probes_total", "Jobs the half-open breaker let through "
 	     "as probes.", "", probes, COUNTER),
+	MAN("askai_man_pages", "Pages the man tool's manual keeps.", "", pages, GAUGE),
+	MAN("askai_man_page_bytes", "Their text.", "", bytes, GAUGE),
+	MAN("askai_man_asks_total", "Pages man calls asked for: a page kept and "
+	    "current answered, or the call waited for man.", "result=\"hit\"", hits,
+	    COUNTER),
+	MAN("askai_man_asks_total", nullptr, "result=\"wait\"", waits, COUNTER),
+	MAN("askai_man_runs_total", "Runs of man: to find a page's file (man -w), "
+	    "or to render the page (man -l).", "run=\"find\"", finds, COUNTER),
+	MAN("askai_man_runs_total", nullptr, "run=\"render\"", renders, COUNTER),
 	VALUE("askai_upstream_wait_seconds", "Time from an upstream request to its "
 	      "start in libcurl, its host's lookup included.", "", struct http_metrics,
 	      wait, HTTP, HISTOGRAM, NS),
@@ -245,6 +257,7 @@ static struct entry const table[] = {
 };
 
 #undef INPUT
+#undef MAN
 #undef JOBS
 #undef CONNS
 #undef CALLS
@@ -363,6 +376,7 @@ metrics_render (struct metrics_src const *src,
 		[HTTP] = src->http,
 		[BLOCKERS] = src->blockers,
 		[JOBS] = src->jobs,
+		[MAN] = src->man,
 		[BRAINSTEM] = &brainstem_metrics,
 		[LOGGER] = &log_metrics,
 		[PSI] = hist_get(&brainstem_metrics.psi_ok) ? &brainstem_metrics : nullptr,

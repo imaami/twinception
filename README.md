@@ -229,11 +229,12 @@ becomes crossed reasoning payload.
 
 ## askai: an "ask an AI" MCP server
 
-`askai` is an [MCP](https://modelcontextprotocol.io) server with a single tool,
-`ask_ai`, that forwards a prompt to another AI model and returns its answer.  A
+`askai` is an [MCP](https://modelcontextprotocol.io) server whose tool,
+`ask_ai`, forwards a prompt to another AI model and returns its answer.  A
 small local model in `llama-server` can use it for a second opinion, or to hand
 a hard sub-problem to a bigger model.  The other model sees only the prompt, so
-the tool description asks the caller to make it self-contained.
+the tool description asks the caller to make it self-contained.  With `--man`,
+a second tool, `man`, reads the manual (below).
 
 It speaks MCP's Streamable HTTP transport, which is what the `llama-server` web
 UI's MCP client uses, and serves both protocol eras on one endpoint:
@@ -250,7 +251,8 @@ model works (`--sse-keepalive`), and ends with the result as one `data:`
 event.  A call whose `params._meta` has a `progressToken` also gets
 `notifications/progress` on its stream, at most one every 100 ms: its place in
 its session's queue while it waits for the upstream, then the tokens of the
-answer as they come.  Other requests, and clients that accept only JSON, get
+answer as they come, "thinking" while the latest is the model's thinking and
+"generating" once it is the answer's text.  Other requests, and clients that accept only JSON, get
 JSON.  Request bodies may come with a `Content-Length` or in chunks.
 
 ### Upstream protocols
@@ -327,6 +329,45 @@ Raise both for slow reasoning models.
 
 Running several instances with different `--tool-name` values (and ports) gives
 the model a choice of advisers, e.g. `ask_reasoner` and `ask_coder`.
+
+### Reading the manual
+
+With `--man`, `askai` also offers the tool `man`: a page of the manual of the
+machine `askai` runs on, as `man [section] name` shows it, in UTF-8 text, so
+that a model can check the interface of a system call, library function or
+command rather than recall it.  Its arguments are the page's `name` and an
+optional `section`, such as `2`, `3`, `3p` or `7`.  A name is 1 to 128
+letters, digits and `_.:+@-`, and a section 1 to 16 letters and digits, neither
+beginning with `-`, so neither can become an option or a path.
+
+`askai` runs `man` itself, with no shell: `man -w -s SECTION -- NAME`, which
+finds the page's file, then `man -l -- FILE`, which renders it.  Each runs in a
+session of its own, its standard error discarded, with an environment of its
+own: `PATH` and `MANPATH` as `askai` has them, `LC_ALL=C.UTF-8`, `MANWIDTH=80`,
+and `MANROFFOPT='-rHY=0 -dAD=l'`, which turns hyphenation and justification
+off, as a model reads words split across lines, or padded with spaces, less
+well.  A page longer than 2 MiB is cut there with a note saying so; `gcc(1)`,
+the longest page of many a system, renders to 1.4 MiB, which is some 370,000
+tokens, more than many a model's context holds.
+
+Each page is rendered once and kept, by its file: `printf` in section `3p` and
+in `3posix` share one rendering, as do `S_ISBLK` and `inode(7)`, which the
+former's file points to.  Asked for again, a page comes from memory, in 0.3 ms
+for `pthread_create(3)` and 5.5 ms for `gcc(1)`, as long as its file is as it
+was; a file that has changed is rendered anew.  A name `man` has found a file
+for is found anew once that finding is ten minutes old, in the background,
+the kept page given meanwhile, so that a page installed since, which `man`
+would find first, takes over.  Calls for a page under way wait for its one
+rendering.  Pages are kept for good: all of a system's pages take some 100 to
+200 MiB.  `GET /metrics` shows the pages kept and their bytes, the calls a
+kept page answered and those that waited, and the runs of `man`.
+
+A missing page is a tool error, "No manual entry for NAME in section S.", and
+so are `man`'s other failures and a page that takes more than 10 s to find or
+render; none of those is kept.  At most 16 `man` processes run at once; a call
+past those is answered as busy.  A call that goes, as when its client closes
+the connection, leaves the page to be rendered and kept; stopping `askai`
+kills `man` and the processes it started.
 
 ### Security
 
@@ -470,6 +511,13 @@ MCP server:
                             (repeatable; '*' allows any)
       --tool-name NAME      tool name (default ask_ai)
       --tool-description TEXT
+      --man                 also offer the tool man, which gives a page
+                            of the manual as man(1) renders it, in
+                            plain UTF-8 text; each page is rendered
+                            once and kept
+      --test-man-recheck SECONDS
+                            test aid: how long man's finding of a
+                            page's file holds (default 600)
   -v, --verbose             log every tool call
       --loops N             event loops that serve clients (default 0:
                             one fewer than the CPUs askai may use, at

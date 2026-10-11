@@ -46,9 +46,9 @@ ai_request (struct ai_endpoint const *ep,
 struct ai_event {
 	char const *error;      /**< the upstream's error message, or nullptr */
 	char const *reason;     /**< the answer's stop reason, or nullptr */
-	uint32_t    truncated;  /**< bool: the reason is the output token limit */
-	uint32_t    end;        /**< bool, widened over the padding: the answer
-	                             says it has ended */
+	uint32_t    thought;    /**< bool: the event carries the model's thinking */
+	uint16_t    truncated;  /**< bool: the reason is the output token limit */
+	uint16_t    end;        /**< bool: the answer says it has ended */
 };
 
 /** What ends an answer the output token limit cut short. */

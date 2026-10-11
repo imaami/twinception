@@ -10,6 +10,7 @@
 
 struct ai_endpoint;
 struct loop;
+struct manual;
 struct mcp;
 struct mcp_static;
 struct metrics_mcp;
@@ -44,13 +45,15 @@ mcp_limits (void)
 
 /**
  * What every loop's MCP shares, and nobody changes once it is made: the
- * configuration, and the replies that never change, serialized.  @p ep and
- * @p tool must outlive it.
+ * configuration, and the replies that never change, serialized.  With
+ * @p manual, it offers the tool man beside @p tool: a page of the manual
+ * (src/manual.h).  @p ep, @p tool and @p manual must outlive it.
  */
 extern int
 mcp_static_new (struct mcp_static        **p_static,
                 struct ai_endpoint const  *ep,
                 struct mcp_tool const     *tool,
+                struct manual             *manual,
                 struct mcp_limits const   *limits);
 
 extern void

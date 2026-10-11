@@ -252,6 +252,13 @@ put_text (int               (*put) (void       *user,
 	return str ? put(user, str, (size_t)json_object_get_string_len(val)) : 0;
 }
 
+/* Whether @p val is a string with something in it. */
+static bool
+some_text (struct json_object *val)
+{
+	return jb_text(val) && json_object_get_string_len(val);
+}
+
 /* The message of an error event, or of one that carries an error. */
 static char const *
 event_error (struct json_object *ev)
@@ -301,6 +308,9 @@ ai_event (enum ai_protocol    protocol,
 			e = put_text(put, user, jb_get(part, "text"));
 		if (!e)
 			e = put_text(put, user, jb_get(delta, "refusal"));
+		/* llama-server's and DeepSeek's name, and OpenRouter's. */
+		out->thought = some_text(jb_get(delta, "reasoning_content")) ||
+		               some_text(jb_get(delta, "reasoning"));
 		reason = jb_get(choice, "finish_reason");
 		limit = "length";
 		break;
@@ -309,6 +319,9 @@ ai_event (enum ai_protocol    protocol,
 		if (jb_is(type, "response.output_text.delta") ||
 		    jb_is(type, "response.refusal.delta"))
 			e = put_text(put, user, jb_get(ev, "delta"));
+		out->thought = (jb_is(type, "response.reasoning_text.delta") ||
+		                jb_is(type, "response.reasoning_summary_text.delta")) &&
+		               some_text(jb_get(ev, "delta"));
 		reason = jb_get(jb_get(jb_get(ev, "response"), "incomplete_details"),
 		                "reason");
 		limit = "max_output_tokens";
@@ -318,6 +331,9 @@ ai_event (enum ai_protocol    protocol,
 		if (jb_is(type, "content_block_delta") &&
 		    jb_is(jb_get(delta, "type"), "text_delta"))
 			e = put_text(put, user, jb_get(delta, "text"));
+		out->thought = jb_is(type, "content_block_delta") &&
+		               jb_is(jb_get(delta, "type"), "thinking_delta") &&
+		               some_text(jb_get(delta, "thinking"));
 		reason = jb_get(delta, "stop_reason");
 		limit = "max_tokens";
 		break;
@@ -329,6 +345,8 @@ ai_event (enum ai_protocol    protocol,
 		for (size_t i = 0; !e && (part = jb_at(parts, i)); ++i)
 			if (!json_object_get_boolean(jb_get(part, "thought")))
 				e = put_text(put, user, jb_get(part, "text"));
+			else
+				out->thought |= some_text(jb_get(part, "text"));
 		reason = candidate ? jb_get(candidate, "finishReason")
 		       : jb_get(jb_get(ev, "promptFeedback"), "blockReason");
 		limit = "MAX_TOKENS";

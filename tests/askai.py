@@ -8,6 +8,7 @@ import os
 import re
 import resource
 import select
+import shutil
 import signal
 import socket
 import subprocess
@@ -96,6 +97,10 @@ def sse_of(payload):
     elif "output" in payload:
         events.append(("response.created", {"type": "response.created"}))
         for item in payload["output"]:
+            for part in item.get("content", []) if item["type"] == "reasoning" else []:
+                for piece in pieces(part["text"]):
+                    events.append(("response.reasoning_text.delta", {
+                        "type": "response.reasoning_text.delta", "delta": piece}))
             for part in item.get("content", []) if item["type"] == "message" else []:
                 kind = "refusal" if part["type"] == "refusal" else "output_text"
                 for piece in pieces(part.get("refusal") or part.get("text") or ""):
@@ -3069,7 +3074,8 @@ def read_events(sock, timeout=10):
 def check_progress(binary, up):
     """A call whose request has a progressToken gets notifications/progress on
     its event stream, at most one every 100 ms, their progress growing: its
-    place in its session's queue, then the tokens of its answer.  None comes
+    place in its session's queue, then the tokens of its answer, "thinking"
+    while the latest is the model's thinking, in every protocol.  None comes
     after the result, or once the call is cancelled, nor to a call without a
     token, nor in a JSON reply."""
     chunk = sse_wire([(None, {"choices": [{"index": 0, "delta": {"content": "x"}}]})])
@@ -3137,6 +3143,44 @@ def check_progress(binary, up):
             events = read_events(sock)
             assert events and all(e.get("method") == "notifications/progress"
                                   for _, e in events), events
+
+    # Thinking counts, said so while the latest token is; the answer is the
+    # text alone.
+    thinking = {
+        "openai": {"choices": [{"message": {"reasoning_content": "hmm",
+                                            "content": "xyz"},
+                                "finish_reason": "stop"}]},
+        "responses": {"status": "completed", "output": [
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "hmm"}]},
+            {"type": "message", "content": [{"type": "output_text", "text": "xyz"}]}]},
+        "anthropic": {"content": [{"type": "thinking", "thinking": "hmm"},
+                                  {"type": "text", "text": "xyz"}],
+                      "stop_reason": "end_turn"},
+        "gemini": {"candidates": [{"content": {"parts": [
+            {"text": "hmm", "thought": True}, {"text": "xyz"}]},
+            "finishReason": "STOP"}]},
+    }
+    paths = {"openai": "/v1/chat/completions", "responses": "/v1/responses",
+             "anthropic": "/v1/messages", "gemini": "/v1beta/models/m:generateContent"}
+    for protocol, answer in thinking.items():
+        events = sse_of(answer)
+        sizes = tuple(len(sse_wire([e])) for e in events)
+        up.reply = lambda request, w=sse_wire(events), s=sizes: (
+            200, Stream(wire=w, sizes=s, gap=0.15))
+        with Askai(binary, "-p", protocol, "-u", up.url(paths[protocol]), "-m", "m",
+                   "--slots", "1") as ai:
+            with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+                sock.sendall(call(5, 10, "tok"))
+                events = read_events(sock)
+        assert text_of(events[-1][1]["result"]) == "xyz", (protocol, events)
+        notes = [e["params"] for _, e in events[:-1]]
+        progress = [n["progress"] for n in notes]
+        assert progress == sorted(set(progress)), (protocol, notes)
+        said = [re.fullmatch(r"(thinking|generating), (\d+) tokens", n["message"])
+                for n in notes]
+        kinds = [m[1] for m in said if m and int(m[2])]
+        assert kinds and kinds[0] == "thinking" and kinds[-1] == "generating" and \
+            kinds == sorted(kinds, key=lambda k: k == "generating"), (protocol, notes)
     up.reply = lambda request: (200, ANSWERS["openai"])
 
     print("progress: notifications on the event stream, rate-limited: PASS")
@@ -3448,6 +3492,325 @@ def check_stalled_stderr(binary, up):
     print("stalled stderr: lines dropped and counted, clients served: PASS")
 
 
+# A stand-in for man(1).  With -w it finds a page's file in its directory's
+# "pages", making it if need be, and notes its arguments in "finds"; else it
+# renders the page that file names, noting its arguments in "renders", and
+# the name says what it does.  It notes the processes that wait in
+# "waiting".
+FAKE_MAN = r"""#!/bin/sh
+dir=${0%/*}
+for page; do :; done
+if [ "$1" = -w ]; then
+	echo "$*" >> "$dir/finds"
+	case $page in
+	missing) echo "No manual entry for missing" >&2; exit 16 ;;
+	fail) exit 3 ;;
+	nowhere) echo pages/nowhere; exit 0 ;;
+	shadow) [ -e "$dir/moved" ] && page=shadowed ;;
+	esac
+	[ -e "$dir/pages/$page" ] || : > "$dir/pages/$page"
+	echo "$dir/pages/$page"
+	exit 0
+fi
+echo "$*" >> "$dir/renders"
+case ${page##*/} in
+echo)
+	printf '%s\n' "$@" ---
+	env | sort
+	echo ---
+	ls /proc/self/fd | tr '\n' ' '
+	echo
+	readlink /proc/$$/fd/0 /proc/$$/fd/2
+	grep -E '^Sig(Blk|Ign)' /proc/$$/status
+	set -- $(cat /proc/$$/stat)
+	echo "session $6 of $1"
+	;;
+broken) exit 3 ;;
+big) head -c 3145728 /dev/zero | tr '\0' x ;;
+endless) yes ;;
+bytes) printf 'a\377b\303(c\342\202\254' ;;
+slow) sleep 1; echo slow ;;
+shadow) echo first ;;
+shadowed) echo second ;;
+wait*)
+	sleep 1000 &
+	echo "$$ $!" >> "$dir/waiting"
+	wait
+	;;
+*) echo "page ${page##*/}" ;;
+esac
+"""
+
+
+def man_call(ai, **arguments):
+    status, _, body = ai.rpc("tools/call", {"name": "man", "arguments": arguments})
+    assert status == 200, (status, body)
+    return body["result"]
+
+
+def alive(pid):
+    """Whether process @p pid exists and is no zombie."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rpartition(")")[2].split()[0] != "Z"
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+
+
+def check_man(binary, up):
+    """The man tool, with --man only: its arguments checked; man run to find
+    a page's file, then to render it, with an environment, signals, a session
+    and descriptors of its own; the page cut at 2 MiB and mended into UTF-8
+    text, or why there is none.  Each page is rendered once and kept by its
+    file, for every name it is found by, eight at most, and given while its
+    file is unchanged; a name is found anew, in the background, once the
+    recheck has passed; the asks for a page under way wait for its one fetch.
+    16 children at most, each killed with its group at its deadline or as
+    askai stops; and the real man's pages, where they are installed."""
+    with Askai(binary, "-u", up.url()) as ai:
+        tools = ai.rpc("tools/list")[2]["result"]["tools"]
+        assert [t["name"] for t in tools] == ["ask_ai"], tools
+        _, _, body = ai.rpc("tools/call", {"name": "man", "arguments": {"name": "ls"}})
+        assert body["error"]["message"] == "Unknown tool: man", body
+    proc = subprocess.run([binary, "--man", "--tool-name", "man", "-u", up.url()],
+                          capture_output=True, text=True, timeout=10)
+    assert proc.returncode == 2, proc
+    assert "--man needs a --tool-name other than man" in proc.stderr, proc.stderr
+
+    with tempfile.TemporaryDirectory() as fake:
+        with open(f"{fake}/man", "w") as f:
+            f.write(FAKE_MAN)
+        os.chmod(f"{fake}/man", 0o755)
+        os.mkdir(f"{fake}/pages")
+        path = fake + ":" + os.environ.get("PATH", "/usr/bin:/bin")
+        env = {"PATH": path, "MANPATH": "/nowhere/man", "LANG": "fi_FI.UTF-8",
+               "MANOPT": "-a", "MANPAGER": "less"}
+
+        def lines(name):
+            """The lines of the fake's file @p name."""
+            try:
+                with open(f"{fake}/{name}") as f:
+                    return f.read().splitlines()
+            except FileNotFoundError:
+                return []
+
+        def waiters():
+            """The processes waiting, a line of the shell's and its sleep's
+            for each."""
+            return [[int(p) for p in line.split()] for line in lines("waiting")]
+
+        def runs(page):
+            """How often man found @p page, and rendered it."""
+            return (sum(line.endswith(" -- " + page) for line in lines("finds")),
+                    sum(line.endswith("/pages/" + page) for line in lines("renders")))
+
+        with Askai(binary, "-u", up.url(), "--man", env=env) as ai:
+            tools = ai.rpc("tools/list")[2]["result"]["tools"]
+            assert [t["name"] for t in tools] == ["ask_ai", "man"], tools
+            assert tools[1]["inputSchema"]["required"] == ["name"], tools[1]
+
+            # Its arguments, environment, descriptors, signals and session.
+            page = text_of(man_call(ai, name="echo", section="3p"))
+            assert lines("finds") == ["-w -s 3p -- echo"], lines("finds")
+            out = page.split("\n")
+            args = out[:out.index("---")]
+            assert args == ["-l", "--", f"{fake}/pages/echo"], out
+            rest = out[len(args) + 1:]
+            environ = [v for v in rest[:rest.index("---")]
+                       if v.split("=")[0] not in ("PWD", "OLDPWD", "SHLVL", "_")]
+            assert environ == ["LC_ALL=C.UTF-8", "MANPATH=/nowhere/man",
+                               "MANROFFOPT=-rHY=0 -dAD=l", "MANWIDTH=80",
+                               "PATH=" + path], environ
+            fds, stdin, stderr, blocked, ignored, session = \
+                rest[rest.index("---") + 1:-1]
+            assert fds == "0 1 2 3 ", fds
+            assert (stdin, stderr) == ("/dev/null", "/dev/null"), out
+            assert blocked == "SigBlk:\t0000000000000000", out
+            assert ignored == "SigIgn:\t0000000000000000", out
+            sid, pid = re.fullmatch(r"session (\d+) of (\d+)", session).groups()
+            assert sid == pid, session
+
+            # Each name man finds the file by shares the one rendering, and
+            # once found, a name's page comes from the manual.
+            for section, find in ((3, "-w -s 3 -- echo"), ("", "-w -- echo")):
+                assert text_of(man_call(ai, name="echo", section=section)) == page
+                assert lines("finds")[-1] == find, (section, lines("finds"))
+            for section in ("3p", 3, "", None):
+                arguments = {"name": "echo", "section": section}
+                if section is None:
+                    del arguments["section"]
+                assert text_of(man_call(ai, **arguments)) == page, section
+            _, _, body = ai.modern("tools/call", {"name": "man",
+                                                  "arguments": {"name": "echo"}})
+            assert text_of(body["result"]) == page, body
+            assert runs("echo") == (3, 1), runs("echo")
+            values = ai.metrics()
+            assert values["askai_man_asks_total{result=\"hit\"}"] == 5, values
+            assert values["askai_man_asks_total{result=\"wait\"}"] == 3, values
+            assert values["askai_man_runs_total{run=\"find\"}"] == 3, values
+            assert values["askai_man_runs_total{run=\"render\"}"] == 1, values
+            assert values["askai_man_pages"] == 1, values
+            assert values["askai_man_page_bytes"] == len(page.encode()), values
+
+            # A file that changes is rendered anew, as is one that goes: its
+            # new rendering tells another session.
+            os.chmod(f"{fake}/pages/echo", 0o600)
+            again = text_of(man_call(ai, name="echo"))
+            assert again != page and again.startswith(f"-l\n--\n{fake}/pages/echo\n")
+            assert runs("echo") == (4, 2), runs("echo")
+            os.unlink(f"{fake}/pages/echo")
+            page = text_of(man_call(ai, name="echo", section=3))
+            assert page != again and page.startswith(f"-l\n--\n{fake}/pages/echo\n")
+            assert runs("echo") == (5, 3), runs("echo")
+            assert ai.metrics()["askai_man_pages"] == 1
+
+            # A file is kept by eight names at most: a ninth is found anew
+            # each time, its page still from the manual.
+            for i in range(9):
+                assert text_of(man_call(ai, name="many", section=f"m{i}")) == \
+                    "page many\n"
+            assert runs("many") == (9, 1), runs("many")
+            for i in range(9):
+                man_call(ai, name="many", section=f"m{i}")
+            assert runs("many") == (10, 1), runs("many")
+
+            # Asks for a page under way wait for its one fetch.
+            texts = []
+            threads = [threading.Thread(target=lambda: texts.append(
+                text_of(man_call(ai, name="slow")))) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+            assert texts == ["slow\n"] * 8, texts
+            assert runs("slow") == (1, 1), runs("slow")
+
+            # Arguments a model gets back to correct.
+            name = "The name argument must name a manual page"
+            section = "The section argument must name a section"
+            for arguments, problem in (({"name": "-l"}, name), ({"name": "a/b"}, name),
+                                       ({"name": ""}, name), ({"name": "x" * 129}, name),
+                                       ({"name": "a\u0000b"}, name), ({"section": "1"}, name),
+                                       ({"name": 1}, name),
+                                       ({"name": "ls", "section": "1;x"}, section),
+                                       ({"name": "ls", "section": "-1"}, section),
+                                       ({"name": "ls", "section": "x" * 17}, section),
+                                       ({"name": "ls", "section": 12}, section),
+                                       ({"name": "ls", "section": True}, section)):
+                result = man_call(ai, **arguments)
+                assert result.get("isError") and text_of(result).startswith(problem), \
+                    (arguments, result)
+            _, _, body = ai.rpc("tools/call", {"name": "man", "arguments": [1]})
+            assert text_of(body["result"]) == "Tool arguments must be an object.", body
+
+            # What man says, and what it does wrong; none of it is kept.
+            for arguments, text in (({"name": "missing", "section": "3"},
+                                     "No manual entry for missing in section 3."),
+                                    ({"name": "missing"}, "No manual entry for missing."),
+                                    ({"name": "fail"}, "man failed, with exit status 3."),
+                                    ({"name": "broken"}, "man failed, with exit status 3."),
+                                    ({"name": "nowhere"},
+                                     "man named no file for the page.")):
+                for _ in range(2):
+                    result = man_call(ai, **arguments)
+                    assert result.get("isError") and text_of(result) == text, result
+            assert runs("missing") == (4, 0) and runs("broken") == (2, 2)
+
+            # A page is cut at 2 MiB, and made UTF-8 text.
+            note = "\n\n[The page goes on past the 2 MiB shown.]\n"
+            for _ in range(2):
+                result = man_call(ai, name="big")
+                assert not result.get("isError") and text_of(result) == \
+                    "x" * (2 << 20) + note
+            result = man_call(ai, name="endless")
+            assert text_of(result) == "y\n" * (1 << 20) + note, len(text_of(result))
+            assert text_of(man_call(ai, name="bytes")) == "a?b?(c€"
+            assert runs("big") == (1, 1), runs("big")
+
+            # One call waits out its deadline, and fifteen more go: sixteen
+            # children at most, which go on until their deadline.
+            late = []
+            start = time.monotonic()
+            thread = threading.Thread(target=lambda: late.append(
+                (man_call(ai, name="wait0"), time.monotonic() - start)))
+            thread.start()
+            wait_for(lambda: len(waiters()) == 1)
+            socks = []
+            for i in range(1, 16):
+                sock = socket.create_connection(("127.0.0.1", ai.port), 10)
+                sock.sendall(rpc_request(i, {"name": "man", "arguments": {
+                    "name": f"wait{i}"}}, "tools/call"))
+                socks.append(sock)
+            wait_for(lambda: len(waiters()) == 16)
+            result = man_call(ai, name="spare")
+            assert result.get("isError") and text_of(result) == \
+                "Too many pages are being rendered; try again in a few seconds."
+            for sock in socks:
+                sock.close()
+            assert text_of(man_call(ai, name="echo")) == page
+            thread.join(15)
+            result, took = late[0]
+            assert result.get("isError"), result
+            assert text_of(result) == "man took longer than 10 s.", result
+            assert 10 <= took < 12, took
+            wait_for(lambda: not any(alive(p) for line in waiters() for p in line))
+            assert text_of(man_call(ai, name="spare")) == "page spare\n"
+            assert all(alive(p) for p in (ai.proc.pid,))
+
+        # A name is found anew once the recheck has passed, its page given
+        # meanwhile: a page installed since, which man finds first, takes
+        # over.
+        with Askai(binary, "-u", up.url(), "--man", "--test-man-recheck", "1",
+                   env=env) as ai:
+            assert text_of(man_call(ai, name="shadow")) == "first\n"
+            open(f"{fake}/moved", "w").close()
+            assert text_of(man_call(ai, name="shadow")) == "first\n"
+            assert runs("shadow") == (1, 1), runs("shadow")
+            time.sleep(1.1)
+            assert text_of(man_call(ai, name="shadow")) == "first\n"
+            wait_for(lambda: ai.metrics()["askai_man_pages"] == 2)
+            assert runs("shadow") == (2, 1) and runs("shadowed") == (0, 1)
+            assert text_of(man_call(ai, name="shadow")) == "second\n"
+
+        # Stopping ends a man call, killing its child.
+        os.unlink(f"{fake}/waiting")
+        ai = Askai(binary, "-u", up.url(), "--man", env=env)
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(rpc_request(7, {"name": "man", "arguments": {"name": "wait"}},
+                                     "tools/call"))
+            wait_for(lambda: len(waiters()) == 1)
+            ai.stop()
+            status, body = Replies(sock).next()
+            assert status == 503 and body["error"]["message"] == \
+                "Server is shutting down", (status, body)
+        wait_for(lambda: not any(alive(p) for p in waiters()[0]))
+
+    print("man: offered with --man, arguments, environment, pages kept by file "
+          "and rechecked, one fetch a page, cap, mending, deadline and "
+          "stopping: PASS")
+
+    # The real man, if it has printf(3).
+    if not shutil.which("man") or subprocess.run(
+            ["man", "-w", "3", "printf"], capture_output=True).returncode:
+        print("man: the real man's pages: SKIP (no printf(3))")
+        return
+    with Askai(binary, "-u", up.url(), "--man") as ai:
+        text = text_of(man_call(ai, name="printf", section="3"))
+        assert "SYNOPSIS" in text and "#include <stdio.h>" in text, text[:1000]
+        assert not re.search(r"[\x00-\x09\x0b-\x1f\x7f]", text)
+        assert max(len(line) for line in text.split("\n")) <= 80
+        assert text_of(man_call(ai, name="printf", section=3)) == text
+        assert ai.metrics()["askai_man_asks_total{result=\"hit\"}"] == 1
+        result = man_call(ai, name="no_such_page_xyz", section="3")
+        assert result.get("isError") and text_of(result) == \
+            "No manual entry for no_such_page_xyz in section 3.", result
+        # The longest page of many a system comes through whole.
+        if not subprocess.run(["man", "-w", "1", "gcc"], capture_output=True).returncode:
+            text = text_of(man_call(ai, name="gcc", section="1"))
+            assert "SYNOPSIS" in text and not text.endswith("shown.]\n"), len(text)
+    print("man: the real man's pages, UTF-8 text 80 columns wide, kept: PASS")
+
+
 def main():
     binary = sys.argv[1] if len(sys.argv) > 1 else "./askai"
     up = Upstream()
@@ -3459,7 +3822,7 @@ def main():
                       check_isolation, check_configuration, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_shutdown,
+                      check_man, check_shutdown,
                       check_watchdog, check_stalled_stderr):
             check(binary, up)
     finally:

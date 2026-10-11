@@ -43,6 +43,12 @@
  * notifications/cancelled, on any connection of any loop, which home finds
  * the call's job by (src/job.h).
  *
+ * A man call, when askai offers the man tool, takes its page from the
+ * manual (src/manual.h), which renders each page once and keeps it: at once
+ * if the manual has it, else once man has, which the call waits for, named
+ * by a handle as for a job's completion.  It replies with the page, or with
+ * why there is none.  A call that goes leaves the page to the manual.
+ *
  * GET /metrics answers a trusted client (src/stream.h) with the metrics,
  * rendered a share a step (src/metrics.h).  Draining, tool calls that wait
  * for the upstream, and those yet to start, end with an error, which on an
@@ -66,6 +72,7 @@
 #include "list.h"
 #include "log.h"
 #include "loop.h"
+#include "manual.h"
 #include "mcp.h"
 #include "metrics.h"
 #include "shelf.h"
@@ -132,6 +139,8 @@ struct mcp_static {
 	                                             version */
 	struct dstr               modern_tail;  /**< closes a modern result */
 	struct dstr               versions;     /**< the supported versions, an array */
+	struct manual            *manual;       /**< the man tool's, if askai
+	                                             offers it */
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
 };
@@ -143,6 +152,7 @@ enum phase {
 	PHASE_DISPATCH,  /* handing the message on, in a step of its own */
 	PHASE_BUILD,     /* writing the upstream request, a slice a step */
 	PHASE_CALL,      /* waiting for the upstream */
+	PHASE_MAN,       /* waiting for a man call's page */
 	PHASE_ANSWER,    /* parsing its answer, a slice a step */
 	PHASE_TEXT,      /* taking the tool's output from that, in a step of its own */
 	PHASE_REPLY,     /* escaping the output into the reply, a slice a step */
@@ -177,6 +187,7 @@ struct mcp_req {
 	struct mcp          *mcp;
 	struct job          *job;        /* the tool call's, once submitted, until
 	                                    let go of */
+	struct manual_page  *page;       /* a man call's, until let go of */
 	struct json_object  *msg;        /* parsed, until dispatched; then the
 	                                    upstream's answer, until read */
 	struct json_object  *id;         /* the request's id, if any */
@@ -217,6 +228,7 @@ struct mcp_req {
 struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
 	struct list              freeing;   /* requests freeing their message */
+	struct manual_loop       man;       /* the man calls' fetches */
 	struct shelf             spare;     /* finished requests */
 	struct shelf             jobs;      /* jobs let go of */
 	struct loop_step         drain;     /* ends the calls, draining */
@@ -485,21 +497,25 @@ job_shelve (struct mcp *mcp,
 
 /* Let go of the request's job, if it has one: cancel it while the request
  * waits for it, freeing the request's handle, so that its completion finds
- * no request; else tell home the result has been read. */
+ * no request; else tell home the result has been read.  A man call lets go
+ * of its page, or of its handle while it waits for one, likewise. */
 static void
 call_drop (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	struct job *job = req->job;
-	if (!job)
-		return;
-	req->job = nullptr;
 	bool waits = req->call.bits;
+	manual_put(req->page);
+	req->page = nullptr;
 	if (waits) {
 		loop_forget(mcp->loop, req->call);
 		req->call = (struct handle){};
-		hist_add(&mcp->counts->calls.cancelled, 1);
 	}
+	if (!job)
+		return;
+	req->job = nullptr;
+	if (waits)
+		hist_add(&mcp->counts->calls.cancelled, 1);
 	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_CANCEL);
 	/* A job that waits keeps the front's reference for its completion. */
 	if (!waits && job_put(job, 1))
@@ -776,18 +792,21 @@ tool_result (struct mcp_req *req,
 }
 
 /* The tool's output: a streamed answer's text, in the job's result while
- * the request holds the job, else what the request read or built. */
+ * the request holds the job, a man page while it holds the page, else what
+ * the request read or built. */
 static struct span
 req_output (struct mcp_req const *req)
 {
 	return req->job ? buf_peek(&req->job->result)
+	     : req->page ? (struct span){ (unsigned char *)req->page->text,
+	                                  req->page->len }
 	     : (struct span){ (unsigned char *)(uintptr_t)dstr_get(&req->answer),
 	                      dstr_len(&req->answer) };
 }
 
 /* Escape as much of the output into the reply as the step has the share
- * for; the rest goes on in bulk steps.  Then let go of the job, if the
- * output was its. */
+ * for; the rest goes on in bulk steps.  Then let go of the job, or the
+ * page, if the output was its. */
 static void
 req_reply (struct mcp_req *req)
 {
@@ -836,19 +855,19 @@ call_reply (struct mcp_req *req,
 }
 
 /* Notify the client how far the call has come, as its job's progress says:
- * its place in its principal's queue, then the chunks of its answer, as a
- * progress that grows with each notification.  Held back by output the
- * client has yet to read, it goes in a later step. */
+ * its place in its principal's queue, then the tokens of its answer, thinking
+ * or text, as a progress that grows with each notification.  Held back by
+ * output the client has yet to read, it goes in a later step. */
 static void
 call_progress (struct mcp_req *req)
 {
 	uint64_t progress = atomic_load_explicit(&req->job->progress,
 	                                         memory_order_relaxed);
-	uint32_t place = (uint32_t)progress;
-	uint32_t chunks = (uint32_t)(progress >> 32);
+	uint32_t place = (uint32_t)progress & ~JOB_THINKING;
+	uint32_t tokens = (uint32_t)(progress >> 32);
 	if (place > req->place)
 		req->place = place;
-	uint64_t value = place ? req->place - place : (uint64_t)req->place + chunks;
+	uint64_t value = place ? req->place - place : (uint64_t)req->place + tokens;
 	req->progress = false;
 	if (value < req->next_note)
 		return;
@@ -856,8 +875,9 @@ call_progress (struct mcp_req *req)
 	char text[48];
 	int n = snprintf(num, sizeof num, "%" PRIu64, value);
 	int m = place ? snprintf(text, sizeof text, "queued, position %" PRIu32, place)
-	              : snprintf(text, sizeof text, "generating, %" PRIu32 " tokens",
-	                         chunks);
+	              : snprintf(text, sizeof text, "%s, %" PRIu32 " tokens",
+	                         progress & JOB_THINKING ? "thinking" : "generating",
+	                         tokens);
 	size_t len = 0;
 	char const *token = json_object_to_json_string_length(req->token, JB_WIRE, &len);
 	struct frag const f[] = {
@@ -1028,24 +1048,11 @@ call_copy (struct mcp_req *req,
 	return true;
 }
 
-/* A hash of the @p len bytes at @p data, seeded with @p seed, which no client
- * knows: none can pick keys that crowd one of home's buckets. */
-static uint64_t
-hash (uint64_t             seed,
-      unsigned char const *data,
-      size_t               len)
-{
-	uint64_t h = seed ^ len;
-	for (size_t i = 0; i < len; ++i)
-		h = (h ^ data[i]) * 0x100000001b3;
-	h = (h ^ h >> 33) * 0xff51afd7ed558ccd;
-	return h ^ h >> 33;
-}
-
 /* Write the key a legacy notifications/cancelled names a call by into
  * @p job: the session field, if present, and a line break, which no field
- * holds, then the JSON of the request id @p id; and its hash, seeded.  False
- * if out of memory. */
+ * holds, then the JSON of the request id @p id; and its hash, seeded so
+ * that no client can pick keys that crowd one of home's buckets.  False if
+ * out of memory. */
 static bool
 call_key (struct job         *job,
           uint64_t            seed,
@@ -1065,7 +1072,7 @@ call_key (struct job         *job,
 	}
 	memcpy(s.ptr + head, json, len);
 	buf_commit(&job->key, head + len);
-	job->hash = hash(seed, s.ptr, head + len);
+	job->hash = hash_bytes(seed, s.ptr, head + len);
 	job->session = (uint32_t)head;
 	return true;
 }
@@ -1096,8 +1103,9 @@ call_submit (struct mcp_req *req)
 	job->deadline = ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
 	job->peer[0] = s->peer[0];
 	job->peer[1] = s->peer[1];
-	job->principal = job->session ? hash(seed, buf_peek(&job->key).ptr, job->session)
-	               : hash(~seed, (unsigned char const *)job->peer, sizeof job->peer);
+	job->principal = job->session ? hash_bytes(seed, buf_peek(&job->key).ptr,
+	                                           job->session)
+	               : hash_bytes(~seed, job->peer, sizeof job->peer);
 	job->notify = req->token && req->sse;
 	/* The front's and home's, and the post adds the message's. */
 	atomic_store_explicit(&job->refs, 2, memory_order_relaxed);
@@ -1180,6 +1188,106 @@ id_valid (struct json_object const *id)
 	       json_object_is_type(id, json_type_double);
 }
 
+/* The page a man call waited for is in, or man failed: reply with the page,
+ * or why there is none, unless the call has gone.  Once the loop has
+ * stopped, MCP is gone, and the post is only freed. */
+static void
+man_settled (struct loop *loop,
+             struct msg  *msg)
+{
+	struct manual_wait *w = container_of(msg, struct manual_wait, msg);
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, w->who);
+	if (req) {
+		loop_forget(loop, req->call);
+		req->call = (struct handle){};
+		list_del(&req->hook);
+		req->hook = (struct list){};
+		req->page = w->page;
+		w->page = nullptr;
+		if (req->page) {
+			call_reply(req, true, false);
+		} else {
+			LOG(LOG_VERBOSE, "man call failed after %.1f s: %s",
+			    elapsed(&req->start), w->why);
+			tool_result(req, w->why, true);
+		}
+	}
+	manual_wait_free(w);
+}
+
+/* Whether @p s, of @p len bytes, is 1 to @p max of the characters of @p set,
+ * the first not '-', which man would take for an option. */
+static bool
+man_word (char const *s,
+          size_t      len,
+          size_t      max,
+          char const *set)
+{
+	return s && len && len <= max && *s != '-' && strspn(s, set) == len;
+}
+
+/* Start a man call for the page that @p args names, of the section it
+ * names if any: reply with it if the manual has it, else wait for it; false
+ * if the request is finished instead. */
+static bool
+man_call (struct mcp_req     *req,
+          struct json_object *args)
+{
+#define ALNUM "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	struct mcp *mcp = req->mcp;
+	struct loop *loop = mcp->loop;
+	struct json_object *name = jb_get(args, "name");
+	struct json_object *section = jb_get(args, "section");
+	char const *page = jb_text(name);
+	size_t page_len = page ? (size_t)json_object_get_string_len(name) : 0;
+	/* A small model may give a section as a number. */
+	int64_t number = json_object_is_type(section, json_type_int)
+	               ? json_object_get_int64(section) : -1;
+	char digit[2] = { number >= 0 && number <= 9 ? (char)('0' + number) : 0 };
+	char const *sect = *digit ? digit : jb_text(section);
+	size_t len = *digit ? 1 : sect ? (size_t)json_object_get_string_len(section) : 0;
+	char const *problem =
+		args && !json_object_is_type(args, json_type_object)
+		? "Tool arguments must be an object."
+		: !man_word(page, page_len, MANUAL_NAME, ALNUM "_.:+@-")
+		? "The name argument must name a manual page: 1 to 128 letters, digits "
+		  "and _.:+@- characters, the first not -."
+		: section && !(sect && (!len || man_word(sect, len, MANUAL_SECTION, ALNUM)))
+		? "The section argument must name a section, such as 1, 3 or 3p: 1 to "
+		  "16 letters and digits."
+		: nullptr;
+#undef ALNUM
+	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16, "the problems say");
+	if (problem) {
+		tool_result(req, problem, true);
+		return false;
+	}
+
+	clock_gettime(CLOCK_MONOTONIC, &req->start);
+	struct manual_page *found = nullptr;
+	int e = loop_handle(loop, req, &req->call);
+	if (!e)
+		e = manual_find(&mcp->man, page, page_len, sect, len, req->call, man_settled,
+		                &found);
+	if (e || found) {
+		loop_forget(loop, req->call);
+		req->call = (struct handle){};
+	}
+	if (e) {
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return false;
+	}
+	if (found) {
+		req->page = found;
+		call_reply(req, true, false);
+		return false;
+	}
+	list_append(&mcp->calls, &req->hook);
+	req->s->ops->waiting(req->s);
+	req->phase = PHASE_MAN;
+	return true;
+}
+
 /* Start a tool call; false if the request is finished instead. */
 static bool
 tools_call (struct mcp_req     *req,
@@ -1192,6 +1300,8 @@ tools_call (struct mcp_req     *req,
 		return false;
 	}
 	char const *name = jb_text(jb_get(params, "name"));
+	if (name && st->manual && !strcmp(name, "man"))
+		return man_call(req, jb_get(params, "arguments"));
 	if (!name || strcmp(name, st->tool)) {
 		char msg[32 + 6 * 100];
 		size_t len = name ? (size_t)json_object_get_string_len(jb_get(params, "name"))
@@ -1785,6 +1895,7 @@ mcp_init (struct mcp               **p_mcp,
 	};
 	list_init(&mcp->calls);
 	list_init(&mcp->freeing);
+	manual_loop_init(&mcp->man, st->manual, loop);
 	list_init(&mcp->spare.list);
 	list_init(&mcp->jobs.list);
 	self = *p_mcp = mcp;
@@ -1800,9 +1911,10 @@ mcp_fini (struct mcp **p_mcp)
 	*p_mcp = nullptr;
 
 	/* The transport has cancelled every stream by now, so only requests
-	 * still freeing their message are left. */
+	 * still freeing their message are left, and the man fetches. */
 	while (!list_is_empty(&mcp->freeing))
 		req_end(container_of(mcp->freeing.next, struct mcp_req, hook));
+	manual_loop_fini(&mcp->man);
 	while (mcp_relieve(mcp, BUF_CRITICAL, SIZE_MAX))
 		;
 	loop_unready(&mcp->drain);
@@ -1890,6 +2002,47 @@ tool_definition (struct mcp_tool const *tool)
 		nullptr);
 }
 
+static struct json_object *
+man_definition (void)
+{
+	static_assert(MANUAL_MAX == 2 << 20, "the description says 2 MiB");
+	return jb_object(
+		"name", json_object_new_string("man"),
+		"title", json_object_new_string("Manual page"),
+		"description", json_object_new_string(
+			"Read one of the server's Unix manual pages, as `man [section] name` "
+			"shows it, in plain text; a long page is cut at 2 MiB. Use it to "
+			"check the exact interface of a system call, library function, "
+			"command, file format or convention. Pages are kept once "
+			"rendered, so reading one again is cheap."),
+		"inputSchema", jb_object(
+			"type", json_object_new_string("object"),
+			"properties", jb_object(
+				"name", jb_object(
+					"type", json_object_new_string("string"),
+					"description", json_object_new_string(
+						"The page's name, such as printf, pthread_create, epoll "
+						"or bash."),
+					nullptr),
+				"section", jb_object(
+					"type", json_object_new_string("string"),
+					"description", json_object_new_string(
+						"Optional section: 1 commands, 2 system calls, 3 library "
+						"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
+						"overviews and conventions, 8 administration. Without "
+						"it, the first page man finds in its usual order."),
+					nullptr),
+				nullptr),
+			"required", jb_list(json_object_new_string("name")),
+			"additionalProperties", json_object_new_boolean(0),
+			nullptr),
+		"annotations", jb_object(
+			"readOnlyHint", json_object_new_boolean(1),
+			"openWorldHint", json_object_new_boolean(0),
+			nullptr),
+		nullptr);
+}
+
 /* Serialize @p val into @p text, then free it; false if out of memory. */
 static bool
 serialize (struct dstr        *text,
@@ -1923,6 +2076,7 @@ int
 mcp_static_new (struct mcp_static        **p_static,
                 struct ai_endpoint const  *ep,
                 struct mcp_tool const     *tool,
+                struct manual             *manual,
                 struct mcp_limits const   *limits)
 {
 	struct mcp_static *st = malloc(sizeof *st);
@@ -1936,6 +2090,7 @@ mcp_static_new (struct mcp_static        **p_static,
 		.init_tail = DSTR_INIT,
 		.modern_tail = DSTR_INIT,
 		.versions = DSTR_INIT,
+		.manual = manual,
 		.seed = loop_clock(),
 		.lim = *limits
 	};
@@ -1949,7 +2104,7 @@ mcp_static_new (struct mcp_static        **p_static,
 	                                     nullptr);
 	struct json_object *tools = jb_list(tool_definition(tool));
 	struct json_object *list = json_object_new_array();
-	bool ok = info && tools;
+	bool ok = info && tools && (!manual || jb_push(tools, man_definition()));
 	for (size_t i = 0; ok && i < ARRAY_SIZE(versions); ++i)
 		ok = jb_push(list, json_object_new_string(versions[i]));
 	struct dstr info_text = DSTR_INIT;
