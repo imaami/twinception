@@ -2,7 +2,6 @@
 #include <errno.h>
 #include <json-c/json.h>
 #include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -222,8 +221,9 @@ git_ceilings (struct git const *git)
 {
 	static char const ceiling[] = "GIT_CEILING_DIRECTORIES=";
 	size_t size = sizeof ceiling;
+	/* Each path, and its NUL, goes before its safe.directory setting. */
 	for (size_t i = 0; i < git->n; ++i)
-		size += strlen(git->repo[i].path) + 1;
+		size += (size_t)(git->repo[i].safe - git->repo[i].path);
 	char *env = malloc(size);
 	if (!env)
 		return nullptr;
@@ -293,9 +293,9 @@ git_create (char const *const paths[],
 void
 git_destroy (struct git **p_git)
 {
-	struct git *git = *p_git;
-	if (!git)
+	if (!p_git || !*p_git)
 		return;
+	struct git *git = *p_git;
 	*p_git = nullptr;
 	for (size_t i = 0; i < git->n; ++i)
 		free(git->repo[i].name);
@@ -459,7 +459,7 @@ git_wrong (char       *why,
 {
 	va_list ap;
 	va_start(ap, fmt);
-	(void)util_vformat(why, GIT_WHY, fmt, ap);
+	util_vformat(why, GIT_WHY, fmt, ap);
 	va_end(ap);
 	return EINVAL;
 }
@@ -479,7 +479,7 @@ git_wrong_word (char       *why,
 
 /* The repository named @p name, if one is listed so; else nullptr. */
 static struct git_repo const *
-git_repo (struct git const *git,
+git_find (struct git const *git,
           char const       *name)
 {
 	for (size_t i = 0; name && i < git->n; ++i)
@@ -495,10 +495,12 @@ git_repos_wrong (struct git const *git,
 {
 	size_t n = util_format(why, GIT_WHY, "The repo argument must name one of the "
 	                       "repositories:");
-	for (size_t i = 0; i < git->n; ++i)
+	/* Once cut short, with "...", the list says no more. */
+	for (size_t i = 0; i < git->n && n < GIT_WHY - 1; ++i)
 		n += util_format(why + n, GIT_WHY - n, "%s %s", i ? "," : "",
 		                 git->repo[i].name);
-	util_format(why + n, GIT_WHY - n, ".");
+	if (n < GIT_WHY - 1)
+		util_format(why + n, GIT_WHY - n, ".");
 	return EINVAL;
 }
 
@@ -532,7 +534,7 @@ git_command (struct git const   *git,
 		if (!git_known(it.key))
 			return git_wrong_word(why, "Unknown argument: ", it.key, 64, ".");
 
-	struct git_repo const *repo = git_repo(git, jb_text(jb_get(args, "repo")));
+	struct git_repo const *repo = git_find(git, jb_text(jb_get(args, "repo")));
 	if (!repo)
 		return git_repos_wrong(git, why);
 	char const *cmd = jb_text(jb_get(args, "command"));
