@@ -30,13 +30,13 @@
 /* The phases of a relief of memory pressure. */
 enum { RELIEVE_KEPT, RELIEVE_STASH, RELIEVE_END, RELIEVED };
 
-/* glibc's tuning (see serve()): blocks from this size up get mappings of
- * their own, and where nothing limits the address space, heaps keep this
+/* glibc's tuning (see askai_tune()): blocks from this size up get mappings
+ * of their own, and where nothing limits the address space, heaps keep this
  * much of their tops; and a free of this much trims the top of its arena's
  * heap. */
 enum { MMAP_MIN = 32 << 20, TOP_PAD = 64 << 20, TOP_FREE = 64 << 10 };
 
-/* The heaps' top pad: glibc's default, or TOP_PAD (see serve()). */
+/* The heaps' top pad: glibc's default, or TOP_PAD (see askai_tune()). */
 static int top_pad = 128 << 10;
 
 /* Blocks of TOP_FREE, one from each loop's arena that relieved memory
@@ -48,7 +48,7 @@ static _Atomic(void *) tops;
  * the process's, lowered for this free alone, and only one thread at a time
  * does it (brainstem_relieved()). */
 static void
-top_trim (void *block)
+askai_top_trim (void *block)
 {
 	mallopt(M_TOP_PAD, 0);
 	mallopt(M_TRIM_THRESHOLD, 0);
@@ -57,20 +57,31 @@ top_trim (void *block)
 	mallopt(M_TOP_PAD, top_pad);
 }
 
+/* Chain @p block on tops. */
+static void
+askai_top_push (void *block)
+{
+	void *head = atomic_load_explicit(&tops, memory_order_relaxed);
+	do memcpy(block, &head, sizeof head);
+	while (!atomic_compare_exchange_weak(&tops, &head, block));
+}
+
 /* Whether the kernel commits memory strictly (vm.overcommit_memory 2). */
 static bool
-strict_commit (void)
+askai_strict_commit (void)
 {
 	FILE *f = fopen("/proc/sys/vm/overcommit_memory", "re");
-	int mode = f ? fgetc(f) : EOF;
-	if (f)
-		fclose(f);
+	if (!f)
+		return false;
+	int mode = fgetc(f);
+	/* Only read: nothing is lost if closing fails. */
+	(void)fclose(f);
 	return mode == '2';
 }
 
 /* What a loop thread keeps for reuse, and its reliefs of memory pressure
  * (design section 5); first in each loop's app, which it stands for. */
-struct keep {
+struct askai_keep {
 	struct buf_stash    stash;
 	struct loop_step    relief;
 	struct loop_step    trim;      /* the trim, on the last loop of a relief */
@@ -91,7 +102,7 @@ struct keep {
  * after the loops' keeps are gone. */
 static struct {
 	struct blocker_job  job;
-	struct keep        *keep;
+	struct askai_keep  *keep;
 	uint64_t            ns;
 } walker;
 
@@ -100,7 +111,7 @@ static struct {
  * again, then home hands the client loops the new policy (src/policy.h),
  * and its door the new TLS context; the other options take a restart, which
  * askai says.  One at a time, a SIGHUP meanwhile having another follow. */
-struct reload {
+struct askai_reload {
 	struct blocker_job job;
 	struct config      cfg;     /* as the blocker read it */
 	int                status;  /* config_reload()'s */
@@ -110,9 +121,9 @@ struct reload {
 
 /* What runs on home: the jobs (src/home.h), and the door, which accepts the
  * clients and places them on the client loops (src/httpd.h). */
-struct home_app {
-	struct keep               keep;
-	struct reload             reload;
+struct askai_home {
+	struct askai_keep         keep;
+	struct askai_reload       reload;
 	struct http_metrics       http;  /* here, as the client loops render it */
 	struct home_metrics       jobs;  /* likewise */
 	struct ai_endpoint const *ep;
@@ -124,10 +135,10 @@ struct home_app {
 };
 
 /* What runs on a client loop: MCP over HTTP. */
-struct app {
-	struct keep              keep;
+struct askai_client {
+	struct askai_keep        keep;
 	struct metrics_mcp       counts;  /* MCP's, which any loop renders */
-	struct home_app const   *home;
+	struct askai_home const *home;
 	struct mcp_static const *st;
 	struct httpd_cfg const  *hcfg;
 	struct httpd_hub        *hub;
@@ -135,6 +146,49 @@ struct app {
 	struct httpd            *httpd;
 	struct task_pool        *tasks;   /* if askai offers test_task */
 };
+
+/* What every loop shares, made before any starts. */
+struct askai_shared {
+	struct manual       *manual;
+	struct mcp_static   *st;
+	struct httpd_hub    *hub;
+	struct git          *git;
+	struct notes        *notes;
+	struct task_pool    *tasks;
+	struct askai_client *clients;
+	struct metrics_loop *loops;
+};
+
+/* Free the relief's kept objects, as much a step as its share of release
+ * work allows; 0 once none are left. */
+static size_t
+askai_keep_release (struct askai_keep *keep,
+                    enum buf_pressure  level,
+                    size_t             room)
+{
+	size_t n = keep->mcp ? mcp_relieve(keep->mcp, level, room)
+	         : keep->door ? httpd_home_relieve(keep->door, level, room) : 0;
+	if (!n && keep->home)
+		n = home_relieve(keep->home, level, room);
+	return n;
+}
+
+/* The relief's share is done: leave a block for the trim, and if this loop's
+ * is the last share of all, run the trim. */
+static void
+askai_keep_relieved (struct askai_keep *keep,
+                     struct loop       *loop)
+{
+	keep->phase = RELIEVED;
+	void *block = malloc(TOP_FREE);
+	if (block)
+		askai_top_push(block);
+	if (!brainstem_relieved(hist_get(&keep->stash.metrics.released) - keep->released))
+		return;
+	keep->tops = atomic_exchange(&tops, nullptr);
+	keep->trim_ns = 0;
+	loop_ready_bulk(loop, &keep->trim);
+}
 
 /*
  * Relieve memory pressure, in bulk steps (design section 5): free the
@@ -145,39 +199,23 @@ struct app {
  * one call cannot be split.  The share ends early if the pressure clears.
  */
 static void
-relief_step (struct loop      *loop,
-             struct loop_step *step)
+askai_keep_relief (struct loop      *loop,
+                   struct loop_step *step)
 {
-	struct keep *keep = container_of(step, struct keep, relief);
+	struct askai_keep *keep = container_of(step, struct askai_keep, relief);
 	enum buf_pressure level = atomic_load_explicit(&buf_pressure, memory_order_relaxed);
 	size_t room = loop_room(loop, LOOP_RELEASE);
 	size_t n;
 	switch (level || keep->phase == RELIEVED ? keep->phase : RELIEVE_END) {
 	case RELIEVE_KEPT:
-		n = keep->mcp ? mcp_relieve(keep->mcp, level, room)
-		  : keep->door ? httpd_home_relieve(keep->door, level, room) : 0;
-		if (!n && keep->home)
-			n = home_relieve(keep->home, level, room);
+		n = askai_keep_release(keep, level, room);
 		break;
 	case RELIEVE_STASH:
 		n = buf_stash_release(&keep->stash, level, room);
 		break;
-	case RELIEVE_END: {
-		keep->phase = RELIEVED;
-		void *block = malloc(TOP_FREE);
-		void *head = atomic_load_explicit(&tops, memory_order_relaxed);
-		if (block) {
-			do memcpy(block, &head, sizeof head);
-			while (!atomic_compare_exchange_weak(&tops, &head, block));
-		}
-		if (brainstem_relieved(hist_get(&keep->stash.metrics.released) -
-		                       keep->released)) {
-			keep->tops = atomic_exchange(&tops, nullptr);
-			keep->trim_ns = 0;
-			loop_ready_bulk(loop, &keep->trim);
-		}
+	case RELIEVE_END:
+		askai_keep_relieved(keep, loop);
 		return;
-	}
 	default:
 		return;
 	}
@@ -192,17 +230,17 @@ relief_step (struct loop      *loop,
  * loop that allocates meanwhile waits only for its own arena's part, where
  * on a loop the walk of them all would be one step. */
 static void
-walk (struct blocker_job *job)
+askai_walk (struct blocker_job *job)
 {
 	(void)job;
 	uint64_t start = loop_clock();
-	malloc_trim(0);
+	(void)malloc_trim(0);
 	walker.ns = loop_clock() - start;
 }
 
 /* The trim is over: count it, and let the next relief begin. */
 static void
-trim_end (struct keep *keep)
+askai_keep_trimmed (struct askai_keep *keep)
 {
 	struct buf_stash_metrics *m = &keep->stash.metrics;
 	hist_add(&m->trims, 1);
@@ -215,14 +253,38 @@ trim_end (struct keep *keep)
 }
 
 static void
-walk_done (struct loop *loop,
-           struct msg  *msg)
+askai_walk_done (struct loop *loop,
+                 struct msg  *msg)
 {
 	(void)msg;
 	if (loop->exit)
 		return;
 	walker.keep->trim_ns += walker.job.error ? 0 : walker.ns;
-	trim_end(walker.keep);
+	askai_keep_trimmed(walker.keep);
+}
+
+/* Walk the arenas on a blocker, or here if none takes it; with the pressure
+ * cleared, @p on false, end the trim at once. */
+static void
+askai_keep_walk (struct askai_keep *keep,
+                 struct loop       *loop,
+                 bool               on)
+{
+	if (!on) {
+		(void)brainstem_trimmed();
+		return;
+	}
+	walker.job = (struct blocker_job){
+		.done.fn = askai_walk_done,
+		.work = askai_walk,
+		.loop = loop
+	};
+	walker.keep = keep;
+	if (!blocker_submit(keep->blockers, &walker.job))
+		return;
+	askai_walk(&walker.job);
+	keep->trim_ns += walker.ns;
+	askai_keep_trimmed(keep);
 }
 
 /* The last loop of a relief trims the allocator for every loop: a bulk step
@@ -230,45 +292,30 @@ walk_done (struct loop *loop,
  * them all on a blocker, or here if none takes it.  The pressure cleared,
  * the blocks are only freed. */
 static void
-trim_step (struct loop      *loop,
-           struct loop_step *step)
+askai_keep_trim (struct loop      *loop,
+                 struct loop_step *step)
 {
-	struct keep *keep = container_of(step, struct keep, trim);
+	struct askai_keep *keep = container_of(step, struct askai_keep, trim);
 	bool on = atomic_load_explicit(&buf_pressure, memory_order_relaxed);
 	void *block = keep->tops;
-	if (block) {
-		memcpy(&keep->tops, block, sizeof keep->tops);
-		uint64_t start = loop_clock();
-		if (on)
-			top_trim(block);
-		else
-			free(block);
-		keep->trim_ns += loop_clock() - start;
-		loop_ready_bulk(loop, step);
-	} else if (!on) {
-		(void)brainstem_trimmed();
-	} else {
-		walker.job = (struct blocker_job){
-			.done.fn = walk_done,
-			.work = walk,
-			.loop = loop
-		};
-		walker.keep = keep;
-		if (blocker_submit(keep->blockers, &walker.job)) {
-			walk(&walker.job);
-			keep->trim_ns += walker.ns;
-			trim_end(keep);
-		}
+	if (!block) {
+		askai_keep_walk(keep, loop, on);
+		return;
 	}
+	memcpy(&keep->tops, block, sizeof keep->tops);
+	uint64_t start = loop_clock();
+	(on ? askai_top_trim : free)(block);
+	keep->trim_ns += loop_clock() - start;
+	loop_ready_bulk(loop, step);
 }
 
 /* Begin a window of reuse, over which a relief at high pressure finds what
  * went unused: as long as the brainstem waits between reliefs. */
 static void
-keep_age (struct loop       *loop,
-          struct loop_timer *timer)
+askai_keep_age (struct loop       *loop,
+                struct loop_timer *timer)
 {
-	struct keep *keep = container_of(timer, struct keep, age);
+	struct askai_keep *keep = container_of(timer, struct askai_keep, age);
 	buf_stash_age(&keep->stash);
 	if (keep->mcp)
 		mcp_age(keep->mcp);
@@ -281,10 +328,10 @@ keep_age (struct loop       *loop,
 
 /* The loop's app, whose keep comes first. */
 static void
-keep_relieve (void        *ctx,
-              struct loop *loop)
+askai_keep_relieve (void        *ctx,
+                    struct loop *loop)
 {
-	struct keep *keep = ctx;
+	struct askai_keep *keep = ctx;
 	keep->phase = RELIEVE_KEPT;
 	keep->released = hist_get(&keep->stash.metrics.released);
 	hist_add(&keep->stash.metrics.reliefs, 1);
@@ -294,14 +341,14 @@ keep_relieve (void        *ctx,
 /* Give the calling thread @p keep's stash, and begin its windows of reuse;
  * a trim walks the arenas on @p blockers. */
 static int
-keep_start (struct keep     *keep,
-            struct loop     *loop,
-            struct blocker  *blockers)
+askai_keep_start (struct askai_keep *keep,
+                  struct loop       *loop,
+                  struct blocker    *blockers)
 {
 	keep->blockers = blockers;
-	keep->relief.fn = relief_step;
-	keep->trim.fn = trim_step;
-	keep->age.fn = keep_age;
+	keep->relief.fn = askai_keep_relief;
+	keep->trim.fn = askai_keep_trim;
+	keep->age.fn = askai_keep_age;
 	keep->phase = RELIEVED;
 	buf_stash_attach(&keep->stash);
 	return loop_timer_set(loop, &keep->age,
@@ -311,8 +358,8 @@ keep_start (struct keep     *keep,
 /* Give back all that @p keep's stash keeps, and the blocks of a trim cut
  * short, and leave the thread without. */
 static void
-keep_stop (struct keep *keep,
-           struct loop *loop)
+askai_keep_stop (struct askai_keep *keep,
+                 struct loop       *loop)
 {
 	for (void *block = keep->tops; block; block = keep->tops) {
 		memcpy(&keep->tops, block, sizeof keep->tops);
@@ -325,82 +372,96 @@ keep_stop (struct keep *keep,
 	buf_stash_attach(nullptr);
 }
 
+/* Home's keep, door and scheduler. */
 static int
-home_app_start (void            *ctx,
-                struct loop     *loop,
-                struct blocker  *blockers)
+askai_home_parts (struct askai_home *app,
+                  struct loop       *loop,
+                  struct blocker    *blockers)
 {
-	struct home_app *app = ctx;
+	int e = askai_keep_start(&app->keep, loop, blockers);
+	if (e)
+		return e;
+	app->keep.door = httpd_home_create(loop, app->hub, app->hcfg, &app->jobs.in_flight,
+	                                   &e);
+	if (e)
+		return e;
+	app->keep.home = home_create(loop, blockers, app->keep.door, app->ep, app->cfg,
+	                             &app->jobs, &app->http, &e);
+	return e;
+}
+
+static int
+askai_home_start (void           *ctx,
+                  struct loop    *loop,
+                  struct blocker *blockers)
+{
+	static char const name[] = "home";
+	struct askai_home *app = ctx;
 	struct metrics_src *metrics = app->metrics;
 	struct metrics_loop *mine = &metrics->loops[metrics->n_loops - 1];
+	static_assert(sizeof name <= sizeof mine->name);
 	app->loop = loop;
-	snprintf(mine->name, sizeof mine->name, "home");
+	memcpy(mine->name, name, sizeof name);
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
 	metrics->blockers = blocker_metrics(blockers);
-	int e = keep_start(&app->keep, loop, blockers);
-	if (!e)
-		app->keep.door = httpd_home_create(loop, app->hub, app->hcfg,
-		                                   &app->jobs.in_flight, &e);
-	if (!e)
-		app->keep.home = home_create(loop, blockers, app->keep.door, app->ep, app->cfg,
-		                             &app->jobs, &app->http, &e);
+	int e = askai_home_parts(app, loop, blockers);
 	if (e)
 		LOG(LOG_ERROR, "cannot start home: %s", strerror(e));
 	return e;
 }
 
 static void
-home_app_open (void        *ctx,
-               struct loop *loop)
+askai_home_open (void        *ctx,
+                 struct loop *loop)
 {
 	(void)loop;
-	httpd_home_open(((struct home_app *)ctx)->keep.door);
+	httpd_home_open(((struct askai_home *)ctx)->keep.door);
 }
 
 static void
-home_app_drain (void        *ctx,
-                struct loop *loop,
-                uint64_t     deadline)
+askai_home_drain (void        *ctx,
+                  struct loop *loop,
+                  uint64_t     deadline)
 {
 	(void)loop;
 	(void)deadline;
-	struct home_app *app = ctx;
+	struct askai_home *app = ctx;
 	httpd_home_drain(app->keep.door);
 	home_drain(app->keep.home);
 }
 
 static void
-home_app_alone (void        *ctx,
-                struct loop *loop)
+askai_home_alone (void        *ctx,
+                  struct loop *loop)
 {
 	(void)loop;
-	home_alone(((struct home_app *)ctx)->keep.home);
+	home_alone(((struct askai_home *)ctx)->keep.home);
 }
 
-static void reload_done (struct loop *loop, struct msg *msg);
-
 static void
-reload_work (struct blocker_job *job)
+askai_reload_work (struct blocker_job *job)
 {
-	struct reload *r = container_of(job, struct reload, job);
-	struct home_app const *app = container_of(r, struct home_app, reload);
+	struct askai_reload *r = container_of(job, struct askai_reload, job);
+	struct askai_home const *app = container_of(r, struct askai_home, reload);
 	r->status = config_reload(&r->cfg, app->cfg);
 }
 
+static void askai_reload_done (struct loop *loop, struct msg *msg);
+
 static void
-home_app_reload (void        *ctx,
-                 struct loop *loop)
+askai_home_reload (void        *ctx,
+                   struct loop *loop)
 {
-	struct home_app *app = ctx;
-	struct reload *r = &app->reload;
+	struct askai_home *app = ctx;
+	struct askai_reload *r = &app->reload;
 	if (r->busy) {
 		r->again = true;
 		return;
 	}
 	r->job = (struct blocker_job){
-		.done.fn = reload_done,
-		.work = reload_work,
+		.done.fn = askai_reload_done,
+		.work = askai_reload_work,
 		.loop = loop
 	};
 	r->busy = !blocker_submit(app->keep.blockers, &r->job);
@@ -408,61 +469,89 @@ home_app_reload (void        *ctx,
 		LOG(LOG_WARN, "configuration not reloaded: the blockers are busy");
 }
 
-/* The blocker has read the configuration: hand the client loops its
- * policy, and the door its TLS context, unless it is wrong, as the log says
- * then.  A context made only as the file now names a TLS listener serves
- * none until a restart. */
+/* Hand the client loops the reloaded policy, and the door its TLS context,
+ * unless the configuration is wrong, as the log says then.  A context made
+ * only as the file now names a TLS listener serves none until a restart. */
 static void
-reload_done (struct loop *loop,
-             struct msg  *msg)
+askai_reload_apply (struct askai_home         *app,
+                    struct askai_reload const *r)
 {
-	struct reload *r = container_of(msg, struct reload, job.done);
-	struct home_app *app = container_of(r, struct home_app, reload);
+	if (r->status >= 0) {
+		LOG(LOG_ERROR, "configuration not reloaded; the last stays");
+		return;
+	}
+	int e = httpd_home_policy(app->keep.door, r->cfg.policy);
+	if (e) {
+		LOG(LOG_ERROR, "configuration not reloaded: %s; the last stays",
+		    e == EAGAIN ? "the server is not open" : strerror(e));
+		return;
+	}
+	char const *cert = "";
+	if (r->cfg.tls && app->cfg->tls) {
+		httpd_home_tls(app->keep.door, r->cfg.tls);
+		cert = ", and the TLS certificate";
+	}
+	LOG(LOG_INFO, "configuration reloaded: who may connect, and what they may do%s%s",
+	    cert, r->cfg.restart ? "; its other options take a restart" : "");
+}
+
+/* The blocker has read the configuration: apply it, and reload again if a
+ * SIGHUP came meanwhile. */
+static void
+askai_reload_done (struct loop *loop,
+                   struct msg  *msg)
+{
+	struct askai_reload *r = container_of(msg, struct askai_reload, job.done);
+	struct askai_home *app = container_of(r, struct askai_home, reload);
 	r->busy = false;
 	/* Cancelled, as the blockers stop, the work was not done. */
 	if (r->job.error)
 		return;
-	if (!loop->exit) {
-		int e = r->status < 0 ? httpd_home_policy(app->keep.door, r->cfg.policy)
-		                      : 0;
-		bool tls = r->status < 0 && !e && r->cfg.tls && app->cfg->tls;
-		if (tls)
-			httpd_home_tls(app->keep.door, r->cfg.tls);
-		if (r->status >= 0)
-			LOG(LOG_ERROR, "configuration not reloaded; the last stays");
-		else if (e)
-			LOG(LOG_ERROR, "configuration not reloaded: %s; the last stays",
-			    e == EAGAIN ? "the server is not open" : strerror(e));
-		else
-			LOG(LOG_INFO, "configuration reloaded: who may connect, and what "
-			    "they may do%s%s", tls ? ", and the TLS certificate" : "",
-			    r->cfg.restart ? "; its other options take a restart" : "");
-	}
+	if (!loop->exit)
+		askai_reload_apply(app, r);
 	config_fini(&r->cfg);
 	if (r->again && !loop->exit) {
 		r->again = false;
-		home_app_reload(app, loop);
+		askai_home_reload(app, loop);
 	}
 }
 
 static void
-home_app_stop (void        *ctx,
-               struct loop *loop)
+askai_home_stop (void        *ctx,
+                 struct loop *loop)
 {
-	struct home_app *app = ctx;
+	struct askai_home *app = ctx;
 	home_destroy(&app->keep.home);
 	httpd_home_destroy(&app->keep.door);
-	keep_stop(&app->keep, loop);
+	askai_keep_stop(&app->keep, loop);
+}
+
+/* A client loop's keep, MCP and server. */
+static int
+askai_client_parts (struct askai_client *app,
+                    struct loop         *loop,
+                    struct blocker      *blockers)
+{
+	int e = askai_keep_start(&app->keep, loop, blockers);
+	if (e)
+		return e;
+	app->keep.mcp = mcp_create(loop, app->home->loop, app->st, app->metrics,
+	                           &app->counts, &e);
+	if (e)
+		return e;
+	app->httpd = httpd_create(loop, app->hub, loop->id - 1, mcp_app(app->keep.mcp),
+	                          app->hcfg, &e);
+	return e;
 }
 
 static int
-app_start (void            *ctx,
-           struct loop     *loop,
-           struct blocker  *blockers)
+askai_client_start (void           *ctx,
+                    struct loop    *loop,
+                    struct blocker *blockers)
 {
-	struct app *app = ctx;
+	struct askai_client *app = ctx;
 	struct metrics_loop *mine = &app->metrics->loops[loop->id - 1];
-	snprintf(mine->name, sizeof mine->name, "%" PRIu64, loop->id);
+	(void)util_format(mine->name, sizeof mine->name, "%" PRIu64, loop->id);
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
 	mine->kept = &app->counts.kept;
@@ -473,184 +562,219 @@ app_start (void            *ctx,
 		task_pool_attach(app->tasks, loop);
 		mine->tasks = task_pool_loop_metrics(app->tasks, loop->id - 1);
 	}
-	int e = keep_start(&app->keep, loop, blockers);
-	if (!e)
-		app->keep.mcp = mcp_create(loop, app->home->loop, app->st, app->metrics,
-		                           &app->counts, &e);
+	int e = askai_client_parts(app, loop, blockers);
 	if (e)
 		LOG(LOG_ERROR, "cannot start client loop %" PRIu64 ": %s", loop->id,
 		    strerror(e));
-	else
-		app->httpd = httpd_create(loop, app->hub, loop->id - 1,
-		                          mcp_app(app->keep.mcp), app->hcfg, &e);
 	return e;
 }
 
 static void
-app_drain (void        *ctx,
-           struct loop *loop,
-           uint64_t     deadline)
+askai_client_drain (void        *ctx,
+                    struct loop *loop,
+                    uint64_t     deadline)
 {
 	(void)loop;
-	struct app *app = ctx;
+	struct askai_client *app = ctx;
 	httpd_drain(app->httpd, deadline);
 	mcp_drain(app->keep.mcp);
 }
 
 static void
-app_stop (void        *ctx,
-          struct loop *loop)
+askai_client_stop (void        *ctx,
+                   struct loop *loop)
 {
-	struct app *app = ctx;
+	struct askai_client *app = ctx;
 	if (app->tasks)
 		task_pool_detach(app->tasks, loop);
 	httpd_destroy(&app->httpd);
 	mcp_destroy(&app->keep.mcp);
-	keep_stop(&app->keep, loop);
+	askai_keep_stop(&app->keep, loop);
 }
 
-/* Serve until shut down, as @p cfg says; returns the exit status. */
-static int
-serve (struct config const *cfg)
+/* Keep what is freed for reuse, and give memory back to the system only
+ * under memory pressure (design section 5).  glibc would otherwise map and
+ * unmap each block over 128 KiB of its own, give back the top of a heap as
+ * it is freed and a thread's heap once all of it is, and grow a thread's
+ * heap a page and an mprotect() at a time.  Blocks of up to 32 MiB, the most
+ * the threshold takes and the largest stash class, come from the heaps.  A
+ * top pad as large as a heap keeps a thread's heaps, and makes each writable
+ * whole as glibc creates it; as that counts against RLIMIT_DATA, RLIMIT_AS
+ * and a strict commit limit, under any of those the pad stays glibc's.  Only
+ * descriptors limit the connections: take all the hard limit allows. */
+static void
+askai_tune (void)
 {
-	/* Keep what is freed for reuse, and give memory back to the system only
-	 * under memory pressure (design section 5).  glibc would otherwise map
-	 * and unmap each block over 128 KiB of its own, give back the top of a
-	 * heap as it is freed and a thread's heap once all of it is, and grow a
-	 * thread's heap a page and an mprotect() at a time.  Blocks of up to
-	 * 32 MiB, the most the threshold takes and the largest stash class, come
-	 * from the heaps.  A top pad as large as a heap keeps a thread's heaps,
-	 * and makes each writable whole as glibc creates it; as that counts
-	 * against RLIMIT_DATA, RLIMIT_AS and a strict commit limit, under any of
-	 * those the pad stays glibc's. */
 	mallopt(M_MMAP_THRESHOLD, MMAP_MIN);
 	mallopt(M_TRIM_THRESHOLD, -1);
 	struct rlimit data;
 	struct rlimit space;
 	if (!getrlimit(RLIMIT_DATA, &data) && data.rlim_cur == RLIM_INFINITY &&
 	    !getrlimit(RLIMIT_AS, &space) && space.rlim_cur == RLIM_INFINITY &&
-	    !strict_commit())
+	    !askai_strict_commit())
 		top_pad = TOP_PAD;
 	mallopt(M_TOP_PAD, top_pad);
 
-	/* Only descriptors limit the connections: take all the hard limit allows. */
 	struct rlimit nofile;
 	if (!getrlimit(RLIMIT_NOFILE, &nofile) && nofile.rlim_cur < nofile.rlim_max) {
 		nofile.rlim_cur = nofile.rlim_max;
 		(void)setrlimit(RLIMIT_NOFILE, &nofile);
 	}
+}
 
-	/* What every loop shares is made before any starts: the immutable, and
-	 * what home's door shares with the client loops' servers.  Each loop
-	 * sets its metrics as it starts, and home opens its door only once all
-	 * have, so that no request renders them before. */
+/* What the loops share but the notes, for @p n client loops. */
+static int
+askai_shared_make (struct askai_shared *s,
+                   struct config const *cfg,
+                   size_t               n)
+{
+	int e = 0;
+	if (cfg->n_gits &&
+	    !(s->git = git_create(cfg->gits, cfg->n_gits, cfg->git_timeout, &e)))
+		return e;
+	if (cfg->flags & CFG_TEST_TASK && !(s->tasks = task_pool_create(n, &e)))
+		return e;
+	s->clients = calloc(n, sizeof *s->clients);
+	s->loops = calloc(n + 1, sizeof *s->loops);
+	if (!s->clients || !s->loops)
+		return ENOMEM;
+	if (cfg->flags & CFG_MAN && !(s->manual = manual_create(cfg->man_recheck, &e)))
+		return e;
+	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->notes, &e)))
+		return e;
+	s->hub = httpd_hub_create(n, &e);
+	return e;
+}
+
+/* What every loop shares, for @p n client loops, made before any starts:
+ * the immutable, and what home's door shares with the client loops'
+ * servers.  On an error, stderr says what. */
+static int
+askai_shared_init (struct askai_shared *s,
+                   struct config const *cfg,
+                   size_t               n)
+{
+	int e = 0;
+	if (cfg->notes) {
+		char why[256];
+		if (!(s->notes = notes_create(cfg->notes, why, sizeof why, &e))) {
+			fprintf(stderr, "askai: --notes: %s: %s\n", cfg->notes, why);
+			return e;
+		}
+	}
+	if ((e = askai_shared_make(s, cfg, n)))
+		fprintf(stderr, "askai: %s\n", strerror(e));
+	return e;
+}
+
+static void
+askai_shared_fini (struct askai_shared *s)
+{
+	task_pool_destroy(&s->tasks);
+	httpd_hub_destroy(&s->hub);
+	git_destroy(&s->git);
+	notes_destroy(&s->notes);
+	mcp_static_destroy(&s->st);
+	manual_destroy(&s->manual);
+	free(s->loops);
+	s->loops = nullptr;
+	free(s->clients);
+	s->clients = nullptr;
+}
+
+/* Say how the tasks of @p n client loops ended: every loop has stopped, and
+ * the counts are whole, but where a blocker still busy kept the loops
+ * unfinished, their inboxes unread, the tasks those held are under way
+ * still. */
+static void
+askai_tasks_report (struct task_pool const *tasks,
+                    size_t                  n)
+{
+	struct task_pool_metrics const *t = task_pool_metrics(tasks);
+	uint64_t moved = 0;
+	for (size_t i = 0; i < n; ++i)
+		moved += hist_get(&task_pool_loop_metrics(tasks, i)->moved);
+	uint64_t submitted = hist_get(&t->submitted);
+	uint64_t done = hist_get(&t->done);
+	uint64_t cancelled = hist_get(&t->cancelled);
+	uint64_t abandoned = hist_get(&t->abandoned);
+	uint64_t ended = done + cancelled + abandoned;
+	char rest[48] = "";
+	if (submitted > ended)
+		util_format(rest, sizeof rest, "; %" PRIu64 " under way", submitted - ended);
+	fprintf(stderr, "askai: tasks: %" PRIu64 " submitted, %" PRIu64 " done, %" PRIu64
+	        " cancelled, %" PRIu64 " abandoned; %" PRIu64 " moved%s\n", submitted, done,
+	        cancelled, abandoned, moved, rest);
+}
+
+/* Run the loops on @p s, as @p cfg says, until shut down; returns the exit
+ * status.  Each loop sets its metrics as it starts, and home opens its door
+ * only once all have, so that no request renders them before. */
+static int
+askai_run (struct askai_shared *s,
+           struct config const *cfg)
+{
 	struct brainstem_cfg bcfg = cfg->brainstem;
 	size_t n = bcfg.loops;
-	struct manual *manual = nullptr;
-	struct mcp_static *st = nullptr;
-	struct httpd_hub *hub = nullptr;
-	int git_error = 0;
-	struct git *git = cfg->n_gits ? git_create(cfg->gits, cfg->n_gits, cfg->git_timeout,
-	                                           &git_error)
-	                              : nullptr;
-	char why[256];
-	int notes_error = 0;
-	struct notes *notes = cfg->notes ? notes_create(cfg->notes, why, sizeof why,
-	                                                &notes_error)
-	                                 : nullptr;
-	if (notes_error) {
-		fprintf(stderr, "askai: --notes: %s: %s\n", cfg->notes, why);
-		git_destroy(&git);
-		return 1;
-	}
-	int e = git_error;
-	struct task_pool *tasks = cfg->flags & CFG_TEST_TASK ? task_pool_create(n, &e)
-	                                                     : nullptr;
-	struct app *apps = calloc(n, sizeof *apps);
-	struct metrics_loop *loops = calloc(n + 1, sizeof *loops);
-	if (!apps || !loops)
-		e = ENOMEM;
-	if (!e && cfg->flags & CFG_MAN)
-		manual = manual_create(cfg->man_recheck, &e);
-	if (!e)
-		st = mcp_static_create(cfg, manual, tasks, git, notes, &e);
-	if (!e)
-		hub = httpd_hub_create(n, &e);
 	struct metrics_src metrics = {
-		.loops = loops,
-		.man = manual ? manual_metrics(manual) : nullptr,
-		.tasks = tasks ? task_pool_metrics(tasks) : nullptr,
+		.loops = s->loops,
+		.man = s->manual ? manual_metrics(s->manual) : nullptr,
+		.tasks = s->tasks ? task_pool_metrics(s->tasks) : nullptr,
 		.n_loops = n + 1
 	};
-	struct home_app home = {
+	struct askai_home home = {
 		.ep = &cfg->ep,
 		.hcfg = &cfg->http,
-		.hub = hub,
+		.hub = s->hub,
 		.metrics = &metrics,
 		.cfg = cfg
 	};
 	metrics.http = &home.http;
 	metrics.jobs = &home.jobs;
-	for (size_t i = 0; !e && i < n; ++i) {
-		struct app *app = &apps[i];
+	for (size_t i = 0; i < n; ++i) {
+		struct askai_client *app = &s->clients[i];
 		buf_stash_init(&app->keep.stash);
 		metrics_mcp_init(&app->counts);
 		app->home = &home;
-		app->st = st;
+		app->st = s->st;
 		app->hcfg = &cfg->http;
-		app->hub = hub;
+		app->hub = s->hub;
 		app->metrics = &metrics;
-		app->tasks = tasks;
+		app->tasks = s->tasks;
 	}
 	bcfg.home = (struct brainstem_app){
 		.ctx = &home,
-		.start = home_app_start,
-		.open = home_app_open,
-		.drain = home_app_drain,
-		.relieve = keep_relieve,
-		.alone = home_app_alone,
-		.reload = cfg->path || cfg->tls ? home_app_reload : nullptr,
-		.stop = home_app_stop
+		.start = askai_home_start,
+		.open = askai_home_open,
+		.drain = askai_home_drain,
+		.relieve = askai_keep_relieve,
+		.alone = askai_home_alone,
+		.reload = cfg->path || cfg->tls ? askai_home_reload : nullptr,
+		.stop = askai_home_stop
 	};
 	bcfg.client = (struct brainstem_app){
-		.ctx = apps,
-		.stride = sizeof *apps,
-		.start = app_start,
-		.drain = app_drain,
-		.relieve = keep_relieve,
-		.stop = app_stop
+		.ctx = s->clients,
+		.stride = sizeof *s->clients,
+		.start = askai_client_start,
+		.drain = askai_client_drain,
+		.relieve = askai_keep_relieve,
+		.stop = askai_client_stop
 	};
 	log_threshold = cfg->flags & CFG_VERBOSE ? LOG_VERBOSE : LOG_INFO;
-	int status = e ? 1 : brainstem_run(&bcfg);
-	if (e)
-		fprintf(stderr, "askai: %s\n", strerror(e));
-	if (tasks && !e) {
-		/* Every loop has stopped, and the counts are whole, but where a
-		 * blocker still busy kept the loops unfinished, their inboxes
-		 * unread: the tasks those held are under way still. */
-		struct task_pool_metrics const *t = task_pool_metrics(tasks);
-		uint64_t moved = 0;
-		for (size_t i = 0; i < n; ++i)
-			moved += hist_get(&task_pool_loop_metrics(tasks, i)->moved);
-		uint64_t submitted = hist_get(&t->submitted);
-		uint64_t ended = hist_get(&t->done) + hist_get(&t->cancelled) +
-		                 hist_get(&t->abandoned);
-		char rest[48] = "";
-		if (submitted > ended)
-			snprintf(rest, sizeof rest, "; %" PRIu64 " under way", submitted - ended);
-		fprintf(stderr, "askai: tasks: %" PRIu64 " submitted, %" PRIu64 " done, %"
-		        PRIu64 " cancelled, %" PRIu64 " abandoned; %" PRIu64 " moved%s\n",
-		        submitted, hist_get(&t->done), hist_get(&t->cancelled),
-		        hist_get(&t->abandoned), moved, rest);
-	}
-	task_pool_destroy(&tasks);
-	httpd_hub_destroy(&hub);
-	git_destroy(&git);
-	notes_destroy(&notes);
-	mcp_static_destroy(&st);
-	manual_destroy(&manual);
-	free(loops);
-	free(apps);
+	int status = brainstem_run(&bcfg);
+	if (s->tasks)
+		askai_tasks_report(s->tasks, n);
+	return status;
+}
+
+/* Serve until shut down, as @p cfg says; returns the exit status. */
+static int
+askai_serve (struct config const *cfg)
+{
+	askai_tune();
+	struct askai_shared s = {};
+	int status = askai_shared_init(&s, cfg, cfg->brainstem.loops) ? 1 : askai_run(&s, cfg);
+	askai_shared_fini(&s);
 	return status;
 }
 
@@ -661,7 +785,7 @@ main (int   argc,
 	int status;
 	struct config cfg = config(argc, argv, &status);
 	if (status < 0)
-		status = serve(&cfg);
+		status = askai_serve(&cfg);
 	config_fini(&cfg);
 	return status;
 }
