@@ -8,10 +8,17 @@
 #include <string.h>
 
 #include "app.h"
+#include "util.h"
+
+/* The options without a letter. */
+enum {
+	MAIN_A_PROVIDER = 0x100,
+	MAIN_B_PROVIDER
+};
 
 static void
-usage (FILE       *out,
-       char const *argv0)
+main_usage (FILE       *out,
+            char const *argv0)
 {
 	fprintf(out,
 	        "Usage: %s [options]\n"
@@ -37,37 +44,44 @@ usage (FILE       *out,
 }
 
 static int
-parse_history_mode (char const            *str,
-                    enum app_history_mode *mode)
+main_history_mode (char const            *str,
+                   enum app_history_mode *mode)
 {
-	if (!strcmp(str, "split"))
-		*mode = APP_HISTORY_SPLIT;
-	else if (!strcmp(str, "shared-a"))
-		*mode = APP_HISTORY_SHARED_A;
-	else if (!strcmp(str, "shared-b"))
-		*mode = APP_HISTORY_SHARED_B;
-	else
-		return EINVAL;
-	return 0;
+	static char const *const names[] = {
+		[APP_HISTORY_SPLIT]    = "split",
+		[APP_HISTORY_SHARED_A] = "shared-a",
+		[APP_HISTORY_SHARED_B] = "shared-b"
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+		if (!strcmp(str, names[i])) {
+			*mode = (enum app_history_mode)i;
+			return 0;
+		}
+	}
+	return EINVAL;
 }
 
 static int
-parse_provider (char const        *str,
-                enum app_provider *provider)
+main_provider (char const        *str,
+               enum app_provider *provider)
 {
-	if (!strcmp(str, "llama"))
-		*provider = APP_PROVIDER_LLAMA;
-	else if (!strcmp(str, "deepinfra"))
-		*provider = APP_PROVIDER_DEEPINFRA;
-	else
-		return EINVAL;
-	return 0;
+	static char const *const names[] = {
+		[APP_PROVIDER_LLAMA]     = "llama",
+		[APP_PROVIDER_DEEPINFRA] = "deepinfra"
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+		if (!strcmp(str, names[i])) {
+			*provider = (enum app_provider)i;
+			return 0;
+		}
+	}
+	return EINVAL;
 }
 
 static int
-parse_long (char const *str,
-            long       *value,
-            long        min)
+main_long (char const *str,
+           long       *value,
+           long        min)
 {
 	char *end;
 	errno = 0;
@@ -79,8 +93,8 @@ parse_long (char const *str,
 }
 
 static int
-parse_u32 (char const *str,
-           uint32_t   *value)
+main_u32 (char const *str,
+          uint32_t   *value)
 {
 	char *end;
 	errno = 0;
@@ -88,6 +102,158 @@ parse_u32 (char const *str,
 	if (errno || *end || !n || n > UINT32_MAX)
 		return EINVAL;
 	*value = (uint32_t)n;
+	return 0;
+}
+
+static int
+main_temperature (char const *str,
+                  double     *value)
+{
+	char *end;
+	errno = 0;
+	double t = strtod(str, &end);
+	if (errno || end == str || *end || t < 0)
+		return EINVAL;
+	*value = t;
+	return 0;
+}
+
+/* Take option @p opt, with its argument @p arg, into @p cfg: EINVAL, said,
+ * if that is not valid. */
+static int
+main_option (struct app_cfg *cfg,
+             int             opt,
+             char const     *arg)
+{
+	int e;
+	char const *what;
+	switch (opt) {
+	case 'a': cfg->url[0] = arg; return 0;
+	case 'b': cfg->url[1] = arg; return 0;
+	case 'A': cfg->model[0] = arg; return 0;
+	case 'B': cfg->model[1] = arg; return 0;
+	case 's': cfg->system = arg; return 0;
+	case 'p': cfg->prompt = arg; return 0;
+	case 'd': cfg->debug = 1; return 0;
+	case 'P': cfg->template_check = 0; return 0;
+	case MAIN_A_PROVIDER:
+		e = main_provider(arg, &cfg->provider[0]);
+		what = "model A provider";
+		break;
+	case MAIN_B_PROVIDER:
+		e = main_provider(arg, &cfg->provider[1]);
+		what = "model B provider";
+		break;
+	case 'H':
+		e = main_history_mode(arg, &cfg->history_mode);
+		what = "history mode";
+		break;
+	case 'q':
+		e = main_u32(arg, &cfg->rapid_quantum);
+		what = "rapid quantum";
+		break;
+	case 'R':
+		e = main_u32(arg, &cfg->rapid_budget);
+		what = "rapid budget";
+		break;
+	case 'C':
+		e = main_long(arg, &cfg->crosstalk_rounds, -1);
+		what = "crosstalk round count";
+		break;
+	case 't':
+		e = main_temperature(arg, &cfg->temperature);
+		what = "temperature";
+		break;
+	case 'n':
+		e = main_long(arg, &cfg->max_tokens, 1);
+		what = "max token count";
+		break;
+	default:
+		return EINVAL;
+	}
+	if (e)
+		fprintf(stderr, "invalid %s: %s\n", what, arg);
+	return e;
+}
+
+/* Fill in model @p i's URL, and the model of DeepInfra, as its provider has
+ * them: EINVAL, said, if rapid mode cannot use that model. */
+static int
+main_model (struct app_cfg *cfg,
+            size_t          i)
+{
+	static char const *const url[][2] = {
+		[APP_PROVIDER_LLAMA] = {
+			"http://127.0.0.1:8080/v1/chat/completions",
+			"http://127.0.0.1:8081/v1/chat/completions"
+		},
+		[APP_PROVIDER_DEEPINFRA] = {
+			"https://api.deepinfra.com/v1/openai/chat/completions",
+			"https://api.deepinfra.com/v1/openai/chat/completions"
+		}
+	};
+	if (!cfg->url[i])
+		cfg->url[i] = url[cfg->provider[i]][i];
+	if (cfg->provider[i] != APP_PROVIDER_DEEPINFRA)
+		return 0;
+
+	if (!cfg->model[i])
+		cfg->model[i] = "Qwen/Qwen3.6-35B-A3B";
+	if (!cfg->rapid_quantum ||
+	    !strncmp(cfg->model[i], "Qwen/", sizeof "Qwen/" - 1) ||
+	    !strncmp(cfg->model[i], "qwen/", sizeof "qwen/" - 1))
+		return 0;
+
+	fprintf(stderr,
+	        "DeepInfra model %c must currently be a Qwen reasoning model "
+	        "in rapid mode; raw reasoning re-injection is not defined for %s\n",
+	        (int)('A' + i), cfg->model[i]);
+	return EINVAL;
+}
+
+/* The DeepInfra API key, from the first of the variables that has one:
+ * EINVAL, said, if neither has. */
+static int
+main_key (struct app_cfg *cfg)
+{
+	static char const *const names[] = {
+		"DEEPINFRA_API_KEY",
+		"DEEPINFRA_TOKEN"
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+		char const *key = getenv(names[i]);
+		if (key && *key) {
+			cfg->deepinfra_key = key;
+			return 0;
+		}
+	}
+	fputs("DEEPINFRA_API_KEY or DEEPINFRA_TOKEN is required for "
+	      "DeepInfra providers\n", stderr);
+	return EINVAL;
+}
+
+/* Fill in what @p cfg was not given: EINVAL, said, if what it was given does
+ * not go together. */
+static int
+main_complete (struct app_cfg *cfg)
+{
+	if (cfg->rapid_budget) {
+		if (!cfg->rapid_quantum) {
+			fputs("--rapid-budget requires --rapid\n", stderr);
+			return EINVAL;
+		}
+	} else if (cfg->rapid_quantum) {
+		cfg->rapid_budget = 512;
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(cfg->provider); ++i) {
+		int e = main_model(cfg, i);
+		if (e)
+			return e;
+	}
+	if (cfg->provider[0] == APP_PROVIDER_DEEPINFRA ||
+	    cfg->provider[1] == APP_PROVIDER_DEEPINFRA)
+		return main_key(cfg);
 	return 0;
 }
 
@@ -101,16 +267,14 @@ main (int   argc,
 		.history_mode = APP_HISTORY_SPLIT,
 		.template_check = 1
 	};
-	unsigned url_set = 0;
-	enum { OPT_A_PROVIDER = 0x100, OPT_B_PROVIDER };
 
 	static struct option const options[] = {
 		{ "a-url",             required_argument, nullptr, 'a' },
 		{ "b-url",             required_argument, nullptr, 'b' },
 		{ "a-model",           required_argument, nullptr, 'A' },
 		{ "b-model",           required_argument, nullptr, 'B' },
-		{ "a-provider",        required_argument, nullptr, OPT_A_PROVIDER },
-		{ "b-provider",        required_argument, nullptr, OPT_B_PROVIDER },
+		{ "a-provider",        required_argument, nullptr, MAIN_A_PROVIDER },
+		{ "b-provider",        required_argument, nullptr, MAIN_B_PROVIDER },
 		{ "system",            required_argument, nullptr, 's' },
 		{ "prompt",            required_argument, nullptr, 'p' },
 		{ "temperature",       required_argument, nullptr, 't' },
@@ -132,122 +296,26 @@ main (int   argc,
 			break;
 
 		switch (opt) {
-		case 'a': cfg.url[0] = optarg; url_set |= 1u; break;
-		case 'b': cfg.url[1] = optarg; url_set |= 2u; break;
-		case 'A': cfg.model[0] = optarg; break;
-		case 'B': cfg.model[1] = optarg; break;
-		case 's': cfg.system = optarg; break;
-		case 'p': cfg.prompt = optarg; break;
-		case 'd': cfg.debug = 1; break;
-		case 'P': cfg.template_check = 0; break;
-		case OPT_A_PROVIDER:
-			if (parse_provider(optarg, &cfg.provider[0])) {
-				fprintf(stderr, "invalid model A provider: %s\n", optarg);
-				return 2;
-			}
-			break;
-		case OPT_B_PROVIDER:
-			if (parse_provider(optarg, &cfg.provider[1])) {
-				fprintf(stderr, "invalid model B provider: %s\n", optarg);
-				return 2;
-			}
-			break;
-		case 'H':
-			if (parse_history_mode(optarg, &cfg.history_mode)) {
-				fprintf(stderr, "invalid history mode: %s\n", optarg);
-				return 2;
-			}
-			break;
-		case 'q':
-			if (parse_u32(optarg, &cfg.rapid_quantum)) {
-				fprintf(stderr, "invalid rapid quantum: %s\n", optarg);
-				return 2;
-			}
-			break;
-		case 'R':
-			if (parse_u32(optarg, &cfg.rapid_budget)) {
-				fprintf(stderr, "invalid rapid budget: %s\n", optarg);
-				return 2;
-			}
-			break;
-		case 'C':
-			if (parse_long(optarg, &cfg.crosstalk_rounds, -1)) {
-				fprintf(stderr, "invalid crosstalk round count: %s\n", optarg);
-				return 2;
-			}
-			break;
-		case 't': {
-			char *end;
-			errno = 0;
-			cfg.temperature = strtod(optarg, &end);
-			if (errno || end == optarg || *end || cfg.temperature < 0) {
-				fprintf(stderr, "invalid temperature: %s\n", optarg);
-				return 2;
-			}
-			break;
-		}
-		case 'n':
-			if (parse_long(optarg, &cfg.max_tokens, 1)) {
-				fprintf(stderr, "invalid max token count: %s\n", optarg);
-				return 2;
-			}
-			break;
 		case 'h':
-			usage(stdout, argv[0]);
+			main_usage(stdout, argv[0]);
 			return 0;
-		default:
-			usage(stderr, argv[0]);
+		case '?':
+			main_usage(stderr, argv[0]);
 			return 2;
 		}
+		if (main_option(&cfg, opt, optarg))
+			return 2;
 	}
 
 	if (optind != argc) {
-		usage(stderr, argv[0]);
+		main_usage(stderr, argv[0]);
 		return 2;
 	}
-
-	if (cfg.rapid_budget && !cfg.rapid_quantum) {
-		fputs("--rapid-budget requires --rapid\n", stderr);
+	if (main_complete(&cfg))
 		return 2;
-	}
-	if (cfg.rapid_quantum && !cfg.rapid_budget)
-		cfg.rapid_budget = 512;
-
-	static char const *llama_url[] = {
-		"http://127.0.0.1:8080/v1/chat/completions",
-		"http://127.0.0.1:8081/v1/chat/completions"
-	};
-	for (size_t i = 0; i < 2; ++i) {
-		if (!(url_set & (1u << i)))
-			cfg.url[i] = cfg.provider[i] == APP_PROVIDER_DEEPINFRA
-				? "https://api.deepinfra.com/v1/openai/chat/completions"
-				: llama_url[i];
-		if (cfg.provider[i] == APP_PROVIDER_DEEPINFRA && !cfg.model[i])
-			cfg.model[i] = "Qwen/Qwen3.6-35B-A3B";
-		if (cfg.provider[i] == APP_PROVIDER_DEEPINFRA && cfg.rapid_quantum &&
-		    strncmp(cfg.model[i], "Qwen/", sizeof "Qwen/" - 1) &&
-		    strncmp(cfg.model[i], "qwen/", sizeof "qwen/" - 1)) {
-			fprintf(stderr,
-			        "DeepInfra model %c must currently be a Qwen reasoning model "
-			        "in rapid mode; raw reasoning re-injection is not defined for %s\n",
-			        (int)('A' + i), cfg.model[i]);
-			return 2;
-		}
-	}
-	if (cfg.provider[0] == APP_PROVIDER_DEEPINFRA ||
-	    cfg.provider[1] == APP_PROVIDER_DEEPINFRA) {
-		cfg.deepinfra_key = getenv("DEEPINFRA_API_KEY");
-		if (!cfg.deepinfra_key || !*cfg.deepinfra_key)
-			cfg.deepinfra_key = getenv("DEEPINFRA_TOKEN");
-		if (!cfg.deepinfra_key || !*cfg.deepinfra_key) {
-			fputs("DEEPINFRA_API_KEY or DEEPINFRA_TOKEN is required for "
-			      "DeepInfra providers\n", stderr);
-			return 2;
-		}
-	}
 
 	/* libcurl leaves SIGPIPE to us because CURLOPT_NOSIGNAL is set. */
-	signal(SIGPIPE, SIG_IGN);
+	(void)signal(SIGPIPE, SIG_IGN);
 	int e = app_run(&cfg);
 	if (e) {
 		fprintf(stderr, "%s: %s\n", argv[0], strerror(e));
