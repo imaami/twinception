@@ -2409,6 +2409,18 @@ def check_reload(binary, up):
             assert line.strip().endswith("its other options take a restart"), line
             _, _, body = ai.rpc("tools/list", headers=auth("t1"))
             assert body["result"]["tools"][0]["description"] != "New.", body
+            # The roles name the tools that askai runs, not those the file
+            # now asks for: man, dropped from the file, runs until a restart,
+            # and a new name for the ask tool is no tool yet.
+            write(first, man=False)
+            line = reload(ai, "configuration reloaded")
+            assert line.strip().endswith("its other options take a restart"), line
+            assert tools(ai, "t1") == ["ask_ai", "man"]
+            write({"roles": {"a": {"tools": ["ask_twin"]}}}, **{"tool-name": "ask_twin"})
+            assert 'askai offers no tool "ask_twin"' in \
+                reload(ai, "offers no tool").strip() + "".join(ai.log)
+            ai.wait_log("configuration not reloaded")
+            assert tools(ai, "t1") == ["ask_ai", "man"]
 
             # Reloads under way while a client asks: every answer is one of
             # the two policies', and none fails.

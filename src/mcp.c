@@ -168,18 +168,42 @@ static char const *const field_names[F_N] = {
 	[F_SESSION] = "mcp-session-id",
 };
 
+/* The kinds of tool that askai may offer, in the order of their ids: those
+ * that a role may grant, which clients list and call, before KIND_NOTES;
+ * notes and compact, which only turns are given, after. */
+enum mcp_kind : uint32_t {
+	KIND_ASK,
+	KIND_MAN,
+	KIND_TASK,
+	KIND_GIT,
+	KIND_NOTES,
+	KIND_COMPACT,
+	KINDS
+};
+
+/* A tool that askai offers: its definition as tools/list lists it, after a
+ * comma, if a role may grant it; its name; and its kind. */
+struct mcp_offer {
+	struct dstr     listed;
+	char const     *name;
+	uint32_t        len;
+	enum mcp_kind   kind;
+};
+
 struct mcp_static {
 	struct ai_endpoint const *ep;
-	char const               *tool;
-	size_t                    tool_len;     /**< its bytes */
+	struct mcp_offer          offers[KINDS];  /**< by id */
+	uint32_t                  id[KINDS];      /**< of each kind; KINDS if it
+	                                               is not offered */
+	uint32_t                  n_offers;
+	uint32_t                  n_granted;      /**< those before the first
+	                                               that only turns are given */
 	struct dstr               lent[4];      /**< the tools a turn may call, by
 	                                             man and git, bits 0 and 1, that
 	                                             the role may call: the request's
 	                                             tools; empty: none */
-	struct dstr               list[1 << MCP_TOOLS][2];  /**< tools/list results
-	                                                       for each set of the
-	                                                       tools a role may
-	                                                       list: legacy, modern */
+	struct dstr               list_tail;    /**< closes a modern tools/list
+	                                             result after its tools */
 	struct dstr               discover;     /**< the server/discover result */
 	struct dstr               init_tail;    /**< an initialize result after the
 	                                             version */
@@ -1889,17 +1913,16 @@ mcp_req_draft (struct mcp_req     *req,
 	return req->text ? mcp_req_copy(req, 0) : ENOMEM;
 }
 
-/* Start a call that asks the upstream, of the class the request asks for,
- * lending the turns the tools req->lent says, if any: build its upstream
- * request, then submit its job.  The notes the turns keep, if askai keeps
+/* Start a call that asks the upstream, with the arguments @p args, of the
+ * class the request asks for, lending the turns the tools req->lent says,
+ * if any: build its upstream request, then submit its job.  The notes the turns keep, if askai keeps
  * them, go in the thread the call goes on with, else in a new one. */
 static void
 mcp_req_ask (struct mcp_req     *req,
-             struct json_object *params)
+             struct json_object *args)
 {
 	struct notes const *notes = req->lent ? req->mcp->st->notes : nullptr;
 	/* Argument problems go back to the model so it can correct itself. */
-	struct json_object *args = jb_get(params, "arguments");
 	struct json_object *prompt = jb_get(args, "prompt");
 	struct json_object *system = jb_get(args, "system");
 	struct json_object *thread = jb_get(args, "thread");
@@ -1935,8 +1958,6 @@ mcp_req_ask (struct mcp_req     *req,
 	}
 	req->start = loop_clock();
 	mcp_req_wait(req);
-	struct json_object *token = jb_get(jb_get(params, "_meta"), "progressToken");
-	req->token = mcp_id_valid(token) ? json_object_get(token) : nullptr;
 	int e = mcp_req_draft(req, prompt, system);
 	if (e) {
 		mcp_req_fail(req, e);
@@ -2053,14 +2074,13 @@ mcp_req_spin (struct mcp_req     *req,
 	task_submit(&s->task, loop);
 }
 
-/* Start a test_task call: a task of the slices its arguments in @p params
- * ask for; or, with a prompt instead, a call that asks the upstream as
+/* Start a test_task call: a task of the slices its arguments @p args ask
+ * for; or, with a prompt instead, a call that asks the upstream as
  * background work. */
 static void
 mcp_req_task (struct mcp_req     *req,
-              struct json_object *params)
+              struct json_object *args)
 {
-	struct json_object *args = jb_get(params, "arguments");
 	if (args && !json_object_is_type(args, json_type_object)) {
 		mcp_req_tool_result(req, TEXT("Tool arguments must be an object."), true);
 		return;
@@ -2075,7 +2095,7 @@ mcp_req_task (struct mcp_req     *req,
 		return;
 	}
 	req->asks = JOB_BACKGROUND;
-	mcp_req_ask(req, params);
+	mcp_req_ask(req, args);
 }
 
 /* git's output is all in: take it a slice a step. */
@@ -2285,16 +2305,24 @@ mcp_req_upload_failed (struct mcp_req *req,
 	mcp_req_fail(req, e);
 }
 
+/* Whether askai offers a tool of @p kind that @p req's client's role may
+ * call. */
+static bool
+mcp_req_may (struct mcp_req const *req,
+             enum mcp_kind         kind)
+{
+	uint32_t id = req->mcp->st->id[kind];
+	return id < req->mcp->st->n_granted && req->s->tools >> id & 1;
+}
+
 /* The tools of @p req's client's role that its turns may call: 1 + the
  * index of their definitions in st->lent; 0 if none. */
 static uint8_t
 mcp_req_lent (struct mcp_req const *req)
 {
-	struct mcp_static const *st = req->mcp->st;
-	uint32_t tools = req->s->tools;
-	size_t i = (tools & MCP_TOOL_MAN && st->manual ? 1u : 0) |
-	           (tools & MCP_TOOL_GIT && st->git ? 2u : 0);
-	return dstr_len(&st->lent[i]) ? (uint8_t)(i + 1) : 0;
+	size_t i = (mcp_req_may(req, KIND_MAN) ? 1u : 0) |
+	           (mcp_req_may(req, KIND_GIT) ? 2u : 0);
+	return dstr_len(&req->mcp->st->lent[i]) ? (uint8_t)(i + 1) : 0;
 }
 
 /* The bytes of a tool's output that a turn takes, at most: an eighth of the
@@ -3417,12 +3445,12 @@ mcp_req_compact_full (struct mcp_req *req)
 #undef CAT
 
 /* Start a tool call: of the tool that the name in @p params names, compared
- * over its length, as the Mcp-Name header is. */
+ * over its length, as the Mcp-Name header is, among those that a role may
+ * grant, with the arguments and the progress token that @p params gives. */
 static void
 mcp_req_tools_call (struct mcp_req     *req,
                     struct json_object *params)
 {
-#define IS(s) (len == sizeof s - 1 && !memcmp(str, s, len))
 	struct mcp_static const *st = req->mcp->st;
 	if (req->mcp->draining) {
 		mcp_req_fail(req, ESHUTDOWN);
@@ -3430,17 +3458,15 @@ mcp_req_tools_call (struct mcp_req     *req,
 	}
 	size_t len = 0;
 	char const *str = mcp_str(jb_get(params, "name"), &len);
-	uint32_t tool = !str ? 0
-	              : len == st->tool_len && !memcmp(str, st->tool, len) ? MCP_TOOL_ASK
-	              : st->manual && IS("man") ? MCP_TOOL_MAN
-	              : st->tasks && IS("test_task") ? MCP_TOOL_TASK
-	              : st->git && IS("git") ? MCP_TOOL_GIT : 0;
-#undef IS
+	uint32_t id = 0;
+	while (str && id < st->n_granted &&
+	       (st->offers[id].len != len || memcmp(st->offers[id].name, str, len)))
+		++id;
 	/* One that the client's role may not call is not unknown, but not
 	 * available to it. */
-	if (!(tool & req->s->tools)) {
-		struct mcp_piece head = tool ? FRAG("Tool not available: ")
-		                             : FRAG("Unknown tool: ");
+	if (!str || id == st->n_granted || !(req->s->tools >> id & 1)) {
+		struct mcp_piece head = str && id < st->n_granted
+		                      ? FRAG("Tool not available: ") : FRAG("Unknown tool: ");
 		struct mcp_piece what = str ? ESC(str, mcp_clip(str, len, 100))
 		                            : TEXT("(none)");
 		char msg[32 + 6 * 100];
@@ -3449,19 +3475,27 @@ mcp_req_tools_call (struct mcp_req     *req,
 		mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, head.len + n), nullptr, 0);
 		return;
 	}
-	switch (tool) {
-	case MCP_TOOL_MAN:
-		mcp_req_man(req, jb_get(params, "arguments"));
-		return;
-	case MCP_TOOL_TASK:
-		mcp_req_task(req, params);
-		return;
-	case MCP_TOOL_GIT:
-		mcp_req_git(req, jb_get(params, "arguments"));
-		return;
-	default:
+	struct json_object *token = jb_get(jb_get(params, "_meta"), "progressToken");
+	req->token = mcp_id_valid(token) ? json_object_get(token) : nullptr;
+	struct json_object *args = jb_get(params, "arguments");
+	switch (st->offers[id].kind) {
+	case KIND_ASK:
 		req->lent = mcp_req_lent(req);
-		mcp_req_ask(req, params);
+		mcp_req_ask(req, args);
+		return;
+	case KIND_MAN:
+		mcp_req_man(req, args);
+		return;
+	case KIND_TASK:
+		mcp_req_task(req, args);
+		return;
+	case KIND_GIT:
+		mcp_req_git(req, args);
+		return;
+	case KIND_NOTES:
+	case KIND_COMPACT:
+	case KINDS:
+		break;
 	}
 }
 
@@ -3533,6 +3567,25 @@ mcp_req_result_of (struct mcp_req    *req,
 	mcp_req_result(req, p, ARRAY_SIZE(p), SPAN(JSON_FIELD));
 }
 
+/* List the tools that the client's role may call: the definitions, each
+ * after a comma, of those it is granted, the first's comma left out. */
+static void
+mcp_req_tools_list (struct mcp_req *req)
+{
+	struct mcp_static const *st = req->mcp->st;
+	struct mcp_piece p[KINDS + 3] = { FRAG("{\"tools\":[") };
+	size_t n = 1;
+	for (uint32_t id = 0; id < st->n_granted; ++id) {
+		struct dstr const *def = &st->offers[id].listed;
+		bool first = n == 1;
+		if (req->s->tools >> id & 1)
+			p[n++] = RAW(dstr_get(def) + first, dstr_len(def) - first);
+	}
+	p[n++] = req->modern ? DSTR(&st->list_tail) : FRAG("]}");
+	p[n++] = FRAG("}");
+	mcp_req_result(req, p, n, SPAN(JSON_FIELD));
+}
+
 /* Answer a valid request, or start the tool call it asks for, unless its era
  * has no such method. */
 static void
@@ -3548,7 +3601,6 @@ mcp_req_route (struct mcp_req     *req,
 		[METHOD_DISCOVER]   = 2,
 	};
 	struct mcp_static const *st = req->mcp->st;
-	struct dstr const *list = st->list[req->s->tools & ((1 << MCP_TOOLS) - 1)];
 	if (!(eras[req->method] >> req->modern & 1)) {
 		/* Legacy clients take a 404 for an expired session, so keep 200. */
 		mcp_req_error(req, req->modern ? 404 : 200, METHOD_NOT_FOUND,
@@ -3560,7 +3612,7 @@ mcp_req_route (struct mcp_req     *req,
 		mcp_req_tools_call(req, params);
 		return;
 	case METHOD_TOOLS_LIST:
-		mcp_req_result_of(req, &list[req->modern]);
+		mcp_req_tools_list(req);
 		return;
 	case METHOD_DISCOVER:
 		mcp_req_result_of(req, &st->discover);
@@ -4409,10 +4461,6 @@ mcp_modern_list (struct json_object *result,
 	return result;
 }
 
-/* The definitions that mcp_static_create() makes: the tools', by their
- * bits, then those of the notes and compact, which only turns are given. */
-enum { DEF_NOTES = MCP_TOOLS, DEF_COMPACT, DEFS };
-
 /* An array of the @p n values at @p vals that are not nullptr, as @p make
  * makes them, each a reference of its own; nullptr if out of memory. */
 static struct json_object *
@@ -4430,25 +4478,6 @@ mcp_array (struct json_object *const *vals,
 		return nullptr;
 	}
 	return arr;
-}
-
-/* Serialize into st->list[@p mask] the tools/list results, legacy and
- * modern, of the tools of @p defs that the bits of @p mask name. */
-static int
-mcp_static_list (struct mcp_static        *st,
-                 size_t                    mask,
-                 struct json_object *const defs[DEFS],
-                 struct json_object       *info)
-{
-	struct json_object *pick[MCP_TOOLS];
-	for (size_t i = 0; i < MCP_TOOLS; ++i)
-		pick[i] = mask & 1u << i ? defs[i] : nullptr;
-	struct json_object *tools = mcp_array(pick, MCP_TOOLS, json_object_get);
-	int e = mcp_serialize(&st->list[mask][0],
-	                      jb_object("tools", json_object_get(tools), nullptr));
-	int f = mcp_serialize(&st->list[mask][1],
-	                      mcp_modern_list(jb_object("tools", tools, nullptr), info));
-	return e ? e : f;
 }
 
 /* Serialize the supported versions, pushed onto @p list, and with what
@@ -4479,10 +4508,12 @@ mcp_static_tails (struct mcp_static  *st,
 	if (e)
 		return e;
 	if (!dstr_printf(&st->init_tail, "\",\"capabilities\":{\"tools\":{}},"
-	                 "\"serverInfo\":%s}", dstr_get(&text)))
+	                 "\"serverInfo\":%s}", dstr_get(&text)) ||
+	    !dstr_printf(&st->modern_tail, ",\"resultType\":\"complete\",\"_meta\":"
+	                 "{\"%s\":%s}}", meta_server, dstr_get(&text)))
 		return ENOMEM;
-	return dstr_printf(&st->modern_tail, ",\"resultType\":\"complete\",\"_meta\":"
-	                   "{\"%s\":%s}}", meta_server, dstr_get(&text)) ? 0 : ENOMEM;
+	return dstr_printf(&st->list_tail, "],\"ttlMs\":%d,\"cacheScope\":\"public\"%s",
+	                   CACHE_TTL_MS, dstr_get(&st->modern_tail)) ? 0 : ENOMEM;
 }
 
 /* Serialize the replies that never change, of @p info, what tells of
@@ -4495,18 +4526,20 @@ static int
 mcp_static_build (struct mcp_static        *st,
                   struct json_object       *info,
                   struct json_object       *list,
-                  struct json_object *const defs[DEFS])
+                  struct json_object *const defs[KINDS])
 {
-	for (size_t mask = 0; mask < ARRAY_SIZE(st->list); ++mask) {
-		int e = mcp_static_list(st, mask, defs, info);
+	for (uint32_t id = 0; id < st->n_granted; ++id) {
+		struct mcp_offer *o = &st->offers[id];
+		int e = dstr_cat_n(&o->listed, ",", 1)
+		      ? mcp_serialize(&o->listed, json_object_get(defs[o->kind])) : ENOMEM;
 		if (e)
 			return e;
 	}
-	size_t lent = defs[DEF_COMPACT] ? ARRAY_SIZE(st->lent) : 0;
+	size_t lent = defs[KIND_COMPACT] ? ARRAY_SIZE(st->lent) : 0;
 	for (size_t mask = 0; mask < lent; ++mask) {
 		struct json_object *const tools[] = {
-			mask & 1 ? defs[1] : nullptr, mask & 2 ? defs[3] : nullptr,
-			defs[DEF_NOTES], defs[DEF_COMPACT]
+			mask & 1 ? defs[KIND_MAN] : nullptr, mask & 2 ? defs[KIND_GIT] : nullptr,
+			defs[KIND_NOTES], defs[KIND_COMPACT]
 		};
 		if (!tools[0] && !tools[1] && !tools[2])
 			continue;
@@ -4516,6 +4549,46 @@ mcp_static_build (struct mcp_static        *st,
 			return e;
 	}
 	return mcp_static_tails(st, info, list);
+}
+
+/* The names of the kinds of tool but the ask tool's, which the configuration
+ * names. */
+static struct {
+	char const *ptr;
+	size_t      len;
+} const kind_names[KINDS] = {
+#define N(s) { s, sizeof s - 1 }
+	[KIND_MAN]     = N("man"),
+	[KIND_TASK]    = N("test_task"),
+	[KIND_GIT]     = N("git"),
+	[KIND_NOTES]   = N("notes"),
+	[KIND_COMPACT] = N("compact"),
+#undef N
+};
+
+/* The kinds of tool that @p cfg offers, as bits. */
+static uint32_t
+mcp_kinds (struct config const *cfg)
+{
+	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
+	return 1u << KIND_ASK | (cfg->flags & CFG_MAN ? 1u << KIND_MAN : 0) |
+	       (cfg->flags & CFG_TEST_TASK ? 1u << KIND_TASK : 0) |
+	       (cfg->n_gits ? 1u << KIND_GIT : 0) |
+	       (lends && cfg->notes ? 1u << KIND_NOTES : 0) |
+	       (lends ? 1u << KIND_COMPACT : 0);
+}
+
+size_t
+mcp_tools (struct config const *cfg,
+           char const          *names[TOOL_MAX])
+{
+	static_assert(KIND_NOTES <= TOOL_MAX);
+	uint32_t kinds = mcp_kinds(cfg);
+	size_t n = 0;
+	for (enum mcp_kind k = 0; k < KIND_NOTES; ++k)
+		if (kinds >> k & 1)
+			names[n++] = kind_names[k].ptr ? kind_names[k].ptr : cfg->tool.name;
+	return n;
 }
 
 struct mcp_static *
@@ -4534,8 +4607,7 @@ mcp_static_create (struct config const *cfg,
 	}
 	*st = (struct mcp_static){
 		.ep = &cfg->ep,
-		.tool = cfg->tool.name,
-		.tool_len = strlen(cfg->tool.name),
+		.list_tail = DSTR_INIT,
 		.discover = DSTR_INIT,
 		.init_tail = DSTR_INIT,
 		.modern_tail = DSTR_INIT,
@@ -4549,10 +4621,23 @@ mcp_static_create (struct config const *cfg,
 		.turns = cfg->turns
 	};
 	/* A zeroed dstr is no empty string (dstr.h). */
-	for (size_t i = 0; i < ARRAY_SIZE(st->list); ++i)
-		st->list[i][0] = st->list[i][1] = (struct dstr)DSTR_INIT;
 	for (size_t i = 0; i < ARRAY_SIZE(st->lent); ++i)
 		st->lent[i] = (struct dstr)DSTR_INIT;
+	uint32_t kinds = mcp_kinds(cfg);
+	for (enum mcp_kind k = 0; k < KINDS; ++k) {
+		st->id[k] = KINDS;
+		if (!(kinds >> k & 1))
+			continue;
+		st->id[k] = st->n_offers;
+		st->n_granted += k < KIND_NOTES;
+		st->offers[st->n_offers++] = (struct mcp_offer){
+			.listed = DSTR_INIT,
+			.name = kind_names[k].ptr ? kind_names[k].ptr : cfg->tool.name,
+			.len = kind_names[k].ptr ? (uint32_t)kind_names[k].len
+			                         : (uint32_t)strlen(cfg->tool.name),
+			.kind = k
+		};
+	}
 	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
 
 	/* Built with json-c, which escapes as replies need, then kept as text. */
@@ -4561,20 +4646,19 @@ mcp_static_create (struct config const *cfg,
 	                                     "version", json_object_new_string("0.1.0"),
 	                                     nullptr);
 	struct json_object *list = json_object_new_array();
-	struct json_object *defs[DEFS] = {
-		mcp_tool_definition(&cfg->tool, st->notes),
-		manual ? mcp_man_definition() : nullptr,
-		tasks ? mcp_task_definition() : nullptr,
-		git ? git_definition(git) : nullptr,
-		st->notes ? mcp_notes_definition() : nullptr,
-		lends ? mcp_compact_definition() : nullptr
+	struct json_object *defs[KINDS] = {
+		[KIND_ASK]     = mcp_tool_definition(&cfg->tool, st->notes),
+		[KIND_MAN]     = manual ? mcp_man_definition() : nullptr,
+		[KIND_TASK]    = tasks ? mcp_task_definition() : nullptr,
+		[KIND_GIT]     = git ? git_definition(git) : nullptr,
+		[KIND_NOTES]   = st->notes ? mcp_notes_definition() : nullptr,
+		[KIND_COMPACT] = lends ? mcp_compact_definition() : nullptr
 	};
-	static_assert(MCP_TOOL_MAN == 1u << 1 && MCP_TOOL_TASK == 1u << 2 &&
-	              MCP_TOOL_GIT == 1u << 3);
-	*e = !info || !list || !defs[0] || (manual && !defs[1]) || (tasks && !defs[2]) ||
-	     (git && !defs[3]) || (st->notes && !defs[DEF_NOTES]) ||
-	     (lends && !defs[DEF_COMPACT]) ? ENOMEM : mcp_static_build(st, info, list, defs);
-	for (size_t i = 0; i < DEFS; ++i)
+	bool made = info && list;
+	for (uint32_t id = 0; id < st->n_offers; ++id)
+		made = made && defs[st->offers[id].kind];
+	*e = made ? mcp_static_build(st, info, list, defs) : ENOMEM;
+	for (size_t i = 0; i < KINDS; ++i)
 		json_object_put(defs[i]);
 	json_object_put(list);
 	json_object_put(info);
@@ -4590,9 +4674,9 @@ mcp_static_destroy (struct mcp_static **p_static)
 	if (!st)
 		return;
 	*p_static = nullptr;
-	for (size_t i = 0; i < ARRAY_SIZE(st->list); ++i)
-		for (size_t j = 0; j < ARRAY_SIZE(st->list[i]); ++j)
-			dstr_cleanup(&st->list[i][j]);
+	for (uint32_t id = 0; id < st->n_offers; ++id)
+		dstr_cleanup(&st->offers[id].listed);
+	dstr_cleanup(&st->list_tail);
 	for (size_t i = 0; i < ARRAY_SIZE(st->lent); ++i)
 		dstr_cleanup(&st->lent[i]);
 	dstr_cleanup(&st->discover);

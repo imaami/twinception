@@ -1562,21 +1562,17 @@ config_note_token (struct config const *cfg)
 		                      "%s names who may connect", cfg->path);
 }
 
-/* Make the policy, who may connect and what they may do. */
+/* Make the policy, who may connect and what they may do: the roles name
+ * the tools that askai runs, which on a reload are the running
+ * configuration's. */
 static int
 config_policy (struct config *cfg)
 {
-	char const *tools[MCP_TOOLS] = {
-		[0] = cfg->tool.name,
-		[1] = cfg->flags & CFG_MAN ? "man" : nullptr,
-		[2] = cfg->flags & CFG_TEST_TASK ? "test_task" : nullptr,
-		[3] = cfg->n_gits ? "git" : nullptr
-	};
-	static_assert(MCP_TOOL_ASK == 1u << 0 && MCP_TOOL_MAN == 1u << 1 &&
-	              MCP_TOOL_TASK == 1u << 2 && MCP_TOOL_GIT == 1u << 3);
+	char const *tools[TOOL_MAX];
+	size_t n = mcp_tools(cfg->running ? cfg->running : cfg, tools);
 	char why[256];
 	int e;
-	cfg->policy = policy_create(cfg->file, tools, MCP_TOOLS, why, sizeof why, &e);
+	cfg->policy = policy_create(cfg->file, tools, n, why, sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
 	if (e)
@@ -1723,6 +1719,7 @@ config_reload (struct config       *cfg,
 {
 	*cfg = config_defaults(from->argc, from->argv);
 	cfg->logged = true;
+	cfg->running = from;
 	int status = config_parse(cfg);
 	cfg->restart = status < 0 && !config_same_options(cfg, from);
 	return status;

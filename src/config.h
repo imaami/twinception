@@ -60,6 +60,9 @@ struct config {
 	                                         Gemini's */
 	char                 *auth;         /**< the API key's header line */
 	char                 *description;  /**< tool.description, by default */
+	struct config const  *running;      /**< on a reload, the configuration
+	                                         askai runs with, whose tools the
+	                                         roles name; else nullptr */
 	char const           *path;         /**< the configuration file's, or
 	                                         nullptr */
 	char const           *key_env;

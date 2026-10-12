@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "tool.h"
 
 struct config;
 struct git;
@@ -19,16 +20,6 @@ struct metrics_src;
 struct notes;
 struct stream_app;
 struct task_pool;
-
-/** The tools, as bits of what a client's role may list and call
- *  (src/policy.h). */
-enum mcp_tool_bit {
-	MCP_TOOL_ASK  = 1u << 0,  /**< the tool that asks the upstream */
-	MCP_TOOL_MAN  = 1u << 1,  /**< man, if askai offers it */
-	MCP_TOOL_TASK = 1u << 2,  /**< the test aid test_task, if askai offers it */
-	MCP_TOOL_GIT  = 1u << 3,  /**< git, if askai lists repositories */
-	MCP_TOOLS     = 4,
-};
 
 struct mcp_tool {
 	char const *name;
@@ -57,15 +48,25 @@ mcp_limits (void)
 }
 
 /**
+ * The tools that @p cfg offers and a client's role may list and call
+ * (src/policy.h): their names into @p names, each at its id, the ask tool's
+ * first, then man's, test_task's and git's, as offered.  Returns how many.
+ */
+extern size_t
+mcp_tools (struct config const *cfg,
+           char const          *names[TOOL_MAX]);
+
+/**
  * What every loop's MCP shares, and nobody changes once it is made: the
  * configuration @p cfg, and the replies that never change, serialized.
  * With @p manual, it offers the tool man beside the ask tool: a page of the
  * manual (src/manual.h); with @p tasks, the test aid test_task, CPU work
  * done as a task (src/task.h); with @p git, the tool git (src/git.h).  With
- * CFG_UPSTREAM_TOOLS, the ask tool lends the upstream the tools the client
- * may call but itself, and with @p notes the tool notes (src/notes.h), and
+ * CFG_UPSTREAM_TOOLS, the ask tool lends the upstream man and git, as the
+ * client may call them, and with @p notes the tool notes (src/notes.h), and
  * the tool compact: its call then runs a loop of turns, each an upstream
- * call, and the tools each turn calls, until an answer calls none.
+ * call, and the tools each turn calls, until an answer calls none.  The
+ * tools' ids are those of mcp_tools(), then notes' and compact's.
  * @p cfg, @p manual, @p tasks, @p git and @p notes must outlive it.
  * nullptr, with the error in @p *e, if it cannot be made.
  */
