@@ -56,7 +56,8 @@ struct config {
 	char const          **origins;      /**< http.origins */
 	char const          **listens;      /**< http.listen */
 	char const          **gits;         /**< the git tool's repositories */
-	char                 *url;          /**< ep.url, when askai works it out */
+	char                 *url;          /**< ep.url, when askai makes it:
+	                                         Gemini's */
 	char                 *auth;         /**< the API key's header line */
 	char                 *description;  /**< tool.description, by default */
 	char const           *path;         /**< the configuration file's, or

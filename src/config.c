@@ -6,7 +6,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <json-c/json.h>
-#include <limits.h>
+#include <libgen.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,9 +54,10 @@ static struct {
 };
 
 static void
-usage (FILE       *out,
-       char const *argv0)
+config_usage (struct config const *cfg,
+              FILE                *out)
 {
+	char const *argv0 = cfg->argv[0];
 	fprintf(out,
 	        "Usage: %s [options]\n"
 	        "MCP server (Streamable HTTP) with a tool that asks another AI.\n"
@@ -213,76 +214,102 @@ usage (FILE       *out,
 	        BRAINSTEM_FORCED);
 }
 
-static bool
-parse_long (char const *str,
-            long        min,
-            long        max,
-            long       *value)
+/* @p str, a decimal number from @p min to @p max, in @p *value; EINVAL if
+ * it is not one. */
+static int
+config_parse_number (char const *str,
+                     long long   min,
+                     long long   max,
+                     long long  *value)
 {
 	char *end;
+	/* strtoll() leaves errno as it was on success. */
 	errno = 0;
-	long n = strtol(str, &end, 10);
+	long long n = strtoll(str, &end, 10);
 	if (errno || end == str || *end || n < min || n > max)
-		return false;
+		return EINVAL;
 	*value = n;
-	return true;
+	return 0;
 }
 
-static bool
-parse_u32 (char const *str,
-           uint32_t    min,
-           uint32_t    max,
-           uint32_t   *value)
+/* As config_parse_number(), into a long. */
+static int
+config_parse_long (char const *str,
+                   long        min,
+                   long        max,
+                   long       *value)
 {
-	long n;
-	if (!parse_long(str, min, max, &n))
-		return false;
-	*value = (uint32_t)n;
-	return true;
+	long long n;
+	int e = config_parse_number(str, min, max, &n);
+	if (!e)
+		*value = (long)n;
+	return e;
+}
+
+/* As config_parse_number(), into a uint32_t. */
+static int
+config_parse_u32 (char const *str,
+                  uint32_t    min,
+                  uint32_t    max,
+                  uint32_t   *value)
+{
+	long long n;
+	int e = config_parse_number(str, min, max, &n);
+	if (!e)
+		*value = (uint32_t)n;
+	return e;
 }
 
 /* A byte count, which may end in K, M or G for KiB, MiB or GiB. */
-static bool
-parse_size (char const *str,
-            size_t      min,
-            size_t      max,
-            size_t     *value)
+static int
+config_parse_size (char const *str,
+                   size_t      min,
+                   size_t      max,
+                   size_t     *value)
 {
 	static char const units[] = "KMG";
+	if (*str < '0' || *str > '9')
+		return EINVAL;
 	char *end;
+	/* strtoull() leaves errno as it was on success. */
 	errno = 0;
 	unsigned long long n = strtoull(str, &end, 10);
-	char const *unit = *end ? strchr(units, *end) : nullptr;
-	if (errno || *str < '0' || *str > '9' || (*end && (!unit || end[1])))
-		return false;
-	unsigned shift = unit ? 10 * (unsigned)(unit - units + 1) : 0;
+	if (errno)
+		return EINVAL;
+	unsigned shift = 0;
+	if (*end) {
+		char const *unit = strchr(units, *end);
+		if (!unit || end[1])
+			return EINVAL;
+		shift = 10 * (unsigned)(unit - units + 1);
+	}
 	if (n > max >> shift || n << shift < min)
-		return false;
+		return EINVAL;
 	*value = (size_t)n << shift;
-	return true;
+	return 0;
 }
 
-/* Whether a header line named like @p prefix's name is among @p lines. */
+/* Whether a header line named like @p prefix's name is among cfg->headers. */
 static bool
-has_header (char const *const *lines,
-            char const        *prefix)
+config_has_header (struct config const *cfg,
+                   char const          *prefix)
 {
 	size_t n = strcspn(prefix, ":");
-	for (; lines && *lines; ++lines)
-		if (!strncasecmp(*lines, prefix, n) && (*lines)[n] == ':')
+	for (char const **line = cfg->headers; *line; ++line)
+		if (!strncasecmp(*line, prefix, n) && (*line)[n] == ':')
 			return true;
 	return false;
 }
 
 static bool
-valid_header (char const *line)
+config_header_valid (char const *line)
 {
 	size_t n = strcspn(line, ": \t\r\n");
 	return n && line[n] == ':' && !strpbrk(line, "\r\n");
 }
 
 static bool
-valid_tool_name (char const *name)
+config_tool_name_valid (char const *name)
 {
 	size_t n = strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	                        "0123456789_.-");
@@ -369,29 +396,41 @@ static struct option const options[] = {
 enum { FILE_MAX = 1 << 20 };
 
 /* Say what is wrong, as of the configuration file @p where unless that is
- * nullptr: on stderr, or in the log on a reload. */
+ * nullptr: on stderr, or in the log on a reload.  Returns 2, the exit status
+ * for an invalid option or environment. */
 [[gnu::format(printf, 3, 4)]]
-static void
-complain (struct config const *cfg,
-          char const          *where,
-          char const          *fmt,
-          ...)
+static int
+config_complain (struct config const *cfg,
+                 char const          *where,
+                 char const          *fmt,
+                 ...)
 {
 	char what[512];
 	va_list ap;
 	va_start(ap, fmt);
-	vsnprintf(what, sizeof what, fmt, ap);
+	(void)util_vformat(what, sizeof what, fmt, ap);
 	va_end(ap);
+	char const *colon = ": ";
+	if (!where)
+		where = colon = "";
 	if (cfg->logged)
-		LOG(LOG_ERROR, "%s%s%s", where ? where : "", where ? ": " : "", what);
+		LOG(LOG_ERROR, "%s%s%s", where, colon, what);
 	else
-		fprintf(stderr, "askai: %s%s%s\n", where ? where : "", where ? ": " : "",
-		        what);
+		fprintf(stderr, "askai: %s%s%s\n", where, colon, what);
+	return 2;
+}
+
+/* Say that askai is out of memory; returns 1, the exit status for it. */
+static int
+config_oom (struct config const *cfg)
+{
+	(void)config_complain(cfg, nullptr, "out of memory");
+	return 1;
 }
 
 /* The option whose value is @p opt. */
 static struct option const *
-option_of (int opt)
+config_option (int opt)
 {
 	struct option const *o = options;
 	while (o->name && o->val != opt)
@@ -400,11 +439,11 @@ option_of (int opt)
 }
 
 /* Append @p item to the nullptr-terminated @p list of @p *n items, which
- * has room for it (lists()). */
+ * has room for it (config_lists()). */
 static void
-push (char const **list,
-      size_t       *n,
-      char const   *item)
+config_push (char const **list,
+             size_t       *n,
+             char const   *item)
 {
 	list[(*n)++] = item;
 	list[*n] = nullptr;
@@ -413,8 +452,8 @@ push (char const **list,
 /* A string of its own, printed as @p fmt says; nullptr if out of memory. */
 [[gnu::format(printf, 1, 2)]]
 static char *
-print (char const *fmt,
-       ...)
+config_aprintf (char const *fmt,
+                ...)
 {
 	char *str;
 	va_list ap;
@@ -425,38 +464,194 @@ print (char const *fmt,
 	return str;
 }
 
-/* Apply option @p opt with @p arg, given in the configuration file @p where,
- * or on the command line if that is nullptr; returns 0, or 2, having said
- * why. */
+/* Set the protocol that @p arg names, given as config_apply() says. */
 static int
-apply (struct config *cfg,
-       int            opt,
-       char const    *arg,
-       char const    *where)
+config_apply_protocol (struct config *cfg,
+                       char const    *arg,
+                       char const    *where)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(protocols); ++i) {
+		if (!strcmp(protocols[i].name, arg)) {
+			cfg->ep.protocol = (enum ai_protocol)i;
+			return 0;
+		}
+	}
+	return config_complain(cfg, where, "unknown protocol: %s", arg);
+}
+
+/* Set the sampling temperature to @p arg, a number not below 0, given as
+ * config_apply() says. */
+static int
+config_apply_temperature (struct config *cfg,
+                          char const    *arg,
+                          char const    *where)
+{
+	struct json_object *t = jb_parse(arg, strlen(arg), JSON_TOKENER_STRICT, 0);
+	enum json_type type = json_object_get_type(t);
+	if ((type != json_type_double && type != json_type_int) ||
+	    json_object_get_double(t) < 0) {
+		json_object_put(t);
+		return config_complain(cfg, where, "invalid temperature: %s", arg);
+	}
+	json_object_put(cfg->ep.temperature);
+	cfg->ep.temperature = t;
+	return 0;
+}
+
+/* Set what is merged into each request body to @p arg, a JSON object, given
+ * as config_apply() says. */
+static int
+config_apply_extra (struct config *cfg,
+                    char const    *arg,
+                    char const    *where)
+{
+	struct json_object *x = jb_parse(arg, strlen(arg), JSON_TOKENER_STRICT, 0);
+	if (!json_object_is_type(x, json_type_object)) {
+		json_object_put(x);
+		return config_complain(cfg, where, "--extra needs a JSON object: %s", arg);
+	}
+	json_object_put(cfg->ep.extra);
+	cfg->ep.extra = x;
+	return 0;
+}
+
+/* Apply option @p opt, which takes a number, with @p arg, as config_apply()
+ * says. */
+static int
+config_apply_number (struct config *cfg,
+                     int            opt,
+                     char const    *arg,
+                     char const    *where)
 {
 	struct ai_endpoint *ep = &cfg->ep;
 	struct httpd_limits *lim = &cfg->http.limits;
 	struct mcp_limits *mlim = &cfg->mcp;
+	struct brainstem_cfg *bs = &cfg->brainstem;
 	size_t size = 0;
-	bool ok = true;
+	uint32_t n = 0;
+	int e;
 	switch (opt) {
-	case 'p': {
-		size_t i = 0;
-		while (i < ARRAY_SIZE(protocols) && strcmp(protocols[i].name, arg))
-			++i;
-		if (i == ARRAY_SIZE(protocols)) {
-			complain(cfg, where, "unknown protocol: %s", arg);
-			return 2;
-		}
-		ep->protocol = (enum ai_protocol)i;
+	case OPT_MAX_HEAD:
+		e = config_parse_size(arg, 1, UINT16_MAX, &size);
+		lim->head = (uint32_t)size;
 		break;
+	case OPT_MAX_FIELDS:
+		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->fields);
+		break;
+	case OPT_HEAD_TIMEOUT:
+		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->head_time);
+		break;
+	case OPT_MAX_BODY:
+		e = config_parse_size(arg, 0, SIZE_MAX / 2, &lim->body);
+		break;
+	case OPT_MIN_BODY_RATE:
+		e = config_parse_size(arg, 0, UINT32_MAX, &size);
+		lim->body_rate = (uint32_t)size;
+		break;
+	case OPT_BODY_GRACE:
+		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->body_grace);
+		break;
+	case OPT_BODY_BUDGET:
+		e = config_parse_size(arg, 0, SIZE_MAX / 2, &lim->bodies);
+		break;
+	case OPT_CLIENT_BUDGET:
+		e = config_parse_size(arg, 1, SIZE_MAX / 2, &lim->client_bodies);
+		break;
+	case OPT_MAX_DEPTH:
+		e = config_parse_u32(arg, 1, INT32_MAX - 1, &mlim->depth);
+		break;
+	case OPT_MAX_VALUES:
+		e = config_parse_u32(arg, 1, UINT32_MAX, &mlim->values);
+		break;
+	case OPT_MAX_MEMBERS:
+		e = config_parse_u32(arg, 1, UINT32_MAX - 1, &mlim->members);
+		break;
+	case OPT_SSE_KEEPALIVE:
+		e = config_parse_u32(arg, 0, UINT32_MAX / 2, &mlim->keepalive);
+		break;
+	case OPT_MAX_CLIENT_CONNS:
+		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->clients);
+		break;
+	case OPT_IDLE_TIMEOUT:
+		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->idle_time);
+		break;
+	case OPT_OUTPUT_PAUSE:
+		e = config_parse_size(arg, 1, SIZE_MAX / 2, &lim->out_pause);
+		break;
+	case OPT_MAX_OUTPUT:
+		e = config_parse_size(arg, 1, SIZE_MAX / 2, &lim->out_max);
+		break;
+	case OPT_SEND_TIMEOUT:
+		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->write_time);
+		break;
+	case OPT_GRACE:
+		e = config_parse_u32(arg, 1, 3600, &n);
+		bs->grace_ms = n * 1000;
+		break;
+	case OPT_WATCHDOG:
+		e = config_parse_u32(arg, 0, 60'000, &bs->watchdog_ms);
+		break;
+	case OPT_TEST_STALL:
+		e = config_parse_u32(arg, 1, 3'600'000, &n);
+		bs->stall_ms = n;
+		break;
+	case OPT_MEMORY_HIGH:
+		e = config_parse_size(arg, 1, SIZE_MAX / 2, &size);
+		bs->memory_high = size;
+		break;
+	case OPT_MAX_CALLS:
+		e = config_parse_u32(arg, 1, 1'000'000, &cfg->calls);
+		break;
+	case OPT_SLOTS:
+		e = config_parse_u32(arg, 1, UINT16_MAX, &ep->slots);
+		break;
+	case OPT_CHUNK_TIMEOUT:
+		e = config_parse_long(arg, 0, INT32_MAX / 1000, &ep->chunk_ms);
+		ep->chunk_ms *= 1000;
+		break;
+	case OPT_TEST_MAN_RECHECK:
+		e = config_parse_u32(arg, 0, 86'400, &cfg->man_recheck);
+		break;
+	case OPT_GIT_TIMEOUT:
+		e = config_parse_u32(arg, 1, 3600, &n);
+		cfg->git_timeout = n * 1'000'000'000ULL;
+		break;
+	case OPT_MAX_TURNS:
+		e = config_parse_u32(arg, 1, 1000, &cfg->turns);
+		break;
+	case OPT_CONTEXT:
+		e = config_parse_long(arg, 0, INT32_MAX, &ep->context);
+		break;
+	case OPT_LOOPS:
+		/* As many as a handle's loop field names, home being 0. */
+		e = config_parse_u32(arg, 0, 255, &cfg->loops);
+		break;
+	default:
+		return 2;
 	}
+	if (e)
+		return config_complain(cfg, where, "invalid --%s: %s",
+		                       config_option(opt)->name, arg);
+	return 0;
+}
+
+/* Apply option @p opt with @p arg, given in the configuration file @p where,
+ * or on the command line if that is nullptr; returns 0, or 2, having said
+ * why. */
+static int
+config_apply (struct config *cfg,
+              int            opt,
+              char const    *arg,
+              char const    *where)
+{
+	struct ai_endpoint *ep = &cfg->ep;
+	switch (opt) {
+	case 'p':
+		return config_apply_protocol(cfg, arg, where);
 	case 'u':
 		if (strncmp(arg, "http://", sizeof "http://" - 1) &&
-		    strncmp(arg, "https://", sizeof "https://" - 1)) {
-			complain(cfg, where, "not an http(s) URL: %s", arg);
-			return 2;
-		}
+		    strncmp(arg, "https://", sizeof "https://" - 1))
+			return config_complain(cfg, where, "not an http(s) URL: %s", arg);
 		ep->url = arg;
 		break;
 	case 'm': ep->model = arg; break;
@@ -464,12 +659,10 @@ apply (struct config *cfg,
 	case 's': ep->system = arg; break;
 	case 'l':
 		/* The command line's listeners replace the file's. */
-		if (!where && cfg->listen_file) {
-			cfg->listen_file = false;
+		if (!where && cfg->listen_file)
 			cfg->n_listens = 0;
-		}
-		push(cfg->listens, &cfg->n_listens, arg);
-		cfg->listen_file |= where != nullptr;
+		cfg->listen_file = where != nullptr;
+		config_push(cfg->listens, &cfg->n_listens, arg);
 		break;
 	case 'v': cfg->flags |= CFG_VERBOSE; break;
 	case OPT_TOOL_DESCRIPTION: cfg->tool.description = arg; break;
@@ -479,143 +672,34 @@ apply (struct config *cfg,
 	case OPT_UPSTREAM_TOOLS: cfg->flags |= CFG_UPSTREAM_TOOLS; break;
 	case OPT_NOTES: cfg->notes = arg; break;
 	case 'o':
-		push(cfg->origins, &cfg->n_origins, arg);
+		config_push(cfg->origins, &cfg->n_origins, arg);
 		break;
 	case 'H':
-		if (!valid_header(arg)) {
-			complain(cfg, where, "invalid header line: %s", arg);
-			return 2;
-		}
-		push(cfg->headers, &cfg->n_headers, arg);
+		if (!config_header_valid(arg))
+			return config_complain(cfg, where, "invalid header line: %s", arg);
+		config_push(cfg->headers, &cfg->n_headers, arg);
 		break;
-	case 't': {
-		struct json_object *t = jb_parse(arg, strlen(arg), JSON_TOKENER_STRICT, 0);
-		if ((!json_object_is_type(t, json_type_double) &&
-		     !json_object_is_type(t, json_type_int)) ||
-		    json_object_get_double(t) < 0) {
-			json_object_put(t);
-			complain(cfg, where, "invalid temperature: %s", arg);
-			return 2;
-		}
-		json_object_put(ep->temperature);
-		ep->temperature = t;
-		break;
-	}
+	case 't':
+		return config_apply_temperature(cfg, arg, where);
 	case 'n':
-		if (!parse_long(arg, 1, INT32_MAX, &ep->max_tokens)) {
-			complain(cfg, where, "invalid max token count: %s", arg);
-			return 2;
-		}
+		if (config_parse_long(arg, 1, INT32_MAX, &ep->max_tokens))
+			return config_complain(cfg, where, "invalid max token count: %s", arg);
 		break;
-	case 'x': {
-		struct json_object *x = jb_parse(arg, strlen(arg), JSON_TOKENER_STRICT, 0);
-		if (!json_object_is_type(x, json_type_object)) {
-			json_object_put(x);
-			complain(cfg, where, "--extra needs a JSON object: %s", arg);
-			return 2;
-		}
-		json_object_put(ep->extra);
-		ep->extra = x;
-		break;
-	}
+	case 'x':
+		return config_apply_extra(cfg, arg, where);
 	case 'T':
-		if (!parse_long(arg, 0, INT32_MAX / 1000, &ep->timeout_ms)) {
-			complain(cfg, where, "invalid timeout: %s", arg);
-			return 2;
-		}
+		if (config_parse_long(arg, 0, INT32_MAX / 1000, &ep->timeout_ms))
+			return config_complain(cfg, where, "invalid timeout: %s", arg);
 		ep->timeout_ms *= 1000;
 		break;
 	case OPT_TOOL_NAME:
-		if (!valid_tool_name(arg)) {
-			complain(cfg, where, "tool names are 1-128 of [A-Za-z0-9_.-]: %s", arg);
-			return 2;
-		}
+		if (!config_tool_name_valid(arg))
+			return config_complain(cfg, where, "tool names are 1-128 of "
+			                       "[A-Za-z0-9_.-]: %s", arg);
 		cfg->tool.name = arg;
-		break;
-	case OPT_MAX_HEAD:
-		ok = parse_size(arg, 1, UINT16_MAX, &size);
-		lim->head = (uint32_t)size;
-		break;
-	case OPT_MAX_FIELDS:
-		ok = parse_u32(arg, 0, UINT32_MAX, &lim->fields);
-		break;
-	case OPT_HEAD_TIMEOUT:
-		ok = parse_u32(arg, 0, UINT32_MAX, &lim->head_time);
-		break;
-	case OPT_MAX_BODY:
-		ok = parse_size(arg, 0, SIZE_MAX / 2, &lim->body);
-		break;
-	case OPT_MIN_BODY_RATE:
-		ok = parse_size(arg, 0, UINT32_MAX, &size);
-		lim->body_rate = (uint32_t)size;
-		break;
-	case OPT_BODY_GRACE:
-		ok = parse_u32(arg, 0, UINT32_MAX, &lim->body_grace);
-		break;
-	case OPT_BODY_BUDGET:
-		ok = parse_size(arg, 0, SIZE_MAX / 2, &lim->bodies);
-		break;
-	case OPT_CLIENT_BUDGET:
-		ok = parse_size(arg, 1, SIZE_MAX / 2, &lim->client_bodies);
-		break;
-	case OPT_MAX_DEPTH:
-		ok = parse_u32(arg, 1, INT32_MAX - 1, &mlim->depth);
-		break;
-	case OPT_MAX_VALUES:
-		ok = parse_u32(arg, 1, UINT32_MAX, &mlim->values);
-		break;
-	case OPT_MAX_MEMBERS:
-		ok = parse_u32(arg, 1, UINT32_MAX - 1, &mlim->members);
-		break;
-	case OPT_SSE_KEEPALIVE:
-		ok = parse_u32(arg, 0, UINT32_MAX / 2, &mlim->keepalive);
-		break;
-	case OPT_MAX_CLIENT_CONNS:
-		ok = parse_u32(arg, 0, UINT32_MAX, &lim->clients);
-		break;
-	case OPT_IDLE_TIMEOUT:
-		ok = parse_u32(arg, 0, UINT32_MAX, &lim->idle_time);
-		break;
-	case OPT_OUTPUT_PAUSE:
-		ok = parse_size(arg, 1, SIZE_MAX / 2, &lim->out_pause);
-		break;
-	case OPT_MAX_OUTPUT:
-		ok = parse_size(arg, 1, SIZE_MAX / 2, &lim->out_max);
-		break;
-	case OPT_SEND_TIMEOUT:
-		ok = parse_u32(arg, 0, UINT32_MAX, &lim->write_time);
-		break;
-	case OPT_GRACE: {
-		uint32_t seconds = 0;
-		ok = parse_u32(arg, 1, 3600, &seconds);
-		cfg->brainstem.grace_ms = seconds * 1000;
-		break;
-	}
-	case OPT_WATCHDOG:
-		ok = parse_u32(arg, 0, 60'000, &cfg->brainstem.watchdog_ms);
-		break;
-	case OPT_TEST_STALL: {
-		uint32_t ms = 0;
-		ok = parse_u32(arg, 1, 3'600'000, &ms);
-		cfg->brainstem.stall_ms = ms;
-		break;
-	}
-	case OPT_MEMORY_HIGH:
-		ok = parse_size(arg, 1, SIZE_MAX / 2, &size);
-		cfg->brainstem.memory_high = size;
 		break;
 	case OPT_TEST_PRESSURE:
 		cfg->brainstem.pressure = arg;
-		break;
-	case OPT_MAX_CALLS:
-		ok = parse_u32(arg, 1, 1'000'000, &cfg->calls);
-		break;
-	case OPT_SLOTS:
-		ok = parse_u32(arg, 1, UINT16_MAX, &ep->slots);
-		break;
-	case OPT_CHUNK_TIMEOUT:
-		ok = parse_long(arg, 0, INT32_MAX / 1000, &ep->chunk_ms);
-		ep->chunk_ms *= 1000;
 		break;
 	case OPT_TEST_FIFO:
 		cfg->flags |= CFG_TEST_FIFO;
@@ -626,101 +710,181 @@ apply (struct config *cfg,
 	case OPT_MAN:
 		cfg->flags |= CFG_MAN;
 		break;
-	case OPT_TEST_MAN_RECHECK:
-		ok = parse_u32(arg, 0, 86'400, &cfg->man_recheck);
-		break;
 	case OPT_GIT:
-		push(cfg->gits, &cfg->n_gits, arg);
-		break;
-	case OPT_GIT_TIMEOUT: {
-		uint32_t seconds = 0;
-		ok = parse_u32(arg, 1, 3600, &seconds);
-		cfg->git_timeout = seconds * 1'000'000'000ULL;
-		break;
-	}
-	case OPT_MAX_TURNS:
-		ok = parse_u32(arg, 1, 1000, &cfg->turns);
-		break;
-	case OPT_CONTEXT:
-		ok = parse_long(arg, 0, INT32_MAX, &ep->context);
-		break;
-	case OPT_LOOPS:
-		/* As many as a handle's loop field names, home being 0. */
-		ok = parse_u32(arg, 0, 255, &cfg->loops);
+		config_push(cfg->gits, &cfg->n_gits, arg);
 		break;
 	default:
-		return 2;
-	}
-	if (!ok) {
-		complain(cfg, where, "invalid --%s: %s", option_of(opt)->name, arg);
-		return 2;
+		return config_apply_number(cfg, opt, arg, where);
 	}
 	return 0;
 }
 
-/* Apply @p val, a member of the configuration file, as option @p o: a
- * string, or a number or, for --extra, an object, as its argument; true for
- * an option that takes none; an array of strings for a repeatable one. */
+/* Say that @p val, a member of the configuration file or an element of one,
+ * is no value of option @p o; returns 2. */
 static int
-apply_value (struct config        *cfg,
-             struct option const  *o,
-             struct json_object   *val)
+config_invalid (struct config const *cfg,
+                struct option const *o,
+                struct json_object  *val)
 {
-	char const *where = cfg->path;
-	bool flag = o->has_arg == no_argument;
-	bool many = o->val == 'H' || o->val == 'o' || o->val == 'l' || o->val == OPT_GIT;
-	enum json_type type = json_object_get_type(val);
-	if (type == json_type_boolean && flag)
-		return json_object_get_boolean(val) ? apply(cfg, o->val, nullptr, where) : 0;
-	if (type == json_type_string && !flag)
-		return apply(cfg, o->val, json_object_get_string(val), where);
-	if ((type == json_type_int || type == json_type_double ||
-	     (type == json_type_object && o->val == 'x')) && !flag)
-		return apply(cfg, o->val, json_object_to_json_string_ext(
-		             val, JSON_C_TO_STRING_PLAIN), where);
-	if (type == json_type_array && many) {
-		size_t n = json_object_array_length(val);
-		size_t i = 0;
-		int e = 0;
-		/* Not of arrays, as lists() counts them. */
-		for (struct json_object *v; !e && i < n &&
-		     !json_object_is_type(v = json_object_array_get_idx(val, i),
-		                          json_type_array); ++i)
-			e = apply_value(cfg, o, v);
-		if (e || i == n)
-			return e;
+	char const *text = json_object_to_json_string_ext(val, JSON_C_TO_STRING_PLAIN);
+	return config_complain(cfg, cfg->path, "invalid --%s: %s", o->name, text);
+}
+
+/* The argument that @p val gives option @p o, which takes one: a string, or
+ * a number or, for --extra, an object, as JSON text; nullptr if it is none
+ * of those. */
+static char const *
+config_value_arg (struct option const *o,
+                  struct json_object  *val)
+{
+	switch (json_object_get_type(val)) {
+	case json_type_string:
+		return json_object_get_string(val);
+	case json_type_object:
+		if (o->val != 'x')
+			return nullptr;
+		[[fallthrough]];
+	case json_type_int:
+	case json_type_double:
+		return json_object_to_json_string_ext(val, JSON_C_TO_STRING_PLAIN);
+	default:
+		return nullptr;
 	}
-	complain(cfg, where, "invalid --%s: %s", o->name,
-	         json_object_to_json_string_ext(val, JSON_C_TO_STRING_PLAIN));
-	return 2;
+}
+
+/* Apply @p val, a member of the configuration file or an element of one, as
+ * option @p o: true for an option that takes no argument, else the
+ * argument config_value_arg() finds. */
+static int
+config_apply_value (struct config       *cfg,
+                    struct option const *o,
+                    struct json_object  *val)
+{
+	if (o->has_arg == no_argument) {
+		if (!json_object_is_type(val, json_type_boolean))
+			return config_invalid(cfg, o, val);
+		if (!json_object_get_boolean(val))
+			return 0;
+		return config_apply(cfg, o->val, nullptr, cfg->path);
+	}
+	char const *arg = config_value_arg(o, val);
+	if (!arg)
+		return config_invalid(cfg, o, val);
+	return config_apply(cfg, o->val, arg, cfg->path);
+}
+
+/* Apply @p val, a member of the configuration file, as option @p o: a value
+ * config_apply_value() takes, or an array of them for a repeatable option. */
+static int
+config_apply_member (struct config       *cfg,
+                     struct option const *o,
+                     struct json_object  *val)
+{
+	bool many = o->val == 'H' || o->val == 'o' || o->val == 'l' ||
+	            o->val == OPT_GIT;
+	if (!many || !json_object_is_type(val, json_type_array))
+		return config_apply_value(cfg, o, val);
+	size_t n = json_object_array_length(val);
+	for (size_t i = 0; i < n; ++i) {
+		struct json_object *v = json_object_array_get_idx(val, i);
+		/* Not of arrays, as config_lists() counts them. */
+		int status = json_object_is_type(v, json_type_array)
+		           ? config_invalid(cfg, o, val)
+		           : config_apply_value(cfg, o, v);
+		if (status)
+			return status;
+	}
+	return 0;
 }
 
 /* Whether @p st's file only root and askai's user may change: for a
  * directory, others may add entries to it if only their owners may remove
  * them (the sticky bit, as on /tmp). */
 static bool
-safe (struct stat const *st)
+config_safe (struct stat const *st)
 {
 	return (!st->st_uid || st->st_uid == geteuid()) &&
 	       (!(st->st_mode & (S_IWGRP | S_IWOTH)) ||
 	        (S_ISDIR(st->st_mode) && st->st_mode & S_ISVTX));
 }
 
-/* Whether every directory above @p path is safe(). */
+/* Whether every directory above @p path is config_safe(); false if that
+ * cannot be told. */
 static bool
-safe_dirs (char const *path)
+config_safe_dirs (char const *path)
 {
-	char real[PATH_MAX];
-	bool ok = realpath(path, real);
-	for (char *slash = ok ? strrchr(real, '/') : nullptr; ok && slash;
+	char *real = realpath(path, nullptr);
+	if (!real)
+		return false;
+	bool ok = true;
+	struct stat st;
+	/* Each but the root, from the nearest; the root last. */
+	for (char *slash = strrchr(real, '/'); ok && slash != real;
 	     slash = strrchr(real, '/')) {
 		*slash = '\0';
-		struct stat st;
-		ok = !stat(slash == real ? "/" : real, &st) && safe(&st);
-		if (slash == real)
-			break;
+		ok = !stat(real, &st) && config_safe(&st);
 	}
-	return ok;
+	free(real);
+	return ok && !stat("/", &st) && config_safe(&st);
+}
+
+/* Read up to @p size bytes of the file open as @p fd into @p buf, as many as
+ * there are, their count into @p *p_len; 0, or why a read failed. */
+static int
+config_read (int     fd,
+             char   *buf,
+             size_t  size,
+             size_t *p_len)
+{
+	*p_len = 0;
+	while (*p_len < size) {
+		ssize_t n = read(fd, buf + *p_len, size - *p_len);
+		if (n > 0)
+			*p_len += (size_t)n;
+		else if (!n)
+			return 0;
+		else if (errno != EINTR)
+			return errno;
+	}
+	return 0;
+}
+
+/* As config_slurp() says, the file at @p path being open as @p fd. */
+static int
+config_slurp_fd (struct config const *cfg,
+                 int                  fd,
+                 char const          *path,
+                 mode_t               hide,
+                 char               **p_text,
+                 size_t              *p_len)
+{
+	struct stat st;
+	if (fstat(fd, &st))
+		return config_complain(cfg, nullptr, "cannot open %s: %s", path,
+		                       strerror(errno));
+	if (!S_ISREG(st.st_mode))
+		return config_complain(cfg, path, "not a regular file");
+	if (st.st_size > FILE_MAX)
+		return config_complain(cfg, path, "larger than 1 MiB");
+	if (!config_safe(&st) || !config_safe_dirs(path))
+		return config_complain(cfg, path, "others than root and askai's user "
+		                       "may change it");
+	if (st.st_mode & hide)
+		return config_complain(cfg, path, "others may read it");
+	char *text = malloc((size_t)st.st_size + 1);
+	if (!text)
+		return config_oom(cfg);
+	size_t len;
+	int e = config_read(fd, text, (size_t)st.st_size, &len);
+	if (e) {
+		explicit_bzero(text, len);
+		free(text);
+		return config_complain(cfg, path, "%s", strerror(e));
+	}
+	text[len] = '\0';
+	*p_text = text;
+	*p_len = len;
+	return 0;
 }
 
 /* Read the file at @p path whole into @p *p_text, NUL-terminated, its
@@ -729,106 +893,70 @@ safe_dirs (char const *path)
  * permission bits @p hide, such as S_IROTH for a secret, which is wiped
  * from memory freed here.  Returns 0, or the exit status, having said why. */
 static int
-slurp (struct config const *cfg,
-       char const          *path,
-       mode_t               hide,
-       char               **p_text,
-       size_t              *p_len)
+config_slurp (struct config const *cfg,
+              char const          *path,
+              mode_t               hide,
+              char               **p_text,
+              size_t              *p_len)
 {
 	/* Not blocking, a FIFO opens at once, and fails the check. */
 	int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-	struct stat st;
-	if (fd < 0 || fstat(fd, &st)) {
-		complain(cfg, nullptr, "cannot open %s: %s", path, strerror(errno));
-		if (fd >= 0)
-			close(fd);
-		return 2;
-	}
-	char const *why = !S_ISREG(st.st_mode) ? "not a regular file"
-	                : st.st_size > FILE_MAX ? "larger than 1 MiB"
-	                : !safe(&st) || !safe_dirs(path)
-	                ? "others than root and askai's user may change it"
-	                : st.st_mode & hide ? "others may read it"
-	                : nullptr;
-	size_t len = 0;
-	char *text = why ? nullptr : malloc((size_t)st.st_size + 1);
-	if (text) {
-		for (ssize_t n; (n = read(fd, text + len, (size_t)st.st_size - len)) != 0; ) {
-			if (n < 0 && errno == EINTR)
-				continue;
-			if (n < 0) {
-				why = strerror(errno);
-				break;
-			}
-			len += (size_t)n;
-			if (len == (size_t)st.st_size)
-				break;
-		}
-	}
+	if (fd < 0)
+		return config_complain(cfg, nullptr, "cannot open %s: %s", path,
+		                       strerror(errno));
+	int status = config_slurp_fd(cfg, fd, path, hide, p_text, p_len);
 	close(fd);
-	if (why || !text) {
-		if (text)
-			explicit_bzero(text, len);
-		free(text);
-		complain(cfg, why ? path : nullptr, "%s", why ? why : "out of memory");
-		return why ? 2 : 1;
-	}
-	text[len] = '\0';
-	*p_text = text;
-	*p_len = len;
-	return 0;
+	return status;
 }
 
-/* Read the configuration file into cfg->file: a JSON object, which may hold
- * comments, in a file slurp() reads.  Returns 0, or the exit status, having
- * said why. */
+/* Say that the configuration file's @p text is not as config_json() says,
+ * @p what being wrong at byte @p end; returns 2. */
 static int
-load (struct config *cfg)
+config_json_fail (struct config const *cfg,
+                  char const          *text,
+                  size_t               end,
+                  char const          *what)
 {
-	char const *path = cfg->path;
-	char *text;
-	size_t len;
-	int status = slurp(cfg, path, 0, &text, &len);
-	if (status)
-		return status;
+	size_t line = 1;
+	size_t column = 1;
+	for (size_t i = 0; i < end; ++i, ++column)
+		if (text[i] == '\n') {
+			++line;
+			column = 0;
+		}
+	return config_complain(cfg, cfg->path, "%zu:%zu: %s", line, column, what);
+}
 
+/* Parse the configuration file's @p len bytes of @p text into cfg->file:
+ * a JSON object, which may hold comments, and blanks after it at most.
+ * Returns 0, or the exit status, having said why. */
+static int
+config_json (struct config *cfg,
+             char const    *text,
+             size_t         len)
+{
 	struct json_tokener *tok = json_tokener_new();
-	struct json_object *file = tok ? json_tokener_parse_ex(tok, text, (int)len)
-	                               : nullptr;
-	size_t end = tok ? json_tokener_get_parse_end(tok) : 0;
-	enum json_tokener_error e = tok ? json_tokener_get_error(tok)
-	                                : json_tokener_error_memory;
+	if (!tok)
+		return config_oom(cfg);
+	/* config_fini() puts what this gives, whatever the status. */
+	cfg->file = json_tokener_parse_ex(tok, text, (int)len);
+	size_t end = json_tokener_get_parse_end(tok);
+	enum json_tokener_error e = json_tokener_get_error(tok);
 	json_tokener_free(tok);
-	/* What follows the object may only be blank. */
-	size_t rest = end + strspn(text + end, " \t\r\n");
-	if (file && (!json_object_is_type(file, json_type_object) || rest < len)) {
-		e = json_tokener_error_parse_unexpected;
-		end = json_object_is_type(file, json_type_object) ? rest : 0;
-	}
-	if (!file || e != json_tokener_success) {
-		size_t line = 1;
-		size_t column = 1;
-		for (size_t i = 0; i < end && i < len; ++i, ++column)
-			if (text[i] == '\n') {
-				++line;
-				column = 0;
-			}
-		complain(cfg, path, "%zu:%zu: %s", line, column, file && e ==
-		         json_tokener_error_parse_unexpected ? "not one JSON object"
-		         : json_tokener_error_desc(e));
-		json_object_put(file);
-		free(text);
-		return 2;
-	}
-	free(text);
-	cfg->file = file;
+	if (!cfg->file)
+		return config_json_fail(cfg, text, end, json_tokener_error_desc(e));
+	if (!json_object_is_type(cfg->file, json_type_object))
+		return config_json_fail(cfg, text, 0, "not one JSON object");
+	end += strspn(text + end, " \t\r\n");
+	if (end < len)
+		return config_json_fail(cfg, text, end, "not one JSON object");
 	return 0;
 }
 
 /* Whether the configuration file's member @p key is of its policy, who may
  * connect and what they may do (src/policy.h), rather than an option. */
 static bool
-of_policy (char const *key)
+config_of_policy (char const *key)
 {
 	return !strcmp(key, "roles") || !strcmp(key, "identities") ||
 	       !strcmp(key, "unix-groups") || !strcmp(key, "anonymous");
@@ -837,51 +965,53 @@ of_policy (char const *key)
 /* Whether the configuration file's member @p key takes effect on a reload:
  * the policy's, and TLS's certificate, key and key types. */
 static bool
-reloadable (char const *key)
+config_reloadable (char const *key)
 {
-	return of_policy(key) || !strncmp(key, "tls-", sizeof "tls-" - 1);
+	return config_of_policy(key) || !strncmp(key, "tls-", sizeof "tls-" - 1);
 }
 
-/* The members of @p file, a configuration file's object or nullptr, but
- * those @p but is true of. */
+/* The members of @p cfg's configuration file, if it has one, but those
+ * @p but is true of. */
 static size_t
-members_but (struct json_object *file,
-             bool              (*but) (char const *key))
+config_members_but (struct config const *cfg,
+                    bool               (*but) (char const *key))
 {
 	size_t n = 0;
 	struct json_object_iter it;
-	if (file)
-		json_object_object_foreachC(file, it)
+	if (cfg->file)
+		json_object_object_foreachC(cfg->file, it)
 			n += !but(it.key);
 	return n;
 }
 
-/* Whether @p a and @p b, configuration files' objects or nullptr, set the
- * same options, those a reload takes aside. */
+/* Whether @p cfg's configuration file and @p from's, if either has one, set
+ * the same options, those a reload takes aside. */
 static bool
-same_options (struct json_object *a,
-              struct json_object *b)
+config_same_options (struct config const *cfg,
+                     struct config const *from)
 {
-	if (members_but(a, reloadable) != members_but(b, reloadable))
+	if (config_members_but(cfg, config_reloadable) !=
+	    config_members_but(from, config_reloadable))
 		return false;
+	if (!from->file)
+		return true;
 	struct json_object_iter it;
-	if (a)
-		json_object_object_foreachC(a, it) {
-			struct json_object *v;
-			if (!reloadable(it.key) &&
-			    (!json_object_object_get_ex(b, it.key, &v) ||
-			     !json_object_equal(it.val, v)))
-				return false;
-		}
+	json_object_object_foreachC(from->file, it) {
+		struct json_object *v;
+		if (!config_reloadable(it.key) &&
+		    (!json_object_object_get_ex(cfg->file, it.key, &v) ||
+		     !json_object_equal(it.val, v)))
+			return false;
+	}
 	return true;
 }
 
 /* Make room for the lists of headers, origins, listeners and repositories,
  * in one block: each may hold every argument, every string of the
  * configuration file and the three headers askai adds, and ends in nullptr.
- * False if out of memory. */
-static bool
-lists (struct config *cfg)
+ * Returns 0, or 1 if out of memory, having said so. */
+static int
+config_lists (struct config *cfg)
 {
 	size_t room = (size_t)cfg->argc + 4;
 	struct json_object_iter it;
@@ -891,313 +1021,467 @@ lists (struct config *cfg)
 			      ? json_object_array_length(it.val) : 1;
 	char const **block = malloc(4 * room * sizeof *block);
 	if (!block)
-		return false;
+		return config_oom(cfg);
 	cfg->headers = block;
 	cfg->origins = block + room;
 	cfg->listens = block + 2 * room;
 	cfg->gits = block + 3 * room;
 	*cfg->headers = *cfg->origins = *cfg->listens = *cfg->gits = nullptr;
-	return true;
+	cfg->ep.headers = cfg->headers;
+	cfg->http.origins = cfg->origins;
+	cfg->http.listen = cfg->listens;
+	return 0;
 }
 
-/* Apply the configuration file's members as the options of their names. */
+/* Apply the configuration file's members but its policy's as the options of
+ * their names. */
 static int
-apply_file (struct config *cfg)
+config_apply_file (struct config *cfg)
 {
 	struct json_object_iter it;
 	json_object_object_foreachC(cfg->file, it) {
+		if (config_of_policy(it.key))
+			continue;
 		struct option const *o = options;
 		while (o->name && strcmp(o->name, it.key))
 			++o;
-		if (of_policy(it.key))
-			continue;
-		if (!o->name || o->val == 'c' || o->val == 'h') {
-			complain(cfg, cfg->path, "unknown option: %s", it.key);
-			return 2;
-		}
-		int e = apply_value(cfg, o, it.val);
-		if (e)
-			return e;
+		if (!o->name || o->val == 'c' || o->val == 'h')
+			return config_complain(cfg, cfg->path, "unknown option: %s", it.key);
+		int status = config_apply_member(cfg, o, it.val);
+		if (status)
+			return status;
 	}
 	return 0;
 }
 
-/* Whether the directory @p dir has @p entry. */
-static bool
-has (char const *dir,
-     char const *entry)
+/* Read the configuration file, which config_slurp() reads, as config_json()
+ * says, make room for the lists, and apply the file's options. */
+static int
+config_file (struct config *cfg)
 {
-	char path[PATH_MAX];
-	struct stat st;
-	int n = snprintf(path, sizeof path, "%s/%s", dir, entry);
-	return n > 0 && (size_t)n < sizeof path && !stat(path, &st);
+	char *text;
+	size_t len;
+	int status = config_slurp(cfg, cfg->path, 0, &text, &len);
+	if (status)
+		return status;
+	status = config_json(cfg, text, len);
+	free(text);
+	if (status)
+		return status;
+	status = config_lists(cfg);
+	if (status)
+		return status;
+	return config_apply_file(cfg);
 }
 
-/* Whether the notes repository's path is a directory that only root and
- * askai's user may change, or else names one that the directory it would
- * be made in lets only them make; false, having said why, if not. */
+/* Check the limits on clients against each other, and that the tools askai
+ * offers are named apart. */
+static int
+config_check (struct config const *cfg)
+{
+	struct httpd_limits const *lim = &cfg->http.limits;
+	if (lim->body > lim->bodies)
+		return config_complain(cfg, nullptr, "--max-body exceeds --body-budget");
+	if (lim->client_bodies && lim->body > lim->client_bodies)
+		return config_complain(cfg, nullptr, "--max-body exceeds --client-budget");
+	if (lim->out_pause > lim->out_max)
+		return config_complain(cfg, nullptr, "--output-pause exceeds --max-output");
+	char const *name = cfg->tool.name;
+	if (cfg->flags & CFG_MAN && !strcmp(name, "man"))
+		return config_complain(cfg, nullptr, "--man needs a --tool-name other "
+		                       "than man");
+	if (cfg->flags & CFG_TEST_TASK && !strcmp(name, "test_task"))
+		return config_complain(cfg, nullptr, "--test-task needs a --tool-name "
+		                       "other than test_task");
+	if (cfg->n_gits && !strcmp(name, "git"))
+		return config_complain(cfg, nullptr, "--git needs a --tool-name other "
+		                       "than git");
+	return 0;
+}
+
+/* Whether @p path is a work tree's top or a git directory, so that git
+ * finds no repository around it. */
 static bool
-notes_place (struct config const *cfg)
+config_git_repo (char const *path)
+{
+	int fd = open(path, O_PATH | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return false;
+	struct stat st;
+	bool repo = !fstatat(fd, ".git", &st, 0) ||
+	            (!fstatat(fd, "HEAD", &st, 0) && !fstatat(fd, "objects", &st, 0));
+	close(fd);
+	return repo;
+}
+
+/* Check that repository @p i is one config_git_repo() is true of, named
+ * apart from those before it. */
+static int
+config_check_git (struct config const *cfg,
+                  size_t               i)
+{
+	char const *path = cfg->gits[i];
+	size_t len;
+	char const *name = git_name(path, &len);
+	if (!name)
+		return config_complain(cfg, nullptr, "--git: %s names no repository: "
+		                       "its last component, less a .git suffix, must "
+		                       "be 1 to 64 of [A-Za-z0-9_.-], not beginning "
+		                       "with a dot", path);
+	if (!config_git_repo(path))
+		return config_complain(cfg, nullptr, "--git: not a git repository: %s",
+		                       path);
+	for (size_t j = 0; j < i; ++j) {
+		size_t other;
+		char const *o = git_name(cfg->gits[j], &other);
+		if (other == len && !memcmp(o, name, len))
+			return config_complain(cfg, nullptr, "--git: two repositories "
+			                       "named %.*s", (int)len, name);
+	}
+	return 0;
+}
+
+static int
+config_check_gits (struct config const *cfg)
+{
+	for (size_t i = 0; i < cfg->n_gits; ++i) {
+		int status = config_check_git(cfg, i);
+		if (status)
+			return status;
+	}
+	return 0;
+}
+
+/* Check that the upstream may call tools, if it is to. */
+static int
+config_check_upstream (struct config const *cfg)
+{
+	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
+		return 0;
+	if (cfg->ep.protocol != AI_OPENAI)
+		return config_complain(cfg, nullptr, "--upstream-tools needs --protocol "
+		                       "openai");
+	/* The turns follow the messages. */
+	if (json_object_object_get_ex(cfg->ep.extra, "messages", nullptr))
+		return config_complain(cfg, nullptr, "--extra may not change messages "
+		                       "with --upstream-tools");
+	return 0;
+}
+
+/* Check that the directory the notes repository would be made in, as it is
+ * not there, lets only root and askai's user make it. */
+static int
+config_check_notes_parent (struct config const *cfg)
+{
+	char *copy = strdup(cfg->notes);
+	if (!copy)
+		return config_oom(cfg);
+	char const *dir = dirname(copy);
+	struct stat st;
+	int status = 0;
+	if (stat(dir, &st))
+		status = config_complain(cfg, nullptr, "--notes: %s: %s", cfg->notes,
+		                         strerror(errno));
+	else if (!S_ISDIR(st.st_mode) || !config_safe(&st) || !config_safe_dirs(dir))
+		status = config_complain(cfg, nullptr, "--notes: %s: others than root "
+		                         "and askai's user may change the directory it "
+		                         "would be made in", cfg->notes);
+	free(copy);
+	return status;
+}
+
+/* Check that the notes repository's path, if one is given, is a directory
+ * that only root and askai's user may change, or else names one that the
+ * directory it would be made in lets only them make. */
+static int
+config_check_notes (struct config const *cfg)
 {
 	char const *path = cfg->notes;
+	if (!path)
+		return 0;
+	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
+		return config_complain(cfg, nullptr, "--notes needs --upstream-tools");
 	struct stat st;
-	char const *why = nullptr;
-	if (!stat(path, &st)) {
-		why = !S_ISDIR(st.st_mode) ? "not a directory"
-		    : !safe(&st) || !safe_dirs(path)
-		    ? "others than root and askai's user may change it" : nullptr;
-	} else if (errno == ENOENT) {
-		/* The directory it would be made in, its trailing slashes aside. */
-		char dir[PATH_MAX];
-		size_t end = strlen(path);
-		while (end > 1 && path[end - 1] == '/')
-			--end;
-		while (end && path[end - 1] != '/')
-			--end;
-		while (end > 1 && path[end - 1] == '/')
-			--end;
-		int n = snprintf(dir, sizeof dir, "%.*s", end ? (int)end : 1, end ? path : ".");
-		why = n < 0 || (size_t)n >= sizeof dir ? strerror(ENAMETOOLONG)
-		    : stat(dir, &st) ? strerror(errno)
-		    : !S_ISDIR(st.st_mode) || !safe(&st) || !safe_dirs(dir)
-		    ? "others than root and askai's user may change the directory it "
-		      "would be made in" : nullptr;
-	} else {
-		why = strerror(errno);
-	}
-	if (why)
-		complain(cfg, nullptr, "--notes: %s: %s", path, why);
-	return !why;
+	if (stat(path, &st))
+		return errno == ENOENT ? config_check_notes_parent(cfg)
+		                       : config_complain(cfg, nullptr, "--notes: %s: %s",
+		                                         path, strerror(errno));
+	if (!S_ISDIR(st.st_mode))
+		return config_complain(cfg, nullptr, "--notes: %s: not a directory",
+		                       path);
+	if (!config_safe(&st) || !config_safe_dirs(path))
+		return config_complain(cfg, nullptr, "--notes: %s: others than root "
+		                       "and askai's user may change it", path);
+	return 0;
 }
 
-/* The TLS listeners' context, from the certificate chain's file and its
- * key's, which none but its owner and its group may read, both wiped once
- * read, as one file may hold the two; 0, or the exit status, having said
- * why. */
+/* Take @p key as the API key, in @p *p_key, unless it has a line break. */
 static int
-tls_context (struct config *cfg)
+config_key_take (struct config const *cfg,
+                 char const          *key,
+                 char const         **p_key)
 {
-	if (!cfg->tls_cert || !cfg->tls_key) {
-		complain(cfg, nullptr, "a tls: listener needs --tls-cert and --tls-key");
-		return 2;
+	if (strpbrk(key, "\r\n"))
+		return config_complain(cfg, nullptr, "the API key contains a line "
+		                       "break");
+	*p_key = key;
+	return 0;
+}
+
+/* The API key, in @p *p_key, from the variable --key-env names. */
+static int
+config_key_env (struct config const *cfg,
+                char const         **p_key)
+{
+	char const *key = getenv(cfg->key_env);
+	if (!key || !*key)
+		return config_complain(cfg, nullptr, "%s is not set", cfg->key_env);
+	return config_key_take(cfg, key, p_key);
+}
+
+/*
+ * The API key, in @p *p_key, from the first of the provider's usual
+ * variables that is set, for its own endpoint unless a header gives a key,
+ * as @p has_auth says.  A provider's usual key variable is only read for
+ * its own endpoint, so pointing --url elsewhere never leaks that key; use
+ * --key-env there.
+ */
+static int
+config_key_usual (struct config const *cfg,
+                  bool                 has_auth,
+                  char const         **p_key)
+{
+	if (cfg->ep.url || has_auth)
+		return 0;
+	char const *const *vars = protocols[cfg->ep.protocol].keys;
+	for (size_t i = 0; i < ARRAY_SIZE(protocols[0].keys) && vars[i]; ++i) {
+		char const *key = getenv(vars[i]);
+		if (key && *key)
+			return config_key_take(cfg, key, p_key);
 	}
-	char *chain;
-	size_t chain_len;
-	int e = slurp(cfg, cfg->tls_cert, 0, &chain, &chain_len);
-	if (e)
-		return e;
+	return config_complain(cfg, nullptr, "set %s or pass --key-env", vars[0]);
+}
+
+/* Point the upstream at the provider's own API: for Gemini, at the model's
+ * method that streams, in SSE. */
+static int
+config_url_own (struct config *cfg)
+{
+	struct ai_endpoint *ep = &cfg->ep;
+	if (!ep->model)
+		return config_complain(cfg, nullptr, "--model is required for %s's "
+		                       "own API", protocols[ep->protocol].name);
+	if (ep->protocol != AI_GEMINI) {
+		ep->url = protocols[ep->protocol].url;
+		return 0;
+	}
+	cfg->url = config_aprintf("%s%s:streamGenerateContent?alt=sse",
+	                          protocols[AI_GEMINI].url, ep->model);
+	if (!cfg->url)
+		return config_oom(cfg);
+	ep->url = cfg->url;
+	return 0;
+}
+
+/* The '?' or '&' that begins the alt parameter of @p query, a URL's query
+ * or ""; nullptr if it has none. */
+static char const *
+config_url_alt (char const *query)
+{
+	char const *alt = strstr(query, "?alt=");
+	return alt ? alt : strstr(query, "&alt=");
+}
+
+/* Gemini streams from :streamGenerateContent, in SSE with alt=sse, whatever
+ * alt the URL that --url gives had. */
+static int
+config_url_gemini (struct config *cfg)
+{
+	static char const method[] = ":generateContent";
+	size_t m = sizeof method - 1;
+	if (cfg->ep.protocol != AI_GEMINI)
+		return 0;
+	char const *url = cfg->ep.url;
+	char const *query = url + strcspn(url, "?");
+	/* The path, less its method if that is the one that does not stream. */
+	size_t path = (size_t)(query - url);
+	char const *stream = "";
+	if (path >= m && !memcmp(query - m, method, m)) {
+		path -= m;
+		stream = ":streamGenerateContent";
+	}
+	/* The query up to its alt's value, and what follows that; or all of it,
+	 * and alt. */
+	char const *alt = config_url_alt(query);
+	if (alt) {
+		char const *value = alt + sizeof "?alt=" - 1;
+		cfg->url = config_aprintf("%.*s%s%.*salt=sse%s", (int)path, url, stream,
+		                          (int)(alt + 1 - query), query,
+		                          value + strcspn(value, "&"));
+	} else {
+		cfg->url = config_aprintf("%.*s%s%s%salt=sse", (int)path, url, stream,
+		                          query, *query ? "&" : "?");
+	}
+	if (!cfg->url)
+		return config_oom(cfg);
+	cfg->ep.url = cfg->url;
+	return 0;
+}
+
+/* Add the headers that askai sends unless they are given: the API key's
+ * with @p key, unless that is nullptr, anthropic-version for Anthropic, and
+ * User-Agent. */
+static int
+config_headers (struct config *cfg,
+                char const    *key)
+{
+	if (key) {
+		cfg->auth = config_aprintf("%s%s", protocols[cfg->ep.protocol].auth, key);
+		if (!cfg->auth)
+			return config_oom(cfg);
+		config_push(cfg->headers, &cfg->n_headers, cfg->auth);
+	}
+	if (cfg->ep.protocol == AI_ANTHROPIC &&
+	    !config_has_header(cfg, "anthropic-version:"))
+		config_push(cfg->headers, &cfg->n_headers, "anthropic-version: 2023-06-01");
+	if (!config_has_header(cfg, "user-agent:"))
+		config_push(cfg->headers, &cfg->n_headers, "User-Agent: askai/0.1");
+	return 0;
+}
+
+/* The tool's description, unless one is given. */
+static int
+config_description (struct config *cfg)
+{
+	if (cfg->tool.description)
+		return 0;
+	char const *who = "another AI model";
+	char const *model = "";
+	if (cfg->ep.model) {
+		who = "the AI model ";
+		model = cfg->ep.model;
+	}
+	cfg->description = config_aprintf("Ask %s%s a question or give it a task, and get "
+	                                  "its answer. It cannot see this conversation, your "
+	                                  "files or your tools, so write a complete, "
+	                                  "self-contained prompt.%s%s Use it for a second "
+	                                  "opinion, for hard problems, or for knowledge you "
+	                                  "lack.", who, model,
+	                                  cfg->flags & CFG_UPSTREAM_TOOLS
+	                                  ? " It may use some of this server's tools "
+	                                    "itself, and its answer lists the calls it "
+	                                    "made." : "",
+	                                  cfg->notes ? " It keeps notes in a thread, which "
+	                                               "a later call may go on with." : "");
+	if (!cfg->description)
+		return config_oom(cfg);
+	cfg->tool.description = cfg->description;
+	return 0;
+}
+
+/* Work out the upstream's API key, URL and headers, and the tool's
+ * description. */
+static int
+config_upstream (struct config *cfg)
+{
+	bool has_auth = config_has_header(cfg, protocols[cfg->ep.protocol].auth);
+	char const *key = nullptr;
+	int status = cfg->key_env ? config_key_env(cfg, &key)
+	                          : config_key_usual(cfg, has_auth, &key);
+	if (status)
+		return status;
+	status = cfg->ep.url ? config_url_gemini(cfg) : config_url_own(cfg);
+	if (status)
+		return status;
+	status = config_headers(cfg, has_auth ? nullptr : key);
+	if (status)
+		return status;
+	return config_description(cfg);
+}
+
+/* Make TLS's context of the certificate chain of @p chain_len bytes at
+ * @p chain and the key that --tls-key's file holds, which none but its owner
+ * and its group may read, wiped once read. */
+static int
+config_tls_key (struct config *cfg,
+                char const    *chain,
+                size_t         chain_len)
+{
 	char *key;
-	size_t key_len;
-	e = slurp(cfg, cfg->tls_key, S_IROTH, &key, &key_len);
-	if (e) {
-		explicit_bzero(chain, chain_len);
-		free(chain);
-		return e;
-	}
+	size_t len;
+	int status = config_slurp(cfg, cfg->tls_key, S_IROTH, &key, &len);
+	if (status)
+		return status;
 	char why[256];
-	cfg->tls = tls_ctx_create(cfg, chain, chain_len, key, key_len, why, sizeof why, &e);
-	explicit_bzero(key, key_len);
-	explicit_bzero(chain, chain_len);
+	int e;
+	cfg->tls = tls_ctx_create(cfg, chain, chain_len, key, len, why, sizeof why, &e);
+	explicit_bzero(key, len);
 	free(key);
-	free(chain);
-	if (e == ENOMEM) {
-		complain(cfg, nullptr, "out of memory");
-		return 1;
-	}
-	if (e) {
-		complain(cfg, nullptr, "TLS: %s", why);
-		return 2;
-	}
+	if (e == ENOMEM)
+		return config_oom(cfg);
+	if (e)
+		return config_complain(cfg, nullptr, "TLS: %s", why);
 	cfg->http.tls = cfg->tls;
 	return 0;
 }
 
-/* Check the options together, and work out what they leave to askai. */
+/* Make the TLS listeners' context from the certificate chain's file and its
+ * key's, the chain wiped once read too, as one file may hold the two. */
 static int
-finish (struct config *cfg)
+config_tls (struct config *cfg)
 {
-	struct ai_endpoint *ep = &cfg->ep;
-	struct httpd_limits const *lim = &cfg->http.limits;
-	if (lim->body > lim->bodies) {
-		complain(cfg, nullptr, "--max-body exceeds --body-budget");
-		return 2;
-	}
-	if (lim->client_bodies && lim->body > lim->client_bodies) {
-		complain(cfg, nullptr, "--max-body exceeds --client-budget");
-		return 2;
-	}
-	if (lim->out_pause > lim->out_max) {
-		complain(cfg, nullptr, "--output-pause exceeds --max-output");
-		return 2;
-	}
-	if (cfg->flags & CFG_MAN && !strcmp(cfg->tool.name, "man")) {
-		complain(cfg, nullptr, "--man needs a --tool-name other than man");
-		return 2;
-	}
-	if (cfg->flags & CFG_TEST_TASK && !strcmp(cfg->tool.name, "test_task")) {
-		complain(cfg, nullptr, "--test-task needs a --tool-name other than test_task");
-		return 2;
-	}
-	if (cfg->n_gits && !strcmp(cfg->tool.name, "git")) {
-		complain(cfg, nullptr, "--git needs a --tool-name other than git");
-		return 2;
-	}
-	/* Each repository a work tree's top or a git directory, so that git
-	 * finds none around it, and each named apart. */
-	for (size_t i = 0; i < cfg->n_gits; ++i) {
-		char const *path = cfg->gits[i];
-		size_t len;
-		char const *name = git_name(path, &len);
-		if (!name) {
-			complain(cfg, nullptr, "--git: %s names no repository: its last "
-			         "component, less a .git suffix, must be 1 to 64 of "
-			         "[A-Za-z0-9_.-], not beginning with a dot", path);
-			return 2;
-		}
-		if (!has(path, ".git") && !(has(path, "HEAD") && has(path, "objects"))) {
-			complain(cfg, nullptr, "--git: not a git repository: %s", path);
-			return 2;
-		}
-		for (size_t j = 0; j < i; ++j) {
-			size_t other;
-			char const *o = git_name(cfg->gits[j], &other);
-			if (other == len && !memcmp(o, name, len)) {
-				complain(cfg, nullptr, "--git: two repositories named %.*s",
-				         (int)len, name);
-				return 2;
-			}
-		}
-	}
+	if (!cfg->tls_cert || !cfg->tls_key)
+		return config_complain(cfg, nullptr, "a tls: listener needs --tls-cert "
+		                       "and --tls-key");
+	char *chain;
+	size_t len;
+	int status = config_slurp(cfg, cfg->tls_cert, 0, &chain, &len);
+	if (status)
+		return status;
+	status = config_tls_key(cfg, chain, len);
+	explicit_bzero(chain, len);
+	free(chain);
+	return status;
+}
 
-	if (cfg->flags & CFG_UPSTREAM_TOOLS && ep->protocol != AI_OPENAI) {
-		complain(cfg, nullptr, "--upstream-tools needs --protocol openai");
-		return 2;
-	}
-	/* The turns follow the messages. */
-	if (cfg->flags & CFG_UPSTREAM_TOOLS &&
-	    json_object_object_get_ex(ep->extra, "messages", nullptr)) {
-		complain(cfg, nullptr, "--extra may not change messages with "
-		         "--upstream-tools");
-		return 2;
-	}
-	if (cfg->notes && !(cfg->flags & CFG_UPSTREAM_TOOLS)) {
-		complain(cfg, nullptr, "--notes needs --upstream-tools");
-		return 2;
-	}
-	if (cfg->notes && !notes_place(cfg))
-		return 2;
-
-	/*
-	 * A provider's usual key variable is only read for its own endpoint, so
-	 * pointing --url elsewhere never leaks that key; use --key-env there.
-	 */
-	char const *prefix = protocols[ep->protocol].auth;
-	char const *key = nullptr;
-	if (cfg->key_env) {
-		key = getenv(cfg->key_env);
-		if (!key || !*key) {
-			complain(cfg, nullptr, "%s is not set", cfg->key_env);
-			return 2;
-		}
-	} else if (!ep->url && !has_header(cfg->headers, prefix)) {
-		for (size_t i = 0; !key && i < ARRAY_SIZE(protocols[0].keys); ++i) {
-			char const *var = protocols[ep->protocol].keys[i];
-			key = var ? getenv(var) : nullptr;
-			key = key && *key ? key : nullptr;
-		}
-		if (!key) {
-			complain(cfg, nullptr, "set %s or pass --key-env",
-			         protocols[ep->protocol].keys[0]);
-			return 2;
-		}
-	}
-	if (key && strpbrk(key, "\r\n")) {
-		complain(cfg, nullptr, "the API key contains a line break");
-		return 2;
-	}
-
-	if (!ep->url) {
-		if (!ep->model) {
-			complain(cfg, nullptr, "--model is required for %s's own API",
-			         protocols[ep->protocol].name);
-			return 2;
-		}
-		bool gemini = ep->protocol == AI_GEMINI;
-		if (!(cfg->url = print("%s%s%s", protocols[ep->protocol].url,
-		                       gemini ? ep->model : "",
-		                       gemini ? ":streamGenerateContent?alt=sse" : "")))
-			goto oom;
-		ep->url = cfg->url;
-	} else if (ep->protocol == AI_GEMINI) {
-		/* Gemini streams from :streamGenerateContent, in SSE with alt=sse,
-		 * whatever alt the URL had. */
-		static char const method[] = ":generateContent";
-		size_t m = sizeof method - 1;
-		size_t len = strlen(ep->url);
-		char const *query = strchr(ep->url, '?');
-		size_t path = query ? (size_t)(query - ep->url) : len;
-		bool plain = path >= m && !memcmp(ep->url + path - m, method, m);
-		char const *alt = query ? strstr(query, "?alt=") : nullptr;
-		if (query && !alt)
-			alt = strstr(query, "&alt=");
-		/* The query up to its alt's value, and what follows that. */
-		size_t head = alt ? (size_t)(alt - ep->url) + 1 : len;
-		char const *tail = alt ? alt + 5 + strcspn(alt + 5, "&") : "";
-		if (!(cfg->url = print("%.*s%s%.*s%salt=sse%s",
-		                       (int)(path - (plain ? m : 0)), ep->url,
-		                       plain ? ":streamGenerateContent" : "",
-		                       (int)(head - path), ep->url + path,
-		                       alt ? "" : query ? "&" : "?", tail)))
-			goto oom;
-		ep->url = cfg->url;
-	}
-
-	if (key && !has_header(cfg->headers, prefix)) {
-		if (!(cfg->auth = print("%s%s", prefix, key)))
-			goto oom;
-		push(cfg->headers, &cfg->n_headers, cfg->auth);
-	}
-	if (ep->protocol == AI_ANTHROPIC && !has_header(cfg->headers, "anthropic-version:"))
-		push(cfg->headers, &cfg->n_headers, "anthropic-version: 2023-06-01");
-	if (!has_header(cfg->headers, "user-agent:"))
-		push(cfg->headers, &cfg->n_headers, "User-Agent: askai/0.1");
-	ep->headers = cfg->headers;
-
-	if (!cfg->tool.description) {
-		bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
-		cfg->description = print("Ask %s%s a question or give it a task, and get "
-		                         "its answer. It cannot see this conversation, your "
-		                         "files or your tools, so write a complete, "
-		                         "self-contained prompt.%s%s Use it for a second "
-		                         "opinion, for hard problems, or for knowledge you "
-		                         "lack.",
-		                         ep->model ? "the AI model " : "another AI model",
-		                         ep->model ? ep->model : "",
-		                         lends ? " It may use some of this server's tools "
-		                                 "itself, and its answer lists the calls it "
-		                                 "made." : "",
-		                         cfg->notes ? " It keeps notes in a thread, which "
-		                                      "a later call may go on with." : "");
-		if (!(cfg->tool.description = cfg->description))
-			goto oom;
-	}
-
-	cfg->http.origins = cfg->origins;
+/* Listen on 127.0.0.1:8090 unless told where, and make TLS's context if a
+ * listener is TLS's. */
+static int
+config_listens (struct config *cfg)
+{
 	if (!cfg->n_listens)
-		push(cfg->listens, &cfg->n_listens, "127.0.0.1:8090");
-	cfg->http.listen = cfg->listens;
+		config_push(cfg->listens, &cfg->n_listens, "127.0.0.1:8090");
 	bool tls = false;
 	for (size_t i = 0; i < cfg->n_listens; ++i) {
 		char const *addr = httpd_tls(cfg->listens[i]);
-		if (addr && !strncmp(addr, "unix:", sizeof "unix:" - 1)) {
-			complain(cfg, nullptr, "TLS over a Unix socket: %s", cfg->listens[i]);
-			return 2;
-		}
-		tls |= addr != nullptr;
+		if (!addr)
+			continue;
+		if (!strncmp(addr, "unix:", sizeof "unix:" - 1))
+			return config_complain(cfg, nullptr, "TLS over a Unix socket: %s",
+			                       cfg->listens[i]);
+		tls = true;
 	}
-	int e = tls ? tls_context(cfg) : 0;
-	if (e)
-		return e;
+	return tls ? config_tls(cfg) : 0;
+}
+
+/* Note that ASKAI_TOKEN goes unused if the configuration file names who may
+ * connect, but on a reload. */
+static void
+config_note_token (struct config const *cfg)
+{
+	char const *token = getenv("ASKAI_TOKEN");
+	if (cfg->logged || !token || !*token || !cfg->file)
+		return;
+	if (config_members_but(cfg, config_of_policy) <
+	    (size_t)json_object_object_length(cfg->file))
+		(void)config_complain(cfg, nullptr, "note: ASKAI_TOKEN is ignored, as "
+		                      "%s names who may connect", cfg->path);
+}
+
+/* Make the policy, who may connect and what they may do. */
+static int
+config_policy (struct config *cfg)
+{
 	char const *tools[MCP_TOOLS] = {
 		[0] = cfg->tool.name,
 		[1] = cfg->flags & CFG_MAN ? "man" : nullptr,
@@ -1207,42 +1491,87 @@ finish (struct config *cfg)
 	static_assert(MCP_TOOL_ASK == 1u << 0 && MCP_TOOL_MAN == 1u << 1 &&
 	              MCP_TOOL_TASK == 1u << 2 && MCP_TOOL_GIT == 1u << 3);
 	char why[256];
+	int e;
 	cfg->policy = policy_create(cfg->file, tools, MCP_TOOLS, why, sizeof why, &e);
 	if (e == ENOMEM)
-		goto oom;
-	if (e) {
-		complain(cfg, cfg->path, "%s", why);
-		return 2;
-	}
+		return config_oom(cfg);
+	if (e)
+		return config_complain(cfg, cfg->path, "%s", why);
 	cfg->http.policy = cfg->policy;
-	char const *token = getenv("ASKAI_TOKEN");
-	bool own = !cfg->file ||
-	           members_but(cfg->file, of_policy) ==
-	           (size_t)json_object_object_length(cfg->file);
-	if (token && *token && !own && !cfg->logged)
-		complain(cfg, nullptr, "note: ASKAI_TOKEN is ignored, as %s names who may "
-		         "connect", cfg->path);
-	/* One CPU fewer than askai may use is left to home and the threads that
-	 * mostly sleep (design section 1). */
-	size_t cpus = brainstem_cpus() - 1;
-	cfg->brainstem.loops = cfg->loops ? cfg->loops
-	                     : cpus < 1 ? 1 : cpus < 255 ? cpus : 255;
-	return -1;
-
-oom:
-	complain(cfg, nullptr, "out of memory");
-	return 1;
+	config_note_token(cfg);
+	return 0;
 }
 
-/* Read the command line and the file it names into @p cfg, saying what is
- * wrong in the log if @p logged, as config() says. */
+/* Check the options together, and work out what they leave to askai. */
 static int
-parse (struct config *cfg,
-       int            argc,
-       char          *argv[],
-       bool           logged)
+config_finish (struct config *cfg)
 {
-	*cfg = (struct config){
+	int status = config_check(cfg);
+	if (status)
+		return status;
+	status = config_check_gits(cfg);
+	if (status)
+		return status;
+	status = config_check_upstream(cfg);
+	if (status)
+		return status;
+	status = config_check_notes(cfg);
+	if (status)
+		return status;
+	status = config_upstream(cfg);
+	if (status)
+		return status;
+	status = config_listens(cfg);
+	if (status)
+		return status;
+	status = config_policy(cfg);
+	if (status)
+		return status;
+	/* One CPU fewer than askai may use is left to home and the threads that
+	 * mostly sleep (design section 1). */
+	size_t loops = cfg->loops;
+	if (!loops) {
+		size_t cpus = brainstem_cpus() - 1;
+		loops = cpus < 1 ? 1 : cpus < 255 ? cpus : 255;
+	}
+	cfg->brainstem.loops = loops;
+	return 0;
+}
+
+/* Show the usage on stderr, but on a reload; returns 2. */
+static int
+config_misuse (struct config const *cfg)
+{
+	if (!cfg->logged)
+		config_usage(cfg, stderr);
+	return 2;
+}
+
+/* Apply the command line's options, but --config, over the file's. */
+static int
+config_argv (struct config *cfg)
+{
+	opterr = !cfg->logged;
+	optind = 0;
+	for (int opt; (opt = getopt_long(cfg->argc, cfg->argv, shorts, options,
+	                                 nullptr)) >= 0; ) {
+		if (opt == '?')
+			return config_misuse(cfg);
+		if (opt == 'c')
+			continue;
+		int status = config_apply(cfg, opt, optarg, nullptr);
+		if (status)
+			return status;
+	}
+	return optind == cfg->argc ? 0 : config_misuse(cfg);
+}
+
+/* The defaults, for the command line of @p argc arguments at @p argv. */
+static struct config
+config_defaults (int   argc,
+                 char *argv[])
+{
+	return (struct config){
 		.ep = {
 			.timeout_ms = 600'000,
 			.chunk_ms = 60'000,
@@ -1260,46 +1589,36 @@ parse (struct config *cfg,
 		.calls = 256,
 		.man_recheck = 600,
 		.turns = 32,
-		.git_timeout = 30'000'000'000,
-		.logged = logged
+		.git_timeout = 30'000'000'000
 	};
+}
 
+/* Read the command line and the file it names into @p cfg, as config()
+ * says. */
+static int
+config_parse (struct config *cfg)
+{
 	/* The configuration file goes first, so that the command line overrides
 	 * it; help goes before either.  Each pass begins getopt afresh. */
 	opterr = 0;
 	optind = 0;
-	for (int opt; (opt = getopt_long(argc, argv, shorts, options, nullptr)) >= 0; ) {
-		if (opt == 'h' && !logged) {
-			usage(stdout, argv[0]);
+	for (int opt; (opt = getopt_long(cfg->argc, cfg->argv, shorts, options,
+	                                 nullptr)) >= 0; ) {
+		if (opt == 'h' && !cfg->logged) {
+			config_usage(cfg, stdout);
 			return 0;
 		}
 		if (opt == 'c')
 			cfg->path = optarg;
 	}
-	opterr = !logged;
-	optind = 0;
-	int e = cfg->path ? load(cfg) : 0;
-	if (!e && !lists(cfg)) {
-		complain(cfg, nullptr, "out of memory");
-		return 1;
-	}
-	if (!e && cfg->file)
-		e = apply_file(cfg);
-	for (int opt; !e && (opt = getopt_long(argc, argv, shorts, options, nullptr)) >= 0; ) {
-		if (opt == '?') {
-			if (!logged)
-				usage(stderr, argv[0]);
-			return 2;
-		}
-		if (opt != 'c')
-			e = apply(cfg, opt, optarg, nullptr);
-	}
-	if (!e && optind != argc) {
-		if (!logged)
-			usage(stderr, argv[0]);
-		return 2;
-	}
-	return e ? e : finish(cfg);
+	int status = cfg->path ? config_file(cfg) : config_lists(cfg);
+	if (status)
+		return status;
+	status = config_argv(cfg);
+	if (status)
+		return status;
+	status = config_finish(cfg);
+	return status ? status : -1;
 }
 
 struct config
@@ -1307,8 +1626,8 @@ config (int   argc,
         char *argv[],
         int  *status)
 {
-	struct config cfg;
-	*status = parse(&cfg, argc, argv, false);
+	struct config cfg = config_defaults(argc, argv);
+	*status = config_parse(&cfg);
 	return cfg;
 }
 
@@ -1316,8 +1635,10 @@ int
 config_reload (struct config       *cfg,
                struct config const *from)
 {
-	int status = parse(cfg, from->argc, from->argv, true);
-	cfg->restart = status < 0 && !same_options(from->file, cfg->file);
+	*cfg = config_defaults(from->argc, from->argv);
+	cfg->logged = true;
+	int status = config_parse(cfg);
+	cfg->restart = status < 0 && !config_same_options(cfg, from);
 	return status;
 }
 
@@ -1333,4 +1654,5 @@ config_fini (struct config *cfg)
 	free(cfg->auth);
 	free(cfg->description);
 	free(cfg->headers);
+	*cfg = (struct config){};
 }
