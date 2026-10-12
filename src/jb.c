@@ -114,27 +114,65 @@ jb_parse (char const *data,
 	return root;
 }
 
-/* Open a container, counting its members if @p members limits them; false
- * if out of memory. */
-static bool
+/* Room for one more container's count of members. */
+static int
+jb_scan_grow (struct jb_scan *scan)
+{
+	if (scan->depth < scan->cap)
+		return 0;
+	uint32_t cap = scan->cap ? 2 * scan->cap : 32;
+	uint32_t *m = realloc(scan->members, cap * sizeof *m);
+	if (!m)
+		return ENOMEM;
+	scan->members = m;
+	scan->cap = cap;
+	return 0;
+}
+
+/* Open a container, counting its members if @p members limits them; 0 or
+ * ENOMEM. */
+static int
 jb_scan_open (struct jb_scan *scan,
               uint32_t        members)
 {
 	if (members != UINT32_MAX) {
-		if (scan->depth == scan->cap) {
-			uint32_t cap = scan->cap ? 2 * scan->cap : 32;
-			uint32_t *m = realloc(scan->members, cap * sizeof *m);
-			if (!m)
-				return false;
-			scan->members = m;
-			scan->cap = cap;
-		}
+		int e = jb_scan_grow(scan);
+		if (e)
+			return e;
 		scan->members[scan->depth] = 0;
 	}
 	++scan->depth;
 	++scan->values;
 	scan->state = JB_SCAN_GAP;
-	return true;
+	return 0;
+}
+
+/* Skip @p data, within a string, to its next quote, or to a backslash before
+ * it, counting the bytes; @p *quote is the next quote once looked for, else
+ * @p end.  Returns where it stopped, @p end if the string goes on past it. */
+static char const *
+jb_scan_string (struct jb_scan  *scan,
+                char const      *data,
+                char const      *end,
+                char const     **quote)
+{
+	if (!*quote || *quote < data) {
+		*quote = memchr(data, '"', (size_t)(end - data));
+		if (!*quote)
+			*quote = end;
+	}
+	char const *slash = memchr(data, '\\', (size_t)(*quote - data));
+	if (slash) {
+		scan->run += (size_t)(slash - data);
+		scan->state = JB_SCAN_ESCAPE;
+		return slash;
+	}
+	scan->run += (size_t)(*quote - data);
+	if (*quote == end)
+		return end;
+	scan->copied += scan->run;
+	scan->state = JB_SCAN_GAP;
+	return *quote;
 }
 
 size_t
@@ -152,26 +190,11 @@ jb_scan (struct jb_scan *scan,
 	for (; data < end; ++data) {
 		char c = *data;
 		switch (scan->state) {
-		case JB_SCAN_STRING: {
-			/* Skip to the next quote, or a backslash before it. */
-			if (!quote || quote < data) {
-				quote = memchr(data, '"', (size_t)(end - data));
-				quote = quote ? quote : end;
-			}
-			char const *slash = memchr(data, '\\', (size_t)(quote - data));
-			char const *stop = slash ? slash : quote;
-			scan->run += (size_t)(stop - data);
-			if (stop == end)
+		case JB_SCAN_STRING:
+			data = jb_scan_string(scan, data, end, &quote);
+			if (data == end)
 				return len;
-			data = stop;
-			if (slash) {
-				scan->state = JB_SCAN_ESCAPE;
-				continue;
-			}
-			scan->copied += scan->run;
-			scan->state = JB_SCAN_GAP;
 			continue;
-		}
 		case JB_SCAN_ESCAPE:
 			scan->run += 2;
 			scan->state = JB_SCAN_STRING;
@@ -183,7 +206,7 @@ jb_scan (struct jb_scan *scan,
 		case '{':
 		case '[':
 			if (scan->depth == depth || scan->values == values ||
-			    !jb_scan_open(scan, members))
+			    jb_scan_open(scan, members))
 				return (size_t)(data - start);
 			break;
 		case '"':
