@@ -1207,7 +1207,7 @@ finish (struct config *cfg)
 	static_assert(MCP_TOOL_ASK == 1u << 0 && MCP_TOOL_MAN == 1u << 1 &&
 	              MCP_TOOL_TASK == 1u << 2 && MCP_TOOL_GIT == 1u << 3);
 	char why[256];
-	e = policy_new(&cfg->policy, cfg->file, tools, MCP_TOOLS, why, sizeof why);
+	cfg->policy = policy_create(cfg->file, tools, MCP_TOOLS, why, sizeof why, &e);
 	if (e == ENOMEM)
 		goto oom;
 	if (e) {

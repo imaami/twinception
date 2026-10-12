@@ -57,16 +57,17 @@ struct policy_grant {
 /**
  * The policy of @p file, the configuration file's object, or askai's own if
  * that is nullptr or names none, for the tools @p tools names: bit i is
- * tool i, nullptr for one askai does not offer; a reference to it.  Returns
- * 0; ENOMEM; or EINVAL with @p why, of @p len bytes, saying what is wrong.
+ * tool i, nullptr for one askai does not offer; a reference to it.  nullptr,
+ * with the error in @p *e: ENOMEM, or EINVAL with @p why, of @p len bytes,
+ * saying what is wrong.
  */
-extern int
-policy_new (struct policy           **p_policy,
-            struct json_object       *file,
-            char const *const         tools[],
-            size_t                    n_tools,
-            char                     *why,
-            size_t                    len);
+extern struct policy *
+policy_create (struct json_object *file,
+               char const *const   tools[],
+               size_t              n_tools,
+               char               *why,
+               size_t              len,
+               int                *e);
 
 /** Another reference to @p policy, which a reload does not change, but
  *  replaces. */
