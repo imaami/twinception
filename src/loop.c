@@ -47,7 +47,7 @@ enum { TIME_TURN, TIME_STEP, TIME_BULK, TIME_LATE, TIMINGS };
 
 /* The statistics since the last report.  The histograms come first and the
  * plain counts after them, so that a new window wipes the counts with one
- * memset() and clears the histograms by atomic stores (stats_empty()). */
+ * memset() and clears the histograms by atomic stores (loop_stats_empty()). */
 struct loop_stats {
 	struct hist time[TIMINGS];
 	uint64_t    over[TIMINGS];     /* those over 1 ms, counted exactly, as the
@@ -94,10 +94,10 @@ static char const *const unit_name[LOOP_UNITS] = {
 /* Record @p ns as timing @p t in the statistics since the last report, and in
  * @p metric. */
 static void
-timing_record (struct loop_stats *s,
-               size_t             t,
-               struct hist       *metric,
-               uint64_t           ns)
+loop_stats_time (struct loop_stats *s,
+                 size_t             t,
+                 struct hist       *metric,
+                 uint64_t           ns)
 {
 	hist_record(&s->time[t], ns);
 	s->over[t] += ns > 1'000'000;
@@ -107,8 +107,8 @@ timing_record (struct loop_stats *s,
 /* Empty @p s for a window of statistics: if it was just allocated, its
  * histograms are initialized, and otherwise only cleared. */
 static void
-stats_empty (struct loop_stats *s,
-             bool               fresh)
+loop_stats_empty (struct loop_stats *s,
+                  bool               fresh)
 {
 	for (size_t t = 0; t < TIMINGS; ++t)
 		(fresh ? hist_init : hist_clear)(&s->time[t]);
@@ -117,7 +117,7 @@ stats_empty (struct loop_stats *s,
 }
 
 static void
-metrics_init (struct loop_metrics *m)
+loop_metrics_init (struct loop_metrics *m)
 {
 	hist_init(&m->turn);
 	for (size_t i = 0; i < ARRAY_SIZE(m->step); ++i)
@@ -129,8 +129,8 @@ metrics_init (struct loop_metrics *m)
 }
 
 static void
-most (uint64_t *max,
-      uint64_t  n)
+loop_most (uint64_t *max,
+           uint64_t  n)
 {
 	if (n > *max)
 		*max = n;
@@ -212,11 +212,11 @@ loop_init (struct loop *loop)
 	atomic_store_explicit(&loop->inbox, nullptr, memory_order_relaxed);
 	loop_blank(loop);
 	loop->now = loop_clock();
-	loop->epfd = epoll_create1(EPOLL_CLOEXEC);
 	list_init(&loop->refs);
 	list_init(&loop->dead);
 	for (size_t i = 0; i < ARRAY_SIZE(loop->ready); ++i)
 		list_init(&loop->ready[i]);
+	loop->epfd = epoll_create1(EPOLL_CLOEXEC);
 	if (loop->epfd < 0)
 		return errno;
 
@@ -232,8 +232,8 @@ loop_init (struct loop *loop)
 	loop->metrics = malloc(sizeof *loop->metrics);
 	if (!loop->stats || !loop->metrics)
 		return ENOMEM;
-	stats_empty(loop->stats, true);
-	metrics_init(loop->metrics);
+	loop_stats_empty(loop->stats, true);
+	loop_metrics_init(loop->metrics);
 	return 0;
 }
 
@@ -256,24 +256,24 @@ loop_post (struct loop *loop,
 static void
 loop_collect (struct loop *loop)
 {
-	struct msg *msg = atomic_load_explicit(&loop->inbox, memory_order_relaxed)
-	                ? atomic_exchange(&loop->inbox, nullptr) : nullptr;
-	if (msg) {
-		/* The newest comes first: reversed, the first is the last. */
-		struct msg *last = msg;
-		struct msg *fifo = nullptr;
-		while (msg) {
-			struct msg *next = msg->next;
-			msg->next = fifo;
-			fifo = msg;
-			msg = next;
-		}
-		if (loop->mail_last)
-			loop->mail_last->next = fifo;
-		else
-			loop->mail = fifo;
-		loop->mail_last = last;
+	/* Only this loop empties the inbox: once seen full, it stays so. */
+	if (!atomic_load_explicit(&loop->inbox, memory_order_relaxed))
+		return;
+	struct msg *msg = atomic_exchange(&loop->inbox, nullptr);
+	/* The newest comes first: reversed, the first is the last. */
+	struct msg *last = msg;
+	struct msg *fifo = nullptr;
+	while (msg) {
+		struct msg *next = msg->next;
+		msg->next = fifo;
+		fifo = msg;
+		msg = next;
 	}
+	if (loop->mail_last)
+		loop->mail_last->next = fifo;
+	else
+		loop->mail = fifo;
+	loop->mail_last = last;
 }
 
 /* Hand the oldest message taken to its handler. */
@@ -321,13 +321,30 @@ loop_fini (struct loop *loop)
 
 /* The slot @p h names, if it names one of @p loop's; else nullptr. */
 static struct loop_slot *
-slot_of (struct loop const *loop,
-         struct handle      h)
+loop_slot_of (struct loop const *loop,
+              struct handle      h)
 {
 	uint32_t i = (uint32_t)(h.bits >> 32) & (SLOTS_MAX - 1);
-	struct loop_slot *slot = h.bits >> 56 == loop->id && i < loop->used
-	                       ? &loop->slots[i] : nullptr;
-	return slot && slot->gen == (uint32_t)h.bits && slot->obj ? slot : nullptr;
+	if (h.bits >> 56 != loop->id || i >= loop->used)
+		return nullptr;
+	struct loop_slot *slot = &loop->slots[i];
+	return slot->gen == (uint32_t)h.bits && slot->obj ? slot : nullptr;
+}
+
+/* Room in the table of handles for a slot never used; 0 or ENOMEM. */
+static int
+loop_slots_grow (struct loop *loop)
+{
+	if (loop->used < loop->slots_cap)
+		return 0;
+	size_t cap = loop->slots_cap ? 2 * loop->slots_cap : SLOTS_MIN;
+	struct loop_slot *slots = cap > SLOTS_MAX ? nullptr
+	                        : realloc(loop->slots, cap * sizeof *slots);
+	if (!slots)
+		return ENOMEM;
+	loop->slots = slots;
+	loop->slots_cap = cap;
+	return 0;
 }
 
 int
@@ -339,15 +356,9 @@ loop_handle (struct loop   *loop,
 	if (i--) {
 		loop->vacant = loop->slots[i].vacant;
 	} else {
-		if (loop->used == loop->slots_cap) {
-			size_t cap = loop->slots_cap ? 2 * loop->slots_cap : SLOTS_MIN;
-			struct loop_slot *slots = cap > SLOTS_MAX ? nullptr
-			                        : realloc(loop->slots, cap * sizeof *slots);
-			if (!slots)
-				return ENOMEM;
-			loop->slots = slots;
-			loop->slots_cap = cap;
-		}
+		int e = loop_slots_grow(loop);
+		if (e)
+			return e;
 		i = loop->used++;
 		loop->slots[i].gen = 1;
 	}
@@ -360,7 +371,7 @@ void *
 loop_lookup (struct loop const *loop,
              struct handle      h)
 {
-	struct loop_slot const *slot = slot_of(loop, h);
+	struct loop_slot const *slot = loop_slot_of(loop, h);
 	return slot ? slot->obj : nullptr;
 }
 
@@ -368,7 +379,7 @@ void
 loop_forget (struct loop   *loop,
              struct handle  h)
 {
-	struct loop_slot *slot = slot_of(loop, h);
+	struct loop_slot *slot = loop_slot_of(loop, h);
 	if (!slot)
 		return;
 	slot->obj = nullptr;
@@ -479,9 +490,9 @@ loop_unready (struct loop_step *step)
 }
 
 static void
-heap_put (struct loop       *loop,
-          struct loop_timer *timer,
-          size_t             i)
+loop_heap_put (struct loop       *loop,
+               struct loop_timer *timer,
+               size_t             i)
 {
 	loop->heap[i] = timer;
 	timer->slot = i + 1;
@@ -489,12 +500,12 @@ heap_put (struct loop       *loop,
 
 /* Restore the heap order around @p timer, which is in the heap. */
 static void
-heap_fix (struct loop       *loop,
-          struct loop_timer *timer)
+loop_heap_fix (struct loop       *loop,
+               struct loop_timer *timer)
 {
 	size_t i = timer->slot - 1;
 	while (i && loop->heap[(i - 1) / 4]->due > timer->due) {
-		heap_put(loop, loop->heap[(i - 1) / 4], i);
+		loop_heap_put(loop, loop->heap[(i - 1) / 4], i);
 		i = (i - 1) / 4;
 	}
 	for (size_t c; (c = 4 * i + 1) < loop->timers; i = c) {
@@ -504,9 +515,9 @@ heap_fix (struct loop       *loop,
 				c = k;
 		if (loop->heap[c]->due >= timer->due)
 			break;
-		heap_put(loop, loop->heap[c], i);
+		loop_heap_put(loop, loop->heap[c], i);
 	}
-	heap_put(loop, timer, i);
+	loop_heap_put(loop, timer, i);
 }
 
 int
@@ -523,10 +534,10 @@ loop_timer_set (struct loop       *loop,
 			loop->heap = heap;
 			loop->heap_cap = cap;
 		}
-		heap_put(loop, timer, loop->timers++);
+		loop_heap_put(loop, timer, loop->timers++);
 	}
 	timer->due = due;
-	heap_fix(loop, timer);
+	loop_heap_fix(loop, timer);
 	return 0;
 }
 
@@ -540,8 +551,8 @@ loop_timer_stop (struct loop       *loop,
 	timer->slot = 0;
 	struct loop_timer *last = loop->heap[--loop->timers];
 	if (i < loop->timers) {
-		heap_put(loop, last, i);
-		heap_fix(loop, last);
+		loop_heap_put(loop, last, i);
+		loop_heap_fix(loop, last);
 	}
 }
 
@@ -554,10 +565,10 @@ loop_fire (struct loop *loop)
 		struct loop_timer *timer = loop->heap[0];
 		if (timer->due > loop->now)
 			break;
-		timing_record(loop->stats, TIME_LATE, &loop->metrics->late,
-		              loop->now - timer->due);
+		loop_stats_time(loop->stats, TIME_LATE, &loop->metrics->late,
+		                loop->now - timer->due);
 		timer->due = UINT64_MAX;
-		heap_fix(loop, timer);
+		loop_heap_fix(loop, timer);
 		timer->fn(loop, timer);
 	}
 	return n;
@@ -600,10 +611,10 @@ loop_run (struct loop *loop,
 			loop->work[u] = 0;
 		step->fn(loop, step);
 		uint64_t end = loop_clock();
-		timing_record(loop->stats, TIME_STEP + bulk, &loop->metrics->step[bulk],
-		              end - t);
+		loop_stats_time(loop->stats, TIME_STEP + bulk, &loop->metrics->step[bulk],
+		                end - t);
 		for (size_t u = 0; u < LOOP_UNITS; ++u) {
-			most(&loop->stats->work[u], loop->work[u]);
+			loop_most(&loop->stats->work[u], loop->work[u]);
 			if (loop->work[u] > hist_get(&loop->metrics->work[u]))
 				atomic_store_explicit(&loop->metrics->work[u], loop->work[u],
 				                      memory_order_relaxed);
@@ -663,11 +674,15 @@ loop_log_stats (struct loop *loop,
 	int n = snprintf(work, sizeof work, "events=%" PRIu64 "/%u timers=%" PRIu64
 	                 "/%u steps=%" PRIu64, s->events, (unsigned)EVENTS, s->timers,
 	                 (unsigned)TIMERS, s->steps);
-	for (size_t u = 0; u < LOOP_UNITS && n > 0 && (size_t)n < sizeof work; ++u)
-		n += snprintf(work + n, sizeof work - (size_t)n, " %s=%" PRIu64 "/%" PRIu64,
-		              unit_name[u], s->work[u], bound[u]);
-	log_put(nullptr, "stats %swork %s", label, work);
-	stats_empty(s, false);
+	for (size_t u = 0; u < LOOP_UNITS && n >= 0 && n < (int)sizeof work; ++u) {
+		int k = snprintf(work + n, sizeof work - (size_t)n, " %s=%" PRIu64 "/%" PRIu64,
+		                 unit_name[u], s->work[u], bound[u]);
+		n = k < 0 ? k : n + k;
+	}
+	/* Cut short, the line still says what fits. */
+	if (n >= 0)
+		log_put(nullptr, "stats %swork %s", label, work);
+	loop_stats_empty(s, false);
 }
 
 int
@@ -715,17 +730,17 @@ loop_exec (struct loop *loop)
 			loop_deliver(loop);
 		}
 		struct loop_stats *s = loop->stats;
-		most(&s->events, (uint64_t)n);
-		most(&s->timers, loop_fire(loop));
+		loop_most(&s->events, (uint64_t)n);
+		loop_most(&s->timers, loop_fire(loop));
 
 		loop->stepping = true;
 		uint64_t steps = loop_run(loop, &loop->ready[FRESH], 2,
 		                          start + INTERACTIVE_NS, false);
 		steps += loop_run(loop, &loop->ready[BULK], 1, start + BULK_NS, true);
 		loop->stepping = false;
-		most(&s->steps, steps);
+		loop_most(&s->steps, steps);
 		loop_reap(loop);
-		timing_record(s, TIME_TURN, &loop->metrics->turn, loop_clock() - start);
+		loop_stats_time(s, TIME_TURN, &loop->metrics->turn, loop_clock() - start);
 	}
 
 	/* What follows the last turn is no turn to a watchdog. */
