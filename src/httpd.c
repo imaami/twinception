@@ -1508,6 +1508,23 @@ httpd_conn_trailer (struct httpd_conn    *conn,
 	return conn->trailer > lim->head || ++conn->trailers > lim->fields ? 431 : 0;
 }
 
+/* Take the next part of the chunks, the one conn->chunking says. */
+static unsigned
+httpd_conn_chunk_part (struct httpd_conn    *conn,
+                       struct httpd_dechunk *d)
+{
+	switch (conn->chunking) {
+	case CHUNK_SIZE:
+		return httpd_conn_chunk_size(conn, d);
+	case CHUNK_DATA:
+		return httpd_conn_chunk_data(conn, d);
+	case CHUNK_CRLF:
+		return httpd_conn_chunk_end(conn, d);
+	default:
+		return httpd_conn_trailer(conn, d);
+	}
+}
+
 /*
  * Decode chunks (RFC 9112 7.1) from the @p len bytes at @p raw that follow
  * the head, moving their data down to @p raw, and count the data in the
@@ -1525,16 +1542,10 @@ httpd_conn_dechunk (struct httpd_conn *conn,
                     size_t            *used,
                     size_t            *out)
 {
-	static unsigned (*const part[]) (struct httpd_conn *, struct httpd_dechunk *) = {
-		[CHUNK_SIZE] = httpd_conn_chunk_size,
-		[CHUNK_DATA] = httpd_conn_chunk_data,
-		[CHUNK_CRLF] = httpd_conn_chunk_end,
-		[CHUNK_TRAILER] = httpd_conn_trailer,
-	};
 	struct httpd_dechunk d = { raw, len, 0, 0 };
 	for (size_t was = SIZE_MAX; d.rd != was && d.rd < len && !conn->body_in; ) {
 		was = d.rd;
-		unsigned status = part[conn->chunking](conn, &d);
+		unsigned status = httpd_conn_chunk_part(conn, &d);
 		if (status)
 			return status;
 	}
