@@ -321,8 +321,8 @@ static struct metrics_entry const table[] = {
 #undef WORK
 #undef LOOP_HIST
 
-/* Append text, formatted as by printf(); returns 0, ENOMEM, or the error
- * that kept vsnprintf() from formatting it. */
+/* Append text, formatted as by printf(); returns 0, buf_reserve()'s error,
+ * or EOVERFLOW if vsnprintf() cannot format it. */
 [[gnu::format(printf, 2, 3)]]
 static int
 metrics_put (struct buf *out,
@@ -340,7 +340,7 @@ metrics_put (struct buf *out,
 		va_end(ap);
 		if (n < 0)
 			return EOVERFLOW;
-		if (n < (int)s.len) {
+		if ((size_t)n < s.len) {
 			buf_commit(out, (size_t)n);
 			return 0;
 		}
@@ -422,17 +422,50 @@ metrics_loop_source (struct metrics_loop const *l,
 	return at[source];
 }
 
-/* A loop's series' labels: its name's, then @p labels, if any, in the
- * @p size bytes at @p buf. */
+/* Entry @p m's series at @p at, labelled @p labels, its family's help and
+ * type first if @p first, counted into @p *cost. */
 static int
-metrics_loop_labels (char       *buf,
-                     size_t      size,
-                     char const *loop,
-                     char const *labels)
+metrics_put_series (struct buf                 *out,
+                    struct metrics_entry const *m,
+                    char const                 *labels,
+                    void const                 *at,
+                    bool                        first,
+                    unsigned                   *cost)
 {
-	int n = *labels ? snprintf(buf, size, "loop=\"%s\",%s", loop, labels)
-	                : snprintf(buf, size, "loop=\"%s\"", loop);
-	return n < 0 || n >= (int)size ? EOVERFLOW : 0;
+	if (m->help && first) {
+		int e = metrics_put(out, "# HELP %s %s\n# TYPE %s %s\n", m->name, m->help,
+		                    m->name, kinds[m->kind]);
+		if (e)
+			return e;
+	}
+	if (m->kind == HISTOGRAM) {
+		*cost += 8;
+		return metrics_put_hist(out, m->name, labels, at);
+	}
+	*cost += 1;
+	return metrics_put_value(out, m->name, labels, m->scale, at);
+}
+
+/* Loop @p loop's series of entry @p m, if it has them: labelled with its
+ * name, and @p m's labels, if any.  A loop's family starts with the first
+ * loop, which has them all. */
+static int
+metrics_put_loop (struct buf                 *out,
+                  struct metrics_entry const *m,
+                  struct metrics_loop const  *loop,
+                  bool                        first,
+                  unsigned                   *cost)
+{
+	char const *at = metrics_loop_source(loop, m->source);
+	if (!at)
+		return 0;
+	char labels[128];
+	int n = *m->labels ? snprintf(labels, sizeof labels, "loop=\"%s\",%s", loop->name,
+	                              m->labels)
+	                   : snprintf(labels, sizeof labels, "loop=\"%s\"", loop->name);
+	if (n < 0 || n >= (int)sizeof labels)
+		return EOVERFLOW;
+	return metrics_put_series(out, m, labels, at + m->off, first, cost);
 }
 
 /* The metrics are series, from @p *pos on: an entry's for each loop in turn,
@@ -459,38 +492,16 @@ metrics_render (struct metrics_src const *src,
 	for (unsigned cost = 0; *pos < end && cost < BUDGET; ) {
 		struct metrics_entry const *m = &table[*pos / n];
 		size_t l = *pos % n;
-		char labels[128];
-		char const *ls = m->labels;
-		char const *at;
+		int e = 0;
 		if (m->source < PER_LOOP) {
-			struct metrics_loop const *loop = &src->loops[l];
-			at = metrics_loop_source(loop, m->source);
-			ls = labels;
 			++*pos;
-			int e = metrics_loop_labels(labels, sizeof labels, loop->name, m->labels);
-			if (e)
-				return e;
+			e = metrics_put_loop(out, m, &src->loops[l], !l, &cost);
 		} else {
-			/* An entry that is no loop's has a series once. */
-			at = base[m->source];
+			/* An entry that is no loop's has a series once, from its first
+			 * position on. */
+			char const *at = base[m->source];
 			*pos = (*pos / n + 1) * n;
-		}
-		if (!at)
-			continue;
-		at += m->off;
-		/* A loop's family starts with the first loop, which has them all. */
-		int e = m->help && !l ? metrics_put(out, "# HELP %s %s\n# TYPE %s %s\n",
-		                                    m->name, m->help, m->name, kinds[m->kind])
-		                      : 0;
-		if (e)
-			return e;
-		if (m->kind == HISTOGRAM) {
-			e = metrics_put_hist(out, m->name, ls, (struct hist const *)(void const *)at);
-			cost += 8;
-		} else {
-			e = metrics_put_value(out, m->name, ls, m->scale,
-			                      (_Atomic uint64_t const *)(void const *)at);
-			++cost;
+			e = at ? metrics_put_series(out, m, m->labels, at + m->off, true, &cost) : 0;
 		}
 		if (e)
 			return e;
