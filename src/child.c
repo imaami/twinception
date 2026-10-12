@@ -254,11 +254,11 @@ child_attr (posix_spawnattr_t *attr)
  * output the pipe end @p out, through @p fa and @p attr, fresh. */
 static int
 child_cmd_spawn (struct child_cmd const     *cmd,
-             posix_spawn_file_actions_t *fa,
-             posix_spawnattr_t          *attr,
-             int                         in,
-             int                         out,
-             int                        *pidfd)
+                 posix_spawn_file_actions_t *fa,
+                 posix_spawnattr_t          *attr,
+                 int                         in,
+                 int                         out,
+                 int                        *pidfd)
 {
 	int e = child_fds(fa, in, out, cmd->flags);
 	if (e)
