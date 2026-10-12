@@ -26,6 +26,22 @@ struct blocker {
 	int                    stop;       /* under the lock */
 };
 
+/* The queue's next job, under the lock, waiting for one; nullptr once the
+ * queue is empty and the blockers stop. */
+static struct blocker_job *
+blocker_next (struct blocker *b)
+{
+	while (list_is_empty(&b->queue)) {
+		if (b->stop)
+			return nullptr;
+		pthread_cond_wait(&b->ready, &b->lock);
+	}
+	struct list *next = b->queue.next;
+	list_del(next);
+	--b->queued;
+	return container_of(next, struct blocker_job, hook);
+}
+
 /* A blocker thread: run the queue's jobs, or once told to stop, cancel
  * them, until it is empty. */
 static void *
@@ -35,19 +51,9 @@ blocker_thread (void *arg)
 	log_attach();
 	(void)pthread_setname_np(pthread_self(), "blocker");
 	pthread_mutex_lock(&b->lock);
-	for (;;) {
-		struct list *next = b->queue.next;
-		if (next == &b->queue) {
-			if (b->stop)
-				break;
-			pthread_cond_wait(&b->ready, &b->lock);
-			continue;
-		}
-		list_del(next);
-		--b->queued;
+	for (struct blocker_job *job; (job = blocker_next(b)); ) {
 		bool stop = b->stop;
 		pthread_mutex_unlock(&b->lock);
-		struct blocker_job *job = container_of(next, struct blocker_job, hook);
 		if (stop) {
 			job->error = ECANCELED;
 		} else {
@@ -143,9 +149,9 @@ blocker_done (struct blocker const *blocker)
 void
 blocker_destroy (struct blocker **p_blocker)
 {
-	struct blocker *b = *p_blocker;
-	if (!b)
+	if (!p_blocker || !*p_blocker)
 		return;
+	struct blocker *b = *p_blocker;
 	*p_blocker = nullptr;
 	pthread_cond_destroy(&b->ready);
 	pthread_mutex_destroy(&b->lock);

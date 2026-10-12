@@ -173,12 +173,15 @@ task_pool_create (size_t  loops,
 		atomic_init(&lane->metrics.moved, 0);
 		atomic_init(&lane->load, 0);
 	}
+	*e = 0;
 	return pool;
 }
 
 void
 task_pool_destroy (struct task_pool **p_pool)
 {
+	if (!p_pool)
+		return;
 	free(*p_pool);
 	*p_pool = nullptr;
 }
