@@ -671,17 +671,14 @@ loop_log_stats (struct loop *loop,
 		        (double)hist_get(&h->max) / 1e3);
 	}
 	char work[512];
-	int n = snprintf(work, sizeof work, "events=%" PRIu64 "/%u timers=%" PRIu64
-	                 "/%u steps=%" PRIu64, s->events, (unsigned)EVENTS, s->timers,
-	                 (unsigned)TIMERS, s->steps);
-	for (size_t u = 0; u < LOOP_UNITS && n >= 0 && n < (int)sizeof work; ++u) {
-		int k = snprintf(work + n, sizeof work - (size_t)n, " %s=%" PRIu64 "/%" PRIu64,
-		                 unit_name[u], s->work[u], bound[u]);
-		n = k < 0 ? k : n + k;
-	}
-	/* Cut short, the line still says what fits. */
-	if (n >= 0)
-		log_put(nullptr, "stats %swork %s", label, work);
+	size_t len = util_format(work, sizeof work, "events=%" PRIu64 "/%u timers=%" PRIu64
+	                         "/%u steps=%" PRIu64, s->events, (unsigned)EVENTS,
+	                         s->timers, (unsigned)TIMERS, s->steps);
+	/* Once cut short, with "...", the line says no more. */
+	for (size_t u = 0; u < LOOP_UNITS && len < sizeof work - 1; ++u)
+		len += util_format(work + len, sizeof work - len, " %s=%" PRIu64 "/%" PRIu64,
+		                   unit_name[u], s->work[u], bound[u]);
+	log_put(nullptr, "stats %swork %s", label, work);
 	loop_stats_empty(s, false);
 }
 
