@@ -53,17 +53,18 @@ git_name (char const *path,
 
 /**
  * The git tool for the @p n repositories at @p paths, whose names are apart,
- * each call's deadline @p timeout ns after it starts; nullptr, with errno
- * ENOMEM if out of memory, or as realpath() set it if a path does not
- * resolve.
+ * each call's deadline @p timeout ns after it starts; nullptr, with the error
+ * in @p *e: EINVAL if a path has no name, ENOMEM if out of memory, or as
+ * realpath() says if a path does not resolve.
  */
 extern struct git *
-git_new (char const *const paths[],
-         size_t             n,
-         uint64_t           timeout);
+git_create (char const *const paths[],
+            size_t             n,
+            uint64_t           timeout,
+            int               *e);
 
 extern void
-git_free (struct git **p_git);
+git_destroy (struct git **p_git);
 
 /** The environment git runs in. */
 extern char *const *
@@ -80,10 +81,10 @@ git_definition (struct git const *git);
 /**
  * Fill @p argv, of GIT_ARGV entries, with the git command that @p args, a
  * call's arguments, ask for, its strings pointing into @p args and @p git,
- * which must outlive it; nullptr, or what is wrong with the arguments, for
- * the model to read, which @p why, of GIT_WHY bytes, may hold.
+ * which must outlive it.  Returns 0; or EINVAL, @p why, of GIT_WHY bytes,
+ * saying what is wrong with the arguments, for the model to read.
  */
-extern char const *
+extern int
 git_command (struct git const   *git,
              struct json_object *args,
              char const         *argv[],

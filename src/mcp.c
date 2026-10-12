@@ -1903,9 +1903,8 @@ git_call (struct mcp_req     *req,
 	struct git const *git = mcp->st->git;
 	char const *argv[GIT_ARGV];
 	char why[GIT_WHY];
-	char const *problem = git_command(git, args, argv, why);
-	if (!problem)
-		problem = offset_of(req, args);
+	char const *problem = git_command(git, args, argv, why) ? why
+	                    : offset_of(req, args);
 	if (problem) {
 		tool_result(req, problem, true);
 		return false;

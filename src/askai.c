@@ -549,9 +549,10 @@ serve (struct config const *cfg)
 	struct manual *manual = nullptr;
 	struct mcp_static *st = nullptr;
 	struct httpd_hub *hub = nullptr;
-	struct git *git = cfg->n_gits ? git_new(cfg->gits, cfg->n_gits, cfg->git_timeout)
+	int git_error = 0;
+	struct git *git = cfg->n_gits ? git_create(cfg->gits, cfg->n_gits, cfg->git_timeout,
+	                                           &git_error)
 	                              : nullptr;
-	int git_error = cfg->n_gits && !git ? errno : 0;
 	char why[256];
 	int notes_error = 0;
 	struct notes *notes = cfg->notes ? notes_create(cfg->notes, why, sizeof why,
@@ -559,7 +560,7 @@ serve (struct config const *cfg)
 	                                 : nullptr;
 	if (notes_error) {
 		fprintf(stderr, "askai: --notes: %s: %s\n", cfg->notes, why);
-		git_free(&git);
+		git_destroy(&git);
 		return 1;
 	}
 	int e = git_error;
@@ -644,7 +645,7 @@ serve (struct config const *cfg)
 	}
 	task_pool_destroy(&tasks);
 	httpd_hub_free(&hub);
-	git_free(&git);
+	git_destroy(&git);
 	notes_destroy(&notes);
 	mcp_static_free(&st);
 	manual_free(&manual);

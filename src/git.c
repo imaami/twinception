@@ -1,7 +1,7 @@
 /** @file The git tool (git.h). */
 #include <errno.h>
 #include <json-c/json.h>
-#include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,17 +20,17 @@ enum {
 
 /* A repository: its name, its path, and the setting that has git trust it,
  * one string of the three. */
-struct repo {
+struct git_repo {
 	char *name;
 	char *path;
 	char *safe;
 };
 
 struct git {
-	char       *env[ENV];
-	uint64_t    timeout;
-	size_t      n;
-	struct repo repo[];
+	char           *env[ENV];
+	uint64_t        timeout;
+	size_t          n;
+	struct git_repo repo[];
 };
 
 /* What git runs with whatever the call: no pager, nor a program that a
@@ -175,95 +175,123 @@ git_name (char const *path,
 	if (n > sizeof suffix - 1 &&
 	    !memcmp(path + end - (sizeof suffix - 1), suffix, sizeof suffix - 1))
 		n -= sizeof suffix - 1;
-	bool ok = n && n <= 64 &&
-	          strspn(path + start, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	                               "0123456789_.-") >= n && path[start] != '.';
-	*len = ok ? n : 0;
-	return ok ? path + start : nullptr;
+	*len = 0;
+	if (!n || n > 64 || path[start] == '.' ||
+	    strspn(path + start, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	                         "0123456789_.-") < n)
+		return nullptr;
+	*len = n;
+	return path + start;
 }
 
-struct git *
-git_new (char const *const paths[],
-         size_t             n,
-         uint64_t           timeout)
+/* Set @p r up for the repository listed as @p path: its name, its real
+ * path, and its safe.directory setting, in one allocation. */
+static int
+git_repo_init (struct git_repo *r,
+               char const      *path)
 {
 	static char const safe[] = "safe.directory=";
-	static char const env_path[] = "PATH=";
-	static char const ceiling[] = "GIT_CEILING_DIRECTORIES=";
-	struct git *git = calloc(1, sizeof *git + n * sizeof *git->repo);
-	char const *path = getenv("PATH");
-	path = path && *path ? path : "/usr/bin:/bin";
-	size_t size = sizeof env_path + strlen(path);
-	char *env = git ? malloc(size) : nullptr;
-	if (!env) {
-		free(git);
-		errno = ENOMEM;
-		return nullptr;
+	size_t len = 0;
+	char const *name = git_name(path, &len);
+	if (!name)
+		return EINVAL;
+	char *real = realpath(path, nullptr);
+	if (!real)
+		return errno;
+	size_t real_len = strlen(real);
+	char *s = malloc(len + 1 + 2 * (real_len + 1) + sizeof safe - 1);
+	if (!s) {
+		free(real);
+		return ENOMEM;
 	}
-	snprintf(env, size, "%s%s", env_path, path);
-	git->env[0] = env;
-	git->timeout = timeout;
+	r->name = memcpy(s, name, len);
+	r->name[len] = '\0';
+	r->path = memcpy(s + len + 1, real, real_len + 1);
+	r->safe = r->path + real_len + 1;
+	memcpy(r->safe, safe, sizeof safe - 1);
+	memcpy(r->safe + sizeof safe - 1, real, real_len + 1);
+	free(real);
+	return 0;
+}
 
-	/* No repository found above one listed, which git would look for
-	 * without one there: the ceilings, the listed ones' parents. */
-	size_t ceilings = sizeof ceiling;
-	for (size_t i = 0; i < n; ++i) {
-		char real[PATH_MAX];
-		size_t len = 0;
-		char const *name = git_name(paths[i], &len);
-		if (!name || !realpath(paths[i], real)) {
-			int e = name ? errno : EINVAL;
-			git_free(&git);
-			errno = e;
-			return nullptr;
-		}
-		size_t real_len = strlen(real);
-		char *s = malloc(len + 1 + 2 * (real_len + 1) + sizeof safe - 1);
-		if (!s) {
-			git_free(&git);
-			errno = ENOMEM;
-			return nullptr;
-		}
-		struct repo *r = &git->repo[i];
-		r->name = memcpy(s, name, len);
-		r->name[len] = '\0';
-		r->path = memcpy(s + len + 1, real, real_len + 1);
-		r->safe = r->path + real_len + 1;
-		memcpy(r->safe, safe, sizeof safe - 1);
-		memcpy(r->safe + sizeof safe - 1, real, real_len + 1);
-		git->n = i + 1;
-		ceilings += real_len + 1;
-	}
-	char *ceiling_env = malloc(ceilings);
-	if (!ceiling_env) {
-		git_free(&git);
-		errno = ENOMEM;
+/* GIT_CEILING_DIRECTORIES: the listed repositories' parents, so that git
+ * finds no repository above one listed, as it would look for one without
+ * one there; nullptr if out of memory. */
+static char *
+git_ceilings (struct git const *git)
+{
+	static char const ceiling[] = "GIT_CEILING_DIRECTORIES=";
+	size_t size = sizeof ceiling;
+	for (size_t i = 0; i < git->n; ++i)
+		size += strlen(git->repo[i].path) + 1;
+	char *env = malloc(size);
+	if (!env)
 		return nullptr;
-	}
 	size_t at = sizeof ceiling - 1;
-	memcpy(ceiling_env, ceiling, at);
-	for (size_t i = 0; i < n; ++i) {
+	memcpy(env, ceiling, at);
+	for (size_t i = 0; i < git->n; ++i) {
 		char const *p = git->repo[i].path;
 		size_t len = (size_t)(strrchr(p, '/') - p);
 		if (i)
-			ceiling_env[at++] = ':';
-		memcpy(ceiling_env + at, len ? p : "/", len ? len : 1);
+			env[at++] = ':';
+		memcpy(env + at, len ? p : "/", len ? len : 1);
 		at += len ? len : 1;
 	}
-	ceiling_env[at] = '\0';
+	env[at] = '\0';
+	return env;
+}
+
+/* Set @p git up for the @p n repositories at @p paths. */
+static int
+git_load (struct git        *git,
+          char const *const  paths[],
+          size_t             n)
+{
+	static char const env_path[] = "PATH=";
+	char const *path = getenv("PATH");
+	char *env = util_concat(env_path, sizeof env_path - 1,
+	                        path && *path ? path : "/usr/bin:/bin");
+	if (!env)
+		return ENOMEM;
+	git->env[0] = env;
+	for (; git->n < n; ++git->n) {
+		int e = git_repo_init(&git->repo[git->n], paths[git->n]);
+		if (e)
+			return e;
+	}
+	char *ceilings = git_ceilings(git);
+	if (!ceilings)
+		return ENOMEM;
 	char *const vars[ENV] = {
-		env, ceiling_env, "HOME=/nonexistent", "LC_ALL=C.UTF-8",
+		env, ceilings, "HOME=/nonexistent", "LC_ALL=C.UTF-8",
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat",
 		"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none", nullptr
 	};
 	static_assert(sizeof vars == sizeof git->env);
 	memcpy(git->env, vars, sizeof vars);
+	return 0;
+}
+
+struct git *
+git_create (char const *const paths[],
+            size_t             n,
+            uint64_t           timeout,
+            int               *e)
+{
+	struct git *git = calloc(1, sizeof *git + n * sizeof *git->repo);
+	if (!git) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	git->timeout = timeout;
+	if ((*e = git_load(git, paths, n)))
+		git_destroy(&git);
 	return git;
 }
 
 void
-git_free (struct git **p_git)
+git_destroy (struct git **p_git)
 {
 	struct git *git = *p_git;
 	if (!git)
@@ -290,15 +318,16 @@ git_timeout (struct git const *git)
 
 /* Append @p str to the array @p arr, which is let go of if that fails. */
 static struct json_object *
-append (struct json_object *arr,
-        char const         *str)
+git_append (struct json_object *arr,
+            char const         *str)
 {
 	return arr && jb_push(arr, json_object_new_string(str)) ? arr : nullptr;
 }
 
+/* The schema of an argument that is at most @p max strings. */
 static struct json_object *
-strings (char const *description,
-         size_t      max)
+git_strings (char const *description,
+             size_t      max)
 {
 	return jb_object(
 		"type", json_object_new_string("array"),
@@ -315,10 +344,10 @@ git_definition (struct git const *git)
 	              GIT_MAX == 2 << 20, "the description says");
 	struct json_object *repos = json_object_new_array();
 	for (size_t i = 0; i < git->n; ++i)
-		repos = append(repos, git->repo[i].name);
+		repos = git_append(repos, git->repo[i].name);
 	struct json_object *cmds = json_object_new_array();
 	for (size_t i = 0; i < ARRAY_SIZE(commands); ++i)
-		cmds = append(cmds, commands[i].name);
+		cmds = git_append(cmds, commands[i].name);
 	return jb_object(
 		"name", json_object_new_string("git"),
 		"title", json_object_new_string("Git"),
@@ -340,12 +369,12 @@ git_definition (struct git const *git)
 					"type", json_object_new_string("string"),
 					"enum", cmds,
 					nullptr),
-				"options", strings("Options, such as --oneline or "
-				                   "--max-count=20.", OPTIONS),
-				"revisions", strings("Revisions, such as HEAD~3, main..topic "
-				                     "or a commit's hash.", REVISIONS),
-				"paths", strings("Paths in the repository, relative to its "
-				                 "top.", PATHS),
+				"options", git_strings("Options, such as --oneline or "
+				                       "--max-count=20.", OPTIONS),
+				"revisions", git_strings("Revisions, such as HEAD~3, main..topic "
+				                         "or a commit's hash.", REVISIONS),
+				"paths", git_strings("Paths in the repository, relative to its "
+				                     "top.", PATHS),
 				"pattern", jb_object(
 					"type", json_object_new_string("string"),
 					"description", json_object_new_string(
@@ -359,7 +388,8 @@ git_definition (struct git const *git)
 						"past where it was cut."),
 					nullptr),
 				nullptr),
-			"required", append(append(json_object_new_array(), "repo"), "command"),
+			"required", git_append(git_append(json_object_new_array(), "repo"),
+			                       "command"),
 			"additionalProperties", json_object_new_boolean(0),
 			nullptr),
 		"annotations", jb_object(
@@ -372,8 +402,8 @@ git_definition (struct git const *git)
 /* @p val's string, of 1 to WORD bytes and no NUL, and its length in @p *len;
  * nullptr if it is not one. */
 static char const *
-word (struct json_object *val,
-      size_t             *len)
+git_word (struct json_object *val,
+          size_t             *len)
 {
 	char const *s = jb_text(val);
 	*len = s ? (size_t)json_object_get_string_len(val) : 0;
@@ -382,9 +412,9 @@ word (struct json_object *val,
 
 /* Whether @p opt, of @p len bytes, is one of @p allowed. */
 static bool
-allowed (char const       *opt,
-         size_t            len,
-         struct opt const *allowed)
+git_allowed (char const       *opt,
+             size_t            len,
+             struct opt const *allowed)
 {
 	for (; allowed->str; ++allowed) {
 		char const *a = allowed->str;
@@ -407,7 +437,7 @@ allowed (char const       *opt,
 
 /* Whether @p path is relative, with no ".." component. */
 static bool
-inside (char const *path)
+git_inside (char const *path)
 {
 	if (*path == '/')
 		return false;
@@ -419,21 +449,73 @@ inside (char const *path)
 	return true;
 }
 
-/* Put @p head, @p str cut at @p max bytes but never inside a character, and
- * @p tail in @p why; returns @p why. */
-static char const *
-say (char       *why,
-     char const *head,
-     char const *str,
-     size_t      max,
-     char const *tail)
+/* Say in @p why, of GIT_WHY bytes, what is wrong with a call's arguments;
+ * returns EINVAL. */
+[[gnu::format(printf, 2, 3)]]
+static int
+git_wrong (char       *why,
+           char const *fmt,
+           ...)
 {
-	snprintf(why, GIT_WHY, "%s%.*s%s", head, (int)jb_utf8(str, strnlen(str, max)),
-	         str, tail);
-	return why;
+	va_list ap;
+	va_start(ap, fmt);
+	(void)util_vformat(why, GIT_WHY, fmt, ap);
+	va_end(ap);
+	return EINVAL;
 }
 
-char const *
+/* Say that @p str, cut at @p max bytes but never inside a character, is
+ * wrong, after @p head and before @p tail; returns EINVAL. */
+static int
+git_wrong_word (char       *why,
+                char const *head,
+                char const *str,
+                size_t      max,
+                char const *tail)
+{
+	return git_wrong(why, "%s%.*s%s", head, (int)jb_utf8(str, strnlen(str, max)),
+	                 str, tail);
+}
+
+/* The repository named @p name, if one is listed so; else nullptr. */
+static struct git_repo const *
+git_repo (struct git const *git,
+          char const       *name)
+{
+	for (size_t i = 0; name && i < git->n; ++i)
+		if (!strcmp(name, git->repo[i].name))
+			return &git->repo[i];
+	return nullptr;
+}
+
+/* Say which repositories a call may name; returns EINVAL. */
+static int
+git_repos_wrong (struct git const *git,
+                 char             *why)
+{
+	size_t n = util_format(why, GIT_WHY, "The repo argument must name one of the "
+	                       "repositories:");
+	for (size_t i = 0; i < git->n; ++i)
+		n += util_format(why + n, GIT_WHY - n, "%s %s", i ? "," : "",
+		                 git->repo[i].name);
+	util_format(why + n, GIT_WHY - n, ".");
+	return EINVAL;
+}
+
+/* Whether @p key is an argument the tool takes. */
+static bool
+git_known (char const *key)
+{
+	static char const *const keys[] = {
+		"repo", "command", "options", "revisions", "paths", "pattern", "offset"
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(keys); ++i)
+		if (!strcmp(key, keys[i]))
+			return true;
+	return false;
+}
+
+int
 git_command (struct git const   *git,
              struct json_object *args,
              char const         *argv[],
@@ -444,36 +526,22 @@ git_command (struct git const   *git,
 		"The options, revisions and paths arguments must be arrays of strings, "
 		"at most 16, 4 and 32 of them, each of 1 to 1024 bytes.";
 	if (!json_object_is_type(args, json_type_object))
-		return "Tool arguments must be an object.";
+		return git_wrong(why, "Tool arguments must be an object.");
 	struct json_object_iter it;
 	json_object_object_foreachC(args, it)
-		if (strcmp(it.key, "repo") && strcmp(it.key, "command") &&
-		    strcmp(it.key, "options") && strcmp(it.key, "revisions") &&
-		    strcmp(it.key, "paths") && strcmp(it.key, "pattern") &&
-		    strcmp(it.key, "offset"))
-			return say(why, "Unknown argument: ", it.key, 64, ".");
+		if (!git_known(it.key))
+			return git_wrong_word(why, "Unknown argument: ", it.key, 64, ".");
 
-	char const *name = jb_text(jb_get(args, "repo"));
-	struct repo const *repo = nullptr;
-	for (size_t i = 0; name && !repo && i < git->n; ++i)
-		repo = strcmp(name, git->repo[i].name) ? nullptr : &git->repo[i];
-	if (!repo) {
-		int n = snprintf(why, GIT_WHY, "The repo argument must name one of the "
-		                 "repositories:");
-		for (size_t i = 0; n > 0 && (size_t)n < GIT_WHY && i < git->n; ++i)
-			n += snprintf(why + n, GIT_WHY - (size_t)n, "%s %s", i ? "," : "",
-			              git->repo[i].name);
-		if (n > 0 && (size_t)n < GIT_WHY)
-			snprintf(why + n, GIT_WHY - (size_t)n, ".");
-		return why;
-	}
+	struct git_repo const *repo = git_repo(git, jb_text(jb_get(args, "repo")));
+	if (!repo)
+		return git_repos_wrong(git, why);
 	char const *cmd = jb_text(jb_get(args, "command"));
 	size_t c = 0;
 	while (cmd && c < ARRAY_SIZE(commands) && strcmp(cmd, commands[c].name))
 		++c;
 	if (!cmd || c == ARRAY_SIZE(commands))
-		return "The command argument must be one of log, show, diff, grep, blame, "
-		       "ls-files, ls-tree, cat-file and rev-parse.";
+		return git_wrong(why, "The command argument must be one of log, show, diff, "
+		                 "grep, blame, ls-files, ls-tree, cat-file and rev-parse.");
 	uint64_t takes = commands[c].takes;
 
 	struct json_object *lists[3] = {
@@ -485,23 +553,22 @@ git_command (struct git const   *git,
 		bool array = json_object_is_type(lists[l], json_type_array);
 		lens[l] = array ? json_object_array_length(lists[l]) : 0;
 		if (lists[l] && (!array || lens[l] > most[l]))
-			return lists_problem;
+			return git_wrong(why, "%s", lists_problem);
 	}
-	if (lens[1] && !(takes & REVS)) {
-		snprintf(why, GIT_WHY, "git %s takes no revisions.", cmd);
-		return why;
-	}
-	if (lens[2] && !(takes & FILES)) {
-		snprintf(why, GIT_WHY, "git %s takes no paths.", cmd);
-		return why;
-	}
+	if (lens[1] && !(takes & REVS))
+		return git_wrong(why, "git %s takes no revisions.", cmd);
+	if (lens[2] && !(takes & FILES))
+		return git_wrong(why, "git %s takes no paths.", cmd);
 	struct json_object *pattern = jb_get(args, "pattern");
 	size_t len;
-	char const *pat = word(pattern, &len);
-	if (takes & PATTERN ? !pat : pattern != nullptr)
-		return takes & PATTERN ? "git grep needs a pattern argument: a string "
-		                         "of 1 to 1024 bytes."
-		                       : "Only git grep takes a pattern.";
+	char const *pat = git_word(pattern, &len);
+	if (takes & PATTERN) {
+		if (!pat)
+			return git_wrong(why, "git grep needs a pattern argument: a string of "
+			                 "1 to 1024 bytes.");
+	} else if (pattern) {
+		return git_wrong(why, "Only git grep takes a pattern.");
+	}
 
 	size_t k = 0;
 	argv[k++] = "git";
@@ -517,33 +584,43 @@ git_command (struct git const   *git,
 		argv[k++] = commands[c].forced[i];
 	/* The options, then the pattern, the revisions and the paths, each
 	 * checked as it goes in. */
-	for (size_t l = 0; l < 3; ++l) {
-		if (l == 1 && pat) {
-			argv[k++] = "-e";
-			argv[k++] = pat;
+	for (size_t i = 0; i < lens[0]; ++i) {
+		char const *s = git_word(json_object_array_get_idx(lists[0], i), &len);
+		if (!s)
+			return git_wrong(why, "%s", lists_problem);
+		if (!git_allowed(s, len, commands[c].options)) {
+			char head[48];
+			util_format(head, sizeof head, "git %s takes no option ", cmd);
+			return git_wrong_word(why, head, s, 100, " here.");
 		}
-		if (l == 1 && takes & END)
-			argv[k++] = "--end-of-options";
-		if (l == 2 && takes & FILES)
-			argv[k++] = "--";
-		for (size_t i = 0; i < lens[l]; ++i) {
-			char const *s = word(json_object_array_get_idx(lists[l], i), &len);
-			if (!s)
-				return lists_problem;
-			if (!l && !allowed(s, len, commands[c].options)) {
-				char head[48];
-				snprintf(head, sizeof head, "git %s takes no option ", cmd);
-				return say(why, head, s, 100, " here.");
-			}
-			if (l == 1 && (*s == '-' || !inside(s)))
-				return "A revision may not start with - or /, nor have a .. "
-				       "component.";
-			if (l == 2 && !inside(s))
-				return "A path must be relative to the repository's top, with no "
-				       ".. component.";
-			argv[k++] = s;
-		}
+		argv[k++] = s;
+	}
+	if (pat) {
+		argv[k++] = "-e";
+		argv[k++] = pat;
+	}
+	if (takes & END)
+		argv[k++] = "--end-of-options";
+	for (size_t i = 0; i < lens[1]; ++i) {
+		char const *s = git_word(json_object_array_get_idx(lists[1], i), &len);
+		if (!s)
+			return git_wrong(why, "%s", lists_problem);
+		if (*s == '-' || !git_inside(s))
+			return git_wrong(why, "A revision may not start with - or /, nor have a "
+			                 ".. component.");
+		argv[k++] = s;
+	}
+	if (takes & FILES)
+		argv[k++] = "--";
+	for (size_t i = 0; i < lens[2]; ++i) {
+		char const *s = git_word(json_object_array_get_idx(lists[2], i), &len);
+		if (!s)
+			return git_wrong(why, "%s", lists_problem);
+		if (!git_inside(s))
+			return git_wrong(why, "A path must be relative to the repository's top, "
+			                 "with no .. component.");
+		argv[k++] = s;
 	}
 	argv[k] = nullptr;
-	return nullptr;
+	return 0;
 }
