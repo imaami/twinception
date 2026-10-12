@@ -197,12 +197,12 @@ struct httpd_conn {
 	uint32_t             n_groups;
 	uint32_t             uid;       /* and the user */
 	uint32_t             room;      /* groups the groups' storage holds */
-	int                  fd;        /* home sets it */
 	uint32_t             events;    /* reported since the last step, and DEADLINE */
 	uint32_t             scan;      /* where to resume looking for the head's end */
 	uint32_t             trailer;   /* trailer bytes so far */
+	int                  fd;        /* home sets it; -1 once closed */
 	uint16_t             trailers;  /* trailer fields so far */
-	uint8_t              chunking;  /* enum httpd_chunk */
+	uint16_t             chunking;  /* enum httpd_chunk */
 	bool                 parsed;
 	bool                 body_in;   /* the body is all in */
 	bool                 open;      /* the application has the stream */
@@ -214,7 +214,6 @@ struct httpd_conn {
 	bool                 closing;
 	bool                 eof;
 	bool                 doomed;    /* to close at its next step */
-	bool                 dead;
 	bool                 linger;    /* half-closed, discarding input */
 	bool                 writable;  /* to tell the application once output drains */
 	bool                 local;     /* home sets it: the client is on loopback,
@@ -763,9 +762,9 @@ httpd_conn_unhold (struct httpd_conn *conn)
 	conn->held = 0;
 }
 
-/* Take @p n bytes from @p budget, of which @p max may be taken; false if they
- * do not fit.  Every client loop takes from the same. */
-static bool
+/* Take @p n bytes from @p budget, of which @p max may be taken: 0, or
+ * ENOBUFS if they do not fit.  Every client loop takes from the same. */
+static int
 httpd_budget_take (_Atomic size_t *budget,
                    size_t          n,
                    size_t          max)
@@ -775,26 +774,29 @@ httpd_budget_take (_Atomic size_t *budget,
 		if (atomic_compare_exchange_weak_explicit(budget, &used, used + n,
 		                                          memory_order_relaxed,
 		                                          memory_order_relaxed))
-			return true;
-	return false;
+			return 0;
+	return ENOBUFS;
 }
 
-/* Count @p n more body bytes in the budgets; false if they do not fit. */
-static bool
+/* Count @p n more body bytes in the budgets: 0, or ENOBUFS if they do not
+ * fit. */
+static int
 httpd_conn_hold (struct httpd_conn *conn,
                  size_t             n)
 {
 	struct httpd *srv = conn->srv;
 	if (!n)
-		return true;
-	if (!httpd_budget_take(&srv->hub->bodies, n, srv->lim.bodies))
-		return false;
-	if (!httpd_budget_take(&conn->client->held, n, srv->lim.client_bodies)) {
+		return 0;
+	int e = httpd_budget_take(&srv->hub->bodies, n, srv->lim.bodies);
+	if (e)
+		return e;
+	e = httpd_budget_take(&conn->client->held, n, srv->lim.client_bodies);
+	if (e) {
 		atomic_fetch_sub_explicit(&srv->hub->bodies, n, memory_order_relaxed);
-		return false;
+		return e;
 	}
 	conn->held += n;
-	return true;
+	return 0;
 }
 
 /* Take the stream back from the application, if it has it. */
@@ -826,9 +828,10 @@ httpd_show_idle (struct httpd *srv)
 static void
 httpd_conn_close (struct httpd_conn *conn)
 {
-	if (conn->dead)
+	int fd = conn->fd;
+	if (fd < 0)
 		return;
-	conn->dead = true;
+	conn->fd = -1;
 
 	/* The last connection of a server that drains. */
 	struct httpd *srv = conn->srv;
@@ -848,8 +851,9 @@ httpd_conn_close (struct httpd_conn *conn)
 	if (conn->ctx && conn->ssl)
 		hist_add(&srv->lane->metrics.unshaken, 1);
 	tls_ctx_put(conn->ctx);
+	conn->ctx = nullptr;
 	tls_destroy(&conn->ssl);
-	close(conn->fd);
+	close(fd);
 	buf_fini(&conn->out);
 	buf_fini(&conn->in);
 }
@@ -935,21 +939,23 @@ httpd_conn_doom (struct httpd_conn *conn)
 	httpd_conn_ready(conn);
 }
 
-/* Queue @p n fragments; false, dooming the connection, if out of memory. */
-static bool
+/* Queue @p n fragments: 0, or EPIPE once the connection is doomed, or the
+ * error that dooms it, out of memory. */
+static int
 httpd_conn_put (struct httpd_conn       *conn,
                 struct httpd_frag const *f,
                 size_t                   n)
 {
-	if (conn->dead || conn->doomed)
-		return false;
+	if (conn->doomed)
+		return EPIPE;
 	size_t total = httpd_frag_len(f, n);
 	if (!total)
-		return true;
+		return 0;
 	struct span s;
-	if (buf_reserve(&conn->out, total, SIZE_MAX, &s)) {
+	int e = buf_reserve(&conn->out, total, SIZE_MAX, &s);
+	if (e) {
 		httpd_conn_doom(conn);
-		return false;
+		return e;
 	}
 	for (size_t i = 0; i < n; ++i) {
 		if (f[i].len)
@@ -957,7 +963,24 @@ httpd_conn_put (struct httpd_conn       *conn,
 		s.ptr += f[i].len;
 	}
 	buf_commit(&conn->out, total);
-	return true;
+	return 0;
+}
+
+/* Queue @p data as a chunk. */
+static int
+httpd_conn_put_chunk (struct httpd_conn *conn,
+                      struct httpd_frag  data)
+{
+	char digits[20];
+	char const *size = httpd_hex(digits + sizeof digits - 2, data.len);
+	digits[sizeof digits - 2] = '\r';
+	digits[sizeof digits - 1] = '\n';
+	struct httpd_frag const f[] = {
+		{ size, (size_t)(digits + sizeof digits - size) },
+		data,
+		FRAG("\r\n"),
+	};
+	return httpd_conn_put(conn, f, ARRAY_SIZE(f));
 }
 
 /* Queue a response head: the status line, our headers, up to 8 @p extra
@@ -965,8 +988,8 @@ httpd_conn_put (struct httpd_conn       *conn,
  * STREAM_OPEN, which to HTTP/1.1 clients goes in chunks and to others ends
  * with the connection.  A response that begins before its request's body is
  * all in, or to a request that asked so, or while the server drains, ends the
- * connection. */
-static bool
+ * connection.  Returns as httpd_conn_put() does. */
+static int
 httpd_conn_head (struct httpd_conn       *conn,
                  unsigned                 status,
                  struct httpd_frag const *extra,
@@ -985,8 +1008,7 @@ httpd_conn_head (struct httpd_conn       *conn,
 	code[7] = ' ';
 	char const *c = httpd_decimal(code + 7, status);
 	char digits[20];
-	char const *len = httpd_decimal(digits + sizeof digits, open ? 0 : length);
-
+	struct httpd_frag const origin = httpd_conn_field(conn, req->origin);
 	struct httpd_frag f[12 + 8];
 	size_t n = 0;
 	f[n++] = FRAG("HTTP/1.1 ");
@@ -998,13 +1020,14 @@ httpd_conn_head (struct httpd_conn       *conn,
 	if (conn->chunks) {
 		f[n++] = FRAG("Transfer-Encoding: chunked\r\n");
 	} else if (!open && status != 204) {
+		char const *len = httpd_decimal(digits + sizeof digits, length);
 		f[n++] = FRAG("Content-Length: ");
 		f[n++] = (struct httpd_frag){ len, (size_t)(digits + sizeof digits - len) };
 		f[n++] = FRAG("\r\n");
 	}
-	if (req->origin.off) {
+	if (origin.ptr) {
 		f[n++] = FRAG("Access-Control-Allow-Origin: ");
-		f[n++] = httpd_conn_field(conn, req->origin);
+		f[n++] = origin;
 		f[n++] = FRAG("\r\nAccess-Control-Allow-Credentials: true\r\n"
 		              "Access-Control-Expose-Headers: Mcp-Session-Id, "
 		              "WWW-Authenticate\r\n"
@@ -1017,7 +1040,8 @@ httpd_conn_head (struct httpd_conn       *conn,
 }
 
 /* Queue a complete response of our own: @p body, which is nullptr for none
- * (and no Content-Type), after @p extra header lines; at most 8 of each. */
+ * (and no Content-Type), after @p extra header lines; at most 8 of each.  A
+ * failure dooms the connection. */
 static void
 httpd_conn_respond (struct httpd_conn       *conn,
                     unsigned                 status,
@@ -1032,22 +1056,21 @@ httpd_conn_respond (struct httpd_conn       *conn,
 		head[n++] = FRAG("Content-Type: application/json\r\n");
 	for (size_t i = 0; i < n_extra; ++i)
 		head[n++] = extra[i];
-	if (httpd_conn_head(conn, status, head, n, httpd_frag_len(body, n_body)))
-		httpd_conn_put(conn, body, n_body);
+	if (!httpd_conn_head(conn, status, head, n, httpd_frag_len(body, n_body)))
+		(void)httpd_conn_put(conn, body, n_body);
 	conn->done = true;
 }
 
-/* A JSON-RPC error saying @p message, or else the reason phrase. */
+/* A JSON-RPC error saying the reason phrase. */
 static void
 httpd_conn_error (struct httpd_conn       *conn,
                   unsigned                 status,
-                  struct httpd_frag const *message,
                   struct httpd_frag const *extra,
                   size_t                   n_extra)
 {
 	struct httpd_frag const body[] = {
 		FRAG("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\""),
-		message ? *message : httpd_reason(status),
+		httpd_reason(status),
 		FRAG("\"}}"),
 	};
 	httpd_conn_respond(conn, status, extra, n_extra, body, ARRAY_SIZE(body));
@@ -1064,7 +1087,7 @@ httpd_conn_fail (struct httpd_conn *conn,
 	if (conn->replied)
 		httpd_conn_doom(conn);
 	else
-		httpd_conn_error(conn, status, nullptr, nullptr, 0);
+		httpd_conn_error(conn, status, nullptr, 0);
 }
 
 static void
@@ -1076,10 +1099,11 @@ httpd_conn_preflight (struct httpd_conn *conn)
 		return;
 	}
 
+	struct httpd_frag const acrh = httpd_conn_field(conn, req->acrh);
 	struct httpd_frag const extra[] = {
 		FRAG("Access-Control-Allow-Methods: POST, GET, DELETE, OPTIONS\r\n"
 		     "Access-Control-Allow-Headers: "),
-		req->acrh.off ? httpd_conn_field(conn, req->acrh) : FRAG("Content-Type, Authorization"),
+		acrh.ptr ? acrh : FRAG("Content-Type, Authorization"),
 		FRAG("\r\nAccess-Control-Max-Age: 600\r\n"),
 		req->pna ? FRAG("Access-Control-Allow-Private-Network: true\r\n")
 		         : FRAG(""),
@@ -1096,7 +1120,7 @@ httpd_stream_head (struct stream *s,
 {
 	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
 	struct httpd_frag const extra = { (char const *)fields.ptr, fields.len };
-	if (!conn->open || conn->replied || !httpd_conn_head(conn, status, &extra, 1, length))
+	if (!conn->open || conn->replied || httpd_conn_head(conn, status, &extra, 1, length))
 		return EPIPE;
 	loop_ready(conn->srv->loop, &conn->step);
 	return 0;
@@ -1125,18 +1149,8 @@ httpd_stream_data (struct stream *s,
 		return EPIPE;
 	}
 
-	char digits[20];
-	char const *size = httpd_hex(digits + sizeof digits - 2, bytes.len);
-	digits[sizeof digits - 2] = '\r';
-	digits[sizeof digits - 1] = '\n';
-	struct httpd_frag const f[] = {
-		{ size, (size_t)(digits + sizeof digits - size) },
-		{ (char const *)bytes.ptr, bytes.len },
-		FRAG("\r\n"),
-	};
-	bool ok = conn->chunks ? httpd_conn_put(conn, f, ARRAY_SIZE(f))
-	                       : httpd_conn_put(conn, &f[1], 1);
-	if (!ok)
+	struct httpd_frag const f = { (char const *)bytes.ptr, bytes.len };
+	if (conn->chunks ? httpd_conn_put_chunk(conn, f) : httpd_conn_put(conn, &f, 1))
 		return EPIPE;
 	loop_work(srv->loop, LOOP_SEND, bytes.len);
 	loop_ready(srv->loop, &conn->step);
@@ -1156,13 +1170,13 @@ httpd_stream_end (struct stream *s,
 	conn->open = conn->waits = conn->writable = false;
 	conn->stream.user = nullptr;
 	if (!conn->replied) {
-		httpd_conn_error(conn, 500, nullptr, nullptr, 0);
+		httpd_conn_error(conn, 500, nullptr, 0);
 	} else if (error) {
 		/* The client sees the body cut short as the connection closes. */
 		conn->closing = true;
 		httpd_conn_doom(conn);
 	} else if (conn->chunks) {
-		httpd_conn_put(conn, &FRAG("0\r\n\r\n"), 1);
+		(void)httpd_conn_put(conn, &FRAG("0\r\n\r\n"), 1);
 	}
 	conn->done = true;
 	loop_ready(conn->srv->loop, &conn->step);
@@ -1242,7 +1256,7 @@ httpd_conn_admit (struct httpd_conn *conn)
 		return 403; /* DNS rebinding defence */
 	if (strcmp(head, "OPTIONS") && !httpd_conn_grant(conn))
 		return 401;
-	return httpd_conn_hold(conn, req->body) ? 0 : 503;
+	return httpd_conn_hold(conn, req->body) ? 503 : 0;
 }
 
 /*
@@ -1355,7 +1369,7 @@ httpd_conn_body (struct httpd_conn *conn,
 		unsigned status = httpd_conn_dechunk(conn, raw, len, &used, &out);
 		if (status)
 			return status;
-		if (!httpd_conn_hold(conn, out))
+		if (httpd_conn_hold(conn, out))
 			return 503;
 	} else {
 		used = out = len < req->body - conn->got ? len : req->body - conn->got;
@@ -1455,7 +1469,7 @@ httpd_conn_next (struct httpd_conn *conn,
 			if (status != 401)
 				*req = (struct httpd_req){};
 			conn->closing = true;
-			httpd_conn_error(conn, status, nullptr, status == 401
+			httpd_conn_error(conn, status, status == 401
 			                 ? &FRAG("WWW-Authenticate: Bearer\r\n")
 			                 : &FRAG("Retry-After: 1\r\n"),
 			                 status == 401 || status == 503);
@@ -1480,7 +1494,7 @@ httpd_conn_next (struct httpd_conn *conn,
 			return NEXT_YIELD;
 		if (req->expect && !conn->cont) {
 			static char const cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
-			httpd_conn_put(conn, &FRAG(cont), 1);
+			(void)httpd_conn_put(conn, &FRAG(cont), 1);
 			conn->cont = true;
 		}
 		return NEXT_INPUT;
@@ -1488,70 +1502,98 @@ httpd_conn_next (struct httpd_conn *conn,
 	return conn->done ? NEXT_MORE : NEXT_WAIT;
 }
 
+/* The output is all sent: its storage goes back, and TLS sends what a read
+ * left it to send, such as the answer to a key update, whose wait for room
+ * stalls as the output's does.  With nothing left, the request's own clock
+ * restarts, as it was held up meanwhile.  Returns 0, or the error that closed
+ * the connection. */
+static int
+httpd_conn_sent (struct httpd_conn *conn)
+{
+	uint64_t now = conn->srv->loop->now;
+	buf_fini(&conn->out);
+	enum tls_shake shake = httpd_conn_blocked(conn) ? tls_shake(conn->ssl)
+	                                                : TLS_SHAKEN;
+	if (shake == TLS_FAILED) {
+		httpd_conn_close(conn);
+		return EPROTO;
+	}
+	if (shake == TLS_WRITE) {
+		if (!conn->stall)
+			conn->stall = now;
+		return 0;
+	}
+	if (conn->stall)
+		conn->since = now;
+	conn->stall = 0;
+	return 0;
+}
+
+/* A send would block: the write-stall clock starts, and restarts only once
+ * WRITE_PROGRESS bytes have gone out, so a trickle cannot hold it. */
+static void
+httpd_conn_stall (struct httpd_conn *conn)
+{
+	if (conn->stall && conn->drained < WRITE_PROGRESS)
+		return;
+	conn->stall = conn->srv->loop->now;
+	conn->drained = 0;
+}
+
+/* How many of @p pending bytes to send within @p room: TLS sends a record a
+ * call, whole, of TLS_RECORD bytes or the output's last, so that a call after
+ * one that waited is never shorter, and none sends records unseen. */
+static size_t
+httpd_conn_send_len (struct httpd_conn const *conn,
+                     size_t                   pending,
+                     size_t                   room)
+{
+	if (!conn->ssl)
+		return pending < room ? pending : room;
+	size_t len = pending < TLS_RECORD ? pending : TLS_RECORD;
+	return len <= room ? len : 0;
+}
+
 #undef FRAG
 
-/* Send what is queued, within the step's share; false if the connection
- * closed.  The write-stall clock starts when a send would block and restarts
- * only once WRITE_PROGRESS bytes have gone out, so a trickle cannot hold it;
- * once the output has drained, the request's own clock restarts, as it was
- * held up meanwhile.  TLS sends a record a call, whole, of TLS_RECORD bytes
- * or the output's last, so that a call after one that waited is never
- * shorter, and none sends records unseen; with the output sent, what a read
- * left it to send, such as the answer to a key update, whose wait for room
- * stalls as the output's does. */
-static bool
+/* Send what is queued, within the step's share: 0, or the error that closed
+ * the connection. */
+static int
 httpd_conn_flush (struct httpd_conn *conn)
 {
 	struct loop *loop = conn->srv->loop;
-	while (!conn->dead) {
+	for (;;) {
 		struct span out = buf_peek(&conn->out);
-		if (!out.len) {
-			buf_fini(&conn->out);
-			enum tls_shake shake = httpd_conn_blocked(conn) ? tls_shake(conn->ssl)
-			                                                : TLS_SHAKEN;
-			if (shake == TLS_FAILED) {
-				httpd_conn_close(conn);
-				return false;
-			}
-			if (shake == TLS_WRITE) {
-				if (!conn->stall)
-					conn->stall = loop->now;
-				return true;
-			}
-			if (conn->stall)
-				conn->since = loop->now;
-			conn->stall = 0;
-			return true;
-		}
-		size_t len = conn->ssl && out.len > TLS_RECORD ? TLS_RECORD : out.len;
-		size_t room = loop_room(loop, LOOP_SEND);
-		if (!room || (conn->ssl && room < len))
-			return true;
-		ssize_t n = httpd_conn_send(conn, out.ptr, conn->ssl || len < room ? len : room);
+		if (!out.len)
+			return httpd_conn_sent(conn);
+		size_t len = httpd_conn_send_len(conn, out.len, loop_room(loop, LOOP_SEND));
+		if (!len)
+			return 0;
+		ssize_t n = httpd_conn_send(conn, out.ptr, len);
 		if (n >= 0) {
 			buf_consume(&conn->out, (size_t)n);
 			conn->drained += (size_t)n;
 			conn->earlier -= conn->earlier < (size_t)n ? conn->earlier : (size_t)n;
 			loop_work(loop, LOOP_SEND, (uint64_t)n);
-		} else if (n == -EAGAIN || n == -EWOULDBLOCK) {
-			if (!conn->stall || conn->drained >= WRITE_PROGRESS) {
-				conn->stall = loop->now;
-				conn->drained = 0;
-			}
-			return true;
-		} else if (n != -EINTR) {
-			httpd_conn_close(conn);
+			continue;
 		}
+		if (n == -EINTR)
+			continue;
+		if (n == -EAGAIN || n == -EWOULDBLOCK) {
+			httpd_conn_stall(conn);
+			return 0;
+		}
+		httpd_conn_close(conn);
+		return (int)-n;
 	}
-	return false;
 }
 
 /*
  * When the deadline that applies runs out, UINT64_MAX if none does: lingering,
  * the idle deadline until a TLS client begins its handshake, then the head's
- * until it is done, the write stall's while output is stuck, none while the
- * application works, the idle or the head deadline until a head is parsed,
- * then the body's minimum rate.
+ * until it is done, the write stall's while output is stuck, the idle or the
+ * head deadline until a head is parsed, none once the body is in and the
+ * application works, else the body's minimum rate.
  */
 static uint64_t
 httpd_conn_deadline (struct httpd_conn const *conn)
@@ -1563,19 +1605,18 @@ httpd_conn_deadline (struct httpd_conn const *conn)
 		return httpd_after(conn->since, conn->ssl ? lim->head_time : lim->idle_time);
 	if (conn->stall)
 		return httpd_after(conn->stall, lim->write_time);
-	if (conn->body_in && conn->parsed)
-		return UINT64_MAX;
 	if (!conn->parsed)
 		return httpd_after(conn->since, httpd_conn_input(conn) ? lim->head_time
 		                                                       : lim->idle_time);
+	if (conn->body_in || !lim->body_rate)
+		return UINT64_MAX;
 
 	/* From its start, once the grace is up, the body must have come at
 	 * body_rate: the bytes so far pay for so much time. */
-	size_t got = conn->got;
-	size_t secs = lim->body_rate ? got / lim->body_rate : 0;
-	if (!lim->body_rate || secs > UINT32_MAX)
+	size_t secs = conn->got / lim->body_rate;
+	if (secs > UINT32_MAX)
 		return UINT64_MAX;
-	uint64_t paid = secs * NS + got % lim->body_rate * NS / lim->body_rate;
+	uint64_t paid = secs * NS + conn->got % lim->body_rate * NS / lim->body_rate;
 	uint64_t grace = lim->body_grace * NS;
 	return conn->since + (paid > grace ? paid : grace);
 }
@@ -1606,10 +1647,12 @@ static void
 httpd_conn_discard (struct httpd_conn *conn)
 {
 	ssize_t n = recv(conn->fd, nullptr, LOOP_STEP_RECV, MSG_TRUNC | MSG_DONTWAIT);
-	if (!n || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
-		httpd_conn_close(conn);
-	else if (n > 0)
+	if (n > 0) {
 		loop_work(conn->srv->loop, LOOP_RECV, (uint64_t)n);
+		return;
+	}
+	if (!n || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+		httpd_conn_close(conn);
 }
 
 /* The last response is sent: linger, unless the client has closed already,
@@ -1639,26 +1682,73 @@ httpd_conn_end (struct httpd_conn *conn)
 }
 
 /*
- * One step: requests, as far as the step's share and STEP_NS allow, then one
- * send of their responses.  Then wait for input once no complete request is
- * left, for the application while it works on one, for output space once
- * lim.out_pause bytes are pending, and for the next turn otherwise.
+ * After a step that ended at @p next: wait for input once no complete request
+ * is left, for the application while it works on one, for output space once
+ * lim.out_pause bytes are @p pending or TLS is @p blocked, and for the next
+ * turn otherwise, as for a request the step left (@p again).  Input that
+ * ended stays readable: watching it then would spin, as it would while TLS
+ * waits to send.  Input TLS holds, which epoll does not report, is read in
+ * the next step.
  */
+static void
+httpd_conn_wait (struct httpd_conn *conn,
+                 enum httpd_next    next,
+                 size_t             pending,
+                 bool               blocked,
+                 bool               again)
+{
+	struct httpd *srv = conn->srv;
+	bool starved = next == NEXT_INPUT;
+	bool paused = pending >= srv->lim.out_pause || conn->closing;
+	bool reads = starved && !paused && !blocked && !conn->eof && !conn->waits;
+	bool held = reads && conn->events & HELD;
+	uint32_t events = pending || blocked ? EPOLLOUT : 0;
+	if (conn->waits)
+		events |= EPOLLRDHUP;
+	else if (reads)
+		events |= EPOLLIN;
+	if (loop_modify(srv->loop, &conn->ref, events)) {
+		httpd_conn_close(conn);
+		return;
+	}
+	if (held)
+		conn->events |= EPOLLIN;
+	bool waiting = !again && !held &&
+	               (starved || next == NEXT_WAIT || paused || blocked);
+	if (waiting)
+		loop_unready(&conn->step);
+	else
+		loop_ready(srv->loop, &conn->step);
+
+	/* An idle connection keeps no storage, and under critical memory
+	 * pressure one that waits keeps no more than its bytes need. */
+	bool idle = starved && !pending && !blocked && !httpd_conn_input(conn);
+	if (idle)
+		buf_fini(&conn->in);
+	else if (waiting && atomic_load_explicit(&buf_pressure, memory_order_relaxed) >=
+	                    BUF_CRITICAL)
+		loop_work(srv->loop, LOOP_COPY, buf_trim(&conn->in) + buf_trim(&conn->out));
+
+	httpd_conn_park(conn, idle);
+	httpd_conn_arm(conn);
+}
+
+/* One step: requests, as far as the step's share and STEP_NS allow, then one
+ * send of their responses; once the last is sent, the connection ends. */
 static void
 httpd_conn_pump (struct httpd_conn *conn)
 {
 	struct httpd *srv = conn->srv;
-	struct loop *loop = srv->loop;
 	enum httpd_next next = NEXT_MORE;
 	uint64_t end = loop_clock() + STEP_NS;
-	while (next == NEXT_MORE && !conn->dead && !conn->doomed &&
+	while (next == NEXT_MORE && !conn->doomed &&
 	       buf_peek(&conn->out).len < srv->lim.out_pause)
 		next = httpd_conn_next(conn, end);
 	if (conn->doomed) {
 		httpd_conn_close(conn);
 		return;
 	}
-	if (!httpd_conn_flush(conn))
+	if (httpd_conn_flush(conn))
 		return;
 
 	size_t pending = buf_peek(&conn->out).len;
@@ -1675,48 +1765,13 @@ httpd_conn_pump (struct httpd_conn *conn)
 		/* A response ended there leaves its request to the next step. */
 		again = conn->done;
 	}
-	bool starved = next == NEXT_INPUT;
 	bool blocked = httpd_conn_blocked(conn);
-	if (!pending && !blocked && (next == NEXT_END || (starved && conn->eof))) {
+	if (!pending && !blocked &&
+	    (next == NEXT_END || (next == NEXT_INPUT && conn->eof))) {
 		httpd_conn_end(conn);
 		return;
 	}
-
-	/* Input that ended stays readable: watching it then would spin, as it
-	 * would while TLS waits to send.  Input TLS holds, which epoll does not
-	 * report, is read in the next step. */
-	bool paused = pending >= srv->lim.out_pause || conn->closing;
-	bool reads = starved && !paused && !blocked && !conn->eof && !conn->waits;
-	bool held = reads && conn->events & HELD;
-	uint32_t events = pending || blocked ? EPOLLOUT : 0;
-	if (conn->waits)
-		events |= EPOLLRDHUP;
-	else if (reads)
-		events |= EPOLLIN;
-	if (loop_modify(loop, &conn->ref, events)) {
-		httpd_conn_close(conn);
-		return;
-	}
-	if (held)
-		conn->events |= EPOLLIN;
-	bool waiting = !again && !held &&
-	               (next == NEXT_INPUT || next == NEXT_WAIT || paused || blocked);
-	if (waiting)
-		loop_unready(&conn->step);
-	else
-		loop_ready(loop, &conn->step);
-
-	/* An idle connection keeps no storage, and under critical memory
-	 * pressure one that waits keeps no more than its bytes need. */
-	bool idle = starved && !pending && !blocked && !httpd_conn_input(conn);
-	if (idle)
-		buf_fini(&conn->in);
-	else if (waiting && atomic_load_explicit(&buf_pressure, memory_order_relaxed) >=
-	                    BUF_CRITICAL)
-		loop_work(loop, LOOP_COPY, buf_trim(&conn->in) + buf_trim(&conn->out));
-
-	httpd_conn_park(conn, idle);
-	httpd_conn_arm(conn);
+	httpd_conn_wait(conn, next, pending, blocked, again);
 }
 
 /* One recv, or one TLS record, straight into the input's free tail.  A
@@ -1726,7 +1781,7 @@ httpd_conn_read (struct httpd_conn *conn)
 {
 	/* Input is read only while no complete request is buffered, and a
 	 * body is cut out as it comes, so the limit is never reached and an
-	 * empty span means out of memory. */
+	 * error means out of memory. */
 	struct loop *loop = conn->srv->loop;
 	bool first = !conn->parsed && !httpd_conn_input(conn);
 	struct span s;
@@ -1735,8 +1790,7 @@ httpd_conn_read (struct httpd_conn *conn)
 		return;
 	}
 	size_t room = loop_room(loop, LOOP_RECV);
-	size_t len = s.len < room ? s.len : room;
-	ssize_t n = httpd_conn_recv(conn, s.ptr, len);
+	ssize_t n = httpd_conn_recv(conn, s.ptr, s.len < room ? s.len : room);
 	conn->events &= ~HELD;
 	if (n > 0) {
 		buf_commit(&conn->in, (size_t)n);
@@ -1755,30 +1809,39 @@ httpd_conn_read (struct httpd_conn *conn)
 		conn->events |= HELD;
 }
 
-/* A flight of the handshake, which a TLS listener's client begins with its
- * first bytes, from then on within the head's deadline; once it is done,
- * the connection serves as any other.  Each flight's time is its CPU's,
- * mostly.  A step woken by the client's FIN alone counts none. */
+/* A TLS listener's client begins the handshake with its first bytes: its end
+ * of TLS is made then.  Returns 0, or EAGAIN while it has sent none, or EPIPE
+ * once the connection is closed: a client that closes without a word, such
+ * as a probe of the port, began no handshake. */
+static int
+httpd_conn_hello (struct httpd_conn *conn)
+{
+	char c;
+	ssize_t peek = recv(conn->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+	if (peek < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+		return EAGAIN;
+	conn->ssl = peek > 0 ? tls_create(conn->ctx, conn->fd) : nullptr;
+	if (!conn->ssl) {
+		httpd_conn_close(conn);
+		return EPIPE;
+	}
+	conn->since = conn->srv->loop->now;
+	httpd_conn_park(conn, false);
+	return 0;
+}
+
+/* A flight of the handshake, from the client's first bytes on within the
+ * head's deadline; once it is done, the connection serves as any other.
+ * Each flight's time is its CPU's, mostly.  A step woken by the client's FIN
+ * alone counts none. */
 static void
 httpd_conn_shake (struct httpd_conn *conn)
 {
 	struct httpd *srv = conn->srv;
 	struct loop *loop = srv->loop;
 	struct metrics_conns *m = &srv->lane->metrics;
-	if (!conn->ssl) {
-		/* A client that closes without a word, such as a probe of the
-		 * port, began no handshake. */
-		char c;
-		ssize_t peek = recv(conn->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
-		if (peek < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
-			return;
-		if (peek <= 0 || !(conn->ssl = tls_create(conn->ctx, conn->fd))) {
-			httpd_conn_close(conn);
-			return;
-		}
-		conn->since = loop->now;
-		httpd_conn_park(conn, false);
-	}
+	if (!conn->ssl && httpd_conn_hello(conn))
+		return;
 	uint64_t start = loop_clock();
 	enum tls_shake shake = tls_shake(conn->ssl);
 	hist_record(&m->flights, loop_clock() - start);
@@ -1815,16 +1878,16 @@ httpd_conn_step (struct loop      *loop,
 		httpd_conn_close(conn);
 		return;
 	}
+	bool due = (events & DEADLINE) && httpd_conn_deadline(conn) <= loop->now;
 	/* A handshake ends as a head would, but with no answer. */
 	if (conn->ctx) {
-		if (conn->srv->draining ||
-		    ((events & DEADLINE) && httpd_conn_deadline(conn) <= loop->now))
+		if (conn->srv->draining || due)
 			httpd_conn_close(conn);
 		else if (events & (EPOLLIN | EPOLLOUT))
 			httpd_conn_shake(conn);
 		return;
 	}
-	if ((events & DEADLINE) && httpd_conn_deadline(conn) <= loop->now) {
+	if (due) {
 		httpd_conn_expire(conn);
 	} else if (conn->linger) {
 		httpd_conn_discard(conn);
@@ -1832,7 +1895,7 @@ httpd_conn_step (struct loop      *loop,
 	} else if (events & EPOLLIN) {
 		httpd_conn_read(conn);
 	}
-	if (!conn->dead)
+	if (conn->fd >= 0)
 		httpd_conn_pump(conn);
 }
 
