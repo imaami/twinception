@@ -995,8 +995,7 @@ tls_context (struct config *cfg)
 		return e;
 	}
 	char why[256];
-	cfg->tls = tls_new(cfg, chain, chain_len, key, key_len, why, sizeof why);
-	e = cfg->tls ? 0 : errno;
+	cfg->tls = tls_ctx_create(cfg, chain, chain_len, key, key_len, why, sizeof why, &e);
 	explicit_bzero(key, key_len);
 	explicit_bzero(chain, chain_len);
 	free(key);
@@ -1329,7 +1328,7 @@ config_fini (struct config *cfg)
 	json_object_put(cfg->ep.temperature);
 	json_object_put(cfg->file);
 	policy_put(cfg->policy);
-	tls_put(cfg->tls);
+	tls_ctx_put(cfg->tls);
 	free(cfg->url);
 	free(cfg->auth);
 	free(cfg->description);

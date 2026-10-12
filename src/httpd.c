@@ -846,8 +846,8 @@ conn_close (struct conn *conn)
 	/* A handshake begun and not done has failed. */
 	if (conn->ctx && conn->ssl)
 		hist_add(&srv->lane->metrics.unshaken, 1);
-	tls_put(conn->ctx);
-	tls_free(conn->ssl);
+	tls_ctx_put(conn->ctx);
+	tls_destroy(&conn->ssl);
 	close(conn->fd);
 	buf_fini(&conn->out);
 	buf_fini(&conn->in);
@@ -889,6 +889,30 @@ static bool
 conn_blocked (struct conn const *conn)
 {
 	return conn->ssl && tls_blocked(conn->ssl);
+}
+
+/* As recv(), or tls_recv() with TLS: the bytes, or a negative error. */
+static ssize_t
+conn_recv (struct conn *conn,
+           void        *buf,
+           size_t       len)
+{
+	if (conn->ssl)
+		return tls_recv(conn->ssl, buf, len);
+	ssize_t n = recv(conn->fd, buf, len, 0);
+	return n < 0 ? -errno : n;
+}
+
+/* As send(), or tls_send() with TLS: the bytes, or a negative error. */
+static ssize_t
+conn_send (struct conn *conn,
+           void const  *buf,
+           size_t       len)
+{
+	if (conn->ssl)
+		return tls_send(conn->ssl, buf, len);
+	ssize_t n = send(conn->fd, buf, len, MSG_NOSIGNAL);
+	return n < 0 ? -errno : n;
 }
 
 /* Queue the connection's step: a bulk one while it shakes hands. */
@@ -1501,21 +1525,19 @@ conn_flush (struct conn *conn)
 		size_t room = loop_room(loop, LOOP_SEND);
 		if (!room || (conn->ssl && room < len))
 			return true;
-		ssize_t n = conn->ssl ? tls_send(conn->ssl, out.ptr, len)
-		                      : send(conn->fd, out.ptr, len < room ? len : room,
-		                             MSG_NOSIGNAL);
+		ssize_t n = conn_send(conn, out.ptr, conn->ssl || len < room ? len : room);
 		if (n >= 0) {
 			buf_consume(&conn->out, (size_t)n);
 			conn->drained += (size_t)n;
 			conn->earlier -= conn->earlier < (size_t)n ? conn->earlier : (size_t)n;
 			loop_work(loop, LOOP_SEND, (uint64_t)n);
-		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+		} else if (n == -EAGAIN || n == -EWOULDBLOCK) {
 			if (!conn->stall || conn->drained >= WRITE_PROGRESS) {
 				conn->stall = loop->now;
 				conn->drained = 0;
 			}
 			return true;
-		} else if (errno != EINTR) {
+		} else if (n != -EINTR) {
 			conn_close(conn);
 		}
 	}
@@ -1597,10 +1619,7 @@ conn_end (struct conn *conn)
 {
 	struct httpd *srv = conn->srv;
 	conn_cancel(conn);
-	if (conn->ssl) {
-		tls_end(conn->ssl);
-		conn->ssl = nullptr;
-	}
+	tls_close(&conn->ssl);
 	if (conn->eof || shutdown(conn->fd, SHUT_WR) ||
 	    loop_modify(srv->loop, &conn->ref, EPOLLIN)) {
 		/* Input left unread would turn the close into a reset. */
@@ -1715,15 +1734,14 @@ conn_read (struct conn *conn)
 	}
 	size_t room = loop_room(loop, LOOP_RECV);
 	size_t len = s.len < room ? s.len : room;
-	ssize_t n = conn->ssl ? tls_recv(conn->ssl, s.ptr, len)
-	                      : recv(conn->fd, s.ptr, len, 0);
+	ssize_t n = conn_recv(conn, s.ptr, len);
 	conn->events &= ~HELD;
 	if (n > 0) {
 		buf_commit(&conn->in, (size_t)n);
 		loop_work(loop, LOOP_RECV, (uint64_t)n);
 	} else if (!n) {
 		conn->eof = true;
-	} else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+	} else if (n != -EAGAIN && n != -EWOULDBLOCK && n != -EINTR) {
 		conn_close(conn);
 		return;
 	}
@@ -1752,7 +1770,7 @@ conn_shake (struct conn *conn)
 		ssize_t peek = recv(conn->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
 		if (peek < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
 			return;
-		if (peek <= 0 || !(conn->ssl = tls_open(conn->ctx, conn->fd))) {
+		if (peek <= 0 || !(conn->ssl = tls_create(conn->ctx, conn->fd))) {
 			conn_close(conn);
 			return;
 		}
@@ -1765,7 +1783,7 @@ conn_shake (struct conn *conn)
 	loop_work(loop, LOOP_FLIGHTS, 1);
 	if (shake == TLS_SHAKEN) {
 		hist_add(&m->shaken, 1);
-		tls_put(conn->ctx);
+		tls_ctx_put(conn->ctx);
 		conn->ctx = nullptr;
 		conn->since = loop->now;
 		if (tls_pending(conn->ssl))
@@ -1935,7 +1953,7 @@ conn_setup (struct httpd *srv,
 		return;
 	}
 	loop_timer_stop(loop, &conn->timer);
-	tls_put(ctx);
+	tls_ctx_put(ctx);
 	close(fd);
 	loop_post(srv->hub->home, &conn->msg);
 }
@@ -1949,7 +1967,7 @@ conn_take (struct loop *loop,
 {
 	struct conn *conn = container_of(msg, struct conn, msg);
 	if (loop->exit) {
-		tls_put(conn->ctx);
+		tls_ctx_put(conn->ctx);
 		close(conn->fd);
 		conn_free(conn);
 		return;
@@ -2223,7 +2241,7 @@ home_place (struct httpd_home  *home,
 	conn->msg.fn = conn_take;
 	conn->lane = lane;
 	conn->client = client;
-	conn->ctx = ctx ? tls_get(ctx) : nullptr;
+	conn->ctx = ctx ? tls_ctx_get(ctx) : nullptr;
 	conn->fd = fd;
 	conn->local = local;
 	loop_post(lane->loop, &conn->msg);
@@ -2572,7 +2590,7 @@ httpd_home_init (struct httpd_home      **p_home,
 		.cap = cfg->limits.clients
 	};
 	if (cfg->tls)
-		home->ctx = tls_get(cfg->tls);
+		home->ctx = tls_ctx_get(cfg->tls);
 	struct policy_grant g;
 	home->anyone = policy_grant(cfg->policy, nullptr, 0, POLICY_REMOTE, nullptr,
 	                            &g) && g.tools;
@@ -2634,7 +2652,7 @@ httpd_home_fini (struct httpd_home **p_home)
 		}
 	free(home->clients);
 	free(home->listeners);
-	tls_put(home->ctx);
+	tls_ctx_put(home->ctx);
 	door = nullptr;
 	free(home);
 }
@@ -2698,8 +2716,8 @@ httpd_home_tls (struct httpd_home *home,
 {
 	if (!home->ctx)
 		return;
-	tls_put(home->ctx);
-	home->ctx = tls_get(ctx);
+	tls_ctx_put(home->ctx);
+	home->ctx = tls_ctx_get(ctx);
 }
 
 void

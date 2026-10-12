@@ -42,31 +42,32 @@ enum tls_shake {
  * A context from @p chain, @p chain_len bytes of PEM text, the leaf's
  * certificate and then any it needs to be trusted by, and @p key, @p key_len
  * bytes of PEM text, its unencrypted private key, as @p cfg allows; nullptr,
- * with errno ENOMEM if out of memory, or EINVAL with what is wrong in
+ * with ENOMEM in @p *e if out of memory, or EINVAL with what is wrong in
  * @p why, of @p len bytes.  Neither text is kept.
  */
 extern struct ssl_ctx_st *
-tls_new (struct config const *cfg,
-         char const          *chain,
-         size_t               chain_len,
-         char const          *key,
-         size_t               key_len,
-         char                *why,
-         size_t               len);
+tls_ctx_create (struct config const *cfg,
+                char const          *chain,
+                size_t               chain_len,
+                char const          *key,
+                size_t               key_len,
+                char                *why,
+                size_t               len,
+                int                 *e);
 
 /** Another reference to @p ctx. */
 extern struct ssl_ctx_st *
-tls_get (struct ssl_ctx_st *ctx);
+tls_ctx_get (struct ssl_ctx_st *ctx);
 
 /** Put a reference to @p ctx, if not nullptr: the last frees it. */
 extern void
-tls_put (struct ssl_ctx_st *ctx);
+tls_ctx_put (struct ssl_ctx_st *ctx);
 
 /** The server's end of TLS for the client on socket @p fd, by @p ctx;
  *  nullptr if out of memory. */
 extern struct ssl_st *
-tls_open (struct ssl_ctx_st *ctx,
-          int                fd);
+tls_create (struct ssl_ctx_st *ctx,
+            int                fd);
 
 /** Shake hands a flight further, a flight of the server's being sent
  *  whole; or, after the handshake, send what a read left to send. */
@@ -74,15 +75,15 @@ extern enum tls_shake
 tls_shake (struct ssl_st *ssl);
 
 /** As recv() into @p buf, from a record at most: 0 once the client has
- *  closed, or -1 with errno EAGAIN if it waits for the socket, to read or
- *  to send first (tls_blocked()), else EPROTO. */
+ *  closed, or -EAGAIN if it waits for the socket, to read or to send first
+ *  (tls_blocked()), else -EPROTO. */
 extern ssize_t
 tls_recv (struct ssl_st *ssl,
           void          *buf,
           size_t         len);
 
-/** As send() of @p buf, a record of it: -1 with errno EAGAIN if it waits
- *  for room, else EPROTO.  Once it has waited, it must be called again with
+/** As send() of @p buf, a record of it: -EAGAIN if it waits for room,
+ *  else -EPROTO.  Once it has waited, it must be called again with
  *  the same bytes, which may have moved, and at least as many, as a call
  *  that waited may have sent a record before, which the next one counts;
  *  so calls of TLS_RECORD bytes at most never send part of one unseen. */
@@ -101,12 +102,13 @@ extern bool
 tls_blocked (struct ssl_st const *ssl);
 
 /** Say the connection ends (close_notify), if its handshake is done, as far
- *  as the socket takes it now, and free @p ssl. */
+ *  as the socket takes it now, and destroy @p *p_ssl. */
 extern void
-tls_end (struct ssl_st *ssl);
+tls_close (struct ssl_st **p_ssl);
 
-/** Free @p ssl, if not nullptr, saying nothing more to the client. */
+/** Free @p *p_ssl, if not nullptr, saying nothing more to the client, and
+ *  set it to nullptr. */
 extern void
-tls_free (struct ssl_st *ssl);
+tls_destroy (struct ssl_st **p_ssl);
 
 #endif /* TWINCEPTION_SRC_TLS_H_ */
