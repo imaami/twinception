@@ -2,7 +2,6 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
@@ -111,9 +110,9 @@ manual_page_put (struct manual_page *page)
 void
 manual_wait_destroy (struct manual_wait **p_w)
 {
-	struct manual_wait *w = *p_w;
-	if (!w)
+	if (!p_w || !*p_w)
 		return;
+	struct manual_wait *w = *p_w;
 	*p_w = nullptr;
 	manual_page_put(w->page);
 	free(w);
@@ -201,10 +200,13 @@ manual_drop (struct manual       *m,
 	free(a);
 }
 
-/* Free @p f, its waiters posted, and the page it holds, if any. */
+/* Free @p *p_f, its waiters posted, and the page it holds, if any, and set
+ * it to nullptr. */
 static void
-manual_fetch_free (struct manual_fetch *f)
+manual_fetch_destroy (struct manual_fetch **p_f)
 {
+	struct manual_fetch *f = *p_f;
+	*p_f = nullptr;
 	manual_page_put(f->page);
 	child_destroy(&f->child);
 	loop_unready(&f->step);
@@ -229,7 +231,7 @@ manual_fetch_fail (struct manual_fetch *f,
 		util_format(w->why, sizeof w->why, "%s", why);
 		loop_post(w->loop, &w->msg);
 	}
-	manual_fetch_free(f);
+	manual_fetch_destroy(&f);
 }
 
 /*
@@ -281,7 +283,7 @@ manual_fetch_done (struct manual_fetch *f,
 	/* The fetch's page is this one, or none. */
 	if (!rendered)
 		manual_page_put(page);
-	manual_fetch_free(f);
+	manual_fetch_destroy(&f);
 }
 
 /* Run man with @p argv, its output up to @p max bytes, then @p done; else
@@ -318,6 +320,20 @@ manual_fetch_run (struct manual_fetch *f,
 	manual_fetch_fail(f, why);
 }
 
+/* Say in @p why that the manual has no entry for alias @p a. */
+static void
+manual_entry_none (struct manual_entry const *a,
+                   char                      *why)
+{
+	char const *name = a->key;
+	char const *section = name + strlen(name) + 1;
+	if (*section)
+		util_format(why, MANUAL_WHY, "No manual entry for %s in section %s.", name,
+		            section);
+	else
+		util_format(why, MANUAL_WHY, "No manual entry for %s.", name);
+}
+
 /* Whether man, @p c, ended well, or its output was cut short; else @p why
  * says what went wrong. */
 static bool
@@ -327,8 +343,6 @@ manual_fetch_ended (struct manual_fetch const *f,
 {
 	if (c->cut)
 		return true;
-	char const *name = f->alias->key;
-	char const *section = name + strlen(name) + 1;
 	if (c->late) {
 		util_format(why, MANUAL_WHY, "man took longer than %d s.", MANUAL_SECONDS);
 		return false;
@@ -337,13 +351,10 @@ manual_fetch_ended (struct manual_fetch const *f,
 	case CLD_EXITED:
 		if (!c->status)
 			return true;
-		if (c->status != 16)
-			util_format(why, MANUAL_WHY, "man failed, with exit status %d.", c->status);
-		else if (*section)
-			util_format(why, MANUAL_WHY, "No manual entry for %s in section %s.", name,
-			            section);
+		if (c->status == 16)
+			manual_entry_none(f->alias, why);
 		else
-			util_format(why, MANUAL_WHY, "No manual entry for %s.", name);
+			util_format(why, MANUAL_WHY, "man failed, with exit status %d.", c->status);
 		return false;
 	case 0:
 		util_format(why, MANUAL_WHY, "man ended, and why is unknown.");
@@ -632,9 +643,9 @@ manual_create (uint32_t  recheck,
 void
 manual_destroy (struct manual **p_manual)
 {
-	struct manual *m = *p_manual;
-	if (!m)
+	if (!p_manual || !*p_manual)
 		return;
+	struct manual *m = *p_manual;
 	*p_manual = nullptr;
 	for (size_t i = 0; i <= m->mask; ++i) {
 		for (struct manual_entry *e = m->buckets[i]; e; ) {
