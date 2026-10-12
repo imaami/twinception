@@ -59,93 +59,109 @@ enum {
 	ERRED     = 1 << 11,  /* the result says what went wrong upstream */
 	STALLED   = 1 << 12,  /* the chunk timeout ended it */
 	ENDED     = 1 << 13,  /* its stream said the answer has ended */
-	READY     = 1 << 14,  /* a slot was free for it: on the ready list */
+	READY     = 1 << 14,  /* a slot was free for it: on a ready list */
+	PREEMPTED = 1 << 15,  /* an interactive job preempted it once, which no
+	                         other may again */
 };
 
 /* The breaker's states, as /metrics gives them. */
 enum { CLOSED, OPEN, HALF };
 
-/* Whom jobs are for: a session, or a client's address.  An entry exists
- * while the principal has jobs queued, which tell who it is, and is kept
- * for reuse after. */
+/* Whom jobs of a class are for: an identity, a session, or a client's
+ * address.  An entry exists while the principal has jobs of the class
+ * queued, which tell who it is, and is kept for reuse after. */
 struct principal {
-	struct list       ring;    /* on home's ring, or its shelf */
+	struct list       ring;    /* on home's ring of its class, or its shelf */
 	struct list       jobs;    /* queued, oldest first, by their queue hooks */
 	struct principal *chain;   /* the next in its bucket */
 	uint64_t          hash;
-	size_t            queued;
+	uint32_t          queued;
+	uint32_t          class;   /* 0 interactive, 1 background */
 };
 
 /*
  * Every job in flight is on the timeline, in the order of its deadline: the
  * front's, from its submission, while it waits, and from its start upstream
  * once it runs, which moves it to the end.  A job waiting is on its
- * principal's queue, and the principals with jobs queued are on the ring,
- * the next to start one first: each starts one, then goes to the back; or,
- * if a slot was free for it as it came and nobody waited, it is ready, to
- * start before them.  A running job its front let go of is among those
- * dropped, to cancel.  Messages only admit, refuse or move jobs, and bulk
+ * principal's queue, and the principals with jobs queued are on the ring of
+ * their jobs' class, the next to start one first: each starts one, then
+ * goes to the back; or, if a slot was free for it as it came and nobody
+ * waited, it is ready, to start before them.  Interactive jobs start before
+ * background ones, which hold all slots but one at most, so that one stays
+ * free for interactive work; with one slot, an interactive job that has to
+ * wait preempts a background one running, which starts again later, ready,
+ * before the other background jobs.  A running background job is among
+ * those of its class, unless its front let go of it: then it is among
+ * those dropped, to cancel.  Messages only admit, refuse or move jobs, and bulk
  * steps start, read and cancel them, a share at a time, as each call into
  * libcurl costs some tens of µs.  The jobs in flight are in the registry
  * too, chained in buckets by a hash of their keys, as the principals are by
  * theirs.
  */
 struct home {
-	struct loop_step          start;     /* starts the jobs waiting */
-	struct loop_step          stop;      /* cancels the jobs dropped */
-	struct loop_step          drain;     /* cancels every job in flight */
-	struct loop_step          overdue;   /* ends the jobs past their deadline */
-	struct loop_step          silent;    /* ends the answers silent too long */
-	struct loop_step          resume;    /* lets the answers held back on */
-	struct loop_step          feed;      /* reads the streams */
-	struct loop_step          reap;      /* frees the events' values */
-	struct loop_step          shed;      /* ends the jobs waiting, the breaker
-	                                        open */
-	struct loop_step          props;     /* reads /props */
-	struct loop_timer         deadline;  /* the timeline's first */
-	struct loop_timer         quiet;     /* the answer silent longest */
-	struct loop_timer         breaker;   /* when the breaker half-opens */
-	struct list               ring;
-	struct list               ready;     /* by the jobs' queue hooks */
+	struct loop_step          start;       /* starts the jobs waiting */
+	struct loop_step          stop;        /* cancels the jobs dropped */
+	struct loop_step          drain;       /* cancels every job in flight */
+	struct loop_step          overdue;     /* ends the jobs past their deadline */
+	struct loop_step          silent;      /* ends the answers silent too long */
+	struct loop_step          resume;      /* lets the answers held back on */
+	struct loop_step          feed;        /* reads the streams */
+	struct loop_step          reap;        /* frees the events' values */
+	struct loop_step          shed;        /* ends the jobs waiting, the breaker
+	                                          open */
+	struct loop_step          preempt;     /* preempts the jobs preempting */
+	struct loop_step          props;       /* reads /props */
+	struct loop_timer         deadline;    /* the timeline's first */
+	struct loop_timer         quiet;       /* the answer silent longest */
+	struct loop_timer         breaker;     /* when the breaker half-opens */
+	struct list               ring[2];     /* by class */
+	struct list               ready[2];    /* by class, by the jobs' queue
+	                                          hooks */
+	struct list               background;  /* the background jobs running, by
+	                                          their queue hooks */
+	struct list               preempting;  /* those to preempt, likewise */
 	struct list               timeline;
 	struct list               dropped;
-	struct list               held;      /* the jobs whose answer a step's share
-	                                        held back, by their held hooks */
-	struct list               idle;      /* the answers under way, the one
-	                                        silent longest first */
-	struct list               feeding;   /* the streams with bytes to read */
-	struct shelf              spare;     /* principals kept for reuse */
-	struct jb_pool            pool;      /* the events' tokeners */
-	struct jb_reaper          reaper;    /* the events' values left to free */
-	struct jb_parser          parser;    /* /props's */
-	struct buf                answer;    /* /props's */
+	struct list               held;        /* the jobs whose answer a step's share
+	                                          held back, by their held hooks */
+	struct list               idle;        /* the answers under way, the one
+	                                          silent longest first */
+	struct list               feeding;     /* the streams with bytes to read */
+	struct shelf              spare;       /* principals kept for reuse */
+	struct jb_pool            pool;        /* the events' tokeners */
+	struct jb_reaper          reaper;      /* the events' values left to free */
+	struct jb_parser          parser;      /* /props's */
+	struct buf                answer;      /* /props's */
 	struct home_metrics      *metrics;
 	struct loop              *loop;
 	struct http              *http;
-	struct httpd_home        *door;      /* to make room for descriptors */
+	struct httpd_home        *door;        /* to make room for descriptors */
 	struct ai_endpoint const *ep;
-	struct job              **keys;      /* the registry's buckets */
-	struct principal        **whom;      /* the principals' buckets */
-	struct http_request      *ask;       /* GET /props, under way */
-	uint64_t                  timeout;   /* ns from a start to its deadline */
-	uint64_t                  silence;   /* ns an answer may pause */
-	uint64_t                  backoff;   /* the breaker's next open spell */
-	uint64_t                  until;     /* when the breaker half-opens */
-	size_t                    mask;      /* buckets - 1 */
-	uint32_t                  max;       /* jobs in flight at most */
-	uint32_t                  slots;     /* upstream calls at once at most */
-	uint32_t                  failures;  /* in a row, closed */
-	uint32_t                  readied;   /* jobs ready */
-	uint16_t                  draining;  /* bool, widened over the padding */
-	uint16_t                  alone;     /* bool: the client loops have exited */
-	uint8_t                   state;     /* the breaker's */
-	uint8_t                   probing;   /* bool: a probe is under way */
-	uint8_t                   paused;    /* bool: /props is held back */
-	uint8_t                   fifo;      /* bool: one queue for all */
+	struct job              **keys;        /* the registry's buckets */
+	struct principal        **whom;        /* the principals' buckets */
+	struct http_request      *ask;         /* GET /props, under way */
+	uint64_t                  timeout;     /* ns from a start to its deadline */
+	uint64_t                  silence;     /* ns an answer may pause */
+	uint64_t                  backoff;     /* the breaker's next open spell */
+	uint64_t                  until;       /* when the breaker half-opens */
+	size_t                    mask;        /* buckets - 1 */
+	uint32_t                  max;         /* jobs in flight at most */
+	uint32_t                  slots;       /* upstream calls at once at most */
+	uint32_t                  failures;    /* in a row, closed */
+	uint32_t                  readied[2];  /* jobs ready, by class */
+	uint32_t                  running_bg;  /* background jobs running */
+	uint16_t                  draining;    /* bool, widened over the padding */
+	uint16_t                  alone;       /* bool: the client loops have exited */
+	uint8_t                   state;       /* the breaker's */
+	uint8_t                   probing;     /* bool: a probe is under way */
+	uint8_t                   paused;      /* bool: /props is held back */
+	uint8_t                   fifo;        /* bool: one queue for all */
 };
 
 /* The thread's home: the handler of jobs' messages finds it here. */
 static thread_local struct home *self;
+
+static void preempt_excess (struct home *home);
 
 /* The link that heads the registry's bucket of the keys of @p hash, which
  * the front works out, seeded, so that no client can pick keys that crowd
@@ -157,13 +173,29 @@ home_bucket (struct home const *home,
 	return &home->keys[hash & home->mask];
 }
 
+/* @p job's class: 0 interactive, 1 background. */
+static uint32_t
+class_of (struct job const *job)
+{
+	return (job->asks & JOB_BACKGROUND) != 0;
+}
+
+/* The upstream slots that background jobs may hold at most: all but one,
+ * which stays for interactive work, unless there is only one. */
+static uint32_t
+background_slots (struct home const *home)
+{
+	return home->slots - (home->slots >= 2);
+}
+
 /* Whether @p job is for @p p, who its first job queued is for. */
 static bool
 for_principal (struct principal const *p,
                struct job const       *job)
 {
 	struct job const *first = container_of(p->jobs.next, struct job, queue);
-	return p->hash == job->principal && first->session == job->session &&
+	return p->hash == job->principal && p->class == class_of(job) &&
+	       first->session == job->session &&
 	       (job->session ? !memcmp(buf_peek(&first->key).ptr,
 	                               buf_peek(&job->key).ptr, job->session)
 	                     : first->peer[0] == job->peer[0] &&
@@ -171,13 +203,13 @@ for_principal (struct principal const *p,
 }
 
 /* The link that holds the principal @p job is for, or where it would be
- * appended; for all one in a queue first in first out. */
+ * appended; for all of a class one in a queue first in first out. */
 static struct principal **
 principal_slot (struct home const *home,
                 struct job const  *job)
 {
 	struct principal **p = &home->whom[home->fifo ? 0 : job->principal & home->mask];
-	while (!home->fifo && *p && !for_principal(*p, job))
+	while (*p && (home->fifo ? (*p)->class != class_of(job) : !for_principal(*p, job)))
 		p = &(*p)->chain;
 	return p;
 }
@@ -188,7 +220,7 @@ job_progress (struct job *job,
               uint64_t    progress)
 {
 	atomic_store_explicit(&job->progress, progress, memory_order_relaxed);
-	if (job->notify && !(job->flags & (DROPPED | WITHDRAWN)))
+	if (job->asks & JOB_NOTIFY && !(job->flags & (DROPPED | WITHDRAWN)))
 		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_PROGRESS);
 }
 
@@ -255,12 +287,16 @@ job_end (struct home      *home,
 		hist_add(&m->in_flight, -1ULL);
 		if (job->who)
 			queue_leave(home, job);
-		home->readied -= (job->flags & READY) != 0;
+		home->readied[class_of(job)] -= (job->flags & READY) != 0;
 		list_del(&job->queue);
 		list_del(&job->idle);
 		list_del(&job->feed);
 		if (job->flags & RUNNING) {
 			hist_add(&m->running, -1ULL);
+			if (class_of(job)) {
+				hist_add(&m->background, -1ULL);
+				--home->running_bg;
+			}
 			home->probing &= !(job->flags & PROBE);
 			loop_ready_bulk(home->loop, &home->start);
 		}
@@ -379,6 +415,8 @@ breaker_note (struct home *home,
 			home->backoff = BACKOFF_MIN;
 			LOG(LOG_INFO, "upstream breaker closed: the probe went through");
 			loop_ready_bulk(home->loop, &home->start);
+			/* An interactive job may wait for the probe's slot. */
+			preempt_excess(home);
 		}
 		return;
 	}
@@ -557,6 +595,11 @@ job_start (struct home *home,
 	job->flags |= RUNNING;
 	hist_add(&m->running, 1);
 	hist_add(&m->dispatched, 1);
+	if (class_of(job)) {
+		list_append(&home->background, &job->queue);
+		hist_add(&m->background, 1);
+		++home->running_bg;
+	}
 	job->since = loop->now;
 	job->deadline = home->timeout ? loop->now + home->timeout : 0;
 	list_del(&job->due);
@@ -570,17 +613,26 @@ job_start (struct home *home,
 		job_end(home, job, JOB_FAILED, &m->completed);
 }
 
-/* The job to start next: the first ready, else the oldest of the ring's
- * first principal; nullptr if none waits. */
+/* The job to start next: of the interactive ones, then of the background
+ * ones, the first ready, else the oldest of the ring's first principal; but
+ * none of the background ones to @p start while they hold all the slots
+ * they may; nullptr if none waits. */
 static struct job *
-job_next (struct home const *home)
+job_next (struct home const *home,
+          bool               start)
 {
-	if (!list_is_empty(&home->ready))
-		return container_of(home->ready.next, struct job, queue);
-	if (list_is_empty(&home->ring))
-		return nullptr;
-	struct principal *p = container_of(home->ring.next, struct principal, ring);
-	return container_of(p->jobs.next, struct job, queue);
+	for (uint32_t c = 0; c < 2; ++c) {
+		if (c && start && home->running_bg >= background_slots(home))
+			break;
+		if (!list_is_empty(&home->ready[c]))
+			return container_of(home->ready[c].next, struct job, queue);
+		if (list_is_empty(&home->ring[c]))
+			continue;
+		struct principal *p = container_of(home->ring[c].next, struct principal,
+		                                   ring);
+		return container_of(p->jobs.next, struct job, queue);
+	}
+	return nullptr;
 }
 
 /* Start jobs waiting while slots are free, home does not drain, the breaker
@@ -593,7 +645,7 @@ start_step (struct loop      *loop,
 	struct home *home = container_of(step, struct home, start);
 	while (!home->draining && home->state != OPEN && !home->probing &&
 	       hist_get(&home->metrics->running) < home->slots) {
-		struct job *job = job_next(home);
+		struct job *job = job_next(home, true);
 		if (!job)
 			return;
 		if (!loop_room(loop, LOOP_REQS)) {
@@ -602,11 +654,11 @@ start_step (struct loop      *loop,
 		}
 		if (job->flags & READY) {
 			job->flags &= (uint16_t)~READY;
-			--home->readied;
+			--home->readied[class_of(job)];
 			list_del(&job->queue);
 		} else {
 			list_del(&job->who->ring);
-			list_append(&home->ring, &job->who->ring);
+			list_append(&home->ring[class_of(job)], &job->who->ring);
 			queue_leave(home, job);
 		}
 		job_start(home, job);
@@ -659,6 +711,12 @@ overdue_step (struct loop      *loop,
 			job_cancel(home, job);
 		} else if (job->flags & RUNNING) {
 			job_cut(home, job, CURLE_OPERATION_TIMEDOUT);
+		} else if (job->flags & PREEMPTED) {
+			/* It went upstream, and keeps its deadline from then. */
+			job_say(job, "Timed out after %.0f s: an interactive call preempted it, "
+			        "and it could not start again in time.",
+			        (double)home->ep->timeout_ms / 1e3);
+			job_end(home, job, JOB_FAILED, &home->metrics->completed);
 		} else {
 			job_say(job, "Timed out after %.0f s waiting for an upstream slot.",
 			        (double)home->ep->timeout_ms / 1e3);
@@ -960,7 +1018,7 @@ shed_step (struct loop      *loop,
 {
 	struct home *home = container_of(step, struct home, shed);
 	while (home->state == OPEN) {
-		struct job *job = job_next(home);
+		struct job *job = job_next(home, false);
 		if (!job)
 			return;
 		if (!loop_room(loop, LOOP_REQS)) {
@@ -971,6 +1029,113 @@ shed_step (struct loop      *loop,
 		loop_work(loop, LOOP_REQS, 1);
 	}
 }
+
+/* Whether @p job, a background job running, may be cut: not as the probe,
+ * nor once its answer is all in. */
+static bool
+cuttable (struct job const *job)
+{
+	return job->transfer && !(job->flags & (PROBE | DELIVERED | ENDED));
+}
+
+/* How many background jobs running, of those not being preempted already,
+ * hold slots they may not: those beyond the S - 1 they may hold, as S may
+ * shrink; and with one slot, the one an interactive job waits for. */
+static uint32_t
+preempt_count (struct home const *home)
+{
+	uint32_t may = background_slots(home);
+	uint32_t over = home->running_bg > may ? home->running_bg - may : 0;
+	if (home->slots == 1 && home->running_bg && !list_is_empty(&home->ring[0]))
+		over = 1;
+	struct list const *node;
+	list_foreach (node, &home->preempting)
+		over -= over > 0;
+	return over;
+}
+
+/* Whether a background job preempting is still to be. */
+static bool
+preempt_needed (struct home const *home)
+{
+	uint32_t may = background_slots(home);
+	return home->running_bg > may ||
+	       (home->slots == 1 && !list_is_empty(&home->ring[0]));
+}
+
+/* Have the background jobs that hold slots they may not preempted, the first
+ * to have started first. */
+static void
+preempt_excess (struct home *home)
+{
+	uint32_t over = preempt_count(home);
+	struct list *node;
+	struct list *next;
+	list_foreach_safe (node, next, &home->background) {
+		struct job *job = container_of(node, struct job, queue);
+		if (!over)
+			break;
+		/* Once at most. */
+		if (!cuttable(job) || job->flags & PREEMPTED)
+			continue;
+		job->flags |= PREEMPTED;
+		list_del(&job->queue);
+		list_append(&home->preempting, &job->queue);
+		loop_ready_bulk(home->loop, &home->preempt);
+		--over;
+	}
+}
+
+/* Preempt the background jobs that interactive ones preempt: cut each one's
+ * upstream call, and have it wait again, ready, first of the background
+ * jobs, its deadline as it was; as many a step as its share of requests
+ * allows.  A preemption is no outcome of the upstream's, which the breaker
+ * counts. */
+static void
+preempt_step (struct loop      *loop,
+              struct loop_step *step)
+{
+	struct home *home = container_of(step, struct home, preempt);
+	struct home_metrics *m = home->metrics;
+	for (; !list_is_empty(&home->preempting); loop_work(loop, LOOP_REQS, 1)) {
+		if (!loop_room(loop, LOOP_REQS)) {
+			loop_ready_bulk(loop, step);
+			return;
+		}
+		struct job *job = container_of(home->preempting.next, struct job, queue);
+		list_del(&job->queue);
+		/* Its answer may be all in by now, or the interactive job gone. */
+		if (!cuttable(job) || !preempt_needed(home)) {
+			job->flags &= (uint16_t)~PREEMPTED;
+			list_append(&home->background, &job->queue);
+			continue;
+		}
+		if (job->transfer && http_sent(job->transfer))
+			hist_add(&m->aborted, 1);
+		http_cancel(home->http, &job->transfer);
+		list_del(&job->idle);
+		list_del(&job->feed);
+		list_del(&job->held);
+		jb_parse_end(&job->parser, &home->pool, &home->reaper);
+		if (home->reaper.n)
+			loop_ready_bulk(loop, &home->reap);
+		buf_free(&job->wire);
+		buf_consume(&job->result, buf_peek(&job->result).len);
+		job->flags = PREEMPTED | READY;
+		job->http = 0;
+		job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
+		job->reason[0] = '\0';
+		hist_add(&m->running, -1ULL);
+		hist_add(&m->background, -1ULL);
+		hist_add(&m->preempted, 1);
+		--home->running_bg;
+		list_append(home->ready[1].next, &job->queue);
+		++home->readied[1];
+		job_progress(job, 1);
+		loop_ready_bulk(loop, &home->start);
+	}
+}
+
 
 /* Cancel the jobs on @p list, by their queue hooks or, @p due, their due
  * hooks, as many as the step's share of requests allows; false if some are
@@ -1022,6 +1187,8 @@ home_slots (struct home *home,
 	if (why)
 		LOG(LOG_INFO, "upstream slots: %" PRIu32 " (%s)", n, why);
 	loop_ready_bulk(home->loop, &home->start);
+	/* Fewer slots may leave background jobs holding more than they may. */
+	preempt_excess(home);
 }
 
 /* Gather /props's answer, up to MAX_PROPS bytes, as much a step as its share
@@ -1173,12 +1340,14 @@ home_withdraw (struct home      *home,
 }
 
 /* Admit @p job, or end it at once: draining, with the breaker open, with
- * --max-calls in flight, or with QUEUED queued for its principal (unless all
- * share one queue, first in first out).  If a slot is free for it, the
- * breaker closed and nobody waiting, it is ready, queued for none, so that a
- * burst the slots free take at once is not refused; else it joins its
- * principal's queue, and its principal the ring, if new to it, at the
- * back. */
+ * --max-calls in flight, or with QUEUED of its class queued for its
+ * principal (unless all of a class share one queue, first in first out).
+ * If a slot is free for it, the breaker closed and no job of its class or
+ * before it waiting (and, a background job, the background ones holding
+ * fewer slots than they may), it is ready, queued for none, so that a burst
+ * the slots free take at once is not refused; else it joins its principal's
+ * queue, and its principal its class's ring, if new to it, at the back.  An
+ * interactive job that waits with one slot preempts a background one. */
 static void
 home_admit (struct home *home,
             struct job  *job)
@@ -1199,8 +1368,12 @@ home_admit (struct home *home,
 		job_end(home, job, JOB_BUSY, &m->rejected);
 		return;
 	}
-	bool ready = home->state == CLOSED && list_is_empty(&home->ring) &&
-	             hist_get(&m->running) + home->readied < home->slots;
+	uint32_t c = class_of(job);
+	bool ready = home->state == CLOSED && list_is_empty(&home->ring[0]) &&
+	             hist_get(&m->running) + home->readied[0] + home->readied[1] <
+	             home->slots &&
+	             (!c || (list_is_empty(&home->ring[1]) &&
+	                     home->running_bg + home->readied[1] < background_slots(home)));
 	if (!p && !ready) {
 		struct list *spare = shelf_take(&home->spare);
 		p = spare ? container_of(spare, struct principal, ring) : malloc(sizeof *p);
@@ -1208,10 +1381,10 @@ home_admit (struct home *home,
 			job_end(home, job, JOB_FAILED, &m->rejected);
 			return;
 		}
-		*p = (struct principal){ .hash = job->principal };
+		*p = (struct principal){ .hash = job->principal, .class = c };
 		list_init(&p->jobs);
 		*slot = p;
-		list_append(&home->ring, &p->ring);
+		list_append(&home->ring[c], &p->ring);
 		hist_add(&m->principals, 1);
 	}
 	struct job **link = home_bucket(home, job->hash);
@@ -1222,14 +1395,16 @@ home_admit (struct home *home,
 		(void)loop_timer_set(home->loop, &home->deadline, job->deadline);
 	hist_add(&m->in_flight, 1);
 	if (ready) {
-		list_append(&home->ready, &job->queue);
+		list_append(&home->ready[c], &job->queue);
 		job->flags |= READY;
-		++home->readied;
+		++home->readied[c];
 	} else {
 		list_append(&p->jobs, &job->queue);
 		job->who = p;
 		hist_add(&m->queued, 1);
 		job_progress(job, ++p->queued);
+		if (!c)
+			preempt_excess(home);
 	}
 	loop_ready_bulk(home->loop, &home->start);
 	/* It may need a descriptor upstream. */
@@ -1313,6 +1488,7 @@ home_init (struct home               **p_home,
 		.feed.fn = feed_step,
 		.reap.fn = reap_step,
 		.shed.fn = shed_step,
+		.preempt.fn = preempt_step,
 		.props.fn = props_step,
 		.deadline.fn = deadline_event,
 		.quiet.fn = quiet_event,
@@ -1334,8 +1510,12 @@ home_init (struct home               **p_home,
 		.max = max,
 		.fifo = (cfg->flags & CFG_TEST_FIFO) != 0
 	};
-	list_init(&home->ring);
-	list_init(&home->ready);
+	for (size_t c = 0; c < 2; ++c) {
+		list_init(&home->ring[c]);
+		list_init(&home->ready[c]);
+	}
+	list_init(&home->background);
+	list_init(&home->preempting);
 	list_init(&home->timeline);
 	list_init(&home->dropped);
 	list_init(&home->held);
@@ -1380,13 +1560,15 @@ home_fini (struct home **p_home)
 		job_cancel(home, container_of(home->timeline.next, struct job, due));
 	struct home_metrics const *m = home->metrics;
 	LOG(LOG_INFO, "jobs: %" PRIu64 " submitted, %" PRIu64 " completed, %" PRIu64
-	    " cancelled, %" PRIu64 " rejected; %" PRIu64 " cancelled upstream",
-	    hist_get(&m->submitted), hist_get(&m->completed), hist_get(&m->cancelled),
-	    hist_get(&m->rejected), hist_get(&m->aborted));
+	    " cancelled, %" PRIu64 " rejected; %" PRIu64 " cancelled upstream; %"
+	    PRIu64 " preempted", hist_get(&m->submitted), hist_get(&m->completed),
+	    hist_get(&m->cancelled), hist_get(&m->rejected), hist_get(&m->aborted),
+	    hist_get(&m->preempted));
 	http_cancel(home->http, &home->ask);
 	struct loop_step *const steps[] = {
 		&home->start, &home->stop, &home->drain, &home->overdue, &home->silent,
-		&home->resume, &home->feed, &home->reap, &home->shed, &home->props,
+		&home->resume, &home->feed, &home->reap, &home->shed, &home->preempt,
+		&home->props,
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(steps); ++i)
 		loop_unready(steps[i]);

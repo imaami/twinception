@@ -207,6 +207,17 @@ jb_utf8 (char const *str,
          size_t      len);
 
 /**
+ * Make the @p n bytes at @p p UTF-8 text, in place, each byte that breaks it
+ * becoming a '?', but for a character cut short at their end while more
+ * bytes follow (@p last false), which those may complete; returns the bytes
+ * made text, all but that character's.
+ */
+extern size_t
+jb_mend (char   *p,
+         size_t  n,
+         bool    last);
+
+/**
  * Write @p len bytes of UTF-8 text to @p dst, which has room for 6 * @p len,
  * as the inside of a JSON string, escaped as json-c would with JB_WIRE.
  * Returns the bytes written.

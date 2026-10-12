@@ -52,7 +52,10 @@ enum {
 enum { JOINED, STARTING, RUNNING, EXITED };
 
 /* Orders to a loop: the bits of one message (design section 2). */
-enum { DRAIN = 1, STATS = 2, STALL = 4, RELIEVE = 8, ALONE = 16, OPEN = 32 };
+enum {
+	DRAIN = 1, STATS = 2, STALL = 4, RELIEVE = 8, ALONE = 16, OPEN = 32,
+	RELOAD = 64
+};
 
 /* Resources found over their threshold, as bits: descriptors, then PSI. */
 enum { HIGH_FDS = 1, HIGH_PSI = 2 };
@@ -186,6 +189,8 @@ loop_order (struct loop *loop,
 		app->alone(ctx, loop);
 	if (orders & OPEN)
 		app->open(ctx, loop);
+	if (orders & RELOAD)
+		app->reload(ctx, loop);
 }
 
 /* Post an order, unless the message is on its way already. */
@@ -348,6 +353,14 @@ stop (struct brainstem *bs)
 	drain(bs);
 }
 
+/* Have home reload the configuration, unless shutting down. */
+static void
+reload (struct brainstem *bs)
+{
+	if (!bs->stopping && state(&bs->threads[HOME]) == RUNNING)
+		order(&bs->threads[HOME], RELOAD);
+}
+
 static void
 signals (struct brainstem *bs)
 {
@@ -357,6 +370,8 @@ signals (struct brainstem *bs)
 			order_all(bs, STATS);
 		else if (si.ssi_signo == SIGUSR2)
 			order_all(bs, STALL);
+		else if (si.ssi_signo == SIGHUP && bs->cfg->home.reload)
+			reload(bs);
 		else if (bs->stopping)
 			force(bs, "a second signal");
 		else
@@ -781,15 +796,16 @@ brainstem_run (struct brainstem_cfg const *cfg)
 	signal(SIGPIPE, SIG_IGN);
 
 	/* Shutdown signals the process started with ignored, as nohup and
-	 * shells leave them to spare a job, stay so.  The signalfd would take
-	 * them all the same: Linux keeps a blocked signal, whatever its action. */
+	 * shells leave them to spare a job, stay so; SIGHUP is taken all the
+	 * same where it reloads.  The signalfd would take them all: Linux keeps
+	 * a blocked signal, whatever its action. */
 	static int const stops[] = { SIGHUP, SIGINT, SIGTERM };
 	sigset_t mine;
 	sigemptyset(&mine);
 	for (size_t i = 0; i < ARRAY_SIZE(stops); ++i) {
 		struct sigaction sa = {};
 		(void)sigaction(stops[i], nullptr, &sa);
-		if (sa.sa_handler != SIG_IGN)
+		if (sa.sa_handler != SIG_IGN || (stops[i] == SIGHUP && cfg->home.reload))
 			sigaddset(&mine, stops[i]);
 	}
 	sigaddset(&mine, SIGUSR1);

@@ -5,7 +5,9 @@ override SRC_askai := \
   brainstem.c         \
   buf.c               \
   child.c             \
+  config.c            \
   dstr.c              \
+  git.c               \
   home.c              \
   http.c              \
   httpd.c             \
@@ -14,8 +16,11 @@ override SRC_askai := \
   loop.c              \
   manual.c            \
   mcp.c               \
-  metrics.c
+  metrics.c           \
+  policy.c            \
+  task.c
 
 override LIB_askai := \
+  libcrypto           \
   json-c              \
   libcurl

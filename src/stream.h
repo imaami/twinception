@@ -96,15 +96,16 @@ struct stream_app {
 
 struct stream {
 	struct stream_ops const *ops;
-	void                    *user;     /**< the application's own */
-	uint64_t                 trusted;  /**< bool, widened over the padding: the
-	                                        client showed the token or, none
-	                                        being set, is on loopback and names
-	                                        no other host, and may see
-	                                        diagnostics */
-	uint64_t                 peer[2];  /**< the client's address, as the
-	                                        limits per address key it: IPv4,
-	                                        mapped, or an IPv6 /64 */
+	void                    *user;       /**< the application's own */
+	uint64_t                 principal;  /**< the client's identity's
+	                                          (src/policy.h); 0: anonymous */
+	uint64_t                 peer[2];    /**< the client's address, as the
+	                                          limits per address key it:
+	                                          IPv4, mapped, or an IPv6 /64 */
+	uint32_t                 tools;      /**< bits of the tools its role may
+	                                          list and call */
+	uint32_t                 trusted;    /**< bool: its role may see
+	                                          diagnostics */
 };
 
 #endif /* TWINCEPTION_SRC_STREAM_H_ */

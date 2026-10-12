@@ -19,8 +19,9 @@
  * repeated request pipeline, malformed, hostile and dense requests, connection
  * churn, tool-call jobs, tool calls that hang up on their event stream,
  * legacy tool calls that a notifications/cancelled on another connection
- * cancels, a flooder's many tool calls in one session and interactive
- * sessions' one at a time) run alongside to stress the server while the
+ * cancels, a flooder's many tool calls in one session, interactive
+ * sessions' one at a time, and test_task calls of CPU work done as tasks,
+ * from S8) run alongside to stress the server while the
  * probe measures the damage.  The
  * pipeline and the malformed, hostile and dense modes time each batch or body
  * they send; with --solo, they run one after another, alone and without the
@@ -74,7 +75,8 @@ struct transport {
 
 /** Wire requests: the probe kinds' and the tool-call jobs', in both eras. */
 enum req_id {
-	RQ_PING, RQ_LIST, RQ_INIT, RQ_DISCOVER, RQ_LIST26, RQ_CALL, RQ_CALL26, RQ_N
+	RQ_PING, RQ_LIST, RQ_INIT, RQ_DISCOVER, RQ_LIST26, RQ_CALL, RQ_CALL26, RQ_TASK,
+	RQ_TASK26, RQ_N
 };
 
 #define RPC(id, method, params) \
@@ -106,6 +108,12 @@ static struct {
 	[RQ_CALL26]   = REQ(ERA26("tools/call") "Mcp-Name: ask_ai\r\n",
 	                    RPC(7, "tools/call", ",\"params\":{\"name\":\"ask_ai\","
 	                    "\"arguments\":{\"prompt\":\"Q\"}," META "}")),
+	/* 40 slices of 250 us: 10 ms of work. */
+	[RQ_TASK]     = REQ("", RPC(7, "tools/call", ",\"params\":{\"name\":"
+	                    "\"test_task\",\"arguments\":{\"slices\":40}}")),
+	[RQ_TASK26]   = REQ(ERA26("tools/call") "Mcp-Name: test_task\r\n",
+	                    RPC(7, "tools/call", ",\"params\":{\"name\":\"test_task\","
+	                    "\"arguments\":{\"slices\":40}," META "}")),
 };
 
 #undef REQ
@@ -741,7 +749,7 @@ probe_run (struct probe *p,
 /* --- background load modes ----------------------------------------------- */
 
 enum {
-	BG_MAX  = 14, /**< one thread per mode */
+	BG_MAX  = 15, /**< one thread per mode */
 	BG_KEYS = 5, /**< counters per mode */
 };
 
@@ -1182,7 +1190,7 @@ out:
  */
 enum job_state { JOB_DEAD, JOB_CONNECTING, JOB_SENDING, JOB_READING, JOB_HOLDING };
 enum { JOB_SUBMITTED, JOB_COMPLETED, JOB_FAILED, JOB_DROPPED, JOB_HUNGUP };
-enum { JOBS, JOBS_HANGUP, JOBS_CANCEL, JOBS_FLOOD, JOBS_INTERACTIVE };
+enum { JOBS, JOBS_HANGUP, JOBS_CANCEL, JOBS_FLOOD, JOBS_INTERACTIVE, JOBS_TASKS };
 enum { HANGUP_MS = 20, BUSY_MS = 10, JOB_REQ = 512 };
 
 struct job_conn {
@@ -1334,7 +1342,7 @@ jobs_thread (void *arg)
 {
 	struct bg *b = arg;
 	bool hangup = b->mode == JOBS_HANGUP || b->mode == JOBS_CANCEL;
-	bool own = b->mode >= JOBS_CANCEL;
+	bool own = b->mode >= JOBS_CANCEL && b->mode <= JOBS_INTERACTIVE;
 	uint64_t rng = 0x2545F4914F6CDD1Du ^ now_ns();
 	int ep = epoll_create1(EPOLL_CLOEXEC);
 	struct job_conn *jc = calloc((size_t)b->count, sizeof *jc);
@@ -1346,7 +1354,8 @@ jobs_thread (void *arg)
 		return nullptr;
 	}
 	for (int i = 0; i < b->count; ++i) {
-		jc[i].req = i & 1 ? RQ_CALL26 : RQ_CALL;
+		jc[i].req = b->mode == JOBS_TASKS ? i & 1 ? RQ_TASK26 : RQ_TASK
+		          : i & 1 ? RQ_CALL26 : RQ_CALL;
 		if (own && !job_session(&jc[i], b->mode == JOBS_FLOOD ? 0xf100d
 		                                : b->mode == JOBS_CANCEL ? i : 0x1000 + i))
 			continue;
@@ -1429,7 +1438,7 @@ jobs_thread (void *arg)
 				            memmem(c->buf + head, c->rx - head, "try again", 9);
 				b->n[ok ? JOB_COMPLETED : quiet || busy ? JOB_HUNGUP : JOB_FAILED]++;
 				c->done += ok;
-				if (ok && b->mode == JOBS_INTERACTIVE)
+				if (ok && (b->mode == JOBS_INTERACTIVE || b->mode == JOBS_TASKS))
 					hist_record(b->lat, now_ns() - c->sent_ns);
 				c->state = busy ? JOB_HOLDING : JOB_SENDING;
 				c->sent = 0;
@@ -1620,7 +1629,7 @@ main (int   argc,
 		OPT_IDLE = 0x100, OPT_LORIS, OPT_GAP, OPT_SLOWBODY, OPT_SLOWREAD,
 		OPT_PIPELINE, OPT_MALFORMED, OPT_HOSTILE, OPT_DENSE, OPT_CHURN, OPT_JOBS,
 		OPT_HANGUP, OPT_CANCEL, OPT_FRESH, OPT_STATS, OPT_SLOW, OPT_SOLO,
-		OPT_FLOOD, OPT_INTERACTIVE,
+		OPT_FLOOD, OPT_INTERACTIVE, OPT_TASKS,
 	};
 	static struct option const opts[] = {
 		{ "host",      required_argument, nullptr, 'H' },
@@ -1645,6 +1654,7 @@ main (int   argc,
 		{ "cancel",    required_argument, nullptr, OPT_CANCEL },
 		{ "flood",     required_argument, nullptr, OPT_FLOOD },
 		{ "interactive", required_argument, nullptr, OPT_INTERACTIVE },
+		{ "tasks",     required_argument, nullptr, OPT_TASKS },
 		{ "stats",     required_argument, nullptr, OPT_STATS },
 		{ "slow",      required_argument, nullptr, OPT_SLOW },
 		{ "solo",      no_argument,       nullptr, OPT_SOLO },
@@ -1662,6 +1672,7 @@ main (int   argc,
 	int conns = 32, fresh = 64;
 	int idle = 0, loris = 0, gap = 1000, slowbody = 0, slowread = 0;
 	int pipeline = 0, jobs = 0, hangup = 0, cancel = 0, flood = 0, interactive = 0;
+	int tasks = 0;
 	bool malformed = false, hostile = false, dense = false, solo = false;
 
 	for (int o; (o = getopt_long(argc, argv, "H:p:r:d:T:c:", opts, nullptr)) >= 0; )
@@ -1686,6 +1697,7 @@ main (int   argc,
 		case OPT_CANCEL: cancel = atoi(optarg); break;
 		case OPT_FLOOD: flood = atoi(optarg); break;
 		case OPT_INTERACTIVE: interactive = atoi(optarg); break;
+		case OPT_TASKS: tasks = atoi(optarg); break;
 		case OPT_CHURN: churn = atof(optarg); break;
 		case OPT_JOBS: jobs = atoi(optarg); break;
 		case OPT_STATS: stats = optarg; break;
@@ -1800,6 +1812,8 @@ main (int   argc,
 	START(interactive > 0, jobs_thread, .name = "interactive", .count = interactive,
 	      .mode = JOBS_INTERACTIVE,
 	      .key = { "submitted", "completed", "failed", "dropped" });
+	START(tasks > 0, jobs_thread, .name = "tasks", .count = tasks,
+	      .mode = JOBS_TASKS, .key = { "submitted", "completed", "failed", "dropped" });
 	START(pipeline > 0, pipeline_thread, .name = "pipeline", .count = pipeline,
 	      .key = { "batches", "reqs", "got", "drain_total_us", "drain_max_us" });
 #undef START
@@ -1887,7 +1901,8 @@ main (int   argc,
 	putchar('\n');
 	for (int i = 0; i < nth; ++i) {
 		struct bg *b = &bgs[i];
-		if (!b->per || (b->mode != JOBS && b->mode != JOBS_INTERACTIVE))
+		if (!b->per || (b->mode != JOBS && b->mode != JOBS_INTERACTIVE &&
+		                b->mode != JOBS_TASKS))
 			continue;
 		nv = 0;
 		for (int k = 0; k < b->count && k < 1024; ++k)

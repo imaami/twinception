@@ -2,9 +2,12 @@
 """End-to-end checks for the askai MCP server against fake AI endpoints."""
 
 import fcntl
+import grp
+import hashlib
 import http.client
 import json
 import os
+import pwd
 import re
 import resource
 import select
@@ -2088,7 +2091,426 @@ def check_configuration(binary, up):
         assert text_of(body["result"]) == "A"
         assert up.last()["headers"]["authorization"] == "Bearer from-header"
 
-    print("configuration and key handling: PASS")
+    # A configuration file: a JSON object, comments allowed, whose members are
+    # the long options, which the command line overrides.
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/askai.json"
+
+        def write(text, mode=0o600):
+            with open(path, "w") as f:
+                f.write(text)
+            os.chmod(path, mode)
+
+        write("""{
+            // the upstream
+            "url": "%s", "tool-name": "ask_file", /* and its tool */
+            "tool-description": "From the file.", "man": true,
+            "header": ["X-A: 1", "X-B: 2"], "temperature": 0.5,
+            "extra": {"top_k": 5}, "max-tokens": 9, "test-fifo": false,
+        }""" % up.url())
+        with Askai(binary, "-c", path, "--tool-name", "ask_cli", "-n", "7",
+                   "-H", "X-C: 3") as ai:
+            tools = ai.rpc("tools/list")[2]["result"]["tools"]
+            assert [(t["name"], t["description"]) for t in tools[:1]] == \
+                [("ask_cli", "From the file.")] and tools[1]["name"] == "man", tools
+            _, _, body = ai.rpc("tools/call", {"name": "ask_cli",
+                                               "arguments": {"prompt": "Q"}})
+            assert text_of(body["result"]) == "A", body
+            request = up.last()
+            assert [request["headers"][k] for k in ("x-a", "x-b", "x-c")] == \
+                ["1", "2", "3"], request["headers"]
+            assert {k: request["body"].get(k) for k in ("temperature", "top_k",
+                                                         "max_tokens")} == \
+                {"temperature": 0.5, "top_k": 5, "max_tokens": 7}, request["body"]
+
+        url = '"url": "%s"' % up.url()
+        for text, message in (
+                ('{%s, "bogus": 1}' % url, f"{path}: unknown option: bogus"),
+                ('{%s, "config": "x"}' % url, "unknown option: config"),
+                ('{%s, "loops": [1]}' % url, f"{path}: invalid --loops: [1]"),
+                ('{%s, "man": "yes"}' % url, "invalid --man"),
+                ('{%s, "max-body": "1X"}' % url, "invalid --max-body: 1X"),
+                ('{%s, "header": [["X-A: 1", "X-B: 2"]]}' % url,
+                 f'{path}: invalid --header: [["X-A: 1","X-B: 2"]]'),
+                ('{"url": "ftp://x"}', f"{path}: not an http(s) URL"),
+                ('{\n %s\n "loops": 1\n}' % url,
+                 f"{path}: 3:2: object value separator ',' expected"),
+                ('[1]', f"{path}: 1:1: not one JSON object"),
+                ('{%s} x' % url, "not one JSON object"),
+                ('{%s, "x": "%s"}' % (url, "y" * (1 << 20)), "larger than 1 MiB")):
+            write(text)
+            fails("-c", path, message=message)
+        write("{%s}" % url, 0o620)
+        fails("-c", path, message=f"{path}: others than root and askai's user")
+        write("{%s}" % url)
+        os.chmod(d, 0o770)
+        fails("-c", path, message="others than root and askai's user")
+        os.chmod(d, 0o700)
+        os.symlink(path, f"{d}/link.json")
+        fails("-c", f"{d}/link.json", message="cannot open")
+        os.mkfifo(f"{d}/fifo.json")
+        fails("-c", f"{d}/fifo.json", message="not a regular file")
+        fails("-c", f"{d}/none.json", message="No such file or directory")
+        write("{")
+        run = subprocess.run([binary, "-c", path, "-h"], capture_output=True,
+                             text=True, timeout=5)
+        assert run.returncode == 0 and "--config FILE" in run.stdout, run
+
+    print("configuration and key handling, and the configuration file: PASS")
+
+
+def check_identities(binary, up):
+    """Who a client is, by the bearer token it shows or else by how it
+    connects, and its role's view and no more: the tools it lists and may
+    call, and the metrics.  A token no identity has, or none where no role is
+    named for how the client connects, is refused on the head.  An
+    identity's calls share one principal, whichever of its tokens they show.
+    The configuration's mistakes are named."""
+    def digest(token):
+        return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+
+    def auth(token, **fields):
+        return ({"Authorization": f"Bearer {token}"} if token else {}) | fields
+
+    roles = {"admin": {"tools": ["ask_ai", "man"], "metrics": True},
+             "asker": {"tools": ["ask_ai"]}, "reader": {"tools": ["man"]},
+             "none": {"tools": [], "metrics": False}}
+    identities = {
+        "alice": {"role": "admin", "tokens": [digest("alice-1")]},
+        "bob": {"role": "asker", "tokens": ["env:BOB_TOKEN", digest("bob-2")]},
+        "carol": {"role": "reader", "tokens": [digest("carol-1")]},
+        "dave.d@x": {"role": "none", "tokens": [digest("dave-1")]}}
+    env = {"BOB_TOKEN": "bob-1", "ASKAI_TOKEN": "ignored"}
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/askai.json"
+
+        def write(**policy):
+            with open(path, "w") as f:
+                json.dump({"url": up.url(), "man": True} | policy, f)
+            os.chmod(path, 0o600)
+
+        write(roles=roles, identities=identities,
+              anonymous={"loopback": "reader", "remote": None})
+        with Askai(binary, "-c", path, "--slots", "1", env=env) as ai:
+            assert any("ASKAI_TOKEN is ignored" in line for line in ai.log), ai.log
+            for token, tools in (("alice-1", ["ask_ai", "man"]),
+                                 ("bob-1", ["ask_ai"]), ("bob-2", ["ask_ai"]),
+                                 ("carol-1", ["man"]), ("dave-1", []),
+                                 (None, ["man"])):
+                status, _, body = ai.rpc("tools/list", headers=auth(token))
+                assert status == 200 and \
+                    [t["name"] for t in body["result"]["tools"]] == tools, (token, body)
+            for token, tool, message in (
+                    ("bob-1", "man", "Tool not available: man"),
+                    ("carol-1", "ask_ai", "Tool not available: ask_ai"),
+                    (None, "ask_ai", "Tool not available: ask_ai"),
+                    ("dave-1", "man", "Tool not available: man"),
+                    ("alice-1", "nope", "Unknown tool: nope")):
+                _, _, body = ai.rpc("tools/call", {"name": tool, "arguments": {
+                    "prompt": "Q", "name": "printf"}}, headers=auth(token))
+                assert body["error"]["message"] == message, (token, tool, body)
+            for token in ("alice-1", "bob-2"):
+                _, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": {
+                    "prompt": "Q"}}, headers=auth(token))
+                assert text_of(body["result"]) == "A", (token, body)
+            _, _, body = ai.rpc("tools/call", {"name": "man", "arguments": {
+                "name": "printf"}}, headers=auth("carol-1"))
+            assert "result" in body, body
+            assert ai.get("/metrics", auth("alice-1"))[0] == 200
+            for token in ("bob-1", "carol-1", None):
+                assert ai.get("/metrics", auth(token))[0] == 403, token
+            # Refused on the head: an unknown token, and none from a client
+            # that names another host, as a page rebound to 127.0.0.1 would.
+            for headers in (auth("alice-2"), auth("ALICE-1"),
+                            auth(None, Host="example.com"),
+                            {"Authorization": "Bearer"}):
+                status, _, _ = ai.rpc("tools/list", headers=headers)
+                assert status == 401, headers
+            status, _, _ = ai.rpc("tools/list", headers=auth("alice-1",
+                                                             Host="example.com"))
+            assert status == 200
+
+            # Bob's calls are one principal's, whichever token they show and
+            # whatever session they are of.
+            hold = up.reply
+            up.reply = lambda request: (200, ANSWERS["openai"], 1.0 if b"HOLD" in
+                                        request["raw"] else 0)
+            socks = []
+            for token, prompt, session in (("alice-1", "HOLD", None),
+                                           ("bob-1", "B1", None),
+                                           ("bob-2", "B2", "b" * 32),
+                                           ("alice-1", "A1", None)):
+                socks.append(socket.create_connection(("127.0.0.1", ai.port), 10))
+                fields = {"Mcp-Session-Id": session} if session else {}
+                socks[-1].sendall(rpc_request(len(socks), {"name": "ask_ai",
+                                  "arguments": {"prompt": prompt}}, "tools/call",
+                                  headers=auth(token, **fields)))
+                if prompt == "B2":
+                    wait_for(lambda: ai.metrics(auth("alice-1"))[
+                        "askai_jobs_queued"] == 2)
+                    assert ai.metrics(auth("alice-1"))["askai_principals_queued"] == 1
+            wait_for(lambda: ai.metrics(auth("alice-1"))["askai_jobs_queued"] == 3)
+            assert ai.metrics(auth("alice-1"))["askai_principals_queued"] == 2
+            for sock in socks:
+                sock.settimeout(10)
+                assert text_of(Replies(sock).next()[1]["result"]) == "A"
+                sock.close()
+            up.reply = hold
+
+        # Nobody without a token, unless named.
+        write(roles=roles, identities=identities)
+        with Askai(binary, "-c", path, env=env) as ai:
+            assert ai.rpc("tools/list")[0] == 401
+            assert ai.rpc("tools/list", headers=auth("bob-2"))[0] == 200
+
+        for policy, message in (
+                ({"roles": []}, "roles must be an object"),
+                ({"roles": {"a b": {}}}, "invalid role name: a b"),
+                ({"roles": {"r": {"tools": ["ask_ai", "ls"]}}},
+                 'role r: askai offers no tool "ls"'),
+                ({"roles": {"r": {"tools": "ask_ai"}}}, "role r: tools must be"),
+                ({"roles": {"r": {"metrics": 1}}}, "role r: metrics must be"),
+                ({"roles": {"r": {"admin": True}}}, "role r: unknown member admin"),
+                ({"roles": roles, "identities": {"e": {"role": "root",
+                                                       "tokens": ["env:BOB_TOKEN"]}}},
+                 'identity e: no role "root"'),
+                ({"roles": roles, "identities": {"e": {"role": "admin"}}},
+                 "identity e needs tokens"),
+                ({"roles": roles, "identities": {"e": {"role": "admin",
+                                                       "tokens": ["plain"]}}},
+                 "identity e: a token is sha256:HEX or env:NAME"),
+                ({"roles": roles, "identities": {"e": {"role": "admin",
+                                                       "tokens": ["sha256:00"]}}},
+                 "identity e: sha256: needs 64 hex digits"),
+                ({"roles": roles, "identities": {"e": {"role": "admin",
+                                                       "tokens": ["env:NO_VAR"]}}},
+                 "identity e: NO_VAR is not set"),
+                ({"roles": roles, "identities": {"e": {"role": "admin",
+                                                       "tokens": [digest("bob-1")]},
+                                                 "f": {"role": "admin",
+                                                       "tokens": ["env:BOB_TOKEN"]}}},
+                 "two tokens of the identities are the same"),
+                ({"roles": roles, "identities": {"e": {"role": "admin", "uid": 0,
+                                                       "tokens": ["env:BOB_TOKEN"]}}},
+                 "identity e: unknown member uid"),
+                ({"roles": roles, "anonymous": {"local": "admin"}},
+                 "anonymous: unknown member local"),
+                ({"roles": roles, "anonymous": {"remote": "root"}},
+                 'anonymous: remote: no role "root"')):
+            write(**policy)
+            run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path],
+                                 env={k: v for k, v in os.environ.items()
+                                      if k not in KEY_VARS} | env,
+                                 capture_output=True, text=True, timeout=5)
+            assert run.returncode == 2 and f"{path}: {message}" in run.stderr, \
+                (policy, run.stderr)
+        with open(path, "w") as f:
+            json.dump({"url": up.url(), "roles": {"r": {"tools": ["man"]}}}, f)
+        run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path],
+                             capture_output=True, text=True, timeout=5)
+        assert run.returncode == 2 and 'askai offers no tool "man"' in run.stderr
+
+    print("identities: roles' tools and metrics, tokens, anonymous clients, one "
+          "principal per identity, mistakes named: PASS")
+
+
+def check_reload(binary, up):
+    """SIGHUP, with a configuration file, reloads who may connect and what
+    they may do, for the requests that begin from then on, while others go
+    on: a wrong file leaves the last policy, and other options changed take
+    a restart, as the log says.  Without a file, SIGHUP still stops askai."""
+    def digest(token):
+        return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+
+    def auth(token):
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    def tools(ai, token):
+        status, _, body = ai.rpc("tools/list", headers=auth(token))
+        return [t["name"] for t in body["result"]["tools"]] if status == 200 \
+            else status
+
+    full = {"tools": ["ask_ai", "man"], "metrics": True}
+    first = {"roles": {"a": full}, "identities": {"alice": {"role": "a", "tokens":
+                                                            [digest("t1")]}}}
+    second = {"roles": {"a": {"tools": ["man"], "metrics": True},
+                        "b": {"tools": ["ask_ai"]}},
+              "identities": {"alice": {"role": "a", "tokens": [digest("t1")]},
+                             "bob": {"role": "b", "tokens": [digest("t2")]}},
+              "anonymous": {"loopback": "b"}}
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/askai.json"
+
+        def write(policy, **options):
+            text = json.dumps({"url": up.url(), "man": True} | options | policy)
+            with open(f"{path}.new", "w") as f:
+                f.write(text)
+            os.chmod(f"{path}.new", 0o600)
+            os.rename(f"{path}.new", path)
+
+        def reload(ai, pattern):
+            ai.log.clear()
+            ai.proc.send_signal(signal.SIGHUP)
+            return ai.wait_log(pattern)
+
+        write(first)
+        with Askai(binary, "-c", path) as ai:
+            assert (tools(ai, "t1"), tools(ai, "t2"), tools(ai, None)) == \
+                (["ask_ai", "man"], 401, 401)
+            write(second)
+            reload(ai, "configuration reloaded: who may connect")
+            assert (tools(ai, "t1"), tools(ai, "t2"), tools(ai, None)) == \
+                (["man"], ["ask_ai"], ["ask_ai"])
+            # A wrong file, or a policy that does not hold, leaves the last.
+            with open(path, "a") as f:
+                f.write("x")
+            reload(ai, "configuration not reloaded; the last stays")
+            write({"roles": {"a": full}, "anonymous": {"remote": "z"}})
+            assert 'anonymous: remote: no role "z"' in \
+                reload(ai, "no role").strip() + "".join(ai.log)
+            ai.wait_log("configuration not reloaded")
+            assert (tools(ai, "t1"), tools(ai, "t2")) == (["man"], ["ask_ai"])
+            # Other options keep, until a restart.
+            write(first, **{"tool-description": "New."})
+            line = reload(ai, "configuration reloaded")
+            assert line.strip().endswith("its other options take a restart"), line
+            _, _, body = ai.rpc("tools/list", headers=auth("t1"))
+            assert body["result"]["tools"][0]["description"] != "New.", body
+
+            # Reloads under way while a client asks: every answer is one of
+            # the two policies', and none fails.
+            seen = set()
+            errors = []
+            stop = threading.Event()
+
+            def ask():
+                conn = ai.connect()
+                while not stop.is_set():
+                    status, _, body = ai.rpc("tools/list", headers=auth("t1"),
+                                             conn=conn)
+                    if status != 200:
+                        errors.append((status, body))
+                    else:
+                        seen.add(tuple(t["name"] for t in body["result"]["tools"]))
+                conn.close()
+
+            threads = [threading.Thread(target=ask) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for i in range(20):
+                write(second if i % 2 else first)
+                reload(ai, "configuration reloaded")
+            stop.set()
+            for thread in threads:
+                thread.join(10)
+            assert not errors and seen == {("ask_ai", "man"), ("man",)}, (errors, seen)
+
+    # Without a file, SIGHUP stops askai, as SIGTERM does.
+    ai = Askai(binary, "-u", up.url())
+    ai.proc.send_signal(signal.SIGHUP)
+    assert ai.proc.wait(5) == 0, "".join(ai.log)
+    print("reload: SIGHUP with a configuration file reloads who may connect, "
+          "under load; wrong files and other options logged: PASS")
+
+
+def uds_rpc(path, method="tools/list", params=None, headers=None):
+    """A JSON-RPC request over the Unix socket at @p path: (status, body)."""
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(10)
+        sock.connect(path)
+        sock.sendall(rpc_request(1, params, method, headers=headers))
+        status, body = Replies(sock).next()
+    return status, body
+
+
+def check_unix(binary, up):
+    """A Unix socket beside TCP (--listen unix:PATH): its clients are who the
+    kernel says (SO_PEERCRED, SO_PEERGROUPS), an identity's Unix user or
+    else a user of a group the policy names, a token still counting first,
+    and askai's own policy lets them do everything.  A socket file left by a
+    server gone is taken over, one a server listens on is not, and askai
+    removes its own as it stops."""
+    me = pwd.getpwuid(os.getuid()).pw_name
+    group = grp.getgrgid(os.getgid()).gr_name
+
+    def names(reply):
+        status, body = reply
+        return [t["name"] for t in body["result"]["tools"]] if status == 200 \
+            else status
+
+    def digest(token):
+        return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+
+    with tempfile.TemporaryDirectory() as d:
+        sock = f"{d}/askai.sock"
+        path = f"{d}/askai.json"
+
+        def write(**policy):
+            with open(path, "w") as f:
+                json.dump({"url": up.url(), "man": True} | policy, f)
+            os.chmod(path, 0o600)
+
+        roles = {"a": {"tools": ["ask_ai", "man"], "metrics": True},
+                 "g": {"tools": ["man"]}, "t": {"tools": ["ask_ai"]}}
+        # askai's own policy: everything, as on loopback.
+        with Askai(binary, "-u", up.url(), "--man", "-l", f"unix:{sock}") as ai:
+            assert names(uds_rpc(sock)) == ["ask_ai", "man"]
+            assert ai.rpc("ping")[0] == 200
+            assert any(f"unix:{sock}" in line for line in ai.log), ai.log
+        assert not os.path.exists(sock)
+
+        for policy, tools in (
+                ({"identities": {"me": {"role": "a", "unix-users": [me]}},
+                  "unix-groups": {group: "g"}}, ["ask_ai", "man"]),
+                ({"identities": {"me": {"role": "a", "unix-users": [os.getuid()]}}},
+                 ["ask_ai", "man"]),
+                ({"unix-groups": {group: "g", "root": "a"}}, ["man"]),
+                ({"unix-groups": {str(os.getgid()): "g"}}, ["man"]),
+                ({"anonymous": {"unix": "t"}}, ["ask_ai"]),
+                ({"anonymous": {"loopback": "a"}}, 401)):
+            write(roles=roles, **policy)
+            with Askai(binary, "-c", path, "-l", f"unix:{sock}") as ai:
+                assert names(uds_rpc(sock)) == tools, (policy, uds_rpc(sock))
+        write(roles=roles, identities={"tok": {"role": "t", "tokens": [digest("x")]},
+                                       "me": {"role": "g", "unix-users": [me]}})
+        with Askai(binary, "-c", path, "-l", f"unix:{sock}") as ai:
+            assert names(uds_rpc(sock)) == ["man"]
+            assert names(uds_rpc(sock, headers={"Authorization": "Bearer x"})) == \
+                ["ask_ai"]
+            assert names(uds_rpc(sock, headers={"Authorization": "Bearer y"})) == 401
+            # The other listener serves as before.
+            assert ai.rpc("tools/list")[0] == 401
+
+        # A file left behind is taken over; a socket in use is not.
+        with socket.socket(socket.AF_UNIX) as left:
+            left.bind(sock)
+        with Askai(binary, "-u", up.url(), "-l", f"unix:{sock}") as ai:
+            run = subprocess.run([binary, "-u", up.url(), "-l", f"unix:{sock}"],
+                                 capture_output=True, text=True, timeout=10)
+            assert run.returncode == 1 and "Address already in use" in run.stderr, run
+            assert names(uds_rpc(sock)) == ["ask_ai"]
+        for policy, message in (
+                ({"identities": {"e": {"role": "a",
+                                       "unix-users": ["no_such_user_xyz"]}}},
+                 'identity e: no user "no_such_user_xyz"'),
+                ({"unix-groups": {"no_such_group_xyz": "a"}},
+                 "unix-groups: no group no_such_group_xyz"),
+                ({"unix-groups": {group: "z"}}, f'unix-groups: {group}: no role "z"'),
+                ({"identities": {"e": {"role": "a", "unix-users": [me]},
+                                 "f": {"role": "g", "unix-users": [os.getuid()]}}},
+                 f"two identities are Unix user {os.getuid()}"),
+                ({"identities": {"e": {"role": "a", "unix-users": me}}},
+                 "identity e: tokens and unix-users are arrays")):
+            write(roles=roles, **policy)
+            run = subprocess.run([binary, "-c", path], capture_output=True, text=True,
+                                 timeout=5)
+            assert run.returncode == 2 and f"{path}: {message}" in run.stderr, \
+                (policy, run.stderr)
+        run = subprocess.run([binary, "-u", up.url(), "-l", "unix:" + "x" * 200],
+                             capture_output=True, text=True, timeout=5)
+        assert run.returncode == 1 and "invalid listen address" in run.stderr, run
+    print("unix sockets: SO_PEERCRED users and groups, tokens first, askai's own "
+          "policy, stale and busy socket files: PASS")
 
 
 def local_address():
@@ -3367,7 +3789,7 @@ def check_jobs(binary, up):
     wait_for(lambda: up.hangups == hangups + 8)
     assert len(up.requests) == count + 8
     ai.wait_log(r"jobs: 16 submitted, 0 completed, 16 cancelled, 0 rejected; "
-                r"8 cancelled upstream$")
+                r"8 cancelled upstream; 0 preempted$")
     up.reply = lambda request: (200, ANSWERS["openai"])
 
     print("jobs: busy, stale handles, cancels racing completions, shutdown: PASS")
@@ -3811,6 +4233,474 @@ def check_man(binary, up):
     print("man: the real man's pages, UTF-8 text 80 columns wide, kept: PASS")
 
 
+FAKE_GIT = r"""#!/bin/sh
+# A stand-in for git: what the first revision names it does, else the real
+# git does the command.
+dir=${0%/*}
+rev= seen=
+for a; do
+    [ -n "$seen" ] && { rev=$a; break; }
+    [ "$a" = --end-of-options ] && seen=1
+done
+case $rev in
+echo)
+    for a; do printf '%s\n' "$a"; done
+    echo ---
+    env | sort
+    echo ---
+    ls /proc/self/fd | tr '\n' ' '
+    echo
+    readlink /proc/self/fd/0
+    [ "$(readlink /proc/$$/fd/2)" = "$(readlink /proc/$$/fd/1)" ] && echo "2>&1"
+    echo "session $(cut -d' ' -f6 /proc/$$/stat) of $$"
+    grep -E '^Sig(Blk|Ign)' /proc/self/status ;;
+stubborn|polite)
+    echo $$ > "$dir/pid"
+    if [ $rev = stubborn ]; then
+        trap 'echo TERM >> "$dir/signals"' TERM
+    else
+        trap 'echo TERM >> "$dir/signals"; exit 143' TERM
+    fi
+    echo begun
+    while :; do sleep 0.05; done ;;
+*) exec /usr/bin/git "$@" ;;
+esac
+"""
+
+
+def check_git(binary, up):
+    """The git tool, with --git only: its arguments checked against the
+    allowlists, revisions after --end-of-options and paths after --, run with
+    a fixed environment and the settings that stop programs a repository
+    could name; its output, errors included, made UTF-8 text and cut at
+    2 MiB; at the deadline SIGTERM, then SIGKILL a second later; a call that
+    goes, or askai stopping, kills it; and the repositories' names checked
+    as askai starts."""
+    def run(*args):
+        return subprocess.run([binary, "-u", up.url(), *args], capture_output=True,
+                              text=True, timeout=10)
+
+    with Askai(binary, "-u", up.url()) as ai:
+        tools = ai.rpc("tools/list")[2]["result"]["tools"]
+        assert [t["name"] for t in tools] == ["ask_ai"], tools
+    with tempfile.TemporaryDirectory() as d:
+        git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+        repo = f"{d}/proj.git"
+        os.mkdir(repo)
+        def sh(*args):
+            subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c",
+                            "user.email=t@t", *args], check=True, env=os.environ | git,
+                           capture_output=True)
+        sh("init", "-q", "-b", "main")
+        with open(f"{repo}/a.txt", "wb") as f:
+            f.write(b"alpha\nbeta \xff\xfe gamma\n")
+        with open(f"{repo}/big.txt", "wb") as f:
+            f.write(b"x" * (3 << 20))
+        sh("add", "a.txt", "big.txt")
+        sh("commit", "-q", "-m", "first")
+        subprocess.run(["git", "init", "-q", f"{d}/other"], check=True,
+                       env=os.environ | git)
+        os.mkdir(f"{d}/plain")
+        for args, message in ((("--git", repo, "--tool-name", "git"),
+                               "--git needs a --tool-name other than git"),
+                              (("--git", f"{d}/none"), "--git: not a git repository"),
+                              (("--git", f"{d}/plain"), "--git: not a git repository"),
+                              (("--git", "/"), "--git: / names no repository"),
+                              (("--git", f"{d}/.git"), "names no repository"),
+                              (("--git", repo, "--git-timeout", "0"),
+                               "invalid --git-timeout")):
+            proc = run(*args)
+            assert proc.returncode == 2 and message in proc.stderr, (args, proc)
+        os.mkdir(f"{d}/x")
+        subprocess.run(["git", "init", "-q", f"{d}/x/proj"], check=True,
+                       env=os.environ | git)
+        proc = run("--git", repo, "--git", f"{d}/x/proj")
+        assert proc.returncode == 2 and \
+            "--git: two repositories named proj" in proc.stderr, proc
+
+        fake = f"{d}/fake"
+        os.mkdir(fake)
+        with open(f"{fake}/git", "w") as f:
+            f.write(FAKE_GIT)
+        os.chmod(f"{fake}/git", 0o755)
+        env = {"PATH": fake + ":" + os.environ.get("PATH", "/usr/bin:/bin"),
+               "GIT_DIR": "/nowhere", "GIT_EXTERNAL_DIFF": "x", "HOME": d}
+
+        def call(ai, **arguments):
+            status, _, body = ai.rpc("tools/call", {"name": "git",
+                                                    "arguments": arguments})
+            assert status == 200, (status, body)
+            return body["result"]
+
+        with Askai(binary, "-u", up.url(), "--git", repo, "--git", f"{d}/other",
+                   "--git-timeout", "1", env=env) as ai:
+            tools = ai.rpc("tools/list")[2]["result"]["tools"]
+            assert [t["name"] for t in tools] == ["ask_ai", "git"], tools
+            schema = tools[1]["inputSchema"]
+            assert schema["properties"]["repo"]["enum"] == ["proj", "other"] and \
+                schema["required"] == ["repo", "command"], schema
+
+            # What a call may ask for.
+            for arguments, text in (
+                    (["x"], "Tool arguments must be an object."),
+                    ({"repo": "proj", "command": "log", "x": 1},
+                     "Unknown argument: x."),
+                    ({"repo": "nope", "command": "log"},
+                     "The repo argument must name one of the repositories: "
+                     "proj, other."),
+                    ({"repo": "proj", "command": "push"},
+                     "The command argument must be one of log, show, diff, grep, "
+                     "blame, ls-files, ls-tree, cat-file and rev-parse."),
+                    ({"repo": "proj", "command": "log", "options": ["--output=/x"]},
+                     "git log takes no option --output=/x here."),
+                    ({"repo": "proj", "command": "log", "options": ["-n", "3"]},
+                     "git log takes no option -n here."),
+                    ({"repo": "proj", "command": "grep", "pattern": "a",
+                      "options": ["-f"]}, "git grep takes no option -f here."),
+                    ({"repo": "proj", "command": "grep", "pattern": "a",
+                      "options": ["--no-index"]},
+                     "git grep takes no option --no-index here."),
+                    ({"repo": "proj", "command": "blame", "options": ["--contents=x"]},
+                     "git blame takes no option --contents=x here."),
+                    ({"repo": "proj", "command": "log", "options": "--all"},
+                     "The options, revisions and paths arguments must be arrays of "
+                     "strings, at most 16, 4 and 32 of them, each of 1 to 1024 "
+                     "bytes."),
+                    ({"repo": "proj", "command": "log", "revisions": ["a\u0000b"]},
+                     "The options, revisions and paths arguments must be arrays of "
+                     "strings, at most 16, 4 and 32 of them, each of 1 to 1024 "
+                     "bytes."),
+                    ({"repo": "proj", "command": "show", "revisions": ["--help"]},
+                     "A revision may not start with - or /, nor have a .. "
+                     "component."),
+                    ({"repo": "proj", "command": "diff", "revisions": ["/etc"]},
+                     "A revision may not start with - or /, nor have a .. "
+                     "component."),
+                    ({"repo": "proj", "command": "diff", "revisions": ["x/../.."]},
+                     "A revision may not start with - or /, nor have a .. "
+                     "component."),
+                    ({"repo": "proj", "command": "log", "paths": ["../x"]},
+                     "A path must be relative to the repository's top, with no .. "
+                     "component."),
+                    ({"repo": "proj", "command": "log", "paths": ["/etc/passwd"]},
+                     "A path must be relative to the repository's top, with no .. "
+                     "component."),
+                    ({"repo": "proj", "command": "ls-files", "revisions": ["HEAD"]},
+                     "git ls-files takes no revisions."),
+                    ({"repo": "proj", "command": "cat-file", "paths": ["a.txt"]},
+                     "git cat-file takes no paths."),
+                    ({"repo": "proj", "command": "grep"},
+                     "git grep needs a pattern argument: a string of 1 to 1024 "
+                     "bytes."),
+                    ({"repo": "proj", "command": "log", "pattern": "a"},
+                     "Only git grep takes a pattern.")):
+                result = call(ai, **arguments) if isinstance(arguments, dict) else \
+                    ai.rpc("tools/call", {"name": "git", "arguments": arguments})[2][
+                        "result"]
+                assert result.get("isError") and text_of(result) == text, \
+                    (arguments, result)
+
+            # Its argv, environment, descriptors, signals and session.
+            out = text_of(call(ai, repo="proj", command="log",
+                               options=["--oneline"], revisions=["echo"],
+                               paths=["a.txt"]))
+            argv, environ, rest = out.split("---\n")
+            real = os.path.realpath(repo)
+            assert argv.split("\n")[:-1] == [
+                "--no-pager", "-c", "core.fsmonitor=false", "-c",
+                "log.showSignature=false", "-c", "gpg.program=false", "-c",
+                "gpg.ssh.program=false", "-c", "gpg.x509.program=false", "-c",
+                "core.hooksPath=/dev/null", "-c", "protocol.allow=never", "-c",
+                "diff.submodule=short", "-c", "diff.autoRefreshIndex=false", "-c",
+                "gc.auto=0", "-c", "maintenance.auto=false", "-c",
+                f"safe.directory={real}", "-C", real, "log", "--no-ext-diff",
+                "--no-textconv", "--oneline", "--end-of-options", "echo", "--",
+                "a.txt"], argv
+            environ = [v for v in environ.split("\n")[:-1]
+                       if not v.startswith(("PWD=", "OLDPWD=", "SHLVL=", "_="))]
+            top = os.path.realpath(d)
+            assert environ == ["GIT_ALLOW_PROTOCOL=none",
+                               f"GIT_CEILING_DIRECTORIES={top}:{top}",
+                               "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+                               "GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0",
+                               "GIT_PAGER=cat", "GIT_TERMINAL_PROMPT=0",
+                               "HOME=/nonexistent", "LC_ALL=C.UTF-8",
+                               "PATH=" + env["PATH"]], environ
+            lines = rest.split("\n")
+            assert lines[0] == "0 1 2 3 " and lines[1] == "/dev/null" and \
+                lines[2] == "2>&1", lines
+            sid, pid = re.fullmatch(r"session (\d+) of (\d+)", lines[3]).groups()
+            assert sid == pid, lines
+            assert lines[4:6] == ["SigBlk:\t0000000000000000",
+                                  "SigIgn:\t0000000000000000"], lines
+
+            # The real git: output, errors, mending, the cut, and grep's none.
+            assert text_of(call(ai, repo="proj", command="log",
+                                options=["--format=%s"])) == "first\n"
+            assert text_of(call(ai, repo="proj", command="grep", pattern="beta",
+                                options=["-n"])) == "a.txt:2:beta ?? gamma\n"
+            result = call(ai, repo="proj", command="grep", pattern="nothing here")
+            assert not result.get("isError") and \
+                text_of(result) == "[git exited with status 1.]", result
+            result = call(ai, repo="proj", command="show", revisions=["nosuch"])
+            assert result.get("isError") and text_of(result).startswith(
+                "fatal: bad revision 'nosuch'\n\n[git exited with status 128.]"), result
+            result = call(ai, repo="proj", command="cat-file", options=["-p"],
+                          revisions=["HEAD:big.txt"])
+            assert not result.get("isError") and text_of(result) == "x" * (2 << 20) + \
+                "\n\n[The output goes on past the 2 MiB shown.]", len(text_of(result))
+            result = call(ai, repo="other", command="log")
+            assert result.get("isError") and "does not have any commits" in \
+                text_of(result), result
+            assert text_of(call(ai, repo="proj", command="ls-files")) == \
+                "a.txt\nbig.txt\n"
+            assert text_of(call(ai, repo="proj", command="ls-tree",
+                                options=["--name-only"], revisions=["HEAD"],
+                                paths=["a.txt"])) == "a.txt\n"
+            head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], text=True,
+                                  capture_output=True, env=os.environ | git).stdout
+            assert text_of(call(ai, repo="proj", command="rev-parse",
+                                revisions=["HEAD"])) == head
+            result = call(ai, repo="proj", command="rev-parse", revisions=["a.txt"])
+            assert text_of(result) == "[No output.]", result
+
+            # The deadline: SIGTERM, then SIGKILL a second later, to one that
+            # stays; one that goes on SIGTERM is gone at once.
+            for rev, least, most in (("stubborn", 1.9, 3.5), ("polite", 0.9, 1.9)):
+                start = time.monotonic()
+                result = call(ai, repo="proj", command="log", revisions=[rev])
+                took = time.monotonic() - start
+                text = text_of(result)
+                assert result.get("isError") and text.startswith("begun\n") and \
+                    text.endswith("\n\n[git took longer than 1 s, and was stopped.]"), \
+                    result
+                assert least <= took < most, (rev, took)
+                with open(f"{fake}/signals") as f:
+                    assert f.read() == "TERM\n"
+                os.unlink(f"{fake}/signals")
+                with open(f"{fake}/pid") as f:
+                    pid = int(f.read())
+                wait_for(lambda: not alive(pid))
+
+            # A call that goes kills its git.
+            os.unlink(f"{fake}/pid")
+            with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+                sock.sendall(rpc_request(7, {"name": "git", "arguments": {
+                    "repo": "proj", "command": "log", "revisions": ["stubborn"]}},
+                    "tools/call"))
+                wait_for(lambda: os.path.exists(f"{fake}/pid"))
+                with open(f"{fake}/pid") as f:
+                    pid = int(f.read())
+            wait_for(lambda: not alive(pid))
+            assert not os.path.exists(f"{fake}/signals")
+
+        # Stopping askai ends a call, killing its git; a configuration file
+        # lists the repositories too.
+        with open(f"{d}/askai.json", "w") as f:
+            json.dump({"git": [repo, f"{d}/other"]}, f)
+        os.chmod(f"{d}/askai.json", 0o600)
+        os.unlink(f"{fake}/pid")
+        ai = Askai(binary, "-u", up.url(), "-c", f"{d}/askai.json", env=env)
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(rpc_request(8, {"name": "git", "arguments": {
+                "repo": "other", "command": "log", "revisions": ["stubborn"]}},
+                "tools/call"))
+            wait_for(lambda: os.path.exists(f"{fake}/pid"))
+            with open(f"{fake}/pid") as f:
+                pid = int(f.read())
+            ai.stop()
+            status, body = Replies(sock).next()
+            assert status in (200, 503), (status, body)
+        wait_for(lambda: not alive(pid))
+    print("git: offered with --git, arguments allowed and refused, argv, "
+          "environment, output, errors, mending, cut, deadline, cancel, stop: "
+          "PASS")
+
+
+def check_tasks(binary, up):
+    """Tasks (src/task.h), through the test aid test_task, offered with
+    --test-task only: its arguments checked; CPU work done a slice a step,
+    placed on the client loops and spread among them, moved off a loop that
+    holds too many; a call that goes cancels its task; askai stopping lets go
+    of those under way; and the counts add up, in /metrics and as askai
+    stops."""
+    def call(ai, arguments):
+        status, _, body = ai.rpc("tools/call", {"name": "test_task",
+                                                "arguments": arguments})
+        assert status == 200, (status, body)
+        return body["result"]
+
+    def ended(values):
+        return {end: values[f'askai_tasks_ended_total{{end="{end}"}}']
+                for end in ("done", "cancelled", "abandoned")}
+
+    with Askai(binary, "-u", up.url()) as ai:
+        tools = ai.rpc("tools/list")[2]["result"]["tools"]
+        assert [t["name"] for t in tools] == ["ask_ai"], tools
+        _, _, body = ai.rpc("tools/call", {"name": "test_task",
+                                           "arguments": {"slices": 1}})
+        assert body["error"]["message"] == "Unknown tool: test_task", body
+    proc = subprocess.run([binary, "--test-task", "--tool-name", "test_task", "-u",
+                           up.url()], capture_output=True, text=True, timeout=10)
+    assert proc.returncode == 2 and "--test-task needs a --tool-name other than " \
+        "test_task" in proc.stderr, proc
+
+    ai = Askai(binary, "-u", up.url(), "--test-task", loops=4)
+    try:
+        tools = ai.rpc("tools/list")[2]["result"]["tools"]
+        assert [t["name"] for t in tools] == ["ask_ai", "test_task"], tools
+        assert set(tools[1]["inputSchema"]["properties"]) == {"slices", "prompt"}, \
+            tools[1]
+        slices = "The slices argument must be a whole number from 1 to 100000."
+        for arguments, text in ((["x"], "Tool arguments must be an object."),
+                                ({}, slices), ({"slices": 0}, slices),
+                                ({"slices": 100001}, slices), ({"slices": "3"}, slices),
+                                ({"slices": 1.5}, slices),
+                                ({"slices": 1, "prompt": "Q"},
+                                 "Give slices or a prompt, not both."),
+                                ({"prompt": ""},
+                                 "The prompt argument must be a non-empty string.")):
+            result = call(ai, arguments)
+            assert result.get("isError") and text_of(result) == text, (arguments, result)
+        assert text_of(call(ai, {"slices": 3})) == \
+            "Ran 3 slices, and moved 0 times between loops.", ai.log
+
+        # Calls of mixed lengths at once spread their tasks over every loop,
+        # and a loop left holding more than eight moves some off.
+        moves = 0
+        rounds = 0
+        while not moves and rounds < 5:
+            rounds += 1
+            texts = []
+            threads = [threading.Thread(target=lambda n=n: texts.append(
+                text_of(call(ai, {"slices": n})))) for n in (8, 400) * 20]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+            assert len(texts) == 40, texts
+            moves += sum(int(re.fullmatch(r"Ran \d+ slices, and moved (\d+) times "
+                                          r"between loops\.", t).group(1)) for t in texts)
+        values = ai.metrics()
+        ran = [v for k, v in values.items() if k.startswith("askai_task_slices_total{")]
+        assert len(ran) == 4 and min(ran) > 0, values
+        assert sum(v for k, v in values.items()
+                   if k.startswith("askai_tasks_moved_total{")) == moves > 0, values
+        assert values["askai_tasks_submitted_total"] == ended(values)["done"], values
+        assert not any(v for k, v in values.items() if k.startswith("askai_tasks_held{"))
+        assert all(v == 1 for k, v in values.items()
+                   if k.startswith("askai_loop_step_work_max{") and 'unit="tasks"' in k
+                   and 'loop="home"' not in k), values
+
+        # A call that goes cancels its task, which goes at its next slice.
+        before = ended(ai.metrics())
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(rpc_request(7, {"name": "test_task",
+                                         "arguments": {"slices": 100000}}, "tools/call"))
+            wait_for(lambda: sum(v for k, v in ai.metrics().items()
+                                 if k.startswith("askai_tasks_held{")) == 1)
+        wait_for(lambda: ended(ai.metrics())["cancelled"] == before["cancelled"] + 1)
+        assert not any(v for k, v in ai.metrics().items()
+                       if k.startswith("askai_tasks_held{"))
+
+        # Stopping ends a call under way, and lets go of its task.
+        with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+            sock.sendall(rpc_request(8, {"name": "test_task",
+                                         "arguments": {"slices": 100000}}, "tools/call"))
+            wait_for(lambda: sum(v for k, v in ai.metrics().items()
+                                 if k.startswith("askai_tasks_held{")) == 1)
+            ai.stop()
+            status, body = Replies(sock).next()
+            assert status == 503 and body["error"]["message"] == \
+                "Server is shutting down", (status, body)
+    except BaseException:
+        ai.proc.kill()
+        ai.proc.wait()
+        sys.stderr.write("".join(ai.log))
+        raise
+    line = next(l for l in ai.log if l.startswith("askai: tasks: "))
+    counts = [int(n) for n in re.findall(r"\d+", line)]
+    assert len(counts) == 5 and counts[0] == sum(counts[1:4]) == 3 + 40 * rounds \
+        and counts[4] == moves, line
+    print("tasks: test_task with --test-task only, arguments, spread over the "
+          "loops, moved, cancelled, stopped, counted: PASS")
+
+
+def check_classes(binary, up):
+    """The LLM scheduler's classes (S8): test_task's prompt asks as
+    background work, which interactive calls go before.  With two slots or
+    more, background jobs hold all but one, which stays free for interactive
+    ones; with one, an interactive job that has to wait preempts a
+    background one, whose upstream call is cut and which starts again
+    later, preempted once at most."""
+    def background(ai, prompt, out):
+        status, _, body = ai.rpc("tools/call", {"name": "test_task",
+                                                "arguments": {"prompt": prompt}})
+        out.append((prompt, status, body))
+
+    def timed(ai, prompt):
+        start = time.monotonic()
+        status, _, body = ai.rpc("tools/call", {"name": "ask_ai",
+                                                "arguments": {"prompt": prompt}})
+        assert status == 200 and text_of(body["result"]) == "A", body
+        return time.monotonic() - start
+
+    def prompts():
+        with up.lock:
+            return [r["body"]["messages"][-1]["content"] for r in up.requests]
+
+    hold = up.reply
+    up.reply = lambda request: (200, ANSWERS["openai"], 1.5 if b"bg" in
+                                request["raw"] else 0.05)
+    try:
+        # Two slots: the background jobs take one, and wait for it.
+        with Askai(binary, "-u", up.url(), "--test-task", "--slots", "2") as ai:
+            out = []
+            threads = [threading.Thread(target=background, args=(ai, f"bg{i}", out))
+                       for i in range(3)]
+            for thread in threads:
+                thread.start()
+            wait_for(lambda: ai.metrics()["askai_jobs_queued"] == 2)
+            values = ai.metrics()
+            assert values["askai_upstream_background_calls"] == 1 and \
+                values["askai_upstream_calls"] == 1, values
+            assert timed(ai, "fg") < 1, "an interactive call waited"
+            for thread in threads:
+                thread.join(10)
+            assert len(out) == 3 and all(s == 200 and text_of(b["result"]) == "A"
+                                         for _, s, b in out), out
+            assert ai.metrics()["askai_jobs_preempted_total"] == 0
+
+        # One slot: an interactive job preempts the background one running,
+        # which starts again, and is not preempted again.
+        del up.requests[:]
+        hangups = up.hangups
+        with Askai(binary, "-u", up.url(), "--test-task", "--slots", "1") as ai:
+            out = []
+            thread = threading.Thread(target=background, args=(ai, "bg", out))
+            thread.start()
+            wait_for(lambda: ai.metrics()["askai_upstream_background_calls"] == 1)
+            assert timed(ai, "fg1") < 1, "the interactive call was not first"
+            wait_for(lambda: prompts().count("bg") == 2)
+            assert up.hangups == hangups + 1, (up.hangups, hangups)
+            assert ai.metrics()["askai_jobs_preempted_total"] == 1
+            took = timed(ai, "fg2")
+            assert took > 0.5, f"preempted twice: the call took {took:.2f} s"
+            thread.join(10)
+            assert len(out) == 1 and out[0][1] == 200 and \
+                text_of(out[0][2]["result"]) == "A", out
+            assert prompts() == ["bg", "fg1", "bg", "fg2"], prompts()
+            values = ai.metrics()
+            assert values["askai_jobs_preempted_total"] == 1 and \
+                values["askai_upstream_cancels_total"] == 1, values
+        line = next(l for l in ai.log if "jobs: " in l)
+        assert line.rstrip().endswith("; 1 cancelled upstream; 1 preempted"), line
+    finally:
+        up.reply = hold
+    print("classes: background work from test_task's prompt, a slot kept for "
+          "interactive work, preemption with one slot, once: PASS")
+
+
 def main():
     binary = sys.argv[1] if len(sys.argv) > 1 else "./askai"
     up = Upstream()
@@ -3819,10 +4709,12 @@ def main():
                       check_modern, check_http, check_large_bodies, check_sse,
                       check_answers, check_dense, check_connections,
                       check_cancellation, check_limits, check_loops, check_turn_order,
-                      check_isolation, check_configuration, check_metrics,
+                      check_isolation, check_configuration, check_identities,
+                      check_reload, check_unix, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_man, check_shutdown,
+                      check_man, check_git, check_tasks, check_classes,
+                      check_shutdown,
                       check_watchdog, check_stalled_stderr):
             check(binary, up)
     finally:

@@ -81,6 +81,10 @@ struct brainstem_app {
 	 *  left. */
 	void (*alone)   (void            *ctx,
 	                 struct loop     *loop);
+	/** Home's only, if set: SIGHUP, which then reloads the configuration
+	 *  rather than stopping. */
+	void (*reload)  (void            *ctx,
+	                 struct loop     *loop);
 	/** Tear down, after the loop's last turn. */
 	void (*stop)    (void            *ctx,
 	                 struct loop     *loop);

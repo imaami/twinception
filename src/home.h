@@ -55,13 +55,18 @@ struct home_metrics {
 	_Atomic uint64_t running;     /**< upstream calls under way */
 	_Atomic uint64_t slots;       /**< upstream calls at once, at most */
 	_Atomic uint64_t dispatched;  /**< jobs started upstream */
-	_Atomic uint64_t aborted;     /**< upstream calls of jobs cancelled once
-	                                   their request had gone */
+	_Atomic uint64_t aborted;     /**< upstream calls cut once their request
+	                                   had gone: of jobs cancelled, or
+	                                   preempted */
 	_Atomic uint64_t chunks;      /**< events of streamed answers */
 	_Atomic uint64_t stalls;      /**< answers ended by the chunk timeout */
 	_Atomic uint64_t breaker;     /**< 0 closed, 1 open, 2 half-open */
 	_Atomic uint64_t opens;       /**< times the breaker opened */
 	_Atomic uint64_t probes;      /**< jobs it let through half-open */
+	_Atomic uint64_t background;  /**< upstream calls of background jobs
+	                                   under way */
+	_Atomic uint64_t preempted;   /**< background jobs whose upstream call an
+	                                   interactive one preempted */
 };
 
 /**

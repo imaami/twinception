@@ -196,24 +196,6 @@ alias_drop (struct manual *m,
 	free(a);
 }
 
-/* Make the @p n bytes at @p p UTF-8 text, each byte that breaks it becoming
- * a '?', but for a character cut short at their end while more bytes follow
- * (@p last false), which those may complete; returns the bytes made text,
- * all but that character's. */
-static size_t
-utf8_mend (char   *p,
-           size_t  n,
-           bool    last)
-{
-	size_t i = 0;
-	while ((i += jb_utf8(p + i, n - i)) < n) {
-		if (!last && n - i < 4)
-			return i;
-		p[i++] = '?';
-	}
-	return n;
-}
-
 /*
  * The fetch is over, with @p page, whose reference it takes, or else with
  * @p why there is none.  A page it rendered, the manual keeps by its file;
@@ -287,7 +269,7 @@ run (struct fetch      *f,
 	struct manual_loop *ml = f->ml;
 	struct loop *loop = ml->loop;
 	int e = child_spawn(&f->child, loop, &ml->children, "man", argv, ml->manual->env,
-	                    max, loop->now + MANUAL_SECONDS * NS, done, f);
+	                    max, loop->now + MANUAL_SECONDS * NS, 0, 0, done, f);
 	if (!e) {
 		count(runs, 1);
 		return;
@@ -339,7 +321,7 @@ copy_step (struct loop      *loop,
 	n = n < mend ? n : mend;
 	if (n) {
 		char *p = (char *)out.ptr + f->off;
-		n = utf8_mend(p, n, n == left);
+		n = jb_mend(p, n, n == left);
 		memcpy(f->page->text + f->off, p, n);
 		loop_work(loop, LOOP_COPY, n);
 		loop_work(loop, LOOP_ESCAPE, n);

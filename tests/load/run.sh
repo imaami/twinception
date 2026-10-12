@@ -4,8 +4,8 @@
 #
 # Usage: run.sh PROFILE [ASKAI_BIN [LOAD_DIR [DURATION]]]
 #   PROFILE    baseline | idle | jobs | answers | sse | race | cancel |
-#              flood | loris | slowread | pipeline | hostile | dense |
-#              malformed | storm | check | stall
+#              flood | saturated | loris | slowread | pipeline | hostile |
+#              dense | malformed | storm | check | stall
 #   ASKAI_BIN  the askai executable to test (default: $ASKAI or ./askai)
 #   LOAD_DIR   directory holding the built gen and mock (default: this dir)
 #   DURATION   seconds of load (default: 10)
@@ -15,7 +15,10 @@
 # memory pressure (default DURATION, so that the two phases weigh alike), and
 # LEAK_S, the most seconds of it under pressure (default 10); ASKAI_CPUS and
 # LOAD_CPUS, taskset(1) CPU lists for askai and for the generator and mock;
-# ASKAI_ARGS, more options for askai, such as --loops N;
+# ASKAI_ARGS, more options for askai, such as --loops N; RELOAD_S, the
+# seconds between SIGHUPs while the load lasts (S7), askai then reading a
+# configuration file whose policy gives anonymous clients everything, which
+# each SIGHUP reloads;
 # STATS, what askai reports on SIGUSR1: full (the default), loop (S2a: no work
 # line) or none (S0, S1: none, and the signal would end it), the clauses it
 # cannot report then being n/a; MEMORY, how askai gives memory back: pressure
@@ -108,6 +111,12 @@
 # interactive sessions each make one at a time, against an upstream of two
 # slots that streams its answers at a token rate; ASKAI_ARGS=--test-fifo
 # shows the same with one queue, first in first out.
+# The "saturated" profile (S8) keeps every client loop busy with tasks, CPU
+# work done a 250 us slice a step (src/task.h): four test_task calls of 40
+# slices at a time for each client loop, which askai places, and moves off a
+# loop that holds too many; its "tasks" clause checks that every task ended
+# once and that every client loop ran some.  The storm has saturating tasks
+# too, and the check profile a few.
 # The "check" profile is a light mix of every mode, short deadlines and a few
 # thousand connections for `make check-load`.  The "stall" profile instead
 # runs the coordinated-omission self-check: it
@@ -154,6 +163,7 @@ race)      mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --hangup 48 --churn
 cancel)    mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --cancel 48 --churn 200)
            askai_args=(--slots 64) ;;
 flood)     mock_args=(-s 2 -r 100 -z 20); gen_args=(--flood 16 --interactive 4) ;;
+saturated) mock_args=(-s 4 -d 5 -z 2);   gen_args=(); askai_args=(--test-task) ;;
 loris)     mock_args=(-s 4 -d 5);        gen_args=(--loris 128 --slowbody 128) ;;
 slowread)  mock_args=(-s 4 -d 5);        gen_args=(--slowread 128) ;;
 pipeline)  mock_args=(-s 4 -d 5);        gen_args=(--pipeline 4) ;;
@@ -167,11 +177,14 @@ storm)     mock_args=(-s 1 -d 20 -z 64)
            gen_args=(--idle 10000 --jobs 64 --loris 64 --slowbody 64
                      --slowread 64 --pipeline 4 --churn 1000 --malformed
                      --hostile)
+           askai_args=(--test-task)
            ct_free='ct_max - 16384' ;;
 check)     mock_args=(-s 2 -d 50 -z 131072)
            gen_args=(--idle 500 --jobs 8 --hangup 4 --loris 16 --slowbody 16
-                     --slowread 8 --pipeline 1 --churn 200 --hostile --dense)
-           askai_args=(--max-values 1000000 --head-timeout 2 --body-grace 1)
+                     --slowread 8 --pipeline 1 --churn 200 --hostile --dense
+                     --tasks 4)
+           askai_args=(--max-values 1000000 --head-timeout 2 --body-grace 1
+                       --test-task)
            hold_s=3 ct_free=20000 ;;
 *) printf '%s: unknown profile: %s\n' "$self" "$profile" >&2; exit 2 ;;
 esac
@@ -208,6 +221,7 @@ if [[ ${MEMORY:-pressure} == pressure ]]; then
 fi
 cleanup () {
 	[[ -n $sample_pid ]] && kill "$sample_pid" 2> /dev/null
+	[[ -n ${reload_pid-} ]] && kill "$reload_pid" 2> /dev/null
 	[[ -n $stall_pid ]] && kill "$stall_pid" 2> /dev/null
 	[[ -n $after_pid ]] && kill "$after_pid" 2> /dev/null
 	[[ -n $askai_pid ]] && kill -TERM "$askai_pid" 2> /dev/null
@@ -289,6 +303,24 @@ place () {
 	}'
 }
 
+# Print the task slices each client loop ran (S8), from GET /metrics, as a
+# TASKS line: the least, the median and the most, and the tasks moved.
+tasks () {
+	get "$1" /metrics |
+	awk -F '[ ]' '/^askai_task_slices_total\{/ { v[n++] = $2 }
+	/^askai_tasks_moved_total\{/ { moved += $2 }
+	END {
+		if (!n)
+			exit
+		for (i = 1; i < n; ++i)
+			for (j = i; j > 0 && v[j - 1] + 0 > v[j] + 0; --j) {
+				t = v[j]; v[j] = v[j - 1]; v[j - 1] = t
+			}
+		printf "TASKS loops=%d slices min=%d median=%d max=%d moved=%d\n",
+		       n, v[0], v[int(n / 2)], v[n - 1], moved
+	}'
+}
+
 # Once the load's calls have ended, no upstream call may outlive its job:
 # wait up to 5 s for askai to have no job in flight and the mock no request
 # under way, then print both sides' counts as a SETTLED line, askai's of the
@@ -339,6 +371,14 @@ mock_port=$(wait_port "$tmp/mock.err") || {
 
 read -ra extra <<< "${ASKAI_ARGS-}"
 askai_args+=("${extra[@]}")
+if [[ -n ${RELOAD_S-} ]]; then
+	tools='"ask_ai"'
+	[[ " ${askai_args[*]} " == *' --test-task '* ]] && tools+=', "test_task"'
+	printf '%s\n' "{ \"roles\": { \"all\": { \"tools\": [$tools], \"metrics\": true } }," \
+	       '  "anonymous": { "loopback": "all", "remote": "all" } }' > "$tmp/askai.json"
+	chmod 600 "$tmp/askai.json"
+	askai_args+=(-c "$tmp/askai.json")
+fi
 "${pin_askai[@]}" "$askai" -l 127.0.0.1:0 "${askai_args[@]}" \
 	-u "http://127.0.0.1:$mock_port/v1/chat/completions" -m m \
 	2> "$tmp/askai.err" &
@@ -352,6 +392,9 @@ askai_port=$(wait_port "$tmp/askai.err") || {
 loops=$(cat "/proc/$askai_pid/task/"*/comm 2> /dev/null | grep -cxE 'home|loop[0-9]+')
 ((loops)) || loops=1
 slack=${RSS_SLACK_KIB:-$((4096 + 256 * (loops - 1)))}
+# Saturating tasks: four at a time for each client loop.
+[[ $profile == saturated || $profile == storm ]] &&
+	gen_args+=(--tasks $((4 * (loops > 1 ? loops - 1 : 1))))
 
 printf '=== profile %s: rate=%s/s base=%ss duration=%ss askai_port=%s ' \
        "$profile" "$rate" "$base" "$dur" "$askai_port"
@@ -393,17 +436,30 @@ if ((stall)); then
 	stall_pid=$!
 fi
 
-# The load.
+# The load, and the reloads under way.
 while resources; do sleep 0.5; done > "$tmp/res" 2> /dev/null &
 sample_pid=$!
+reload_pid= reloads=0
+if [[ -n ${RELOAD_S-} ]]; then
+	while sleep "$RELOAD_S" && kill -HUP "$askai_pid" 2> /dev/null; do
+		echo
+	done > "$tmp/hup" &
+	reload_pid=$!
+fi
 "${pin_load[@]}" "$gen" -H 127.0.0.1 -p "$askai_port" -r "$rate" -d "$dur" \
 	--stats "$mock_port" "${gen_args[@]}" 2> "$tmp/gen.err" | tee -a "$tmp/gen.out"
 gen_rc=${PIPESTATUS[0]}
 kill "$sample_pid" 2> /dev/null
 sample_pid=
+if [[ -n $reload_pid ]]; then
+	kill "$reload_pid" 2> /dev/null
+	wait "$reload_pid" 2> /dev/null
+	reloads=$(wc -l < "$tmp/hup")
+fi
 cat "$tmp/idle.err" "$tmp/gen.err"
 loop_stats load | tee -a "$tmp/gen.out"
 place "$askai_port" | tee -a "$tmp/gen.out"
+tasks "$askai_port" | tee -a "$tmp/gen.out"
 
 # The after phase: the probe alone again, while the load's connections go and
 # askai keeps their memory, then under memory pressure, until its RSS is back
@@ -466,7 +522,12 @@ wait "$mock_pid" 2> /dev/null
 mock_rc=$?
 mock_pid=
 grep -E '^mock: (requests|http)' "$tmp/mock.err" | tee -a "$tmp/gen.out"
-grep -E '^askai: jobs: ' "$tmp/askai.err" | tee -a "$tmp/gen.out"
+grep -E '^askai: (jobs|tasks): ' "$tmp/askai.err" | tee -a "$tmp/gen.out"
+if [[ -n ${RELOAD_S-} ]]; then
+	printf 'RELOADS sent=%d done=%d failed=%d\n' "$reloads" \
+	       "$(grep -c 'configuration reloaded' "$tmp/askai.err")" \
+	       "$(grep -c 'not reloaded' "$tmp/askai.err")" | tee -a "$tmp/gen.out"
+fi
 
 printf 'PROFILE %s askai_exit=%s gen_exit=%s/%s/%s/%s mock_exit=%s\n' "$profile" \
        "$askai_rc" "$idle_rc" "$solo_rc" "$gen_rc" "$after_rc" "$mock_rc"
@@ -508,6 +569,7 @@ $1 == "AFTER" && $2 == "SUMMARY" && $3 == "kind=all" { kv(aft, 4) }
 $1 == "SUMMARY" && $2 == "kind=all" { kv(v, 3) }
 $1 == "SUMMARY" && $2 == "kind=fresh-ping" { kv(fresh, 3) }
 $1 == "CONTROL" { kv(c, 2) }
+$1 == "RELOADS" { kv(rl, 2); reloads_seen = 1 }
 # The turns of the client loops: the most of each figure over the loops,
 # but for the counts, summed; the longest of home apart.
 function turns(a, b) {
@@ -545,8 +607,19 @@ $1 == "askai:" && $2 == "jobs:" {
 	js["cancelled"] = $7
 	js["rejected"] = $9
 	js["upstream"] = NF >= 11 ? $11 : $7
+	js["preempted"] = NF >= 14 ? $14 : 0
 }
+$1 == "askai:" && $2 == "tasks:" {
+	tasks_seen = 1
+	tk["submitted"] = $3
+	tk["done"] = $5
+	tk["cancelled"] = $7
+	tk["abandoned"] = $9
+	tk["moved"] = $11
+}
+$1 == "TASKS" { kv(ts, 2) }
 $1 == "FAIR" && $2 == "probe" { kv(fp, 3) }
+$1 == "FAIR" && $2 == "tasks" { kv(ft, 3); tasks_fair = 1 }
 $1 == "FAIR" && $2 == "jobs" { kv(fj, 3); jobs_fair = 1 }
 $1 == "FAIR" && $2 == "interactive" { kv(fi, 3); sched = 1 }
 $1 == "BG" {
@@ -657,8 +730,8 @@ END {
 		detail = detail sprintf(" hangup failed=%d dropped=%d",
 		                        bg["hangup", "failed"], bg["hangup", "dropped"])
 	}
-	split("flood interactive", calls, " ")
-	for (i = 1; i <= 2; ++i) {
+	split("flood interactive tasks", calls, " ")
+	for (i = 1; i <= 3; ++i) {
 		m = calls[i]
 		if (!(m in bgs))
 			continue
@@ -722,6 +795,11 @@ END {
 		detail = detail sprintf("; job calls min=%d median=%s max=%s",
 		                        fj["calls_min"], fj["calls_median"], fj["calls_max"])
 	}
+	if (tasks_fair) {
+		unfair += ft["calls_min"] < 1 && ft["calls_median"] >= 3
+		detail = detail sprintf("; task calls min=%d median=%s max=%s",
+		                        ft["calls_min"], ft["calls_median"], ft["calls_max"])
+	}
 	# A heavy mode with no body or batch done, while it had some alone, is
 	# starved outright.
 	split("pipeline malformed hostile dense", heavy, " ")
@@ -751,7 +829,8 @@ END {
 		lost = st["upstream"] - st["cancelled"]
 		check("jobs", js["submitted"] == js["completed"] + js["cancelled"] + \
 		      js["rejected"] && !st["active"] && !st["queued"] && \
-		      !st["in_flight"] && lost >= 0 && st["upstream"] <= js["cancelled"] && \
+		      !st["in_flight"] && lost >= 0 && \
+		      st["upstream"] <= js["cancelled"] + js["preempted"] && \
 		      (exact ? !lost : lost <= 10 + cancel_slack * st["upstream"]),
 		      sprintf("submitted=%d completed=%d cancelled=%d rejected=%d; " \
 		              "settled: in flight %d, upstream under way %d, queued %d; " \
@@ -763,6 +842,18 @@ END {
 		                                      10 + cancel_slack * st["upstream"])))
 	} else {
 		printf "CHECK jobs=n/a askai reports no jobs\n"
+	}
+
+	# Every task ended once, and with saturating tasks every client loop ran
+	# some of their slices.
+	if (tasks_seen) {
+		spread = !("tasks" in bgs) || ts["min"] > 0
+		check("tasks", tk["submitted"] == tk["done"] + tk["cancelled"] + \
+		      tk["abandoned"] && spread,
+		      sprintf("submitted=%d done=%d cancelled=%d abandoned=%d moved=%d; " \
+		              "slices on %d client loops min=%d median=%d max=%d",
+		              tk["submitted"], tk["done"], tk["cancelled"], tk["abandoned"],
+		              tk["moved"], ts["loops"], ts["min"], ts["median"], ts["max"]))
 	}
 
 	# Each interactive session completes its fair share of calls, or near:
@@ -788,6 +879,13 @@ END {
 		              bg["interactive", "p90_us"] / 1000, service_ms,
 		              fair_wait * service_ms))
 	}
+
+	# Every SIGHUP reloaded the policy, under the load, but those that came
+	# as one was under way, which it folded into one more.
+	if (reloads_seen)
+		check("reloads", rl["sent"] > 0 && rl["done"] > 0 && !rl["failed"] &&
+		      rl["done"] <= rl["sent"], sprintf("sent=%d done=%d failed=%d",
+		                                        rl["sent"], rl["done"], rl["failed"]))
 
 	turn_limit = turn_gross * it["p99_us"]
 	if (rtt_gross * idle["p99_us"] > turn_limit)

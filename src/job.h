@@ -36,8 +36,8 @@
  * home ends the job it names as WITHDRAWN, and returns the carrier to its
  * front at once.  The front works the hash out, so that home's handling of
  * a message costs the same whatever the key's length.  So does the
- * principal's: the call's session, which begins the key, or else its
- * client's address.
+ * principal's: the client's identity, else the call's session, which begins
+ * the key, else its client's address.
  */
 #ifndef TWINCEPTION_SRC_JOB_H_
 #define TWINCEPTION_SRC_JOB_H_
@@ -71,6 +71,15 @@ enum {
 /** In a running job's progress, beside its tokens: the latest was thinking. */
 static constexpr uint32_t JOB_THINKING = UINT32_C(1) << 31;
 
+/** What the front asks of a job, before SUBMIT. */
+enum job_ask {
+	JOB_NOTIFY     = 1 << 0,  /**< post PROGRESS */
+	JOB_BACKGROUND = 1 << 1,  /**< its class is background, not interactive:
+	                               interactive jobs go first, keep a slot of
+	                               their own, and with one slot preempt it
+	                               (home.c) */
+};
+
 /** How a job ended. */
 enum job_status {
 	JOB_ANSWERED,   /**< the result holds the upstream's answer, as it came */
@@ -89,7 +98,9 @@ struct job {
 	struct msg           to_home;     /**< SUBMIT, CANCEL: the front posts it */
 	struct msg           to_front;    /**< DONE, PROGRESS, RETURN: home posts it */
 	struct list          spare;       /**< the front's: on its spare list */
-	struct list          queue;       /**< home's: on its principal's queue, or
+	struct list          queue;       /**< home's: on its principal's queue, a
+	                                       ready list, among the background jobs
+	                                       running or those to preempt, or
 	                                       among the jobs dropped */
 	struct list          due;         /**< home's: among the jobs in flight, by
 	                                       deadline */
@@ -129,7 +140,8 @@ struct job {
 	                                       seeded, of whom the call is for */
 	uint64_t             peer[2];     /**< the front's: the client's address,
 	                                       which is the principal without a
-	                                       session */
+	                                       session; UINT64_MAX twice for an
+	                                       identity's */
 	_Atomic uint64_t     progress;    /**< home writes, the front reads: the
 	                                       answer's tokens << 32 | the place in
 	                                       its principal's queue, from 1, or,
@@ -139,7 +151,9 @@ struct job {
 	_Atomic uint32_t     refs;        /**< the front, home, each message queued */
 	uint32_t             session;     /**< the front's, with the key: the bytes
 	                                       of the session and its line break
-	                                       that begin it; 0: none */
+	                                       that begin it, which tell principals
+	                                       apart; 0: none, or the principal is
+	                                       an identity */
 	uint32_t             ev;          /**< home's: where the event's data
 	                                       begins in the wire */
 	uint32_t             evlen;       /**< and its length so far */
@@ -152,8 +166,8 @@ struct job {
 	uint16_t             flags;       /**< home's: what it notes of the run */
 	uint8_t              status;      /**< home writes before DONE: enum
 	                                       job_status */
-	uint8_t              notify;      /**< the front's, before SUBMIT: bool,
-	                                       post PROGRESS */
+	uint8_t              asks;        /**< the front's, before SUBMIT: enum
+	                                       job_ask */
 	char                 reason[38];  /**< home's: the answer's stop reason,
 	                                       longer than any the providers
 	                                       name */
@@ -193,7 +207,7 @@ job_init (struct job  *job,
 	job->peer[0] = job->peer[1] = 0;
 	job->session = job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
 	job->http = job->flags = 0;
-	job->status = job->notify = 0;
+	job->status = job->asks = 0;
 	job->reason[0] = '\0';
 	atomic_init(&job->progress, 0);
 	atomic_init(&job->home_bits, 0);

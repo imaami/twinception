@@ -131,7 +131,12 @@ child_step (struct loop      *loop,
 	struct child *c = container_of(step, struct child, step);
 	uint16_t events = c->events;
 	c->events = 0;
-	if (events & CHILD_LATE) {
+	if (events & CHILD_LATE && c->grace && !c->late && c->proc.fd >= 0) {
+		/* Its grace starts on the timer, which stays in the heap. */
+		c->late = true;
+		(void)kill(-c->pid, SIGTERM);
+		(void)loop_timer_set(loop, &c->timer, loop->now + c->grace);
+	} else if (events & CHILD_LATE) {
 		c->late = true;
 		child_kill(c);
 	}
@@ -168,10 +173,12 @@ child_late (struct loop       *loop,
 	loop_ready_bulk(loop, &c->step);
 }
 
-/* Spawn @p file, its output the pipe end @p out, into @p pidfd. */
+/* Spawn @p file, its output, and its error with CHILD_STDERR in @p flags,
+ * the pipe end @p out, into @p pidfd. */
 static int
 spawn (int        *pidfd,
        int         out,
+       uint32_t    flags,
        char const *file,
        char *const argv[],
        char *const envp[])
@@ -192,7 +199,9 @@ spawn (int        *pidfd,
 			e = posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null",
 			                                     O_RDONLY, 0);
 		if (!e)
-			e = posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null",
+			e = flags & CHILD_STDERR
+			  ? posix_spawn_file_actions_adddup2(&fa, out, STDERR_FILENO)
+			  : posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null",
 			                                     O_WRONLY, 0);
 		if (!e)
 			e = posix_spawn_file_actions_addclosefrom_np(&fa, STDERR_FILENO + 1);
@@ -223,6 +232,8 @@ child_spawn (struct child **p_child,
              char *const    envp[],
              size_t         max,
              uint64_t       deadline,
+             uint64_t       grace,
+             uint32_t       flags,
              void         (*done) (struct child *c),
              void          *owner)
 {
@@ -245,7 +256,8 @@ child_spawn (struct child **p_child,
 		.loop = loop,
 		.done = done,
 		.owner = owner,
-		.max = max
+		.max = max,
+		.grace = grace
 	};
 	int fds[2] = { -1, -1 };
 	int pidfd = -1;
@@ -258,7 +270,7 @@ child_spawn (struct child **p_child,
 	if (!e && deadline)
 		e = loop_timer_set(loop, &c->timer, deadline);
 	if (!e)
-		e = spawn(&pidfd, fds[1], file, argv, envp);
+		e = spawn(&pidfd, fds[1], flags, file, argv, envp);
 	if (fds[1] >= 0)
 		close(fds[1]);
 	if (!e) {

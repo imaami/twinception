@@ -49,6 +49,7 @@ enum loop_unit {
 	LOOP_RELEASE,  /**< blocks or objects kept for reuse that are given back
 	                    to the allocator under memory pressure, a block a
 	                    unit per 128 KiB (buf_stash_release()) */
+	LOOP_TASKS,    /**< task slices (task.h) */
 	LOOP_UNITS
 };
 
@@ -65,6 +66,7 @@ enum {
 	LOOP_STEP_ACCEPTS = 32,
 	LOOP_STEP_CLOSES  = 32,
 	LOOP_STEP_RELEASE = 256,
+	LOOP_STEP_TASKS   = 1,
 };
 
 /**

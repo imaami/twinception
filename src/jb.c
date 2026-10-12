@@ -460,6 +460,20 @@ jb_utf8 (char const *str,
 }
 
 size_t
+jb_mend (char   *p,
+         size_t  n,
+         bool    last)
+{
+	size_t i = 0;
+	while ((i += jb_utf8(p + i, n - i)) < n) {
+		if (!last && n - i < 4)
+			return i;
+		p[i++] = '?';
+	}
+	return n;
+}
+
+size_t
 jb_escape (char       *dst,
            char const *src,
            size_t      len)

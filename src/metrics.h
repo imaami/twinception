@@ -11,6 +11,8 @@
  * jobs, its scheduler's queue and slots, the upstream breaker, streamed
  * answers' chunks, and its upstream wait and run times and host lookups;
  * blocker jobs; the man tool's manual, its pages, hits and runs of man;
+ * tasks (src/task.h), those each client loop holds, its slices and moves,
+ * and how they ended;
  * log lines dropped; watchdog reports; the brainstem's resource gauges, and
  * memory pressure and its inputs.  Histograms have fixed buckets, from 1 µs
  * to 300 s.
@@ -28,6 +30,8 @@ struct home_metrics;
 struct http_metrics;
 struct loop_metrics;
 struct manual_metrics;
+struct task_metrics;
+struct tasks_metrics;
 
 /** MCP methods, whose request times are kept apart. */
 enum metrics_method {
@@ -99,6 +103,7 @@ struct metrics_loop {
 	struct hist const              *methods;  /**< METHOD_N, by enum
 	                                               metrics_method */
 	struct metrics_conns const     *conns;
+	struct task_metrics const      *tasks;    /**< if askai offers test_task */
 };
 
 /** Where the metrics are; the brainstem's and the logger's are global. */
@@ -109,6 +114,7 @@ struct metrics_src {
 	struct blocker_metrics const *blockers;
 	struct home_metrics const    *jobs;
 	struct manual_metrics const  *man;       /**< if askai offers man */
+	struct tasks_metrics const   *tasks;     /**< if askai offers test_task */
 	size_t                        n_loops;
 };
 

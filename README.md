@@ -234,7 +234,8 @@ becomes crossed reasoning payload.
 small local model in `llama-server` can use it for a second opinion, or to hand
 a hard sub-problem to a bigger model.  The other model sees only the prompt, so
 the tool description asks the caller to make it self-contained.  With `--man`,
-a second tool, `man`, reads the manual (below).
+a second tool, `man`, reads the manual, and with `--git`, a tool `git` runs
+read-only git commands in the repositories it lists (below).
 
 It speaks MCP's Streamable HTTP transport, which is what the `llama-server` web
 UI's MCP client uses, and serves both protocol eras on one endpoint:
@@ -364,18 +365,135 @@ kept page answered and those that waited, and the runs of `man`.
 
 A missing page is a tool error, "No manual entry for NAME in section S.", and
 so are `man`'s other failures and a page that takes more than 10 s to find or
-render; none of those is kept.  At most 16 `man` processes run at once; a call
-past those is answered as busy.  A call that goes, as when its client closes
+render; none of those is kept.  At most 16 `man` and `git` processes run at
+once; a call past those is answered as busy.  A call that goes, as when its client closes
 the connection, leaves the page to be rendered and kept; stopping `askai`
 kills `man` and the processes it started.
+
+### Reading git repositories
+
+With `--git PATH`, which may repeat, or a configuration file's `"git"` list,
+`askai` also offers the tool `git`: read-only git commands in the repositories
+listed, each a work tree's top or a git directory, and named by the last
+component of its path as given, less a `.git` suffix: `/srv/git/proj.git` is
+`proj`.  A name is 1 to 64 letters, digits and `_.-`, not beginning with a dot;
+a path without one, or two of one name, are refused as `askai` starts.  A call names its
+`repo` and its `command`, one of `log`, `show`, `diff`, `grep`, `blame`,
+`ls-files`, `ls-tree`, `cat-file` and `rev-parse`, and gives its `options`, its
+`revisions` and its `paths` apart, and for `grep` its `pattern`:
+
+```json
+{ "repo": "proj", "command": "log", "options": ["--oneline", "--max-count=20"],
+  "revisions": ["main..topic"], "paths": ["src"] }
+```
+
+Each option must be one the command's allowlist has, its value attached
+(`--max-count=20`, not `-n 20`); revisions follow `--end-of-options` (but for
+the commands that take it amiss), and may not start with `-` or `/` nor have a
+`..` component; paths follow `--`, relative to the repository's top, with no
+`..` component; a pattern follows `-e`; `rev-parse` looks at revisions only.
+So no option that writes a file (`--output`), reads one from outside the
+repository (`grep -f`, `blame --contents`, `--no-index`) or runs a program
+(`grep -O`, `--ext-diff`, `--textconv`) can come from a client.  `askai` runs
+`git` itself, with no shell, in a session of its own, with an environment of its
+own (`PATH` as `askai` has it, `LC_ALL=C.UTF-8`, a `HOME` that does not exist,
+no system or global configuration, no terminal prompts, no optional locks, no
+repository looked for above the listed ones, and no remote protocol or fetch of
+a partial clone's missing objects) and with settings that stop what a
+repository's configuration could have it run: no pager, fsmonitor, gpg (which a
+log's format may ask for), hooks or submodule diff, and no refresh of the
+index, and `safe.directory` for the repository, as listing it trusts it.  The rest of a
+repository's own configuration, such as filters that a work tree's files pass
+through, is trusted likewise: list only repositories whose configuration you
+trust.
+
+The reply is `git`'s output, its errors included, made UTF-8 text and cut at
+2 MiB with a note saying so; an exit status other than 0 is noted, and is a
+tool error but for 1 with nothing written, as `grep` finding none.  At the
+deadline, `--git-timeout` (30 s), `git` gets SIGTERM, and SIGKILL a second
+later, and the call is a tool error; a call that goes, or `askai` stopping,
+kills `git` and the processes it started.
 
 ### Security
 
 `askai` spends your API credits, so by default it listens on 127.0.0.1 only and
 refuses browser requests whose `Origin` is neither loopback nor allowed by `-o`,
 which defeats DNS-rebinding attacks.  Before listening anywhere else, set
-`ASKAI_TOKEN`; clients must then send `Authorization: Bearer <token>`, which the
-web UI can add as a custom header.
+`ASKAI_TOKEN`, or name identities in a configuration file (below); clients must
+then send `Authorization: Bearer <token>`, which the web UI can add as a custom
+header.  A Unix socket (`--listen unix:PATH`) knows its clients' users without
+a token; its file's mode follows `askai`'s umask, and `askai` removes it as it
+stops.  With `--git`, whoever may call the tool may read the repositories
+listed.
+
+### Configuration file, identities and roles
+
+`--config FILE` (`-c`) reads options from a JSON object too, which may hold
+comments: each member is named as a long option is, its value the option's
+argument, a string or a number (`extra` may be an object); `true` for an option
+that takes none; an array for one that repeats.  The command line overrides
+the file: repeatable options add up, but for `listen`, which the command line's
+replace.  Only root or `askai`'s user may change the file or any directory
+above it (others may add to a sticky one, such as `/tmp`), and it must be a
+regular file, not a symbolic link.
+
+Four more members say who may connect, and what they may do:
+
+```json
+{
+  "url": "http://127.0.0.1:8081/v1/chat/completions",
+  "man": true,
+  "listen": ["127.0.0.1:8090", "unix:/run/askai/askai.sock"],
+  "roles": {
+    "admin":  { "tools": ["ask_ai", "man"], "metrics": true },
+    "user":   { "tools": ["ask_ai", "man"] },
+    "reader": { "tools": ["man"] }
+  },
+  "identities": {
+    "alice": { "role": "admin", "unix-users": ["alice"],
+               "tokens": ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"] },
+    "ci":    { "role": "user", "tokens": ["env:ASKAI_CI_TOKEN"] }
+  },
+  "unix-groups": { "developers": "user" },
+  "anonymous": { "loopback": "reader", "remote": null, "unix": null }
+}
+```
+
+- A **role** lists the tools it may list and call, as clients see them
+  (`--tool-name`'s, `man` and `git`), and whether it may read `GET /metrics`.
+  `tools/list` shows a client its role's tools only, and calling another is
+  an error, "Tool not available: NAME".
+- An **identity** has a role, and proves itself with a bearer token,
+  `Authorization: Bearer TOKEN`: `"sha256:HEX"`, the token's SHA-256 digest
+  (`printf %s TOKEN | sha256sum`), keeps the token out of the file, and
+  `"env:NAME"` reads it from `askai`'s environment.  A client of a Unix
+  socket is the identity whose `unix-users` (names or uids) holds its user,
+  as the kernel says (`SO_PEERCRED`); a token, if it shows one, counts first.
+- **`unix-groups`** gives the other users of a Unix socket the role of the
+  first of their groups it names, among the groups they had as they
+  connected (`SO_PEERGROUPS`).
+- **`anonymous`** names the role of a client that shows no token: `loopback`,
+  one on loopback that names it as `localhost`, `127.0.0.1` or `[::1]`;
+  `remote`, any other over TCP; `unix`, a user of a Unix socket that no
+  identity or group names.  `null`, as leaving it out, refuses them.
+
+A token that no identity has is refused with 401, on the request's head
+before its body, as is a client without one that no role is named for.  An
+identity's calls are one principal of the scheduler's, whichever of its tokens
+they show, and each other user of a Unix socket is one; anonymous TCP clients
+are their sessions or addresses, as before.  User and group names are looked
+up as the file is read, which with a directory service such as SSSD may wait
+on it.  Without those four members, `askai`'s own policy holds: with
+`ASKAI_TOKEN` set, clients must show it and may do everything; else clients on
+loopback that name it so, or on a Unix socket, may do everything, and others
+may call the tools.  With them, `ASKAI_TOKEN` is ignored, as `askai` notes.
+
+With `--config`, SIGHUP reloads who may connect and what they may do: a
+blocker thread reads the command line and the file again, and the new policy
+takes over for the requests that begin from then on, while those under way
+finish as they began.  A file that is wrong is logged, and the last policy
+stays; the other options take a restart, as the log says when they changed.
+Without `--config`, SIGHUP stops `askai`, as SIGTERM does.
 
 ### Limits
 
@@ -436,8 +554,9 @@ and how busy they are; the client stays with that loop.  A tool call hands its
 upstream request to home as a job, which home runs and hands back.  Home makes
 as many upstream requests at once as the upstream has slots (`--slots`; by
 default what `llama-server`'s `/props` says for every protocol but `gemini`,
-else 4).  The other calls wait, each in its principal's queue, its
-MCP session's or, without one, its client address's, and the principals take
+else 4).  The other calls wait, each in its principal's queue, its client's
+identity's, else its MCP session's or, without one, its client address's,
+and the principals take
 turns, a call each, so that one flooding client leaves the others their share.
 At most `--max-calls` (256) are under way, and eight queued for one principal
 (a call that a free slot takes at once waits in no queue); a tool call past
@@ -463,11 +582,12 @@ connections, home's jobs, its queue, slots and breaker, streamed answers'
 chunks, upstream wait and run times, host lookups, log lines dropped,
 watchdog reports, memory and descriptors, memory pressure and its inputs, and
 what the loops keep for reuse and gave back.
-It answers clients on loopback that name it as `localhost`, `127.0.0.1` or
-`[::1]` (or send no `Host`), and with `ASKAI_TOKEN` set, those that send the
-token.
+It answers the clients whose role may read it: without a configuration file
+that says otherwise, those on loopback that name it as `localhost`,
+`127.0.0.1` or `[::1]` (or send no `Host`), or on a Unix socket, and with
+`ASKAI_TOKEN` set, those that send the token.
 
-The first SIGINT, SIGTERM or SIGHUP makes `askai` drain: it stops accepting
+The first SIGINT or SIGTERM, or SIGHUP without `--config`, makes `askai` drain: it stops accepting
 clients, closes idle connections, answers tool calls that wait for the other
 model with an error (on an event stream, as its last event), finishes other
 requests, and exits 0, all within a grace period of 5 s (`--grace`).  A second
@@ -479,6 +599,11 @@ Invalid options or environment exit 2, and a failure to start or to serve 1.
 ### askai options
 
 ```text
+  -c, --config FILE         read options from FILE too: a JSON object
+                            whose members are named as the long
+                            options are, which the command line
+                            overrides (see README.md)
+
 Upstream AI:
   -p, --protocol NAME       openai (chat completions), responses,
                             anthropic or gemini (default openai)
@@ -506,7 +631,8 @@ Upstream AI:
                             at once as an error that says to try again
 
 MCP server:
-  -l, --listen ADDR         [host:]port (default 127.0.0.1:8090)
+  -l, --listen ADDR         [host:]port, or unix:PATH for a Unix socket
+                            (repeatable; default 127.0.0.1:8090)
   -o, --allow-origin URL    allow a non-loopback browser Origin
                             (repeatable; '*' allows any)
       --tool-name NAME      tool name (default ask_ai)
@@ -515,6 +641,13 @@ MCP server:
                             of the manual as man(1) renders it, in
                             plain UTF-8 text; each page is rendered
                             once and kept
+      --git PATH            also offer the tool git: read-only git
+                            commands in the repository at PATH, which
+                            its directory's name names (repeatable)
+      --git-timeout SECONDS
+                            a git call's deadline, at which git gets
+                            SIGTERM, and SIGKILL a second later
+                            (default 30)
       --test-man-recheck SECONDS
                             test aid: how long man's finding of a
                             page's file holds (default 600)
@@ -536,6 +669,9 @@ MCP server:
                             (critical), read each second
       --test-fifo           test aid: tool calls wait for the upstream
                             in one queue, first in first out
+      --test-task           test aid: also offer the tool test_task,
+                            CPU work in 250 us slices, run as a task
+                            on the client loops
   -h, --help                show this help
 
 Limits on clients (BYTES may end in K, M or G; 0 = none where noted):

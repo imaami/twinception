@@ -71,6 +71,7 @@ static constexpr uint64_t bound[LOOP_UNITS] = {
 	[LOOP_ACCEPTS] = LOOP_STEP_ACCEPTS,
 	[LOOP_CLOSES]  = LOOP_STEP_CLOSES,
 	[LOOP_RELEASE] = LOOP_STEP_RELEASE,
+	[LOOP_TASKS]   = LOOP_STEP_TASKS,
 };
 
 static char const *const unit_name[LOOP_UNITS] = {
@@ -85,6 +86,7 @@ static char const *const unit_name[LOOP_UNITS] = {
 	[LOOP_ACCEPTS] = "accepts",
 	[LOOP_CLOSES]  = "closes",
 	[LOOP_RELEASE] = "release",
+	[LOOP_TASKS]   = "tasks",
 };
 
 /* Record @p ns as timing @p t in the statistics since the last report, and in

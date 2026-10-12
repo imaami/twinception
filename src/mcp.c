@@ -49,6 +49,16 @@
  * by a handle as for a job's completion.  It replies with the page, or with
  * why there is none.  A call that goes leaves the page to the manual.
  *
+ * A git call, when askai lists repositories, runs git (src/git.h) as a
+ * child (src/child.h) on the call's loop, and replies with its output, its
+ * errors included, made UTF-8 text a share a step; a call that goes kills
+ * it.
+ *
+ * A test_task call, when askai offers the test aid, runs CPU work of the
+ * slices it asks for as a task (src/task.h), which may run on any client
+ * loop, and waits for it, named by a handle likewise; a call that goes
+ * cancels the task.
+ *
  * GET /metrics answers a trusted client (src/stream.h) with the metrics,
  * rendered a share a step (src/metrics.h).  Draining, tool calls that wait
  * for the upstream, and those yet to start, end with an error, which on an
@@ -57,6 +67,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <json-c/printbuf.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,7 +77,9 @@
 
 #include "ai.h"
 #include "buf.h"
+#include "child.h"
 #include "dstr.h"
+#include "git.h"
 #include "jb.h"
 #include "job.h"
 #include "list.h"
@@ -77,6 +90,7 @@
 #include "metrics.h"
 #include "shelf.h"
 #include "stream.h"
+#include "task.h"
 #include "util.h"
 
 enum {
@@ -133,7 +147,10 @@ static char const *const field_names[F_N] = {
 struct mcp_static {
 	struct ai_endpoint const *ep;
 	char const               *tool;
-	struct dstr               list[2];      /**< tools/list results: legacy, modern */
+	struct dstr               list[1 << MCP_TOOLS][2];  /**< tools/list results
+	                                                       for each set of the
+	                                                       tools a role may
+	                                                       list: legacy, modern */
 	struct dstr               discover;     /**< the server/discover result */
 	struct dstr               init_tail;    /**< an initialize result after the
 	                                             version */
@@ -141,6 +158,10 @@ struct mcp_static {
 	struct dstr               versions;     /**< the supported versions, an array */
 	struct manual            *manual;       /**< the man tool's, if askai
 	                                             offers it */
+	struct tasks             *tasks;        /**< test_task's, if askai offers
+	                                             it */
+	struct git               *git;          /**< git's, if askai lists
+	                                             repositories */
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
 };
@@ -153,6 +174,9 @@ enum phase {
 	PHASE_BUILD,     /* writing the upstream request, a slice a step */
 	PHASE_CALL,      /* waiting for the upstream */
 	PHASE_MAN,       /* waiting for a man call's page */
+	PHASE_TASK,      /* waiting for a test_task call's task */
+	PHASE_GIT,       /* waiting for a git call's git */
+	PHASE_GIT_TEXT,  /* taking its output, a slice a step */
 	PHASE_ANSWER,    /* parsing its answer, a slice a step */
 	PHASE_TEXT,      /* taking the tool's output from that, in a step of its own */
 	PHASE_REPLY,     /* escaping the output into the reply, a slice a step */
@@ -188,6 +212,9 @@ struct mcp_req {
 	struct job          *job;        /* the tool call's, once submitted, until
 	                                    let go of */
 	struct manual_page  *page;       /* a man call's, until let go of */
+	struct task         *task;       /* a test_task call's, while it waits */
+	struct child        *child;      /* a git call's git, until its output is
+	                                    taken */
 	struct json_object  *msg;        /* parsed, until dispatched; then the
 	                                    upstream's answer, until read */
 	struct json_object  *id;         /* the request's id, if any */
@@ -214,6 +241,8 @@ struct mcp_req {
 	uint16_t             next;       /* the splice to write next */
 	uint8_t              phase;      /* enum phase */
 	uint8_t              method;     /* enum metrics_method */
+	uint8_t              asks;       /* enum job_ask: JOB_BACKGROUND for
+	                                    test_task's prompt */
 	bool                 modern;
 	bool                 sse_ok;     /* the client takes an event stream */
 	bool                 sse;        /* the response is one */
@@ -229,6 +258,7 @@ struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
 	struct list              freeing;   /* requests freeing their message */
 	struct manual_loop       man;       /* the man calls' fetches */
+	struct list              children;  /* the git calls' */
 	struct shelf             spare;     /* finished requests */
 	struct shelf             jobs;      /* jobs let go of */
 	struct loop_step         drain;     /* ends the calls, draining */
@@ -498,7 +528,8 @@ job_shelve (struct mcp *mcp,
 /* Let go of the request's job, if it has one: cancel it while the request
  * waits for it, freeing the request's handle, so that its completion finds
  * no request; else tell home the result has been read.  A man call lets go
- * of its page, or of its handle while it waits for one, likewise. */
+ * of its page, or of its handle while it waits for one, likewise; a
+ * test_task call of its task, which it cancels. */
 static void
 call_drop (struct mcp_req *req)
 {
@@ -510,6 +541,14 @@ call_drop (struct mcp_req *req)
 	if (waits) {
 		loop_forget(mcp->loop, req->call);
 		req->call = (struct handle){};
+	}
+	if (req->task) {
+		task_drop(req->task);
+		req->task = nullptr;
+	}
+	if (req->child) {
+		child_drop(req->child);
+		req->child = nullptr;
 	}
 	if (!job)
 		return;
@@ -1078,8 +1117,12 @@ call_key (struct job         *job,
 }
 
 /* Hand the upstream request to a job, which the request names itself to for
- * the job's completion, with the call's key and principal, its session or
- * else its client's address, and submit the job to home. */
+ * the job's completion, with the call's key and principal: its client's
+ * identity, else its session, else its client's address; and submit the
+ * job to home.  An identity's jobs are one principal's, whatever their
+ * sessions and addresses: home tells them by their hash and a peer no
+ * client has (UINT64_MAX twice; a Unix socket's user's is UINT64_MAX and
+ * its uid). */
 static void
 call_submit (struct mcp_req *req)
 {
@@ -1103,10 +1146,15 @@ call_submit (struct mcp_req *req)
 	job->deadline = ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
 	job->peer[0] = s->peer[0];
 	job->peer[1] = s->peer[1];
-	job->principal = job->session ? hash_bytes(seed, buf_peek(&job->key).ptr,
+	job->principal = s->principal ? s->principal
+	               : job->session ? hash_bytes(seed, buf_peek(&job->key).ptr,
 	                                           job->session)
 	               : hash_bytes(~seed, job->peer, sizeof job->peer);
-	job->notify = req->token && req->sse;
+	if (s->principal) {
+		job->session = 0;
+		job->peer[0] = job->peer[1] = UINT64_MAX;
+	}
+	job->asks = (uint8_t)(req->asks | (req->token && req->sse ? JOB_NOTIFY : 0));
 	/* The front's and home's, and the post adds the message's. */
 	atomic_store_explicit(&job->refs, 2, memory_order_relaxed);
 	req->job = job;
@@ -1288,32 +1336,15 @@ man_call (struct mcp_req     *req,
 	return true;
 }
 
-/* Start a tool call; false if the request is finished instead. */
+/* Start a call that asks the upstream, of the class the request asks for:
+ * build its upstream request, then submit its job; false if the request is
+ * finished instead. */
 static bool
-tools_call (struct mcp_req     *req,
-            struct json_object *params)
+ask_call (struct mcp_req     *req,
+          struct json_object *params)
 {
 	struct mcp *mcp = req->mcp;
 	struct mcp_static const *st = mcp->st;
-	if (mcp->draining) {
-		reply_error(req, 503, INTERNAL_ERROR, "Server is shutting down", nullptr, 0);
-		return false;
-	}
-	char const *name = jb_text(jb_get(params, "name"));
-	if (name && st->manual && !strcmp(name, "man"))
-		return man_call(req, jb_get(params, "arguments"));
-	if (!name || strcmp(name, st->tool)) {
-		char msg[32 + 6 * 100];
-		size_t len = name ? (size_t)json_object_get_string_len(jb_get(params, "name"))
-		                  : 0;
-		size_t n = name ? jb_escape(msg + 14, name, clip(name, len, 100))
-		                : (size_t)sprintf(msg + 14, "(none)");
-		memcpy(msg, "Unknown tool: ", 14);
-		msg[14 + n] = '\0';
-		reply_error(req, 200, INVALID_PARAMS, msg, nullptr, 0);
-		return false;
-	}
-
 	/* Argument problems go back to the model so it can correct itself. */
 	struct json_object *args = jb_get(params, "arguments");
 	struct json_object *prompt = jb_get(args, "prompt");
@@ -1361,6 +1392,268 @@ tools_call (struct mcp_req     *req,
 	req->phase = PHASE_BUILD;
 	loop_ready_bulk(mcp->loop, &req->step);
 	return true;
+}
+
+/* test_task's work: a kernel of CPU work, run a slice at a time. */
+struct spin {
+	struct task   task;    /* first, as task_put() frees it */
+	uint64_t      left;    /* slices to run */
+	uint64_t      slices;  /* run */
+	uint64_t      x;       /* the kernel's state */
+	struct handle call;    /* the call's, on its owner's loop */
+};
+
+/* The most slices a test_task call may ask for: 25 s of work. */
+enum { SPIN_MAX = 100'000 };
+
+static enum task_state
+spin_slice (struct task *task,
+            struct loop *loop,
+            uint64_t     until)
+{
+	(void)loop;
+	struct spin *s = container_of(task, struct spin, task);
+	uint64_t x = s->x;
+	do {
+		for (unsigned i = 0; i < 1024; ++i) {
+			x ^= x << 13;
+			x ^= x >> 7;
+			x ^= x << 17;
+		}
+	} while (loop_clock() < until);
+	s->x = x;
+	++s->slices;
+	return --s->left ? TASK_MORE : TASK_DONE;
+}
+
+/* A test_task call's task is back: reply with what it did, unless the call
+ * has gone.  Once the loop has stopped, MCP is gone, and the task is only
+ * let go of. */
+static void
+spin_back (struct loop *loop,
+           struct msg  *msg)
+{
+	struct task *task = container_of(msg, struct task, msg);
+	struct spin *s = container_of(task, struct spin, task);
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, s->call);
+	if (!req) {
+		task_put(task, 1);
+		return;
+	}
+	loop_forget(loop, req->call);
+	req->call = (struct handle){};
+	list_del(&req->hook);
+	req->hook = (struct list){};
+	req->task = nullptr;
+	char text[96];
+	snprintf(text, sizeof text, "Ran %" PRIu64 " slices, and moved %" PRIu64
+	         " times between loops.", s->slices, task->moves);
+	task_put(task, 2);
+	tool_result(req, text, false);
+}
+
+/* Start a test_task call: a task of the slices its arguments in @p params
+ * ask for, which the call waits for; or, with a prompt instead, a call that
+ * asks the upstream as background work.  False if the request is finished
+ * instead. */
+static bool
+task_call (struct mcp_req     *req,
+           struct json_object *params)
+{
+	static_assert(SPIN_MAX == 100'000, "the problem says");
+	struct mcp *mcp = req->mcp;
+	struct loop *loop = mcp->loop;
+	struct json_object *args = jb_get(params, "arguments");
+	struct json_object *slices = jb_get(args, "slices");
+	bool prompt = jb_get(args, "prompt");
+	int64_t n = json_object_is_type(slices, json_type_int)
+	          ? json_object_get_int64(slices) : 0;
+	char const *problem =
+		args && !json_object_is_type(args, json_type_object)
+		? "Tool arguments must be an object."
+		: prompt && slices ? "Give slices or a prompt, not both."
+		: !prompt && (n < 1 || n > SPIN_MAX)
+		? "The slices argument must be a whole number from 1 to 100000."
+		: nullptr;
+	if (problem) {
+		tool_result(req, problem, true);
+		return false;
+	}
+	if (prompt) {
+		req->asks = JOB_BACKGROUND;
+		return ask_call(req, params);
+	}
+	struct spin *s = malloc(sizeof *s);
+	if (!s || loop_handle(loop, req, &req->call)) {
+		free(s);
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return false;
+	}
+	task_init(&s->task, mcp->st->tasks, loop, spin_slice, spin_back);
+	s->left = (uint64_t)n;
+	s->slices = 0;
+	s->x = loop->now | 1;
+	s->call = req->call;
+	clock_gettime(CLOCK_MONOTONIC, &req->start);
+	req->task = &s->task;
+	list_append(&mcp->calls, &req->hook);
+	req->s->ops->waiting(req->s);
+	req->phase = PHASE_TASK;
+	task_submit(&s->task, loop);
+	return true;
+}
+
+/* git's output is all in: take it a slice a step. */
+static void
+git_done (struct child *c)
+{
+	struct mcp_req *req = c->owner;
+	req->phase = PHASE_GIT_TEXT;
+	req->off = 0;
+	loop_ready_bulk(req->mcp->loop, &req->step);
+}
+
+/* Take a slice of a git call's output into its answer, made UTF-8 text; once
+ * all is in, say how git ended, if it failed, and reply. */
+static void
+git_text (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct loop *loop = mcp->loop;
+	struct child *c = req->child;
+	struct span out = buf_peek(&c->out);
+	size_t left = out.len - req->off;
+	size_t room = loop_room(loop, LOOP_COPY);
+	size_t n = left < room ? left : room;
+	if (n) {
+		char *p = (char *)out.ptr + req->off;
+		n = jb_mend(p, n, n == left);
+		if (!dstr_cat_n(&req->answer, p, n)) {
+			call_drop(req);
+			list_del(&req->hook);
+			req->hook = (struct list){};
+			reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+			return;
+		}
+	}
+	loop_work(loop, LOOP_COPY, n);
+	req->off += n;
+	if (req->off < out.len) {
+		loop_ready_bulk(loop, &req->step);
+		return;
+	}
+
+	/* An exit status of 1 with nothing written, as grep's finding none, is
+	 * no failure. */
+	static_assert(GIT_MAX == 2 << 20, "the note says 2 MiB");
+	bool empty = !dstr_len(&req->answer);
+	bool exited = c->code == CLD_EXITED;
+	bool failed = c->late || (!exited && !c->cut) ||
+	              (exited && c->status && !(c->status == 1 && empty));
+	char note[96] = "";
+	if (c->late)
+		snprintf(note, sizeof note, "[git took longer than %.0f s, and was "
+		         "stopped.]", (double)git_timeout(mcp->st->git) / 1e9);
+	else if (c->cut)
+		snprintf(note, sizeof note, "[The output goes on past the 2 MiB shown.]");
+	else if (!exited)
+		snprintf(note, sizeof note, "[git was killed by signal %d.]", c->status);
+	else if (c->status)
+		snprintf(note, sizeof note, "[git exited with status %d.]", c->status);
+	else if (empty)
+		snprintf(note, sizeof note, "[No output.]");
+	child_drop(c);
+	req->child = nullptr;
+	list_del(&req->hook);
+	req->hook = (struct list){};
+	/* A blank line between the output and the note. */
+	char const *gap = empty ? "" : dstr_get(&req->answer)[dstr_len(&req->answer) - 1]
+	                               == '\n' ? "\n" : "\n\n";
+	if (*note && !(dstr_cat(&req->answer, gap) && dstr_cat(&req->answer, note))) {
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return;
+	}
+	call_reply(req, true, failed);
+}
+
+/* Start a git call: the command @p args asks for, in the repository it names;
+ * false if the request is finished instead. */
+static bool
+git_call (struct mcp_req     *req,
+          struct json_object *args)
+{
+	struct mcp *mcp = req->mcp;
+	struct loop *loop = mcp->loop;
+	struct git const *git = mcp->st->git;
+	char const *argv[GIT_ARGV];
+	char why[GIT_WHY];
+	char const *problem = git_command(git, args, argv, why);
+	if (problem) {
+		tool_result(req, problem, true);
+		return false;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &req->start);
+	int e = child_spawn(&req->child, loop, &mcp->children, "git", (char *const *)argv,
+	                    git_env(git), GIT_MAX, loop->now + git_timeout(git),
+	                    GIT_GRACE_NS, CHILD_STDERR, git_done, req);
+	if (e == EBUSY) {
+		tool_result(req, "Too many commands are running; try again in a few "
+		            "seconds.", true);
+		return false;
+	}
+	if (e) {
+		snprintf(why, sizeof why, "Cannot run git: %s.", strerror(e));
+		LOG(LOG_WARN, "%s", why);
+		tool_result(req, why, true);
+		return false;
+	}
+	list_append(&mcp->calls, &req->hook);
+	req->s->ops->waiting(req->s);
+	if (req->sse_ok)
+		req_stream(req);
+	req->phase = PHASE_GIT;
+	return true;
+}
+
+/* Start a tool call; false if the request is finished instead. */
+static bool
+tools_call (struct mcp_req     *req,
+            struct json_object *params)
+{
+	struct mcp *mcp = req->mcp;
+	struct mcp_static const *st = mcp->st;
+	if (mcp->draining) {
+		reply_error(req, 503, INTERNAL_ERROR, "Server is shutting down", nullptr, 0);
+		return false;
+	}
+	char const *name = jb_text(jb_get(params, "name"));
+	uint32_t tool = !name ? 0 : !strcmp(name, st->tool) ? MCP_TOOL_ASK
+	              : st->manual && !strcmp(name, "man") ? MCP_TOOL_MAN
+	              : st->tasks && !strcmp(name, "test_task") ? MCP_TOOL_TASK
+	              : st->git && !strcmp(name, "git") ? MCP_TOOL_GIT : 0;
+	/* One that the client's role may not call is not unknown, but not
+	 * available to it. */
+	if (!(tool & req->s->tools)) {
+		static char const unknown[] = "Unknown tool: ";
+		static char const denied[] = "Tool not available: ";
+		size_t at = tool ? sizeof denied - 1 : sizeof unknown - 1;
+		char msg[32 + 6 * 100];
+		memcpy(msg, tool ? denied : unknown, at);
+		size_t len = name ? (size_t)json_object_get_string_len(jb_get(params, "name"))
+		                  : 0;
+		size_t n = name ? jb_escape(msg + at, name, clip(name, len, 100))
+		                : (size_t)sprintf(msg + at, "(none)");
+		msg[at + n] = '\0';
+		reply_error(req, 200, INVALID_PARAMS, msg, nullptr, 0);
+		return false;
+	}
+	if (tool == MCP_TOOL_MAN)
+		return man_call(req, jb_get(params, "arguments"));
+	if (tool == MCP_TOOL_TASK)
+		return task_call(req, params);
+	if (tool == MCP_TOOL_GIT)
+		return git_call(req, jb_get(params, "arguments"));
+	return ask_call(req, params);
 }
 
 static void
@@ -1517,7 +1810,8 @@ dispatch (struct mcp_req *req)
 	if (!strcmp(method, "tools/call"))
 		return tools_call(req, params);
 	if (!strcmp(method, "tools/list"))
-		reply_result(req, &TEXT(&st->list[req->modern]), 1, nullptr);
+		reply_result(req, &TEXT(&st->list[s->tools & ((1 << MCP_TOOLS) - 1)]
+		                                 [req->modern]), 1, nullptr);
 	else if (req->modern && !strcmp(method, "server/discover"))
 		reply_result(req, &TEXT(&st->discover), 1, nullptr);
 	else if (!req->modern && !strcmp(method, "initialize"))
@@ -1695,6 +1989,9 @@ req_step (struct loop      *loop,
 		break;
 	case PHASE_TEXT:
 		req_text(req);
+		break;
+	case PHASE_GIT_TEXT:
+		git_text(req);
 		break;
 	case PHASE_REPLY:
 		req_reply(req);
@@ -1896,6 +2193,7 @@ mcp_init (struct mcp               **p_mcp,
 	list_init(&mcp->calls);
 	list_init(&mcp->freeing);
 	manual_loop_init(&mcp->man, st->manual, loop);
+	list_init(&mcp->children);
 	list_init(&mcp->spare.list);
 	list_init(&mcp->jobs.list);
 	self = *p_mcp = mcp;
@@ -1915,6 +2213,7 @@ mcp_fini (struct mcp **p_mcp)
 	while (!list_is_empty(&mcp->freeing))
 		req_end(container_of(mcp->freeing.next, struct mcp_req, hook));
 	manual_loop_fini(&mcp->man);
+	child_free_all(&mcp->children);
 	while (mcp_relieve(mcp, BUF_CRITICAL, SIZE_MAX))
 		;
 	loop_unready(&mcp->drain);
@@ -2043,6 +2342,41 @@ man_definition (void)
 		nullptr);
 }
 
+static struct json_object *
+task_definition (void)
+{
+	static_assert(SPIN_MAX == 100'000 && TASK_SLICE_NS == 250'000,
+	              "the description says");
+	return jb_object(
+		"name", json_object_new_string("test_task"),
+		"title", json_object_new_string("Test task"),
+		"description", json_object_new_string(
+			"A test aid: CPU work of the slices asked for, 250 us each, run "
+			"as a task on the server's event loops, which says how many "
+			"slices ran and how often the task moved between loops; or, "
+			"given a prompt instead, a question to the upstream AI as "
+			"background work, which interactive calls go before."),
+		"inputSchema", jb_object(
+			"type", json_object_new_string("object"),
+			"properties", jb_object(
+				"slices", jb_object(
+					"type", json_object_new_string("integer"),
+					"minimum", json_object_new_int(1),
+					"maximum", json_object_new_int(SPIN_MAX),
+					nullptr),
+				"prompt", jb_object(
+					"type", json_object_new_string("string"),
+					nullptr),
+				nullptr),
+			"additionalProperties", json_object_new_boolean(0),
+			nullptr),
+		"annotations", jb_object(
+			"readOnlyHint", json_object_new_boolean(1),
+			"openWorldHint", json_object_new_boolean(0),
+			nullptr),
+		nullptr);
+}
+
 /* Serialize @p val into @p text, then free it; false if out of memory. */
 static bool
 serialize (struct dstr        *text,
@@ -2077,6 +2411,8 @@ mcp_static_new (struct mcp_static        **p_static,
                 struct ai_endpoint const  *ep,
                 struct mcp_tool const     *tool,
                 struct manual             *manual,
+                struct tasks              *tasks,
+                struct git                *git,
                 struct mcp_limits const   *limits)
 {
 	struct mcp_static *st = malloc(sizeof *st);
@@ -2085,15 +2421,19 @@ mcp_static_new (struct mcp_static        **p_static,
 	*st = (struct mcp_static){
 		.ep = ep,
 		.tool = tool->name,
-		.list = { DSTR_INIT, DSTR_INIT },
 		.discover = DSTR_INIT,
 		.init_tail = DSTR_INIT,
 		.modern_tail = DSTR_INIT,
 		.versions = DSTR_INIT,
 		.manual = manual,
+		.tasks = tasks,
+		.git = git,
 		.seed = loop_clock(),
 		.lim = *limits
 	};
+	/* A zeroed dstr is no empty string (dstr.h). */
+	for (size_t i = 0; i < ARRAY_SIZE(st->list); ++i)
+		st->list[i][0] = st->list[i][1] = (struct dstr)DSTR_INIT;
 	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
 	*p_static = st;
 
@@ -2102,18 +2442,36 @@ mcp_static_new (struct mcp_static        **p_static,
 	                                     "title", json_object_new_string("Ask AI"),
 	                                     "version", json_object_new_string("0.1.0"),
 	                                     nullptr);
-	struct json_object *tools = jb_list(tool_definition(tool));
+	struct json_object *defs[MCP_TOOLS] = {
+		tool_definition(tool),
+		manual ? man_definition() : nullptr,
+		tasks ? task_definition() : nullptr,
+		git ? git_definition(git) : nullptr
+	};
+	static_assert(MCP_TOOL_MAN == 1u << 1 && MCP_TOOL_TASK == 1u << 2 &&
+	              MCP_TOOL_GIT == 1u << 3);
 	struct json_object *list = json_object_new_array();
-	bool ok = info && tools && (!manual || jb_push(tools, man_definition()));
+	bool ok = info && defs[0] && (!manual || defs[1]) && (!tasks || defs[2]) &&
+	          (!git || defs[3]);
 	for (size_t i = 0; ok && i < ARRAY_SIZE(versions); ++i)
 		ok = jb_push(list, json_object_new_string(versions[i]));
+	/* A role lists the tools it may call, of those askai offers. */
+	for (size_t mask = 0; ok && mask < ARRAY_SIZE(st->list); ++mask) {
+		struct json_object *tools = json_object_new_array();
+		for (size_t i = 0; tools && i < MCP_TOOLS; ++i)
+			if (mask & 1u << i && defs[i] &&
+			    !jb_push(tools, json_object_get(defs[i])))
+				tools = nullptr;
+		ok = tools &&
+		     serialize(&st->list[mask][0], jb_object("tools", json_object_get(tools),
+		                                             nullptr)) &&
+		     serialize(&st->list[mask][1], modern_list(jb_object(
+		             "tools", json_object_get(tools), nullptr), info));
+		json_object_put(tools);
+	}
 	struct dstr info_text = DSTR_INIT;
 	ok = ok && serialize(&info_text, json_object_get(info)) &&
 	     serialize(&st->versions, json_object_get(list)) &&
-	     serialize(&st->list[0], jb_object("tools", json_object_get(tools),
-	                                       nullptr)) &&
-	     serialize(&st->list[1], modern_list(jb_object("tools", json_object_get(tools),
-	                                                   nullptr), info)) &&
 	     serialize(&st->discover, modern_list(jb_object(
 	             "supportedVersions", json_object_get(list),
 	             "capabilities", jb_object("tools", jb_object(nullptr), nullptr),
@@ -2124,7 +2482,8 @@ mcp_static_new (struct mcp_static        **p_static,
 	                 "{\"%s\":%s}}", meta_server, dstr_get(&info_text));
 	dstr_cleanup(&info_text);
 	json_object_put(list);
-	json_object_put(tools);
+	for (size_t i = 0; i < MCP_TOOLS; ++i)
+		json_object_put(defs[i]);
 	json_object_put(info);
 	if (!ok) {
 		mcp_static_free(p_static);
@@ -2141,7 +2500,8 @@ mcp_static_free (struct mcp_static **p_static)
 	struct mcp_static *st = *p_static;
 	*p_static = nullptr;
 	for (size_t i = 0; i < ARRAY_SIZE(st->list); ++i)
-		dstr_cleanup(&st->list[i]);
+		for (size_t j = 0; j < ARRAY_SIZE(st->list[i]); ++j)
+			dstr_cleanup(&st->list[i][j]);
 	dstr_cleanup(&st->discover);
 	dstr_cleanup(&st->init_tail);
 	dstr_cleanup(&st->modern_tail);

@@ -14,6 +14,7 @@ struct httpd_home;
 struct httpd_hub;
 struct loop;
 struct metrics_conns;
+struct policy;
 struct stream_app;
 
 /**
@@ -62,10 +63,12 @@ httpd_limits (void)
 }
 
 struct httpd_cfg {
-	struct httpd_limits limits;
-	char const *const  *origins;  /**< allowed non-loopback Origins; "*": any */
-	char const         *listen;   /**< [host:]port */
-	char const         *token;    /**< bearer token clients must send, or nullptr */
+	struct httpd_limits  limits;
+	char const *const   *origins;  /**< allowed non-loopback Origins; "*": any */
+	char const *const   *listen;   /**< where to listen: [host:]port, or
+	                                    unix:PATH, each; nullptr ends them */
+	struct policy       *policy;   /**< who clients are, and what they may do:
+	                                    each loop's server takes a reference */
 };
 
 /**
@@ -105,6 +108,14 @@ httpd_home_fini (struct httpd_home **p_home);
  *  drained already. */
 extern void
 httpd_home_open (struct httpd_home *home);
+
+/** Have every client loop's server take @p policy, a reference each, for
+ *  the requests that begin from then on, and let go of its last.  Returns 0,
+ *  or EAGAIN unless the door is open, as before every client loop runs and
+ *  once draining. */
+extern int
+httpd_home_policy (struct httpd_home *home,
+                   struct policy     *policy);
 
 /** Stop accepting clients: close the listener. */
 extern void

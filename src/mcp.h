@@ -9,6 +9,7 @@
 #include "buf.h"
 
 struct ai_endpoint;
+struct git;
 struct loop;
 struct manual;
 struct mcp;
@@ -16,6 +17,17 @@ struct mcp_static;
 struct metrics_mcp;
 struct metrics_src;
 struct stream_app;
+struct tasks;
+
+/** The tools, as bits of what a client's role may list and call
+ *  (src/policy.h). */
+enum mcp_tool_bit {
+	MCP_TOOL_ASK  = 1u << 0,  /**< the tool that asks the upstream */
+	MCP_TOOL_MAN  = 1u << 1,  /**< man, if askai offers it */
+	MCP_TOOL_TASK = 1u << 2,  /**< the test aid test_task, if askai offers it */
+	MCP_TOOL_GIT  = 1u << 3,  /**< git, if askai lists repositories */
+	MCP_TOOLS     = 4,
+};
 
 struct mcp_tool {
 	char const *name;
@@ -47,13 +59,17 @@ mcp_limits (void)
  * What every loop's MCP shares, and nobody changes once it is made: the
  * configuration, and the replies that never change, serialized.  With
  * @p manual, it offers the tool man beside @p tool: a page of the manual
- * (src/manual.h).  @p ep, @p tool and @p manual must outlive it.
+ * (src/manual.h); with @p tasks, the test aid test_task, CPU work done as a
+ * task (src/task.h); with @p git, the tool git (src/git.h).  @p ep, @p tool,
+ * @p manual, @p tasks and @p git must outlive it.
  */
 extern int
 mcp_static_new (struct mcp_static        **p_static,
                 struct ai_endpoint const  *ep,
                 struct mcp_tool const     *tool,
                 struct manual             *manual,
+                struct tasks              *tasks,
+                struct git                *git,
                 struct mcp_limits const   *limits);
 
 extern void

@@ -13,6 +13,7 @@
 #include "loop.h"
 #include "manual.h"
 #include "metrics.h"
+#include "task.h"
 #include "util.h"
 
 /* What a call renders at most, a histogram costing 8 and a value 1: a
@@ -22,8 +23,9 @@ enum { BUDGET = 32 };
 /* Where a series is: those before PER_LOOP are each loop's, rendered for
  * every loop that has them, labelled with its name. */
 enum source {
-	LOOP, STASH, KEPT, CALLS, METHODS, CONNS, PER_LOOP,
-	HTTP = PER_LOOP, BLOCKERS, JOBS, MAN, BRAINSTEM, LOGGER, PSI, CGROUP, SOURCES
+	LOOP, STASH, KEPT, CALLS, METHODS, CONNS, TASKS, PER_LOOP,
+	HTTP = PER_LOOP, BLOCKERS, JOBS, MAN, TASKS_ALL, BRAINSTEM, LOGGER, PSI, CGROUP,
+	SOURCES
 };
 enum kind { COUNTER, GAUGE, HISTOGRAM };
 enum scale { ONE, NS, US, PERMYRIAD };
@@ -82,6 +84,10 @@ static struct {
 	VALUE(name, help, labels, struct home_metrics, field, JOBS, kind, ONE)
 #define MAN(name, help, labels, field, kind) \
 	VALUE(name, help, labels, struct manual_metrics, field, MAN, kind, ONE)
+#define TASKS(name, help, field, kind) \
+	VALUE(name, help, "", struct task_metrics, field, TASKS, kind, ONE)
+#define TASKS_ALL(name, help, labels, field) \
+	VALUE(name, help, labels, struct tasks_metrics, field, TASKS_ALL, COUNTER, ONE)
 #define INPUT(help, input, i) \
 	VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
 	      struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
@@ -107,6 +113,7 @@ static struct entry const table[] = {
 	WORK(nullptr, "accepts", LOOP_ACCEPTS),
 	WORK(nullptr, "closes", LOOP_CLOSES),
 	WORK(nullptr, "release", LOOP_RELEASE),
+	WORK(nullptr, "tasks", LOOP_TASKS),
 	METHOD("Time from a request's head to its end, by MCP method.", "initialize",
 	       METHOD_INITIALIZE),
 	METHOD(nullptr, "ping", METHOD_PING),
@@ -144,8 +151,8 @@ static struct entry const table[] = {
 	JOBS("askai_upstream_calls", "Upstream calls under way.", "", running, GAUGE),
 	JOBS("askai_upstream_slots", "Upstream calls at once at most: --slots, "
 	     "llama-server's /props, or 4.", "", slots, GAUGE),
-	JOBS("askai_upstream_cancels_total", "Upstream calls of cancelled jobs, "
-	     "cancelled once their request had gone.", "", aborted, COUNTER),
+	JOBS("askai_upstream_cancels_total", "Upstream calls cut once their request "
+	     "had gone: of cancelled jobs, or preempted ones.", "", aborted, COUNTER),
 	JOBS("askai_upstream_chunks_total", "Events of streamed answers.", "", chunks,
 	     COUNTER),
 	JOBS("askai_upstream_stalls_total", "Answers ended by the chunk timeout.", "",
@@ -154,6 +161,10 @@ static struct entry const table[] = {
 	     "half-open.", "", breaker, GAUGE),
 	JOBS("askai_breaker_opens_total", "Times the upstream breaker opened.", "",
 	     opens, COUNTER),
+	JOBS("askai_upstream_background_calls", "Upstream calls of background jobs "
+	     "under way.", "", background, GAUGE),
+	JOBS("askai_jobs_preempted_total", "Background jobs whose upstream call an "
+	     "interactive job preempted, to start again later.", "", preempted, COUNTER),
 	JOBS("askai_breaker_probes_total", "Jobs the half-open breaker let through "
 	     "as probes.", "", probes, COUNTER),
 	MAN("askai_man_pages", "Pages the man tool's manual keeps.", "", pages, GAUGE),
@@ -165,6 +176,16 @@ static struct entry const table[] = {
 	MAN("askai_man_runs_total", "Runs of man: to find a page's file (man -w), "
 	    "or to render the page (man -l).", "run=\"find\"", finds, COUNTER),
 	MAN("askai_man_runs_total", nullptr, "run=\"render\"", renders, COUNTER),
+	TASKS("askai_tasks_held", "Tasks a client loop holds.", held, GAUGE),
+	TASKS("askai_task_slices_total", "Task slices a client loop ran.", slices,
+	      COUNTER),
+	TASKS("askai_tasks_moved_total", "Tasks a client loop moved to another.",
+	      moved, COUNTER),
+	TASKS_ALL("askai_tasks_submitted_total", "Tasks submitted.", "", submitted),
+	TASKS_ALL("askai_tasks_ended_total", "Tasks ended: their slices done, found "
+	          "cancelled, or held by a loop that stopped.", "end=\"done\"", done),
+	TASKS_ALL("askai_tasks_ended_total", nullptr, "end=\"cancelled\"", cancelled),
+	TASKS_ALL("askai_tasks_ended_total", nullptr, "end=\"abandoned\"", abandoned),
 	VALUE("askai_upstream_wait_seconds", "Time from an upstream request to its "
 	      "start in libcurl, its host's lookup included.", "", struct http_metrics,
 	      wait, HTTP, HISTOGRAM, NS),
@@ -257,6 +278,8 @@ static struct entry const table[] = {
 };
 
 #undef INPUT
+#undef TASKS_ALL
+#undef TASKS
 #undef MAN
 #undef JOBS
 #undef CONNS
@@ -360,6 +383,7 @@ loop_source (struct metrics_loop const *l,
 		[CALLS] = l->calls,
 		[METHODS] = l->methods,
 		[CONNS] = l->conns,
+		[TASKS] = l->tasks,
 	};
 	return at[source];
 }
@@ -377,6 +401,7 @@ metrics_render (struct metrics_src const *src,
 		[BLOCKERS] = src->blockers,
 		[JOBS] = src->jobs,
 		[MAN] = src->man,
+		[TASKS_ALL] = src->tasks,
 		[BRAINSTEM] = &brainstem_metrics,
 		[LOGGER] = &log_metrics,
 		[PSI] = hist_get(&brainstem_metrics.psi_ok) ? &brainstem_metrics : nullptr,
