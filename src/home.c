@@ -177,7 +177,7 @@ struct home {
 /* The thread's home: the handler of jobs' messages finds it here. */
 static thread_local struct home *self;
 
-static void preempt_excess (struct home *home);
+static void home_preempt_excess (struct home *home);
 
 /* The link that heads the registry's bucket of the keys of @p hash, which
  * the front works out, seeded, so that no client can pick keys that crowd
@@ -191,7 +191,7 @@ home_bucket (struct home const *home,
 
 /* @p job's class: 0 interactive, 1 background. */
 static uint32_t
-class_of (struct job const *job)
+home_job_class (struct job const *job)
 {
 	return (job->asks & JOB_BACKGROUND) != 0;
 }
@@ -199,18 +199,18 @@ class_of (struct job const *job)
 /* The upstream slots that background jobs may hold at most: all but one,
  * which stays for interactive work, unless there is only one. */
 static uint32_t
-background_slots (struct home const *home)
+home_background_slots (struct home const *home)
 {
 	return home->slots - (home->slots >= 2);
 }
 
 /* Whether @p job is for @p p, who its first job queued is for. */
 static bool
-for_principal (struct principal const *p,
-               struct job const       *job)
+home_principal_is (struct principal const *p,
+                   struct job const       *job)
 {
 	struct job const *first = container_of(p->jobs.next, struct job, queue);
-	return p->hash == job->principal && p->class == class_of(job) &&
+	return p->hash == job->principal && p->class == home_job_class(job) &&
 	       first->session == job->session &&
 	       (job->session ? !memcmp(buf_peek(&first->key).ptr,
 	                               buf_peek(&job->key).ptr, job->session)
@@ -221,19 +221,20 @@ for_principal (struct principal const *p,
 /* The link that holds the principal @p job is for, or where it would be
  * appended; for all of a class one in a queue first in first out. */
 static struct principal **
-principal_slot (struct home const *home,
+home_find_whom (struct home const *home,
                 struct job const  *job)
 {
 	struct principal **p = &home->whom[home->fifo ? 0 : job->principal & home->mask];
-	while (*p && (home->fifo ? (*p)->class != class_of(job) : !for_principal(*p, job)))
+	while (*p && (home->fifo ? (*p)->class != home_job_class(job)
+	                         : !home_principal_is(*p, job)))
 		p = &(*p)->chain;
 	return p;
 }
 
 /* Publish @p job's progress, and tell its front if it asked. */
 static void
-job_progress (struct job *job,
-              uint64_t    progress)
+home_job_progress (struct job *job,
+                   uint64_t    progress)
 {
 	atomic_store_explicit(&job->progress, progress, memory_order_relaxed);
 	if (job->asks & JOB_NOTIFY && !(job->flags & (DROPPED | WITHDRAWN)))
@@ -245,8 +246,8 @@ job_progress (struct job *job,
  * keep the places they had); a principal with none left goes on the
  * shelf. */
 static void
-queue_leave (struct home *home,
-             struct job  *job)
+home_unqueue (struct home *home,
+              struct job  *job)
 {
 	struct principal *p = job->who;
 	struct list *node = job->queue.next;
@@ -256,8 +257,8 @@ queue_leave (struct home *home,
 	if (--p->queued) {
 		for (; !home->fifo && node != &p->jobs; node = node->next) {
 			struct job *next = container_of(node, struct job, queue);
-			job_progress(next, atomic_load_explicit(&next->progress,
-			                                        memory_order_relaxed) - 1);
+			home_job_progress(next, atomic_load_explicit(&next->progress,
+			                                             memory_order_relaxed) - 1);
 		}
 		return;
 	}
@@ -272,7 +273,7 @@ queue_leave (struct home *home,
 
 /* Give the storage of @p job's answer back to the stash. */
 static void
-answer_free (struct job *job)
+home_job_drop_answer (struct job *job)
 {
 	buf_fini(&job->result);
 	buf_fini(&job->calls);
@@ -282,8 +283,8 @@ answer_free (struct job *job)
 /* Drop @p n references to @p job, and hand it back to its front if they were
  * the last. */
 static void
-home_put (struct job *job,
-          uint32_t    n)
+home_job_put (struct job *job,
+              uint32_t    n)
 {
 	if (job_put(job, n)) {
 		atomic_store_explicit(&job->front_bits, JOB_RETURN, memory_order_relaxed);
@@ -297,10 +298,10 @@ home_put (struct job *job,
  * go of as it ran, which home lets go of too.  Its slot, if it had one, goes
  * to the next.  Alone, home has its loop exit once no job is in flight. */
 static void
-job_end (struct home      *home,
-         struct job       *job,
-         enum job_status   status,
-         _Atomic uint64_t *count)
+home_end (struct home      *home,
+          struct job       *job,
+          enum job_status   status,
+          _Atomic uint64_t *count)
 {
 	if (!list_is_empty(&job->due)) {
 		struct home_metrics *m = home->metrics;
@@ -311,14 +312,14 @@ job_end (struct home      *home,
 		*p = job->chain;
 		hist_add(&m->in_flight, -1ULL);
 		if (job->who)
-			queue_leave(home, job);
-		home->readied[class_of(job)] -= (job->flags & READY) != 0;
+			home_unqueue(home, job);
+		home->readied[home_job_class(job)] -= (job->flags & READY) != 0;
 		list_del(&job->queue);
 		list_del(&job->idle);
 		list_del(&job->feed);
 		if (job->flags & RUNNING) {
 			hist_add(&m->running, -1ULL);
-			if (class_of(job)) {
+			if (home_job_class(job)) {
 				hist_add(&m->background, -1ULL);
 				--home->running_bg;
 			}
@@ -335,11 +336,11 @@ job_end (struct home      *home,
 		hist_add(count, 1);
 	bool dropped = job->flags & DROPPED;
 	if (dropped || status == JOB_CANCELLED || status == JOB_WITHDRAWN)
-		answer_free(job);
+		home_job_drop_answer(job);
 	job->status = (uint8_t)status;
 	job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DONE);
 	if (dropped)
-		home_put(job, 1);
+		home_job_put(job, 1);
 	if (home && home->alone && !hist_get(&home->metrics->in_flight))
 		loop_exit(home->loop);
 }
@@ -348,9 +349,9 @@ job_end (struct home      *home,
  * empty if out of memory. */
 [[gnu::format(printf, 2, 3)]]
 static void
-job_say (struct job *job,
-         char const *fmt,
-         ...)
+home_job_say (struct job *job,
+              char const *fmt,
+              ...)
 {
 	buf_consume(&job->result, buf_peek(&job->result).len);
 	for (size_t room = 128;;) {
@@ -374,18 +375,18 @@ job_say (struct job *job,
 /* The breaker is open: end @p job, which may not go upstream, with when to
  * try again. */
 static void
-job_refuse (struct home *home,
-            struct job  *job)
+home_refuse (struct home *home,
+             struct job  *job)
 {
 	uint64_t left = home->until > home->loop->now ? home->until - home->loop->now : 0;
-	job_say(job, "The upstream is unavailable; try again in %" PRIu64 " s.",
-	        (left + NS - 1) / NS);
-	job_end(home, job, JOB_FAILED, &home->metrics->rejected);
+	home_job_say(job, "The upstream is unavailable; try again in %" PRIu64 " s.",
+	             (left + NS - 1) / NS);
+	home_end(home, job, JOB_FAILED, &home->metrics->rejected);
 }
 
 static void
-breaker_state (struct home *home,
-               uint8_t      state)
+home_breaker_set (struct home *home,
+                  uint8_t      state)
 {
 	home->state = state;
 	atomic_store_explicit(&home->metrics->breaker, state, memory_order_relaxed);
@@ -394,15 +395,15 @@ breaker_state (struct home *home,
 /* Refuse the upstream jobs for a spell: what Retry-After asked for, @p retry
  * seconds, or else the backoff, which doubles for the next. */
 static void
-breaker_open (struct home *home,
-              long         retry)
+home_breaker_open (struct home *home,
+                   long         retry)
 {
 	struct loop *loop = home->loop;
 	uint64_t spell = retry > 0 ? (uint64_t)retry * NS : home->backoff;
 	spell = spell < BACKOFF_MIN ? BACKOFF_MIN : spell > BACKOFF_MAX ? BACKOFF_MAX : spell;
 	home->backoff = home->backoff < BACKOFF_MAX / 2 ? 2 * home->backoff : BACKOFF_MAX;
 	home->until = loop->now + spell;
-	breaker_state(home, OPEN);
+	home_breaker_set(home, OPEN);
 	hist_add(&home->metrics->opens, 1);
 	(void)loop_timer_set(loop, &home->breaker, home->until);
 	LOG(LOG_WARN, "upstream unavailable: tool calls refused for %" PRIu64 " s",
@@ -411,11 +412,11 @@ breaker_open (struct home *home,
 }
 
 static void
-breaker_event (struct loop       *loop,
-               struct loop_timer *timer)
+home_breaker_event (struct loop       *loop,
+                    struct loop_timer *timer)
 {
 	struct home *home = container_of(timer, struct home, breaker);
-	breaker_state(home, HALF);
+	home_breaker_set(home, HALF);
 	LOG(LOG_INFO, "upstream breaker half-open: a probe goes next");
 	loop_ready_bulk(loop, &home->start);
 }
@@ -426,24 +427,24 @@ breaker_event (struct loop       *loop,
  * jobs' outcomes count only while it is closed, and a job cancelled counts
  * not at all. */
 static void
-breaker_note (struct home *home,
-              struct job  *job,
-              bool         failure,
-              long         retry)
+home_breaker_note (struct home *home,
+                   struct job  *job,
+                   bool         failure,
+                   long         retry)
 {
 	if (job->flags & PROBE) {
 		job->flags &= (uint16_t)~PROBE;
 		home->probing = false;
 		if (failure) {
-			breaker_open(home, retry);
+			home_breaker_open(home, retry);
 		} else {
-			breaker_state(home, CLOSED);
+			home_breaker_set(home, CLOSED);
 			home->failures = 0;
 			home->backoff = BACKOFF_MIN;
 			LOG(LOG_INFO, "upstream breaker closed: the probe went through");
 			loop_ready_bulk(home->loop, &home->start);
 			/* An interactive job may wait for the probe's slot. */
-			preempt_excess(home);
+			home_preempt_excess(home);
 		}
 		return;
 	}
@@ -451,26 +452,26 @@ breaker_note (struct home *home,
 		return;
 	home->failures = failure ? home->failures + 1 : 0;
 	if (failure && (home->failures >= FAILURES || retry > 0))
-		breaker_open(home, retry);
+		home_breaker_open(home, retry);
 }
 
 /* @p job's run upstream is over, with @p result and libcurl's @p error, and
  * @p retry the seconds its answer's Retry-After asked for: complete it with
  * the answer, its text, or why there is none in its place. */
 static void
-job_finish (struct home *home,
-            struct job  *job,
-            CURLcode     result,
-            char const  *error,
-            long         retry)
+home_finish (struct home *home,
+             struct job  *job,
+             CURLcode     result,
+             char const  *error,
+             long         retry)
 {
 	struct home_metrics *m = home->metrics;
 	uint16_t flags = job->flags;
-	breaker_note(home, job, result ? result != CURLE_WRITE_ERROR &&
-	                                 result != CURLE_OUT_OF_MEMORY
-	                               : job->http >= 500 || job->http == 429, retry);
+	home_breaker_note(home, job, result ? result != CURLE_WRITE_ERROR &&
+	                                      result != CURLE_OUT_OF_MEMORY
+	                                    : job->http >= 500 || job->http == 429, retry);
 	if (result == CURLE_OK && !(flags & STREAM)) {
-		job_end(home, job, JOB_ANSWERED, &m->completed);
+		home_end(home, job, JOB_ANSWERED, &m->completed);
 		return;
 	}
 	struct span text = buf_peek(&job->result);
@@ -483,49 +484,49 @@ job_finish (struct home *home,
 			memcpy(s.ptr, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1);
 			buf_commit(&job->result, sizeof AI_CUT_NOTE - 1);
 		}
-		job_end(home, job, JOB_TEXT, &m->completed);
+		home_end(home, job, JOB_TEXT, &m->completed);
 		return;
 	}
 	if (result == CURLE_OK && !(flags & ERRED)) {
 		char why[96];
 		(void)ai_no_answer(why, sizeof why, *job->reason ? job->reason : nullptr);
-		job_say(job, "%s", why);
+		home_job_say(job, "%s", why);
 	} else if (flags & OVERFLOW) {
-		job_say(job, "Upstream response exceeds %d MiB.", MAX_RESPONSE >> 20);
+		home_job_say(job, "Upstream response exceeds %d MiB.", MAX_RESPONSE >> 20);
 	} else if (flags & STALLED) {
-		job_say(job, "Upstream answer stalled: nothing came for %.0f s.",
-		         (double)home->silence / 1e9);
+		home_job_say(job, "Upstream answer stalled: nothing came for %.0f s.",
+		              (double)home->silence / 1e9);
 	} else if (result == CURLE_OPERATION_TIMEDOUT) {
-		job_say(job, "Upstream request timed out after %.0f s.",
-		        (double)(home->loop->now - job->since) / 1e9);
+		home_job_say(job, "Upstream request timed out after %.0f s.",
+		             (double)(home->loop->now - job->since) / 1e9);
 	} else if (result) {
-		job_say(job, "Upstream request failed: %s%s%s", curl_easy_strerror(result),
+		home_job_say(job, "Upstream request failed: %s%s%s", curl_easy_strerror(result),
 		        *error ? ": " : "", error);
 	}
-	job_end(home, job, JOB_FAILED, &m->completed);
+	home_end(home, job, JOB_FAILED, &m->completed);
 }
 
 /* End @p job's run upstream now, with @p result, cancelling its transfer if
  * it still has one: the upstream sees a hang-up. */
 static void
-job_cut (struct home *home,
-         struct job  *job,
-         CURLcode     result)
+home_cut (struct home *home,
+          struct job  *job,
+          CURLcode     result)
 {
 	http_cancel(home->http, &job->transfer);
-	job_finish(home, job, result, "", 0);
+	home_finish(home, job, result, "", 0);
 }
 
 /* Gather the upstream's answer, a stream into the wire and a plain one into
  * the result, up to MAX_RESPONSE bytes, as much a step as its share of
  * receiving takes: curl holds the rest back until a later step lets it on
- * (resume_step()).  A stream is held back too while a step's share of it
+ * (home_resume_step()).  A stream is held back too while a step's share of it
  * waits to be read.  A write over a whole share, which curl does not make,
  * would count in full.  Each write counts as the answer's sign of life. */
 static size_t
-job_write (char const *data,
-           size_t      len,
-           void       *user)
+home_job_write (char const *data,
+                size_t      len,
+                void       *user)
 {
 	struct job *job = user;
 	struct home *home = self;
@@ -544,7 +545,7 @@ job_write (char const *data,
 		/* The upstream answers: the other jobs need not wait for the
 		 * probe's end, which may be minutes away. */
 		if (job->flags & PROBE && status < 500 && status != 429)
-			breaker_note(home, job, false, 0);
+			home_breaker_note(home, job, false, 0);
 	}
 	job->active = loop->now;
 	list_del(&job->idle);
@@ -585,10 +586,10 @@ job_write (char const *data,
 /* The upstream call has ended.  A stream's end, once all of it is read; any
  * other answer, or none, at once. */
 static void
-job_done (CURLcode    result,
-          long        status,
-          char const *error,
-          void       *user)
+home_job_done (CURLcode    result,
+               long        status,
+               char const *error,
+               void       *user)
 {
 	struct job *job = user;
 	struct home *home = self;
@@ -603,14 +604,14 @@ job_done (CURLcode    result,
 		loop_ready_bulk(home->loop, &home->feed);
 		return;
 	}
-	job_finish(home, job, result, error, http_retry_after(home->http));
+	home_finish(home, job, result, error, http_retry_after(home->http));
 }
 
 /* Start @p job upstream, at the end of the timeline, its deadline the
  * latest; half-open, as the breaker's probe. */
 static void
-job_start (struct home *home,
-           struct job  *job)
+home_start (struct home *home,
+            struct job  *job)
 {
 	struct home_metrics *m = home->metrics;
 	struct loop *loop = home->loop;
@@ -623,7 +624,7 @@ job_start (struct home *home,
 	job->flags |= RUNNING;
 	hist_add(&m->running, 1);
 	hist_add(&m->dispatched, 1);
-	if (class_of(job)) {
+	if (home_job_class(job)) {
 		list_append(&home->background, &job->queue);
 		hist_add(&m->background, 1);
 		++home->running_bg;
@@ -635,11 +636,11 @@ job_start (struct home *home,
 	list_append(&home->timeline, &job->due);
 	if (job->deadline && home->deadline.due == UINT64_MAX)
 		(void)loop_timer_set(loop, &home->deadline, job->deadline);
-	job_progress(job, 0);
+	home_job_progress(job, 0);
 	struct span body = buf_peek(&job->request);
 	if (http_post_json(home->http, ep->url, (char const *)body.ptr, body.len, false,
-	                   ep->headers, 0, job_write, job_done, job, &job->transfer))
-		job_end(home, job, JOB_FAILED, &m->completed);
+	                   ep->headers, 0, home_job_write, home_job_done, job, &job->transfer))
+		home_end(home, job, JOB_FAILED, &m->completed);
 }
 
 /* The job to start next: of the interactive ones, then of the background
@@ -647,11 +648,11 @@ job_start (struct home *home,
  * none of the background ones to @p start while they hold all the slots
  * they may; nullptr if none waits. */
 static struct job *
-job_next (struct home const *home,
-          bool               start)
+home_next (struct home const *home,
+           bool               start)
 {
 	for (uint32_t c = 0; c < 2; ++c) {
-		if (c && start && home->running_bg >= background_slots(home))
+		if (c && start && home->running_bg >= home_background_slots(home))
 			break;
 		if (!list_is_empty(&home->ready[c]))
 			return container_of(home->ready[c].next, struct job, queue);
@@ -668,13 +669,13 @@ job_next (struct home const *home,
  * lets them and the step's share of requests allows: those ready first, then
  * the next principal on the ring starts its first and goes to the back. */
 static void
-start_step (struct loop      *loop,
-            struct loop_step *step)
+home_start_step (struct loop      *loop,
+                 struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, start);
 	while (!home->draining && home->state != OPEN && !home->probing &&
 	       hist_get(&home->metrics->running) < home->slots) {
-		struct job *job = job_next(home, true);
+		struct job *job = home_next(home, true);
 		if (!job)
 			return;
 		if (!loop_room(loop, LOOP_REQS)) {
@@ -683,21 +684,21 @@ start_step (struct loop      *loop,
 		}
 		if (job->flags & READY) {
 			job->flags &= (uint16_t)~READY;
-			--home->readied[class_of(job)];
+			--home->readied[home_job_class(job)];
 			list_del(&job->queue);
 		} else {
 			list_del(&job->who->ring);
-			list_append(&home->ring[class_of(job)], &job->who->ring);
-			queue_leave(home, job);
+			list_append(&home->ring[home_job_class(job)], &job->who->ring);
+			home_unqueue(home, job);
 		}
-		job_start(home, job);
+		home_start(home, job);
 		loop_work(loop, LOOP_REQS, 1);
 	}
 }
 
 static void
-deadline_event (struct loop       *loop,
-                struct loop_timer *timer)
+home_deadline_event (struct loop       *loop,
+                     struct loop_timer *timer)
 {
 	loop_ready_bulk(loop, &container_of(timer, struct home, deadline)->overdue);
 }
@@ -705,15 +706,15 @@ deadline_event (struct loop       *loop,
 /* Cancel @p job, which its front let go of, its client withdrew, or a drain
  * ends: one whose request had gone upstream counts as cancelled there. */
 static void
-job_cancel (struct home *home,
-            struct job  *job)
+home_cancel (struct home *home,
+             struct job  *job)
 {
 	struct home_metrics *m = home->metrics;
 	if (job->transfer && http_sent(job->transfer))
 		hist_add(&m->aborted, 1);
 	http_cancel(home->http, &job->transfer);
-	job_end(home, job, job->flags & WITHDRAWN ? JOB_WITHDRAWN : JOB_CANCELLED,
-	        &m->cancelled);
+	home_end(home, job, job->flags & WITHDRAWN ? JOB_WITHDRAWN : JOB_CANCELLED,
+	         &m->cancelled);
 }
 
 /* End the jobs past their deadline, oldest first, as many a step as its share
@@ -721,8 +722,8 @@ job_cancel (struct home *home,
  * one waiting for a slot does too, refused, and one dropped is cancelled.
  * libcurl short of memory may lose a transfer's own timeout. */
 static void
-overdue_step (struct loop      *loop,
-              struct loop_step *step)
+home_overdue_step (struct loop      *loop,
+                   struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, overdue);
 	for (; !list_is_empty(&home->timeline); loop_work(loop, LOOP_REQS, 1)) {
@@ -737,27 +738,27 @@ overdue_step (struct loop      *loop,
 			return;
 		}
 		if (job->flags & (DROPPED | WITHDRAWN)) {
-			job_cancel(home, job);
+			home_cancel(home, job);
 		} else if (job->flags & RUNNING) {
-			job_cut(home, job, CURLE_OPERATION_TIMEDOUT);
+			home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
 		} else if (job->flags & PREEMPTED) {
 			/* It went upstream, and keeps its deadline from then. */
-			job_say(job, "Timed out after %.0f s: an interactive call preempted it, "
-			        "and it could not start again in time.",
-			        (double)home->ep->timeout_ms / 1e3);
-			job_end(home, job, JOB_FAILED, &home->metrics->completed);
+			home_job_say(job, "Timed out after %.0f s: an interactive call "
+			             "preempted it, and it could not start again in time.",
+			             (double)home->ep->timeout_ms / 1e3);
+			home_end(home, job, JOB_FAILED, &home->metrics->completed);
 		} else {
-			job_say(job, "Timed out after %.0f s waiting for an upstream slot.",
-			        (double)home->ep->timeout_ms / 1e3);
-			job_end(home, job, JOB_FAILED, &home->metrics->rejected);
+			home_job_say(job, "Timed out after %.0f s waiting for an upstream slot.",
+			             (double)home->ep->timeout_ms / 1e3);
+			home_end(home, job, JOB_FAILED, &home->metrics->rejected);
 		}
 	}
 	(void)loop_timer_set(loop, &home->deadline, UINT64_MAX);
 }
 
 static void
-quiet_event (struct loop       *loop,
-             struct loop_timer *timer)
+home_quiet_event (struct loop       *loop,
+                  struct loop_timer *timer)
 {
 	loop_ready_bulk(loop, &container_of(timer, struct home, quiet)->silent);
 }
@@ -766,8 +767,8 @@ quiet_event (struct loop       *loop,
  * longest first, as many a step as its share of requests allows; then wait
  * for the next. */
 static void
-silent_step (struct loop      *loop,
-             struct loop_step *step)
+home_silent_step (struct loop      *loop,
+                  struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, silent);
 	for (; !list_is_empty(&home->idle); loop_work(loop, LOOP_REQS, 1)) {
@@ -782,7 +783,7 @@ silent_step (struct loop      *loop,
 		}
 		job->flags |= STALLED;
 		hist_add(&home->metrics->stalls, 1);
-		job_cut(home, job, CURLE_OPERATION_TIMEDOUT);
+		home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
 	}
 	(void)loop_timer_set(loop, &home->quiet, UINT64_MAX);
 }
@@ -791,8 +792,8 @@ silent_step (struct loop      *loop,
  * receiving has room for a write from curl, which may hold one back again;
  * curl reads on in a later step. */
 static void
-resume_step (struct loop      *loop,
-             struct loop_step *step)
+home_resume_step (struct loop      *loop,
+                  struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, resume);
 	while (!list_is_empty(&home->held) &&
@@ -801,7 +802,7 @@ resume_step (struct loop      *loop,
 		list_del(&job->held);
 		CURLcode e = http_resume(job->transfer);
 		if (e)
-			job_cut(home, job, e);
+			home_cut(home, job, e);
 	}
 	if (!list_is_empty(&home->held))
 		loop_ready_bulk(loop, step);
@@ -811,9 +812,9 @@ resume_step (struct loop      *loop,
  * they are UTF-8 (json-c lets overlong forms through), and the answer stays
  * within MAX_RESPONSE; it is copied whole. */
 static int
-put_text (void       *user,
-          char const *text,
-          size_t      len)
+home_put_text (void       *user,
+               char const *text,
+               size_t      len)
 {
 	struct job *job = user;
 	if (jb_utf8(text, len) < len)
@@ -831,11 +832,11 @@ put_text (void       *user,
 }
 
 /* Add @p len bytes of thinking at @p text to the job @p user's, as
- * put_text() does its answer. */
+ * home_put_text() does its answer. */
 static int
-put_thought (void       *user,
-             char const *text,
-             size_t      len)
+home_put_thought (void       *user,
+                  char const *text,
+                  size_t      len)
 {
 	struct job *job = user;
 	if (jb_utf8(text, len) < len)
@@ -860,8 +861,8 @@ put_thought (void       *user,
  * same.  EPROTO for a call that breaks that order, or for more than
  * JOB_CALLS of them; EILSEQ for what is not UTF-8. */
 static int
-put_call (void                 *user,
-          struct ai_call const *call)
+home_put_call (void                 *user,
+               struct ai_call const *call)
 {
 	struct job *job = user;
 	struct span all = buf_peek(&job->calls);
@@ -933,10 +934,10 @@ put_call (void                 *user,
 /* Parse on with @p parser, the @p len bytes at @p json, a slice as far as
  * the step's shares allow, which it counts; true once the parse is over. */
 static bool
-parse_slice (struct home      *home,
-             struct jb_parser *parser,
-             char const       *json,
-             size_t            len)
+home_parse (struct home      *home,
+            struct jb_parser *parser,
+            char const       *json,
+            size_t            len)
 {
 	struct loop *loop = home->loop;
 	uint64_t bytes = loop_room(loop, LOOP_PARSE);
@@ -958,8 +959,8 @@ parse_slice (struct home      *home,
  * if the event ended the job.  An event that is not JSON text ends it, as a
  * whole answer that is not would. */
 static int
-read_event (struct home *home,
-            struct job  *job)
+home_read_event (struct home *home,
+                 struct job  *job)
 {
 	struct loop *loop = home->loop;
 	struct jb_parser *parser = &job->parser;
@@ -969,7 +970,7 @@ read_event (struct home *home,
 	if (job->evlen == 6 && !memcmp(data, "[DONE]", 6)) {
 		job->flags |= ENDED;
 	} else {
-		if (!parse_slice(home, parser, data, job->evlen))
+		if (!home_parse(home, parser, data, job->evlen))
 			return 0;
 		uint32_t n = parser->cut.values;
 		struct json_object *root = jb_parser_take(parser);
@@ -983,9 +984,9 @@ read_event (struct home *home,
 			size_t had = buf_peek(&job->result).len;
 			bool tools = job->asks & JOB_TOOLS;
 			struct ai_sink const sink = {
-				.text = put_text,
-				.thought = tools ? put_thought : nullptr,
-				.call = tools ? put_call : nullptr,
+				.text = home_put_text,
+				.thought = tools ? home_put_thought : nullptr,
+				.call = tools ? home_put_call : nullptr,
 				.user = job
 			};
 			e = ai_event(home->ep->protocol, root, &sink, &ev);
@@ -993,11 +994,12 @@ read_event (struct home *home,
 			hist_add(&home->metrics->chunks, 1);
 			bool text = buf_peek(&job->result).len > had;
 			if (text || ev.thought)
-				job_progress(job, (uint64_t)++job->chunks << 32 |
-				                  (text ? 0 : JOB_THINKING));
+				home_job_progress(job, (uint64_t)++job->chunks << 32 |
+				                       (text ? 0 : JOB_THINKING));
 		}
 		if (ev.reason) {
-			size_t len = jb_utf8(ev.reason, strnlen(ev.reason, sizeof job->reason - 1));
+			size_t len = jb_utf8(ev.reason, strnlen(ev.reason,
+			                                        sizeof job->reason - 1));
 			memcpy(job->reason, ev.reason, len);
 			job->reason[len] = '\0';
 			job->flags = (uint16_t)(ev.truncated ? job->flags | TRUNCATED
@@ -1007,13 +1009,13 @@ read_event (struct home *home,
 		bool bad = e == EILSEQ || e == EPROTO || (!json && !e);
 		if (ev.error) {
 			size_t len = strnlen(ev.error, 4096);
-			job_say(job, "Upstream error (HTTP %d): %.*s", job->http,
-			        (int)jb_utf8(ev.error, len), ev.error);
+			home_job_say(job, "Upstream error (HTTP %d): %.*s", job->http,
+			             (int)jb_utf8(ev.error, len), ev.error);
 		} else if (bad) {
-			job_say(job, "Upstream error (HTTP %d): %s", job->http,
-			        e == EPROTO ? "tool calls out of order, or too many"
-			        : json ? "an answer that is not text"
-			        : "an event that is not JSON text");
+			home_job_say(job, "Upstream error (HTTP %d): %s", job->http,
+			             e == EPROTO ? "tool calls out of order, or too many"
+			             : json ? "an answer that is not text"
+			             : "an event that is not JSON text");
 		}
 		job->flags |= ev.error || bad ? ERRED : 0;
 		if (json && n <= loop_room(loop, LOOP_VALUES)) {
@@ -1030,8 +1032,8 @@ read_event (struct home *home,
 	job->flags &= (uint16_t)~EVENT;
 	if (job->flags & ERRED || e) {
 		job->flags |= e == ENOBUFS ? OVERFLOW : 0;
-		job_cut(home, job, job->flags & ERRED ? CURLE_OK
-		                 : e == ENOBUFS ? CURLE_WRITE_ERROR : CURLE_OUT_OF_MEMORY);
+		home_cut(home, job, job->flags & ERRED ? CURLE_OK
+		                  : e == ENOBUFS ? CURLE_WRITE_ERROR : CURLE_OUT_OF_MEMORY);
 		return -1;
 	}
 	return 1;
@@ -1042,8 +1044,8 @@ read_event (struct home *home,
  * line ends the event, which has some; every other line says nothing, and
  * goes once no event's data precedes it (SSE). */
 static void
-read_line (struct job *job,
-           size_t      end)
+home_job_line (struct job *job,
+               size_t      end)
 {
 	unsigned char *wire = buf_peek(&job->wire).ptr;
 	unsigned char *line = wire + job->line;
@@ -1076,12 +1078,12 @@ read_line (struct job *job,
  * has delivered whole ends with its last event read: cut off, as a transfer
  * cut short, unless an event said the answer had ended. */
 static bool
-read_stream (struct home *home,
-             struct job  *job)
+home_read_stream (struct home *home,
+                  struct job  *job)
 {
 	struct loop *loop = home->loop;
 	for (;;) {
-		int r = job->flags & EVENT ? read_event(home, job) : 1;
+		int r = job->flags & EVENT ? home_read_event(home, job) : 1;
 		if (r <= 0)
 			return r < 0;
 		struct span w = buf_peek(&job->wire);
@@ -1095,12 +1097,12 @@ read_stream (struct home *home,
 			loop_work(loop, LOOP_PARSE, end + !!nl - job->scan);
 			job->scan = (uint32_t)(end + !!nl);
 			if (nl)
-				read_line(job, end);
+				home_job_line(job, end);
 			continue;
 		}
 		/* The last line, and the last event, need no line breaks. */
 		if (job->flags & DELIVERED && job->line < job->scan) {
-			read_line(job, job->scan);
+			home_job_line(job, job->scan);
 			continue;
 		}
 		if (job->flags & DELIVERED && job->evlen) {
@@ -1109,8 +1111,8 @@ read_stream (struct home *home,
 		}
 		if (job->flags & DELIVERED) {
 			bool whole = job->flags & ENDED;
-			job_finish(home, job, whole ? CURLE_OK : CURLE_PARTIAL_FILE,
-			           whole ? "" : "the stream ended before the answer did", 0);
+			home_finish(home, job, whole ? CURLE_OK : CURLE_PARTIAL_FILE,
+			            whole ? "" : "the stream ended before the answer did", 0);
 			return true;
 		}
 		list_del(&job->feed);
@@ -1126,13 +1128,13 @@ read_stream (struct home *home,
 /* Read the streams, each as far as the step's shares allow, the one that
  * used them up going to the back for the next step. */
 static void
-feed_step (struct loop      *loop,
-           struct loop_step *step)
+home_feed_step (struct loop      *loop,
+                struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, feed);
 	while (!list_is_empty(&home->feeding)) {
 		struct job *job = container_of(home->feeding.next, struct job, feed);
-		if (!read_stream(home, job)) {
+		if (!home_read_stream(home, job)) {
 			list_del(&job->feed);
 			list_append(&home->feeding, &job->feed);
 			loop_ready_bulk(loop, step);
@@ -1142,8 +1144,8 @@ feed_step (struct loop      *loop,
 }
 
 static void
-reap_step (struct loop      *loop,
-           struct loop_step *step)
+home_reap_step (struct loop      *loop,
+                struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, reap);
 	loop_work(loop, LOOP_VALUES, jb_reaper_step(&home->reaper,
@@ -1155,19 +1157,19 @@ reap_step (struct loop      *loop,
 /* The breaker opened: end the jobs waiting, in the order they would have
  * started, as many a step as its share of requests allows. */
 static void
-shed_step (struct loop      *loop,
-           struct loop_step *step)
+home_shed_step (struct loop      *loop,
+                struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, shed);
 	while (home->state == OPEN) {
-		struct job *job = job_next(home, false);
+		struct job *job = home_next(home, false);
 		if (!job)
 			return;
 		if (!loop_room(loop, LOOP_REQS)) {
 			loop_ready_bulk(loop, step);
 			return;
 		}
-		job_refuse(home, job);
+		home_refuse(home, job);
 		loop_work(loop, LOOP_REQS, 1);
 	}
 }
@@ -1175,7 +1177,7 @@ shed_step (struct loop      *loop,
 /* Whether @p job, a background job running, may be cut: not as the probe,
  * nor once its answer is all in. */
 static bool
-cuttable (struct job const *job)
+home_job_cuttable (struct job const *job)
 {
 	return job->transfer && !(job->flags & (PROBE | DELIVERED | ENDED));
 }
@@ -1184,9 +1186,9 @@ cuttable (struct job const *job)
  * hold slots they may not: those beyond the S - 1 they may hold, as S may
  * shrink; and with one slot, the one an interactive job waits for. */
 static uint32_t
-preempt_count (struct home const *home)
+home_preempt_count (struct home const *home)
 {
-	uint32_t may = background_slots(home);
+	uint32_t may = home_background_slots(home);
 	uint32_t over = home->running_bg > may ? home->running_bg - may : 0;
 	if (home->slots == 1 && home->running_bg && !list_is_empty(&home->ring[0]))
 		over = 1;
@@ -1198,9 +1200,9 @@ preempt_count (struct home const *home)
 
 /* Whether a background job preempting is still to be. */
 static bool
-preempt_needed (struct home const *home)
+home_preempt_needed (struct home const *home)
 {
-	uint32_t may = background_slots(home);
+	uint32_t may = home_background_slots(home);
 	return home->running_bg > may ||
 	       (home->slots == 1 && !list_is_empty(&home->ring[0]));
 }
@@ -1208,9 +1210,9 @@ preempt_needed (struct home const *home)
 /* Have the background jobs that hold slots they may not preempted, the first
  * to have started first. */
 static void
-preempt_excess (struct home *home)
+home_preempt_excess (struct home *home)
 {
-	uint32_t over = preempt_count(home);
+	uint32_t over = home_preempt_count(home);
 	struct list *node;
 	struct list *next;
 	list_foreach_safe (node, next, &home->background) {
@@ -1218,7 +1220,7 @@ preempt_excess (struct home *home)
 		if (!over)
 			break;
 		/* Once at most. */
-		if (!cuttable(job) || job->flags & PREEMPTED)
+		if (!home_job_cuttable(job) || job->flags & PREEMPTED)
 			continue;
 		job->flags |= PREEMPTED;
 		list_del(&job->queue);
@@ -1234,8 +1236,8 @@ preempt_excess (struct home *home)
  * allows.  A preemption is no outcome of the upstream's, which the breaker
  * counts. */
 static void
-preempt_step (struct loop      *loop,
-              struct loop_step *step)
+home_preempt_step (struct loop      *loop,
+                   struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, preempt);
 	struct home_metrics *m = home->metrics;
@@ -1247,7 +1249,7 @@ preempt_step (struct loop      *loop,
 		struct job *job = container_of(home->preempting.next, struct job, queue);
 		list_del(&job->queue);
 		/* Its answer may be all in by now, or the interactive job gone. */
-		if (!cuttable(job) || !preempt_needed(home)) {
+		if (!home_job_cuttable(job) || !home_preempt_needed(home)) {
 			job->flags &= (uint16_t)~PREEMPTED;
 			list_append(&home->background, &job->queue);
 			continue;
@@ -1275,7 +1277,7 @@ preempt_step (struct loop      *loop,
 		--home->running_bg;
 		list_append(home->ready[1].next, &job->queue);
 		++home->readied[1];
-		job_progress(job, 1);
+		home_job_progress(job, 1);
 		loop_ready_bulk(loop, &home->start);
 	}
 }
@@ -1285,36 +1287,36 @@ preempt_step (struct loop      *loop,
  * hooks, as many as the step's share of requests allows; false if some are
  * left. */
 static bool
-cancel_some (struct home *home,
-             struct loop *loop,
-             struct list *list,
-             bool         due)
+home_cancel_some (struct home *home,
+                  struct loop *loop,
+                  struct list *list,
+                  bool         due)
 {
 	for (; !list_is_empty(list); loop_work(loop, LOOP_REQS, 1)) {
 		if (!loop_room(loop, LOOP_REQS))
 			return false;
-		job_cancel(home, due ? container_of(list->next, struct job, due)
-		                      : container_of(list->next, struct job, queue));
+		home_cancel(home, due ? container_of(list->next, struct job, due)
+		                       : container_of(list->next, struct job, queue));
 	}
 	return true;
 }
 
 static void
-stop_step (struct loop      *loop,
-           struct loop_step *step)
+home_stop_step (struct loop      *loop,
+                struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, stop);
-	if (!cancel_some(home, loop, &home->dropped, false))
+	if (!home_cancel_some(home, loop, &home->dropped, false))
 		loop_ready_bulk(loop, step);
 }
 
 /* Draining: cancel every job in flight. */
 static void
-drain_step (struct loop      *loop,
-            struct loop_step *step)
+home_drain_step (struct loop      *loop,
+                 struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, drain);
-	if (!cancel_some(home, loop, &home->timeline, true))
+	if (!home_cancel_some(home, loop, &home->timeline, true))
 		loop_ready_bulk(loop, step);
 }
 
@@ -1332,15 +1334,15 @@ home_slots (struct home *home,
 		LOG(LOG_INFO, "upstream slots: %" PRIu32 " (%s)", n, why);
 	loop_ready_bulk(home->loop, &home->start);
 	/* Fewer slots may leave background jobs holding more than they may. */
-	preempt_excess(home);
+	home_preempt_excess(home);
 }
 
 /* Gather /props's answer, up to MAX_PROPS bytes, as much a step as its share
  * of receiving takes, the rest held back for the props step. */
 static size_t
-props_write (char const *data,
-             size_t      len,
-             void       *user)
+home_props_write (char const *data,
+                  size_t      len,
+                  void       *user)
 {
 	struct home *home = user;
 	if (!len)
@@ -1360,10 +1362,10 @@ props_write (char const *data,
 }
 
 static void
-props_done (CURLcode    result,
-            long        status,
-            char const *error,
-            void       *user)
+home_props_done (CURLcode    result,
+                 long        status,
+                 char const *error,
+                 void       *user)
 {
 	struct home *home = user;
 	home->ask = nullptr;
@@ -1389,8 +1391,8 @@ props_done (CURLcode    result,
  * slice a step, and take the slots its total_slots says, unless told, and
  * the context its slots' n_ctx says, likewise. */
 static void
-props_step (struct loop      *loop,
-            struct loop_step *step)
+home_props_step (struct loop      *loop,
+                 struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, props);
 	if (home->paused) {
@@ -1402,7 +1404,7 @@ props_step (struct loop      *loop,
 	}
 	struct jb_parser *parser = &home->parser;
 	struct span json = buf_peek(&home->answer);
-	if (!parse_slice(home, parser, json.len ? (char const *)json.ptr : "", json.len)) {
+	if (!home_parse(home, parser, json.len ? (char const *)json.ptr : "", json.len)) {
 		loop_ready_bulk(loop, step);
 		return;
 	}
@@ -1440,7 +1442,7 @@ props_step (struct loop      *loop,
  * llama-server does not, or is a well-known cloud API; false if not asked.
  * The answer may take PROPS_MS, or the calls' timeout if shorter. */
 static bool
-props_ask (struct home *home)
+home_props_ask (struct home *home)
 {
 	static char const *const clouds[] = {
 		"api.openai.com", "api.anthropic.com", "openrouter.ai", "api.groq.com",
@@ -1467,7 +1469,7 @@ props_ask (struct home *home)
 	     !curl_url_set(u, CURLUPART_FRAGMENT, nullptr, 0) &&
 	     !curl_url_get(u, CURLUPART_URL, &url, 0) &&
 	     !http_post_json(home->http, url, nullptr, 0, false, ep->headers, ms,
-	                     props_write, props_done, home, &home->ask);
+	                     home_props_write, home_props_done, home, &home->ask);
 	curl_free(url);
 	curl_free(host);
 	curl_url_cleanup(u);
@@ -1495,7 +1497,7 @@ home_withdraw (struct home      *home,
 		found = true;
 		job->flags |= WITHDRAWN;
 		if (!job->transfer) {
-			job_end(home, job, JOB_WITHDRAWN, &home->metrics->cancelled);
+			home_end(home, job, JOB_WITHDRAWN, &home->metrics->cancelled);
 			continue;
 		}
 		list_del(&job->queue);
@@ -1513,8 +1515,8 @@ home_withdraw (struct home      *home,
  * and goes; a first turn's makes it go, as it was the call's before, whose
  * id this one has again. */
 static bool
-withdrawn (struct home *home,
-           struct job  *job)
+home_withdrawn (struct home *home,
+                struct job  *job)
 {
 	size_t len = buf_peek(&job->key).len;
 	for (size_t i = 0; i < WITHDRAWALS; ++i) {
@@ -1543,35 +1545,35 @@ home_admit (struct home *home,
 {
 	struct home_metrics *m = home->metrics;
 	if (home->draining) {
-		job_end(home, job, JOB_CANCELLED, &m->rejected);
+		home_end(home, job, JOB_CANCELLED, &m->rejected);
 		return;
 	}
-	if (job->asks & JOB_TOOLS && withdrawn(home, job)) {
-		job_end(home, job, JOB_WITHDRAWN, &m->cancelled);
+	if (job->asks & JOB_TOOLS && home_withdrawn(home, job)) {
+		home_end(home, job, JOB_WITHDRAWN, &m->cancelled);
 		return;
 	}
 	if (home->state == OPEN) {
-		job_refuse(home, job);
+		home_refuse(home, job);
 		return;
 	}
-	struct principal **slot = principal_slot(home, job);
+	struct principal **slot = home_find_whom(home, job);
 	struct principal *p = *slot;
 	if (hist_get(&m->in_flight) >= home->max ||
 	    (p && !home->fifo && p->queued >= QUEUED)) {
-		job_end(home, job, JOB_BUSY, &m->rejected);
+		home_end(home, job, JOB_BUSY, &m->rejected);
 		return;
 	}
-	uint32_t c = class_of(job);
+	uint32_t c = home_job_class(job);
 	bool ready = home->state == CLOSED && list_is_empty(&home->ring[0]) &&
 	             hist_get(&m->running) + home->readied[0] + home->readied[1] <
 	             home->slots &&
 	             (!c || (list_is_empty(&home->ring[1]) &&
-	                     home->running_bg + home->readied[1] < background_slots(home)));
+	                     home->running_bg + home->readied[1] < home_background_slots(home)));
 	if (!p && !ready) {
 		struct list *spare = shelf_take(&home->spare);
 		p = spare ? container_of(spare, struct principal, ring) : malloc(sizeof *p);
 		if (!p) {
-			job_end(home, job, JOB_FAILED, &m->rejected);
+			home_end(home, job, JOB_FAILED, &m->rejected);
 			return;
 		}
 		*p = (struct principal){ .hash = job->principal, .class = c };
@@ -1595,9 +1597,9 @@ home_admit (struct home *home,
 		list_append(&p->jobs, &job->queue);
 		job->who = p;
 		hist_add(&m->queued, 1);
-		job_progress(job, ++p->queued);
+		home_job_progress(job, ++p->queued);
 		if (!c)
-			preempt_excess(home);
+			home_preempt_excess(home);
 	}
 	loop_ready_bulk(home->loop, &home->start);
 	/* It may need a descriptor upstream. */
@@ -1617,7 +1619,7 @@ home_job (struct loop *loop,
 		/* A carrier, which goes back to its front at once. */
 		if (home)
 			home_withdraw(home, job);
-		home_put(job, 2);
+		home_job_put(job, 2);
 		return;
 	}
 	if (bits & JOB_SUBMIT) {
@@ -1629,7 +1631,7 @@ home_job (struct loop *loop,
 		if (m)
 			hist_add(&m->submitted, 1);
 		if (!home || bits & JOB_CANCEL)
-			job_end(home, job, JOB_CANCELLED, m ? &m->cancelled : nullptr);
+			home_end(home, job, JOB_CANCELLED, m ? &m->cancelled : nullptr);
 		else
 			home_admit(home, job);
 	} else if (bits & JOB_CANCEL && job->transfer) {
@@ -1638,16 +1640,16 @@ home_job (struct loop *loop,
 		list_del(&job->queue);
 		list_append(&home->dropped, &job->queue);
 		loop_ready_bulk(loop, &home->stop);
-		home_put(job, 1);
+		home_job_put(job, 1);
 		return;
 	} else if (bits & JOB_CANCEL && !list_is_empty(&job->due)) {
-		job_end(home, job, JOB_CANCELLED, &m->cancelled);
+		home_end(home, job, JOB_CANCELLED, &m->cancelled);
 	}
 	/* Let go of the job as its front has, the result's storage back to the
 	 * stash it came from. */
 	if (bits & JOB_CANCEL)
-		answer_free(job);
-	home_put(job, bits & JOB_CANCEL ? 2 : 1);
+		home_job_drop_answer(job);
+	home_job_put(job, bits & JOB_CANCEL ? 2 : 1);
 }
 
 struct home *
@@ -1673,20 +1675,20 @@ home_create (struct loop              *loop,
 		return nullptr;
 	}
 	*home = (struct home){
-		.start.fn = start_step,
-		.stop.fn = stop_step,
-		.drain.fn = drain_step,
-		.overdue.fn = overdue_step,
-		.silent.fn = silent_step,
-		.resume.fn = resume_step,
-		.feed.fn = feed_step,
-		.reap.fn = reap_step,
-		.shed.fn = shed_step,
-		.preempt.fn = preempt_step,
-		.props.fn = props_step,
-		.deadline.fn = deadline_event,
-		.quiet.fn = quiet_event,
-		.breaker.fn = breaker_event,
+		.start.fn = home_start_step,
+		.stop.fn = home_stop_step,
+		.drain.fn = home_drain_step,
+		.overdue.fn = home_overdue_step,
+		.silent.fn = home_silent_step,
+		.resume.fn = home_resume_step,
+		.feed.fn = home_feed_step,
+		.reap.fn = home_reap_step,
+		.shed.fn = home_shed_step,
+		.preempt.fn = home_preempt_step,
+		.props.fn = home_props_step,
+		.deadline.fn = home_deadline_event,
+		.quiet.fn = home_quiet_event,
+		.breaker.fn = home_breaker_event,
 		.pool = {
 			.scalar = MAX_SCALAR,
 			.flags = JSON_TOKENER_VALIDATE_UTF8
@@ -1739,7 +1741,7 @@ home_create (struct loop              *loop,
 	 * the context, which compacting it takes, unless told. */
 	home->context = ep->context > 0 ? (uint32_t)ep->context : 0;
 	bool asked = (!ep->slots || (cfg->flags & CFG_UPSTREAM_TOOLS && !home->context)) &&
-	             props_ask(home);
+	             home_props_ask(home);
 	if (ep->slots)
 		home_slots(home, ep->slots, "--slots");
 	else
@@ -1758,7 +1760,7 @@ home_destroy (struct home **p_home)
 		return;
 	*p_home = nullptr;
 	while (!list_is_empty(&home->timeline))
-		job_cancel(home, container_of(home->timeline.next, struct job, due));
+		home_cancel(home, container_of(home->timeline.next, struct job, due));
 	struct home_metrics const *m = home->metrics;
 	LOG(LOG_INFO, "jobs: %" PRIu64 " submitted, %" PRIu64 " completed, %" PRIu64
 	    " cancelled, %" PRIu64 " rejected; %" PRIu64 " cancelled upstream; %"
