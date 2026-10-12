@@ -7,7 +7,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
-#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
@@ -82,7 +81,7 @@ static struct {
 struct brainstem;
 
 /* A loop's thread, which the brainstem starts, watches, orders and stops. */
-struct loop_thread {
+struct brainstem_thread {
 	struct loop                 loop;
 	struct msg                  order;    /* to the loop, with orders */
 	struct brainstem           *bs;
@@ -101,9 +100,6 @@ struct loop_thread {
 };
 
 struct brainstem {
-	struct loop_thread         *threads;   /* home's, then the client loops' */
-	struct brainstem_cfg const *cfg;
-	struct blocker             *blockers;
 	uint64_t                    drain_by;  /* for the loops, set before DRAIN */
 	uint64_t                    deadline;  /* of the grace period */
 	uint64_t                    tick;      /* the watchdog's next look */
@@ -113,18 +109,22 @@ struct brainstem {
 	uint64_t                    relief;    /* when the loops are to relieve
 	                                          memory pressure again, if it
 	                                          lasts */
-	uint64_t                    stopping;  /* bool, widened over the padding:
-	                                          shutting down */
+	struct brainstem_thread    *threads;   /* home's, then the client loops' */
+	struct brainstem_cfg const *cfg;
+	struct blocker             *blockers;
+	char                       *cgroup;    /* the process's cgroup v2
+	                                          directory */
+	char                       *cg_path;   /* room for the path of a file of
+	                                          it or of an ancestor */
 	size_t                      n;         /* threads: home and the client
 	                                          loops */
-	size_t                      cg_len;    /* of cgroup */
+	size_t                      cg_len;    /* of cgroup; 0: none */
 	int                         sig_fd;
 	int                         wake_fd;   /* threads report through it */
 	uint32_t                    high;      /* HIGH_* bits */
 	uint32_t                    level;     /* memory pressure, as published */
 	uint8_t                     levels[PRESSURE_INPUTS];  /* each input's */
-	char                        cgroup[PATH_MAX];  /* the process's cgroup v2
-	                                                  directory */
+	bool                        stopping;  /* shutting down */
 };
 
 struct brainstem_metrics brainstem_metrics;
@@ -134,24 +134,25 @@ struct brainstem_metrics brainstem_metrics;
 static _Atomic uint32_t relieving;
 static _Atomic uint64_t relieved;
 
+/* Set @p p, of brainstem_metrics, which the brainstem alone writes. */
 static void
-set (_Atomic uint64_t *p,
-     uint64_t          v)
+brainstem_metric_set (_Atomic uint64_t *p,
+                      uint64_t          v)
 {
 	atomic_store_explicit(p, v, memory_order_relaxed);
 }
 
 static uint32_t
-state (struct loop_thread const *t)
+brainstem_thread_state (struct brainstem_thread const *t)
 {
 	return atomic_load_explicit(&t->state, memory_order_acquire);
 }
 
 /* On the loop's thread: say how it stands. */
 static void
-report (struct loop_thread *t,
-        uint32_t            state,
-        int                 error)
+brainstem_thread_report (struct brainstem_thread *t,
+                         uint32_t                 state,
+                         int                      error)
 {
 	t->error = error;
 	atomic_store_explicit(&t->state, state, memory_order_release);
@@ -160,10 +161,10 @@ report (struct loop_thread *t,
 
 /* On a loop: carry out the brainstem's orders, unless the loop is done. */
 static void
-loop_order (struct loop *loop,
-            struct msg  *msg)
+brainstem_thread_obey (struct loop *loop,
+                       struct msg  *msg)
 {
-	struct loop_thread *t = container_of(msg, struct loop_thread, order);
+	struct brainstem_thread *t = container_of(msg, struct brainstem_thread, order);
 	struct brainstem_app const *app = t->app;
 	void *ctx = t->ctx;
 	uint32_t orders = atomic_exchange(&t->orders, 0);
@@ -171,7 +172,7 @@ loop_order (struct loop *loop,
 		return;
 	if (orders & STATS) {
 		char label[sizeof t->name + 1];
-		snprintf(label, sizeof label, "%s ", t->name);
+		util_format(label, sizeof label, "%s ", t->name);
 		loop_log_stats(loop, label);
 	}
 	if (orders & STALL) {
@@ -195,8 +196,8 @@ loop_order (struct loop *loop,
 
 /* Post an order, unless the message is on its way already. */
 static void
-order (struct loop_thread *t,
-       uint32_t            bit)
+brainstem_thread_order (struct brainstem_thread *t,
+                        uint32_t                 bit)
 {
 	if (!atomic_fetch_or(&t->orders, bit))
 		loop_post(&t->loop, &t->order);
@@ -204,34 +205,34 @@ order (struct loop_thread *t,
 
 /* Give each running loop the order @p bit. */
 static void
-order_all (struct brainstem *bs,
-           uint32_t          bit)
+brainstem_order_all (struct brainstem *bs,
+                     uint32_t          bit)
 {
 	for (size_t i = 0; i < bs->n; ++i)
-		if (state(&bs->threads[i]) == RUNNING)
-			order(&bs->threads[i], bit);
+		if (brainstem_thread_state(&bs->threads[i]) == RUNNING)
+			brainstem_thread_order(&bs->threads[i], bit);
 }
 
 /* Have every running loop relieve memory pressure, unless the last relief
- * is still under way; false if it is, or no loop runs, or one starts, as it
+ * is still under way; EAGAIN if it is, or no loop runs, or one starts, as it
  * might run by the time the orders go out, ordered but not counted.  A loop
  * that exits before it ends its share holds up the reliefs after, which only
  * shutdown does. */
-static bool
-relieve (struct brainstem *bs)
+static int
+brainstem_relieve (struct brainstem *bs)
 {
 	uint32_t n = 0;
 	for (size_t i = 0; i < bs->n; ++i) {
-		uint32_t s = state(&bs->threads[i]);
+		uint32_t s = brainstem_thread_state(&bs->threads[i]);
 		if (s == STARTING)
-			return false;
+			return EAGAIN;
 		n += s == RUNNING;
 	}
 	if (!n || atomic_load(&relieving))
-		return false;
+		return EAGAIN;
 	atomic_store(&relieving, n + 1);
-	order_all(bs, RELIEVE);
-	return true;
+	brainstem_order_all(bs, RELIEVE);
+	return 0;
 }
 
 bool
@@ -249,33 +250,43 @@ brainstem_trimmed (void)
 	return bytes;
 }
 
-static void *
-loop_main (void *arg)
+/* On the loop's thread, its loop started: start the app, then run the loop
+ * until it exits; 0 or the error that ended it. */
+static int
+brainstem_thread_exec (struct brainstem_thread *t)
 {
-	struct loop_thread *t = arg;
-	struct brainstem_app const *app = t->app;
+	int e = t->app->start(t->ctx, &t->loop, t->bs->blockers);
+	if (e)
+		return e;
+	brainstem_thread_report(t, RUNNING, 0);
+	e = loop_exec(&t->loop);
+	if (e)
+		LOG(LOG_ERROR, "%s's event loop: %s", t->name, strerror(e));
+	return e;
+}
+
+static void *
+brainstem_thread_main (void *arg)
+{
+	struct brainstem_thread *t = arg;
 	log_attach();
 	(void)pthread_setname_np(pthread_self(), t->name);
 	int e = loop_init(&t->loop);
 	if (e) {
 		LOG(LOG_ERROR, "cannot start %s's event loop: %s", t->name, strerror(e));
 	} else {
-		if (!(e = app->start(t->ctx, &t->loop, t->bs->blockers))) {
-			report(t, RUNNING, 0);
-			if ((e = loop_exec(&t->loop)))
-				LOG(LOG_ERROR, "%s's event loop: %s", t->name, strerror(e));
-		}
-		app->stop(t->ctx, &t->loop);
+		e = brainstem_thread_exec(t);
+		t->app->stop(t->ctx, &t->loop);
 	}
-	report(t, EXITED, e);
+	brainstem_thread_report(t, EXITED, e);
 	return nullptr;
 }
 
 /* Sleep until @p until at most, or until a thread reports or a signal comes;
  * returns whether a signal came. */
 static bool
-nap (struct brainstem *bs,
-     uint64_t          until)
+brainstem_nap (struct brainstem *bs,
+               uint64_t          until)
 {
 	uint64_t now = loop_clock();
 	uint64_t ns = until > now ? until - now : 0;
@@ -301,8 +312,8 @@ nap (struct brainstem *bs,
  * any more, and one left unread would end every wait at once.  A loop thread
  * not joined is let go, to end with the process. */
 [[noreturn]] static void
-force (struct brainstem *bs,
-       char const       *why)
+brainstem_force (struct brainstem *bs,
+                 char const       *why)
 {
 	LOG(LOG_ERROR, "shutting down at once: %s", why);
 	log_stop();
@@ -310,73 +321,111 @@ force (struct brainstem *bs,
 	bs->sig_fd = -1;
 	uint64_t until = loop_clock() + FLUSH_MS * MS;
 	while (!log_done() && loop_clock() < until)
-		(void)nap(bs, until);
+		(void)brainstem_nap(bs, until);
 	for (size_t i = 0; i < bs->n; ++i)
-		if (bs->threads[i].created && state(&bs->threads[i]) != JOINED)
-			pthread_detach(bs->threads[i].thread);
+		if (bs->threads[i].created && brainstem_thread_state(&bs->threads[i]) != JOINED)
+			(void)pthread_detach(bs->threads[i].thread);
 	_exit(BRAINSTEM_FORCED);
 }
 
 /* The same, for why the loop of @p t fails. */
 [[noreturn]] static void
-force_for (struct brainstem   *bs,
-           struct loop_thread *t,
-           char const         *why)
+brainstem_thread_force (struct brainstem_thread *t,
+                        char const              *why)
 {
 	char text[64];
-	snprintf(text, sizeof text, "the event loop %s (%s)", why, t->name);
-	force(bs, text);
+	util_format(text, sizeof text, "the event loop %s (%s)", why, t->name);
+	brainstem_force(t->bs, text);
 }
 
 /* Have each running loop drain, once, by the end of four fifths of the grace
  * period, which leaves the rest to the threads that wind down after them. */
 static void
-drain (struct brainstem *bs)
+brainstem_drain (struct brainstem *bs)
 {
 	if (!bs->drain_by)
 		bs->drain_by = bs->deadline - bs->cfg->grace_ms * MS / 5;
 	for (size_t i = 0; i < bs->n; ++i) {
-		struct loop_thread *t = &bs->threads[i];
-		if (state(t) == RUNNING && !t->drained) {
+		struct brainstem_thread *t = &bs->threads[i];
+		if (brainstem_thread_state(t) == RUNNING && !t->drained) {
 			t->drained = true;
-			order(t, DRAIN);
+			brainstem_thread_order(t, DRAIN);
 		}
 	}
 }
 
 /* Shut down: the loops drain within the grace period. */
 static void
-stop (struct brainstem *bs)
+brainstem_stop (struct brainstem *bs)
 {
 	bs->stopping = true;
 	bs->deadline = loop_clock() + bs->cfg->grace_ms * MS;
-	drain(bs);
+	brainstem_drain(bs);
 }
 
 /* Have home reload the configuration, unless shutting down. */
 static void
-reload (struct brainstem *bs)
+brainstem_reload (struct brainstem *bs)
 {
-	if (!bs->stopping && state(&bs->threads[HOME]) == RUNNING)
-		order(&bs->threads[HOME], RELOAD);
+	if (!bs->stopping && brainstem_thread_state(&bs->threads[HOME]) == RUNNING)
+		brainstem_thread_order(&bs->threads[HOME], RELOAD);
+}
+
+/* Take signal @p signo: SIGHUP reloads, if home can; the others the
+ * signalfd takes shut down, and a second one ends the process at once. */
+static void
+brainstem_signal (struct brainstem *bs,
+                  uint32_t          signo)
+{
+	switch (signo) {
+	case SIGUSR1:
+		brainstem_order_all(bs, STATS);
+		return;
+	case SIGUSR2:
+		brainstem_order_all(bs, STALL);
+		return;
+	case SIGHUP:
+		if (!bs->cfg->home.reload)
+			break;
+		brainstem_reload(bs);
+		return;
+	}
+	if (bs->stopping)
+		brainstem_force(bs, "a second signal");
+	brainstem_stop(bs);
 }
 
 static void
-signals (struct brainstem *bs)
+brainstem_signals (struct brainstem *bs)
 {
 	struct signalfd_siginfo si;
-	while (read(bs->sig_fd, &si, sizeof si) == (ssize_t)sizeof si) {
-		if (si.ssi_signo == SIGUSR1)
-			order_all(bs, STATS);
-		else if (si.ssi_signo == SIGUSR2)
-			order_all(bs, STALL);
-		else if (si.ssi_signo == SIGHUP && bs->cfg->home.reload)
-			reload(bs);
-		else if (bs->stopping)
-			force(bs, "a second signal");
-		else
-			stop(bs);
+	while (read(bs->sig_fd, &si, sizeof si) == (ssize_t)sizeof si)
+		brainstem_signal(bs, si.ssi_signo);
+}
+
+/* Report @p t's turn under way once it has gone on longer than @p threshold,
+ * and while draining, end the process once it has gone on for STUCK_MS; of a
+ * turn, the time since bs->resumed counts only. */
+static void
+brainstem_thread_watch (struct brainstem_thread *t,
+                        uint64_t                 now,
+                        uint64_t                 threshold)
+{
+	if (brainstem_thread_state(t) != RUNNING)
+		return;
+	uint64_t start = atomic_load_explicit(&t->loop.turn, memory_order_relaxed);
+	if (!start || start >= now)
+		return;
+	struct brainstem *bs = t->bs;
+	uint64_t seen = now - (start > bs->resumed ? start : bs->resumed);
+	if (seen > threshold && start != t->flagged) {
+		t->flagged = start;
+		hist_add(&brainstem_metrics.reports, 1);
+		LOG(LOG_WARN, "watchdog: the event loop has been in one turn for %.1f ms "
+		    "(%s)", (double)(now - start) / 1e6, t->name);
 	}
+	if (bs->stopping && seen > STUCK_MS * MS)
+		brainstem_thread_force(t, "is stuck");
 }
 
 /*
@@ -384,92 +433,100 @@ signals (struct brainstem *bs)
  * threshold, once, and while draining end the process once one has gone on
  * for STUCK_MS.  Woken more than a threshold (two periods) past its time, the
  * brainstem was held up itself, likely with the rest of the process or the
- * machine, so it vouches for no turn's time before then.
+ * machine, so it vouches for no turn's time before then.  With no threshold,
+ * it looks every IDLE_MS, for stuck turns only.
  */
 static void
-watch (struct brainstem *bs,
-       uint64_t          now)
+brainstem_watch (struct brainstem *bs,
+                 uint64_t          now)
 {
-	uint64_t threshold = bs->cfg->watchdog_ms * MS;
-	uint64_t period = threshold ? threshold / 2 : IDLE_MS * MS;
+	uint64_t threshold = UINT64_MAX;
+	uint64_t period = IDLE_MS * MS;
+	if (bs->cfg->watchdog_ms) {
+		threshold = bs->cfg->watchdog_ms * MS;
+		period = threshold / 2;
+	}
 	if (now - bs->tick > 2 * period) {
 		bs->resumed = now;
 		hist_add(&brainstem_metrics.late, 1);
 	}
 	bs->tick = now + period;
-
-	for (size_t i = 0; i < bs->n; ++i) {
-		struct loop_thread *t = &bs->threads[i];
-		uint64_t start = state(t) == RUNNING
-		               ? atomic_load_explicit(&t->loop.turn, memory_order_relaxed) : 0;
-		if (!start || start >= now)
-			continue;
-		uint64_t seen = now - (start > bs->resumed ? start : bs->resumed);
-		if (threshold && seen > threshold && start != t->flagged) {
-			t->flagged = start;
-			hist_add(&brainstem_metrics.reports, 1);
-			LOG(LOG_WARN, "watchdog: the event loop has been in one turn for %.1f ms "
-			    "(%s)", (double)(now - start) / 1e6, t->name);
-		}
-		if (bs->stopping && seen > STUCK_MS * MS)
-			force_for(bs, t, "is stuck");
-	}
+	for (size_t i = 0; i < bs->n; ++i)
+		brainstem_thread_watch(&bs->threads[i], now, threshold);
 }
 
-/* The start of the file at @p path, as a string; false if unreadable. */
-static bool
-slurp (char const *path,
-       char       *buf,
-       size_t      size)
+/* The start of the file at @p path, as a string in the @p size bytes at
+ * @p buf, empty if unreadable; 0 or the error number. */
+static int
+brainstem_read (char const *path,
+                char       *buf,
+                size_t      size)
 {
+	*buf = '\0';
 	int fd = open(path, O_RDONLY | O_CLOEXEC);
-	ssize_t n = fd < 0 ? -1 : read(fd, buf, size - 1);
-	if (fd >= 0)
-		close(fd);
+	if (fd < 0)
+		return errno;
+	ssize_t n = read(fd, buf, size - 1);
+	int e = n < 0 ? errno : 0;
+	close(fd);
 	buf[n > 0 ? n : 0] = '\0';
-	return n > 0;
+	return e;
 }
 
 /* Whether a gauge went over its threshold (1) or back under it (-1), as bit
  * @p bit of bs->high keeps track of. */
 static int
-crossed (struct brainstem *bs,
-         uint32_t          bit,
-         bool              over,
-         bool              under)
+brainstem_crossed (struct brainstem *bs,
+                   uint32_t          bit,
+                   bool              over,
+                   bool              under)
 {
-	if (over && !(bs->high & bit)) {
-		bs->high |= bit;
-		return 1;
-	}
-	if (under && (bs->high & bit)) {
+	if (bs->high & bit) {
+		if (!under)
+			return 0;
 		bs->high &= ~bit;
 		return -1;
 	}
-	return 0;
+	if (!over)
+		return 0;
+	bs->high |= bit;
+	return 1;
 }
 
 /* The number the file at @p path starts with, or @p none if it starts with
  * none, as a cgroup's "max" does, or is unreadable. */
 static uint64_t
-number (char const *path,
-        char       *buf,
-        size_t      size,
-        uint64_t    none)
+brainstem_number (char const *path,
+                  char       *buf,
+                  size_t      size,
+                  uint64_t    none)
 {
 	unsigned long long n;
-	return slurp(path, buf, size) && sscanf(buf, "%llu", &n) == 1 ? n : none;
+	return brainstem_read(path, buf, size) || sscanf(buf, "%llu", &n) != 1 ? none : n;
 }
 
 /* The number after field @p name in @p text, or @p none if it has none. */
 static uint64_t
-field (char const *text,
-       char const *name,
-       uint64_t    none)
+brainstem_field (char const *text,
+                 char const *name,
+                 uint64_t    none)
 {
 	char const *at = strstr(text, name);
 	unsigned long long n;
 	return at && sscanf(at, "%*s %llu", &n) == 1 ? n : none;
+}
+
+/* The length of the path of the cgroup above the one whose directory's path
+ * is the first @p len bytes of @p dir; 0 above cgroup_root. */
+static size_t
+brainstem_cgroup_up (char const *dir,
+                     size_t      len)
+{
+	if (len == sizeof cgroup_root - 1)
+		return 0;
+	while (dir[--len] != '/')
+		;
+	return len;
 }
 
 /*
@@ -480,83 +537,48 @@ field (char const *text,
  * has a limit, and its fullness, in hundredths of a percent, is returned.
  */
 static uint64_t
-cgroup (struct brainstem *bs,
-        char             *buf,
-        size_t            size,
-        uint64_t         *usage,
-        uint64_t         *limit,
-        uint64_t         *least)
+brainstem_cgroup (struct brainstem *bs,
+                  char             *buf,
+                  size_t            size,
+                  uint64_t         *usage,
+                  uint64_t         *limit,
+                  uint64_t         *least)
 {
-	char path[sizeof bs->cgroup + sizeof "/memory.current"];
+	char *path = bs->cg_path;
 	uint64_t most = 0;
 	*usage = *limit = *least = 0;
-	for (size_t len = bs->cg_len; len >= sizeof cgroup_root - 1; ) {
+	for (size_t len = bs->cg_len; len; len = brainstem_cgroup_up(bs->cgroup, len)) {
 		memcpy(path, bs->cgroup, len);
 		strcpy(path + len, "/memory.high");
-		uint64_t high = number(path, buf, size, UINT64_MAX);
+		uint64_t high = brainstem_number(path, buf, size, UINT64_MAX);
 		strcpy(path + len, "/memory.max");
-		uint64_t max = number(path, buf, size, UINT64_MAX);
-		uint64_t cap = high < max ? high : max;
-		uint64_t use = 0;
-		if (cap && cap < UINT64_MAX) {
-			strcpy(path + len, "/memory.stat");
-			uint64_t cache = slurp(path, buf, size)
-			               ? field(buf, "\ninactive_file ", 0) : 0;
-			strcpy(path + len, "/memory.current");
-			use = number(path, buf, size, 0);
-			use -= cache < use ? cache : use;
-			*least = *least && *least < cap ? *least : cap;
-		}
-		if (use && use * 10'000 / cap >= most) {
-			most = use * 10'000 / cap;
-			*usage = use;
-			*limit = cap;
-		}
-		if (len == sizeof cgroup_root - 1)
-			break;
-		while (bs->cgroup[--len] != '/')
-			;
+		uint64_t cap = brainstem_number(path, buf, size, UINT64_MAX);
+		cap = high < cap ? high : cap;
+		if (!cap || cap == UINT64_MAX)
+			continue;
+		*least = *least && *least < cap ? *least : cap;
+		strcpy(path + len, "/memory.stat");
+		uint64_t cache = brainstem_read(path, buf, size)
+		               ? 0 : brainstem_field(buf, "\ninactive_file ", 0);
+		strcpy(path + len, "/memory.current");
+		uint64_t use = brainstem_number(path, buf, size, 0);
+		use -= cache < use ? cache : use;
+		uint64_t full = use * 10'000 / cap;
+		if (!use || full < most)
+			continue;
+		most = full;
+		*usage = use;
+		*limit = cap;
 	}
 	return most;
 }
 
-/*
- * Work out the memory pressure level from each input's, which moves with
- * hysteresis, and publish it; when it rises, and every BRAINSTEM_RELIEF_MS
- * while it lasts, have the loops relieve it, as soon as the last relief has
- * ended.
- */
-static void
-pressure (struct brainstem *bs,
-          uint64_t          now,
-          char             *buf,
-          size_t            size)
+/* Move each input's memory pressure level with its @p fullness, with
+ * hysteresis, and publish it; returns the highest. */
+static uint32_t
+brainstem_inputs (struct brainstem *bs,
+                  uint64_t const   *fullness)
 {
-	static char const *const names[] = { "none", "high", "critical" };
-	uint64_t total = 0;
-	uint64_t avail = 0;
-	if (slurp("/proc/meminfo", buf, size)) {
-		total = field(buf, "MemTotal:", 0) << 10;
-		avail = field(buf, "MemAvailable:", 0) << 10;
-	}
-	uint64_t usage;
-	uint64_t limit;
-	uint64_t least;
-	uint64_t cg = cgroup(bs, buf, size, &usage, &limit, &least);
-	uint64_t room = least && least < total ? least : total;
-	uint64_t high = bs->cfg->memory_high ? bs->cfg->memory_high
-	              : room / 16 > MEMORY_HIGH_MIN ? room / 16 : MEMORY_HIGH_MIN;
-	uint64_t rss = hist_get(&brainstem_metrics.rss);
-	uint64_t const fullness[PRESSURE_INPUTS] = {
-		[PRESSURE_RESIDENT] = rss * 10'000 / high,
-		/* MemAvailable reads 0 where it is absent, as before Linux 3.14. */
-		[PRESSURE_SYSTEM] = avail && avail < total ? (total - avail) * 10'000 / total
-		                                           : 0,
-		[PRESSURE_CGROUP] = cg,
-		[PRESSURE_PSI] = hist_get(&brainstem_metrics.psi[1]),
-		[PRESSURE_TEST] = bs->cfg->pressure ? number(bs->cfg->pressure, buf, size, 0)
-		                                    : 0,
-	};
 	uint32_t level = BUF_EASY;
 	for (size_t i = 0; i < PRESSURE_INPUTS; ++i) {
 		uint32_t l = bs->levels[i];
@@ -565,175 +587,285 @@ pressure (struct brainstem *bs,
 		while (l && fullness[i] < marks[i].down[l - 1])
 			--l;
 		bs->levels[i] = (uint8_t)l;
-		set(&brainstem_metrics.inputs[i], l);
+		brainstem_metric_set(&brainstem_metrics.inputs[i], l);
 		level = l > level ? l : level;
 	}
-	set(&brainstem_metrics.mem_high, high);
-	set(&brainstem_metrics.mem_total, total);
-	set(&brainstem_metrics.mem_avail, avail);
-	set(&brainstem_metrics.cg_usage, usage);
-	set(&brainstem_metrics.cg_limit, limit);
-	set(&brainstem_metrics.pressure, level);
+	return level;
+}
+
+/*
+ * Publish the memory pressure @p level, and log a change, RAM's fullness
+ * @p ram among its figures; when it rises, and every BRAINSTEM_RELIEF_MS while
+ * it lasts, have the loops relieve it, as soon as the last relief has ended.
+ */
+static void
+brainstem_level (struct brainstem *bs,
+                 uint64_t          now,
+                 uint32_t          level,
+                 uint64_t          ram)
+{
+	static char const *const names[] = { "none", "high", "critical" };
+	brainstem_metric_set(&brainstem_metrics.pressure, level);
 	atomic_store_explicit(&buf_pressure, level, memory_order_relaxed);
-	if (level != bs->level)
-		LOG(level > bs->level ? LOG_WARN : LOG_INFO, "memory pressure %s: resident "
-		    "%" PRIu64 " MiB, high from %" PRIu64 " MiB; RAM %" PRIu64 " %% in use%s",
-		    names[level], rss >> 20, high >> 20, fullness[PRESSURE_SYSTEM] / 100,
+	if (level != bs->level) {
+		enum log_level said = LOG_INFO;
+		if (level > bs->level) {
+			said = LOG_WARN;
+			bs->relief = now;
+		}
+		LOG(said, "memory pressure %s: resident %" PRIu64 " MiB, high from %" PRIu64
+		    " MiB; RAM %" PRIu64 " %% in use%s", names[level],
+		    hist_get(&brainstem_metrics.rss) >> 20,
+		    hist_get(&brainstem_metrics.mem_high) >> 20, ram / 100,
 		    bs->levels[PRESSURE_TEST] ? "; the test aid's level" : "");
-	if (level > bs->level)
-		bs->relief = now;
-	if (level && now >= bs->relief && relieve(bs))
+	}
+	if (level && now >= bs->relief && !brainstem_relieve(bs))
 		bs->relief = now + BRAINSTEM_RELIEF_MS * MS;
 	bs->level = level;
+}
+
+/* Work out the memory pressure level from each input's, and act on it. */
+static void
+brainstem_pressure (struct brainstem *bs,
+                    uint64_t          now,
+                    char             *buf,
+                    size_t            size)
+{
+	(void)brainstem_read("/proc/meminfo", buf, size);
+	uint64_t total = brainstem_field(buf, "MemTotal:", 0) << 10;
+	uint64_t avail = brainstem_field(buf, "MemAvailable:", 0) << 10;
+	uint64_t usage;
+	uint64_t limit;
+	uint64_t least;
+	uint64_t cg = brainstem_cgroup(bs, buf, size, &usage, &limit, &least);
+	uint64_t room = least && least < total ? least : total;
+	uint64_t high = bs->cfg->memory_high ? bs->cfg->memory_high
+	              : room / 16 > MEMORY_HIGH_MIN ? room / 16 : MEMORY_HIGH_MIN;
+	uint64_t const fullness[PRESSURE_INPUTS] = {
+		[PRESSURE_RESIDENT] = hist_get(&brainstem_metrics.rss) * 10'000 / high,
+		/* MemAvailable reads 0 where it is absent, as before Linux 3.14. */
+		[PRESSURE_SYSTEM] = avail && avail < total ? (total - avail) * 10'000 / total
+		                                           : 0,
+		[PRESSURE_CGROUP] = cg,
+		[PRESSURE_PSI] = hist_get(&brainstem_metrics.psi[1]),
+		[PRESSURE_TEST] = bs->cfg->pressure ? brainstem_number(bs->cfg->pressure, buf,
+		                                                       size, 0) : 0,
+	};
+	brainstem_metric_set(&brainstem_metrics.mem_high, high);
+	brainstem_metric_set(&brainstem_metrics.mem_total, total);
+	brainstem_metric_set(&brainstem_metrics.mem_avail, avail);
+	brainstem_metric_set(&brainstem_metrics.cg_usage, usage);
+	brainstem_metric_set(&brainstem_metrics.cg_limit, limit);
+	brainstem_level(bs, now, brainstem_inputs(bs, fullness),
+	                fullness[PRESSURE_SYSTEM]);
+}
+
+/* Count into @p *fds each entry of /proc/self/fd but ".", ".." and the
+ * directory's own descriptor, read through @p buf without malloc(), whose
+ * arena lock a trim on a loop may hold. */
+static int
+brainstem_fd_count (char     *buf,
+                    size_t    size,
+                    uint64_t *fds)
+{
+	int dir = open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (dir < 0)
+		return errno;
+	uint64_t n = 0;
+	for (ssize_t got; (got = getdents64(dir, buf, size)) > 0; )
+		for (ssize_t at = 0; at < got; ++n) {
+			typeof(((struct dirent64 *)nullptr)->d_reclen) len;
+			memcpy(&len, buf + at + offsetof(struct dirent64, d_reclen), sizeof len);
+			at += len ? len : got;
+		}
+	close(dir);
+	*fds = n > 3 ? n - 3 : 0;
+	return 0;
+}
+
+/* Descriptors open, against their limit. */
+static void
+brainstem_fds (struct brainstem *bs,
+               char             *buf,
+               size_t            size)
+{
+	struct rlimit nofile;
+	uint64_t fds;
+	if (getrlimit(RLIMIT_NOFILE, &nofile) || brainstem_fd_count(buf, size, &fds))
+		return;
+	uint64_t limit = nofile.rlim_cur;
+	brainstem_metric_set(&brainstem_metrics.fds, fds);
+	brainstem_metric_set(&brainstem_metrics.fd_limit, limit);
+	int c = brainstem_crossed(bs, HIGH_FDS, fds >= limit / 10 * 9,
+	                          fds < limit / 10 * 8);
+	if (c > 0)
+		LOG(LOG_WARN, "descriptors open: %" PRIu64 " of %" PRIu64, fds, limit);
+	if (c < 0)
+		LOG(LOG_INFO, "descriptors open: %" PRIu64 " of %" PRIu64 ", fewer again",
+		    fds, limit);
+}
+
+/* The pressure stall information, where the kernel has it. */
+static void
+brainstem_psi (struct brainstem *bs,
+               char             *buf,
+               size_t            size)
+{
+#define PSI "/proc/pressure/"
+	static char const *const files[] = { PSI "cpu", PSI "memory", PSI "io" };
+	for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+		char const *name = files[i] + sizeof PSI - 1;
+		double avg10;
+		unsigned long long total;
+		if (brainstem_read(files[i], buf, size) ||
+		    sscanf(buf, "some avg10=%lf avg60=%*f avg300=%*f total=%llu", &avg10,
+		           &total) != 2)
+			continue;
+		uint64_t permyriad = (uint64_t)(avg10 * 100 + 0.5);
+		brainstem_metric_set(&brainstem_metrics.psi_ok, 1);
+		brainstem_metric_set(&brainstem_metrics.psi[i], permyriad);
+		brainstem_metric_set(&brainstem_metrics.psi_total[i], total);
+		int c = brainstem_crossed(bs, HIGH_PSI << i, permyriad >= 2000,
+		                          permyriad < 1000);
+		if (c > 0)
+			LOG(LOG_WARN, "pressure on %s: some task stalled %.2f %% of the last "
+			    "10 s", name, avg10);
+		if (c < 0)
+			LOG(LOG_INFO, "pressure on %s: some task stalled %.2f %% of the last "
+			    "10 s, less again", name, avg10);
+	}
+#undef PSI
 }
 
 /* Once a second: resident memory, descriptors against their limit, the
  * pressure stall information where the kernel has it, and memory pressure. */
 static void
-sample (struct brainstem *bs,
-        uint64_t          now)
+brainstem_sample (struct brainstem *bs,
+                  uint64_t          now)
 {
 	bs->sample = now + SAMPLE_MS * MS;
 	char buf[16 << 10];
+	long page = sysconf(_SC_PAGESIZE);
 	unsigned long long resident;
-	if (slurp("/proc/self/statm", buf, sizeof buf) &&
+	if (page > 0 && !brainstem_read("/proc/self/statm", buf, sizeof buf) &&
 	    sscanf(buf, "%*s %llu", &resident) == 1)
-		set(&brainstem_metrics.rss, resident * (uint64_t)sysconf(_SC_PAGESIZE));
-
-	/* Each entry but ".", ".." and the directory's own descriptor, read
-	 * without malloc(), whose arena lock a trim on the loop may hold. */
-	int dir = open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	struct rlimit nofile;
-	if (dir >= 0 && !getrlimit(RLIMIT_NOFILE, &nofile)) {
-		uint64_t fds = 0;
-		for (ssize_t n; (n = getdents64(dir, buf, sizeof buf)) > 0; )
-			for (ssize_t at = 0; at < n; ++fds) {
-				typeof(((struct dirent64 *)nullptr)->d_reclen) len;
-				memcpy(&len, buf + at + offsetof(struct dirent64, d_reclen),
-				       sizeof len);
-				at += len ? len : n;
-			}
-		fds = fds > 3 ? fds - 3 : 0;
-		uint64_t limit = nofile.rlim_cur;
-		set(&brainstem_metrics.fds, fds);
-		set(&brainstem_metrics.fd_limit, limit);
-		int c = crossed(bs, HIGH_FDS, fds >= limit / 10 * 9, fds < limit / 10 * 8);
-		if (c)
-			LOG(c > 0 ? LOG_WARN : LOG_INFO, "descriptors open: %" PRIu64 " of %"
-			    PRIu64 "%s", fds, limit, c > 0 ? "" : ", fewer again");
-	}
-	if (dir >= 0)
-		close(dir);
-
-	static char const *const psi[] = { "cpu", "memory", "io" };
-	for (size_t i = 0; i < ARRAY_SIZE(psi); ++i) {
-		char path[32];
-		double avg10;
-		unsigned long long total;
-		snprintf(path, sizeof path, "/proc/pressure/%s", psi[i]);
-		if (!slurp(path, buf, sizeof buf) ||
-		    sscanf(buf, "some avg10=%lf avg60=%*f avg300=%*f total=%llu", &avg10,
-		           &total) != 2)
-			continue;
-		uint64_t permyriad = (uint64_t)(avg10 * 100 + 0.5);
-		set(&brainstem_metrics.psi_ok, 1);
-		set(&brainstem_metrics.psi[i], permyriad);
-		set(&brainstem_metrics.psi_total[i], total);
-		int c = crossed(bs, HIGH_PSI << i, permyriad >= 2000, permyriad < 1000);
-		if (c)
-			LOG(c > 0 ? LOG_WARN : LOG_INFO, "pressure on %s: some task stalled "
-			    "%.2f %% of the last 10 s%s", psi[i], avg10,
-			    c > 0 ? "" : ", less again");
-	}
-	pressure(bs, now, buf, sizeof buf);
+		brainstem_metric_set(&brainstem_metrics.rss, resident * (uint64_t)page);
+	brainstem_fds(bs, buf, sizeof buf);
+	brainstem_psi(bs, buf, sizeof buf);
+	brainstem_pressure(bs, now, buf, sizeof buf);
 }
 
 /* Wait at most until @p until, then mind signals, the watchdog, resources
  * and the grace period. */
 static void
-mind (struct brainstem *bs,
-      uint64_t          until)
+brainstem_mind (struct brainstem *bs,
+                uint64_t          until)
 {
 	uint64_t next = until;
 	uint64_t const due[] = { bs->tick, bs->sample, bs->deadline };
 	for (size_t i = 0; i < ARRAY_SIZE(due); ++i)
 		next = due[i] < next ? due[i] : next;
-	if (nap(bs, next))
-		signals(bs);
+	if (brainstem_nap(bs, next))
+		brainstem_signals(bs);
 	uint64_t now = loop_clock();
 	if (now >= bs->tick)
-		watch(bs, now);
+		brainstem_watch(bs, now);
 	if (now >= bs->sample) {
-		sample(bs, now);
+		brainstem_sample(bs, now);
 		/* Busy with that, the brainstem was not held up. */
 		bs->tick += loop_clock() - now;
 	}
 	if (now >= bs->deadline)
-		force(bs, "the grace period is over");
+		brainstem_force(bs, "the grace period is over");
 	/* A loop that exits on its own shuts the rest down. */
 	for (size_t i = 0; i < bs->n && !bs->stopping; ++i)
-		if (state(&bs->threads[i]) == EXITED)
-			stop(bs);
+		if (brainstem_thread_state(&bs->threads[i]) == EXITED)
+			brainstem_stop(bs);
 }
 
-/* Start @p t's thread, which inherits the mask that blocks every signal, on
- * a stack of @p attr's size, and wait for its loop to run; false if it does
- * not. */
-static bool
-start (struct brainstem     *bs,
-       struct loop_thread   *t,
-       pthread_attr_t const *attr)
+/* Create @p t's thread, which inherits the mask that blocks every signal, on
+ * a stack of STACK bytes. */
+static int
+brainstem_thread_create (struct brainstem_thread *t)
+{
+	pthread_attr_t attr;
+	int e = pthread_attr_init(&attr);
+	if (e)
+		return e;
+	(void)pthread_attr_setstacksize(&attr, STACK);
+	e = pthread_create(&t->thread, &attr, brainstem_thread_main, t);
+	pthread_attr_destroy(&attr);
+	return e;
+}
+
+/* Start @p t's thread, and wait while its loop starts; 0 or the error that
+ * kept the thread from starting. */
+static int
+brainstem_thread_start (struct brainstem_thread *t)
 {
 	atomic_store_explicit(&t->state, STARTING, memory_order_relaxed);
-	int e = pthread_create(&t->thread, attr, loop_main, t);
+	int e = brainstem_thread_create(t);
 	if (e) {
 		atomic_store_explicit(&t->state, JOINED, memory_order_relaxed);
-		t->error = e;
 		LOG(LOG_ERROR, "cannot start %s: %s", t->name, strerror(e));
-		return false;
+		return e;
 	}
 	t->created = true;
 	uint64_t until = loop_clock() + START_MS * MS;
-	while (state(t) == STARTING) {
+	while (brainstem_thread_state(t) == STARTING) {
 		if (loop_clock() >= until)
-			force_for(bs, t, "did not start in time");
-		mind(bs, until);
+			brainstem_thread_force(t, "did not start in time");
+		brainstem_mind(t->bs, until);
 	}
-	return state(t) == RUNNING;
+	return 0;
 }
 
 /*
  * Grow the descriptor table to FD_TABLE, or the limit, while the process has
  * one thread: once threads share it, the kernel waits for an RCU grace period
  * each time it grows, 7-11 ms here, in the call that needed a descriptor.
- * The table stays grown; @p fd is any open descriptor.
+ * The table stays grown after the copy of wake_fd that grew it is closed.
  */
 static void
-fd_table (int fd)
+brainstem_fd_table (struct brainstem const *bs)
 {
 	struct rlimit nofile;
-	if (fd < 0 || getrlimit(RLIMIT_NOFILE, &nofile))
+	if (getrlimit(RLIMIT_NOFILE, &nofile))
 		return;
 	int last = (int)(nofile.rlim_cur < FD_TABLE ? nofile.rlim_cur : FD_TABLE) - 1;
-	if (last > fd && fcntl(last, F_GETFD) < 0 && dup2(fd, last) == last)
+	if (last > bs->wake_fd && fcntl(last, F_GETFD) < 0 &&
+	    dup2(bs->wake_fd, last) == last)
 		close(last);
 }
 
 /* Find the process's cgroup v2 directory, for its limits: the path of
- * /proc/self/cgroup's "0::" line, under where cgroup v2 is mounted, into
- * @p dir; returns its length, 0 if it does not fit. */
-static size_t
-cgroup_dir (char   *dir,
-            size_t  size)
+ * /proc/self/cgroup's "0::" line, under where cgroup v2 is mounted, in
+ * memory of its own with @p room bytes after it, its NUL among them; its
+ * length goes to @p *len, 0 if out of memory, when nullptr is returned. */
+static char *
+brainstem_cgroup_dir (size_t  room,
+                      size_t *len)
 {
-	char buf[4096];
-	char const *line = slurp("/proc/self/cgroup", buf, sizeof buf) ? buf : "";
-	if (strncmp(line, "0::/", 4) && (line = strstr(line, "\n0::/")))
-		++line;
-	size_t n = line && *line ? strcspn(line + 3, "\n") : 0;
-	int len = snprintf(dir, size, "%s%.*s", cgroup_root, n > 1 ? (int)n : 0,
-	                   line ? line + 3 : "");
-	return len > 0 && (size_t)len < size ? (size_t)len : 0;
+	/* A line break first, as if a line came before the file's first. */
+	char buf[1 + 4096];
+	buf[0] = '\n';
+	(void)brainstem_read("/proc/self/cgroup", buf + 1, sizeof buf - 1);
+	char const *line = strstr(buf, "\n0::/");
+	char const *path = line ? line + 4 : "";
+	/* "/", the root's path, adds nothing. */
+	size_t n = strcspn(path, "\n");
+	n = n > 1 ? n : 0;
+	size_t at = sizeof cgroup_root - 1;
+	char *dir = malloc(at + n + room);
+	if (!dir) {
+		*len = 0;
+		return nullptr;
+	}
+	memcpy(dir, cgroup_root, at);
+	memcpy(dir + at, path, n);
+	dir[at + n] = '\0';
+	*len = at + n;
+	return dir;
 }
 
 size_t
@@ -745,44 +877,80 @@ brainstem_cpus (void)
 	         : online > 0 ? (size_t)online : 1;
 	/* A quota and its period, or "max": no quota.  A fraction of a CPU
 	 * still needs one. */
-	char path[PATH_MAX + sizeof "/cpu.max"];
+	size_t len;
+	char *path = brainstem_cgroup_dir(sizeof "/cpu.max", &len);
 	char buf[64];
-	for (size_t len = cgroup_dir(path, PATH_MAX); len >= sizeof cgroup_root - 1; ) {
+	for (; len; len = brainstem_cgroup_up(path, len)) {
 		unsigned long long quota;
 		unsigned long long period;
 		strcpy(path + len, "/cpu.max");
-		if (slurp(path, buf, sizeof buf) &&
-		    sscanf(buf, "%llu %llu", &quota, &period) == 2 && period) {
-			uint64_t cpus = (quota + period - 1) / period;
-			n = cpus && cpus < n ? (size_t)cpus : n;
-		}
-		if (len == sizeof cgroup_root - 1)
-			break;
-		while (path[--len] != '/')
-			;
+		if (brainstem_read(path, buf, sizeof buf) ||
+		    sscanf(buf, "%llu %llu", &quota, &period) != 2 || !period)
+			continue;
+		uint64_t cpus = (quota + period - 1) / period;
+		n = cpus && cpus < n ? (size_t)cpus : n;
 	}
+	free(path);
 	return n ? n : 1;
 }
 
 /* Join @p t's thread, if it has exited; one that exited on its own, as the
  * brainstem did not shut down, starts the shutdown. */
 static void
-join (struct brainstem   *bs,
-      struct loop_thread *t)
+brainstem_thread_join (struct brainstem_thread *t)
 {
-	if (state(t) != EXITED)
+	if (brainstem_thread_state(t) != EXITED)
 		return;
-	if (!bs->stopping)
-		stop(bs);
-	pthread_join(t->thread, nullptr);
+	if (!t->bs->stopping)
+		brainstem_stop(t->bs);
+	(void)pthread_join(t->thread, nullptr);
 	atomic_store_explicit(&t->state, JOINED, memory_order_relaxed);
 }
 
-int
-brainstem_run (struct brainstem_cfg const *cfg)
+/* Lay @p t, storage just allocated, as the thread of @p bs that runs @p app
+ * with the context @p ctx; its place in bs->threads numbers its loop.  Its
+ * atomics are initialized in place, once, as loop_place() does its loop's. */
+static void
+brainstem_thread_place (struct brainstem_thread    *t,
+                        struct brainstem           *bs,
+                        struct brainstem_app const *app,
+                        void                       *ctx)
 {
-	/* Threads inherit the mask: asynchronous signals go to the signalfd
-	 * alone.  Signals that faults raise stay unblocked. */
+	size_t id = (size_t)(t - bs->threads);
+	loop_place(&t->loop);
+	t->loop.id = id;
+	t->order.fn = brainstem_thread_obey;
+	t->bs = bs;
+	t->app = app;
+	t->ctx = ctx;
+	atomic_init(&t->orders, 0);
+	atomic_init(&t->state, JOINED);
+	util_format(t->name, sizeof t->name, id ? "loop%zu" : "home", id);
+}
+
+/* Allocate the threads, home's, then the client loops', each with the
+ * context of its own. */
+static int
+brainstem_place_threads (struct brainstem *bs)
+{
+	struct brainstem_cfg const *cfg = bs->cfg;
+	bs->threads = calloc(cfg->loops + 1, sizeof *bs->threads);
+	if (!bs->threads)
+		return ENOMEM;
+	bs->n = cfg->loops + 1;
+	brainstem_thread_place(&bs->threads[HOME], bs, &cfg->home, cfg->home.ctx);
+	char *ctx = cfg->client.ctx;
+	for (size_t i = HOME + 1; i < bs->n; ++i, ctx += cfg->client.stride)
+		brainstem_thread_place(&bs->threads[i], bs, &cfg->client, ctx);
+	return 0;
+}
+
+/* Block every signal but those faults raise, in the threads to come too, as
+ * they inherit the mask, and ignore SIGPIPE; returns the mask before. */
+static sigset_t
+brainstem_block (void)
+{
+	/* Asynchronous signals go to the signalfd alone. */
 	static int const faults[] = {
 		SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP
 	};
@@ -794,11 +962,18 @@ brainstem_run (struct brainstem_cfg const *cfg)
 	pthread_sigmask(SIG_BLOCK, &all, &old);
 	/* libcurl leaves SIGPIPE to us because CURLOPT_NOSIGNAL is set. */
 	signal(SIGPIPE, SIG_IGN);
+	return old;
+}
 
-	/* Shutdown signals the process started with ignored, as nohup and
-	 * shells leave them to spare a job, stay so; SIGHUP is taken all the
-	 * same where it reloads.  The signalfd would take them all: Linux keeps
-	 * a blocked signal, whatever its action. */
+/*
+ * The signals the signalfd takes for @p cfg.  Shutdown signals the process
+ * started with ignored, as nohup and shells leave them to spare a job, stay
+ * so; SIGHUP is taken all the same where it reloads.  The signalfd would take
+ * them all: Linux keeps a blocked signal, whatever its action.
+ */
+static sigset_t
+brainstem_mine (struct brainstem_cfg const *cfg)
+{
 	static int const stops[] = { SIGHUP, SIGINT, SIGTERM };
 	sigset_t mine;
 	sigemptyset(&mine);
@@ -811,122 +986,185 @@ brainstem_run (struct brainstem_cfg const *cfg)
 	sigaddset(&mine, SIGUSR1);
 	if (cfg->stall_ms)
 		sigaddset(&mine, SIGUSR2);
+	return mine;
+}
+
+/* Set up @p bs, as brainstem_run() declares it, for @p cfg: the threads, the
+ * signalfd that takes @p mine, the eventfd the threads report through, the
+ * cgroup's paths, the logger and the blockers. */
+static int
+brainstem_init (struct brainstem           *bs,
+                struct brainstem_cfg const *cfg,
+                sigset_t const             *mine)
+{
+	uint64_t now = loop_clock();
+	bs->cfg = cfg;
+	bs->tick = now;
+	bs->resumed = now;
+	bs->sample = now;
+	int e = brainstem_place_threads(bs);
+	if (e)
+		return e;
+	bs->sig_fd = signalfd(-1, mine, SFD_NONBLOCK | SFD_CLOEXEC);
+	if (bs->sig_fd < 0)
+		return errno;
+	bs->wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (bs->wake_fd < 0)
+		return errno;
+	brainstem_fd_table(bs);
+	size_t len;
+	bs->cgroup = brainstem_cgroup_dir(1, &len);
+	bs->cg_path = malloc(len + sizeof "/memory.current");
+	if (!bs->cgroup || !bs->cg_path)
+		return ENOMEM;
+	bs->cg_len = len;
+	/* Rings for the brainstem, the loops and the blockers. */
+	e = log_start(1 + bs->n + BLOCKER_THREADS, bs->wake_fd);
+	if (e)
+		return e;
+	log_attach();
+	bs->blockers = blocker_create(bs->wake_fd, &e);
+	if (e)
+		return e;
+	return blocker_start(bs->blockers);
+}
+
+/*
+ * Start home's thread, then the client loops', unless a signal comes
+ * meanwhile; until all run, the brainstem keeps every signal blocked, as they
+ * inherit its mask, and takes its own through the signalfd.  A loop that
+ * could not start shuts the others down; once every one runs, home opens its
+ * door to clients.  Returns 0 or the error that kept a thread from starting.
+ */
+static int
+brainstem_start (struct brainstem *bs)
+{
+	int e = 0;
+	size_t i = 0;
+	for (; i < bs->n && !bs->stopping; ++i) {
+		struct brainstem_thread *t = &bs->threads[i];
+		e = brainstem_thread_start(t);
+		if (e || brainstem_thread_state(t) != RUNNING)
+			break;
+	}
+	if (bs->stopping)
+		brainstem_drain(bs);
+	else if (i < bs->n)
+		brainstem_stop(bs);
+	else
+		brainstem_thread_order(&bs->threads[HOME], OPEN);
+	return e;
+}
+
+/* Join the client loops' threads that have exited; returns whether a client
+ * loop runs. */
+static bool
+brainstem_clients_run (struct brainstem *bs)
+{
+	bool running = false;
+	for (size_t i = HOME + 1; i < bs->n; ++i) {
+		struct brainstem_thread *t = &bs->threads[i];
+		brainstem_thread_join(t);
+		running |= brainstem_thread_state(t) == RUNNING;
+	}
+	return running;
+}
+
+/* The client loops exit first, in any order; then home, told it is alone,
+ * once its jobs end.  Returns the first error a loop ended with, 0 if none. */
+static int
+brainstem_wait (struct brainstem *bs)
+{
+	while (brainstem_clients_run(bs))
+		brainstem_mind(bs, UINT64_MAX);
+	int e = 0;
+	for (size_t i = 0; i < bs->n; ++i) {
+		struct brainstem_thread *t = &bs->threads[i];
+		if (brainstem_thread_state(t) == RUNNING)
+			brainstem_thread_order(t, ALONE);
+		while (brainstem_thread_state(t) == RUNNING)
+			brainstem_mind(bs, UINT64_MAX);
+		brainstem_thread_join(t);
+		e = e ? e : t->error;
+	}
+	return e;
+}
+
+/*
+ * Stop the blockers, and once they are done, within JOIN_MS, free them and
+ * the loops; returns whether they were done.  The blockers may still post to
+ * home, whose loop stays until they are done, as do the client loops, which
+ * home's may post to; a blocker stuck in a call is left to the process's
+ * exit.  Home's loop goes first: what its inbox still holds posts to the
+ * client loops, whose own handlers post to nobody.
+ */
+static bool
+brainstem_stop_blockers (struct brainstem *bs)
+{
+	blocker_stop(bs->blockers);
+	uint64_t until = loop_clock() + JOIN_MS * MS;
+	while (!blocker_done(bs->blockers) && loop_clock() < until)
+		brainstem_mind(bs, until);
+	if (!blocker_done(bs->blockers)) {
+		LOG(LOG_WARN, "a blocker is still busy");
+		return false;
+	}
+	blocker_destroy(&bs->blockers);
+	for (size_t i = 0; i < bs->n; ++i)
+		if (bs->threads[i].created)
+			loop_fini(&bs->threads[i].loop);
+	free(bs->threads);
+	bs->threads = nullptr;
+	bs->n = 0;
+	return true;
+}
+
+/* Free what @p bs holds, once the threads that use it are done, and let the
+ * logger write what it holds, within FLUSH_MS. */
+static void
+brainstem_fini (struct brainstem *bs)
+{
+	bool freed = brainstem_stop_blockers(bs);
+	log_stop();
+	uint64_t until = loop_clock() + FLUSH_MS * MS;
+	while (!log_done() && loop_clock() < until)
+		brainstem_mind(bs, until);
+	/* The threads write wake_fd as they exit, the last of them perhaps
+	 * still to come, so it stays open until the process exits. */
+	if (freed && log_done())
+		log_fini();
+	if (bs->sig_fd >= 0)
+		close(bs->sig_fd);
+	bs->sig_fd = -1;
+	free(bs->cg_path);
+	bs->cg_path = nullptr;
+	free(bs->cgroup);
+	bs->cgroup = nullptr;
+	bs->cg_len = 0;
+}
+
+int
+brainstem_run (struct brainstem_cfg const *cfg)
+{
+	sigset_t old = brainstem_block();
+	sigset_t mine = brainstem_mine(cfg);
 
 	/* Static, as a blocker stuck in a call may post to home until the
 	 * process exits; so its loops stay too then. */
-	uint64_t now = loop_clock();
 	static struct brainstem bs = {
 		.deadline = UINT64_MAX,
 		.sig_fd = -1,
 		.wake_fd = -1
 	};
-	bs.threads = calloc(cfg->loops + 1, sizeof *bs.threads);
-	bs.n = bs.threads ? cfg->loops + 1 : 0;
-	for (size_t i = 0; i < bs.n; ++i) {
-		struct loop_thread *t = &bs.threads[i];
-		loop_place(&t->loop);
-		t->loop.id = i;
-		t->order.fn = loop_order;
-		t->bs = &bs;
-		t->app = i ? &cfg->client : &cfg->home;
-		t->ctx = (char *)t->app->ctx + (i ? i - 1 : 0) * t->app->stride;
-		atomic_init(&t->orders, 0);
-		atomic_init(&t->state, JOINED);
-		snprintf(t->name, sizeof t->name, i ? "loop%zu" : "home", i);
-	}
-	bs.cfg = cfg;
-	bs.tick = now;
-	bs.resumed = now;
-	bs.sample = now;
-	bs.sig_fd = signalfd(-1, &mine, SFD_NONBLOCK | SFD_CLOEXEC);
-	bs.wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-	int e = bs.sig_fd < 0 || bs.wake_fd < 0 ? errno : !bs.threads ? ENOMEM : 0;
-	fd_table(bs.wake_fd);
-	bs.cg_len = cgroup_dir(bs.cgroup, sizeof bs.cgroup);
-	/* Rings for the brainstem, the loops and the blockers. */
-	if (!e && !(e = log_start(1 + bs.n + BLOCKER_THREADS, bs.wake_fd)))
-		log_attach();
-	if (!e)
-		bs.blockers = blocker_create(bs.wake_fd, &e);
-	if (!e)
-		e = blocker_start(bs.blockers);
+	int e = brainstem_init(&bs, cfg, &mine);
 	if (e)
 		LOG(LOG_ERROR, "cannot start: %s", strerror(e));
-	/* Home first, then the client loops, unless a signal came meanwhile;
-	 * until all run, the brainstem keeps every signal blocked, as they
-	 * inherit its mask, and takes its own through the signalfd. */
-	pthread_attr_t attr;
-	pthread_attr_init(&attr);
-	pthread_attr_setstacksize(&attr, STACK);
-	size_t started = 0;
-	while (!e && !bs.stopping && started < bs.n &&
-	       start(&bs, &bs.threads[started], &attr))
-		++started;
-	pthread_attr_destroy(&attr);
+	else
+		e = brainstem_start(&bs);
 	/* What the signalfd does not take, the brainstem takes as before. */
 	sigorset(&mine, &mine, &old);
 	pthread_sigmask(SIG_SETMASK, &mine, nullptr);
-	/* A loop that could not start shuts the others down; once every one
-	 * runs, home opens its door to clients. */
-	if (!e && started < bs.n && !bs.stopping)
-		stop(&bs);
-	if (bs.stopping)
-		drain(&bs);
-	else if (!e)
-		order(&bs.threads[HOME], OPEN);
-
-	/* The client loops exit first, in any order; then home, told it is
-	 * alone, once its jobs end. */
-	for (bool running = true; running; ) {
-		running = false;
-		for (size_t i = HOME + 1; i < bs.n; ++i) {
-			join(&bs, &bs.threads[i]);
-			running |= state(&bs.threads[i]) == RUNNING;
-		}
-		if (running)
-			mind(&bs, UINT64_MAX);
-	}
-	for (size_t i = 0; i < bs.n; ++i) {
-		struct loop_thread *t = &bs.threads[i];
-		if (state(t) == RUNNING)
-			order(t, ALONE);
-		while (state(t) == RUNNING)
-			mind(&bs, UINT64_MAX);
-		join(&bs, t);
-		e = e ? e : t->error;
-	}
-
-	/* The blockers may still post to home, whose loop stays until they are
-	 * done, as do the client loops, which home's may post to; a blocker
-	 * stuck in a call is left to the process's exit.  Home's loop goes
-	 * first: what its inbox still holds posts to the client loops, whose
-	 * own handlers post to nobody. */
-	blocker_stop(bs.blockers);
-	uint64_t until = loop_clock() + JOIN_MS * MS;
-	while (!blocker_done(bs.blockers) && loop_clock() < until)
-		mind(&bs, until);
-	bool done = blocker_done(bs.blockers);
-	if (done) {
-		blocker_destroy(&bs.blockers);
-		for (size_t i = 0; i < bs.n; ++i)
-			if (bs.threads[i].created)
-				loop_fini(&bs.threads[i].loop);
-		free(bs.threads);
-		bs.threads = nullptr;
-		bs.n = 0;
-	} else {
-		LOG(LOG_WARN, "a blocker is still busy");
-	}
-
-	log_stop();
-	until = loop_clock() + FLUSH_MS * MS;
-	while (!log_done() && loop_clock() < until)
-		mind(&bs, until);
-	/* The threads write wake_fd as they exit, the last of them perhaps
-	 * still to come, so it stays open until the process exits. */
-	if (done && log_done())
-		log_fini();
-	if (bs.sig_fd >= 0)
-		close(bs.sig_fd);
-	return e ? 1 : 0;
+	int lost = brainstem_wait(&bs);
+	brainstem_fini(&bs);
+	return e || lost ? 1 : 0;
 }
