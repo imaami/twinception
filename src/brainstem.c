@@ -113,9 +113,8 @@ struct brainstem {
 	struct brainstem_cfg const *cfg;
 	struct blocker             *blockers;
 	char                       *cgroup;    /* the process's cgroup v2
-	                                          directory */
-	char                       *cg_path;   /* room for the path of a file of
-	                                          it or of an ancestor */
+	                                          directory, with room after it
+	                                          for a file's name */
 	size_t                      n;         /* threads: home and the client
 	                                          loops */
 	size_t                      cg_len;    /* of cgroup; 0: none */
@@ -371,8 +370,10 @@ brainstem_reload (struct brainstem *bs)
 		brainstem_thread_order(&bs->threads[HOME], RELOAD);
 }
 
-/* Take signal @p signo: SIGHUP reloads, if home can; the others the
- * signalfd takes shut down, and a second one ends the process at once. */
+/* Take signal @p signo: SIGUSR1 logs the loops' statistics, SIGUSR2 holds
+ * them in a turn (a test aid), and SIGHUP has home reload, if it has a
+ * reload; any other, SIGHUP without one included, shuts down, and a second
+ * shutdown signal ends the process at once. */
 static void
 brainstem_signal (struct brainstem *bs,
                   uint32_t          signo)
@@ -544,23 +545,28 @@ brainstem_cgroup (struct brainstem *bs,
                   uint64_t         *limit,
                   uint64_t         *least)
 {
-	char *path = bs->cg_path;
+	static char const high_file[] = "/memory.high";
+	static char const max_file[] = "/memory.max";
+	static char const stat_file[] = "/memory.stat";
+	static char const current_file[] = "/memory.current";
+	/* The files' names go after each directory's, which bs->cgroup has room
+	 * for, and which the walk up does not look at. */
+	char *path = bs->cgroup;
 	uint64_t most = 0;
 	*usage = *limit = *least = 0;
-	for (size_t len = bs->cg_len; len; len = brainstem_cgroup_up(bs->cgroup, len)) {
-		memcpy(path, bs->cgroup, len);
-		strcpy(path + len, "/memory.high");
+	for (size_t len = bs->cg_len; len; len = brainstem_cgroup_up(path, len)) {
+		memcpy(path + len, high_file, sizeof high_file);
 		uint64_t high = brainstem_number(path, buf, size, UINT64_MAX);
-		strcpy(path + len, "/memory.max");
+		memcpy(path + len, max_file, sizeof max_file);
 		uint64_t cap = brainstem_number(path, buf, size, UINT64_MAX);
 		cap = high < cap ? high : cap;
 		if (!cap || cap == UINT64_MAX)
 			continue;
 		*least = *least && *least < cap ? *least : cap;
-		strcpy(path + len, "/memory.stat");
+		memcpy(path + len, stat_file, sizeof stat_file);
 		uint64_t cache = brainstem_read(path, buf, size)
 		               ? 0 : brainstem_field(buf, "\ninactive_file ", 0);
-		strcpy(path + len, "/memory.current");
+		memcpy(path + len, current_file, sizeof current_file);
 		uint64_t use = brainstem_number(path, buf, size, 0);
 		use -= cache < use ? cache : use;
 		uint64_t full = use * 10'000 / cap;
@@ -594,14 +600,17 @@ brainstem_inputs (struct brainstem *bs,
 }
 
 /*
- * Publish the memory pressure @p level, and log a change, RAM's fullness
- * @p ram among its figures; when it rises, and every BRAINSTEM_RELIEF_MS while
- * it lasts, have the loops relieve it, as soon as the last relief has ended.
+ * Publish the memory pressure @p level, and log a change, with the resident
+ * bytes @p rss, the threshold @p high and RAM's fullness @p ram; when it
+ * rises, and every BRAINSTEM_RELIEF_MS while it lasts, have the loops relieve
+ * it, as soon as the last relief has ended.
  */
 static void
 brainstem_level (struct brainstem *bs,
                  uint64_t          now,
                  uint32_t          level,
+                 uint64_t          rss,
+                 uint64_t          high,
                  uint64_t          ram)
 {
 	static char const *const names[] = { "none", "high", "critical" };
@@ -615,8 +624,7 @@ brainstem_level (struct brainstem *bs,
 		}
 		LOG(said, "memory pressure %s: resident %" PRIu64 " MiB, high from %" PRIu64
 		    " MiB; RAM %" PRIu64 " %% in use%s", names[level],
-		    hist_get(&brainstem_metrics.rss) >> 20,
-		    hist_get(&brainstem_metrics.mem_high) >> 20, ram / 100,
+		    rss >> 20, high >> 20, ram / 100,
 		    bs->levels[PRESSURE_TEST] ? "; the test aid's level" : "");
 	}
 	if (level && now >= bs->relief && !brainstem_relieve(bs))
@@ -641,8 +649,9 @@ brainstem_pressure (struct brainstem *bs,
 	uint64_t room = least && least < total ? least : total;
 	uint64_t high = bs->cfg->memory_high ? bs->cfg->memory_high
 	              : room / 16 > MEMORY_HIGH_MIN ? room / 16 : MEMORY_HIGH_MIN;
+	uint64_t rss = hist_get(&brainstem_metrics.rss);
 	uint64_t const fullness[PRESSURE_INPUTS] = {
-		[PRESSURE_RESIDENT] = hist_get(&brainstem_metrics.rss) * 10'000 / high,
+		[PRESSURE_RESIDENT] = rss * 10'000 / high,
 		/* MemAvailable reads 0 where it is absent, as before Linux 3.14. */
 		[PRESSURE_SYSTEM] = avail && avail < total ? (total - avail) * 10'000 / total
 		                                           : 0,
@@ -656,7 +665,7 @@ brainstem_pressure (struct brainstem *bs,
 	brainstem_metric_set(&brainstem_metrics.mem_avail, avail);
 	brainstem_metric_set(&brainstem_metrics.cg_usage, usage);
 	brainstem_metric_set(&brainstem_metrics.cg_limit, limit);
-	brainstem_level(bs, now, brainstem_inputs(bs, fullness),
+	brainstem_level(bs, now, brainstem_inputs(bs, fullness), rss, high,
 	                fullness[PRESSURE_SYSTEM]);
 }
 
@@ -794,7 +803,7 @@ brainstem_thread_create (struct brainstem_thread *t)
 		return e;
 	(void)pthread_attr_setstacksize(&attr, STACK);
 	e = pthread_create(&t->thread, &attr, brainstem_thread_main, t);
-	pthread_attr_destroy(&attr);
+	(void)pthread_attr_destroy(&attr);
 	return e;
 }
 
@@ -877,13 +886,14 @@ brainstem_cpus (void)
 	         : online > 0 ? (size_t)online : 1;
 	/* A quota and its period, or "max": no quota.  A fraction of a CPU
 	 * still needs one. */
+	static char const max_file[] = "/cpu.max";
 	size_t len;
-	char *path = brainstem_cgroup_dir(sizeof "/cpu.max", &len);
+	char *path = brainstem_cgroup_dir(sizeof max_file, &len);
 	char buf[64];
 	for (; len; len = brainstem_cgroup_up(path, len)) {
 		unsigned long long quota;
 		unsigned long long period;
-		strcpy(path + len, "/cpu.max");
+		memcpy(path + len, max_file, sizeof max_file);
 		if (brainstem_read(path, buf, sizeof buf) ||
 		    sscanf(buf, "%llu %llu", &quota, &period) != 2 || !period)
 			continue;
@@ -1013,9 +1023,8 @@ brainstem_init (struct brainstem           *bs,
 		return errno;
 	brainstem_fd_table(bs);
 	size_t len;
-	bs->cgroup = brainstem_cgroup_dir(1, &len);
-	bs->cg_path = malloc(len + sizeof "/memory.current");
-	if (!bs->cgroup || !bs->cg_path)
+	bs->cgroup = brainstem_cgroup_dir(sizeof "/memory.current", &len);
+	if (!bs->cgroup)
 		return ENOMEM;
 	bs->cg_len = len;
 	/* Rings for the brainstem, the loops and the blockers. */
@@ -1029,6 +1038,22 @@ brainstem_init (struct brainstem           *bs,
 	return blocker_start(bs->blockers);
 }
 
+/* Start home's thread, then the client loops', until a signal comes or one
+ * does not run; returns whether all run, the error that kept one from
+ * starting in @p *e. */
+static bool
+brainstem_start_all (struct brainstem *bs,
+                     int              *e)
+{
+	for (size_t i = 0; i < bs->n; ++i) {
+		struct brainstem_thread *t = &bs->threads[i];
+		if (bs->stopping || (*e = brainstem_thread_start(t)) ||
+		    brainstem_thread_state(t) != RUNNING)
+			return false;
+	}
+	return true;
+}
+
 /*
  * Start home's thread, then the client loops', unless a signal comes
  * meanwhile; until all run, the brainstem keeps every signal blocked, as they
@@ -1040,20 +1065,27 @@ static int
 brainstem_start (struct brainstem *bs)
 {
 	int e = 0;
-	size_t i = 0;
-	for (; i < bs->n && !bs->stopping; ++i) {
-		struct brainstem_thread *t = &bs->threads[i];
-		e = brainstem_thread_start(t);
-		if (e || brainstem_thread_state(t) != RUNNING)
-			break;
-	}
+	bool all = brainstem_start_all(bs, &e);
 	if (bs->stopping)
 		brainstem_drain(bs);
-	else if (i < bs->n)
+	else if (!all)
 		brainstem_stop(bs);
 	else
 		brainstem_thread_order(&bs->threads[HOME], OPEN);
 	return e;
+}
+
+/* Tell @p t's loop, if it runs, that it is alone, and wait for it to
+ * exit. */
+static void
+brainstem_alone (struct brainstem        *bs,
+                 struct brainstem_thread *t)
+{
+	if (brainstem_thread_state(t) != RUNNING)
+		return;
+	brainstem_thread_order(t, ALONE);
+	do brainstem_mind(bs, UINT64_MAX);
+	while (brainstem_thread_state(t) == RUNNING);
 }
 
 /* Join the client loops' threads that have exited; returns whether a client
@@ -1080,10 +1112,7 @@ brainstem_wait (struct brainstem *bs)
 	int e = 0;
 	for (size_t i = 0; i < bs->n; ++i) {
 		struct brainstem_thread *t = &bs->threads[i];
-		if (brainstem_thread_state(t) == RUNNING)
-			brainstem_thread_order(t, ALONE);
-		while (brainstem_thread_state(t) == RUNNING)
-			brainstem_mind(bs, UINT64_MAX);
+		brainstem_alone(bs, t);
 		brainstem_thread_join(t);
 		e = e ? e : t->error;
 	}
@@ -1136,8 +1165,6 @@ brainstem_fini (struct brainstem *bs)
 	if (bs->sig_fd >= 0)
 		close(bs->sig_fd);
 	bs->sig_fd = -1;
-	free(bs->cg_path);
-	bs->cg_path = nullptr;
 	free(bs->cgroup);
 	bs->cgroup = nullptr;
 	bs->cg_len = 0;
