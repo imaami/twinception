@@ -5454,6 +5454,19 @@ def check_turns(binary, up):
                     ((202, 1) if cancel else (200, 2)), (status, body)
                 assert cancel or body["result"]["content"][0]["text"] == "A", body
 
+            # A turn's calls run at once, each in a slot of its own, their
+            # results and the trace's lines in the calls' order.
+            script[:] = [lambda r: (200, turn_stream([(f"p{i}", "git", slow)
+                                                      for i in range(3)]))]
+            count = len(up.requests)
+            start = time.monotonic()
+            result = ai.ask("Q")
+            took = time.monotonic() - start
+            assert took < 2.5, took
+            results = turns(up.requests[count + 1])[1:]
+            assert [m["tool_call_id"] for m in results] == ["p0", "p1", "p2"], results
+            assert result["content"][1]["text"].count("- git ") == 3, result
+
         # llama-server's /props tells the context, with --slots too.
         up.props = {"total_slots": 2, "default_generation_settings": {"n_ctx": 6000}}
         with Askai(binary, *args, "--slots", "1") as ai:

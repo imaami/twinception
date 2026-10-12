@@ -452,9 +452,10 @@ with `--jinja`): those of `man` and `git` that the caller's role may call
 those `compact`.
 Offered none, the call asks once, as without the option.  Else it runs a
 loop of turns: each turn is an upstream call, whose answer may call tools;
-`askai` runs them, one after another, writes the turn and their results into
-the conversation, and asks again, until an answer calls none, which is the
-call's answer.  A turn goes back as it came where the API asks for that: a
+`askai` runs them at once (a `notes` or `compact` call keeps to itself, after
+the calls before it and before those after it), writes the turn and their
+results, in the calls' order, into the conversation, and asks again, until
+an answer calls none, which is the call's answer.  A turn goes back as it came where the API asks for that: a
 call's `extra_content` in chat completions, in which Gemini's give their
 thought signature; the output items of the Responses API, its reasoning
 among them; the thinking blocks of Anthropic's Messages, with their

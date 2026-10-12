@@ -193,23 +193,26 @@ enum mcp_lend : uint8_t {
 
 /* What each kind of tool is: its name, but the ask tool's, which the
  * configuration names; how the turns are lent it; its row in the turns'
- * metrics; and whether its output is paged by "offset".  After the kinds,
- * a tool of none of them. */
+ * metrics; whether its output is paged by "offset"; and whether a turn's
+ * call of it keeps to itself, running after the calls before it are
+ * written, and those after it after it is.  After the kinds, a tool of
+ * none of them. */
 static struct {
 	char const *ptr;
 	uint32_t    len;
 	uint8_t     lend;    /* enum mcp_lend */
 	uint8_t     metric;  /* enum metrics_lent */
-	uint16_t    paged;   /* bool, widened over the padding */
+	bool        paged;
+	bool        serial;
 } const kind_info[KINDS + 1] = {
 #define N(s) s, sizeof s - 1
 	[KIND_ASK]     = { .metric = LENT_NONE },
-	[KIND_MAN]     = { N("man"), LEND_GRANTED, LENT_MAN, true },
-	[KIND_TASK]    = { N("test_task"), LEND_NEVER, LENT_NONE, false },
-	[KIND_GIT]     = { N("git"), LEND_GRANTED, LENT_GIT, true },
-	[KIND_NOTES]   = { N("notes"), LEND_ALWAYS, LENT_NOTES, false },
-	[KIND_COMPACT] = { N("compact"), LEND_WITH, LENT_COMPACT, false },
-	[KINDS]        = { N("an unknown tool"), LEND_NEVER, LENT_NONE, false },
+	[KIND_MAN]     = { N("man"), LEND_GRANTED, LENT_MAN, true, false },
+	[KIND_TASK]    = { N("test_task"), LEND_NEVER, LENT_NONE, false, false },
+	[KIND_GIT]     = { N("git"), LEND_GRANTED, LENT_GIT, true, false },
+	[KIND_NOTES]   = { N("notes"), LEND_ALWAYS, LENT_NOTES, false, true },
+	[KIND_COMPACT] = { N("compact"), LEND_WITH, LENT_COMPACT, false, true },
+	[KINDS]        = { N("an unknown tool"), LEND_NEVER, LENT_NONE, false, false },
 #undef N
 };
 
@@ -264,8 +267,10 @@ enum mcp_phase {
 	PHASE_DISPATCH,  /* handing the message on, in a step of its own */
 	PHASE_BUILD,     /* writing the upstream request, a slice a step */
 	PHASE_CALL,      /* waiting for the upstream */
-	PHASE_TOOL,      /* waiting for its tools' calls, which work in their
-	                    slots' steps */
+	PHASE_TOOL,      /* waiting for its own call, which works in its slot's
+	                    steps */
+	PHASE_CALLS,     /* running a turn's tool calls, each in a slot of its
+	                    own, and writing their results in order */
 	PHASE_ANSWER,    /* parsing its answer, a slice a step */
 	PHASE_TEXT,      /* taking the tool's output from that, in a step of its own */
 	PHASE_ARGS,      /* parsing a turn's tool calls' arguments, a slice a step */
@@ -309,7 +314,9 @@ struct mcp_slot {
 	                                  none of those */
 	uint8_t             fetch;     /* enum mcp_fetch: what its git is for */
 	bool                tooling;   /* it is a turn's call */
-	char                note[387]; /* what askai adds to the output, sized to
+	bool                done;      /* the turn's call has its output */
+	bool                failed;    /* and it failed */
+	char                note[385]; /* what askai adds to the output, sized to
 	                                  end the slot unpadded */
 };
 
@@ -333,6 +340,8 @@ struct mcp_req {
 	                                    client; likewise */
 	struct buf           calls;      /* a turn's tool calls, as its job had
 	                                    them, while they run */
+	struct mcp_slot     *slots;      /* those calls', JOB_CALLS of them, from
+	                                    its first turn with calls to its end */
 	struct stream       *s;          /* nullptr once it is gone */
 	struct mcp          *mcp;
 	struct job          *job;        /* the tool call's, once submitted, until
@@ -356,7 +365,9 @@ struct mcp_req {
 	size_t               prompt_at;  /* where the prompt's text ends in the
 	                                    upload: what askai adds goes there */
 	size_t               sent;       /* bytes of the upload as a turn went */
-	size_t               at;         /* where the call under way is in calls */
+	size_t               at;         /* where the call whose result is written
+	                                    next is in calls */
+	size_t               launch_at;  /* and the call launched next */
 	size_t               replayed;   /* bytes of the job's replay that the
 	                                    turn has written */
 	uint64_t             head;       /* loop_clock() at the request's head */
@@ -379,6 +390,7 @@ struct mcp_req {
 	uint32_t             context;    /* tokens the upstream's context holds;
 	                                    0: unknown */
 	uint32_t             traced;     /* tool calls the turns made */
+	uint32_t             launched;   /* the turn's calls launched */
 	uint16_t             splices;
 	uint16_t             next;       /* the splice to write next, or piece */
 	uint16_t             part;       /* the part of the turn being written,
@@ -734,6 +746,47 @@ mcp_req_forget (struct mcp_req *req)
 	req->call = (struct handle){};
 }
 
+static void mcp_slot_step (struct loop *loop, struct loop_step *step);
+
+/* Make @p req's slots for a turn's calls, unless it has them. */
+static int
+mcp_req_slots_make (struct mcp_req *req)
+{
+	if (req->slots)
+		return 0;
+	req->slots = malloc(JOB_CALLS * sizeof *req->slots);
+	if (!req->slots)
+		return ENOMEM;
+	for (size_t k = 0; k < JOB_CALLS; ++k)
+		req->slots[k] = (struct mcp_slot){
+			.step.fn = mcp_slot_step,
+			.answer = DSTR_INIT,
+			.req = req,
+			.tool = KINDS,
+			.tooling = true
+		};
+	return 0;
+}
+
+static void mcp_slot_drop (struct mcp_slot *slot);
+
+/* Let go of what the turn's calls launched wait for, and of their output,
+ * which the slots' storage keeps for reuse. */
+static void
+mcp_req_slots_drop (struct mcp_req *req)
+{
+	for (uint32_t k = 0; req->slots && k < req->launched; ++k) {
+		struct mcp_slot *slot = &req->slots[k];
+		mcp_slot_drop(slot);
+		dstr_clear(&slot->answer);
+		slot->skip = slot->window = 0;
+		slot->note_len = 0;
+		slot->tool = KINDS;
+		slot->done = slot->failed = false;
+	}
+	req->launched = 0;
+}
+
 /* Let go of what @p slot's call waits for, its work, and its output's
  * page. */
 static void
@@ -763,6 +816,7 @@ mcp_req_drop (struct mcp_req *req)
 	struct mcp *mcp = req->mcp;
 	struct job *job = req->job;
 	mcp_slot_drop(&req->self);
+	mcp_req_slots_drop(req);
 	if (!job) {
 		if (req->call.bits)
 			mcp_req_forget(req);
@@ -819,13 +873,33 @@ mcp_req_park (struct mcp_req *req)
 	req->phase = PHASE_TOOL;
 }
 
+/* @p slot's call waits no more: its request, if the slot is its own; a
+ * turn's call leaves it among the calls a drain ends. */
+static void
+mcp_slot_unwait (struct mcp_slot *slot)
+{
+	if (slot == &slot->req->self)
+		mcp_req_unwait(slot->req);
+}
+
 /* What @p slot's call waited for is in. */
 static void
 mcp_slot_wake (struct mcp_slot *slot)
 {
 	loop_forget(slot->req->mcp->loop, slot->call);
 	slot->call = (struct handle){};
-	mcp_req_unwait(slot->req);
+	mcp_slot_unwait(slot);
+}
+
+/* @p slot's call waits: its request parks, if the slot is its own; a
+ * turn's call keeps it among the calls a drain ends. */
+static void
+mcp_slot_park (struct mcp_slot *slot)
+{
+	if (slot == &slot->req->self)
+		mcp_req_park(slot->req);
+	else
+		mcp_req_wait(slot->req);
 }
 
 /* Let go of the arguments of the turn's calls @p k to @p end. */
@@ -868,6 +942,10 @@ mcp_req_finish (struct mcp_req *req)
 	buf_fini(&req->calls);
 	dstr_clear(&req->self.answer);
 	dstr_clear(&req->trace);
+	for (size_t k = 0; req->slots && k < JOB_CALLS; ++k)
+		dstr_cleanup(&req->slots[k].answer);
+	free(req->slots);
+	req->slots = nullptr;
 	if (!req->reaper.n) {
 		mcp_req_end(req);
 		return;
@@ -1936,7 +2014,7 @@ mcp_slot_man (struct mcp_slot    *slot,
 		mcp_slot_respond(slot, false);
 		return;
 	}
-	mcp_req_park(req);
+	mcp_slot_park(slot);
 }
 
 static void mcp_slot_notes_fetch (struct mcp_slot *slot, enum mcp_fetch fetch,
@@ -2166,7 +2244,7 @@ mcp_slot_spin (struct mcp_slot    *slot,
 	s->call = slot->call;
 	slot->start = loop_clock();
 	slot->task = &s->task;
-	mcp_req_park(req);
+	mcp_slot_park(slot);
 	task_submit(&s->task, loop);
 }
 
@@ -2249,7 +2327,7 @@ mcp_slot_git_ended (struct mcp_slot *slot)
 		failed = false;
 	}
 	child_destroy(&slot->child);
-	mcp_req_unwait(req);
+	mcp_slot_unwait(slot);
 	struct mcp_piece const p[] = {
 		!len ? FRAG("") : dstr_get(&slot->answer)[len - 1] == '\n' ? FRAG("\n")
 		                                                         : FRAG("\n\n"),
@@ -2334,14 +2412,16 @@ mcp_slot_git (struct mcp_slot    *slot,
 	}
 	if (req->sse_ok && !req->sse)
 		mcp_req_stream(req);
-	mcp_req_park(req);
+	mcp_slot_park(slot);
 }
 
-static void mcp_req_tool_start (struct mcp_req *req);
+static void mcp_req_calls_next (struct mcp_req *req);
 static bool mcp_req_slice (struct mcp_req *req, struct jb_pool *pool,
                            struct span json);
 static void mcp_slot_notes (struct mcp_slot *slot, struct json_object *args);
-static void mcp_req_compact (struct mcp_req *req, struct json_object *args);
+struct mcp_call;
+static void mcp_slot_compact (struct mcp_slot *slot, struct mcp_call const *c,
+                              struct json_object *args);
 static void mcp_req_turn_submit (struct mcp_req *req);
 static void mcp_req_add_start (struct mcp_req *req);
 static void mcp_on_notes (struct child *c);
@@ -2722,9 +2802,14 @@ mcp_req_turn_write (struct mcp_req *req)
 	/* The usage counts the turn: what is written after it counts on. */
 	req->sent = buf_peek(&req->upload).len;
 	mcp_req_drop(req);
+	e = mcp_req_slots_make(req);
+	if (e) {
+		mcp_req_fail(req, e);
+		return;
+	}
 	req->part = 0;
-	req->at = 0;
-	mcp_req_tool_start(req);
+	req->at = req->launch_at = 0;
+	mcp_req_calls_next(req);
 }
 
 /* Add a line for the tool call @p c, of @p tool, to the trace: its name and
@@ -2789,40 +2874,38 @@ mcp_req_tool_of (struct mcp_req const *req,
 	return KINDS;
 }
 
-/* Run the turn's tool call req->part, unless all have run, in the
- * request's own slot.  A call goes to the tool of its name that the turns
+static void mcp_req_result_begin (struct mcp_req *req, struct mcp_slot *slot);
+
+/* Launch the turn's next tool call, in its slot, unless it must wait: a
+ * call that keeps to itself until those before it are written, and those
+ * after it until it is.  A call goes to the tool of its name that the turns
  * may call, which writes its output into the slot's answer, or gives a
- * page, and calls mcp_slot_done(). */
+ * page, and calls mcp_slot_done().  The step comes again after it, as the
+ * call may end the request. */
 static void
-mcp_req_tool_start (struct mcp_req *req)
+mcp_req_call_launch (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
-	if (req->part == req->n_calls) {
-		/* All have run: submit the next turn, or, its context full,
-		 * compact it first. */
-		buf_fini(&req->calls);
-		if (req->context && req->used && mcp_req_tokens(req) >= req->context)
-			mcp_req_compact_full(req);
-		else
-			mcp_req_turn_submit(req);
+	uint32_t k = req->launched;
+	if (k == req->n_calls || (k > req->part && kind_info[req->slots[k - 1].tool].serial))
 		return;
-	}
+	struct mcp_call c = mcp_call_at(buf_peek(&req->calls).ptr + req->launch_at);
+	enum mcp_kind tool = mcp_req_tool_of(req, c.name);
+	if (kind_info[tool].serial && k > req->part)
+		return;
 	if (mcp->draining) {
 		mcp_req_fail(req, ESHUTDOWN);
 		return;
 	}
-	struct mcp_call c = mcp_call_at(buf_peek(&req->calls).ptr + req->at);
-	enum mcp_kind tool = mcp_req_tool_of(req, c.name);
 	/* Its arguments go once its result is written, or the request ends. */
-	struct json_object *args = req->args[req->part];
-	struct mcp_slot *slot = &req->self;
+	struct json_object *args = req->args[k];
+	struct mcp_slot *slot = &req->slots[k];
 	slot->tool = (uint8_t)tool;
+	req->launch_at += c.size;
+	req->launched = k + 1;
 	hist_add(&mcp->counts->calls.lent[kind_info[tool].metric], 1);
-	slot->skip = 0;
-	slot->tooling = true;
-	dstr_clear(&slot->answer);
-	(void)mcp_req_trace(req, &c, args, tool);
 	mcp_req_notify_tool(req, kind_info[tool].ptr);
+	loop_ready_bulk(mcp->loop, &req->step);
 	if (!args) {
 		mcp_slot_result(slot, req->cut
 		                ? TEXT("Your answer reached the output token limit, which "
@@ -2842,7 +2925,7 @@ mcp_req_tool_start (struct mcp_req *req)
 		mcp_slot_notes(slot, args);
 		return;
 	case KIND_COMPACT:
-		mcp_req_compact(req, args);
+		mcp_slot_compact(slot, &c, args);
 		return;
 	case KIND_ASK:
 	case KIND_TASK:
@@ -2850,6 +2933,30 @@ mcp_req_tool_start (struct mcp_req *req)
 		break;
 	}
 	mcp_slot_result(slot, TEXT("No tool of that name is yours to call."), true);
+}
+
+/* Go on with the turn's tool calls: write the next one's result once it
+ * has its output, in the calls' order, else launch another; once all are
+ * written, submit the next turn, or, its context full, compact it first. */
+static void
+mcp_req_calls_next (struct mcp_req *req)
+{
+	if (req->part == req->n_calls) {
+		mcp_req_slots_drop(req);
+		buf_fini(&req->calls);
+		if (req->context && req->used && mcp_req_tokens(req) >= req->context)
+			mcp_req_compact_full(req);
+		else
+			mcp_req_turn_submit(req);
+		return;
+	}
+	struct mcp_slot *slot = &req->slots[req->part];
+	if (slot->done) {
+		mcp_req_result_begin(req, slot);
+		return;
+	}
+	req->phase = PHASE_CALLS;
+	mcp_req_call_launch(req);
 }
 
 /* Take the window of the output @p out of @p slot's call that the turn
@@ -2903,21 +3010,29 @@ mcp_slot_note_window (struct mcp_slot *slot,
 	return 0;
 }
 
-/* The call in @p slot has its output: its window, and what askai adds after
- * it, then write its result.  After the turn's last call, askai adds what
- * the context holds, if it fills up, and that the next turn is the last, if
- * it is. */
+/* The turn's call in @p slot has its output: its window, and the note on
+ * it; the request writes its result once those before it are. */
 static void
 mcp_slot_done (struct mcp_slot *slot,
                bool             failed)
 {
-	struct mcp_req *req = slot->req;
 	struct span out = mcp_slot_output(slot);
-	slot->tooling = false;
 	bool past = slot->skip > out.len;
-	(void)mcp_req_trace_end(req, failed, out.len);
 	mcp_slot_window(slot, out);
-	size_t n = mcp_slot_note_window(slot, out.len, past);
+	slot->note_len = (uint16_t)mcp_slot_note_window(slot, out.len, past);
+	slot->failed = failed;
+	slot->done = true;
+	loop_ready_bulk(slot->req->mcp->loop, &slot->req->step);
+}
+
+/* Write the result of the turn's call in @p slot, the next in order: after
+ * the turn's last, askai adds what the context holds, if it fills up, and
+ * that the next turn is the last, if it is. */
+static void
+mcp_req_result_begin (struct mcp_req  *req,
+                      struct mcp_slot *slot)
+{
+	size_t n = slot->note_len;
 	if (req->part + 1u == req->n_calls) {
 		size_t size = sizeof slot->note;
 		uint64_t tokens = mcp_req_tokens(req) + (slot->window + n) / 4;
@@ -2943,7 +3058,7 @@ mcp_req_result_put (struct mcp_req        *req,
                     struct mcp_call const *c)
 {
 	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
-	struct mcp_slot const *slot = &req->self;
+	struct mcp_slot const *slot = &req->slots[req->part];
 	struct span out = mcp_slot_output(slot);
 	char made[CALL_ID];
 	struct mcp_piece id;
@@ -2978,8 +3093,9 @@ mcp_req_result_put (struct mcp_req        *req,
 	return mcp_req_upload(req, p, last ? ARRAY_SIZE(p) : ARRAY_SIZE(p) - 2);
 }
 
-/* Write the result of the call under way into the upload, a slice a step;
- * then let go of its output, and run the next call. */
+/* Write the result of the turn's call whose turn it is into the upload, a
+ * slice a step, then its line of the trace; then let go of its output,
+ * and go on with the calls. */
 static void
 mcp_req_result_write (struct mcp_req *req)
 {
@@ -2993,7 +3109,9 @@ mcp_req_result_write (struct mcp_req *req)
 		mcp_req_upload_failed(req, e);
 		return;
 	}
-	struct mcp_slot *slot = &req->self;
+	struct mcp_slot *slot = &req->slots[req->part];
+	(void)mcp_req_trace(req, &c, req->args[req->part], slot->tool);
+	(void)mcp_req_trace_end(req, slot->failed, mcp_slot_output(slot).len);
 	manual_page_put(slot->page);
 	slot->page = nullptr;
 	dstr_clear(&slot->answer);
@@ -3002,7 +3120,7 @@ mcp_req_result_write (struct mcp_req *req)
 	req->at += c.size;
 	mcp_req_args_free(req, req->part, req->part + 1u);
 	++req->part;
-	mcp_req_tool_start(req);
+	mcp_req_calls_next(req);
 }
 
 /* Submit the next turn, its upload whole; or, draining, end the call. */
@@ -3110,8 +3228,7 @@ mcp_slot_notes_spawn (struct mcp_slot *slot,
 	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_notes, slot, &e);
 	if (!slot->child)
 		return e;
-	mcp_req_wait(req);
-	req->phase = PHASE_TOOL;
+	mcp_slot_park(slot);
 	return 0;
 }
 
@@ -3444,8 +3561,7 @@ mcp_slot_notes_compacted (struct mcp_slot *slot)
 static void
 mcp_slot_notes_out (struct mcp_slot *slot)
 {
-	struct mcp_req *req = slot->req;
-	mcp_req_unwait(req);
+	mcp_slot_unwait(slot);
 	switch (slot->fetch) {
 	case FETCH_WRITE:
 		mcp_slot_notes_written(slot);
@@ -3488,22 +3604,24 @@ mcp_req_compact_notes (struct mcp_req *req,
 	mcp_req_go_on(req, TEXT("\n\n"));
 }
 
-/* Compact the context, as the turn's compact call asks: what follows the
- * prompt goes, and askai adds the summary and the notes to it.  The turn's
- * calls after this one do not run. */
+/* Compact the context, as the turn's compact call @p c in @p slot asks with
+ * @p args: what follows the prompt goes, and askai adds the summary and the
+ * notes to it.  The turn's calls after this one do not run. */
 static void
-mcp_req_compact (struct mcp_req     *req,
-                 struct json_object *args)
+mcp_slot_compact (struct mcp_slot       *slot,
+                  struct mcp_call const *c,
+                  struct json_object    *args)
 {
 	static_assert(SUMMARY_MAX == 16 << 10, "the problem says");
+	struct mcp_req *req = slot->req;
 	size_t len = 0;
 	char const *summary = mcp_str(jb_get(args, "summary"), &len);
 	if (!summary || !len || len > SUMMARY_MAX) {
-		mcp_slot_result(&req->self, TEXT("The summary argument must be a string of 1 to "
-		                              "16384 bytes."), true);
+		mcp_slot_result(slot, TEXT("The summary argument must be a string of 1 to "
+		                           "16384 bytes."), true);
 		return;
 	}
-	req->self.tooling = false;
+	(void)mcp_req_trace(req, c, args, KIND_COMPACT);
 	(void)mcp_req_trace_end(req, false, len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
 	dstr_clear(&req->self.answer);
@@ -3515,6 +3633,7 @@ mcp_req_compact (struct mcp_req     *req,
 	};
 	int e = mcp_slot_say(&req->self, p, ARRAY_SIZE(p));
 	mcp_req_args_free(req, req->part, ARRAY_SIZE(req->args));
+	mcp_req_slots_drop(req);
 	buf_fini(&req->calls);
 	if (e) {
 		mcp_req_fail(req, e);
@@ -4045,6 +4164,9 @@ mcp_req_step (struct loop      *loop,
 		break;
 	case PHASE_TURN:
 		mcp_req_turn_write(req);
+		break;
+	case PHASE_CALLS:
+		mcp_req_calls_next(req);
 		break;
 	case PHASE_RESULT:
 		mcp_req_result_write(req);
