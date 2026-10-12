@@ -27,6 +27,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "tool.h"
+
 struct json_object;
 struct policy;
 
@@ -49,15 +51,17 @@ struct policy_peer {
 /** What a client may see and do, and whose share of the upstream its calls
  *  take. */
 struct policy_grant {
-	uint64_t principal;  /**< its identity's, never 0; 0 if anonymous */
-	uint32_t tools;      /**< bits of the tools it may list and call */
-	uint32_t metrics;    /**< bool: it may read the metrics */
+	tool_mask tools;      /**< the tools it may list and call */
+	uint64_t  principal;  /**< its identity's, never 0; 0 if anonymous */
+	uint64_t  metrics;    /**< bool: it may read the metrics; widened over
+	                           the padding */
 };
 
 /**
  * The policy of @p file, the configuration file's object, or askai's own if
- * that is nullptr or names none, for the tools @p tools names: bit i is
- * tool i, nullptr for one askai does not offer; a reference to it.  nullptr,
+ * that is nullptr or names none, for the @p n_tools tools, at most TOOL_MAX,
+ * that @p tools names: bit i is tool i, nullptr for one askai does not
+ * offer; a reference to it.  nullptr,
  * with the error in @p *e: ENOMEM, or EINVAL with @p why, of @p len bytes,
  * saying what is wrong.
  */

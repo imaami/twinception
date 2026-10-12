@@ -25,6 +25,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "tool.h"
 
 /** The body length of a request or response not known up front. */
 static constexpr size_t STREAM_OPEN = SIZE_MAX;
@@ -99,15 +100,16 @@ struct stream_app {
 struct stream {
 	struct stream_ops const *ops;
 	void                    *user;       /**< the application's own */
+	tool_mask                tools;      /**< the tools its role may list and
+	                                          call */
 	uint64_t                 principal;  /**< the client's identity's
 	                                          (src/policy.h); 0: anonymous */
 	uint64_t                 peer[2];    /**< the client's address, as the
 	                                          limits per address key it:
 	                                          IPv4, mapped, or an IPv6 /64 */
-	uint32_t                 tools;      /**< bits of the tools its role may
-	                                          list and call */
-	uint32_t                 trusted;    /**< bool: its role may see
-	                                          diagnostics */
+	uint64_t                 trusted;    /**< bool: its role may see
+	                                          diagnostics; widened over the
+	                                          padding */
 };
 
 #endif /* TWINCEPTION_SRC_STREAM_H_ */

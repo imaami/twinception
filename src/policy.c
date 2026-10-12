@@ -23,8 +23,8 @@ static constexpr uint64_t SEED = 0x9e3779b97f4a7c15;
 
 /* What the clients a role is given may see and do. */
 struct policy_role {
-	uint32_t tools;
-	uint32_t metrics;
+	tool_mask tools;
+	uint64_t  metrics;  /* bool, widened over the padding */
 };
 
 /* A token, by its digest, and the identity it proves. */
@@ -330,7 +330,7 @@ policy_build_tools (struct policy_build *b,
 		if (k == b->n_tools)
 			return policy_build_fail(b, "role %s: askai offers no tool %s", name,
 			                         json_object_to_json_string(v));
-		r->tools |= 1u << k;
+		r->tools |= (tool_mask)1 << k;
 	}
 	return 0;
 }
@@ -595,9 +595,9 @@ policy_build_own (struct policy_build *b,
                   char const          *token)
 {
 	struct policy *p = b->p;
-	uint32_t all = 0;
+	tool_mask all = 0;
 	for (size_t i = 0; i < b->n_tools; ++i)
-		all |= b->tools[i] ? 1u << i : 0;
+		all |= b->tools[i] ? (tool_mask)1 << i : 0;
 	p->roles[0] = (struct policy_role){ .tools = all, .metrics = true };
 	p->roles[1] = (struct policy_role){ .tools = all };
 	if (!token) {
