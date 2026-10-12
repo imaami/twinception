@@ -103,8 +103,8 @@ struct app {
 	struct loop           loop;
 	struct dstr           stdin_buf;
 	struct dstr           bearer;
-	struct dstr           template_url[2];    /* the llama models' */
-	struct dstr           completion_url[2];  /* likewise */
+	struct dstr           template_url[2];
+	struct dstr           completion_url[2];
 	struct dstr           generation_tail[2];
 	struct dstr           reasoning_tail[2];
 	struct dstr           transition[2];
@@ -118,17 +118,20 @@ struct app {
 	uint16_t              exit_after_turn;  /* bool, likewise */
 };
 
-static char const probe_reasoning_old[] =
-	"__TWINCEPTION_REASONING_PROBE_OLD_196F89C7__";
-static char const probe_reasoning_new[] =
-	"__TWINCEPTION_REASONING_PROBE_NEW_5A2E4D31__";
-static char const probe_rapid_reasoning[] =
-	"__TWINCEPTION_RAPID_REASONING_8E6A09B3__";
-static char const probe_rapid_answer[] =
-	"__TWINCEPTION_RAPID_ANSWER_71C4F052__";
+/* How a request ended, as curl's done callback has it. */
+struct app_reply {
+	char const *curl_error;
+	long        status;
+	CURLcode    result;
+};
 
-static void app_advance (struct app *app);
-static void app_advance_rapid (struct app *app);
+static char const probe_reasoning_old[] = "__TWINCEPTION_REASONING_PROBE_OLD_196F89C7__";
+static char const probe_reasoning_new[] = "__TWINCEPTION_REASONING_PROBE_NEW_5A2E4D31__";
+static char const probe_rapid_reasoning[] = "__TWINCEPTION_RAPID_REASONING_8E6A09B3__";
+static char const probe_rapid_answer[] = "__TWINCEPTION_RAPID_ANSWER_71C4F052__";
+
+static int app_advance (struct app *app);
+static int app_advance_rapid (struct app *app);
 static int app_start_turn (struct app *app, struct dstr const *user_a,
                            struct dstr const *user_b);
 static http_done_cb app_probe_done;
@@ -249,8 +252,8 @@ app_json_string (struct json_object const *obj,
 
 /* Append the string @p str, unless it is nullptr, to @p out. */
 static int
-app_json_cat (struct dstr        *out,
-              struct json_object *str)
+app_json_cat (struct json_object *str,
+              struct dstr        *out)
 {
 	return !str || dstr_cat_n(out, json_object_get_string(str),
 	                          (size_t)json_object_get_string_len(str))
@@ -321,8 +324,9 @@ app_answer (struct app const      *app,
 	}
 }
 
+/* Append the history, as model @p model sees it, to @p messages. */
 static int
-app_json_history (struct app const   *app,
+app_history_json (struct app const   *app,
                   struct json_object *messages,
                   size_t              model)
 {
@@ -339,11 +343,11 @@ app_json_history (struct app const   *app,
 	return 0;
 }
 
-/* An object whose "messages", in @p *messages, begin with the system
+/* A request body whose "messages", in @p *messages, begin with the system
  * message, if there is one; nullptr if out of memory. */
 static struct json_object *
-app_json_root (struct app const    *app,
-               struct json_object **messages)
+app_body (struct app const    *app,
+          struct json_object **messages)
 {
 	struct json_object *root = json_object_new_object();
 	if (!root)
@@ -358,15 +362,15 @@ app_json_root (struct app const    *app,
 	return root;
 }
 
-/* As app_json_root(), the history as model @p model sees it and the pending
+/* As app_body(), the history as model @p model sees it and the pending
  * turn's user message to it following. */
 static struct json_object *
-app_json_turn (struct app const    *app,
-               size_t               model,
-               struct json_object **messages)
+app_pending_body (struct app const    *app,
+                  size_t               model,
+                  struct json_object **messages)
 {
-	struct json_object *root = app_json_root(app, messages);
-	if (root && (app_json_history(app, *messages, model) ||
+	struct json_object *root = app_body(app, messages);
+	if (root && (app_history_json(app, *messages, model) ||
 	             app_json_message(*messages, "user",
 	                              dstr_get(&app->pending->user[model]),
 	                              nullptr))) {
@@ -405,46 +409,31 @@ app_post (struct app          *app,
 	return e;
 }
 
-/* Say that @p what of model @p model failed, as curl's @p result and the
- * HTTP @p status tell. */
+/* Show @p reply to a failed request of model @p model, after @p what. */
 static void
-app_report (size_t      model,
-            char const *what,
-            CURLcode    result,
-            long        status,
-            char const *curl_error)
+app_reply_report (struct app_reply const *reply,
+                  size_t                  model,
+                  char const             *what)
 {
+	char const *curl_error = reply->curl_error;
 	char const *sep = ": ";
 	if (!curl_error || !*curl_error)
 		sep = curl_error = "";
 	fprintf(stderr, "model %c %s: HTTP %ld, curl=%s%s%s\n",
-	        (int)('A' + model), what, status, curl_easy_strerror(result),
-	        sep, curl_error);
+	        (int)('A' + model), what, reply->status,
+	        curl_easy_strerror(reply->result), sep, curl_error);
 }
 
-/* EIO, said as app_report() does, unless curl's @p result and the HTTP
- * @p status are a success. */
+/* EIO, shown as app_reply_report() does, unless @p reply is a success. */
 static int
-app_http_check (size_t      model,
-                char const *what,
-                CURLcode    result,
-                long        status,
-                char const *curl_error)
+app_reply_check (struct app_reply const *reply,
+                 size_t                  model,
+                 char const             *what)
 {
-	if (result == CURLE_OK && status >= 200 && status < 300)
+	if (reply->result == CURLE_OK && reply->status >= 200 && reply->status < 300)
 		return 0;
-	app_report(model, what, result, status, curl_error);
+	app_reply_report(reply, model, what);
 	return EIO;
-}
-
-static size_t
-app_prefix_len (char const *a,
-                char const *b)
-{
-	size_t n = 0;
-	while (a[n] && a[n] == b[n])
-		++n;
-	return n;
 }
 
 static void
@@ -482,7 +471,7 @@ app_probe_body (struct app_probe const *probe)
 	};
 
 	struct json_object *messages;
-	struct json_object *root = app_json_root(probe->app, &messages);
+	struct json_object *root = app_body(probe->app, &messages);
 	if (!root)
 		return nullptr;
 	for (size_t i = span[probe->stage].first; i < span[probe->stage].end; ++i) {
@@ -527,7 +516,7 @@ app_probe_prompt (struct app_probe const *probe,
 		return app_probe_reject(probe, "invalid JSON response");
 
 	struct json_object *value = app_json_string(root, "prompt");
-	int e = value ? app_json_cat(prompt, value)
+	int e = value ? app_json_cat(value, prompt)
 	              : app_probe_reject(probe, "response has no prompt string");
 	json_object_put(root);
 	return e;
@@ -558,10 +547,10 @@ static int
 app_probe_rapid (struct app_probe const *probe,
                  char const             *prompt)
 {
+	size_t skip = sizeof probe_rapid_reasoning - 1;
 	char const *reasoning = strstr(prompt, probe_rapid_reasoning);
-	char const *answer = reasoning
-		? strstr(reasoning + sizeof probe_rapid_reasoning - 1, probe_rapid_answer)
-		: nullptr;
+	char const *answer = reasoning ? strstr(reasoning + skip, probe_rapid_answer)
+	                               : nullptr;
 	if (!answer) {
 		fprintf(stderr,
 		        "model %c rapid template check failed: cannot locate generation, "
@@ -572,7 +561,9 @@ app_probe_rapid (struct app_probe const *probe,
 
 	char const *base = dstr_get(&probe->rapid_base);
 	size_t base_len = dstr_len(&probe->rapid_base);
-	size_t common = app_prefix_len(base, prompt);
+	size_t common = 0;
+	while (base[common] && base[common] == prompt[common])
+		++common;
 	size_t reasoning_off = (size_t)(reasoning - prompt);
 	if (common > reasoning_off) {
 		fprintf(stderr,
@@ -582,7 +573,7 @@ app_probe_rapid (struct app_probe const *probe,
 		return EPROTO;
 	}
 
-	char const *begin = reasoning + sizeof probe_rapid_reasoning - 1;
+	char const *begin = reasoning + skip;
 	size_t transition_len = (size_t)(answer - begin);
 	if (!transition_len)
 		return EPROTO;
@@ -639,23 +630,22 @@ app_probe_post (struct app_probe *probe)
 	                app_probe_write, app_probe_done, probe, &probe->request);
 }
 
-/* Take in the answer to @p probe's stage, as curl's @p result and the HTTP
- * @p status have it: the next stage is posted, or the probe is done. */
+/* Take in @p reply to @p probe's stage: the next stage is posted, or the
+ * probe is done and the app goes on. */
 static int
-app_probe_end (struct app_probe *probe,
-               CURLcode          result,
-               long              status,
-               char const       *curl_error)
+app_probe_end (struct app_probe       *probe,
+               struct app_reply const *reply)
 {
-	int e = app_http_check(probe->index, "template check failed", result,
-	                       status, curl_error);
+	int e = app_reply_check(reply, probe->index, "template check failed");
 	if (e)
 		return e;
 
 	if (probe->stage != APP_PROBE_RAPID_BASE) {
 		e = app_probe_check(probe);
-		probe->done = !e;
-		return e;
+		if (e)
+			return e;
+		probe->done = 1;
+		return app_advance(probe->app);
 	}
 
 	/* The base stage runs once, so rapid_base starts out empty. */
@@ -673,12 +663,11 @@ app_probe_done (CURLcode    result,
                 void       *user)
 {
 	struct app_probe *probe = user;
+	struct app_reply const reply = { curl_error, status, result };
 	probe->request = nullptr;
-	int e = app_probe_end(probe, result, status, curl_error);
+	int e = app_probe_end(probe, &reply);
 	if (e)
 		app_fail(probe->app, e);
-	else
-		app_advance(probe->app);
 }
 
 /* Begin the template check of @p probe's model: a llama model must pass
@@ -754,8 +743,8 @@ app_stream_write (char const *data,
 }
 
 /* The JSON of an event of @p s, or nullptr with the error in @p *e: 0 for
- * the [DONE] that ends the stream, EPROTO for an event that is not JSON and
- * EREMOTEIO for one that reports an error. */
+ * the [DONE] that ends the stream, EPROTO for an event that is not JSON,
+ * EREMOTEIO for one that reports an error, or ENOMEM. */
 static struct json_object *
 app_stream_event (struct app_stream *s,
                   char const        *data,
@@ -792,44 +781,48 @@ app_stream_event (struct app_stream *s,
 }
 
 /* The error, if any, that the request of @p s ended with: its own, the
- * parser's, or what curl's @p result, the HTTP @p status or a missing end
- * of the stream say. */
+ * parser's, or what @p reply or a missing end of the stream says. */
 static int
-app_stream_error (struct app_stream *s,
-                  CURLcode           result,
-                  long               status)
+app_stream_error (struct app_stream      *s,
+                  struct app_reply const *reply)
 {
 	if (s->error)
 		return s->error;
 	int e = sse_end(&s->sse);
 	if (e)
 		return e;
-	if (result != CURLE_OK)
+	if (reply->result != CURLE_OK)
 		return EIO;
-	return status < 200 || status >= 300 || !s->ended ? EPROTO : 0;
+	return reply->status < 200 || reply->status >= 300 || !s->ended ? EPROTO : 0;
 }
 
-/* The request of @p s is over, with curl's @p result and the HTTP
- * @p status: its error, if any, is kept and shown, with @p what failed and
+/* As app_stream_error(), an error shown as app_reply_report() does, with
  * the tail of the response. */
-static void
-app_stream_end (struct app_stream *s,
-                CURLcode           result,
-                long               status,
-                char const        *curl_error,
-                char const        *what)
+static int
+app_stream_check (struct app_stream      *s,
+                  struct app_reply const *reply,
+                  char const             *what)
 {
-	s->request = nullptr;
-	s->done = 1;
-	s->error = app_stream_error(s, result, status);
-	if (!s->error)
-		return;
+	int e = app_stream_error(s, reply);
+	if (!e)
+		return 0;
 
-	app_report(s->index, what, result, status, curl_error);
+	app_reply_report(reply, s->index, what);
 	int tail_len = (int)dstr_len(&s->tail);
 	if (tail_len)
 		fprintf(stderr, "model %c response tail:\n%.*s\n",
 		        (int)('A' + s->index), tail_len, dstr_get(&s->tail));
+	return e;
+}
+
+/* The request of @p s is over, with the error @p e, if any. */
+static void
+app_stream_end (struct app_stream *s,
+                int                e)
+{
+	s->request = nullptr;
+	s->done = 1;
+	s->error = e;
 }
 
 static void
@@ -846,8 +839,8 @@ app_print (struct app const      *app,
 	fflush(stdout);
 }
 
-/* Drop the pending turn, a request of which failed. */
-static void
+/* Drop the pending turn, a request of which failed, and go on. */
+static int
 app_discard (struct app *app)
 {
 	fprintf(stderr, "%spaired turn discarded; history unchanged\n",
@@ -855,22 +848,20 @@ app_discard (struct app *app)
 	app_turn_destroy(&app->pending);
 	app->rapid_stage = APP_RAPID_IDLE;
 	app->crosstalk_left = 0;
-	app_advance(app);
+	return app_advance(app);
 }
 
 /* Take the pending turn, answered, into the history and show it; then go on
  * with a crosstalk round, if one is due, or else the next prompt. */
-static void
+static int
 app_commit (struct app *app)
 {
 	struct app_turn *turn = app->pending;
 	app->pending = nullptr;
 	list_append(&app->history, &turn->hook);
 	app_print(app, turn);
-	if (app->exit_after_turn || !app->crosstalk_left) {
-		app_advance(app);
-		return;
-	}
+	if (app->exit_after_turn || !app->crosstalk_left)
+		return app_advance(app);
 
 	if (app->crosstalk_left > 0)
 		--app->crosstalk_left;
@@ -878,28 +869,25 @@ app_commit (struct app *app)
 		fprintf(stderr, "crosstalk: A <- B, B <- A%s\n",
 		        app->crosstalk_left < 0 ? " (unbounded)" : "");
 	int e = app_start_turn(app, &turn->answer[1], &turn->answer[0]);
-	if (e) {
+	if (e)
 		fprintf(stderr, "cannot start crosstalk round: %s\n", strerror(e));
-		app_fail(app, e);
-	}
+	return e;
 }
 
-static void
+static int
 app_finish_chat (struct app *app)
 {
 	struct app_chat *chat = app->chat;
 	if (!app->pending || !chat[0].stream.done || !chat[1].stream.done)
-		return;
-	if (chat[0].stream.error || chat[1].stream.error) {
-		app_discard(app);
-		return;
-	}
+		return 0;
+	if (chat[0].stream.error || chat[1].stream.error)
+		return app_discard(app);
 
 	for (size_t i = 0; i < ARRAY_SIZE(app->chat); ++i) {
 		app->pending->answer[i] = dstr_move(&chat[i].answer);
 		app->pending->reasoning[i] = dstr_move(&chat[i].reasoning);
 	}
-	app_commit(app);
+	return app_commit(app);
 }
 
 static void
@@ -917,10 +905,10 @@ app_chat_delta (struct app_chat          *chat,
 	struct json_object *reasoning = app_json_string(delta, "reasoning_content");
 	if (!reasoning)
 		reasoning = app_json_string(delta, "reasoning");
-	int e = app_json_cat(&chat->reasoning, reasoning);
+	int e = app_json_cat(reasoning, &chat->reasoning);
 	if (e)
 		return e;
-	return app_json_cat(&chat->answer, app_json_string(delta, "content"));
+	return app_json_cat(app_json_string(delta, "content"), &chat->answer);
 }
 
 static int
@@ -948,8 +936,11 @@ app_chat_done (CURLcode    result,
                void       *user)
 {
 	struct app_stream *s = user;
-	app_stream_end(s, result, status, curl_error, "failed");
-	app_finish_chat(s->app);
+	struct app_reply const reply = { curl_error, status, result };
+	app_stream_end(s, app_stream_check(s, &reply, "failed"));
+	int e = app_finish_chat(s->app);
+	if (e)
+		app_fail(s->app, e);
 }
 
 static struct json_object *
@@ -959,7 +950,7 @@ app_chat_body (struct app_chat const *chat)
 	struct app_cfg const *cfg = &app->cfg;
 	size_t i = chat->stream.index;
 	struct json_object *messages;
-	struct json_object *root = app_json_turn(app, i, &messages);
+	struct json_object *root = app_pending_body(app, i, &messages);
 	if (!root)
 		return nullptr;
 
@@ -1039,13 +1030,15 @@ app_rapid_template_write (char const *data,
 	return dstr_cat_n(&rapid->response, data, len) ? len : 0;
 }
 
-/* The turn's prompt, from @p rapid's /apply-template response. */
+/* Append the prompt of @p rapid's /apply-template response to its base:
+ * EPROTO if the response has none, or ENOMEM, either said to be invalid
+ * JSON. */
 static int
 app_rapid_template_parse (struct app_rapid *rapid)
 {
 	struct json_object *root = json_tokener_parse(dstr_get(&rapid->response));
 	struct json_object *prompt = app_json_string(root, "prompt");
-	int e = prompt ? app_json_cat(&rapid->base, prompt) : EPROTO;
+	int e = prompt ? app_json_cat(prompt, &rapid->base) : EPROTO;
 	json_object_put(root);
 	if (e)
 		fprintf(stderr, "model %c turn template returned invalid JSON\n",
@@ -1054,13 +1047,10 @@ app_rapid_template_parse (struct app_rapid *rapid)
 }
 
 static int
-app_rapid_template_end (struct app_rapid *rapid,
-                        CURLcode          result,
-                        long              status,
-                        char const       *curl_error)
+app_rapid_template_end (struct app_rapid       *rapid,
+                        struct app_reply const *reply)
 {
-	int e = app_http_check(rapid->stream.index, "turn template failed",
-	                       result, status, curl_error);
+	int e = app_reply_check(reply, rapid->stream.index, "turn template failed");
 	return e ? e : app_rapid_template_parse(rapid);
 }
 
@@ -1071,21 +1061,21 @@ app_rapid_template_done (CURLcode    result,
                          void       *user)
 {
 	struct app_rapid *rapid = user;
-	rapid->stream.request = nullptr;
-	rapid->stream.done = 1;
-	rapid->stream.error = app_rapid_template_end(rapid, result, status,
-	                                             curl_error);
-	app_advance_rapid(rapid->stream.app);
+	struct app_reply const reply = { curl_error, status, result };
+	app_stream_end(&rapid->stream, app_rapid_template_end(rapid, &reply));
+	int e = app_advance_rapid(rapid->stream.app);
+	if (e)
+		app_fail(rapid->stream.app, e);
 }
 
 static struct json_object *
 app_rapid_template_body (struct app_rapid const *rapid)
 {
 	struct app const *app = rapid->stream.app;
-	char const *model = app->cfg.model[rapid->stream.index];
+	size_t i = rapid->stream.index;
+	char const *model = app->cfg.model[i];
 	struct json_object *messages;
-	struct json_object *root = app_json_turn(app, rapid->stream.index,
-	                                         &messages);
+	struct json_object *root = app_pending_body(app, i, &messages);
 	if (root && model &&
 	    app_json_set(root, "model", json_object_new_string(model))) {
 		json_object_put(root);
@@ -1156,7 +1146,7 @@ static int
 app_rapid_deepinfra_event (struct app_rapid         *rapid,
                            struct json_object const *choice)
 {
-	int e = app_json_cat(app_rapid_out(rapid), app_rapid_text(rapid, choice));
+	int e = app_json_cat(app_rapid_text(rapid, choice), app_rapid_out(rapid));
 	struct json_object *reason = app_json_string(choice, "finish_reason");
 	if (e || !reason)
 		return e;
@@ -1192,7 +1182,7 @@ static int
 app_rapid_llama_event (struct app_rapid         *rapid,
                        struct json_object const *root)
 {
-	int e = app_json_cat(app_rapid_out(rapid), app_json_string(root, "content"));
+	int e = app_json_cat(app_json_string(root, "content"), app_rapid_out(rapid));
 	if (e)
 		return e;
 	e = app_rapid_count(rapid, root);
@@ -1236,8 +1226,11 @@ app_rapid_done (CURLcode    result,
                 void       *user)
 {
 	struct app_stream *s = user;
-	app_stream_end(s, result, status, curl_error, "rapid request failed");
-	app_advance_rapid(s->app);
+	struct app_reply const reply = { curl_error, status, result };
+	app_stream_end(s, app_stream_check(s, &reply, "rapid request failed"));
+	int e = app_advance_rapid(s->app);
+	if (e)
+		app_fail(s->app, e);
 }
 
 /* Append to @p messages the assistant message that @p rapid's model goes
@@ -1265,7 +1258,7 @@ app_rapid_deepinfra_body (struct app_rapid const *rapid,
 	struct app_cfg const *cfg = &app->cfg;
 	size_t i = rapid->stream.index;
 	struct json_object *messages;
-	struct json_object *root = app_json_turn(app, i, &messages);
+	struct json_object *root = app_pending_body(app, i, &messages);
 	if (!root)
 		return nullptr;
 
@@ -1406,8 +1399,8 @@ static int
 app_start_quantum (struct app *app)
 {
 	uint32_t remaining = app->cfg.rapid_budget - app->rapid_used;
-	uint32_t n = remaining < app->cfg.rapid_quantum
-		? remaining : app->cfg.rapid_quantum;
+	uint32_t n = remaining < app->cfg.rapid_quantum ? remaining
+	                                                : app->cfg.rapid_quantum;
 	if (!n)
 		return EINVAL;
 
@@ -1459,7 +1452,7 @@ app_end_quantum (struct app *app)
 	return app_start_stage(app, APP_RAPID_ANSWER, app->cfg.max_tokens);
 }
 
-static void
+static int
 app_commit_rapid (struct app *app)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(app->rapid); ++i) {
@@ -1467,7 +1460,7 @@ app_commit_rapid (struct app *app)
 		app->pending->reasoning[i] = dstr_move(&app->rapid[i].emitted);
 	}
 	app->rapid_stage = APP_RAPID_IDLE;
-	app_commit(app);
+	return app_commit(app);
 }
 
 /* Go on from the rapid stage that both models are done with. */
@@ -1480,28 +1473,23 @@ app_next_stage (struct app *app)
 	case APP_RAPID_THINK:
 		return app_end_quantum(app);
 	case APP_RAPID_ANSWER:
-		app_commit_rapid(app);
-		return 0;
+		return app_commit_rapid(app);
 	case APP_RAPID_IDLE:
 		break;
 	}
 	return EPROTO;
 }
 
-static void
+/* Go on with the rapid turn once both models are done with its stage. */
+static int
 app_advance_rapid (struct app *app)
 {
 	struct app_rapid const *rapid = app->rapid;
 	if (!app->pending || !rapid[0].stream.done || !rapid[1].stream.done)
-		return;
-	if (rapid[0].stream.error || rapid[1].stream.error) {
-		app_discard(app);
-		return;
-	}
-
-	int e = app_next_stage(app);
-	if (e)
-		app_fail(app, e);
+		return 0;
+	if (rapid[0].stream.error || rapid[1].stream.error)
+		return app_discard(app);
+	return app_next_stage(app);
 }
 
 static int
@@ -1516,8 +1504,7 @@ app_start_rapid (struct app *app)
 			return e;
 	}
 	/* DeepInfra models need no template, so the turn may go on at once. */
-	app_advance_rapid(app);
-	return 0;
+	return app_advance_rapid(app);
 }
 
 /* Start a turn that tells model A @p user_a and model B @p user_b. */
@@ -1544,31 +1531,32 @@ app_pop_prompt (struct app *app)
 	return prompt;
 }
 
-static void
+/* Start a turn on the next prompt, unless a turn or a template check is
+ * under way; with no prompt, ask for one, or end once there will be none. */
+static int
 app_advance (struct app *app)
 {
 	if (app->pending || !app->probe[0].done || !app->probe[1].done)
-		return;
+		return 0;
 
 	struct app_prompt *prompt = app_pop_prompt(app);
 	if (prompt) {
 		app->crosstalk_left = app->cfg.crosstalk_rounds;
 		int e = app_start_turn(app, &prompt->text, &prompt->text);
 		app_prompt_destroy(&prompt);
-		if (e) {
+		if (e)
 			fprintf(stderr, "cannot start request pair: %s\n", strerror(e));
-			app_fail(app, e);
-		}
-		return;
+		return e;
 	}
 
 	if (app->stdin_eof || app->exit_after_turn) {
 		loop_exit(&app->loop);
-		return;
+		return 0;
 	}
 
 	fputs("> ", stdout);
 	fflush(stdout);
+	return 0;
 }
 
 static int
@@ -1623,7 +1611,8 @@ app_stdin_drain (struct app *app)
 	}
 }
 
-/* Read stdin, and queue its lines, and once it has ended, the rest. */
+/* Read stdin, and queue its lines, and once it has ended, the rest; then
+ * go on. */
 static int
 app_stdin_read (struct app *app)
 {
@@ -1642,13 +1631,14 @@ app_stdin_read (struct app *app)
 		used += len + 1;
 	}
 	dstr_erase(&app->stdin_buf, 0, used);
-	if (!app->stdin_eof)
-		return 0;
-
-	e = app_queue_prompt(app, dstr_get(&app->stdin_buf),
-	                     dstr_len(&app->stdin_buf));
-	dstr_clear(&app->stdin_buf);
-	return e;
+	if (app->stdin_eof) {
+		e = app_queue_prompt(app, dstr_get(&app->stdin_buf),
+		                     dstr_len(&app->stdin_buf));
+		dstr_clear(&app->stdin_buf);
+		if (e)
+			return e;
+	}
+	return app_advance(app);
 }
 
 static void
@@ -1664,8 +1654,6 @@ app_stdin_event (struct loop     *loop,
 	int e = app_stdin_read(app);
 	if (e)
 		app_fail(app, e);
-	else
-		app_advance(app);
 }
 
 /* Model @p i's /apply-template and /completion URLs, which replace the
@@ -1831,10 +1819,13 @@ app_fini (struct app *app)
 	}
 
 	app_turn_destroy(&app->pending);
-	for (struct app_prompt *prompt; (prompt = app_pop_prompt(app)); )
-		app_prompt_destroy(&prompt);
 	struct list *node;
 	struct list *tmp;
+	list_foreach_safe (node, tmp, &app->prompts) {
+		struct app_prompt *prompt = container_of(node, struct app_prompt, hook);
+		list_del(node);
+		app_prompt_destroy(&prompt);
+	}
 	list_foreach_safe (node, tmp, &app->history) {
 		struct app_turn *turn = container_of(node, struct app_turn, hook);
 		list_del(node);
@@ -1850,18 +1841,23 @@ app_fini (struct app *app)
 	loop_fini(&app->loop);
 }
 
-/* Check the templates, then take turns until the prompts run out or one
- * fails: its error, or the loop's. */
+/* Set up @p app, check the templates, then take turns until the prompts
+ * run out or one fails: its error, or the loop's. */
 static int
 app_exec (struct app *app)
 {
+	int e = app_init(app);
+	if (e)
+		return e;
 	for (size_t i = 0; i < ARRAY_SIZE(app->probe); ++i) {
-		int e = app_probe_begin(&app->probe[i]);
+		e = app_probe_begin(&app->probe[i]);
 		if (e)
 			return e;
 	}
-	app_advance(app);
-	int e = loop_exec(&app->loop);
+	e = app_advance(app);
+	if (e)
+		return e;
+	e = loop_exec(&app->loop);
 	return e ? e : app->error;
 }
 
@@ -1869,9 +1865,7 @@ int
 app_run (struct app_cfg const *cfg)
 {
 	struct app a = app(cfg);
-	int e = app_init(&a);
-	if (!e)
-		e = app_exec(&a);
+	int e = app_exec(&a);
 	app_fini(&a);
 	return e;
 }

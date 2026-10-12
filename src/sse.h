@@ -36,7 +36,7 @@ sse_feed (struct sse *sse,
           size_t      len);
 
 /** The stream has ended: its last line, unterminated, and its last event
- *  are dispatched. */
+ *  are dispatched.  Returns 0, ENOMEM, or the event callback's error. */
 extern int
 sse_end (struct sse *sse);
 
