@@ -147,8 +147,12 @@ struct askai_client {
 	struct task_pool        *tasks;   /* if askai offers test_task */
 };
 
-/* What every loop shares, made before any starts. */
+/* What every loop shares, made before any starts, and home and the metrics,
+ * which a blocker still busy at shutdown, such as a reload's, may write to
+ * until the process exits (askai_serve()). */
 struct askai_shared {
+	struct askai_home    home;
+	struct metrics_src   metrics;
 	struct manual       *manual;
 	struct mcp_static   *st;
 	struct httpd_hub    *hub;
@@ -263,17 +267,11 @@ askai_walk_done (struct loop *loop,
 	askai_keep_trimmed(walker.keep);
 }
 
-/* Walk the arenas on a blocker, or here if none takes it; with the pressure
- * cleared, @p on false, end the trim at once. */
+/* Walk the arenas on a blocker, or here if none takes it. */
 static void
 askai_keep_walk (struct askai_keep *keep,
-                 struct loop       *loop,
-                 bool               on)
+                 struct loop       *loop)
 {
-	if (!on) {
-		(void)brainstem_trimmed();
-		return;
-	}
 	walker.job = (struct blocker_job){
 		.done.fn = askai_walk_done,
 		.work = askai_walk,
@@ -299,7 +297,10 @@ askai_keep_trim (struct loop      *loop,
 	bool on = atomic_load_explicit(&buf_pressure, memory_order_relaxed);
 	void *block = keep->tops;
 	if (!block) {
-		askai_keep_walk(keep, loop, on);
+		if (on)
+			askai_keep_walk(keep, loop);
+		else
+			(void)brainstem_trimmed();
 		return;
 	}
 	memcpy(&keep->tops, block, sizeof keep->tops);
@@ -526,21 +527,16 @@ askai_home_stop (void        *ctx,
 	askai_keep_stop(&app->keep, loop);
 }
 
-/* A client loop's keep, MCP and server. */
+/* A client loop's keep and MCP. */
 static int
 askai_client_parts (struct askai_client *app,
                     struct loop         *loop,
                     struct blocker      *blockers)
 {
 	int e = askai_keep_start(&app->keep, loop, blockers);
-	if (e)
-		return e;
-	app->keep.mcp = mcp_create(loop, app->home->loop, app->st, app->metrics,
-	                           &app->counts, &e);
-	if (e)
-		return e;
-	app->httpd = httpd_create(loop, app->hub, loop->id - 1, mcp_app(app->keep.mcp),
-	                          app->hcfg, &e);
+	if (!e)
+		app->keep.mcp = mcp_create(loop, app->home->loop, app->st, app->metrics,
+		                           &app->counts, &e);
 	return e;
 }
 
@@ -551,7 +547,7 @@ askai_client_start (void           *ctx,
 {
 	struct askai_client *app = ctx;
 	struct metrics_loop *mine = &app->metrics->loops[loop->id - 1];
-	(void)util_format(mine->name, sizeof mine->name, "%" PRIu64, loop->id);
+	util_format(mine->name, sizeof mine->name, "%" PRIu64, loop->id);
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
 	mine->kept = &app->counts.kept;
@@ -563,9 +559,14 @@ askai_client_start (void           *ctx,
 		mine->tasks = task_pool_loop_metrics(app->tasks, loop->id - 1);
 	}
 	int e = askai_client_parts(app, loop, blockers);
-	if (e)
+	if (e) {
 		LOG(LOG_ERROR, "cannot start client loop %" PRIu64 ": %s", loop->id,
 		    strerror(e));
+		return e;
+	}
+	/* The server says itself why it cannot start. */
+	app->httpd = httpd_create(loop, app->hub, loop->id - 1, mcp_app(app->keep.mcp),
+	                          app->hcfg, &e);
 	return e;
 }
 
@@ -716,34 +717,35 @@ askai_run (struct askai_shared *s,
 {
 	struct brainstem_cfg bcfg = cfg->brainstem;
 	size_t n = bcfg.loops;
-	struct metrics_src metrics = {
+	struct askai_home *home = &s->home;
+	s->metrics = (struct metrics_src){
 		.loops = s->loops,
+		.http = &home->http,
+		.jobs = &home->jobs,
 		.man = s->manual ? manual_metrics(s->manual) : nullptr,
 		.tasks = s->tasks ? task_pool_metrics(s->tasks) : nullptr,
 		.n_loops = n + 1
 	};
-	struct askai_home home = {
-		.ep = &cfg->ep,
-		.hcfg = &cfg->http,
-		.hub = s->hub,
-		.metrics = &metrics,
-		.cfg = cfg
-	};
-	metrics.http = &home.http;
-	metrics.jobs = &home.jobs;
+	/* Its atomic members are valid as its storage is static: no struct
+	 * value is assigned over them. */
+	home->ep = &cfg->ep;
+	home->hcfg = &cfg->http;
+	home->hub = s->hub;
+	home->metrics = &s->metrics;
+	home->cfg = cfg;
 	for (size_t i = 0; i < n; ++i) {
 		struct askai_client *app = &s->clients[i];
 		buf_stash_init(&app->keep.stash);
 		metrics_mcp_init(&app->counts);
-		app->home = &home;
+		app->home = home;
 		app->st = s->st;
 		app->hcfg = &cfg->http;
 		app->hub = s->hub;
-		app->metrics = &metrics;
+		app->metrics = &s->metrics;
 		app->tasks = s->tasks;
 	}
 	bcfg.home = (struct brainstem_app){
-		.ctx = &home,
+		.ctx = home,
 		.start = askai_home_start,
 		.open = askai_home_open,
 		.drain = askai_home_drain,
@@ -767,12 +769,14 @@ askai_run (struct askai_shared *s,
 	return status;
 }
 
-/* Serve until shut down, as @p cfg says; returns the exit status. */
+/* Serve until shut down, as @p cfg says; returns the exit status.  What the
+ * loops share is static: a blocker still busy at shutdown is left to the
+ * process's exit, as is what it writes to. */
 static int
 askai_serve (struct config const *cfg)
 {
+	static struct askai_shared s;
 	askai_tune();
-	struct askai_shared s = {};
 	int status = askai_shared_init(&s, cfg, cfg->brainstem.loops) ? 1 : askai_run(&s, cfg);
 	askai_shared_fini(&s);
 	return status;
