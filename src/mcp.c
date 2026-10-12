@@ -904,9 +904,11 @@ mcp_req_open (struct mcp_req *req,
 	return mcp_req_put(req, p, ARRAY_SIZE(p));
 }
 
-/* Send the reply, as JSON with @p status and the header @p fields or as the
- * stream's last event, then finish the request; if making the reply failed
- * with @p e, end the stream with that instead. */
+/* The call is answered: take it off the calls under way, which a drain
+ * ends, and let go of what it waits for.  Send the reply, as JSON with
+ * @p status and the header @p fields or as the stream's last event, then
+ * finish the request; if making the reply failed with @p e, end the stream
+ * with that instead. */
 static void
 mcp_req_close (struct mcp_req *req,
                uint16_t        status,
@@ -914,6 +916,9 @@ mcp_req_close (struct mcp_req *req,
                int             e)
 {
 	struct stream *s = req->s;
+	mcp_req_unwait(req);
+	mcp_req_drop(req);
+	loop_timer_stop(req->mcp->loop, &req->timer);
 	if (e) {
 		mcp_req_abort(req, e);
 		return;
@@ -971,15 +976,14 @@ mcp_req_error (struct mcp_req         *req,
 	              mcp_req_error_put(req, code, message, data, n_data));
 }
 
-/* End the call with an error, having let go of what it waits for: for
- * ESHUTDOWN, the server drains; else memory ran out. */
+/* End the call with an error reply: 503, Server is shutting down, for
+ * ESHUTDOWN, as the server drains; 500, Out of memory, for any other error,
+ * be it memory, a handle or a page's lookup the call could not have, or
+ * text it could not format. */
 static void
 mcp_req_fail (struct mcp_req *req,
               int             e)
 {
-	mcp_req_unwait(req);
-	mcp_req_drop(req);
-	loop_timer_stop(req->mcp->loop, &req->timer);
 	if (e == ESHUTDOWN) {
 		mcp_req_error(req, 503, INTERNAL_ERROR, FRAG("Server is shutting down"),
 		              nullptr, 0);
@@ -1119,8 +1123,8 @@ mcp_req_output (struct mcp_req const *req)
 }
 
 /* Escape as much of the output into the reply as the step has the share
- * for; the rest goes on in bulk steps.  Then let go of the job, or the
- * page, if the output was its. */
+ * for; the rest goes on in bulk steps.  Then close the result, which lets
+ * go of the job, or the page, if the output was its. */
 static void
 mcp_req_reply (struct mcp_req *req)
 {
@@ -1140,7 +1144,6 @@ mcp_req_reply (struct mcp_req *req)
 		loop_ready_bulk(loop, &req->step);
 		return;
 	}
-	mcp_req_drop(req);
 	mcp_req_tool_close(req);
 }
 
@@ -1416,7 +1419,6 @@ mcp_req_job_end (struct mcp_req *req)
 			mcp_req_job_failed(req, why);
 			return;
 		}
-		mcp_req_drop(req);
 		mcp_req_error(req, 500, INTERNAL_ERROR,
 		              FRAG("Cannot start the upstream request"), nullptr, 0);
 	}
