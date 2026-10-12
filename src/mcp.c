@@ -2314,10 +2314,11 @@ mcp_req_tokens (struct mcp_req const *req)
 }
 
 /* A turn's tool call, as its job's calls, and then req->calls, hold it: a
- * struct job_call, then its id, name and arguments. */
+ * struct job_call, then its id, name, extra and arguments. */
 struct mcp_call {
 	struct span id;
 	struct span name;
+	struct span extra;
 	struct span args;
 	size_t      size;  /* bytes of all that */
 };
@@ -2329,11 +2330,13 @@ mcp_call_at (unsigned char const *p)
 	struct job_call c;
 	memcpy(&c, p, sizeof c);
 	unsigned char *id = (unsigned char *)(uintptr_t)(p + sizeof c);
+	unsigned char *extra = id + c.id + c.name;
 	return (struct mcp_call){
 		.id = { id, c.id },
 		.name = { id + c.id, c.name },
-		.args = { id + c.id + c.name, c.args },
-		.size = sizeof c + c.id + c.name + c.args,
+		.extra = { extra, c.extra },
+		.args = { extra + c.extra, c.args },
+		.size = job_call_size(&c),
 	};
 }
 
@@ -2467,6 +2470,9 @@ mcp_req_turn_call (struct mcp_req         *req,
 		ESC(c.name.ptr, c.name.len),
 		BYTES(f->args),
 		req->args[k] && c.args.len ? ESC(c.args.ptr, c.args.len) : TEXT("{}"),
+		BYTES(f->args_end),
+		c.extra.len ? BYTES(f->extra) : (struct mcp_piece){},
+		RAW(c.extra.ptr, c.extra.len),
 		BYTES(f->call_end),
 	};
 	e = mcp_req_upload(req, p, ARRAY_SIZE(p));

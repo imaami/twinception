@@ -1096,7 +1096,7 @@ home_job_has_call (struct job const *job,
 		memcpy(&c, all + off, sizeof c);
 		if (c.index == index)
 			return true;
-		off += sizeof c + c.id + c.name + c.args;
+		off += job_call_size(&c);
 	}
 	return false;
 }
@@ -1104,10 +1104,11 @@ home_job_has_call (struct job const *job,
 /* Add what @p call says of a tool call to the job @p user's calls: a call
  * begins with an index none had, after which those before it are whole, or,
  * for a server that gives no index, with an id unlike the last call's; its
- * id comes before its name, and its name before its arguments, which may
- * come in pieces; an id or a name said again, as some servers do, is the
- * same.  EPROTO for a call that breaks that order, or for more than
- * JOB_CALLS of them; EILSEQ for what is not UTF-8. */
+ * id comes before its name, its name before its extra, and that, which
+ * comes once, before its arguments, which may come in pieces; an id, a name
+ * or an extra said again, as some servers do, is the same.  EPROTO for a
+ * call that breaks that order, or for more than JOB_CALLS of them; EILSEQ
+ * for what is not UTF-8. */
 static int
 home_put_call (void                 *user,
                struct ai_call const *call)
@@ -1120,10 +1121,11 @@ home_put_call (void                 *user,
 	for (size_t off = 0; off < all.len; ++n) {
 		memcpy(&last, all.ptr + off, sizeof last);
 		at = off;
-		off += sizeof last + last.id + last.name + last.args;
+		off += job_call_size(&last);
 	}
 	size_t id = call->id_len;
 	size_t name = call->name_len;
+	size_t extra = call->extra_len;
 	size_t args = call->args_len;
 	/* An id unlike the last call's begins a call; one said again is the
 	 * same. */
@@ -1140,6 +1142,9 @@ home_put_call (void                 *user,
 		id = more;
 		if (name && name == last.name && !memcmp(had + last.id, call->name, name))
 			name = 0;
+		had += last.id + last.name;
+		if (extra && extra == last.extra && !memcmp(had, call->extra, extra))
+			extra = 0;
 	} else {
 		/* A call that came before the last may not go on. */
 		if (n == JOB_CALLS || home_job_has_call(job, index, at))
@@ -1148,12 +1153,13 @@ home_put_call (void                 *user,
 		at = all.len;
 		head = sizeof last;
 	}
-	if ((id && (last.name || last.args)) || (name && last.args))
+	bool later = last.extra || last.args;
+	if ((id && (last.name || later)) || ((name || extra) && later))
 		return EPROTO;
 	if (jb_utf8(call->id, id) < id || jb_utf8(call->name, name) < name ||
-	    jb_utf8(call->args, args) < args)
+	    jb_utf8(call->extra, extra) < extra || jb_utf8(call->args, args) < args)
 		return EILSEQ;
-	size_t len = head + id + name + args;
+	size_t len = head + id + name + extra + args;
 	if (!len)
 		return 0;
 	struct span s;
@@ -1166,10 +1172,13 @@ home_put_call (void                 *user,
 		memcpy(p, call->id, id);
 	if (name)
 		memcpy(p + id, call->name, name);
+	if (extra)
+		memcpy(p + id + name, call->extra, extra);
 	if (args)
-		memcpy(p + id + name, call->args, args);
+		memcpy(p + id + name + extra, call->args, args);
 	last.id += (uint32_t)id;
 	last.name += (uint32_t)name;
+	last.extra += (uint32_t)extra;
 	last.args += (uint32_t)args;
 	buf_commit(&job->calls, len);
 	memcpy(buf_peek(&job->calls).ptr + at, &last, sizeof last);

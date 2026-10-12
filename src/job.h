@@ -89,13 +89,21 @@ enum job_ask {
 };
 
 /** A tool call that a streamed answer makes, in a job's calls: this, then
- *  the bytes of its id, its name and its arguments' JSON text. */
+ *  the bytes of its id, its name, its extra and its arguments' JSON text. */
 struct job_call {
 	uint32_t index;  /**< its place among the answer's calls */
 	uint32_t id;     /**< bytes of its id */
 	uint32_t name;   /**< of its name */
+	uint32_t extra;  /**< of the JSON text it carries back (struct ai_call) */
 	uint32_t args;   /**< of its arguments */
 };
+
+/** The bytes of the call @p c in a job's calls: it and its parts. */
+static inline size_t
+job_call_size (struct job_call const *c)
+{
+	return sizeof *c + c->id + c->name + c->extra + c->args;
+}
 
 /** How a job ended. */
 enum job_status {

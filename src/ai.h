@@ -85,9 +85,14 @@ static constexpr uint32_t AI_CALL_NEXT = UINT32_MAX;
 struct ai_call {
 	char const *id;
 	char const *name;
-	char const *args;      /**< a piece of its arguments' JSON text */
+	char const *extra;      /**< JSON text that the call carries back as it
+	                             came, which the API's turns place (struct
+	                             ai_format): Gemini's thought signature, in
+	                             chat completions its extra_content */
+	char const *args;       /**< a piece of its arguments' JSON text */
 	size_t      id_len;
 	size_t      name_len;
+	size_t      extra_len;
 	size_t      args_len;
 	uint32_t    index;
 };
@@ -129,7 +134,9 @@ ai_event (enum ai_api            api,
  * the texts of strings, which are escaped into it.  A model's turn is turn,
  * its text, thought and its thinking's text if it has any, and calls; then
  * each tool call: call (after the first, call_next), its id, name, its
- * name, args, its arguments' JSON text, and call_end; then turn_end.  The
+ * name, args, its arguments' JSON text, args_end, extra and its extra's
+ * JSON text as it is if it has one (struct ai_call), and call_end; then
+ * turn_end.  The
  * result of a call is result, the call's id, output, the result's text, and
  * result_end.  prompt_end ends the prompt's text: what askai adds to the
  * prompt goes before it.
@@ -145,6 +152,8 @@ struct ai_format {
 	                call_next,
 	                name,
 	                args,
+	                args_end,
+	                extra,
 	                call_end,
 	                turn_end,
 	                result,

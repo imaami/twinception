@@ -4805,13 +4805,14 @@ def check_git(binary, up):
 
 
 def turn_stream(calls=(), text="", reasoning="", used=None, interleave=False,
-                index=True, reason=None):
+                index=True, reason=None, extras=None):
     """A streamed chat completion of @p text that calls the tools @p calls,
     (id, name, arguments' JSON text) each, the arguments in pieces of 7
     bytes, after @p reasoning; with @p used, (prompt, answer) tokens, its
     usage; with @p interleave, the calls' pieces taken in turn; without
     @p index, the calls' pieces giving none; with @p reason, that stop
-    reason."""
+    reason; with @p extras, each call's extra_content or None, as Gemini
+    sends them: each call whole in one piece, with no index."""
     ev = [(None, {"choices": [{"index": 0, "delta": {"role": "assistant",
                                                      "content": ""}}]})]
     delta = lambda d: (None, {"choices": [{"index": 0, "delta": d}]})
@@ -4821,7 +4822,12 @@ def turn_stream(calls=(), text="", reasoning="", used=None, interleave=False,
     ev += [delta({"content": text[k:k + (16 << 10)]})
            for k in range(0, len(text), 16 << 10)]
     pieces = []
-    for i, (cid, name, args) in enumerate(calls):
+    for (cid, name, args), extra in zip(calls, extras or ()):
+        whole = {"id": cid, "type": "function",
+                 "function": {"name": name, "arguments": args}}
+        pieces.append([delta({"tool_calls": [whole | (
+            {"extra_content": extra} if extra else {})]})])
+    for i, (cid, name, args) in enumerate(calls if not extras else ()):
         at = {"index": i} if index else {}
         call = [delta({"tool_calls": [at | {"id": cid, "type": "function",
                                             "function": {"name": name,
@@ -5122,6 +5128,31 @@ def check_turns(binary, up):
             # Calls out of order are the upstream's error.
             script[:] = [lambda r: (200, turn_stream([("a", "git", log), ("b", "git", log)],
                                                      interleave=True))]
+            result = ai.ask("Q")
+            assert result.get("isError") and "tool calls out of order" in \
+                result["content"][0]["text"], result
+
+            # Gemini's thought signatures, in extra_content: whole calls with
+            # no index, of which only the first of parallel ones is signed,
+            # go back as they came; one that comes after its arguments is out
+            # of order.
+            signed = {"google": {"thought_signature": "c2ln/+=="}}
+            script[:] = [lambda r: (200, turn_stream([("g1", "git", log), ("g2", "git", log)],
+                                                     extras=(signed, None)))]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            assert result["content"][0]["text"] == "A", result
+            request = up.requests[count + 1]
+            head = turns(request)[0]
+            assert head["tool_calls"][0]["extra_content"] == signed, head
+            assert "extra_content" not in head["tool_calls"][1], head
+            assert b'"extra_content":{"google":{"thought_signature":"c2ln/+=="}}}' in \
+                request["raw"], request["raw"]
+            late = turn_stream([("g", "git", log)]).wire.replace(
+                b'"delta": {}, "finish_reason"', b'"delta": {"tool_calls": [{"index": 0, '
+                b'"extra_content": {"google": {}}}]}, "finish_reason"', 1)
+            assert b'"extra_content"' in late
+            script[:] = [lambda r: (200, Stream(wire=late))]
             result = ai.ask("Q")
             assert result.get("isError") and "tool calls out of order" in \
                 result["content"][0]["text"], result

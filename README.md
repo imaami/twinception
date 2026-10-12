@@ -454,8 +454,10 @@ Offered none, the call asks once, as without the option.  Else it runs a
 loop of turns: each turn is an upstream call, whose answer may call tools;
 `askai` runs them, one after another, writes the turn and their results into
 the conversation, and asks again, until an answer calls none, which is the
-call's answer.  Each turn waits for an upstream slot like any call, so the
-scheduler's fairness holds turn by turn.  The caller gets the answer, and a
+call's answer.  A call's `extra_content`, in which Gemini's chat completions
+give their thought signature, goes back with the call as it came.  Each turn
+waits for an upstream slot like any call, so the scheduler's fairness holds
+turn by turn.  The caller gets the answer, and a
 second text that lists the calls the turns made, with their arguments (but
 those of `notes` and `compact`, which are the model's own) and the bytes of
 each output.  With a `progressToken`, its notifications say the turn and the

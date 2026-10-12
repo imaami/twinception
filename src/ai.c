@@ -347,10 +347,15 @@ ai_chat_calls (struct ai_sink const *sink,
 		struct ai_call call = {
 			.index = at >= 0 && at < AI_CALL_NEXT ? (uint32_t)at : AI_CALL_NEXT
 		};
+		/* Gemini's thought signature, which a turn gives back. */
+		struct json_object *extra = jb_get(c, "extra_content");
 		call.id = ai_text_of(jb_get(c, "id"), &call.id_len);
 		call.name = ai_text_of(jb_get(fn, "name"), &call.name_len);
+		call.extra = extra ? json_object_to_json_string_length(extra, JB_WIRE,
+		                                                       &call.extra_len)
+		                   : nullptr;
 		call.args = ai_text_of(jb_get(fn, "arguments"), &call.args_len);
-		e = sink->call(sink->user, &call);
+		e = extra && !call.extra ? ENOMEM : sink->call(sink->user, &call);
 	}
 	return e;
 }
@@ -517,7 +522,9 @@ ai_format (enum ai_api api)
 		.call_next  = B(",{\"id\":\""),
 		.name       = B("\",\"type\":\"function\",\"function\":{\"name\":\""),
 		.args       = B("\",\"arguments\":\""),
-		.call_end   = B("\"}}"),
+		.args_end   = B("\"}"),
+		.extra      = B(",\"extra_content\":"),
+		.call_end   = B("}"),
 		.turn_end   = B("]}"),
 		.result     = B(",{\"role\":\"tool\",\"tool_call_id\":\""),
 		.output     = B("\",\"content\":\""),
