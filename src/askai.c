@@ -553,8 +553,11 @@ serve (struct config const *cfg)
 	                              : nullptr;
 	int git_error = cfg->n_gits && !git ? errno : 0;
 	char why[256];
-	struct notes *notes = cfg->notes ? notes_new(cfg->notes, why, sizeof why) : nullptr;
-	if (cfg->notes && !notes) {
+	int notes_error = 0;
+	struct notes *notes = cfg->notes ? notes_create(cfg->notes, why, sizeof why,
+	                                                &notes_error)
+	                                 : nullptr;
+	if (notes_error) {
 		fprintf(stderr, "askai: --notes: %s: %s\n", cfg->notes, why);
 		git_free(&git);
 		return 1;
@@ -642,7 +645,7 @@ serve (struct config const *cfg)
 	task_pool_destroy(&tasks);
 	httpd_hub_free(&hub);
 	git_free(&git);
-	notes_free(&notes);
+	notes_destroy(&notes);
 	mcp_static_free(&st);
 	manual_free(&manual);
 	free(loops);

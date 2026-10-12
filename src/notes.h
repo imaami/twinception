@@ -39,24 +39,26 @@ static constexpr uint64_t NOTES_NS = 10'000'000'000;
 
 /**
  * The notes repository at @p path, a bare one, made so if nothing is there;
- * nullptr, with errno, if it is not one or cannot be made, @p why, of
- * @p len bytes, saying so.  Runs git and waits for it: for startup.
+ * nullptr, with the error in @p *e, if it is not one or cannot be made,
+ * @p why, of @p len bytes, saying so.  Runs git and waits for it: for
+ * startup.
  */
 extern struct notes *
-notes_new (char const *path,
-           char       *why,
-           size_t      len);
+notes_create (char const *path,
+              char       *why,
+              size_t      len,
+              int        *e);
 
 extern void
-notes_free (struct notes **p_notes);
+notes_destroy (struct notes **p_notes);
 
 /** The environment git runs in. */
 extern char *const *
 notes_env (struct notes const *notes);
 
-/** A new thread's id, NUL-terminated, in @p id, of 128 random bits; false
- * if the kernel gave none. */
-extern bool
+/** A new thread's id, NUL-terminated, in @p id, of 128 random bits;
+ *  returns 0, or why the kernel gave none. */
+extern int
 notes_id (char id[NOTES_ID + 1]);
 
 /** Whether the @p len bytes at @p s are a thread's id. */
@@ -80,9 +82,9 @@ notes_write (struct notes const *notes,
 /**
  * Write into @p in what has git fast-import commit a note of the @p len
  * bytes of UTF-8 text at @p text, with no NUL, to @p ref, on its tip if
- * @p after, else as its first; false if out of memory.
+ * @p after, else as its first; returns 0 or ENOMEM.
  */
-extern bool
+extern int
 notes_input (struct buf *in,
              char const *ref,
              char const *text,

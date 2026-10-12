@@ -1665,7 +1665,7 @@ ask_call (struct mcp_req     *req,
 	req->token = id_valid(token) ? json_object_get(token) : nullptr;
 	if (notes && id) {
 		memcpy(req->thread, id, sizeof req->thread);
-	} else if (notes && !notes_id(req->thread)) {
+	} else if (notes && notes_id(req->thread)) {
 		reply_error(req, 500, INTERNAL_ERROR, "Cannot make a thread's id", nullptr, 0);
 		return false;
 	}
@@ -2656,7 +2656,7 @@ notes_call (struct mcp_req     *req,
 	}
 	char const *argv[NOTES_ARGV];
 	notes_write(req->mcp->st->notes, argv);
-	if (!notes_input(&req->body, req->ref, note, len, req->branch)) {
+	if (notes_input(&req->body, req->ref, note, len, req->branch)) {
 		tool_done(req, false, true);
 		return;
 	}
