@@ -429,19 +429,23 @@ mcp_is_metrics (struct span target)
 	       (target.len == n || target.ptr[n] == '?');
 }
 
-/* The enum metrics_method of @p method. */
+/* The enum metrics_method of @p method, of @p len bytes. */
 static uint8_t
-mcp_method_index (char const *method)
+mcp_method_index (char const *method,
+                  size_t      len)
 {
-	static char const *const names[METHOD_N] = {
-		[METHOD_INITIALIZE] = "initialize",
-		[METHOD_PING]       = "ping",
-		[METHOD_TOOLS_LIST] = "tools/list",
-		[METHOD_TOOLS_CALL] = "tools/call",
-		[METHOD_DISCOVER]   = "server/discover",
+#define M(s) { s, sizeof s - 1, false }
+	static struct mcp_piece const names[METHOD_N] = {
+		[METHOD_INITIALIZE] = M("initialize"),
+		[METHOD_PING]       = M("ping"),
+		[METHOD_TOOLS_LIST] = M("tools/list"),
+		[METHOD_TOOLS_CALL] = M("tools/call"),
+		[METHOD_DISCOVER]   = M("server/discover"),
 	};
+#undef M
 	uint8_t i = METHOD_N;
-	while (--i && (!names[i] || strcmp(method, names[i])))
+	while (--i && (!names[i].len || names[i].len != len ||
+	               memcmp(method, names[i].ptr, len)))
 		;
 	return i;
 }
@@ -3734,7 +3738,7 @@ mcp_req_request (struct mcp_req     *req,
 {
 	struct stream *s = req->s;
 	struct json_object *params = jb_get(req->msg, "params");
-	req->method = mcp_method_index(method);
+	req->method = mcp_method_index(method, len);
 	if (!mcp_id_valid(id)) {
 		mcp_req_error(req, 400, INVALID_REQUEST, FRAG("Invalid request id"), nullptr, 0);
 		return;
@@ -3776,6 +3780,7 @@ mcp_req_accept (struct mcp_req *req)
 static void
 mcp_req_message (struct mcp_req *req)
 {
+	static char const cancelled[] = "notifications/cancelled";
 	struct json_object *msg = req->msg;
 	struct stream *s = req->s;
 	size_t len = 0;
@@ -3797,7 +3802,7 @@ mcp_req_message (struct mcp_req *req)
 		return;
 	}
 	if (!has_id) {
-		if (!strcmp(method, "notifications/cancelled"))
+		if (len == sizeof cancelled - 1 && !memcmp(method, cancelled, len))
 			mcp_cancel(req->mcp, s->ops->field(s, F_SESSION), jb_get(msg, "params"));
 		mcp_req_accept(req);
 		return;
