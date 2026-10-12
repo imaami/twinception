@@ -102,9 +102,9 @@ extern bool
 tls_blocked (struct ssl_st const *ssl);
 
 /** Say the connection ends (close_notify), if its handshake is done, as far
- *  as the socket takes it now, and destroy @p *p_ssl. */
+ *  as the socket takes it now; tls_destroy() then frees @p ssl. */
 extern void
-tls_close (struct ssl_st **p_ssl);
+tls_close (struct ssl_st *ssl);
 
 /** Free @p *p_ssl, if not nullptr, saying nothing more to the client, and
  *  set it to nullptr. */

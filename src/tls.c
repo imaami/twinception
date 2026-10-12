@@ -317,14 +317,13 @@ tls_blocked (struct ssl_st const *ssl)
 }
 
 void
-tls_close (struct ssl_st **p_ssl)
+tls_close (struct ssl_st *ssl)
 {
-	struct ssl_st *ssl = *p_ssl;
-	if (ssl && SSL_is_init_finished(ssl)) {
-		ERR_clear_error();
-		(void)SSL_shutdown(ssl);
-	}
-	tls_destroy(p_ssl);
+	if (!SSL_is_init_finished(ssl))
+		return;
+	ERR_clear_error();
+	(void)SSL_shutdown(ssl);
+	ERR_clear_error();
 }
 
 void
