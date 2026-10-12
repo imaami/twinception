@@ -329,8 +329,8 @@ put (struct buf *out,
      ...)
 {
 	for (size_t room = 256;;) {
-		struct span s = buf_reserve(out, room, SIZE_MAX);
-		if (!s.len)
+		struct span s;
+		if (buf_reserve(out, room, SIZE_MAX, &s))
 			return false;
 		va_list ap;
 		va_start(ap, fmt);

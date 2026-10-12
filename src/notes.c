@@ -260,8 +260,8 @@ notes_input (struct buf *in,
 	int t = snprintf(tail, sizeof tail, "\n%s%s%s\n", after ? "from " : "",
 	                 after ? ref : "", after ? "^0\n" : "");
 	size_t n = (size_t)h + len + (size_t)t;
-	struct span s = buf_reserve(in, n, SIZE_MAX);
-	if (!s.len)
+	struct span s;
+	if (buf_reserve(in, n, SIZE_MAX, &s))
 		return false;
 	memcpy(s.ptr, head, (size_t)h);
 	memcpy(s.ptr + h, text, len);

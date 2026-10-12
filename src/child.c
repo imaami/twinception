@@ -60,7 +60,7 @@ child_free (struct child *c)
 		close(fd);
 		atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
 	}
-	buf_free(&c->out);
+	buf_fini(&c->out);
 	free(c);
 }
 
@@ -80,8 +80,8 @@ child_read (struct child *c)
 			loop_ready_bulk(loop, &c->step);
 			return;
 		}
-		struct span s = buf_reserve(&c->out, want, c->max + 1);
-		if (!s.len) {
+		struct span s;
+		if (buf_reserve(&c->out, want, c->max + 1, &s)) {
 			c->cut = true;
 			child_kill(c);
 			return;
@@ -347,7 +347,7 @@ child_drop (struct child *c)
 		return;
 	}
 	loop_timer_stop(c->loop, &c->timer);
-	buf_free(&c->out);
+	buf_fini(&c->out);
 }
 
 void

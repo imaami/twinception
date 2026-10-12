@@ -595,15 +595,15 @@ static void
 job_shelve (struct mcp *mcp,
             struct job *job)
 {
-	buf_free(&job->request);
-	buf_free(&job->key);
+	buf_fini(&job->request);
+	buf_fini(&job->key);
 	if (mcp) {
 		shelf_put(&mcp->jobs, &job->spare);
 		hist_add(&mcp->counts->kept.jobs, 1);
 	} else {
-		buf_free(&job->result);
-		buf_free(&job->calls);
-		buf_free(&job->thought);
+		buf_fini(&job->result);
+		buf_fini(&job->calls);
+		buf_fini(&job->thought);
 		free(job);
 	}
 }
@@ -689,10 +689,10 @@ req_finish (struct mcp_req *req)
 	json_object_put(req->token);
 	req->draft = req->id = req->token = req->prompt = nullptr;
 	jb_scan_reset(&req->scan);
-	buf_free(&req->body);
-	buf_free(&req->upload);
-	buf_free(&req->reply);
-	buf_free(&req->calls);
+	buf_fini(&req->body);
+	buf_fini(&req->upload);
+	buf_fini(&req->reply);
+	buf_fini(&req->calls);
 	dstr_clear(&req->answer);
 	dstr_clear(&req->trace);
 	if (!req->reaper.n) {
@@ -775,9 +775,9 @@ reply_open (struct mcp_req *req)
 	buf_consume(&req->reply, buf_peek(&req->reply).len);
 	req->nomem = false;
 	if (req->sse) {
-		struct span s = buf_reserve(&req->reply, 6, SIZE_MAX);
-		req->nomem = !s.len;
-		if (s.len) {
+		struct span s;
+		req->nomem = buf_reserve(&req->reply, 6, SIZE_MAX, &s);
+		if (!req->nomem) {
 			memcpy(s.ptr, "data: ", 6);
 			buf_commit(&req->reply, 6);
 		}
@@ -790,10 +790,11 @@ reply_put (struct mcp_req    *req,
            size_t             n)
 {
 	for (size_t i = 0; i < n && !req->nomem; ++i) {
-		struct span s = f[i].len ? buf_reserve(&req->reply, f[i].len, SIZE_MAX)
-		                         : (struct span){};
-		req->nomem = f[i].len && !s.len;
-		if (s.len) {
+		struct span s;
+		if (!f[i].len)
+			continue;
+		req->nomem = buf_reserve(&req->reply, f[i].len, SIZE_MAX, &s);
+		if (!req->nomem) {
 			memcpy(s.ptr, f[i].ptr, f[i].len);
 			buf_commit(&req->reply, f[i].len);
 		}
@@ -806,10 +807,11 @@ reply_escape (struct mcp_req *req,
               char const     *src,
               size_t          len)
 {
-	struct span s = req->nomem || !len ? (struct span){}
-	              : buf_reserve(&req->reply, 6 * len, SIZE_MAX);
-	req->nomem |= len && !s.len;
-	if (s.len)
+	struct span s;
+	if (req->nomem || !len)
+		return;
+	req->nomem = buf_reserve(&req->reply, 6 * len, SIZE_MAX, &s);
+	if (!req->nomem)
 		buf_commit(&req->reply, jb_escape((char *)s.ptr, src, len));
 }
 
@@ -1246,8 +1248,8 @@ call_done (struct loop *loop,
 		req->upload = job->request;
 		job->request = (struct buf){};
 	}
-	buf_free(&job->request);
-	buf_free(&job->key);
+	buf_fini(&job->request);
+	buf_fini(&job->key);
 	if (!req) {
 		if (mcp)
 			hist_add(&mcp->counts->calls.dropped, 1);
@@ -1326,11 +1328,12 @@ call_copy (struct mcp_req *req,
 {
 	size_t from = k ? req->splice[k - 1].at : 0;
 	size_t len = (k < req->splices ? req->splice[k].at : req->len) - from;
-	struct span s = len ? buf_reserve(&req->upload, len, SIZE_MAX) : (struct span){};
-	if (len && !s.len)
+	struct span s;
+	if (!len)
+		return true;
+	if (buf_reserve(&req->upload, len, SIZE_MAX, &s))
 		return false;
-	if (len)
-		memcpy(s.ptr, req->text + from, len);
+	memcpy(s.ptr, req->text + from, len);
 	buf_commit(&req->upload, len);
 	return true;
 }
@@ -1349,9 +1352,8 @@ call_key (struct job         *job,
 	size_t len = 0;
 	char const *json = json_object_to_json_string_length(id, JB_WIRE, &len);
 	size_t head = session.ptr ? session.len + 1 : 0;
-	struct span s = json ? buf_reserve(&job->key, head + len, SIZE_MAX)
-	                     : (struct span){};
-	if (!s.len)
+	struct span s;
+	if (!json || buf_reserve(&job->key, head + len, SIZE_MAX, &s))
 		return false;
 	if (head) {
 		memcpy(s.ptr, session.ptr, session.len);
@@ -1434,9 +1436,8 @@ call_build (struct mcp_req *req)
 		size_t len = (size_t)json_object_get_string_len(str) - req->off;
 		size_t room = loop_room(loop, LOOP_ESCAPE);
 		size_t n = len < room ? len : room;
-		struct span s = n ? buf_reserve(&req->upload, 6 * n, SIZE_MAX)
-		                  : (struct span){};
-		ok = !n || s.len;
+		struct span s = {};
+		ok = !n || !buf_reserve(&req->upload, 6 * n, SIZE_MAX, &s);
 		if (n && ok) {
 			buf_commit(&req->upload, jb_escape((char *)s.ptr,
 			                                   json_object_get_string(str) +
@@ -2019,9 +2020,10 @@ upload_put (struct mcp_req     *req,
 			size_t k = left < room ? left : room;
 			if (!k)
 				return EAGAIN;
-			struct span s = buf_reserve(&req->upload, q->text ? 6 * k : k, UPLOAD_MAX);
-			if (!s.len)
-				return errno == ENOBUFS ? ENOBUFS : ENOMEM;
+			struct span s;
+			int e = buf_reserve(&req->upload, q->text ? 6 * k : k, UPLOAD_MAX, &s);
+			if (e)
+				return e;
 			if (q->text) {
 				buf_commit(&req->upload, jb_escape((char *)s.ptr, q->ptr + req->off, k));
 			} else {
@@ -2251,8 +2253,8 @@ turn_write (struct mcp_req *req)
 		upload_failed(req, e);
 		return;
 	}
-	struct span s = buf_reserve(&req->calls, all.len, CALLS_MAX);
-	if (!s.len) {
+	struct span s;
+	if (buf_reserve(&req->calls, all.len, CALLS_MAX, &s)) {
 		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
 		return;
 	}
@@ -2321,7 +2323,7 @@ tool_start (struct mcp_req *req)
 	struct mcp *mcp = req->mcp;
 	struct mcp_static const *st = mcp->st;
 	if (req->part == req->n_calls) {
-		buf_free(&req->calls);
+		buf_fini(&req->calls);
 		if (req->context && req->used && tokens_of(req) >= req->context)
 			compact_full(req);
 		else
@@ -2649,7 +2651,7 @@ notes_call (struct mcp_req     *req,
 	}
 	req->fetch = FETCH_WRITE;
 	int e = notes_spawn(req, argv, buf_peek(&req->body));
-	buf_free(&req->body);
+	buf_fini(&req->body);
 	if (e)
 		notes_failed(req, e);
 }
@@ -2811,7 +2813,7 @@ compact_call (struct mcp_req     *req,
 	              "results with it. Your summary of it:]\n\n") &&
 	          dstr_cat_n(&req->answer, summary, jb_utf8(summary, len));
 	args_free(req, req->part, ARRAY_SIZE(req->args));
-	buf_free(&req->calls);
+	buf_fini(&req->calls);
 	if (!ok) {
 		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
 		return;
@@ -2849,7 +2851,7 @@ compact_full (struct mcp_req *req)
 	hist_add(&req->mcp->counts->calls.compacted[1], 1);
 	call_drop(req);
 	args_free(req, 0, ARRAY_SIZE(req->args));
-	buf_free(&req->calls);
+	buf_fini(&req->calls);
 	dstr_clear(&req->answer);
 	req->tooling = false;
 	if (!CAT(&req->answer, "\n\n[askai: your context filled up, so the "
@@ -3139,7 +3141,7 @@ req_parse (struct mcp_req *req)
 		loop_ready_bulk(loop, &req->step);
 		return;
 	}
-	buf_free(&req->body);
+	buf_fini(&req->body);
 	req->phase = PHASE_DISPATCH;
 	if (whole)
 		req_dispatch(req);
@@ -3338,7 +3340,7 @@ mcp_on_head (void          *ctx,
 	s->user = req;
 	/* A body of known length is taken in without growing. */
 	if (!metrics && length && length != STREAM_OPEN)
-		(void)buf_reserve(&req->body, length, length);
+		(void)buf_reserve(&req->body, length, length, &(struct span){});
 }
 
 static void
@@ -3369,9 +3371,8 @@ mcp_on_body (struct stream *s,
 		               : "Out of memory");
 		return;
 	}
-	struct span room = bytes.len ? buf_reserve(&req->body, bytes.len, SIZE_MAX)
-	                             : (struct span){};
-	if (bytes.len && !room.len) {
+	struct span room = {};
+	if (bytes.len && buf_reserve(&req->body, bytes.len, SIZE_MAX, &room)) {
 		req_http_error(req, 500, "Out of memory");
 		return;
 	}

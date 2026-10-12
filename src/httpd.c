@@ -849,8 +849,8 @@ conn_close (struct conn *conn)
 	tls_put(conn->ctx);
 	tls_free(conn->ssl);
 	close(conn->fd);
-	buf_free(&conn->out);
-	buf_free(&conn->in);
+	buf_fini(&conn->out);
+	buf_fini(&conn->in);
 }
 
 /* File the connection at the young end of its list. */
@@ -921,8 +921,8 @@ conn_put (struct conn       *conn,
 	size_t total = frag_len(f, n);
 	if (!total)
 		return true;
-	struct span s = buf_reserve(&conn->out, total, SIZE_MAX);
-	if (!s.len) {
+	struct span s;
+	if (buf_reserve(&conn->out, total, SIZE_MAX, &s)) {
 		conn_doom(conn);
 		return false;
 	}
@@ -1480,7 +1480,7 @@ conn_flush (struct conn *conn)
 	while (!conn->dead) {
 		struct span out = buf_peek(&conn->out);
 		if (!out.len) {
-			buf_free(&conn->out);
+			buf_fini(&conn->out);
 			enum tls_shake shake = conn_blocked(conn) ? tls_shake(conn->ssl)
 			                                          : TLS_SHAKEN;
 			if (shake == TLS_FAILED) {
@@ -1611,7 +1611,7 @@ conn_end (struct conn *conn)
 	conn->linger = true;
 	conn->since = srv->loop->now;
 	conn_unhold(conn);
-	buf_free(&conn->in);
+	buf_fini(&conn->in);
 	loop_unready(&conn->step);
 	conn_park(conn, false);
 	conn_arm(conn);
@@ -1689,7 +1689,7 @@ conn_pump (struct conn *conn)
 	 * pressure one that waits keeps no more than its bytes need. */
 	bool idle = starved && !pending && !blocked && !conn_input(conn);
 	if (idle)
-		buf_free(&conn->in);
+		buf_fini(&conn->in);
 	else if (waiting && atomic_load_explicit(&buf_pressure, memory_order_relaxed) >=
 	                    BUF_CRITICAL)
 		loop_work(loop, LOOP_COPY, buf_trim(&conn->in) + buf_trim(&conn->out));
@@ -1708,8 +1708,8 @@ conn_read (struct conn *conn)
 	 * empty span means out of memory. */
 	struct loop *loop = conn->srv->loop;
 	bool first = !conn->parsed && !conn_input(conn);
-	struct span s = buf_reserve(&conn->in, READ_MIN, conn->srv->in_max);
-	if (!s.len) {
+	struct span s;
+	if (buf_reserve(&conn->in, READ_MIN, conn->srv->in_max, &s)) {
 		conn_close(conn);
 		return;
 	}

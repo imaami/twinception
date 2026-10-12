@@ -101,20 +101,22 @@ struct buf_stash {
 };
 
 /**
- * At least @p min free bytes at the tail, doubling up to @p max; empty on ENOBUFS.
+ * Make at least @p min bytes free at the tail, doubling up to @p max, and
+ * give them in @p room.  Returns 0; ENOBUFS, the backpressure signal, when
+ * the readable bytes and @p min together exceed @p max; or ENOMEM.
  *
- * The span covers the free bytes at the tail, which can be more than @p min,
- * but never more than would take the readable bytes past @p max.  It is empty,
- * and the buffer unchanged, when the readable bytes and @p min together exceed
- * @p max (errno ENOBUFS, the backpressure signal) or memory runs out (ENOMEM).
- * A reservation may move the readable bytes: pointers into them do not survive
- * it, offsets from the head do.  Storage grows to the class that holds the
- * double, or what is needed, but not past the class that holds @p max.
+ * @p room covers the free bytes at the tail, which can be more than @p min,
+ * but never more than would take the readable bytes past @p max.  On an
+ * error it is empty, and the buffer unchanged.  A reservation may move the
+ * readable bytes: pointers into them do not survive it, offsets from the
+ * head do.  Storage grows to the class that holds the double, or what is
+ * needed, but not past the class that holds @p max.
  */
-extern struct span
-buf_reserve (struct buf *buf,
-             size_t      min,
-             size_t      max);
+extern int
+buf_reserve (struct buf  *buf,
+             size_t       min,
+             size_t       max,
+             struct span *room);
 
 /** Make @p len bytes written into the last reservation readable. */
 static inline void
@@ -170,7 +172,7 @@ buf_wipe (struct buf *buf);
 /** Give the storage up, to the stash if the thread has one, leaving an
  *  empty buffer. */
 extern void
-buf_free (struct buf *buf);
+buf_fini (struct buf *buf);
 
 /** Make @p stash, in zeroed storage just allocated, valid: its atomic
  *  members are initialized in place (src/hist.h). */

@@ -32,8 +32,8 @@ put (struct buf *buf,
      size_t      len,
      size_t      max)
 {
-	struct span s = buf_reserve(buf, len, max);
-	if (s.len < len)
+	struct span s;
+	if (buf_reserve(buf, len, max, &s) || s.len < len)
 		return false;
 	memcpy(s.ptr, src, len);
 	buf_commit(buf, len);
@@ -57,16 +57,16 @@ test_empty (void)
 	CHECK(!s.ptr && !s.len);
 	CHECK(!buf_trim(&buf));
 	buf_wipe(&buf);
-	buf_free(&buf);
+	buf_fini(&buf);
 	CHECK(!buf.data && !buf.cap);
 
 	/* A first reservation takes the smallest class, and the span covers
 	 * what of it the maximum allows. */
-	s = buf_reserve(&buf, 100, 1000);
+	CHECK(!buf_reserve(&buf, 100, 1000, &s));
 	CHECK(s.ptr && s.len == 1000 && buf.cap == 4096);
 	buf_commit(&buf, 0);
 	CHECK(!buf_peek(&buf).len);
-	buf_free(&buf);
+	buf_fini(&buf);
 }
 
 static void
@@ -84,11 +84,12 @@ test_round_trip (void)
 	CHECK(!buf.head && !buf.tail && buf.data == data && !buf_peek(&buf).len);
 
 	/* The span covers all free space, and a zero reservation succeeds. */
-	struct span s = buf_reserve(&buf, 1, SIZE_MAX);
+	struct span s;
+	CHECK(!buf_reserve(&buf, 1, SIZE_MAX, &s));
 	CHECK(s.ptr == buf.data && s.len == buf.cap);
-	s = buf_reserve(&buf, 0, SIZE_MAX);
+	CHECK(!buf_reserve(&buf, 0, SIZE_MAX, &s));
 	CHECK(s.len == buf.cap);
-	buf_free(&buf);
+	buf_fini(&buf);
 }
 
 static void
@@ -102,40 +103,35 @@ test_growth (void)
 	CHECK(put(&buf, block, 1, 50'000) && buf.cap == 8192);
 	CHECK(put(&buf, block, 4096, 50'000) && buf.cap == 16384);
 	/* Doubling stops at the class that holds the maximum. */
-	struct span s = buf_reserve(&buf, 30'000, 50'000);
+	struct span s;
+	CHECK(!buf_reserve(&buf, 30'000, 50'000, &s));
 	CHECK(s.len == 50'000 - 8193 && buf.cap == 65536);
 	buf_commit(&buf, 30'000);
 	CHECK(buf_peek(&buf).len == 38'193);
 
 	/* Past the maximum: ENOBUFS, and nothing changes. */
 	unsigned char *data = buf.data;
-	errno = 0;
-	s = buf_reserve(&buf, 11'808, 50'000);
-	CHECK(!s.ptr && !s.len && errno == ENOBUFS);
+	CHECK(buf_reserve(&buf, 11'808, 50'000, &s) == ENOBUFS && !s.ptr && !s.len);
 	CHECK(buf.data == data && buf.cap == 65536 && buf_peek(&buf).len == 38'193);
-	s = buf_reserve(&buf, 11'807, 50'000);
+	CHECK(!buf_reserve(&buf, 11'807, 50'000, &s));
 	CHECK(s.len == 11'807);
 
 	/* A maximum below the capacity also caps the span. */
-	errno = 0;
-	CHECK(!buf_reserve(&buf, 10, 38'199).len && errno == ENOBUFS);
-	s = buf_reserve(&buf, 5, 38'199);
+	CHECK(buf_reserve(&buf, 10, 38'199, &s) == ENOBUFS && !s.len);
+	CHECK(!buf_reserve(&buf, 5, 38'199, &s));
 	CHECK(s.len == 6 && buf.cap == 65536);
 
 	/* A smaller maximum than the readable bytes, and overflowing sums. */
-	errno = 0;
-	CHECK(!buf_reserve(&buf, 300, 500).len && errno == ENOBUFS);
-	errno = 0;
-	CHECK(!buf_reserve(&buf, SIZE_MAX, SIZE_MAX).len && errno == ENOBUFS);
-	buf_free(&buf);
+	CHECK(buf_reserve(&buf, 300, 500, &s) == ENOBUFS && !s.len);
+	CHECK(buf_reserve(&buf, SIZE_MAX, SIZE_MAX, &s) == ENOBUFS && !s.len);
+	buf_fini(&buf);
 
 	/* Out of memory: ENOMEM, and nothing changes. */
 	CHECK(put(&buf, "abc", 3, SIZE_MAX));
 	data = buf.data;
-	errno = 0;
-	CHECK(!buf_reserve(&buf, SIZE_MAX / 2, SIZE_MAX).len && errno == ENOMEM);
+	CHECK(buf_reserve(&buf, SIZE_MAX / 2, SIZE_MAX, &s) == ENOMEM && !s.len);
 	CHECK(buf.data == data && holds(&buf, "abc", 3));
-	buf_free(&buf);
+	buf_fini(&buf);
 }
 
 static void
@@ -149,37 +145,37 @@ test_compaction (void)
 	struct buf buf = {};
 	CHECK(put(&buf, bytes, 4096, SIZE_MAX) && buf.cap == 4096);
 	buf_consume(&buf, 1000);
-	struct span s = buf_reserve(&buf, 500, SIZE_MAX);
+	struct span s;
+	CHECK(!buf_reserve(&buf, 500, SIZE_MAX, &s));
 	CHECK(buf.cap == 8192 && !buf.head && s.len == 8192 - 3096);
 	CHECK(holds(&buf, bytes + 1000, 3096));
-	buf_free(&buf);
+	buf_fini(&buf);
 
 	/* Half or more consumed: the bytes move down in place. */
 	CHECK(put(&buf, bytes, 4096, SIZE_MAX));
 	buf_consume(&buf, 2048);
 	unsigned char *data = buf.data;
-	s = buf_reserve(&buf, 1000, SIZE_MAX);
+	CHECK(!buf_reserve(&buf, 1000, SIZE_MAX, &s));
 	CHECK(buf.data == data && buf.cap == 4096 && !buf.head && s.len == 2048);
 	CHECK(holds(&buf, bytes + 2048, 2048));
 
 	/* Compaction that would not make room grows instead. */
 	CHECK(put(&buf, bytes, 2048, SIZE_MAX));
 	buf_consume(&buf, 2048);
-	s = buf_reserve(&buf, 3000, SIZE_MAX);
+	CHECK(!buf_reserve(&buf, 3000, SIZE_MAX, &s));
 	CHECK(buf.cap == 8192 && !buf.head && s.len == 8192 - 2048);
 	CHECK(holds(&buf, bytes, 2048));
-	buf_free(&buf);
+	buf_fini(&buf);
 
 	/* At the maximum the bytes move down, however few were consumed, but
 	 * only for room within the maximum. */
 	CHECK(put(&buf, bytes, 4096, 4096) && buf.cap == 4096);
 	buf_consume(&buf, 10);
-	errno = 0;
-	CHECK(!buf_reserve(&buf, 11, 4096).len && errno == ENOBUFS && buf.head == 10);
-	s = buf_reserve(&buf, 10, 4096);
+	CHECK(buf_reserve(&buf, 11, 4096, &s) == ENOBUFS && !s.len && buf.head == 10);
+	CHECK(!buf_reserve(&buf, 10, 4096, &s));
 	CHECK(buf.cap == 4096 && !buf.head && s.len == 10);
 	CHECK(holds(&buf, bytes + 10, 4086));
-	buf_free(&buf);
+	buf_fini(&buf);
 }
 
 static void
@@ -223,7 +219,7 @@ test_cut (void)
 	CHECK(holds(&buf, "ne", 2));
 	buf_cut(&buf, 0, 2);
 	CHECK(!buf.head && !buf.tail);
-	buf_free(&buf);
+	buf_fini(&buf);
 }
 
 static void
@@ -238,7 +234,7 @@ test_wipe (void)
 	for (size_t i = 0; i < buf.cap; ++i)
 		zero &= !buf.data[i];
 	CHECK(zero);
-	buf_free(&buf);
+	buf_fini(&buf);
 }
 
 /* xorshift64*: a fixed, portable sequence. */
@@ -291,12 +287,13 @@ test_model (void)
 			size_t head = buf.head;
 			size_t cap = buf.cap;
 			unsigned char *data = buf.data;
-			struct span s = buf_reserve(&buf, min, MAX);
+			struct span s;
+			int e = buf_reserve(&buf, min, MAX, &s);
 			if (len + min > MAX) {
-				CHECK(!s.len && buf.cap == cap && buf.head == head);
+				CHECK(e == ENOBUFS && !s.len && buf.cap == cap && buf.head == head);
 				break;
 			}
-			CHECK(s.len >= min && buf.cap <= MAX);
+			CHECK(!e && s.len >= min && buf.cap <= MAX);
 			if (buf.cap == cap && head && !buf.head) {
 				CHECK(buf.data == data && (head >= cap / 2 || cap == MAX));
 				*(cap < MAX ? &moved : &forced) += len;
@@ -327,7 +324,7 @@ test_model (void)
 			} else if (!(r & 0x30)) {
 				(void)put(&other, noise, 1 + (size_t)(r >> 16) % MAX, SIZE_MAX);
 				if (r & 0x40)
-					buf_free(&other);
+					buf_fini(&other);
 			} else if (!(r & 0x300)) {
 				buf_stash_age(&stash);
 				(void)buf_stash_release(&stash, r & 0x400 ? BUF_CRITICAL
@@ -344,8 +341,8 @@ test_model (void)
 	       " moved without growing, %" PRIu64 " at the maximum; stash: %" PRIu64
 	       " hits, %" PRIu64 " misses\n", OPS, consumed, moved, forced,
 	       hist_get(&stash.metrics.hits), hist_get(&stash.metrics.misses));
-	buf_free(&buf);
-	buf_free(&other);
+	buf_fini(&buf);
+	buf_fini(&other);
 	(void)buf_stash_release(&stash, BUF_CRITICAL, SIZE_MAX);
 	CHECK(!stashed(&stash) && !stash.held);
 	buf_stash_attach(nullptr);
@@ -364,8 +361,8 @@ test_stash (void)
 	struct buf b = {};
 	CHECK(put(&a, bytes, 1, SIZE_MAX) && put(&b, bytes, 1, SIZE_MAX));
 	unsigned char *data = b.data;
-	buf_free(&a);
-	buf_free(&b);
+	buf_fini(&a);
+	buf_fini(&b);
 	CHECK(stash.n[0] == 2 && stashed(&stash) == 8192);
 	CHECK(hist_get(&stash.metrics.misses) == 2 && !hist_get(&stash.metrics.hits));
 	CHECK(put(&a, bytes, 1, SIZE_MAX) && a.data == data);
@@ -377,7 +374,7 @@ test_stash (void)
 	CHECK(stash.n[0] == 2 && stashed(&stash) == 8192);
 	buf_consume(&a, 8192);
 	CHECK(buf_trim(&a) == 1 && a.cap == 4096 && stash.n[2] == 1 && stash.n[0] == 1);
-	buf_free(&a);
+	buf_fini(&a);
 	CHECK(stash.n[0] == 2 && stashed(&stash) == 8192 + 16384);
 
 	/* At high pressure, what went unused since the last window began goes:
@@ -386,7 +383,7 @@ test_stash (void)
 	buf_stash_age(&stash);
 	CHECK(!buf_stash_release(&stash, BUF_HIGH, 256));
 	CHECK(put(&a, bytes, 1, SIZE_MAX));
-	buf_free(&a);
+	buf_fini(&a);
 	buf_stash_age(&stash);
 	CHECK(buf_stash_release(&stash, BUF_HIGH, 256) == 2);
 	CHECK(stash.n[0] == 1 && !stash.n[2] && stashed(&stash) == 4096);
@@ -398,7 +395,7 @@ test_stash (void)
 	for (size_t i = 0; i < ARRAY_SIZE(many); ++i)
 		CHECK(put(&many[i], bytes, 1, SIZE_MAX));
 	for (size_t i = 0; i < ARRAY_SIZE(many); ++i)
-		buf_free(&many[i]);
+		buf_fini(&many[i]);
 	CHECK(stash.n[0] == 3);
 	CHECK(buf_stash_release(&stash, BUF_CRITICAL, 2) == 2 && stash.n[0] == 1);
 	CHECK(buf_stash_release(&stash, BUF_CRITICAL, 2) == 1 && !stashed(&stash));
@@ -409,8 +406,8 @@ test_stash (void)
 	static unsigned char large[256 << 10];
 	CHECK(put(&a, large, sizeof large, SIZE_MAX) && a.cap == sizeof large);
 	CHECK(put(&b, bytes, 1, SIZE_MAX));
-	buf_free(&a);
-	buf_free(&b);
+	buf_fini(&a);
+	buf_fini(&b);
 	CHECK(buf_stash_release(&stash, BUF_CRITICAL, 2) == 2 && stashed(&stash) == 4096);
 	CHECK(buf_stash_release(&stash, BUF_CRITICAL, 2) == 1 && !stashed(&stash));
 
@@ -421,19 +418,19 @@ test_stash (void)
 		CHECK(put(&wave[i], large, 40 << 10, SIZE_MAX) && wave[i].cap == 64 << 10);
 	CHECK(stash.held == 256 << 10 && stash.peak == 256 << 10);
 	for (size_t i = 0; i < 4; ++i)
-		buf_free(&wave[i]);
+		buf_fini(&wave[i]);
 	uint64_t released = hist_get(&stash.metrics.released);
 	for (size_t i = 0; i < ARRAY_SIZE(wave); ++i)
 		CHECK(put(&wave[i], large, 20 << 10, SIZE_MAX) && wave[i].cap == 32 << 10);
 	for (size_t i = 0; i < ARRAY_SIZE(wave); ++i)
-		buf_free(&wave[i]);
+		buf_fini(&wave[i]);
 	CHECK(stash.n[4] == 4 && stash.n[3] == 8 && stashed(&stash) == 2 * stash.peak);
 	CHECK(hist_get(&stash.metrics.released) == released);
 	CHECK(put(&b, large, 10 << 10, SIZE_MAX) && b.cap == 16 << 10);
 	CHECK(stash.n[4] == 3 && stash.n[3] == 8);
 	CHECK(hist_get(&stash.metrics.released) == released + (64 << 10));
 	CHECK(stashed(&stash) + stash.held <= 2 * stash.peak);
-	buf_free(&b);
+	buf_fini(&b);
 
 	/* Under critical pressure storage given up goes back at once, a trim's
 	 * too, and a release of all lets the peak start again. */
@@ -445,14 +442,14 @@ test_stash (void)
 	released = hist_get(&stash.metrics.released);
 	CHECK(buf_trim(&a) == 100 && a.cap == 4096 && !stashed(&stash));
 	CHECK(hist_get(&stash.metrics.released) == released + (64 << 10));
-	buf_free(&a);
+	buf_fini(&a);
 	CHECK(!stashed(&stash) && !stash.held);
 	atomic_store(&buf_pressure, BUF_EASY);
 
 	/* A thread without a stash frees what it gives up. */
 	buf_stash_attach(nullptr);
 	CHECK(put(&a, bytes, 1, SIZE_MAX));
-	buf_free(&a);
+	buf_fini(&a);
 	CHECK(!stash.n[0] && !stashed(&stash));
 }
 

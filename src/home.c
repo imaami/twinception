@@ -274,9 +274,9 @@ queue_leave (struct home *home,
 static void
 answer_free (struct job *job)
 {
-	buf_free(&job->result);
-	buf_free(&job->calls);
-	buf_free(&job->thought);
+	buf_fini(&job->result);
+	buf_fini(&job->calls);
+	buf_fini(&job->thought);
 }
 
 /* Drop @p n references to @p job, and hand it back to its front if they were
@@ -328,7 +328,7 @@ job_end (struct home      *home,
 		jb_parse_end(&job->parser, &home->pool, &home->reaper);
 		if (home->reaper.n)
 			loop_ready_bulk(home->loop, &home->reap);
-		buf_free(&job->wire);
+		buf_fini(&job->wire);
 	}
 	list_del(&job->held);
 	if (count)
@@ -354,10 +354,12 @@ job_say (struct job *job,
 {
 	buf_consume(&job->result, buf_peek(&job->result).len);
 	for (size_t room = 128;;) {
-		struct span s = buf_reserve(&job->result, room, SIZE_MAX);
+		struct span s;
+		if (buf_reserve(&job->result, room, SIZE_MAX, &s))
+			return;
 		va_list ap;
 		va_start(ap, fmt);
-		int n = s.len ? vsnprintf((char *)s.ptr, s.len, fmt, ap) : -1;
+		int n = vsnprintf((char *)s.ptr, s.len, fmt, ap);
 		va_end(ap);
 		if (n < 0)
 			return;
@@ -475,10 +477,9 @@ job_finish (struct home *home,
 	bool calls = buf_peek(&job->calls).len;
 	if (result == CURLE_OK && !(flags & ERRED) && (text.len || calls)) {
 		/* Cut short, a tool call's arguments are, which the front tells. */
-		struct span s = flags & TRUNCATED && !calls
-		              ? buf_reserve(&job->result, sizeof AI_CUT_NOTE - 1, SIZE_MAX)
-		              : (struct span){};
-		if (s.len) {
+		struct span s;
+		if (flags & TRUNCATED && !calls
+		    && !buf_reserve(&job->result, sizeof AI_CUT_NOTE - 1, SIZE_MAX, &s)) {
 			memcpy(s.ptr, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1);
 			buf_commit(&job->result, sizeof AI_CUT_NOTE - 1);
 		}
@@ -564,9 +565,10 @@ job_write (char const *data,
 		return CURL_WRITEFUNC_PAUSE;
 	}
 	struct buf *to = stream ? &job->wire : &job->result;
-	struct span s = buf_reserve(to, len, MAX_RESPONSE);
-	if (!s.len) {
-		job->flags |= errno == ENOBUFS ? OVERFLOW : 0;
+	struct span s;
+	int e = buf_reserve(to, len, MAX_RESPONSE, &s);
+	if (e) {
+		job->flags |= e == ENOBUFS ? OVERFLOW : 0;
 		return 0;
 	}
 	memcpy(s.ptr, data, len);
@@ -816,9 +818,12 @@ put_text (void       *user,
 	struct job *job = user;
 	if (jb_utf8(text, len) < len)
 		return EILSEQ;
-	struct span s = len ? buf_reserve(&job->result, len, MAX_RESPONSE) : (struct span){};
-	if (!s.len)
-		return len ? errno : 0;
+	if (!len)
+		return 0;
+	struct span s;
+	int e = buf_reserve(&job->result, len, MAX_RESPONSE, &s);
+	if (e)
+		return e;
 	memcpy(s.ptr, text, len);
 	buf_commit(&job->result, len);
 	loop_work(self->loop, LOOP_COPY, len);
@@ -835,10 +840,12 @@ put_thought (void       *user,
 	struct job *job = user;
 	if (jb_utf8(text, len) < len)
 		return EILSEQ;
-	struct span s = len ? buf_reserve(&job->thought, len, MAX_RESPONSE)
-	                    : (struct span){};
-	if (!s.len)
-		return len ? errno : 0;
+	if (!len)
+		return 0;
+	struct span s;
+	int e = buf_reserve(&job->thought, len, MAX_RESPONSE, &s);
+	if (e)
+		return e;
 	memcpy(s.ptr, text, len);
 	buf_commit(&job->thought, len);
 	loop_work(self->loop, LOOP_COPY, len);
@@ -902,9 +909,10 @@ put_call (void                 *user,
 	size_t len = head + id + name + args;
 	if (!len)
 		return 0;
-	struct span s = buf_reserve(&job->calls, len, MAX_RESPONSE);
-	if (!s.len)
-		return errno;
+	struct span s;
+	int e = buf_reserve(&job->calls, len, MAX_RESPONSE, &s);
+	if (e)
+		return e;
 	/* Only the last part grows, at the end of the last call. */
 	unsigned char *p = s.ptr + head;
 	if (id)
@@ -1253,7 +1261,7 @@ preempt_step (struct loop      *loop,
 		jb_parse_end(&job->parser, &home->pool, &home->reaper);
 		if (home->reaper.n)
 			loop_ready_bulk(loop, &home->reap);
-		buf_free(&job->wire);
+		buf_fini(&job->wire);
 		buf_consume(&job->result, buf_peek(&job->result).len);
 		buf_consume(&job->calls, buf_peek(&job->calls).len);
 		buf_consume(&job->thought, buf_peek(&job->thought).len);
@@ -1342,8 +1350,8 @@ props_write (char const *data,
 		loop_ready_bulk(home->loop, &home->props);
 		return CURL_WRITEFUNC_PAUSE;
 	}
-	struct span s = buf_reserve(&home->answer, len, MAX_PROPS);
-	if (!s.len)
+	struct span s;
+	if (buf_reserve(&home->answer, len, MAX_PROPS, &s))
 		return 0;
 	memcpy(s.ptr, data, len);
 	buf_commit(&home->answer, len);
@@ -1370,7 +1378,7 @@ props_done (CURLcode    result,
 		         : curl_easy_strerror(result));
 	else
 		snprintf(why, sizeof why, "the default: /props: HTTP %ld", status);
-	buf_free(&home->answer);
+	buf_fini(&home->answer);
 	if (home->ep->slots)
 		http_connections(home->http, home->slots);
 	else
@@ -1409,7 +1417,7 @@ props_step (struct loop      *loop,
 	               ? json_object_get_int64(ctx) : 0;
 	jb_reap(&home->reaper, root);
 	loop_ready_bulk(loop, &home->reap);
-	buf_free(&home->answer);
+	buf_fini(&home->answer);
 	if (tokens > 0 && !home->context) {
 		home->context = tokens < INT32_MAX ? (uint32_t)tokens : INT32_MAX;
 		LOG(LOG_INFO, "upstream context: %" PRIu32 " tokens (llama-server's /props)",
@@ -1770,7 +1778,7 @@ home_fini (struct home **p_home)
 	http_fini(&home->http);
 	jb_parse_end(&home->parser, &home->pool, nullptr);
 	jb_reaper_fini(&home->reaper);
-	buf_free(&home->answer);
+	buf_fini(&home->answer);
 	while (home_relieve(home, BUF_CRITICAL, SIZE_MAX))
 		;
 	self = nullptr;
