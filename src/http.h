@@ -50,8 +50,8 @@ http_destroy (struct http **p_http);
  * looks up itself.
  */
 extern void
-http_resolver (struct http     *http,
-               struct blocker  *blockers);
+http_resolver (struct http    *http,
+               struct blocker *blockers);
 
 /**
  * Start an asynchronous JSON POST of the @p len bytes at @p body, on a later
