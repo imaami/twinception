@@ -78,7 +78,7 @@ struct keep {
 	struct mcp         *mcp;       /* what a client loop keeps besides */
 	struct httpd_home  *door;      /* what home keeps besides */
 	struct home        *home;      /* and its scheduler */
-	struct blockers    *blockers;  /* where the walk goes */
+	struct blocker     *blockers;  /* where the walk goes */
 	void               *tops;      /* the trim's blocks yet to free */
 	uint64_t            released;  /* the stash's count as the relief began */
 	uint64_t            trim_ns;   /* the trim's so far */
@@ -254,7 +254,7 @@ trim_step (struct loop      *loop,
 			.loop = loop
 		};
 		walker.keep = keep;
-		if (blockers_submit(keep->blockers, &walker.job)) {
+		if (blocker_submit(keep->blockers, &walker.job)) {
 			walk(&walker.job);
 			keep->trim_ns += walker.ns;
 			trim_end(keep);
@@ -296,7 +296,7 @@ keep_relieve (void        *ctx,
 static int
 keep_start (struct keep     *keep,
             struct loop     *loop,
-            struct blockers *blockers)
+            struct blocker  *blockers)
 {
 	keep->blockers = blockers;
 	keep->relief.fn = relief_step;
@@ -328,7 +328,7 @@ keep_stop (struct keep *keep,
 static int
 home_app_start (void            *ctx,
                 struct loop     *loop,
-                struct blockers *blockers)
+                struct blocker  *blockers)
 {
 	struct home_app *app = ctx;
 	struct metrics_src *metrics = app->metrics;
@@ -337,7 +337,7 @@ home_app_start (void            *ctx,
 	snprintf(mine->name, sizeof mine->name, "home");
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
-	metrics->blockers = blockers_metrics(blockers);
+	metrics->blockers = blocker_metrics(blockers);
 	int e = keep_start(&app->keep, loop, blockers);
 	if (!e)
 		e = httpd_home_init(&app->keep.door, loop, app->hub, app->hcfg,
@@ -403,7 +403,7 @@ home_app_reload (void        *ctx,
 		.work = reload_work,
 		.loop = loop
 	};
-	r->busy = !blockers_submit(app->keep.blockers, &r->job);
+	r->busy = !blocker_submit(app->keep.blockers, &r->job);
 	if (!r->busy)
 		LOG(LOG_WARN, "configuration not reloaded: the blockers are busy");
 }
@@ -458,7 +458,7 @@ home_app_stop (void        *ctx,
 static int
 app_start (void            *ctx,
            struct loop     *loop,
-           struct blockers *blockers)
+           struct blocker  *blockers)
 {
 	struct app *app = ctx;
 	struct metrics_loop *mine = &app->metrics->loops[loop->id - 1];

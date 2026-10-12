@@ -20,7 +20,7 @@ typedef void http_done_cb (CURLcode    result,
                            char const *curl_error,
                            void       *user);
 
-struct blockers;
+struct blocker;
 struct http;
 struct http_request;
 
@@ -50,7 +50,7 @@ http_fini (struct http **p_http);
  */
 extern void
 http_resolver (struct http     *http,
-               struct blockers *blockers);
+               struct blocker  *blockers);
 
 /**
  * Start an asynchronous JSON POST of the @p len bytes at @p body, on a later

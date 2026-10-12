@@ -32,7 +32,7 @@
 #include "buf.h"
 
 struct ai_endpoint;
-struct blockers;
+struct blocker;
 struct config;
 struct home;
 struct http_metrics;
@@ -80,7 +80,7 @@ struct home_metrics {
 extern int
 home_init (struct home               **p_home,
            struct loop                *loop,
-           struct blockers            *blockers,
+           struct blocker             *blockers,
            struct httpd_home          *door,
            struct ai_endpoint const   *ep,
            struct config const        *cfg,

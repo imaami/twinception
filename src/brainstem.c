@@ -103,7 +103,7 @@ struct loop_thread {
 struct brainstem {
 	struct loop_thread         *threads;   /* home's, then the client loops' */
 	struct brainstem_cfg const *cfg;
-	struct blockers            *blockers;
+	struct blocker             *blockers;
 	uint64_t                    drain_by;  /* for the loops, set before DRAIN */
 	uint64_t                    deadline;  /* of the grace period */
 	uint64_t                    tick;      /* the watchdog's next look */
@@ -847,7 +847,9 @@ brainstem_run (struct brainstem_cfg const *cfg)
 	if (!e && !(e = log_start(1 + bs.n + BLOCKER_THREADS, bs.wake_fd)))
 		log_attach();
 	if (!e)
-		e = blockers_start(&bs.blockers, bs.wake_fd);
+		bs.blockers = blocker_create(bs.wake_fd, &e);
+	if (!e)
+		e = blocker_start(bs.blockers);
 	if (e)
 		LOG(LOG_ERROR, "cannot start: %s", strerror(e));
 	/* Home first, then the client loops, unless a signal came meanwhile;
@@ -899,13 +901,13 @@ brainstem_run (struct brainstem_cfg const *cfg)
 	 * stuck in a call is left to the process's exit.  Home's loop goes
 	 * first: what its inbox still holds posts to the client loops, whose
 	 * own handlers post to nobody. */
-	blockers_stop(bs.blockers);
+	blocker_stop(bs.blockers);
 	uint64_t until = loop_clock() + JOIN_MS * MS;
-	while (!blockers_done(bs.blockers) && loop_clock() < until)
+	while (!blocker_done(bs.blockers) && loop_clock() < until)
 		mind(&bs, until);
-	bool done = blockers_done(bs.blockers);
+	bool done = blocker_done(bs.blockers);
 	if (done) {
-		blockers_fini(&bs.blockers);
+		blocker_destroy(&bs.blockers);
 		for (size_t i = 0; i < bs.n; ++i)
 			if (bs.threads[i].created)
 				loop_fini(&bs.threads[i].loop);

@@ -38,33 +38,39 @@ struct blocker_metrics {
 	_Atomic uint64_t refused;  /**< jobs a full or stopped queue refused */
 };
 
-struct blockers;
+struct blocker;
 
-/** Start the blockers; each writes @p notify_fd, an eventfd, as it exits,
- *  so the caller keeps that open until the process exits. */
+/** The blockers, not started yet, which write @p notify_fd, an eventfd, as
+ *  each exits, so the caller keeps that open until the process exits;
+ *  nullptr, with the error in @p *e, if they cannot be made. */
+extern struct blocker *
+blocker_create (int  notify_fd,
+                int *e);
+
+/** Start the blocker threads.  Returns 0, or why one could not start: those
+ *  started run on, for blocker_stop() to end. */
 extern int
-blockers_start (struct blockers **p_blockers,
-                int               notify_fd);
+blocker_start (struct blocker *blocker);
 
 /** Queue @p job, its done.fn, work and loop set; EAGAIN if the queue is full
  *  or the blockers stop. */
 extern int
-blockers_submit (struct blockers    *blockers,
-                 struct blocker_job *job);
+blocker_submit (struct blocker     *blocker,
+                struct blocker_job *job);
 
 /** Tell the blockers to finish the work under way, cancel the rest and exit. */
 extern void
-blockers_stop (struct blockers *blockers);
+blocker_stop (struct blocker *blocker);
 
-/** Whether every blocker has exited. */
+/** Whether every blocker started has exited. */
 extern bool
-blockers_done (struct blockers const *blockers);
+blocker_done (struct blocker const *blocker);
 
 /** Free the blockers, once they are done. */
 extern void
-blockers_fini (struct blockers **p_blockers);
+blocker_destroy (struct blocker **p_blocker);
 
 extern struct blocker_metrics const *
-blockers_metrics (struct blockers const *blockers);
+blocker_metrics (struct blocker const *blocker);
 
 #endif /* TWINCEPTION_SRC_BLOCKER_H_ */

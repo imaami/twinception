@@ -73,7 +73,7 @@ struct http {
 	struct list          sockets;
 	struct list          hosts;     /* looked up, or being looked up */
 	struct loop         *loop;
-	struct blockers     *blockers;  /* that look host names up, or nullptr */
+	struct blocker      *blockers;  /* that look host names up, or nullptr */
 	struct http_metrics *metrics;
 	CURLM               *multi;
 	long                 retry;     /* the Retry-After of the request that
@@ -473,7 +473,7 @@ http_lookup (struct http_host *host)
 		.len = host->len
 	};
 	memcpy(l->key, host->key, host->len);
-	int e = blockers_submit(host->http->blockers, &l->job);
+	int e = blocker_submit(host->http->blockers, &l->job);
 	if (e)
 		free(l);
 	else
@@ -642,7 +642,7 @@ http_connections (struct http *http,
 
 void
 http_resolver (struct http     *http,
-               struct blockers *blockers)
+               struct blocker  *blockers)
 {
 	http->blockers = blockers;
 }

@@ -34,7 +34,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-struct blockers;
+struct blocker;
 struct loop;
 
 /** The exit status of a shutdown the brainstem forced; the time between the
@@ -65,7 +65,7 @@ struct brainstem_app {
 	 *  stop() follows, whatever it returns. */
 	int  (*start)   (void            *ctx,
 	                 struct loop     *loop,
-	                 struct blockers *blockers);
+	                 struct blocker  *blockers);
 	/** Home's only: every client loop runs; begin to serve. */
 	void (*open)    (void            *ctx,
 	                 struct loop     *loop);

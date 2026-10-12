@@ -1653,7 +1653,7 @@ home_job (struct loop *loop,
 int
 home_init (struct home               **p_home,
            struct loop                *loop,
-           struct blockers            *blockers,
+           struct blocker             *blockers,
            struct httpd_home          *door,
            struct ai_endpoint const   *ep,
            struct config const        *cfg,

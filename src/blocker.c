@@ -14,7 +14,7 @@ enum { QUEUE = 256 }; /* jobs waiting at most */
 
 /* The queue's lock and condition variable are POSIX's, of which C11's mtx_t
  * and cnd_t are wrappers in glibc that ThreadSanitizer does not see. */
-struct blockers {
+struct blocker {
 	struct blocker_metrics metrics;
 	struct list            queue;
 	pthread_mutex_t        lock;
@@ -26,24 +26,28 @@ struct blockers {
 	int                    stop;       /* under the lock */
 };
 
+/* A blocker thread: run the queue's jobs, or once told to stop, cancel
+ * them, until it is empty. */
 static void *
-blocker (void *arg)
+blocker_thread (void *arg)
 {
-	struct blockers *b = arg;
+	struct blocker *b = arg;
 	log_attach();
 	(void)pthread_setname_np(pthread_self(), "blocker");
 	pthread_mutex_lock(&b->lock);
 	for (;;) {
-		while (list_is_empty(&b->queue) && !b->stop)
+		struct list *next = b->queue.next;
+		if (next == &b->queue) {
+			if (b->stop)
+				break;
 			pthread_cond_wait(&b->ready, &b->lock);
-		if (list_is_empty(&b->queue))
-			break;
-		struct blocker_job *job = container_of(b->queue.next, struct blocker_job,
-		                                       hook);
-		list_del(&job->hook);
+			continue;
+		}
+		list_del(next);
 		--b->queued;
 		bool stop = b->stop;
 		pthread_mutex_unlock(&b->lock);
+		struct blocker_job *job = container_of(next, struct blocker_job, hook);
 		if (stop) {
 			job->error = ECANCELED;
 		} else {
@@ -61,90 +65,95 @@ blocker (void *arg)
 	return nullptr;
 }
 
-int
-blockers_start (struct blockers **p_blockers,
-                int               notify_fd)
+struct blocker *
+blocker_create (int  notify_fd,
+                int *e)
 {
-	struct blockers *b = calloc(1, sizeof *b);
-	if (!b)
-		return ENOMEM;
+	struct blocker *b = calloc(1, sizeof *b);
+	if (!b) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	if ((*e = pthread_mutex_init(&b->lock, nullptr))) {
+		free(b);
+		return nullptr;
+	}
+	if ((*e = pthread_cond_init(&b->ready, nullptr))) {
+		pthread_mutex_destroy(&b->lock);
+		free(b);
+		return nullptr;
+	}
 	atomic_init(&b->metrics.done, 0);
 	atomic_init(&b->metrics.refused, 0);
 	atomic_init(&b->exited, 0);
 	list_init(&b->queue);
 	b->notify_fd = notify_fd;
-	int e = pthread_mutex_init(&b->lock, nullptr);
-	if (e) {
-		free(b);
-		return e;
-	}
-	if ((e = pthread_cond_init(&b->ready, nullptr))) {
-		pthread_mutex_destroy(&b->lock);
-		free(b);
-		return e;
-	}
-	*p_blockers = b;
-	while (!e && b->started < BLOCKER_THREADS) {
-		pthread_t thread;
-		if (!(e = pthread_create(&thread, nullptr, blocker, b))) {
-			pthread_detach(thread);
-			++b->started;
-		}
-	}
-	return e;
+	return b;
 }
 
 int
-blockers_submit (struct blockers    *blockers,
-                 struct blocker_job *job)
+blocker_start (struct blocker *blocker)
+{
+	while (blocker->started < BLOCKER_THREADS) {
+		pthread_t thread;
+		int e = pthread_create(&thread, nullptr, blocker_thread, blocker);
+		if (e)
+			return e;
+		(void)pthread_detach(thread);
+		++blocker->started;
+	}
+	return 0;
+}
+
+int
+blocker_submit (struct blocker     *blocker,
+                struct blocker_job *job)
 {
 	job->error = 0;
-	pthread_mutex_lock(&blockers->lock);
-	bool ok = !blockers->stop && blockers->queued < QUEUE;
-	if (ok) {
-		list_append(&blockers->queue, &job->hook);
-		++blockers->queued;
-	}
-	pthread_mutex_unlock(&blockers->lock);
-	if (!ok) {
-		atomic_fetch_add_explicit(&blockers->metrics.refused, 1, memory_order_relaxed);
+	pthread_mutex_lock(&blocker->lock);
+	if (blocker->stop || blocker->queued >= QUEUE) {
+		pthread_mutex_unlock(&blocker->lock);
+		atomic_fetch_add_explicit(&blocker->metrics.refused, 1, memory_order_relaxed);
 		return EAGAIN;
 	}
-	pthread_cond_signal(&blockers->ready);
+	list_append(&blocker->queue, &job->hook);
+	++blocker->queued;
+	pthread_mutex_unlock(&blocker->lock);
+	pthread_cond_signal(&blocker->ready);
 	return 0;
 }
 
 void
-blockers_stop (struct blockers *blockers)
+blocker_stop (struct blocker *blocker)
 {
-	if (!blockers)
+	if (!blocker)
 		return;
-	pthread_mutex_lock(&blockers->lock);
-	blockers->stop = true;
-	pthread_mutex_unlock(&blockers->lock);
-	pthread_cond_broadcast(&blockers->ready);
+	pthread_mutex_lock(&blocker->lock);
+	blocker->stop = true;
+	pthread_mutex_unlock(&blocker->lock);
+	pthread_cond_broadcast(&blocker->ready);
 }
 
 bool
-blockers_done (struct blockers const *blockers)
+blocker_done (struct blocker const *blocker)
 {
-	return !blockers || atomic_load(&blockers->exited) == blockers->started;
+	return !blocker || atomic_load(&blocker->exited) == blocker->started;
 }
 
 void
-blockers_fini (struct blockers **p_blockers)
+blocker_destroy (struct blocker **p_blocker)
 {
-	struct blockers *b = *p_blockers;
+	struct blocker *b = *p_blocker;
 	if (!b)
 		return;
-	*p_blockers = nullptr;
+	*p_blocker = nullptr;
 	pthread_cond_destroy(&b->ready);
 	pthread_mutex_destroy(&b->lock);
 	free(b);
 }
 
 struct blocker_metrics const *
-blockers_metrics (struct blockers const *blockers)
+blocker_metrics (struct blocker const *blocker)
 {
-	return &blockers->metrics;
+	return &blocker->metrics;
 }
