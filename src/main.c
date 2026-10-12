@@ -66,6 +66,32 @@ main_lookup (char const *const names[],
 	return i;
 }
 
+/* The provider @p str names, in @p *provider; EINVAL, with it unchanged, if
+ * it names none. */
+static int
+main_provider (char const        *str,
+               enum app_provider *provider)
+{
+	size_t i = main_lookup(main_providers, ARRAY_SIZE(main_providers), str);
+	if (i == ARRAY_SIZE(main_providers))
+		return EINVAL;
+	*provider = (enum app_provider)i;
+	return 0;
+}
+
+/* The history mode @p str names, in @p *mode; EINVAL, with it unchanged, if
+ * it names none. */
+static int
+main_history_mode (char const            *str,
+                   enum app_history_mode *mode)
+{
+	size_t i = main_lookup(main_history_modes, ARRAY_SIZE(main_history_modes), str);
+	if (i == ARRAY_SIZE(main_history_modes))
+		return EINVAL;
+	*mode = (enum app_history_mode)i;
+	return 0;
+}
+
 static int
 main_long (char const *str,
            long       *value,
@@ -124,8 +150,6 @@ main_option (struct app_cfg *cfg,
              int             opt,
              char const     *arg)
 {
-	static size_t const modes = ARRAY_SIZE(main_history_modes);
-	static size_t const providers = ARRAY_SIZE(main_providers);
 	switch (opt) {
 	case 'a': cfg->url[0] = arg; return 0;
 	case 'b': cfg->url[1] = arg; return 0;
@@ -135,21 +159,15 @@ main_option (struct app_cfg *cfg,
 	case 'p': cfg->prompt = arg; return 0;
 	case 'd': cfg->debug = 1; return 0;
 	case 'P': cfg->template_check = 0; return 0;
-	case MAIN_A_PROVIDER: {
-		size_t i = main_lookup(main_providers, providers, arg);
-		cfg->provider[0] = (enum app_provider)i;
-		return main_invalid(i < providers ? 0 : EINVAL, "model A provider", arg);
-	}
-	case MAIN_B_PROVIDER: {
-		size_t i = main_lookup(main_providers, providers, arg);
-		cfg->provider[1] = (enum app_provider)i;
-		return main_invalid(i < providers ? 0 : EINVAL, "model B provider", arg);
-	}
-	case 'H': {
-		size_t i = main_lookup(main_history_modes, modes, arg);
-		cfg->history_mode = (enum app_history_mode)i;
-		return main_invalid(i < modes ? 0 : EINVAL, "history mode", arg);
-	}
+	case MAIN_A_PROVIDER:
+		return main_invalid(main_provider(arg, &cfg->provider[0]), "model A provider",
+		                    arg);
+	case MAIN_B_PROVIDER:
+		return main_invalid(main_provider(arg, &cfg->provider[1]), "model B provider",
+		                    arg);
+	case 'H':
+		return main_invalid(main_history_mode(arg, &cfg->history_mode), "history mode",
+		                    arg);
 	case 'q':
 		return main_invalid(main_u32(arg, &cfg->rapid_quantum),
 		                    "rapid quantum", arg);
