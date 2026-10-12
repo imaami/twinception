@@ -1,4 +1,5 @@
 /** @file Tasks (task.h). */
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 
@@ -20,29 +21,52 @@ struct task_lane {
 	                                 that none chooses it */
 };
 
-struct tasks {
-	struct tasks_metrics metrics;  /* owners and runners add */
-	size_t               n;
-	struct task_lane     lane[];   /* client loop i + 1's at i */
+struct task_pool {
+	struct task_pool_metrics metrics;  /* owners and runners add */
+	size_t                   n;
+	struct task_lane         lane[];   /* client loop i + 1's at i */
 };
 
 static uint64_t
-load_of (struct task_lane const *lane)
+task_lane_load (struct task_lane const *lane)
 {
 	return atomic_load_explicit(&lane->load, memory_order_relaxed);
+}
+
+/* @p task has come to loop @p loop's lane @p lane: queue it. */
+static void
+task_lane_take (struct task_lane *lane,
+                struct task      *task,
+                struct loop      *loop)
+{
+	list_append(&lane->held, &task->hook);
+	hist_add(&lane->metrics.held, 1);
+	loop_ready_bulk(loop, &task->step);
+}
+
+/* @p task leaves @p lane, which held it. */
+static void
+task_lane_leave (struct task_lane *lane,
+                 struct task      *task)
+{
+	list_del(&task->hook);
+	hist_add(&lane->metrics.held, -1ULL);
+	atomic_fetch_sub_explicit(&lane->load, 1, memory_order_relaxed);
 }
 
 /* The lighter of two lanes picked at random by @p self's loop, none of them
  * @p self's own if @p other; @p self's if there is no other to pick. */
 static struct task_lane *
-choose (struct tasks     *tasks,
-        struct task_lane *self,
-        bool              other)
+task_pool_choose (struct task_pool *pool,
+                  struct task_lane *self,
+                  bool              other)
 {
-	size_t n = tasks->n;
-	size_t me = (size_t)(self - tasks->lane);
-	if (n == 1 || (other && n == 2))
-		return n == 1 ? self : &tasks->lane[!me];
+	size_t n = pool->n;
+	if (n == 1)
+		return self;
+	size_t me = (size_t)(self - pool->lane);
+	if (other && n == 2)
+		return &pool->lane[!me];
 	uint64_t r = self->rng;
 	r ^= r << 13;
 	r ^= r >> 7;
@@ -57,20 +81,9 @@ choose (struct tasks     *tasks,
 		a += a >= me;
 		b += b >= me;
 	}
-	struct task_lane *x = &tasks->lane[a];
-	struct task_lane *y = &tasks->lane[b];
-	return load_of(y) < load_of(x) ? y : x;
-}
-
-/* @p task has come to loop @p loop's lane @p lane: queue it. */
-static void
-take (struct task_lane *lane,
-      struct task      *task,
-      struct loop      *loop)
-{
-	list_append(&lane->held, &task->hook);
-	hist_add(&lane->metrics.held, 1);
-	loop_ready_bulk(loop, &task->step);
+	struct task_lane *x = &pool->lane[a];
+	struct task_lane *y = &pool->lane[b];
+	return task_lane_load(y) < task_lane_load(x) ? y : x;
 }
 
 /* A task moved to this loop; once the loop has stopped, it never runs, and
@@ -81,108 +94,116 @@ task_arrive (struct loop *loop,
 {
 	struct task *task = container_of(msg, struct task, msg);
 	if (loop->exit) {
-		atomic_fetch_add_explicit(&task->tasks->metrics.abandoned, 1,
+		atomic_fetch_add_explicit(&task->pool->metrics.abandoned, 1,
 		                          memory_order_relaxed);
 		task_put(task, 1);
 		return;
 	}
-	take(&task->tasks->lane[loop->id - 1], task, loop);
+	task_lane_take(&task->pool->lane[loop->id - 1], task, loop);
 }
 
-/* A slice of a task, unless it is cancelled: then, or once it is done, it
- * goes back to its owner; else it stays, or moves while this loop holds
- * more than TASK_BACKLOG to a loop that holds two fewer at least. */
+/* After a slice of @p task, which @p lane holds on @p loop: queue it for the
+ * next, or move it, while the loop holds more than TASK_BACKLOG, to a loop
+ * that holds two fewer at least. */
 static void
-task_step (struct loop      *loop,
-           struct loop_step *step)
+task_lane_next (struct task_lane *lane,
+                struct task      *task,
+                struct loop      *loop)
 {
-	struct task *task = container_of(step, struct task, step);
-	struct tasks *tasks = task->tasks;
-	struct task_lane *self = &tasks->lane[loop->id - 1];
-	bool cancelled = atomic_load_explicit(&task->cancel, memory_order_acquire);
-	enum task_state state = TASK_DONE;
-	if (!cancelled) {
-		state = task->slice(task, loop, loop_clock() + TASK_SLICE_NS);
-		loop_work(loop, LOOP_TASKS, 1);
-		hist_add(&self->metrics.slices, 1);
-	}
-	struct task_lane *to = state == TASK_DONE ? nullptr
-	                     : load_of(self) > TASK_BACKLOG ? choose(tasks, self, true)
-	                     : self;
-	if (to && to != self && load_of(to) + 2 > load_of(self))
-		to = self;
-	if (to == self) {
-		loop_ready_bulk(loop, step);
+	uint64_t load = task_lane_load(lane);
+	struct task_lane *to = load > TASK_BACKLOG ? task_pool_choose(task->pool, lane, true)
+	                                           : lane;
+	if (to == lane || task_lane_load(to) + 2 > load) {
+		loop_ready_bulk(loop, &task->step);
 		return;
 	}
-	list_del(&task->hook);
-	hist_add(&self->metrics.held, -1ULL);
-	atomic_fetch_sub_explicit(&self->load, 1, memory_order_relaxed);
-	if (!to) {
-		atomic_fetch_add_explicit(cancelled ? &tasks->metrics.cancelled
-		                                    : &tasks->metrics.done, 1,
-		                          memory_order_relaxed);
-		task->msg.fn = task->back;
-		loop_post(task->owner, &task->msg);
-		return;
-	}
+	task_lane_leave(lane, task);
 	atomic_fetch_add_explicit(&to->load, 1, memory_order_relaxed);
-	hist_add(&self->metrics.moved, 1);
+	hist_add(&lane->metrics.moved, 1);
 	++task->moves;
 	task->msg.fn = task_arrive;
 	loop_post(to->loop, &task->msg);
 }
 
-struct tasks *
-tasks_new (size_t loops)
+/* A slice of a task, unless it is cancelled: then, or once it is done, it
+ * goes back to its owner. */
+static void
+task_step (struct loop      *loop,
+           struct loop_step *step)
 {
-	struct tasks *tasks = calloc(1, sizeof *tasks + loops * sizeof *tasks->lane);
-	if (!tasks)
+	struct task *task = container_of(step, struct task, step);
+	struct task_pool *pool = task->pool;
+	struct task_lane *self = &pool->lane[loop->id - 1];
+	_Atomic uint64_t *ended = &pool->metrics.cancelled;
+	if (!atomic_load_explicit(&task->cancel, memory_order_acquire)) {
+		enum task_state state = task->slice(task, loop, loop_clock() + TASK_SLICE_NS);
+		loop_work(loop, LOOP_TASKS, 1);
+		hist_add(&self->metrics.slices, 1);
+		if (state == TASK_MORE) {
+			task_lane_next(self, task, loop);
+			return;
+		}
+		ended = &pool->metrics.done;
+	}
+	task_lane_leave(self, task);
+	atomic_fetch_add_explicit(ended, 1, memory_order_relaxed);
+	task->msg.fn = task->back;
+	loop_post(task->owner, &task->msg);
+}
+
+struct task_pool *
+task_pool_create (size_t  loops,
+                  int    *e)
+{
+	struct task_pool *pool = calloc(1, sizeof *pool + loops * sizeof *pool->lane);
+	if (!pool) {
+		*e = ENOMEM;
 		return nullptr;
-	struct tasks_metrics *m = &tasks->metrics;
+	}
+	struct task_pool_metrics *m = &pool->metrics;
 	atomic_init(&m->submitted, 0);
 	atomic_init(&m->done, 0);
 	atomic_init(&m->cancelled, 0);
 	atomic_init(&m->abandoned, 0);
-	tasks->n = loops;
+	pool->n = loops;
 	for (size_t i = 0; i < loops; ++i) {
-		struct task_lane *lane = &tasks->lane[i];
+		struct task_lane *lane = &pool->lane[i];
 		atomic_init(&lane->metrics.held, 0);
 		atomic_init(&lane->metrics.slices, 0);
 		atomic_init(&lane->metrics.moved, 0);
 		atomic_init(&lane->load, 0);
 	}
-	return tasks;
+	return pool;
 }
 
 void
-tasks_free (struct tasks **p_tasks)
+task_pool_destroy (struct task_pool **p_pool)
 {
-	free(*p_tasks);
-	*p_tasks = nullptr;
+	free(*p_pool);
+	*p_pool = nullptr;
 }
 
 void
-tasks_attach (struct tasks *tasks,
-              struct loop  *loop)
+task_pool_attach (struct task_pool *pool,
+                  struct loop      *loop)
 {
-	struct task_lane *lane = &tasks->lane[loop->id - 1];
+	struct task_lane *lane = &pool->lane[loop->id - 1];
 	lane->loop = loop;
 	list_init(&lane->held);
 	lane->rng = loop_clock() * 0x9e3779b97f4a7c15 | 1;
 }
 
 void
-tasks_detach (struct tasks *tasks,
-              struct loop  *loop)
+task_pool_detach (struct task_pool *pool,
+                  struct loop      *loop)
 {
-	struct task_lane *lane = &tasks->lane[loop->id - 1];
+	struct task_lane *lane = &pool->lane[loop->id - 1];
 	while (!list_is_empty(&lane->held)) {
 		struct task *task = container_of(lane->held.next, struct task, hook);
 		loop_unready(&task->step);
 		list_del(&task->hook);
 		hist_add(&lane->metrics.held, -1ULL);
-		atomic_fetch_add_explicit(&tasks->metrics.abandoned, 1, memory_order_relaxed);
+		atomic_fetch_add_explicit(&pool->metrics.abandoned, 1, memory_order_relaxed);
 		task_put(task, 1);
 	}
 	/* A placer that read the load before goes on, and its task is
@@ -191,21 +212,21 @@ tasks_detach (struct tasks *tasks,
 }
 
 struct task_metrics const *
-tasks_loop_metrics (struct tasks const *tasks,
-                    size_t              i)
+task_pool_loop_metrics (struct task_pool const *pool,
+                        size_t                  i)
 {
-	return &tasks->lane[i].metrics;
+	return &pool->lane[i].metrics;
 }
 
-struct tasks_metrics const *
-tasks_metrics (struct tasks const *tasks)
+struct task_pool_metrics const *
+task_pool_metrics (struct task_pool const *pool)
 {
-	return &tasks->metrics;
+	return &pool->metrics;
 }
 
 void
 task_init (struct task      *task,
-           struct tasks     *tasks,
+           struct task_pool *pool,
            struct loop      *loop,
            enum task_state (*slice) (struct task *task,
                                      struct loop *loop,
@@ -218,7 +239,7 @@ task_init (struct task      *task,
 	task->hook = (struct list){};
 	task->slice = slice;
 	task->back = back;
-	task->tasks = tasks;
+	task->pool = pool;
 	task->owner = loop;
 	task->moves = 0;
 	atomic_init(&task->cancel, 0);
@@ -229,14 +250,14 @@ void
 task_submit (struct task *task,
              struct loop *loop)
 {
-	struct tasks *tasks = task->tasks;
-	struct task_lane *self = &tasks->lane[loop->id - 1];
+	struct task_pool *pool = task->pool;
+	struct task_lane *self = &pool->lane[loop->id - 1];
 	atomic_store_explicit(&task->refs, 2, memory_order_relaxed);
-	atomic_fetch_add_explicit(&tasks->metrics.submitted, 1, memory_order_relaxed);
-	struct task_lane *to = choose(tasks, self, false);
+	atomic_fetch_add_explicit(&pool->metrics.submitted, 1, memory_order_relaxed);
+	struct task_lane *to = task_pool_choose(pool, self, false);
 	atomic_fetch_add_explicit(&to->load, 1, memory_order_relaxed);
 	if (to == self) {
-		take(self, task, loop);
+		task_lane_take(self, task, loop);
 		return;
 	}
 	task->msg.fn = task_arrive;

@@ -87,7 +87,7 @@ static struct {
 #define TASKS(name, help, field, kind) \
 	VALUE(name, help, "", struct task_metrics, field, TASKS, kind, ONE)
 #define TASKS_ALL(name, help, labels, field) \
-	VALUE(name, help, labels, struct tasks_metrics, field, TASKS_ALL, COUNTER, ONE)
+	VALUE(name, help, labels, struct task_pool_metrics, field, TASKS_ALL, COUNTER, ONE)
 #define INPUT(help, input, i) \
 	VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
 	      struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)

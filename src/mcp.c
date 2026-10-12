@@ -181,7 +181,7 @@ struct mcp_static {
 	struct dstr               versions;     /**< the supported versions, an array */
 	struct manual            *manual;       /**< the man tool's, if askai
 	                                             offers it */
-	struct tasks             *tasks;        /**< test_task's, if askai offers
+	struct task_pool         *tasks;        /**< test_task's, if askai offers
 	                                             it */
 	struct git               *git;          /**< git's, if askai lists
 	                                             repositories */
@@ -3803,7 +3803,7 @@ int
 mcp_static_new (struct mcp_static   **p_static,
                 struct config const  *cfg,
                 struct manual        *manual,
-                struct tasks         *tasks,
+                struct task_pool     *tasks,
                 struct git           *git,
                 struct notes         *notes)
 {

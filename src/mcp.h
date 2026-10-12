@@ -18,7 +18,7 @@ struct metrics_mcp;
 struct metrics_src;
 struct notes;
 struct stream_app;
-struct tasks;
+struct task_pool;
 
 /** The tools, as bits of what a client's role may list and call
  *  (src/policy.h). */
@@ -72,7 +72,7 @@ extern int
 mcp_static_new (struct mcp_static   **p_static,
                 struct config const  *cfg,
                 struct manual        *manual,
-                struct tasks         *tasks,
+                struct task_pool     *tasks,
                 struct git           *git,
                 struct notes         *notes);
 

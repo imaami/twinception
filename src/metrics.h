@@ -32,7 +32,7 @@ struct http_metrics;
 struct loop_metrics;
 struct manual_metrics;
 struct task_metrics;
-struct tasks_metrics;
+struct task_pool_metrics;
 
 /** MCP methods, whose request times are kept apart. */
 enum metrics_method {
@@ -136,14 +136,14 @@ struct metrics_loop {
 
 /** Where the metrics are; the brainstem's and the logger's are global. */
 struct metrics_src {
-	struct metrics_loop          *loops;     /**< the client loops', which
-	                                              have all, then home's */
-	struct http_metrics const    *http;
-	struct blocker_metrics const *blockers;
-	struct home_metrics const    *jobs;
-	struct manual_metrics const  *man;       /**< if askai offers man */
-	struct tasks_metrics const   *tasks;     /**< if askai offers test_task */
-	size_t                        n_loops;
+	struct metrics_loop            *loops;     /**< the client loops', which
+	                                                have all, then home's */
+	struct http_metrics const      *http;
+	struct blocker_metrics const   *blockers;
+	struct home_metrics const      *jobs;
+	struct manual_metrics const    *man;       /**< if askai offers man */
+	struct task_pool_metrics const *tasks;     /**< if askai offers test_task */
+	size_t                          n_loops;
 };
 
 /**

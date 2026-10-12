@@ -133,7 +133,7 @@ struct app {
 	struct httpd_hub        *hub;
 	struct metrics_src      *metrics;
 	struct httpd            *httpd;
-	struct tasks            *tasks;   /* if askai offers test_task */
+	struct task_pool        *tasks;   /* if askai offers test_task */
 };
 
 /*
@@ -470,8 +470,8 @@ app_start (void            *ctx,
 	mine->methods = app->counts.methods;
 	mine->conns = httpd_hub_metrics(app->hub, loop->id - 1);
 	if (app->tasks) {
-		tasks_attach(app->tasks, loop);
-		mine->tasks = tasks_loop_metrics(app->tasks, loop->id - 1);
+		task_pool_attach(app->tasks, loop);
+		mine->tasks = task_pool_loop_metrics(app->tasks, loop->id - 1);
 	}
 	int e = keep_start(&app->keep, loop, blockers);
 	if (!e)
@@ -503,7 +503,7 @@ app_stop (void        *ctx,
 {
 	struct app *app = ctx;
 	if (app->tasks)
-		tasks_detach(app->tasks, loop);
+		task_pool_detach(app->tasks, loop);
 	httpd_fini(&app->httpd);
 	mcp_fini(&app->keep.mcp);
 	keep_stop(&app->keep, loop);
@@ -559,11 +559,13 @@ serve (struct config const *cfg)
 		git_free(&git);
 		return 1;
 	}
-	struct tasks *tasks = cfg->flags & CFG_TEST_TASK ? tasks_new(n) : nullptr;
+	int e = git_error;
+	struct task_pool *tasks = cfg->flags & CFG_TEST_TASK ? task_pool_create(n, &e)
+	                                                     : nullptr;
 	struct app *apps = calloc(n, sizeof *apps);
 	struct metrics_loop *loops = calloc(n + 1, sizeof *loops);
-	int e = !apps || !loops || (cfg->flags & CFG_TEST_TASK && !tasks) ? ENOMEM
-	      : git_error;
+	if (!apps || !loops)
+		e = ENOMEM;
 	if (!e && cfg->flags & CFG_MAN)
 		e = manual_new(&manual, cfg->man_recheck);
 	if (!e)
@@ -573,7 +575,7 @@ serve (struct config const *cfg)
 	struct metrics_src metrics = {
 		.loops = loops,
 		.man = manual ? manual_metrics(manual) : nullptr,
-		.tasks = tasks ? tasks_metrics(tasks) : nullptr,
+		.tasks = tasks ? task_pool_metrics(tasks) : nullptr,
 		.n_loops = n + 1
 	};
 	struct home_app home = {
@@ -622,10 +624,10 @@ serve (struct config const *cfg)
 		/* Every loop has stopped, and the counts are whole, but where a
 		 * blocker still busy kept the loops unfinished, their inboxes
 		 * unread: the tasks those held are under way still. */
-		struct tasks_metrics const *t = tasks_metrics(tasks);
+		struct task_pool_metrics const *t = task_pool_metrics(tasks);
 		uint64_t moved = 0;
 		for (size_t i = 0; i < n; ++i)
-			moved += hist_get(&tasks_loop_metrics(tasks, i)->moved);
+			moved += hist_get(&task_pool_loop_metrics(tasks, i)->moved);
 		uint64_t submitted = hist_get(&t->submitted);
 		uint64_t ended = hist_get(&t->done) + hist_get(&t->cancelled) +
 		                 hist_get(&t->abandoned);
@@ -637,7 +639,7 @@ serve (struct config const *cfg)
 		        submitted, hist_get(&t->done), hist_get(&t->cancelled),
 		        hist_get(&t->abandoned), moved, rest);
 	}
-	tasks_free(&tasks);
+	task_pool_destroy(&tasks);
 	httpd_hub_free(&hub);
 	git_free(&git);
 	notes_free(&notes);
