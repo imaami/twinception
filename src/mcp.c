@@ -1358,7 +1358,7 @@ call_key (struct job         *job,
 	}
 	memcpy(s.ptr + head, json, len);
 	buf_commit(&job->key, head + len);
-	job->hash = hash_bytes(seed, s.ptr, head + len);
+	job->hash = util_hash(seed, s.ptr, head + len);
 	job->session = (uint32_t)head;
 	return true;
 }
@@ -1394,9 +1394,9 @@ call_submit (struct mcp_req *req)
 	job->peer[0] = s->peer[0];
 	job->peer[1] = s->peer[1];
 	job->principal = s->principal ? s->principal
-	               : job->session ? hash_bytes(seed, buf_peek(&job->key).ptr,
-	                                           job->session)
-	               : hash_bytes(~seed, job->peer, sizeof job->peer);
+	               : job->session ? util_hash(seed, buf_peek(&job->key).ptr,
+	                                          job->session)
+	               : util_hash(~seed, job->peer, sizeof job->peer);
 	if (s->principal) {
 		job->session = 0;
 		job->peer[0] = job->peer[1] = UINT64_MAX;

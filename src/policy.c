@@ -107,7 +107,7 @@ valid_name (char const *name)
 static uint64_t
 principal_of (char const *name)
 {
-	uint64_t h = hash_bytes(SEED, name, strlen(name));
+	uint64_t h = util_hash(SEED, name, strlen(name));
 	return h + !h;
 }
 
@@ -164,7 +164,7 @@ by_id (void const *a,
 static uint64_t
 principal_of_uid (uint32_t uid)
 {
-	uint64_t h = hash_bytes(~SEED, &uid, sizeof uid);
+	uint64_t h = util_hash(~SEED, &uid, sizeof uid);
 	return h + !h;
 }
 

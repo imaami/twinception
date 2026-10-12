@@ -386,7 +386,7 @@ found (struct child *c)
 		settle(f, nullptr, "man named no file for the page.");
 		return;
 	}
-	uint64_t hash = hash_bytes(m->seed, out.ptr, len);
+	uint64_t hash = util_hash(m->seed, out.ptr, len);
 	pthread_mutex_lock(&m->lock);
 	struct entry *file = entry_find(m, (char const *)out.ptr, len, hash);
 	if (!file)
@@ -491,7 +491,7 @@ manual_find (struct manual_loop  *ml,
 	key[name_len] = '\0';
 	if (section_len)
 		memcpy(key + name_len + 1, section, section_len);
-	uint64_t hash = hash_bytes(m->seed, key, len);
+	uint64_t hash = util_hash(m->seed, key, len);
 
 	pthread_mutex_lock(&m->lock);
 	struct entry *a = entry_find(m, key, len, hash);
