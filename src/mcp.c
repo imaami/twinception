@@ -3935,22 +3935,6 @@ static void
 mcp_req_step (struct loop      *loop,
               struct loop_step *step)
 {
-	static void (*const work[PHASE_N]) (struct mcp_req *req) = {
-		[PHASE_PARSE]     = mcp_req_parse,
-		[PHASE_DISPATCH]  = mcp_req_dispatch,
-		[PHASE_BUILD]     = mcp_req_build,
-		[PHASE_ANSWER]    = mcp_req_answer,
-		[PHASE_TEXT]      = mcp_req_text,
-		[PHASE_GIT_TEXT]  = mcp_req_git_text,
-		[PHASE_ARGS]      = mcp_req_turn_args,
-		[PHASE_TURN]      = mcp_req_turn_write,
-		[PHASE_NOTES_OUT] = mcp_req_notes_out,
-		[PHASE_RESULT]    = mcp_req_result_write,
-		[PHASE_ADD]       = mcp_req_add_write,
-		[PHASE_REPLY]     = mcp_req_reply,
-		[PHASE_SEND]      = mcp_req_send,
-		[PHASE_METRICS]   = mcp_req_metrics,
-	};
 	struct mcp_req *req = container_of(step, struct mcp_req, step);
 	if (req->tick && req->phase < PHASE_REPLY) {
 		req->tick = false;
@@ -3966,8 +3950,52 @@ mcp_req_step (struct loop      *loop,
 			return;
 		}
 	}
-	if (work[req->phase])
-		work[req->phase](req);
+	switch (req->phase) {
+	case PHASE_PARSE:
+		mcp_req_parse(req);
+		break;
+	case PHASE_DISPATCH:
+		mcp_req_dispatch(req);
+		break;
+	case PHASE_BUILD:
+		mcp_req_build(req);
+		break;
+	case PHASE_ANSWER:
+		mcp_req_answer(req);
+		break;
+	case PHASE_TEXT:
+		mcp_req_text(req);
+		break;
+	case PHASE_GIT_TEXT:
+		mcp_req_git_text(req);
+		break;
+	case PHASE_ARGS:
+		mcp_req_turn_args(req);
+		break;
+	case PHASE_TURN:
+		mcp_req_turn_write(req);
+		break;
+	case PHASE_NOTES_OUT:
+		mcp_req_notes_out(req);
+		break;
+	case PHASE_RESULT:
+		mcp_req_result_write(req);
+		break;
+	case PHASE_ADD:
+		mcp_req_add_write(req);
+		break;
+	case PHASE_REPLY:
+		mcp_req_reply(req);
+		break;
+	case PHASE_SEND:
+		mcp_req_send(req);
+		break;
+	case PHASE_METRICS:
+		mcp_req_metrics(req);
+		break;
+	default:
+		break;
+	}
 }
 
 static void
