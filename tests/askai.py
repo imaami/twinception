@@ -4393,8 +4393,17 @@ def check_man(binary, up):
             # children at most, which go on until their deadline.
             late = []
             start = time.monotonic()
-            thread = threading.Thread(target=lambda: late.append(
-                (man_call(ai, name="wait0"), time.monotonic() - start)))
+
+            # Its reply comes as its deadline does, after 10 s: the client
+            # waits longer than that.
+            def late_call():
+                conn = http.client.HTTPConnection(ai.host, ai.port, timeout=15)
+                status, _, body = ai.rpc("tools/call", {
+                    "name": "man", "arguments": {"name": "wait0"}}, conn=conn)
+                conn.close()
+                assert status == 200, (status, body)
+                late.append((body["result"], time.monotonic() - start))
+            thread = threading.Thread(target=late_call)
             thread.start()
             wait_for(lambda: len(waiters()) == 1)
             socks = []
