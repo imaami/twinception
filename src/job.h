@@ -50,8 +50,8 @@
 #include "list.h"
 #include "loop.h"
 
-struct http_request;
 struct home_principal;
+struct http_request;
 
 /** The bits of the messages to home. */
 enum {
