@@ -63,31 +63,31 @@ struct brainstem_app {
 	size_t  stride;
 	/** Set up on @p loop, before its first turn; an error fails the start.
 	 *  stop() follows, whatever it returns. */
-	int  (*start)   (void            *ctx,
-	                 struct loop     *loop,
-	                 struct blocker  *blockers);
+	int  (*start)   (void           *ctx,
+	                 struct loop    *loop,
+	                 struct blocker *blockers);
 	/** Home's only: every client loop runs; begin to serve. */
-	void (*open)    (void            *ctx,
-	                 struct loop     *loop);
+	void (*open)    (void           *ctx,
+	                 struct loop    *loop);
 	/** Drain: wind down, and have the loop exit, by @p deadline (ns). */
-	void (*drain)   (void            *ctx,
-	                 struct loop     *loop,
-	                 uint64_t         deadline);
+	void (*drain)   (void           *ctx,
+	                 struct loop    *loop,
+	                 uint64_t        deadline);
 	/** Relieve memory pressure, as buf_pressure says, and once done call
 	 *  brainstem_relieved(). */
-	void (*relieve) (void            *ctx,
-	                 struct loop     *loop);
+	void (*relieve) (void           *ctx,
+	                 struct loop    *loop);
 	/** Home's only: the client loops have exited; exit once no work is
 	 *  left. */
-	void (*alone)   (void            *ctx,
-	                 struct loop     *loop);
+	void (*alone)   (void           *ctx,
+	                 struct loop    *loop);
 	/** Home's only, if set: SIGHUP, which then reloads the configuration
 	 *  rather than stopping. */
-	void (*reload)  (void            *ctx,
-	                 struct loop     *loop);
+	void (*reload)  (void           *ctx,
+	                 struct loop    *loop);
 	/** Tear down, after the loop's last turn. */
-	void (*stop)    (void            *ctx,
-	                 struct loop     *loop);
+	void (*stop)    (void           *ctx,
+	                 struct loop    *loop);
 };
 
 struct brainstem_cfg {
