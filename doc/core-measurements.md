@@ -1007,6 +1007,51 @@ generator counting handshakes cut off. Refuted: that handshaking
 connections should be evictable (as plaintext heads begun, they are busy by
 design).
 
+## S10 — Turns
+
+Gate: met. Design §4 ("Turns") gives what was built. The upstream is
+`tests/askai.py`'s fake, which streams chat completions' tool calls a piece
+at a time (`turn_stream()`); no real model was run, as this machine's GPUs
+serve the user's own llama-servers.
+
+**`check_turns`**: the tools a role lends (git, notes, compact; notes and
+compact alone for a role without git), the turn's JSON as llama-server
+parses it (text, `reasoning_content`, calls, `{}` for arguments that are no
+object, made-up ids for calls without one), results in order, the trace;
+notes written, read back newest-window-first and searched, a thread gone on
+with and an unknown one refused; windows of 64 KiB, and of an eighth of
+`--context` or of `/props`'s `n_ctx` (asked for with `--slots` too), with the
+offset that reads on, and past the output's end, for a turn and for a
+direct call; the answer whole after a call with an offset; the warning at three
+quarters, askai's compaction at the context by the usage and on the
+upstream's overflow error, once; `compact` with its summary and the notes,
+the calls after it not run; `--max-turns` told and stopped; calls out of
+order refused, and calls with no index taken; arguments the output token
+limit cut named so; progress notes per turn and tool; a hang-up mid-loop
+cancels the upstream call, and a legacy cancel as a tool runs ends the call
+before its next turn (the test fails without the fix); the notes
+repository's hooks not run; `/props` slow beside `--slots 1` delaying no
+call; the configuration's mistakes named; the metrics.
+
+**Steps**: a turn of 3 MiB of text and 1 MiB of thinking, after a 512 KiB
+prompt, calling git four times for 64 KiB windows: every unit of every loop
+within its bound, the front's writing of the turn into the conversation and
+home's reading of the events alike (an event over 0.5 MiB still breaks
+home's copy bound, as before; servers stream small pieces).
+
+**Notes' costs** (git 2.55, a notebook of 256 notes of 1 KiB): a write,
+`git fast-import` from the branch's tip, median 3.9 ms and at most 5.8 ms
+from spawn to exit; a read of the 256, `git log -z`, 5.2 ms. Each note is
+one loose object (257 for 256 notes, the empty tree shared).
+
+**Suite and sanitizers**, after the review: `tests/askai.py`, 38 checks,
+pass with clang and gcc; ASan, UBSan and LeakSanitizer clean on all of
+them; TSan clean on `check_turns`, `check_progress`, `check_jobs`,
+`check_cancellation` and `check_shutdown`. The `check` load profile passes
+before and after the review (probe p99 4.5× and 4.6× idle, every clause),
+the core's paths changed only by the sink that home reads events through,
+`/props`'s connection and the withdrawals kept between turns.
+
 ## Open decisions
 
 Measured, not settled, and left as they are:

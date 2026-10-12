@@ -269,7 +269,8 @@ run (struct fetch      *f,
 	struct manual_loop *ml = f->ml;
 	struct loop *loop = ml->loop;
 	int e = child_spawn(&f->child, loop, &ml->children, "man", argv, ml->manual->env,
-	                    max, loop->now + MANUAL_SECONDS * NS, 0, 0, done, f);
+	                    (struct span){}, max, loop->now + MANUAL_SECONDS * NS, 0, 0,
+	                    done, f);
 	if (!e) {
 		count(runs, 1);
 		return;

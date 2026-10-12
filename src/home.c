@@ -37,11 +37,14 @@ enum {
 	QUEUED       = 8,         /* jobs queued for a principal at most */
 	SLOTS        = 4,         /* upstream calls at once, unless told or found */
 	FAILURES     = 5,         /* failures in a row that open the breaker */
+	WITHDRAWALS  = 16,        /* withdrawals of calls between their turns'
+	                             jobs kept, the oldest given up first */
 };
 
 static constexpr uint64_t NS = 1'000'000'000;
 static constexpr uint64_t BACKOFF_MIN = NS;
 static constexpr uint64_t BACKOFF_MAX = 60 * NS;
+static constexpr uint64_t WITHDRAWAL_NS = 600 * NS;  /* how long one is kept */
 
 /* What home notes of a job's run, in its flags. */
 enum {
@@ -144,12 +147,25 @@ struct home {
 	uint64_t                  silence;     /* ns an answer may pause */
 	uint64_t                  backoff;     /* the breaker's next open spell */
 	uint64_t                  until;       /* when the breaker half-opens */
+	struct {
+		uint64_t hash;
+		uint64_t until;
+		size_t   len;
+	}                         gone[WITHDRAWALS];  /* withdrawals that found no
+	                                                 job: the key's hash and
+	                                                 length, and when they are
+	                                                 given up; for the turns
+	                                                 of a call that lends
+	                                                 tools, between jobs */
 	size_t                    mask;        /* buckets - 1 */
 	uint32_t                  max;         /* jobs in flight at most */
 	uint32_t                  slots;       /* upstream calls at once at most */
+	uint32_t                  context;     /* tokens of the upstream's context,
+	                                          as told or found; 0: unknown */
 	uint32_t                  failures;    /* in a row, closed */
 	uint32_t                  readied[2];  /* jobs ready, by class */
 	uint32_t                  running_bg;  /* background jobs running */
+	uint32_t                  gone_at;     /* the next of gone to fill */
 	uint16_t                  draining;    /* bool, widened over the padding */
 	uint16_t                  alone;       /* bool: the client loops have exited */
 	uint8_t                   state;       /* the breaker's */
@@ -254,6 +270,15 @@ queue_leave (struct home *home,
 	hist_add(&home->metrics->principals, -1ULL);
 }
 
+/* Give the storage of @p job's answer back to the stash. */
+static void
+answer_free (struct job *job)
+{
+	buf_free(&job->result);
+	buf_free(&job->calls);
+	buf_free(&job->thought);
+}
+
 /* Drop @p n references to @p job, and hand it back to its front if they were
  * the last. */
 static void
@@ -310,7 +335,7 @@ job_end (struct home      *home,
 		hist_add(count, 1);
 	bool dropped = job->flags & DROPPED;
 	if (dropped || status == JOB_CANCELLED || status == JOB_WITHDRAWN)
-		buf_free(&job->result);
+		answer_free(job);
 	job->status = (uint8_t)status;
 	job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DONE);
 	if (dropped)
@@ -447,11 +472,12 @@ job_finish (struct home *home,
 		return;
 	}
 	struct span text = buf_peek(&job->result);
-	if (result == CURLE_OK && !(flags & ERRED) && text.len) {
-		struct span s = flags & TRUNCATED ? buf_reserve(&job->result,
-		                                                sizeof AI_CUT_NOTE - 1,
-		                                                SIZE_MAX)
-		                                  : (struct span){};
+	bool calls = buf_peek(&job->calls).len;
+	if (result == CURLE_OK && !(flags & ERRED) && (text.len || calls)) {
+		/* Cut short, a tool call's arguments are, which the front tells. */
+		struct span s = flags & TRUNCATED && !calls
+		              ? buf_reserve(&job->result, sizeof AI_CUT_NOTE - 1, SIZE_MAX)
+		              : (struct span){};
 		if (s.len) {
 			memcpy(s.ptr, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1);
 			buf_commit(&job->result, sizeof AI_CUT_NOTE - 1);
@@ -601,6 +627,7 @@ job_start (struct home *home,
 		++home->running_bg;
 	}
 	job->since = loop->now;
+	job->context = home->context;
 	job->deadline = home->timeout ? loop->now + home->timeout : 0;
 	list_del(&job->due);
 	list_append(&home->timeline, &job->due);
@@ -798,6 +825,103 @@ put_text (void       *user,
 	return 0;
 }
 
+/* Add @p len bytes of thinking at @p text to the job @p user's, as
+ * put_text() does its answer. */
+static int
+put_thought (void       *user,
+             char const *text,
+             size_t      len)
+{
+	struct job *job = user;
+	if (jb_utf8(text, len) < len)
+		return EILSEQ;
+	struct span s = len ? buf_reserve(&job->thought, len, MAX_RESPONSE)
+	                    : (struct span){};
+	if (!s.len)
+		return len ? errno : 0;
+	memcpy(s.ptr, text, len);
+	buf_commit(&job->thought, len);
+	loop_work(self->loop, LOOP_COPY, len);
+	return 0;
+}
+
+/* Add what @p call says of a tool call to the job @p user's calls: a call
+ * begins with an index none had, after which those before it are whole, or,
+ * for a server that gives no index, with an id unlike the last call's; its
+ * id comes before its name, and its name before its arguments, which may
+ * come in pieces; an id or a name said again, as some servers do, is the
+ * same.  EPROTO for a call that breaks that order, or for more than
+ * JOB_CALLS of them; EILSEQ for what is not UTF-8. */
+static int
+put_call (void                 *user,
+          struct ai_call const *call)
+{
+	struct job *job = user;
+	struct span all = buf_peek(&job->calls);
+	struct job_call last = {};
+	size_t at = 0;
+	uint32_t n = 0;
+	for (size_t off = 0; off < all.len; ++n) {
+		memcpy(&last, all.ptr + off, sizeof last);
+		at = off;
+		off += sizeof last + last.id + last.name + last.args;
+	}
+	unsigned char const *had = n ? all.ptr + at + sizeof last : nullptr;
+	size_t id = call->id_len;
+	bool same_id = n && id && id == last.id && !memcmp(had, call->id, id);
+	uint32_t index = call->index != AI_CALL_NEXT ? call->index
+	               : !n || (id && !same_id) ? n : last.index;
+	bool next = !n || last.index != index;
+	/* A call that came before the last may not go on. */
+	for (size_t off = 0; next && off < at; ) {
+		struct job_call c;
+		memcpy(&c, all.ptr + off, sizeof c);
+		if (c.index == index)
+			return EPROTO;
+		off += sizeof c + c.id + c.name + c.args;
+	}
+	if (next && n == JOB_CALLS)
+		return EPROTO;
+	if (next) {
+		last = (struct job_call){ .index = index };
+		at = all.len;
+		had = nullptr;
+	}
+	size_t name = call->name_len;
+	size_t args = call->args_len;
+	if (!next && same_id)
+		id = 0;
+	if (!next && name && name == last.name && !memcmp(had + last.id, call->name, name))
+		name = 0;
+	if ((id && (last.name || last.args)) || (name && last.args))
+		return EPROTO;
+	if (jb_utf8(call->id, id) < id || jb_utf8(call->name, name) < name ||
+	    jb_utf8(call->args, args) < args)
+		return EILSEQ;
+	size_t head = next ? sizeof last : 0;
+	size_t len = head + id + name + args;
+	if (!len)
+		return 0;
+	struct span s = buf_reserve(&job->calls, len, MAX_RESPONSE);
+	if (!s.len)
+		return errno;
+	/* Only the last part grows, at the end of the last call. */
+	unsigned char *p = s.ptr + head;
+	if (id)
+		memcpy(p, call->id, id);
+	if (name)
+		memcpy(p + id, call->name, name);
+	if (args)
+		memcpy(p + id + name, call->args, args);
+	last.id += (uint32_t)id;
+	last.name += (uint32_t)name;
+	last.args += (uint32_t)args;
+	buf_commit(&job->calls, len);
+	memcpy(buf_peek(&job->calls).ptr + at, &last, sizeof last);
+	loop_work(self->loop, LOOP_COPY, len);
+	return 0;
+}
+
 /* Parse on with @p parser, the @p len bytes at @p json, a slice as far as
  * the step's shares allow, which it counts; true once the parse is over. */
 static bool
@@ -849,7 +973,15 @@ read_event (struct home *home,
 		/* Each event is a chunk, and one with text or thinking a token. */
 		if (json) {
 			size_t had = buf_peek(&job->result).len;
-			e = ai_event(home->ep->protocol, root, put_text, job, &ev);
+			bool tools = job->asks & JOB_TOOLS;
+			struct ai_sink const sink = {
+				.text = put_text,
+				.thought = tools ? put_thought : nullptr,
+				.call = tools ? put_call : nullptr,
+				.user = job
+			};
+			e = ai_event(home->ep->protocol, root, &sink, &ev);
+			job->used = ev.used ? ev.used : job->used;
 			hist_add(&home->metrics->chunks, 1);
 			bool text = buf_peek(&job->result).len > had;
 			if (text || ev.thought)
@@ -864,14 +996,16 @@ read_event (struct home *home,
 			                                     : job->flags & ~TRUNCATED);
 		}
 		job->flags |= ev.end ? ENDED : 0;
-		bool bad = e == EILSEQ || (!json && !e);
+		bool bad = e == EILSEQ || e == EPROTO || (!json && !e);
 		if (ev.error) {
 			size_t len = strnlen(ev.error, 4096);
 			job_say(job, "Upstream error (HTTP %d): %.*s", job->http,
 			        (int)jb_utf8(ev.error, len), ev.error);
 		} else if (bad) {
 			job_say(job, "Upstream error (HTTP %d): %s", job->http,
-			        json ? "an answer that is not text" : "an event that is not JSON text");
+			        e == EPROTO ? "tool calls out of order, or too many"
+			        : json ? "an answer that is not text"
+			        : "an event that is not JSON text");
 		}
 		job->flags |= ev.error || bad ? ERRED : 0;
 		if (json && n <= loop_room(loop, LOOP_VALUES)) {
@@ -1121,9 +1255,11 @@ preempt_step (struct loop      *loop,
 			loop_ready_bulk(loop, &home->reap);
 		buf_free(&job->wire);
 		buf_consume(&job->result, buf_peek(&job->result).len);
+		buf_consume(&job->calls, buf_peek(&job->calls).len);
+		buf_consume(&job->thought, buf_peek(&job->thought).len);
 		job->flags = PREEMPTED | READY;
 		job->http = 0;
-		job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
+		job->ev = job->evlen = job->line = job->scan = job->chunks = job->used = 0;
 		job->reason[0] = '\0';
 		hist_add(&m->running, -1ULL);
 		hist_add(&m->background, -1ULL);
@@ -1235,11 +1371,15 @@ props_done (CURLcode    result,
 	else
 		snprintf(why, sizeof why, "the default: /props: HTTP %ld", status);
 	buf_free(&home->answer);
-	home_slots(home, SLOTS, why);
+	if (home->ep->slots)
+		http_connections(home->http, home->slots);
+	else
+		home_slots(home, SLOTS, why);
 }
 
 /* Let /props's answer on, once the step has the share for it, or parse it a
- * slice a step, and take the slots its total_slots says. */
+ * slice a step, and take the slots its total_slots says, unless told, and
+ * the context its slots' n_ctx says, likewise. */
 static void
 props_step (struct loop      *loop,
             struct loop_step *step)
@@ -1261,11 +1401,25 @@ props_step (struct loop      *loop,
 	struct json_object *root = jb_parse_take(parser);
 	jb_parse_end(parser, &home->pool, &home->reaper);
 	struct json_object *total = jb_get(root, "total_slots");
+	struct json_object *ctx = jb_get(jb_get(root, "default_generation_settings"),
+	                                 "n_ctx");
 	int64_t n = json_object_is_type(total, json_type_int)
 	          ? json_object_get_int64(total) : 0;
+	int64_t tokens = json_object_is_type(ctx, json_type_int)
+	               ? json_object_get_int64(ctx) : 0;
 	jb_reap(&home->reaper, root);
 	loop_ready_bulk(loop, &home->reap);
 	buf_free(&home->answer);
+	if (tokens > 0 && !home->context) {
+		home->context = tokens < INT32_MAX ? (uint32_t)tokens : INT32_MAX;
+		LOG(LOG_INFO, "upstream context: %" PRIu32 " tokens (llama-server's /props)",
+		    home->context);
+	}
+	/* Told the slots, /props had a connection of its own. */
+	if (home->ep->slots) {
+		http_connections(home->http, home->slots);
+		return;
+	}
 	if (n > 0)
 		home_slots(home, n < UINT16_MAX ? (uint32_t)n : UINT16_MAX,
 		           "llama-server's /props");
@@ -1315,19 +1469,22 @@ props_ask (struct home *home)
 /* End the jobs in flight that the key of @p carrier names, as their client
  * asked: at once those not running upstream, and by a step those running,
  * the same that cancels those their front let go of.  One its front let go
- * of ends so already. */
+ * of ends so already.  A key that names none is kept a while, as it may
+ * name a call that lends tools between the jobs of its turns. */
 static void
 home_withdraw (struct home      *home,
                struct job const *carrier)
 {
 	struct span key = buf_peek(&carrier->key);
 	struct job *next;
+	bool found = false;
 	for (struct job *job = *home_bucket(home, carrier->hash); job; job = next) {
 		struct span k = buf_peek(&job->key);
 		next = job->chain;
 		if (job->hash != carrier->hash || k.len != key.len ||
 		    memcmp(k.ptr, key.ptr, key.len) || job->flags & (DROPPED | WITHDRAWN))
 			continue;
+		found = true;
 		job->flags |= WITHDRAWN;
 		if (!job->transfer) {
 			job_end(home, job, JOB_WITHDRAWN, &home->metrics->cancelled);
@@ -1337,6 +1494,30 @@ home_withdraw (struct home      *home,
 		list_append(&home->dropped, &job->queue);
 		loop_ready_bulk(home->loop, &home->stop);
 	}
+	if (!found)
+		home->gone[home->gone_at++ % WITHDRAWALS] = (typeof(home->gone[0])){
+			carrier->hash, home->loop->now + WITHDRAWAL_NS, key.len
+		};
+}
+
+/* Whether @p job, of a call that lends tools, was withdrawn between its
+ * turns' jobs: a withdrawal kept for its key ends a turn after the first,
+ * and goes; a first turn's makes it go, as it was the call's before, whose
+ * id this one has again. */
+static bool
+withdrawn (struct home *home,
+           struct job  *job)
+{
+	size_t len = buf_peek(&job->key).len;
+	for (size_t i = 0; i < WITHDRAWALS; ++i) {
+		if (home->gone[i].until <= home->loop->now || home->gone[i].hash != job->hash ||
+		    home->gone[i].len != len)
+			continue;
+		home->gone[i].until = 0;
+		if (job->asks & JOB_AGAIN)
+			return true;
+	}
+	return false;
 }
 
 /* Admit @p job, or end it at once: draining, with the breaker open, with
@@ -1355,6 +1536,10 @@ home_admit (struct home *home,
 	struct home_metrics *m = home->metrics;
 	if (home->draining) {
 		job_end(home, job, JOB_CANCELLED, &m->rejected);
+		return;
+	}
+	if (job->asks & JOB_TOOLS && withdrawn(home, job)) {
+		job_end(home, job, JOB_WITHDRAWN, &m->cancelled);
 		return;
 	}
 	if (home->state == OPEN) {
@@ -1431,7 +1616,7 @@ home_job (struct loop *loop,
 		/* A job may come back for another run: what home noted of the
 		 * last goes before any end. */
 		job->flags = job->http = 0;
-		job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
+		job->ev = job->evlen = job->line = job->scan = job->chunks = job->used = 0;
 		job->reason[0] = '\0';
 		if (m)
 			hist_add(&m->submitted, 1);
@@ -1453,7 +1638,7 @@ home_job (struct loop *loop,
 	/* Let go of the job as its front has, the result's storage back to the
 	 * stash it came from. */
 	if (bits & JOB_CANCEL)
-		buf_free(&job->result);
+		answer_free(job);
 	home_put(job, bits & JOB_CANCEL ? 2 : 1);
 }
 
@@ -1541,11 +1726,18 @@ home_init (struct home               **p_home,
 	}
 	http_resolver(home->http, blockers);
 	self = *p_home = home;
-	/* Until /props answers, if asked, the default, said once it has. */
+	/* Until /props answers, if asked, the default, said once it has; and
+	 * the context, which compacting it takes, unless told. */
+	home->context = ep->context > 0 ? (uint32_t)ep->context : 0;
+	bool asked = (!ep->slots || (cfg->flags & CFG_UPSTREAM_TOOLS && !home->context)) &&
+	             props_ask(home);
 	if (ep->slots)
 		home_slots(home, ep->slots, "--slots");
 	else
-		home_slots(home, SLOTS, props_ask(home) ? nullptr : "the default");
+		home_slots(home, SLOTS, asked ? nullptr : "the default");
+	/* Told the slots, /props takes no call's connection. */
+	if (ep->slots && asked)
+		http_connections(home->http, ep->slots + 1L);
 	return 0;
 }
 

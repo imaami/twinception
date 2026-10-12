@@ -70,7 +70,8 @@ merge (struct json_object *dst,
 struct json_object *
 ai_request (struct ai_endpoint const *ep,
             struct json_object       *system,
-            struct json_object       *prompt)
+            struct json_object       *prompt,
+            struct json_object       *tools)
 {
 	struct json_object *root = json_object_new_object();
 	if (!root)
@@ -87,7 +88,11 @@ ai_request (struct ai_endpoint const *ep,
 		struct json_object *messages = json_object_new_array();
 		if (!jb_set(root, "messages", messages) ||
 		    (system && !jb_push(messages, message("system", system))) ||
-		    !jb_push(messages, message("user", prompt)))
+		    !jb_push(messages, message("user", prompt)) ||
+		    (tools && (!jb_set(root, "tools", json_object_get(tools)) ||
+		               !jb_set(root, "stream_options", jb_object(
+		                       "include_usage", json_object_new_boolean(1),
+		                       nullptr)))))
 			goto fail;
 		break;
 	}
@@ -130,6 +135,16 @@ ai_request (struct ai_endpoint const *ep,
 	    (ep->protocol != AI_GEMINI &&
 	     !jb_set(root, "stream", json_object_new_boolean(1))))
 		goto fail;
+	/* Chat completions' messages last, after what --extra added, so that
+	 * turns may follow them, unless --extra took them away. */
+	struct json_object *messages = ep->protocol == AI_OPENAI
+	                             ? jb_get(root, "messages") : nullptr;
+	if (messages) {
+		json_object_get(messages);
+		json_object_object_del(root, "messages");
+		if (!jb_set(root, "messages", messages))
+			goto fail;
+	}
 	return root;
 
 fail:
@@ -240,7 +255,8 @@ ai_no_answer (char       *buf,
 	                reason ? reason : "", reason ? ")" : "");
 }
 
-/* Hand @p val's text to @p put, if it is a string. */
+/* Hand @p val's text to @p put, if it is a string and @p put is not
+ * nullptr. */
 static int
 put_text (int               (*put) (void       *user,
                                     char const *text,
@@ -248,8 +264,53 @@ put_text (int               (*put) (void       *user,
           void               *user,
           struct json_object *val)
 {
-	char const *str = jb_text(val);
+	char const *str = put ? jb_text(val) : nullptr;
 	return str ? put(user, str, (size_t)json_object_get_string_len(val)) : 0;
+}
+
+/* @p val's text and its length in @p *len, if it is a string; else
+ * nullptr. */
+static char const *
+text_of (struct json_object *val,
+         size_t             *len)
+{
+	char const *str = jb_text(val);
+	*len = str ? (size_t)json_object_get_string_len(val) : 0;
+	return str;
+}
+
+/* Hand the pieces of chat completions' tool calls, @p calls, to @p sink. */
+static int
+openai_calls (struct ai_sink const *sink,
+              struct json_object   *calls)
+{
+	int e = 0;
+	struct json_object *c;
+	for (size_t i = 0; !e && sink->call && (c = jb_at(calls, i)); ++i) {
+		struct json_object *index = jb_get(c, "index");
+		struct json_object *fn = jb_get(c, "function");
+		int64_t at = json_object_is_type(index, json_type_int)
+		           ? json_object_get_int64(index) : -1;
+		struct ai_call call = {
+			.index = at >= 0 && at < AI_CALL_NEXT ? (uint32_t)at : AI_CALL_NEXT
+		};
+		call.id = text_of(jb_get(c, "id"), &call.id_len);
+		call.name = text_of(jb_get(fn, "name"), &call.name_len);
+		call.args = text_of(jb_get(fn, "arguments"), &call.args_len);
+		e = sink->call(sink->user, &call);
+	}
+	return e;
+}
+
+/* The tokens that @p usage, chat completions', says the request and the
+ * answer took; 0 if it says nothing of them. */
+static uint32_t
+openai_used (struct json_object *usage)
+{
+	int64_t prompt = json_object_get_int64(jb_get(usage, "prompt_tokens"));
+	int64_t answer = json_object_get_int64(jb_get(usage, "completion_tokens"));
+	int64_t n = prompt > 0 && answer >= 0 ? prompt + answer : 0;
+	return n < UINT32_MAX ? (uint32_t)n : UINT32_MAX;
 }
 
 /* Whether @p val is a string with something in it. */
@@ -276,15 +337,29 @@ event_error (struct json_object *ev)
 	return msg ? msg : erred ? "an error event" : nullptr;
 }
 
-int
-ai_event (enum ai_protocol    protocol,
-          struct json_object *ev,
-          int               (*put) (void       *user,
-                                    char const *text,
-                                    size_t      len),
-          void               *user,
-          struct ai_event    *out)
+/* Each protocol's stop reason for an answer the output token limit cut. */
+static char const *const limits[] = {
+	[AI_OPENAI] = "length",
+	[AI_RESPONSES] = "max_output_tokens",
+	[AI_ANTHROPIC] = "max_tokens",
+	[AI_GEMINI] = "MAX_TOKENS",
+};
+
+bool
+ai_cut (enum ai_protocol  protocol,
+        char const       *reason)
 {
+	return reason && !strcmp(reason, limits[protocol]);
+}
+
+int
+ai_event (enum ai_protocol       protocol,
+          struct json_object    *ev,
+          struct ai_sink const  *sink,
+          struct ai_event       *out)
+{
+	int (*put)(void *, char const *, size_t) = sink->text;
+	void *user = sink->user;
 	if ((out->error = event_error(ev)))
 		return 0;
 	int e = 0;
@@ -308,11 +383,19 @@ ai_event (enum ai_protocol    protocol,
 			e = put_text(put, user, jb_get(part, "text"));
 		if (!e)
 			e = put_text(put, user, jb_get(delta, "refusal"));
-		/* llama-server's and DeepSeek's name, and OpenRouter's. */
-		out->thought = some_text(jb_get(delta, "reasoning_content")) ||
-		               some_text(jb_get(delta, "reasoning"));
+		/* llama-server's and DeepSeek's name, and OpenRouter's; only the
+		 * first goes back in a turn, as reasoning_content. */
+		struct json_object *thinking = jb_get(delta, "reasoning_content");
+		bool kept = some_text(thinking);
+		out->thought = kept || some_text(jb_get(delta, "reasoning"));
+		if (!e && kept)
+			e = put_text(sink->thought, user, thinking);
+		if (!e)
+			e = openai_calls(sink, jb_get(delta, "tool_calls"));
+		/* With include_usage, a last event of its own, with no choices. */
+		out->used = openai_used(jb_get(ev, "usage"));
 		reason = jb_get(choice, "finish_reason");
-		limit = "length";
+		limit = limits[AI_OPENAI];
 		break;
 	}
 	case AI_RESPONSES:
@@ -324,7 +407,7 @@ ai_event (enum ai_protocol    protocol,
 		               some_text(jb_get(ev, "delta"));
 		reason = jb_get(jb_get(jb_get(ev, "response"), "incomplete_details"),
 		                "reason");
-		limit = "max_output_tokens";
+		limit = limits[AI_RESPONSES];
 		break;
 	case AI_ANTHROPIC: {
 		struct json_object *delta = jb_get(ev, "delta");
@@ -335,7 +418,7 @@ ai_event (enum ai_protocol    protocol,
 		               jb_is(jb_get(delta, "type"), "thinking_delta") &&
 		               some_text(jb_get(delta, "thinking"));
 		reason = jb_get(delta, "stop_reason");
-		limit = "max_tokens";
+		limit = limits[AI_ANTHROPIC];
 		break;
 	}
 	case AI_GEMINI: {
@@ -349,7 +432,7 @@ ai_event (enum ai_protocol    protocol,
 				out->thought |= some_text(jb_get(part, "text"));
 		reason = candidate ? jb_get(candidate, "finishReason")
 		       : jb_get(jb_get(ev, "promptFeedback"), "blockReason");
-		limit = "MAX_TOKENS";
+		limit = limits[AI_GEMINI];
 		break;
 	}
 	}
@@ -358,6 +441,30 @@ ai_event (enum ai_protocol    protocol,
 	out->end = out->reason || jb_is(type, "response.completed") ||
 	           jb_is(type, "response.incomplete") || jb_is(type, "message_stop");
 	return e;
+}
+
+struct ai_format const *
+ai_format (enum ai_protocol protocol)
+{
+#define B(s) { s, sizeof s - 1 }
+	static struct ai_format const chat = {
+		.turn       = B(",{\"role\":\"assistant\",\"content\":\""),
+		.thought    = B("\",\"reasoning_content\":\""),
+		.calls      = B("\",\"tool_calls\":["),
+		.call       = B("{\"id\":\""),
+		.call_next  = B(",{\"id\":\""),
+		.name       = B("\",\"type\":\"function\",\"function\":{\"name\":\""),
+		.args       = B("\",\"arguments\":\""),
+		.call_end   = B("\"}}"),
+		.turn_end   = B("]}"),
+		.result     = B(",{\"role\":\"tool\",\"tool_call_id\":\""),
+		.output     = B("\",\"content\":\""),
+		.result_end = B("\"}"),
+		.prompt_end = B("\"}"),
+		.end        = B("]}"),
+	};
+#undef B
+	return protocol == AI_OPENAI ? &chat : nullptr;
 }
 
 static int

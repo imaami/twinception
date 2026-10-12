@@ -68,6 +68,9 @@ enum {
 	JOB_RETURN   = 4,  /**< home dropped the last reference, without one */
 };
 
+/** Tool calls that a streamed answer may make, at most. */
+enum { JOB_CALLS = 16 };
+
 /** In a running job's progress, beside its tokens: the latest was thinking. */
 static constexpr uint32_t JOB_THINKING = UINT32_C(1) << 31;
 
@@ -78,6 +81,20 @@ enum job_ask {
 	                               interactive jobs go first, keep a slot of
 	                               their own, and with one slot preempt it
 	                               (home.c) */
+	JOB_TOOLS      = 1 << 2,  /**< keep a streamed answer's thinking and tool
+	                               calls, which the request offered tools for */
+	JOB_AGAIN      = 1 << 3,  /**< a turn after its call's first: a withdrawal
+	                               of the call that came between its jobs
+	                               ends it (home.c) */
+};
+
+/** A tool call that a streamed answer makes, in a job's calls: this, then
+ *  the bytes of its id, its name and its arguments' JSON text. */
+struct job_call {
+	uint32_t index;  /**< its place among the answer's calls */
+	uint32_t id;     /**< bytes of its id */
+	uint32_t name;   /**< of its name */
+	uint32_t args;   /**< of its arguments */
 };
 
 /** How a job ended. */
@@ -113,6 +130,11 @@ struct job {
 	                                       read by home until DONE */
 	struct buf           result;      /**< home's: written before DONE, read
 	                                       by the front until CANCEL */
+	struct buf           calls;       /**< likewise: with JOB_TOOLS, the tool
+	                                       calls of a streamed answer, each a
+	                                       struct job_call and its bytes */
+	struct buf           thought;     /**< likewise: with JOB_TOOLS, its
+	                                       thinking's text */
 	struct buf           key;         /**< the front's: written before SUBMIT
 	                                       or WITHDRAW, read by home until
 	                                       DONE or RETURN: the call's session,
@@ -161,6 +183,12 @@ struct job {
 	uint32_t             scan;        /**< how far it has been looked at */
 	uint32_t             chunks;      /**< home's: the answer's tokens, its
 	                                       events with text or thinking */
+	uint32_t             used;        /**< home writes before DONE: the tokens
+	                                       of the request and the answer, as
+	                                       its usage says; 0: unknown */
+	uint32_t             context;     /**< home writes before DONE: the tokens
+	                                       the upstream's context holds, as
+	                                       /props says; 0: unknown */
 	uint16_t             http;        /**< home writes before DONE: the answer's
 	                                       HTTP status */
 	uint16_t             flags;       /**< home's: what it notes of the run */
@@ -196,7 +224,8 @@ job_init (struct job  *job,
 	list_init(&job->held);
 	list_init(&job->idle);
 	list_init(&job->feed);
-	job->request = job->result = job->key = job->wire = (struct buf){};
+	job->request = job->result = job->calls = job->thought = (struct buf){};
+	job->key = job->wire = (struct buf){};
 	job->parser = (struct jb_parser){};
 	job->front = front;
 	job->chain = nullptr;
@@ -206,6 +235,7 @@ job_init (struct job  *job,
 	job->deadline = job->since = job->active = job->hash = job->principal = 0;
 	job->peer[0] = job->peer[1] = 0;
 	job->session = job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
+	job->used = job->context = 0;
 	job->http = job->flags = 0;
 	job->status = job->asks = 0;
 	job->reason[0] = '\0';

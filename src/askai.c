@@ -23,6 +23,7 @@
 #include "manual.h"
 #include "mcp.h"
 #include "metrics.h"
+#include "notes.h"
 #include "task.h"
 #include "util.h"
 
@@ -551,6 +552,13 @@ serve (struct config const *cfg)
 	struct git *git = cfg->n_gits ? git_new(cfg->gits, cfg->n_gits, cfg->git_timeout)
 	                              : nullptr;
 	int git_error = cfg->n_gits && !git ? errno : 0;
+	char why[256];
+	struct notes *notes = cfg->notes ? notes_new(cfg->notes, why, sizeof why) : nullptr;
+	if (cfg->notes && !notes) {
+		fprintf(stderr, "askai: --notes: %s: %s\n", cfg->notes, why);
+		git_free(&git);
+		return 1;
+	}
 	struct tasks *tasks = cfg->flags & CFG_TEST_TASK ? tasks_new(n) : nullptr;
 	struct app *apps = calloc(n, sizeof *apps);
 	struct metrics_loop *loops = calloc(n + 1, sizeof *loops);
@@ -559,7 +567,7 @@ serve (struct config const *cfg)
 	if (!e && cfg->flags & CFG_MAN)
 		e = manual_new(&manual, cfg->man_recheck);
 	if (!e)
-		e = mcp_static_new(&st, &cfg->ep, &cfg->tool, manual, tasks, git, &cfg->mcp);
+		e = mcp_static_new(&st, cfg, manual, tasks, git, notes);
 	if (!e)
 		e = httpd_hub_new(&hub, n);
 	struct metrics_src metrics = {
@@ -632,6 +640,7 @@ serve (struct config const *cfg)
 	tasks_free(&tasks);
 	httpd_hub_free(&hub);
 	git_free(&git);
+	notes_free(&notes);
 	mcp_static_free(&st);
 	manual_free(&manual);
 	free(loops);

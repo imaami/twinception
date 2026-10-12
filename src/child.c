@@ -1,5 +1,5 @@
 /** @file Child processes (child.h). */
-#define _GNU_SOURCE /* pipe2(), POSIX_SPAWN_SETSID */
+#define _GNU_SOURCE /* pipe2(), memfd_create(), POSIX_SPAWN_SETSID */
 
 #include <errno.h>
 #include <fcntl.h>
@@ -8,6 +8,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/pidfd.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -173,10 +174,11 @@ child_late (struct loop       *loop,
 	loop_ready_bulk(loop, &c->step);
 }
 
-/* Spawn @p file, its output, and its error with CHILD_STDERR in @p flags,
- * the pipe end @p out, into @p pidfd. */
+/* Spawn @p file, its input @p in if not -1, its output, and its error with
+ * CHILD_STDERR in @p flags, the pipe end @p out, into @p pidfd. */
 static int
 spawn (int        *pidfd,
+       int         in,
        int         out,
        uint32_t    flags,
        char const *file,
@@ -196,7 +198,8 @@ spawn (int        *pidfd,
 	if (!e) {
 		e = posix_spawn_file_actions_adddup2(&fa, out, STDOUT_FILENO);
 		if (!e)
-			e = posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null",
+			e = in >= 0 ? posix_spawn_file_actions_adddup2(&fa, in, STDIN_FILENO)
+			  : posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null",
 			                                     O_RDONLY, 0);
 		if (!e)
 			e = flags & CHILD_STDERR
@@ -223,6 +226,34 @@ spawn (int        *pidfd,
 	return e;
 }
 
+/* A file in memory that holds the @p len bytes at @p data, read from its
+ * start; -1, with errno, if that cannot be. */
+static int
+input (unsigned char const *data,
+       size_t               len)
+{
+	int fd = memfd_create("askai-input", MFD_CLOEXEC);
+	for (size_t done = 0; fd >= 0 && done < len; ) {
+		ssize_t n = write(fd, data + done, len - done);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0) {
+			int e = n ? errno : EIO;
+			close(fd);
+			errno = e;
+			return -1;
+		}
+		done += (size_t)n;
+	}
+	if (fd >= 0 && lseek(fd, 0, SEEK_SET)) {
+		int e = errno;
+		close(fd);
+		errno = e;
+		return -1;
+	}
+	return fd;
+}
+
 int
 child_spawn (struct child **p_child,
              struct loop   *loop,
@@ -230,6 +261,7 @@ child_spawn (struct child **p_child,
              char const    *file,
              char *const    argv[],
              char *const    envp[],
+             struct span    in,
              size_t         max,
              uint64_t       deadline,
              uint64_t       grace,
@@ -261,7 +293,8 @@ child_spawn (struct child **p_child,
 	};
 	int fds[2] = { -1, -1 };
 	int pidfd = -1;
-	int e = pipe2(fds, O_CLOEXEC) ? errno : 0;
+	int in_fd = in.len ? input(in.ptr, in.len) : -1;
+	int e = in.len && in_fd < 0 ? errno : pipe2(fds, O_CLOEXEC) ? errno : 0;
 	/* Only the read end: the child writes its output as it would any pipe. */
 	if (!e && fcntl(fds[0], F_SETFL, O_NONBLOCK))
 		e = errno;
@@ -270,9 +303,11 @@ child_spawn (struct child **p_child,
 	if (!e && deadline)
 		e = loop_timer_set(loop, &c->timer, deadline);
 	if (!e)
-		e = spawn(&pidfd, fds[1], flags, file, argv, envp);
+		e = spawn(&pidfd, in_fd, fds[1], flags, file, argv, envp);
 	if (fds[1] >= 0)
 		close(fds[1]);
+	if (in_fd >= 0)
+		close(in_fd);
 	if (!e) {
 		c->pid = pidfd_getpid(pidfd);
 		e = c->pid <= 0 ? ESRCH : loop_watch(loop, &c->proc, pidfd, EPOLLIN,

@@ -78,6 +78,7 @@
 #include "ai.h"
 #include "buf.h"
 #include "child.h"
+#include "config.h"
 #include "dstr.h"
 #include "git.h"
 #include "jb.h"
@@ -88,6 +89,7 @@
 #include "manual.h"
 #include "mcp.h"
 #include "metrics.h"
+#include "notes.h"
 #include "shelf.h"
 #include "stream.h"
 #include "task.h"
@@ -109,6 +111,23 @@ enum {
 	MAX_SCALAR   = 1 << 10,   /* bytes of a JSON number or literal, which json-c
 	                             converts whole: no valid one needs more */
 	CACHE_TTL_MS = 300'000,   /* how long modern clients may cache lists */
+	UPLOAD_MAX   = 16 << 20,  /* bytes of a conversation's upstream request:
+	                             past those, its context is full */
+	CALLS_MAX    = 1 << 20,   /* bytes of a turn's tool calls */
+	LEND_MAX     = 64 << 10,  /* bytes of a tool's output that a turn takes,
+	                             at most */
+	SUMMARY_MAX  = 16 << 10,  /* bytes of compact's summary */
+	TRACE_MAX    = 48,        /* tool calls the trace tells of */
+	TRACE_ARGS   = 200,       /* bytes of a call's arguments it tells */
+};
+
+/* What a git of the notes is for. */
+enum fetch {
+	FETCH_WRITE,    /* the notes tool's write */
+	FETCH_READ,     /* its read */
+	FETCH_RESUME,   /* the notes of a thread the call goes on with */
+	FETCH_COMPACT,  /* compact's */
+	FETCH_FULL,     /* a compaction of a context that filled up */
 };
 
 static constexpr uint64_t NS = 1'000'000'000;
@@ -147,6 +166,10 @@ static char const *const field_names[F_N] = {
 struct mcp_static {
 	struct ai_endpoint const *ep;
 	char const               *tool;
+	struct dstr               lent[4];      /**< the tools a turn may call, by
+	                                             man and git, bits 0 and 1, that
+	                                             the role may call: the request's
+	                                             tools; empty: none */
 	struct dstr               list[1 << MCP_TOOLS][2];  /**< tools/list results
 	                                                       for each set of the
 	                                                       tools a role may
@@ -162,8 +185,12 @@ struct mcp_static {
 	                                             it */
 	struct git               *git;          /**< git's, if askai lists
 	                                             repositories */
+	struct notes             *notes;        /**< the notes', with --notes */
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
+	uint64_t                  turns;        /**< upstream calls an ask call
+	                                             makes at most; widened over
+	                                             the padding */
 };
 
 /** Where a request stands. */
@@ -179,6 +206,12 @@ enum phase {
 	PHASE_GIT_TEXT,  /* taking its output, a slice a step */
 	PHASE_ANSWER,    /* parsing its answer, a slice a step */
 	PHASE_TEXT,      /* taking the tool's output from that, in a step of its own */
+	PHASE_ARGS,      /* parsing a turn's tool calls' arguments, a slice a step */
+	PHASE_TURN,      /* writing the turn into the upstream request, likewise */
+	PHASE_NOTES,     /* waiting for a git that writes or reads notes */
+	PHASE_NOTES_OUT, /* taking a read's notes, in a step of its own */
+	PHASE_RESULT,    /* writing a tool call's result into the request */
+	PHASE_ADD,       /* writing what askai adds to the prompt into it */
 	PHASE_REPLY,     /* escaping the output into the reply, a slice a step */
 	PHASE_SEND,      /* sending the reply, a piece a step */
 	PHASE_FREE,      /* freeing the message, a slice a step, then ending */
@@ -207,6 +240,10 @@ struct mcp_req {
 	struct splice        splice[2];  /* prompt and system, in draft order */
 	struct dstr          answer;     /* the tool's output; its storage stays
 	                                    with the request for reuse */
+	struct dstr          trace;      /* the tool calls the turns made, for the
+	                                    client; likewise */
+	struct buf           calls;      /* a turn's tool calls, as its job had
+	                                    them, while they run */
 	struct stream       *s;          /* nullptr once it is gone */
 	struct mcp          *mcp;
 	struct job          *job;        /* the tool call's, once submitted, until
@@ -221,14 +258,28 @@ struct mcp_req {
 	struct json_object  *token;      /* a tool call's progressToken, if any */
 	struct json_object  *draft;      /* the upstream request without the
 	                                    client's strings, until written */
+	struct json_object  *prompt;     /* the client's prompt, which the draft
+	                                    holds, until written */
+	struct json_object  *args[JOB_CALLS];  /* a turn's tool calls' arguments,
+	                                          each until its call; nullptr
+	                                          if none or no object */
 	char const          *text;       /* the draft serialized */
 	size_t               len;
 	size_t               off;        /* bytes of the next splice written, of
 	                                    the answer escaped, or metrics done */
 	size_t               values;     /* of msg */
+	size_t               prompt_at;  /* where the prompt's text ends in the
+	                                    upload: what askai adds goes there */
+	size_t               sent;       /* bytes of the upload as a turn went */
+	size_t               at;         /* where the call under way is in calls */
+	size_t               skip;       /* the byte of a tool's output that its
+	                                    window, given to a turn, starts at */
+	size_t               window;     /* and the bytes of that */
 	uint64_t             head;       /* loop_clock() at the request's head */
 	uint64_t             ping_at;    /* when the next keep-alive is due */
 	uint64_t             noted;      /* when the last notification went */
+	uint64_t             base;       /* what the progress was as the turn
+	                                    began */
 	struct handle        call;       /* names the request to its job's
 	                                    completion, while it waits for that */
 	struct jb_scan       scan;       /* the body's pre-scan */
@@ -237,12 +288,31 @@ struct mcp_req {
 	                                    notification gave */
 	uint32_t             next_note;  /* 1 + the last progress it gave; 0:
 	                                    none */
+	uint32_t             turn;       /* upstream calls made */
+	uint32_t             used;       /* tokens of the last turn's request and
+	                                    answer, as its usage says; 0: unknown */
+	uint32_t             context;    /* tokens the upstream's context holds;
+	                                    0: unknown */
+	uint32_t             traced;     /* tool calls the turns made */
 	uint16_t             splices;
-	uint16_t             next;       /* the splice to write next */
+	uint16_t             next;       /* the splice to write next, or piece */
+	uint16_t             part;       /* the part of the turn being written,
+	                                    or its call under way */
+	uint16_t             n_calls;    /* the turn's tool calls */
+	uint16_t             bad;        /* bits of those whose arguments are no
+	                                    JSON object, one a call */
 	uint8_t              phase;      /* enum phase */
 	uint8_t              method;     /* enum metrics_method */
 	uint8_t              asks;       /* enum job_ask: JOB_BACKGROUND for
 	                                    test_task's prompt */
+	uint8_t              lent;       /* 1 + the index in st->lent of the
+	                                    tools its turns may call; 0: none */
+	uint8_t              tool;       /* enum metrics_lent: the call under
+	                                    way's tool */
+	uint8_t              fetch;      /* enum fetch: what the notes git is
+	                                    for */
+	uint8_t              forced;     /* compactions askai made since a turn
+	                                    went through */
 	bool                 modern;
 	bool                 sse_ok;     /* the client takes an event stream */
 	bool                 sse;        /* the response is one */
@@ -252,6 +322,15 @@ struct mcp_req {
 	bool                 progress;   /* the job's progress moved on */
 	bool                 nomem;      /* building the reply ran out of memory */
 	bool                 blocked;    /* waiting for on_writable() */
+	bool                 tooling;    /* a tool runs for a turn */
+	bool                 branch;     /* the thread has notes */
+	bool                 stopped;    /* the turns ran out with tools called */
+	bool                 cut;        /* the turn's answer reached the output
+	                                    token limit */
+	char                 thread[NOTES_ID + 1];  /* the notes' thread's id */
+	char                 ref[NOTES_REF];        /* and its ref */
+	char                 note[382];  /* what askai adds to a tool's output,
+	                                    sized to end the request unpadded */
 };
 
 struct mcp {
@@ -433,6 +512,7 @@ static uint64_t
 req_kept (struct mcp_req const *req)
 {
 	return sizeof *req + dstr_get_block_count(&req->answer) * DSTR_BLK_SIZE +
+	       dstr_get_block_count(&req->trace) * DSTR_BLK_SIZE +
 	       req->scan.cap * sizeof *req->scan.members +
 	       req->reaper.cap * sizeof *req->reaper.stack;
 }
@@ -466,7 +546,7 @@ req_new (struct mcp *mcp)
 	if (!node) {
 		struct mcp_req *req = malloc(sizeof *req);
 		if (req)
-			*req = (struct mcp_req){ .answer = DSTR_INIT };
+			*req = (struct mcp_req){ .answer = DSTR_INIT, .trace = DSTR_INIT };
 		return req;
 	}
 	struct mcp_req *req = container_of(node, struct mcp_req, hook);
@@ -487,6 +567,7 @@ req_free (struct mcp *mcp)
 	jb_reaper_fini(&req->reaper);
 	jb_scan_end(&req->scan);
 	dstr_cleanup(&req->answer);
+	dstr_cleanup(&req->trace);
 	free(req);
 }
 
@@ -521,6 +602,8 @@ job_shelve (struct mcp *mcp,
 		hist_add(&mcp->counts->kept.jobs, 1);
 	} else {
 		buf_free(&job->result);
+		buf_free(&job->calls);
+		buf_free(&job->thought);
 		free(job);
 	}
 }
@@ -561,6 +644,25 @@ call_drop (struct mcp_req *req)
 		job_shelve(mcp, job);
 }
 
+/* Have the request wait among the calls under way, which a drain ends, if it
+ * is not among them yet. */
+static void
+call_wait (struct mcp_req *req)
+{
+	if (!req->hook.next)
+		list_append(&req->mcp->calls, &req->hook);
+}
+
+/* Take the request off the calls under way, if it is among them. */
+static void
+call_unwait (struct mcp_req *req)
+{
+	if (req->hook.next) {
+		list_del(&req->hook);
+		req->hook = (struct list){};
+	}
+}
+
 /* The reply is queued, or the stream gone: let go of everything at once but
  * the values still to free, and end once those are freed. */
 static void
@@ -573,19 +675,26 @@ req_finish (struct mcp_req *req)
 	}
 	call_drop(req);
 	loop_timer_stop(mcp->loop, &req->timer);
-	jb_parse_end(&req->parser, req->phase == PHASE_ANSWER ? &mcp->answers
-	                                                      : &mcp->pool,
+	jb_parse_end(&req->parser, req->phase == PHASE_ANSWER || req->phase == PHASE_ARGS
+	                           ? &mcp->answers : &mcp->pool,
 	             &req->reaper);
 	req_dispose(req);
+	for (size_t i = 0; i < ARRAY_SIZE(req->args); ++i) {
+		if (req->args[i])
+			jb_reap(&req->reaper, req->args[i]);
+		req->args[i] = nullptr;
+	}
 	json_object_put(req->draft);
 	json_object_put(req->id);
 	json_object_put(req->token);
-	req->draft = req->id = req->token = nullptr;
+	req->draft = req->id = req->token = req->prompt = nullptr;
 	jb_scan_reset(&req->scan);
 	buf_free(&req->body);
 	buf_free(&req->upload);
 	buf_free(&req->reply);
+	buf_free(&req->calls);
 	dstr_clear(&req->answer);
+	dstr_clear(&req->trace);
 	if (!req->reaper.n) {
 		req_end(req);
 		return;
@@ -804,12 +913,42 @@ tool_open (struct mcp_req *req)
 	reply_put(req, &FRAG("{\"content\":[{\"type\":\"text\",\"text\":\""), 1);
 }
 
+/* End a tool result: after its text, for an ask call whose turns called
+ * tools, or kept notes, what they called and where the notes are, as a
+ * text of its own. */
 static void
 tool_close (struct mcp_req *req)
 {
 	struct mcp_static const *st = req->mcp->st;
+	reply_put(req, &FRAG("\"}"), 1);
+	if (dstr_len(&req->trace) || req->branch || req->stopped) {
+		char head[160];
+		char tail[256];
+		int h = req->traced
+		      ? snprintf(head, sizeof head, "The other AI made %" PRIu32 " tool "
+		                 "call%s in %" PRIu32 " turn%s:\n", req->traced,
+		                 req->traced > 1 ? "s" : "", req->turn,
+		                 req->turn > 1 ? "s" : "")
+		      : snprintf(head, sizeof head, "The other AI called no tools.\n");
+		int t = 0;
+		if (req->traced > TRACE_MAX)
+			t = snprintf(tail, sizeof tail, "- and %" PRIu32 " more\n",
+			             req->traced - TRACE_MAX);
+		if (req->stopped)
+			t += snprintf(tail + t, sizeof tail - (size_t)t, "It was stopped after "
+			              "%" PRIu32 " turns, still calling tools.\n", req->turn);
+		if (req->branch)
+			t += snprintf(tail + t, sizeof tail - (size_t)t, "It kept notes in the "
+			              "thread %s: to go on with this work, give that as the "
+			              "thread argument.", req->thread);
+		reply_put(req, &FRAG(",{\"type\":\"text\",\"text\":\""), 1);
+		reply_escape(req, head, (size_t)h);
+		reply_escape(req, dstr_get(&req->trace), dstr_len(&req->trace));
+		reply_escape(req, tail, (size_t)t);
+		reply_put(req, &FRAG("\"}"), 1);
+	}
 	struct frag const f[] = {
-		FRAG("\"}]"),
+		FRAG("]"),
 		req->failed ? FRAG(",\"isError\":true") : FRAG(""),
 		req->modern ? TEXT(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
@@ -818,12 +957,20 @@ tool_close (struct mcp_req *req)
 	reply_close(req, 200, nullptr);
 }
 
-/* A tool result of @p text, short and ours. */
+static void tool_done (struct mcp_req *req, bool ok, bool failed);
+
+/* A tool result of @p text, short and ours; for a turn's tool call, its
+ * output, which goes to the turn. */
 static void
 tool_result (struct mcp_req *req,
              char const     *text,
              bool            failed)
 {
+	if (req->tooling) {
+		dstr_clear(&req->answer);
+		tool_done(req, dstr_cat(&req->answer, text), failed);
+		return;
+	}
 	req->failed = failed;
 	tool_open(req);
 	reply_escape(req, text, strlen(text));
@@ -872,6 +1019,10 @@ call_reply (struct mcp_req *req,
             bool            ok,
             bool            failed)
 {
+	if (req->tooling) {
+		tool_done(req, ok, failed);
+		return;
+	}
 	struct span text = req_output(req);
 	char const *str = (char const *)text.ptr;
 	if (ok && failed)
@@ -886,37 +1037,34 @@ call_reply (struct mcp_req *req,
 	}
 
 	loop_timer_stop(req->mcp->loop, &req->timer);
+	/* From the offset that a man or git call asked for, a character's
+	 * start; an ask call's answer whole. */
+	size_t off = req->lent ? 0 : req->skip;
+	if (off > text.len) {
+		char why[96];
+		snprintf(why, sizeof why, "The output has %zu bytes, fewer than the offset.",
+		         text.len);
+		tool_result(req, why, true);
+		return;
+	}
+	while (off < text.len && (text.ptr[off] & 0xc0) == 0x80)
+		++off;
 	req->failed = failed;
 	req->phase = PHASE_REPLY;
-	req->off = 0;
+	req->off = off;
 	tool_open(req);
 	req_reply(req);
 }
 
-/* Notify the client how far the call has come, as its job's progress says:
- * its place in its principal's queue, then the tokens of its answer, thinking
- * or text, as a progress that grows with each notification.  Held back by
- * output the client has yet to read, it goes in a later step. */
+/* Write a notification of progress @p value, saying @p text, which needs
+ * no escaping, on the call's event stream. */
 static void
-call_progress (struct mcp_req *req)
+progress_put (struct mcp_req *req,
+              uint64_t        value,
+              char const     *text)
 {
-	uint64_t progress = atomic_load_explicit(&req->job->progress,
-	                                         memory_order_relaxed);
-	uint32_t place = (uint32_t)progress & ~JOB_THINKING;
-	uint32_t tokens = (uint32_t)(progress >> 32);
-	if (place > req->place)
-		req->place = place;
-	uint64_t value = place ? req->place - place : (uint64_t)req->place + tokens;
-	req->progress = false;
-	if (value < req->next_note)
-		return;
 	char num[24];
-	char text[48];
 	int n = snprintf(num, sizeof num, "%" PRIu64, value);
-	int m = place ? snprintf(text, sizeof text, "queued, position %" PRIu32, place)
-	              : snprintf(text, sizeof text, "%s, %" PRIu32 " tokens",
-	                         progress & JOB_THINKING ? "thinking" : "generating",
-	                         tokens);
 	size_t len = 0;
 	char const *token = json_object_to_json_string_length(req->token, JB_WIRE, &len);
 	struct frag const f[] = {
@@ -926,7 +1074,7 @@ call_progress (struct mcp_req *req)
 		FRAG(",\"progress\":"),
 		{ num, (size_t)n },
 		FRAG(",\"message\":\""),
-		{ text, (size_t)m },
+		{ text, strlen(text) },
 		FRAG("\"}}\n\n"),
 	};
 	req->nomem = !token;
@@ -937,6 +1085,50 @@ call_progress (struct mcp_req *req)
 	req->nomem = false;
 	req->noted = req->mcp->loop->now;
 	req->next_note = value + 1;
+}
+
+/* Notify the client how far the call has come, as its job's progress says:
+ * its place in its principal's queue, then the tokens of its answer, thinking
+ * or text, as a progress that grows with each notification, and with each
+ * turn.  Held back by output the client has yet to read, it goes in a later
+ * step. */
+static void
+call_progress (struct mcp_req *req)
+{
+	uint64_t progress = atomic_load_explicit(&req->job->progress,
+	                                         memory_order_relaxed);
+	uint32_t place = (uint32_t)progress & ~JOB_THINKING;
+	uint32_t tokens = (uint32_t)(progress >> 32);
+	if (place > req->place)
+		req->place = place;
+	uint64_t value = req->base + (place ? req->place - place
+	                                    : (uint64_t)req->place + tokens);
+	req->progress = false;
+	if (value < req->next_note)
+		return;
+	char text[64];
+	int m = req->lent ? snprintf(text, sizeof text, "turn %" PRIu32 ", ", req->turn)
+	                  : 0;
+	if (place)
+		snprintf(text + m, sizeof text - (size_t)m, "queued, position %" PRIu32,
+		         place);
+	else
+		snprintf(text + m, sizeof text - (size_t)m, "%s, %" PRIu32 " tokens",
+		         progress & JOB_THINKING ? "thinking" : "generating", tokens);
+	progress_put(req, value, text);
+}
+
+/* Notify the client that a turn calls @p tool, a tool askai names, unless
+ * the call has no progressToken, or output the client has yet to read holds
+ * the notification back. */
+static void
+call_note (struct mcp_req *req,
+           char const     *tool)
+{
+	char text[64];
+	snprintf(text, sizeof text, "turn %" PRIu32 ", calling %s", req->turn, tool);
+	if (req->token && req->sse && !req->blocked)
+		progress_put(req, req->next_note, text);
 }
 
 /* While a call waits: a keep-alive, if one is due, and a notification of its
@@ -979,6 +1171,48 @@ call_noted (struct mcp_req *req)
 	}
 }
 
+static void turn_done (struct mcp_req *req);
+static void compact_full (struct mcp_req *req);
+
+/* Whether @p why, a failed turn's reason, says that the request did not
+ * fit the upstream's context: llama-server's "exceeds the available
+ * context size", OpenAI's "maximum context length", others' "context
+ * window". */
+static bool
+overflowed (char const *why,
+            size_t      len)
+{
+#define W(s) { s, sizeof s - 1 }
+	static char const word[] = "context ";
+	static struct {
+		char const *s;
+		size_t      n;
+	} const what[] = { W("size"), W("length"), W("window") };
+#undef W
+	for (size_t i = 0; i + sizeof word - 1 <= len; ++i) {
+		if (strncasecmp(why + i, word, sizeof word - 1))
+			continue;
+		char const *rest = why + i + sizeof word - 1;
+		size_t left = len - i - (sizeof word - 1);
+		for (size_t k = 0; k < ARRAY_SIZE(what); ++k)
+			if (left >= what[k].n && !strncasecmp(rest, what[k].s, what[k].n))
+				return true;
+	}
+	return false;
+}
+
+/* Whether a turn that failed for @p why, @p len bytes, should start the
+ * conversation again from the prompt: it did not fit the context, which
+ * askai has not compacted since a turn went through, and turns went
+ * before it. */
+static bool
+refit (struct mcp_req const *req,
+       char const           *why,
+       size_t                len)
+{
+	return req->lent && req->turn > 1 && !req->forced && overflowed(why, len);
+}
+
 /*
  * A job's completion, or the job itself, handed back by home.  A completion
  * goes to the request that waits for it, which parses the answer a slice a
@@ -1005,10 +1239,15 @@ call_done (struct loop *loop,
 			job_shelve(mcp, job);
 		return;
 	}
-	/* Home is done with the upstream request and the key. */
+	/* Home is done with the upstream request and the key: a request
+	 * whose turns go on keeps the request, its conversation. */
+	struct mcp_req *req = mcp ? loop_lookup(loop, job->call) : nullptr;
+	if (req && req->lent) {
+		req->upload = job->request;
+		job->request = (struct buf){};
+	}
 	buf_free(&job->request);
 	buf_free(&job->key);
-	struct mcp_req *req = mcp ? loop_lookup(loop, job->call) : nullptr;
 	if (!req) {
 		if (mcp)
 			hist_add(&mcp->counts->calls.dropped, 1);
@@ -1023,6 +1262,17 @@ call_done (struct loop *loop,
 	list_del(&req->hook);
 	req->hook = (struct list){};
 	enum job_status status = job->status;
+	if (status == JOB_TEXT && req->lent) {
+		turn_done(req);
+		return;
+	}
+	/* A failed call's result says why, unless it never started. */
+	struct span why = buf_peek(&job->result);
+	if (status == JOB_FAILED && refit(req, (char const *)why.ptr, why.len)) {
+		call_drop(req);
+		compact_full(req);
+		return;
+	}
 	if (status == JOB_ANSWERED || status == JOB_TEXT) {
 		req->phase = status == JOB_TEXT ? PHASE_TEXT : PHASE_ANSWER;
 		loop_ready_bulk(loop, &req->step);
@@ -1036,8 +1286,6 @@ call_done (struct loop *loop,
 		req_finish(req);
 		return;
 	}
-	/* A failed call's result says why, unless it never started. */
-	struct span why = buf_peek(&job->result);
 	struct dstr const *text =
 		status == JOB_BUSY ? dstr_cat_n(&req->answer, busy, sizeof busy - 1)
 		: why.len ? dstr_cat_n(&req->answer, (char const *)why.ptr, why.len)
@@ -1154,7 +1402,15 @@ call_submit (struct mcp_req *req)
 		job->session = 0;
 		job->peer[0] = job->peer[1] = UINT64_MAX;
 	}
-	job->asks = (uint8_t)(req->asks | (req->token && req->sse ? JOB_NOTIFY : 0));
+	job->asks = (uint8_t)(req->asks | (req->token && req->sse ? JOB_NOTIFY : 0) |
+	                      (req->lent ? JOB_TOOLS : 0) |
+	                      (req->lent && req->turn ? JOB_AGAIN : 0));
+	req->sent = buf_peek(&job->request).len;
+	req->base = req->next_note;
+	req->place = 0;
+	++req->turn;
+	if (req->lent)
+		hist_add(&mcp->counts->calls.turns, 1);
 	/* The front's and home's, and the post adds the message's. */
 	atomic_store_explicit(&job->refs, 2, memory_order_relaxed);
 	req->job = job;
@@ -1162,9 +1418,11 @@ call_submit (struct mcp_req *req)
 	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_SUBMIT);
 }
 
+static void turn_ready (struct mcp_req *req);
+
 /* Escape as much of a client's string into the upstream request as the step
  * has the share for, with the draft that follows it; once all is written,
- * submit it. */
+ * submit it, after what askai adds to the prompt if anything. */
 static void
 call_build (struct mcp_req *req)
 {
@@ -1187,6 +1445,8 @@ call_build (struct mcp_req *req)
 			req->off += n;
 		}
 		if (ok && n == len) {
+			if (str == req->prompt)
+				req->prompt_at = buf_peek(&req->upload).len;
 			req->off = 0;
 			ok = call_copy(req, ++req->next);
 		}
@@ -1197,9 +1457,10 @@ call_build (struct mcp_req *req)
 	}
 
 	json_object_put(req->draft);
-	req->draft = nullptr;
+	req->draft = req->prompt = nullptr;
+	req->next = 0;
 	if (ok)
-		call_submit(req);
+		turn_ready(req);
 	else
 		reply_error(req, 500, INTERNAL_ERROR, "Cannot start the upstream request",
 		            nullptr, 0);
@@ -1263,6 +1524,19 @@ man_settled (struct loop *loop,
 	manual_wait_free(w);
 }
 
+/* Take the byte of a tool's output that @p args asks it to start from, its
+ * offset, into req->skip; what is wrong with it, or nullptr. */
+static char const *
+offset_of (struct mcp_req     *req,
+           struct json_object *args)
+{
+	struct json_object *o = jb_get(args, "offset");
+	int64_t n = json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : -1;
+	req->skip = o && n > 0 ? (size_t)n : 0;
+	return o && n < 0 ? "The offset argument must be a whole number of bytes, from 0."
+	                  : nullptr;
+}
+
 /* Whether @p s, of @p len bytes, is 1 to @p max of the characters of @p set,
  * the first not '-', which man would take for an option. */
 static bool
@@ -1303,7 +1577,7 @@ man_call (struct mcp_req     *req,
 		: section && !(sect && (!len || man_word(sect, len, MANUAL_SECTION, ALNUM)))
 		? "The section argument must name a section, such as 1, 3 or 3p: 1 to "
 		  "16 letters and digits."
-		: nullptr;
+		: offset_of(req, args);
 #undef ALNUM
 	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16, "the problems say");
 	if (problem) {
@@ -1311,7 +1585,8 @@ man_call (struct mcp_req     *req,
 		return false;
 	}
 
-	clock_gettime(CLOCK_MONOTONIC, &req->start);
+	if (!req->tooling)
+		clock_gettime(CLOCK_MONOTONIC, &req->start);
 	struct manual_page *found = nullptr;
 	int e = loop_handle(loop, req, &req->call);
 	if (!e)
@@ -1330,15 +1605,32 @@ man_call (struct mcp_req     *req,
 		call_reply(req, true, false);
 		return false;
 	}
-	list_append(&mcp->calls, &req->hook);
+	call_wait(req);
 	req->s->ops->waiting(req->s);
 	req->phase = PHASE_MAN;
 	return true;
 }
 
-/* Start a call that asks the upstream, of the class the request asks for:
- * build its upstream request, then submit its job; false if the request is
- * finished instead. */
+static bool notes_fetch (struct mcp_req *req, enum fetch fetch, char const *search);
+
+/* Serialize the tools a turn may call: the text @p obj's userdata points
+ * at, as it is. */
+static int
+lent_text (struct json_object *obj,
+           struct printbuf    *pb,
+           int                 level,
+           int                 flags)
+{
+	(void)level;
+	(void)flags;
+	struct dstr const *text = json_object_get_userdata(obj);
+	return printbuf_memappend(pb, dstr_get(text), (int)dstr_len(text)) < 0 ? -1 : 0;
+}
+
+/* Start a call that asks the upstream, of the class the request asks for,
+ * lending the turns the tools req->lent says, if any: build its upstream
+ * request, then submit its job; false if the request is finished
+ * instead. */
 static bool
 ask_call (struct mcp_req     *req,
           struct json_object *params)
@@ -1349,12 +1641,20 @@ ask_call (struct mcp_req     *req,
 	struct json_object *args = jb_get(params, "arguments");
 	struct json_object *prompt = jb_get(args, "prompt");
 	struct json_object *system = jb_get(args, "system");
+	struct json_object *thread = jb_get(args, "thread");
+	char const *id = jb_text(thread);
+	bool notes = req->lent && st->notes;
 	char const *problem =
 		args && !json_object_is_type(args, json_type_object)
 		? "Tool arguments must be an object."
 		: !jb_text(prompt) || !*jb_text(prompt)
 		? "The prompt argument must be a non-empty string."
 		: system && !jb_text(system) ? "The system argument must be a string."
+		: thread && !notes
+		? "No notes are kept for you here, so there is no thread to go on with."
+		: thread && !(id && notes_is_id(id, (size_t)json_object_get_string_len(thread)))
+		? "The thread argument must be a thread's id, as an earlier answer gave it: "
+		  "32 hexadecimal digits."
 		: nullptr;
 	if (problem) {
 		tool_result(req, problem, true);
@@ -1362,9 +1662,17 @@ ask_call (struct mcp_req     *req,
 	}
 
 	clock_gettime(CLOCK_MONOTONIC, &req->start);
-	list_append(&mcp->calls, &req->hook);
+	call_wait(req);
 	struct json_object *token = jb_get(jb_get(params, "_meta"), "progressToken");
 	req->token = id_valid(token) ? json_object_get(token) : nullptr;
+	if (notes && id) {
+		memcpy(req->thread, id, sizeof req->thread);
+	} else if (notes && !notes_id(req->thread)) {
+		reply_error(req, 500, INTERNAL_ERROR, "Cannot make a thread's id", nullptr, 0);
+		return false;
+	}
+	if (notes)
+		notes_ref(req->s->principal, req->thread, req->ref);
 
 	/* The client's strings, which may be long, are left out of the draft
 	 * request, and call_build() escapes them in; a default system prompt
@@ -1376,9 +1684,17 @@ ask_call (struct mcp_req     *req,
 	json_object_set_serializer(prompt, splice_mark, req, nullptr);
 	if (system)
 		json_object_set_serializer(system, splice_mark, req, nullptr);
-	if (!sys || !*sys || instructions)
-		req->draft = ai_request(st->ep, instructions, prompt);
+	/* The tools the turns may call, serialized once for every loop. */
+	struct json_object *tools = req->lent ? json_object_new_array() : nullptr;
+	if (tools)
+		json_object_set_serializer(tools, lent_text,
+		                           (void *)(uintptr_t)&st->lent[req->lent - 1],
+		                           nullptr);
+	if ((!sys || !*sys || instructions) && (!req->lent || tools))
+		req->draft = ai_request(st->ep, instructions, prompt, tools);
 	json_object_put(instructions);
+	json_object_put(tools);
+	req->prompt = prompt;
 	req->text = req->draft ? json_object_to_json_string_length(req->draft, JB_WIRE,
 	                                                           &req->len)
 	                       : nullptr;
@@ -1389,6 +1705,9 @@ ask_call (struct mcp_req     *req,
 	req->s->ops->waiting(req->s);
 	if (req->sse_ok)
 		req_stream(req);
+	/* Going on with a thread, its notes go with the prompt. */
+	if (thread)
+		return notes_fetch(req, FETCH_RESUME, nullptr);
 	req->phase = PHASE_BUILD;
 	loop_ready_bulk(mcp->loop, &req->step);
 	return true;
@@ -1588,14 +1907,18 @@ git_call (struct mcp_req     *req,
 	char const *argv[GIT_ARGV];
 	char why[GIT_WHY];
 	char const *problem = git_command(git, args, argv, why);
+	if (!problem)
+		problem = offset_of(req, args);
 	if (problem) {
 		tool_result(req, problem, true);
 		return false;
 	}
-	clock_gettime(CLOCK_MONOTONIC, &req->start);
+	if (!req->tooling)
+		clock_gettime(CLOCK_MONOTONIC, &req->start);
 	int e = child_spawn(&req->child, loop, &mcp->children, "git", (char *const *)argv,
-	                    git_env(git), GIT_MAX, loop->now + git_timeout(git),
-	                    GIT_GRACE_NS, CHILD_STDERR, git_done, req);
+	                    git_env(git), (struct span){}, GIT_MAX,
+	                    loop->now + git_timeout(git), GIT_GRACE_NS, CHILD_STDERR,
+	                    git_done, req);
 	if (e == EBUSY) {
 		tool_result(req, "Too many commands are running; try again in a few "
 		            "seconds.", true);
@@ -1607,13 +1930,948 @@ git_call (struct mcp_req     *req,
 		tool_result(req, why, true);
 		return false;
 	}
-	list_append(&mcp->calls, &req->hook);
+	call_wait(req);
 	req->s->ops->waiting(req->s);
-	if (req->sse_ok)
+	if (req->sse_ok && !req->sse)
 		req_stream(req);
 	req->phase = PHASE_GIT;
 	return true;
 }
+
+static void tool_start (struct mcp_req *req);
+static bool req_slice (struct mcp_req *req, struct jb_pool *pool, struct span json);
+static void notes_call (struct mcp_req *req, struct json_object *args);
+static void compact_call (struct mcp_req *req, struct json_object *args);
+static void turn_submit (struct mcp_req *req);
+static void add_start (struct mcp_req *req);
+static void notes_done (struct child *c);
+
+static_assert(JOB_CALLS <= 16, "a turn's calls are bits of bad");
+
+/* Append the literal @p s to @p d. */
+#define CAT(d, s) dstr_cat_n(d, s, sizeof s - 1)
+
+/* @p val's text and its length in @p *len, if it is a string; else
+ * nullptr. */
+static char const *
+str_of (struct json_object *val,
+        size_t             *len)
+{
+	char const *str = jb_text(val);
+	*len = str ? (size_t)json_object_get_string_len(val) : 0;
+	return str;
+}
+
+/* Where the last byte @p c is among the @p n at @p p, or nullptr. */
+static unsigned char const *
+last_of (unsigned char const *p,
+         int                  c,
+         size_t               n)
+{
+	while (n--)
+		if (p[n] == (unsigned char)c)
+			return p + n;
+	return nullptr;
+}
+
+/* Let go of the arguments of the turn's calls @p k to @p end. */
+static void
+args_free (struct mcp_req *req,
+           size_t          k,
+           size_t          end)
+{
+	for (; k < end; ++k)
+		if (req->args[k]) {
+			jb_reap(&req->reaper, req->args[k]);
+			req->args[k] = nullptr;
+		}
+	if (req->reaper.n)
+		loop_ready_bulk(req->mcp->loop, &req->step);
+}
+
+/* A piece of the upstream request's JSON text: bytes as they are, or text
+ * escaped into a string. */
+struct piece {
+	char const *ptr;
+	size_t      len;
+	uint64_t    text;  /* bool, widened over the padding */
+};
+
+#define BYTES(b) ((struct piece){ (b).ptr, (b).len, false })
+#define TEXT_OF(p, n) ((struct piece){ (char const *)(p), (n), true })
+
+/* Write the @p n pieces at @p p into the upload, from piece req->next and
+ * its byte req->off on, as far as the step's shares allow.  Returns 0 once
+ * all are written; EAGAIN if the step ran out first; ENOMEM; or ENOBUFS if
+ * the upload would pass UPLOAD_MAX, its context full. */
+static int
+upload_put (struct mcp_req     *req,
+            struct piece const *p,
+            size_t              n)
+{
+	struct loop *loop = req->mcp->loop;
+	for (; req->next < n; ++req->next, req->off = 0) {
+		struct piece const *q = &p[req->next];
+		while (req->off < q->len) {
+			enum loop_unit kind = q->text ? LOOP_ESCAPE : LOOP_COPY;
+			size_t left = q->len - req->off;
+			size_t room = loop_room(loop, kind);
+			size_t k = left < room ? left : room;
+			if (!k)
+				return EAGAIN;
+			struct span s = buf_reserve(&req->upload, q->text ? 6 * k : k, UPLOAD_MAX);
+			if (!s.len)
+				return errno == ENOBUFS ? ENOBUFS : ENOMEM;
+			if (q->text) {
+				buf_commit(&req->upload, jb_escape((char *)s.ptr, q->ptr + req->off, k));
+			} else {
+				memcpy(s.ptr, q->ptr + req->off, k);
+				buf_commit(&req->upload, k);
+			}
+			loop_work(loop, kind, k);
+			req->off += k;
+		}
+	}
+	req->next = 0;
+	return 0;
+}
+
+/* The upload could not be written, as @p e says: out of memory, the call
+ * ends; past UPLOAD_MAX, its context is full. */
+static void
+upload_failed (struct mcp_req *req,
+               int             e)
+{
+	if (e == ENOBUFS) {
+		compact_full(req);
+		return;
+	}
+	reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+}
+
+/* The tools of @p req's client's role that its turns may call: 1 + the
+ * index of their definitions in st->lent; 0 if none. */
+static uint8_t
+lent_of (struct mcp_req const *req)
+{
+	struct mcp_static const *st = req->mcp->st;
+	uint32_t tools = req->s->tools;
+	size_t i = (tools & MCP_TOOL_MAN && st->manual ? 1u : 0) |
+	           (tools & MCP_TOOL_GIT && st->git ? 2u : 0);
+	return dstr_len(&st->lent[i]) ? (uint8_t)(i + 1) : 0;
+}
+
+/* The bytes of a tool's output that a turn takes, at most: an eighth of the
+ * context, if known, as text takes some 4 bytes a token. */
+static size_t
+lend_max (struct mcp_req const *req)
+{
+	size_t eighth = (size_t)req->context / 2;
+	return !req->context ? LEND_MAX : eighth < 2048 ? 2048
+	       : eighth < LEND_MAX ? eighth : LEND_MAX;
+}
+
+/* The tokens that the upload, as written so far, takes: the last turn's
+ * request and answer, as its usage said, and what was written after the
+ * answer, at 4 bytes a token; or, unknown, all of it so. */
+static uint64_t
+tokens_of (struct mcp_req const *req)
+{
+	size_t len = buf_peek(&req->upload).len;
+	return req->used ? req->used + (len > req->sent ? len - req->sent : 0) / 4
+	                 : len / 4;
+}
+
+/* Call @p k of the turn, the struct job_call at @p p, and its id, name and
+ * arguments in @p id, @p name and @p args; an id it lacks made up in
+ * @p made, of 24 bytes. */
+static struct job_call
+call_at (struct mcp_req const *req,
+         unsigned char const  *p,
+         uint32_t              k,
+         struct span          *id,
+         struct span          *name,
+         struct span          *args,
+         char                 *made)
+{
+	struct job_call c;
+	memcpy(&c, p, sizeof c);
+	*id = (struct span){ (unsigned char *)(uintptr_t)(p + sizeof c), c.id };
+	*name = (struct span){ id->ptr + c.id, c.name };
+	*args = (struct span){ name->ptr + c.name, c.args };
+	if (!c.id) {
+		int n = snprintf(made, 24, "call_%" PRIu32 "_%" PRIu32, req->turn, k);
+		*id = (struct span){ (unsigned char *)made, (size_t)n };
+	}
+	return c;
+}
+
+/* A turn has ended, its job's answer in: an answer that calls no tool is the
+ * call's answer, as are the last turn's, else parse the arguments of the
+ * calls it makes, then write the turn into the upload, then run them. */
+static void
+turn_done (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct job *job = req->job;
+	struct span calls = buf_peek(&job->calls);
+	long told = mcp->st->ep->context;
+	req->used = job->used;
+	req->context = told > 0 ? (uint32_t)told : job->context;
+	req->cut = ai_cut(mcp->st->ep->protocol, job->reason);
+	req->forced = 0;
+	uint16_t n = 0;
+	for (size_t off = 0; off < calls.len; ++n) {
+		struct job_call c;
+		memcpy(&c, calls.ptr + off, sizeof c);
+		off += sizeof c + c.id + c.name + c.args;
+	}
+	if (calls.len > CALLS_MAX) {
+		tool_result(req, "The other AI's tool calls in one turn took more than "
+		            "1 MiB, so none was run.", true);
+		return;
+	}
+	req->stopped = n && req->turn >= mcp->st->turns;
+	if (req->stopped)
+		hist_add(&mcp->counts->calls.stopped, 1);
+	if (!n || req->stopped) {
+		req->phase = PHASE_TEXT;
+		loop_ready_bulk(mcp->loop, &req->step);
+		return;
+	}
+	req->n_calls = n;
+	req->part = 0;
+	req->at = 0;
+	req->bad = 0;
+	req->phase = PHASE_ARGS;
+	loop_ready_bulk(mcp->loop, &req->step);
+}
+
+/* Parse the arguments of the turn's tool calls, a slice a step, each into
+ * req->args, or its bit in bad if they are no JSON object; then write the
+ * turn. */
+static void
+turn_args (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct loop *loop = mcp->loop;
+	struct span all = buf_peek(&req->job->calls);
+	for (; req->part < req->n_calls; ++req->part) {
+		struct span id, name, args;
+		char made[24];
+		struct job_call c = call_at(req, all.ptr + req->at, req->part, &id, &name,
+		                            &args, made);
+		struct json_object *v = nullptr;
+		if (!args.len) {
+			v = json_object_new_object();
+			if (!v) {
+				reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+				return;
+			}
+		} else if (!req_slice(req, &mcp->answers, args)) {
+			loop_ready_bulk(loop, &req->step);
+			return;
+		} else {
+			v = req->msg;
+			req->msg = nullptr;
+		}
+		if (v && !json_object_is_type(v, json_type_object)) {
+			jb_reap(&req->reaper, v);
+			v = nullptr;
+		}
+		req->args[req->part] = v;
+		req->bad |= (uint16_t)(!v << req->part);
+		req->at += sizeof c + c.id + c.name + c.args;
+	}
+	/* The turn goes after the request's messages, which it ends no more. */
+	struct ai_bytes end = ai_format(mcp->st->ep->protocol)->end;
+	struct span up = buf_peek(&req->upload);
+	buf_cut(&req->upload, up.len - end.len, end.len);
+	req->part = 0;
+	req->at = 0;
+	req->next = 0;
+	req->off = 0;
+	req->phase = PHASE_TURN;
+	loop_ready_bulk(loop, &req->step);
+}
+
+/* Write the turn into the upload, a slice a step: its text and thinking,
+ * then each tool call, its arguments "{}" if they were no object, as the
+ * upstream may parse them; then keep the calls, let go of the job and run
+ * the first. */
+static void
+turn_write (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct ai_format const *f = ai_format(mcp->st->ep->protocol);
+	struct job *job = req->job;
+	struct span all = buf_peek(&job->calls);
+	int e = 0;
+	for (; !e && req->part <= req->n_calls + 1u; ++req->part) {
+		if (!req->part) {
+			struct span text = buf_peek(&job->result);
+			struct span thought = buf_peek(&job->thought);
+			struct piece const p[] = {
+				BYTES(f->turn),
+				TEXT_OF(text.ptr, text.len),
+				thought.len ? BYTES(f->thought) : (struct piece){},
+				TEXT_OF(thought.ptr, thought.len),
+				BYTES(f->calls),
+			};
+			e = upload_put(req, p, ARRAY_SIZE(p));
+		} else if (req->part <= req->n_calls) {
+			uint32_t k = req->part - 1u;
+			struct span id, name, args;
+			char made[24];
+			struct job_call c = call_at(req, all.ptr + req->at, k, &id, &name, &args,
+			                            made);
+			bool bad = req->bad & 1u << k;
+			struct piece const p[] = {
+				BYTES(k ? f->call_next : f->call),
+				TEXT_OF(id.ptr, id.len),
+				BYTES(f->name),
+				TEXT_OF(name.ptr, name.len),
+				BYTES(f->args),
+				bad || !args.len ? TEXT_OF("{}", 2) : TEXT_OF(args.ptr, args.len),
+				BYTES(f->call_end),
+			};
+			e = upload_put(req, p, ARRAY_SIZE(p));
+			if (!e)
+				req->at += sizeof c + c.id + c.name + c.args;
+		} else {
+			e = upload_put(req, &BYTES(f->turn_end), 1);
+		}
+	}
+	if (e == EAGAIN) {
+		--req->part;
+		loop_ready_bulk(mcp->loop, &req->step);
+		return;
+	}
+	if (e) {
+		upload_failed(req, e);
+		return;
+	}
+	struct span s = buf_reserve(&req->calls, all.len, CALLS_MAX);
+	if (!s.len) {
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return;
+	}
+	memcpy(s.ptr, all.ptr, all.len);
+	buf_commit(&req->calls, all.len);
+	loop_work(mcp->loop, LOOP_COPY, all.len);
+	/* The usage counts the turn: what is written after it counts on. */
+	req->sent = buf_peek(&req->upload).len;
+	call_drop(req);
+	req->part = 0;
+	req->at = 0;
+	tool_start(req);
+}
+
+/* Add a line for a tool call to the trace, @p name its name and @p text
+ * its arguments' JSON text, @p args parsed, but what notes and compact are
+ * given, which are the upstream's own; the outcome follows. */
+static void
+trace_call (struct mcp_req     *req,
+            struct span         name,
+            struct span         text,
+            struct json_object *args,
+            enum metrics_lent   tool)
+{
+	if (req->traced++ >= TRACE_MAX)
+		return;
+	size_t act = 0;
+	char const *action = tool == LENT_NOTES ? str_of(jb_get(args, "action"), &act)
+	                                        : nullptr;
+	char const *json = tool == LENT_NOTES || tool == LENT_COMPACT
+	                 ? nullptr : (char const *)text.ptr;
+	size_t len = json ? jb_utf8(json, clip(json, text.len, TRACE_ARGS)) : 0;
+	size_t n = clip((char const *)name.ptr, name.len, 64);
+	bool ok = CAT(&req->trace, "- ") &&
+	          dstr_cat_n(&req->trace, (char const *)name.ptr, jb_utf8((char const *)
+	                                                                   name.ptr, n)) &&
+	          (!action || (CAT(&req->trace, " ") &&
+	                       dstr_cat_n(&req->trace, action, clip(action, act, 16)))) &&
+	          (!len || (CAT(&req->trace, " ") && dstr_cat_n(&req->trace, json, len))) &&
+	          (!json || len == text.len || CAT(&req->trace, "..."));
+	(void)ok;
+}
+
+/* End the trace's line for the call under way: whether it failed, or the
+ * bytes of its output. */
+static void
+trace_end (struct mcp_req *req,
+           bool            failed,
+           size_t          bytes)
+{
+	if (req->traced > TRACE_MAX)
+		return;
+	if (failed)
+		(void)CAT(&req->trace, ": failed\n");
+	else
+		(void)dstr_printf(&req->trace, ": %zu bytes\n", bytes);
+}
+
+/* Run the turn's tool call req->part, unless all have run: then submit the
+ * next turn, or, its context full, compact it first.  A call goes to the
+ * tool of its name that the turns may call, which writes its output into
+ * the request's answer, or gives a page, and calls tool_done(). */
+static void
+tool_start (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct mcp_static const *st = mcp->st;
+	if (req->part == req->n_calls) {
+		buf_free(&req->calls);
+		if (req->context && req->used && tokens_of(req) >= req->context)
+			compact_full(req);
+		else
+			turn_submit(req);
+		return;
+	}
+	if (mcp->draining) {
+		reply_error(req, 503, INTERNAL_ERROR, "Server is shutting down", nullptr, 0);
+		return;
+	}
+	struct span id, name, args;
+	char made[24];
+	(void)call_at(req, buf_peek(&req->calls).ptr + req->at, req->part, &id, &name,
+	              &args, made);
+	uint32_t lent = req->lent - 1u;
+#define IS(s) (name.len == sizeof s - 1 && !memcmp(name.ptr, s, sizeof s - 1))
+	enum metrics_lent tool = IS("man") && lent & 1 ? LENT_MAN
+	               : IS("git") && lent & 2 ? LENT_GIT
+	               : IS("notes") && st->notes ? LENT_NOTES
+	               : IS("compact") ? LENT_COMPACT
+	               : LENT_NONE;
+#undef IS
+	static char const *const names[] = {
+		[LENT_NONE] = "an unknown tool", [LENT_MAN] = "man", [LENT_GIT] = "git",
+		[LENT_NOTES] = "notes", [LENT_COMPACT] = "compact",
+	};
+	/* Its arguments go once its result is written, or the request ends. */
+	struct json_object *a = req->args[req->part];
+	req->tool = (uint8_t)tool;
+	hist_add(&mcp->counts->calls.lent[tool], 1);
+	req->skip = 0;
+	req->tooling = true;
+	dstr_clear(&req->answer);
+	trace_call(req, name, args, a, tool);
+	call_note(req, names[tool]);
+	if (req->bad & 1u << req->part && req->cut)
+		tool_result(req, "Your answer reached the output token limit, which cut "
+		            "these arguments short, so the call was not run.", true);
+	else if (req->bad & 1u << req->part)
+		tool_result(req, "Your arguments were not a JSON object, so the call was not "
+		            "run.", true);
+	else if (tool == LENT_MAN)
+		(void)man_call(req, a);
+	else if (tool == LENT_GIT)
+		(void)git_call(req, a);
+	else if (tool == LENT_NOTES)
+		notes_call(req, a);
+	else if (tool == LENT_COMPACT)
+		compact_call(req, a);
+	else
+		tool_result(req, "No tool of that name is yours to call.", true);
+}
+
+/* The call under way has its output, its window and what askai adds after
+ * it: for the turn's last call, what the context holds, if it fills up,
+ * and that the next turn is the last, if it is. */
+static void
+tool_done (struct mcp_req *req,
+           bool            ok,
+           bool            failed)
+{
+	struct mcp *mcp = req->mcp;
+	req->tooling = false;
+	req->note[0] = '\0';
+	if (!ok) {
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return;
+	}
+	struct span out = req_output(req);
+	trace_end(req, failed, out.len);
+	/* From a character's start, up to a line's end if one is near. */
+	size_t cap = lend_max(req);
+	bool past = req->skip > out.len;
+	size_t skip = past ? out.len : req->skip;
+	while (skip < out.len && (out.ptr[skip] & 0xc0) == 0x80)
+		++skip;
+	size_t len = out.len - skip;
+	size_t window = len <= cap ? len : clip((char const *)out.ptr + skip, len, cap);
+	if (window < len) {
+		size_t from = window - window / 4;
+		unsigned char const *nl = last_of(out.ptr + skip + from, '\n', window - from);
+		window = nl ? (size_t)(nl - out.ptr - skip) + 1 : window;
+	}
+	req->skip = skip;
+	req->window = window;
+	int n = 0;
+	size_t room = sizeof req->note;
+	bool pages = req->tool == LENT_MAN || req->tool == LENT_GIT;
+	if (skip + window < out.len && pages)
+		n = snprintf(req->note, room, "\n\n[Bytes %zu to %zu of %zu: for the rest, "
+		             "call again with \"offset\": %zu.]", skip, skip + window,
+		             out.len, skip + window);
+	else if (skip + window < out.len)
+		n = snprintf(req->note, room, "\n\n[Bytes %zu to %zu of %zu: the rest is "
+		             "cut.]", skip, skip + window, out.len);
+	else if (past)
+		n = snprintf(req->note, room, "[The output has %zu bytes, fewer than the "
+		             "offset.]", out.len);
+	else if (skip)
+		n = snprintf(req->note, room, "\n\n[Bytes %zu to %zu of %zu: its end.]", skip,
+		             out.len, out.len);
+	if (req->part + 1u == req->n_calls) {
+		uint64_t tokens = tokens_of(req) + (window + (size_t)n) / 4;
+		if (req->context && tokens * 4 >= (uint64_t)req->context * 3 &&
+		    (size_t)n < room)
+			n += snprintf(req->note + n, room - (size_t)n, "\n\n[askai: your context "
+			              "is %" PRIu64 "%% full, %" PRIu64 " of %" PRIu32 " tokens. "
+			              "Note what you need to keep, then call compact.]",
+			              tokens * 100 / req->context, tokens, req->context);
+		if (req->turn + 1u == mcp->st->turns && (size_t)n < room)
+			snprintf(req->note + n, room - (size_t)n, "\n\n[askai: your next turn is "
+			         "your last: answer then, without calling tools.]");
+	}
+	req->phase = PHASE_RESULT;
+	req->next = 0;
+	req->off = 0;
+	loop_ready_bulk(mcp->loop, &req->step);
+}
+
+/* Write the result of the call under way into the upload, a slice a step,
+ * and after the turn's last one the end of the messages; then let go of
+ * its output, and run the next call. */
+static void
+result_write (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct ai_format const *f = ai_format(mcp->st->ep->protocol);
+	struct span out = req_output(req);
+	struct span id, name, args;
+	char made[24];
+	struct job_call c = call_at(req, buf_peek(&req->calls).ptr + req->at, req->part,
+	                            &id, &name, &args, made);
+	bool last = req->part + 1u == req->n_calls;
+	struct piece const p[] = {
+		BYTES(f->result),
+		TEXT_OF(id.ptr, id.len),
+		BYTES(f->output),
+		TEXT_OF(out.len ? out.ptr + req->skip : nullptr, req->window),
+		TEXT_OF(req->note, strlen(req->note)),
+		BYTES(f->result_end),
+		last ? BYTES(f->end) : (struct piece){},
+	};
+	int e = upload_put(req, p, ARRAY_SIZE(p));
+	if (e == EAGAIN) {
+		loop_ready_bulk(mcp->loop, &req->step);
+		return;
+	}
+	if (e) {
+		upload_failed(req, e);
+		return;
+	}
+	manual_put(req->page);
+	req->page = nullptr;
+	dstr_clear(&req->answer);
+	req->note[0] = '\0';
+	req->skip = req->window = 0;
+	req->at += sizeof c + c.id + c.name + c.args;
+	args_free(req, req->part, req->part + 1u);
+	++req->part;
+	tool_start(req);
+}
+
+/* Submit the next turn, its upload whole; or, draining, end the call. */
+static void
+turn_submit (struct mcp_req *req)
+{
+	if (req->mcp->draining) {
+		reply_error(req, 503, INTERNAL_ERROR, "Server is shutting down", nullptr, 0);
+		return;
+	}
+	call_wait(req);
+	call_submit(req);
+}
+
+/* The first turn's upload is written: submit it, after what askai adds to
+ * the prompt, if anything. */
+static void
+turn_ready (struct mcp_req *req)
+{
+	if (dstr_len(&req->answer))
+		add_start(req);
+	else
+		turn_submit(req);
+}
+
+/* Write what askai adds to the prompt, in the request's answer, at the end
+ * of the prompt's text: the conversation after it goes. */
+static void
+add_start (struct mcp_req *req)
+{
+	struct span up = buf_peek(&req->upload);
+	buf_cut(&req->upload, req->prompt_at, up.len - req->prompt_at);
+	req->next = 0;
+	req->off = 0;
+	req->phase = PHASE_ADD;
+	loop_ready_bulk(req->mcp->loop, &req->step);
+}
+
+/* Write what askai adds to the prompt a slice a step, and end the prompt
+ * and the messages; then submit the turn. */
+static void
+add_write (struct mcp_req *req)
+{
+	struct ai_format const *f = ai_format(req->mcp->st->ep->protocol);
+	struct piece const p[] = {
+		TEXT_OF(dstr_get(&req->answer), dstr_len(&req->answer)),
+		BYTES(f->prompt_end),
+		BYTES(f->end),
+	};
+	int e = upload_put(req, p, ARRAY_SIZE(p));
+	if (e == EAGAIN) {
+		loop_ready_bulk(req->mcp->loop, &req->step);
+		return;
+	}
+	if (e) {
+		reply_error(req, 500, INTERNAL_ERROR, e == ENOBUFS
+		            ? "The task and its notes do not fit the upstream request"
+		            : "Out of memory", nullptr, 0);
+		return;
+	}
+	dstr_clear(&req->answer);
+	turn_submit(req);
+}
+
+/* Spawn the git of @p argv, its input @p in, for the notes, for what
+ * req->fetch says: 0, or why not. */
+static int
+notes_spawn (struct mcp_req *req,
+             char const     *argv[],
+             struct span     in)
+{
+	struct mcp *mcp = req->mcp;
+	struct loop *loop = mcp->loop;
+	int e = child_spawn(&req->child, loop, &mcp->children, "git", (char *const *)argv,
+	                    notes_env(mcp->st->notes), in, NOTES_MAX, loop->now + NOTES_NS,
+	                    0, CHILD_STDERR, notes_done, req);
+	if (e)
+		return e;
+	call_wait(req);
+	req->phase = PHASE_NOTES;
+	return 0;
+}
+
+/* The notes' git could not be spawned, as @p e says: a compaction goes on
+ * without the notes; the notes tool's call, or a thread gone on with, ends
+ * with why. */
+static void
+notes_failed (struct mcp_req *req,
+              int             e)
+{
+	if (e != EBUSY)
+		LOG(LOG_WARN, "notes: cannot run git: %s", strerror(e));
+	if (req->fetch == FETCH_COMPACT || req->fetch == FETCH_FULL) {
+		if (CAT(&req->answer, "\n\n[askai: your notes could not be read.]\n\n"
+		        "[askai: go on with the task.]"))
+			add_start(req);
+		else
+			reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return;
+	}
+	char why[96];
+	snprintf(why, sizeof why, e == EBUSY ? "Too many commands are running; try again "
+	         "in a few seconds." : "Cannot run git: %s.", strerror(e));
+	dstr_clear(&req->answer);
+	tool_result(req, why, true);
+}
+
+/* Read the notes of the request's thread for @p fetch, those that hold
+ * @p search if not nullptr; false if the request is finished instead. */
+static bool
+notes_fetch (struct mcp_req *req,
+             enum fetch      fetch,
+             char const     *search)
+{
+	char const *argv[NOTES_ARGV];
+	notes_read(req->mcp->st->notes, req->ref, search, argv);
+	req->fetch = (uint8_t)fetch;
+	int e = notes_spawn(req, argv, (struct span){});
+	if (e)
+		notes_failed(req, e);
+	return !e || fetch == FETCH_COMPACT || fetch == FETCH_FULL;
+}
+
+/* The notes tool's call: write a note, or read them back. */
+static void
+notes_call (struct mcp_req     *req,
+            struct json_object *args)
+{
+	static_assert(NOTES_TEXT == 8 << 10 && NOTES_SEARCH == 1 << 10,
+	              "the problems say");
+	struct json_object *action = jb_get(args, "action");
+	struct json_object *text = jb_get(args, "text");
+	struct json_object *search = jb_get(args, "search");
+	bool write = jb_is(action, "write");
+	size_t len = 0;
+	char const *note = str_of(text, &len);
+	size_t find_len = 0;
+	char const *find = str_of(search, &find_len);
+	char const *problem =
+		!write && !jb_is(action, "read") ? "The action argument must be write or read."
+		: write && (!note || !len || len > NOTES_TEXT || memchr(note, '\0', len))
+		? "A note must be a string of 1 to 8192 bytes, and no NUL."
+		: search && (write || !find || !find_len || find_len > NOTES_SEARCH ||
+		             strcspn(find, "\n") < find_len)
+		? "The search argument, which only read takes, must be a line of 1 to "
+		  "1024 bytes."
+		: nullptr;
+	if (problem) {
+		tool_result(req, problem, true);
+		return;
+	}
+	if (!write && !req->branch) {
+		tool_result(req, "You have written no notes yet.", false);
+		return;
+	}
+	if (!write) {
+		(void)notes_fetch(req, FETCH_READ, find);
+		return;
+	}
+	char const *argv[NOTES_ARGV];
+	notes_write(req->mcp->st->notes, argv);
+	if (!notes_input(&req->body, req->ref, note, len, req->branch)) {
+		tool_done(req, false, true);
+		return;
+	}
+	req->fetch = FETCH_WRITE;
+	int e = notes_spawn(req, argv, buf_peek(&req->body));
+	buf_free(&req->body);
+	if (e)
+		notes_failed(req, e);
+}
+
+/* The notes' git has ended, its output all in: take it in a step of its
+ * own. */
+static void
+notes_done (struct child *c)
+{
+	struct mcp_req *req = c->owner;
+	req->phase = PHASE_NOTES_OUT;
+	loop_ready_bulk(req->mcp->loop, &req->step);
+}
+
+/* Add the newest notes of @p out, git log's, newest first and each ending
+ * in a NUL, that fit the bytes a tool's output may take, at least one, to
+ * the request's answer, oldest first; false if out of memory.  Only those
+ * are looked at: the rest are only counted, @p cut saying that git's
+ * output was cut, so that some went uncounted. */
+static bool
+notes_render (struct mcp_req *req,
+              struct span     out,
+              bool            cut)
+{
+	/* What a rendered note adds to its text, and the line before them. */
+	enum { EACH = 8, HEAD = 64 };
+	size_t budget = lend_max(req);
+	struct span shown[NOTES_READ];
+	uint32_t n = 0;
+	size_t at = 0;
+	size_t rendered = HEAD;
+	while (at < out.len && n < NOTES_READ) {
+		unsigned char const *nul = memchr(out.ptr + at, '\0', out.len - at);
+		size_t end = nul ? (size_t)(nul - out.ptr) : out.len;
+		rendered += end - at + EACH;
+		if (n && rendered > budget)
+			break;
+		shown[n++] = (struct span){ out.ptr + at, end - at };
+		at = nul ? end + 1 : end;
+	}
+	uint32_t more = 0;
+	while (at < out.len) {
+		unsigned char const *nul = memchr(out.ptr + at, '\0', out.len - at);
+		at = nul ? (size_t)(nul - out.ptr) + 1 : out.len;
+		++more;
+	}
+	loop_work(req->mcp->loop, LOOP_COPY, out.len);
+	bool ok = true;
+	if (more)
+		ok = dstr_printf(&req->answer, "[%" PRIu32 "%s older note%s not shown: "
+		                 "search for %s.]\n\n", more, cut ? " or more" : "",
+		                 more > 1 || cut ? "s are" : " is",
+		                 more > 1 || cut ? "them" : "it");
+	else if (cut)
+		ok = CAT(&req->answer, "[Older notes are not shown: search for them.]\n\n");
+	for (uint32_t k = n; ok && k--; ) {
+		char const *note = (char const *)shown[k].ptr;
+		ok = dstr_printf(&req->answer, "%" PRIu32 ". ", n - k) &&
+		     dstr_cat_n(&req->answer, note, jb_utf8(note, shown[k].len)) &&
+		     (k ? CAT(&req->answer, "\n\n") : CAT(&req->answer, "\n"));
+	}
+	return ok;
+}
+
+/* Take what the notes' git said, for what it ran for: a note written, or the
+ * notes read, for the notes tool, for the prompt of a thread gone on with,
+ * or for a compaction. */
+static void
+notes_out (struct mcp_req *req)
+{
+	struct child *c = req->child;
+	struct span out = buf_peek(&c->out);
+	bool ok = c->cut || (!c->late && c->code == CLD_EXITED && !c->status);
+	/* Exit status 128 with fatal: bad revision: no such branch. */
+	bool none = !c->late && c->code == CLD_EXITED && c->status == 128;
+	call_unwait(req);
+	enum fetch fetch = req->fetch;
+	bool mem = true;
+	if (fetch == FETCH_WRITE) {
+		req->branch |= ok;
+		if (ok) {
+			mem = CAT(&req->answer, "Noted.");
+		} else {
+			size_t n = jb_utf8((char const *)out.ptr, clip((char const *)out.ptr,
+			                                              out.len, 300));
+			mem = c->late ? CAT(&req->answer, "Could not write the note: git took "
+			                    "too long.") != nullptr
+			    : CAT(&req->answer, "Could not write the note: ") &&
+			      dstr_cat_n(&req->answer, (char const *)out.ptr, n);
+		}
+		child_drop(c);
+		req->child = nullptr;
+		tool_done(req, mem, !ok);
+		return;
+	}
+	if (fetch == FETCH_RESUME && !ok) {
+		child_drop(c);
+		req->child = nullptr;
+		char why[96 + NOTES_ID];
+		snprintf(why, sizeof why, none ? "Unknown thread: %s." : "Cannot read the "
+		         "notes of the thread %s.", req->thread);
+		call_drop(req);
+		dstr_clear(&req->answer);
+		tool_result(req, why, true);
+		return;
+	}
+	if (fetch == FETCH_RESUME) {
+		req->branch = true;
+		mem = CAT(&req->answer, "\n\n[askai: the notes you kept in earlier calls "
+		          "on this thread, oldest first:]\n\n");
+	} else if (fetch != FETCH_READ) {
+		mem = ok ? CAT(&req->answer, "\n\n[askai: your notes, oldest first:]\n\n")
+		         : CAT(&req->answer, "\n\n[askai: your notes could not be read.]\n");
+	}
+	if (mem && ok && !out.len && fetch == FETCH_READ)
+		mem = CAT(&req->answer, "No note holds that text.");
+	if (mem && ok)
+		mem = notes_render(req, out, c->cut);
+	if (mem && fetch == FETCH_READ && !ok)
+		mem = none ? CAT(&req->answer, "You have written no notes yet.")
+		           : CAT(&req->answer, "Your notes could not be read.");
+	if (mem && fetch != FETCH_READ && fetch != FETCH_RESUME)
+		mem = CAT(&req->answer, "\n[askai: go on with the task.]");
+	child_drop(c);
+	req->child = nullptr;
+	if (fetch == FETCH_READ) {
+		tool_done(req, mem, !ok && !none);
+	} else if (!mem) {
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+	} else if (fetch == FETCH_RESUME) {
+		req->phase = PHASE_BUILD;
+		loop_ready_bulk(req->mcp->loop, &req->step);
+	} else {
+		add_start(req);
+	}
+}
+
+/* Compact the context, as the turn's compact call asks: what follows the
+ * prompt goes, and askai adds the summary and the notes to it.  The turn's
+ * calls after this one do not run. */
+static void
+compact_call (struct mcp_req     *req,
+              struct json_object *args)
+{
+	static_assert(SUMMARY_MAX == 16 << 10, "the problem says");
+	size_t len = 0;
+	char const *summary = str_of(jb_get(args, "summary"), &len);
+	if (!summary || !len || len > SUMMARY_MAX) {
+		tool_result(req, "The summary argument must be a string of 1 to 16384 "
+		            "bytes.", true);
+		return;
+	}
+	req->tooling = false;
+	trace_end(req, false, len);
+	hist_add(&req->mcp->counts->calls.compacted[0], 1);
+	dstr_clear(&req->answer);
+	bool ok = CAT(&req->answer, "\n\n[askai: you compacted the context: the "
+	              "conversation since the task is gone, your turns and the tools' "
+	              "results with it. Your summary of it:]\n\n") &&
+	          dstr_cat_n(&req->answer, summary, jb_utf8(summary, len));
+	args_free(req, req->part, ARRAY_SIZE(req->args));
+	buf_free(&req->calls);
+	if (!ok) {
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return;
+	}
+	if (req->mcp->draining) {
+		reply_error(req, 503, INTERNAL_ERROR, "Server is shutting down", nullptr, 0);
+		return;
+	}
+	if (req->branch) {
+		(void)notes_fetch(req, FETCH_COMPACT, nullptr);
+		return;
+	}
+	if (!CAT(&req->answer, "\n\n[askai: go on with the task.]")) {
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return;
+	}
+	add_start(req);
+}
+
+/* The context is full, as the upstream said or as askai reckons: what
+ * follows the prompt goes, and askai adds the notes to it, unless that was
+ * done already since a turn went through. */
+static void
+compact_full (struct mcp_req *req)
+{
+	if (req->mcp->draining) {
+		reply_error(req, 503, INTERNAL_ERROR, "Server is shutting down", nullptr, 0);
+		return;
+	}
+	if (req->forced++) {
+		tool_result(req, "The upstream's context cannot hold the task and the notes "
+		            "kept for it.", true);
+		return;
+	}
+	hist_add(&req->mcp->counts->calls.compacted[1], 1);
+	call_drop(req);
+	args_free(req, 0, ARRAY_SIZE(req->args));
+	buf_free(&req->calls);
+	dstr_clear(&req->answer);
+	req->tooling = false;
+	if (!CAT(&req->answer, "\n\n[askai: your context filled up, so the "
+	         "conversation since the task is gone, your turns and the tools' "
+	         "results with it.]")) {
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return;
+	}
+	if (req->branch) {
+		(void)notes_fetch(req, FETCH_FULL, nullptr);
+		return;
+	}
+	if (!CAT(&req->answer, "\n\n[askai: go on with the task.]")) {
+		reply_error(req, 500, INTERNAL_ERROR, "Out of memory", nullptr, 0);
+		return;
+	}
+	add_start(req);
+}
+
+#undef CAT
+#undef TEXT_OF
+#undef BYTES
 
 /* Start a tool call; false if the request is finished instead. */
 static bool
@@ -1653,6 +2911,7 @@ tools_call (struct mcp_req     *req,
 		return task_call(req, params);
 	if (tool == MCP_TOOL_GIT)
 		return git_call(req, jb_get(params, "arguments"));
+	req->lent = lent_of(req);
 	return ask_call(req, params);
 }
 
@@ -1915,8 +3174,9 @@ req_answer (struct mcp_req *req)
 static void
 req_text (struct mcp_req *req)
 {
+	/* Stopped with no text, its turns gave no answer. */
 	if (req->job->status == JOB_TEXT) {
-		call_reply(req, true, false);
+		call_reply(req, true, req->stopped && !buf_peek(&req->job->result).len);
 		return;
 	}
 	struct span body = buf_peek(&req->job->result);
@@ -1927,6 +3187,10 @@ req_text (struct mcp_req *req)
 	loop_work(req->mcp->loop, LOOP_COPY, dstr_len(&req->answer));
 	req_dispose(req);
 	call_drop(req);
+	if (ok && failed && refit(req, dstr_get(&req->answer), dstr_len(&req->answer))) {
+		compact_full(req);
+		return;
+	}
 	call_reply(req, ok, failed);
 }
 
@@ -1993,6 +3257,21 @@ req_step (struct loop      *loop,
 	case PHASE_GIT_TEXT:
 		git_text(req);
 		break;
+	case PHASE_ARGS:
+		turn_args(req);
+		break;
+	case PHASE_TURN:
+		turn_write(req);
+		break;
+	case PHASE_NOTES_OUT:
+		notes_out(req);
+		break;
+	case PHASE_RESULT:
+		result_write(req);
+		break;
+	case PHASE_ADD:
+		add_write(req);
+		break;
 	case PHASE_REPLY:
 		req_reply(req);
 		break;
@@ -2049,6 +3328,7 @@ mcp_on_head (void          *ctx,
 		.reaper = req->reaper,
 		.scan = req->scan,
 		.answer = req->answer,
+		.trace = req->trace,
 		.s = s,
 		.mcp = mcp,
 		.head = loop_clock(),
@@ -2267,30 +3547,43 @@ mcp_drain (struct mcp *mcp)
 	loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 
+/* The ask tool's definition; with @p notes, with the thread argument. */
 static struct json_object *
-tool_definition (struct mcp_tool const *tool)
+tool_definition (struct mcp_tool const *tool,
+                 bool                   notes)
 {
+	struct json_object *props = jb_object(
+		"prompt", jb_object(
+			"type", json_object_new_string("string"),
+			"description", json_object_new_string(
+				"The complete, self-contained question or task. The other AI "
+				"cannot see this conversation, so include all the context it "
+				"needs."),
+			nullptr),
+		"system", jb_object(
+			"type", json_object_new_string("string"),
+			"description", json_object_new_string(
+				"Optional system instructions for the other AI, such as a role "
+				"or an answer format."),
+			nullptr),
+		nullptr);
+	if (notes && !jb_set(props, "thread", jb_object(
+		    "type", json_object_new_string("string"),
+		    "description", json_object_new_string(
+			    "Optional: the thread that an earlier answer named, to go on with "
+			    "that work. The other AI keeps notes in a thread as it works, and "
+			    "starts with them."),
+		    nullptr))) {
+		json_object_put(props);
+		props = nullptr;
+	}
 	return jb_object(
 		"name", json_object_new_string(tool->name),
 		"title", json_object_new_string("Ask AI"),
 		"description", json_object_new_string(tool->description),
 		"inputSchema", jb_object(
 			"type", json_object_new_string("object"),
-			"properties", jb_object(
-				"prompt", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"The complete, self-contained question or task. The "
-						"other AI cannot see this conversation, so include "
-						"all the context it needs."),
-					nullptr),
-				"system", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"Optional system instructions for the other AI, such "
-						"as a role or an answer format."),
-					nullptr),
-				nullptr),
+			"properties", props,
 			"required", jb_list(json_object_new_string("prompt")),
 			"additionalProperties", json_object_new_boolean(0),
 			nullptr),
@@ -2310,10 +3603,10 @@ man_definition (void)
 		"title", json_object_new_string("Manual page"),
 		"description", json_object_new_string(
 			"Read one of the server's Unix manual pages, as `man [section] name` "
-			"shows it, in plain text; a long page is cut at 2 MiB. Use it to "
-			"check the exact interface of a system call, library function, "
-			"command, file format or convention. Pages are kept once "
-			"rendered, so reading one again is cheap."),
+			"shows it, in plain text; a long page is cut, and offset reads on "
+			"past the cut. Use it to check the exact interface of a system "
+			"call, library function, command, file format or convention. Pages "
+			"are kept once rendered, so reading one again is cheap."),
 		"inputSchema", jb_object(
 			"type", json_object_new_string("object"),
 			"properties", jb_object(
@@ -2330,6 +3623,13 @@ man_definition (void)
 						"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
 						"overviews and conventions, 8 administration. Without "
 						"it, the first page man finds in its usual order."),
+					nullptr),
+				"offset", jb_object(
+					"type", json_object_new_string("integer"),
+					"minimum", json_object_new_int(0),
+					"description", json_object_new_string(
+						"The byte of the page to start from, to read on past "
+						"where it was cut."),
 					nullptr),
 				nullptr),
 			"required", jb_list(json_object_new_string("name")),
@@ -2377,6 +3677,98 @@ task_definition (void)
 		nullptr);
 }
 
+/* The notes tool's definition, which only turns are given. */
+static struct json_object *
+notes_definition (void)
+{
+	static_assert(NOTES_TEXT == 8 << 10 && NOTES_READ == 256, "the description says");
+	struct json_object *actions = jb_list(json_object_new_string("write"));
+	if (!jb_push(actions, json_object_new_string("read"))) {
+		json_object_put(actions);
+		actions = nullptr;
+	}
+	return jb_object(
+		"name", json_object_new_string("notes"),
+		"description", json_object_new_string(
+			"Your notebook for this task, which outlasts your context: write "
+			"down what you find, what you decide, and what is done and left "
+			"to do, a short note at a time, as you go. When the context fills "
+			"up, the conversation is compacted to the task, a summary and these "
+			"notes; read them back when you need them. They are yours: the "
+			"client sees that you keep them, not what they say."),
+		"inputSchema", jb_object(
+			"type", json_object_new_string("object"),
+			"properties", jb_object(
+				"action", jb_object(
+					"type", json_object_new_string("string"),
+					"enum", actions,
+					"description", json_object_new_string(
+						"write a note, or read the newest 256."),
+					nullptr),
+				"text", jb_object(
+					"type", json_object_new_string("string"),
+					"description", json_object_new_string(
+						"For write: the note, short and self-contained, at "
+						"most 8 KiB."),
+					nullptr),
+				"search", jb_object(
+					"type", json_object_new_string("string"),
+					"description", json_object_new_string(
+						"For read: only the notes that hold this text, "
+						"regardless of case."),
+					nullptr),
+				nullptr),
+			"required", jb_list(json_object_new_string("action")),
+			"additionalProperties", json_object_new_boolean(0),
+			nullptr),
+		nullptr);
+}
+
+/* The compact tool's definition, which only turns are given. */
+static struct json_object *
+compact_definition (void)
+{
+	static_assert(SUMMARY_MAX == 16 << 10, "the description says");
+	return jb_object(
+		"name", json_object_new_string("compact"),
+		"description", json_object_new_string(
+			"Free your context: the conversation since the task, your turns and "
+			"the tools' results, is replaced by your summary of it, and your "
+			"notes are shown again. Note first what you must keep. Call it when "
+			"askai says that the context fills up, or once you are done with a "
+			"part of the work whose details you no longer need. Calls after it "
+			"in the same turn do not run."),
+		"inputSchema", jb_object(
+			"type", json_object_new_string("object"),
+			"properties", jb_object(
+				"summary", jb_object(
+					"type", json_object_new_string("string"),
+					"description", json_object_new_string(
+						"Where the task stands: what is done, what you found, "
+						"and what you will do next; at most 16 KiB."),
+					nullptr),
+				nullptr),
+			"required", jb_list(json_object_new_string("summary")),
+			"additionalProperties", json_object_new_boolean(0),
+			nullptr),
+		nullptr);
+}
+
+/* @p def, an MCP tool's definition, as chat completions' tools have one;
+ * nullptr if out of memory. */
+static struct json_object *
+lend (struct json_object *def)
+{
+	return jb_object(
+		"type", json_object_new_string("function"),
+		"function", jb_object(
+			"name", json_object_get(jb_get(def, "name")),
+			"description", json_object_get(jb_get(def, "description")),
+			"parameters", json_object_get(jb_get(def, "inputSchema")),
+			nullptr),
+		nullptr);
+}
+
 /* Serialize @p val into @p text, then free it; false if out of memory. */
 static bool
 serialize (struct dstr        *text,
@@ -2407,19 +3799,20 @@ modern_list (struct json_object *result,
 }
 
 int
-mcp_static_new (struct mcp_static        **p_static,
-                struct ai_endpoint const  *ep,
-                struct mcp_tool const     *tool,
-                struct manual             *manual,
-                struct tasks              *tasks,
-                struct git                *git,
-                struct mcp_limits const   *limits)
+mcp_static_new (struct mcp_static   **p_static,
+                struct config const  *cfg,
+                struct manual        *manual,
+                struct tasks         *tasks,
+                struct git           *git,
+                struct notes         *notes)
 {
+	struct mcp_tool const *tool = &cfg->tool;
+	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS && ai_format(cfg->ep.protocol);
 	struct mcp_static *st = malloc(sizeof *st);
 	if (!st)
 		return ENOMEM;
 	*st = (struct mcp_static){
-		.ep = ep,
+		.ep = &cfg->ep,
 		.tool = tool->name,
 		.discover = DSTR_INIT,
 		.init_tail = DSTR_INIT,
@@ -2428,12 +3821,16 @@ mcp_static_new (struct mcp_static        **p_static,
 		.manual = manual,
 		.tasks = tasks,
 		.git = git,
+		.notes = lends ? notes : nullptr,
 		.seed = loop_clock(),
-		.lim = *limits
+		.lim = cfg->mcp,
+		.turns = cfg->turns
 	};
 	/* A zeroed dstr is no empty string (dstr.h). */
 	for (size_t i = 0; i < ARRAY_SIZE(st->list); ++i)
 		st->list[i][0] = st->list[i][1] = (struct dstr)DSTR_INIT;
+	for (size_t i = 0; i < ARRAY_SIZE(st->lent); ++i)
+		st->lent[i] = (struct dstr)DSTR_INIT;
 	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
 	*p_static = st;
 
@@ -2443,7 +3840,7 @@ mcp_static_new (struct mcp_static        **p_static,
 	                                     "version", json_object_new_string("0.1.0"),
 	                                     nullptr);
 	struct json_object *defs[MCP_TOOLS] = {
-		tool_definition(tool),
+		tool_definition(tool, st->notes),
 		manual ? man_definition() : nullptr,
 		tasks ? task_definition() : nullptr,
 		git ? git_definition(git) : nullptr
@@ -2455,6 +3852,34 @@ mcp_static_new (struct mcp_static        **p_static,
 	          (!git || defs[3]);
 	for (size_t i = 0; ok && i < ARRAY_SIZE(versions); ++i)
 		ok = jb_push(list, json_object_new_string(versions[i]));
+	/* What a turn may call, by whether the role may call man and git: those,
+	 * the notes, and, with any of those, compact. */
+	struct json_object *own[2] = {
+		lends && st->notes ? notes_definition() : nullptr,
+		lends ? compact_definition() : nullptr,
+	};
+	ok = ok && (!lends || (own[1] && (!st->notes || own[0])));
+	for (size_t mask = 0; ok && lends && mask < ARRAY_SIZE(st->lent); ++mask) {
+		struct json_object *lent[] = {
+			mask & 1 ? defs[1] : nullptr, mask & 2 ? defs[3] : nullptr, own[0]
+		};
+		struct json_object *tools = json_object_new_array();
+		bool some = false;
+		for (size_t i = 0; tools && i < ARRAY_SIZE(lent); ++i) {
+			some |= lent[i] != nullptr;
+			if (lent[i] && !jb_push(tools, lend(lent[i])))
+				tools = nullptr;
+		}
+		ok = tools && (!some || jb_push(tools, lend(own[1])));
+		if (ok && some) {
+			size_t len = 0;
+			char const *json = json_object_to_json_string_length(tools, JB_WIRE, &len);
+			ok = json && dstr_cat_n(&st->lent[mask], json, len);
+		}
+		json_object_put(tools);
+	}
+	json_object_put(own[0]);
+	json_object_put(own[1]);
 	/* A role lists the tools it may call, of those askai offers. */
 	for (size_t mask = 0; ok && mask < ARRAY_SIZE(st->list); ++mask) {
 		struct json_object *tools = json_object_new_array();
@@ -2502,6 +3927,8 @@ mcp_static_free (struct mcp_static **p_static)
 	for (size_t i = 0; i < ARRAY_SIZE(st->list); ++i)
 		for (size_t j = 0; j < ARRAY_SIZE(st->list[i]); ++j)
 			dstr_cleanup(&st->list[i][j]);
+	for (size_t i = 0; i < ARRAY_SIZE(st->lent); ++i)
+		dstr_cleanup(&st->lent[i]);
 	dstr_cleanup(&st->discover);
 	dstr_cleanup(&st->init_tail);
 	dstr_cleanup(&st->modern_tail);

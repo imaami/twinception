@@ -8,7 +8,7 @@
 
 #include "buf.h"
 
-struct ai_endpoint;
+struct config;
 struct git;
 struct loop;
 struct manual;
@@ -16,6 +16,7 @@ struct mcp;
 struct mcp_static;
 struct metrics_mcp;
 struct metrics_src;
+struct notes;
 struct stream_app;
 struct tasks;
 
@@ -57,20 +58,23 @@ mcp_limits (void)
 
 /**
  * What every loop's MCP shares, and nobody changes once it is made: the
- * configuration, and the replies that never change, serialized.  With
- * @p manual, it offers the tool man beside @p tool: a page of the manual
- * (src/manual.h); with @p tasks, the test aid test_task, CPU work done as a
- * task (src/task.h); with @p git, the tool git (src/git.h).  @p ep, @p tool,
- * @p manual, @p tasks and @p git must outlive it.
+ * configuration @p cfg, and the replies that never change, serialized.
+ * With @p manual, it offers the tool man beside the ask tool: a page of the
+ * manual (src/manual.h); with @p tasks, the test aid test_task, CPU work
+ * done as a task (src/task.h); with @p git, the tool git (src/git.h).  With
+ * CFG_UPSTREAM_TOOLS, the ask tool lends the upstream the tools the client
+ * may call but itself, and with @p notes the tool notes (src/notes.h), and
+ * the tool compact: its call then runs a loop of turns, each an upstream
+ * call, and the tools each turn calls, until an answer calls none.
+ * @p cfg, @p manual, @p tasks, @p git and @p notes must outlive it.
  */
 extern int
-mcp_static_new (struct mcp_static        **p_static,
-                struct ai_endpoint const  *ep,
-                struct mcp_tool const     *tool,
-                struct manual             *manual,
-                struct tasks              *tasks,
-                struct git                *git,
-                struct mcp_limits const   *limits);
+mcp_static_new (struct mcp_static   **p_static,
+                struct config const  *cfg,
+                struct manual        *manual,
+                struct tasks         *tasks,
+                struct git           *git,
+                struct notes         *notes);
 
 extern void
 mcp_static_free (struct mcp_static **p_static);

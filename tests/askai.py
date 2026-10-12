@@ -4757,6 +4757,452 @@ def check_git(binary, up):
           "PASS")
 
 
+def turn_stream(calls=(), text="", reasoning="", used=None, interleave=False,
+                index=True, reason=None):
+    """A streamed chat completion of @p text that calls the tools @p calls,
+    (id, name, arguments' JSON text) each, the arguments in pieces of 7
+    bytes, after @p reasoning; with @p used, (prompt, answer) tokens, its
+    usage; with @p interleave, the calls' pieces taken in turn; without
+    @p index, the calls' pieces giving none; with @p reason, that stop
+    reason."""
+    ev = [(None, {"choices": [{"index": 0, "delta": {"role": "assistant",
+                                                     "content": ""}}]})]
+    delta = lambda d: (None, {"choices": [{"index": 0, "delta": d}]})
+    # As servers stream: many small pieces.
+    ev += [delta({"reasoning_content": reasoning[k:k + (16 << 10)]})
+           for k in range(0, len(reasoning), 16 << 10)]
+    ev += [delta({"content": text[k:k + (16 << 10)]})
+           for k in range(0, len(text), 16 << 10)]
+    pieces = []
+    for i, (cid, name, args) in enumerate(calls):
+        at = {"index": i} if index else {}
+        call = [delta({"tool_calls": [at | {"id": cid, "type": "function",
+                                            "function": {"name": name,
+                                                         "arguments": ""}}]})]
+        call += [delta({"tool_calls": [at | {"function": {
+            "arguments": args[k:k + 7]}}]}) for k in range(0, len(args), 7)]
+        pieces.append(call)
+    if interleave:
+        ev += [e for group in zip(*pieces) for e in group]
+    else:
+        ev += [e for call in pieces for e in call]
+    ev.append((None, {"choices": [{"index": 0, "delta": {}, "finish_reason":
+                                   reason or ("tool_calls" if calls else "stop")}]}))
+    if used:
+        ev.append((None, {"choices": [], "usage": {"prompt_tokens": used[0],
+                                                   "completion_tokens": used[1]}}))
+    ev.append((None, "[DONE]"))
+    return Stream(wire=sse_wire(ev))
+
+
+def check_turns(binary, up):
+    """With --upstream-tools, an ask call lends the upstream the tools its
+    client's role may call but itself, and notes and compact, in chat
+    completions: it runs the tools each turn calls, a tool's output cut to a
+    window that offset moves, writes the turn and the results into the
+    conversation, and asks on until an answer calls none, --max-turns turns
+    at most; the client gets the answer and the calls' trace.  Notes are
+    commits on the thread's branch, read back, and given again with the
+    prompt to a call that goes on with the thread; compact, a context that
+    the upstream says is full, or one askai reckons is, has the
+    conversation start again from the prompt, the summary and the notes."""
+    def run(*args):
+        return subprocess.run([binary, "-u", up.url(), *args], capture_output=True,
+                              text=True, timeout=10)
+
+    for args, message in ((("--notes", "/nonexistent/x"), "--notes needs "
+                           "--upstream-tools"),
+                          (("--upstream-tools", "-p", "anthropic"),
+                           "--upstream-tools needs --protocol openai"),
+                          (("--upstream-tools", "--max-turns", "0"),
+                           "invalid --max-turns: 0"),
+                          (("--upstream-tools", "--context", "-1"),
+                           "invalid --context: -1"),
+                          (("--upstream-tools", "-x", '{"messages": null}'),
+                           "--extra may not change messages with --upstream-tools")):
+        proc = run(*args)
+        assert proc.returncode == 2 and message in proc.stderr, (args, proc)
+
+    with tempfile.TemporaryDirectory() as d:
+        git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+        repo = f"{d}/proj"
+        os.mkdir(repo)
+
+        def sh(*args, cwd=repo):
+            return subprocess.run(["git", "-C", cwd, "-c", "user.name=t", "-c",
+                                   "user.email=t@t", *args], check=True,
+                                  env=os.environ | git, capture_output=True,
+                                  text=True).stdout
+        sh("init", "-q", "-b", "main")
+        with open(f"{repo}/big.txt", "w") as f:
+            f.write("".join(f"line {i:05}\n" for i in range(4000)))
+        sh("add", "big.txt")
+        sh("commit", "-q", "-m", "first")
+        notes = f"{d}/notes"
+        with open(f"{d}/file", "w"):
+            pass
+        os.mkdir(f"{d}/work")
+        sh("init", "-q", cwd=f"{d}/work")
+        for path, message in ((f"{d}/file", "not a directory"),
+                              (f"{d}/work", "not a git repository"),
+                              (f"{d}/work/.git", "not a bare git repository")):
+            proc = run("--upstream-tools", "--notes", path)
+            assert proc.returncode and message in proc.stderr, (path, proc)
+
+        def turns(request):
+            """The messages after the prompt's."""
+            return request["body"]["messages"][1:]
+
+        def prompt(request):
+            return request["body"]["messages"][0]["content"]
+
+        script = []
+
+        def reply(request):
+            return script.pop(0)(request) if script else (200, turn_stream(text="A"))
+        up.reply = reply
+        args = ("-u", up.url(), "--upstream-tools", "--git", repo, "--notes", notes)
+        with Askai(binary, *args) as ai:
+            tools = {t["name"]: t for t in ai.rpc("tools/list")[2]["result"]["tools"]}
+            assert "thread" in tools["ask_ai"]["inputSchema"]["properties"], tools
+            assert "offset" in tools["git"]["inputSchema"]["properties"], tools
+            assert "notes" not in tools and "compact" not in tools, tools
+
+            # Two calls, git's and a note, then a read of the notes, then the
+            # answer.  The turns carry the text, the thinking and the calls.
+            log = json.dumps({"repo": "proj", "command": "log",
+                              "options": ["--oneline"]})
+            script[:] = [
+                lambda r: (200, turn_stream([("c1", "git", log), ("c2", "notes", json.dumps(
+                    {"action": "write", "text": "found \"first\""}))], text="Looking.",
+                    reasoning="hmm", used=(100, 20))),
+                lambda r: (200, turn_stream([("", "notes", '{"action":"read"}')])),
+            ]
+            count = len(up.requests)
+            result = ai.ask("What is there?")
+            first, second, third = up.requests[count:]
+            body = first["body"]
+            assert [t["function"]["name"] for t in body["tools"]] == \
+                ["git", "notes", "compact"], body["tools"]
+            assert body["stream_options"] == {"include_usage": True}, body
+            assert list(body)[-1] == "messages" and turns(first) == [], body
+            head, *results = turns(second)
+            assert head["role"] == "assistant" and head["content"] == "Looking." and \
+                head["reasoning_content"] == "hmm", head
+            assert [(c["id"], c["function"]["name"]) for c in head["tool_calls"]] == \
+                [("c1", "git"), ("c2", "notes")], head
+            assert json.loads(head["tool_calls"][0]["function"]["arguments"]) == \
+                json.loads(log), head
+            assert [(m["role"], m["tool_call_id"]) for m in results] == \
+                [("tool", "c1"), ("tool", "c2")], results
+            assert re.fullmatch(r"[0-9a-f]{7} first\n", results[0]["content"]), results
+            assert results[1]["content"] == "Noted.", results
+            read = turns(third)[3:]
+            assert read[0]["tool_calls"][0]["id"] == "call_2_0", read
+            assert "reasoning_content" not in read[0], read
+            assert read[1] == {"role": "tool", "tool_call_id": "call_2_0",
+                               "content": "1. found \"first\"\n"}, read
+            text, trace = [c["text"] for c in result["content"]]
+            assert text == "A", result
+            thread = re.search(r"in the thread ([0-9a-f]{32}):", trace).group(1)
+            assert trace.startswith("The other AI made 3 tool calls in 3 turns:\n"
+                                    f"- git {log}: 14 bytes\n"
+                                    "- notes write: 6 bytes\n- notes read: 17 bytes\n"
+                                    ), trace
+            assert "found" not in trace, trace
+            branch = f"refs/heads/anonymous/{thread}"
+            assert sh("--git-dir", notes, "log", "--format=%B", branch,
+                      cwd=d).strip() == "found \"first\"", branch
+
+            # Going on with the thread: its notes go with the prompt.
+            count = len(up.requests)
+            result = ai.ask("And now?", thread=thread)
+            assert prompt(up.requests[count]) == (
+                "And now?\n\n[askai: the notes you kept in earlier calls on this "
+                "thread, oldest first:]\n\n1. found \"first\"\n"), up.requests[count]
+            assert f"in the thread {thread}:" in result["content"][1]["text"], result
+            for value, message in (("0" * 32, "Unknown thread: " + "0" * 32 + "."),
+                                   ("xyz", "must be a thread's id")):
+                result = ai.ask("Q", thread=value)
+                assert result.get("isError") and message in text_of(result), result
+
+            # A window of git's output, the rest by offset; a note too long,
+            # a tool not lent, arguments that are no object.
+            show = {"repo": "proj", "command": "show", "revisions": ["HEAD:big.txt"]}
+            script[:] = [
+                lambda r: (200, turn_stream([
+                    ("a", "git", json.dumps(show)),
+                    ("b", "git", json.dumps(show | {"offset": 65530})),
+                    ("c", "notes", json.dumps({"action": "write", "text": "x" * 8193})),
+                    ("d", "man", '{"name":"ls"}'), ("e", "git", "[1]"),
+                    ("f", "git", '{"repo":')])),
+            ]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            calls, *results = turns(up.requests[count + 1])
+            outputs = [m["content"] for m in results]
+            with open(f"{repo}/big.txt") as f:
+                assert outputs[0] == f.read(), outputs[0][-200:]
+            assert outputs[1] == "[The output has 44000 bytes, fewer than the offset.]", \
+                outputs[1]
+            assert outputs[2] == "A note must be a string of 1 to 8192 bytes, and no " \
+                "NUL.", outputs[2]
+            assert outputs[3] == "No tool of that name is yours to call.", outputs[3]
+            assert outputs[4] == outputs[5] == "Your arguments were not a JSON " \
+                "object, so the call was not run.", outputs[4:]
+            assert [c["function"]["arguments"] for c in calls["tool_calls"][4:]] == \
+                ["{}", "{}"], calls
+            _, _, body = ai.rpc("tools/call", {"name": "git", "arguments": {
+                "repo": "proj", "command": "log", "offset": 999999}})
+            assert body["result"].get("isError") and re.fullmatch(
+                r"The output has \d+ bytes, fewer than the offset\.",
+                text_of(body["result"])), body
+
+            # Calls with no index, as some servers send them; arguments the
+            # output token limit cut; a search of more than a line.
+            script[:] = [
+                lambda r: (200, turn_stream([("x", "git", log), ("y", "git", log)],
+                                            index=False)),
+                lambda r: (200, turn_stream([("z", "git", log[:-9])], reason="length")),
+                lambda r: (200, turn_stream([("n", "notes", json.dumps(
+                    {"action": "read", "search": "a\nb"}))])),
+            ]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
+            assert len(outputs) == 2 and outputs[0] == outputs[1], outputs
+            assert turns(up.requests[count + 2])[-1]["content"] == "Your answer " \
+                "reached the output token limit, which cut these arguments short, " \
+                "so the call was not run.", up.requests[count + 2]
+            assert turns(up.requests[count + 3])[-1]["content"] == "The search " \
+                "argument, which only read takes, must be a line of 1 to 1024 " \
+                "bytes.", up.requests[count + 3]
+
+            values = ai.metrics()
+            assert total(values, "askai_turns_total") == 10, values
+            assert [total(values, "askai_turn_tool_calls_total", tool=t) for t in
+                    ("git", "notes", "man", "compact", "unknown")] == [8, 4, 0, 0, 1], \
+                values
+
+        # A small context: windows of an eighth of it, a warning past three
+        # quarters, and once full, the conversation starts again.
+        with Askai(binary, *args, "--context", "8000") as ai:
+            show = {"repo": "proj", "command": "show", "revisions": ["HEAD:big.txt"]}
+            script[:] = [
+                lambda r: (200, turn_stream([("a", "git", json.dumps(show))],
+                                            used=(4000, 10))),
+                lambda r: (200, turn_stream([("b", "git", json.dumps(show | {
+                    "offset": 3993}))], used=(6000, 10))),
+                lambda r: (200, turn_stream([("c", "git", json.dumps(show))],
+                                            used=(7900, 10))),
+            ]
+            count = len(up.requests)
+            ai.ask("Q")
+            out = turns(up.requests[count + 1])[1]["content"]
+            # Lines of 11 bytes: 363 of them in an eighth of 8000 tokens.
+            assert out.startswith("line 00000\n") and out.endswith(
+                "line 00362\n\n\n[Bytes 0 to 3993 of 44000: for the rest, call "
+                "again with \"offset\": 3993.]"), out[-120:]
+            out = turns(up.requests[count + 2])[3]["content"]
+            assert out.startswith("line 00363\n") and \
+                "line 00725\n\n\n[Bytes 3993 to 7986 of 44000: for the rest" in out and \
+                re.search(r"\[askai: your context is \d+% full, \d+ of 8000 "
+                          r"tokens\. Note what you need to keep, then call "
+                          r"compact\.\]$", out), out[-300:]
+            # Full by its reckoning: from the prompt again.
+            again = up.requests[count + 3]
+            assert turns(again) == [] and prompt(again) == (
+                "Q\n\n[askai: your context filled up, so the conversation since the "
+                "task is gone, your turns and the tools' results with it.]\n\n"
+                "[askai: go on with the task.]"), again
+
+        # Hooks in the notes repository do not run.
+        os.makedirs(f"{notes}/hooks", exist_ok=True)
+        with open(f"{notes}/hooks/reference-transaction", "w") as f:
+            f.write(f"#!/bin/sh\ntouch {d}/hooked\n")
+        os.chmod(f"{notes}/hooks/reference-transaction", 0o755)
+        with Askai(binary, *args, "--max-turns", "3") as ai:
+            # compact: from the prompt, the summary and the notes; calls after
+            # it do not run.
+            script[:] = [
+                lambda r: (200, turn_stream([("a", "notes", json.dumps(
+                    {"action": "write", "text": "n1"}))])),
+                lambda r: (200, turn_stream([("b", "compact", json.dumps(
+                    {"summary": "S"})), ("c", "git", log)])),
+            ]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            again = up.requests[count + 2]
+            assert turns(again) == [] and prompt(again) == (
+                "Q\n\n[askai: you compacted the context: the conversation since the "
+                "task is gone, your turns and the tools' results with it. Your "
+                "summary of it:]\n\nS\n\n[askai: your notes, oldest first:]\n\n"
+                "1. n1\n\n[askai: go on with the task.]"), prompt(again)
+            assert "- compact: 1 bytes\n" in result["content"][1]["text"], result
+            assert "git" not in result["content"][1]["text"], result
+            assert not os.path.exists(f"{d}/hooked")
+
+            # The upstream says the context is full: once, from the prompt
+            # again; twice, the call fails.
+            full = {"error": {"code": 400, "type": "exceed_context_size_error",
+                              "message": "request (9000 tokens) exceeds the "
+                              "available context size (8192 tokens), try "
+                              "increasing it"}}
+            script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
+                         lambda r: (400, full)]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            assert turns(up.requests[count + 2]) == [], up.requests[count + 2]
+            script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
+                         lambda r: (400, full), lambda r: (400, full)]
+            result = ai.ask("Q")
+            assert result.get("isError") and "exceeds the available context" in \
+                result["content"][0]["text"], result
+
+            # The turns run out: the last is told, and stopped.
+            script[:] = [lambda r: (200, turn_stream([(str(i), "git", log)]))
+                         for i in range(3)]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            assert len(up.requests) == count + 3, up.requests[count:]
+            assert turns(up.requests[count + 2])[-1]["content"].endswith(
+                "[askai: your next turn is your last: answer then, without calling "
+                "tools.]"), up.requests[count + 2]
+            assert result.get("isError") and result["content"][0]["text"] == "" and \
+                "It was stopped after 3 turns, still calling tools." in \
+                result["content"][1]["text"], result
+
+            # Calls out of order are the upstream's error.
+            script[:] = [lambda r: (200, turn_stream([("a", "git", log), ("b", "git", log)],
+                                                     interleave=True))]
+            result = ai.ask("Q")
+            assert result.get("isError") and "tool calls out of order" in \
+                result["content"][0]["text"], result
+
+            values = ai.metrics()
+            assert total(values, "askai_compactions_total", by="upstream") == 1 and \
+                total(values, "askai_compactions_total", by="askai") == 2 and \
+                total(values, "askai_turns_stopped_total") == 1, values
+
+            # Notes on the turns' progress, and a client that goes mid-call
+            # cancels it.
+            script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
+                         lambda r: (200, turn_stream(text="A"), 0.5)]
+            params = {"name": "ask_ai", "arguments": {"prompt": "Q"},
+                      "_meta": {"progressToken": "t"}}
+            with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+                sock.sendall(rpc_request(5, params, "tools/call", headers={
+                    "MCP-Protocol-Version": LEGACY,
+                    "Accept": "application/json, text/event-stream"}))
+                events = read_events(sock)
+            messages = [e["params"]["message"] for _, e in events if "method" in e]
+            assert "turn 1, calling git" in messages, messages
+            progress = [e["params"]["progress"] for _, e in events if "method" in e]
+            assert progress == sorted(set(progress)), progress
+            assert events[-1][1]["result"]["content"][0]["text"] == "A", events
+            script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
+                         lambda r: (200, turn_stream(text="A"), 5)]
+            up.cancelled.clear()
+            count = len(up.requests)
+            sock = socket.create_connection(("127.0.0.1", ai.port), 10)
+            sock.sendall(rpc_request(6, params, "tools/call", headers={
+                "MCP-Protocol-Version": LEGACY,
+                "Accept": "application/json, text/event-stream"}))
+            wait_for(lambda: len(up.requests) == count + 2)
+            sock.close()
+            assert up.cancelled.wait(5)
+            script.clear()
+
+        # A legacy client's notifications/cancelled that comes between the
+        # turns, as a tool runs, ends the call before its next turn.
+        os.mkdir(f"{d}/bin")
+        with open(f"{d}/bin/git", "w") as f:
+            f.write(f"#!/bin/sh\ncase \"$*\" in *SLOWPATH*) sleep 1;; esac\n"
+                    f"exec {shutil.which('git')} \"$@\"\n")
+        os.chmod(f"{d}/bin/git", 0o755)
+        slow = json.dumps({"repo": "proj", "command": "log", "paths": ["SLOWPATH"]})
+        with Askai(binary, *args, env={"PATH": f"{d}/bin:" + os.environ["PATH"]}) as ai:
+            for cancel in (True, False):
+                script[:] = [lambda r: (200, turn_stream([("s", "git", slow)]))]
+                count = len(up.requests)
+                with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+                    sock.sendall(session_call(9, 77))
+                    wait_for(lambda: len(up.requests) == count + 1)
+                    time.sleep(0.3)
+                    if cancel:
+                        assert ai.rpc("notifications/cancelled", {"requestId": 77},
+                                      rpc_id=None, headers={
+                                          "Mcp-Session-Id": f"{9:032x}",
+                                          "MCP-Protocol-Version": LEGACY})[0] == 202
+                    status, body = Replies(sock).next()
+                assert (status, len(up.requests) - count) == \
+                    ((202, 1) if cancel else (200, 2)), (status, body)
+                assert cancel or body["result"]["content"][0]["text"] == "A", body
+
+        # llama-server's /props tells the context, with --slots too.
+        up.props = {"total_slots": 2, "default_generation_settings": {"n_ctx": 6000}}
+        with Askai(binary, *args, "--slots", "1") as ai:
+            ai.wait_log(r"upstream context: 6000 tokens \(llama-server's /props\)")
+            assert any("upstream slots: 1 (--slots)" in line for line in ai.log), ai.log
+            description = ai.rpc("tools/list")[2]["result"]["tools"][0]["description"]
+            assert "It may use some of this server's tools itself" in description and \
+                "It keeps notes in a thread" in description, description
+            script[:] = [lambda r: (200, turn_stream([("a", "git", json.dumps(show))]))]
+            count = len(up.requests)
+            ai.ask("Q")
+            assert "[Bytes 0 to 2992 of 44000:" in turns(up.requests[count + 1])[1][
+                "content"], up.requests[count + 1]
+
+            # A read gives the newest notes that fit a window, oldest first.
+            write = lambda c: json.dumps({"action": "write", "text": c * 1200})
+            script[:] = [
+                lambda r: (200, turn_stream([(c, "notes", write(c)) for c in "abc"])),
+                lambda r: (200, turn_stream([("d", "notes", '{"action":"read"}'),
+                                             ("e", "notes", json.dumps(
+                                                 {"action": "read", "search": "A"})),
+                                             ("f", "notes", json.dumps(
+                                                 {"action": "read", "search": "z"}))])),
+            ]
+            count = len(up.requests)
+            ai.ask("Q")
+            reads = [m["content"] for m in turns(up.requests[count + 2])[5:]]
+            assert reads == [
+                "[1 older note is not shown: search for it.]\n\n1. " + "b" * 1200 +
+                "\n\n2. " + "c" * 1200 + "\n", "1. " + "a" * 1200 + "\n",
+                "No note holds that text."], reads
+
+            # However long the turns grow, no step does more than its share.
+            work(ai)
+            script[:] = [lambda r: (200, turn_stream(
+                [(str(i), "git", json.dumps(show | {"offset": 3000 * i}))
+                 for i in range(4)], text="t" * (3 << 20), reasoning="r" * (1 << 20)))]
+            ai.ask("Q" * (512 << 10))
+            units, _ = work(ai)
+            assert all(most <= bound for most, bound in units.values()), units
+        # /props, while it takes long, does not hold the one slot's connection.
+        up.props = "hang"
+        with Askai(binary, *args, "--slots", "1") as ai:
+            start = time.monotonic()
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            assert time.monotonic() - start < 1, time.monotonic() - start
+        up.props = None
+
+        # A role that may not call git lends the turns notes and compact.
+        path = f"{d}/askai.json"
+        with open(path, "w") as f:
+            json.dump({"roles": {"asker": {"tools": ["ask_ai"]}},
+                       "anonymous": {"loopback": "asker"}}, f)
+        os.chmod(path, 0o600)
+        with Askai(binary, *args, "-c", path) as ai:
+            count = len(up.requests)
+            assert text_of(ai.ask("Q")) == "A"
+            assert [t["function"]["name"] for t in up.requests[count]["body"]["tools"]] \
+                == ["notes", "compact"], up.requests[count]["body"]
+    up.reply = lambda request: (200, ANSWERS["openai"])
+    print("turns: tools lent to the upstream, notes, threads, windows, compaction, "
+          "limits: PASS")
+
+
 def check_tasks(binary, up):
     """Tasks (src/task.h), through the test aid test_task, offered with
     --test-task only: its arguments checked; CPU work done a slice a step,
@@ -4953,7 +5399,7 @@ def main():
                       check_reload, check_unix, check_tls, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_man, check_git, check_tasks, check_classes,
+                      check_man, check_git, check_turns, check_tasks, check_classes,
                       check_shutdown,
                       check_watchdog, check_stalled_stderr):
             check(binary, up)

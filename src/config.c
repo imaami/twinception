@@ -91,6 +91,17 @@ usage (FILE       *out,
 	        "                            8 of them queued per session or client\n"
 	        "                            address; a tool call past those is answered\n"
 	        "                            at once as an error that says to try again\n"
+	        "      --upstream-tools      give the upstream tools too: those the\n"
+	        "                            client may call but the ask tool, notes\n"
+	        "                            with --notes, and compact; an ask call then\n"
+	        "                            runs them and asks on until it answers\n"
+	        "                            (needs --protocol openai)\n"
+	        "      --notes DIR           the git repository where the upstream keeps\n"
+	        "                            its notes, made bare if it does not exist\n"
+	        "      --max-turns N         upstream calls an ask call makes at most\n"
+	        "                            with --upstream-tools (default 32)\n"
+	        "      --context TOKENS      the upstream's context, for compacting it\n"
+	        "                            (default: what llama-server's /props says)\n"
 	        "\n", argv0);
 	fprintf(out,
 	        "MCP server:\n"
@@ -288,7 +299,8 @@ enum {
 	OPT_GRACE, OPT_WATCHDOG, OPT_TEST_STALL, OPT_MEMORY_HIGH, OPT_TEST_PRESSURE,
 	OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO,
 	OPT_MAN, OPT_TEST_MAN_RECHECK, OPT_TEST_TASK, OPT_GIT, OPT_GIT_TIMEOUT,
-	OPT_TLS_CERT, OPT_TLS_KEY, OPT_TLS_ALLOW_RSA
+	OPT_TLS_CERT, OPT_TLS_KEY, OPT_TLS_ALLOW_RSA, OPT_UPSTREAM_TOOLS, OPT_NOTES,
+	OPT_MAX_TURNS, OPT_CONTEXT
 };
 
 static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
@@ -308,6 +320,10 @@ static struct option const options[] = {
 	{ "chunk-timeout",    required_argument, nullptr, OPT_CHUNK_TIMEOUT },
 	{ "slots",            required_argument, nullptr, OPT_SLOTS },
 	{ "max-calls",        required_argument, nullptr, OPT_MAX_CALLS },
+	{ "upstream-tools",   no_argument,       nullptr, OPT_UPSTREAM_TOOLS },
+	{ "notes",            required_argument, nullptr, OPT_NOTES },
+	{ "max-turns",        required_argument, nullptr, OPT_MAX_TURNS },
+	{ "context",          required_argument, nullptr, OPT_CONTEXT },
 	{ "listen",           required_argument, nullptr, 'l' },
 	{ "allow-origin",     required_argument, nullptr, 'o' },
 	{ "tls-cert",         required_argument, nullptr, OPT_TLS_CERT },
@@ -460,6 +476,8 @@ apply (struct config *cfg,
 	case OPT_TLS_CERT: cfg->tls_cert = arg; break;
 	case OPT_TLS_KEY: cfg->tls_key = arg; break;
 	case OPT_TLS_ALLOW_RSA: cfg->flags |= CFG_TLS_RSA; break;
+	case OPT_UPSTREAM_TOOLS: cfg->flags |= CFG_UPSTREAM_TOOLS; break;
+	case OPT_NOTES: cfg->notes = arg; break;
 	case 'o':
 		push(cfg->origins, &cfg->n_origins, arg);
 		break;
@@ -620,6 +638,12 @@ apply (struct config *cfg,
 		cfg->git_timeout = seconds * 1'000'000'000ULL;
 		break;
 	}
+	case OPT_MAX_TURNS:
+		ok = parse_u32(arg, 1, 1000, &cfg->turns);
+		break;
+	case OPT_CONTEXT:
+		ok = parse_long(arg, 0, INT32_MAX, &ep->context);
+		break;
 	case OPT_LOOPS:
 		/* As many as a handle's loop field names, home being 0. */
 		ok = parse_u32(arg, 0, 255, &cfg->loops);
@@ -909,6 +933,43 @@ has (char const *dir,
 	return n > 0 && (size_t)n < sizeof path && !stat(path, &st);
 }
 
+/* Whether the notes repository's path is a directory that only root and
+ * askai's user may change, or else names one that the directory it would
+ * be made in lets only them make; false, having said why, if not. */
+static bool
+notes_place (struct config const *cfg)
+{
+	char const *path = cfg->notes;
+	struct stat st;
+	char const *why = nullptr;
+	if (!stat(path, &st)) {
+		why = !S_ISDIR(st.st_mode) ? "not a directory"
+		    : !safe(&st) || !safe_dirs(path)
+		    ? "others than root and askai's user may change it" : nullptr;
+	} else if (errno == ENOENT) {
+		/* The directory it would be made in, its trailing slashes aside. */
+		char dir[PATH_MAX];
+		size_t end = strlen(path);
+		while (end > 1 && path[end - 1] == '/')
+			--end;
+		while (end && path[end - 1] != '/')
+			--end;
+		while (end > 1 && path[end - 1] == '/')
+			--end;
+		int n = snprintf(dir, sizeof dir, "%.*s", end ? (int)end : 1, end ? path : ".");
+		why = n < 0 || (size_t)n >= sizeof dir ? strerror(ENAMETOOLONG)
+		    : stat(dir, &st) ? strerror(errno)
+		    : !S_ISDIR(st.st_mode) || !safe(&st) || !safe_dirs(dir)
+		    ? "others than root and askai's user may change the directory it "
+		      "would be made in" : nullptr;
+	} else {
+		why = strerror(errno);
+	}
+	if (why)
+		complain(cfg, nullptr, "--notes: %s: %s", path, why);
+	return !why;
+}
+
 /* The TLS listeners' context, from the certificate chain's file and its
  * key's, which none but its owner and its group may read, both wiped once
  * read, as one file may hold the two; 0, or the exit status, having said
@@ -1009,6 +1070,24 @@ finish (struct config *cfg)
 		}
 	}
 
+	if (cfg->flags & CFG_UPSTREAM_TOOLS && ep->protocol != AI_OPENAI) {
+		complain(cfg, nullptr, "--upstream-tools needs --protocol openai");
+		return 2;
+	}
+	/* The turns follow the messages. */
+	if (cfg->flags & CFG_UPSTREAM_TOOLS &&
+	    json_object_object_get_ex(ep->extra, "messages", nullptr)) {
+		complain(cfg, nullptr, "--extra may not change messages with "
+		         "--upstream-tools");
+		return 2;
+	}
+	if (cfg->notes && !(cfg->flags & CFG_UPSTREAM_TOOLS)) {
+		complain(cfg, nullptr, "--notes needs --upstream-tools");
+		return 2;
+	}
+	if (cfg->notes && !notes_place(cfg))
+		return 2;
+
 	/*
 	 * A provider's usual key variable is only read for its own endpoint, so
 	 * pointing --url elsewhere never leaks that key; use --key-env there.
@@ -1086,14 +1165,20 @@ finish (struct config *cfg)
 	ep->headers = cfg->headers;
 
 	if (!cfg->tool.description) {
+		bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
 		cfg->description = print("Ask %s%s a question or give it a task, and get "
 		                         "its answer. It cannot see this conversation, your "
 		                         "files or your tools, so write a complete, "
-		                         "self-contained prompt. Use it for a second "
+		                         "self-contained prompt.%s%s Use it for a second "
 		                         "opinion, for hard problems, or for knowledge you "
 		                         "lack.",
 		                         ep->model ? "the AI model " : "another AI model",
-		                         ep->model ? ep->model : "");
+		                         ep->model ? ep->model : "",
+		                         lends ? " It may use some of this server's tools "
+		                                 "itself, and its answer lists the calls it "
+		                                 "made." : "",
+		                         cfg->notes ? " It keeps notes in a thread, which "
+		                                      "a later call may go on with." : "");
 		if (!(cfg->tool.description = cfg->description))
 			goto oom;
 	}
@@ -1175,6 +1260,7 @@ parse (struct config *cfg,
 		.argc = argc,
 		.calls = 256,
 		.man_recheck = 600,
+		.turns = 32,
 		.git_timeout = 30'000'000'000,
 		.logged = logged
 	};

@@ -56,12 +56,30 @@ struct metrics_kept {
 	                                 tokeners' string buffers */
 };
 
-/** What a client loop counts of its tool calls' jobs: the loop writes, any
- *  thread reads. */
+/** The tools that an ask call's turns may call (src/mcp.h), as a call's
+ *  tool, which the metrics count by. */
+enum metrics_lent {
+	LENT_NONE,     /**< one not lent, or of no tool's name */
+	LENT_MAN,
+	LENT_GIT,
+	LENT_NOTES,
+	LENT_COMPACT,
+	LENT_N
+};
+
+/** What a client loop counts of its tool calls' jobs, and of the turns of
+ *  the ask calls that lend the upstream tools: the loop writes, any thread
+ *  reads. */
 struct metrics_calls {
-	_Atomic uint64_t cancelled;  /**< calls it cancelled while their job ran */
-	_Atomic uint64_t dropped;    /**< completions it dropped, their call gone:
-	                                  a stale handle */
+	_Atomic uint64_t cancelled;     /**< calls it cancelled while their job ran */
+	_Atomic uint64_t dropped;       /**< completions it dropped, their call
+	                                     gone: a stale handle */
+	_Atomic uint64_t turns;         /**< upstream calls the turns made */
+	_Atomic uint64_t lent[LENT_N];  /**< tool calls they made, by tool */
+	_Atomic uint64_t compacted[2];  /**< contexts compacted: by compact, and by
+	                                     askai, the context full */
+	_Atomic uint64_t stopped;       /**< ask calls whose turns ran out with
+	                                     tools called */
 };
 
 /** What a client loop's MCP counts: the loop writes, any thread reads.  It
@@ -82,6 +100,12 @@ metrics_mcp_init (struct metrics_mcp *m)
 	atomic_init(&m->kept.bytes[1], 0);
 	atomic_init(&m->calls.cancelled, 0);
 	atomic_init(&m->calls.dropped, 0);
+	atomic_init(&m->calls.turns, 0);
+	for (size_t i = 0; i < LENT_N; ++i)
+		atomic_init(&m->calls.lent[i], 0);
+	atomic_init(&m->calls.compacted[0], 0);
+	atomic_init(&m->calls.compacted[1], 0);
+	atomic_init(&m->calls.stopped, 0);
 	for (size_t i = 0; i < METHOD_N; ++i)
 		hist_init(&m->methods[i]);
 }

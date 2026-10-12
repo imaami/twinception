@@ -237,7 +237,9 @@ small local model in `llama-server` can use it for a second opinion, or to hand
 a hard sub-problem to a bigger model.  The other model sees only the prompt, so
 the tool description asks the caller to make it self-contained.  With `--man`,
 a second tool, `man`, reads the manual, and with `--git`, a tool `git` runs
-read-only git commands in the repositories it lists (below).
+read-only git commands in the repositories it lists (below).  With
+`--upstream-tools`, the other model may call those tools too, and keep notes
+of its work, in a loop of turns that ends with its answer.
 
 It speaks MCP's Streamable HTTP transport, which is what the `llama-server` web
 UI's MCP client uses, and serves both protocol eras on one endpoint:
@@ -351,7 +353,8 @@ and `MANROFFOPT='-rHY=0 -dAD=l'`, which turns hyphenation and justification
 off, as a model reads words split across lines, or padded with spaces, less
 well.  A page longer than 2 MiB is cut there with a note saying so; `gcc(1)`,
 the longest page of many a system, renders to 1.4 MiB, which is some 370,000
-tokens, more than many a model's context holds.
+tokens, more than many a model's context holds.  An optional `offset`, in
+bytes, starts the reply further on in the page.
 
 Each page is rendered once and kept, by its file: `printf` in section `3p` and
 in `3posix` share one rendering, as do `S_ISBLK` and `inode(7)`, which the
@@ -410,11 +413,69 @@ through, is trusted likewise: list only repositories whose configuration you
 trust.
 
 The reply is `git`'s output, its errors included, made UTF-8 text and cut at
-2 MiB with a note saying so; an exit status other than 0 is noted, and is a
-tool error but for 1 with nothing written, as `grep` finding none.  At the
+2 MiB with a note saying so, from the byte an optional `offset` names; an exit
+status other than 0 is noted, and is a tool error but for 1 with nothing
+written, as `grep` finding none.  At the
 deadline, `--git-timeout` (30 s), `git` gets SIGTERM, and SIGKILL a second
 later, and the call is a tool error; a call that goes, or `askai` stopping,
 kills `git` and the processes it started.
+
+### Lending tools to the upstream
+
+With `--upstream-tools`, an `ask_ai` call offers the other model tools of its
+own, in the chat completions protocol (`--protocol openai`, which
+`llama-server` speaks; its chat template must take tools, as with `--jinja`):
+those of `man` and `git` that the caller's role may call (`ask_ai` itself is
+never offered), `notes` with `--notes`, and with any of those `compact`.
+Offered none, the call asks once, as without the option.  Else it runs a
+loop of turns: each turn is an upstream call, whose answer may call tools;
+`askai` runs them, one after another, writes the turn and their results into
+the conversation, and asks again, until an answer calls none, which is the
+call's answer.  Each turn waits for an upstream slot like any call, so the
+scheduler's fairness holds turn by turn.  The caller gets the answer, and a
+second text that lists the calls the turns made, with their arguments (but
+those of `notes` and `compact`, which are the model's own) and the bytes of
+each output.  With a `progressToken`, its notifications say the turn and the
+tool being called.  `--max-turns` (32) bounds the turns: the turn before the
+last is told so, and a last answer that still calls tools ends the call, as an
+error if it has no text.  A legacy `notifications/cancelled` ends the call
+too, at its next turn if a tool runs as it comes.  The upstream must stream
+its answers, as `llama-server` does; a strict server that refuses
+`stream_options` takes `-x '{"stream_options": null}'`, which leaves the
+context to be counted by the request's bytes.
+
+A tool's output goes to a turn in a window of an eighth of the context, at
+most 64 KiB, cut at a line's end, with a note that names the bytes shown and
+the `offset` that reads on.  The context is what `--context` says, or else
+what `llama-server`'s `GET /props` says (`n_ctx`), which `askai` asks for even
+with `--slots`; each turn asks for its usage (`stream_options.include_usage`),
+which counts the tokens.  Once a turn would fill three quarters of the
+context, the last result of its tools says so, and asks the model to note
+what it needs and call `compact`.
+
+`compact` takes a summary: the conversation after the prompt, its turns and
+the tools' results, goes, and `askai` adds to the prompt, in brackets, the
+summary and the notes; calls after `compact` in the same turn do not run.
+Should the context fill up all the same, as the upstream says (llama-server's
+"exceeds the available context size", or a "context length" or "context
+window" error) or as the usage counts, `askai` does likewise without a
+summary, once until a turn goes through again; the next overflow is the
+call's error.
+
+With `--notes DIR`, the model keeps notes in a git repository, which `askai`
+makes bare if nothing is there (a work tree or a non-bare repository is
+refused).  Each `ask_ai` call is a thread, whose notes are commits on the
+branch `refs/heads/WHO/ID`: `WHO` is the caller's identity, as a hash, or
+`anonymous`; `ID` is 32 hexadecimal digits, random.  A note is a commit
+message, written by `git fast-import`, its tree empty: `git log` shows them.
+The tool `notes` writes a note of up to 8 KiB, or reads back the newest 256,
+or those that hold a text (`search`).  The caller sees that notes were kept,
+and the thread's id, not what they say; `ask_ai`'s `thread` argument goes on
+with a thread in a later call, whose prompt then carries the thread's notes.
+Only the identity that wrote a thread can go on with it.  Two calls that write
+to one thread at once may make one note fail, which says so.  `git` runs
+there with no hooks.  Nothing prunes the repository: run `git gc` on it now
+and then.
 
 ### Security
 
@@ -426,7 +487,9 @@ then send `Authorization: Bearer <token>`, which the web UI can add as a custom
 header.  A Unix socket (`--listen unix:PATH`) knows its clients' users without
 a token; its file's mode follows `askai`'s umask, and `askai` removes it as it
 stops.  With `--git`, whoever may call the tool may read the repositories
-listed.  Tokens cross the network in the clear but over TLS (below), or a
+listed, and with `--upstream-tools`, so may the model that answers them.  An
+anonymous client's threads of notes are all under `anonymous`, kept apart only
+by their random ids.  Tokens cross the network in the clear but over TLS (below), or a
 proxy that ends it.
 
 ### TLS
@@ -668,6 +731,17 @@ Upstream AI:
                             8 of them queued per session or client
                             address; a tool call past those is answered
                             at once as an error that says to try again
+      --upstream-tools      give the upstream tools too: those the
+                            client may call but the ask tool, notes
+                            with --notes, and compact; an ask call then
+                            runs them and asks on until it answers
+                            (needs --protocol openai)
+      --notes DIR           the git repository where the upstream keeps
+                            its notes, made bare if it does not exist
+      --max-turns N         upstream calls an ask call makes at most
+                            with --upstream-tools (default 32)
+      --context TOKENS      the upstream's context, for compacting it
+                            (default: what llama-server's /props says)
 
 MCP server:
   -l, --listen ADDR         [host:]port, unix:PATH for a Unix socket, or

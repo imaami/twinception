@@ -17,13 +17,17 @@ struct ssl_ctx_st;
 
 /** Options that are on or off, as bits of struct config's flags. */
 enum config_flag {
-	CFG_MAN       = 1u << 0,  /**< offer the man tool */
-	CFG_TEST_FIFO = 1u << 1,  /**< test aid: tool calls wait for the upstream
-	                               in one queue, first in first out */
-	CFG_VERBOSE   = 1u << 2,  /**< log every tool call */
-	CFG_TEST_TASK = 1u << 3,  /**< test aid: offer test_task, CPU work done as
-	                               a task (src/task.h) */
-	CFG_TLS_RSA   = 1u << 4,  /**< a TLS certificate's key may be RSA */
+	CFG_MAN            = 1u << 0,  /**< offer the man tool */
+	CFG_TEST_FIFO      = 1u << 1,  /**< test aid: tool calls wait for the
+	                                    upstream in one queue, first in first
+	                                    out */
+	CFG_VERBOSE        = 1u << 2,  /**< log every tool call */
+	CFG_TEST_TASK      = 1u << 3,  /**< test aid: offer test_task, CPU work
+	                                    done as a task (src/task.h) */
+	CFG_TLS_RSA        = 1u << 4,  /**< a TLS certificate's key may be RSA */
+	CFG_UPSTREAM_TOOLS = 1u << 5,  /**< the upstream may call tools too, in
+	                                    a loop of turns that the ask tool's
+	                                    call runs (src/mcp.h) */
 };
 
 /**
@@ -60,6 +64,8 @@ struct config {
 	char const           *key_env;
 	char const           *tls_cert;     /**< the TLS certificate chain's file */
 	char const           *tls_key;      /**< its key's */
+	char const           *notes;        /**< the notes repository's path
+	                                         (src/notes.h), or nullptr */
 	size_t                n_headers;
 	size_t                n_origins;
 	size_t                n_listens;
@@ -68,6 +74,8 @@ struct config {
 	uint32_t              calls;        /**< tool calls in flight, at most */
 	uint32_t              man_recheck;  /**< seconds that man's finding of a
 	                                         page's file holds (src/manual.h) */
+	uint32_t              turns;        /**< upstream calls an ask call's loop
+	                                         of turns makes, at most */
 	uint32_t              loops;        /**< client loops asked for; 0: one
 	                                         fewer than the CPUs */
 	int                   argc;
@@ -77,8 +85,9 @@ struct config {
 	                                         options other than its policy are
 	                                         not those askai runs with, which
 	                                         take a restart */
-	uint32_t              listen_file;  /**< bool: the listeners so far are
-	                                         the file's */
+	uint64_t              listen_file;  /**< bool: the listeners so far are
+	                                         the file's; widened over the
+	                                         padding */
 };
 
 /**

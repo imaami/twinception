@@ -129,6 +129,27 @@ static struct entry const table[] = {
 	      "notifications/cancelled names).", cancelled),
 	CALLS("askai_calls_dropped_total", "Job completions a loop dropped, their "
 	      "call gone (a stale handle).", dropped),
+	CALLS("askai_turns_total", "Upstream calls made as turns of ask calls that "
+	      "lend the upstream tools (--upstream-tools).", turns),
+	VALUE("askai_turn_tool_calls_total", "Tool calls the turns made, by tool; "
+	      "unknown: one not lent, or of no tool's name.", "tool=\"man\"",
+	      struct metrics_calls, lent[LENT_MAN], CALLS, COUNTER, ONE),
+	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"git\"",
+	      struct metrics_calls, lent[LENT_GIT], CALLS, COUNTER, ONE),
+	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"notes\"",
+	      struct metrics_calls, lent[LENT_NOTES], CALLS, COUNTER, ONE),
+	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"compact\"",
+	      struct metrics_calls, lent[LENT_COMPACT], CALLS, COUNTER, ONE),
+	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"unknown\"",
+	      struct metrics_calls, lent[LENT_NONE], CALLS, COUNTER, ONE),
+	VALUE("askai_compactions_total", "Contexts of ask calls' turns compacted: "
+	      "by the upstream's compact call, or by askai, the context full.",
+	      "by=\"upstream\"", struct metrics_calls, compacted[0], CALLS, COUNTER,
+	      ONE),
+	VALUE("askai_compactions_total", nullptr, "by=\"askai\"", struct metrics_calls,
+	      compacted[1], CALLS, COUNTER, ONE),
+	CALLS("askai_turns_stopped_total", "Ask calls stopped as their turns ran out "
+	      "(--max-turns), tools still called.", stopped),
 	CONNS("askai_connections", "Connections a client loop serves.", open, GAUGE),
 	CONNS("askai_connections_placed_total", "Connections home placed on a "
 	      "client loop.", taken, COUNTER),

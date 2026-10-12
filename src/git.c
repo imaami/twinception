@@ -351,6 +351,13 @@ git_definition (struct git const *git)
 					"description", json_object_new_string(
 						"grep's pattern, and only grep's."),
 					nullptr),
+				"offset", jb_object(
+					"type", json_object_new_string("integer"),
+					"minimum", json_object_new_int(0),
+					"description", json_object_new_string(
+						"The byte of the output to start from, to read on "
+						"past where it was cut."),
+					nullptr),
 				nullptr),
 			"required", append(append(json_object_new_array(), "repo"), "command"),
 			"additionalProperties", json_object_new_boolean(0),
@@ -442,7 +449,8 @@ git_command (struct git const   *git,
 	json_object_object_foreachC(args, it)
 		if (strcmp(it.key, "repo") && strcmp(it.key, "command") &&
 		    strcmp(it.key, "options") && strcmp(it.key, "revisions") &&
-		    strcmp(it.key, "paths") && strcmp(it.key, "pattern"))
+		    strcmp(it.key, "paths") && strcmp(it.key, "pattern") &&
+		    strcmp(it.key, "offset"))
 			return say(why, "Unknown argument: ", it.key, 64, ".");
 
 	char const *name = jb_text(jb_get(args, "repo"));

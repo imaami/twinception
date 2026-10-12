@@ -61,10 +61,10 @@ struct child {
 
 /**
  * Spawn @p file, found through askai's PATH, with @p argv and @p envp; its
- * standard input and error are /dev/null, but with CHILD_STDERR in @p flags
- * its error goes to its output too, its output a pipe, its signal mask
- * empty and every signal's action the default, and it inherits no other
- * descriptor.  The steps of @p loop read its output into out, up to @p max
+ * standard input the bytes of @p in, or /dev/null if there are none, and
+ * its error /dev/null, but with CHILD_STDERR in @p flags its error goes to
+ * its output too; its output a pipe, its signal mask empty and every
+ * signal's action the default, and it inherits no other descriptor.  The steps of @p loop read its output into out, up to @p max
  * bytes, and kill it past those, or at @p deadline (loop_clock(); 0 for
  * none), after SIGTERM and @p grace ns if that is not 0.  Once it is reaped
  * and its output is all in, a step calls @p done
@@ -80,6 +80,7 @@ child_spawn (struct child **p_child,
              char const    *file,
              char *const    argv[],
              char *const    envp[],
+             struct span    in,
              size_t         max,
              uint64_t       deadline,
              uint64_t       grace,
