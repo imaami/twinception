@@ -1,4 +1,5 @@
 /** @file Terse, leak-safe helpers for building and reading json-c values. */
+#include <errno.h>
 #include <json-c/printbuf.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -20,7 +21,7 @@ jb_object (char const *key,
 		struct json_object *val = va_arg(ap, struct json_object *);
 		if (!obj) {
 			json_object_put(val);
-		} else if (!jb_set(obj, key, val)) {
+		} else if (jb_set(obj, key, val)) {
 			json_object_put(obj);
 			obj = nullptr;
 		}
@@ -37,32 +38,32 @@ jb_list (struct json_object *val)
 		json_object_put(val);
 		return nullptr;
 	}
-	if (!jb_push(arr, val)) {
+	if (jb_push(arr, val)) {
 		json_object_put(arr);
 		return nullptr;
 	}
 	return arr;
 }
 
-bool
+int
 jb_set (struct json_object *obj,
         char const         *key,
         struct json_object *val)
 {
 	if (obj && val && !json_object_object_add(obj, key, val))
-		return true;
+		return 0;
 	json_object_put(val);
-	return false;
+	return ENOMEM;
 }
 
-bool
+int
 jb_push (struct json_object *arr,
          struct json_object *val)
 {
 	if (arr && val && !json_object_array_add(arr, val))
-		return true;
+		return 0;
 	json_object_put(val);
-	return false;
+	return ENOMEM;
 }
 
 struct json_object *
@@ -105,10 +106,10 @@ jb_parse (char const *data,
 {
 	struct jb_pool pool = { .depth = depth, .flags = flags };
 	struct jb_parser parser = {};
-	while (!jb_parse_some(&parser, &pool, data, len, SIZE_MAX, UINT32_MAX))
+	while (!jb_parser_step(&parser, &pool, data, len, SIZE_MAX, UINT32_MAX))
 		;
-	struct json_object *root = jb_parse_take(&parser);
-	jb_parse_end(&parser, &pool, nullptr);
+	struct json_object *root = jb_parser_take(&parser);
+	jb_parser_fini(&parser, &pool, nullptr);
 	(void)jb_pool_release(&pool, 0);
 	return root;
 }
@@ -116,8 +117,8 @@ jb_parse (char const *data,
 /* Open a container, counting its members if @p members limits them; false
  * if out of memory. */
 static bool
-scan_open (struct jb_scan *scan,
-           uint32_t        members)
+jb_scan_open (struct jb_scan *scan,
+              uint32_t        members)
 {
 	if (members != UINT32_MAX) {
 		if (scan->depth == scan->cap) {
@@ -163,9 +164,12 @@ jb_scan (struct jb_scan *scan,
 			if (stop == end)
 				return len;
 			data = stop;
-			scan->state = slash ? JB_SCAN_ESCAPE : JB_SCAN_GAP;
-			if (!slash)
-				scan->copied += scan->run;
+			if (slash) {
+				scan->state = JB_SCAN_ESCAPE;
+				continue;
+			}
+			scan->copied += scan->run;
+			scan->state = JB_SCAN_GAP;
 			continue;
 		}
 		case JB_SCAN_ESCAPE:
@@ -179,7 +183,7 @@ jb_scan (struct jb_scan *scan,
 		case '{':
 		case '[':
 			if (scan->depth == depth || scan->values == values ||
-			    !scan_open(scan, members))
+			    !jb_scan_open(scan, members))
 				return (size_t)(data - start);
 			break;
 		case '"':
@@ -226,15 +230,15 @@ jb_scan (struct jb_scan *scan,
 }
 
 void
-jb_scan_end (struct jb_scan *scan)
+jb_scan_fini (struct jb_scan *scan)
 {
 	free(scan->members);
 	*scan = (struct jb_scan){};
 }
 
 void
-jb_reap (struct jb_reaper   *reaper,
-         struct json_object *val)
+jb_reaper_take (struct jb_reaper   *reaper,
+                struct json_object *val)
 {
 	if (!json_object_is_type(val, json_type_array) &&
 	    !json_object_is_type(val, json_type_object)) {
@@ -254,40 +258,48 @@ jb_reap (struct jb_reaper   *reaper,
 	reaper->stack[reaper->n++] = val;
 }
 
+/* Take a value out of the container @p top, in @p *val, a reference of its
+ * own: an array's last element, or an object's first member, each O(1).
+ * False if @p top is empty. */
+static bool
+jb_pop (struct json_object  *top,
+        struct json_object **val)
+{
+	if (json_object_is_type(top, json_type_array)) {
+		size_t len = json_object_array_length(top);
+		if (!len)
+			return false;
+		*val = json_object_get(json_object_array_get_idx(top, len - 1));
+		json_object_array_del_idx(top, len - 1, 1);
+		return true;
+	}
+	struct lh_entry *e = lh_table_head(json_object_get_object(top));
+	if (!e)
+		return false;
+	*val = json_object_get(lh_entry_v(e));
+	json_object_object_del(top, lh_entry_k(e));
+	return true;
+}
+
 /*
  * Take containers apart from the innermost: each value taken out of one is
- * freed, or taken apart in turn, and a container is freed once empty.  Taking
- * the last element of an array, or the first member of an object, costs O(1).
+ * freed, or taken apart in turn, and a container is freed once empty.
  */
 size_t
-jb_reap_some (struct jb_reaper *reaper,
-              size_t            values)
+jb_reaper_step (struct jb_reaper *reaper,
+                size_t            values)
 {
 	size_t freed = 0;
 	while (freed < values && reaper->n) {
 		struct json_object *top = reaper->stack[reaper->n - 1];
 		struct json_object *val = nullptr;
-		bool took = false;
-		if (json_object_is_type(top, json_type_array)) {
-			size_t len = json_object_array_length(top);
-			if ((took = len)) {
-				val = json_object_get(json_object_array_get_idx(top, len - 1));
-				json_object_array_del_idx(top, len - 1, 1);
-			}
-		} else {
-			struct lh_entry *e = lh_table_head(json_object_get_object(top));
-			if ((took = e)) {
-				val = json_object_get(lh_entry_v(e));
-				json_object_object_del(top, lh_entry_k(e));
-			}
-		}
-		if (!took) {
+		if (!jb_pop(top, &val)) {
 			--reaper->n;
 			json_object_put(top);
 			++freed;
 		} else if (json_object_is_type(val, json_type_array) ||
 		           json_object_is_type(val, json_type_object)) {
-			jb_reap(reaper, val);
+			jb_reaper_take(reaper, val);
 		} else {
 			json_object_put(val);
 			++freed;
@@ -325,7 +337,7 @@ jb_pool_release (struct jb_pool *pool,
 /* A tokener whose stack holds nothing, from @p pool or new; nullptr if out of
  * memory. */
 static struct json_tokener *
-pool_take (struct jb_pool *pool)
+jb_pool_take (struct jb_pool *pool)
 {
 	if (pool->n) {
 		struct json_tokener *tok = pool->free[--pool->n];
@@ -342,16 +354,16 @@ pool_take (struct jb_pool *pool)
 }
 
 bool
-jb_parse_some (struct jb_parser *parser,
-               struct jb_pool   *pool,
-               char const       *data,
-               size_t            len,
-               size_t            bytes,
-               uint32_t          values)
+jb_parser_step (struct jb_parser *parser,
+                struct jb_pool   *pool,
+                char const       *data,
+                size_t            len,
+                size_t            bytes,
+                uint32_t          values)
 {
 	if (parser->done)
 		return true;
-	if (!parser->tok && !(parser->tok = pool_take(pool))) {
+	if (!parser->tok && !(parser->tok = jb_pool_take(pool))) {
 		parser->done = parser->failed = true;
 		return true;
 	}
@@ -406,17 +418,17 @@ jb_parse_some (struct jb_parser *parser,
  * been stable since 0.12, and with them gone this would not compile.
  */
 void
-jb_parse_end (struct jb_parser *parser,
-              struct jb_pool   *pool,
-              struct jb_reaper *reaper)
+jb_parser_fini (struct jb_parser *parser,
+                struct jb_pool   *pool,
+                struct jb_reaper *reaper)
 {
 	struct json_tokener *tok = parser->tok;
 	if (reaper) {
 		for (int i = 0; tok && i <= tok->depth; ++i)
 			if (tok->stack[i].current)
-				jb_reap(reaper, json_object_get(tok->stack[i].current));
+				jb_reaper_take(reaper, json_object_get(tok->stack[i].current));
 		if (parser->root)
-			jb_reap(reaper, parser->root);
+			jb_reaper_take(reaper, parser->root);
 	} else {
 		json_object_put(parser->root);
 	}

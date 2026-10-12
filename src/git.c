@@ -321,7 +321,7 @@ static struct json_object *
 git_append (struct json_object *arr,
             char const         *str)
 {
-	return arr && jb_push(arr, json_object_new_string(str)) ? arr : nullptr;
+	return arr && !jb_push(arr, json_object_new_string(str)) ? arr : nullptr;
 }
 
 /* The schema of an argument that is at most @p max strings. */

@@ -325,7 +325,7 @@ job_end (struct home      *home,
 			home->probing &= !(job->flags & PROBE);
 			loop_ready_bulk(home->loop, &home->start);
 		}
-		jb_parse_end(&job->parser, &home->pool, &home->reaper);
+		jb_parser_fini(&job->parser, &home->pool, &home->reaper);
 		if (home->reaper.n)
 			loop_ready_bulk(home->loop, &home->reap);
 		buf_fini(&job->wire);
@@ -946,7 +946,7 @@ parse_slice (struct home      *home,
 	size_t off = parser->off;
 	uint32_t seen = parser->cut.values;
 	size_t copied = parser->cut.copied;
-	bool over = jb_parse_some(parser, &home->pool, json, len, bytes, (uint32_t)values);
+	bool over = jb_parser_step(parser, &home->pool, json, len, bytes, (uint32_t)values);
 	loop_work(loop, LOOP_PARSE, parser->off - off);
 	loop_work(loop, LOOP_VALUES, parser->cut.values - seen);
 	loop_work(loop, LOOP_COPY, parser->cut.copied - copied);
@@ -972,12 +972,12 @@ read_event (struct home *home,
 		if (!parse_slice(home, parser, data, job->evlen))
 			return 0;
 		uint32_t n = parser->cut.values;
-		struct json_object *root = jb_parse_take(parser);
+		struct json_object *root = jb_parser_take(parser);
 		bool json = root;
 		if (!json && (!parser->tok ||
 		              json_tokener_get_error(parser->tok) == json_tokener_error_memory))
 			e = ENOMEM;
-		jb_parse_end(parser, &home->pool, &home->reaper);
+		jb_parser_fini(parser, &home->pool, &home->reaper);
 		/* Each event is a chunk, and one with text or thinking a token. */
 		if (json) {
 			size_t had = buf_peek(&job->result).len;
@@ -1020,7 +1020,7 @@ read_event (struct home *home,
 			json_object_put(root);
 			loop_work(loop, LOOP_VALUES, n);
 		} else if (json) {
-			jb_reap(&home->reaper, root);
+			jb_reaper_take(&home->reaper, root);
 		}
 		if (home->reaper.n)
 			loop_ready_bulk(loop, &home->reap);
@@ -1146,8 +1146,8 @@ reap_step (struct loop      *loop,
            struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, reap);
-	loop_work(loop, LOOP_VALUES, jb_reap_some(&home->reaper,
-	                                          loop_room(loop, LOOP_VALUES)));
+	loop_work(loop, LOOP_VALUES, jb_reaper_step(&home->reaper,
+	                                            loop_room(loop, LOOP_VALUES)));
 	if (home->reaper.n)
 		loop_ready_bulk(loop, step);
 }
@@ -1258,7 +1258,7 @@ preempt_step (struct loop      *loop,
 		list_del(&job->idle);
 		list_del(&job->feed);
 		list_del(&job->held);
-		jb_parse_end(&job->parser, &home->pool, &home->reaper);
+		jb_parser_fini(&job->parser, &home->pool, &home->reaper);
 		if (home->reaper.n)
 			loop_ready_bulk(loop, &home->reap);
 		buf_fini(&job->wire);
@@ -1406,8 +1406,8 @@ props_step (struct loop      *loop,
 		loop_ready_bulk(loop, step);
 		return;
 	}
-	struct json_object *root = jb_parse_take(parser);
-	jb_parse_end(parser, &home->pool, &home->reaper);
+	struct json_object *root = jb_parser_take(parser);
+	jb_parser_fini(parser, &home->pool, &home->reaper);
 	struct json_object *total = jb_get(root, "total_slots");
 	struct json_object *ctx = jb_get(jb_get(root, "default_generation_settings"),
 	                                 "n_ctx");
@@ -1415,7 +1415,7 @@ props_step (struct loop      *loop,
 	          ? json_object_get_int64(total) : 0;
 	int64_t tokens = json_object_is_type(ctx, json_type_int)
 	               ? json_object_get_int64(ctx) : 0;
-	jb_reap(&home->reaper, root);
+	jb_reaper_take(&home->reaper, root);
 	loop_ready_bulk(loop, &home->reap);
 	buf_fini(&home->answer);
 	if (tokens > 0 && !home->context) {
@@ -1776,7 +1776,7 @@ home_fini (struct home **p_home)
 	loop_timer_stop(home->loop, &home->quiet);
 	loop_timer_stop(home->loop, &home->deadline);
 	http_destroy(&home->http);
-	jb_parse_end(&home->parser, &home->pool, nullptr);
+	jb_parser_fini(&home->parser, &home->pool, nullptr);
 	jb_reaper_fini(&home->reaper);
 	buf_fini(&home->answer);
 	while (home_relieve(home, BUF_CRITICAL, SIZE_MAX))

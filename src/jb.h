@@ -23,15 +23,15 @@ extern struct json_object *
 jb_list (struct json_object *val);
 
 /** Set @p key to @p val, which is consumed even on failure or when @p obj
- *  is nullptr. */
-extern bool
+ *  is nullptr; returns 0 or ENOMEM. */
+extern int
 jb_set (struct json_object *obj,
         char const         *key,
         struct json_object *val);
 
 /** Append @p val, which is consumed even on failure or when @p arr is
- *  nullptr. */
-extern bool
+ *  nullptr; returns 0 or ENOMEM. */
+extern int
 jb_push (struct json_object *arr,
          struct json_object *val);
 
@@ -100,7 +100,7 @@ jb_scan (struct jb_scan *scan,
 
 /** Free what a scan holds. */
 extern void
-jb_scan_end (struct jb_scan *scan);
+jb_scan_fini (struct jb_scan *scan);
 
 /** Begin a scan anew, keeping the storage @p scan holds. */
 static inline void
@@ -121,13 +121,13 @@ struct jb_reaper {
  * it.  Should memory run out, it is freed at once.
  */
 extern void
-jb_reap (struct jb_reaper   *reaper,
-         struct json_object *val);
+jb_reaper_take (struct jb_reaper   *reaper,
+                struct json_object *val);
 
 /** Free up to @p values values; returns how many it freed. */
 extern size_t
-jb_reap_some (struct jb_reaper *reaper,
-              size_t            values);
+jb_reaper_step (struct jb_reaper *reaper,
+                size_t            values);
 
 /** Free what is left, all at once. */
 extern void
@@ -170,20 +170,20 @@ struct jb_parser {
  * Parse the next slice of the @p len bytes at @p data, as jb_parse() would,
  * with a tokener from @p pool and within its limits: at most @p bytes bytes,
  * 4 at least, and @p values values.  Returns true once the parse is over,
- * when jb_parse_take() gives the value, nullptr on error.  A slice never ends
- * within a character, whose bytes it leaves to the next.
+ * when jb_parser_take() gives the value, nullptr on error.  A slice never
+ * ends within a character, whose bytes it leaves to the next.
  */
 extern bool
-jb_parse_some (struct jb_parser *parser,
-               struct jb_pool   *pool,
-               char const       *data,
-               size_t            len,
-               size_t            bytes,
-               uint32_t          values);
+jb_parser_step (struct jb_parser *parser,
+                struct jb_pool   *pool,
+                char const       *data,
+                size_t            len,
+                size_t            bytes,
+                uint32_t          values);
 
 /** The parsed value, which the caller now owns; nullptr after an error. */
 static inline struct json_object *
-jb_parse_take (struct jb_parser *parser)
+jb_parser_take (struct jb_parser *parser)
 {
 	struct json_object *root = parser->failed ? nullptr : parser->root;
 	if (root)
@@ -196,9 +196,9 @@ jb_parse_take (struct jb_parser *parser)
  * built and nobody took to @p reaper, or, with none, freeing that at once.
  */
 extern void
-jb_parse_end (struct jb_parser *parser,
-              struct jb_pool   *pool,
-              struct jb_reaper *reaper);
+jb_parser_fini (struct jb_parser *parser,
+                struct jb_pool   *pool,
+                struct jb_reaper *reaper);
 
 /** Length of the longest prefix of the @p len bytes at @p str that is UTF-8
  *  text (RFC 3629), which json-c checks more leniently. */

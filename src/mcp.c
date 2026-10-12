@@ -502,7 +502,7 @@ req_dispose (struct mcp_req *req)
 		json_object_put(msg);
 		loop_work(loop, LOOP_VALUES, req->values);
 	} else {
-		jb_reap(&req->reaper, msg);
+		jb_reaper_take(&req->reaper, msg);
 		loop_ready_bulk(loop, &req->step);
 	}
 }
@@ -565,7 +565,7 @@ req_free (struct mcp *mcp)
 	hist_add(&mcp->counts->kept.spares, -1ULL);
 	hist_add(&mcp->counts->kept.bytes[0], -req_kept(req));
 	jb_reaper_fini(&req->reaper);
-	jb_scan_end(&req->scan);
+	jb_scan_fini(&req->scan);
 	dstr_cleanup(&req->answer);
 	dstr_cleanup(&req->trace);
 	free(req);
@@ -672,13 +672,13 @@ req_finish (struct mcp_req *req)
 	}
 	call_drop(req);
 	loop_timer_stop(mcp->loop, &req->timer);
-	jb_parse_end(&req->parser, req->phase == PHASE_ANSWER || req->phase == PHASE_ARGS
-	                           ? &mcp->answers : &mcp->pool,
-	             &req->reaper);
+	jb_parser_fini(&req->parser, req->phase == PHASE_ANSWER || req->phase == PHASE_ARGS
+	                             ? &mcp->answers : &mcp->pool,
+	               &req->reaper);
 	req_dispose(req);
 	for (size_t i = 0; i < ARRAY_SIZE(req->args); ++i) {
 		if (req->args[i])
-			jb_reap(&req->reaper, req->args[i]);
+			jb_reaper_take(&req->reaper, req->args[i]);
 		req->args[i] = nullptr;
 	}
 	json_object_put(req->draft);
@@ -1985,7 +1985,7 @@ args_free (struct mcp_req *req,
 {
 	for (; k < end; ++k)
 		if (req->args[k]) {
-			jb_reap(&req->reaper, req->args[k]);
+			jb_reaper_take(&req->reaper, req->args[k]);
 			req->args[k] = nullptr;
 		}
 	if (req->reaper.n)
@@ -2180,7 +2180,7 @@ turn_args (struct mcp_req *req)
 			req->msg = nullptr;
 		}
 		if (v && !json_object_is_type(v, json_type_object)) {
-			jb_reap(&req->reaper, v);
+			jb_reaper_take(&req->reaper, v);
 			v = nullptr;
 		}
 		req->args[req->part] = v;
@@ -3123,15 +3123,15 @@ req_slice (struct mcp_req *req,
 	size_t off = parser->off;
 	uint32_t seen = parser->cut.values;
 	size_t copied = parser->cut.copied;
-	bool over = jb_parse_some(parser, pool, (char const *)json.ptr, json.len, bytes,
-	                          (uint32_t)values);
+	bool over = jb_parser_step(parser, pool, (char const *)json.ptr, json.len, bytes,
+	                           (uint32_t)values);
 	loop_work(loop, LOOP_PARSE, parser->off - off);
 	loop_work(loop, LOOP_VALUES, parser->cut.values - seen);
 	loop_work(loop, LOOP_COPY, parser->cut.copied - copied);
 	if (over) {
 		req->values = parser->cut.values;
-		req->msg = jb_parse_take(parser);
-		jb_parse_end(parser, pool, &req->reaper);
+		req->msg = jb_parser_take(parser);
+		jb_parser_fini(parser, pool, &req->reaper);
 	}
 	return over;
 }
@@ -3169,7 +3169,7 @@ req_answer (struct mcp_req *req)
 		(unsigned char *)(uintptr_t)text, json.len });
 	size_t end = !over ? req->parser.off : req->msg ? json.len : off;
 	if (jb_utf8(text + off, end - off) < end - off) {
-		jb_parse_end(&req->parser, &req->mcp->answers, &req->reaper);
+		jb_parser_fini(&req->parser, &req->mcp->answers, &req->reaper);
 		req_dispose(req);
 		over = true;
 	}
@@ -3238,8 +3238,8 @@ req_step (struct loop      *loop,
 		call_tick(req);
 	}
 	if (req->reaper.n) {
-		loop_work(loop, LOOP_VALUES, jb_reap_some(&req->reaper,
-		                                          loop_room(loop, LOOP_VALUES)));
+		loop_work(loop, LOOP_VALUES, jb_reaper_step(&req->reaper,
+		                                            loop_room(loop, LOOP_VALUES)));
 		if (req->reaper.n) {
 			loop_ready_bulk(loop, step);
 		} else if (req->phase == PHASE_FREE) {
@@ -3575,7 +3575,7 @@ tool_definition (struct mcp_tool const *tool,
 				"or an answer format."),
 			nullptr),
 		nullptr);
-	if (notes && !jb_set(props, "thread", jb_object(
+	if (notes && jb_set(props, "thread", jb_object(
 		    "type", json_object_new_string("string"),
 		    "description", json_object_new_string(
 			    "Optional: the thread that an earlier answer named, to go on with "
@@ -3691,7 +3691,7 @@ notes_definition (void)
 {
 	static_assert(NOTES_TEXT == 8 << 10 && NOTES_READ == 256, "the description says");
 	struct json_object *actions = jb_list(json_object_new_string("write"));
-	if (!jb_push(actions, json_object_new_string("read"))) {
+	if (jb_push(actions, json_object_new_string("read"))) {
 		json_object_put(actions);
 		actions = nullptr;
 	}
@@ -3795,11 +3795,11 @@ static struct json_object *
 modern_list (struct json_object *result,
              struct json_object *info)
 {
-	if (!jb_set(result, "ttlMs", json_object_new_int(CACHE_TTL_MS)) ||
-	    !jb_set(result, "cacheScope", json_object_new_string("public")) ||
-	    !jb_set(result, "resultType", json_object_new_string("complete")) ||
-	    !jb_set(result, "_meta", jb_object(meta_server, json_object_get(info),
-	                                       nullptr))) {
+	if (jb_set(result, "ttlMs", json_object_new_int(CACHE_TTL_MS)) ||
+	    jb_set(result, "cacheScope", json_object_new_string("public")) ||
+	    jb_set(result, "resultType", json_object_new_string("complete")) ||
+	    jb_set(result, "_meta", jb_object(meta_server, json_object_get(info),
+	                                      nullptr))) {
 		json_object_put(result);
 		return nullptr;
 	}
@@ -3859,7 +3859,7 @@ mcp_static_new (struct mcp_static   **p_static,
 	bool ok = info && defs[0] && (!manual || defs[1]) && (!tasks || defs[2]) &&
 	          (!git || defs[3]);
 	for (size_t i = 0; ok && i < ARRAY_SIZE(versions); ++i)
-		ok = jb_push(list, json_object_new_string(versions[i]));
+		ok = !jb_push(list, json_object_new_string(versions[i]));
 	/* What a turn may call, by whether the role may call man and git: those,
 	 * the notes, and, with any of those, compact. */
 	struct json_object *own[2] = {
@@ -3875,10 +3875,10 @@ mcp_static_new (struct mcp_static   **p_static,
 		bool some = false;
 		for (size_t i = 0; tools && i < ARRAY_SIZE(lent); ++i) {
 			some |= lent[i] != nullptr;
-			if (lent[i] && !jb_push(tools, lend(lent[i])))
+			if (lent[i] && jb_push(tools, lend(lent[i])))
 				tools = nullptr;
 		}
-		ok = tools && (!some || jb_push(tools, lend(own[1])));
+		ok = tools && (!some || !jb_push(tools, lend(own[1])));
 		if (ok && some) {
 			size_t len = 0;
 			char const *json = json_object_to_json_string_length(tools, JB_WIRE, &len);
@@ -3893,7 +3893,7 @@ mcp_static_new (struct mcp_static   **p_static,
 		struct json_object *tools = json_object_new_array();
 		for (size_t i = 0; tools && i < MCP_TOOLS; ++i)
 			if (mask & 1u << i && defs[i] &&
-			    !jb_push(tools, json_object_get(defs[i])))
+			    jb_push(tools, json_object_get(defs[i])))
 				tools = nullptr;
 		ok = tools &&
 		     serialize(&st->list[mask][0], jb_object("tools", json_object_get(tools),

@@ -60,7 +60,7 @@ merge (struct json_object *dst,
 		           json_object_is_type(cur, json_type_object)) {
 			if (merge(cur, it.val))
 				return ENOMEM;
-		} else if (!jb_set(dst, it.key, copy(it.val))) {
+		} else if (jb_set(dst, it.key, copy(it.val))) {
 			return ENOMEM;
 		}
 	}
@@ -77,7 +77,7 @@ ai_request (struct ai_endpoint const *ep,
 	if (!root)
 		return nullptr;
 	if (ep->model && ep->protocol != AI_GEMINI &&
-	    !jb_set(root, "model", json_object_new_string(ep->model)))
+	    jb_set(root, "model", json_object_new_string(ep->model)))
 		goto fail;
 
 	struct json_object *options = root;
@@ -86,40 +86,40 @@ ai_request (struct ai_endpoint const *ep,
 	switch (ep->protocol) {
 	case AI_OPENAI: {
 		struct json_object *messages = json_object_new_array();
-		if (!jb_set(root, "messages", messages) ||
-		    (system && !jb_push(messages, message("system", system))) ||
-		    !jb_push(messages, message("user", prompt)) ||
-		    (tools && (!jb_set(root, "tools", json_object_get(tools)) ||
-		               !jb_set(root, "stream_options", jb_object(
-		                       "include_usage", json_object_new_boolean(1),
-		                       nullptr)))))
+		if (jb_set(root, "messages", messages) ||
+		    (system && jb_push(messages, message("system", system))) ||
+		    jb_push(messages, message("user", prompt)) ||
+		    (tools && (jb_set(root, "tools", json_object_get(tools)) ||
+		               jb_set(root, "stream_options", jb_object(
+		                      "include_usage", json_object_new_boolean(1),
+		                      nullptr)))))
 			goto fail;
 		break;
 	}
 	case AI_RESPONSES:
 		max_key = "max_output_tokens";
-		if (!jb_set(root, "input", json_object_get(prompt)) ||
-		    (system && !jb_set(root, "instructions", json_object_get(system))) ||
-		    !jb_set(root, "store", json_object_new_boolean(0)))
+		if (jb_set(root, "input", json_object_get(prompt)) ||
+		    (system && jb_set(root, "instructions", json_object_get(system))) ||
+		    jb_set(root, "store", json_object_new_boolean(0)))
 			goto fail;
 		break;
 	case AI_ANTHROPIC:
 		if (max_tokens <= 0)
 			max_tokens = ANTHROPIC_MAX_TOKENS;
-		if (!jb_set(root, "messages", jb_list(message("user", prompt))) ||
-		    (system && !jb_set(root, "system", json_object_get(system))))
+		if (jb_set(root, "messages", jb_list(message("user", prompt))) ||
+		    (system && jb_set(root, "system", json_object_get(system))))
 			goto fail;
 		break;
 	case AI_GEMINI:
 		max_key = "maxOutputTokens";
-		if (!jb_set(root, "contents",
-		            jb_list(gemini_content("user", prompt))) ||
-		    (system && !jb_set(root, "systemInstruction",
-		                       gemini_content(nullptr, system))))
+		if (jb_set(root, "contents",
+		           jb_list(gemini_content("user", prompt))) ||
+		    (system && jb_set(root, "systemInstruction",
+		                      gemini_content(nullptr, system))))
 			goto fail;
 		if (max_tokens > 0 || ep->temperature) {
 			options = json_object_new_object();
-			if (!jb_set(root, "generationConfig", options))
+			if (jb_set(root, "generationConfig", options))
 				goto fail;
 		}
 		break;
@@ -128,12 +128,12 @@ ai_request (struct ai_endpoint const *ep,
 	/* Gemini streams by its URL; the others by the body, whatever
 	 * --extra says. */
 	if ((max_tokens > 0 &&
-	     !jb_set(options, max_key, json_object_new_int64(max_tokens))) ||
+	     jb_set(options, max_key, json_object_new_int64(max_tokens))) ||
 	    (ep->temperature &&
-	     !jb_set(options, "temperature", copy(ep->temperature))) ||
+	     jb_set(options, "temperature", copy(ep->temperature))) ||
 	    (ep->extra && merge(root, ep->extra)) ||
 	    (ep->protocol != AI_GEMINI &&
-	     !jb_set(root, "stream", json_object_new_boolean(1))))
+	     jb_set(root, "stream", json_object_new_boolean(1))))
 		goto fail;
 	/* Chat completions' messages last, after what --extra added, so that
 	 * turns may follow them, unless --extra took them away. */
@@ -142,7 +142,7 @@ ai_request (struct ai_endpoint const *ep,
 	if (messages) {
 		json_object_get(messages);
 		json_object_object_del(root, "messages");
-		if (!jb_set(root, "messages", messages))
+		if (jb_set(root, "messages", messages))
 			goto fail;
 	}
 	return root;
