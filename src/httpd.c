@@ -1876,10 +1876,8 @@ httpd_conn_end (struct httpd_conn *conn)
 {
 	struct httpd *srv = conn->srv;
 	httpd_conn_cancel(conn);
-	if (conn->ssl) {
-		tls_close(conn->ssl);
-		tls_destroy(&conn->ssl);
-	}
+	tls_close(conn->ssl);
+	tls_destroy(&conn->ssl);
 	if (conn->eof || shutdown(conn->fd, SHUT_WR) ||
 	    loop_modify(srv->loop, &conn->ref, EPOLLIN)) {
 		/* Input left unread would turn the close into a reset. */

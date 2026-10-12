@@ -14,7 +14,8 @@
  * reports, but for the rest of a record a read had no room for, or part of
  * one (tls_pending()).  Each function here clears the thread's OpenSSL
  * error queue before it calls OpenSSL and after a failure, as every
- * connection of a loop shares that queue.
+ * connection of a loop shares that queue; after tls_close(), the
+ * tls_destroy() that follows it does.
  */
 #ifndef TWINCEPTION_SRC_TLS_H_
 #define TWINCEPTION_SRC_TLS_H_
@@ -101,8 +102,10 @@ tls_pending (struct ssl_st const *ssl);
 extern bool
 tls_blocked (struct ssl_st const *ssl);
 
-/** Say the connection ends (close_notify), if its handshake is done, as far
- *  as the socket takes it now; tls_destroy() then frees @p ssl. */
+/** Say the connection ends (close_notify), if @p ssl is not nullptr and its
+ *  handshake is done, as far as the socket takes it now; tls_destroy(),
+ *  which must follow, frees @p ssl and clears what this leaves in the error
+ *  queue. */
 extern void
 tls_close (struct ssl_st *ssl);
 

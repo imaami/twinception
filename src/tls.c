@@ -319,11 +319,10 @@ tls_blocked (struct ssl_st const *ssl)
 void
 tls_close (struct ssl_st *ssl)
 {
-	if (!SSL_is_init_finished(ssl))
+	if (!ssl || !SSL_is_init_finished(ssl))
 		return;
 	ERR_clear_error();
 	(void)SSL_shutdown(ssl);
-	ERR_clear_error();
 }
 
 void
