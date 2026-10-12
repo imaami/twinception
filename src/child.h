@@ -59,43 +59,47 @@ struct child {
 	                                  is about to */
 };
 
+/** What a child runs, and how. */
+struct child_cmd {
+	char const        *file;      /**< found through askai's PATH */
+	char const *const *argv;
+	char *const       *envp;
+	struct span        in;        /**< its standard input; empty: /dev/null */
+	size_t             max;       /**< the cap on its output, in bytes */
+	uint64_t           deadline;  /**< loop_clock(); 0: none */
+	uint64_t           grace;     /**< ns from SIGTERM to SIGKILL at the
+	                                   deadline; 0: SIGKILL at once */
+	uint32_t           flags;     /**< enum child_flag */
+};
+
 /**
- * Spawn @p file, found through askai's PATH, with @p argv and @p envp; its
- * standard input the bytes of @p in, or /dev/null if there are none, and
- * its error /dev/null, but with CHILD_STDERR in @p flags its error goes to
- * its output too; its output a pipe, its signal mask empty and every
- * signal's action the default, and it inherits no other descriptor.  The steps of @p loop read its output into out, up to @p max
- * bytes, and kill it past those, or at @p deadline (loop_clock(); 0 for
- * none), after SIGTERM and @p grace ns if that is not 0.  Once it is reaped
- * and its output is all in, a step calls @p done
- * with it, which may let go of it.  It goes on @p list until freed.  Returns
- * 0; EBUSY with CHILD_MAX children alive; or why it could not be spawned.
- * Spawning blocks the caller until the child has executed @p file, about
+ * Spawn @p cmd: its standard error /dev/null, but with CHILD_STDERR its
+ * output too; its output a pipe, its signal mask empty and every signal's
+ * action the default, and it inherits no other descriptor.  The steps of
+ * @p loop read its output into out, up to cmd->max bytes, and kill it past
+ * those, or at its deadline.  Once it is reaped and its output is all in, a
+ * step calls @p done with it, which may destroy it.  It goes on @p list
+ * until destroyed.  Returns the child; nullptr, with the error in @p *e:
+ * EBUSY with CHILD_MAX children alive, or why it could not be spawned.
+ * Spawning blocks the caller until the child has executed its file, about
  * 0.1 ms.
  */
-extern int
-child_spawn (struct child **p_child,
-             struct loop   *loop,
-             struct list   *list,
-             char const    *file,
-             char *const    argv[],
-             char *const    envp[],
-             struct span    in,
-             size_t         max,
-             uint64_t       deadline,
-             uint64_t       grace,
-             uint32_t       flags,
-             void         (*done) (struct child *c),
-             void          *owner);
+extern struct child *
+child_create (struct loop            *loop,
+              struct list            *list,
+              struct child_cmd const *cmd,
+              void                  (*done) (struct child *c),
+              void                   *owner,
+              int                    *e);
 
-/** Let go of @p c: free it, if it has ended; else kill it, stop reading its
- *  output, and free it once it is reaped. */
+/** Let go of @p *p_c, which becomes nullptr: free it, if it has ended;
+ *  else kill it, stop reading its output, and free it once it is reaped. */
 extern void
-child_drop (struct child *c);
+child_destroy (struct child **p_c);
 
 /** Free every child on @p list as its loop stops; any still alive is killed
  *  and left to the process's exit to reap. */
 extern void
-child_free_all (struct list *list);
+child_destroy_all (struct list *list);
 
 #endif /* TWINCEPTION_SRC_CHILD_H_ */

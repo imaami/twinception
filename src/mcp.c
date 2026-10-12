@@ -629,10 +629,7 @@ call_drop (struct mcp_req *req)
 		task_drop(req->task);
 		req->task = nullptr;
 	}
-	if (req->child) {
-		child_drop(req->child);
-		req->child = nullptr;
-	}
+	child_destroy(&req->child);
 	if (!job)
 		return;
 	req->job = nullptr;
@@ -1882,8 +1879,7 @@ git_text (struct mcp_req *req)
 		snprintf(note, sizeof note, "[git exited with status %d.]", c->status);
 	else if (empty)
 		snprintf(note, sizeof note, "[No output.]");
-	child_drop(c);
-	req->child = nullptr;
+	child_destroy(&req->child);
 	list_del(&req->hook);
 	req->hook = (struct list){};
 	/* A blank line between the output and the note. */
@@ -1916,10 +1912,17 @@ git_call (struct mcp_req     *req,
 	}
 	if (!req->tooling)
 		clock_gettime(CLOCK_MONOTONIC, &req->start);
-	int e = child_spawn(&req->child, loop, &mcp->children, "git", (char *const *)argv,
-	                    git_env(git), (struct span){}, GIT_MAX,
-	                    loop->now + git_timeout(git), GIT_GRACE_NS, CHILD_STDERR,
-	                    git_done, req);
+	struct child_cmd const cmd = {
+		.file = "git",
+		.argv = argv,
+		.envp = git_env(git),
+		.max = GIT_MAX,
+		.deadline = loop->now + git_timeout(git),
+		.grace = GIT_GRACE_NS,
+		.flags = CHILD_STDERR
+	};
+	int e = 0;
+	req->child = child_create(loop, &mcp->children, &cmd, git_done, req, &e);
 	if (e == EBUSY) {
 		tool_result(req, "Too many commands are running; try again in a few "
 		            "seconds.", true);
@@ -2557,10 +2560,18 @@ notes_spawn (struct mcp_req *req,
 {
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
-	int e = child_spawn(&req->child, loop, &mcp->children, "git", (char *const *)argv,
-	                    notes_env(mcp->st->notes), in, NOTES_MAX, loop->now + NOTES_NS,
-	                    0, CHILD_STDERR, notes_done, req);
-	if (e)
+	struct child_cmd const cmd = {
+		.file = "git",
+		.argv = argv,
+		.envp = notes_env(mcp->st->notes),
+		.in = in,
+		.max = NOTES_MAX,
+		.deadline = loop->now + NOTES_NS,
+		.flags = CHILD_STDERR
+	};
+	int e = 0;
+	req->child = child_create(loop, &mcp->children, &cmd, notes_done, req, &e);
+	if (!req->child)
 		return e;
 	call_wait(req);
 	req->phase = PHASE_NOTES;
@@ -2742,14 +2753,12 @@ notes_out (struct mcp_req *req)
 			    : CAT(&req->answer, "Could not write the note: ") &&
 			      dstr_cat_n(&req->answer, (char const *)out.ptr, n);
 		}
-		child_drop(c);
-		req->child = nullptr;
+		child_destroy(&req->child);
 		tool_done(req, mem, !ok);
 		return;
 	}
 	if (fetch == FETCH_RESUME && !ok) {
-		child_drop(c);
-		req->child = nullptr;
+		child_destroy(&req->child);
 		char why[96 + NOTES_ID];
 		snprintf(why, sizeof why, none ? "Unknown thread: %s." : "Cannot read the "
 		         "notes of the thread %s.", req->thread);
@@ -2775,8 +2784,7 @@ notes_out (struct mcp_req *req)
 		           : CAT(&req->answer, "Your notes could not be read.");
 	if (mem && fetch != FETCH_READ && fetch != FETCH_RESUME)
 		mem = CAT(&req->answer, "\n[askai: go on with the task.]");
-	child_drop(c);
-	req->child = nullptr;
+	child_destroy(&req->child);
 	if (fetch == FETCH_READ) {
 		tool_done(req, mem, !ok && !none);
 	} else if (!mem) {
@@ -3494,7 +3502,7 @@ mcp_fini (struct mcp **p_mcp)
 	while (!list_is_empty(&mcp->freeing))
 		req_end(container_of(mcp->freeing.next, struct mcp_req, hook));
 	manual_loop_fini(&mcp->man);
-	child_free_all(&mcp->children);
+	child_destroy_all(&mcp->children);
 	while (mcp_relieve(mcp, BUF_CRITICAL, SIZE_MAX))
 		;
 	loop_unready(&mcp->drain);

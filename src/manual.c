@@ -250,8 +250,7 @@ settle (struct fetch       *f,
 	if (f->page != page)
 		manual_put(f->page);
 	manual_put(page);
-	if (f->child)
-		child_drop(f->child);
+	child_destroy(&f->child);
 	loop_unready(&f->step);
 	list_del(&f->hook);
 	free(f);
@@ -261,17 +260,23 @@ settle (struct fetch       *f,
  * settle the fetch with why not.  Counts the run in @p runs. */
 static void
 run (struct fetch      *f,
-     char              *argv[],
+     char const        *argv[],
      size_t             max,
      void             (*done) (struct child *c),
      _Atomic uint64_t  *runs)
 {
 	struct manual_loop *ml = f->ml;
 	struct loop *loop = ml->loop;
-	int e = child_spawn(&f->child, loop, &ml->children, "man", argv, ml->manual->env,
-	                    (struct span){}, max, loop->now + MANUAL_SECONDS * NS, 0, 0,
-	                    done, f);
-	if (!e) {
+	struct child_cmd const cmd = {
+		.file = "man",
+		.argv = argv,
+		.envp = ml->manual->env,
+		.max = max,
+		.deadline = loop->now + MANUAL_SECONDS * NS
+	};
+	int e = 0;
+	f->child = child_create(loop, &ml->children, &cmd, done, f, &e);
+	if (f->child) {
 		count(runs, 1);
 		return;
 	}
@@ -388,8 +393,7 @@ found (struct child *c)
 		file = entry_add(m, (char const *)out.ptr, len, hash);
 	struct manual_page *page = file && file->page ? page_get(file->page) : nullptr;
 	pthread_mutex_unlock(&m->lock);
-	child_drop(c);
-	f->child = nullptr;
+	child_destroy(&f->child);
 	f->file = file;
 	if (!file) {
 		settle(f, nullptr, "Out of memory.");
@@ -406,7 +410,7 @@ found (struct child *c)
 		return;
 	}
 	manual_put(page);
-	char *argv[] = { "man", "-l", "--", file->key, nullptr };
+	char const *argv[] = { "man", "-l", "--", file->key, nullptr };
 	run(f, argv, MANUAL_MAX, rendered, &m->metrics.renders);
 }
 
@@ -454,7 +458,7 @@ ask (struct manual_loop *ml,
 	/* Man finds the file. */
 	char *name = a->key;
 	char *section = name + strlen(name) + 1;
-	char *argv[7] = { "man", "-w" };
+	char const *argv[7] = { "man", "-w" };
 	size_t i = 2;
 	if (*section) {
 		argv[i++] = "-s";
@@ -525,7 +529,7 @@ manual_loop_fini (struct manual_loop *ml)
 	while (!list_is_empty(&ml->fetches))
 		settle(container_of(ml->fetches.next, struct fetch, hook), nullptr,
 		       "Server is shutting down.");
-	child_free_all(&ml->children);
+	child_destroy_all(&ml->children);
 }
 
 /* The entry "@p name=value" of askai's environment, where @p name is @p len
