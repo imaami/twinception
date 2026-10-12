@@ -408,7 +408,7 @@ config_complain (struct config const *cfg,
 	char what[512];
 	va_list ap;
 	va_start(ap, fmt);
-	(void)util_vformat(what, sizeof what, fmt, ap);
+	util_vformat(what, sizeof what, fmt, ap);
 	va_end(ap);
 	char const *colon = ": ";
 	if (!where)
@@ -1007,9 +1007,10 @@ config_same_options (struct config const *cfg,
 }
 
 /* Make room for the lists of headers, origins, listeners and repositories,
- * in one block: each may hold every argument, every string of the
- * configuration file and the three headers askai adds, and ends in nullptr.
- * Returns 0, or 1 if out of memory, having said so. */
+ * in one block, and point ep.headers, http.origins and http.listen at their
+ * lists: each may hold every argument, every string of the configuration
+ * file and the three headers askai adds, and ends in nullptr.  Returns 0, or
+ * 1 if out of memory, having said so. */
 static int
 config_lists (struct config *cfg)
 {
