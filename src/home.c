@@ -73,13 +73,13 @@ enum { CLOSED, OPEN, HALF };
 /* Whom jobs of a class are for: an identity, a session, or a client's
  * address.  An entry exists while the principal has jobs of the class
  * queued, which tell who it is, and is kept for reuse after. */
-struct principal {
-	struct list       ring;    /* on home's ring of its class, or its shelf */
-	struct list       jobs;    /* queued, oldest first, by their queue hooks */
-	struct principal *chain;   /* the next in its bucket */
-	uint64_t          hash;
-	uint32_t          queued;
-	uint32_t          class;   /* 0 interactive, 1 background */
+struct home_principal {
+	struct list            ring;    /* on home's ring of its class, or its shelf */
+	struct list            jobs;    /* queued, oldest first, by their queue hooks */
+	struct home_principal *chain;   /* the next in its bucket */
+	uint64_t               hash;
+	uint32_t               queued;
+	uint32_t               class;   /* 0 interactive, 1 background */
 };
 
 /*
@@ -141,7 +141,7 @@ struct home {
 	struct httpd_home        *door;        /* to make room for descriptors */
 	struct ai_endpoint const *ep;
 	struct job              **keys;        /* the registry's buckets */
-	struct principal        **whom;        /* the principals' buckets */
+	struct home_principal   **whom;        /* the principals' buckets */
 	struct http_request      *ask;         /* GET /props, under way */
 	uint64_t                  timeout;     /* ns from a start to its deadline */
 	uint64_t                  silence;     /* ns an answer may pause */
@@ -204,7 +204,7 @@ home_background_slots (struct home const *home)
 
 /* Whether @p job is for @p p, who its first job queued is for. */
 static bool
-home_principal_is (struct principal const *p,
+home_principal_is (struct home_principal const *p,
                    struct job const       *job)
 {
 	struct job const *first = container_of(p->jobs.next, struct job, queue);
@@ -218,11 +218,11 @@ home_principal_is (struct principal const *p,
 
 /* The link that holds the principal @p job is for, or where it would be
  * appended; for all of a class one in a queue first in first out. */
-static struct principal **
+static struct home_principal **
 home_find_whom (struct home const *home,
                 struct job const  *job)
 {
-	struct principal **p = home->whom;
+	struct home_principal **p = home->whom;
 	if (home->fifo) {
 		uint32_t c = home_job_class(job);
 		while (*p && (*p)->class != c)
@@ -249,9 +249,9 @@ home_job_progress (struct job *job,
  * class's ring, onto the shelf. */
 static void
 home_shelve (struct home      *home,
-             struct principal *p)
+             struct home_principal *p)
 {
-	struct principal **link = &home->whom[home->fifo ? 0 : p->hash & home->mask];
+	struct home_principal **link = &home->whom[home->fifo ? 0 : p->hash & home->mask];
 	while (*link != p)
 		link = &(*link)->chain;
 	*link = p->chain;
@@ -268,7 +268,7 @@ static void
 home_unqueue (struct home *home,
               struct job  *job)
 {
-	struct principal *p = job->who;
+	struct home_principal *p = job->who;
 	struct list *node = job->queue.next;
 	list_del(&job->queue);
 	job->who = nullptr;
@@ -864,7 +864,7 @@ home_first (struct home const *home,
 		return container_of(home->ready[c].next, struct job, queue);
 	if (list_is_empty(&home->ring[c]))
 		return nullptr;
-	struct principal *p = container_of(home->ring[c].next, struct principal, ring);
+	struct home_principal *p = container_of(home->ring[c].next, struct home_principal, ring);
 	return container_of(p->jobs.next, struct job, queue);
 }
 
@@ -1872,15 +1872,15 @@ static int
 home_wait (struct home       *home,
            struct job        *job,
            uint32_t           c,
-           struct principal **slot)
+           struct home_principal **slot)
 {
-	struct principal *p = *slot;
+	struct home_principal *p = *slot;
 	if (!p) {
 		struct list *spare = shelf_take(&home->spare);
-		p = spare ? container_of(spare, struct principal, ring) : malloc(sizeof *p);
+		p = spare ? container_of(spare, struct home_principal, ring) : malloc(sizeof *p);
 		if (!p)
 			return ENOMEM;
-		*p = (struct principal){ .hash = job->principal, .class = c };
+		*p = (struct home_principal){ .hash = job->principal, .class = c };
 		list_init(&p->jobs);
 		*slot = p;
 		list_append(&home->ring[c], &p->ring);
@@ -1919,7 +1919,7 @@ home_admit (struct home *home,
 		home_refuse(home, job);
 		return;
 	}
-	struct principal **slot = home_find_whom(home, job);
+	struct home_principal **slot = home_find_whom(home, job);
 	if (hist_get(&m->in_flight) >= home->max ||
 	    (*slot && !home->fifo && (*slot)->queued >= QUEUED)) {
 		home_end(home, job, JOB_BUSY, &m->rejected);
@@ -2210,6 +2210,6 @@ home_relieve (struct home       *home,
 	/* Principals' entries keep no storage, so each is a unit. */
 	size_t done = 0;
 	for (size_t n = shelf_unused(&home->spare, level); n && done < max; --n, ++done)
-		free(container_of(shelf_drop(&home->spare), struct principal, ring));
+		free(container_of(shelf_drop(&home->spare), struct home_principal, ring));
 	return done;
 }

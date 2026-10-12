@@ -51,7 +51,7 @@
 #include "loop.h"
 
 struct http_request;
-struct principal;
+struct home_principal;
 
 /** The bits of the messages to home. */
 enum {
@@ -112,93 +112,93 @@ enum job_status {
 
 /** An upstream call, shared by its front and home (R4). */
 struct job {
-	struct msg           to_home;     /**< SUBMIT, CANCEL: the front posts it */
-	struct msg           to_front;    /**< DONE, PROGRESS, RETURN: home posts it */
-	struct list          spare;       /**< the front's: on its spare list */
-	struct list          queue;       /**< home's: on its principal's queue, a
-	                                       ready list, among the background jobs
-	                                       running or those to preempt, or
-	                                       among the jobs dropped */
-	struct list          due;         /**< home's: among the jobs in flight, by
-	                                       deadline */
-	struct list          held;        /**< home's: among those whose answer
-	                                       waits for a step's share */
-	struct list          idle;        /**< home's: among the answers under way,
-	                                       by when they last sent */
-	struct list          feed;        /**< home's: among the streams to read */
-	struct buf           request;     /**< the front's: written before SUBMIT,
-	                                       read by home until DONE */
-	struct buf           result;      /**< home's: written before DONE, read
-	                                       by the front until CANCEL */
-	struct buf           calls;       /**< likewise: with JOB_TOOLS, the tool
-	                                       calls of a streamed answer, each a
-	                                       struct job_call and its bytes */
-	struct buf           thought;     /**< likewise: with JOB_TOOLS, its
-	                                       thinking's text */
-	struct buf           key;         /**< the front's: written before SUBMIT
-	                                       or WITHDRAW, read by home until
-	                                       DONE or RETURN: the call's session,
-	                                       a line break and its id's JSON */
-	struct buf           wire;        /**< home's: a streamed answer's bytes
-	                                       yet to read */
-	struct jb_parser     parser;      /**< home's: of the stream's event */
-	struct loop         *front;       /**< the front's loop, set as it is made */
-	struct job          *chain;       /**< home's: the next in its registry's
-	                                       bucket */
-	struct http_request *transfer;    /**< home's: the request upstream */
-	struct principal    *who;         /**< home's: whose queue it is on */
-	struct handle        call;        /**< the front's: what waits for it */
-	uint64_t             deadline;    /**< the front writes, before SUBMIT, when
-	                                       the call times out waiting, and home
-	                                       as it starts the job, when the
-	                                       upstream does: CLOCK_MONOTONIC ns;
-	                                       0: never */
-	uint64_t             since;       /**< home's: when it started upstream */
-	uint64_t             active;      /**< home's: when its answer last sent */
-	uint64_t             hash;        /**< the front's, with the key: its hash,
-	                                       seeded, which home's registry
-	                                       buckets the job by */
-	uint64_t             principal;   /**< the front's, with the key: the hash,
-	                                       seeded, of whom the call is for */
-	uint64_t             peer[2];     /**< the front's: the client's address,
-	                                       which is the principal without a
-	                                       session; UINT64_MAX twice for an
-	                                       identity's */
-	_Atomic uint64_t     progress;    /**< home writes, the front reads: the
-	                                       answer's tokens << 32 | the place in
-	                                       its principal's queue, from 1, or,
-	                                       once it runs, JOB_THINKING or 0 */
-	_Atomic uint32_t     home_bits;   /**< pending to home */
-	_Atomic uint32_t     front_bits;  /**< pending to the front */
-	_Atomic uint32_t     refs;        /**< the front, home, each message queued */
-	uint32_t             session;     /**< the front's, with the key: the bytes
-	                                       of the session and its line break
-	                                       that begin it, which tell principals
-	                                       apart; 0: none, or the principal is
-	                                       an identity */
-	uint32_t             ev;          /**< home's: where the event's data
-	                                       begins in the wire */
-	uint32_t             evlen;       /**< and its length so far */
-	uint32_t             line;        /**< where the line read begins */
-	uint32_t             scan;        /**< how far it has been looked at */
-	uint32_t             chunks;      /**< home's: the answer's tokens, its
-	                                       events with text or thinking */
-	uint32_t             used;        /**< home writes before DONE: the tokens
-	                                       of the request and the answer, as
-	                                       its usage says; 0: unknown */
-	uint32_t             context;     /**< home writes before DONE: the tokens
-	                                       the upstream's context holds, as
-	                                       /props says; 0: unknown */
-	uint16_t             http;        /**< home writes before DONE: the answer's
-	                                       HTTP status */
-	uint16_t             flags;       /**< home's: what it notes of the run */
-	uint8_t              status;      /**< home writes before DONE: enum
-	                                       job_status */
-	uint8_t              asks;        /**< the front's, before SUBMIT: enum
-	                                       job_ask */
-	char                 reason[38];  /**< home's: the answer's stop reason,
-	                                       longer than any the providers
-	                                       name */
+	struct msg             to_home;     /**< SUBMIT, CANCEL: the front posts it */
+	struct msg             to_front;    /**< DONE, PROGRESS, RETURN: home posts it */
+	struct list            spare;       /**< the front's: on its spare list */
+	struct list            queue;       /**< home's: on its principal's queue, a
+	                                         ready list, among the background jobs
+	                                         running or those to preempt, or
+	                                         among the jobs dropped */
+	struct list            due;         /**< home's: among the jobs in flight, by
+	                                         deadline */
+	struct list            held;        /**< home's: among those whose answer
+	                                         waits for a step's share */
+	struct list            idle;        /**< home's: among the answers under way,
+	                                         by when they last sent */
+	struct list            feed;        /**< home's: among the streams to read */
+	struct buf             request;     /**< the front's: written before SUBMIT,
+	                                         read by home until DONE */
+	struct buf             result;      /**< home's: written before DONE, read
+	                                         by the front until CANCEL */
+	struct buf             calls;       /**< likewise: with JOB_TOOLS, the tool
+	                                         calls of a streamed answer, each a
+	                                         struct job_call and its bytes */
+	struct buf             thought;     /**< likewise: with JOB_TOOLS, its
+	                                         thinking's text */
+	struct buf             key;         /**< the front's: written before SUBMIT
+	                                         or WITHDRAW, read by home until
+	                                         DONE or RETURN: the call's session,
+	                                         a line break and its id's JSON */
+	struct buf             wire;        /**< home's: a streamed answer's bytes
+	                                         yet to read */
+	struct jb_parser       parser;      /**< home's: of the stream's event */
+	struct loop           *front;       /**< the front's loop, set as it is made */
+	struct job            *chain;       /**< home's: the next in its registry's
+	                                         bucket */
+	struct http_request   *transfer;    /**< home's: the request upstream */
+	struct home_principal *who;         /**< home's: whose queue it is on */
+	struct handle          call;        /**< the front's: what waits for it */
+	uint64_t               deadline;    /**< the front writes, before SUBMIT, when
+	                                         the call times out waiting, and home
+	                                         as it starts the job, when the
+	                                         upstream does: CLOCK_MONOTONIC ns;
+	                                         0: never */
+	uint64_t               since;       /**< home's: when it started upstream */
+	uint64_t               active;      /**< home's: when its answer last sent */
+	uint64_t               hash;        /**< the front's, with the key: its hash,
+	                                         seeded, which home's registry
+	                                         buckets the job by */
+	uint64_t               principal;   /**< the front's, with the key: the hash,
+	                                         seeded, of whom the call is for */
+	uint64_t               peer[2];     /**< the front's: the client's address,
+	                                         which is the principal without a
+	                                         session; UINT64_MAX twice for an
+	                                         identity's */
+	_Atomic uint64_t       progress;    /**< home writes, the front reads: the
+	                                         answer's tokens << 32 | the place in
+	                                         its principal's queue, from 1, or,
+	                                         once it runs, JOB_THINKING or 0 */
+	_Atomic uint32_t       home_bits;   /**< pending to home */
+	_Atomic uint32_t       front_bits;  /**< pending to the front */
+	_Atomic uint32_t       refs;        /**< the front, home, each message queued */
+	uint32_t               session;     /**< the front's, with the key: the bytes
+	                                         of the session and its line break
+	                                         that begin it, which tell principals
+	                                         apart; 0: none, or the principal is
+	                                         an identity */
+	uint32_t               ev;          /**< home's: where the event's data
+	                                         begins in the wire */
+	uint32_t               evlen;       /**< and its length so far */
+	uint32_t               line;        /**< where the line read begins */
+	uint32_t               scan;        /**< how far it has been looked at */
+	uint32_t               chunks;      /**< home's: the answer's tokens, its
+	                                         events with text or thinking */
+	uint32_t               used;        /**< home writes before DONE: the tokens
+	                                         of the request and the answer, as
+	                                         its usage says; 0: unknown */
+	uint32_t               context;     /**< home writes before DONE: the tokens
+	                                         the upstream's context holds, as
+	                                         /props says; 0: unknown */
+	uint16_t               http;        /**< home writes before DONE: the answer's
+	                                         HTTP status */
+	uint16_t               flags;       /**< home's: what it notes of the run */
+	uint8_t                status;      /**< home writes before DONE: enum
+	                                         job_status */
+	uint8_t                asks;        /**< the front's, before SUBMIT: enum
+	                                         job_ask */
+	char                   reason[38];  /**< home's: the answer's stop reason,
+	                                         longer than any the providers
+	                                         name */
 };
 
 /** Home's handler of the messages to it (home.c). */
