@@ -32,14 +32,15 @@ struct http_metrics {
 };
 
 /** A bridge on @p loop that counts into @p metrics, whose atomic members
- *  are valid, unless that is nullptr. */
-extern int
-http_init (struct http         **p_http,
-           struct loop          *loop,
-           struct http_metrics  *metrics);
+ *  are valid, unless that is nullptr; nullptr, with the error in @p *e, if
+ *  it cannot be made. */
+extern struct http *
+http_create (struct loop         *loop,
+             struct http_metrics *metrics,
+             int                 *e);
 
 extern void
-http_fini (struct http **p_http);
+http_destroy (struct http **p_http);
 
 /**
  * Look up upstream host names on @p blockers rather than in libcurl, which

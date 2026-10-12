@@ -124,7 +124,7 @@ http_finish (struct http         *http,
 	http_done_cb *done = request->done_cb;
 	void *user = request->user;
 	char error[CURL_ERROR_SIZE];
-	snprintf(error, sizeof error, "%s", request->error);
+	memcpy(error, request->error, sizeof error);
 
 	curl_slist_free_all(request->resolve);
 	curl_slist_free_all(request->headers);
@@ -158,8 +158,8 @@ http_doom (struct http *http,
 	curl_easy_getinfo(easy, CURLINFO_PRIVATE, &request);
 	if (request && !request->fail) {
 		request->fail = e == ENOMEM ? CURLE_OUT_OF_MEMORY : CURLE_COULDNT_CONNECT;
-		snprintf(request->error, sizeof request->error,
-		         "cannot watch the socket: %s", strerror(e));
+		util_format(request->error, sizeof request->error,
+		            "cannot watch the socket: %s", strerror(e));
 		loop_ready_bulk(http->loop, &http->fail);
 	}
 }
@@ -268,7 +268,7 @@ http_socket_release (struct loop_ref *ref)
 }
 
 static uint32_t
-curl_events (int what)
+http_events (int what)
 {
 	switch (what) {
 	case CURL_POLL_IN:
@@ -280,6 +280,30 @@ curl_events (int what)
 	default:
 		return 0;
 	}
+}
+
+/* Watch @p socket, which curl asks for @p events. */
+static int
+http_socket_add (struct http   *http,
+                 curl_socket_t  socket,
+                 uint32_t       events)
+{
+	struct http_socket *hs = malloc(sizeof *hs);
+	if (!hs)
+		return ENOMEM;
+	*hs = (struct http_socket){
+		.step.fn = http_socket_step,
+		.http = http,
+		.socket = socket
+	};
+	int e = loop_watch(http->loop, &hs->ref, socket, events, http_socket_event, hs);
+	if (e) {
+		free(hs);
+		return e;
+	}
+	list_append(&http->sockets, &hs->hook);
+	(void)curl_multi_assign(http->multi, socket, hs);
+	return 0;
 }
 
 static int
@@ -302,27 +326,11 @@ http_socket_cb (CURL          *easy,
 		return 0;
 	}
 
-	uint32_t events = curl_events(what);
-	int e;
-	if (!events || hs) {
-		e = events ? loop_modify(http->loop, &hs->ref, events) : 0;
-	} else if (!(hs = malloc(sizeof *hs))) {
-		e = ENOMEM;
-	} else {
-		*hs = (struct http_socket){
-			.step.fn = http_socket_step,
-			.http = http,
-			.socket = socket
-		};
-		e = loop_watch(http->loop, &hs->ref, socket, events, http_socket_event,
-		               hs);
-		if (e) {
-			free(hs);
-		} else {
-			list_append(&http->sockets, &hs->hook);
-			(void)curl_multi_assign(http->multi, socket, hs);
-		}
-	}
+	uint32_t events = http_events(what);
+	if (!events)
+		return 0;
+	int e = hs ? loop_modify(http->loop, &hs->ref, events)
+	           : http_socket_add(http, socket, events);
 	if (e)
 		http_doom(http, easy, e);
 	return 0;
@@ -359,98 +367,157 @@ http_pin (struct http_request *request,
           char const          *entry)
 {
 	request->resolve = curl_slist_append(nullptr, entry);
-	return !request->resolve ? ENOMEM
-	     : curl_easy_setopt(request->easy, CURLOPT_RESOLVE, request->resolve)
-	     ? EIO : 0;
+	if (!request->resolve)
+		return ENOMEM;
+	return curl_easy_setopt(request->easy, CURLOPT_RESOLVE, request->resolve) ? EIO : 0;
+}
+
+/* Append the address of @p ai, if it is one, to the @p len bytes at
+ * @p entry, as libcurl takes it: IPv6 in brackets, after a comma but for the
+ * first, which follows the ':' that ends "name:port:".  There is room for
+ * INET6_ADDRSTRLEN + 3 bytes.  Returns the new length. */
+static size_t
+http_lookup_put (char                  *entry,
+                 size_t                 len,
+                 struct addrinfo const *ai)
+{
+	void const *addr;
+	switch (ai->ai_family) {
+	case AF_INET6:
+		addr = &((struct sockaddr_in6 const *)(void const *)ai->ai_addr)->sin6_addr;
+		break;
+	case AF_INET:
+		addr = &((struct sockaddr_in const *)(void const *)ai->ai_addr)->sin_addr;
+		break;
+	default:
+		return len;
+	}
+	char text[INET6_ADDRSTRLEN];
+	if (!inet_ntop(ai->ai_family, addr, text, sizeof text))
+		return len;
+	bool v6 = ai->ai_family == AF_INET6;
+	if (entry[len - 1] != ':')
+		entry[len++] = ',';
+	if (v6)
+		entry[len++] = '[';
+	size_t n = strlen(text);
+	memcpy(entry + len, text, n);
+	len += n;
+	if (v6)
+		entry[len++] = ']';
+	return len;
 }
 
 /* On a blocker: look the host up, and write its addresses as libcurl takes
- * them, IPv6 ones in brackets. */
+ * them: "name:port:address,...". */
 static void
 http_look_up (struct blocker_job *job)
 {
 	struct http_lookup *l = container_of(job, struct http_lookup, job);
-	char const *port = l->key + l->name + 1;
 	struct addrinfo const hints = {
 		.ai_family = AF_UNSPEC,
 		.ai_socktype = SOCK_STREAM
 	};
 	struct addrinfo *list;
-	if ((l->gai = getaddrinfo(l->key, port, &hints, &list)))
+	if ((l->gai = getaddrinfo(l->key, l->key + l->name + 1, &hints, &list)))
 		return;
 
 	size_t n = 0;
 	for (struct addrinfo const *ai = list; ai; ai = ai->ai_next)
 		++n;
-	/* "name:port:" and, for each address, "[address]," at most. */
-	size_t cap = l->len + 1 + n * (INET6_ADDRSTRLEN + 3);
-	char *entry = malloc(cap);
-	size_t len = entry ? (size_t)snprintf(entry, cap, "%s:%s:", l->key, port) : 0;
-	for (struct addrinfo const *ai = list; entry && ai; ai = ai->ai_next) {
-		bool v6 = ai->ai_family == AF_INET6;
-		void const *addr = v6
-		        ? (void const *)&((struct sockaddr_in6 const *)(void const *)
-		                          ai->ai_addr)->sin6_addr
-		        : (void const *)&((struct sockaddr_in const *)(void const *)
-		                          ai->ai_addr)->sin_addr;
-		char text[INET6_ADDRSTRLEN];
-		if ((v6 || ai->ai_family == AF_INET) &&
-		    inet_ntop(ai->ai_family, addr, text, sizeof text))
-			len += (size_t)snprintf(entry + len, cap - len, "%s%s%s%s",
-			                        entry[len - 1] == ':' ? "" : ",",
-			                        v6 ? "[" : "", text, v6 ? "]" : "");
+	/* The key, "name\0port\0", and for each address "[address]," at most,
+	 * and the NUL. */
+	char *entry = malloc(l->len + n * (INET6_ADDRSTRLEN + 3) + 1);
+	if (!entry) {
+		freeaddrinfo(list);
+		l->gai = EAI_MEMORY;
+		return;
 	}
+	memcpy(entry, l->key, l->len);
+	entry[l->name] = ':';
+	entry[l->len - 1] = ':';
+	size_t len = l->len;
+	for (struct addrinfo const *ai = list; ai; ai = ai->ai_next)
+		len = http_lookup_put(entry, len, ai);
 	freeaddrinfo(list);
-	if (entry && entry[len - 1] != ':') {
-		l->entry = entry;
-	} else {
+	entry[len] = '\0';
+	if (len == l->len) {
 		free(entry);
-		l->gai = entry ? EAI_NONAME : EAI_MEMORY;
+		l->gai = EAI_NONAME;
+		return;
 	}
+	l->entry = entry;
 }
 
-/* On the loop: start the requests that waited for the host's addresses, or
- * fail them.  A lookup that fails leaves the addresses the host had. */
+/* Queue @p request for curl. */
+static void
+http_queue (struct http         *http,
+            struct http_request *request)
+{
+	list_append(&http->queued, &request->hook);
+	loop_ready_bulk(http->loop, &http->start);
+}
+
+/* Start @p request, which waited for @p host's addresses, or fail it, saying
+ * @p why if the host has none. */
+static void
+http_host_resume (struct http_host    *host,
+                  struct http_request *request,
+                  char const          *why)
+{
+	struct http *http = host->http;
+	list_del(&request->hook);
+	if (host->entry) {
+		int e = http_pin(request, host->entry);
+		if (!e) {
+			http_queue(http, request);
+			return;
+		}
+		why = strerror(e);
+	}
+	request->fail = CURLE_COULDNT_RESOLVE_HOST;
+	util_format(request->error, sizeof request->error, "cannot look up %s: %s",
+	            host->key, why);
+	list_append(&http->requests, &request->hook);
+	loop_ready_bulk(http->loop, &http->fail);
+}
+
+/* @p host's lookup @p l has come back: keep the addresses it found, and
+ * start the requests that waited for them, or fail them.  A lookup that
+ * fails leaves the addresses the host had. */
+static void
+http_host_found (struct http_host   *host,
+                 struct http_lookup *l)
+{
+	struct http *http = host->http;
+	char const *why = l->job.error ? strerror(l->job.error)
+	                : l->entry ? "" : gai_strerror(l->gai);
+	host->lookup = nullptr;
+	if (http->metrics)
+		hist_add(&http->metrics->lookups[l->entry != nullptr], 1);
+	if (l->entry) {
+		free(host->entry);
+		host->entry = l->entry;
+		l->entry = nullptr;
+		host->expires = http->loop->now + LOOKUP_TTL_NS;
+	} else if (host->entry) {
+		LOG(LOG_WARN, "cannot look up %s, so its old addresses serve: %s",
+		    host->key, why);
+	}
+	while (!list_is_empty(&host->waiting))
+		http_host_resume(host, container_of(host->waiting.next, struct http_request,
+		                                    hook), why);
+}
+
+/* On the loop: a lookup has come back, to its host unless http has gone. */
 static void
 http_looked_up (struct loop *loop,
                 struct msg  *msg)
 {
+	(void)loop;
 	struct http_lookup *l = container_of(msg, struct http_lookup, job.done);
-	struct http_host *host = l->host;
-	if (host) {
-		struct http *http = host->http;
-		char const *why = l->job.error ? strerror(l->job.error)
-		                : l->entry ? "" : gai_strerror(l->gai);
-		host->lookup = nullptr;
-		if (http->metrics)
-			hist_add(&http->metrics->lookups[l->entry != nullptr], 1);
-		if (l->entry) {
-			free(host->entry);
-			host->entry = l->entry;
-			l->entry = nullptr;
-			host->expires = loop->now + LOOKUP_TTL_NS;
-		} else if (host->entry) {
-			LOG(LOG_WARN, "cannot look up %s, so its old addresses serve: %s",
-			    host->key, why);
-		}
-		while (!list_is_empty(&host->waiting)) {
-			struct http_request *request = container_of(host->waiting.next,
-			                                           struct http_request,
-			                                           hook);
-			list_del(&request->hook);
-			int e = host->entry ? http_pin(request, host->entry) : 0;
-			if (host->entry && !e) {
-				list_append(&http->queued, &request->hook);
-				loop_ready_bulk(loop, &http->start);
-				continue;
-			}
-			request->fail = CURLE_COULDNT_RESOLVE_HOST;
-			snprintf(request->error, sizeof request->error, "cannot look up %s: %s",
-			         host->key, e ? strerror(e) : why);
-			list_append(&http->requests, &request->hook);
-			loop_ready_bulk(loop, &http->fail);
-		}
-	}
+	if (l->host)
+		http_host_found(l->host, l);
 	free(l->entry);
 	free(l);
 }
@@ -481,6 +548,36 @@ http_lookup (struct http_host *host)
 	return e;
 }
 
+/* The host @p name, of @p n bytes with its NUL, and @p port, of @p p:
+ * found, or added; nullptr if out of memory. */
+static struct http_host *
+http_host_get (struct http *http,
+               char const  *name,
+               size_t       n,
+               char const  *port,
+               size_t       p)
+{
+	struct list *node;
+	list_foreach (node, &http->hosts) {
+		struct http_host *h = container_of(node, struct http_host, hook);
+		if (h->len == n + p && !memcmp(h->key, name, n) && !memcmp(h->key + n, port, p))
+			return h;
+	}
+	struct http_host *host = malloc(sizeof *host + n + p);
+	if (!host)
+		return nullptr;
+	*host = (struct http_host){
+		.http = http,
+		.name = n - 1,
+		.len = n + p
+	};
+	list_init(&host->waiting);
+	memcpy(host->key, name, n);
+	memcpy(host->key + n, port, p);
+	list_append(&http->hosts, &host->hook);
+	return host;
+}
+
 /* The host that @p url names, if the bridge looks names up and it is one,
  * rather than an address; else, and when out of memory, nullptr, which
  * leaves the lookup to libcurl. */
@@ -488,7 +585,9 @@ static struct http_host *
 http_host (struct http *http,
            char const  *url)
 {
-	CURLU *u = http->blockers ? curl_url() : nullptr;
+	if (!http->blockers)
+		return nullptr;
+	CURLU *u = curl_url();
 	char *name = nullptr;
 	char *port = nullptr;
 	struct http_host *host = nullptr;
@@ -496,49 +595,59 @@ http_host (struct http *http,
 	if (u && !curl_url_set(u, CURLUPART_URL, url, 0) &&
 	    !curl_url_get(u, CURLUPART_HOST, &name, 0) &&
 	    !curl_url_get(u, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) &&
-	    *name != '[' && inet_pton(AF_INET, name, addr) != 1) {
-		size_t n = strlen(name) + 1;
-		size_t p = strlen(port) + 1;
-		struct list *node;
-		list_foreach (node, &http->hosts) {
-			struct http_host *h = container_of(node, struct http_host, hook);
-			if (!strcmp(h->key, name) && !strcmp(h->key + n, port)) {
-				host = h;
-				break;
-			}
-		}
-		if (!host && (host = malloc(sizeof *host + n + p))) {
-			*host = (struct http_host){
-				.http = http,
-				.name = n - 1,
-				.len = n + p
-			};
-			list_init(&host->waiting);
-			memcpy(host->key, name, n);
-			memcpy(host->key + n, port, p);
-			list_append(&http->hosts, &host->hook);
-		}
-	}
+	    *name != '[' && inet_pton(AF_INET, name, addr) != 1)
+		host = http_host_get(http, name, strlen(name) + 1, port, strlen(port) + 1);
 	curl_free(port);
 	curl_free(name);
 	curl_url_cleanup(u);
 	return host;
 }
 
-int
-http_init (struct http         **p_http,
-           struct loop          *loop,
-           struct http_metrics  *metrics)
+/* Have @p request, to @p host, wait for its addresses, or with fresh ones,
+ * queue it. */
+static int
+http_host_take (struct http_host    *host,
+                struct http_request *request)
 {
-	if (!p_http || !loop)
-		return EFAULT;
-	if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
-		return EIO;
+	if (host->entry && host->expires > request->since) {
+		int e = http_pin(request, host->entry);
+		if (!e)
+			http_queue(host->http, request);
+		return e;
+	}
+	list_append(&host->waiting, &request->hook);
+	return host->lookup ? 0 : http_lookup(host);
+}
 
+/* Arm @p http's timer, which stays in the heap from then on, and give curl
+ * its callbacks. */
+static int
+http_setup (struct http *http)
+{
+	if (!http->multi || loop_timer_set(http->loop, &http->timer, UINT64_MAX))
+		return ENOMEM;
+	if (curl_multi_setopt(http->multi, CURLMOPT_SOCKETFUNCTION, http_socket_cb) != CURLM_OK ||
+	    curl_multi_setopt(http->multi, CURLMOPT_SOCKETDATA, http) != CURLM_OK ||
+	    curl_multi_setopt(http->multi, CURLMOPT_TIMERFUNCTION, http_timer_cb) != CURLM_OK ||
+	    curl_multi_setopt(http->multi, CURLMOPT_TIMERDATA, http) != CURLM_OK)
+		return EIO;
+	return 0;
+}
+
+struct http *
+http_create (struct loop         *loop,
+             struct http_metrics *metrics,
+             int                 *e)
+{
+	if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+		*e = EIO;
+		return nullptr;
+	}
 	struct http *http = malloc(sizeof *http);
 	if (!http) {
 		curl_global_cleanup();
-		return ENOMEM;
+		*e = ENOMEM;
+		return nullptr;
 	}
 	*http = (struct http){
 		.timer.fn = http_timer_event,
@@ -553,19 +662,9 @@ http_init (struct http         **p_http,
 	list_init(&http->requests);
 	list_init(&http->sockets);
 	list_init(&http->hosts);
-	*p_http = http;
-
-	int e = !http->multi || loop_timer_set(loop, &http->timer, UINT64_MAX)
-	      ? ENOMEM : 0;
-	if (!e &&
-	    (curl_multi_setopt(http->multi, CURLMOPT_SOCKETFUNCTION, http_socket_cb) != CURLM_OK ||
-	     curl_multi_setopt(http->multi, CURLMOPT_SOCKETDATA, http) != CURLM_OK ||
-	     curl_multi_setopt(http->multi, CURLMOPT_TIMERFUNCTION, http_timer_cb) != CURLM_OK ||
-	     curl_multi_setopt(http->multi, CURLMOPT_TIMERDATA, http) != CURLM_OK))
-		e = EIO;
-	if (e)
-		http_fini(p_http);
-	return e;
+	if ((*e = http_setup(http)))
+		http_destroy(&http);
+	return http;
 }
 
 void
@@ -648,12 +747,11 @@ http_resolver (struct http     *http,
 }
 
 void
-http_fini (struct http **p_http)
+http_destroy (struct http **p_http)
 {
-	if (!p_http || !*p_http)
-		return;
-
 	struct http *http = *p_http;
+	if (!http)
+		return;
 	*p_http = nullptr;
 
 	/* A lookup under way comes back to nobody, and frees itself. */
@@ -698,6 +796,27 @@ http_fini (struct http **p_http)
 	curl_global_cleanup();
 }
 
+/* Give @p request its header lines: a body's Content-Type, and @p headers,
+ * nullptr-terminated, unless nullptr.  Appending keeps the list's head, the
+ * request's.  0 or ENOMEM. */
+static int
+http_request_headers (struct http_request *request,
+                      char const          *body,
+                      char const *const   *headers)
+{
+	if (body && !(request->headers = curl_slist_append(nullptr, "Content-Type: "
+	                                                   "application/json")))
+		return ENOMEM;
+	for (; headers && *headers; ++headers) {
+		struct curl_slist *list = curl_slist_append(request->headers, *headers);
+		if (!list)
+			return ENOMEM;
+		if (!request->headers)
+			request->headers = list;
+	}
+	return 0;
+}
+
 int
 http_post_json (struct http         *http,
                 char const          *url,
@@ -716,25 +835,14 @@ http_post_json (struct http         *http,
 
 	struct http_request *request = calloc(1, sizeof *request);
 	if (!request)
-		return errno ? errno : ENOMEM;
+		return ENOMEM;
 	list_init(&request->hook);
-
 	request->easy = curl_easy_init();
 	request->write_cb = write_cb;
 	request->done_cb = done_cb;
 	request->user = user;
 	request->len = body ? len : 0;
-	/* A body is JSON.  Appending keeps the list's head, the request's. */
-	bool ok = request->easy &&
-	          (!body || (request->headers = curl_slist_append(
-	                     nullptr, "Content-Type: application/json")));
-	for (; ok && headers && *headers; ++headers) {
-		struct curl_slist *list = curl_slist_append(request->headers, *headers);
-		ok = list;
-		if (!request->headers)
-			request->headers = list;
-	}
-	if (!ok) {
+	if (!request->easy || http_request_headers(request, body, headers)) {
 		http_cancel(http, &request);
 		return ENOMEM;
 	}
@@ -767,20 +875,11 @@ http_post_json (struct http         *http,
 	/* A host by name waits for its addresses, unless they are fresh. */
 	request->since = loop_clock();
 	struct http_host *host = http_host(http, url);
-	bool fresh = host && host->entry && host->expires > request->since;
-	int e = fresh ? http_pin(request, host->entry) : 0;
-	if (host && !fresh) {
-		list_append(&host->waiting, &request->hook);
-		e = host->lookup ? 0 : http_lookup(host);
-	}
-	if (e) {
+	int e = 0;
+	if (!host)
+		http_queue(http, request);
+	else if ((e = http_host_take(host, request)))
 		http_cancel(http, &request);
-		return e;
-	}
-	if (!host || fresh) {
-		list_append(&http->queued, &request->hook);
-		loop_ready_bulk(http->loop, &http->start);
-	}
 	*p_request = request;
-	return 0;
+	return e;
 }

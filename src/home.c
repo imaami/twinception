@@ -1722,7 +1722,7 @@ home_init (struct home               **p_home,
 	if (!e)
 		e = loop_timer_set(loop, &home->breaker, UINT64_MAX);
 	if (!e)
-		e = http_init(&home->http, loop, http);
+		home->http = http_create(loop, http, &e);
 	if (e) {
 		loop_timer_stop(loop, &home->breaker);
 		loop_timer_stop(loop, &home->quiet);
@@ -1775,7 +1775,7 @@ home_fini (struct home **p_home)
 	loop_timer_stop(home->loop, &home->breaker);
 	loop_timer_stop(home->loop, &home->quiet);
 	loop_timer_stop(home->loop, &home->deadline);
-	http_fini(&home->http);
+	http_destroy(&home->http);
 	jb_parse_end(&home->parser, &home->pool, nullptr);
 	jb_reaper_fini(&home->reaper);
 	buf_fini(&home->answer);

@@ -1784,8 +1784,8 @@ app_init (struct app *app)
 	                 cfg->deepinfra_key))
 		return ENOMEM;
 
-	e = http_init(&app->http, &app->loop, nullptr);
-	if (e)
+	app->http = http_create(&app->loop, nullptr, &e);
+	if (!app->http)
 		return e;
 
 	if (cfg->prompt) {
@@ -1847,7 +1847,7 @@ app_fini (struct app *app)
 		loop_unwatch(&app->loop, &app->stdin_ref);
 	if (app->stdin_flags >= 0)
 		fcntl(STDIN_FILENO, F_SETFL, app->stdin_flags);
-	http_fini(&app->http);
+	http_destroy(&app->http);
 	loop_fini(&app->loop);
 }
 
