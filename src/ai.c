@@ -71,80 +71,112 @@ ai_merge (struct json_object *dst,
 	return 0;
 }
 
-/* Fill @p root, the body of a request to @p ep, as ai_request() says. */
+/* The model, the token limit under @p max_key, unless @p max_tokens is not
+ * positive, and the temperature, into @p options, which is @p root or in it;
+ * then --extra, merged into @p root. */
 static int
-ai_request_fill (struct ai_endpoint const *ep,
-                 struct json_object       *root,
-                 struct json_object       *system,
-                 struct json_object       *prompt,
-                 struct json_object       *tools)
+ai_request_common (struct ai_endpoint const *ep,
+                   struct json_object       *root,
+                   struct json_object       *options,
+                   char const               *max_key,
+                   long                      max_tokens)
 {
-	bool gemini = ep->protocol == AI_GEMINI;
-	if (ep->model && !gemini && jb_set(root, "model", json_object_new_string(ep->model)))
-		return ENOMEM;
-
-	struct json_object *options = root;
-	char const *max_key = "max_tokens";
-	long max_tokens = ep->max_tokens;
-	switch (ep->protocol) {
-	case AI_OPENAI: {
-		struct json_object *messages = json_object_new_array();
-		if (jb_set(root, "messages", messages) ||
-		    (system && jb_push(messages, ai_message("system", system))) ||
-		    jb_push(messages, ai_message("user", prompt)) ||
-		    (tools && (jb_set(root, "tools", json_object_get(tools)) ||
-		               jb_set(root, "stream_options", jb_object(
-		                      "include_usage", json_object_new_boolean(1),
-		                      nullptr)))))
-			return ENOMEM;
-		break;
-	}
-	case AI_RESPONSES:
-		max_key = "max_output_tokens";
-		if (jb_set(root, "input", json_object_get(prompt)) ||
-		    (system && jb_set(root, "instructions", json_object_get(system))) ||
-		    jb_set(root, "store", json_object_new_boolean(0)))
-			return ENOMEM;
-		break;
-	case AI_ANTHROPIC:
-		if (max_tokens <= 0)
-			max_tokens = ANTHROPIC_MAX_TOKENS;
-		if (jb_set(root, "messages", jb_list(ai_message("user", prompt))) ||
-		    (system && jb_set(root, "system", json_object_get(system))))
-			return ENOMEM;
-		break;
-	case AI_GEMINI:
-		max_key = "maxOutputTokens";
-		if (jb_set(root, "contents", jb_list(ai_gemini_content("user", prompt))) ||
-		    (system && jb_set(root, "systemInstruction",
-		                      ai_gemini_content(nullptr, system))))
-			return ENOMEM;
-		if (max_tokens > 0 || ep->temperature) {
-			options = json_object_new_object();
-			if (jb_set(root, "generationConfig", options))
-				return ENOMEM;
-		}
-		break;
-	}
-
-	/* Gemini streams by its URL; the others by the body, whatever
-	 * --extra says. */
 	if ((max_tokens > 0 &&
 	     jb_set(options, max_key, json_object_new_int64(max_tokens))) ||
-	    (ep->temperature &&
-	     jb_set(options, "temperature", ai_copy(ep->temperature))) ||
-	    (ep->extra && ai_merge(root, ep->extra)) ||
-	    (!gemini && jb_set(root, "stream", json_object_new_boolean(1))))
+	    (ep->temperature && jb_set(options, "temperature", ai_copy(ep->temperature))) ||
+	    (ep->extra && ai_merge(root, ep->extra)))
 		return ENOMEM;
-	/* Chat completions' messages last, after what --extra added, so that
-	 * turns may follow them, unless --extra took them away. */
-	struct json_object *messages = ep->protocol == AI_OPENAI
-	                             ? jb_get(root, "messages") : nullptr;
+	return 0;
+}
+
+/* The model, if @p ep names one, first in @p root. */
+static int
+ai_request_model (struct ai_endpoint const *ep,
+                  struct json_object       *root)
+{
+	return ep->model ? jb_set(root, "model", json_object_new_string(ep->model)) : 0;
+}
+
+/* Chat completions' body.  Its messages go last, after what --extra added,
+ * so that turns may follow them, unless --extra took them away; it streams
+ * by the body, whatever --extra says. */
+static int
+ai_request_openai (struct ai_endpoint const *ep,
+                   struct json_object       *root,
+                   struct json_object       *system,
+                   struct json_object       *prompt,
+                   struct json_object       *tools)
+{
+	struct json_object *messages = json_object_new_array();
+	if (ai_request_model(ep, root) ||
+	    jb_set(root, "messages", messages) ||
+	    (system && jb_push(messages, ai_message("system", system))) ||
+	    jb_push(messages, ai_message("user", prompt)) ||
+	    (tools && (jb_set(root, "tools", json_object_get(tools)) ||
+	               jb_set(root, "stream_options", jb_object(
+	                      "include_usage", json_object_new_boolean(1),
+	                      nullptr)))) ||
+	    ai_request_common(ep, root, root, "max_tokens", ep->max_tokens) ||
+	    jb_set(root, "stream", json_object_new_boolean(1)))
+		return ENOMEM;
+	messages = jb_get(root, "messages");
 	if (!messages)
 		return 0;
 	json_object_get(messages);
 	json_object_object_del(root, "messages");
 	return jb_set(root, "messages", messages);
+}
+
+/* The Responses API's body, which streams by the body. */
+static int
+ai_request_responses (struct ai_endpoint const *ep,
+                      struct json_object       *root,
+                      struct json_object       *system,
+                      struct json_object       *prompt)
+{
+	if (ai_request_model(ep, root) ||
+	    jb_set(root, "input", json_object_get(prompt)) ||
+	    (system && jb_set(root, "instructions", json_object_get(system))) ||
+	    jb_set(root, "store", json_object_new_boolean(0)) ||
+	    ai_request_common(ep, root, root, "max_output_tokens", ep->max_tokens))
+		return ENOMEM;
+	return jb_set(root, "stream", json_object_new_boolean(1));
+}
+
+/* Anthropic's body, which needs max_tokens and streams by the body. */
+static int
+ai_request_anthropic (struct ai_endpoint const *ep,
+                      struct json_object       *root,
+                      struct json_object       *system,
+                      struct json_object       *prompt)
+{
+	long max_tokens = ep->max_tokens > 0 ? ep->max_tokens : ANTHROPIC_MAX_TOKENS;
+	if (ai_request_model(ep, root) ||
+	    jb_set(root, "messages", jb_list(ai_message("user", prompt))) ||
+	    (system && jb_set(root, "system", json_object_get(system))) ||
+	    ai_request_common(ep, root, root, "max_tokens", max_tokens))
+		return ENOMEM;
+	return jb_set(root, "stream", json_object_new_boolean(1));
+}
+
+/* Gemini's body, whose URL names the model and asks for a stream. */
+static int
+ai_request_gemini (struct ai_endpoint const *ep,
+                   struct json_object       *root,
+                   struct json_object       *system,
+                   struct json_object       *prompt)
+{
+	if (jb_set(root, "contents", jb_list(ai_gemini_content("user", prompt))) ||
+	    (system && jb_set(root, "systemInstruction",
+	                      ai_gemini_content(nullptr, system))))
+		return ENOMEM;
+	struct json_object *options = root;
+	if (ep->max_tokens > 0 || ep->temperature) {
+		options = json_object_new_object();
+		if (jb_set(root, "generationConfig", options))
+			return ENOMEM;
+	}
+	return ai_request_common(ep, root, options, "maxOutputTokens", ep->max_tokens);
 }
 
 struct json_object *
@@ -154,9 +186,26 @@ ai_request (struct ai_endpoint const *ep,
             struct json_object       *tools)
 {
 	struct json_object *root = json_object_new_object();
-	if (root && ai_request_fill(ep, root, system, prompt, tools)) {
+	if (!root)
+		return nullptr;
+	int e = 0;
+	switch (ep->protocol) {
+	case AI_OPENAI:
+		e = ai_request_openai(ep, root, system, prompt, tools);
+		break;
+	case AI_RESPONSES:
+		e = ai_request_responses(ep, root, system, prompt);
+		break;
+	case AI_ANTHROPIC:
+		e = ai_request_anthropic(ep, root, system, prompt);
+		break;
+	case AI_GEMINI:
+		e = ai_request_gemini(ep, root, system, prompt);
+		break;
+	}
+	if (e) {
 		json_object_put(root);
-		root = nullptr;
+		return nullptr;
 	}
 	return root;
 }
@@ -244,15 +293,17 @@ ai_gemini_answer (struct json_object  *root,
 	return e;
 }
 
+static char const no_answer[] = "The model returned no answer.";
+#define no_answer_reason "The model returned no answer (stop reason: %s)."
+
 size_t
 ai_no_answer (char       *buf,
               size_t      size,
               char const *reason)
 {
 	if (!reason)
-		return util_format(buf, size, "The model returned no answer.");
-	return util_format(buf, size, "The model returned no answer (stop reason: %s).",
-	                   reason);
+		return util_format(buf, size, "%s", no_answer);
+	return util_format(buf, size, no_answer_reason, reason);
 }
 
 /* Hand @p val's text to @p put, if it is a string and @p put is not
@@ -542,12 +593,14 @@ ai_answer (enum ai_protocol    protocol,
 	if (e)
 		return e;
 	if (!dstr_len(text)) {
-		char why[256];
-		size_t n = ai_no_answer(why, sizeof why, reason);
 		*failed = true;
-		return dstr_cat_n(text, why, n) ? 0 : ENOMEM;
+		bool ok = reason ? dstr_printf(text, no_answer_reason, reason)
+		                 : dstr_cat_n(text, no_answer, sizeof no_answer - 1);
+		return ok ? 0 : ENOMEM;
 	}
 	if (ai_cut(protocol, reason))
 		return dstr_cat_n(text, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1) ? 0 : ENOMEM;
 	return 0;
 }
+
+#undef no_answer_reason
