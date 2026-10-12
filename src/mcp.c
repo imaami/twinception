@@ -2058,9 +2058,11 @@ mcp_req_ask (struct mcp_req     *req,
 	req->s->ops->waiting(req->s);
 	if (req->sse_ok)
 		mcp_req_stream(req);
+	/* The message, which holds the thread, goes now: going on with a
+	 * thread, its notes go with the prompt. */
+	bool resume = thread;
 	mcp_req_dispose(req);
-	/* Going on with a thread, its notes go with the prompt. */
-	if (thread) {
+	if (resume) {
 		mcp_req_notes_fetch(req, FETCH_RESUME, nullptr);
 		return;
 	}
