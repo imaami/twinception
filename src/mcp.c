@@ -125,6 +125,7 @@ enum {
 
 /* What a git of the notes is for. */
 enum mcp_fetch {
+	FETCH_GIT,      /* the git tool's */
 	FETCH_WRITE,    /* the notes tool's write */
 	FETCH_READ,     /* its read */
 	FETCH_RESUME,   /* the notes of a thread the call goes on with */
@@ -263,16 +264,12 @@ enum mcp_phase {
 	PHASE_DISPATCH,  /* handing the message on, in a step of its own */
 	PHASE_BUILD,     /* writing the upstream request, a slice a step */
 	PHASE_CALL,      /* waiting for the upstream */
-	PHASE_MAN,       /* waiting for a man call's page */
-	PHASE_TASK,      /* waiting for a test_task call's task */
-	PHASE_GIT,       /* waiting for a git call's git */
-	PHASE_GIT_TEXT,  /* taking its output, a slice a step */
+	PHASE_TOOL,      /* waiting for its tools' calls, which work in their
+	                    slots' steps */
 	PHASE_ANSWER,    /* parsing its answer, a slice a step */
 	PHASE_TEXT,      /* taking the tool's output from that, in a step of its own */
 	PHASE_ARGS,      /* parsing a turn's tool calls' arguments, a slice a step */
 	PHASE_TURN,      /* writing the turn into the upstream request, likewise */
-	PHASE_NOTES,     /* waiting for a git that writes or reads notes */
-	PHASE_NOTES_OUT, /* taking a read's notes, in a step of its own */
 	PHASE_RESULT,    /* writing a tool call's result into the request */
 	PHASE_ADD,       /* writing what askai adds to the prompt into it */
 	PHASE_REPLY,     /* escaping the output into the reply, a slice a step */
@@ -285,6 +282,35 @@ enum mcp_phase {
 struct mcp_splice {
 	struct json_object *str;
 	size_t              at;  /* offset into the draft's text */
+};
+
+struct mcp_req;
+
+/* A call of a tool that a request runs: the client's, or one of a turn's.
+ * The request's own also holds its answer, and the notes' git that the
+ * request reads for itself. */
+struct mcp_slot {
+	struct loop_step    step;      /* its work: its git's output */
+	struct dstr         answer;    /* the tool's output; its storage stays
+	                                  for reuse */
+	struct mcp_req     *req;       /* whose */
+	struct manual_page *page;      /* a man call's, until let go of */
+	struct task        *task;      /* a test_task call's, while it waits */
+	struct child       *child;     /* a git's, until its output is taken */
+	size_t              off;       /* bytes of its git's output taken */
+	size_t              skip;      /* the byte of the output that its window,
+	                                  given to a turn, starts at */
+	size_t              window;    /* and the bytes of that */
+	uint64_t            start;     /* loop_clock() as the call began */
+	struct handle       call;      /* names it to the completion it waits
+	                                  for: man's page, test_task's task */
+	uint16_t            note_len;  /* bytes of note */
+	uint8_t             tool;      /* enum mcp_kind: of a turn's call; KINDS:
+	                                  none of those */
+	uint8_t             fetch;     /* enum mcp_fetch: what its git is for */
+	bool                tooling;   /* it is a turn's call */
+	char                note[387]; /* what askai adds to the output, sized to
+	                                  end the slot unpadded */
 };
 
 /** A request, from its stream's head to its end or cancellation. */
@@ -300,8 +326,9 @@ struct mcp_req {
 	struct jb_parser     parser;     /* of the body, then of the answer */
 	struct jb_reaper     reaper;     /* what is freed a slice a step */
 	struct mcp_splice    splice[2];  /* prompt and system, in draft order */
-	struct dstr          answer;     /* the tool's output; its storage stays
-	                                    with the request for reuse */
+	struct mcp_slot      self;       /* its own call: its answer, the tool
+	                                    that a client calls, and the notes'
+	                                    git it reads */
 	struct dstr          trace;      /* the tool calls the turns made, for the
 	                                    client; likewise */
 	struct buf           calls;      /* a turn's tool calls, as its job had
@@ -310,10 +337,6 @@ struct mcp_req {
 	struct mcp          *mcp;
 	struct job          *job;        /* the tool call's, once submitted, until
 	                                    let go of */
-	struct manual_page  *page;       /* a man call's, until let go of */
-	struct task         *task;       /* a test_task call's, while it waits */
-	struct child        *child;      /* a git call's git, until its output is
-	                                    taken */
 	struct json_object  *msg;        /* parsed, until dispatched; then the
 	                                    upstream's answer, until read */
 	struct json_object  *id;         /* the request's id, if any */
@@ -336,11 +359,7 @@ struct mcp_req {
 	size_t               at;         /* where the call under way is in calls */
 	size_t               replayed;   /* bytes of the job's replay that the
 	                                    turn has written */
-	size_t               skip;       /* the byte of a tool's output that its
-	                                    window, given to a turn, starts at */
-	size_t               window;     /* and the bytes of that */
 	uint64_t             head;       /* loop_clock() at the request's head */
-	uint64_t             start;      /* and as its tool call began */
 	uint64_t             ping_at;    /* when the next keep-alive is due */
 	uint64_t             noted;      /* when the last notification went */
 	uint64_t             base;       /* what the progress was as the turn
@@ -365,15 +384,10 @@ struct mcp_req {
 	uint16_t             part;       /* the part of the turn being written,
 	                                    or its call under way */
 	uint16_t             n_calls;    /* the turn's tool calls */
-	uint16_t             note_len;   /* bytes of note */
 	uint8_t              phase;      /* enum mcp_phase */
 	uint8_t              method;     /* enum metrics_method */
 	uint8_t              asks;       /* enum job_ask: JOB_BACKGROUND for
 	                                    test_task's prompt */
-	uint8_t              tool;       /* enum mcp_kind: the call under way's
-	                                    tool; KINDS: none of those */
-	uint8_t              fetch;      /* enum mcp_fetch: what the notes git is
-	                                    for */
 	uint8_t              forced;     /* compactions askai made since a turn
 	                                    went through */
 	bool                 modern;
@@ -384,7 +398,6 @@ struct mcp_req {
 	                                    due */
 	bool                 progress;   /* the job's progress moved on */
 	bool                 blocked;    /* waiting for on_writable() */
-	bool                 tooling;    /* a tool runs for a turn */
 	bool                 listed;     /* the list that the turn's items go in
 	                                    has one */
 	bool                 branch;     /* the thread has notes */
@@ -393,8 +406,6 @@ struct mcp_req {
 	                                    token limit */
 	char                 thread[NOTES_ID + 1];  /* the notes' thread's id */
 	char                 ref[NOTES_REF];        /* and its ref */
-	char                 note[383];  /* what askai adds to a tool's output,
-	                                    sized to end the request unpadded */
 };
 
 struct mcp {
@@ -424,7 +435,7 @@ static char const busy[] = "Too many tool calls are under way; try again in a "
                            "few seconds.";
 
 /* A run of bytes: a piece of JSON text, or words for a client or the
- * model.  mcp_req_say() and mcp_req_tool_result() take words as text,
+ * model.  mcp_slot_say() and mcp_slot_result() take words as text,
  * whatever their flag. */
 struct mcp_piece {
 	char const *ptr;
@@ -626,7 +637,7 @@ mcp_req_enter (struct mcp_req *req,
 static uint64_t
 mcp_req_kept (struct mcp_req const *req)
 {
-	return sizeof *req + dstr_get_block_count(&req->answer) * DSTR_BLK_SIZE +
+	return sizeof *req + dstr_get_block_count(&req->self.answer) * DSTR_BLK_SIZE +
 	       dstr_get_block_count(&req->trace) * DSTR_BLK_SIZE +
 	       req->scan.cap * sizeof *req->scan.members +
 	       req->reaper.cap * sizeof *req->reaper.stack;
@@ -661,7 +672,7 @@ mcp_spare_take (struct mcp *mcp)
 	if (!node) {
 		struct mcp_req *req = malloc(sizeof *req);
 		if (req)
-			*req = (struct mcp_req){ .answer = DSTR_INIT, .trace = DSTR_INIT };
+			*req = (struct mcp_req){ .self.answer = DSTR_INIT, .trace = DSTR_INIT };
 		return req;
 	}
 	struct mcp_req *req = container_of(node, struct mcp_req, hook);
@@ -681,7 +692,7 @@ mcp_spare_drop (struct mcp *mcp)
 	hist_add(&mcp->counts->kept.bytes[0], -mcp_req_kept(req));
 	jb_reaper_fini(&req->reaper);
 	jb_scan_fini(&req->scan);
-	dstr_cleanup(&req->answer);
+	dstr_cleanup(&req->self.answer);
 	dstr_cleanup(&req->trace);
 	free(req);
 }
@@ -723,6 +734,24 @@ mcp_req_forget (struct mcp_req *req)
 	req->call = (struct handle){};
 }
 
+/* Let go of what @p slot's call waits for, its work, and its output's
+ * page. */
+static void
+mcp_slot_drop (struct mcp_slot *slot)
+{
+	manual_page_put(slot->page);
+	slot->page = nullptr;
+	if (slot->task) {
+		task_drop(slot->task);
+		slot->task = nullptr;
+	}
+	child_destroy(&slot->child);
+	loop_unready(&slot->step);
+	if (slot->call.bits)
+		loop_forget(slot->req->mcp->loop, slot->call);
+	slot->call = (struct handle){};
+}
+
 /* Let go of the request's job, if it has one: cancel it while the request
  * waits for it, freeing the request's handle, so that its completion finds
  * no request; else tell home the result has been read.  A man call lets go
@@ -733,13 +762,7 @@ mcp_req_drop (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	struct job *job = req->job;
-	manual_page_put(req->page);
-	req->page = nullptr;
-	if (req->task) {
-		task_drop(req->task);
-		req->task = nullptr;
-	}
-	child_destroy(&req->child);
+	mcp_slot_drop(&req->self);
 	if (!job) {
 		if (req->call.bits)
 			mcp_req_forget(req);
@@ -785,6 +808,26 @@ mcp_req_wake (struct mcp_req *req)
 	mcp_req_unwait(req);
 }
 
+/* The request waits for its tool's call: on the calls that a drain ends,
+ * its stream told so, its message freed. */
+static void
+mcp_req_park (struct mcp_req *req)
+{
+	mcp_req_wait(req);
+	req->s->ops->waiting(req->s);
+	mcp_req_dispose(req);
+	req->phase = PHASE_TOOL;
+}
+
+/* What @p slot's call waited for is in. */
+static void
+mcp_slot_wake (struct mcp_slot *slot)
+{
+	loop_forget(slot->req->mcp->loop, slot->call);
+	slot->call = (struct handle){};
+	mcp_req_unwait(slot->req);
+}
+
 /* Let go of the arguments of the turn's calls @p k to @p end. */
 static void
 mcp_req_args_free (struct mcp_req *req,
@@ -823,7 +866,7 @@ mcp_req_finish (struct mcp_req *req)
 	buf_fini(&req->upload);
 	buf_fini(&req->reply);
 	buf_fini(&req->calls);
-	dstr_clear(&req->answer);
+	dstr_clear(&req->self.answer);
 	dstr_clear(&req->trace);
 	if (!req->reaper.n) {
 		mcp_req_end(req);
@@ -1135,22 +1178,23 @@ mcp_req_tool_close (struct mcp_req *req)
 	              e ? e : mcp_req_put(req, p, ARRAY_SIZE(p)));
 }
 
-static void mcp_req_tool_done (struct mcp_req *req, bool failed);
+static void mcp_slot_done (struct mcp_slot *slot, bool failed);
 
-/* A tool result of @p text, short and ours; for a turn's tool call, its
- * output, which goes to the turn. */
+/* A tool result of @p text, short and ours, for @p slot's call; for a
+ * turn's tool call, its output, which goes to the turn. */
 static void
-mcp_req_tool_result (struct mcp_req   *req,
-                     struct mcp_piece  text,
-                     bool              failed)
+mcp_slot_result (struct mcp_slot  *slot,
+                 struct mcp_piece  text,
+                 bool              failed)
 {
-	if (req->tooling) {
-		dstr_clear(&req->answer);
-		if (!dstr_cat_n(&req->answer, text.ptr, text.len)) {
+	struct mcp_req *req = slot->req;
+	if (slot->tooling) {
+		dstr_clear(&slot->answer);
+		if (!dstr_cat_n(&slot->answer, text.ptr, text.len)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
 		}
-		mcp_req_tool_done(req, failed);
+		mcp_slot_done(slot, failed);
 		return;
 	}
 	req->failed = failed;
@@ -1162,17 +1206,23 @@ mcp_req_tool_result (struct mcp_req   *req,
 	mcp_req_tool_close(req);
 }
 
-/* The tool's output: a streamed answer's text, in the job's result while
- * the request holds the job, a man page while it holds the page, else what
- * the request read or built. */
+/* The output of @p slot's call: a man page while it holds the page, else
+ * what it read or built. */
+static struct span
+mcp_slot_output (struct mcp_slot const *slot)
+{
+	return slot->page ? (struct span){ (unsigned char *)slot->page->text,
+	                                   slot->page->len }
+	     : (struct span){ (unsigned char *)(uintptr_t)dstr_get(&slot->answer),
+	                      dstr_len(&slot->answer) };
+}
+
+/* The request's output: a streamed answer's text, in the job's result while
+ * the request holds the job, else its own call's. */
 static struct span
 mcp_req_output (struct mcp_req const *req)
 {
-	return req->job ? buf_peek(&req->job->result)
-	     : req->page ? (struct span){ (unsigned char *)req->page->text,
-	                                  req->page->len }
-	     : (struct span){ (unsigned char *)(uintptr_t)dstr_get(&req->answer),
-	                      dstr_len(&req->answer) };
+	return req->job ? buf_peek(&req->job->result) : mcp_slot_output(&req->self);
 }
 
 /* Escape as much of the output into the reply as the step has the share
@@ -1200,32 +1250,34 @@ mcp_req_reply (struct mcp_req *req)
 	mcp_req_tool_close(req);
 }
 
-/* The tool's output is in: for a turn's tool call, the turn takes it;
- * else reply with it, a slice at a time, from the offset that a man or git
- * call asked for, a character's start, or an ask call's whole. */
+/* The output of @p slot's call is in: for a turn's tool call, the turn
+ * takes it; else reply with it, a slice at a time, from the offset that a
+ * man or git call asked for, a character's start, or an ask call's
+ * whole. */
 static void
-mcp_req_respond (struct mcp_req *req,
-                 bool            failed)
+mcp_slot_respond (struct mcp_slot *slot,
+                  bool             failed)
 {
-	if (req->tooling) {
-		mcp_req_tool_done(req, failed);
+	if (slot->tooling) {
+		mcp_slot_done(slot, failed);
 		return;
 	}
+	struct mcp_req *req = slot->req;
 	struct span text = mcp_req_output(req);
 	char const *str = (char const *)text.ptr;
 	if (failed)
-		LOG(LOG_WARN, "tool call failed after %.1f s: %.*s", mcp_elapsed(req->start),
+		LOG(LOG_WARN, "tool call failed after %.1f s: %.*s", mcp_elapsed(slot->start),
 		    (int)mcp_clip(str, text.len, 300), str);
 	else
 		LOG(LOG_VERBOSE, "tool call answered after %.1f s (%zu bytes)",
-		    mcp_elapsed(req->start), text.len);
+		    mcp_elapsed(slot->start), text.len);
 	loop_timer_stop(req->mcp->loop, &req->timer);
-	size_t off = req->lent ? 0 : req->skip;
+	size_t off = req->lent ? 0 : slot->skip;
 	if (off > text.len) {
 		char why[96];
 		size_t n = util_format(why, sizeof why, "The output has %zu bytes, fewer "
 		                       "than the offset.", text.len);
-		mcp_req_tool_result(req, ESC(why, n), true);
+		mcp_slot_result(slot, ESC(why, n), true);
 		return;
 	}
 	while (off < text.len && (text.ptr[off] & 0xc0) == 0x80)
@@ -1456,7 +1508,7 @@ mcp_req_job_done (struct mcp_req *req)
 		/* Its client gave up on it: the stream ends quietly. */
 		if (!req->sse)
 			(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
-		LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", mcp_elapsed(req->start));
+		LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", mcp_elapsed(req->self.start));
 		mcp_req_finish(req);
 		return;
 	case JOB_CANCELLED:
@@ -1479,13 +1531,13 @@ mcp_req_job_done (struct mcp_req *req)
 		}
 	}
 	/* Why the call failed is its output, which the job holds till dropped. */
-	bool ok = dstr_cat_n(&req->answer, (char const *)why.ptr, why.len);
+	bool ok = dstr_cat_n(&req->self.answer, (char const *)why.ptr, why.len);
 	mcp_req_drop(req);
 	if (!ok) {
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
-	mcp_req_respond(req, true);
+	mcp_slot_respond(&req->self, true);
 }
 
 /*
@@ -1762,38 +1814,38 @@ mcp_on_page (struct loop *loop,
              struct msg  *msg)
 {
 	struct manual_wait *w = container_of(msg, struct manual_wait, msg);
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, w->who);
-	if (!req) {
+	struct mcp_slot *slot = loop->exit ? nullptr : loop_lookup(loop, w->who);
+	if (!slot) {
 		manual_wait_destroy(&w);
 		return;
 	}
-	mcp_req_wake(req);
-	req->page = w->page;
+	mcp_slot_wake(slot);
+	slot->page = w->page;
 	w->page = nullptr;
-	if (req->page) {
-		mcp_req_respond(req, false);
+	if (slot->page) {
+		mcp_slot_respond(slot, false);
 	} else {
-		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s", mcp_elapsed(req->start),
+		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s", mcp_elapsed(slot->start),
 		    w->why);
-		mcp_req_tool_result(req, ESC(w->why, strlen(w->why)), true);
+		mcp_slot_result(slot, ESC(w->why, strlen(w->why)), true);
 	}
 	manual_wait_destroy(&w);
 }
 
 /* Take the byte of a tool's output that @p args asks it to start from, its
- * offset, into req->skip; what is wrong with it, if anything. */
+ * offset, into slot->skip; what is wrong with it, if anything. */
 static struct mcp_piece
-mcp_req_offset (struct mcp_req     *req,
-                struct json_object *args)
+mcp_slot_offset (struct mcp_slot    *slot,
+                 struct json_object *args)
 {
 	struct json_object *o = jb_get(args, "offset");
-	req->skip = 0;
+	slot->skip = 0;
 	if (!o)
 		return (struct mcp_piece){};
 	int64_t n = json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : -1;
 	if (n < 0)
 		return TEXT("The offset argument must be a whole number of bytes, from 0.");
-	req->skip = (size_t)n;
+	slot->skip = (size_t)n;
 	return (struct mcp_piece){};
 }
 
@@ -1809,32 +1861,35 @@ mcp_man_word (char const *s,
 }
 
 /* Look up the page of @p name in @p section, of @p name_len and
- * @p section_len bytes: in @p *found if the manual has it, else the request
- * is named to wait for it.  Returns 0 or an error. */
+ * @p section_len bytes: in @p *found if the manual has it, else @p slot is
+ * named to wait for it.  Returns 0 or an error. */
 static int
-mcp_req_man_find (struct mcp_req      *req,
-                  char const          *name,
-                  size_t               name_len,
-                  char const          *section,
-                  size_t               section_len,
-                  struct manual_page **found)
+mcp_slot_man_find (struct mcp_slot     *slot,
+                   char const          *name,
+                   size_t               name_len,
+                   char const          *section,
+                   size_t               section_len,
+                   struct manual_page **found)
 {
-	struct mcp *mcp = req->mcp;
-	int e = loop_handle(mcp->loop, req, &req->call);
+	struct mcp *mcp = slot->req->mcp;
+	int e = loop_handle(mcp->loop, slot, &slot->call);
 	if (e)
 		return e;
-	e = manual_find(&mcp->man, name, name_len, section, section_len, req->call,
+	e = manual_find(&mcp->man, name, name_len, section, section_len, slot->call,
 	                mcp_on_page, found);
-	if (e || *found)
-		mcp_req_forget(req);
+	if (e || *found) {
+		loop_forget(mcp->loop, slot->call);
+		slot->call = (struct handle){};
+	}
 	return e;
 }
 
-/* Start a man call for the page that @p args names, of the section it
- * names if any: reply with it if the manual has it, else wait for it. */
+/* Start a man call in @p slot for the page that @p args names, of the
+ * section it names if any: reply with it if the manual has it, else wait
+ * for it. */
 static void
-mcp_req_man (struct mcp_req     *req,
-             struct json_object *args)
+mcp_slot_man (struct mcp_slot    *slot,
+              struct json_object *args)
 {
 #define ALNUM "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 	struct json_object *section = jb_get(args, "section");
@@ -1860,34 +1915,32 @@ mcp_req_man (struct mcp_req     *req,
 		: section && !(sect && (!len || mcp_man_word(sect, len, MANUAL_SECTION, ALNUM)))
 		? TEXT("The section argument must name a section, such as 1, 3 or 3p: 1 "
 		       "to 16 letters and digits.")
-		: mcp_req_offset(req, args);
+		: mcp_slot_offset(slot, args);
 #undef ALNUM
 	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16, "the problems say");
 	if (problem.ptr) {
-		mcp_req_tool_result(req, problem, true);
+		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	if (!req->tooling)
-		req->start = loop_clock();
+	struct mcp_req *req = slot->req;
+	if (!slot->tooling)
+		slot->start = loop_clock();
 	struct manual_page *found = nullptr;
-	int e = mcp_req_man_find(req, page, page_len, sect, len, &found);
+	int e = mcp_slot_man_find(slot, page, page_len, sect, len, &found);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
 	}
 	if (found) {
-		req->page = found;
-		mcp_req_respond(req, false);
+		slot->page = found;
+		mcp_slot_respond(slot, false);
 		return;
 	}
-	mcp_req_wait(req);
-	req->s->ops->waiting(req->s);
-	mcp_req_dispose(req);
-	req->phase = PHASE_MAN;
+	mcp_req_park(req);
 }
 
-static void mcp_req_notes_fetch (struct mcp_req *req, enum mcp_fetch fetch,
-                                 char const *search);
+static void mcp_slot_notes_fetch (struct mcp_slot *slot, enum mcp_fetch fetch,
+                                  char const *search);
 
 /* Serialize the tools that the turns of @p obj's userdata, a request, may
  * call: their definitions as the upstream's API has them, each after a
@@ -1987,7 +2040,7 @@ mcp_req_ask (struct mcp_req     *req,
 		       "gave it: 32 hexadecimal digits.")
 		: (struct mcp_piece){};
 	if (problem.ptr) {
-		mcp_req_tool_result(req, problem, true);
+		mcp_slot_result(&req->self, problem, true);
 		return;
 	}
 	if (id) {
@@ -2001,7 +2054,7 @@ mcp_req_ask (struct mcp_req     *req,
 		}
 		notes_ref(req->s->principal, req->thread, req->ref);
 	}
-	req->start = loop_clock();
+	req->self.start = loop_clock();
 	mcp_req_wait(req);
 	int e = mcp_req_draft(req, prompt, system);
 	if (e) {
@@ -2016,7 +2069,7 @@ mcp_req_ask (struct mcp_req     *req,
 	bool resume = id;
 	mcp_req_dispose(req);
 	if (resume) {
-		mcp_req_notes_fetch(req, FETCH_RESUME, nullptr);
+		mcp_slot_notes_fetch(&req->self, FETCH_RESUME, nullptr);
 		return;
 	}
 	mcp_req_enter(req, PHASE_BUILD);
@@ -2063,35 +2116,36 @@ mcp_spin_back (struct loop *loop,
 {
 	struct task *task = container_of(msg, struct task, msg);
 	struct mcp_spin *s = container_of(task, struct mcp_spin, task);
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, s->call);
-	if (!req) {
+	struct mcp_slot *slot = loop->exit ? nullptr : loop_lookup(loop, s->call);
+	if (!slot) {
 		task_put(task, 1);
 		return;
 	}
-	mcp_req_wake(req);
-	req->task = nullptr;
+	mcp_slot_wake(slot);
+	slot->task = nullptr;
 	char text[96];
 	size_t n = util_format(text, sizeof text, "Ran %" PRIu64 " slices, and moved "
 	                       "%" PRIu64 " times between loops.", s->slices,
 	                       task->moves);
 	task_put(task, 2);
-	mcp_req_tool_result(req, ESC(text, n), false);
+	mcp_slot_result(slot, ESC(text, n), false);
 }
 
-/* Run the @p slices a test_task call asks for as a task, which the call
- * waits for. */
+/* Run the @p slices a test_task call in @p slot asks for as a task, which
+ * the call waits for. */
 static void
-mcp_req_spin (struct mcp_req     *req,
-              struct json_object *slices)
+mcp_slot_spin (struct mcp_slot    *slot,
+               struct json_object *slices)
 {
 	static_assert(SPIN_MAX == 100'000, "the problem says");
+	struct mcp_req *req = slot->req;
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
 	int64_t n = json_object_is_type(slices, json_type_int)
 	          ? json_object_get_int64(slices) : 0;
 	if (n < 1 || n > SPIN_MAX) {
-		mcp_req_tool_result(req, TEXT("The slices argument must be a whole number "
-		                              "from 1 to 100000."), true);
+		mcp_slot_result(slot, TEXT("The slices argument must be a whole number "
+		                           "from 1 to 100000."), true);
 		return;
 	}
 	struct mcp_spin *s = malloc(sizeof *s);
@@ -2099,7 +2153,7 @@ mcp_req_spin (struct mcp_req     *req,
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
-	int e = loop_handle(loop, req, &req->call);
+	int e = loop_handle(loop, slot, &slot->call);
 	if (e) {
 		free(s);
 		mcp_req_fail(req, e);
@@ -2109,13 +2163,10 @@ mcp_req_spin (struct mcp_req     *req,
 	s->left = (uint64_t)n;
 	s->slices = 0;
 	s->x = loop->now | 1;
-	s->call = req->call;
-	req->start = loop_clock();
-	req->task = &s->task;
-	mcp_req_wait(req);
-	req->s->ops->waiting(req->s);
-	mcp_req_dispose(req);
-	req->phase = PHASE_TASK;
+	s->call = slot->call;
+	slot->start = loop_clock();
+	slot->task = &s->task;
+	mcp_req_park(req);
 	task_submit(&s->task, loop);
 }
 
@@ -2127,39 +2178,40 @@ mcp_req_task (struct mcp_req     *req,
               struct json_object *args)
 {
 	if (args && !json_object_is_type(args, json_type_object)) {
-		mcp_req_tool_result(req, TEXT("Tool arguments must be an object."), true);
+		mcp_slot_result(&req->self, TEXT("Tool arguments must be an object."), true);
 		return;
 	}
 	struct json_object *slices = jb_get(args, "slices");
 	if (!jb_get(args, "prompt")) {
-		mcp_req_spin(req, slices);
+		mcp_slot_spin(&req->self, slices);
 		return;
 	}
 	if (slices) {
-		mcp_req_tool_result(req, TEXT("Give slices or a prompt, not both."), true);
+		mcp_slot_result(&req->self, TEXT("Give slices or a prompt, not both."), true);
 		return;
 	}
 	req->asks = JOB_BACKGROUND;
 	mcp_req_ask(req, args);
 }
 
-/* git's output is all in: take it a slice a step. */
+/* The output of a slot's git is all in: take it a slice a step, in the
+ * slot's own. */
 static void
 mcp_on_git (struct child *c)
 {
-	struct mcp_req *req = c->owner;
-	req->off = 0;
-	mcp_req_enter(req, PHASE_GIT_TEXT);
+	struct mcp_slot *slot = c->owner;
+	slot->off = 0;
+	loop_ready_bulk(slot->req->mcp->loop, &slot->step);
 }
 
-/* Append the @p n pieces at @p p to the request's answer: 0, or ENOMEM. */
+/* Append the @p n pieces at @p p to @p slot's answer: 0, or ENOMEM. */
 static int
-mcp_req_say (struct mcp_req         *req,
-             struct mcp_piece const *p,
-             size_t                  n)
+mcp_slot_say (struct mcp_slot        *slot,
+              struct mcp_piece const *p,
+              size_t                  n)
 {
 	for (size_t i = 0; i < n; ++i)
-		if (!dstr_cat_n(&req->answer, p[i].ptr, p[i].len))
+		if (!dstr_cat_n(&slot->answer, p[i].ptr, p[i].len))
 			return ENOMEM;
 	return 0;
 }
@@ -2169,11 +2221,12 @@ mcp_req_say (struct mcp_req         *req,
  * none; then reply.  An exit status of 1 with nothing written, as grep's
  * finding none, is no failure. */
 static void
-mcp_req_git_ended (struct mcp_req *req)
+mcp_slot_git_ended (struct mcp_slot *slot)
 {
 	static_assert(GIT_MAX == 2 << 20, "the note says 2 MiB");
-	struct child *c = req->child;
-	size_t len = dstr_len(&req->answer);
+	struct mcp_req *req = slot->req;
+	struct child *c = slot->child;
+	size_t len = dstr_len(&slot->answer);
 	char buf[96];
 	struct mcp_piece note;
 	bool failed = true;
@@ -2195,66 +2248,67 @@ mcp_req_git_ended (struct mcp_req *req)
 		note = len ? (struct mcp_piece){} : TEXT("[No output.]");
 		failed = false;
 	}
-	child_destroy(&req->child);
+	child_destroy(&slot->child);
 	mcp_req_unwait(req);
 	struct mcp_piece const p[] = {
-		!len ? FRAG("") : dstr_get(&req->answer)[len - 1] == '\n' ? FRAG("\n")
-		                                                          : FRAG("\n\n"),
+		!len ? FRAG("") : dstr_get(&slot->answer)[len - 1] == '\n' ? FRAG("\n")
+		                                                         : FRAG("\n\n"),
 		note,
 	};
-	if (note.ptr && mcp_req_say(req, p, ARRAY_SIZE(p))) {
+	if (note.ptr && mcp_slot_say(slot, p, ARRAY_SIZE(p))) {
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
-	mcp_req_respond(req, failed);
+	mcp_slot_respond(slot, failed);
 }
 
-/* Take a slice of a git call's output into its answer, made UTF-8 text;
- * once all is in, reply. */
+/* Take a slice of the output of @p slot's git into its answer, made UTF-8
+ * text; once all is in, reply. */
 static void
-mcp_req_git_text (struct mcp_req *req)
+mcp_slot_git_text (struct mcp_slot *slot)
 {
-	struct loop *loop = req->mcp->loop;
-	struct span out = buf_peek(&req->child->out);
-	size_t left = out.len - req->off;
+	struct loop *loop = slot->req->mcp->loop;
+	struct span out = buf_peek(&slot->child->out);
+	size_t left = out.len - slot->off;
 	size_t room = loop_room(loop, LOOP_COPY);
 	size_t n = left < room ? left : room;
 	if (n) {
-		char *p = (char *)out.ptr + req->off;
+		char *p = (char *)out.ptr + slot->off;
 		n = jb_mend(p, n, n == left);
-		if (!dstr_cat_n(&req->answer, p, n)) {
-			mcp_req_fail(req, ENOMEM);
+		if (!dstr_cat_n(&slot->answer, p, n)) {
+			mcp_req_fail(slot->req, ENOMEM);
 			return;
 		}
 	}
 	loop_work(loop, LOOP_COPY, n);
-	req->off += n;
-	if (req->off < out.len) {
-		loop_ready_bulk(loop, &req->step);
+	slot->off += n;
+	if (slot->off < out.len) {
+		loop_ready_bulk(loop, &slot->step);
 		return;
 	}
-	mcp_req_git_ended(req);
+	mcp_slot_git_ended(slot);
 }
 
-/* Start a git call: the command @p args asks for, in the repository it
- * names. */
+/* Start a git call in @p slot: the command @p args asks for, in the
+ * repository it names. */
 static void
-mcp_req_git (struct mcp_req     *req,
-             struct json_object *args)
+mcp_slot_git (struct mcp_slot    *slot,
+              struct json_object *args)
 {
+	struct mcp_req *req = slot->req;
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
 	struct git const *git = mcp->st->git;
 	char const *argv[GIT_ARGV];
 	char why[GIT_WHY];
 	struct mcp_piece problem = git_command(git, args, argv, why)
-	                         ? ESC(why, strlen(why)) : mcp_req_offset(req, args);
+	                         ? ESC(why, strlen(why)) : mcp_slot_offset(slot, args);
 	if (problem.ptr) {
-		mcp_req_tool_result(req, problem, true);
+		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	if (!req->tooling)
-		req->start = loop_clock();
+	if (!slot->tooling)
+		slot->start = loop_clock();
 	struct child_cmd const cmd = {
 		.file = "git",
 		.argv = argv,
@@ -2265,30 +2319,28 @@ mcp_req_git (struct mcp_req     *req,
 		.flags = CHILD_STDERR
 	};
 	int e = 0;
-	req->child = child_create(loop, &mcp->children, &cmd, mcp_on_git, req, &e);
+	slot->fetch = FETCH_GIT;
+	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_git, slot, &e);
 	if (e == EBUSY) {
-		mcp_req_tool_result(req, TEXT("Too many commands are running; try again in "
-		                              "a few seconds."), true);
+		mcp_slot_result(slot, TEXT("Too many commands are running; try again in a "
+		                           "few seconds."), true);
 		return;
 	}
 	if (e) {
 		size_t n = util_format(why, sizeof why, "Cannot run git: %s.", strerror(e));
 		LOG(LOG_WARN, "%s", why);
-		mcp_req_tool_result(req, ESC(why, n), true);
+		mcp_slot_result(slot, ESC(why, n), true);
 		return;
 	}
-	mcp_req_wait(req);
-	req->s->ops->waiting(req->s);
 	if (req->sse_ok && !req->sse)
 		mcp_req_stream(req);
-	mcp_req_dispose(req);
-	req->phase = PHASE_GIT;
+	mcp_req_park(req);
 }
 
 static void mcp_req_tool_start (struct mcp_req *req);
 static bool mcp_req_slice (struct mcp_req *req, struct jb_pool *pool,
                            struct span json);
-static void mcp_req_notes (struct mcp_req *req, struct json_object *args);
+static void mcp_slot_notes (struct mcp_slot *slot, struct json_object *args);
 static void mcp_req_compact (struct mcp_req *req, struct json_object *args);
 static void mcp_req_turn_submit (struct mcp_req *req);
 static void mcp_req_add_start (struct mcp_req *req);
@@ -2445,7 +2497,7 @@ mcp_req_turn_done (struct mcp_req *req)
 	req->cut = ai_cut(mcp->st->ep->api, job->reason);
 	req->forced = 0;
 	if (calls.len > CALLS_MAX) {
-		mcp_req_tool_result(req, TEXT("The other AI's tool calls in one turn took "
+		mcp_slot_result(&req->self, TEXT("The other AI's tool calls in one turn took "
 		                              "more than 1 MiB, so none was run."), true);
 		return;
 	}
@@ -2737,10 +2789,10 @@ mcp_req_tool_of (struct mcp_req const *req,
 	return KINDS;
 }
 
-/* Run the turn's tool call req->part, unless all have run.  A call goes to
- * the tool of its name that the turns may call, which writes its output
- * into the request's answer, or gives a page, and calls
- * mcp_req_tool_done(). */
+/* Run the turn's tool call req->part, unless all have run, in the
+ * request's own slot.  A call goes to the tool of its name that the turns
+ * may call, which writes its output into the slot's answer, or gives a
+ * page, and calls mcp_slot_done(). */
 static void
 mcp_req_tool_start (struct mcp_req *req)
 {
@@ -2763,30 +2815,31 @@ mcp_req_tool_start (struct mcp_req *req)
 	enum mcp_kind tool = mcp_req_tool_of(req, c.name);
 	/* Its arguments go once its result is written, or the request ends. */
 	struct json_object *args = req->args[req->part];
-	req->tool = (uint8_t)tool;
+	struct mcp_slot *slot = &req->self;
+	slot->tool = (uint8_t)tool;
 	hist_add(&mcp->counts->calls.lent[kind_info[tool].metric], 1);
-	req->skip = 0;
-	req->tooling = true;
-	dstr_clear(&req->answer);
+	slot->skip = 0;
+	slot->tooling = true;
+	dstr_clear(&slot->answer);
 	(void)mcp_req_trace(req, &c, args, tool);
 	mcp_req_notify_tool(req, kind_info[tool].ptr);
 	if (!args) {
-		mcp_req_tool_result(req, req->cut
-		                    ? TEXT("Your answer reached the output token limit, which "
-		                           "cut these arguments short, so the call was not run.")
-		                    : TEXT("Your arguments were not a JSON object, so the call "
-		                           "was not run."), true);
+		mcp_slot_result(slot, req->cut
+		                ? TEXT("Your answer reached the output token limit, which "
+		                       "cut these arguments short, so the call was not run.")
+		                : TEXT("Your arguments were not a JSON object, so the call "
+		                       "was not run."), true);
 		return;
 	}
 	switch (tool) {
 	case KIND_MAN:
-		mcp_req_man(req, args);
+		mcp_slot_man(slot, args);
 		return;
 	case KIND_GIT:
-		mcp_req_git(req, args);
+		mcp_slot_git(slot, args);
 		return;
 	case KIND_NOTES:
-		mcp_req_notes(req, args);
+		mcp_slot_notes(slot, args);
 		return;
 	case KIND_COMPACT:
 		mcp_req_compact(req, args);
@@ -2796,20 +2849,21 @@ mcp_req_tool_start (struct mcp_req *req)
 	case KINDS:
 		break;
 	}
-	mcp_req_tool_result(req, TEXT("No tool of that name is yours to call."), true);
+	mcp_slot_result(slot, TEXT("No tool of that name is yours to call."), true);
 }
 
-/* Take the window of the output @p out that the turn takes into req->skip
- * and req->window: from req->skip, or the output's end, a character's
- * start, up to mcp_req_lend_max() bytes, to a line's end if one is near. */
+/* Take the window of the output @p out of @p slot's call that the turn
+ * takes into slot->skip and slot->window: from slot->skip, or the output's
+ * end, a character's start, up to mcp_req_lend_max() bytes, to a line's end
+ * if one is near. */
 static void
-mcp_req_window (struct mcp_req *req,
-                struct span     out)
+mcp_slot_window (struct mcp_slot *slot,
+                 struct span      out)
 {
-	size_t skip = req->skip < out.len ? req->skip : out.len;
+	size_t skip = slot->skip < out.len ? slot->skip : out.len;
 	while (skip < out.len && (out.ptr[skip] & 0xc0) == 0x80)
 		++skip;
-	size_t cap = mcp_req_lend_max(req);
+	size_t cap = mcp_req_lend_max(slot->req);
 	size_t len = out.len - skip;
 	size_t window = len;
 	if (len > cap) {
@@ -2819,63 +2873,64 @@ mcp_req_window (struct mcp_req *req,
 		if (nl)
 			window = (size_t)(nl - out.ptr - skip) + 1;
 	}
-	req->skip = skip;
-	req->window = window;
+	slot->skip = skip;
+	slot->window = window;
 }
 
-/* Say in req->note where the window is in the output of @p len bytes, unless
- * it is all of it, or that req->skip was @p past its end; returns the note's
- * length. */
+/* Say in slot->note where the window is in the output of @p len bytes of
+ * @p slot's call, unless it is all of it, or that slot->skip was @p past
+ * its end; returns the note's length. */
 static size_t
-mcp_req_note_window (struct mcp_req *req,
-                     size_t          len,
-                     bool            past)
+mcp_slot_note_window (struct mcp_slot *slot,
+                      size_t           len,
+                      bool             past)
 {
-	size_t end = req->skip + req->window;
+	size_t end = slot->skip + slot->window;
 	if (end < len) {
-		if (kind_info[req->tool].paged)
-			return util_format(req->note, sizeof req->note, "\n\n[Bytes %zu to %zu "
+		if (kind_info[slot->tool].paged)
+			return util_format(slot->note, sizeof slot->note, "\n\n[Bytes %zu to %zu "
 			                   "of %zu: for the rest, call again with \"offset\": "
-			                   "%zu.]", req->skip, end, len, end);
-		return util_format(req->note, sizeof req->note, "\n\n[Bytes %zu to %zu of "
-		                   "%zu: the rest is cut.]", req->skip, end, len);
+			                   "%zu.]", slot->skip, end, len, end);
+		return util_format(slot->note, sizeof slot->note, "\n\n[Bytes %zu to %zu of "
+		                   "%zu: the rest is cut.]", slot->skip, end, len);
 	}
 	if (past)
-		return util_format(req->note, sizeof req->note, "[The output has %zu bytes, "
+		return util_format(slot->note, sizeof slot->note, "[The output has %zu bytes, "
 		                   "fewer than the offset.]", len);
-	if (req->skip)
-		return util_format(req->note, sizeof req->note, "\n\n[Bytes %zu to %zu of "
-		                   "%zu: its end.]", req->skip, len, len);
+	if (slot->skip)
+		return util_format(slot->note, sizeof slot->note, "\n\n[Bytes %zu to %zu of "
+		                   "%zu: its end.]", slot->skip, len, len);
 	return 0;
 }
 
-/* The call under way has its output: its window, and what askai adds after
+/* The call in @p slot has its output: its window, and what askai adds after
  * it, then write its result.  After the turn's last call, askai adds what
  * the context holds, if it fills up, and that the next turn is the last, if
  * it is. */
 static void
-mcp_req_tool_done (struct mcp_req *req,
-                   bool            failed)
+mcp_slot_done (struct mcp_slot *slot,
+               bool             failed)
 {
-	struct span out = mcp_req_output(req);
-	req->tooling = false;
-	bool past = req->skip > out.len;
+	struct mcp_req *req = slot->req;
+	struct span out = mcp_slot_output(slot);
+	slot->tooling = false;
+	bool past = slot->skip > out.len;
 	(void)mcp_req_trace_end(req, failed, out.len);
-	mcp_req_window(req, out);
-	size_t n = mcp_req_note_window(req, out.len, past);
+	mcp_slot_window(slot, out);
+	size_t n = mcp_slot_note_window(slot, out.len, past);
 	if (req->part + 1u == req->n_calls) {
-		size_t size = sizeof req->note;
-		uint64_t tokens = mcp_req_tokens(req) + (req->window + n) / 4;
+		size_t size = sizeof slot->note;
+		uint64_t tokens = mcp_req_tokens(req) + (slot->window + n) / 4;
 		if (req->context && tokens * 4 >= (uint64_t)req->context * 3)
-			n += util_format(req->note + n, size - n, "\n\n[askai: your context is "
+			n += util_format(slot->note + n, size - n, "\n\n[askai: your context is "
 			                 "%" PRIu64 "%% full, %" PRIu64 " of %" PRIu32 " tokens. "
 			                 "Note what you need to keep, then call compact.]",
 			                 tokens * 100 / req->context, tokens, req->context);
 		if (req->turn + 1u == req->mcp->st->turns)
-			n += util_format(req->note + n, size - n, "\n\n[askai: your next turn "
+			n += util_format(slot->note + n, size - n, "\n\n[askai: your next turn "
 			                 "is your last: answer then, without calling tools.]");
 	}
-	req->note_len = (uint16_t)n;
+	slot->note_len = (uint16_t)n;
 	req->next = 0;
 	req->off = 0;
 	mcp_req_enter(req, PHASE_RESULT);
@@ -2888,7 +2943,8 @@ mcp_req_result_put (struct mcp_req        *req,
                     struct mcp_call const *c)
 {
 	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
-	struct span out = mcp_req_output(req);
+	struct mcp_slot const *slot = &req->self;
+	struct span out = mcp_slot_output(slot);
 	char made[CALL_ID];
 	struct mcp_piece id;
 	int e = mcp_req_call_id(req, c, req->part, made, &id);
@@ -2912,8 +2968,8 @@ mcp_req_result_put (struct mcp_req        *req,
 		by,
 		also,
 		BYTES(f->output),
-		ESC(out.len ? out.ptr + req->skip : nullptr, req->window),
-		ESC(req->note, req->note_len),
+		ESC(out.len ? out.ptr + slot->skip : nullptr, slot->window),
+		ESC(slot->note, slot->note_len),
 		BYTES(f->result_end),
 		BYTES(f->results_end),
 		BYTES(f->end),
@@ -2937,11 +2993,12 @@ mcp_req_result_write (struct mcp_req *req)
 		mcp_req_upload_failed(req, e);
 		return;
 	}
-	manual_page_put(req->page);
-	req->page = nullptr;
-	dstr_clear(&req->answer);
-	req->note_len = 0;
-	req->skip = req->window = 0;
+	struct mcp_slot *slot = &req->self;
+	manual_page_put(slot->page);
+	slot->page = nullptr;
+	dstr_clear(&slot->answer);
+	slot->note_len = 0;
+	slot->skip = slot->window = 0;
 	req->at += c.size;
 	mcp_req_args_free(req, req->part, req->part + 1u);
 	++req->part;
@@ -2967,7 +3024,7 @@ mcp_req_turn_submit (struct mcp_req *req)
 static void
 mcp_req_turn_ready (struct mcp_req *req)
 {
-	if (dstr_len(&req->answer))
+	if (dstr_len(&req->self.answer))
 		mcp_req_add_start(req);
 	else
 		mcp_req_turn_submit(req);
@@ -2992,7 +3049,7 @@ mcp_req_add_write (struct mcp_req *req)
 {
 	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
 	struct mcp_piece const p[] = {
-		ESC(dstr_get(&req->answer), dstr_len(&req->answer)),
+		ESC(dstr_get(&req->self.answer), dstr_len(&req->self.answer)),
 		BYTES(f->prompt_end),
 		BYTES(f->end),
 	};
@@ -3011,7 +3068,7 @@ mcp_req_add_write (struct mcp_req *req)
 		mcp_req_fail(req, e);
 		return;
 	}
-	dstr_clear(&req->answer);
+	dstr_clear(&req->self.answer);
 	mcp_req_turn_submit(req);
 }
 
@@ -3022,7 +3079,7 @@ mcp_req_go_on (struct mcp_req   *req,
                struct mcp_piece  text)
 {
 	struct mcp_piece const p[] = { text, TEXT("[askai: go on with the task.]") };
-	int e = mcp_req_say(req, p, ARRAY_SIZE(p));
+	int e = mcp_slot_say(&req->self, p, ARRAY_SIZE(p));
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -3031,12 +3088,13 @@ mcp_req_go_on (struct mcp_req   *req,
 }
 
 /* Spawn the git of @p argv, its input @p in, for the notes, for what
- * req->fetch says: 0, or why not. */
+ * req->self.fetch says: 0, or why not. */
 static int
-mcp_req_notes_spawn (struct mcp_req *req,
-                     char const     *argv[],
-                     struct span     in)
+mcp_slot_notes_spawn (struct mcp_slot *slot,
+                      char const      *argv[],
+                      struct span      in)
 {
+	struct mcp_req *req = slot->req;
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
 	struct child_cmd const cmd = {
@@ -3049,11 +3107,11 @@ mcp_req_notes_spawn (struct mcp_req *req,
 		.flags = CHILD_STDERR
 	};
 	int e = 0;
-	req->child = child_create(loop, &mcp->children, &cmd, mcp_on_notes, req, &e);
-	if (!req->child)
+	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_notes, slot, &e);
+	if (!slot->child)
 		return e;
 	mcp_req_wait(req);
-	req->phase = PHASE_NOTES;
+	req->phase = PHASE_TOOL;
 	return 0;
 }
 
@@ -3061,39 +3119,41 @@ mcp_req_notes_spawn (struct mcp_req *req,
  * without the notes; the notes tool's call, or a thread gone on with, ends
  * with why. */
 static void
-mcp_req_notes_failed (struct mcp_req *req,
-                      int             e)
+mcp_slot_notes_failed (struct mcp_slot *slot,
+                       int              e)
 {
-	if (req->fetch == FETCH_COMPACT || req->fetch == FETCH_FULL) {
+	struct mcp_req *req = slot->req;
+	if (slot->fetch == FETCH_COMPACT || slot->fetch == FETCH_FULL) {
 		if (e != EBUSY)
 			LOG(LOG_WARN, "notes: cannot run git: %s", strerror(e));
 		mcp_req_go_on(req, TEXT("\n\n[askai: your notes could not be read.]\n\n"));
 		return;
 	}
 	if (e == EBUSY) {
-		mcp_req_tool_result(req, TEXT("Too many commands are running; try again in "
+		mcp_slot_result(slot, TEXT("Too many commands are running; try again in "
 		                              "a few seconds."), true);
 		return;
 	}
 	LOG(LOG_WARN, "notes: cannot run git: %s", strerror(e));
 	char why[96];
-	mcp_req_tool_result(req, ESC(why, util_format(why, sizeof why, "Cannot run git: "
+	mcp_slot_result(slot, ESC(why, util_format(why, sizeof why, "Cannot run git: "
 	                                              "%s.", strerror(e))), true);
 }
 
 /* Read the notes of the request's thread for @p fetch, those that hold
  * @p search if not nullptr. */
 static void
-mcp_req_notes_fetch (struct mcp_req *req,
-                     enum mcp_fetch  fetch,
-                     char const     *search)
+mcp_slot_notes_fetch (struct mcp_slot *slot,
+                      enum mcp_fetch   fetch,
+                      char const      *search)
 {
+	struct mcp_req *req = slot->req;
 	char const *argv[NOTES_ARGV];
 	notes_read(req->mcp->st->notes, req->ref, search, argv);
-	req->fetch = (uint8_t)fetch;
-	int e = mcp_req_notes_spawn(req, argv, (struct span){});
+	slot->fetch = (uint8_t)fetch;
+	int e = mcp_slot_notes_spawn(slot, argv, (struct span){});
 	if (e)
-		mcp_req_notes_failed(req, e);
+		mcp_slot_notes_failed(slot, e);
 }
 
 /* What is wrong with the search argument, for write, which takes none, or
@@ -3103,9 +3163,10 @@ static char const bad_search[] = "The search argument, which only read takes, "
 
 /* The notes tool's write: a note of the text that @p args gives. */
 static void
-mcp_req_notes_write (struct mcp_req     *req,
-                     struct json_object *args)
+mcp_slot_notes_write (struct mcp_slot    *slot,
+                      struct json_object *args)
 {
+	struct mcp_req *req = slot->req;
 	static_assert(NOTES_TEXT == 8 << 10, "the problem says");
 	size_t len = 0;
 	char const *note = mcp_str(jb_get(args, "text"), &len);
@@ -3115,7 +3176,7 @@ mcp_req_notes_write (struct mcp_req     *req,
 		: jb_get(args, "search") ? TEXT(bad_search)
 		: (struct mcp_piece){};
 	if (problem.ptr) {
-		mcp_req_tool_result(req, problem, true);
+		mcp_slot_result(slot, problem, true);
 		return;
 	}
 	char const *argv[NOTES_ARGV];
@@ -3125,58 +3186,60 @@ mcp_req_notes_write (struct mcp_req     *req,
 		mcp_req_fail(req, e);
 		return;
 	}
-	req->fetch = FETCH_WRITE;
-	e = mcp_req_notes_spawn(req, argv, buf_peek(&req->body));
+	slot->fetch = FETCH_WRITE;
+	e = mcp_slot_notes_spawn(slot, argv, buf_peek(&req->body));
 	buf_fini(&req->body);
 	if (e)
-		mcp_req_notes_failed(req, e);
+		mcp_slot_notes_failed(slot, e);
 }
 
 /* The notes tool's read: the notes, those that hold the text that @p args
  * searches for, if any. */
 static void
-mcp_req_notes_read (struct mcp_req     *req,
-                    struct json_object *args)
+mcp_slot_notes_read (struct mcp_slot    *slot,
+                     struct json_object *args)
 {
+	struct mcp_req *req = slot->req;
 	static_assert(NOTES_SEARCH == 1 << 10, "the problem says");
 	struct json_object *search = jb_get(args, "search");
 	size_t len = 0;
 	char const *find = mcp_str(search, &len);
 	if (search && (!find || !len || len > NOTES_SEARCH || strcspn(find, "\n") < len)) {
-		mcp_req_tool_result(req, TEXT(bad_search), true);
+		mcp_slot_result(slot, TEXT(bad_search), true);
 		return;
 	}
 	if (!req->branch) {
-		mcp_req_tool_result(req, TEXT("You have written no notes yet."), false);
+		mcp_slot_result(slot, TEXT("You have written no notes yet."), false);
 		return;
 	}
-	mcp_req_notes_fetch(req, FETCH_READ, find);
+	mcp_slot_notes_fetch(slot, FETCH_READ, find);
 }
 
 /* The notes tool's call: write a note, or read them back. */
 static void
-mcp_req_notes (struct mcp_req     *req,
-               struct json_object *args)
+mcp_slot_notes (struct mcp_slot    *slot,
+                struct json_object *args)
 {
 	struct json_object *action = jb_get(args, "action");
 	if (jb_is(action, "write")) {
-		mcp_req_notes_write(req, args);
+		mcp_slot_notes_write(slot, args);
 		return;
 	}
 	if (!jb_is(action, "read")) {
-		mcp_req_tool_result(req, TEXT("The action argument must be write or read."),
+		mcp_slot_result(slot, TEXT("The action argument must be write or read."),
 		                    true);
 		return;
 	}
-	mcp_req_notes_read(req, args);
+	mcp_slot_notes_read(slot, args);
 }
 
 /* The notes' git has ended, its output all in: take it in a step of its
- * own. */
+ * slot's own. */
 static void
 mcp_on_notes (struct child *c)
 {
-	mcp_req_enter(c->owner, PHASE_NOTES_OUT);
+	struct mcp_slot *slot = c->owner;
+	loop_ready_bulk(slot->req->mcp->loop, &slot->step);
 }
 
 /* Whether the notes' git @p c gave what it was run for: its output cut is
@@ -3211,10 +3274,11 @@ mcp_note_end (struct span out,
  * are only counted, @p cut saying that git's output was cut, so that some
  * went uncounted. */
 static int
-mcp_req_notes_render (struct mcp_req *req,
-                      struct span     out,
-                      bool            cut)
+mcp_slot_notes_render (struct mcp_slot *slot,
+                       struct span      out,
+                       bool             cut)
 {
+	struct mcp_req *req = slot->req;
 	/* What a rendered note adds to its text, and the line before them. */
 	enum { EACH = 8, HEAD = 64 };
 	size_t budget = mcp_req_lend_max(req);
@@ -3236,20 +3300,20 @@ mcp_req_notes_render (struct mcp_req *req,
 	loop_work(req->mcp->loop, LOOP_COPY, out.len);
 	/* How many older notes are not shown, and some uncounted if cut. */
 	if (more) {
-		if (!dstr_printf(&req->answer, "[%" PRIu32 "%s older note%s.]\n\n", more,
+		if (!dstr_printf(&slot->answer, "[%" PRIu32 "%s older note%s.]\n\n", more,
 		                 cut ? " or more" : "", more > 1 || cut
 		                 ? "s are not shown: search for them"
 		                 : " is not shown: search for it"))
 			return ENOMEM;
-	} else if (cut && !CAT(&req->answer, "[Older notes are not shown: search for "
+	} else if (cut && !CAT(&slot->answer, "[Older notes are not shown: search for "
 	                       "them.]\n\n")) {
 		return ENOMEM;
 	}
 	for (uint32_t k = n; k--; ) {
 		char const *note = (char const *)shown[k].ptr;
-		if (!dstr_printf(&req->answer, "%" PRIu32 ". ", n - k) ||
-		    !dstr_cat_n(&req->answer, note, jb_utf8(note, shown[k].len)) ||
-		    !(k ? CAT(&req->answer, "\n\n") : CAT(&req->answer, "\n")))
+		if (!dstr_printf(&slot->answer, "%" PRIu32 ". ", n - k) ||
+		    !dstr_cat_n(&slot->answer, note, jb_utf8(note, shown[k].len)) ||
+		    !(k ? CAT(&slot->answer, "\n\n") : CAT(&slot->answer, "\n")))
 			return ENOMEM;
 	}
 	return 0;
@@ -3258,25 +3322,25 @@ mcp_req_notes_render (struct mcp_req *req,
 /* Add @p head, then the notes that the notes' git read, to the request's
  * answer. */
 static int
-mcp_req_notes_list (struct mcp_req   *req,
-                    struct mcp_piece  head)
+mcp_slot_notes_list (struct mcp_slot  *slot,
+                     struct mcp_piece  head)
 {
-	struct child const *c = req->child;
-	int e = mcp_req_say(req, &head, 1);
-	return e ? e : mcp_req_notes_render(req, buf_peek(&c->out), c->cut);
+	struct child const *c = slot->child;
+	int e = mcp_slot_say(slot, &head, 1);
+	return e ? e : mcp_slot_notes_render(slot, buf_peek(&c->out), c->cut);
 }
 
 /* Say whether the notes' git wrote the note, as @p ok says, and if not,
  * why. */
 static int
-mcp_req_notes_said (struct mcp_req *req,
-                    bool            ok)
+mcp_slot_notes_said (struct mcp_slot *slot,
+                     bool             ok)
 {
-	struct child const *c = req->child;
+	struct child const *c = slot->child;
 	if (ok)
-		return mcp_req_say(req, &TEXT("Noted."), 1);
+		return mcp_slot_say(slot, &TEXT("Noted."), 1);
 	if (c->late)
-		return mcp_req_say(req, &TEXT("Could not write the note: git took too "
+		return mcp_slot_say(slot, &TEXT("Could not write the note: git took too "
 		                              "long."), 1);
 	struct span out = buf_peek(&c->out);
 	char const *why = (char const *)out.ptr;
@@ -3284,71 +3348,74 @@ mcp_req_notes_said (struct mcp_req *req,
 		TEXT("Could not write the note: "),
 		ESC(why, jb_utf8(why, mcp_clip(why, out.len, 300))),
 	};
-	return mcp_req_say(req, p, ARRAY_SIZE(p));
+	return mcp_slot_say(slot, p, ARRAY_SIZE(p));
 }
 
 /* The notes' git wrote a note for the notes tool, or failed to. */
 static void
-mcp_req_notes_written (struct mcp_req *req)
+mcp_slot_notes_written (struct mcp_slot *slot)
 {
-	bool ok = mcp_notes_ok(req->child);
-	int e = mcp_req_notes_said(req, ok);
+	struct mcp_req *req = slot->req;
+	bool ok = mcp_notes_ok(slot->child);
+	int e = mcp_slot_notes_said(slot, ok);
 	req->branch |= ok;
-	child_destroy(&req->child);
+	child_destroy(&slot->child);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_req_tool_done(req, !ok);
+	mcp_slot_done(slot, !ok);
 }
 
 /* The notes' git read the notes for the notes tool, or failed to: show
  * them, or say why there are none: none holds the text searched for, none
  * was written, or they could not be read, which fails the call. */
 static void
-mcp_req_notes_got (struct mcp_req *req)
+mcp_slot_notes_got (struct mcp_slot *slot)
 {
-	struct child *c = req->child;
+	struct mcp_req *req = slot->req;
+	struct child *c = slot->child;
 	struct span out = buf_peek(&c->out);
 	bool failed = false;
 	int e;
 	if (mcp_notes_ok(c)) {
-		e = out.len ? mcp_req_notes_render(req, out, c->cut)
-		            : mcp_req_say(req, &TEXT("No note holds that text."), 1);
+		e = out.len ? mcp_slot_notes_render(slot, out, c->cut)
+		            : mcp_slot_say(slot, &TEXT("No note holds that text."), 1);
 	} else if (mcp_notes_none(c)) {
-		e = mcp_req_say(req, &TEXT("You have written no notes yet."), 1);
+		e = mcp_slot_say(slot, &TEXT("You have written no notes yet."), 1);
 	} else {
 		failed = true;
-		e = mcp_req_say(req, &TEXT("Your notes could not be read."), 1);
+		e = mcp_slot_say(slot, &TEXT("Your notes could not be read."), 1);
 	}
-	child_destroy(&req->child);
+	child_destroy(&slot->child);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_req_tool_done(req, failed);
+	mcp_slot_done(slot, failed);
 }
 
 /* The notes' git read the notes of the thread the call goes on with, which
  * go with the prompt, or failed to, which ends the call. */
 static void
-mcp_req_notes_resumed (struct mcp_req *req)
+mcp_slot_notes_resumed (struct mcp_slot *slot)
 {
-	struct child *c = req->child;
+	struct mcp_req *req = slot->req;
+	struct child *c = slot->child;
 	if (!mcp_notes_ok(c)) {
 		char why[96 + NOTES_ID];
 		size_t n = mcp_notes_none(c)
 		         ? util_format(why, sizeof why, "Unknown thread: %s.", req->thread)
 		         : util_format(why, sizeof why, "Cannot read the notes of the "
 		                       "thread %s.", req->thread);
-		child_destroy(&req->child);
-		mcp_req_tool_result(req, ESC(why, n), true);
+		child_destroy(&slot->child);
+		mcp_slot_result(slot, ESC(why, n), true);
 		return;
 	}
 	req->branch = true;
-	int e = mcp_req_notes_list(req, TEXT("\n\n[askai: the notes you kept in earlier "
+	int e = mcp_slot_notes_list(slot, TEXT("\n\n[askai: the notes you kept in earlier "
 	                                     "calls on this thread, oldest first:]\n\n"));
-	child_destroy(&req->child);
+	child_destroy(&slot->child);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -3359,12 +3426,13 @@ mcp_req_notes_resumed (struct mcp_req *req)
 /* The notes' git read the notes for a compaction, which go with the prompt,
  * or failed to. */
 static void
-mcp_req_notes_compacted (struct mcp_req *req)
+mcp_slot_notes_compacted (struct mcp_slot *slot)
 {
-	int e = mcp_notes_ok(req->child)
-	      ? mcp_req_notes_list(req, TEXT("\n\n[askai: your notes, oldest first:]\n\n"))
-	      : mcp_req_say(req, &TEXT("\n\n[askai: your notes could not be read.]\n"), 1);
-	child_destroy(&req->child);
+	struct mcp_req *req = slot->req;
+	int e = mcp_notes_ok(slot->child)
+	      ? mcp_slot_notes_list(slot, TEXT("\n\n[askai: your notes, oldest first:]\n\n"))
+	      : mcp_slot_say(slot, &TEXT("\n\n[askai: your notes could not be read.]\n"), 1);
+	child_destroy(&slot->child);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -3374,22 +3442,37 @@ mcp_req_notes_compacted (struct mcp_req *req)
 
 /* Take what the notes' git said, for what it ran for. */
 static void
-mcp_req_notes_out (struct mcp_req *req)
+mcp_slot_notes_out (struct mcp_slot *slot)
 {
+	struct mcp_req *req = slot->req;
 	mcp_req_unwait(req);
-	switch (req->fetch) {
+	switch (slot->fetch) {
 	case FETCH_WRITE:
-		mcp_req_notes_written(req);
+		mcp_slot_notes_written(slot);
 		return;
 	case FETCH_READ:
-		mcp_req_notes_got(req);
+		mcp_slot_notes_got(slot);
 		return;
 	case FETCH_RESUME:
-		mcp_req_notes_resumed(req);
+		mcp_slot_notes_resumed(slot);
 		return;
 	default:
-		mcp_req_notes_compacted(req);
+		mcp_slot_notes_compacted(slot);
 	}
+}
+
+/* Do the work of @p step's slot: take its git's output, the git tool's or
+ * the notes'. */
+static void
+mcp_slot_step (struct loop      *loop,
+               struct loop_step *step)
+{
+	(void)loop;
+	struct mcp_slot *slot = container_of(step, struct mcp_slot, step);
+	if (slot->fetch == FETCH_GIT)
+		mcp_slot_git_text(slot);
+	else
+		mcp_slot_notes_out(slot);
 }
 
 /* Compaction has left the summary, if any, in what askai adds to the
@@ -3399,7 +3482,7 @@ mcp_req_compact_notes (struct mcp_req *req,
                        enum mcp_fetch  fetch)
 {
 	if (req->branch) {
-		mcp_req_notes_fetch(req, fetch, nullptr);
+		mcp_slot_notes_fetch(&req->self, fetch, nullptr);
 		return;
 	}
 	mcp_req_go_on(req, TEXT("\n\n"));
@@ -3416,21 +3499,21 @@ mcp_req_compact (struct mcp_req     *req,
 	size_t len = 0;
 	char const *summary = mcp_str(jb_get(args, "summary"), &len);
 	if (!summary || !len || len > SUMMARY_MAX) {
-		mcp_req_tool_result(req, TEXT("The summary argument must be a string of 1 to "
+		mcp_slot_result(&req->self, TEXT("The summary argument must be a string of 1 to "
 		                              "16384 bytes."), true);
 		return;
 	}
-	req->tooling = false;
+	req->self.tooling = false;
 	(void)mcp_req_trace_end(req, false, len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
-	dstr_clear(&req->answer);
+	dstr_clear(&req->self.answer);
 	struct mcp_piece const p[] = {
 		TEXT("\n\n[askai: you compacted the context: the conversation since the "
 		     "task is gone, your turns and the tools' results with it. Your "
 		     "summary of it:]\n\n"),
 		ESC(summary, jb_utf8(summary, len)),
 	};
-	int e = mcp_req_say(req, p, ARRAY_SIZE(p));
+	int e = mcp_slot_say(&req->self, p, ARRAY_SIZE(p));
 	mcp_req_args_free(req, req->part, ARRAY_SIZE(req->args));
 	buf_fini(&req->calls);
 	if (e) {
@@ -3455,7 +3538,7 @@ mcp_req_compact_full (struct mcp_req *req)
 		return;
 	}
 	if (req->forced++) {
-		mcp_req_tool_result(req, TEXT("The upstream's context cannot hold the task "
+		mcp_slot_result(&req->self, TEXT("The upstream's context cannot hold the task "
 		                              "and the notes kept for it."), true);
 		return;
 	}
@@ -3463,9 +3546,9 @@ mcp_req_compact_full (struct mcp_req *req)
 	mcp_req_drop(req);
 	mcp_req_args_free(req, 0, ARRAY_SIZE(req->args));
 	buf_fini(&req->calls);
-	dstr_clear(&req->answer);
-	req->tooling = false;
-	int e = mcp_req_say(req, &TEXT("\n\n[askai: your context filled up, so the "
+	dstr_clear(&req->self.answer);
+	req->self.tooling = false;
+	int e = mcp_slot_say(&req->self, &TEXT("\n\n[askai: your context filled up, so the "
 	                               "conversation since the task is gone, your turns "
 	                               "and the tools' results with it.]"), 1);
 	if (e) {
@@ -3517,13 +3600,13 @@ mcp_req_tools_call (struct mcp_req     *req,
 		mcp_req_ask(req, args);
 		return;
 	case KIND_MAN:
-		mcp_req_man(req, args);
+		mcp_slot_man(&req->self, args);
 		return;
 	case KIND_TASK:
 		mcp_req_task(req, args);
 		return;
 	case KIND_GIT:
-		mcp_req_git(req, args);
+		mcp_slot_git(&req->self, args);
 		return;
 	case KIND_NOTES:
 	case KIND_COMPACT:
@@ -3885,25 +3968,25 @@ mcp_req_text (struct mcp_req *req)
 	struct span body = buf_peek(&job->result);
 	/* Stopped with no text, its turns gave no answer. */
 	if (job->status == JOB_TEXT) {
-		mcp_req_respond(req, req->stopped && !body.len);
+		mcp_slot_respond(&req->self, req->stopped && !body.len);
 		return;
 	}
 	bool failed = true;
 	int e = ai_answer(req->mcp->st->ep->api, job->http, req->msg,
-	                  body.len ? (char const *)body.ptr : "", body.len, &req->answer,
+	                  body.len ? (char const *)body.ptr : "", body.len, &req->self.answer,
 	                  &failed);
-	loop_work(req->mcp->loop, LOOP_COPY, dstr_len(&req->answer));
+	loop_work(req->mcp->loop, LOOP_COPY, dstr_len(&req->self.answer));
 	mcp_req_dispose(req);
 	mcp_req_drop(req);
 	if (e) {
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
-	if (failed && mcp_req_refit(req, dstr_get(&req->answer), dstr_len(&req->answer))) {
+	if (failed && mcp_req_refit(req, dstr_get(&req->self.answer), dstr_len(&req->self.answer))) {
 		mcp_req_compact_full(req);
 		return;
 	}
-	mcp_req_respond(req, failed);
+	mcp_slot_respond(&req->self, failed);
 }
 
 /* Render a share of the metrics into the reply; once all are in, send it. */
@@ -3957,17 +4040,11 @@ mcp_req_step (struct loop      *loop,
 	case PHASE_TEXT:
 		mcp_req_text(req);
 		break;
-	case PHASE_GIT_TEXT:
-		mcp_req_git_text(req);
-		break;
 	case PHASE_ARGS:
 		mcp_req_turn_args(req);
 		break;
 	case PHASE_TURN:
 		mcp_req_turn_write(req);
-		break;
-	case PHASE_NOTES_OUT:
-		mcp_req_notes_out(req);
 		break;
 	case PHASE_RESULT:
 		mcp_req_result_write(req);
@@ -4016,7 +4093,7 @@ mcp_begin (struct mcp           *mcp,
 		.timer.fn = mcp_req_timer,
 		.reaper = req->reaper,
 		.scan = req->scan,
-		.answer = req->answer,
+		.self = { .step.fn = mcp_slot_step, .answer = req->self.answer, .req = req },
 		.trace = req->trace,
 		.s = s,
 		.mcp = mcp,
@@ -4113,7 +4190,7 @@ mcp_on_cancel (struct stream *s)
 {
 	struct mcp_req *req = s->user;
 	if (req->call.bits)
-		LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", mcp_elapsed(req->start));
+		LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", mcp_elapsed(req->self.start));
 	req->s = nullptr;
 	mcp_req_finish(req);
 }
