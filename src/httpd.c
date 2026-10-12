@@ -127,100 +127,100 @@ static constexpr uint32_t HELD = 1u << 30;
 /* The head starts the input buffer until the request is done, so header
  * values are kept as offsets into it, which survive the buffer moving; 0 is
  * absent, since the method is at 0.  Heads are at most 65535 bytes. */
-struct field {
+struct httpd_field {
 	uint16_t off;
 	uint16_t len;
 };
 
-struct req {
-	size_t       body;                /* Content-Length */
-	uint32_t     head;                /* length of the request line and headers */
-	struct field target;
-	struct field host;
-	struct field origin;
-	struct field auth;
-	struct field acrh;                /* Access-Control-Request-Headers */
-	struct field app[STREAM_FIELDS];  /* those the application asked for */
-	bool         length;              /* Content-Length seen */
-	bool         chunked;             /* Transfer-Encoding: chunked */
-	bool         http10;
-	bool         close;
-	bool         expect;              /* Expect: 100-continue */
-	bool         pna;                 /* Access-Control-Request-Private-Network */
+struct httpd_req {
+	size_t             body;                /* Content-Length */
+	uint32_t           head;                /* length of the request line and headers */
+	struct httpd_field target;
+	struct httpd_field host;
+	struct httpd_field origin;
+	struct httpd_field auth;
+	struct httpd_field acrh;                /* Access-Control-Request-Headers */
+	struct httpd_field app[STREAM_FIELDS];  /* those the application asked for */
+	bool               length;              /* Content-Length seen */
+	bool               chunked;             /* Transfer-Encoding: chunked */
+	bool               http10;
+	bool               close;
+	bool               expect;              /* Expect: 100-continue */
+	bool               pna;                 /* Access-Control-Request-Private-Network */
 };
 
 /* The connections from one client address: home's, which counts them, and
  * keeps the entry for reuse once none is left; the client loops count the
  * bytes of bodies they hold for it. */
-struct client {
-	struct list     spare;    /* on home's shelf, once unused */
-	struct client  *next;     /* in its hash chain */
-	uint64_t        addr[2];
-	size_t          conns;
-	_Atomic size_t  held;     /* body bytes counted in hub->bodies; 0 once
-	                             unused */
+struct httpd_client {
+	struct list          spare;    /* on home's shelf, once unused */
+	struct httpd_client *next;     /* in its hash chain */
+	uint64_t             addr[2];
+	size_t               conns;
+	_Atomic size_t       held;     /* body bytes counted in hub->bodies; 0 once
+	                                  unused */
 };
 
 /* Where a chunked body's decoding stands. */
-enum chunk { CHUNK_SIZE, CHUNK_DATA, CHUNK_CRLF, CHUNK_TRAILER };
+enum httpd_chunk { CHUNK_SIZE, CHUNK_DATA, CHUNK_CRLF, CHUNK_TRAILER };
 
-struct conn {
-	struct msg         msg;       /* home's hand-over, then the give-back */
-	struct list        hook;      /* on srv->idle, oldest first, or srv->busy;
-	                                 or on home's shelf */
-	struct loop_ref    ref;
-	struct loop_step   step;
-	struct loop_timer  timer;     /* for the deadline that applies */
-	struct stream      stream;
-	struct buf         in;
-	struct buf         out;
-	struct httpd      *srv;
-	struct httpd_lane *lane;      /* home sets it: the loop's */
-	struct client     *client;    /* home sets it */
-	struct ssl_ctx_st *ctx;       /* home sets it: what a TLS listener's
-	                                 client shakes hands by, a reference
-	                                 until the handshake is done */
-	struct ssl_st     *ssl;       /* TLS's end, once the client begins */
-	uint64_t           since;     /* when the request, the handshake, or the
-	                                 idle spell began */
-	uint64_t           stall;     /* when the output last stalled; 0: it flows */
-	size_t             drained;   /* bytes sent since then */
-	size_t             earlier;   /* of the output pending, the bytes of
-	                                 responses before the one under way */
-	size_t             held;      /* body bytes counted in the budgets */
-	size_t             got;       /* body bytes handed on */
-	size_t             chunk;     /* bytes left of the chunk under way */
-	struct req         req;
-	uint32_t          *groups;    /* home sets them: a Unix socket's user's
-	                                 groups, sorted, in storage kept with
-	                                 the connection's */
-	uint32_t           n_groups;
-	uint32_t           uid;       /* and the user */
-	uint32_t           room;      /* groups the groups' storage holds */
-	int                fd;        /* home sets it */
-	uint32_t           events;    /* reported since the last step, and DEADLINE */
-	uint32_t           scan;      /* where to resume looking for the head's end */
-	uint32_t           trailer;   /* trailer bytes so far */
-	uint16_t           trailers;  /* trailer fields so far */
-	uint8_t            chunking;  /* enum chunk */
-	bool               parsed;
-	bool               body_in;   /* the body is all in */
-	bool               open;      /* the application has the stream */
-	bool               waits;     /* and waits for something outside the loop */
-	bool               replied;   /* the response head is queued */
-	bool               done;      /* the response is complete */
-	bool               chunks;    /* the response body goes in chunks */
-	bool               cont;      /* 100 Continue sent */
-	bool               closing;
-	bool               eof;
-	bool               doomed;    /* to close at its next step */
-	bool               dead;
-	bool               linger;    /* half-closed, discarding input */
-	bool               writable;  /* to tell the application once output drains */
-	bool               local;     /* home sets it: the client is on loopback,
-	                                 or a Unix socket */
-	bool               uds;       /* home sets it: over a Unix socket */
-	bool               idle;      /* on srv->idle */
+struct httpd_conn {
+	struct msg           msg;       /* home's hand-over, then the give-back */
+	struct list          hook;      /* on srv->idle, oldest first, or srv->busy;
+	                                   or on home's shelf */
+	struct loop_ref      ref;
+	struct loop_step     step;
+	struct loop_timer    timer;     /* for the deadline that applies */
+	struct stream        stream;
+	struct buf           in;
+	struct buf           out;
+	struct httpd        *srv;
+	struct httpd_lane   *lane;      /* home sets it: the loop's */
+	struct httpd_client *client;    /* home sets it */
+	struct ssl_ctx_st   *ctx;       /* home sets it: what a TLS listener's
+	                                   client shakes hands by, a reference
+	                                   until the handshake is done */
+	struct ssl_st       *ssl;       /* TLS's end, once the client begins */
+	uint64_t             since;     /* when the request, the handshake, or the
+	                                   idle spell began */
+	uint64_t             stall;     /* when the output last stalled; 0: it flows */
+	size_t               drained;   /* bytes sent since then */
+	size_t               earlier;   /* of the output pending, the bytes of
+	                                   responses before the one under way */
+	size_t               held;      /* body bytes counted in the budgets */
+	size_t               got;       /* body bytes handed on */
+	size_t               chunk;     /* bytes left of the chunk under way */
+	struct httpd_req     req;
+	uint32_t            *groups;    /* home sets them: a Unix socket's user's
+	                                   groups, sorted, in storage kept with
+	                                   the connection's */
+	uint32_t             n_groups;
+	uint32_t             uid;       /* and the user */
+	uint32_t             room;      /* groups the groups' storage holds */
+	int                  fd;        /* home sets it */
+	uint32_t             events;    /* reported since the last step, and DEADLINE */
+	uint32_t             scan;      /* where to resume looking for the head's end */
+	uint32_t             trailer;   /* trailer bytes so far */
+	uint16_t             trailers;  /* trailer fields so far */
+	uint8_t              chunking;  /* enum httpd_chunk */
+	bool                 parsed;
+	bool                 body_in;   /* the body is all in */
+	bool                 open;      /* the application has the stream */
+	bool                 waits;     /* and waits for something outside the loop */
+	bool                 replied;   /* the response head is queued */
+	bool                 done;      /* the response is complete */
+	bool                 chunks;    /* the response body goes in chunks */
+	bool                 cont;      /* 100 Continue sent */
+	bool                 closing;
+	bool                 eof;
+	bool                 doomed;    /* to close at its next step */
+	bool                 dead;
+	bool                 linger;    /* half-closed, discarding input */
+	bool                 writable;  /* to tell the application once output drains */
+	bool                 local;     /* home sets it: the client is on loopback,
+	                                   or a Unix socket */
+	bool                 uds;       /* home sets it: over a Unix socket */
+	bool                 idle;      /* on srv->idle */
 };
 
 /* A client loop, as its server and home's door share it. */
@@ -291,7 +291,7 @@ struct httpd {
 };
 
 /* A socket home's door listens on. */
-struct listener {
+struct httpd_listener {
 	struct loop_ref ref;
 	char const     *path;   /* a Unix socket's file, which goes as the
 	                           socket closes; nullptr: TCP */
@@ -310,9 +310,9 @@ struct httpd_home {
 	struct loop_timer       tick;       /* housekeeping */
 	struct loop            *loop;
 	struct httpd_hub       *hub;
-	struct client         **clients;    /* CLIENT_SLOTS hash chains */
+	struct httpd_client   **clients;    /* CLIENT_SLOTS hash chains */
 	_Atomic uint64_t const *calls;      /* jobs in flight */
-	struct listener        *listeners;
+	struct httpd_listener  *listeners;
 	struct ssl_ctx_st      *ctx;        /* a reference: what TLS listeners'
 	                                       clients shake hands by; nullptr:
 	                                       there is none */
@@ -338,17 +338,17 @@ struct httpd_home {
 static thread_local struct httpd_home *door;
 
 /* A run of response bytes. */
-struct frag {
+struct httpd_frag {
 	char const *ptr;
 	size_t      len;
 };
 
-#define FRAG(s) ((struct frag){ s, sizeof s - 1 })
+#define FRAG(s) ((struct httpd_frag){ s, sizeof s - 1 })
 
 /* Decimal @p n written backwards from @p end; returns its first digit. */
 static char *
-decimal (char   *end,
-         size_t  n)
+httpd_decimal (char   *end,
+               size_t  n)
 {
 	do *--end = (char)('0' + n % 10);
 	while (n /= 10);
@@ -357,8 +357,8 @@ decimal (char   *end,
 
 /* Hexadecimal @p n written backwards from @p end; returns its first digit. */
 static char *
-hex (char   *end,
-     size_t  n)
+httpd_hex (char   *end,
+           size_t  n)
 {
 	do *--end = "0123456789abcdef"[n % 16];
 	while (n /= 16);
@@ -367,7 +367,7 @@ hex (char   *end,
 
 /* The value of hexadecimal digit @p c, or 16 if it is none. */
 static unsigned
-hexdigit (unsigned char c)
+httpd_hexdigit (unsigned char c)
 {
 	return (unsigned)(c - '0') < 10 ? (unsigned)(c - '0')
 	     : (unsigned)((c | 0x20) - 'a') < 6 ? (unsigned)((c | 0x20) - 'a') + 10
@@ -376,14 +376,14 @@ hexdigit (unsigned char c)
 
 /* @p s seconds after @p since; never, if @p s is 0. */
 static uint64_t
-after (uint64_t since,
-       uint32_t s)
+httpd_after (uint64_t since,
+             uint32_t s)
 {
 	return s ? since + s * NS : UINT64_MAX;
 }
 
-static struct frag
-reason (unsigned status)
+static struct httpd_frag
+httpd_reason (unsigned status)
 {
 	switch (status) {
 	case 200: return FRAG("OK");
@@ -408,16 +408,16 @@ reason (unsigned status)
 }
 
 static bool
-tchar (unsigned char c)
+httpd_tchar (unsigned char c)
 {
 	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
 	       (c >= 'A' && c <= 'Z') || (c && strchr("!#$%&'*+-.^_`|~", c));
 }
 
 static bool
-has_token (char const *list,
-           char const *token,
-           size_t      len)
+httpd_has_token (char const *list,
+                 char const *token,
+                 size_t      len)
 {
 	for (char const *p = list; *p; ) {
 		p += strspn(p, " \t,");
@@ -435,7 +435,7 @@ has_token (char const *list,
 /* Whether @p host, a Host field or an origin's host and port, names this
  * machine by loopback, whatever the port. */
 static bool
-loopback_host (char const *host)
+httpd_loopback_host (char const *host)
 {
 #define P(s) { s, sizeof s - 1 }
 	static struct {
@@ -457,21 +457,21 @@ loopback_host (char const *host)
 
 /* Browsers on this machine. */
 static bool
-loopback_origin (char const *origin)
+httpd_loopback_origin (char const *origin)
 {
 	static char const http[] = "http://";
 	static char const https[] = "https://";
 	size_t scheme = !strncmp(origin, http, sizeof http - 1) ? sizeof http - 1
 	              : !strncmp(origin, https, sizeof https - 1) ? sizeof https - 1
 	              : 0;
-	return scheme && loopback_host(origin + scheme);
+	return scheme && httpd_loopback_host(origin + scheme);
 }
 
 static bool
-origin_allowed (struct httpd const *srv,
-                char const         *origin)
+httpd_origin_allowed (struct httpd const *srv,
+                      char const         *origin)
 {
-	if (loopback_origin(origin))
+	if (httpd_loopback_origin(origin))
 		return true;
 	for (char const *const *o = srv->origins; o && *o; ++o)
 		if (!strcmp(*o, "*") || !strcmp(*o, origin))
@@ -482,9 +482,9 @@ origin_allowed (struct httpd const *srv,
 
 /* Length of the head (request line + headers + empty line), 0 if partial. */
 static size_t
-head_length (char const *data,
-             size_t      len,
-             size_t     *scan)
+httpd_head_length (char const *data,
+                   size_t      len,
+                   size_t     *scan)
 {
 	size_t i = *scan;
 	char const *nl = nullptr;
@@ -506,7 +506,7 @@ head_length (char const *data,
 
 /* Cut the next line at its LF, dropping a preceding CR. */
 static char *
-next_line (char **cursor)
+httpd_next_line (char **cursor)
 {
 	char *line = *cursor;
 	char *nl = strchr(line, '\n');
@@ -520,19 +520,19 @@ next_line (char **cursor)
 /* Record header @p name, whose @p value is at offset @p off of the head and
  * @p len bytes long, if it is one that matters here or to @p app. */
 static unsigned
-header (struct req              *req,
-        struct stream_app const *app,
-        char const              *name,
-        char const              *value,
-        uint16_t                 off,
-        uint16_t                 len,
-        size_t                   max_body)
+httpd_req_header (struct httpd_req        *req,
+                  struct stream_app const *app,
+                  char const              *name,
+                  char const              *value,
+                  uint16_t                 off,
+                  uint16_t                 len,
+                  size_t                   max_body)
 {
-	struct field *f = !strcasecmp(name, "host") ? &req->host
-	                : !strcasecmp(name, "origin") ? &req->origin
-	                : !strcasecmp(name, "authorization") ? &req->auth
-	                : !strcasecmp(name, "access-control-request-headers") ? &req->acrh
-	                : nullptr;
+	struct httpd_field *f = !strcasecmp(name, "host") ? &req->host
+	                      : !strcasecmp(name, "origin") ? &req->origin
+	                      : !strcasecmp(name, "authorization") ? &req->auth
+	                      : !strcasecmp(name, "access-control-request-headers")
+	                      ? &req->acrh : nullptr;
 	bool list = false;
 	for (size_t i = 0; !f && i < app->n_fields; ++i)
 		if (!strcasecmp(name, app->fields[i])) {
@@ -544,7 +544,7 @@ header (struct req              *req,
 		if (f->off && !list)
 			return 400;
 		if (!f->off)
-			*f = (struct field){ off, len };
+			*f = (struct httpd_field){ off, len };
 		return 0;
 	}
 
@@ -564,10 +564,10 @@ header (struct req              *req,
 			return 501;
 		req->chunked = true;
 	} else if (!strcasecmp(name, "connection")) {
-		if (has_token(value, "close", sizeof "close" - 1))
+		if (httpd_has_token(value, "close", sizeof "close" - 1))
 			req->close = true;
-		else if (req->http10 && has_token(value, "keep-alive",
-		                                  sizeof "keep-alive" - 1))
+		else if (req->http10 && httpd_has_token(value, "keep-alive",
+		                                        sizeof "keep-alive" - 1))
 			req->close = false;
 	} else if (!strcasecmp(name, "expect")) {
 		if (strcasecmp(value, "100-continue"))
@@ -582,18 +582,18 @@ header (struct req              *req,
 /* Parse a complete head in place, leaving the method at its start as a
  * string; nonzero is an HTTP error. */
 static unsigned
-parse_head (char                      *data,
-            size_t                     len,
-            struct req                *req,
-            struct stream_app const   *app,
-            struct httpd_limits const *lim)
+httpd_req_parse (char                      *data,
+                 size_t                     len,
+                 struct httpd_req          *req,
+                 struct stream_app const   *app,
+                 struct httpd_limits const *lim)
 {
-	*req = (struct req){ .head = (uint32_t)len };
+	*req = (struct httpd_req){ .head = (uint32_t)len };
 	if (memchr(data, '\0', len))
 		return 400;
 
 	char *cursor = data;
-	char *line = next_line(&cursor);
+	char *line = httpd_next_line(&cursor);
 	for (char const *p = line; *p; ++p)
 		if ((unsigned char)*p < ' ' || *p == 0x7f)
 			return 400;
@@ -604,17 +604,17 @@ parse_head (char                      *data,
 		return 400;
 	*target = '\0';
 	*version++ = '\0';
-	req->target = (struct field){ (uint16_t)(target + 1 - data),
-	                              (uint16_t)(version - target - 2) };
+	req->target = (struct httpd_field){ (uint16_t)(target + 1 - data),
+	                                    (uint16_t)(version - target - 2) };
 	for (char const *p = line; *p; ++p)
-		if (!tchar((unsigned char)*p))
+		if (!httpd_tchar((unsigned char)*p))
 			return 400;
 	req->http10 = !strcmp(version, "HTTP/1.0");
 	if (!req->http10 && strcmp(version, "HTTP/1.1"))
 		return strncmp(version, "HTTP/", 5) ? 400 : 505;
 	req->close = req->http10;
 
-	for (uint32_t fields = 0; *(line = next_line(&cursor)); ) {
+	for (uint32_t fields = 0; *(line = httpd_next_line(&cursor)); ) {
 		if (++fields > lim->fields)
 			return 431;
 		char *colon = strchr(line, ':');
@@ -622,7 +622,7 @@ parse_head (char                      *data,
 			return 400;
 		*colon = '\0';
 		for (char const *p = line; *p; ++p)
-			if (!tchar((unsigned char)*p))
+			if (!httpd_tchar((unsigned char)*p))
 				return 400;
 
 		char *value = colon + 1 + strspn(colon + 1, " \t");
@@ -633,8 +633,9 @@ parse_head (char                      *data,
 			if (((unsigned char)*p < ' ' && *p != '\t') || *p == 0x7f)
 				return 400;
 
-		unsigned status = header(req, app, line, value, (uint16_t)(value - data),
-		                         (uint16_t)(end - value), lim->body);
+		unsigned status = httpd_req_header(req, app, line, value,
+		                                   (uint16_t)(value - data),
+		                                   (uint16_t)(end - value), lim->body);
 		if (status)
 			return status;
 	}
@@ -645,19 +646,19 @@ parse_head (char                      *data,
 }
 
 /* The value of header @p f, empty with a null pointer if absent. */
-static struct frag
-field (struct conn const *conn,
-       struct field       f)
+static struct httpd_frag
+httpd_conn_field (struct httpd_conn const *conn,
+                  struct httpd_field       f)
 {
 	char const *head = (char const *)buf_peek(&conn->in).ptr;
-	return f.off ? (struct frag){ head + f.off, f.len } : (struct frag){};
+	return f.off ? (struct httpd_frag){ head + f.off, f.len } : (struct httpd_frag){};
 }
 
 /* The address a client is known by: IPv4 (as IPv4-mapped IPv6), or for other
  * IPv6 the /64 prefix, which is what one host is usually given. */
 static void
-client_key (struct sockaddr_storage const *ss,
-            uint64_t                       key[2])
+httpd_addr_key (struct sockaddr_storage const *ss,
+                uint64_t                       key[2])
 {
 	unsigned char a[16] = {};
 	if (ss->ss_family == AF_INET) {
@@ -673,14 +674,14 @@ client_key (struct sockaddr_storage const *ss,
 
 /* The link that holds client @p key in home's table, or where it would be
  * appended. */
-static struct client **
-client_slot (struct httpd_home *home,
-             uint64_t const     key[2])
+static struct httpd_client **
+httpd_home_client_slot (struct httpd_home *home,
+                        uint64_t const     key[2])
 {
 	uint64_t h = key[0] ^ key[1] * 0x9e3779b97f4a7c15;
 	h = (h ^ h >> 30) * 0xbf58476d1ce4e5b9;
 	h = (h ^ h >> 27) * 0x94d049bb133111eb;
-	struct client **p = &home->clients[(h ^ h >> 31) & (CLIENT_SLOTS - 1)];
+	struct httpd_client **p = &home->clients[(h ^ h >> 31) & (CLIENT_SLOTS - 1)];
 	while (*p && ((*p)->addr[0] != key[0] || (*p)->addr[1] != key[1]))
 		p = &(*p)->next;
 	return p;
@@ -688,16 +689,16 @@ client_slot (struct httpd_home *home,
 
 /* Count a connection from client @p key, in an entry kept for reuse if
  * there is one; nullptr if out of memory. */
-static struct client *
-client_get (struct httpd_home *home,
-            uint64_t const     key[2])
+static struct httpd_client *
+httpd_home_client_get (struct httpd_home *home,
+                       uint64_t const     key[2])
 {
-	struct client **p = client_slot(home, key);
-	struct client *client = *p;
+	struct httpd_client **p = httpd_home_client_slot(home, key);
+	struct httpd_client *client = *p;
 	if (!client) {
 		struct list *spare = shelf_take(&home->gone);
 		if (spare) {
-			client = container_of(spare, struct client, spare);
+			client = container_of(spare, struct httpd_client, spare);
 		} else if ((client = malloc(sizeof *client))) {
 			atomic_init(&client->held, 0);
 		} else {
@@ -716,17 +717,17 @@ client_get (struct httpd_home *home,
 /* A connection of @p client's has been given back; after the last, as the
  * loop that closed it touches the entry no more, home keeps it for reuse. */
 static void
-client_put (struct httpd_home *home,
-            struct client     *client)
+httpd_home_client_put (struct httpd_home   *home,
+                       struct httpd_client *client)
 {
 	if (--client->conns)
 		return;
-	*client_slot(home, client->addr) = client->next;
+	*httpd_home_client_slot(home, client->addr) = client->next;
 	shelf_put(&home->gone, &client->spare);
 }
 
 static bool
-loopback (struct sockaddr_storage const *ss)
+httpd_addr_loopback (struct sockaddr_storage const *ss)
 {
 	if (ss->ss_family == AF_INET) {
 		struct sockaddr_in const *in = (void const *)ss;
@@ -744,15 +745,15 @@ loopback (struct sockaddr_storage const *ss)
 /* The connection has closed, and its events are dispatched: give it back to
  * home, which counts it no more. */
 static void
-conn_release (struct loop_ref *ref)
+httpd_conn_release (struct loop_ref *ref)
 {
-	struct conn *conn = container_of(ref, struct conn, ref);
+	struct httpd_conn *conn = container_of(ref, struct httpd_conn, ref);
 	loop_post(conn->srv->hub->home, &conn->msg);
 }
 
 /* Give back the body bytes the connection holds in the budgets. */
 static void
-conn_unhold (struct conn *conn)
+httpd_conn_unhold (struct httpd_conn *conn)
 {
 	if (!conn->held)
 		return;
@@ -765,9 +766,9 @@ conn_unhold (struct conn *conn)
 /* Take @p n bytes from @p budget, of which @p max may be taken; false if they
  * do not fit.  Every client loop takes from the same. */
 static bool
-budget_take (_Atomic size_t *budget,
-             size_t          n,
-             size_t          max)
+httpd_budget_take (_Atomic size_t *budget,
+                   size_t          n,
+                   size_t          max)
 {
 	for (size_t used = atomic_load_explicit(budget, memory_order_relaxed);
 	     n <= max - used; )
@@ -780,15 +781,15 @@ budget_take (_Atomic size_t *budget,
 
 /* Count @p n more body bytes in the budgets; false if they do not fit. */
 static bool
-conn_hold (struct conn *conn,
-           size_t       n)
+httpd_conn_hold (struct httpd_conn *conn,
+                 size_t             n)
 {
 	struct httpd *srv = conn->srv;
 	if (!n)
 		return true;
-	if (!budget_take(&srv->hub->bodies, n, srv->lim.bodies))
+	if (!httpd_budget_take(&srv->hub->bodies, n, srv->lim.bodies))
 		return false;
-	if (!budget_take(&conn->client->held, n, srv->lim.client_bodies)) {
+	if (!httpd_budget_take(&conn->client->held, n, srv->lim.client_bodies)) {
 		atomic_fetch_sub_explicit(&srv->hub->bodies, n, memory_order_relaxed);
 		return false;
 	}
@@ -798,7 +799,7 @@ conn_hold (struct conn *conn,
 
 /* Take the stream back from the application, if it has it. */
 static void
-conn_cancel (struct conn *conn)
+httpd_conn_cancel (struct httpd_conn *conn)
 {
 	if (!conn->open)
 		return;
@@ -810,10 +811,10 @@ conn_cancel (struct conn *conn)
 /* Tell home how many connections idle, and when the least recently active
  * of them began to, as either changed. */
 static void
-srv_idle (struct httpd *srv)
+httpd_show_idle (struct httpd *srv)
 {
 	uint64_t since = list_is_empty(&srv->idle) ? UINT64_MAX
-	               : container_of(srv->idle.next, struct conn, hook)->since;
+	               : container_of(srv->idle.next, struct httpd_conn, hook)->since;
 	if (since != srv->idle_since) {
 		srv->idle_since = since;
 		atomic_store_explicit(&srv->lane->idle, since, memory_order_relaxed);
@@ -823,7 +824,7 @@ srv_idle (struct httpd *srv)
 }
 
 static void
-conn_close (struct conn *conn)
+httpd_conn_close (struct httpd_conn *conn)
 {
 	if (conn->dead)
 		return;
@@ -835,14 +836,14 @@ conn_close (struct conn *conn)
 	if (!--srv->conns && srv->draining)
 		loop_exit(srv->loop);
 	atomic_store_explicit(&srv->lane->metrics.open, srv->conns, memory_order_relaxed);
-	conn_cancel(conn);
-	conn_unhold(conn);
+	httpd_conn_cancel(conn);
+	httpd_conn_unhold(conn);
 	list_del(&conn->hook);
 	srv->idles -= conn->idle;
-	srv_idle(srv);
+	httpd_show_idle(srv);
 	loop_unready(&conn->step);
 	loop_timer_stop(srv->loop, &conn->timer);
-	loop_release(srv->loop, &conn->ref, conn_release);
+	loop_release(srv->loop, &conn->ref, httpd_conn_release);
 	/* A handshake begun and not done has failed. */
 	if (conn->ctx && conn->ssl)
 		hist_add(&srv->lane->metrics.unshaken, 1);
@@ -855,20 +856,20 @@ conn_close (struct conn *conn)
 
 /* File the connection at the young end of its list. */
 static void
-conn_park (struct conn *conn,
-           bool         idle)
+httpd_conn_park (struct httpd_conn *conn,
+                 bool               idle)
 {
 	struct httpd *srv = conn->srv;
 	list_del(&conn->hook);
 	list_append(idle ? &srv->idle : &srv->busy, &conn->hook);
 	srv->idles += idle - conn->idle;
 	conn->idle = idle;
-	srv_idle(srv);
+	httpd_show_idle(srv);
 }
 
 static size_t
-frag_len (struct frag const *f,
-          size_t             n)
+httpd_frag_len (struct httpd_frag const *f,
+                size_t                   n)
 {
 	size_t len = 0;
 	for (size_t i = 0; i < n; ++i)
@@ -878,7 +879,7 @@ frag_len (struct frag const *f,
 
 /* Whether the client's bytes wait, in the input or in TLS: a head begun. */
 static bool
-conn_input (struct conn const *conn)
+httpd_conn_input (struct httpd_conn const *conn)
 {
 	return buf_peek(&conn->in).len || (conn->ssl && tls_pending(conn->ssl));
 }
@@ -886,16 +887,16 @@ conn_input (struct conn const *conn)
 /* Whether TLS waits for room to send what a read left it, such as the
  * answer to a key update: it reads nothing more meanwhile. */
 static bool
-conn_blocked (struct conn const *conn)
+httpd_conn_blocked (struct httpd_conn const *conn)
 {
 	return conn->ssl && tls_blocked(conn->ssl);
 }
 
 /* As recv(), or tls_recv() with TLS: the bytes, or a negative error. */
 static ssize_t
-conn_recv (struct conn *conn,
-           void        *buf,
-           size_t       len)
+httpd_conn_recv (struct httpd_conn *conn,
+                 void              *buf,
+                 size_t             len)
 {
 	if (conn->ssl)
 		return tls_recv(conn->ssl, buf, len);
@@ -905,9 +906,9 @@ conn_recv (struct conn *conn,
 
 /* As send(), or tls_send() with TLS: the bytes, or a negative error. */
 static ssize_t
-conn_send (struct conn *conn,
-           void const  *buf,
-           size_t       len)
+httpd_conn_send (struct httpd_conn *conn,
+                 void const        *buf,
+                 size_t             len)
 {
 	if (conn->ssl)
 		return tls_send(conn->ssl, buf, len);
@@ -917,7 +918,7 @@ conn_send (struct conn *conn,
 
 /* Queue the connection's step: a bulk one while it shakes hands. */
 static void
-conn_ready (struct conn *conn)
+httpd_conn_ready (struct httpd_conn *conn)
 {
 	if (conn->ctx)
 		loop_ready_bulk(conn->srv->loop, &conn->step);
@@ -928,26 +929,26 @@ conn_ready (struct conn *conn)
 /* Close the connection at its next step: output must not close it at once,
  * as an application may be writing it. */
 static void
-conn_doom (struct conn *conn)
+httpd_conn_doom (struct httpd_conn *conn)
 {
 	conn->doomed = true;
-	conn_ready(conn);
+	httpd_conn_ready(conn);
 }
 
 /* Queue @p n fragments; false, dooming the connection, if out of memory. */
 static bool
-conn_put (struct conn       *conn,
-          struct frag const *f,
-          size_t             n)
+httpd_conn_put (struct httpd_conn       *conn,
+                struct httpd_frag const *f,
+                size_t                   n)
 {
 	if (conn->dead || conn->doomed)
 		return false;
-	size_t total = frag_len(f, n);
+	size_t total = httpd_frag_len(f, n);
 	if (!total)
 		return true;
 	struct span s;
 	if (buf_reserve(&conn->out, total, SIZE_MAX, &s)) {
-		conn_doom(conn);
+		httpd_conn_doom(conn);
 		return false;
 	}
 	for (size_t i = 0; i < n; ++i) {
@@ -966,13 +967,13 @@ conn_put (struct conn       *conn,
  * all in, or to a request that asked so, or while the server drains, ends the
  * connection. */
 static bool
-conn_head (struct conn       *conn,
-           unsigned           status,
-           struct frag const *extra,
-           size_t             n_extra,
-           size_t             length)
+httpd_conn_head (struct httpd_conn       *conn,
+                 unsigned                 status,
+                 struct httpd_frag const *extra,
+                 size_t                   n_extra,
+                 size_t                   length)
 {
-	struct req const *req = &conn->req;
+	struct httpd_req const *req = &conn->req;
 	bool open = length == STREAM_OPEN;
 	conn->chunks = open && !req->http10;
 	conn->closing |= req->close || conn->srv->draining || !conn->body_in ||
@@ -982,15 +983,15 @@ conn_head (struct conn       *conn,
 
 	char code[8];
 	code[7] = ' ';
-	char const *c = decimal(code + 7, status);
+	char const *c = httpd_decimal(code + 7, status);
 	char digits[20];
-	char const *len = decimal(digits + sizeof digits, open ? 0 : length);
+	char const *len = httpd_decimal(digits + sizeof digits, open ? 0 : length);
 
-	struct frag f[12 + 8];
+	struct httpd_frag f[12 + 8];
 	size_t n = 0;
 	f[n++] = FRAG("HTTP/1.1 ");
-	f[n++] = (struct frag){ c, (size_t)(code + 8 - c) };
-	f[n++] = reason(status);
+	f[n++] = (struct httpd_frag){ c, (size_t)(code + 8 - c) };
+	f[n++] = httpd_reason(status);
 	f[n++] = FRAG("\r\n");
 	if (conn->closing)
 		f[n++] = FRAG("Connection: close\r\n");
@@ -998,12 +999,12 @@ conn_head (struct conn       *conn,
 		f[n++] = FRAG("Transfer-Encoding: chunked\r\n");
 	} else if (!open && status != 204) {
 		f[n++] = FRAG("Content-Length: ");
-		f[n++] = (struct frag){ len, (size_t)(digits + sizeof digits - len) };
+		f[n++] = (struct httpd_frag){ len, (size_t)(digits + sizeof digits - len) };
 		f[n++] = FRAG("\r\n");
 	}
 	if (req->origin.off) {
 		f[n++] = FRAG("Access-Control-Allow-Origin: ");
-		f[n++] = field(conn, req->origin);
+		f[n++] = httpd_conn_field(conn, req->origin);
 		f[n++] = FRAG("\r\nAccess-Control-Allow-Credentials: true\r\n"
 		              "Access-Control-Expose-Headers: Mcp-Session-Id, "
 		              "WWW-Authenticate\r\n"
@@ -1012,90 +1013,90 @@ conn_head (struct conn       *conn,
 	for (size_t i = 0; i < n_extra; ++i)
 		f[n++] = extra[i];
 	f[n++] = FRAG("\r\n");
-	return conn_put(conn, f, n);
+	return httpd_conn_put(conn, f, n);
 }
 
 /* Queue a complete response of our own: @p body, which is nullptr for none
  * (and no Content-Type), after @p extra header lines; at most 8 of each. */
 static void
-conn_respond (struct conn       *conn,
-              unsigned           status,
-              struct frag const *extra,
-              size_t             n_extra,
-              struct frag const *body,
-              size_t             n_body)
+httpd_conn_respond (struct httpd_conn       *conn,
+                    unsigned                 status,
+                    struct httpd_frag const *extra,
+                    size_t                   n_extra,
+                    struct httpd_frag const *body,
+                    size_t                   n_body)
 {
-	struct frag head[9];
+	struct httpd_frag head[9];
 	size_t n = 0;
 	if (body)
 		head[n++] = FRAG("Content-Type: application/json\r\n");
 	for (size_t i = 0; i < n_extra; ++i)
 		head[n++] = extra[i];
-	if (conn_head(conn, status, head, n, frag_len(body, n_body)))
-		conn_put(conn, body, n_body);
+	if (httpd_conn_head(conn, status, head, n, httpd_frag_len(body, n_body)))
+		httpd_conn_put(conn, body, n_body);
 	conn->done = true;
 }
 
 /* A JSON-RPC error saying @p message, or else the reason phrase. */
 static void
-conn_error (struct conn       *conn,
-            unsigned           status,
-            struct frag const *message,
-            struct frag const *extra,
-            size_t             n_extra)
+httpd_conn_error (struct httpd_conn       *conn,
+                  unsigned                 status,
+                  struct httpd_frag const *message,
+                  struct httpd_frag const *extra,
+                  size_t                   n_extra)
 {
-	struct frag const body[] = {
+	struct httpd_frag const body[] = {
 		FRAG("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\""),
-		message ? *message : reason(status),
+		message ? *message : httpd_reason(status),
 		FRAG("\"}}"),
 	};
-	conn_respond(conn, status, extra, n_extra, body, ARRAY_SIZE(body));
+	httpd_conn_respond(conn, status, extra, n_extra, body, ARRAY_SIZE(body));
 }
 
 /* Fail the request under way with @p status, taking the stream back from the
  * application; with a response begun already, the connection just closes. */
 static void
-conn_fail (struct conn *conn,
-           unsigned     status)
+httpd_conn_fail (struct httpd_conn *conn,
+                 unsigned           status)
 {
-	conn_cancel(conn);
+	httpd_conn_cancel(conn);
 	conn->closing = true;
 	if (conn->replied)
-		conn_doom(conn);
+		httpd_conn_doom(conn);
 	else
-		conn_error(conn, status, nullptr, nullptr, 0);
+		httpd_conn_error(conn, status, nullptr, nullptr, 0);
 }
 
 static void
-conn_preflight (struct conn *conn)
+httpd_conn_preflight (struct httpd_conn *conn)
 {
-	struct req const *req = &conn->req;
+	struct httpd_req const *req = &conn->req;
 	if (!req->origin.off) {
-		conn_respond(conn, 204, &FRAG("Allow: POST, OPTIONS\r\n"), 1, nullptr, 0);
+		httpd_conn_respond(conn, 204, &FRAG("Allow: POST, OPTIONS\r\n"), 1, nullptr, 0);
 		return;
 	}
 
-	struct frag const extra[] = {
+	struct httpd_frag const extra[] = {
 		FRAG("Access-Control-Allow-Methods: POST, GET, DELETE, OPTIONS\r\n"
 		     "Access-Control-Allow-Headers: "),
-		req->acrh.off ? field(conn, req->acrh) : FRAG("Content-Type, Authorization"),
+		req->acrh.off ? httpd_conn_field(conn, req->acrh) : FRAG("Content-Type, Authorization"),
 		FRAG("\r\nAccess-Control-Max-Age: 600\r\n"),
 		req->pna ? FRAG("Access-Control-Allow-Private-Network: true\r\n")
 		         : FRAG(""),
 		FRAG("Vary: Access-Control-Request-Headers\r\n"),
 	};
-	conn_respond(conn, 204, extra, ARRAY_SIZE(extra), nullptr, 0);
+	httpd_conn_respond(conn, 204, extra, ARRAY_SIZE(extra), nullptr, 0);
 }
 
 static int
-stream_head (struct stream *s,
-             uint16_t       status,
-             struct span    fields,
-             size_t         length)
+httpd_stream_head (struct stream *s,
+                   uint16_t       status,
+                   struct span    fields,
+                   size_t         length)
 {
-	struct conn *conn = container_of(s, struct conn, stream);
-	struct frag const extra = { (char const *)fields.ptr, fields.len };
-	if (!conn->open || conn->replied || !conn_head(conn, status, &extra, 1, length))
+	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
+	struct httpd_frag const extra = { (char const *)fields.ptr, fields.len };
+	if (!conn->open || conn->replied || !httpd_conn_head(conn, status, &extra, 1, length))
 		return EPIPE;
 	loop_ready(conn->srv->loop, &conn->step);
 	return 0;
@@ -1109,10 +1110,10 @@ stream_head (struct stream *s,
  * read, while one that lets earlier responses pile up is cut off.
  */
 static int
-stream_data (struct stream *s,
-             struct span    bytes)
+httpd_stream_data (struct stream *s,
+                   struct span    bytes)
 {
-	struct conn *conn = container_of(s, struct conn, stream);
+	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
 	struct httpd *srv = conn->srv;
 	if (!conn->open || !conn->replied)
 		return EPIPE;
@@ -1120,21 +1121,21 @@ stream_data (struct stream *s,
 		return 0;
 	if ((conn->earlier || conn->writable) &&
 	    buf_peek(&conn->out).len + bytes.len > srv->lim.out_max) {
-		conn_doom(conn);
+		httpd_conn_doom(conn);
 		return EPIPE;
 	}
 
 	char digits[20];
-	char const *size = hex(digits + sizeof digits - 2, bytes.len);
+	char const *size = httpd_hex(digits + sizeof digits - 2, bytes.len);
 	digits[sizeof digits - 2] = '\r';
 	digits[sizeof digits - 1] = '\n';
-	struct frag const f[] = {
+	struct httpd_frag const f[] = {
 		{ size, (size_t)(digits + sizeof digits - size) },
 		{ (char const *)bytes.ptr, bytes.len },
 		FRAG("\r\n"),
 	};
-	bool ok = conn->chunks ? conn_put(conn, f, ARRAY_SIZE(f))
-	                       : conn_put(conn, &f[1], 1);
+	bool ok = conn->chunks ? httpd_conn_put(conn, f, ARRAY_SIZE(f))
+	                       : httpd_conn_put(conn, &f[1], 1);
 	if (!ok)
 		return EPIPE;
 	loop_work(srv->loop, LOOP_SEND, bytes.len);
@@ -1146,50 +1147,50 @@ stream_data (struct stream *s,
 }
 
 static void
-stream_end (struct stream *s,
-            int            error)
+httpd_stream_end (struct stream *s,
+                  int            error)
 {
-	struct conn *conn = container_of(s, struct conn, stream);
+	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
 	if (!conn->open)
 		return;
 	conn->open = conn->waits = conn->writable = false;
 	conn->stream.user = nullptr;
 	if (!conn->replied) {
-		conn_error(conn, 500, nullptr, nullptr, 0);
+		httpd_conn_error(conn, 500, nullptr, nullptr, 0);
 	} else if (error) {
 		/* The client sees the body cut short as the connection closes. */
 		conn->closing = true;
-		conn_doom(conn);
+		httpd_conn_doom(conn);
 	} else if (conn->chunks) {
-		conn_put(conn, &FRAG("0\r\n\r\n"), 1);
+		httpd_conn_put(conn, &FRAG("0\r\n\r\n"), 1);
 	}
 	conn->done = true;
 	loop_ready(conn->srv->loop, &conn->step);
 }
 
 static void
-stream_waiting (struct stream *s)
+httpd_stream_waiting (struct stream *s)
 {
-	struct conn *conn = container_of(s, struct conn, stream);
+	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
 	conn->waits = conn->open;
 	loop_ready(conn->srv->loop, &conn->step);
 }
 
 static struct span
-stream_field (struct stream const *s,
-              size_t               i)
+httpd_stream_field (struct stream const *s,
+                    size_t               i)
 {
-	struct conn const *conn = container_of(s, struct conn const, stream);
-	struct frag f = field(conn, conn->req.app[i]);
+	struct httpd_conn const *conn = container_of(s, struct httpd_conn const, stream);
+	struct httpd_frag f = httpd_conn_field(conn, conn->req.app[i]);
 	return (struct span){ (unsigned char *)(uintptr_t)f.ptr, f.len };
 }
 
-static struct stream_ops const stream_ops = {
-	.head = stream_head,
-	.data = stream_data,
-	.end = stream_end,
-	.waiting = stream_waiting,
-	.field = stream_field,
+static struct stream_ops const httpd_stream_ops = {
+	.head = httpd_stream_head,
+	.data = httpd_stream_data,
+	.end = httpd_stream_end,
+	.waiting = httpd_stream_waiting,
+	.field = httpd_stream_field,
 };
 
 /* Who the client of a freshly parsed head is, by its bearer token, or by
@@ -1199,15 +1200,15 @@ static struct stream_ops const stream_ops = {
  * page whose name was rebound to 127.0.0.1, whose GET carries no Origin: it
  * connects as a remote one. */
 static bool
-conn_grant (struct conn *conn)
+httpd_conn_grant (struct httpd_conn *conn)
 {
 	static char const scheme[] = "Bearer";
 	size_t n = sizeof scheme - 1;
-	struct frag auth = field(conn, conn->req.auth);
+	struct httpd_frag auth = httpd_conn_field(conn, conn->req.auth);
 	bool bearer = auth.ptr && auth.len >= n && !strncasecmp(auth.ptr, scheme, n) &&
 	              (auth.len == n || auth.ptr[n] == ' ');
 	size_t skip = bearer && auth.len > n ? n + 1 : n;
-	char const *host = field(conn, conn->req.host).ptr;
+	char const *host = httpd_conn_field(conn, conn->req.host).ptr;
 	struct policy_peer const peer = {
 		.groups = conn->groups,
 		.n_groups = conn->n_groups,
@@ -1217,7 +1218,7 @@ conn_grant (struct conn *conn)
 	bool ok = policy_grant(conn->srv->policy, bearer ? auth.ptr + skip : nullptr,
 	                       bearer ? auth.len - skip : 0,
 	                       conn->uds ? POLICY_UNIX
-	                       : conn->local && (!host || loopback_host(host))
+	                       : conn->local && (!host || httpd_loopback_host(host))
 	                       ? POLICY_LOOPBACK : POLICY_REMOTE,
 	                       conn->uds ? &peer : nullptr, &g);
 	conn->stream.principal = g.principal;
@@ -1231,17 +1232,17 @@ conn_grant (struct conn *conn)
  * client that may not send a body holds none of the budgets.  A chunked body
  * is counted as it comes. */
 static unsigned
-conn_admit (struct conn *conn)
+httpd_conn_admit (struct httpd_conn *conn)
 {
 	struct httpd *srv = conn->srv;
-	struct req const *req = &conn->req;
+	struct httpd_req const *req = &conn->req;
 	char const *head = (char const *)buf_peek(&conn->in).ptr;
-	char const *origin = field(conn, req->origin).ptr;
-	if (origin && !origin_allowed(srv, origin))
+	char const *origin = httpd_conn_field(conn, req->origin).ptr;
+	if (origin && !httpd_origin_allowed(srv, origin))
 		return 403; /* DNS rebinding defence */
-	if (strcmp(head, "OPTIONS") && !conn_grant(conn))
+	if (strcmp(head, "OPTIONS") && !httpd_conn_grant(conn))
 		return 401;
-	return conn_hold(conn, req->body) ? 0 : 503;
+	return httpd_conn_hold(conn, req->body) ? 0 : 503;
 }
 
 /*
@@ -1253,11 +1254,11 @@ conn_admit (struct conn *conn)
  * smuggling exploits.  Chunk extensions and trailer fields are ignored.
  */
 static unsigned
-conn_dechunk (struct conn   *conn,
-              unsigned char *raw,
-              size_t         len,
-              size_t        *used,
-              size_t        *out)
+httpd_conn_dechunk (struct httpd_conn *conn,
+                    unsigned char     *raw,
+                    size_t             len,
+                    size_t            *used,
+                    size_t            *out)
 {
 	struct httpd_limits const *lim = &conn->srv->lim;
 	size_t rd = 0;
@@ -1299,7 +1300,7 @@ conn_dechunk (struct conn   *conn,
 			 * each of its lines must be a field: a request that follows
 			 * a missing empty line is no trailer. */
 			size_t name = 0;
-			while (name < n - 1 && tchar(line[name]))
+			while (name < n - 1 && httpd_tchar(line[name]))
 				++name;
 			conn->body_in = n == 1;
 			if (!conn->body_in && (!name || line[name] != ':'))
@@ -1311,7 +1312,7 @@ conn_dechunk (struct conn   *conn,
 			size_t size = 0;
 			size_t i = 0;
 			bool bad = false;
-			for (unsigned d; i < n - 1 && (d = hexdigit(line[i])) < 16; ++i) {
+			for (unsigned d; i < n - 1 && (d = httpd_hexdigit(line[i])) < 16; ++i) {
 				bad |= size > SIZE_MAX >> 4;
 				size = size << 4 | d;
 			}
@@ -1338,11 +1339,11 @@ conn_dechunk (struct conn   *conn,
  * application, if it has the stream, and cut it out of the input.  Returns 0
  * or an HTTP error, and sets @p *more if the share ran out first. */
 static unsigned
-conn_body (struct conn *conn,
-           bool        *more)
+httpd_conn_body (struct httpd_conn *conn,
+                 bool              *more)
 {
 	struct loop *loop = conn->srv->loop;
-	struct req const *req = &conn->req;
+	struct httpd_req const *req = &conn->req;
 	struct span in = buf_peek(&conn->in);
 	unsigned char *raw = in.ptr + req->head;
 	size_t avail = in.len - req->head;
@@ -1351,10 +1352,10 @@ conn_body (struct conn *conn,
 	size_t used;
 	size_t out;
 	if (req->chunked) {
-		unsigned status = conn_dechunk(conn, raw, len, &used, &out);
+		unsigned status = httpd_conn_dechunk(conn, raw, len, &used, &out);
 		if (status)
 			return status;
-		if (!conn_hold(conn, out))
+		if (!httpd_conn_hold(conn, out))
 			return 503;
 	} else {
 		used = out = len < req->body - conn->got ? len : req->body - conn->got;
@@ -1372,14 +1373,14 @@ conn_body (struct conn *conn,
 
 /* Begin a request: CORS preflights are ours, the rest the application's. */
 static void
-conn_begin (struct conn *conn)
+httpd_conn_begin (struct httpd_conn *conn)
 {
 	struct httpd *srv = conn->srv;
-	struct req const *req = &conn->req;
+	struct httpd_req const *req = &conn->req;
 	char const *method = (char const *)buf_peek(&conn->in).ptr;
 	conn->body_in = !req->chunked && !req->body;
 	if (!strcmp(method, "OPTIONS")) {
-		conn_preflight(conn);
+		httpd_conn_preflight(conn);
 		return;
 	}
 
@@ -1388,7 +1389,7 @@ conn_begin (struct conn *conn)
 	conn->open = true;
 	conn->stream.user = nullptr;
 	struct stream_app const *app = srv->app;
-	struct frag target = field(conn, req->target);
+	struct httpd_frag target = httpd_conn_field(conn, req->target);
 	app->on_head(app->ctx, &conn->stream,
 	             (struct span){ (unsigned char *)(uintptr_t)method, strlen(method) },
 	             (struct span){ (unsigned char *)(uintptr_t)target.ptr, target.len },
@@ -1398,7 +1399,7 @@ conn_begin (struct conn *conn)
 }
 
 /* What the connection's step does next. */
-enum next {
+enum httpd_next {
 	NEXT_MORE,   /* go on */
 	NEXT_INPUT,  /* wait for input */
 	NEXT_YIELD,  /* wait for the next step */
@@ -1408,16 +1409,16 @@ enum next {
 
 /* Advance the request under way, or begin the next unless the step has no
  * share left for that or has run to @p end. */
-static enum next
-conn_next (struct conn *conn,
-           uint64_t     end)
+static enum httpd_next
+httpd_conn_next (struct httpd_conn *conn,
+                 uint64_t           end)
 {
 	struct httpd *srv = conn->srv;
-	struct req *req = &conn->req;
+	struct httpd_req *req = &conn->req;
 	if (conn->done && conn->body_in) {
 		buf_consume(&conn->in, req->head);
-		conn_unhold(conn);
-		*req = (struct req){};
+		httpd_conn_unhold(conn);
+		*req = (struct httpd_req){};
 		conn->since = srv->loop->now;
 		conn->got = conn->chunk = conn->scan = conn->trailer = conn->trailers = 0;
 		conn->chunking = CHUNK_SIZE;
@@ -1435,41 +1436,42 @@ conn_next (struct conn *conn,
 		/* A head that does not end within lim.head bytes is too large. */
 		struct span in = buf_peek(&conn->in);
 		size_t scan = conn->scan;
-		size_t head = head_length((char const *)in.ptr, in.len < srv->lim.head
-		                                                ? in.len : srv->lim.head,
-		                          &scan);
+		size_t head = httpd_head_length((char const *)in.ptr,
+		                                in.len < srv->lim.head ? in.len
+		                                                       : srv->lim.head,
+		                                &scan);
 		conn->scan = (uint32_t)scan;
-		unsigned status = head ? parse_head((char *)in.ptr, head, req, srv->app,
-		                                    &srv->lim)
+		unsigned status = head ? httpd_req_parse((char *)in.ptr, head, req,
+		                                         srv->app, &srv->lim)
 		                : in.len >= srv->lim.head ? 431 : 0;
 		if (!head && !status)
 			return NEXT_INPUT;
 		loop_work(loop, LOOP_REQS, 1);
 		if (!status)
-			status = conn_admit(conn);
+			status = httpd_conn_admit(conn);
 		if (status) {
 			/* Echo no Origin unless it passed the check: only a 401
 			 * follows that. */
 			if (status != 401)
-				*req = (struct req){};
+				*req = (struct httpd_req){};
 			conn->closing = true;
-			conn_error(conn, status, nullptr, status == 401
-			           ? &FRAG("WWW-Authenticate: Bearer\r\n")
-			           : &FRAG("Retry-After: 1\r\n"),
-			           status == 401 || status == 503);
+			httpd_conn_error(conn, status, nullptr, status == 401
+			                 ? &FRAG("WWW-Authenticate: Bearer\r\n")
+			                 : &FRAG("Retry-After: 1\r\n"),
+			                 status == 401 || status == 503);
 			return NEXT_END;
 		}
 		conn->parsed = true;
 		conn->since = loop->now;
-		conn_begin(conn);
+		httpd_conn_begin(conn);
 		return NEXT_MORE;
 	}
 
 	if (!conn->body_in) {
 		bool more = false;
-		unsigned status = conn_body(conn, &more);
+		unsigned status = httpd_conn_body(conn, &more);
 		if (status) {
-			conn_fail(conn, status);
+			httpd_conn_fail(conn, status);
 			return NEXT_END;
 		}
 		if (conn->body_in || conn->done)
@@ -1478,7 +1480,7 @@ conn_next (struct conn *conn,
 			return NEXT_YIELD;
 		if (req->expect && !conn->cont) {
 			static char const cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
-			conn_put(conn, &FRAG(cont), 1);
+			httpd_conn_put(conn, &FRAG(cont), 1);
 			conn->cont = true;
 		}
 		return NEXT_INPUT;
@@ -1498,17 +1500,17 @@ conn_next (struct conn *conn,
  * left it to send, such as the answer to a key update, whose wait for room
  * stalls as the output's does. */
 static bool
-conn_flush (struct conn *conn)
+httpd_conn_flush (struct httpd_conn *conn)
 {
 	struct loop *loop = conn->srv->loop;
 	while (!conn->dead) {
 		struct span out = buf_peek(&conn->out);
 		if (!out.len) {
 			buf_fini(&conn->out);
-			enum tls_shake shake = conn_blocked(conn) ? tls_shake(conn->ssl)
-			                                          : TLS_SHAKEN;
+			enum tls_shake shake = httpd_conn_blocked(conn) ? tls_shake(conn->ssl)
+			                                                : TLS_SHAKEN;
 			if (shake == TLS_FAILED) {
-				conn_close(conn);
+				httpd_conn_close(conn);
 				return false;
 			}
 			if (shake == TLS_WRITE) {
@@ -1525,7 +1527,7 @@ conn_flush (struct conn *conn)
 		size_t room = loop_room(loop, LOOP_SEND);
 		if (!room || (conn->ssl && room < len))
 			return true;
-		ssize_t n = conn_send(conn, out.ptr, conn->ssl || len < room ? len : room);
+		ssize_t n = httpd_conn_send(conn, out.ptr, conn->ssl || len < room ? len : room);
 		if (n >= 0) {
 			buf_consume(&conn->out, (size_t)n);
 			conn->drained += (size_t)n;
@@ -1538,7 +1540,7 @@ conn_flush (struct conn *conn)
 			}
 			return true;
 		} else if (n != -EINTR) {
-			conn_close(conn);
+			httpd_conn_close(conn);
 		}
 	}
 	return false;
@@ -1552,20 +1554,20 @@ conn_flush (struct conn *conn)
  * then the body's minimum rate.
  */
 static uint64_t
-conn_deadline (struct conn const *conn)
+httpd_conn_deadline (struct httpd_conn const *conn)
 {
 	struct httpd_limits const *lim = &conn->srv->lim;
 	if (conn->linger)
 		return conn->since + LINGER_S * NS;
 	if (conn->ctx)
-		return after(conn->since, conn->ssl ? lim->head_time : lim->idle_time);
+		return httpd_after(conn->since, conn->ssl ? lim->head_time : lim->idle_time);
 	if (conn->stall)
-		return after(conn->stall, lim->write_time);
+		return httpd_after(conn->stall, lim->write_time);
 	if (conn->body_in && conn->parsed)
 		return UINT64_MAX;
 	if (!conn->parsed)
-		return after(conn->since, conn_input(conn) ? lim->head_time
-		                                           : lim->idle_time);
+		return httpd_after(conn->since, httpd_conn_input(conn) ? lim->head_time
+		                                                       : lim->idle_time);
 
 	/* From its start, once the grace is up, the body must have come at
 	 * body_rate: the bytes so far pay for so much time. */
@@ -1580,9 +1582,9 @@ conn_deadline (struct conn const *conn)
 
 /* Bring the timer forward to the deadline, if that is sooner. */
 static void
-conn_arm (struct conn *conn)
+httpd_conn_arm (struct httpd_conn *conn)
 {
-	uint64_t due = conn_deadline(conn);
+	uint64_t due = httpd_conn_deadline(conn);
 	if (due < conn->timer.due)
 		(void)loop_timer_set(conn->srv->loop, &conn->timer, due);
 }
@@ -1590,22 +1592,22 @@ conn_arm (struct conn *conn)
 /* A deadline ran out: a slow head or body is answered 408 and the connection
  * ends once that is sent; otherwise it closes at once. */
 static void
-conn_expire (struct conn *conn)
+httpd_conn_expire (struct httpd_conn *conn)
 {
 	if (conn->linger || conn->stall || !buf_peek(&conn->in).len)
-		conn_close(conn);
+		httpd_conn_close(conn);
 	else
-		conn_fail(conn, 408);
+		httpd_conn_fail(conn, 408);
 }
 
 /* Discard what a lingering client still sends, a read a step; close once it
  * has closed too. */
 static void
-conn_drain (struct conn *conn)
+httpd_conn_discard (struct httpd_conn *conn)
 {
 	ssize_t n = recv(conn->fd, nullptr, LOOP_STEP_RECV, MSG_TRUNC | MSG_DONTWAIT);
 	if (!n || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
-		conn_close(conn);
+		httpd_conn_close(conn);
 	else if (n > 0)
 		loop_work(conn->srv->loop, LOOP_RECV, (uint64_t)n);
 }
@@ -1615,25 +1617,25 @@ conn_drain (struct conn *conn)
  * application still has is cancelled.  TLS says it ends, and is gone: what
  * the client sends from then on is only discarded. */
 static void
-conn_end (struct conn *conn)
+httpd_conn_end (struct httpd_conn *conn)
 {
 	struct httpd *srv = conn->srv;
-	conn_cancel(conn);
+	httpd_conn_cancel(conn);
 	tls_close(&conn->ssl);
 	if (conn->eof || shutdown(conn->fd, SHUT_WR) ||
 	    loop_modify(srv->loop, &conn->ref, EPOLLIN)) {
 		/* Input left unread would turn the close into a reset. */
 		(void)recv(conn->fd, nullptr, srv->in_max, MSG_TRUNC | MSG_DONTWAIT);
-		conn_close(conn);
+		httpd_conn_close(conn);
 		return;
 	}
 	conn->linger = true;
 	conn->since = srv->loop->now;
-	conn_unhold(conn);
+	httpd_conn_unhold(conn);
 	buf_fini(&conn->in);
 	loop_unready(&conn->step);
-	conn_park(conn, false);
-	conn_arm(conn);
+	httpd_conn_park(conn, false);
+	httpd_conn_arm(conn);
 }
 
 /*
@@ -1643,20 +1645,20 @@ conn_end (struct conn *conn)
  * lim.out_pause bytes are pending, and for the next turn otherwise.
  */
 static void
-conn_pump (struct conn *conn)
+httpd_conn_pump (struct httpd_conn *conn)
 {
 	struct httpd *srv = conn->srv;
 	struct loop *loop = srv->loop;
-	enum next next = NEXT_MORE;
+	enum httpd_next next = NEXT_MORE;
 	uint64_t end = loop_clock() + STEP_NS;
 	while (next == NEXT_MORE && !conn->dead && !conn->doomed &&
 	       buf_peek(&conn->out).len < srv->lim.out_pause)
-		next = conn_next(conn, end);
+		next = httpd_conn_next(conn, end);
 	if (conn->doomed) {
-		conn_close(conn);
+		httpd_conn_close(conn);
 		return;
 	}
-	if (!conn_flush(conn))
+	if (!httpd_conn_flush(conn))
 		return;
 
 	size_t pending = buf_peek(&conn->out).len;
@@ -1666,7 +1668,7 @@ conn_pump (struct conn *conn)
 		if (conn->open)
 			srv->app->on_writable(&conn->stream);
 		if (conn->doomed) {
-			conn_close(conn);
+			httpd_conn_close(conn);
 			return;
 		}
 		pending = buf_peek(&conn->out).len;
@@ -1674,9 +1676,9 @@ conn_pump (struct conn *conn)
 		again = conn->done;
 	}
 	bool starved = next == NEXT_INPUT;
-	bool blocked = conn_blocked(conn);
+	bool blocked = httpd_conn_blocked(conn);
 	if (!pending && !blocked && (next == NEXT_END || (starved && conn->eof))) {
-		conn_end(conn);
+		httpd_conn_end(conn);
 		return;
 	}
 
@@ -1692,7 +1694,7 @@ conn_pump (struct conn *conn)
 	else if (reads)
 		events |= EPOLLIN;
 	if (loop_modify(loop, &conn->ref, events)) {
-		conn_close(conn);
+		httpd_conn_close(conn);
 		return;
 	}
 	if (held)
@@ -1706,35 +1708,35 @@ conn_pump (struct conn *conn)
 
 	/* An idle connection keeps no storage, and under critical memory
 	 * pressure one that waits keeps no more than its bytes need. */
-	bool idle = starved && !pending && !blocked && !conn_input(conn);
+	bool idle = starved && !pending && !blocked && !httpd_conn_input(conn);
 	if (idle)
 		buf_fini(&conn->in);
 	else if (waiting && atomic_load_explicit(&buf_pressure, memory_order_relaxed) >=
 	                    BUF_CRITICAL)
 		loop_work(loop, LOOP_COPY, buf_trim(&conn->in) + buf_trim(&conn->out));
 
-	conn_park(conn, idle);
-	conn_arm(conn);
+	httpd_conn_park(conn, idle);
+	httpd_conn_arm(conn);
 }
 
 /* One recv, or one TLS record, straight into the input's free tail.  A
  * head's clock starts with its first byte, which may be in TLS still. */
 static void
-conn_read (struct conn *conn)
+httpd_conn_read (struct httpd_conn *conn)
 {
 	/* Input is read only while no complete request is buffered, and a
 	 * body is cut out as it comes, so the limit is never reached and an
 	 * empty span means out of memory. */
 	struct loop *loop = conn->srv->loop;
-	bool first = !conn->parsed && !conn_input(conn);
+	bool first = !conn->parsed && !httpd_conn_input(conn);
 	struct span s;
 	if (buf_reserve(&conn->in, READ_MIN, conn->srv->in_max, &s)) {
-		conn_close(conn);
+		httpd_conn_close(conn);
 		return;
 	}
 	size_t room = loop_room(loop, LOOP_RECV);
 	size_t len = s.len < room ? s.len : room;
-	ssize_t n = conn_recv(conn, s.ptr, len);
+	ssize_t n = httpd_conn_recv(conn, s.ptr, len);
 	conn->events &= ~HELD;
 	if (n > 0) {
 		buf_commit(&conn->in, (size_t)n);
@@ -1742,14 +1744,14 @@ conn_read (struct conn *conn)
 	} else if (!n) {
 		conn->eof = true;
 	} else if (n != -EAGAIN && n != -EWOULDBLOCK && n != -EINTR) {
-		conn_close(conn);
+		httpd_conn_close(conn);
 		return;
 	}
-	if (first && conn_input(conn))
+	if (first && httpd_conn_input(conn))
 		conn->since = loop->now;
 	/* After a read that gave bytes, or that waits to send, what TLS holds
 	 * is read again; a part of a record waits for the rest. */
-	if (conn->ssl && (n > 0 || conn_blocked(conn)) && tls_pending(conn->ssl))
+	if (conn->ssl && (n > 0 || httpd_conn_blocked(conn)) && tls_pending(conn->ssl))
 		conn->events |= HELD;
 }
 
@@ -1758,7 +1760,7 @@ conn_read (struct conn *conn)
  * the connection serves as any other.  Each flight's time is its CPU's,
  * mostly.  A step woken by the client's FIN alone counts none. */
 static void
-conn_shake (struct conn *conn)
+httpd_conn_shake (struct httpd_conn *conn)
 {
 	struct httpd *srv = conn->srv;
 	struct loop *loop = srv->loop;
@@ -1771,11 +1773,11 @@ conn_shake (struct conn *conn)
 		if (peek < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
 			return;
 		if (peek <= 0 || !(conn->ssl = tls_create(conn->ctx, conn->fd))) {
-			conn_close(conn);
+			httpd_conn_close(conn);
 			return;
 		}
 		conn->since = loop->now;
-		conn_park(conn, false);
+		httpd_conn_park(conn, false);
 	}
 	uint64_t start = loop_clock();
 	enum tls_shake shake = tls_shake(conn->ssl);
@@ -1788,83 +1790,83 @@ conn_shake (struct conn *conn)
 		conn->since = loop->now;
 		if (tls_pending(conn->ssl))
 			conn->events |= HELD;
-		conn_pump(conn);
+		httpd_conn_pump(conn);
 		return;
 	}
 	if (shake == TLS_FAILED ||
 	    loop_modify(loop, &conn->ref, shake == TLS_WRITE ? EPOLLOUT : EPOLLIN)) {
-		conn_close(conn);
+		httpd_conn_close(conn);
 		return;
 	}
-	conn_arm(conn);
+	httpd_conn_arm(conn);
 }
 
 static void
-conn_step (struct loop      *loop,
-           struct loop_step *step)
+httpd_conn_step (struct loop      *loop,
+                 struct loop_step *step)
 {
-	struct conn *conn = container_of(step, struct conn, step);
+	struct httpd_conn *conn = container_of(step, struct httpd_conn, step);
 	uint32_t events = conn->events;
 	conn->events &= HELD;
 
 	/* A client that goes away while the application waits cancels it. */
 	if (conn->doomed || (events & (EPOLLERR | EPOLLHUP)) ||
 	    (conn->waits && (events & EPOLLRDHUP))) {
-		conn_close(conn);
+		httpd_conn_close(conn);
 		return;
 	}
 	/* A handshake ends as a head would, but with no answer. */
 	if (conn->ctx) {
 		if (conn->srv->draining ||
-		    ((events & DEADLINE) && conn_deadline(conn) <= loop->now))
-			conn_close(conn);
+		    ((events & DEADLINE) && httpd_conn_deadline(conn) <= loop->now))
+			httpd_conn_close(conn);
 		else if (events & (EPOLLIN | EPOLLOUT))
-			conn_shake(conn);
+			httpd_conn_shake(conn);
 		return;
 	}
-	if ((events & DEADLINE) && conn_deadline(conn) <= loop->now) {
-		conn_expire(conn);
+	if ((events & DEADLINE) && httpd_conn_deadline(conn) <= loop->now) {
+		httpd_conn_expire(conn);
 	} else if (conn->linger) {
-		conn_drain(conn);
+		httpd_conn_discard(conn);
 		return;
 	} else if (events & EPOLLIN) {
-		conn_read(conn);
+		httpd_conn_read(conn);
 	}
 	if (!conn->dead)
-		conn_pump(conn);
+		httpd_conn_pump(conn);
 }
 
 static void
-conn_event (struct loop     *loop,
-            struct loop_ref *ref,
-            uint32_t         events)
+httpd_conn_event (struct loop     *loop,
+                  struct loop_ref *ref,
+                  uint32_t         events)
 {
 	(void)loop;
-	struct conn *conn = ref->owner;
+	struct httpd_conn *conn = ref->owner;
 	conn->events |= events;
-	conn_ready(conn);
+	httpd_conn_ready(conn);
 }
 
 /* Fired early, re-arm for the deadline as it now stands; else let the step
  * act on it. */
 static void
-conn_timer (struct loop       *loop,
-            struct loop_timer *timer)
+httpd_conn_timer (struct loop       *loop,
+                  struct loop_timer *timer)
 {
-	struct conn *conn = container_of(timer, struct conn, timer);
-	uint64_t due = conn_deadline(conn);
+	struct httpd_conn *conn = container_of(timer, struct httpd_conn, timer);
+	uint64_t due = httpd_conn_deadline(conn);
 	if (due > loop->now) {
 		(void)loop_timer_set(loop, timer, due);
 		return;
 	}
 	conn->events |= DEADLINE;
-	conn_ready(conn);
+	httpd_conn_ready(conn);
 }
 
 /* Watch the listeners for clients, or for none if @p events is 0. */
 static void
-home_watch (struct httpd_home *home,
-            uint32_t           events)
+httpd_home_watch (struct httpd_home *home,
+                  uint32_t           events)
 {
 	for (size_t i = 0; i < home->n_listeners; ++i)
 		(void)loop_modify(home->loop, &home->listeners[i].ref, events);
@@ -1872,7 +1874,7 @@ home_watch (struct httpd_home *home,
 
 /* Free the storage of a connection, which may be a spare. */
 static void
-conn_free (struct conn *conn)
+httpd_conn_free (struct httpd_conn *conn)
 {
 	free(conn->groups);
 	free(conn);
@@ -1882,33 +1884,33 @@ conn_free (struct conn *conn)
  * for the next client.  A descriptor came free, so the spare may be had again.
  * Once home's loop has stopped, its door is gone, and it is freed. */
 static void
-conn_back (struct loop *loop,
-           struct msg  *msg)
+httpd_conn_back (struct loop *loop,
+                 struct msg  *msg)
 {
-	struct conn *conn = container_of(msg, struct conn, msg);
+	struct httpd_conn *conn = container_of(msg, struct httpd_conn, msg);
 	struct httpd_home *home = loop->exit ? nullptr : door;
 	if (!home) {
-		conn_free(conn);
+		httpd_conn_free(conn);
 		return;
 	}
-	client_put(home, conn->client);
+	httpd_home_client_put(home, conn->client);
 	--conn->lane->conns;
 	--home->conns;
 	shelf_put(&home->spare, &conn->hook);
 	if (home->spare_fd < 0 && home->open &&
 	    (home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC)) >= 0)
-		home_watch(home, EPOLLIN);
+		httpd_home_watch(home, EPOLLIN);
 }
 
 /* Set up a connection home placed on the loop, or close it at once while the
  * server drains, giving it back to home. */
 static void
-conn_setup (struct httpd *srv,
-            struct conn  *conn)
+httpd_conn_setup (struct httpd      *srv,
+                  struct httpd_conn *conn)
 {
 	struct loop *loop = srv->loop;
 	struct httpd_lane *lane = conn->lane;
-	struct client *client = conn->client;
+	struct httpd_client *client = conn->client;
 	uint32_t *groups = conn->groups;
 	uint32_t n_groups = conn->n_groups;
 	uint32_t uid = conn->uid;
@@ -1917,12 +1919,12 @@ conn_setup (struct httpd *srv,
 	int fd = conn->fd;
 	bool local = conn->local;
 	bool uds = conn->uds;
-	*conn = (struct conn){
-		.msg.fn = conn_back,
-		.step.fn = conn_step,
-		.timer.fn = conn_timer,
+	*conn = (struct httpd_conn){
+		.msg.fn = httpd_conn_back,
+		.step.fn = httpd_conn_step,
+		.timer.fn = httpd_conn_timer,
 		.stream = {
-			.ops = &stream_ops,
+			.ops = &httpd_stream_ops,
 			.peer = { client->addr[0], client->addr[1] }
 		},
 		.srv = srv,
@@ -1944,12 +1946,12 @@ conn_setup (struct httpd *srv,
 	int one = 1;
 	if (!srv->draining &&
 	    (uds || !setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one)) &&
-	    !loop_timer_set(loop, &conn->timer, after(conn->since, srv->lim.idle_time)) &&
-	    !loop_watch(loop, &conn->ref, fd, EPOLLIN, conn_event, conn)) {
+	    !loop_timer_set(loop, &conn->timer, httpd_after(conn->since, srv->lim.idle_time)) &&
+	    !loop_watch(loop, &conn->ref, fd, EPOLLIN, httpd_conn_event, conn)) {
 		list_init(&conn->hook);
 		atomic_store_explicit(&lane->metrics.open, ++srv->conns,
 		                      memory_order_relaxed);
-		conn_park(conn, true);
+		httpd_conn_park(conn, true);
 		return;
 	}
 	loop_timer_stop(loop, &conn->timer);
@@ -1962,14 +1964,14 @@ conn_setup (struct httpd *srv,
  * up; once the loop has stopped, its server and home's door may be gone, and
  * it is only closed and freed. */
 static void
-conn_take (struct loop *loop,
-           struct msg  *msg)
+httpd_conn_take (struct loop *loop,
+                 struct msg  *msg)
 {
-	struct conn *conn = container_of(msg, struct conn, msg);
+	struct httpd_conn *conn = container_of(msg, struct httpd_conn, msg);
 	if (loop->exit) {
 		tls_ctx_put(conn->ctx);
 		close(conn->fd);
-		conn_free(conn);
+		httpd_conn_free(conn);
 		return;
 	}
 	struct httpd *srv = conn->lane->srv;
@@ -1980,8 +1982,8 @@ conn_take (struct loop *loop,
 /* Set up the connections home handed over, as many a step as its share of
  * accepts allows. */
 static void
-srv_take (struct loop      *loop,
-          struct loop_step *step)
+httpd_take_step (struct loop      *loop,
+                 struct loop_step *step)
 {
 	struct httpd *srv = container_of(step, struct httpd, take);
 	for (; !list_is_empty(&srv->taken); loop_work(loop, LOOP_ACCEPTS, 1)) {
@@ -1989,17 +1991,17 @@ srv_take (struct loop      *loop,
 			loop_ready(loop, step);
 			return;
 		}
-		struct conn *conn = container_of(srv->taken.next, struct conn, hook);
+		struct httpd_conn *conn = container_of(srv->taken.next, struct httpd_conn, hook);
 		list_del(&conn->hook);
-		conn_setup(srv, conn);
+		httpd_conn_setup(srv, conn);
 	}
 }
 
 /* On a client loop: take the policy home stored last, and let go of the
  * one before; once the loop has stopped, only let go of it. */
 static void
-srv_policy (struct loop *loop,
-            struct msg  *msg)
+httpd_lane_policy (struct loop *loop,
+                   struct msg  *msg)
 {
 	struct httpd_lane *lane = container_of(msg, struct httpd_lane, handover);
 	struct policy *policy = atomic_exchange(&lane->policy, nullptr);
@@ -2014,8 +2016,8 @@ srv_policy (struct loop *loop,
 
 /* Home asks the loop to close idle connections, as descriptors run short. */
 static void
-srv_evicts (struct loop *loop,
-            struct msg  *msg)
+httpd_lane_evict (struct loop *loop,
+                  struct msg  *msg)
 {
 	struct httpd_lane *lane = container_of(msg, struct httpd_lane, evict);
 	uint32_t n = atomic_exchange(&lane->evicts, 0);
@@ -2028,8 +2030,8 @@ srv_evicts (struct loop *loop,
 /* Close the least recently active idle connections home asked for, as many
  * a step as its share allows; once none is idle, none is left to close. */
 static void
-srv_evict (struct loop      *loop,
-           struct loop_step *step)
+httpd_evict_step (struct loop      *loop,
+                  struct loop_step *step)
 {
 	struct httpd *srv = container_of(step, struct httpd, evict);
 	for (; srv->evicting && !list_is_empty(&srv->idle); --srv->evicting) {
@@ -2037,7 +2039,7 @@ srv_evict (struct loop      *loop,
 			loop_ready_bulk(loop, step);
 			return;
 		}
-		conn_close(container_of(srv->idle.next, struct conn, hook));
+		httpd_conn_close(container_of(srv->idle.next, struct httpd_conn, hook));
 	}
 	srv->evicting = 0;
 }
@@ -2045,8 +2047,8 @@ srv_evict (struct loop      *loop,
 /* Draining: close the idle connections, and from the deadline on every one
  * left, as many a step as its share allows. */
 static void
-srv_drain (struct loop      *loop,
-           struct loop_step *step)
+httpd_drain_step (struct loop      *loop,
+                  struct loop_step *step)
 {
 	struct httpd *srv = container_of(step, struct httpd, drain);
 	struct list *rest = loop->now >= srv->drain_by ? &srv->busy : &srv->idle;
@@ -2054,14 +2056,14 @@ srv_drain (struct loop      *loop,
 		struct list *list = list_is_empty(&srv->idle) ? rest : &srv->idle;
 		if (list_is_empty(list))
 			return;
-		conn_close(container_of(list->next, struct conn, hook));
+		httpd_conn_close(container_of(list->next, struct httpd_conn, hook));
 	}
 	loop_ready_bulk(loop, step);
 }
 
 static void
-srv_deadline (struct loop       *loop,
-              struct loop_timer *timer)
+httpd_deadline_event (struct loop       *loop,
+                      struct loop_timer *timer)
 {
 	loop_ready_bulk(loop, &container_of(timer, struct httpd, deadline)->drain);
 }
@@ -2069,7 +2071,7 @@ srv_deadline (struct loop       *loop,
 /* Whether clients hold all the descriptors they may: one for each connection,
  * and one more for each job in flight, for its upstream connection. */
 static bool
-home_full (struct httpd_home const *home)
+httpd_home_full (struct httpd_home const *home)
 {
 	return home->conns + hist_get(home->calls) >= home->fd_budget;
 }
@@ -2077,7 +2079,7 @@ home_full (struct httpd_home const *home)
 /* Leave FD_RESERVE descriptors and the two each client loop holds, its
  * epoll's and its inbox's, or half of fewer, to all but clients. */
 static void
-home_budget (struct httpd_home *home)
+httpd_home_budget (struct httpd_home *home)
 {
 	struct rlimit nofile = { .rlim_cur = RLIM_INFINITY };
 	(void)getrlimit(RLIMIT_NOFILE, &nofile);
@@ -2096,7 +2098,7 @@ home_budget (struct httpd_home *home)
  * spread over the loops, and a loop is asked for no more than it has idle.
  */
 static bool
-home_evict (struct httpd_home *home)
+httpd_home_evict (struct httpd_home *home)
 {
 	struct httpd_hub *hub = home->hub;
 	struct httpd_lane *oldest = nullptr;
@@ -2127,8 +2129,8 @@ home_evict (struct httpd_home *home)
  * the utilisation: so connections that come and go spread over the loops
  * too, rather than go to the lightest until the next look. */
 static uint64_t
-home_weight (struct httpd_home *home,
-             struct httpd_lane *lane)
+httpd_home_weight (struct httpd_home *home,
+                   struct httpd_lane *lane)
 {
 	uint64_t now = home->loop->now;
 	if (now - lane->sampled >= SAMPLE_NS) {
@@ -2145,7 +2147,7 @@ home_weight (struct httpd_home *home,
 /* The lighter of two client loops chosen at random (design section 3), or
  * of two as light the one with fewer connections. */
 static struct httpd_lane *
-home_lane (struct httpd_home *home)
+httpd_home_lane (struct httpd_home *home)
 {
 	struct httpd_hub *hub = home->hub;
 	if (hub->n == 1)
@@ -2159,14 +2161,14 @@ home_lane (struct httpd_home *home)
 	size_t b = (size_t)((r >> 32) % (hub->n - 1));
 	struct httpd_lane *x = &hub->lane[a];
 	struct httpd_lane *y = &hub->lane[b + (b >= a)];
-	uint64_t wx = home_weight(home, x);
-	uint64_t wy = home_weight(home, y);
+	uint64_t wx = httpd_home_weight(home, x);
+	uint64_t wy = httpd_home_weight(home, y);
 	return wy < wx || (wy == wx && y->conns < x->conns) ? y : x;
 }
 
 static int
-by_id (void const *a,
-       void const *b)
+httpd_by_id (void const *a,
+             void const *b)
 {
 	uint32_t const *x = a;
 	uint32_t const *y = b;
@@ -2177,9 +2179,9 @@ by_id (void const *a,
  * @p gid, into @p conn, sorted, growing the storage it keeps for them if
  * need be; false if memory runs out. */
 static bool
-uds_groups (struct conn *conn,
-            int          fd,
-            gid_t        gid)
+httpd_conn_groups (struct httpd_conn *conn,
+                   int                fd,
+                   gid_t              gid)
 {
 	static_assert(_Generic((gid_t)0, uint32_t: true, default: false));
 	/* Room for the supplementary groups, as many as the kernel last said,
@@ -2199,7 +2201,7 @@ uds_groups (struct conn *conn,
 	}
 	conn->groups[n] = gid;
 	conn->n_groups = (uint32_t)n + 1;
-	qsort(conn->groups, n + 1, sizeof *conn->groups, by_id);
+	qsort(conn->groups, n + 1, sizeof *conn->groups, httpd_by_id);
 	return true;
 }
 
@@ -2208,22 +2210,23 @@ uds_groups (struct conn *conn,
  * as the user @p cred says if over a Unix socket, to shake hands by @p ctx
  * if not nullptr; if out of memory, close @p fd. */
 static void
-home_place (struct httpd_home  *home,
-            int                 fd,
-            uint64_t const      addr[2],
-            bool                local,
-            struct ucred const *cred,
-            struct ssl_ctx_st  *ctx)
+httpd_home_place (struct httpd_home  *home,
+                  int                 fd,
+                  uint64_t const      addr[2],
+                  bool                local,
+                  struct ucred const *cred,
+                  struct ssl_ctx_st  *ctx)
 {
 	struct list *spare = shelf_take(&home->spare);
-	struct conn *conn = spare ? container_of(spare, struct conn, hook)
-	                          : malloc(sizeof *conn);
+	struct httpd_conn *conn = spare ? container_of(spare, struct httpd_conn, hook)
+	                                : malloc(sizeof *conn);
 	if (conn && !spare) {
 		conn->groups = nullptr;
 		conn->room = 0;
 	}
-	struct client *client = conn && (!cred || uds_groups(conn, fd, cred->gid))
-	                      ? client_get(home, addr) : nullptr;
+	struct httpd_client *client = conn && (!cred ||
+	                                       httpd_conn_groups(conn, fd, cred->gid))
+	                            ? httpd_home_client_get(home, addr) : nullptr;
 	if (!client) {
 		if (conn)
 			shelf_put(&home->spare, &conn->hook);
@@ -2234,11 +2237,11 @@ home_place (struct httpd_home  *home,
 		conn->n_groups = 0;
 	conn->uid = cred ? cred->uid : 0;
 	conn->uds = cred;
-	struct httpd_lane *lane = home_lane(home);
+	struct httpd_lane *lane = httpd_home_lane(home);
 	++lane->conns;
 	++lane->placed;
 	++home->conns;
-	conn->msg.fn = conn_take;
+	conn->msg.fn = httpd_conn_take;
 	conn->lane = lane;
 	conn->client = client;
 	conn->ctx = ctx ? tls_ctx_get(ctx) : nullptr;
@@ -2255,11 +2258,11 @@ home_place (struct httpd_home  *home,
  * make room, or is turned away if none is idle.
  */
 static void
-home_take (struct httpd_home             *home,
-           struct listener const         *l,
-           int                            fd,
-           struct sockaddr_storage const *ss,
-           bool                           shed)
+httpd_home_take (struct httpd_home             *home,
+                 struct httpd_listener const   *l,
+                 int                            fd,
+                 struct sockaddr_storage const *ss,
+                 bool                           shed)
 {
 	/* A Unix socket's client counts as its user, against the cap. */
 	uint64_t addr[2] = { UINT64_MAX };
@@ -2267,7 +2270,7 @@ home_take (struct httpd_home             *home,
 	struct ucred cred;
 	socklen_t len = sizeof cred;
 	if (!uds) {
-		client_key(ss, addr);
+		httpd_addr_key(ss, addr);
 	} else if (!getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len)) {
 		addr[1] = cred.uid;
 	} else {
@@ -2275,7 +2278,7 @@ home_take (struct httpd_home             *home,
 		++home->refused;
 		return;
 	}
-	struct client const *client = *client_slot(home, addr);
+	struct httpd_client const *client = *httpd_home_client_slot(home, addr);
 	if (client && home->cap && client->conns >= home->cap) {
 		static char const busy[] = "HTTP/1.1 503 Service Unavailable\r\n"
 		                           "Retry-After: 1\r\nConnection: close\r\n"
@@ -2284,12 +2287,12 @@ home_take (struct httpd_home             *home,
 			(void)send(fd, busy, sizeof busy - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
 		close(fd);
 		++home->capped;
-	} else if ((shed || home_full(home)) && !home_evict(home)) {
+	} else if ((shed || httpd_home_full(home)) && !httpd_home_evict(home)) {
 		close(fd);
 		++home->refused;
 	} else {
-		home_place(home, fd, addr, uds || loopback(ss), uds ? &cred : nullptr,
-		           l->tls ? home->ctx : nullptr);
+		httpd_home_place(home, fd, addr, uds || httpd_addr_loopback(ss),
+		                 uds ? &cred : nullptr, l->tls ? home->ctx : nullptr);
 	}
 }
 
@@ -2301,8 +2304,8 @@ home_take (struct httpd_home             *home,
  * The spare comes back once a descriptor comes free.
  */
 static int
-home_shed (struct httpd_home *home,
-           struct listener   *l)
+httpd_home_shed (struct httpd_home     *home,
+                 struct httpd_listener *l)
 {
 	close(home->spare_fd);
 	struct sockaddr_storage ss;
@@ -2311,7 +2314,7 @@ home_shed (struct httpd_home *home,
 	                 SOCK_NONBLOCK | SOCK_CLOEXEC);
 	int e = errno;
 	if (fd >= 0)
-		home_take(home, l, fd, &ss, true);
+		httpd_home_take(home, l, fd, &ss, true);
 	home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
 	errno = e;
 	return fd;
@@ -2321,7 +2324,7 @@ home_shed (struct httpd_home *home,
  * so the next may be accepted: Linux passes on a pending connection's network
  * error, and firewall rules may forbid one. */
 static bool
-accept_next (int e)
+httpd_accept_next (int e)
 {
 	switch (e) {
 	case EINTR: case ECONNABORTED: case EPERM: case EPROTO: case ENOPROTOOPT:
@@ -2340,8 +2343,8 @@ accept_next (int e)
  * descriptors run out; without it, listening pauses until a connection is
  * given back, or the tick. */
 static void
-home_accept (struct loop      *loop,
-             struct loop_step *step)
+httpd_home_accept_step (struct loop      *loop,
+                        struct loop_step *step)
 {
 	struct httpd_home *home = container_of(step, struct httpd_home, accept);
 	uint64_t end = loop_clock() + STEP_NS;
@@ -2353,11 +2356,11 @@ home_accept (struct loop      *loop,
 			++k;
 		if (k == n)
 			return;
-		struct listener *l = &home->listeners[(home->turn + k) % n];
+		struct httpd_listener *l = &home->listeners[(home->turn + k) % n];
 		home->turn = (home->turn + k + 1) % n;
 		if (home->spare_fd < 0 &&
 		    (home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC)) < 0) {
-			home_watch(home, 0);
+			httpd_home_watch(home, 0);
 			return;
 		}
 		loop_work(loop, LOOP_ACCEPTS, 1);
@@ -2366,16 +2369,16 @@ home_accept (struct loop      *loop,
 		int fd = accept4(l->fd, (struct sockaddr *)&ss, &len,
 		                 SOCK_NONBLOCK | SOCK_CLOEXEC);
 		if (fd < 0 && (errno == EMFILE || errno == ENFILE))
-			fd = home_shed(home, l);
+			fd = httpd_home_shed(home, l);
 		else if (fd >= 0)
-			home_take(home, l, fd, &ss, false);
-		if (fd >= 0 || accept_next(errno))
+			httpd_home_take(home, l, fd, &ss, false);
+		if (fd >= 0 || httpd_accept_next(errno))
 			continue;
 		l->ready = false;
 		if (errno != EAGAIN && errno != EWOULDBLOCK) {
 			/* Out of memory or descriptors: retry on the next tick. */
 			LOG(LOG_ERROR, "accept: %s", strerror(errno));
-			home_watch(home, 0);
+			httpd_home_watch(home, 0);
 			return;
 		}
 	}
@@ -2383,22 +2386,22 @@ home_accept (struct loop      *loop,
 }
 
 static void
-home_listen_event (struct loop     *loop,
-                   struct loop_ref *ref,
-                   uint32_t         events)
+httpd_listener_event (struct loop     *loop,
+                      struct loop_ref *ref,
+                      uint32_t         events)
 {
 	(void)events;
 	struct httpd_home *home = ref->owner;
-	container_of(ref, struct listener, ref)->ready = true;
+	container_of(ref, struct httpd_listener, ref)->ready = true;
 	loop_ready(loop, &home->accept);
 }
 
 static void
-home_tick (struct loop       *loop,
-           struct loop_timer *timer)
+httpd_home_tick (struct loop       *loop,
+                 struct loop_timer *timer)
 {
 	struct httpd_home *home = container_of(timer, struct httpd_home, tick);
-	home_budget(home);
+	httpd_home_budget(home);
 	if (home->refused)
 		LOG(LOG_WARN, "out of descriptors: turned %" PRIu32 " clients away",
 		    home->refused);
@@ -2409,15 +2412,15 @@ home_tick (struct loop       *loop,
 	if (home->spare_fd < 0)
 		home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
 	if (home->open)
-		home_watch(home, EPOLLIN);
+		httpd_home_watch(home, EPOLLIN);
 	(void)loop_timer_set(loop, timer, loop->now + TICK_S * NS);
 }
 
 /* Listen on the Unix socket at @p path into @p l: one whose file is left
  * there, which no server listens on, goes first. */
 static int
-uds_listen (struct listener *l,
-            char const      *path)
+httpd_listener_uds (struct httpd_listener *l,
+                    char const            *path)
 {
 	struct sockaddr_un sa = { .sun_family = AF_UNIX };
 	size_t len = strlen(path);
@@ -2458,8 +2461,8 @@ uds_listen (struct listener *l,
 /* Listen on @p addr, [host:]port, unix:PATH or tls:[host:]port, into
  * @p l. */
 static int
-home_listen (struct listener *l,
-             char const      *addr)
+httpd_listener_open (struct httpd_listener *l,
+                     char const            *addr)
 {
 	static char const uds[] = "unix:";
 	char const *at = httpd_tls(addr);
@@ -2468,7 +2471,7 @@ home_listen (struct listener *l,
 		at = addr;
 	if (!strncmp(at, uds, sizeof uds - 1)) {
 		if (!l->tls)
-			return uds_listen(l, at + sizeof uds - 1);
+			return httpd_listener_uds(l, at + sizeof uds - 1);
 		LOG(LOG_ERROR, "invalid listen address: %s", addr);
 		return EINVAL;
 	}
@@ -2535,8 +2538,8 @@ httpd_hub_create (size_t  loops,
 	hub->n = loops;
 	for (size_t i = 0; i < loops; ++i) {
 		struct httpd_lane *lane = &hub->lane[i];
-		lane->evict.fn = srv_evicts;
-		lane->handover.fn = srv_policy;
+		lane->evict.fn = httpd_lane_evict;
+		lane->handover.fn = httpd_lane_policy;
 		atomic_init(&lane->policy, nullptr);
 		atomic_init(&lane->metrics.open, 0);
 		atomic_init(&lane->metrics.taken, 0);
@@ -2572,7 +2575,7 @@ httpd_home_create (struct loop            *loop,
                    int                    *e)
 {
 	struct httpd_home *home = malloc(sizeof *home);
-	struct client **clients = calloc(CLIENT_SLOTS, sizeof *clients);
+	struct httpd_client **clients = calloc(CLIENT_SLOTS, sizeof *clients);
 	if (!home || !clients) {
 		free(clients);
 		free(home);
@@ -2581,8 +2584,8 @@ httpd_home_create (struct loop            *loop,
 		return nullptr;
 	}
 	*home = (struct httpd_home){
-		.accept.fn = home_accept,
-		.tick.fn = home_tick,
+		.accept.fn = httpd_home_accept_step,
+		.tick.fn = httpd_home_tick,
 		.loop = loop,
 		.hub = hub,
 		.clients = clients,
@@ -2598,7 +2601,7 @@ httpd_home_create (struct loop            *loop,
 	                            &g) && g.tools;
 	list_init(&home->spare.list);
 	list_init(&home->gone.list);
-	home_budget(home);
+	httpd_home_budget(home);
 	hub->home = loop;
 	door = home;
 
@@ -2608,17 +2611,17 @@ httpd_home_create (struct loop            *loop,
 		++n;
 	*e = (home->listeners = calloc(n, sizeof *home->listeners)) ? 0 : ENOMEM;
 	for (size_t i = 0; !*e && i < n; ++i) {
-		struct listener *l = &home->listeners[i];
+		struct httpd_listener *l = &home->listeners[i];
 		l->ref.fd = l->fd = -1;
 		++home->n_listeners;
-		*e = home_listen(l, cfg->listen[i]);
+		*e = httpd_listener_open(l, cfg->listen[i]);
 		if (!*e && l->tls && !home->ctx) {
 			LOG(LOG_ERROR, "cannot listen on %s: no TLS certificate",
 			    cfg->listen[i]);
 			*e = EINVAL;
 		}
 		if (!*e)
-			*e = loop_watch(loop, &l->ref, l->fd, 0, home_listen_event, home);
+			*e = loop_watch(loop, &l->ref, l->fd, 0, httpd_listener_event, home);
 	}
 	if (!*e && (home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC)) < 0)
 		*e = errno;
@@ -2648,7 +2651,7 @@ httpd_home_destroy (struct httpd_home **p_home)
 	/* Connections on their way to a loop, or back, count their client
 	 * addresses still; the loops are done with them. */
 	for (size_t i = 0; i < CLIENT_SLOTS; ++i)
-		for (struct client *c = home->clients[i], *next; c; c = next) {
+		for (struct httpd_client *c = home->clients[i], *next; c; c = next) {
 			next = c->next;
 			free(c);
 		}
@@ -2665,12 +2668,12 @@ httpd_home_open (struct httpd_home *home)
 	/* Drained already, the door stays shut. */
 	if (!home->n_listeners || home->listeners->fd < 0)
 		return;
-	home_watch(home, EPOLLIN);
+	httpd_home_watch(home, EPOLLIN);
 	home->open = true;
 
 	/* The endpoints say the server is ready. */
 	for (size_t i = 0; i < home->n_listeners; ++i) {
-		struct listener const *l = &home->listeners[i];
+		struct httpd_listener const *l = &home->listeners[i];
 		struct sockaddr_storage ss;
 		socklen_t sslen = sizeof ss;
 		char addr[INET6_ADDRSTRLEN];
@@ -2683,7 +2686,7 @@ httpd_home_open (struct httpd_home *home)
 			bool v6 = ss.ss_family == AF_INET6;
 			LOG(LOG_INFO, "MCP endpoint http%s://%s%s%s:%s/mcp", l->tls ? "s" : "",
 			    v6 ? "[" : "", addr, v6 ? "]" : "", port);
-			if (home->anyone && !loopback(&ss))
+			if (home->anyone && !httpd_addr_loopback(&ss))
 				LOG(LOG_WARN, "warning: listening beyond loopback, where clients "
 				    "that show no token may call tools; anyone who can connect "
 				    "can spend your API credits");
@@ -2728,7 +2731,7 @@ httpd_home_drain (struct httpd_home *home)
 	home->open = false;
 	loop_unready(&home->accept);
 	for (size_t i = 0; i < home->n_listeners; ++i) {
-		struct listener *l = &home->listeners[i];
+		struct httpd_listener *l = &home->listeners[i];
 		if (l->fd < 0)
 			continue;
 		loop_unwatch(home->loop, &l->ref);
@@ -2742,8 +2745,8 @@ httpd_home_drain (struct httpd_home *home)
 void
 httpd_home_crowd (struct httpd_home *home)
 {
-	if (home_full(home))
-		(void)home_evict(home);
+	if (httpd_home_full(home))
+		(void)httpd_home_evict(home);
 }
 
 void
@@ -2761,9 +2764,9 @@ httpd_home_relieve (struct httpd_home *home,
 	/* What home keeps holds no buffer, but a few groups, so each is a unit. */
 	size_t done = 0;
 	for (size_t n = shelf_unused(&home->spare, level); n && done < max; --n, ++done)
-		conn_free(container_of(shelf_drop(&home->spare), struct conn, hook));
+		httpd_conn_free(container_of(shelf_drop(&home->spare), struct httpd_conn, hook));
 	for (size_t n = shelf_unused(&home->gone, level); n && done < max; --n, ++done)
-		free(container_of(shelf_drop(&home->gone), struct client, spare));
+		free(container_of(shelf_drop(&home->gone), struct httpd_client, spare));
 	return done;
 }
 
@@ -2792,10 +2795,10 @@ httpd_create (struct loop             *loop,
 	if (!lim.client_bodies)
 		lim.client_bodies = lim.bodies / 4 > lim.body ? lim.bodies / 4 : lim.body;
 	*srv = (struct httpd){
-		.take.fn = srv_take,
-		.drain.fn = srv_drain,
-		.evict.fn = srv_evict,
-		.deadline.fn = srv_deadline,
+		.take.fn = httpd_take_step,
+		.drain.fn = httpd_drain_step,
+		.evict.fn = httpd_evict_step,
+		.deadline.fn = httpd_deadline_event,
 		.lim = lim,
 		.loop = loop,
 		.hub = hub,
@@ -2825,14 +2828,14 @@ httpd_destroy (struct httpd **p_httpd)
 	/* Those handed over but not set up close at once, as when draining. */
 	srv->draining = true;
 	while (!list_is_empty(&srv->taken)) {
-		struct conn *conn = container_of(srv->taken.next, struct conn, hook);
+		struct httpd_conn *conn = container_of(srv->taken.next, struct httpd_conn, hook);
 		list_del(&conn->hook);
-		conn_setup(srv, conn);
+		httpd_conn_setup(srv, conn);
 	}
 	struct list *const lists[] = { &srv->idle, &srv->busy };
 	for (size_t i = 0; i < ARRAY_SIZE(lists); ++i)
 		while (!list_is_empty(lists[i]))
-			conn_close(container_of(lists[i]->next, struct conn, hook));
+			httpd_conn_close(container_of(lists[i]->next, struct httpd_conn, hook));
 	/* Home, which outlives the loop's server, has them back now. */
 	loop_reap(srv->loop);
 	loop_unready(&srv->take);
