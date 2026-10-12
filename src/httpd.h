@@ -91,12 +91,12 @@ httpd_tls (char const *addr)
  * loops: made before any loop starts, freed once every loop is finished
  * (loop_fini()), as messages in the loops' inboxes may point into it.
  */
-extern int
-httpd_hub_new (struct httpd_hub **p_hub,
-               size_t             loops);
+extern struct httpd_hub *
+httpd_hub_create (size_t  loops,
+                  int    *e);
 
 extern void
-httpd_hub_free (struct httpd_hub **p_hub);
+httpd_hub_destroy (struct httpd_hub **p_hub);
 
 /** What client loop @p i counts of its connections, for GET /metrics. */
 extern struct metrics_conns const *
@@ -107,17 +107,18 @@ httpd_hub_metrics (struct httpd_hub const *hub,
  * Home's door on home's @p loop: listen on cfg->listen, and from
  * httpd_home_open() on, accept clients and place each on a client loop of
  * @p hub.  Descriptors are budgeted for the connections and for @p calls,
- * the jobs in flight, which each may need one upstream.
+ * the jobs in flight, which each may need one upstream.  nullptr, with the
+ * error in @p *e, if it cannot be made.
  */
-extern int
-httpd_home_init (struct httpd_home      **p_home,
-                 struct loop             *loop,
-                 struct httpd_hub        *hub,
-                 struct httpd_cfg const  *cfg,
-                 _Atomic uint64_t const  *calls);
+extern struct httpd_home *
+httpd_home_create (struct loop            *loop,
+                   struct httpd_hub       *hub,
+                   struct httpd_cfg const *cfg,
+                   _Atomic uint64_t const *calls,
+                   int                    *e);
 
 extern void
-httpd_home_fini (struct httpd_home **p_home);
+httpd_home_destroy (struct httpd_home **p_home);
 
 /** Every client loop's server runs: accept clients, unless the door has
  *  drained already. */
@@ -163,18 +164,19 @@ httpd_home_relieve (struct httpd_home *home,
                     size_t             max);
 
 /** Serve @p app, whose fields may number STREAM_FIELDS at most, on client
- *  loop @p i of @p hub, its @p loop. */
-extern int
-httpd_init (struct httpd            **p_httpd,
-            struct loop              *loop,
-            struct httpd_hub         *hub,
-            size_t                    i,
-            struct stream_app const  *app,
-            struct httpd_cfg const   *cfg);
+ *  loop @p i of @p hub, its @p loop; nullptr, with the error in @p *e, if
+ *  it cannot. */
+extern struct httpd *
+httpd_create (struct loop             *loop,
+              struct httpd_hub        *hub,
+              size_t                   i,
+              struct stream_app const *app,
+              struct httpd_cfg const  *cfg,
+              int                     *e);
 
-/** Close every connection, and give each back to home. */
+/** Close every connection, give each back to home, and free the server. */
 extern void
-httpd_fini (struct httpd **p_httpd);
+httpd_destroy (struct httpd **p_httpd);
 
 /**
  * Close the idle connections and end the others once their response is

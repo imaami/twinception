@@ -75,21 +75,21 @@ struct home_metrics {
  * which @p door makes room for, and with CFG_TEST_FIFO, as a test aid, in
  * one queue for all, first in first out.  It counts into @p metrics and
  * @p http, whose atomic members are valid, and which outlive every loop that
- * renders them.
+ * renders them.  nullptr, with the error in @p *e, if it cannot be made.
  */
-extern int
-home_init (struct home               **p_home,
-           struct loop                *loop,
-           struct blocker             *blockers,
-           struct httpd_home          *door,
-           struct ai_endpoint const   *ep,
-           struct config const        *cfg,
-           struct home_metrics        *metrics,
-           struct http_metrics        *http);
+extern struct home *
+home_create (struct loop              *loop,
+             struct blocker           *blockers,
+             struct httpd_home        *door,
+             struct ai_endpoint const *ep,
+             struct config const      *cfg,
+             struct home_metrics      *metrics,
+             struct http_metrics      *http,
+             int                      *e);
 
 /** Cancel the jobs in flight, which complete, then free home. */
 extern void
-home_fini (struct home **p_home);
+home_destroy (struct home **p_home);
 
 /** Cancel the jobs in flight, a share a step, and refuse new ones. */
 extern void

@@ -3440,17 +3440,19 @@ drain_calls (struct loop      *loop,
 	}
 }
 
-int
-mcp_init (struct mcp               **p_mcp,
-          struct loop               *loop,
-          struct loop               *home,
-          struct mcp_static const   *st,
-          struct metrics_src const  *metrics,
-          struct metrics_mcp        *counts)
+struct mcp *
+mcp_create (struct loop              *loop,
+            struct loop              *home,
+            struct mcp_static const  *st,
+            struct metrics_src const *metrics,
+            struct metrics_mcp       *counts,
+            int                      *e)
 {
 	struct mcp *mcp = malloc(sizeof *mcp);
-	if (!mcp)
-		return ENOMEM;
+	if (!mcp) {
+		*e = ENOMEM;
+		return nullptr;
+	}
 	*mcp = (struct mcp){
 		.drain.fn = drain_calls,
 		.app = {
@@ -3484,16 +3486,16 @@ mcp_init (struct mcp               **p_mcp,
 	list_init(&mcp->children);
 	list_init(&mcp->spare.list);
 	list_init(&mcp->jobs.list);
-	self = *p_mcp = mcp;
-	return 0;
+	self = mcp;
+	return mcp;
 }
 
 void
-mcp_fini (struct mcp **p_mcp)
+mcp_destroy (struct mcp **p_mcp)
 {
-	if (!p_mcp || !*p_mcp)
-		return;
 	struct mcp *mcp = *p_mcp;
+	if (!mcp)
+		return;
 	*p_mcp = nullptr;
 
 	/* The transport has cancelled every stream by now, so only requests
@@ -3806,19 +3808,21 @@ modern_list (struct json_object *result,
 	return result;
 }
 
-int
-mcp_static_new (struct mcp_static   **p_static,
-                struct config const  *cfg,
-                struct manual        *manual,
-                struct task_pool     *tasks,
-                struct git           *git,
-                struct notes         *notes)
+struct mcp_static *
+mcp_static_create (struct config const *cfg,
+                   struct manual       *manual,
+                   struct task_pool    *tasks,
+                   struct git          *git,
+                   struct notes        *notes,
+                   int                 *e)
 {
 	struct mcp_tool const *tool = &cfg->tool;
 	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS && ai_format(cfg->ep.protocol);
 	struct mcp_static *st = malloc(sizeof *st);
-	if (!st)
-		return ENOMEM;
+	if (!st) {
+		*e = ENOMEM;
+		return nullptr;
+	}
 	*st = (struct mcp_static){
 		.ep = &cfg->ep,
 		.tool = tool->name,
@@ -3840,7 +3844,6 @@ mcp_static_new (struct mcp_static   **p_static,
 	for (size_t i = 0; i < ARRAY_SIZE(st->lent); ++i)
 		st->lent[i] = (struct dstr)DSTR_INIT;
 	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
-	*p_static = st;
 
 	/* Built with json-c, which escapes as replies need, then kept as text. */
 	struct json_object *info = jb_object("name", json_object_new_string("askai"),
@@ -3919,18 +3922,18 @@ mcp_static_new (struct mcp_static   **p_static,
 		json_object_put(defs[i]);
 	json_object_put(info);
 	if (!ok) {
-		mcp_static_free(p_static);
-		return ENOMEM;
+		mcp_static_destroy(&st);
+		*e = ENOMEM;
 	}
-	return 0;
+	return st;
 }
 
 void
-mcp_static_free (struct mcp_static **p_static)
+mcp_static_destroy (struct mcp_static **p_static)
 {
-	if (!p_static || !*p_static)
-		return;
 	struct mcp_static *st = *p_static;
+	if (!st)
+		return;
 	*p_static = nullptr;
 	for (size_t i = 0; i < ARRAY_SIZE(st->list); ++i)
 		for (size_t j = 0; j < ARRAY_SIZE(st->list[i]); ++j)

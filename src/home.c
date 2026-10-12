@@ -1650,15 +1650,15 @@ home_job (struct loop *loop,
 	home_put(job, bits & JOB_CANCEL ? 2 : 1);
 }
 
-int
-home_init (struct home               **p_home,
-           struct loop                *loop,
-           struct blocker             *blockers,
-           struct httpd_home          *door,
-           struct ai_endpoint const   *ep,
-           struct config const        *cfg,
-           struct home_metrics        *metrics,
-           struct http_metrics        *http)
+struct home *
+home_create (struct loop              *loop,
+             struct blocker           *blockers,
+             struct httpd_home        *door,
+             struct ai_endpoint const *ep,
+             struct config const      *cfg,
+             struct home_metrics      *metrics,
+             struct http_metrics      *http,
+             int                      *e)
 {
 	uint32_t max = cfg->calls;
 	size_t buckets = stdc_bit_ceil(max < KEYS_MAX ? max : (uint32_t)KEYS_MAX);
@@ -1669,7 +1669,8 @@ home_init (struct home               **p_home,
 		free(whom);
 		free(keys);
 		free(home);
-		return ENOMEM;
+		*e = ENOMEM;
+		return nullptr;
 	}
 	*home = (struct home){
 		.start.fn = start_step,
@@ -1716,24 +1717,24 @@ home_init (struct home               **p_home,
 	list_init(&home->feeding);
 	list_init(&home->spare.list);
 	/* In the heap from the start, the timers are set without fail. */
-	int e = loop_timer_set(loop, &home->deadline, UINT64_MAX);
-	if (!e)
-		e = loop_timer_set(loop, &home->quiet, UINT64_MAX);
-	if (!e)
-		e = loop_timer_set(loop, &home->breaker, UINT64_MAX);
-	if (!e)
-		home->http = http_create(loop, http, &e);
-	if (e) {
+	*e = loop_timer_set(loop, &home->deadline, UINT64_MAX);
+	if (!*e)
+		*e = loop_timer_set(loop, &home->quiet, UINT64_MAX);
+	if (!*e)
+		*e = loop_timer_set(loop, &home->breaker, UINT64_MAX);
+	if (!*e)
+		home->http = http_create(loop, http, e);
+	if (*e) {
 		loop_timer_stop(loop, &home->breaker);
 		loop_timer_stop(loop, &home->quiet);
 		loop_timer_stop(loop, &home->deadline);
 		free(whom);
 		free(keys);
 		free(home);
-		return e;
+		return nullptr;
 	}
 	http_resolver(home->http, blockers);
-	self = *p_home = home;
+	self = home;
 	/* Until /props answers, if asked, the default, said once it has; and
 	 * the context, which compacting it takes, unless told. */
 	home->context = ep->context > 0 ? (uint32_t)ep->context : 0;
@@ -1746,11 +1747,11 @@ home_init (struct home               **p_home,
 	/* Told the slots, /props takes no call's connection. */
 	if (ep->slots && asked)
 		http_connections(home->http, ep->slots + 1L);
-	return 0;
+	return home;
 }
 
 void
-home_fini (struct home **p_home)
+home_destroy (struct home **p_home)
 {
 	struct home *home = *p_home;
 	if (!home)

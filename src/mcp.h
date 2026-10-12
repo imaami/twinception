@@ -67,34 +67,36 @@ mcp_limits (void)
  * the tool compact: its call then runs a loop of turns, each an upstream
  * call, and the tools each turn calls, until an answer calls none.
  * @p cfg, @p manual, @p tasks, @p git and @p notes must outlive it.
+ * nullptr, with the error in @p *e, if it cannot be made.
  */
-extern int
-mcp_static_new (struct mcp_static   **p_static,
-                struct config const  *cfg,
-                struct manual        *manual,
-                struct task_pool     *tasks,
-                struct git           *git,
-                struct notes         *notes);
+extern struct mcp_static *
+mcp_static_create (struct config const *cfg,
+                   struct manual       *manual,
+                   struct task_pool    *tasks,
+                   struct git          *git,
+                   struct notes        *notes,
+                   int                 *e);
 
 extern void
-mcp_static_free (struct mcp_static **p_static);
+mcp_static_destroy (struct mcp_static **p_static);
 
 /**
  * MCP on @p loop, whose tool calls are jobs that home runs on its loop
  * @p home (src/job.h).  It counts into @p counts, whose atomic members are
- * valid, and GET /metrics renders @p metrics.
+ * valid, and GET /metrics renders @p metrics.  nullptr, with the error in
+ * @p *e, if out of memory.
  */
-extern int
-mcp_init (struct mcp               **p_mcp,
-          struct loop               *loop,
-          struct loop               *home,
-          struct mcp_static const   *st,
-          struct metrics_src const  *metrics,
-          struct metrics_mcp        *counts);
+extern struct mcp *
+mcp_create (struct loop              *loop,
+            struct loop              *home,
+            struct mcp_static const  *st,
+            struct metrics_src const *metrics,
+            struct metrics_mcp       *counts,
+            int                      *e);
 
-/** Cancels every request under way. */
+/** Cancel every request under way, and free MCP. */
 extern void
-mcp_fini (struct mcp **p_mcp);
+mcp_destroy (struct mcp **p_mcp);
 
 /** Begin a window of reuse, as buf_stash_age() does for a stash. */
 extern void

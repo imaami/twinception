@@ -2522,13 +2522,15 @@ home_listen (struct listener *l,
 	return e;
 }
 
-int
-httpd_hub_new (struct httpd_hub **p_hub,
-               size_t             loops)
+struct httpd_hub *
+httpd_hub_create (size_t  loops,
+                  int    *e)
 {
 	struct httpd_hub *hub = calloc(1, sizeof *hub + loops * sizeof *hub->lane);
-	if (!hub)
-		return ENOMEM;
+	if (!hub) {
+		*e = ENOMEM;
+		return nullptr;
+	}
 	atomic_init(&hub->bodies, 0);
 	hub->n = loops;
 	for (size_t i = 0; i < loops; ++i) {
@@ -2545,12 +2547,11 @@ httpd_hub_new (struct httpd_hub **p_hub,
 		atomic_init(&lane->idles, 0);
 		atomic_init(&lane->evicts, 0);
 	}
-	*p_hub = hub;
-	return 0;
+	return hub;
 }
 
 void
-httpd_hub_free (struct httpd_hub **p_hub)
+httpd_hub_destroy (struct httpd_hub **p_hub)
 {
 	free(*p_hub);
 	*p_hub = nullptr;
@@ -2563,12 +2564,12 @@ httpd_hub_metrics (struct httpd_hub const *hub,
 	return &hub->lane[i].metrics;
 }
 
-int
-httpd_home_init (struct httpd_home      **p_home,
-                 struct loop             *loop,
-                 struct httpd_hub        *hub,
-                 struct httpd_cfg const  *cfg,
-                 _Atomic uint64_t const  *calls)
+struct httpd_home *
+httpd_home_create (struct loop            *loop,
+                   struct httpd_hub       *hub,
+                   struct httpd_cfg const *cfg,
+                   _Atomic uint64_t const *calls,
+                   int                    *e)
 {
 	struct httpd_home *home = malloc(sizeof *home);
 	struct client **clients = calloc(CLIENT_SLOTS, sizeof *clients);
@@ -2576,7 +2577,8 @@ httpd_home_init (struct httpd_home      **p_home,
 		free(clients);
 		free(home);
 		LOG(LOG_ERROR, "cannot start the server: %s", strerror(ENOMEM));
-		return ENOMEM;
+		*e = ENOMEM;
+		return nullptr;
 	}
 	*home = (struct httpd_home){
 		.accept.fn = home_accept,
@@ -2598,40 +2600,40 @@ httpd_home_init (struct httpd_home      **p_home,
 	list_init(&home->gone.list);
 	home_budget(home);
 	hub->home = loop;
-	door = *p_home = home;
+	door = home;
 
 	/* The listeners are watched for no events until the door opens. */
 	size_t n = 0;
 	while (cfg->listen[n])
 		++n;
-	int e = (home->listeners = calloc(n, sizeof *home->listeners)) ? 0 : ENOMEM;
-	for (size_t i = 0; !e && i < n; ++i) {
+	*e = (home->listeners = calloc(n, sizeof *home->listeners)) ? 0 : ENOMEM;
+	for (size_t i = 0; !*e && i < n; ++i) {
 		struct listener *l = &home->listeners[i];
 		l->ref.fd = l->fd = -1;
 		++home->n_listeners;
-		e = home_listen(l, cfg->listen[i]);
-		if (!e && l->tls && !home->ctx) {
+		*e = home_listen(l, cfg->listen[i]);
+		if (!*e && l->tls && !home->ctx) {
 			LOG(LOG_ERROR, "cannot listen on %s: no TLS certificate",
 			    cfg->listen[i]);
-			e = EINVAL;
+			*e = EINVAL;
 		}
-		if (!e)
-			e = loop_watch(loop, &l->ref, l->fd, 0, home_listen_event, home);
+		if (!*e)
+			*e = loop_watch(loop, &l->ref, l->fd, 0, home_listen_event, home);
 	}
-	if (!e && (home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC)) < 0)
-		e = errno;
-	if (!e)
-		e = loop_timer_set(loop, &home->tick, loop->now + TICK_S * NS);
-	if (e) {
-		if (e != EINVAL && e != EADDRINUSE)
-			LOG(LOG_ERROR, "cannot start the server: %s", strerror(e));
-		httpd_home_fini(p_home);
+	if (!*e && (home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC)) < 0)
+		*e = errno;
+	if (!*e)
+		*e = loop_timer_set(loop, &home->tick, loop->now + TICK_S * NS);
+	if (*e) {
+		if (*e != EINVAL && *e != EADDRINUSE)
+			LOG(LOG_ERROR, "cannot start the server: %s", strerror(*e));
+		httpd_home_destroy(&home);
 	}
-	return e;
+	return home;
 }
 
 void
-httpd_home_fini (struct httpd_home **p_home)
+httpd_home_destroy (struct httpd_home **p_home)
 {
 	struct httpd_home *home = *p_home;
 	if (!home)
@@ -2765,21 +2767,24 @@ httpd_home_relieve (struct httpd_home *home,
 	return done;
 }
 
-int
-httpd_init (struct httpd            **p_httpd,
-            struct loop              *loop,
-            struct httpd_hub         *hub,
-            size_t                    i,
-            struct stream_app const  *app,
-            struct httpd_cfg const   *cfg)
+struct httpd *
+httpd_create (struct loop             *loop,
+              struct httpd_hub        *hub,
+              size_t                   i,
+              struct stream_app const *app,
+              struct httpd_cfg const  *cfg,
+              int                     *e)
 {
-	if (app->n_fields > STREAM_FIELDS)
-		return EINVAL;
+	if (app->n_fields > STREAM_FIELDS) {
+		*e = EINVAL;
+		return nullptr;
+	}
 
 	struct httpd *srv = malloc(sizeof *srv);
 	if (!srv) {
 		LOG(LOG_ERROR, "cannot start the server: %s", strerror(ENOMEM));
-		return ENOMEM;
+		*e = ENOMEM;
+		return nullptr;
 	}
 
 	/* By default one client address may hold a quarter of the bodies. */
@@ -2806,16 +2811,15 @@ httpd_init (struct httpd            **p_httpd,
 	list_init(&srv->taken);
 	srv->lane->loop = loop;
 	srv->lane->srv = srv;
-	*p_httpd = srv;
-	return 0;
+	return srv;
 }
 
 void
-httpd_fini (struct httpd **p_httpd)
+httpd_destroy (struct httpd **p_httpd)
 {
-	if (!p_httpd || !*p_httpd)
-		return;
 	struct httpd *srv = *p_httpd;
+	if (!srv)
+		return;
 	*p_httpd = nullptr;
 
 	/* Those handed over but not set up close at once, as when draining. */

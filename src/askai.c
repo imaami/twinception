@@ -340,11 +340,11 @@ home_app_start (void            *ctx,
 	metrics->blockers = blocker_metrics(blockers);
 	int e = keep_start(&app->keep, loop, blockers);
 	if (!e)
-		e = httpd_home_init(&app->keep.door, loop, app->hub, app->hcfg,
-		                    &app->jobs.in_flight);
+		app->keep.door = httpd_home_create(loop, app->hub, app->hcfg,
+		                                   &app->jobs.in_flight, &e);
 	if (!e)
-		e = home_init(&app->keep.home, loop, blockers, app->keep.door, app->ep,
-		              app->cfg, &app->jobs, &app->http);
+		app->keep.home = home_create(loop, blockers, app->keep.door, app->ep, app->cfg,
+		                             &app->jobs, &app->http, &e);
 	if (e)
 		LOG(LOG_ERROR, "cannot start home: %s", strerror(e));
 	return e;
@@ -450,8 +450,8 @@ home_app_stop (void        *ctx,
                struct loop *loop)
 {
 	struct home_app *app = ctx;
-	home_fini(&app->keep.home);
-	httpd_home_fini(&app->keep.door);
+	home_destroy(&app->keep.home);
+	httpd_home_destroy(&app->keep.door);
 	keep_stop(&app->keep, loop);
 }
 
@@ -475,14 +475,14 @@ app_start (void            *ctx,
 	}
 	int e = keep_start(&app->keep, loop, blockers);
 	if (!e)
-		e = mcp_init(&app->keep.mcp, loop, app->home->loop, app->st, app->metrics,
-		             &app->counts);
+		app->keep.mcp = mcp_create(loop, app->home->loop, app->st, app->metrics,
+		                           &app->counts, &e);
 	if (e)
 		LOG(LOG_ERROR, "cannot start client loop %" PRIu64 ": %s", loop->id,
 		    strerror(e));
 	else
-		e = httpd_init(&app->httpd, loop, app->hub, loop->id - 1,
-		               mcp_app(app->keep.mcp), app->hcfg);
+		app->httpd = httpd_create(loop, app->hub, loop->id - 1,
+		                          mcp_app(app->keep.mcp), app->hcfg, &e);
 	return e;
 }
 
@@ -504,8 +504,8 @@ app_stop (void        *ctx,
 	struct app *app = ctx;
 	if (app->tasks)
 		task_pool_detach(app->tasks, loop);
-	httpd_fini(&app->httpd);
-	mcp_fini(&app->keep.mcp);
+	httpd_destroy(&app->httpd);
+	mcp_destroy(&app->keep.mcp);
 	keep_stop(&app->keep, loop);
 }
 
@@ -573,9 +573,9 @@ serve (struct config const *cfg)
 	if (!e && cfg->flags & CFG_MAN)
 		manual = manual_create(cfg->man_recheck, &e);
 	if (!e)
-		e = mcp_static_new(&st, cfg, manual, tasks, git, notes);
+		st = mcp_static_create(cfg, manual, tasks, git, notes, &e);
 	if (!e)
-		e = httpd_hub_new(&hub, n);
+		hub = httpd_hub_create(n, &e);
 	struct metrics_src metrics = {
 		.loops = loops,
 		.man = manual ? manual_metrics(manual) : nullptr,
@@ -644,10 +644,10 @@ serve (struct config const *cfg)
 		        hist_get(&t->abandoned), moved, rest);
 	}
 	task_pool_destroy(&tasks);
-	httpd_hub_free(&hub);
+	httpd_hub_destroy(&hub);
 	git_destroy(&git);
 	notes_destroy(&notes);
-	mcp_static_free(&st);
+	mcp_static_destroy(&st);
 	manual_destroy(&manual);
 	free(loops);
 	free(apps);
