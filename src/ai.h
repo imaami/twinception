@@ -1,4 +1,4 @@
-/** @file Upstream AI endpoint protocols: request bodies and answer parsing. */
+/** @file Upstream AI APIs: request bodies and answer parsing. */
 #ifndef TWINCEPTION_SRC_AI_H_
 #define TWINCEPTION_SRC_AI_H_
 
@@ -8,11 +8,25 @@
 struct dstr;
 struct json_object;
 
-enum ai_protocol {
-	AI_OPENAI,     /**< OpenAI-compatible chat completions */
-	AI_RESPONSES,  /**< OpenAI Responses API */
-	AI_ANTHROPIC,  /**< Anthropic Messages API */
-	AI_GEMINI      /**< Google Gemini generateContent */
+/** How the upstream's requests and answers are written: 0 only until the
+ *  configuration has chosen. */
+enum ai_api : uint16_t {
+	AI_CHAT = 1,   /**< chat completions, OpenAI's and the many copies */
+	AI_RESPONSES,  /**< OpenAI's Responses */
+	AI_MESSAGES,   /**< Anthropic's Messages */
+	AI_GENERATE,   /**< Gemini's generateContent */
+};
+
+/** Who serves the upstream, as askai knows them: their URLs, the variables
+ *  of their keys and their default API. */
+enum ai_provider : uint16_t {
+	AI_NO_PROVIDER,  /**< a server that --url names alone */
+	AI_LLAMA,        /**< llama-server, which says at /props what it has */
+	AI_OPENAI,
+	AI_ANTHROPIC,
+	AI_GOOGLE,
+	AI_DEEPINFRA,
+	AI_OPENROUTER,
 };
 
 struct ai_endpoint {
@@ -32,12 +46,13 @@ struct ai_endpoint {
 	                                       unknown */
 	uint32_t            slots;        /**< upstream calls at once; 0: as
 	                                       llama-server's /props says, else 4 */
-	enum ai_protocol    protocol;
+	enum ai_api         api;
+	enum ai_provider    provider;
 };
 
 /**
  * Build the request body asking @p prompt, with @p system instructions unless
- * that is nullptr, and offering the model @p tools, an array as the protocol
+ * that is nullptr, and offering the model @p tools, an array as the API
  * has them, unless that is nullptr; nullptr if out of memory.  Its messages
  * are its last member, so that the turns of a conversation (ai_format())
  * may follow them.  All three are JSON values, which the body takes
@@ -103,13 +118,13 @@ struct ai_sink {
  * it has ended, or chat completions' [DONE], is cut off.
  */
 extern int
-ai_event (enum ai_protocol       protocol,
+ai_event (enum ai_api            api,
           struct json_object    *ev,
           struct ai_sink const  *sink,
           struct ai_event       *out);
 
 /**
- * The JSON text that the turns of a conversation are made of, in a protocol
+ * The JSON text that the turns of a conversation are made of, in an API
  * whose answers may call tools: each member a fragment that goes between
  * the texts of strings, which are escaped into it.  A model's turn is turn,
  * its text, thought and its thinking's text if it has any, and calls; then
@@ -139,16 +154,16 @@ struct ai_format {
 	                end;         /**< ends the messages, and the body */
 };
 
-/** Whether @p reason, an answer's stop reason, is @p protocol's output
+/** Whether @p reason, an answer's stop reason, is @p api's output
  *  token limit, which cuts it short. */
 extern bool
-ai_cut (enum ai_protocol  protocol,
+ai_cut (enum ai_api       api,
         char const       *reason);
 
-/** The format of turns in @p protocol; nullptr if askai has none for it, as
- *  for every protocol but chat completions so far. */
+/** The format of turns in @p api; nullptr if askai has none for it, as
+ *  for every API but chat completions so far. */
 extern struct ai_format const *
-ai_format (enum ai_protocol protocol);
+ai_format (enum ai_api api);
 
 /** Say in the @p size bytes at @p buf that the model gave no answer, and
  *  why, if its stop @p reason is not nullptr; returns the length written. */
@@ -165,7 +180,7 @@ ai_no_answer (char       *buf,
  * answer.
  */
 extern int
-ai_answer (enum ai_protocol    protocol,
+ai_answer (enum ai_api         api,
            long                status,
            struct json_object *root,
            char const         *body,

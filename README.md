@@ -260,23 +260,42 @@ answer as they come, "thinking" while the latest is the model's thinking and
 "generating" once it is the answer's text.  Other requests, and clients that accept only JSON, get
 JSON.  Request bodies may come with a `Content-Length` or in chunks.
 
-### Upstream protocols
+### Upstream providers and APIs
 
-| `-p`        | API                      | Default endpoint (without `-u`)                                                 | Key variable                       |
-| ----------- | ------------------------ | ------------------------------------------------------------------------------- | ---------------------------------- |
-| `openai`    | Chat Completions         | `https://api.openai.com/v1/chat/completions`                                    | `OPENAI_API_KEY`                   |
-| `responses` | OpenAI Responses         | `https://api.openai.com/v1/responses`                                           | `OPENAI_API_KEY`                   |
-| `anthropic` | Anthropic Messages       | `https://api.anthropic.com/v1/messages`                                         | `ANTHROPIC_API_KEY`                |
-| `gemini`    | Gemini `streamGenerateContent` | `https://generativelanguage.googleapis.com/v1beta/models/MODEL:streamGenerateContent?alt=sse` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+`--api` says how the requests and answers are written:
 
-`openai` also covers every OpenAI-compatible server: another `llama-server`,
-vLLM, Ollama, LM Studio, OpenRouter, Groq, DeepInfra and so on.  Reasoning or
-thinking output is dropped; only the answer is returned.  An answer cut off by
+| `--api`     | API                                                       |
+| ----------- | --------------------------------------------------------- |
+| `chat`      | Chat Completions: OpenAI's, and the many servers that copy it |
+| `responses` | OpenAI Responses                                          |
+| `messages`  | Anthropic Messages                                        |
+| `generate`  | Gemini `streamGenerateContent`                            |
+
+`-p`, `--provider`, says who serves it, whose default API, URL for the API and
+key variables are then the defaults:
+
+| `-p`         | Default API | URLs of its APIs (without `-u`)                                                   | Key variables                            |
+| ------------ | ----------- | --------------------------------------------------------------------------------- | ---------------------------------------- |
+| `llama`      | `chat`      | `http://127.0.0.1:9931/v1/` + `chat/completions`, `responses`, `messages`         | `LLAMA_API_KEY`, if set                  |
+| `openai`     | `chat`      | `https://api.openai.com/v1/` + `chat/completions`, `responses`                    | `OPENAI_API_KEY`                         |
+| `anthropic`  | `messages`  | `https://api.anthropic.com/v1/` + `messages`, `chat/completions`                  | `ANTHROPIC_API_KEY`                      |
+| `google`     | `generate`  | `https://generativelanguage.googleapis.com/v1beta/` + `models/MODEL:streamGenerateContent?alt=sse`, `openai/chat/completions` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| `deepinfra`  | `chat`      | `https://api.deepinfra.com/v1/openai/chat/completions`                            | `DEEPINFRA_API_KEY`, `DEEPINFRA_TOKEN`   |
+| `openrouter` | `chat`      | `https://openrouter.ai/api/v1/chat/completions`                                   | `OPENROUTER_API_KEY`                     |
+
+The choice goes one way: a provider brings its API, URL and key, while `--api`
+alone brings none of them.  Without a provider, `-u` must say where the server
+is, its API is `chat` unless `--api` says otherwise, and its key is
+`ASKAI_API_KEY`'s, if that is set; `chat` covers every OpenAI-compatible
+server this way: vLLM, Ollama, LM Studio, Groq and so on.  With a provider,
+`-u` replaces the provider's URL, and a provider that does not serve the API
+asked for is refused.  A provider's own URL needs `-m`, but llama's.
+Reasoning or thinking output is dropped; only the answer is returned.  An answer cut off by
 the token limit is marked as such, and upstream failures (HTTP errors, error
 events, refusals, timeouts) come back as tool errors the model can read and
 react to.
 
-Every protocol asks for a streamed answer: `stream: true` in the body, which
+Every API asks for a streamed answer: `stream: true` in the body, which
 `-x` cannot turn off, and for Gemini `:streamGenerateContent?alt=sse`, which a
 `-u` URL ending in `:generateContent` is asked as instead, with `alt=sse`
 whatever `alt` it had.  The tool still
@@ -286,25 +305,29 @@ begun) and cancel generation upstream as soon as the client goes.  A server
 that answers with plain JSON all the same is understood too.
 
 API keys are read from the environment, never from the command line.  A
-provider's usual variable is only used for its own endpoint: with `-u`, name the
-variable explicitly with `-k`, so a key is never sent somewhere you did not ask
-for.
+provider's usual variables are only read for its own URL: with `-u`, the key is
+`ASKAI_API_KEY`'s, or that of the variable `-k` names, so a provider's key is
+never sent somewhere you did not ask for.
 
 ```sh
 # Ask an Anthropic model.
 export ANTHROPIC_API_KEY=...
 ./askai -p anthropic -m MODEL
 
-# Ask a model served by a second llama-server (no key needed).
-./askai -u http://127.0.0.1:8081/v1/chat/completions
+# Ask the model of the local llama-server, at 127.0.0.1:9931 (no key needed).
+./askai -p llama
+
+# Ask a model served by a second llama-server.
+./askai -p llama -u http://127.0.0.1:8081/v1/chat/completions
 
 # Ask a model on OpenRouter.
 export OPENROUTER_API_KEY=...
-./askai -u https://openrouter.ai/api/v1/chat/completions -k OPENROUTER_API_KEY -m MODEL
+./askai -p openrouter -m MODEL
 
-# Ask a Gemini model.
+# Ask a Gemini model, in Gemini's API or in Google's chat completions.
 export GEMINI_API_KEY=...
-./askai -p gemini -m MODEL
+./askai -p google -m MODEL
+./askai -p google --api chat -m MODEL
 ```
 
 `-x` deep-merges a JSON object into every request body, which reaches any
@@ -312,7 +335,7 @@ provider-specific parameter; `null` members delete keys.  For example, OpenAI
 reasoning models want `max_completion_tokens` instead of `max_tokens`:
 
 ```sh
-./askai -m MODEL -n 4096 -x '{"max_tokens": null, "max_completion_tokens": 4096}'
+./askai -p openai -m MODEL -n 4096 -x '{"max_tokens": null, "max_completion_tokens": 4096}'
 ```
 
 ### Connecting llama-server
@@ -423,7 +446,7 @@ kills `git` and the processes it started.
 ### Lending tools to the upstream
 
 With `--upstream-tools`, an `ask_ai` call offers the other model tools of its
-own, in the chat completions protocol (`--protocol openai`, which
+own, in the chat completions API (`--api chat`, which
 `llama-server` speaks; its chat template must take tools, as with `--jinja`):
 those of `man` and `git` that the caller's role may call (`ask_ai` itself is
 never offered), `notes` with `--notes`, and with any of those `compact`.
@@ -655,8 +678,8 @@ places each on the lighter of two client loops, by the connections they hold
 and how busy they are; the client stays with that loop.  A tool call hands its
 upstream request to home as a job, which home runs and hands back.  Home makes
 as many upstream requests at once as the upstream has slots (`--slots`; by
-default what `llama-server`'s `/props` says for every protocol but `gemini`,
-else 4).  The other calls wait, each in its principal's queue, its client's
+default what `llama-server`'s `/props` says, which `askai` asks of `-p llama`
+and of a server no provider names, unless its API is `generate`; else 4).  The other calls wait, each in its principal's queue, its client's
 identity's, else its MCP session's or, without one, its client address's,
 and the principals take
 turns, a call each, so that one flooding client leaves the others their share.
@@ -707,12 +730,20 @@ Invalid options or environment exit 2, and a failure to start or to serve 1.
                             overrides (see README.md)
 
 Upstream AI:
-  -p, --protocol NAME       openai (chat completions), responses,
-                            anthropic or gemini (default openai)
-  -u, --url URL             endpoint URL (default: the provider's API)
-  -m, --model NAME          model to ask
-  -k, --key-env VAR         environment variable holding the API key;
-                            without -u the provider's usual one is used
+  -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),
+                            openai, anthropic, google, deepinfra or
+                            openrouter, whose API, URL and key
+                            variable are the defaults
+      --api NAME            chat (completions), responses, messages
+                            (Anthropic's) or generate (Gemini's);
+                            default: the provider's, else chat
+  -u, --url URL             endpoint URL (default: the provider's)
+  -m, --model NAME          model to ask (required at a provider's
+                            own URL, but llama's)
+  -k, --key-env VAR         environment variable holding the API key
+                            (default: at a provider's own URL its
+                            usual one, which llama may lack; else
+                            ASKAI_API_KEY, if set)
   -H, --header LINE         extra request header (repeatable)
   -s, --system TEXT         default system prompt
   -t, --temperature N       sampling temperature
@@ -735,7 +766,7 @@ Upstream AI:
                             client may call but the ask tool, notes
                             with --notes, and compact; an ask call then
                             runs them and asks on until it answers
-                            (needs --protocol openai)
+                            (needs --api chat)
       --notes DIR           the git repository where the upstream keeps
                             its notes, made bare if it does not exist
       --max-turns N         upstream calls an ask call makes at most

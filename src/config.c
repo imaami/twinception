@@ -28,28 +28,76 @@
 #include "util.h"
 
 
+static char const *const api_names[] = {
+	[AI_CHAT]      = "chat",
+	[AI_RESPONSES] = "responses",
+	[AI_MESSAGES]  = "messages",
+	[AI_GENERATE]  = "generate",
+};
+
+/* Each API's header line prefix for the API key. */
+static char const *const auths[] = {
+	[AI_CHAT]      = "Authorization: Bearer ",
+	[AI_RESPONSES] = "Authorization: Bearer ",
+	[AI_MESSAGES]  = "x-api-key: ",
+	[AI_GENERATE]  = "x-goog-api-key: ",
+};
+
+static char const *const provider_names[] = {
+	[AI_LLAMA]      = "llama",
+	[AI_OPENAI]     = "openai",
+	[AI_ANTHROPIC]  = "anthropic",
+	[AI_GOOGLE]     = "google",
+	[AI_DEEPINFRA]  = "deepinfra",
+	[AI_OPENROUTER] = "openrouter",
+};
+
+/* What each provider has: its URL for each API it serves, Gemini's
+ * generateContent's followed by the model and ":streamGenerateContent"; the
+ * variables tried for its key, at its own URLs only; and its default API.
+ * No provider's are those of a URL that --url gives. */
 static struct {
-	char const *name;
-	char const *url;      /* gemini: the model and ":streamGenerateContent"
-	                         follow */
-	char const *auth;     /* header line prefix for the API key */
-	char const *keys[2];  /* variables tried for the provider's own endpoint */
-} const protocols[] = {
-	[AI_OPENAI] = {
-		"openai", "https://api.openai.com/v1/chat/completions",
-		"Authorization: Bearer ", { "OPENAI_API_KEY" }
+	char const  *url[ARRAY_SIZE(api_names)];
+	char const  *keys[2];
+	enum ai_api  api;
+} const providers[] = {
+	[AI_NO_PROVIDER] = { .keys = { "ASKAI_API_KEY" }, .api = AI_CHAT },
+	[AI_LLAMA] = {
+		{
+			[AI_CHAT]      = "http://127.0.0.1:9931/v1/chat/completions",
+			[AI_RESPONSES] = "http://127.0.0.1:9931/v1/responses",
+			[AI_MESSAGES]  = "http://127.0.0.1:9931/v1/messages",
+		}, { "LLAMA_API_KEY" }, AI_CHAT
 	},
-	[AI_RESPONSES] = {
-		"responses", "https://api.openai.com/v1/responses",
-		"Authorization: Bearer ", { "OPENAI_API_KEY" }
+	[AI_OPENAI] = {
+		{
+			[AI_CHAT]      = "https://api.openai.com/v1/chat/completions",
+			[AI_RESPONSES] = "https://api.openai.com/v1/responses",
+		}, { "OPENAI_API_KEY" }, AI_CHAT
 	},
 	[AI_ANTHROPIC] = {
-		"anthropic", "https://api.anthropic.com/v1/messages",
-		"x-api-key: ", { "ANTHROPIC_API_KEY" }
+		{
+			[AI_CHAT]     = "https://api.anthropic.com/v1/chat/completions",
+			[AI_MESSAGES] = "https://api.anthropic.com/v1/messages",
+		}, { "ANTHROPIC_API_KEY" }, AI_MESSAGES
 	},
-	[AI_GEMINI] = {
-		"gemini", "https://generativelanguage.googleapis.com/v1beta/models/",
-		"x-goog-api-key: ", { "GEMINI_API_KEY", "GOOGLE_API_KEY" }
+	[AI_GOOGLE] = {
+		{
+			[AI_CHAT]     = "https://generativelanguage.googleapis.com/v1beta/"
+			                "openai/chat/completions",
+			[AI_GENERATE] = "https://generativelanguage.googleapis.com/v1beta/"
+			                "models/",
+		}, { "GEMINI_API_KEY", "GOOGLE_API_KEY" }, AI_GENERATE
+	},
+	[AI_DEEPINFRA] = {
+		{
+			[AI_CHAT] = "https://api.deepinfra.com/v1/openai/chat/completions",
+		}, { "DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN" }, AI_CHAT
+	},
+	[AI_OPENROUTER] = {
+		{
+			[AI_CHAT] = "https://openrouter.ai/api/v1/chat/completions",
+		}, { "OPENROUTER_API_KEY" }, AI_CHAT
 	},
 };
 
@@ -68,12 +116,20 @@ config_usage (struct config const *cfg,
 	        "                            overrides (see README.md)\n"
 	        "\n"
 	        "Upstream AI:\n"
-	        "  -p, --protocol NAME       openai (chat completions), responses,\n"
-	        "                            anthropic or gemini (default openai)\n"
-	        "  -u, --url URL             endpoint URL (default: the provider's API)\n"
-	        "  -m, --model NAME          model to ask\n"
-	        "  -k, --key-env VAR         environment variable holding the API key;\n"
-	        "                            without -u the provider's usual one is used\n"
+	        "  -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),\n"
+	        "                            openai, anthropic, google, deepinfra or\n"
+	        "                            openrouter, whose API, URL and key\n"
+	        "                            variable are the defaults\n"
+	        "      --api NAME            chat (completions), responses, messages\n"
+	        "                            (Anthropic's) or generate (Gemini's);\n"
+	        "                            default: the provider's, else chat\n"
+	        "  -u, --url URL             endpoint URL (default: the provider's)\n"
+	        "  -m, --model NAME          model to ask (required at a provider's\n"
+	        "                            own URL, but llama's)\n"
+	        "  -k, --key-env VAR         environment variable holding the API key\n"
+	        "                            (default: at a provider's own URL its\n"
+	        "                            usual one, which llama may lack; else\n"
+	        "                            ASKAI_API_KEY, if set)\n"
 	        "  -H, --header LINE         extra request header (repeatable)\n"
 	        "  -s, --system TEXT         default system prompt\n"
 	        "  -t, --temperature N       sampling temperature\n"
@@ -96,7 +152,7 @@ config_usage (struct config const *cfg,
 	        "                            client may call but the ask tool, notes\n"
 	        "                            with --notes, and compact; an ask call then\n"
 	        "                            runs them and asks on until it answers\n"
-	        "                            (needs --protocol openai)\n"
+	        "                            (needs --api chat)\n"
 	        "      --notes DIR           the git repository where the upstream keeps\n"
 	        "                            its notes, made bare if it does not exist\n"
 	        "      --max-turns N         upstream calls an ask call makes at most\n"
@@ -327,14 +383,15 @@ enum {
 	OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO,
 	OPT_MAN, OPT_TEST_MAN_RECHECK, OPT_TEST_TASK, OPT_GIT, OPT_GIT_TIMEOUT,
 	OPT_TLS_CERT, OPT_TLS_KEY, OPT_TLS_ALLOW_RSA, OPT_UPSTREAM_TOOLS, OPT_NOTES,
-	OPT_MAX_TURNS, OPT_CONTEXT
+	OPT_MAX_TURNS, OPT_CONTEXT, OPT_API
 };
 
 static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
 
 static struct option const options[] = {
 	{ "config",           required_argument, nullptr, 'c' },
-	{ "protocol",         required_argument, nullptr, 'p' },
+	{ "provider",         required_argument, nullptr, 'p' },
+	{ "api",              required_argument, nullptr, OPT_API },
 	{ "url",              required_argument, nullptr, 'u' },
 	{ "model",            required_argument, nullptr, 'm' },
 	{ "key-env",          required_argument, nullptr, 'k' },
@@ -464,19 +521,17 @@ config_aprintf (char const *fmt,
 	return str;
 }
 
-/* Set the protocol that @p arg names, given as config_apply() says. */
-static int
-config_apply_protocol (struct config *cfg,
-                       char const    *arg,
-                       char const    *where)
+/* The index of @p name among the @p n @p names, which begin at 1; 0 if it
+ * is none of them. */
+static size_t
+config_find (char const *const *names,
+             size_t             n,
+             char const        *name)
 {
-	for (size_t i = 0; i < ARRAY_SIZE(protocols); ++i) {
-		if (!strcmp(protocols[i].name, arg)) {
-			cfg->ep.protocol = (enum ai_protocol)i;
-			return 0;
-		}
-	}
-	return config_complain(cfg, where, "unknown protocol: %s", arg);
+	size_t i = n;
+	while (--i && strcmp(names[i], name))
+		;
+	return i;
 }
 
 /* Set the sampling temperature to @p arg, a number not below 0, given as
@@ -646,8 +701,20 @@ config_apply (struct config *cfg,
 {
 	struct ai_endpoint *ep = &cfg->ep;
 	switch (opt) {
-	case 'p':
-		return config_apply_protocol(cfg, arg, where);
+	case 'p': {
+		size_t i = config_find(provider_names, ARRAY_SIZE(provider_names), arg);
+		if (!i)
+			return config_complain(cfg, where, "unknown provider: %s", arg);
+		ep->provider = (enum ai_provider)i;
+		break;
+	}
+	case OPT_API: {
+		size_t i = config_find(api_names, ARRAY_SIZE(api_names), arg);
+		if (!i)
+			return config_complain(cfg, where, "unknown API: %s", arg);
+		ep->api = (enum ai_api)i;
+		break;
+	}
 	case 'u':
 		if (strncmp(arg, "http://", sizeof "http://" - 1) &&
 		    strncmp(arg, "https://", sizeof "https://" - 1))
@@ -1153,15 +1220,31 @@ config_check_gits (struct config const *cfg)
 	return 0;
 }
 
+/* Settle the upstream's API, unless --api chose it: its provider's default.
+ * A provider must serve it; with none, --url must say where it is. */
+static int
+config_api (struct config *cfg)
+{
+	struct ai_endpoint *ep = &cfg->ep;
+	if (!ep->api)
+		ep->api = providers[ep->provider].api;
+	if (!ep->provider)
+		return ep->url ? 0 : config_complain(cfg, nullptr, "--provider or --url "
+		                                     "is required");
+	if (providers[ep->provider].url[ep->api])
+		return 0;
+	return config_complain(cfg, nullptr, "%s has no %s API",
+	                       provider_names[ep->provider], api_names[ep->api]);
+}
+
 /* Check that the upstream may call tools, if it is to. */
 static int
 config_check_upstream (struct config const *cfg)
 {
 	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
 		return 0;
-	if (cfg->ep.protocol != AI_OPENAI)
-		return config_complain(cfg, nullptr, "--upstream-tools needs --protocol "
-		                       "openai");
+	if (cfg->ep.api != AI_CHAT)
+		return config_complain(cfg, nullptr, "--upstream-tools needs --api chat");
 	/* The turns follow the messages. */
 	if (json_object_object_get_ex(cfg->ep.extra, "messages", nullptr))
 		return config_complain(cfg, nullptr, "--extra may not change messages "
@@ -1241,43 +1324,45 @@ config_key_env (struct config const *cfg,
 }
 
 /*
- * The API key, in @p *p_key, from the first of the provider's usual
- * variables that is set, for its own endpoint unless a header gives a key,
- * as @p has_auth says.  A provider's usual key variable is only read for
- * its own endpoint, so pointing --url elsewhere never leaks that key; use
- * --key-env there.
+ * The API key, in @p *p_key, unless a header gives one, as @p has_auth says:
+ * from the first of the usual variables that is set, the provider's at its
+ * own URL, which llama-server may do without, else ASKAI_API_KEY, which a
+ * URL that --url gives may do without.  A provider's variables are only read
+ * for its own URL, so pointing --url elsewhere never leaks its key.
  */
 static int
 config_key_usual (struct config const *cfg,
                   bool                 has_auth,
                   char const         **p_key)
 {
-	if (cfg->ep.url || has_auth)
+	if (has_auth)
 		return 0;
-	char const *const *vars = protocols[cfg->ep.protocol].keys;
-	for (size_t i = 0; i < ARRAY_SIZE(protocols[0].keys) && vars[i]; ++i) {
+	enum ai_provider p = cfg->ep.url ? AI_NO_PROVIDER : cfg->ep.provider;
+	char const *const *vars = providers[p].keys;
+	for (size_t i = 0; i < ARRAY_SIZE(providers[0].keys) && vars[i]; ++i) {
 		char const *key = getenv(vars[i]);
 		if (key && *key)
 			return config_key_take(cfg, key, p_key);
 	}
+	if (p == AI_NO_PROVIDER || p == AI_LLAMA)
+		return 0;
 	return config_complain(cfg, nullptr, "set %s or pass --key-env", vars[0]);
 }
 
-/* Point the upstream at the provider's own API: for Gemini, at the model's
- * method that streams, in SSE. */
+/* Point the upstream at the provider's own URL for its API: for Gemini's
+ * generateContent, at the model's method that streams, in SSE. */
 static int
 config_url_own (struct config *cfg)
 {
 	struct ai_endpoint *ep = &cfg->ep;
-	if (!ep->model)
+	if (!ep->model && ep->provider != AI_LLAMA)
 		return config_complain(cfg, nullptr, "--model is required for %s's "
-		                       "own API", protocols[ep->protocol].name);
-	if (ep->protocol != AI_GEMINI) {
-		ep->url = protocols[ep->protocol].url;
+		                       "own API", provider_names[ep->provider]);
+	ep->url = providers[ep->provider].url[ep->api];
+	if (ep->api != AI_GENERATE)
 		return 0;
-	}
-	cfg->url = config_aprintf("%s%s:streamGenerateContent?alt=sse",
-	                          protocols[AI_GEMINI].url, ep->model);
+	cfg->url = config_aprintf("%s%s:streamGenerateContent?alt=sse", ep->url,
+	                          ep->model);
 	if (!cfg->url)
 		return config_oom(cfg);
 	ep->url = cfg->url;
@@ -1296,11 +1381,11 @@ config_url_alt (char const *query)
 /* Gemini streams from :streamGenerateContent, in SSE with alt=sse, whatever
  * alt the URL that --url gives had. */
 static int
-config_url_gemini (struct config *cfg)
+config_url_generate (struct config *cfg)
 {
 	static char const method[] = ":generateContent";
 	size_t m = sizeof method - 1;
-	if (cfg->ep.protocol != AI_GEMINI)
+	if (cfg->ep.api != AI_GENERATE)
 		return 0;
 	char const *url = cfg->ep.url;
 	char const *query = url + strcspn(url, "?");
@@ -1330,19 +1415,19 @@ config_url_gemini (struct config *cfg)
 }
 
 /* Add the headers that askai sends unless they are given: the API key's
- * with @p key, unless that is nullptr, anthropic-version for Anthropic, and
+ * with @p key, unless that is nullptr, anthropic-version for Messages, and
  * User-Agent. */
 static int
 config_headers (struct config *cfg,
                 char const    *key)
 {
 	if (key) {
-		cfg->auth = config_aprintf("%s%s", protocols[cfg->ep.protocol].auth, key);
+		cfg->auth = config_aprintf("%s%s", auths[cfg->ep.api], key);
 		if (!cfg->auth)
 			return config_oom(cfg);
 		config_push(cfg->headers, &cfg->n_headers, cfg->auth);
 	}
-	if (cfg->ep.protocol == AI_ANTHROPIC &&
+	if (cfg->ep.api == AI_MESSAGES &&
 	    !config_has_header(cfg, "anthropic-version:"))
 		config_push(cfg->headers, &cfg->n_headers, "anthropic-version: 2023-06-01");
 	if (!config_has_header(cfg, "user-agent:"))
@@ -1385,13 +1470,13 @@ config_description (struct config *cfg)
 static int
 config_upstream (struct config *cfg)
 {
-	bool has_auth = config_has_header(cfg, protocols[cfg->ep.protocol].auth);
+	bool has_auth = config_has_header(cfg, auths[cfg->ep.api]);
 	char const *key = nullptr;
 	int status = cfg->key_env ? config_key_env(cfg, &key)
 	                          : config_key_usual(cfg, has_auth, &key);
 	if (status)
 		return status;
-	status = cfg->ep.url ? config_url_gemini(cfg) : config_url_own(cfg);
+	status = cfg->ep.url ? config_url_generate(cfg) : config_url_own(cfg);
 	if (status)
 		return status;
 	status = config_headers(cfg, has_auth ? nullptr : key);
@@ -1513,6 +1598,9 @@ config_finish (struct config *cfg)
 	status = config_check_gits(cfg);
 	if (status)
 		return status;
+	status = config_api(cfg);
+	if (status)
+		return status;
 	status = config_check_upstream(cfg);
 	if (status)
 		return status;
@@ -1576,7 +1664,6 @@ config_defaults (int   argc,
 		.ep = {
 			.timeout_ms = 600'000,
 			.chunk_ms = 60'000,
-			.protocol = AI_OPENAI
 		},
 		.tool = { .name = "ask_ai" },
 		.mcp = mcp_limits(),

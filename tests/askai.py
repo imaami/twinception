@@ -24,8 +24,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LEGACY = "2025-11-25"
 MODERN = "2026-07-28"
-KEY_VARS = ("ASKAI_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-            "GEMINI_API_KEY", "GOOGLE_API_KEY")
+KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+            "DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN", "OPENROUTER_API_KEY")
+# The API that each answer format of the fake upstream is in.
+API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
+       "gemini": "generate"}
 
 ANSWERS = {
     "openai": {"choices": [{"message": {"role": "assistant", "content": "A",
@@ -645,7 +649,7 @@ def check_protocols(binary, up):
             "top_p": 0.5, "stream": False}),
     }
     for protocol, (path, auth, value, body) in expect.items():
-        with Askai(binary, "-p", protocol, "-u", up.url(path), "-m", "m",
+        with Askai(binary, "--api", API[protocol], "-u", up.url(path), "-m", "m",
                    "-k", "TEST_KEY", "-s", "SYS", "-n", "77", "-t", "0.25",
                    "-x", '{"top_p": 0.5, "store": null, "stream": false}',
                    env={"TEST_KEY": "secret"}) as ai:
@@ -669,7 +673,7 @@ def check_protocols(binary, up):
             assert "isError" not in result
             assert text_of(result).startswith("A\n\n[The answer was cut short")
 
-    with Askai(binary, "-p", "anthropic", "-u", up.url("/v1/messages")) as ai:
+    with Askai(binary, "--api", "messages", "-u", up.url("/v1/messages")) as ai:
         up.reply = lambda request: (200, ANSWERS["anthropic"])
         ai.ask()
         assert up.last()["body"]["max_tokens"] == 4096
@@ -678,7 +682,7 @@ def check_protocols(binary, up):
     # A Gemini URL's alt, whatever it was, is sse.
     for query, want in (("?alt=json&x=1", "?alt=sse&x=1"),
                         ("?x=1&alt=json", "?x=1&alt=sse"), ("?x=1", "?x=1&alt=sse")):
-        with Askai(binary, "-p", "gemini",
+        with Askai(binary, "--api", "generate",
                    "-u", up.url("/v1beta/models/m:generateContent" + query)) as ai:
             up.reply = lambda request: (200, ANSWERS["gemini"])
             assert text_of(ai.ask()) == "A"
@@ -1638,7 +1642,7 @@ def check_large_bodies(binary, up):
     system = "s\u00e9\x02" * 20000
     for protocol in ("openai", "responses", "anthropic", "gemini"):
         path = "/v1beta/models/m:generateContent" if protocol == "gemini" else "/x"
-        with Askai(binary, "-p", protocol, "-u", up.url(path), "-m", "m",
+        with Askai(binary, "--api", API[protocol], "-u", up.url(path), "-m", "m",
                    "--max-body", "4M") as ai:
             up.reply = lambda request, p=protocol: (200, ANSWERS[p])
             msg = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
@@ -2049,9 +2053,15 @@ def check_configuration(binary, up):
         assert run.returncode == 2 and message in run.stderr, (args, run.stderr)
 
     fails("-p", "anthropic", "-m", "m", message="set ANTHROPIC_API_KEY")
-    fails("-p", "gemini", env={"GEMINI_API_KEY": "k"}, message="--model is required")
+    fails("-p", "google", env={"GEMINI_API_KEY": "k"}, message="--model is required")
     fails("-u", up.url(), "-k", "UNSET_VAR", message="UNSET_VAR is not set")
-    fails("-p", "cohere", message="unknown protocol")
+    fails("-p", "cohere", message="unknown provider: cohere")
+    fails("--api", "openai", message="unknown API: openai")
+    fails("-m", "m", message="--provider or --url is required")
+    fails("--api", "messages", "-m", "m", message="--provider or --url is required")
+    fails("-p", "openai", "--api", "messages", "-m", "m", env={"OPENAI_API_KEY": "k"},
+          message="openai has no messages API")
+    fails("-p", "llama", "--api", "generate", message="llama has no generate API")
     fails("-u", "ftp://x", message="not an http(s) URL")
     fails("-t", "warm", message="invalid temperature")
     fails("-t", "-1", message="invalid temperature")
@@ -2076,7 +2086,7 @@ def check_configuration(binary, up):
     for loops in ("256", "-1", "x", ""):
         fails("--loops", loops, message="invalid --loops")
 
-    with Askai(binary, "-p", "gemini", "-m", "m",
+    with Askai(binary, "-p", "google", "-m", "m",
                env={"GOOGLE_API_KEY": "fallback-key"}) as ai:
         _, _, body = ai.rpc("tools/list")
         assert body["result"]["tools"][0]["name"] == "ask_ai"
@@ -2091,6 +2101,26 @@ def check_configuration(binary, up):
                                                 "arguments": {"prompt": "Q"}})
         assert text_of(body["result"]) == "A"
         assert up.last()["headers"]["authorization"] == "Bearer from-header"
+
+    # A URL that --url gives has ASKAI_API_KEY's key, if any, and never a
+    # provider's usual one; its API is the provider's, else chat completions.
+    for args, env, auth, path in (
+            ((), {}, None, "/x"),
+            ((), {"ASKAI_API_KEY": "askai-key"}, "Bearer askai-key", "/x"),
+            (("-p", "openai"), {"OPENAI_API_KEY": "must-not-leak",
+                                "ASKAI_API_KEY": "askai-key"}, "Bearer askai-key", "/x"),
+            (("-p", "anthropic"), {"ANTHROPIC_API_KEY": "must-not-leak"}, None,
+             "/v1/messages"),
+            (("-p", "llama", "--api", "messages"), {"LLAMA_API_KEY": "must-not-leak"},
+             None, "/v1/messages")):
+        with Askai(binary, *args, "-u", up.url(path), env=env) as ai:
+            up.reply = lambda request, p=path: (200, ANSWERS["anthropic" if p != "/x"
+                                                             else "openai"])
+            assert text_of(ai.ask()) == "A", args
+            headers = up.last()["headers"]
+            assert headers.get("authorization") == auth, (args, headers)
+            assert "x-api-key" not in headers, (args, headers)
+    up.reply = lambda request: (200, ANSWERS["openai"])
 
     # A configuration file: a JSON object, comments allowed, whose members are
     # the long options, which the command line overrides.
@@ -3300,7 +3330,7 @@ def check_streaming(binary, up):
                                         "finishReason": "IMAGE_PROHIBITED_CONTENT"}]}}
     cuts = (1,) * 300 + (7, 13, 2, 31, 5, 64) * 200
     for protocol, answer in answers.items():
-        with Askai(binary, "-p", protocol, "-u", up.url(paths[protocol]), "-m", "m",
+        with Askai(binary, "--api", API[protocol], "-u", up.url(paths[protocol]), "-m", "m",
                    "--chunk-timeout", "1") as ai:
             events = sse_of(answer)
             wire = sse_wire(events)
@@ -3700,12 +3730,20 @@ def check_slots(binary, up):
     gets = up.gets
     with Askai(binary, "-u", up.url(), "--slots", "3") as ai:
         ai.wait_log(r"upstream slots: 3 \(--slots\)")
-    with Askai(binary, "-p", "gemini", "-u", up.url("/v1beta/models/m")) as ai:
-        ai.wait_log(r"upstream slots: 4 \(the default\)")
+    # Only a server that may be llama-server is asked: one that no provider
+    # but llama names, and that has no Gemini API.
+    for args in (("--api", "generate", "-u", up.url("/v1beta/models/m")),
+                 ("-p", "openai", "-u", up.url()),
+                 ("-p", "anthropic", "-u", up.url("/v1/messages"))):
+        with Askai(binary, *args) as ai:
+            ai.wait_log(r"upstream slots: 4 \(the default\)")
     assert up.gets == gets
     up.props = {"total_slots": 2}
-    with Askai(binary, "-p", "anthropic", "-u", up.url("/v1/messages")) as ai:
-        ai.wait_log(r"upstream slots: 2 \(llama-server's /props\)")
+    for args in (("--api", "messages", "-u", up.url("/v1/messages")),
+                 ("-p", "llama", "-u", up.url()),
+                 ("-p", "llama", "--api", "responses", "-u", up.url("/v1/responses"))):
+        with Askai(binary, *args) as ai:
+            ai.wait_log(r"upstream slots: 2 \(llama-server's /props\)")
     # /props may take the calls' timeout at most.
     up.props = "hang"
     with Askai(binary, "-u", up.url(), "-T", "1") as ai:
@@ -3829,7 +3867,7 @@ def check_progress(binary, up):
         sizes = tuple(len(sse_wire([e])) for e in events)
         up.reply = lambda request, w=sse_wire(events), s=sizes: (
             200, Stream(wire=w, sizes=s, gap=0.15))
-        with Askai(binary, "-p", protocol, "-u", up.url(paths[protocol]), "-m", "m",
+        with Askai(binary, "--api", API[protocol], "-u", up.url(paths[protocol]), "-m", "m",
                    "--slots", "1") as ai:
             with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
                 sock.sendall(call(5, 10, "tok"))
@@ -4821,8 +4859,8 @@ def check_turns(binary, up):
 
     for args, message in ((("--notes", "/nonexistent/x"), "--notes needs "
                            "--upstream-tools"),
-                          (("--upstream-tools", "-p", "anthropic"),
-                           "--upstream-tools needs --protocol openai"),
+                          (("--upstream-tools", "--api", "messages"),
+                           "--upstream-tools needs --api chat"),
                           (("--upstream-tools", "--max-turns", "0"),
                            "invalid --max-turns: 0"),
                           (("--upstream-tools", "--context", "-1"),

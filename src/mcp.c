@@ -2369,7 +2369,7 @@ mcp_req_turn_done (struct mcp_req *req)
 	long told = mcp->st->ep->context;
 	req->used = job->used;
 	req->context = told > 0 ? (uint32_t)told : job->context;
-	req->cut = ai_cut(mcp->st->ep->protocol, job->reason);
+	req->cut = ai_cut(mcp->st->ep->api, job->reason);
 	req->forced = 0;
 	if (calls.len > CALLS_MAX) {
 		mcp_req_tool_result(req, TEXT("The other AI's tool calls in one turn took "
@@ -2438,7 +2438,7 @@ mcp_req_turn_args (struct mcp_req *req)
 		req->at += c.size;
 	}
 	/* The turn goes after the request's messages, which it ends no more. */
-	struct ai_bytes end = ai_format(req->mcp->st->ep->protocol)->end;
+	struct ai_bytes end = ai_format(req->mcp->st->ep->api)->end;
 	buf_cut(&req->upload, buf_peek(&req->upload).len - end.len, end.len);
 	req->part = 0;
 	req->at = 0;
@@ -2481,7 +2481,7 @@ mcp_req_turn_call (struct mcp_req         *req,
 static int
 mcp_req_turn_part (struct mcp_req *req)
 {
-	struct ai_format const *f = ai_format(req->mcp->st->ep->protocol);
+	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
 	struct job *job = req->job;
 	if (req->part > req->n_calls)
 		return mcp_req_upload(req, &BYTES(f->turn_end), 1);
@@ -2746,7 +2746,7 @@ static int
 mcp_req_result_put (struct mcp_req        *req,
                     struct mcp_call const *c)
 {
-	struct ai_format const *f = ai_format(req->mcp->st->ep->protocol);
+	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
 	struct span out = mcp_req_output(req);
 	char made[CALL_ID];
 	struct mcp_piece id;
@@ -2833,7 +2833,7 @@ mcp_req_add_start (struct mcp_req *req)
 static void
 mcp_req_add_write (struct mcp_req *req)
 {
-	struct ai_format const *f = ai_format(req->mcp->st->ep->protocol);
+	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
 	struct mcp_piece const p[] = {
 		ESC(dstr_get(&req->answer), dstr_len(&req->answer)),
 		BYTES(f->prompt_end),
@@ -3708,7 +3708,7 @@ mcp_req_text (struct mcp_req *req)
 		return;
 	}
 	bool failed = true;
-	int e = ai_answer(req->mcp->st->ep->protocol, job->http, req->msg,
+	int e = ai_answer(req->mcp->st->ep->api, job->http, req->msg,
 	                  body.len ? (char const *)body.ptr : "", body.len, &req->answer,
 	                  &failed);
 	loop_work(req->mcp->loop, LOOP_COPY, dstr_len(&req->answer));
@@ -4446,7 +4446,7 @@ mcp_static_create (struct config const *cfg,
                    int                 *e)
 {
 	/* The upstream is lent tools if its protocol has tool calls. */
-	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS && ai_format(cfg->ep.protocol);
+	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS && ai_format(cfg->ep.api);
 	struct mcp_static *st = malloc(sizeof *st);
 	if (!st) {
 		*e = ENOMEM;

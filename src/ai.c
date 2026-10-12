@@ -1,4 +1,4 @@
-/** @file Upstream AI endpoint protocols: request bodies and answer parsing,
+/** @file Upstream AI APIs: request bodies and answer parsing,
  *  whole or streamed. */
 #include <errno.h>
 #include <stdio.h>
@@ -10,14 +10,14 @@
 #include "util.h"
 
 /** Anthropic requires max_tokens; this fits every model's output limit. */
-enum { ANTHROPIC_MAX_TOKENS = 4096 };
+enum { MESSAGES_MAX_TOKENS = 4096 };
 
-/* Each protocol's stop reason for an answer the output token limit cut. */
+/* Each API's stop reason for an answer the output token limit cut. */
 static char const *const limits[] = {
-	[AI_OPENAI] = "length",
+	[AI_CHAT] = "length",
 	[AI_RESPONSES] = "max_output_tokens",
-	[AI_ANTHROPIC] = "max_tokens",
-	[AI_GEMINI] = "MAX_TOKENS",
+	[AI_MESSAGES] = "max_tokens",
+	[AI_GENERATE] = "MAX_TOKENS",
 };
 
 static struct json_object *
@@ -30,8 +30,8 @@ ai_message (char const         *role,
 }
 
 static struct json_object *
-ai_gemini_content (char const         *role,
-                   struct json_object *text)
+ai_generate_content (char const         *role,
+                     struct json_object *text)
 {
 	struct json_object *parts = jb_list(jb_object(
 		"text", json_object_get(text), nullptr));
@@ -101,11 +101,11 @@ ai_request_model (struct ai_endpoint const *ep,
  * so that turns may follow them, unless --extra took them away; it streams
  * by the body, whatever --extra says. */
 static int
-ai_request_openai (struct ai_endpoint const *ep,
-                   struct json_object       *root,
-                   struct json_object       *system,
-                   struct json_object       *prompt,
-                   struct json_object       *tools)
+ai_request_chat (struct ai_endpoint const *ep,
+                 struct json_object       *root,
+                 struct json_object       *system,
+                 struct json_object       *prompt,
+                 struct json_object       *tools)
 {
 	struct json_object *messages = json_object_new_array();
 	if (ai_request_model(ep, root) ||
@@ -145,12 +145,12 @@ ai_request_responses (struct ai_endpoint const *ep,
 
 /* Anthropic's body, which needs max_tokens and streams by the body. */
 static int
-ai_request_anthropic (struct ai_endpoint const *ep,
-                      struct json_object       *root,
-                      struct json_object       *system,
-                      struct json_object       *prompt)
+ai_request_messages (struct ai_endpoint const *ep,
+                     struct json_object       *root,
+                     struct json_object       *system,
+                     struct json_object       *prompt)
 {
-	long max_tokens = ep->max_tokens > 0 ? ep->max_tokens : ANTHROPIC_MAX_TOKENS;
+	long max_tokens = ep->max_tokens > 0 ? ep->max_tokens : MESSAGES_MAX_TOKENS;
 	if (ai_request_model(ep, root) ||
 	    jb_set(root, "messages", jb_list(ai_message("user", prompt))) ||
 	    (system && jb_set(root, "system", json_object_get(system))) ||
@@ -161,14 +161,14 @@ ai_request_anthropic (struct ai_endpoint const *ep,
 
 /* Gemini's body, whose URL names the model and asks for a stream. */
 static int
-ai_request_gemini (struct ai_endpoint const *ep,
-                   struct json_object       *root,
-                   struct json_object       *system,
-                   struct json_object       *prompt)
+ai_request_generate (struct ai_endpoint const *ep,
+                     struct json_object       *root,
+                     struct json_object       *system,
+                     struct json_object       *prompt)
 {
-	if (jb_set(root, "contents", jb_list(ai_gemini_content("user", prompt))) ||
+	if (jb_set(root, "contents", jb_list(ai_generate_content("user", prompt))) ||
 	    (system && jb_set(root, "systemInstruction",
-	                      ai_gemini_content(nullptr, system))))
+	                      ai_generate_content(nullptr, system))))
 		return ENOMEM;
 	struct json_object *options = root;
 	if (ep->max_tokens > 0 || ep->temperature) {
@@ -189,18 +189,18 @@ ai_request (struct ai_endpoint const *ep,
 	if (!root)
 		return nullptr;
 	int e = 0;
-	switch (ep->protocol) {
-	case AI_OPENAI:
-		e = ai_request_openai(ep, root, system, prompt, tools);
+	switch (ep->api) {
+	case AI_CHAT:
+		e = ai_request_chat(ep, root, system, prompt, tools);
 		break;
 	case AI_RESPONSES:
 		e = ai_request_responses(ep, root, system, prompt);
 		break;
-	case AI_ANTHROPIC:
-		e = ai_request_anthropic(ep, root, system, prompt);
+	case AI_MESSAGES:
+		e = ai_request_messages(ep, root, system, prompt);
 		break;
-	case AI_GEMINI:
-		e = ai_request_gemini(ep, root, system, prompt);
+	case AI_GENERATE:
+		e = ai_request_generate(ep, root, system, prompt);
 		break;
 	}
 	if (e) {
@@ -223,9 +223,9 @@ ai_append (struct dstr        *text,
 /* The text of chat completions' answer @p root, into @p text, and its stop
  * reason in @p *reason. */
 static int
-ai_openai_answer (struct json_object  *root,
-                  struct dstr         *text,
-                  char const         **reason)
+ai_chat_answer (struct json_object  *root,
+                struct dstr         *text,
+                char const         **reason)
 {
 	struct json_object *choice = jb_at(jb_get(root, "choices"), 0);
 	struct json_object *msg = jb_get(choice, "message");
@@ -263,9 +263,9 @@ ai_responses_answer (struct json_object  *root,
 }
 
 static int
-ai_anthropic_answer (struct json_object  *root,
-                     struct dstr         *text,
-                     char const         **reason)
+ai_messages_answer (struct json_object  *root,
+                    struct dstr         *text,
+                    char const         **reason)
 {
 	*reason = jb_text(jb_get(root, "stop_reason"));
 	int e = 0;
@@ -277,9 +277,9 @@ ai_anthropic_answer (struct json_object  *root,
 }
 
 static int
-ai_gemini_answer (struct json_object  *root,
-                  struct dstr         *text,
-                  char const         **reason)
+ai_generate_answer (struct json_object  *root,
+                    struct dstr         *text,
+                    char const         **reason)
 {
 	struct json_object *candidate = jb_at(jb_get(root, "candidates"), 0);
 	struct json_object *parts = jb_get(jb_get(candidate, "content"), "parts");
@@ -332,8 +332,8 @@ ai_text_of (struct json_object *val,
 
 /* Hand the pieces of chat completions' tool calls, @p calls, to @p sink. */
 static int
-ai_openai_calls (struct ai_sink const *sink,
-                 struct json_object   *calls)
+ai_chat_calls (struct ai_sink const *sink,
+               struct json_object   *calls)
 {
 	if (!sink->call)
 		return 0;
@@ -358,7 +358,7 @@ ai_openai_calls (struct ai_sink const *sink,
 /* The tokens that @p usage, chat completions', says the request and the
  * answer took; 0 if it says nothing of them. */
 static uint32_t
-ai_openai_used (struct json_object *usage)
+ai_chat_used (struct json_object *usage)
 {
 	int64_t prompt = json_object_get_int64(jb_get(usage, "prompt_tokens"));
 	int64_t answer = json_object_get_int64(jb_get(usage, "completion_tokens"));
@@ -394,18 +394,18 @@ ai_event_error (struct json_object *ev)
 }
 
 bool
-ai_cut (enum ai_protocol  protocol,
+ai_cut (enum ai_api       api,
         char const       *reason)
 {
-	return reason && !strcmp(reason, limits[protocol]);
+	return reason && !strcmp(reason, limits[api]);
 }
 
 /* Hand the pieces of chat completions' @p delta to @p sink, saying in @p out
  * whether it carries thinking. */
 static int
-ai_openai_delta (struct ai_sink const *sink,
-                 struct json_object   *delta,
-                 struct ai_event      *out)
+ai_chat_delta (struct ai_sink const *sink,
+               struct json_object   *delta,
+               struct ai_event      *out)
 {
 	struct json_object *content = jb_get(delta, "content");
 	/* Some servers send content as an array of text parts. */
@@ -422,15 +422,15 @@ ai_openai_delta (struct ai_sink const *sink,
 	out->thought = kept || ai_some_text(jb_get(delta, "reasoning"));
 	if (kept && (e = ai_put_text(sink->thought, sink->user, thinking)))
 		return e;
-	return ai_openai_calls(sink, jb_get(delta, "tool_calls"));
+	return ai_chat_calls(sink, jb_get(delta, "tool_calls"));
 }
 
 /* Hand the text of Anthropic's content block @p delta to @p sink, saying in
  * @p out whether it carries thinking. */
 static int
-ai_anthropic_delta (struct ai_sink const *sink,
-                    struct json_object   *delta,
-                    struct ai_event      *out)
+ai_messages_delta (struct ai_sink const *sink,
+                   struct json_object   *delta,
+                   struct ai_event      *out)
 {
 	struct json_object *kind = jb_get(delta, "type");
 	if (jb_is(kind, "text_delta"))
@@ -441,7 +441,7 @@ ai_anthropic_delta (struct ai_sink const *sink,
 }
 
 int
-ai_event (enum ai_protocol       protocol,
+ai_event (enum ai_api            api,
           struct json_object    *ev,
           struct ai_sink const  *sink,
           struct ai_event       *out)
@@ -453,8 +453,8 @@ ai_event (enum ai_protocol       protocol,
 	int e = 0;
 	struct json_object *type = jb_get(ev, "type");
 	struct json_object *reason = nullptr;
-	switch (protocol) {
-	case AI_OPENAI: {
+	switch (api) {
+	case AI_CHAT: {
 		/* The first completion's, should --extra ask for more (n). */
 		struct json_object *choices = jb_get(ev, "choices");
 		struct json_object *choice;
@@ -462,9 +462,9 @@ ai_event (enum ai_protocol       protocol,
 		                   json_object_get_int64(jb_get(choice, "index")); ++i)
 			;
 		/* With include_usage, a last event of its own, with no choices. */
-		out->used = ai_openai_used(jb_get(ev, "usage"));
+		out->used = ai_chat_used(jb_get(ev, "usage"));
 		reason = jb_get(choice, "finish_reason");
-		e = ai_openai_delta(sink, jb_get(choice, "delta"), out);
+		e = ai_chat_delta(sink, jb_get(choice, "delta"), out);
 		break;
 	}
 	case AI_RESPONSES:
@@ -477,14 +477,14 @@ ai_event (enum ai_protocol       protocol,
 		reason = jb_get(jb_get(jb_get(ev, "response"), "incomplete_details"),
 		                "reason");
 		break;
-	case AI_ANTHROPIC: {
+	case AI_MESSAGES: {
 		struct json_object *delta = jb_get(ev, "delta");
 		reason = jb_get(delta, "stop_reason");
 		if (jb_is(type, "content_block_delta"))
-			e = ai_anthropic_delta(sink, delta, out);
+			e = ai_messages_delta(sink, delta, out);
 		break;
 	}
-	case AI_GEMINI: {
+	case AI_GENERATE: {
 		struct json_object *candidate = jb_at(jb_get(ev, "candidates"), 0);
 		struct json_object *parts = jb_get(jb_get(candidate, "content"), "parts");
 		struct json_object *part;
@@ -499,14 +499,14 @@ ai_event (enum ai_protocol       protocol,
 	}
 	}
 	out->reason = jb_text(reason);
-	out->truncated = ai_cut(protocol, out->reason);
+	out->truncated = ai_cut(api, out->reason);
 	out->end = out->reason || jb_is(type, "response.completed") ||
 	           jb_is(type, "response.incomplete") || jb_is(type, "message_stop");
 	return e;
 }
 
 struct ai_format const *
-ai_format (enum ai_protocol protocol)
+ai_format (enum ai_api api)
 {
 #define B(s) { s, sizeof s - 1 }
 	static struct ai_format const chat = {
@@ -526,7 +526,7 @@ ai_format (enum ai_protocol protocol)
 		.end        = B("]}"),
 	};
 #undef B
-	return protocol == AI_OPENAI ? &chat : nullptr;
+	return api == AI_CHAT ? &chat : nullptr;
 }
 
 /* Say in @p text what the upstream's error answer, of HTTP @p status, says:
@@ -562,7 +562,7 @@ ai_describe_error (struct dstr        *text,
 }
 
 int
-ai_answer (enum ai_protocol    protocol,
+ai_answer (enum ai_api         api,
            long                status,
            struct json_object *root,
            char const         *body,
@@ -576,18 +576,18 @@ ai_answer (enum ai_protocol    protocol,
 
 	char const *reason = nullptr;
 	int e = 0;
-	switch (protocol) {
-	case AI_OPENAI:
-		e = ai_openai_answer(root, text, &reason);
+	switch (api) {
+	case AI_CHAT:
+		e = ai_chat_answer(root, text, &reason);
 		break;
 	case AI_RESPONSES:
 		e = ai_responses_answer(root, text, &reason);
 		break;
-	case AI_ANTHROPIC:
-		e = ai_anthropic_answer(root, text, &reason);
+	case AI_MESSAGES:
+		e = ai_messages_answer(root, text, &reason);
 		break;
-	case AI_GEMINI:
-		e = ai_gemini_answer(root, text, &reason);
+	case AI_GENERATE:
+		e = ai_generate_answer(root, text, &reason);
 		break;
 	}
 	if (e)
@@ -598,7 +598,7 @@ ai_answer (enum ai_protocol    protocol,
 		                 : dstr_cat_n(text, no_answer, sizeof no_answer - 1);
 		return ok ? 0 : ENOMEM;
 	}
-	if (ai_cut(protocol, reason))
+	if (ai_cut(api, reason))
 		return dstr_cat_n(text, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1) ? 0 : ENOMEM;
 	return 0;
 }

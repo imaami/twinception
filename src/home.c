@@ -1221,7 +1221,7 @@ home_take (struct home        *home,
 	sink.user = job;
 	size_t had = buf_peek(&job->result).len;
 	struct ai_event ev = {};
-	int e = ai_event(home->ep->protocol, root, &sink, &ev);
+	int e = ai_event(home->ep->api, root, &sink, &ev);
 	hist_add(&home->metrics->chunks, 1);
 	if (buf_peek(&job->result).len > had)
 		home_job_progress(job, (uint64_t)++job->chunks << 32);
@@ -1689,36 +1689,17 @@ home_props_step (struct loop      *loop,
 		home_props_end(home, SLOTS, "the default: /props gives no total_slots");
 }
 
-/* Ask for /props at the server of @p u, the upstream's URL, unless it is a
- * well-known cloud API (ENOTSUP); the answer may take PROPS_MS, or the
- * calls' timeout if shorter.  0 once asked, else the error that kept it
- * from asking. */
+/* Ask for /props at the server of @p u, the upstream's URL; the answer may
+ * take PROPS_MS, or the calls' timeout if shorter.  0 once asked, else the
+ * error that kept it from asking. */
 static int
 home_props_get (struct home *home,
                 CURLU       *u)
 {
-	static char const *const clouds[] = {
-		"api.openai.com", "api.anthropic.com", "openrouter.ai", "api.groq.com",
-		"api.mistral.ai", "api.together.xyz", "api.deepseek.com", "api.x.ai",
-		"api.fireworks.ai",
-	};
-	static char const azure[] = ".openai.azure.com";
 	struct ai_endpoint const *ep = home->ep;
-	char *host = nullptr;
-	if (curl_url_set(u, CURLUPART_URL, ep->url, 0) ||
-	    curl_url_get(u, CURLUPART_HOST, &host, 0))
-		return EINVAL;
-	size_t i = 0;
-	while (i < ARRAY_SIZE(clouds) && strcasecmp(host, clouds[i]))
-		++i;
-	size_t len = strlen(host);
-	char const *tail = len >= sizeof azure ? host + len - (sizeof azure - 1) : "";
-	bool cloud = i < ARRAY_SIZE(clouds) || !strcasecmp(tail, azure);
-	curl_free(host);
-	if (cloud)
-		return ENOTSUP;
 	char *url = nullptr;
-	if (curl_url_set(u, CURLUPART_PATH, "/props", 0) ||
+	if (curl_url_set(u, CURLUPART_URL, ep->url, 0) ||
+	    curl_url_set(u, CURLUPART_PATH, "/props", 0) ||
 	    curl_url_set(u, CURLUPART_QUERY, nullptr, 0) ||
 	    curl_url_set(u, CURLUPART_FRAGMENT, nullptr, 0) ||
 	    curl_url_get(u, CURLUPART_URL, &url, 0))
@@ -1731,12 +1712,15 @@ home_props_get (struct home *home,
 }
 
 /* Ask the upstream how many slots it has, as llama-server says at GET /props
- * of its endpoint's server (home_props_get()), unless it speaks Gemini's
- * protocol, which llama-server does not (ENOTSUP); 0 once asked. */
+ * of its endpoint's server (home_props_get()), unless it is known to be no
+ * llama-server: a provider's but llama's, or one that has Gemini's API
+ * (ENOTSUP); 0 once asked. */
 static int
 home_props_ask (struct home *home)
 {
-	if (home->ep->protocol == AI_GEMINI)
+	struct ai_endpoint const *ep = home->ep;
+	if ((ep->provider != AI_NO_PROVIDER && ep->provider != AI_LLAMA) ||
+	    ep->api == AI_GENERATE)
 		return ENOTSUP;
 	CURLU *u = curl_url();
 	if (!u)
