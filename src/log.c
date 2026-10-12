@@ -241,20 +241,6 @@ log_thread (void *arg)
 	return nullptr;
 }
 
-/* Free the rings and the logger's eventfd. */
-static void
-log_free (void)
-{
-	for (size_t i = 0; i < lg.n; ++i)
-		free(lg.rings[i].data);
-	free(lg.rings);
-	if (lg.wake_fd >= 0)
-		close(lg.wake_fd);
-	lg.rings = nullptr;
-	lg.n = 0;
-	lg.wake_fd = -1;
-}
-
 /* Make @p n rings, and the logger's eventfd. */
 static int
 log_alloc (size_t n)
@@ -298,7 +284,7 @@ log_start (size_t rings,
 	lg.notify_fd = notify_fd;
 	int e = log_alloc(rings);
 	if (e || (e = log_spawn()))
-		log_free();
+		log_fini();
 	return e;
 }
 
@@ -330,7 +316,14 @@ log_fini (void)
 {
 	if (!lg.rings)
 		return;
-	log_free();
+	for (size_t i = 0; i < lg.n; ++i)
+		free(lg.rings[i].data);
+	free(lg.rings);
+	if (lg.wake_fd >= 0)
+		close(lg.wake_fd);
+	lg.rings = nullptr;
+	lg.n = 0;
+	lg.wake_fd = -1;
 	atomic_store(&lg.attached, 0);
 	atomic_store(&lg.state, RUNNING);
 	self = nullptr;
