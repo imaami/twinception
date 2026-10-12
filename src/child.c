@@ -48,7 +48,7 @@ child_kill (struct child *c)
 }
 
 static void
-child_free (struct child *c)
+child_dispose (struct child *c)
 {
 	list_del(&c->hook);
 	loop_unready(&c->step);
@@ -62,6 +62,22 @@ child_free (struct child *c)
 	}
 	buf_fini(&c->out);
 	free(c);
+}
+
+/* read() @p len bytes into @p buf, from @p fd, again after a signal: the
+ * bytes, or a negative error. */
+static ssize_t
+child_pipe_read (int     fd,
+                 void   *buf,
+                 size_t  len)
+{
+	for (;;) {
+		ssize_t n = read(fd, buf, len);
+		if (n >= 0)
+			return n;
+		if (errno != EINTR)
+			return -errno;
+	}
 }
 
 /* Read as much of the child's output as the step has the share for, the rest
@@ -87,13 +103,12 @@ child_read (struct child *c)
 			child_kill(c);
 			return;
 		}
-		ssize_t n = read(c->pipe.fd, s.ptr, want);
-		if (n < 0 && errno == EINTR)
-			continue;
+		ssize_t n = child_pipe_read(c->pipe.fd, s.ptr, want);
+		/* EAGAIN waits for more; anything else ends the output. */
+		if (n == -EAGAIN)
+			return;
 		if (n <= 0) {
-			/* EAGAIN waits for more; anything else ends the output. */
-			if (!n || errno != EAGAIN)
-				child_close(c);
+			child_close(c);
 			return;
 		}
 		buf_commit(&c->out, (size_t)n);
@@ -162,7 +177,7 @@ child_step (struct loop      *loop,
 	if (c->done)
 		c->done(c);
 	else
-		child_free(c);
+		child_dispose(c);
 }
 
 static void
@@ -238,7 +253,7 @@ child_attr (posix_spawnattr_t *attr)
 /* Spawn @p cmd's file into @p pidfd, its input @p in if not -1 and its
  * output the pipe end @p out, through @p fa and @p attr, fresh. */
 static int
-child_spawn (struct child_cmd const     *cmd,
+child_cmd_spawn (struct child_cmd const     *cmd,
              posix_spawn_file_actions_t *fa,
              posix_spawnattr_t          *attr,
              int                         in,
@@ -255,12 +270,12 @@ child_spawn (struct child_cmd const     *cmd,
 	                    (char *const *)cmd->envp);
 }
 
-/* As child_spawn(), with file actions and attributes of its own. */
+/* As child_cmd_spawn(), with file actions and attributes of its own. */
 static int
-child_exec (struct child_cmd const *cmd,
-            int                     in,
-            int                     out,
-            int                    *pidfd)
+child_cmd_exec (struct child_cmd const *cmd,
+                int                     in,
+                int                     out,
+                int                    *pidfd)
 {
 	posix_spawn_file_actions_t fa;
 	int e = posix_spawn_file_actions_init(&fa);
@@ -268,11 +283,28 @@ child_exec (struct child_cmd const *cmd,
 		return e;
 	posix_spawnattr_t attr;
 	if (!(e = posix_spawnattr_init(&attr))) {
-		e = child_spawn(cmd, &fa, &attr, in, out, pidfd);
+		e = child_cmd_spawn(cmd, &fa, &attr, in, out, pidfd);
 		posix_spawnattr_destroy(&attr);
 	}
 	posix_spawn_file_actions_destroy(&fa);
 	return e;
+}
+
+/* Write the bytes of @p in to @p fd, a file, and rewind it. */
+static int
+child_write_all (int         fd,
+                 struct span in)
+{
+	for (size_t done = 0; done < in.len; ) {
+		ssize_t n = write(fd, in.ptr + done, in.len - done);
+		if (n > 0)
+			done += (size_t)n;
+		else if (!n)
+			return EIO;
+		else if (errno != EINTR)
+			return errno;
+	}
+	return lseek(fd, 0, SEEK_SET) ? errno : 0;
 }
 
 /* A file in memory that holds the bytes of @p in, read from its start, in
@@ -284,22 +316,23 @@ child_input (struct span  in,
 	*fd = memfd_create("askai-input", MFD_CLOEXEC);
 	if (*fd < 0)
 		return errno;
-	int e = 0;
-	for (size_t done = 0; !e && done < in.len; ) {
-		ssize_t n = write(*fd, in.ptr + done, in.len - done);
-		if (n > 0)
-			done += (size_t)n;
-		else if (!n)
-			e = EIO;
-		else if (errno != EINTR)
-			e = errno;
-	}
-	if (!e && lseek(*fd, 0, SEEK_SET))
-		e = errno;
+	int e = child_write_all(*fd, in);
 	if (e) {
 		close(*fd);
 		*fd = -1;
 	}
+	return e;
+}
+
+/* Kill and reap @p pidfd's process, which could not be watched, at once;
+ * returns @p e. */
+static int
+child_unwatched (int pidfd,
+                 int e)
+{
+	siginfo_t info;
+	(void)waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED);
+	close(pidfd);
 	return e;
 }
 
@@ -310,18 +343,15 @@ child_watch (struct child *c,
              int           pidfd)
 {
 	c->pid = pidfd_getpid(pidfd);
-	int e = c->pid > 0 ? loop_watch(c->loop, &c->proc, pidfd, EPOLLIN, child_event, c)
-	                   : ESRCH;
+	if (c->pid <= 0) {
+		(void)pidfd_send_signal(pidfd, SIGKILL, nullptr, 0);
+		return child_unwatched(pidfd, ESRCH);
+	}
+	int e = loop_watch(c->loop, &c->proc, pidfd, EPOLLIN, child_event, c);
 	if (!e)
 		return 0;
-	if (c->pid > 0)
-		(void)kill(-c->pid, SIGKILL);
-	else
-		(void)pidfd_send_signal(pidfd, SIGKILL, nullptr, 0);
-	siginfo_t info;
-	(void)waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED);
-	close(pidfd);
-	return e;
+	(void)kill(-c->pid, SIGKILL);
+	return child_unwatched(pidfd, e);
 }
 
 /* A pipe for @p c's output: its read end watched, and the write end in
@@ -357,13 +387,13 @@ child_run (struct child           *c,
 	if (e)
 		return e;
 	int pidfd = -1;
-	if ((e = child_exec(cmd, in, out, &pidfd)))
+	if ((e = child_cmd_exec(cmd, in, out, &pidfd)))
 		return e;
 	return child_watch(c, pidfd);
 }
 
 /* Spawn @p c's process as @p cmd says, reading its output and timing it;
- * on an error, its pipe and timer may be left for child_free(). */
+ * on an error, its pipe and timer may be left for child_dispose(). */
 static int
 child_start (struct child           *c,
              struct child_cmd const *cmd)
@@ -417,7 +447,7 @@ child_create (struct loop            *loop,
 	list_init(&c->hook);
 	if ((*e = child_start(c, cmd))) {
 		atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
-		child_free(c);
+		child_dispose(c);
 		return nullptr;
 	}
 	list_append(list, &c->hook);
@@ -427,14 +457,14 @@ child_create (struct loop            *loop,
 void
 child_destroy (struct child **p_c)
 {
-	struct child *c = *p_c;
-	if (!c)
+	if (!p_c || !*p_c)
 		return;
+	struct child *c = *p_c;
 	*p_c = nullptr;
 	c->done = nullptr;
 	child_kill(c);
 	if (c->proc.fd < 0) {
-		child_free(c);
+		child_dispose(c);
 		return;
 	}
 	loop_timer_stop(c->loop, &c->timer);
@@ -445,5 +475,5 @@ void
 child_destroy_all (struct list *list)
 {
 	while (!list_is_empty(list))
-		child_free(container_of(list->next, struct child, hook));
+		child_dispose(container_of(list->next, struct child, hook));
 }
