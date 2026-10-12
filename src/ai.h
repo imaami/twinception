@@ -151,8 +151,8 @@ extern struct ai_format const *
 ai_format (enum ai_protocol protocol);
 
 /** Say in the @p size bytes at @p buf that the model gave no answer, and
- *  why, if its stop @p reason is not nullptr; returns snprintf()'s count. */
-extern int
+ *  why, if its stop @p reason is not nullptr; returns the length written. */
+extern size_t
 ai_no_answer (char       *buf,
               size_t      size,
               char const *reason);
