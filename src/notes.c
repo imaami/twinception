@@ -60,15 +60,30 @@ notes_drain (int     fd,
              size_t  len)
 {
 	size_t n = 0;
-	for (;;) {
-		char sink[256];
-		bool full = n == len - 1;
-		ssize_t r = full ? read(fd, sink, sizeof sink) : read(fd, out + n, len - 1 - n);
+	while (n < len - 1) {
+		ssize_t r = read(fd, out + n, len - 1 - n);
 		if (r > 0)
-			n += full ? 0 : (size_t)r;
+			n += (size_t)r;
 		else if (!r || errno != EINTR)
 			return n;
 	}
+	for (;;) {
+		char sink[256];
+		ssize_t r = read(fd, sink, sizeof sink);
+		if (!r || (r < 0 && errno != EINTR))
+			return n;
+	}
+}
+
+/* Say in @p out, of @p len bytes, that git cannot run, as @p e says;
+ * returns @p e. */
+static int
+notes_cannot (char   *out,
+              size_t  len,
+              int     e)
+{
+	util_format(out, len, "cannot run git: %s", strerror(e));
+	return e;
 }
 
 /* Run git with @p argv, its output, cut at @p len - 1 bytes, in @p out,
@@ -83,17 +98,16 @@ notes_run (struct notes const *notes,
 {
 	int fds[2];
 	if (pipe2(fds, O_CLOEXEC))
-		return errno;
+		return notes_cannot(out, len, errno);
 	pid_t pid = 0;
 	int e = notes_spawn(notes, argv, fds[1], &pid);
 	close(fds[1]);
-	size_t n = e ? 0 : notes_drain(fds[0], out, len);
-	out[n] = '\0';
-	close(fds[0]);
 	if (e) {
-		util_format(out, len, "cannot run git: %s", strerror(e));
-		return e;
+		close(fds[0]);
+		return notes_cannot(out, len, e);
 	}
+	out[notes_drain(fds[0], out, len)] = '\0';
+	close(fds[0]);
 	int status = 0;
 	while (waitpid(pid, &status, 0) < 0)
 		if (errno != EINTR)
@@ -196,9 +210,9 @@ notes_create (char const *path,
 void
 notes_destroy (struct notes **p_notes)
 {
-	struct notes *notes = *p_notes;
-	if (!notes)
+	if (!p_notes || !*p_notes)
 		return;
+	struct notes *notes = *p_notes;
 	*p_notes = nullptr;
 	free(notes->env[0]);
 	free(notes->dir);
@@ -284,13 +298,18 @@ notes_input (struct buf *in,
              size_t      len,
              bool        after)
 {
+	static char const end[] = "\n\n";
 	char head[192];
-	char tail[NOTES_REF + 16];
+	char from[NOTES_REF + 16];
+	char const *tail = end;
+	int t = sizeof end - 1;
+	if (after) {
+		tail = from;
+		t = snprintf(from, sizeof from, "\nfrom %s^0\n\n", ref);
+	}
 	int h = snprintf(head, sizeof head, "commit %s\ncommitter askai <askai> now\n"
 	                 "data %zu\n", ref, len);
-	int t = after ? snprintf(tail, sizeof tail, "\nfrom %s^0\n\n", ref)
-	              : snprintf(tail, sizeof tail, "\n\n");
-	if (h < 0 || h >= (int)sizeof head || t < 0 || t >= (int)sizeof tail)
+	if (h < 0 || h >= (int)sizeof head || t < 0 || t >= (int)sizeof from)
 		return EINVAL;
 	size_t n = (size_t)h + len + (size_t)t;
 	struct span s;

@@ -82,7 +82,8 @@ notes_write (struct notes const *notes,
 /**
  * Write into @p in what has git fast-import commit a note of the @p len
  * bytes of UTF-8 text at @p text, with no NUL, to @p ref, on its tip if
- * @p after, else as its first; returns 0 or ENOMEM.
+ * @p after, else as its first; returns 0, or ENOMEM, or EINVAL if @p ref
+ * is too long.
  */
 extern int
 notes_input (struct buf *in,
