@@ -1342,7 +1342,7 @@ config_key_usual (struct config const *cfg,
 		if (key && *key)
 			return config_key_take(cfg, key, p_key);
 	}
-	if (p == AI_NO_PROVIDER || p == AI_LLAMA)
+	if (ai_llama_like(p))
 		return 0;
 	return config_complain(cfg, nullptr, "set %s or pass --key-env", vars[0]);
 }
@@ -1353,7 +1353,7 @@ static int
 config_url_own (struct config *cfg)
 {
 	struct ai_endpoint *ep = &cfg->ep;
-	if (!ep->model && ep->provider != AI_LLAMA)
+	if (!ep->model && !ai_llama_like(ep->provider))
 		return config_complain(cfg, nullptr, "--model is required for %s's "
 		                       "own API", provider_names[ep->provider]);
 	ep->url = providers[ep->provider].url[ep->api];

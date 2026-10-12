@@ -1745,8 +1745,7 @@ static int
 home_props_ask (struct home *home)
 {
 	struct ai_endpoint const *ep = home->ep;
-	if ((ep->provider != AI_NO_PROVIDER && ep->provider != AI_LLAMA) ||
-	    ep->api == AI_GENERATE)
+	if (!ai_llama_like(ep->provider) || ep->api == AI_GENERATE)
 		return ENOTSUP;
 	CURLU *u = curl_url();
 	if (!u)

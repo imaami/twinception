@@ -337,7 +337,7 @@ struct mcp_req {
 	                                    token limit */
 	char                 thread[NOTES_ID + 1];  /* the notes' thread's id */
 	char                 ref[NOTES_REF];        /* and its ref */
-	char                 note[383];  /* what askai adds to a tool's output,
+	char                 note[382];  /* what askai adds to a tool's output,
 	                                    sized to end the request unpadded */
 };
 
@@ -2493,40 +2493,53 @@ mcp_req_call_args (struct mcp_req const   *req,
 	return v && !json ? ENOMEM : 0;
 }
 
-/* Write the turn's call req->part - 1, after the items of the replay before
- * it; unless the API's calls are in the replay, which is all it writes. */
+/* Write the call @p c, req->part - 1 in the turn, after @p items, those of
+ * the replay before it. */
+static int
+mcp_req_call_put (struct mcp_req         *req,
+                  struct ai_format const *f,
+                  struct mcp_call const  *c,
+                  struct mcp_piece        items)
+{
+	uint32_t k = req->part - 1u;
+	char made[CALL_ID];
+	struct mcp_piece id;
+	struct mcp_piece args;
+	int e = mcp_req_call_id(req, c, k, made, &id);
+	if (e || (e = mcp_req_call_args(req, f, c, k, &args)))
+		return e;
+	struct mcp_piece const p[] = {
+		items,
+		BYTES(req->listed || items.len ? f->call_next : f->call),
+		id,
+		BYTES(f->name),
+		ESC(c->name.ptr, c->name.len),
+		BYTES(f->args),
+		args,
+		BYTES(f->args_end),
+		c->extra.len ? BYTES(f->extra) : (struct mcp_piece){},
+		RAW(c->extra.ptr, c->extra.len),
+		BYTES(f->call_end),
+	};
+	e = mcp_req_upload(req, p, ARRAY_SIZE(p));
+	if (!e)
+		req->listed = true;
+	return e;
+}
+
+/* Write the turn's call under way, after the items of the replay before
+ * it; or only those, as the API's calls are in the replay. */
 static int
 mcp_req_turn_call (struct mcp_req         *req,
                    struct ai_format const *f)
 {
-	uint32_t k = req->part - 1u;
 	struct mcp_call c = mcp_call_at(buf_peek(&req->job->calls).ptr + req->at);
 	struct mcp_piece items = mcp_req_items(req, c.replay);
-	char made[CALL_ID];
-	struct mcp_piece id = {};
-	struct mcp_piece args = {};
-	int e = 0;
-	if (f->call.len && ((e = mcp_req_call_id(req, &c, k, made, &id)) ||
-	                    (e = mcp_req_call_args(req, f, &c, k, &args))))
-		return e;
-	bool listed = req->listed || items.len;
-	struct mcp_piece const p[] = {
-		items,
-		BYTES(listed ? f->call_next : f->call),
-		id,
-		BYTES(f->name),
-		ESC(c.name.ptr, c.name.len),
-		BYTES(f->args),
-		args,
-		BYTES(f->args_end),
-		c.extra.len ? BYTES(f->extra) : (struct mcp_piece){},
-		RAW(c.extra.ptr, c.extra.len),
-		BYTES(f->call_end),
-	};
-	e = mcp_req_upload(req, p, f->call.len ? ARRAY_SIZE(p) : 1);
+	int e = f->call.len ? mcp_req_call_put(req, f, &c, items)
+	                    : mcp_req_upload(req, &items, 1);
 	if (e)
 		return e;
-	req->listed = listed || f->call.len;
+	req->listed = req->listed || items.len;
 	req->replayed = c.replay;
 	req->at += c.size;
 	return 0;

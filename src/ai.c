@@ -498,8 +498,6 @@ ai_chat_delta (struct ai_sink const *sink,
 	return ai_chat_calls(sink, jb_get(delta, "tool_calls"));
 }
 
-#define REPLAY(s) ai_replay(sink, s, sizeof s - 1)
-
 /* Hand @p item, an output item of the Responses API, @p at in the output,
  * to @p sink: a function call as a call, and a call, a reasoning item or a
  * message, whole, to the replay. */
@@ -530,7 +528,7 @@ ai_responses_event (struct ai_sink const *sink,
                     struct json_object   *ev,
                     struct ai_event      *out)
 {
-	enum { TEXT, REFUSAL, REASONING, SUMMARY, ITEM, DONE, KINDS };
+	enum { TEXT, REFUSAL, REASONING, SUMMARY, ITEM, DONE, CUT, KINDS };
 	static char const *const kinds[KINDS] = {
 		[TEXT]      = "response.output_text.delta",
 		[REFUSAL]   = "response.refusal.delta",
@@ -538,6 +536,7 @@ ai_responses_event (struct ai_sink const *sink,
 		[SUMMARY]   = "response.reasoning_summary_text.delta",
 		[ITEM]      = "response.output_item.done",
 		[DONE]      = "response.completed",
+		[CUT]       = "response.incomplete",
 	};
 	struct json_object *delta = jb_get(ev, "delta");
 	switch (ai_kind(jb_get(ev, "type"), kinds, KINDS)) {
@@ -551,7 +550,8 @@ ai_responses_event (struct ai_sink const *sink,
 	case ITEM:
 		return ai_responses_item(sink, jb_get(ev, "output_index"),
 		                         jb_get(ev, "item"));
-	case DONE: {
+	case DONE:
+	case CUT: {
 		struct json_object *usage = jb_get(jb_get(ev, "response"), "usage");
 		out->used = ai_used(json_object_get_int64(jb_get(usage, "input_tokens")),
 		                    json_object_get_int64(jb_get(usage, "output_tokens")));
@@ -560,6 +560,8 @@ ai_responses_event (struct ai_sink const *sink,
 	}
 	return 0;
 }
+
+#define REPLAY(s) ai_replay(sink, s, sizeof s - 1)
 
 /* Hand what Anthropic's content block @p block, @p at in the content,
  * begins with to @p sink: a tool call's id and name; or, to the replay, the
@@ -581,10 +583,17 @@ ai_messages_start (struct ai_sink const *sink,
 	case TOOL: {
 		if (!sink->call)
 			return 0;
+		/* A server that gives the arguments whole gives them here. */
+		struct json_object *input = jb_get(block, "input");
+		bool whole = json_object_is_type(input, json_type_object) &&
+		             json_object_object_length(input);
 		struct ai_call call = { .index = at };
 		call.id = ai_text_of(jb_get(block, "id"), &call.id_len);
 		call.name = ai_text_of(jb_get(block, "name"), &call.name_len);
-		return sink->call(sink->user, &call);
+		call.args = whole ? json_object_to_json_string_length(input, JB_WIRE,
+		                                                      &call.args_len)
+		                  : nullptr;
+		return whole && !call.args ? ENOMEM : sink->call(sink->user, &call);
 	}
 	case THINKING:
 		reader->open = at + 1;
@@ -598,9 +607,9 @@ ai_messages_start (struct ai_sink const *sink,
 /* Hand the pieces of @p delta, of Anthropic's content block @p at, to
  * @p sink: its text, its thinking's and its signature, which go on in the
  * replay with the block's item that @p reader has open, or a text block's
- * first text, which opens its item, as a turn may have no empty one; or a
- * piece of a tool call's arguments.  Says in @p out whether it carries
- * thinking. */
+ * first text that is not white space, which opens its item, as a turn may
+ * have no blank one; or a piece of a tool call's arguments.  Says in @p out
+ * whether it carries thinking. */
 static int
 ai_messages_delta (struct ai_sink const *sink,
                    struct ai_reader     *reader,
@@ -619,8 +628,9 @@ ai_messages_delta (struct ai_sink const *sink,
 	switch (ai_kind(jb_get(delta, "type"), kinds, KINDS)) {
 	case TEXT: {
 		struct json_object *text = jb_get(delta, "text");
+		char const *str = jb_text(text);
 		int e = ai_put_text(sink->text, sink->user, text);
-		if (e || !ai_some_text(text))
+		if (e || (!open && (!str || !str[strspn(str, " \t\r\n")])))
 			return e;
 		if (!open) {
 			reader->open = at + 1;
@@ -652,14 +662,15 @@ ai_messages_delta (struct ai_sink const *sink,
 
 /* Hand the pieces of Anthropic's event @p ev to @p sink, as @p reader keeps
  * the reading, saying in @p out whether it carries thinking, and the tokens
- * used as the answer ends.  A content block with no index may carry text
- * only. */
+ * used as the answer ends.  An event of a content block with no index may
+ * carry text only. */
 static int
 ai_messages_event (struct ai_sink const *sink,
                    struct ai_reader     *reader,
                    struct json_object   *ev,
                    struct ai_event      *out)
 {
+	/* The content blocks' events first. */
 	enum { DELTA, START, STOP, MESSAGE, MESSAGE_DELTA, KINDS };
 	static char const *const kinds[KINDS] = {
 		[DELTA]         = "content_block_delta",
@@ -669,9 +680,12 @@ ai_messages_event (struct ai_sink const *sink,
 		[MESSAGE_DELTA] = "message_delta",
 	};
 	uint32_t at = ai_index(jb_get(ev, "index"));
-	if (at == AI_CALL_NEXT)
-		sink = &(struct ai_sink){ .text = sink->text, .user = sink->user };
-	switch (ai_kind(jb_get(ev, "type"), kinds, KINDS)) {
+	size_t kind = ai_kind(jb_get(ev, "type"), kinds, KINDS);
+	if (kind < MESSAGE && at == AI_CALL_NEXT)
+		return kind == DELTA ? ai_put_text(sink->text, sink->user,
+		                                   jb_get(jb_get(ev, "delta"), "text"))
+		                     : 0;
+	switch (kind) {
 	case DELTA:
 		return ai_messages_delta(sink, reader, at, jb_get(ev, "delta"), out);
 	case START:
@@ -729,43 +743,54 @@ ai_generate_call (struct ai_sink const *sink,
 	return args && !call.args ? ENOMEM : sink->call(sink->user, &call);
 }
 
+/* End the text part that @p reader has open, then give @p sink's replay
+ * @p part whole. */
+static int
+ai_generate_whole (struct ai_sink const *sink,
+                   struct ai_reader     *reader,
+                   struct json_object   *part)
+{
+	int e = ai_generate_close(sink, reader);
+	return e ? e : ai_replay_item(sink, part);
+}
+
 /* Hand Gemini's part @p part to @p sink, as @p reader keeps the reading: a
- * function call, which goes whole to the replay, or text, whose text parts
- * go on in one in the replay until a thought signature or a call ends it;
- * or say in @p out that it is thinking. */
+ * function call, which goes whole to the replay, as does a part with a
+ * thought signature, in which it came; or text, which goes on in the text
+ * part open in the replay, or thinking, as @p out says. */
 static int
 ai_generate_part (struct ai_sink const *sink,
                   struct ai_reader     *reader,
                   struct json_object   *part,
                   struct ai_event      *out)
 {
-	struct json_object *text = jb_get(part, "text");
-	if (json_object_get_boolean(jb_get(part, "thought"))) {
-		out->thought |= ai_some_text(text);
-		return 0;
-	}
 	struct json_object *fc = jb_get(part, "functionCall");
 	if (fc) {
 		int e = ai_generate_close(sink, reader);
 		e = e ? e : ai_generate_call(sink, reader, fc);
 		return e ? e : ai_replay_item(sink, part);
 	}
+	struct json_object *text = jb_get(part, "text");
 	struct json_object *signature = jb_get(part, "thoughtSignature");
+	if (json_object_get_boolean(jb_get(part, "thought"))) {
+		out->thought |= ai_some_text(text);
+		return signature ? ai_generate_whole(sink, reader, part) : 0;
+	}
 	int e = ai_put_text(sink->text, sink->user, text);
-	if (e || (!ai_some_text(text) && !signature))
+	if (e)
 		return e;
+	if (signature)
+		return ai_generate_whole(sink, reader, part);
+	if (!ai_some_text(text))
+		return 0;
 	if (!reader->open) {
 		reader->open = 1;
 		e = REPLAY(",{\"text\":\"");
 	}
-	e = e ? e : ai_replay_text(sink, text);
-	if (e || !signature)
-		return e;
-	reader->open = 0;
-	e = REPLAY("\",\"thoughtSignature\":\"");
-	e = e ? e : ai_replay_text(sink, signature);
-	return e ? e : REPLAY("\"}");
+	return e ? e : ai_replay_text(sink, text);
 }
+
+#undef REPLAY
 
 int
 ai_event (enum ai_api            api,
@@ -825,8 +850,6 @@ ai_event (enum ai_api            api,
 	           jb_is(type, "response.incomplete") || jb_is(type, "message_stop");
 	return e;
 }
-
-#undef REPLAY
 
 struct ai_format const *
 ai_format (enum ai_api api)

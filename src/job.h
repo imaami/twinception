@@ -210,7 +210,7 @@ struct job {
 	                                         job_status */
 	uint8_t                asks;        /**< the front's, before SUBMIT: enum
 	                                         job_ask */
-	char                   reason[38];  /**< home's: the answer's stop reason,
+	char                   reason[42];  /**< home's: the answer's stop reason,
 	                                         longer than any the providers
 	                                         name */
 };

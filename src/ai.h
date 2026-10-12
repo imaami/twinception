@@ -29,6 +29,14 @@ enum ai_provider : uint16_t {
 	AI_OPENROUTER,
 };
 
+/** Whether @p p may be llama-server, which may need no key or model and
+ *  says at /props what it has: llama, or a server that no provider names. */
+static inline bool
+ai_llama_like (enum ai_provider p)
+{
+	return p == AI_NO_PROVIDER || p == AI_LLAMA;
+}
+
 struct ai_endpoint {
 	struct json_object *extra;        /**< deep-merged into each request body */
 	struct json_object *temperature;  /**< JSON number, or nullptr */
@@ -205,7 +213,7 @@ struct ai_format {
 	                prompt_end,
 	                end;
 	char const     *conversation;  /**< the body's member it is in */
-	uint32_t        flags;         /**< enum ai_format_flag */
+	uint64_t        flags;         /**< enum ai_format_flag */
 };
 
 /**

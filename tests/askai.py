@@ -689,6 +689,7 @@ def check_protocols(binary, up):
             assert text_of(ai.ask()) == "A"
             assert up.last()["path"] == "/v1beta/models/m:streamGenerateContent" + want
 
+    up.reply = lambda request: (200, ANSWERS["openai"])
     print("openai/responses/anthropic/gemini requests and answers: PASS")
 
 
@@ -4849,11 +4850,13 @@ def turn_stream(calls=(), text="", reasoning="", used=None, interleave=False,
     return Stream(wire=sse_wire(ev))
 
 
-def messages_turn(blocks, stop="tool_use"):
+def messages_turn(blocks, stop="tool_use", stray=False):
     """A streamed answer of Anthropic's Messages of the content @p blocks,
-    each ("thinking", text, signature), ("redacted", data), ("text", text)
-    or ("tool", id, name, arguments' JSON text), the texts and arguments in
-    pieces of 5 bytes, that stops for @p stop."""
+    each ("thinking", text, signature), ("redacted", data), ("text", text),
+    ("tool", id, name, arguments' JSON text) or ("whole", id, name,
+    arguments' JSON text), whose arguments come with its start, the texts
+    and arguments in pieces of 5 bytes, that stops for @p stop; with
+    @p stray, a text delta with no index after each block's start."""
     ev = [("message_start", {"type": "message_start", "message": {
         "id": "msg", "type": "message", "role": "assistant", "content": [],
         "usage": {"input_tokens": 90, "cache_read_input_tokens": 10,
@@ -4863,7 +4866,9 @@ def messages_turn(blocks, stop="tool_use"):
               "redacted": lambda b: {"type": "redacted_thinking", "data": b[1]},
               "text": lambda b: {"type": "text", "text": ""},
               "tool": lambda b: {"type": "tool_use", "id": b[1], "name": b[2],
-                                 "input": {}}}
+                                 "input": {}},
+              "whole": lambda b: {"type": "tool_use", "id": b[1], "name": b[2],
+                                  "input": json.loads(b[3])}}
     pieces = {"thinking": lambda b: [{"type": "thinking_delta", "thinking": t}
                                      for t in split(b[1], 5)] +
                                     [{"type": "signature_delta", "signature": b[2]}],
@@ -4871,10 +4876,15 @@ def messages_turn(blocks, stop="tool_use"):
               "text": lambda b: [{"type": "text_delta", "text": t}
                                  for t in split(b[1], 5)],
               "tool": lambda b: [{"type": "input_json_delta", "partial_json": t}
-                                 for t in split(b[3], 5)]}
+                                 for t in split(b[3], 5)],
+              "whole": lambda b: []}
     for i, b in enumerate(blocks):
         ev.append(("content_block_start", {"type": "content_block_start", "index": i,
                                            "content_block": starts[b[0]](b)}))
+        if stray:
+            ev.append(("content_block_delta", {"type": "content_block_delta",
+                                               "delta": {"type": "text_delta",
+                                                         "text": "!"}}))
         ev += [("content_block_delta", {"type": "content_block_delta", "index": i,
                                         "delta": d}) for d in pieces[b[0]](b)]
         ev.append(("content_block_stop", {"type": "content_block_stop", "index": i}))
@@ -4975,13 +4985,15 @@ def check_turn_apis(binary, up):
                 "so the call was not run.", given
 
         # Anthropic's Messages: thinking blocks, signed, and a redacted one go
-        # back in their places among the text and the calls, but an empty
-        # text block; the results go in one message.
+        # back in their places among the text and the calls, but a blank
+        # text block, and the text of a delta with no index; arguments may
+        # come with the call's start; the results go in one message.
         blocks = [("thinking", "Plan it.", "sig/1"), ("text", "Looking."), ("text", ""),
-                  ("thinking", "", "sig2"), ("tool", "c1", "git", json.dumps(log)),
-                  ("redacted", "opaque=="), ("tool", "c2", "git", "{\"repo\":")]
+                  ("text", " \n\n"), ("thinking", "", "sig2"),
+                  ("tool", "c1", "git", json.dumps(log)), ("redacted", "opaque=="),
+                  ("tool", "c2", "git", "{\"repo\":"), ("whole", "c3", "git", json.dumps(log))]
         with run("messages", "/v1/messages") as ai:
-            script[:] = [lambda r: (200, messages_turn(blocks)),
+            script[:] = [lambda r: (200, messages_turn(blocks, stray=True)),
                          lambda r: (200, messages_turn([("text", "A")], "end_turn"))]
             count = len(up.requests)
             result = ai.ask("Q")
@@ -4999,20 +5011,25 @@ def check_turn_apis(binary, up):
                 {"type": "thinking", "thinking": "", "signature": "sig2"},
                 {"type": "tool_use", "id": "c1", "name": "git", "input": log},
                 {"type": "redacted_thinking", "data": "opaque=="},
-                {"type": "tool_use", "id": "c2", "name": "git", "input": {}}]}, messages
+                {"type": "tool_use", "id": "c2", "name": "git", "input": {}},
+                {"type": "tool_use", "id": "c3", "name": "git", "input": log}]}, messages
             assert b'"signature":"sig/1"' in second["raw"], second["raw"]
             results = messages[2]
             assert results["role"] == "user" and len(messages) == 3, messages
             assert [(c["type"], c["tool_use_id"]) for c in results["content"]] == \
-                [("tool_result", "c1"), ("tool_result", "c2")], results
+                [("tool_result", "c1"), ("tool_result", "c2"), ("tool_result", "c3")], \
+                results
             assert re.fullmatch(logged, results["content"][0]["content"]), results
+            assert re.fullmatch(logged, results["content"][2]["content"]), results
 
-        # Gemini's: a text part's signature ends its text, and a call ends
-        # one with none; the calls go back with their signatures, and their
-        # responses name them, and give the id of one that had one.
+        # Gemini's: text parts go on in one, but a part with a thought
+        # signature, thinking too, goes back as it came, as do the calls;
+        # their responses name them, and give the id of one that had one.
         call = {"name": "git", "args": log}
         turns = [
-            [[{"text": "Plan.", "thought": True}], [{"text": "Look"}],
+            [[{"text": "Plan.", "thought": True}],
+             [{"text": "Deep.", "thought": True, "thoughtSignature": "thsig"}],
+             [{"text": "Lo"}], [{"text": "ok"}],
              [{"text": "ing.", "thoughtSignature": "tsig"}],
              [{"functionCall": call, "thoughtSignature": "fsig/+"},
               {"functionCall": call}]],
@@ -5036,7 +5053,8 @@ def check_turn_apis(binary, up):
             assert list(second["body"])[-1] == "contents", second["body"]
             assert contents[0] == {"role": "user", "parts": [{"text": "Q"}]}, contents
             assert contents[1] == {"role": "model", "parts": [
-                {"text": "Looking.", "thoughtSignature": "tsig"},
+                {"text": "Deep.", "thought": True, "thoughtSignature": "thsig"},
+                {"text": "Look"}, {"text": "ing.", "thoughtSignature": "tsig"},
                 {"functionCall": call, "thoughtSignature": "fsig/+"},
                 {"functionCall": call}]}, contents
             parts = contents[2]["parts"]
