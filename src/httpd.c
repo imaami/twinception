@@ -323,16 +323,16 @@ struct httpd_home {
 	size_t                  conns;      /* placed, and not given back */
 	size_t                  fd_budget;  /* for conns + calls, from
 	                                       RLIMIT_NOFILE */
-	int                     spare_fd;   /* given up to accept a client */
 	uint32_t                cap;        /* connections per client address;
 	                                       0: none */
 	uint32_t                refused;    /* turned away for descriptors since
 	                                       the tick */
 	uint32_t                capped;     /* turned away by the cap since then */
-	uint16_t                open;       /* bool: accepting */
-	uint16_t                anyone;     /* bool: clients that show no token
+	uint32_t                open;       /* bool: accepting */
+	uint32_t                anyone;     /* bool: clients that show no token
 	                                       may call tools from beyond
 	                                       loopback */
+	int                     spare_fd;   /* given up to accept a client */
 };
 
 /* Home's door, for the connections given back. */
@@ -812,22 +812,24 @@ httpd_home_client_get (struct httpd_home *home,
 {
 	struct httpd_client **p = httpd_home_client_slot(home, key);
 	struct httpd_client *client = *p;
-	if (!client) {
-		struct list *spare = shelf_take(&home->gone);
-		if (spare) {
-			client = container_of(spare, struct httpd_client, spare);
-		} else if ((client = malloc(sizeof *client))) {
-			atomic_init(&client->held, 0);
-		} else {
-			return nullptr;
-		}
-		client->next = nullptr;
-		client->addr[0] = key[0];
-		client->addr[1] = key[1];
-		client->conns = 0;
-		*p = client;
+	if (client) {
+		++client->conns;
+		return client;
 	}
-	++client->conns;
+	struct list *spare = shelf_take(&home->gone);
+	if (spare) {
+		client = container_of(spare, struct httpd_client, spare);
+	} else {
+		client = malloc(sizeof *client);
+		if (!client)
+			return nullptr;
+		atomic_init(&client->held, 0);
+	}
+	client->next = nullptr;
+	client->addr[0] = key[0];
+	client->addr[1] = key[1];
+	client->conns = 1;
+	*p = client;
 	return client;
 }
 
@@ -843,20 +845,24 @@ httpd_home_client_put (struct httpd_home   *home,
 	shelf_put(&home->gone, &client->spare);
 }
 
+/* Whether @p ss is on this machine: on loopback, or a Unix socket. */
 static bool
-httpd_addr_loopback (struct sockaddr_storage const *ss)
+httpd_addr_local (struct sockaddr_storage const *ss)
 {
-	if (ss->ss_family == AF_INET) {
-		struct sockaddr_in const *in = (void const *)ss;
+	struct sockaddr_in const *in = (void const *)ss;
+	struct sockaddr_in6 const *in6 = (void const *)ss;
+	struct in6_addr const *a = &in6->sin6_addr;
+	switch (ss->ss_family) {
+	case AF_UNIX:
+		return true;
+	case AF_INET:
 		return ntohl(in->sin_addr.s_addr) >> 24 == 127;
-	}
-	if (ss->ss_family == AF_INET6) {
-		struct sockaddr_in6 const *in6 = (void const *)ss;
-		struct in6_addr const *a = &in6->sin6_addr;
+	case AF_INET6:
 		return IN6_IS_ADDR_LOOPBACK(a) ||
 		       (IN6_IS_ADDR_V4MAPPED(a) && a->s6_addr[12] == 127);
+	default:
+		return false;
 	}
-	return false;
 }
 
 /* The connection has closed, and its events are dispatched: give it back to
@@ -2130,12 +2136,34 @@ httpd_home_watch (struct httpd_home *home,
 		(void)loop_modify(home->loop, &home->listeners[i].ref, events);
 }
 
+/* Take the spare descriptor, given up to accept a client once descriptors
+ * run out: 0, or open()'s error. */
+static int
+httpd_home_spare (struct httpd_home *home)
+{
+	home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+	return home->spare_fd < 0 ? errno : 0;
+}
+
 /* Free the storage of a connection, which may be a spare. */
 static void
-httpd_conn_free (struct httpd_conn *conn)
+httpd_conn_destroy (struct httpd_conn **p_conn)
 {
+	struct httpd_conn *conn = *p_conn;
+	*p_conn = nullptr;
 	free(conn->groups);
 	free(conn);
+}
+
+/* Let go of the client of a connection home placed and no loop set up: its
+ * descriptor, and what it was to shake hands by. */
+static void
+httpd_conn_drop (struct httpd_conn *conn)
+{
+	tls_ctx_put(conn->ctx);
+	conn->ctx = nullptr;
+	close(conn->fd);
+	conn->fd = -1;
 }
 
 /* Home has a connection back: it counts it no more, and keeps its storage
@@ -2146,25 +2174,24 @@ httpd_conn_back (struct loop *loop,
                  struct msg  *msg)
 {
 	struct httpd_conn *conn = container_of(msg, struct httpd_conn, msg);
-	struct httpd_home *home = loop->exit ? nullptr : door;
-	if (!home) {
-		httpd_conn_free(conn);
+	struct httpd_home *home = door;
+	if (loop->exit || !home) {
+		httpd_conn_destroy(&conn);
 		return;
 	}
 	httpd_home_client_put(home, conn->client);
 	--conn->lane->conns;
 	--home->conns;
 	shelf_put(&home->spare, &conn->hook);
-	if (home->spare_fd < 0 && home->open &&
-	    (home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC)) >= 0)
+	if (home->spare_fd < 0 && home->open && !httpd_home_spare(home))
 		httpd_home_watch(home, EPOLLIN);
 }
 
 /* Set up a connection home placed on the loop, or close it at once while the
  * server drains, giving it back to home. */
 static void
-httpd_conn_setup (struct httpd      *srv,
-                  struct httpd_conn *conn)
+httpd_conn_setup (struct httpd_conn *conn,
+                  struct httpd      *srv)
 {
 	struct loop *loop = srv->loop;
 	struct httpd_lane *lane = conn->lane;
@@ -2179,6 +2206,7 @@ httpd_conn_setup (struct httpd      *srv,
 	bool uds = conn->uds;
 	*conn = (struct httpd_conn){
 		.msg.fn = httpd_conn_back,
+		.ref.fd = -1,
 		.step.fn = httpd_conn_step,
 		.timer.fn = httpd_conn_timer,
 		.stream = {
@@ -2213,8 +2241,7 @@ httpd_conn_setup (struct httpd      *srv,
 		return;
 	}
 	loop_timer_stop(loop, &conn->timer);
-	tls_ctx_put(ctx);
-	close(fd);
+	httpd_conn_drop(conn);
 	loop_post(srv->hub->home, &conn->msg);
 }
 
@@ -2227,9 +2254,8 @@ httpd_conn_take (struct loop *loop,
 {
 	struct httpd_conn *conn = container_of(msg, struct httpd_conn, msg);
 	if (loop->exit) {
-		tls_ctx_put(conn->ctx);
-		close(conn->fd);
-		httpd_conn_free(conn);
+		httpd_conn_drop(conn);
+		httpd_conn_destroy(&conn);
 		return;
 	}
 	struct httpd *srv = conn->lane->srv;
@@ -2249,9 +2275,10 @@ httpd_take_step (struct loop      *loop,
 			loop_ready(loop, step);
 			return;
 		}
-		struct httpd_conn *conn = container_of(srv->taken.next, struct httpd_conn, hook);
+		struct httpd_conn *conn = container_of(srv->taken.next, struct httpd_conn,
+		                                       hook);
 		list_del(&conn->hook);
-		httpd_conn_setup(srv, conn);
+		httpd_conn_setup(conn, srv);
 	}
 }
 
@@ -2263,10 +2290,9 @@ httpd_lane_policy (struct loop *loop,
 {
 	struct httpd_lane *lane = container_of(msg, struct httpd_lane, handover);
 	struct policy *policy = atomic_exchange(&lane->policy, nullptr);
-	struct httpd *srv = loop->exit ? nullptr : lane->srv;
-	if (srv && policy) {
-		struct policy *old = srv->policy;
-		srv->policy = policy;
+	if (policy && !loop->exit) {
+		struct policy *old = lane->srv->policy;
+		lane->srv->policy = policy;
 		policy = old;
 	}
 	policy_put(policy);
@@ -2347,15 +2373,15 @@ httpd_home_budget (struct httpd_home *home)
 }
 
 /*
- * Have the least recently active idle connection closed, by its loop; false
- * if no loop has one idle to spare.  Each loop says how many idle and when
- * the least recently active of them began to, and home looks at each, only
- * when descriptors run short.  A loop asked to close some, which it has yet
- * to take on, stands for when its next idle one began to, were their
+ * Have the least recently active idle connection closed, by its loop: 0, or
+ * EAGAIN if no loop has one idle to spare.  Each loop says how many idle and
+ * when the least recently active of them began to, and home looks at each,
+ * only when descriptors run short.  A loop asked to close some, which it has
+ * yet to take on, stands for when its next idle one began to, were their
  * beginnings spread evenly since, so that a burst of new clients or calls is
  * spread over the loops, and a loop is asked for no more than it has idle.
  */
-static bool
+static int
 httpd_home_evict (struct httpd_home *home)
 {
 	struct httpd_hub *hub = home->hub;
@@ -2375,9 +2401,11 @@ httpd_home_evict (struct httpd_home *home)
 			oldest = lane;
 		}
 	}
-	if (oldest && !atomic_fetch_add(&oldest->evicts, 1))
+	if (!oldest)
+		return EAGAIN;
+	if (!atomic_fetch_add(&oldest->evicts, 1))
 		loop_post(oldest->loop, &oldest->evict);
-	return oldest;
+	return 0;
 }
 
 /* A client loop's weight: the connections home placed on it and has not had
@@ -2433,10 +2461,26 @@ httpd_by_id (void const *a,
 	return (*x > *y) - (*x < *y);
 }
 
+/* Make room for @p n groups in the storage kept with the connection: 0, or
+ * ENOMEM. */
+static int
+httpd_conn_room (struct httpd_conn *conn,
+                 size_t             n)
+{
+	if (conn->room >= n)
+		return 0;
+	uint32_t *groups = realloc(conn->groups, n * sizeof *groups);
+	if (!groups)
+		return ENOMEM;
+	conn->groups = groups;
+	conn->room = (uint32_t)n;
+	return 0;
+}
+
 /* Read the groups of the user of Unix socket @p fd, whose primary group is
  * @p gid, into @p conn, sorted, growing the storage it keeps for them if
- * need be; false if memory runs out. */
-static bool
+ * need be: 0, or ENOMEM. */
+static int
 httpd_conn_groups (struct httpd_conn *conn,
                    int                fd,
                    gid_t              gid)
@@ -2445,22 +2489,52 @@ httpd_conn_groups (struct httpd_conn *conn,
 	/* Room for the supplementary groups, as many as the kernel last said,
 	 * and the primary one, which those may lack. */
 	size_t n = 0;
-	for (int e = ERANGE; e == ERANGE; ) {
-		if (conn->room < n + 1) {
-			uint32_t *groups = realloc(conn->groups, (n + 1) * sizeof *groups);
-			if (!groups)
-				return false;
-			conn->groups = groups;
-			conn->room = (uint32_t)n + 1;
-		}
+	int e = ERANGE;
+	while (e == ERANGE) {
+		if (httpd_conn_room(conn, n + 1))
+			return ENOMEM;
 		socklen_t size = (socklen_t)((conn->room - 1) * sizeof *conn->groups);
 		e = getsockopt(fd, SOL_SOCKET, SO_PEERGROUPS, conn->groups, &size) ? errno : 0;
-		n = e && e != ERANGE ? 0 : size / sizeof *conn->groups;
+		n = size / sizeof *conn->groups;
 	}
+	/* Those the kernel cannot tell are none. */
+	if (e)
+		n = 0;
 	conn->groups[n] = gid;
 	conn->n_groups = (uint32_t)n + 1;
 	qsort(conn->groups, n + 1, sizeof *conn->groups, httpd_by_id);
-	return true;
+	return 0;
+}
+
+/* The user of the client on @p fd, as @p cred says if over a Unix socket,
+ * with the user's groups; else none: 0, or ENOMEM. */
+static int
+httpd_conn_user (struct httpd_conn  *conn,
+                 int                 fd,
+                 struct ucred const *cred)
+{
+	conn->uds = cred;
+	if (!cred) {
+		conn->n_groups = 0;
+		conn->uid = 0;
+		return 0;
+	}
+	conn->uid = cred->uid;
+	return httpd_conn_groups(conn, fd, cred->gid);
+}
+
+/* Storage for a connection: one given back, if home keeps any; nullptr if
+ * out of memory. */
+static struct httpd_conn *
+httpd_home_conn (struct httpd_home *home)
+{
+	struct list *spare = shelf_take(&home->spare);
+	if (spare)
+		return container_of(spare, struct httpd_conn, hook);
+	struct httpd_conn *conn = malloc(sizeof *conn);
+	if (conn)
+		*conn = (struct httpd_conn){ .fd = -1 };
+	return conn;
 }
 
 /* Place the client on @p fd, from @p addr, on loopback if @p local, on a
@@ -2475,26 +2549,18 @@ httpd_home_place (struct httpd_home  *home,
                   struct ucred const *cred,
                   struct ssl_ctx_st  *ctx)
 {
-	struct list *spare = shelf_take(&home->spare);
-	struct httpd_conn *conn = spare ? container_of(spare, struct httpd_conn, hook)
-	                                : malloc(sizeof *conn);
-	if (conn && !spare) {
-		conn->groups = nullptr;
-		conn->room = 0;
-	}
-	struct httpd_client *client = conn && (!cred ||
-	                                       httpd_conn_groups(conn, fd, cred->gid))
-	                            ? httpd_home_client_get(home, addr) : nullptr;
-	if (!client) {
-		if (conn)
-			shelf_put(&home->spare, &conn->hook);
+	struct httpd_conn *conn = httpd_home_conn(home);
+	if (!conn) {
 		close(fd);
 		return;
 	}
-	if (!cred)
-		conn->n_groups = 0;
-	conn->uid = cred ? cred->uid : 0;
-	conn->uds = cred;
+	struct httpd_client *client = httpd_conn_user(conn, fd, cred) ? nullptr
+	                            : httpd_home_client_get(home, addr);
+	if (!client) {
+		shelf_put(&home->spare, &conn->hook);
+		close(fd);
+		return;
+	}
 	struct httpd_lane *lane = httpd_home_lane(home);
 	++lane->conns;
 	++lane->placed;
@@ -2524,17 +2590,18 @@ httpd_home_take (struct httpd_home             *home,
 {
 	/* A Unix socket's client counts as its user, against the cap. */
 	uint64_t addr[2] = { UINT64_MAX };
-	bool uds = ss->ss_family == AF_UNIX;
 	struct ucred cred;
+	struct ucred const *user = nullptr;
 	socklen_t len = sizeof cred;
-	if (!uds) {
+	if (ss->ss_family != AF_UNIX) {
 		httpd_addr_key(ss, addr);
-	} else if (!getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len)) {
-		addr[1] = cred.uid;
-	} else {
+	} else if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len)) {
 		close(fd);
 		++home->refused;
 		return;
+	} else {
+		addr[1] = cred.uid;
+		user = &cred;
 	}
 	struct httpd_client const *client = *httpd_home_client_slot(home, addr);
 	if (client && home->cap && client->conns >= home->cap) {
@@ -2545,37 +2612,48 @@ httpd_home_take (struct httpd_home             *home,
 			(void)send(fd, busy, sizeof busy - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
 		close(fd);
 		++home->capped;
-	} else if ((shed || httpd_home_full(home)) && !httpd_home_evict(home)) {
+		return;
+	}
+	if ((shed || httpd_home_full(home)) && httpd_home_evict(home)) {
 		close(fd);
 		++home->refused;
-	} else {
-		httpd_home_place(home, fd, addr, uds || httpd_addr_loopback(ss),
-		                 uds ? &cred : nullptr, l->tls ? home->ctx : nullptr);
+		return;
 	}
+	httpd_home_place(home, fd, addr, httpd_addr_local(ss), user,
+	                 l->tls ? home->ctx : nullptr);
+}
+
+/* Accept a client from @p l, and take it as httpd_home_take() does: 0, or
+ * accept()'s error. */
+static int
+httpd_home_accept (struct httpd_home           *home,
+                   struct httpd_listener const *l,
+                   bool                         shed)
+{
+	struct sockaddr_storage ss;
+	socklen_t len = sizeof ss;
+	int fd = accept4(l->fd, (struct sockaddr *)&ss, &len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+	if (fd < 0)
+		return errno;
+	httpd_home_take(home, l, fd, &ss, shed);
+	return 0;
 }
 
 /*
  * Out of descriptors, which accept() reports whether or not a client waits:
- * accept in the spare descriptor's place.  Returns a non-negative number if a
- * client was accepted from @p l, or else -1 with accept()'s errno, EAGAIN if
- * none waited.
+ * accept in the spare descriptor's place.  Returns 0 if a client was
+ * accepted from @p l, or else accept()'s error, EAGAIN if none waited.
  * The spare comes back once a descriptor comes free.
  */
 static int
-httpd_home_shed (struct httpd_home     *home,
-                 struct httpd_listener *l)
+httpd_home_shed (struct httpd_home           *home,
+                 struct httpd_listener const *l)
 {
 	close(home->spare_fd);
-	struct sockaddr_storage ss;
-	socklen_t len = sizeof ss;
-	int fd = accept4(l->fd, (struct sockaddr *)&ss, &len,
-	                 SOCK_NONBLOCK | SOCK_CLOEXEC);
-	int e = errno;
-	if (fd >= 0)
-		httpd_home_take(home, l, fd, &ss, true);
-	home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
-	errno = e;
-	return fd;
+	home->spare_fd = -1;
+	int e = httpd_home_accept(home, l, true);
+	(void)httpd_home_spare(home);
+	return e;
 }
 
 /* Whether accept() failing with @p e concerns only the connection it took,
@@ -2594,6 +2672,21 @@ httpd_accept_next (int e)
 	}
 }
 
+/* The listener that clients wait on whose turn it is; nullptr if none. */
+static struct httpd_listener *
+httpd_home_listener (struct httpd_home *home)
+{
+	size_t n = home->n_listeners;
+	for (size_t k = 0; k < n; ++k) {
+		size_t i = (home->turn + k) % n;
+		if (!home->listeners[i].ready)
+			continue;
+		home->turn = (i + 1) % n;
+		return &home->listeners[i];
+	}
+	return nullptr;
+}
+
 /* Accept clients as far as the step's share goes, fewer once STEP_NS have
  * passed: turning one away closes it, which costs the more the more it has
  * sent.  The listeners that clients wait on take turns, a client each.
@@ -2606,39 +2699,28 @@ httpd_home_accept_step (struct loop      *loop,
 {
 	struct httpd_home *home = container_of(step, struct httpd_home, accept);
 	uint64_t end = loop_clock() + STEP_NS;
-	size_t n = home->n_listeners;
 	for (unsigned i = 0; loop_room(loop, LOOP_ACCEPTS) && (!i || loop_clock() < end);
 	     ++i) {
-		size_t k = 0;
-		while (k < n && !home->listeners[(home->turn + k) % n].ready)
-			++k;
-		if (k == n)
+		struct httpd_listener *l = httpd_home_listener(home);
+		if (!l)
 			return;
-		struct httpd_listener *l = &home->listeners[(home->turn + k) % n];
-		home->turn = (home->turn + k + 1) % n;
-		if (home->spare_fd < 0 &&
-		    (home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC)) < 0) {
+		if (home->spare_fd < 0 && httpd_home_spare(home)) {
 			httpd_home_watch(home, 0);
 			return;
 		}
 		loop_work(loop, LOOP_ACCEPTS, 1);
-		struct sockaddr_storage ss;
-		socklen_t len = sizeof ss;
-		int fd = accept4(l->fd, (struct sockaddr *)&ss, &len,
-		                 SOCK_NONBLOCK | SOCK_CLOEXEC);
-		if (fd < 0 && (errno == EMFILE || errno == ENFILE))
-			fd = httpd_home_shed(home, l);
-		else if (fd >= 0)
-			httpd_home_take(home, l, fd, &ss, false);
-		if (fd >= 0 || httpd_accept_next(errno))
+		int e = httpd_home_accept(home, l, false);
+		if (e == EMFILE || e == ENFILE)
+			e = httpd_home_shed(home, l);
+		if (!e || httpd_accept_next(e))
 			continue;
 		l->ready = false;
-		if (errno != EAGAIN && errno != EWOULDBLOCK) {
-			/* Out of memory or descriptors: retry on the next tick. */
-			LOG(LOG_ERROR, "accept: %s", strerror(errno));
-			httpd_home_watch(home, 0);
-			return;
-		}
+		if (e == EAGAIN || e == EWOULDBLOCK)
+			continue;
+		/* Out of memory or descriptors: retry on the next tick. */
+		LOG(LOG_ERROR, "accept: %s", strerror(e));
+		httpd_home_watch(home, 0);
+		return;
 	}
 	loop_ready(loop, step);
 }
@@ -2668,14 +2750,48 @@ httpd_home_tick (struct loop       *loop,
 		    " clients away", home->capped);
 	home->refused = home->capped = 0;
 	if (home->spare_fd < 0)
-		home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+		(void)httpd_home_spare(home);
 	if (home->open)
 		httpd_home_watch(home, EPOLLIN);
 	(void)loop_timer_set(loop, timer, loop->now + TICK_S * NS);
 }
 
-/* Listen on the Unix socket at @p path into @p l: one whose file is left
- * there, which no server listens on, goes first. */
+/* Whether the file at @p sa's path is a Unix socket that no server listens
+ * on, left there: then it is gone now. */
+static bool
+httpd_uds_stale (struct sockaddr_un const *sa)
+{
+	struct stat st;
+	if (lstat(sa->sun_path, &st) || !S_ISSOCK(st.st_mode))
+		return false;
+	int probe = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (probe < 0)
+		return false;
+	bool stale = connect(probe, (struct sockaddr const *)sa, sizeof *sa) &&
+	             errno == ECONNREFUSED;
+	close(probe);
+	return stale && !unlink(sa->sun_path);
+}
+
+/* Bind the listener's Unix socket to @p sa and listen: a file left there,
+ * which no server listens on, goes first.  Returns 0, or the error. */
+static int
+httpd_listener_bind_uds (struct httpd_listener    *l,
+                         struct sockaddr_un const *sa)
+{
+	struct sockaddr const *a = (struct sockaddr const *)sa;
+	if (bind(l->fd, a, sizeof *sa)) {
+		int e = errno;
+		if (e != EADDRINUSE || !httpd_uds_stale(sa))
+			return e;
+		if (bind(l->fd, a, sizeof *sa))
+			return errno;
+	}
+	return listen(l->fd, SOMAXCONN) ? errno : 0;
+}
+
+/* Listen on the Unix socket at @p path into @p l, whose socket, if it is
+ * made, the door closes as it drains. */
 static int
 httpd_listener_uds (struct httpd_listener *l,
                     char const            *path)
@@ -2687,33 +2803,56 @@ httpd_listener_uds (struct httpd_listener *l,
 		return EINVAL;
 	}
 	memcpy(sa.sun_path, path, len);
-	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-	int e = fd < 0 ? errno : 0;
-	for (int tries = 0; !e && bind(fd, (struct sockaddr *)&sa, sizeof sa); ++tries) {
-		e = errno;
-		struct stat st;
-		int probe = -1;
-		if (e != EADDRINUSE || tries || lstat(path, &st) || !S_ISSOCK(st.st_mode) ||
-		    (probe = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
-			break;
-		bool stale = connect(probe, (struct sockaddr *)&sa, sizeof sa) &&
-		             errno == ECONNREFUSED;
-		close(probe);
-		if (!stale || unlink(path))
-			break;
-		e = 0;
-	}
-	if (!e && listen(fd, SOMAXCONN))
-		e = errno;
+	l->fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	int e = l->fd < 0 ? errno : httpd_listener_bind_uds(l, &sa);
 	if (e) {
 		LOG(LOG_ERROR, "cannot listen on unix:%s: %s", path, strerror(e));
-		if (fd >= 0)
-			close(fd);
+		return e;
+	}
+	l->path = path;
+	return 0;
+}
+
+/* Listen on @p ai into @p l: 0, or the error. */
+static int
+httpd_listener_bind (struct httpd_listener *l,
+                     struct addrinfo const *ai)
+{
+	int fd = socket(ai->ai_family, ai->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC,
+	                ai->ai_protocol);
+	if (fd < 0)
+		return errno;
+	int one = 1;
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) ||
+	    bind(fd, ai->ai_addr, ai->ai_addrlen) || listen(fd, SOMAXCONN)) {
+		int e = errno;
+		close(fd);
 		return e;
 	}
 	l->fd = fd;
-	l->path = path;
 	return 0;
+}
+
+/* Split @p at, [host:]port, an IPv6 host in brackets, into @p host, of
+ * @p size bytes, which keeps what it holds if @p at names none, and the port
+ * it returns; nullptr if @p at is invalid. */
+static char const *
+httpd_split_host (char const *at,
+                  char       *host,
+                  size_t      size)
+{
+	bool bracket = *at == '[';
+	char const *start = at + bracket;
+	char const *end = bracket ? strchr(start, ']') : strrchr(at, ':');
+	if (!end)
+		return bracket ? nullptr : at;
+	char const *port = end + 1 + bracket;
+	size_t len = (size_t)(end - start);
+	if (port[-1] != ':' || len >= size)
+		return nullptr;
+	memcpy(host, start, len);
+	host[len] = '\0';
+	return port;
 }
 
 /* Listen on @p addr, [host:]port, unix:PATH or tls:[host:]port, into
@@ -2723,10 +2862,9 @@ httpd_listener_open (struct httpd_listener *l,
                      char const            *addr)
 {
 	static char const uds[] = "unix:";
-	char const *at = httpd_tls(addr);
-	l->tls = at != nullptr;
-	if (!at)
-		at = addr;
+	char const *tls = httpd_tls(addr);
+	char const *at = tls ? tls : addr;
+	l->tls = at != addr;
 	if (!strncmp(at, uds, sizeof uds - 1)) {
 		if (!l->tls)
 			return httpd_listener_uds(l, at + sizeof uds - 1);
@@ -2734,19 +2872,10 @@ httpd_listener_open (struct httpd_listener *l,
 		return EINVAL;
 	}
 	char host[256] = "127.0.0.1";
-	char const *port = at;
-	char const *colon = strrchr(at, ':');
-	if (*at == '[' || colon) {
-		char const *start = at + (*at == '[');
-		char const *end = *at == '[' ? strchr(at, ']') : colon;
-		if (!end || (*at == '[' && end[1] != ':') ||
-		    (size_t)(end - start) >= sizeof host) {
-			LOG(LOG_ERROR, "invalid listen address: %s", addr);
-			return EINVAL;
-		}
-		memcpy(host, start, (size_t)(end - start));
-		host[end - start] = '\0';
-		port = end + 1 + (*end == ']');
+	char const *port = httpd_split_host(at, host, sizeof host);
+	if (!port) {
+		LOG(LOG_ERROR, "invalid listen address: %s", addr);
+		return EINVAL;
 	}
 
 	struct addrinfo const hints = {
@@ -2760,27 +2889,81 @@ httpd_listener_open (struct httpd_listener *l,
 		LOG(LOG_ERROR, "cannot listen on %s: %s", addr, gai_strerror(g));
 		return EINVAL;
 	}
-
 	int e = EADDRNOTAVAIL;
-	for (struct addrinfo *ai = list; ai && e; ai = ai->ai_next) {
-		int fd = socket(ai->ai_family, ai->ai_socktype | SOCK_NONBLOCK |
-		                SOCK_CLOEXEC, ai->ai_protocol);
-		int one = 1;
-		if (fd >= 0 &&
-		    !setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) &&
-		    !bind(fd, ai->ai_addr, ai->ai_addrlen) && !listen(fd, SOMAXCONN)) {
-			l->fd = fd;
-			e = 0;
-		} else {
-			e = errno;
-			if (fd >= 0)
-				close(fd);
-		}
-	}
+	for (struct addrinfo const *ai = list; ai && e; ai = ai->ai_next)
+		e = httpd_listener_bind(l, ai);
 	freeaddrinfo(list);
 	if (e)
 		LOG(LOG_ERROR, "cannot listen on %s: %s", addr, strerror(e));
 	return e;
+}
+
+/* Listen on @p addr with the next listener, watched for no events until the
+ * door opens. */
+static int
+httpd_home_listen (struct httpd_home *home,
+                   char const        *addr)
+{
+	struct httpd_listener *l = &home->listeners[home->n_listeners++];
+	l->ref.fd = l->fd = -1;
+	int e = httpd_listener_open(l, addr);
+	if (e)
+		return e;
+	if (l->tls && !home->ctx) {
+		LOG(LOG_ERROR, "cannot listen on %s: no TLS certificate", addr);
+		return EINVAL;
+	}
+	return loop_watch(home->loop, &l->ref, l->fd, 0, httpd_listener_event, home);
+}
+
+/* Listen on each of @p listen, take the spare descriptor, and start the
+ * tick. */
+static int
+httpd_home_start (struct httpd_home *home,
+                  char const *const *listen)
+{
+	size_t n = 0;
+	while (listen[n])
+		++n;
+	home->listeners = calloc(n, sizeof *home->listeners);
+	if (!home->listeners)
+		return ENOMEM;
+	for (size_t i = 0; i < n; ++i) {
+		int e = httpd_home_listen(home, listen[i]);
+		if (e)
+			return e;
+	}
+	int e = httpd_home_spare(home);
+	if (e)
+		return e;
+	return loop_timer_set(home->loop, &home->tick, home->loop->now + TICK_S * NS);
+}
+
+/* Say where clients find the endpoint of @p l; warn if clients that show no
+ * token may call tools from beyond loopback (@p anyone) there. */
+static void
+httpd_listener_announce (struct httpd_listener const *l,
+                         bool                         anyone)
+{
+	if (l->path) {
+		LOG(LOG_INFO, "MCP endpoint http://localhost/mcp on unix:%s", l->path);
+		return;
+	}
+	struct sockaddr_storage ss;
+	socklen_t len = sizeof ss;
+	char addr[INET6_ADDRSTRLEN];
+	char port[8];
+	if (getsockname(l->fd, (struct sockaddr *)&ss, &len) ||
+	    getnameinfo((struct sockaddr *)&ss, len, addr, sizeof addr, port, sizeof port,
+	                NI_NUMERICHOST | NI_NUMERICSERV))
+		return;
+	LOG(LOG_INFO, ss.ss_family == AF_INET6 ? "MCP endpoint http%s://[%s]:%s/mcp"
+	                                       : "MCP endpoint http%s://%s:%s/mcp",
+	    l->tls ? "s" : "", addr, port);
+	if (anyone && !httpd_addr_local(&ss))
+		LOG(LOG_WARN, "warning: listening beyond loopback, where clients "
+		    "that show no token may call tools; anyone who can connect "
+		    "can spend your API credits");
 }
 
 struct httpd_hub *
@@ -2848,12 +3031,11 @@ httpd_home_create (struct loop            *loop,
 		.hub = hub,
 		.clients = clients,
 		.calls = calls,
+		.ctx = cfg->tls ? tls_ctx_get(cfg->tls) : nullptr,
 		.rng = loop_clock() | 1,
-		.spare_fd = -1,
-		.cap = cfg->limits.clients
+		.cap = cfg->limits.clients,
+		.spare_fd = -1
 	};
-	if (cfg->tls)
-		home->ctx = tls_ctx_get(cfg->tls);
 	struct policy_grant g;
 	home->anyone = policy_grant(cfg->policy, nullptr, 0, POLICY_REMOTE, nullptr,
 	                            &g) && g.tools;
@@ -2863,34 +3045,13 @@ httpd_home_create (struct loop            *loop,
 	hub->home = loop;
 	door = home;
 
-	/* The listeners are watched for no events until the door opens. */
-	size_t n = 0;
-	while (cfg->listen[n])
-		++n;
-	*e = (home->listeners = calloc(n, sizeof *home->listeners)) ? 0 : ENOMEM;
-	for (size_t i = 0; !*e && i < n; ++i) {
-		struct httpd_listener *l = &home->listeners[i];
-		l->ref.fd = l->fd = -1;
-		++home->n_listeners;
-		*e = httpd_listener_open(l, cfg->listen[i]);
-		if (!*e && l->tls && !home->ctx) {
-			LOG(LOG_ERROR, "cannot listen on %s: no TLS certificate",
-			    cfg->listen[i]);
-			*e = EINVAL;
-		}
-		if (!*e)
-			*e = loop_watch(loop, &l->ref, l->fd, 0, httpd_listener_event, home);
-	}
-	if (!*e && (home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC)) < 0)
-		*e = errno;
+	*e = httpd_home_start(home, cfg->listen);
 	if (!*e)
-		*e = loop_timer_set(loop, &home->tick, loop->now + TICK_S * NS);
-	if (*e) {
-		if (*e != EINVAL && *e != EADDRINUSE)
-			LOG(LOG_ERROR, "cannot start the server: %s", strerror(*e));
-		httpd_home_destroy(&home);
-	}
-	return home;
+		return home;
+	if (*e != EINVAL && *e != EADDRINUSE)
+		LOG(LOG_ERROR, "cannot start the server: %s", strerror(*e));
+	httpd_home_destroy(&home);
+	return nullptr;
 }
 
 void
@@ -2930,26 +3091,8 @@ httpd_home_open (struct httpd_home *home)
 	home->open = true;
 
 	/* The endpoints say the server is ready. */
-	for (size_t i = 0; i < home->n_listeners; ++i) {
-		struct httpd_listener const *l = &home->listeners[i];
-		struct sockaddr_storage ss;
-		socklen_t sslen = sizeof ss;
-		char addr[INET6_ADDRSTRLEN];
-		char port[8];
-		if (l->path) {
-			LOG(LOG_INFO, "MCP endpoint http://localhost/mcp on unix:%s", l->path);
-		} else if (!getsockname(l->fd, (struct sockaddr *)&ss, &sslen) &&
-		           !getnameinfo((struct sockaddr *)&ss, sslen, addr, sizeof addr,
-		                        port, sizeof port, NI_NUMERICHOST | NI_NUMERICSERV)) {
-			bool v6 = ss.ss_family == AF_INET6;
-			LOG(LOG_INFO, "MCP endpoint http%s://%s%s%s:%s/mcp", l->tls ? "s" : "",
-			    v6 ? "[" : "", addr, v6 ? "]" : "", port);
-			if (home->anyone && !httpd_addr_loopback(&ss))
-				LOG(LOG_WARN, "warning: listening beyond loopback, where clients "
-				    "that show no token may call tools; anyone who can connect "
-				    "can spend your API credits");
-		}
-	}
+	for (size_t i = 0; i < home->n_listeners; ++i)
+		httpd_listener_announce(&home->listeners[i], home->anyone);
 }
 
 int
@@ -3021,8 +3164,11 @@ httpd_home_relieve (struct httpd_home *home,
 {
 	/* What home keeps holds no buffer, but a few groups, so each is a unit. */
 	size_t done = 0;
-	for (size_t n = shelf_unused(&home->spare, level); n && done < max; --n, ++done)
-		httpd_conn_free(container_of(shelf_drop(&home->spare), struct httpd_conn, hook));
+	for (size_t n = shelf_unused(&home->spare, level); n && done < max; --n, ++done) {
+		struct httpd_conn *conn = container_of(shelf_drop(&home->spare),
+		                                       struct httpd_conn, hook);
+		httpd_conn_destroy(&conn);
+	}
 	for (size_t n = shelf_unused(&home->gone, level); n && done < max; --n, ++done)
 		free(container_of(shelf_drop(&home->gone), struct httpd_client, spare));
 	return done;
@@ -3086,9 +3232,10 @@ httpd_destroy (struct httpd **p_httpd)
 	/* Those handed over but not set up close at once, as when draining. */
 	srv->draining = true;
 	while (!list_is_empty(&srv->taken)) {
-		struct httpd_conn *conn = container_of(srv->taken.next, struct httpd_conn, hook);
+		struct httpd_conn *conn = container_of(srv->taken.next, struct httpd_conn,
+		                                       hook);
 		list_del(&conn->hook);
-		httpd_conn_setup(srv, conn);
+		httpd_conn_setup(conn, srv);
 	}
 	struct list *const lists[] = { &srv->idle, &srv->busy };
 	for (size_t i = 0; i < ARRAY_SIZE(lists); ++i)
