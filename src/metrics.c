@@ -32,7 +32,7 @@ enum scale { ONE, NS, US, PERMYRIAD };
 
 /* A series, or a loop's; help, given for the first of a family only, starts
  * the family. */
-struct entry {
+struct metrics_entry {
 	char const *name;
 	char const *help;
 	char const *labels;  /* within the braces, but for a loop's, or "" */
@@ -92,7 +92,7 @@ static struct {
 	VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
 	      struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
 
-static struct entry const table[] = {
+static struct metrics_entry const table[] = {
 	LOOP_HIST("askai_loop_turn_seconds", "Time an event loop turn took.", "", turn),
 	LOOP_HIST("askai_loop_step_seconds", "Time a step took.",
 	          "kind=\"interactive\"", step[0]),
@@ -321,26 +321,28 @@ static struct entry const table[] = {
 #undef WORK
 #undef LOOP_HIST
 
-/* Append text, formatted as by printf(); false if out of memory. */
+/* Append text, formatted as by printf(); returns 0, ENOMEM, or the error
+ * that kept vsnprintf() from formatting it. */
 [[gnu::format(printf, 2, 3)]]
-static bool
-put (struct buf *out,
-     char const *fmt,
-     ...)
+static int
+metrics_put (struct buf *out,
+             char const *fmt,
+             ...)
 {
 	for (size_t room = 256;;) {
 		struct span s;
-		if (buf_reserve(out, room, SIZE_MAX, &s))
-			return false;
+		int e = buf_reserve(out, room, SIZE_MAX, &s);
+		if (e)
+			return e;
 		va_list ap;
 		va_start(ap, fmt);
 		int n = vsnprintf((char *)s.ptr, s.len, fmt, ap);
 		va_end(ap);
 		if (n < 0)
-			return false;
-		if ((size_t)n < s.len) {
+			return EOVERFLOW;
+		if (n < (int)s.len) {
 			buf_commit(out, (size_t)n);
-			return true;
+			return 0;
 		}
 		room = (size_t)n + 1;
 	}
@@ -349,11 +351,11 @@ put (struct buf *out,
 /* A histogram's cumulative buckets, to its own resolution, then its sum and
  * count; the count is the buckets' total, which a writer may have moved on
  * from meanwhile. */
-static bool
-put_hist (struct buf         *out,
-          char const         *name,
-          char const         *labels,
-          struct hist const  *h)
+static int
+metrics_put_hist (struct buf         *out,
+                  char const         *name,
+                  char const         *labels,
+                  struct hist const  *h)
 {
 	char const *sep = *labels ? "," : "";
 	uint64_t n = 0;
@@ -361,50 +363,52 @@ put_hist (struct buf         *out,
 	for (size_t b = 0; b < ARRAY_SIZE(bounds); ++b) {
 		for (size_t end = hist_index(bounds[b].ns); i <= end; ++i)
 			n += hist_get(&h->bucket[i]);
-		if (!put(out, "%s_bucket{%s%sle=\"%s\"} %" PRIu64 "\n", name, labels, sep,
-		         bounds[b].le, n))
-			return false;
+		int e = metrics_put(out, "%s_bucket{%s%sle=\"%s\"} %" PRIu64 "\n", name, labels,
+		                    sep, bounds[b].le, n);
+		if (e)
+			return e;
 	}
 	for (; i < HIST_BUCKETS; ++i)
 		n += hist_get(&h->bucket[i]);
 	char const *open = *labels ? "{" : "";
 	char const *close = *labels ? "}" : "";
-	return put(out, "%s_bucket{%s%sle=\"+Inf\"} %" PRIu64 "\n"
-	           "%s_sum%s%s%s %.9g\n%s_count%s%s%s %" PRIu64 "\n",
-	           name, labels, sep, n,
-	           name, open, labels, close, (double)hist_get(&h->sum) / 1e9,
-	           name, open, labels, close, n);
+	return metrics_put(out, "%s_bucket{%s%sle=\"+Inf\"} %" PRIu64 "\n"
+	                   "%s_sum%s%s%s %.9g\n%s_count%s%s%s %" PRIu64 "\n",
+	                   name, labels, sep, n,
+	                   name, open, labels, close, (double)hist_get(&h->sum) / 1e9,
+	                   name, open, labels, close, n);
 }
 
-static bool
-put_value (struct buf             *out,
-           char const             *name,
-           char const             *labels,
-           uint16_t                scale,
-           _Atomic uint64_t const *p)
+static int
+metrics_put_value (struct buf             *out,
+                   char const             *name,
+                   char const             *labels,
+                   uint16_t                scale,
+                   _Atomic uint64_t const *p)
 {
 	uint64_t v = hist_get(p);
 	char const *open = *labels ? "{" : "";
 	char const *close = *labels ? "}" : "";
 	switch (scale) {
 	case NS:
-		return put(out, "%s%s%s%s %.9f\n", name, open, labels, close,
-		           (double)v / 1e9);
+		return metrics_put(out, "%s%s%s%s %.9f\n", name, open, labels, close,
+		                   (double)v / 1e9);
 	case US:
-		return put(out, "%s%s%s%s %.6f\n", name, open, labels, close,
-		           (double)v / 1e6);
+		return metrics_put(out, "%s%s%s%s %.6f\n", name, open, labels, close,
+		                   (double)v / 1e6);
 	case PERMYRIAD:
-		return put(out, "%s%s%s%s %.4f\n", name, open, labels, close,
-		           (double)v / 1e4);
+		return metrics_put(out, "%s%s%s%s %.4f\n", name, open, labels, close,
+		                   (double)v / 1e4);
 	default:
-		return put(out, "%s%s%s%s %" PRIu64 "\n", name, open, labels, close, v);
+		return metrics_put(out, "%s%s%s%s %" PRIu64 "\n", name, open, labels, close,
+		                   v);
 	}
 }
 
 /* Where loop @p l's series of @p source are, if it has them. */
 static void const *
-loop_source (struct metrics_loop const *l,
-             unsigned                   source)
+metrics_loop_source (struct metrics_loop const *l,
+                     unsigned                   source)
 {
 	void const *const at[PER_LOOP] = {
 		[LOOP] = l->loop,
@@ -416,6 +420,19 @@ loop_source (struct metrics_loop const *l,
 		[TASKS] = l->tasks,
 	};
 	return at[source];
+}
+
+/* A loop's series' labels: its name's, then @p labels, if any, in the
+ * @p size bytes at @p buf. */
+static int
+metrics_loop_labels (char       *buf,
+                     size_t      size,
+                     char const *loop,
+                     char const *labels)
+{
+	int n = *labels ? snprintf(buf, size, "loop=\"%s\",%s", loop, labels)
+	                : snprintf(buf, size, "loop=\"%s\"", loop);
+	return n < 0 || n >= (int)size ? EOVERFLOW : 0;
 }
 
 /* The metrics are series, from @p *pos on: an entry's for each loop in turn,
@@ -440,32 +457,43 @@ metrics_render (struct metrics_src const *src,
 	size_t const n = src->n_loops;
 	size_t const end = ARRAY_SIZE(table) * n;
 	for (unsigned cost = 0; *pos < end && cost < BUDGET; ) {
-		struct entry const *e = &table[*pos / n];
+		struct metrics_entry const *m = &table[*pos / n];
 		size_t l = *pos % n;
-		bool looped = e->source < PER_LOOP;
-		char const *at = looped ? loop_source(&src->loops[l], e->source)
-		                        : base[e->source];
-		/* An entry that is no loop's has a series once. */
-		*pos = looped ? *pos + 1 : (*pos / n + 1) * n;
+		char labels[128];
+		char const *ls = m->labels;
+		char const *at;
+		if (m->source < PER_LOOP) {
+			struct metrics_loop const *loop = &src->loops[l];
+			at = metrics_loop_source(loop, m->source);
+			ls = labels;
+			++*pos;
+			int e = metrics_loop_labels(labels, sizeof labels, loop->name, m->labels);
+			if (e)
+				return e;
+		} else {
+			/* An entry that is no loop's has a series once. */
+			at = base[m->source];
+			*pos = (*pos / n + 1) * n;
+		}
 		if (!at)
 			continue;
-		at += e->off;
+		at += m->off;
 		/* A loop's family starts with the first loop, which has them all. */
-		char labels[128];
-		if (looped)
-			snprintf(labels, sizeof labels, "loop=\"%s\"%s%s", src->loops[l].name,
-			         *e->labels ? "," : "", e->labels);
-		if (e->help && !l && !put(out, "# HELP %s %s\n# TYPE %s %s\n", e->name,
-		                          e->help, e->name, kinds[e->kind]))
-			return ENOMEM;
-		char const *ls = looped ? labels : e->labels;
-		bool ok = e->kind == HISTOGRAM
-		        ? put_hist(out, e->name, ls, (struct hist const *)(void const *)at)
-		        : put_value(out, e->name, ls, e->scale,
-		                    (_Atomic uint64_t const *)(void const *)at);
-		if (!ok)
-			return ENOMEM;
-		cost += e->kind == HISTOGRAM ? 8 : 1;
+		int e = m->help && !l ? metrics_put(out, "# HELP %s %s\n# TYPE %s %s\n",
+		                                    m->name, m->help, m->name, kinds[m->kind])
+		                      : 0;
+		if (e)
+			return e;
+		if (m->kind == HISTOGRAM) {
+			e = metrics_put_hist(out, m->name, ls, (struct hist const *)(void const *)at);
+			cost += 8;
+		} else {
+			e = metrics_put_value(out, m->name, ls, m->scale,
+			                      (_Atomic uint64_t const *)(void const *)at);
+			++cost;
+		}
+		if (e)
+			return e;
 	}
 	return *pos < end ? EAGAIN : 0;
 }
