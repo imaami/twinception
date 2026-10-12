@@ -43,39 +43,27 @@ main_usage (FILE       *out,
 	        argv0);
 }
 
-static int
-main_history_mode (char const            *str,
-                   enum app_history_mode *mode)
-{
-	static char const *const names[] = {
-		[APP_HISTORY_SPLIT]    = "split",
-		[APP_HISTORY_SHARED_A] = "shared-a",
-		[APP_HISTORY_SHARED_B] = "shared-b"
-	};
-	for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
-		if (!strcmp(str, names[i])) {
-			*mode = (enum app_history_mode)i;
-			return 0;
-		}
-	}
-	return EINVAL;
-}
+static char const *const main_history_modes[] = {
+	[APP_HISTORY_SPLIT]    = "split",
+	[APP_HISTORY_SHARED_A] = "shared-a",
+	[APP_HISTORY_SHARED_B] = "shared-b"
+};
 
-static int
-main_provider (char const        *str,
-               enum app_provider *provider)
+static char const *const main_providers[] = {
+	[APP_PROVIDER_LLAMA]     = "llama",
+	[APP_PROVIDER_DEEPINFRA] = "deepinfra"
+};
+
+/* The index of @p str among the @p n @p names, @p n if it is none of them. */
+static size_t
+main_lookup (char const *const names[],
+             size_t             n,
+             char const        *str)
 {
-	static char const *const names[] = {
-		[APP_PROVIDER_LLAMA]     = "llama",
-		[APP_PROVIDER_DEEPINFRA] = "deepinfra"
-	};
-	for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
-		if (!strcmp(str, names[i])) {
-			*provider = (enum app_provider)i;
-			return 0;
-		}
-	}
-	return EINVAL;
+	size_t i = 0;
+	while (i < n && strcmp(str, names[i]))
+		++i;
+	return i;
 }
 
 static int
@@ -118,15 +106,26 @@ main_temperature (char const *str,
 	return 0;
 }
 
+/* @p e, an error of @p arg as @p what, said unless it is 0. */
+static int
+main_invalid (int         e,
+              char const *what,
+              char const *arg)
+{
+	if (e)
+		fprintf(stderr, "invalid %s: %s\n", what, arg);
+	return e;
+}
+
 /* Take option @p opt, with its argument @p arg, into @p cfg: EINVAL, said,
- * if that is not valid. */
+ * if the argument is not valid, and EINVAL if @p opt is no option. */
 static int
 main_option (struct app_cfg *cfg,
              int             opt,
              char const     *arg)
 {
-	int e;
-	char const *what;
+	static size_t const modes = ARRAY_SIZE(main_history_modes);
+	static size_t const providers = ARRAY_SIZE(main_providers);
 	switch (opt) {
 	case 'a': cfg->url[0] = arg; return 0;
 	case 'b': cfg->url[1] = arg; return 0;
@@ -136,44 +135,39 @@ main_option (struct app_cfg *cfg,
 	case 'p': cfg->prompt = arg; return 0;
 	case 'd': cfg->debug = 1; return 0;
 	case 'P': cfg->template_check = 0; return 0;
-	case MAIN_A_PROVIDER:
-		e = main_provider(arg, &cfg->provider[0]);
-		what = "model A provider";
-		break;
-	case MAIN_B_PROVIDER:
-		e = main_provider(arg, &cfg->provider[1]);
-		what = "model B provider";
-		break;
-	case 'H':
-		e = main_history_mode(arg, &cfg->history_mode);
-		what = "history mode";
-		break;
+	case MAIN_A_PROVIDER: {
+		size_t i = main_lookup(main_providers, providers, arg);
+		cfg->provider[0] = (enum app_provider)i;
+		return main_invalid(i < providers ? 0 : EINVAL, "model A provider", arg);
+	}
+	case MAIN_B_PROVIDER: {
+		size_t i = main_lookup(main_providers, providers, arg);
+		cfg->provider[1] = (enum app_provider)i;
+		return main_invalid(i < providers ? 0 : EINVAL, "model B provider", arg);
+	}
+	case 'H': {
+		size_t i = main_lookup(main_history_modes, modes, arg);
+		cfg->history_mode = (enum app_history_mode)i;
+		return main_invalid(i < modes ? 0 : EINVAL, "history mode", arg);
+	}
 	case 'q':
-		e = main_u32(arg, &cfg->rapid_quantum);
-		what = "rapid quantum";
-		break;
+		return main_invalid(main_u32(arg, &cfg->rapid_quantum),
+		                    "rapid quantum", arg);
 	case 'R':
-		e = main_u32(arg, &cfg->rapid_budget);
-		what = "rapid budget";
-		break;
+		return main_invalid(main_u32(arg, &cfg->rapid_budget),
+		                    "rapid budget", arg);
 	case 'C':
-		e = main_long(arg, &cfg->crosstalk_rounds, -1);
-		what = "crosstalk round count";
-		break;
+		return main_invalid(main_long(arg, &cfg->crosstalk_rounds, -1),
+		                    "crosstalk round count", arg);
 	case 't':
-		e = main_temperature(arg, &cfg->temperature);
-		what = "temperature";
-		break;
+		return main_invalid(main_temperature(arg, &cfg->temperature),
+		                    "temperature", arg);
 	case 'n':
-		e = main_long(arg, &cfg->max_tokens, 1);
-		what = "max token count";
-		break;
+		return main_invalid(main_long(arg, &cfg->max_tokens, 1),
+		                    "max token count", arg);
 	default:
 		return EINVAL;
 	}
-	if (e)
-		fprintf(stderr, "invalid %s: %s\n", what, arg);
-	return e;
 }
 
 /* Fill in model @p i's URL, and the model of DeepInfra, as its provider has
