@@ -32,8 +32,9 @@
  * against their medians, and the tool-call connections' completions.  SIGINT
  * ends the run early, as if its duration were up.
  *
- * All socket access goes through @ref transport, so an S7 TLS client can be
- * dropped in without touching the probe or the load modes.
+ * All socket access goes through @ref transport: from S9 a TLS one serves
+ * TLS churn (--tls-churn), full handshakes on fresh connections, timed and
+ * checked for their protocol and key exchange (TLS lines).
  */
 #define _GNU_SOURCE
 
@@ -43,6 +44,8 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -60,14 +63,21 @@
 
 #include "hist.h"
 
-/** Byte transport for one connection; S7 swaps @ref tcp for a TLS variant. */
+struct tls_stats;
+
+/** Byte transport for one connection: @ref tcp, or @ref tls. */
 struct transport {
 	char const *host;
 	char const *port;
 	int     (*dial)  (struct transport *t); /**< start a non-blocking connect */
+	/** Once connected, shake hands a step further: 0 once done, EPOLLIN or
+	 *  EPOLLOUT for what it waits for, -1 if it failed; nullptr: none.  Only
+	 *  fresh slots use such a transport. */
+	int     (*shake) (struct transport *t, int fd);
 	ssize_t (*recv)  (int fd, void *buf, size_t len);
 	ssize_t (*send)  (int fd, void const *buf, size_t len);
 	void    (*close) (int fd);
+	struct tls_stats *tls; /**< its handshakes; nullptr: none */
 	uint32_t    src;   /**< IPv4 base the dials take source addresses after; 0: any */
 	uint32_t    dials; /**< connects started, which pick the source address */
 	uint32_t    per;   /**< dials per source address; 0: PER_SRC */
@@ -247,6 +257,192 @@ static struct transport tcp = {
 	.close = tcp_close,
 };
 
+/* --- TLS transport (S9) -------------------------------------------------- */
+
+/** A TLS transport's handshakes: done, failed or cut off, and done with a
+ *  protocol other than http/1.1 or a key exchange other than the one
+ *  offered first; and the time each took, from the connect to its end. */
+struct tls_stats {
+	struct hist hs;
+	uint64_t    ok;
+	uint64_t    err;
+	uint64_t    alpn_bad;
+	uint64_t    group_other;
+};
+
+/** A TLS connection, which only the thread that dialled it touches. */
+struct tls_conn {
+	SSL     *ssl;
+	uint64_t t0;   /**< when it connected; 0: not yet */
+};
+
+static char const       tls_group[] = "X25519MLKEM768";
+static SSL_CTX         *tls_ctx;   /* the client's: never changed once made */
+static struct tls_conn *tls_conns; /* by descriptor */
+static size_t           tls_max;   /* descriptors that has room for */
+
+/* Make the client's context: TLS 1.3 only, ALPN http/1.1, X25519MLKEM768
+ * offered first, every handshake a full one, and the server's certificate
+ * checked against @p ca for the address @p host, if @p ca is given; and
+ * the table of connections. */
+static bool
+tls_client (char const *ca,
+            char const *host)
+{
+	struct rlimit rl;
+	tls_max = getrlimit(RLIMIT_NOFILE, &rl) || rl.rlim_cur > 1 << 20 ? 1 << 20
+	        : rl.rlim_cur;
+	tls_conns = calloc(tls_max, sizeof *tls_conns);
+	tls_ctx = SSL_CTX_new(TLS_client_method());
+	if (!tls_conns || !tls_ctx)
+		return false;
+	SSL_CTX_set_mode(tls_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE |
+	                          SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER |
+	                          SSL_MODE_RELEASE_BUFFERS);
+	SSL_CTX_set_options(tls_ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
+	SSL_CTX_set_verify(tls_ctx, ca ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, nullptr);
+	return SSL_CTX_set_min_proto_version(tls_ctx, TLS1_3_VERSION) &&
+	       SSL_CTX_set1_groups_list(tls_ctx, "X25519MLKEM768:X25519") &&
+	       !SSL_CTX_set_alpn_protos(tls_ctx, (unsigned char const *)"\x08http/1.1", 9) &&
+	       (!ca || (SSL_CTX_load_verify_file(tls_ctx, ca) == 1 &&
+	                X509_VERIFY_PARAM_set1_ip_asc(SSL_CTX_get0_param(tls_ctx),
+	                                              host) == 1));
+}
+
+static int
+tls_dial (struct transport *t)
+{
+	int fd = tcp_dial(t);
+	if (fd < 0)
+		return -1;
+	SSL *ssl = (size_t)fd < tls_max ? SSL_new(tls_ctx) : nullptr;
+	if (!ssl || SSL_set_fd(ssl, fd) != 1) {
+		SSL_free(ssl);
+		ERR_clear_error();
+		close(fd);
+		return -1;
+	}
+	SSL_set_connect_state(ssl);
+	tls_conns[fd] = (struct tls_conn){ ssl, 0 };
+	return fd;
+}
+
+static int
+tls_shake (struct transport *t,
+           int               fd)
+{
+	struct tls_conn *c = &tls_conns[fd];
+	struct tls_stats *s = t->tls;
+	if (!c->t0) {
+		/* A connect that failed is no handshake's. */
+		int err = 0;
+		socklen_t len = sizeof err;
+		if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) || err)
+			return -1;
+		c->t0 = now_ns();
+	}
+	ERR_clear_error();
+	int r = SSL_do_handshake(c->ssl);
+	if (r == 1) {
+		hist_record(&s->hs, now_ns() - c->t0);
+		s->ok++;
+		unsigned char const *alpn;
+		unsigned int alpn_len;
+		SSL_get0_alpn_selected(c->ssl, &alpn, &alpn_len);
+		s->alpn_bad += alpn_len != 8 || memcmp(alpn, "http/1.1", 8);
+		char const *group = SSL_get0_group_name(c->ssl);
+		s->group_other += !group || strcasecmp(group, tls_group);
+		return 0;
+	}
+	switch (SSL_get_error(c->ssl, r)) {
+	case SSL_ERROR_WANT_READ:
+		return EPOLLIN;
+	case SSL_ERROR_WANT_WRITE:
+		return EPOLLOUT;
+	}
+	/* The slot's drop counts it. */
+	if (!s->err) {
+		char why[256];
+		ERR_error_string_n(ERR_peek_last_error(), why, sizeof why);
+		fprintf(stderr, "gen: TLS handshake failed: %s\n", why);
+	}
+	ERR_clear_error();
+	return -1;
+}
+
+/* What a TLS read or write that did not go through means, as recv() and
+ * send() say it. */
+static ssize_t
+tls_error (SSL *ssl,
+           int  r)
+{
+	int e = SSL_get_error(ssl, r);
+	int sys = errno;
+	ERR_clear_error();
+	switch (e) {
+	case SSL_ERROR_ZERO_RETURN:
+		return 0;
+	case SSL_ERROR_WANT_READ:
+	case SSL_ERROR_WANT_WRITE:
+		errno = EAGAIN;
+		return -1;
+	case SSL_ERROR_SYSCALL:
+		errno = sys ? sys : EPIPE;
+		return -1;
+	default:
+		errno = EPROTO;
+		return -1;
+	}
+}
+
+static ssize_t
+tls_recv (int    fd,
+          void  *buf,
+          size_t len)
+{
+	SSL *ssl = tls_conns[fd].ssl;
+	size_t n = 0;
+	ERR_clear_error();
+	int r = SSL_read_ex(ssl, buf, len, &n);
+	return r > 0 ? (ssize_t)n : tls_error(ssl, r);
+}
+
+static ssize_t
+tls_send (int         fd,
+          void const *buf,
+          size_t      len)
+{
+	SSL *ssl = tls_conns[fd].ssl;
+	size_t n = 0;
+	ERR_clear_error();
+	int r = SSL_write_ex(ssl, buf, len, &n);
+	return r > 0 ? (ssize_t)n : tls_error(ssl, r);
+}
+
+/* Say the connection ends (close_notify), if its handshake is done, and
+ * close it. */
+static void
+tls_close (int fd)
+{
+	SSL *ssl = tls_conns[fd].ssl;
+	if (SSL_is_init_finished(ssl)) {
+		ERR_clear_error();
+		(void)SSL_shutdown(ssl);
+	}
+	SSL_free(ssl);
+	ERR_clear_error();
+	tls_conns[fd] = (struct tls_conn){};
+	close(fd);
+}
+
+static struct transport tls = {
+	.dial = tls_dial,
+	.shake = tls_shake,
+	.recv = tls_recv,
+	.send = tls_send,
+	.close = tls_close,
+};
+
 /* --- open-loop Poisson probe --------------------------------------------- */
 
 enum pconn_state { PC_DOWN, PC_CONNECTING, PC_IDLE, PC_BUSY };
@@ -279,6 +475,7 @@ struct pconn {
 	uint8_t     state;
 	uint8_t     kind;
 	bool        fresh;       /**< a new connection per probe */
+	bool        shaking;     /**< its transport shakes hands */
 	char        buf[16 << 10];
 };
 
@@ -370,8 +567,9 @@ pc_arm (struct probe *p,
 
 static void pc_connect (struct probe *p, struct pconn *pc);
 
-/* Drop the connection, settling its in-flight probe as @p fate.  A keep-alive
- * slot redials at once, or after REDIAL_NS if it never got connected. */
+/* Drop the connection, settling its in-flight probe as @p fate, and counting
+ * a handshake under way as failed.  A keep-alive slot redials at once, or
+ * after REDIAL_NS if it never got connected. */
 static void
 pc_drop (struct probe *p,
          struct pconn *pc,
@@ -379,6 +577,8 @@ pc_drop (struct probe *p,
 {
 	if (pc->state == PC_BUSY)
 		probe_settle(p, pc, pc->kind, pc->sched_ns, pc->sent_ns, fate);
+	if (pc->shaking)
+		p->t->tls->err++;
 	if (pc->fd >= 0) {
 		epoll_ctl(p->epfd, EPOLL_CTL_DEL, pc->fd, nullptr);
 		p->t->close(pc->fd);
@@ -386,6 +586,7 @@ pc_drop (struct probe *p,
 	}
 	bool failed = pc->state == PC_CONNECTING;
 	pc->state = PC_DOWN;
+	pc->shaking = false;
 	if (pc->fresh)
 		return;
 	if (!failed) {
@@ -511,7 +712,9 @@ probe_send (struct probe     *p,
 		pc_send(p, pc);
 		return;
 	}
-	/* The connect is part of a fresh probe: send once writable. */
+	/* The connect, and the handshake, are part of a fresh probe: send once
+	 * writable, and the hands shaken. */
+	pc->shaking = p->t->shake != nullptr;
 	pc->fd = p->t->dial(p->t);
 	struct epoll_event ev = { .events = EPOLLOUT | EPOLLRDHUP, .data.ptr = pc };
 	if (pc->fd < 0 || epoll_ctl(p->epfd, EPOLL_CTL_ADD, pc->fd, &ev))
@@ -534,6 +737,8 @@ probe_dispatch (struct probe *p,
 		probe_send(p, pc, r->ent[r->head++ % r->cap], now);
 }
 
+/* A fresh slot stays busy while its transport shakes hands, so that a
+ * handshake that fails settles its probe, or times out. */
 static void
 probe_event (struct probe *p,
              struct pconn *pc,
@@ -549,6 +754,18 @@ probe_event (struct probe *p,
 		}
 		pc->state = PC_IDLE;
 		pc_arm(p, pc, EPOLLRDHUP);
+		return;
+	}
+	if (pc->shaking) {
+		int want = p->t->shake(p->t, pc->fd);
+		if (want < 0) {
+			pc_drop(p, pc, FATE_ERR);
+		} else if (want) {
+			pc_arm(p, pc, (uint32_t)want | EPOLLRDHUP);
+		} else {
+			pc->shaking = false;
+			pc_send(p, pc);
+		}
 		return;
 	}
 	/* On an idle keep-alive, a hang-up just means redial. */
@@ -749,7 +966,7 @@ probe_run (struct probe *p,
 /* --- background load modes ----------------------------------------------- */
 
 enum {
-	BG_MAX  = 15, /**< one thread per mode */
+	BG_MAX  = 16, /**< one thread per mode */
 	BG_KEYS = 5, /**< counters per mode */
 };
 
@@ -1629,7 +1846,8 @@ main (int   argc,
 		OPT_IDLE = 0x100, OPT_LORIS, OPT_GAP, OPT_SLOWBODY, OPT_SLOWREAD,
 		OPT_PIPELINE, OPT_MALFORMED, OPT_HOSTILE, OPT_DENSE, OPT_CHURN, OPT_JOBS,
 		OPT_HANGUP, OPT_CANCEL, OPT_FRESH, OPT_STATS, OPT_SLOW, OPT_SOLO,
-		OPT_FLOOD, OPT_INTERACTIVE, OPT_TASKS,
+		OPT_FLOOD, OPT_INTERACTIVE, OPT_TASKS, OPT_TLS_PORT, OPT_TLS_CHURN,
+		OPT_TLS_CA,
 	};
 	static struct option const opts[] = {
 		{ "host",      required_argument, nullptr, 'H' },
@@ -1655,6 +1873,9 @@ main (int   argc,
 		{ "flood",     required_argument, nullptr, OPT_FLOOD },
 		{ "interactive", required_argument, nullptr, OPT_INTERACTIVE },
 		{ "tasks",     required_argument, nullptr, OPT_TASKS },
+		{ "tls-port",  required_argument, nullptr, OPT_TLS_PORT },
+		{ "tls-churn", required_argument, nullptr, OPT_TLS_CHURN },
+		{ "tls-ca",    required_argument, nullptr, OPT_TLS_CA },
 		{ "stats",     required_argument, nullptr, OPT_STATS },
 		{ "slow",      required_argument, nullptr, OPT_SLOW },
 		{ "solo",      no_argument,       nullptr, OPT_SOLO },
@@ -1666,7 +1887,8 @@ main (int   argc,
 	char const *stats = nullptr;
 	double rate = 1000.0;
 	double duration = 10.0;
-	double churn = 0;
+	double churn = 0, tls_churn = 0;
+	char const *tls_ca = nullptr;
 	long timeout_ms = 5000;
 	long slow_us = 1000;
 	int conns = 32, fresh = 64;
@@ -1699,6 +1921,9 @@ main (int   argc,
 		case OPT_INTERACTIVE: interactive = atoi(optarg); break;
 		case OPT_TASKS: tasks = atoi(optarg); break;
 		case OPT_CHURN: churn = atof(optarg); break;
+		case OPT_TLS_PORT: tls.port = optarg; break;
+		case OPT_TLS_CHURN: tls_churn = atof(optarg); break;
+		case OPT_TLS_CA: tls_ca = optarg; break;
 		case OPT_JOBS: jobs = atoi(optarg); break;
 		case OPT_STATS: stats = optarg; break;
 		case OPT_SLOW: slow_us = atol(optarg); break;
@@ -1710,6 +1935,10 @@ main (int   argc,
 		fputs("gen: need rate, duration, timeout > 0 and some probe slots\n", stderr);
 		return 2;
 	}
+	if (tls_churn > 0 && !tls.port) {
+		fputs("gen: --tls-churn needs --tls-port\n", stderr);
+		return 2;
+	}
 
 	/* Wake on schedule: the default 50 us slack would count as latency.
 	 * Threads inherit it, so set it before any start. */
@@ -1719,6 +1948,12 @@ main (int   argc,
 	signal(SIGINT, on_interrupt);
 	if (!build_requests()) {
 		fputs("gen: a request is too long\n", stderr);
+		return 1;
+	}
+	tls.host = tcp.host;
+	if (tls_churn > 0 && !tls_client(tls_ca, tcp.host)) {
+		fputs("gen: cannot set TLS up\n", stderr);
+		ERR_print_errors_fp(stderr);
 		return 1;
 	}
 
@@ -1755,13 +1990,19 @@ main (int   argc,
 		return 0;
 	}
 
-	/* The probe dials from any address (127.0.0.1); churn and each
-	 * background mode from 127.N.0.1 onwards. */
-	struct probe p, cp;
+	/* The probe dials from any address (127.0.0.1); churn, TLS churn and
+	 * each background mode from 127.N.0.1 onwards. */
+	struct probe p, cp, tp;
 	struct transport ctcp = tcp;
 	ctcp.src = (uint32_t)(127 << 24 | (BG_MAX + 1) << 16);
+	static struct tls_stats tls_churned;
+	struct transport ctls = tls;
+	ctls.src = (uint32_t)(127 << 24 | (BG_MAX + 2) << 16);
+	ctls.tls = &tls_churned;
+	hist_init(&tls_churned.hs);
 	if (!probe_init(&p, &tcp, conns, fresh, (uint64_t)timeout_ms * 1'000'000u) ||
-	    !probe_init(&cp, &ctcp, 0, CHURN_SLOTS, CHURN_TIMEOUT_NS)) {
+	    !probe_init(&cp, &ctcp, 0, CHURN_SLOTS, CHURN_TIMEOUT_NS) ||
+	    !probe_init(&tp, &ctls, 0, CHURN_SLOTS, CHURN_TIMEOUT_NS)) {
 		fputs("gen: out of memory\n", stderr);
 		return 1;
 	}
@@ -1796,6 +2037,8 @@ main (int   argc,
 	START(hostile, burst_thread, .name = "hostile", .mode = BURST_HOSTILE,
 	      .key = { "opened", "answered", "refused", "sent", "ok" });
 	START(churn > 0, churn_thread, .name = "churn", .probe = &cp, .rate = churn);
+	START(tls_churn > 0, churn_thread, .name = "tlschurn", .probe = &tp,
+	      .rate = tls_churn);
 	START(dense, burst_thread, .name = "dense", .mode = BURST_DENSE,
 	      .key = { "opened", "answered", "refused", "sent", "ok" });
 	START(jobs > 0, jobs_thread, .name = "jobs", .count = jobs,
@@ -1819,7 +2062,10 @@ main (int   argc,
 #undef START
 
 	fprintf(stderr, "gen: %s:%s rate=%.0f/s duration=%.0fs conns=%d/%d fresh=%d "
-	        "bg=%d\n", tcp.host, tcp.port, rate, duration, ready, conns, fresh, nth);
+	        "bg=%d", tcp.host, tcp.port, rate, duration, ready, conns, fresh, nth);
+	if (tls_churn > 0)
+		fprintf(stderr, " tls=%s:%s churn=%.0f/s", tls.host, tls.port, tls_churn);
+	fputc('\n', stderr);
 
 	/* Let background load ramp up before the measured window opens. */
 	if (nth)
@@ -1863,6 +2109,14 @@ main (int   argc,
 			print_tail(ct, &b->probe->hist[H_ALL], (uint64_t)slow_us * 1000);
 			whole &= !ct[FATE_LOST] && ct[FATE_SCHED] ==
 			         ct[FATE_OK] + ct[FATE_ERR] + ct[FATE_TIMEOUT];
+			struct tls_stats const *s = b->probe->t->tls;
+			if (!s)
+				continue;
+			printf("TLS name=%s ok=%llu err=%llu alpn_bad=%llu group_other=%llu",
+			       b->name, (unsigned long long)s->ok, (unsigned long long)s->err,
+			       (unsigned long long)s->alpn_bad,
+			       (unsigned long long)s->group_other);
+			print_tail(nullptr, &s->hs, (uint64_t)slow_us * 1000);
 			continue;
 		}
 		for (int k = 0; k < BG_KEYS; ++k)
@@ -1915,8 +2169,11 @@ main (int   argc,
 	for (int i = 0; i < nth; ++i)
 		free(bgs[i].per);
 
+	probe_fini(&tp);
 	probe_fini(&cp);
 	probe_fini(&p);
+	SSL_CTX_free(tls_ctx);
+	free(tls_conns);
 	if (!whole)
 		fputs("gen: FAIL: not every scheduled arrival was accounted for\n", stderr);
 	return whole ? 0 : 1;

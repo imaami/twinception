@@ -13,6 +13,7 @@
 #include "mcp.h"
 
 struct policy;
+struct ssl_ctx_st;
 
 /** Options that are on or off, as bits of struct config's flags. */
 enum config_flag {
@@ -22,6 +23,7 @@ enum config_flag {
 	CFG_VERBOSE   = 1u << 2,  /**< log every tool call */
 	CFG_TEST_TASK = 1u << 3,  /**< test aid: offer test_task, CPU work done as
 	                               a task (src/task.h) */
+	CFG_TLS_RSA   = 1u << 4,  /**< a TLS certificate's key may be RSA */
 };
 
 /**
@@ -40,6 +42,8 @@ struct config {
 	struct json_object   *file;         /**< the configuration file's object,
 	                                         which strings point into */
 	struct policy        *policy;       /**< http.policy */
+	struct ssl_ctx_st    *tls;          /**< http.tls: made from tls_cert and
+	                                         tls_key if a listener is TLS's */
 	char                **argv;         /**< the command line, as reloads
 	                                         read it again */
 	char const          **headers;      /**< ep.headers, at the start of the
@@ -54,6 +58,8 @@ struct config {
 	char const           *path;         /**< the configuration file's, or
 	                                         nullptr */
 	char const           *key_env;
+	char const           *tls_cert;     /**< the TLS certificate chain's file */
+	char const           *tls_key;      /**< its key's */
 	size_t                n_headers;
 	size_t                n_origins;
 	size_t                n_listens;
@@ -88,11 +94,12 @@ config (int   argc,
         int  *status);
 
 /**
- * Read the command line of @p from, and the configuration file it names,
- * again, into @p cfg, as config() does, but on any thread and saying what
- * is wrong in the log: for a reload, of which only the policy counts
- * (src/policy.h), the restart flag saying whether the rest differs from
- * @p from's.  Returns the status config() gives.
+ * Read the command line of @p from, the configuration file it names and
+ * the TLS certificate and key, again, into @p cfg, as config() does, but on
+ * any thread and saying what is wrong in the log: for a reload, of which
+ * only the policy (src/policy.h) and the TLS context count, the restart flag
+ * saying whether the rest differs from @p from's.  Returns the status
+ * config() gives.
  */
 extern int
 config_reload (struct config       *cfg,

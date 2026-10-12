@@ -24,6 +24,7 @@
 #include "log.h"
 #include "mcp.h"
 #include "policy.h"
+#include "tls.h"
 #include "util.h"
 
 
@@ -93,8 +94,14 @@ usage (FILE       *out,
 	        "\n", argv0);
 	fprintf(out,
 	        "MCP server:\n"
-	        "  -l, --listen ADDR         [host:]port, or unix:PATH for a Unix socket\n"
-	        "                            (repeatable; default 127.0.0.1:8090)\n"
+	        "  -l, --listen ADDR         [host:]port, unix:PATH for a Unix socket, or\n"
+	        "                            tls:[host:]port for TLS (repeatable;\n"
+	        "                            default 127.0.0.1:8090)\n"
+	        "      --tls-cert FILE       TLS's certificate chain, in PEM: the\n"
+	        "                            server's, then those it is trusted by\n"
+	        "      --tls-key FILE        its private key, in PEM, unencrypted: ECDSA\n"
+	        "                            on P-256, P-384 or P-521, or Ed25519\n"
+	        "      --tls-allow-rsa       allow an RSA key too\n"
 	        "  -o, --allow-origin URL    allow a non-loopback browser Origin\n"
 	        "                            (repeatable; '*' allows any)\n"
 	        "      --tool-name NAME      tool name (default ask_ai)\n"
@@ -183,12 +190,13 @@ usage (FILE       *out,
 	        "SIGUSR1 prints each event loop's turn and step times, its timers'\n"
 	        "lateness and the most work a step did, since the previous SIGUSR1,\n"
 	        "to stderr, in lines that name it: loop1 to loopN serve clients,\n"
-	        "home accepts them and runs the upstream calls.  With --config,\n"
-	        "SIGHUP reloads who may connect and what they may do.  The first\n"
-	        "SIGINT or SIGTERM, or SIGHUP without --config, unless askai started\n"
-	        "with it ignored, ends tool calls with an error, finishes other\n"
-	        "requests and exits 0; a second, or a grace period run out, or an\n"
-	        "event loop stuck, exits at once with %d.\n"
+	        "home accepts them and runs the upstream calls.  With --config or\n"
+	        "TLS, SIGHUP reloads who may connect and what they may do, and the\n"
+	        "TLS certificate and key.  The first SIGINT or SIGTERM, or SIGHUP\n"
+	        "without either, unless askai started with it ignored, ends tool\n"
+	        "calls with an error, finishes other requests and exits 0; a\n"
+	        "second, or a grace period run out, or an event loop stuck, exits\n"
+	        "at once with %d.\n"
 	        "Invalid options or environment exit 2, and a failure to start or\n"
 	        "to serve 1.\n",
 	        BRAINSTEM_FORCED);
@@ -279,7 +287,8 @@ enum {
 	OPT_IDLE_TIMEOUT, OPT_OUTPUT_PAUSE, OPT_MAX_OUTPUT, OPT_SEND_TIMEOUT,
 	OPT_GRACE, OPT_WATCHDOG, OPT_TEST_STALL, OPT_MEMORY_HIGH, OPT_TEST_PRESSURE,
 	OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO,
-	OPT_MAN, OPT_TEST_MAN_RECHECK, OPT_TEST_TASK, OPT_GIT, OPT_GIT_TIMEOUT
+	OPT_MAN, OPT_TEST_MAN_RECHECK, OPT_TEST_TASK, OPT_GIT, OPT_GIT_TIMEOUT,
+	OPT_TLS_CERT, OPT_TLS_KEY, OPT_TLS_ALLOW_RSA
 };
 
 static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
@@ -301,6 +310,9 @@ static struct option const options[] = {
 	{ "max-calls",        required_argument, nullptr, OPT_MAX_CALLS },
 	{ "listen",           required_argument, nullptr, 'l' },
 	{ "allow-origin",     required_argument, nullptr, 'o' },
+	{ "tls-cert",         required_argument, nullptr, OPT_TLS_CERT },
+	{ "tls-key",          required_argument, nullptr, OPT_TLS_KEY },
+	{ "tls-allow-rsa",    no_argument,       nullptr, OPT_TLS_ALLOW_RSA },
 	{ "tool-name",        required_argument, nullptr, OPT_TOOL_NAME },
 	{ "tool-description", required_argument, nullptr, OPT_TOOL_DESCRIPTION },
 	{ "man",              no_argument,       nullptr, OPT_MAN },
@@ -445,6 +457,9 @@ apply (struct config *cfg,
 		break;
 	case 'v': cfg->flags |= CFG_VERBOSE; break;
 	case OPT_TOOL_DESCRIPTION: cfg->tool.description = arg; break;
+	case OPT_TLS_CERT: cfg->tls_cert = arg; break;
+	case OPT_TLS_KEY: cfg->tls_key = arg; break;
+	case OPT_TLS_ALLOW_RSA: cfg->flags |= CFG_TLS_RSA; break;
 	case 'o':
 		push(cfg->origins, &cfg->n_origins, arg);
 		break;
@@ -684,13 +699,18 @@ safe_dirs (char const *path)
 	return ok;
 }
 
-/* Read the configuration file into cfg->file: a JSON object, which may hold
- * comments, in a regular file that only root and askai's user may change,
- * nor replace.  Returns 0, or the exit status, having said why. */
+/* Read the file at @p path whole into @p *p_text, NUL-terminated, its
+ * length into @p *p_len: a regular file of FILE_MAX bytes at most that only
+ * root and askai's user may change, nor replace, and that has none of the
+ * permission bits @p hide, such as S_IROTH for a secret, which is wiped
+ * from memory freed here.  Returns 0, or the exit status, having said why. */
 static int
-load (struct config *cfg)
+slurp (struct config const *cfg,
+       char const          *path,
+       mode_t               hide,
+       char               **p_text,
+       size_t              *p_len)
 {
-	char const *path = cfg->path;
 	/* Not blocking, a FIFO opens at once, and fails the check. */
 	int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
 	struct stat st;
@@ -704,6 +724,7 @@ load (struct config *cfg)
 	                : st.st_size > FILE_MAX ? "larger than 1 MiB"
 	                : !safe(&st) || !safe_dirs(path)
 	                ? "others than root and askai's user may change it"
+	                : st.st_mode & hide ? "others may read it"
 	                : nullptr;
 	size_t len = 0;
 	char *text = why ? nullptr : malloc((size_t)st.st_size + 1);
@@ -722,11 +743,30 @@ load (struct config *cfg)
 	}
 	close(fd);
 	if (why || !text) {
+		if (text)
+			explicit_bzero(text, len);
 		free(text);
 		complain(cfg, why ? path : nullptr, "%s", why ? why : "out of memory");
 		return why ? 2 : 1;
 	}
 	text[len] = '\0';
+	*p_text = text;
+	*p_len = len;
+	return 0;
+}
+
+/* Read the configuration file into cfg->file: a JSON object, which may hold
+ * comments, in a file slurp() reads.  Returns 0, or the exit status, having
+ * said why. */
+static int
+load (struct config *cfg)
+{
+	char const *path = cfg->path;
+	char *text;
+	size_t len;
+	int status = slurp(cfg, path, 0, &text, &len);
+	if (status)
+		return status;
 
 	struct json_tokener *tok = json_tokener_new();
 	struct json_object *file = tok ? json_tokener_parse_ex(tok, text, (int)len)
@@ -770,32 +810,41 @@ of_policy (char const *key)
 	       !strcmp(key, "unix-groups") || !strcmp(key, "anonymous");
 }
 
-/* The options that @p file, a configuration file's object or nullptr, sets:
- * its members but its policy's. */
+/* Whether the configuration file's member @p key takes effect on a reload:
+ * the policy's, and TLS's certificate, key and key types. */
+static bool
+reloadable (char const *key)
+{
+	return of_policy(key) || !strncmp(key, "tls-", sizeof "tls-" - 1);
+}
+
+/* The members of @p file, a configuration file's object or nullptr, but
+ * those @p but is true of. */
 static size_t
-options_in (struct json_object *file)
+members_but (struct json_object *file,
+             bool              (*but) (char const *key))
 {
 	size_t n = 0;
 	struct json_object_iter it;
 	if (file)
 		json_object_object_foreachC(file, it)
-			n += !of_policy(it.key);
+			n += !but(it.key);
 	return n;
 }
 
 /* Whether @p a and @p b, configuration files' objects or nullptr, set the
- * same options, their policies aside. */
+ * same options, those a reload takes aside. */
 static bool
 same_options (struct json_object *a,
               struct json_object *b)
 {
-	if (options_in(a) != options_in(b))
+	if (members_but(a, reloadable) != members_but(b, reloadable))
 		return false;
 	struct json_object_iter it;
 	if (a)
 		json_object_object_foreachC(a, it) {
 			struct json_object *v;
-			if (!of_policy(it.key) &&
+			if (!reloadable(it.key) &&
 			    (!json_object_object_get_ex(b, it.key, &v) ||
 			     !json_object_equal(it.val, v)))
 				return false;
@@ -858,6 +907,49 @@ has (char const *dir,
 	struct stat st;
 	int n = snprintf(path, sizeof path, "%s/%s", dir, entry);
 	return n > 0 && (size_t)n < sizeof path && !stat(path, &st);
+}
+
+/* The TLS listeners' context, from the certificate chain's file and its
+ * key's, which none but its owner and its group may read, both wiped once
+ * read, as one file may hold the two; 0, or the exit status, having said
+ * why. */
+static int
+tls_context (struct config *cfg)
+{
+	if (!cfg->tls_cert || !cfg->tls_key) {
+		complain(cfg, nullptr, "a tls: listener needs --tls-cert and --tls-key");
+		return 2;
+	}
+	char *chain;
+	size_t chain_len;
+	int e = slurp(cfg, cfg->tls_cert, 0, &chain, &chain_len);
+	if (e)
+		return e;
+	char *key;
+	size_t key_len;
+	e = slurp(cfg, cfg->tls_key, S_IROTH, &key, &key_len);
+	if (e) {
+		explicit_bzero(chain, chain_len);
+		free(chain);
+		return e;
+	}
+	char why[256];
+	cfg->tls = tls_new(cfg, chain, chain_len, key, key_len, why, sizeof why);
+	e = cfg->tls ? 0 : errno;
+	explicit_bzero(key, key_len);
+	explicit_bzero(chain, chain_len);
+	free(key);
+	free(chain);
+	if (e == ENOMEM) {
+		complain(cfg, nullptr, "out of memory");
+		return 1;
+	}
+	if (e) {
+		complain(cfg, nullptr, "TLS: %s", why);
+		return 2;
+	}
+	cfg->http.tls = cfg->tls;
+	return 0;
 }
 
 /* Check the options together, and work out what they leave to askai. */
@@ -1010,6 +1102,18 @@ finish (struct config *cfg)
 	if (!cfg->n_listens)
 		push(cfg->listens, &cfg->n_listens, "127.0.0.1:8090");
 	cfg->http.listen = cfg->listens;
+	bool tls = false;
+	for (size_t i = 0; i < cfg->n_listens; ++i) {
+		char const *addr = httpd_tls(cfg->listens[i]);
+		if (addr && !strncmp(addr, "unix:", sizeof "unix:" - 1)) {
+			complain(cfg, nullptr, "TLS over a Unix socket: %s", cfg->listens[i]);
+			return 2;
+		}
+		tls |= addr != nullptr;
+	}
+	int e = tls ? tls_context(cfg) : 0;
+	if (e)
+		return e;
 	char const *tools[MCP_TOOLS] = {
 		[0] = cfg->tool.name,
 		[1] = cfg->flags & CFG_MAN ? "man" : nullptr,
@@ -1019,7 +1123,7 @@ finish (struct config *cfg)
 	static_assert(MCP_TOOL_ASK == 1u << 0 && MCP_TOOL_MAN == 1u << 1 &&
 	              MCP_TOOL_TASK == 1u << 2 && MCP_TOOL_GIT == 1u << 3);
 	char why[256];
-	int e = policy_new(&cfg->policy, cfg->file, tools, MCP_TOOLS, why, sizeof why);
+	e = policy_new(&cfg->policy, cfg->file, tools, MCP_TOOLS, why, sizeof why);
 	if (e == ENOMEM)
 		goto oom;
 	if (e) {
@@ -1029,7 +1133,8 @@ finish (struct config *cfg)
 	cfg->http.policy = cfg->policy;
 	char const *token = getenv("ASKAI_TOKEN");
 	bool own = !cfg->file ||
-	           options_in(cfg->file) == (size_t)json_object_object_length(cfg->file);
+	           members_but(cfg->file, of_policy) ==
+	           (size_t)json_object_object_length(cfg->file);
 	if (token && *token && !own && !cfg->logged)
 		complain(cfg, nullptr, "note: ASKAI_TOKEN is ignored, as %s names who may "
 		         "connect", cfg->path);
@@ -1138,6 +1243,7 @@ config_fini (struct config *cfg)
 	json_object_put(cfg->ep.temperature);
 	json_object_put(cfg->file);
 	policy_put(cfg->policy);
+	tls_put(cfg->tls);
 	free(cfg->url);
 	free(cfg->auth);
 	free(cfg->description);

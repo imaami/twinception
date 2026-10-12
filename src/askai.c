@@ -94,11 +94,11 @@ static struct {
 	uint64_t            ns;
 } walker;
 
-/* A reload of the configuration, on SIGHUP with a configuration file: a
- * blocker reads the command line and the file again, then home hands the
- * client loops the new policy (src/policy.h); the other options take a
- * restart, which askai says.  One at a time, a SIGHUP meanwhile having
- * another follow. */
+/* A reload of the configuration, on SIGHUP with a configuration file or TLS:
+ * a blocker reads the command line, the file and the TLS certificate and key
+ * again, then home hands the client loops the new policy (src/policy.h),
+ * and its door the new TLS context; the other options take a restart, which
+ * askai says.  One at a time, a SIGHUP meanwhile having another follow. */
 struct reload {
 	struct blocker_job job;
 	struct config      cfg;     /* as the blocker read it */
@@ -408,7 +408,9 @@ home_app_reload (void        *ctx,
 }
 
 /* The blocker has read the configuration: hand the client loops its
- * policy, unless it is wrong, as the log says then. */
+ * policy, and the door its TLS context, unless it is wrong, as the log says
+ * then.  A context made only as the file now names a TLS listener serves
+ * none until a restart. */
 static void
 reload_done (struct loop *loop,
              struct msg  *msg)
@@ -422,6 +424,9 @@ reload_done (struct loop *loop,
 	if (!loop->exit) {
 		int e = r->status < 0 ? httpd_home_policy(app->keep.door, r->cfg.policy)
 		                      : 0;
+		bool tls = r->status < 0 && !e && r->cfg.tls && app->cfg->tls;
+		if (tls)
+			httpd_home_tls(app->keep.door, r->cfg.tls);
 		if (r->status >= 0)
 			LOG(LOG_ERROR, "configuration not reloaded; the last stays");
 		else if (e)
@@ -429,8 +434,8 @@ reload_done (struct loop *loop,
 			    e == EAGAIN ? "the server is not open" : strerror(e));
 		else
 			LOG(LOG_INFO, "configuration reloaded: who may connect, and what "
-			    "they may do%s", r->cfg.restart ? "; its other options take a "
-			    "restart" : "");
+			    "they may do%s%s", tls ? ", and the TLS certificate" : "",
+			    r->cfg.restart ? "; its other options take a restart" : "");
 	}
 	config_fini(&r->cfg);
 	if (r->again && !loop->exit) {
@@ -590,7 +595,7 @@ serve (struct config const *cfg)
 		.drain = home_app_drain,
 		.relieve = keep_relieve,
 		.alone = home_app_alone,
-		.reload = cfg->path ? home_app_reload : nullptr,
+		.reload = cfg->path || cfg->tls ? home_app_reload : nullptr,
 		.stop = home_app_stop
 	};
 	bcfg.client = (struct brainstem_app){

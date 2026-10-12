@@ -18,9 +18,11 @@ override SRC_askai := \
   mcp.c               \
   metrics.c           \
   policy.c            \
-  task.c
+  task.c              \
+  tls.c
 
 override LIB_askai := \
   libcrypto           \
   json-c              \
-  libcurl
+  libcurl             \
+  libssl

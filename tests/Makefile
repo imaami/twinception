@@ -73,7 +73,8 @@ override LOAD_FLAGS := $(TEST_FLAGS) -pthread -I$(SRC_DIR)
 load-build: | $(LOAD)/gen $(LOAD)/mock
 
 $(LOAD)/gen: $(LOAD_SRC)/gen.c $(SRC_DIR)hist.h | $(LOAD)
-	$(CC) $(LOAD_FLAGS) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $< -lm
+	$(CC) $(LOAD_FLAGS) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $< -lssl \
+	      -lcrypto -lm
 
 $(LOAD)/mock: $(LOAD_SRC)/mock.c | $(LOAD)
 	$(CC) $(LOAD_FLAGS) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $<

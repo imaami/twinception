@@ -4,8 +4,8 @@
 #
 # Usage: run.sh PROFILE [ASKAI_BIN [LOAD_DIR [DURATION]]]
 #   PROFILE    baseline | idle | jobs | answers | sse | race | cancel |
-#              flood | saturated | loris | slowread | pipeline | hostile |
-#              dense | malformed | storm | check | stall
+#              flood | saturated | tls | loris | slowread | pipeline |
+#              hostile | dense | malformed | storm | check | stall
 #   ASKAI_BIN  the askai executable to test (default: $ASKAI or ./askai)
 #   LOAD_DIR   directory holding the built gen and mock (default: this dir)
 #   DURATION   seconds of load (default: 10)
@@ -18,7 +18,9 @@
 # ASKAI_ARGS, more options for askai, such as --loops N; RELOAD_S, the
 # seconds between SIGHUPs while the load lasts (S7), askai then reading a
 # configuration file whose policy gives anonymous clients everything, which
-# each SIGHUP reloads;
+# each SIGHUP reloads, as it does the TLS certificate (S9); TLS_RATE, the
+# TLS handshakes a second of TLS churn, for any profile (default: the
+# profile's, 0 for most);
 # STATS, what askai reports on SIGUSR1: full (the default), loop (S2a: no work
 # line) or none (S0, S1: none, and the signal would end it), the clauses it
 # cannot report then being n/a; MEMORY, how askai gives memory back: pressure
@@ -55,7 +57,10 @@
 #    background requests left unanswered (idle, and the malformed, hostile and
 #    dense requests sent whole; dense ones not answered 200); tool calls that
 #    failed or were cut off; mock counters that do not add up;
-#  - lockout: a fresh connection not served (fresh-ping, churn);
+#  - lockout: a fresh connection not served (fresh-ping, churn, TLS churn);
+#  - tls (from S9, with TLS churn): no handshake done, or one that failed,
+#    or that agreed on another protocol than http/1.1 or another key
+#    exchange than X25519MLKEM768;
 #  - limits: loris or slow-body clients still open once their deadline is
 #    past; an upstream call that outlived its client, 3 s after the load (in
 #    the sse profile, whose clients all hang up on their event streams, any
@@ -117,6 +122,11 @@
 # loop that holds too many; its "tasks" clause checks that every task ended
 # once and that every client loop ran some.  The storm has saturating tasks
 # too, and the check profile a few.
+# The "tls" profile (S9) has TLS churn alone, 1000 full handshakes a second,
+# each a bulk step's flight of 0.2 ms or so on a client loop, against askai
+# serving a throwaway ECDSA certificate on a second listener, while the probe
+# measures the plain listener's clients; the storm has 200 a second, and
+# the check profile 50.
 # The "check" profile is a light mix of every mode, short deadlines and a few
 # thousand connections for `make check-load`.  The "stall" profile instead
 # runs the coordinated-omission self-check: it
@@ -151,7 +161,7 @@ done
 
 # Seconds of load after which loris and slow-body clients must be closed, and
 # the conntrack entries a run needs free (see below), of the table's ct_max.
-stall=0 askai_args=() hold_s=10 ct_free='ct_max / 2' exact=0
+stall=0 askai_args=() hold_s=10 ct_free='ct_max / 2' exact=0 tls=0
 case $profile in
 baseline)  mock_args=(-s 4 -d 5 -z 2);   gen_args=() ;;
 idle)      mock_args=(-s 4 -d 5 -z 2);   gen_args=(--idle 5000) ;;
@@ -164,6 +174,7 @@ cancel)    mock_args=(-s 0 -d 20 -c);    gen_args=(--jobs 16 --cancel 48 --churn
            askai_args=(--slots 64) ;;
 flood)     mock_args=(-s 2 -r 100 -z 20); gen_args=(--flood 16 --interactive 4) ;;
 saturated) mock_args=(-s 4 -d 5 -z 2);   gen_args=(); askai_args=(--test-task) ;;
+tls)       mock_args=(-s 4 -d 5 -z 2);   gen_args=(); tls=1000 ;;
 loris)     mock_args=(-s 4 -d 5);        gen_args=(--loris 128 --slowbody 128) ;;
 slowread)  mock_args=(-s 4 -d 5);        gen_args=(--slowread 128) ;;
 pipeline)  mock_args=(-s 4 -d 5);        gen_args=(--pipeline 4) ;;
@@ -177,7 +188,7 @@ storm)     mock_args=(-s 1 -d 20 -z 64)
            gen_args=(--idle 10000 --jobs 64 --loris 64 --slowbody 64
                      --slowread 64 --pipeline 4 --churn 1000 --malformed
                      --hostile)
-           askai_args=(--test-task)
+           askai_args=(--test-task) tls=200
            ct_free='ct_max - 16384' ;;
 check)     mock_args=(-s 2 -d 50 -z 131072)
            gen_args=(--idle 500 --jobs 8 --hangup 4 --loris 16 --slowbody 16
@@ -185,9 +196,10 @@ check)     mock_args=(-s 2 -d 50 -z 131072)
                      --tasks 4)
            askai_args=(--max-values 1000000 --head-timeout 2 --body-grace 1
                        --test-task)
-           hold_s=3 ct_free=20000 ;;
+           hold_s=3 ct_free=20000 tls=50 ;;
 *) printf '%s: unknown profile: %s\n' "$self" "$profile" >&2; exit 2 ;;
 esac
+tls=${TLS_RATE:-$tls}
 
 # Netfilter, where loaded, tracks every connection, closed ones for 120 s,
 # and a storm makes up to 140 000, from S5 up to 210 000 as several client
@@ -352,13 +364,14 @@ settled () {
 	echo "$line"
 }
 
-# Wait up to 5 s for a "127.0.0.1:PORT" line in FILE; echo the first PORT.
+# Wait up to 5 s for a "SCHEME://127.0.0.1:PORT" line in FILE, SCHEME http
+# unless given; echo the first PORT.
 wait_port () {
-	local file=$1 i port
+	local file=$1 scheme=${2:-http} i port
 	for ((i = 0; i < 100; ++i)); do
-		port=$(grep -oE '127\.0\.0\.1:[0-9]+' "$file" 2> /dev/null |
-		       head -1 | cut -d: -f2)
-		[[ -n $port ]] && { echo "$port"; return 0; }
+		port=$(grep -oE "$scheme://127\.0\.0\.1:[0-9]+" "$file" 2> /dev/null |
+		       head -1)
+		[[ -n $port ]] && { echo "${port##*:}"; return 0; }
 		sleep 0.05
 	done
 	return 1
@@ -379,12 +392,33 @@ if [[ -n ${RELOAD_S-} ]]; then
 	chmod 600 "$tmp/askai.json"
 	askai_args+=(-c "$tmp/askai.json")
 fi
+# TLS churn's listener, with a throwaway certificate, which the generator
+# checks the server's against.
+if ((tls)); then
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc \
+		-keyout "$tmp/tls.key" -out "$tmp/tls.crt" -days 1 -subj /CN=127.0.0.1 \
+		-addext subjectAltName=IP:127.0.0.1 2> "$tmp/openssl.err" || {
+		echo "$self: TLS needs a certificate from openssl(1)" >&2
+		cat "$tmp/openssl.err" >&2
+		exit 2
+	}
+	chmod 644 "$tmp/tls.crt"
+	chmod 600 "$tmp/tls.key"
+	askai_args+=(-l tls:127.0.0.1:0 --tls-cert "$tmp/tls.crt" --tls-key "$tmp/tls.key")
+fi
 "${pin_askai[@]}" "$askai" -l 127.0.0.1:0 "${askai_args[@]}" \
 	-u "http://127.0.0.1:$mock_port/v1/chat/completions" -m m \
 	2> "$tmp/askai.err" &
 askai_pid=$!
 askai_port=$(wait_port "$tmp/askai.err") || {
 	echo "$self: askai did not start" >&2; cat "$tmp/askai.err" >&2; exit 1; }
+tls_port=
+if ((tls)); then
+	tls_port=$(wait_port "$tmp/askai.err" https) || {
+		echo "$self: askai did not listen for TLS" >&2; cat "$tmp/askai.err" >&2
+		exit 1; }
+	gen_args+=(--tls-port "$tls_port" --tls-ca "$tmp/tls.crt" --tls-churn "$tls")
+fi
 # Each loop's thread logs statistics of its own: from S4 home, which runs the
 # jobs, and from S5 the client loops, loop1 to loopN.  Each client loop's
 # thread keeps glibc's per-thread cache of small blocks, which no call gives
@@ -398,6 +432,7 @@ slack=${RSS_SLACK_KIB:-$((4096 + 256 * (loops - 1)))}
 
 printf '=== profile %s: rate=%s/s base=%ss duration=%ss askai_port=%s ' \
        "$profile" "$rate" "$base" "$dur" "$askai_port"
+((tls)) && printf 'tls_port=%s tls_churn=%s/s ' "$tls_port" "$tls"
 printf 'mock_port=%s askai_args=%s ===\n' "$mock_port" "${askai_args[*]:-}"
 idle_res=$(resources)
 loop_stats
@@ -630,6 +665,14 @@ $1 == "BG" {
 		bg[name, f[1]] = f[2]
 	}
 }
+$1 == "TLS" {
+	name = substr($2, 6)
+	tlss[name] = 1
+	for (i = 3; i <= NF; ++i) {
+		split($i, f, "=")
+		tl[name, f[1]] = f[2]
+	}
+}
 $1 == "SOLO" {
 	name = substr($2, 6)
 	solos[name] = 1
@@ -694,12 +737,27 @@ END {
 	      sprintf("probe sched=%d+%d failed=%d", v["sched"], aft["sched"], bad))
 	lock = fresh["err"] + fresh["timeout"] + fresh["lost"]
 	detail = sprintf("fresh-ping ok=%d failed=%d", fresh["ok"], lock)
-	if ("churn" in bgs) {
-		lock += bg["churn", "err"] + bg["churn", "timeout"] + bg["churn", "lost"]
-		detail = detail sprintf(" churn ok=%d of %d", bg["churn", "ok"],
-		                        bg["churn", "sched"])
+	split("churn tlschurn", churns, " ")
+	for (i = 1; i <= 2; ++i) {
+		m = churns[i]
+		if (!(m in bgs))
+			continue
+		lock += bg[m, "err"] + bg[m, "timeout"] + bg[m, "lost"]
+		detail = detail sprintf(" %s ok=%d of %d", m == "churn" ? "churn" :
+		                        "tls churn", bg[m, "ok"], bg[m, "sched"])
 	}
 	check("lockout", !lock, detail)
+
+	# Every TLS handshake done, on http/1.1 and X25519MLKEM768.
+	if ("tlschurn" in tlss)
+		check("tls", tl["tlschurn", "ok"] > 0 && !tl["tlschurn", "err"] &&
+		      !tl["tlschurn", "alpn_bad"] && !tl["tlschurn", "group_other"],
+		      sprintf("handshakes ok=%d err=%d alpn_bad=%d group_other=%d; " \
+		              "p50=%sus p90=%sus p99=%sus max=%sus", tl["tlschurn", "ok"],
+		              tl["tlschurn", "err"], tl["tlschurn", "alpn_bad"],
+		              tl["tlschurn", "group_other"], tl["tlschurn", "p50_us"],
+		              tl["tlschurn", "p90_us"], tl["tlschurn", "p99_us"],
+		              tl["tlschurn", "max_us"]))
 
 	unanswered = 0
 	detail = ""

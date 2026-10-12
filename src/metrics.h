@@ -7,7 +7,8 @@
  * home's, histograms of turn and step times, timer lateness and inbox delay,
  * the most work a step did, and the storage its stash keeps and what it gave
  * back; per client loop the storage it keeps besides, its tool calls'
- * cancellations, its request times by MCP method and its connections; home's
+ * cancellations, its request times by MCP method, its connections and their
+ * TLS handshakes, the flights' times included; home's
  * jobs, its scheduler's queue and slots, the upstream breaker, streamed
  * answers' chunks, and its upstream wait and run times and host lookups;
  * blocker jobs; the man tool's manual, its pages, hits and runs of man;
@@ -88,8 +89,11 @@ metrics_mcp_init (struct metrics_mcp *m)
 /** What a client loop counts of its connections: the loop writes, any
  *  thread reads. */
 struct metrics_conns {
-	_Atomic uint64_t open;   /**< connections it serves */
-	_Atomic uint64_t taken;  /**< connections home placed on it */
+	_Atomic uint64_t open;      /**< connections it serves */
+	_Atomic uint64_t taken;     /**< connections home placed on it */
+	_Atomic uint64_t shaken;    /**< TLS handshakes done */
+	_Atomic uint64_t unshaken;  /**< TLS handshakes begun and not done */
+	struct hist      flights;   /**< TLS handshakes' flights' times */
 };
 
 /** A loop's metrics, labelled with its name; those it lacks are nullptr.  Each

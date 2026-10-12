@@ -114,6 +114,7 @@ static struct entry const table[] = {
 	WORK(nullptr, "closes", LOOP_CLOSES),
 	WORK(nullptr, "release", LOOP_RELEASE),
 	WORK(nullptr, "tasks", LOOP_TASKS),
+	WORK(nullptr, "flights", LOOP_FLIGHTS),
 	METHOD("Time from a request's head to its end, by MCP method.", "initialize",
 	       METHOD_INITIALIZE),
 	METHOD(nullptr, "ping", METHOD_PING),
@@ -131,6 +132,14 @@ static struct entry const table[] = {
 	CONNS("askai_connections", "Connections a client loop serves.", open, GAUGE),
 	CONNS("askai_connections_placed_total", "Connections home placed on a "
 	      "client loop.", taken, COUNTER),
+	VALUE("askai_tls_handshakes_total", "TLS handshakes a client loop did, by "
+	      "result: done, or begun and failed or cut off.", "result=\"done\"",
+	      struct metrics_conns, shaken, CONNS, COUNTER, ONE),
+	VALUE("askai_tls_handshakes_total", nullptr, "result=\"failed\"",
+	      struct metrics_conns, unshaken, CONNS, COUNTER, ONE),
+	VALUE("askai_tls_flight_seconds", "Time a TLS handshake's flight took on a "
+	      "client loop: its CPU, mostly.", "", struct metrics_conns, flights,
+	      CONNS, HISTOGRAM, NS),
 	JOBS("askai_jobs_submitted_total", "Jobs (upstream calls) submitted to home.",
 	     "", submitted, COUNTER),
 	JOBS("askai_jobs_ended_total", "Jobs home ended: completed with the "

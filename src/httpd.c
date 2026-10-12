@@ -95,6 +95,7 @@
 #include "policy.h"
 #include "shelf.h"
 #include "stream.h"
+#include "tls.h"
 #include "util.h"
 
 enum {
@@ -117,6 +118,11 @@ static constexpr uint64_t NS = 1'000'000'000;
 
 /* An event bit epoll never reports, for the timer finding a deadline passed. */
 static constexpr uint32_t DEADLINE = 1u << 31;
+
+/* And one that steps keep: TLS holds input that epoll no longer reports, the
+ * rest of a record a read had no room for, or records a read that waited to
+ * send left. */
+static constexpr uint32_t HELD = 1u << 30;
 
 /* The head starts the input buffer until the request is done, so header
  * values are kept as offsets into it, which survive the buffer moving; 0 is
@@ -171,7 +177,12 @@ struct conn {
 	struct httpd      *srv;
 	struct httpd_lane *lane;      /* home sets it: the loop's */
 	struct client     *client;    /* home sets it */
-	uint64_t           since;     /* when the request, or the idle spell, began */
+	struct ssl_ctx_st *ctx;       /* home sets it: what a TLS listener's
+	                                 client shakes hands by, a reference
+	                                 until the handshake is done */
+	struct ssl_st     *ssl;       /* TLS's end, once the client begins */
+	uint64_t           since;     /* when the request, the handshake, or the
+	                                 idle spell began */
 	uint64_t           stall;     /* when the output last stalled; 0: it flows */
 	size_t             drained;   /* bytes sent since then */
 	size_t             earlier;   /* of the output pending, the bytes of
@@ -285,7 +296,8 @@ struct listener {
 	char const     *path;   /* a Unix socket's file, which goes as the
 	                           socket closes; nullptr: TCP */
 	int             fd;
-	uint32_t        ready;  /* bool: clients may wait */
+	uint16_t        ready;  /* bool: clients may wait */
+	uint16_t        tls;    /* bool: clients shake hands (home->ctx) */
 };
 
 /* Home's door: the listeners, and the clients' addresses, connections and
@@ -301,6 +313,9 @@ struct httpd_home {
 	struct client         **clients;    /* CLIENT_SLOTS hash chains */
 	_Atomic uint64_t const *calls;      /* jobs in flight */
 	struct listener        *listeners;
+	struct ssl_ctx_st      *ctx;        /* a reference: what TLS listeners'
+	                                       clients shake hands by; nullptr:
+	                                       there is none */
 	size_t                  n_listeners;
 	size_t                  turn;       /* the listener to accept from next */
 	uint64_t                rng;        /* xorshift64 */
@@ -828,6 +843,11 @@ conn_close (struct conn *conn)
 	loop_unready(&conn->step);
 	loop_timer_stop(srv->loop, &conn->timer);
 	loop_release(srv->loop, &conn->ref, conn_release);
+	/* A handshake begun and not done has failed. */
+	if (conn->ctx && conn->ssl)
+		hist_add(&srv->lane->metrics.unshaken, 1);
+	tls_put(conn->ctx);
+	tls_free(conn->ssl);
 	close(conn->fd);
 	buf_free(&conn->out);
 	buf_free(&conn->in);
@@ -856,13 +876,38 @@ frag_len (struct frag const *f,
 	return len;
 }
 
+/* Whether the client's bytes wait, in the input or in TLS: a head begun. */
+static bool
+conn_input (struct conn const *conn)
+{
+	return buf_peek(&conn->in).len || (conn->ssl && tls_pending(conn->ssl));
+}
+
+/* Whether TLS waits for room to send what a read left it, such as the
+ * answer to a key update: it reads nothing more meanwhile. */
+static bool
+conn_blocked (struct conn const *conn)
+{
+	return conn->ssl && tls_blocked(conn->ssl);
+}
+
+/* Queue the connection's step: a bulk one while it shakes hands. */
+static void
+conn_ready (struct conn *conn)
+{
+	if (conn->ctx)
+		loop_ready_bulk(conn->srv->loop, &conn->step);
+	else
+		loop_ready(conn->srv->loop, &conn->step);
+}
+
 /* Close the connection at its next step: output must not close it at once,
  * as an application may be writing it. */
 static void
 conn_doom (struct conn *conn)
 {
 	conn->doomed = true;
-	loop_ready(conn->srv->loop, &conn->step);
+	conn_ready(conn);
 }
 
 /* Queue @p n fragments; false, dooming the connection, if out of memory. */
@@ -1423,7 +1468,11 @@ conn_next (struct conn *conn,
  * closed.  The write-stall clock starts when a send would block and restarts
  * only once WRITE_PROGRESS bytes have gone out, so a trickle cannot hold it;
  * once the output has drained, the request's own clock restarts, as it was
- * held up meanwhile. */
+ * held up meanwhile.  TLS sends a record a call, whole, of TLS_RECORD bytes
+ * or the output's last, so that a call after one that waited is never
+ * shorter, and none sends records unseen; with the output sent, what a read
+ * left it to send, such as the answer to a key update, whose wait for room
+ * stalls as the output's does. */
 static bool
 conn_flush (struct conn *conn)
 {
@@ -1432,16 +1481,29 @@ conn_flush (struct conn *conn)
 		struct span out = buf_peek(&conn->out);
 		if (!out.len) {
 			buf_free(&conn->out);
+			enum tls_shake shake = conn_blocked(conn) ? tls_shake(conn->ssl)
+			                                          : TLS_SHAKEN;
+			if (shake == TLS_FAILED) {
+				conn_close(conn);
+				return false;
+			}
+			if (shake == TLS_WRITE) {
+				if (!conn->stall)
+					conn->stall = loop->now;
+				return true;
+			}
 			if (conn->stall)
 				conn->since = loop->now;
 			conn->stall = 0;
 			return true;
 		}
+		size_t len = conn->ssl && out.len > TLS_RECORD ? TLS_RECORD : out.len;
 		size_t room = loop_room(loop, LOOP_SEND);
-		if (!room)
+		if (!room || (conn->ssl && room < len))
 			return true;
-		ssize_t n = send(conn->fd, out.ptr, out.len < room ? out.len : room,
-		                 MSG_NOSIGNAL);
+		ssize_t n = conn->ssl ? tls_send(conn->ssl, out.ptr, len)
+		                      : send(conn->fd, out.ptr, len < room ? len : room,
+		                             MSG_NOSIGNAL);
 		if (n >= 0) {
 			buf_consume(&conn->out, (size_t)n);
 			conn->drained += (size_t)n;
@@ -1462,9 +1524,10 @@ conn_flush (struct conn *conn)
 
 /*
  * When the deadline that applies runs out, UINT64_MAX if none does: lingering,
- * the write stall's while output is stuck, none while the application works,
- * the idle or the head deadline until a head is parsed, then the body's
- * minimum rate.
+ * the idle deadline until a TLS client begins its handshake, then the head's
+ * until it is done, the write stall's while output is stuck, none while the
+ * application works, the idle or the head deadline until a head is parsed,
+ * then the body's minimum rate.
  */
 static uint64_t
 conn_deadline (struct conn const *conn)
@@ -1472,13 +1535,15 @@ conn_deadline (struct conn const *conn)
 	struct httpd_limits const *lim = &conn->srv->lim;
 	if (conn->linger)
 		return conn->since + LINGER_S * NS;
+	if (conn->ctx)
+		return after(conn->since, conn->ssl ? lim->head_time : lim->idle_time);
 	if (conn->stall)
 		return after(conn->stall, lim->write_time);
 	if (conn->body_in && conn->parsed)
 		return UINT64_MAX;
 	if (!conn->parsed)
-		return after(conn->since, buf_peek(&conn->in).len ? lim->head_time
-		                                                  : lim->idle_time);
+		return after(conn->since, conn_input(conn) ? lim->head_time
+		                                           : lim->idle_time);
 
 	/* From its start, once the grace is up, the body must have come at
 	 * body_rate: the bytes so far pay for so much time. */
@@ -1525,12 +1590,17 @@ conn_drain (struct conn *conn)
 
 /* The last response is sent: linger, unless the client has closed already,
  * when what it sent is discarded and the connection closed.  A stream the
- * application still has is cancelled. */
+ * application still has is cancelled.  TLS says it ends, and is gone: what
+ * the client sends from then on is only discarded. */
 static void
 conn_end (struct conn *conn)
 {
 	struct httpd *srv = conn->srv;
 	conn_cancel(conn);
+	if (conn->ssl) {
+		tls_end(conn->ssl);
+		conn->ssl = nullptr;
+	}
 	if (conn->eof || shutdown(conn->fd, SHUT_WR) ||
 	    loop_modify(srv->loop, &conn->ref, EPOLLIN)) {
 		/* Input left unread would turn the close into a reset. */
@@ -1585,23 +1655,31 @@ conn_pump (struct conn *conn)
 		again = conn->done;
 	}
 	bool starved = next == NEXT_INPUT;
-	if (!pending && (next == NEXT_END || (starved && conn->eof))) {
+	bool blocked = conn_blocked(conn);
+	if (!pending && !blocked && (next == NEXT_END || (starved && conn->eof))) {
 		conn_end(conn);
 		return;
 	}
 
-	/* Input that ended stays readable: watching it then would spin. */
+	/* Input that ended stays readable: watching it then would spin, as it
+	 * would while TLS waits to send.  Input TLS holds, which epoll does not
+	 * report, is read in the next step. */
 	bool paused = pending >= srv->lim.out_pause || conn->closing;
-	uint32_t events = pending ? EPOLLOUT : 0;
+	bool reads = starved && !paused && !blocked && !conn->eof && !conn->waits;
+	bool held = reads && conn->events & HELD;
+	uint32_t events = pending || blocked ? EPOLLOUT : 0;
 	if (conn->waits)
 		events |= EPOLLRDHUP;
-	else if (starved && !paused && !conn->eof)
+	else if (reads)
 		events |= EPOLLIN;
 	if (loop_modify(loop, &conn->ref, events)) {
 		conn_close(conn);
 		return;
 	}
-	bool waiting = !again && (next == NEXT_INPUT || next == NEXT_WAIT || paused);
+	if (held)
+		conn->events |= EPOLLIN;
+	bool waiting = !again && !held &&
+	               (next == NEXT_INPUT || next == NEXT_WAIT || paused || blocked);
 	if (waiting)
 		loop_unready(&conn->step);
 	else
@@ -1609,7 +1687,7 @@ conn_pump (struct conn *conn)
 
 	/* An idle connection keeps no storage, and under critical memory
 	 * pressure one that waits keeps no more than its bytes need. */
-	bool idle = starved && !pending && !buf_peek(&conn->in).len;
+	bool idle = starved && !pending && !blocked && !conn_input(conn);
 	if (idle)
 		buf_free(&conn->in);
 	else if (waiting && atomic_load_explicit(&buf_pressure, memory_order_relaxed) >=
@@ -1620,8 +1698,8 @@ conn_pump (struct conn *conn)
 	conn_arm(conn);
 }
 
-/* One recv straight into the input's free tail.  A head's clock starts with
- * its first byte. */
+/* One recv, or one TLS record, straight into the input's free tail.  A
+ * head's clock starts with its first byte, which may be in TLS still. */
 static void
 conn_read (struct conn *conn)
 {
@@ -1629,24 +1707,78 @@ conn_read (struct conn *conn)
 	 * body is cut out as it comes, so the limit is never reached and an
 	 * empty span means out of memory. */
 	struct loop *loop = conn->srv->loop;
-	bool first = !conn->parsed && !buf_peek(&conn->in).len;
+	bool first = !conn->parsed && !conn_input(conn);
 	struct span s = buf_reserve(&conn->in, READ_MIN, conn->srv->in_max);
 	if (!s.len) {
 		conn_close(conn);
 		return;
 	}
 	size_t room = loop_room(loop, LOOP_RECV);
-	ssize_t n = recv(conn->fd, s.ptr, s.len < room ? s.len : room, 0);
+	size_t len = s.len < room ? s.len : room;
+	ssize_t n = conn->ssl ? tls_recv(conn->ssl, s.ptr, len)
+	                      : recv(conn->fd, s.ptr, len, 0);
+	conn->events &= ~HELD;
 	if (n > 0) {
 		buf_commit(&conn->in, (size_t)n);
 		loop_work(loop, LOOP_RECV, (uint64_t)n);
-		if (first)
-			conn->since = loop->now;
 	} else if (!n) {
 		conn->eof = true;
 	} else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
 		conn_close(conn);
+		return;
 	}
+	if (first && conn_input(conn))
+		conn->since = loop->now;
+	/* After a read that gave bytes, or that waits to send, what TLS holds
+	 * is read again; a part of a record waits for the rest. */
+	if (conn->ssl && (n > 0 || conn_blocked(conn)) && tls_pending(conn->ssl))
+		conn->events |= HELD;
+}
+
+/* A flight of the handshake, which a TLS listener's client begins with its
+ * first bytes, from then on within the head's deadline; once it is done,
+ * the connection serves as any other.  Each flight's time is its CPU's,
+ * mostly.  A step woken by the client's FIN alone counts none. */
+static void
+conn_shake (struct conn *conn)
+{
+	struct httpd *srv = conn->srv;
+	struct loop *loop = srv->loop;
+	struct metrics_conns *m = &srv->lane->metrics;
+	if (!conn->ssl) {
+		/* A client that closes without a word, such as a probe of the
+		 * port, began no handshake. */
+		char c;
+		ssize_t peek = recv(conn->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+		if (peek < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+			return;
+		if (peek <= 0 || !(conn->ssl = tls_open(conn->ctx, conn->fd))) {
+			conn_close(conn);
+			return;
+		}
+		conn->since = loop->now;
+		conn_park(conn, false);
+	}
+	uint64_t start = loop_clock();
+	enum tls_shake shake = tls_shake(conn->ssl);
+	hist_record(&m->flights, loop_clock() - start);
+	loop_work(loop, LOOP_FLIGHTS, 1);
+	if (shake == TLS_SHAKEN) {
+		hist_add(&m->shaken, 1);
+		tls_put(conn->ctx);
+		conn->ctx = nullptr;
+		conn->since = loop->now;
+		if (tls_pending(conn->ssl))
+			conn->events |= HELD;
+		conn_pump(conn);
+		return;
+	}
+	if (shake == TLS_FAILED ||
+	    loop_modify(loop, &conn->ref, shake == TLS_WRITE ? EPOLLOUT : EPOLLIN)) {
+		conn_close(conn);
+		return;
+	}
+	conn_arm(conn);
 }
 
 static void
@@ -1655,12 +1787,21 @@ conn_step (struct loop      *loop,
 {
 	struct conn *conn = container_of(step, struct conn, step);
 	uint32_t events = conn->events;
-	conn->events = 0;
+	conn->events &= HELD;
 
 	/* A client that goes away while the application waits cancels it. */
 	if (conn->doomed || (events & (EPOLLERR | EPOLLHUP)) ||
 	    (conn->waits && (events & EPOLLRDHUP))) {
 		conn_close(conn);
+		return;
+	}
+	/* A handshake ends as a head would, but with no answer. */
+	if (conn->ctx) {
+		if (conn->srv->draining ||
+		    ((events & DEADLINE) && conn_deadline(conn) <= loop->now))
+			conn_close(conn);
+		else if (events & (EPOLLIN | EPOLLOUT))
+			conn_shake(conn);
 		return;
 	}
 	if ((events & DEADLINE) && conn_deadline(conn) <= loop->now) {
@@ -1680,9 +1821,10 @@ conn_event (struct loop     *loop,
             struct loop_ref *ref,
             uint32_t         events)
 {
+	(void)loop;
 	struct conn *conn = ref->owner;
 	conn->events |= events;
-	loop_ready(loop, &conn->step);
+	conn_ready(conn);
 }
 
 /* Fired early, re-arm for the deadline as it now stands; else let the step
@@ -1698,7 +1840,7 @@ conn_timer (struct loop       *loop,
 		return;
 	}
 	conn->events |= DEADLINE;
-	loop_ready(loop, &conn->step);
+	conn_ready(conn);
 }
 
 /* Watch the listeners for clients, or for none if @p events is 0. */
@@ -1753,6 +1895,7 @@ conn_setup (struct httpd *srv,
 	uint32_t n_groups = conn->n_groups;
 	uint32_t uid = conn->uid;
 	uint32_t room = conn->room;
+	struct ssl_ctx_st *ctx = conn->ctx;
 	int fd = conn->fd;
 	bool local = conn->local;
 	bool uds = conn->uds;
@@ -1767,6 +1910,7 @@ conn_setup (struct httpd *srv,
 		.srv = srv,
 		.lane = lane,
 		.client = client,
+		.ctx = ctx,
 		.since = loop->now,
 		.groups = groups,
 		.n_groups = n_groups,
@@ -1791,6 +1935,7 @@ conn_setup (struct httpd *srv,
 		return;
 	}
 	loop_timer_stop(loop, &conn->timer);
+	tls_put(ctx);
 	close(fd);
 	loop_post(srv->hub->home, &conn->msg);
 }
@@ -1804,6 +1949,7 @@ conn_take (struct loop *loop,
 {
 	struct conn *conn = container_of(msg, struct conn, msg);
 	if (loop->exit) {
+		tls_put(conn->ctx);
 		close(conn->fd);
 		conn_free(conn);
 		return;
@@ -2041,14 +2187,15 @@ uds_groups (struct conn *conn,
 
 /* Place the client on @p fd, from @p addr, on loopback if @p local, on a
  * client loop, in the storage of a connection given back if one is kept,
- * as the user @p cred says if over a Unix socket; if out of memory, close
- * @p fd. */
+ * as the user @p cred says if over a Unix socket, to shake hands by @p ctx
+ * if not nullptr; if out of memory, close @p fd. */
 static void
 home_place (struct httpd_home  *home,
             int                 fd,
             uint64_t const      addr[2],
             bool                local,
-            struct ucred const *cred)
+            struct ucred const *cred,
+            struct ssl_ctx_st  *ctx)
 {
 	struct list *spare = shelf_take(&home->spare);
 	struct conn *conn = spare ? container_of(spare, struct conn, hook)
@@ -2076,19 +2223,22 @@ home_place (struct httpd_home  *home,
 	conn->msg.fn = conn_take;
 	conn->lane = lane;
 	conn->client = client;
+	conn->ctx = ctx ? tls_get(ctx) : nullptr;
 	conn->fd = fd;
 	conn->local = local;
 	loop_post(lane->loop, &conn->msg);
 }
 
 /*
- * Place the client on @p fd, unless its address is at the cap.  A client
+ * Place the client on @p fd, from listener @p l, unless its address is at
+ * the cap, which is said in plain HTTP but to TLS's clients.  A client
  * beyond the descriptor budget, or one accepted in the spare descriptor's
  * place (@p shed), has the least recently active idle connection closed to
  * make room, or is turned away if none is idle.
  */
 static void
 home_take (struct httpd_home             *home,
+           struct listener const         *l,
            int                            fd,
            struct sockaddr_storage const *ss,
            bool                           shed)
@@ -2112,14 +2262,16 @@ home_take (struct httpd_home             *home,
 		static char const busy[] = "HTTP/1.1 503 Service Unavailable\r\n"
 		                           "Retry-After: 1\r\nConnection: close\r\n"
 		                           "Content-Length: 0\r\n\r\n";
-		(void)send(fd, busy, sizeof busy - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+		if (!l->tls)
+			(void)send(fd, busy, sizeof busy - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
 		close(fd);
 		++home->capped;
 	} else if ((shed || home_full(home)) && !home_evict(home)) {
 		close(fd);
 		++home->refused;
 	} else {
-		home_place(home, fd, addr, uds || loopback(ss), uds ? &cred : nullptr);
+		home_place(home, fd, addr, uds || loopback(ss), uds ? &cred : nullptr,
+		           l->tls ? home->ctx : nullptr);
 	}
 }
 
@@ -2141,7 +2293,7 @@ home_shed (struct httpd_home *home,
 	                 SOCK_NONBLOCK | SOCK_CLOEXEC);
 	int e = errno;
 	if (fd >= 0)
-		home_take(home, fd, &ss, true);
+		home_take(home, l, fd, &ss, true);
 	home->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
 	errno = e;
 	return fd;
@@ -2198,7 +2350,7 @@ home_accept (struct loop      *loop,
 		if (fd < 0 && (errno == EMFILE || errno == ENFILE))
 			fd = home_shed(home, l);
 		else if (fd >= 0)
-			home_take(home, fd, &ss, false);
+			home_take(home, l, fd, &ss, false);
 		if (fd >= 0 || accept_next(errno))
 			continue;
 		l->ready = false;
@@ -2285,21 +2437,30 @@ uds_listen (struct listener *l,
 	return 0;
 }
 
-/* Listen on @p addr, [host:]port or unix:PATH, into @p l. */
+/* Listen on @p addr, [host:]port, unix:PATH or tls:[host:]port, into
+ * @p l. */
 static int
 home_listen (struct listener *l,
              char const      *addr)
 {
 	static char const uds[] = "unix:";
-	if (!strncmp(addr, uds, sizeof uds - 1))
-		return uds_listen(l, addr + sizeof uds - 1);
+	char const *at = httpd_tls(addr);
+	l->tls = at != nullptr;
+	if (!at)
+		at = addr;
+	if (!strncmp(at, uds, sizeof uds - 1)) {
+		if (!l->tls)
+			return uds_listen(l, at + sizeof uds - 1);
+		LOG(LOG_ERROR, "invalid listen address: %s", addr);
+		return EINVAL;
+	}
 	char host[256] = "127.0.0.1";
-	char const *port = addr;
-	char const *colon = strrchr(addr, ':');
-	if (*addr == '[' || colon) {
-		char const *start = addr + (*addr == '[');
-		char const *end = *addr == '[' ? strchr(addr, ']') : colon;
-		if (!end || (*addr == '[' && end[1] != ':') ||
+	char const *port = at;
+	char const *colon = strrchr(at, ':');
+	if (*at == '[' || colon) {
+		char const *start = at + (*at == '[');
+		char const *end = *at == '[' ? strchr(at, ']') : colon;
+		if (!end || (*at == '[' && end[1] != ':') ||
 		    (size_t)(end - start) >= sizeof host) {
 			LOG(LOG_ERROR, "invalid listen address: %s", addr);
 			return EINVAL;
@@ -2359,6 +2520,9 @@ httpd_hub_new (struct httpd_hub **p_hub,
 		atomic_init(&lane->policy, nullptr);
 		atomic_init(&lane->metrics.open, 0);
 		atomic_init(&lane->metrics.taken, 0);
+		atomic_init(&lane->metrics.shaken, 0);
+		atomic_init(&lane->metrics.unshaken, 0);
+		hist_init(&lane->metrics.flights);
 		atomic_init(&lane->idle, UINT64_MAX);
 		atomic_init(&lane->idles, 0);
 		atomic_init(&lane->evicts, 0);
@@ -2407,6 +2571,8 @@ httpd_home_init (struct httpd_home      **p_home,
 		.spare_fd = -1,
 		.cap = cfg->limits.clients
 	};
+	if (cfg->tls)
+		home->ctx = tls_get(cfg->tls);
 	struct policy_grant g;
 	home->anyone = policy_grant(cfg->policy, nullptr, 0, POLICY_REMOTE, nullptr,
 	                            &g) && g.tools;
@@ -2426,6 +2592,11 @@ httpd_home_init (struct httpd_home      **p_home,
 		l->ref.fd = l->fd = -1;
 		++home->n_listeners;
 		e = home_listen(l, cfg->listen[i]);
+		if (!e && l->tls && !home->ctx) {
+			LOG(LOG_ERROR, "cannot listen on %s: no TLS certificate",
+			    cfg->listen[i]);
+			e = EINVAL;
+		}
 		if (!e)
 			e = loop_watch(loop, &l->ref, l->fd, 0, home_listen_event, home);
 	}
@@ -2463,6 +2634,7 @@ httpd_home_fini (struct httpd_home **p_home)
 		}
 	free(home->clients);
 	free(home->listeners);
+	tls_put(home->ctx);
 	door = nullptr;
 	free(home);
 }
@@ -2489,8 +2661,8 @@ httpd_home_open (struct httpd_home *home)
 		           !getnameinfo((struct sockaddr *)&ss, sslen, addr, sizeof addr,
 		                        port, sizeof port, NI_NUMERICHOST | NI_NUMERICSERV)) {
 			bool v6 = ss.ss_family == AF_INET6;
-			LOG(LOG_INFO, "MCP endpoint http://%s%s%s:%s/mcp", v6 ? "[" : "",
-			    addr, v6 ? "]" : "", port);
+			LOG(LOG_INFO, "MCP endpoint http%s://%s%s%s:%s/mcp", l->tls ? "s" : "",
+			    v6 ? "[" : "", addr, v6 ? "]" : "", port);
 			if (home->anyone && !loopback(&ss))
 				LOG(LOG_WARN, "warning: listening beyond loopback, where clients "
 				    "that show no token may call tools; anyone who can connect "
@@ -2518,6 +2690,16 @@ httpd_home_policy (struct httpd_home *home,
 			loop_post(lane->loop, &lane->handover);
 	}
 	return 0;
+}
+
+void
+httpd_home_tls (struct httpd_home *home,
+                struct ssl_ctx_st *ctx)
+{
+	if (!home->ctx)
+		return;
+	tls_put(home->ctx);
+	home->ctx = tls_get(ctx);
 }
 
 void

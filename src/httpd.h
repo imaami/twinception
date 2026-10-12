@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "buf.h"
 
@@ -15,6 +16,7 @@ struct httpd_hub;
 struct loop;
 struct metrics_conns;
 struct policy;
+struct ssl_ctx_st;
 struct stream_app;
 
 /**
@@ -66,10 +68,23 @@ struct httpd_cfg {
 	struct httpd_limits  limits;
 	char const *const   *origins;  /**< allowed non-loopback Origins; "*": any */
 	char const *const   *listen;   /**< where to listen: [host:]port, or
-	                                    unix:PATH, each; nullptr ends them */
+	                                    unix:PATH, or tls:[host:]port for
+	                                    TLS, each; nullptr ends them */
 	struct policy       *policy;   /**< who clients are, and what they may do:
 	                                    each loop's server takes a reference */
+	struct ssl_ctx_st   *tls;      /**< what TLS listeners' clients shake
+	                                    hands by (src/tls.h), if there are
+	                                    any: home takes a reference */
 };
+
+/** @p addr, a listen address, less its "tls:", if it is TLS's; else
+ *  nullptr. */
+static inline char const *
+httpd_tls (char const *addr)
+{
+	static char const tls[] = "tls:";
+	return strncmp(addr, tls, sizeof tls - 1) ? nullptr : addr + sizeof tls - 1;
+}
 
 /**
  * What home's door and the client loops' servers share, for @p loops client
@@ -116,6 +131,13 @@ httpd_home_open (struct httpd_home *home);
 extern int
 httpd_home_policy (struct httpd_home *home,
                    struct policy     *policy);
+
+/** Have the TLS listeners' clients from now on shake hands by @p ctx, a
+ *  reference home takes, and let go of the last; with no TLS listener, do
+ *  nothing.  Those who shook hands before go on as they are. */
+extern void
+httpd_home_tls (struct httpd_home *home,
+                struct ssl_ctx_st *ctx);
 
 /** Stop accepting clients: close the listener. */
 extern void

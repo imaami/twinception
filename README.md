@@ -17,6 +17,8 @@ server that gives a model running in `llama-server` a tool for asking another AI
 - C23 compiler
 - libcurl
 - json-c
+- OpenSSL 3.5 or later (libssl, libcrypto), and its `openssl` command for the
+  tests' certificates
 - Linux epoll + timerfd
 
 ## Build
@@ -424,7 +426,43 @@ then send `Authorization: Bearer <token>`, which the web UI can add as a custom
 header.  A Unix socket (`--listen unix:PATH`) knows its clients' users without
 a token; its file's mode follows `askai`'s umask, and `askai` removes it as it
 stops.  With `--git`, whoever may call the tool may read the repositories
-listed.
+listed.  Tokens cross the network in the clear but over TLS (below), or a
+proxy that ends it.
+
+### TLS
+
+`--listen tls:[host:]port` serves HTTPS on that address: TLS 1.3 only, with
+ALPN `http/1.1` (a client that offers ALPN must offer that), its key exchange
+X25519MLKEM768 first, else X25519 or P-256.  `--tls-cert FILE` names the
+certificate chain, in PEM: the server's certificate, then those it needs to
+be trusted by, which go to clients as they are; `--tls-key FILE` its private
+key, in PEM and unencrypted: ECDSA on P-256, P-384 or P-521, or Ed25519
+(which browsers do not take), and RSA only with `--tls-allow-rsa`, as its
+handshakes take three times the CPU.  Both files must pass the checks a
+configuration file does (below), and none but its owner and its group may
+read the key's.  certbot's `live` files are symbolic
+links: have a deploy hook copy them.
+
+```sh
+askai -u http://127.0.0.1:8081/v1/chat/completions \
+      -l tls:0.0.0.0:8443 --tls-cert /etc/askai/chain.pem --tls-key /etc/askai/key.pem
+```
+
+A client loop shakes hands with each client, a flight a step among its bulk
+work, so that handshakes wait behind cheap requests rather than hold them
+up; the client must be done within `--head-timeout` of its first byte, and
+one that sends nothing is closed after `--idle-timeout`, as over plain TCP.
+A client that sends plain HTTP, or that offers only TLS 1.2 or another
+protocol than HTTP/1.1, is closed with no answer, as is one over the
+per-address cap.  Each connection gets one stateless ticket, and no session
+is cached.  SIGHUP reads the certificate and key again, with or without
+`--config`: new connections shake hands with the new ones, those open go on
+with the old.  Files that do not load, or a key that is not the
+certificate's, are logged, and the last stay.  Who a TLS client is follows
+the same policy as over TCP, by token or by where it connects from.
+`GET /metrics` counts each client loop's handshakes, done and failed, and
+times their flights, mostly CPU (`askai_tls_handshakes_total`,
+`askai_tls_flight_seconds`).
 
 ### Configuration file, identities and roles
 
@@ -488,12 +526,13 @@ on it.  Without those four members, `askai`'s own policy holds: with
 loopback that name it so, or on a Unix socket, may do everything, and others
 may call the tools.  With them, `ASKAI_TOKEN` is ignored, as `askai` notes.
 
-With `--config`, SIGHUP reloads who may connect and what they may do: a
-blocker thread reads the command line and the file again, and the new policy
-takes over for the requests that begin from then on, while those under way
-finish as they began.  A file that is wrong is logged, and the last policy
-stays; the other options take a restart, as the log says when they changed.
-Without `--config`, SIGHUP stops `askai`, as SIGTERM does.
+With `--config`, or a TLS listener, SIGHUP reloads who may connect and what
+they may do, and the TLS certificate and key: a blocker thread reads the
+command line, the file and those again, and the new policy takes over for
+the requests that begin from then on, while those under way finish as they
+began.  A file that is wrong is logged, and the last policy stays; the other
+options take a restart, as the log says when they changed.  Without either,
+SIGHUP stops `askai`, as SIGTERM does.
 
 ### Limits
 
@@ -587,7 +626,7 @@ that says otherwise, those on loopback that name it as `localhost`,
 `127.0.0.1` or `[::1]` (or send no `Host`), or on a Unix socket, and with
 `ASKAI_TOKEN` set, those that send the token.
 
-The first SIGINT or SIGTERM, or SIGHUP without `--config`, makes `askai` drain: it stops accepting
+The first SIGINT or SIGTERM, or SIGHUP without `--config` or TLS, makes `askai` drain: it stops accepting
 clients, closes idle connections, answers tool calls that wait for the other
 model with an error (on an event stream, as its last event), finishes other
 requests, and exits 0, all within a grace period of 5 s (`--grace`).  A second
@@ -631,8 +670,14 @@ Upstream AI:
                             at once as an error that says to try again
 
 MCP server:
-  -l, --listen ADDR         [host:]port, or unix:PATH for a Unix socket
-                            (repeatable; default 127.0.0.1:8090)
+  -l, --listen ADDR         [host:]port, unix:PATH for a Unix socket, or
+                            tls:[host:]port for TLS (repeatable;
+                            default 127.0.0.1:8090)
+      --tls-cert FILE       TLS's certificate chain, in PEM: the
+                            server's, then those it is trusted by
+      --tls-key FILE        its private key, in PEM, unencrypted: ECDSA
+                            on P-256, P-384 or P-521, or Ed25519
+      --tls-allow-rsa       allow an RSA key too
   -o, --allow-origin URL    allow a non-loopback browser Origin
                             (repeatable; '*' allows any)
       --tool-name NAME      tool name (default ask_ai)

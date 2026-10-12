@@ -14,6 +14,7 @@ import select
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -2513,6 +2514,245 @@ def check_unix(binary, up):
           "policy, stale and busy socket files: PASS")
 
 
+def tls_files(d, name, kind="ec"):
+    """A self-signed certificate for 127.0.0.1, of a key of @p kind, and the
+    key, in @p d: (certificate's file, key's file)."""
+    newkey = {"ec": ["ec", "-pkeyopt", "ec_paramgen_curve:P-256"],
+              "ed25519": ["ed25519"], "rsa": ["rsa:2048"]}[kind]
+    crt, key = f"{d}/{name}.crt", f"{d}/{name}.key"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", *newkey, "-noenc",
+                    "-keyout", key, "-out", crt, "-days", "1", "-subj",
+                    f"/CN={name}", "-addext", "subjectAltName=IP:127.0.0.1"],
+                   check=True, capture_output=True)
+    os.chmod(crt, 0o644)
+    os.chmod(key, 0o600)
+    return crt, key
+
+
+def tls_client(crt, alpn=("http/1.1",), top=ssl.TLSVersion.TLSv1_3):
+    """A client's TLS context that trusts @p crt, offers @p alpn, and speaks
+    TLS up to @p top."""
+    ctx = ssl.create_default_context(cafile=crt)
+    ctx.maximum_version = top
+    if alpn:
+        ctx.set_alpn_protocols(list(alpn))
+    return ctx
+
+
+def tls_port(ai):
+    """The port of @p ai's TLS listener, as its log says."""
+    line = ai.wait_log(r"MCP endpoint https://")
+    return int(re.search(r":(\d+)/mcp$", line.strip()).group(1))
+
+
+def tls_connect(ctx, port, rcvbuf=None):
+    """A TLS connection to @p port, its handshake done, with a receive
+    buffer of @p rcvbuf bytes if given."""
+    sock = socket.socket()
+    if rcvbuf:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+    sock.settimeout(10)
+    sock.connect(("127.0.0.1", port))
+    return ctx.wrap_socket(sock, server_hostname="127.0.0.1")
+
+
+def check_tls(binary, up):
+    """TLS listeners (tls:): TLS 1.3 and ALPN http/1.1 only; records that
+    come together, requests and answers of many records, records' rests
+    that TLS holds, a key update; a handshake within the head's deadline,
+    plain HTTP and the cap answered with a close; a certificate and key
+    checked as askai starts, and reloaded on SIGHUP without a configuration
+    file."""
+    def fails(*args, message):
+        run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(), *args],
+                             stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=5, check=False)
+        assert run.returncode == 2 and message in run.stderr, (args, run.stderr)
+
+    def https(ctx, port):
+        return http.client.HTTPSConnection("127.0.0.1", port, timeout=10,
+                                           context=ctx)
+
+    def refused(ctx, port):
+        try:
+            with tls_connect(ctx, port):
+                return False
+        except ssl.SSLError:
+            return True
+
+    with tempfile.TemporaryDirectory() as d:
+        crt, key = tls_files(d, "one")
+        tls = ("-l", "tls:127.0.0.1:0", "--tls-cert", crt, "--tls-key", key)
+        with Askai(binary, "-u", up.url(), *tls, "--head-timeout", "1",
+                   "--idle-timeout", "2") as ai:
+            port = tls_port(ai)
+            ctx = tls_client(crt)
+            conn = https(ctx, port)
+            status, _, body = ai.rpc("tools/list", conn=conn)
+            assert status == 200 and body["result"]["tools"], (status, body)
+            assert (conn.sock.version(), conn.sock.selected_alpn_protocol()) == \
+                ("TLSv1.3", "http/1.1")
+            conn.close()
+            status, _, _ = ai.rpc("ping", conn=https(tls_client(crt, alpn=()), port))
+            assert status == 200, status
+
+            # Requests whose records come in one segment, which TLS reads a
+            # record at a time: each is answered.
+            with tls_connect(ctx, port) as sock:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_CORK, 1)
+                for i in range(5):
+                    sock.sendall(rpc_request(i))
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_CORK, 0)
+                replies = Replies(sock)
+                assert [replies.next()[1]["id"] for _ in range(5)] == list(range(5))
+
+            # A question and its answer of many records each: the question's
+            # records come whole, and reads with less room leave their rests
+            # in TLS, which epoll does not see; the answer goes to a client
+            # that reads it late, through a small window, so that sends wait
+            # and are sent again.
+            answer = "x" * (600 << 10)
+            up.reply = lambda request: (200, {"choices": [{"message": {
+                "role": "assistant", "content": answer}, "finish_reason": "stop"}]})
+            try:
+                with tls_connect(ctx, port, rcvbuf=4096) as sock:
+                    sock.sendall(rpc_request(1, {"name": "ask_ai", "arguments": {
+                        "prompt": "y" * (700 << 10)}}, "tools/call"))
+                    time.sleep(0.5)
+                    status, body = Replies(sock).next()
+                    assert status == 200 and text_of(body["result"]) == answer, status
+            finally:
+                up.reply = lambda request: (200, ANSWERS["openai"])
+            assert len(up.last()["body"]["messages"][-1]["content"]) == 700 << 10
+
+            # A key update the client asks for is answered, and requests go on.
+            with subprocess.Popen(["openssl", "s_client", "-connect",
+                                   f"127.0.0.1:{port}", "-alpn", "http/1.1",
+                                   "-CAfile", crt], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT) as client:
+                # It reads its input once its handshake is done, and a K must
+                # come alone.
+                seen = b""
+                end = time.monotonic() + 10
+                while b"Verify return code" not in seen and time.monotonic() < end:
+                    if select.select([client.stdout], [], [], 0.2)[0]:
+                        seen += os.read(client.stdout.fileno(), 65536)
+                for line in (b"K\n", rpc_request(7), b"K\n", rpc_request(8)):
+                    client.stdin.write(line)
+                    client.stdin.flush()
+                    time.sleep(0.3)
+                    while select.select([client.stdout], [], [], 0.2)[0]:
+                        chunk = os.read(client.stdout.fileno(), 65536)
+                        if not chunk:
+                            break
+                        seen += chunk
+                client.stdin.close()
+                seen += client.stdout.read()
+            assert seen.count(b"KEYUPDATE") == 2 and b'"id":7' in seen and \
+                b'"id":8' in seen, seen.decode(errors="replace")
+
+            # TLS 1.2, or no protocol but h2, fails the handshake; plain HTTP
+            # fails it at its first bytes, and half a ClientHello at the
+            # head's deadline: each closed with no answer.
+            assert refused(tls_client(crt, top=ssl.TLSVersion.TLSv1_2), port)
+            assert refused(tls_client(crt, alpn=("h2",)), port)
+            with socket.create_connection(("127.0.0.1", port), 10) as sock:
+                sock.sendall(rpc_request(1))
+                assert closed_by_peer(sock), "plain HTTP answered"
+            with socket.create_connection(("127.0.0.1", port), 10) as sock:
+                sock.sendall(b"\x16\x03\x01")
+                start = time.monotonic()
+                assert closed_by_peer(sock, 4) and time.monotonic() - start < 3
+            # A client that says nothing has the idle deadline, and one that
+            # closes without a word began no handshake.
+            with socket.create_connection(("127.0.0.1", port), 10) as sock:
+                start = time.monotonic()
+                assert closed_by_peer(sock, 5) and time.monotonic() - start > 1.5
+            socket.create_connection(("127.0.0.1", port), 10).close()
+            time.sleep(0.2)
+            m = ai.metrics()
+            assert total(m, "askai_tls_handshakes_total", result="failed") == 4, m
+            assert total(m, "askai_tls_handshakes_total", result="done") >= 5, m
+            assert total(m, "askai_tls_flight_seconds_count") >= 10, m
+
+        # The cap closes a TLS client with nothing said.
+        with Askai(binary, "-u", up.url(), *tls, "--max-client-conns", "1") as ai:
+            port = tls_port(ai)
+            with tls_connect(tls_client(crt), port) as first:
+                with socket.create_connection(("127.0.0.1", port), 10) as sock:
+                    assert sock.recv(64) == b""
+                first.sendall(rpc_request(3))
+                assert Replies(first).next()[1]["id"] == 3
+
+        # SIGHUP reloads the certificate and key, without a configuration
+        # file; those who shook hands go on.  A key that is not the
+        # certificate's leaves the last.
+        with Askai(binary, "-u", up.url(), *tls) as ai:
+            port = tls_port(ai)
+            one = tls_client(crt)
+            old = https(one, port)
+            assert ai.rpc("ping", conn=old)[0] == 200
+            crt2, key2 = tls_files(d, "two")
+            os.replace(crt2, crt)
+            os.replace(key2, key)
+            ai.log.clear()
+            ai.proc.send_signal(signal.SIGHUP)
+            ai.wait_log("configuration reloaded: .*, and the TLS certificate$")
+            two = tls_client(crt)
+            assert ai.rpc("ping", conn=https(two, port))[0] == 200
+            assert refused(one, port)
+            assert ai.rpc("ping", conn=old)[0] == 200
+            os.replace(tls_files(d, "three")[1], key)
+            ai.log.clear()
+            ai.proc.send_signal(signal.SIGHUP)
+            ai.wait_log("configuration not reloaded; the last stays")
+            assert "TLS: the key is not the certificate's" in "".join(ai.log)
+            assert ai.rpc("ping", conn=https(two, port))[0] == 200
+            old.close()
+
+        # Ed25519, and RSA if allowed.
+        for kind, extra in (("ed25519", ()), ("rsa", ("--tls-allow-rsa",))):
+            c, k = tls_files(d, kind, kind)
+            with Askai(binary, "-u", up.url(), "-l", "tls:127.0.0.1:0",
+                       "--tls-cert", c, "--tls-key", k, *extra) as ai:
+                assert ai.rpc("ping", conn=https(tls_client(c), tls_port(ai)))[0] == 200
+
+        # What askai refuses to start with.
+        crt, key = tls_files(d, "four")
+        rsa_crt, rsa_key = f"{d}/rsa.crt", f"{d}/rsa.key"
+        enc = f"{d}/enc.key"
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ec", "-pkeyopt",
+                        "ec_paramgen_curve:P-256", "-aes256", "-pass", "pass:x",
+                        "-out", enc], check=True, capture_output=True)
+        os.chmod(enc, 0o600)
+        listen = ("-l", "tls:127.0.0.1:0")
+        fails(*listen, message="a tls: listener needs --tls-cert and --tls-key")
+        fails(*listen, "--tls-cert", crt, message="needs --tls-cert and --tls-key")
+        fails("-l", "tls:unix:/nonexistent/askai", "--tls-cert", crt, "--tls-key", key,
+              message="TLS over a Unix socket")
+        fails(*listen, "--tls-cert", f"{d}/none", "--tls-key", key,
+              message="cannot open")
+        fails(*listen, "--tls-cert", key, "--tls-key", key,
+              message="TLS: the certificate chain: ")
+        fails(*listen, "--tls-cert", crt, "--tls-key", rsa_key,
+              message="TLS: the key is not the certificate's")
+        fails(*listen, "--tls-cert", rsa_crt, "--tls-key", rsa_key,
+              message="the key is RSA, which needs --tls-allow-rsa")
+        fails(*listen, "--tls-cert", crt, "--tls-key", enc,
+              message="TLS: the key is encrypted")
+        os.chmod(key, 0o644)
+        fails(*listen, "--tls-cert", crt, "--tls-key", key,
+              message=f"{key}: others may read it")
+        os.chmod(key, 0o640)
+        with Askai(binary, "-u", up.url(), *listen, "--tls-cert", crt,
+                   "--tls-key", key):
+            pass
+    print("tls: TLS 1.3 and http/1.1 only, records held, waits and key "
+          "updates, deadlines, plain HTTP, the cap, certificate checks and "
+          "reload: PASS")
+
+
 def local_address():
     """A non-loopback address of this host, or None."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -4710,7 +4950,7 @@ def main():
                       check_answers, check_dense, check_connections,
                       check_cancellation, check_limits, check_loops, check_turn_order,
                       check_isolation, check_configuration, check_identities,
-                      check_reload, check_unix, check_metrics,
+                      check_reload, check_unix, check_tls, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_tasks, check_classes,

@@ -50,6 +50,7 @@ enum loop_unit {
 	                    to the allocator under memory pressure, a block a
 	                    unit per 128 KiB (buf_stash_release()) */
 	LOOP_TASKS,    /**< task slices (task.h) */
+	LOOP_FLIGHTS,  /**< TLS handshake flights (tls.h) */
 	LOOP_UNITS
 };
 
@@ -67,6 +68,7 @@ enum {
 	LOOP_STEP_CLOSES  = 32,
 	LOOP_STEP_RELEASE = 256,
 	LOOP_STEP_TASKS   = 1,
+	LOOP_STEP_FLIGHTS = 1,
 };
 
 /**

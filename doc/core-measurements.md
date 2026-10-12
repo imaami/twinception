@@ -30,8 +30,9 @@ askai or the mock did not exit 0 or the generator lost arrivals.
 | hostile | bodies on new connections in a closed loop. Over the limits: 100 k-deep nesting, 400 k values, a 4 MB string. From S2a, within them: 1013 empty objects, 507 keys, a 1 MiB string, a 1 MiB tool call of escaped prose |
 | dense | 1 MiB bodies, one at a time: 524 k zeros, 349 k empty objects, or 237 k members in objects of 512; askai has `--max-values 1000000` (S2b) |
 | malformed | malformed requests on new connections in a closed loop; churn of fresh-connection pings at 1000/s |
-| storm | 10 000 idle; 64 jobs; 64 each of loris, slow-body and slow-read clients; a 4 MiB pipeline; churn at 1000/s; malformed; hostile; mock 1 slot |
-| check | every mode on a small scale (500 idle, 8 jobs, 4 hang-ups, 16 + 16 slow, 8 slow readers, a pipeline, churn at 200/s, hostile, dense, 256 KiB answers); askai has `--head-timeout 2 --body-grace 1 --max-values 1000000` (S2b) |
+| tls | TLS churn alone: 1000 full handshakes a second on fresh connections to a second, TLS listener with a throwaway P-256 certificate, each sending a ping (S9) |
+| storm | 10 000 idle; 64 jobs; 64 each of loris, slow-body and slow-read clients; a 4 MiB pipeline; churn at 1000/s; malformed; hostile; mock 1 slot; from S8 saturating tasks; from S9 TLS churn at 200/s |
+| check | every mode on a small scale (500 idle, 8 jobs, 4 hang-ups, 16 + 16 slow, 8 slow readers, a pipeline, churn at 200/s, hostile, dense, 256 KiB answers; from S8 4 task connections; from S9 TLS churn at 50/s); askai has `--head-timeout 2 --body-grace 1 --max-values 1000000` (S2b) |
 
 `baseline` is the probe alone; `stall` is the self-check under "Method".
 
@@ -50,7 +51,8 @@ back (`LEAK_S` s at most). `run.sh` prints `RATIO`, a `CHECK` per clause and
 | Clause | A run fails on |
 |---|---|
 | errors | a probe arrival that failed, timed out or was lost, in any phase; a background request sent whole but not answered (idle, malformed, hostile, dense; dense ones not answered 200); a tool call failed or cut off; mock counters that do not add up |
-| lockout | a fresh connection not served: the fresh-ping probe kind, and churn |
+| lockout | a fresh connection not served: the fresh-ping probe kind, and churn; from S9, TLS churn |
+| tls | from S9, with TLS churn: no handshake done, or one failed, or done on another protocol than http/1.1 or another key exchange than X25519MLKEM768 |
 | limits | loris or slow-body clients still open once their deadline has passed; an upstream call that outlived its client by 3 s; in the `sse` profile, where every client hangs up on its event stream, any call answered rather than cancelled |
 | leaks | descriptors not back at the idle count + 2, or RSS not back within `RSS_SLACK_KIB` (4096, and from S5 256 more per client loop, for glibc's per-thread cache), by the end of the after phase: what askai keeps for reuse it gives back under the induced pressure |
 | fairness | a probe connection's p90 over `FAIR_CONN` (10) × the median connection's, each connection taking its turn of the arrivals; a probe kind's p90 over `FAIR_KIND` (10) × the median kind's; a tool-call connection with no call done while the median one did 3; a heavy mode's p90 batch or body over `FAIR_HEAVY` (50) × its p90 alone, or none done |
@@ -944,6 +946,66 @@ in first out.
   the first completion's; stop reasons keep up to 37 bytes; a Gemini URL's
   `alt` becomes `sse`; progress counts the events that carry text, and none
   is posted for a call withdrawn.
+
+## S9 — TLS
+
+Gate "TLS storm verdict": met. Design §3 gives what was built ("as built in
+S9") and what was measured of OpenSSL 3.6.5 before the build. The figures
+below are from the code after the review of S9: askai on this machine's 32
+CPUs (31 client loops), the harness beside it, unpinned.
+
+**Storm**, with TLS churn at 200 full handshakes a second (fresh
+connections to a second listener, a throwaway P-256 certificate, each
+sending a ping), three rounds:
+
+| Round | Handshakes done | Handshake p50 / p99 / max, ms | Probe p99 vs idle | Heavy modes' p90 vs alone | Turn max, ms | Verdict |
+|---|---|---|---|---|---|---|
+| 1 | 2095 of 2095 | 2.99 / 5.26 / 13.4 | 18.7× | 24.3–30.1× | 7.6 | pass |
+| 2 | 2011 of 2011 | 3.01 / 5.19 / 11.3 | 16.3× | 25.2–34.4× | 9.5 | pass |
+| 3 | 2197 of 2197 | 2.97 / 5.26 / 11.9 | 17.7× | 24.2–32.8× | 7.1 | pass |
+
+Handshake times are the client's, from its connect to the handshake's end,
+its own ML-KEM and ECDSA work included. Each flight is a bulk step, and in
+the storm the bulk lists hold the saturating tasks' slices, so handshakes
+take about four times as long as alone. Every handshake agreed on http/1.1
+and X25519MLKEM768.
+
+**TLS alone** (`tls`: 1000 handshakes a second): 10 493 of 10 493 done,
+p50 0.79 ms and p99 2.0 ms; probe p99 1.02× idle; the longest turn
+0.52 ms. RSS went from 45.9 MB idle to 55.7 MB after, within the slack:
+OpenSSL keeps per-thread state on each of the 31 loops, and caches.
+**check**: 273 of 273 handshakes at 50 a second. **Sanitizers**:
+`tests/askai.py`'s 37 checks are clean under ASan, UBSan and
+LeakSanitizer, and so is the `tls` profile (5567 handshakes); `check_tls`
+and `check_reload` are clean under TSan.
+
+**KeyUpdate flood** (review of S9): a client sends N KeyUpdates in one
+burst, then a ping, to askai with one client loop. The table gives the
+longest interactive step, as the bucket of `askai_loop_step_seconds` it
+fell in.
+
+| Build | N = 10 | 700 | 5000 | 20 000 |
+|---|---|---|---|---|
+| read-ahead, `AUTO_RETRY` (OpenSSL's default) | ≤ 0.25 ms | ≤ 10 ms | ≤ 50 ms | ≤ 250 ms |
+| read-ahead, no `AUTO_RETRY` | the ping never answered | | | |
+| neither (as built) | ≤ 0.1 ms | ≤ 0.1 ms | ≤ 0.5 ms | ≤ 0.1 ms |
+
+**Review of S9** (four reviewers, each followed by a verifier). Fixed:
+- one `SSL_read` went through every post-handshake message a client sent (above);
+- input was watched while TLS waited to send, which spun;
+- an `SSL_write` retry could be shorter than OpenSSL requires, closing the
+  connection: writes are now a record at most;
+- records read ahead were stranded when a read waited to send;
+- a client that connected and closed counted as a failed handshake;
+- part of a record held in TLS counted as idle;
+- out of memory in OpenSSL came out as an invalid option;
+- the certificate file's text, which may hold the key too, was not wiped.
+
+The tests gained certificates of mode 0644 (under umask 002 askai refused
+them), s_client's commands sent only once its handshake is done, and the
+generator counting handshakes cut off. Refuted: that handshaking
+connections should be evictable (as plaintext heads begun, they are busy by
+design).
 
 ## Open decisions
 

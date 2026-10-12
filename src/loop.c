@@ -72,6 +72,7 @@ static constexpr uint64_t bound[LOOP_UNITS] = {
 	[LOOP_CLOSES]  = LOOP_STEP_CLOSES,
 	[LOOP_RELEASE] = LOOP_STEP_RELEASE,
 	[LOOP_TASKS]   = LOOP_STEP_TASKS,
+	[LOOP_FLIGHTS] = LOOP_STEP_FLIGHTS,
 };
 
 static char const *const unit_name[LOOP_UNITS] = {
@@ -87,6 +88,7 @@ static char const *const unit_name[LOOP_UNITS] = {
 	[LOOP_CLOSES]  = "closes",
 	[LOOP_RELEASE] = "release",
 	[LOOP_TASKS]   = "tasks",
+	[LOOP_FLIGHTS] = "flights",
 };
 
 /* Record @p ns as timing @p t in the statistics since the last report, and in
