@@ -833,7 +833,7 @@ model_done (CURLcode    result,
 	model->done = 1;
 
 	if (!model->error) {
-		int e = sse_finish(&model->sse);
+		int e = sse_end(&model->sse);
 		if (e)
 			model->error = e;
 	}
@@ -1179,7 +1179,7 @@ rapid_done (CURLcode    result,
 	model->done = 1;
 
 	if (!model->error) {
-		int e = sse_finish(&model->sse);
+		int e = sse_end(&model->sse);
 		if (e)
 			model->error = e;
 	}

@@ -31,11 +31,13 @@ sse_line (struct sse *sse,
 	if (!len)
 		return sse_dispatch(sse);
 
-	if (len < 5 || memcmp(line, "data:", 5))
+	static char const field[] = "data:";
+	size_t n = sizeof field - 1;
+	if (len < n || memcmp(line, field, n))
 		return 0;
 
-	line += 5;
-	len -= 5;
+	line += n;
+	len -= n;
 	if (len && *line == ' ') {
 		++line;
 		--len;
@@ -55,6 +57,13 @@ sse (sse_event_cb *event,
 		.event = event,
 		.user = user
 	};
+}
+
+void
+sse_reset (struct sse *sse)
+{
+	dstr_clear(&sse->input);
+	dstr_clear(&sse->data);
 }
 
 int
@@ -87,7 +96,7 @@ sse_feed (struct sse *sse,
 }
 
 int
-sse_finish (struct sse *sse)
+sse_end (struct sse *sse)
 {
 	size_t len = dstr_len(&sse->input);
 	int e = len ? sse_line(sse, dstr_get(&sse->input), len) : 0;
