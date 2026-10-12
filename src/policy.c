@@ -6,7 +6,6 @@
 #include <pwd.h>
 #include <stdarg.h>
 #include <stdatomic.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -91,13 +90,14 @@ policy_build_fail (struct policy_build *b,
 {
 	va_list ap;
 	va_start(ap, fmt);
-	(void)util_vformat(b->why, b->len, fmt, ap);
+	util_vformat(b->why, b->len, fmt, ap);
 	va_end(ap);
 	return EINVAL;
 }
 
-/* Say that @p what of @p who names no user or group @p name, as @p e says,
- * ENOENT for none at all; returns EINVAL, or @p e if that is ENOMEM. */
+/* Say that @p what, such as "unix-groups: no group", names no user or group
+ * @p name, as @p e says, ENOENT for none at all; returns EINVAL, or @p e if
+ * that is ENOMEM. */
 static int
 policy_build_none (struct policy_build *b,
                    char const          *what,
@@ -335,6 +335,24 @@ policy_build_tools (struct policy_build *b,
 	return 0;
 }
 
+/* Member @p key, @p val, of role @p name, into @p r. */
+static int
+policy_build_member (struct policy_build *b,
+                     struct policy_role  *r,
+                     char const          *name,
+                     char const          *key,
+                     struct json_object  *val)
+{
+	if (!strcmp(key, "tools"))
+		return policy_build_tools(b, r, name, val);
+	if (strcmp(key, "metrics"))
+		return policy_build_fail(b, "role %s: unknown member %s", name, key);
+	if (!json_object_is_type(val, json_type_boolean))
+		return policy_build_fail(b, "role %s: metrics must be true or false", name);
+	r->metrics = json_object_get_boolean(val);
+	return 0;
+}
+
 /* Role @p name, its members @p members, into @p r. */
 static int
 policy_build_role_one (struct policy_build *b,
@@ -348,17 +366,9 @@ policy_build_role_one (struct policy_build *b,
 		return policy_build_fail(b, "role %s must be an object", name);
 	struct json_object_iter m;
 	json_object_object_foreachC(members, m) {
-		if (!strcmp(m.key, "tools")) {
-			int e = policy_build_tools(b, r, name, m.val);
-			if (e)
-				return e;
-		} else if (strcmp(m.key, "metrics")) {
-			return policy_build_fail(b, "role %s: unknown member %s", name, m.key);
-		} else if (!json_object_is_type(m.val, json_type_boolean)) {
-			return policy_build_fail(b, "role %s: metrics must be true or false", name);
-		} else {
-			r->metrics = json_object_get_boolean(m.val);
-		}
+		int e = policy_build_member(b, r, name, m.key, m.val);
+		if (e)
+			return e;
 	}
 	return 0;
 }
