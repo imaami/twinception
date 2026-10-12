@@ -455,14 +455,14 @@ loop of turns: each turn is an upstream call, whose answer may call tools;
 `askai` runs them at once (a `notes` or `compact` call keeps to itself, after
 the calls before it and before those after it), writes the turn and their
 results, in the calls' order, into the conversation, and asks again, until
-an answer calls none, which is the call's answer.  A turn goes back as it came where the API asks for that: a
-call's `extra_content` in chat completions, in which Gemini's give their
-thought signature; the output items of the Responses API, its reasoning
-among them; the thinking blocks of Anthropic's Messages, with their
-signatures, in their places among the text and the calls; and Gemini's
-parts, with their thought signatures.  Each turn waits for an upstream slot
-like any call, so the scheduler's fairness holds turn by turn.  The caller gets the answer, and a
-second text that lists the calls the turns made, with their arguments (but
+an answer calls none, which is the call's answer.  A turn goes back as it
+came where the API asks for that: a call's `extra_content` in chat
+completions, in which Gemini's give their thought signature; the output
+items of the Responses API, its reasoning among them; the thinking blocks of
+Anthropic's Messages, with their signatures, in their places among the text
+and the calls; and Gemini's parts, with their thought signatures.  Each turn
+waits for an upstream slot like any call, so the scheduler's fairness holds
+turn by turn.  The caller gets the answer, and a second text that lists the calls the turns made, with their arguments (but
 those of `notes` and `compact`, which are the model's own) and the bytes of
 each output.  With a `progressToken`, its notifications say the turn and the
 tool being called.  `--max-turns` (32) bounds the turns: the turn before the
@@ -481,6 +481,18 @@ with `--slots`; each turn asks for its usage (`stream_options.include_usage`),
 which counts the tokens.  Once a turn would fill three quarters of the
 context, the last result of its tools says so, and asks the model to note
 what it needs and call `compact`.
+
+The model need not wait for a slow call: `background` runs a call of `man`
+or `git` as a job, and answers at once with its number, 8 jobs a call at
+most; `jobs` lists them, gives a finished one's output, a window at a time
+from its `offset`, or cancels one; `timer` sets a timer of up to an hour,
+with a note.  A job that finishes and a timer that fires are told, in
+brackets, after the next result the turns are given; `wait`, for up to 10
+minutes, ends as soon as either happens, a job of those it names or any, and
+says what did, which takes no upstream slot while it waits, as polling
+`jobs` would.  `background` and `jobs` come with a tool that can run so,
+`wait` and `timer` with any.  The jobs and timers last as long as the call:
+its answer ends them.
 
 `compact` takes a summary: the conversation after the prompt, its turns and
 the tools' results, goes, and `askai` adds to the prompt, in brackets, the

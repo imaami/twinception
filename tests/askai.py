@@ -27,6 +27,9 @@ MODERN = "2026-07-28"
 KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
             "DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN", "OPENROUTER_API_KEY")
+# The tools that turns lent git are given, in order: git, then compact,
+# then those that run git in the background, wait and set timers.
+TURN_TOOLS = ["git", "compact", "background", "jobs", "wait", "timer"]
 # The API that each answer format of the fake upstream is in.
 API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
        "gemini": "generate"}
@@ -4984,7 +4987,7 @@ def check_turn_apis(binary, up):
             first, second = up.requests[count:]
             tools = first["body"]["tools"]
             assert [(t["type"], t["name"]) for t in tools] == \
-                [("function", "git"), ("function", "compact")], tools
+                [("function", t) for t in TURN_TOOLS], tools
             assert tools[0]["parameters"]["properties"]["repo"], tools
             given = second["body"]["input"]
             assert list(second["body"])[-1] == "input", second["body"]
@@ -5003,7 +5006,8 @@ def check_turn_apis(binary, up):
         blocks = [("thinking", "Plan it.", "sig/1"), ("text", "Looking."), ("text", ""),
                   ("text", " \n\n"), ("thinking", "", "sig2"),
                   ("tool", "c1", "git", json.dumps(log)), ("redacted", "opaque=="),
-                  ("tool", "c2", "git", "{\"repo\":"), ("whole", "c3", "git", json.dumps(log))]
+                  ("tool", "c2", "git", "{\"repo\":"),
+                  ("whole", "c3", "git", json.dumps(log))]
         with run("messages", "/v1/messages") as ai:
             script[:] = [lambda r: (200, messages_turn(blocks, stray=True)),
                          lambda r: (200, messages_turn([("text", "A")], "end_turn"))]
@@ -5012,7 +5016,7 @@ def check_turn_apis(binary, up):
             assert result["content"][0]["text"] == "A", result
             first, second = up.requests[count:]
             tools = first["body"]["tools"]
-            assert [t["name"] for t in tools] == ["git", "compact"] and \
+            assert [t["name"] for t in tools] == TURN_TOOLS and \
                 tools[0]["input_schema"]["properties"]["repo"], tools
             messages = second["body"]["messages"]
             assert list(second["body"])[-1] == "messages", second["body"]
@@ -5059,7 +5063,7 @@ def check_turn_apis(binary, up):
             tools = first["body"]["tools"]
             declared = tools[0]["functionDeclarations"]
             assert len(tools) == 1 and [t["name"] for t in declared] == \
-                ["git", "compact"], tools
+                TURN_TOOLS, tools
             assert declared[0]["parametersJsonSchema"]["properties"]["repo"], tools
             contents = second["body"]["contents"]
             assert list(second["body"])[-1] == "contents", second["body"]
@@ -5173,7 +5177,8 @@ def check_turns(binary, up):
             first, second, third = up.requests[count:]
             body = first["body"]
             assert [t["function"]["name"] for t in body["tools"]] == \
-                ["git", "notes", "compact"], body["tools"]
+                ["git", "notes", "compact", "background", "jobs", "wait", "timer"], \
+                body["tools"]
             assert body["stream_options"] == {"include_usage": True}, body
             assert list(body)[-1] == "messages" and turns(first) == [], body
             head, *results = turns(second)
@@ -5467,6 +5472,58 @@ def check_turns(binary, up):
             assert [m["tool_call_id"] for m in results] == ["p0", "p1", "p2"], results
             assert result["content"][1]["text"].count("- git ") == 3, result
 
+            # A job in the background, and a timer: background starts git and
+            # answers at once; a wait for the job ends as it finishes, saying
+            # so; jobs lists it and gives its output; a later wait ends as the
+            # timer fires, saying so; a cancelled job runs no more.
+            def tool_call(cid, name, **args):
+                return (cid, name, json.dumps(args))
+            script[:] = [
+                lambda r: (200, turn_stream([
+                    tool_call("b1", "background", tool="git", arguments=json.loads(slow)),
+                    tool_call("t1", "timer", seconds=2, note="check it")])),
+                lambda r: (200, turn_stream([tool_call("w1", "wait", seconds=30, jobs=[1])])),
+                lambda r: (200, turn_stream([
+                    tool_call("j1", "jobs", action="list"),
+                    tool_call("j2", "jobs", action="result", job=1)])),
+                lambda r: (200, turn_stream([tool_call("w2", "wait", seconds=10)])),
+                lambda r: (200, turn_stream([
+                    tool_call("b2", "background", tool="git", arguments=json.loads(slow)),
+                    tool_call("b3", "background", tool="notes", arguments={})])),
+                lambda r: (200, turn_stream([tool_call("c1", "jobs", action="cancel", job=2),
+                                             tool_call("c2", "jobs", action="list"),
+                                             tool_call("c3", "wait", seconds=0)])),
+            ]
+            count = len(up.requests)
+            start = time.monotonic()
+            result = ai.ask("Q")
+            took = time.monotonic() - start
+            assert result["content"][0]["text"] == "A", result
+            asked = up.requests[count:count + 7]
+
+            def said(k, cid):
+                """What request k of the call says call cid gave."""
+                return next(m["content"] for m in turns(asked[k])
+                            if m.get("tool_call_id") == cid)
+            assert said(1, "b1") == "Started job 1." and \
+                said(1, "t1") == "Timer 1 will fire in 2 s.", turns(asked[1])
+            assert said(2, "w1").startswith("[askai: job 1, git, finished: call jobs") and \
+                "timer" not in said(2, "w1"), said(2, "w1")
+            assert re.fullmatch(r"job 1: git \{.*\}: finished, \d+ bytes\n",
+                                said(3, "j1")), said(3, "j1")
+            assert said(3, "j2") == "[No output.]", said(3, "j2")
+            assert said(4, "w2") == "[askai: timer 1 fired: check it.]\n", said(4, "w2")
+            assert said(5, "b2") == "Started job 2." and \
+                said(5, "b3").startswith("The tool argument must name a tool"), \
+                turns(asked[5])
+            assert said(6, "c1") == "Cancelled the job." and \
+                "job 2: git" in said(6, "c2") and said(6, "c2").endswith(": cancelled\n") \
+                and said(6, "c3").startswith("The seconds argument"), turns(asked[6])
+            assert 2 <= took < 6, took
+            trace = result["content"][1]["text"]
+            assert all(f"- {t} " in trace for t in ("background", "timer", "wait", "jobs")), \
+                trace
+
         # llama-server's /props tells the context, with --slots too.
         up.props = {"total_slots": 2, "default_generation_settings": {"n_ctx": 6000}}
         with Askai(binary, *args, "--slots", "1") as ai:
@@ -5515,7 +5572,8 @@ def check_turns(binary, up):
             assert time.monotonic() - start < 1, time.monotonic() - start
         up.props = None
 
-        # A role that may not call git lends the turns notes and compact.
+        # A role that may not call git lends the turns notes and compact, and
+        # wait and timer, but nothing to run in the background.
         path = f"{d}/askai.json"
         with open(path, "w") as f:
             json.dump({"roles": {"asker": {"tools": ["ask_ai"]}},
@@ -5525,7 +5583,7 @@ def check_turns(binary, up):
             count = len(up.requests)
             assert text_of(ai.ask("Q")) == "A"
             assert [t["function"]["name"] for t in up.requests[count]["body"]["tools"]] \
-                == ["notes", "compact"], up.requests[count]["body"]
+                == ["notes", "compact", "wait", "timer"], up.requests[count]["body"]
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("turns: tools lent to the upstream, notes, threads, windows, compaction, "
           "limits: PASS")
