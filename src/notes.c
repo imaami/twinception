@@ -121,21 +121,6 @@ notes_fail (char       *why,
 	return EINVAL;
 }
 
-/* @p a then @p b, in memory of its own; nullptr if out of memory. */
-static char *
-notes_join (char const *a,
-            size_t      a_len,
-            char const *b)
-{
-	size_t b_len = strlen(b);
-	char *s = malloc(a_len + b_len + 1);
-	if (s) {
-		memcpy(s, a, a_len);
-		memcpy(s + a_len, b, b_len + 1);
-	}
-	return s;
-}
-
 /* Make the bare repository at @p path, with no hooks' samples, if nothing is
  * there, and find its real path. */
 static int
@@ -160,7 +145,7 @@ notes_open (struct notes *notes,
 		util_format(why, len, "%s", strerror(e));
 		return e;
 	}
-	notes->dir = notes_join(dir, sizeof dir - 1, real);
+	notes->dir = util_concat(dir, sizeof dir - 1, real);
 	free(real);
 	if (!notes->dir) {
 		util_format(why, len, "out of memory");
@@ -186,8 +171,8 @@ notes_create (char const *path,
 	static char const env_path[] = "PATH=";
 	char const *search = getenv("PATH");
 	struct notes *notes = calloc(1, sizeof *notes);
-	char *env = notes ? notes_join(env_path, sizeof env_path - 1,
-	                               search && *search ? search : "/usr/bin:/bin")
+	char *env = notes ? util_concat(env_path, sizeof env_path - 1,
+	                                search && *search ? search : "/usr/bin:/bin")
 	                  : nullptr;
 	if (!env) {
 		free(notes);

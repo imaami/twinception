@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ARRAY_SIZE(a) (sizeof (a) / sizeof *(a))
@@ -27,23 +28,36 @@ util_hash (uint64_t    seed,
 	return h ^ h >> 33;
 }
 
+/** The @p a_len bytes at @p a, then the string @p b, in memory of their
+ *  own; nullptr if out of memory. */
+static inline char *
+util_concat (char const *a,
+             size_t      a_len,
+             char const *b)
+{
+	size_t b_len = strlen(b);
+	char *s = malloc(a_len + b_len + 1);
+	if (s) {
+		memcpy(s, a, a_len);
+		memcpy(s + a_len, b, b_len + 1);
+	}
+	return s;
+}
+
 /**
  * Format words that a log, a client or the model reads into the @p size
- * bytes at @p buf, @p size > 0, as snprintf() does: text cut short ends in
+ * bytes at @p buf, @p size > 0, as vsnprintf() does: text cut short ends in
  * "...", and a format that fails gives "?".  Returns the length written.
  */
-[[gnu::format(printf, 3, 4)]]
+[[gnu::format(printf, 3, 0)]]
 static inline size_t
-util_format (char       *buf,
-             size_t      size,
-             char const *fmt,
-             ...)
+util_vformat (char       *buf,
+              size_t      size,
+              char const *fmt,
+              va_list     ap)
 {
 	static char const cut[] = "...";
-	va_list ap;
-	va_start(ap, fmt);
 	int n = vsnprintf(buf, size, fmt, ap);
-	va_end(ap);
 	if (n < 0) {
 		size_t len = size > 1;
 		memcpy(buf, "?", len);
@@ -55,6 +69,21 @@ util_format (char       *buf,
 	if (size >= sizeof cut)
 		memcpy(buf + size - sizeof cut, cut, sizeof cut);
 	return size - 1;
+}
+
+/** As util_vformat(), with the format's arguments. */
+[[gnu::format(printf, 3, 4)]]
+static inline size_t
+util_format (char       *buf,
+             size_t      size,
+             char const *fmt,
+             ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	size_t len = util_vformat(buf, size, fmt, ap);
+	va_end(ap);
+	return len;
 }
 
 #endif /* TWINCEPTION_SRC_UTIL_H_ */
