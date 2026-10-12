@@ -29,7 +29,7 @@ enum {
 enum { RUNNING, STOPPING, DONE };
 
 /* The owner's half and the logger's half each have a cache line. */
-struct ring {
+struct log_ring {
 	alignas(64) _Atomic size_t head;  /* bytes put, by the thread it is for */
 	unsigned char             *data;
 	alignas(64) _Atomic size_t tail;  /* bytes written out, by the logger */
@@ -37,7 +37,7 @@ struct ring {
 };
 
 static struct {
-	struct ring      *rings;
+	struct log_ring  *rings;
 	size_t            n;
 	_Atomic size_t    attached;
 	int               wake_fd;
@@ -46,11 +46,11 @@ static struct {
 	_Atomic uint32_t  state;
 } lg = { .wake_fd = -1, .notify_fd = -1 };
 
-static thread_local struct ring *self;
+static thread_local struct log_ring *self;
 
 /* For a thread that found no ring left: always full, so its lines are dropped
  * and counted, and it never blocks on stderr. */
-static struct ring full = { .head = RING };
+static struct log_ring full = { .head = RING };
 
 struct log_metrics log_metrics;
 enum log_level log_threshold = LOG_INFO;
@@ -58,8 +58,8 @@ enum log_level log_threshold = LOG_INFO;
 /* Whether the site may log a line now; if so, @p *missed is how many it held
  * back since its last.  Racing threads may miscount by a line or two. */
 static bool
-site_allow (struct log_site *site,
-            uint32_t        *missed)
+log_site_allow (struct log_site *site,
+                uint32_t        *missed)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
@@ -82,10 +82,10 @@ site_allow (struct log_site *site,
 /* Put a whole line into the calling thread's ring, or drop it if it does not
  * fit; without a ring, write it out. */
 static void
-emit (char const *line,
-      size_t      len)
+log_emit (char const *line,
+          size_t      len)
 {
-	struct ring *r = self;
+	struct log_ring *r = self;
 	if (!r) {
 		ssize_t n = write(STDERR_FILENO, line, len);
 		(void)n;
@@ -110,8 +110,8 @@ emit (char const *line,
 
 /* Length @p len of a line after a vsnprintf() into it returned @p n. */
 static size_t
-grown (size_t len,
-       int    n)
+log_grown (size_t len,
+           int    n)
 {
 	return n < 0 ? len : len + (size_t)n < LINE - 1 ? len + (size_t)n : LINE - 1;
 }
@@ -122,31 +122,31 @@ log_put (struct log_site *site,
          ...)
 {
 	uint32_t missed = 0;
-	if (site && !site_allow(site, &missed))
+	if (site && !log_site_allow(site, &missed))
 		return;
 
 	/* The last byte is kept for the line break. */
 	char line[LINE];
-	size_t len = grown(0, snprintf(line, LINE - 1, "%s: ",
-	                               program_invocation_short_name));
+	size_t len = log_grown(0, snprintf(line, LINE - 1, "%s: ",
+	                                   program_invocation_short_name));
 	va_list ap;
 	va_start(ap, fmt);
-	len = grown(len, vsnprintf(line + len, LINE - 1 - len, fmt, ap));
+	len = log_grown(len, vsnprintf(line + len, LINE - 1 - len, fmt, ap));
 	va_end(ap);
 	if (missed)
-		len = grown(len, snprintf(line + len, LINE - 1 - len,
-		                          " (%" PRIu32 " more held back)", missed));
+		len = log_grown(len, snprintf(line + len, LINE - 1 - len,
+		                              " (%" PRIu32 " more held back)", missed));
 	if (len == LINE - 1)
-		memcpy(line + len - 3, "...", 3);
+		memcpy(line + len - (sizeof "..." - 1), "...", sizeof "..." - 1);
 	line[len++] = '\n';
-	emit(line, len);
+	log_emit(line, len);
 }
 
 /* Write all @p n buffers at @p iov to stderr, waiting as long as it takes for
  * room; on an error, drop the rest. */
 static void
-write_all (struct iovec *iov,
-           size_t        n)
+log_write_all (struct iovec *iov,
+               size_t        n)
 {
 	while (n) {
 		ssize_t w = writev(STDERR_FILENO, iov, (int)n);
@@ -170,7 +170,7 @@ write_all (struct iovec *iov,
 
 /* Whether the logger has something to do: lines, or the order to stop. */
 static bool
-pending (void)
+log_pending (void)
 {
 	if (atomic_load(&lg.state) != RUNNING)
 		return true;
@@ -182,7 +182,7 @@ pending (void)
 }
 
 static void *
-logger (void *arg)
+log_thread (void *arg)
 {
 	(void)arg;
 	(void)pthread_setname_np(pthread_self(), "logger");
@@ -202,7 +202,7 @@ logger (void *arg)
 			reported = dropped;
 		}
 		for (size_t i = 0; i < lg.n; ++i) {
-			struct ring *r = &lg.rings[i];
+			struct log_ring *r = &lg.rings[i];
 			size_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed);
 			r->seen = atomic_load_explicit(&r->head, memory_order_acquire);
 			size_t len = r->seen - tail;
@@ -214,7 +214,7 @@ logger (void *arg)
 				iov[k++] = (struct iovec){ r->data, len - first };
 		}
 		if (k) {
-			write_all(iov, k);
+			log_write_all(iov, k);
 			for (size_t i = 0; i < lg.n; ++i)
 				atomic_store_explicit(&lg.rings[i].tail, lg.rings[i].seen,
 				                      memory_order_release);
@@ -226,7 +226,7 @@ logger (void *arg)
 		/* Say so before the last look, so that a line put after it, or
 		 * the order to stop, wakes this. */
 		atomic_store(&lg.asleep, 1);
-		if (!pending()) {
+		if (!log_pending()) {
 			eventfd_t v;
 			(void)poll(&(struct pollfd){ .fd = lg.wake_fd, .events = POLLIN }, 1, -1);
 			(void)eventfd_read(lg.wake_fd, &v);
@@ -241,43 +241,64 @@ logger (void *arg)
 	return nullptr;
 }
 
+/* Free the rings and the logger's eventfd. */
+static void
+log_free (void)
+{
+	for (size_t i = 0; i < lg.n; ++i)
+		free(lg.rings[i].data);
+	free(lg.rings);
+	if (lg.wake_fd >= 0)
+		close(lg.wake_fd);
+	lg.rings = nullptr;
+	lg.n = 0;
+	lg.wake_fd = -1;
+}
+
+/* Make @p n rings, and the logger's eventfd. */
+static int
+log_alloc (size_t n)
+{
+	lg.rings = aligned_alloc(alignof(struct log_ring), n * sizeof *lg.rings);
+	if (!lg.rings)
+		return ENOMEM;
+	for (; lg.n < n; ++lg.n) {
+		struct log_ring *r = &lg.rings[lg.n];
+		if (!(r->data = malloc(RING)))
+			return ENOMEM;
+		atomic_init(&r->head, 0);
+		atomic_init(&r->tail, 0);
+		r->seen = 0;
+	}
+	lg.wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	return lg.wake_fd < 0 ? errno : 0;
+}
+
+/* Start the logger's thread, detached. */
+static int
+log_spawn (void)
+{
+	pthread_attr_t attr;
+	int e = pthread_attr_init(&attr);
+	if (e)
+		return e;
+	(void)pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	pthread_t thread;
+	e = pthread_create(&thread, &attr, log_thread, nullptr);
+	pthread_attr_destroy(&attr);
+	return e;
+}
+
 int
 log_start (size_t rings,
            int    notify_fd)
 {
 	if (!rings || rings > RINGS_MAX)
 		return EINVAL;
-	lg.rings = aligned_alloc(alignof(struct ring), rings * sizeof *lg.rings);
-	if (!lg.rings)
-		return ENOMEM;
-	int e = 0;
-	for (size_t i = 0; !e && i < rings; ++i, ++lg.n) {
-		struct ring *r = &lg.rings[i];
-		atomic_init(&r->head, 0);
-		atomic_init(&r->tail, 0);
-		r->seen = 0;
-		e = (r->data = malloc(RING)) ? 0 : ENOMEM;
-	}
-	if (!e && (lg.wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) < 0)
-		e = errno;
 	lg.notify_fd = notify_fd;
-	pthread_attr_t attr;
-	if (!e && !(e = pthread_attr_init(&attr))) {
-		(void)pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-		pthread_t thread;
-		e = pthread_create(&thread, &attr, logger, nullptr);
-		pthread_attr_destroy(&attr);
-	}
-	if (e) {
-		for (size_t i = 0; i < lg.n; ++i)
-			free(lg.rings[i].data);
-		free(lg.rings);
-		if (lg.wake_fd >= 0)
-			close(lg.wake_fd);
-		lg.rings = nullptr;
-		lg.n = 0;
-		lg.wake_fd = -1;
-	}
+	int e = log_alloc(rings);
+	if (e || (e = log_spawn()))
+		log_free();
 	return e;
 }
 
@@ -309,13 +330,7 @@ log_fini (void)
 {
 	if (!lg.rings)
 		return;
-	for (size_t i = 0; i < lg.n; ++i)
-		free(lg.rings[i].data);
-	free(lg.rings);
-	close(lg.wake_fd);
-	lg.rings = nullptr;
-	lg.n = 0;
-	lg.wake_fd = -1;
+	log_free();
 	atomic_store(&lg.attached, 0);
 	atomic_store(&lg.state, RUNNING);
 	self = nullptr;
