@@ -70,7 +70,9 @@ struct stream_ops {
 /** Upward: what a transport tells its application. */
 struct stream_app {
 	/** Header field names the application reads with field(), in lower
-	 *  case; each may appear at most once in a request, but a list. */
+	 *  case; each may appear at most once in a request, but a list.  One
+	 *  the transport reads itself, such as host or content-length, is
+	 *  never the application's: field() gives it empty. */
 	char const *const *fields;
 	size_t             n_fields;
 	/** Bit i set: field i is a list (RFC 9110 5.3), which may come in
