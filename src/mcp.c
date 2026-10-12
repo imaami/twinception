@@ -277,6 +277,8 @@ struct mcp_req {
 	                                    upload: what askai adds goes there */
 	size_t               sent;       /* bytes of the upload as a turn went */
 	size_t               at;         /* where the call under way is in calls */
+	size_t               replayed;   /* bytes of the job's replay that the
+	                                    turn has written */
 	size_t               skip;       /* the byte of a tool's output that its
 	                                    window, given to a turn, starts at */
 	size_t               window;     /* and the bytes of that */
@@ -327,6 +329,8 @@ struct mcp_req {
 	bool                 progress;   /* the job's progress moved on */
 	bool                 blocked;    /* waiting for on_writable() */
 	bool                 tooling;    /* a tool runs for a turn */
+	bool                 listed;     /* the list that the turn's items go in
+	                                    has one */
 	bool                 branch;     /* the thread has notes */
 	bool                 stopped;    /* the turns ran out with tools called */
 	bool                 cut;        /* the turn's answer reached the output
@@ -1452,6 +1456,7 @@ mcp_on_job (struct loop *loop,
 		buf_fini(&job->result);
 		buf_fini(&job->calls);
 		buf_fini(&job->thought);
+		buf_fini(&job->replay);
 		free(job);
 		return;
 	}
@@ -2320,7 +2325,8 @@ struct mcp_call {
 	struct span name;
 	struct span extra;
 	struct span args;
-	size_t      size;  /* bytes of all that */
+	size_t      size;    /* bytes of all that */
+	size_t      replay;  /* bytes of the job's replay before it */
 };
 
 /* The call at @p p. */
@@ -2337,6 +2343,7 @@ mcp_call_at (unsigned char const *p)
 		.extra = { extra, c.extra },
 		.args = { extra + c.extra, c.args },
 		.size = job_call_size(&c),
+		.replay = c.replay,
 	};
 }
 
@@ -2445,64 +2452,118 @@ mcp_req_turn_args (struct mcp_req *req)
 	buf_cut(&req->upload, buf_peek(&req->upload).len - end.len, end.len);
 	req->part = 0;
 	req->at = 0;
+	req->replayed = 0;
 	req->next = 0;
 	req->off = 0;
 	mcp_req_enter(req, PHASE_TURN);
 }
 
-/* Write the turn's call req->part - 1, its arguments "{}" if they were no
- * object, as the upstream may parse them. */
+/* The items of the job's replay that the turn has yet to write before its
+ * byte @p to, as a piece: the first's comma left out if the list that they
+ * go in has no item yet. */
+static struct mcp_piece
+mcp_req_items (struct mcp_req const *req,
+               size_t                to)
+{
+	size_t from = req->replayed;
+	if (to <= from)
+		return (struct mcp_piece){};
+	from += !req->listed;
+	return RAW(buf_peek(&req->job->replay).ptr + from, to - from);
+}
+
+/* The arguments of the call @p c, @p k in the turn, as @p f writes them,
+ * into @p *p: "{}" if they were no object, as the upstream may parse them. */
+static int
+mcp_req_call_args (struct mcp_req const   *req,
+                   struct ai_format const *f,
+                   struct mcp_call const  *c,
+                   uint32_t                k,
+                   struct mcp_piece       *p)
+{
+	struct json_object *v = req->args[k];
+	if (!(f->flags & AI_ARGS_RAW)) {
+		*p = v && c->args.len ? ESC(c->args.ptr, c->args.len) : TEXT("{}");
+		return 0;
+	}
+	size_t len = 0;
+	char const *json = v ? json_object_to_json_string_length(v, JB_WIRE, &len)
+	                     : nullptr;
+	*p = json ? RAW(json, len) : FRAG("{}");
+	return v && !json ? ENOMEM : 0;
+}
+
+/* Write the turn's call req->part - 1, after the items of the replay before
+ * it; unless the API's calls are in the replay, which is all it writes. */
 static int
 mcp_req_turn_call (struct mcp_req         *req,
                    struct ai_format const *f)
 {
 	uint32_t k = req->part - 1u;
 	struct mcp_call c = mcp_call_at(buf_peek(&req->job->calls).ptr + req->at);
+	struct mcp_piece items = mcp_req_items(req, c.replay);
 	char made[CALL_ID];
-	struct mcp_piece id;
-	int e = mcp_req_call_id(req, &c, k, made, &id);
-	if (e)
+	struct mcp_piece id = {};
+	struct mcp_piece args = {};
+	int e = 0;
+	if (f->call.len && ((e = mcp_req_call_id(req, &c, k, made, &id)) ||
+	                    (e = mcp_req_call_args(req, f, &c, k, &args))))
 		return e;
+	bool listed = req->listed || items.len;
 	struct mcp_piece const p[] = {
-		BYTES(k ? f->call_next : f->call),
+		items,
+		BYTES(listed ? f->call_next : f->call),
 		id,
 		BYTES(f->name),
 		ESC(c.name.ptr, c.name.len),
 		BYTES(f->args),
-		req->args[k] && c.args.len ? ESC(c.args.ptr, c.args.len) : TEXT("{}"),
+		args,
 		BYTES(f->args_end),
 		c.extra.len ? BYTES(f->extra) : (struct mcp_piece){},
 		RAW(c.extra.ptr, c.extra.len),
 		BYTES(f->call_end),
 	};
-	e = mcp_req_upload(req, p, ARRAY_SIZE(p));
+	e = mcp_req_upload(req, p, f->call.len ? ARRAY_SIZE(p) : 1);
 	if (e)
 		return e;
+	req->listed = listed || f->call.len;
+	req->replayed = c.replay;
 	req->at += c.size;
 	return 0;
 }
 
-/* Write part req->part of the turn into the upload: first its text and
- * thinking, then each tool call, then its end. */
+/* Write part req->part of the turn into the upload: first its head, with
+ * its text and thinking if the API writes them, then each tool call, then
+ * the replay's items after the last and its end. */
 static int
 mcp_req_turn_part (struct mcp_req *req)
 {
 	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
 	struct job *job = req->job;
-	if (req->part > req->n_calls)
-		return mcp_req_upload(req, &BYTES(f->turn_end), 1);
+	if (req->part > req->n_calls) {
+		struct mcp_piece const p[] = {
+			mcp_req_items(req, buf_peek(&job->replay).len),
+			BYTES(f->turn_end),
+		};
+		return mcp_req_upload(req, p, ARRAY_SIZE(p));
+	}
 	if (req->part)
 		return mcp_req_turn_call(req, f);
 	struct span text = buf_peek(&job->result);
 	struct span thought = buf_peek(&job->thought);
+	bool thinks = thought.len && f->thought.len;
 	struct mcp_piece const p[] = {
 		BYTES(f->turn),
-		ESC(text.ptr, text.len),
-		thought.len ? BYTES(f->thought) : (struct mcp_piece){},
-		ESC(thought.ptr, thought.len),
+		BYTES(f->text),
+		ESC(text.ptr, f->text.len ? text.len : 0),
+		thinks ? BYTES(f->thought) : (struct mcp_piece){},
+		ESC(thought.ptr, thinks ? thought.len : 0),
 		BYTES(f->calls),
 	};
-	return mcp_req_upload(req, p, ARRAY_SIZE(p));
+	int e = mcp_req_upload(req, p, ARRAY_SIZE(p));
+	if (!e)
+		req->listed = !f->turn.len;
+	return e;
 }
 
 /* Write the turn into the upload, a slice a step; then keep its calls, let
@@ -2759,16 +2820,32 @@ mcp_req_result_put (struct mcp_req        *req,
 	int e = mcp_req_call_id(req, c, req->part, made, &id);
 	if (e)
 		return e;
+	/* A result that names its call gives the id of a call that had one. */
+	struct mcp_piece key = id;
+	struct mcp_piece by = {};
+	struct mcp_piece also = {};
+	if (f->flags & AI_RESULT_NAMED) {
+		key = ESC(c->name.ptr, c->name.len);
+		if (c->id.len) {
+			by = BYTES(f->result_id);
+			also = id;
+		}
+	}
 	struct mcp_piece const p[] = {
+		BYTES(req->part ? f->result_sep : f->results),
 		BYTES(f->result),
-		id,
+		key,
+		by,
+		also,
 		BYTES(f->output),
 		ESC(out.len ? out.ptr + req->skip : nullptr, req->window),
 		ESC(req->note, req->note_len),
 		BYTES(f->result_end),
-		req->part + 1u == req->n_calls ? BYTES(f->end) : (struct mcp_piece){},
+		BYTES(f->results_end),
+		BYTES(f->end),
 	};
-	return mcp_req_upload(req, p, ARRAY_SIZE(p));
+	bool last = req->part + 1u == req->n_calls;
+	return mcp_req_upload(req, p, last ? ARRAY_SIZE(p) : ARRAY_SIZE(p) - 2);
 }
 
 /* Write the result of the call under way into the upload, a slice a step;
@@ -4290,21 +4367,6 @@ mcp_compact_definition (void)
 		nullptr);
 }
 
-/* @p def, an MCP tool's definition, as chat completions' tools have one;
- * nullptr if out of memory. */
-static struct json_object *
-mcp_lend (struct json_object *def)
-{
-	return jb_object(
-		"type", json_object_new_string("function"),
-		"function", jb_object(
-			"name", json_object_get(jb_get(def, "name")),
-			"description", json_object_get(jb_get(def, "description")),
-			"parameters", json_object_get(jb_get(def, "inputSchema")),
-			nullptr),
-		nullptr);
-}
-
 /* Serialize @p val into @p text, then free it. */
 static int
 mcp_serialize (struct dstr        *text,
@@ -4435,8 +4497,8 @@ mcp_static_build (struct mcp_static        *st,
 		};
 		if (!tools[0] && !tools[1] && !tools[2])
 			continue;
-		int e = mcp_serialize(&st->lent[mask],
-		                      mcp_array(tools, ARRAY_SIZE(tools), mcp_lend));
+		int e = mcp_serialize(&st->lent[mask], ai_tools(st->ep->api, mcp_array(
+			tools, ARRAY_SIZE(tools), json_object_get)));
 		if (e)
 			return e;
 	}
@@ -4451,8 +4513,7 @@ mcp_static_create (struct config const *cfg,
                    struct notes        *notes,
                    int                 *e)
 {
-	/* The upstream is lent tools if its protocol has tool calls. */
-	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS && ai_format(cfg->ep.api);
+	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
 	struct mcp_static *st = malloc(sizeof *st);
 	if (!st) {
 		*e = ENOMEM;

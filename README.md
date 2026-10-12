@@ -446,18 +446,21 @@ kills `git` and the processes it started.
 ### Lending tools to the upstream
 
 With `--upstream-tools`, an `ask_ai` call offers the other model tools of its
-own, in the chat completions API (`--api chat`, which
-`llama-server` speaks; its chat template must take tools, as with `--jinja`):
-those of `man` and `git` that the caller's role may call (`ask_ai` itself is
-never offered), `notes` with `--notes`, and with any of those `compact`.
+own, in any of the APIs (`llama-server`'s chat template must take tools, as
+with `--jinja`): those of `man` and `git` that the caller's role may call
+(`ask_ai` itself is never offered), `notes` with `--notes`, and with any of
+those `compact`.
 Offered none, the call asks once, as without the option.  Else it runs a
 loop of turns: each turn is an upstream call, whose answer may call tools;
 `askai` runs them, one after another, writes the turn and their results into
 the conversation, and asks again, until an answer calls none, which is the
-call's answer.  A call's `extra_content`, in which Gemini's chat completions
-give their thought signature, goes back with the call as it came.  Each turn
-waits for an upstream slot like any call, so the scheduler's fairness holds
-turn by turn.  The caller gets the answer, and a
+call's answer.  A turn goes back as it came where the API asks for that: a
+call's `extra_content` in chat completions, in which Gemini's give their
+thought signature; the output items of the Responses API, its reasoning
+among them; the thinking blocks of Anthropic's Messages, with their
+signatures, in their places among the text and the calls; and Gemini's
+parts, with their thought signatures.  Each turn waits for an upstream slot
+like any call, so the scheduler's fairness holds turn by turn.  The caller gets the answer, and a
 second text that lists the calls the turns made, with their arguments (but
 those of `notes` and `compact`, which are the model's own) and the bytes of
 each output.  With a `progressToken`, its notifications say the turn and the
@@ -768,7 +771,6 @@ Upstream AI:
                             client may call but the ask tool, notes
                             with --notes, and compact; an ask call then
                             runs them and asks on until it answers
-                            (needs --api chat)
       --notes DIR           the git repository where the upstream keeps
                             its notes, made bare if it does not exist
       --max-turns N         upstream calls an ask call makes at most

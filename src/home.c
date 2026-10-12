@@ -285,6 +285,7 @@ home_job_drop_answer (struct job *job)
 	buf_fini(&job->result);
 	buf_fini(&job->calls);
 	buf_fini(&job->thought);
+	buf_fini(&job->replay);
 }
 
 /* Drop @p n references to @p job, and hand it back to its front if they were
@@ -307,6 +308,7 @@ home_job_reset (struct job *job,
 	job->flags = flags;
 	job->http = 0;
 	job->ev = job->evlen = job->line = job->scan = job->chunks = job->used = 0;
+	job->reader = (struct ai_reader){};
 	job->reason[0] = '\0';
 }
 
@@ -1039,8 +1041,8 @@ home_resume_step (struct loop      *loop,
 	}
 }
 
-/* Add the @p len bytes of text at @p text to @p to, a job's answer or its
- * thinking, if they are UTF-8 (json-c lets overlong forms through), and the
+/* Add the @p len bytes of text at @p text to @p to, a job's answer, its
+ * thinking or its replay, if they are UTF-8 (json-c lets overlong forms through), and the
  * buffer stays within MAX_RESPONSE; it is copied whole. */
 static int
 home_append_text (struct home *home,
@@ -1081,6 +1083,16 @@ home_put_thought (void       *user,
 {
 	struct job *job = user;
 	return home_append_text(self, &job->thought, text, len);
+}
+
+/* Its replay, likewise: JSON text. */
+static int
+home_put_replay (void       *user,
+                 char const *json,
+                 size_t      len)
+{
+	struct job *job = user;
+	return home_append_text(self, &job->replay, json, len);
 }
 
 /* Whether one of @p job's tool calls before @p at in its calls is call
@@ -1149,7 +1161,10 @@ home_put_call (void                 *user,
 		/* A call that came before the last may not go on. */
 		if (n == JOB_CALLS || home_job_has_call(job, index, at))
 			return EPROTO;
-		last = (struct job_call){ .index = index };
+		last = (struct job_call){
+			.index = index,
+			.replay = (uint32_t)buf_peek(&job->replay).len
+		};
 		at = all.len;
 		head = sizeof last;
 	}
@@ -1224,13 +1239,14 @@ home_take (struct home        *home,
 	static struct ai_sink const tools = {
 		.text = home_put_text,
 		.thought = home_put_thought,
-		.call = home_put_call
+		.call = home_put_call,
+		.replay = home_put_replay
 	};
 	struct ai_sink sink = job->asks & JOB_TOOLS ? tools : plain;
 	sink.user = job;
 	size_t had = buf_peek(&job->result).len;
 	struct ai_event ev = {};
-	int e = ai_event(home->ep->api, root, &sink, &ev);
+	int e = ai_event(home->ep->api, &job->reader, root, &sink, &ev);
 	hist_add(&home->metrics->chunks, 1);
 	if (buf_peek(&job->result).len > had)
 		home_job_progress(job, (uint64_t)++job->chunks << 32);
@@ -1499,6 +1515,7 @@ home_preempt (struct home *home,
 	buf_consume(&job->result, buf_peek(&job->result).len);
 	buf_consume(&job->calls, buf_peek(&job->calls).len);
 	buf_consume(&job->thought, buf_peek(&job->thought).len);
+	buf_consume(&job->replay, buf_peek(&job->replay).len);
 	home_job_reset(job, PREEMPTED | READY);
 	hist_add(&m->running, -1ULL);
 	hist_add(&m->background, -1ULL);

@@ -45,6 +45,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+#include "ai.h"
 #include "buf.h"
 #include "jb.h"
 #include "list.h"
@@ -91,11 +92,12 @@ enum job_ask {
 /** A tool call that a streamed answer makes, in a job's calls: this, then
  *  the bytes of its id, its name, its extra and its arguments' JSON text. */
 struct job_call {
-	uint32_t index;  /**< its place among the answer's calls */
-	uint32_t id;     /**< bytes of its id */
-	uint32_t name;   /**< of its name */
-	uint32_t extra;  /**< of the JSON text it carries back (struct ai_call) */
-	uint32_t args;   /**< of its arguments */
+	uint32_t index;   /**< its place among the answer's calls */
+	uint32_t replay;  /**< the bytes of the job's replay before it */
+	uint32_t id;      /**< bytes of its id */
+	uint32_t name;    /**< of its name */
+	uint32_t extra;   /**< of the JSON text it carries back (struct ai_call) */
+	uint32_t args;    /**< of its arguments */
 };
 
 /** The bytes of the call @p c in a job's calls: it and its parts. */
@@ -143,6 +145,9 @@ struct job {
 	                                         struct job_call and its bytes */
 	struct buf             thought;     /**< likewise: with JOB_TOOLS, its
 	                                         thinking's text */
+	struct buf             replay;      /**< likewise: with JOB_TOOLS, what its
+	                                         turn gives back as it came (struct
+	                                         ai_sink) */
 	struct buf             key;         /**< the front's: written before SUBMIT
 	                                         or WITHDRAW, read by home until
 	                                         DONE or RETURN: the call's session,
@@ -197,6 +202,7 @@ struct job {
 	uint32_t               context;     /**< home writes before DONE: the tokens
 	                                         the upstream's context holds, as
 	                                         /props says; 0: unknown */
+	struct ai_reader       reader;      /**< home's: of the stream's events */
 	uint16_t               http;        /**< home writes before DONE: the answer's
 	                                         HTTP status */
 	uint16_t               flags;       /**< home's: what it notes of the run */
@@ -233,6 +239,7 @@ job_init (struct job  *job,
 	list_init(&job->idle);
 	list_init(&job->feed);
 	job->request = job->result = job->calls = job->thought = (struct buf){};
+	job->replay = (struct buf){};
 	job->key = job->wire = (struct buf){};
 	job->parser = (struct jb_parser){};
 	job->front = front;
@@ -244,6 +251,7 @@ job_init (struct job  *job,
 	job->peer[0] = job->peer[1] = 0;
 	job->session = job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
 	job->used = job->context = 0;
+	job->reader = (struct ai_reader){};
 	job->http = job->flags = 0;
 	job->status = job->asks = 0;
 	job->reason[0] = '\0';

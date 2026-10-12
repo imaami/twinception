@@ -635,7 +635,8 @@ def check_protocols(binary, up):
             "stream": True, "messages": [{"role": "system", "content": "SYS"},
                                          {"role": "user", "content": "Q"}]}),
         "responses": ("/v1/responses", "authorization", "Bearer secret", {
-            "model": "m", "input": "Q", "instructions": "SYS", "store": False,
+            "model": "m", "input": [{"role": "user", "content": "Q"}],
+            "instructions": "SYS", "store": False,
             "max_output_tokens": 77, "temperature": 0.25, "top_p": 0.5,
             "stream": True}),
         "anthropic": ("/v1/messages", "x-api-key", "secret", {
@@ -1655,7 +1656,7 @@ def check_large_bodies(binary, up):
             texts = {
                 "openai": lambda b: (b["messages"][1]["content"],
                                      b["messages"][0]["content"]),
-                "responses": lambda b: (b["input"], b["instructions"]),
+                "responses": lambda b: (b["input"][0]["content"], b["instructions"]),
                 "anthropic": lambda b: (b["messages"][0]["content"], b["system"]),
                 "gemini": lambda b: (b["contents"][0]["parts"][0]["text"],
                                      b["systemInstruction"]["parts"][0]["text"]),
@@ -4848,6 +4849,211 @@ def turn_stream(calls=(), text="", reasoning="", used=None, interleave=False,
     return Stream(wire=sse_wire(ev))
 
 
+def messages_turn(blocks, stop="tool_use"):
+    """A streamed answer of Anthropic's Messages of the content @p blocks,
+    each ("thinking", text, signature), ("redacted", data), ("text", text)
+    or ("tool", id, name, arguments' JSON text), the texts and arguments in
+    pieces of 5 bytes, that stops for @p stop."""
+    ev = [("message_start", {"type": "message_start", "message": {
+        "id": "msg", "type": "message", "role": "assistant", "content": [],
+        "usage": {"input_tokens": 90, "cache_read_input_tokens": 10,
+                  "output_tokens": 1}}})]
+    starts = {"thinking": lambda b: {"type": "thinking", "thinking": "",
+                                     "signature": ""},
+              "redacted": lambda b: {"type": "redacted_thinking", "data": b[1]},
+              "text": lambda b: {"type": "text", "text": ""},
+              "tool": lambda b: {"type": "tool_use", "id": b[1], "name": b[2],
+                                 "input": {}}}
+    pieces = {"thinking": lambda b: [{"type": "thinking_delta", "thinking": t}
+                                     for t in split(b[1], 5)] +
+                                    [{"type": "signature_delta", "signature": b[2]}],
+              "redacted": lambda b: [],
+              "text": lambda b: [{"type": "text_delta", "text": t}
+                                 for t in split(b[1], 5)],
+              "tool": lambda b: [{"type": "input_json_delta", "partial_json": t}
+                                 for t in split(b[3], 5)]}
+    for i, b in enumerate(blocks):
+        ev.append(("content_block_start", {"type": "content_block_start", "index": i,
+                                           "content_block": starts[b[0]](b)}))
+        ev += [("content_block_delta", {"type": "content_block_delta", "index": i,
+                                        "delta": d}) for d in pieces[b[0]](b)]
+        ev.append(("content_block_stop", {"type": "content_block_stop", "index": i}))
+    ev.append(("message_delta", {"type": "message_delta",
+                                 "delta": {"stop_reason": stop},
+                                 "usage": {"output_tokens": 20}}))
+    ev.append(("message_stop", {"type": "message_stop"}))
+    return Stream(wire=sse_wire(ev))
+
+
+def split(text, n):
+    """@p text in pieces of @p n characters; one empty piece if it is empty."""
+    return [text[k:k + n] for k in range(0, len(text), n)] or [""]
+
+
+def responses_turn(items, text=""):
+    """A streamed answer of the Responses API of @p text, then the output
+    @p items, each done whole."""
+    ev = [(None, {"type": "response.created", "response": {"status": "in_progress"}})]
+    ev += [(None, {"type": "response.output_text.delta", "output_index": 0,
+                   "delta": t}) for t in split(text, 5) if t]
+    ev += [(None, {"type": "response.output_item.done", "output_index": i,
+                   "item": item}) for i, item in enumerate(items)]
+    ev.append((None, {"type": "response.completed", "response": {
+        "status": "completed", "usage": {"input_tokens": 100, "output_tokens": 20}}}))
+    return Stream(wire=sse_wire(ev))
+
+
+def generate_turn(chunks, reason="STOP"):
+    """A streamed answer of Gemini's of @p chunks, each a list of parts, the
+    last with @p reason."""
+    ev = [(None, {"candidates": [{"content": {"role": "model", "parts": parts}} |
+                                 ({"finishReason": reason} if i + 1 == len(chunks)
+                                  else {})],
+                  "usageMetadata": {"totalTokenCount": 120}})
+          for i, parts in enumerate(chunks)]
+    return Stream(wire=sse_wire(ev))
+
+
+def check_turn_apis(binary, up):
+    """With --upstream-tools, the turns of the Responses API, Anthropic's
+    Messages and Gemini's generateContent: the tools are offered as each
+    has them, a turn goes back as it came, its items in their order, its
+    thinking and its signatures whole, and its calls' results as each
+    takes them."""
+    with tempfile.TemporaryDirectory() as d:
+        git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+        repo = f"{d}/proj"
+        os.mkdir(repo)
+        for args in (("init", "-q", "-b", "main"), ("commit", "-q", "--allow-empty",
+                                                     "-m", "first")):
+            subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c",
+                            "user.email=t@t", *args], check=True,
+                           env=os.environ | git, capture_output=True)
+        log = {"repo": "proj", "command": "log", "options": ["--oneline"]}
+        logged = r"[0-9a-f]{7} first\n"
+        script = []
+
+        def reply(request):
+            return script.pop(0)(request)
+        up.reply = reply
+
+        def run(api, path):
+            return Askai(binary, "--api", api, "-u", up.url(path), "--upstream-tools",
+                         "--git", repo)
+
+        # The Responses API: the turn is its output items, in the input's
+        # list, its calls' outputs after them.
+        items = [{"type": "reasoning", "id": "rs_1", "summary": [],
+                  "encrypted_content": "enc/+="},
+                 {"type": "message", "id": "msg_1", "role": "assistant",
+                  "status": "completed",
+                  "content": [{"type": "output_text", "text": "Looking.",
+                               "annotations": []}]},
+                 {"type": "function_call", "id": "fc_1", "call_id": "c1",
+                  "name": "git", "arguments": json.dumps(log), "status": "completed"},
+                 {"type": "function_call", "id": "fc_2", "call_id": "c2",
+                  "name": "git", "arguments": "{\"repo\": \"proj\", \"comm"}]
+        with run("responses", "/v1/responses") as ai:
+            script[:] = [lambda r: (200, responses_turn(items, "Looking.")),
+                         lambda r: (200, responses_turn([], "A"))]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            assert result["content"][0]["text"] == "A", result
+            first, second = up.requests[count:]
+            tools = first["body"]["tools"]
+            assert [(t["type"], t["name"]) for t in tools] == \
+                [("function", "git"), ("function", "compact")], tools
+            assert tools[0]["parameters"]["properties"]["repo"], tools
+            given = second["body"]["input"]
+            assert list(second["body"])[-1] == "input", second["body"]
+            assert given[0] == {"role": "user", "content": "Q"}, given
+            assert given[1:5] == items, given
+            assert [(g["type"], g["call_id"]) for g in given[5:]] == \
+                [("function_call_output", "c1"), ("function_call_output", "c2")], given
+            assert re.fullmatch(logged, given[5]["output"]), given
+            assert given[6]["output"] == "Your arguments were not a JSON object, " \
+                "so the call was not run.", given
+
+        # Anthropic's Messages: thinking blocks, signed, and a redacted one go
+        # back in their places among the text and the calls, but an empty
+        # text block; the results go in one message.
+        blocks = [("thinking", "Plan it.", "sig/1"), ("text", "Looking."), ("text", ""),
+                  ("thinking", "", "sig2"), ("tool", "c1", "git", json.dumps(log)),
+                  ("redacted", "opaque=="), ("tool", "c2", "git", "{\"repo\":")]
+        with run("messages", "/v1/messages") as ai:
+            script[:] = [lambda r: (200, messages_turn(blocks)),
+                         lambda r: (200, messages_turn([("text", "A")], "end_turn"))]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            assert result["content"][0]["text"] == "A", result
+            first, second = up.requests[count:]
+            tools = first["body"]["tools"]
+            assert [t["name"] for t in tools] == ["git", "compact"] and \
+                tools[0]["input_schema"]["properties"]["repo"], tools
+            messages = second["body"]["messages"]
+            assert list(second["body"])[-1] == "messages", second["body"]
+            assert messages[0] == {"role": "user", "content": "Q"}, messages
+            assert messages[1] == {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "Plan it.", "signature": "sig/1"},
+                {"type": "text", "text": "Looking."},
+                {"type": "thinking", "thinking": "", "signature": "sig2"},
+                {"type": "tool_use", "id": "c1", "name": "git", "input": log},
+                {"type": "redacted_thinking", "data": "opaque=="},
+                {"type": "tool_use", "id": "c2", "name": "git", "input": {}}]}, messages
+            assert b'"signature":"sig/1"' in second["raw"], second["raw"]
+            results = messages[2]
+            assert results["role"] == "user" and len(messages) == 3, messages
+            assert [(c["type"], c["tool_use_id"]) for c in results["content"]] == \
+                [("tool_result", "c1"), ("tool_result", "c2")], results
+            assert re.fullmatch(logged, results["content"][0]["content"]), results
+
+        # Gemini's: a text part's signature ends its text, and a call ends
+        # one with none; the calls go back with their signatures, and their
+        # responses name them, and give the id of one that had one.
+        call = {"name": "git", "args": log}
+        turns = [
+            [[{"text": "Plan.", "thought": True}], [{"text": "Look"}],
+             [{"text": "ing.", "thoughtSignature": "tsig"}],
+             [{"functionCall": call, "thoughtSignature": "fsig/+"},
+              {"functionCall": call}]],
+            [[{"text": "More"}], [{"text": "."},
+                                  {"functionCall": call | {"id": "g3"}}]],
+        ]
+        with run("generate", "/v1beta/models/m:generateContent") as ai:
+            script[:] = [lambda r: (200, generate_turn(turns[0])),
+                         lambda r: (200, generate_turn(turns[1])),
+                         lambda r: (200, generate_turn([[{"text": "A"}]]))]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            assert result["content"][0]["text"] == "A", result
+            first, second, third = up.requests[count:]
+            tools = first["body"]["tools"]
+            declared = tools[0]["functionDeclarations"]
+            assert len(tools) == 1 and [t["name"] for t in declared] == \
+                ["git", "compact"], tools
+            assert declared[0]["parametersJsonSchema"]["properties"]["repo"], tools
+            contents = second["body"]["contents"]
+            assert list(second["body"])[-1] == "contents", second["body"]
+            assert contents[0] == {"role": "user", "parts": [{"text": "Q"}]}, contents
+            assert contents[1] == {"role": "model", "parts": [
+                {"text": "Looking.", "thoughtSignature": "tsig"},
+                {"functionCall": call, "thoughtSignature": "fsig/+"},
+                {"functionCall": call}]}, contents
+            parts = contents[2]["parts"]
+            assert contents[2]["role"] == "user" and len(contents) == 3, contents
+            assert [p["functionResponse"]["name"] for p in parts] == ["git", "git"] and \
+                all("id" not in p["functionResponse"] for p in parts), parts
+            assert re.fullmatch(logged, parts[0]["functionResponse"]["response"]["output"]), \
+                parts
+            contents = third["body"]["contents"]
+            assert contents[3] == {"role": "model", "parts": [
+                {"text": "More."}, {"functionCall": call | {"id": "g3"}}]}, contents
+            assert contents[4]["parts"][0]["functionResponse"]["id"] == "g3", contents
+    up.reply = lambda request: (200, ANSWERS["openai"])
+    print("turns of the Responses API, Anthropic's Messages and Gemini's: tools, "
+          "items in order, thinking and signatures given back, results: PASS")
+
+
 def check_turns(binary, up):
     """With --upstream-tools, an ask call lends the upstream the tools its
     client's role may call but itself, and notes and compact, in chat
@@ -4865,8 +5071,9 @@ def check_turns(binary, up):
 
     for args, message in ((("--notes", "/nonexistent/x"), "--notes needs "
                            "--upstream-tools"),
-                          (("--upstream-tools", "--api", "messages"),
-                           "--upstream-tools needs --api chat"),
+                          (("--upstream-tools", "--api", "generate", "-x",
+                            '{"contents": null}'), "--extra may not change contents "
+                           "with --upstream-tools"),
                           (("--upstream-tools", "--max-turns", "0"),
                            "invalid --max-turns: 0"),
                           (("--upstream-tools", "--context", "-1"),
@@ -5477,7 +5684,8 @@ def main():
                       check_reload, check_unix, check_tls, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_man, check_git, check_turns, check_tasks, check_classes,
+                      check_man, check_git, check_turns, check_turn_apis, check_tasks,
+                      check_classes,
                       check_shutdown,
                       check_watchdog, check_stalled_stderr):
             check(binary, up)

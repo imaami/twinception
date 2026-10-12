@@ -98,8 +98,10 @@ struct ai_call {
 };
 
 /** Where the pieces of a streamed answer go: its text, and, unless nullptr,
- *  its thinking's text and its tool calls.  Each returns 0, or an error,
- *  which ends the reading of the event. */
+ *  its thinking's text, its tool calls and its replay: the JSON text of
+ *  what its turn gives back as it came (struct ai_format), in pieces, each
+ *  of its items after a comma.  Each returns 0, or an error, which ends the
+ *  reading of the event. */
 struct ai_sink {
 	int  (*text)    (void       *user,
 	                 char const *text,
@@ -109,44 +111,81 @@ struct ai_sink {
 	                 size_t      len);
 	int  (*call)    (void                 *user,
 	                 struct ai_call const *call);
+	int  (*replay)  (void       *user,
+	                 char const *json,
+	                 size_t      len);
 	void  *user;
+};
+
+/** What the reading of a streamed answer keeps from one event to the next:
+ *  zeroed before its first. */
+struct ai_reader {
+	uint32_t open;   /**< 1 + the content block whose item in the replay
+	                      is open, in Anthropic's Messages; nonzero while a
+	                      text part is, in Gemini's; else 0 */
+	uint32_t calls;  /**< the answer's tool calls so far, in Gemini's, which
+	                      numbers none */
+	uint32_t input;  /**< the request's tokens, in Anthropic's Messages,
+	                      which says them first and the answer's last */
 };
 
 /** What ends an answer the output token limit cut short. */
 #define AI_CUT_NOTE "\n\n[The answer was cut short by the output token limit.]"
 
 /**
- * Read an event of a streamed answer, its data parsed as @p ev: hand each
- * piece of it to @p sink, and say what else it says in @p out, zeroed to
- * begin, which then points into @p ev.  Returns the first nonzero that the
- * sink returned, else 0.  An answer whose stream ends before an event says
- * it has ended, or chat completions' [DONE], is cut off.
+ * Read an event of a streamed answer, its data parsed as @p ev, as
+ * @p reader says the events before it left the reading: hand each piece of
+ * it to @p sink, and say what else it says in @p out, zeroed to begin,
+ * which then points into @p ev.  Returns the first nonzero that the sink
+ * returned, else 0, or ENOMEM.  An answer whose stream ends before an
+ * event says it has ended, or chat completions' [DONE], is cut off.
  */
 extern int
 ai_event (enum ai_api            api,
+          struct ai_reader      *reader,
           struct json_object    *ev,
           struct ai_sink const  *sink,
           struct ai_event       *out);
 
+/** How the turns of an API differ beyond their fragments (struct
+ *  ai_format's flags). */
+enum ai_format_flag {
+	AI_ARGS_RAW     = 1u << 0,  /**< a call's arguments are a JSON object,
+	                                 not the text of a JSON string */
+	AI_RESULT_NAMED = 1u << 1,  /**< a result names its call by name, and
+	                                 by id only if the call had one */
+};
+
 /**
  * The JSON text that the turns of a conversation are made of, in an API
- * whose answers may call tools: each member a fragment that goes between
- * the texts of strings, which are escaped into it.  A model's turn is turn,
- * its text, thought and its thinking's text if it has any, and calls; then
- * each tool call: call (after the first, call_next), its id, name, its
- * name, args, its arguments' JSON text, args_end, extra and its extra's
- * JSON text as it is if it has one (struct ai_call), and call_end; then
- * turn_end.  The
- * result of a call is result, the call's id, output, the result's text, and
- * result_end.  prompt_end ends the prompt's text: what askai adds to the
- * prompt goes before it.
+ * whose answers may call tools: each fragment goes between the texts of
+ * strings, which are escaped into it, and of JSON as it came.
+ *
+ * A model's turn is turn, which opens the list of its items, or, empty,
+ * leaves them in the conversation's; then text and its text, if the API
+ * has text, thought and its thinking's text if it has any, and calls, which
+ * opens a list of their own if it is not empty.  Then the replay, its items
+ * before each call, the call, and the items after the last: each call is
+ * call, or call_next after an item in the list, its id, name, its name,
+ * args, its arguments (AI_ARGS_RAW), args_end, extra and its extra's JSON
+ * text if it has one (struct ai_call), and call_end, unless call is empty,
+ * as the calls are in the replay.  Then turn_end.
+ *
+ * The results of the calls follow: results, then each result after the
+ * first result_sep, and result, the call's id, or its name and result_id
+ * and its id if it had one (AI_RESULT_NAMED), output, the result's text,
+ * and result_end; then results_end.
+ *
+ * prompt_end ends the prompt's text, after which end ends the conversation
+ * and the body: what askai adds to the prompt goes before it.
  */
 struct ai_format {
 	struct ai_bytes {
 		char const *ptr;
 		size_t      len;
 	}               turn,
-	                thought,     /**< only with some thinking */
+	                text,
+	                thought,
 	                calls,
 	                call,
 	                call_next,
@@ -156,12 +195,27 @@ struct ai_format {
 	                extra,
 	                call_end,
 	                turn_end,
+	                results,
+	                result_sep,
 	                result,
+	                result_id,
 	                output,
 	                result_end,
+	                results_end,
 	                prompt_end,
-	                end;         /**< ends the messages, and the body */
+	                end;
+	char const     *conversation;  /**< the body's member it is in */
+	uint32_t        flags;         /**< enum ai_format_flag */
 };
+
+/**
+ * The tools of @p defs, an array of definitions as MCP has them, as @p api
+ * offers them to the model; nullptr if out of memory, or if @p defs is
+ * nullptr.  Takes @p defs.
+ */
+extern struct json_object *
+ai_tools (enum ai_api         api,
+          struct json_object *defs);
 
 /** Whether @p reason, an answer's stop reason, is @p api's output
  *  token limit, which cuts it short. */
@@ -169,8 +223,7 @@ extern bool
 ai_cut (enum ai_api       api,
         char const       *reason);
 
-/** The format of turns in @p api; nullptr if askai has none for it, as
- *  for every API but chat completions so far. */
+/** The format of turns in @p api. */
 extern struct ai_format const *
 ai_format (enum ai_api api);
 

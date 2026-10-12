@@ -152,7 +152,6 @@ config_usage (struct config const *cfg,
 	        "                            client may call but the ask tool, notes\n"
 	        "                            with --notes, and compact; an ask call then\n"
 	        "                            runs them and asks on until it answers\n"
-	        "                            (needs --api chat)\n"
 	        "      --notes DIR           the git repository where the upstream keeps\n"
 	        "                            its notes, made bare if it does not exist\n"
 	        "      --max-turns N         upstream calls an ask call makes at most\n"
@@ -1243,12 +1242,11 @@ config_check_upstream (struct config const *cfg)
 {
 	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
 		return 0;
-	if (cfg->ep.api != AI_CHAT)
-		return config_complain(cfg, nullptr, "--upstream-tools needs --api chat");
-	/* The turns follow the messages. */
-	if (json_object_object_get_ex(cfg->ep.extra, "messages", nullptr))
-		return config_complain(cfg, nullptr, "--extra may not change messages "
-		                       "with --upstream-tools");
+	/* The turns follow the conversation. */
+	char const *key = ai_format(cfg->ep.api)->conversation;
+	if (json_object_object_get_ex(cfg->ep.extra, key, nullptr))
+		return config_complain(cfg, nullptr, "--extra may not change %s with "
+		                       "--upstream-tools", key);
 	return 0;
 }
 
