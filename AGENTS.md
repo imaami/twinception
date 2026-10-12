@@ -31,6 +31,7 @@ This file provides guidance to agents such as ChatGPT, Claude, CodeRabbit, Copil
 - Use anonymous structs and unions to combat nesting hell as needed.
 - Practically nothing should be a `typedef`. The few exceptions when `typedef` is genuinely defensible are:
   - implementing opaque handle types in APIs (for example when library instantiation returns an instance pointer);
+  - API callback function types (note: _not_ callback _pointer_ types - more about this later);
   - uniform interface semantics for C and C++ users of an API (`typedef struct Foo Foo` lets C code pretend `struct` is implicit);
   - `unsigned _BitInt()` because aligning it vertically with much shorter type names is awful, and/or you need to type it often:
     ```c
@@ -40,6 +41,34 @@ This file provides guidance to agents such as ChatGPT, Claude, CodeRabbit, Copil
 - Structs and unions with a tag but no type alias are great despite being somewhat more verbose to type:
   - they make it possible to have RAII initializer functions that return by value and are named like the tag;
   - an alias can be a `struct`, `union`, or a number of other things, but a tag tells the type semantics immediately.
+- Function type aliases should not be pointer type aliases. While the former has its use cases, the latter is
+  - unnecessary because appending an asterisk makes it a function pointer just like with any other type alias;
+  - harmful because all pointer type aliases obscure pointer-ness, which is fundamentally unacceptable;
+  - limited because a function type can forward declare a function but a function pointer type can not.
+- `PATH_MAX` is not for defining array sizes. Don't trust its value to be reasonable.
+- Always initialize and invalidate file descriptors by setting them to `-1`.
+- Don't use an external flag to track a file descriptor's state. `-1` means not in use. Always uphold this rule.
+- Immediately set pointers to `nullptr` after calling `free()`. Passing a null pointer to `free()` is a no-op per the C standard.
+- If you must compare a signed integer variable to a `sizeof` expression, don't cast the variable to `size_t`, cast `sizeof` to the signed type instead. The former is a runtime conversion but the latter is not.
+- If you keep casting signed variables to unsigned or vice versa, you're not planning ahead. Think of what you need to accomplish and pick the types based on that.
+- Always check the return value of libc calls when they're not completely inconsequential. `snprintf()` returns a negative value on error and the untruncated length otherwise: check both before using the count, and never cast it to an unsigned type first.
+- Do not assign to `errno` as a way to pass error information forward.
+- In some cases `errno` must be cleared of stale values to guarantee its usefulness, e.g. before calling `strtoul()` and related functions. These are documented workarounds for known gotchas, not a suggestion to adopt `errno` as your error propagation channel.
+- Give every atomic object a valid state exactly once (C23 7.17.2): an initializer, static or thread storage, or `atomic_init()` for allocated or mapped storage and for automatic objects declared without an initializer. Never initialize one twice, and never write over atomics in use with `memset()`, `memcpy()` or struct assignment; wiping an object right before `free()` is fine.
+
+### Modules
+
+- A module is a `name.c` and its `name.h`, and its functions, static ones included, are named `name_whatever()`. A second object type of the same module extends the prefix: `name_part_whatever()`.
+- A function takes a pointer to its own object as its first argument.
+- The life cycle functions each have exactly one meaning:
+  - `struct name name (args, int *e);` initializes an object at its declaration and returns it by value, the error number in `*e`;
+  - `int name_init (struct name *dest, args);` initializes storage that the caller provides and returns 0 or an error number;
+  - `void name_fini (struct name *obj);` frees what the object holds, but not the object itself;
+  - `struct name *name_create (args, int *e);` allocates and initializes an object and returns a pointer to it;
+  - `void name_destroy (struct name **p_obj);` finalizes and frees the object, then sets the caller's pointer to `nullptr`.
+
+  Neither `name()` nor `name_init()` allocates the object, and nothing named init returns a pointer.
+- A function that can fail returns an error number, 0 on success, or the object it makes and the error number in an `int *e` argument. Words that a caller may need go into a caller-owned buffer. Never `bool` or `void` with a side channel for the error.
 
 ### Make
 
