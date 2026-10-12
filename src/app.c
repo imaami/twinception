@@ -1646,12 +1646,14 @@ app_stdin_event (struct loop     *loop,
                  struct loop_ref *ref,
                  uint32_t         events)
 {
-	(void)loop;
 	struct app *app = ref->owner;
 	if (events & (EPOLLHUP | EPOLLRDHUP))
 		app->stdin_eof = 1;
 
 	int e = app_stdin_read(app);
+	/* A hangup stays readable, so a watch past the end would spin. */
+	if (app->stdin_eof)
+		loop_unwatch(loop, ref);
 	if (e)
 		app_fail(app, e);
 }
