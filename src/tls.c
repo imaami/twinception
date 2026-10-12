@@ -135,13 +135,16 @@ tls_ctx_key_type (SSL_CTX             *ctx,
 	if (!EVP_PKEY_is_a(key, "EC"))
 		return "the key is neither ECDSA nor Ed25519";
 	static char const *const curves[] = { "prime256v1", "secp384r1", "secp521r1" };
+	static char const other[] = "the key is ECDSA on a curve other than P-256, P-384 "
+	                            "or P-521";
 	char curve[32];
 	size_t n;
-	if (EVP_PKEY_get_group_name(key, curve, sizeof curve, &n))
-		for (size_t i = 0; i < ARRAY_SIZE(curves); ++i)
-			if (!strcmp(curve, curves[i]))
-				return nullptr;
-	return "the key is ECDSA on a curve other than P-256, P-384 or P-521";
+	if (!EVP_PKEY_get_group_name(key, curve, sizeof curve, &n))
+		return other;
+	for (size_t i = 0; i < ARRAY_SIZE(curves); ++i)
+		if (!strcmp(curve, curves[i]))
+			return nullptr;
+	return other;
 }
 
 /* Say in the @p len bytes at @p why that @p what failed, and OpenSSL's
@@ -327,6 +330,8 @@ tls_close (struct ssl_st **p_ssl)
 void
 tls_destroy (struct ssl_st **p_ssl)
 {
+	if (!p_ssl || !*p_ssl)
+		return;
 	SSL_free(*p_ssl);
 	*p_ssl = nullptr;
 	ERR_clear_error();
