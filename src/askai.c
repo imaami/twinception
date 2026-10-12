@@ -571,7 +571,7 @@ serve (struct config const *cfg)
 	if (!apps || !loops)
 		e = ENOMEM;
 	if (!e && cfg->flags & CFG_MAN)
-		e = manual_new(&manual, cfg->man_recheck);
+		manual = manual_create(cfg->man_recheck, &e);
 	if (!e)
 		e = mcp_static_new(&st, cfg, manual, tasks, git, notes);
 	if (!e)
@@ -648,7 +648,7 @@ serve (struct config const *cfg)
 	git_destroy(&git);
 	notes_destroy(&notes);
 	mcp_static_free(&st);
-	manual_free(&manual);
+	manual_destroy(&manual);
 	free(loops);
 	free(apps);
 	return status;

@@ -619,7 +619,7 @@ call_drop (struct mcp_req *req)
 	struct mcp *mcp = req->mcp;
 	struct job *job = req->job;
 	bool waits = req->call.bits;
-	manual_put(req->page);
+	manual_page_put(req->page);
 	req->page = nullptr;
 	if (waits) {
 		loop_forget(mcp->loop, req->call);
@@ -1519,7 +1519,7 @@ man_settled (struct loop *loop,
 			tool_result(req, w->why, true);
 		}
 	}
-	manual_wait_free(w);
+	manual_wait_destroy(&w);
 }
 
 /* Take the byte of a tool's output that @p args asks it to start from, its
@@ -2477,7 +2477,7 @@ result_write (struct mcp_req *req)
 		upload_failed(req, e);
 		return;
 	}
-	manual_put(req->page);
+	manual_page_put(req->page);
 	req->page = nullptr;
 	dstr_clear(&req->answer);
 	req->note[0] = '\0';

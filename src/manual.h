@@ -82,15 +82,16 @@ struct manual_metrics {
 /**
  * A manual, empty, for man to fill with askai's PATH and MANPATH, its pages
  * 80 columns of UTF-8 text, neither hyphenated nor justified; man's finding
- * for a name holds @p recheck seconds.  Returns 0 or ENOMEM.
+ * for a name holds @p recheck seconds.  nullptr, with the error in @p *e,
+ * if it cannot be made.
  */
-extern int
-manual_new (struct manual **p_manual,
-            uint32_t        recheck);
+extern struct manual *
+manual_create (uint32_t  recheck,
+               int      *e);
 
 /** Free the manual, once every loop has ended its fetches. */
 extern void
-manual_free (struct manual **p_manual);
+manual_destroy (struct manual **p_manual);
 
 extern struct manual_metrics const *
 manual_metrics (struct manual const *manual);
@@ -133,10 +134,11 @@ manual_find (struct manual_loop  *ml,
 
 /** Let go of a reference to @p page, if not nullptr. */
 extern void
-manual_put (struct manual_page *page);
+manual_page_put (struct manual_page *page);
 
-/** Free @p w, a waiter's post, and the page it holds, if any. */
+/** Free @p *p_w, a waiter's post, and the page it holds, if any, and set
+ *  it to nullptr. */
 extern void
-manual_wait_free (struct manual_wait *w);
+manual_wait_destroy (struct manual_wait **p_w);
 
 #endif /* TWINCEPTION_SRC_MANUAL_H_ */
