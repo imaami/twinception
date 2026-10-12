@@ -179,6 +179,9 @@ enum ai_format_flag {
  * text if it has one (struct ai_call), and call_end, unless call is empty,
  * as the calls are in the replay.  Then turn_end.
  *
+ * The tools that a turn may call are an array as the API has them, which
+ * tools and tools_end hold, of the items ai_tool() makes.
+ *
  * The results of the calls follow: results, then each result after the
  * first result_sep, and result, the call's id, or its name and result_id
  * and its id if it had one (AI_RESULT_NAMED), output, the result's text,
@@ -191,7 +194,9 @@ struct ai_format {
 	struct ai_bytes {
 		char const *ptr;
 		size_t      len;
-	}               turn,
+	}               tools,
+	                tools_end,
+	                turn,
 	                text,
 	                thought,
 	                calls,
@@ -217,13 +222,13 @@ struct ai_format {
 };
 
 /**
- * The tools of @p defs, an array of definitions as MCP has them, as @p api
- * offers them to the model; nullptr if out of memory, or if @p defs is
- * nullptr.  Takes @p defs.
+ * The tool that @p def, a definition as MCP has it, defines, as @p api
+ * offers it to the model, an item of the array that ai_format()'s tools and
+ * tools_end hold; nullptr if out of memory.
  */
 extern struct json_object *
-ai_tools (enum ai_api         api,
-          struct json_object *defs);
+ai_tool (enum ai_api               api,
+         struct json_object const *def);
 
 /** Whether @p reason, an answer's stop reason, is @p api's output
  *  token limit, which cuts it short. */

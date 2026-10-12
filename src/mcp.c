@@ -181,10 +181,43 @@ enum mcp_kind : uint32_t {
 	KINDS
 };
 
-/* A tool that askai offers: its definition as tools/list lists it, after a
- * comma, if a role may grant it; its name; and its kind. */
+/* How a kind of tool is lent to the turns: never; as the client's role
+ * grants it; whenever the turns are lent anything; or beside another. */
+enum mcp_lend : uint8_t {
+	LEND_NEVER,
+	LEND_GRANTED,
+	LEND_ALWAYS,
+	LEND_WITH,
+};
+
+/* What each kind of tool is: its name, but the ask tool's, which the
+ * configuration names; how the turns are lent it; its row in the turns'
+ * metrics; and whether its output is paged by "offset".  After the kinds,
+ * a tool of none of them. */
+static struct {
+	char const *ptr;
+	uint32_t    len;
+	uint8_t     lend;    /* enum mcp_lend */
+	uint8_t     metric;  /* enum metrics_lent */
+	uint16_t    paged;   /* bool, widened over the padding */
+} const kind_info[KINDS + 1] = {
+#define N(s) s, sizeof s - 1
+	[KIND_ASK]     = { .metric = LENT_NONE },
+	[KIND_MAN]     = { N("man"), LEND_GRANTED, LENT_MAN, true },
+	[KIND_TASK]    = { N("test_task"), LEND_NEVER, LENT_NONE, false },
+	[KIND_GIT]     = { N("git"), LEND_GRANTED, LENT_GIT, true },
+	[KIND_NOTES]   = { N("notes"), LEND_ALWAYS, LENT_NOTES, false },
+	[KIND_COMPACT] = { N("compact"), LEND_WITH, LENT_COMPACT, false },
+	[KINDS]        = { N("an unknown tool"), LEND_NEVER, LENT_NONE, false },
+#undef N
+};
+
+/* A tool that askai offers: its definition as tools/list lists it, if a
+ * role may grant it, and as the upstream's API has it, if it is lent, each
+ * after a comma; its name; and its kind. */
 struct mcp_offer {
 	struct dstr     listed;
+	struct dstr     lent;
 	char const     *name;
 	uint32_t        len;
 	enum mcp_kind   kind;
@@ -198,10 +231,10 @@ struct mcp_static {
 	uint32_t                  n_offers;
 	uint32_t                  n_granted;      /**< those before the first
 	                                               that only turns are given */
-	struct dstr               lent[4];      /**< the tools a turn may call, by
-	                                             man and git, bits 0 and 1, that
-	                                             the role may call: the request's
-	                                             tools; empty: none */
+	tool_mask                 lends;          /**< lent as a role grants them */
+	tool_mask                 always;         /**< lent whenever the turns are
+	                                               lent anything */
+	tool_mask                 with;           /**< lent beside those */
 	struct dstr               list_tail;    /**< closes a modern tools/list
 	                                             result after its tools */
 	struct dstr               discover;     /**< the server/discover result */
@@ -312,6 +345,7 @@ struct mcp_req {
 	uint64_t             noted;      /* when the last notification went */
 	uint64_t             base;       /* what the progress was as the turn
 	                                    began */
+	tool_mask            lent;       /* the tools its turns may call */
 	struct handle        call;       /* names the request to its job's
 	                                    completion, while it waits for that */
 	struct jb_scan       scan;       /* the body's pre-scan */
@@ -336,10 +370,8 @@ struct mcp_req {
 	uint8_t              method;     /* enum metrics_method */
 	uint8_t              asks;       /* enum job_ask: JOB_BACKGROUND for
 	                                    test_task's prompt */
-	uint8_t              lent;       /* 1 + the index in st->lent of the
-	                                    tools its turns may call; 0: none */
-	uint8_t              tool;       /* enum metrics_lent: the call under
-	                                    way's tool */
+	uint8_t              tool;       /* enum mcp_kind: the call under way's
+	                                    tool; KINDS: none of those */
 	uint8_t              fetch;      /* enum mcp_fetch: what the notes git is
 	                                    for */
 	uint8_t              forced;     /* compactions askai made since a turn
@@ -361,7 +393,7 @@ struct mcp_req {
 	                                    token limit */
 	char                 thread[NOTES_ID + 1];  /* the notes' thread's id */
 	char                 ref[NOTES_REF];        /* and its ref */
-	char                 note[382];  /* what askai adds to a tool's output,
+	char                 note[383];  /* what askai adds to a tool's output,
 	                                    sized to end the request unpadded */
 };
 
@@ -1857,8 +1889,9 @@ mcp_req_man (struct mcp_req     *req,
 static void mcp_req_notes_fetch (struct mcp_req *req, enum mcp_fetch fetch,
                                  char const *search);
 
-/* Serialize the tools a turn may call: the text @p obj's userdata points
- * at, as it is. */
+/* Serialize the tools that the turns of @p obj's userdata, a request, may
+ * call: their definitions as the upstream's API has them, each after a
+ * comma, the first's left out, in the API's array. */
 static int
 mcp_lent_text (struct json_object *obj,
                struct printbuf    *pb,
@@ -1867,8 +1900,21 @@ mcp_lent_text (struct json_object *obj,
 {
 	(void)level;
 	(void)flags;
-	struct dstr const *text = json_object_get_userdata(obj);
-	return printbuf_memappend(pb, dstr_get(text), (int)dstr_len(text)) < 0 ? -1 : 0;
+	struct mcp_req const *req = json_object_get_userdata(obj);
+	struct mcp_static const *st = req->mcp->st;
+	struct ai_format const *f = ai_format(st->ep->api);
+	int e = printbuf_memappend(pb, f->tools.ptr, (int)f->tools.len);
+	size_t skip = 1;
+	for (uint32_t id = 0; e >= 0 && id < st->n_offers; ++id) {
+		struct dstr const *def = &st->offers[id].lent;
+		if (!(req->lent >> id & 1))
+			continue;
+		e = printbuf_memappend(pb, dstr_get(def) + skip, (int)(dstr_len(def) - skip));
+		skip = 0;
+	}
+	if (e >= 0)
+		e = printbuf_memappend(pb, f->tools_end.ptr, (int)f->tools_end.len);
+	return e < 0 ? -1 : 0;
 }
 
 /* Draft the upstream request with @p prompt and @p system, and write it up
@@ -1899,8 +1945,7 @@ mcp_req_draft (struct mcp_req     *req,
 			json_object_put(instructions);
 			return ENOMEM;
 		}
-		json_object_set_serializer(tools, mcp_lent_text,
-		                           (void *)(uintptr_t)&st->lent[req->lent - 1], nullptr);
+		json_object_set_serializer(tools, mcp_lent_text, req, nullptr);
 	}
 	json_object_set_serializer(prompt, mcp_splice_mark, req, nullptr);
 	req->draft = ai_request(st->ep, instructions, prompt, tools);
@@ -2305,24 +2350,14 @@ mcp_req_upload_failed (struct mcp_req *req,
 	mcp_req_fail(req, e);
 }
 
-/* Whether askai offers a tool of @p kind that @p req's client's role may
- * call. */
-static bool
-mcp_req_may (struct mcp_req const *req,
-             enum mcp_kind         kind)
-{
-	uint32_t id = req->mcp->st->id[kind];
-	return id < req->mcp->st->n_granted && req->s->tools >> id & 1;
-}
-
-/* The tools of @p req's client's role that its turns may call: 1 + the
- * index of their definitions in st->lent; 0 if none. */
-static uint8_t
+/* The tools that @p req's turns may call: those lent as the client's role
+ * grants them, and those lent always; and if any, those lent beside them. */
+static tool_mask
 mcp_req_lent (struct mcp_req const *req)
 {
-	size_t i = (mcp_req_may(req, KIND_MAN) ? 1u : 0) |
-	           (mcp_req_may(req, KIND_GIT) ? 2u : 0);
-	return dstr_len(&req->mcp->st->lent[i]) ? (uint8_t)(i + 1) : 0;
+	struct mcp_static const *st = req->mcp->st;
+	tool_mask lent = (req->s->tools & st->lends) | st->always;
+	return lent ? lent | st->with : 0;
 }
 
 /* The bytes of a tool's output that a turn takes, at most: an eighth of the
@@ -2648,7 +2683,7 @@ static int
 mcp_req_trace (struct mcp_req        *req,
                struct mcp_call const *c,
                struct json_object    *args,
-               enum metrics_lent      tool)
+               enum mcp_kind          tool)
 {
 	if (req->traced++ >= TRACE_MAX)
 		return 0;
@@ -2657,9 +2692,9 @@ mcp_req_trace (struct mcp_req        *req,
 	    !dstr_cat_n(&req->trace, name, jb_utf8(name, mcp_clip(name, c->name.len, 64))))
 		return ENOMEM;
 	switch (tool) {
-	case LENT_COMPACT:
+	case KIND_COMPACT:
 		return 0;
-	case LENT_NOTES:
+	case KIND_NOTES:
 		size_t len = 0;
 		char const *action = mcp_str(jb_get(args, "action"), &len);
 		return !action || (CAT(&req->trace, " ") &&
@@ -2688,19 +2723,18 @@ mcp_req_trace_end (struct mcp_req *req,
 	return dstr_printf(&req->trace, ": %zu bytes\n", bytes) ? 0 : ENOMEM;
 }
 
-/* The tool of @p name that the turns may call; LENT_NONE if none. */
-static enum metrics_lent
+/* The kind of the tool of @p name that the turns may call; KINDS if none. */
+static enum mcp_kind
 mcp_req_tool_of (struct mcp_req const *req,
                  struct span           name)
 {
-	uint32_t lent = req->lent - 1u;
-#define IS(s) mcp_span_is(name, s, sizeof s - 1)
-	return IS("man") && lent & 1 ? LENT_MAN
-	     : IS("git") && lent & 2 ? LENT_GIT
-	     : IS("notes") && req->mcp->st->notes ? LENT_NOTES
-	     : IS("compact") ? LENT_COMPACT
-	     : LENT_NONE;
-#undef IS
+	struct mcp_static const *st = req->mcp->st;
+	for (uint32_t id = 0; id < st->n_offers; ++id) {
+		struct mcp_offer const *o = &st->offers[id];
+		if (req->lent >> id & 1 && mcp_span_is(name, o->name, o->len))
+			return o->kind;
+	}
+	return KINDS;
 }
 
 /* Run the turn's tool call req->part, unless all have run.  A call goes to
@@ -2710,10 +2744,6 @@ mcp_req_tool_of (struct mcp_req const *req,
 static void
 mcp_req_tool_start (struct mcp_req *req)
 {
-	static char const *const names[] = {
-		[LENT_NONE] = "an unknown tool", [LENT_MAN] = "man", [LENT_GIT] = "git",
-		[LENT_NOTES] = "notes", [LENT_COMPACT] = "compact",
-	};
 	struct mcp *mcp = req->mcp;
 	if (req->part == req->n_calls) {
 		/* All have run: submit the next turn, or, its context full,
@@ -2730,16 +2760,16 @@ mcp_req_tool_start (struct mcp_req *req)
 		return;
 	}
 	struct mcp_call c = mcp_call_at(buf_peek(&req->calls).ptr + req->at);
-	enum metrics_lent tool = mcp_req_tool_of(req, c.name);
+	enum mcp_kind tool = mcp_req_tool_of(req, c.name);
 	/* Its arguments go once its result is written, or the request ends. */
 	struct json_object *args = req->args[req->part];
 	req->tool = (uint8_t)tool;
-	hist_add(&mcp->counts->calls.lent[tool], 1);
+	hist_add(&mcp->counts->calls.lent[kind_info[tool].metric], 1);
 	req->skip = 0;
 	req->tooling = true;
 	dstr_clear(&req->answer);
 	(void)mcp_req_trace(req, &c, args, tool);
-	mcp_req_notify_tool(req, names[tool]);
+	mcp_req_notify_tool(req, kind_info[tool].ptr);
 	if (!args) {
 		mcp_req_tool_result(req, req->cut
 		                    ? TEXT("Your answer reached the output token limit, which "
@@ -2749,21 +2779,24 @@ mcp_req_tool_start (struct mcp_req *req)
 		return;
 	}
 	switch (tool) {
-	case LENT_MAN:
+	case KIND_MAN:
 		mcp_req_man(req, args);
 		return;
-	case LENT_GIT:
+	case KIND_GIT:
 		mcp_req_git(req, args);
 		return;
-	case LENT_NOTES:
+	case KIND_NOTES:
 		mcp_req_notes(req, args);
 		return;
-	case LENT_COMPACT:
+	case KIND_COMPACT:
 		mcp_req_compact(req, args);
 		return;
-	default:
-		mcp_req_tool_result(req, TEXT("No tool of that name is yours to call."), true);
+	case KIND_ASK:
+	case KIND_TASK:
+	case KINDS:
+		break;
 	}
+	mcp_req_tool_result(req, TEXT("No tool of that name is yours to call."), true);
 }
 
 /* Take the window of the output @p out that the turn takes into req->skip
@@ -2800,7 +2833,7 @@ mcp_req_note_window (struct mcp_req *req,
 {
 	size_t end = req->skip + req->window;
 	if (end < len) {
-		if (req->tool == LENT_MAN || req->tool == LENT_GIT)
+		if (kind_info[req->tool].paged)
 			return util_format(req->note, sizeof req->note, "\n\n[Bytes %zu to %zu "
 			                   "of %zu: for the rest, call again with \"offset\": "
 			                   "%zu.]", req->skip, end, len, end);
@@ -4445,6 +4478,18 @@ mcp_serialize (struct dstr        *text,
 	return e;
 }
 
+/* Serialize @p val into @p text after a comma, an item of a list, then free
+ * it. */
+static int
+mcp_static_item (struct dstr        *text,
+                 struct json_object *val)
+{
+	if (dstr_cat_n(text, ",", 1))
+		return mcp_serialize(text, val);
+	json_object_put(val);
+	return ENOMEM;
+}
+
 /* Make @p result a modern list result: cacheable, complete, with our _meta. */
 static struct json_object *
 mcp_modern_list (struct json_object *result,
@@ -4459,25 +4504,6 @@ mcp_modern_list (struct json_object *result,
 		return nullptr;
 	}
 	return result;
-}
-
-/* An array of the @p n values at @p vals that are not nullptr, as @p make
- * makes them, each a reference of its own; nullptr if out of memory. */
-static struct json_object *
-mcp_array (struct json_object *const *vals,
-           size_t                    n,
-           struct json_object     *(*make) (struct json_object *val))
-{
-	struct json_object *arr = json_object_new_array();
-	if (!arr)
-		return nullptr;
-	for (size_t i = 0; i < n; ++i) {
-		if (!vals[i] || !jb_push(arr, make(vals[i])))
-			continue;
-		json_object_put(arr);
-		return nullptr;
-	}
-	return arr;
 }
 
 /* Serialize the supported versions, pushed onto @p list, and with what
@@ -4528,43 +4554,24 @@ mcp_static_build (struct mcp_static        *st,
                   struct json_object       *list,
                   struct json_object *const defs[KINDS])
 {
-	for (uint32_t id = 0; id < st->n_granted; ++id) {
+	/* The turns are lent tools with compact, which --upstream-tools offers. */
+	bool lends = defs[KIND_COMPACT];
+	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_offer *o = &st->offers[id];
-		int e = dstr_cat_n(&o->listed, ",", 1)
-		      ? mcp_serialize(&o->listed, json_object_get(defs[o->kind])) : ENOMEM;
-		if (e)
-			return e;
-	}
-	size_t lent = defs[KIND_COMPACT] ? ARRAY_SIZE(st->lent) : 0;
-	for (size_t mask = 0; mask < lent; ++mask) {
-		struct json_object *const tools[] = {
-			mask & 1 ? defs[KIND_MAN] : nullptr, mask & 2 ? defs[KIND_GIT] : nullptr,
-			defs[KIND_NOTES], defs[KIND_COMPACT]
-		};
-		if (!tools[0] && !tools[1] && !tools[2])
-			continue;
-		int e = mcp_serialize(&st->lent[mask], ai_tools(st->ep->api, mcp_array(
-			tools, ARRAY_SIZE(tools), json_object_get)));
+		enum mcp_lend lend = lends ? kind_info[o->kind].lend : LEND_NEVER;
+		tool_mask bit = (tool_mask)1 << id;
+		st->lends |= lend == LEND_GRANTED ? bit : 0;
+		st->always |= lend == LEND_ALWAYS ? bit : 0;
+		st->with |= lend == LEND_WITH ? bit : 0;
+		int e = id < st->n_granted
+		      ? mcp_static_item(&o->listed, json_object_get(defs[o->kind])) : 0;
+		if (!e && lend != LEND_NEVER)
+			e = mcp_static_item(&o->lent, ai_tool(st->ep->api, defs[o->kind]));
 		if (e)
 			return e;
 	}
 	return mcp_static_tails(st, info, list);
 }
-
-/* The names of the kinds of tool but the ask tool's, which the configuration
- * names. */
-static struct {
-	char const *ptr;
-	size_t      len;
-} const kind_names[KINDS] = {
-#define N(s) { s, sizeof s - 1 }
-	[KIND_MAN]     = N("man"),
-	[KIND_TASK]    = N("test_task"),
-	[KIND_GIT]     = N("git"),
-	[KIND_NOTES]   = N("notes"),
-	[KIND_COMPACT] = N("compact"),
-#undef N
-};
 
 /* The kinds of tool that @p cfg offers, as bits. */
 static uint32_t
@@ -4587,7 +4594,7 @@ mcp_tools (struct config const *cfg,
 	size_t n = 0;
 	for (enum mcp_kind k = 0; k < KIND_NOTES; ++k)
 		if (kinds >> k & 1)
-			names[n++] = kind_names[k].ptr ? kind_names[k].ptr : cfg->tool.name;
+			names[n++] = kind_info[k].ptr ? kind_info[k].ptr : cfg->tool.name;
 	return n;
 }
 
@@ -4621,8 +4628,6 @@ mcp_static_create (struct config const *cfg,
 		.turns = cfg->turns
 	};
 	/* A zeroed dstr is no empty string (dstr.h). */
-	for (size_t i = 0; i < ARRAY_SIZE(st->lent); ++i)
-		st->lent[i] = (struct dstr)DSTR_INIT;
 	uint32_t kinds = mcp_kinds(cfg);
 	for (enum mcp_kind k = 0; k < KINDS; ++k) {
 		st->id[k] = KINDS;
@@ -4632,9 +4637,10 @@ mcp_static_create (struct config const *cfg,
 		st->n_granted += k < KIND_NOTES;
 		st->offers[st->n_offers++] = (struct mcp_offer){
 			.listed = DSTR_INIT,
-			.name = kind_names[k].ptr ? kind_names[k].ptr : cfg->tool.name,
-			.len = kind_names[k].ptr ? (uint32_t)kind_names[k].len
-			                         : (uint32_t)strlen(cfg->tool.name),
+			.lent = DSTR_INIT,
+			.name = kind_info[k].ptr ? kind_info[k].ptr : cfg->tool.name,
+			.len = kind_info[k].ptr ? kind_info[k].len
+			                        : (uint32_t)strlen(cfg->tool.name),
 			.kind = k
 		};
 	}
@@ -4674,11 +4680,11 @@ mcp_static_destroy (struct mcp_static **p_static)
 	if (!st)
 		return;
 	*p_static = nullptr;
-	for (uint32_t id = 0; id < st->n_offers; ++id)
+	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		dstr_cleanup(&st->offers[id].listed);
+		dstr_cleanup(&st->offers[id].lent);
+	}
 	dstr_cleanup(&st->list_tail);
-	for (size_t i = 0; i < ARRAY_SIZE(st->lent); ++i)
-		dstr_cleanup(&st->lent[i]);
 	dstr_cleanup(&st->discover);
 	dstr_cleanup(&st->init_tail);
 	dstr_cleanup(&st->modern_tail);

@@ -857,6 +857,8 @@ ai_format (enum ai_api api)
 #define B(s) { s, sizeof s - 1 }
 	static struct ai_format const formats[] = {
 		[AI_CHAT] = {
+			.tools        = B("["),
+			.tools_end    = B("]"),
 			.turn         = B(",{\"role\":\"assistant\""),
 			.text         = B(",\"content\":\""),
 			.thought      = B("\",\"reasoning_content\":\""),
@@ -879,6 +881,8 @@ ai_format (enum ai_api api)
 		/* Its turn is the replay's items, its calls among them, in the
 		 * input's list. */
 		[AI_RESPONSES] = {
+			.tools        = B("["),
+			.tools_end    = B("]"),
 			.result       = B(",{\"type\":\"function_call_output\",\"call_id\":\""),
 			.output       = B("\",\"output\":\""),
 			.result_end   = B("\"}"),
@@ -889,6 +893,8 @@ ai_format (enum ai_api api)
 		/* Its turn's text and thinking blocks are in the replay; all its
 		 * results go in one message. */
 		[AI_MESSAGES] = {
+			.tools        = B("["),
+			.tools_end    = B("]"),
 			.turn         = B(",{\"role\":\"assistant\",\"content\":["),
 			.call         = B("{\"type\":\"tool_use\",\"id\":\""),
 			.call_next    = B(",{\"type\":\"tool_use\",\"id\":\""),
@@ -910,6 +916,8 @@ ai_format (enum ai_api api)
 		/* Its turn's parts are the replay's, its calls among them, with
 		 * their thought signatures. */
 		[AI_GENERATE] = {
+			.tools        = B("[{\"functionDeclarations\":["),
+			.tools_end    = B("]}]"),
 			.turn         = B(",{\"role\":\"model\",\"parts\":["),
 			.turn_end     = B("]}"),
 			.results      = B(",{\"role\":\"user\",\"parts\":["),
@@ -930,8 +938,8 @@ ai_format (enum ai_api api)
 }
 
 struct json_object *
-ai_tools (enum ai_api         api,
-          struct json_object *defs)
+ai_tool (enum ai_api               api,
+         struct json_object const *def)
 {
 	static char const *const schemas[] = {
 		[AI_CHAT]      = "parameters",
@@ -939,38 +947,26 @@ ai_tools (enum ai_api         api,
 		[AI_MESSAGES]  = "input_schema",
 		[AI_GENERATE]  = "parametersJsonSchema",
 	};
-	struct json_object *tools = defs ? json_object_new_array() : nullptr;
-	struct json_object *def;
-	for (size_t i = 0; tools && (def = jb_at(defs, i)); ++i) {
-		struct json_object *tool = jb_object(
-			"name", json_object_get(jb_get(def, "name")),
-			"description", json_object_get(jb_get(def, "description")),
-			schemas[api], json_object_get(jb_get(def, "inputSchema")),
-			nullptr);
-		switch (api) {
-		case AI_CHAT:
-			tool = jb_object("type", json_object_new_string("function"),
-			                 "function", tool, nullptr);
-			break;
-		case AI_RESPONSES:
-			if (tool && jb_set(tool, "type", json_object_new_string("function"))) {
-				json_object_put(tool);
-				tool = nullptr;
-			}
-			break;
-		case AI_MESSAGES:
-		case AI_GENERATE:
-			break;
+	struct json_object *tool = jb_object(
+		"name", json_object_get(jb_get(def, "name")),
+		"description", json_object_get(jb_get(def, "description")),
+		schemas[api], json_object_get(jb_get(def, "inputSchema")),
+		nullptr);
+	switch (api) {
+	case AI_CHAT:
+		return jb_object("type", json_object_new_string("function"),
+		                 "function", tool, nullptr);
+	case AI_RESPONSES:
+		if (tool && jb_set(tool, "type", json_object_new_string("function"))) {
+			json_object_put(tool);
+			return nullptr;
 		}
-		if (jb_push(tools, tool)) {
-			json_object_put(tools);
-			tools = nullptr;
-		}
+		return tool;
+	case AI_MESSAGES:
+	case AI_GENERATE:
+		break;
 	}
-	json_object_put(defs);
-	if (api != AI_GENERATE || !tools)
-		return tools;
-	return jb_list(jb_object("functionDeclarations", tools, nullptr));
+	return tool;
 }
 
 /* Say in @p text what the upstream's error answer, of HTTP @p status, says:
