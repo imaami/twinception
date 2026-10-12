@@ -1241,8 +1241,8 @@ mcp_req_progress (struct mcp_req *req)
 	if (place > req->place)
 		req->place = place;
 	req->progress = false;
-	uint64_t value = req->base + (place ? req->place - place
-	                                    : (uint64_t)req->place + tokens);
+	/* Queued, a job has no tokens; running, no place. */
+	uint64_t value = req->base + (req->place - place) + tokens;
 	if (value < req->next_note)
 		return;
 	char text[64];
@@ -1563,8 +1563,6 @@ mcp_req_submit (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
-	struct stream const *s = req->s;
-	uint64_t seed = mcp->st->seed;
 	struct job *job = mcp_take_job(mcp);
 	if (!job)
 		return ENOMEM;
@@ -1578,6 +1576,7 @@ mcp_req_submit (struct mcp_req *req)
 	req->upload = (struct buf){};
 	job->call = req->call;
 	job->deadline = ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
+	struct stream const *s = req->s;
 	if (s->principal) {
 		job->principal = s->principal;
 		job->session = 0;
@@ -1585,6 +1584,7 @@ mcp_req_submit (struct mcp_req *req)
 	} else {
 		job->peer[0] = s->peer[0];
 		job->peer[1] = s->peer[1];
+		uint64_t seed = mcp->st->seed;
 		job->principal = job->session
 		               ? util_hash(seed, buf_peek(&job->key).ptr, job->session)
 		               : util_hash(~seed, job->peer, sizeof job->peer);
@@ -2105,7 +2105,7 @@ mcp_req_git_ended (struct mcp_req *req)
 	struct child *c = req->child;
 	size_t len = dstr_len(&req->answer);
 	char buf[96];
-	struct mcp_piece note = {};
+	struct mcp_piece note;
 	bool failed = true;
 	if (c->late) {
 		note = ESC(buf, util_format(buf, sizeof buf, "[git took longer than %.0f s, "
@@ -2548,20 +2548,22 @@ mcp_req_trace (struct mcp_req        *req,
 	if (!CAT(&req->trace, "- ") ||
 	    !dstr_cat_n(&req->trace, name, jb_utf8(name, mcp_clip(name, c->name.len, 64))))
 		return ENOMEM;
-	if (tool == LENT_COMPACT)
+	switch (tool) {
+	case LENT_COMPACT:
 		return 0;
-	if (tool == LENT_NOTES) {
+	case LENT_NOTES:
 		size_t len = 0;
 		char const *action = mcp_str(jb_get(args, "action"), &len);
 		return !action || (CAT(&req->trace, " ") &&
 		                   dstr_cat_n(&req->trace, action, mcp_clip(action, len, 16)))
 		       ? 0 : ENOMEM;
+	default:
+		char const *json = (char const *)c->args.ptr;
+		size_t n = jb_utf8(json, mcp_clip(json, c->args.len, TRACE_ARGS));
+		if (n && !(CAT(&req->trace, " ") && dstr_cat_n(&req->trace, json, n)))
+			return ENOMEM;
+		return n < c->args.len && !CAT(&req->trace, "...") ? ENOMEM : 0;
 	}
-	char const *json = (char const *)c->args.ptr;
-	size_t len = jb_utf8(json, mcp_clip(json, c->args.len, TRACE_ARGS));
-	if (len && !(CAT(&req->trace, " ") && dstr_cat_n(&req->trace, json, len)))
-		return ENOMEM;
-	return len < c->args.len && !CAT(&req->trace, "...") ? ENOMEM : 0;
 }
 
 /* End the trace's line for the call under way: whether it failed, or the
@@ -2715,13 +2717,13 @@ mcp_req_tool_done (struct mcp_req *req,
                    bool            failed)
 {
 	struct span out = mcp_req_output(req);
-	size_t size = sizeof req->note;
 	req->tooling = false;
 	bool past = req->skip > out.len;
 	(void)mcp_req_trace_end(req, failed, out.len);
 	mcp_req_window(req, out);
 	size_t n = mcp_req_note_window(req, out.len, past);
 	if (req->part + 1u == req->n_calls) {
+		size_t size = sizeof req->note;
 		uint64_t tokens = mcp_req_tokens(req) + (req->window + n) / 4;
 		if (req->context && tokens * 4 >= (uint64_t)req->context * 3)
 			n += util_format(req->note + n, size - n, "\n\n[askai: your context is "
