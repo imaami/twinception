@@ -1,7 +1,7 @@
 /** @file The tools that askai offers, as masks of their ids, which roles
  *  grant (src/policy.h) and requests carry (src/stream.h); and the kinds of
  *  tool they are, what their calls do.  start() ends or parks a call;
- *  step() does a share of its work; drop() lets go of what it holds.  All
+ *  step() does a share of its work; drop() lets go of its own word.  All
  *  run on the call's loop, and never block. */
 #ifndef TWINCEPTION_SRC_TOOL_H_
 #define TWINCEPTION_SRC_TOOL_H_
@@ -39,15 +39,15 @@ typedef void tool_start_fn (struct mcp_slot    *slot,
 
 typedef void tool_step_fn (struct mcp_slot *slot);
 
-/** Let go of what the call holds; stop what would end it. */
+/** Let go of the call's own word, which is not nullptr; stop what would
+ *  end the call. */
 typedef void tool_drop_fn (struct mcp_slot *slot);
 
 struct tool_kind {
 	tool_definition_fn *definition;
 	tool_start_fn      *start;
 	tool_step_fn       *step;   /**< if it readies the slot's step */
-	tool_drop_fn       *drop;   /**< if its calls hold more than the slot
-	                                 lets go of */
+	tool_drop_fn       *drop;   /**< if its calls own a word */
 	uint64_t            flags;  /**< enum tool_flag */
 };
 

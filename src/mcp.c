@@ -332,10 +332,12 @@ struct mcp_slot {
 	struct dstr         answer;    /* the tool's output; its storage stays
 	                                  for reuse */
 	struct mcp_req     *req;       /* whose */
-	struct manual_page *page;      /* a man call's, until let go of */
-	struct task        *task;      /* a test_task call's, while it waits */
+	void               *own;       /* its kind's word for the call, which
+	                                  its drop() lets go of: a man call's
+	                                  page, a test_task call's task */
+	struct span         lent;      /* its output, if own keeps it: a man
+	                                  call's page's text */
 	struct child       *child;     /* a git's, until its output is taken */
-	size_t              off;       /* bytes of its git's output taken */
 	size_t              skip;      /* the byte of the output that its window,
 	                                  given to a turn, starts at */
 	size_t              window;    /* and the bytes of that */
@@ -891,14 +893,15 @@ mcp_slot_offer (struct mcp_slot const *slot)
 	return &slot->req->mcp->st->offers[slot->tool];
 }
 
-/* Let go of what @p slot's call holds, as its kind does, of its notes' git,
- * and of its work and what it waits for. */
+/* Let go of @p slot's own word, as its kind does, and of the output it
+ * lent; of its git, and of its work and what it waits for. */
 static void
 mcp_slot_drop (struct mcp_slot *slot)
 {
-	tool_drop_fn *drop = mcp_slot_offer(slot)->kind->drop;
-	if (drop)
-		drop(slot);
+	if (slot->own)
+		mcp_slot_offer(slot)->kind->drop(slot);
+	slot->own = nullptr;
+	slot->lent = (struct span){};
 	child_destroy(&slot->child);
 	loop_unready(&slot->step);
 	if (slot->call.bits)
@@ -1421,15 +1424,14 @@ mcp_slot_result (struct mcp_slot  *slot,
 	mcp_req_tool_close(req);
 }
 
-/* The output of @p slot's call: a man page while it holds the page, else
- * what it read or built. */
+/* The output of @p slot's call: the job's whose output it gives, if any;
+ * else what it lends, if anything; else what it read or built. */
 static struct span
 mcp_slot_output (struct mcp_slot const *slot)
 {
 	if (slot->of)
 		return mcp_slot_output(slot->of);
-	return slot->page ? (struct span){ (unsigned char *)slot->page->text,
-	                                   slot->page->len }
+	return slot->lent.ptr ? slot->lent
 	     : (struct span){ (unsigned char *)(uintptr_t)dstr_get(&slot->answer),
 	                      dstr_len(&slot->answer) };
 }
@@ -2214,9 +2216,11 @@ mcp_on_page (struct loop *loop,
 		return;
 	}
 	mcp_slot_wake(slot);
-	slot->page = w->page;
+	struct manual_page *page = w->page;
 	w->page = nullptr;
-	if (slot->page) {
+	if (page) {
+		slot->own = page;
+		slot->lent = (struct span){ (unsigned char *)page->text, page->len };
 		mcp_slot_respond(slot, false);
 	} else {
 		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s", mcp_elapsed(slot->start),
@@ -2323,7 +2327,8 @@ mcp_slot_man (struct mcp_slot    *slot,
 		return;
 	}
 	if (found) {
-		slot->page = found;
+		slot->own = found;
+		slot->lent = (struct span){ (unsigned char *)found->text, found->len };
 		mcp_slot_respond(slot, false);
 		return;
 	}
@@ -2334,8 +2339,7 @@ mcp_slot_man (struct mcp_slot    *slot,
 static void
 mcp_slot_man_drop (struct mcp_slot *slot)
 {
-	manual_page_put(slot->page);
-	slot->page = nullptr;
+	manual_page_put(slot->own);
 }
 
 static void mcp_slot_notes_fetch (struct mcp_slot *slot, enum mcp_fetch fetch,
@@ -2520,7 +2524,7 @@ mcp_spin_back (struct loop *loop,
 		return;
 	}
 	mcp_slot_wake(slot);
-	slot->task = nullptr;
+	slot->own = nullptr;
 	char text[96];
 	size_t n = util_format(text, sizeof text, "Ran %" PRIu64 " slices, and moved "
 	                       "%" PRIu64 " times between loops.", s->slices,
@@ -2562,7 +2566,7 @@ mcp_slot_spin (struct mcp_slot    *slot,
 	s->slices = 0;
 	s->x = loop->now | 1;
 	s->call = slot->call;
-	slot->task = &s->task;
+	slot->own = &s->task;
 	mcp_slot_park(slot);
 	task_submit(&s->task, loop);
 }
@@ -2595,19 +2599,15 @@ mcp_slot_task (struct mcp_slot    *slot,
 static void
 mcp_slot_task_drop (struct mcp_slot *slot)
 {
-	if (slot->task) {
-		task_drop(slot->task);
-		slot->task = nullptr;
-	}
+	task_drop(slot->own);
 }
 
-/* The output of a slot's git is all in: take it a slice a step, in the
- * slot's own. */
+/* A slot's git, the git tool's or the notes', has ended, its output all
+ * in: take it in steps of the slot's own. */
 static void
 mcp_on_git (struct child *c)
 {
 	struct mcp_slot *slot = c->owner;
-	slot->off = 0;
 	loop_ready_bulk(slot->req->mcp->loop, &slot->step);
 }
 
@@ -2675,21 +2675,21 @@ static void
 mcp_slot_git_text (struct mcp_slot *slot)
 {
 	struct loop *loop = slot->req->mcp->loop;
-	struct span out = buf_peek(&slot->child->out);
-	size_t left = out.len - slot->off;
+	struct buf *out = &slot->child->out;
+	struct span left = buf_peek(out);
 	size_t room = loop_room(loop, LOOP_COPY);
-	size_t n = left < room ? left : room;
+	size_t n = left.len < room ? left.len : room;
 	if (n) {
-		char *p = (char *)out.ptr + slot->off;
-		n = jb_mend(p, n, n == left);
+		char *p = (char *)left.ptr;
+		n = jb_mend(p, n, n == left.len);
 		if (!dstr_cat_n(&slot->answer, p, n)) {
 			mcp_req_fail(slot->req, ENOMEM);
 			return;
 		}
 	}
 	loop_work(loop, LOOP_COPY, n);
-	slot->off += n;
-	if (slot->off < out.len) {
+	buf_consume(out, n);
+	if (n < left.len) {
 		loop_ready_bulk(loop, &slot->step);
 		return;
 	}
@@ -2746,7 +2746,6 @@ static bool mcp_req_slice (struct mcp_req *req, struct jb_pool *pool,
                            struct span json);
 static void mcp_req_turn_submit (struct mcp_req *req);
 static void mcp_req_add_start (struct mcp_req *req);
-static void mcp_on_notes (struct child *c);
 
 /* Append the literal @p s to @p d. */
 #define CAT(d, s) dstr_cat_n(d, s, sizeof s - 1)
@@ -3726,7 +3725,7 @@ mcp_slot_none (struct mcp_slot    *slot,
  * call that keeps to itself until those before it are written, and those
  * after it until it is.  A call goes to the tool of its name that the turns
  * may call, whose kind starts it, writes its output into the slot's answer,
- * or gives a page, and calls mcp_slot_done().  The step comes again after
+ * or lends it, and calls mcp_slot_done().  The step comes again after
  * it, as the call may end the request. */
 static void
 mcp_req_call_launch (struct mcp_req *req)
@@ -3963,8 +3962,7 @@ mcp_req_result_write (struct mcp_req *req)
 	struct mcp_slot *slot = &req->slots[req->part];
 	(void)mcp_req_trace(req, &c, req->args[req->part], mcp_slot_offer(slot)->trace);
 	(void)mcp_req_trace_end(req, slot->failed, mcp_slot_output(slot).len);
-	manual_page_put(slot->page);
-	slot->page = nullptr;
+	mcp_slot_drop(slot);
 	slot->of = nullptr;
 	dstr_clear(&slot->answer);
 	slot->note_len = 0;
@@ -4083,7 +4081,7 @@ mcp_slot_notes_spawn (struct mcp_slot *slot,
 		.flags = CHILD_STDERR
 	};
 	int e = 0;
-	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_notes, slot, &e);
+	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_git, slot, &e);
 	if (!slot->child)
 		return e;
 	mcp_slot_park(slot);
@@ -4206,15 +4204,6 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		return;
 	}
 	mcp_slot_notes_read(slot, args);
-}
-
-/* The notes' git has ended, its output all in: take it in a step of its
- * slot's own. */
-static void
-mcp_on_notes (struct child *c)
-{
-	struct mcp_slot *slot = c->owner;
-	loop_ready_bulk(slot->req->mcp->loop, &slot->step);
 }
 
 /* Whether the notes' git @p c gave what it was run for: its output cut is
