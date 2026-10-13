@@ -92,6 +92,7 @@
 #include "mcp.h"
 #include "metrics.h"
 #include "notes.h"
+#include "plugin.h"
 #include "shelf.h"
 #include "stream.h"
 #include "task.h"
@@ -228,18 +229,26 @@ static constexpr uint64_t KF_SERIAL = 1ull << 32;
 
 /* A tool that askai offers: its definition as tools/list lists it, if a
  * role may grant it, and as the upstream's API has it, if it is lent, each
- * after a comma; its kind; its name; how the turns are lent it; its row in
- * the turns' metrics; and what the trace tells of its calls. */
+ * after a comma; its kind; its name; its plugin's part; how the turns are
+ * lent it; its row in the turns' metrics; and what the trace tells of its
+ * calls. */
 struct mcp_offer {
 	struct dstr             listed;
 	struct dstr             lent;
 	struct tool_kind const *kind;
 	char const             *name;
 	uint32_t                len;
+	uint8_t                 part;    /* its plugin's, in plugins[] and a
+	                                    loop's parts[] */
 	uint8_t                 lend;    /* enum mcp_lend */
 	uint8_t                 metric;  /* enum metrics_lent */
-	uint16_t                trace;   /* enum mcp_trace, widened over the
-	                                    padding */
+	uint8_t                 trace;   /* enum mcp_trace */
+};
+
+/* A plugin whose tools askai offers, and its instance. */
+struct mcp_plugin {
+	struct plugin const *plugin;
+	void                *inst;
 };
 
 struct mcp_static {
@@ -248,6 +257,10 @@ struct mcp_static {
 	struct mcp_offer          offers[TOOL_MAX + 1];  /**< by id; TOOL_MAX's,
 	                                                      that of a tool askai
 	                                                      does not offer */
+	struct mcp_plugin         plugins[TOOL_MAX];     /**< by part, at most one
+	                                                      an offer: 0 that of
+	                                                      askai's own kinds,
+	                                                      its instance this */
 	uint32_t                  n_offers;
 	uint32_t                  n_granted;      /**< those before the first
 	                                               that only turns are given */
@@ -267,19 +280,15 @@ struct mcp_static {
 	struct dstr               server_meta;  /**< a modern result's _meta
 	                                             member */
 	struct dstr               versions;     /**< the supported versions, an array */
-	struct manual            *manual;       /**< the man tool's, if askai
-	                                             offers it */
 	struct task_pool         *tasks;        /**< test_task's, if askai offers
 	                                             it */
-	struct git               *git;          /**< git's, if askai lists
-	                                             repositories */
 	struct notes             *notes;        /**< the notes', with --notes */
 	struct ledger            *ledger;       /**< the tasks' */
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
-	uint64_t                  turns;        /**< upstream calls an ask call
-	                                             makes at most; widened over
-	                                             the padding */
+	uint32_t                  turns;        /**< upstream calls an ask call
+	                                             makes at most */
+	uint32_t                  n_plugins;
 };
 
 /** Where a request stands. */
@@ -342,8 +351,8 @@ struct mcp_slot {
 	                                  given to a turn, starts at */
 	size_t              window;    /* and the bytes of that */
 	uint64_t            start;     /* loop_clock() as the call began */
-	struct handle       call;      /* names it to the completion it waits
-	                                  for: man's page, test_task's task */
+	struct handle       call;      /* names it to the post that completes
+	                                  it, as mcp_slot_name() makes it */
 	uint16_t            note_len;  /* bytes of note */
 	uint8_t             tool;      /* its call's tool, by its offer's id;
 	                                  TOOL_MAX: none */
@@ -516,8 +525,7 @@ struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
 	struct list              tasks;     /* requests whose call is a task */
 	struct list              freeing;   /* requests freeing their message */
-	struct manual_loop       man;       /* the man calls' fetches */
-	struct list              children;  /* the git calls' */
+	struct list              children;  /* the git calls' and the notes' */
 	struct shelf             spare;     /* finished requests */
 	struct shelf             jobs;      /* jobs let go of */
 	struct loop_step         drain;     /* ends the calls, draining */
@@ -530,6 +538,7 @@ struct mcp {
 	struct loop             *home;      /* where jobs run */
 	struct mcp_static const *st;
 	uint64_t                 draining;  /* bool, widened over the padding */
+	void                    *parts[];   /* the plugins', as st->plugins[] */
 };
 
 /* The thread's MCP: the handler of jobs' completions finds it here. */
@@ -988,26 +997,6 @@ mcp_slot_unwait (struct mcp_slot *slot)
 {
 	if (slot == &slot->req->self)
 		mcp_req_unwait(slot->req);
-}
-
-/* What @p slot's call waited for is in. */
-static void
-mcp_slot_wake (struct mcp_slot *slot)
-{
-	loop_forget(slot->req->mcp->loop, slot->call);
-	slot->call = (struct handle){};
-	mcp_slot_unwait(slot);
-}
-
-/* @p slot's call waits: its request parks, if the slot is its own; a
- * turn's call keeps it among the calls a drain ends. */
-static void
-mcp_slot_park (struct mcp_slot *slot)
-{
-	if (slot == &slot->req->self)
-		mcp_req_park(slot->req);
-	else
-		mcp_req_wait(slot->req);
 }
 
 /* Let go of the arguments of the turn's calls @p k to @p end. */
@@ -2202,6 +2191,154 @@ mcp_id_valid (struct json_object const *id)
 	       json_object_is_type(id, json_type_double);
 }
 
+/* The call API (src/mcp.h): what a kind of tool does with a call. */
+
+void *
+mcp_slot_part (struct mcp_slot const *slot)
+{
+	return slot->req->mcp->parts[mcp_slot_offer(slot)->part];
+}
+
+void **
+mcp_slot_own (struct mcp_slot *slot)
+{
+	return &slot->own;
+}
+
+/* @p slot's call waits no more: let go of its name, if it has one, and of
+ * its step, if queued. */
+static void
+mcp_slot_wake (struct mcp_slot *slot)
+{
+	if (slot->call.bits)
+		loop_forget(slot->req->mcp->loop, slot->call);
+	slot->call = (struct handle){};
+	loop_unready(&slot->step);
+	mcp_slot_unwait(slot);
+}
+
+void
+mcp_slot_tell (struct mcp_slot  *slot,
+               struct tool_text  text,
+               uint32_t          flags)
+{
+	size_t len = jb_utf8(text.ptr, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
+	mcp_slot_wake(slot);
+	mcp_slot_result(slot, ESC(text.ptr, len), flags & TOOL_FAILED);
+}
+
+void
+mcp_slot_finish (struct mcp_slot *slot,
+                 uint32_t         flags)
+{
+	mcp_slot_wake(slot);
+	mcp_slot_respond(slot, flags & TOOL_FAILED);
+}
+
+void
+mcp_slot_fail (struct mcp_slot *slot,
+               int              e)
+{
+	mcp_req_fail(slot->req, e);
+}
+
+int
+mcp_slot_offset (struct mcp_slot    *slot,
+                 struct json_object *args)
+{
+	struct json_object *o = jb_get(args, "offset");
+	int64_t n = !o ? 0
+	          : json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : -1;
+	slot->skip = n > 0 ? (size_t)n : 0;
+	if (n >= 0)
+		return 0;
+	mcp_slot_tell(slot, TOOL_TEXT("The offset argument must be a whole number of bytes, "
+	                              "from 0."), TOOL_FAILED);
+	return EINVAL;
+}
+
+int
+mcp_slot_write (struct mcp_slot  *slot,
+                struct tool_text  text,
+                uint32_t          flags,
+                size_t           *taken)
+{
+	struct dstr *answer = &slot->answer;
+	size_t had = dstr_len(answer);
+	if (text.len > TOOL_OUTPUT_MAX - had)
+		return EFBIG;
+	/* What is UTF-8 goes at once; from the first byte that breaks it, a
+	 * chunk at a time, mended by jb_mend(), which with TOOL_MORE leaves a
+	 * character the end cuts short to the next write.  All or nothing. */
+	size_t i = jb_utf8(text.ptr, text.len);
+	bool ok = dstr_cat_n(answer, text.ptr, i);
+	for (bool last = i == text.len; ok && !last; ) {
+		char chunk[4 << 10];
+		size_t n = text.len - i < sizeof chunk ? text.len - i : sizeof chunk;
+		last = i + n == text.len;
+		memcpy(chunk, text.ptr + i, n);
+		n = jb_mend(chunk, n, last && !(flags & TOOL_MORE));
+		ok = dstr_cat_n(answer, chunk, n);
+		i += n;
+	}
+	if (!ok) {
+		(void)dstr_erase(answer, had, SIZE_MAX);
+		return ENOMEM;
+	}
+	loop_work(slot->req->mcp->loop, LOOP_COPY, i);
+	*taken = i;
+	return 0;
+}
+
+struct tool_text
+mcp_slot_answer (struct mcp_slot const *slot)
+{
+	return (struct tool_text){ dstr_get(&slot->answer), dstr_len(&slot->answer) };
+}
+
+void
+mcp_slot_lend (struct mcp_slot  *slot,
+               struct tool_text  text)
+{
+	slot->lent = (struct span){ (unsigned char *)(uintptr_t)text.ptr, text.len };
+}
+
+/* Its request parks, if the slot is its own; a turn's call keeps it among
+ * the calls a drain ends. */
+void
+mcp_slot_park (struct mcp_slot *slot)
+{
+	struct mcp_req *req = slot->req;
+	if (mcp_slot_offer(slot)->kind->flags & TOOL_STREAM && req->sse_ok && !req->sse)
+		mcp_req_stream(req);
+	if (slot == &req->self)
+		mcp_req_park(req);
+	else
+		mcp_req_wait(req);
+}
+
+void
+mcp_slot_ready (struct mcp_slot *slot)
+{
+	loop_ready_bulk(slot->req->mcp->loop, &slot->step);
+}
+
+int
+mcp_slot_name (struct mcp_slot *slot,
+               struct handle   *who)
+{
+	int e = slot->call.bits ? 0 : loop_handle(slot->req->mcp->loop, slot, &slot->call);
+	*who = slot->call;
+	return e;
+}
+
+struct mcp_slot *
+mcp_slot_named (struct loop const *loop,
+                struct handle      who)
+{
+	return loop->exit ? nullptr : loop_lookup(loop, who);
+}
+
 /* The page a man call waited for is in, or man failed: reply with the
  * page, or why there is none, unless the call has gone.  Once the loop has
  * stopped, MCP is gone, and the post is only freed. */
@@ -2210,41 +2347,23 @@ mcp_on_page (struct loop *loop,
              struct msg  *msg)
 {
 	struct manual_wait *w = container_of(msg, struct manual_wait, msg);
-	struct mcp_slot *slot = loop->exit ? nullptr : loop_lookup(loop, w->who);
+	struct mcp_slot *slot = mcp_slot_named(loop, w->who);
 	if (!slot) {
 		manual_wait_destroy(&w);
 		return;
 	}
-	mcp_slot_wake(slot);
 	struct manual_page *page = w->page;
 	w->page = nullptr;
 	if (page) {
-		slot->own = page;
-		slot->lent = (struct span){ (unsigned char *)page->text, page->len };
-		mcp_slot_respond(slot, false);
+		*mcp_slot_own(slot) = page;
+		mcp_slot_lend(slot, (struct tool_text){ page->text, page->len });
+		mcp_slot_finish(slot, 0);
 	} else {
 		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s", mcp_elapsed(slot->start),
 		    w->why);
-		mcp_slot_result(slot, ESC(w->why, strlen(w->why)), true);
+		mcp_slot_tell(slot, (struct tool_text){ w->why, strlen(w->why) }, TOOL_FAILED);
 	}
 	manual_wait_destroy(&w);
-}
-
-/* Take the byte of a tool's output that @p args asks it to start from, its
- * offset, into slot->skip; what is wrong with it, if anything. */
-static struct mcp_piece
-mcp_slot_offset (struct mcp_slot    *slot,
-                 struct json_object *args)
-{
-	struct json_object *o = jb_get(args, "offset");
-	slot->skip = 0;
-	if (!o)
-		return (struct mcp_piece){};
-	int64_t n = json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : -1;
-	if (n < 0)
-		return TEXT("The offset argument must be a whole number of bytes, from 0.");
-	slot->skip = (size_t)n;
-	return (struct mcp_piece){};
 }
 
 /* Whether @p s, of @p len bytes, is 1 to @p max of the characters of @p set,
@@ -2258,33 +2377,9 @@ mcp_man_word (char const *s,
 	return s && len && len <= max && *s != '-' && strspn(s, set) == len;
 }
 
-/* Look up the page of @p name in @p section, of @p name_len and
- * @p section_len bytes: in @p *found if the manual has it, else @p slot is
- * named to wait for it.  Returns 0 or an error. */
-static int
-mcp_slot_man_find (struct mcp_slot     *slot,
-                   char const          *name,
-                   size_t               name_len,
-                   char const          *section,
-                   size_t               section_len,
-                   struct manual_page **found)
-{
-	struct mcp *mcp = slot->req->mcp;
-	int e = loop_handle(mcp->loop, slot, &slot->call);
-	if (e)
-		return e;
-	e = manual_find(&mcp->man, name, name_len, section, section_len, slot->call,
-	                mcp_on_page, found);
-	if (e || *found) {
-		loop_forget(mcp->loop, slot->call);
-		slot->call = (struct handle){};
-	}
-	return e;
-}
-
 /* Start a man call in @p slot for the page that @p args names, of the
- * section it names if any: reply with it if the manual has it, else wait
- * for it. */
+ * section it names if any: reply with it if the manual, the man tool's
+ * part of the loop, has it, else wait for it, named. */
 static void
 mcp_slot_man (struct mcp_slot    *slot,
               struct json_object *args)
@@ -2304,32 +2399,37 @@ mcp_slot_man (struct mcp_slot    *slot,
 		sect = digit;
 		len = 1;
 	}
-	struct mcp_piece problem =
+	struct tool_text problem =
 		args && !json_object_is_type(args, json_type_object)
-		? TEXT("Tool arguments must be an object.")
+		? TOOL_TEXT("Tool arguments must be an object.")
 		: !mcp_man_word(page, page_len, MANUAL_NAME, ALNUM "_.:+@-")
-		? TEXT("The name argument must name a manual page: 1 to 128 letters, "
-		       "digits and _.:+@- characters, the first not -.")
+		? TOOL_TEXT("The name argument must name a manual page: 1 to 128 letters, "
+		            "digits and _.:+@- characters, the first not -.")
 		: section && !(sect && (!len || mcp_man_word(sect, len, MANUAL_SECTION, ALNUM)))
-		? TEXT("The section argument must name a section, such as 1, 3 or 3p: 1 "
-		       "to 16 letters and digits.")
-		: mcp_slot_offset(slot, args);
+		? TOOL_TEXT("The section argument must name a section, such as 1, 3 or 3p: "
+		            "1 to 16 letters and digits.")
+		: (struct tool_text){};
 #undef ALNUM
 	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16, "the problems say");
 	if (problem.ptr) {
-		mcp_slot_result(slot, problem, true);
+		mcp_slot_tell(slot, problem, TOOL_FAILED);
 		return;
 	}
+	if (mcp_slot_offset(slot, args))
+		return;
+	struct handle who;
 	struct manual_page *found = nullptr;
-	int e = mcp_slot_man_find(slot, page, page_len, sect, len, &found);
+	int e = mcp_slot_name(slot, &who);
+	e = e ? e : manual_find(mcp_slot_part(slot), page, page_len, sect, len, who,
+	                        mcp_on_page, &found);
 	if (e) {
-		mcp_req_fail(slot->req, e);
+		mcp_slot_fail(slot, e);
 		return;
 	}
 	if (found) {
-		slot->own = found;
-		slot->lent = (struct span){ (unsigned char *)found->text, found->len };
-		mcp_slot_respond(slot, false);
+		*mcp_slot_own(slot) = found;
+		mcp_slot_lend(slot, (struct tool_text){ found->text, found->len });
+		mcp_slot_finish(slot, 0);
 		return;
 	}
 	mcp_slot_park(slot);
@@ -2339,7 +2439,31 @@ mcp_slot_man (struct mcp_slot    *slot,
 static void
 mcp_slot_man_drop (struct mcp_slot *slot)
 {
-	manual_page_put(slot->own);
+	manual_page_put(*mcp_slot_own(slot));
+}
+
+/* The man tool's part of @p loop: the manual's, @p inst's, fetches there,
+ * and their children; nullptr, with ENOMEM in @p *e, if out of memory. */
+static void *
+mcp_man_part_create (void        *inst,
+                     struct loop *loop,
+                     int         *e)
+{
+	struct manual_loop *ml = malloc(sizeof *ml);
+	*e = ml ? 0 : ENOMEM;
+	if (ml)
+		manual_loop_init(ml, inst, loop);
+	return ml;
+}
+
+/* End the man tool's part of a loop, as it stops, and free it. */
+static void
+mcp_man_part_destroy (void **p_part)
+{
+	struct manual_loop *ml = *p_part;
+	*p_part = nullptr;
+	manual_loop_fini(ml);
+	free(ml);
 }
 
 static void mcp_slot_notes_fetch (struct mcp_slot *slot, enum mcp_fetch fetch,
@@ -2518,19 +2642,18 @@ mcp_spin_back (struct loop *loop,
 {
 	struct task *task = container_of(msg, struct task, msg);
 	struct mcp_spin *s = container_of(task, struct mcp_spin, task);
-	struct mcp_slot *slot = loop->exit ? nullptr : loop_lookup(loop, s->call);
+	struct mcp_slot *slot = mcp_slot_named(loop, s->call);
 	if (!slot) {
 		task_put(task, 1);
 		return;
 	}
-	mcp_slot_wake(slot);
-	slot->own = nullptr;
+	*mcp_slot_own(slot) = nullptr;
 	char text[96];
 	size_t n = util_format(text, sizeof text, "Ran %" PRIu64 " slices, and moved "
 	                       "%" PRIu64 " times between loops.", s->slices,
 	                       task->moves);
 	task_put(task, 2);
-	mcp_slot_result(slot, ESC(text, n), false);
+	mcp_slot_tell(slot, (struct tool_text){ text, n }, 0);
 }
 
 /* Run the @p slices a test_task call in @p slot asks for as a task, which
@@ -2540,33 +2663,27 @@ mcp_slot_spin (struct mcp_slot    *slot,
                struct json_object *slices)
 {
 	static_assert(SPIN_MAX == 100'000, "the problem says");
-	struct mcp_req *req = slot->req;
-	struct mcp *mcp = req->mcp;
+	struct mcp *mcp = slot->req->mcp;
 	struct loop *loop = mcp->loop;
 	int64_t n = json_object_is_type(slices, json_type_int)
 	          ? json_object_get_int64(slices) : 0;
 	if (n < 1 || n > SPIN_MAX) {
-		mcp_slot_result(slot, TEXT("The slices argument must be a whole number "
-		                           "from 1 to 100000."), true);
+		mcp_slot_tell(slot, TOOL_TEXT("The slices argument must be a whole number "
+		                              "from 1 to 100000."), TOOL_FAILED);
 		return;
 	}
 	struct mcp_spin *s = malloc(sizeof *s);
-	if (!s) {
-		mcp_req_fail(req, ENOMEM);
-		return;
-	}
-	int e = loop_handle(loop, slot, &slot->call);
+	int e = s ? mcp_slot_name(slot, &s->call) : ENOMEM;
 	if (e) {
 		free(s);
-		mcp_req_fail(req, e);
+		mcp_slot_fail(slot, e);
 		return;
 	}
 	task_init(&s->task, mcp->st->tasks, loop, mcp_spin_slice, mcp_spin_back);
 	s->left = (uint64_t)n;
 	s->slices = 0;
 	s->x = loop->now | 1;
-	s->call = slot->call;
-	slot->own = &s->task;
+	*mcp_slot_own(slot) = &s->task;
 	mcp_slot_park(slot);
 	task_submit(&s->task, loop);
 }
@@ -2579,7 +2696,7 @@ mcp_slot_task (struct mcp_slot    *slot,
                struct json_object *args)
 {
 	if (args && !json_object_is_type(args, json_type_object)) {
-		mcp_slot_result(slot, TEXT("Tool arguments must be an object."), true);
+		mcp_slot_tell(slot, TOOL_TEXT("Tool arguments must be an object."), TOOL_FAILED);
 		return;
 	}
 	struct json_object *slices = jb_get(args, "slices");
@@ -2588,7 +2705,7 @@ mcp_slot_task (struct mcp_slot    *slot,
 		return;
 	}
 	if (slices) {
-		mcp_slot_result(slot, TEXT("Give slices or a prompt, not both."), true);
+		mcp_slot_tell(slot, TOOL_TEXT("Give slices or a prompt, not both."), TOOL_FAILED);
 		return;
 	}
 	slot->req->asks = JOB_BACKGROUND;
@@ -2599,7 +2716,7 @@ mcp_slot_task (struct mcp_slot    *slot,
 static void
 mcp_slot_task_drop (struct mcp_slot *slot)
 {
-	task_drop(slot->own);
+	task_drop(*mcp_slot_own(slot));
 }
 
 /* A slot's git, the git tool's or the notes', has ended, its output all
@@ -2607,8 +2724,7 @@ mcp_slot_task_drop (struct mcp_slot *slot)
 static void
 mcp_on_git (struct child *c)
 {
-	struct mcp_slot *slot = c->owner;
-	loop_ready_bulk(slot->req->mcp->loop, &slot->step);
+	mcp_slot_ready(c->owner);
 }
 
 /* Append the @p n pieces at @p p to @p slot's answer: 0, or ENOMEM. */
@@ -2631,42 +2747,39 @@ static void
 mcp_slot_git_ended (struct mcp_slot *slot)
 {
 	static_assert(GIT_MAX == 2 << 20, "the note says 2 MiB");
-	struct mcp_req *req = slot->req;
 	struct child *c = slot->child;
-	size_t len = dstr_len(&slot->answer);
+	struct tool_text out = mcp_slot_answer(slot);
 	char buf[96];
 	struct mcp_piece note;
 	bool failed = true;
 	if (c->late) {
 		note = ESC(buf, util_format(buf, sizeof buf, "[git took longer than %.0f s, "
 		                            "and was stopped.]",
-		                            (double)git_timeout(req->mcp->st->git) / 1e9));
+		                            (double)git_timeout(mcp_slot_part(slot)) / 1e9));
 	} else if (c->cut) {
 		note = TEXT("[The output goes on past the 2 MiB shown.]");
-		failed = c->code == CLD_EXITED && c->status && (c->status != 1 || len);
+		failed = c->code == CLD_EXITED && c->status && (c->status != 1 || out.len);
 	} else if (c->code != CLD_EXITED) {
 		note = ESC(buf, util_format(buf, sizeof buf, "[git was killed by signal %d.]",
 		                            c->status));
 	} else if (c->status) {
 		note = ESC(buf, util_format(buf, sizeof buf, "[git exited with status %d.]",
 		                            c->status));
-		failed = c->status != 1 || len;
+		failed = c->status != 1 || out.len;
 	} else {
-		note = len ? (struct mcp_piece){} : TEXT("[No output.]");
+		note = out.len ? (struct mcp_piece){} : TEXT("[No output.]");
 		failed = false;
 	}
 	child_destroy(&slot->child);
-	mcp_slot_unwait(slot);
 	struct mcp_piece const p[] = {
-		!len ? FRAG("") : dstr_get(&slot->answer)[len - 1] == '\n' ? FRAG("\n")
-		                                                         : FRAG("\n\n"),
+		!out.len ? FRAG("") : out.ptr[out.len - 1] == '\n' ? FRAG("\n") : FRAG("\n\n"),
 		note,
 	};
 	if (note.ptr && mcp_slot_say(slot, p, ARRAY_SIZE(p))) {
-		mcp_req_fail(req, ENOMEM);
+		mcp_slot_fail(slot, ENOMEM);
 		return;
 	}
-	mcp_slot_respond(slot, failed);
+	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
 }
 
 /* Take a slice of the output of @p slot's git into its answer, made UTF-8
@@ -2674,46 +2787,41 @@ mcp_slot_git_ended (struct mcp_slot *slot)
 static void
 mcp_slot_git_text (struct mcp_slot *slot)
 {
-	struct loop *loop = slot->req->mcp->loop;
 	struct buf *out = &slot->child->out;
 	struct span left = buf_peek(out);
-	size_t room = loop_room(loop, LOOP_COPY);
+	size_t room = loop_room(slot->req->mcp->loop, LOOP_COPY);
 	size_t n = left.len < room ? left.len : room;
-	if (n) {
-		char *p = (char *)left.ptr;
-		n = jb_mend(p, n, n == left.len);
-		if (!dstr_cat_n(&slot->answer, p, n)) {
-			mcp_req_fail(slot->req, ENOMEM);
-			return;
-		}
+	int e = mcp_slot_write(slot, (struct tool_text){ (char const *)left.ptr, n },
+	                       n < left.len ? TOOL_MORE : 0, &n);
+	if (e) {
+		mcp_slot_fail(slot, e);
+		return;
 	}
-	loop_work(loop, LOOP_COPY, n);
 	buf_consume(out, n);
 	if (n < left.len) {
-		loop_ready_bulk(loop, &slot->step);
+		mcp_slot_ready(slot);
 		return;
 	}
 	mcp_slot_git_ended(slot);
 }
 
 /* Start a git call in @p slot: the command @p args asks for, in the
- * repository it names. */
+ * repository it names, of the git that is the tool's part. */
 static void
 mcp_slot_git (struct mcp_slot    *slot,
               struct json_object *args)
 {
-	struct mcp_req *req = slot->req;
-	struct mcp *mcp = req->mcp;
+	struct mcp *mcp = slot->req->mcp;
 	struct loop *loop = mcp->loop;
-	struct git const *git = mcp->st->git;
+	struct git const *git = mcp_slot_part(slot);
 	char const *argv[GIT_ARGV];
 	char why[GIT_WHY];
-	struct mcp_piece problem = git_command(git, args, argv, why)
-	                         ? ESC(why, strlen(why)) : mcp_slot_offset(slot, args);
-	if (problem.ptr) {
-		mcp_slot_result(slot, problem, true);
+	if (git_command(git, args, argv, why)) {
+		mcp_slot_tell(slot, (struct tool_text){ why, strlen(why) }, TOOL_FAILED);
 		return;
 	}
+	if (mcp_slot_offset(slot, args))
+		return;
 	struct child_cmd const cmd = {
 		.file = "git",
 		.argv = argv,
@@ -2726,18 +2834,16 @@ mcp_slot_git (struct mcp_slot    *slot,
 	int e = 0;
 	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_git, slot, &e);
 	if (e == EBUSY) {
-		mcp_slot_result(slot, TEXT("Too many commands are running; try again in a "
-		                           "few seconds."), true);
+		mcp_slot_tell(slot, TOOL_TEXT("Too many commands are running; try again in a "
+		                              "few seconds."), TOOL_FAILED);
 		return;
 	}
 	if (e) {
 		size_t n = util_format(why, sizeof why, "Cannot run git: %s.", strerror(e));
 		LOG(LOG_WARN, "%s", why);
-		mcp_slot_result(slot, ESC(why, n), true);
+		mcp_slot_tell(slot, (struct tool_text){ why, n }, TOOL_FAILED);
 		return;
 	}
-	if (req->sse_ok && !req->sse)
-		mcp_req_stream(req);
 	mcp_slot_park(slot);
 }
 
@@ -3534,12 +3640,12 @@ mcp_slot_jobs_result (struct mcp_slot    *slot,
                       struct mcp_slot    *job,
                       struct json_object *args)
 {
-	struct mcp_piece problem = !job->done ? TEXT("That job still runs: wait for it.")
-	                         : mcp_slot_offset(slot, args);
-	if (problem.ptr) {
-		mcp_slot_result(slot, problem, true);
+	if (!job->done) {
+		mcp_slot_result(slot, TEXT("That job still runs: wait for it."), true);
 		return;
 	}
+	if (mcp_slot_offset(slot, args))
+		return;
 	slot->of = job;
 	mcp_slot_respond(slot, job->failed);
 }
@@ -5340,6 +5446,18 @@ mcp_drain_step (struct loop      *loop,
 	}
 }
 
+/* Destroy the first @p n of @p mcp's parts, last first. */
+static void
+mcp_destroy_parts (struct mcp *mcp,
+                   uint32_t    n)
+{
+	while (n--) {
+		plugin_part_destroy_fn *destroy = mcp->st->plugins[n].plugin->part_destroy;
+		if (destroy)
+			destroy(&mcp->parts[n]);
+	}
+}
+
 struct mcp *
 mcp_create (struct loop              *loop,
             struct loop              *home,
@@ -5348,7 +5466,7 @@ mcp_create (struct loop              *loop,
             struct metrics_mcp       *counts,
             int                      *e)
 {
-	struct mcp *mcp = malloc(sizeof *mcp);
+	struct mcp *mcp = malloc(sizeof *mcp + st->n_plugins * sizeof *mcp->parts);
 	if (!mcp) {
 		*e = ENOMEM;
 		return nullptr;
@@ -5383,10 +5501,21 @@ mcp_create (struct loop              *loop,
 	list_init(&mcp->calls);
 	list_init(&mcp->tasks);
 	list_init(&mcp->freeing);
-	manual_loop_init(&mcp->man, st->manual, loop);
 	list_init(&mcp->children);
 	list_init(&mcp->spare.list);
 	list_init(&mcp->jobs.list);
+	for (uint32_t i = 0; i < st->n_plugins; ++i) {
+		struct mcp_plugin const *p = &st->plugins[i];
+		plugin_part_create_fn *create = p->plugin->part_create;
+		int pe = 0;
+		mcp->parts[i] = create ? create(p->inst, loop, &pe) : p->inst;
+		if (!mcp->parts[i]) {
+			*e = pe ? pe : ENOMEM;
+			mcp_destroy_parts(mcp, i);
+			free(mcp);
+			return nullptr;
+		}
+	}
 	self = mcp;
 	return mcp;
 }
@@ -5402,16 +5531,17 @@ mcp_destroy (struct mcp **p_mcp)
 	/* The transport has cancelled every stream by now, but for the
 	 * stand-ins of the calls that are tasks, which end here, their tasks
 	 * failed.  Then only requests still freeing their message are left,
-	 * and the man fetches. */
+	 * and what the parts do, such as the man fetches.  The parts go once
+	 * what they keep is given back. */
 	while (!list_is_empty(&mcp->tasks))
 		mcp_req_abort(container_of(mcp->tasks.next, struct mcp_req, task_hook),
 		              ESHUTDOWN);
 	while (!list_is_empty(&mcp->freeing))
 		mcp_req_end(container_of(mcp->freeing.next, struct mcp_req, hook));
-	manual_loop_fini(&mcp->man);
-	child_destroy_all(&mcp->children);
 	while (mcp_relieve(mcp, BUF_CRITICAL, SIZE_MAX))
 		;
+	mcp_destroy_parts(mcp, mcp->st->n_plugins);
+	child_destroy_all(&mcp->children);
 	loop_unready(&mcp->drain);
 	self = nullptr;
 	free(mcp);
@@ -5452,6 +5582,11 @@ mcp_relieve (struct mcp        *mcp,
 	for (size_t n = shelf_unused(&mcp->jobs, level); n && done < max; --n, ++done) {
 		hist_add(&mcp->counts->kept.jobs, -1ULL);
 		free(container_of(shelf_drop(&mcp->jobs), struct job, spare));
+	}
+	for (uint32_t i = 0; i < mcp->st->n_plugins && done < max; ++i) {
+		plugin_relieve_fn *relieve = mcp->st->plugins[i].plugin->relieve;
+		if (relieve)
+			done += relieve(mcp->parts[i], level, max - done);
 	}
 	return done;
 }
@@ -5601,8 +5736,7 @@ mcp_task_definition (void const *inst)
 static struct json_object *
 mcp_git_definition (void const *inst)
 {
-	struct mcp_static const *st = inst;
-	return git_definition(st->git);
+	return git_definition(inst);
 }
 
 /* The notes tool's definition, which only turns are given. */
@@ -5902,17 +6036,44 @@ mcp_static_tails (struct mcp_static  *st,
 	                   CACHE_TTL_MS, dstr_get(&st->modern_tail)) ? 0 : ENOMEM;
 }
 
-/* What each kind of tool is: what its calls do; its name, but the ask
- * tool's, which the configuration names; how the turns are lent it; its row
- * in the turns' metrics; and what the trace tells of its calls. */
+/* What each kind of tool is: what its calls do, or the plugin whose one
+ * tool it is; its name, but the ask tool's, which the configuration names;
+ * how the turns are lent it, but a plugin's, which its kind's flags say;
+ * its row in the turns' metrics; and what the trace tells of its calls. */
 struct mcp_row {
 	struct tool_kind        kind;
+	struct plugin const    *plugin;
 	char const             *ptr;
 	uint32_t                len;
 	uint8_t                 lend;    /* enum mcp_lend */
 	uint8_t                 metric;  /* enum metrics_lent */
-	uint16_t                trace;   /* enum mcp_trace, widened over the
-	                                    padding */
+	uint8_t                 trace;   /* enum mcp_trace */
+};
+
+/* askai's own kinds, as a plugin of no parts: its instance, the
+ * mcp_static, is part 0. */
+static struct plugin const mcp_host_plugin = {};
+
+/* askai's man and git, plugins built in: man's part of a loop is the
+ * manual's there, git's the git itself. */
+static struct plugin const mcp_man_plugin = {
+	.tools = {{
+		.definition = mcp_man_definition,
+		.start = mcp_slot_man,
+		.drop = mcp_slot_man_drop,
+		.flags = TOOL_LENT | TOOL_PAGED | TOOL_DETACH
+	}},
+	.part_create = mcp_man_part_create,
+	.part_destroy = mcp_man_part_destroy
+};
+
+static struct plugin const mcp_git_plugin = {
+	.tools = {{
+		.definition = mcp_git_definition,
+		.start = mcp_slot_git,
+		.step = mcp_slot_git_text,
+		.flags = TOOL_LENT | TOOL_PAGED | TOOL_DETACH | TOOL_STREAM
+	}}
 };
 
 static struct mcp_row const mcp_rows[KINDS] = {
@@ -5920,15 +6081,11 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	[KIND_ASK]        = { { .definition = mcp_tool_definition, .start = mcp_slot_ask,
 	                        .step = mcp_slot_notes_out },
 	                      .metric = LENT_NONE },
-	[KIND_MAN]        = { { .definition = mcp_man_definition, .start = mcp_slot_man,
-	                        .drop = mcp_slot_man_drop, .flags = TOOL_PAGED | TOOL_DETACH },
-	                      N("man"), LEND_GRANTED, LENT_MAN },
+	[KIND_MAN]        = { .plugin = &mcp_man_plugin, N("man"), .metric = LENT_MAN },
 	[KIND_TASK]       = { { .definition = mcp_task_definition, .start = mcp_slot_task,
 	                        .drop = mcp_slot_task_drop },
 	                      N("test_task"), LEND_NEVER, LENT_NONE },
-	[KIND_GIT]        = { { .definition = mcp_git_definition, .start = mcp_slot_git,
-	                        .step = mcp_slot_git_text, .flags = TOOL_PAGED | TOOL_DETACH },
-	                      N("git"), LEND_GRANTED, LENT_GIT },
+	[KIND_GIT]        = { .plugin = &mcp_git_plugin, N("git"), .metric = LENT_GIT },
 	[KIND_NOTES]      = { { .definition = mcp_notes_definition, .start = mcp_slot_notes,
 	                        .step = mcp_slot_notes_out, .flags = KF_SERIAL },
 	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION },
@@ -5962,7 +6119,7 @@ mcp_static_build (struct mcp_static  *st,
 {
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_offer *o = &st->offers[id];
-		struct json_object *def = o->kind->definition(st);
+		struct json_object *def = o->kind->definition(st->plugins[o->part].inst);
 		tool_mask bit = (tool_mask)1 << id;
 		st->lends |= o->lend == LEND_GRANTED ? bit : 0;
 		st->always |= o->lend == LEND_ALWAYS ? bit : 0;
@@ -6044,15 +6201,15 @@ mcp_static_create (struct config const *cfg,
 			.len = mcp_rows[KIND_NONE].len,
 			.metric = mcp_rows[KIND_NONE].metric
 		},
+		.plugins[0] = { &mcp_host_plugin, st },
+		.n_plugins = 1,
 		.list_tail = DSTR_INIT,
 		.discover = DSTR_INIT,
 		.init_tail = DSTR_INIT,
 		.modern_tail = DSTR_INIT,
 		.server_meta = DSTR_INIT,
 		.versions = DSTR_INIT,
-		.manual = manual,
 		.tasks = tasks,
-		.git = git,
 		.notes = lends ? notes : nullptr,
 		.ledger = ledger,
 		.seed = loop_clock(),
@@ -6062,20 +6219,32 @@ mcp_static_create (struct config const *cfg,
 	/* A zeroed dstr is no empty string (dstr.h). */
 	char const *names[TOOL_MAX];
 	enum mcp_kind kinds[TOOL_MAX];
+	void *const insts[KINDS] = { [KIND_MAN] = manual, [KIND_GIT] = git };
 	st->n_offers = mcp_offers(cfg, names, kinds, &st->n_granted);
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_row const *row = &mcp_rows[kinds[id]];
-		st->offers[id] = (struct mcp_offer){
+		struct mcp_offer *o = &st->offers[id];
+		*o = (struct mcp_offer){
 			.listed = DSTR_INIT,
 			.lent = DSTR_INIT,
 			.kind = &row->kind,
 			.name = names[id],
 			.len = row->ptr ? row->len : (uint32_t)strlen(names[id]),
-			/* The turns are lent tools with --upstream-tools. */
-			.lend = lends ? row->lend : LEND_NEVER,
+			.lend = row->lend,
 			.metric = row->metric,
 			.trace = row->trace
 		};
+		/* A plugin's tool is its kind, of a part of its own. */
+		if (row->plugin) {
+			o->kind = &row->plugin->tools[0];
+			o->part = (uint8_t)st->n_plugins;
+			o->lend = o->kind->flags & TOOL_LENT ? LEND_GRANTED : LEND_NEVER;
+			st->plugins[st->n_plugins++] = (struct mcp_plugin){ row->plugin,
+			                                                    insts[kinds[id]] };
+		}
+		/* The turns are lent tools with --upstream-tools. */
+		if (!lends)
+			o->lend = LEND_NEVER;
 	}
 	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
 

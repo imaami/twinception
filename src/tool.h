@@ -1,11 +1,12 @@
 /** @file The tools that askai offers, as masks of their ids, which roles
  *  grant (src/policy.h) and requests carry (src/stream.h); and the kinds of
- *  tool they are, what their calls do.  start() ends or parks a call;
- *  step() does a share of its work; drop() lets go of its own word.  All
- *  run on the call's loop, and never block. */
+ *  tool they are, what their calls do, with the call API of src/mcp.h.
+ *  start() ends or parks a call; step() does a share of its work; drop()
+ *  lets go of its own word.  All run on the call's loop, and never block. */
 #ifndef TWINCEPTION_SRC_TOOL_H_
 #define TWINCEPTION_SRC_TOOL_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct json_object;
@@ -17,9 +18,24 @@ static constexpr unsigned TOOL_MAX = 128;
 /** Tools, bit i that of id i. */
 typedef unsigned _BitInt(TOOL_MAX) tool_mask;
 
+enum {
+	TOOL_TELL_MAX   = 4 << 10,   /**< bytes mcp_slot_tell() takes */
+	TOOL_OUTPUT_MAX = 16 << 20,  /**< bytes a call may write */
+};
+
+/** UTF-8 text, its giver's. */
+struct tool_text {
+	char const *ptr;
+	size_t      len;
+};
+
+/** A string literal's text; a pointer does not compile. */
+#define TOOL_TEXT(s) ((struct tool_text){ "" s, sizeof s - 1 })
+
 enum tool_flag : uint64_t {
 	TOOL_LENT   = 1u << 0,  /**< turns may call it, as the role grants */
-	TOOL_PAGED  = 1u << 1,  /**< output read on from "offset" */
+	TOOL_PAGED  = 1u << 1,  /**< output read on from "offset", which
+	                             start() takes with mcp_slot_offset() */
 	TOOL_DETACH = 1u << 2,  /**< a turn may run it in the background */
 	TOOL_STREAM = 1u << 3,  /**< parking opens the event stream */
 };
@@ -27,6 +43,12 @@ enum tool_flag : uint64_t {
 /** A plugin's kinds may have these; askai's have more. */
 static constexpr uint64_t TOOL_FLAGS = TOOL_LENT | TOOL_PAGED | TOOL_DETACH |
                                        TOOL_STREAM;
+
+/** How a call's output ends, or goes on. */
+enum tool_out : uint32_t {
+	TOOL_FAILED = 1u << 0,  /**< tell, finish: the call failed */
+	TOOL_MORE   = 1u << 1,  /**< write: more output follows */
+};
 
 /** The tool's definition, as tools/list lists it, of @p inst, the kind's
  *  instance: a new reference, nullptr if out of memory.  Once, at start. */
@@ -39,15 +61,16 @@ typedef void tool_start_fn (struct mcp_slot    *slot,
 
 typedef void tool_step_fn (struct mcp_slot *slot);
 
-/** Let go of the call's own word, which is not nullptr; stop what would
- *  end the call. */
+/** Let go of *mcp_slot_own(), not nullptr; stop what would end the
+ *  call.  It may run inside the call's end, before that returns
+ *  (src/mcp.h). */
 typedef void tool_drop_fn (struct mcp_slot *slot);
 
 struct tool_kind {
 	tool_definition_fn *definition;
 	tool_start_fn      *start;
-	tool_step_fn       *step;   /**< if it readies the slot's step */
-	tool_drop_fn       *drop;   /**< if its calls own a word */
+	tool_step_fn       *step;   /**< if it calls mcp_slot_ready() */
+	tool_drop_fn       *drop;   /**< if it sets own */
 	uint64_t            flags;  /**< enum tool_flag */
 };
 
