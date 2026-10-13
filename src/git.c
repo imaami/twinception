@@ -548,7 +548,7 @@ git_command (struct git const   *git,
 	static char const lists_problem[] =
 		"The options, revisions and paths arguments must be arrays of strings, "
 		"at most 16, 4 and 32 of them, each of 1 to 1024 bytes.";
-	if (!json_object_is_type(args, json_type_object))
+	if (!args)
 		return git_wrong(why, "Tool arguments must be an object.");
 	struct json_object_iter it;
 	json_object_object_foreachC(args, it)

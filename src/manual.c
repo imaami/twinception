@@ -825,9 +825,7 @@ manual_start (struct mcp_slot    *slot,
 		len = 1;
 	}
 	struct tool_text problem =
-		args && !json_object_is_type(args, json_type_object)
-		? TOOL_TEXT("Tool arguments must be an object.")
-		: !manual_word(page, page_len, MANUAL_NAME, ALNUM "_.:+@-")
+		!manual_word(page, page_len, MANUAL_NAME, ALNUM "_.:+@-")
 		? TOOL_TEXT("The name argument must name a manual page: 1 to 128 letters, "
 		            "digits and _.:+@- characters, the first not -.")
 		: section && !(sect && (!len || manual_word(sect, len, MANUAL_SECTION, ALNUM)))

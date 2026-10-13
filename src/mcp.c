@@ -2414,9 +2414,7 @@ mcp_req_ask (struct mcp_req     *req,
 	size_t len = 0;
 	char const *id = jb_str(thread, &len);
 	struct mcp_piece problem =
-		args && !json_object_is_type(args, json_type_object)
-		? TEXT("Tool arguments must be an object.")
-		: !text || !*text ? TEXT("The prompt argument must be a non-empty string.")
+		!text || !*text ? TEXT("The prompt argument must be a non-empty string.")
 		: system && !jb_text(system) ? TEXT("The system argument must be a string.")
 		: !thread ? (struct mcp_piece){}
 		: !notes ? TEXT("No notes are kept for you here, so there is no thread to "
@@ -2554,10 +2552,6 @@ static void
 mcp_slot_task (struct mcp_slot    *slot,
                struct json_object *args)
 {
-	if (args && !json_object_is_type(args, json_type_object)) {
-		mcp_slot_tell(slot, TOOL_TEXT("Tool arguments must be an object."), TOOL_FAILED);
-		return;
-	}
 	struct json_object *slices = jb_get(args, "slices");
 	if (!jb_get(args, "prompt")) {
 		mcp_slot_spin(slot, slices);
@@ -3288,12 +3282,17 @@ mcp_agenda_alarm (struct loop       *loop,
 }
 
 /* Note when @p slot's call starts, and start it with the arguments @p args,
- * as its tool's kind does. */
+ * as its tool's kind does, if they are an object or none; a client's call
+ * may give anything. */
 static void
 mcp_slot_start (struct mcp_slot    *slot,
                 struct json_object *args)
 {
 	slot->start = loop_clock();
+	if (args && !json_object_is_type(args, json_type_object)) {
+		mcp_slot_tell(slot, TOOL_TEXT("Tool arguments must be an object."), TOOL_FAILED);
+		return;
+	}
 	mcp_slot_offer(slot)->kind->start(slot, args);
 }
 

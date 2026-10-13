@@ -54,8 +54,7 @@ enum tool_out : uint32_t {
  *  instance: a new reference, nullptr if out of memory.  Once, at start. */
 typedef struct json_object *tool_definition_fn (void const *inst);
 
-/** @p args: a client's anything, nullptr too; a turn's an object; valid
- *  until the call ends or parks. */
+/** @p args: nullptr or an object, valid until the call ends or parks. */
 typedef void tool_start_fn (struct mcp_slot    *slot,
                             struct json_object *args);
 
