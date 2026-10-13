@@ -24,6 +24,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LEGACY = "2025-11-25"
 MODERN = "2026-07-28"
+# A modern request's _meta that takes tasks (the tasks extension).
+TAKES_TASKS = {"io.modelcontextprotocol/protocolVersion": MODERN,
+               "io.modelcontextprotocol/clientCapabilities": {
+                   "extensions": {"io.modelcontextprotocol/tasks": {}}}}
 KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
             "DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN", "OPENROUTER_API_KEY")
@@ -441,8 +445,8 @@ class Askai:
             "io.modelcontextprotocol/clientCapabilities": {},
         }
         all_headers = {"MCP-Protocol-Version": MODERN, "Mcp-Method": method}
-        if "name" in params:
-            all_headers["Mcp-Name"] = params["name"]
+        if "name" in params or "taskId" in params:
+            all_headers["Mcp-Name"] = params.get("name", params.get("taskId"))
         all_headers.update(headers or {})
         return self.rpc(method, params, rpc_id, all_headers)
 
@@ -748,7 +752,8 @@ def check_modern(binary, up):
         result = body["result"]
         assert result["supportedVersions"][0] == MODERN
         assert LEGACY in result["supportedVersions"]
-        assert result["capabilities"] == {"tools": {}}
+        assert result["capabilities"] == {
+            "tools": {}, "extensions": {"io.modelcontextprotocol/tasks": {}}}
         assert result["resultType"] == "complete"
         assert result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "askai"
         assert result["cacheScope"] == "public" and result["ttlMs"] > 0
@@ -789,6 +794,127 @@ def check_modern(binary, up):
         assert status == 200 and text_of(body["result"]) == "A"
 
     print("2026-07-28 stateless requests and header validation: PASS")
+
+
+def check_mcp_tasks(binary, up):
+    """MCP's tasks extension (2026-07-28): a tool call of a client that takes
+    tasks becomes one once it has run a second, and its client polls it
+    with tasks/get until the result is in, which only its own identity
+    finds, or ends it with tasks/cancel.  A call that answers sooner, and
+    one of a client that does not take tasks, answer as ever."""
+    def digest(token):
+        return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+
+    alice, bob = ({"Authorization": f"Bearer {t}"} for t in ("a-1", "b-1"))
+    iso = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z"
+    hold = up.reply
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/askai.json"
+        with open(path, "w") as f:
+            json.dump({"url": up.url(),
+                       "roles": {"asker": {"tools": ["ask_ai"], "metrics": True}},
+                       "identities": {"alice": {"role": "asker", "tokens": [digest("a-1")]},
+                                      "bob": {"role": "asker", "tokens": [digest("b-1")]}}},
+                      f)
+        os.chmod(path, 0o600)
+        try:
+            with Askai(binary, "-c", path) as ai:
+                def call(delay, meta=TAKES_TASKS):
+                    up.reply = lambda r: (200, ANSWERS["openai"], delay)
+                    start = time.monotonic()
+                    status, _, body = ai.modern("tools/call", {
+                        "name": "ask_ai", "arguments": {"prompt": "Q"}}, meta=meta,
+                        headers=alice)
+                    assert status == 200, body
+                    return body["result"], time.monotonic() - start
+
+                def ask(task_id, method="tasks/get", meta=TAKES_TASKS, headers=alice):
+                    return ai.modern(method, {"taskId": task_id}, meta=meta,
+                                     headers=headers)
+
+                def poll(task_id):
+                    for _ in range(100):
+                        result = ask(task_id)[2]["result"]
+                        if result["status"] != "working":
+                            return result
+                        time.sleep(0.1)
+                    raise AssertionError(result)
+
+                # Calls that answer within the second, or of clients that do not
+                # take tasks, answer as ever.
+                for delay, meta, at_least in ((0, TAKES_TASKS, 0), (1.5, None, 1.5)):
+                    result, took = call(delay, meta)
+                    assert result["resultType"] == "complete" and text_of(result) == "A" \
+                        and took >= at_least, (result, took)
+
+                # A slow one is a task after a second, whose record its client
+                # polls until the call's result is in.
+                task, took = call(2)
+                assert 0.9 <= took < 1.8, took
+                tid = task.pop("taskId")
+                assert re.fullmatch(r"[0-9a-f]{32}", tid) and \
+                    re.fullmatch(iso, task["createdAt"]), task
+                assert task.pop("_meta")["io.modelcontextprotocol/serverInfo"]["name"] == \
+                    "askai" and task == {"resultType": "task", "status": "working",
+                                         "createdAt": task["createdAt"],
+                                         "lastUpdatedAt": task["createdAt"],
+                                         "ttlMs": None, "pollIntervalMs": 1000}, task
+                status, _, body = ask(tid)
+                assert status == 200 and body["result"]["status"] == "working" and \
+                    body["result"]["resultType"] == "complete" and \
+                    "result" not in body["result"], body
+                done = poll(tid)
+                assert done["status"] == "completed" and text_of(done["result"]) == "A" \
+                    and done["result"]["resultType"] == "complete", done
+                assert done["ttlMs"] >= 600_000 and done["createdAt"] == task["createdAt"] \
+                    and done["createdAt"] < done["lastUpdatedAt"], done
+
+                # Another identity's, an unknown id, a client that does not take
+                # tasks, a mismatched Mcp-Name, and a legacy client.
+                for args, kwargs, expected in (
+                        ((tid,), {"headers": bob}, (200, -32602)),
+                        (("0" * 32,), {}, (200, -32602)),
+                        ((tid[:-1],), {}, (200, -32602)),
+                        ((tid,), {"meta": None}, (400, -32021)),
+                        ((tid,), {"headers": alice | {"Mcp-Name": "x"}}, (400, -32020))):
+                    status, _, body = ask(*args, **kwargs)
+                    assert (status, body["error"]["code"]) == expected, (args, body)
+                assert body["error"]["message"] == \
+                    "Mcp-Name header does not match the task id", body
+                assert ask(tid, meta=None)[2]["error"]["data"] == {"requiredCapabilities": {
+                    "extensions": {"io.modelcontextprotocol/tasks": {}}}}
+                status, _, body = ai.rpc("tasks/get", {"taskId": tid}, headers=alice)
+                assert body["error"]["code"] == -32601, body
+
+                # tasks/update has no input to give; tasks/cancel of an ended task
+                # changes nothing.
+                for method in ("tasks/update", "tasks/cancel"):
+                    result = ask(tid, method)[2]["result"]
+                    assert result.pop("resultType") == "complete" and \
+                        list(result) == ["_meta"], result
+                assert ask(tid)[2]["result"] == done | {"_meta": done["_meta"]}
+
+                # tasks/cancel ends a working task's call, its upstream call
+                # with it.
+                up.cancelled.clear()
+                task, _ = call(30)
+                assert ask(task["taskId"], "tasks/cancel")[0] == 200
+                assert up.cancelled.wait(5)
+                gone = poll(task["taskId"])
+                assert gone["status"] == "cancelled" and "result" not in gone and \
+                    gone["statusMessage"], gone
+
+                values = ai.metrics(alice)
+                assert values["askai_mcp_tasks_opened_total"] == 2 and \
+                    values['askai_mcp_tasks_ended_total{status="completed"}'] == 1 and \
+                    values['askai_mcp_tasks_ended_total{status="cancelled"}'] == 1 and \
+                    values["askai_mcp_tasks_kept"] == 2 and \
+                    values["askai_mcp_task_result_bytes"] > 0, values
+                assert total(values, "askai_request_seconds_count", method="tasks/get") >= 4
+        finally:
+            up.reply = hold
+    print("MCP tasks: calls that run a second become tasks, polled, bound to their "
+          "identity, cancelled: PASS")
 
 
 def check_http(binary, up):
@@ -5602,6 +5728,23 @@ def check_turns(binary, up):
                 "look.]\n\nStarted.\n\n" + finished + "\nDone.", result
             assert 2.4 <= took < 5, took
 
+            # A client that takes tasks gets a task of a call that dozes, which
+            # ends with the answers.
+            script[:] = [lambda r: (200, turn_stream([tool_call("t1", "timer", seconds=2)])),
+                         lambda r: (200, turn_stream(text="Waiting.")),
+                         lambda r: (200, turn_stream(text="Done."))]
+            _, _, body = ai.modern("tools/call", {
+                "name": "ask_ai", "arguments": {"prompt": "Q"}}, meta=TAKES_TASKS)
+            tid = body["result"]["taskId"]
+            for _ in range(100):
+                _, _, body = ai.modern("tasks/get", {"taskId": tid}, meta=TAKES_TASKS)
+                if body["result"]["status"] != "working":
+                    break
+                time.sleep(0.1)
+            assert body["result"]["status"] == "completed" and \
+                body["result"]["result"]["content"][0]["text"] == \
+                "Waiting.\n\n[askai: timer 1 fired.]\n\nDone.", body
+
             # A call that dozes goes as its client does, its timer with it;
             # askai stopping ends one at once, with an error.
             ask = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
@@ -5878,7 +6021,8 @@ def main():
     up = Upstream()
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
-                      check_modern, check_http, check_large_bodies, check_sse,
+                      check_modern, check_mcp_tasks, check_http, check_large_bodies,
+                      check_sse,
                       check_answers, check_dense, check_connections,
                       check_cancellation, check_limits, check_loops, check_turn_order,
                       check_isolation, check_configuration, check_identities,

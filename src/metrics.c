@@ -11,6 +11,7 @@
 #include "http.h"
 #include "log.h"
 #include "loop.h"
+#include "ledger.h"
 #include "manual.h"
 #include "metrics.h"
 #include "task.h"
@@ -24,7 +25,8 @@ enum { BUDGET = 32 };
  * every loop that has them, labelled with its name. */
 enum source {
 	LOOP, STASH, KEPT, CALLS, METHODS, CONNS, TASKS, PER_LOOP,
-	HTTP = PER_LOOP, BLOCKERS, JOBS, MAN, TASKS_ALL, BRAINSTEM, LOGGER, PSI, CGROUP,
+	HTTP = PER_LOOP, BLOCKERS, JOBS, MAN, TASKS_ALL, LEDGER, BRAINSTEM, LOGGER, PSI,
+	CGROUP,
 	SOURCES
 };
 enum kind { COUNTER, GAUGE, HISTOGRAM };
@@ -88,6 +90,8 @@ static struct {
 	VALUE(name, help, "", struct task_metrics, field, TASKS, kind, ONE)
 #define TASKS_ALL(name, help, labels, field) \
 	VALUE(name, help, labels, struct task_pool_metrics, field, TASKS_ALL, COUNTER, ONE)
+#define LEDGERS(name, help, labels, field, kind) \
+	VALUE(name, help, labels, struct ledger_metrics, field, LEDGER, kind, ONE)
 #define INPUT(help, input, i) \
 	VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
 	      struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
@@ -121,6 +125,9 @@ static struct metrics_entry const table[] = {
 	METHOD(nullptr, "tools/list", METHOD_TOOLS_LIST),
 	METHOD(nullptr, "tools/call", METHOD_TOOLS_CALL),
 	METHOD(nullptr, "server/discover", METHOD_DISCOVER),
+	METHOD(nullptr, "tasks/get", METHOD_TASKS_GET),
+	METHOD(nullptr, "tasks/update", METHOD_TASKS_UPDATE),
+	METHOD(nullptr, "tasks/cancel", METHOD_TASKS_CANCEL),
 	METHOD(nullptr, "notification", METHOD_NOTIFY),
 	METHOD(nullptr, "metrics", METHOD_METRICS),
 	METHOD(nullptr, "other", METHOD_OTHER),
@@ -224,6 +231,20 @@ static struct metrics_entry const table[] = {
 	          "cancelled, or held by a loop that stopped.", "end=\"done\"", done),
 	TASKS_ALL("askai_tasks_ended_total", nullptr, "end=\"cancelled\"", cancelled),
 	TASKS_ALL("askai_tasks_ended_total", nullptr, "end=\"abandoned\"", abandoned),
+	LEDGERS("askai_mcp_tasks_opened_total", "Tool calls that became tasks of MCP's "
+	        "tasks extension.", "", opened, COUNTER),
+	LEDGERS("askai_mcp_tasks_ended_total", "Those whose calls ended, by how.",
+	        "status=\"completed\"", ended[LEDGER_COMPLETED], COUNTER),
+	LEDGERS("askai_mcp_tasks_ended_total", nullptr, "status=\"failed\"",
+	        ended[LEDGER_FAILED], COUNTER),
+	LEDGERS("askai_mcp_tasks_ended_total", nullptr, "status=\"cancelled\"",
+	        ended[LEDGER_CANCELLED], COUNTER),
+	LEDGERS("askai_mcp_tasks_gone_total", "Task records let go of, their time up "
+	        "or for room.", "", gone, COUNTER),
+	LEDGERS("askai_mcp_tasks_full_total", "Tool calls kept from becoming tasks, "
+	        "the ledger full of tasks at work.", "", full, COUNTER),
+	LEDGERS("askai_mcp_tasks_kept", "Task records kept.", "", kept, GAUGE),
+	LEDGERS("askai_mcp_task_result_bytes", "Their results.", "", bytes, GAUGE),
 	VALUE("askai_upstream_wait_seconds", "Time from an upstream request to its "
 	      "start in libcurl, its host's lookup included.", "", struct http_metrics,
 	      wait, HTTP, HISTOGRAM, NS),
@@ -490,6 +511,7 @@ metrics_render (struct metrics_src const *src,
 		[JOBS] = src->jobs,
 		[MAN] = src->man,
 		[TASKS_ALL] = src->tasks,
+		[LEDGER] = src->ledger,
 		[BRAINSTEM] = &brainstem_metrics,
 		[LOGGER] = &log_metrics,
 		[PSI] = hist_get(&brainstem_metrics.psi_ok) ? &brainstem_metrics : nullptr,

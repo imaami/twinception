@@ -260,6 +260,17 @@ answer as they come, "thinking" while the latest is the model's thinking and
 "generating" once it is the answer's text.  Other requests, and clients that accept only JSON, get
 JSON.  Request bodies may come with a `Content-Length` or in chunks.
 
+A 2026-07-28 client that takes tasks, as its request's client capabilities
+declare the extension `io.modelcontextprotocol/tasks`, gets a task of a tool
+call that has not answered within a second: the call answers with the task's
+id and goes on without the client, which polls `tasks/get` for where it
+stands and, once it has ended, its result or error, or ends it with
+`tasks/cancel`.  Only the identity that made a task finds it; anonymous
+clients share one, so among them a task's id, 128 random bits, is the key.
+A task is kept ten minutes after its call ends, or less once 1024 tasks or
+64 MiB of results are kept.  `server/discover` lists the extension; askai
+asks for no input, so `tasks/update` has none to take.
+
 ### Upstream providers and APIs
 
 `--api` says how the requests and answers are written:

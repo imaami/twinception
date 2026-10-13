@@ -12,6 +12,7 @@ override SRC_askai := \
   http.c              \
   httpd.c             \
   jb.c                \
+  ledger.c            \
   log.c               \
   loop.c              \
   manual.c            \

@@ -29,6 +29,7 @@
 struct blocker_metrics;
 struct home_metrics;
 struct http_metrics;
+struct ledger_metrics;
 struct loop_metrics;
 struct manual_metrics;
 struct task_metrics;
@@ -42,6 +43,9 @@ enum metrics_method {
 	METHOD_TOOLS_LIST,
 	METHOD_TOOLS_CALL,
 	METHOD_DISCOVER,
+	METHOD_TASKS_GET,
+	METHOD_TASKS_UPDATE,
+	METHOD_TASKS_CANCEL,
 	METHOD_NOTIFY,      /**< notifications, and responses */
 	METHOD_METRICS,     /**< GET /metrics */
 	METHOD_N
@@ -147,6 +151,7 @@ struct metrics_src {
 	struct home_metrics const      *jobs;
 	struct manual_metrics const    *man;       /**< if askai offers man */
 	struct task_pool_metrics const *tasks;     /**< if askai offers test_task */
+	struct ledger_metrics const    *ledger;    /**< the MCP tasks' */
 	size_t                          n_loops;
 };
 

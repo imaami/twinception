@@ -18,6 +18,7 @@
 #include "home.h"
 #include "http.h"
 #include "httpd.h"
+#include "ledger.h"
 #include "log.h"
 #include "loop.h"
 #include "manual.h"
@@ -158,6 +159,7 @@ struct askai_shared {
 	struct httpd_hub    *hub;
 	struct git          *git;
 	struct notes        *notes;
+	struct ledger       *ledger;
 	struct task_pool    *tasks;
 	struct askai_client *clients;
 	struct metrics_loop *loops;
@@ -641,7 +643,10 @@ askai_shared_make (struct askai_shared *s,
 		return ENOMEM;
 	if (cfg->flags & CFG_MAN && !(s->manual = manual_create(cfg->man_recheck, &e)))
 		return e;
-	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->notes, &e)))
+	if (!(s->ledger = ledger_create(&e)))
+		return e;
+	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->notes,
+	                                s->ledger, &e)))
 		return e;
 	s->hub = httpd_hub_create(n, &e);
 	return e;
@@ -676,6 +681,7 @@ askai_shared_fini (struct askai_shared *s)
 	git_destroy(&s->git);
 	notes_destroy(&s->notes);
 	mcp_static_destroy(&s->st);
+	ledger_destroy(&s->ledger);
 	manual_destroy(&s->manual);
 	free(s->loops);
 	s->loops = nullptr;
@@ -724,6 +730,7 @@ askai_run (struct askai_shared *s,
 		.jobs = &home->jobs,
 		.man = s->manual ? manual_metrics(s->manual) : nullptr,
 		.tasks = s->tasks ? task_pool_metrics(s->tasks) : nullptr,
+		.ledger = ledger_metrics(s->ledger),
 		.n_loops = n + 1
 	};
 	/* Its atomic members are valid as its storage is static: no struct

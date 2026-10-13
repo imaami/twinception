@@ -74,6 +74,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/random.h>
+#include <time.h>
 
 #include "ai.h"
 #include "buf.h"
@@ -83,6 +84,7 @@
 #include "git.h"
 #include "jb.h"
 #include "job.h"
+#include "ledger.h"
 #include "list.h"
 #include "log.h"
 #include "loop.h"
@@ -102,6 +104,7 @@ enum {
 	INVALID_PARAMS      = -32602,
 	INTERNAL_ERROR      = -32603,
 	HEADER_MISMATCH     = -32020,
+	MISSING_CAPABILITY  = -32021,
 	UNSUPPORTED_VERSION = -32022,
 };
 
@@ -126,6 +129,8 @@ enum {
 	TRACE_ARGS   = 200,       /* bytes of a call's arguments it tells */
 	CALL_ID      = sizeof "call_4294967295_4294967295",  /* bytes of a
 	                                                        made-up call id */
+	POLL_MS      = 1000,      /* between a task's polls, as its client is asked */
+	ISO_TIME     = sizeof "2026-10-13T12:34:56.789Z",
 };
 
 /* What a git of the notes is for. */
@@ -141,6 +146,9 @@ enum mcp_fetch {
 static constexpr uint64_t NS = 1'000'000'000;
 static constexpr uint64_t PROGRESS_NS = 100'000'000;  /* between a call's
                                                          notifications */
+static constexpr uint64_t TASK_NS = 1'000'000'000;  /* a call's run before it
+                                                       becomes a task, for a
+                                                       client that takes them */
 
 /** Newest first; the first MODERN revisions carry their version in _meta. */
 static char const versions[][sizeof "2026-07-28"] = {
@@ -158,6 +166,7 @@ static char const pre_streams[] = "2024-11-05";
 static char const meta_version[] = "io.modelcontextprotocol/protocolVersion";
 static char const meta_caps[] = "io.modelcontextprotocol/clientCapabilities";
 static char const meta_server[] = "io.modelcontextprotocol/serverInfo";
+static char const meta_tasks[] = "io.modelcontextprotocol/tasks";
 
 /** The header field of a JSON response. */
 #define JSON_FIELD "Content-Type: application/json\r\n"
@@ -269,6 +278,8 @@ struct mcp_static {
 	struct dstr               init_tail;    /**< an initialize result after the
 	                                             version */
 	struct dstr               modern_tail;  /**< closes a modern result */
+	struct dstr               server_meta;  /**< a modern result's _meta
+	                                             member */
 	struct dstr               versions;     /**< the supported versions, an array */
 	struct manual            *manual;       /**< the man tool's, if askai
 	                                             offers it */
@@ -277,6 +288,7 @@ struct mcp_static {
 	struct git               *git;          /**< git's, if askai lists
 	                                             repositories */
 	struct notes             *notes;        /**< the notes', with --notes */
+	struct ledger            *ledger;       /**< the tasks' */
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
 	uint64_t                  turns;        /**< upstream calls an ask call
@@ -304,6 +316,7 @@ enum mcp_phase {
 	PHASE_RESULT,    /* writing a tool call's result into the request */
 	PHASE_ADD,       /* writing what askai adds to the prompt into it */
 	PHASE_WAKE,      /* writing the message that wakes the turns, likewise */
+	PHASE_SHOW,      /* copying a task's result into the reply, likewise */
 	PHASE_REPLY,     /* escaping the output into the reply, a slice a step */
 	PHASE_SEND,      /* sending the reply, a piece a step */
 	PHASE_FREE,      /* freeing the message, a slice a step, then ending */
@@ -368,6 +381,8 @@ static void mcp_agenda_destroy (struct mcp_agenda **p_agenda);
 struct mcp_req {
 	struct list          hook;       /* on mcp->calls while a tool call runs,
 	                                    then on mcp->freeing, then spare */
+	struct list          task_hook;  /* on mcp->tasks while the call is a
+	                                    task */
 	struct loop_step     step;       /* the phase's work, and keep-alives */
 	struct loop_timer    timer;      /* the next keep-alive */
 	struct buf           body;       /* the request body */
@@ -388,7 +403,12 @@ struct mcp_req {
 	                                    its first turn with calls to its end */
 	struct mcp_agenda   *agenda;     /* its turns' jobs and timers, from the
 	                                    first to its end */
-	struct stream       *s;          /* nullptr once it is gone */
+	struct ledger_task  *task;       /* the task the call runs as, once it is
+	                                    one */
+	struct ledger_task  *shown;      /* the task whose result tasks/get
+	                                    copies, while it does */
+	struct stream       *s;          /* nullptr once it is gone; stand_in
+	                                    once the call is a task */
 	struct mcp          *mcp;
 	struct job          *job;        /* the tool call's, once submitted, until
 	                                    let go of */
@@ -418,10 +438,14 @@ struct mcp_req {
 	                                    turn has written */
 	uint64_t             head;       /* loop_clock() at the request's head */
 	uint64_t             ping_at;    /* when the next keep-alive is due */
+	uint64_t             promote_at; /* when the call becomes a task, if its
+	                                    client takes them */
 	uint64_t             noted;      /* when the last notification went */
 	uint64_t             base;       /* what the progress was as the turn
 	                                    began */
 	tool_mask            lent;       /* the tools its turns may call */
+	struct stream        stand_in;   /* a task's stream, which writes the
+	                                    reply into its record */
 	struct handle        call;       /* names the request to its job's
 	                                    completion, while it waits for that */
 	struct jb_scan       scan;       /* the body's pre-scan */
@@ -499,6 +523,7 @@ struct mcp_agenda {
 
 struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
+	struct list              tasks;     /* requests whose call is a task */
 	struct list              freeing;   /* requests freeing their message */
 	struct manual_loop       man;       /* the man calls' fetches */
 	struct list              children;  /* the git calls' */
@@ -604,6 +629,9 @@ mcp_method_index (char const *method,
 		[METHOD_TOOLS_LIST] = M("tools/list"),
 		[METHOD_TOOLS_CALL] = M("tools/call"),
 		[METHOD_DISCOVER]   = M("server/discover"),
+		[METHOD_TASKS_GET]    = M("tasks/get"),
+		[METHOD_TASKS_UPDATE] = M("tasks/update"),
+		[METHOD_TASKS_CANCEL] = M("tasks/cancel"),
 	};
 #undef M
 	uint8_t i = METHOD_N;
@@ -915,12 +943,16 @@ mcp_req_drop (struct mcp_req *req)
 }
 
 /* Have the request wait among the calls under way, which a drain ends, if it
- * is not among them yet. */
+ * is not among them yet; while the server drains, the drain's next step
+ * ends it. */
 static void
 mcp_req_wait (struct mcp_req *req)
 {
+	struct mcp *mcp = req->mcp;
 	if (!req->hook.next)
-		list_append(&req->mcp->calls, &req->hook);
+		list_append(&mcp->calls, &req->hook);
+	if (mcp->draining)
+		loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 
 /* Take the request off the calls under way, if it is among them. */
@@ -997,12 +1029,37 @@ mcp_req_args_free (struct mcp_req *req,
 		loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
+/* The call of a task ends: cancelled as its client asked, failed as
+ * req->error says or its reply, in the task's record, is an error or not
+ * whole, else completed.  Publish that, and let go of the task. */
+static void
+mcp_req_task_end (struct mcp_req *req)
+{
+	static char const erred[] = "\"error\":";
+	struct ledger_task *task = req->task;
+	size_t n = sizeof erred - 1;
+	bool failed = !task->result || task->len != task->size ||
+	              (task->len >= n && !memcmp(task->result, erred, n));
+	enum ledger_status status = req->error == ECANCELED ? LEDGER_CANCELLED
+	                          : req->error || failed ? LEDGER_FAILED
+	                          : LEDGER_COMPLETED;
+	ledger_end(req->mcp->st->ledger, task, status);
+	loop_forget(req->mcp->loop, task->who);
+	ledger_task_put(task);
+	req->task = nullptr;
+	list_del(&req->task_hook);
+}
+
 /* The reply is queued, or the stream gone: let go of everything at once but
  * the values still to free, and end once those are freed. */
 static void
 mcp_req_finish (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
+	if (req->task)
+		mcp_req_task_end(req);
+	ledger_task_put(req->shown);
+	req->shown = nullptr;
 	mcp_req_unwait(req);
 	mcp_req_drop(req);
 	loop_timer_stop(mcp->loop, &req->timer);
@@ -1132,11 +1189,17 @@ mcp_req_put (struct mcp_req         *req,
 
 /* Begin the reply: on an event stream, an event; then
  * '{"jsonrpc":"2.0","id":ID,"result":', or "error", without the id if the
- * request has none. */
+ * request has none; for a task's call only '"result":', or "error", which
+ * tasks/get writes into its own result. */
 static int
 mcp_req_open (struct mcp_req *req,
               bool            error)
 {
+	if (req->task) {
+		struct mcp_piece const key = error ? FRAG("\"error\":") : FRAG("\"result\":");
+		buf_consume(&req->reply, buf_peek(&req->reply).len);
+		return mcp_req_put(req, &key, 1);
+	}
 	struct mcp_piece id[3] = {};
 	if (req->id) {
 		size_t len = 0;
@@ -1548,14 +1611,39 @@ mcp_req_notify_tool (struct mcp_req *req,
 	mcp_req_notify(req, req->next_note, text, n);
 }
 
-/* While a call waits: a keep-alive, if one is due, and a notification of its
- * progress, if that moved on, the last went PROGRESS_NS ago and the client
- * has read what it was sent; then the timer for the next of them. */
+/* Set the request's timer for the first due of a keep-alive, a notification
+ * of progress and its call's becoming a task; held back, it waits for
+ * on_writable() for the last two. */
+static void
+mcp_req_arm (struct mcp_req *req)
+{
+	uint64_t next = req->progress && !req->blocked ? req->noted + PROGRESS_NS
+	                                               : UINT64_MAX;
+	next = req->ping_at < next ? req->ping_at : next;
+	next = req->promote_at < next && !req->blocked ? req->promote_at : next;
+	(void)loop_timer_set(req->mcp->loop, &req->timer, next);
+}
+
+static struct ledger_task *mcp_req_task_open (struct mcp_req *req);
+static void mcp_req_detach (struct mcp_req *req, struct ledger_task *task);
+
+/* While a call waits: its becoming a task, if that is due; else a
+ * keep-alive, if one is due, and a notification of its progress, if that
+ * moved on, the last went PROGRESS_NS ago and the client has read what it
+ * was sent; then the timer for the next of them. */
 static void
 mcp_req_tick (struct mcp_req *req)
 {
 	struct loop *loop = req->mcp->loop;
 	uint32_t keepalive = req->mcp->st->lim.keepalive;
+	if (req->promote_at <= loop->now && !req->blocked) {
+		req->promote_at = UINT64_MAX;
+		struct ledger_task *task = mcp_req_task_open(req);
+		if (task) {
+			mcp_req_detach(req, task);
+			return;
+		}
+	}
 	if (keepalive && req->ping_at <= loop->now) {
 		if (!req->blocked)
 			(void)mcp_req_write(req, SPAN(":\n\n"));
@@ -1564,10 +1652,7 @@ mcp_req_tick (struct mcp_req *req)
 	req->progress &= req->phase == PHASE_CALL;
 	if (req->progress && req->noted + PROGRESS_NS <= loop->now && !req->blocked)
 		mcp_req_progress(req);
-	/* Held back, it waits for on_writable(). */
-	uint64_t next = req->progress && !req->blocked ? req->noted + PROGRESS_NS
-	                                               : UINT64_MAX;
-	(void)loop_timer_set(loop, &req->timer, next < req->ping_at ? next : req->ping_at);
+	mcp_req_arm(req);
 }
 
 /* The job's progress moved on: notify the client, now or once PROGRESS_NS
@@ -1951,9 +2036,163 @@ mcp_req_stream (struct mcp_req *req)
 	struct stream *s = req->s;
 	req->sse = !s->ops->head(s, 200, SPAN(fields), STREAM_OPEN);
 	uint32_t keepalive = mcp->st->lim.keepalive;
-	req->ping_at = keepalive ? mcp->loop->now + keepalive * NS : UINT64_MAX;
-	if (req->sse)
-		(void)loop_timer_set(mcp->loop, &req->timer, req->ping_at);
+	if (req->sse && keepalive)
+		req->ping_at = mcp->loop->now + keepalive * NS;
+	mcp_req_arm(req);
+}
+
+/* Write @p ns, CLOCK_REALTIME, into @p out as ISO 8601 UTC, to the
+ * millisecond; returns its length, 0 if it cannot be told. */
+static size_t
+mcp_iso_time (char     out[static ISO_TIME],
+              uint64_t ns)
+{
+	time_t secs = (time_t)(ns / NS);
+	struct tm tm;
+	if (!gmtime_r(&secs, &tm))
+		return 0;
+	return util_format(out, ISO_TIME, "%04d-%02d-%02dT%02d:%02d:%02d.%03" PRIu64 "Z",
+	                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+	                   tm.tm_min, tm.tm_sec, ns % NS / 1'000'000);
+}
+
+/* The stand-in stream of a task's call takes its reply, of @p length bytes,
+ * into the task's record; it has no client to tell more. */
+static int
+mcp_stand_in_head (struct stream *s,
+                   uint16_t       status,
+                   struct span    fields,
+                   size_t         length)
+{
+	(void)status;
+	(void)fields;
+	struct mcp_req *req = s->user;
+	return length == STREAM_OPEN ? EPIPE : ledger_task_reserve(req->task, length);
+}
+
+static int
+mcp_stand_in_data (struct stream *s,
+                   struct span    bytes)
+{
+	struct mcp_req *req = s->user;
+	return ledger_task_write(req->task, bytes);
+}
+
+static void
+mcp_stand_in_end (struct stream *s,
+                  int            error)
+{
+	(void)s;
+	(void)error;
+}
+
+static void
+mcp_stand_in_waiting (struct stream *s)
+{
+	(void)s;
+}
+
+static struct span
+mcp_stand_in_field (struct stream const *s,
+                    size_t               i)
+{
+	(void)s;
+	(void)i;
+	return (struct span){};
+}
+
+static struct stream_ops const stand_in_ops = {
+	.head = mcp_stand_in_head,
+	.data = mcp_stand_in_data,
+	.end = mcp_stand_in_end,
+	.waiting = mcp_stand_in_waiting,
+	.field = mcp_stand_in_field,
+};
+
+/* A client asked to cancel the task whose cancel @p msg is: end its call,
+ * if it still runs here, as a hang-up would, the task cancelled. */
+static void
+mcp_on_task_cancel (struct loop *loop,
+                    struct msg  *msg)
+{
+	struct ledger_task *task = container_of(msg, struct ledger_task, cancel);
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, task->who);
+	ledger_task_put(task);
+	if (!req)
+		return;
+	LOG(LOG_VERBOSE, "task cancelled after %.1f s", mcp_elapsed(req->head));
+	mcp_req_abort(req, ECANCELED);
+}
+
+/* The record of the task the call becomes, in the ledger for any loop to
+ * find; nullptr if the ledger has no room, or the call cannot be named, as
+ * the call then goes on as it is. */
+static struct ledger_task *
+mcp_req_task_open (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct handle who;
+	int e = loop_handle(mcp->loop, req, &who);
+	struct ledger_task *task = e ? nullptr
+	                         : ledger_open(mcp->st->ledger, req->s->principal, mcp->loop,
+	                                       who, mcp_on_task_cancel, &e);
+	if (task)
+		return task;
+	if (who.bits)
+		loop_forget(mcp->loop, who);
+	LOG(LOG_VERBOSE, "tool call kept from being a task: %s", strerror(e));
+	return nullptr;
+}
+
+/* Answer the call's client with @p task, which the call runs as from now
+ * on, its stream the stand-in, which writes its reply into the task's
+ * record; or, if the answer cannot go, end the task and the call. */
+static void
+mcp_req_detach (struct mcp_req     *req,
+                struct ledger_task *task)
+{
+	static_assert(POLL_MS == 1000, "the reply says");
+	struct mcp *mcp = req->mcp;
+	struct stream *s = req->s;
+	char at[ISO_TIME];
+	size_t n = mcp_iso_time(at, task->created);
+	struct mcp_piece const p[] = {
+		FRAG("{\"resultType\":\"task\","),
+		DSTR(&mcp->st->server_meta),
+		FRAG(",\"taskId\":\""),
+		RAW(task->id, LEDGER_ID),
+		FRAG("\",\"status\":\"working\",\"createdAt\":\""),
+		RAW(at, n),
+		FRAG("\",\"lastUpdatedAt\":\""),
+		RAW(at, n),
+		FRAG("\",\"ttlMs\":null,\"pollIntervalMs\":1000}}"),
+	};
+	int e = mcp_req_open(req, false);
+	e = e ? e : mcp_req_put(req, p, ARRAY_SIZE(p));
+	e = e ? e : req->sse ? mcp_req_put(req, &FRAG("\n\n"), 1)
+	          : s->ops->head(s, 200, SPAN(JSON_FIELD), buf_peek(&req->reply).len);
+	e = e ? e : mcp_req_write(req, buf_peek(&req->reply));
+	buf_consume(&req->reply, buf_peek(&req->reply).len);
+	if (e) {
+		ledger_end(mcp->st->ledger, task, LEDGER_CANCELLED);
+		loop_forget(mcp->loop, task->who);
+		ledger_task_put(task);
+		mcp_req_abort(req, e);
+		return;
+	}
+	req->stand_in = *s;
+	req->stand_in.ops = &stand_in_ops;
+	s->ops->end(s, 0);
+	req->s = &req->stand_in;
+	req->task = task;
+	list_append(&mcp->tasks, &req->task_hook);
+	req->sse = req->blocked = req->progress = false;
+	req->ping_at = UINT64_MAX;
+	json_object_put(req->token);
+	req->token = nullptr;
+	loop_timer_stop(mcp->loop, &req->timer);
+	LOG(LOG_VERBOSE, "tool call became task %.*s after %.1f s", LEDGER_ID, task->id,
+	    mcp_elapsed(req->head));
 }
 
 /* Whether @p id may name a request, or a progress token: a number, or a
@@ -4312,10 +4551,13 @@ mcp_req_compact_full (struct mcp_req *req)
 
 /* Start a tool call: of the tool that the name in @p params names, compared
  * over its length, as the Mcp-Name header is, among those that a role may
- * grant, with the arguments and the progress token that @p params gives. */
+ * grant, with the arguments and the progress token that @p params gives;
+ * for a client that takes tasks, as @p tasks says, one that becomes a task
+ * if it runs TASK_NS. */
 static void
 mcp_req_tools_call (struct mcp_req     *req,
-                    struct json_object *params)
+                    struct json_object *params,
+                    bool                tasks)
 {
 	struct mcp_static const *st = req->mcp->st;
 	if (req->mcp->draining) {
@@ -4343,6 +4585,10 @@ mcp_req_tools_call (struct mcp_req     *req,
 	}
 	struct json_object *token = jb_get(jb_get(params, "_meta"), "progressToken");
 	req->token = mcp_id_valid(token) ? json_object_get(token) : nullptr;
+	if (tasks) {
+		req->promote_at = req->mcp->loop->now + TASK_NS;
+		mcp_req_arm(req);
+	}
 	struct json_object *args = jb_get(params, "arguments");
 	switch (st->offers[id].kind) {
 	case KIND_ASK:
@@ -4456,19 +4702,158 @@ mcp_req_tools_list (struct mcp_req *req)
 	mcp_req_result(req, p, n, SPAN(JSON_FIELD));
 }
 
+/* Copy the result of the task that tasks/get shows into the reply, a slice
+ * a step; then close it. */
+static void
+mcp_req_show (struct mcp_req *req)
+{
+	struct loop *loop = req->mcp->loop;
+	struct ledger_task *task = req->shown;
+	size_t left = task->len - req->off;
+	size_t room = loop_room(loop, LOOP_COPY);
+	size_t n = left < room ? left : room;
+	int e = mcp_req_put(req, &RAW(task->result + req->off, n), 1);
+	loop_work(loop, LOOP_COPY, n);
+	req->off += n;
+	if (!e && n < left) {
+		loop_ready_bulk(loop, &req->step);
+		return;
+	}
+	ledger_task_put(task);
+	req->shown = nullptr;
+	mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, &FRAG("}"), 1));
+}
+
+/* Answer tasks/get with where @p task, a reference, stands: once its call
+ * has ended, with its result or error, which mcp_req_show() copies. */
+static void
+mcp_req_task_show (struct mcp_req     *req,
+                   struct ledger_task *task)
+{
+	static_assert(POLL_MS == 1000, "the reply says");
+#define S(s) { s, sizeof s - 1, false }
+	static struct mcp_piece const statuses[LEDGER_STATUSES] = {
+		[LEDGER_WORKING]   = S("working"),
+		[LEDGER_COMPLETED] = S("completed"),
+		[LEDGER_FAILED]    = S("failed"),
+		[LEDGER_CANCELLED] = S("cancelled"),
+	};
+	static struct mcp_piece const said[LEDGER_STATUSES] = {
+		[LEDGER_FAILED]    = S(",\"statusMessage\":\"The tool call failed: its error "
+		                       "says why.\""),
+		[LEDGER_CANCELLED] = S(",\"statusMessage\":\"The tool call was cancelled, "
+		                       "as asked.\""),
+	};
+#undef S
+	struct mcp_static const *st = req->mcp->st;
+	enum ledger_status status = atomic_load_explicit(&task->status, memory_order_acquire);
+	bool ended = status != LEDGER_WORKING;
+	bool whole = ended && task->result;
+	char created[ISO_TIME];
+	char updated[ISO_TIME];
+	char ttl[24];
+	/* Its end, and the time it stays after, once there is one to read. */
+	uint64_t ran = ended && task->ended > task->created ? task->ended - task->created
+	                                                    : 0;
+	size_t n_ttl = ended ? util_format(ttl, sizeof ttl, "%" PRIu64,
+	                                   ran / 1'000'000 + LEDGER_KEEP * 1000)
+	                     : util_format(ttl, sizeof ttl, "null");
+	struct mcp_piece const p[] = {
+		FRAG("{\"resultType\":\"complete\","),
+		DSTR(&st->server_meta),
+		FRAG(",\"taskId\":\""),
+		RAW(task->id, LEDGER_ID),
+		FRAG("\",\"status\":\""),
+		statuses[status],
+		FRAG("\",\"createdAt\":\""),
+		RAW(created, mcp_iso_time(created, task->created)),
+		FRAG("\",\"lastUpdatedAt\":\""),
+		RAW(updated, mcp_iso_time(updated, ended ? task->ended : task->created)),
+		FRAG("\",\"ttlMs\":"),
+		RAW(ttl, n_ttl),
+		FRAG(",\"pollIntervalMs\":1000"),
+		said[status],
+		/* A result or error goes after a comma, and closes the object. */
+		whole ? FRAG(",")
+		: status == LEDGER_FAILED ? FRAG(",\"error\":{\"code\":-32603,\"message\":"
+		                                 "\"Internal error\"}}")
+		: FRAG("}"),
+	};
+	int e = mcp_req_open(req, false);
+	e = e ? e : mcp_req_put(req, p, ARRAY_SIZE(p));
+	if (e || !whole) {
+		ledger_task_put(task);
+		mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, &FRAG("}"), 1));
+		return;
+	}
+	req->shown = task;
+	req->off = 0;
+	mcp_req_enter(req, PHASE_SHOW);
+}
+
+/* tasks/get, tasks/update or tasks/cancel, of the task that @p params'
+ * taskId names, which only its own principal finds; for a client that
+ * takes tasks, as @p tasks says its request declares.  askai asks for no
+ * input, so tasks/update has none to take. */
+static void
+mcp_req_tasks (struct mcp_req     *req,
+               struct json_object *params,
+               bool                tasks)
+{
+	struct mcp_static const *st = req->mcp->st;
+	if (!tasks) {
+		struct mcp_piece const data[] = {
+			FRAG("{\"requiredCapabilities\":{\"extensions\":{\""),
+			FRAG(meta_tasks),
+			FRAG("\":{}}}}"),
+		};
+		mcp_req_error(req, 400, MISSING_CAPABILITY,
+		              FRAG("Missing required client capability"), data,
+		              ARRAY_SIZE(data));
+		return;
+	}
+	size_t len = 0;
+	char const *id = mcp_str(jb_get(params, "taskId"), &len);
+	struct ledger_task *task = id ? ledger_find(st->ledger, req->s->principal, id, len)
+	                              : nullptr;
+	if (!task) {
+		mcp_req_error(req, 200, INVALID_PARAMS,
+		              FRAG("Failed to retrieve task: Task not found"), nullptr, 0);
+		return;
+	}
+	if (req->method == METHOD_TASKS_GET) {
+		mcp_req_task_show(req, task);
+		return;
+	}
+	if (req->method == METHOD_TASKS_CANCEL)
+		ledger_task_cancel(task);
+	ledger_task_put(task);
+	struct mcp_piece const p[] = {
+		FRAG("{\"resultType\":\"complete\","),
+		DSTR(&st->server_meta),
+		FRAG("}}"),
+	};
+	mcp_req_result(req, p, ARRAY_SIZE(p), SPAN(JSON_FIELD));
+}
+
 /* Answer a valid request, or start the tool call it asks for, unless its era
- * has no such method. */
+ * has no such method; @p tasks says whether it declares the tasks
+ * extension. */
 static void
 mcp_req_route (struct mcp_req     *req,
-               struct json_object *params)
+               struct json_object *params,
+               bool                tasks)
 {
 	/* The eras that have each method, bit 0 legacy, bit 1 modern. */
 	static uint8_t const eras[METHOD_N] = {
-		[METHOD_INITIALIZE] = 1,
-		[METHOD_PING]       = 1,
-		[METHOD_TOOLS_LIST] = 3,
-		[METHOD_TOOLS_CALL] = 3,
-		[METHOD_DISCOVER]   = 2,
+		[METHOD_INITIALIZE]   = 1,
+		[METHOD_PING]         = 1,
+		[METHOD_TOOLS_LIST]   = 3,
+		[METHOD_TOOLS_CALL]   = 3,
+		[METHOD_DISCOVER]     = 2,
+		[METHOD_TASKS_GET]    = 2,
+		[METHOD_TASKS_UPDATE] = 2,
+		[METHOD_TASKS_CANCEL] = 2,
 	};
 	struct mcp_static const *st = req->mcp->st;
 	if (!(eras[req->method] >> req->modern & 1)) {
@@ -4479,7 +4864,12 @@ mcp_req_route (struct mcp_req     *req,
 	}
 	switch (req->method) {
 	case METHOD_TOOLS_CALL:
-		mcp_req_tools_call(req, params);
+		mcp_req_tools_call(req, params, tasks);
+		return;
+	case METHOD_TASKS_GET:
+	case METHOD_TASKS_UPDATE:
+	case METHOD_TASKS_CANCEL:
+		mcp_req_tasks(req, params, tasks);
 		return;
 	case METHOD_TOOLS_LIST:
 		mcp_req_tools_list(req);
@@ -4505,9 +4895,10 @@ mcp_req_modern (struct mcp_req     *req,
 {
 	struct stream *s = req->s;
 	struct json_object *m = jb_get(params, "_meta");
+	struct json_object *caps = jb_get(m, meta_caps);
 	size_t len = 0;
 	char const *version = mcp_str(jb_get(m, meta_version), &len);
-	if (!version || !json_object_is_type(jb_get(m, meta_caps), json_type_object)) {
+	if (!version || !json_object_is_type(caps, json_type_object)) {
 		mcp_req_error(req, 400, INVALID_PARAMS,
 		              FRAG("Request _meta must carry protocolVersion and "
 		                   "clientCapabilities"), nullptr, 0);
@@ -4537,17 +4928,21 @@ mcp_req_modern (struct mcp_req     *req,
 		              nullptr, 0);
 		return;
 	}
+	/* Mcp-Name mirrors a tool call's tool, and a task method's task. */
+	bool call = req->method == METHOD_TOOLS_CALL;
+	bool task = req->method >= METHOD_TASKS_GET && req->method <= METHOD_TASKS_CANCEL;
 	size_t name_len = 0;
-	char const *name = mcp_str(jb_get(params, "name"), &name_len);
-	if (req->method == METHOD_TOOLS_CALL && name &&
-	    !mcp_span_is(s->ops->field(s, F_NAME), name, name_len)) {
+	char const *name = mcp_str(jb_get(params, call ? "name" : "taskId"), &name_len);
+	if ((call || task) && name && !mcp_span_is(s->ops->field(s, F_NAME), name, name_len)) {
 		mcp_req_error(req, 400, HEADER_MISMATCH,
-		              FRAG("Mcp-Name header does not match the tool name"), nullptr,
-		              0);
+		              call ? FRAG("Mcp-Name header does not match the tool name")
+		                   : FRAG("Mcp-Name header does not match the task id"),
+		              nullptr, 0);
 		return;
 	}
 	req->sse_ok = mcp_accepts_sse(s->ops->field(s, F_ACCEPT));
-	mcp_req_route(req, params);
+	struct json_object *ext = jb_get(jb_get(caps, "extensions"), meta_tasks);
+	mcp_req_route(req, params, json_object_is_type(ext, json_type_object));
 }
 
 /* A request, of @p method, @p len bytes, and @p id: answer it in its era. */
@@ -4584,7 +4979,7 @@ mcp_req_request (struct mcp_req     *req,
 	 * event streams; 2024-11-05 has none. */
 	req->sse_ok = mcp_accepts_sse(s->ops->field(s, F_ACCEPT)) &&
 	              !mcp_span_is(header, pre_streams, sizeof pre_streams - 1);
-	mcp_req_route(req, params);
+	mcp_req_route(req, params, false);
 }
 
 /* Take a response or a notification, which have no answer. */
@@ -4810,6 +5205,9 @@ mcp_req_step (struct loop      *loop,
 	case PHASE_WAKE:
 		mcp_req_add_write(req);
 		break;
+	case PHASE_SHOW:
+		mcp_req_show(req);
+		break;
 	case PHASE_REPLY:
 		mcp_req_reply(req);
 		break;
@@ -4856,6 +5254,8 @@ mcp_begin (struct mcp           *mcp,
 		.s = s,
 		.mcp = mcp,
 		.head = loop_clock(),
+		.ping_at = UINT64_MAX,
+		.promote_at = UINT64_MAX,
 		.phase = phase,
 		.method = method
 	};
@@ -5016,6 +5416,7 @@ mcp_create (struct loop              *loop,
 		.counts = counts
 	};
 	list_init(&mcp->calls);
+	list_init(&mcp->tasks);
 	list_init(&mcp->freeing);
 	manual_loop_init(&mcp->man, st->manual, loop);
 	list_init(&mcp->children);
@@ -5033,8 +5434,13 @@ mcp_destroy (struct mcp **p_mcp)
 		return;
 	*p_mcp = nullptr;
 
-	/* The transport has cancelled every stream by now, so only requests
-	 * still freeing their message are left, and the man fetches. */
+	/* The transport has cancelled every stream by now, but for the
+	 * stand-ins of the calls that are tasks, which end here, their tasks
+	 * failed.  Then only requests still freeing their message are left,
+	 * and the man fetches. */
+	while (!list_is_empty(&mcp->tasks))
+		mcp_req_abort(container_of(mcp->tasks.next, struct mcp_req, task_hook),
+		              ESHUTDOWN);
 	while (!list_is_empty(&mcp->freeing))
 		mcp_req_end(container_of(mcp->freeing.next, struct mcp_req, hook));
 	manual_loop_fini(&mcp->man);
@@ -5495,15 +5901,20 @@ mcp_static_tails (struct mcp_static  *st,
 		return e;
 	struct json_object *discover = jb_object(
 		"supportedVersions", json_object_get(list),
-		"capabilities", jb_object("tools", jb_object(nullptr), nullptr),
+		"capabilities", jb_object(
+			"tools", jb_object(nullptr),
+			"extensions", jb_object(meta_tasks, jb_object(nullptr), nullptr),
+			nullptr),
 		nullptr);
 	e = mcp_serialize(&st->discover, mcp_modern_list(discover, info));
 	if (e)
 		return e;
 	if (!dstr_printf(&st->init_tail, "\",\"capabilities\":{\"tools\":{}},"
 	                 "\"serverInfo\":%s}", dstr_get(&text)) ||
-	    !dstr_printf(&st->modern_tail, ",\"resultType\":\"complete\",\"_meta\":"
-	                 "{\"%s\":%s}}", meta_server, dstr_get(&text)))
+	    !dstr_printf(&st->server_meta, "\"_meta\":{\"%s\":%s}", meta_server,
+	                 dstr_get(&text)) ||
+	    !dstr_printf(&st->modern_tail, ",\"resultType\":\"complete\",%s}",
+	                 dstr_get(&st->server_meta)))
 		return ENOMEM;
 	return dstr_printf(&st->list_tail, "],\"ttlMs\":%d,\"cacheScope\":\"public\"%s",
 	                   CACHE_TTL_MS, dstr_get(&st->modern_tail)) ? 0 : ENOMEM;
@@ -5575,6 +5986,7 @@ mcp_static_create (struct config const *cfg,
                    struct task_pool    *tasks,
                    struct git          *git,
                    struct notes        *notes,
+                   struct ledger       *ledger,
                    int                 *e)
 {
 	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
@@ -5589,11 +6001,13 @@ mcp_static_create (struct config const *cfg,
 		.discover = DSTR_INIT,
 		.init_tail = DSTR_INIT,
 		.modern_tail = DSTR_INIT,
+		.server_meta = DSTR_INIT,
 		.versions = DSTR_INIT,
 		.manual = manual,
 		.tasks = tasks,
 		.git = git,
 		.notes = lends ? notes : nullptr,
+		.ledger = ledger,
 		.seed = loop_clock(),
 		.lim = cfg->mcp,
 		.turns = cfg->turns
@@ -5663,6 +6077,7 @@ mcp_static_destroy (struct mcp_static **p_static)
 	dstr_cleanup(&st->discover);
 	dstr_cleanup(&st->init_tail);
 	dstr_cleanup(&st->modern_tail);
+	dstr_cleanup(&st->server_meta);
 	dstr_cleanup(&st->versions);
 	free(st);
 }

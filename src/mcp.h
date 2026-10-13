@@ -11,6 +11,7 @@
 
 struct config;
 struct git;
+struct ledger;
 struct loop;
 struct manual;
 struct mcp;
@@ -66,8 +67,10 @@ mcp_tools (struct config const *cfg,
  * client may call them, and with @p notes the tool notes (src/notes.h), and
  * the tool compact: its call then runs a loop of turns, each an upstream
  * call, and the tools each turn calls, until an answer calls none.  The
- * tools' ids are those of mcp_tools(), then notes' and compact's.
- * @p cfg, @p manual, @p tasks, @p git and @p notes must outlive it.
+ * tools' ids are those of mcp_tools(), then notes' and compact's.  A tool
+ * call of a modern client that takes tasks becomes one, in @p ledger
+ * (src/ledger.h), once it has run a second.  @p cfg, @p manual, @p tasks,
+ * @p git, @p notes and @p ledger must outlive it.
  * nullptr, with the error in @p *e, if it cannot be made.
  */
 extern struct mcp_static *
@@ -76,6 +79,7 @@ mcp_static_create (struct config const *cfg,
                    struct task_pool    *tasks,
                    struct git          *git,
                    struct notes        *notes,
+                   struct ledger       *ledger,
                    int                 *e);
 
 extern void
