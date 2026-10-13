@@ -174,7 +174,8 @@ mcp_slot_write (struct mcp_slot  *slot,
 extern struct tool_text
 mcp_slot_answer (struct mcp_slot const *slot);
 
-/** Not exported yet: lent output, which own keeps, given instead. */
+/** Not exported yet: lent output, which own keeps, that mcp_slot_finish()
+ *  gives instead of what is written. */
 extern void
 mcp_slot_lend (struct mcp_slot  *slot,
                struct tool_text  text);

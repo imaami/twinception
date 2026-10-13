@@ -2207,6 +2207,9 @@ mcp_slot_tell (struct mcp_slot  *slot,
 {
 	size_t len = jb_utf8(text.ptr, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
 	mcp_slot_wake(slot);
+	/* The output is the text whole, not lent, nor from an offset. */
+	slot->skip = 0;
+	slot->lent = (struct span){};
 	mcp_slot_result(slot, ESC(text.ptr, len), flags & TOOL_FAILED);
 }
 

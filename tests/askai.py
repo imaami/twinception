@@ -4404,9 +4404,10 @@ def check_man(binary, up):
     """The man tool, with --man only: its arguments checked; man run to find
     a page's file, then to render it, with an environment, signals, a session
     and descriptors of its own; the page cut at 2 MiB and mended into UTF-8
-    text, or why there is none.  Each page is rendered once and kept by its
-    file, for every name it is found by, eight at most, and given while its
-    file is unchanged; a name is found anew, in the background, once the
+    text, or why there is none, which a turn's call is given whole, whatever
+    its offset.  Each page is rendered once and kept by its file, for every
+    name it is found by, eight at most, and given while its file is
+    unchanged; a name is found anew, in the background, once the
     recheck has passed; the asks for a page under way wait for its one fetch.
     16 children at most, each killed with its group at its deadline or as
     askai stops; and the real man's pages, where they are installed."""
@@ -4609,6 +4610,19 @@ def check_man(binary, up):
             assert text_of(man_call(ai, name="spare")) == "page spare\n"
             assert all(alive(p) for p in (ai.proc.pid,))
 
+        # A turn's call is given what man says whole, whatever its offset.
+        replies = [(200, turn_stream([(str(off), "man", json.dumps(
+            {"name": "missing", "offset": off})) for off in (5, 100000)]))]
+        up.reply = lambda request: replies.pop() if replies else \
+            (200, turn_stream(text="A"))
+        with Askai(binary, "-u", up.url(), "--man", "--upstream-tools", env=env) as ai:
+            count = len(up.requests)
+            assert ai.ask()["content"][0]["text"] == "A"
+            results = up.requests[count + 1]["body"]["messages"][2:]
+            assert [m["content"] for m in results] == \
+                ["No manual entry for missing."] * 2, results
+        up.reply = lambda request: (200, ANSWERS["openai"])
+
         # A name is found anew once the recheck has passed, its page given
         # meanwhile: a page installed since, which man finds first, takes
         # over.
@@ -4638,8 +4652,8 @@ def check_man(binary, up):
         wait_for(lambda: not any(alive(p) for p in waiters()[0]))
 
     print("man: offered with --man, arguments, environment, pages kept by file "
-          "and rechecked, one fetch a page, cap, mending, deadline and "
-          "stopping: PASS")
+          "and rechecked, one fetch a page, cap, mending, deadline, why "
+          "whole to a turn, and stopping: PASS")
 
     # The real man, if it has printf(3).
     if not shutil.which("man") or subprocess.run(
