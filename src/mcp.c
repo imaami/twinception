@@ -43,11 +43,8 @@
  * notifications/cancelled, on any connection of any loop, which home finds
  * the call's job by (src/job.h).
  *
- * A man call, when askai offers the man tool, takes its page from the
- * manual (src/manual.h), which renders each page once and keeps it: at once
- * if the manual has it, else once man has, which the call waits for, named
- * by a handle as for a job's completion.  It replies with the page, or with
- * why there is none.  A call that goes leaves the page to the manual.
+ * The man tool is the manual's (src/manual.h), a plugin built in
+ * (src/plugin.h), whose calls go through the call API (src/mcp.h).
  *
  * A git call, when askai lists repositories, runs git (src/git.h) as a
  * child (src/child.h) on the call's loop, and replies with its output, its
@@ -683,17 +680,6 @@ mcp_clip (char const *s,
 	while (max && ((unsigned char)s[max] & 0xc0) == 0x80)
 		--max;
 	return max;
-}
-
-/* @p val's text and its length in @p *len, if it is a string; else
- * nullptr. */
-static char const *
-mcp_str (struct json_object *val,
-         size_t             *len)
-{
-	char const *str = jb_text(val);
-	*len = str ? (size_t)json_object_get_string_len(val) : 0;
-	return str;
 }
 
 /* Write @p len bytes of @p p, from its byte @p off, into @p buf, as they
@@ -2339,133 +2325,6 @@ mcp_slot_named (struct loop const *loop,
 	return loop->exit ? nullptr : loop_lookup(loop, who);
 }
 
-/* The page a man call waited for is in, or man failed: reply with the
- * page, or why there is none, unless the call has gone.  Once the loop has
- * stopped, MCP is gone, and the post is only freed. */
-static void
-mcp_on_page (struct loop *loop,
-             struct msg  *msg)
-{
-	struct manual_wait *w = container_of(msg, struct manual_wait, msg);
-	struct mcp_slot *slot = mcp_slot_named(loop, w->who);
-	if (!slot) {
-		manual_wait_destroy(&w);
-		return;
-	}
-	struct manual_page *page = w->page;
-	w->page = nullptr;
-	if (page) {
-		*mcp_slot_own(slot) = page;
-		mcp_slot_lend(slot, (struct tool_text){ page->text, page->len });
-		mcp_slot_finish(slot, 0);
-	} else {
-		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s", mcp_elapsed(slot->start),
-		    w->why);
-		mcp_slot_tell(slot, (struct tool_text){ w->why, strlen(w->why) }, TOOL_FAILED);
-	}
-	manual_wait_destroy(&w);
-}
-
-/* Whether @p s, of @p len bytes, is 1 to @p max of the characters of @p set,
- * the first not '-', which man would take for an option. */
-static bool
-mcp_man_word (char const *s,
-              size_t      len,
-              size_t      max,
-              char const *set)
-{
-	return s && len && len <= max && *s != '-' && strspn(s, set) == len;
-}
-
-/* Start a man call in @p slot for the page that @p args names, of the
- * section it names if any: reply with it if the manual, the man tool's
- * part of the loop, has it, else wait for it, named. */
-static void
-mcp_slot_man (struct mcp_slot    *slot,
-              struct json_object *args)
-{
-#define ALNUM "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	struct json_object *section = jb_get(args, "section");
-	size_t page_len = 0;
-	char const *page = mcp_str(jb_get(args, "name"), &page_len);
-	size_t len = 0;
-	char const *sect = mcp_str(section, &len);
-	/* A small model may give a section as a number. */
-	int64_t number = json_object_is_type(section, json_type_int)
-	               ? json_object_get_int64(section) : -1;
-	char digit[2] = "";
-	if (number >= 0 && number <= 9) {
-		digit[0] = (char)('0' + number);
-		sect = digit;
-		len = 1;
-	}
-	struct tool_text problem =
-		args && !json_object_is_type(args, json_type_object)
-		? TOOL_TEXT("Tool arguments must be an object.")
-		: !mcp_man_word(page, page_len, MANUAL_NAME, ALNUM "_.:+@-")
-		? TOOL_TEXT("The name argument must name a manual page: 1 to 128 letters, "
-		            "digits and _.:+@- characters, the first not -.")
-		: section && !(sect && (!len || mcp_man_word(sect, len, MANUAL_SECTION, ALNUM)))
-		? TOOL_TEXT("The section argument must name a section, such as 1, 3 or 3p: "
-		            "1 to 16 letters and digits.")
-		: (struct tool_text){};
-#undef ALNUM
-	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16, "the problems say");
-	if (problem.ptr) {
-		mcp_slot_tell(slot, problem, TOOL_FAILED);
-		return;
-	}
-	if (mcp_slot_offset(slot, args))
-		return;
-	struct handle who;
-	struct manual_page *found = nullptr;
-	int e = mcp_slot_name(slot, &who);
-	e = e ? e : manual_find(mcp_slot_part(slot), page, page_len, sect, len, who,
-	                        mcp_on_page, &found);
-	if (e) {
-		mcp_slot_fail(slot, e);
-		return;
-	}
-	if (found) {
-		*mcp_slot_own(slot) = found;
-		mcp_slot_lend(slot, (struct tool_text){ found->text, found->len });
-		mcp_slot_finish(slot, 0);
-		return;
-	}
-	mcp_slot_park(slot);
-}
-
-/* Let go of a man call's page. */
-static void
-mcp_slot_man_drop (struct mcp_slot *slot)
-{
-	manual_page_put(*mcp_slot_own(slot));
-}
-
-/* The man tool's part of @p loop: the manual's, @p inst's, fetches there,
- * and their children; nullptr, with ENOMEM in @p *e, if out of memory. */
-static void *
-mcp_man_part_create (void        *inst,
-                     struct loop *loop,
-                     int         *e)
-{
-	struct manual_loop *ml = malloc(sizeof *ml);
-	*e = ml ? 0 : ENOMEM;
-	if (ml)
-		manual_loop_init(ml, inst, loop);
-	return ml;
-}
-
-/* End the man tool's part of a loop, as it stops, and free it. */
-static void
-mcp_man_part_destroy (void **p_part)
-{
-	struct manual_loop *ml = *p_part;
-	*p_part = nullptr;
-	manual_loop_fini(ml);
-	free(ml);
-}
-
 static void mcp_slot_notes_fetch (struct mcp_slot *slot, enum mcp_fetch fetch,
                                   char const *search);
 
@@ -2553,7 +2412,7 @@ mcp_req_ask (struct mcp_req     *req,
 	struct json_object *thread = jb_get(args, "thread");
 	char const *text = jb_text(prompt);
 	size_t len = 0;
-	char const *id = mcp_str(thread, &len);
+	char const *id = jb_str(thread, &len);
 	struct mcp_piece problem =
 		args && !json_object_is_type(args, json_type_object)
 		? TEXT("Tool arguments must be an object.")
@@ -3303,7 +3162,7 @@ mcp_req_trace (struct mcp_req        *req,
 		return 0;
 	case TRACE_ACTION:
 		size_t len = 0;
-		char const *action = mcp_str(jb_get(args, "action"), &len);
+		char const *action = jb_str(jb_get(args, "action"), &len);
 		return !action || (CAT(&req->trace, " ") &&
 		                   dstr_cat_n(&req->trace, action, mcp_clip(action, len, 16)))
 		       ? 0 : ENOMEM;
@@ -3563,7 +3422,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 {
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
-	char const *name = mcp_str(jb_get(args, "tool"), &len);
+	char const *name = jb_str(jb_get(args, "tool"), &len);
 	struct json_object *call = jb_get(args, "arguments");
 	uint32_t id = name ? mcp_req_tool_of(req, name, len) : TOOL_MAX;
 	struct mcp_piece problem =
@@ -3775,7 +3634,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	int64_t secs = json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : 0;
 	size_t len = 0;
 	struct json_object *note = jb_get(args, "note");
-	char const *text = mcp_str(note, &len);
+	char const *text = jb_str(note, &len);
 	struct mcp_piece problem =
 		secs < 1 || secs > TIMER_MAX
 		? TEXT("The seconds argument must be a whole number from 1 to 3600.")
@@ -4248,7 +4107,7 @@ mcp_slot_notes_write (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	static_assert(NOTES_TEXT == 8 << 10, "the problem says");
 	size_t len = 0;
-	char const *note = mcp_str(jb_get(args, "text"), &len);
+	char const *note = jb_str(jb_get(args, "text"), &len);
 	struct mcp_piece problem =
 		!note || !len || len > NOTES_TEXT || memchr(note, '\0', len)
 		? TEXT("A note must be a string of 1 to 8192 bytes, and no NUL.")
@@ -4282,7 +4141,7 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 	static_assert(NOTES_SEARCH == 1 << 10, "the problem says");
 	struct json_object *search = jb_get(args, "search");
 	size_t len = 0;
-	char const *find = mcp_str(search, &len);
+	char const *find = jb_str(search, &len);
 	if (search && (!find || !len || len > NOTES_SEARCH || strcspn(find, "\n") < len)) {
 		mcp_slot_result(slot, TEXT(bad_search), true);
 		return;
@@ -4564,7 +4423,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	static_assert(SUMMARY_MAX == 16 << 10, "the problem says");
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
-	char const *summary = mcp_str(jb_get(args, "summary"), &len);
+	char const *summary = jb_str(jb_get(args, "summary"), &len);
 	if (!summary || !len || len > SUMMARY_MAX) {
 		mcp_slot_result(slot, TEXT("The summary argument must be a string of 1 to "
 		                           "16384 bytes."), true);
@@ -4657,7 +4516,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 		return;
 	}
 	size_t len = 0;
-	char const *str = mcp_str(jb_get(params, "name"), &len);
+	char const *str = jb_str(jb_get(params, "name"), &len);
 	uint32_t id = 0;
 	while (str && id < st->n_granted &&
 	       (st->offers[id].len != len || memcmp(st->offers[id].name, str, len)))
@@ -4692,7 +4551,7 @@ mcp_req_initialize (struct mcp_req     *req,
 	static char const head[] = JSON_FIELD "Mcp-Session-Id: ";
 	static char const hex[] = "0123456789abcdef";
 	size_t len = 0;
-	char const *version = mcp_str(jb_get(params, "protocolVersion"), &len);
+	char const *version = jb_str(jb_get(params, "protocolVersion"), &len);
 	if (!mcp_is_legacy(version, len)) {
 		version = versions[MODERN];
 		len = sizeof versions[MODERN] - 1;
@@ -4883,7 +4742,7 @@ mcp_req_tasks (struct mcp_req     *req,
 		return;
 	}
 	size_t len = 0;
-	char const *id = mcp_str(jb_get(params, "taskId"), &len);
+	char const *id = jb_str(jb_get(params, "taskId"), &len);
 	struct ledger_task *task = id ? ledger_find(st->ledger, req->s->principal, id, len)
 	                              : nullptr;
 	if (!task) {
@@ -4967,7 +4826,7 @@ mcp_req_modern (struct mcp_req     *req,
 	struct json_object *m = jb_get(params, "_meta");
 	struct json_object *caps = jb_get(m, meta_caps);
 	size_t len = 0;
-	char const *version = mcp_str(jb_get(m, meta_version), &len);
+	char const *version = jb_str(jb_get(m, meta_version), &len);
 	if (!version || !json_object_is_type(caps, json_type_object)) {
 		mcp_req_error(req, 400, INVALID_PARAMS,
 		              FRAG("Request _meta must carry protocolVersion and "
@@ -5002,7 +4861,7 @@ mcp_req_modern (struct mcp_req     *req,
 	bool call = req->method == METHOD_TOOLS_CALL;
 	bool task = req->method >= METHOD_TASKS_GET && req->method <= METHOD_TASKS_CANCEL;
 	size_t name_len = 0;
-	char const *name = mcp_str(jb_get(params, call ? "name" : "taskId"), &name_len);
+	char const *name = jb_str(jb_get(params, call ? "name" : "taskId"), &name_len);
 	if ((call || task) && name && !mcp_span_is(s->ops->field(s, F_NAME), name, name_len)) {
 		mcp_req_error(req, 400, HEADER_MISMATCH,
 		              call ? FRAG("Mcp-Name header does not match the tool name")
@@ -5036,8 +4895,8 @@ mcp_req_request (struct mcp_req     *req,
 		return;
 	}
 	size_t version_len = 0;
-	char const *version = mcp_str(jb_get(jb_get(params, "_meta"), meta_version),
-	                              &version_len);
+	char const *version = jb_str(jb_get(jb_get(params, "_meta"), meta_version),
+	                             &version_len);
 	struct span header = s->ops->field(s, F_VERSION);
 	req->modern = (version && !mcp_is_legacy(version, version_len)) ||
 	              (header.ptr && !mcp_is_legacy((char const *)header.ptr, header.len));
@@ -5070,7 +4929,7 @@ mcp_req_message (struct mcp_req *req)
 	struct json_object *msg = req->msg;
 	struct stream *s = req->s;
 	size_t len = 0;
-	char const *method = mcp_str(jb_get(msg, "method"), &len);
+	char const *method = jb_str(jb_get(msg, "method"), &len);
 	struct json_object *id;
 	bool has_id = json_object_object_get_ex(msg, "id", &id);
 	if (!jb_is(jb_get(msg, "jsonrpc"), "2.0")) {
@@ -5647,55 +5506,6 @@ mcp_tool_definition (void const *inst)
 }
 
 static struct json_object *
-mcp_man_definition (void const *inst)
-{
-	(void)inst;
-	static_assert(MANUAL_MAX == 2 << 20, "the description says 2 MiB");
-	return jb_object(
-		"name", json_object_new_string("man"),
-		"title", json_object_new_string("Manual page"),
-		"description", json_object_new_string(
-			"Read one of the server's Unix manual pages, as `man [section] name` "
-			"shows it, in plain text; a long page is cut, and offset reads on "
-			"past the cut. Use it to check the exact interface of a system "
-			"call, library function, command, file format or convention. Pages "
-			"are kept once rendered, so reading one again is cheap."),
-		"inputSchema", jb_object(
-			"type", json_object_new_string("object"),
-			"properties", jb_object(
-				"name", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"The page's name, such as printf, pthread_create, epoll "
-						"or bash."),
-					nullptr),
-				"section", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"Optional section: 1 commands, 2 system calls, 3 library "
-						"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
-						"overviews and conventions, 8 administration. Without "
-						"it, the first page man finds in its usual order."),
-					nullptr),
-				"offset", jb_object(
-					"type", json_object_new_string("integer"),
-					"minimum", json_object_new_int(0),
-					"description", json_object_new_string(
-						"The byte of the page to start from, to read on past "
-						"where it was cut."),
-					nullptr),
-				nullptr),
-			"required", jb_list(json_object_new_string("name")),
-			"additionalProperties", json_object_new_boolean(0),
-			nullptr),
-		"annotations", jb_object(
-			"readOnlyHint", json_object_new_boolean(1),
-			"openWorldHint", json_object_new_boolean(0),
-			nullptr),
-		nullptr);
-}
-
-static struct json_object *
 mcp_task_definition (void const *inst)
 {
 	(void)inst;
@@ -6054,19 +5864,7 @@ struct mcp_row {
  * mcp_static, is part 0. */
 static struct plugin const mcp_host_plugin = {};
 
-/* askai's man and git, plugins built in: man's part of a loop is the
- * manual's there, git's the git itself. */
-static struct plugin const mcp_man_plugin = {
-	.tools = {{
-		.definition = mcp_man_definition,
-		.start = mcp_slot_man,
-		.drop = mcp_slot_man_drop,
-		.flags = TOOL_LENT | TOOL_PAGED | TOOL_DETACH
-	}},
-	.part_create = mcp_man_part_create,
-	.part_destroy = mcp_man_part_destroy
-};
-
+/* askai's git, a plugin built in: its part of a loop is the git itself. */
 static struct plugin const mcp_git_plugin = {
 	.tools = {{
 		.definition = mcp_git_definition,
@@ -6081,7 +5879,7 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	[KIND_ASK]        = { { .definition = mcp_tool_definition, .start = mcp_slot_ask,
 	                        .step = mcp_slot_notes_out },
 	                      .metric = LENT_NONE },
-	[KIND_MAN]        = { .plugin = &mcp_man_plugin, N("man"), .metric = LENT_MAN },
+	[KIND_MAN]        = { .plugin = &manual_plugin, N("man"), .metric = LENT_MAN },
 	[KIND_TASK]       = { { .definition = mcp_task_definition, .start = mcp_slot_task,
 	                        .drop = mcp_slot_task_drop },
 	                      N("test_task"), LEND_NEVER, LENT_NONE },

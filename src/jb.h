@@ -49,6 +49,12 @@ jb_at (struct json_object const *arr,
 extern char const *
 jb_text (struct json_object *val);
 
+/** @p val's text and its length in @p *len, if it is a string; else
+ *  nullptr. */
+extern char const *
+jb_str (struct json_object *val,
+        size_t             *len);
+
 /** Whether @p val is the string @p str. */
 extern bool
 jb_is (struct json_object *val,

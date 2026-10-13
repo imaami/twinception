@@ -90,6 +90,15 @@ jb_text (struct json_object *val)
 		? json_object_get_string(val) : nullptr;
 }
 
+char const *
+jb_str (struct json_object *val,
+        size_t             *len)
+{
+	char const *str = jb_text(val);
+	*len = str ? (size_t)json_object_get_string_len(val) : 0;
+	return str;
+}
+
 bool
 jb_is (struct json_object *val,
        char const         *str)

@@ -12,62 +12,21 @@
  * one fetch, on whichever loop began it, and it goes on, its page kept, when
  * the calls that waited for it go.  The manual keeps what it renders for
  * good: all of a system's pages take some 100 to 200 MiB.
+ *
+ * The man tool is the manual's kind of tool (src/tool.h), its part of a
+ * client loop the fetches there.  A man call takes its page at once if the
+ * manual has it, else once man has, which the call waits for, named
+ * (src/mcp.h).  It replies with the page, or with why there is none.  A
+ * call that goes leaves the page to the manual.
  */
 #ifndef TWINCEPTION_SRC_MANUAL_H_
 #define TWINCEPTION_SRC_MANUAL_H_
 
 #include <stdatomic.h>
-#include <stddef.h>
 #include <stdint.h>
-#include <sys/types.h>
-#include <time.h>
-
-#include "list.h"
-#include "loop.h"
-
-enum {
-	MANUAL_MAX     = 2 << 20,  /**< bytes of a page kept: past those, cut short */
-	MANUAL_SECONDS = 10,       /**< for man to find, or render, a page */
-	MANUAL_NAME    = 128,      /**< bytes of a page's name, at most */
-	MANUAL_SECTION = 16,       /**< and of a section's */
-	MANUAL_WHY     = 192,      /**< bytes of what says why there is no page */
-};
 
 struct manual;
-
-/** A page as man rendered it, UTF-8 text, a page cut short ending in a note
- *  that says so; no one changes it.  The manual holds a reference while it
- *  keeps the page, and each reader one. */
-struct manual_page {
-	struct timespec  ctime;  /**< its file's, as man began */
-	dev_t            dev;
-	ino_t            ino;
-	off_t            size;
-	size_t           len;
-	_Atomic uint32_t refs;
-	char             text[];
-};
-
-/** A call that waits for a page: posted to its loop, msg.fn its handler,
- *  once the page is in or man has failed; the handler frees it. */
-struct manual_wait {
-	struct msg           msg;
-	struct manual_wait  *next;
-	struct loop         *loop;
-	struct manual_page  *page;   /**< the page, a reference the handler
-	                                  may take; else nullptr, and why */
-	struct handle        who;    /**< names the call on its loop */
-	char                 why[MANUAL_WHY];
-};
-
-/** What a client loop has of the manual: the fetches it runs, and their
- *  children. */
-struct manual_loop {
-	struct list     fetches;
-	struct list     children;
-	struct manual  *manual;
-	struct loop    *loop;
-};
+struct plugin;
 
 /** What the manual has done: any thread writes, any reads (src/hist.h). */
 struct manual_metrics {
@@ -96,49 +55,8 @@ manual_destroy (struct manual **p_manual);
 extern struct manual_metrics const *
 manual_metrics (struct manual const *manual);
 
-/** Begin @p ml, the manual's part of @p loop. */
-static inline void
-manual_loop_init (struct manual_loop *ml,
-                  struct manual      *manual,
-                  struct loop        *loop)
-{
-	list_init(&ml->fetches);
-	list_init(&ml->children);
-	ml->manual = manual;
-	ml->loop = loop;
-}
-
-/** End the fetches the loop runs, as it stops: their waiters learn that the
- *  server is shutting down, and their children are killed. */
-extern void
-manual_loop_fini (struct manual_loop *ml);
-
-/**
- * The page @p name, of @p name_len bytes, of the section @p section, of
- * @p section_len bytes, 0 for none: in @p *p_page, a reference, if the
- * manual has it as its file is.  Else @p *p_page is nullptr, and the call
- * @p who names on the loop waits for a post to @p fn, a struct manual_wait.
- * Returns 0; EINVAL if either is too long; or ENOMEM.  They are man's to
- * take as a name and a section, never as an option: the caller checks them.
- */
-extern int
-manual_find (struct manual_loop  *ml,
-             char const          *name,
-             size_t               name_len,
-             char const          *section,
-             size_t               section_len,
-             struct handle        who,
-             void               (*fn) (struct loop *loop,
-                                       struct msg  *msg),
-             struct manual_page **p_page);
-
-/** Let go of a reference to @p page, if not nullptr. */
-extern void
-manual_page_put (struct manual_page *page);
-
-/** Free @p *p_w, a waiter's post, and the page it holds, if any, and set
- *  it to nullptr. */
-extern void
-manual_wait_destroy (struct manual_wait **p_w);
+/** The man tool, a plugin built in (src/plugin.h) whose instance is a
+ *  manual. */
+extern struct plugin const manual_plugin;
 
 #endif /* TWINCEPTION_SRC_MANUAL_H_ */
