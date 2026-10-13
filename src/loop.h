@@ -7,70 +7,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "export.h"
 #include "hist.h"
 #include "list.h"
+#include "loop_export.h"
 
 struct loop;
 struct loop_ref;
 struct loop_slot;
 struct loop_stats;
-
-/**
- * The name another thread holds of an object of a loop's: never a pointer,
- * never an fd (design section 1, R2).  It names a slot of the loop's table,
- * whose generation advances as the slot is freed, so a handle kept after that
- * names nothing.  0 is no handle.
- */
-struct handle {
-	uint64_t bits;  /**< loop:8 | slot:24 | gen:32 */
-};
-
-/**
- * The units of work a step may do, and at most how many of each (design
- * section 1): what keeps a turn short however slow the machine.  Steps count
- * their work with loop_work(), may ask loop_room() what is left of the
- * step's share, and leave the rest to a later step.  Work that cannot be
- * split, such as a copy a library makes, counts in full where it happens.
- * The statistics keep the most of each unit any step did, which must stay
- * within its bound.
- */
-enum loop_unit {
-	LOOP_REQS,     /**< requests begun, or tool calls a drain ends */
-	LOOP_RECV,     /**< bytes received */
-	LOOP_SEND,     /**< bytes sent, or queued to send by an application */
-	LOOP_BODY,     /**< request body bytes taken in and pre-scanned */
-	LOOP_PARSE,    /**< JSON bytes parsed, or SSE lines' bytes read */
-	LOOP_VALUES,   /**< JSON values parsed or freed */
-	LOOP_ESCAPE,   /**< bytes escaped into JSON */
-	LOOP_COPY,     /**< bytes copied whole, as json-c does a string it
-	                    parsed, or an answer's text */
-	LOOP_ACCEPTS,  /**< connections accepted */
-	LOOP_CLOSES,   /**< connections closed */
-	LOOP_RELEASE,  /**< blocks or objects kept for reuse that are given back
-	                    to the allocator under memory pressure, a block a
-	                    unit per 128 KiB (buf_stash_release()) */
-	LOOP_TASKS,    /**< task slices (task.h) */
-	LOOP_FLIGHTS,  /**< TLS handshake flights (tls.h) */
-	LOOP_UNITS
-};
-
-/** The bounds of the units per step. */
-enum {
-	LOOP_STEP_REQS    = 8,
-	LOOP_STEP_RECV    = 64 << 10,
-	LOOP_STEP_SEND    = 256 << 10,
-	LOOP_STEP_BODY    = 64 << 10,
-	LOOP_STEP_PARSE   = 16 << 10,
-	LOOP_STEP_VALUES  = 256,
-	LOOP_STEP_ESCAPE  = 64 << 10,
-	LOOP_STEP_COPY    = 1 << 20,
-	LOOP_STEP_ACCEPTS = 32,
-	LOOP_STEP_CLOSES  = 32,
-	LOOP_STEP_RELEASE = 256,
-	LOOP_STEP_TASKS   = 1,
-	LOOP_STEP_FLIGHTS = 1,
-};
 
 /**
  * Reports @p events on a watched descriptor.  A callback should only note
@@ -109,20 +53,6 @@ struct loop_step {
 	                 struct loop_step *step);
 };
 
-/**
- * A message another thread posts to a loop (design section 2).  Its handler
- * runs on the loop in a later turn, and owns the message from then on.  The
- * poster must not touch it meanwhile, nor post it again: a message that may
- * be posted repeatedly carries a word of pending bits, and is posted only
- * when that word turns non-zero.
- */
-struct msg {
-	struct msg *next;
-	void      (*fn) (struct loop *loop,
-	                 struct msg  *msg);
-	uint64_t    posted;  /**< loop_clock() as it was posted */
-};
-
 /** What a loop has done since it began: its one writer is the loop, and any
  *  thread may read it (src/hist.h).  Times are in ns. */
 struct loop_metrics {
@@ -131,14 +61,6 @@ struct loop_metrics {
 	struct hist      late;              /**< how late timers fired */
 	struct hist      inbox;             /**< from a post to its handler */
 	_Atomic uint64_t work[LOOP_UNITS];  /**< the most of each unit a step did */
-};
-
-/** A deadline on the loop's timer heap: one per object, not one per event. */
-struct loop_timer {
-	uint64_t due;   /**< CLOCK_MONOTONIC ns; UINT64_MAX never fires */
-	void   (*fn) (struct loop       *loop,
-	              struct loop_timer *timer);
-	size_t   slot;  /**< heap index + 1; 0 while not in the heap */
 };
 
 /**
@@ -217,15 +139,6 @@ extern void
 loop_fini (struct loop *loop);
 
 /**
- * Post @p msg to @p loop, from any thread: an atomic push, and a write to the
- * loop's eventfd only if the loop sleeps.  It cannot fail.
- */
-EXPORT
-extern void
-loop_post (struct loop *loop,
-           struct msg  *msg);
-
-/**
  * Name @p obj for other threads with a slot of the loop's table, the slot
  * freed last if there is one: the table grows only past the most named at
  * once, and keeps its slots.  ENOMEM if it cannot grow, which past 2^24 slots
@@ -293,38 +206,6 @@ loop_ready_bulk (struct loop      *loop,
 /** Take @p step off its list, if it is on one. */
 extern void
 loop_unready (struct loop_step *step);
-
-/**
- * Arm @p timer to fire at @p due, or move it there.  A timer stays in the
- * heap until it is stopped; once it fires it is due at UINT64_MAX (never)
- * until set again.  So only arming a timer that is not in the heap can fail,
- * when the heap cannot grow (ENOMEM).
- */
-EXPORT
-extern int
-loop_timer_set (struct loop       *loop,
-                struct loop_timer *timer,
-                uint64_t           due);
-
-EXPORT
-extern void
-loop_timer_stop (struct loop       *loop,
-                 struct loop_timer *timer);
-
-/** Count @p n units of work @p u done by the step under way. */
-static inline void
-loop_work (struct loop    *loop,
-           enum loop_unit  u,
-           uint64_t        n)
-{
-	loop->work[u] += n;
-}
-
-/** How many units of work @p u the step under way has left. */
-EXPORT
-extern uint64_t
-loop_room (struct loop const *loop,
-           enum loop_unit     u);
 
 /** CLOCK_MONOTONIC in nanoseconds. */
 extern uint64_t

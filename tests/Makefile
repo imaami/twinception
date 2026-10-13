@@ -70,6 +70,7 @@ check-handle: $Otests/handle
 	$<
 
 $Otests/handle: $(TEST_DIR)handle.c $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
+                $(SRC_DIR)loop_export.h $(SRC_DIR)export.h \
                 $(SRC_DIR)log.c | $Otests
 	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	      -o "$@" $(TEST_DIR)handle.c $(SRC_DIR)log.c

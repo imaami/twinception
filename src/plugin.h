@@ -21,7 +21,7 @@
 
 #include "buf.h"
 #include "export.h"
-#include "loop.h"
+#include "loop_export.h"
 #include "manifest.h"
 #include "mcp.h"
 #include "tool.h"
@@ -76,8 +76,7 @@ struct plugin {
 	X(sizeof (struct plugin)) X(offsetof (struct plugin, part_create)) \
 	X(sizeof (struct handle)) X(sizeof (struct msg))                   \
 	X(offsetof (struct msg, fn)) X(sizeof (struct loop_timer))         \
-	X(offsetof (struct loop_timer, fn)) X(offsetof (struct loop, now)) \
-	X(offsetof (struct loop, work))
+	X(offsetof (struct loop_timer, fn))
 #define PLUGIN_ABI_U32(x) (uint32_t)(x),
 #define PLUGIN_ABI_N(x) + 1
 static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);

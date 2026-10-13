@@ -8,7 +8,7 @@
 
 #include "buf.h"
 #include "export.h"
-#include "loop.h"
+#include "loop_export.h"
 #include "tool.h"
 
 struct config;

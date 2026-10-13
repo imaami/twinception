@@ -137,6 +137,20 @@ loop_most (uint64_t *max,
 }
 
 uint64_t
+loop_now (struct loop const *loop)
+{
+	return loop->now;
+}
+
+void
+loop_work (struct loop    *loop,
+           enum loop_unit  u,
+           uint64_t        n)
+{
+	loop->work[u] += n;
+}
+
+uint64_t
 loop_room (struct loop const *loop,
            enum loop_unit     u)
 {
