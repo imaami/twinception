@@ -2313,6 +2313,7 @@ httpd_lane_policy (struct loop *loop,
 		struct policy *old = lane->srv->policy;
 		lane->srv->policy = policy;
 		policy = old;
+		lane->srv->app->on_policy(lane->srv->app->ctx);
 	}
 	policy_put(policy);
 }

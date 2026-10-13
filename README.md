@@ -690,6 +690,36 @@ With `--upstream-tools`, the other model may also call a tool of a plugin if
 the tool's kind has the flag `TOOL_LENT` (`src/tool.h`) and the caller's role
 may call the tool.
 
+A plugin can store state in instances.  An instance is memory that `askai`
+allocates and that the plugin initializes.  Each call of a tool of such a
+plugin uses one instance of the plugin.  Two users never get the same
+instance, and only one loop thread uses an instance.
+
+`askai` determines the user of a call in this order.  If the client sent a
+token and the policy has tokens, the user is the identity that has the token.
+Under `askai`'s own policy, all clients that send `ASKAI_TOKEN` are one user.
+Otherwise, if the client is connected over a Unix socket, the user is the
+identity that lists the client's Unix user in `unix-users`, or else the Unix
+user itself.  Every other client is anonymous.  A tool call that the other
+model makes in a turn of a user's `ask_ai` call is a call of that user.
+
+A user whose connections are on several loop threads has one instance on each
+of them, and these instances share nothing.  Each call of an anonymous client
+gets a new instance, and `askai` destroys that instance after the call.  On
+one loop thread, the calls of a user to the tools of one plugin get the same
+instance, with these exceptions:
+
+- A loop thread has at most 256 instances that later calls of their users can
+  get.  When a call of a user needs one more, `askai` destroys the one that
+  has been unused for the longest time.  If calls use all 256 instances, the
+  call fails with the text "Too many tool calls are under way; try again in a
+  few seconds."
+- Under memory pressure, `askai` destroys instances that no call uses.
+- After a successful reload, the calls of new requests get new instances.  A
+  call that started before the reload uses its instance until the call ends.
+  A call that starts after the reload in an older request, for example a tool
+  call in a turn of an `ask_ai` call, gets a new instance for that call alone.
+
 `askai` reads the manifest from each file before it loads the file.  It
 refuses a plugin that breaks one of these rules:
 

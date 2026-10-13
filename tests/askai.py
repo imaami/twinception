@@ -5968,10 +5968,10 @@ def check_tasks(binary, up):
 def check_plugin(binary, up, plugin):
     """askai loads the plugins that the configuration file lists.
 
-    The test plugin (src/test_plugin.c) has one tool, test_echo.  The check
-    lists and calls it, grants it to a role by name, reloads the
-    configuration, calls it from a turn of an ask call, and then starts
-    askai with files that it must refuse.
+    The test plugin (src/test_plugin.c) has two tools.  The check uses the
+    first one, test_echo.  The check lists and calls test_echo, grants it to
+    a role by name, reloads the configuration, calls it from a turn of an
+    ask call, and then starts askai with files that askai must refuse.
     """
     plugin = os.path.abspath(plugin)
     with open(plugin, "rb") as f:
@@ -6033,7 +6033,8 @@ def check_plugin(binary, up, plugin):
         write([plugin])
         with Askai(binary, "-c", path) as ai:
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
-            assert [t["name"] for t in tools] == ["ask_ai", "man", "test_echo"], tools
+            assert [t["name"] for t in tools] == \
+                ["ask_ai", "man", "test_echo", "test_state"], tools
             assert tools[2]["description"] == "Returns the text argument unchanged." \
                 and tools[2]["inputSchema"]["required"] == ["text"], tools[2]
             for text in ("plugin \u20ac", "", "x" * 100000):
@@ -6088,13 +6089,13 @@ def check_plugin(binary, up, plugin):
             [("a", "timer", "{}"), ("b", "test_echo", '{"text":"x"}')]
             if len(request["body"]["messages"]) == 1 else (), text="A"))
         with Askai(binary, "-c", path) as ai:
-            assert names(ai) == ["ask_ai", "man", "test_echo"]
+            assert names(ai) == ["ask_ai", "man", "test_echo", "test_state"]
             count = len(up.requests)
             answer, trace = [c["text"] for c in ai.ask("Q")["content"]]
             first, second = up.requests[count:]
             assert [t["function"]["name"] for t in first["body"]["tools"]] == \
-                ["man", "test_echo", "compact", "background", "jobs", "wait",
-                 "timer"], first
+                ["man", "test_echo", "test_state", "compact", "background",
+                 "jobs", "wait", "timer"], first
             assert [m["content"] for m in second["body"]["messages"][2:]] == \
                 ["The seconds argument must be a whole number from 1 to 3600.",
                  "x"], second
@@ -6122,6 +6123,12 @@ def check_plugin(binary, up, plugin):
                  f"its ABI value 0 is {word(1) + 1}, askai's is {word(1)}"),
                 (patched("probes.so", 32, 1), "its ABI value 31 is 1, askai's is 0")):
             fails([listed], f"askai: {listed}: {message}")
+        # A copy that calls mcp_slot_tel1(), which askai does not export.
+        with open(f"{d}/import.so", "wb") as f:
+            assert b"mcp_slot_tell\0" in image
+            f.write(image.replace(b"mcp_slot_tell\0", b"mcp_slot_tel1\0"))
+        fails([f"{d}/import.so"], f"askai: {d}/import.so: cannot load it: ",
+              "undefined symbol: mcp_slot_tel1")
         fails([plugin, plugin], f"askai: {plugin}: its tool test_echo has the "
               "name of a tool that askai already has")
         fails([plugin], f"askai: {plugin}: its tool test_echo has the name of a "
@@ -6146,6 +6153,285 @@ def check_plugin(binary, up, plugin):
     print("plugin: test_echo listed, called, granted by a role, kept over a "
           "reload and called from a turn; files that are no plugin of this "
           "askai refused: PASS")
+
+
+def check_instances(binary, up, plugin):
+    """A plugin has one instance for each user on each client loop.
+
+    The tool test_state of the test plugin (src/test_plugin.c) answers with
+    the principal of the call's user, the address of the call's instance,
+    the number of calls that the instance has had, and the text that the
+    instance stores.  A call without "wait_ms" stores its "text" argument in
+    the instance after it has answered.  A call with "wait_ms" stores it
+    when it starts, and the drop() of such a call stores "dropped".  The
+    check uses these values to show that two users never get the same
+    instance, on one loop and on four, that a turn of a user's ask call gets
+    the user's instance, and when askai destroys an instance.
+    """
+    plugin = os.path.abspath(plugin)
+
+    def digest(token):
+        return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+
+    def auth(token):
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    def state(ai, token, conn=None, **arguments):
+        """Calls test_state as the identity that has the token.  Returns
+        the four values of the answer.  They are the principal, the address
+        of the instance, the number of calls of the instance, and the text
+        that was in the instance when the call ended."""
+        status, _, body = ai.rpc(
+            "tools/call", {"name": "test_state", "arguments": arguments},
+            headers=auth(token), conn=conn)
+        assert status == 200 and not body["result"].get("isError"), (status, body)
+        found = re.fullmatch(r"principal=(\w+) instance=(\S+) calls=(\d+) last=(.*)",
+                             text_of(body["result"]), re.S)
+        assert found, body
+        return found[1], found[2], int(found[3]), found[4]
+
+    def parked(ai, token, ms):
+        """Starts a call of test_state that waits ms milliseconds.  The
+        call runs in a new thread.  The function returns when askai has
+        started the call.  It returns the thread, the list that the thread
+        appends the call's answer to, and the number of calls that the
+        user's instance has had by then.  askai must run with one loop."""
+        answer = []
+        thread = threading.Thread(target=lambda: answer.append(
+            state(ai, token, text="held", wait_ms=ms)))
+        calls = state(ai, token, text="poll")[2]
+        thread.start()
+        # The waiting call adds 1 to the instance's number of calls when
+        # it starts.  Each call of this loop adds 1 too.  So the waiting
+        # call has started when the number has grown by 2 between two
+        # calls of this loop.
+        end = time.monotonic() + 5
+        while True:
+            now = state(ai, token, text="poll")[2]
+            if now == calls + 2:
+                return thread, answer, now
+            assert now == calls + 1 and time.monotonic() < end, (calls, now)
+            calls = now
+
+    roles = {"all": {"tools": ["ask_ai", "test_state"]}}
+    users = {name: {"role": "all", "tokens": [digest(name)]}
+             for name in ("alice", "bob")}
+    hold = up.reply
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/askai.json"
+
+        def write(**options):
+            text = json.dumps({"url": up.url(), "plugins": [plugin]} | options)
+            with open(f"{path}.new", "w") as f:
+                f.write(text)
+            os.chmod(f"{path}.new", 0o600)
+            os.rename(f"{path}.new", path)
+
+        # One loop.  Each user has an instance of its own, and gets the
+        # same instance again from a new connection.
+        write(roles=roles, identities=users, **{"upstream-tools": True})
+        with Askai(binary, "-c", path, loops=1) as ai:
+            alice, hers, calls, last = state(ai, "alice", text="A-secret")
+            assert (calls, last) == (1, ""), (calls, last)
+            bob, his, calls, last = state(ai, "bob", text="B-secret")
+            assert (calls, last) == (1, "") and bob != alice and his != hers, \
+                (calls, last, alice, bob, hers, his)
+            assert state(ai, "alice", text="A2") == (alice, hers, 2, "A-secret")
+            assert state(ai, "bob") == (bob, his, 2, "B-secret")
+            # Both users send their requests on one connection that stays
+            # open, as happens when a proxy forwards them.
+            conn = ai.connect()
+            assert state(ai, "alice", conn=conn) == (alice, hers, 3, "A2")
+            assert state(ai, "bob", conn=conn) == (bob, his, 3, "")
+            conn.close()
+
+            # A turn of alice's ask call calls the tool.  The call gets
+            # alice's instance, not a separate one.
+            up.reply = lambda request: (200, turn_stream(
+                [("a", "test_state", '{"text":"turn"}')]
+                if len(request["body"]["messages"]) == 1 else (), text="A"))
+            count = len(up.requests)
+            status, _, body = ai.rpc(
+                "tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}},
+                headers=auth("alice"))
+            assert status == 200 and not body["result"].get("isError"), (status, body)
+            second = up.requests[count:][1]
+            assert second["body"]["messages"][2]["content"] == \
+                f"principal={alice} instance={hers} calls=4 last=", second
+            up.reply = hold
+            assert state(ai, "alice") == (alice, hers, 5, "turn")
+            assert state(ai, "bob") == (bob, his, 4, "")
+
+            # A reload.  The call that waits started before the reload.
+            # It has the old instance until it ends.  A call that starts
+            # after the reload gets a new instance, and later calls get
+            # that new instance too.
+            waiter, held, calls = parked(ai, "alice", 1500)
+            write(roles=roles, identities=users | {
+                "carol": {"role": "all", "tokens": [digest("carol")]}},
+                **{"upstream-tools": True})
+            ai.log.clear()
+            ai.proc.send_signal(signal.SIGHUP)
+            ai.wait_log("configuration reloaded")
+            after = state(ai, "alice", text="after")
+            assert after[0] == alice and after[2:] == (1, ""), after
+            assert state(ai, "bob")[2:] == (1, "")
+            waiter.join()
+            assert held == [(alice, hers, calls, "poll")] and after[1] != hers, \
+                (held, after)
+            assert state(ai, "alice")[1:] == (after[1], 2, "after")
+            assert state(ai, "carol")[2:] == (1, "")
+
+            # An ask call of alice starts before a reload, and its turn
+            # calls test_state after the reload.  The request of the ask
+            # call began before the reload, so the turn's call gets a new
+            # instance that no other call gets.  It does not get the
+            # instance that alice's requests get after the reload.
+            go = threading.Event()
+
+            def late(request):
+                first = len(request["body"]["messages"]) == 1
+                assert not first or go.wait(5)
+                return 200, turn_stream(
+                    [("a", "test_state", '{"text":"late"}')] if first else (),
+                    text="A")
+
+            up.reply = late
+            up.arrived.clear()
+            count = len(up.requests)
+            asked = []
+            asker = threading.Thread(target=lambda: asked.append(ai.rpc(
+                "tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}},
+                headers=auth("alice"))))
+            asker.start()
+            assert up.arrived.wait(5)
+            ai.log.clear()
+            ai.proc.send_signal(signal.SIGHUP)
+            ai.wait_log("configuration reloaded")
+            mine = state(ai, "alice", text="mine")
+            assert mine[2:] == (1, ""), mine
+            go.set()
+            asker.join()
+            up.reply = hold
+            status, _, body = asked[0]
+            assert status == 200 and not body["result"].get("isError"), (status, body)
+            told = up.requests[count:][1]["body"]["messages"][2]["content"]
+            assert re.fullmatch(rf"principal={alice} instance=\S+ calls=1 last=",
+                                told), told
+            assert state(ai, "alice")[1:] == (mine[1], 2, "mine")
+
+        # The policy has no identities, so every TCP client is anonymous.
+        # Each call of an anonymous client gets a new instance.  A call
+        # adds 1 to the number of calls of its instance when it starts, so
+        # the number is 1 in every answer only if no two of the calls that
+        # wait got the same instance.
+        write()
+        with Askai(binary, "-c", path, loops=1) as ai:
+            conn = ai.connect()
+            seen = [state(ai, None, conn=conn, text=f"t{k}") for k in range(5)]
+            conn.close()
+            assert all(principal == "0" * 16 and (calls, last) == (1, "")
+                       for principal, _, calls, last in seen), seen
+            waited = []
+            threads = [threading.Thread(target=lambda: waited.append(
+                state(ai, None, wait_ms=300))) for _ in range(100)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            assert len(waited) == 100 and all(w[2] == 1 for w in waited), waited
+
+        # More users than a loop's table has room for (INSTANCE_MAX is 256,
+        # src/instance.h).  The table destroys the instance that has been
+        # unused for the longest time, so the last 256 users get their
+        # instances again and the users before them get new ones.
+        many = {f"u{k}": {"role": "all", "tokens": [digest(f"u{k}")]}
+                for k in range(400)}
+        write(roles=roles, identities=many)
+        with Askai(binary, "-c", path, "--max-client-conns", "0", loops=1) as ai:
+            for k in range(400):
+                assert state(ai, f"u{k}", text=f"s{k}")[2] == 1
+            assert state(ai, "u399")[2:] == (2, "s399")
+            assert state(ai, "u144")[2:] == (2, "s144")
+            assert state(ai, "u143")[2:] == (1, "")
+            assert state(ai, "u0")[2:] == (1, "")
+
+            # Each of 256 users has a call that waits, so calls use all 256
+            # instances of the table and the table cannot destroy one.  The
+            # call of another user then ends as failed, and the client can
+            # repeat it.  When the 256 clients close their connections,
+            # askai drops their calls, and the call of the other user
+            # succeeds.
+            held = []
+            for k in range(256):
+                sock = socket.create_connection((ai.host, ai.port), 10)
+                sock.sendall(rpc_request(
+                    1, {"name": "test_state", "arguments": {"wait_ms": 60000}},
+                    "tools/call", headers=auth(f"u{k}")))
+                held.append(sock)
+
+            def refused():
+                status, _, body = ai.rpc(
+                    "tools/call", {"name": "test_state", "arguments": {}},
+                    headers=auth("u256"))
+                assert status == 200 and "result" in body, (status, body)
+                return body["result"].get("isError") and text_of(body["result"]) == \
+                    "Too many tool calls are under way; try again in a few seconds."
+
+            wait_for(refused)
+            for sock in held:
+                sock.close()
+            wait_for(lambda: not refused())
+
+        # Four loops, two connections at a time for each user.  A user has
+        # at most one instance on each loop, and every answer has only that
+        # user's own text.
+        write(roles=roles, identities=users)
+        with Askai(binary, "-c", path, loops=4) as ai:
+            seen = {"alice": [], "bob": []}
+
+            def calls_of(name):
+                for k in range(200):
+                    seen[name].append(state(ai, name, text=f"{name}-{k}"))
+
+            threads = [threading.Thread(target=calls_of, args=(name,))
+                       for name in seen for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            for name, other in (("alice", "bob"), ("bob", "alice")):
+                assert len(seen[name]) == 400, len(seen[name])
+                instances = {s[1] for s in seen[name]}
+                assert len({s[0] for s in seen[name]}) == 1 and \
+                    1 <= len(instances) <= 4, (name, instances)
+                assert all(s[3] == "" or s[3].startswith(f"{name}-")
+                           for s in seen[name]), name
+                assert not instances & {s[1] for s in seen[other]}, name
+
+        # Memory pressure.  At the critical level askai destroys every
+        # instance that no call uses.  The call that waits uses alice's
+        # instance, so that instance stays, and the call ends with it.
+        level = tempfile.NamedTemporaryFile("w", prefix="askai-pressure-")
+        set_pressure(level, 0)
+        with Askai(binary, "-c", path, "--test-pressure", level.name, loops=1) as ai:
+            alice, hers = state(ai, "alice")[:2]
+            for _ in range(5):
+                state(ai, "bob", text="y")
+            waiter, held, calls = parked(ai, "alice", 4000)
+            set_pressure(level, 2)
+            wait_for(lambda: state(ai, "bob")[2] == 1, seconds=3.5)
+            set_pressure(level, 0)
+            waiter.join()
+            assert held == [(alice, hers, calls, "poll")], held
+            # The drop() of the call that waited stored "dropped" in alice's
+            # instance.  This shows that mcp_slot_instance() returned the
+            # instance inside drop().
+            assert state(ai, "alice") == (alice, hers, calls + 1, "dropped")
+    print("instances: one for each user on a loop, also from a turn; a new "
+          "one for each anonymous call, after a reload, past 256 users and "
+          "under memory pressure; a failed call when calls use all 256; four "
+          "loops: PASS")
 
 
 def check_classes(binary, up):
@@ -6241,6 +6527,7 @@ def main():
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_turns, check_turn_apis, check_tasks,
                       lambda binary, up: check_plugin(binary, up, plugin),
+                      lambda binary, up: check_instances(binary, up, plugin),
                       check_classes,
                       check_shutdown,
                       check_watchdog, check_stalled_stderr):

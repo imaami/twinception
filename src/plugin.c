@@ -244,6 +244,13 @@ plugin_loaded_load (struct plugin_loaded *dest,
 		return plugin_refuse(why, len, "cannot load it: %s",
 		                     err ? err : "the dynamic linker gave no reason");
 	}
+	struct plugin const *p = dest->plugin;
+	if (p->instance_init ? p->instance_size - 1 >= PLUGIN_INSTANCE_MAX
+	                     : p->instance_size || p->instance_fini || p->relieve)
+		return plugin_refuse(why, len, "the instance members of its askai_plugin "
+		                     "do not agree: instance_init() goes with an "
+		                     "instance_size of 1 to %zu, and instance_fini() and "
+		                     "relieve() need instance_init()", PLUGIN_INSTANCE_MAX);
 	for (uint32_t i = 0; i < PLUGIN_TOOLS; ++i) {
 		struct tool_kind const *kind = &dest->plugin->tools[i];
 		bool named = i < dest->n_tools;

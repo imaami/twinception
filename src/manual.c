@@ -670,11 +670,11 @@ manual_find (struct manual_loop  *ml,
 	return e;
 }
 
-/* The man tool's part of @p loop: the fetches there of the manual
- * @p inst, and their children; nullptr, with ENOMEM in @p *e, if out of
- * memory. */
-static void *
-manual_loop_create (void        *inst,
+/* Creates the man tool's part of @p loop for @p service, a struct manual.
+ * The part has the list of the fetches that the loop runs and the list of
+ * their children.  Returns the part, or nullptr with ENOMEM in @p *e. */
+void *
+manual_loop_create (void        *service,
                     struct loop *loop,
                     int         *e)
 {
@@ -683,7 +683,7 @@ manual_loop_create (void        *inst,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*ml = (struct manual_loop){ .manual = inst, .loop = loop };
+	*ml = (struct manual_loop){ .manual = service, .loop = loop };
 	list_init(&ml->fetches);
 	list_init(&ml->children);
 	*e = 0;
@@ -693,7 +693,7 @@ manual_loop_create (void        *inst,
 /* End the fetches the loop runs, as it stops: their waiters learn that the
  * server is shutting down, and their children are killed.  Then free
  * @p *p_part, the man tool's part of the loop, and set it to nullptr. */
-static void
+void
 manual_loop_destroy (void **p_part)
 {
 	struct manual_loop *ml = *p_part;
@@ -860,9 +860,9 @@ manual_drop (struct mcp_slot *slot)
 }
 
 static struct json_object *
-manual_definition (void const *inst)
+manual_definition (void const *service)
 {
-	(void)inst;
+	(void)service;
 	static_assert(MANUAL_MAX == 2 << 20, "the description says 2 MiB");
 	return jb_object(
 		"name", json_object_new_string("man"),
@@ -914,7 +914,5 @@ struct plugin const manual_plugin = {
 		.start = manual_start,
 		.drop = manual_drop,
 		.flags = TOOL_LENT | TOOL_PAGED | TOOL_DETACH
-	}},
-	.part_create = manual_loop_create,
-	.part_destroy = manual_loop_destroy
+	}}
 };

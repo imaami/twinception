@@ -4,10 +4,11 @@ include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-askai check-buf check-completion check-dstr \
-        check-handle check-load check-twinception load load-build
+        check-handle check-instance check-load check-twinception load \
+        load-build
 default:; @:
 check: | check-completion check-twinception check-askai check-buf \
-         check-handle check-dstr check-load
+         check-handle check-instance check-dstr check-load
 
 # Nothing below this comment is defined when tab-completing.
 
@@ -74,6 +75,21 @@ $Otests/handle: $(TEST_DIR)handle.c $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
                 $(SRC_DIR)log.c | $Otests
 	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	      -o "$@" $(TEST_DIR)handle.c $(SRC_DIR)log.c
+
+# Unit tests of the table of plugin instances.  The test includes
+# src/loop.c and src/instance.c, so that it can call their static functions.
+check-instance: $Otests/instance
+	$<
+
+$Otests/instance: $(TEST_DIR)instance.c $(SRC_DIR)instance.c \
+                  $(SRC_DIR)instance.h $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
+                  $(SRC_DIR)loop_export.h $(SRC_DIR)plugin.h \
+                  $(SRC_DIR)brainstem.h $(SRC_DIR)buf.h $(SRC_DIR)export.h \
+                  $(SRC_DIR)hist.h $(SRC_DIR)list.h $(SRC_DIR)manifest.h \
+                  $(SRC_DIR)mcp.h $(SRC_DIR)tool.h $(SRC_DIR)util.h \
+                  $(SRC_DIR)log.c $(SRC_DIR)log.h | $Otests
+	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
+	      -o "$@" $(TEST_DIR)instance.c $(SRC_DIR)log.c
 
 # e.g. make check-dstr DSTR_CHECKFLAGS='-t gcc -S address'
 check-dstr:

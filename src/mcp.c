@@ -75,6 +75,7 @@
 #include "config.h"
 #include "dstr.h"
 #include "git.h"
+#include "instance.h"
 #include "jb.h"
 #include "job.h"
 #include "ledger.h"
@@ -239,10 +240,14 @@ struct mcp_offer {
 	uint8_t                 trace;   /* enum mcp_trace */
 };
 
-/* A plugin whose tools askai offers, and its instance. */
+/* A plugin whose tools askai offers.  A built-in plugin can have a service,
+ * the object that every loop shares, and a part of it on each client loop.
+ * A plugin that askai loaded from a file has neither. */
 struct mcp_plugin {
 	struct plugin const *plugin;
-	void                *inst;
+	void                *service;
+	mcp_part_create_fn  *part_create;
+	mcp_part_destroy_fn *part_destroy;
 };
 
 struct mcp_static {
@@ -251,10 +256,10 @@ struct mcp_static {
 	struct mcp_offer          offers[TOOL_MAX + 1];  /**< by id; TOOL_MAX's,
 	                                                      that of a tool askai
 	                                                      does not offer */
-	struct mcp_plugin         plugins[TOOL_MAX];     /**< by part, at most one
-	                                                      an offer: 0 that of
-	                                                      askai's own kinds,
-	                                                      its instance this */
+	/** The plugins that have a tool, indexed by part.  There is at most
+	 *  one plugin for each offer.  Entry 0 is the plugin of askai's own
+	 *  kinds, and its service is this mcp_static. */
+	struct mcp_plugin         plugins[TOOL_MAX];
 	uint32_t                  n_offers;
 	uint32_t                  n_granted;      /**< those before the first
 	                                               that only turns are given */
@@ -339,6 +344,13 @@ struct mcp_slot {
 	                                  its drop() lets go of: a man call's
 	                                  page, a test_task call's task, a git
 	                                  call's git */
+	void               *inst;      /* The instance of the tool's plugin for
+	                                  the user of the request, or nullptr
+	                                  if the plugin has no instances.
+	                                  mcp_slot_start() sets it with
+	                                  instance_table_get(), and
+	                                  mcp_slot_drop() clears it with
+	                                  instance_table_put(). */
 	struct span         lent;      /* its output, if own keeps it: a man
 	                                  call's page's text */
 	struct child       *child;     /* its notes' git, until its output is
@@ -363,8 +375,10 @@ struct mcp_slot {
 	                                  list of jobs shows */
 	struct mcp_slot    *of;        /* the job whose output it gives, if it
 	                                  gives a job's */
-	char                note[368]; /* what askai adds to the output, sized to
-	                                  end the slot unpadded */
+	char                note[360]; /* The text that askai adds to the
+	                                  call's output.  With 360 bytes the
+	                                  slot is 512 bytes and has no padding
+	                                  at its end. */
 };
 
 static_assert(TOOL_MAX <= UINT8_MAX, "a slot's tool holds TOOL_MAX");
@@ -439,6 +453,13 @@ struct mcp_req {
 	uint64_t             noted;      /* when the last notification went */
 	uint64_t             base;       /* what the progress was as the turn
 	                                    began */
+	uint64_t             principal;  /* The principal of the request's
+	                                    client.  mcp_begin() copies it from
+	                                    the stream, because s can be nullptr
+	                                    when a call is dropped. */
+	uint64_t             generation; /* The value that
+	                                    instance_table_generation() returned
+	                                    when the request began. */
 	tool_mask            lent;       /* the tools its turns may call */
 	struct stream        stand_in;   /* a task's stream, which writes the
 	                                    reply into its record */
@@ -533,6 +554,9 @@ struct mcp {
 	struct loop             *loop;
 	struct loop             *home;      /* where jobs run */
 	struct mcp_static const *st;
+	struct instance_table    instances; /* The instances of the plugins for
+	                                       the users whose calls run on this
+	                                       loop. */
 	uint64_t                 draining;  /* bool, widened over the padding */
 	void                    *parts[];   /* the plugins', as st->plugins[] */
 };
@@ -895,6 +919,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	if (slot->own)
 		mcp_slot_offer(slot)->kind->drop(slot);
 	slot->own = nullptr;
+	instance_table_put(&slot->req->mcp->instances, &slot->inst);
 	slot->lent = (struct span){};
 	child_destroy(&slot->child);
 	loop_unready(&slot->step);
@@ -2183,6 +2208,24 @@ mcp_slot_part (struct mcp_slot const *slot)
 	return slot->req->mcp->parts[mcp_slot_offer(slot)->part];
 }
 
+void *
+mcp_slot_instance (struct mcp_slot const *slot)
+{
+	return slot->inst;
+}
+
+struct loop *
+mcp_slot_loop (struct mcp_slot const *slot)
+{
+	return slot->req->mcp->loop;
+}
+
+uint64_t
+mcp_slot_principal (struct mcp_slot const *slot)
+{
+	return slot->req->principal;
+}
+
 void **
 mcp_slot_own (struct mcp_slot *slot)
 {
@@ -3282,9 +3325,17 @@ mcp_agenda_alarm (struct loop       *loop,
 		mcp_agenda_wake(a);
 }
 
-/* Note when @p slot's call starts, and start it with the arguments @p args,
- * as its tool's kind does, if they are an object or none; a client's call
- * may give anything. */
+/* Starts the call of @p slot with the arguments @p args, and stores the
+ * time of the start in the slot.
+ *
+ * A client can send any JSON value as the arguments.  If @p args is neither
+ * nullptr nor an object, the call ends with an error text.  Otherwise the
+ * function gets the instance of the tool's plugin for the user of the
+ * request, if the plugin has instances, and then calls start() of the
+ * tool's kind.  If instance_table_get() returns EBUSY, the call ends as
+ * failed.  Any other error of instance_table_get() ends the whole request.
+ *
+ * No function of a plugin is running when this function is called. */
 static void
 mcp_slot_start (struct mcp_slot    *slot,
                 struct json_object *args)
@@ -3294,7 +3345,17 @@ mcp_slot_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, TOOL_TEXT("Tool arguments must be an object."), TOOL_FAILED);
 		return;
 	}
-	mcp_slot_offer(slot)->kind->start(slot, args);
+	struct mcp_req *req = slot->req;
+	struct mcp *mcp = req->mcp;
+	struct mcp_offer const *offer = mcp_slot_offer(slot);
+	int e = instance_table_get(&mcp->instances, mcp->st->plugins[offer->part].plugin,
+	                           req->principal, req->generation, &slot->inst);
+	if (e == EBUSY)
+		mcp_slot_result(slot, TEXT(busy), true);
+	else if (e)
+		mcp_req_fail(req, e);
+	else
+		offer->kind->start(slot, args);
 }
 
 /* Start the call that @p args asks for as a job in the background, in a
@@ -5076,6 +5137,8 @@ mcp_begin (struct mcp           *mcp,
 		.s = s,
 		.mcp = mcp,
 		.head = loop_clock(),
+		.principal = s->principal,
+		.generation = instance_table_generation(&mcp->instances),
 		.ping_at = UINT64_MAX,
 		.promote_at = UINT64_MAX,
 		.phase = phase,
@@ -5175,6 +5238,17 @@ mcp_on_cancel (struct stream *s)
 	mcp_req_finish(req);
 }
 
+/* The on_policy() function of the stream application.  The loop of @p ctx,
+ * a struct mcp, has replaced its policy after a reload.  The instances that
+ * exist were made for users as the old policy identified them.  After
+ * instance_table_flush(), no call of a later request gets one of them. */
+static void
+mcp_on_policy (void *ctx)
+{
+	struct mcp *mcp = ctx;
+	instance_table_flush(&mcp->instances);
+}
+
 struct stream_app const *
 mcp_app (struct mcp *mcp)
 {
@@ -5203,9 +5277,9 @@ mcp_destroy_parts (struct mcp *mcp,
                    uint32_t    n)
 {
 	while (n--) {
-		plugin_part_destroy_fn *destroy = mcp->st->plugins[n].plugin->part_destroy;
-		if (destroy)
-			destroy(&mcp->parts[n]);
+		struct mcp_plugin const *p = &mcp->st->plugins[n];
+		if (p->part_destroy)
+			p->part_destroy(&mcp->parts[n]);
 	}
 }
 
@@ -5232,7 +5306,8 @@ mcp_create (struct loop              *loop,
 			.on_head = mcp_on_head,
 			.on_body = mcp_on_body,
 			.on_writable = mcp_on_writable,
-			.on_cancel = mcp_on_cancel
+			.on_cancel = mcp_on_cancel,
+			.on_policy = mcp_on_policy
 		},
 		.pool = {
 			.depth = st->lim.depth,
@@ -5255,20 +5330,26 @@ mcp_create (struct loop              *loop,
 	list_init(&mcp->children);
 	list_init(&mcp->spare.list);
 	list_init(&mcp->jobs.list);
+	*e = instance_table_init(&mcp->instances, loop);
+	if (*e) {
+		free(mcp);
+		return nullptr;
+	}
 	for (uint32_t i = 0; i < st->n_plugins; ++i) {
 		struct mcp_plugin const *p = &st->plugins[i];
-		plugin_part_create_fn *create = p->plugin->part_create;
-		/* A plugin without part_create() has its instance as its part.
-		 * That is nullptr for a plugin that askai loaded from a file. */
-		mcp->parts[i] = p->inst;
-		if (!create)
+		/* For a plugin without part_create(), the part is the plugin's
+		 * service.  A plugin that askai loaded from a file has neither, so
+		 * its part is nullptr. */
+		mcp->parts[i] = p->service;
+		if (!p->part_create)
 			continue;
 		int pe = 0;
-		mcp->parts[i] = create(p->inst, loop, &pe);
+		mcp->parts[i] = p->part_create(p->service, loop, &pe);
 		if (mcp->parts[i])
 			continue;
 		*e = pe ? pe : ENOMEM;
 		mcp_destroy_parts(mcp, i);
+		instance_table_fini(&mcp->instances);
 		free(mcp);
 		return nullptr;
 	}
@@ -5296,6 +5377,7 @@ mcp_destroy (struct mcp **p_mcp)
 		mcp_req_end(container_of(mcp->freeing.next, struct mcp_req, hook));
 	while (mcp_relieve(mcp, BUF_CRITICAL, SIZE_MAX))
 		;
+	instance_table_fini(&mcp->instances);
 	mcp_destroy_parts(mcp, mcp->st->n_plugins);
 	child_destroy_all(&mcp->children);
 	loop_unready(&mcp->drain);
@@ -5339,11 +5421,10 @@ mcp_relieve (struct mcp        *mcp,
 		hist_add(&mcp->counts->kept.jobs, -1ULL);
 		free(container_of(shelf_drop(&mcp->jobs), struct job, spare));
 	}
-	for (uint32_t i = 0; i < mcp->st->n_plugins && done < max; ++i) {
-		plugin_relieve_fn *relieve = mcp->st->plugins[i].plugin->relieve;
-		if (relieve)
-			done += relieve(mcp->parts[i], level, max - done);
-	}
+	/* Freeing one spare request can count more units than max, so done
+	 * can be greater than max here. */
+	if (done < max)
+		done += instance_table_relieve(&mcp->instances, level, max - done);
 	return done;
 }
 
@@ -5354,12 +5435,13 @@ mcp_drain (struct mcp *mcp)
 	loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 
-/* The ask tool's definition, as @p inst, the mcp_static, configures it;
- * with the notes askai keeps if it does, the thread argument. */
+/* Returns the definition of the ask tool.  @p service is the mcp_static,
+ * which has the tool's configured name and description.  The definition has
+ * the argument "thread" if askai has a notes repository (--notes). */
 static struct json_object *
-mcp_tool_definition (void const *inst)
+mcp_tool_definition (void const *service)
 {
-	struct mcp_static const *st = inst;
+	struct mcp_static const *st = service;
 	struct json_object *props = jb_object(
 		"prompt", jb_object(
 			"type", json_object_new_string("string"),
@@ -5403,9 +5485,9 @@ mcp_tool_definition (void const *inst)
 }
 
 static struct json_object *
-mcp_task_definition (void const *inst)
+mcp_task_definition (void const *service)
 {
-	(void)inst;
+	(void)service;
 	static_assert(SPIN_MAX == 100'000 && TASK_SLICE_NS == 250'000,
 	              "the description says");
 	return jb_object(
@@ -5440,9 +5522,9 @@ mcp_task_definition (void const *inst)
 
 /* The notes tool's definition, which only turns are given. */
 static struct json_object *
-mcp_notes_definition (void const *inst)
+mcp_notes_definition (void const *service)
 {
-	(void)inst;
+	(void)service;
 	static_assert(NOTES_TEXT == 8 << 10 && NOTES_READ == 256, "the description says");
 	struct json_object *actions = jb_list(json_object_new_string("write"));
 	if (jb_push(actions, json_object_new_string("read"))) {
@@ -5488,9 +5570,9 @@ mcp_notes_definition (void const *inst)
 
 /* The compact tool's definition, which only turns are given. */
 static struct json_object *
-mcp_compact_definition (void const *inst)
+mcp_compact_definition (void const *service)
 {
-	(void)inst;
+	(void)service;
 	static_assert(SUMMARY_MAX == 16 << 10, "the description says");
 	return jb_object(
 		"name", json_object_new_string("compact"),
@@ -5541,9 +5623,9 @@ mcp_schema (struct json_object *properties,
 /* The definition of background, which only turns are given; nullptr if
  * out of memory. */
 static struct json_object *
-mcp_background_definition (void const *inst)
+mcp_background_definition (void const *service)
 {
-	(void)inst;
+	(void)service;
 	static_assert(JOBS_MAX == 8, "the description says");
 	return jb_object(
 		"name", json_object_new_string("background"),
@@ -5570,9 +5652,9 @@ mcp_background_definition (void const *inst)
 
 /* The definition of jobs, likewise. */
 static struct json_object *
-mcp_jobs_definition (void const *inst)
+mcp_jobs_definition (void const *service)
 {
-	(void)inst;
+	(void)service;
 	struct json_object *actions = jb_list(json_object_new_string("list"));
 	if (jb_push(actions, json_object_new_string("result")) ||
 	    jb_push(actions, json_object_new_string("cancel"))) {
@@ -5604,9 +5686,9 @@ mcp_jobs_definition (void const *inst)
 
 /* The definition of wait, likewise. */
 static struct json_object *
-mcp_wait_definition (void const *inst)
+mcp_wait_definition (void const *service)
 {
-	(void)inst;
+	(void)service;
 	static_assert(WAIT_MAX == 600, "the description says");
 	return jb_object(
 		"name", json_object_new_string("wait"),
@@ -5632,9 +5714,9 @@ mcp_wait_definition (void const *inst)
 
 /* The definition of timer, likewise. */
 static struct json_object *
-mcp_timer_definition (void const *inst)
+mcp_timer_definition (void const *service)
 {
-	(void)inst;
+	(void)service;
 	static_assert(TIMER_MAX == 3600 && TIMER_NOTE == 200, "the description says");
 	return jb_object(
 		"name", json_object_new_string("timer"),
@@ -5749,8 +5831,10 @@ struct mcp_row {
 	uint8_t                 trace;   /* enum mcp_trace */
 };
 
-/* askai's own kinds, as a plugin of no parts: its instance, the
- * mcp_static, is part 0. */
+/* mcp_host_plugin is the plugin of askai's own kinds.  It has no instances
+ * and no part_create().  Its service is the mcp_static, and mcp_create()
+ * uses the service as the plugin's part on every loop.  It is the plugin
+ * at index 0 of mcp_static.plugins. */
 static struct plugin const mcp_host_plugin = {};
 
 static struct mcp_row const mcp_rows[KINDS] = {
@@ -5796,7 +5880,7 @@ mcp_static_build (struct mcp_static  *st,
 {
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_offer *o = &st->offers[id];
-		struct json_object *def = o->kind->definition(st->plugins[o->part].inst);
+		struct json_object *def = o->kind->definition(st->plugins[o->part].service);
 		tool_mask bit = (tool_mask)1 << id;
 		st->lends |= o->lend == LEND_GRANTED ? bit : 0;
 		st->always |= o->lend == LEND_ALWAYS ? bit : 0;
@@ -5861,24 +5945,26 @@ mcp_register (struct registry     *reg,
 	return 0;
 }
 
-/* Returns the instance of @p plugin, a plugin of @p st.  The instance of
- * askai's own kinds is @p st itself.  The man tool's is @p manual and the
- * git tool's is @p git.  A plugin that askai loaded from a file has none. */
-static void *
-mcp_static_inst (struct mcp_static   *st,
-                 struct plugin const *plugin,
-                 struct manual       *manual,
-                 struct git          *git)
+/* Returns the record of @p plugin for @p st: the plugin, its service and
+ * its two part functions.  The service of askai's own kinds is @p st.  The
+ * service of the man tool's plugin is @p manual, and the service of the git
+ * tool's plugin is @p git.  Both of these have a part on every client loop.
+ * A plugin that askai loaded from a file has no service and no part. */
+static struct mcp_plugin
+mcp_static_plugin (struct mcp_static   *st,
+                   struct plugin const *plugin,
+                   struct manual       *manual,
+                   struct git          *git)
 {
 	struct mcp_plugin const own[] = {
-		{ &mcp_host_plugin, st },
-		{ &manual_plugin, manual },
-		{ &git_plugin, git },
+		{ .plugin = &mcp_host_plugin, .service = st },
+		{ &manual_plugin, manual, manual_loop_create, manual_loop_destroy },
+		{ &git_plugin, git, git_loop_create, git_loop_destroy },
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(own); ++i)
 		if (own[i].plugin == plugin)
-			return own[i].inst;
-	return nullptr;
+			return own[i];
+	return (struct mcp_plugin){ .plugin = plugin };
 }
 
 struct mcp_static *
@@ -5923,9 +6009,7 @@ mcp_static_create (struct config const *cfg,
 		.turns = cfg->turns
 	};
 	for (uint32_t i = 0; i < reg->n_plugins; ++i)
-		st->plugins[i] = (struct mcp_plugin){
-			reg->plugins[i], mcp_static_inst(st, reg->plugins[i], manual, git)
-		};
+		st->plugins[i] = mcp_static_plugin(st, reg->plugins[i], manual, git);
 	/* A zeroed dstr is no empty string (dstr.h). */
 	for (uint32_t id = 0; id < reg->n_tools; ++id) {
 		struct registry_tool const *t = &reg->tools[id];

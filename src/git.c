@@ -349,12 +349,13 @@ git_strings (char const *description,
 		nullptr);
 }
 
-/* The tool's definition, of the repositories that @p inst, the git, lists;
- * nullptr if out of memory. */
+/* Returns the definition of the git tool.  @p service is the struct git,
+ * and the definition lists the names of its repositories.  Returns nullptr
+ * if out of memory. */
 static struct json_object *
-git_definition (void const *inst)
+git_definition (void const *service)
 {
-	struct git const *git = inst;
+	struct git const *git = service;
 	static_assert(OPTIONS == 16 && REVISIONS == 4 && PATHS == 32 &&
 	              GIT_MAX == 2 << 20, "the description says");
 	struct json_object *repos = json_object_new_array();
@@ -783,10 +784,11 @@ git_drop (struct mcp_slot *slot)
 	child_destroy(&c);
 }
 
-/* The git tool's part of @p loop: the children there of the calls of the
- * git @p inst; nullptr, with ENOMEM in @p *e, if out of memory. */
-static void *
-git_loop_create (void        *inst,
+/* Creates the git tool's part of @p loop for @p service, a struct git.  The
+ * part has the list of the children that the git calls on the loop run.
+ * Returns the part, or nullptr with ENOMEM in @p *e. */
+void *
+git_loop_create (void        *service,
                  struct loop *loop,
                  int         *e)
 {
@@ -795,7 +797,7 @@ git_loop_create (void        *inst,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*gl = (struct git_loop){ .git = inst, .loop = loop };
+	*gl = (struct git_loop){ .git = service, .loop = loop };
 	list_init(&gl->children);
 	*e = 0;
 	return gl;
@@ -804,7 +806,7 @@ git_loop_create (void        *inst,
 /* Free the children of the calls on the loop, as it stops, killing any
  * still alive; then free @p *p_part, the git tool's part of the loop, and
  * set it to nullptr. */
-static void
+void
 git_loop_destroy (void **p_part)
 {
 	struct git_loop *gl = *p_part;
@@ -822,7 +824,5 @@ struct plugin const git_plugin = {
 		.step = git_step,
 		.drop = git_drop,
 		.flags = TOOL_LENT | TOOL_PAGED | TOOL_DETACH | TOOL_STREAM
-	}},
-	.part_create = git_loop_create,
-	.part_destroy = git_loop_destroy
+	}}
 };

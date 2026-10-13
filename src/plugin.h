@@ -1,17 +1,43 @@
-/** @file Plugins: parts of askai that bring kinds of tool (src/tool.h),
- *  whose calls go through the call API (src/mcp.h).  A built-in plugin has
- *  an instance, read-only or guarding itself, and a part of it on each
- *  client loop, that loop's alone.  askai's own man and git are plugins
- *  built in.
+/** @file Plugins.  A plugin provides kinds of tool (src/tool.h).  The calls
+ *  of its tools use the call API of src/mcp.h.  The man tool and the git
+ *  tool are plugins that are built into askai.
  *
- * Others are shared objects that askai's make rules build (src/NAME.so.mk)
- * and askai loads as it starts, never to unload them, once it has read the
- * manifest that PLUGIN_MANIFEST() gives each.  The configuration file lists
- * them in its member "plugins" (README.md).  A plugin exports
- * askai_plugin alone, and calls only what askai exports (src/export.h),
- * json-c and libc.  It has no constructor and no mutable static, starts no
- * thread or process, takes no signal, changes no process-wide setting,
- * loads nothing, and never blocks or exits.
+ * Every other plugin is a shared object that askai's make rules build
+ * (src/NAME.so.mk).  The configuration file lists the plugins in its member
+ * "plugins" (README.md).  askai loads them when it starts, after it has
+ * read the manifest that PLUGIN_MANIFEST() puts into each of them.  It
+ * never unloads a plugin.
+ *
+ * A plugin exports only askai_plugin.  It calls only json-c, libc and the
+ * functions that askai exports (src/export.h).  It has no constructor, no
+ * mutable static variable and no thread-local variable.  It starts no
+ * thread and no process, installs no signal handler, changes no setting of
+ * the process, loads no other object, and never blocks or exits.
+ *
+ * A plugin has state in two places only.  The first is the pointer that
+ * mcp_slot_own() returns for a call.  The second is an instance.  An
+ * instance is instance_size bytes that askai allocates and that the plugin
+ * initializes with instance_init().  If instance_size is not 0, each call
+ * of the plugin's tools uses one instance, and mcp_slot_instance() returns
+ * it.
+ *
+ * Three things are always true of an instance:
+ * - All calls that use it have the same user.  mcp_slot_principal()
+ *   returns the principal of a call's user.
+ * - askai passes it only to functions that run on the thread of one client
+ *   loop, so it needs no lock.
+ * - askai calls instance_fini() for it only when no call uses it and no
+ *   function of the plugin is running.
+ *
+ * Two calls of one user do not always get the same instance.  A user whose
+ * connections are on several loops has an instance on each of these loops,
+ * and the instances share nothing.  askai destroys instances that no call
+ * uses, for example under memory pressure and after a reload of the
+ * configuration.  A user can have more than one instance on one loop at
+ * the same time.  Each call of an anonymous client, whose principal is 0,
+ * gets a new instance.  A plugin must therefore work when a call gets a
+ * new instance, which has none of the data that an earlier call of the
+ * same user stored.  src/instance.h has the exact rules.
  */
 #ifndef TWINCEPTION_SRC_PLUGIN_H_
 #define TWINCEPTION_SRC_PLUGIN_H_
@@ -31,37 +57,69 @@
  *  function whose behavior changes while its declaration stays the same.
  *  PLUGIN_MANIFEST() stores it in the manifest so that askai does not load
  *  a plugin that was built with a different value. */
-static constexpr uint32_t PLUGIN_EPOCH = 1;
+static constexpr uint32_t PLUGIN_EPOCH = 2;
 
-/** On @p loop's thread, before its first call: the part of @p inst;
- *  nullptr, the error in @p *e.  A plugin that askai loaded from a file has
- *  no instance, so its @p inst is nullptr. */
-typedef void *plugin_part_create_fn (void        *inst,
-                                     struct loop *loop,
-                                     int         *e);
+/** The largest value of instance_size, in bytes. */
+static constexpr size_t PLUGIN_INSTANCE_MAX = 64 << 10;
 
-/** Its calls all dropped; sets *p_part to nullptr. */
-typedef void plugin_part_destroy_fn (void **p_part);
+/**
+ * Initializes an instance.  @p instance points to instance_size bytes that
+ * askai allocated.  The bytes are aligned for any type, and their content
+ * is not defined.  @p principal is the user of the instance.  It is 0 for
+ * an anonymous client.  @p loop is the loop of the instance.
+ *
+ * askai calls the function on the thread of @p loop, when a call of the
+ * user starts there and needs a new instance.  It calls it before start()
+ * of the call's kind.  The function must not block.
+ *
+ * Returns 0, or an error number.  After an error, askai frees the bytes and
+ * does not call instance_fini().  Before the function returns an error, it
+ * must therefore free what it allocated and stop the timers that it set.
+ * askai then ends the request of the call in the way that mcp_slot_fail()
+ * does.
+ */
+typedef int plugin_instance_init_fn (void        *instance,
+                                     uint64_t     principal,
+                                     struct loop *loop);
 
-/** Give back kept memory, up to @p max LOOP_RELEASE units; returns those
- *  done, 0 once nothing is kept. */
-typedef size_t plugin_relieve_fn (void              *part,
+/** Finalizes an instance.  It frees what the members of the instance point
+ *  to, and it stops the instance's timers.  askai frees the bytes of the
+ *  instance itself.  askai calls the function on the thread of the
+ *  instance's loop, when no call uses the instance and no function of the
+ *  plugin is running. */
+typedef void plugin_instance_fini_fn (void *instance);
+
+/** Frees memory that @p instance has allocated only for reuse, at most
+ *  @p max LOOP_RELEASE units.  askai calls it under memory pressure of the
+ *  level @p level.  Returns the number of units freed.  It returns 0 when
+ *  the instance has no such memory left. */
+typedef size_t plugin_relieve_fn (void              *instance,
                                   enum buf_pressure  level,
                                   size_t             max);
 
-/** A plugin's kinds at most, as many as its manifest may name tools. */
+/** The largest number of kinds that a plugin has.  It equals the number of
+ *  tool names that a manifest has room for. */
 static constexpr unsigned PLUGIN_TOOLS = MANIFEST_TOOLS;
 
 struct plugin {
-	/** Its kinds, in the order of its manifest's tools: the leading
-	 *  entries, those whose start is set; the rest are all zero. */
-	struct tool_kind        tools[PLUGIN_TOOLS];
-	plugin_part_create_fn  *part_create;   /**< nullptr: part = instance,
-	                                            for kinds whose calls end in
-	                                            start(): no shares, timers
-	                                            or posts */
-	plugin_part_destroy_fn *part_destroy;  /**< exactly with part_create */
-	plugin_relieve_fn      *relieve;       /**< needs part_create */
+	/** The plugin's kinds.  tools[i] is the kind of the tool that the
+	 *  manifest names at index i.  An entry is a kind if its start is set.
+	 *  The kinds are the first entries, and every entry after them is all
+	 *  zero. */
+	struct tool_kind         tools[PLUGIN_TOOLS];
+	/** Initializes an instance.  It is set if instance_size is not 0, and
+	 *  it is nullptr if instance_size is 0. */
+	plugin_instance_init_fn *instance_init;
+	/** Finalizes an instance.  It is nullptr if an instance has nothing to
+	 *  free.  It can be set only if instance_init is set. */
+	plugin_instance_fini_fn *instance_fini;
+	/** Frees memory that an instance has allocated only for reuse.  It is
+	 *  nullptr if an instance has no such memory.  It can be set only if
+	 *  instance_init is set. */
+	plugin_relieve_fn       *relieve;
+	/** The size of an instance in bytes, from 1 to PLUGIN_INSTANCE_MAX.
+	 *  It is 0 if the plugin has no instances. */
+	size_t                   instance_size;
 };
 
 /** Sizes, alignments and offsets that must be the same in askai and in a
@@ -73,7 +131,7 @@ struct plugin {
 	X(sizeof (void *)) X(sizeof (long)) X(alignof (max_align_t))       \
 	X(sizeof (enum buf_pressure)) X(sizeof (struct tool_text))         \
 	X(sizeof (struct tool_kind)) X(offsetof (struct tool_kind, flags)) \
-	X(sizeof (struct plugin)) X(offsetof (struct plugin, part_create)) \
+	X(sizeof (struct plugin)) X(offsetof (struct plugin, instance_init)) \
 	X(sizeof (struct handle)) X(sizeof (struct msg))                   \
 	X(offsetof (struct msg, fn)) X(sizeof (struct loop_timer))         \
 	X(offsetof (struct loop_timer, fn))

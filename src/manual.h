@@ -25,6 +25,8 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+#include "mcp.h"
+
 struct manual;
 struct plugin;
 
@@ -55,8 +57,17 @@ manual_destroy (struct manual **p_manual);
 extern struct manual_metrics const *
 manual_metrics (struct manual const *manual);
 
-/** The man tool, a plugin built in (src/plugin.h) whose instance is a
- *  manual. */
+/** The plugin of the man tool.  It is built into askai (src/plugin.h), and
+ *  its service is a struct manual. */
 extern struct plugin const manual_plugin;
+
+/** Creates the man tool's part of a client loop (src/mcp.h).  The service
+ *  argument points to the struct manual.  The only error number is
+ *  ENOMEM. */
+extern mcp_part_create_fn manual_loop_create;
+
+/** Ends the fetches that the loop runs.  Then it frees the part and sets
+ *  the caller's pointer to nullptr. */
+extern mcp_part_destroy_fn manual_loop_destroy;
 
 #endif /* TWINCEPTION_SRC_MANUAL_H_ */

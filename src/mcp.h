@@ -91,11 +91,17 @@ extern void
 mcp_static_destroy (struct mcp_static **p_static);
 
 /**
- * MCP on @p loop, whose tool calls are jobs that home runs on its loop
- * @p home (src/job.h), with a part of each plugin (src/plugin.h), made in
- * turn on its thread.  It counts into @p counts, whose atomic members are
- * valid, and GET /metrics renders @p metrics.  nullptr, with the error in
- * @p *e, if out of memory, or as a part's making says.
+ * Creates the MCP application of the client loop @p loop.  askai calls the
+ * function on the thread of @p loop.  @p home is the loop of home, which
+ * runs the upstream calls of the client loops as jobs (src/job.h).  The
+ * function creates the part of each built-in plugin that has parts, in the
+ * order of the plugins.  These plugins are man and git.  The new object
+ * records its statistics in @p counts, whose atomic members must be valid.
+ * It answers GET /metrics from @p metrics.
+ *
+ * Returns the new object.  On failure it returns nullptr and stores the
+ * error number in @p *e.  The error number is ENOMEM, or the error number
+ * of the function that failed to create a part.
  */
 extern struct mcp *
 mcp_create (struct loop              *loop,
@@ -115,12 +121,26 @@ extern void
 mcp_age (struct mcp *mcp);
 
 /**
- * Free some of what is kept for reuse: a pooled tokener, at BUF_HIGH one
- * whose string buffer outgrew a slice, or else finished requests, then jobs,
- * up to @p max units of release work (buf_units()) or one request if that is
- * more, at BUF_HIGH those unused since the last window began, then what the
- * plugins' parts keep, as their relieve() says.  Returns the units; 0 once
- * none are left to free.
+ * Frees memory that @p mcp has only for reuse.  askai calls it under memory
+ * pressure of the level @p level.  The function counts what it frees in
+ * units of release work (buf_units()).
+ *
+ * First it frees one pooled tokener whose string buffer is longer than a
+ * limit, if the pools have one.  The limit is LOOP_STEP_PARSE bytes, or 0
+ * bytes at BUF_CRITICAL.  After it has freed a tokener, it returns the
+ * units of the buffer and frees nothing else.
+ *
+ * Otherwise it frees finished requests, and then jobs, that are stored for
+ * reuse.  Below BUF_CRITICAL it frees only the ones that have been unused
+ * since the mcp_age() call before the last one.  It always frees the first
+ * such request.  It returns before it frees a later request that would make
+ * the total greater than @p max units.  It frees jobs, one unit each, while
+ * the total is less than @p max.  If the total is still less than @p max
+ * after the jobs, it calls instance_table_relieve() for the plugins'
+ * instances with the units that are left (src/instance.h).
+ *
+ * Returns the number of units freed.  It returns 0 when nothing is left to
+ * free.
  */
 extern size_t
 mcp_relieve (struct mcp        *mcp,
@@ -146,10 +166,53 @@ mcp_app (struct mcp *mcp);
  * (mcp_slot_name()); the handler finds it with mcp_slot_named().
  */
 
-/** Its plugin's part on this loop. */
-EXPORT
+/** Creates the part of a built-in plugin for the client loop @p loop.
+ *  @p service is the plugin's service, the object that all loops share.
+ *  askai calls the function on the thread of @p loop, before the loop's
+ *  first call.  Returns the part.  On failure it returns nullptr and stores
+ *  the error number in @p *e.  Only the built-in plugins have parts. */
+typedef void *mcp_part_create_fn (void        *service,
+                                  struct loop *loop,
+                                  int         *e);
+
+/** Destroys the part @p *p_part and sets @p *p_part to nullptr.  askai
+ *  calls the function when the loop stops, after it has dropped every call
+ *  on the loop.  mcp_create() also calls it for the parts that it has
+ *  created if it cannot create the part of a later plugin. */
+typedef void mcp_part_destroy_fn (void **p_part);
+
+/** Returns the part of the call's plugin on the call's loop.  Only the
+ *  built-in plugins have parts, so askai does not export this function. */
 extern void *
 mcp_slot_part (struct mcp_slot const *slot);
+
+/** Returns the call's instance: the bytes that instance_init() of the
+ *  tool's plugin initialized for the call's user on the call's loop
+ *  (src/plugin.h).  It returns nullptr if the plugin has no instances.
+ *  askai destroys an instance only when no call uses it and no function of
+ *  the plugin is running.  A kind can therefore use the instance until the
+ *  function that ends the call returns. */
+EXPORT
+extern void *
+mcp_slot_instance (struct mcp_slot const *slot);
+
+/** Returns the loop that runs the call.  A kind passes it to the functions
+ *  of src/loop_export.h, for example loop_timer_set() and loop_room(). */
+EXPORT
+extern struct loop *
+mcp_slot_loop (struct mcp_slot const *slot);
+
+/** Returns the principal of the call's user.  policy_grant()
+ *  (src/policy.h) determines the user of a client in this order.  If the
+ *  client sent a token and the policy has tokens, the user is the identity
+ *  that has the token.  Otherwise, if the client is connected over a Unix
+ *  socket, the user is the identity that lists the client's Unix user, or
+ *  else the Unix user itself.  Otherwise the client is anonymous, and its
+ *  principal is 0.  A call that a turn of the client's ask call makes has
+ *  the principal of the client. */
+EXPORT
+extern uint64_t
+mcp_slot_principal (struct mcp_slot const *slot);
 
 /** The kind's word for the call, nullptr at start. */
 EXPORT

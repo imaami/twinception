@@ -11,6 +11,7 @@ override SRC_askai := \
   home.c              \
   http.c              \
   httpd.c             \
+  instance.c          \
   jb.c                \
   ledger.c            \
   log.c               \

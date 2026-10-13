@@ -95,6 +95,11 @@ struct stream_app {
 	void (*on_writable) (struct stream *s);
 	/** The stream is gone before its end(). */
 	void (*on_cancel)   (struct stream *s);
+	/** Called when the loop has replaced its policy (src/policy.h) after
+	 *  a reload.  A stream that begins after this call has the principal
+	 *  and the tools that the new policy grants.  Every application must
+	 *  set this member. */
+	void (*on_policy)   (void *ctx);
 };
 
 struct stream {

@@ -50,9 +50,12 @@ enum tool_out : uint32_t {
 	TOOL_MORE   = 1u << 1,  /**< write: more output follows */
 };
 
-/** The tool's definition, as tools/list lists it, of @p inst, the kind's
- *  instance: a new reference, nullptr if out of memory.  Once, at start. */
-typedef struct json_object *tool_definition_fn (void const *inst);
+/** Returns the definition of the tool as tools/list shows it.  The result
+ *  is a new reference, or nullptr if out of memory.  askai calls the
+ *  function once, when it starts.  @p service is the service of a built-in
+ *  plugin, which is the object that every loop shares.  It is nullptr for a
+ *  plugin that askai loaded from a file. */
+typedef struct json_object *tool_definition_fn (void const *service);
 
 /** @p args: nullptr or an object, valid until the call ends or parks. */
 typedef void tool_start_fn (struct mcp_slot    *slot,
