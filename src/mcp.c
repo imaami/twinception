@@ -185,7 +185,8 @@ static char const *const field_names[F_N] = {
 
 /* The kinds of tool that askai may offer, in the order of their ids: those
  * that a role may grant, which clients list and call, before KIND_NOTES;
- * notes and compact, which only turns are given, after. */
+ * notes and compact, which only turns are given, after; then that of a
+ * tool it does not offer. */
 enum mcp_kind : uint32_t {
 	KIND_ASK,
 	KIND_MAN,
@@ -197,6 +198,7 @@ enum mcp_kind : uint32_t {
 	KIND_JOBS,
 	KIND_WAIT,
 	KIND_TIMER,
+	KIND_NONE,
 	KINDS
 };
 
@@ -222,15 +224,14 @@ enum mcp_kind_flag : uint16_t {
 
 /* What each kind of tool is: its name, but the ask tool's, which the
  * configuration names; how the turns are lent it; its row in the turns'
- * metrics; and what its calls are.  After the kinds, a tool of none of
- * them. */
+ * metrics; and what its calls are. */
 static struct {
 	char const *ptr;
 	uint32_t    len;
 	uint8_t     lend;    /* enum mcp_lend */
 	uint8_t     metric;  /* enum metrics_lent */
 	uint16_t    flags;   /* enum mcp_kind_flag */
-} const kind_info[KINDS + 1] = {
+} const kind_info[KINDS] = {
 #define N(s) s, sizeof s - 1
 	[KIND_ASK]        = { .metric = LENT_NONE },
 	[KIND_MAN]        = { N("man"), LEND_GRANTED, LENT_MAN, KF_PAGED | KF_DETACH },
@@ -242,7 +243,7 @@ static struct {
 	[KIND_JOBS]       = { N("jobs"), LEND_DETACH, LENT_JOBS, KF_PAGED | KF_SERIAL },
 	[KIND_WAIT]       = { N("wait"), LEND_WITH, LENT_WAIT, KF_SERIAL },
 	[KIND_TIMER]      = { N("timer"), LEND_WITH, LENT_TIMER, 0 },
-	[KINDS]           = { N("an unknown tool"), LEND_NEVER, LENT_NONE, 0 },
+	[KIND_NONE]       = { N("an unknown tool"), LEND_NEVER, LENT_NONE, 0 },
 #undef N
 };
 
@@ -259,9 +260,9 @@ struct mcp_offer {
 
 struct mcp_static {
 	struct ai_endpoint const *ep;
-	struct mcp_offer          offers[KINDS];  /**< by id */
-	uint32_t                  id[KINDS];      /**< of each kind; KINDS if it
-	                                               is not offered */
+	struct mcp_offer          offers[TOOL_MAX + 1];  /**< by id; TOOL_MAX's,
+	                                                      that of a tool askai
+	                                                      does not offer */
 	uint32_t                  n_offers;
 	uint32_t                  n_granted;      /**< those before the first
 	                                               that only turns are given */
@@ -357,8 +358,8 @@ struct mcp_slot {
 	struct handle       call;      /* names it to the completion it waits
 	                                  for: man's page, test_task's task */
 	uint16_t            note_len;  /* bytes of note */
-	uint8_t             tool;      /* enum mcp_kind: of a turn's call; KINDS:
-	                                  none of those */
+	uint8_t             tool;      /* its call's tool, by its offer's id;
+	                                  TOOL_MAX: none */
 	uint8_t             fetch;     /* enum mcp_fetch: what its git is for */
 	uint8_t             role;      /* enum mcp_role */
 	bool                done;      /* the call has its output, or it was
@@ -372,6 +373,8 @@ struct mcp_slot {
 	char                note[368]; /* what askai adds to the output, sized to
 	                                  end the slot unpadded */
 };
+
+static_assert(TOOL_MAX <= UINT8_MAX, "a slot's tool holds TOOL_MAX");
 
 struct mcp_agenda;
 
@@ -867,7 +870,7 @@ mcp_req_slots_make (struct mcp_req *req)
 			.step.fn = mcp_slot_step,
 			.answer = DSTR_INIT,
 			.req = req,
-			.tool = KINDS,
+			.tool = TOOL_MAX,
 			.role = ROLE_TURN
 		};
 	return 0;
@@ -889,7 +892,7 @@ mcp_req_slots_drop (struct mcp_req *req)
 		dstr_clear(&slot->answer);
 		slot->skip = slot->window = 0;
 		slot->note_len = 0;
-		slot->tool = KINDS;
+		slot->tool = TOOL_MAX;
 		slot->done = slot->failed = false;
 	}
 	req->launched = 0;
@@ -3227,9 +3230,16 @@ mcp_req_trace_end (struct mcp_req *req,
 	return dstr_printf(&req->trace, ": %zu bytes\n", bytes) ? 0 : ENOMEM;
 }
 
-/* The kind of the tool of @p name, of @p len bytes, that the turns may
- * call; KINDS if none. */
-static enum mcp_kind
+/* The offer of the tool of @p slot's call. */
+static struct mcp_offer const *
+mcp_slot_offer (struct mcp_slot const *slot)
+{
+	return &slot->req->mcp->st->offers[slot->tool];
+}
+
+/* The id of the tool of @p name, of @p len bytes, that the turns may
+ * call; TOOL_MAX if none. */
+static uint32_t
 mcp_req_tool_of (struct mcp_req const *req,
                  char const           *name,
                  size_t                len)
@@ -3238,9 +3248,9 @@ mcp_req_tool_of (struct mcp_req const *req,
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_offer const *o = &st->offers[id];
 		if (req->lent >> id & 1 && o->len == len && !memcmp(o->name, name, len))
-			return o->kind;
+			return id;
 	}
-	return KINDS;
+	return TOOL_MAX;
 }
 
 static void mcp_agenda_alarm (struct loop *loop, struct loop_timer *timer);
@@ -3267,7 +3277,7 @@ mcp_agenda_create (struct mcp_req *req,
 			.step.fn = mcp_slot_step,
 			.answer = DSTR_INIT,
 			.req = req,
-			.tool = KINDS,
+			.tool = TOOL_MAX,
 			.role = ROLE_JOB
 		};
 	return a;
@@ -3398,7 +3408,7 @@ mcp_agenda_job_done (struct mcp_slot *slot)
 	uint32_t n = (uint32_t)(slot - a->jobs) + 1;
 	if (!dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, %s: call jobs with the "
 	                 "action result and job %" PRIu32 " for its output.]\n", n,
-	                 kind_info[slot->tool].ptr, slot->failed ? "failed" : "finished",
+	                 mcp_slot_offer(slot)->name, slot->failed ? "failed" : "finished",
 	                 n)) {
 		mcp_req_fail(slot->req, ENOMEM);
 		return;
@@ -3452,7 +3462,8 @@ mcp_slot_background (struct mcp_slot    *slot,
 	size_t len = 0;
 	char const *name = mcp_str(jb_get(args, "tool"), &len);
 	struct json_object *call = jb_get(args, "arguments");
-	enum mcp_kind kind = name ? mcp_req_tool_of(req, name, len) : KINDS;
+	uint32_t id = name ? mcp_req_tool_of(req, name, len) : TOOL_MAX;
+	enum mcp_kind kind = req->mcp->st->offers[id].kind;
 	struct mcp_piece problem =
 		!(kind_info[kind].flags & KF_DETACH)
 		? TEXT("The tool argument must name a tool of yours that may run in the "
@@ -3481,7 +3492,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
-	job->tool = (uint8_t)kind;
+	job->tool = (uint8_t)id;
 	uint32_t n = ++a->n_jobs;
 	char text[64];
 	mcp_slot_result(slot, ESC(text, util_format(text, sizeof text, "Started job %"
@@ -3515,7 +3526,7 @@ mcp_slot_jobs_list (struct mcp_slot *slot)
 			util_format(state, sizeof state, "%s, %zu bytes",
 			            job->failed ? "failed" : "finished", mcp_slot_output(job).len);
 		if (!args || !dstr_printf(&slot->answer, "job %" PRIu32 ": %s %.*s%s: %s\n",
-		                          k + 1, kind_info[job->tool].ptr,
+		                          k + 1, mcp_slot_offer(job)->name,
 		                          (int)mcp_clip(args, len, 100), args,
 		                          len > 100 ? "..." : "", state))
 			return ENOMEM;
@@ -3718,11 +3729,13 @@ mcp_req_call_launch (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	uint32_t k = req->launched;
-	if (k == req->n_calls || (k > req->part && kind_info[req->slots[k - 1].tool].flags & KF_SERIAL))
+	if (k == req->n_calls ||
+	    (k > req->part && kind_info[mcp_slot_offer(&req->slots[k - 1])->kind].flags & KF_SERIAL))
 		return;
 	struct mcp_call c = mcp_call_at(buf_peek(&req->calls).ptr + req->launch_at);
-	enum mcp_kind tool = mcp_req_tool_of(req, (char const *)c.name.ptr, c.name.len);
-	if (kind_info[tool].flags & KF_SERIAL && k > req->part)
+	uint32_t id = mcp_req_tool_of(req, (char const *)c.name.ptr, c.name.len);
+	struct mcp_offer const *tool = &mcp->st->offers[id];
+	if (kind_info[tool->kind].flags & KF_SERIAL && k > req->part)
 		return;
 	if (mcp->draining) {
 		mcp_req_fail(req, ESHUTDOWN);
@@ -3731,11 +3744,11 @@ mcp_req_call_launch (struct mcp_req *req)
 	/* Its arguments go once its result is written, or the request ends. */
 	struct json_object *args = req->args[k];
 	struct mcp_slot *slot = &req->slots[k];
-	slot->tool = (uint8_t)tool;
+	slot->tool = (uint8_t)id;
 	req->launch_at += c.size;
 	req->launched = k + 1;
-	hist_add(&mcp->counts->calls.lent[kind_info[tool].metric], 1);
-	mcp_req_notify_tool(req, kind_info[tool].ptr);
+	hist_add(&mcp->counts->calls.lent[kind_info[tool->kind].metric], 1);
+	mcp_req_notify_tool(req, tool->name);
 	loop_ready_bulk(mcp->loop, &req->step);
 	if (!args) {
 		mcp_slot_result(slot, req->cut
@@ -3745,7 +3758,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		                       "was not run."), true);
 		return;
 	}
-	switch (tool) {
+	switch (tool->kind) {
 	case KIND_MAN:
 		mcp_slot_man(slot, args);
 		return;
@@ -3772,6 +3785,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		return;
 	case KIND_ASK:
 	case KIND_TASK:
+	case KIND_NONE:
 	case KINDS:
 		break;
 	}
@@ -3837,7 +3851,7 @@ mcp_slot_note_window (struct mcp_slot *slot,
 {
 	size_t end = slot->skip + slot->window;
 	if (end < len) {
-		if (kind_info[slot->tool].flags & KF_PAGED)
+		if (kind_info[mcp_slot_offer(slot)->kind].flags & KF_PAGED)
 			return util_format(slot->note, sizeof slot->note, "\n\n[Bytes %zu to %zu "
 			                   "of %zu: for the rest, call again with \"offset\": "
 			                   "%zu.]", slot->skip, end, len, end);
@@ -3974,7 +3988,7 @@ mcp_req_result_write (struct mcp_req *req)
 		return;
 	}
 	struct mcp_slot *slot = &req->slots[req->part];
-	(void)mcp_req_trace(req, &c, req->args[req->part], slot->tool);
+	(void)mcp_req_trace(req, &c, req->args[req->part], mcp_slot_offer(slot)->kind);
 	(void)mcp_req_trace_end(req, slot->failed, mcp_slot_output(slot).len);
 	manual_page_put(slot->page);
 	slot->page = nullptr;
@@ -4590,6 +4604,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 		mcp_req_arm(req);
 	}
 	struct json_object *args = jb_get(params, "arguments");
+	req->self.tool = (uint8_t)id;
 	switch (st->offers[id].kind) {
 	case KIND_ASK:
 		req->lent = mcp_req_lent(req);
@@ -4610,6 +4625,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 	case KIND_JOBS:
 	case KIND_WAIT:
 	case KIND_TIMER:
+	case KIND_NONE:
 	case KINDS:
 		break;
 	}
@@ -5249,7 +5265,8 @@ mcp_begin (struct mcp           *mcp,
 		.timer.fn = mcp_req_timer,
 		.reaper = req->reaper,
 		.scan = req->scan,
-		.self = { .step.fn = mcp_slot_step, .answer = req->self.answer, .req = req },
+		.self = { .step.fn = mcp_slot_step, .answer = req->self.answer, .req = req,
+		          .tool = TOOL_MAX },
 		.trace = req->trace,
 		.s = s,
 		.mcp = mcp,
@@ -5953,31 +5970,44 @@ mcp_static_build (struct mcp_static        *st,
 	return mcp_static_tails(st, info, list);
 }
 
-/* The kinds of tool that @p cfg offers, as bits. */
+/* The tools that @p cfg offers, in the order of their ids: their names
+ * into @p names and their kinds into @p kinds, those that a role may grant
+ * first, @p *granted of them.  Returns how many. */
 static uint32_t
-mcp_kinds (struct config const *cfg)
+mcp_offers (struct config const *cfg,
+            char const          *names[TOOL_MAX],
+            enum mcp_kind        kinds[TOOL_MAX],
+            uint32_t            *granted)
 {
+	static_assert(KINDS - 1 == MCP_TOOLS && MCP_TOOLS <= TOOL_MAX);
 	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
 	uint32_t turns = 1u << KIND_COMPACT | 1u << KIND_BACKGROUND | 1u << KIND_JOBS |
 	                 1u << KIND_WAIT | 1u << KIND_TIMER;
-	return 1u << KIND_ASK | (cfg->flags & CFG_MAN ? 1u << KIND_MAN : 0) |
-	       (cfg->flags & CFG_TEST_TASK ? 1u << KIND_TASK : 0) |
-	       (cfg->n_gits ? 1u << KIND_GIT : 0) |
-	       (lends && cfg->notes ? 1u << KIND_NOTES : 0) |
-	       (lends ? turns : 0);
+	uint32_t offered = 1u << KIND_ASK | (cfg->flags & CFG_MAN ? 1u << KIND_MAN : 0) |
+	                   (cfg->flags & CFG_TEST_TASK ? 1u << KIND_TASK : 0) |
+	                   (cfg->n_gits ? 1u << KIND_GIT : 0) |
+	                   (lends && cfg->notes ? 1u << KIND_NOTES : 0) |
+	                   (lends ? turns : 0);
+	uint32_t n = 0;
+	*granted = 0;
+	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
+		if (!(offered >> k & 1))
+			continue;
+		*granted += k < KIND_NOTES;
+		names[n] = kind_info[k].ptr ? kind_info[k].ptr : cfg->tool.name;
+		kinds[n++] = k;
+	}
+	return n;
 }
 
 size_t
 mcp_tools (struct config const *cfg,
            char const          *names[TOOL_MAX])
 {
-	static_assert(KIND_NOTES <= TOOL_MAX);
-	uint32_t kinds = mcp_kinds(cfg);
-	size_t n = 0;
-	for (enum mcp_kind k = 0; k < KIND_NOTES; ++k)
-		if (kinds >> k & 1)
-			names[n++] = kind_info[k].ptr ? kind_info[k].ptr : cfg->tool.name;
-	return n;
+	enum mcp_kind kinds[TOOL_MAX];
+	uint32_t granted;
+	(void)mcp_offers(cfg, names, kinds, &granted);
+	return granted;
 }
 
 struct mcp_static *
@@ -5997,6 +6027,11 @@ mcp_static_create (struct config const *cfg,
 	}
 	*st = (struct mcp_static){
 		.ep = &cfg->ep,
+		.offers[TOOL_MAX] = {
+			.name = kind_info[KIND_NONE].ptr,
+			.len = kind_info[KIND_NONE].len,
+			.kind = KIND_NONE
+		},
 		.list_tail = DSTR_INIT,
 		.discover = DSTR_INIT,
 		.init_tail = DSTR_INIT,
@@ -6013,19 +6048,16 @@ mcp_static_create (struct config const *cfg,
 		.turns = cfg->turns
 	};
 	/* A zeroed dstr is no empty string (dstr.h). */
-	uint32_t kinds = mcp_kinds(cfg);
-	for (enum mcp_kind k = 0; k < KINDS; ++k) {
-		st->id[k] = KINDS;
-		if (!(kinds >> k & 1))
-			continue;
-		st->id[k] = st->n_offers;
-		st->n_granted += k < KIND_NOTES;
-		st->offers[st->n_offers++] = (struct mcp_offer){
+	char const *names[TOOL_MAX];
+	enum mcp_kind kinds[TOOL_MAX];
+	st->n_offers = mcp_offers(cfg, names, kinds, &st->n_granted);
+	for (uint32_t id = 0; id < st->n_offers; ++id) {
+		enum mcp_kind k = kinds[id];
+		st->offers[id] = (struct mcp_offer){
 			.listed = DSTR_INIT,
 			.lent = DSTR_INIT,
-			.name = kind_info[k].ptr ? kind_info[k].ptr : cfg->tool.name,
-			.len = kind_info[k].ptr ? kind_info[k].len
-			                        : (uint32_t)strlen(cfg->tool.name),
+			.name = names[id],
+			.len = kind_info[k].ptr ? kind_info[k].len : (uint32_t)strlen(names[id]),
 			.kind = k
 		};
 	}

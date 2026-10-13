@@ -48,6 +48,9 @@ mcp_limits (void)
 	};
 }
 
+/** The tools askai has of its own, offered or not. */
+static constexpr unsigned MCP_TOOLS = 10;
+
 /**
  * The tools that @p cfg offers and a client's role may list and call
  * (src/policy.h): their names into @p names, each at its id, the ask tool's
