@@ -17,13 +17,45 @@
 /* The ELF header of askai itself.  The linker defines the symbol. */
 [[gnu::visibility("hidden")]] extern ElfW(Ehdr) const __ehdr_start;
 
-/* The plugin's file while plugin_manifest_read() reads it. */
+/* The address and thread sanitizers add constructors to the objects that
+ * they instrument.  The undefined-behavior sanitizer adds writable data,
+ * unless it is built with -fsanitize-trap.  A plugin that is built with one
+ * of these sanitizers therefore has state outside its instances.  askai
+ * that is built with -fsanitize=address, -fsanitize=thread or
+ * -fsanitize=undefined refuses no plugin file for such state, so that a
+ * plugin can be built with the same sanitizer.  It then also loads a file
+ * that has thread-local storage. */
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+    __has_feature(undefined_behavior_sanitizer)
+static constexpr bool PLUGIN_STATE_REFUSED = false;
+#else
+static constexpr bool PLUGIN_STATE_REFUSED = true;
+#endif
+
+/* What plugin_manifest_read() knows about the plugin's file while it reads
+ * the file. */
 struct plugin_file {
-	uint64_t         size;   /* of the file in bytes, from fstat() */
-	struct manifest *dest;   /* where the manifest is copied to */
-	char            *why;    /* where the reason for a refusal is written */
-	size_t           len;    /* of why in bytes */
-	uint32_t         found;  /* the number of askai manifests read so far */
+	uint64_t         size;        /* the size of the file in bytes, from
+	                                 fstat() */
+	uint64_t         write_from;  /* the lowest address of the writable
+	                                 PT_LOAD segments */
+	uint64_t         write_to;    /* the address after the last byte of the
+	                                 writable PT_LOAD segments.  It is 0 if
+	                                 the file has no such segment. */
+	uint64_t         relro_from;  /* the first address of the PT_GNU_RELRO
+	                                 segment */
+	uint64_t         relro_to;    /* the address after the last byte of the
+	                                 PT_GNU_RELRO segment */
+	struct manifest *dest;        /* the manifest is copied to this object */
+	char            *why;         /* the reason for a refusal is written to
+	                                 this buffer */
+	char const      *state;       /* a description of what the file has that
+	                                 is state of the plugin outside its
+	                                 instances.  It is nullptr if the file
+	                                 has nothing of that sort. */
+	size_t           len;         /* the size of why in bytes */
+	uint32_t         found;       /* the number of askai manifests read so
+	                                 far */
 	int              fd;
 };
 
@@ -111,10 +143,92 @@ plugin_file_notes (struct plugin_file *f,
 	return 0;
 }
 
+/* Records in f->state what the file has, unless something is recorded
+ * there already. */
+static void
+plugin_file_state (struct plugin_file *f,
+                   char const         *what)
+{
+	if (!f->state)
+		f->state = what;
+}
+
+/* Reads the entries of the PT_DYNAMIC segment: the bytes of the file from
+ * offset off to offset end.  Records in f->state an entry for a constructor
+ * or a destructor.  Returns 0, or EINVAL with the reason in f->why. */
+static int
+plugin_file_dynamic (struct plugin_file *f,
+                     uint64_t            off,
+                     uint64_t            end)
+{
+	for (; off < end; off += sizeof (ElfW(Dyn))) {
+		ElfW(Dyn) dyn;
+		int e = plugin_file_read(f, off, end, &dyn, sizeof dyn);
+		if (e)
+			return e;
+		switch (dyn.d_tag) {
+		case DT_INIT:
+		case DT_FINI:
+		case DT_INIT_ARRAY:
+		case DT_FINI_ARRAY:
+		case DT_PREINIT_ARRAY:
+			plugin_file_state(f, "has a constructor or a destructor (the C "
+			                  "start files add both unless the plugin is "
+			                  "linked with -nostartfiles)");
+			break;
+		default:
+			break;
+		}
+	}
+	return 0;
+}
+
+/* Looks at one program header of the file.  It reads the notes of a
+ * PT_NOTE segment and the entries of the PT_DYNAMIC segment.  It records in
+ * *f the addresses of the writable PT_LOAD segments and of the PT_GNU_RELRO
+ * segment, and a PT_TLS segment in f->state.  Returns 0, or EINVAL with the
+ * reason in f->why. */
+static int
+plugin_file_segment (struct plugin_file *f,
+                     ElfW(Phdr) const   *ph)
+{
+	if (ph->p_offset > f->size || ph->p_filesz > f->size - ph->p_offset ||
+	    ph->p_memsz > UINT64_MAX - ph->p_vaddr)
+		return plugin_refuse(f->why, f->len, "a truncated or malformed ELF file");
+	uint64_t end = ph->p_offset + ph->p_filesz;
+	uint64_t top = ph->p_vaddr + ph->p_memsz;
+	switch (ph->p_type) {
+	case PT_NOTE:
+		return plugin_file_notes(f, ph->p_offset, end, ph->p_align == 8 ? 7 : 3);
+	case PT_DYNAMIC:
+		return plugin_file_dynamic(f, ph->p_offset, end);
+	case PT_TLS:
+		plugin_file_state(f, "has thread-local storage");
+		return 0;
+	case PT_GNU_RELRO:
+		f->relro_from = ph->p_vaddr;
+		f->relro_to = top;
+		return 0;
+	case PT_LOAD:
+		if (!(ph->p_flags & PF_W))
+			return 0;
+		f->write_from = ph->p_vaddr < f->write_from ? ph->p_vaddr : f->write_from;
+		f->write_to = top > f->write_to ? top : f->write_to;
+		return 0;
+	default:
+		return 0;
+	}
+}
+
 /* Reads the manifest of the plugin whose file is open at fd into *dest.
  * The file must be a regular file.  Its contents must be a shared object
  * for the machine that askai runs on, and its PT_NOTE segments must contain
  * exactly one note with the owner "askai" and the type MANIFEST_TYPE.
+ *
+ * A plugin has its state in instances (plugin.h).  So the file must have no
+ * thread-local storage, no constructor or destructor, and no writable data
+ * that is still writable when the plugin's code runs.
+ *
  * Returns 0, or EINVAL with the reason in the len bytes at why. */
 static int
 plugin_manifest_read (struct manifest *dest,
@@ -128,11 +242,12 @@ plugin_manifest_read (struct manifest *dest,
 	if (!S_ISREG(st.st_mode))
 		return plugin_refuse(why, len, "not a regular file");
 	struct plugin_file f = {
-		.size = st.st_size > 0 ? (uint64_t)st.st_size : 0,
-		.dest = dest,
-		.why  = why,
-		.len  = len,
-		.fd   = fd,
+		.size       = st.st_size > 0 ? (uint64_t)st.st_size : 0,
+		.write_from = UINT64_MAX,
+		.dest       = dest,
+		.why        = why,
+		.len        = len,
+		.fd         = fd,
 	};
 	/* A file that is shorter than an ELF header is not read.  The header
 	 * stays zero, and the comparison below refuses it. */
@@ -157,16 +272,27 @@ plugin_manifest_read (struct manifest *dest,
 		int e = plugin_file_read(&f, off, f.size, &ph, sizeof ph);
 		if (e)
 			return e;
-		if (ph.p_type != PT_NOTE)
-			continue;
-		if (ph.p_offset > f.size || ph.p_filesz > f.size - ph.p_offset)
-			return plugin_refuse(why, len, "a truncated or malformed ELF file");
-		e = plugin_file_notes(&f, ph.p_offset, ph.p_offset + ph.p_filesz,
-		                      ph.p_align == 8 ? 7 : 3);
+		e = plugin_file_segment(&f, &ph);
 		if (e)
 			return e;
 	}
-	return f.found ? 0 : plugin_refuse(why, len, "has no askai manifest");
+	if (!f.found)
+		return plugin_refuse(why, len, "has no askai manifest");
+	/* Before any code of the plugin runs, the dynamic linker makes the
+	 * PT_GNU_RELRO segment read-only.  It rounds both ends of the segment
+	 * down to a page, so a writable byte outside that range stays
+	 * writable. */
+	long page = sysconf(_SC_PAGESIZE);
+	if (page <= 0)
+		return plugin_refuse(why, len, "cannot check it: the page size is unknown");
+	uint64_t mask = ~((uint64_t)page - 1);
+	if (f.write_to && (f.write_from < (f.relro_from & mask) ||
+	                   f.write_to > (f.relro_to & mask)))
+		plugin_file_state(&f, "has writable data (a plugin has no mutable "
+		                  "static and is linked with -Wl,-z,relro,-z,now)");
+	if (PLUGIN_STATE_REFUSED && f.state)
+		return plugin_refuse(why, len, "%s", f.state);
+	return 0;
 }
 
 /* A name is 1 to 31 characters of [-0-9_a-z] followed by a NUL.  Returns

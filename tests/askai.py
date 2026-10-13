@@ -5988,6 +5988,38 @@ def check_plugin(binary, up, plugin):
         return int.from_bytes(image[at + 4 * index:at + 4 * index + 4],
                               sys.byteorder)
 
+    def number(offset, size):
+        return int.from_bytes(image[offset:offset + size], sys.byteorder)
+
+    def segment(kind):
+        """Returns the file offset of the program header of type kind."""
+        assert image[4] == 2, "the plugin is not an ELF64 file"
+        first, size, count = number(32, 8), number(54, 2), number(56, 2)
+        for offset in range(first, first + size * count, size):
+            if number(offset, 4) == kind:
+                return offset
+        raise AssertionError(f"no program header of type {kind:#x}")
+
+    def dynamic(tag):
+        """Returns the file offset of the low 4 bytes of the tag of the
+        dynamic section's entry whose tag is tag."""
+        header = segment(2)
+        first, size = number(header + 8, 8), number(header + 32, 8)
+        for offset in range(first, first + size, 16):
+            if number(offset, 8) == tag:
+                return offset + (4 if sys.byteorder == "big" else 0)
+        raise AssertionError(f"no dynamic entry with tag {tag:#x}")
+
+    # askai that is built with -fsanitize=address, -fsanitize=thread or
+    # -fsanitize=undefined refuses no plugin file for thread-local storage,
+    # constructors or writable data (src/plugin.c).  The check recognizes
+    # such a binary by the names of the sanitizer's functions.  A binary
+    # that is built with -fsanitize-trap=undefined has none of these names,
+    # so the check does not work with that build.
+    with open(binary, "rb") as f:
+        text = f.read()
+    refuses_state = not re.search(rb"__(asan|tsan)_init|__ubsan_handle", text)
+
     with tempfile.TemporaryDirectory() as d:
         path = f"{d}/askai.json"
 
@@ -6129,6 +6161,22 @@ def check_plugin(binary, up, plugin):
             f.write(image.replace(b"mcp_slot_tell\0", b"mcp_slot_tel1\0"))
         fails([f"{d}/import.so"], f"askai: {d}/import.so: cannot load it: ",
               "undefined symbol: mcp_slot_tel1")
+        # A plugin's state is in its instances.  askai refuses a file with
+        # thread-local storage, with a constructor, or with writable data
+        # that the dynamic linker does not make read-only.  Each copy has
+        # one changed word: the type of the PT_GNU_RELRO program header
+        # (0x6474e552) becomes PT_TLS (7) or PT_NULL (0), and the tag
+        # DT_FLAGS_1 (0x6ffffffb) of the dynamic section becomes DT_INIT
+        # (12).
+        relro = (segment(0x6474E552) - at) // 4
+        for name, index, value, message in (
+                ("tls.so", relro, 7, "has thread-local storage"),
+                ("relro.so", relro, 0, "has writable data"),
+                ("init.so", (dynamic(0x6FFFFFFB) - at) // 4, 12,
+                 "has a constructor or a destructor")):
+            listed = patched(name, index, value)
+            if refuses_state:
+                fails([listed], f"askai: {listed}: {message}")
         fails([plugin, plugin], f"askai: {plugin}: its tool test_echo has the "
               "name of a tool that askai already has")
         fails([plugin], f"askai: {plugin}: its tool test_echo has the name of a "

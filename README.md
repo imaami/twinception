@@ -729,6 +729,13 @@ refuses a plugin that breaks one of these rules:
   equal those of `askai`.  They differ when the plugin was built from other
   sources or with a compiler or options that change the layout of the shared
   structures.
+- The file must have no thread-local storage, no constructor or destructor,
+  and no data that is still writable when the plugin's code runs, because a
+  plugin has its state in instances.  The link flags `-nostartfiles
+  -Wl,-z,relro,-z,now` give such a file; a plugin sets them in its
+  `src/NAME.so.mk`, as `src/test_plugin.so.mk` does.  `askai` that is built
+  with `-fsanitize=address`, `-fsanitize=thread` or `-fsanitize=undefined`
+  does not check this.
 - No tool of the plugin may have the name of a tool that `askai` already has,
   its own or an earlier plugin's.
 - The plugin must not call a function of `askai` that `askai` does not export

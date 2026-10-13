@@ -186,13 +186,18 @@ struct plugin_loaded {
  *
  * It reads the manifest from the file first.  The epoch and the
  * PLUGIN_ABI() values in the manifest must equal askai's own.  The plugin's
- * name and each tool name must be 1 to 31 characters of [-0-9_a-z].  It
- * loads the shared object after these checks, with dlopen() and RTLD_NOW.
- * RTLD_NOW makes dlopen() fail if the plugin calls a function of askai that
- * askai does not export.  For each tool that the manifest names, the kind
- * at the same index in askai_plugin must have definition() and start().
- * The other kinds must have neither.  The shared object stays loaded until
- * askai exits.
+ * name and each tool name must be 1 to 31 characters of [-0-9_a-z].  The
+ * file must have no thread-local storage, no constructor or destructor,
+ * and no data that is still writable when the plugin's code runs, because
+ * a plugin has its state in instances.  The link flags -nostartfiles and
+ * -Wl,-z,relro,-z,now give such a file (src/test_plugin.so.mk).  askai
+ * that is built with -fsanitize=address, -fsanitize=thread or
+ * -fsanitize=undefined does not check this.  It loads the shared object
+ * after these checks, with dlopen() and RTLD_NOW.  RTLD_NOW makes dlopen()
+ * fail if the plugin calls a function of askai that askai does not export.
+ * For each tool that the manifest names, the kind at the same index in
+ * askai_plugin must have definition() and start().  The other kinds must
+ * have neither.  The shared object stays loaded until askai exits.
  *
  * Returns the loaded plugin.  On failure it returns nullptr and stores the
  * error number in @p *e: ENOMEM, or EINVAL with the reason in the @p len
