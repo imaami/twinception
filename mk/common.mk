@@ -18,6 +18,9 @@ all: | $(TGT) compile_commands.json
 
 ifneq (.DEFAULT,$(MAKECMDGOALS))
 
+# A recipe that fails leaves no target behind.
+.DELETE_ON_ERROR:
+
 # No `override` here, it clobbers command-line variables.
 CFLAGS     :=
 CPPFLAGS   := -Wall -Wextra -Wpedantic -DNDEBUG=1
@@ -39,6 +42,10 @@ endif
 ifeq (,$(filter -mcpu=% -march=% -mtune=%,$(CFLAGS)))
 override CFLAGS += -march=native -mtune=native
 endif
+# What a link may export: only what src/export.h marks.
+ifeq (,$(filter -fvisibility=%,$(CFLAGS)))
+override CFLAGS += -fvisibility=hidden
+endif
 
 ifeq (,$(filter -flto=% -flto -fno-lto,$(CXXFLAGS)))
 override CXXFLAGS += -flto=auto
@@ -48,6 +55,9 @@ override CXXFLAGS += -O3
 endif
 ifeq (,$(filter -mcpu=% -march=% -mtune=%,$(CXXFLAGS)))
 override CXXFLAGS += -march=native -mtune=native
+endif
+ifeq (,$(filter -fvisibility=%,$(CXXFLAGS)))
+override CXXFLAGS += -fvisibility=hidden
 endif
 
 override _cc_var = $(shell $(wordlist 2,$(words $1),$1))
@@ -88,9 +98,9 @@ override JSON_$1  := $$(O_OBJ_$1:=.json)
 $1: | $$O$1
 
 ifneq (,$(1:%.a=))
-# Executable target
+# Executable target; its LDFLAGS_, if its .mk file sets them, come first
 $$O$1: $$(A_OBJ_$1) $$(O_OBJ_$1) $$(EXT_$1)
-override LDFLAGS_$1 = $$(call pkg-config,libs-only-L,$$(LIB_$1))
+override LDFLAGS_$1 = $(LDFLAGS_$1) $$(call pkg-config,libs-only-L,$$(LIB_$1))
 override LDLIBS_$1  = $$(call pkg-config,libs-only-l,$$(LIB_$1))
 else
 # Archive target

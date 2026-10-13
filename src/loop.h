@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "export.h"
 #include "hist.h"
 #include "list.h"
 
@@ -219,6 +220,7 @@ loop_fini (struct loop *loop);
  * Post @p msg to @p loop, from any thread: an atomic push, and a write to the
  * loop's eventfd only if the loop sleeps.  It cannot fail.
  */
+EXPORT
 extern void
 loop_post (struct loop *loop,
            struct msg  *msg);
@@ -298,11 +300,13 @@ loop_unready (struct loop_step *step);
  * until set again.  So only arming a timer that is not in the heap can fail,
  * when the heap cannot grow (ENOMEM).
  */
+EXPORT
 extern int
 loop_timer_set (struct loop       *loop,
                 struct loop_timer *timer,
                 uint64_t           due);
 
+EXPORT
 extern void
 loop_timer_stop (struct loop       *loop,
                  struct loop_timer *timer);
@@ -317,6 +321,7 @@ loop_work (struct loop    *loop,
 }
 
 /** How many units of work @p u the step under way has left. */
+EXPORT
 extern uint64_t
 loop_room (struct loop const *loop,
            enum loop_unit     u);

@@ -28,3 +28,6 @@ override LIB_askai := \
   json-c              \
   libcurl             \
   libssl
+
+# Exports to the plugins it loads what src/export.h marks
+override LDFLAGS_askai := -rdynamic

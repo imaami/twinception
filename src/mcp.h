@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "export.h"
 #include "loop.h"
 #include "tool.h"
 
@@ -145,14 +146,17 @@ mcp_app (struct mcp *mcp);
  */
 
 /** Its plugin's part on this loop. */
+EXPORT
 extern void *
 mcp_slot_part (struct mcp_slot const *slot);
 
 /** The kind's word for the call, nullptr at start. */
+EXPORT
 extern void **
 mcp_slot_own (struct mcp_slot *slot);
 
 /** Take @p args' "offset": 0, or EINVAL, the call ended saying why. */
+EXPORT
 extern int
 mcp_slot_offset (struct mcp_slot    *slot,
                  struct json_object *args);
@@ -163,6 +167,7 @@ mcp_slot_offset (struct mcp_slot    *slot,
  * 0, the bytes taken in @p *taken, counted as LOOP_COPY; or, nothing
  * taken, EFBIG past TOOL_OUTPUT_MAX, or ENOMEM.
  */
+EXPORT
 extern int
 mcp_slot_write (struct mcp_slot  *slot,
                 struct tool_text  text,
@@ -182,15 +187,18 @@ mcp_slot_lend (struct mcp_slot  *slot,
 
 /** From start(), last: wait.  An own call's arguments are freed; with
  *  TOOL_STREAM, any role, an event stream opens if the client takes one. */
+EXPORT
 extern void
 mcp_slot_park (struct mcp_slot *slot);
 
 /** Queue step(), in bulk: the kind has one. */
+EXPORT
 extern void
 mcp_slot_ready (struct mcp_slot *slot);
 
 /** Name the call for a post: 0, or ENOMEM.  A call has one name until it
  *  ends or drops; naming it again gives the same handle. */
+EXPORT
 extern int
 mcp_slot_name (struct mcp_slot *slot,
                struct handle   *who);
@@ -201,17 +209,20 @@ mcp_slot_name (struct mcp_slot *slot,
  * touch nothing else.  A lookup, as loop_lookup(): its object is the
  * loop's table.
  */
+EXPORT
 extern struct mcp_slot *
 mcp_slot_named (struct loop const *loop,
                 struct handle      who);
 
 /** End with @p text whole, cut at TOOL_TELL_MAX or a non-UTF-8 byte. */
+EXPORT
 extern void
 mcp_slot_tell (struct mcp_slot  *slot,
                struct tool_text  text,
                uint32_t          flags);
 
 /** End with the output: an own call's from its offset, a turn's window. */
+EXPORT
 extern void
 mcp_slot_finish (struct mcp_slot *slot,
                  uint32_t         flags);
@@ -222,6 +233,7 @@ mcp_slot_finish (struct mcp_slot *slot,
  * call.  A call that fails for its own reasons ends by tell or finish with
  * TOOL_FAILED.
  */
+EXPORT
 extern void
 mcp_slot_fail (struct mcp_slot *slot,
                int              e);
