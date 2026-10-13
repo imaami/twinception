@@ -491,8 +491,14 @@ brackets, after the next result the turns are given; `wait`, for up to 10
 minutes, ends as soon as either happens, a job of those it names or any, and
 says what did, which takes no upstream slot while it waits, as polling
 `jobs` would.  `background` and `jobs` come with a tool that can run so,
-`wait` and `timer` with any.  The jobs and timers last as long as the call:
-its answer ends them.
+`wait` and `timer` with any.
+
+An answer while a job runs or a timer is set does not end the call: the
+turns doze, holding no upstream slot, until a job finishes or a timer fires,
+or at once if one did as they answered; then a message in the user's place,
+after the answer, says what happened, and they go on.  The reply gives each
+answer, and what woke the turns after it.  An answer with nothing under way,
+or in the last turn, ends the call, and its jobs and timers with it.
 
 `compact` takes a summary: the conversation after the prompt, its turns and
 the tools' results, goes, and `askai` adds to the prompt, in brackets, the

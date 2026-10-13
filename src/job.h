@@ -72,6 +72,12 @@ enum {
 /** Tool calls that a streamed answer may make, at most. */
 enum { JOB_CALLS = 16 };
 
+/** How long a call that lends tools may go between its turns' jobs, in ns:
+ *  as long as a timer that its turns set may take, as they may doze until
+ *  it fires.  Home keeps a withdrawal of the call that finds no job as
+ *  long. */
+static constexpr uint64_t JOB_GAP_NS = 3'600'000'000'000;
+
 /** In a running job's progress, beside its tokens: the latest was thinking. */
 static constexpr uint32_t JOB_THINKING = UINT32_C(1) << 31;
 

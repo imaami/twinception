@@ -295,12 +295,15 @@ enum mcp_phase {
 	                    steps */
 	PHASE_CALLS,     /* running a turn's tool calls, each in a slot of its
 	                    own, and writing their results in order */
+	PHASE_DOZE,      /* its turns answered: waiting for what their jobs and
+	                    timers do next */
 	PHASE_ANSWER,    /* parsing its answer, a slice a step */
 	PHASE_TEXT,      /* taking the tool's output from that, in a step of its own */
 	PHASE_ARGS,      /* parsing a turn's tool calls' arguments, a slice a step */
 	PHASE_TURN,      /* writing the turn into the upstream request, likewise */
 	PHASE_RESULT,    /* writing a tool call's result into the request */
 	PHASE_ADD,       /* writing what askai adds to the prompt into it */
+	PHASE_WAKE,      /* writing the message that wakes the turns, likewise */
 	PHASE_REPLY,     /* escaping the output into the reply, a slice a step */
 	PHASE_SEND,      /* sending the reply, a piece a step */
 	PHASE_FREE,      /* freeing the message, a slice a step, then ending */
@@ -473,13 +476,18 @@ struct mcp_timer {
 
 /* What an ask call's turns have under way besides themselves: the jobs
  * they started in the background, the timers they set, a wait call that
- * waits for those, and what happened that the next result says. */
+ * waits for those, what happened that the next result or message says, and
+ * the answers they gave before what happened woke them. */
 struct mcp_agenda {
 	struct mcp_slot   jobs[JOBS_MAX];      /* by number - 1 */
 	struct mcp_timer  timers[TIMERS_MAX];
 	struct loop_timer alarm;     /* the first due: a timer, or the wait's end */
-	struct dstr       notices;   /* what happened, which no result said yet */
-	struct dstr       told;      /* what the result being written says */
+	struct dstr       notices;   /* what happened, which none said yet */
+	struct dstr       told;      /* what the result or message being written
+	                                says */
+	struct dstr       said;      /* those answers, each with what woke the
+	                                turns after it, which the reply begins
+	                                with */
 	struct mcp_req   *req;
 	struct mcp_slot  *wait;      /* the wait call's slot, while it waits */
 	uint64_t          wait_end;  /* when it waits no more */
@@ -1405,8 +1413,8 @@ mcp_req_reply (struct mcp_req *req)
 
 /* The output of @p slot's call is in: for a turn's tool call, the turn
  * takes it; else reply with it, a slice at a time, from the offset that a
- * man or git call asked for, a character's start, or an ask call's
- * whole. */
+ * man or git call asked for, a character's start, or an ask call's whole,
+ * after the answers that its turns dozed after. */
 static void
 mcp_slot_respond (struct mcp_slot *slot,
                   bool             failed)
@@ -1438,7 +1446,8 @@ mcp_slot_respond (struct mcp_slot *slot,
 	req->failed = failed;
 	req->phase = PHASE_REPLY;
 	req->off = off;
-	int e = mcp_req_tool_open(req, (struct mcp_piece){});
+	int e = mcp_req_tool_open(req, req->agenda ? DSTR(&req->agenda->said)
+	                                           : (struct mcp_piece){});
 	if (e) {
 		mcp_req_abort(req, e);
 		return;
@@ -2639,9 +2648,44 @@ mcp_req_call_id (struct mcp_req const  *req,
 	return 0;
 }
 
+/* Whether the conversation fills the upstream's context, as far as known. */
+static bool
+mcp_req_full (struct mcp_req const *req)
+{
+	return req->context && req->used && mcp_req_tokens(req) >= req->context;
+}
+
+/* Whether @p a, if any, has what the turns may doze for: a job that runs, a
+ * timer set, or what happened that they were not told yet. */
+static bool
+mcp_agenda_pending (struct mcp_agenda const *a)
+{
+	if (!a)
+		return false;
+	bool any = dstr_len(&a->notices) || dstr_len(&a->told);
+	for (uint32_t k = 0; !any && k < a->n_jobs; ++k)
+		any = !a->jobs[k].done;
+	for (size_t i = 0; !any && i < TIMERS_MAX; ++i)
+		any = a->timers[i].due;
+	return any;
+}
+
+/* Whether the turns, which answered, doze until what their agenda has under
+ * way happens, then go on: if the answer, streamed, has text, the turns may
+ * take another, and the context has room. */
+static bool
+mcp_req_dozes (struct mcp_req const *req)
+{
+	struct job const *job = req->job;
+	return job->status == JOB_TEXT && buf_peek(&job->result).len &&
+	       req->turn < req->mcp->st->turns && !mcp_req_full(req) &&
+	       mcp_agenda_pending(req->agenda);
+}
+
 /* A turn has ended, its job's answer in: an answer that calls no tool is the
- * call's answer, as are the last turn's, else parse the arguments of the
- * calls it makes, then write the turn into the upload, then run them. */
+ * call's answer, unless the turns doze after it, as are the last turn's;
+ * else parse the arguments of the calls it makes, then write the turn into
+ * the upload, then run them, or doze. */
 static void
 mcp_req_turn_done (struct mcp_req *req)
 {
@@ -2661,7 +2705,7 @@ mcp_req_turn_done (struct mcp_req *req)
 	uint16_t n = 0;
 	for (size_t off = 0; off < calls.len; ++n)
 		off += mcp_call_at(calls.ptr + off).size;
-	if (!n) {
+	if (!n && !mcp_req_dozes(req)) {
 		mcp_req_enter(req, PHASE_TEXT);
 		return;
 	}
@@ -2819,7 +2863,8 @@ mcp_req_turn_call (struct mcp_req         *req,
 
 /* Write part req->part of the turn into the upload: first its head, with
  * its text and thinking if the API writes them, then each tool call, then
- * the replay's items after the last and its end. */
+ * the replay's items after the last and its end, an answer's if it calls
+ * none. */
 static int
 mcp_req_turn_part (struct mcp_req *req)
 {
@@ -2828,7 +2873,7 @@ mcp_req_turn_part (struct mcp_req *req)
 	if (req->part > req->n_calls) {
 		struct mcp_piece const p[] = {
 			mcp_req_items(req, buf_peek(&job->replay).len),
-			BYTES(f->turn_end),
+			BYTES(req->n_calls ? f->turn_end : f->answer_end),
 		};
 		return mcp_req_upload(req, p, ARRAY_SIZE(p));
 	}
@@ -2843,7 +2888,7 @@ mcp_req_turn_part (struct mcp_req *req)
 		ESC(text.ptr, f->text.len ? text.len : 0),
 		thinks ? BYTES(f->thought) : (struct mcp_piece){},
 		ESC(thought.ptr, thinks ? thought.len : 0),
-		BYTES(f->calls),
+		req->n_calls ? BYTES(f->calls) : (struct mcp_piece){},
 	};
 	int e = mcp_req_upload(req, p, ARRAY_SIZE(p));
 	if (!e)
@@ -2851,8 +2896,10 @@ mcp_req_turn_part (struct mcp_req *req)
 	return e;
 }
 
+static void mcp_req_doze (struct mcp_req *req);
+
 /* Write the turn into the upload, a slice a step; then keep its calls, let
- * go of the job and run the first. */
+ * go of the job and run the first; or doze, if it calls none. */
 static void
 mcp_req_turn_write (struct mcp_req *req)
 {
@@ -2867,6 +2914,10 @@ mcp_req_turn_write (struct mcp_req *req)
 			mcp_req_upload_failed(req, e);
 			return;
 		}
+	}
+	if (!req->n_calls) {
+		mcp_req_doze(req);
+		return;
 	}
 	struct span all = buf_peek(&req->job->calls);
 	int e = mcp_piece_write(&RAW(all.ptr, all.len), 0, all.len, &req->calls,
@@ -2969,6 +3020,7 @@ mcp_agenda_create (struct mcp_req *req,
 		.alarm.fn = mcp_agenda_alarm,
 		.notices = DSTR_INIT,
 		.told = DSTR_INIT,
+		.said = DSTR_INIT,
 		.req = req
 	};
 	for (size_t k = 0; k < JOBS_MAX; ++k)
@@ -2998,6 +3050,7 @@ mcp_agenda_destroy (struct mcp_agenda **p_agenda)
 	}
 	dstr_cleanup(&a->notices);
 	dstr_cleanup(&a->told);
+	dstr_cleanup(&a->said);
 	free(a);
 }
 
@@ -3049,8 +3102,56 @@ mcp_agenda_wait_end (struct mcp_agenda *a)
 	mcp_slot_respond(slot, false);
 }
 
+/* What happened wakes @p a's turns, which dozed: a message of the user's
+ * says what, and that the next turn is their last if it is, and so does
+ * the reply, before the answer that follows. */
+static void
+mcp_agenda_wake (struct mcp_agenda *a)
+{
+	struct mcp_req *req = a->req;
+	bool ok = dstr_cat_n(&a->told, dstr_get(&a->notices), dstr_len(&a->notices)) &&
+	          dstr_cat_n(&a->said, dstr_get(&a->told), dstr_len(&a->told)) &&
+	          CAT(&a->said, "\n") &&
+	          (req->turn + 1u < req->mcp->st->turns ||
+	           CAT(&a->told, "[askai: your next turn is your last: answer then, "
+	                         "without calling tools.]\n"));
+	dstr_clear(&a->notices);
+	if (!ok) {
+		mcp_req_fail(req, ENOMEM);
+		return;
+	}
+	req->next = 0;
+	req->off = 0;
+	mcp_req_enter(req, PHASE_WAKE);
+}
+
+/* The turns answered, the answer in the upload, with what their agenda has
+ * under way: keep it for the reply, let go of the job, and doze until what
+ * happens next wakes them, or wake them now if something has. */
+static void
+mcp_req_doze (struct mcp_req *req)
+{
+	struct mcp_agenda *a = req->agenda;
+	struct span text = buf_peek(&req->job->result);
+	if (!dstr_cat_n(&a->said, (char const *)text.ptr, text.len) ||
+	    !CAT(&a->said, "\n\n")) {
+		mcp_req_fail(req, ENOMEM);
+		return;
+	}
+	loop_work(req->mcp->loop, LOOP_COPY, text.len);
+	/* The usage counts the turn: what is written after it counts on. */
+	req->sent = buf_peek(&req->upload).len;
+	mcp_req_drop(req);
+	if (dstr_len(&a->notices) || dstr_len(&a->told)) {
+		mcp_agenda_wake(a);
+		return;
+	}
+	req->phase = PHASE_DOZE;
+	mcp_req_wait(req);
+}
+
 /* The job in @p slot has its output, or failed: the next result says so,
- * and a wait for it ends. */
+ * and a wait for it ends, or it wakes the turns, if they doze. */
 static void
 mcp_agenda_job_done (struct mcp_slot *slot)
 {
@@ -3065,10 +3166,13 @@ mcp_agenda_job_done (struct mcp_slot *slot)
 	}
 	if (a->wait && (!a->wait_for || a->wait_for >> (n - 1) & 1))
 		mcp_agenda_wait_end(a);
+	else if (a->req->phase == PHASE_DOZE)
+		mcp_agenda_wake(a);
 }
 
 /* @p timer's agenda's alarm: the timers due fire, which the next result
- * says, and a wait ends if one did, or if its time is up. */
+ * says, and a wait ends if one did, or if its time is up; one that fires
+ * wakes the turns, if they doze. */
 static void
 mcp_agenda_alarm (struct loop       *loop,
                   struct loop_timer *timer)
@@ -3094,6 +3198,8 @@ mcp_agenda_alarm (struct loop       *loop,
 	int e = mcp_agenda_arm(a);
 	if (e)
 		mcp_req_fail(a->req, e);
+	else if (fired && a->req->phase == PHASE_DOZE)
+		mcp_agenda_wake(a);
 }
 
 /* Start the call that @p args asks for as a job in the background, in a
@@ -3314,6 +3420,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
                 struct json_object *args)
 {
 	static_assert(TIMER_MAX == 3600 && TIMER_NOTE == 200, "the problem says");
+	static_assert(TIMER_MAX * NS <= JOB_GAP_NS, "home keeps a withdrawal as long");
 	struct mcp_req *req = slot->req;
 	struct json_object *o = jb_get(args, "seconds");
 	int64_t secs = json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : 0;
@@ -3441,7 +3548,7 @@ mcp_req_calls_next (struct mcp_req *req)
 	if (req->part == req->n_calls) {
 		mcp_req_slots_drop(req);
 		buf_fini(&req->calls);
-		if (req->context && req->used && mcp_req_tokens(req) >= req->context)
+		if (mcp_req_full(req))
 			mcp_req_compact_full(req);
 		else
 			mcp_req_turn_submit(req);
@@ -3681,14 +3788,18 @@ mcp_req_add_start (struct mcp_req *req)
 	mcp_req_enter(req, PHASE_ADD);
 }
 
-/* Write what askai adds to the prompt a slice a step, and end the prompt
- * and the messages; then submit the turn. */
+/* Write what askai adds to the prompt, in the request's answer, or the
+ * message that wakes the turns, what the agenda tells, a slice a step, and
+ * end the prompt or the message and the messages; then submit the turn. */
 static void
 mcp_req_add_write (struct mcp_req *req)
 {
 	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
+	bool wake = req->phase == PHASE_WAKE;
+	struct dstr *text = wake ? &req->agenda->told : &req->self.answer;
 	struct mcp_piece const p[] = {
-		ESC(dstr_get(&req->self.answer), dstr_len(&req->self.answer)),
+		wake ? BYTES(f->user) : (struct mcp_piece){},
+		ESC(dstr_get(text), dstr_len(text)),
 		BYTES(f->prompt_end),
 		BYTES(f->end),
 	};
@@ -3697,17 +3808,17 @@ mcp_req_add_write (struct mcp_req *req)
 		loop_ready_bulk(req->mcp->loop, &req->step);
 		return;
 	}
-	if (e == ENOBUFS) {
+	if (e == ENOBUFS && !wake) {
 		mcp_req_error(req, 500, INTERNAL_ERROR,
 		              FRAG("The task and its notes do not fit the upstream request"),
 		              nullptr, 0);
 		return;
 	}
 	if (e) {
-		mcp_req_fail(req, e);
+		mcp_req_upload_failed(req, e);
 		return;
 	}
-	dstr_clear(&req->self.answer);
+	dstr_clear(text);
 	mcp_req_turn_submit(req);
 }
 
@@ -4696,6 +4807,7 @@ mcp_req_step (struct loop      *loop,
 		mcp_req_result_write(req);
 		break;
 	case PHASE_ADD:
+	case PHASE_WAKE:
 		mcp_req_add_write(req);
 		break;
 	case PHASE_REPLY:
@@ -5220,9 +5332,10 @@ mcp_background_definition (void)
 		"description", json_object_new_string(
 			"Start a call of another tool as a job in the background, and go on "
 			"at once: askai answers with the job's number, and tells you when it "
-			"finishes, with a later tool result or by ending a wait. Then read "
-			"its output with jobs. Use it for calls that take long, while you "
-			"do other work; at most 8 jobs a task."),
+			"finishes: with a later tool result, by ending a wait, or in a "
+			"message after your answer. Then read its output with jobs. Use it "
+			"for calls that take long, while you do other work; at most 8 jobs "
+			"a task."),
 		"inputSchema", mcp_schema(
 			jb_object(
 				"tool", mcp_property("string", "The name of the tool to call, "
@@ -5306,7 +5419,8 @@ mcp_timer_definition (void)
 		"name", json_object_new_string("timer"),
 		"description", json_object_new_string(
 			"Set a timer, and go on at once: when it fires, askai tells you, "
-			"with a later tool result or by ending a wait."),
+			"with a later tool result, by ending a wait, or in a message after "
+			"your answer."),
 		"inputSchema", mcp_schema(
 			jb_object(
 				"seconds", mcp_property("integer", "When it fires: in 1 to 3600 "

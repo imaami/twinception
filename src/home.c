@@ -44,7 +44,6 @@ enum {
 static constexpr uint64_t NS = 1'000'000'000;
 static constexpr uint64_t BACKOFF_MIN = NS;
 static constexpr uint64_t BACKOFF_MAX = 60 * NS;
-static constexpr uint64_t WITHDRAWAL_NS = 600 * NS;  /* how long one is kept */
 
 /* What home notes of a job's run, in its flags. */
 enum {
@@ -1792,7 +1791,7 @@ home_withdraw (struct home      *home,
 	}
 	if (!found)
 		home->gone[home->gone_at++ % WITHDRAWALS] = (typeof(home->gone[0])){
-			carrier->hash, home->loop->now + WITHDRAWAL_NS, key.len
+			carrier->hash, home->loop->now + JOB_GAP_NS, key.len
 		};
 }
 

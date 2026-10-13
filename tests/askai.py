@@ -4944,7 +4944,8 @@ def check_turn_apis(binary, up):
     Messages and Gemini's generateContent: the tools are offered as each
     has them, a turn goes back as it came, its items in their order, its
     thinking and its signatures whole, and its calls' results as each
-    takes them."""
+    takes them; an answer that the turns doze after goes back as it came,
+    then the message that wakes them, as the user's."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo = f"{d}/proj"
@@ -4965,6 +4966,17 @@ def check_turn_apis(binary, up):
         def run(api, path):
             return Askai(binary, "--api", api, "-u", up.url(path), "--upstream-tools",
                          "--git", repo)
+        woke = "[askai: timer 1 fired.]\n"
+
+        def doze(ai, answers, key):
+            """An ask call whose turns, the @p answers, set a timer of 1 s,
+            answer "Waiting." and doze until it fires, then answer "A": the
+            conversation, @p key in its body, that woke them."""
+            script[:] = [lambda r, a=a: (200, a) for a in answers]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            assert result["content"][0]["text"] == f"Waiting.\n\n{woke}\nA", result
+            return up.requests[count + 2]["body"][key]
 
         # The Responses API: the turn is its output items, in the input's
         # list, its calls' outputs after them.
@@ -4998,6 +5010,13 @@ def check_turn_apis(binary, up):
             assert re.fullmatch(logged, given[5]["output"]), given
             assert given[6]["output"] == "Your arguments were not a JSON object, " \
                 "so the call was not run.", given
+            timer = {"type": "function_call", "id": "fc_3", "call_id": "t1",
+                     "name": "timer", "arguments": "{\"seconds\":1}",
+                     "status": "completed"}
+            given = doze(ai, [responses_turn([timer]),
+                              responses_turn([items[1]], "Waiting."),
+                              responses_turn([], "A")], "input")
+            assert given[3:] == [items[1], {"role": "user", "content": woke}], given
 
         # Anthropic's Messages: thinking blocks, signed, and a redacted one go
         # back in their places among the text and the calls, but a blank
@@ -5037,6 +5056,12 @@ def check_turn_apis(binary, up):
                 results
             assert re.fullmatch(logged, results["content"][0]["content"]), results
             assert re.fullmatch(logged, results["content"][2]["content"]), results
+            messages = doze(ai, [messages_turn([("tool", "t1", "timer", '{"seconds":1}')]),
+                                 messages_turn([("text", "Waiting.")], "end_turn"),
+                                 messages_turn([("text", "A")], "end_turn")], "messages")
+            assert messages[3:] == [
+                {"role": "assistant", "content": [{"type": "text", "text": "Waiting."}]},
+                {"role": "user", "content": woke}], messages
 
         # Gemini's: text parts go on in one, but a part with a thought
         # signature, thinking too, goes back as it came, as do the calls;
@@ -5083,9 +5108,15 @@ def check_turn_apis(binary, up):
             assert contents[3] == {"role": "model", "parts": [
                 {"text": "More."}, {"functionCall": call | {"id": "g3"}}]}, contents
             assert contents[4]["parts"][0]["functionResponse"]["id"] == "g3", contents
+            contents = doze(ai, [generate_turn([[{"functionCall": {
+                                     "name": "timer", "args": {"seconds": 1}}}]]),
+                                 generate_turn([[{"text": "Waiting."}]]),
+                                 generate_turn([[{"text": "A"}]])], "contents")
+            assert contents[3:] == [{"role": "model", "parts": [{"text": "Waiting."}]},
+                                    {"role": "user", "parts": [{"text": woke}]}], contents
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("turns of the Responses API, Anthropic's Messages and Gemini's: tools, "
-          "items in order, thinking and signatures given back, results: PASS")
+          "items in order, thinking and signatures given back, results, waking: PASS")
 
 
 def check_turns(binary, up):
@@ -5367,6 +5398,23 @@ def check_turns(binary, up):
                 "It was stopped after 3 turns, still calling tools." in \
                 result["content"][1]["text"], result
 
+            # Turns that doze are told, as they wake, if their next is their
+            # last, whose answer ends the call, though a timer is still set.
+            script[:] = [
+                lambda r: (200, turn_stream([(c, "timer", json.dumps({"seconds": s}))
+                                             for c, s in (("t", 1), ("u", 60))])),
+                lambda r: (200, turn_stream(text="Waiting.")),
+            ]
+            count = len(up.requests)
+            start = time.monotonic()
+            result = ai.ask("Q")
+            assert time.monotonic() - start < 3, time.monotonic() - start
+            assert turns(up.requests[count + 2])[-1]["content"] == (
+                "[askai: timer 1 fired.]\n[askai: your next turn is your last: answer "
+                "then, without calling tools.]\n"), up.requests[count + 2]
+            assert result["content"][0]["text"] == \
+                "Waiting.\n\n[askai: timer 1 fired.]\n\nA", result
+
             # Calls out of order are the upstream's error.
             script[:] = [lambda r: (200, turn_stream([("a", "git", log), ("b", "git", log)],
                                                      interleave=True))]
@@ -5523,6 +5571,58 @@ def check_turns(binary, up):
             trace = result["content"][1]["text"]
             assert all(f"- {t} " in trace for t in ("background", "timer", "wait", "jobs")), \
                 trace
+
+            # An answer while a timer is set, or a job runs, leaves the call
+            # open: the turns doze until it fires, or ends, which a message of
+            # the user's after the answer says; one that ended as they
+            # answered wakes them at once.  The reply gives each answer and
+            # what woke the turns after it.
+            script[:] = [
+                lambda r: (200, turn_stream([tool_call("t1", "timer", seconds=1,
+                                                       note="look")])),
+                lambda r: (200, turn_stream(text="Waiting.")),
+                lambda r: (200, turn_stream([tool_call("b1", "background", tool="git",
+                                                       arguments=json.loads(slow))])),
+                lambda r: (time.sleep(1.5), (200, turn_stream(text="Started.")))[1],
+                lambda r: (200, turn_stream(text="Done.")),
+            ]
+            count = len(up.requests)
+            start = time.monotonic()
+            result = ai.ask("Q")
+            took = time.monotonic() - start
+            asked = up.requests[count:]
+            finished = "[askai: job 1, git, finished: call jobs with the action " \
+                "result and job 1 for its output.]\n"
+            assert len(asked) == 5 and turns(asked[2])[2:] == [
+                {"role": "assistant", "content": "Waiting."},
+                {"role": "user", "content": "[askai: timer 1 fired: look.]\n"}], asked
+            assert turns(asked[4])[-2:] == [{"role": "assistant", "content": "Started."},
+                                            {"role": "user", "content": finished}], asked
+            assert result["content"][0]["text"] == "Waiting.\n\n[askai: timer 1 fired: " \
+                "look.]\n\nStarted.\n\n" + finished + "\nDone.", result
+            assert 2.4 <= took < 5, took
+
+            # A call that dozes goes as its client does, its timer with it;
+            # askai stopping ends one at once, with an error.
+            ask = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
+            for stop, secs in ((False, 1), (True, 30)):
+                script[:] = [lambda r: (200, turn_stream([tool_call("t", "timer",
+                                                                    seconds=secs)])),
+                             lambda r: (200, turn_stream(text="Waiting."))]
+                count = len(up.requests)
+                with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+                    sock.sendall(rpc_request(8, ask, "tools/call"))
+                    wait_for(lambda: len(up.requests) == count + 2)
+                    time.sleep(0.2)
+                    if stop:
+                        start = time.monotonic()
+                        ai.proc.send_signal(signal.SIGTERM)
+                        status, body = Replies(sock).next()
+                        assert status == 503 and body["error"]["message"] == \
+                            "Server is shutting down", body
+                        assert time.monotonic() - start < 2, time.monotonic() - start
+                time.sleep(1.5)
+                assert len(up.requests) == count + 2, up.requests[count:]
 
         # llama-server's /props tells the context, with --slots too.
         up.props = {"total_slots": 2, "default_generation_settings": {"n_ctx": 6000}}

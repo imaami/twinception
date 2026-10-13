@@ -177,7 +177,8 @@ enum ai_format_flag {
  * call, or call_next after an item in the list, its id, name, its name,
  * args, its arguments (AI_ARGS_RAW), args_end, extra and its extra's JSON
  * text if it has one (struct ai_call), and call_end, unless call is empty,
- * as the calls are in the replay.  Then turn_end.
+ * as the calls are in the replay.  Then turn_end.  An answer, a turn that
+ * calls no tool, is the same but for calls, and ends with answer_end.
  *
  * The tools that a turn may call are an array as the API has them, which
  * tools and tools_end hold, of the items ai_tool() makes.
@@ -188,7 +189,9 @@ enum ai_format_flag {
  * and result_end; then results_end.
  *
  * prompt_end ends the prompt's text, after which end ends the conversation
- * and the body: what askai adds to the prompt goes before it.
+ * and the body: what askai adds to the prompt goes before it.  A message
+ * that askai adds to the conversation as the user's is user, its text, and
+ * prompt_end.
  */
 struct ai_format {
 	struct ai_bytes {
@@ -208,6 +211,7 @@ struct ai_format {
 	                extra,
 	                call_end,
 	                turn_end,
+	                answer_end,
 	                results,
 	                result_sep,
 	                result,
@@ -215,6 +219,7 @@ struct ai_format {
 	                output,
 	                result_end,
 	                results_end,
+	                user,
 	                prompt_end,
 	                end;
 	char const     *conversation;  /**< the body's member it is in */
