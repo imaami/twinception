@@ -4,8 +4,9 @@ override SRCDIR := $(realpath $(MK_DIR)../src)/
 override TGT = $(eval \
   override TGT:=$$(foreach b,$$(BIN),$$(if $$(strip $$(SRC_$$b)),$$b)))$(TGT)
 
-override A_TGT = $(eval override A_TGT:=$$(filter %.a,$$(TGT)))$(A_TGT)
-override O_TGT = $(eval override O_TGT:=$$(strip $$(TGT:%.a=)))$(O_TGT)
+override A_TGT  = $(eval override A_TGT:=$$(filter %.a,$$(TGT)))$(A_TGT)
+override O_TGT  = $(eval override O_TGT:=$$(filter-out %.a %.so,$$(TGT)))$(O_TGT)
+override SO_TGT = $(eval override SO_TGT:=$$(filter %.so,$$(TGT)))$(SO_TGT)
 
 .PHONY: all $(TGT)             \
         compile_commands.json  \
@@ -17,9 +18,6 @@ all: | $(TGT) compile_commands.json
 # Nothing below this comment is defined when tab-completing.
 
 ifneq (.DEFAULT,$(MAKECMDGOALS))
-
-# A recipe that fails leaves no target behind.
-.DELETE_ON_ERROR:
 
 # No `override` here, it clobbers command-line variables.
 CFLAGS     :=
@@ -42,10 +40,6 @@ endif
 ifeq (,$(filter -mcpu=% -march=% -mtune=%,$(CFLAGS)))
 override CFLAGS += -march=native -mtune=native
 endif
-# What a link may export: only what src/export.h marks.
-ifeq (,$(filter -fvisibility=%,$(CFLAGS)))
-override CFLAGS += -fvisibility=hidden
-endif
 
 ifeq (,$(filter -flto=% -flto -fno-lto,$(CXXFLAGS)))
 override CXXFLAGS += -flto=auto
@@ -55,6 +49,11 @@ override CXXFLAGS += -O3
 endif
 ifeq (,$(filter -mcpu=% -march=% -mtune=%,$(CXXFLAGS)))
 override CXXFLAGS += -march=native -mtune=native
+endif
+
+# Plugin loader needs default symbol visibility to be hidden.
+ifeq (,$(filter -fvisibility=%,$(CFLAGS)))
+override CFLAGS += -fvisibility=hidden
 endif
 ifeq (,$(filter -fvisibility=%,$(CXXFLAGS)))
 override CXXFLAGS += -fvisibility=hidden
@@ -86,27 +85,33 @@ override __pkgcfg_inc_cflags = $(foreach x,$1,$(eval override \
  C$(if $(x:%.c=),XX)FLAGS_$x = $$(call pkg-config,cflags,$$(INC_$x))))
 
 override define __tgt
-override SRC      += $$(SRC_$1)
 
 override A_SRC_$1 := $$(filter %.a,$$(SRC_$1))
 override O_SRC_$1 := $$(strip $$(SRC_$1:%.a=))
 override A_OBJ_$1 := $$(A_SRC_$1:%=$$O%)
-override O_OBJ_$1 := $$(O_SRC_$1:%=$$O%.o)
-override DEP_$1   := $$(O_OBJ_$1:.o=.d)
+override O_OBJ_$1 := $$(O_SRC_$1:%=$$O%.o$$(if $(1:%.so=),,-fPIC))
+override DEP_$1   := $$(O_SRC_$1:%=$$O%.d$$(if $(1:%.so=),,-fPIC))
 override JSON_$1  := $$(O_OBJ_$1:=.json)
+
+override DEP   += $$(DEP_$1)
+override O_OBJ += $$(O_OBJ_$1)
+override SRC   += $$(SRC_$1)
 
 $1: | $$O$1
 
 ifneq (,$(1:%.a=))
-# Executable target; its LDFLAGS_, if its .mk file sets them, come first
+# Executable or shared library target
 $$O$1: $$(A_OBJ_$1) $$(O_OBJ_$1) $$(EXT_$1)
-override LDFLAGS_$1 = $(LDFLAGS_$1) $$(call pkg-config,libs-only-L,$$(LIB_$1))
+override LDFLAGS_$1 = $$(call pkg-config,libs-only-L,$$(LIB_$1))
 override LDLIBS_$1  = $$(call pkg-config,libs-only-l,$$(LIB_$1))
 else
 # Archive target
 $$O$1: $$O$1($$(A_OBJ_$1) $$(O_OBJ_$1) $$(EXT_$1))
 endif
 
+#
+#ifneq (,$(if $(1:%.so=),,$1))
+#
 
 clean-$1: | clean.o-$1 clean.json-$1
 purge-$1: | clean-$1 clean.d-$1
@@ -119,17 +124,19 @@ endif
 endef
 
 override define targets
-$(eval override SRC:=)
+$(eval override DEP   :=)
+$(eval override O_OBJ :=)
+$(eval override SRC   :=)
 
 $(foreach x,$1,$(eval $(call __tgt,$x)))
 
 $(eval
+override DEP   := $$(sort $$(DEP))
+override O_OBJ := $$(sort $$(O_OBJ))
 override SRC   := $$(sort $$(SRC))
 override A_SRC := $$(filter %.a,$$(SRC))
 override O_SRC := $$(strip $$(SRC:%.a=))
 override A_OBJ := $$(A_SRC:%=$$O%)
-override O_OBJ := $$(O_SRC:%=$$O%.o)
-override DEP   := $$(O_OBJ:.o=.d)
 override JSON  := $$(O_OBJ:=.json)
 )
 
@@ -167,25 +174,50 @@ $(O_TGT:%=$O%):
 	               $(LDLIBS) $(LDLIBS_$(@F)))
 endif
 
+ifneq (,$(SO_TGT))
+$(SO_TGT:%=$O%):
+	+$(strip $(CC) -o "$@" -MMD $(CFLAGS)         \
+	               -ffile-prefix-map=$(SRCDIR)='' \
+	               -Wl,--shared                   \
+	               $^ $(LDFLAGS) $(LDFLAGS_$(@F)) \
+	               $(LDLIBS) $(LDLIBS_$(@F)))
+endif
+
 ifneq (,$(A_TGT))
 (%): % ;
 $(A_TGT:%=$O%):
 	$(AR) rcsU $@ $?
 endif
 
-$O%.c.o: $(SRCDIR)%.c
-	+$(strip $(CC) -o "$@" -MMD $(CPPFLAGS)       \
+$O%.c.o-fPIC: $(SRCDIR)%.c
+	+$(strip $(CC) -o "$@" -fPIC $(CPPFLAGS)      \
 	               $(CPPFLAGS_$(<F)) $(CFLAGS)    \
 	               $(CFLAGS_$(<F))                \
 	               -ffile-prefix-map="$(<D:/=)/=" \
-	               -c "$<")
+	               -MF "$(@:o-fPIC=d-fPIC)"       \
+	               -MMD -c "$<")
 
-$O%.cpp.o: $(SRCDIR)%.cpp
-	+$(strip $(CXX) -o "$@" -MMD $(CPPFLAGS)       \
+$O%.cpp.o-fPIC: $(SRCDIR)%.cpp
+	+$(strip $(CXX) -o "$@" -fPIC $(CPPFLAGS)      \
 	                $(CPPFLAGS_$(<F)) $(CXXFLAGS)  \
 	                $(CXXFLAGS_$(<F))              \
 	                -ffile-prefix-map="$(<D:/=)/=" \
-	                -c "$<")
+	                -MF "$(@:o-fPIC=d-fPIC)"       \
+	                -MMD -c "$<")
+
+$O%.c.o: $(SRCDIR)%.c
+	+$(strip $(CC) -o "$@" $(CPPFLAGS)            \
+	               $(CPPFLAGS_$(<F)) $(CFLAGS)    \
+	               $(CFLAGS_$(<F))                \
+	               -ffile-prefix-map="$(<D:/=)/=" \
+	               -MMD -c "$<")
+
+$O%.cpp.o: $(SRCDIR)%.cpp
+	+$(strip $(CXX) -o "$@" $(CPPFLAGS)            \
+	                $(CPPFLAGS_$(<F)) $(CXXFLAGS)  \
+	                $(CXXFLAGS_$(<F))              \
+	                -ffile-prefix-map="$(<D:/=)/=" \
+	                -MMD -c "$<")
 
 $(TGT:%=clean-%) clean-compile_commands.json:
 	$(RM) $O$(@:clean-%=%)
@@ -205,11 +237,11 @@ $(TGT:%=clean.json-%):
 	$(RM) $(JSON_$(@:clean.json-%=%))
 
 $O%.c.o.json: $(SRCDIR)%.c
-	@printf '%s\0' $(CC) -o "$(@:.json=)" -MMD    \
+	@printf '%s\0' $(CC) -o "$(@:.json=)"         \
 	               $(CPPFLAGS) $(CPPFLAGS_$(<F))  \
 	               $(CFLAGS) $(CFLAGS_$(<F))      \
 	               -ffile-prefix-map="$(<D:/=)/=" \
-	               -c "$<"                        \
+	               -MMD -c "$<"                   \
 	| jq -MRs --arg dir "$(O:/%/=/%)"             \
 	          --arg src "$<"                      \
 	          --arg out "$(@:.json=)"             \
@@ -218,11 +250,39 @@ $O%.c.o.json: $(SRCDIR)%.c
 	        file: \$$src, output: \$$out }" > "$@"
 
 $O%.cpp.o.json: $(SRCDIR)%.cpp
-	@printf '%s\0' $(CXX) -o "$(@:.json=)" -MMD   \
+	@printf '%s\0' $(CXX) -o "$(@:.json=)"        \
 	               $(CPPFLAGS) $(CPPFLAGS_$(<F))  \
 	               $(CXXFLAGS) $(CXXFLAGS_$(<F))  \
 	               -ffile-prefix-map="$(<D:/=)/=" \
-	               -c "$<"                        \
+	               -MMD -c "$<"                   \
+	| jq -MRs --arg dir "$(O:/%/=/%)"             \
+	          --arg src "$<"                      \
+	          --arg out "$(@:.json=)"             \
+	     "{ directory: \$$dir,                    \
+	        arguments: (split(\"\u0000\")[:-1]),  \
+	        file: \$$src, output: \$$out }" > "$@"
+
+$O%.c.o-fPIC.json: $(SRCDIR)%.c
+	@printf '%s\0' $(CC) -o "$(@:.json=)" -fPIC   \
+	               $(CPPFLAGS) $(CPPFLAGS_$(<F))  \
+	               $(CFLAGS) $(CFLAGS_$(<F))      \
+	               -ffile-prefix-map="$(<D:/=)/=" \
+	               -MF "$(@:o-fPIC.json=d-fPIC)"  \
+	               -MMD -c "$<"                   \
+	| jq -MRs --arg dir "$(O:/%/=/%)"             \
+	          --arg src "$<"                      \
+	          --arg out "$(@:.json=)"             \
+	     "{ directory: \$$dir,                    \
+	        arguments: (split(\"\u0000\")[:-1]),  \
+	        file: \$$src, output: \$$out }" > "$@"
+
+$O%.cpp.o-fPIC.json: $(SRCDIR)%.cpp
+	@printf '%s\0' $(CXX) -o "$(@:.json=)" -fPIC  \
+	               $(CPPFLAGS) $(CPPFLAGS_$(<F))  \
+	               $(CXXFLAGS) $(CXXFLAGS_$(<F))  \
+	               -ffile-prefix-map="$(<D:/=)/=" \
+	               -MF "$(@:o-fPIC.json=d-fPIC)"  \
+	               -MMD -c "$<"                   \
 	| jq -MRs --arg dir "$(O:/%/=/%)"             \
 	          --arg src "$<"                      \
 	          --arg out "$(@:.json=)"             \

@@ -4,7 +4,8 @@ include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-askai check-buf check-dstr check-handle \
-        check-load check-twinception load load-build
+        check-load check-twinception load load-build \
+        build-askai build-test_plugin.so build-twinception
 default:; @:
 check: | check-twinception check-askai check-buf check-handle check-dstr \
          check-load
@@ -34,13 +35,16 @@ override TEST_FLAGS := -std=gnu23 -O2 -g -Wall -Wextra -Wpedantic
 # objects: two sub-makes at once would compile the same files.
 .NOTPARALLEL:
 
-check-twinception:
-	+$(MAKE) -C $(TEST_DIR)../src $(@:check-%=%) O="$O"
-	$(PYTHON) $(TEST_DIR)check.py $(@:check-%=$O%)
+# What src/ builds that the checks run, a goal per make.
+build-askai build-test_plugin.so build-twinception:
+	+$(MAKE) -C $(TEST_DIR)../src $(@:build-%=%) O="$O"
 
-check-askai:
-	+$(MAKE) -C $(TEST_DIR)../src $(@:check-%=%) O="$O"
-	$(PYTHON) $(TEST_DIR)askai.py $(@:check-%=$O%)
+check-twinception: | build-twinception
+	$(PYTHON) $(TEST_DIR)check.py $Otwinception
+
+# The test plugin is built, though nothing loads it yet.
+check-askai: | build-askai build-test_plugin.so
+	$(PYTHON) $(TEST_DIR)askai.py $Oaskai
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf
@@ -84,14 +88,12 @@ $Otests $(LOAD):; mkdir -p "$@"
 # The harness's verdict (no errors, lockouts, leaks, unfairness or unbounded
 # work; latency only against the same run's idle phase) on a light mix of
 # every mode against $O/askai, in about 15 s.
-check-load: | load-build
-	+$(MAKE) -C $(TEST_DIR)../src askai O="$O"
+check-load: | load-build build-askai
 	BASE=2 $(LOAD_SRC)/run.sh check $Oaskai "$(LOAD)" 5
 
 # Build the harness and askai, then run the storm profile against $O/askai.
 # Override the seconds with LOAD_SECONDS and the probe rate with RATE.
-load: | load-build
-	+$(MAKE) -C $(TEST_DIR)../src askai O="$O"
+load: | load-build build-askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
 endif
