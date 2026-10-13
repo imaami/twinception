@@ -174,7 +174,7 @@ ifneq (,$(SO_TGT))
 $(SO_TGT:%=$O%):
 	+$(strip $(CC) -o "$@" -MMD $(CFLAGS)         \
 	               -ffile-prefix-map=$(SRCDIR)='' \
-	               -Wl,--shared                   \
+	               -shared                        \
 	               $^ $(LDFLAGS) $(LDFLAGS_$(@F)) \
 	               $(LDLIBS) $(LDLIBS_$(@F)))
 endif
@@ -186,17 +186,17 @@ $(A_TGT:%=$O%):
 endif
 
 $O%.c.o-fPIC: $(SRCDIR)%.c
-	+$(strip $(CC) -o "$@" -fPIC $(CPPFLAGS)      \
-	               $(CPPFLAGS_$(<F)) $(CFLAGS)    \
-	               $(CFLAGS_$(<F))                \
+	+$(strip $(CC) -o "$@" -fPIC                  \
+	               $(CPPFLAGS) $(CPPFLAGS_$(<F))  \
+	               $(CFLAGS) $(CFLAGS_$(<F))      \
 	               -ffile-prefix-map="$(<D:/=)/=" \
 	               -MF "$(@:o-fPIC=d-fPIC)"       \
 	               -MMD -c "$<")
 
 $O%.cpp.o-fPIC: $(SRCDIR)%.cpp
-	+$(strip $(CXX) -o "$@" -fPIC $(CPPFLAGS)      \
-	                $(CPPFLAGS_$(<F)) $(CXXFLAGS)  \
-	                $(CXXFLAGS_$(<F))              \
+	+$(strip $(CXX) -o "$@" -fPIC                  \
+	                $(CPPFLAGS) $(CPPFLAGS_$(<F))  \
+	                $(CXXFLAGS) $(CXXFLAGS_$(<F))  \
 	                -ffile-prefix-map="$(<D:/=)/=" \
 	                -MF "$(@:o-fPIC=d-fPIC)"       \
 	                -MMD -c "$<")

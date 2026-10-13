@@ -24,8 +24,11 @@
 #include "mcp.h"
 #include "tool.h"
 
-/** Bumped as a meaning changes that no declaration shows, which changes
- *  the build key with it. */
+/** The version of the plugin interface.  Increase it whenever the
+ *  interface changes and no PLUGIN_ABI() value changes.  An example is a
+ *  function whose behavior changes while its declaration stays the same.
+ *  PLUGIN_MANIFEST() stores it in the manifest so that askai does not load
+ *  a plugin that was built with a different value. */
 static constexpr uint32_t PLUGIN_EPOCH = 1;
 
 /** On @p loop's thread, before its first call: the part of @p inst;
@@ -58,8 +61,11 @@ struct plugin {
 	plugin_relieve_fn      *relieve;       /**< needs part_create */
 };
 
-/** The layouts that askai's compiler and a plugin's must agree on, which
- *  the build key cannot tell: the plugin's own flags may change them. */
+/** Sizes, alignments and offsets that must be the same in askai and in a
+ *  plugin.  They can differ if askai and the plugin are built with
+ *  different compilers or with different compiler options.
+ *  PLUGIN_MANIFEST() stores the plugin's values in the manifest so that
+ *  askai can compare them with its own. */
 #define PLUGIN_ABI(X)                                                      \
 	X(sizeof (void *)) X(sizeof (long)) X(alignof (max_align_t))       \
 	X(sizeof (enum buf_pressure)) X(sizeof (struct tool_text))         \
@@ -75,12 +81,16 @@ static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
 #undef PLUGIN_ABI_N
 
 /**
- * The plugin's manifest, of designated initializers of struct manifest but
- * the key and the probes, then the declaration of askai_plugin, which the
- * plugin defines: PLUGIN_MANIFEST(.name = "test", .tools = { "test_echo" });
- * Once per plugin, which a second use makes a link error.  It needs the
- * build key, PLUGIN_KEY: the plugin includes plugin_key.h, which make
- * generates from this header (KEY_ of mk/common.mk).
+ * Defines the plugin's manifest and declares askai_plugin, which the plugin
+ * must then define.  The arguments are designated initializers for members
+ * of struct manifest:
+ *
+ *     PLUGIN_MANIFEST(.name = "test", .tools = { "test_echo" });
+ *
+ * Do not pass .epoch or .abi.  The macro sets them.  Use the macro once
+ * per plugin.  Each use defines plugin_manifest.  A second use in the same
+ * source file is a compile error.  A second use in another source file of
+ * the plugin is a link error.
  */
 #define PLUGIN_MANIFEST(...)                                         \
 	MANIFEST_NO_ASAN                                             \
@@ -91,7 +101,7 @@ static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
 		.descsz = sizeof (struct manifest),                  \
 		.type   = MANIFEST_TYPE,                             \
 		.owner  = "askai",                                   \
-		.desc   = { .key = PLUGIN_KEY,                       \
+		.desc   = { .epoch = PLUGIN_EPOCH,                   \
 		            .abi = { PLUGIN_ABI(PLUGIN_ABI_U32) },   \
 		            __VA_ARGS__ }                            \
 	};                                                           \

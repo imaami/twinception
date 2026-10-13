@@ -12,7 +12,6 @@
 static constexpr uint32_t MANIFEST_TYPE = 0x61736b01;  /* "ask", 1 */
 
 enum {
-	MANIFEST_KEY   = 16,  /**< bytes of the build key */
 	MANIFEST_ABI   = 32,  /**< layout probes at most */
 	MANIFEST_NAME  = 32,  /**< bytes of a name, its NULs included */
 	MANIFEST_NEEDS = 4,   /**< plugins one may need */
@@ -23,7 +22,7 @@ enum {
  *  NULs; an entry of needs or tools is a name or all NULs, the names
  *  first, each once, and none of needs the plugin's own. */
 struct manifest {
-	uint8_t  key[MANIFEST_KEY];                     /**< the build key */
+	uint32_t epoch;                                 /**< PLUGIN_EPOCH */
 	uint32_t abi[MANIFEST_ABI];                     /**< PLUGIN_ABI(), then
 	                                                     zeros */
 	char     name[MANIFEST_NAME];
@@ -40,7 +39,7 @@ struct manifest_note {
 	struct manifest desc;
 };
 
-static_assert(sizeof (struct manifest) == 560);
+static_assert(sizeof (struct manifest) == 548);
 static_assert(alignof (struct manifest_note) == 4);
 static_assert(offsetof (struct manifest_note, desc) == 20);
 
