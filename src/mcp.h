@@ -20,6 +20,7 @@ struct mcp_static;
 struct metrics_mcp;
 struct metrics_src;
 struct notes;
+struct registry;
 struct stream_app;
 struct task_pool;
 
@@ -49,17 +50,16 @@ mcp_limits (void)
 	};
 }
 
-/** The tools askai has of its own, offered or not. */
-static constexpr unsigned MCP_TOOLS = 10;
-
 /**
- * The tools that @p cfg offers and a client's role may list and call
- * (src/policy.h): their names into @p names, each at its id, the ask tool's
- * first, then man's, test_task's and git's, as offered.  Returns how many.
+ * Adds the tools of askai's own that @p cfg offers to the registry @p reg
+ * (src/registry.h).  The ask tool, the man tool, test_task and the git tool
+ * are added in that order as tools that a role can grant.  The tools that
+ * only the turns of an ask call use are added after them.
+ * Returns 0, or the error number of registry_add().
  */
-extern size_t
-mcp_tools (struct config const *cfg,
-           char const          *names[TOOL_MAX]);
+extern int
+mcp_register (struct registry     *reg,
+              struct config const *cfg);
 
 /**
  * What every loop's MCP shares, and nobody changes once it is made: the
@@ -71,7 +71,8 @@ mcp_tools (struct config const *cfg,
  * client may call them, and with @p notes the tool notes (src/notes.h), and
  * the tool compact: its call then runs a loop of turns, each an upstream
  * call, and the tools each turn calls, until an answer calls none.  The
- * tools' ids are those of mcp_tools(), then notes' and compact's.  A tool
+ * tools and their ids are those of @p cfg's registry (src/registry.h), which
+ * also has the tools of the plugins that askai loaded.  A tool
  * call of a modern client that takes tasks becomes one, in @p ledger
  * (src/ledger.h), once it has run a second.  @p cfg, @p manual, @p tasks,
  * @p git, @p notes and @p ledger must outlive it.

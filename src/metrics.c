@@ -155,6 +155,8 @@ static struct metrics_entry const table[] = {
 	      struct metrics_calls, lent[LENT_WAIT], CALLS, COUNTER, ONE),
 	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"timer\"",
 	      struct metrics_calls, lent[LENT_TIMER], CALLS, COUNTER, ONE),
+	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"plugin\"",
+	      struct metrics_calls, lent[LENT_PLUGIN], CALLS, COUNTER, ONE),
 	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"unknown\"",
 	      struct metrics_calls, lent[LENT_NONE], CALLS, COUNTER, ONE),
 	VALUE("askai_compactions_total", "Contexts of ask calls' turns compacted: "

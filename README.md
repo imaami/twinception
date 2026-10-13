@@ -24,7 +24,7 @@ server that gives a model running in `llama-server` a tool for asking another AI
 ## Build
 
 ```sh
-make            # builds twinception and askai
+make            # builds twinception, askai and askai's test plugin
 make check      # end-to-end tests of both, the dstr trials and check-load
 make check-dstr # only the dstr trials
 make check-load # only askai's load verdict on a light mix (10-20 s)
@@ -239,7 +239,8 @@ the tool description asks the caller to make it self-contained.  With `--man`,
 a second tool, `man`, reads the manual, and with `--git`, a tool `git` runs
 read-only git commands in the repositories it lists (below).  With
 `--upstream-tools`, the other model may call those tools too, and keep notes
-of its work, in a loop of turns that ends with its answer.
+of its work, in a loop of turns that ends with its answer.  A plugin that the
+configuration file lists adds tools of its own (below).
 
 It speaks MCP's Streamable HTTP transport, which is what the `llama-server` web
 UI's MCP client uses, and serves both protocol eras on one endpoint:
@@ -460,7 +461,8 @@ With `--upstream-tools`, an `ask_ai` call offers the other model tools of its
 own, in any of the APIs (`llama-server`'s chat template must take tools, as
 with `--jinja`): those of `man` and `git` that the caller's role may call
 (`ask_ai` itself is never offered), `notes` with `--notes`, and with any of
-those `compact`.
+those `compact`.  A plugin's tool is offered in the same way if its kind
+allows it (see Plugins below).
 Offered none, the call asks once, as without the option.  Else it runs a
 loop of turns: each turn is an upstream call, whose answer may call tools;
 `askai` runs them at once (a `notes` or `compact` call keeps to itself, after
@@ -548,7 +550,13 @@ stops.  With `--git`, whoever may call the tool may read the repositories
 listed, and with `--upstream-tools`, so may the model that answers them.  An
 anonymous client's threads of notes are all under `anonymous`, kept apart only
 by their random ids.  Tokens cross the network in the clear but over TLS (below), or a
-proxy that ends it.
+proxy that ends it.  A plugin is code that runs inside `askai` with all of
+`askai`'s rights.  Whoever may change the configuration file decides which
+files `askai` loads as plugins.  Whoever may change one of those files, or a
+directory above it, decides which code runs.  `askai` checks who may change
+the configuration file (below).  It does not check who may change a plugin's
+file, so make sure that only root or `askai`'s user may change each plugin's
+file and the directories above it.
 
 ### TLS
 
@@ -619,7 +627,8 @@ Four more members say who may connect, and what they may do:
 ```
 
 - A **role** lists the tools it may list and call, as clients see them
-  (`--tool-name`'s, `man` and `git`), and whether it may read `GET /metrics`.
+  (`--tool-name`'s, `man`, `git` and the tools of the plugins), and whether it
+  may read `GET /metrics`.
   `tools/list` shows a client its role's tools only, and calling another is
   an error, "Tool not available: NAME".
 - An **identity** has a role, and proves itself with a bearer token,
@@ -654,6 +663,55 @@ the requests that begin from then on, while those under way finish as they
 began.  A file that is wrong is logged, and the last policy stays; the other
 options take a restart, as the log says when they changed.  Without either,
 SIGHUP stops `askai`, as SIGTERM does.
+
+### Plugins
+
+A plugin is a shared object that adds tools to `askai`.  The configuration
+file lists the plugins in the member `plugins`, an array of absolute paths.
+There is no command-line option for it.
+
+```json
+{
+  "url": "http://127.0.0.1:8081/v1/chat/completions",
+  "plugins": ["/usr/libexec/askai/test_plugin.so"]
+}
+```
+
+`askai` loads the plugins as it starts, in the order of the array `plugins`,
+and never unloads one.  A reload loads nothing.  A change of `plugins` takes
+effect when `askai` is restarted.  Until then, the log line of each successful
+reload ends with "its other options take a restart".
+
+In `tools/list`, the tools of the plugins come after `askai`'s own.  They are
+in the order of the array `plugins`, and the tools of one plugin are in the
+order of its manifest.  A role names them as it names any other tool.  Under
+`askai`'s own policy (above), every client that `askai` accepts may call them.
+With `--upstream-tools`, the other model may also call a tool of a plugin if
+the tool's kind has the flag `TOOL_LENT` (`src/tool.h`) and the caller's role
+may call the tool.
+
+`askai` reads the manifest from each file before it loads the file.  It
+refuses a plugin that breaks one of these rules:
+
+- The file must contain a manifest, which `PLUGIN_MANIFEST()` of
+  `src/plugin.h` puts into every plugin.
+- The plugin interface version and the sizes and offsets in the manifest must
+  equal those of `askai`.  They differ when the plugin was built from other
+  sources or with a compiler or options that change the layout of the shared
+  structures.
+- No tool of the plugin may have the name of a tool that `askai` already has,
+  its own or an earlier plugin's.
+- The plugin must not call a function of `askai` that `askai` does not export
+  (`src/export.h`).  `dlopen()` fails for such a plugin.  `askai` does not
+  check which functions of other libraries the plugin calls.
+
+A refused plugin stops `askai` as it starts, with exit status 2 and a message
+that names the file and the reason.
+
+A plugin is built by `askai`'s make rules: `src/NAME.so.mk` lists its sources,
+as `src/test_plugin.so.mk` does for the test plugin, and `make NAME.so` builds
+it.  `src/plugin.h` documents what a plugin provides and what it must not do,
+and `src/test_plugin.c` is the smallest example.
 
 ### Limits
 

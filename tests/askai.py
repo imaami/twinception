@@ -2200,6 +2200,8 @@ def check_configuration(binary, up):
     fails("-x", "[1]", message="needs a JSON object")
     fails("-H", "Bad Header: x", message="invalid header line")
     fails("--tool-name", "ask ai", message="tool names")
+    fails("-u", up.url(), "--upstream-tools", "--tool-name", "wait",
+          message="--tool-name: askai has another tool named wait")
     fails("--max-body", "1X", message="invalid --max-body")
     fails("--max-head", "65536", message="invalid --max-head")
     fails("--max-depth", "0", message="invalid --max-depth")
@@ -2548,6 +2550,13 @@ def check_reload(binary, up):
             write({"roles": {"a": {"tools": ["ask_twin"]}}}, **{"tool-name": "ask_twin"})
             assert 'askai offers no tool "ask_twin"' in \
                 reload(ai, "offers no tool").strip() + "".join(ai.log)
+            ai.wait_log("configuration not reloaded")
+            assert tools(ai, "t1") == ["ask_ai", "man"]
+            # A reload refuses a name for the ask tool that another of
+            # askai's tools has, as a start does.
+            write(first, **{"tool-name": "man"})
+            assert "--tool-name: askai has another tool named man" in \
+                reload(ai, "another tool named").strip() + "".join(ai.log)
             ai.wait_log("configuration not reloaded")
             assert tools(ai, "t1") == ["ask_ai", "man"]
 
@@ -4419,7 +4428,8 @@ def check_man(binary, up):
     proc = subprocess.run([binary, "--man", "--tool-name", "man", "-u", up.url()],
                           capture_output=True, text=True, timeout=10)
     assert proc.returncode == 2, proc
-    assert "--man needs a --tool-name other than man" in proc.stderr, proc.stderr
+    assert "--tool-name: askai has another tool named man" in proc.stderr, \
+        proc.stderr
 
     with tempfile.TemporaryDirectory() as fake:
         with open(f"{fake}/man", "w") as f:
@@ -4746,7 +4756,7 @@ def check_git(binary, up):
                        env=os.environ | git)
         os.mkdir(f"{d}/plain")
         for args, message in ((("--git", repo, "--tool-name", "git"),
-                               "--git needs a --tool-name other than git"),
+                               "--tool-name: askai has another tool named git"),
                               (("--git", f"{d}/none"), "--git: not a git repository"),
                               (("--git", f"{d}/plain"), "--git: not a git repository"),
                               (("--git", "/"), "--git: / names no repository"),
@@ -5871,7 +5881,7 @@ def check_tasks(binary, up):
         assert body["error"]["message"] == "Unknown tool: test_task", body
     proc = subprocess.run([binary, "--test-task", "--tool-name", "test_task", "-u",
                            up.url()], capture_output=True, text=True, timeout=10)
-    assert proc.returncode == 2 and "--test-task needs a --tool-name other than " \
+    assert proc.returncode == 2 and "--tool-name: askai has another tool named " \
         "test_task" in proc.stderr, proc
 
     ai = Askai(binary, "-u", up.url(), "--test-task", loops=4)
@@ -5955,6 +5965,189 @@ def check_tasks(binary, up):
           "loops, moved, cancelled, stopped, counted: PASS")
 
 
+def check_plugin(binary, up, plugin):
+    """askai loads the plugins that the configuration file lists.
+
+    The test plugin (src/test_plugin.c) has one tool, test_echo.  The check
+    lists and calls it, grants it to a role by name, reloads the
+    configuration, calls it from a turn of an ask call, and then starts
+    askai with files that it must refuse.
+    """
+    plugin = os.path.abspath(plugin)
+    with open(plugin, "rb") as f:
+        image = f.read()
+    # The manifest is an ELF note (src/manifest.h): the sizes of the owner
+    # and of the manifest, the type, the owner "askai", then the manifest.
+    # The manifest starts with the epoch and the ABI values, 4 bytes each.
+    head = b"".join(n.to_bytes(4, sys.byteorder)
+                    for n in (6, 548, 0x61736B01)) + b"askai\0\0\0"
+    assert image.count(head) == 1, image.count(head)
+    at = image.index(head) + len(head)
+
+    def word(index):
+        return int.from_bytes(image[at + 4 * index:at + 4 * index + 4],
+                              sys.byteorder)
+
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/askai.json"
+
+        def write(plugins, **options):
+            text = json.dumps({"url": up.url(), "man": True,
+                               "plugins": plugins} | options)
+            with open(f"{path}.new", "w") as f:
+                f.write(text)
+            os.chmod(f"{path}.new", 0o600)
+            os.rename(f"{path}.new", path)
+
+        def call(ai, name, arguments):
+            status, _, body = ai.rpc("tools/call",
+                                     {"name": name, "arguments": arguments})
+            assert status == 200, (status, body)
+            return body
+
+        def names(ai):
+            return [t["name"] for t in ai.rpc("tools/list")[2]["result"]["tools"]]
+
+        def fails(plugins, *messages, args=()):
+            write(plugins)
+            run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path, *args],
+                                 stdin=subprocess.DEVNULL, capture_output=True,
+                                 text=True, timeout=5, check=False)
+            assert run.returncode == 2, (plugins, run.returncode, run.stderr)
+            for message in messages:
+                assert message in run.stderr, (message, run.stderr)
+
+        def patched(name, index, value):
+            """Writes a copy of the plugin in which the 4-byte word at index
+            is value, and returns its path.  Index 0 is the first word of
+            the manifest.  Index -3 is the type of the note."""
+            copy = bytearray(image)
+            copy[at + 4 * index:at + 4 * index + 4] = \
+                value.to_bytes(4, sys.byteorder)
+            with open(f"{d}/{name}", "wb") as f:
+                f.write(copy)
+            return f"{d}/{name}"
+
+        # Without roles every client may call the plugin's tool.  Its id
+        # follows those of askai's own tools.
+        write([plugin])
+        with Askai(binary, "-c", path) as ai:
+            tools = ai.rpc("tools/list")[2]["result"]["tools"]
+            assert [t["name"] for t in tools] == ["ask_ai", "man", "test_echo"], tools
+            assert tools[2]["description"] == "Returns the text argument unchanged." \
+                and tools[2]["inputSchema"]["required"] == ["text"], tools[2]
+            for text in ("plugin \u20ac", "", "x" * 100000):
+                result = call(ai, "test_echo", {"text": text})["result"]
+                assert not result.get("isError") and text_of(result) == text, \
+                    (len(text), result)
+            for arguments in ({"text": 5}, {}):
+                result = call(ai, "test_echo", arguments)["result"]
+                assert result.get("isError") and text_of(result) == \
+                    "The text argument must be a string.", (arguments, result)
+            assert call(ai, "test_none", {})["error"]["message"] == \
+                "Unknown tool: test_none"
+            # A call of askai's own man tool returns a result while the plugin
+            # is loaded.  The text depends on the installed man and its pages.
+            assert "result" in call(ai, "man", {"name": "ls"})
+
+        # A role grants the tool by its name.  A reload reads the names
+        # from the registry that askai started with.
+        only = {"roles": {"echo": {"tools": ["test_echo"]}},
+                "anonymous": {"loopback": "echo"}}
+        write([plugin], **only)
+        with Askai(binary, "-c", path) as ai:
+            assert names(ai) == ["test_echo"]
+            assert text_of(call(ai, "test_echo", {"text": "a"})["result"]) == "a"
+            assert call(ai, "man", {"name": "ls"})["error"]["message"] == \
+                "Tool not available: man"
+            write([plugin], roles={"both": {"tools": ["man", "test_echo"]}},
+                  anonymous={"loopback": "both"})
+            ai.log.clear()
+            ai.proc.send_signal(signal.SIGHUP)
+            line = ai.wait_log("configuration reloaded")
+            assert not line.strip().endswith("take a restart"), line
+            assert names(ai) == ["man", "test_echo"]
+            assert text_of(call(ai, "test_echo", {"text": "b"})["result"]) == "b"
+            # A changed list of plugins takes a restart: the tool stays.
+            write([], **only)
+            ai.log.clear()
+            ai.proc.send_signal(signal.SIGHUP)
+            line = ai.wait_log("configuration reloaded")
+            assert line.strip().endswith("its other options take a restart"), line
+            assert names(ai) == ["test_echo"]
+
+        # With "upstream-tools" the registry also has the tools that only
+        # the turns of an ask call use.  registry_add() inserts test_echo
+        # before them, which increases each of their ids by one.  The kind
+        # of test_echo has TOOL_LENT, so askai sends its definition to the
+        # upstream with those tools.  The first turn calls timer, whose id
+        # changed, and test_echo.  askai counts the call of test_echo in
+        # askai_turn_tool_calls_total{tool="plugin"}.
+        write([plugin], **{"upstream-tools": True})
+        up.reply = lambda request: (200, turn_stream(
+            [("a", "timer", "{}"), ("b", "test_echo", '{"text":"x"}')]
+            if len(request["body"]["messages"]) == 1 else (), text="A"))
+        with Askai(binary, "-c", path) as ai:
+            assert names(ai) == ["ask_ai", "man", "test_echo"]
+            count = len(up.requests)
+            answer, trace = [c["text"] for c in ai.ask("Q")["content"]]
+            first, second = up.requests[count:]
+            assert [t["function"]["name"] for t in first["body"]["tools"]] == \
+                ["man", "test_echo", "compact", "background", "jobs", "wait",
+                 "timer"], first
+            assert [m["content"] for m in second["body"]["messages"][2:]] == \
+                ["The seconds argument must be a whole number from 1 to 3600.",
+                 "x"], second
+            assert answer == "A" and '- test_echo {"text":"x"}: 1 bytes\n' in trace, \
+                trace
+            assert total(ai.metrics(), "askai_turn_tool_calls_total",
+                         tool="plugin") == 1
+        up.reply = lambda request: (200, ANSWERS["openai"])
+
+        # Every refusal names the file and stops askai as it starts.
+        with open(f"{d}/text.so", "w") as f:
+            f.write("not a shared object\n")
+        with open(f"{d}/short.so", "wb") as f:
+            f.write(image[:at + 100])
+        os.mkdir(f"{d}/dir.so")
+        for listed, message in (
+                (f"{d}/none.so", "cannot open it: No such file or directory"),
+                (f"{d}/text.so", "not a shared object of this machine"),
+                (f"{d}/dir.so", "not a regular file"),
+                (f"{d}/short.so", "a truncated or malformed ELF file"),
+                (patched("type.so", -3, 0), "has no askai manifest"),
+                (patched("epoch.so", 0, word(0) + 1),
+                 f"its plugin epoch is {word(0) + 1}, askai's is {word(0)}"),
+                (patched("abi.so", 1, word(1) + 1),
+                 f"its ABI value 0 is {word(1) + 1}, askai's is {word(1)}"),
+                (patched("probes.so", 32, 1), "its ABI value 31 is 1, askai's is 0")):
+            fails([listed], f"askai: {listed}: {message}")
+        fails([plugin, plugin], f"askai: {plugin}: its tool test_echo has the "
+              "name of a tool that askai already has")
+        fails([plugin], f"askai: {plugin}: its tool test_echo has the name of a "
+              "tool that askai already has", args=("--tool-name", "test_echo"))
+        fails(["test_plugin.so"], f"askai: {path}: plugins: not an absolute "
+              "path: test_plugin.so")
+        fails([5], f"askai: {path}: plugins: not an absolute path: 5")
+        fails(plugin, f"askai: {path}: plugins: not an array")
+        # A role cannot name a tool of a plugin that is not loaded.
+        write([], **only)
+        run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path],
+                             stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=5, check=False)
+        assert run.returncode == 2 and \
+            'askai offers no tool "test_echo"' in run.stderr, run.stderr
+
+    # "plugins" is a member of the configuration file, not an option.
+    run = subprocess.run([binary, "-u", up.url(), "--plugins", plugin],
+                         stdin=subprocess.DEVNULL, capture_output=True,
+                         text=True, timeout=5, check=False)
+    assert run.returncode == 2, (run.returncode, run.stderr)
+    print("plugin: test_echo listed, called, granted by a role, kept over a "
+          "reload and called from a turn; files that are no plugin of this "
+          "askai refused: PASS")
+
+
 def check_classes(binary, up):
     """The LLM scheduler's classes (S8): test_task's prompt asks as
     background work, which interactive calls go before.  With two slots or
@@ -6032,6 +6225,9 @@ def check_classes(binary, up):
 
 def main():
     binary = sys.argv[1] if len(sys.argv) > 1 else "./askai"
+    # The test plugin is built beside askai (tests/Makefile).
+    plugin = sys.argv[2] if len(sys.argv) > 2 else \
+        os.path.join(os.path.dirname(binary), "test_plugin.so")
     up = Upstream()
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
@@ -6044,6 +6240,7 @@ def main():
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_turns, check_turn_apis, check_tasks,
+                      lambda binary, up: check_plugin(binary, up, plugin),
                       check_classes,
                       check_shutdown,
                       check_watchdog, check_stalled_stderr):

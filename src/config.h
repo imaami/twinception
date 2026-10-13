@@ -11,6 +11,7 @@
 #include "brainstem.h"
 #include "httpd.h"
 #include "mcp.h"
+#include "registry.h"
 
 struct policy;
 struct ssl_ctx_st;
@@ -41,6 +42,11 @@ struct config {
 	struct mcp_limits     mcp;
 	struct httpd_cfg      http;
 	struct brainstem_cfg  brainstem;    /**< all but its apps */
+	struct registry       registry;     /**< the tools that askai offers.  A
+	                                         reload's configuration has only
+	                                         askai's own tools here, and its
+	                                         policy is made from the registry
+	                                         of running. */
 	uint64_t              git_timeout;  /**< ns from a git call's start to its
 	                                         deadline */
 	struct json_object   *file;         /**< the configuration file's object,

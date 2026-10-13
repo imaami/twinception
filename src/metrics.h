@@ -72,6 +72,7 @@ enum metrics_lent {
 	LENT_JOBS,
 	LENT_WAIT,
 	LENT_TIMER,
+	LENT_PLUGIN,   /**< a tool of a plugin that askai loaded from a file */
 	LENT_N
 };
 

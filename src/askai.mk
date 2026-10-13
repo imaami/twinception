@@ -19,7 +19,9 @@ override SRC_askai := \
   mcp.c               \
   metrics.c           \
   notes.c             \
+  plugin.c            \
   policy.c            \
+  registry.c          \
   task.c              \
   tls.c
 

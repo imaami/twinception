@@ -52,9 +52,9 @@ check-completion:
 check-twinception: | twinception
 	$(PYTHON) $(TEST_DIR)check.py $Otwinception
 
-# The test plugin is built, though nothing loads it yet.
+# askai.py loads the test plugin in check_plugin().
 check-askai: | askai test_plugin.so
-	$(PYTHON) $(TEST_DIR)askai.py $Oaskai
+	$(PYTHON) $(TEST_DIR)askai.py $Oaskai $Otest_plugin.so
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf

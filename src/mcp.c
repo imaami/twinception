@@ -86,6 +86,7 @@
 #include "metrics.h"
 #include "notes.h"
 #include "plugin.h"
+#include "registry.h"
 #include "shelf.h"
 #include "stream.h"
 #include "task.h"
@@ -4508,7 +4509,8 @@ static void
 mcp_req_tools_list (struct mcp_req *req)
 {
 	struct mcp_static const *st = req->mcp->st;
-	struct mcp_piece p[KINDS + 3] = { FRAG("{\"tools\":[") };
+	/* One piece for each tool that a role can be granted, and three more. */
+	struct mcp_piece p[TOOL_MAX + 3] = { FRAG("{\"tools\":[") };
 	size_t n = 1;
 	for (uint32_t id = 0; id < st->n_granted; ++id) {
 		struct dstr const *def = &st->offers[id].listed;
@@ -5256,14 +5258,19 @@ mcp_create (struct loop              *loop,
 	for (uint32_t i = 0; i < st->n_plugins; ++i) {
 		struct mcp_plugin const *p = &st->plugins[i];
 		plugin_part_create_fn *create = p->plugin->part_create;
+		/* A plugin without part_create() has its instance as its part.
+		 * That is nullptr for a plugin that askai loaded from a file. */
+		mcp->parts[i] = p->inst;
+		if (!create)
+			continue;
 		int pe = 0;
-		mcp->parts[i] = create ? create(p->inst, loop, &pe) : p->inst;
-		if (!mcp->parts[i]) {
-			*e = pe ? pe : ENOMEM;
-			mcp_destroy_parts(mcp, i);
-			free(mcp);
-			return nullptr;
-		}
+		mcp->parts[i] = create(p->inst, loop, &pe);
+		if (mcp->parts[i])
+			continue;
+		*e = pe ? pe : ENOMEM;
+		mcp_destroy_parts(mcp, i);
+		free(mcp);
+		return nullptr;
 	}
 	self = mcp;
 	return mcp;
@@ -5807,16 +5814,16 @@ mcp_static_build (struct mcp_static  *st,
 	return mcp_static_tails(st, info, list);
 }
 
-/* The tools that @p cfg offers, in the order of their ids: their names
- * into @p names and their kinds into @p kinds, those that a role may grant
- * first, @p *granted of them.  Returns how many. */
-static uint32_t
-mcp_offers (struct config const *cfg,
-            char const          *names[TOOL_MAX],
-            enum mcp_kind        kinds[TOOL_MAX],
-            uint32_t            *granted)
+/* The attributes of a tool of a plugin that askai loaded from a file.  The
+ * flags of its kind decide whether the turns are lent it.  The turns'
+ * metrics count the calls of all such tools in one row.  The trace shows
+ * the arguments of its calls. */
+static struct mcp_row const mcp_loaded_row = { .metric = LENT_PLUGIN };
+
+int
+mcp_register (struct registry     *reg,
+              struct config const *cfg)
 {
-	static_assert(KINDS - 1 == MCP_TOOLS && MCP_TOOLS <= TOOL_MAX);
 	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
 	uint32_t turns = 1u << KIND_COMPACT | 1u << KIND_BACKGROUND | 1u << KIND_JOBS |
 	                 1u << KIND_WAIT | 1u << KIND_TIMER;
@@ -5825,26 +5832,53 @@ mcp_offers (struct config const *cfg,
 	                   (cfg->n_gits ? 1u << KIND_GIT : 0) |
 	                   (lends && cfg->notes ? 1u << KIND_NOTES : 0) |
 	                   (lends ? turns : 0);
-	uint32_t n = 0;
-	*granted = 0;
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
 		if (!(offered >> k & 1))
 			continue;
-		*granted += k < KIND_NOTES;
-		names[n] = mcp_rows[k].ptr ? mcp_rows[k].ptr : cfg->tool.name;
-		kinds[n++] = k;
+		struct mcp_row const *row = &mcp_rows[k];
+		struct plugin const *plugin = &mcp_host_plugin;
+		struct registry_tool tool = {
+			.name = row->ptr,
+			.kind = &row->kind,
+			.data = row,
+			.len  = row->len,
+		};
+		/* The configuration names the ask tool. */
+		if (!tool.name) {
+			tool.name = cfg->tool.name;
+			tool.len = (uint32_t)strlen(tool.name);
+		}
+		/* The man tool and the git tool are kinds of plugins built in. */
+		if (row->plugin) {
+			plugin = row->plugin;
+			tool.kind = plugin->tools;
+		}
+		int e = registry_add(reg, plugin, &tool,
+		                     k < KIND_NOTES ? REGISTRY_GRANTED : 0);
+		if (e)
+			return e;
 	}
-	return n;
+	return 0;
 }
 
-size_t
-mcp_tools (struct config const *cfg,
-           char const          *names[TOOL_MAX])
+/* Returns the instance of @p plugin, a plugin of @p st.  The instance of
+ * askai's own kinds is @p st itself.  The man tool's is @p manual and the
+ * git tool's is @p git.  A plugin that askai loaded from a file has none. */
+static void *
+mcp_static_inst (struct mcp_static   *st,
+                 struct plugin const *plugin,
+                 struct manual       *manual,
+                 struct git          *git)
 {
-	enum mcp_kind kinds[TOOL_MAX];
-	uint32_t granted;
-	(void)mcp_offers(cfg, names, kinds, &granted);
-	return granted;
+	struct mcp_plugin const own[] = {
+		{ &mcp_host_plugin, st },
+		{ &manual_plugin, manual },
+		{ &git_plugin, git },
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(own); ++i)
+		if (own[i].plugin == plugin)
+			return own[i].inst;
+	return nullptr;
 }
 
 struct mcp_static *
@@ -5857,6 +5891,7 @@ mcp_static_create (struct config const *cfg,
                    int                 *e)
 {
 	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
+	struct registry const *reg = &cfg->registry;
 	struct mcp_static *st = malloc(sizeof *st);
 	if (!st) {
 		*e = ENOMEM;
@@ -5871,8 +5906,9 @@ mcp_static_create (struct config const *cfg,
 			.len = mcp_rows[KIND_NONE].len,
 			.metric = mcp_rows[KIND_NONE].metric
 		},
-		.plugins[0] = { &mcp_host_plugin, st },
-		.n_plugins = 1,
+		.n_offers = reg->n_tools,
+		.n_granted = reg->n_granted,
+		.n_plugins = reg->n_plugins,
 		.list_tail = DSTR_INIT,
 		.discover = DSTR_INIT,
 		.init_tail = DSTR_INIT,
@@ -5886,32 +5922,31 @@ mcp_static_create (struct config const *cfg,
 		.lim = cfg->mcp,
 		.turns = cfg->turns
 	};
+	for (uint32_t i = 0; i < reg->n_plugins; ++i)
+		st->plugins[i] = (struct mcp_plugin){
+			reg->plugins[i], mcp_static_inst(st, reg->plugins[i], manual, git)
+		};
 	/* A zeroed dstr is no empty string (dstr.h). */
-	char const *names[TOOL_MAX];
-	enum mcp_kind kinds[TOOL_MAX];
-	void *const insts[KINDS] = { [KIND_MAN] = manual, [KIND_GIT] = git };
-	st->n_offers = mcp_offers(cfg, names, kinds, &st->n_granted);
-	for (uint32_t id = 0; id < st->n_offers; ++id) {
-		struct mcp_row const *row = &mcp_rows[kinds[id]];
+	for (uint32_t id = 0; id < reg->n_tools; ++id) {
+		struct registry_tool const *t = &reg->tools[id];
+		/* mcp_register() gave each of askai's own tools its row. */
+		struct mcp_row const *row = t->data ? t->data : &mcp_loaded_row;
 		struct mcp_offer *o = &st->offers[id];
 		*o = (struct mcp_offer){
 			.listed = DSTR_INIT,
 			.lent = DSTR_INIT,
-			.kind = &row->kind,
-			.name = names[id],
-			.len = row->ptr ? row->len : (uint32_t)strlen(names[id]),
+			.kind = t->kind,
+			.name = t->name,
+			.len = t->len,
+			.part = (uint8_t)t->part,
 			.lend = row->lend,
 			.metric = row->metric,
 			.trace = row->trace
 		};
-		/* A plugin's tool is its kind, of a part of its own. */
-		if (row->plugin) {
-			o->kind = &row->plugin->tools[0];
-			o->part = (uint8_t)st->n_plugins;
+		/* The kind of a plugin, built in or loaded, is not in a row.  Its
+		 * flags decide whether the turns are lent the tool. */
+		if (t->kind != &row->kind)
 			o->lend = o->kind->flags & TOOL_LENT ? LEND_GRANTED : LEND_NEVER;
-			st->plugins[st->n_plugins++] = (struct mcp_plugin){ row->plugin,
-			                                                    insts[kinds[id]] };
-		}
 		/* The turns are lent tools with --upstream-tools. */
 		if (!lends)
 			o->lend = LEND_NEVER;

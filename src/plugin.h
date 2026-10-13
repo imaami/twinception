@@ -1,11 +1,13 @@
 /** @file Plugins: parts of askai that bring kinds of tool (src/tool.h),
- *  whose calls go through the call API (src/mcp.h).  A plugin has an
- *  instance, read-only or guarding itself, and a part of it on each client
- *  loop, that loop's alone.  askai's own man and git are plugins built in.
+ *  whose calls go through the call API (src/mcp.h).  A built-in plugin has
+ *  an instance, read-only or guarding itself, and a part of it on each
+ *  client loop, that loop's alone.  askai's own man and git are plugins
+ *  built in.
  *
  * Others are shared objects that askai's make rules build (src/NAME.so.mk)
  * and askai loads as it starts, never to unload them, once it has read the
- * manifest that PLUGIN_MANIFEST() gives each.  A plugin exports
+ * manifest that PLUGIN_MANIFEST() gives each.  The configuration file lists
+ * them in its member "plugins" (README.md).  A plugin exports
  * askai_plugin alone, and calls only what askai exports (src/export.h),
  * json-c and libc.  It has no constructor and no mutable static, starts no
  * thread or process, takes no signal, changes no process-wide setting,
@@ -32,7 +34,8 @@
 static constexpr uint32_t PLUGIN_EPOCH = 1;
 
 /** On @p loop's thread, before its first call: the part of @p inst;
- *  nullptr, the error in @p *e. */
+ *  nullptr, the error in @p *e.  A plugin that askai loaded from a file has
+ *  no instance, so its @p inst is nullptr. */
 typedef void *plugin_part_create_fn (void        *inst,
                                      struct loop *loop,
                                      int         *e);
@@ -106,5 +109,47 @@ static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
 		            __VA_ARGS__ }                            \
 	};                                                           \
 	EXPORT extern struct plugin const askai_plugin
+
+/* The rest of this file is askai's side.  A plugin does not use it. */
+
+/** A plugin that askai loaded from a file. */
+struct plugin_loaded {
+	struct plugin const *plugin;    /**< the askai_plugin of the shared
+	                                     object */
+	struct manifest      manifest;  /**< read from the file before the
+	                                     shared object was loaded */
+	uint32_t             n_tools;   /**< the number of tools that the
+	                                     manifest names */
+	/** lens[i] is the length in bytes of manifest.tools[i]. */
+	uint8_t              lens[MANIFEST_TOOLS];
+};
+
+/**
+ * Loads the plugin in the file at @p path.
+ *
+ * It reads the manifest from the file first.  The epoch and the
+ * PLUGIN_ABI() values in the manifest must equal askai's own.  The plugin's
+ * name and each tool name must be 1 to 31 characters of [-0-9_a-z].  It
+ * loads the shared object after these checks, with dlopen() and RTLD_NOW.
+ * RTLD_NOW makes dlopen() fail if the plugin calls a function of askai that
+ * askai does not export.  For each tool that the manifest names, the kind
+ * at the same index in askai_plugin must have definition() and start().
+ * The other kinds must have neither.  The shared object stays loaded until
+ * askai exits.
+ *
+ * Returns the loaded plugin.  On failure it returns nullptr and stores the
+ * error number in @p *e: ENOMEM, or EINVAL with the reason in the @p len
+ * bytes at @p why.  The reason is worded to follow the path and a colon.
+ */
+extern struct plugin_loaded *
+plugin_loaded_create (char const *path,
+                      char       *why,
+                      size_t      len,
+                      int        *e);
+
+/** Frees the loaded plugin *@p p_loaded and sets it to nullptr.  The shared
+ *  object stays loaded. */
+extern void
+plugin_loaded_destroy (struct plugin_loaded **p_loaded);
 
 #endif /* TWINCEPTION_SRC_PLUGIN_H_ */

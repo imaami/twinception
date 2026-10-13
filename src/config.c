@@ -254,6 +254,9 @@ config_usage (struct config const *cfg,
 	        "127.0.0.1 or [::1], or on a Unix socket, may do everything, others\n"
 	        "call the tools.  GET /metrics gives metrics in Prometheus's text\n"
 	        "format to the clients who may see them.\n"
+	        "The configuration file's \"plugins\" member lists the plugins that\n"
+	        "askai loads as it starts: an array of absolute paths (see\n"
+	        "README.md).\n"
 	        "SIGUSR1 prints each event loop's turn and step times, its timers'\n"
 	        "lateness and the most work a step did, since the previous SIGUSR1,\n"
 	        "to stderr, in lines that name it: loop1 to loopN serve clients,\n"
@@ -1101,13 +1104,14 @@ config_lists (struct config *cfg)
 }
 
 /* Apply the configuration file's members but its policy's as the options of
- * their names. */
+ * their names.  The member "plugins" is not an option either:
+ * config_registry() reads it. */
 static int
 config_apply_file (struct config *cfg)
 {
 	struct json_object_iter it;
 	json_object_object_foreachC(cfg->file, it) {
-		if (config_of_policy(it.key))
+		if (config_of_policy(it.key) || !strcmp(it.key, "plugins"))
 			continue;
 		struct option const *o = options;
 		while (o->name && strcmp(o->name, it.key))
@@ -1141,8 +1145,7 @@ config_file (struct config *cfg)
 	return config_apply_file(cfg);
 }
 
-/* Check the limits on clients against each other, and that the tools askai
- * offers are named apart. */
+/* Check the limits on clients against each other. */
 static int
 config_check (struct config const *cfg)
 {
@@ -1153,16 +1156,6 @@ config_check (struct config const *cfg)
 		return config_complain(cfg, nullptr, "--max-body exceeds --client-budget");
 	if (lim->out_pause > lim->out_max)
 		return config_complain(cfg, nullptr, "--output-pause exceeds --max-output");
-	char const *name = cfg->tool.name;
-	if (cfg->flags & CFG_MAN && !strcmp(name, "man"))
-		return config_complain(cfg, nullptr, "--man needs a --tool-name other "
-		                       "than man");
-	if (cfg->flags & CFG_TEST_TASK && !strcmp(name, "test_task"))
-		return config_complain(cfg, nullptr, "--test-task needs a --tool-name "
-		                       "other than test_task");
-	if (cfg->n_gits && !strcmp(name, "git"))
-		return config_complain(cfg, nullptr, "--git needs a --tool-name other "
-		                       "than git");
 	return 0;
 }
 
@@ -1562,17 +1555,69 @@ config_note_token (struct config const *cfg)
 		                      "%s names who may connect", cfg->path);
 }
 
+/* Loads the plugin whose path is @p v, an element of the configuration
+ * file's "plugins", and adds its tools to the registry. */
+static int
+config_plugin (struct config      *cfg,
+               struct json_object *v)
+{
+	char const *path = json_object_get_string(v);
+	if (!json_object_is_type(v, json_type_string) || *path != '/')
+		return config_complain(cfg, cfg->path, "plugins: not an absolute "
+		                       "path: %s", path ? path : "null");
+	char why[256];
+	int e = registry_load(&cfg->registry, path, why, sizeof why);
+	if (e == ENOMEM)
+		return config_oom(cfg);
+	if (e)
+		return config_complain(cfg, path, "%s", why);
+	return 0;
+}
+
+/* Fills the registry with the tools that askai offers: its own, then those
+ * of the plugins that the configuration file lists in "plugins", an array
+ * of absolute paths, loaded in that order.  A reload adds only askai's own
+ * tools, so that it refuses the same --tool-name as a start does.  A reload
+ * loads no plugin, and config_policy() reads the registry of cfg->running. */
+static int
+config_registry (struct config *cfg)
+{
+	/* The names of askai's own tools are fixed and distinct, except the
+	 * ask tool's. */
+	int e = mcp_register(&cfg->registry, cfg);
+	if (e)
+		return config_complain(cfg, nullptr, "--tool-name: askai has another "
+		                       "tool named %s", cfg->tool.name);
+	struct json_object *list;
+	if (cfg->running || !json_object_object_get_ex(cfg->file, "plugins", &list))
+		return 0;
+	if (!json_object_is_type(list, json_type_array))
+		return config_complain(cfg, cfg->path, "plugins: not an array");
+	size_t n = json_object_array_length(list);
+	for (size_t i = 0; i < n; ++i) {
+		int status = config_plugin(cfg, json_object_array_get_idx(list, i));
+		if (status)
+			return status;
+	}
+	return 0;
+}
+
 /* Make the policy, who may connect and what they may do: the roles name
  * the tools that askai runs, which on a reload are the running
  * configuration's. */
 static int
 config_policy (struct config *cfg)
 {
+	struct registry const *reg = cfg->running ? &cfg->running->registry
+	                                          : &cfg->registry;
+	/* The tools that a role can grant have the first ids of the registry. */
 	char const *tools[TOOL_MAX];
-	size_t n = mcp_tools(cfg->running ? cfg->running : cfg, tools);
+	for (uint32_t id = 0; id < reg->n_granted; ++id)
+		tools[id] = reg->tools[id].name;
 	char why[256];
 	int e;
-	cfg->policy = policy_create(cfg->file, tools, n, why, sizeof why, &e);
+	cfg->policy = policy_create(cfg->file, tools, reg->n_granted, why,
+	                            sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
 	if (e)
@@ -1605,6 +1650,9 @@ config_finish (struct config *cfg)
 	if (status)
 		return status;
 	status = config_listens(cfg);
+	if (status)
+		return status;
+	status = config_registry(cfg);
 	if (status)
 		return status;
 	status = config_policy(cfg);
@@ -1733,6 +1781,7 @@ config_fini (struct config *cfg)
 	json_object_put(cfg->file);
 	policy_put(cfg->policy);
 	tls_ctx_put(cfg->tls);
+	registry_fini(&cfg->registry);
 	free(cfg->url);
 	free(cfg->auth);
 	free(cfg->description);
