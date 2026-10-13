@@ -1,21 +1,37 @@
 /** @file The git tool (git.h). */
 #include <errno.h>
 #include <json-c/json.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "child.h"
 #include "git.h"
 #include "jb.h"
+#include "list.h"
+#include "log.h"
+#include "loop.h"
+#include "mcp.h"
+#include "plugin.h"
 #include "util.h"
 
 enum {
-	OPTIONS   = 16,    /* a call's options, at most */
-	REVISIONS = 4,     /* its revisions */
-	PATHS     = 32,    /* its paths */
-	WORD      = 1024,  /* bytes of an option, a revision, a path or a pattern */
-	ENV       = 12,    /* git's environment, its nullptr included */
+	GIT_MAX   = 2 << 20,  /**< output bytes, at most */
+	GIT_ARGV  = 128,      /**< a command's argv, its nullptr included */
+	GIT_WHY   = 256,      /**< bytes of what is wrong with a call */
+	GIT_NOTE  = 96,       /**< bytes ending the output, at most: a blank line, a note */
+	OPTIONS   = 16,       /**< a call's options, at most */
+	REVISIONS = 4,        /**< its revisions */
+	PATHS     = 32,       /**< its paths */
+	WORD      = 1024,     /**< bytes of an option, a revision, a path or a pattern */
+	ENV       = 12,       /**< git's environment, its nullptr included */
 };
+
+/** From SIGTERM to SIGKILL at a git call's deadline. */
+static constexpr uint64_t GIT_GRACE_NS = 1'000'000'000;
+
+static_assert(GIT_MAX == 2 << 20 && GIT_GRACE_NS == 1'000'000'000, "git.h says");
 
 /* A repository: its name, its path, and the setting that has git trust it,
  * one string of the three. */
@@ -30,6 +46,14 @@ struct git {
 	uint64_t        timeout;
 	size_t          n;
 	struct git_repo repo[];
+};
+
+/* What a client loop has of the git tool, its part of it: the children of
+ * the calls there, the git, and the loop. */
+struct git_loop {
+	struct list       children;
+	struct git const *git;
+	struct loop      *loop;
 };
 
 /* What git runs with whatever the call: no pager, nor a program that a
@@ -304,18 +328,6 @@ git_destroy (struct git **p_git)
 	free(git);
 }
 
-char *const *
-git_env (struct git const *git)
-{
-	return git->env;
-}
-
-uint64_t
-git_timeout (struct git const *git)
-{
-	return git->timeout;
-}
-
 /* Append @p str to the array @p arr, which is let go of if that fails. */
 static struct json_object *
 git_append (struct json_object *arr,
@@ -337,9 +349,12 @@ git_strings (char const *description,
 		nullptr);
 }
 
-struct json_object *
-git_definition (struct git const *git)
+/* The tool's definition, of the repositories that @p inst, the git, lists;
+ * nullptr if out of memory. */
+static struct json_object *
+git_definition (void const *inst)
 {
+	struct git const *git = inst;
 	static_assert(OPTIONS == 16 && REVISIONS == 4 && PATHS == 32 &&
 	              GIT_MAX == 2 << 20, "the description says");
 	struct json_object *repos = json_object_new_array();
@@ -517,7 +532,13 @@ git_known (char const *key)
 	return false;
 }
 
-int
+/*
+ * Fill @p argv, of GIT_ARGV entries, with the git command that @p args, a
+ * call's arguments, ask for, its strings pointing into @p args and @p git,
+ * which must outlive it.  Returns 0; or EINVAL, @p why, of GIT_WHY bytes,
+ * saying what is wrong with the arguments, for the model to read.
+ */
+static int
 git_command (struct git const   *git,
              struct json_object *args,
              char const         *argv[],
@@ -626,3 +647,182 @@ git_command (struct git const   *git,
 	argv[k] = nullptr;
 	return 0;
 }
+
+/* A git call's git has ended, its output all in: take it in steps of the
+ * call's own. */
+static void
+git_back (struct child *c)
+{
+	mcp_slot_ready(c->owner);
+}
+
+/* The text that util_format() writes into the array @p a. */
+#define FORMAT(a, ...) ((struct tool_text){ a, util_format(a, sizeof a, __VA_ARGS__) })
+
+/* @p c, the git of @p slot's call, has ended, its output all taken: let go
+ * of it; after the output, a blank line between, say how git ended if it
+ * failed, that the output was cut, or that there was none; then finish.  An
+ * exit status of 1 with nothing written, as grep's finding none, is no
+ * failure. */
+static void
+git_ended (struct mcp_slot *slot,
+           struct child    *c)
+{
+	static_assert(GIT_MAX == 2 << 20, "the note says 2 MiB");
+	struct tool_text out = mcp_slot_answer(slot);
+	char buf[GIT_NOTE - 2];  /* the blank line takes 2 bytes at most */
+	struct tool_text note;
+	bool failed = true;
+	if (c->late) {
+		struct git_loop const *gl = mcp_slot_part(slot);
+		note = FORMAT(buf, "[git took longer than %.0f s, and was stopped.]",
+		              (double)gl->git->timeout / 1e9);
+	} else if (c->cut) {
+		note = TOOL_TEXT("[The output goes on past the 2 MiB shown.]");
+		failed = c->code == CLD_EXITED && c->status && (c->status != 1 || out.len);
+	} else if (c->code != CLD_EXITED) {
+		note = FORMAT(buf, "[git was killed by signal %d.]", c->status);
+	} else if (c->status) {
+		note = FORMAT(buf, "[git exited with status %d.]", c->status);
+		failed = c->status != 1 || out.len;
+	} else {
+		note = out.len ? (struct tool_text){} : TOOL_TEXT("[No output.]");
+		failed = false;
+	}
+	*mcp_slot_own(slot) = nullptr;
+	child_destroy(&c);
+	struct tool_text const p[] = {
+		!out.len ? TOOL_TEXT("") : out.ptr[out.len - 1] == '\n' ? TOOL_TEXT("\n")
+		                                                        : TOOL_TEXT("\n\n"),
+		note,
+	};
+	int e = 0;
+	size_t taken;
+	for (size_t i = note.ptr ? 0 : ARRAY_SIZE(p); i < ARRAY_SIZE(p) && !e; ++i)
+		e = mcp_slot_write(slot, p[i], 0, &taken);
+	if (e) {
+		mcp_slot_fail(slot, e);
+		return;
+	}
+	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
+}
+#undef FORMAT
+
+/* Take a share of the output of @p slot's git into the call's output, made
+ * UTF-8 text, a character cut at the share's end left to the next; once all
+ * is in, end, in the next step if the share has no room left for the
+ * note. */
+static void
+git_step (struct mcp_slot *slot)
+{
+	struct child *c = *mcp_slot_own(slot);
+	struct span left = buf_peek(&c->out);
+	size_t room = loop_room(c->loop, LOOP_COPY);
+	size_t n = left.len < room ? left.len : room;
+	int e = mcp_slot_write(slot, (struct tool_text){ (char const *)left.ptr, n },
+	                       n < left.len ? TOOL_MORE : 0, &n);
+	if (e) {
+		mcp_slot_fail(slot, e);
+		return;
+	}
+	buf_consume(&c->out, n);
+	if (n < left.len || loop_room(c->loop, LOOP_COPY) < GIT_NOTE) {
+		mcp_slot_ready(slot);
+		return;
+	}
+	git_ended(slot, c);
+}
+
+/* Start a git call in @p slot: the command @p args asks for, in the
+ * repository it names, run as the call's own child on the loop of the
+ * tool's part. */
+static void
+git_start (struct mcp_slot    *slot,
+           struct json_object *args)
+{
+	struct git_loop *gl = mcp_slot_part(slot);
+	struct git const *git = gl->git;
+	char const *argv[GIT_ARGV];
+	char why[GIT_WHY];
+	if (git_command(git, args, argv, why)) {
+		mcp_slot_tell(slot, (struct tool_text){ why, strlen(why) }, TOOL_FAILED);
+		return;
+	}
+	if (mcp_slot_offset(slot, args))
+		return;
+	struct child_cmd const cmd = {
+		.file = "git",
+		.argv = argv,
+		.envp = git->env,
+		.max = GIT_MAX,
+		.deadline = gl->loop->now + git->timeout,
+		.grace = GIT_GRACE_NS,
+		.flags = CHILD_STDERR
+	};
+	int e = 0;
+	*mcp_slot_own(slot) = child_create(gl->loop, &gl->children, &cmd, git_back, slot, &e);
+	if (e == EBUSY) {
+		mcp_slot_tell(slot, TOOL_TEXT("Too many commands are running; try again in a "
+		                              "few seconds."), TOOL_FAILED);
+		return;
+	}
+	if (e) {
+		size_t n = util_format(why, sizeof why, "Cannot run git: %s.", strerror(e));
+		LOG(LOG_WARN, "%s", why);
+		mcp_slot_tell(slot, (struct tool_text){ why, n }, TOOL_FAILED);
+		return;
+	}
+	mcp_slot_park(slot);
+}
+
+/* Let go of a git call's git, which kills it if it runs. */
+static void
+git_drop (struct mcp_slot *slot)
+{
+	struct child *c = *mcp_slot_own(slot);
+	child_destroy(&c);
+}
+
+/* The git tool's part of @p loop: the children there of the calls of the
+ * git @p inst; nullptr, with ENOMEM in @p *e, if out of memory. */
+static void *
+git_loop_create (void        *inst,
+                 struct loop *loop,
+                 int         *e)
+{
+	struct git_loop *gl = malloc(sizeof *gl);
+	if (!gl) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	*gl = (struct git_loop){ .git = inst, .loop = loop };
+	list_init(&gl->children);
+	*e = 0;
+	return gl;
+}
+
+/* Free the children of the calls on the loop, as it stops, killing any
+ * still alive; then free @p *p_part, the git tool's part of the loop, and
+ * set it to nullptr. */
+static void
+git_loop_destroy (void **p_part)
+{
+	struct git_loop *gl = *p_part;
+	if (!gl)
+		return;
+	*p_part = nullptr;
+	child_destroy_all(&gl->children);
+	free(gl);
+}
+
+struct plugin const git_plugin = {
+	.tools = {{
+		.definition = git_definition,
+		.start = git_start,
+		.step = git_step,
+		.drop = git_drop,
+		.flags = TOOL_LENT | TOOL_PAGED | TOOL_DETACH | TOOL_STREAM
+	}},
+	.part_create = git_loop_create,
+	.part_destroy = git_loop_destroy
+};

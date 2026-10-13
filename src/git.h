@@ -21,8 +21,12 @@
  * diff, textconv (a submodule's too), gpg and hooks, and its refreshing the
  * index.  The repository's other configuration, such as its filters, which
  * a work tree's files pass through, is trusted, as listing it says.  Its
- * output, its error included, is cut at GIT_MAX; at its deadline it gets
- * SIGTERM, and SIGKILL GIT_GRACE_NS later.
+ * output, its error included, is cut at 2 MiB; at its deadline it gets
+ * SIGTERM, and SIGKILL a second later.
+ *
+ * The git tool is git's kind of tool (src/tool.h), its part of a client
+ * loop the children there; a call's output is made UTF-8 text a share a
+ * step (src/mcp.h), and a call that goes kills its git.
  */
 #ifndef TWINCEPTION_SRC_GIT_H_
 #define TWINCEPTION_SRC_GIT_H_
@@ -31,16 +35,7 @@
 #include <stdint.h>
 
 struct git;
-struct json_object;
-
-enum {
-	GIT_MAX  = 2 << 20,  /**< output bytes, at most */
-	GIT_ARGV = 128,      /**< a command's argv, its nullptr included */
-	GIT_WHY  = 256,      /**< bytes of what is wrong with a call */
-};
-
-/** From SIGTERM to SIGKILL at a git call's deadline. */
-static constexpr uint64_t GIT_GRACE_NS = 1'000'000'000;
+struct plugin;
 
 /**
  * The name of the repository listed as @p path: the last component of the
@@ -66,28 +61,8 @@ git_create (char const *const paths[],
 extern void
 git_destroy (struct git **p_git);
 
-/** The environment git runs in. */
-extern char *const *
-git_env (struct git const *git);
-
-/** A call's deadline, in ns from its start. */
-extern uint64_t
-git_timeout (struct git const *git);
-
-/** The tool's definition, for tools/list; nullptr if out of memory. */
-extern struct json_object *
-git_definition (struct git const *git);
-
-/**
- * Fill @p argv, of GIT_ARGV entries, with the git command that @p args, a
- * call's arguments, ask for, its strings pointing into @p args and @p git,
- * which must outlive it.  Returns 0; or EINVAL, @p why, of GIT_WHY bytes,
- * saying what is wrong with the arguments, for the model to read.
- */
-extern int
-git_command (struct git const   *git,
-             struct json_object *args,
-             char const         *argv[],
-             char               *why);
+/** The git tool, a plugin built in (src/plugin.h) whose instance is a
+ *  git. */
+extern struct plugin const git_plugin;
 
 #endif /* TWINCEPTION_SRC_GIT_H_ */

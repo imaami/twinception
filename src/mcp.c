@@ -43,13 +43,9 @@
  * notifications/cancelled, on any connection of any loop, which home finds
  * the call's job by (src/job.h).
  *
- * The man tool is the manual's (src/manual.h), a plugin built in
- * (src/plugin.h), whose calls go through the call API (src/mcp.h).
- *
- * A git call, when askai lists repositories, runs git (src/git.h) as a
- * child (src/child.h) on the call's loop, and replies with its output, its
- * errors included, made UTF-8 text a share a step; a call that goes kills
- * it.
+ * The man and git tools are the manual's (src/manual.h) and git's
+ * (src/git.h), plugins built in (src/plugin.h), whose calls go through the
+ * call API (src/mcp.h).
  *
  * A test_task call, when askai offers the test aid, runs CPU work of the
  * slices it asks for as a task (src/task.h), which may run on any client
@@ -334,16 +330,18 @@ enum mcp_role : uint8_t {
  * The request's own also holds its answer, and the notes' git that the
  * request reads for itself. */
 struct mcp_slot {
-	struct loop_step    step;      /* its work: its git's output */
+	struct loop_step    step;      /* its work, its kind's step() */
 	struct dstr         answer;    /* the tool's output; its storage stays
 	                                  for reuse */
 	struct mcp_req     *req;       /* whose */
 	void               *own;       /* its kind's word for the call, which
 	                                  its drop() lets go of: a man call's
-	                                  page, a test_task call's task */
+	                                  page, a test_task call's task, a git
+	                                  call's git */
 	struct span         lent;      /* its output, if own keeps it: a man
 	                                  call's page's text */
-	struct child       *child;     /* a git's, until its output is taken */
+	struct child       *child;     /* its notes' git, until its output is
+	                                  taken */
 	size_t              skip;      /* the byte of the output that its window,
 	                                  given to a turn, starts at */
 	size_t              window;    /* and the bytes of that */
@@ -522,7 +520,7 @@ struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
 	struct list              tasks;     /* requests whose call is a task */
 	struct list              freeing;   /* requests freeing their message */
-	struct list              children;  /* the git calls' and the notes' */
+	struct list              children;  /* the notes' gits */
 	struct shelf             spare;     /* finished requests */
 	struct shelf             jobs;      /* jobs let go of */
 	struct loop_step         drain;     /* ends the calls, draining */
@@ -889,7 +887,7 @@ mcp_slot_offer (struct mcp_slot const *slot)
 }
 
 /* Let go of @p slot's own word, as its kind does, and of the output it
- * lent; of its git, and of its work and what it waits for. */
+ * lent; of its notes' git, and of its work and what it waits for. */
 static void
 mcp_slot_drop (struct mcp_slot *slot)
 {
@@ -906,9 +904,8 @@ mcp_slot_drop (struct mcp_slot *slot)
 
 /* Let go of the request's job, if it has one: cancel it while the request
  * waits for it, freeing the request's handle, so that its completion finds
- * no request; else tell home the result has been read.  A man call lets go
- * of its page, or of its handle while it waits for one, likewise; a
- * test_task call of its task, which it cancels; a git call of its git. */
+ * no request; else tell home the result has been read.  Its calls let go
+ * of what they hold, as their kinds do, and of their handles likewise. */
 static void
 mcp_req_drop (struct mcp_req *req)
 {
@@ -2578,14 +2575,6 @@ mcp_slot_task_drop (struct mcp_slot *slot)
 	task_drop(*mcp_slot_own(slot));
 }
 
-/* A slot's git, the git tool's or the notes', has ended, its output all
- * in: take it in steps of the slot's own. */
-static void
-mcp_on_git (struct child *c)
-{
-	mcp_slot_ready(c->owner);
-}
-
 /* Append the @p n pieces at @p p to @p slot's answer: 0, or ENOMEM. */
 static int
 mcp_slot_say (struct mcp_slot        *slot,
@@ -2596,114 +2585,6 @@ mcp_slot_say (struct mcp_slot        *slot,
 		if (!dstr_cat_n(&slot->answer, p[i].ptr, p[i].len))
 			return ENOMEM;
 	return 0;
-}
-
-/* git has ended, its output all in: after it, a blank line between, say
- * how git ended if it failed, that the output was cut, or that there was
- * none; then reply.  An exit status of 1 with nothing written, as grep's
- * finding none, is no failure. */
-static void
-mcp_slot_git_ended (struct mcp_slot *slot)
-{
-	static_assert(GIT_MAX == 2 << 20, "the note says 2 MiB");
-	struct child *c = slot->child;
-	struct tool_text out = mcp_slot_answer(slot);
-	char buf[96];
-	struct mcp_piece note;
-	bool failed = true;
-	if (c->late) {
-		note = ESC(buf, util_format(buf, sizeof buf, "[git took longer than %.0f s, "
-		                            "and was stopped.]",
-		                            (double)git_timeout(mcp_slot_part(slot)) / 1e9));
-	} else if (c->cut) {
-		note = TEXT("[The output goes on past the 2 MiB shown.]");
-		failed = c->code == CLD_EXITED && c->status && (c->status != 1 || out.len);
-	} else if (c->code != CLD_EXITED) {
-		note = ESC(buf, util_format(buf, sizeof buf, "[git was killed by signal %d.]",
-		                            c->status));
-	} else if (c->status) {
-		note = ESC(buf, util_format(buf, sizeof buf, "[git exited with status %d.]",
-		                            c->status));
-		failed = c->status != 1 || out.len;
-	} else {
-		note = out.len ? (struct mcp_piece){} : TEXT("[No output.]");
-		failed = false;
-	}
-	child_destroy(&slot->child);
-	struct mcp_piece const p[] = {
-		!out.len ? FRAG("") : out.ptr[out.len - 1] == '\n' ? FRAG("\n") : FRAG("\n\n"),
-		note,
-	};
-	if (note.ptr && mcp_slot_say(slot, p, ARRAY_SIZE(p))) {
-		mcp_slot_fail(slot, ENOMEM);
-		return;
-	}
-	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
-}
-
-/* Take a slice of the output of @p slot's git into its answer, made UTF-8
- * text; once all is in, reply. */
-static void
-mcp_slot_git_text (struct mcp_slot *slot)
-{
-	struct buf *out = &slot->child->out;
-	struct span left = buf_peek(out);
-	size_t room = loop_room(slot->req->mcp->loop, LOOP_COPY);
-	size_t n = left.len < room ? left.len : room;
-	int e = mcp_slot_write(slot, (struct tool_text){ (char const *)left.ptr, n },
-	                       n < left.len ? TOOL_MORE : 0, &n);
-	if (e) {
-		mcp_slot_fail(slot, e);
-		return;
-	}
-	buf_consume(out, n);
-	if (n < left.len) {
-		mcp_slot_ready(slot);
-		return;
-	}
-	mcp_slot_git_ended(slot);
-}
-
-/* Start a git call in @p slot: the command @p args asks for, in the
- * repository it names, of the git that is the tool's part. */
-static void
-mcp_slot_git (struct mcp_slot    *slot,
-              struct json_object *args)
-{
-	struct mcp *mcp = slot->req->mcp;
-	struct loop *loop = mcp->loop;
-	struct git const *git = mcp_slot_part(slot);
-	char const *argv[GIT_ARGV];
-	char why[GIT_WHY];
-	if (git_command(git, args, argv, why)) {
-		mcp_slot_tell(slot, (struct tool_text){ why, strlen(why) }, TOOL_FAILED);
-		return;
-	}
-	if (mcp_slot_offset(slot, args))
-		return;
-	struct child_cmd const cmd = {
-		.file = "git",
-		.argv = argv,
-		.envp = git_env(git),
-		.max = GIT_MAX,
-		.deadline = loop->now + git_timeout(git),
-		.grace = GIT_GRACE_NS,
-		.flags = CHILD_STDERR
-	};
-	int e = 0;
-	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_git, slot, &e);
-	if (e == EBUSY) {
-		mcp_slot_tell(slot, TOOL_TEXT("Too many commands are running; try again in a "
-		                              "few seconds."), TOOL_FAILED);
-		return;
-	}
-	if (e) {
-		size_t n = util_format(why, sizeof why, "Cannot run git: %s.", strerror(e));
-		LOG(LOG_WARN, "%s", why);
-		mcp_slot_tell(slot, (struct tool_text){ why, n }, TOOL_FAILED);
-		return;
-	}
-	mcp_slot_park(slot);
 }
 
 static void mcp_req_calls_next (struct mcp_req *req);
@@ -4026,6 +3907,14 @@ mcp_req_go_on (struct mcp_req   *req,
 	mcp_req_add_start(req);
 }
 
+/* The notes' git has ended, its output all in: take it in steps of its
+ * slot's own. */
+static void
+mcp_on_notes (struct child *c)
+{
+	mcp_slot_ready(c->owner);
+}
+
 /* Spawn the git of @p argv, its input @p in, for the notes, for what
  * req->self.fetch says: 0, or why not. */
 static int
@@ -4046,7 +3935,7 @@ mcp_slot_notes_spawn (struct mcp_slot *slot,
 		.flags = CHILD_STDERR
 	};
 	int e = 0;
-	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_git, slot, &e);
+	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_notes, slot, &e);
 	if (!slot->child)
 		return e;
 	mcp_slot_park(slot);
@@ -4389,8 +4278,7 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 	}
 }
 
-/* Do the work of @p step's slot, as its call's kind does: take its git's
- * output, the git tool's or the notes'. */
+/* Do the work of @p step's slot, as its call's kind does. */
 static void
 mcp_slot_step (struct loop      *loop,
                struct loop_step *step)
@@ -5541,14 +5429,6 @@ mcp_task_definition (void const *inst)
 		nullptr);
 }
 
-/* git's definition, of the repositories that @p inst, the mcp_static, has
- * it list. */
-static struct json_object *
-mcp_git_definition (void const *inst)
-{
-	return git_definition(inst);
-}
-
 /* The notes tool's definition, which only turns are given. */
 static struct json_object *
 mcp_notes_definition (void const *inst)
@@ -5864,16 +5744,6 @@ struct mcp_row {
  * mcp_static, is part 0. */
 static struct plugin const mcp_host_plugin = {};
 
-/* askai's git, a plugin built in: its part of a loop is the git itself. */
-static struct plugin const mcp_git_plugin = {
-	.tools = {{
-		.definition = mcp_git_definition,
-		.start = mcp_slot_git,
-		.step = mcp_slot_git_text,
-		.flags = TOOL_LENT | TOOL_PAGED | TOOL_DETACH | TOOL_STREAM
-	}}
-};
-
 static struct mcp_row const mcp_rows[KINDS] = {
 #define N(s) .ptr = s, .len = sizeof s - 1
 	[KIND_ASK]        = { { .definition = mcp_tool_definition, .start = mcp_slot_ask,
@@ -5883,7 +5753,7 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	[KIND_TASK]       = { { .definition = mcp_task_definition, .start = mcp_slot_task,
 	                        .drop = mcp_slot_task_drop },
 	                      N("test_task"), LEND_NEVER, LENT_NONE },
-	[KIND_GIT]        = { .plugin = &mcp_git_plugin, N("git"), .metric = LENT_GIT },
+	[KIND_GIT]        = { .plugin = &git_plugin, N("git"), .metric = LENT_GIT },
 	[KIND_NOTES]      = { { .definition = mcp_notes_definition, .start = mcp_slot_notes,
 	                        .step = mcp_slot_notes_out, .flags = KF_SERIAL },
 	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION },
