@@ -135,7 +135,6 @@ enum {
 
 /* What a git of the notes is for. */
 enum mcp_fetch {
-	FETCH_GIT,      /* the git tool's */
 	FETCH_WRITE,    /* the notes tool's write */
 	FETCH_READ,     /* its read */
 	FETCH_RESUME,   /* the notes of a thread the call goes on with */
@@ -183,10 +182,10 @@ static char const *const field_names[F_N] = {
 	[F_SESSION] = "mcp-session-id",
 };
 
-/* The kinds of tool that askai may offer, in the order of their ids: those
- * that a role may grant, which clients list and call, before KIND_NOTES;
- * notes and compact, which only turns are given, after; then that of a
- * tool it does not offer. */
+/* The kinds of tool that askai may offer, each its row of mcp_rows, in the
+ * order of their ids: those that a role may grant, which clients list and
+ * call, before KIND_NOTES; from notes on, those only turns are given; then
+ * that of a tool it does not offer. */
 enum mcp_kind : uint32_t {
 	KIND_ASK,
 	KIND_MAN,
@@ -213,53 +212,39 @@ enum mcp_lend : uint8_t {
 	LEND_DETACH,
 };
 
-/* What a kind of tool's calls are, beside how it is lent. */
-enum mcp_kind_flag : uint16_t {
-	KF_PAGED  = 1u << 0,  /* its output is read on from "offset" */
-	KF_SERIAL = 1u << 1,  /* a turn's call of it keeps to itself, running
-	                         after the calls before it are written, and those
-	                         after it after it is */
-	KF_DETACH = 1u << 2,  /* a turn may run it in the background */
+/* What the trace tells of a call besides its tool's name: its arguments'
+ * JSON text; of a notes call's, which are the upstream's own, only the
+ * action; or nothing. */
+enum mcp_trace : uint8_t {
+	TRACE_JSON,
+	TRACE_ACTION,
+	TRACE_NAME,
 };
 
-/* What each kind of tool is: its name, but the ask tool's, which the
- * configuration names; how the turns are lent it; its row in the turns'
- * metrics; and what its calls are. */
-static struct {
-	char const *ptr;
-	uint32_t    len;
-	uint8_t     lend;    /* enum mcp_lend */
-	uint8_t     metric;  /* enum metrics_lent */
-	uint16_t    flags;   /* enum mcp_kind_flag */
-} const kind_info[KINDS] = {
-#define N(s) s, sizeof s - 1
-	[KIND_ASK]        = { .metric = LENT_NONE },
-	[KIND_MAN]        = { N("man"), LEND_GRANTED, LENT_MAN, KF_PAGED | KF_DETACH },
-	[KIND_TASK]       = { N("test_task"), LEND_NEVER, LENT_NONE, 0 },
-	[KIND_GIT]        = { N("git"), LEND_GRANTED, LENT_GIT, KF_PAGED | KF_DETACH },
-	[KIND_NOTES]      = { N("notes"), LEND_ALWAYS, LENT_NOTES, KF_SERIAL },
-	[KIND_COMPACT]    = { N("compact"), LEND_WITH, LENT_COMPACT, KF_SERIAL },
-	[KIND_BACKGROUND] = { N("background"), LEND_DETACH, LENT_BACKGROUND, 0 },
-	[KIND_JOBS]       = { N("jobs"), LEND_DETACH, LENT_JOBS, KF_PAGED | KF_SERIAL },
-	[KIND_WAIT]       = { N("wait"), LEND_WITH, LENT_WAIT, KF_SERIAL },
-	[KIND_TIMER]      = { N("timer"), LEND_WITH, LENT_TIMER, 0 },
-	[KIND_NONE]       = { N("an unknown tool"), LEND_NEVER, LENT_NONE, 0 },
-#undef N
-};
+/* A flag of askai's own kinds, past TOOL_FLAGS: a turn's call of it keeps
+ * to itself, running after the calls before it are written, and those after
+ * it after it is. */
+static constexpr uint64_t KF_SERIAL = 1ull << 32;
 
 /* A tool that askai offers: its definition as tools/list lists it, if a
  * role may grant it, and as the upstream's API has it, if it is lent, each
- * after a comma; its name; and its kind. */
+ * after a comma; its kind; its name; how the turns are lent it; its row in
+ * the turns' metrics; and what the trace tells of its calls. */
 struct mcp_offer {
-	struct dstr     listed;
-	struct dstr     lent;
-	char const     *name;
-	uint32_t        len;
-	enum mcp_kind   kind;
+	struct dstr             listed;
+	struct dstr             lent;
+	struct tool_kind const *kind;
+	char const             *name;
+	uint32_t                len;
+	uint8_t                 lend;    /* enum mcp_lend */
+	uint8_t                 metric;  /* enum metrics_lent */
+	uint16_t                trace;   /* enum mcp_trace, widened over the
+	                                    padding */
 };
 
 struct mcp_static {
 	struct ai_endpoint const *ep;
+	struct mcp_tool const    *tool;   /**< the ask tool's, as configured */
 	struct mcp_offer          offers[TOOL_MAX + 1];  /**< by id; TOOL_MAX's,
 	                                                      that of a tool askai
 	                                                      does not offer */
@@ -360,7 +345,8 @@ struct mcp_slot {
 	uint16_t            note_len;  /* bytes of note */
 	uint8_t             tool;      /* its call's tool, by its offer's id;
 	                                  TOOL_MAX: none */
-	uint8_t             fetch;     /* enum mcp_fetch: what its git is for */
+	uint8_t             fetch;     /* enum mcp_fetch: what its notes' git is
+	                                  for */
 	uint8_t             role;      /* enum mcp_role */
 	bool                done;      /* the call has its output, or it was
 	                                  cancelled */
@@ -898,17 +884,21 @@ mcp_req_slots_drop (struct mcp_req *req)
 	req->launched = 0;
 }
 
-/* Let go of what @p slot's call waits for, its work, and its output's
- * page. */
+/* The offer of the tool of @p slot's call. */
+static struct mcp_offer const *
+mcp_slot_offer (struct mcp_slot const *slot)
+{
+	return &slot->req->mcp->st->offers[slot->tool];
+}
+
+/* Let go of what @p slot's call holds, as its kind does, of its notes' git,
+ * and of its work and what it waits for. */
 static void
 mcp_slot_drop (struct mcp_slot *slot)
 {
-	manual_page_put(slot->page);
-	slot->page = nullptr;
-	if (slot->task) {
-		task_drop(slot->task);
-		slot->task = nullptr;
-	}
+	tool_drop_fn *drop = mcp_slot_offer(slot)->kind->drop;
+	if (drop)
+		drop(slot);
 	child_destroy(&slot->child);
 	loop_unready(&slot->step);
 	if (slot->call.bits)
@@ -2326,13 +2316,10 @@ mcp_slot_man (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	struct mcp_req *req = slot->req;
-	if (slot->role == ROLE_OWN)
-		slot->start = loop_clock();
 	struct manual_page *found = nullptr;
 	int e = mcp_slot_man_find(slot, page, page_len, sect, len, &found);
 	if (e) {
-		mcp_req_fail(req, e);
+		mcp_req_fail(slot->req, e);
 		return;
 	}
 	if (found) {
@@ -2341,6 +2328,14 @@ mcp_slot_man (struct mcp_slot    *slot,
 		return;
 	}
 	mcp_slot_park(slot);
+}
+
+/* Let go of a man call's page. */
+static void
+mcp_slot_man_drop (struct mcp_slot *slot)
+{
+	manual_page_put(slot->page);
+	slot->page = nullptr;
 }
 
 static void mcp_slot_notes_fetch (struct mcp_slot *slot, enum mcp_fetch fetch,
@@ -2458,7 +2453,6 @@ mcp_req_ask (struct mcp_req     *req,
 		}
 		notes_ref(req->s->principal, req->thread, req->ref);
 	}
-	req->self.start = loop_clock();
 	mcp_req_wait(req);
 	int e = mcp_req_draft(req, prompt, system);
 	if (e) {
@@ -2568,34 +2562,43 @@ mcp_slot_spin (struct mcp_slot    *slot,
 	s->slices = 0;
 	s->x = loop->now | 1;
 	s->call = slot->call;
-	slot->start = loop_clock();
 	slot->task = &s->task;
 	mcp_slot_park(slot);
 	task_submit(&s->task, loop);
 }
 
-/* Start a test_task call: a task of the slices its arguments @p args ask
- * for; or, with a prompt instead, a call that asks the upstream as
- * background work. */
+/* Start a test_task call in @p slot, the request's own: a task of the
+ * slices its arguments @p args ask for; or, with a prompt instead, a call
+ * that asks the upstream as background work. */
 static void
-mcp_req_task (struct mcp_req     *req,
-              struct json_object *args)
+mcp_slot_task (struct mcp_slot    *slot,
+               struct json_object *args)
 {
 	if (args && !json_object_is_type(args, json_type_object)) {
-		mcp_slot_result(&req->self, TEXT("Tool arguments must be an object."), true);
+		mcp_slot_result(slot, TEXT("Tool arguments must be an object."), true);
 		return;
 	}
 	struct json_object *slices = jb_get(args, "slices");
 	if (!jb_get(args, "prompt")) {
-		mcp_slot_spin(&req->self, slices);
+		mcp_slot_spin(slot, slices);
 		return;
 	}
 	if (slices) {
-		mcp_slot_result(&req->self, TEXT("Give slices or a prompt, not both."), true);
+		mcp_slot_result(slot, TEXT("Give slices or a prompt, not both."), true);
 		return;
 	}
-	req->asks = JOB_BACKGROUND;
-	mcp_req_ask(req, args);
+	slot->req->asks = JOB_BACKGROUND;
+	mcp_req_ask(slot->req, args);
+}
+
+/* Let go of a test_task call's task, which cancels it if it runs. */
+static void
+mcp_slot_task_drop (struct mcp_slot *slot)
+{
+	if (slot->task) {
+		task_drop(slot->task);
+		slot->task = nullptr;
+	}
 }
 
 /* The output of a slot's git is all in: take it a slice a step, in the
@@ -2711,8 +2714,6 @@ mcp_slot_git (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	if (slot->role == ROLE_OWN)
-		slot->start = loop_clock();
 	struct child_cmd const cmd = {
 		.file = "git",
 		.argv = argv,
@@ -2723,7 +2724,6 @@ mcp_slot_git (struct mcp_slot    *slot,
 		.flags = CHILD_STDERR
 	};
 	int e = 0;
-	slot->fetch = FETCH_GIT;
 	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_git, slot, &e);
 	if (e == EBUSY) {
 		mcp_slot_result(slot, TEXT("Too many commands are running; try again in a "
@@ -2744,10 +2744,6 @@ mcp_slot_git (struct mcp_slot    *slot,
 static void mcp_req_calls_next (struct mcp_req *req);
 static bool mcp_req_slice (struct mcp_req *req, struct jb_pool *pool,
                            struct span json);
-static void mcp_slot_notes (struct mcp_slot *slot, struct json_object *args);
-struct mcp_call;
-static void mcp_slot_compact (struct mcp_slot *slot, struct mcp_call const *c,
-                              struct json_object *args);
 static void mcp_req_turn_submit (struct mcp_req *req);
 static void mcp_req_add_start (struct mcp_req *req);
 static void mcp_on_notes (struct child *c);
@@ -3182,15 +3178,14 @@ mcp_req_turn_write (struct mcp_req *req)
 	mcp_req_calls_next(req);
 }
 
-/* Add a line for the tool call @p c, of @p tool, to the trace: its name and
- * the first TRACE_ARGS bytes of its arguments' JSON text, but of what notes
- * and compact are given, which are the upstream's own, only the notes'
- * action; the outcome follows. */
+/* Add a line for the tool call @p c, with the arguments @p args, to the
+ * trace: its name and, as @p trace says, the first TRACE_ARGS bytes of its
+ * arguments' JSON text, or its action; the outcome follows. */
 static int
 mcp_req_trace (struct mcp_req        *req,
                struct mcp_call const *c,
                struct json_object    *args,
-               enum mcp_kind          tool)
+               enum mcp_trace         trace)
 {
 	if (req->traced++ >= TRACE_MAX)
 		return 0;
@@ -3198,10 +3193,10 @@ mcp_req_trace (struct mcp_req        *req,
 	if (!CAT(&req->trace, "- ") ||
 	    !dstr_cat_n(&req->trace, name, jb_utf8(name, mcp_clip(name, c->name.len, 64))))
 		return ENOMEM;
-	switch (tool) {
-	case KIND_COMPACT:
+	switch (trace) {
+	case TRACE_NAME:
 		return 0;
-	case KIND_NOTES:
+	case TRACE_ACTION:
 		size_t len = 0;
 		char const *action = mcp_str(jb_get(args, "action"), &len);
 		return !action || (CAT(&req->trace, " ") &&
@@ -3228,13 +3223,6 @@ mcp_req_trace_end (struct mcp_req *req,
 	if (failed)
 		return CAT(&req->trace, ": failed\n") ? 0 : ENOMEM;
 	return dstr_printf(&req->trace, ": %zu bytes\n", bytes) ? 0 : ENOMEM;
-}
-
-/* The offer of the tool of @p slot's call. */
-static struct mcp_offer const *
-mcp_slot_offer (struct mcp_slot const *slot)
-{
-	return &slot->req->mcp->st->offers[slot->tool];
 }
 
 /* The id of the tool of @p name, of @p len bytes, that the turns may
@@ -3451,6 +3439,16 @@ mcp_agenda_alarm (struct loop       *loop,
 		mcp_agenda_wake(a);
 }
 
+/* Note when @p slot's call starts, and start it with the arguments @p args,
+ * as its tool's kind does. */
+static void
+mcp_slot_start (struct mcp_slot    *slot,
+                struct json_object *args)
+{
+	slot->start = loop_clock();
+	mcp_slot_offer(slot)->kind->start(slot, args);
+}
+
 /* Start the call that @p args asks for as a job in the background, in a
  * slot of the agenda's: of a tool the turns may call that may run so.  The
  * call in @p slot says the job's number at once. */
@@ -3463,9 +3461,8 @@ mcp_slot_background (struct mcp_slot    *slot,
 	char const *name = mcp_str(jb_get(args, "tool"), &len);
 	struct json_object *call = jb_get(args, "arguments");
 	uint32_t id = name ? mcp_req_tool_of(req, name, len) : TOOL_MAX;
-	enum mcp_kind kind = req->mcp->st->offers[id].kind;
 	struct mcp_piece problem =
-		!(kind_info[kind].flags & KF_DETACH)
+		!(req->mcp->st->offers[id].kind->flags & TOOL_DETACH)
 		? TEXT("The tool argument must name a tool of yours that may run in the "
 		       "background, such as git or man.")
 		: call && !json_object_is_type(call, json_type_object)
@@ -3498,10 +3495,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 	mcp_slot_result(slot, ESC(text, util_format(text, sizeof text, "Started job %"
 	                                            PRIu32 ".", n)), false);
 	/* Last, as the job's start may end the request. */
-	if (kind == KIND_MAN)
-		mcp_slot_man(job, job->args);
-	else
-		mcp_slot_git(job, job->args);
+	mcp_slot_start(job, job->args);
 }
 
 /* List the jobs into @p slot's answer: each with its tool, its arguments,
@@ -3718,24 +3712,34 @@ mcp_slot_timer (struct mcp_slot    *slot,
 
 static void mcp_req_result_begin (struct mcp_req *req, struct mcp_slot *slot);
 
+/* A turn's call of a tool that it may not call, or that askai does not
+ * offer. */
+static void
+mcp_slot_none (struct mcp_slot    *slot,
+               struct json_object *args)
+{
+	(void)args;
+	mcp_slot_result(slot, TEXT("No tool of that name is yours to call."), true);
+}
+
 /* Launch the turn's next tool call, in its slot, unless it must wait: a
  * call that keeps to itself until those before it are written, and those
  * after it until it is.  A call goes to the tool of its name that the turns
- * may call, which writes its output into the slot's answer, or gives a
- * page, and calls mcp_slot_done().  The step comes again after it, as the
- * call may end the request. */
+ * may call, whose kind starts it, writes its output into the slot's answer,
+ * or gives a page, and calls mcp_slot_done().  The step comes again after
+ * it, as the call may end the request. */
 static void
 mcp_req_call_launch (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	uint32_t k = req->launched;
 	if (k == req->n_calls ||
-	    (k > req->part && kind_info[mcp_slot_offer(&req->slots[k - 1])->kind].flags & KF_SERIAL))
+	    (k > req->part && mcp_slot_offer(&req->slots[k - 1])->kind->flags & KF_SERIAL))
 		return;
 	struct mcp_call c = mcp_call_at(buf_peek(&req->calls).ptr + req->launch_at);
 	uint32_t id = mcp_req_tool_of(req, (char const *)c.name.ptr, c.name.len);
 	struct mcp_offer const *tool = &mcp->st->offers[id];
-	if (kind_info[tool->kind].flags & KF_SERIAL && k > req->part)
+	if (tool->kind->flags & KF_SERIAL && k > req->part)
 		return;
 	if (mcp->draining) {
 		mcp_req_fail(req, ESHUTDOWN);
@@ -3747,7 +3751,7 @@ mcp_req_call_launch (struct mcp_req *req)
 	slot->tool = (uint8_t)id;
 	req->launch_at += c.size;
 	req->launched = k + 1;
-	hist_add(&mcp->counts->calls.lent[kind_info[tool->kind].metric], 1);
+	hist_add(&mcp->counts->calls.lent[tool->metric], 1);
 	mcp_req_notify_tool(req, tool->name);
 	loop_ready_bulk(mcp->loop, &req->step);
 	if (!args) {
@@ -3758,38 +3762,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		                       "was not run."), true);
 		return;
 	}
-	switch (tool->kind) {
-	case KIND_MAN:
-		mcp_slot_man(slot, args);
-		return;
-	case KIND_GIT:
-		mcp_slot_git(slot, args);
-		return;
-	case KIND_NOTES:
-		mcp_slot_notes(slot, args);
-		return;
-	case KIND_COMPACT:
-		mcp_slot_compact(slot, &c, args);
-		return;
-	case KIND_BACKGROUND:
-		mcp_slot_background(slot, args);
-		return;
-	case KIND_JOBS:
-		mcp_slot_jobs(slot, args);
-		return;
-	case KIND_WAIT:
-		mcp_slot_wait(slot, args);
-		return;
-	case KIND_TIMER:
-		mcp_slot_timer(slot, args);
-		return;
-	case KIND_ASK:
-	case KIND_TASK:
-	case KIND_NONE:
-	case KINDS:
-		break;
-	}
-	mcp_slot_result(slot, TEXT("No tool of that name is yours to call."), true);
+	mcp_slot_start(slot, args);
 }
 
 /* Go on with the turn's tool calls: write the next one's result once it
@@ -3851,7 +3824,7 @@ mcp_slot_note_window (struct mcp_slot *slot,
 {
 	size_t end = slot->skip + slot->window;
 	if (end < len) {
-		if (kind_info[mcp_slot_offer(slot)->kind].flags & KF_PAGED)
+		if (mcp_slot_offer(slot)->kind->flags & TOOL_PAGED)
 			return util_format(slot->note, sizeof slot->note, "\n\n[Bytes %zu to %zu "
 			                   "of %zu: for the rest, call again with \"offset\": "
 			                   "%zu.]", slot->skip, end, len, end);
@@ -3988,7 +3961,7 @@ mcp_req_result_write (struct mcp_req *req)
 		return;
 	}
 	struct mcp_slot *slot = &req->slots[req->part];
-	(void)mcp_req_trace(req, &c, req->args[req->part], mcp_slot_offer(slot)->kind);
+	(void)mcp_req_trace(req, &c, req->args[req->part], mcp_slot_offer(slot)->trace);
 	(void)mcp_req_trace_end(req, slot->failed, mcp_slot_output(slot).len);
 	manual_page_put(slot->page);
 	slot->page = nullptr;
@@ -4462,18 +4435,15 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 	}
 }
 
-/* Do the work of @p step's slot: take its git's output, the git tool's or
- * the notes'. */
+/* Do the work of @p step's slot, as its call's kind does: take its git's
+ * output, the git tool's or the notes'. */
 static void
 mcp_slot_step (struct loop      *loop,
                struct loop_step *step)
 {
 	(void)loop;
 	struct mcp_slot *slot = container_of(step, struct mcp_slot, step);
-	if (slot->fetch == FETCH_GIT)
-		mcp_slot_git_text(slot);
-	else
-		mcp_slot_notes_out(slot);
+	mcp_slot_offer(slot)->kind->step(slot);
 }
 
 /* Compaction has left the summary, if any, in what askai adds to the
@@ -4489,13 +4459,12 @@ mcp_req_compact_notes (struct mcp_req *req,
 	mcp_req_go_on(req, TEXT("\n\n"));
 }
 
-/* Compact the context, as the turn's compact call @p c in @p slot asks with
+/* Compact the context, as the turn's compact call in @p slot asks with
  * @p args: what follows the prompt goes, and askai adds the summary and the
  * notes to it.  The turn's calls after this one do not run. */
 static void
-mcp_slot_compact (struct mcp_slot       *slot,
-                  struct mcp_call const *c,
-                  struct json_object    *args)
+mcp_slot_compact (struct mcp_slot    *slot,
+                  struct json_object *args)
 {
 	static_assert(SUMMARY_MAX == 16 << 10, "the problem says");
 	struct mcp_req *req = slot->req;
@@ -4506,7 +4475,10 @@ mcp_slot_compact (struct mcp_slot       *slot,
 		                           "16384 bytes."), true);
 		return;
 	}
-	(void)mcp_req_trace(req, c, args, KIND_COMPACT);
+	/* The trace names the call by its tool, the name it called. */
+	struct mcp_offer const *o = mcp_slot_offer(slot);
+	struct mcp_call const c = { .name = { (unsigned char *)(uintptr_t)o->name, o->len } };
+	(void)mcp_req_trace(req, &c, args, o->trace);
 	(void)mcp_req_trace_end(req, false, len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
 	dstr_clear(&req->self.answer);
@@ -4563,6 +4535,17 @@ mcp_req_compact_full (struct mcp_req *req)
 
 #undef CAT
 
+/* Start an ask call in @p slot, the request's own, its turns lent the tools
+ * that the client's role grants. */
+static void
+mcp_slot_ask (struct mcp_slot    *slot,
+              struct json_object *args)
+{
+	struct mcp_req *req = slot->req;
+	req->lent = mcp_req_lent(req);
+	mcp_req_ask(req, args);
+}
+
 /* Start a tool call: of the tool that the name in @p params names, compared
  * over its length, as the Mcp-Name header is, among those that a role may
  * grant, with the arguments and the progress token that @p params gives;
@@ -4603,32 +4586,8 @@ mcp_req_tools_call (struct mcp_req     *req,
 		req->promote_at = req->mcp->loop->now + TASK_NS;
 		mcp_req_arm(req);
 	}
-	struct json_object *args = jb_get(params, "arguments");
 	req->self.tool = (uint8_t)id;
-	switch (st->offers[id].kind) {
-	case KIND_ASK:
-		req->lent = mcp_req_lent(req);
-		mcp_req_ask(req, args);
-		return;
-	case KIND_MAN:
-		mcp_slot_man(&req->self, args);
-		return;
-	case KIND_TASK:
-		mcp_req_task(req, args);
-		return;
-	case KIND_GIT:
-		mcp_slot_git(&req->self, args);
-		return;
-	case KIND_NOTES:
-	case KIND_COMPACT:
-	case KIND_BACKGROUND:
-	case KIND_JOBS:
-	case KIND_WAIT:
-	case KIND_TIMER:
-	case KIND_NONE:
-	case KINDS:
-		break;
-	}
+	mcp_slot_start(&req->self, jb_get(params, "arguments"));
 }
 
 static void
@@ -5515,12 +5474,12 @@ mcp_drain (struct mcp *mcp)
 	loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 
-/* The ask tool's definition; with @p notes, the notes askai keeps if it
- * does, with the thread argument. */
+/* The ask tool's definition, as @p inst, the mcp_static, configures it;
+ * with the notes askai keeps if it does, the thread argument. */
 static struct json_object *
-mcp_tool_definition (struct mcp_tool const *tool,
-                     struct notes const    *notes)
+mcp_tool_definition (void const *inst)
 {
+	struct mcp_static const *st = inst;
 	struct json_object *props = jb_object(
 		"prompt", jb_object(
 			"type", json_object_new_string("string"),
@@ -5536,7 +5495,7 @@ mcp_tool_definition (struct mcp_tool const *tool,
 				"or an answer format."),
 			nullptr),
 		nullptr);
-	if (notes && jb_set(props, "thread", jb_object(
+	if (st->notes && jb_set(props, "thread", jb_object(
 		    "type", json_object_new_string("string"),
 		    "description", json_object_new_string(
 			    "Optional: the thread that an earlier answer named, to go on with "
@@ -5547,9 +5506,9 @@ mcp_tool_definition (struct mcp_tool const *tool,
 		props = nullptr;
 	}
 	return jb_object(
-		"name", json_object_new_string(tool->name),
+		"name", json_object_new_string(st->tool->name),
 		"title", json_object_new_string("Ask AI"),
-		"description", json_object_new_string(tool->description),
+		"description", json_object_new_string(st->tool->description),
 		"inputSchema", jb_object(
 			"type", json_object_new_string("object"),
 			"properties", props,
@@ -5564,8 +5523,9 @@ mcp_tool_definition (struct mcp_tool const *tool,
 }
 
 static struct json_object *
-mcp_man_definition (void)
+mcp_man_definition (void const *inst)
 {
+	(void)inst;
 	static_assert(MANUAL_MAX == 2 << 20, "the description says 2 MiB");
 	return jb_object(
 		"name", json_object_new_string("man"),
@@ -5612,8 +5572,9 @@ mcp_man_definition (void)
 }
 
 static struct json_object *
-mcp_task_definition (void)
+mcp_task_definition (void const *inst)
 {
+	(void)inst;
 	static_assert(SPIN_MAX == 100'000 && TASK_SLICE_NS == 250'000,
 	              "the description says");
 	return jb_object(
@@ -5646,10 +5607,20 @@ mcp_task_definition (void)
 		nullptr);
 }
 
+/* git's definition, of the repositories that @p inst, the mcp_static, has
+ * it list. */
+static struct json_object *
+mcp_git_definition (void const *inst)
+{
+	struct mcp_static const *st = inst;
+	return git_definition(st->git);
+}
+
 /* The notes tool's definition, which only turns are given. */
 static struct json_object *
-mcp_notes_definition (void)
+mcp_notes_definition (void const *inst)
 {
+	(void)inst;
 	static_assert(NOTES_TEXT == 8 << 10 && NOTES_READ == 256, "the description says");
 	struct json_object *actions = jb_list(json_object_new_string("write"));
 	if (jb_push(actions, json_object_new_string("read"))) {
@@ -5695,8 +5666,9 @@ mcp_notes_definition (void)
 
 /* The compact tool's definition, which only turns are given. */
 static struct json_object *
-mcp_compact_definition (void)
+mcp_compact_definition (void const *inst)
 {
+	(void)inst;
 	static_assert(SUMMARY_MAX == 16 << 10, "the description says");
 	return jb_object(
 		"name", json_object_new_string("compact"),
@@ -5747,8 +5719,9 @@ mcp_schema (struct json_object *properties,
 /* The definition of background, which only turns are given; nullptr if
  * out of memory. */
 static struct json_object *
-mcp_background_definition (void)
+mcp_background_definition (void const *inst)
 {
+	(void)inst;
 	static_assert(JOBS_MAX == 8, "the description says");
 	return jb_object(
 		"name", json_object_new_string("background"),
@@ -5775,8 +5748,9 @@ mcp_background_definition (void)
 
 /* The definition of jobs, likewise. */
 static struct json_object *
-mcp_jobs_definition (void)
+mcp_jobs_definition (void const *inst)
 {
+	(void)inst;
 	struct json_object *actions = jb_list(json_object_new_string("list"));
 	if (jb_push(actions, json_object_new_string("result")) ||
 	    jb_push(actions, json_object_new_string("cancel"))) {
@@ -5808,8 +5782,9 @@ mcp_jobs_definition (void)
 
 /* The definition of wait, likewise. */
 static struct json_object *
-mcp_wait_definition (void)
+mcp_wait_definition (void const *inst)
 {
+	(void)inst;
 	static_assert(WAIT_MAX == 600, "the description says");
 	return jb_object(
 		"name", json_object_new_string("wait"),
@@ -5835,8 +5810,9 @@ mcp_wait_definition (void)
 
 /* The definition of timer, likewise. */
 static struct json_object *
-mcp_timer_definition (void)
+mcp_timer_definition (void const *inst)
 {
+	(void)inst;
 	static_assert(TIMER_MAX == 3600 && TIMER_NOTE == 200, "the description says");
 	return jb_object(
 		"name", json_object_new_string("timer"),
@@ -5937,33 +5913,78 @@ mcp_static_tails (struct mcp_static  *st,
 	                   CACHE_TTL_MS, dstr_get(&st->modern_tail)) ? 0 : ENOMEM;
 }
 
+/* What each kind of tool is: what its calls do; its name, but the ask
+ * tool's, which the configuration names; how the turns are lent it; its row
+ * in the turns' metrics; and what the trace tells of its calls. */
+struct mcp_row {
+	struct tool_kind        kind;
+	char const             *ptr;
+	uint32_t                len;
+	uint8_t                 lend;    /* enum mcp_lend */
+	uint8_t                 metric;  /* enum metrics_lent */
+	uint16_t                trace;   /* enum mcp_trace, widened over the
+	                                    padding */
+};
+
+static struct mcp_row const mcp_rows[KINDS] = {
+#define N(s) .ptr = s, .len = sizeof s - 1
+	[KIND_ASK]        = { { .definition = mcp_tool_definition, .start = mcp_slot_ask,
+	                        .step = mcp_slot_notes_out },
+	                      .metric = LENT_NONE },
+	[KIND_MAN]        = { { .definition = mcp_man_definition, .start = mcp_slot_man,
+	                        .drop = mcp_slot_man_drop, .flags = TOOL_PAGED | TOOL_DETACH },
+	                      N("man"), LEND_GRANTED, LENT_MAN },
+	[KIND_TASK]       = { { .definition = mcp_task_definition, .start = mcp_slot_task,
+	                        .drop = mcp_slot_task_drop },
+	                      N("test_task"), LEND_NEVER, LENT_NONE },
+	[KIND_GIT]        = { { .definition = mcp_git_definition, .start = mcp_slot_git,
+	                        .step = mcp_slot_git_text, .flags = TOOL_PAGED | TOOL_DETACH },
+	                      N("git"), LEND_GRANTED, LENT_GIT },
+	[KIND_NOTES]      = { { .definition = mcp_notes_definition, .start = mcp_slot_notes,
+	                        .step = mcp_slot_notes_out, .flags = KF_SERIAL },
+	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION },
+	[KIND_COMPACT]    = { { .definition = mcp_compact_definition, .start = mcp_slot_compact,
+	                        .flags = KF_SERIAL },
+	                      N("compact"), LEND_WITH, LENT_COMPACT, TRACE_NAME },
+	[KIND_BACKGROUND] = { { .definition = mcp_background_definition,
+	                        .start = mcp_slot_background },
+	                      N("background"), LEND_DETACH, LENT_BACKGROUND },
+	[KIND_JOBS]       = { { .definition = mcp_jobs_definition, .start = mcp_slot_jobs,
+	                        .flags = TOOL_PAGED | KF_SERIAL },
+	                      N("jobs"), LEND_DETACH, LENT_JOBS },
+	[KIND_WAIT]       = { { .definition = mcp_wait_definition, .start = mcp_slot_wait,
+	                        .flags = KF_SERIAL },
+	                      N("wait"), LEND_WITH, LENT_WAIT },
+	[KIND_TIMER]      = { { .definition = mcp_timer_definition, .start = mcp_slot_timer },
+	                      N("timer"), LEND_WITH, LENT_TIMER },
+	[KIND_NONE]       = { { .start = mcp_slot_none },
+	                      N("an unknown tool"), LEND_NEVER, LENT_NONE },
+#undef N
+};
+
 /* Serialize the replies that never change, of @p info, what tells of
- * askai, @p list, an array for the supported versions, and @p defs:
- * tools/list's for each set of the tools a role may list; with compact's
- * definition, the tools a turn may call, by whether the role may call man
- * and git, bits 0 and 1 of the set: those, the notes, and, with any of
- * those, compact; then mcp_static_tails()'s. */
+ * askai, and @p list, an array for the supported versions: each tool's
+ * definition, as tools/list lists it if a role may grant it, and as the
+ * upstream's API has it if it is lent; then mcp_static_tails()'s. */
 static int
-mcp_static_build (struct mcp_static        *st,
-                  struct json_object       *info,
-                  struct json_object       *list,
-                  struct json_object *const defs[KINDS])
+mcp_static_build (struct mcp_static  *st,
+                  struct json_object *info,
+                  struct json_object *list)
 {
-	/* The turns are lent tools with compact, which --upstream-tools offers. */
-	bool lends = defs[KIND_COMPACT];
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_offer *o = &st->offers[id];
-		enum mcp_lend lend = lends ? kind_info[o->kind].lend : LEND_NEVER;
+		struct json_object *def = o->kind->definition(st);
 		tool_mask bit = (tool_mask)1 << id;
-		st->lends |= lend == LEND_GRANTED ? bit : 0;
-		st->always |= lend == LEND_ALWAYS ? bit : 0;
-		st->with |= lend == LEND_WITH ? bit : 0;
-		st->detached |= lend == LEND_DETACH ? bit : 0;
-		st->detach |= kind_info[o->kind].flags & KF_DETACH ? bit : 0;
-		int e = id < st->n_granted
-		      ? mcp_static_item(&o->listed, json_object_get(defs[o->kind])) : 0;
-		if (!e && lend != LEND_NEVER)
-			e = mcp_static_item(&o->lent, ai_tool(st->ep->api, defs[o->kind]));
+		st->lends |= o->lend == LEND_GRANTED ? bit : 0;
+		st->always |= o->lend == LEND_ALWAYS ? bit : 0;
+		st->with |= o->lend == LEND_WITH ? bit : 0;
+		st->detached |= o->lend == LEND_DETACH ? bit : 0;
+		st->detach |= o->kind->flags & TOOL_DETACH ? bit : 0;
+		int e = !def ? ENOMEM : id < st->n_granted
+		      ? mcp_static_item(&o->listed, json_object_get(def)) : 0;
+		if (!e && o->lend != LEND_NEVER)
+			e = mcp_static_item(&o->lent, ai_tool(st->ep->api, def));
+		json_object_put(def);
 		if (e)
 			return e;
 	}
@@ -5994,7 +6015,7 @@ mcp_offers (struct config const *cfg,
 		if (!(offered >> k & 1))
 			continue;
 		*granted += k < KIND_NOTES;
-		names[n] = kind_info[k].ptr ? kind_info[k].ptr : cfg->tool.name;
+		names[n] = mcp_rows[k].ptr ? mcp_rows[k].ptr : cfg->tool.name;
 		kinds[n++] = k;
 	}
 	return n;
@@ -6027,10 +6048,12 @@ mcp_static_create (struct config const *cfg,
 	}
 	*st = (struct mcp_static){
 		.ep = &cfg->ep,
+		.tool = &cfg->tool,
 		.offers[TOOL_MAX] = {
-			.name = kind_info[KIND_NONE].ptr,
-			.len = kind_info[KIND_NONE].len,
-			.kind = KIND_NONE
+			.kind = &mcp_rows[KIND_NONE].kind,
+			.name = mcp_rows[KIND_NONE].ptr,
+			.len = mcp_rows[KIND_NONE].len,
+			.metric = mcp_rows[KIND_NONE].metric
 		},
 		.list_tail = DSTR_INIT,
 		.discover = DSTR_INIT,
@@ -6052,13 +6075,17 @@ mcp_static_create (struct config const *cfg,
 	enum mcp_kind kinds[TOOL_MAX];
 	st->n_offers = mcp_offers(cfg, names, kinds, &st->n_granted);
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
-		enum mcp_kind k = kinds[id];
+		struct mcp_row const *row = &mcp_rows[kinds[id]];
 		st->offers[id] = (struct mcp_offer){
 			.listed = DSTR_INIT,
 			.lent = DSTR_INIT,
+			.kind = &row->kind,
 			.name = names[id],
-			.len = kind_info[k].ptr ? kind_info[k].len : (uint32_t)strlen(names[id]),
-			.kind = k
+			.len = row->ptr ? row->len : (uint32_t)strlen(names[id]),
+			/* The turns are lent tools with --upstream-tools. */
+			.lend = lends ? row->lend : LEND_NEVER,
+			.metric = row->metric,
+			.trace = row->trace
 		};
 	}
 	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
@@ -6069,24 +6096,7 @@ mcp_static_create (struct config const *cfg,
 	                                     "version", json_object_new_string("0.1.0"),
 	                                     nullptr);
 	struct json_object *list = json_object_new_array();
-	struct json_object *defs[KINDS] = {
-		[KIND_ASK]        = mcp_tool_definition(&cfg->tool, st->notes),
-		[KIND_MAN]        = manual ? mcp_man_definition() : nullptr,
-		[KIND_TASK]       = tasks ? mcp_task_definition() : nullptr,
-		[KIND_GIT]        = git ? git_definition(git) : nullptr,
-		[KIND_NOTES]      = st->notes ? mcp_notes_definition() : nullptr,
-		[KIND_COMPACT]    = lends ? mcp_compact_definition() : nullptr,
-		[KIND_BACKGROUND] = lends ? mcp_background_definition() : nullptr,
-		[KIND_JOBS]       = lends ? mcp_jobs_definition() : nullptr,
-		[KIND_WAIT]       = lends ? mcp_wait_definition() : nullptr,
-		[KIND_TIMER]      = lends ? mcp_timer_definition() : nullptr
-	};
-	bool made = info && list;
-	for (uint32_t id = 0; id < st->n_offers; ++id)
-		made = made && defs[st->offers[id].kind];
-	*e = made ? mcp_static_build(st, info, list, defs) : ENOMEM;
-	for (size_t i = 0; i < KINDS; ++i)
-		json_object_put(defs[i]);
+	*e = info && list ? mcp_static_build(st, info, list) : ENOMEM;
 	json_object_put(list);
 	json_object_put(info);
 	if (*e)
