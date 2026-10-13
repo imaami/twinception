@@ -102,16 +102,12 @@ $1: | $$O$1
 ifneq (,$(1:%.a=))
 # Executable or shared library target
 $$O$1: $$(A_OBJ_$1) $$(O_OBJ_$1) $$(EXT_$1)
-override LDFLAGS_$1 = $$(call pkg-config,libs-only-L,$$(LIB_$1))
-override LDLIBS_$1  = $$(call pkg-config,libs-only-l,$$(LIB_$1))
+override LDFLAGS_$1 += $$(call pkg-config,libs-only-L,$$(LIB_$1))
+override LDLIBS_$1  += $$(call pkg-config,libs-only-l,$$(LIB_$1))
 else
 # Archive target
 $$O$1: $$O$1($$(A_OBJ_$1) $$(O_OBJ_$1) $$(EXT_$1))
 endif
-
-#
-#ifneq (,$(if $(1:%.so=),,$1))
-#
 
 clean-$1: | clean.o-$1 clean.json-$1
 purge-$1: | clean-$1 clean.d-$1
