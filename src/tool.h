@@ -4,7 +4,7 @@
 #define TWINCEPTION_SRC_TOOL_H_
 
 /** The tools askai may offer at most: a mask's width. */
-enum { TOOL_MAX = 128 };
+static constexpr unsigned TOOL_MAX = 128;
 
 /** Tools, bit i that of id i. */
 typedef unsigned _BitInt(TOOL_MAX) tool_mask;
