@@ -5380,6 +5380,12 @@ def check_notes(binary, up):
                 "!No note has that name."
             assert call({"action": "read", "file": "b", "thread": thread,
                          "offset": -1}).startswith("!The offset argument")
+            # Only list and read take an offset, and the answer of a call
+            # that failed is whole.
+            said = call({"action": "add", "file": "o.md", "text": "o", "offset": 500})
+            assert said.startswith("Noted, in the new thread "), said
+            assert call({"action": "read", "file": "b", "thread": thread,
+                         "offset": 5}) == "!No note has that name."
 
             for arguments, why in (
                     ({"action": "list"}, "list and read need the thread argument"),

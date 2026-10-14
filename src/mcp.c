@@ -4224,6 +4224,7 @@ mcp_slot_notes_failed (struct mcp_slot *slot,
 		return;
 	}
 	buf_fini(&req->body);
+	slot->skip = 0;
 	if (e == EBUSY) {
 		mcp_slot_result(slot, TEXT("Too many commands are running; try again in "
 		                           "a few seconds."), true);
@@ -4298,6 +4299,10 @@ mcp_slot_notes_end (struct mcp_slot *slot,
 		mcp_req_fail(slot->req, e);
 		return;
 	}
+	/* The offset of a list or a read does not apply to the answer of a
+	 * failed call. */
+	if (failed)
+		slot->skip = 0;
 	mcp_slot_respond(slot, failed);
 }
 
@@ -4669,6 +4674,8 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
 		return;
 	}
+	if (mcp_slot_offset(slot, args))
+		return;
 	struct buf in = {};
 	int e = notes_read_input(&in, name + skip, len - skip);
 	if (e) {
@@ -4692,8 +4699,6 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	struct json_object *thread = jb_get(args, "thread");
 	bool add = jb_is(action, "add");
 	bool read = jb_is(action, "read");
-	if (mcp_slot_offset(slot, args))
-		return;
 	if (!add && !read && !jb_is(action, "list")) {
 		mcp_slot_result(slot, TEXT("The action argument must be add, list or read."),
 		                true);
@@ -4726,7 +4731,7 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		mcp_slot_notes_read(slot, args);
 	else if (!req->branch)
 		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
-	else
+	else if (!mcp_slot_offset(slot, args))
 		mcp_slot_notes_run(slot, FETCH_LIST, nullptr);
 }
 
