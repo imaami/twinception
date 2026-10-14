@@ -6,8 +6,13 @@
  * architecture.  godbolt_compile compiles source code once with each of
  * one or more compilers and each of one or more argument strings.  Its
  * output has a record for each compilation, with the exit code, the
- * assembly and the messages of the compiler.  README.md describes the
- * tools and the option.
+ * assembly and the messages of the compiler.  godbolt_preprocess,
+ * godbolt_macros and godbolt_targets compile in the same way.  Their
+ * records have the preprocessed source, the predefined macros, or facts
+ * about the target that follow from the predefined macros
+ * (src/godbolt_probe.h).  The flags of the compiler's driver depend on the
+ * kind of the compiler, which the list of compilers has.  README.md
+ * describes the tools and the option.
  *
  * A call sends its HTTP requests through askai with mcp_slot_fetch(), one
  * at a time.  askai can store a response for the seconds of the keep of
@@ -19,7 +24,9 @@
  * (src/loop_export.h).  A list of compilers is a JSON array, and the
  * plugin parses it one element at a time, so it never has a tree of the
  * whole list.  The plugin parses a response to a compilation in slices
- * into one tree, and it frees the tree in slices.
+ * into one tree, writes it in slices, and frees it in slices.  One step
+ * parses the output of the probe of godbolt_targets, which is usually less
+ * than 100 KiB, but can be as long as a response.
  */
 #include <errno.h>
 #include <inttypes.h>
@@ -31,10 +38,12 @@
 
 #include <json-c/json.h>
 
+#include "godbolt_probe.h"
 #include "plugin.h"
 
 PLUGIN_MANIFEST(.name = "godbolt",
-                .tools = { "godbolt_catalog", "godbolt_compile" });
+                .tools = { "godbolt_catalog", "godbolt_compile", "godbolt_preprocess",
+                           "godbolt_macros", "godbolt_targets" });
 
 enum {
 	GODBOLT_URL_MAX      = 255,       /* bytes of the option url */
@@ -97,6 +106,37 @@ static struct godbolt_config const godbolt_defaults = {
 enum godbolt_tool : uint8_t {
 	GODBOLT_CATALOG,
 	GODBOLT_COMPILE,
+	GODBOLT_PREPROCESS,
+	GODBOLT_MACROS,
+	GODBOLT_TARGETS,
+	GODBOLT_TOOLS
+};
+
+/* The kinds of driver of a compiler.  The list of compilers has the kind of
+ * each compiler as its compilerType.  GODBOLT_GNU is every kind but
+ * win32-vc and clang-cl. */
+enum godbolt_driver : uint8_t {
+	GODBOLT_GNU,
+	GODBOLT_MSVC,
+	GODBOLT_CLANG_CL,
+	GODBOLT_DRIVERS
+};
+
+/* Where the main text of a record is in the response to a compilation. */
+enum godbolt_from : uint32_t {
+	GODBOLT_FROM_ASM,     /* in asm, before stdout and stderr */
+	GODBOLT_FROM_PP,      /* in ppOutput.output, before stdout and stderr */
+	GODBOLT_FROM_STDOUT,  /* in stdout, before stderr */
+	GODBOLT_FROM_NONE,    /* none, because the compilation is not sent */
+};
+
+/* The sections of a record. */
+enum godbolt_sec : uint8_t {
+	GODBOLT_SEC_ASM,
+	GODBOLT_SEC_STDOUT,
+	GODBOLT_SEC_STDERR,
+	GODBOLT_SEC_PP,
+	GODBOLT_SEC_MACROS,
 };
 
 /* The kinds of request that the plugin sends. */
@@ -136,8 +176,9 @@ static struct godbolt_rule const godbolt_rules[] = {
 
 /* What the next step of a call does. */
 enum godbolt_phase : uint8_t {
-	GODBOLT_LIST,    /* reads the response to the request of the catalog */
-	GODBOLT_ROWS,    /* parses the list of the catalog and writes rows */
+	GODBOLT_LIST,    /* reads the response to the request of a list */
+	GODBOLT_ROWS,    /* parses the list, and writes rows or reads the
+	                    kinds of the compilers */
 	GODBOLT_ESCAPE,  /* escapes the source into the body of the requests */
 	GODBOLT_JOB,     /* sends the request of the next compilation */
 	GODBOLT_ANSWER,  /* reads the response to a compilation */
@@ -242,12 +283,13 @@ enum godbolt_arg : uint8_t {
 	GODBOLT_ARG_ARGS,
 	GODBOLT_ARG_SOURCE,
 	GODBOLT_ARG_FILTERS,
+	GODBOLT_ARG_HEADERS,
 	GODBOLT_ARG_COUNT
 };
 
 static char const *const godbolt_arg_names[] = {
 	"action", "language", "ids", "match", "kind", "family", "architecture",
-	"limit", "offset", "compilers", "args", "source", "filters"
+	"limit", "offset", "compilers", "args", "source", "filters", "headers"
 };
 
 static_assert(sizeof godbolt_arg_names / sizeof *godbolt_arg_names == GODBOLT_ARG_COUNT);
@@ -284,6 +326,8 @@ static struct tool_text const godbolt_arg_rules[] = {
 		"filters must be an object whose members are among intel, demangle, "
 		"directives, commentOnly, labels, libraryCode and trim. Each member "
 		"is true or false."),
+	[GODBOLT_ARG_HEADERS] = GODBOLT_TEXT(
+		"headers must be true or false."),
 };
 
 #define GODBOLT_BIT(arg) (1u << GODBOLT_ARG_##arg)
@@ -307,6 +351,21 @@ static struct godbolt_params const godbolt_params[] = {
 		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
 		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(FILTERS) | GODBOLT_BIT(OFFSET),
 		.needs = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(SOURCE)
+	},
+	[GODBOLT_PREPROCESS] = {
+		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
+		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(OFFSET),
+		.needs = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(SOURCE)
+	},
+	[GODBOLT_MACROS] = {
+		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
+		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(OFFSET),
+		.needs = GODBOLT_BIT(COMPILERS)
+	},
+	[GODBOLT_TARGETS] = {
+		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
+		        GODBOLT_BIT(HEADERS) | GODBOLT_BIT(OFFSET),
+		.needs = GODBOLT_BIT(COMPILERS)
 	},
 };
 
@@ -338,19 +397,64 @@ enum { GODBOLT_FILTERS = sizeof godbolt_filters / sizeof *godbolt_filters };
  * commentOnly, demangle, directives, intel and labels. */
 static constexpr uint8_t GODBOLT_SITE_FILTERS = 0x1f;
 
-/* The sections of a record, in the order of the record. */
-static struct {
-	char const       *member;  /* the member of the response */
-	struct tool_text  line;    /* the first line of the section */
-} const godbolt_sections[] = {
-	{ "asm", GODBOLT_TEXT("--- asm ---\n") },
-	{ "stdout", GODBOLT_TEXT("--- stdout ---\n") },
-	{ "stderr", GODBOLT_TEXT("--- stderr ---\n") },
+/* The first line of each section of a record. */
+static struct tool_text const godbolt_sections[] = {
+	[GODBOLT_SEC_ASM]    = GODBOLT_TEXT("--- asm ---\n"),
+	[GODBOLT_SEC_STDOUT] = GODBOLT_TEXT("--- stdout ---\n"),
+	[GODBOLT_SEC_STDERR] = GODBOLT_TEXT("--- stderr ---\n"),
+	[GODBOLT_SEC_PP]     = GODBOLT_TEXT("--- pp ---\n"),
+	[GODBOLT_SEC_MACROS] = GODBOLT_TEXT("--- macros ---\n"),
 };
 
-#undef GODBOLT_TEXT
+/* The largest number of sections of a record. */
+enum { GODBOLT_SECTIONS = 3 };
 
-enum { GODBOLT_SECTIONS = sizeof godbolt_sections / sizeof *godbolt_sections };
+/* How a tool compiles with a kind of driver. */
+struct godbolt_recipe {
+	struct tool_text flags;    /* the arguments before the argument string */
+	struct tool_text options;  /* the member compilerOptions of the body */
+	uint32_t         from;     /* enum godbolt_from */
+	uint32_t         windows;  /* 1 if /TC comes before the flags, or /TP
+	                              for a language other than c */
+};
+
+#define GODBOLT_PP \
+	GODBOLT_TEXT("{\"producePp\":{\"filter-headers\":false,\"clang-format\":false}," \
+	             "\"skipAsm\":true}")
+#define GODBOLT_SKIP_ASM GODBOLT_TEXT("{\"skipAsm\":true}")
+
+/* The recipes of the tools for each kind of driver.  These are the recipes
+ * of godbolt-c with one change: godbolt-c refused a kind of compiler
+ * without a recipe, and here such a kind gets the recipe of GCC.  Compiler
+ * Explorer itself appends -E for the preprocessed view of any C or C++
+ * compiler.  An MSVC compiler cannot output its predefined macros. */
+static struct godbolt_recipe const godbolt_recipes[GODBOLT_TOOLS][GODBOLT_DRIVERS] = {
+	[GODBOLT_COMPILE] = {
+		[GODBOLT_GNU]      = { GODBOLT_TEXT(""), GODBOLT_TEXT("{}"), GODBOLT_FROM_ASM, 0 },
+		[GODBOLT_MSVC]     = { GODBOLT_TEXT(""), GODBOLT_TEXT("{}"), GODBOLT_FROM_ASM, 0 },
+		[GODBOLT_CLANG_CL] = { GODBOLT_TEXT(""), GODBOLT_TEXT("{}"), GODBOLT_FROM_ASM, 0 },
+	},
+	[GODBOLT_PREPROCESS] = {
+		[GODBOLT_GNU]      = { GODBOLT_TEXT("-E"), GODBOLT_PP, GODBOLT_FROM_PP, 0 },
+		[GODBOLT_MSVC]     = { GODBOLT_TEXT("/EP"), GODBOLT_SKIP_ASM, GODBOLT_FROM_STDOUT, 1 },
+		[GODBOLT_CLANG_CL] = { GODBOLT_TEXT("/EP"), GODBOLT_SKIP_ASM, GODBOLT_FROM_STDOUT, 1 },
+	},
+	[GODBOLT_MACROS] = {
+		[GODBOLT_GNU]      = { GODBOLT_TEXT("-E -dM"), GODBOLT_PP, GODBOLT_FROM_PP, 0 },
+		[GODBOLT_MSVC]     = { GODBOLT_TEXT(""), GODBOLT_TEXT(""), GODBOLT_FROM_NONE, 0 },
+		[GODBOLT_CLANG_CL] = { GODBOLT_TEXT("/E /clang:-dM"), GODBOLT_SKIP_ASM,
+		                       GODBOLT_FROM_STDOUT, 1 },
+	},
+	[GODBOLT_TARGETS] = {
+		[GODBOLT_GNU]      = { GODBOLT_TEXT("-E"), GODBOLT_PP, GODBOLT_FROM_PP, 0 },
+		[GODBOLT_MSVC]     = { GODBOLT_TEXT("/EP"), GODBOLT_SKIP_ASM, GODBOLT_FROM_STDOUT, 1 },
+		[GODBOLT_CLANG_CL] = { GODBOLT_TEXT("/EP"), GODBOLT_SKIP_ASM, GODBOLT_FROM_STDOUT, 1 },
+	},
+};
+
+#undef GODBOLT_SKIP_ASM
+#undef GODBOLT_PP
+#undef GODBOLT_TEXT
 
 /* The arguments of a call after the checks.  The texts point into the
  * call's JSON arguments. */
@@ -370,6 +474,7 @@ struct godbolt_args {
 	uint8_t          n_words;
 	uint8_t          action;    /* enum godbolt_action */
 	uint8_t          filters;   /* bits of godbolt_filters[] */
+	uint8_t          headers;   /* the argument headers */
 	char             text[96];  /* the bytes of why, unless why is a
 	                               constant */
 };
@@ -383,6 +488,8 @@ struct godbolt {
 	                                           timer to the call */
 	struct web_request           req;       /* the request under way, or the
 	                                           request that the timer sends */
+	struct godbolt_probe         probe;     /* the parsed output of the probe
+	                                           of godbolt_targets */
 	struct mcp_slot             *slot;
 	struct loop                 *loop;
 	struct godbolt_config const *cfg;
@@ -435,6 +542,13 @@ struct godbolt {
 	                                           nothing */
 	uint16_t                     found;     /* bit i is set if ids[i] is in
 	                                           the list */
+	uint8_t                      drivers[GODBOLT_IDS];  /* enum
+	                                                       godbolt_driver of
+	                                                       ids[i] */
+	uint8_t                      sec_of[GODBOLT_SECTIONS];  /* enum
+	                                                           godbolt_sec of
+	                                                           secs[i] */
+	uint8_t                      n_sec;     /* the sections of the record */
 	uint8_t                      tool;      /* enum godbolt_tool */
 	uint8_t                      action;    /* enum godbolt_action */
 	uint8_t                      phase;     /* enum godbolt_phase */
@@ -460,6 +574,11 @@ struct godbolt {
 	                                           true */
 	uint8_t                      full;      /* the output has GODBOLT_FULL
 	                                           bytes */
+	uint8_t                      headers;   /* the argument headers */
+	uint8_t                      probed;    /* probe has the facts of the
+	                                           record */
+	uint8_t                      no_pp;     /* the response has no text of
+	                                           the preprocessor */
 	char                         why[GODBOLT_REASON_MAX + 120];
 	char                         url[1024];
 	char                         blob[];
@@ -884,9 +1003,9 @@ godbolt_result (struct godbolt      *call,
 }
 
 /* Returns the state of the parse of a JSON array after the byte @p c,
- * which is outside an element, in the state @p s.  A byte that begins an
- * element gives GODBOLT_LIST_VALUE, and the parse of the element begins
- * with that byte. */
+ * which is outside an element, in the state @p s.  For a byte that begins
+ * an element, the function returns GODBOLT_LIST_VALUE, and the parse of the
+ * element begins with that byte. */
 static uint8_t
 godbolt_array_next (uint8_t s,
                     char    c)
@@ -1324,10 +1443,74 @@ godbolt_catalog_end (struct godbolt *call)
 static_assert(GODBOLT_TAGS == 64 && GODBOLT_VALUE_MAX == 128 && GODBOLT_KEYS == 256,
               "the texts of the catalog have these numbers");
 
-/* The phase GODBOLT_LIST of godbolt_catalog.  It reads the response to the
- * request of the list, and it writes the first line of the output. */
+/* Stores the kind of driver of a compiler of the call, if the element of
+ * the list of compilers is one of them.  When the list has had each
+ * compiler of the call, the function sets call->list to GODBOLT_LIST_END,
+ * which ends the parse.  Returns 0. */
+static int
+godbolt_driver_row (struct godbolt     *call,
+                    struct json_object *element)
+{
+	struct tool_text const id = godbolt_member(element, "id");
+	struct tool_text const kind = godbolt_member(element, "compilerType");
+	for (uint8_t i = 0; i < call->n_ids; ++i) {
+		if (call->found >> i & 1 || !godbolt_same(id, call->ids[i]))
+			continue;
+		call->found |= (uint16_t)(1u << i);
+		call->drivers[i] = godbolt_same(kind, TOOL_TEXT("win32-vc")) ? GODBOLT_MSVC
+		                 : godbolt_same(kind, TOOL_TEXT("clang-cl")) ? GODBOLT_CLANG_CL
+		                 : GODBOLT_GNU;
+	}
+	if (call->found == (1u << call->n_ids) - 1)
+		call->list = GODBOLT_LIST_END;
+	return 0;
+}
+
+/* Ends the parse of the list of compilers of a tool that compiles.  If a
+ * compiler of the call is not in the list, the call fails.  Otherwise the
+ * next step begins the first compilation. */
 static enum godbolt_go
-godbolt_catalog_list (struct godbolt *call)
+godbolt_drivers_end (struct godbolt *call)
+{
+	if (call->found != (1u << call->n_ids) - 1) {
+		char absent[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
+		godbolt_absent(call, absent);
+		return godbolt_refuse(call, "These compiler ids are not in the list of language "
+		                      "%.*s: %s. godbolt_catalog lists the ids.",
+		                      (int)call->language.len, call->language.ptr, absent);
+	}
+	call->phase = GODBOLT_JOB;
+	return GODBOLT_GO;
+}
+
+/* Sends the request of the list of languages, or of the list of compilers
+ * of the call's language.  The next step reads the response.  Returns
+ * GODBOLT_WAIT, or GODBOLT_ENDED if the call failed. */
+static enum godbolt_go
+godbolt_list_send (struct godbolt *call)
+{
+	char *u = godbolt_cat(call->url, (struct tool_text){ call->cfg->url, call->cfg->len });
+	if (call->action == GODBOLT_LANGUAGES) {
+		u = godbolt_cat(u, TOOL_TEXT("/api/languages"));
+	} else {
+		u = godbolt_cat(u, TOOL_TEXT("/api/compilers/"));
+		u = godbolt_cat_path(u, call->language);
+		u = godbolt_cat(u, TOOL_TEXT("?fields=" GODBOLT_FIELDS));
+	}
+	*u = '\0';
+	godbolt_request(call, call->action == GODBOLT_LANGUAGES ? GODBOLT_GET_LANGUAGES
+	                                                        : GODBOLT_GET_COMPILERS,
+	                nullptr, 0);
+	call->phase = GODBOLT_LIST;
+	enum godbolt_go const r = godbolt_send(call);
+	return r != GODBOLT_BAD ? r : godbolt_refuse(call, "askai could not get the list from "
+	                                             "Compiler Explorer (%s).", call->why);
+}
+
+/* The phase GODBOLT_LIST.  It reads the response to the request of the
+ * list.  For godbolt_catalog, it writes the first line of the output. */
+static enum godbolt_go
+godbolt_list (struct godbolt *call)
 {
 	struct web_response r;
 	enum godbolt_go const got = godbolt_result(call, &r);
@@ -1337,32 +1520,39 @@ godbolt_catalog_list (struct godbolt *call)
 		                      ? "languages" : "compilers", call->why);
 	if (got != GODBOLT_GO)
 		return got;
-	if (call->action > GODBOLT_COMPILERS && !(call->doc = json_object_new_object())) {
-		mcp_slot_fail(call->slot, ENOMEM);
-		return GODBOLT_ENDED;
-	}
 	json_tokener_reset(call->tok);
 	call->off = 0;
 	call->list = GODBOLT_LIST_OPEN;
 	call->phase = GODBOLT_ROWS;
+	if (call->tool != GODBOLT_CATALOG)
+		return GODBOLT_GO;
+	if (call->action > GODBOLT_COMPILERS && !(call->doc = json_object_new_object())) {
+		mcp_slot_fail(call->slot, ENOMEM);
+		return GODBOLT_ENDED;
+	}
 	return godbolt_put(call, godbolt_headers[call->action]) ? godbolt_fail(call) : GODBOLT_GO;
 }
 
-/* The phase GODBOLT_ROWS of godbolt_catalog.  It parses the next elements
- * of the list, and it ends the call after the end of the list. */
+/* The phase GODBOLT_ROWS.  It parses the next elements of the list.  After
+ * the end of the list, godbolt_catalog ends the call, and the other tools
+ * begin to compile. */
 static enum godbolt_go
-godbolt_catalog_rows (struct godbolt *call)
+godbolt_rows (struct godbolt *call)
 {
 	struct web_response r;
 	if (mcp_slot_fetched(call->slot, &r) || (!r.body && r.len))
 		return godbolt_refuse(call, "askai has no response to the request of the list.");
-	if (godbolt_list_parse(call, r.body, r.len, call->action == GODBOLT_LANGUAGES
+	bool const catalog = call->tool == GODBOLT_CATALOG;
+	if (godbolt_list_parse(call, r.body, r.len, !catalog ? godbolt_driver_row
+	                                            : call->action == GODBOLT_LANGUAGES
 	                                            ? godbolt_language_row : godbolt_compiler_row))
 		return godbolt_fail(call);
 	if (call->list == GODBOLT_LIST_BAD)
 		return godbolt_refuse(call, "Compiler Explorer sent a list that is not valid: %s.",
 		                      call->why);
-	return call->list == GODBOLT_LIST_END ? godbolt_catalog_end(call) : GODBOLT_GO;
+	if (call->list != GODBOLT_LIST_END)
+		return GODBOLT_GO;
+	return catalog ? godbolt_catalog_end(call) : godbolt_drivers_end(call);
 }
 
 /* The phase GODBOLT_ESCAPE.  It escapes the next slice of the source into
@@ -1396,29 +1586,49 @@ godbolt_escape_source (struct godbolt *call)
 		return godbolt_refuse(call, "The body of a request would be longer than 4 MiB, "
 		                      "because the source has %zu bytes as a JSON string.",
 		                      call->head - prefix.len);
+	if (call->tool != GODBOLT_COMPILE)
+		return godbolt_list_send(call);
 	call->phase = GODBOLT_JOB;
 	return GODBOLT_GO;
 }
 
 static_assert(WEB_SEND_MAX == 4 << 20, "the reason says 4 MiB");
 
+/* Returns the recipe of the compilation call->job. */
+static struct godbolt_recipe const *
+godbolt_job_recipe (struct godbolt const *call)
+{
+	return &godbolt_recipes[call->tool][call->drivers[call->job / call->n_args]];
+}
+
 /* Writes the part of the body of the request of the compilation call->job
- * that follows the source: the language, the argument string, the filters
- * and the compiler options.  Stores in call->arg_at and call->arg_len
- * where the escaped argument string is in the body. */
+ * that follows the source: the language, the arguments, the filters and
+ * the compiler options.  The arguments are the flags of the recipe and the
+ * argument string, separated by a space.  Stores in call->arg_at and
+ * call->arg_len where the escaped argument string is in the body. */
 static void
 godbolt_job_body (struct godbolt *call)
 {
+	struct godbolt_recipe const *r = godbolt_job_recipe(call);
 	struct tool_text const arg = call->args[call->job % call->n_args];
 	char *d = godbolt_cat(call->body + call->head, TOOL_TEXT("\",\"lang\":\""));
 	d = godbolt_cat(d, call->language);
 	d = godbolt_cat(d, TOOL_TEXT("\",\"options\":{\"userArguments\":\""));
+	char const *const flags = d;
+	if (r->windows)
+		d = godbolt_cat(d, godbolt_same(call->language, TOOL_TEXT("c")) ? TOOL_TEXT("/TC")
+		                                                                : TOOL_TEXT("/TP"));
+	d = godbolt_cat(d, d > flags && r->flags.len ? TOOL_TEXT(" ") : (struct tool_text){});
+	d = godbolt_cat(d, r->flags);
+	d = godbolt_cat(d, d > flags && arg.len ? TOOL_TEXT(" ") : (struct tool_text){});
 	call->arg_at = (size_t)(d - call->body);
 	d = godbolt_escape(d, arg.ptr, arg.len);
 	call->arg_len = (size_t)(d - call->body) - call->arg_at;
 	d = godbolt_cat(d, TOOL_TEXT("\",\"filters\":"));
-	d = godbolt_cat_filters(d, call->filters);
-	d = godbolt_cat(d, TOOL_TEXT(",\"compilerOptions\":{}}}"));
+	d = godbolt_cat_filters(d, call->tool == GODBOLT_COMPILE ? call->filters : 0);
+	d = godbolt_cat(d, TOOL_TEXT(",\"compilerOptions\":"));
+	d = godbolt_cat(d, r->options);
+	d = godbolt_cat(d, TOOL_TEXT("}}"));
 	call->len = (size_t)(d - call->body);
 	loop_work(call->loop, LOOP_ESCAPE, arg.len);
 }
@@ -1452,6 +1662,10 @@ godbolt_next (struct godbolt *call)
 	call->marked = 0;
 	call->cut = 0;
 	call->truncated = 0;
+	call->n_sec = 0;
+	call->no_pp = 0;
+	call->probed = 0;
+	godbolt_probe_fini(&call->probe);
 }
 
 /* Writes the record of the compilation call->job, which has no response,
@@ -1475,6 +1689,10 @@ godbolt_end (struct godbolt *call)
 {
 	uint32_t const *c = call->counts;
 	uint32_t const jobs = (uint32_t)call->n_ids * call->n_args;
+	if (call->tool == GODBOLT_TARGETS)
+		godbolt_put(call, TOOL_TEXT("The facts come from predefined macros. data_model "
+		                            "describes only the sizes of int, long and "
+		                            "pointers.\n"));
 	godbolt_putf(call, "Of %" PRIu32 " compilation%s, %" PRIu32 " ended with exit code "
 	             "0, %" PRIu32 " ended with another exit code or a timeout, %" PRIu32
 	             " ended with a failed request, and %" PRIu32 " ended without a "
@@ -1497,6 +1715,10 @@ godbolt_job (struct godbolt *call)
 	godbolt_job_body(call);
 	if (call->full) {
 		godbolt_why(call, "not sent, because the output is full");
+		return godbolt_record(call, GODBOLT_UNSENT);
+	}
+	if (godbolt_job_recipe(call)->from == GODBOLT_FROM_NONE) {
+		godbolt_why(call, "not sent, because MSVC cannot output its predefined macros");
 		return godbolt_record(call, GODBOLT_UNSENT);
 	}
 	char *u = godbolt_cat(call->url, (struct tool_text){ call->cfg->url, call->cfg->len });
@@ -1526,41 +1748,153 @@ godbolt_answer (struct godbolt *call)
 	return GODBOLT_GO;
 }
 
+/* Returns the member @p name of @p obj, or nullptr if @p obj has no such
+ * member. */
+static struct json_object *
+godbolt_get (struct json_object *obj,
+             char const         *name)
+{
+	struct json_object *v = nullptr;
+	return json_object_object_get_ex(obj, name, &v) ? v : nullptr;
+}
+
+/* Adds the section @p sec, whose text is @p v, to the record. */
+static void
+godbolt_section_add (struct godbolt     *call,
+                     struct json_object *v,
+                     enum godbolt_sec    sec)
+{
+	call->secs[call->n_sec] = v;
+	call->sec_of[call->n_sec++] = sec;
+}
+
+/* Stores in call->secs the texts of the sections of the record, where the
+ * recipe of the compilation has them.  A record of a recipe that
+ * preprocesses gets a note if the response has no text of the
+ * preprocessor, and a note on a cut if the preprocessor left out lines. */
+static void
+godbolt_sections_find (struct godbolt *call)
+{
+	uint32_t const from = godbolt_job_recipe(call)->from;
+	enum godbolt_sec const main = call->tool == GODBOLT_MACROS ? GODBOLT_SEC_MACROS
+	                                                               : GODBOLT_SEC_PP;
+	struct json_object *pp = godbolt_get(call->doc, "ppOutput");
+	struct json_object *text = godbolt_get(pp, "output");
+	call->n_sec = 0;
+	if (from == GODBOLT_FROM_ASM)
+		godbolt_section_add(call, godbolt_get(call->doc, "asm"), GODBOLT_SEC_ASM);
+	if (from == GODBOLT_FROM_PP)
+		godbolt_section_add(call, text, main);
+	godbolt_section_add(call, godbolt_get(call->doc, "stdout"),
+	                    from == GODBOLT_FROM_STDOUT ? main : GODBOLT_SEC_STDOUT);
+	godbolt_section_add(call, godbolt_get(call->doc, "stderr"), GODBOLT_SEC_STDERR);
+	call->no_pp = from == GODBOLT_FROM_PP && !json_object_is_type(text, json_type_string);
+	call->truncated |= from == GODBOLT_FROM_PP &&
+	                   json_object_get_int64(godbolt_get(pp, "numberOfLinesFiltered"));
+}
+
+/* Returns the member text of each element of the array @p v, each with a
+ * newline after it, and stores the length in @p *len.  The caller frees
+ * the text.  On failure it returns nullptr and stores ENOMEM in @p *e. */
+static char *
+godbolt_join (struct godbolt     *call,
+              struct json_object *v,
+              size_t             *len,
+              int                *e)
+{
+	size_t const n = json_object_array_length(v);
+	size_t bytes = 1;
+	for (size_t i = 0; i < n; ++i)
+		bytes += godbolt_member(json_object_array_get_idx(v, i), "text").len + 1;
+	char *text = malloc(bytes);
+	if (!text) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	char *d = text;
+	for (size_t i = 0; i < n; ++i) {
+		d = godbolt_cat(d, godbolt_member(json_object_array_get_idx(v, i), "text"));
+		*d++ = '\n';
+	}
+	*len = (size_t)(d - text);
+	loop_work(call->loop, LOOP_COPY, *len);
+	*e = 0;
+	return text;
+}
+
+/* Parses the output of the probe of a call of godbolt_targets, which is the
+ * main text of the record: a string, or the lines of stdout.  If the output
+ * has a valid block, the record has the facts and the messages of the
+ * compiler.  Otherwise the status of the record has the reason, and the
+ * record has the output.  The function parses the whole output in one
+ * step.  Returns 0, or ENOMEM. */
+static int
+godbolt_targets_parse (struct godbolt *call)
+{
+	struct json_object *v = call->secs[0];
+	struct tool_text text = {};
+	char *joined = nullptr;
+	if (json_object_is_type(v, json_type_string)) {
+		text = (struct tool_text){ json_object_get_string(v),
+		                           (size_t)json_object_get_string_len(v) };
+	} else if (json_object_is_type(v, json_type_array)) {
+		int e;
+		joined = godbolt_join(call, v, &text.len, &e);
+		if (!joined)
+			return e;
+		text.ptr = joined;
+	}
+	int const e = godbolt_probe_init(&call->probe, text.ptr, text.len);
+	free(joined);
+	joined = nullptr;
+	loop_work(call->loop, LOOP_PARSE, text.len);
+	if (e == ENOMEM)
+		return ENOMEM;
+	if (e) {
+		godbolt_why(call, "the probe output is not valid: %s", call->probe.why);
+		return 0;
+	}
+	call->probed = 1;
+	call->n_sec = 0;
+	godbolt_section_add(call, godbolt_get(call->doc, "stderr"), GODBOLT_SEC_STDERR);
+	return 0;
+}
+
 /* Reads the parsed response to a compilation, and stores its status in
  * call->why and the texts of its sections in call->secs.  The next step
  * writes the record. */
 static enum godbolt_go
 godbolt_classify (struct godbolt *call)
 {
-	struct json_object *code = nullptr;
-	struct json_object *flag = nullptr;
-	if (!json_object_object_get_ex(call->doc, "code", &code) ||
-	    !json_object_is_type(code, json_type_int)) {
+	struct json_object *code = godbolt_get(call->doc, "code");
+	struct json_object *timed_out = godbolt_get(call->doc, "timedOut");
+	struct json_object *truncated = godbolt_get(call->doc, "truncated");
+	if (!json_object_is_type(code, json_type_int)) {
 		godbolt_why(call, "the response is not a JSON object with an integer member "
 		            "code");
 		++call->counts[GODBOLT_FAILED];
 		call->phase = GODBOLT_FREE;
 		return godbolt_header(call) ? godbolt_fail(call) : GODBOLT_GO;
 	}
-	bool const timed = json_object_object_get_ex(call->doc, "timedOut", &flag) &&
-	                   json_object_is_type(flag, json_type_boolean) &&
-	                   json_object_get_boolean(flag);
-	call->truncated = json_object_object_get_ex(call->doc, "truncated", &flag) &&
-	                  json_object_is_type(flag, json_type_boolean) &&
-	                  json_object_get_boolean(flag);
+	bool const timed = json_object_is_type(timed_out, json_type_boolean) &&
+	                   json_object_get_boolean(timed_out);
+	call->truncated = json_object_is_type(truncated, json_type_boolean) &&
+	                  json_object_get_boolean(truncated);
 	int64_t const n = json_object_get_int64(code);
 	if (timed)
 		godbolt_why(call, "timed out on Compiler Explorer");
 	else
 		godbolt_why(call, "exit code %" PRId64, n);
 	++call->counts[!n && !timed ? GODBOLT_ZERO : GODBOLT_OTHER];
-	for (size_t i = 0; i < GODBOLT_SECTIONS; ++i) {
-		call->secs[i] = nullptr;
-		(void)json_object_object_get_ex(call->doc, godbolt_sections[i].member,
-		                                &call->secs[i]);
-	}
+	godbolt_sections_find(call);
 	call->phase = GODBOLT_WRITE;
-	return GODBOLT_GO;
+	if (call->tool != GODBOLT_TARGETS || n || timed)
+		return GODBOLT_GO;
+	int const e = godbolt_targets_parse(call);
+	if (!e)
+		return GODBOLT_GO;
+	mcp_slot_fail(call->slot, e);
+	return GODBOLT_ENDED;
 }
 
 /* The phase GODBOLT_PARSE.  It parses the next slice of the response to
@@ -1610,7 +1944,7 @@ godbolt_full (struct godbolt *call)
 	                                   "reached 14 MiB.]\n"));
 }
 
-static_assert(GODBOLT_FULL == 14 << 20, "the note says 14 MiB");
+static_assert(GODBOLT_FULL == 14 << 20, "the text of the note has 14 MiB");
 
 /* Writes as much of the @p len bytes at @p s, from call->byte on, as the
  * bounds of the step and the room left in the output allow, and advances
@@ -1654,6 +1988,9 @@ godbolt_section_text (struct godbolt     *call,
 	char const *s = json_object_get_string(v);
 	if (godbolt_slice(call, s, len) || call->full || call->byte < len)
 		return call->e;
+	call->marked |= len >= sizeof "\n[Truncated]" - 1 &&
+	                !memcmp(s + len - (sizeof "\n[Truncated]" - 1), "\n[Truncated]",
+	                        sizeof "\n[Truncated]" - 1);
 	return s[len - 1] == '\n' ? call->e : godbolt_put(call, TOOL_TEXT("\n"));
 }
 
@@ -1699,7 +2036,7 @@ godbolt_section (struct godbolt *call)
 	               : json_object_is_type(v, json_type_array) ? json_object_array_length(v)
 	               : 0;
 	if (n && !call->opened)
-		godbolt_put(call, godbolt_sections[call->sec].line);
+		godbolt_put(call, godbolt_sections[call->sec_of[call->sec]]);
 	call->opened = 1;
 	if (n && (text ? godbolt_section_text(call, v, n) : godbolt_section_lines(call, v, n)))
 		return call->e;
@@ -1716,14 +2053,88 @@ godbolt_section (struct godbolt *call)
 	return call->e;
 }
 
+/* Writes @p s, a NUL-terminated text of the probe, to the call's output.
+ * Returns 0, or call->e. */
+static int
+godbolt_puts (struct godbolt *call,
+              char const     *s)
+{
+	return godbolt_put(call, (struct tool_text){ s, strlen(s) });
+}
+
+/* Writes the facts about the target that follow from the output of the
+ * probe, one to a line, and the versions of the compiler.  With the
+ * argument headers, it also writes which target headers the compiler has.
+ * Returns 0, or call->e. */
+static int
+godbolt_facts (struct godbolt *call)
+{
+	struct tool_text const names[GODBOLT_PROBE_FACTS] = {
+		TOOL_TEXT("architecture: "), TOOL_TEXT("os: "), TOOL_TEXT("os_family: "),
+		TOOL_TEXT("data_model: "), TOOL_TEXT("pointer_bits: "), TOOL_TEXT("endianness: "),
+		TOOL_TEXT("libc: ")
+	};
+	struct tool_text const versions[] = {
+		TOOL_TEXT("__clang_major__"), TOOL_TEXT("__GNUC__"), TOOL_TEXT("__GNUC_MINOR__"),
+		TOOL_TEXT("_MSC_VER"), TOOL_TEXT("__STDC_VERSION__"), TOOL_TEXT("__cplusplus")
+	};
+	struct godbolt_probe const *p = &call->probe;
+	for (size_t i = 0; i < GODBOLT_PROBE_FACTS; ++i) {
+		struct godbolt_probe_claim const *c = &p->facts[i];
+		godbolt_put(call, names[i]);
+		if (c->conflict)
+			godbolt_put(call, TOOL_TEXT("conflicting"));
+		else if (i == GODBOLT_PROBE_POINTER_BITS && p->pointer_bits)
+			godbolt_putf(call, "%" PRIu64, p->pointer_bits);
+		else if (c->value)
+			godbolt_puts(call, c->value);
+		else
+			godbolt_put(call, TOOL_TEXT("unknown"));
+		for (uint32_t k = 0; k < c->n; ++k) {
+			godbolt_put(call, k ? TOOL_TEXT(", ") : TOOL_TEXT(" (from "));
+			godbolt_puts(call, c->evidence[k]);
+		}
+		godbolt_put(call, c->n ? TOOL_TEXT(")\n") : TOOL_TEXT("\n"));
+	}
+	bool any = false;
+	for (size_t i = 0; i < sizeof versions / sizeof *versions; ++i) {
+		char const *value = godbolt_probe_macro(p, versions[i].ptr);
+		if (!value)
+			continue;
+		godbolt_put(call, any ? TOOL_TEXT(" ") : TOOL_TEXT("versions: "));
+		godbolt_put(call, versions[i]);
+		godbolt_put(call, TOOL_TEXT("="));
+		godbolt_put_field(call, (struct tool_text){ value, strlen(value) });
+		any = true;
+	}
+	godbolt_put(call, any ? TOOL_TEXT("\n") : TOOL_TEXT("versions: unknown\n"));
+	if (!call->headers)
+		return call->e;
+	for (uint32_t k = 0; k < p->n_headers; ++k) {
+		godbolt_put(call, k ? TOOL_TEXT(", ") : TOOL_TEXT("headers: "));
+		godbolt_put_field(call, (struct tool_text){ p->headers[k].name,
+		                                            strlen(p->headers[k].name) });
+		godbolt_put(call, TOOL_TEXT(" "));
+		godbolt_put_field(call, (struct tool_text){ p->headers[k].value,
+		                                            strlen(p->headers[k].value) });
+	}
+	return godbolt_put(call, p->n_headers ? TOOL_TEXT("\n") : TOOL_TEXT("headers: unknown\n"));
+}
+
 /* The phase GODBOLT_WRITE.  It writes the record of the compilation, as
  * much of it as the bounds of the step allow. */
 static enum godbolt_go
 godbolt_write (struct godbolt *call)
 {
-	if (!call->headed)
+	if (!call->headed) {
 		godbolt_header(call);
-	while (call->sec < GODBOLT_SECTIONS && !call->full) {
+		if (call->no_pp)
+			godbolt_put(call, TOOL_TEXT("Compiler Explorer sent no output of the "
+			                            "preprocessor for this compiler.\n"));
+		if (call->probed)
+			godbolt_facts(call);
+	}
+	while (call->sec < call->n_sec && !call->full) {
 		uint8_t const sec = call->sec;
 		if (godbolt_section(call))
 			return godbolt_fail(call);
@@ -1807,8 +2218,8 @@ godbolt_free (struct godbolt *call)
 
 /* The functions of the phases. */
 static enum godbolt_go (*const godbolt_phases[]) (struct godbolt *call) = {
-	[GODBOLT_LIST]   = godbolt_catalog_list,
-	[GODBOLT_ROWS]   = godbolt_catalog_rows,
+	[GODBOLT_LIST]   = godbolt_list,
+	[GODBOLT_ROWS]   = godbolt_rows,
 	[GODBOLT_ESCAPE] = godbolt_escape_source,
 	[GODBOLT_JOB]    = godbolt_job,
 	[GODBOLT_ANSWER] = godbolt_answer,
@@ -1842,6 +2253,7 @@ godbolt_destroy (struct godbolt **p_call)
 	struct godbolt *call = *p_call;
 	json_tokener_free(call->tok);
 	json_object_put(call->doc);
+	godbolt_probe_fini(&call->probe);
 	free(call->body);
 	call->body = nullptr;
 	free(call);
@@ -2020,6 +2432,9 @@ godbolt_args_set (struct godbolt_args *a,
 		return a->source.ptr ? 0 : EINVAL;
 	case GODBOLT_ARG_FILTERS:
 		return godbolt_args_filters(a, v);
+	case GODBOLT_ARG_HEADERS:
+		a->headers = json_object_get_boolean(v);
+		return json_object_is_type(v, json_type_boolean) ? 0 : EINVAL;
 	case GODBOLT_ARG_COUNT:
 		break;
 	}
@@ -2109,16 +2524,30 @@ godbolt_copy (char             **p,
 	return copy;
 }
 
-/* Allocates the state of a call with copies of the texts of @p a.  The
- * words of match are copied in lower case.  An empty source becomes "\n",
- * as in godbolt-c.  Returns the state.  On failure it returns nullptr and
- * stores ENOMEM in @p *e. */
+/* The line before the source of the probe that makes the compiler include
+ * the target headers of the probe. */
+#define GODBOLT_HEADERS_LINE "#define GODBOLT_PROBE_HEADERS 1\n"
+
+/* Allocates the state of a call of the tool @p tool on the loop @p loop,
+ * with copies of the texts of @p a, and counts the copies as LOOP_COPY
+ * work.  The words of match are copied in lower case.  An empty source
+ * becomes "\n", as in godbolt-c.  The source of godbolt_targets is the
+ * probe, after a line that makes the compiler include the target headers
+ * if the argument headers is true.  Returns the state.  On failure it
+ * returns nullptr and stores ENOMEM in @p *e. */
 static struct godbolt *
 godbolt_create (struct godbolt_args const *a,
+                enum godbolt_tool          tool,
+                struct loop               *loop,
                 int                       *e)
 {
-	struct tool_text const source = a->source.len ? a->source : TOOL_TEXT("\n");
-	size_t bytes = a->language.len + source.len + a->kind.len + a->family.len +
+	bool const targets = tool == GODBOLT_TARGETS;
+	struct tool_text const head = targets && a->headers ? TOOL_TEXT(GODBOLT_HEADERS_LINE)
+	                                                    : (struct tool_text){};
+	struct tool_text source = a->source.len ? a->source : TOOL_TEXT("\n");
+	if (targets)
+		source.ptr = godbolt_probe_source(&source.len);
+	size_t bytes = a->language.len + head.len + source.len + a->kind.len + a->family.len +
 	               a->architecture.len;
 	for (uint8_t i = 0; i < a->n_ids; ++i)
 		bytes += a->ids[i].len;
@@ -2137,12 +2566,15 @@ godbolt_create (struct godbolt_args const *a,
 	*call = (struct godbolt){
 		.timer = { .due = UINT64_MAX, .fn = godbolt_fired },
 		.tok = tok,
+		.loop = loop,
 		.limit = a->limit,
 		.n_ids = a->n_ids,
 		.n_args = a->n_args,
 		.n_words = a->n_words,
-		.action = a->action,
-		.filters = a->filters
+		.tool = tool,
+		.action = tool == GODBOLT_CATALOG ? a->action : GODBOLT_COMPILERS,
+		.filters = a->filters,
+		.headers = a->headers
 	};
 	char *p = call->blob;
 	for (uint8_t i = 0; i < a->n_ids; ++i)
@@ -2155,17 +2587,23 @@ godbolt_create (struct godbolt_args const *a,
 			*p++ = godbolt_lower(a->words[i].ptr[k]);
 	}
 	call->language = godbolt_copy(&p, a->language);
-	call->source = godbolt_copy(&p, source);
+	call->source = (struct tool_text){ p, head.len + source.len };
+	p = godbolt_cat(godbolt_cat(p, head), source);
 	call->kind = godbolt_copy(&p, a->kind);
 	call->family = godbolt_copy(&p, a->family);
 	call->architecture = godbolt_copy(&p, a->architecture);
+	loop_work(loop, LOOP_COPY, bytes);
 	*e = 0;
 	return call;
 }
 
+#undef GODBOLT_HEADERS_LINE
+
 /* Starts a call of the tool @p tool.  It checks the arguments and copies
  * them.  godbolt_catalog sends the request of its list.  The other tools
- * escape the source in their steps first. */
+ * escape the source in their steps first, and godbolt_preprocess,
+ * godbolt_macros and godbolt_targets then read the kinds of their
+ * compilers from the list of compilers. */
 static void
 godbolt_start (struct mcp_slot    *slot,
                struct json_object *args,
@@ -2192,18 +2630,15 @@ godbolt_start (struct mcp_slot    *slot,
 	struct json_object *offset = nullptr;
 	bool const paged = json_object_object_get_ex(args, "offset", &offset) &&
 	                   json_object_get_int64(offset) > 0;
-	loop_work(loop, LOOP_COPY, a.source.len);
 	int e;
-	struct godbolt *call = godbolt_create(&a, &e);
+	struct godbolt *call = godbolt_create(&a, tool, loop, &e);
 	if (!call) {
 		mcp_slot_fail(slot, e);
 		return;
 	}
 	*own = call;
 	call->slot = slot;
-	call->loop = loop;
 	call->cfg = cfg;
-	call->tool = tool;
 	call->paged = paged;
 	if (tool != GODBOLT_CATALOG) {
 		call->phase = GODBOLT_ESCAPE;
@@ -2211,24 +2646,7 @@ godbolt_start (struct mcp_slot    *slot,
 			mcp_slot_park(slot);
 		return;
 	}
-	char *u = godbolt_cat(call->url, (struct tool_text){ cfg->url, cfg->len });
-	if (call->action == GODBOLT_LANGUAGES) {
-		u = godbolt_cat(u, TOOL_TEXT("/api/languages"));
-	} else {
-		u = godbolt_cat(u, TOOL_TEXT("/api/compilers/"));
-		u = godbolt_cat_path(u, call->language);
-		u = godbolt_cat(u, TOOL_TEXT("?fields=" GODBOLT_FIELDS));
-	}
-	*u = '\0';
-	godbolt_request(call, call->action == GODBOLT_LANGUAGES ? GODBOLT_GET_LANGUAGES
-	                                                        : GODBOLT_GET_COMPILERS,
-	                nullptr, 0);
-	call->phase = GODBOLT_LIST;
-	enum godbolt_go const r = godbolt_send(call);
-	if (r == GODBOLT_BAD)
-		godbolt_refuse(call, "askai could not get the list from Compiler Explorer (%s).",
-		               call->why);
-	else if (r == GODBOLT_WAIT)
+	if (godbolt_list_send(call) == GODBOLT_WAIT)
 		mcp_slot_park(slot);
 }
 
@@ -2246,6 +2664,27 @@ godbolt_compile_start (struct mcp_slot    *slot,
                        struct json_object *args)
 {
 	godbolt_start(slot, args, GODBOLT_COMPILE);
+}
+
+static void
+godbolt_preprocess_start (struct mcp_slot    *slot,
+                          struct json_object *args)
+{
+	godbolt_start(slot, args, GODBOLT_PREPROCESS);
+}
+
+static void
+godbolt_macros_start (struct mcp_slot    *slot,
+                      struct json_object *args)
+{
+	godbolt_start(slot, args, GODBOLT_MACROS);
+}
+
+static void
+godbolt_targets_start (struct mcp_slot    *slot,
+                       struct json_object *args)
+{
+	godbolt_start(slot, args, GODBOLT_TARGETS);
 }
 
 /* Stores the reason of a refusal of the options in the @p len bytes at
@@ -2355,10 +2794,13 @@ godbolt_definition (void const       *service,
 }
 
 /* The parts of the definitions that several tools share. */
-#define GODBOLT_DEF_LANGUAGE(what)                                              \
+#define GODBOLT_DEF_LANGUAGE(what, examples)                                    \
 	"\"language\":{\"type\":\"string\",\"default\":\"c\",\"description\":"  \
-	"\"The Compiler Explorer id of the language of " what ", such as c, c++ " \
-	"or rust. The default is c.\"}"
+	"\"The Compiler Explorer id of the language of " what ", such as "       \
+	examples ". The default is c.\"}"
+#define GODBOLT_DEF_SOURCE                                                      \
+	"\"source\":{\"type\":\"string\",\"description\":\"The source code "    \
+	"itself, not a file name. It has at most 1 MiB of UTF-8.\"}"
 #define GODBOLT_DEF_COMPILERS                                                   \
 	"\"compilers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"     \
 	"\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"  \
@@ -2393,7 +2835,7 @@ godbolt_catalog_definition (void const *service)
 		"compilers. kinds counts the compilers of each compilerType, families "
 		"counts the compilers of each family tag, and architectures counts the "
 		"compilers of each instruction set.\"},"
-		GODBOLT_DEF_LANGUAGE("the compilers") ","
+		GODBOLT_DEF_LANGUAGE("the compilers", "c, c++ or rust") ","
 		"\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
 		"\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"
 		"\"Exact ids of the items to list. The call fails if an id is not in the "
@@ -2439,9 +2881,8 @@ godbolt_compile_definition (void const *service)
 		"{\"name\":\"godbolt_compile\",\"title\":\"Compile on Compiler Explorer\","
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
-		GODBOLT_DEF_LANGUAGE("the source") ","
-		"\"source\":{\"type\":\"string\",\"description\":\"The source code "
-		"itself, not a file name. It has at most 1 MiB of UTF-8.\"},"
+		GODBOLT_DEF_LANGUAGE("the source", "c, c++ or rust") ","
+		GODBOLT_DEF_SOURCE ","
 		"\"filters\":{\"type\":\"object\",\"additionalProperties\":false,"
 		"\"properties\":{\"intel\":{\"type\":\"boolean\",\"default\":true},"
 		"\"demangle\":{\"type\":\"boolean\",\"default\":true},"
@@ -2466,10 +2907,83 @@ godbolt_compile_definition (void const *service)
 		          "ids from godbolt_catalog."));
 }
 
+static struct json_object *
+godbolt_preprocess_definition (void const *service)
+{
+	return godbolt_definition(service,
+		"{\"name\":\"godbolt_preprocess\",\"title\":\"Preprocess on Compiler "
+		"Explorer\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
+		GODBOLT_DEF_LANGUAGE("the source", "c or c++") ","
+		GODBOLT_DEF_SOURCE "," GODBOLT_DEF_OFFSET "},"
+		"\"required\":[\"compilers\",\"source\"],\"additionalProperties\":false},"
+		GODBOLT_DEF_HINTS "}",
+		TOOL_TEXT("Preprocesses source code on Compiler Explorer at "),
+		TOOL_TEXT(", once with each compiler and each argument string. The output "
+		          "has a record for each compilation, with the exit code, the "
+		          "preprocessed source and the messages of the compiler, and the last "
+		          "line has the counts of the results. Compiler Explorer resolves the "
+		          "includes with the headers of each compiler. askai sends the source "
+		          "to that service. The compiler ids must be exact ids from "
+		          "godbolt_catalog."));
+}
+
+static struct json_object *
+godbolt_macros_definition (void const *service)
+{
+	return godbolt_definition(service,
+		"{\"name\":\"godbolt_macros\",\"title\":\"Predefined macros on Compiler "
+		"Explorer\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
+		GODBOLT_DEF_LANGUAGE("the source", "c or c++") ","
+		"\"source\":{\"type\":\"string\",\"description\":\"Source code whose "
+		"macro definitions the output also has, not a file name. It has at most "
+		"1 MiB of UTF-8. The default is no source.\"},"
+		GODBOLT_DEF_OFFSET "},"
+		"\"required\":[\"compilers\"],\"additionalProperties\":false},"
+		GODBOLT_DEF_HINTS "}",
+		TOOL_TEXT("Outputs the predefined macros of each compiler with each argument "
+		          "string, from Compiler Explorer at "),
+		TOOL_TEXT(". The output has a record for each compilation, with the exit code, "
+		          "the macros and the messages of the compiler, and the last line has "
+		          "the counts of the results. The record of an MSVC compiler has no "
+		          "macros, because MSVC cannot output them. askai sends the source to "
+		          "that service. The compiler ids must be exact ids from "
+		          "godbolt_catalog."));
+}
+
+static struct json_object *
+godbolt_targets_definition (void const *service)
+{
+	return godbolt_definition(service,
+		"{\"name\":\"godbolt_targets\",\"title\":\"Target facts from Compiler "
+		"Explorer\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
+		GODBOLT_DEF_LANGUAGE("the probe", "c or c++") ","
+		"\"headers\":{\"type\":\"boolean\",\"default\":false,\"description\":"
+		"\"true to include a few headers of the target too, such as limits.h and "
+		"features.h, and to output which of them the compiler has. The "
+		"compilation can then fail if a compiler on Compiler Explorer has no "
+		"headers for its target.\"},"
+		GODBOLT_DEF_OFFSET "},"
+		"\"required\":[\"compilers\"],\"additionalProperties\":false},"
+		GODBOLT_DEF_HINTS "}",
+		TOOL_TEXT("Preprocesses a fixed probe on Compiler Explorer at "),
+		TOOL_TEXT(", once with each compiler and each argument string. The output "
+		          "has facts about each target that follow from the predefined "
+		          "macros. The facts are the architecture, the operating system, the "
+		          "data model, the width of a pointer, the byte order, the C library "
+		          "and the versions of the compiler and of the language. The line of "
+		          "each fact lists the macros that the fact comes from, and the last "
+		          "line has the counts of the results. The compiler ids must be exact "
+		          "ids from godbolt_catalog."));
+}
+
 #undef GODBOLT_DEF_HINTS
 #undef GODBOLT_DEF_OFFSET
 #undef GODBOLT_DEF_ARGS
 #undef GODBOLT_DEF_COMPILERS
+#undef GODBOLT_DEF_SOURCE
 #undef GODBOLT_DEF_LANGUAGE
 
 struct plugin const askai_plugin = {
@@ -2484,6 +2998,27 @@ struct plugin const askai_plugin = {
 		{
 			.definition = godbolt_compile_definition,
 			.start = godbolt_compile_start,
+			.step = godbolt_step,
+			.drop = godbolt_drop,
+			.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | TOOL_DETACH
+		},
+		{
+			.definition = godbolt_preprocess_definition,
+			.start = godbolt_preprocess_start,
+			.step = godbolt_step,
+			.drop = godbolt_drop,
+			.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | TOOL_DETACH
+		},
+		{
+			.definition = godbolt_macros_definition,
+			.start = godbolt_macros_start,
+			.step = godbolt_step,
+			.drop = godbolt_drop,
+			.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | TOOL_DETACH
+		},
+		{
+			.definition = godbolt_targets_definition,
+			.start = godbolt_targets_start,
 			.step = godbolt_step,
 			.drop = godbolt_drop,
 			.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | TOOL_DETACH

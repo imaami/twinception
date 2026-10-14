@@ -7849,7 +7849,20 @@ CE_COMPILERS = {
     # More different kinds than the counts take.
     "keys": [ce_compiler(f"k{i}", "kind", f"kind{i}", [], "1.0", "amd64")
              for i in range(257)],
+    # A compiler whose probe has a macro value of more than 256 bytes.
+    "probe": [ce_compiler("longvalue", "long value", "", [], "1.0", "amd64")],
 }
+
+# The macros in the output of the probe of godbolt_targets: those of an
+# x86_64 Linux GCC with glibc, and those of an x64 MSVC.
+CE_PROBE_GNU = {"__x86_64__": "1", "__linux__": "1", "__SIZEOF_INT__": "4",
+                "__SIZEOF_LONG__": "8", "__SIZEOF_POINTER__": "8",
+                "__CHAR_BIT__": "8", "__LP64__": "1", "__BYTE_ORDER__": "1234",
+                "__ORDER_LITTLE_ENDIAN__": "1234", "__GLIBC__": "2",
+                "__GNUC__": "14", "__GNUC_MINOR__": "2",
+                "__STDC_VERSION__": "201710L"}
+CE_PROBE_MSVC = {"_M_X64": "100", "_WIN32": "1", "_WIN64": "1", "_MSC_VER": "1940"}
+CE_PROBE_HEADERS = ("limits.h", "features.h", "TargetConditionals.h", "_mingw.h")
 
 
 class MockCE:
@@ -7866,7 +7879,12 @@ class MockCE:
     labels has 200,000 label definitions, and array answers a JSON array.
     Any other id compiles: each line of the source becomes a line of
     assembly, -Wall adds a warning, and -DFAIL adds an error and the exit
-    code 1.  Any other request gets 404.
+    code 1.  With producePp, the text of the preprocessor is the source
+    after a line marker, or a macro with -dM.  With /EP or /clang:-dM,
+    stdout has the source or a macro.  The probe of godbolt_targets gets
+    the block of CE_PROBE_GNU, of CE_PROBE_MSVC for cvc19, of CE_PROBE_GNU
+    with a value of 257 bytes for longvalue, or a block without its end for
+    cti.  Any other request gets 404.
     """
 
     def __init__(self):
@@ -7976,6 +7994,20 @@ class MockCE:
                          "labelDefinitions": {f"L{i}": i for i in range(200_000)}}, ()
         if cid == "array":
             return 200, [0] * 300_000, ()
+        pp = "producePp" in body["options"]["compilerOptions"]
+        lines = body["source"].splitlines()
+        if "GBPROBE_BEGIN_1" in body["source"]:
+            lines = self.probe(cid, body["source"])
+        elif pp or "/EP" in args or "/clang:-dM" in args:
+            lines = ["#define __GNUC__ 14" if pp else "#define _MSC_VER 1940"] \
+                if "-dM" in args else ['# 1 "<source>"'] * pp + lines
+        if pp:
+            return 200, {"code": 0, "stdout": [], "stderr": [], "asm": [], "ppOutput": {
+                "output": "".join(line + "\n" for line in lines),
+                "numberOfLinesFiltered": 0}}, ()
+        if "/EP" in args or "/clang:-dM" in args:
+            return 200, {"code": 0, "stdout": [{"text": line} for line in lines],
+                         "stderr": [], "asm": []}, ()
         stderr = []
         if "-Wall" in args:
             stderr.append({"text": "<source>:1:1: warning: a warning [-Wall]"})
@@ -7984,7 +8016,24 @@ class MockCE:
         return 200, {"code": 1 if "-DFAIL" in args else 0, "stdout": [],
                      "stderr": stderr,
                      "asm": [{"text": "asm: " + line, "source": None}
-                             for line in body["source"].splitlines()]}, ()
+                             for line in lines]}, ()
+
+    @staticmethod
+    def probe(cid, source):
+        """The lines of the output of the probe for the compiler @p cid."""
+        if cid == "cti":
+            return ["GBPROBE_BEGIN_1"]
+        status = "not-requested"
+        if source.startswith("#define GODBOLT_PROBE_HEADERS 1\n"):
+            status = "included"
+        macros = CE_PROBE_MSVC if cid == "cvc19" else CE_PROBE_GNU
+        if cid == "longvalue":
+            macros = CE_PROBE_GNU | {"__GNUC__": "1" * 257}
+        return ["# 1 \"<source>\"", "GBPROBE_BEGIN_1"] + \
+            [f"GBPROBE_HEADER({json.dumps(name)}, {json.dumps(status)})"
+             for name in CE_PROBE_HEADERS] + \
+            [f"GBPROBE_MACRO({json.dumps(name)}, {json.dumps(value)})"
+             for name, value in macros.items()] + ["GBPROBE_END_1"]
 
 
 def ce_records(text):
@@ -8010,8 +8059,9 @@ def check_godbolt(binary, up, godbolt):
     requests, the records of failed requests, a retry after 429, cut and
     oversized responses, the end of the output at 14 MiB, a long line,
     large and odd responses, the stored responses of a call with offset,
-    refused arguments and a cancelled call.
-    Last, it starts askai with options that the plugin refuses.
+    refused arguments and a cancelled call.  It preprocesses, outputs the
+    predefined macros and probes the targets with compilers of each kind of
+    driver.  Last, it starts askai with options that the plugin refuses.
     """
     godbolt = os.path.realpath(godbolt)
     ce = MockCE()
@@ -8067,11 +8117,13 @@ def check_godbolt(binary, up, godbolt):
             with Askai(binary, "-c", path) as ai:
                 tools = ai.rpc("tools/list")[2]["result"]["tools"]
                 assert [t["name"] for t in tools] == \
-                    ["ask_ai", "godbolt_catalog", "godbolt_compile"], tools
-                assert tools[1]["inputSchema"]["required"] == ["action"] and \
-                    tools[2]["inputSchema"]["required"] == ["compilers", "source"], tools
+                    ["ask_ai", "godbolt_catalog", "godbolt_compile", "godbolt_preprocess",
+                     "godbolt_macros", "godbolt_targets"], tools
+                assert [t["inputSchema"]["required"] for t in tools[1:]] == \
+                    [["action"], ["compilers", "source"], ["compilers", "source"],
+                     ["compilers"], ["compilers"]], tools
                 for tool in tools[1:]:
-                    assert f"Compiler Explorer at {ce.url()}, " in tool["description"], tool
+                    assert f"Compiler Explorer at {ce.url()}" in tool["description"], tool
 
                 # The languages, with the User-Agent of askai and the Accept
                 # that Compiler Explorer needs for JSON.
@@ -8289,6 +8341,109 @@ def check_godbolt(binary, up, godbolt):
                 assert ok(ai, "godbolt_compile", **arguments) == full
                 assert len(ce.bodies()) == sent + 4
 
+                # godbolt_preprocess reads the kinds of its compilers from the
+                # stored list.  MSVC and clang-cl get /TC or /TP and /EP, and
+                # stdout has their text.  The other kinds, also those that
+                # godbolt-c did not know, get -E and the preprocessed view.
+                listed = len(ce.seen("GET"))
+                sent = len(ce.bodies())
+                records, last = ce_records(ok(ai, "godbolt_preprocess", args=["-O2"],
+                                              compilers=["cg142", "cvc19", "cti"],
+                                              source=source))
+                marker = '# 1 "<source>"\n'
+                assert records == [
+                    ("cg142", "-O2", "exit code 0", f"--- pp ---\n{marker}{source}"),
+                    ("cvc19", "-O2", "exit code 0", f"--- pp ---\n{source}"),
+                    ("cti", "-O2", "exit code 0", f"--- pp ---\n{marker}{source}")] and \
+                    last == summary(3, 3, 0, 0, 0), records
+                bodies = ce.bodies()[sent:]
+                producepp = {"producePp": {"filter-headers": False, "clang-format": False},
+                             "skipAsm": True}
+                assert [(b["options"]["userArguments"], b["options"]["compilerOptions"])
+                        for b in bodies] == [("-E -O2", producepp),
+                                             ("/TC /EP -O2", {"skipAsm": True}),
+                                             ("-E -O2", producepp)], bodies
+                assert all(b["options"]["filters"] == dict.fromkeys(filters, False)
+                           for b in bodies), bodies
+                ok(ai, "godbolt_preprocess", compilers=["cvc19"], language="c++",
+                   source=source)
+                assert ce.bodies()[-1]["options"]["userArguments"] == "/TP /EP" and \
+                    ce.bodies()[-1]["lang"] == "c++"
+                assert len(ce.seen("GET")) == listed, ce.seen("GET")[listed:]
+                sent = len(ce.bodies())
+                assert refused(ai, "godbolt_preprocess", compilers=["cg142", "nope"],
+                               source=source) == "These compiler ids are not in the " \
+                    "list of language c: nope. godbolt_catalog lists the ids."
+                assert len(ce.bodies()) == sent
+
+                # godbolt_macros sends no request for MSVC, and its source is
+                # optional.
+                records, last = ce_records(ok(ai, "godbolt_macros",
+                                              compilers=["cg142", "cvc19", "cclangcl19"]))
+                assert records == [
+                    ("cg142", "", "exit code 0", "--- macros ---\n#define __GNUC__ 14\n"),
+                    ("cvc19", "", "not sent, because MSVC cannot output its predefined "
+                     "macros", ""),
+                    ("cclangcl19", "", "exit code 0",
+                     "--- macros ---\n#define _MSC_VER 1940\n")] and \
+                    last == summary(3, 2, 0, 0, 1), records
+                bodies = ce.bodies()[sent:]
+                assert [(b["options"]["userArguments"], b["source"]) for b in bodies] == \
+                    [("-E -dM", "\n"), ("/TC /E /clang:-dM", "\n")], bodies
+
+                # godbolt_targets preprocesses the probe, and the record has the
+                # facts that the macros show.  With headers, the source makes
+                # the compiler include the target headers first.
+                def facts(macros, **values):
+                    lines = [f"{name}: {values.get(name, 'unknown')}"
+                             for name in ("architecture", "os", "os_family", "data_model",
+                                          "pointer_bits", "endianness", "libc")]
+                    versions = " ".join(f"{name}={macros[name]}" for name in (
+                        "__clang_major__", "__GNUC__", "__GNUC_MINOR__", "_MSC_VER",
+                        "__STDC_VERSION__", "__cplusplus") if name in macros)
+                    return "".join(line + "\n" for line in lines) + \
+                        f"versions: {versions}\n"
+                gnu = facts(CE_PROBE_GNU, architecture="x86_64 (from __x86_64__)",
+                            os="linux (from __linux__)", os_family="linux (from __linux__)",
+                            data_model="lp64 (from __LP64__, __SIZEOF_INT__, "
+                            "__SIZEOF_LONG__, __SIZEOF_POINTER__, __CHAR_BIT__)",
+                            pointer_bits="64 (from __SIZEOF_POINTER__, __CHAR_BIT__)",
+                            endianness="little (from __BYTE_ORDER__, "
+                            "__ORDER_LITTLE_ENDIAN__)", libc="glibc (from __GLIBC__)")
+                msvc = facts(CE_PROBE_MSVC, architecture="x86_64 (from _M_X64)",
+                             os="windows (from _WIN64)", os_family="windows (from _WIN64)",
+                             data_model="llp64 (from _WIN64)",
+                             pointer_bits="64 (from _WIN64)")
+                note = "The facts come from predefined macros. data_model describes " \
+                    "only the sizes of int, long and pointers.\n"
+                sent = len(ce.bodies())
+                text = ok(ai, "godbolt_targets", compilers=["cg142", "cvc19", "cti"],
+                          args=["-m64"])
+                assert text.endswith(note + summary(3, 3, 0, 0, 0)), text
+                records, _ = ce_records(text.removesuffix(note + summary(3, 3, 0, 0, 0))
+                                        + summary(3, 3, 0, 0, 0))
+                assert records == [
+                    ("cg142", "-m64", "exit code 0", gnu),
+                    ("cvc19", "-m64", "exit code 0", msvc),
+                    ("cti", "-m64", "the probe output is not valid: the output has no "
+                     "complete block", "--- pp ---\nGBPROBE_BEGIN_1\n")], records
+                bodies = ce.bodies()[sent:]
+                assert [b["options"]["userArguments"] for b in bodies] == \
+                    ["-E -m64", "/TC /EP -m64", "-E -m64"], bodies
+                assert bodies[0]["source"].startswith("/* Preprocess only: ") and \
+                    len(bodies[0]["source"].encode()) == 14865, bodies[0]["source"][:80]
+                text = ok(ai, "godbolt_targets", compilers=["cg142"], headers=True)
+                assert ce.bodies()[-1]["source"] == \
+                    "#define GODBOLT_PROBE_HEADERS 1\n" + bodies[0]["source"]
+                assert gnu + "headers: limits.h included, features.h included, " \
+                    "TargetConditionals.h included, _mingw.h included\n" in text, text
+                # A value of more than 256 bytes makes the probe output not
+                # valid.
+                records, _ = ce_records(ok(ai, "godbolt_targets", compilers=["longvalue"],
+                                           language="probe").removesuffix(note))
+                assert records[0][2] == "the probe output is not valid: a name or a value " \
+                    "of a record has more than 256 bytes", records
+
                 # Refused arguments send no request.
                 sent = len(ce.seen())
                 for arguments, why in (
@@ -8338,6 +8493,19 @@ def check_godbolt(binary, up, godbolt):
                          "argument source.")):
                     assert refused(ai, "godbolt_catalog", **arguments).startswith(why), \
                         arguments
+                for name, arguments, why in (
+                        ("godbolt_preprocess", {"compilers": ["cg142"]},
+                         "The argument source is required."),
+                        ("godbolt_preprocess", {"compilers": ["cg142"], "source": "x",
+                                                "filters": {}},
+                         "The tool has no argument filters."),
+                        ("godbolt_macros", {"compilers": ["cg142"], "headers": True},
+                         "The tool has no argument headers."),
+                        ("godbolt_targets", {"compilers": ["cg142"], "source": "x"},
+                         "The tool has no argument source."),
+                        ("godbolt_targets", {"compilers": ["cg142"], "headers": 1},
+                         "headers must be true or false.")):
+                    assert refused(ai, name, **arguments) == why, (name, arguments)
                 assert len(ce.seen()) == sent, ce.seen()[sent:]
 
                 # A notification ends a call whose compilation is under way, at
@@ -8389,7 +8557,8 @@ def check_godbolt(binary, up, godbolt):
           "filters, failed requests as records, 429 sent again, cut and oversized "
           "responses, the end of the output at 14 MiB, a long line in slices, "
           "large and odd responses, stored responses for a call with offset, "
-          "refused arguments and options, cancellation: PASS")
+          "refused arguments and options, cancellation; preprocessing, predefined "
+          "macros and target facts with the flags of each driver: PASS")
 
 
 def check_classes(binary, up):

@@ -1,5 +1,6 @@
 override SRC_godbolt.so := \
-  godbolt.c
+  godbolt.c                \
+  godbolt_probe.c
 
 override LIB_godbolt.so := \
   json-c

@@ -909,6 +909,25 @@ it.  It has these tools:
   all.  The output has a record for each compilation, with the exit code,
   the assembly, and the output and the messages of the compiler.  The
   compiled program does not run.
+- `godbolt_preprocess` preprocesses source code in the same way, and its
+  records have the preprocessed source.
+- `godbolt_macros` outputs the predefined macros of each compiler, and of
+  the source if the call has one.  MSVC cannot output its predefined
+  macros, so the plugin sends no request for an MSVC compiler.
+- `godbolt_targets` preprocesses a fixed probe, and its records have facts
+  about the target that follow from the predefined macros.  The facts are
+  the architecture, the operating system, the data model, the width of a
+  pointer, the byte order, the C library and the versions.  The line of each
+  fact lists the macros that the fact comes from.  With `headers`, the probe
+  also includes a few target headers, such as `limits.h` and `features.h`.
+  The probe and its parser come from godbolt-c, under the MIT license
+  (`src/godbolt_probe.c`).
+
+The last three tools read the kind of each compiler from the list of
+compilers.  The arguments for an MSVC or clang-cl compiler begin with the
+flags of its driver, such as `/TC /EP`, and the text is in the standard
+output of the compiler.  The arguments for every other compiler begin with
+the flags of GCC, such as `-E`.
 
 The option `url` is the base URL of the service.  Its default is
 `https://godbolt.org`.
@@ -930,7 +949,8 @@ list of compilers has at most 4 MiB, and an element of a list at most
 4 KiB.  The catalog leaves out a compiler with more than 64 family tags, or
 with more than 128 bytes in its kind, its architecture or a family tag, and
 a line of the output counts the elements that it left out.  The counts of
-`godbolt_catalog` have at most 256 different keys.
+`godbolt_catalog` have at most 256 different keys.  A name or a value in
+the output of the probe of `godbolt_targets` has at most 256 bytes.
 
 The plugin sends a request at most 3 times.  It sends the request again
 after the status 429, 502 or 503.  It sends a request for a list again also
@@ -941,12 +961,12 @@ more than 30 s, the request fails at once.
 
 The `keep` of a request for the list of languages is a day, and the `keep`
 of a request for a list of compilers is an hour, so a repeated call of
-`godbolt_catalog` usually sends no request.  A call of `godbolt_compile`
-without `offset` sends each compilation, unless `askai` received the
-response to the same compilation less than a second before.  A call with
-`offset` gets the responses that `askai` received for the same call without
-`offset` in the last 5 minutes, if `askai` still stores them, and then both
-calls have the same output.  `askai` does not store a failed response, so a
+`godbolt_catalog` usually sends no request.  A call that compiles, without
+`offset`, sends each compilation, unless `askai` received the response to
+the same compilation less than a second before.  A call with `offset` gets
+the responses that `askai` received for the same call without `offset` in
+the last 5 minutes, if `askai` still stores them, and then both calls have
+the same output.  `askai` does not store a failed response, so a
 call with `offset` sends a failed request again, and the record of that
 compilation can differ.
 
