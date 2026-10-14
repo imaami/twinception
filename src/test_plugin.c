@@ -288,11 +288,22 @@ test_plugin_never (struct loop       *loop,
 	abort();
 }
 
+/* The function of the message that test_plugin_misuse_invalid() posts.  It
+ * frees the message. */
+static void
+test_plugin_msg_free (struct loop *loop,
+                      struct msg  *msg)
+{
+	(void)loop;
+	free(msg);
+}
+
 /* Passes each exported function of askai inputs that the function must
  * refuse: nullptr, a text with a length and no bytes, flag bits that the
  * function does not take, a timer without a function, a timer whose slot is
  * greater than the number of timers in the loop's heap, a message without
- * a function, and a unit of work out of range.  Then it ends the call with
+ * a function, a message that is posted already, and a unit of work out of
+ * range.  Then it ends the call with
  * the text "refused R of N", where N is the number of these inputs and R is
  * the number of them that the functions refused as their documentation
  * says. */
@@ -334,6 +345,13 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(loop_post(nullptr, &bare_msg) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_post(loop, nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_post(loop, &bare_msg) == EFAULT);
+	/* The message's function frees the message, so askai must call it
+	 * once.  The second post must therefore be refused. */
+	struct msg *twice = malloc(sizeof *twice);
+	if (twice)
+		*twice = (struct msg){ .fn = test_plugin_msg_free };
+	TEST_PLUGIN_REFUSED(twice && !loop_post(loop, twice) &&
+	                    loop_post(loop, twice) == EALREADY);
 	TEST_PLUGIN_REFUSED(loop_timer_set(nullptr, &stray, UINT64_MAX) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_timer_set(loop, nullptr, UINT64_MAX) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_timer_set(loop, &bare, UINT64_MAX) == EFAULT);

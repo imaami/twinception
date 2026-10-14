@@ -113,7 +113,12 @@ struct loop_timer {
  * Posts @p msg to @p loop.  Any thread can call it.  It pushes the message
  * onto the loop's list of posted messages with an atomic operation, and it
  * writes to the loop's eventfd only if the loop is asleep.  Returns 0, or
- * EFAULT if @p loop or @p msg is nullptr or @p msg has no function.
+ * EFAULT if @p loop or @p msg is nullptr or @p msg has no function.  It
+ * returns EALREADY if @p msg is the newest message in the loop's list,
+ * which means that it is posted already.  The function does not detect a
+ * message that is further down the list, or that the loop has taken from
+ * the list and not yet handled.  So a poster still must not post a message
+ * again before the loop has called the message's function.
  */
 EXPORT
 extern int

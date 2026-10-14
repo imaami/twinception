@@ -264,10 +264,17 @@ loop_post (struct loop *loop,
 {
 	if (!loop || !msg || !msg->fn)
 		return EFAULT;
-	msg->posted = loop_clock();
+	uint64_t const posted = loop_clock();
 	struct msg *head = atomic_load_explicit(&loop->inbox, memory_order_relaxed);
-	do msg->next = head;
-	while (!atomic_compare_exchange_weak(&loop->inbox, &head, msg));
+	do {
+		/* The newest message of the inbox is posted already.  Posting it
+		 * again would make it its own next message, and the inbox a
+		 * cycle. */
+		if (head == msg)
+			return EALREADY;
+		msg->next = head;
+		msg->posted = posted;
+	} while (!atomic_compare_exchange_weak(&loop->inbox, &head, msg));
 	/* Sequentially consistent with the loop's own store to asleep and its
 	 * look at the inbox: either it sees this message, or this sees it
 	 * asleep (design section 2). */

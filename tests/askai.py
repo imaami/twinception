@@ -6799,7 +6799,7 @@ def check_misuse(binary, up, plugin):
             # "invalid" passes it.
             found = re.fullmatch(r"refused (\d+) of (\d+)",
                                  text_of(call("test_misuse", {"case": "invalid"})))
-            assert found and found[1] == found[2] and int(found[2]) >= 35, found
+            assert found and found[1] == found[2] and int(found[2]) >= 36, found
             assert text_of(call("test_echo", {"text": "x"})) == "x"
             # After the end of the call, each function that would end or
             # change the call refused with EINVAL.
