@@ -3865,6 +3865,9 @@ mcp_req_call_launch (struct mcp_req *req)
 	mcp_req_notify_tool(req, tool->name);
 	loop_ready_bulk(mcp->loop, &req->step);
 	if (!args) {
+		/* mcp_slot_start() does not run for this call, so this line sets
+		 * slot->start.  mcp_slot_done() logs the time since slot->start. */
+		slot->start = loop_clock();
 		mcp_slot_result(slot, req->cut
 		                ? TEXT("Your answer reached the output token limit, which "
 		                       "cut these arguments short, so the call was not run.")
@@ -3952,25 +3955,45 @@ mcp_slot_note_window (struct mcp_slot *slot,
 
 static void mcp_agenda_job_done (struct mcp_slot *slot);
 
-/* The turn's call in @p slot has its output: its window, and the note on
- * it; the request writes its result once those before it are.  A job's
- * says so in the next result. */
+/* Handles the end of the call in @p slot, which is a call of a turn or a
+ * job.  The call has produced its output or has failed.  For a call of a
+ * turn, the function sets slot->skip and slot->window to the part of the
+ * output that the next upstream request contains, and writes the note about
+ * that part into slot->note.  Then it queues the step of the request.  The
+ * step writes the results of the calls into the upstream request in the
+ * order of the calls.  For a job, the function calls mcp_agenda_job_done(),
+ * which adds a notice about the job to the agenda.
+ *
+ * With --verbose, the function logs one line with the name of the tool,
+ * whether the call failed, the time that the call took and the size of the
+ * output in bytes.  The line does not contain the arguments or the output,
+ * because they can contain the text of the upstream's notes.  A failed call
+ * is logged at the verbose level, because a model that calls a tool with
+ * wrong arguments is not an error of askai.  A call that ends in another
+ * way, such as a job that a jobs call cancels or a call that ends with its
+ * request, ends in mcp_slot_drop() and has no line. */
 static void
 mcp_slot_done (struct mcp_slot *slot,
                bool             failed)
 {
+	/* The first words of the log line for a call of a turn and for a job.
+	 * This function is not called for ROLE_OWN. */
+	static char const *const label[] = {
+		[ROLE_TURN] = "tool call from a turn",
+		[ROLE_JOB]  = "background tool call from a turn",
+	};
+	struct span out = mcp_slot_output(slot);
+	LOG(LOG_VERBOSE, "%s to %s %s after %.1f s (%zu bytes)", label[slot->role],
+	    mcp_slot_offer(slot)->name, failed ? "failed" : "answered",
+	    mcp_elapsed(slot->start), out.len);
+	slot->failed = failed;
 	if (slot->role == ROLE_JOB) {
-		slot->failed = failed;
-		slot->done = true;
 		mcp_agenda_job_done(slot);
 		return;
 	}
-	struct span out = mcp_slot_output(slot);
 	bool past = slot->skip > out.len;
 	mcp_slot_window(slot, out);
 	slot->note_len = (uint16_t)mcp_slot_note_window(slot, out.len, past);
-	slot->failed = failed;
-	slot->done = true;
 	loop_ready_bulk(slot->req->mcp->loop, &slot->req->step);
 }
 

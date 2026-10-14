@@ -6234,7 +6234,8 @@ def check_turns(binary, up):
                     f"exec {shutil.which('git')} \"$@\"\n")
         os.chmod(f"{d}/bin/git", 0o755)
         slow = json.dumps({"repo": "proj", "command": "log", "paths": ["SLOWPATH"]})
-        with Askai(binary, *args, env={"PATH": f"{d}/bin:" + os.environ["PATH"]}) as ai:
+        with Askai(binary, *args, "--verbose",
+                   env={"PATH": f"{d}/bin:" + os.environ["PATH"]}) as ai:
             for cancel in (True, False):
                 script[:] = [lambda r: (200, turn_stream([("s", "git", slow)]))]
                 count = len(up.requests)
@@ -6316,6 +6317,27 @@ def check_turns(binary, up):
             trace = result["content"][1]["text"]
             assert all(f"- {t} " in trace for t in ("background", "timer", "wait", "jobs")), \
                 trace
+            # With --verbose, askai logs each call of a turn and each job that
+            # answers or fails.  The line contains the name of the tool, the
+            # time, the size of the output and whether the call failed.  It
+            # does not contain the arguments.
+            ai.wait_log(r"^askai: tool call from a turn to background answered after "
+                        r"\d+\.\d s \(14 bytes\)$")
+            for pattern in ("tool call from a turn to background failed",
+                            "tool call from a turn to wait failed",
+                            "tool call from a turn to jobs answered",
+                            "background tool call from a turn to git answered"):
+                ai.wait_log("^askai: " + pattern + r" after \d+\.\d s \(\d+ bytes\)$")
+            assert not any("SLOWPATH" in line for line in ai.log), ai.log
+
+            # The output token limit can cut the arguments of a call short.
+            # askai does not run such a call, and the time in the log line of
+            # the call is under one second.
+            script[:] = [lambda r: (200, turn_stream([("z", "git", slow[:-9])],
+                                                     reason="length"))]
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            ai.wait_log(r"^askai: tool call from a turn to git failed after 0\.\d s "
+                        r"\(\d+ bytes\)$")
 
             # An answer while a timer is set, or a job runs, leaves the call
             # open: the turns doze until it fires, or ends, which a message of
