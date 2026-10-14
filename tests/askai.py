@@ -6796,6 +6796,12 @@ def check_misuse(binary, up, plugin):
                     bool(result.get("isError")) == failed, (case, result)
                 # The next call on the loop gets only its own output.
                 assert text_of(call("test_echo", {"text": "x"})) == "x", case
+            # Each exported function refuses the invalid inputs that the case
+            # "invalid" passes it.
+            found = re.fullmatch(r"refused (\d+) of (\d+)",
+                                 text_of(call("test_misuse", {"case": "invalid"})))
+            assert found and found[1] == found[2] and int(found[2]) >= 18, found
+            assert text_of(call("test_echo", {"text": "x"})) == "x"
             # After the end of the call, askai refused mcp_slot_write(),
             # mcp_slot_name() and mcp_slot_offset() with EINVAL.
             einval = errno.EINVAL

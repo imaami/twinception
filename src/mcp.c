@@ -2328,28 +2328,54 @@ mcp_slot_part (struct mcp_slot const *slot)
 	return slot->req->mcp->parts[mcp_slot_offer(slot)->part];
 }
 
+/* Returns true if @p slot is not nullptr.  Each exported function of the
+ * call API calls it first, because a plugin calls these functions across
+ * the boundary of its shared object.  It logs a warning, which names
+ * @p func, for nullptr. */
+static bool
+mcp_slot_given (struct mcp_slot const *slot,
+                char const            *func)
+{
+	if (slot)
+		return true;
+	LOG(LOG_WARN, "%s: no slot", func);
+	return false;
+}
+
+/* Returns true if @p text has bytes wherever its length says so.  It logs
+ * a warning, which names @p func, for a text with a length and no bytes. */
+static bool
+mcp_text_valid (struct tool_text  text,
+                char const       *func)
+{
+	if (text.ptr || !text.len)
+		return true;
+	LOG(LOG_WARN, "%s: a text of %zu bytes has no bytes", func, text.len);
+	return false;
+}
+
 void *
 mcp_slot_instance (struct mcp_slot const *slot)
 {
-	return slot->inst;
+	return mcp_slot_given(slot, __func__) ? slot->inst : nullptr;
 }
 
 struct loop *
 mcp_slot_loop (struct mcp_slot const *slot)
 {
-	return slot->req->mcp->loop;
+	return mcp_slot_given(slot, __func__) ? slot->req->mcp->loop : nullptr;
 }
 
 uint64_t
 mcp_slot_principal (struct mcp_slot const *slot)
 {
-	return slot->req->principal;
+	return mcp_slot_given(slot, __func__) ? slot->req->principal : 0;
 }
 
 void **
 mcp_slot_own (struct mcp_slot *slot)
 {
-	return &slot->own;
+	return mcp_slot_given(slot, __func__) ? &slot->own : nullptr;
 }
 
 /* @p slot's call waits no more: let go of its name, if it has one, and of
@@ -2369,8 +2395,12 @@ mcp_slot_tell (struct mcp_slot  *slot,
                struct tool_text  text,
                uint32_t          flags)
 {
-	if (slot->done)
+	if (!mcp_slot_given(slot, __func__) || slot->done)
 		return;
+	if (!mcp_text_valid(text, __func__)) {
+		text = TOOL_TEXT("The tool gave askai a text without bytes.");
+		flags = TOOL_FAILED;
+	}
 	size_t len = jb_utf8(text.ptr, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
 	mcp_slot_wake(slot);
 	/* The output is the text whole, not lent, nor from an offset. */
@@ -2383,7 +2413,7 @@ void
 mcp_slot_finish (struct mcp_slot *slot,
                  uint32_t         flags)
 {
-	if (slot->done)
+	if (!mcp_slot_given(slot, __func__) || slot->done)
 		return;
 	mcp_slot_wake(slot);
 	mcp_slot_respond(slot, flags & TOOL_FAILED);
@@ -2393,7 +2423,7 @@ void
 mcp_slot_fail (struct mcp_slot *slot,
                int              e)
 {
-	if (slot->done)
+	if (!mcp_slot_given(slot, __func__) || slot->done)
 		return;
 	slot->done = true;
 	mcp_req_fail(slot->req, e);
@@ -2403,7 +2433,7 @@ int
 mcp_slot_offset (struct mcp_slot    *slot,
                  struct json_object *args)
 {
-	if (slot->done)
+	if (!mcp_slot_given(slot, __func__) || slot->done)
 		return EINVAL;
 	struct json_object *o = jb_get(args, "offset");
 	int64_t n = !o ? 0
@@ -2422,8 +2452,12 @@ mcp_slot_write (struct mcp_slot  *slot,
                 uint32_t          flags,
                 size_t           *taken)
 {
+	if (!taken) {
+		LOG(LOG_WARN, "%s: no place for the number of bytes taken", __func__);
+		return EINVAL;
+	}
 	*taken = 0;
-	if (slot->done)
+	if (!mcp_slot_given(slot, __func__) || slot->done || !mcp_text_valid(text, __func__))
 		return EINVAL;
 	struct dstr *answer = &slot->answer;
 	size_t had = dstr_len(answer);
@@ -2470,7 +2504,7 @@ mcp_slot_lend (struct mcp_slot  *slot,
 void
 mcp_slot_park (struct mcp_slot *slot)
 {
-	if (slot->done)
+	if (!mcp_slot_given(slot, __func__) || slot->done)
 		return;
 	struct mcp_req *req = slot->req;
 	if (mcp_slot_offer(slot)->kind->flags & TOOL_STREAM && req->sse_ok && !req->sse)
@@ -2484,7 +2518,7 @@ mcp_slot_park (struct mcp_slot *slot)
 void
 mcp_slot_ready (struct mcp_slot *slot)
 {
-	if (slot->done)
+	if (!mcp_slot_given(slot, __func__) || slot->done)
 		return;
 	if (!mcp_slot_offer(slot)->kind->step) {
 		mcp_slot_tell(slot, TOOL_TEXT("The tool's kind has no step(), so the call "
@@ -2498,10 +2532,13 @@ int
 mcp_slot_name (struct mcp_slot *slot,
                struct handle   *who)
 {
-	if (slot->done) {
-		*who = (struct handle){};
+	if (!who) {
+		LOG(LOG_WARN, "%s: no place for the handle", __func__);
 		return EINVAL;
 	}
+	*who = (struct handle){};
+	if (!mcp_slot_given(slot, __func__) || slot->done)
+		return EINVAL;
 	int e = slot->call.bits ? 0 : loop_handle(slot->req->mcp->loop, slot, &slot->call);
 	*who = slot->call;
 	return e;
@@ -2511,6 +2548,10 @@ struct mcp_slot *
 mcp_slot_named (struct loop const *loop,
                 struct handle      who)
 {
+	if (!loop) {
+		LOG(LOG_WARN, "%s: no loop", __func__);
+		return nullptr;
+	}
 	return loop->exit ? nullptr : loop_lookup(loop, who);
 }
 

@@ -1,6 +1,15 @@
 /** @file The part of the event loop (src/loop.h) that a plugin
  *  (src/plugin.h) uses.  struct loop is an incomplete type in this header,
- *  so a plugin does not depend on the members of struct loop. */
+ *  so a plugin does not depend on the members of struct loop.
+ *
+ * Each exported function checks its inputs before it uses them, because a
+ * plugin calls it across the boundary of a shared object.  It refuses
+ * nullptr for the loop, a message or a timer that is nullptr or has no
+ * function, a timer whose member slot is out of the range of the loop's
+ * heap, and a unit of work out of range.  It logs a warning for what it
+ * refuses.  Then a function that returns an error number returns EINVAL,
+ * loop_now() and loop_room() return 0, and the other functions do
+ * nothing. */
 #ifndef TWINCEPTION_SRC_LOOP_EXPORT_H_
 #define TWINCEPTION_SRC_LOOP_EXPORT_H_
 

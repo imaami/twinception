@@ -12,7 +12,10 @@
  * functions that askai exports (src/export.h).  It has no constructor, no
  * mutable static variable and no thread-local variable.  It starts no
  * thread and no process, installs no signal handler, changes no setting of
- * the process, loads no other object, and never blocks or exits.
+ * the process, loads no other object, and never blocks or exits.  Each of
+ * its functions that askai calls checks the pointers that it gets once, at
+ * its start, and the plugin checks what a getter of the call API returns
+ * before it uses that.
  *
  * A plugin has state in two places only.  The first is the pointer that
  * mcp_slot_own() returns for a call.  The second is an instance.  An

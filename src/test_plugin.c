@@ -15,8 +15,13 @@
  * "wait_ms" stores the text "dropped" in the instance.
  *
  * test_misuse calls the call API in ways that tool.h and mcp.h do not
- * allow.  askai must go on working after them, and nothing of one call may
- * reach another call.  check_misuse (tests/askai.py) runs it. */
+ * allow, and passes the exported functions inputs that they must refuse.
+ * askai must go on working after them, and nothing of one call may reach
+ * another call.  check_misuse (tests/askai.py) runs it.
+ *
+ * Each function that askai calls checks the pointers that it gets once, at
+ * its start, and the plugin checks what the getters of the call API
+ * return before it uses that. */
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -49,13 +54,15 @@ struct test_plugin_wait {
 };
 
 /* The plugin's instance_init().  It stores the user of the instance and
- * sets the number of calls to 0. */
+ * sets the number of calls to 0.  Returns 0, or EINVAL if askai passed no
+ * instance or no loop. */
 static int
 test_plugin_instance_init (void        *instance,
                            uint64_t     principal,
                            struct loop *loop)
 {
-	(void)loop;
+	if (!instance || !loop)
+		return EINVAL;
 	struct test_plugin_instance *inst = instance;
 	*inst = (struct test_plugin_instance){ .principal = principal };
 	return 0;
@@ -83,6 +90,8 @@ static void
 test_plugin_echo_start (struct mcp_slot    *slot,
                         struct json_object *args)
 {
+	if (!slot)
+		return;
 	struct json_object *text;
 	if (!json_object_object_get_ex(args, "text", &text) ||
 	    !json_object_is_type(text, json_type_string)) {
@@ -120,7 +129,8 @@ test_plugin_state_definition (void const *service)
 		"\"additionalProperties\":false}}");
 }
 
-/* Ends the call.  The output is the state of the call's instance. */
+/* Ends the call.  The output is the state of the call's instance.  The
+ * caller has checked that the call has an instance. */
 static void
 test_plugin_state_tell (struct mcp_slot *slot)
 {
@@ -144,6 +154,8 @@ test_plugin_wait_fired (struct loop       *loop,
 {
 	(void)loop;
 	struct test_plugin_wait *w = (struct test_plugin_wait *)timer;
+	if (!w || !w->slot)
+		return;
 	if (w->fail)
 		mcp_slot_fail(w->slot, EIO);
 	else
@@ -164,7 +176,13 @@ static void
 test_plugin_state_start (struct mcp_slot    *slot,
                          struct json_object *args)
 {
+	if (!slot)
+		return;
 	struct test_plugin_instance *inst = mcp_slot_instance(slot);
+	if (!inst) {
+		mcp_slot_tell(slot, TOOL_TEXT("The call has no instance."), TOOL_FAILED);
+		return;
+	}
 	++inst->calls;
 	if (inst->principal != mcp_slot_principal(slot)) {
 		mcp_slot_tell(slot, TOOL_TEXT("The instance is another user's."), TOOL_FAILED);
@@ -189,18 +207,19 @@ test_plugin_state_start (struct mcp_slot    *slot,
 	inst->len = len;
 	if (!waits)
 		return;
-	struct test_plugin_wait *w = malloc(sizeof *w);
+	struct loop *loop = mcp_slot_loop(slot);
+	void **own = mcp_slot_own(slot);
+	struct test_plugin_wait *w = loop && own ? malloc(sizeof *w) : nullptr;
 	if (!w) {
 		mcp_slot_fail(slot, ENOMEM);
 		return;
 	}
-	struct loop *loop = mcp_slot_loop(slot);
 	*w = (struct test_plugin_wait){
 		.timer = { .due = UINT64_MAX, .fn = test_plugin_wait_fired },
 		.slot = slot,
 		.fail = json_object_get_boolean(fail),
 	};
-	*mcp_slot_own(slot) = w;
+	*own = w;
 	int e = loop_timer_set(loop, &w->timer, loop_now(loop) + ms * 1'000'000);
 	if (e)
 		mcp_slot_fail(slot, e);
@@ -220,14 +239,19 @@ test_plugin_state_start (struct mcp_slot    *slot,
 static void
 test_plugin_state_drop (struct mcp_slot *slot)
 {
-	struct test_plugin_wait *w = *mcp_slot_own(slot);
+	void **own = slot ? mcp_slot_own(slot) : nullptr;
+	struct test_plugin_wait *w = own ? *own : nullptr;
+	if (!w)
+		return;
 	loop_timer_stop(mcp_slot_loop(slot), &w->timer);
 	free(w);
-	*mcp_slot_own(slot) = nullptr;
+	*own = nullptr;
 	static char const dropped[] = "dropped";
 	struct test_plugin_instance *inst = mcp_slot_instance(slot);
-	inst->len = sizeof dropped - 1;
-	memcpy(inst->last, dropped, inst->len);
+	if (inst) {
+		inst->len = sizeof dropped - 1;
+		memcpy(inst->last, dropped, inst->len);
+	}
 	mcp_slot_tell(slot, TOOL_TEXT("dropped"), 0);
 }
 
@@ -242,9 +266,81 @@ test_plugin_misuse_definition (void const *service)
 		"\"description\":\"Uses the call API in ways that it does not allow.\","
 		"\"inputSchema\":{\"type\":\"object\","
 		"\"properties\":{\"case\":{\"type\":\"string\","
-		"\"enum\":[\"ready\",\"own\",\"after\"]}},"
+		"\"enum\":[\"ready\",\"own\",\"after\",\"invalid\"]}},"
 		"\"required\":[\"case\"],"
 		"\"additionalProperties\":false}}");
+}
+
+/* The timer function of the timers that test_plugin_misuse_invalid()
+ * passes.  askai must never call it. */
+static void
+test_plugin_never (struct loop       *loop,
+                   struct loop_timer *timer)
+{
+	(void)loop;
+	(void)timer;
+	abort();
+}
+
+/* Passes each exported function of askai inputs that the function must
+ * refuse: nullptr, a text with a length and no bytes, a timer without a
+ * function, a timer whose slot is out of the range of the loop's heap, a
+ * message without a function, and a unit of work out of range.  Then it
+ * ends the call with the text "refused R of N", where N is the number of
+ * refusals that the function can see in the return values, and R is the
+ * number of them that happened.  The functions that return nothing must
+ * neither end the call nor crash askai. */
+static void
+test_plugin_misuse_invalid (struct mcp_slot *slot,
+                            struct loop     *loop)
+{
+	struct tool_text const none = { nullptr, 5 };
+	struct loop_timer bare = { .due = UINT64_MAX };
+	struct loop_timer stray = { .due = UINT64_MAX, .fn = test_plugin_never, .slot = 1000 };
+	struct msg bare_msg = {};
+	struct handle who = { 1 };
+	size_t taken;
+	unsigned refused = 0;
+	unsigned checks = 0;
+#define TEST_PLUGIN_REFUSED(cond) (++checks, refused += !!(cond))
+	TEST_PLUGIN_REFUSED(!mcp_slot_instance(nullptr));
+	TEST_PLUGIN_REFUSED(!mcp_slot_loop(nullptr));
+	TEST_PLUGIN_REFUSED(!mcp_slot_principal(nullptr));
+	TEST_PLUGIN_REFUSED(!mcp_slot_own(nullptr));
+	TEST_PLUGIN_REFUSED(mcp_slot_offset(nullptr, nullptr) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(nullptr, TOOL_TEXT("x"), 0, &taken) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, none, 0, &taken) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, TOOL_TEXT("x"), 0, nullptr) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_name(nullptr, &who) == EINVAL && !who.bits);
+	TEST_PLUGIN_REFUSED(mcp_slot_name(slot, nullptr) == EINVAL);
+	TEST_PLUGIN_REFUSED(!mcp_slot_named(nullptr, who));
+	TEST_PLUGIN_REFUSED(loop_timer_set(nullptr, &stray, UINT64_MAX) == EINVAL);
+	TEST_PLUGIN_REFUSED(loop_timer_set(loop, nullptr, UINT64_MAX) == EINVAL);
+	TEST_PLUGIN_REFUSED(loop_timer_set(loop, &bare, UINT64_MAX) == EINVAL);
+	TEST_PLUGIN_REFUSED(loop_timer_set(loop, &stray, UINT64_MAX) == EINVAL);
+	TEST_PLUGIN_REFUSED(!loop_now(nullptr));
+	TEST_PLUGIN_REFUSED(!loop_room(nullptr, LOOP_COPY));
+	TEST_PLUGIN_REFUSED(!loop_room(loop, (enum loop_unit)(LOOP_UNITS + 7)));
+#undef TEST_PLUGIN_REFUSED
+	mcp_slot_park(nullptr);
+	mcp_slot_ready(nullptr);
+	mcp_slot_tell(nullptr, TOOL_TEXT("x"), 0);
+	mcp_slot_finish(nullptr, 0);
+	mcp_slot_fail(nullptr, EIO);
+	loop_timer_stop(nullptr, &stray);
+	loop_timer_stop(loop, nullptr);
+	loop_timer_stop(loop, &stray);
+	loop_work(nullptr, LOOP_COPY, 1);
+	loop_work(loop, (enum loop_unit)(LOOP_UNITS + 7), 1);
+	loop_post(nullptr, &bare_msg);
+	loop_post(loop, nullptr);
+	loop_post(loop, &bare_msg);
+	char out[48];
+	int n = snprintf(out, sizeof out, "refused %u of %u", refused, checks);
+	if (n < 0 || n >= (int)sizeof out)
+		mcp_slot_fail(slot, ENOMEM);
+	else
+		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
 }
 
 /* Starts a test_misuse call.  The kind of test_misuse has no step() and no
@@ -259,11 +355,14 @@ test_plugin_misuse_definition (void const *service)
  *   that mcp_slot_write(), mcp_slot_name() and mcp_slot_offset() return in
  *   the call's instance, as the text "write=W name=N offset=O".  The next
  *   test_state call of the user shows that text.
+ * - "invalid": test_plugin_misuse_invalid() runs.
  * Any other case ends the call as failed. */
 static void
 test_plugin_misuse_start (struct mcp_slot    *slot,
                           struct json_object *args)
 {
+	if (!slot)
+		return;
 	struct json_object *arg = nullptr;
 	(void)json_object_object_get_ex(args, "case", &arg);
 	char const *what = json_object_get_string(arg);
@@ -274,9 +373,19 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 		return;
 	}
 	struct test_plugin_instance *inst = mcp_slot_instance(slot);
+	struct loop *loop = mcp_slot_loop(slot);
+	void **own = mcp_slot_own(slot);
+	if (!inst || !loop || !own) {
+		mcp_slot_tell(slot, TOOL_TEXT("The call has no instance."), TOOL_FAILED);
+		return;
+	}
 	if (!strcmp(what, "own")) {
-		*mcp_slot_own(slot) = inst;
+		*own = inst;
 		mcp_slot_tell(slot, TOOL_TEXT("own"), 0);
+		return;
+	}
+	if (!strcmp(what, "invalid")) {
+		test_plugin_misuse_invalid(slot, loop);
 		return;
 	}
 	if (strcmp(what, "after")) {

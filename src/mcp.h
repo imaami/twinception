@@ -174,6 +174,15 @@ mcp_app (struct mcp *mcp);
  * thread completes a call with loop_post() and the handle that
  * mcp_slot_name() stores.  The message's function then gets the call with
  * mcp_slot_named().
+ *
+ * Each exported function checks its inputs before it uses them, because a
+ * plugin calls it across the boundary of a shared object.  It refuses
+ * nullptr for the slot or the loop, a text with a length and no bytes, and
+ * nullptr where it stores a result.  It logs a warning for what it
+ * refuses.  Then a function that returns an error number returns EINVAL, a
+ * function that returns a pointer returns nullptr, mcp_slot_principal()
+ * returns 0, and the other functions do nothing.  mcp_slot_tell() with a
+ * slot and a text with a length and no bytes ends the call as failed.
  */
 
 /** Creates the part of a built-in plugin for the client loop @p loop.
