@@ -3,6 +3,7 @@
 
 import errno
 import fcntl
+import gzip
 import grp
 import hashlib
 import http.client
@@ -6673,7 +6674,7 @@ def check_tasks(binary, up):
 def check_plugin(binary, up, plugin):
     """askai loads the plugins that the configuration file lists.
 
-    The test plugin (src/test_plugin.c) has two tools.  The check uses the
+    The test plugin (src/test_plugin.c) has four tools.  The check uses the
     first one, test_echo.  The check lists and calls test_echo, grants it to
     a role by name, reloads the configuration, calls it from a turn of an
     ask call, and then starts askai with files that askai must refuse.
@@ -6800,7 +6801,8 @@ def check_plugin(binary, up, plugin):
         with Askai(binary, "-c", path) as ai:
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in tools] == \
-                ["ask_ai", "man", "test_echo", "test_state", "test_misuse"], tools
+                ["ask_ai", "man", "test_echo", "test_state", "test_misuse",
+                 "test_fetch"], tools
             assert tools[2]["description"] == "Returns the text argument unchanged." \
                 and tools[2]["inputSchema"]["required"] == ["text"], tools[2]
             for text in ("plugin \u20ac", "", "x" * 100000):
@@ -6870,7 +6872,7 @@ def check_plugin(binary, up, plugin):
             if len(request["body"]["messages"]) == 1 else (), text="A"))
         with Askai(binary, "-c", path) as ai:
             assert names(ai) == ["ask_ai", "man", "test_echo", "test_state",
-                                 "test_misuse"]
+                                 "test_misuse", "test_fetch"]
             count = len(up.requests)
             answer, trace = [c["text"] for c in ai.ask("Q")["content"]]
             first, second = up.requests[count:]
@@ -7332,8 +7334,8 @@ def check_misuse(binary, up, plugin):
             assert text_of(call("test_misuse", {"case": "handles"})) == \
                 "foreign 0 own 1"
             # After the end of the call, each function that would end or
-            # change the call refused with EINVAL.
-            assert state()[1] == "refused 8 of 8"
+            # change the call, and mcp_slot_fetched(), refused with EINVAL.
+            assert state()[1] == "refused 10 of 10"
 
             # The same three cases in a turn of an ask call.
             up.reply = lambda request: (200, turn_stream(
@@ -7403,6 +7405,305 @@ def check_misuse(binary, up, plugin):
           "without drop(), the call API after the end and from drop(), and a "
           "job that fails while its ask call's reply is sent, and the next "
           "calls work: PASS")
+
+
+def check_web(binary, up, plugin):
+    """A call of a plugin's tool sends HTTP requests through askai, which can
+    store the responses for equal requests (src/web.h).
+
+    The tool test_fetch of the test plugin (src/test_plugin.c) sends the
+    request that its arguments give with mcp_slot_fetch(), and writes what
+    mcp_slot_fetched() stores.  A local server answers the requests.  It
+    counts them by path and query, and it records the headers and the body
+    of the last request of each.  The path selects the response: /slow
+    waits 0.5 s, /sleep waits 3 s, /hang answers only after 5 s and notes
+    when the client closes the connection, /fail is a 500 error with
+    Retry-After, /big has 1000 bytes, /echo echoes the body, /gzip has 100000
+    bytes, compressed with gzip if the request accepts that, and any other
+    path is a short text.
+    """
+    plugin = os.path.realpath(plugin)
+    seen = {}
+    last = {}
+    closed = []
+    lock = threading.Lock()
+
+    class Site(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def answer(self, status, body, ctype="text/plain; charset=utf-8",
+                   headers=()):
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            for name, value in headers:
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def hang(self):
+            """Waits up to 5 s for the client to close the connection."""
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                ready, _, _ = select.select([self.connection], [], [], 0.05)
+                if ready and not self.connection.recv(1, socket.MSG_PEEK):
+                    with lock:
+                        closed.append(time.monotonic())
+                    self.close_connection = True
+                    return
+            self.answer(200, b"late")
+
+        def serve(self, body):
+            with lock:
+                seen[self.path] = seen.get(self.path, 0) + 1
+                last[self.path] = (self.headers, body)
+            name = self.path.split("?")[0]
+            if name == "/hang":
+                self.hang()
+                return
+            time.sleep({"/slow": 0.5, "/sleep": 3}.get(name, 0))
+            if name == "/fail":
+                self.answer(500, b"no", headers=[("Retry-After", "7")])
+            elif name == "/big":
+                self.answer(200, b"x" * 1000)
+            elif name == "/gzip" and "gzip" in self.headers.get("Accept-Encoding", ""):
+                self.answer(200, gzip.compress(b"x" * 100000),
+                            headers=[("Content-Encoding", "gzip")])
+            elif name == "/gzip":
+                self.answer(200, b"x" * 100000)
+            elif name == "/echo":
+                self.answer(200, body, self.headers.get("Content-Type", ""))
+            else:
+                self.answer(200, b"hello")
+
+        def do_GET(self):
+            self.serve(b"")
+
+        def do_POST(self):
+            self.serve(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+
+    def count(path):
+        with lock:
+            return seen.get(path, 0)
+
+    server = QuietServer(("127.0.0.1", 0), Site)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def call(ai, rpc_id=1, **arguments):
+        status, _, body = ai.rpc("tools/call", {"name": "test_fetch",
+                                                "arguments": arguments}, rpc_id=rpc_id)
+        assert status == 200 and "result" in body, (status, body)
+        return body["result"]
+
+    def fetch(ai, **arguments):
+        """The fields of the response that test_fetch writes, and its body."""
+        result = call(ai, **arguments)
+        assert not result.get("isError"), (arguments, result)
+        head, _, text = text_of(result).partition("\n\n")
+        fields = dict((line + " ").split(" ", 1) for line in head.split("\n"))
+        fields = {k: v[:-1] for k, v in fields.items()}
+        return fields, text
+
+    def relieve(ai, pressure):
+        """Sets the memory pressure of the test aid to pressure until a relief
+        is over, and then to 0."""
+        trims = total(ai.metrics(), "askai_memory_trims_total")
+        set_pressure(level, pressure)
+        wait_for(lambda: total(ai.metrics(), "askai_memory_trims_total") > trims)
+        set_pressure(level, 0)
+        wait_for(lambda: ai.metrics()["askai_memory_pressure_level"] == 0 or
+                 not memory_calm())
+
+    level = tempfile.NamedTemporaryFile("w", prefix="askai-pressure-")
+    set_pressure(level, 0)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{os.path.realpath(d)}/askai.json"
+            with open(path, "w") as f:
+                json.dump({"url": up.url(), "plugins": [plugin]}, f)
+            os.chmod(path, 0o600)
+            with Askai(binary, "-c", path, "--verbose", "--test-pressure",
+                       level.name) as ai:
+                # A GET has the Accept of the call and the User-Agent of
+                # askai.
+                fields, text = fetch(ai, url=f"{base}/text?get", accept="text/plain")
+                assert fields == {"status": "200", "type": "text/plain; charset=utf-8",
+                                  "age": "0", "retry": "0", "e": "0", "error": ""} and \
+                    text == "hello", (fields, text)
+                headers, _ = last["/text?get"]
+                assert headers["User-Agent"] == "askai (plugin test)" and \
+                    headers["Accept"] == "text/plain", dict(headers)
+                ai.wait_log(r"^askai: web request GET http://127\.0\.0\.1:\d+/text\?get "
+                            r"answered with status 200 after \d+ ms \(5 bytes\)$")
+
+                # A POST sends the body as JSON.
+                fields, text = fetch(ai, url=f"{base}/echo?post", body='{"a":1}')
+                headers, sent = last["/echo?post"]
+                assert fields["status"] == "200" and fields["type"] == \
+                    "application/json" and text == '{"a":1}', (fields, text)
+                assert headers["Content-Type"] == "application/json" and \
+                    sent == b'{"a":1}', (dict(headers), sent)
+
+                # With keep, an equal request gets the stored response.  A
+                # request with another Accept, max or body is sent.
+                for _ in range(2):
+                    fields, text = fetch(ai, url=f"{base}/text?keep", keep=60)
+                    assert text == "hello" and int(fields["age"]) >= 0, fields
+                assert count("/text?keep") == 1
+                for n, other in enumerate(({"accept": "text/html"}, {"max": 100},
+                                           {"body": "{}"}), 2):
+                    fetch(ai, url=f"{base}/text?keep", keep=60, **other)
+                    assert count("/text?keep") == n, (other, count("/text?keep"))
+
+                # If two equal requests are under way at once, one reaches
+                # the server, and both calls get the response.
+                out = []
+                threads = [threading.Thread(target=lambda: out.append(fetch(
+                    ai, url=f"{base}/slow?both", keep=60))) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                    time.sleep(0.1)
+                for thread in threads:
+                    thread.join(5)
+                assert [text for _, text in out] == ["hello", "hello"], out
+                assert count("/slow?both") == 1
+
+                # An equal request with another timeout does not wait for the
+                # request under way.  It is sent.
+                out = []
+                threads = [threading.Thread(target=lambda t=t: out.append(fetch(
+                    ai, url=f"{base}/slow?timeouts", keep=60, timeout=t)))
+                    for t in (5, 6)]
+                for thread in threads:
+                    thread.start()
+                    time.sleep(0.1)
+                for thread in threads:
+                    thread.join(5)
+                assert [text for _, text in out] == ["hello", "hello"], out
+                assert count("/slow?timeouts") == 2
+
+                # askai asks for a compressed body and decodes it.  max is the
+                # length of the decoded body.
+                fields, text = fetch(ai, url=f"{base}/gzip?all", max=100000)
+                headers, _ = last["/gzip?all"]
+                assert fields["e"] == "0" and text == "x" * 100000 and \
+                    "gzip" in headers["Accept-Encoding"], (fields, dict(headers))
+                fields, text = fetch(ai, url=f"{base}/gzip?less", max=99999)
+                assert fields["e"] == str(errno.EFBIG) and text == "", fields
+
+                # A stored response is used only while it is younger than
+                # keep.
+                fetch(ai, url=f"{base}/text?short", keep=1)
+                fetch(ai, url=f"{base}/text?short", keep=1)
+                assert count("/text?short") == 1
+                time.sleep(1.1)
+                fetch(ai, url=f"{base}/text?short", keep=1)
+                assert count("/text?short") == 2
+
+                # Under high memory pressure, askai frees the stored responses
+                # whose keep has passed, and under critical pressure all of
+                # them.  A request with a longer keep could use them before.
+                fetch(ai, url=f"{base}/text?old", keep=1)
+                fetch(ai, url=f"{base}/text?new", keep=60)
+                time.sleep(1.1)
+                relieve(ai, 1)
+                fetch(ai, url=f"{base}/text?old", keep=60)
+                fetch(ai, url=f"{base}/text?new", keep=60)
+                assert count("/text?old") == 2 and \
+                    (count("/text?new") == 1 or not memory_calm()), seen
+                relieve(ai, 2)
+                fetch(ai, url=f"{base}/text?new", keep=60)
+                assert count("/text?new") == 2, seen
+
+                # A response with an error status is not stored.
+                for _ in range(2):
+                    fields, text = fetch(ai, url=f"{base}/fail?keep", keep=60)
+                    assert fields["status"] == "500" and fields["retry"] == "7" and \
+                        fields["e"] == "0" and text == "no", (fields, text)
+                assert count("/fail?keep") == 2
+
+                # A body longer than max fails with EFBIG.  A body of max
+                # bytes comes whole.
+                fields, text = fetch(ai, url=f"{base}/big?999", max=999)
+                assert fields["e"] == str(errno.EFBIG) and text == "" and \
+                    fields["error"] == "The response body is longer than 999 bytes.", \
+                    fields
+                fields, text = fetch(ai, url=f"{base}/big?1000", max=1000)
+                assert fields["e"] == "0" and text == "x" * 1000, fields
+
+                # A request that takes longer than its timeout fails with
+                # ETIMEDOUT at its deadline.
+                start = time.monotonic()
+                fields, text = fetch(ai, url=f"{base}/sleep?late", timeout=1)
+                took = time.monotonic() - start
+                assert fields["e"] == str(errno.ETIMEDOUT) and fields["status"] == "0", \
+                    fields
+                assert took < 1.8, f"the call took {took:.2f} s"
+
+                # mcp_slot_fetch() refuses what web_request does not allow.
+                for arguments in ({"url": "ftp://127.0.0.1/"},
+                                  {"url": "file:///etc/passwd"},
+                                  {"url": "http://user:pw@127.0.0.1/"},
+                                  {"url": "http://127.0.0.1/a b"},
+                                  {"url": "http:///nohost"},
+                                  {"url": "http://127.0.0.1/" + "a" * 4096},
+                                  {"url": base, "accept": "a\nb"},
+                                  {"url": base, "accept": ""},
+                                  {"url": base, "max": 0},
+                                  {"url": base, "max": (16 << 20) + 1},
+                                  {"url": base, "timeout": 0},
+                                  {"url": base, "timeout": 301},
+                                  {"url": base, "keep": 7 * 86400 + 1}):
+                    result = call(ai, **arguments)
+                    assert result.get("isError") and \
+                        text_of(result) == f"fetch: {errno.EINVAL}", (arguments, result)
+
+                # A second request while the first is under way is refused.
+                result = call(ai, url=f"{base}/slow?twice", twice=True)
+                assert not result.get("isError") and \
+                    text_of(result) == f"twice: {errno.EBUSY}", result
+
+                # A notification ends a call that waits for its response,
+                # and home closes the connection of the request.
+                results = []
+                thread = threading.Thread(target=lambda: results.append(ai.rpc(
+                    "tools/call", {"name": "test_fetch",
+                                   "arguments": {"url": f"{base}/hang?cancel"}},
+                    rpc_id=7)))
+                thread.start()
+                wait_for(lambda: count("/hang?cancel") == 1)
+                cancelled = time.monotonic()
+                assert ai.rpc("notifications/cancelled", {"requestId": 7},
+                              rpc_id=None)[0] == 202
+                thread.join(5)
+                assert results[0][0] == 202 and results[0][2] is None, results
+                wait_for(lambda: closed, 1.5)
+                assert closed[0] - cancelled < 1.5, closed[0] - cancelled
+                assert fetch(ai, url=f"{base}/text?after")[1] == "hello"
+
+                # A request whose keep is not 0 goes on without its call, and
+                # askai stops at once with it under way.
+                thread = threading.Thread(target=lambda: results.append(ai.rpc(
+                    "tools/call", {"name": "test_fetch",
+                                   "arguments": {"url": f"{base}/hang?stop",
+                                                 "keep": 60}})), daemon=True)
+                thread.start()
+                wait_for(lambda: count("/hang?stop") == 1)
+                stopping = time.monotonic()
+            assert time.monotonic() - stopping < 3, "askai took long to stop"
+            wait_for(lambda: len(closed) == 2, 2)
+    finally:
+        level.close()
+        server.shutdown()
+        server.server_close()
+    print("web: GET and POST through askai, stored responses for equal requests, "
+          "one request for two equal calls, keep, memory pressure, errors not "
+          "stored, EFBIG, ETIMEDOUT, refused requests, EBUSY, cancellation and a "
+          "stop with a request under way: PASS")
 
 
 def check_classes(binary, up):
@@ -7501,6 +7802,7 @@ def main():
                       lambda binary, up: check_plugin(binary, up, plugin),
                       lambda binary, up: check_instances(binary, up, plugin),
                       lambda binary, up: check_misuse(binary, up, plugin),
+                      lambda binary, up: check_web(binary, up, plugin),
                       check_classes,
                       check_shutdown,
                       check_watchdog, check_stalled_stderr):

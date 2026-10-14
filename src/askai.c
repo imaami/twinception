@@ -29,6 +29,7 @@
 #include "roster.h"
 #include "task.h"
 #include "util.h"
+#include "web.h"
 
 /* The phases of a relief of memory pressure. */
 enum { RELIEVE_KEPT, RELIEVE_STASH, RELIEVE_END, RELIEVED };
@@ -92,6 +93,7 @@ struct askai_keep {
 	struct mcp         *mcp;       /* what a client loop keeps besides */
 	struct httpd_home  *door;      /* what home keeps besides */
 	struct home        *home;      /* and its scheduler */
+	struct web         *web;       /* and the stored HTTP responses */
 	struct blocker     *blockers;  /* where the walk goes */
 	void               *tops;      /* the trim's blocks yet to free */
 	uint64_t            released;  /* the stash's count as the relief began */
@@ -163,6 +165,7 @@ struct askai_shared {
 	struct notes        *notes;
 	struct ledger       *ledger;
 	struct roster       *roster;
+	struct web          *web;
 	struct task_pool    *tasks;
 	struct askai_client *clients;
 	struct metrics_loop *loops;
@@ -179,6 +182,8 @@ askai_keep_release (struct askai_keep *keep,
 	         : keep->door ? httpd_home_relieve(keep->door, level, room) : 0;
 	if (!n && keep->home)
 		n = home_relieve(keep->home, level, room);
+	if (!n && keep->web)
+		n = web_relieve(keep->web, level, room);
 	return n;
 }
 
@@ -378,7 +383,8 @@ askai_keep_stop (struct askai_keep *keep,
 	buf_stash_attach(nullptr);
 }
 
-/* Home's keep, door and scheduler. */
+/* Home's keep, door and scheduler, and home's part of the service of HTTP
+ * requests (src/web.h). */
 static int
 askai_home_parts (struct askai_home *app,
                   struct loop       *loop,
@@ -393,7 +399,7 @@ askai_home_parts (struct askai_home *app,
 		return e;
 	app->keep.home = home_create(loop, blockers, app->keep.door, app->ep, app->cfg,
 	                             &app->jobs, &app->http, &e);
-	return e;
+	return e ? e : web_home_start(app->keep.web, loop, blockers);
 }
 
 static int
@@ -528,6 +534,7 @@ askai_home_stop (void        *ctx,
 {
 	struct askai_home *app = ctx;
 	home_destroy(&app->keep.home);
+	web_home_stop(app->keep.web);
 	httpd_home_destroy(&app->keep.door);
 	askai_keep_stop(&app->keep, loop);
 }
@@ -646,10 +653,11 @@ askai_shared_make (struct askai_shared *s,
 		return ENOMEM;
 	if (cfg->flags & CFG_MAN && !(s->manual = manual_create(cfg->man_recheck, &e)))
 		return e;
-	if (!(s->ledger = ledger_create(&e)) || !(s->roster = roster_create(&e)))
+	if (!(s->ledger = ledger_create(&e)) || !(s->roster = roster_create(&e)) ||
+	    !(s->web = web_create(&e)))
 		return e;
 	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->notes,
-	                                s->ledger, s->roster, &e)))
+	                                s->ledger, s->roster, s->web, &e)))
 		return e;
 	s->hub = httpd_hub_create(n, &e);
 	return e;
@@ -686,6 +694,7 @@ askai_shared_fini (struct askai_shared *s)
 	mcp_static_destroy(&s->st);
 	ledger_destroy(&s->ledger);
 	roster_destroy(&s->roster);
+	web_destroy(&s->web);
 	manual_destroy(&s->manual);
 	free(s->loops);
 	s->loops = nullptr;
@@ -744,6 +753,7 @@ askai_run (struct askai_shared *s,
 	home->hub = s->hub;
 	home->metrics = &s->metrics;
 	home->cfg = cfg;
+	home->keep.web = s->web;
 	for (size_t i = 0; i < n; ++i) {
 		struct askai_client *app = &s->clients[i];
 		buf_stash_init(&app->keep.stash);

@@ -74,6 +74,14 @@ http_post_json (struct http         *http,
                 void                *user,
                 struct http_request **p_request);
 
+/** Sends the header Accept-Encoding with every encoding that libcurl can
+ *  decode, and decodes the answer to @p request before the write callback
+ *  gets it.  Call it before the step that starts the request, so right
+ *  after http_post_json().  Returns 0, EFAULT if @p request is nullptr, or
+ *  EIO if libcurl refuses the option. */
+extern int
+http_accept_encoding (struct http_request *request);
+
 extern void
 http_cancel (struct http         *http,
              struct http_request **p_request);
@@ -94,6 +102,12 @@ http_response (struct http_request const  *request,
  *  none. */
 extern long
 http_retry_after (struct http const *http);
+
+/** Returns the Content-Type of the answer, or nullptr if the answer has
+ *  none.  Only a done callback calls it, and the text stays valid until the
+ *  callback returns. */
+extern char const *
+http_type (struct http const *http);
 
 /** Keep at most @p n connections to a host at once, and @p n + 1 in all,
  *  idle ones included. */

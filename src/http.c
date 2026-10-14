@@ -76,6 +76,8 @@ struct http {
 	struct blocker      *blockers;  /* that look host names up, or nullptr */
 	struct http_metrics *metrics;
 	CURLM               *multi;
+	CURL                *ended;     /* the transfer whose done callback
+	                                   runs, or nullptr */
 	long                 retry;     /* the Retry-After of the request that
 	                                   ended last, in seconds */
 };
@@ -104,19 +106,23 @@ struct http_lookup {
 	char                key[];    /* the host's, copied */
 };
 
-/* Take @p request out of curl and free it, then report @p result. */
+/* Take @p request out of curl and free it, then report @p result.  The
+ * transfer's handle stays until the done callback returns, so that
+ * http_type() can read the answer's Content-Type from it.  A done callback
+ * can end another request, so the handle of the outer callback is restored
+ * after the callback. */
 static void
 http_finish (struct http         *http,
              struct http_request *request,
              CURLcode             result)
 {
+	CURL *easy = request->easy;
 	long status = 0;
 	curl_off_t retry = 0;
-	curl_easy_getinfo(request->easy, CURLINFO_RESPONSE_CODE, &status);
-	curl_easy_getinfo(request->easy, CURLINFO_RETRY_AFTER, &retry);
+	curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+	curl_easy_getinfo(easy, CURLINFO_RETRY_AFTER, &retry);
 	http->retry = retry > 0 && retry < LONG_MAX ? (long)retry : 0;
-	curl_multi_remove_handle(http->multi, request->easy);
-	curl_easy_cleanup(request->easy);
+	curl_multi_remove_handle(http->multi, easy);
 	list_del(&request->hook);
 	if (request->started && http->metrics)
 		hist_record(&http->metrics->run, loop_clock() - request->started);
@@ -129,7 +135,11 @@ http_finish (struct http         *http,
 	curl_slist_free_all(request->resolve);
 	curl_slist_free_all(request->headers);
 	free(request);
+	CURL *outer = http->ended;
+	http->ended = easy;
 	done(result, status, error, user);
+	http->ended = outer;
+	curl_easy_cleanup(easy);
 }
 
 static void
@@ -730,6 +740,15 @@ http_retry_after (struct http const *http)
 	return http->retry;
 }
 
+char const *
+http_type (struct http const *http)
+{
+	char const *type = nullptr;
+	if (http->ended)
+		curl_easy_getinfo(http->ended, CURLINFO_CONTENT_TYPE, &type);
+	return type;
+}
+
 void
 http_connections (struct http *http,
                   long         n)
@@ -886,4 +905,13 @@ http_post_json (struct http         *http,
 	}
 	*p_request = request;
 	return 0;
+}
+
+int
+http_accept_encoding (struct http_request *request)
+{
+	if (!request)
+		return EFAULT;
+	return curl_easy_setopt(request->easy, CURLOPT_ACCEPT_ENCODING, "") == CURLE_OK
+	       ? 0 : EIO;
 }

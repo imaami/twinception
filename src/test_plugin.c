@@ -1,4 +1,4 @@
-/** @file A plugin for the tests (tests/askai.py).  It has three tools.
+/** @file A plugin for the tests (tests/askai.py).  It has four tools.
  *
  * The output of a test_echo call is the value of the call's string argument
  * "text".
@@ -19,6 +19,11 @@
  * askai must go on working after them, and nothing of one call may reach
  * another call.  check_misuse (tests/askai.py) runs it.
  *
+ * test_fetch sends an HTTP request with mcp_slot_fetch() and parks.  Its
+ * step() writes the response's status, type, age, retry, error number and
+ * error text, one to a line, then an empty line and the body.  check_web
+ * (tests/askai.py) runs it.
+ *
  * Each function that askai calls checks the pointers that it gets once, at
  * its start, and the plugin checks what the getters of the call API
  * return before it uses that. */
@@ -33,7 +38,7 @@
 #include "plugin.h"
 
 PLUGIN_MANIFEST(.name = "test",
-                .tools = { "test_echo", "test_state", "test_misuse" });
+                .tools = { "test_echo", "test_state", "test_misuse", "test_fetch" });
 
 /* The plugin's instance: what test_state stores for one user on one loop. */
 struct test_plugin_instance {
@@ -374,6 +379,28 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(loop_work(loop, beyond, 1) == EINVAL);
 	TEST_PLUGIN_REFUSED(!loop_room(nullptr, LOOP_COPY));
 	TEST_PLUGIN_REFUSED(!loop_room(loop, beyond));
+	/* The kind of test_misuse has no step(), but mcp_slot_fetch() checks
+	 * its inputs first, so it does not end the call for them. */
+	struct web_request const get = {
+		.url = "http://127.0.0.1/", .max = 1, .timeout = 1
+	};
+	struct web_request const no_url = { .max = 1, .timeout = 1 };
+	struct web_request const no_body = {
+		.url = "http://127.0.0.1/", .len = 1, .max = 1, .timeout = 1
+	};
+	struct web_request const ftp = {
+		.url = "ftp://127.0.0.1/", .max = 1, .timeout = 1
+	};
+	struct web_response response;
+	TEST_PLUGIN_REFUSED(mcp_slot_fetch(nullptr, &get) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_fetch(slot, nullptr) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_fetch(slot, &no_url) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_fetch(slot, &no_body) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_fetch(slot, &ftp) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_fetched(nullptr, &response) == EFAULT &&
+	                    !response.body);
+	TEST_PLUGIN_REFUSED(mcp_slot_fetched(slot, nullptr) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_fetched(slot, &response) == ENOENT);
 #undef TEST_PLUGIN_REFUSED
 	char out[48];
 	int n = snprintf(out, sizeof out, "refused %u of %u", refused, checks);
@@ -428,11 +455,12 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
  * - "own": the call sets the mcp_slot_own() pointer, and then it ends with
  *   the text "own".  The kind has no drop(), so askai calls none.
  * - "after": the call ends with the text "first".  Then it calls each
- *   function of the call API that ends or changes a call, and each of them
- *   must refuse with EINVAL.  The function stores the text "refused R of
- *   N" in the call's instance, where N is the number of these calls and R
- *   is the number of them that returned EINVAL.  The next test_state call
- *   of the user shows that text.
+ *   function of the call API that ends or changes a call, and
+ *   mcp_slot_fetched().  Each of them must refuse with EINVAL.  The
+ *   function stores the text "refused R of N" in the call's instance, where
+ *   N is the number of these calls and R is the number of them that
+ *   returned EINVAL.  The next test_state call of the user shows that
+ *   text.
  * - "invalid": test_plugin_misuse_invalid() runs.
  * - "handles": test_plugin_misuse_handles() runs.
  * Any other case ends the call as failed. */
@@ -478,6 +506,10 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	mcp_slot_tell(slot, TOOL_TEXT("first"), 0);
 	size_t taken = 0;
 	struct handle who;
+	struct web_request const get = {
+		.url = "http://127.0.0.1/", .max = 1, .timeout = 1
+	};
+	struct web_response response;
 	/* args is not valid after the end of the call, so the function passes
 	 * nullptr to mcp_slot_offset(). */
 	int const codes[] = {
@@ -489,6 +521,8 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 		mcp_slot_fail(slot, EIO),
 		mcp_slot_ready(slot),
 		mcp_slot_park(slot),
+		mcp_slot_fetch(slot, &get),
+		mcp_slot_fetched(slot, &response),
 	};
 	unsigned refused = 0;
 	for (size_t k = 0; k < sizeof codes / sizeof *codes; ++k)
@@ -496,6 +530,133 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	int n = snprintf(inst->last, sizeof inst->last, "refused %u of %zu", refused,
 	                 sizeof codes / sizeof *codes);
 	inst->len = n > 0 && n < (int)sizeof inst->last ? (size_t)n : 0;
+}
+
+/* Returns the definition of test_fetch as a new reference, or nullptr if
+ * json-c cannot allocate memory. */
+static struct json_object *
+test_plugin_fetch_definition (void const *service)
+{
+	(void)service;
+	return json_tokener_parse(
+		"{\"name\":\"test_fetch\","
+		"\"description\":\"Sends an HTTP request through askai.\","
+		"\"inputSchema\":{\"type\":\"object\","
+		"\"properties\":{\"url\":{\"type\":\"string\"},"
+		"\"body\":{\"type\":\"string\"},"
+		"\"accept\":{\"type\":\"string\"},"
+		"\"max\":{\"type\":\"integer\"},"
+		"\"timeout\":{\"type\":\"integer\"},"
+		"\"keep\":{\"type\":\"integer\"},"
+		"\"twice\":{\"type\":\"boolean\"}},"
+		"\"required\":[\"url\"],"
+		"\"additionalProperties\":false}}");
+}
+
+/* Returns the string member @p name of @p args, and stores its length in
+ * @p *len.  Returns nullptr if @p args has no such string. */
+static char const *
+test_plugin_string (struct json_object *args,
+                    char const         *name,
+                    size_t             *len)
+{
+	struct json_object *v = nullptr;
+	*len = 0;
+	if (!json_object_object_get_ex(args, name, &v) ||
+	    !json_object_is_type(v, json_type_string))
+		return nullptr;
+	*len = (size_t)json_object_get_string_len(v);
+	return json_object_get_string(v);
+}
+
+/* Returns the integer member @p name of @p args, or @p otherwise if
+ * @p args has no such member. */
+static int64_t
+test_plugin_integer (struct json_object *args,
+                     char const         *name,
+                     int64_t             otherwise)
+{
+	struct json_object *v = nullptr;
+	return json_object_object_get_ex(args, name, &v) ? json_object_get_int64(v)
+	                                                 : otherwise;
+}
+
+/* Starts a test_fetch call.  It sends the request that the arguments
+ * describe.  "url" is required.  "body" makes the request a POST.  "accept"
+ * is the value of Accept.  "max" is 65536 bytes, "timeout" 10 seconds and
+ * "keep" 0 unless the arguments have them.  askai checks the values, so the
+ * function passes them as they are, cast to the types of web_request.  If
+ * mcp_slot_fetch() fails, the call fails with the text "fetch: E", where E
+ * is the error number.  With "twice" true, the function calls
+ * mcp_slot_fetch() a second time after the first has succeeded, and the
+ * call ends with the text "twice: E", where E is the error number of the
+ * second call. */
+static void
+test_plugin_fetch_start (struct mcp_slot    *slot,
+                         struct json_object *args)
+{
+	if (!slot)
+		return;
+	size_t url_len;
+	size_t accept_len;
+	struct web_request request = {
+		.url = test_plugin_string(args, "url", &url_len),
+		.accept = test_plugin_string(args, "accept", &accept_len),
+		.max = (size_t)test_plugin_integer(args, "max", 65536),
+		.timeout = (uint32_t)test_plugin_integer(args, "timeout", 10),
+		.keep = (uint32_t)test_plugin_integer(args, "keep", 0)
+	};
+	request.body = test_plugin_string(args, "body", &request.len);
+	struct json_object *arg = nullptr;
+	(void)json_object_object_get_ex(args, "twice", &arg);
+	int e = mcp_slot_fetch(slot, &request);
+	bool twice = !e && json_object_get_boolean(arg);
+	if (!e && !twice) {
+		mcp_slot_park(slot);
+		return;
+	}
+	if (twice)
+		e = mcp_slot_fetch(slot, &request);
+	char out[32];
+	int n = snprintf(out, sizeof out, "%s: %d", twice ? "twice" : "fetch", e);
+	if (n < 0 || n >= (int)sizeof out)
+		mcp_slot_fail(slot, ENOMEM);
+	else
+		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n },
+		              twice ? 0 : TOOL_FAILED);
+}
+
+/* The step() of test_fetch.  It writes the result of the call's request
+ * and ends the call.  The kind has no drop(), because askai frees the
+ * response. */
+static void
+test_plugin_fetch_step (struct mcp_slot *slot)
+{
+	if (!slot)
+		return;
+	struct web_response r;
+	int e = mcp_slot_fetched(slot, &r);
+	char head[640];
+	int n = e ? snprintf(head, sizeof head, "fetched: %d", e)
+	          : snprintf(head, sizeof head, "status %" PRIu32 "\ntype %.256s\nage %"
+	                     PRIu32 "\nretry %" PRIu32 "\ne %d\nerror %.256s\n\n",
+	                     r.status, r.type, r.age, r.retry, r.e, r.error);
+	if (n < 0 || n >= (int)sizeof head) {
+		mcp_slot_fail(slot, ENOMEM);
+		return;
+	}
+	if (e) {
+		mcp_slot_tell(slot, (struct tool_text){ head, (size_t)n }, TOOL_FAILED);
+		return;
+	}
+	size_t taken;
+	e = mcp_slot_write(slot, (struct tool_text){ head, (size_t)n }, 0, &taken);
+	if (!e)
+		e = mcp_slot_write(slot, (struct tool_text){ r.body, r.len }, 0, &taken);
+	if (e)
+		mcp_slot_fail(slot, e);
+	else
+		mcp_slot_finish(slot, 0);
 }
 
 struct plugin const askai_plugin = {
@@ -515,6 +676,11 @@ struct plugin const askai_plugin = {
 			.definition = test_plugin_misuse_definition,
 			.start = test_plugin_misuse_start,
 			.flags = TOOL_LENT
+		},
+		{
+			.definition = test_plugin_fetch_definition,
+			.start = test_plugin_fetch_start,
+			.step = test_plugin_fetch_step
 		},
 	},
 	.instance_init = test_plugin_instance_init,

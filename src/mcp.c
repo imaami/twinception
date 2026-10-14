@@ -94,6 +94,7 @@
 #include "stream.h"
 #include "task.h"
 #include "util.h"
+#include "web.h"
 
 enum {
 	PARSE_ERROR         = -32700,
@@ -262,12 +263,15 @@ struct mcp_offer {
 
 /* A plugin whose tools askai offers.  A built-in plugin can have a service,
  * the object that every loop shares, and a part of it on each client loop.
- * A plugin that askai loaded from a file has neither. */
+ * A plugin that askai loaded from a file has neither, and has its record
+ * of the loading instead. */
 struct mcp_plugin {
-	struct plugin const *plugin;
-	void                *service;
-	mcp_part_create_fn  *part_create;
-	mcp_part_destroy_fn *part_destroy;
+	struct plugin const        *plugin;
+	void                       *service;
+	mcp_part_create_fn         *part_create;
+	mcp_part_destroy_fn        *part_destroy;
+	struct plugin_loaded const *loaded;  /* nullptr for a built-in
+	                                        plugin */
 };
 
 struct mcp_static {
@@ -305,6 +309,7 @@ struct mcp_static {
 	struct ledger            *ledger;       /**< the tasks' */
 	struct roster            *roster;       /**< the tool calls that run and
 	                                             are not tasks */
+	struct web               *web;          /**< the plugins' HTTP requests */
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
 	uint32_t                  turns;        /**< upstream calls an ask call
@@ -377,6 +382,9 @@ struct mcp_slot {
 	                                  call's page's text */
 	struct child       *child;     /* its notes' git, until its output is
 	                                  taken */
+	struct web_wait    *web;       /* its kind's last HTTP request, under
+	                                  way or with its reply, until the
+	                                  next request or mcp_slot_drop() */
 	size_t              skip;      /* the byte of the output that its window,
 	                                  given to a turn, starts at */
 	size_t              window;    /* and the bytes of that */
@@ -403,8 +411,8 @@ struct mcp_slot {
 	                                  list of jobs shows */
 	struct mcp_slot    *of;        /* the job whose output it gives, if it
 	                                  gives a job's */
-	char                note[360]; /* The text that askai adds to the
-	                                  call's output.  With 360 bytes the
+	char                note[352]; /* The text that askai adds to the
+	                                  call's output.  With 352 bytes the
 	                                  slot is 512 bytes and has no padding
 	                                  at its end. */
 };
@@ -951,10 +959,11 @@ mcp_slot_offer (struct mcp_slot const *slot)
  * drop() to end the call.  Then the function calls the kind's drop(), or it
  * logs a warning if the kind has no drop().  A request drops its own slot
  * between two turns too, and its own slot has no own word, so that slot
- * does not count as ended then.  Last, the function puts the call's
- * instance back (instance_table_put()), clears the lent output, destroys
- * the child of the call's notes, removes the call's step from the loop's
- * queue and frees the call's handle. */
+ * does not count as ended then.  Last, the function releases the call's
+ * HTTP request and its reply, puts the call's instance back
+ * (instance_table_put()), clears the lent output, destroys the child of
+ * the call's notes, removes the call's step from the loop's queue and frees
+ * the call's handle. */
 static void
 mcp_slot_drop (struct mcp_slot *slot)
 {
@@ -968,6 +977,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 			    "drop()", offer->name);
 	}
 	slot->own = nullptr;
+	web_wait_leave(&slot->web);
 	instance_table_put(&slot->req->mcp->instances, &slot->inst);
 	slot->lent = (struct span){};
 	/* A git that writes notes runs to its end, because a kill could leave
@@ -2382,10 +2392,14 @@ mcp_slot_own (struct mcp_slot *slot)
 }
 
 /* @p slot's call waits no more: let go of its name, if it has one, and of
- * its step, if queued. */
+ * its step, if queued.  The function also releases the call's HTTP
+ * request if the request is under way.  A reply that has come stays until
+ * mcp_slot_drop(), so that drop() can still use it. */
 static void
 mcp_slot_wake (struct mcp_slot *slot)
 {
+	if (slot->web && !web_wait_done(slot->web))
+		web_wait_leave(&slot->web);
 	if (slot->call.bits)
 		loop_forget(slot->req->mcp->loop, slot->call);
 	slot->call = (struct handle){};
@@ -2566,6 +2580,102 @@ mcp_slot_named (struct loop const *loop,
                 struct handle      who)
 {
 	return loop && !loop->exit ? loop_lookup(loop, who, HANDLE_SLOT) : nullptr;
+}
+
+/* The reply to @p wait, the HTTP request of the call that @p who names, has
+ * come.  The step of the call is queued, unless the call has ended.  If the
+ * call is gone, or the loop has stopped, the wait is freed. */
+static void
+mcp_slot_fetch_back (struct loop     *loop,
+                     struct handle    who,
+                     struct web_wait *wait)
+{
+	struct mcp_slot *slot = mcp_slot_named(loop, who);
+	if (!slot || slot->web != wait) {
+		web_wait_leave(&wait);
+		return;
+	}
+	if (!slot->done)
+		loop_ready_bulk(loop, &slot->step);
+}
+
+int
+mcp_slot_fetch (struct mcp_slot          *slot,
+                struct web_request const *request)
+{
+	if (!slot || !request || !request->url || (!request->body && request->len))
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
+	char const *url = request->url;
+	char const *accept = request->accept;
+	size_t url_len = strnlen(url, WEB_URL_MAX + 1);
+	size_t accept_len = accept ? strnlen(accept, WEB_ACCEPT_MAX + 1) : 0;
+	size_t scheme = !strncmp(url, "http://", 7) ? 7 : !strncmp(url, "https://", 8) ? 8 : 0;
+	/* The authority ends at the first '/', '?' or '#'.  A user name or a
+	 * password in it ends in '@'.  For a URL that is too long, authority
+	 * is 0, and the URL is refused. */
+	size_t authority = scheme && url_len <= WEB_URL_MAX
+	                 ? strcspn(url + scheme, "/?#") : 0;
+	if (!authority || memchr(url + scheme, '@', authority) ||
+	    (accept && (!accept_len || accept_len > WEB_ACCEPT_MAX)) ||
+	    request->len > WEB_SEND_MAX || request->max - 1 >= WEB_BODY_MAX ||
+	    request->timeout - 1 >= WEB_TIMEOUT_MAX || request->keep > WEB_KEEP_MAX)
+		return EINVAL;
+	for (size_t i = 0; i < url_len; ++i)
+		if ((unsigned char)url[i] <= ' ' || (unsigned char)url[i] > '~')
+			return EINVAL;
+	for (size_t i = 0; i < accept_len; ++i)
+		if ((unsigned char)accept[i] < ' ' || (unsigned char)accept[i] > '~')
+			return EINVAL;
+	struct mcp_offer const *offer = mcp_slot_offer(slot);
+	if (!offer->kind->step)
+		return mcp_slot_ready(slot);
+	if (slot->web && !web_wait_done(slot->web))
+		return EBUSY;
+	struct handle who;
+	int e = mcp_slot_name(slot, &who);
+	if (e)
+		return e;
+	struct mcp *mcp = slot->req->mcp;
+	struct plugin_loaded const *loaded = mcp->st->plugins[offer->part].loaded;
+	struct web_ask const ask = {
+		.request = request,
+		.plugin = loaded ? loaded->manifest.name : nullptr,
+		.loop = mcp->loop,
+		.home = mcp->home,
+		.back = mcp_slot_fetch_back,
+		.url = url_len,
+		.accept = accept_len,
+		.who = who
+	};
+	struct web_wait *wait = web_wait_create(mcp->st->web, &ask, &e);
+	if (!wait)
+		return e;
+	web_wait_leave(&slot->web);
+	slot->web = wait;
+	if (web_wait_done(wait))
+		loop_ready_bulk(mcp->loop, &slot->step);
+	return 0;
+}
+
+int
+mcp_slot_fetched (struct mcp_slot const *slot,
+                  struct web_response   *response)
+{
+	if (!response)
+		return EFAULT;
+	*response = (struct web_response){};
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
+	if (!slot->web)
+		return ENOENT;
+	if (!web_wait_done(slot->web))
+		return EINPROGRESS;
+	web_wait_response(slot->web, response, slot->req->mcp->loop->now);
+	return 0;
 }
 
 static void mcp_slot_notes_run (struct mcp_slot *slot, uint8_t fetch, struct buf *in);
@@ -6454,21 +6564,28 @@ mcp_register (struct registry     *reg,
  * its two part functions.  The service of askai's own kinds is @p st.  The
  * service of the man tool's plugin is @p manual, and the service of the git
  * tool's plugin is @p git.  Both of these have a part on every client loop.
- * A plugin that askai loaded from a file has no service and no part. */
+ * A plugin that askai loaded from a file has no service and no part.  Its
+ * record has the record of the loading from @p reg instead. */
 static struct mcp_plugin
-mcp_static_plugin (struct mcp_static   *st,
-                   struct plugin const *plugin,
-                   struct manual       *manual,
-                   struct git          *git)
+mcp_static_plugin (struct mcp_static     *st,
+                   struct registry const *reg,
+                   struct plugin const   *plugin,
+                   struct manual         *manual,
+                   struct git            *git)
 {
 	struct mcp_plugin const own[] = {
 		{ .plugin = &mcp_host_plugin, .service = st },
-		{ &manual_plugin, manual, manual_loop_create, manual_loop_destroy },
-		{ &git_plugin, git, git_loop_create, git_loop_destroy },
+		{ .plugin = &manual_plugin, .service = manual,
+		  .part_create = manual_loop_create, .part_destroy = manual_loop_destroy },
+		{ .plugin = &git_plugin, .service = git,
+		  .part_create = git_loop_create, .part_destroy = git_loop_destroy },
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(own); ++i)
 		if (own[i].plugin == plugin)
 			return own[i];
+	for (uint32_t i = 0; i < reg->n_loaded; ++i)
+		if (reg->loaded[i]->plugin == plugin)
+			return (struct mcp_plugin){ .plugin = plugin, .loaded = reg->loaded[i] };
 	return (struct mcp_plugin){ .plugin = plugin };
 }
 
@@ -6480,6 +6597,7 @@ mcp_static_create (struct config const *cfg,
                    struct notes        *notes,
                    struct ledger       *ledger,
                    struct roster       *roster,
+                   struct web          *web,
                    int                 *e)
 {
 	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
@@ -6511,12 +6629,13 @@ mcp_static_create (struct config const *cfg,
 		.notes = notes,
 		.ledger = ledger,
 		.roster = roster,
+		.web = web,
 		.seed = loop_clock(),
 		.lim = cfg->mcp,
 		.turns = cfg->turns
 	};
 	for (uint32_t i = 0; i < reg->n_plugins; ++i)
-		st->plugins[i] = mcp_static_plugin(st, reg->plugins[i], manual, git);
+		st->plugins[i] = mcp_static_plugin(st, reg, reg->plugins[i], manual, git);
 	/* A zeroed dstr is no empty string (dstr.h). */
 	for (uint32_t id = 0; id < reg->n_tools; ++id) {
 		struct registry_tool const *t = &reg->tools[id];

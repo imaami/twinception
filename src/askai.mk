@@ -25,7 +25,8 @@ override SRC_askai := \
   registry.c          \
   roster.c            \
   task.c              \
-  tls.c
+  tls.c               \
+  web.c
 
 override LIB_askai := \
   libcrypto           \

@@ -785,6 +785,57 @@ instance, with these exceptions:
   A call that starts after the reload in an older request, for example a tool
   call in a turn of an `ask_ai` call, gets a new instance for that call alone.
 
+A plugin may not use a socket or libcurl itself, because a plugin starts no
+thread and never blocks.  A call of a plugin's tool sends an HTTP request
+through `askai` with `mcp_slot_fetch()` instead (`src/mcp.h`, `src/web.h`).
+The call waits while `askai` sends the request on its home thread.  When the
+response has come, or the request has failed, `askai` runs the `step()` of
+the tool's kind, which reads the result with `mcp_slot_fetched()`.  The
+result has the status, the `Content-Type`, the body, the seconds of
+`Retry-After`, the age of the response in seconds, and an error number and
+text if the request failed.  A request is a GET, or a POST with a body:
+
+- The URL begins with `http://` or `https://` and has at most 4096 bytes of
+  printable ASCII without spaces.  It has no user name and no password.
+- The body of a POST has at most 4 MiB.  `askai` sends it with
+  `Content-Type: application/json`.
+- The value of `Accept`, if the request has one, has 1 to 256 bytes of
+  printable ASCII.
+- `max` is the largest length of the response body, at most 16 MiB.  A
+  longer body fails the request with `EFBIG`.  `askai` asks for a
+  compressed body with `Accept-Encoding`, and `max` is the length after
+  `askai` has decoded it.
+- `timeout` is the number of seconds that the whole request may take, 1 to
+  300.  A request that takes longer fails with `ETIMEDOUT`.  So does a
+  request whose connection to the server is not set up within 10 seconds.
+
+`askai` sends the header `User-Agent: askai (plugin NAME)`, where NAME is
+the name in the plugin's manifest, and it follows no redirect.  It sends at
+most 64 requests at once, and it opens at most two connections to one host.
+The requests of the plugins do not use the connections of the upstream
+calls.  If a call ends while its request is under way, `askai` cancels the
+request, unless the request's `keep` is not 0.  With `--verbose`, `askai`
+logs one line for each request that it sends, when the request ends.
+
+A request with `keep`, a number of seconds up to 7 days, can use a response
+that `askai` stored for an equal request of any user, call or loop.  Two
+requests are equal if they come from the same plugin and have the same
+method, URL, `Accept`, `max` and body.  `askai` uses a stored response only
+if it received the response less than `keep` seconds ago, and the age in
+the result is the number of seconds since then.  If an equal request with
+`keep` and the same `timeout` is under way, the call waits for the response
+to that request, and `askai` does not send a second request.  `askai` stores
+a response only if the request has `keep`, the status is from 200 to 299,
+and the whole body came.  The keep of a stored response is the largest
+`keep` of the requests that waited for it.  A stored response stays after
+its keep has passed, until `askai` needs the memory.  The stored responses
+use at most 64 MiB, together with their keys and `askai`'s records of them,
+and a response that would use more than 16 MiB is not stored.  To make room
+for a new response, `askai` frees first the responses whose keep has passed,
+and then the responses whose keep passes next.  Under high memory pressure
+it frees the responses whose keep has passed, and under critical memory
+pressure it frees all of them.
+
 `askai` reads the manifest from each file before it loads the file.  It
 refuses a plugin that breaks one of these rules:
 

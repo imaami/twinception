@@ -12,10 +12,11 @@
  * functions that askai exports (src/export.h).  It has no constructor, no
  * mutable static variable and no thread-local variable.  It starts no
  * thread and no process, installs no signal handler, changes no setting of
- * the process, loads no other object, and never blocks or exits.  Each of
- * its functions that askai calls checks the pointers that it gets once, at
- * its start, and the plugin checks what a getter of the call API returns
- * before it uses that.
+ * the process, loads no other object, and never blocks or exits.  A call
+ * of its tools sends an HTTP request through askai with mcp_slot_fetch()
+ * (src/web.h).  Each of its functions that askai calls checks the pointers
+ * that it gets once, at its start, and the plugin checks what a getter of
+ * the call API returns before it uses that.
  *
  * A plugin has state in two places only.  The first is the pointer that
  * mcp_slot_own() returns for a call.  The second is an instance.  An
@@ -54,6 +55,7 @@
 #include "manifest.h"
 #include "mcp.h"
 #include "tool.h"
+#include "web.h"
 
 /** The version of the plugin interface.  Increase it whenever the
  *  interface changes and no PLUGIN_ABI() value changes.  An example is a
@@ -137,7 +139,8 @@ struct plugin {
 	X(sizeof (struct plugin)) X(offsetof (struct plugin, instance_init)) \
 	X(sizeof (struct handle)) X(sizeof (struct msg))                   \
 	X(offsetof (struct msg, fn)) X(sizeof (struct loop_timer))         \
-	X(offsetof (struct loop_timer, fn))
+	X(offsetof (struct loop_timer, fn)) X(sizeof (struct web_request)) \
+	X(sizeof (struct web_response))
 #define PLUGIN_ABI_U32(x) (uint32_t)(x),
 #define PLUGIN_ABI_N(x) + 1
 static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);

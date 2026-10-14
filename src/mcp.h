@@ -24,6 +24,9 @@ struct notes;
 struct registry;
 struct stream_app;
 struct task_pool;
+struct web;
+struct web_request;
+struct web_response;
 
 struct mcp_tool {
 	char const *name;
@@ -77,9 +80,10 @@ mcp_register (struct registry     *reg,
  * call of a modern client that takes tasks becomes one, in @p ledger
  * (src/ledger.h), once it has run a second.  A tool call is in @p roster
  * (src/roster.h) from its start until it ends or becomes a task, so that a
- * notifications/cancelled of its caller reaches it.  @p cfg, @p manual,
- * @p tasks, @p git, @p notes, @p ledger and @p roster must outlive the
- * object.
+ * notifications/cancelled of its caller reaches it.  The calls of the
+ * plugins' tools send their HTTP requests through @p web (src/web.h).
+ * @p cfg, @p manual, @p tasks, @p git, @p notes, @p ledger, @p roster and
+ * @p web must outlive the object.
  * nullptr, with the error in @p *e, if it cannot be made.
  */
 extern struct mcp_static *
@@ -90,6 +94,7 @@ mcp_static_create (struct config const *cfg,
                    struct notes        *notes,
                    struct ledger       *ledger,
                    struct roster       *roster,
+                   struct web          *web,
                    int                 *e);
 
 extern void
@@ -170,7 +175,8 @@ mcp_app (struct mcp *mcp);
  * the kind's own word points to stays valid until drop().  askai can run
  * drop() before the function that ends the call returns.  After the end,
  * the functions that would end or change the call do nothing, and
- * mcp_slot_write(), mcp_slot_name() and mcp_slot_offset() return EINVAL.
+ * mcp_slot_write(), mcp_slot_name(), mcp_slot_offset(), mcp_slot_fetch()
+ * and mcp_slot_fetched() return EINVAL.
  * After drop() has returned, the kind must not use the slot.  Another
  * thread completes a call with loop_post() and the handle that
  * mcp_slot_name() stores.  The message's function then gets the call with
@@ -297,6 +303,69 @@ mcp_slot_park (struct mcp_slot *slot);
 EXPORT
 extern int
 mcp_slot_ready (struct mcp_slot *slot);
+
+/**
+ * Sends @p request for the call through askai, which copies the request
+ * and the bytes that its members point to before the function returns.
+ * The kind's start() then parks the call.  When the response has come, or
+ * the request has failed, askai queues the step() of the call's kind, and
+ * step() reads the result with mcp_slot_fetched().  If the call ends before
+ * that, askai cancels the request, unless request->keep is not 0.
+ *
+ * askai sends the header User-Agent with the value "askai (plugin NAME)",
+ * where NAME is the name in the plugin's manifest, and the header Accept
+ * with the value of request->accept.  If the request has a body, askai
+ * sends the header Content-Type with the value application/json.  askai
+ * follows no redirect.
+ *
+ * If request->keep is not 0, askai can use a response that it received for
+ * an equal request, of any user and any loop, instead of sending the
+ * request.  Two requests are equal if they come from the same plugin and
+ * have the same method, URL, Accept, max and body.  askai uses a stored
+ * response only if it received the response less than request->keep
+ * seconds ago.  A request that is equal to a request under way, with the
+ * same timeout, waits for the response to that request if the keep of both
+ * is not 0.  askai stores a response only if the request's keep is not 0,
+ * the status is 200 to 299, and the whole body came.  A stored response
+ * stays until the stored responses need more than 64 MiB of memory, or
+ * until memory pressure.  Then askai frees first the responses whose keep
+ * has passed, the keep being the largest keep of the requests that waited
+ * for the response.
+ *
+ * askai asks for a compressed response with the header Accept-Encoding,
+ * and decodes it.  request->max is the length of the decoded body.
+ *
+ * Returns 0, and the new request then replaces the response to the call's
+ * previous request.  On failure the function returns an error number:
+ * - EFAULT if @p slot, @p request or request->url is nullptr, or if
+ *   request->body is nullptr and request->len is not 0.
+ * - EINVAL if the call has ended, if a member of @p request is out of its
+ *   range (src/web.h), or if the kind has no step().  If the kind has no
+ *   step(), the function also ends the call as failed, as mcp_slot_ready()
+ *   does.
+ * - EBUSY if a request of the call is under way.
+ * - EAGAIN if askai sends WEB_RUNS requests already.
+ * - ENOMEM if askai runs out of memory.
+ */
+EXPORT
+extern int
+mcp_slot_fetch (struct mcp_slot          *slot,
+                struct web_request const *request);
+
+/**
+ * Stores the result of the call's last request in @p *response.  The
+ * pointers in @p *response stay valid until the call's next
+ * mcp_slot_fetch(), or until askai drops the call.  askai drops a call
+ * after the call has ended, and after the kind's drop() has returned.
+ * Returns 0.  On failure it returns EFAULT if @p slot or @p response is
+ * nullptr, EINVAL if the call has ended, EINPROGRESS while the request is
+ * under way, or ENOENT if the call has made no request.  If @p response is
+ * not nullptr, a failure stores zeros and null pointers in @p *response.
+ */
+EXPORT
+extern int
+mcp_slot_fetched (struct mcp_slot const *slot,
+                  struct web_response   *response);
 
 /** Stores in @p *who a handle that names the call, for a message that
  *  another thread posts with loop_post().  A call has one handle until it
