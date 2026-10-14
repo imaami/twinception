@@ -77,8 +77,9 @@ mcp_register (struct registry     *reg,
  * call of a modern client that takes tasks becomes one, in @p ledger
  * (src/ledger.h), once it has run a second.  A tool call is in @p roster
  * (src/roster.h) from its start until it ends or becomes a task, so that a
- * notifications/cancelled of its caller reaches it.  @p cfg, @p manual, @p tasks, @p git, @p notes,
- * @p ledger and @p roster must outlive the object.
+ * notifications/cancelled of its caller reaches it.  @p cfg, @p manual,
+ * @p tasks, @p git, @p notes, @p ledger and @p roster must outlive the
+ * object.
  * nullptr, with the error in @p *e, if it cannot be made.
  */
 extern struct mcp_static *
