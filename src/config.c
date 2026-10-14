@@ -31,18 +31,20 @@
 
 
 static char const *const api_names[] = {
-	[AI_CHAT]      = "chat",
-	[AI_RESPONSES] = "responses",
-	[AI_MESSAGES]  = "messages",
-	[AI_GENERATE]  = "generate",
+	[AI_CHAT]         = "chat",
+	[AI_RESPONSES]    = "responses",
+	[AI_MESSAGES]     = "messages",
+	[AI_GENERATE]     = "generate",
+	[AI_INTERACTIONS] = "interactions",
 };
 
 /* Each API's header line prefix for the API key. */
 static char const *const auths[] = {
-	[AI_CHAT]      = "Authorization: Bearer ",
-	[AI_RESPONSES] = "Authorization: Bearer ",
-	[AI_MESSAGES]  = "x-api-key: ",
-	[AI_GENERATE]  = "x-goog-api-key: ",
+	[AI_CHAT]         = "Authorization: Bearer ",
+	[AI_RESPONSES]    = "Authorization: Bearer ",
+	[AI_MESSAGES]     = "x-api-key: ",
+	[AI_GENERATE]     = "x-goog-api-key: ",
+	[AI_INTERACTIONS] = "x-goog-api-key: ",
 };
 
 static char const *const provider_names[] = {
@@ -85,10 +87,12 @@ static struct {
 	},
 	[AI_GOOGLE] = {
 		{
-			[AI_CHAT]     = "https://generativelanguage.googleapis.com/v1beta/"
-			                "openai/chat/completions",
-			[AI_GENERATE] = "https://generativelanguage.googleapis.com/v1beta/"
-			                "models/",
+			[AI_CHAT]         = "https://generativelanguage.googleapis.com/v1beta/"
+			                    "openai/chat/completions",
+			[AI_GENERATE]     = "https://generativelanguage.googleapis.com/v1beta/"
+			                    "models/",
+			[AI_INTERACTIONS] = "https://generativelanguage.googleapis.com/v1beta/"
+			                    "interactions",
 		}, { "GEMINI_API_KEY", "GOOGLE_API_KEY" }, AI_GENERATE
 	},
 	[AI_DEEPINFRA] = {
@@ -128,7 +132,8 @@ config_usage (struct config const *cfg,
 	        "                            openrouter; the provider sets the defaults\n"
 	        "                            of --api, --url and --key-env\n"
 	        "      --api NAME            chat (chat completions), responses,\n"
-	        "                            messages (Anthropic) or generate (Gemini)\n"
+	        "                            messages (Anthropic), generate (Gemini) or\n"
+	        "                            interactions (Gemini Interactions)\n"
 	        "                            (default: the API of the provider, else\n"
 	        "                            chat)\n"
 	        "  -u, --url URL             endpoint URL, http:// or https:// (default:\n"

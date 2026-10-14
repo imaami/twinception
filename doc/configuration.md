@@ -243,8 +243,9 @@ request.
 The context size is the value of `context`, or else `n_ctx` from the
 `/props` of `llama-server`.  `askai` requests `/props` only if the upstream
 can be `llama-server`: with `"provider": "llama"`, or with `url` and no
-provider, and not with the API `generate`.  With `slots`, `askai` requests
-`/props` only with `upstream-tools` and without `context`.
+provider, and not with the APIs `generate` and `interactions`.  With
+`slots`, `askai` requests `/props` only with `upstream-tools` and without
+`context`.
 
 With a known context size, `askai` adds a notice to the last result of the
 tool calls of a turn:
@@ -316,9 +317,11 @@ APIs](../README.md#upstream-providers-and-apis) of `README.md` lists them.
 #### `api`
 
 The value is a string: `chat` (Chat Completions), `responses` (OpenAI
-Responses), `messages` (Anthropic Messages) or `generate` (Gemini).  The
-default is the API of the provider: `messages` for `anthropic`, `generate`
-for `google`, and `chat` for the other providers and without a provider.
+Responses), `messages` (Anthropic Messages), `generate` (Gemini
+generateContent) or `interactions` (Gemini Interactions).  The default is
+the API of the provider: `messages` for `anthropic`, `generate` for
+`google`, and `chat` for the other providers and without a provider.
+`google` also serves `chat` and `interactions`.
 
 `api` sets the format of the upstream requests and answers.  `askai`
 refuses an API that the provider does not serve, such as `"api":
@@ -361,8 +364,8 @@ it is `ASKAI_API_KEY`.
 
 `askai` sends the key in the key header of the API: `Authorization: Bearer
 KEY`, or `x-api-key: KEY` for `messages`, or `x-goog-api-key: KEY` for
-`generate`.  If a `header` line has the same name, `askai` sends that line
-instead of the key.
+`generate` and `interactions`.  If a `header` line has the same name, `askai`
+sends that line instead of the key.
 
 A variable that `key-env` names must be set and not empty, also when a
 `header` line has the name of the key header.  Without `key-env`, `askai`
@@ -419,7 +422,8 @@ from the body.  The numbers of the object must be finite: `askai` refuses
 `NaN`, `Infinity` and a number that is too large for a double.  `extra`
 cannot turn off `"stream": true`.  With `upstream-tools`, `extra` must not
 contain the conversation of the API: `messages` for `chat` and `messages`,
-`input` for `responses`, and `contents` for `generate`.
+`input` for `responses` and `interactions`, and `contents` for
+`generate`.
 
 OpenAI reasoning models require the request member `max_completion_tokens`
 instead of `max_tokens`.  With the API `chat`, `askai` sends `max_tokens`
@@ -452,7 +456,8 @@ The value is an integer from 1 to 65535.  `askai` computes the default:
 
 `slots` sets how many upstream calls `askai` makes at once.  The other
 calls wait in a queue.  `askai` requests `/props` only with `"provider":
-"llama"`, or with `url` and no provider, and not with the API `generate`.
+"llama"`, or with `url` and no provider, and not with the APIs `generate`
+and `interactions`.
 
 #### `max-calls`
 

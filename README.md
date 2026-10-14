@@ -277,12 +277,13 @@ asks for no input, so `tasks/update` has none to take.
 
 `--api` says how the requests and answers are written:
 
-| `--api`     | API                                                       |
-| ----------- | --------------------------------------------------------- |
-| `chat`      | Chat Completions: OpenAI's, and the many servers that copy it |
-| `responses` | OpenAI Responses                                          |
-| `messages`  | Anthropic Messages                                        |
-| `generate`  | Gemini `streamGenerateContent`                            |
+| `--api`        | API                                                       |
+| -------------- | --------------------------------------------------------- |
+| `chat`         | Chat Completions: OpenAI's, and the many servers that copy it |
+| `responses`    | OpenAI Responses                                          |
+| `messages`     | Anthropic Messages                                        |
+| `generate`     | Gemini `streamGenerateContent`                            |
+| `interactions` | Gemini Interactions                                       |
 
 `-p`, `--provider`, says who serves it, whose default API, URL for the API and
 key variables are then the defaults:
@@ -292,7 +293,7 @@ key variables are then the defaults:
 | `llama`      | `chat`      | `http://127.0.0.1:9931/v1/` + `chat/completions`, `responses`, `messages`         | `LLAMA_API_KEY`, if set                  |
 | `openai`     | `chat`      | `https://api.openai.com/v1/` + `chat/completions`, `responses`                    | `OPENAI_API_KEY`                         |
 | `anthropic`  | `messages`  | `https://api.anthropic.com/v1/` + `messages`, `chat/completions`                  | `ANTHROPIC_API_KEY`                      |
-| `google`     | `generate`  | `https://generativelanguage.googleapis.com/v1beta/` + `models/MODEL:streamGenerateContent?alt=sse`, `openai/chat/completions` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| `google`     | `generate`  | `https://generativelanguage.googleapis.com/v1beta/` + `models/MODEL:streamGenerateContent?alt=sse`, `interactions`, `openai/chat/completions` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 | `deepinfra`  | `chat`      | `https://api.deepinfra.com/v1/openai/chat/completions`                            | `DEEPINFRA_API_KEY`, `DEEPINFRA_TOKEN`   |
 | `openrouter` | `chat`      | `https://openrouter.ai/api/v1/chat/completions`                                   | `OPENROUTER_API_KEY`                     |
 
@@ -309,7 +310,8 @@ events, refusals, timeouts) come back as tool errors the model can read and
 react to.
 
 Every API asks for a streamed answer: `stream: true` in the body, which
-`-x` cannot turn off, and for Gemini `:streamGenerateContent?alt=sse`, which a
+`-x` cannot turn off, and for Gemini's generateContent
+`:streamGenerateContent?alt=sse`, which a
 `-u` URL ending in `:generateContent` is asked as instead, with `alt=sse`
 whatever `alt` it had.  The tool still
 returns the whole answer at once; streaming lets `askai` report progress,
@@ -337,9 +339,11 @@ export ANTHROPIC_API_KEY=...
 export OPENROUTER_API_KEY=...
 ./askai -p openrouter -m MODEL
 
-# Ask a Gemini model, in Gemini's API or in Google's chat completions.
+# Ask a Gemini model, in Gemini's generateContent or Interactions API, or in
+# Google's chat completions.
 export GEMINI_API_KEY=...
 ./askai -p google -m MODEL
+./askai -p google --api interactions -m MODEL
 ./askai -p google --api chat -m MODEL
 ```
 
@@ -481,7 +485,8 @@ came where the API asks for that: a call's `extra_content` in chat
 completions, in which Gemini's give their thought signature; the output
 items of the Responses API, its reasoning among them; the thinking blocks of
 Anthropic's Messages, with their signatures, in their places among the text
-and the calls; and Gemini's parts, with their thought signatures.  Each turn
+and the calls; Gemini's parts, with their thought signatures; and the steps
+of Gemini's Interactions, thoughts with their signatures among them.  Each turn
 waits for an upstream slot like any call, so the scheduler's fairness holds
 turn by turn.  The caller gets the answer, and a second text that lists the calls the turns made, with their arguments (but
 those of `notes` and `compact`, which are the model's own) and the bytes of
@@ -1061,7 +1066,8 @@ and how busy they are; the client stays with that loop.  A tool call hands its
 upstream request to home as a job, which home runs and hands back.  Home makes
 as many upstream requests at once as the upstream has slots (`--slots`; by
 default what `llama-server`'s `/props` says, which `askai` asks of `-p llama`
-and of a server no provider names, unless its API is `generate`; else 4).  The other calls wait, each in its principal's queue, its client's
+and of a server no provider names, unless its API is `generate` or
+`interactions`; else 4).  The other calls wait, each in its principal's queue, its client's
 identity's, else its MCP session's or, without one, its client address's,
 and the principals take
 turns, a call each, so that one flooding client leaves the others their share.
@@ -1126,7 +1132,8 @@ Upstream AI:
                             openrouter; the provider sets the defaults
                             of --api, --url and --key-env
       --api NAME            chat (chat completions), responses,
-                            messages (Anthropic) or generate (Gemini)
+                            messages (Anthropic), generate (Gemini) or
+                            interactions (Gemini Interactions)
                             (default: the API of the provider, else
                             chat)
   -u, --url URL             endpoint URL, http:// or https:// (default:

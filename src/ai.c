@@ -19,7 +19,17 @@ static char const *const limits[] = {
 	[AI_RESPONSES] = "max_output_tokens",
 	[AI_MESSAGES] = "max_tokens",
 	[AI_GENERATE] = "MAX_TOKENS",
+	[AI_INTERACTIONS] = "incomplete",
 };
+
+/* The type of the step whose item is open in the replay, in Gemini's
+ * Interactions, or the end of the answer, after which no event changes the
+ * replay (struct ai_reader's kind). */
+enum { INTERACTIONS_THOUGHT, INTERACTIONS_OUTPUT, INTERACTIONS_ENDED };
+
+/* The state of the summary array of the open thought (struct ai_reader's
+ * summary). */
+enum { SUMMARY_NONE, SUMMARY_OPEN, SUMMARY_CLOSED };
 
 static struct json_object *
 ai_message (char const         *role,
@@ -72,16 +82,23 @@ ai_merge (struct json_object *dst,
 	return 0;
 }
 
-/* The model, the token limit under @p max_key, unless @p max_tokens is not
- * positive, and the temperature, into @p options, which is @p root or in it;
- * then --extra, merged into @p root. */
+/* Write the token limit under @p max_key, unless @p max_tokens is not
+ * positive, and the temperature into @p root.  If @p config is not nullptr,
+ * write them into a new object, @p root's member @p config, which is added
+ * only if one of them is set.  Then merge --extra into @p root. */
 static int
 ai_request_common (struct ai_endpoint const *ep,
                    struct json_object       *root,
-                   struct json_object       *options,
+                   char const               *config,
                    char const               *max_key,
                    long                      max_tokens)
 {
+	struct json_object *options = root;
+	if (config && (max_tokens > 0 || ep->temperature)) {
+		options = json_object_new_object();
+		if (jb_set(root, config, options))
+			return ENOMEM;
+	}
 	if ((max_tokens > 0 &&
 	     jb_set(options, max_key, json_object_new_int64(max_tokens))) ||
 	    (ep->temperature && jb_set(options, "temperature", ai_copy(ep->temperature))) ||
@@ -116,7 +133,7 @@ ai_request_chat (struct ai_endpoint const *ep,
 	               jb_set(root, "stream_options", jb_object(
 	                      "include_usage", json_object_new_boolean(1),
 	                      nullptr)))) ||
-	    ai_request_common(ep, root, root, "max_tokens", ep->max_tokens))
+	    ai_request_common(ep, root, nullptr, "max_tokens", ep->max_tokens))
 		return ENOMEM;
 	return jb_set(root, "stream", json_object_new_boolean(1));
 }
@@ -134,7 +151,7 @@ ai_request_responses (struct ai_endpoint const *ep,
 	    (system && jb_set(root, "instructions", json_object_get(system))) ||
 	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
 	    jb_set(root, "store", json_object_new_boolean(0)) ||
-	    ai_request_common(ep, root, root, "max_output_tokens", ep->max_tokens))
+	    ai_request_common(ep, root, nullptr, "max_output_tokens", ep->max_tokens))
 		return ENOMEM;
 	return jb_set(root, "stream", json_object_new_boolean(1));
 }
@@ -152,7 +169,7 @@ ai_request_messages (struct ai_endpoint const *ep,
 	    jb_set(root, "messages", jb_list(ai_message("user", prompt))) ||
 	    (system && jb_set(root, "system", json_object_get(system))) ||
 	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
-	    ai_request_common(ep, root, root, "max_tokens", max_tokens))
+	    ai_request_common(ep, root, nullptr, "max_tokens", max_tokens))
 		return ENOMEM;
 	return jb_set(root, "stream", json_object_new_boolean(1));
 }
@@ -170,13 +187,40 @@ ai_request_generate (struct ai_endpoint const *ep,
 	                      ai_generate_content(nullptr, system))) ||
 	    (tools && jb_set(root, "tools", json_object_get(tools))))
 		return ENOMEM;
-	struct json_object *options = root;
-	if (ep->max_tokens > 0 || ep->temperature) {
-		options = json_object_new_object();
-		if (jb_set(root, "generationConfig", options))
-			return ENOMEM;
-	}
-	return ai_request_common(ep, root, options, "maxOutputTokens", ep->max_tokens);
+	return ai_request_common(ep, root, "generationConfig", "maxOutputTokens",
+	                         ep->max_tokens);
+}
+
+/* Return a user_input step of Gemini's Interactions with the text @p text.
+ * The text is the last value of each object and array around it, so that
+ * the body ends after the text with prompt_end and end (ai_format()). */
+static struct json_object *
+ai_interactions_input (struct json_object *text)
+{
+	struct json_object *content = jb_object("type", json_object_new_string("text"),
+	                                        "text", json_object_get(text), nullptr);
+	return jb_object("type", json_object_new_string("user_input"),
+	                 "content", jb_list(content), nullptr);
+}
+
+/* The request body of Gemini's Interactions.  stream is set after --extra
+ * is merged, so that the answer is always streamed. */
+static int
+ai_request_interactions (struct ai_endpoint const *ep,
+                         struct json_object       *root,
+                         struct json_object       *system,
+                         struct json_object       *prompt,
+                         struct json_object       *tools)
+{
+	if (ai_request_model(ep, root) ||
+	    jb_set(root, "input", jb_list(ai_interactions_input(prompt))) ||
+	    (system && jb_set(root, "system_instruction", json_object_get(system))) ||
+	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
+	    jb_set(root, "store", json_object_new_boolean(0)) ||
+	    ai_request_common(ep, root, "generation_config", "max_output_tokens",
+	                      ep->max_tokens))
+		return ENOMEM;
+	return jb_set(root, "stream", json_object_new_boolean(1));
 }
 
 /* Move the conversation, @p root's member @p key, to its end, after what
@@ -215,6 +259,9 @@ ai_request (struct ai_endpoint const *ep,
 		break;
 	case AI_GENERATE:
 		e = ai_request_generate(ep, root, system, prompt, tools);
+		break;
+	case AI_INTERACTIONS:
+		e = ai_request_interactions(ep, root, system, prompt, tools);
 		break;
 	}
 	if (e || ai_request_last(root, ai_format(ep->api)->conversation)) {
@@ -307,6 +354,30 @@ ai_generate_answer (struct json_object  *root,
 	return e;
 }
 
+/* The text of the model_output steps of Gemini's Interactions' answer
+ * @p root, into @p text, and its status, as its stop reason, in
+ * @p *reason. */
+static int
+ai_interactions_answer (struct json_object  *root,
+                        struct dstr         *text,
+                        char const         **reason)
+{
+	*reason = jb_text(jb_get(root, "status"));
+	struct json_object *steps = jb_get(root, "steps");
+	int e = 0;
+	struct json_object *step;
+	for (size_t i = 0; !e && (step = jb_at(steps, i)); ++i) {
+		if (!jb_is(jb_get(step, "type"), "model_output"))
+			continue;
+		struct json_object *content = jb_get(step, "content");
+		struct json_object *item;
+		for (size_t j = 0; !e && (item = jb_at(content, j)); ++j)
+			if (jb_is(jb_get(item, "type"), "text"))
+				e = ai_append(text, jb_get(item, "text"));
+	}
+	return e;
+}
+
 static char const no_answer[] = "The model returned no answer.";
 #define no_answer_reason "The model returned no answer (stop reason: %s)."
 
@@ -369,6 +440,15 @@ ai_used (int64_t prompt,
 	return n < UINT32_MAX ? (uint32_t)n : UINT32_MAX;
 }
 
+/* Return @p val as a token count if it is a JSON integer, else 0.  json-c
+ * also parses NaN, which json_object_get_int64() cannot convert.  ai_used()
+ * treats a request count of 0 as not known and an answer count of 0 as 0. */
+static int64_t
+ai_count (struct json_object *val)
+{
+	return json_object_is_type(val, json_type_int) ? json_object_get_int64(val) : 0;
+}
+
 /* The place of @p type, an event's or an item's, among the @p n @p names; @p n
  * if it is none of them. */
 static size_t
@@ -405,19 +485,30 @@ ai_replay_text (struct ai_sink const *sink,
 	return json ? sink->replay(sink->user, json + 1, len - 2) : ENOMEM;
 }
 
+/* Pass @p val, an item of the answer, whole, to @p sink's replay, if it has
+ * one, after the @p len bytes at @p head. */
+static int
+ai_replay_after (struct ai_sink const *sink,
+                 char const           *head,
+                 size_t                len,
+                 struct json_object   *val)
+{
+	if (!sink->replay)
+		return 0;
+	size_t n = 0;
+	char const *json = json_object_to_json_string_length(val, JB_WIRE, &n);
+	if (!json)
+		return ENOMEM;
+	int e = sink->replay(sink->user, head, len);
+	return e ? e : sink->replay(sink->user, json, n);
+}
+
 /* Give it @p val, an item of the answer, whole, after a comma. */
 static int
 ai_replay_item (struct ai_sink const *sink,
                 struct json_object   *val)
 {
-	if (!sink->replay)
-		return 0;
-	size_t len = 0;
-	char const *json = json_object_to_json_string_length(val, JB_WIRE, &len);
-	if (!json)
-		return ENOMEM;
-	int e = sink->replay(sink->user, ",", 1);
-	return e ? e : sink->replay(sink->user, json, len);
+	return ai_replay_after(sink, ",", 1, val);
 }
 
 /* Hand the pieces of chat completions' tool calls, @p calls, to @p sink. */
@@ -460,7 +551,9 @@ ai_event_error (struct json_object *ev)
 	struct json_object *error = jb_get(ev, "error");
 	if (!error && jb_is(type, "response.failed"))
 		error = jb_get(jb_get(ev, "response"), "error");
-	bool erred = error || jb_is(type, "error");
+	/* An event of Gemini's Interactions has its type in event_type. */
+	bool erred = error || jb_is(type, "error") ||
+	             jb_is(jb_get(ev, "event_type"), "error");
 	struct json_object *const words[] = {
 		jb_get(error, "message"), error, erred ? jb_get(ev, "message") : nullptr
 	};
@@ -528,7 +621,8 @@ ai_responses_item (struct ai_sink const *sink,
 }
 
 /* Hand the pieces of the Responses API's event @p ev to @p sink, saying in
- * @p out whether it carries thinking, and the tokens used once it ends. */
+ * @p out whether it carries thinking, and the end and the tokens used once
+ * it ends. */
 static int
 ai_responses_event (struct ai_sink const *sink,
                     struct json_object   *ev,
@@ -559,6 +653,7 @@ ai_responses_event (struct ai_sink const *sink,
 	case DONE:
 	case CUT: {
 		struct json_object *usage = jb_get(jb_get(ev, "response"), "usage");
+		out->end = 1;
 		out->used = ai_used(json_object_get_int64(jb_get(usage, "input_tokens")),
 		                    json_object_get_int64(jb_get(usage, "output_tokens")));
 		return 0;
@@ -568,6 +663,30 @@ ai_responses_event (struct ai_sink const *sink,
 }
 
 #define REPLAY(s) ai_replay(sink, s, sizeof s - 1)
+
+/* Hand the start of tool call @p at, @p item, to @p sink: its id and name,
+ * and its arguments, @p item's member @p key, if they are a JSON object that
+ * is not empty.  A server that sends the arguments whole sends them in the
+ * start. */
+static int
+ai_call_start (struct ai_sink const *sink,
+               uint32_t              at,
+               struct json_object   *item,
+               char const           *key)
+{
+	if (!sink->call)
+		return 0;
+	struct json_object *args = jb_get(item, key);
+	bool whole = json_object_is_type(args, json_type_object) &&
+	             json_object_object_length(args);
+	struct ai_call call = { .index = at };
+	call.id = ai_text_of(jb_get(item, "id"), &call.id_len);
+	call.name = ai_text_of(jb_get(item, "name"), &call.name_len);
+	call.args = whole ? json_object_to_json_string_length(args, JB_WIRE,
+	                                                      &call.args_len)
+	                  : nullptr;
+	return whole && !call.args ? ENOMEM : sink->call(sink->user, &call);
+}
 
 /* Hand what Anthropic's content block @p block, @p at in the content,
  * begins with to @p sink: a tool call's id and name; or, to the replay, the
@@ -586,21 +705,8 @@ ai_messages_start (struct ai_sink const *sink,
 		[REDACTED] = "redacted_thinking",
 	};
 	switch (ai_kind(jb_get(block, "type"), kinds, KINDS)) {
-	case TOOL: {
-		if (!sink->call)
-			return 0;
-		/* A server that gives the arguments whole gives them here. */
-		struct json_object *input = jb_get(block, "input");
-		bool whole = json_object_is_type(input, json_type_object) &&
-		             json_object_object_length(input);
-		struct ai_call call = { .index = at };
-		call.id = ai_text_of(jb_get(block, "id"), &call.id_len);
-		call.name = ai_text_of(jb_get(block, "name"), &call.name_len);
-		call.args = whole ? json_object_to_json_string_length(input, JB_WIRE,
-		                                                      &call.args_len)
-		                  : nullptr;
-		return whole && !call.args ? ENOMEM : sink->call(sink->user, &call);
-	}
+	case TOOL:
+		return ai_call_start(sink, at, block, "input");
 	case THINKING:
 		reader->open = at + 1;
 		return REPLAY(",{\"type\":\"thinking\",\"thinking\":\"");
@@ -667,9 +773,9 @@ ai_messages_delta (struct ai_sink const *sink,
 }
 
 /* Hand the pieces of Anthropic's event @p ev to @p sink, as @p reader keeps
- * the reading, saying in @p out whether it carries thinking, and the tokens
- * used as the answer ends.  An event of a content block with no index may
- * carry text only. */
+ * the reading, saying in @p out whether it carries thinking, the tokens
+ * used as the answer ends, and the end of the message.  An event of a
+ * content block with no index may carry text only. */
 static int
 ai_messages_event (struct ai_sink const *sink,
                    struct ai_reader     *reader,
@@ -677,13 +783,14 @@ ai_messages_event (struct ai_sink const *sink,
                    struct ai_event      *out)
 {
 	/* The content blocks' events first. */
-	enum { DELTA, START, STOP, MESSAGE, MESSAGE_DELTA, KINDS };
+	enum { DELTA, START, STOP, MESSAGE, MESSAGE_DELTA, MESSAGE_STOP, KINDS };
 	static char const *const kinds[KINDS] = {
 		[DELTA]         = "content_block_delta",
 		[START]         = "content_block_start",
 		[STOP]          = "content_block_stop",
 		[MESSAGE]       = "message_start",
 		[MESSAGE_DELTA] = "message_delta",
+		[MESSAGE_STOP]  = "message_stop",
 	};
 	uint32_t at = ai_index(jb_get(ev, "index"));
 	size_t kind = ai_kind(jb_get(ev, "type"), kinds, KINDS);
@@ -718,6 +825,9 @@ ai_messages_event (struct ai_sink const *sink,
 		                    json_object_get_int64(jb_get(usage, "output_tokens")));
 		return 0;
 	}
+	case MESSAGE_STOP:
+		out->end = 1;
+		return 0;
 	}
 	return 0;
 }
@@ -799,6 +909,259 @@ ai_generate_part (struct ai_sink const *sink,
 	return e ? e : ai_replay_text(sink, text);
 }
 
+/* Close the open item in @p sink's replay, if there is one (@p reader).
+ * For a thought, close its summary array if it is open, then the thought.
+ * For a model output, close its text and the step. */
+static int
+ai_interactions_close (struct ai_sink const *sink,
+                       struct ai_reader     *reader)
+{
+	if (!reader->open)
+		return 0;
+	reader->open = 0;
+	if (reader->kind == INTERACTIONS_OUTPUT)
+		return REPLAY("\"}]}");
+	return reader->summary == SUMMARY_OPEN ? REPLAY("]}") : REPLAY("}");
+}
+
+/* Pass @p text, a piece of text of step @p at of Gemini's Interactions, to
+ * @p sink's text and to its replay.  The text goes into the open item if
+ * that item is the model output of step @p at.  If no item is open, text
+ * that is not only white space starts a new model output item for step
+ * @p at.  Otherwise the replay does not get the text. */
+static int
+ai_interactions_text (struct ai_sink const *sink,
+                      struct ai_reader     *reader,
+                      uint32_t              at,
+                      struct json_object   *text)
+{
+	size_t len;
+	char const *str = ai_text_of(text, &len);
+	int e = str && sink->text ? sink->text(sink->user, str, len) : 0;
+	if (e || !str)
+		return e;
+	if (reader->open == at + 1)
+		return reader->kind == INTERACTIONS_OUTPUT ? ai_replay_text(sink, text) : 0;
+	if (reader->open || strspn(str, " \t\r\n") == len)
+		return 0;
+	reader->open = at + 1;
+	reader->kind = INTERACTIONS_OUTPUT;
+	e = REPLAY(",{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"");
+	return e ? e : ai_replay_text(sink, text);
+}
+
+/* Write @p item, a summary item of the open thought, whole to @p sink's
+ * replay: after the earlier items, or in a new summary array.  Skip an item
+ * that is not a JSON object, and an item that comes after the array is
+ * closed. */
+static int
+ai_interactions_summary (struct ai_sink const *sink,
+                         struct ai_reader     *reader,
+                         struct json_object   *item)
+{
+	if (reader->summary == SUMMARY_CLOSED || !json_object_is_type(item, json_type_object))
+		return 0;
+	if (reader->summary == SUMMARY_OPEN)
+		return ai_replay_item(sink, item);
+	reader->summary = SUMMARY_OPEN;
+	static char const head[] = ",\"summary\":[";
+	return ai_replay_after(sink, head, sizeof head - 1, item);
+}
+
+/* Write @p signature into the open thought in @p sink's replay.  Close the
+ * summary array first if it is open.  Skip a signature that is not a
+ * string, that is empty, or that comes after the thought already has a
+ * signature. */
+static int
+ai_interactions_sign (struct ai_sink const *sink,
+                      struct ai_reader     *reader,
+                      struct json_object   *signature)
+{
+	if (reader->sign || !ai_some_text(signature))
+		return 0;
+	reader->sign = 1;
+	int e = 0;
+	if (reader->summary == SUMMARY_OPEN) {
+		reader->summary = SUMMARY_CLOSED;
+		e = REPLAY("]");
+	}
+	e = e ? e : REPLAY(",\"signature\":\"");
+	e = e ? e : ai_replay_text(sink, signature);
+	return e ? e : REPLAY("\"");
+}
+
+/* Start the item of @p step, thought step @p at of Gemini's Interactions,
+ * in @p sink's replay, and mark it open in @p reader.  Write its type, then
+ * the signature and the summary items that the start event contains.  Set
+ * out->thought if a summary item has text. */
+static int
+ai_interactions_thought (struct ai_sink const *sink,
+                         struct ai_reader     *reader,
+                         uint32_t              at,
+                         struct json_object   *step,
+                         struct ai_event      *out)
+{
+	reader->open = at + 1;
+	reader->kind = INTERACTIONS_THOUGHT;
+	reader->summary = SUMMARY_NONE;
+	reader->sign = 0;
+	int e = REPLAY(",{\"type\":\"thought\"");
+	e = e ? e : ai_interactions_sign(sink, reader, jb_get(step, "signature"));
+	struct json_object *summary = jb_get(step, "summary");
+	struct json_object *item;
+	for (size_t i = 0; !e && (item = jb_at(summary, i)); ++i) {
+		out->thought |= ai_some_text(jb_get(item, "text"));
+		e = ai_interactions_summary(sink, reader, item);
+	}
+	return e;
+}
+
+/* Process @p step, the start of step @p at of Gemini's Interactions.
+ * Ignore a step of a type other than thought, model_output and
+ * function_call, such as the step of a server tool; the open item stays
+ * open.  For those three types, close the open item in the replay first.
+ * Then start the item of a thought (ai_interactions_thought()), pass the
+ * text of a model output (ai_interactions_text()), or mark the function
+ * call as the last that started in @p reader and pass it to @p sink. */
+static int
+ai_interactions_start (struct ai_sink const *sink,
+                       struct ai_reader     *reader,
+                       uint32_t              at,
+                       struct json_object   *step,
+                       struct ai_event      *out)
+{
+	enum { THOUGHT, OUTPUT, CALL, KINDS };
+	static char const *const kinds[KINDS] = {
+		[THOUGHT] = "thought",
+		[OUTPUT]  = "model_output",
+		[CALL]    = "function_call",
+	};
+	size_t kind = ai_kind(jb_get(step, "type"), kinds, KINDS);
+	if (kind == KINDS)
+		return 0;
+	int e = ai_interactions_close(sink, reader);
+	if (e)
+		return e;
+	switch (kind) {
+	case THOUGHT:
+		return ai_interactions_thought(sink, reader, at, step, out);
+	case OUTPUT: {
+		struct json_object *content = jb_get(step, "content");
+		struct json_object *item;
+		for (size_t i = 0; !e && (item = jb_at(content, i)); ++i)
+			if (jb_is(jb_get(item, "type"), "text"))
+				e = ai_interactions_text(sink, reader, at,
+				                         jb_get(item, "text"));
+		return e;
+	}
+	case CALL:
+		reader->calls = at + 1;
+		return ai_call_start(sink, at, step, "arguments");
+	}
+	return 0;
+}
+
+/* Process @p delta, a delta of step @p at of Gemini's Interactions.  Pass
+ * the text of a model output (ai_interactions_text()).  Write a summary
+ * item or a signature into the thought of step @p at if that thought is
+ * open, and set out->thought if the summary item has text.  Pass a piece of
+ * the arguments of a function call to @p sink.  If step @p at is not the
+ * function call that started last (@p reader), close the open item in the
+ * replay first, because a piece that starts a new call places the call at
+ * the current end of the replay, and mark step @p at as that call. */
+static int
+ai_interactions_delta (struct ai_sink const *sink,
+                       struct ai_reader     *reader,
+                       uint32_t              at,
+                       struct json_object   *delta,
+                       struct ai_event      *out)
+{
+	enum { TEXT, SUMMARY, SIGNATURE, ARGUMENTS, KINDS };
+	static char const *const kinds[KINDS] = {
+		[TEXT]      = "text",
+		[SUMMARY]   = "thought_summary",
+		[SIGNATURE] = "thought_signature",
+		[ARGUMENTS] = "arguments_delta",
+	};
+	bool thought = reader->open == at + 1 && reader->kind == INTERACTIONS_THOUGHT;
+	switch (ai_kind(jb_get(delta, "type"), kinds, KINDS)) {
+	case TEXT:
+		return ai_interactions_text(sink, reader, at, jb_get(delta, "text"));
+	case SUMMARY: {
+		struct json_object *item = jb_get(delta, "content");
+		out->thought = ai_some_text(jb_get(item, "text"));
+		return thought ? ai_interactions_summary(sink, reader, item) : 0;
+	}
+	case SIGNATURE:
+		return thought ? ai_interactions_sign(sink, reader, jb_get(delta, "signature"))
+		               : 0;
+	case ARGUMENTS: {
+		struct ai_call call = { .index = at };
+		call.args = ai_text_of(jb_get(delta, "arguments"), &call.args_len);
+		if (!sink->call || !call.args)
+			return 0;
+		int e = reader->calls == at + 1 ? 0 : ai_interactions_close(sink, reader);
+		reader->calls = at + 1;
+		return e ? e : sink->call(sink->user, &call);
+	}
+	}
+	return 0;
+}
+
+/* Process @p ev, an event of Gemini's Interactions of type @p type, with
+ * the state of the reading in @p reader.  interaction.completed closes the
+ * open item in the replay, sets out->end and the tokens used, and makes
+ * the reading ignore the events after it.  A step event without an index
+ * can pass only text to @p sink. */
+static int
+ai_interactions_event (struct ai_sink const *sink,
+                       struct ai_reader     *reader,
+                       struct json_object   *type,
+                       struct json_object   *ev,
+                       struct ai_event      *out)
+{
+	enum { DELTA, START, STOP, DONE, KINDS };
+	static char const *const kinds[KINDS] = {
+		[DELTA] = "step.delta",
+		[START] = "step.start",
+		[STOP]  = "step.stop",
+		[DONE]  = "interaction.completed",
+	};
+	if (reader->kind == INTERACTIONS_ENDED)
+		return 0;
+	uint32_t at = ai_index(jb_get(ev, "index"));
+	size_t kind = ai_kind(type, kinds, KINDS);
+	struct json_object *delta = jb_get(ev, "delta");
+	if (kind < DONE && at == AI_CALL_NEXT) {
+		struct json_object *text = kind == DELTA ? jb_get(delta, "text") : nullptr;
+		return ai_put_text(sink->text, sink->user, text);
+	}
+	switch (kind) {
+	case DELTA:
+		return ai_interactions_delta(sink, reader, at, delta, out);
+	case START:
+		return ai_interactions_start(sink, reader, at, jb_get(ev, "step"), out);
+	case STOP:
+		return reader->open == at + 1 ? ai_interactions_close(sink, reader) : 0;
+	case DONE: {
+		/* The thinking is not sent back in the next request, so the tokens
+		 * used are total_input_tokens plus total_output_tokens, which leave
+		 * out the thinking.  If that sum is not known, the tokens used are
+		 * total_tokens, which include the thinking. */
+		struct json_object *usage = jb_get(jb_get(ev, "interaction"), "usage");
+		out->end = 1;
+		out->used = ai_used(ai_count(jb_get(usage, "total_input_tokens")),
+		                    ai_count(jb_get(usage, "total_output_tokens")));
+		if (!out->used)
+			out->used = ai_used(ai_count(jb_get(usage, "total_tokens")), 0);
+		int e = ai_interactions_close(sink, reader);
+		reader->kind = INTERACTIONS_ENDED;
+		return e;
+	}
+	}
+	return 0;
+}
+
 #undef REPLAY
 
 int
@@ -811,7 +1174,6 @@ ai_event (enum ai_api            api,
 	if ((out->error = ai_event_error(ev)))
 		return 0;
 	int e = 0;
-	struct json_object *type = jb_get(ev, "type");
 	struct json_object *reason = nullptr;
 	switch (api) {
 	case AI_CHAT: {
@@ -852,11 +1214,16 @@ ai_event (enum ai_api            api,
 		out->used = ai_used(json_object_get_int64(jb_get(usage, "totalTokenCount")), 0);
 		break;
 	}
+	case AI_INTERACTIONS:
+		/* interaction.created has a status too, so only the status in
+		 * interaction.completed is the stop reason. */
+		e = ai_interactions_event(sink, reader, jb_get(ev, "event_type"), ev, out);
+		reason = out->end ? jb_get(jb_get(ev, "interaction"), "status") : nullptr;
+		break;
 	}
 	out->reason = jb_text(reason);
 	out->truncated = ai_cut(api, out->reason);
-	out->end = out->reason || jb_is(type, "response.completed") ||
-	           jb_is(type, "response.incomplete") || jb_is(type, "message_stop");
+	out->end = out->end || out->reason;
 	return e;
 }
 
@@ -948,6 +1315,26 @@ ai_format (enum ai_api api)
 			.conversation = "contents",
 			.flags        = AI_RESULT_NAMED,
 		},
+		/* A turn is the replay's steps and the calls, in the input list.
+		 * Each result is a step after them. */
+		[AI_INTERACTIONS] = {
+			.tools        = B("["),
+			.tools_end    = B("]"),
+			.call         = B(",{\"type\":\"function_call\",\"id\":\""),
+			.call_next    = B(",{\"type\":\"function_call\",\"id\":\""),
+			.name         = B("\",\"name\":\""),
+			.args         = B("\",\"arguments\":"),
+			.call_end     = B("}"),
+			.result       = B(",{\"type\":\"function_result\",\"call_id\":\""),
+			.output       = B("\",\"result\":\""),
+			.result_end   = B("\"}"),
+			.user         = B(",{\"type\":\"user_input\",\"content\":"
+			                  "[{\"type\":\"text\",\"text\":\""),
+			.prompt_end   = B("\"}]}"),
+			.end          = B("]}"),
+			.conversation = "input",
+			.flags        = AI_ARGS_RAW,
+		},
 	};
 #undef B
 	return &formats[api];
@@ -958,10 +1345,11 @@ ai_tool (enum ai_api               api,
          struct json_object const *def)
 {
 	static char const *const schemas[] = {
-		[AI_CHAT]      = "parameters",
-		[AI_RESPONSES] = "parameters",
-		[AI_MESSAGES]  = "input_schema",
-		[AI_GENERATE]  = "parametersJsonSchema",
+		[AI_CHAT]         = "parameters",
+		[AI_RESPONSES]    = "parameters",
+		[AI_MESSAGES]     = "input_schema",
+		[AI_GENERATE]     = "parametersJsonSchema",
+		[AI_INTERACTIONS] = "parameters",
 	};
 	struct json_object *tool = jb_object(
 		"name", json_object_get(jb_get(def, "name")),
@@ -973,6 +1361,7 @@ ai_tool (enum ai_api               api,
 		return jb_object("type", json_object_new_string("function"),
 		                 "function", tool, nullptr);
 	case AI_RESPONSES:
+	case AI_INTERACTIONS:
 		if (tool && jb_set(tool, "type", json_object_new_string("function"))) {
 			json_object_put(tool);
 			return nullptr;
@@ -1044,6 +1433,9 @@ ai_answer (enum ai_api         api,
 		break;
 	case AI_GENERATE:
 		e = ai_generate_answer(root, text, &reason);
+		break;
+	case AI_INTERACTIONS:
+		e = ai_interactions_answer(root, text, &reason);
 		break;
 	}
 	if (e)

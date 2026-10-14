@@ -1290,7 +1290,10 @@ home_event (struct home *home,
 /* Parse the event whole in @p job's wire, a slice a step, take what it says,
  * and free it; then go on past it.  0 once it has, EAGAIN if the step's
  * share ran out first, ECANCELED if the event ended the job.  An event that
- * is not JSON text ends it, as a whole answer that is not would. */
+ * is not JSON text ends it, as a whole answer that is not would.  The data
+ * [DONE], which is not JSON text, is not parsed.  It ends the answer,
+ * except in Gemini's Interactions, where it is skipped, because only
+ * interaction.completed ends the answer there. */
 static int
 home_read_event (struct home *home,
                  struct job  *job)
@@ -1299,7 +1302,7 @@ home_read_event (struct home *home,
 	char const *data = (char const *)buf_peek(&job->wire).ptr + job->ev;
 	int e = 0;
 	if (job->evlen == sizeof done - 1 && !memcmp(data, done, sizeof done - 1))
-		job->flags |= ENDED;
+		job->flags |= home->ep->api == AI_INTERACTIONS ? 0 : ENDED;
 	else if (!home_parse(home, &job->parser, data, job->evlen))
 		return EAGAIN;
 	else
@@ -1720,13 +1723,14 @@ home_props_get (struct home *home,
 
 /* Ask the upstream how many slots it has, as llama-server says at GET /props
  * of its endpoint's server (home_props_get()), unless it is known to be no
- * llama-server: a provider's but llama's, or one that has Gemini's API
- * (ENOTSUP); 0 once asked. */
+ * llama-server: a provider's but llama's, or one that has one of Gemini's
+ * APIs (ENOTSUP); 0 once asked. */
 static int
 home_props_ask (struct home *home)
 {
 	struct ai_endpoint const *ep = home->ep;
-	if (!ai_llama_like(ep->provider) || ep->api == AI_GENERATE)
+	if (!ai_llama_like(ep->provider) || ep->api == AI_GENERATE ||
+	    ep->api == AI_INTERACTIONS)
 		return ENOTSUP;
 	CURLU *u = curl_url();
 	if (!u)

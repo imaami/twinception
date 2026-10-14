@@ -11,10 +11,11 @@ struct json_object;
 /** How the upstream's requests and answers are written: 0 only until the
  *  configuration has chosen. */
 enum ai_api : uint16_t {
-	AI_CHAT = 1,   /**< chat completions, OpenAI's and the many copies */
-	AI_RESPONSES,  /**< OpenAI's Responses */
-	AI_MESSAGES,   /**< Anthropic's Messages */
-	AI_GENERATE,   /**< Gemini's generateContent */
+	AI_CHAT = 1,      /**< chat completions, OpenAI's and the many copies */
+	AI_RESPONSES,     /**< OpenAI's Responses */
+	AI_MESSAGES,      /**< Anthropic's Messages */
+	AI_GENERATE,      /**< Gemini's generateContent */
+	AI_INTERACTIONS,  /**< Gemini's Interactions */
 };
 
 /** Who serves the upstream, as askai knows them: their URLs, the variables
@@ -129,12 +130,31 @@ struct ai_sink {
  *  zeroed before its first. */
 struct ai_reader {
 	uint32_t open;   /**< 1 + the content block whose item in the replay
-	                      is open, in Anthropic's Messages; nonzero while a
-	                      text part is, in Gemini's; else 0 */
-	uint32_t calls;  /**< the answer's tool calls so far, in Gemini's, which
-	                      numbers none */
-	uint32_t input;  /**< the request's tokens, in Anthropic's Messages,
-	                      which says them first and the answer's last */
+	                      is open, in Anthropic's Messages, or 1 + the step
+	                      whose item is open, in Gemini's Interactions;
+	                      nonzero while a text part is, in Gemini's
+	                      generateContent; else 0 */
+	uint32_t calls;  /**< the answer's tool calls so far, in Gemini's
+	                      generateContent, which numbers none; 1 + the step
+	                      of the last function call that started, in
+	                      Gemini's Interactions */
+	union {
+		uint32_t input;  /**< the request's tokens, in Anthropic's
+		                      Messages, which says them first and the
+		                      answer's last */
+		struct {
+			uint16_t kind;     /**< the type of the step whose item is
+			                        open, in Gemini's Interactions:
+			                        thought or model output; or the end
+			                        of the answer, after which the
+			                        events are ignored */
+			uint8_t  summary;  /**< the state of the summary array of
+			                        the open thought: not written, open
+			                        or closed */
+			uint8_t  sign;     /**< bool: the open thought has a
+			                        signature */
+		};
+	};
 };
 
 /** What ends an answer the output token limit cut short. */

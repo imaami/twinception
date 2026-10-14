@@ -40,7 +40,7 @@ KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
 TURN_TOOLS = ["git", "compact", "background", "jobs", "wait", "timer"]
 # The API that each answer format of the fake upstream is in.
 API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
-       "gemini": "generate"}
+       "gemini": "generate", "interactions": "interactions"}
 
 ANSWERS = {
     "openai": {"choices": [{"message": {"role": "assistant", "content": "A",
@@ -55,6 +55,12 @@ ANSWERS = {
     "gemini": {"candidates": [{"content": {"parts": [
         {"text": "hmm", "thought": True}, {"text": "A"}]},
         "finishReason": "STOP"}]},
+    "interactions": {"status": "completed", "steps": [
+        {"type": "thought", "signature": "sig",
+         "summary": [{"type": "text", "text": "hmm"}]},
+        {"type": "model_output", "content": [{"type": "text", "text": "A"}]}],
+        "usage": {"total_input_tokens": 10, "total_output_tokens": 1,
+                  "total_thought_tokens": 5, "total_tokens": 16}},
 }
 
 TRUNCATED = {
@@ -68,6 +74,8 @@ TRUNCATED = {
                   "stop_reason": "max_tokens"},
     "gemini": {"candidates": [{"content": {"parts": [{"text": "A"}]},
                                "finishReason": "MAX_TOKENS"}]},
+    "interactions": {"status": "incomplete", "steps": [
+        {"type": "model_output", "content": [{"type": "text", "text": "A"}]}]},
 }
 
 
@@ -128,6 +136,40 @@ def sse_of(payload):
         done = "response.incomplete" if payload.get("status") == "incomplete" \
             else "response.completed"
         events.append((done, {"type": done, "response": payload}))
+    elif "steps" in payload:
+        # Gemini's Interactions sends each step as a start, deltas and a
+        # stop, and then the end without the steps.
+        def event(name, **data):
+            events.append((name, {"event_type": name} | data))
+
+        event("interaction.created", interaction={"id": "v1_x",
+                                                  "status": "in_progress"})
+        for i, step in enumerate(payload["steps"]):
+            kind = step["type"]
+            start = {"type": kind}
+            deltas = []
+            if kind == "thought":
+                start["signature"] = ""
+                deltas = [{"type": "thought_summary", "content": item}
+                          for item in step.get("summary", [])]
+                if step.get("signature"):
+                    deltas.append({"type": "thought_signature",
+                                   "signature": step["signature"]})
+            elif kind == "model_output":
+                deltas = [{"type": "text", "text": piece}
+                          for item in step.get("content", [])
+                          for piece in pieces(item["text"])]
+            elif kind == "function_call":
+                start |= {"id": step["id"], "name": step["name"], "arguments": {}}
+                deltas = [{"type": "arguments_delta", "arguments": piece}
+                          for piece in pieces(json.dumps(step["arguments"]))]
+            event("step.start", index=i, step=start)
+            for delta in deltas:
+                event("step.delta", index=i, delta=delta)
+            event("step.stop", index=i)
+        event("interaction.completed",
+              interaction={k: v for k, v in payload.items() if k != "steps"})
+        events.append(("done", "[DONE]"))
     elif "content" in payload:
         events.append(("message_start", {"type": "message_start", "message": {
             "content": [], "stop_reason": None}}))
@@ -659,6 +701,12 @@ def check_protocols(binary, up):
             "systemInstruction": {"parts": [{"text": "SYS"}]},
             "generationConfig": {"maxOutputTokens": 77, "temperature": 0.25},
             "top_p": 0.5, "stream": False}),
+        "interactions": ("/v1beta/interactions", "x-goog-api-key", "secret", {
+            "model": "m", "input": [{"type": "user_input", "content": [
+                {"type": "text", "text": "Q"}]}],
+            "system_instruction": "SYS", "store": False,
+            "generation_config": {"max_output_tokens": 77, "temperature": 0.25},
+            "top_p": 0.5, "stream": True}),
     }
     for protocol, (path, auth, value, body) in expect.items():
         with Askai(binary, "--api", API[protocol], "-u", up.url(path), "-m", "m",
@@ -672,7 +720,7 @@ def check_protocols(binary, up):
                 path = "/v1beta/models/m:streamGenerateContent?alt=sse"
             assert request["path"] == path, (protocol, request["path"])
             assert request["headers"][auth] == value, protocol
-            if protocol == "responses":
+            if protocol in ("responses", "interactions"):
                 body = dict(body)
                 del body["store"]  # --extra null deletes keys
             assert request["body"] == body, (protocol, request["body"])
@@ -684,6 +732,17 @@ def check_protocols(binary, up):
             result = ai.ask()
             assert "isError" not in result
             assert text_of(result).startswith("A\n\n[The answer was cut short")
+
+    # Interactions has generation_config only for -n or -t, and -t alone
+    # puts only the temperature in it.
+    for args, config in (((), None), (("-t", "0.5"), {"temperature": 0.5})):
+        with Askai(binary, "--api", "interactions", "-u", up.url("/v1beta/interactions"),
+                   "-m", "m", *args) as ai:
+            up.reply = lambda request: (200, ANSWERS["interactions"])
+            assert text_of(ai.ask()) == "A"
+            body = up.last()["body"]
+            assert body.get("generation_config") == config, body
+            assert not {"temperature", "max_output_tokens"} & set(body), body
 
     with Askai(binary, "--api", "messages", "-u", up.url("/v1/messages")) as ai:
         up.reply = lambda request: (200, ANSWERS["anthropic"])
@@ -701,7 +760,8 @@ def check_protocols(binary, up):
             assert up.last()["path"] == "/v1beta/models/m:streamGenerateContent" + want
 
     up.reply = lambda request: (200, ANSWERS["openai"])
-    print("openai/responses/anthropic/gemini requests and answers: PASS")
+    print("openai/responses/anthropic/gemini/interactions requests and answers: "
+          "PASS")
 
 
 def check_upstream_errors(binary, up):
@@ -745,6 +805,41 @@ def check_upstream_errors(binary, up):
     with Askai(binary, "-u", "http://127.0.0.1:1/v1/chat/completions") as ai:
         result = ai.ask()
         assert result["isError"] and "Upstream request failed" in text_of(result)
+
+    # These answers of Gemini's Interactions are errors: an error body, an
+    # answer that failed with no text, whole or streamed, an error event
+    # without an error member, and a stream that ends with [DONE] and has
+    # no interaction.completed, also when its events have the types that end
+    # an answer of the Responses API or of Anthropic's Messages.
+    error_event = sse_wire([("error", {"event_type": "error"})])
+    ends = ("response.completed", "response.incomplete", "message_stop")
+    cut = sse_of(ANSWERS["interactions"])[:7]
+    with Askai(binary, "--api", "interactions",
+               "-u", up.url("/v1beta/interactions")) as ai:
+        for reply, message in (
+                ((400, {"error": {"code": "invalid_request", "message": "bad tool"}}),
+                 "Upstream error (HTTP 400): bad tool"),
+                ((200, {"status": "failed", "steps": []}),
+                 "The model returned no answer (stop reason: failed)."),
+                ((200, Stream(wire=error_event)),
+                 "Upstream error (HTTP 200): an error event"),
+                ((200, Stream(wire=sse_wire(sse_of(ANSWERS["interactions"])[:3] +
+                                            [("done", "[DONE]")]))),
+                 "Upstream request failed: Transferred a partial file: the stream "
+                 "ended before the answer did"),
+                ((200, Stream(wire=sse_wire(
+                    [(n, d | {"type": ends[i % 3]}) for i, (n, d) in enumerate(cut)] +
+                    [("done", "[DONE]")]))),
+                 "Upstream request failed: Transferred a partial file: the stream "
+                 "ended before the answer did")):
+            for plain in (True, False):
+                up.plain = plain
+                up.reply = lambda request, r=reply: r
+                result = ai.ask()
+                assert result["isError"] is True and text_of(result) == message, \
+                    (plain, text_of(result), message)
+        up.plain = False
+    up.reply = lambda request: (200, ANSWERS["openai"])
 
     print("upstream errors, refusals, timeouts: PASS")
 
@@ -1938,7 +2033,7 @@ def check_large_bodies(binary, up):
     any slice may end, arrives whole, in every protocol's order of fields."""
     prompt = 'Ünïcödé "quoted"\n\t\u20ac\U0001f600 \\ \x01 end. ' * 30000
     system = "s\u00e9\x02" * 20000
-    for protocol in ("openai", "responses", "anthropic", "gemini"):
+    for protocol in ("openai", "responses", "anthropic", "gemini", "interactions"):
         path = "/v1beta/models/m:generateContent" if protocol == "gemini" else "/x"
         with Askai(binary, "--api", API[protocol], "-u", up.url(path), "-m", "m",
                    "--max-body", "4M") as ai:
@@ -1957,6 +2052,8 @@ def check_large_bodies(binary, up):
                 "anthropic": lambda b: (b["messages"][0]["content"], b["system"]),
                 "gemini": lambda b: (b["contents"][0]["parts"][0]["text"],
                                      b["systemInstruction"]["parts"][0]["text"]),
+                "interactions": lambda b: (b["input"][0]["content"][0]["text"],
+                                           b["system_instruction"]),
             }[protocol](sent)
             assert texts == (prompt, system), protocol
     up.reply = lambda request: (200, ANSWERS["openai"])
@@ -2420,6 +2517,12 @@ def check_configuration(binary, up):
     fails("-p", "openai", "--api", "messages", "-m", "m", env={"OPENAI_API_KEY": "k"},
           message="openai has no messages API")
     fails("-p", "llama", "--api", "generate", message="llama has no generate API")
+    fails("-p", "llama", "--api", "interactions",
+          message="llama has no interactions API")
+    fails("-p", "openai", "--api", "interactions", "-m", "m",
+          env={"OPENAI_API_KEY": "k"}, message="openai has no interactions API")
+    fails("-p", "google", "--api", "interactions", env={"GEMINI_API_KEY": "k"},
+          message="--model is required")
     fails("-u", "ftp://x", message="not an http(s) URL")
     fails("-t", "warm", message="invalid temperature")
     fails("-t", "-1", message="invalid temperature")
@@ -2510,6 +2613,23 @@ def check_configuration(binary, up):
                env={"GOOGLE_API_KEY": "fallback-key"}) as ai:
         _, _, body = ai.rpc("tools/list")
         assert body["result"]["tools"][0]["name"] == "ask_ai"
+    with Askai(binary, "-p", "google", "--api", "interactions", "-m", "m",
+               env={"GEMINI_API_KEY": "k"}) as ai:
+        _, _, body = ai.rpc("tools/list")
+        assert body["result"]["tools"][0]["name"] == "ask_ai"
+    # With --url, the Interactions API is asked at that URL as it is given,
+    # with the key in x-goog-api-key.
+    with Askai(binary, "-p", "google", "--api", "interactions", "-m", "m",
+               "-u", up.url("/v1beta/interactions"), "-k", "TEST_KEY",
+               env={"TEST_KEY": "secret", "GEMINI_API_KEY": "must-not-leak"}) as ai:
+        up.reply = lambda request: (200, ANSWERS["interactions"])
+        assert text_of(ai.ask()) == "A"
+        request = up.last()
+        assert request["path"] == "/v1beta/interactions", request["path"]
+        assert request["headers"]["x-goog-api-key"] == "secret", request["headers"]
+        assert "authorization" not in request["headers"], request["headers"]
+        assert request["body"]["model"] == "m", request["body"]
+    up.reply = lambda request: (200, ANSWERS["openai"])
 
     with Askai(binary, "-u", up.url(), "-H", "Authorization: Bearer from-header",
                "--tool-name", "ask_twin", "--tool-description", "Ask the twin.",
@@ -3804,6 +3924,10 @@ def check_streaming(binary, up):
         "gemini": {"candidates": [{"content": {"parts": [
             {"text": "hmm", "thought": True}, {"text": text}]},
             "finishReason": "STOP"}]},
+        "interactions": {"status": "completed", "steps": [
+            {"type": "thought", "signature": "sig",
+             "summary": [{"type": "text", "text": "hmm"}]},
+            {"type": "model_output", "content": [{"type": "text", "text": text}]}]},
     }
     errors = {
         "openai": (None, {"error": {"message": "boom"}}),
@@ -3811,9 +3935,12 @@ def check_streaming(binary, up):
         "anthropic": ("error", {"type": "error", "error": {
             "type": "overloaded_error", "message": "boom"}}),
         "gemini": (None, {"error": {"code": 500, "message": "boom"}}),
+        "interactions": ("error", {"event_type": "error", "error": {
+            "code": "api_error", "message": "boom"}}),
     }
     paths = {"openai": "/v1/chat/completions", "responses": "/v1/responses",
-             "anthropic": "/v1/messages", "gemini": "/v1beta/models/m:generateContent"}
+             "anthropic": "/v1/messages", "gemini": "/v1beta/models/m:generateContent",
+             "interactions": "/v1beta/interactions"}
     # Stop reasons longer than most, of answers with no text.
     empty = {"openai": {"choices": [{"message": {"content": ""},
                                      "finish_reason": "content_filter"}]},
@@ -3822,7 +3949,8 @@ def check_streaming(binary, up):
              "anthropic": {"content": [],
                            "stop_reason": "model_context_window_exceeded"},
              "gemini": {"candidates": [{"content": {"parts": []},
-                                        "finishReason": "IMAGE_PROHIBITED_CONTENT"}]}}
+                                        "finishReason": "IMAGE_PROHIBITED_CONTENT"}]},
+             "interactions": {"status": "failed", "steps": []}}
     cuts = (1,) * 300 + (7, 13, 2, 31, 5, 64) * 200
     for protocol, answer in answers.items():
         with Askai(binary, "--api", API[protocol], "-u", up.url(paths[protocol]), "-m", "m",
@@ -3836,6 +3964,24 @@ def check_streaming(binary, up):
             up.plain = True
             up.reply = lambda request, p=protocol: (200, ANSWERS[p])
             assert text_of(ai.ask()) == "A", protocol
+            if protocol == "interactions":
+                # The answer is the text items of the model_output steps.
+                up.reply = lambda request: (200, {"status": "completed", "steps": [
+                    {"type": "code_execution_result",
+                     "content": [{"type": "text", "text": "no"}]},
+                    {"type": "model_output", "content": [
+                        {"type": "text", "text": "A"},
+                        {"type": "text_annotation", "text": "no"},
+                        {"type": "text", "text": "B"}]}]})
+                assert text_of(ai.ask()) == "AB", protocol
+                # interaction.completed ends the answer even without a status.
+                up.plain = False
+                up.reply = lambda request: (200, Stream(wire=sse_wire([
+                    (n, {"event_type": n, "interaction": {"id": "v1_x"}})
+                    if n == "interaction.completed" else (n, d)
+                    for n, d in sse_of(ANSWERS["interactions"])])))
+                assert text_of(ai.ask()) == "A", protocol
+                up.plain = True
             # No text: the same stop reason, streamed or not.
             up.reply = lambda request, p=protocol: (200, empty[p])
             plain = ai.ask()
@@ -4228,6 +4374,7 @@ def check_slots(binary, up):
     # Only a server that may be llama-server is asked: one that no provider
     # but llama names, and that has no Gemini API.
     for args in (("--api", "generate", "-u", up.url("/v1beta/models/m")),
+                 ("--api", "interactions", "-u", up.url("/v1beta/interactions")),
                  ("-p", "openai", "-u", up.url()),
                  ("-p", "anthropic", "-u", up.url("/v1/messages"))):
         with Askai(binary, *args) as ai:
@@ -4354,11 +4501,19 @@ def check_progress(binary, up):
         "gemini": {"candidates": [{"content": {"parts": [
             {"text": "hmm", "thought": True}, {"text": "xyz"}]},
             "finishReason": "STOP"}]},
+        "interactions": {"status": "completed", "steps": [
+            {"type": "thought", "summary": [{"type": "text", "text": "hmm"}]},
+            {"type": "model_output", "content": [{"type": "text", "text": "xyz"}]}]},
     }
     paths = {"openai": "/v1/chat/completions", "responses": "/v1/responses",
-             "anthropic": "/v1/messages", "gemini": "/v1beta/models/m:generateContent"}
-    for protocol, answer in thinking.items():
-        events = sse_of(answer)
+             "anthropic": "/v1/messages", "gemini": "/v1beta/models/m:generateContent",
+             "interactions": "/v1beta/interactions"}
+    runs = [(protocol, sse_of(answer)) for protocol, answer in thinking.items()]
+    # In Interactions, the summary may come whole in step.start instead.
+    events = sse_of(thinking["interactions"])
+    events[1][1]["step"]["summary"] = [events[2][1]["delta"]["content"]]
+    runs.append(("interactions", events[:2] + events[3:]))
+    for protocol, events in runs:
         sizes = tuple(len(sse_wire([e])) for e in events)
         up.reply = lambda request, w=sse_wire(events), s=sizes: (
             200, Stream(wire=w, sizes=s, gap=0.15))
@@ -5488,6 +5643,61 @@ def generate_turn(chunks, reason="STOP"):
     return Stream(wire=sse_wire(ev))
 
 
+def interactions_turn(steps, status=None, usage=None, after=()):
+    """A streamed answer of Gemini's Interactions of the output @p steps, each
+    ("thought", texts of the summary items in its start, texts of those in
+    deltas, signature or None), ("text", text in its start, text in deltas),
+    ("call", id, name, arguments' JSON text in deltas) or ("whole", id,
+    name, arguments' JSON text in its start), numbered in their order; the
+    texts in deltas in pieces of 5 bytes and the arguments in pieces of 7.
+    A dict in @p steps is the data of an event that is sent as it is.  The
+    end has @p status, by default requires_action if a step is a call, else
+    completed, and @p usage; the events of the dicts in @p after follow it."""
+    def event(data):
+        return (data["event_type"], data)
+
+    def text(t):
+        return {"type": "text", "text": t}
+
+    ev = [event({"event_type": "interaction.created",
+                 "interaction": {"id": "v1_x", "status": "in_progress"}})]
+    calls = False
+    i = 0
+    for s in steps:
+        if isinstance(s, dict):
+            ev.append(event(s))
+            continue
+        kind = s[0]
+        if kind == "thought":
+            start = {"type": "thought", "signature": ""}
+            start |= {"summary": [text(t) for t in s[1]]} if s[1] else {}
+            deltas = [{"type": "thought_summary", "content": text(t)} for t in s[2]]
+            deltas += [{"type": "thought_signature", "signature": s[3]}] if s[3] else []
+        elif kind == "text":
+            start = {"type": "model_output"}
+            start |= {"content": [text(s[1])]} if s[1] else {}
+            deltas = [{"type": "text", "text": t} for t in split(s[2], 5) if t]
+        else:
+            calls = True
+            whole = kind == "whole"
+            start = {"type": "function_call", "id": s[1], "name": s[2],
+                     "arguments": json.loads(s[3]) if whole else {}}
+            deltas = [] if whole else [{"type": "arguments_delta", "arguments": t}
+                                       for t in split(s[3], 7)]
+        ev.append(event({"event_type": "step.start", "index": i, "step": start}))
+        ev += [event({"event_type": "step.delta", "index": i, "delta": d})
+               for d in deltas]
+        ev.append(event({"event_type": "step.stop", "index": i}))
+        i += 1
+    ev.append(event({"event_type": "interaction.completed", "interaction": {
+        "id": "v1_x", "status": status or ("requires_action" if calls else "completed"),
+        "usage": usage or {"total_input_tokens": 100, "total_output_tokens": 20,
+                           "total_thought_tokens": 30, "total_tokens": 150}}}))
+    ev += [event(data) for data in after]
+    ev.append(("done", "[DONE]"))
+    return Stream(wire=sse_wire(ev))
+
+
 def check_notes(binary, up):
     """With --notes and without --upstream-tools, a role can grant the notes
     tool to clients.  An add without a thread starts one, in a repository of
@@ -5673,13 +5883,15 @@ def check_notes(binary, up):
 
 def check_turn_apis(binary, up):
     """With --upstream-tools, the turns of the Responses API, Anthropic's
-    Messages and Gemini's generateContent: the tools are offered as each
-    has them, a turn goes back as it came, its items in their order, its
-    thinking and its signatures whole, and its calls' results as each
-    takes them; an answer that the turns doze after goes back as it came,
-    then the message that wakes them, as the user's.  In chat completions
-    and in Messages, askai treats token counts whose sum overflows int64_t
-    as not known."""
+    Messages, Gemini's generateContent and Gemini's Interactions: the tools
+    are offered as each has them, a turn goes back as it came, its items in
+    their order, its thinking and its signatures whole, and its calls'
+    results as each takes them; an answer that the turns doze after goes
+    back as it came, then the message that wakes them, as the user's.  The
+    replay of Interactions stays valid JSON when the events come in broken
+    orders, and the token counts of its usage are checked against
+    --context.  In chat completions, in Messages and in Interactions, askai
+    treats token counts whose sum overflows int64_t as not known."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo = f"{d}/proj"
@@ -5849,6 +6061,191 @@ def check_turn_apis(binary, up):
             assert contents[3:] == [{"role": "model", "parts": [{"text": "Waiting."}]},
                                     {"role": "user", "parts": [{"text": woke}]}], contents
 
+        # In Gemini's Interactions, the model's steps go back in their order,
+        # each in the form of the non-streamed answer.  A thought has its
+        # summary items and its signature, and no empty signature.  A model
+        # output has the text of its start and of its deltas, and a step of
+        # blank text is left out.  A call has the arguments of its deltas or
+        # of its start.  Each result is a step after the model's steps.
+        def text(t):
+            return {"type": "text", "text": t}
+
+        def output(t):
+            return {"type": "model_output", "content": [text(t)]}
+
+        def fcall(cid, name, args):
+            return {"type": "function_call", "id": cid, "name": name, "arguments": args}
+
+        def thought(summary, signature=None):
+            return {"type": "thought"} | ({"summary": [text(t) for t in summary]}
+                                          if summary else {}) | \
+                ({"signature": signature} if signature else {})
+
+        def event(kind, at=None, **data):
+            return {"event_type": "step." + kind} | \
+                ({"index": at} if at is not None else {}) | data
+
+        broken = '{"repo": "proj", "comm'
+        first_turn = [("thought", ["Plan "], ["it.", "Then go."], "sig/+1"),
+                      ("text", "Lo", "oking."), ("text", "", " \n\n"),
+                      ("call", "c1", "git", json.dumps(log)),
+                      ("call", "c2", "git", broken),
+                      ("whole", "c3", "git", json.dumps(log))]
+        # The events of the second turn come in broken orders.  They have a
+        # second signature in a delta after one in the start, deltas of an
+        # index that is not open or of a type that does not fit the step, a
+        # summary item after the signature, a thought that is open until the
+        # next step starts, a call or the arguments of a call without a start
+        # while a thought is open, the arguments and the stop of a call that
+        # started before the open thought, a step of a server tool and its
+        # stop while a thought is open, text and a start without an index
+        # while no step is open, summary items that are no object, arguments
+        # that are no string, a thought that is open at the end, and steps
+        # after the end, which are ignored.
+        second_turn = [
+            event("start", 0, step={"type": "thought", "signature": "first",
+                                     "summary": [text("s1")]}),
+            event("delta", 0, delta={"type": "thought_summary", "content": text("s2")}),
+            event("delta", 0, delta={"type": "thought_signature", "signature": "second"}),
+            event("delta", 7, delta={"type": "thought_summary", "content": text("x")}),
+            event("delta", 7, delta={"type": "thought_signature", "signature": "y"}),
+            event("delta", 7, delta={"type": "text", "text": "Z"}),
+            event("delta", 0, delta={"type": "text", "text": "Z"}),
+            event("stop", 0),
+            event("start", 1, step={"type": "thought", "signature": ""}),
+            event("delta", 1, delta={"type": "thought_summary", "content": text("s3")}),
+            event("delta", 7, delta={"type": "thought_signature", "signature": "y"}),
+            event("delta", 1, delta={"type": "thought_signature", "signature": "sig2"}),
+            event("delta", 1, delta={"type": "thought_summary", "content": text("s4")}),
+            event("start", 2, step={"type": "model_output", "content": [text("Hi")]}),
+            event("delta", delta={"type": "text", "text": "X"}),
+            event("delta", 2, delta={"type": "text", "text": " there"}),
+            event("stop", 2),
+            event("delta", delta={"type": "text", "text": "Y"}),
+            event("start", step={"type": "thought", "summary": [text("q")]}),
+            event("start", 3, step={"type": "function_call", "id": "c4", "name": "git",
+                                    "arguments": {}}),
+            event("start", 4, step={"type": "thought", "summary": [text("s5")]}),
+            event("delta", 3, delta={"type": "arguments_delta",
+                                     "arguments": json.dumps(log)}),
+            event("stop", 3),
+            event("delta", 4, delta={"type": "thought_summary"}),
+            event("delta", 4, delta={"type": "thought_summary", "content": "s"}),
+            event("start", 5, step={"type": "google_search_call", "id": "g1"}),
+            event("delta", 5, delta={"type": "google_search_call", "arguments": {}}),
+            event("stop", 5),
+            event("delta", 4, delta={"type": "thought_summary", "content": text("s6")}),
+            event("start", 6, step={"type": "function_call", "id": "c5", "name": "git",
+                                    "arguments": log}),
+            event("stop", 6),
+            event("start", 7, step={"type": "model_output", "content": [
+                text("Ok"), {"type": "text_annotation", "text": "no"}]}),
+            event("delta", 7, delta={"type": "thought_summary", "content": text("x")}),
+            event("delta", 7, delta={"type": "thought_signature", "signature": "y"}),
+            event("delta", 7, delta={"type": "text", "text": "."}),
+            event("stop", 7),
+            event("start", 8, step={"type": "thought", "summary": [text("s7")]}),
+            event("delta", 9, delta={"type": "arguments_delta",
+                                     "arguments": json.dumps(log)}),
+            event("start", 10, step={"type": "thought", "summary": [text("s8")]}),
+            event("delta", 11, delta={"type": "arguments_delta", "arguments": {"a": 1}}),
+            event("delta", delta={"type": "text", "text": "!"})]
+        with Askai(binary, "--api", "interactions", "-u", up.url("/v1beta/interactions"),
+                   "-m", "m", "-s", "SYS", "-n", "100", "--upstream-tools",
+                   "--git", repo) as ai:
+            late = [event("start", 20, step={"type": "thought", "summary": [text("late")]}),
+                    event("start", 21, step={"type": "function_call", "id": "c9",
+                                            "name": "git", "arguments": log})]
+            script[:] = [lambda r: (200, interactions_turn(first_turn)),
+                         lambda r: (200, interactions_turn(second_turn, after=late)),
+                         lambda r: (200, interactions_turn([
+                             ("text", "A", ""),
+                             event("delta", delta={"type": "text", "text": "B"})]))]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            assert result["content"][0]["text"] == "AB", result
+            first, second, third = up.requests[count:]
+            body = first["body"]
+            assert [(k, body[k]) for k in ("model", "system_instruction", "store",
+                                           "stream", "generation_config")] == \
+                [("model", "m"), ("system_instruction", "SYS"), ("store", False),
+                 ("stream", True), ("generation_config", {"max_output_tokens": 100})], \
+                body
+            tools = body["tools"]
+            assert [(t["type"], t["name"]) for t in tools] == \
+                [("function", t) for t in TURN_TOOLS], tools
+            assert all(sorted(t) == ["description", "name", "parameters", "type"]
+                       for t in tools), tools
+            assert tools[0]["parameters"]["properties"]["repo"], tools
+            given = second["body"]["input"]
+            assert list(second["body"])[-1] == "input", second["body"]
+            user = {"type": "user_input", "content": [text("Q")]}
+            assert given[:6] == [
+                user, thought(["Plan ", "it.", "Then go."], "sig/+1"), output("Looking."),
+                fcall("c1", "git", log), fcall("c2", "git", {}),
+                fcall("c3", "git", log)], given
+            assert b'"signature":"sig/+1"' in second["raw"], second["raw"]
+            assert [(g["type"], g["call_id"]) for g in given[6:]] == \
+                [("function_result", c) for c in ("c1", "c2", "c3")], given
+            assert re.fullmatch(logged, given[6]["result"]), given
+            assert given[7]["result"] == "Your arguments were not a JSON object, " \
+                "so the call was not run.", given
+            assert re.fullmatch(logged, given[8]["result"]), given
+            assert [sorted(g) for g in given[6:]] == [["call_id", "result", "type"]] * 3, \
+                given
+            given = third["body"]["input"]
+            assert given[:9] == second["body"]["input"], given
+            made = given[17].get("id", "")
+            assert re.fullmatch(r"call_\d+_\d+", made), given
+            assert given[9:19] == [
+                {"type": "thought", "signature": "first", "summary": [text("s1"),
+                                                                      text("s2")]},
+                thought(["s3"], "sig2"), output("Hi there"), fcall("c4", "git", log),
+                thought(["s5", "s6"]), fcall("c5", "git", log), output("Ok."),
+                thought(["s7"]), fcall(made, "", log), thought(["s8"])], given
+            assert [(g["type"], g["call_id"]) for g in given[19:]] == \
+                [("function_result", c) for c in ("c4", "c5", made)], given
+
+            # An answer that the turns doze after, a thought and text, goes
+            # back as it came, then the message that wakes them.
+            given = doze(ai, [interactions_turn([("whole", "t1", "timer",
+                                                  '{"seconds":1}')]),
+                              interactions_turn([("thought", [], [], "sigW"),
+                                                 ("text", "Wait", "ing.")]),
+                              interactions_turn([("text", "A", "")])], "input")
+            assert given[3:] == [thought([], "sigW"), output("Waiting."),
+                                 {"type": "user_input", "content": [text(woke)]}], given
+
+        # The tokens used are total_input_tokens plus total_output_tokens,
+        # which leave out the thinking.  If that sum is not known, the tokens
+        # used are total_tokens.  An input count that is not a JSON integer,
+        # such as NaN, which json-c parses, is not known.  When the tokens
+        # used fill the context, askai starts the conversation again in the
+        # next request.
+        for usage, full in (({"total_input_tokens": 7990, "total_output_tokens": 10,
+                              "total_thought_tokens": 500, "total_tokens": 8500}, True),
+                            ({"total_input_tokens": 7990.0, "total_output_tokens": 10,
+                              "total_tokens": 100}, False),
+                            ({"total_tokens": 8000}, True),
+                            ({"total_input_tokens": float("nan"),
+                              "total_output_tokens": 10, "total_tokens": 8000}, True),
+                            ({"total_input_tokens": 100, "total_output_tokens": 20,
+                              "total_thought_tokens": 7880, "total_tokens": 8000},
+                             False)):
+            with Askai(binary, "--api", "interactions",
+                       "-u", up.url("/v1beta/interactions"), "--upstream-tools",
+                       "--git", repo, "--context", "8000") as ai:
+                script[:] = [lambda r, u=usage: (200, interactions_turn(
+                                 [("call", "c1", "git", json.dumps(log))], usage=u)),
+                             lambda r: (200, interactions_turn([("text", "A", "")]))]
+                count = len(up.requests)
+                result = ai.ask("Q")
+                assert result["content"][0]["text"] == "A", (usage, result)
+                given = up.requests[count + 1]["body"]["input"]
+                said = given[0]["content"][0]["text"]
+                assert (len(given) == 1 and said.startswith(
+                    "Q\n\n[askai: your context filled up")) == full, (usage, given)
+
         # askai treats token counts whose sum overflows int64_t as not known.
         # A count that is not known does not fill the context, so the second
         # request continues the conversation.  Without the overflow check,
@@ -5863,7 +6260,11 @@ def check_turn_apis(binary, up):
                     [("tool", *call[0])], usage={
                         "input_tokens": big, "cache_creation_input_tokens": big,
                         "cache_read_input_tokens": big}),
-                 messages_turn([("text", "A")], "end_turn"))):
+                 messages_turn([("text", "A")], "end_turn")),
+                ("interactions", "/v1beta/interactions", interactions_turn(
+                    [("call", *call[0])], usage={"total_input_tokens": big,
+                                                 "total_output_tokens": big}),
+                 interactions_turn([("text", "A", "")]))):
             with Askai(binary, "--api", api, "-u", up.url(path), "--upstream-tools",
                        "--git", repo, "--context", "8000") as ai:
                 script[:] = [lambda r, a=first: (200, a), lambda r, a=second: (200, a)]
@@ -5873,8 +6274,9 @@ def check_turn_apis(binary, up):
                 body = json.dumps(up.requests[count + 1]["body"])
                 assert "your context filled up" not in body, (api, body)
     up.reply = lambda request: (200, ANSWERS["openai"])
-    print("turns of the Responses API, Anthropic's Messages and Gemini's: tools, "
-          "items in order, thinking and signatures given back, results, waking: PASS")
+    print("turns of the Responses API, Anthropic's Messages, Gemini's "
+          "generateContent and Interactions: tools, items in order, thinking and "
+          "signatures given back, results, waking: PASS")
 
 
 def check_turns(binary, up):
@@ -5897,6 +6299,9 @@ def check_turns(binary, up):
 
     for args, message in ((("--upstream-tools", "--api", "generate", "-x",
                             '{"contents": null}'), "--extra may not change contents "
+                           "with --upstream-tools"),
+                          (("--upstream-tools", "--api", "interactions", "-x",
+                            '{"input": null}'), "--extra may not change input "
                            "with --upstream-tools"),
                           (("--upstream-tools", "--max-turns", "0"),
                            "invalid --max-turns: 0"),
