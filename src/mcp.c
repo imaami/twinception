@@ -970,7 +970,12 @@ mcp_slot_drop (struct mcp_slot *slot)
 	slot->own = nullptr;
 	instance_table_put(&slot->req->mcp->instances, &slot->inst);
 	slot->lent = (struct span){};
-	child_destroy(&slot->child);
+	/* A git that writes notes runs to its end, because a kill could leave
+	 * a lock file behind (notes_unlock()). */
+	if (slot->fetch == FETCH_CREATE || slot->fetch == FETCH_ADD)
+		child_release(&slot->child);
+	else
+		child_destroy(&slot->child);
 	loop_unready(&slot->step);
 	if (slot->call.bits)
 		loop_forget(slot->req->mcp->loop, slot->call);
@@ -4246,6 +4251,12 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
 	enum notes_cmd cmd = fetch & FETCH_NEWEST ? NOTES_READ : mcp_fetch_cmds[fetch];
+	/* git init and fast-import write.  If they are killed while they write,
+	 * they can leave a lock file behind.  So their deadline sends SIGTERM
+	 * first, and stale lock files are removed before they run. */
+	bool writes = cmd == NOTES_CREATE || cmd == NOTES_ADD;
+	if (writes)
+		notes_unlock(mcp->st->notes, req->repo);
 	char const *argv[NOTES_ARGV];
 	notes_argv(mcp->st->notes, req->repo, cmd, argv);
 	struct child_cmd const c = {
@@ -4255,8 +4266,9 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 		.in = in ? buf_peek(in) : (struct span){},
 		.max = NOTES_MAX,
 		.deadline = loop->now + NOTES_NS,
+		.grace = writes ? NOTES_GRACE : 0,
 		/* For the commands that write, the output includes the errors. */
-		.flags = cmd == NOTES_CREATE || cmd == NOTES_ADD ? CHILD_STDERR : 0
+		.flags = writes ? CHILD_STDERR : 0
 	};
 	slot->fetch = fetch;
 	int e = 0;

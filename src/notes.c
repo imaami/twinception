@@ -8,6 +8,7 @@
 #include <strings.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "notes.h"
@@ -22,7 +23,13 @@ enum { ENV = 10 };
 struct notes {
 	char *env[ENV];
 	char *dir;    /* the real path of the directory of the threads */
+	int   fd;     /* the directory of the threads, open; -1 if not open */
 };
+
+/* The age in seconds past which a lock file in the repository of a thread
+ * is stale.  No git of askai runs that long. */
+static constexpr time_t STALE = 60;
+static_assert(NOTES_NS + NOTES_GRACE < (uint64_t)STALE * 1'000'000'000);
 
 /* The option of git that names a repository. */
 static char const git_dir[] = "--git-dir=";
@@ -67,17 +74,14 @@ notes_open (struct notes *notes,
 	int e = mkdir(path, 0700) && errno != EEXIST ? errno : 0;
 	if (!e && !(notes->dir = realpath(path, nullptr)))
 		e = errno;
-	int fd = e ? -1 : open(notes->dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if (!e && fd < 0)
+	if (!e && (notes->fd = open(notes->dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0)
 		e = errno;
 	if (e) {
 		util_format(why, len, "%s", strerror(e));
 		return e;
 	}
 	struct stat st;
-	bool repo = !fstatat(fd, "HEAD", &st, AT_SYMLINK_NOFOLLOW);
-	close(fd);
-	if (!repo)
+	if (fstatat(notes->fd, "HEAD", &st, AT_SYMLINK_NOFOLLOW))
 		return 0;
 	util_format(why, len, "the directory is a git repository.  Older versions "
 	            "of askai kept all the notes in one repository, but askai now "
@@ -112,6 +116,7 @@ notes_create (char const *path,
 	};
 	static_assert(sizeof vars == sizeof notes->env);
 	memcpy(notes->env, vars, sizeof vars);
+	notes->fd = -1;
 	if ((*e = notes_open(notes, path, why, len)))
 		notes_destroy(&notes);
 	return notes;
@@ -126,6 +131,9 @@ notes_destroy (struct notes **p_notes)
 	*p_notes = nullptr;
 	free(notes->env[0]);
 	free(notes->dir);
+	if (notes->fd >= 0)
+		close(notes->fd);
+	notes->fd = -1;
 	free(notes);
 }
 
@@ -237,6 +245,28 @@ notes_is_dotgit (char const *part,
 		at += (size_t)(bs - s) + 1;
 	}
 	return false;
+}
+
+void
+notes_unlock (struct notes const *notes,
+              char const         *repo)
+{
+	static char const *const locks[] = {
+		"HEAD.lock", "config.lock", "refs/heads/notes.lock",
+	};
+	char path[NOTES_REPO + sizeof "/refs/heads/notes.lock"];
+	char *p = stpcpy(path, repo + sizeof git_dir - 1);
+	*p++ = '/';
+	time_t now = time(nullptr);
+	for (size_t i = 0; i < ARRAY_SIZE(locks); ++i) {
+		struct stat st;
+		stpcpy(p, locks[i]);
+		/* A lock file that cannot be removed makes the write fail, which
+		 * the log shows. */
+		if (!fstatat(notes->fd, path, &st, AT_SYMLINK_NOFOLLOW) &&
+		    now - st.st_mtime > STALE)
+			(void)unlinkat(notes->fd, path, 0);
+	}
 }
 
 int

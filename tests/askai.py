@@ -5429,6 +5429,25 @@ def check_notes(binary, up):
                                         "call added a note to this thread at the "
                                         "same time. Add it again.", "Noted."], said
             assert not any("could not add" in line for line in ai.log), ai.log
+            # An add whose client goes while git writes still adds the note.
+            sock = socket.create_connection(("127.0.0.1", ai.port), 10)
+            sock.sendall(rpc_request(1, {"name": "notes", "arguments": {
+                "action": "add", "file": "dropped.md", "text": "d",
+                "thread": thread}}, "tools/call", headers=auth("alice-1")))
+            time.sleep(0.2)
+            sock.close()
+            time.sleep(1)
+            assert "dropped.md" in call({"action": "list", "thread": thread})
+            # A lock file that git left behind is removed once it is a minute
+            # old, and the next add works.
+            book = f"{notes}/{who}/client/{thread}"
+            for lock in ("HEAD.lock", "refs/heads/notes.lock"):
+                with open(f"{book}/{lock}", "w"):
+                    pass
+                os.utime(f"{book}/{lock}", (time.time() - 120,) * 2)
+            assert call({"action": "add", "file": "unlocked.md", "text": "u",
+                         "thread": thread}) == "Noted."
+            assert not os.path.exists(f"{book}/refs/heads/notes.lock")
     print("notes: granted by a role, threads of the clients' own, list, read, "
           "pages, names and texts refused, threads kept apart: PASS")
 

@@ -43,6 +43,10 @@ enum {
 /** The time from the start of git to its deadline, in nanoseconds. */
 static constexpr uint64_t NOTES_NS = 10'000'000'000;
 
+/** The time from SIGTERM to SIGKILL at the deadline of a git that writes,
+ *  in nanoseconds. */
+static constexpr uint64_t NOTES_GRACE = 1'000'000'000;
+
 /** The two kinds of threads. */
 enum notes_side : uint8_t {
 	NOTES_UPSTREAM,  /**< a thread of the upstream in ask calls */
@@ -108,6 +112,17 @@ notes_repo (uint64_t        principal,
             enum notes_side side,
             char const     *id,
             char            repo[NOTES_REPO]);
+
+/**
+ * Removes the lock files of git that are older than a minute from the
+ * repository that @p repo names.  git leaves a lock file behind if it is
+ * killed while it writes, and the file makes every later write to the
+ * repository fail.  No git of askai runs for a minute, so no git that runs
+ * has a lock file of that age.
+ */
+extern void
+notes_unlock (struct notes const *notes,
+              char const         *repo);
 
 /** Writes the argv of the command @p cmd for the repository @p repo to
  *  @p argv.  @p repo must outlive @p argv. */

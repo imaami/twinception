@@ -472,6 +472,17 @@ child_destroy (struct child **p_c)
 }
 
 void
+child_release (struct child **p_c)
+{
+	if (!p_c || !*p_c)
+		return;
+	struct child *c = *p_c;
+	*p_c = nullptr;
+	c->done = nullptr;
+	c->owner = nullptr;
+}
+
+void
 child_destroy_all (struct list *list)
 {
 	while (!list_is_empty(list))

@@ -97,6 +97,12 @@ child_create (struct loop            *loop,
 extern void
 child_destroy (struct child **p_c);
 
+/** Lets go of @p *p_c, which becomes nullptr, without killing it.  The
+ *  child runs until it ends, its output reaches the cap, or its deadline
+ *  comes, and its loop frees it then. */
+extern void
+child_release (struct child **p_c);
+
 /** Free every child on @p list as its loop stops; any still alive is killed
  *  and left to the process's exit to reap. */
 extern void
