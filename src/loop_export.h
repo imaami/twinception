@@ -3,12 +3,10 @@
  *  so a plugin does not depend on the members of struct loop.
  *
  * Each exported function checks its inputs before it uses them, because a
- * plugin calls it across the boundary of a shared object.  It refuses
- * nullptr for the loop, a message or a timer that is nullptr or has no
- * function, a timer whose member slot is greater than the number of timers
- * in the loop's heap, and a unit of work out of range.  Then a function
- * that returns an error number returns EINVAL, loop_now() and loop_room()
- * return 0, and the other functions do nothing. */
+ * plugin calls it across the boundary of a shared object.  A function that
+ * returns an error number returns EFAULT for a pointer that is nullptr,
+ * also for a message or a timer without a function, and EINVAL for a value
+ * out of range.  loop_now() and loop_room() return 0 for such inputs. */
 #ifndef TWINCEPTION_SRC_LOOP_EXPORT_H_
 #define TWINCEPTION_SRC_LOOP_EXPORT_H_
 
@@ -114,12 +112,11 @@ struct loop_timer {
 /**
  * Posts @p msg to @p loop.  Any thread can call it.  It pushes the message
  * onto the loop's list of posted messages with an atomic operation, and it
- * writes to the loop's eventfd only if the loop is asleep.  It posts nothing
- * if @p loop or @p msg is nullptr or if @p msg has no function, and the
- * caller cannot tell that from the function's result.
+ * writes to the loop's eventfd only if the loop is asleep.  Returns 0, or
+ * EFAULT if @p loop or @p msg is nullptr or @p msg has no function.
  */
 EXPORT
-extern void
+extern int
 loop_post (struct loop *loop,
            struct msg  *msg);
 
@@ -127,9 +124,10 @@ loop_post (struct loop *loop,
  * Sets @p timer to fire at @p due.  If the timer is already set, the call
  * changes its deadline.  A timer stays in the heap until loop_timer_stop().
  * After it has fired, it is due at UINT64_MAX, which means never, until it
- * is set again.  It returns EINVAL for the inputs that the top of this file
- * lists, ENOMEM if the timer is not in the heap and the heap cannot grow,
- * and 0 otherwise.
+ * is set again.  Returns 0.  Returns EFAULT if @p loop or @p timer is
+ * nullptr or @p timer has no function, EINVAL if the member slot of
+ * @p timer is greater than the number of timers in the heap, and ENOMEM if
+ * the timer is not in the heap and the heap cannot grow.
  */
 EXPORT
 extern int
@@ -138,27 +136,33 @@ loop_timer_set (struct loop       *loop,
                 uint64_t           due);
 
 /** Removes @p timer from the heap of @p loop.  It does nothing if the timer
- *  is not in the heap. */
+ *  is not in the heap.  Returns 0, EFAULT if @p loop or @p timer is
+ *  nullptr, or EINVAL if the member slot of @p timer is greater than the
+ *  number of timers in the heap. */
 EXPORT
-extern void
+extern int
 loop_timer_stop (struct loop       *loop,
                  struct loop_timer *timer);
 
 /** Returns the time at which the current turn of @p loop began, in
- *  nanoseconds of CLOCK_MONOTONIC.  loop_timer_set() uses the same clock. */
+ *  nanoseconds of CLOCK_MONOTONIC.  loop_timer_set() uses the same clock.
+ *  Returns 0 if @p loop is nullptr. */
 EXPORT
 extern uint64_t
 loop_now (struct loop const *loop);
 
-/** Counts @p n units of the work @p u for the step that is running. */
+/** Counts @p n units of the work @p u for the step that is running.
+ *  Returns 0, EFAULT if @p loop is nullptr, or EINVAL if @p u is out of
+ *  range. */
 EXPORT
-extern void
+extern int
 loop_work (struct loop    *loop,
            enum loop_unit  u,
            uint64_t        n);
 
 /** Returns the number of units of the work @p u that the step that is
- *  running may still do. */
+ *  running may still do.  Returns 0 if @p loop is nullptr or @p u is out of
+ *  range. */
 EXPORT
 extern uint64_t
 loop_room (struct loop const *loop,

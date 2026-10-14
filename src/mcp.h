@@ -177,13 +177,12 @@ mcp_app (struct mcp *mcp);
  * mcp_slot_named().
  *
  * Each exported function checks its inputs before it uses them, because a
- * plugin calls it across the boundary of a shared object.  It refuses
- * nullptr for the slot or the loop, a text with a length and no bytes, and
- * nullptr where it stores a result.  Then a function that returns an error
- * number returns EINVAL, a function that returns a pointer returns nullptr,
- * mcp_slot_principal() returns 0, and the other functions do nothing.
- * mcp_slot_tell() with a slot and a text with a length and no bytes ends
- * the call as failed.
+ * plugin calls it across the boundary of a shared object.  A function that
+ * returns an error number returns EFAULT for a pointer that is nullptr,
+ * also for a text with a length and no bytes, and EINVAL for a call that
+ * has ended and for flag bits that the function does not take.  A function
+ * that returns a pointer returns nullptr if the slot or the loop is
+ * nullptr, and mcp_slot_principal() returns 0.
  */
 
 /** Creates the part of a built-in plugin for the client loop @p loop.
@@ -245,7 +244,8 @@ mcp_slot_own (struct mcp_slot *slot);
 /** Takes the call's offset from the member "offset" of @p args.  Returns 0
  *  if the member is missing or is a whole number from 0.  Otherwise it ends
  *  the call as failed with a text that says why, and returns EINVAL.  It
- *  also returns EINVAL if the call has ended. */
+ *  returns EFAULT if @p slot is nullptr, and EINVAL if the call has
+ *  ended. */
 EXPORT
 extern int
 mcp_slot_offset (struct mcp_slot    *slot,
@@ -258,9 +258,10 @@ mcp_slot_offset (struct mcp_slot    *slot,
  * write can complete the character.  Stores the number of bytes taken in
  * @p *taken and counts them as LOOP_COPY work.
  *
- * Returns 0.  On failure it takes nothing.  It returns EFBIG if the output
- * would grow past TOOL_OUTPUT_MAX, ENOMEM if memory runs out, and EINVAL if
- * the call has ended.
+ * Returns 0.  On failure it takes nothing.  It returns EFAULT if @p slot or
+ * @p taken is nullptr or @p text has a length and no bytes, EINVAL if the
+ * call has ended or @p flags has other bits than TOOL_MORE, EFBIG if the
+ * output would grow past TOOL_OUTPUT_MAX, and ENOMEM if memory runs out.
  */
 EXPORT
 extern int
@@ -283,23 +284,26 @@ mcp_slot_lend (struct mcp_slot  *slot,
 /** Makes the call wait.  start() calls it last, if the call goes on after
  *  start() returns.  askai can free the call's arguments in this function.
  *  For a kind with TOOL_STREAM, the reply becomes an event stream if the
- *  client accepts one.  Does nothing if the call has ended. */
+ *  client accepts one.  Returns 0, EFAULT if @p slot is nullptr, or EINVAL
+ *  if the call has ended. */
 EXPORT
-extern void
+extern int
 mcp_slot_park (struct mcp_slot *slot);
 
-/** Queues the step() of the call's kind as a bulk step of the loop.  If the
- *  kind has no step(), the call ends as failed instead.  Does nothing if the
- *  call has ended. */
+/** Queues the step() of the call's kind as a bulk step of the loop.
+ *  Returns 0, EFAULT if @p slot is nullptr, or EINVAL if the call has ended.
+ *  If the kind has no step(), the function ends the call as failed and
+ *  returns EINVAL. */
 EXPORT
-extern void
+extern int
 mcp_slot_ready (struct mcp_slot *slot);
 
 /** Stores in @p *who a handle that names the call, for a message that
  *  another thread posts with loop_post().  A call has one handle until it
  *  ends or is dropped, so a second call of this function stores the same
- *  handle.  Returns 0, or ENOMEM.  If the call has ended, the function
- *  stores the handle 0 and returns EINVAL. */
+ *  handle.  Returns 0, or ENOMEM.  It returns EFAULT if @p who or @p slot
+ *  is nullptr, and EINVAL if the call has ended.  If it fails and @p who is
+ *  not nullptr, it stores the handle 0 in @p *who. */
 EXPORT
 extern int
 mcp_slot_name (struct mcp_slot *slot,
@@ -318,10 +322,12 @@ mcp_slot_named (struct loop const *loop,
 
 /** Ends the call with @p text as its whole output, without an offset.  The
  *  text is cut at TOOL_TELL_MAX bytes, or before its first byte that is not
- *  part of UTF-8.  With TOOL_FAILED in @p flags, the call fails.  Does
- *  nothing if the call has ended. */
+ *  part of UTF-8.  With TOOL_FAILED in @p flags, the call fails.  Returns
+ *  0, EFAULT if @p slot is nullptr or @p text has a length and no bytes, or
+ *  EINVAL if the call has ended or @p flags has other bits than
+ *  TOOL_FAILED. */
 EXPORT
-extern void
+extern int
 mcp_slot_tell (struct mcp_slot  *slot,
                struct tool_text  text,
                uint32_t          flags);
@@ -329,10 +335,11 @@ mcp_slot_tell (struct mcp_slot  *slot,
 /** Ends the call with the output that mcp_slot_write() wrote.  A client's
  *  call gets the output from the offset that mcp_slot_offset() took.  A
  *  turn's call gets the part of the output that the turn takes.  With
- *  TOOL_FAILED in @p flags, the call fails.  Does nothing if the call has
- *  ended. */
+ *  TOOL_FAILED in @p flags, the call fails.  Returns 0, EFAULT if @p slot is
+ *  nullptr, or EINVAL if the call has ended or @p flags has other bits than
+ *  TOOL_FAILED. */
 EXPORT
-extern void
+extern int
 mcp_slot_finish (struct mcp_slot *slot,
                  uint32_t         flags);
 
@@ -341,14 +348,14 @@ mcp_slot_finish (struct mcp_slot *slot,
  * an HTTP 503 error for ESHUTDOWN and an HTTP 500 error, "Out of memory",
  * for any other error number.  For a call of a turn, or of a job that the
  * turns run in the background, the request is the ask call.  If the reply
- * of the ask call is already being sent, only the call ends.  Does nothing
- * if the call has ended.
+ * of the ask call is already being sent, only the call ends.  Returns 0,
+ * EFAULT if @p slot is nullptr, or EINVAL if the call has ended.
  *
  * A call that fails for a reason of its own ends with mcp_slot_tell() or
  * mcp_slot_finish() and TOOL_FAILED instead.
  */
 EXPORT
-extern void
+extern int
 mcp_slot_fail (struct mcp_slot *slot,
                int              e);
 

@@ -142,13 +142,17 @@ loop_now (struct loop const *loop)
 	return loop ? loop->now : 0;
 }
 
-void
+int
 loop_work (struct loop    *loop,
            enum loop_unit  u,
            uint64_t        n)
 {
-	if (loop && (size_t)u < LOOP_UNITS)
-		loop->work[u] += n;
+	if (!loop)
+		return EFAULT;
+	if ((size_t)u >= LOOP_UNITS)
+		return EINVAL;
+	loop->work[u] += n;
+	return 0;
 }
 
 uint64_t
@@ -254,12 +258,12 @@ loop_init (struct loop *loop)
 	return 0;
 }
 
-void
+int
 loop_post (struct loop *loop,
            struct msg  *msg)
 {
 	if (!loop || !msg || !msg->fn)
-		return;
+		return EFAULT;
 	msg->posted = loop_clock();
 	struct msg *head = atomic_load_explicit(&loop->inbox, memory_order_relaxed);
 	do msg->next = head;
@@ -269,6 +273,7 @@ loop_post (struct loop *loop,
 	 * asleep (design section 2). */
 	if (atomic_exchange(&loop->asleep, 0))
 		(void)eventfd_write(loop->wake.fd, 1);
+	return 0;
 }
 
 /* Take what was posted, oldest first, behind what earlier turns left. */
@@ -544,7 +549,9 @@ loop_timer_set (struct loop       *loop,
                 struct loop_timer *timer,
                 uint64_t           due)
 {
-	if (!loop || !timer || !timer->fn || timer->slot > loop->timers)
+	if (!loop || !timer || !timer->fn)
+		return EFAULT;
+	if (timer->slot > loop->timers)
 		return EINVAL;
 	if (!timer->slot) {
 		if (loop->timers == loop->heap_cap) {
@@ -562,12 +569,16 @@ loop_timer_set (struct loop       *loop,
 	return 0;
 }
 
-void
+int
 loop_timer_stop (struct loop       *loop,
                  struct loop_timer *timer)
 {
-	if (!loop || !timer || !timer->slot || timer->slot > loop->timers)
-		return;
+	if (!loop || !timer)
+		return EFAULT;
+	if (timer->slot > loop->timers)
+		return EINVAL;
+	if (!timer->slot)
+		return 0;
 	size_t i = timer->slot - 1;
 	timer->slot = 0;
 	struct loop_timer *last = loop->heap[--loop->timers];
@@ -575,6 +586,7 @@ loop_timer_stop (struct loop       *loop,
 		loop_heap_put(loop, last, i);
 		loop_heap_fix(loop, last);
 	}
+	return 0;
 }
 
 /* Fire up to TIMERS timers due by the start of the turn; returns how many. */

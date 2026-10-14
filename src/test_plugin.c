@@ -129,12 +129,15 @@ test_plugin_state_definition (void const *service)
 		"\"additionalProperties\":false}}");
 }
 
-/* Ends the call.  The output is the state of the call's instance.  The
- * caller has checked that the call has an instance. */
+/* Ends the call.  The output is the state of the call's instance. */
 static void
 test_plugin_state_tell (struct mcp_slot *slot)
 {
 	struct test_plugin_instance const *inst = mcp_slot_instance(slot);
+	if (!inst) {
+		mcp_slot_tell(slot, TOOL_TEXT("The call has no instance."), TOOL_FAILED);
+		return;
+	}
 	char out[160];
 	int n = snprintf(out, sizeof out, "principal=%016" PRIx64 " instance=%p "
 	                 "calls=%" PRIu64 " last=%.*s", inst->principal,
@@ -243,7 +246,10 @@ test_plugin_state_drop (struct mcp_slot *slot)
 	struct test_plugin_wait *w = own ? *own : nullptr;
 	if (!w)
 		return;
-	loop_timer_stop(mcp_slot_loop(slot), &w->timer);
+	/* If the timer cannot be stopped, it can still fire, so the function
+	 * keeps the memory that the timer is in. */
+	if (loop_timer_stop(mcp_slot_loop(slot), &w->timer))
+		return;
 	free(w);
 	*own = nullptr;
 	static char const dropped[] = "dropped";
@@ -283,13 +289,13 @@ test_plugin_never (struct loop       *loop,
 }
 
 /* Passes each exported function of askai inputs that the function must
- * refuse: nullptr, a text with a length and no bytes, a timer without a
- * function, a timer whose slot is out of the range of the loop's heap, a
- * message without a function, and a unit of work out of range.  Then it
- * ends the call with the text "refused R of N", where N is the number of
- * refusals that the function can see in the return values, and R is the
- * number of them that happened.  The functions that return nothing must
- * neither end the call nor crash askai. */
+ * refuse: nullptr, a text with a length and no bytes, flag bits that the
+ * function does not take, a timer without a function, a timer whose slot is
+ * greater than the number of timers in the loop's heap, a message without
+ * a function, and a unit of work out of range.  Then it ends the call with
+ * the text "refused R of N", where N is the number of these inputs and R is
+ * the number of them that the functions refused as their documentation
+ * says. */
 static void
 test_plugin_misuse_invalid (struct mcp_slot *slot,
                             struct loop     *loop)
@@ -299,6 +305,8 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	struct loop_timer stray = { .due = UINT64_MAX, .fn = test_plugin_never, .slot = 1000 };
 	struct msg bare_msg = {};
 	struct handle who = { 1 };
+	enum loop_unit const beyond = (enum loop_unit)(LOOP_UNITS + 7);
+	uint32_t const unknown = 1u << 7;
 	size_t taken;
 	unsigned refused = 0;
 	unsigned checks = 0;
@@ -307,34 +315,38 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(!mcp_slot_loop(nullptr));
 	TEST_PLUGIN_REFUSED(!mcp_slot_principal(nullptr));
 	TEST_PLUGIN_REFUSED(!mcp_slot_own(nullptr));
-	TEST_PLUGIN_REFUSED(mcp_slot_offset(nullptr, nullptr) == EINVAL);
-	TEST_PLUGIN_REFUSED(mcp_slot_write(nullptr, TOOL_TEXT("x"), 0, &taken) == EINVAL);
-	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, none, 0, &taken) == EINVAL);
-	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, TOOL_TEXT("x"), 0, nullptr) == EINVAL);
-	TEST_PLUGIN_REFUSED(mcp_slot_name(nullptr, &who) == EINVAL && !who.bits);
-	TEST_PLUGIN_REFUSED(mcp_slot_name(slot, nullptr) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_offset(nullptr, nullptr) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(nullptr, TOOL_TEXT("x"), 0, &taken) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, none, 0, &taken) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, TOOL_TEXT("x"), 0, nullptr) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, TOOL_TEXT("x"), unknown, &taken) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_name(nullptr, &who) == EFAULT && !who.bits);
+	TEST_PLUGIN_REFUSED(mcp_slot_name(slot, nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(!mcp_slot_named(nullptr, who));
-	TEST_PLUGIN_REFUSED(loop_timer_set(nullptr, &stray, UINT64_MAX) == EINVAL);
-	TEST_PLUGIN_REFUSED(loop_timer_set(loop, nullptr, UINT64_MAX) == EINVAL);
-	TEST_PLUGIN_REFUSED(loop_timer_set(loop, &bare, UINT64_MAX) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_park(nullptr) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_ready(nullptr) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_tell(nullptr, TOOL_TEXT("x"), 0) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_tell(slot, none, 0) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_tell(slot, TOOL_TEXT("x"), unknown) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_finish(nullptr, 0) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_finish(slot, unknown) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_fail(nullptr, EIO) == EFAULT);
+	TEST_PLUGIN_REFUSED(loop_post(nullptr, &bare_msg) == EFAULT);
+	TEST_PLUGIN_REFUSED(loop_post(loop, nullptr) == EFAULT);
+	TEST_PLUGIN_REFUSED(loop_post(loop, &bare_msg) == EFAULT);
+	TEST_PLUGIN_REFUSED(loop_timer_set(nullptr, &stray, UINT64_MAX) == EFAULT);
+	TEST_PLUGIN_REFUSED(loop_timer_set(loop, nullptr, UINT64_MAX) == EFAULT);
+	TEST_PLUGIN_REFUSED(loop_timer_set(loop, &bare, UINT64_MAX) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_timer_set(loop, &stray, UINT64_MAX) == EINVAL);
+	TEST_PLUGIN_REFUSED(loop_timer_stop(nullptr, &stray) == EFAULT);
+	TEST_PLUGIN_REFUSED(loop_timer_stop(loop, nullptr) == EFAULT);
+	TEST_PLUGIN_REFUSED(loop_timer_stop(loop, &stray) == EINVAL);
 	TEST_PLUGIN_REFUSED(!loop_now(nullptr));
+	TEST_PLUGIN_REFUSED(loop_work(nullptr, LOOP_COPY, 1) == EFAULT);
+	TEST_PLUGIN_REFUSED(loop_work(loop, beyond, 1) == EINVAL);
 	TEST_PLUGIN_REFUSED(!loop_room(nullptr, LOOP_COPY));
-	TEST_PLUGIN_REFUSED(!loop_room(loop, (enum loop_unit)(LOOP_UNITS + 7)));
+	TEST_PLUGIN_REFUSED(!loop_room(loop, beyond));
 #undef TEST_PLUGIN_REFUSED
-	mcp_slot_park(nullptr);
-	mcp_slot_ready(nullptr);
-	mcp_slot_tell(nullptr, TOOL_TEXT("x"), 0);
-	mcp_slot_finish(nullptr, 0);
-	mcp_slot_fail(nullptr, EIO);
-	loop_timer_stop(nullptr, &stray);
-	loop_timer_stop(loop, nullptr);
-	loop_timer_stop(loop, &stray);
-	loop_work(nullptr, LOOP_COPY, 1);
-	loop_work(loop, (enum loop_unit)(LOOP_UNITS + 7), 1);
-	loop_post(nullptr, &bare_msg);
-	loop_post(loop, nullptr);
-	loop_post(loop, &bare_msg);
 	char out[48];
 	int n = snprintf(out, sizeof out, "refused %u of %u", refused, checks);
 	if (n < 0 || n >= (int)sizeof out)
@@ -350,11 +362,11 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
  * - "own": the call sets the mcp_slot_own() pointer, and then it ends with
  *   the text "own".  The kind has no drop(), so askai calls none.
  * - "after": the call ends with the text "first".  Then it calls each
- *   function of the call API that ends or changes a call, and askai must
- *   ignore each of these calls.  The function stores the error numbers
- *   that mcp_slot_write(), mcp_slot_name() and mcp_slot_offset() return in
- *   the call's instance, as the text "write=W name=N offset=O".  The next
- *   test_state call of the user shows that text.
+ *   function of the call API that ends or changes a call, and each of them
+ *   must refuse with EINVAL.  The function stores the text "refused R of
+ *   N" in the call's instance, where N is the number of these calls and R
+ *   is the number of them that returned EINVAL.  The next test_state call
+ *   of the user shows that text.
  * - "invalid": test_plugin_misuse_invalid() runs.
  * Any other case ends the call as failed. */
 static void
@@ -395,18 +407,23 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	mcp_slot_tell(slot, TOOL_TEXT("first"), 0);
 	size_t taken = 0;
 	struct handle who;
-	int write = mcp_slot_write(slot, TOOL_TEXT("late"), 0, &taken);
-	int name = mcp_slot_name(slot, &who);
 	/* args is not valid after the end of the call, so the function passes
-	 * nullptr. */
-	int offset = mcp_slot_offset(slot, nullptr);
-	mcp_slot_tell(slot, TOOL_TEXT("second"), 0);
-	mcp_slot_finish(slot, 0);
-	mcp_slot_fail(slot, EIO);
-	mcp_slot_ready(slot);
-	mcp_slot_park(slot);
-	int n = snprintf(inst->last, sizeof inst->last, "write=%d name=%d offset=%d",
-	                 write, name, offset);
+	 * nullptr to mcp_slot_offset(). */
+	int const codes[] = {
+		mcp_slot_write(slot, TOOL_TEXT("late"), 0, &taken),
+		mcp_slot_name(slot, &who),
+		mcp_slot_offset(slot, nullptr),
+		mcp_slot_tell(slot, TOOL_TEXT("second"), 0),
+		mcp_slot_finish(slot, 0),
+		mcp_slot_fail(slot, EIO),
+		mcp_slot_ready(slot),
+		mcp_slot_park(slot),
+	};
+	unsigned refused = 0;
+	for (size_t k = 0; k < sizeof codes / sizeof *codes; ++k)
+		refused += codes[k] == EINVAL;
+	int n = snprintf(inst->last, sizeof inst->last, "refused %u of %zu", refused,
+	                 sizeof codes / sizeof *codes);
 	inst->len = n > 0 && n < (int)sizeof inst->last ? (size_t)n : 0;
 }
 

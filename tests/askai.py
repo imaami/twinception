@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end checks for the askai MCP server against fake AI endpoints."""
 
-import errno
 import fcntl
 import grp
 import hashlib
@@ -6800,12 +6799,11 @@ def check_misuse(binary, up, plugin):
             # "invalid" passes it.
             found = re.fullmatch(r"refused (\d+) of (\d+)",
                                  text_of(call("test_misuse", {"case": "invalid"})))
-            assert found and found[1] == found[2] and int(found[2]) >= 18, found
+            assert found and found[1] == found[2] and int(found[2]) >= 35, found
             assert text_of(call("test_echo", {"text": "x"})) == "x"
-            # After the end of the call, askai refused mcp_slot_write(),
-            # mcp_slot_name() and mcp_slot_offset() with EINVAL.
-            einval = errno.EINVAL
-            assert state()[1] == f"write={einval} name={einval} offset={einval}"
+            # After the end of the call, each function that would end or
+            # change the call refused with EINVAL.
+            assert state()[1] == "refused 8 of 8"
 
             # The same three cases in a turn of an ask call.
             up.reply = lambda request: (200, turn_stream(

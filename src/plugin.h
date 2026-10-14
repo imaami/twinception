@@ -60,7 +60,7 @@
  *  function whose behavior changes while its declaration stays the same.
  *  PLUGIN_MANIFEST() stores it in the manifest so that askai does not load
  *  a plugin that was built with a different value. */
-static constexpr uint32_t PLUGIN_EPOCH = 3;
+static constexpr uint32_t PLUGIN_EPOCH = 4;
 
 /** The largest value of instance_size, in bytes. */
 static constexpr size_t PLUGIN_INSTANCE_MAX = 64 << 10;

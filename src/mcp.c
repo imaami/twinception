@@ -2364,50 +2364,57 @@ mcp_slot_wake (struct mcp_slot *slot)
 	mcp_slot_unwait(slot);
 }
 
-void
+int
 mcp_slot_tell (struct mcp_slot  *slot,
                struct tool_text  text,
                uint32_t          flags)
 {
-	if (!slot || slot->done)
-		return;
-	if (!text.ptr && text.len) {
-		text = TOOL_TEXT("The tool gave askai a text without bytes.");
-		flags = TOOL_FAILED;
-	}
+	if (!slot || (!text.ptr && text.len))
+		return EFAULT;
+	if (slot->done || flags & ~(uint32_t)TOOL_FAILED)
+		return EINVAL;
 	size_t len = jb_utf8(text.ptr, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
 	mcp_slot_wake(slot);
 	/* The output is the text whole, not lent, nor from an offset. */
 	slot->skip = 0;
 	slot->lent = (struct span){};
 	mcp_slot_result(slot, ESC(text.ptr, len), flags & TOOL_FAILED);
+	return 0;
 }
 
-void
+int
 mcp_slot_finish (struct mcp_slot *slot,
                  uint32_t         flags)
 {
-	if (!slot || slot->done)
-		return;
+	if (!slot)
+		return EFAULT;
+	if (slot->done || flags & ~(uint32_t)TOOL_FAILED)
+		return EINVAL;
 	mcp_slot_wake(slot);
 	mcp_slot_respond(slot, flags & TOOL_FAILED);
+	return 0;
 }
 
-void
+int
 mcp_slot_fail (struct mcp_slot *slot,
                int              e)
 {
-	if (!slot || slot->done)
-		return;
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
 	slot->done = true;
 	mcp_req_fail(slot->req, e);
+	return 0;
 }
 
 int
 mcp_slot_offset (struct mcp_slot    *slot,
                  struct json_object *args)
 {
-	if (!slot || slot->done)
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
 		return EINVAL;
 	struct json_object *o = jb_get(args, "offset");
 	int64_t n = !o ? 0
@@ -2427,9 +2434,11 @@ mcp_slot_write (struct mcp_slot  *slot,
                 size_t           *taken)
 {
 	if (!taken)
-		return EINVAL;
+		return EFAULT;
 	*taken = 0;
-	if (!slot || slot->done || (!text.ptr && text.len))
+	if (!slot || (!text.ptr && text.len))
+		return EFAULT;
+	if (slot->done || flags & ~(uint32_t)TOOL_MORE)
 		return EINVAL;
 	struct dstr *answer = &slot->answer;
 	size_t had = dstr_len(answer);
@@ -2473,11 +2482,13 @@ mcp_slot_lend (struct mcp_slot  *slot,
 
 /* Its request parks, if the slot is its own; a turn's call keeps it among
  * the calls a drain ends. */
-void
+int
 mcp_slot_park (struct mcp_slot *slot)
 {
-	if (!slot || slot->done)
-		return;
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
 	struct mcp_req *req = slot->req;
 	if (mcp_slot_offer(slot)->kind->flags & TOOL_STREAM && req->sse_ok && !req->sse)
 		mcp_req_stream(req);
@@ -2485,19 +2496,23 @@ mcp_slot_park (struct mcp_slot *slot)
 		mcp_req_park(req);
 	else
 		mcp_req_wait(req);
+	return 0;
 }
 
-void
+int
 mcp_slot_ready (struct mcp_slot *slot)
 {
-	if (!slot || slot->done)
-		return;
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
 	if (!mcp_slot_offer(slot)->kind->step) {
-		mcp_slot_tell(slot, TOOL_TEXT("The tool's kind has no step(), so the call "
-		                              "cannot go on."), TOOL_FAILED);
-		return;
+		(void)mcp_slot_tell(slot, TOOL_TEXT("The tool's kind has no step(), so the "
+		                                    "call cannot go on."), TOOL_FAILED);
+		return EINVAL;
 	}
 	loop_ready_bulk(slot->req->mcp->loop, &slot->step);
+	return 0;
 }
 
 int
@@ -2505,9 +2520,11 @@ mcp_slot_name (struct mcp_slot *slot,
                struct handle   *who)
 {
 	if (!who)
-		return EINVAL;
+		return EFAULT;
 	*who = (struct handle){};
-	if (!slot || slot->done)
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
 		return EINVAL;
 	int e = slot->call.bits ? 0 : loop_handle(slot->req->mcp->loop, slot, &slot->call);
 	*who = slot->call;
