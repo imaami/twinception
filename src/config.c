@@ -1556,6 +1556,33 @@ config_note_token (struct config const *cfg)
 		                      "%s names who may connect", cfg->path);
 }
 
+/* Checks the plugin file at @p path.  Only root and askai's user may change
+ * the file and the directories above it.  The path must be the file's real
+ * path, so it has no symbolic link.  Then nobody else can replace the file
+ * between this check and the dlopen() in plugin.c. */
+static int
+config_check_plugin (struct config const *cfg,
+                     char const          *path)
+{
+	char *real = realpath(path, nullptr);
+	if (!real)
+		return config_complain(cfg, path, "cannot open it: %s", strerror(errno));
+	int status = strcmp(real, path)
+	           ? config_complain(cfg, path, "not the file's real path, which "
+	                             "is %s", real)
+	           : 0;
+	free(real);
+	if (status)
+		return status;
+	struct stat st;
+	if (stat(path, &st))
+		return config_complain(cfg, path, "cannot open it: %s", strerror(errno));
+	if (!config_safe(&st) || !config_safe_dirs(path))
+		return config_complain(cfg, path, "others than root and askai's user "
+		                       "may change it");
+	return 0;
+}
+
 /* Loads the plugin whose path is @p v, an element of the configuration
  * file's "plugins", and adds its tools to the registry. */
 static int
@@ -1566,6 +1593,9 @@ config_plugin (struct config      *cfg,
 	if (!json_object_is_type(v, json_type_string) || *path != '/')
 		return config_complain(cfg, cfg->path, "plugins: not an absolute "
 		                       "path: %s", path ? path : "null");
+	int status = config_check_plugin(cfg, path);
+	if (status)
+		return status;
 	char why[256];
 	int e = registry_load(&cfg->registry, path, why, sizeof why);
 	if (e == ENOMEM)

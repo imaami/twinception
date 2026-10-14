@@ -5973,7 +5973,7 @@ def check_plugin(binary, up, plugin):
     a role by name, reloads the configuration, calls it from a turn of an
     ask call, and then starts askai with files that askai must refuse.
     """
-    plugin = os.path.abspath(plugin)
+    plugin = os.path.realpath(plugin)
     with open(plugin, "rb") as f:
         image = f.read()
     # The manifest is an ELF note (src/manifest.h): the sizes of the owner
@@ -6021,6 +6021,7 @@ def check_plugin(binary, up, plugin):
     refuses_state = not re.search(rb"__(asan|tsan)_init|__ubsan_handle", text)
 
     with tempfile.TemporaryDirectory() as d:
+        d = os.path.realpath(d)
         path = f"{d}/askai.json"
 
         def write(plugins, **options):
@@ -6161,6 +6162,24 @@ def check_plugin(binary, up, plugin):
             f.write(image.replace(b"mcp_slot_tell\0", b"mcp_slot_tel1\0"))
         fails([f"{d}/import.so"], f"askai: {d}/import.so: cannot load it: ",
               "undefined symbol: mcp_slot_tel1")
+        # Only root and askai's user may change a plugin file and the
+        # directories above it.  The path of a plugin is the file's real
+        # path.
+        shutil.copy(plugin, f"{d}/open.so")
+        os.chmod(f"{d}/open.so", 0o666)
+        os.mkdir(f"{d}/shared")
+        os.chmod(f"{d}/shared", 0o777)
+        shutil.copy(plugin, f"{d}/shared/test.so")
+        os.symlink(plugin, f"{d}/link.so")
+        for listed in (f"{d}/open.so", f"{d}/shared/test.so"):
+            fails([listed], f"askai: {listed}: others than root and askai's "
+                  "user may change it")
+        for listed in (f"{d}/link.so", f"{d}/shared/../import.so",
+                       f"{os.path.dirname(plugin)}/./{os.path.basename(plugin)}"):
+            fails([listed], f"askai: {listed}: not the file's real path, which "
+                  f"is {os.path.realpath(listed)}")
+        fails([f"{d}/none.so"], f"askai: {d}/none.so: cannot open it: No such "
+              "file or directory")
         # A plugin's state is in its instances.  askai refuses a file with
         # thread-local storage, with a constructor, or with writable data
         # that the dynamic linker does not make read-only.  Each copy has
@@ -6216,7 +6235,7 @@ def check_instances(binary, up, plugin):
     instance, on one loop and on four, that a turn of a user's ask call gets
     the user's instance, and when askai destroys an instance.
     """
-    plugin = os.path.abspath(plugin)
+    plugin = os.path.realpath(plugin)
 
     def digest(token):
         return "sha256:" + hashlib.sha256(token.encode()).hexdigest()

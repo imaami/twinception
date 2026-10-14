@@ -553,10 +553,9 @@ by their random ids.  Tokens cross the network in the clear but over TLS (below)
 proxy that ends it.  A plugin is code that runs inside `askai` with all of
 `askai`'s rights.  Whoever may change the configuration file decides which
 files `askai` loads as plugins.  Whoever may change one of those files, or a
-directory above it, decides which code runs.  `askai` checks who may change
-the configuration file (below).  It does not check who may change a plugin's
-file, so make sure that only root or `askai`'s user may change each plugin's
-file and the directories above it.
+directory above it, decides which code runs.  `askai` refuses a
+configuration file or a plugin's file that others than root and `askai`'s user
+may change, or that is in a directory that they may change (below).
 
 ### TLS
 
@@ -723,6 +722,9 @@ instance, with these exceptions:
 `askai` reads the manifest from each file before it loads the file.  It
 refuses a plugin that breaks one of these rules:
 
+- Only root and `askai`'s user may change the file and the directories above
+  it, as for the configuration file.  The path must be the file's real path,
+  without a symbolic link, a `.` or `..` component or a double slash.
 - The file must contain a manifest, which `PLUGIN_MANIFEST()` of
   `src/plugin.h` puts into every plugin.
 - The plugin interface version and the sizes and offsets in the manifest must
