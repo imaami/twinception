@@ -163,11 +163,22 @@ test_one_step (void)
 	CHECK(t.fresh_steps >= 49 && t.ongoing_steps >= 49);
 }
 
+/* The handler advances the clock by 600 µs, past the 500 µs that a turn has
+ * for interactive steps.  Each turn must still run one interactive step.
+ * The fresh entry and the ongoing entry must run in alternate turns. */
+static void
+test_no_room (void)
+{
+	turn_run(600, 100, 100, 100);
+	CHECK(t.fresh_steps >= 49 && t.ongoing_steps >= 49);
+}
+
 int
 main (void)
 {
 	test_room();
 	test_one_step();
+	test_no_room();
 	if (failures) {
 		fprintf(stderr, "turn: %u checks failed\n", failures);
 		return 1;

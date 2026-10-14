@@ -631,13 +631,14 @@ loop_fire (struct loop *loop)
  * Run one step of each entry that is queued on the @p n lists in the array
  * @p lists.  While more than one list has entries, the steps alternate
  * between the lists.  The first step is from the list at index @p *cursor,
- * unless that list is empty.  The function starts a step only while the
- * clock is before @p until.  If @p bulk is true, at least one step runs.
- * The function puts the entries that did not run back at the head of their
- * lists, before the entries that were queued during the call.  On return,
- * @p *cursor is the index of the list after the list of the last step, so
- * the next call continues the alternation.  Returns the number of steps that
- * ran.
+ * unless that list is empty.  If an entry is queued, at least one step
+ * runs, and the function starts more steps only while the clock is before
+ * @p until.  @p bulk selects the histogram in which the function records
+ * the times of the steps.  The function puts the entries that did not run
+ * back at the head of their lists, before the entries that were queued
+ * during the call.  On return, @p *cursor is the index of the list after
+ * the list of the last step, so the next call continues the alternation.
+ * Returns the number of steps that ran.
  */
 static uint64_t
 loop_run (struct loop *loop,
@@ -655,16 +656,14 @@ loop_run (struct loop *loop,
 
 	uint64_t t = loop_clock();
 	uint64_t steps = 0;
-	bool first = bulk;
 	size_t i = *cursor;
-	for (size_t empty = 0; empty < n && !loop->exit && (first || t < until);
+	for (size_t empty = 0; empty < n && !loop->exit && (!steps || t < until);
 	     i = (i + 1) % n) {
 		if (list_is_empty(&batch[i])) {
 			++empty;
 			continue;
 		}
 		empty = 0;
-		first = false;
 		struct loop_step *step = container_of(batch[i].next, struct loop_step,
 		                                      hook);
 		loop_unready(step);

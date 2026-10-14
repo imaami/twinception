@@ -40,8 +40,10 @@ struct loop_ref {
  * This structure is an entry on a ready list of the loop.  A turn of the
  * loop calls the function fn of the entry to run one step, which is a
  * bounded piece of work.  A turn first runs the callbacks of events,
- * messages and timers.  Then it starts one step of each queued interactive
- * entry until 500 µs have passed since the turn began.  Then, if bulk
+ * messages and timers.  Then it starts interactive steps, at most one for
+ * each queued interactive entry, until 500 µs have passed since the turn
+ * began.  If an interactive entry is queued, at least one interactive step
+ * runs, even when the callbacks ran for 500 µs or more.  Then, if bulk
  * entries are queued, it runs at least one bulk step, and it starts more
  * bulk steps while they can end within 1 ms.
  *
