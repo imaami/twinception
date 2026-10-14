@@ -61,7 +61,8 @@ check-askai: | askai test_plugin.so
 check-buf: $Otests/buf
 	$<
 
-$Otests/buf: $(TEST_DIR)buf.c $(SRC_DIR)buf.c $(SRC_DIR)buf.h | $Otests
+$Otests/buf: $(TEST_DIR)buf.c $(SRC_DIR)buf.c $(SRC_DIR)buf.h \
+             $(SRC_DIR)hist.h $(SRC_DIR)util.h | $Otests
 	$(CC) $(TEST_FLAGS) -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	      -o "$@" $(filter %.c,$^)
 
@@ -72,7 +73,8 @@ check-handle: $Otests/handle
 
 $Otests/handle: $(TEST_DIR)handle.c $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
                 $(SRC_DIR)loop_export.h $(SRC_DIR)export.h \
-                $(SRC_DIR)log.c | $Otests
+                $(SRC_DIR)hist.h $(SRC_DIR)list.h $(SRC_DIR)util.h \
+                $(SRC_DIR)log.c $(SRC_DIR)log.h | $Otests
 	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	      -o "$@" $(TEST_DIR)handle.c $(SRC_DIR)log.c
 
