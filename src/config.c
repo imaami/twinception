@@ -6,7 +6,9 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <json-c/json.h>
+#include <json-c/json_visit.h>
 #include <libgen.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -538,8 +540,32 @@ config_find (char const *const *names,
 	return i;
 }
 
-/* Set the sampling temperature to @p arg, a number not below 0, given as
- * config_apply() says. */
+/* Check a number in the object of --extra, as a json_c_visit() callback.
+ * The function returns JSON_C_VISIT_RETURN_ERROR for a double that is NaN
+ * or infinite.  For a finite double, it resets the serializer to the
+ * default serializer of json-c, which prints the value of the double.  The
+ * parser of json-c sets for each double a serializer that prints the text
+ * of the number as the parser read it, and json-c reads some numbers that
+ * JSON does not allow, such as "1.". */
+static int
+config_extra_number (struct json_object *val,
+                      int,
+                      struct json_object *,
+                      char const *,
+                      size_t *,
+                      void *)
+{
+	if (!json_object_is_type(val, json_type_double))
+		return JSON_C_VISIT_RETURN_CONTINUE;
+	if (!isfinite(json_object_get_double(val)))
+		return JSON_C_VISIT_RETURN_ERROR;
+	json_object_set_serializer(val, nullptr, nullptr, nullptr);
+	return JSON_C_VISIT_RETURN_CONTINUE;
+}
+
+/* Set the sampling temperature to @p arg, a finite number not below 0.
+ * @p where is the path of the configuration file that contains @p arg, or
+ * nullptr if @p arg is from the command line. */
 static int
 config_apply_temperature (struct config *cfg,
                           char const    *arg,
@@ -547,18 +573,24 @@ config_apply_temperature (struct config *cfg,
 {
 	struct json_object *t = jb_parse(arg, strlen(arg), JSON_TOKENER_STRICT, 0);
 	enum json_type type = json_object_get_type(t);
-	if ((type != json_type_double && type != json_type_int) ||
-	    json_object_get_double(t) < 0) {
+	double d = json_object_get_double(t);
+	/* !(d >= 0) is true for a negative number and for NaN. */
+	if ((type != json_type_double && type != json_type_int) || !(d >= 0) || isinf(d)) {
 		json_object_put(t);
 		return config_complain(cfg, where, "invalid temperature: %s", arg);
 	}
+	/* The default serializer prints the value of the number, not the text
+	 * that json-c read (config_extra_number()). */
+	json_object_set_serializer(t, nullptr, nullptr, nullptr);
 	json_object_put(cfg->ep.temperature);
 	cfg->ep.temperature = t;
 	return 0;
 }
 
-/* Set what is merged into each request body to @p arg, a JSON object, given
- * as config_apply() says. */
+/* Set the object that is merged into each request body to @p arg, a JSON
+ * object whose numbers are finite.  @p where is the path of the
+ * configuration file that contains @p arg, or nullptr if @p arg is from the
+ * command line. */
 static int
 config_apply_extra (struct config *cfg,
                     char const    *arg,
@@ -568,6 +600,11 @@ config_apply_extra (struct config *cfg,
 	if (!json_object_is_type(x, json_type_object)) {
 		json_object_put(x);
 		return config_complain(cfg, where, "--extra needs a JSON object: %s", arg);
+	}
+	if (json_c_visit(x, 0, config_extra_number, nullptr)) {
+		json_object_put(x);
+		return config_complain(cfg, where, "--extra contains NaN, an infinity "
+		                       "or a number outside the range of a double: %s", arg);
 	}
 	json_object_put(cfg->ep.extra);
 	cfg->ep.extra = x;

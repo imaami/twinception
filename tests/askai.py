@@ -2360,8 +2360,16 @@ def check_configuration(binary, up):
     fails("-u", "ftp://x", message="not an http(s) URL")
     fails("-t", "warm", message="invalid temperature")
     fails("-t", "-1", message="invalid temperature")
+    # json-c parses NaN and Infinity, and it parses 1e400 as an infinite
+    # double.  JSON has no number that is NaN or infinite.
+    for temperature in ("NaN", "Infinity", "1e400"):
+        fails("-t", temperature, message="invalid temperature: " + temperature)
     fails("-n", "0", message="invalid max token count")
     fails("-x", "[1]", message="needs a JSON object")
+    for extra in ('{"top_p": Infinity}', '{"a": [1, {"b": NaN}]}',
+                  '{"a": -1e400}'):
+        fails("-x", extra, message="--extra contains NaN, an infinity or a "
+              "number outside the range of a double: " + extra)
     fails("-H", "Bad Header: x", message="invalid header line")
     fails("--tool-name", "ask ai", message="tool names")
     fails("-u", up.url(), "--upstream-tools", "--tool-name", "wait",
@@ -2471,6 +2479,17 @@ def check_configuration(binary, up):
             assert "x-api-key" not in headers, (args, headers)
     up.reply = lambda request: (200, ANSWERS["openai"])
 
+    # json-c also parses numbers that JSON does not allow, such as "1.",
+    # "-.5" and "01.5".  askai sends each of them as a JSON number.
+    def constant(name):
+        raise ValueError(name)
+    with Askai(binary, "-u", up.url(), "-t", "1.",
+               "-x", '{"top_p": 1., "a": [1.e1, -.5, {"b": 01.5}]}') as ai:
+        assert text_of(ai.ask()) == "A"
+        body = json.loads(up.last()["raw"], parse_constant=constant)
+        assert [body[k] for k in ("temperature", "top_p", "a")] == \
+            [1.0, 1.0, [10.0, -0.5, {"b": 1.5}]], body
+
     # A configuration file: a JSON object, comments allowed, whose members are
     # the long options, which the command line overrides.
     with tempfile.TemporaryDirectory() as d:
@@ -2510,6 +2529,10 @@ def check_configuration(binary, up):
                 ('{%s, "loops": [1]}' % url, f"{path}: invalid --loops: [1]"),
                 ('{%s, "man": "yes"}' % url, "invalid --man"),
                 ('{%s, "max-body": "1X"}' % url, "invalid --max-body: 1X"),
+                ('{%s, "temperature": NaN}' % url, f"{path}: invalid temperature: NaN"),
+                ('{%s, "extra": {"a": [Infinity]}}' % url,
+                 f'{path}: --extra contains NaN, an infinity or a number outside '
+                 'the range of a double: {"a":[Infinity]}'),
                 ('{%s, "header": [["X-A: 1", "X-B: 2"]]}' % url,
                  f'{path}: invalid --header: [["X-A: 1","X-B: 2"]]'),
                 ('{"url": "ftp://x"}', f"{path}: not an http(s) URL"),
