@@ -1870,7 +1870,8 @@ mcp_on_job (struct loop *loop,
 		buf_fini(&job->request);
 		buf_fini(&job->key);
 		buf_fini(&job->result);
-		buf_fini(&job->calls);
+		for (size_t k = 0; k < JOB_CALLS; ++k)
+			buf_fini(&job->calls[k]);
 		buf_fini(&job->thought);
 		buf_fini(&job->replay);
 		free(job);
@@ -3015,20 +3016,24 @@ mcp_req_turn_done (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	struct job *job = req->job;
-	struct span calls = buf_peek(&job->calls);
 	long told = mcp->st->ep->context;
 	req->used = job->used;
 	req->context = told > 0 ? (uint32_t)told : job->context;
 	req->cut = ai_cut(mcp->st->ep->api, job->reason);
 	req->forced = 0;
-	if (calls.len > CALLS_MAX) {
+	/* The calls are in the first n buffers of job->calls. */
+	uint16_t n = 0;
+	size_t bytes = 0;
+	for (size_t k = 0; k < JOB_CALLS; ++k) {
+		size_t len = buf_peek(&job->calls[k]).len;
+		bytes += len;
+		n += len != 0;
+	}
+	if (bytes > CALLS_MAX) {
 		mcp_slot_result(&req->self, TEXT("The other AI's tool calls in one turn took "
 		                              "more than 1 MiB, so none was run."), true);
 		return;
 	}
-	uint16_t n = 0;
-	for (size_t off = 0; off < calls.len; ++n)
-		off += mcp_call_at(calls.ptr + off).size;
 	if (!n && !mcp_req_dozes(req)) {
 		mcp_req_enter(req, PHASE_TEXT);
 		return;
@@ -3041,7 +3046,6 @@ mcp_req_turn_done (struct mcp_req *req)
 	}
 	req->n_calls = n;
 	req->part = 0;
-	req->at = 0;
 	mcp_req_enter(req, PHASE_ARGS);
 }
 
@@ -3073,9 +3077,8 @@ mcp_req_turn_arg (struct mcp_req *req,
 static void
 mcp_req_turn_args (struct mcp_req *req)
 {
-	struct span all = buf_peek(&req->job->calls);
 	for (; req->part < req->n_calls; ++req->part) {
-		struct mcp_call c = mcp_call_at(all.ptr + req->at);
+		struct mcp_call c = mcp_call_at(buf_peek(&req->job->calls[req->part]).ptr);
 		int e = mcp_req_turn_arg(req, c.args);
 		if (e == EAGAIN) {
 			loop_ready_bulk(req->mcp->loop, &req->step);
@@ -3085,13 +3088,11 @@ mcp_req_turn_args (struct mcp_req *req)
 			mcp_req_fail(req, e);
 			return;
 		}
-		req->at += c.size;
 	}
 	/* The turn goes after the request's messages, which it ends no more. */
 	struct ai_bytes end = ai_format(req->mcp->st->ep->api)->end;
 	buf_cut(&req->upload, buf_peek(&req->upload).len - end.len, end.len);
 	req->part = 0;
-	req->at = 0;
 	req->replayed = 0;
 	req->next = 0;
 	req->off = 0;
@@ -3173,7 +3174,7 @@ static int
 mcp_req_turn_call (struct mcp_req         *req,
                    struct ai_format const *f)
 {
-	struct mcp_call c = mcp_call_at(buf_peek(&req->job->calls).ptr + req->at);
+	struct mcp_call c = mcp_call_at(buf_peek(&req->job->calls[req->part - 1u]).ptr);
 	struct mcp_piece items = mcp_req_items(req, c.replay);
 	int e = f->call.len ? mcp_req_call_put(req, f, &c, items)
 	                    : mcp_req_upload(req, &items, 1);
@@ -3181,7 +3182,6 @@ mcp_req_turn_call (struct mcp_req         *req,
 		return e;
 	req->listed = req->listed || items.len;
 	req->replayed = c.replay;
-	req->at += c.size;
 	return 0;
 }
 
@@ -3243,14 +3243,16 @@ mcp_req_turn_write (struct mcp_req *req)
 		mcp_req_doze(req);
 		return;
 	}
-	struct span all = buf_peek(&req->job->calls);
-	int e = mcp_piece_write(&RAW(all.ptr, all.len), 0, all.len, &req->calls,
-	                        CALLS_MAX);
+	int e = 0;
+	for (uint16_t k = 0; !e && k < req->n_calls; ++k) {
+		struct span c = buf_peek(&req->job->calls[k]);
+		e = mcp_piece_write(&RAW(c.ptr, c.len), 0, c.len, &req->calls, CALLS_MAX);
+		loop_work(loop, LOOP_COPY, c.len);
+	}
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
 	}
-	loop_work(loop, LOOP_COPY, all.len);
 	/* The usage counts the turn: what is written after it counts on. */
 	req->sent = buf_peek(&req->upload).len;
 	mcp_req_drop(req);

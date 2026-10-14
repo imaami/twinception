@@ -5171,15 +5171,20 @@ def check_git(binary, up):
           "PASS")
 
 
-def turn_stream(calls=(), text="", reasoning="", used=None, interleave=False,
+def turn_stream(calls=(), text="", reasoning="", used=None, order=(),
                 index=True, reason=None, extras=None):
-    """A streamed chat completion of @p text that calls the tools @p calls,
-    (id, name, arguments' JSON text) each, the arguments in pieces of 7
-    bytes, after @p reasoning; with @p used, (prompt, answer) tokens, its
-    usage; with @p interleave, the calls' pieces taken in turn; without
-    @p index, the calls' pieces giving none; with @p reason, that stop
-    reason; with @p extras, each call's extra_content or None, as Gemini
-    sends them: each call whole in one piece, with no index."""
+    """Return a streamed chat completion that contains the reasoning
+    @p reasoning, then the text @p text, and then the tool calls in
+    @p calls.  Each call is a tuple (id, name, JSON text of the
+    arguments), and the arguments come in pieces of 7 bytes.  @p used is a
+    tuple (prompt tokens, answer tokens) for the usage.  @p order is a
+    list of call numbers.  For each number in @p order, the stream
+    contains the next piece of that call.  Then the remaining pieces of
+    each call follow, call by call.  With @p index false, the pieces have
+    no index.  @p reason is the stop reason.  @p extras is a list with one
+    item for each call: its extra_content, or None.  With @p extras, each
+    call comes whole in one piece without an index, as Gemini sends
+    calls."""
     ev = [(None, {"choices": [{"index": 0, "delta": {"role": "assistant",
                                                      "content": ""}}]})]
     delta = lambda d: (None, {"choices": [{"index": 0, "delta": d}]})
@@ -5202,10 +5207,9 @@ def turn_stream(calls=(), text="", reasoning="", used=None, interleave=False,
         call += [delta({"tool_calls": [at | {"function": {
             "arguments": args[k:k + 7]}}]}) for k in range(0, len(args), 7)]
         pieces.append(call)
-    if interleave:
-        ev += [e for group in zip(*pieces) for e in group]
-    else:
-        ev += [e for call in pieces for e in call]
+    rest = [iter(call) for call in pieces]
+    ev += [next(rest[k]) for k in order]
+    ev += [e for call in rest for e in call]
     ev.append((None, {"choices": [{"index": 0, "delta": {}, "finish_reason":
                                    reason or ("tool_calls" if calls else "stop")}]}))
     if used:
@@ -6003,12 +6007,38 @@ def check_turns(binary, up):
             assert result["content"][0]["text"] == \
                 "Waiting.\n\n[askai: timer 1 fired.]\n\nA", result
 
-            # Calls out of order are the upstream's error.
-            script[:] = [lambda r: (200, turn_stream([("a", "git", log), ("b", "git", log)],
-                                                     interleave=True))]
+            # The pieces of parallel calls can come in any order.  The next
+            # request lists the calls in the order in which they began.  In
+            # the first stream, the pieces of the two calls alternate until
+            # the pieces of call a end.  In the second stream, both calls
+            # begin, then all arguments of call b come, and then all
+            # arguments of call a.  In the third stream, call b begins before
+            # call a.
+            other = json.dumps({"repo": "proj", "command": "log",
+                                "options": ["-1", "--format=%s"]})
+            calls = [("a", "git", log), ("b", "git", other)]
+            pieces = [1 + -(-len(args) // 7) for _, _, args in calls]
+            assert pieces[0] < pieces[1], pieces
+            for order, want in (([0, 1] * pieces[0], calls),
+                                ([0] + [1] * pieces[1], calls),
+                                ([1, 0], calls[::-1])):
+                script[:] = [lambda r: (200, turn_stream(calls, order=order))]
+                count = len(up.requests)
+                result = ai.ask("Q")
+                assert result["content"][0]["text"] == "A", (order, result)
+                head, *results = turns(up.requests[count + 1])
+                assert [(c["id"], c["function"]["name"], c["function"]["arguments"])
+                        for c in head["tool_calls"]] == want, (order, head)
+                assert [m["tool_call_id"] for m in results] == \
+                    [cid for cid, _, _ in want], results
+
+            # More than 16 calls in one turn are an error of the upstream.
+            script[:] = [lambda r: (200, turn_stream([(str(i), "git", log)
+                                                      for i in range(17)],
+                                                     order=range(17)))]
             result = ai.ask("Q")
-            assert result.get("isError") and "tool calls out of order" in \
-                result["content"][0]["text"], result
+            assert result.get("isError") and result["content"][0]["text"] == \
+                "Upstream error (HTTP 200): tool calls out of order, or too many", result
 
             # Gemini's thought signatures, in extra_content: whole calls with
             # no index, of which only the first of parallel ones is signed,

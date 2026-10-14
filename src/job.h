@@ -82,10 +82,13 @@ enum job_ask {
 	                               calls, which the request offered tools for */
 };
 
-/** A tool call that a streamed answer makes, in a job's calls: this, then
- *  the bytes of its id, its name, its extra and its arguments' JSON text. */
+/** The header of a tool call in a streamed answer.  Each call is stored in
+ *  its own buffer of job->calls.  The buffer contains this header and then
+ *  the bytes of the id, the name, the extra and the JSON text of the
+ *  arguments of the call. */
 struct job_call {
-	uint32_t index;   /**< its place among the answer's calls */
+	uint32_t index;   /**< the index of the call in the answer, or the
+	                       number of its buffer if the answer gave none */
 	uint32_t replay;  /**< the bytes of the job's replay before it */
 	uint32_t id;      /**< bytes of its id */
 	uint32_t name;    /**< of its name */
@@ -131,9 +134,12 @@ struct job {
 	                                         read by home until DONE */
 	struct buf             result;      /**< home's: written before DONE, read
 	                                         by the front until CANCEL */
-	struct buf             calls;       /**< likewise: with JOB_TOOLS, the tool
-	                                         calls of a streamed answer, each a
-	                                         struct job_call and its bytes */
+	/** Home writes these buffers before DONE, and the front reads them
+	 *  until CANCEL.  With JOB_TOOLS, buffer k contains call k of a
+	 *  streamed answer (struct job_call).  The calls are numbered in the
+	 *  order in which they begin, and the buffers after the last call are
+	 *  empty. */
+	struct buf             calls[JOB_CALLS];
 	struct buf             thought;     /**< likewise: with JOB_TOOLS, its
 	                                         thinking's text */
 	struct buf             replay;      /**< likewise: with JOB_TOOLS, what its
@@ -225,8 +231,9 @@ job_init (struct job  *job,
 	list_init(&job->held);
 	list_init(&job->idle);
 	list_init(&job->feed);
-	job->request = job->result = job->calls = job->thought = (struct buf){};
-	job->replay = (struct buf){};
+	job->request = job->result = job->thought = job->replay = (struct buf){};
+	for (size_t k = 0; k < JOB_CALLS; ++k)
+		job->calls[k] = (struct buf){};
 	job->key = job->wire = (struct buf){};
 	job->parser = (struct jb_parser){};
 	job->front = front;

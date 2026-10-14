@@ -256,7 +256,8 @@ static void
 home_job_drop_answer (struct job *job)
 {
 	buf_fini(&job->result);
-	buf_fini(&job->calls);
+	for (size_t k = 0; k < JOB_CALLS; ++k)
+		buf_fini(&job->calls[k]);
 	buf_fini(&job->thought);
 	buf_fini(&job->replay);
 }
@@ -597,7 +598,7 @@ home_finish_text (struct home *home,
                   struct job  *job)
 {
 	_Atomic uint64_t *completed = &home->metrics->completed;
-	if (buf_peek(&job->calls).len) {
+	if (buf_peek(&job->calls[0]).len) {
 		home_end(home, job, JOB_TEXT, completed);
 		return;
 	}
@@ -1063,81 +1064,87 @@ home_put_replay (void       *user,
 	return home_append_text(self, &job->replay, json, len);
 }
 
-/* Whether one of @p job's tool calls before @p at in its calls is call
- * @p index. */
-static bool
-home_job_has_call (struct job const *job,
-                   uint32_t          index,
-                   size_t            at)
-{
-	unsigned char const *all = buf_peek(&job->calls).ptr;
-	for (size_t off = 0; off < at; ) {
-		struct job_call c;
-		memcpy(&c, all + off, sizeof c);
-		if (c.index == index)
-			return true;
-		off += job_call_size(&c);
-	}
-	return false;
-}
-
-/* Add what @p call says of a tool call to the job @p user's calls: a call
- * begins with an index none had, after which those before it are whole, or,
- * for a server that gives no index, with an id unlike the last call's; its
- * id comes before its name, its name before its extra, and that, which
- * comes once, before its arguments, which may come in pieces; an id, a name
- * or an extra said again, as some servers do, is the same.  EPROTO for a
- * call that breaks that order, or for more than JOB_CALLS of them; EILSEQ
- * for what is not UTF-8. */
+/* Add the piece @p call of a tool call to the calls of the job @p user.
+ * Call k is stored in job->calls[k], and the calls are numbered in the
+ * order in which they begin.  A piece with an index that no stored call has
+ * begins a new call.  A piece without an index begins a new call if there
+ * is no call yet or if its id differs from the id of the last call.
+ * Otherwise the piece belongs to the last call.  The pieces of different
+ * calls may come in any order.  In each call, the id comes before the name,
+ * and the name comes before the extra.  The extra comes once and before the
+ * arguments.  The arguments may come in several pieces.  The function
+ * ignores an id, a name or an extra that repeats the stored bytes, because
+ * some servers send them again.  The function returns EPROTO if a call
+ * breaks this order or if there are more than JOB_CALLS calls.  It returns
+ * ENOBUFS if the calls together would have more than MAX_RESPONSE bytes,
+ * and EILSEQ if a piece is not UTF-8. */
 static int
 home_put_call (void                 *user,
                struct ai_call const *call)
 {
 	struct job *job = user;
-	struct span all = buf_peek(&job->calls);
-	struct job_call last = {};
-	size_t at = 0;
+	/* This loop counts the calls in n and the bytes of all calls in bytes.
+	 * It sets k to the number of the call that has the index of the
+	 * piece, and c to the header of the last call. */
+	struct job_call c = {};
 	uint32_t n = 0;
-	for (size_t off = 0; off < all.len; ++n) {
-		memcpy(&last, all.ptr + off, sizeof last);
-		at = off;
-		off += job_call_size(&last);
+	uint32_t k = JOB_CALLS;
+	size_t bytes = 0;
+	for (; n < JOB_CALLS; ++n) {
+		struct span s = buf_peek(&job->calls[n]);
+		if (!s.len)
+			break;
+		memcpy(&c, s.ptr, sizeof c);
+		k = c.index == call->index ? n : k;
+		bytes += s.len;
 	}
 	size_t id = call->id_len;
 	size_t name = call->name_len;
 	size_t extra = call->extra_len;
 	size_t args = call->args_len;
-	/* An id unlike the last call's begins a call; one said again is the
-	 * same. */
-	uint32_t next = last.index;
-	size_t more = 0;
-	if (id && (id != last.id || memcmp(all.ptr + at + sizeof last, call->id, id))) {
-		next = n;
-		more = id;
+	uint32_t index = call->index;
+	/* A piece without an index continues the last call if there is a
+	 * call and the piece has no id or the same id as the last call.  Then
+	 * its id is not stored again.  Otherwise the piece begins call n.  No
+	 * stored call has the index AI_CALL_NEXT, so k is still JOB_CALLS for
+	 * such a piece. */
+	if (index == AI_CALL_NEXT) {
+		bool same = n && !(id && (id != c.id ||
+		                          memcmp(buf_peek(&job->calls[n - 1]).ptr + sizeof c,
+		                                 call->id, id)));
+		index = n;
+		if (same) {
+			k = n - 1;
+			id = 0;
+		}
 	}
-	uint32_t index = call->index != AI_CALL_NEXT ? call->index : next;
 	size_t head = 0;
-	if (n && last.index == index) {
-		unsigned char const *had = all.ptr + at + sizeof last;
-		id = more;
-		if (name && name == last.name && !memcmp(had + last.id, call->name, name))
+	if (k < n) {
+		/* Ignore an id, a name or an extra that repeats the stored
+		 * bytes. */
+		unsigned char const *had = buf_peek(&job->calls[k]).ptr;
+		memcpy(&c, had, sizeof c);
+		had += sizeof c;
+		if (id && id == c.id && !memcmp(had, call->id, id))
+			id = 0;
+		had += c.id;
+		if (name && name == c.name && !memcmp(had, call->name, name))
 			name = 0;
-		had += last.id + last.name;
-		if (extra && extra == last.extra && !memcmp(had, call->extra, extra))
+		had += c.name;
+		if (extra && extra == c.extra && !memcmp(had, call->extra, extra))
 			extra = 0;
+	} else if (n == JOB_CALLS) {
+		return EPROTO;
 	} else {
-		/* A call that came before the last may not go on. */
-		if (n == JOB_CALLS || home_job_has_call(job, index, at))
-			return EPROTO;
-		last = (struct job_call){
+		c = (struct job_call){
 			.index = index,
 			.replay = (uint32_t)buf_peek(&job->replay).len
 		};
-		at = all.len;
-		head = sizeof last;
+		head = sizeof c;
+		k = n;
 	}
-	bool later = last.extra || last.args;
-	if ((id && (last.name || later)) || ((name || extra) && later))
+	bool later = c.extra || c.args;
+	if ((id && (c.name || later)) || ((name || extra) && later))
 		return EPROTO;
 	if (jb_utf8(call->id, id) < id || jb_utf8(call->name, name) < name ||
 	    jb_utf8(call->extra, extra) < extra || jb_utf8(call->args, args) < args)
@@ -1145,11 +1152,16 @@ home_put_call (void                 *user,
 	size_t len = head + id + name + extra + args;
 	if (!len)
 		return 0;
+	/* The limit of the buffer is MAX_RESPONSE minus the bytes of the
+	 * other calls, so the calls together stay within MAX_RESPONSE. */
+	struct buf *to = &job->calls[k];
 	struct span s;
-	int e = buf_reserve(&job->calls, len, MAX_RESPONSE, &s);
+	int e = buf_reserve(to, len, MAX_RESPONSE - (bytes - buf_peek(to).len), &s);
 	if (e)
 		return e;
-	/* Only the last part grows, at the end of the last call. */
+	/* After the order check above, the new bytes belong to the last
+	 * stored part of the call or to the parts after it, so they go to the
+	 * end of the buffer. */
 	unsigned char *p = s.ptr + head;
 	if (id)
 		memcpy(p, call->id, id);
@@ -1159,12 +1171,12 @@ home_put_call (void                 *user,
 		memcpy(p + id + name, call->extra, extra);
 	if (args)
 		memcpy(p + id + name + extra, call->args, args);
-	last.id += (uint32_t)id;
-	last.name += (uint32_t)name;
-	last.extra += (uint32_t)extra;
-	last.args += (uint32_t)args;
-	buf_commit(&job->calls, len);
-	memcpy(buf_peek(&job->calls).ptr + at, &last, sizeof last);
+	c.id += (uint32_t)id;
+	c.name += (uint32_t)name;
+	c.extra += (uint32_t)extra;
+	c.args += (uint32_t)args;
+	buf_commit(to, len);
+	memcpy(buf_peek(to).ptr, &c, sizeof c);
 	loop_work(self->loop, LOOP_COPY, len);
 	return 0;
 }
@@ -1481,7 +1493,8 @@ home_preempt (struct home *home,
 	home_abort(home, job);
 	home_unstream(home, job);
 	buf_consume(&job->result, buf_peek(&job->result).len);
-	buf_consume(&job->calls, buf_peek(&job->calls).len);
+	for (size_t k = 0; k < JOB_CALLS; ++k)
+		buf_consume(&job->calls[k], buf_peek(&job->calls[k]).len);
 	buf_consume(&job->thought, buf_peek(&job->thought).len);
 	buf_consume(&job->replay, buf_peek(&job->replay).len);
 	home_job_reset(job, PREEMPTED | READY);
