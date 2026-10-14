@@ -360,7 +360,7 @@ plugin_loaded_definition (struct plugin_loaded const *loaded,
                           char                       *why,
                           size_t                      len)
 {
-	struct json_object *def = loaded->plugin->tools[i].definition(nullptr);
+	struct json_object *def = loaded->plugin->tools[i].definition(loaded->config);
 	if (!def)
 		return ENOMEM;
 	size_t n = 0;
@@ -377,9 +377,8 @@ plugin_loaded_definition (struct plugin_loaded const *loaded,
  * dest->plugin.  dest->n_tools is the number of tools that its manifest
  * names: those kinds of the plugin must have definition() and start(), and
  * the kinds after them must have neither.  The flags of every kind must be
- * among TOOL_FLAGS, and the definition of each named tool must have the
- * tool's name.  Returns 0, ENOMEM, or EINVAL with the reason in the len
- * bytes at why. */
+ * among TOOL_FLAGS.  Returns 0, ENOMEM, or EINVAL with the reason in the
+ * len bytes at why. */
 static int
 plugin_loaded_load (struct plugin_loaded *dest,
                     char const           *path,
@@ -416,20 +415,69 @@ plugin_loaded_load (struct plugin_loaded *dest,
 			                     "askai_plugin has flags that tool.h does not "
 			                     "define for plugins: %#" PRIx64, i,
 			                     kind->flags & ~TOOL_FLAGS);
-		int e = named ? plugin_loaded_definition(dest, i, why, len) : 0;
-		if (e)
-			return e;
 	}
 	return 0;
 }
 
+/* Checks configure and config_size of dest->plugin, and stores the
+ * plugin's configuration in dest->config: config_size zeroed bytes that
+ * configure() fills from options.  options is the member "options" of the
+ * plugin's element of "plugins", or nullptr.  A plugin without configure()
+ * gets no configuration, and it is refused if options is not nullptr.  The
+ * reason of configure() follows "options: " in why.  Returns 0, ENOMEM, or
+ * EINVAL with the reason in the len bytes at why. */
+static int
+plugin_loaded_configure (struct plugin_loaded *dest,
+                         struct json_object   *options,
+                         char                 *why,
+                         size_t                len)
+{
+	static char const prefix[] = "options: ";
+	struct plugin const *p = dest->plugin;
+	if (p->configure ? p->config_size - 1 >= PLUGIN_CONFIG_MAX : p->config_size)
+		return plugin_refuse(why, len, "its askai_plugin has configure() without a "
+		                     "config_size of 1 to %zu, or a config_size without "
+		                     "configure()", PLUGIN_CONFIG_MAX);
+	if (!p->configure)
+		return options ? plugin_refuse(why, len, "%sthe plugin has no options",
+		                               prefix)
+		               : 0;
+	dest->config = calloc(1, p->config_size);
+	if (!dest->config)
+		return ENOMEM;
+	/* A buffer without room for a reason after the prefix gets the prefix
+	 * alone. */
+	if (len <= sizeof prefix)
+		return plugin_refuse(why, len, "%s", prefix);
+	/* The reason of configure() follows the prefix.  The text is cut at the
+	 * end of the buffer, also if configure() stored no NUL. */
+	char *reason = why + sizeof prefix - 1;
+	size_t room = len - (sizeof prefix - 1);
+	memcpy(why, prefix, sizeof prefix - 1);
+	*reason = '\0';
+	int e = p->configure(dest->config, options, reason, room);
+	reason[room - 1] = '\0';
+	if (!e || e == ENOMEM)
+		return e;
+	if (e != EINVAL)
+		return plugin_refuse(why, len, "%sconfigure() returned the error "
+		                     "number %d", prefix, e);
+	if (!*reason)
+		return plugin_refuse(why, len, "%sconfigure() refused the options "
+		                     "without a reason", prefix);
+	return EINVAL;
+}
+
 /* Fills *dest for the plugin in the file at path: reads and checks the
- * manifest, then loads the shared object.  No code of the plugin runs
- * before its manifest has passed the checks.  Returns 0, or EINVAL with
- * the reason in the len bytes at why. */
+ * manifest, then loads the shared object, then stores the plugin's
+ * configuration from options, and then checks that the definition of each
+ * named tool has the tool's name.  definition() gets the configuration.  No
+ * code of the plugin runs before its manifest has passed the checks.
+ * Returns 0, ENOMEM, or EINVAL with the reason in the len bytes at why. */
 static int
 plugin_loaded_init (struct plugin_loaded *dest,
                     char const           *path,
+                    struct json_object   *options,
                     char                 *why,
                     size_t                len)
 {
@@ -446,21 +494,27 @@ plugin_loaded_init (struct plugin_loaded *dest,
 	                          why, len);
 	if (e)
 		return e;
-	return plugin_loaded_load(dest, path, why, len);
+	e = plugin_loaded_load(dest, path, why, len);
+	if (!e)
+		e = plugin_loaded_configure(dest, options, why, len);
+	for (uint32_t i = 0; !e && i < dest->n_tools; ++i)
+		e = plugin_loaded_definition(dest, i, why, len);
+	return e;
 }
 
 struct plugin_loaded *
-plugin_loaded_create (char const *path,
-                      char       *why,
-                      size_t      len,
-                      int        *e)
+plugin_loaded_create (char const         *path,
+                      struct json_object *options,
+                      char               *why,
+                      size_t              len,
+                      int                *e)
 {
 	struct plugin_loaded *loaded = calloc(1, sizeof *loaded);
 	if (!loaded) {
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*e = plugin_loaded_init(loaded, path, why, len);
+	*e = plugin_loaded_init(loaded, path, options, why, len);
 	if (*e)
 		plugin_loaded_destroy(&loaded);
 	return loaded;
@@ -469,6 +523,10 @@ plugin_loaded_create (char const *path,
 void
 plugin_loaded_destroy (struct plugin_loaded **p_loaded)
 {
+	if (*p_loaded) {
+		free((*p_loaded)->config);
+		(*p_loaded)->config = nullptr;
+	}
 	free(*p_loaded);
 	*p_loaded = nullptr;
 }

@@ -221,6 +221,13 @@ EXPORT
 extern void *
 mcp_slot_instance (struct mcp_slot const *slot);
 
+/** Returns the configuration that configure() of the call's plugin stored
+ *  (src/plugin.h), or nullptr if the plugin has no configure().  All calls
+ *  and loops share the configuration, and nothing changes it. */
+EXPORT
+extern void const *
+mcp_slot_config (struct mcp_slot const *slot);
+
 /** Returns the loop that runs the call.  A kind passes it to the functions
  *  of src/loop_export.h, for example loop_timer_set() and loop_room(). */
 EXPORT

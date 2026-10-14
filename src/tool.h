@@ -56,8 +56,9 @@ enum tool_out : uint32_t {
  *  also calls the function once as it loads the plugin, to check that the
  *  definition's member "name" is the tool's name in the manifest.
  *  @p service is the service of a built-in plugin, which is the object that
- *  every loop shares.  It is nullptr for a plugin that askai loaded from a
- *  file. */
+ *  every loop shares.  For a plugin that askai loaded from a file, it is the
+ *  plugin's configuration (src/plugin.h), or nullptr if the plugin has no
+ *  configure(). */
 typedef struct json_object *tool_definition_fn (void const *service);
 
 /** @p args: nullptr or an object, valid until the call ends or parks. */

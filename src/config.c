@@ -325,7 +325,9 @@ config_usage (struct config const *cfg,
 	        "localhost, 127.0.0.1 or [::1], may request GET /metrics, which returns\n"
 	        "metrics in the Prometheus text format.\n"
 	        "The member plugins of the configuration file is an array of the\n"
-	        "absolute paths of the plugins that askai loads as it starts (see\n"
+	        "plugins that askai loads as it starts.  An element is the absolute\n"
+	        "path of a plugin, or an object whose member path is that path and\n"
+	        "whose member options is an object of the plugin's options (see\n"
 	        "README.md).\n"
 	        "SIGUSR1 prints to stderr, for each event loop, the times of its turns and\n"
 	        "steps, the lateness of its timers and the most work that one step did\n"
@@ -1692,21 +1694,49 @@ config_check_plugin (struct config const *cfg,
 	return 0;
 }
 
-/* Loads the plugin whose path is @p v, an element of the configuration
- * file's "plugins", and adds its tools to the registry. */
+/* Loads the plugin of @p v, an element of the configuration file's
+ * "plugins", and adds its tools to the registry.  The element is the
+ * absolute path of the plugin, or an object.  The object's member "path" is
+ * that path, and its member "options", if it has one, is an object of the
+ * plugin's options.  The object has no other member. */
 static int
 config_plugin (struct config      *cfg,
                struct json_object *v)
 {
-	char const *path = json_object_get_string(v);
-	if (!json_object_is_type(v, json_type_string) || *path != '/')
+	struct json_object *file = v;
+	struct json_object *options = nullptr;
+	if (json_object_is_type(v, json_type_object)) {
+		struct json_object_iter it;
+		bool has_path = false;
+		bool has_options = false;
+		json_object_object_foreachC(v, it) {
+			if (!strcmp(it.key, "path")) {
+				file = it.val;
+				has_path = true;
+			} else if (!strcmp(it.key, "options")) {
+				options = it.val;
+				has_options = true;
+			} else {
+				return config_complain(cfg, cfg->path, "plugins: unknown "
+				                       "member of a plugin: %s", it.key);
+			}
+		}
+		if (!has_path)
+			return config_complain(cfg, cfg->path, "plugins: a plugin has no "
+			                       "member path");
+		if (has_options && !json_object_is_type(options, json_type_object))
+			return config_complain(cfg, cfg->path, "plugins: the member "
+			                       "options of a plugin is not an object");
+	}
+	char const *path = json_object_get_string(file);
+	if (!json_object_is_type(file, json_type_string) || *path != '/')
 		return config_complain(cfg, cfg->path, "plugins: not an absolute "
 		                       "path: %s", path ? path : "null");
 	int status = config_check_plugin(cfg, path);
 	if (status)
 		return status;
 	char why[256];
-	int e = registry_load(&cfg->registry, path, why, sizeof why);
+	int e = registry_load(&cfg->registry, path, options, why, sizeof why);
 	if (e == ENOMEM)
 		return config_oom(cfg);
 	if (e)
@@ -1715,8 +1745,8 @@ config_plugin (struct config      *cfg,
 }
 
 /* Fills the registry with the tools that askai offers: its own, then those
- * of the plugins that the configuration file lists in "plugins", an array
- * of absolute paths, loaded in that order.  A reload adds only askai's own
+ * of the plugins that the configuration file lists in "plugins", loaded in
+ * the order of the array.  A reload adds only askai's own
  * tools, so that it refuses the same --tool-name as a start does.  A reload
  * loads no plugin, and config_policy() reads the registry of cfg->running. */
 static int

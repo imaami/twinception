@@ -1,4 +1,4 @@
-/** @file A plugin for the tests (tests/askai.py).  It has four tools.
+/** @file A plugin for the tests (tests/askai.py).  It has five tools.
  *
  * The output of a test_echo call is the value of the call's string argument
  * "text".
@@ -24,11 +24,17 @@
  * error text, one to a line, then an empty line and the body.  check_web
  * (tests/askai.py) runs it.
  *
+ * The plugin has one option, "greeting", a string of at most 63 bytes,
+ * whose default is "hello".  The output of a test_config call is
+ * "greeting=" and the greeting of the plugin's configuration, or "none" if
+ * the call gets no configuration.  check_plugin runs it.
+ *
  * Each function that askai calls checks the pointers that it gets once, at
  * its start, and the plugin checks what the getters of the call API
  * return before it uses that. */
 #include <errno.h>
 #include <inttypes.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +44,13 @@
 #include "plugin.h"
 
 PLUGIN_MANIFEST(.name = "test",
-                .tools = { "test_echo", "test_state", "test_misuse", "test_fetch" });
+                .tools = { "test_echo", "test_state", "test_misuse", "test_fetch",
+                           "test_config" });
+
+/* The plugin's configuration. */
+struct test_plugin_config {
+	char greeting[64];  /* the option "greeting", NUL-terminated */
+};
 
 /* The plugin's instance: what test_state stores for one user on one loop. */
 struct test_plugin_instance {
@@ -332,6 +344,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(!mcp_slot_loop(nullptr));
 	TEST_PLUGIN_REFUSED(!mcp_slot_principal(nullptr));
 	TEST_PLUGIN_REFUSED(!mcp_slot_own(nullptr));
+	TEST_PLUGIN_REFUSED(!mcp_slot_config(nullptr));
 	TEST_PLUGIN_REFUSED(mcp_slot_offset(nullptr, nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_write(nullptr, TOOL_TEXT("x"), 0, &taken) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, none, 0, &taken) == EFAULT);
@@ -659,6 +672,106 @@ test_plugin_fetch_step (struct mcp_slot *slot)
 		mcp_slot_finish(slot, 0);
 }
 
+/* Stores the reason of a refusal of the options in the @p len bytes at
+ * @p why, formatted from @p fmt and its arguments.  Returns EINVAL. */
+[[gnu::format(printf, 3, 4)]]
+static int
+test_plugin_refuse (char       *why,
+                    size_t      len,
+                    char const *fmt,
+                    ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(why, len, fmt, ap);
+	va_end(ap);
+	if (n < 0)
+		*why = '\0';
+	return EINVAL;
+}
+
+/* The plugin's configure().  It stores the default greeting, and then the
+ * option "greeting" if @p options has it.  It refuses another member, and a
+ * greeting that is not a string of at most 63 bytes. */
+static int
+test_plugin_configure (void               *config,
+                       struct json_object *options,
+                       char               *why,
+                       size_t              len)
+{
+	if (!config || !why || !len)
+		return EINVAL;
+	struct test_plugin_config *c = config;
+	static char const hello[] = "hello";
+	memcpy(c->greeting, hello, sizeof hello);
+	if (!options)
+		return 0;
+	if (!json_object_is_type(options, json_type_object))
+		return test_plugin_refuse(why, len, "not an object");
+	struct json_object_iter it;
+	json_object_object_foreachC(options, it) {
+		if (strcmp(it.key, "greeting"))
+			return test_plugin_refuse(why, len, "unknown option: %s", it.key);
+		size_t n = json_object_is_type(it.val, json_type_string)
+		         ? (size_t)json_object_get_string_len(it.val) : sizeof c->greeting;
+		if (n >= sizeof c->greeting)
+			return test_plugin_refuse(why, len, "greeting: not a string of at "
+			                          "most %zu bytes", sizeof c->greeting - 1);
+		memcpy(c->greeting, json_object_get_string(it.val), n + 1);
+	}
+	return 0;
+}
+
+/* Returns the definition of test_config as a new reference, or nullptr if
+ * json-c cannot allocate memory.  @p service is the configuration, or
+ * nullptr if the plugin has none.  The description ends with the greeting
+ * in parentheses, or with "(none)". */
+static struct json_object *
+test_plugin_config_definition (void const *service)
+{
+	struct test_plugin_config const *c = service;
+	char text[sizeof "Returns the greeting of the plugin's options ()." +
+	          sizeof c->greeting];
+	int n = snprintf(text, sizeof text, "Returns the greeting of the plugin's "
+	                 "options (%s).", c ? c->greeting : "none");
+	if (n < 0 || n >= (int)sizeof text)
+		return nullptr;
+	struct json_object *def = json_tokener_parse(
+		"{\"name\":\"test_config\","
+		"\"inputSchema\":{\"type\":\"object\","
+		"\"properties\":{},"
+		"\"additionalProperties\":false}}");
+	struct json_object *desc = json_object_new_string_len(text, n);
+	if (!def || !desc || json_object_object_add(def, "description", desc)) {
+		json_object_put(desc);
+		json_object_put(def);
+		return nullptr;
+	}
+	return def;
+}
+
+/* Ends the call with "greeting=" and the greeting of the configuration, or
+ * with "none" if mcp_slot_config() returns nullptr. */
+static void
+test_plugin_config_start (struct mcp_slot    *slot,
+                          struct json_object *args)
+{
+	(void)args;
+	if (!slot)
+		return;
+	struct test_plugin_config const *c = mcp_slot_config(slot);
+	if (!c) {
+		mcp_slot_tell(slot, TOOL_TEXT("none"), 0);
+		return;
+	}
+	char out[sizeof "greeting=" + sizeof c->greeting];
+	int n = snprintf(out, sizeof out, "greeting=%s", c->greeting);
+	if (n < 0 || n >= (int)sizeof out)
+		mcp_slot_fail(slot, ENOMEM);
+	else
+		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
+}
+
 struct plugin const askai_plugin = {
 	.tools = {
 		{
@@ -682,7 +795,13 @@ struct plugin const askai_plugin = {
 			.start = test_plugin_fetch_start,
 			.step = test_plugin_fetch_step
 		},
+		{
+			.definition = test_plugin_config_definition,
+			.start = test_plugin_config_start
+		},
 	},
 	.instance_init = test_plugin_instance_init,
-	.instance_size = sizeof (struct test_plugin_instance)
+	.configure = test_plugin_configure,
+	.instance_size = sizeof (struct test_plugin_instance),
+	.config_size = sizeof (struct test_plugin_config)
 };

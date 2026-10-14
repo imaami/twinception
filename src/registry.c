@@ -58,10 +58,11 @@ registry_add (struct registry            *reg,
 }
 
 int
-registry_load (struct registry *reg,
-               char const      *path,
-               char            *why,
-               size_t           len)
+registry_load (struct registry    *reg,
+               char const         *path,
+               struct json_object *options,
+               char               *why,
+               size_t              len)
 {
 	if (reg->n_loaded == ARRAY_SIZE(reg->loaded)) {
 		util_format(why, len, "askai cannot load more than %zu plugins",
@@ -69,7 +70,8 @@ registry_load (struct registry *reg,
 		return EINVAL;
 	}
 	int e;
-	struct plugin_loaded *loaded = plugin_loaded_create(path, why, len, &e);
+	struct plugin_loaded *loaded = plugin_loaded_create(path, options, why, len,
+	                                                    &e);
 	if (!loaded)
 		return e;
 	/* The loop adds tools whose names are pointers into loaded->manifest.

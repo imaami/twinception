@@ -637,10 +637,13 @@ The command line overrides the file.  It adds to the lists of headers,
 allowed origins and git repositories of the file, but any `-l` replaces the
 `listen` list of the file, and `-x` replaces its `extra`.  A member that is
 neither an option nor one of the five members below stops `askai`, and so do
-`config` and `help`.  If two members have the same name, the last one counts.
-Only the last `--config` is read.  The file must be a regular file of at most
-1 MiB, not a symbolic link, and only root or `askai`'s user may change it or
-any directory above it (others may add to a sticky one, such as `/tmp`).
+`config` and `help`.  Four of the five members are the policy below.  The
+fifth, `plugins`, lists the plugins that `askai` loads, each by its path or
+as an object with its path and its options (see Plugins).  If two members
+have the same name, the last one counts.  Only the last `--config` is read.
+The file must be a regular file of at most 1 MiB, not a symbolic link, and
+only root or `askai`'s user may change it or any directory above it (others
+may add to a sticky one, such as `/tmp`).
 [`doc/askai.example.json`](doc/askai.example.json) lists every member.
 
 Four more members define who may connect, and what each client may do:
@@ -732,20 +735,38 @@ SIGHUP stops `askai`, as SIGTERM does.
 ### Plugins
 
 A plugin is a shared object that adds tools to `askai`.  The configuration
-file lists the plugins in the member `plugins`, an array of absolute paths.
-There is no command-line option for it.
+file lists the plugins in the member `plugins`, an array.  An element of the
+array is the absolute path of a plugin, or an object whose member `path` is
+that path and whose member `options` has the plugin's options.  There is no
+command-line option for it.
 
 ```json
 {
   "url": "http://127.0.0.1:8081/v1/chat/completions",
-  "plugins": ["/usr/libexec/askai/test_plugin.so"]
+  "plugins": [
+    "/usr/libexec/askai/one.so",
+    { "path": "/usr/libexec/askai/test_plugin.so",
+      "options": { "greeting": "hi" } }
+  ]
 }
 ```
 
 `askai` loads the plugins as it starts, in the order of the array `plugins`,
-and never unloads one.  A reload loads nothing.  A change of `plugins` takes
-effect when `askai` is restarted.  Until then, the log line of each successful
-reload ends with "its other options take a restart".
+and never unloads one.  A reload loads nothing.  A change of `plugins`, also
+of the options of a plugin, takes effect when `askai` is restarted.  Until
+then, the log line of each successful reload ends with "its other options
+take a restart".
+
+The options of a plugin are an object, which the plugin defines.  As
+`askai` loads the plugin, it passes the object to the plugin's
+`configure()` (`src/plugin.h`), or nullptr if the element has no `options`.
+`configure()` checks the options and stores the plugin's configuration.
+All calls of the plugin's tools share the configuration, and nothing changes
+it.  A call gets it with `mcp_slot_config()`.  A plugin without
+`configure()` has no options.  `askai` refuses an element that has another
+member, `options` that is not an object, options for a plugin without
+`configure()`, and options that `configure()` refuses.  A refusal stops
+`askai` with exit status 2 and a message with the reason.
 
 In `tools/list`, the tools of the plugins come after `askai`'s own.  They are
 in the order of the array `plugins`, and the tools of one plugin are in the

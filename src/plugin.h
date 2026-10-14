@@ -42,6 +42,12 @@
  * gets a new instance.  A plugin must therefore work when a call gets a
  * new instance, which has none of the data that an earlier call of the
  * same user stored.  src/instance.h has the exact rules.
+ *
+ * A plugin can have options in the configuration file.  Its configure()
+ * checks them and stores the plugin's configuration when askai loads the
+ * plugin.  All calls and loops share the configuration, and askai does not
+ * change it after that.  mcp_slot_config() returns it, and askai passes it
+ * to definition() of each of the plugin's kinds.
  */
 #ifndef TWINCEPTION_SRC_PLUGIN_H_
 #define TWINCEPTION_SRC_PLUGIN_H_
@@ -66,6 +72,9 @@ static constexpr uint32_t PLUGIN_EPOCH = 4;
 
 /** The largest value of instance_size, in bytes. */
 static constexpr size_t PLUGIN_INSTANCE_MAX = 64 << 10;
+
+/** The largest value of config_size, in bytes. */
+static constexpr size_t PLUGIN_CONFIG_MAX = 4 << 10;
 
 /**
  * Initializes an instance.  @p instance points to instance_size bytes that
@@ -102,6 +111,29 @@ typedef size_t plugin_relieve_fn (void              *instance,
                                   enum buf_pressure  level,
                                   size_t             max);
 
+/**
+ * Checks @p options and stores the plugin's configuration in @p config.
+ * @p options is the member "options" of the plugin's element of "plugins"
+ * in the configuration file, or nullptr if the element has none.  @p config
+ * points to config_size bytes that askai allocated.  The bytes are zero,
+ * and they are aligned for any type.
+ *
+ * The configuration is plain data.  askai frees its bytes when it exits,
+ * and it calls no function to finalize them.  So the configuration must not
+ * point to memory that the function allocates, or to @p options.  askai
+ * calls the function once, when it loads the plugin, before it calls
+ * definition() of the plugin's kinds and before the loops start.
+ *
+ * Returns 0, ENOMEM, or EINVAL.  Before it returns EINVAL, the function
+ * stores the reason as NUL-terminated text in the @p len bytes at @p why.
+ * The reason is worded to follow "options: ".  askai refuses the plugin if
+ * the function returns an error number.
+ */
+typedef int plugin_configure_fn (void               *config,
+                                 struct json_object *options,
+                                 char               *why,
+                                 size_t              len);
+
 /** The largest number of kinds that a plugin has.  It equals the number of
  *  tool names that a manifest has room for. */
 static constexpr unsigned PLUGIN_TOOLS = MANIFEST_TOOLS;
@@ -122,9 +154,15 @@ struct plugin {
 	 *  nullptr if an instance has no such memory.  It can be set only if
 	 *  instance_init is set. */
 	plugin_relieve_fn       *relieve;
+	/** Checks the plugin's options and stores its configuration.  It is
+	 *  nullptr if the plugin has no options. */
+	plugin_configure_fn     *configure;
 	/** The size of an instance in bytes, from 1 to PLUGIN_INSTANCE_MAX.
 	 *  It is 0 if the plugin has no instances. */
 	size_t                   instance_size;
+	/** The size of the configuration in bytes, from 1 to
+	 *  PLUGIN_CONFIG_MAX.  It is 0 if configure is nullptr. */
+	size_t                   config_size;
 };
 
 /** Sizes, alignments and offsets that must be the same in askai and in a
@@ -140,7 +178,7 @@ struct plugin {
 	X(sizeof (struct handle)) X(sizeof (struct msg))                   \
 	X(offsetof (struct msg, fn)) X(sizeof (struct loop_timer))         \
 	X(offsetof (struct loop_timer, fn)) X(sizeof (struct web_request)) \
-	X(sizeof (struct web_response))
+	X(sizeof (struct web_response)) X(offsetof (struct plugin, configure))
 #define PLUGIN_ABI_U32(x) (uint32_t)(x),
 #define PLUGIN_ABI_N(x) + 1
 static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
@@ -179,6 +217,9 @@ static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
 struct plugin_loaded {
 	struct plugin const *plugin;    /**< the askai_plugin of the shared
 	                                     object */
+	void                *config;    /**< the configuration that
+	                                     configure() stored, or nullptr if
+	                                     the plugin has no configure() */
 	struct manifest      manifest;  /**< read from the file before the
 	                                     shared object was loaded */
 	uint32_t             n_tools;   /**< the number of tools that the
@@ -203,22 +244,31 @@ struct plugin_loaded {
  * fail if the plugin calls a function of askai that askai does not export.
  * For each tool that the manifest names, the kind at the same index in
  * askai_plugin must have definition() and start().  The other kinds must
- * have neither.  A kind's flags must be among TOOL_FLAGS (src/tool.h), and
- * the definition of a named tool must have the tool's name.  The shared
- * object stays loaded until askai exits.
+ * have neither.  A kind's flags must be among TOOL_FLAGS (src/tool.h).  The
+ * shared object stays loaded until askai exits.
+ *
+ * configure and config_size of askai_plugin must both be set or both be 0,
+ * and config_size must be at most PLUGIN_CONFIG_MAX.  If the plugin has
+ * configure(), the function allocates config_size zeroed bytes, and it
+ * calls configure() with them and @p options.  @p options is the member
+ * "options" of the plugin's element of "plugins", or nullptr.  A plugin
+ * without configure() is refused if @p options is not nullptr.  After that,
+ * the definition of each named tool must have the tool's name.  The
+ * function calls definition() with the configuration to check that.
  *
  * Returns the loaded plugin.  On failure it returns nullptr and stores the
  * error number in @p *e: ENOMEM, or EINVAL with the reason in the @p len
  * bytes at @p why.  The reason is worded to follow the path and a colon.
  */
 extern struct plugin_loaded *
-plugin_loaded_create (char const *path,
-                      char       *why,
-                      size_t      len,
-                      int        *e);
+plugin_loaded_create (char const         *path,
+                      struct json_object *options,
+                      char               *why,
+                      size_t              len,
+                      int                *e);
 
-/** Frees the loaded plugin *@p p_loaded and sets it to nullptr.  The shared
- *  object stays loaded. */
+/** Frees the loaded plugin *@p p_loaded and its configuration, and sets
+ *  *@p p_loaded to nullptr.  The shared object stays loaded. */
 extern void
 plugin_loaded_destroy (struct plugin_loaded **p_loaded);
 

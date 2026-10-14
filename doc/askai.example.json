@@ -191,7 +191,12 @@
   // names).  null refuses those clients.
   "anonymous": { "loopback": "user", "remote": null, "unix": null },
 
-  /* Plugins: the absolute paths of the plugins that askai loads as it
-   * starts.  Only root or the user of askai may be able to change them. */
+  /* The plugins that askai loads as it starts.  An element is the absolute
+   * path of a plugin, or an object with the path and the plugin's options,
+   * such as this one:
+   *   { "path": "/usr/libexec/askai/test_plugin.so",
+   *     "options": { "greeting": "hi" } }
+   * Only root or the user of askai may be able to change a plugin's file
+   * and the directories above it. */
   "plugins": []
 }

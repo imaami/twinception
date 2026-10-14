@@ -2373,6 +2373,23 @@ mcp_slot_instance (struct mcp_slot const *slot)
 	return slot ? slot->inst : nullptr;
 }
 
+/* Returns the record of the loading of the plugin of @p slot's tool, or
+ * nullptr if the plugin is built into askai. */
+static struct plugin_loaded const *
+mcp_slot_loaded (struct mcp_slot const *slot)
+{
+	return slot->req->mcp->st->plugins[mcp_slot_offer(slot)->part].loaded;
+}
+
+void const *
+mcp_slot_config (struct mcp_slot const *slot)
+{
+	if (!slot)
+		return nullptr;
+	struct plugin_loaded const *loaded = mcp_slot_loaded(slot);
+	return loaded ? loaded->config : nullptr;
+}
+
 struct loop *
 mcp_slot_loop (struct mcp_slot const *slot)
 {
@@ -2638,7 +2655,7 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 	if (e)
 		return e;
 	struct mcp *mcp = slot->req->mcp;
-	struct plugin_loaded const *loaded = mcp->st->plugins[offer->part].loaded;
+	struct plugin_loaded const *loaded = mcp_slot_loaded(slot);
 	struct web_ask const ask = {
 		.request = request,
 		.plugin = loaded ? loaded->manifest.name : nullptr,
@@ -6496,7 +6513,11 @@ mcp_static_build (struct mcp_static  *st,
 {
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_offer *o = &st->offers[id];
-		struct json_object *def = o->kind->definition(st->plugins[o->part].service);
+		/* definition() of a plugin that askai loaded from a file gets the
+		 * plugin's configuration. */
+		struct mcp_plugin const *p = &st->plugins[o->part];
+		struct json_object *def = o->kind->definition(p->loaded ? p->loaded->config
+		                                                        : p->service);
 		int e = !def ? ENOMEM : id < st->n_granted
 		      ? mcp_static_item(&o->listed, json_object_get(def)) : 0;
 		/* The upstream gets its own definition of the notes tool. */

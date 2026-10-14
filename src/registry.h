@@ -19,6 +19,7 @@
 
 #include "tool.h"
 
+struct json_object;
 struct plugin;
 struct plugin_loaded;
 
@@ -84,16 +85,18 @@ registry_add (struct registry            *reg,
 
 /**
  * Loads the plugin in the file at @p path with plugin_loaded_create()
- * (src/plugin.h) and adds the tools that its manifest names, in the order
- * of the manifest, as tools that a role can grant.
+ * (src/plugin.h), which passes @p options to the plugin's configure(), and
+ * adds the tools that its manifest names, in the order of the manifest, as
+ * tools that a role can grant.
  *
  * Returns 0; ENOMEM; or EINVAL with the reason in the @p len bytes at
  * @p why.  The reason is worded to follow the path and a colon.
  */
 extern int
-registry_load (struct registry *reg,
-               char const      *path,
-               char            *why,
-               size_t           len);
+registry_load (struct registry    *reg,
+               char const         *path,
+               struct json_object *options,
+               char               *why,
+               size_t              len);
 
 #endif /* TWINCEPTION_SRC_REGISTRY_H_ */

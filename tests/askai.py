@@ -6674,10 +6674,12 @@ def check_tasks(binary, up):
 def check_plugin(binary, up, plugin):
     """askai loads the plugins that the configuration file lists.
 
-    The test plugin (src/test_plugin.c) has four tools.  The check uses the
-    first one, test_echo.  The check lists and calls test_echo, grants it to
-    a role by name, reloads the configuration, calls it from a turn of an
-    ask call, and then starts askai with files that askai must refuse.
+    The test plugin (src/test_plugin.c) has five tools.  The check lists
+    and calls test_echo, grants it to a role by name, reloads the
+    configuration, calls it from a turn of an ask call, and then starts
+    askai with files that askai must refuse.  Then it gives the plugin
+    options, which test_config shows, and starts askai with options that
+    askai must refuse.
     """
     plugin = os.path.realpath(plugin)
     with open(plugin, "rb") as f:
@@ -6716,11 +6718,10 @@ def check_plugin(binary, up, plugin):
                 return offset + (4 if sys.byteorder == "big" else 0)
         raise AssertionError(f"no dynamic entry with tag {tag:#x}")
 
-    def symbol(name):
-        """Returns the file offset of the dynamic symbol name.  The section
+    def address(name):
+        """Returns the address of the dynamic symbol name.  The section
         header of type SHT_DYNSYM (11) gives the symbols, and its sh_link
-        names the section of their names.  A PT_LOAD program header (1)
-        maps the symbol's address to its file offset."""
+        names the section of their names."""
         first, size, count = number(40, 8), number(58, 2), number(60, 2)
         for header in range(first, first + size * count, size):
             if number(header + 4, 4) != 11:
@@ -6737,12 +6738,21 @@ def check_plugin(binary, up, plugin):
             break
         else:
             raise AssertionError(f"no dynamic symbol {name}")
+        return address
+
+    def offset(at):
+        """Returns the file offset of the address at.  A PT_LOAD program
+        header (1) maps the address to its file offset."""
         first, size, count = number(32, 8), number(54, 2), number(56, 2)
         for header in range(first, first + size * count, size):
             vaddr = number(header + 16, 8)
-            if number(header, 4) == 1 and vaddr <= address < vaddr + number(header + 32, 8):
-                return number(header + 8, 8) + address - vaddr
-        raise AssertionError(f"{name} is not in the file")
+            if number(header, 4) == 1 and vaddr <= at < vaddr + number(header + 32, 8):
+                return number(header + 8, 8) + at - vaddr
+        raise AssertionError(f"the address {at:#x} is not in the file")
+
+    def symbol(name):
+        """Returns the file offset of the dynamic symbol name."""
+        return offset(address(name))
 
     # askai that is built with -fsanitize=address, -fsanitize=thread or
     # -fsanitize=undefined refuses no plugin file for thread-local storage,
@@ -6802,7 +6812,7 @@ def check_plugin(binary, up, plugin):
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in tools] == \
                 ["ask_ai", "man", "test_echo", "test_state", "test_misuse",
-                 "test_fetch"], tools
+                 "test_fetch", "test_config"], tools
             assert tools[2]["description"] == "Returns the text argument unchanged." \
                 and tools[2]["inputSchema"]["required"] == ["text"], tools[2]
             for text in ("plugin \u20ac", "", "x" * 100000):
@@ -6872,7 +6882,7 @@ def check_plugin(binary, up, plugin):
             if len(request["body"]["messages"]) == 1 else (), text="A"))
         with Askai(binary, "-c", path) as ai:
             assert names(ai) == ["ask_ai", "man", "test_echo", "test_state",
-                                 "test_misuse", "test_fetch"]
+                                 "test_misuse", "test_fetch", "test_config"]
             count = len(up.requests)
             answer, trace = [c["text"] for c in ai.ask("Q")["content"]]
             first, second = up.requests[count:]
@@ -6970,6 +6980,94 @@ def check_plugin(binary, up, plugin):
               "path: test_plugin.so")
         fails([5], f"askai: {path}: plugins: not an absolute path: 5")
         fails(plugin, f"askai: {path}: plugins: not an array")
+        # An element of "plugins" can be an object with the members path
+        # and options.  configure() of the plugin checks the options, and
+        # test_config shows the greeting that it stored.  A plugin without
+        # options has the default greeting.  A reload changes no option.
+        # definition() gets the configuration, so the description of
+        # test_config in tools/list ends with the same greeting.
+        def greeting(ai):
+            tools = ai.rpc("tools/list")[2]["result"]["tools"]
+            desc = next(t["description"] for t in tools if t["name"] == "test_config")
+            text = text_of(call(ai, "test_config", {})["result"])
+            word = text.removeprefix("greeting=")
+            assert desc == f"Returns the greeting of the plugin's options ({word}).", \
+                (desc, text)
+            return text
+        for plugins, expected in (([plugin], "greeting=hello"),
+                                  ([{"path": plugin}], "greeting=hello"),
+                                  ([{"path": plugin, "options": {}}], "greeting=hello"),
+                                  ([{"path": plugin, "options": {"greeting": "hi"}}],
+                                   "greeting=hi")):
+            write(plugins)
+            with Askai(binary, "-c", path) as ai:
+                assert greeting(ai) == expected, (plugins, greeting(ai))
+                if expected == "greeting=hi":
+                    write([{"path": plugin, "options": {"greeting": "yo"}}])
+                    ai.log.clear()
+                    ai.proc.send_signal(signal.SIGHUP)
+                    line = ai.wait_log("configuration reloaded")
+                    assert line.strip().endswith("its other options take a restart")
+                    assert greeting(ai) == "greeting=hi"
+        for plugins, message in (
+                ([{"path": plugin, "options": 5}], f"askai: {path}: plugins: the "
+                 "member options of a plugin is not an object"),
+                ([{"path": plugin, "options": None}], f"askai: {path}: plugins: the "
+                 "member options of a plugin is not an object"),
+                ([{"path": plugin, "name": "x"}], f"askai: {path}: plugins: unknown "
+                 "member of a plugin: name"),
+                ([{"options": {}}], f"askai: {path}: plugins: a plugin has no member "
+                 "path"),
+                ([{"path": "test_plugin.so"}], f"askai: {path}: plugins: not an "
+                 "absolute path: test_plugin.so"),
+                ([{"path": plugin, "options": {"greeting": 5}}], f"askai: {plugin}: "
+                 "options: greeting: not a string of at most 63 bytes"),
+                ([{"path": plugin, "options": {"greeting": "x" * 64}}],
+                 f"askai: {plugin}: options: greeting: not a string of at most 63 "
+                 "bytes"),
+                ([{"path": plugin, "options": {"colour": "red"}}], f"askai: {plugin}: "
+                 "options: unknown option: colour")):
+            fails(plugins, message)
+
+        # A copy whose config_size is 0 has configure() without room for a
+        # configuration.  In another copy, the dynamic relocation that sets
+        # the pointer configure sets the member step of kind 7 instead,
+        # which no tool has, and the pointer configure and config_size are
+        # 0.  That plugin has no options.  The manifest's ABI value 0 is the
+        # size of a pointer, its value 5 the size of struct tool_kind, whose
+        # member step follows two pointers, its value 7 the size of struct
+        # plugin, whose last member is config_size, and its value 16 the
+        # offset of configure.
+        size_at = symbol(b"askai_plugin") + word(8) - 8
+        copy = bytearray(image)
+        copy[size_at:size_at + 8] = bytes(8)
+        with open(f"{d}/size.so", "wb") as f:
+            f.write(copy)
+        fails([f"{d}/size.so"], f"askai: {d}/size.so: its askai_plugin has "
+              "configure() without a config_size of 1 to 4096")
+        configure = address(b"askai_plugin") + word(17)
+        spare = address(b"askai_plugin") + 7 * word(6) + 2 * word(1)
+        first, size, count = number(40, 8), number(58, 2), number(60, 2)
+        relocations = 0
+        for header in range(first, first + size * count, size):
+            # Only the sections of type SHT_RELA (4) have relocations with
+            # addends.
+            start = number(header + 24, 8)
+            for rela in range(start, start + number(header + 32, 8), 24) \
+                    if number(header + 4, 4) == 4 else ():
+                if number(rela, 8) == configure:
+                    copy[rela:rela + 8] = spare.to_bytes(8, sys.byteorder)
+                    relocations += 1
+        assert relocations == 1, relocations
+        copy[offset(configure):offset(configure) + 8] = bytes(8)
+        with open(f"{d}/bare.so", "wb") as f:
+            f.write(copy)
+        fails([{"path": f"{d}/bare.so", "options": {}}], f"askai: {d}/bare.so: "
+              "options: the plugin has no options")
+        write([f"{d}/bare.so"])
+        with Askai(binary, "-c", path) as ai:
+            assert greeting(ai) == "none"
+
         # A role cannot name a tool of a plugin that is not loaded.
         write([], **only)
         run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path],
@@ -6985,7 +7083,8 @@ def check_plugin(binary, up, plugin):
     assert run.returncode == 2, (run.returncode, run.stderr)
     print("plugin: test_echo listed, called, granted by a role, kept over a "
           "reload and called from a turn; files that are no plugin of this "
-          "askai refused: PASS")
+          "askai refused; options given to the plugin, kept over a reload, and "
+          "refused: PASS")
 
 
 def check_instances(binary, up, plugin):
