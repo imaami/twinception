@@ -29,15 +29,13 @@
  * The front names the call that waits for the job by a handle (loop.h), which
  * it frees as it cancels: a completion that finds the handle stale is dropped.
  *
- * A job also carries its call's key, the session and request id a legacy
- * notifications/cancelled names, and the key's hash, by which home finds it
- * in the registry of jobs in flight, whatever loop the notification came to.
- * That loop posts home the key in a job of its own, a carrier, with WITHDRAW:
- * home ends the job it names as WITHDRAWN, and returns the carrier to its
- * front at once.  The front works the hash out, so that home's handling of
- * a message costs the same whatever the key's length.  So does the
- * principal's: the client's identity, else the call's session, which begins
- * the key, else its client's address.
+ * A job also carries its principal.  The principal is the client's
+ * identity, else the call's session, which is the job's key, else the
+ * client's address.  The front computes the principal's hash, so that the
+ * time that home takes for a message does not depend on the length of the
+ * key.  A notifications/cancelled reaches a call through the roster
+ * (src/roster.h), not through home.  The call's front then cancels the
+ * call's job with CANCEL.
  */
 #ifndef TWINCEPTION_SRC_JOB_H_
 #define TWINCEPTION_SRC_JOB_H_
@@ -58,8 +56,6 @@ struct http_request;
 enum {
 	JOB_SUBMIT   = 1,  /**< run the job */
 	JOB_CANCEL   = 2,  /**< the front lets go: stop the job if it runs */
-	JOB_WITHDRAW = 4,  /**< the job is a carrier: end the one its key names,
-	                        as its client asked */
 };
 
 /** The bits of the messages to the front. */
@@ -71,12 +67,6 @@ enum {
 
 /** Tool calls that a streamed answer may make, at most. */
 enum { JOB_CALLS = 16 };
-
-/** How long a call that lends tools may go between its turns' jobs, in ns:
- *  as long as a timer that its turns set may take, as they may doze until
- *  it fires.  Home keeps a withdrawal of the call that finds no job as
- *  long. */
-static constexpr uint64_t JOB_GAP_NS = 3'600'000'000'000;
 
 /** In a running job's progress, beside its tokens: the latest was thinking. */
 static constexpr uint32_t JOB_THINKING = UINT32_C(1) << 31;
@@ -90,9 +80,6 @@ enum job_ask {
 	                               (home.c) */
 	JOB_TOOLS      = 1 << 2,  /**< keep a streamed answer's thinking and tool
 	                               calls, which the request offered tools for */
-	JOB_AGAIN      = 1 << 3,  /**< a turn after its call's first: a withdrawal
-	                               of the call that came between its jobs
-	                               ends it (home.c) */
 };
 
 /** A tool call that a streamed answer makes, in a job's calls: this, then
@@ -121,8 +108,6 @@ enum job_status {
 	JOB_BUSY,       /**< refused: too many jobs in flight, or queued for its
 	                     principal */
 	JOB_CANCELLED,  /**< cancelled, or refused by a home that drains; the
-	                     result is empty */
-	JOB_WITHDRAWN,  /**< cancelled as its client asked, by its key; the
 	                     result is empty */
 };
 
@@ -154,16 +139,15 @@ struct job {
 	struct buf             replay;      /**< likewise: with JOB_TOOLS, what its
 	                                         turn gives back as it came (struct
 	                                         ai_sink) */
-	struct buf             key;         /**< the front's: written before SUBMIT
-	                                         or WITHDRAW, read by home until
-	                                         DONE or RETURN: the call's session,
-	                                         a line break and its id's JSON */
+	struct buf             key;         /**< The front writes it before SUBMIT,
+	                                         and home reads it until DONE.  It
+	                                         is the call's session field and a
+	                                         line break, or empty if the
+	                                         request has no session field. */
 	struct buf             wire;        /**< home's: a streamed answer's bytes
 	                                         yet to read */
 	struct jb_parser       parser;      /**< home's: of the stream's event */
 	struct loop           *front;       /**< the front's loop, set as it is made */
-	struct job            *chain;       /**< home's: the next in its registry's
-	                                         bucket */
 	struct http_request   *transfer;    /**< home's: the request upstream */
 	struct home_principal *who;         /**< home's: whose queue it is on */
 	struct handle          call;        /**< the front's: what waits for it */
@@ -174,9 +158,6 @@ struct job {
 	                                         0: never */
 	uint64_t               since;       /**< home's: when it started upstream */
 	uint64_t               active;      /**< home's: when its answer last sent */
-	uint64_t               hash;        /**< the front's, with the key: its hash,
-	                                         seeded, which home's registry
-	                                         buckets the job by */
 	uint64_t               principal;   /**< the front's, with the key: the hash,
 	                                         seeded, of whom the call is for */
 	uint64_t               peer[2];     /**< the front's: the client's address,
@@ -249,11 +230,10 @@ job_init (struct job  *job,
 	job->key = job->wire = (struct buf){};
 	job->parser = (struct jb_parser){};
 	job->front = front;
-	job->chain = nullptr;
 	job->transfer = nullptr;
 	job->who = nullptr;
 	job->call = (struct handle){};
-	job->deadline = job->since = job->active = job->hash = job->principal = 0;
+	job->deadline = job->since = job->active = job->principal = 0;
 	job->peer[0] = job->peer[1] = 0;
 	job->session = job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
 	job->used = job->context = 0;

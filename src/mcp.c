@@ -39,9 +39,10 @@
  * chunks of its answer, which home reads from a streamed answer into its
  * text, so that the request only escapes that into the reply.  Closing the
  * stream, which in HTTP/1.1 means closing the connection or its sending side,
- * cancels the call in every era; legacy clients may also cancel it with
- * notifications/cancelled, on any connection of any loop, which home finds
- * the call's job by (src/job.h).
+ * cancels the call in every era.  The caller of a call can also cancel it
+ * with notifications/cancelled, on any connection of any loop.
+ * mcp_req_cancel() looks the call up in the roster (src/roster.h) by the
+ * caller, the session and the request id.
  *
  * The man and git tools are the manual's (src/manual.h) and git's
  * (src/git.h), plugins built in (src/plugin.h), whose calls go through the
@@ -88,6 +89,7 @@
 #include "notes.h"
 #include "plugin.h"
 #include "registry.h"
+#include "roster.h"
 #include "shelf.h"
 #include "stream.h"
 #include "task.h"
@@ -283,6 +285,8 @@ struct mcp_static {
 	                                             it */
 	struct notes             *notes;        /**< the notes', with --notes */
 	struct ledger            *ledger;       /**< the tasks' */
+	struct roster            *roster;       /**< the tool calls that run and
+	                                             are not tasks */
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
 	uint32_t                  turns;        /**< upstream calls an ask call
@@ -423,6 +427,10 @@ struct mcp_req {
 	                                    one */
 	struct ledger_task  *shown;      /* the task whose result tasks/get
 	                                    copies, while it does */
+	struct roster_call  *rostered;   /* the record of the request's tool
+	                                    call in the roster, from the start
+	                                    of the call until the call ends or
+	                                    becomes a task */
 	struct stream       *s;          /* nullptr once it is gone; stand_in
 	                                    once the call is a task */
 	struct mcp          *mcp;
@@ -1064,12 +1072,25 @@ mcp_req_task_end (struct mcp_req *req)
 	list_del(&req->task_hook);
 }
 
+/* Takes the request's tool call out of the roster, if it is in the roster,
+ * and frees the handle of the request that the record has.  After this, a
+ * notifications/cancelled does not reach the call. */
+static void
+mcp_req_leave (struct mcp_req *req)
+{
+	if (!req->rostered)
+		return;
+	loop_forget(req->mcp->loop, req->rostered->who);
+	roster_leave(req->mcp->st->roster, &req->rostered);
+}
+
 /* The reply is queued, or the stream gone: let go of everything at once but
  * the values still to free, and end once those are freed. */
 static void
 mcp_req_finish (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
+	mcp_req_leave(req);
 	if (req->task)
 		mcp_req_task_end(req);
 	ledger_task_put(req->shown);
@@ -1770,13 +1791,6 @@ mcp_req_job_done (struct mcp_req *req)
 	case JOB_TEXT:
 		mcp_req_turn_done(req);
 		return;
-	case JOB_WITHDRAWN:
-		/* Its client gave up on it: the stream ends quietly. */
-		if (!req->sse)
-			(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
-		LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", mcp_elapsed(req->self.start));
-		mcp_req_finish(req);
-		return;
 	case JOB_CANCELLED:
 		mcp_req_fail(req, ESHUTDOWN);
 		return;
@@ -1889,33 +1903,64 @@ mcp_req_copy (struct mcp_req *req,
 	                       SIZE_MAX);
 }
 
-/* Write the key a legacy notifications/cancelled names a call by into
- * @p job: the session field, if present, and a line break, which no field
- * holds, then the JSON of the request id @p id; and its hash, seeded so
- * that no client can pick keys that crowd one of home's buckets. */
+/* Writes the call's session field and a line break into @p job's key, if
+ * the request has a session field.  A field cannot contain a line break.
+ * Home uses the key to tell principals apart.  Returns 0, or the error
+ * number of buf_reserve(). */
 static int
-mcp_key (struct mcp         *mcp,
-         struct job         *job,
-         struct span         session,
-         struct json_object *id)
+mcp_key (struct job  *job,
+         struct span  session)
 {
+	job->session = 0;
+	if (!session.ptr)
+		return 0;
+	struct span s;
+	int e = buf_reserve(&job->key, session.len + 1, SIZE_MAX, &s);
+	if (e)
+		return e;
+	memcpy(s.ptr, session.ptr, session.len);
+	s.ptr[session.len] = '\n';
+	buf_commit(&job->key, session.len + 1);
+	job->session = (uint32_t)(session.len + 1);
+	return 0;
+}
+
+/* Writes into @p key the key of a call in the roster.  @p id is the request
+ * id: the id of @p req for its own call, or the id that a
+ * notifications/cancelled in @p req names.  The key begins with the
+ * principal of the client of @p req.  If the principal is 0, the client's
+ * address follows it.  Then come the session field and a line break, if the
+ * request has a session field, and last the JSON text of @p id.  Stores the
+ * hash of the key in @p *hash.  The hash is seeded, so that no client can
+ * choose keys that fill one bucket of the roster.  Returns 0, or ENOMEM. */
+static int
+mcp_req_key (struct mcp_req const *req,
+             struct json_object   *id,
+             struct buf           *key,
+             uint64_t             *hash)
+{
+	struct stream const *s = req->s;
+	uint64_t const who[3] = {
+		s->principal, s->principal ? 0 : s->peer[0], s->principal ? 0 : s->peer[1]
+	};
+	struct span session = s->ops->field(s, F_SESSION);
 	size_t len = 0;
 	char const *json = json_object_to_json_string_length(id, JB_WIRE, &len);
 	if (!json)
 		return ENOMEM;
-	size_t head = session.ptr ? session.len + 1 : 0;
-	struct span s;
-	int e = buf_reserve(&job->key, head + len, SIZE_MAX, &s);
+	size_t head = sizeof who + (session.ptr ? session.len + 1 : 0);
+	struct span k;
+	int e = buf_reserve(key, head + len, SIZE_MAX, &k);
 	if (e)
 		return e;
-	if (head) {
-		memcpy(s.ptr, session.ptr, session.len);
-		s.ptr[session.len] = '\n';
+	memcpy(k.ptr, who, sizeof who);
+	if (session.ptr) {
+		memcpy(k.ptr + sizeof who, session.ptr, session.len);
+		k.ptr[head - 1] = '\n';
 	}
-	memcpy(s.ptr + head, json, len);
-	buf_commit(&job->key, head + len);
-	job->hash = util_hash(mcp->st->seed, s.ptr, head + len);
-	job->session = (uint32_t)head;
+	memcpy(k.ptr + head, json, len);
+	buf_commit(key, head + len);
+	*hash = util_hash(req->mcp->st->seed, k.ptr, head + len);
 	return 0;
 }
 
@@ -1926,7 +1971,7 @@ mcp_req_name (struct mcp_req *req,
               struct job     *job)
 {
 	struct stream *s = req->s;
-	int e = mcp_key(req->mcp, job, s->ops->field(s, F_SESSION), req->id);
+	int e = mcp_key(job, s->ops->field(s, F_SESSION));
 	return e ? e : loop_handle(req->mcp->loop, req, &req->call);
 }
 
@@ -1970,7 +2015,7 @@ mcp_req_submit (struct mcp_req *req)
 	}
 	uint8_t asks = req->asks | (req->token && req->sse ? JOB_NOTIFY : 0);
 	if (req->lent) {
-		asks |= JOB_TOOLS | (req->turn ? JOB_AGAIN : 0);
+		asks |= JOB_TOOLS;
 		hist_add(&mcp->counts->calls.turns, 1);
 	}
 	job->asks = asks;
@@ -2143,6 +2188,52 @@ mcp_on_task_cancel (struct loop *loop,
 	mcp_req_abort(req, ECANCELED);
 }
 
+/* This is the function of the message that roster_cancel() posts when a
+ * client cancels a tool call with notifications/cancelled.  @p msg is the
+ * member cancel of the call's record.  If the call still runs on @p loop
+ * and its reply has not begun, the function ends the call with
+ * mcp_req_finish(), as a hang-up does.  Before that, it answers a JSON
+ * request with the status 202 and no body.  An event stream ends without a
+ * response. */
+static void
+mcp_on_withdraw (struct loop *loop,
+                 struct msg  *msg)
+{
+	struct roster_call *call = container_of(msg, struct roster_call, cancel);
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, call->who);
+	roster_call_put(call);
+	if (!req || req->phase >= PHASE_REPLY)
+		return;
+	if (!req->sse)
+		(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
+	LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", mcp_elapsed(req->self.start));
+	mcp_req_finish(req);
+}
+
+/* Puts the request's tool call into the roster, so that a
+ * notifications/cancelled of the same caller on any loop reaches the call.
+ * The record has a new handle of the request, which mcp_req_leave() frees.
+ * Returns 0, or ENOMEM. */
+static int
+mcp_req_enrol (struct mcp_req *req)
+{
+	struct mcp *mcp = req->mcp;
+	struct buf key = {};
+	uint64_t hash;
+	struct handle who;
+	int e = mcp_req_key(req, req->id, &key, &hash);
+	if (!e)
+		e = loop_handle(mcp->loop, req, &who);
+	if (!e) {
+		req->rostered = roster_enter(mcp->st->roster, buf_peek(&key), hash, mcp->loop,
+		                             who, mcp_on_withdraw, &e);
+		if (e)
+			loop_forget(mcp->loop, who);
+	}
+	buf_fini(&key);
+	return e;
+}
+
 /* The record of the task the call becomes, in the ledger for any loop to
  * find; nullptr if the ledger has no room, or the call cannot be named, as
  * the call then goes on as it is. */
@@ -2199,6 +2290,9 @@ mcp_req_detach (struct mcp_req     *req,
 		mcp_req_abort(req, e);
 		return;
 	}
+	/* The request has its answer, which is the task.  From now on a client
+	 * can cancel the call only with tasks/cancel. */
+	mcp_req_leave(req);
 	req->stand_in = *s;
 	req->stand_in.ops = &stand_in_ops;
 	s->ops->end(s, 0);
@@ -3624,7 +3718,6 @@ mcp_slot_timer (struct mcp_slot    *slot,
                 struct json_object *args)
 {
 	static_assert(TIMER_MAX == 3600 && TIMER_NOTE == 200, "the problem says");
-	static_assert(TIMER_MAX * NS <= JOB_GAP_NS, "home keeps a withdrawal as long");
 	struct mcp_req *req = slot->req;
 	struct json_object *o = jb_get(args, "seconds");
 	int64_t secs = json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : 0;
@@ -4537,6 +4630,11 @@ mcp_req_tools_call (struct mcp_req     *req,
 		mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, head.len + n), nullptr, 0);
 		return;
 	}
+	int e = mcp_req_enrol(req);
+	if (e) {
+		mcp_req_fail(req, e);
+		return;
+	}
 	struct json_object *token = jb_get(jb_get(params, "_meta"), "progressToken");
 	req->token = mcp_id_valid(token) ? json_object_get(token) : nullptr;
 	if (tasks) {
@@ -4584,26 +4682,22 @@ mcp_req_initialize (struct mcp_req     *req,
 	mcp_req_result(req, p, ARRAY_SIZE(p), f);
 }
 
-/* A legacy client gave up on a call, which may wait on any loop: hand its
- * key to home in a carrier job, and home ends the call's job, whose
- * completion ends the call's stream quietly.  An id no request may have
- * names no call, and out of memory nothing does. */
+/* Handles the notifications/cancelled in @p req.  The notification cancels
+ * the calls of the same caller that have the request id in @p params, and
+ * these calls can run on any loop.  roster_cancel() posts the message of
+ * each such record to its call's loop, and mcp_on_withdraw() ends the call
+ * there.  An id that no request can have names no call.  If memory runs
+ * out, nothing is cancelled. */
 static void
-mcp_cancel (struct mcp         *mcp,
-            struct span         session,
-            struct json_object *params)
+mcp_req_cancel (struct mcp_req     *req,
+                struct json_object *params)
 {
 	struct json_object *id = jb_get(params, "requestId");
-	struct job *job = mcp_id_valid(id) ? mcp_take_job(mcp) : nullptr;
-	if (!job)
-		return;
-	if (mcp_key(mcp, job, session, id)) {
-		mcp_shelve_job(mcp, job);
-		return;
-	}
-	/* Home's, and the post adds the message's. */
-	atomic_store_explicit(&job->refs, 1, memory_order_relaxed);
-	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_WITHDRAW);
+	struct buf key = {};
+	uint64_t hash;
+	if (mcp_id_valid(id) && !mcp_req_key(req, id, &key, &hash))
+		roster_cancel(req->mcp->st->roster, buf_peek(&key), hash);
+	buf_fini(&key);
 }
 
 /* Reply with a result serialized once, @p text. */
@@ -4931,7 +5025,6 @@ mcp_req_message (struct mcp_req *req)
 {
 	static char const cancelled[] = "notifications/cancelled";
 	struct json_object *msg = req->msg;
-	struct stream *s = req->s;
 	size_t len = 0;
 	char const *method = jb_str(jb_get(msg, "method"), &len);
 	struct json_object *id;
@@ -4952,7 +5045,7 @@ mcp_req_message (struct mcp_req *req)
 	}
 	if (!has_id) {
 		if (len == sizeof cancelled - 1 && !memcmp(method, cancelled, len))
-			mcp_cancel(req->mcp, s->ops->field(s, F_SESSION), jb_get(msg, "params"));
+			mcp_req_cancel(req, jb_get(msg, "params"));
 		mcp_req_accept(req);
 		return;
 	}
@@ -6025,6 +6118,7 @@ mcp_static_create (struct config const *cfg,
                    struct git          *git,
                    struct notes        *notes,
                    struct ledger       *ledger,
+                   struct roster       *roster,
                    int                 *e)
 {
 	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
@@ -6055,6 +6149,7 @@ mcp_static_create (struct config const *cfg,
 		.tasks = tasks,
 		.notes = lends ? notes : nullptr,
 		.ledger = ledger,
+		.roster = roster,
 		.seed = loop_clock(),
 		.lim = cfg->mcp,
 		.turns = cfg->turns

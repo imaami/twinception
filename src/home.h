@@ -2,8 +2,7 @@
  *  serves no client (design sections 1 and 4).
  *
  * Home owns the curl bridge (src/http.h), with its timers and its host
- * lookups on the blockers, the registry of jobs in flight, and their
- * scheduler.  Admission ends a job at once as BUSY with --max-calls jobs in
+ * lookups on the blockers, and the scheduler of the jobs.  Admission ends a job at once as BUSY with --max-calls jobs in
  * flight, or with eight queued for its principal, the call's session or else
  * its client's address.  A job that a free slot takes at once, nobody
  * waiting, queues for none; the others wait in their principal's queue for
@@ -15,8 +14,7 @@
  * progress meanwhile.  A breaker on the upstream's failures refuses jobs
  * while the upstream seems down, and lets a probe through now and then.  The
  * messages of jobs only admit, refuse or note them; bulk steps start, read
- * and cancel them, a share at a time.  The registry finds the jobs a legacy
- * notifications/cancelled names by their keys, in O(1).  Each job admitted
+ * and cancel them, a share at a time.  Each job admitted
  * counts against the descriptors, which home's door (src/httpd.h) budgets.
  * A home that drains cancels the jobs in flight and refuses new ones; once
  * the client loops have all exited and no job is in flight, it has its loop

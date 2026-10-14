@@ -480,8 +480,9 @@ those of `notes` and `compact`, which are the model's own) and the bytes of
 each output.  With a `progressToken`, its notifications say the turn and the
 tool being called.  `--max-turns` (32) bounds the turns: the turn before the
 last is told so, and a last answer that still calls tools ends the call, as an
-error if it has no text.  A legacy `notifications/cancelled` ends the call
-too, at its next turn if a tool runs as it comes.  The upstream must stream
+error if it has no text.  A `notifications/cancelled` from the caller of the
+call ends it too, at once, also while a tool runs or the turns doze.  The
+upstream must stream
 its answers, as `llama-server` does; a strict server that refuses
 `stream_options` takes `-x '{"stream_options": null}'`, which leaves the
 context to be counted by the request's bytes.
@@ -821,8 +822,12 @@ turns, a call each, so that one flooding client leaves the others their share.
 At most `--max-calls` (256) are under way, and eight queued for one principal
 (a call that a free slot takes at once waits in no queue); a tool call past
 those is answered at once with a tool error that says to try again.  A client that goes while its call waits or
-runs cancels it, upstream too, as does a `notifications/cancelled` for it that
-comes on any connection.  After five upstream failures in a row (connection
+runs cancels it, upstream too, as does a `notifications/cancelled` for it from
+the same caller, which can come on any connection.  The caller is the client's
+identity if it has one.  Otherwise it is the user of a Unix socket, or the
+address of a TCP client (IPv4, or IPv6 /64).  The notification must also carry
+the same `Mcp-Session-Id` field as the call, or none if the call has none.
+After five upstream failures in a row (connection
 errors, timeouts, HTTP 5xx and 429), or an answer's `Retry-After`, tool calls
 are refused at once, saying when to try again: for a second, or as long as
 `Retry-After` asked.  Then one call probes the upstream, and the wait doubles,

@@ -1240,8 +1240,8 @@ def check_cancellation(binary, up):
         return 200, ANSWERS["openai"], 1.0 if "SLOW" in request["raw"].decode() else 0
 
     # With two loops, home places a connection that comes while a call waits
-    # on the loop that has none, so each notification reaches the call's job
-    # from the other loop, through home's registry.
+    # on the loop that has none, so each notification reaches the call from
+    # the other loop, through the roster (src/roster.h).
     with Askai(binary, "-u", up.url(), loops=2) as ai:
         def served(method):
             """How many requests of @p method each loop has served."""
@@ -1359,9 +1359,159 @@ def check_cancellation(binary, up):
             assert closed_by_peer(sock, 5), "a half-closed call was answered"
         assert not up.arrived.is_set() or up.cancelled.wait(2)
         assert ai.rpc("ping")[0] == 200
+
+    # A notification cancels only its caller's own calls.  The caller is the
+    # identity, from any address, or for an anonymous client its address.
+    # alice may call ask_ai, bob may call no tool, and an anonymous client
+    # on loopback may call ask_ai.
+    def digest(token):
+        return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+
+    alice = {"Authorization": "Bearer alice"}
+    bob = {"Authorization": "Bearer bob"}
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{os.path.realpath(d)}/askai.json"
+        with open(path, "w") as f:
+            json.dump({"url": up.url(),
+                       "roles": {"caller": {"tools": ["ask_ai"]}, "none": {"tools": []}},
+                       "identities": {"alice": {"role": "caller", "tokens": [digest("alice")]},
+                                      "bob": {"role": "none", "tokens": [digest("bob")]}},
+                       "anonymous": {"loopback": "caller"}}, f)
+        os.chmod(path, 0o600)
+        up.reply = slow
+        with Askai(binary, "-c", path, loops=2) as ai:
+            def connection(source):
+                return http.client.HTTPConnection(ai.host, ai.port, timeout=10,
+                                                  source_address=(source, 0))
+
+            def attempt(rpc_id, caller, canceller, modern=False):
+                """Starts an ask call of caller with rpc_id, and cancels it
+                from canceller.  Each is (headers, source address).  Returns
+                the call's reply and whether its upstream request was
+                cancelled."""
+                up.arrived.clear()
+                up.cancelled.clear()
+                results = []
+                params = {"name": "ask_ai", "arguments": {"prompt": "SLOW"}}
+                start = (lambda: ai.modern("tools/call", params, rpc_id=rpc_id,
+                                           headers=caller[0])) if modern else \
+                    (lambda: ai.rpc("tools/call", params, rpc_id=rpc_id,
+                                    headers=caller[0], conn=connection(caller[1])))
+                thread = threading.Thread(target=lambda: results.append(start()))
+                thread.start()
+                assert up.arrived.wait(5)
+                headers = canceller[0] | ({"MCP-Protocol-Version": MODERN} if modern else {})
+                assert ai.rpc("notifications/cancelled", {"requestId": rpc_id},
+                              rpc_id=None, headers=headers,
+                              conn=connection(canceller[1]))[0] == 202
+                thread.join(5)
+                return results[0], up.cancelled.wait(0.5)
+
+            def survived(outcome):
+                (status, _, body), cancelled = outcome
+                return status == 200 and body is not None and \
+                    text_of(body["result"]) == "A" and not cancelled
+
+            def ended(outcome):
+                """The call ended without a result: an event stream (200)
+                without an event, or a JSON reply with 202."""
+                (status, _, body), cancelled = outcome
+                return status in (200, 202) and body is None and cancelled
+
+            local, other = "127.0.0.1", "127.0.0.2"
+            assert survived(attempt(1, (alice, local), (bob, local)))
+            assert survived(attempt(2, (alice, local), ({}, local)))
+            assert survived(attempt(3, (alice, local), ({}, local), modern=True))
+            assert ended(attempt(8, (alice, local), (alice, other), modern=True))
+            assert ended(attempt(4, (alice, local), (alice, other)))
+            assert survived(attempt(5, ({}, local), ({}, other)))
+            assert ended(attempt(6, ({}, local), ({}, local)))
+
+            # A call that has become a task is no longer in the roster.  A
+            # notification for its request id leaves the task working, and
+            # tasks/cancel ends it.
+            up.reply = lambda request: (200, ANSWERS["openai"], 3)
+            status, _, body = ai.modern("tools/call", {
+                "name": "ask_ai", "arguments": {"prompt": "T"}}, rpc_id=7,
+                meta=TAKES_TASKS, headers=alice)
+            task = body["result"]["taskId"]
+            for headers in (alice, bob, {}):
+                assert ai.rpc("notifications/cancelled", {"requestId": 7},
+                              rpc_id=None, headers=headers)[0] == 202
+            time.sleep(0.3)
+            status, _, body = ai.modern("tasks/get", {"taskId": task},
+                                        meta=TAKES_TASKS, headers=alice)
+            assert status == 200 and body["result"]["status"] == "working", body
+            assert ai.modern("tasks/cancel", {"taskId": task}, meta=TAKES_TASKS,
+                             headers=alice)[0] == 200
+            wait_for(lambda: ai.modern("tasks/get", {"taskId": task}, meta=TAKES_TASKS,
+                                       headers=alice)[2]["result"]["status"] == "cancelled")
+
+    # Between the turns of an ask call no job of the call is in home.  A
+    # notification then ends the call at once, and the call makes no more
+    # upstream requests.  Seventeen calls doze on a timer at the same time.
+    turns = {}
+
+    def dozing(request):
+        prompt = request["body"]["messages"][0]["content"]
+        turns[prompt] = turns.get(prompt, 0) + 1
+        if turns[prompt] == 1:
+            return 200, turn_stream([("t", "timer", '{"seconds":3}')])
+        return 200, turn_stream(text="WAITING" if turns[prompt] == 2 else "AGAIN")
+
+    up.reply = dozing
+    sockets = []
+    try:
+        with Askai(binary, "-u", up.url(), "--man", "--upstream-tools",
+                   "--max-client-conns", "64", loops=2) as ai:
+            for i in range(17):
+                sock = socket.create_connection(("127.0.0.1", ai.port), 10)
+                sockets.append(sock)
+                sock.sendall(rpc_request(100 + i, {"name": "ask_ai", "arguments": {
+                    "prompt": f"call{i}"}}, "tools/call", accept_sse=True))
+                wait_for(lambda i=i: turns.get(f"call{i}") == 2)
+            wait_for(lambda: total(ai.metrics(), "askai_jobs_in_flight") == 0)
+            for i in range(17):
+                assert ai.rpc("notifications/cancelled", {"requestId": 100 + i},
+                              rpc_id=None)[0] == 202
+            # Each event stream ends with its last chunk, and without an
+            # event, within a second of the cancels.  The first timer is due
+            # 3 s after the first call began, so a call that ends only when
+            # its timer fires fails this.
+            cancelled = time.monotonic()
+            for sock in sockets:
+                sock.settimeout(max(0.01, cancelled + 1 - time.monotonic()))
+                seen = b""
+                while not seen.endswith(b"\r\n0\r\n\r\n"):
+                    seen += sock.recv(65536)
+                assert b"data:" not in seen, seen
+            # No call makes a third upstream request when its timer is due.
+            time.sleep(max(0, cancelled + 3.5 - time.monotonic()))
+            assert all(n == 2 for n in turns.values()), turns
+    finally:
+        for sock in sockets:
+            sock.close()
+
+    # A notification ends a call that runs without the upstream, here a
+    # test_task call of 10,000 slices, at once.
+    with Askai(binary, "-u", up.url(), "--test-task", loops=2) as ai:
+        session = {"Mcp-Session-Id": "a" * 32}
+        results = []
+        thread = threading.Thread(target=lambda: results.append(ai.rpc(
+            "tools/call", {"name": "test_task", "arguments": {"slices": 10000}},
+            rpc_id=99, headers=session)))
+        start = time.monotonic()
+        thread.start()
+        time.sleep(0.2)
+        assert ai.rpc("notifications/cancelled", {"requestId": 99}, rpc_id=None,
+                      headers=session)[0] == 202
+        thread.join(5)
+        assert results[0][0] == 202 and results[0][2] is None, results
+        assert time.monotonic() - start < 1, "the task ran on after the cancel"
     up.reply = lambda request: (200, ANSWERS["openai"])
 
-    print("cancellation by notification, from another loop too, hang-up and "
+    print("cancellation by notification, from another loop too, only of the "
+          "caller's own calls, between turns, of a task, hang-up and "
           "half-close: PASS")
 
 
@@ -2641,6 +2791,35 @@ def check_unix(binary, up):
             assert names(uds_rpc(sock)) == ["ask_ai", "man"]
             assert ai.rpc("ping")[0] == 200
             assert any(f"unix:{sock}" in line for line in ai.log), ai.log
+            # A Unix socket's client without an identity is its Unix user.  A
+            # notifications/cancelled from an anonymous TCP client does not
+            # end the user's call, and one from another connection of the
+            # same user over the socket does.
+            hold = up.reply
+            up.reply = lambda request: (200, ANSWERS["openai"], 1.0)
+            notification = json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                       "params": {"requestId": 1}}).encode()
+            for over_unix, expected in ((False, 200), (True, 202)):
+                up.arrived.clear()
+                results = []
+                thread = threading.Thread(target=lambda: results.append(uds_rpc(
+                    sock, "tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}})))
+                thread.start()
+                assert up.arrived.wait(5)
+                if over_unix:
+                    with socket.socket(socket.AF_UNIX) as conn:
+                        conn.settimeout(10)
+                        conn.connect(sock)
+                        conn.sendall(b"POST /mcp HTTP/1.1\r\nContent-Type: application/json\r\n"
+                                     b"Content-Length: %d\r\n\r\n" % len(notification) +
+                                     notification)
+                        assert Replies(conn).next()[0] == 202
+                else:
+                    assert ai.rpc("notifications/cancelled", {"requestId": 1},
+                                  rpc_id=None)[0] == 202
+                thread.join(5)
+                assert results[0][0] == expected, (over_unix, results)
+            up.reply = hold
         assert not os.path.exists(sock)
 
         for policy, tools in (
@@ -6112,6 +6291,20 @@ def check_plugin(binary, up, plugin):
             # A call of askai's own man tool returns a result while the plugin
             # is loaded.  The text depends on the installed man and its pages.
             assert "result" in call(ai, "man", {"name": "ls"})
+            # A notification of the same client ends a plugin's call that
+            # waits, at once.
+            results = []
+            thread = threading.Thread(target=lambda: results.append(ai.rpc(
+                "tools/call", {"name": "test_state", "arguments": {"wait_ms": 3000}},
+                rpc_id=7)))
+            start = time.monotonic()
+            thread.start()
+            time.sleep(0.3)
+            assert ai.rpc("notifications/cancelled", {"requestId": 7},
+                          rpc_id=None)[0] == 202
+            thread.join(5)
+            assert results[0][0] == 202 and results[0][2] is None, results
+            assert time.monotonic() - start < 1.5, "the call waited on"
 
         # A role grants the tool by its name.  A reload reads the names
         # from the registry that askai started with.

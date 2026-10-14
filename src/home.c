@@ -1,6 +1,5 @@
-/** @file Home's jobs: admission, the scheduler, the registry of jobs in
- *  flight, their runs over the curl bridge, streamed answers and the breaker
- *  (home.h). */
+/** @file Home's jobs: admission, the scheduler, the runs of the jobs over
+ *  the curl bridge, streamed answers and the breaker (home.h). */
 #include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
@@ -32,13 +31,11 @@ enum {
 	                             json-c converts whole */
 	MAX_PROPS    = 1 << 20,   /* bytes of a /props answer */
 	PROPS_MS     = 10'000,    /* the most /props may take, or the timeout */
-	KEYS_MAX     = 1 << 16,   /* the registry's buckets at most, and the
-	                             principals' */
+	KEYS_MAX     = 1 << 16,   /* the largest number of buckets of the
+	                             principals */
 	QUEUED       = 8,         /* jobs queued for a principal at most */
 	SLOTS        = 4,         /* upstream calls at once, unless told or found */
 	FAILURES     = 5,         /* failures in a row that open the breaker */
-	WITHDRAWALS  = 16,        /* withdrawals of calls between their turns'
-	                             jobs kept, the oldest given up first */
 };
 
 static constexpr uint64_t NS = 1'000'000'000;
@@ -49,7 +46,6 @@ static constexpr uint64_t BACKOFF_MAX = 60 * NS;
 enum {
 	OVERFLOW  = 1 << 0,   /* the answer passed MAX_RESPONSE */
 	DROPPED   = 1 << 1,   /* its front let go of it while it ran */
-	WITHDRAWN = 1 << 2,   /* its client cancelled it, by its key, while it ran */
 	RUNNING   = 1 << 3,   /* it holds an upstream slot */
 	PROBE     = 1 << 4,   /* it is the breaker's probe */
 	SEEN      = 1 << 5,   /* its answer has begun */
@@ -96,9 +92,8 @@ struct home_principal {
  * those of its class, unless its front let go of it: then it is among
  * those dropped, to cancel.  Messages only admit, refuse or move jobs, and bulk
  * steps start, read and cancel them, a share at a time, as each call into
- * libcurl costs some tens of µs.  The jobs in flight are in the registry
- * too, chained in buckets by a hash of their keys, as the principals are by
- * theirs.
+ * libcurl costs some tens of µs.  A seeded hash of a principal selects the
+ * bucket of the principal, and each bucket is a chained list.
  */
 struct home {
 	struct loop_step          start;       /* starts the jobs waiting */
@@ -139,23 +134,12 @@ struct home {
 	struct http              *http;
 	struct httpd_home        *door;        /* to make room for descriptors */
 	struct ai_endpoint const *ep;
-	struct job              **keys;        /* the registry's buckets */
 	struct home_principal   **whom;        /* the principals' buckets */
 	struct http_request      *ask;         /* GET /props, under way */
 	uint64_t                  timeout;     /* ns from a start to its deadline */
 	uint64_t                  silence;     /* ns an answer may pause */
 	uint64_t                  backoff;     /* the breaker's next open spell */
 	uint64_t                  until;       /* when the breaker half-opens */
-	struct {
-		uint64_t hash;
-		uint64_t until;
-		size_t   len;
-	}                         gone[WITHDRAWALS];  /* withdrawals that found no
-	                                                 job: the key's hash and
-	                                                 length, and when they are
-	                                                 given up; for the turns
-	                                                 of a call that lends
-	                                                 tools, between jobs */
 	size_t                    mask;        /* buckets - 1 */
 	uint32_t                  max;         /* jobs in flight at most */
 	uint32_t                  slots;       /* upstream calls at once at most */
@@ -164,9 +148,9 @@ struct home {
 	uint32_t                  failures;    /* in a row, closed */
 	uint32_t                  readied[2];  /* jobs ready, by class */
 	uint32_t                  running_bg;  /* background jobs running */
-	uint32_t                  gone_at;     /* the next of gone to fill */
-	uint16_t                  draining;    /* bool, widened over the padding */
-	uint16_t                  alone;       /* bool: the client loops have exited */
+	uint32_t                  draining;    /* bool, widened over the padding */
+	uint32_t                  alone;       /* bool, widened over the padding:
+	                                          the client loops have exited */
 	uint8_t                   state;       /* the breaker's */
 	uint8_t                   probing;     /* bool: a probe is under way */
 	uint8_t                   paused;      /* bool: /props is held back */
@@ -175,16 +159,6 @@ struct home {
 
 /* The thread's home: the handler of jobs' messages finds it here. */
 static thread_local struct home *self;
-
-/* The link that heads the registry's bucket of the keys of @p hash, which
- * the front works out, seeded, so that no client can pick keys that crowd
- * one. */
-static struct job **
-home_bucket (struct home const *home,
-             uint64_t           hash)
-{
-	return &home->keys[hash & home->mask];
-}
 
 /* @p job's class: 0 interactive, 1 background. */
 static uint32_t
@@ -240,7 +214,7 @@ home_job_progress (struct job *job,
                    uint64_t    progress)
 {
 	atomic_store_explicit(&job->progress, progress, memory_order_relaxed);
-	if (job->asks & JOB_NOTIFY && !(job->flags & (DROPPED | WITHDRAWN)))
+	if (job->asks & JOB_NOTIFY && !(job->flags & DROPPED))
 		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_PROGRESS);
 }
 
@@ -326,7 +300,7 @@ home_job_end (struct job      *job,
 		home_job_put(job, 1);
 		return;
 	}
-	if (status == JOB_CANCELLED || status == JOB_WITHDRAWN)
+	if (status == JOB_CANCELLED)
 		home_job_drop_answer(job);
 	job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DONE);
 }
@@ -354,8 +328,9 @@ home_unstream (struct home *home,
 	buf_fini(&job->wire);
 }
 
-/* Take @p job, in flight, out of the registry and off the timeline, off its
- * queue, and off its run upstream if it had one, its slot to the next. */
+/* Takes @p job, which is in flight, off the timeline, off its principal's
+ * queue and off its list of jobs.  If the job runs upstream, the function
+ * frees its upstream slot, so that the next job can start. */
 static void
 home_retire (struct home *home,
              struct job  *job)
@@ -363,10 +338,6 @@ home_retire (struct home *home,
 	struct home_metrics *m = home->metrics;
 	uint32_t c = home_job_class(job);
 	list_del(&job->due);
-	struct job **p = home_bucket(home, job->hash);
-	while (*p != job)
-		p = &(*p)->chain;
-	*p = job->chain;
 	hist_add(&m->in_flight, -1ULL);
 	if (job->who)
 		home_unqueue(home, job);
@@ -924,15 +895,13 @@ home_abort (struct home *home,
 	http_cancel(home->http, &job->transfer);
 }
 
-/* Cancel @p job, which its front let go of, its client withdrew, or a drain
- * ends. */
+/* Cancels @p job, which its front dropped or a drain ends. */
 static void
 home_cancel (struct home *home,
              struct job  *job)
 {
 	home_abort(home, job);
-	home_end(home, job, job->flags & WITHDRAWN ? JOB_WITHDRAWN : JOB_CANCELLED,
-	         &home->metrics->cancelled);
+	home_end(home, job, JOB_CANCELLED, &home->metrics->cancelled);
 }
 
 /* End @p job, past its deadline: one running times out, one waiting for a
@@ -942,7 +911,7 @@ static void
 home_expire (struct home *home,
              struct job  *job)
 {
-	if (job->flags & (DROPPED | WITHDRAWN)) {
+	if (job->flags & DROPPED) {
 		home_cancel(home, job);
 		return;
 	}
@@ -1764,65 +1733,11 @@ home_drop (struct home *home,
 	loop_ready_bulk(home->loop, &home->stop);
 }
 
-/* End the jobs in flight that the key of @p carrier names, as their client
- * asked: at once those not running upstream, and by a step those running,
- * the same that cancels those their front let go of.  One its front let go
- * of ends so already.  A key that names none is kept a while, as it may
- * name a call that lends tools between the jobs of its turns. */
-static void
-home_withdraw (struct home      *home,
-               struct job const *carrier)
-{
-	struct span key = buf_peek(&carrier->key);
-	struct job *next;
-	bool found = false;
-	for (struct job *job = *home_bucket(home, carrier->hash); job; job = next) {
-		struct span k = buf_peek(&job->key);
-		next = job->chain;
-		if (job->hash != carrier->hash || k.len != key.len ||
-		    memcmp(k.ptr, key.ptr, key.len) || job->flags & (DROPPED | WITHDRAWN))
-			continue;
-		found = true;
-		job->flags |= WITHDRAWN;
-		if (job->transfer)
-			home_drop(home, job);
-		else
-			home_end(home, job, JOB_WITHDRAWN, &home->metrics->cancelled);
-	}
-	if (!found)
-		home->gone[home->gone_at++ % WITHDRAWALS] = (typeof(home->gone[0])){
-			carrier->hash, home->loop->now + JOB_GAP_NS, key.len
-		};
-}
-
-/* Whether @p job, of a call that lends tools, was withdrawn between its
- * turns' jobs: a withdrawal kept for its key ends a turn after the first,
- * and goes; a first turn's makes it go, as it was the call's before, whose
- * id this one has again. */
-static bool
-home_withdrawn (struct home *home,
-                struct job  *job)
-{
-	size_t len = buf_peek(&job->key).len;
-	for (size_t i = 0; i < WITHDRAWALS; ++i) {
-		if (home->gone[i].until <= home->loop->now || home->gone[i].hash != job->hash ||
-		    home->gone[i].len != len)
-			continue;
-		home->gone[i].until = 0;
-		if (job->asks & JOB_AGAIN)
-			return true;
-	}
-	return false;
-}
-
-/* Enter @p job in the registry and on the timeline: it is in flight. */
+/* Puts @p job on the timeline.  The job is then in flight. */
 static void
 home_register (struct home *home,
                struct job  *job)
 {
-	struct job **link = home_bucket(home, job->hash);
-	job->chain = *link;
-	*link = job;
 	home_timeline(home, job);
 	hist_add(&home->metrics->in_flight, 1);
 }
@@ -1887,10 +1802,6 @@ home_admit (struct home *home,
 	struct home_metrics *m = home->metrics;
 	if (home->draining) {
 		home_end(home, job, JOB_CANCELLED, &m->rejected);
-		return;
-	}
-	if (job->asks & JOB_TOOLS && home_withdrawn(home, job)) {
-		home_end(home, job, JOB_WITHDRAWN, &m->cancelled);
 		return;
 	}
 	if (home->state == OPEN) {
@@ -1970,7 +1881,7 @@ home_job_orphan (struct job *job,
 		home_job_put(job, bits & JOB_CANCEL ? 2 : 1);
 		return;
 	}
-	/* Its front lets go of it, or it is a carrier, which goes back. */
+	/* Its front has dropped it. */
 	home_job_drop_answer(job);
 	home_job_put(job, 2);
 }
@@ -1986,12 +1897,6 @@ home_job (struct loop *loop,
 		return;
 	}
 	struct home *home = self;
-	if (bits & JOB_WITHDRAW) {
-		/* A carrier, which goes back to its front at once. */
-		home_withdraw(home, job);
-		home_job_put(job, 2);
-		return;
-	}
 	if (bits & JOB_SUBMIT)
 		home_submit(home, job, bits);
 	else
@@ -2042,8 +1947,6 @@ home_fini (struct home *home)
 	self = nullptr;
 	free(home->whom);
 	home->whom = nullptr;
-	free(home->keys);
-	home->keys = nullptr;
 }
 
 struct home *
@@ -2086,7 +1989,6 @@ home_create (struct loop              *loop,
 		.loop = loop,
 		.door = door,
 		.ep = ep,
-		.keys = calloc(buckets, sizeof *home->keys),
 		.whom = calloc(buckets, sizeof *home->whom),
 		.mask = buckets - 1,
 		.timeout = ep->timeout_ms > 0 ? (uint64_t)ep->timeout_ms * 1'000'000 : 0,
@@ -2110,7 +2012,7 @@ home_create (struct loop              *loop,
 	list_init(&home->idle);
 	list_init(&home->feeding);
 	list_init(&home->spare.list);
-	*e = home->keys && home->whom ? home_arm(home, http) : ENOMEM;
+	*e = home->whom ? home_arm(home, http) : ENOMEM;
 	if (*e) {
 		home_fini(home);
 		free(home);

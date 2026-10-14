@@ -131,9 +131,9 @@ static struct metrics_entry const table[] = {
 	METHOD(nullptr, "notification", METHOD_NOTIFY),
 	METHOD(nullptr, "metrics", METHOD_METRICS),
 	METHOD(nullptr, "other", METHOD_OTHER),
-	CALLS("askai_calls_cancelled_total", "Tool calls a loop cancelled while their "
-	      "job ran: hang-ups, closed streams, drains (home ends those that "
-	      "notifications/cancelled names).", cancelled),
+	CALLS("askai_calls_cancelled_total", "Tool calls that a loop cancelled while "
+	      "their job ran, for a hang-up, a closed stream, a drain or a "
+	      "notifications/cancelled.", cancelled),
 	CALLS("askai_calls_dropped_total", "Job completions a loop dropped, their "
 	      "call gone (a stale handle).", dropped),
 	CALLS("askai_turns_total", "Upstream calls made as turns of ask calls that "

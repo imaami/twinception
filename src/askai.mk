@@ -23,6 +23,7 @@ override SRC_askai := \
   plugin.c            \
   policy.c            \
   registry.c          \
+  roster.c            \
   task.c              \
   tls.c
 

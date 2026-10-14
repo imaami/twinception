@@ -25,6 +25,7 @@
 #include "mcp.h"
 #include "metrics.h"
 #include "notes.h"
+#include "roster.h"
 #include "task.h"
 #include "util.h"
 
@@ -160,6 +161,7 @@ struct askai_shared {
 	struct git          *git;
 	struct notes        *notes;
 	struct ledger       *ledger;
+	struct roster       *roster;
 	struct task_pool    *tasks;
 	struct askai_client *clients;
 	struct metrics_loop *loops;
@@ -643,10 +645,10 @@ askai_shared_make (struct askai_shared *s,
 		return ENOMEM;
 	if (cfg->flags & CFG_MAN && !(s->manual = manual_create(cfg->man_recheck, &e)))
 		return e;
-	if (!(s->ledger = ledger_create(&e)))
+	if (!(s->ledger = ledger_create(&e)) || !(s->roster = roster_create(&e)))
 		return e;
 	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->notes,
-	                                s->ledger, &e)))
+	                                s->ledger, s->roster, &e)))
 		return e;
 	s->hub = httpd_hub_create(n, &e);
 	return e;
@@ -682,6 +684,7 @@ askai_shared_fini (struct askai_shared *s)
 	notes_destroy(&s->notes);
 	mcp_static_destroy(&s->st);
 	ledger_destroy(&s->ledger);
+	roster_destroy(&s->roster);
 	manual_destroy(&s->manual);
 	free(s->loops);
 	s->loops = nullptr;
