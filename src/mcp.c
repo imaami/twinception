@@ -4282,12 +4282,20 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	mcp_slot_park(slot);
 }
 
-/* Returns true if git exited with status 0 before its deadline, or if
- * askai cut its output.  The cut output of a list has the newest notes. */
+/* Returns true if git exited with status 0 before its deadline, and askai
+ * did not cut its output. */
 static bool
 mcp_notes_ok (struct child const *c)
 {
-	return c->cut || (!c->late && c->code == CLD_EXITED && !c->status);
+	return !c->cut && !c->late && c->code == CLD_EXITED && !c->status;
+}
+
+/* Returns true if git wrote a list of the notes.  A list that askai cut
+ * has the newest notes. */
+static bool
+mcp_notes_listed (struct child const *c)
+{
+	return c->cut || mcp_notes_ok(c);
 }
 
 /* Returns true if git exited with status 128.  It does so if the
@@ -4400,7 +4408,7 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 {
 	struct child const *c = slot->child;
 	char tip[NOTES_TIP + 1];
-	int r = mcp_notes_ok(c) && !c->cut ? notes_checked(buf_peek(&c->out), tip) : EIO;
+	int r = mcp_notes_ok(c) ? notes_checked(buf_peek(&c->out), tip) : EIO;
 	if (!r) {
 		child_destroy(&slot->child);
 		mcp_slot_notes_write(slot, tip);
@@ -4479,7 +4487,7 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 {
 	struct child const *c = slot->child;
 	struct span newest;
-	bool ok = mcp_notes_ok(c);
+	bool ok = mcp_notes_listed(c);
 	int e = !ok ? mcp_slot_notes_unread(slot)
 	      : mcp_slot_say(slot, &TEXT("Your notes, oldest first:\n\n"), 1);
 	if (!e && ok)
@@ -4525,15 +4533,22 @@ mcp_slot_notes_prompt (struct mcp_slot  *slot,
 		ESC(name, newest.len ? jb_utf8(name, newest.len) : 0),
 		TEXT(":]\n\n"),
 	};
-	if (!e && newest.len && !(e = mcp_slot_say(slot, p, ARRAY_SIZE(p))))
+	/* The name comes from git, and git reads the note only if the name is
+	 * one that an add would take. */
+	size_t skip = 0;
+	bool named = newest.len && !notes_name(name, newest.len, &skip) && !skip;
+	if (!e && named && !(e = mcp_slot_say(slot, p, ARRAY_SIZE(p))))
 		e = notes_read_input(&in, name, newest.len);
+	if (!e && newest.len && !named)
+		e = mcp_slot_say(slot, &TEXT("\n[askai: the newest note could not be "
+		                             "read.]\n"), 1);
 	child_destroy(&slot->child);
 	if (e) {
 		buf_fini(&in);
 		mcp_req_fail(req, e);
 		return;
 	}
-	if (!newest.len) {
+	if (!named) {
 		mcp_req_notes_then(req, slot->fetch);
 		return;
 	}
@@ -4573,7 +4588,7 @@ mcp_slot_notes_resumed (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
 	struct child *c = slot->child;
-	if (!mcp_notes_ok(c)) {
+	if (!mcp_notes_listed(c)) {
 		char why[64 + NOTES_ID];
 		size_t n = mcp_notes_none(c)
 		         ? util_format(why, sizeof why, "Unknown thread: %s.", req->thread)
@@ -4594,7 +4609,7 @@ static void
 mcp_slot_notes_compacted (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
-	if (mcp_notes_ok(slot->child)) {
+	if (mcp_notes_listed(slot->child)) {
 		mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: your notes, oldest first:]\n\n"));
 		return;
 	}

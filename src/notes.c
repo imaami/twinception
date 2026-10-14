@@ -164,11 +164,23 @@ notes_id (char id[NOTES_ID + 1])
 	return 0;
 }
 
+/* Returns true if the @p n bytes at @p s are lowercase hexadecimal
+ * digits. */
+static bool
+notes_hex (char const *s,
+           size_t      n)
+{
+	for (size_t i = 0; i < n; ++i)
+		if ((s[i] < '0' || s[i] > '9') && (s[i] < 'a' || s[i] > 'f'))
+			return false;
+	return true;
+}
+
 bool
 notes_is_id (char const *s,
              size_t      len)
 {
-	return len == NOTES_ID && strspn(s, "0123456789abcdef") >= NOTES_ID;
+	return len == NOTES_ID && notes_hex(s, len);
 }
 
 void
@@ -372,7 +384,9 @@ notes_checked (struct span out,
 		kind = notes_kind(p, (size_t)(nl - p), &oid);
 		if (lines || kind == KIND_MISSING)
 			continue;
-		if (kind != KIND_COMMIT || oid > NOTES_TIP)
+		/* The name of a commit is 40 hexadecimal digits, or 64 with
+		 * SHA-256. */
+		if (kind != KIND_COMMIT || (oid != 40 && oid != NOTES_TIP) || !notes_hex(p, oid))
 			return EIO;
 		memcpy(tip, p, oid);
 		tip[oid] = '\0';
@@ -464,7 +478,7 @@ notes_read_out (struct span  out,
 {
 	*text = (struct span){};
 	char const *line = (char const *)out.ptr;
-	char const *nl = memchr(line, '\n', out.len);
+	char const *nl = out.len ? memchr(line, '\n', out.len) : nullptr;
 	if (!nl)
 		return EIO;
 	size_t n = (size_t)(nl - line);
