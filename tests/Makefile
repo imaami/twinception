@@ -4,11 +4,11 @@ include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-askai check-buf check-completion check-dstr \
-        check-handle check-instance check-load check-twinception load \
-        load-build
+        check-handle check-instance check-load check-turn check-twinception \
+        load load-build
 default:; @:
 check: | check-completion check-twinception check-askai check-buf \
-         check-handle check-instance check-dstr check-load
+         check-handle check-turn check-instance check-dstr check-load
 
 # Nothing below this comment is defined when tab-completing.
 
@@ -75,6 +75,19 @@ $Otests/handle: $(TEST_DIR)handle.c $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
                 $(SRC_DIR)log.c | $Otests
 	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	      -o "$@" $(TEST_DIR)handle.c $(SRC_DIR)log.c
+
+# check-turn runs unit tests of the order in which a turn of the event loop
+# runs its steps.  The test includes src/loop.c and replaces clock_gettime()
+# in it with a fake clock.
+check-turn: $Otests/turn
+	$<
+
+$Otests/turn: $(TEST_DIR)turn.c $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
+              $(SRC_DIR)loop_export.h $(SRC_DIR)export.h $(SRC_DIR)hist.h \
+              $(SRC_DIR)list.h $(SRC_DIR)util.h $(SRC_DIR)log.c \
+              $(SRC_DIR)log.h | $Otests
+	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
+	      -o "$@" $(TEST_DIR)turn.c $(SRC_DIR)log.c
 
 # Unit tests of the table of plugin instances.  The test includes
 # src/loop.c and src/instance.c, so that it can call their static functions.

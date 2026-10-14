@@ -628,15 +628,22 @@ loop_fire (struct loop *loop)
 }
 
 /*
- * Give the entries queued on the @p n lists from @p lists one step each, a
- * step from each list in turn, while the clock is short of @p until, or at
- * least one if @p bulk.  Entries not reached go back to the head of their
- * lists, ahead of steps queued meanwhile.  Returns how many steps ran.
+ * Run one step of each entry that is queued on the @p n lists in the array
+ * @p lists.  While more than one list has entries, the steps alternate
+ * between the lists.  The first step is from the list at index @p *cursor,
+ * unless that list is empty.  The function starts a step only while the
+ * clock is before @p until.  If @p bulk is true, at least one step runs.
+ * The function puts the entries that did not run back at the head of their
+ * lists, before the entries that were queued during the call.  On return,
+ * @p *cursor is the index of the list after the list of the last step, so
+ * the next call continues the alternation.  Returns the number of steps that
+ * ran.
  */
 static uint64_t
 loop_run (struct loop *loop,
           struct list *lists,
           size_t       n,
+          size_t      *cursor,
           uint64_t     until,
           bool         bulk)
 {
@@ -649,7 +656,8 @@ loop_run (struct loop *loop,
 	uint64_t t = loop_clock();
 	uint64_t steps = 0;
 	bool first = bulk;
-	for (size_t i = 0, empty = 0; empty < n && !loop->exit && (first || t < until);
+	size_t i = *cursor;
+	for (size_t empty = 0; empty < n && !loop->exit && (first || t < until);
 	     i = (i + 1) % n) {
 		if (list_is_empty(&batch[i])) {
 			++empty;
@@ -675,7 +683,8 @@ loop_run (struct loop *loop,
 		t = end;
 		++steps;
 	}
-	for (size_t i = 0; i < n; ++i) {
+	*cursor = i;
+	for (i = 0; i < n; ++i) {
 		list_transplant(&batch[i], &lists[i]);
 		list_transplant(&lists[i], &batch[i]);
 	}
@@ -784,9 +793,10 @@ loop_exec (struct loop *loop)
 		loop_most(&s->timers, loop_fire(loop));
 
 		loop->stepping = true;
-		uint64_t steps = loop_run(loop, &loop->ready[FRESH], 2,
+		uint64_t steps = loop_run(loop, &loop->ready[FRESH], 2, &loop->cursor,
 		                          start + INTERACTIVE_NS, false);
-		steps += loop_run(loop, &loop->ready[BULK], 1, start + BULK_NS, true);
+		steps += loop_run(loop, &loop->ready[BULK], 1, &(size_t){},
+		                  start + BULK_NS, true);
 		loop->stepping = false;
 		loop_most(&s->steps, steps);
 		loop_reap(loop);

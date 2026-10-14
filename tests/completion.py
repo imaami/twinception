@@ -31,7 +31,7 @@ SRC = """
 TESTS = """
     default
     check check-askai check-buf check-completion check-dstr check-handle
-    check-instance check-load check-twinception
+    check-instance check-load check-turn check-twinception
     load load-build
 """.split()
 

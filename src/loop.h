@@ -37,15 +37,25 @@ struct loop_ref {
 };
 
 /**
- * A bounded piece of work for a turn.  After its events and timers, a turn
- * gives each queued interactive entry one step until 500 µs have passed since
- * it began, then at least one bulk step, and more as long as they can end
- * within 1 ms.  Interactive entries queued by event and timer callbacks and
- * those queued by steps, such as a step queuing itself again, take turns, a
- * step each, starting with the former: fresh work does not wait behind
- * ongoing work, nor ongoing work behind a flood of fresh.  Entries a turn
- * does not reach go first in the next; a step queued during the turn's steps
- * waits for the next.
+ * This structure is an entry on a ready list of the loop.  A turn of the
+ * loop calls the function fn of the entry to run one step, which is a
+ * bounded piece of work.  A turn first runs the callbacks of events,
+ * messages and timers.  Then it starts one step of each queued interactive
+ * entry until 500 µs have passed since the turn began.  Then, if bulk
+ * entries are queued, it runs at least one bulk step, and it starts more
+ * bulk steps while they can end within 1 ms.
+ *
+ * loop_ready() appends an entry to the fresh list when a callback calls it,
+ * and to the ongoing list when a step calls it, for example when a step
+ * queues itself again.  While both lists have entries, the steps alternate
+ * between the two lists.  A turn begins with the list after the list of the
+ * last step in the previous turn, unless that list is empty.  So the
+ * alternation continues from one turn to the next, even when a turn has
+ * time for only one interactive step.
+ *
+ * Entries that a turn does not run are at the head of their lists in the
+ * next turn.  An interactive entry that a step queues runs in the next turn
+ * at the earliest.
  */
 struct loop_step {
 	struct list hook;  /**< on a ready list; zeroed when off it */
@@ -92,6 +102,10 @@ struct loop {
 	size_t                 timers;            /**< armed, the heap's length */
 	size_t                 heap_cap;
 	size_t                 slots_cap;
+	size_t                 cursor;            /**< the index in ready of the
+	                                               interactive list of the
+	                                               first step in the next turn,
+	                                               unless that list is empty */
 	uint64_t               now;               /**< when the turn began, CLOCK_MONOTONIC ns */
 	uint64_t               work[LOOP_UNITS];  /**< done by the step under way */
 	int                    epfd;
