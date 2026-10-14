@@ -2347,6 +2347,22 @@ def check_configuration(binary, up):
                              text=True, timeout=5, check=False)
         assert run.returncode == 2 and message in run.stderr, (args, run.stderr)
 
+    # The usage block of README.md is the option part of --help: from the
+    # --config entry to the blank line before the text about who may connect.
+    usage = subprocess.run([binary, "--help"], capture_output=True, text=True,
+                           timeout=5, check=True).stdout.split("\n")
+    first = next(i for i, line in enumerate(usage) if line.startswith("  -c, --config"))
+    last = usage.index("", next(i for i, line in enumerate(usage)
+                                if line.startswith("--send-timeout", 6)))
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                           "README.md")) as f:
+        readme = f.read().split("\n")
+    upstream = readme.index("Upstream AI:")
+    start = max(i for i in range(upstream) if readme[i].startswith("```")) + 1
+    end = readme.index("```", upstream)
+    assert readme[start:end] == usage[first:last], \
+        "the usage block of README.md differs from --help"
+
     # doc/askai.example.json names every long option but config and help,
     # and askai starts with it.  Its anonymous loopback clients have the role
     # user, and the token "test" is the identity alice, whose role admin may

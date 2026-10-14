@@ -929,136 +929,198 @@ Invalid options or environment exit 2, and a failure to start or to serve 1.
 ### askai options
 
 ```text
-  -c, --config FILE         read options from FILE too: a JSON object
-                            whose members are named as the long
-                            options are, which the command line
-                            overrides (see README.md)
+  -c, --config FILE         read options from FILE before the command
+                            line: a JSON object with long option names
+                            as members, comments allowed.  true sets an
+                            option without argument, and an array lists
+                            the values of a repeatable option.  The
+                            command line overrides the file, but adds to
+                            its header, allow-origin and git lists.
+                            Only the last --config is read.  See
+                            README.md and doc/askai.example.json.
 
 Upstream AI:
   -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),
                             openai, anthropic, google, deepinfra or
-                            openrouter, whose API, URL and key
-                            variable are the defaults
-      --api NAME            chat (completions), responses, messages
-                            (Anthropic's) or generate (Gemini's);
-                            default: the provider's, else chat
-  -u, --url URL             endpoint URL (default: the provider's)
-  -m, --model NAME          model to ask (required at a provider's
-                            own URL, but llama's)
-  -k, --key-env VAR         environment variable holding the API key
-                            (default: at a provider's own URL its
-                            usual one, which llama may lack; else
-                            ASKAI_API_KEY, if set)
-  -H, --header LINE         extra request header (repeatable)
+                            openrouter; the provider sets the defaults
+                            of --api, --url and --key-env
+      --api NAME            chat (chat completions), responses,
+                            messages (Anthropic) or generate (Gemini)
+                            (default: the API of the provider, else
+                            chat)
+  -u, --url URL             endpoint URL, http:// or https:// (default:
+                            the URL of the provider; required without
+                            --provider)
+  -m, --model NAME          model to ask (required at the URL of a
+                            provider other than llama)
+  -k, --key-env VAR         environment variable that contains the API
+                            key (default: at the URL of a provider, the
+                            usual variable of the provider, which llama
+                            may leave unset; else ASKAI_API_KEY, if set)
+  -H, --header LINE         extra request header, Name: value
+                            (repeatable)
   -s, --system TEXT         default system prompt
-  -t, --temperature N       sampling temperature
-  -n, --max-tokens N        output token limit
-  -x, --extra JSON          object deep-merged into each request body;
-                            null members delete keys
-  -T, --timeout SECONDS     a tool call's wait for an upstream slot, and
-                            then its upstream call's (default 600,
-                            0 = none)
+  -t, --temperature N       sampling temperature, a number from 0
+                            (default: none sent)
+  -n, --max-tokens N        output token limit (default: none sent, but
+                            4096 with the messages API)
+  -x, --extra JSON          JSON object that askai merges into each
+                            request body, recursively; a null member
+                            removes that key
+  -T, --timeout SECONDS     time limit on each upstream call: first on
+                            the wait for an upstream slot, then again on
+                            the call itself (default 600, 0 = none)
       --chunk-timeout SECONDS
                             longest pause in an answer once it has
                             begun (default 60, 0 = none)
-      --slots N             upstream calls at once (default: what
-                            llama-server's /props says, else 4)
-      --max-calls N         tool calls under way at most (default 256),
-                            8 of them queued per session or client
-                            address; a tool call past those is answered
-                            at once as an error that says to try again
-      --upstream-tools      give the upstream tools too: man, git and
-                            the plugins' tools that allow it, as the
-                            client's role allows, notes with --notes,
-                            and compact; an ask call then runs them
-                            and asks on until it answers
-      --notes DIR           the directory of the notebooks of the
-                            upstream and of the clients, made if it
-                            does not exist
-      --max-turns N         upstream calls an ask call makes at most
-                            with --upstream-tools (default 32)
-      --context TOKENS      the upstream's context, for compacting it
-                            (default: what llama-server's /props says)
+      --slots N             upstream calls at once (default: total_slots
+                            from the /props of llama-server, else 4)
+      --max-calls N         upstream calls queued or running, at most
+                            (default 256), and at most 8 queued for one
+                            identity, one Unix user, or else one session
+                            or client address; an ask call past those
+                            fails at once with an error to try again
+      --upstream-tools      offer tools to the upstream in ask calls:
+                            man, git and the plugin tools that allow it,
+                            as the role of the client allows, and notes
+                            with --notes; with any of those also
+                            compact, wait and timer, and beside a tool
+                            that can run in the background also
+                            background and jobs; an ask call runs the
+                            tool calls of each turn and sends the next
+                            upstream request until an answer ends the
+                            call
+      --notes DIR           also offer the tool notes: notebooks in git
+                            repositories under DIR, which askai makes if
+                            it does not exist; to clients as their role
+                            allows, and to the upstream with
+                            --upstream-tools
+      --max-turns N         upstream calls that an ask call makes at
+                            most, with --upstream-tools (default 32)
+      --context TOKENS      context size of the upstream, used with
+                            --upstream-tools: a tool result in a turn is
+                            at most an eighth of it, at three quarters
+                            the upstream is asked to call compact, and
+                            when it is full, askai compacts the
+                            conversation (default: n_ctx from the /props
+                            of llama-server, else unknown; 0 = the
+                            default)
 
 MCP server:
-  -l, --listen ADDR         [host:]port, unix:PATH for a Unix socket, or
+  -l, --listen ADDR         [host:]port, where host is 127.0.0.1 if it
+                            is left out; unix:PATH for a Unix socket; or
                             tls:[host:]port for TLS (repeatable;
                             default 127.0.0.1:8090)
-      --tls-cert FILE       TLS's certificate chain, in PEM: the
-                            server's, then those it is trusted by
-      --tls-key FILE        its private key, in PEM, unencrypted: ECDSA
-                            on P-256, P-384 or P-521, or Ed25519
+      --tls-cert FILE       certificate chain for tls: listeners, in
+                            PEM: the certificate of the server first,
+                            then the intermediate CA certificates
+      --tls-key FILE        private key of that certificate, in PEM,
+                            unencrypted: ECDSA on P-256, P-384 or P-521,
+                            or Ed25519; others must not be able to read
+                            FILE
       --tls-allow-rsa       allow an RSA key too
-  -o, --allow-origin URL    allow a non-loopback browser Origin
-                            (repeatable; '*' allows any)
-      --tool-name NAME      tool name (default ask_ai)
+  -o, --allow-origin URL    allow browser requests whose Origin header
+                            is exactly URL, such as https://example.com
+                            (repeatable; '*' allows any; loopback
+                            Origins are always allowed)
+      --tool-name NAME      name of the ask tool, 1 to 128 characters
+                            from A-Z, a-z, 0-9, _, . and - (default
+                            ask_ai)
       --tool-description TEXT
-      --man                 also offer the tool man, which gives a page
-                            of the manual as man(1) renders it, in
-                            plain UTF-8 text; each page is rendered
-                            once and kept
+                            description of the ask tool (default: a text
+                            built from --model, --upstream-tools and
+                            --notes)
+      --man                 also offer the tool man, which returns a
+                            page of the manual as man(1) renders it, in
+                            plain UTF-8 text; askai renders each page
+                            once and stores it
       --git PATH            also offer the tool git: read-only git
-                            commands in the repository at PATH, which
-                            its directory's name names (repeatable)
+                            commands in the repository at PATH, the top
+                            of a work tree or a bare repository, named
+                            by the last component of PATH less .git
+                            (repeatable)
       --git-timeout SECONDS
-                            a git call's deadline, at which git gets
-                            SIGTERM, and SIGKILL a second later
+                            deadline of a git call, at which git gets
+                            SIGTERM, and SIGKILL one second later
                             (default 30)
       --test-man-recheck SECONDS
-                            test aid: how long man's finding of a
-                            page's file holds (default 600)
-  -v, --verbose             log every tool call
+                            test aid: once the lookup of the file of a
+                            page (man -w) is older than this, the next
+                            man call for the page repeats the lookup in
+                            the background (default 600, 0 = on each
+                            call)
+  -v, --verbose             log each tool call of a client as it ends,
+                            each call of a turn and each job that
+                            answers or fails, and each man page that
+                            askai renders
       --loops N             event loops that serve clients (default 0:
                             one fewer than the CPUs askai may use, at
                             least 1, at most 255)
-      --grace SECONDS       to finish what is under way on SIGINT,
-                            SIGTERM or SIGHUP (default 5)
+      --grace SECONDS       time to finish the requests under way after
+                            SIGINT, SIGTERM or SIGHUP (default 5)
       --watchdog MS         log a turn of an event loop longer than
                             this (default 20, 0 = none)
-      --test-stall MS       test aid: SIGUSR2 holds each event loop in
-                            one turn this long
+      --test-stall MS       test aid: SIGUSR2 stops each event loop in
+                            one turn for this long
       --memory-high BYTES   resident memory from which memory pressure
                             is high (default: a sixteenth of RAM, or of
                             the lowest cgroup limit, at least 256M)
       --test-pressure FILE  test aid: memory pressure is at least the
-                            level FILE holds, 0 (none), 1 (high) or 2
+                            level in FILE, 0 (none), 1 (high) or 2
                             (critical), read each second
-      --test-fifo           test aid: tool calls wait for the upstream
-                            in one queue, first in first out
-      --test-task           test aid: also offer the tool test_task,
-                            CPU work in 250 us slices, run as a task
-                            on the client loops
+      --test-fifo           test aid: upstream calls wait in one queue
+                            for each class, first in first out, and
+                            without the limit of 8 queued calls
+      --test-task           test aid: also offer the tool test_task: CPU
+                            work in 250 us slices, run as a task on the
+                            client loops; or, given a prompt, an
+                            upstream call run as background work
   -h, --help                show this help
 
-Limits on clients (BYTES may end in K, M or G; 0 = none where noted):
+Limits on clients (BYTES and RATE may end in K, M or G for KiB, MiB or
+GiB; 0 = none where noted):
       --max-head BYTES      request line and headers (default 16K,
                             at most 65535)
       --max-fields N        header fields (default 64)
       --head-timeout SECONDS
-                            time to send those in (default 10, 0 = none)
-      --max-body BYTES      request body (default 1M)
-      --min-body-rate RATE  bytes per second a body must average from
-                            its start (default 4K, 0 = none),
-      --body-grace SECONDS  once this has passed (default 5)
-      --body-budget BYTES   bodies held for all clients (default 256M)
+                            time limit for a TLS handshake, and for a
+                            request line and headers, each from its
+                            first byte (default 10, 0 = none)
+      --max-body BYTES      request body, at most --body-budget
+                            (default 1M)
+      --min-body-rate RATE  bytes per second that a request body must
+                            average from the end of its headers, once
+                            --body-grace has passed (default 4K,
+                            0 = none)
+      --body-grace SECONDS  time after the headers before
+                            --min-body-rate applies (default 5)
+      --body-budget BYTES   request bodies in memory for all clients
+                            together (default 256M)
       --client-budget BYTES
-                            of those, held for one client address
-                            (default: a quarter, at least --max-body)
+                            the part of --body-budget for one client
+                            address (default: a quarter of it, at least
+                            --max-body)
       --max-depth N         JSON nesting in a request (default 32)
       --max-values N        JSON values in a request, keys included
-                            (default 1024; json-c takes up to 0.7 KiB
-                            for each while it holds them)
+                            (default 1024; json-c uses up to 0.7 KiB for
+                            each value while it parses)
       --max-members N       members of one JSON object in a request
                             (default 1024)
       --sse-keepalive SECONDS
-                            between comments that keep an event stream
-                            open (default 15, 0 = none)
-      --max-client-conns N  connections per client address
-                            (default 256, 0 = none)
+                            time between the comment lines that askai
+                            writes on an idle event stream (default 15,
+                            0 = none)
+      --max-client-conns N  connections per client address: an IPv4
+                            address, an IPv6 /64, or the user of a Unix
+                            socket client (default 256, 0 = none)
       --idle-timeout SECONDS
-                            keep-alive idle time (default 30, 0 = none)
-      --output-pause BYTES  pending output that holds back a connection's
-                            requests until it drains (default 256K)
+                            time a connection may stay open with no
+                            request under way, before its first request
+                            and between requests (default 30, 0 = none)
+      --output-pause BYTES  pending output at which no more input is
+                            read from a connection, and a response is
+                            paused until at most half of this is pending
+                            (default 256K, at most --max-output)
       --max-output BYTES    close a connection whose pending output a
                             response would take past this, unless it
                             is all that is pending (default 1M)
