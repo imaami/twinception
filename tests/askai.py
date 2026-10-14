@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end checks for the askai MCP server against fake AI endpoints."""
 
+import errno
 import fcntl
 import grp
 import hashlib
@@ -6095,7 +6096,7 @@ def check_plugin(binary, up, plugin):
         with Askai(binary, "-c", path) as ai:
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in tools] == \
-                ["ask_ai", "man", "test_echo", "test_state"], tools
+                ["ask_ai", "man", "test_echo", "test_state", "test_misuse"], tools
             assert tools[2]["description"] == "Returns the text argument unchanged." \
                 and tools[2]["inputSchema"]["required"] == ["text"], tools[2]
             for text in ("plugin \u20ac", "", "x" * 100000):
@@ -6150,13 +6151,14 @@ def check_plugin(binary, up, plugin):
             [("a", "timer", "{}"), ("b", "test_echo", '{"text":"x"}')]
             if len(request["body"]["messages"]) == 1 else (), text="A"))
         with Askai(binary, "-c", path) as ai:
-            assert names(ai) == ["ask_ai", "man", "test_echo", "test_state"]
+            assert names(ai) == ["ask_ai", "man", "test_echo", "test_state",
+                                 "test_misuse"]
             count = len(up.requests)
             answer, trace = [c["text"] for c in ai.ask("Q")["content"]]
             first, second = up.requests[count:]
             assert [t["function"]["name"] for t in first["body"]["tools"]] == \
-                ["man", "test_echo", "test_state", "compact", "background",
-                 "jobs", "wait", "timer"], first
+                ["man", "test_echo", "test_state", "test_misuse", "compact",
+                 "background", "jobs", "wait", "timer"], first
             assert [m["content"] for m in second["body"]["messages"][2:]] == \
                 ["The seconds argument must be a whole number from 1 to 3600.",
                  "x"], second
@@ -6545,6 +6547,137 @@ def check_instances(binary, up, plugin):
           "loops: PASS")
 
 
+def check_misuse(binary, up, plugin):
+    """askai goes on working when a plugin uses the call API in ways that
+    src/tool.h and src/mcp.h do not allow, and nothing of one call reaches
+    another.
+
+    The kind of the tool test_misuse of the test plugin (src/test_plugin.c)
+    has no step() and no drop().  Its case "ready" asks for a step, its case
+    "own" sets the mcp_slot_own() pointer, and its case "after" ends the
+    call and then calls each function of the call API that ends or changes
+    a call.  The drop() of test_state tries to end its call.  A background
+    job of test_state with "fail" ends with mcp_slot_fail() while the reply
+    of its ask call is being sent.
+    """
+    plugin = os.path.realpath(plugin)
+    auth = {"Authorization": "Bearer alice"}
+    tools = ["ask_ai", "test_echo", "test_state", "test_misuse"]
+    # The text and the error flag of each case's result.
+    expected = {
+        "ready": ("The tool's kind has no step(), so the call cannot go on.", True),
+        "own": ("own", False),
+        "after": ("first", False),
+    }
+    hold = up.reply
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{os.path.realpath(d)}/askai.json"
+        with open(path, "w") as f:
+            json.dump({"url": up.url(), "plugins": [plugin],
+                       "upstream-tools": True, "max-turns": 2,
+                       "roles": {"all": {"tools": tools}},
+                       "identities": {"alice": {
+                           "role": "all",
+                           "tokens": ["sha256:" + hashlib.sha256(b"alice").hexdigest()]}}},
+                      f)
+        os.chmod(path, 0o600)
+        with Askai(binary, "-c", path, loops=1) as ai:
+            def call(name, arguments):
+                status, _, body = ai.rpc("tools/call",
+                                         {"name": name, "arguments": arguments},
+                                         headers=auth)
+                assert status == 200 and "result" in body, (status, body)
+                return body["result"]
+
+            def state():
+                """The number of calls of alice's instance, and the text that
+                it stored when the test_state call ended."""
+                found = re.fullmatch(r"principal=\w+ instance=\S+ calls=(\d+) last=(.*)",
+                                     text_of(call("test_state", {})), re.S)
+                assert found
+                return int(found[1]), found[2]
+
+            for case, (text, failed) in expected.items():
+                result = call("test_misuse", {"case": case})
+                assert text_of(result) == text and \
+                    bool(result.get("isError")) == failed, (case, result)
+                # The next call on the loop gets only its own output.
+                assert text_of(call("test_echo", {"text": "x"})) == "x", case
+            # After the end of the call, askai refused mcp_slot_write(),
+            # mcp_slot_name() and mcp_slot_offset() with EINVAL.
+            einval = errno.EINVAL
+            assert state()[1] == f"write={einval} name={einval} offset={einval}"
+
+            # The same three cases in a turn of an ask call.
+            up.reply = lambda request: (200, turn_stream(
+                [(case, "test_misuse", json.dumps({"case": case})) for case in expected]
+                if len(request["body"]["messages"]) == 1 else (), text="A"))
+            count = len(up.requests)
+            result = call("ask_ai", {"prompt": "Q"})
+            up.reply = hold
+            # The result has the answer and then the trace of the turns.
+            assert result["content"][0]["text"] == "A" and \
+                not result.get("isError"), result
+            told = [m["content"] for m in up.requests[count:][1]["body"]["messages"][2:]]
+            assert len(told) == 3 and all(
+                said.startswith(text) for said, (text, _) in zip(told, expected.values())), told
+
+            # The client of a call that waits closes its connection, so askai
+            # drops the call.  The drop() of test_state tries to end the
+            # call, and askai ignores that.
+            calls = state()[0]
+            with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+                sock.sendall(rpc_request(
+                    1, {"name": "test_state", "arguments": {"wait_ms": 60000}},
+                    "tools/call", headers=auth))
+                # Each call of state() adds 1 to the number of calls, and the
+                # call that waits adds 1 when it starts.  So it has started
+                # when the number grows by 2 between two calls of state().
+                end = time.monotonic() + 5
+                while (now := state()[0]) != calls + 2:
+                    assert now == calls + 1 and time.monotonic() < end, (calls, now)
+                    calls = now
+            wait_for(lambda: state()[1] == "dropped")
+            assert text_of(call("test_echo", {"text": "y"})) == "y"
+
+            # A background job of a turn fails with mcp_slot_fail() while
+            # the reply of its ask call is being sent.  The reply is larger
+            # than the buffers of the connection, and the client reads only
+            # the head of the reply before the job fails, so askai is still
+            # sending the reply then.  The job's failure must not change
+            # the reply.
+            big = "B" * (6 << 20)
+            job = {"tool": "test_state", "arguments": {"wait_ms": 2000, "fail": True}}
+            up.reply = lambda request: (200, turn_stream(
+                [("j", "background", json.dumps(job))]
+                if len(request["body"]["messages"]) == 1 else (), text=big))
+            count = len(up.requests)
+            with socket.socket() as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+                sock.settimeout(30)
+                sock.connect(("127.0.0.1", ai.port))
+                sock.sendall(rpc_request(
+                    1, {"name": "ask_ai", "arguments": {"prompt": "Q"}},
+                    "tools/call", headers=auth))
+                # The job starts before the second turn's upstream request.
+                wait_for(lambda: len(up.requests) == count + 2)
+                fails_at = time.monotonic() + 2.0
+                replies = Replies(sock)
+                while b"\r\n\r\n" not in replies.buf:
+                    assert replies.fill(len(replies.buf) + 1)
+                assert time.monotonic() < fails_at, "the reply began after the job failed"
+                time.sleep(fails_at + 0.5 - time.monotonic())
+                status, body = replies.next()
+            up.reply = hold
+            assert status == 200 and not body["result"].get("isError") and \
+                body["result"]["content"][0]["text"] == big, (status, str(body)[:300])
+            assert text_of(call("test_echo", {"text": "z"})) == "z"
+    print("misuse: askai ignores or refuses a step without step(), an own word "
+          "without drop(), the call API after the end and from drop(), and a "
+          "job that fails while its ask call's reply is sent, and the next "
+          "calls work: PASS")
+
+
 def check_classes(binary, up):
     """The LLM scheduler's classes (S8): test_task's prompt asks as
     background work, which interactive calls go before.  With two slots or
@@ -6639,6 +6772,7 @@ def main():
                       check_man, check_git, check_turns, check_turn_apis, check_tasks,
                       lambda binary, up: check_plugin(binary, up, plugin),
                       lambda binary, up: check_instances(binary, up, plugin),
+                      lambda binary, up: check_misuse(binary, up, plugin),
                       check_classes,
                       check_shutdown,
                       check_watchdog, check_stalled_stderr):

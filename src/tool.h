@@ -66,16 +66,20 @@ typedef void tool_start_fn (struct mcp_slot    *slot,
 
 typedef void tool_step_fn (struct mcp_slot *slot);
 
-/** Let go of *mcp_slot_own(), not nullptr; stop what would end the
- *  call.  It may run inside the call's end, before that returns
- *  (src/mcp.h). */
+/** Frees what the call's own word (mcp_slot_own()) points to, and stops
+ *  what would end the call later, such as a timer.  askai calls it only if
+ *  the own word is not nullptr.  It can run inside the function that ends
+ *  the call, before that function returns (src/mcp.h).  The call has ended
+ *  before drop() runs, so drop() cannot end it. */
 typedef void tool_drop_fn (struct mcp_slot *slot);
 
 struct tool_kind {
 	tool_definition_fn *definition;
 	tool_start_fn      *start;
-	tool_step_fn       *step;   /**< if it calls mcp_slot_ready() */
-	tool_drop_fn       *drop;   /**< if it sets own */
+	tool_step_fn       *step;   /**< needed if a call of the kind calls
+	                                 mcp_slot_ready() */
+	tool_drop_fn       *drop;   /**< needed if a call of the kind sets its
+	                                 own word */
 	uint64_t            flags;  /**< enum tool_flag */
 };
 

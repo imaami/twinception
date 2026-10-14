@@ -1,4 +1,4 @@
-/** @file A plugin for the tests (tests/askai.py).  It has two tools.
+/** @file A plugin for the tests (tests/askai.py).  It has three tools.
  *
  * The output of a test_echo call is the value of the call's string argument
  * "text".
@@ -10,8 +10,13 @@
  * stores.  A call without "wait_ms" ends first and then stores its "text"
  * argument in the instance, so its output has the text that an earlier call
  * stored.  A call with "wait_ms" stores its "text" argument when it starts,
- * and it ends that many milliseconds later.  The drop() of a call with
- * "wait_ms" stores the text "dropped" in the instance. */
+ * and it ends that many milliseconds later.  With "fail" true as well, the
+ * call then ends with mcp_slot_fail() instead.  The drop() of a call with
+ * "wait_ms" stores the text "dropped" in the instance.
+ *
+ * test_misuse calls the call API in ways that tool.h and mcp.h do not
+ * allow.  askai must go on working after them, and nothing of one call may
+ * reach another call.  check_misuse (tests/askai.py) runs it. */
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -22,7 +27,8 @@
 
 #include "plugin.h"
 
-PLUGIN_MANIFEST(.name = "test", .tools = { "test_echo", "test_state" });
+PLUGIN_MANIFEST(.name = "test",
+                .tools = { "test_echo", "test_state", "test_misuse" });
 
 /* The plugin's instance: what test_state stores for one user on one loop. */
 struct test_plugin_instance {
@@ -38,6 +44,8 @@ struct test_plugin_instance {
 struct test_plugin_wait {
 	struct loop_timer  timer;
 	struct mcp_slot   *slot;
+	bool               fail;  /* the timer ends the call with
+	                             mcp_slot_fail() */
 };
 
 /* The plugin's instance_init().  It stores the user of the instance and
@@ -107,7 +115,8 @@ test_plugin_state_definition (void const *service)
 		"\"description\":\"Tells the state of the caller's instance.\","
 		"\"inputSchema\":{\"type\":\"object\","
 		"\"properties\":{\"text\":{\"type\":\"string\"},"
-		"\"wait_ms\":{\"type\":\"integer\"}},"
+		"\"wait_ms\":{\"type\":\"integer\"},"
+		"\"fail\":{\"type\":\"boolean\"}},"
 		"\"additionalProperties\":false}}");
 }
 
@@ -127,14 +136,18 @@ test_plugin_state_tell (struct mcp_slot *slot)
 }
 
 /* The timer function of a call that waits.  It runs when the wait is over,
- * and it ends the call. */
+ * and it ends the call.  If the call has "fail" true, it ends the call with
+ * mcp_slot_fail() and EIO. */
 static void
 test_plugin_wait_fired (struct loop       *loop,
                         struct loop_timer *timer)
 {
 	(void)loop;
 	struct test_plugin_wait *w = (struct test_plugin_wait *)timer;
-	test_plugin_state_tell(w->slot);
+	if (w->fail)
+		mcp_slot_fail(w->slot, EIO);
+	else
+		test_plugin_state_tell(w->slot);
 }
 
 /* Starts a test_state call.  It adds 1 to the number of calls of the call's
@@ -159,7 +172,9 @@ test_plugin_state_start (struct mcp_slot    *slot,
 	}
 	struct json_object *text = nullptr;
 	struct json_object *wait = nullptr;
+	struct json_object *fail = nullptr;
 	(void)json_object_object_get_ex(args, "text", &text);
+	(void)json_object_object_get_ex(args, "fail", &fail);
 	bool waits = json_object_object_get_ex(args, "wait_ms", &wait);
 	uint64_t ms = (uint64_t)json_object_get_int64(wait);
 	char now[sizeof inst->last];
@@ -183,6 +198,7 @@ test_plugin_state_start (struct mcp_slot    *slot,
 	*w = (struct test_plugin_wait){
 		.timer = { .due = UINT64_MAX, .fn = test_plugin_wait_fired },
 		.slot = slot,
+		.fail = json_object_get_boolean(fail),
 	};
 	*mcp_slot_own(slot) = w;
 	int e = loop_timer_set(loop, &w->timer, loop_now(loop) + ms * 1'000'000);
@@ -198,7 +214,9 @@ test_plugin_state_start (struct mcp_slot    *slot,
  * timer and frees the call's memory.  Then it stores the text "dropped" in
  * the call's instance.  check_instances (tests/askai.py) reads that text.
  * The text shows that mcp_slot_instance() returns the instance inside
- * drop(). */
+ * drop().  Last, the function tries to end the call, which drop() must not
+ * do.  askai has ended the call before it calls drop(), so it ignores the
+ * attempt.  check_misuse drops such calls. */
 static void
 test_plugin_state_drop (struct mcp_slot *slot)
 {
@@ -210,6 +228,77 @@ test_plugin_state_drop (struct mcp_slot *slot)
 	struct test_plugin_instance *inst = mcp_slot_instance(slot);
 	inst->len = sizeof dropped - 1;
 	memcpy(inst->last, dropped, inst->len);
+	mcp_slot_tell(slot, TOOL_TEXT("dropped"), 0);
+}
+
+/* Returns the definition of test_misuse as a new reference, or nullptr if
+ * json-c cannot allocate memory. */
+static struct json_object *
+test_plugin_misuse_definition (void const *service)
+{
+	(void)service;
+	return json_tokener_parse(
+		"{\"name\":\"test_misuse\","
+		"\"description\":\"Uses the call API in ways that it does not allow.\","
+		"\"inputSchema\":{\"type\":\"object\","
+		"\"properties\":{\"case\":{\"type\":\"string\","
+		"\"enum\":[\"ready\",\"own\",\"after\"]}},"
+		"\"required\":[\"case\"],"
+		"\"additionalProperties\":false}}");
+}
+
+/* Starts a test_misuse call.  The kind of test_misuse has no step() and no
+ * drop().  The argument "case" selects what the call does:
+ * - "ready": the call calls mcp_slot_ready().  The kind has no step(), so
+ *   askai ends the call as failed.
+ * - "own": the call sets the mcp_slot_own() pointer, and then it ends with
+ *   the text "own".  The kind has no drop(), so askai calls none.
+ * - "after": the call ends with the text "first".  Then it calls each
+ *   function of the call API that ends or changes a call, and askai must
+ *   ignore each of these calls.  The function stores the error numbers
+ *   that mcp_slot_write(), mcp_slot_name() and mcp_slot_offset() return in
+ *   the call's instance, as the text "write=W name=N offset=O".  The next
+ *   test_state call of the user shows that text.
+ * Any other case ends the call as failed. */
+static void
+test_plugin_misuse_start (struct mcp_slot    *slot,
+                          struct json_object *args)
+{
+	struct json_object *arg = nullptr;
+	(void)json_object_object_get_ex(args, "case", &arg);
+	char const *what = json_object_get_string(arg);
+	if (!what)
+		what = "";
+	if (!strcmp(what, "ready")) {
+		mcp_slot_ready(slot);
+		return;
+	}
+	struct test_plugin_instance *inst = mcp_slot_instance(slot);
+	if (!strcmp(what, "own")) {
+		*mcp_slot_own(slot) = inst;
+		mcp_slot_tell(slot, TOOL_TEXT("own"), 0);
+		return;
+	}
+	if (strcmp(what, "after")) {
+		mcp_slot_tell(slot, TOOL_TEXT("The case argument is not known."), TOOL_FAILED);
+		return;
+	}
+	mcp_slot_tell(slot, TOOL_TEXT("first"), 0);
+	size_t taken = 0;
+	struct handle who;
+	int write = mcp_slot_write(slot, TOOL_TEXT("late"), 0, &taken);
+	int name = mcp_slot_name(slot, &who);
+	/* args is not valid after the end of the call, so the function passes
+	 * nullptr. */
+	int offset = mcp_slot_offset(slot, nullptr);
+	mcp_slot_tell(slot, TOOL_TEXT("second"), 0);
+	mcp_slot_finish(slot, 0);
+	mcp_slot_fail(slot, EIO);
+	mcp_slot_ready(slot);
+	mcp_slot_park(slot);
+	int n = snprintf(inst->last, sizeof inst->last, "write=%d name=%d offset=%d",
+	                 write, name, offset);
+	inst->len = n > 0 && n < (int)sizeof inst->last ? (size_t)n : 0;
 }
 
 struct plugin const askai_plugin = {
@@ -223,6 +312,11 @@ struct plugin const askai_plugin = {
 			.definition = test_plugin_state_definition,
 			.start = test_plugin_state_start,
 			.drop = test_plugin_state_drop,
+			.flags = TOOL_LENT | TOOL_DETACH
+		},
+		{
+			.definition = test_plugin_misuse_definition,
+			.start = test_plugin_misuse_start,
 			.flags = TOOL_LENT
 		},
 	},

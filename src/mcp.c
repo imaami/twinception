@@ -367,8 +367,14 @@ struct mcp_slot {
 	uint8_t             fetch;     /* enum mcp_fetch: what its notes' git is
 	                                  for */
 	uint8_t             role;      /* enum mcp_role */
-	bool                done;      /* the call has its output, or it was
-	                                  cancelled */
+	bool                done;      /* true once the call has ended.  A
+	                                  call ends when it has its output,
+	                                  when it fails, when it is
+	                                  cancelled, and when askai calls
+	                                  its kind's drop().  The functions
+	                                  of the call API that would end or
+	                                  change a call do nothing for an
+	                                  ended call. */
 	bool                failed;    /* the call failed */
 	bool                cancelled; /* a job's call, cancelled */
 	struct json_object *args;      /* a job's call's arguments, which the
@@ -911,13 +917,27 @@ mcp_slot_offer (struct mcp_slot const *slot)
 	return &slot->req->mcp->st->offers[slot->tool];
 }
 
-/* Let go of @p slot's own word, as its kind does, and of the output it
- * lent; of its notes' git, and of its work and what it waits for. */
+/* Drops the call in @p slot.  If the call's own word is set, the call
+ * counts as ended first, so the call API ignores an attempt of the kind's
+ * drop() to end the call.  Then the function calls the kind's drop(), or it
+ * logs a warning if the kind has no drop().  A request drops its own slot
+ * between two turns too, and its own slot has no own word, so that slot
+ * does not count as ended then.  Last, the function puts the call's
+ * instance back (instance_table_put()), clears the lent output, destroys
+ * the child of the call's notes, removes the call's step from the loop's
+ * queue and frees the call's handle. */
 static void
 mcp_slot_drop (struct mcp_slot *slot)
 {
-	if (slot->own)
-		mcp_slot_offer(slot)->kind->drop(slot);
+	if (slot->own) {
+		slot->done = true;
+		struct mcp_offer const *offer = mcp_slot_offer(slot);
+		if (offer->kind->drop)
+			offer->kind->drop(slot);
+		else
+			LOG(LOG_WARN, "a call of %s set its own word, but its kind has no "
+			    "drop()", offer->name);
+	}
 	slot->own = nullptr;
 	instance_table_put(&slot->req->mcp->instances, &slot->inst);
 	slot->lent = (struct span){};
@@ -1296,6 +1316,10 @@ static void
 mcp_req_fail (struct mcp_req *req,
               int             e)
 {
+	/* The reply is being sent, or the request is being freed.  A job of the
+	 * turns that fails now does not change the reply. */
+	if (req->phase >= PHASE_SEND)
+		return;
 	if (e == ESHUTDOWN) {
 		mcp_req_error(req, 503, INTERNAL_ERROR, FRAG("Server is shutting down"),
 		              nullptr, 0);
@@ -1404,6 +1428,7 @@ mcp_slot_result (struct mcp_slot  *slot,
                  bool              failed)
 {
 	struct mcp_req *req = slot->req;
+	slot->done = true;
 	if (slot->role != ROLE_OWN) {
 		dstr_clear(&slot->answer);
 		if (!dstr_cat_n(&slot->answer, text.ptr, text.len)) {
@@ -1475,6 +1500,7 @@ static void
 mcp_slot_respond (struct mcp_slot *slot,
                   bool             failed)
 {
+	slot->done = true;
 	if (slot->role != ROLE_OWN) {
 		mcp_slot_done(slot, failed);
 		return;
@@ -2249,6 +2275,8 @@ mcp_slot_tell (struct mcp_slot  *slot,
                struct tool_text  text,
                uint32_t          flags)
 {
+	if (slot->done)
+		return;
 	size_t len = jb_utf8(text.ptr, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
 	mcp_slot_wake(slot);
 	/* The output is the text whole, not lent, nor from an offset. */
@@ -2261,6 +2289,8 @@ void
 mcp_slot_finish (struct mcp_slot *slot,
                  uint32_t         flags)
 {
+	if (slot->done)
+		return;
 	mcp_slot_wake(slot);
 	mcp_slot_respond(slot, flags & TOOL_FAILED);
 }
@@ -2269,6 +2299,9 @@ void
 mcp_slot_fail (struct mcp_slot *slot,
                int              e)
 {
+	if (slot->done)
+		return;
+	slot->done = true;
 	mcp_req_fail(slot->req, e);
 }
 
@@ -2276,6 +2309,8 @@ int
 mcp_slot_offset (struct mcp_slot    *slot,
                  struct json_object *args)
 {
+	if (slot->done)
+		return EINVAL;
 	struct json_object *o = jb_get(args, "offset");
 	int64_t n = !o ? 0
 	          : json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : -1;
@@ -2293,6 +2328,9 @@ mcp_slot_write (struct mcp_slot  *slot,
                 uint32_t          flags,
                 size_t           *taken)
 {
+	*taken = 0;
+	if (slot->done)
+		return EINVAL;
 	struct dstr *answer = &slot->answer;
 	size_t had = dstr_len(answer);
 	if (text.len > TOOL_OUTPUT_MAX - had)
@@ -2338,6 +2376,8 @@ mcp_slot_lend (struct mcp_slot  *slot,
 void
 mcp_slot_park (struct mcp_slot *slot)
 {
+	if (slot->done)
+		return;
 	struct mcp_req *req = slot->req;
 	if (mcp_slot_offer(slot)->kind->flags & TOOL_STREAM && req->sse_ok && !req->sse)
 		mcp_req_stream(req);
@@ -2350,6 +2390,13 @@ mcp_slot_park (struct mcp_slot *slot)
 void
 mcp_slot_ready (struct mcp_slot *slot)
 {
+	if (slot->done)
+		return;
+	if (!mcp_slot_offer(slot)->kind->step) {
+		mcp_slot_tell(slot, TOOL_TEXT("The tool's kind has no step(), so the call "
+		                              "cannot go on."), TOOL_FAILED);
+		return;
+	}
 	loop_ready_bulk(slot->req->mcp->loop, &slot->step);
 }
 
@@ -2357,6 +2404,10 @@ int
 mcp_slot_name (struct mcp_slot *slot,
                struct handle   *who)
 {
+	if (slot->done) {
+		*who = (struct handle){};
+		return EINVAL;
+	}
 	int e = slot->call.bits ? 0 : loop_handle(slot->req->mcp->loop, slot, &slot->call);
 	*who = slot->call;
 	return e;

@@ -157,13 +157,19 @@ extern struct stream_app const *
 mcp_app (struct mcp *mcp);
 
 /*
- * The call API: what a kind of tool (src/tool.h) does with a call, its
- * slot.  A call ends once: by tell, finish, fail, or a refused offset.  The
- * end cancels a queued step(), and may free the call and its arguments; own
- * and lent output stay until drop(), which the end may run before it
- * returns: after the end, touch neither the call nor what own holds.
- * Another thread completes a call by loop_post() naming it
- * (mcp_slot_name()); the handler finds it with mcp_slot_named().
+ * The call API.  A kind of tool (src/tool.h) uses these functions for a
+ * call, which runs in a slot.  A call ends once: with mcp_slot_tell(),
+ * mcp_slot_finish() or mcp_slot_fail(), or when mcp_slot_offset() or
+ * mcp_slot_ready() ends it as failed.  The end cancels a step() that is
+ * queued, and askai can then free the call's arguments.  The output that
+ * the kind's own word points to stays valid until drop().  askai can run
+ * drop() before the function that ends the call returns.  After the end,
+ * the functions that would end or change the call do nothing, and
+ * mcp_slot_write(), mcp_slot_name() and mcp_slot_offset() return EINVAL.
+ * After drop() has returned, the kind must not use the slot.  Another
+ * thread completes a call with loop_post() and the handle that
+ * mcp_slot_name() stores.  The message's function then gets the call with
+ * mcp_slot_named().
  */
 
 /** Creates the part of a built-in plugin for the client loop @p loop.
@@ -214,22 +220,33 @@ EXPORT
 extern uint64_t
 mcp_slot_principal (struct mcp_slot const *slot);
 
-/** The kind's word for the call, nullptr at start. */
+/** Returns the address of the call's own word, a pointer that the kind can
+ *  set.  The word is nullptr when the call starts.  If the kind sets it,
+ *  askai calls the kind's drop() when it drops the call.  A kind without
+ *  drop() must not set it. */
 EXPORT
 extern void **
 mcp_slot_own (struct mcp_slot *slot);
 
-/** Take @p args' "offset": 0, or EINVAL, the call ended saying why. */
+/** Takes the call's offset from the member "offset" of @p args.  Returns 0
+ *  if the member is missing or is a whole number from 0.  Otherwise it ends
+ *  the call as failed with a text that says why, and returns EINVAL.  It
+ *  also returns EINVAL if the call has ended. */
 EXPORT
 extern int
 mcp_slot_offset (struct mcp_slot    *slot,
                  struct json_object *args);
 
 /**
- * Append @p text, made UTF-8: a byte that breaks it becomes '?', but with
- * TOOL_MORE up to 3 bytes ending no character are left to the next write.
- * 0, the bytes taken in @p *taken, counted as LOOP_COPY; or, nothing
- * taken, EFBIG past TOOL_OUTPUT_MAX, or ENOMEM.
+ * Appends @p text to the call's output.  A byte that is not part of UTF-8
+ * becomes '?'.  With TOOL_MORE in @p flags, up to 3 bytes at the end of
+ * @p text that do not complete a character are not taken, so that the next
+ * write can complete the character.  Stores the number of bytes taken in
+ * @p *taken and counts them as LOOP_COPY work.
+ *
+ * Returns 0.  On failure it takes nothing.  It returns EFBIG if the output
+ * would grow past TOOL_OUTPUT_MAX, ENOMEM if memory runs out, and EINVAL if
+ * the call has ended.
  */
 EXPORT
 extern int
@@ -249,19 +266,26 @@ extern void
 mcp_slot_lend (struct mcp_slot  *slot,
                struct tool_text  text);
 
-/** From start(), last: wait.  An own call's arguments are freed; with
- *  TOOL_STREAM, any role, an event stream opens if the client takes one. */
+/** Makes the call wait.  start() calls it last, if the call goes on after
+ *  start() returns.  askai can free the call's arguments in this function.
+ *  For a kind with TOOL_STREAM, the reply becomes an event stream if the
+ *  client accepts one.  Does nothing if the call has ended. */
 EXPORT
 extern void
 mcp_slot_park (struct mcp_slot *slot);
 
-/** Queue step(), in bulk: the kind has one. */
+/** Queues the step() of the call's kind as a bulk step of the loop.  If the
+ *  kind has no step(), the call ends as failed instead.  Does nothing if the
+ *  call has ended. */
 EXPORT
 extern void
 mcp_slot_ready (struct mcp_slot *slot);
 
-/** Name the call for a post: 0, or ENOMEM.  A call has one name until it
- *  ends or drops; naming it again gives the same handle. */
+/** Stores in @p *who a handle that names the call, for a message that
+ *  another thread posts with loop_post().  A call has one handle until it
+ *  ends or is dropped, so a second call of this function stores the same
+ *  handle.  Returns 0, or ENOMEM.  If the call has ended, the function
+ *  stores the handle 0 and returns EINVAL. */
 EXPORT
 extern int
 mcp_slot_name (struct mcp_slot *slot,
@@ -278,24 +302,36 @@ extern struct mcp_slot *
 mcp_slot_named (struct loop const *loop,
                 struct handle      who);
 
-/** End with @p text whole, cut at TOOL_TELL_MAX or a non-UTF-8 byte. */
+/** Ends the call with @p text as its whole output, without an offset.  The
+ *  text is cut at TOOL_TELL_MAX bytes, or before its first byte that is not
+ *  part of UTF-8.  With TOOL_FAILED in @p flags, the call fails.  Does
+ *  nothing if the call has ended. */
 EXPORT
 extern void
 mcp_slot_tell (struct mcp_slot  *slot,
                struct tool_text  text,
                uint32_t          flags);
 
-/** End with the output: an own call's from its offset, a turn's window. */
+/** Ends the call with the output that mcp_slot_write() wrote.  A client's
+ *  call gets the output from the offset that mcp_slot_offset() took.  A
+ *  turn's call gets the part of the output that the turn takes.  With
+ *  TOOL_FAILED in @p flags, the call fails.  Does nothing if the call has
+ *  ended. */
 EXPORT
 extern void
 mcp_slot_finish (struct mcp_slot *slot,
                  uint32_t         flags);
 
 /**
- * End the call and its request with @p e, ENOMEM or ESHUTDOWN; any other
- * is answered as ENOMEM is, 500 Out of memory.  A turn's fails its ask
- * call.  A call that fails for its own reasons ends by tell or finish with
- * TOOL_FAILED.
+ * Ends the call and its request with the error number @p e.  The reply is
+ * an HTTP 503 error for ESHUTDOWN and an HTTP 500 error, "Out of memory",
+ * for any other error number.  For a call of a turn, or of a job that the
+ * turns run in the background, the request is the ask call.  If the reply
+ * of the ask call is already being sent, only the call ends.  Does nothing
+ * if the call has ended.
+ *
+ * A call that fails for a reason of its own ends with mcp_slot_tell() or
+ * mcp_slot_finish() and TOOL_FAILED instead.
  */
 EXPORT
 extern void
