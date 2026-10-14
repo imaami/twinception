@@ -28,8 +28,8 @@ CFLAGS   :=
 CPPFLAGS :=
 LDFLAGS  :=
 
-override SRC_DIR    := $(TEST_DIR)../src/
-override TEST_FLAGS := -std=gnu23 -O2 -g -Wall -Wextra -Wpedantic
+override SRC_DIR    := $(realpath $(TEST_DIR)../src)/
+override TEST_FLAGS := -std=gnu23 -O2 -g -Wall -Wextra -Wpedantic -pthread
 
 # Each check builds its binary with a sub-make, and the binaries share
 # objects: two sub-makes at once would compile the same files.
@@ -61,22 +61,10 @@ check-askai: | askai test_plugin.so
 check-buf: $Otests/buf
 	$<
 
-$Otests/buf: $(TEST_DIR)buf.c $(SRC_DIR)buf.c $(SRC_DIR)buf.h \
-             $(SRC_DIR)hist.h $(SRC_DIR)util.h | $Otests
-	$(CC) $(TEST_FLAGS) -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	      -o "$@" $(filter %.c,$^)
-
 # Unit tests of the event loop's handles, which include src/loop.c to reach
 # its slot table.
 check-handle: $Otests/handle
 	$<
-
-$Otests/handle: $(TEST_DIR)handle.c $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
-                $(SRC_DIR)loop_export.h $(SRC_DIR)export.h \
-                $(SRC_DIR)hist.h $(SRC_DIR)list.h $(SRC_DIR)util.h \
-                $(SRC_DIR)log.c $(SRC_DIR)log.h | $Otests
-	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	      -o "$@" $(TEST_DIR)handle.c $(SRC_DIR)log.c
 
 # check-turn runs unit tests of the order in which a turn of the event loop
 # runs its steps.  The test includes src/loop.c and replaces clock_gettime()
@@ -84,27 +72,31 @@ $Otests/handle: $(TEST_DIR)handle.c $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
 check-turn: $Otests/turn
 	$<
 
-$Otests/turn: $(TEST_DIR)turn.c $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
-              $(SRC_DIR)loop_export.h $(SRC_DIR)export.h $(SRC_DIR)hist.h \
-              $(SRC_DIR)list.h $(SRC_DIR)util.h $(SRC_DIR)log.c \
-              $(SRC_DIR)log.h | $Otests
-	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	      -o "$@" $(TEST_DIR)turn.c $(SRC_DIR)log.c
-
 # Unit tests of the table of plugin instances.  The test includes
 # src/loop.c and src/instance.c, so that it can call their static functions.
 check-instance: $Otests/instance
 	$<
 
-$Otests/instance: $(TEST_DIR)instance.c $(SRC_DIR)instance.c \
-                  $(SRC_DIR)instance.h $(SRC_DIR)loop.c $(SRC_DIR)loop.h \
-                  $(SRC_DIR)loop_export.h $(SRC_DIR)plugin.h \
-                  $(SRC_DIR)brainstem.h $(SRC_DIR)buf.h $(SRC_DIR)export.h \
-                  $(SRC_DIR)hist.h $(SRC_DIR)list.h $(SRC_DIR)manifest.h \
-                  $(SRC_DIR)mcp.h $(SRC_DIR)tool.h $(SRC_DIR)util.h \
-                  $(SRC_DIR)log.c $(SRC_DIR)log.h | $Otests
-	$(CC) $(TEST_FLAGS) -pthread -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	      -o "$@" $(TEST_DIR)instance.c $(SRC_DIR)log.c
+# The unit tests.  Each test links the object of its own source and the
+# objects of the files of src/ that the lines below list.
+override UNIT := buf handle instance turn
+
+$Otests/buf: $Otests/src/buf.c.o
+$Otests/handle $Otests/instance $Otests/turn: $Otests/src/log.c.o
+
+$(UNIT:%=$Otests/%): $Otests/%: $Otests/%.c.o
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
+
+# Each source is compiled on its own, as in mk/common.mk.  -MMD writes a
+# rule to a .d file beside the object.  The rule lists every file that the
+# source includes, directly or through other files, as a prerequisite of
+# the object.  The .d files are included at the end of this makefile, so a
+# change of an included file rebuilds only the objects that include it.
+$Otests/%.c.o: $(TEST_DIR)%.c | $Otests
+	$(CC) $(TEST_FLAGS) -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) -MMD -c -o "$@" "$<"
+
+$Otests/src/%.c.o: $(SRC_DIR)%.c | $Otests/src
+	$(CC) $(TEST_FLAGS) -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) -MMD -c -o "$@" "$<"
 
 # e.g. make check-dstr DSTR_CHECKFLAGS='-t gcc -S address'
 check-dstr:
@@ -114,18 +106,20 @@ check-dstr:
 # profile driver; the histogram is src/hist.h.
 override LOAD       := $Otests/load
 override LOAD_SRC   := $(TEST_DIR)load
-override LOAD_FLAGS := $(TEST_FLAGS) -pthread -I$(SRC_DIR)
+override LOAD_FLAGS := $(TEST_FLAGS) -I$(SRC_DIR)
 
 load-build: | $(LOAD)/gen $(LOAD)/mock
 
-$(LOAD)/gen: $(LOAD_SRC)/gen.c $(SRC_DIR)hist.h | $(LOAD)
-	$(CC) $(LOAD_FLAGS) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $< -lssl \
+# Each program of the harness has one source, so one command compiles and
+# links it, and -MMD writes the rule for the program to a .d file.
+$(LOAD)/gen: $(LOAD_SRC)/gen.c | $(LOAD)
+	$(CC) $(LOAD_FLAGS) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -MMD -o "$@" $< -lssl \
 	      -lcrypto -lm
 
 $(LOAD)/mock: $(LOAD_SRC)/mock.c | $(LOAD)
-	$(CC) $(LOAD_FLAGS) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $<
+	$(CC) $(LOAD_FLAGS) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -MMD -o "$@" $<
 
-$Otests $(LOAD):; mkdir -p "$@"
+$Otests $Otests/src $(LOAD):; mkdir -p "$@"
 
 # The harness's verdict (no errors, lockouts, leaks, unfairness or unbounded
 # work; latency only against the same run's idle phase) on a light mix of
@@ -137,5 +131,8 @@ check-load: | load-build askai
 # Override the seconds with LOAD_SECONDS and the probe rate with RATE.
 load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
+
+-include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/log.c.d \
+         $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif
