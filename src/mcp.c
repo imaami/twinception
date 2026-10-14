@@ -4324,13 +4324,20 @@ mcp_slot_notes_unread (struct mcp_slot *slot)
 static int
 mcp_slot_notes_unadded (struct mcp_slot *slot)
 {
-	static char const busy[] = "not updating ";
+	/* git writes one of these errors if another call moved the branch
+	 * after the check of the name.  fast-import writes "not updating" if it
+	 * read the new tip.  The update of the branch writes "but expected" if
+	 * the tip moved after fast-import read it. */
+	struct span const raced[] = { SPAN("not updating "), SPAN(" but expected ") };
 	struct child const *c = slot->child;
 	struct span out = buf_peek(&c->out);
 	if (c->late)
 		return mcp_slot_say(slot, &TEXT("Could not add the note: it took too "
 		                                "long."), 1);
-	if (memmem(out.ptr, out.len, busy, sizeof busy - 1))
+	bool race = false;
+	for (size_t i = 0; i < ARRAY_SIZE(raced) && out.len; ++i)
+		race |= memmem(out.ptr, out.len, raced[i].ptr, raced[i].len) != nullptr;
+	if (race)
 		return mcp_slot_say(slot, &TEXT("Could not add the note, because another "
 		                                "call added a note to this thread at the "
 		                                "same time. Add it again."), 1);

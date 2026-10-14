@@ -5406,6 +5406,29 @@ def check_notes(binary, up):
                                   {"action": "add", "file": "z.md", "text": "z"}):
                     said = call(arguments | {"thread": other}, token)
                     assert said == f"!Unknown thread: {other}.", (token, arguments, said)
+        # When two adds to one thread run at once, one of them fails, and its
+        # answer asks to add the note again.  A git that sleeps before
+        # fast-import makes both adds check the same newest note.
+        os.mkdir(f"{d}/bin")
+        with open(f"{d}/bin/git", "w") as f:
+            f.write('#!/bin/sh\ncase " $* " in *" fast-import "*) sleep 0.5;; esac\n'
+                    f'exec {shutil.which("git")} "$@"\n')
+        os.chmod(f"{d}/bin/git", 0o755)
+        with Askai(binary, "-c", path,
+                   env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
+            for k in range(3):
+                said = []
+                adds = [threading.Thread(target=lambda name=name: said.append(call(
+                    {"action": "add", "file": name, "text": "r", "thread": thread})))
+                    for name in (f"race/{k}a.md", f"race/{k}b.md")]
+                for add in adds:
+                    add.start()
+                for add in adds:
+                    add.join(10)
+                assert sorted(said) == ["!Could not add the note, because another "
+                                        "call added a note to this thread at the "
+                                        "same time. Add it again.", "Noted."], said
+            assert not any("could not add" in line for line in ai.log), ai.log
     print("notes: granted by a role, threads of the clients' own, list, read, "
           "pages, names and texts refused, threads kept apart: PASS")
 

@@ -543,8 +543,8 @@ names.  Slashes at the start of a name are left out.  The caller sees that notes
 they say.  `ask_ai`'s `thread` argument goes on with a thread in a later
 call, whose prompt then has the list of the thread's notes and the newest
 note.  Only the identity that wrote a thread can go on with it.  Two calls
-that add notes to one thread at once may make one of them fail, which says
-so.  `git` runs there with no hooks.  Nothing prunes the repositories: run
+that add notes to one thread at once may make one of them fail, and the
+answer to that call asks to add the note again.  `git` runs there with no hooks.  Nothing prunes the repositories: run
 `git gc` on them now and then.  Older versions of `askai` kept all the notes
 in one repository, `DIR` itself.  `askai` refuses such a `DIR` and does not
 move its notes.
