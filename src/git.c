@@ -368,12 +368,15 @@ git_definition (void const *service)
 		"name", json_object_new_string("git"),
 		"title", json_object_new_string("Git"),
 		"description", json_object_new_string(
-			"Run a read-only git command in one of the server's repositories, "
-			"and get its output, its errors included, cut at 2 MiB: log, show, "
-			"diff, grep, blame, ls-files, ls-tree, cat-file or rev-parse. Give "
-			"options with their values attached (--max-count=20, not -n 20); "
-			"only the usual read-only ones are taken. Revisions and paths go "
-			"apart, and grep's pattern too."),
+			"Run a read-only git command in one of the repositories of the "
+			"server, and get its output, with its errors, up to 2 MiB. The "
+			"commands are log, show, diff, grep, blame, ls-files, ls-tree, "
+			"cat-file and rev-parse. To read a file as of the last commit, use "
+			"show with the whole HEAD:path as the revision and no paths, for "
+			"example \"revisions\": [\"HEAD:src/main.c\"]. Any other commit "
+			"can replace HEAD. Give each option with its value attached "
+			"(--max-count=20, not -n 20). Only the usual read-only options are "
+			"allowed."),
 		"inputSchema", jb_object(
 			"type", json_object_new_string("object"),
 			"properties", jb_object(
@@ -388,13 +391,18 @@ git_definition (void const *service)
 				"options", git_strings("Options, such as --oneline or "
 				                       "--max-count=20.", OPTIONS),
 				"revisions", git_strings("Revisions, such as HEAD~3, main..topic "
-				                         "or a commit's hash.", REVISIONS),
+				                         "or the hash of a commit. For show, "
+				                         "HEAD:path names the contents of a file "
+				                         "as of that commit.", REVISIONS),
 				"paths", git_strings("Paths in the repository, relative to its "
-				                     "top.", PATHS),
+				                     "top. They limit the output of a command "
+				                     "such as log or diff to those paths. They "
+				                     "do not read a file.", PATHS),
 				"pattern", jb_object(
 					"type", json_object_new_string("string"),
 					"description", json_object_new_string(
-						"grep's pattern, and only grep's."),
+						"The pattern for grep. Only grep takes a "
+						"pattern."),
 					nullptr),
 				"offset", jb_object(
 					"type", json_object_new_string("integer"),
@@ -582,7 +590,8 @@ git_command (struct git const   *git,
 	if (lens[1] && !(takes & REVS))
 		return git_wrong(why, "git %s takes no revisions.", cmd);
 	if (lens[2] && !(takes & FILES))
-		return git_wrong(why, "git %s takes no paths.", cmd);
+		return git_wrong(why, "git %s takes no paths. To name a file, give the "
+		                 "revision HEAD:path.", cmd);
 	struct json_object *pattern = jb_get(args, "pattern");
 	size_t len;
 	char const *pat = git_word(pattern, &len);

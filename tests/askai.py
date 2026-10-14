@@ -5122,6 +5122,12 @@ def check_git(binary, up):
             schema = tools[1]["inputSchema"]
             assert schema["properties"]["repo"]["enum"] == ["proj", "other"] and \
                 schema["required"] == ["repo", "command"], schema
+            # The description has an example call that reads a file with show
+            # and HEAD:path, so that a model tries that first.
+            assert '"revisions": ["HEAD:src/main.c"]' in tools[1]["description"] and \
+                "HEAD:path" in schema["properties"]["revisions"]["description"], tools[1]
+            assert text_of(call(ai, repo="proj", command="show",
+                                revisions=["HEAD:a.txt"])).startswith("alpha\n"), "show"
 
             # What a call may ask for.
             for arguments, text in (
@@ -5171,7 +5177,8 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "ls-files", "revisions": ["HEAD"]},
                      "git ls-files takes no revisions."),
                     ({"repo": "proj", "command": "cat-file", "paths": ["a.txt"]},
-                     "git cat-file takes no paths."),
+                     "git cat-file takes no paths. To name a file, give the "
+                     "revision HEAD:path."),
                     ({"repo": "proj", "command": "grep"},
                      "git grep needs a pattern argument: a string of 1 to 1024 "
                      "bytes."),
