@@ -22,6 +22,7 @@ import sys
 SRC = """
     all
     askai clean-askai purge-askai
+    godbolt.so clean-godbolt.so purge-godbolt.so
     test_plugin.so clean-test_plugin.so purge-test_plugin.so
     twinception clean-twinception purge-twinception
     compile_commands.json clean-compile_commands.json

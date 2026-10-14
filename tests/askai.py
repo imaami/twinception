@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LEGACY = "2025-11-25"
@@ -7805,6 +7806,592 @@ def check_web(binary, up, plugin):
           "stop with a request under way: PASS")
 
 
+def ce_compiler(cid, name, kind, families, version, isa, track="stable"):
+    """An element of a list of compilers of the mock Compiler Explorer."""
+    return {"id": cid, "name": name, "compilerType": kind,
+            "compilerCategories": families, "semver": version,
+            "instructionSet": isa, "releaseTrack": track}
+
+
+# The ids of compilers of the mock Compiler Explorer that answer in a way of
+# their own (MockCE.compile).  Each of them has the compilerType of GCC.
+CE_SPECIAL = ("gone", "boom", "busy", "later", "slow", "trunc", "big")
+
+CE_LANGUAGES = [{"id": "c", "name": "C", "extensions": [".c"], "monaco": "nc"},
+                {"id": "c++", "name": "C++", "extensions": [".cpp"],
+                 "monaco": "cppp"}]
+
+CE_COMPILERS = {
+    "c": [ce_compiler("cg142", "x86-64 gcc 14.2", "", ["gcc"], "14.2", "amd64"),
+          ce_compiler("cclang19", "x86-64 clang 19.1", "clang", ["clang", "llvm"],
+                      "19.1", "amd64"),
+          ce_compiler("cvc19", "x64 msvc 19.40", "win32-vc", ["msvc"], "19.40",
+                      "amd64"),
+          ce_compiler("cclangcl19", "x64 clang-cl 19.1", "clang-cl", [], "19.1",
+                      "amd64"),
+          ce_compiler("cti", "TI CL430 21.6", "ticlang", [], "21.6", "msp430"),
+          ce_compiler("cgtrunk", "x86-64 gcc (trunk)", "", ["gcc"], "(trunk)",
+                      "amd64", "nightly"),
+          {"name": "a row without an id"}] +
+         [ce_compiler(cid, "special " + cid, "", ["gcc"], "1.0", "amd64")
+          for cid in CE_SPECIAL],
+    "c++": [ce_compiler("cppg142", "x86-64 g++ 14.2", "", ["gcc"], "14.2", "amd64"),
+            ce_compiler("cvc19", "x64 msvc 19.40", "win32-vc", ["msvc"], "19.40",
+                        "amd64")],
+    # A compiler with more family tags than the plugin takes, one with a kind
+    # longer than it takes, and one whose tags repeat.
+    "tags": [ce_compiler("many", "many tags", "", [f"t{i}" for i in range(65)], "1.0",
+                         "amd64"),
+             ce_compiler("longkind", "long kind", "k" * 129, [], "1.0", "amd64"),
+             ce_compiler("few", "few tags", "", ["a", "b", "a"], "1.0", "amd64")],
+    # An element larger than the plugin takes.
+    "huge": [ce_compiler("long", "x" * (4 << 10), "", [], "1.0", "amd64")],
+    # More different kinds than the counts take.
+    "keys": [ce_compiler(f"k{i}", "kind", f"kind{i}", [], "1.0", "amd64")
+             for i in range(257)],
+}
+
+
+class MockCE:
+    """A local Compiler Explorer for check_godbolt, on an ephemeral port.
+
+    It records each request as (method, path, query, headers, body), with
+    the path percent-decoded.  GET /api/languages and GET /api/compilers/LANG
+    answer with CE_LANGUAGES and CE_COMPILERS.  POST /api/compiler/ID/compile
+    answers by the id: gone is 404, boom is 500 with a JSON message, busy is
+    429 with Retry-After 1 for its first request, later is 429 with
+    Retry-After 120, slow waits 3 s, trunc has cut assembly, big has more
+    than 4 MiB of assembly, and euro has 3.9 MB of assembly in one string of
+    the 3-byte character U+20AC.  longline has a message line of 3 MB,
+    labels has 200,000 label definitions, and array answers a JSON array.
+    Any other id compiles: each line of the source becomes a line of
+    assembly, -Wall adds a warning, and -DFAIL adds an error and the exit
+    code 1.  Any other request gets 404.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.requests = []
+        self.busy = 0
+        ce = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                ce.serve(self, b"")
+
+            def do_POST(self):
+                ce.serve(self, self.rfile.read(int(self.headers.get("Content-Length", 0))))
+
+        self.server = QuietServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def url(self):
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def seen(self, method=None, path=None):
+        """The requests so far, of @p method and @p path if they are given."""
+        with self.lock:
+            return [r for r in self.requests
+                    if method in (None, r[0]) and path in (None, r[1])]
+
+    def bodies(self, cid=None):
+        """The bodies of the compilations so far, of the compiler @p cid if it
+        is given, as JSON."""
+        return [json.loads(r[4]) for r in self.seen("POST")
+                if r[1].startswith("/api/compiler/") and
+                cid in (None, r[1].split("/")[3])]
+
+    def serve(self, handler, body):
+        raw, _, query = handler.path.partition("?")
+        path = urllib.parse.unquote(raw)
+        with self.lock:
+            self.requests.append((handler.command, path, query, handler.headers, body))
+        status, data, headers = self.answer(handler.command, path, body)
+        out = data if isinstance(data, bytes) else json.dumps(data).encode()
+        handler.send_response(status)
+        handler.send_header("Content-Type", "text/plain; charset=utf-8"
+                            if isinstance(data, bytes) else "application/json")
+        handler.send_header("Content-Length", str(len(out)))
+        for name, value in headers:
+            handler.send_header(name, value)
+        handler.end_headers()
+        try:
+            handler.wfile.write(out)
+        except OSError:
+            pass
+
+    def answer(self, method, path, body):
+        if method == "GET" and path == "/api/languages":
+            return 200, CE_LANGUAGES, ()
+        if method == "GET" and path == "/api/compilers/broken":
+            return 500, {"error": True, "message": "No list today"}, ()
+        if method == "GET" and path == "/api/compilers/odd":
+            return 200, {"a": 1}, ()
+        if method == "GET" and path.startswith("/api/compilers/"):
+            return 200, CE_COMPILERS.get(path.removeprefix("/api/compilers/"), []), ()
+        match = re.fullmatch(r"/api/compiler/([^/]+)/compile", path)
+        if method == "POST" and match:
+            return self.compile(match[1], json.loads(body))
+        return 404, b"Not Found", ()
+
+    def compile(self, cid, body):
+        args = body["options"]["userArguments"]
+        with self.lock:
+            self.busy += cid == "busy"
+            first = self.busy == 1
+        if cid == "gone":
+            return 404, b"Not Found", ()
+        if cid == "boom":
+            return 500, {"error": True, "message": "Something broke"}, ()
+        if cid == "later" or (cid == "busy" and first):
+            return 429, b"Too Many Requests", [("Retry-After",
+                                                 "120" if cid == "later" else "1")]
+        if cid == "slow":
+            time.sleep(3)
+        if cid == "trunc":
+            return 200, {"code": 0, "stdout": [], "stderr": [], "truncated": True,
+                         "asm": [{"text": "mov eax, 1"},
+                                 {"text": "[truncated; too many lines]"}]}, ()
+        if cid == "big":
+            return 200, {"code": 0, "stdout": [], "stderr": [],
+                         "asm": [{"text": "x" * 1023}] * 4200}, ()
+        if cid == "euro":
+            return 200, json.dumps({"code": 0, "stdout": [], "stderr": [],
+                                    "asm": "\u20ac" * 1_300_000},
+                                   ensure_ascii=False).encode(), ()
+        if cid == "longline":
+            return 200, {"code": 0, "stdout": [], "asm": [],
+                         "stderr": [{"text": "y" * 3_000_000}]}, ()
+        if cid == "labels":
+            return 200, {"code": 0, "stdout": [], "stderr": [], "asm": [],
+                         "labelDefinitions": {f"L{i}": i for i in range(200_000)}}, ()
+        if cid == "array":
+            return 200, [0] * 300_000, ()
+        stderr = []
+        if "-Wall" in args:
+            stderr.append({"text": "<source>:1:1: warning: a warning [-Wall]"})
+        if "-DFAIL" in args:
+            stderr.append({"text": "<source>:1:1: error: FAIL is defined"})
+        return 200, {"code": 1 if "-DFAIL" in args else 0, "stdout": [],
+                     "stderr": stderr,
+                     "asm": [{"text": "asm: " + line, "source": None}
+                             for line in body["source"].splitlines()]}, ()
+
+
+def ce_records(text):
+    """The records of the output of a compilation, as (id, args, status,
+    body), and the last line."""
+    head, _, last = text.removesuffix("\n").rpartition("\n")
+    parts = re.split(r"^=== (\S+) (\"(?:[^\"\\]|\\.)*\"): (.*) ===\n", head + "\n",
+                     flags=re.M)
+    assert parts[0] == "", text
+    return [(parts[i], json.loads(parts[i + 1]), parts[i + 2], parts[i + 3])
+            for i in range(1, len(parts), 4)], last + "\n"
+
+
+def check_godbolt(binary, up, godbolt):
+    """The godbolt plugin (src/godbolt.c) against a local mock of Compiler
+    Explorer (MockCE).
+
+    The check lists the plugin's tools, and calls godbolt_catalog with each
+    action and its filters.  It reads the output of a call from an offset,
+    checks that askai sends each list once, and checks lists with malformed
+    and oversized elements.  Then it compiles with
+    several compilers and argument strings, and it checks the bodies of the
+    requests, the records of failed requests, a retry after 429, cut and
+    oversized responses, the end of the output at 14 MiB, a long line,
+    large and odd responses, the stored responses of a call with offset,
+    refused arguments and a cancelled call.
+    Last, it starts askai with options that the plugin refuses.
+    """
+    godbolt = os.path.realpath(godbolt)
+    ce = MockCE()
+
+    def call(ai, name, rpc_id=1, **arguments):
+        status, _, body = ai.rpc("tools/call", {"name": name, "arguments": arguments},
+                                 rpc_id=rpc_id)
+        assert status == 200 and "result" in body, (status, body)
+        return body["result"]
+
+    def ok(ai, name, **arguments):
+        result = call(ai, name, **arguments)
+        assert not result.get("isError"), (arguments, result)
+        return text_of(result)
+
+    def refused(ai, name, **arguments):
+        result = call(ai, name, **arguments)
+        assert result.get("isError"), (arguments, result)
+        return text_of(result)
+
+    def gets(path):
+        return len(ce.seen("GET", path))
+
+    filters = {"binary": False, "binaryObject": False, "commentOnly": True,
+               "debugCalls": False, "demangle": True, "directives": True,
+               "execute": False, "intel": True, "labels": True,
+               "libraryCode": False, "trim": False}
+    source = "int square(int x)\n{\n\treturn x * x;\n}\n"
+    asm = "".join(f"asm: {line}\n" for line in source.splitlines())
+    warning = "<source>:1:1: warning: a warning [-Wall]\n"
+    def summary(n, zero, other, failed, unsent):
+        return f"Of {n} compilation{'s' * (n != 1)}, {zero} ended with exit code 0, " \
+            f"{other} ended with another exit code or a timeout, {failed} ended with a " \
+            f"failed request, and {unsent} ended without a request.\n"
+
+    def left(n):
+        return f"The plugin left out {n} element{'s' * (n != 1)} of the list. An " \
+            "element must have a string member id, at most 64 family tags, and at most " \
+            "128 bytes in its kind, its architecture and each family tag."
+
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{os.path.realpath(d)}/askai.json"
+
+            def write(options):
+                with open(path, "w") as f:
+                    json.dump({"url": up.url(),
+                               "plugins": [{"path": godbolt, "options": options}]}, f)
+                os.chmod(path, 0o600)
+
+            # A trailing '/' of the option url is left out.
+            write({"url": ce.url() + "/"})
+            with Askai(binary, "-c", path) as ai:
+                tools = ai.rpc("tools/list")[2]["result"]["tools"]
+                assert [t["name"] for t in tools] == \
+                    ["ask_ai", "godbolt_catalog", "godbolt_compile"], tools
+                assert tools[1]["inputSchema"]["required"] == ["action"] and \
+                    tools[2]["inputSchema"]["required"] == ["compilers", "source"], tools
+                for tool in tools[1:]:
+                    assert f"Compiler Explorer at {ce.url()}, " in tool["description"], tool
+
+                # The languages, with the User-Agent of askai and the Accept
+                # that Compiler Explorer needs for JSON.
+                assert ok(ai, "godbolt_catalog", action="languages") == \
+                    "id\tname\nc\tC\nc++\tC++\nListed 2 of 2 matching languages. " \
+                    "Compiler Explorer has 2 languages.\n"
+                (_, _, _, headers, _), = ce.seen("GET", "/api/languages")
+                assert headers["User-Agent"] == "askai (plugin godbolt)" and \
+                    headers["Accept"] == "application/json", dict(headers)
+
+                # The compilers of a language, with filters.  The list has
+                # one element without an id, which the footer counts.
+                fields = "id,name,compilerType,compilerCategories,semver," \
+                    "instructionSet,releaseTrack"
+                text = ok(ai, "godbolt_catalog", action="compilers")
+                (_, _, query, _, _), = ce.seen("GET", "/api/compilers/c")
+                assert query == "fields=" + fields, query
+                lines = text.split("\n")
+                assert lines[0] == "id\tname\tkind\tversion\tarchitecture\ttrack\tfamilies" \
+                    and lines[1:3] == [
+                        "cg142\tx86-64 gcc 14.2\tdefault\t14.2\tamd64\tstable\tgcc",
+                        "cclang19\tx86-64 clang 19.1\tclang\t19.1\tamd64\tstable\tclang,llvm"] \
+                    and lines[4] == "cclangcl19\tx64 clang-cl 19.1\tclang-cl\t19.1\tamd64\t" \
+                    "stable\tunknown" and lines[-3:] == [left(1), "Listed 13 of 13 matching "
+                                                          "compilers. The list of language c "
+                                                          "has 13 compilers.", ""], text
+
+                def ids(**arguments):
+                    text = ok(ai, "godbolt_catalog", action="compilers", **arguments)
+                    return [line.split("\t")[0] for line in text.split("\n")[1:]
+                            if "\t" in line]
+
+                assert ids(kind="default") == ["cg142", "cgtrunk", *CE_SPECIAL]
+                assert ids(kind="clang") == ["cclang19"]
+                assert ids(family="llvm") == ["cclang19"]
+                assert ids(family="unknown") == ["cclangcl19", "cti"]
+                assert ids(architecture="msp430") == ["cti"]
+                assert ids(match="GCC trunk") == ["cgtrunk"]
+                assert ids(ids=["cti", "cg142"]) == ["cg142", "cti"]
+                assert refused(ai, "godbolt_catalog", action="compilers",
+                               ids=["cvc19", "nope", "cti"], kind="default") == \
+                    "These ids are not in the list of language c, or the filters " \
+                    "exclude them: cvc19, nope, cti."
+                assert refused(ai, "godbolt_catalog", action="languages", ids=["c", "d"]) \
+                    == "These ids are not in the list of languages, or the filters " \
+                    "exclude them: d."
+                assert refused(ai, "godbolt_catalog", action="languages", kind="x") == \
+                    "kind, family and architecture are not valid with the action languages."
+                assert ok(ai, "godbolt_catalog", action="kinds") == \
+                    "kind\tcompilers\nclang\t1\nclang-cl\t1\ndefault\t9\nticlang\t1\n" \
+                    "win32-vc\t1\n" + left(1) + "\nListed 5 of the 5 kinds of the 13 " \
+                    "matching compilers. The list of language c has 13 compilers.\n"
+                assert ok(ai, "godbolt_catalog", action="families", limit=2,
+                          match="x86-64") == \
+                    "family\tcompilers\nclang\t1\ngcc\t2\n" + left(1) + "\nListed 2 of " \
+                    "the 3 families of the 3 matching compilers. The list of language c " \
+                    "has 13 compilers.\n"
+                assert ok(ai, "godbolt_catalog", action="architectures", kind="ticlang") \
+                    .endswith("\nListed 1 of the 1 architecture of the 1 matching compiler. "
+                              "The list of language c has 13 compilers.\n")
+
+                # limit cuts the rows, and an offset reads on from a byte.
+                full = ok(ai, "godbolt_catalog", action="compilers", limit=2)
+                assert full.split("\n")[1:5] == [
+                    "cg142\tx86-64 gcc 14.2\tdefault\t14.2\tamd64\tstable\tgcc",
+                    "cclang19\tx86-64 clang 19.1\tclang\t19.1\tamd64\tstable\tclang,llvm",
+                    left(1), "Listed 2 of 13 matching compilers. The list of language c has "
+                    "13 compilers."], full
+                half = len(full.encode()) // 2
+                assert ok(ai, "godbolt_catalog", action="compilers", limit=2,
+                          offset=half) == full.encode()[half:].decode()
+
+                # askai stores the lists, so each list was sent once.  Another
+                # language is another list.
+                assert gets("/api/languages") == 1 and gets("/api/compilers/c") == 1, \
+                    ce.seen("GET")
+                assert ids(language="c++") == ["cppg142", "cvc19"]
+                assert gets("/api/compilers/c++") == 1
+
+                # A list with an error status fails the call, and so does a
+                # list that is not a JSON array.  The list of a language
+                # without compilers is empty.
+                assert refused(ai, "godbolt_catalog", action="compilers",
+                               language="broken") == "askai could not get the list of " \
+                    "compilers from Compiler Explorer (HTTP 500: No list today)."
+                assert refused(ai, "godbolt_catalog", action="kinds", language="odd") == \
+                    "Compiler Explorer sent a list that is not valid: the text is not a " \
+                    "JSON array."
+                assert ok(ai, "godbolt_catalog", action="compilers", language="none") \
+                    .endswith("families\nListed 0 of 0 matching compilers. The list of "
+                              "language none has 0 compilers.\n")
+
+                # An element with more than 64 family tags, or with a kind of
+                # more than 128 bytes, is left out, and a tag that repeats
+                # counts once.  An element larger than 4 KiB fails the call,
+                # and so do more than 256 different kinds.
+                assert ok(ai, "godbolt_catalog", action="families", language="tags") == \
+                    "family\tcompilers\na\t1\nb\t1\n" + left(2) + "\nListed 2 of the 2 " \
+                    "families of the 1 matching compiler. The list of language tags has 1 " \
+                    "compiler.\n"
+                assert refused(ai, "godbolt_catalog", action="compilers", language="huge") \
+                    == "Compiler Explorer sent a list that is not valid: an element has " \
+                    "more than 4 KiB."
+                assert refused(ai, "godbolt_catalog", action="kinds", language="keys") == \
+                    "Compiler Explorer sent a list that is not valid: the list has more " \
+                    "than 256 different kinds."
+
+                # Compilations in the order of the compilers, and then of the
+                # argument strings.  The bodies have the 11 filters of the
+                # site.  No list of compilers is sent.
+                listed = len(ce.seen("GET"))
+                text = ok(ai, "godbolt_compile", compilers=["cg142", "cclang19"],
+                          args=["-O2", "-O2 -Wall"], source=source)
+                expected = "".join(
+                    f'=== {cid} "{arg}": exit code 0 ===\n--- asm ---\n{asm}' +
+                    (f"--- stderr ---\n{warning}" if "-Wall" in arg else "")
+                    for cid in ("cg142", "cclang19") for arg in ("-O2", "-O2 -Wall"))
+                assert text == expected + summary(4, 4, 0, 0, 0), text
+                bodies = ce.bodies()
+                assert [b["options"]["userArguments"] for b in bodies] == \
+                    ["-O2", "-O2 -Wall"] * 2, bodies
+                for body in bodies:
+                    assert body == {"source": source, "lang": "c", "options": {
+                        "userArguments": body["options"]["userArguments"],
+                        "filters": filters, "compilerOptions": {}}}, body
+                assert len(ce.seen("GET")) == listed
+                ok(ai, "godbolt_compile", compilers=["cg142"], source=source,
+                   filters={"intel": False, "trim": True})
+                assert ce.bodies()[-1]["options"]["filters"] == \
+                    filters | {"intel": False, "trim": True}
+                assert ce.bodies()[-1]["options"]["userArguments"] == ""
+
+                # A failed request is a record, and the call fails only if
+                # no compilation has a result.  An exit code is a result.
+                records, last = ce_records(ok(ai, "godbolt_compile", source=source,
+                                              compilers=["gone", "boom", "cg142"]))
+                assert [r[2] for r in records] == [
+                    "HTTP 404: Compiler Explorer has no compiler with this id. "
+                    "godbolt_catalog lists the ids.",
+                    "HTTP 500: Something broke", "exit code 0"] and \
+                    last == summary(3, 1, 0, 2, 0), records
+                text = refused(ai, "godbolt_compile", compilers=["gone"], source=source)
+                assert text.endswith(summary(1, 0, 0, 1, 0)), text
+                records, last = ce_records(ok(ai, "godbolt_compile", compilers=["cg142"],
+                                              args=["-DFAIL"], source=source))
+                assert records[0][2] == "exit code 1" and \
+                    "--- stderr ---\n<source>:1:1: error: FAIL is defined\n" in \
+                    records[0][3] and last == summary(1, 0, 1, 0, 0), records
+
+                # 429 with Retry-After 1 is sent again after 1 s.  With
+                # Retry-After 120 it is a failed request at once.
+                start = time.monotonic()
+                records, _ = ce_records(ok(ai, "godbolt_compile", compilers=["busy"],
+                                           source=source))
+                took = time.monotonic() - start
+                assert records[0][2] == "exit code 0" and len(ce.bodies("busy")) == 2 \
+                    and took >= 0.9, (records, took)
+                start = time.monotonic()
+                records, _ = ce_records(refused(ai, "godbolt_compile", compilers=["later"],
+                                                source=source))
+                took = time.monotonic() - start
+                assert records[0][2] == "HTTP 429, and Retry-After is 120 s" and \
+                    len(ce.bodies("later")) == 1 and took < 2, (records, took)
+
+                # Cut output has a note, and a response larger than 4 MiB is a
+                # failed request.  The next compilation still has its record.
+                records, _ = ce_records(ok(ai, "godbolt_compile", source=source,
+                                           compilers=["trunc", "big", "cg142"]))
+                assert records[0][2:] == ("exit code 0", "--- asm ---\nmov eax, 1\n"
+                                          "[truncated; too many lines]\n[Compiler "
+                                          "Explorer cut this output.]\n") and \
+                    records[1][2:] == ("the response is larger than 4 MiB", "") and \
+                    records[2][2:] == ("exit code 0", f"--- asm ---\n{asm}"), records
+
+                # The output ends at 14 MiB, also where the room left ends
+                # inside a UTF-8 character.  The lengths of the argument strings
+                # move the end to each byte of a character.
+                for k in range(3):
+                    text = ok(ai, "godbolt_compile", compilers=["euro"],
+                              args=["-x" + "y" * k + str(i) for i in range(4)],
+                              source=source)
+                    note = "\n[The output is cut here, because it has reached 14 MiB.]\n"
+                    head, _, last = text.rpartition(note)
+                    assert len(head.encode()) <= 14 << 20 and \
+                        last == summary(4, 4, 0, 0, 0), (k, text[-300:])
+
+                # A line of 3 MB is written in slices, so that no step copies
+                # more than 1 MiB.  A response with many label definitions is
+                # freed in slices, and a response that is not a JSON object is
+                # a failed request.
+                records, last = ce_records(ok(ai, "godbolt_compile", source=source,
+                                              compilers=["longline", "labels", "array"]))
+                assert records[0][2:] == ("exit code 0", "--- stderr ---\n" + "y" * 3_000_000 +
+                                          "\n") and \
+                    records[1][2:] == ("exit code 0", "") and \
+                    records[2][2] == "the response is not a JSON object with an integer " \
+                    "member code" and last == summary(3, 2, 0, 1, 0), [r[:3] for r in records]
+                copy = [v for k, v in ai.metrics().items()
+                        if k.startswith("askai_loop_step_work_max{") and 'unit="copy"' in k]
+                assert copy and max(copy) <= 1 << 20, copy
+
+                # A call without offset sends its compilations again.  A call
+                # with offset gets the stored responses, and its output is the
+                # rest of the same output.
+                arguments = {"compilers": ["cg142", "cclang19"], "args": ["-O3"],
+                             "source": source}
+                sent = len(ce.bodies())
+                full = ok(ai, "godbolt_compile", **arguments)
+                assert len(ce.bodies()) == sent + 2
+                time.sleep(1.1)
+                half = len(full.encode()) // 2
+                assert ok(ai, "godbolt_compile", offset=half, **arguments) == \
+                    full.encode()[half:].decode()
+                assert len(ce.bodies()) == sent + 2
+                assert ok(ai, "godbolt_compile", **arguments) == full
+                assert len(ce.bodies()) == sent + 4
+
+                # Refused arguments send no request.
+                sent = len(ce.seen())
+                for arguments, why in (
+                        ({"colour": 1}, "The tool has no argument colour."),
+                        ({"compilers": [f"c{i}" for i in range(17)]},
+                         "compilers must be an array of 1 to 16 different compiler "
+                         "ids. A compiler id has 1 to 128 bytes of A-Z, a-z, 0-9, +, "
+                         "-, . and _, and it is not . or .."),
+                        ({"compilers": ["cg142", "cg142"]}, "compilers must be"),
+                        ({"compilers": ["a/b"]}, "compilers must be"),
+                        ({"compilers": [".."]}, "compilers must be"),
+                        ({"compilers": ["a", "b", "c", "d"], "args": [""] * 9},
+                         "args must be an array of 1 to 8 strings. Each string has at "
+                         "most 8192 bytes and no NUL byte."),
+                        ({"compilers": ["a", "b", "c", "d", "e"], "args": [""] * 7},
+                         "The number of compilers times the number of argument strings "
+                         "must be at most 32."),
+                        ({"args": ["x" * 8193]}, "args must be"),
+                        ({"source": "a\0b"}, "source must be a string of at most 1 MiB "
+                         "without a NUL byte."),
+                        ({"language": "c?"}, "language must have 1 to 64 bytes of a-z, "
+                         "0-9, +, - and _."),
+                        ({"filters": {"colour": True}}, "filters must be an object whose "
+                         "members are among intel, demangle, directives, commentOnly, "
+                         "labels, libraryCode and trim. Each member is true or false."),
+                        ({"filters": {"intel": 1}}, "filters must be"),
+                        ({"source": None}, "The argument source is required."),
+                        ({"offset": -1}, "The offset argument must be a whole number "
+                         "of bytes, from 0.")):
+                    arguments = {"compilers": ["cg142"], "source": source} | arguments
+                    arguments = {k: v for k, v in arguments.items() if v is not None}
+                    text = refused(ai, "godbolt_compile", **arguments)
+                    assert text.startswith(why), (arguments, text)
+                for arguments, why in (
+                        ({}, "The argument action is required."),
+                        ({"action": "standards"}, "action must be languages, compilers, "
+                         "kinds, families or architectures."),
+                        ({"action": "compilers", "limit": 0}, "limit must be a whole "
+                         "number from 1 to 2000."),
+                        ({"action": "compilers", "limit": 2001}, "limit must be"),
+                        ({"action": "compilers", "match": " ".join("abcdefghi")},
+                         "match must be a string of at most 256 bytes with at most 8 "
+                         "words."),
+                        ({"action": "compilers", "kind": ""}, "kind must be a string of "
+                         "1 to 128 bytes without a NUL byte."),
+                        ({"action": "compilers", "source": "x"}, "The tool has no "
+                         "argument source.")):
+                    assert refused(ai, "godbolt_catalog", **arguments).startswith(why), \
+                        arguments
+                assert len(ce.seen()) == sent, ce.seen()[sent:]
+
+                # A notification ends a call whose compilation is under way, at
+                # once, and askai goes on working.
+                results = []
+                thread = threading.Thread(target=lambda: results.append(ai.rpc(
+                    "tools/call", {"name": "godbolt_compile", "arguments": {
+                        "compilers": ["slow"], "source": source}}, rpc_id=7)))
+                start = time.monotonic()
+                thread.start()
+                wait_for(lambda: ce.bodies("slow"))
+                assert ai.rpc("notifications/cancelled", {"requestId": 7},
+                              rpc_id=None)[0] == 202
+                thread.join(5)
+                assert time.monotonic() - start < 1.5, "the call waited on"
+                assert results and not (results[0][2] or {}).get("result"), results
+                assert ai.rpc("ping")[0] == 200
+
+        # The plugin refuses options that it does not know, and a url that is
+        # not an http or https URL without a user name, a query or a
+        # fragment.
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{os.path.realpath(d)}/askai.json"
+            for options, why in (
+                    ({"colour": 1}, "the member colour is not an option"),
+                    ({"url": "ftp://x"}, "url must be an http or https URL of at most "
+                     "255 bytes, without a user name, a password, a query or a "
+                     "fragment"),
+                    ({"url": "http://user@x"}, "url must be"),
+                    ({"url": "http://x/?q"}, "url must be"),
+                    ({"url": "http:///"}, "url must be"),
+                    ({"url": "http://" + "x" * 249}, "url must be"),
+                    ({"url": 5}, "url must be")):
+                with open(path, "w") as f:
+                    json.dump({"url": up.url(), "plugins": [
+                        {"path": godbolt, "options": options}]}, f)
+                os.chmod(path, 0o600)
+                run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path],
+                                     stdin=subprocess.DEVNULL, capture_output=True,
+                                     text=True, timeout=5, check=False)
+                assert run.returncode == 2 and \
+                    f"askai: {godbolt}: options: {why}" in run.stderr, \
+                    (options, run.returncode, run.stderr)
+    finally:
+        ce.close()
+    print("godbolt: tools listed with the configured URL; catalog of languages and "
+          "compilers with filters, counts, limit and offset, lists stored, "
+          "malformed and oversized elements; compilations in order with the site's "
+          "filters, failed requests as records, 429 sent again, cut and oversized "
+          "responses, the end of the output at 14 MiB, a long line in slices, "
+          "large and odd responses, stored responses for a call with offset, "
+          "refused arguments and options, cancellation: PASS")
+
+
 def check_classes(binary, up):
     """The LLM scheduler's classes (S8): test_task's prompt asks as
     background work, which interactive calls go before.  With two slots or
@@ -7885,6 +8472,8 @@ def main():
     # The test plugin is built beside askai (tests/Makefile).
     plugin = sys.argv[2] if len(sys.argv) > 2 else \
         os.path.join(os.path.dirname(binary), "test_plugin.so")
+    godbolt = sys.argv[3] if len(sys.argv) > 3 else \
+        os.path.join(os.path.dirname(binary), "godbolt.so")
     up = Upstream()
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
@@ -7902,6 +8491,7 @@ def main():
                       lambda binary, up: check_instances(binary, up, plugin),
                       lambda binary, up: check_misuse(binary, up, plugin),
                       lambda binary, up: check_web(binary, up, plugin),
+                      lambda binary, up: check_godbolt(binary, up, godbolt),
                       check_classes,
                       check_shutdown,
                       check_watchdog, check_stalled_stderr):

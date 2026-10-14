@@ -893,6 +893,63 @@ as `src/test_plugin.so.mk` does for the test plugin, and `make NAME.so` builds
 it.  `src/plugin.h` documents what a plugin provides and what it must not do,
 and `src/test_plugin.c` is the smallest example.
 
+#### The godbolt plugin
+
+`src/godbolt.c` is a plugin for Compiler Explorer, the service at
+https://godbolt.org or another installation of it.  `make godbolt.so` builds
+it.  It has these tools:
+
+- `godbolt_catalog` lists the languages of the service, the compilers of one
+  language, or the numbers of compilers of each kind, family or
+  architecture.  Its filters select compilers by id, kind, family tag,
+  architecture, and words in their ids, names, kinds, versions,
+  architectures, release tracks and family tags.
+- `godbolt_compile` compiles source code once with each of up to 16
+  compilers and each of up to 8 argument strings, and at most 32 times in
+  all.  The output has a record for each compilation, with the exit code,
+  the assembly, and the output and the messages of the compiler.  The
+  compiled program does not run.
+
+The option `url` is the base URL of the service.  Its default is
+`https://godbolt.org`.
+
+```json
+{ "path": "/usr/libexec/askai/godbolt.so",
+  "options": { "url": "https://godbolt.org" } }
+```
+
+A call sends the source code and the argument strings to that service.  A
+call with the argument `offset` gets the output from that byte on, as a call
+of `man` does.  A compilation that fails, for example with an unknown
+compiler id, is a record with the reason, and the call fails only if no
+compilation has a result.
+
+A response to a compilation has at most 4 MiB.  The output of a call ends
+at 14 MiB with a note, and the plugin sends no compilation after that.  A
+list of compilers has at most 4 MiB, and an element of a list at most
+4 KiB.  The catalog leaves out a compiler with more than 64 family tags, or
+with more than 128 bytes in its kind, its architecture or a family tag, and
+a line of the output counts the elements that it left out.  The counts of
+`godbolt_catalog` have at most 256 different keys.
+
+The plugin sends a request at most 3 times.  It sends the request again
+after the status 429, 502 or 503.  It sends a request for a list again also
+after the status 504, after a timeout, and after a transfer that fails in
+another way.  Before the second attempt it waits 1 s, and before the third
+2 s, or the seconds of `Retry-After` if they are more.  If `Retry-After` is
+more than 30 s, the request fails at once.
+
+The `keep` of a request for the list of languages is a day, and the `keep`
+of a request for a list of compilers is an hour, so a repeated call of
+`godbolt_catalog` usually sends no request.  A call of `godbolt_compile`
+without `offset` sends each compilation, unless `askai` received the
+response to the same compilation less than a second before.  A call with
+`offset` gets the responses that `askai` received for the same call without
+`offset` in the last 5 minutes, if `askai` still stores them, and then both
+calls have the same output.  `askai` does not store a failed response, so a
+call with `offset` sends a failed request again, and the record of that
+compilation can differ.
+
 ### Limits
 
 `askai` bounds what each client may send and hold, so that slow, oversized or
