@@ -2252,13 +2252,13 @@ mcp_req_task_open (struct mcp_req *req)
 	struct mcp *mcp = req->mcp;
 	struct handle who;
 	int e = loop_handle(mcp->loop, req, HANDLE_REQ, &who);
-	struct ledger_task *task = e ? nullptr
-	                         : ledger_open(mcp->st->ledger, req->s->principal, mcp->loop,
-	                                       who, mcp_on_task_cancel, &e);
-	if (task)
-		return task;
-	if (who.bits)
+	if (!e) {
+		struct ledger_task *task = ledger_open(mcp->st->ledger, req->s->principal,
+		                                       mcp->loop, who, mcp_on_task_cancel, &e);
+		if (task)
+			return task;
 		loop_forget(mcp->loop, who);
+	}
 	LOG(LOG_VERBOSE, "tool call kept from being a task: %s", strerror(e));
 	return nullptr;
 }
