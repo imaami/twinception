@@ -1522,8 +1522,9 @@ config_tls (struct config *cfg)
 	return status;
 }
 
-/* Listen on 127.0.0.1:8090 unless told where, and make TLS's context if a
- * listener is TLS's. */
+/* Add the listen address 127.0.0.1:8090 if cfg->listens is empty.  Refuse a
+ * listen address that httpd_listen_addr() cannot parse.  If an address begins with
+ * "tls:", make the TLS context. */
 static int
 config_listens (struct config *cfg)
 {
@@ -1531,13 +1532,13 @@ config_listens (struct config *cfg)
 		config_push(cfg->listens, &cfg->n_listens, "127.0.0.1:8090");
 	bool tls = false;
 	for (size_t i = 0; i < cfg->n_listens; ++i) {
-		char const *addr = httpd_tls(cfg->listens[i]);
-		if (!addr)
-			continue;
-		if (!strncmp(addr, "unix:", sizeof "unix:" - 1))
-			return config_complain(cfg, nullptr, "TLS over a Unix socket: %s",
-			                       cfg->listens[i]);
-		tls = true;
+		int e;
+		struct httpd_listen_addr const a = httpd_listen_addr(cfg->listens[i], &e);
+		if (e)
+			return config_complain(cfg, cfg->listen_file ? cfg->path : nullptr,
+			                       "invalid --listen: %s: %s", cfg->listens[i],
+			                       strerror(e));
+		tls |= a.tls;
 	}
 	return tls ? config_tls(cfg) : 0;
 }

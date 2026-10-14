@@ -6,7 +6,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 #include "buf.h"
 
@@ -77,14 +76,38 @@ struct httpd_cfg {
 	                                    any: home takes a reference */
 };
 
-/** @p addr, a listen address, less its "tls:", if it is TLS's; else
- *  nullptr. */
-static inline char const *
-httpd_tls (char const *addr)
-{
-	static char const tls[] = "tls:";
-	return strncmp(addr, tls, sizeof tls - 1) ? nullptr : addr + sizeof tls - 1;
-}
+/** httpd_listen_addr() returns the parts of a listen address in this
+ *  struct. */
+struct httpd_listen_addr {
+	char const *path;       /**< The path of a Unix socket, or nullptr for a
+	                             TCP address.  It points into the parsed
+	                             text. */
+	char const *port;       /**< The TCP port in decimal digits, or nullptr
+	                             for a Unix socket.  It points into the
+	                             parsed text. */
+	size_t      path_len;   /**< The length of path in bytes. */
+	uint64_t    tls;        /**< 1 if the text begins with "tls:", else 0 */
+	char        host[256];  /**< The TCP host.  It is "127.0.0.1" for a port
+	                             with no host and no colon, such as "8090"
+	                             or "tls:8090".  An empty host, as in
+	                             ":8090", means the wildcard address. */
+};
+
+/**
+ * Parse the listen address @p text.  The address must have the form
+ * [host:]port, unix:PATH or tls:[host:]port.  The port must be decimal
+ * digits with a value of 0 to 65535.  A host in brackets, and a host with a
+ * colon, must be an IPv6 address that inet_pton() parses, and may have a
+ * zone after a '%'.  PATH must not be empty, and it must be shorter than
+ * sun_path.  The function does not resolve the host name.
+ *
+ * Returns the parts of the address.  On success, @p *e is 0.  If the address
+ * is malformed, @p *e is EPROTONOSUPPORT for tls:unix:, ENAMETOOLONG for a
+ * PATH that is too long, ERANGE for a port above 65535, or EINVAL otherwise.
+ */
+extern struct httpd_listen_addr
+httpd_listen_addr (char const *text,
+                   int        *e);
 
 /**
  * What home's door and the client loops' servers share, for @p loops client

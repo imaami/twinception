@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end checks for the askai MCP server against fake AI endpoints."""
 
+import errno
 import fcntl
 import grp
 import hashlib
@@ -2382,6 +2383,58 @@ def check_configuration(binary, up):
     for loops in ("256", "-1", "x", ""):
         fails("--loops", loops, message="invalid --loops")
 
+    # A malformed listen address makes askai exit with status 2 before it
+    # listens anywhere.  With a host name that does not resolve, askai fails
+    # later, when it opens the listener, and exits with status 1.
+    for addr, error in (("127.0.0.1:99999", errno.ERANGE),
+                        ("127.0.0.1:65536", errno.ERANGE),
+                        ("65536", errno.ERANGE),
+                        ("tls:127.0.0.1:70000", errno.ERANGE),
+                        ("127.0.0.1:abc", errno.EINVAL),
+                        ("127.0.0.1:", errno.EINVAL),
+                        ("127.0.0.1:-1", errno.EINVAL),
+                        ("127.0.0.1:+80", errno.EINVAL),
+                        ("127.0.0.1: 80", errno.EINVAL),
+                        ("localhost", errno.EINVAL),
+                        ("", errno.EINVAL),
+                        ("[::1]:x", errno.EINVAL),
+                        ("[::1]", errno.EINVAL),
+                        ("[::1]:", errno.EINVAL),
+                        ("[::1:0", errno.EINVAL),
+                        ("[::1]]:0", errno.EINVAL),
+                        ("[]:0", errno.EINVAL),
+                        ("[:0", errno.EINVAL),
+                        ("[localhost]:0", errno.EINVAL),
+                        ("[127.0.0.1]:0", errno.EINVAL),
+                        ("::1", errno.EINVAL),
+                        ("[::1%]:0", errno.EINVAL),
+                        ("x" * 256 + ":0", errno.EINVAL),
+                        ("unix:", errno.EINVAL),
+                        ("unix:/" + "x" * 107, errno.ENAMETOOLONG),
+                        ("tls:unix:/x", errno.EPROTONOSUPPORT)):
+        fails("-u", up.url(), "-l", addr,
+              message=f"invalid --listen: {addr}: {os.strerror(error)}")
+    # A name that cannot be resolved, and an IPv6 address with a zone, are
+    # well formed, so they fail only as askai opens the listener.
+    for addr in ("nonexistent.invalid:0", "[fe80::1%lo]:0", "fe80::1%lo:0"):
+        run = subprocess.run([binary, "-u", up.url(), "-l", addr],
+                             stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=5, check=False)
+        assert run.returncode == 1 and f"cannot listen on {addr}" in run.stderr, \
+            (addr, run.stderr)
+
+    # A Unix socket path of 107 bytes fits in sun_path.  askai accepts a port
+    # with leading zeros and a port without a host.
+    with tempfile.TemporaryDirectory() as d:
+        assert len(d) < 100, d
+        sock = f"{d}/" + "s" * (107 - len(d) - 1)
+        with Askai(binary, "-u", up.url(), "-l", "127.0.0.1:00000", "-l", "0",
+                   "-l", f"unix:{sock}") as ai:
+            ai.wait_log(f"on unix:{sock}$")
+            ports = [line for line in ai.log
+                     if re.search(r"MCP endpoint http://127\.0\.0\.1:\d+/mcp$", line)]
+            assert len(ports) == 2 and os.path.exists(sock), ai.log
+
     with Askai(binary, "-p", "google", "-m", "m",
                env={"GOOGLE_API_KEY": "fallback-key"}) as ai:
         _, _, body = ai.rpc("tools/list")
@@ -2891,7 +2944,7 @@ def check_unix(binary, up):
                 (policy, run.stderr)
         run = subprocess.run([binary, "-u", up.url(), "-l", "unix:" + "x" * 200],
                              capture_output=True, text=True, timeout=5)
-        assert run.returncode == 1 and "invalid listen address" in run.stderr, run
+        assert run.returncode == 2 and "invalid --listen: unix:" in run.stderr, run
     print("unix sockets: SO_PEERCRED users and groups, tokens first, askai's own "
           "policy, stale and busy socket files: PASS")
 
@@ -3112,7 +3165,8 @@ def check_tls(binary, up):
         fails(*listen, message="a tls: listener needs --tls-cert and --tls-key")
         fails(*listen, "--tls-cert", crt, message="needs --tls-cert and --tls-key")
         fails("-l", "tls:unix:/nonexistent/askai", "--tls-cert", crt, "--tls-key", key,
-              message="TLS over a Unix socket")
+              message="invalid --listen: tls:unix:/nonexistent/askai: " +
+                      os.strerror(errno.EPROTONOSUPPORT))
         fails(*listen, "--tls-cert", f"{d}/none", "--tls-key", key,
               message="cannot open")
         fails(*listen, "--tls-cert", key, "--tls-key", key,

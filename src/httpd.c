@@ -2812,18 +2812,15 @@ httpd_listener_bind_uds (struct httpd_listener    *l,
 	return listen(l->fd, SOMAXCONN) ? errno : 0;
 }
 
-/* Listen on the Unix socket at @p path into @p l, whose socket, if it is
- * made, the door closes as it drains. */
+/* Make @p l listen on the Unix socket at @p path, which is @p len bytes
+ * long.  httpd_listen_addr() has checked that the path fits in sun_path.  When
+ * httpd_home_drain() closes the listener, it removes the socket file. */
 static int
 httpd_listener_uds (struct httpd_listener *l,
-                    char const            *path)
+                    char const            *path,
+                    size_t                 len)
 {
 	struct sockaddr_un sa = { .sun_family = AF_UNIX };
-	size_t len = strlen(path);
-	if (!len || len >= sizeof sa.sun_path) {
-		LOG(LOG_ERROR, "invalid listen address: unix:%s", path);
-		return EINVAL;
-	}
 	memcpy(sa.sun_path, path, len);
 	l->fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 	int e = l->fd < 0 ? errno : httpd_listener_bind_uds(l, &sa);
@@ -2855,50 +2852,93 @@ httpd_listener_bind (struct httpd_listener *l,
 	return 0;
 }
 
-/* Split @p at, [host:]port, an IPv6 host in brackets, into @p host, of
- * @p size bytes, which keeps what it holds if @p at names none, and the port
- * it returns; nullptr if @p at is invalid. */
-static char const *
-httpd_split_host (char const *at,
-                  char       *host,
-                  size_t      size)
+/* Copy the host of @p len bytes at @p host, the part of a listen address
+ * before its last colon, to a->host, without brackets.  A host in brackets,
+ * and a host with a colon, must be an IPv6 address, which may have a zone
+ * after a '%'.  Returns 0 or EINVAL. */
+static int
+httpd_listen_host (struct httpd_listen_addr *a,
+                   char const               *host,
+                   size_t                    len)
 {
-	bool bracket = *at == '[';
-	char const *start = at + bracket;
-	char const *end = bracket ? strchr(start, ']') : strrchr(at, ':');
-	if (!end)
-		return bracket ? nullptr : at;
-	char const *port = end + 1 + bracket;
-	size_t len = (size_t)(end - start);
-	if (port[-1] != ':' || len >= size)
-		return nullptr;
-	memcpy(host, start, len);
-	host[len] = '\0';
-	return port;
+	bool bracket = len && *host == '[';
+	if (bracket && (len < 2 || host[len - 1] != ']'))
+		return EINVAL;
+	host += bracket;
+	len -= 2 * bracket;
+	if (len >= sizeof a->host)
+		return EINVAL;
+	memcpy(a->host, host, len);
+	a->host[len] = '\0';
+	if (!bracket && !memchr(a->host, ':', len))
+		return 0;
+	/* inet_pton() does not parse a zone, so the check ends at the '%'.  A
+	 * zone must not be empty.  getaddrinfo() reads the zone later. */
+	char ip[INET6_ADDRSTRLEN];
+	size_t n = strcspn(a->host, "%");
+	if (n >= sizeof ip || (a->host[n] && !a->host[n + 1]))
+		return EINVAL;
+	memcpy(ip, a->host, n);
+	ip[n] = '\0';
+	return inet_pton(AF_INET6, ip, &(struct in6_addr){}) == 1 ? 0 : EINVAL;
 }
 
-/* Listen on @p addr, [host:]port, unix:PATH or tls:[host:]port, into
- * @p l. */
+struct httpd_listen_addr
+httpd_listen_addr (char const *text,
+                   int        *e)
+{
+	static char const tls[] = "tls:";
+	static char const uds[] = "unix:";
+	struct httpd_listen_addr a = {
+		.tls = !strncmp(text, tls, sizeof tls - 1),
+		.host = "127.0.0.1"
+	};
+	char const *at = text + a.tls * (sizeof tls - 1);
+	if (!strncmp(at, uds, sizeof uds - 1)) {
+		a.path = at + sizeof uds - 1;
+		a.path_len = strlen(a.path);
+		*e = a.tls ? EPROTONOSUPPORT
+		   : !a.path_len ? EINVAL
+		   : a.path_len >= sizeof (struct sockaddr_un){}.sun_path ? ENAMETOOLONG
+		   : 0;
+		return a;
+	}
+
+	/* The port is the text after the last colon, or all of the text if it
+	 * has no colon.  The host is the text before the last colon. */
+	char const *colon = strrchr(at, ':');
+	a.port = at;
+	if (colon) {
+		a.port = colon + 1;
+		*e = httpd_listen_host(&a, at, (size_t)(colon - at));
+		if (*e)
+			return a;
+	}
+	/* The loop stops once the value exceeds 65535, so the value cannot
+	 * overflow. */
+	size_t digits = strspn(a.port, "0123456789");
+	uint32_t value = 0;
+	for (size_t i = 0; i < digits && value <= 65535; ++i)
+		value = value * 10 + (uint32_t)(a.port[i] - '0');
+	*e = !digits || a.port[digits] ? EINVAL : value > 65535 ? ERANGE : 0;
+	return a;
+}
+
+/* Make @p l listen on the listen address @p addr.  Returns 0 or an error
+ * number. */
 static int
 httpd_listener_open (struct httpd_listener *l,
                      char const            *addr)
 {
-	static char const uds[] = "unix:";
-	char const *tls = httpd_tls(addr);
-	char const *at = tls ? tls : addr;
-	l->tls = at != addr;
-	if (!strncmp(at, uds, sizeof uds - 1)) {
-		if (!l->tls)
-			return httpd_listener_uds(l, at + sizeof uds - 1);
-		LOG(LOG_ERROR, "invalid listen address: %s", addr);
-		return EINVAL;
+	int e;
+	struct httpd_listen_addr const a = httpd_listen_addr(addr, &e);
+	if (e) {
+		LOG(LOG_ERROR, "invalid listen address: %s: %s", addr, strerror(e));
+		return e;
 	}
-	char host[256] = "127.0.0.1";
-	char const *port = httpd_split_host(at, host, sizeof host);
-	if (!port) {
-		LOG(LOG_ERROR, "invalid listen address: %s", addr);
-		return EINVAL;
-	}
+	l->tls = a.tls;
+	if (a.path)
+		return httpd_listener_uds(l, a.path, a.path_len);
 
 	struct addrinfo const hints = {
 		.ai_flags = AI_PASSIVE | AI_NUMERICSERV,
@@ -2906,12 +2946,12 @@ httpd_listener_open (struct httpd_listener *l,
 		.ai_socktype = SOCK_STREAM
 	};
 	struct addrinfo *list;
-	int g = getaddrinfo(*host ? host : nullptr, port, &hints, &list);
+	int g = getaddrinfo(*a.host ? a.host : nullptr, a.port, &hints, &list);
 	if (g) {
 		LOG(LOG_ERROR, "cannot listen on %s: %s", addr, gai_strerror(g));
 		return EINVAL;
 	}
-	int e = EADDRNOTAVAIL;
+	e = EADDRNOTAVAIL;
 	for (struct addrinfo const *ai = list; ai && e; ai = ai->ai_next)
 		e = httpd_listener_bind(l, ai);
 	freeaddrinfo(list);
