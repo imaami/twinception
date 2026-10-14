@@ -368,10 +368,11 @@ class Askai:
     It serves clients on that many loops, or with loops=None as many as it
     has CPUs.  With nofile, it starts with that descriptor limit, soft and
     hard; with preload, with that library preloaded; with ignore, with those
-    signals ignored; with data, with that data segment limit."""
+    signals ignored; with default, with those signals at their default
+    action; with data, with that data segment limit."""
 
     def __init__(self, binary, *args, loops=4, env=None, nofile=None,
-                 preload=None, ignore=(), data=None):
+                 preload=None, ignore=(), default=(), data=None):
         child_env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
         child_env.update(env or {})
         if preload:
@@ -386,6 +387,8 @@ class Askai:
                 resource.setrlimit(resource.RLIMIT_DATA, (data, data))
             for sig in ignore:
                 signal.signal(sig, signal.SIG_IGN)
+            for sig in default:
+                signal.signal(sig, signal.SIG_DFL)
 
         if loops is not None:
             args = ("--loops", str(loops), *args)
@@ -393,7 +396,7 @@ class Askai:
             [binary, "-l", "127.0.0.1:0", *args], env=child_env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, text=True,
-            preexec_fn=setup if nofile or ignore or data else None)
+            preexec_fn=setup if nofile or ignore or default or data else None)
         # Lines may come before the endpoint's, such as memory pressure's.
         self.log = []
         for line in self.proc.stderr:
@@ -3885,11 +3888,19 @@ def check_shutdown(binary, up):
             ai.proc.kill()
             ai.proc.wait()
 
-    # Ctrl-C does the same.
-    ai = Askai(binary, "-u", up.url())
-    assert ai.rpc("ping")[0] == 200
-    ai.proc.send_signal(signal.SIGINT)
-    assert ai.proc.wait(5) == 0
+    # Ctrl-C does the same.  askai keeps a signal ignored that it starts
+    # with, and the tests may run with SIGINT ignored, as a shell sets it for
+    # a job in the background.  So askai starts with SIGINT at its default
+    # action, and a failed check does not leave askai running.
+    ai = Askai(binary, "-u", up.url(), default=(signal.SIGINT,))
+    try:
+        assert ai.rpc("ping")[0] == 200
+        ai.proc.send_signal(signal.SIGINT)
+        assert ai.proc.wait(5) == 0
+    finally:
+        if ai.proc.poll() is None:
+            ai.proc.kill()
+            ai.proc.wait()
 
     # Signals ignored from the start, as nohup and shells leave them, stay so.
     with Askai(binary, "-u", up.url(), ignore=(signal.SIGHUP, signal.SIGINT)) as ai:
