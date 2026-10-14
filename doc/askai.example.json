@@ -194,8 +194,8 @@
   /* The plugins that askai loads as it starts.  An element is the absolute
    * path of a plugin, or an object with the path and the plugin's options,
    * such as this one:
-   *   { "path": "/usr/libexec/askai/test_plugin.so",
-   *     "options": { "greeting": "hi" } }
+   *   { "path": "/usr/libexec/askai/godbolt.so",
+   *     "options": { "url": "https://godbolt.org", "share": "short" } }
    * Only root or the user of askai may be able to change a plugin's file
    * and the directories above it. */
   "plugins": []

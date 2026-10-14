@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end checks for the askai MCP server against fake AI endpoints."""
 
+import base64
 import errno
 import fcntl
 import gzip
@@ -7884,7 +7885,9 @@ class MockCE:
     stdout has the source or a macro.  The probe of godbolt_targets gets
     the block of CE_PROBE_GNU, of CE_PROBE_MSVC for cvc19, of CE_PROBE_GNU
     with a value of 257 bytes for longvalue, or a block without its end for
-    cti.  Any other request gets 404.
+    cti.  POST /api/shortener answers a JSON object with sessions with a
+    link whose id is a hash of the body, and answers 500 if the body is not
+    such an object or has the word NOSHORT.  Any other request gets 404.
     """
 
     def __init__(self):
@@ -7933,7 +7936,7 @@ class MockCE:
         path = urllib.parse.unquote(raw)
         with self.lock:
             self.requests.append((handler.command, path, query, handler.headers, body))
-        status, data, headers = self.answer(handler.command, path, body)
+        status, data, headers = self.answer(handler.command, path, handler.headers, body)
         out = data if isinstance(data, bytes) else json.dumps(data).encode()
         handler.send_response(status)
         handler.send_header("Content-Type", "text/plain; charset=utf-8"
@@ -7947,7 +7950,18 @@ class MockCE:
         except OSError:
             pass
 
-    def answer(self, method, path, body):
+    def answer(self, method, path, headers, body):
+        if method == "POST" and path == "/api/shortener":
+            try:
+                state = json.loads(body)
+            except ValueError:
+                state = None
+            if headers.get("Content-Type") != "application/json" or \
+                    not isinstance(state, dict) or "sessions" not in state:
+                return 500, b"Missing config parameter", ()
+            if b"NOSHORT" in body:
+                return 500, b"Storage is broken", ()
+            return 200, {"url": f"{self.url()}/z/{hashlib.sha256(body).hexdigest()[:10]}"}, ()
         if method == "GET" and path == "/api/languages":
             return 200, CE_LANGUAGES, ()
         if method == "GET" and path == "/api/compilers/broken":
@@ -8061,7 +8075,8 @@ def check_godbolt(binary, up, godbolt):
     large and odd responses, the stored responses of a call with offset,
     refused arguments and a cancelled call.  It preprocesses, outputs the
     predefined macros and probes the targets with compilers of each kind of
-    driver.  Last, it starts askai with options that the plugin refuses.
+    driver.  It makes links with each value of the option share.  Last, it
+    starts askai with options that the plugin refuses.
     """
     godbolt = os.path.realpath(godbolt)
     ce = MockCE()
@@ -8124,6 +8139,15 @@ def check_godbolt(binary, up, godbolt):
                      ["compilers"], ["compilers"]], tools
                 for tool in tools[1:]:
                     assert f"Compiler Explorer at {ce.url()}" in tool["description"], tool
+                # With short links, the tools that take share store data on
+                # Compiler Explorer.
+                for tool in tools[1:]:
+                    shares = tool["name"] in ("godbolt_compile", "godbolt_preprocess",
+                                              "godbolt_macros")
+                    assert ("share" in tool["inputSchema"]["properties"]) == shares and \
+                        tool["annotations"]["readOnlyHint"] != shares and \
+                        ("Compiler Explorer stores the source permanently" in
+                         tool["description"]) == shares, tool
 
                 # The languages, with the User-Agent of askai and the Accept
                 # that Compiler Explorer needs for JSON.
@@ -8444,6 +8468,65 @@ def check_godbolt(binary, up, godbolt):
                 assert records[0][2] == "the probe output is not valid: a name or a value " \
                     "of a record has more than 256 bytes", records
 
+                # With share, the first line is a short link to the state of the
+                # call, which Compiler Explorer stores.  A call with offset sends
+                # no request, and a call without offset sends the compilations
+                # again, but the same state gets the stored link.
+                shared = {"compilers": ["cg142"], "args": ["-O2"], "source": source,
+                          "share": True}
+                text = ok(ai, "godbolt_compile", **shared)
+                link, _, rest = text.partition("\n")
+                assert re.fullmatch("Link: " + re.escape(ce.url()) + "/z/[0-9a-f]{10}",
+                                    link), text
+                (_, _, _, headers, body), = ce.seen("POST", "/api/shortener")
+                state = {"sessions": [{"id": 1, "language": "c", "source": source,
+                                       "compilers": [{"id": "cg142", "options": "-O2",
+                                                      "filters": filters, "libs": []}]}]}
+                assert headers["Content-Type"] == "application/json" and \
+                    json.loads(body) == state, (dict(headers), body)
+                records, last = ce_records(rest)
+                assert [r[2] for r in records] == ["exit code 0"] and \
+                    last == summary(1, 1, 0, 0, 0), rest
+                posts = len(ce.seen("POST"))
+                time.sleep(1.1)
+                half = len(text.encode()) // 2
+                assert ok(ai, "godbolt_compile", offset=half, **shared) == \
+                    text.encode()[half:].decode()
+                assert len(ce.seen("POST")) == posts
+                assert ok(ai, "godbolt_compile", **shared) == text
+                assert len(ce.seen("POST")) == posts + 1 and \
+                    len(ce.seen("POST", "/api/shortener")) == 1
+
+                # The state of godbolt_macros has the flags of the recipes, and
+                # no compiler that the call does not send.  A link that fails
+                # is a line with the reason, and the compilations go on.
+                text = ok(ai, "godbolt_macros", compilers=["cg142", "cvc19"], share=True)
+                assert text.startswith(f"Link: {ce.url()}/z/"), text
+                assert json.loads(ce.seen("POST", "/api/shortener")[-1][4]) == \
+                    {"sessions": [{"id": 1, "language": "c", "source": "\n", "compilers": [
+                        {"id": "cg142", "options": "-E -dM",
+                         "filters": dict.fromkeys(filters, False), "libs": []}]}]}
+                # A call that sends no compilation gets no link, and Compiler
+                # Explorer stores nothing.
+                shortened = len(ce.seen("POST", "/api/shortener"))
+                text = refused(ai, "godbolt_macros", compilers=["cvc19"], source="int x;\n",
+                               share=True)
+                assert text.startswith("Link: none. The call sends no compilation.\n") and \
+                    len(ce.seen("POST", "/api/shortener")) == shortened, text
+                # The state of a call with long argument strings is written in
+                # more than one step, so that no step escapes more than 64 KiB.
+                ok(ai, "godbolt_compile", compilers=["cg142", "cclang19", "cti", "cgtrunk"],
+                   args=[f"-D{i}" + "x" * 8188 for i in range(8)], source=source, share=True)
+                escape = [v for k, v in ai.metrics().items()
+                          if k.startswith("askai_loop_step_work_max{") and 'unit="escape"' in k]
+                assert escape and max(escape) <= 64 << 10, escape
+                text = ok(ai, "godbolt_compile", compilers=["cg142"], source="// NOSHORT\n",
+                          share=True)
+                link, _, rest = text.partition("\n")
+                assert link == "Link: none. The request for a short link failed " \
+                    "(HTTP 500: Storage is broken)." and \
+                    ce_records(rest)[0][0][2] == "exit code 0", text
+
                 # Refused arguments send no request.
                 sent = len(ce.seen())
                 for arguments, why in (
@@ -8524,6 +8607,43 @@ def check_godbolt(binary, up, godbolt):
                 assert results and not (results[0][2] or {}).get("result"), results
                 assert ai.rpc("ping")[0] == 200
 
+            # The option share state makes links that have the state in
+            # base64.  Compiler Explorer stores nothing, so the tools are
+            # read-only.  A link longer than 8192 bytes is none.
+            write({"url": ce.url(), "share": "state"})
+            with Askai(binary, "-c", path) as ai:
+                tools = ai.rpc("tools/list")[2]["result"]["tools"]
+                assert "share" in tools[2]["inputSchema"]["properties"] and \
+                    tools[2]["annotations"]["readOnlyHint"] and \
+                    "The link contains the source" in tools[2]["description"], tools[2]
+                shortened = len(ce.seen("POST", "/api/shortener"))
+                text = ok(ai, "godbolt_compile", **shared)
+                link, _, rest = text.partition("\n")
+                prefix = f"Link: {ce.url()}/clientstate/"
+                assert link.startswith(prefix) and json.loads(base64.b64decode(
+                    link.removeprefix(prefix), validate=True)) == state, link
+                assert ce_records(rest)[0][0][2] == "exit code 0", rest
+                text = ok(ai, "godbolt_compile", compilers=["cg142"], share=True,
+                          source="int x;\n" * 1000)
+                link, _, rest = text.partition("\n")
+                assert link == "Link: none. The link would be longer than 8192 bytes." \
+                    and ce_records(rest)[0][0][2] == "exit code 0", text
+                assert len(ce.seen("POST", "/api/shortener")) == shortened
+
+            # The option share off removes the argument share, and a call with
+            # it is refused.
+            write({"url": ce.url(), "share": "off"})
+            with Askai(binary, "-c", path) as ai:
+                tools = ai.rpc("tools/list")[2]["result"]["tools"]
+                for tool in tools[1:]:
+                    assert "share" not in tool["inputSchema"]["properties"] and \
+                        tool["annotations"]["readOnlyHint"] and \
+                        "share" not in tool["description"], tool
+                sent = len(ce.seen())
+                assert refused(ai, "godbolt_compile", **shared) == "Links are turned " \
+                    "off on this server, so the tool has no argument share."
+                assert len(ce.seen()) == sent
+
         # The plugin refuses options that it does not know, and a url that is
         # not an http or https URL without a user name, a query or a
         # fragment.
@@ -8538,7 +8658,9 @@ def check_godbolt(binary, up, godbolt):
                     ({"url": "http://x/?q"}, "url must be"),
                     ({"url": "http:///"}, "url must be"),
                     ({"url": "http://" + "x" * 249}, "url must be"),
-                    ({"url": 5}, "url must be")):
+                    ({"url": 5}, "url must be"),
+                    ({"share": "maybe"}, "share must be short, state or off"),
+                    ({"share": True}, "share must be short, state or off")):
                 with open(path, "w") as f:
                     json.dump({"url": up.url(), "plugins": [
                         {"path": godbolt, "options": options}]}, f)
@@ -8558,7 +8680,8 @@ def check_godbolt(binary, up, godbolt):
           "responses, the end of the output at 14 MiB, a long line in slices, "
           "large and odd responses, stored responses for a call with offset, "
           "refused arguments and options, cancellation; preprocessing, predefined "
-          "macros and target facts with the flags of each driver: PASS")
+          "macros and target facts with the flags of each driver; short links, "
+          "links to the state and no links: PASS")
 
 
 def check_classes(binary, up):

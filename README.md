@@ -929,12 +929,13 @@ flags of its driver, such as `/TC /EP`, and the text is in the standard
 output of the compiler.  The arguments for every other compiler begin with
 the flags of GCC, such as `-E`.
 
-The option `url` is the base URL of the service.  Its default is
-`https://godbolt.org`.
+The plugin has two options.  `url` is the base URL of the service, and its
+default is `https://godbolt.org`.  `share` is `short`, `state` or `off`, and
+its default is `short`.
 
 ```json
 { "path": "/usr/libexec/askai/godbolt.so",
-  "options": { "url": "https://godbolt.org" } }
+  "options": { "url": "https://godbolt.org", "share": "short" } }
 ```
 
 A call sends the source code and the argument strings to that service.  A
@@ -953,11 +954,32 @@ a line of the output counts the elements that it left out.  The counts of
 the output of the probe of `godbolt_targets` has at most 256 bytes.
 
 The plugin sends a request at most 3 times.  It sends the request again
-after the status 429, 502 or 503.  It sends a request for a list again also
-after the status 504, after a timeout, and after a transfer that fails in
-another way.  Before the second attempt it waits 1 s, and before the third
-2 s, or the seconds of `Retry-After` if they are more.  If `Retry-After` is
-more than 30 s, the request fails at once.
+after the status 429, 502 or 503.  It sends a request for a list or for a
+short link again also after the status 504 and after a transfer that fails
+in another way, and a request for a list also after a timeout.  Before the
+second attempt it waits 1 s, and before the third 2 s, or the seconds of
+`Retry-After` if they are more.  If `Retry-After` is more than 30 s, the
+request fails at once.
+
+A call of `godbolt_compile`, `godbolt_preprocess` or `godbolt_macros` with
+the argument `share` true has a link on the first line of its output.  The
+link opens the same source, compilers and arguments on Compiler Explorer.
+The option `share` selects the kind of link:
+
+- `short`: Compiler Explorer stores the source, the compilers and the
+  arguments permanently, and the link has a short id, such as
+  `https://godbolt.org/z/Ab12cd34e`.  Anyone with the link can read the
+  source.  Compiler Explorer returns the same link for the same state.
+- `state`: the link has the state in base64, and Compiler Explorer stores
+  nothing.  If the link would be longer than 8192 bytes, the line has the
+  reason instead of a link.
+- `off`: the tools have no argument `share`, and a call with it fails.
+
+Unless links are off, the description of each of these tools has the
+sentence "Set share only if the user asks for a link."  With `short`, their
+`readOnlyHint` is false.  If a link fails, the line has the reason, and the
+compilations go on.  A call that sends no compilation, such as a call of
+`godbolt_macros` with only MSVC compilers, gets no link.
 
 The `keep` of a request for the list of languages is a day, and the `keep`
 of a request for a list of compilers is an hour, so a repeated call of
@@ -966,9 +988,9 @@ of a request for a list of compilers is an hour, so a repeated call of
 the same compilation less than a second before.  A call with `offset` gets
 the responses that `askai` received for the same call without `offset` in
 the last 5 minutes, if `askai` still stores them, and then both calls have
-the same output.  `askai` does not store a failed response, so a
-call with `offset` sends a failed request again, and the record of that
-compilation can differ.
+the same output.  `askai` does not store a failed response, so a call with
+`offset` sends a failed request again, and the record of that compilation
+can differ.  The `keep` of a request for a short link is a day.
 
 ### Limits
 
