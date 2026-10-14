@@ -892,10 +892,11 @@ Upstream AI:
                             8 of them queued per session or client
                             address; a tool call past those is answered
                             at once as an error that says to try again
-      --upstream-tools      give the upstream tools too: man and git,
-                            as the client may call them, notes with
-                            --notes, and compact; an ask call then
-                            runs them and asks on until it answers
+      --upstream-tools      give the upstream tools too: man, git and
+                            the plugins' tools that allow it, as the
+                            client may call them, notes with --notes,
+                            and compact; an ask call then runs them
+                            and asks on until it answers
       --notes DIR           the git repository where the upstream keeps
                             its notes, made bare if it does not exist
       --max-turns N         upstream calls an ask call makes at most
