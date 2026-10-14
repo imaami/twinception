@@ -287,7 +287,10 @@ ledger_task_cancel (struct ledger_task *task)
 	    atomic_load_explicit(&task->status, memory_order_acquire) != LEDGER_WORKING)
 		return;
 	atomic_fetch_add_explicit(&task->refs, 1, memory_order_relaxed);
-	loop_post(task->loop, &task->cancel);
+	/* A message that loop_post() refuses never runs, so the function drops
+	 * the reference of that message itself. */
+	if (loop_post(task->loop, &task->cancel))
+		ledger_task_put(task);
 }
 
 void

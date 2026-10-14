@@ -111,11 +111,14 @@ roster_cancel (struct roster *roster,
 	}
 	pthread_mutex_unlock(&roster->lock);
 	/* The loop of a record can free the record as soon as the message is
-	 * posted, so the function reads hit before it posts. */
+	 * posted, so the function reads hit before it posts.  A message that
+	 * loop_post() refuses never runs, so the function drops the reference
+	 * of that message itself. */
 	while (hits) {
 		struct roster_call *c = hits;
 		hits = c->hit;
-		loop_post(c->loop, &c->cancel);
+		if (loop_post(c->loop, &c->cancel))
+			roster_call_put(c);
 	}
 }
 
