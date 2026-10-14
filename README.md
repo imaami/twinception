@@ -525,36 +525,37 @@ window" error) or as the usage counts, `askai` does likewise without a
 summary, once until a turn goes through again; the next overflow is the
 call's error.
 
-With `--notes DIR`, the model keeps notes of its work.  `askai` makes `DIR`
-if it does not exist.  Each `ask_ai` call is a thread of notes, and each
-thread is a bare git repository of its own, `DIR/WHO/upstream/ID`: `WHO` is
-the caller's identity, as a hash, or `anonymous`, and `ID` is 32 hexadecimal
-digits, random.  A note is a file.  The model chooses its name, such as
-`plan.md` or `findings/locks.md`, and writes its text, at most 8 KiB.  The
-name's extension says the format of the text, which `askai` does not check.
-Adding a note adds a commit to the branch `notes`, which `git fast-import`
-writes.  The tool `notes` adds a note, lists the notes, the oldest first, with
-the time that each was added, or reads a note, a window at a time from its
-`offset`.  A note is never changed or removed: a name that a note or a
-directory of notes has is refused, as is a name with a control character
-or an empty part.  No part of a name can be `.`, `..`, `.git` or `git~1`, in
-any case and also with spaces or dots after it, because git refuses such
-names.  Slashes at the start of a name are left out.  The caller sees that notes were kept, and the thread's id, not what
-they say.  `ask_ai`'s `thread` argument goes on with a thread in a later
-call, whose prompt then has the list of the thread's notes and the newest
-note.  Only the identity that wrote a thread can go on with it.  Two calls
-that add notes to one thread at once may make one of them fail, and the
-answer to that call asks to add the note again.  `git` runs there with no hooks.  Nothing prunes the repositories: run
-`git gc` on them now and then.  Older versions of `askai` kept all the notes
-in one repository, `DIR` itself.  `askai` refuses such a `DIR` and does not
-move its notes.
+With `--notes DIR`, the model keeps notes of its work.  `askai` makes `DIR` if
+it does not exist.  Each `ask_ai` call starts a thread of notes or goes on
+with one, and each thread is a bare git repository of its own,
+`DIR/WHO/upstream/ID`: `WHO` is the caller's identity, as a hash, or
+`anonymous`, and `ID` is 32 hexadecimal digits, random.  A note is a file.
+The model chooses its name, such as `plan.md` or `findings/locks.md`, and
+writes its text, at most 8 KiB.  The extension of the name shows the format of
+the text, which `askai` does not check.  Adding a note adds a commit to the
+branch `notes`, which `git fast-import` writes.  The tool `notes` adds a note,
+lists the notes, the oldest first, with the time that each was added, or reads
+a note, a window at a time from its `offset`.  A note is never changed or
+removed: a name that a note or a directory of notes has is refused, as is a
+name with a control character or an empty part.  No part of a name can be `.`,
+`..`, `.git` or `git~1`, in any case and also with spaces or dots after it,
+because git refuses such names.  Slashes at the start of a name are left out.
+The caller sees that notes were kept, and the thread's id, not what they say.
+`ask_ai`'s `thread` argument goes on with a thread in a later call, whose
+prompt then has the list of the thread's notes and the newest note.  Only the
+identity that wrote a thread can go on with it.  Two calls that add notes to
+one thread at once may make one of them fail, and the answer to that call asks
+to add the note again.  `git` runs there with no hooks.  Nothing prunes the
+repositories: run `git gc` on them now and then.  Older versions of `askai`
+wrote all the notes to one repository, `DIR` itself.  `askai` refuses such a
+`DIR` and does not move its notes.
 
 A role that names `notes` among its `tools` gives its clients notebooks of
 their own, with `--notes` alone.  A client's `add` without a `thread` starts
 a new thread, `DIR/WHO/client/ID`, and the answer names it.  The client gives
 that `thread` to add more notes to it, to list them or to read one.  A client
 cannot open the threads of the model, nor those of other identities.  With
-`--upstream-tools`, the model gets `notes` whatever the role says.
+`--upstream-tools`, the model gets `notes` whatever the role lists.
 
 ### Security
 
@@ -645,7 +646,8 @@ Four more members say who may connect, and what they may do:
 ```
 
 - A **role** lists the tools it may list and call, as clients see them
-  (`--tool-name`'s, `man`, `git`, `notes` and the tools of the plugins), and
+  (the tool that `--tool-name` names, `man`, `git`, `notes` and the tools of
+  the plugins), and
   whether it may read `GET /metrics`.
   `tools/list` shows a client its role's tools only, and calling another is
   an error, "Tool not available: NAME".

@@ -1,5 +1,5 @@
-/** @file The notes (--notes): notebooks in which the upstream and the
- *  clients keep notes as they work (src/mcp.h).
+/** @file This file declares the notes of --notes.  The upstream and the
+ *  clients add notes to notebooks as they work (src/mcp.h).
  *
  * A notebook is a thread of notes.  Each thread is a bare git repository
  * in the directory that --notes names, at the path WHO/SIDE/ID.  WHO is the
@@ -77,8 +77,8 @@ struct notes_entry {
  * exist, the function makes it with the mode 0700.  Returns the notes.  On
  * failure it returns nullptr, stores the error number in @p *e, and writes
  * a message of at most @p len bytes to @p why.  A directory that is a git
- * repository is refused, because older versions of askai kept all the
- * notes in one repository.
+ * repository is refused, because older versions of askai wrote all the
+ * notes to one repository.
  */
 extern struct notes *
 notes_create (char const *path,

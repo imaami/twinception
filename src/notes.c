@@ -84,8 +84,8 @@ notes_open (struct notes *notes,
 	if (fstatat(notes->fd, "HEAD", &st, AT_SYMLINK_NOFOLLOW))
 		return 0;
 	util_format(why, len, "the directory is a git repository.  Older versions "
-	            "of askai kept all the notes in one repository, but askai now "
-	            "keeps a repository for each thread in the directory.  Name a "
+	            "of askai wrote all the notes to one repository.  askai now "
+	            "makes a repository for each thread in the directory.  Name a "
 	            "new directory");
 	return EINVAL;
 }

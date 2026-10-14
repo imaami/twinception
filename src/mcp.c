@@ -4449,8 +4449,8 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 
 /* Appends the list of the notes in @p out, the output of git for
  * NOTES_LIST, to the answer of @p slot, the oldest note first, and stores
- * the name of the newest note in @p *newest.  @p cut says that git's output
- * was cut, which leaves the oldest notes out.  Returns 0 or ENOMEM. */
+ * the name of the newest note in @p *newest.  @p cut is true if askai cut
+ * the output of git, which leaves the oldest notes out.  Returns 0 or ENOMEM. */
 static int
 mcp_slot_notes_listed (struct mcp_slot *slot,
                        struct span      out,
@@ -4556,8 +4556,8 @@ mcp_slot_notes_prompt (struct mcp_slot  *slot,
 }
 
 /* Appends the newest note, which git read for the prompt, to the request's
- * answer, or a line that says that the note could not be read.  Then the
- * ask call continues. */
+ * answer, or else a line with the text that the note could not be read.
+ * Then the ask call continues. */
 static void
 mcp_slot_notes_newest (struct mcp_slot *slot)
 {
@@ -4604,7 +4604,7 @@ mcp_slot_notes_resumed (struct mcp_slot *slot)
 }
 
 /* Handles the list of the notes for a compaction.  The list goes into the
- * prompt, or a line that says that the notes could not be read. */
+ * prompt, or else a line with the text that the notes could not be read. */
 static void
 mcp_slot_notes_compacted (struct mcp_slot *slot)
 {
@@ -4622,7 +4622,7 @@ mcp_slot_notes_compacted (struct mcp_slot *slot)
 	mcp_req_go_on(req, TEXT("\n"));
 }
 
-/* Handles the output of git as slot->fetch says. */
+/* Handles the output of git for the command in slot->fetch. */
 static void
 mcp_slot_notes_out (struct mcp_slot *slot)
 {
@@ -5993,7 +5993,7 @@ mcp_notes_schema (enum notes_side side)
 			"description", json_object_new_string(
 				"For add and read: the file name of the note, at most 255 "
 				"bytes. It can have directories, such as findings/locks.md. "
-				"Its extension, such as .md or .txt, says the format of the "
+				"Its extension, such as .md or .txt, shows the format of the "
 				"text."),
 			nullptr),
 		"text", jb_object(

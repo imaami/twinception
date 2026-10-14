@@ -5279,13 +5279,15 @@ def generate_turn(chunks, reason="STOP"):
 
 
 def check_notes(binary, up):
-    """The notes tool of the clients, with --notes alone: a role grants it.
-    An add without a thread starts one, in a repository of its own under
-    the client's identity, and names it.  A thread's notes are listed oldest
-    first and read back, a long one a page at a time.  A note is never
-    changed, and its name has no empty parts, no . or .., no .git and no
-    control characters.  A thread of another identity, or of the upstream,
-    is unknown to a client."""
+    """With --notes and without --upstream-tools, a role can grant the notes
+    tool to clients.  An add without a thread starts one, in a repository of
+    its own under the client's identity, and the answer names it.  A list
+    has the notes of a thread, the oldest first, and a read returns the text
+    of a note from the byte that offset names.  A note is never changed, and
+    the names that git refuses are refused.  Of two adds at once, one can
+    fail, and its answer asks to add the note again.  A dropped add still
+    adds its note, and a stale lock file of git is removed.  A thread of
+    another identity, or of the upstream, is unknown to a client."""
     def digest(token):
         return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
 
@@ -5396,8 +5398,8 @@ def check_notes(binary, up):
                     ({"action": "remove", "thread": thread},
                      "The action argument must be add, list or read.")):
                 assert call(arguments).startswith("!" + why), (arguments, call(arguments))
-            # Another identity, and the upstream's thread of the same id, are
-            # kept apart from the thread.
+            # A client cannot use a thread of another identity, or a thread of
+            # the upstream with the same id.
             sh = ["git", "init", "-q", "--bare", f"{notes}/{who}/upstream/{'1' * 32}"]
             subprocess.run(sh, check=True, env=os.environ | {
                 "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
@@ -5449,7 +5451,8 @@ def check_notes(binary, up):
                          "thread": thread}) == "Noted."
             assert not os.path.exists(f"{book}/refs/heads/notes.lock")
     print("notes: granted by a role, threads of the clients' own, list, read, "
-          "pages, names and texts refused, threads kept apart: PASS")
+          "offsets, names and texts refused, races, drops, stale locks, other "
+          "threads unknown: PASS")
 
 
 def check_turn_apis(binary, up):
@@ -5642,9 +5645,10 @@ def check_turns(binary, up):
     at most; the client gets the answer and the calls' trace.  Notes are
     files in the repository of the thread, listed and read back; their list
     and the newest note go with the prompt to a call that goes on with the
-    thread; compact, a context that the upstream says is full, or one askai
-    reckons is, has the conversation start again from the prompt, the
-    summary and the notes."""
+    thread.  compact has the conversation start again from the prompt, the
+    summary and the notes, and a context that is full, as the upstream
+    reports or as askai counts, has it start again from the prompt and the
+    notes."""
     def run(*args):
         return subprocess.run([binary, "-u", up.url(), *args], capture_output=True,
                               text=True, timeout=10)
@@ -5707,8 +5711,9 @@ def check_turns(binary, up):
             assert "thread" in tools["notes"]["inputSchema"]["properties"], tools
             assert "compact" not in tools, tools
 
-            # Two calls, git's and a note, then a list of the notes, then the
-            # answer.  The turns carry the text, the thinking and the calls.
+            # Two calls, one of git and one of notes, then a list of the notes,
+            # then the answer.  The turns carry the text, the thinking and the
+            # calls.
             log = json.dumps({"repo": "proj", "command": "log",
                               "options": ["--oneline"]})
             script[:] = [
@@ -5759,8 +5764,8 @@ def check_turns(binary, up):
             assert sh("--git-dir", book, "show", "notes:found.md",
                       cwd=d) == "found \"first\"", book
 
-            # Going on with the thread: the list of its notes and the newest
-            # note go with the prompt.
+            # When an ask call goes on with a thread, the prompt has the list
+            # of the notes of the thread and the newest note.
             count = len(up.requests)
             result = ai.ask("And now?", thread=thread)
             assert re.fullmatch(
@@ -5906,17 +5911,24 @@ def check_turns(binary, up):
             assert "- compact: 1 bytes\n" in result["content"][1]["text"], result
             assert "git" not in result["content"][1]["text"], result
 
-            # The upstream says the context is full: once, from the prompt
-            # again; twice, the call fails.
+            # The upstream reports that the context is full: once, from the
+            # prompt and the notes again; twice, the call fails.
             full = {"error": {"code": 400, "type": "exceed_context_size_error",
                               "message": "request (9000 tokens) exceeds the "
                               "available context size (8192 tokens), try "
                               "increasing it"}}
-            script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
+            script[:] = [lambda r: (200, turn_stream([("a", "notes", json.dumps(
+                             {"action": "add", "file": "n2.md", "text": "n2"}))])),
                          lambda r: (400, full)]
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"
-            assert turns(up.requests[count + 2]) == [], up.requests[count + 2]
+            again = up.requests[count + 2]
+            assert turns(again) == [] and re.fullmatch(
+                "Q\n\n\\[askai: your context filled up, so the conversation since "
+                "the task is gone, your turns and the tools' results with it\\.\\]"
+                f"\n\n\\[askai: your notes, oldest first:\\]\n\n1\\. {when}  n2\\.md  "
+                "\\(1 line\\)\n\n\\[askai: your newest note, n2\\.md:\\]\n\nn2\n\n"
+                "\\[askai: go on with the task\\.\\]", prompt(again)), prompt(again)
             script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
                          lambda r: (400, full), lambda r: (400, full)]
             result = ai.ask("Q")
@@ -6193,8 +6205,9 @@ def check_turns(binary, up):
             assert "[Bytes 0 to 2992 of 44000:" in turns(up.requests[count + 1])[1][
                 "content"], up.requests[count + 1]
 
-            # A list gives every note in the order they were added.  A read
-            # gives a window of a long note, and the rest from an offset.
+            # The list action returns every note, the oldest first.  The read
+            # action returns a window of a long note, and a read with an offset
+            # returns the rest.
             add = lambda c: json.dumps({"action": "add", "file": f"{c}/{c}.txt",
                                         "text": f"{c * 1199}\n" * 6})
             script[:] = [
@@ -6217,10 +6230,13 @@ def check_turns(binary, up):
                 "for the rest, call again with \"offset\": 2400.]", reads[1][-100:]
             assert reads[2] == f"{'c' * 1199}\n\n\n[Bytes 6000 to 7200 of 7200: its " \
                 "end.]", reads[2][-100:]
-            # The last result says also that the context is full.
+            # The result of the last call also has the warning that the context
+            # is full.
             assert reads[3] == "That name is a directory of notes. list shows the " \
-                "notes in it." and reads[4].startswith("No note has that name.\n\n"), \
-                reads[3:]
+                "notes in it." and re.fullmatch(
+                    r"No note has that name\.\n\n\[askai: your context is \d+% full, "
+                    r"\d+ of 6000 tokens\. Note what you need to keep, then call "
+                    r"compact\.\]", reads[4]), reads[3:]
 
             # However long the turns grow, no step does more than its share.
             work(ai)
