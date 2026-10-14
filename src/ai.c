@@ -1,6 +1,7 @@
 /** @file Upstream AI APIs: request bodies and answer parsing,
  *  whole or streamed. */
 #include <errno.h>
+#include <stdckdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -353,13 +354,18 @@ ai_index (struct json_object *val)
 	return at >= 0 && at < AI_CALL_NEXT ? (uint32_t)at : AI_CALL_NEXT;
 }
 
-/* The tokens of a request of @p prompt tokens and of its answer of @p answer;
- * 0 if they are not known. */
+/* Return the sum of @p prompt, the token count of a request, and @p answer,
+ * the token count of its answer.  Return UINT32_MAX if the sum is larger
+ * than UINT32_MAX.  Return 0, which means that the count is not known, if
+ * @p prompt is not positive, if @p answer is negative, or if the sum
+ * overflows int64_t. */
 static uint32_t
 ai_used (int64_t prompt,
          int64_t answer)
 {
-	int64_t n = prompt > 0 && answer >= 0 ? prompt + answer : 0;
+	int64_t n;
+	if (prompt <= 0 || answer < 0 || ckd_add(&n, prompt, answer))
+		return 0;
 	return n < UINT32_MAX ? (uint32_t)n : UINT32_MAX;
 }
 
@@ -697,10 +703,13 @@ ai_messages_event (struct ai_sink const *sink,
 		return REPLAY("\"}");
 	case MESSAGE: {
 		struct json_object *usage = jb_get(jb_get(ev, "message"), "usage");
-		reader->input = ai_used(
-			json_object_get_int64(jb_get(usage, "input_tokens")) +
-			json_object_get_int64(jb_get(usage, "cache_creation_input_tokens")) +
-			json_object_get_int64(jb_get(usage, "cache_read_input_tokens")), 0);
+		struct json_object *written = jb_get(usage, "cache_creation_input_tokens");
+		struct json_object *cached = jb_get(usage, "cache_read_input_tokens");
+		int64_t n = json_object_get_int64(jb_get(usage, "input_tokens"));
+		/* A sum that overflows int64_t is not a token count. */
+		bool over = ckd_add(&n, n, json_object_get_int64(written)) ||
+		            ckd_add(&n, n, json_object_get_int64(cached));
+		reader->input = over ? 0 : ai_used(n, 0);
 		return 0;
 	}
 	case MESSAGE_DELTA: {

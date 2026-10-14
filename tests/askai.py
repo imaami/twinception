@@ -5215,17 +5215,18 @@ def turn_stream(calls=(), text="", reasoning="", used=None, interleave=False,
     return Stream(wire=sse_wire(ev))
 
 
-def messages_turn(blocks, stop="tool_use", stray=False):
+def messages_turn(blocks, stop="tool_use", stray=False, usage=None):
     """A streamed answer of Anthropic's Messages of the content @p blocks,
     each ("thinking", text, signature), ("redacted", data), ("text", text),
     ("tool", id, name, arguments' JSON text) or ("whole", id, name,
     arguments' JSON text), whose arguments come with its start, the texts
     and arguments in pieces of 5 bytes, that stops for @p stop; with
-    @p stray, a text delta with no index after each block's start."""
+    @p stray, a text delta with no index after each block's start.  If
+    @p usage is given, the message_start event contains it as the usage."""
     ev = [("message_start", {"type": "message_start", "message": {
         "id": "msg", "type": "message", "role": "assistant", "content": [],
-        "usage": {"input_tokens": 90, "cache_read_input_tokens": 10,
-                  "output_tokens": 1}}})]
+        "usage": usage or {"input_tokens": 90, "cache_read_input_tokens": 10,
+                           "output_tokens": 1}}})]
     starts = {"thinking": lambda b: {"type": "thinking", "thinking": "",
                                      "signature": ""},
               "redacted": lambda b: {"type": "redacted_thinking", "data": b[1]},
@@ -5472,7 +5473,9 @@ def check_turn_apis(binary, up):
     has them, a turn goes back as it came, its items in their order, its
     thinking and its signatures whole, and its calls' results as each
     takes them; an answer that the turns doze after goes back as it came,
-    then the message that wakes them, as the user's."""
+    then the message that wakes them, as the user's.  In chat completions
+    and in Messages, askai treats token counts whose sum overflows int64_t
+    as not known."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo = f"{d}/proj"
@@ -5641,6 +5644,30 @@ def check_turn_apis(binary, up):
                                  generate_turn([[{"text": "A"}]])], "contents")
             assert contents[3:] == [{"role": "model", "parts": [{"text": "Waiting."}]},
                                     {"role": "user", "parts": [{"text": woke}]}], contents
+
+        # askai treats token counts whose sum overflows int64_t as not known.
+        # A count that is not known does not fill the context, so the second
+        # request continues the conversation.  Without the overflow check,
+        # these sums wrap to a count near UINT32_MAX, and the second request
+        # starts the conversation again.
+        big = 2**63 - 1
+        call = [("a", "git", json.dumps(log))]
+        for api, path, first, second in (
+                ("chat", "/v1/chat/completions", turn_stream(call, used=(big, big)),
+                 turn_stream(text="A")),
+                ("messages", "/v1/messages", messages_turn(
+                    [("tool", *call[0])], usage={
+                        "input_tokens": big, "cache_creation_input_tokens": big,
+                        "cache_read_input_tokens": big}),
+                 messages_turn([("text", "A")], "end_turn"))):
+            with Askai(binary, "--api", api, "-u", up.url(path), "--upstream-tools",
+                       "--git", repo, "--context", "8000") as ai:
+                script[:] = [lambda r, a=first: (200, a), lambda r, a=second: (200, a)]
+                count = len(up.requests)
+                result = ai.ask("Q")
+                assert result["content"][0]["text"] == "A", (api, result)
+                body = json.dumps(up.requests[count + 1]["body"])
+                assert "your context filled up" not in body, (api, body)
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("turns of the Responses API, Anthropic's Messages and Gemini's: tools, "
           "items in order, thinking and signatures given back, results, waking: PASS")
