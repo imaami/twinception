@@ -272,7 +272,7 @@ test_plugin_misuse_definition (void const *service)
 		"\"description\":\"Uses the call API in ways that it does not allow.\","
 		"\"inputSchema\":{\"type\":\"object\","
 		"\"properties\":{\"case\":{\"type\":\"string\","
-		"\"enum\":[\"ready\",\"own\",\"after\",\"invalid\"]}},"
+		"\"enum\":[\"ready\",\"own\",\"after\",\"invalid\",\"handles\"]}},"
 		"\"required\":[\"case\"],"
 		"\"additionalProperties\":false}}");
 }
@@ -373,6 +373,44 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
 }
 
+/* Names the call with mcp_slot_name(), and then makes handles of the slots
+ * of the loop's table near the call's own, with the generations from 1 to
+ * 256 more than its own.  mcp_slot_named() must return nullptr or the call's
+ * own slot for each of them.  The table also names requests, and a handle
+ * of a request must not give a slot.  The call ends with the text "foreign
+ * F own O", where F is the number of handles that gave another object and O
+ * is the number of handles that gave the call's own slot. */
+static void
+test_plugin_misuse_handles (struct mcp_slot *slot,
+                            struct loop     *loop)
+{
+	struct handle own;
+	if (mcp_slot_name(slot, &own)) {
+		mcp_slot_tell(slot, TOOL_TEXT("The call has no handle."), TOOL_FAILED);
+		return;
+	}
+	/* From the highest bit, a handle has 8 bits for the loop, 24 bits for
+	 * the slot of the table and 32 bits for the generation. */
+	uint64_t const at = own.bits >> 32 & 0xffffff;
+	uint64_t const last = (own.bits & 0xffffffff) + 256;
+	uint64_t const top = own.bits & UINT64_C(0xff) << 56;
+	unsigned foreign = 0;
+	unsigned found = 0;
+	for (uint64_t i = at > 8 ? at - 8 : 0; i <= at + 8; ++i)
+		for (uint64_t gen = 1; gen <= last; ++gen) {
+			struct handle const h = { top | i << 32 | gen };
+			struct mcp_slot const *named = mcp_slot_named(loop, h);
+			foreign += named && named != slot;
+			found += named == slot;
+		}
+	char out[48];
+	int n = snprintf(out, sizeof out, "foreign %u own %u", foreign, found);
+	if (n < 0 || n >= (int)sizeof out)
+		mcp_slot_fail(slot, ENOMEM);
+	else
+		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
+}
+
 /* Starts a test_misuse call.  The kind of test_misuse has no step() and no
  * drop().  The argument "case" selects what the call does:
  * - "ready": the call calls mcp_slot_ready().  The kind has no step(), so
@@ -386,6 +424,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
  *   is the number of them that returned EINVAL.  The next test_state call
  *   of the user shows that text.
  * - "invalid": test_plugin_misuse_invalid() runs.
+ * - "handles": test_plugin_misuse_handles() runs.
  * Any other case ends the call as failed. */
 static void
 test_plugin_misuse_start (struct mcp_slot    *slot,
@@ -416,6 +455,10 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	}
 	if (!strcmp(what, "invalid")) {
 		test_plugin_misuse_invalid(slot, loop);
+		return;
+	}
+	if (!strcmp(what, "handles")) {
+		test_plugin_misuse_handles(slot, loop);
 		return;
 	}
 	if (strcmp(what, "after")) {

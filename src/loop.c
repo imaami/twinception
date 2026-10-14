@@ -35,9 +35,15 @@ enum {
 
 /* A slot of the table of handles. */
 struct loop_slot {
-	void    *obj;     /* what it names; nullptr while free */
-	uint32_t gen;     /* the generation its handles carry, never 0 */
-	uint32_t vacant;  /* while free: the slot freed before it + 1, or 0 */
+	void    *obj;         /* what it names; nullptr while free */
+	uint32_t gen;         /* the generation its handles carry, never 0 */
+	union {
+		uint32_t kind;    /* while in use: the kind of obj, a number that
+		                     loop_handle() stores and loop_lookup()
+		                     compares */
+		uint32_t vacant;  /* while free: the slot freed before it + 1, or
+		                     0 */
+	};
 };
 
 /* What the loop times, in ns: a turn from epoll returning to its end, an
@@ -381,6 +387,7 @@ loop_slots_grow (struct loop *loop)
 int
 loop_handle (struct loop   *loop,
              void          *obj,
+             uint32_t       kind,
              struct handle *h)
 {
 	uint32_t i = loop->vacant;
@@ -394,16 +401,18 @@ loop_handle (struct loop   *loop,
 		loop->slots[i].gen = 1;
 	}
 	loop->slots[i].obj = obj;
+	loop->slots[i].kind = kind;
 	*h = (struct handle){ loop->id << 56 | (uint64_t)i << 32 | loop->slots[i].gen };
 	return 0;
 }
 
 void *
 loop_lookup (struct loop const *loop,
-             struct handle      h)
+             struct handle      h,
+             uint32_t           kind)
 {
 	struct loop_slot const *slot = loop_slot_of(loop, h);
-	return slot ? slot->obj : nullptr;
+	return slot && slot->kind == kind ? slot->obj : nullptr;
 }
 
 void

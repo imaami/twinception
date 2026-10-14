@@ -199,6 +199,15 @@ enum mcp_kind : uint32_t {
 	KINDS
 };
 
+/* The kinds of object that the handles of a client loop name
+ * (loop_handle()).  loop_lookup() returns an object only for the kind that
+ * its handle was made with, so a handle of a request never gives a call
+ * slot, and the reverse. */
+enum mcp_handle : uint32_t {
+	HANDLE_REQ = 1,  /* a struct mcp_req */
+	HANDLE_SLOT,     /* a struct mcp_slot */
+};
+
 /* How a kind of tool is lent to the turns: never; as the client's role
  * grants it; whenever the turns are lent anything; beside another; or
  * beside one that may run in the background. */
@@ -1852,7 +1861,7 @@ mcp_on_job (struct loop *loop,
 		mcp_shelve_job(self, job);
 		return;
 	}
-	struct mcp_req *req = loop_lookup(loop, job->call);
+	struct mcp_req *req = loop_lookup(loop, job->call, HANDLE_REQ);
 	if (!(bits & JOB_DONE)) {
 		if (req)
 			mcp_req_progressed(req);
@@ -1972,7 +1981,7 @@ mcp_req_name (struct mcp_req *req,
 {
 	struct stream *s = req->s;
 	int e = mcp_key(job, s->ops->field(s, F_SESSION));
-	return e ? e : loop_handle(req->mcp->loop, req, &req->call);
+	return e ? e : loop_handle(req->mcp->loop, req, HANDLE_REQ, &req->call);
 }
 
 /* Hand the upstream request to a job, which the request names itself to for
@@ -2180,7 +2189,7 @@ mcp_on_task_cancel (struct loop *loop,
                     struct msg  *msg)
 {
 	struct ledger_task *task = container_of(msg, struct ledger_task, cancel);
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, task->who);
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, task->who, HANDLE_REQ);
 	ledger_task_put(task);
 	if (!req)
 		return;
@@ -2200,7 +2209,7 @@ mcp_on_withdraw (struct loop *loop,
                  struct msg  *msg)
 {
 	struct roster_call *call = container_of(msg, struct roster_call, cancel);
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, call->who);
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, call->who, HANDLE_REQ);
 	roster_call_put(call);
 	if (!req || req->phase >= PHASE_REPLY)
 		return;
@@ -2223,7 +2232,7 @@ mcp_req_enrol (struct mcp_req *req)
 	struct handle who;
 	int e = mcp_req_key(req, req->id, &key, &hash);
 	if (!e)
-		e = loop_handle(mcp->loop, req, &who);
+		e = loop_handle(mcp->loop, req, HANDLE_REQ, &who);
 	if (!e) {
 		req->rostered = roster_enter(mcp->st->roster, buf_peek(&key), hash, mcp->loop,
 		                             who, mcp_on_withdraw, &e);
@@ -2242,7 +2251,7 @@ mcp_req_task_open (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	struct handle who;
-	int e = loop_handle(mcp->loop, req, &who);
+	int e = loop_handle(mcp->loop, req, HANDLE_REQ, &who);
 	struct ledger_task *task = e ? nullptr
 	                         : ledger_open(mcp->st->ledger, req->s->principal, mcp->loop,
 	                                       who, mcp_on_task_cancel, &e);
@@ -2526,7 +2535,8 @@ mcp_slot_name (struct mcp_slot *slot,
 		return EFAULT;
 	if (slot->done)
 		return EINVAL;
-	int e = slot->call.bits ? 0 : loop_handle(slot->req->mcp->loop, slot, &slot->call);
+	int e = slot->call.bits ? 0 : loop_handle(slot->req->mcp->loop, slot, HANDLE_SLOT,
+	                                          &slot->call);
 	*who = slot->call;
 	return e;
 }
@@ -2535,7 +2545,7 @@ struct mcp_slot *
 mcp_slot_named (struct loop const *loop,
                 struct handle      who)
 {
-	return loop && !loop->exit ? loop_lookup(loop, who) : nullptr;
+	return loop && !loop->exit ? loop_lookup(loop, who, HANDLE_SLOT) : nullptr;
 }
 
 static void mcp_slot_notes_fetch (struct mcp_slot *slot, enum mcp_fetch fetch,

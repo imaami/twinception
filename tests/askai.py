@@ -6801,6 +6801,10 @@ def check_misuse(binary, up, plugin):
                                  text_of(call("test_misuse", {"case": "invalid"})))
             assert found and found[1] == found[2] and int(found[2]) >= 36, found
             assert text_of(call("test_echo", {"text": "x"})) == "x"
+            # A handle of the loop's table gives a call slot only if it was
+            # made for one.  The call's own request also has handles there.
+            assert text_of(call("test_misuse", {"case": "handles"})) == \
+                "foreign 0 own 1"
             # After the end of the call, each function that would end or
             # change the call refused with EINVAL.
             assert state()[1] == "refused 8 of 8"

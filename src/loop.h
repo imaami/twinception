@@ -139,21 +139,29 @@ extern void
 loop_fini (struct loop *loop);
 
 /**
- * Name @p obj for other threads with a slot of the loop's table, the slot
- * freed last if there is one: the table grows only past the most named at
- * once, and keeps its slots.  ENOMEM if it cannot grow, which past 2^24 slots
- * it never does.
+ * Stores in @p *h a handle that names @p obj for other threads.  The handle
+ * names a slot of the loop's table, which also stores @p kind.  The kind is
+ * a number that the caller chooses for each type of object that it names,
+ * and loop_lookup() returns the object only for the same kind.  The
+ * function takes the slot that was freed last, if there is one, so the
+ * table grows only past the largest number of objects named at once.
+ * Returns 0, or ENOMEM if the table cannot grow, which it never does past
+ * 2^24 slots.
  */
 extern int
 loop_handle (struct loop   *loop,
              void          *obj,
+             uint32_t       kind,
              struct handle *h);
 
-/** What @p h names on @p loop, or nullptr if its slot was freed since it was
- *  made, or it is another loop's. */
+/** Returns the object that @p h names on @p loop if loop_handle() stored
+ *  it with @p kind.  Returns nullptr if the slot of @p h has been freed
+ *  since the handle was made, if the handle is another loop's, or if the
+ *  object has another kind. */
 extern void *
 loop_lookup (struct loop const *loop,
-             struct handle      h);
+             struct handle      h,
+             uint32_t           kind);
 
 /** Free the slot @p h names, if it still does: its generation advances, so no
  *  copy of @p h names anything any more. */
