@@ -5278,6 +5278,126 @@ def generate_turn(chunks, reason="STOP"):
     return Stream(wire=sse_wire(ev))
 
 
+def check_notes(binary, up):
+    """The notes tool of the clients, with --notes alone: a role grants it.
+    An add without a thread starts one, in a repository of its own under
+    the client's identity, and names it.  A thread's notes are listed oldest
+    first and read back, a long one a page at a time.  A note is never
+    changed, and its name has no empty parts, no . or .., no .git and no
+    control characters.  A thread of another identity, or of the upstream,
+    is unknown to a client."""
+    def digest(token):
+        return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+
+    def auth(token):
+        return {"Authorization": f"Bearer {token}"}
+
+    with tempfile.TemporaryDirectory() as d:
+        notes = f"{d}/notes"
+        path = f"{d}/askai.json"
+        with open(path, "w") as f:
+            json.dump({"url": up.url(), "notes": notes,
+                       "roles": {"writer": {"tools": ["notes"]},
+                                 "asker": {"tools": ["ask_ai"]}},
+                       "identities": {
+                           "alice": {"role": "writer", "tokens": [digest("alice-1")]},
+                           "bob": {"role": "writer", "tokens": [digest("bob-1")]},
+                           "carol": {"role": "asker", "tokens": [digest("carol-1")]}}},
+                      f)
+        os.chmod(path, 0o600)
+        with Askai(binary, "-c", path) as ai:
+            def call(arguments, token="alice-1"):
+                status, _, body = ai.rpc("tools/call", {"name": "notes",
+                                                        "arguments": arguments},
+                                         headers=auth(token))
+                assert status == 200, (status, body)
+                if "error" in body:
+                    return body["error"]["message"]
+                result = body["result"]
+                assert len(result["content"]) == 1, result
+                return ("!" if result.get("isError") else "") + text_of(result)
+
+            for token, tools in (("alice-1", ["notes"]), ("carol-1", ["ask_ai"])):
+                listed = ai.rpc("tools/list", headers=auth(token))[2]["result"]["tools"]
+                assert [t["name"] for t in listed] == tools, listed
+            assert call({"action": "list"}, "carol-1") == "Tool not available: notes"
+
+            said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
+            thread = re.fullmatch(r"Noted, in the new thread ([0-9a-f]{32})\. Give "
+                                  r"this thread to add more notes to it, to list "
+                                  r"them, or to read one\.", said).group(1)
+            [who] = os.listdir(notes)
+            assert re.fullmatch("[0-9a-f]{16}", who) and \
+                os.listdir(f"{notes}/{who}") == ["client"], who
+            assert os.listdir(f"{notes}/{who}/client") == [thread]
+            long = "".join(f"line {i:04}\n" for i in range(800))
+            assert call({"action": "add", "file": "a/b c.md", "text": long,
+                         "thread": thread}) == "Noted."
+            assert call({"action": "add", "file": 'q"\\.txt', "text": "q",
+                         "thread": thread}) == "Noted."
+            for name, why in (("plan.md", "A note of that name exists"),
+                              ("a", "That name is a directory of notes"),
+                              ("plan.md/x", "A directory in that name is a note"),
+                              ("", "The file argument must be"),
+                              ("/", "The file argument must be"),
+                              ("a//b", "The file argument must be"),
+                              ("a/", "The file argument must be"),
+                              (".", "The file argument must be"),
+                              ("x/../plan.md", "The file argument must be"),
+                              ("x/.Git/y", "The file argument must be"),
+                              ("a\tb", "The file argument must be"),
+                              ("x" * 256, "The file argument must be")):
+                said = call({"action": "add", "file": name, "text": "t",
+                             "thread": thread})
+                assert said.startswith("!" + why), (name, said)
+            for text in ("", "x" * 8193, "a\0b"):
+                assert call({"action": "add", "file": "t.md", "text": text,
+                             "thread": thread}).startswith("!The text argument"), text
+            assert call({"action": "add", "file": "x" * 255, "text": "t",
+                         "thread": thread}) == "Noted."
+
+            listed = call({"action": "list", "thread": thread})
+            when = r"\d{4}-\d\d-\d\d \d\d:\d\d UTC"
+            assert re.fullmatch(
+                f"Your notes, oldest first:\n\n1\\. {when}  plan\\.md  \\(1 line\\)\n"
+                f"2\\. {when}  a/b c\\.md  \\(800 lines\\)\n"
+                f'3\\. {when}  q"\\\\\\.txt  \\(1 line\\)\n4\\. {when}  x{{255}}  '
+                "\\(1 line\\)\n", listed), listed
+            assert call({"action": "read", "file": "/plan.md", "thread": thread}) == \
+                "step 1"
+            assert call({"action": "read", "file": 'q"\\.txt', "thread": thread}) == "q"
+            assert call({"action": "read", "file": "a/b c.md", "thread": thread,
+                         "offset": 7990}) == long[7990:]
+            assert call({"action": "read", "file": "a", "thread": thread}) == \
+                "!That name is a directory of notes. list shows the notes in it."
+            assert call({"action": "read", "file": "b", "thread": thread}) == \
+                "!No note has that name."
+            assert call({"action": "read", "file": "b", "thread": thread,
+                         "offset": -1}).startswith("!The offset argument")
+
+            for arguments, why in (
+                    ({"action": "list"}, "list and read need the thread argument"),
+                    ({"action": "read", "file": "plan.md"},
+                     "list and read need the thread argument"),
+                    ({"action": "list", "thread": "xyz"},
+                     "The thread argument must be the id of a thread"),
+                    ({"action": "remove", "thread": thread},
+                     "The action argument must be add, list or read.")):
+                assert call(arguments).startswith("!" + why), (arguments, call(arguments))
+            # Another identity, and the upstream's thread of the same id, are
+            # kept apart from the thread.
+            sh = ["git", "init", "-q", "--bare", f"{notes}/{who}/upstream/{'1' * 32}"]
+            subprocess.run(sh, check=True, env=os.environ | {
+                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+            for token, other in (("bob-1", thread), ("alice-1", "1" * 32)):
+                for arguments in ({"action": "list"}, {"action": "read", "file": "plan.md"},
+                                  {"action": "add", "file": "z.md", "text": "z"}):
+                    said = call(arguments | {"thread": other}, token)
+                    assert said == f"!Unknown thread: {other}.", (token, arguments, said)
+    print("notes: granted by a role, threads of the clients' own, list, read, "
+          "pages, names and texts refused, threads kept apart: PASS")
+
+
 def check_turn_apis(binary, up):
     """With --upstream-tools, the turns of the Responses API, Anthropic's
     Messages and Gemini's generateContent: the tools are offered as each
@@ -5466,17 +5586,16 @@ def check_turns(binary, up):
     window that offset moves, writes the turn and the results into the
     conversation, and asks on until an answer calls none, --max-turns turns
     at most; the client gets the answer and the calls' trace.  Notes are
-    commits on the thread's branch, read back, and given again with the
-    prompt to a call that goes on with the thread; compact, a context that
-    the upstream says is full, or one askai reckons is, has the
-    conversation start again from the prompt, the summary and the notes."""
+    files in the repository of the thread, listed and read back; their list
+    and the newest note go with the prompt to a call that goes on with the
+    thread; compact, a context that the upstream says is full, or one askai
+    reckons is, has the conversation start again from the prompt, the
+    summary and the notes."""
     def run(*args):
         return subprocess.run([binary, "-u", up.url(), *args], capture_output=True,
                               text=True, timeout=10)
 
-    for args, message in ((("--notes", "/nonexistent/x"), "--notes needs "
-                           "--upstream-tools"),
-                          (("--upstream-tools", "--api", "generate", "-x",
+    for args, message in ((("--upstream-tools", "--api", "generate", "-x",
                             '{"contents": null}'), "--extra may not change contents "
                            "with --upstream-tools"),
                           (("--upstream-tools", "--max-turns", "0"),
@@ -5506,13 +5625,13 @@ def check_turns(binary, up):
         notes = f"{d}/notes"
         with open(f"{d}/file", "w"):
             pass
-        os.mkdir(f"{d}/work")
-        sh("init", "-q", cwd=f"{d}/work")
+        sh("init", "-q", "--bare", f"{d}/old", cwd=d)
         for path, message in ((f"{d}/file", "not a directory"),
-                              (f"{d}/work", "not a git repository"),
-                              (f"{d}/work/.git", "not a bare git repository")):
+                              (f"{d}/old", "the directory is a git repository")):
             proc = run("--upstream-tools", "--notes", path)
             assert proc.returncode and message in proc.stderr, (path, proc)
+        # A time in a list of notes.
+        when = r"\d{4}-\d\d-\d\d \d\d:\d\d UTC"
 
         def turns(request):
             """The messages after the prompt's."""
@@ -5531,17 +5650,18 @@ def check_turns(binary, up):
             tools = {t["name"]: t for t in ai.rpc("tools/list")[2]["result"]["tools"]}
             assert "thread" in tools["ask_ai"]["inputSchema"]["properties"], tools
             assert "offset" in tools["git"]["inputSchema"]["properties"], tools
-            assert "notes" not in tools and "compact" not in tools, tools
+            assert "thread" in tools["notes"]["inputSchema"]["properties"], tools
+            assert "compact" not in tools, tools
 
-            # Two calls, git's and a note, then a read of the notes, then the
+            # Two calls, git's and a note, then a list of the notes, then the
             # answer.  The turns carry the text, the thinking and the calls.
             log = json.dumps({"repo": "proj", "command": "log",
                               "options": ["--oneline"]})
             script[:] = [
                 lambda r: (200, turn_stream([("c1", "git", log), ("c2", "notes", json.dumps(
-                    {"action": "write", "text": "found \"first\""}))], text="Looking.",
-                    reasoning="hmm", used=(100, 20))),
-                lambda r: (200, turn_stream([("", "notes", '{"action":"read"}')])),
+                    {"action": "add", "file": "/found.md", "text": "found \"first\""}))],
+                    text="Looking.", reasoning="hmm", used=(100, 20))),
+                lambda r: (200, turn_stream([("", "notes", '{"action":"list"}')])),
             ]
             count = len(up.requests)
             result = ai.ask("What is there?")
@@ -5550,6 +5670,9 @@ def check_turns(binary, up):
             assert [t["function"]["name"] for t in body["tools"]] == \
                 ["git", "notes", "compact", "background", "jobs", "wait", "timer"], \
                 body["tools"]
+            # The upstream's notes use the thread of the ask call.
+            assert "thread" not in body["tools"][1]["function"]["parameters"][
+                "properties"], body["tools"][1]
             assert body["stream_options"] == {"include_usage": True}, body
             assert list(body)[-1] == "messages" and turns(first) == [], body
             head, *results = turns(second)
@@ -5566,27 +5689,52 @@ def check_turns(binary, up):
             read = turns(third)[3:]
             assert read[0]["tool_calls"][0]["id"] == "call_2_0", read
             assert "reasoning_content" not in read[0], read
-            assert read[1] == {"role": "tool", "tool_call_id": "call_2_0",
-                               "content": "1. found \"first\"\n"}, read
+            listed = read[1]["content"]
+            assert read[1]["tool_call_id"] == "call_2_0" and re.fullmatch(
+                f"Your notes, oldest first:\n\n1\\. {when}  found\\.md  \\(1 line\\)\n",
+                listed), read
             text, trace = [c["text"] for c in result["content"]]
             assert text == "A", result
             thread = re.search(r"in the thread ([0-9a-f]{32}):", trace).group(1)
             assert trace.startswith("The other AI made 3 tool calls in 3 turns:\n"
                                     f"- git {log}: 14 bytes\n"
-                                    "- notes write: 6 bytes\n- notes read: 17 bytes\n"
-                                    ), trace
+                                    "- notes add: 6 bytes\n"
+                                    f"- notes list: {len(listed)} bytes\n"), trace
             assert "found" not in trace, trace
-            branch = f"refs/heads/anonymous/{thread}"
-            assert sh("--git-dir", notes, "log", "--format=%B", branch,
-                      cwd=d).strip() == "found \"first\"", branch
+            book = f"{notes}/anonymous/upstream/{thread}"
+            assert sh("--git-dir", book, "show", "notes:found.md",
+                      cwd=d) == "found \"first\"", book
 
-            # Going on with the thread: its notes go with the prompt.
+            # Going on with the thread: the list of its notes and the newest
+            # note go with the prompt.
             count = len(up.requests)
             result = ai.ask("And now?", thread=thread)
-            assert prompt(up.requests[count]) == (
-                "And now?\n\n[askai: the notes you kept in earlier calls on this "
-                "thread, oldest first:]\n\n1. found \"first\"\n"), up.requests[count]
+            assert re.fullmatch(
+                "And now\\?\n\n\\[askai: the notes you kept in earlier calls on "
+                f"this thread, oldest first:\\]\n\n1\\. {when}  found\\.md  "
+                "\\(1 line\\)\n\n\\[askai: your newest note, found\\.md:\\]\n\n"
+                "found \"first\"\n", prompt(up.requests[count])), up.requests[count]
             assert f"in the thread {thread}:" in result["content"][1]["text"], result
+
+            # Hooks in the repository of a thread do not run.  A note of a
+            # name that a note has is refused.
+            os.makedirs(f"{book}/hooks")
+            with open(f"{book}/hooks/reference-transaction", "w") as f:
+                f.write(f"#!/bin/sh\ntouch {d}/hooked\n")
+            os.chmod(f"{book}/hooks/reference-transaction", 0o755)
+            script[:] = [lambda r: (200, turn_stream([
+                ("h", "notes", json.dumps({"action": "add", "file": "next.md",
+                                           "text": "n"})),
+                ("i", "notes", json.dumps({"action": "add", "file": "found.md",
+                                           "text": "n"})),
+                ("j", "notes", json.dumps({"action": "read", "file": "next.md"}))]))]
+            count = len(up.requests)
+            ai.ask("Q", thread=thread)
+            assert [m["content"] for m in turns(up.requests[count + 1])[1:]] == [
+                "Noted.", "A note of that name exists, and a note cannot be "
+                "changed. Add the note under another name.", "n"], \
+                up.requests[count + 1]
+            assert not os.path.exists(f"{d}/hooked")
             for value, message in (("0" * 32, "Unknown thread: " + "0" * 32 + "."),
                                    ("xyz", "must be a thread's id")):
                 result = ai.ask("Q", thread=value)
@@ -5599,7 +5747,8 @@ def check_turns(binary, up):
                 lambda r: (200, turn_stream([
                     ("a", "git", json.dumps(show)),
                     ("b", "git", json.dumps(show | {"offset": 65530})),
-                    ("c", "notes", json.dumps({"action": "write", "text": "x" * 8193})),
+                    ("c", "notes", json.dumps({"action": "add", "file": "x.md",
+                                               "text": "x" * 8193})),
                     ("d", "man", '{"name":"ls"}'), ("e", "git", "[1]"),
                     ("f", "git", '{"repo":')])),
             ]
@@ -5611,8 +5760,8 @@ def check_turns(binary, up):
                 assert outputs[0] == f.read(), outputs[0][-200:]
             assert outputs[1] == "[The output has 44000 bytes, fewer than the offset.]", \
                 outputs[1]
-            assert outputs[2] == "A note must be a string of 1 to 8192 bytes, and no " \
-                "NUL.", outputs[2]
+            assert outputs[2] == "The text argument must be a string of 1 to 8192 " \
+                "bytes, and no NUL.", outputs[2]
             assert outputs[3] == "No tool of that name is yours to call.", outputs[3]
             assert outputs[4] == outputs[5] == "Your arguments were not a JSON " \
                 "object, so the call was not run.", outputs[4:]
@@ -5625,13 +5774,13 @@ def check_turns(binary, up):
                 text_of(body["result"])), body
 
             # Calls with no index, as some servers send them; arguments the
-            # output token limit cut; a search of more than a line.
+            # output token limit cut; a name of a note that is not valid.
             script[:] = [
                 lambda r: (200, turn_stream([("x", "git", log), ("y", "git", log)],
                                             index=False)),
                 lambda r: (200, turn_stream([("z", "git", log[:-9])], reason="length")),
                 lambda r: (200, turn_stream([("n", "notes", json.dumps(
-                    {"action": "read", "search": "a\nb"}))])),
+                    {"action": "read", "file": "a/../b"}))])),
             ]
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"
@@ -5640,14 +5789,13 @@ def check_turns(binary, up):
             assert turns(up.requests[count + 2])[-1]["content"] == "Your answer " \
                 "reached the output token limit, which cut these arguments short, " \
                 "so the call was not run.", up.requests[count + 2]
-            assert turns(up.requests[count + 3])[-1]["content"] == "The search " \
-                "argument, which only read takes, must be a line of 1 to 1024 " \
-                "bytes.", up.requests[count + 3]
+            assert turns(up.requests[count + 3])[-1]["content"].startswith(
+                "The file argument must be a file name"), up.requests[count + 3]
 
             values = ai.metrics()
-            assert total(values, "askai_turns_total") == 10, values
+            assert total(values, "askai_turns_total") == 12, values
             assert [total(values, "askai_turn_tool_calls_total", tool=t) for t in
-                    ("git", "notes", "man", "compact", "unknown")] == [8, 4, 0, 0, 1], \
+                    ("git", "notes", "man", "compact", "unknown")] == [8, 7, 0, 0, 1], \
                 values
 
         # A small context: windows of an eighth of it, a warning past three
@@ -5682,31 +5830,27 @@ def check_turns(binary, up):
                 "task is gone, your turns and the tools' results with it.]\n\n"
                 "[askai: go on with the task.]"), again
 
-        # Hooks in the notes repository do not run.
-        os.makedirs(f"{notes}/hooks", exist_ok=True)
-        with open(f"{notes}/hooks/reference-transaction", "w") as f:
-            f.write(f"#!/bin/sh\ntouch {d}/hooked\n")
-        os.chmod(f"{notes}/hooks/reference-transaction", 0o755)
         with Askai(binary, *args, "--max-turns", "3") as ai:
             # compact: from the prompt, the summary and the notes; calls after
             # it do not run.
             script[:] = [
                 lambda r: (200, turn_stream([("a", "notes", json.dumps(
-                    {"action": "write", "text": "n1"}))])),
+                    {"action": "add", "file": "n1.md", "text": "n1"}))])),
                 lambda r: (200, turn_stream([("b", "compact", json.dumps(
                     {"summary": "S"})), ("c", "git", log)])),
             ]
             count = len(up.requests)
             result = ai.ask("Q")
             again = up.requests[count + 2]
-            assert turns(again) == [] and prompt(again) == (
-                "Q\n\n[askai: you compacted the context: the conversation since the "
-                "task is gone, your turns and the tools' results with it. Your "
-                "summary of it:]\n\nS\n\n[askai: your notes, oldest first:]\n\n"
-                "1. n1\n\n[askai: go on with the task.]"), prompt(again)
+            assert turns(again) == [] and re.fullmatch(
+                "Q\n\n\\[askai: you compacted the context: the conversation since "
+                "the task is gone, your turns and the tools' results with it\\. "
+                "Your summary of it:\\]\n\nS\n\n\\[askai: your notes, oldest "
+                f"first:\\]\n\n1\\. {when}  n1\\.md  \\(1 line\\)\n\n\\[askai: your "
+                "newest note, n1\\.md:\\]\n\nn1\n\n\\[askai: go on with the task\\.\\]",
+                prompt(again)), prompt(again)
             assert "- compact: 1 bytes\n" in result["content"][1]["text"], result
             assert "git" not in result["content"][1]["text"], result
-            assert not os.path.exists(f"{d}/hooked")
 
             # The upstream says the context is full: once, from the prompt
             # again; twice, the call fails.
@@ -5995,23 +6139,34 @@ def check_turns(binary, up):
             assert "[Bytes 0 to 2992 of 44000:" in turns(up.requests[count + 1])[1][
                 "content"], up.requests[count + 1]
 
-            # A read gives the newest notes that fit a window, oldest first.
-            write = lambda c: json.dumps({"action": "write", "text": c * 1200})
+            # A list gives every note in the order they were added.  A read
+            # gives a window of a long note, and the rest from an offset.
+            add = lambda c: json.dumps({"action": "add", "file": f"{c}/{c}.txt",
+                                        "text": f"{c * 1199}\n" * 6})
             script[:] = [
-                lambda r: (200, turn_stream([(c, "notes", write(c)) for c in "abc"])),
-                lambda r: (200, turn_stream([("d", "notes", '{"action":"read"}'),
-                                             ("e", "notes", json.dumps(
-                                                 {"action": "read", "search": "A"})),
-                                             ("f", "notes", json.dumps(
-                                                 {"action": "read", "search": "z"}))])),
+                lambda r: (200, turn_stream([(c, "notes", add(c)) for c in "bca"])),
+                lambda r: (200, turn_stream([
+                    ("d", "notes", '{"action":"list"}'),
+                    ("e", "notes", json.dumps({"action": "read", "file": "/c/c.txt"})),
+                    ("o", "notes", json.dumps({"action": "read", "file": "c/c.txt",
+                                               "offset": 6000})),
+                    ("f", "notes", json.dumps({"action": "read", "file": "c"})),
+                    ("g", "notes", json.dumps({"action": "read", "file": "z"}))])),
             ]
             count = len(up.requests)
             ai.ask("Q")
             reads = [m["content"] for m in turns(up.requests[count + 2])[5:]]
-            assert reads == [
-                "[1 older note is not shown: search for it.]\n\n1. " + "b" * 1200 +
-                "\n\n2. " + "c" * 1200 + "\n", "1. " + "a" * 1200 + "\n",
-                "No note holds that text."], reads
+            assert re.fullmatch("Your notes, oldest first:\n\n" + "".join(
+                f"{k}\\. {when}  {c}/{c}\\.txt  \\(6 lines\\)\n"
+                for k, c in ((1, "b"), (2, "c"), (3, "a"))), reads[0]), reads[0]
+            assert reads[1] == f"{'c' * 1199}\n" * 2 + "\n\n[Bytes 0 to 2400 of 7200: " \
+                "for the rest, call again with \"offset\": 2400.]", reads[1][-100:]
+            assert reads[2] == f"{'c' * 1199}\n\n\n[Bytes 6000 to 7200 of 7200: its " \
+                "end.]", reads[2][-100:]
+            # The last result says also that the context is full.
+            assert reads[3] == "That name is a directory of notes. list shows the " \
+                "notes in it." and reads[4].startswith("No note has that name.\n\n"), \
+                reads[3:]
 
             # However long the turns grow, no step does more than its share.
             work(ai)
@@ -7008,7 +7163,8 @@ def main():
                       check_reload, check_unix, check_tls, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_man, check_git, check_turns, check_turn_apis, check_tasks,
+                      check_man, check_git, check_turns, check_notes, check_turn_apis,
+                      check_tasks,
                       lambda binary, up: check_plugin(binary, up, plugin),
                       lambda binary, up: check_instances(binary, up, plugin),
                       lambda binary, up: check_misuse(binary, up, plugin),

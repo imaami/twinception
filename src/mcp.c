@@ -131,13 +131,21 @@ enum {
 	ISO_TIME     = sizeof "2026-10-13T12:34:56.789Z",
 };
 
-/* What a git of the notes is for. */
-enum mcp_fetch {
-	FETCH_WRITE,    /* the notes tool's write */
-	FETCH_READ,     /* its read */
-	FETCH_RESUME,   /* the notes of a thread the call goes on with */
-	FETCH_COMPACT,  /* compact's */
-	FETCH_FULL,     /* a compaction of a context that filled up */
+/* What git runs for in the notes (src/notes.h). */
+enum mcp_fetch : uint8_t {
+	FETCH_CREATE,      /* the notes tool's add: make the repository of a new
+	                      thread */
+	FETCH_CHECK,       /* the notes tool's add: check the name of the note */
+	FETCH_ADD,         /* the notes tool's add */
+	FETCH_LIST,        /* the notes tool's list */
+	FETCH_READ,        /* the notes tool's read */
+	FETCH_RESUME,      /* list the notes of the thread that an ask call goes
+	                      on with */
+	FETCH_COMPACT,     /* list the notes for compact */
+	FETCH_FULL,        /* list the notes for a compaction of a context that
+	                      filled up */
+	FETCH_NEWEST = 8,  /* a flag that is set with one of the last three
+	                      values: read the newest note */
 };
 
 static constexpr uint64_t NS = 1'000'000'000;
@@ -181,9 +189,10 @@ static char const *const field_names[F_N] = {
 };
 
 /* The kinds of tool that askai may offer, each its row of mcp_rows, in the
- * order of their ids: those that a role may grant, which clients list and
- * call, before KIND_NOTES; from notes on, those only turns are given; then
- * that of a tool it does not offer. */
+ * order of their ids.  A role can grant the kinds up to KIND_NOTES, which
+ * clients list and call.  askai gives the kinds after KIND_NOTES only to
+ * the turns of ask calls.  KIND_NONE is the kind of a tool that askai does
+ * not offer. */
 enum mcp_kind : uint32_t {
 	KIND_ASK,
 	KIND_MAN,
@@ -526,8 +535,11 @@ struct mcp_req {
 	bool                 stopped;    /* the turns ran out with tools called */
 	bool                 cut;        /* the turn's answer reached the output
 	                                    token limit */
-	char                 thread[NOTES_ID + 1];  /* the notes' thread's id */
-	char                 ref[NOTES_REF];        /* and its ref */
+	char                 thread[NOTES_ID + 1];  /* the id of the thread of
+	                                               the notes */
+	char                 repo[NOTES_REPO];      /* the argument of git that
+	                                               names the repository of
+	                                               the thread */
 };
 
 /* A timer that a turn set: when it fires, its number, and its note. */
@@ -1407,12 +1419,14 @@ mcp_req_trace_tail (struct mcp_req const *req,
 
 /* Close the result's text; then, for an ask call whose turns called tools,
  * or kept notes, what they called and where the notes are, as a text of its
- * own. */
+ * own.  A call without turns that get tools has no trace.  A client's call
+ * of the notes tool has no turns, and its thread does not belong to an ask
+ * call. */
 static int
 mcp_req_trace_put (struct mcp_req *req)
 {
 	static char const none[] = "The other AI called no tools.\n";
-	if (!dstr_len(&req->trace) && !req->branch && !req->stopped)
+	if (!req->lent || (!dstr_len(&req->trace) && !req->branch && !req->stopped))
 		return mcp_req_put(req, &FRAG("\"}"), 1);
 	char head[160];
 	char tail[256];
@@ -2548,8 +2562,7 @@ mcp_slot_named (struct loop const *loop,
 	return loop && !loop->exit ? loop_lookup(loop, who, HANDLE_SLOT) : nullptr;
 }
 
-static void mcp_slot_notes_fetch (struct mcp_slot *slot, enum mcp_fetch fetch,
-                                  char const *search);
+static void mcp_slot_notes_run (struct mcp_slot *slot, uint8_t fetch, struct buf *in);
 
 /* Serialize the tools that the turns of @p obj's userdata, a request, may
  * call: their definitions as the upstream's API has them, each after a
@@ -2652,14 +2665,14 @@ mcp_req_ask (struct mcp_req     *req,
 	}
 	if (id) {
 		memcpy(req->thread, id, sizeof req->thread);
-		notes_ref(req->s->principal, req->thread, req->ref);
+		notes_repo(req->principal, NOTES_UPSTREAM, req->thread, req->repo);
 	} else if (notes) {
 		if (notes_id(req->thread)) {
 			mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a thread's id"),
 			              nullptr, 0);
 			return;
 		}
-		notes_ref(req->s->principal, req->thread, req->ref);
+		notes_repo(req->principal, NOTES_UPSTREAM, req->thread, req->repo);
 	}
 	mcp_req_wait(req);
 	int e = mcp_req_draft(req, prompt, system);
@@ -2675,7 +2688,7 @@ mcp_req_ask (struct mcp_req     *req,
 	bool resume = id;
 	mcp_req_dispose(req);
 	if (resume) {
-		mcp_slot_notes_fetch(&req->self, FETCH_RESUME, nullptr);
+		mcp_slot_notes_run(&req->self, FETCH_RESUME, nullptr);
 		return;
 	}
 	mcp_req_enter(req, PHASE_BUILD);
@@ -4152,321 +4165,392 @@ mcp_req_go_on (struct mcp_req   *req,
 	mcp_req_add_start(req);
 }
 
-/* The notes' git has ended, its output all in: take it in steps of its
- * slot's own. */
+/* git has exited and askai has read all of its output.  The function
+ * queues the step of the slot, which handles the output. */
 static void
 mcp_on_notes (struct child *c)
 {
 	mcp_slot_ready(c->owner);
 }
 
-/* Spawn the git of @p argv, its input @p in, for the notes, for what
- * req->self.fetch says: 0, or why not. */
-static int
-mcp_slot_notes_spawn (struct mcp_slot *slot,
-                      char const      *argv[],
-                      struct span      in)
+/* The command of git for each enum mcp_fetch.  FETCH_NEWEST reads a note
+ * with NOTES_READ. */
+static enum notes_cmd const mcp_fetch_cmds[] = {
+	[FETCH_CREATE]  = NOTES_CREATE,
+	[FETCH_CHECK]   = NOTES_CHECK,
+	[FETCH_ADD]     = NOTES_ADD,
+	[FETCH_LIST]    = NOTES_LIST,
+	[FETCH_READ]    = NOTES_READ,
+	[FETCH_RESUME]  = NOTES_LIST,
+	[FETCH_COMPACT] = NOTES_LIST,
+	[FETCH_FULL]    = NOTES_LIST,
+};
+
+/* Continues the ask call after the notes for the prompt are in the
+ * request's answer.  If @p fetch has FETCH_RESUME, the call goes on with a
+ * thread and builds its upstream request.  After a compaction, the function
+ * adds the line that tells the upstream to go on with the task. */
+static void
+mcp_req_notes_then (struct mcp_req *req,
+                    uint8_t         fetch)
 {
-	struct mcp_req *req = slot->req;
-	struct mcp *mcp = req->mcp;
-	struct loop *loop = mcp->loop;
-	struct child_cmd const cmd = {
-		.file = "git",
-		.argv = argv,
-		.envp = notes_env(mcp->st->notes),
-		.in = in,
-		.max = NOTES_MAX,
-		.deadline = loop->now + NOTES_NS,
-		.flags = CHILD_STDERR
-	};
-	int e = 0;
-	slot->child = child_create(loop, &mcp->children, &cmd, mcp_on_notes, slot, &e);
-	if (!slot->child)
-		return e;
-	mcp_slot_park(slot);
-	return 0;
+	if ((fetch & ~FETCH_NEWEST) == FETCH_RESUME)
+		mcp_req_enter(req, PHASE_BUILD);
+	else
+		mcp_req_go_on(req, TEXT("\n"));
 }
 
-/* The notes' git could not be spawned, as @p e says: a compaction goes on
- * without the notes; the notes tool's call, or a thread gone on with, ends
- * with why. */
+/* Handles the error @p e of spawning git for slot->fetch.  A compaction
+ * goes on without the notes, and an ask call goes on without the newest
+ * note.  A call of the notes tool, and an ask call that goes on with a
+ * thread, end with the error. */
 static void
 mcp_slot_notes_failed (struct mcp_slot *slot,
                        int              e)
 {
 	struct mcp_req *req = slot->req;
+	if (e != EBUSY)
+		LOG(LOG_WARN, "notes: cannot run git: %s", strerror(e));
+	if (slot->fetch & FETCH_NEWEST) {
+		e = mcp_slot_say(slot, &TEXT("[askai: the note could not be read.]\n"), 1);
+		if (e)
+			mcp_req_fail(req, e);
+		else
+			mcp_req_notes_then(req, slot->fetch);
+		return;
+	}
 	if (slot->fetch == FETCH_COMPACT || slot->fetch == FETCH_FULL) {
-		if (e != EBUSY)
-			LOG(LOG_WARN, "notes: cannot run git: %s", strerror(e));
 		mcp_req_go_on(req, TEXT("\n\n[askai: your notes could not be read.]\n\n"));
 		return;
 	}
+	buf_fini(&req->body);
 	if (e == EBUSY) {
 		mcp_slot_result(slot, TEXT("Too many commands are running; try again in "
-		                              "a few seconds."), true);
+		                           "a few seconds."), true);
 		return;
 	}
-	LOG(LOG_WARN, "notes: cannot run git: %s", strerror(e));
 	char why[96];
-	mcp_slot_result(slot, ESC(why, util_format(why, sizeof why, "Cannot run git: "
-	                                              "%s.", strerror(e))), true);
+	mcp_slot_result(slot, ESC(why, util_format(why, sizeof why, "The notes cannot "
+	                                           "be used now: %s.", strerror(e))), true);
 }
 
-/* Read the notes of the request's thread for @p fetch, those that hold
- * @p search if not nullptr. */
+/* Spawns git for @p fetch with the input in @p in, if not nullptr, and
+ * frees @p in.  git uses the repository of the request's thread. */
 static void
-mcp_slot_notes_fetch (struct mcp_slot *slot,
-                      enum mcp_fetch   fetch,
-                      char const      *search)
+mcp_slot_notes_run (struct mcp_slot *slot,
+                    uint8_t          fetch,
+                    struct buf      *in)
 {
 	struct mcp_req *req = slot->req;
+	struct mcp *mcp = req->mcp;
+	struct loop *loop = mcp->loop;
+	enum notes_cmd cmd = fetch & FETCH_NEWEST ? NOTES_READ : mcp_fetch_cmds[fetch];
 	char const *argv[NOTES_ARGV];
-	notes_read(req->mcp->st->notes, req->ref, search, argv);
-	slot->fetch = (uint8_t)fetch;
-	int e = mcp_slot_notes_spawn(slot, argv, (struct span){});
-	if (e)
+	notes_argv(mcp->st->notes, req->repo, cmd, argv);
+	struct child_cmd const c = {
+		.file = "git",
+		.argv = argv,
+		.envp = notes_env(mcp->st->notes),
+		.in = in ? buf_peek(in) : (struct span){},
+		.max = NOTES_MAX,
+		.deadline = loop->now + NOTES_NS,
+		/* For the commands that write, the output includes the errors. */
+		.flags = cmd == NOTES_CREATE || cmd == NOTES_ADD ? CHILD_STDERR : 0
+	};
+	slot->fetch = fetch;
+	int e = 0;
+	slot->child = child_create(loop, &mcp->children, &c, mcp_on_notes, slot, &e);
+	if (in)
+		buf_fini(in);
+	if (!slot->child) {
 		mcp_slot_notes_failed(slot, e);
+		return;
+	}
+	mcp_slot_park(slot);
 }
 
-/* What is wrong with the search argument, for write, which takes none, or
- * for read. */
-static char const bad_search[] = "The search argument, which only read takes, "
-                                 "must be a line of 1 to 1024 bytes.";
-
-/* The notes tool's write: a note of the text that @p args gives. */
-static void
-mcp_slot_notes_write (struct mcp_slot    *slot,
-                      struct json_object *args)
-{
-	struct mcp_req *req = slot->req;
-	static_assert(NOTES_TEXT == 8 << 10, "the problem says");
-	size_t len = 0;
-	char const *note = jb_str(jb_get(args, "text"), &len);
-	struct mcp_piece problem =
-		!note || !len || len > NOTES_TEXT || memchr(note, '\0', len)
-		? TEXT("A note must be a string of 1 to 8192 bytes, and no NUL.")
-		: jb_get(args, "search") ? TEXT(bad_search)
-		: (struct mcp_piece){};
-	if (problem.ptr) {
-		mcp_slot_result(slot, problem, true);
-		return;
-	}
-	char const *argv[NOTES_ARGV];
-	notes_write(req->mcp->st->notes, argv);
-	int e = notes_input(&req->body, req->ref, note, len, req->branch);
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
-	}
-	slot->fetch = FETCH_WRITE;
-	e = mcp_slot_notes_spawn(slot, argv, buf_peek(&req->body));
-	buf_fini(&req->body);
-	if (e)
-		mcp_slot_notes_failed(slot, e);
-}
-
-/* The notes tool's read: the notes, those that hold the text that @p args
- * searches for, if any. */
-static void
-mcp_slot_notes_read (struct mcp_slot    *slot,
-                     struct json_object *args)
-{
-	struct mcp_req *req = slot->req;
-	static_assert(NOTES_SEARCH == 1 << 10, "the problem says");
-	struct json_object *search = jb_get(args, "search");
-	size_t len = 0;
-	char const *find = jb_str(search, &len);
-	if (search && (!find || !len || len > NOTES_SEARCH || strcspn(find, "\n") < len)) {
-		mcp_slot_result(slot, TEXT(bad_search), true);
-		return;
-	}
-	if (!req->branch) {
-		mcp_slot_result(slot, TEXT("You have written no notes yet."), false);
-		return;
-	}
-	mcp_slot_notes_fetch(slot, FETCH_READ, find);
-}
-
-/* The notes tool's call: write a note, or read them back. */
-static void
-mcp_slot_notes (struct mcp_slot    *slot,
-                struct json_object *args)
-{
-	struct json_object *action = jb_get(args, "action");
-	if (jb_is(action, "write")) {
-		mcp_slot_notes_write(slot, args);
-		return;
-	}
-	if (!jb_is(action, "read")) {
-		mcp_slot_result(slot, TEXT("The action argument must be write or read."),
-		                    true);
-		return;
-	}
-	mcp_slot_notes_read(slot, args);
-}
-
-/* Whether the notes' git @p c gave what it was run for: its output cut is
- * the newest notes all the same. */
+/* Returns true if git exited with status 0 before its deadline, or if
+ * askai cut its output.  The cut output of a list has the newest notes. */
 static bool
 mcp_notes_ok (struct child const *c)
 {
 	return c->cut || (!c->late && c->code == CLD_EXITED && !c->status);
 }
 
-/* Whether it failed for want of the thread's branch: exit status 128, with
- * fatal: bad revision. */
+/* Returns true if git exited with status 128.  It does so if the
+ * repository or the branch of the notes does not exist. */
 static bool
 mcp_notes_none (struct child const *c)
 {
 	return !c->late && c->code == CLD_EXITED && c->status == 128;
 }
 
-/* The end of the next note at @p at in @p out, git log's, each ending in a
- * NUL: that NUL, or the output's end. */
-static size_t
-mcp_note_end (struct span out,
-              size_t      at)
+/* Destroys the child of @p slot and ends the call of the notes tool.  If
+ * @p e is not 0, the request fails with @p e.  Else the call ends with its
+ * answer, as a failed call if @p failed is true. */
+static void
+mcp_slot_notes_end (struct mcp_slot *slot,
+                    int              e,
+                    bool             failed)
 {
-	unsigned char const *nul = memchr(out.ptr + at, '\0', out.len - at);
-	return nul ? (size_t)(nul - out.ptr) : out.len;
+	child_destroy(&slot->child);
+	if (e) {
+		mcp_req_fail(slot->req, e);
+		return;
+	}
+	mcp_slot_respond(slot, failed);
 }
 
-/* Add the newest notes of @p out, git log's, newest first and each ending
- * in a NUL, that fit the bytes a tool's output may take, at least one, to
- * the request's answer, oldest first.  Only those are looked at: the rest
- * are only counted, @p cut saying that git's output was cut, so that some
- * went uncounted. */
+/* Appends to the answer of @p slot why git read no notes.  Exit status 128
+ * means that the thread does not exist. */
 static int
-mcp_slot_notes_render (struct mcp_slot *slot,
-                       struct span      out,
-                       bool             cut)
+mcp_slot_notes_unread (struct mcp_slot *slot)
+{
+	if (!mcp_notes_none(slot->child))
+		return mcp_slot_say(slot, &TEXT("Your notes could not be read."), 1);
+	char why[32 + NOTES_ID];
+	size_t n = util_format(why, sizeof why, "Unknown thread: %s.", slot->req->thread);
+	return mcp_slot_say(slot, &ESC(why, n), 1);
+}
+
+/* Appends to the answer of @p slot why git did not add the note: git took
+ * too long, another call added a note to the thread at the same time, or
+ * another error, which the function logs. */
+static int
+mcp_slot_notes_unadded (struct mcp_slot *slot)
+{
+	static char const busy[] = "not updating ";
+	struct child const *c = slot->child;
+	struct span out = buf_peek(&c->out);
+	if (c->late)
+		return mcp_slot_say(slot, &TEXT("Could not add the note: it took too "
+		                                "long."), 1);
+	if (memmem(out.ptr, out.len, busy, sizeof busy - 1))
+		return mcp_slot_say(slot, &TEXT("Could not add the note, because another "
+		                                "call added a note to this thread at the "
+		                                "same time. Add it again."), 1);
+	char const *why = (char const *)out.ptr;
+	LOG(LOG_WARN, "notes: git could not add a note: %.*s",
+	    (int)mcp_clip(why, out.len, 300), why);
+	return mcp_slot_say(slot, &TEXT("Could not add the note."), 1);
+}
+
+/* Runs git to add the note whose file part is in the request's body.  The
+ * new commit has the parent @p tip, or no parent if @p tip is empty. */
+static void
+mcp_slot_notes_write (struct mcp_slot *slot,
+                      char const      *tip)
 {
 	struct mcp_req *req = slot->req;
-	/* What a rendered note adds to its text, and the line before them. */
-	enum { EACH = 8, HEAD = 64 };
-	size_t budget = mcp_req_lend_max(req);
-	struct span shown[NOTES_READ];
-	uint32_t n = 0;
-	size_t at = 0;
-	size_t rendered = HEAD;
-	for (; at < out.len && n < NOTES_READ; ++n) {
-		size_t end = mcp_note_end(out, at);
-		rendered += end - at + EACH;
-		if (n && rendered > budget)
-			break;
-		shown[n] = (struct span){ out.ptr + at, end - at };
-		at = end + 1;
+	enum notes_side side = slot->role == ROLE_OWN ? NOTES_CLIENT : NOTES_UPSTREAM;
+	struct buf in = {};
+	int e = notes_add_input(&in, side, tip, buf_peek(&req->body));
+	buf_fini(&req->body);
+	if (e) {
+		buf_fini(&in);
+		mcp_req_fail(req, e);
+		return;
 	}
-	uint32_t more = 0;
-	for (; at < out.len; ++more)
-		at = mcp_note_end(out, at) + 1;
-	loop_work(req->mcp->loop, LOOP_COPY, out.len);
-	/* How many older notes are not shown, and some uncounted if cut. */
-	if (more) {
-		if (!dstr_printf(&slot->answer, "[%" PRIu32 "%s older note%s.]\n\n", more,
-		                 cut ? " or more" : "", more > 1 || cut
-		                 ? "s are not shown: search for them"
-		                 : " is not shown: search for it"))
-			return ENOMEM;
-	} else if (cut && !CAT(&slot->answer, "[Older notes are not shown: search for "
-	                       "them.]\n\n")) {
-		return ENOMEM;
-	}
-	for (uint32_t k = n; k--; ) {
-		char const *note = (char const *)shown[k].ptr;
-		if (!dstr_printf(&slot->answer, "%" PRIu32 ". ", n - k) ||
-		    !dstr_cat_n(&slot->answer, note, jb_utf8(note, shown[k].len)) ||
-		    !(k ? CAT(&slot->answer, "\n\n") : CAT(&slot->answer, "\n")))
-			return ENOMEM;
-	}
-	return 0;
+	mcp_slot_notes_run(slot, FETCH_ADD, &in);
 }
 
-/* Add @p head, then the notes that the notes' git read, to the request's
- * answer. */
-static int
-mcp_slot_notes_list (struct mcp_slot  *slot,
-                     struct mcp_piece  head)
-{
-	struct child const *c = slot->child;
-	int e = mcp_slot_say(slot, &head, 1);
-	return e ? e : mcp_slot_notes_render(slot, buf_peek(&c->out), c->cut);
-}
-
-/* Say whether the notes' git wrote the note, as @p ok says, and if not,
- * why. */
-static int
-mcp_slot_notes_said (struct mcp_slot *slot,
-                     bool             ok)
-{
-	struct child const *c = slot->child;
-	if (ok)
-		return mcp_slot_say(slot, &TEXT("Noted."), 1);
-	if (c->late)
-		return mcp_slot_say(slot, &TEXT("Could not write the note: git took too "
-		                              "long."), 1);
-	struct span out = buf_peek(&c->out);
-	char const *why = (char const *)out.ptr;
-	struct mcp_piece const p[] = {
-		TEXT("Could not write the note: "),
-		ESC(why, jb_utf8(why, mcp_clip(why, out.len, 300))),
-	};
-	return mcp_slot_say(slot, p, ARRAY_SIZE(p));
-}
-
-/* The notes' git wrote a note for the notes tool, or failed to. */
+/* Handles the end of git init for an add.  The function adds the note, or
+ * ends the call if git failed. */
 static void
-mcp_slot_notes_written (struct mcp_slot *slot)
+mcp_slot_notes_created (struct mcp_slot *slot)
+{
+	if (mcp_notes_ok(slot->child)) {
+		child_destroy(&slot->child);
+		mcp_slot_notes_write(slot, "");
+		return;
+	}
+	buf_fini(&slot->req->body);
+	mcp_slot_notes_end(slot, mcp_slot_notes_unadded(slot), true);
+}
+
+/* Handles the output of the check of the name of a new note.  The function
+ * adds the note if no note and no directory of notes has the name, and if
+ * no directory in the name is a note. */
+static void
+mcp_slot_notes_checked (struct mcp_slot *slot)
+{
+	struct child const *c = slot->child;
+	char tip[NOTES_TIP + 1];
+	int r = mcp_notes_ok(c) && !c->cut ? notes_checked(buf_peek(&c->out), tip) : EIO;
+	if (!r) {
+		child_destroy(&slot->child);
+		mcp_slot_notes_write(slot, tip);
+		return;
+	}
+	buf_fini(&slot->req->body);
+	int e = r == EEXIST ? mcp_slot_say(slot, &TEXT("A note of that name exists, and a "
+	                                               "note cannot be changed. Add the "
+	                                               "note under another name."), 1)
+	      : r == EISDIR ? mcp_slot_say(slot, &TEXT("That name is a directory of "
+	                                               "notes. Add the note under "
+	                                               "another name."), 1)
+	      : r == ENOTDIR ? mcp_slot_say(slot, &TEXT("A directory in that name is a "
+	                                                "note. Add the note under "
+	                                                "another name."), 1)
+	      : mcp_slot_notes_unread(slot);
+	mcp_slot_notes_end(slot, e, true);
+}
+
+/* Handles the end of git fast-import for an add.  The answer to a client's
+ * add that started a thread has the id of the thread. */
+static void
+mcp_slot_notes_added (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
 	bool ok = mcp_notes_ok(slot->child);
-	int e = mcp_slot_notes_said(slot, ok);
+	bool fresh = !req->branch && slot->role == ROLE_OWN;
 	req->branch |= ok;
-	child_destroy(&slot->child);
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
-	}
-	mcp_slot_done(slot, !ok);
+	char text[160];
+	size_t n = fresh ? util_format(text, sizeof text, "Noted, in the new thread %s. "
+	                               "Give this thread to add more notes to it, to "
+	                               "list them, or to read one.", req->thread) : 0;
+	int e = !ok ? mcp_slot_notes_unadded(slot)
+	      : n ? mcp_slot_say(slot, &ESC(text, n), 1)
+	      : mcp_slot_say(slot, &TEXT("Noted."), 1);
+	mcp_slot_notes_end(slot, e, !ok);
 }
 
-/* The notes' git read the notes for the notes tool, or failed to: show
- * them, or say why there are none: none holds the text searched for, none
- * was written, or they could not be read, which fails the call. */
+/* Appends the list of the notes in @p out, the output of git for
+ * NOTES_LIST, to the answer of @p slot, the oldest note first, and stores
+ * the name of the newest note in @p *newest.  @p cut says that git's output
+ * was cut, which leaves the oldest notes out.  Returns 0 or ENOMEM. */
+static int
+mcp_slot_notes_listed (struct mcp_slot *slot,
+                       struct span      out,
+                       bool             cut,
+                       struct span     *newest)
+{
+	struct dstr *d = &slot->answer;
+	*newest = (struct span){};
+	if (cut && !CAT(d, "[The oldest notes are not in this list.]\n"))
+		return ENOMEM;
+	size_t end = out.len;
+	struct notes_entry entry;
+	for (uint32_t k = 1; notes_entry_before(out, &end, &entry); ++k) {
+		char when[sizeof "2026-10-14 12:34 UTC"];
+		struct tm tm;
+		time_t t = (time_t)entry.time;
+		size_t w = gmtime_r(&t, &tm) ? strftime(when, sizeof when, "%Y-%m-%d %H:%M UTC",
+		                                        &tm) : 0;
+		char const *name = (char const *)entry.name.ptr;
+		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", k, (int)w, when) ||
+		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
+		    !dstr_printf(d, "  (%" PRIu64 " line%s)\n", entry.lines,
+		                 entry.lines == 1 ? "" : "s"))
+			return ENOMEM;
+		*newest = entry.name;
+	}
+	loop_work(slot->req->mcp->loop, LOOP_COPY, out.len);
+	return 0;
+}
+
+/* Answers the list action with the output of git log. */
 static void
-mcp_slot_notes_got (struct mcp_slot *slot)
+mcp_slot_notes_got_list (struct mcp_slot *slot)
+{
+	struct child const *c = slot->child;
+	struct span newest;
+	bool ok = mcp_notes_ok(c);
+	int e = !ok ? mcp_slot_notes_unread(slot)
+	      : mcp_slot_say(slot, &TEXT("Your notes, oldest first:\n\n"), 1);
+	if (!e && ok)
+		e = mcp_slot_notes_listed(slot, buf_peek(&c->out), c->cut, &newest);
+	mcp_slot_notes_end(slot, e, !ok);
+}
+
+/* Answers the read action with the output of git cat-file. */
+static void
+mcp_slot_notes_got_note (struct mcp_slot *slot)
+{
+	struct child const *c = slot->child;
+	struct span text = {};
+	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text) : EIO;
+	char const *s = (char const *)text.ptr;
+	int e = !r ? mcp_slot_say(slot, &ESC(s, text.len ? jb_utf8(s, text.len) : 0), 1)
+	      : r == ENOENT ? mcp_slot_say(slot, &TEXT("No note has that name."), 1)
+	      : r == EISDIR ? mcp_slot_say(slot, &TEXT("That name is a directory of "
+	                                               "notes. list shows the notes in "
+	                                               "it."), 1)
+	      : mcp_slot_notes_unread(slot);
+	mcp_slot_notes_end(slot, e, r);
+}
+
+/* Appends @p head and the list of the notes in the output of git to the
+ * request's answer, which askai adds to the prompt.  Then the function
+ * runs git to read the newest note.  If there are no notes, the ask call
+ * continues. */
+static void
+mcp_slot_notes_prompt (struct mcp_slot  *slot,
+                       struct mcp_piece  head)
 {
 	struct mcp_req *req = slot->req;
-	struct child *c = slot->child;
-	struct span out = buf_peek(&c->out);
-	bool failed = false;
-	int e;
-	if (mcp_notes_ok(c)) {
-		e = out.len ? mcp_slot_notes_render(slot, out, c->cut)
-		            : mcp_slot_say(slot, &TEXT("No note holds that text."), 1);
-	} else if (mcp_notes_none(c)) {
-		e = mcp_slot_say(slot, &TEXT("You have written no notes yet."), 1);
-	} else {
-		failed = true;
-		e = mcp_slot_say(slot, &TEXT("Your notes could not be read."), 1);
+	struct child const *c = slot->child;
+	struct span newest = {};
+	struct buf in = {};
+	int e = mcp_slot_say(slot, &head, 1);
+	if (!e)
+		e = mcp_slot_notes_listed(slot, buf_peek(&c->out), c->cut, &newest);
+	char const *name = (char const *)newest.ptr;
+	struct mcp_piece const p[] = {
+		TEXT("\n[askai: your newest note, "),
+		ESC(name, newest.len ? jb_utf8(name, newest.len) : 0),
+		TEXT(":]\n\n"),
+	};
+	if (!e && newest.len && !(e = mcp_slot_say(slot, p, ARRAY_SIZE(p))))
+		e = notes_read_input(&in, name, newest.len);
+	child_destroy(&slot->child);
+	if (e) {
+		buf_fini(&in);
+		mcp_req_fail(req, e);
+		return;
 	}
+	if (!newest.len) {
+		mcp_req_notes_then(req, slot->fetch);
+		return;
+	}
+	mcp_slot_notes_run(slot, slot->fetch | FETCH_NEWEST, &in);
+}
+
+/* Appends the newest note, which git read for the prompt, to the request's
+ * answer, or a line that says that the note could not be read.  Then the
+ * ask call continues. */
+static void
+mcp_slot_notes_newest (struct mcp_slot *slot)
+{
+	struct mcp_req *req = slot->req;
+	struct child const *c = slot->child;
+	struct span text = {};
+	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text) : EIO;
+	char const *s = (char const *)text.ptr;
+	size_t n = text.len ? jb_utf8(s, text.len) : 0;
+	struct mcp_piece const p[] = {
+		r ? TEXT("[askai: the note could not be read.]") : ESC(s, n),
+		TEXT("\n"),
+	};
+	int e = mcp_slot_say(slot, p, n && s[n - 1] == '\n' ? 1 : 2);
 	child_destroy(&slot->child);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_done(slot, failed);
+	mcp_req_notes_then(req, slot->fetch);
 }
 
-/* The notes' git read the notes of the thread the call goes on with, which
- * go with the prompt, or failed to, which ends the call. */
+/* Handles the list of the notes of the thread that the ask call goes on
+ * with.  The list goes into the prompt.  If git failed, the call ends with
+ * an error. */
 static void
 mcp_slot_notes_resumed (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
 	struct child *c = slot->child;
 	if (!mcp_notes_ok(c)) {
-		char why[96 + NOTES_ID];
+		char why[64 + NOTES_ID];
 		size_t n = mcp_notes_none(c)
 		         ? util_format(why, sizeof why, "Unknown thread: %s.", req->thread)
 		         : util_format(why, sizeof why, "Cannot read the notes of the "
@@ -4476,26 +4560,22 @@ mcp_slot_notes_resumed (struct mcp_slot *slot)
 		return;
 	}
 	req->branch = true;
-	int e = mcp_slot_notes_list(slot, TEXT("\n\n[askai: the notes you kept in earlier "
-	                                     "calls on this thread, oldest first:]\n\n"));
-	child_destroy(&slot->child);
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
-	}
-	mcp_req_enter(req, PHASE_BUILD);
+	mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: the notes you kept in earlier "
+	                                 "calls on this thread, oldest first:]\n\n"));
 }
 
-/* The notes' git read the notes for a compaction, which go with the prompt,
- * or failed to. */
+/* Handles the list of the notes for a compaction.  The list goes into the
+ * prompt, or a line that says that the notes could not be read. */
 static void
 mcp_slot_notes_compacted (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
-	int e = mcp_notes_ok(slot->child)
-	      ? mcp_slot_notes_list(slot, TEXT("\n\n[askai: your notes, oldest first:]\n\n"))
-	      : mcp_slot_say(slot, &TEXT("\n\n[askai: your notes could not be read.]\n"), 1);
+	if (mcp_notes_ok(slot->child)) {
+		mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: your notes, oldest first:]\n\n"));
+		return;
+	}
 	child_destroy(&slot->child);
+	int e = mcp_slot_say(slot, &TEXT("\n\n[askai: your notes could not be read.]\n"), 1);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -4503,24 +4583,150 @@ mcp_slot_notes_compacted (struct mcp_slot *slot)
 	mcp_req_go_on(req, TEXT("\n"));
 }
 
-/* Take what the notes' git said, for what it ran for. */
+/* Handles the output of git as slot->fetch says. */
 static void
 mcp_slot_notes_out (struct mcp_slot *slot)
 {
+	static void (*const steps[]) (struct mcp_slot *slot) = {
+		[FETCH_CREATE]  = mcp_slot_notes_created,
+		[FETCH_CHECK]   = mcp_slot_notes_checked,
+		[FETCH_ADD]     = mcp_slot_notes_added,
+		[FETCH_LIST]    = mcp_slot_notes_got_list,
+		[FETCH_READ]    = mcp_slot_notes_got_note,
+		[FETCH_RESUME]  = mcp_slot_notes_resumed,
+		[FETCH_COMPACT] = mcp_slot_notes_compacted,
+		[FETCH_FULL]    = mcp_slot_notes_compacted,
+	};
 	mcp_slot_unwait(slot);
-	switch (slot->fetch) {
-	case FETCH_WRITE:
-		mcp_slot_notes_written(slot);
+	(slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest : steps[slot->fetch])(slot);
+}
+
+/* The message for a file argument that is not a valid name. */
+static char const bad_name[] = "The file argument must be a file name of 1 to 255 "
+                               "bytes, such as plan.md or findings/locks.md, "
+                               "without control characters, and without the parts "
+                               "., .. and .git.";
+
+/* Starts the add action: a note with the file name and the text in
+ * @p args.  If the thread has notes, git first checks the name.  Else git
+ * first makes the repository of the thread. */
+static void
+mcp_slot_notes_add (struct mcp_slot    *slot,
+                    struct json_object *args)
+{
+	static_assert(NOTES_TEXT == 8 << 10, "the problem says");
+	struct mcp_req *req = slot->req;
+	size_t len = 0;
+	size_t name_len = 0;
+	size_t skip = 0;
+	char const *text = jb_str(jb_get(args, "text"), &len);
+	char const *name = jb_str(jb_get(args, "file"), &name_len);
+	struct mcp_piece problem =
+		!name || notes_name(name, name_len, &skip) ? TEXT(bad_name)
+		: !text || !len || len > NOTES_TEXT || memchr(text, '\0', len)
+		? TEXT("The text argument must be a string of 1 to 8192 bytes, and no NUL.")
+		: (struct mcp_piece){};
+	if (problem.ptr) {
+		mcp_slot_result(slot, problem, true);
 		return;
-	case FETCH_READ:
-		mcp_slot_notes_got(slot);
-		return;
-	case FETCH_RESUME:
-		mcp_slot_notes_resumed(slot);
-		return;
-	default:
-		mcp_slot_notes_compacted(slot);
 	}
+	name += skip;
+	name_len -= skip;
+	/* The file part of the note stays in the request's body while git
+	 * checks the name or makes the repository.  A call that ended early
+	 * can have left a file part there, so the body is cleared first. */
+	buf_fini(&req->body);
+	struct buf in = {};
+	int e = notes_add_file(&req->body, name, name_len, text, len);
+	if (!e && req->branch)
+		e = notes_check_input(&in, name, name_len);
+	else if (!e && slot->role == ROLE_OWN && !(e = notes_id(req->thread)))
+		notes_repo(req->principal, NOTES_CLIENT, req->thread, req->repo);
+	if (e) {
+		buf_fini(&in);
+		buf_fini(&req->body);
+		mcp_req_fail(req, e);
+		return;
+	}
+	mcp_slot_notes_run(slot, req->branch ? FETCH_CHECK : FETCH_CREATE, &in);
+}
+
+/* Starts the read action for the file name in @p args. */
+static void
+mcp_slot_notes_read (struct mcp_slot    *slot,
+                     struct json_object *args)
+{
+	struct mcp_req *req = slot->req;
+	size_t len = 0;
+	size_t skip = 0;
+	char const *name = jb_str(jb_get(args, "file"), &len);
+	if (!name || notes_name(name, len, &skip)) {
+		mcp_slot_result(slot, TEXT(bad_name), true);
+		return;
+	}
+	if (!req->branch) {
+		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
+		return;
+	}
+	struct buf in = {};
+	int e = notes_read_input(&in, name + skip, len - skip);
+	if (e) {
+		buf_fini(&in);
+		mcp_req_fail(req, e);
+		return;
+	}
+	mcp_slot_notes_run(slot, FETCH_READ, &in);
+}
+
+/* Starts a call of the notes tool: add a note, list the notes, or read a
+ * note.  A call from a turn uses the thread of its ask call.  A client's
+ * call names one of the client's threads, or starts a new thread with
+ * add. */
+static void
+mcp_slot_notes (struct mcp_slot    *slot,
+                struct json_object *args)
+{
+	struct mcp_req *req = slot->req;
+	struct json_object *action = jb_get(args, "action");
+	struct json_object *thread = jb_get(args, "thread");
+	bool add = jb_is(action, "add");
+	bool read = jb_is(action, "read");
+	if (mcp_slot_offset(slot, args))
+		return;
+	if (!add && !read && !jb_is(action, "list")) {
+		mcp_slot_result(slot, TEXT("The action argument must be add, list or read."),
+		                true);
+		return;
+	}
+	if (slot->role == ROLE_OWN) {
+		size_t len = 0;
+		char const *id = jb_str(thread, &len);
+		struct mcp_piece problem =
+			thread && (!id || !notes_is_id(id, len))
+			? TEXT("The thread argument must be the id of a thread, as an add "
+			       "named it: 32 hexadecimal digits.")
+			: !thread && !add
+			? TEXT("list and read need the thread argument: the id of a thread "
+			       "that an add named.")
+			: (struct mcp_piece){};
+		if (problem.ptr) {
+			mcp_slot_result(slot, problem, true);
+			return;
+		}
+		if (id) {
+			memcpy(req->thread, id, sizeof req->thread);
+			notes_repo(req->principal, NOTES_CLIENT, req->thread, req->repo);
+			req->branch = true;
+		}
+	}
+	if (add)
+		mcp_slot_notes_add(slot, args);
+	else if (read)
+		mcp_slot_notes_read(slot, args);
+	else if (!req->branch)
+		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
+	else
+		mcp_slot_notes_run(slot, FETCH_LIST, nullptr);
 }
 
 /* Do the work of @p step's slot, as its call's kind does. */
@@ -4540,7 +4746,7 @@ mcp_req_compact_notes (struct mcp_req *req,
                        enum mcp_fetch  fetch)
 {
 	if (req->branch) {
-		mcp_slot_notes_fetch(&req->self, fetch, nullptr);
+		mcp_slot_notes_run(&req->self, fetch, nullptr);
 		return;
 	}
 	mcp_req_go_on(req, TEXT("\n\n"));
@@ -5618,7 +5824,8 @@ mcp_drain (struct mcp *mcp)
 
 /* Returns the definition of the ask tool.  @p service is the mcp_static,
  * which has the tool's configured name and description.  The definition has
- * the argument "thread" if askai has a notes repository (--notes). */
+ * the argument "thread" if the turns get the notes tool, which is the only
+ * tool in st->always.  They get it with --notes and --upstream-tools. */
 static struct json_object *
 mcp_tool_definition (void const *service)
 {
@@ -5638,7 +5845,7 @@ mcp_tool_definition (void const *service)
 				"or an answer format."),
 			nullptr),
 		nullptr);
-	if (st->notes && jb_set(props, "thread", jb_object(
+	if (st->always && jb_set(props, "thread", jb_object(
 		    "type", json_object_new_string("string"),
 		    "description", json_object_new_string(
 			    "Optional: the thread that an earlier answer named, to go on with "
@@ -5701,52 +5908,100 @@ mcp_task_definition (void const *service)
 		nullptr);
 }
 
-/* The notes tool's definition, which only turns are given. */
+/* Returns the definition of the notes tool for the side @p side.  The
+ * definition for the upstream has no thread argument, because a call of a
+ * turn uses the thread of its ask call. */
+static struct json_object *
+mcp_notes_schema (enum notes_side side)
+{
+	static_assert(NOTES_TEXT == 8 << 10 && NOTES_NAME == 255, "the descriptions say");
+	static char const *const descriptions[] = {
+		[NOTES_UPSTREAM] =
+			"Your notebook for this task, which outlasts your context. A note "
+			"is a file: you choose its name, such as plan.md or "
+			"findings/locks.md, and write its text. Add a note whenever you "
+			"find something, decide something, or finish or plan a step. A "
+			"note cannot be changed or removed, so add a new note instead. "
+			"When the context fills up, the conversation is compacted to the "
+			"task, a summary, the list of your notes and your newest note; "
+			"read the others when you need them. The notes are yours: the "
+			"client sees that you keep them, not what they say.",
+		[NOTES_CLIENT] =
+			"A notebook that outlasts your context. A note is a file: you "
+			"choose its name, such as plan.md or findings/locks.md, and write "
+			"its text. The notes are in threads. An add without a thread "
+			"starts a new thread and names it. Give that thread to add more "
+			"notes to it, to list them, or to read one. A note cannot be "
+			"changed or removed.",
+	};
+	struct json_object *actions = jb_list(json_object_new_string("add"));
+	if (jb_push(actions, json_object_new_string("list")) ||
+	    jb_push(actions, json_object_new_string("read"))) {
+		json_object_put(actions);
+		actions = nullptr;
+	}
+	struct json_object *props = jb_object(
+		"action", jb_object(
+			"type", json_object_new_string("string"),
+			"enum", actions,
+			"description", json_object_new_string(
+				"add a note, list the notes, the oldest first, or read a "
+				"note."),
+			nullptr),
+		"file", jb_object(
+			"type", json_object_new_string("string"),
+			"description", json_object_new_string(
+				"For add and read: the file name of the note, at most 255 "
+				"bytes. It can have directories, such as findings/locks.md. "
+				"Its extension, such as .md or .txt, says the format of the "
+				"text."),
+			nullptr),
+		"text", jb_object(
+			"type", json_object_new_string("string"),
+			"description", json_object_new_string(
+				"For add: the text of the note, at most 8 KiB."),
+			nullptr),
+		"offset", jb_object(
+			"type", json_object_new_string("integer"),
+			"minimum", json_object_new_int(0),
+			"description", json_object_new_string(
+				"For list and read: the byte of the output to start from, to "
+				"read on past where it was cut."),
+			nullptr),
+		nullptr);
+	if (side == NOTES_CLIENT && jb_set(props, "thread", jb_object(
+		    "type", json_object_new_string("string"),
+		    "description", json_object_new_string(
+			    "The id of the thread, as an add named it. An add without a "
+			    "thread starts a new one. list and read need a thread."),
+		    nullptr))) {
+		json_object_put(props);
+		props = nullptr;
+	}
+	return jb_object(
+		"name", json_object_new_string("notes"),
+		"description", json_object_new_string(descriptions[side]),
+		"inputSchema", jb_object(
+			"type", json_object_new_string("object"),
+			"properties", props,
+			"required", jb_list(json_object_new_string("action")),
+			"additionalProperties", json_object_new_boolean(0),
+			nullptr),
+		"annotations", jb_object(
+			"readOnlyHint", json_object_new_boolean(0),
+			"destructiveHint", json_object_new_boolean(0),
+			"idempotentHint", json_object_new_boolean(0),
+			"openWorldHint", json_object_new_boolean(0),
+			nullptr),
+		nullptr);
+}
+
+/* Returns the definition of the notes tool for clients. */
 static struct json_object *
 mcp_notes_definition (void const *service)
 {
 	(void)service;
-	static_assert(NOTES_TEXT == 8 << 10 && NOTES_READ == 256, "the description says");
-	struct json_object *actions = jb_list(json_object_new_string("write"));
-	if (jb_push(actions, json_object_new_string("read"))) {
-		json_object_put(actions);
-		actions = nullptr;
-	}
-	return jb_object(
-		"name", json_object_new_string("notes"),
-		"description", json_object_new_string(
-			"Your notebook for this task, which outlasts your context: write "
-			"down what you find, what you decide, and what is done and left "
-			"to do, a short note at a time, as you go. When the context fills "
-			"up, the conversation is compacted to the task, a summary and these "
-			"notes; read them back when you need them. They are yours: the "
-			"client sees that you keep them, not what they say."),
-		"inputSchema", jb_object(
-			"type", json_object_new_string("object"),
-			"properties", jb_object(
-				"action", jb_object(
-					"type", json_object_new_string("string"),
-					"enum", actions,
-					"description", json_object_new_string(
-						"write a note, or read the newest 256."),
-					nullptr),
-				"text", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"For write: the note, short and self-contained, at "
-						"most 8 KiB."),
-					nullptr),
-				"search", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"For read: only the notes that hold this text, "
-						"regardless of case."),
-					nullptr),
-				nullptr),
-			"required", jb_list(json_object_new_string("action")),
-			"additionalProperties", json_object_new_boolean(0),
-			nullptr),
-		nullptr);
+	return mcp_notes_schema(NOTES_CLIENT);
 }
 
 /* The compact tool's definition, which only turns are given. */
@@ -6030,8 +6285,11 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                        .drop = mcp_slot_task_drop },
 	                      N("test_task"), LEND_NEVER, LENT_NONE },
 	[KIND_GIT]        = { .plugin = &git_plugin, N("git"), .metric = LENT_GIT },
+	/* The flag TOOL_LENT lets a role's "upstream" name the notes tool, which
+	 * the turns always get. */
 	[KIND_NOTES]      = { { .definition = mcp_notes_definition, .start = mcp_slot_notes,
-	                        .step = mcp_slot_notes_out, .flags = KF_SERIAL },
+	                        .step = mcp_slot_notes_out,
+	                        .flags = KF_SERIAL | TOOL_LENT | TOOL_PAGED },
 	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION },
 	[KIND_COMPACT]    = { { .definition = mcp_compact_definition, .start = mcp_slot_compact,
 	                        .flags = KF_SERIAL },
@@ -6064,16 +6322,15 @@ mcp_static_build (struct mcp_static  *st,
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_offer *o = &st->offers[id];
 		struct json_object *def = o->kind->definition(st->plugins[o->part].service);
-		tool_mask bit = (tool_mask)1 << id;
-		st->lends |= o->lend == LEND_GRANTED ? bit : 0;
-		st->always |= o->lend == LEND_ALWAYS ? bit : 0;
-		st->with |= o->lend == LEND_WITH ? bit : 0;
-		st->detached |= o->lend == LEND_DETACH ? bit : 0;
-		st->detach |= o->kind->flags & TOOL_DETACH ? bit : 0;
 		int e = !def ? ENOMEM : id < st->n_granted
 		      ? mcp_static_item(&o->listed, json_object_get(def)) : 0;
+		/* The upstream gets its own definition of the notes tool. */
+		struct json_object *lent = o->lend == LEND_NEVER ? nullptr
+		                         : o->kind == &mcp_rows[KIND_NOTES].kind
+		                         ? mcp_notes_schema(NOTES_UPSTREAM) : json_object_get(def);
 		if (!e && o->lend != LEND_NEVER)
-			e = mcp_static_item(&o->lent, ai_tool(st->ep->api, def));
+			e = lent ? mcp_static_item(&o->lent, ai_tool(st->ep->api, lent)) : ENOMEM;
+		json_object_put(lent);
 		json_object_put(def);
 		if (e)
 			return e;
@@ -6097,7 +6354,7 @@ mcp_register (struct registry     *reg,
 	uint32_t offered = 1u << KIND_ASK | (cfg->flags & CFG_MAN ? 1u << KIND_MAN : 0) |
 	                   (cfg->flags & CFG_TEST_TASK ? 1u << KIND_TASK : 0) |
 	                   (cfg->n_gits ? 1u << KIND_GIT : 0) |
-	                   (lends && cfg->notes ? 1u << KIND_NOTES : 0) |
+	                   (cfg->notes ? 1u << KIND_NOTES : 0) |
 	                   (lends ? turns : 0);
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
 		if (!(offered >> k & 1))
@@ -6121,7 +6378,7 @@ mcp_register (struct registry     *reg,
 			tool.kind = plugin->tools;
 		}
 		int e = registry_add(reg, plugin, &tool,
-		                     k < KIND_NOTES ? REGISTRY_GRANTED : 0);
+		                     k <= KIND_NOTES ? REGISTRY_GRANTED : 0);
 		if (e)
 			return e;
 	}
@@ -6186,7 +6443,7 @@ mcp_static_create (struct config const *cfg,
 		.server_meta = DSTR_INIT,
 		.versions = DSTR_INIT,
 		.tasks = tasks,
-		.notes = lends ? notes : nullptr,
+		.notes = notes,
 		.ledger = ledger,
 		.roster = roster,
 		.seed = loop_clock(),
@@ -6219,6 +6476,12 @@ mcp_static_create (struct config const *cfg,
 		/* The turns are lent tools with --upstream-tools. */
 		if (!lends)
 			o->lend = LEND_NEVER;
+		tool_mask bit = (tool_mask)1 << id;
+		st->lends |= o->lend == LEND_GRANTED ? bit : 0;
+		st->always |= o->lend == LEND_ALWAYS ? bit : 0;
+		st->with |= o->lend == LEND_WITH ? bit : 0;
+		st->detached |= o->lend == LEND_DETACH ? bit : 0;
+		st->detach |= o->kind->flags & TOOL_DETACH ? bit : 0;
 	}
 	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
 

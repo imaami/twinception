@@ -239,8 +239,9 @@ the tool description asks the caller to make it self-contained.  With `--man`,
 a second tool, `man`, reads the manual, and with `--git`, a tool `git` runs
 read-only git commands in the repositories it lists (below).  With
 `--upstream-tools`, the other model may call those tools too, and keep notes
-of its work, in a loop of turns that ends with its answer.  A plugin that the
-configuration file lists adds tools of its own (below).
+of its work, in a loop of turns that ends with its answer.  With `--notes`, a
+tool `notes` gives clients notebooks too.  A plugin that the configuration
+file lists adds tools of its own (below).
 
 It speaks MCP's Streamable HTTP transport, which is what the `llama-server` web
 UI's MCP client uses, and serves both protocol eras on one endpoint:
@@ -516,27 +517,43 @@ or in the last turn, ends the call, and its jobs and timers with it.
 
 `compact` takes a summary: the conversation after the prompt, its turns and
 the tools' results, goes, and `askai` adds to the prompt, in brackets, the
-summary and the notes; calls after `compact` in the same turn do not run.
+summary, the list of the notes and the newest note; calls after `compact` in
+the same turn do not run.
 Should the context fill up all the same, as the upstream says (llama-server's
 "exceeds the available context size", or a "context length" or "context
 window" error) or as the usage counts, `askai` does likewise without a
 summary, once until a turn goes through again; the next overflow is the
 call's error.
 
-With `--notes DIR`, the model keeps notes in a git repository, which `askai`
-makes bare if nothing is there (a work tree or a non-bare repository is
-refused).  Each `ask_ai` call is a thread, whose notes are commits on the
-branch `refs/heads/WHO/ID`: `WHO` is the caller's identity, as a hash, or
-`anonymous`; `ID` is 32 hexadecimal digits, random.  A note is a commit
-message, written by `git fast-import`, its tree empty: `git log` shows them.
-The tool `notes` writes a note of up to 8 KiB, or reads back the newest 256,
-or those that hold a text (`search`).  The caller sees that notes were kept,
-and the thread's id, not what they say; `ask_ai`'s `thread` argument goes on
-with a thread in a later call, whose prompt then carries the thread's notes.
-Only the identity that wrote a thread can go on with it.  Two calls that write
-to one thread at once may make one note fail, which says so.  `git` runs
-there with no hooks.  Nothing prunes the repository: run `git gc` on it now
-and then.
+With `--notes DIR`, the model keeps notes of its work.  `askai` makes `DIR`
+if it does not exist.  Each `ask_ai` call is a thread of notes, and each
+thread is a bare git repository of its own, `DIR/WHO/upstream/ID`: `WHO` is
+the caller's identity, as a hash, or `anonymous`, and `ID` is 32 hexadecimal
+digits, random.  A note is a file.  The model chooses its name, such as
+`plan.md` or `findings/locks.md`, and writes its text, at most 8 KiB.  The
+name's extension says the format of the text, which `askai` does not check.
+Adding a note adds a commit to the branch `notes`, which `git fast-import`
+writes.  The tool `notes` adds a note, lists the notes, the oldest first, with
+the time that each was added, or reads a note, a window at a time from its
+`offset`.  A note is never changed or removed: a name that a note or a
+directory of notes has is refused, as is a name with an empty part, `.`,
+`..`, `.git` or a control character.  Slashes at the start of a name are left
+out.  The caller sees that notes were kept, and the thread's id, not what
+they say.  `ask_ai`'s `thread` argument goes on with a thread in a later
+call, whose prompt then has the list of the thread's notes and the newest
+note.  Only the identity that wrote a thread can go on with it.  Two calls
+that add notes to one thread at once may make one of them fail, which says
+so.  `git` runs there with no hooks.  Nothing prunes the repositories: run
+`git gc` on them now and then.  Older versions of `askai` kept all the notes
+in one repository, `DIR` itself.  `askai` refuses such a `DIR` and does not
+move its notes.
+
+A role that names `notes` among its `tools` gives its clients notebooks of
+their own, with `--notes` alone.  A client's `add` without a `thread` starts
+a new thread, `DIR/WHO/client/ID`, and the answer names it.  The client gives
+that `thread` to add more notes to it, to list them or to read one.  A client
+cannot open the threads of the model, nor those of other identities.  With
+`--upstream-tools`, the model gets `notes` whatever the role says.
 
 ### Security
 
@@ -627,8 +644,8 @@ Four more members say who may connect, and what they may do:
 ```
 
 - A **role** lists the tools it may list and call, as clients see them
-  (`--tool-name`'s, `man`, `git` and the tools of the plugins), and whether it
-  may read `GET /metrics`.
+  (`--tool-name`'s, `man`, `git`, `notes` and the tools of the plugins), and
+  whether it may read `GET /metrics`.
   `tools/list` shows a client its role's tools only, and calling another is
   an error, "Tool not available: NAME".
   With `--upstream-tools`, the member `upstream` lists the tools that the
@@ -914,8 +931,9 @@ Upstream AI:
                             client's role allows, notes with --notes,
                             and compact; an ask call then runs them
                             and asks on until it answers
-      --notes DIR           the git repository where the upstream keeps
-                            its notes, made bare if it does not exist
+      --notes DIR           the directory of the notebooks of the
+                            upstream and of the clients, made if it
+                            does not exist
       --max-turns N         upstream calls an ask call makes at most
                             with --upstream-tools (default 32)
       --context TOKENS      the upstream's context, for compacting it

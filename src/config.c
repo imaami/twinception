@@ -153,8 +153,9 @@ config_usage (struct config const *cfg,
 	        "                            client's role allows, notes with --notes,\n"
 	        "                            and compact; an ask call then runs them\n"
 	        "                            and asks on until it answers\n"
-	        "      --notes DIR           the git repository where the upstream keeps\n"
-	        "                            its notes, made bare if it does not exist\n"
+	        "      --notes DIR           the directory of the notebooks of the\n"
+	        "                            upstream and of the clients, made if it\n"
+	        "                            does not exist\n"
 	        "      --max-turns N         upstream calls an ask call makes at most\n"
 	        "                            with --upstream-tools (default 32)\n"
 	        "      --context TOKENS      the upstream's context, for compacting it\n"
@@ -1244,8 +1245,8 @@ config_check_upstream (struct config const *cfg)
 	return 0;
 }
 
-/* Check that the directory the notes repository would be made in, as it is
- * not there, lets only root and askai's user make it. */
+/* Checks that only root and askai's user can make the directory of the
+ * notes, which does not exist yet, in the directory above it. */
 static int
 config_check_notes_parent (struct config const *cfg)
 {
@@ -1266,17 +1267,15 @@ config_check_notes_parent (struct config const *cfg)
 	return status;
 }
 
-/* Check that the notes repository's path, if one is given, is a directory
- * that only root and askai's user may change, or else names one that the
- * directory it would be made in lets only them make. */
+/* Checks the directory of the notes, if --notes names one.  Only root and
+ * askai's user may be able to change it, or to make it if it does not
+ * exist. */
 static int
 config_check_notes (struct config const *cfg)
 {
 	char const *path = cfg->notes;
 	if (!path)
 		return 0;
-	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
-		return config_complain(cfg, nullptr, "--notes needs --upstream-tools");
 	struct stat st;
 	if (stat(path, &st))
 		return errno == ENOENT ? config_check_notes_parent(cfg)
@@ -1449,8 +1448,9 @@ config_description (struct config *cfg)
 	                                  ? " It may use some of this server's tools "
 	                                    "itself, and its answer lists the calls it "
 	                                    "made." : "",
-	                                  cfg->notes ? " It keeps notes in a thread, which "
-	                                               "a later call may go on with." : "");
+	                                  cfg->flags & CFG_UPSTREAM_TOOLS && cfg->notes
+	                                  ? " It keeps notes in a thread, which a later "
+	                                    "call may go on with." : "");
 	if (!cfg->description)
 		return config_oom(cfg);
 	cfg->tool.description = cfg->description;

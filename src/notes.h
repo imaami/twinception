@@ -1,16 +1,21 @@
-/** @file The notes (--notes): a git repository in which the upstream keeps
- *  notes for itself as it works, when askai lends it tools (src/mcp.h).
+/** @file The notes (--notes): notebooks in which the upstream and the
+ *  clients keep notes as they work (src/mcp.h).
  *
- * Each thread of work has a branch, refs/heads/WHO/ID: WHO the principal of
- * the client whose calls it serves (src/policy.h), as 16 hexadecimal digits,
- * or "anonymous"; ID 32 hexadecimal digits, random, which askai makes as an
- * ask call begins and names in its answer, so that the client may go on
- * with the thread in a later call.  A note is a commit, its message the
- * note's text, its tree empty: git fast-import writes it, and git log reads
- * the notes back.  Both run as children (src/child.h), in a fixed
- * environment as the git tool's do, in askai's own repository, which askai
- * makes bare if it does not exist.  Two calls may write to one thread at
- * once: one of them may then fail, its note not written.
+ * A notebook is a thread of notes.  Each thread is a bare git repository
+ * in the directory that --notes names, at the path WHO/SIDE/ID.  WHO is the
+ * principal of the client (src/policy.h) as 16 hexadecimal digits, or
+ * "anonymous".  SIDE is "upstream" for the notes that the upstream writes
+ * in the turns of an ask call, and "client" for the notes of the client.
+ * ID is the id of the thread: 32 random hexadecimal digits.  askai makes
+ * the repository when the first note of the thread is added.
+ *
+ * A note is a file.  Its author chooses the name of the file and its text.
+ * The name can have directories in it.  Adding a note adds one commit to
+ * the branch "notes", and the commit adds the file.  No note is ever
+ * changed or removed.  git fast-import writes the commits, and git log and
+ * git cat-file read them.  They run as children (src/child.h) in a fixed
+ * environment, in the directory that --notes names.  When two calls add
+ * notes to one thread at once, one of the two can fail.
  */
 #ifndef TWINCEPTION_SRC_NOTES_H_
 #define TWINCEPTION_SRC_NOTES_H_
@@ -23,25 +28,53 @@
 struct notes;
 
 enum {
-	NOTES_TEXT   = 8 << 10,  /**< bytes of a note, at most */
-	NOTES_SEARCH = 1 << 10,  /**< bytes of what a read searches for */
-	NOTES_READ   = 256,      /**< notes a read gives back, the newest */
-	NOTES_MAX    = 1 << 20,  /**< bytes of git's output, at most: the
-	                              newest notes it reads, the oldest of
-	                              which may be cut off */
-	NOTES_ID     = 32,       /**< hexadecimal digits of a thread's id */
-	NOTES_REF    = 64,       /**< bytes of a thread's ref, its NUL included */
-	NOTES_ARGV   = 24,       /**< a command's argv, its nullptr included */
+	NOTES_TEXT = 8 << 10,  /**< bytes of the text of a note, at most */
+	NOTES_NAME = 255,      /**< bytes of the name of a note, at most */
+	NOTES_MAX  = 1 << 20,  /**< bytes of the output of git, at most */
+	NOTES_ID   = 32,       /**< hexadecimal digits of the id of a thread */
+	NOTES_REPO = 80,       /**< bytes of the argument of git that names the
+	                            repository of a thread, NUL included */
+	NOTES_TIP  = 64,       /**< hexadecimal digits of a commit's name, at
+	                            most */
+	NOTES_ARGV = 24,       /**< elements of the argv of git, nullptr
+	                            included */
 };
 
-/** From the start of a git that writes or reads notes to its deadline. */
+/** The time from the start of git to its deadline, in nanoseconds. */
 static constexpr uint64_t NOTES_NS = 10'000'000'000;
 
+/** The two kinds of threads. */
+enum notes_side : uint8_t {
+	NOTES_UPSTREAM,  /**< a thread of the upstream in ask calls */
+	NOTES_CLIENT,    /**< a thread of a client */
+};
+
+/** The commands of git that write and read the notes. */
+enum notes_cmd : uint8_t {
+	NOTES_CREATE,  /**< makes the repository of a new thread */
+	NOTES_CHECK,   /**< checks the name of a new note.  notes_check_input()
+	                    writes its input. */
+	NOTES_ADD,     /**< adds a note.  notes_add_input() writes its input. */
+	NOTES_LIST,    /**< writes the list of the notes, the newest first */
+	NOTES_READ,    /**< writes a note.  notes_read_input() writes its
+	                    input. */
+};
+
+/** A note in the output of the command NOTES_LIST. */
+struct notes_entry {
+	struct span name;
+	uint64_t    time;   /**< when it was added, in seconds since the
+	                         epoch */
+	uint64_t    lines;  /**< the number of lines of its text */
+};
+
 /**
- * The notes repository at @p path, a bare one, made so if nothing is there;
- * nullptr, with the error in @p *e, if it is not one or cannot be made,
- * @p why, of @p len bytes, saying so.  Runs git and waits for it: for
- * startup.
+ * Creates the notes in the directory @p path.  If the directory does not
+ * exist, the function makes it with the mode 0700.  Returns the notes.  On
+ * failure it returns nullptr, stores the error number in @p *e, and writes
+ * a message of at most @p len bytes to @p why.  A directory that is a git
+ * repository is refused, because older versions of askai kept all the
+ * notes in one repository.
  */
 extern struct notes *
 notes_create (char const *path,
@@ -52,56 +85,123 @@ notes_create (char const *path,
 extern void
 notes_destroy (struct notes **p_notes);
 
-/** The environment git runs in. */
+/** Returns the environment that git runs in. */
 extern char *const *
 notes_env (struct notes const *notes);
 
-/** A new thread's id, NUL-terminated, in @p id, of 128 random bits;
- *  returns 0, or why the kernel gave none. */
+/** Writes the id of a new thread, 128 random bits as hexadecimal digits,
+ *  to @p id, with a NUL after it.  Returns 0, or the error number if the
+ *  kernel gave no random bits. */
 extern int
 notes_id (char id[NOTES_ID + 1]);
 
-/** Whether the @p len bytes at @p s are a thread's id. */
+/** Returns true if the @p len bytes at @p s are the id of a thread. */
 extern bool
 notes_is_id (char const *s,
              size_t      len);
 
-/** The ref of thread @p id, of the client whose principal is @p principal,
- *  in @p ref. */
+/** Writes to @p repo the argument of git that names the repository of a
+ *  thread.  @p principal is the principal of the client, @p side is the
+ *  side of the thread, and @p id is its id. */
 extern void
-notes_ref (uint64_t    principal,
-           char const *id,
-           char        ref[NOTES_REF]);
+notes_repo (uint64_t        principal,
+            enum notes_side side,
+            char const     *id,
+            char            repo[NOTES_REPO]);
 
-/** In @p argv, the git that writes a note, its input notes_input()'s;
- *  @p ref must outlive it. */
+/** Writes the argv of the command @p cmd for the repository @p repo to
+ *  @p argv.  @p repo must outlive @p argv. */
 extern void
-notes_write (struct notes const *notes,
-             char const         *argv[NOTES_ARGV]);
+notes_argv (struct notes const *notes,
+            char const         *repo,
+            enum notes_cmd      cmd,
+            char const         *argv[NOTES_ARGV]);
 
 /**
- * Write into @p in what has git fast-import commit a note of the @p len
- * bytes of UTF-8 text at @p text, with no NUL, to @p ref, on its tip if
- * @p after, else as its first; returns 0, or ENOMEM, or EINVAL if @p ref
- * is too long.
+ * Checks the name of a note, the @p len bytes at @p name.  Slashes at the
+ * start do not belong to the name, and the function stores their number in
+ * @p *skip.  The rest is a valid name if it has 1 to NOTES_NAME bytes and
+ * no control characters, and if none of its parts between slashes is
+ * empty, ".", ".." or ".git" in any case.  Returns 0 for a valid name, else
+ * EINVAL.
  */
 extern int
-notes_input (struct buf *in,
-             char const *ref,
-             char const *text,
-             size_t      len,
-             bool        after);
+notes_name (char const *name,
+            size_t      len,
+            size_t     *skip);
+
+/** Writes the input of the command NOTES_CHECK for the valid name of
+ *  @p len bytes at @p name to @p in.  Returns 0 or ENOMEM. */
+extern int
+notes_check_input (struct buf *in,
+                   char const *name,
+                   size_t      len);
 
 /**
- * In @p argv, the git that reads back the newest NOTES_READ notes of
- * @p ref, newest first, each ending in a NUL; of those, only the ones that
- * hold @p search, a line, regardless of case, if it is not nullptr.  @p ref
- * and @p search must outlive it.
+ * Reads @p out, the output of the command NOTES_CHECK.  If the thread has
+ * notes, the function writes the name of the newest commit to @p tip, else
+ * an empty string.  Returns 0 if a note of the name can be added.  Returns
+ * EEXIST if a note of the name exists, EISDIR if notes are in a directory
+ * of the name, ENOTDIR if a directory in the name is a note, and EIO if the
+ * output is not what the command writes.
  */
-extern void
-notes_read (struct notes const *notes,
-            char const         *ref,
-            char const         *search,
-            char const         *argv[NOTES_ARGV]);
+extern int
+notes_checked (struct span out,
+               char        tip[NOTES_TIP + 1]);
+
+/**
+ * Writes to @p in the file part of the input of the command NOTES_ADD.  The
+ * valid name of the note is the @p name_len bytes at @p name, and its text
+ * is the @p len bytes at @p text.  notes_add_input() puts the commit before
+ * the file part.  Returns 0, EINVAL for a name longer than NOTES_NAME, or
+ * ENOMEM.
+ */
+extern int
+notes_add_file (struct buf *in,
+                char const *name,
+                size_t      name_len,
+                char const *text,
+                size_t      len);
+
+/**
+ * Writes to @p in the input of the command NOTES_ADD.  The input is a
+ * commit by the side @p side with @p file, the part that notes_add_file()
+ * wrote.  The commit is on top of the commit @p tip if @p tip is not empty.
+ * Returns 0 or ENOMEM.
+ */
+extern int
+notes_add_input (struct buf      *in,
+                 enum notes_side  side,
+                 char const      *tip,
+                 struct span      file);
+
+/** Writes the input of the command NOTES_READ for the valid name of @p len
+ *  bytes at @p name to @p in.  Returns 0 or ENOMEM. */
+extern int
+notes_read_input (struct buf *in,
+                  char const *name,
+                  size_t      len);
+
+/**
+ * Reads @p out, the output of the command NOTES_READ, and stores the text
+ * of the note in @p text.  Returns 0, ENOENT if no note has the name,
+ * EISDIR if the name is a directory of notes, and EIO if the output is not
+ * what the command writes.
+ */
+extern int
+notes_read_out (struct span  out,
+                struct span *text);
+
+/**
+ * Reads the note before the offset @p *end in @p out, the output of the
+ * command NOTES_LIST, into @p entry, and sets @p *end to the offset of its
+ * start.  @p *end starts at out.len, so the notes come oldest first.  An
+ * incomplete note at the end of a cut output is skipped.  Returns false if
+ * no note is before @p *end.
+ */
+extern bool
+notes_entry_before (struct span         out,
+                    size_t             *end,
+                    struct notes_entry *entry);
 
 #endif /* TWINCEPTION_SRC_NOTES_H_ */
