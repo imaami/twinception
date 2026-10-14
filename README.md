@@ -500,9 +500,14 @@ most 64 KiB, cut at a line's end, with a note that names the bytes shown and
 the `offset` that reads on.  The context is what `--context` says, or else
 what `llama-server`'s `GET /props` says (`n_ctx`), which `askai` asks for even
 with `--slots`; each turn asks for its usage (`stream_options.include_usage`),
-which counts the tokens.  Once a turn would fill three quarters of the
-context, the last result of its tools says so, and asks the model to note
-what it needs and call `compact`.
+which counts the tokens.  With `--notes`, `askai` adds a reminder to write
+notes to the last result of a turn's tools, once when the context is a
+quarter full, and once when it is half full.  Compaction removes the
+conversation but not the notes, so notes that the model writes early are
+still there after it.  From two thirds of the context on, `askai` adds the
+fill level of the context to the last result of each turn's tools, with a
+request to note what the model needs and to call `compact`.  After a
+compaction, `askai` adds the reminders again as the context fills up.
 
 The model need not wait for a slow call: `background` runs a call of `man`
 or `git` as a job, and answers at once with its number, 8 jobs a call at
@@ -1170,12 +1175,13 @@ Upstream AI:
                             most, with --upstream-tools (default 32)
       --context TOKENS      context size of the upstream, used with
                             --upstream-tools: a tool result in a turn is
-                            at most an eighth of it, at three quarters
-                            the upstream is asked to call compact, and
-                            when it is full, askai compacts the
-                            conversation (default: n_ctx from the /props
-                            of llama-server, else unknown; 0 = the
-                            default)
+                            at most an eighth of it; at a quarter and at
+                            half, the upstream is reminded to write
+                            notes, with --notes; from two thirds on, it
+                            is asked to call compact; and when it is
+                            full, askai compacts the conversation
+                            (default: n_ctx from the /props of
+                            llama-server, else unknown; 0 = the default)
 
 MCP server:
   -l, --listen ADDR         [host:]port, where host is 127.0.0.1 if it

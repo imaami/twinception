@@ -6075,8 +6075,9 @@ def check_turns(binary, up):
                     ("git", "notes", "man", "compact", "unknown")] == [8, 7, 0, 0, 1], \
                 values
 
-        # A small context: windows of an eighth of it, a warning past three
-        # quarters, and once full, the conversation starts again.
+        # A small context: windows of an eighth of it, a reminder to write
+        # notes past half, a warning past two thirds, and once full, the
+        # conversation starts again.
         with Askai(binary, *args, "--context", "8000") as ai:
             show = {"repo": "proj", "command": "show", "revisions": ["HEAD:big.txt"]}
             script[:] = [
@@ -6091,9 +6092,12 @@ def check_turns(binary, up):
             ai.ask("Q")
             out = turns(up.requests[count + 1])[1]["content"]
             # Lines of 11 bytes: 363 of them in an eighth of 8000 tokens.
-            assert out.startswith("line 00000\n") and out.endswith(
-                "line 00362\n\n\n[Bytes 0 to 3993 of 44000: for the rest, call "
-                "again with \"offset\": 3993.]"), out[-120:]
+            assert out.startswith("line 00000\n") and re.search(
+                r"line 00362\n\n\n\[Bytes 0 to 3993 of 44000: for the rest, call "
+                r"again with \"offset\": 3993\.\]\n\n\[askai: your context is "
+                r"6[0-6]% full, \d+ of 8000 tokens\. Now is a good time to write "
+                r"notes of what you have learned\. Compaction removes the "
+                r"conversation, but not the notes\.\]$", out), out[-300:]
             out = turns(up.requests[count + 2])[3]["content"]
             assert out.startswith("line 00363\n") and \
                 "line 00725\n\n\n[Bytes 3993 to 7986 of 44000: for the rest" in out and \
@@ -6106,6 +6110,45 @@ def check_turns(binary, up):
                 "Q\n\n[askai: your context filled up, so the conversation since the "
                 "task is gone, your turns and the tools' results with it.]\n\n"
                 "[askai: go on with the task.]"), again
+
+        # The reminders to write notes: one at a quarter of the context and
+        # one at half, each only once.  From two thirds on, each turn's last
+        # result asks for compact.  After a compaction, the reminders start
+        # again.  Without the notes tool, there are no reminders.
+        remind = (r"\n\n\[askai: your context is 2\d% full, \d+ of 8000 tokens\. "
+                  r"Now is a good time to write notes of what you have learned\. "
+                  r"Compaction removes the conversation, but not the notes\.\]")
+        warn = (r"\n\n\[askai: your context is 6\d% full, \d+ of 8000 tokens\. "
+                r"Note what you need to keep, then call compact\.\]")
+        for notes_on in (True, False):
+            # The last two arguments are --notes and its directory.
+            what = args if notes_on else args[:-2]
+            call = (lambda c: (c, "notes", json.dumps(
+                        {"action": "add", "file": f"{c}.md", "text": c}))) \
+                if notes_on else (lambda c: (c, "git", log))
+            out = r"Noted\." if notes_on else r"[0-9a-f]{7} first\n"
+            with Askai(binary, *what, "--context", "8000") as ai:
+                # The tokens after each turn: 13%, 26%, 31%, 52%, 57%, 68%, 69%,
+                # then compact, then 26% again.
+                used = (1000, 2100, 2500, 4100, 4500, 5400, 5500)
+                script[:] = [lambda r, c=c, u=u: (200, turn_stream([call(c)],
+                                                                   used=(u, 10)))
+                             for c, u in zip("abcdefg", used)] + [
+                    lambda r: (200, turn_stream([("h", "compact", json.dumps(
+                        {"summary": "S"}))], used=(5600, 10))),
+                    lambda r: (200, turn_stream([call("i")], used=(2100, 10))),
+                ]
+                count = len(up.requests)
+                assert ai.ask("Q")["content"][0]["text"] == "A"
+                sent = up.requests[count + 1:]
+                assert len(sent) == 9 and turns(sent[7]) == [], sent
+                results = [turns(r)[-1]["content"] for r in sent[:7] + sent[8:]]
+                half = remind.replace("2\\d%", "5\\d%")
+                want = ["", remind, "", half, "", warn, warn, remind]
+                if not notes_on:
+                    want = [w if w == warn else "" for w in want]
+                for got, notice in zip(results, want):
+                    assert re.fullmatch(out + notice, got), (notes_on, results)
 
         with Askai(binary, *args, "--max-turns", "3") as ai:
             # compact: from the prompt, the summary and the notes; calls after

@@ -529,6 +529,10 @@ struct mcp_req {
 	                                    test_task's prompt */
 	uint8_t              forced;     /* compactions askai made since a turn
 	                                    went through */
+	uint8_t              reminded;   /* the quarters of the context, 0 to 2,
+	                                    at which the turns were last reminded
+	                                    to write notes, since the last
+	                                    compaction */
 	bool                 modern;
 	bool                 sse_ok;     /* the client takes an event stream */
 	bool                 sse;        /* the response is one */
@@ -4124,9 +4128,41 @@ mcp_slot_done (struct mcp_slot *slot,
 	loop_ready_bulk(slot->req->mcp->loop, &slot->req->step);
 }
 
-/* Write the result of the turn's call in @p slot, the next in order: after
- * the turn's last, askai adds what the context holds, if it fills up, and
- * that the next turn is the last, if it is. */
+/* Writes a notice about the context of @p req into the @p size bytes at
+ * @p buf, and returns its length.  @p tokens is the number of tokens in the
+ * context after the turn's results.  From two thirds of the context on, the
+ * notice asks the turns to call compact, after each turn.  Below two thirds,
+ * if the turns have the notes tool, the notice reminds them to write notes,
+ * once when the context is a quarter full and once when it is half full.
+ * Otherwise there is no notice. */
+static size_t
+mcp_req_context_note (struct mcp_req *req,
+                      char           *buf,
+                      size_t          size,
+                      uint64_t        tokens)
+{
+	uint64_t context = req->context;
+	if (!context)
+		return 0;
+	if (tokens * 3 >= context * 2)
+		return util_format(buf, size, "\n\n[askai: your context is %" PRIu64 "%% full, "
+		                   "%" PRIu64 " of %" PRIu64 " tokens. Note what you need to "
+		                   "keep, then call compact.]", tokens * 100 / context, tokens,
+		                   context);
+	uint8_t quarters = tokens * 2 >= context ? 2 : tokens * 4 >= context;
+	if (quarters <= req->reminded || !(req->lent & req->mcp->st->always))
+		return 0;
+	req->reminded = quarters;
+	return util_format(buf, size, "\n\n[askai: your context is %" PRIu64 "%% full, "
+	                   "%" PRIu64 " of %" PRIu64 " tokens. Now is a good time to write "
+	                   "notes of what you have learned. Compaction removes the "
+	                   "conversation, but not the notes.]", tokens * 100 / context,
+	                   tokens, context);
+}
+
+/* Write the result of the turn's call in @p slot, the next in order.  After
+ * the turn's last result, askai adds the notice about the context, if any,
+ * and a notice that the next turn is the last one, if it is. */
 static void
 mcp_req_result_begin (struct mcp_req  *req,
                       struct mcp_slot *slot)
@@ -4143,11 +4179,7 @@ mcp_req_result_begin (struct mcp_req  *req,
 	if (req->part + 1u == req->n_calls) {
 		size_t size = sizeof slot->note;
 		uint64_t tokens = mcp_req_tokens(req) + (slot->window + n) / 4;
-		if (req->context && tokens * 4 >= (uint64_t)req->context * 3)
-			n += util_format(slot->note + n, size - n, "\n\n[askai: your context is "
-			                 "%" PRIu64 "%% full, %" PRIu64 " of %" PRIu32 " tokens. "
-			                 "Note what you need to keep, then call compact.]",
-			                 tokens * 100 / req->context, tokens, req->context);
+		n += mcp_req_context_note(req, slot->note + n, size - n, tokens);
 		if (req->turn + 1u == req->mcp->st->turns)
 			n += util_format(slot->note + n, size - n, "\n\n[askai: your next turn "
 			                 "is your last: answer then, without calling tools.]");
@@ -4966,6 +4998,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	(void)mcp_req_trace(req, &c, args, o->trace);
 	(void)mcp_req_trace_end(req, false, len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
+	req->reminded = 0;
 	dstr_clear(&req->self.answer);
 	struct mcp_piece const p[] = {
 		TEXT("\n\n[askai: you compacted the context: the conversation since the "
@@ -5004,6 +5037,7 @@ mcp_req_compact_full (struct mcp_req *req)
 		return;
 	}
 	hist_add(&req->mcp->counts->calls.compacted[1], 1);
+	req->reminded = 0;
 	mcp_req_drop(req);
 	mcp_req_args_free(req, 0, ARRAY_SIZE(req->args));
 	buf_fini(&req->calls);
