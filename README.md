@@ -740,6 +740,9 @@ refuses a plugin that breaks one of these rules:
   does not check this.
 - No tool of the plugin may have the name of a tool that `askai` already has,
   its own or an earlier plugin's.
+- Each kind of tool of the plugin may have only the flags that `src/tool.h`
+  defines for plugins (`TOOL_FLAGS`), and the definition of each tool must
+  have the tool's name that the manifest gives.
 - The plugin must not call a function of `askai` that `askai` does not export
   (`src/export.h`).  `dlopen()` fails for such a plugin.  `askai` does not
   check which functions of other libraries the plugin calls.

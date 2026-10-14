@@ -6010,6 +6010,34 @@ def check_plugin(binary, up, plugin):
                 return offset + (4 if sys.byteorder == "big" else 0)
         raise AssertionError(f"no dynamic entry with tag {tag:#x}")
 
+    def symbol(name):
+        """Returns the file offset of the dynamic symbol name.  The section
+        header of type SHT_DYNSYM (11) gives the symbols, and its sh_link
+        names the section of their names.  A PT_LOAD program header (1)
+        maps the symbol's address to its file offset."""
+        first, size, count = number(40, 8), number(58, 2), number(60, 2)
+        for header in range(first, first + size * count, size):
+            if number(header + 4, 4) != 11:
+                continue
+            names = number(first + size * number(header + 40, 4) + 24, 8)
+            start, end = number(header + 24, 8), number(header + 24, 8) + number(header + 32, 8)
+            for sym in range(start, end, number(header + 56, 8)):
+                at_name = names + number(sym, 4)
+                if image[at_name:image.index(b"\0", at_name)] == name:
+                    address = number(sym + 8, 8)
+                    break
+            else:
+                continue
+            break
+        else:
+            raise AssertionError(f"no dynamic symbol {name}")
+        first, size, count = number(32, 8), number(54, 2), number(56, 2)
+        for header in range(first, first + size * count, size):
+            vaddr = number(header + 16, 8)
+            if number(header, 4) == 1 and vaddr <= address < vaddr + number(header + 32, 8):
+                return number(header + 8, 8) + address - vaddr
+        raise AssertionError(f"{name} is not in the file")
+
     # askai that is built with -fsanitize=address, -fsanitize=thread or
     # -fsanitize=undefined refuses no plugin file for thread-local storage,
     # constructors or writable data (src/plugin.c).  The check recognizes
@@ -6162,6 +6190,22 @@ def check_plugin(binary, up, plugin):
             f.write(image.replace(b"mcp_slot_tell\0", b"mcp_slot_tel1\0"))
         fails([f"{d}/import.so"], f"askai: {d}/import.so: cannot load it: ",
               "undefined symbol: mcp_slot_tel1")
+        # A copy in which kind 0 of askai_plugin has the flag 1 << 32, which
+        # src/tool.h does not define for plugins.  The manifest's ABI value
+        # 6 is the offset of the member flags in struct tool_kind.
+        flags = symbol(b"askai_plugin") + word(7)
+        copy = bytearray(image)
+        copy[flags:flags + 8] = (number(flags, 8) | 1 << 32).to_bytes(8, sys.byteorder)
+        with open(f"{d}/flags.so", "wb") as f:
+            f.write(copy)
+        fails([f"{d}/flags.so"], f"askai: {d}/flags.so: kind 0 of its askai_plugin "
+              "has flags that tool.h does not define for plugins: 0x100000000")
+        # A copy whose definition of test_echo has the name test_ech0.
+        assert image.count(b'{"name":"test_echo",') == 1
+        with open(f"{d}/name.so", "wb") as f:
+            f.write(image.replace(b'{"name":"test_echo",', b'{"name":"test_ech0",'))
+        fails([f"{d}/name.so"], f"askai: {d}/name.so: the definition of its tool "
+              "test_echo has another name")
         # Only root and askai's user may change a plugin file and the
         # directories above it.  The path of a plugin is the file's real
         # path.

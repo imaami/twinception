@@ -52,9 +52,12 @@ enum tool_out : uint32_t {
 
 /** Returns the definition of the tool as tools/list shows it.  The result
  *  is a new reference, or nullptr if out of memory.  askai calls the
- *  function once, when it starts.  @p service is the service of a built-in
- *  plugin, which is the object that every loop shares.  It is nullptr for a
- *  plugin that askai loaded from a file. */
+ *  function when it starts.  For a plugin that askai loads from a file, it
+ *  also calls the function once as it loads the plugin, to check that the
+ *  definition's member "name" is the tool's name in the manifest.
+ *  @p service is the service of a built-in plugin, which is the object that
+ *  every loop shares.  It is nullptr for a plugin that askai loaded from a
+ *  file. */
 typedef struct json_object *tool_definition_fn (void const *service);
 
 /** @p args: nullptr or an object, valid until the call ends or parks. */

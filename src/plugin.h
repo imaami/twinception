@@ -197,7 +197,9 @@ struct plugin_loaded {
  * fail if the plugin calls a function of askai that askai does not export.
  * For each tool that the manifest names, the kind at the same index in
  * askai_plugin must have definition() and start().  The other kinds must
- * have neither.  The shared object stays loaded until askai exits.
+ * have neither.  A kind's flags must be among TOOL_FLAGS (src/tool.h), and
+ * the definition of a named tool must have the tool's name.  The shared
+ * object stays loaded until askai exits.
  *
  * Returns the loaded plugin.  On failure it returns nullptr and stores the
  * error number in @p *e: ENOMEM, or EINVAL with the reason in the @p len

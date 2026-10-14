@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "jb.h"
 #include "plugin.h"
 #include "util.h"
 
@@ -349,11 +350,36 @@ plugin_manifest_check (struct manifest const *m,
 	return 0;
 }
 
+/* Calls definition() of the kind of the manifest's tool i, and checks that
+ * the definition is an object whose member "name" is the tool's name.
+ * Returns 0, ENOMEM if definition() returned nullptr, or EINVAL with the
+ * reason in the len bytes at why. */
+static int
+plugin_loaded_definition (struct plugin_loaded const *loaded,
+                          uint32_t                    i,
+                          char                       *why,
+                          size_t                      len)
+{
+	struct json_object *def = loaded->plugin->tools[i].definition(nullptr);
+	if (!def)
+		return ENOMEM;
+	size_t n = 0;
+	char const *name = jb_str(jb_get(def, "name"), &n);
+	int e = name && n == loaded->lens[i] && !memcmp(name, loaded->manifest.tools[i], n)
+	      ? 0
+	      : plugin_refuse(why, len, "the definition of its tool %s has another "
+	                      "name", loaded->manifest.tools[i]);
+	json_object_put(def);
+	return e;
+}
+
 /* Loads the shared object at path and stores its askai_plugin in
  * dest->plugin.  dest->n_tools is the number of tools that its manifest
  * names: those kinds of the plugin must have definition() and start(), and
- * the kinds after them must have neither.  Returns 0, or EINVAL with the
- * reason in the len bytes at why. */
+ * the kinds after them must have neither.  The flags of every kind must be
+ * among TOOL_FLAGS, and the definition of each named tool must have the
+ * tool's name.  Returns 0, ENOMEM, or EINVAL with the reason in the len
+ * bytes at why. */
 static int
 plugin_loaded_load (struct plugin_loaded *dest,
                     char const           *path,
@@ -385,6 +411,14 @@ plugin_loaded_load (struct plugin_loaded *dest,
 			                     "askai_plugin and its manifest do not agree: "
 			                     "a named tool has definition() and start(), "
 			                     "another kind has neither", i);
+		if (kind->flags & ~TOOL_FLAGS)
+			return plugin_refuse(why, len, "kind %" PRIu32 " of its "
+			                     "askai_plugin has flags that tool.h does not "
+			                     "define for plugins: %#" PRIx64, i,
+			                     kind->flags & ~TOOL_FLAGS);
+		int e = named ? plugin_loaded_definition(dest, i, why, len) : 0;
+		if (e)
+			return e;
 	}
 	return 0;
 }
