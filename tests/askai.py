@@ -1717,6 +1717,17 @@ def check_limits(binary, up):
                     pass
             assert ai.rpc("ping")[0] == 200
 
+    # A reply that is larger than the output pause is sent in full.  With
+    # --output-pause 1, half of the pause is 0 bytes, so the stream resumes
+    # when no output is pending.
+    text = "x" * (600 << 10)
+    up.reply = lambda request: (200, {"choices": [{"message": {
+        "role": "assistant", "content": text}, "finish_reason": "stop"}]})
+    for pause in ("1", "2"):
+        with Askai(binary, "-u", up.url(), "--output-pause", pause) as ai:
+            assert text_of(ai.ask()) == text, pause
+    up.reply = lambda request: (200, ANSWERS["openai"])
+
     # A client that half-closes while its replies wait to be sent leaves
     # askai idle, not spinning on the input that ended.
     with Askai(binary, "-u", up.url(), "--output-pause", "64M",

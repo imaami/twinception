@@ -1966,7 +1966,11 @@ httpd_conn_pump (struct httpd_conn *conn)
 
 	size_t pending = buf_peek(&conn->out).len;
 	bool again = false;
-	if (conn->writable && pending < srv->lim.out_pause / 2) {
+	/* Call on_writable() when the pending output is at most half of
+	 * out_pause.  With an out_pause of 1, half of it is 0, so the call
+	 * happens only when no output is pending.  A comparison with < would
+	 * never be true for that value. */
+	if (conn->writable && pending <= srv->lim.out_pause / 2) {
 		conn->writable = false;
 		if (conn->open)
 			srv->app->on_writable(&conn->stream);
