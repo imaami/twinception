@@ -301,7 +301,8 @@ test_plugin_msg_free (struct loop *loop,
 /* Passes each exported function of askai inputs that the function must
  * refuse: nullptr, a text with a length and no bytes, flag bits that the
  * function does not take, a timer without a function, a timer whose slot is
- * greater than the number of timers in the loop's heap, a message without
+ * greater than the number of timers in the loop's heap, a timer whose slot
+ * is the place of another timer in the heap, a message without
  * a function, a message that is posted already, and a unit of work out of
  * range.  Then it ends the call with
  * the text "refused R of N", where N is the number of these inputs and R is
@@ -359,6 +360,15 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(loop_timer_stop(nullptr, &stray) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_timer_stop(loop, nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_timer_stop(loop, &stray) == EINVAL);
+	/* A copy of a timer in the heap has the slot of that timer, but it is
+	 * not that timer.  The heap must keep the timer, which the function
+	 * then stops, because the timer is on the stack. */
+	struct loop_timer real = { .due = UINT64_MAX, .fn = test_plugin_never };
+	int const armed = loop_timer_set(loop, &real, UINT64_MAX);
+	struct loop_timer copy = real;
+	TEST_PLUGIN_REFUSED(!armed && loop_timer_set(loop, &copy, UINT64_MAX) == EINVAL);
+	TEST_PLUGIN_REFUSED(!armed && loop_timer_stop(loop, &copy) == EINVAL);
+	TEST_PLUGIN_REFUSED(!armed && real.slot && !loop_timer_stop(loop, &real) && !real.slot);
 	TEST_PLUGIN_REFUSED(!loop_now(nullptr));
 	TEST_PLUGIN_REFUSED(loop_work(nullptr, LOOP_COPY, 1) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_work(loop, beyond, 1) == EINVAL);

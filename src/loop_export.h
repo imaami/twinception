@@ -6,7 +6,8 @@
  * plugin calls it across the boundary of a shared object.  A function that
  * returns an error number returns EFAULT for a pointer that is nullptr,
  * also for a message or a timer without a function, and EINVAL for a value
- * out of range.  loop_now() and loop_room() return 0 for such inputs. */
+ * out of range, also for a timer whose member slot is not its place in the
+ * loop's heap.  loop_now() and loop_room() return 0 for such inputs. */
 #ifndef TWINCEPTION_SRC_LOOP_EXPORT_H_
 #define TWINCEPTION_SRC_LOOP_EXPORT_H_
 
@@ -131,7 +132,7 @@ loop_post (struct loop *loop,
  * After it has fired, it is due at UINT64_MAX, which means never, until it
  * is set again.  Returns 0.  Returns EFAULT if @p loop or @p timer is
  * nullptr or @p timer has no function, EINVAL if the member slot of
- * @p timer is greater than the number of timers in the heap, and ENOMEM if
+ * @p timer is not 0 and is not the timer's place in the heap, and ENOMEM if
  * the timer is not in the heap and the heap cannot grow.
  */
 EXPORT
@@ -142,8 +143,8 @@ loop_timer_set (struct loop       *loop,
 
 /** Removes @p timer from the heap of @p loop.  It does nothing if the timer
  *  is not in the heap.  Returns 0, EFAULT if @p loop or @p timer is
- *  nullptr, or EINVAL if the member slot of @p timer is greater than the
- *  number of timers in the heap. */
+ *  nullptr, or EINVAL if the member slot of @p timer is not 0 and is not the
+ *  timer's place in the heap. */
 EXPORT
 extern int
 loop_timer_stop (struct loop       *loop,

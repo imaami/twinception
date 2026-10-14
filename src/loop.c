@@ -567,7 +567,9 @@ loop_timer_set (struct loop       *loop,
 {
 	if (!loop || !timer || !timer->fn)
 		return EFAULT;
-	if (timer->slot > loop->timers)
+	/* A timer with a stale slot would take another timer's place. */
+	if (timer->slot > loop->timers ||
+	    (timer->slot && loop->heap[timer->slot - 1] != timer))
 		return EINVAL;
 	if (!timer->slot) {
 		if (loop->timers == loop->heap_cap) {
@@ -591,10 +593,12 @@ loop_timer_stop (struct loop       *loop,
 {
 	if (!loop || !timer)
 		return EFAULT;
-	if (timer->slot > loop->timers)
-		return EINVAL;
 	if (!timer->slot)
 		return 0;
+	/* A timer with a stale slot would take another timer out of the
+	 * heap. */
+	if (timer->slot > loop->timers || loop->heap[timer->slot - 1] != timer)
+		return EINVAL;
 	size_t i = timer->slot - 1;
 	timer->slot = 0;
 	struct loop_timer *last = loop->heap[--loop->timers];
