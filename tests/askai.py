@@ -4549,6 +4549,8 @@ def check_stalled_stderr(binary, up):
 # renders the page that file names, noting its arguments in "renders", and
 # the name says what it does.  It notes the processes that wait in
 # "waiting".
+# For the page wait0, the fake man exits at once, and its sleep still has
+# the output pipe open.
 FAKE_MAN = r"""#!/bin/sh
 dir=${0%/*}
 for page; do :; done
@@ -4587,7 +4589,7 @@ shadowed) echo second ;;
 wait*)
 	sleep 1000 &
 	echo "$$ $!" >> "$dir/waiting"
-	wait
+	[ "${page##*/}" = wait0 ] || wait
 	;;
 *) echo "page ${page##*/}" ;;
 esac
@@ -4783,6 +4785,9 @@ def check_man(binary, up):
 
             # One call waits out its deadline, and fifteen more go: sixteen
             # children at most, which go on until their deadline.
+            # The man of wait0 exits at once, but its sleep has the output
+            # pipe open.  So that man counts toward the limit of sixteen
+            # children until askai kills its group at the deadline.
             late = []
             start = time.monotonic()
 
@@ -4798,6 +4803,7 @@ def check_man(binary, up):
             thread = threading.Thread(target=late_call)
             thread.start()
             wait_for(lambda: len(waiters()) == 1)
+            wait_for(lambda: not alive(waiters()[0][0]))
             socks = []
             for i in range(1, 16):
                 sock = socket.create_connection(("127.0.0.1", ai.port), 10)
@@ -4849,12 +4855,15 @@ def check_man(binary, up):
             assert text_of(man_call(ai, name="shadow")) == "second\n"
 
         # Stopping ends a man call, killing its child.
+        # The man of wait0 exits at once, and stopping askai kills its
+        # group, which includes its sleep.
         os.unlink(f"{fake}/waiting")
         ai = Askai(binary, "-u", up.url(), "--man", env=env)
         with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
-            sock.sendall(rpc_request(7, {"name": "man", "arguments": {"name": "wait"}},
+            sock.sendall(rpc_request(7, {"name": "man", "arguments": {"name": "wait0"}},
                                      "tools/call"))
             wait_for(lambda: len(waiters()) == 1)
+            wait_for(lambda: not alive(waiters()[0][0]))
             ai.stop()
             status, body = Replies(sock).next()
             assert status == 503 and body["error"]["message"] == \
@@ -4917,6 +4926,10 @@ stubborn|polite)
     fi
     echo begun
     while :; do sleep 0.05; done ;;
+orphan)
+    sleep 1000 &
+    echo "$$ $!" > "$dir/pid.new" && mv "$dir/pid.new" "$dir/pid"
+    echo begun ;;
 *) exec /usr/bin/git "$@" ;;
 esac
 """
@@ -5135,6 +5148,29 @@ def check_git(binary, up):
                 with open(f"{fake}/pid") as f:
                     pid = int(f.read())
                 wait_for(lambda: not alive(pid))
+
+            # This git exits at once, but its sleep has the output pipe open.
+            # At the deadline, askai kills the group, which includes the
+            # sleep.
+            result = call(ai, repo="proj", command="log", revisions=["orphan"])
+            assert result.get("isError") and text_of(result) == \
+                "begun\n\n[git took longer than 1 s, and was stopped.]", result
+            with open(f"{fake}/pid") as f:
+                pids = [int(p) for p in f.read().split()]
+            wait_for(lambda: not any(alive(p) for p in pids))
+
+            # When the client closes the connection after this git has
+            # exited, askai kills the group, which includes the sleep.
+            os.unlink(f"{fake}/pid")
+            with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
+                sock.sendall(rpc_request(6, {"name": "git", "arguments": {
+                    "repo": "proj", "command": "log", "revisions": ["orphan"]}},
+                    "tools/call"))
+                wait_for(lambda: os.path.exists(f"{fake}/pid"))
+                with open(f"{fake}/pid") as f:
+                    pids = [int(p) for p in f.read().split()]
+                wait_for(lambda: not alive(pids[0]))
+            wait_for(lambda: not alive(pids[1]))
 
             # A call that goes kills its git.
             os.unlink(f"{fake}/pid")

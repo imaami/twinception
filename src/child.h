@@ -1,7 +1,8 @@
-/** @file Child processes (design section 4): each spawned with a pidfd, in a
- *  session of its own, its standard output read from a pipe into a capped
- *  buffer by the steps of the loop that spawned it, and reaped through the
- *  pidfd, with no SIGCHLD. */
+/** @file Child processes (design section 4).  Each child is spawned with a
+ *  pidfd, in a session of its own.  The steps of the loop that spawned it
+ *  read its standard output from a pipe into a capped buffer.  The pidfd
+ *  becomes readable when the child exits, so askai does not use SIGCHLD.
+ *  The child is reaped by its pid after its output has also ended. */
 #ifndef TWINCEPTION_SRC_CHILD_H_
 #define TWINCEPTION_SRC_CHILD_H_
 
@@ -13,7 +14,7 @@
 #include "list.h"
 #include "loop.h"
 
-/** Children alive at once in the process, at most. */
+/** The maximum number of children in the process that are not reaped. */
 enum { CHILD_MAX = 16 };
 
 /** How a child is spawned. */
@@ -28,10 +29,16 @@ enum child_flag {
  * before it has ended; at its deadline, if it has a grace, with SIGTERM
  * first, and SIGKILL once the grace has passed too; never once it is
  * reaped, as its id may name another group then.
+ *
+ * The child is reaped only after it has exited and its output has ended.
+ * Between the exit and the reap, the child is a zombie.  The kernel does
+ * not reuse the id of a zombie, and the id of the child is also the id of
+ * its process group.  So a kill also reaches a process of the group that
+ * has the output pipe open after the child has exited.
  */
 struct child {
 	struct list        hook;     /**< on its owner's list, until freed */
-	struct loop_ref    proc;     /**< its pidfd, until it is reaped */
+	struct loop_ref    proc;     /**< the pidfd, until the child exits */
 	struct loop_ref    pipe;     /**< its output's read end, until the
 	                                  output ends or the child is killed */
 	struct loop_step   step;
@@ -45,11 +52,14 @@ struct child {
 	void             (*done) (struct child *c);
 	void              *owner;
 	size_t             max;      /**< the cap on its output, in bytes */
-	pid_t              pid;      /**< its own, its session's and its group's */
-	int                code;     /**< how it ended, as waitid() says:
-	                                  CLD_EXITED, CLD_KILLED or CLD_DUMPED;
-	                                  0 until it is reaped, or if waitid()
-	                                  could not tell */
+	pid_t              pid;      /**< the id of the child, its session and
+	                                  its process group, from the watch of
+	                                  the pidfd until the reap, and 0 at
+	                                  other times */
+	int                code;     /**< CLD_EXITED, CLD_KILLED or CLD_DUMPED
+	                                  from waitid() after the child exits,
+	                                  and 0 before that or if waitid()
+	                                  failed */
 	int                status;   /**< its exit status, or the signal that
 	                                  killed it */
 	uint16_t           events;   /**< what the next step is to look at */
@@ -79,8 +89,10 @@ struct child_cmd {
  * @p loop read its output into out, up to cmd->max bytes, and kill it past
  * those, or at its deadline.  Once it is reaped and its output is all in, a
  * step calls @p done with it, which may destroy it.  It goes on @p list
- * until destroyed.  Returns the child; nullptr, with the error in @p *e:
- * EBUSY with CHILD_MAX children alive, or why it could not be spawned.
+ * until destroyed.  The child counts toward CHILD_MAX until it is reaped.
+ * Returns the child, or nullptr with the error in @p *e.  The error is
+ * EBUSY if there are already CHILD_MAX children that are not reaped, or
+ * else the error that stopped the spawn.
  * Spawning blocks the caller until the child has executed its file, about
  * 0.1 ms.
  */

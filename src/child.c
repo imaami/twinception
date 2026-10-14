@@ -26,14 +26,16 @@ enum {
 /* The children spawned and not yet reaped, of every loop. */
 static _Atomic uint32_t alive;
 
-/* Stop reading the child's output. */
+/* Stop watching @p ref, which is the pidfd or the output pipe of the child,
+ * and close its descriptor. */
 static void
-child_close (struct child *c)
+child_close (struct child    *c,
+             struct loop_ref *ref)
 {
-	int fd = c->pipe.fd;
+	int fd = ref->fd;
 	if (fd < 0)
 		return;
-	loop_unwatch(c->loop, &c->pipe);
+	loop_unwatch(c->loop, ref);
 	close(fd);
 }
 
@@ -42,9 +44,24 @@ child_close (struct child *c)
 static void
 child_kill (struct child *c)
 {
-	if (c->proc.fd >= 0)
+	if (c->pid > 0)
 		(void)kill(-c->pid, SIGKILL);
-	child_close(c);
+	child_close(c, &c->pipe);
+}
+
+/* Reap the child if it has exited, and set its pid to 0.  After the reap,
+ * the kernel can reuse the id, so no signal goes to the group of the child
+ * after this call.  A child that has not exited yet stays unreaped until
+ * askai exits.  Apart from child_exited() and the error paths of
+ * child_create(), only this function decrements alive. */
+static void
+child_reap (struct child *c)
+{
+	if (c->pid <= 0)
+		return;
+	(void)waitpid(c->pid, nullptr, WNOHANG);
+	c->pid = 0;
+	atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
 }
 
 static void
@@ -54,12 +71,8 @@ child_dispose (struct child *c)
 	loop_unready(&c->step);
 	loop_timer_stop(c->loop, &c->timer);
 	child_kill(c);
-	int fd = c->proc.fd;
-	if (fd >= 0) {
-		loop_unwatch(c->loop, &c->proc);
-		close(fd);
-		atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
-	}
+	child_close(c, &c->proc);
+	child_reap(c);
 	buf_fini(&c->out);
 	free(c);
 }
@@ -108,7 +121,7 @@ child_read (struct child *c)
 		if (n == -EAGAIN)
 			return;
 		if (n <= 0) {
-			child_close(c);
+			child_close(c, &c->pipe);
 			return;
 		}
 		buf_commit(&c->out, (size_t)n);
@@ -122,22 +135,27 @@ child_read (struct child *c)
 	}
 }
 
-/* Reap the child, if it has exited; should waitid() fail, it has gone all
- * the same, how unknown. */
+/* If the child has exited, store how it ended, and close its pidfd, which
+ * stays readable after the exit.  With WNOWAIT, waitid() does not reap the
+ * child.  The kernel does not reuse the id of a zombie, and the id of the
+ * child is also the id of its group.  So until child_reap(), a kill still
+ * reaches a process of the group that has the output pipe open after the
+ * child has exited.  If waitid() fails, the child was reaped elsewhere, and
+ * the kernel can already have reused its id for another process.  So this
+ * function then sets the pid to 0 without a call of waitpid(). */
 static void
-child_reap (struct child *c)
+child_exited (struct child *c)
 {
 	siginfo_t info = {};
-	int fd = c->proc.fd;
-	if (!waitid(P_PIDFD, (id_t)fd, &info, WEXITED | WNOHANG)) {
-		if (!info.si_pid)
-			return;
-		c->code = info.si_code;
-		c->status = info.si_status;
+	if (waitid(P_PIDFD, (id_t)c->proc.fd, &info, WEXITED | WNOHANG | WNOWAIT)) {
+		c->pid = 0;
+		atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
+	} else if (!info.si_pid) {
+		return;
 	}
-	loop_unwatch(c->loop, &c->proc);
-	close(fd);
-	atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
+	c->code = info.si_code;
+	c->status = info.si_status;
+	child_close(c, &c->proc);
 }
 
 /* Its deadline has come: SIGTERM, and SIGKILL once its grace has passed too,
@@ -145,7 +163,7 @@ child_reap (struct child *c)
 static void
 child_due (struct child *c)
 {
-	bool term = c->grace && !c->late && c->proc.fd >= 0;
+	bool term = c->grace && !c->late && c->pid > 0;
 	c->late = true;
 	if (!term) {
 		child_kill(c);
@@ -170,9 +188,10 @@ child_step (struct loop      *loop,
 	if (events & CHILD_OUT && c->pipe.fd >= 0)
 		child_read(c);
 	if (events & CHILD_EXIT && c->proc.fd >= 0)
-		child_reap(c);
+		child_exited(c);
 	if (c->proc.fd >= 0 || c->pipe.fd >= 0)
 		return;
+	child_reap(c);
 	loop_timer_stop(loop, &c->timer);
 	if (c->done)
 		c->done(c);
@@ -342,16 +361,18 @@ static int
 child_watch (struct child *c,
              int           pidfd)
 {
-	c->pid = pidfd_getpid(pidfd);
-	if (c->pid <= 0) {
+	pid_t pid = pidfd_getpid(pidfd);
+	if (pid <= 0) {
 		(void)pidfd_send_signal(pidfd, SIGKILL, nullptr, 0);
 		return child_unwatched(pidfd, ESRCH);
 	}
 	int e = loop_watch(c->loop, &c->proc, pidfd, EPOLLIN, child_event, c);
-	if (!e)
-		return 0;
-	(void)kill(-c->pid, SIGKILL);
-	return child_unwatched(pidfd, e);
+	if (e) {
+		(void)kill(-pid, SIGKILL);
+		return child_unwatched(pidfd, e);
+	}
+	c->pid = pid;
+	return 0;
 }
 
 /* A pipe for @p c's output: its read end watched, and the write end in
@@ -462,11 +483,11 @@ child_destroy (struct child **p_c)
 	struct child *c = *p_c;
 	*p_c = nullptr;
 	c->done = nullptr;
-	child_kill(c);
 	if (c->proc.fd < 0) {
 		child_dispose(c);
 		return;
 	}
+	child_kill(c);
 	loop_timer_stop(c->loop, &c->timer);
 	buf_fini(&c->out);
 }

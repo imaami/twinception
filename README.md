@@ -410,6 +410,9 @@ render; none of those is kept.  At most 16 `man` and `git` processes run at
 once; a call past those is answered as busy.  A call that goes, as when its client closes
 the connection, leaves the page to be rendered and kept; stopping `askai`
 kills `man` and the processes it started.
+If `man` exits while a process that it started still has the output open,
+that process is still killed at the deadline or when `askai` stops.  Until
+the output ends, that `man` still counts toward the limit of 16 processes.
 
 ### Reading git repositories
 
@@ -455,6 +458,10 @@ written, as `grep` finding none.  At the
 deadline, `--git-timeout` (30 s), `git` gets SIGTERM, and SIGKILL a second
 later, and the call is a tool error; a call that goes, or `askai` stopping,
 kills `git` and the processes it started.
+If `git` exits while a process that it started still has the output open,
+that process is still killed at the deadline, when the client of the call
+closes the connection, or when `askai` stops.  Until the output ends, that
+`git` still counts toward the limit of 16 processes.
 
 ### Lending tools to the upstream
 
