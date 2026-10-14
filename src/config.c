@@ -114,13 +114,13 @@ config_usage (struct config const *cfg,
 	        "\n"
 	        "  -c, --config FILE         read options from FILE before the command\n"
 	        "                            line: a JSON object with long option names\n"
-	        "                            as members, comments allowed.  true sets an\n"
+	        "                            as members, without comments.  true sets an\n"
 	        "                            option without argument, and an array lists\n"
 	        "                            the values of a repeatable option.  The\n"
 	        "                            command line overrides the file, but adds to\n"
 	        "                            its header, allow-origin and git lists.\n"
 	        "                            Only the last --config is read.  See\n"
-	        "                            README.md and doc/askai.example.json.\n"
+	        "                            doc/configuration.md.\n"
 	        "\n"
 	        "Upstream AI:\n"
 	        "  -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),\n"
@@ -1109,9 +1109,11 @@ config_json_fail (struct config const *cfg,
 	return config_complain(cfg, cfg->path, "%zu:%zu: %s", line, column, what);
 }
 
-/* Parse the configuration file's @p len bytes of @p text into cfg->file:
- * a JSON object, which may hold comments, and blanks after it at most.
- * Returns 0, or the exit status, having said why. */
+/* Parses the @p len bytes at @p text, the configuration file, into
+ * cfg->file.  The file must be one JSON object in strict JSON, so that tools
+ * such as jq can read it.  With JSON_TOKENER_STRICT, json-c reports comments
+ * and trailing commas as errors.  Only blanks may follow the object.  Returns
+ * 0, or the exit status after a message about the error. */
 static int
 config_json (struct config *cfg,
              char const    *text,
@@ -1120,6 +1122,7 @@ config_json (struct config *cfg,
 	struct json_tokener *tok = json_tokener_new();
 	if (!tok)
 		return config_oom(cfg);
+	json_tokener_set_flags(tok, JSON_TOKENER_STRICT);
 	/* config_fini() puts what this gives, whatever the status. */
 	cfg->file = json_tokener_parse_ex(tok, text, (int)len);
 	size_t end = json_tokener_get_parse_end(tok);

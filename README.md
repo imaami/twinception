@@ -627,8 +627,9 @@ times their flights, mostly CPU (`askai_tls_handshakes_total`,
 ### Configuration file, identities and roles
 
 `--config FILE` (`-c`) reads options from a JSON object before the command
-line.  The file may have comments, as `/* */` or `//`.  Each member is named
-as a long option is:
+line.  The file must be strict JSON, so that tools such as `jq` can read it:
+comments and trailing commas are errors.  Each member is named as a long
+option is:
 
 - An option with an argument takes a string or a number.  A number must be an
   integer, except for `temperature`: `"slots": 2.0` is refused.
@@ -649,7 +650,11 @@ have the same name, the last one counts.  Only the last `--config` is read.
 The file must be a regular file of at most 1 MiB, not a symbolic link, and
 only root or `askai`'s user may change it or any directory above it (others
 may add to a sticky one, such as `/tmp`).
-[`doc/askai.example.json`](doc/askai.example.json) lists every member.
+[`doc/configuration.md`](doc/configuration.md) is the reference of every
+member: its values, its default and what it does.
+[`doc/askai.example.json`](doc/askai.example.json) sets each option that has
+a fixed default to that default, and `doc/configuration.md` lists the
+options that it leaves out.
 
 Four more members define who may connect, and what each client may do:
 
@@ -1107,13 +1112,13 @@ Invalid options or environment exit 2, and a failure to start or to serve 1.
 ```text
   -c, --config FILE         read options from FILE before the command
                             line: a JSON object with long option names
-                            as members, comments allowed.  true sets an
+                            as members, without comments.  true sets an
                             option without argument, and an array lists
                             the values of a repeatable option.  The
                             command line overrides the file, but adds to
                             its header, allow-origin and git lists.
                             Only the last --config is read.  See
-                            README.md and doc/askai.example.json.
+                            doc/configuration.md.
 
 Upstream AI:
   -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),

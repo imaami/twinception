@@ -2366,18 +2366,41 @@ def check_configuration(binary, up):
     assert readme[start:end] == usage[first:last], \
         "the usage block of README.md differs from --help"
 
-    # doc/askai.example.json names every long option but config and help,
-    # and askai starts with it.  Its anonymous loopback clients have the role
-    # user, and the token "test" is the identity alice, whose role admin may
-    # read the metrics.
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                           "doc", "askai.example.json")) as f:
-        example = f.read()
+    # doc/configuration.md documents under a heading "#### `NAME`" each long
+    # option of --help but config and help, and each member of the file that
+    # is not an option, and nothing else.  Its JSON examples are strict JSON.
+    doc = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc")
+    with open(os.path.join(doc, "configuration.md")) as f:
+        reference = f.read()
+    def constant(name):
+        raise ValueError(name)
+    for block in re.findall(r"^```json\n(.*?)^```$", reference, re.M | re.S):
+        json.loads(block, parse_constant=constant)
     options = subprocess.run([binary, "--help"], capture_output=True, text=True,
                              timeout=5, check=True).stdout
-    missing = [name for name in sorted(set(re.findall(r"--([a-z-]+)", options)))
-               if name not in ("config", "help") and f'"{name}"' not in example]
-    assert not missing, missing
+    options = set(re.findall(r"--([a-z-]+)", options)) - {"config", "help"}
+    policy = {"roles", "identities", "unix-groups", "anonymous"}
+    documented = re.findall(r"^#### `([a-z-]+)`$", reference, re.M)
+    assert len(documented) == len(set(documented)), documented
+    assert set(documented) == options | policy | {"plugins"}, \
+        set(documented) ^ (options | policy | {"plugins"})
+
+    # doc/askai.example.json is strict JSON in the format of jq.  It has each
+    # option but those in the table of the section "The example file" of
+    # doc/configuration.md, and "plugins", but no member of the policy.  So
+    # askai starts with it under its own policy: a client on loopback lists
+    # the tools and reads the metrics.
+    with open(os.path.join(doc, "askai.example.json")) as f:
+        example = f.read()
+    members = json.loads(example, parse_constant=constant)
+    assert example == json.dumps(members, indent=2) + "\n", "not in the format of jq"
+    section = re.search(r"^## The example file$(.*?)^## ", reference,
+                        re.M | re.S).group(1)
+    left_out = re.findall(r"^\| `([a-z-]+)` \|", section, re.M)
+    assert len(left_out) == len(set(left_out)), left_out
+    assert set(left_out) <= options, set(left_out) - options
+    assert set(members) == options - set(left_out) | {"plugins"}, \
+        set(members) ^ (options - set(left_out) | {"plugins"})
     with tempfile.TemporaryDirectory() as d:
         with open(f"{d}/askai.json", "w") as f:
             f.write(example)
@@ -2385,9 +2408,7 @@ def check_configuration(binary, up):
         with Askai(binary, "-c", f"{d}/askai.json", "-u", up.url()) as ai:
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in tools] == ["ask_ai"], tools
-            assert ai.metrics(headers={"Authorization": "Bearer test"})
-            status, _, _ = ai.rpc("tools/list", headers={"Authorization": "Bearer x"})
-            assert status == 401, status
+            assert ai.metrics()
 
     fails("-p", "anthropic", "-m", "m", message="set ANTHROPIC_API_KEY")
     fails("-p", "google", env={"GEMINI_API_KEY": "k"}, message="--model is required")
@@ -2523,8 +2544,6 @@ def check_configuration(binary, up):
 
     # json-c also parses numbers that JSON does not allow, such as "1.",
     # "-.5" and "01.5".  askai sends each of them as a JSON number.
-    def constant(name):
-        raise ValueError(name)
     with Askai(binary, "-u", up.url(), "-t", "1.",
                "-x", '{"top_p": 1., "a": [1.e1, -.5, {"b": 01.5}]}') as ai:
         assert text_of(ai.ask()) == "A"
@@ -2532,8 +2551,8 @@ def check_configuration(binary, up):
         assert [body[k] for k in ("temperature", "top_p", "a")] == \
             [1.0, 1.0, [10.0, -0.5, {"b": 1.5}]], body
 
-    # A configuration file: a JSON object, comments allowed, whose members are
-    # the long options, which the command line overrides.
+    # A configuration file: a JSON object in strict JSON, without comments,
+    # whose members are the long options, which the command line overrides.
     with tempfile.TemporaryDirectory() as d:
         path = f"{d}/askai.json"
 
@@ -2543,11 +2562,10 @@ def check_configuration(binary, up):
             os.chmod(path, mode)
 
         write("""{
-            // the upstream
-            "url": "%s", "tool-name": "ask_file", /* and its tool */
+            "url": "%s", "tool-name": "ask_file",
             "tool-description": "From the file.", "man": true,
             "header": ["X-A: 1", "X-B: 2"], "temperature": 0.5,
-            "extra": {"top_k": 5}, "max-tokens": 9, "test-fifo": false,
+            "extra": {"top_k": 5}, "max-tokens": 9, "test-fifo": false
         }""" % up.url())
         with Askai(binary, "-c", path, "--tool-name", "ask_cli", "-n", "7",
                    "-H", "X-C: 3") as ai:
@@ -2580,8 +2598,14 @@ def check_configuration(binary, up):
                 ('{"url": "ftp://x"}', f"{path}: not an http(s) URL"),
                 ('{\n %s\n "loops": 1\n}' % url,
                  f"{path}: 3:2: object value separator ',' expected"),
+                ('{\n %s, // the upstream\n "loops": 1\n}' % url,
+                 f"{path}: 2:{len(url) + 4}: quoted object property name expected"),
+                ('{\n %s, /* the upstream */\n "loops": 1\n}' % url,
+                 f"{path}: 2:{len(url) + 4}: quoted object property name expected"),
+                ('{\n %s,\n "loops": 1,\n}' % url, f"{path}: 4:1: unexpected character"),
                 ('[1]', f"{path}: 1:1: not one JSON object"),
-                ('{%s} x' % url, "not one JSON object"),
+                ('{%s} x' % url, f"{path}: 1:{len(url) + 4}: unexpected character"),
+                ('{%s}\0x' % url, f"{path}: 1:{len(url) + 3}: not one JSON object"),
                 ('{%s, "x": "%s"}' % (url, "y" * (1 << 20)), "larger than 1 MiB")):
             write(text)
             fails("-c", path, message=message)
