@@ -59,6 +59,16 @@ object_relieve (void *instance, enum buf_pressure level, size_t max)
 	return n;
 }
 
+/* A relieve() that returns more units than it was given. */
+static size_t
+greedy_relieve (void *instance, enum buf_pressure level, size_t max)
+{
+	(void)instance;
+	(void)level;
+	(void)max;
+	return SIZE_MAX;
+}
+
 static struct plugin const with = {
 	.instance_init = object_init,
 	.instance_fini = object_fini,
@@ -68,6 +78,12 @@ static struct plugin const with = {
 static struct plugin const other = {
 	.instance_init = object_init,
 	.instance_fini = object_fini,
+	.instance_size = sizeof (struct object),
+};
+static struct plugin const greedy = {
+	.instance_init = object_init,
+	.instance_fini = object_fini,
+	.relieve = greedy_relieve,
 	.instance_size = sizeof (struct object),
 };
 static struct plugin const without = {};
@@ -141,13 +157,16 @@ main (void)
 	CHECK(count(&t.idle) == 3 && list_is_empty(&t.busy));
 
 	/* If instance_init() fails, instance_table_get() returns its error
-	 * number, and the table has no new instance.  EBUSY is the exception.
-	 * instance_table_get() returns EBUSY only for a full table, so it
-	 * returns EIO if instance_init() returns EBUSY. */
+	 * number, and the table has no new instance.  instance_table_get()
+	 * returns EBUSY only for a full table, so it returns EIO if
+	 * instance_init() returns EBUSY.  It also returns EIO for a number that
+	 * is not positive, because that is no error number. */
 	fail_with = EACCES;
 	CHECK(instance_table_get(&t, &with, 7, g, &a) == EACCES && !a);
 	CHECK(instance_table_get(&t, &with, 0, g, &a) == EACCES && !a);
 	fail_with = EBUSY;
+	CHECK(instance_table_get(&t, &with, 7, g, &a) == EIO && !a);
+	fail_with = -1;
 	CHECK(instance_table_get(&t, &with, 7, g, &a) == EIO && !a);
 	fail_with = 0;
 	CHECK(t.listed == 3 && list_is_empty(&t.busy) && list_is_empty(&t.gone));
@@ -261,6 +280,12 @@ main (void)
 	}
 	CHECK(instance_table_relieve(&t, BUF_CRITICAL, 4) == 4 && made - destroyed == 6);
 	CHECK(instance_table_relieve(&t, BUF_CRITICAL, 100) == 6 && made == destroyed);
+	/* A relieve() that returns more units than it was given counts as
+	 * the units that it was given. */
+	CHECK(!instance_table_get(&t, &greedy, 1, g, &a));
+	CHECK(instance_table_relieve(&t, BUF_EASY, 5) == 5);
+	instance_table_put(&t, &a);
+	CHECK(instance_table_relieve(&t, BUF_CRITICAL, 100) == 1 && made == destroyed);
 
 	/* instance_table_fini() destroys the instances that are left. */
 	CHECK(!instance_table_get(&t, &with, 1, g, &a));

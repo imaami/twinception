@@ -119,8 +119,8 @@ instance_table_generation (struct instance_table const *table)
  * Returns 0 on success.  Returns EBUSY only if the buckets have
  * INSTANCE_MAX instances and calls use all of them.  Returns ENOMEM if it
  * cannot allocate the instance.  If the plugin's instance_init() returns
- * an error number, the function returns that number.  The one exception is
- * EBUSY from instance_init(), for which the function returns EIO.
+ * an error number, the function returns that number.  It returns EIO if
+ * instance_init() returns EBUSY or a number that is not positive.
  */
 extern int
 instance_table_get (struct instance_table  *table,

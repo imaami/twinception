@@ -125,7 +125,8 @@ instance_table_fini (struct instance_table *t)
  * the list busy.  Stores the instance in *p_inst.  Returns 0, ENOMEM, or
  * the error number of instance_init().  It returns EIO if instance_init()
  * returned EBUSY, because instance_table_get() returns EBUSY only for a
- * full table. */
+ * full table.  It also returns EIO if instance_init() returned a number
+ * that is not positive, because such a number is no error number. */
 static int
 instance_table_make (struct instance_table  *t,
                      struct plugin const    *plugin,
@@ -145,7 +146,7 @@ instance_table_make (struct instance_table  *t,
 	int e = plugin->instance_init(inst->bytes, principal, t->loop);
 	if (e) {
 		free(inst);
-		return e == EBUSY ? EIO : e;
+		return e > 0 && e != EBUSY ? e : EIO;
 	}
 	list_append(&t->busy, &inst->hook);
 	*p_inst = inst;
@@ -238,8 +239,12 @@ instance_list_relieve (struct list const *list,
 	size_t done = 0;
 	for (struct list const *pos = list->next; pos != list && done < max; pos = pos->next) {
 		struct instance *inst = container_of(pos, struct instance, hook);
-		if (inst->plugin->relieve)
-			done += inst->plugin->relieve(inst->bytes, level, max - done);
+		if (!inst->plugin->relieve)
+			continue;
+		/* A plugin's relieve() can return more than max - done.  The count
+		 * is cut at max - done, so done never passes max. */
+		size_t n = inst->plugin->relieve(inst->bytes, level, max - done);
+		done += n < max - done ? n : max - done;
 	}
 	return done;
 }
@@ -265,8 +270,9 @@ instance_table_relieve (struct instance_table *t,
 		instance_table_retire(t, inst);
 	}
 	size_t done = instance_table_reap(t, max);
-	/* relieve() of a plugin can return more units than max - done.  The
-	 * two comparisons prevent the subtraction from wrapping around. */
+	/* instance_list_relieve() returns at most max - done, so done never
+	 * passes max.  The comparisons skip a list when no unit of max is
+	 * left. */
 	if (done < max)
 		done += instance_list_relieve(&t->busy, level, max - done);
 	if (done < max)
