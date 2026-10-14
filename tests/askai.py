@@ -5184,6 +5184,14 @@ def check_git(binary, up):
             wait_for(lambda: not alive(pid))
             assert not os.path.exists(f"{fake}/signals")
 
+        # A process can start askai with SIGCHLD ignored.  askai sets SIGCHLD
+        # to its default action, so waitid() still returns the exit status
+        # of git.
+        with Askai(binary, "-u", up.url(), "--git", repo, env=env,
+                   ignore=(signal.SIGCHLD,)) as ai:
+            assert text_of(call(ai, repo="proj", command="log",
+                                options=["--format=%s"])) == "first\n"
+
         # Stopping askai ends a call, killing its git; a configuration file
         # lists the repositories too.
         with open(f"{d}/askai.json", "w") as f:
@@ -5502,6 +5510,12 @@ def check_notes(binary, up):
             assert call({"action": "add", "file": "unlocked.md", "text": "u",
                          "thread": thread}) == "Noted."
             assert not os.path.exists(f"{book}/refs/heads/notes.lock")
+        # A process can start askai with SIGCHLD ignored.  askai sets SIGCHLD
+        # to its default action, so waitid() still returns the exit status
+        # of git, and the note is added.
+        with Askai(binary, "-c", path, ignore=(signal.SIGCHLD,)) as ai:
+            said = call({"action": "add", "file": "y.md", "text": "y"})
+            assert said.startswith("Noted, in the new thread "), said
     print("notes: granted by a role, threads of the clients' own, list, read, "
           "offsets, names and texts refused, races, drops, stale locks, other "
           "threads unknown: PASS")

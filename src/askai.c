@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <malloc.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -786,6 +787,10 @@ static int
 askai_serve (struct config const *cfg)
 {
 	static struct askai_shared s;
+	/* A process can start askai with SIGCHLD ignored, and exec does not
+	 * reset that.  With SIGCHLD ignored, the kernel reaps each child at its
+	 * exit, and then waitid() and waitpid() in child.c fail. */
+	signal(SIGCHLD, SIG_DFL);
 	askai_tune();
 	int status = askai_shared_init(&s, cfg, cfg->brainstem.loops) ? 1 : askai_run(&s, cfg);
 	askai_shared_fini(&s);
