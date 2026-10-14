@@ -128,37 +128,6 @@ loop_metrics_init (struct loop_metrics *m)
 		atomic_init(&m->work[u], 0);
 }
 
-/* Returns true if @p loop is not nullptr.  The exported functions
- * (src/loop_export.h) call it first, because a plugin calls them across the
- * boundary of its shared object.  It logs a warning, which names @p func,
- * for nullptr. */
-static bool
-loop_given (struct loop const *loop,
-            char const        *func)
-{
-	if (loop)
-		return true;
-	LOG(LOG_WARN, "%s: no loop", func);
-	return false;
-}
-
-/* Returns true if the member slot of @p timer is in range.  The slot is
- * the timer's index in the heap of @p loop plus 1, or 0 for a timer that is
- * not in the heap.  The exported functions check it before they use it as
- * an index.  The function logs a warning, which names @p func, for a slot
- * out of range. */
-static bool
-loop_timer_valid (struct loop const       *loop,
-                  struct loop_timer const *timer,
-                  char const              *func)
-{
-	if (timer->slot <= loop->timers)
-		return true;
-	LOG(LOG_WARN, "%s: the timer %p has the slot %zu of %zu", func,
-	    (void const *)timer, timer->slot, loop->timers);
-	return false;
-}
-
 static void
 loop_most (uint64_t *max,
            uint64_t  n)
@@ -170,7 +139,7 @@ loop_most (uint64_t *max,
 uint64_t
 loop_now (struct loop const *loop)
 {
-	return loop_given(loop, __func__) ? loop->now : 0;
+	return loop ? loop->now : 0;
 }
 
 void
@@ -178,7 +147,7 @@ loop_work (struct loop    *loop,
            enum loop_unit  u,
            uint64_t        n)
 {
-	if (loop_given(loop, __func__) && (size_t)u < LOOP_UNITS)
+	if (loop && (size_t)u < LOOP_UNITS)
 		loop->work[u] += n;
 }
 
@@ -186,7 +155,7 @@ uint64_t
 loop_room (struct loop const *loop,
            enum loop_unit     u)
 {
-	if (!loop_given(loop, __func__) || (size_t)u >= LOOP_UNITS)
+	if (!loop || (size_t)u >= LOOP_UNITS)
 		return 0;
 	return loop->work[u] < bound[u] ? bound[u] - loop->work[u] : 0;
 }
@@ -289,12 +258,8 @@ void
 loop_post (struct loop *loop,
            struct msg  *msg)
 {
-	if (!loop_given(loop, __func__))
+	if (!loop || !msg || !msg->fn)
 		return;
-	if (!msg || !msg->fn) {
-		LOG(LOG_WARN, "%s: the message %p has no function", __func__, (void *)msg);
-		return;
-	}
 	msg->posted = loop_clock();
 	struct msg *head = atomic_load_explicit(&loop->inbox, memory_order_relaxed);
 	do msg->next = head;
@@ -579,13 +544,7 @@ loop_timer_set (struct loop       *loop,
                 struct loop_timer *timer,
                 uint64_t           due)
 {
-	if (!loop_given(loop, __func__))
-		return EINVAL;
-	if (!timer || !timer->fn) {
-		LOG(LOG_WARN, "%s: the timer %p has no function", __func__, (void *)timer);
-		return EINVAL;
-	}
-	if (!loop_timer_valid(loop, timer, __func__))
+	if (!loop || !timer || !timer->fn || timer->slot > loop->timers)
 		return EINVAL;
 	if (!timer->slot) {
 		if (loop->timers == loop->heap_cap) {
@@ -607,8 +566,7 @@ void
 loop_timer_stop (struct loop       *loop,
                  struct loop_timer *timer)
 {
-	if (!loop_given(loop, __func__) || !timer || !timer->slot ||
-	    !loop_timer_valid(loop, timer, __func__))
+	if (!loop || !timer || !timer->slot || timer->slot > loop->timers)
 		return;
 	size_t i = timer->slot - 1;
 	timer->slot = 0;

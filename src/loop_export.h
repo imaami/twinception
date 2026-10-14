@@ -5,11 +5,10 @@
  * Each exported function checks its inputs before it uses them, because a
  * plugin calls it across the boundary of a shared object.  It refuses
  * nullptr for the loop, a message or a timer that is nullptr or has no
- * function, a timer whose member slot is out of the range of the loop's
- * heap, and a unit of work out of range.  It logs a warning for what it
- * refuses.  Then a function that returns an error number returns EINVAL,
- * loop_now() and loop_room() return 0, and the other functions do
- * nothing. */
+ * function, a timer whose member slot is greater than the number of timers
+ * in the loop's heap, and a unit of work out of range.  Then a function
+ * that returns an error number returns EINVAL, loop_now() and loop_room()
+ * return 0, and the other functions do nothing. */
 #ifndef TWINCEPTION_SRC_LOOP_EXPORT_H_
 #define TWINCEPTION_SRC_LOOP_EXPORT_H_
 
@@ -115,7 +114,9 @@ struct loop_timer {
 /**
  * Posts @p msg to @p loop.  Any thread can call it.  It pushes the message
  * onto the loop's list of posted messages with an atomic operation, and it
- * writes to the loop's eventfd only if the loop is asleep.  It cannot fail.
+ * writes to the loop's eventfd only if the loop is asleep.  It posts nothing
+ * if @p loop or @p msg is nullptr or if @p msg has no function, and the
+ * caller cannot tell that from the function's result.
  */
 EXPORT
 extern void
@@ -126,8 +127,9 @@ loop_post (struct loop *loop,
  * Sets @p timer to fire at @p due.  If the timer is already set, the call
  * changes its deadline.  A timer stays in the heap until loop_timer_stop().
  * After it has fired, it is due at UINT64_MAX, which means never, until it
- * is set again.  The call can therefore fail only for a timer that is not
- * in the heap.  It returns ENOMEM if the heap cannot grow, and 0 otherwise.
+ * is set again.  It returns EINVAL for the inputs that the top of this file
+ * lists, ENOMEM if the timer is not in the heap and the heap cannot grow,
+ * and 0 otherwise.
  */
 EXPORT
 extern int
