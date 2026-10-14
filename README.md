@@ -621,21 +621,35 @@ times their flights, mostly CPU (`askai_tls_handshakes_total`,
 
 ### Configuration file, identities and roles
 
-`--config FILE` (`-c`) reads options from a JSON object too, which may hold
-comments: each member is named as a long option is, its value the option's
-argument, a string or a number (`extra` may be an object); `true` for an option
-that takes none; an array for one that repeats.  The command line overrides
-the file: repeatable options add up, but for `listen`, which the command line's
-replace.  Only root or `askai`'s user may change the file or any directory
-above it (others may add to a sticky one, such as `/tmp`), and it must be a
-regular file, not a symbolic link.
+`--config FILE` (`-c`) reads options from a JSON object before the command
+line.  The file may have comments, as `/* */` or `//`.  Each member is named
+as a long option is:
 
-Four more members say who may connect, and what they may do:
+- An option with an argument takes a string or a number.  A number must be an
+  integer, except for `temperature`: `"slots": 2.0` is refused.
+- `extra` takes an object, or a string of JSON text.
+- An option without an argument takes `true`.  `false` changes nothing, and
+  the command line cannot turn off an option that the file sets.
+- A repeatable option (`header`, `allow-origin`, `listen` and `git`) takes one
+  value or an array of values.
+
+The command line overrides the file.  It adds to the lists of headers,
+allowed origins and git repositories of the file, but any `-l` replaces the
+`listen` list of the file, and `-x` replaces its `extra`.  A member that is
+neither an option nor one of the five members below stops `askai`, and so do
+`config` and `help`.  If two members have the same name, the last one counts.
+Only the last `--config` is read.  The file must be a regular file of at most
+1 MiB, not a symbolic link, and only root or `askai`'s user may change it or
+any directory above it (others may add to a sticky one, such as `/tmp`).
+[`doc/askai.example.json`](doc/askai.example.json) lists every member.
+
+Four more members define who may connect, and what each client may do:
 
 ```json
 {
   "url": "http://127.0.0.1:8081/v1/chat/completions",
   "man": true,
+  "upstream-tools": true,
   "listen": ["127.0.0.1:8090", "unix:/run/askai/askai.sock"],
   "roles": {
     "admin":  { "tools": ["ask_ai", "man"], "metrics": true },
@@ -652,25 +666,39 @@ Four more members say who may connect, and what they may do:
 }
 ```
 
-- A **role** lists the tools it may list and call, as clients see them
-  (the tool that `--tool-name` names, `man`, `git`, `notes` and the tools of
-  the plugins), and
-  whether it may read `GET /metrics`.
-  `tools/list` shows a client its role's tools only, and calling another is
-  an error, "Tool not available: NAME".
+- A **role** lists in `tools` the tools that its clients may list and call,
+  as clients see them: the tool that `--tool-name` names, `man`, `git`,
+  `notes`, `test_task` and the tools of the plugins.  `metrics` sets whether
+  the clients may read `GET /metrics`.  A role name has 1 to 64 characters
+  from `A-Z`, `a-z`, `0-9`, `_`, `.`, `@` and `-`.  A role without `tools`
+  grants no tool, and `metrics` is `false` unless the role sets it.  A name in
+  `tools` that `askai` does not offer in this run, such as `man` without
+  `--man`, stops `askai`.  `tools/list` shows a client the tools of its role
+  only, and a call of another tool is an error, "Tool not available: NAME".
   With `--upstream-tools`, the member `upstream` lists the tools that the
-  upstream may call in the turns of the role's `ask_ai` calls.  These can
-  differ from the tools that the role's clients may call.  In the example, a
-  client of the role `user` cannot call `man`, but the upstream can call it
-  for the client.  Without `upstream`, the upstream may call the tools that
-  `tools` lists.  `upstream` can name only the tools that `askai` offers to
-  the upstream.
-- An **identity** has a role, and proves itself with a bearer token,
-  `Authorization: Bearer TOKEN`: `"sha256:HEX"`, the token's SHA-256 digest
-  (`printf %s TOKEN | sha256sum`), keeps the token out of the file, and
-  `"env:NAME"` reads it from `askai`'s environment.  A client of a Unix
-  socket is the identity whose `unix-users` (names or uids) holds its user,
-  as the kernel says (`SO_PEERCRED`); a token, if it shows one, counts first.
+  upstream may call in the turns of the `ask_ai` calls of the role.  These
+  can differ from the tools that the clients of the role may call.  In the
+  example, a client of the role `user` cannot call `man`, but the upstream
+  can call it for the client.  Without `upstream`, the upstream may call the
+  tools that `tools` lists.  `upstream` can name `man`, `git`, `notes` and
+  the plugin tools that may be lent.  Without `--upstream-tools`, `upstream`
+  must be empty or left out.  The turns also get `notes` whenever `--notes`
+  is given, `compact`, `wait` and `timer` whenever they get any tool, and
+  `background` and `jobs` beside a tool that can run in the background
+  (`man`, `git`, or a plugin tool that allows it).  None of these five can be
+  named.
+- An **identity** has a name, with the same rule as a role name, a `role`,
+  and `tokens` or `unix-users` or both, of which one must not be empty.  A
+  client proves an identity with a bearer token, `Authorization: Bearer
+  TOKEN`.  `"sha256:HEX"` is the SHA-256 digest of the token (`printf %s
+  TOKEN | sha256sum`), so the file does not contain the token.  `"env:NAME"`
+  reads the token from the environment of `askai`.  A reload reads the file
+  again, so it can change a `sha256:` token, but the environment of a running
+  `askai` does not change, so a new `env:` token needs a restart.  The same
+  token in two places, or the same user in two identities, stops `askai`.  A
+  client of a Unix socket is the identity whose `unix-users` (names or uids)
+  contains its user, as the kernel reports it (`SO_PEERCRED`).  A token that
+  the client sends counts first.
 - **`unix-groups`** gives the other users of a Unix socket the role of the
   first of their groups it names, among the groups they had as they
   connected (`SO_PEERGROUPS`).
@@ -685,10 +713,13 @@ identity's calls are one principal of the scheduler's, whichever of its tokens
 they show, and each other user of a Unix socket is one; anonymous TCP clients
 are their sessions or addresses, as before.  User and group names are looked
 up as the file is read, which with a directory service such as SSSD may wait
-on it.  Without those four members, `askai`'s own policy holds: with
-`ASKAI_TOKEN` set, clients must show it and may do everything; else clients on
-loopback that name it so, or on a Unix socket, may do everything, and others
-may call the tools.  With them, `ASKAI_TOKEN` is ignored, as `askai` notes.
+on it.  Without those four members, `askai`'s own policy applies.  With
+`ASKAI_TOKEN` set, clients must send it and may do everything.  Else clients
+on loopback that name it so, or on a Unix socket, may do everything, and
+other clients may call the tools.  Any of the four members, also with the
+value `null`, turns `askai`'s own policy off, and `askai` then ignores
+`ASKAI_TOKEN` and logs that.  So a file with `roles` alone refuses every
+client.
 
 With `--config`, or a TLS listener, SIGHUP reloads who may connect and what
 they may do, and the TLS certificate and key: a blocker thread reads the

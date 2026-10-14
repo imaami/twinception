@@ -1,0 +1,197 @@
+/*
+ * An example configuration file of askai, for askai --config FILE.  It has
+ * every member that the file can have.  An option that is set here has its
+ * default value, except url, which has no default without a provider.  An
+ * option in a comment has a default that askai computes, or needs a file or
+ * a name of the local system, and its comment shows an example value.  The
+ * members roles, identities, unix-groups, anonymous and plugins are
+ * examples.  README.md describes the members, and askai --help describes
+ * the options.
+ *
+ * Each option without a member in the file has its default, so a file
+ * needs only the members that differ.  The command line overrides the file.
+ * An option without an argument takes true or false.  A number must be an
+ * integer, except for temperature.  BYTES and RATE values may end in K, M
+ * or G, for KiB, MiB or GiB.  0 means "none" where the comment states it.
+ */
+{
+  /* Upstream AI */
+
+  // A provider sets the defaults of api, url and key-env: llama, openai,
+  // anthropic, google, deepinfra or openrouter.  Either provider or url
+  // is required.
+  // "provider": "llama",
+  // chat, responses, messages or generate.  The default is the API of the
+  // provider, else chat.
+  "api": "chat",
+  // http:// or https://.  The default is the URL of the provider.
+  "url": "http://127.0.0.1:8081/v1/chat/completions",
+  // Required at the URL of a provider other than llama.
+  // "model": "gpt-5",
+  // The environment variable that contains the API key.  The default is
+  // the usual variable of the provider at its URL, else ASKAI_API_KEY.
+  // "key-env": "ASKAI_API_KEY",
+  // Extra request headers, "Name: value".
+  "header": [],
+  // The default system prompt.  An empty string sends none.
+  "system": "",
+  // A number from 0.  The default sends none.
+  // "temperature": 0.7,
+  // The output token limit.  The default sends none, but 4096 with the
+  // messages API.
+  // "max-tokens": 4096,
+  // A JSON object that askai merges into each request body, recursively.
+  // A member with the value null removes that key.
+  "extra": {},
+  // Seconds, first for the wait for an upstream slot, then again for the
+  // call itself.  0 means none.
+  "timeout": 600,
+  // The longest pause in an answer once it has begun, in seconds.  0
+  // means none.
+  "chunk-timeout": 60,
+  // Upstream calls at once.  The default is total_slots from the /props
+  // of llama-server, else 4.
+  // "slots": 4,
+  // Upstream calls queued or running, at most.  At most 8 of them are
+  // queued for one identity, one Unix user, or else one session or
+  // client address.
+  "max-calls": 256,
+  // Offer tools to the upstream in ask calls (see --help).
+  "upstream-tools": false,
+  // The directory of the notebooks.  askai makes it if it does not exist.
+  // "notes": "/var/lib/askai/notes",
+  // Upstream calls that one ask call makes at most, with upstream-tools.
+  "max-turns": 32,
+  // The context size of the upstream, in tokens.  0 means the default:
+  // n_ctx from the /props of llama-server, else unknown.
+  "context": 0,
+
+  /* MCP server */
+
+  // [host:]port, unix:PATH or tls:[host:]port.  A port without a host
+  // means 127.0.0.1.  The command line replaces this list.
+  "listen": ["127.0.0.1:8090"],
+  // The certificate chain and its private key, in PEM, for tls:
+  // listeners.  Others must not be able to read the key file.
+  // "tls-cert": "/etc/askai/cert.pem",
+  // "tls-key": "/etc/askai/key.pem",
+  // Allow an RSA key too.
+  "tls-allow-rsa": false,
+  // Browser Origins to allow, each an exact match, or "*" for any.
+  // Loopback Origins are always allowed.
+  "allow-origin": [],
+  // The name of the ask tool: 1 to 128 characters from A-Z, a-z, 0-9,
+  // _, . and -.
+  "tool-name": "ask_ai",
+  // The description of the ask tool.  The default is a text built from
+  // model, upstream-tools and notes.
+  // "tool-description": "Ask another AI model a question.",
+  // Offer the tool man.
+  "man": false,
+  // Repositories for the tool git: the top of a work tree or a bare
+  // repository.  The tool names each by the last component of its path
+  // without .git.
+  "git": [],
+  // The deadline of a git call in seconds, 1 to 3600.
+  "git-timeout": 30,
+  // Log each tool call of a client as it ends, each call of a turn and each
+  // job that answers or fails, and each man page that askai renders.
+  "verbose": false,
+  // Event loops that serve clients, 0 to 255.  0 means one fewer than the
+  // CPUs that askai may use, at least 1.
+  "loops": 0,
+  // Seconds to finish the requests under way on SIGINT, SIGTERM or
+  // SIGHUP, 1 to 3600.
+  "grace": 5,
+  // Log a turn of an event loop longer than this, in ms.  0 means none.
+  "watchdog": 20,
+  // Resident memory from which memory pressure is high.  The default is a
+  // sixteenth of RAM, or of the lowest cgroup limit, at least 256M.
+  // "memory-high": "1G",
+
+  /* Test aids, for the tests of askai only */
+
+  // "test-man-recheck": 600,
+  // "test-stall": 100,
+  // "test-pressure": "/tmp/askai-pressure",
+  "test-fifo": false,
+  "test-task": false,
+
+  /* Limits on clients */
+
+  // The request line and headers, at most 65535 bytes.
+  "max-head": "16K",
+  // Header fields.
+  "max-fields": 64,
+  // The time limit for a TLS handshake, and for a request line and
+  // headers, in seconds.  0 means none.
+  "head-timeout": 10,
+  // A request body, at most body-budget.
+  "max-body": "1M",
+  // Bytes per second that a body must average once body-grace has
+  // passed.  0 means none.
+  "min-body-rate": "4K",
+  // Seconds after the headers before min-body-rate applies.
+  "body-grace": 5,
+  // Request bodies in memory for all clients together.
+  "body-budget": "256M",
+  // The part of body-budget for one client address.  The default is a
+  // quarter of body-budget, at least max-body.
+  // "client-budget": "64M",
+  // JSON nesting, JSON values and members of one object in a request.
+  "max-depth": 32,
+  "max-values": 1024,
+  "max-members": 1024,
+  // Seconds between the comment lines on an idle event stream.  0 means
+  // none.
+  "sse-keepalive": 15,
+  // Connections per client address.  0 means none.
+  "max-client-conns": 256,
+  // Seconds that a connection may stay open with no request under way.
+  // 0 means none.
+  "idle-timeout": 30,
+  // Pending output at which askai pauses a connection, at most
+  // max-output.
+  "output-pause": "256K",
+  // Close a connection whose pending output a response would take past
+  // this.
+  "max-output": "1M",
+  // The longest stall of pending output, in seconds.  0 means none.
+  "send-timeout": 30,
+
+  /* Who may connect, and what each client may do.  Any of these four
+   * members turns off askai's own policy, and askai then ignores
+   * ASKAI_TOKEN. */
+
+  // Each role lists the tools that its clients may call, whether they may
+  // read GET /metrics, and with upstream-tools, the tools that the
+  // upstream may call in their ask calls (the default is the list in
+  // tools).
+  "roles": {
+    "admin": { "tools": ["ask_ai"], "metrics": true },
+    "user":  { "tools": ["ask_ai"], "metrics": false, "upstream": [] }
+  },
+  // Each identity has a role, and tokens or Unix users or both.  A token
+  // is "sha256:" and the SHA-256 digest of the token in hexadecimal, or
+  // "env:" and the name of a variable that contains the token.
+  "identities": {
+    "alice": {
+      "role": "admin",
+      "tokens": ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"],
+      "unix-users": []
+    }
+  },
+  // The role of the other users of a Unix socket, by the first of their
+  // groups that this list names.
+  // "unix-groups": { "developers": "user" },
+  "unix-groups": {},
+  // The role of a client that sends no token: loopback (on loopback, with
+  // the Host localhost, 127.0.0.1 or [::1]), remote (any other TCP
+  // client) and unix (a Unix socket user that no identity or group
+  // names).  null refuses those clients.
+  "anonymous": { "loopback": "user", "remote": null, "unix": null },
+
+  /* Plugins: the absolute paths of the plugins that askai loads as it
+   * starts.  Only root or the user of askai may be able to change them. */
+  "plugins": []
+}

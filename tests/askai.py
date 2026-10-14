@@ -2347,6 +2347,29 @@ def check_configuration(binary, up):
                              text=True, timeout=5, check=False)
         assert run.returncode == 2 and message in run.stderr, (args, run.stderr)
 
+    # doc/askai.example.json names every long option but config and help,
+    # and askai starts with it.  Its anonymous loopback clients have the role
+    # user, and the token "test" is the identity alice, whose role admin may
+    # read the metrics.
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                           "doc", "askai.example.json")) as f:
+        example = f.read()
+    options = subprocess.run([binary, "--help"], capture_output=True, text=True,
+                             timeout=5, check=True).stdout
+    missing = [name for name in sorted(set(re.findall(r"--([a-z-]+)", options)))
+               if name not in ("config", "help") and f'"{name}"' not in example]
+    assert not missing, missing
+    with tempfile.TemporaryDirectory() as d:
+        with open(f"{d}/askai.json", "w") as f:
+            f.write(example)
+        os.chmod(f"{d}/askai.json", 0o600)
+        with Askai(binary, "-c", f"{d}/askai.json", "-u", up.url()) as ai:
+            tools = ai.rpc("tools/list")[2]["result"]["tools"]
+            assert [t["name"] for t in tools] == ["ask_ai"], tools
+            assert ai.metrics(headers={"Authorization": "Bearer test"})
+            status, _, _ = ai.rpc("tools/list", headers={"Authorization": "Bearer x"})
+            assert status == 401, status
+
     fails("-p", "anthropic", "-m", "m", message="set ANTHROPIC_API_KEY")
     fails("-p", "google", env={"GEMINI_API_KEY": "k"}, message="--model is required")
     fails("-u", up.url(), "-k", "UNSET_VAR", message="UNSET_VAR is not set")
