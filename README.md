@@ -536,9 +536,10 @@ Adding a note adds a commit to the branch `notes`, which `git fast-import`
 writes.  The tool `notes` adds a note, lists the notes, the oldest first, with
 the time that each was added, or reads a note, a window at a time from its
 `offset`.  A note is never changed or removed: a name that a note or a
-directory of notes has is refused, as is a name with an empty part, `.`,
-`..`, `.git` or a control character.  Slashes at the start of a name are left
-out.  The caller sees that notes were kept, and the thread's id, not what
+directory of notes has is refused, as is a name with a control character
+or an empty part.  No part of a name can be `.`, `..`, `.git` or `git~1`, in
+any case and also with spaces or dots after it, because git refuses such
+names.  Slashes at the start of a name are left out.  The caller sees that notes were kept, and the thread's id, not what
 they say.  `ask_ai`'s `thread` argument goes on with a thread in a later
 call, whose prompt then has the list of the thread's notes and the newest
 note.  Only the identity that wrote a thread can go on with it.  Two calls

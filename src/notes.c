@@ -212,6 +212,33 @@ notes_argv (struct notes const *notes,
 	argv[k] = nullptr;
 }
 
+/* Returns true if the part of a name of @p n bytes at @p part is a name
+ * that NTFS would read as .git: ".git" or "git~1" in any case, followed
+ * only by spaces and dots up to the end, a backslash or a colon.  The check
+ * looks at the part and at each piece of it after a backslash.  git refuses
+ * such names on every system (core.protectNTFS), so askai refuses them
+ * before git runs. */
+static bool
+notes_is_dotgit (char const *part,
+                 size_t      n)
+{
+	for (size_t at = 0; at <= n; ) {
+		char const *s = part + at;
+		size_t m = n - at;
+		size_t k = m >= 4 && !strncasecmp(s, ".git", 4) ? 4
+		         : m >= 5 && !strncasecmp(s, "git~1", 5) ? 5 : 0;
+		while (k && k < m && (s[k] == ' ' || s[k] == '.'))
+			++k;
+		if (k && (k == m || s[k] == ':' || s[k] == '\\'))
+			return true;
+		char const *bs = memchr(s, '\\', m);
+		if (!bs)
+			return false;
+		at += (size_t)(bs - s) + 1;
+	}
+	return false;
+}
+
 int
 notes_name (char const *name,
             size_t      len,
@@ -232,8 +259,7 @@ notes_name (char const *name,
 		char const *slash = memchr(part, '/', len - at);
 		size_t n = slash ? (size_t)(slash - part) : len - at;
 		if (!n || (n == 1 && part[0] == '.') ||
-		    (n == 2 && part[0] == '.' && part[1] == '.') ||
-		    (n == 4 && !strncasecmp(part, ".git", 4)))
+		    (n == 2 && part[0] == '.' && part[1] == '.') || notes_is_dotgit(part, n))
 			return EINVAL;
 		at += n + 1;
 	}

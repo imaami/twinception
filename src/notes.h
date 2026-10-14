@@ -122,8 +122,10 @@ notes_argv (struct notes const *notes,
  * start do not belong to the name, and the function stores their number in
  * @p *skip.  The rest is a valid name if it has 1 to NOTES_NAME bytes and
  * no control characters, and if none of its parts between slashes is
- * empty, ".", ".." or ".git" in any case.  Returns 0 for a valid name, else
- * EINVAL.
+ * empty, ".", "..", or a name that NTFS would read as ".git".  git refuses
+ * those names: ".git" or "git~1" in any case, followed only by spaces and
+ * dots, also before a colon or a backslash.  Returns 0 for a valid name,
+ * else EINVAL.
  */
 extern int
 notes_name (char const *name,

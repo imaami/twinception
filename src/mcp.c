@@ -4603,9 +4603,10 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 
 /* The message for a file argument that is not a valid name. */
 static char const bad_name[] = "The file argument must be a file name of 1 to 255 "
-                               "bytes, such as plan.md or findings/locks.md, "
-                               "without control characters, and without the parts "
-                               "., .. and .git.";
+                               "bytes, such as plan.md or findings/locks.md. It "
+                               "cannot have control characters or empty parts, "
+                               "and no part can be ., .., .git or git~1, in any "
+                               "case and also with spaces or dots after it.";
 
 /* Starts the add action: a note with the file name and the text in
  * @p args.  If the thread has notes, git first checks the name.  Else git

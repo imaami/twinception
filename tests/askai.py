@@ -5345,6 +5345,12 @@ def check_notes(binary, up):
                               (".", "The file argument must be"),
                               ("x/../plan.md", "The file argument must be"),
                               ("x/.Git/y", "The file argument must be"),
+                              (".git.", "The file argument must be"),
+                              (".GIT ", "The file argument must be"),
+                              ("git~1", "The file argument must be"),
+                              ("x/GIT~1/y", "The file argument must be"),
+                              (".git:x", "The file argument must be"),
+                              ("a\\.git", "The file argument must be"),
                               ("a\tb", "The file argument must be"),
                               ("x" * 256, "The file argument must be")):
                 said = call({"action": "add", "file": name, "text": "t",
