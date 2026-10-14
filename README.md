@@ -459,10 +459,10 @@ kills `git` and the processes it started.
 
 With `--upstream-tools`, an `ask_ai` call offers the other model tools of its
 own, in any of the APIs (`llama-server`'s chat template must take tools, as
-with `--jinja`): those of `man` and `git` that the caller's role may call
-(`ask_ai` itself is never offered), `notes` with `--notes`, and with any of
-those `compact`.  A plugin's tool is offered in the same way if its kind
-allows it (see Plugins below).
+with `--jinja`): those of `man` and `git` that the caller's role lets the
+upstream call (`ask_ai` itself is never offered), `notes` with `--notes`, and
+with any of those `compact`.  A plugin's tool is offered in the same way if
+its kind allows it (see Plugins below).
 Offered none, the call asks once, as without the option.  Else it runs a
 loop of turns: each turn is an upstream call, whose answer may call tools;
 `askai` runs them at once (a `notes` or `compact` call keeps to itself, after
@@ -613,7 +613,7 @@ Four more members say who may connect, and what they may do:
   "listen": ["127.0.0.1:8090", "unix:/run/askai/askai.sock"],
   "roles": {
     "admin":  { "tools": ["ask_ai", "man"], "metrics": true },
-    "user":   { "tools": ["ask_ai", "man"] },
+    "user":   { "tools": ["ask_ai"], "upstream": ["man"] },
     "reader": { "tools": ["man"] }
   },
   "identities": {
@@ -631,6 +631,13 @@ Four more members say who may connect, and what they may do:
   may read `GET /metrics`.
   `tools/list` shows a client its role's tools only, and calling another is
   an error, "Tool not available: NAME".
+  With `--upstream-tools`, the member `upstream` lists the tools that the
+  upstream may call in the turns of the role's `ask_ai` calls.  These can
+  differ from the tools that the role's clients may call.  In the example, a
+  client of the role `user` cannot call `man`, but the upstream can call it
+  for the client.  Without `upstream`, the upstream may call the tools that
+  `tools` lists.  `upstream` can name only the tools that `askai` offers to
+  the upstream.
 - An **identity** has a role, and proves itself with a bearer token,
   `Authorization: Bearer TOKEN`: `"sha256:HEX"`, the token's SHA-256 digest
   (`printf %s TOKEN | sha256sum`), keeps the token out of the file, and
@@ -688,7 +695,7 @@ order of its manifest.  A role names them as it names any other tool.  Under
 `askai`'s own policy (above), every client that `askai` accepts may call them.
 With `--upstream-tools`, the other model may also call a tool of a plugin if
 the tool's kind has the flag `TOOL_LENT` (`src/tool.h`) and the caller's role
-may call the tool.
+lets the upstream call the tool.
 
 A plugin can store state in instances.  An instance is memory that `askai`
 allocates and that the plugin initializes.  Each call of a tool of such a
@@ -904,7 +911,7 @@ Upstream AI:
                             at once as an error that says to try again
       --upstream-tools      give the upstream tools too: man, git and
                             the plugins' tools that allow it, as the
-                            client may call them, notes with --notes,
+                            client's role allows, notes with --notes,
                             and compact; an ask call then runs them
                             and asks on until it answers
       --notes DIR           the git repository where the upstream keeps

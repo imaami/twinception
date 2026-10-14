@@ -2869,14 +2869,17 @@ mcp_req_upload_failed (struct mcp_req *req,
 	mcp_req_fail(req, e);
 }
 
-/* The tools that @p req's turns may call: those lent as the client's role
- * grants them, and those lent always; and if any, those lent beside them,
- * and if any may run in the background, those lent beside those. */
+/* Returns the tools that the turns of @p req may call.  These are the tools
+ * that the client's role lets the upstream call and that askai can offer to
+ * the upstream (st->lends), and the tools that askai always offers to the
+ * upstream (st->always).  If there are any, the result also has the tools
+ * in st->with, and if one of them can run in the background, the tools in
+ * st->detached. */
 static tool_mask
 mcp_req_lent (struct mcp_req const *req)
 {
 	struct mcp_static const *st = req->mcp->st;
-	tool_mask lent = (req->s->tools & st->lends) | st->always;
+	tool_mask lent = (req->s->upstream & st->lends) | st->always;
 	tool_mask more = lent & st->detach ? st->detached : 0;
 	return lent ? lent | st->with | more : 0;
 }

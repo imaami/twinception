@@ -3,7 +3,10 @@
  *  what the role it is given lets it see and do.
  *
  * The configuration file's "roles" name what each role may see and do: the
- * tools it may list and call, and whether it may read the metrics.  Its
+ * tools it may list and call, and whether it may read the metrics.  A
+ * role's member "upstream" lists the tools that the upstream may call in
+ * the turns of the role's ask calls.  Without it, the upstream may call
+ * the tools that the role's clients may call.  Its
  * "identities" name who may connect, each with a role and the tokens that
  * prove it, each a SHA-256 digest ("sha256:HEX") or an environment variable
  * that holds the token ("env:NAME"), or the Unix users ("unix-users", names
@@ -52,23 +55,33 @@ struct policy_peer {
  *  take. */
 struct policy_grant {
 	tool_mask tools;      /**< the tools it may list and call */
+	tool_mask upstream;   /**< the tools that the upstream may call in the
+	                           turns of its ask calls */
 	uint64_t  principal;  /**< its identity's, never 0; 0 if anonymous */
 	uint64_t  metrics;    /**< bool: it may read the metrics; widened over
 	                           the padding */
 };
 
 /**
- * The policy of @p file, the configuration file's object, or askai's own if
- * that is nullptr or names none, for the @p n_tools tools, at most TOOL_MAX,
- * that @p tools names: bit i is tool i, nullptr for one askai does not
- * offer; a reference to it.  nullptr,
- * with the error in @p *e: ENOMEM, or EINVAL with @p why, of @p len bytes,
- * saying what is wrong.
+ * Creates the policy that the configuration file's object @p file
+ * describes.  If @p file is nullptr or has none of the policy's members,
+ * the function creates askai's own policy.
+ *
+ * @p tools has the names of the @p n_tools tools that a role can grant, at
+ * most TOOL_MAX.  Bit i of a tool mask stands for the tool tools[i].  An
+ * element is nullptr if askai does not offer that tool.  @p upstream is the
+ * mask of the tools that askai can offer to the upstream.
+ *
+ * Returns the policy with one reference.  On failure it returns nullptr and
+ * stores the error number in @p *e.  The error number is ENOMEM, or EINVAL
+ * if the file is wrong.  For EINVAL the function writes a message of at
+ * most @p len bytes to @p why.
  */
 extern struct policy *
 policy_create (struct json_object *file,
                char const *const   tools[],
                size_t              n_tools,
+               tool_mask           upstream,
                char               *why,
                size_t              len,
                int                *e);

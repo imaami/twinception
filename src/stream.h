@@ -107,6 +107,9 @@ struct stream {
 	void                    *user;       /**< the application's own */
 	tool_mask                tools;      /**< the tools its role may list and
 	                                          call */
+	tool_mask                upstream;   /**< the tools that the upstream may
+	                                          call in the turns of its ask
+	                                          calls */
 	uint64_t                 principal;  /**< the client's identity's
 	                                          (src/policy.h); 0: anonymous */
 	uint64_t                 peer[2];    /**< the client's address, as the

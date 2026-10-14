@@ -24,7 +24,10 @@ static constexpr uint64_t SEED = 0x9e3779b97f4a7c15;
 /* What the clients a role is given may see and do. */
 struct policy_role {
 	tool_mask tools;
-	uint64_t  metrics;  /* bool, widened over the padding */
+	tool_mask upstream;  /* the tools that the upstream may call in the
+	                        turns of the clients' ask calls */
+	uint64_t  metrics;   /* a bool value in a uint64_t that fills the
+	                        padding */
 };
 
 /* A token, by its digest, and the identity it proves. */
@@ -70,6 +73,8 @@ static_assert(alignof (struct policy_token) <= alignof (struct policy) &&
 
 /* What policy_create() works from, and where it says what is wrong. */
 struct policy_build {
+	tool_mask           upstream;  /* the tools that askai can offer to the
+	                                  upstream */
 	struct policy      *p;
 	struct json_object *roles;    /* the file's, or nullptr */
 	char const *const  *tools;
@@ -310,27 +315,34 @@ policy_build_token (struct policy_build *b,
 	return 0;
 }
 
-/* The tools of role @p name, @p tools, into @p r. */
+/* Reads the list of tool names @p list of role @p name into @p r.  @p key
+ * is the name of the list's member, "tools" or "upstream".  The member
+ * "upstream" may name only the tools that askai can offer to the upstream. */
 static int
 policy_build_tools (struct policy_build *b,
                     struct policy_role  *r,
                     char const          *name,
-                    struct json_object  *tools)
+                    char const          *key,
+                    struct json_object  *list)
 {
-	if (!json_object_is_type(tools, json_type_array))
-		return policy_build_fail(b, "role %s: tools must be an array of names", name);
-	size_t len = json_object_array_length(tools);
+	if (!json_object_is_type(list, json_type_array))
+		return policy_build_fail(b, "role %s: %s must be an array of names",
+		                         name, key);
+	bool up = *key == 'u';
+	tool_mask *mask = up ? &r->upstream : &r->tools;
+	size_t len = json_object_array_length(list);
 	for (size_t i = 0; i < len; ++i) {
-		struct json_object *v = json_object_array_get_idx(tools, i);
+		struct json_object *v = json_object_array_get_idx(list, i);
 		char const *tool = json_object_is_type(v, json_type_string)
 		                 ? json_object_get_string(v) : "";
 		size_t k = 0;
 		while (k < b->n_tools && !(b->tools[k] && !strcmp(b->tools[k], tool)))
 			++k;
-		if (k == b->n_tools)
-			return policy_build_fail(b, "role %s: askai offers no tool %s", name,
-			                         json_object_to_json_string(v));
-		r->tools |= (tool_mask)1 << k;
+		if (k == b->n_tools || (up && !(b->upstream >> k & 1)))
+			return policy_build_fail(b, "role %s: askai offers no tool %s%s", name,
+			                         json_object_to_json_string(v),
+			                         up ? " to the upstream" : "");
+		*mask |= (tool_mask)1 << k;
 	}
 	return 0;
 }
@@ -343,8 +355,8 @@ policy_build_member (struct policy_build *b,
                      char const          *key,
                      struct json_object  *val)
 {
-	if (!strcmp(key, "tools"))
-		return policy_build_tools(b, r, name, val);
+	if (!strcmp(key, "tools") || !strcmp(key, "upstream"))
+		return policy_build_tools(b, r, name, key, val);
 	if (strcmp(key, "metrics"))
 		return policy_build_fail(b, "role %s: unknown member %s", name, key);
 	if (!json_object_is_type(val, json_type_boolean))
@@ -370,6 +382,10 @@ policy_build_role_one (struct policy_build *b,
 		if (e)
 			return e;
 	}
+	/* Without the member "upstream", the upstream may call the tools that
+	 * the role's clients may call. */
+	if (!json_object_object_get_ex(members, "upstream", nullptr))
+		r->upstream = r->tools;
 	return 0;
 }
 
@@ -598,8 +614,8 @@ policy_build_own (struct policy_build *b,
 	tool_mask all = 0;
 	for (size_t i = 0; i < b->n_tools; ++i)
 		all |= b->tools[i] ? (tool_mask)1 << i : 0;
-	p->roles[0] = (struct policy_role){ .tools = all, .metrics = true };
-	p->roles[1] = (struct policy_role){ .tools = all };
+	p->roles[0] = (struct policy_role){ .tools = all, .upstream = all, .metrics = true };
+	p->roles[1] = (struct policy_role){ .tools = all, .upstream = all };
 	if (!token) {
 		p->anonymous[POLICY_LOOPBACK] = 0;
 		p->anonymous[POLICY_REMOTE] = 1;
@@ -633,11 +649,13 @@ struct policy *
 policy_create (struct json_object *file,
                char const *const   tools[],
                size_t              n_tools,
+               tool_mask           upstream,
                char               *why,
                size_t              len,
                int                *e)
 {
 	struct policy_build b = {
+		.upstream = upstream,
 		.tools = tools,
 		.why = why,
 		.n_tools = n_tools,
@@ -722,6 +740,7 @@ policy_grant_role (struct policy const *policy,
 	*g = (struct policy_grant){
 		.principal = principal,
 		.tools = policy->roles[role].tools,
+		.upstream = policy->roles[role].upstream,
 		.metrics = policy->roles[role].metrics
 	};
 	return true;

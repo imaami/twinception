@@ -2590,6 +2590,9 @@ def check_identities(binary, up):
                 ({"roles": {"r": {"tools": ["ask_ai", "ls"]}}},
                  'role r: askai offers no tool "ls"'),
                 ({"roles": {"r": {"tools": "ask_ai"}}}, "role r: tools must be"),
+                ({"roles": {"r": {"upstream": "git"}}}, "role r: upstream must be"),
+                ({"roles": {"r": {"tools": ["ask_ai"], "upstream": ["ask_ai"]}}},
+                 'role r: askai offers no tool "ask_ai" to the upstream'),
                 ({"roles": {"r": {"metrics": 1}}}, "role r: metrics must be"),
                 ({"roles": {"r": {"admin": True}}}, "role r: unknown member admin"),
                 ({"roles": roles, "identities": {"e": {"role": "root",
@@ -5456,8 +5459,9 @@ def check_turn_apis(binary, up):
 
 
 def check_turns(binary, up):
-    """With --upstream-tools, an ask call lends the upstream the tools its
-    client's role may call but itself, and notes and compact, in chat
+    """With --upstream-tools, an ask call lends the upstream the tools that
+    its client's role lets the upstream call, never itself, and notes and
+    compact, in chat
     completions: it runs the tools each turn calls, a tool's output cut to a
     window that offset moves, writes the turn and the results into the
     conversation, and asks on until an answer calls none, --max-turns turns
@@ -6037,6 +6041,33 @@ def check_turns(binary, up):
             assert text_of(ai.ask("Q")) == "A"
             assert [t["function"]["name"] for t in up.requests[count]["body"]["tools"]] \
                 == ["notes", "compact", "wait", "timer"], up.requests[count]["body"]
+
+        # The member "upstream" of a role lists the tools that the upstream
+        # may call.  This list is separate from the list of tools that the
+        # role's clients may call.
+        for role, listed, lent in (
+                ({"tools": ["ask_ai"], "upstream": ["git"]}, ["ask_ai"],
+                 ["git", "notes", "compact", "background", "jobs", "wait", "timer"]),
+                ({"tools": ["ask_ai", "git"], "upstream": []}, ["ask_ai", "git"],
+                 ["notes", "compact", "wait", "timer"])):
+            with open(path, "w") as f:
+                json.dump({"roles": {"asker": role},
+                           "anonymous": {"loopback": "asker"}}, f)
+            with Askai(binary, *args, "-c", path) as ai:
+                tools = ai.rpc("tools/list")[2]["result"]["tools"]
+                assert [t["name"] for t in tools] == listed, tools
+                count = len(up.requests)
+                assert text_of(ai.ask("Q")) == "A"
+                body = up.requests[count]["body"]
+                assert [t["function"]["name"] for t in body["tools"]] == lent, body
+        # askai does not offer the tool ask_ai to the upstream.
+        with open(path, "w") as f:
+            json.dump({"roles": {"r": {"tools": ["ask_ai"], "upstream": ["ask_ai"]}}}, f)
+        run = subprocess.run([binary, *args, "-c", path], capture_output=True,
+                             text=True, timeout=5)
+        assert run.returncode == 2 and \
+            'role r: askai offers no tool "ask_ai" to the upstream' in run.stderr, \
+            run.stderr
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("turns: tools lent to the upstream, notes, threads, windows, compaction, "
           "limits: PASS")

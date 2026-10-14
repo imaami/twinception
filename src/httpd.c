@@ -1367,6 +1367,7 @@ httpd_conn_grant (struct httpd_conn *conn)
 	bool ok = policy_grant(conn->srv->policy, token.ptr, token.len, kind, &peer, &g);
 	conn->stream.principal = g.principal;
 	conn->stream.tools = g.tools;
+	conn->stream.upstream = g.upstream;
 	conn->stream.trusted = g.metrics;
 	return ok;
 }

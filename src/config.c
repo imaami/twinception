@@ -150,7 +150,7 @@ config_usage (struct config const *cfg,
 	        "                            at once as an error that says to try again\n"
 	        "      --upstream-tools      give the upstream tools too: man, git and\n"
 	        "                            the plugins' tools that allow it, as the\n"
-	        "                            client may call them, notes with --notes,\n"
+	        "                            client's role allows, notes with --notes,\n"
 	        "                            and compact; an ask call then runs them\n"
 	        "                            and asks on until it answers\n"
 	        "      --notes DIR           the git repository where the upstream keeps\n"
@@ -1641,13 +1641,20 @@ config_policy (struct config *cfg)
 {
 	struct registry const *reg = cfg->running ? &cfg->running->registry
 	                                          : &cfg->registry;
-	/* The tools that a role can grant have the first ids of the registry. */
+	/* The tools that a role can grant have the first ids of the registry.
+	 * With --upstream-tools, askai can offer such a tool to the upstream if
+	 * the tool's kind has the flag TOOL_LENT. */
+	bool lends = (cfg->running ? cfg->running : cfg)->flags & CFG_UPSTREAM_TOOLS;
 	char const *tools[TOOL_MAX];
-	for (uint32_t id = 0; id < reg->n_granted; ++id)
+	tool_mask upstream = 0;
+	for (uint32_t id = 0; id < reg->n_granted; ++id) {
 		tools[id] = reg->tools[id].name;
+		if (lends && reg->tools[id].kind->flags & TOOL_LENT)
+			upstream |= (tool_mask)1 << id;
+	}
 	char why[256];
 	int e;
-	cfg->policy = policy_create(cfg->file, tools, reg->n_granted, why,
+	cfg->policy = policy_create(cfg->file, tools, reg->n_granted, upstream, why,
 	                            sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
