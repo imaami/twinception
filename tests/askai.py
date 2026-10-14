@@ -761,6 +761,8 @@ def check_modern(binary, up):
         _, _, body = ai.modern("tools/list")
         assert body["result"]["tools"][0]["name"] == "ask_ai"
         assert body["result"]["resultType"] == "complete" and "ttlMs" in body["result"]
+        # The list depends on the caller's role, so no cache may share it.
+        assert body["result"]["cacheScope"] == "private", body
 
         status, _, body = ai.modern("tools/call", {"name": "ask_ai",
                                                    "arguments": {"prompt": "Q"}})
@@ -2513,6 +2515,11 @@ def check_identities(binary, up):
                                  (None, ["man"])):
                 status, _, body = ai.rpc("tools/list", headers=auth(token))
                 assert status == 200 and \
+                    [t["name"] for t in body["result"]["tools"]] == tools, (token, body)
+                # A modern client gets the same list, which no cache may
+                # give to another caller.
+                status, _, body = ai.modern("tools/list", headers=auth(token))
+                assert status == 200 and body["result"]["cacheScope"] == "private" and \
                     [t["name"] for t in body["result"]["tools"]] == tools, (token, body)
             for token, tool, message in (
                     ("bob-1", "man", "Tool not available: man"),

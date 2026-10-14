@@ -5991,7 +5991,9 @@ mcp_static_tails (struct mcp_static  *st,
 	    !dstr_printf(&st->modern_tail, ",\"resultType\":\"complete\",%s}",
 	                 dstr_get(&st->server_meta)))
 		return ENOMEM;
-	return dstr_printf(&st->list_tail, "],\"ttlMs\":%d,\"cacheScope\":\"public\"%s",
+	/* tools/list lists the tools that the caller's role grants, so no cache
+	 * may give one caller's list to another caller. */
+	return dstr_printf(&st->list_tail, "],\"ttlMs\":%d,\"cacheScope\":\"private\"%s",
 	                   CACHE_TTL_MS, dstr_get(&st->modern_tail)) ? 0 : ENOMEM;
 }
 
