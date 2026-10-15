@@ -240,8 +240,10 @@ a second tool, `man`, reads the manual, and with `--git`, a tool `git` runs
 read-only git commands in the repositories it lists (below).  With
 `--upstream-tools`, the other model may call those tools too, and keep notes
 of its work, in a loop of turns that ends with its answer.  With `--notes`, a
-tool `notes` gives clients notebooks too.  A plugin that the configuration
-file lists adds tools of its own (below).
+tool `notes` gives clients notebooks too.  With `--client-jobs`, clients get
+the tools `background`, `jobs`, `wait` and `timer`, with which a client runs
+its calls as jobs while it does other work (below).  A plugin that the
+configuration file lists adds tools of its own (below).
 
 It speaks MCP's Streamable HTTP transport, which is what the `llama-server` web
 UI's MCP client uses, and serves both protocol eras on one endpoint:
@@ -273,9 +275,14 @@ a Unix socket that has no identity.  The owner of an anonymous client's task
 over TCP is the client's address (IPv4, or the /64 of IPv6).  Only the owner
 of a task can read it with `tasks/get` or cancel it with `tasks/cancel`.
 askai removes a task an hour after its call ends.  It removes ended tasks
-sooner, the oldest first, when it has 1024 tasks or 64 MiB of results, and
-when the owner of 64 tasks starts another one.  `server/discover` lists the
-extension; askai asks for no input, so `tasks/update` has none to take.
+sooner in three cases.  With 64 MiB of results, it removes the oldest ended
+tasks first.  With 1024 tasks, a new task makes it remove the oldest ended
+task of the owner with the most ended tasks.  When the owner of 64 tasks
+starts another one, askai removes the owner's oldest ended task.  A job that
+a client starts with `background` (below) is a task too, and its owner can
+read it with `tasks/get` and cancel it with `tasks/cancel`.
+`server/discover` lists the extension; askai asks for no input, so
+`tasks/update` has none to take.
 
 ### Upstream providers and APIs
 
@@ -578,6 +585,72 @@ that `thread` to add more notes to it, to list them or to read one.  A client
 cannot open the threads of the model, nor those of other identities.  With
 `--upstream-tools`, the model gets `notes` whatever the role lists.
 
+### Background jobs and timers for clients
+
+With `--client-jobs`, `askai` offers clients four more tools: `background`,
+`jobs`, `wait` and `timer`.  Under `askai`'s own policy, every client gets
+them.  A role grants them by name, as any other tool:
+
+```json
+"roles": {"agent": {"tools": ["ask_ai", "background", "jobs", "wait", "timer"]}}
+```
+
+- `background` starts a call of another tool of the client, such as
+  `ask_ai`, as a job, and answers at once with the job's id, 32 hexadecimal
+  digits.  The job runs without the request and without the client's
+  connection.  A job cannot be a call of `background`, `jobs`, `wait` or
+  `timer`.  The upstream requests of a job are in the background class of
+  the scheduler, so the interactive calls go first.
+- `jobs` lists the client's jobs, the newest first, and its timers, with the
+  time that each job has run or the time since it ended.  An ended job is
+  "unread" until a `wait` reports its end, or `jobs` or `tasks/get` returns
+  its result.  `jobs` returns the result of an ended job, which is the result
+  that a direct call of the tool returns.  It also cancels a job that runs or
+  a timer that has not fired.
+- `wait` waits up to 10 minutes until a job ends, of those it names or any,
+  or a timer fires, and then lists what happened.  Every wait ends at once if
+  a timer has fired unread, and removes the timer, so each timer goes to one
+  wait only.  A wait without ids also ends at once if a job has ended unread,
+  and marks the job read, so that no other wait without ids reports it.  A
+  wait that names a job ends at once if that job has ended, read or not, so
+  every wait that names the job reports it.  A wait uses no upstream slot.
+  On an event stream, it sends keep-alives (`--sse-keepalive`), but a client
+  that ends its requests after a time of its own needs a shorter wait.
+- `timer` sets a timer of 1 second to an hour, with a note of up to 200
+  bytes.
+
+The jobs and the timers belong to an owner: the client's identity, the Unix
+user of a client of a Unix socket without an identity, or else the client's
+address (IPv4, or the /64 of IPv6).  Every connection of the owner, on any
+event loop, can list, wait for, read and cancel the same jobs and timers.
+Agents with the same identity, the same Unix user or the same address share
+their jobs and timers.  A wait without ids can report a job of another
+agent, and every wait can report a timer of another agent.  A wait that
+names only the jobs of its agent reports no job of another agent, but it
+still reports the timers of the other agents.  Only an identity for each
+agent separates both the jobs and the timers.
+
+A job is a task of the tasks extension too: `tasks/get` and `tasks/cancel`
+accept its id.  A call that became a task is in the list of `jobs` as a
+`task`, and `wait` and `jobs` accept its id.  A call of `background`, `jobs`,
+`wait` or `timer` never becomes a task.
+
+An owner runs at most 8 jobs and tasks at once, and `background` refuses a
+ninth job.  An owner has at most 8 timers, set or fired and unread, and at
+most 4 waits at once.  `askai` stores the result of a job for up to an hour
+after the job ends: it removes ended jobs sooner in the three cases in which
+it removes ended tasks sooner (above).  One of them is a new job or task of
+an owner with 64 jobs and tasks, which makes `askai` remove the owner's
+oldest ended one.  `askai` removes a fired timer that no wait reports an
+hour after it fired.  `askai` stores the jobs, their results and the timers
+in memory only, so a restart of `askai` deletes them, unlike the
+interactions that Gemini's Interactions API stores.  Under `askai`'s own
+policy, remote clients without a token also get the four tools, with the
+limits of their address only; give remote clients tokens.  `askai` has room
+for the jobs, timers and waits of 1024 owners, and at most 512 of them can
+be addresses, so that anonymous clients cannot fill the room of identities
+and Unix users.
+
 ### Security
 
 `askai` spends your API credits, so by default it listens on 127.0.0.1 only and
@@ -690,7 +763,8 @@ Four more members define who may connect, and what each client may do:
 
 - A **role** lists in `tools` the tools that its clients may list and call,
   as clients see them: the tool that `--tool-name` names, `man`, `git`,
-  `notes`, `test_task` and the tools of the plugins.  `metrics` sets whether
+  `notes`, `test_task`, the tools of the plugins, and with `--client-jobs`
+  `background`, `jobs`, `wait` and `timer`.  `metrics` sets whether
   the clients may read `GET /metrics`.  A role name has 1 to 64 characters
   from `A-Z`, `a-z`, `0-9`, `_`, `.`, `@` and `-`.  A role without `tools`
   grants no tool, and `metrics` is `false` unless the role sets it.  A name in
@@ -708,8 +782,11 @@ Four more members define who may connect, and what each client may do:
   must be empty or left out.  The turns also get `notes` whenever `--notes`
   is given, `compact`, `wait` and `timer` whenever they get any tool, and
   `background` and `jobs` beside a tool that can run in the background
-  (`man`, `git`, or a plugin tool that allows it).  None of these five can be
-  named.
+  (`man`, `git`, or a plugin tool that allows it).  `upstream` cannot name
+  `compact`, `background`, `jobs`, `wait` or `timer`, and `tools` cannot
+  name `compact`.  With `--client-jobs`, `tools` can name `background`,
+  `jobs`, `wait` and `timer`, which are then the client's own tools (see
+  Background jobs and timers for clients above).
 - An **identity** has a name, with the same rule as a role name, a `role`,
   and `tokens` or `unix-users` or both, of which one must not be empty.  A
   client proves an identity with a bearer token, `Authorization: Bearer
@@ -730,19 +807,19 @@ Four more members define who may connect, and what each client may do:
   `remote`, any other over TCP; `unix`, a user of a Unix socket that no
   identity or group names.  `null`, as leaving it out, refuses them.
 
-A token that no identity has is refused with 401, on the request's head
-before its body, as is a client without one that no role is named for.  An
-identity's calls are one principal of the scheduler's, whichever of its tokens
-they show, and each other user of a Unix socket is one; anonymous TCP clients
-are their sessions or addresses, as before.  User and group names are looked
-up as the file is read, which with a directory service such as SSSD may wait
-on it.  Without those four members, `askai`'s own policy applies.  With
-`ASKAI_TOKEN` set, clients must send it and may do everything.  Else clients
-on loopback that name it so, or on a Unix socket, may do everything, and
-other clients may call the tools.  Any of the four members, also with the
-value `null`, turns `askai`'s own policy off, and `askai` then ignores
-`ASKAI_TOKEN` and logs that.  So a file with `roles` alone refuses every
-client.
+A token that no identity has is refused with 401, on the request's head before
+its body, as is a client without one that no role is named for.  An identity's
+calls are one principal of the scheduler's, whichever of its tokens they show,
+and each other user of a Unix socket is one; anonymous TCP clients are their
+sessions or addresses, as before.  The principal of an identity or of a Unix
+user is also the owner of its tasks, jobs and timers.  User and group names are
+looked up as the file is read, which with a directory service such as SSSD may
+wait on it.  Without those four members, `askai`'s own policy applies.  With
+`ASKAI_TOKEN` set, clients must send it and may do everything.  Else clients on
+loopback that name it so, or on a Unix socket, may do everything, and other
+clients may call the tools.  Any of the four members, also with the value
+`null`, turns `askai`'s own policy off, and `askai` then ignores `ASKAI_TOKEN`
+and logs that.  So a file with `roles` alone refuses every client.
 
 With `--config`, or a TLS listener, SIGHUP reloads who may connect and what
 they may do, and the TLS certificate and key: a blocker thread reads the
@@ -1181,6 +1258,10 @@ askai: tool bro: built in; on, the ask tool
 askai: tool man: built in; on
 askai: tool git: built in; on, repositories proj
 askai: tool notes: built in; on, directory /var/lib/askai/notes
+askai: tool background: built in; off, --client-jobs turns it on
+askai: tool jobs: built in; off, --client-jobs turns it on
+askai: tool wait: built in; off, --client-jobs turns it on
+askai: tool timer: built in; off, --client-jobs turns it on
 askai: tool godbolt_catalog: plugin godbolt (/usr/libexec/askai/godbolt.so); on
 askai: tool godbolt_compile: plugin godbolt (/usr/libexec/askai/godbolt.so); on
 askai: tool godbolt_preprocess: plugin godbolt (/usr/libexec/askai/godbolt.so); on
@@ -1229,8 +1310,12 @@ offer is written as a JSON string.
 With `--verbose`, `askai` also logs these lines:
 
 - each tool call of a client as it ends: the tool, the client, how the call
-  ended, its time, the size of its output, its arguments as JSON on one line
-  and cut at 200 bytes, and the text of a failure.
+  ended, its time, the size of its output, the task or the job that the call
+  ran as, its arguments as JSON on one line and cut at 200 bytes, and the
+  text of a failure.  The line of a job has the tool and the arguments of
+  the call that the job runs.
+- each call of `background` by a client, as the job starts: the client, the
+  id of the job and the tool that the job calls.
 - each ask call as it starts: its number, `LOOP.N`, its client, the size of
   its prompt, its thread of notes and the start of the prompt as a JSON
   string of at most 100 bytes.  The lines of the call's turns begin with
@@ -1378,6 +1463,12 @@ MCP server:
                             deadline of a git call, at which git gets
                             SIGTERM, and SIGKILL one second later
                             (default 30)
+      --client-jobs         also offer clients the tools background,
+                            jobs, wait and timer, as their role allows:
+                            background runs a call of another tool as a
+                            job, whose result askai stores for an hour;
+                            timer sets a timer; wait waits for jobs and
+                            timers
       --test-man-recheck SECONDS
                             test aid: once the lookup of the file of a
                             page (man -w) is older than this, the next

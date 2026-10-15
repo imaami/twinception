@@ -56,9 +56,10 @@ mcp_limits (void)
 
 /**
  * Adds the tools of askai's own that @p cfg offers to the registry @p reg
- * (src/registry.h).  The ask tool, the man tool, test_task and the git tool
- * are added in that order as tools that a role can grant.  The tools that
- * only the turns of an ask call use are added after them.
+ * (src/registry.h).  The ask tool, the man tool, test_task, the git tool and
+ * the notes tool are added in that order as tools that a role can grant,
+ * and with CFG_CLIENT_JOBS background, jobs, wait and timer after them.
+ * The tools that only the turns of an ask call use are added after them.
  * Returns 0, or the error number of registry_add().
  */
 extern int
@@ -104,7 +105,10 @@ mcp_lent (void const *cfg,
  * tools and their ids are those of @p cfg's registry (src/registry.h), which
  * also has the tools of the plugins that askai loaded.  A tool
  * call of a modern client that takes tasks becomes one, in @p ledger
- * (src/ledger.h), once it has run a second.  A tool call is in @p roster
+ * (src/ledger.h), once it has run a second.  With CFG_CLIENT_JOBS, a
+ * client's call of background starts a call as a job, which also has a
+ * record in @p ledger, and a client's timers and waits are in @p ledger
+ * too.  A tool call is in @p roster
  * (src/roster.h) from its start until it ends or becomes a task, so that a
  * notifications/cancelled of its caller reaches it.  The calls of the
  * plugins' tools send their HTTP requests through @p web (src/web.h).

@@ -30,6 +30,8 @@ enum config_flag {
 	CFG_UPSTREAM_TOOLS = 1u << 5,  /**< the upstream may call tools too, in
 	                                    a loop of turns that the ask tool's
 	                                    call runs (src/mcp.h) */
+	CFG_CLIENT_JOBS    = 1u << 6,  /**< offer clients background, jobs, wait
+	                                    and timer (src/mcp.h) */
 };
 
 /**

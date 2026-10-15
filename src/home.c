@@ -33,7 +33,6 @@ enum {
 	PROPS_MS     = 10'000,    /* the most /props may take, or the timeout */
 	KEYS_MAX     = 1 << 16,   /* the largest number of buckets of the
 	                             principals */
-	QUEUED       = 8,         /* jobs queued for a principal at most */
 	SLOTS        = 4,         /* upstream calls at once, unless told or found */
 	FAILURES     = 5,         /* failures in a row that open the breaker */
 };
@@ -219,8 +218,8 @@ home_job_progress (struct job *job,
 }
 
 /* Take @p job off its principal's queue, the jobs behind it each a place
- * nearer, at most QUEUED - 1 (in one queue for all, which has no cap, they
- * keep the places they had); a principal with none left goes on the
+ * nearer, at most JOB_QUEUED - 1 (in one queue for all, which has no cap,
+ * they keep the places they had); a principal with none left goes on the
  * shelf. */
 static void
 home_unqueue (struct home *home,
@@ -1807,7 +1806,7 @@ home_wait (struct home            *home,
 }
 
 /* Admit @p job, or end it at once: draining, with the breaker open, with
- * --max-calls in flight, or with QUEUED of its class queued for its
+ * --max-calls in flight, or with JOB_QUEUED of its class queued for its
  * principal (unless all of a class share one queue, first in first out).
  * If a slot is free for it (home_vacant()), it is ready, queued for none, so
  * that a burst the slots free take at once is not refused; else it waits
@@ -1827,7 +1826,7 @@ home_admit (struct home *home,
 	}
 	struct home_principal **slot = home_find_whom(home, job);
 	if (hist_get(&m->in_flight) >= home->max ||
-	    (*slot && !home->fifo && (*slot)->queued >= QUEUED)) {
+	    (*slot && !home->fifo && (*slot)->queued >= JOB_QUEUED)) {
 		home_end(home, job, JOB_BUSY, &m->rejected);
 		return;
 	}

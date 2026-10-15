@@ -12,6 +12,7 @@
   "man": false,
   "git": [],
   "git-timeout": 30,
+  "client-jobs": false,
   "tool-name": "ask_ai",
   "test-task": false,
   "listen": [

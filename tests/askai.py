@@ -1022,7 +1022,8 @@ def check_mcp_tasks(binary, up):
                 assert ask(task["taskId"], "tasks/cancel")[0] == 200
                 assert up.cancelled.wait(5)
                 ai.wait_log(r"^askai: tool call ask_ai from identity alice cancelled by "
-                            r"tasks/cancel after ")
+                            rf"its client after \d+\.\d s \(0 bytes\); task "
+                            rf"{task['taskId']}; ask call ")
                 gone = poll(task["taskId"])
                 assert gone["status"] == "cancelled" and "result" not in gone and \
                     gone["statusMessage"], gone
@@ -1072,6 +1073,549 @@ def check_mcp_tasks(binary, up):
             up.reply = hold
     print("MCP tasks: calls that run a second become tasks, polled, bound to their "
           "identity or address, cancelled: PASS")
+
+
+def check_client_jobs(binary, up):
+    """With --client-jobs, askai offers clients background, jobs, wait and
+    timer, as their role grants them.  background runs a call of another of
+    the client's tools as a job: it answers with the job's id at once, and
+    the job runs without the request and its connection.  jobs lists the
+    owner's jobs, tasks and timers, answers with a job's result as a direct
+    call answers, and cancels a job or a timer.  wait ends when a job ends,
+    a timer fires or its seconds pass, and timer sets a timer.  The owner is
+    the client's identity, or the address of an anonymous client, on any
+    connection and any loop.  A job is a task of MCP's tasks extension too.
+    Without the option, askai offers none of the four."""
+    def digest(token):
+        return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+
+    alice, bob = ({"Authorization": f"Bearer {t}"} for t in ("a-1", "b-1"))
+    started = re.compile(r"Started job ([0-9a-f]{32})\. Call wait to wait for it, "
+                         r"then jobs with the action result and this id\.")
+    other = "The tool argument must name a tool of yours other than background, " \
+        "jobs, wait and timer."
+
+    def done(jid):
+        return f"[askai: job {jid}, ask_ai, completed: call jobs with the action " \
+            f"result and job {jid} for its result.]\n"
+
+    def send(ai, method, params, source="127.0.0.1", meta=None, headers=None):
+        """A request from the address @p source; with @p meta, a modern one
+        with that _meta, or with the usual one if it is empty."""
+        conn = http.client.HTTPConnection(ai.host, ai.port, timeout=30,
+                                          source_address=(source, 0))
+        try:
+            if meta is not None:
+                return ai.modern(method, params, meta=meta or None, headers=headers,
+                                 conn=conn)
+            return ai.rpc(method, params, headers=headers, conn=conn)
+        finally:
+            conn.close()
+
+    def call(ai, name, source="127.0.0.1", meta=None, headers=None, **args):
+        """The result of a call of @p name from @p source, and its seconds."""
+        start = time.monotonic()
+        status, _, body = send(ai, "tools/call", {"name": name, "arguments": args},
+                               source, meta, headers)
+        assert status == 200 and "result" in body, body
+        return body["result"], time.monotonic() - start
+
+    def say(ai, name, source="127.0.0.1", **args):
+        return text_of(call(ai, name, source, **args)[0])
+
+    def refused(ai, name, message, source="127.0.0.1", **args):
+        result, _ = call(ai, name, source, **args)
+        assert result.get("isError") is True and text_of(result) == message, \
+            (name, args, result)
+
+    def start(ai, source="127.0.0.1", headers=None, prompt="Q"):
+        """Start an ask call as a job, which answers at once with its id."""
+        result, took = call(ai, "background", source, headers=headers, tool="ask_ai",
+                            arguments={"prompt": prompt})
+        match = started.fullmatch(text_of(result))
+        assert match and "isError" not in result and took < 0.5, (result, took)
+        return match.group(1)
+
+    def waits(ai):
+        return ai.metrics()["askai_mcp_waits"]
+
+    hold = up.reply
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{d}/askai.json"
+
+            def write(members):
+                with open(path, "w") as f:
+                    json.dump({"url": up.url()} | members, f)
+                os.chmod(path, 0o600)
+
+            # Without the option, askai offers none of the four.  With it, a
+            # role may name them, but never compact, and its "upstream" may
+            # name none of them.
+            with Askai(binary, "-u", up.url()) as ai:
+                tools = ai.rpc("tools/list")[2]["result"]["tools"]
+                assert [t["name"] for t in tools] == ["ask_ai"], tools
+                body = ai.rpc("tools/call", {"name": "background", "arguments": {}})[2]
+                assert body["error"]["message"] == "Unknown tool: background", body
+            for role, args, message in (
+                    ({"tools": ["wait"]}, (), 'role r: askai offers no tool "wait"'),
+                    ({"tools": ["compact"]}, ("--client-jobs", "--upstream-tools"),
+                     'role r: askai offers no tool "compact"'),
+                    ({"upstream": ["timer"]}, ("--client-jobs", "--upstream-tools"),
+                     'role r: askai offers no tool "timer" to the upstream')):
+                write({"roles": {"r": role}})
+                run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path, *args],
+                                     capture_output=True, text=True, timeout=10)
+                assert run.returncode == 2 and message in run.stderr, (role, run.stderr)
+
+            # A role that grants the four, and identities: only the owner of
+            # a job can read it, from any address, also after a reload.  A
+            # role that grants background but not ask_ai cannot start an
+            # ask call as a job.
+            write({"roles": {"r": {"tools": ["ask_ai", "background", "jobs", "wait",
+                                             "timer"]},
+                             "s": {"tools": ["background", "jobs", "wait", "timer"]}},
+                   "identities": {"alice": {"role": "r", "tokens": [digest("a-1")]},
+                                  "bob": {"role": "r", "tokens": [digest("b-1")]},
+                                  "carol": {"role": "s", "tokens": [digest("c-1")]}},
+                   "anonymous": {"loopback": "r"}})
+            with Askai(binary, "-c", path, "--client-jobs") as ai:
+                tools = ai.rpc("tools/list", headers=bob)[2]["result"]["tools"]
+                assert [t["name"] for t in tools] == \
+                    ["ask_ai", "background", "jobs", "wait", "timer"], tools
+                up.reply = lambda r: (200, ANSWERS["openai"], 0.5)
+                count = len(up.requests)
+                refused(ai, "background", other, headers={"Authorization": "Bearer c-1"},
+                        tool="ask_ai", arguments={"prompt": "Q"})
+                jid = start(ai, headers=alice)
+                assert say(ai, "jobs", headers=bob, action="list") == \
+                    "You have no jobs and no timers.", ai.log
+                refused(ai, "jobs", "No job of yours has that id; askai stores a job "
+                        "for an hour after it ends.", headers=bob, action="result",
+                        job=jid)
+                assert say(ai, "wait", "127.0.0.2", headers=alice, seconds=10,
+                           jobs=[jid]) == done(jid)
+                assert len(up.requests) == count + 1, up.requests[count:]
+                ai.log.clear()
+                ai.proc.send_signal(signal.SIGHUP)
+                ai.wait_log("configuration reloaded: who may connect")
+                assert say(ai, "jobs", "127.0.0.3", headers=alice, action="result",
+                           job=jid) == "A"
+                assert re.fullmatch(f"job {jid}: ask_ai: completed [0-9] s ago\n",
+                                    say(ai, "jobs", headers=alice, action="list"))
+
+            # A job that one loop runs ends a wait on another: the job's
+            # connection stays open, so the next connections go to the other
+            # loop first.  Each of the three waits names the job, and so
+            # each of them gets it, as the job ends and not at the end of
+            # the wait's seconds.
+            with Askai(binary, "-u", up.url(), "--client-jobs", loops=2) as ai:
+                up.reply = lambda r: (200, ANSWERS["openai"], 1.5)
+                conn = ai.connect()
+                status, _, body = ai.rpc("tools/call", {"name": "background", "arguments": {
+                    "tool": "ask_ai", "arguments": {"prompt": "Q"}}}, conn=conn)
+                assert status == 200, body
+                jid = started.fullmatch(text_of(body["result"])).group(1)
+                said = []
+                threads = [threading.Thread(target=lambda: said.append(
+                    call(ai, "wait", seconds=10, jobs=[jid]))) for _ in range(3)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+                conn.close()
+                assert [text_of(r) for r, _ in said] == [done(jid)] * 3 and \
+                    all(took < 3 for _, took in said), said
+
+            # With --upstream-tools too, the turns get the four with their own
+            # definitions, compact last.  The timers of the turns of a
+            # client's ask job are not timers of the client.
+            repo = f"{d}/proj"
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            script = []
+            up.reply = lambda r: script.pop(0)(r) if script else \
+                (200, turn_stream(text="A"))
+            with Askai(binary, "-u", up.url(), "--client-jobs", "--upstream-tools",
+                       "--git", repo) as ai:
+                tools = ai.rpc("tools/list")[2]["result"]["tools"]
+                assert [t["name"] for t in tools] == \
+                    ["ask_ai", "git", "background", "jobs", "wait", "timer"], tools
+                script[:] = [
+                    lambda r: (200, turn_stream([("t1", "timer", json.dumps(
+                        {"seconds": 1, "note": "turn"}))])),
+                    lambda r: (200, turn_stream(text="Waiting.")),
+                    lambda r: (200, turn_stream(text="Done."))]
+                count = len(up.requests)
+                jid = start(ai)
+                wait_for(lambda: len(up.requests) >= count + 2)
+                lent = up.requests[count]["body"]["tools"]
+                assert [t["function"]["name"] for t in lent] == \
+                    ["git", "background", "jobs", "wait", "timer", "compact"], lent
+                assert lent[2]["function"]["parameters"]["properties"]["job"]["type"] == \
+                    "integer", lent[2]
+                assert re.fullmatch(f"job {jid}: ask_ai: running for [0-9] s\n",
+                                    say(ai, "jobs", action="list"))
+                assert say(ai, "wait", seconds=10, jobs=[jid]) == done(jid)
+                result, _ = call(ai, "jobs", action="result", job=jid)
+                assert result["content"][0]["text"] == \
+                    "Waiting.\n\n[askai: timer 1 fired: turn.]\n\nDone.", result
+                assert re.fullmatch(f"job {jid}: ask_ai: completed [0-9] s ago\n",
+                                    say(ai, "jobs", action="list"))
+            up.reply = hold
+
+            with Askai(binary, "-u", up.url(), "--client-jobs", "--slots", "16",
+                       "--verbose") as ai:
+                tools = {t["name"]: t for t in ai.rpc("tools/list")[2]["result"]["tools"]}
+                assert list(tools) == ["ask_ai", "background", "jobs", "wait", "timer"], \
+                    tools
+                assert "such as ask_ai," in tools["background"]["description"], tools
+                props = {name: t["inputSchema"]["properties"] for name, t in tools.items()}
+                assert props["wait"]["jobs"]["items"] == {"type": "string"} and \
+                    props["jobs"]["job"]["type"] == "string" and \
+                    props["jobs"]["timer"]["type"] == "integer", props
+
+                # A background ask answers at once, and runs as a job, which
+                # the list shows and a wait waits for.  The job's result is
+                # the result of a direct call, in either era.  The wait
+                # reported the job, so the list shows it as read.  Each call
+                # here has a connection of its own, which closes after it.
+                up.reply = lambda r: (200, ANSWERS["openai"], 2)
+                jid = start(ai, prompt="SECRET")
+                assert re.fullmatch(f"job {jid}: ask_ai: running for [01] s\n",
+                                    say(ai, "jobs", action="list"))
+                refused(ai, "jobs", "That job still runs: wait for it.", action="result",
+                        job=jid)
+                result, took = call(ai, "wait", seconds=10, jobs=[jid])
+                assert text_of(result) == done(jid) and 1.2 <= took < 3, (result, took)
+                assert re.fullmatch(f"job {jid}: ask_ai: completed [0-9] s ago\n",
+                                    say(ai, "jobs", action="list"))
+                up.reply = lambda r: (200, ANSWERS["openai"])
+                legacy, _ = call(ai, "jobs", action="result", job=jid)
+                assert legacy == ai.ask() and "resultType" not in legacy, legacy
+                modern, _ = call(ai, "jobs", meta={}, action="result", job=jid)
+                direct = ai.modern("tools/call", {"name": "ask_ai",
+                                                  "arguments": {"prompt": "Q"}})[2]
+                assert modern == direct["result"] and modern["resultType"] == "complete", \
+                    (modern, direct)
+
+                # What background, jobs and wait refuse.
+                for args in ({"tool": "wait", "arguments": {"seconds": 1}},
+                             {"tool": "background"}, {"tool": "nope"}, {}):
+                    refused(ai, "background", other, **args)
+                refused(ai, "background", "The arguments argument must be an object.",
+                        tool="ask_ai", arguments=[])
+                refused(ai, "jobs", "The action argument must be list, result or cancel.",
+                        action="show")
+                for job in ("0" * 31, 7, None):
+                    refused(ai, "jobs", "The job argument must be the id of a job of "
+                            "yours.", action="result", job=job)
+                refused(ai, "jobs", "No job of yours has that id; askai stores a job for "
+                        "an hour after it ends.", action="cancel", job="0" * 32)
+                for args in ({}, {"job": jid, "timer": 1}):
+                    refused(ai, "jobs", "The job argument or the timer argument must "
+                            "name what to cancel.", action="cancel", **args)
+                refused(ai, "jobs", "That job runs no more.", action="cancel", job=jid)
+                for seconds in (0, 601, "1"):
+                    refused(ai, "wait", "The seconds argument must be a whole number "
+                            "from 1 to 600.", seconds=seconds)
+                for jobs in ("x", [1], ["0" * 32] * 17):
+                    refused(ai, "wait", "The jobs argument must list at most 16 ids of "
+                            "jobs of yours.", seconds=1, jobs=jobs)
+                assert say(ai, "wait", seconds=1, jobs=[jid] * 16) == done(jid)
+                refused(ai, "wait", 'No job of yours has the id \u00e9\\"' + "x" * 28 +
+                        "; askai stores a job for an hour after it ends.", seconds=1,
+                        jobs=[jid, '\u00e9\\"' + "x" * 40])
+
+                # An owner runs 8 jobs and tasks at most.  A wait for any job
+                # ends as soon as a job ends that no one has read.
+                up.reply = lambda r: (200, ANSWERS["openai"], 1.5)
+                ids = [start(ai, "127.0.0.2") for _ in range(8)]
+                refused(ai, "background", "You have 8 jobs and tasks running, the most "
+                        "at once: wait for one to end.", "127.0.0.2", tool="ask_ai",
+                        arguments={"prompt": "Q"})
+                seen = []
+                for _ in range(8):
+                    if len(seen) == 8:
+                        break
+                    text = say(ai, "wait", "127.0.0.2", seconds=10)
+                    seen += re.findall(r"^\[askai: job ([0-9a-f]{32}), ask_ai, completed: "
+                                       r"call jobs with the action result and job \1 for "
+                                       r"its result\.\]$", text, re.M)
+                assert sorted(seen) == sorted(ids), (seen, ids)
+                assert say(ai, "jobs", "127.0.0.2", action="list").count(" ago\n") == 8
+
+                # Another address is another owner, also for tasks/get.
+                refused(ai, "jobs", "No job of yours has that id; askai stores a job for "
+                        "an hour after it ends.", action="result", job=ids[0])
+                for source, found in (("127.0.0.1", False), ("127.0.0.2", True)):
+                    body = send(ai, "tasks/get", {"taskId": ids[0]}, source, TAKES_TASKS)[2]
+                    assert ("result" in body) == found and \
+                        (not found or body["result"]["status"] == "completed"), body
+
+                # A cancel of a job that runs cancels its upstream call.  The
+                # upstream call is in the background class.
+                up.cancelled.clear()
+                up.reply = lambda r: (200, ANSWERS["openai"], 30)
+                count = len(up.requests)
+                jid = start(ai, "127.0.0.3")
+                wait_for(lambda: len(up.requests) == count + 1)
+                assert ai.metrics()["askai_upstream_background_calls"] == 1
+                assert say(ai, "jobs", "127.0.0.3", action="cancel", job=jid) == \
+                    f"askai is cancelling job {jid}. Call wait to wait for its end."
+                assert up.cancelled.wait(5)
+                assert say(ai, "wait", "127.0.0.3", seconds=5, jobs=[jid]) == \
+                    f"[askai: job {jid}, ask_ai, cancelled.]\n"
+                refused(ai, "jobs", "That job was cancelled.", "127.0.0.3", action="result",
+                        job=jid)
+                assert re.fullmatch(f"job {jid}: ask_ai: cancelled [0-9] s ago\n",
+                                    say(ai, "jobs", "127.0.0.3", action="list"))
+                time.sleep(0.3)
+                assert len(up.requests) == count + 1, up.requests[count:]
+
+                # Timers: a wait ends as one fires, with its note, or after its
+                # seconds; a timer that has not fired can be cancelled; an
+                # owner has 8 timers at most.
+                said = say(ai, "timer", "127.0.0.4", seconds=1, note="n")
+                n = re.fullmatch(r"Timer (\d+) will fire in 1 s\.", said).group(1)
+                assert say(ai, "jobs", "127.0.0.4", action="list") == \
+                    f"timer {n}: fires in 1 s: n\n"
+                result, took = call(ai, "wait", "127.0.0.4", seconds=5)
+                assert text_of(result) == f"[askai: timer {n} fired: n.]\n" and \
+                    0.7 <= took < 2, (result, took)
+                result, took = call(ai, "wait", "127.0.0.4", seconds=1)
+                assert text_of(result) == "Nothing happened in 1 s." and \
+                    0.9 <= took < 2, (result, took)
+                # A wait that waits answers on an event stream, which the
+                # client accepts.
+                _, headers, body = send(ai, "tools/call", {"name": "wait", "arguments": {
+                    "seconds": 1}}, "127.0.0.4")
+                assert headers["content-type"] == "text/event-stream" and \
+                    text_of(body["result"]) == "Nothing happened in 1 s.", (headers, body)
+                n = re.fullmatch(r"Timer (\d+) will fire in 60 s\.",
+                                 say(ai, "timer", "127.0.0.4", seconds=60)).group(1)
+                assert say(ai, "jobs", "127.0.0.4", action="cancel", timer=int(n)) == \
+                    f"Cancelled timer {n}."
+                refused(ai, "jobs", f"You have no timer {n} set.", "127.0.0.4",
+                        action="cancel", timer=int(n))
+                for timer in (n, float(n), True):
+                    refused(ai, "jobs", "The timer argument must be the number of a timer "
+                            "of yours.", "127.0.0.4", action="cancel", timer=timer)
+                for _ in range(8):
+                    assert say(ai, "timer", "127.0.0.4", seconds=60).startswith("Timer ")
+                refused(ai, "timer", "You have 8 timers set, the most at once.",
+                        "127.0.0.4", seconds=60)
+                for args, message in (
+                        ({"seconds": 0}, "The seconds argument must be a whole number "
+                                         "from 1 to 3600."),
+                        ({"seconds": 3601}, "The seconds argument must be a whole number "
+                                            "from 1 to 3600."),
+                        ({"seconds": 1, "note": "x" * 201},
+                         "The note argument must be a string of at most 200 bytes.")):
+                    refused(ai, "timer", message, "127.0.0.5", **args)
+                assert say(ai, "jobs", "127.0.0.4", action="list").count(
+                    ": fires in 60 s\n") == 8
+
+                # Two waits for any job of one owner: one event ends one.
+                said = []
+                threads = [threading.Thread(target=lambda: said.append(
+                    say(ai, "wait", "127.0.0.6", seconds=3))) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                wait_for(lambda: waits(ai) == 2)
+                up.reply = lambda r: (200, ANSWERS["openai"], 0.3)
+                jid = start(ai, "127.0.0.6")
+                for thread in threads:
+                    thread.join()
+                assert sorted(said) == sorted([done(jid), "Nothing happened in 3 s."]), said
+
+                # An owner has 4 waits at once at most.
+                socks = []
+                for i in range(4):
+                    socks.append(socket.create_connection(("127.0.0.1", ai.port), 10,
+                                                          ("127.0.0.7", 0)))
+                    socks[-1].sendall(rpc_request(i, {"name": "wait", "arguments": {
+                        "seconds": 30}}, "tools/call"))
+                wait_for(lambda: waits(ai) == 4)
+                refused(ai, "wait", "You have 4 waits under way, the most at once.",
+                        "127.0.0.7", seconds=1)
+                for sock in socks:
+                    sock.close()
+                wait_for(lambda: waits(ai) == 0)
+
+                # The tasks extension: tasks/get of a job polls it, and its
+                # result is the job's; tasks/cancel cancels a job; a call that
+                # became a task is in the list; a wait of a client that takes
+                # tasks never becomes a task.
+                up.reply = lambda r: (200, ANSWERS["openai"], 1.5)
+                jid = start(ai, "127.0.0.8")
+                for _ in range(100):
+                    task = send(ai, "tasks/get", {"taskId": jid}, "127.0.0.8",
+                                TAKES_TASKS)[2]["result"]
+                    if task["status"] != "working":
+                        break
+                    time.sleep(0.1)
+                assert re.fullmatch(f"job {jid}: ask_ai: completed [0-9] s ago\n",
+                                    say(ai, "jobs", "127.0.0.8", action="list"))
+                assert task["status"] == "completed" and task["result"] == \
+                    call(ai, "jobs", "127.0.0.8", meta={}, action="result", job=jid)[0], task
+                up.cancelled.clear()
+                up.reply = lambda r: (200, ANSWERS["openai"], 30)
+                count = len(up.requests)
+                jid = start(ai, "127.0.0.8")
+                wait_for(lambda: len(up.requests) == count + 1)
+                assert send(ai, "tasks/cancel", {"taskId": jid}, "127.0.0.8",
+                            TAKES_TASKS)[0] == 200
+                assert up.cancelled.wait(5)
+                assert say(ai, "wait", "127.0.0.8", seconds=5, jobs=[jid]) == \
+                    f"[askai: job {jid}, ask_ai, cancelled.]\n"
+                up.reply = lambda r: (200, ANSWERS["openai"], 2)
+                task, _ = call(ai, "ask_ai", "127.0.0.8", meta=TAKES_TASKS, prompt="Q")
+                assert task["resultType"] == "task", task
+                assert re.search(f"^task {task['taskId']}: ask_ai: running for [0-9] s$",
+                                 say(ai, "jobs", "127.0.0.8", action="list"), re.M)
+                result, took = call(ai, "wait", "127.0.0.9", meta=TAKES_TASKS, seconds=2)
+                assert result["resultType"] == "complete" and \
+                    text_of(result) == "Nothing happened in 2 s." and 1.8 <= took < 3, \
+                    (result, took)
+                assert say(ai, "wait", "127.0.0.8", seconds=5, jobs=[task["taskId"]]) == \
+                    f"[askai: task {task['taskId']}, ask_ai, completed: call jobs with " \
+                    f"the action result and job {task['taskId']} for its result.]\n"
+
+                # The metrics count the jobs and the refusals, the timers set,
+                # and the waits that wait now.  Only two lines of --verbose
+                # have the prompt: the start of the ask call and the end of
+                # the job.
+                values = ai.metrics()
+                assert values["askai_mcp_jobs_opened_total"] == 13 and \
+                    values["askai_mcp_jobs_refused_total"] == 1 and \
+                    values["askai_mcp_tasks_opened_total"] == 1 and \
+                    values["askai_mcp_timers_set_total"] == 10 and \
+                    values["askai_mcp_waits"] == 0, values
+                assert [re.sub(r"\d+\.\d+", "N", re.sub(r"[0-9a-f]{32}", "ID", line))
+                        for line in ai.log if "SECRET" in line] == [
+                    'askai: ask call N from anonymous: prompt 6 bytes, no thread, '
+                    '"SECRET"\n',
+                    "askai: tool call ask_ai from anonymous answered after N s (1 byte); "
+                    "job ID; ask call N, 1 turn, 0 tool calls; arguments "
+                    '{"prompt":"SECRET"}\n'], ai.log
+
+                # A job that has ended is unread in the list until jobs
+                # returns its result.  A wait for any job then does not
+                # report it.
+                src = "127.0.1.1"
+                up.reply = lambda r: (200, ANSWERS["openai"], 0.3)
+                jid = start(ai, src)
+                for _ in range(50):
+                    listed = say(ai, "jobs", src, action="list")
+                    if "running" not in listed:
+                        break
+                    time.sleep(0.1)
+                assert re.fullmatch(f"job {jid}: ask_ai: completed [0-9] s ago, unread\n",
+                                    listed), listed
+                assert say(ai, "jobs", src, action="result", job=jid) == "A"
+                assert re.fullmatch(f"job {jid}: ask_ai: completed [0-9] s ago\n",
+                                    say(ai, "jobs", src, action="list"))
+                assert say(ai, "wait", src, seconds=1) == "Nothing happened in 1 s."
+
+                # A wait that names a job that runs ends when a timer of the
+                # owner fires.
+                src = "127.0.1.7"
+                up.reply = lambda r: (200, ANSWERS["openai"], 5)
+                jid = start(ai, src)
+                n = re.fullmatch(r"Timer (\d+) will fire in 1 s\.",
+                                 say(ai, "timer", src, seconds=1, note="t")).group(1)
+                result, took = call(ai, "wait", src, seconds=10, jobs=[jid])
+                assert text_of(result) == f"[askai: timer {n} fired: t.]\n" and took < 2.5, \
+                    (result, took)
+                say(ai, "jobs", src, action="cancel", job=jid)
+                assert say(ai, "wait", src, seconds=5, jobs=[jid]) == \
+                    f"[askai: job {jid}, ask_ai, cancelled.]\n"
+
+                # The list has the newest job first, and the timers by
+                # number, also after a timer has the place of a cancelled
+                # one.
+                src = "127.0.1.8"
+                up.reply = lambda r: (200, ANSWERS["openai"])
+                first = start(ai, src)
+                assert say(ai, "wait", src, seconds=5, jobs=[first]) == done(first)
+                second = start(ai, src)
+                assert say(ai, "wait", src, seconds=5, jobs=[second]) == done(second)
+
+                def timer(src):
+                    return int(re.fullmatch(r"Timer (\d+) will fire in 60 s\.",
+                                            say(ai, "timer", src, seconds=60)).group(1))
+                numbers = [timer(src) for _ in range(3)]
+                assert say(ai, "jobs", src, action="cancel", timer=numbers[0]) == \
+                    f"Cancelled timer {numbers[0]}."
+                numbers.append(timer(src))
+                listed = say(ai, "jobs", src, action="list")
+                assert re.findall(r"^job ([0-9a-f]{32}):", listed, re.M) == [second, first], \
+                    listed
+                assert [int(n) for n in re.findall(r"^timer (\d+):", listed, re.M)] == \
+                    numbers[1:], listed
+
+                # A timer that has fired is unread in the list until a wait
+                # reports it.  It cannot be cancelled, and the answer says
+                # so.  A wait then reports the timer at once, and the owner
+                # has nothing left.
+                src = "127.0.1.6"
+                n = re.fullmatch(r"Timer (\d+) will fire in 1 s\.",
+                                 say(ai, "timer", src, seconds=1, note="n")).group(1)
+                time.sleep(1.3)
+                assert re.fullmatch(f"timer {n}: fired [0-9] s ago, unread: n\n",
+                                    say(ai, "jobs", src, action="list"))
+                refused(ai, "jobs", f"Timer {n} has fired, and a call of wait reports it.",
+                        src, action="cancel", timer=int(n))
+                result, took = call(ai, "wait", src, seconds=5)
+                assert text_of(result) == f"[askai: timer {n} fired: n.]\n" and took < 0.5, \
+                    (result, took)
+                assert say(ai, "jobs", src, action="list") == "You have no jobs and no timers."
+
+                # A wait ends with an error as askai stops.
+                with socket.create_connection(("127.0.0.1", ai.port), 10,
+                                              ("127.0.0.10", 0)) as sock:
+                    sock.sendall(rpc_request(5, {"name": "wait", "arguments": {
+                        "seconds": 30}}, "tools/call"))
+                    wait_for(lambda: waits(ai) == 1)
+                    ai.proc.send_signal(signal.SIGTERM)
+                    status, body = Replies(sock).next()
+                    assert status == 503 and \
+                        body["error"]["message"] == "Server is shutting down", body
+                assert ai.proc.wait(timeout=5) == 0, "".join(ai.log)
+
+            # Anonymous addresses have room for 512 owners, half of the
+            # table of owners.  A timer of the next address gets the answer
+            # that askai has no room.
+            with Askai(binary, "-u", up.url(), "--client-jobs") as ai:
+                for k in range(512):
+                    assert say(ai, "timer", f"127.0.{2 + k // 256}.{k % 256}",
+                               seconds=3600).startswith("Timer "), k
+                refused(ai, "timer", "askai has no room for more jobs, timers or waits "
+                        "now; try again later.", "127.0.9.1", seconds=1)
+
+            # askai stops at once, with exit status 0, while a job runs: a
+            # job that waits for the upstream, and a job whose turn waits in
+            # the agenda of its ask call.
+            up.reply = lambda r: (200, ANSWERS["openai"], 30)
+            with Askai(binary, "-u", up.url(), "--client-jobs") as ai:
+                count = len(up.requests)
+                start(ai)
+                wait_for(lambda: len(up.requests) == count + 1)
+            script[:] = [lambda r: (200, turn_stream([("w1", "wait", json.dumps(
+                {"seconds": 30}))]))]
+            up.reply = lambda r: script.pop(0)(r) if script else \
+                (200, turn_stream(text="A"))
+            with Askai(binary, "-u", up.url(), "--client-jobs", "--upstream-tools",
+                       "--git", repo) as ai:
+                count = len(up.requests)
+                jid = start(ai)
+                wait_for(lambda: len(up.requests) == count + 1)
+                assert re.fullmatch(f"job {jid}: ask_ai: running for [0-9] s\n",
+                                    say(ai, "jobs", action="list"))
+    finally:
+        up.reply = hold
+    print("client jobs: background, jobs, wait and timer with --client-jobs, by "
+          "owner, across loops and as tasks: PASS")
 
 
 def check_http(binary, up):
@@ -2603,6 +3147,8 @@ def check_configuration(binary, up):
     fails("--tool-name", "ask ai", message="tool names")
     fails("-u", up.url(), "--upstream-tools", "--tool-name", "wait",
           message="--tool-name: askai has another tool named wait")
+    fails("-u", up.url(), "--client-jobs", "--tool-name", "timer",
+          message="--tool-name: askai has another tool named timer")
     fails("--max-body", "1X", message="invalid --max-body")
     fails("--max-head", "65536", message="invalid --max-head")
     fails("--max-depth", "0", message="invalid --max-depth")
@@ -3101,10 +3647,10 @@ def check_logs(binary, up):
     askai does not offer stops askai with the list of the tools that it
     offers.  A client's tool call that fails or is refused is logged with
     its error.  With --verbose, askai logs each tool call of a client with
-    its arguments, the start of each ask call, each upstream turn, each tool
-    call of a turn with the error of a failure, each compaction and each
-    notice about the context; of a note's text and of compact's summary only
-    the size.  No line has a token, an API key, a password or the query of
+    its arguments, the job that a call of background starts, the start of
+    each ask call, each upstream turn, each tool call of a turn with the
+    error of a failure, each compaction and each notice about the context;
+    of a note's text and of compact's summary only the size.  No line has a token, an API key, a password or the query of
     the URL."""
     def told(ai):
         return [line.removeprefix("askai: ").rstrip("\n") for line in ai.log]
@@ -3143,7 +3689,11 @@ def check_logs(binary, up):
                 "tool ask_ai: built in; on, the ask tool",
                 "tool man: built in; off, --man turns it on",
                 "tool git: built in; off, --git PATH turns it on",
-                "tool notes: built in; off, --notes DIR turns it on"], told(ai)
+                "tool notes: built in; off, --notes DIR turns it on",
+                "tool background: built in; off, --client-jobs turns it on",
+                "tool jobs: built in; off, --client-jobs turns it on",
+                "tool wait: built in; off, --client-jobs turns it on",
+                "tool timer: built in; off, --client-jobs turns it on"], told(ai)
 
         # Without --verbose, a failed call is still logged, with its error
         # but without its arguments.
@@ -3429,6 +3979,22 @@ def check_logs(binary, up):
             ai.wait_log(r'^askai: tool call ask_ai from anonymous failed after \d+\.\d s '
                         r'\(0 bytes\); ask call \d+\.\d+, 2 turns, 1 tool call, stopped at '
                         r'--max-turns; arguments \{"prompt":"Q"\}$')
+
+        # With --client-jobs, the four tools of jobs are on.  A call of
+        # background logs the job that it starts, and the line of the job's
+        # end names the job and has the arguments of the job's call.
+        with Askai(binary, "-u", up.url(), "--verbose", "--client-jobs") as ai:
+            has(ai, "tool background: built in; on", "tool jobs: built in; on",
+                "tool wait: built in; on", "tool timer: built in; on")
+            status, _, body = ai.rpc("tools/call", {"name": "background", "arguments": {
+                "tool": "ask_ai", "arguments": {"prompt": "Q"}}})
+            assert status == 200 and not body["result"].get("isError"), body
+            jid = re.search(r"Started job (\w{32})\.", text_of(body["result"])).group(1)
+            ai.wait_log(rf"^askai: tool call background from anonymous became job {jid}, "
+                        r"a call of ask_ai$")
+            ai.wait_log(r"^askai: tool call ask_ai from anonymous answered after \d+\.\d s "
+                        rf"\(1 byte\); job {jid}; ask call \d+\.\d+, 1 turn, 0 tool calls; "
+                        r'arguments \{"prompt":"Q"\}$')
     up.reply = lambda request: (200, ANSWERS["openai"])
 
     print("logs: the upstream, tools, plugins and policy as askai starts, the "
@@ -7591,9 +8157,10 @@ def check_plugin(binary, up, plugin):
     """askai loads the plugins that the configuration file lists.
 
     The test plugin (src/test_plugin.c) has five tools.  The check lists
-    and calls test_echo, grants it to a role by name, reloads the
-    configuration, calls it from a turn of an ask call, and then starts
-    askai with files that askai must refuse.  Then it gives the plugin
+    and calls test_echo, runs a call of test_state that fails as a client's
+    job, grants test_echo to a role by name, reloads the configuration,
+    calls it from a turn of an ask call, and then starts askai with files
+    that askai must refuse.  Then it gives the plugin
     options, which test_config shows, and starts askai with options that
     askai must refuse.
     """
@@ -7748,6 +8315,8 @@ def check_plugin(binary, up, plugin):
                 "askai: tool man: built in; on",
                 "askai: tool git: built in; off, --git PATH turns it on",
                 "askai: tool notes: built in; off, --notes DIR turns it on"] + [
+                f"askai: tool {name}: built in; off, --client-jobs turns it on"
+                for name in ("background", "jobs", "wait", "timer")] + [
                 f"askai: tool {t['name']}: plugin test ({plugin}); on"
                 for t in tools[2:]], listed
             assert f"askai: plugin test: {plugin}; tools test_echo, test_state, " \
@@ -7781,6 +8350,32 @@ def check_plugin(binary, up, plugin):
             thread.join(5)
             assert results[0][0] == 202 and results[0][2] is None, results
             assert time.monotonic() - start < 1.5, "the call waited on"
+
+        # With --client-jobs, background starts a call of a plugin's tool as
+        # a job.  A call that fails with an error makes a failed job: a wait
+        # and the list say so, and jobs answers with the error of a direct
+        # call, in either era.
+        with Askai(binary, "-c", path, "--client-jobs") as ai:
+            args = {"wait_ms": 200, "fail": True}
+            started = text_of(call(ai, "background", {"tool": "test_state",
+                                                      "arguments": args})["result"])
+            match = re.fullmatch(r"Started job ([0-9a-f]{32})\. Call wait to wait for "
+                                 r"it, then jobs with the action result and this id\.",
+                                 started)
+            assert match, started
+            jid = match.group(1)
+            said = text_of(call(ai, "wait", {"seconds": 5, "jobs": [jid]})["result"])
+            assert said == f"[askai: job {jid}, test_state, failed: call jobs with the " \
+                f"action result and job {jid} for its result.]\n", said
+            listed = text_of(call(ai, "jobs", {"action": "list"})["result"])
+            assert re.fullmatch(f"job {jid}: test_state: failed [0-9] s ago\n", listed), \
+                listed
+            for rpc in (ai.rpc, ai.modern):
+                direct = rpc("tools/call", {"name": "test_state", "arguments": args})[2]
+                stored = rpc("tools/call", {"name": "jobs", "arguments": {
+                    "action": "result", "job": jid}})[2]
+                assert "error" in direct and stored["error"] == direct["error"], \
+                    (stored, direct)
 
         # A role grants the tool by its name.  A reload reads the names
         # from the registry that askai started with.
@@ -9712,7 +10307,7 @@ def check_classes(binary, up):
             values = ai.metrics()
             assert values["askai_jobs_preempted_total"] == 1 and \
                 values["askai_upstream_cancels_total"] == 1, values
-        line = next(l for l in ai.log if "jobs: " in l)
+        line = next(l for l in ai.log if l.startswith("askai: jobs: "))
         assert line.rstrip().endswith("; 1 cancelled upstream; 1 preempted"), line
     finally:
         up.reply = hold
@@ -9730,7 +10325,8 @@ def main():
     up = Upstream()
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
-                      check_modern, check_mcp_tasks, check_http, check_large_bodies,
+                      check_modern, check_mcp_tasks, check_client_jobs, check_http,
+                      check_large_bodies,
                       check_sse,
                       check_answers, check_dense, check_connections,
                       check_cancellation, check_limits, check_loops, check_turn_order,

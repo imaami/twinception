@@ -138,6 +138,7 @@ The first set is the tools of the clients.  A client lists them with
 | `git` | with `git` |
 | `notes` | with `notes` |
 | `test_task` | with `"test-task": true` |
+| `background`, `jobs`, `wait` and `timer` | with `"client-jobs": true` |
 | the tools of the plugins | with `plugins` |
 
 The second set is the tools of the upstream model.  `askai` offers them
@@ -145,8 +146,12 @@ only with `"upstream-tools": true`, and only in the turns of an `ask_ai`
 call (section [Tools for the upstream model](#tools-for-the-upstream-model)).
 They are `man`, `git`, `notes` and the plugin tools whose kind has the flag
 `TOOL_LENT` (`src/tool.h`), and `compact`, `background`, `jobs`, `wait` and
-`timer`.  The last five never appear in `tools/list`, and a role cannot name
-them.
+`timer`.  `compact` never appears in `tools/list`, and a role cannot name
+it.  `background`, `jobs`, `wait` and `timer` appear in `tools/list` only
+with `"client-jobs": true`, as tools of the clients.  A role can then name
+them in `tools`, but never in `upstream`.  The turns of an `ask_ai` call
+get these four tools with a definition of their own, and their jobs and
+timers are not those of the client.
 
 Without any of these options, `askai` offers only `ask_ai`.  A file does not
 change that: a member of the file turns on a tool as the option of the same
@@ -584,6 +589,25 @@ The value is an integer number of seconds from 1 to 3600.  The default is
 
 At this deadline, `askai` sends SIGTERM to the process group of `git`, and
 SIGKILL one second later, and the call fails.
+
+#### `client-jobs`
+
+The value is `true`.  The default is off.
+
+With `client-jobs`, `askai` offers clients the tools `background`, `jobs`,
+`wait` and `timer`, as their role allows.  `background` starts a call of
+another tool of the client as a job, and answers at once with the job's id.
+`jobs` lists the client's jobs and timers, returns the result of an ended
+job, and cancels a job or a timer.  `wait` waits up to 10 minutes for a job
+to end or a timer to fire, and `timer` sets a timer of up to an hour.  The
+jobs and the timers belong to the client's identity, to the Unix user of a
+client of a Unix socket without an identity, or else to the client's
+address.  `askai` stores the result of a job for up to an hour after the job
+ends.  An owner runs at most 8 jobs and tasks at once, and has at most 8
+timers and 4 waits.  A change of `client-jobs` needs a restart.  The
+section [Background jobs and timers for
+clients](../README.md#background-jobs-and-timers-for-clients) of `README.md`
+describes the tools in detail.
 
 #### `tool-name`
 

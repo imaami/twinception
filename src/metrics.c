@@ -96,6 +96,8 @@ static struct {
 	VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
 	      struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
 
+static_assert(LEDGER_RUNNING == 8, "the help of askai_mcp_jobs_refused_total says");
+
 static struct metrics_entry const table[] = {
 	LOOP_HIST("askai_loop_turn_seconds", "Time an event loop turn took.", "", turn),
 	LOOP_HIST("askai_loop_step_seconds", "Time a step took.",
@@ -235,6 +237,15 @@ static struct metrics_entry const table[] = {
 	TASKS_ALL("askai_tasks_ended_total", nullptr, "end=\"abandoned\"", abandoned),
 	LEDGERS("askai_mcp_tasks_opened_total", "Tool calls that became tasks of MCP's "
 	        "tasks extension.", "", opened, COUNTER),
+	LEDGERS("askai_mcp_jobs_opened_total", "Calls of background of clients that "
+	        "started jobs.", "", jobs, COUNTER),
+	LEDGERS("askai_mcp_jobs_refused_total", "Calls of background of clients that "
+	        "started no job, because 8 jobs and tasks of the owner ran.", "",
+	        refused, COUNTER),
+	LEDGERS("askai_mcp_timers_set_total", "Timers that clients set.", "", timers,
+	        COUNTER),
+	LEDGERS("askai_mcp_waits", "Calls of wait of clients that wait now.", "", waits,
+	        GAUGE),
 	LEDGERS("askai_mcp_tasks_ended_total", "Tasks and jobs whose calls ended, by "
 	        "status.", "status=\"completed\"", ended[LEDGER_COMPLETED], COUNTER),
 	LEDGERS("askai_mcp_tasks_ended_total", nullptr, "status=\"failed\"",

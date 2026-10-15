@@ -195,7 +195,8 @@ config_usage (struct config const *cfg,
 	        "                            full, askai compacts the conversation\n"
 	        "                            (default: n_ctx from the /props of\n"
 	        "                            llama-server, else unknown; 0 = the default)\n"
-	        "\n"
+	        "\n");
+	fprintf(out,
 	        "MCP server:\n"
 	        "  -l, --listen ADDR         [host:]port, where host is 127.0.0.1 if it\n"
 	        "                            is left out; unix:PATH for a Unix socket; or\n"
@@ -233,6 +234,12 @@ config_usage (struct config const *cfg,
 	        "                            deadline of a git call, at which git gets\n"
 	        "                            SIGTERM, and SIGKILL one second later\n"
 	        "                            (default 30)\n"
+	        "      --client-jobs         also offer clients the tools background,\n"
+	        "                            jobs, wait and timer, as their role allows:\n"
+	        "                            background runs a call of another tool as a\n"
+	        "                            job, whose result askai stores for an hour;\n"
+	        "                            timer sets a timer; wait waits for jobs and\n"
+	        "                            timers\n"
 	        "      --test-man-recheck SECONDS\n"
 	        "                            test aid: once the lookup of the file of a\n"
 	        "                            page (man -w) is older than this, the next\n"
@@ -472,7 +479,7 @@ enum {
 	OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO,
 	OPT_MAN, OPT_TEST_MAN_RECHECK, OPT_TEST_TASK, OPT_GIT, OPT_GIT_TIMEOUT,
 	OPT_TLS_CERT, OPT_TLS_KEY, OPT_TLS_ALLOW_RSA, OPT_UPSTREAM_TOOLS, OPT_NOTES,
-	OPT_MAX_TURNS, OPT_CONTEXT, OPT_API
+	OPT_MAX_TURNS, OPT_CONTEXT, OPT_API, OPT_CLIENT_JOBS
 };
 
 static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
@@ -508,6 +515,7 @@ static struct option const options[] = {
 	{ "test-man-recheck", required_argument, nullptr, OPT_TEST_MAN_RECHECK },
 	{ "git",              required_argument, nullptr, OPT_GIT },
 	{ "git-timeout",      required_argument, nullptr, OPT_GIT_TIMEOUT },
+	{ "client-jobs",      no_argument,       nullptr, OPT_CLIENT_JOBS },
 	{ "max-head",         required_argument, nullptr, OPT_MAX_HEAD },
 	{ "max-fields",       required_argument, nullptr, OPT_MAX_FIELDS },
 	{ "head-timeout",     required_argument, nullptr, OPT_HEAD_TIMEOUT },
@@ -861,6 +869,7 @@ config_apply (struct config *cfg,
 	case OPT_TLS_KEY: cfg->tls_key = arg; break;
 	case OPT_TLS_ALLOW_RSA: cfg->flags |= CFG_TLS_RSA; break;
 	case OPT_UPSTREAM_TOOLS: cfg->flags |= CFG_UPSTREAM_TOOLS; break;
+	case OPT_CLIENT_JOBS: cfg->flags |= CFG_CLIENT_JOBS; break;
 	case OPT_NOTES: cfg->notes = arg; break;
 	case 'o':
 		config_push(cfg->origins, &cfg->n_origins, arg);

@@ -68,6 +68,9 @@ enum {
 /** Tool calls that a streamed answer may make, at most. */
 enum { JOB_CALLS = 16 };
 
+/** Jobs that home queues for one principal and one class, at most. */
+enum { JOB_QUEUED = 8 };
+
 /** In a running job's progress, beside its tokens: the latest was thinking. */
 static constexpr uint32_t JOB_THINKING = UINT32_C(1) << 31;
 
