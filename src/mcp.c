@@ -5770,6 +5770,54 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, e, !ok);
 }
 
+/* The marker of a byte that is not shown as text in a note's view. */
+static char const view_open[] = "\xe2\x9f\xa6";   /* U+27E6 */
+static char const view_close[] = "\xe2\x9f\xa7";  /* U+27E7 */
+
+/* Appends to @p d the view of a note of the @p len bytes at @p s that is not
+ * UTF-8 text, or that has a NUL byte: a line that says how to read the
+ * view, then the bytes as UTF-8 where they are valid UTF-8, each other byte
+ * and each NUL as ⟦XX⟧, its value in hexadecimal, and each ⟦ of the text as
+ * ⟦⟦.  The view tells every byte of the note, which stays as it is.
+ * Returns 0 or ENOMEM. */
+static int
+mcp_notes_view (struct dstr *d,
+                char const  *s,
+                size_t       len)
+{
+	static char const hex[] = "0123456789ABCDEF";
+	size_t const open = sizeof view_open - 1;
+	if (!dstr_printf(d, "[askai: the note is not UTF-8 text: %zu bytes.  Each byte "
+	                 "that is not part of UTF-8 text, and each NUL, is shown as "
+	                 "%sXX%s, its value in hexadecimal, and a %s of the text as "
+	                 "%s%s.  The note itself is not changed.]\n\n", len, view_open,
+	                 view_close, view_open, view_open, view_open))
+		return ENOMEM;
+	for (size_t i = 0; i < len; ) {
+		size_t run = jb_utf8(s + i, len - i);
+		char const *nul = memchr(s + i, '\0', run);
+		if (nul)
+			run = (size_t)(nul - s) - i;
+		/* The valid text, with each ⟦ in it doubled. */
+		for (size_t at = i; at < i + run; ) {
+			char const *m = memmem(s + at, i + run - at, view_open, open);
+			size_t n = m ? (size_t)(m - s) - at + open : i + run - at;
+			if (!dstr_cat_n(d, s + at, n) || (m && !dstr_cat_n(d, view_open, open)))
+				return ENOMEM;
+			at += n;
+		}
+		i += run;
+		if (i == len)
+			break;
+		unsigned char b = (unsigned char)s[i++];
+		char x[] = { hex[b >> 4], hex[b & 15] };
+		if (!dstr_cat_n(d, view_open, open) || !dstr_cat_n(d, x, 2) ||
+		    !dstr_cat_n(d, view_close, sizeof view_close - 1))
+			return ENOMEM;
+	}
+	return 0;
+}
+
 static void mcp_slot_notes_got_copy (struct mcp_slot *slot, struct span text);
 
 /* Answers the read action with the output of git cat-file, or goes on with
@@ -5786,11 +5834,8 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 	}
 	char const *s = (char const *)text.ptr;
 	size_t utf8 = text.len ? jb_utf8(s, text.len) : 0;
-	char why[96];
-	int e = !r && utf8 < text.len
-	      ? mcp_slot_say(slot, &ESC(why, util_format(why, sizeof why, "That note is not "
-	                                                 "UTF-8 text: %zu bytes. It cannot "
-	                                                 "be shown here.", text.len)), 1)
+	int e = !r && (utf8 < text.len || memchr(s, '\0', text.len))
+	      ? mcp_notes_view(&slot->answer, s, text.len)
 	      : !r ? mcp_slot_say(slot, &ESC(s, utf8), 1)
 	      : r == ENOENT ? mcp_slot_say(slot, &TEXT("No note has that name."), 1)
 	      : r == EISDIR ? mcp_slot_say(slot, &TEXT("That name is a directory of "
@@ -5856,18 +5901,23 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 	struct span text = {};
 	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text) : EIO;
 	char const *s = (char const *)text.ptr;
-	size_t len = text.len ? jb_utf8(s, text.len) : 0;
+	size_t len = text.len;
+	/* A note that is not UTF-8 text goes in as its view. */
+	dstr_auto view = DSTR_INIT;
+	if (!r && text.len && (jb_utf8(s, text.len) < text.len || memchr(s, '\0', len))) {
+		if (mcp_notes_view(&view, s, text.len)) {
+			child_destroy(&slot->child);
+			mcp_req_fail(req, ENOMEM);
+			return;
+		}
+		s = dstr_get(&view);
+		len = dstr_len(&view);
+	}
 	size_t n = mcp_clip(s, len, mcp_req_lend_max(req));
 	char more[128];
-	size_t m = len < text.len
-	         ? util_format(more, sizeof more, "[askai: the note is not UTF-8 text: "
-	                       "%zu bytes.]", text.len)
-	         : n < len ? util_format(more, sizeof more, "\n[askai: bytes 0 to %zu of "
+	size_t m = n < len ? util_format(more, sizeof more, "\n[askai: bytes 0 to %zu of "
 	                                 "%zu; read the note with \"offset\": %zu for the "
 	                                 "rest.]", n, len, n) : 0;
-	/* A note that is not text is not shown at all. */
-	if (len < text.len)
-		n = 0;
 	struct mcp_piece const p[] = {
 		r ? TEXT("[askai: the note could not be read.]") : ESC(s, n),
 		ESC(more, m),
@@ -7470,7 +7520,10 @@ mcp_notes_schema (enum notes_side side)
 			"note cannot be changed or removed, so add a new note instead. "
 			"When the context fills up, the conversation is compacted to the "
 			"task, a summary, the list of your notes and the start of your "
-			"newest note; read the others when you need them. The client can "
+			"newest note; read the others when you need them. A note that is "
+			"not UTF-8 text, such as code in an old encoding, reads with each "
+			"other byte as \xe2\x9f\xa6XX\xe2\x9f\xa7, its value in hexadecimal. "
+			"The client can "
 			"read your notes, and can keep notes in this thread too: list and "
 			"read show them with notebook other, and copy puts one of them "
 			"into your notebook byte for byte, for a file that you need as it "
@@ -7481,7 +7534,10 @@ mcp_notes_schema (enum notes_side side)
 			"its text. The notes are in threads. An add without a thread "
 			"starts a new thread and names it. Give that thread to add more "
 			"notes to it, to list them, or to read one. A note cannot be "
-			"changed or removed. A thread has two notebooks: yours, and that "
+			"changed or removed. A note that is not UTF-8 text, such as code "
+			"in an old encoding, reads with each other byte as "
+			"\xe2\x9f\xa6XX\xe2\x9f\xa7, its value in hexadecimal. A thread "
+			"has two notebooks: yours, and that "
 			"of the other AI that the ask tool asks. An ask call with a "
 			"thread keeps the other AI's notes in it, and its answer names "
 			"the thread. list and read show the other AI's notes with "

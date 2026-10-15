@@ -662,6 +662,32 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc",
               for name in members}
 
 
+def note_view(data):
+    """The view of the notes tool of a note of the bytes @p data that is not
+    UTF-8 text: UTF-8 where valid, each other byte and each NUL as ⟦XX⟧, and
+    each ⟦ of the text as ⟦⟦."""
+    out = []
+    i = 0
+    while i < len(data):
+        ch = None
+        for n in (1, 2, 3, 4):
+            try:
+                ch = data[i:i + n].decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                ch = None
+        if ch is not None and ch != "\0":
+            out.append("\u27e6\u27e6" if ch == "\u27e6" else ch)
+            i += n
+        else:
+            out.append("\u27e6%02X\u27e7" % data[i])
+            i += 1
+    return (f"[askai: the note is not UTF-8 text: {len(data)} bytes.  Each byte that "
+            "is not part of UTF-8 text, and each NUL, is shown as \u27e6XX\u27e7, its "
+            "value in hexadecimal, and a \u27e6 of the text as \u27e6\u27e6.  The note "
+            "itself is not changed.]\n\n" + "".join(out))
+
+
 def grouped(members):
     """The configuration file's object for @p members, the options and the
     other members in one object: each option goes into its group's
@@ -7084,7 +7110,18 @@ def check_notes(binary, up):
             for name in ("found.md", "copies/f.md"):
                 assert call({"action": "read", "file": name, "thread": shared}) == "found\n"
             assert call({"action": "read", "file": "img/raw.bin", "thread": shared}) == \
-                f"That note is not UTF-8 text: {len(raw)} bytes. It cannot be shown here."
+                note_view(raw)
+            # A C source in Latin-1, with a string literal whose bytes matter
+            # and an escape of C: the view shows each byte, and the copy keeps
+            # them.
+            latin = b'char *s = "caf\xe9 \xab\x00"; /* \\x41 \xe2\x9f\xa6 */\n'
+            assert call({"action": "add", "file": "legacy.c", "thread": shared,
+                         "content": "data:;base64," + base64.b64encode(latin).decode()}) \
+                == "Noted."
+            view = call({"action": "read", "file": "legacy.c", "thread": shared})
+            assert view == note_view(latin) and view.endswith(
+                'char *s = "caf\u27e6E9\u27e7 \u27e6AB\u27e7\u27e600\u27e7"; '
+                '/* \\x41 \u27e6\u27e6 */\n'), view
             mine = f"{notes}/{who}/client/{shared}"
             assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
                                    "notes:img/raw.bin"], capture_output=True, check=True,
@@ -7870,7 +7907,7 @@ def check_turns(binary, up):
                 "notes reads with \"notebook\": \"other\".]\n\n[askai: the notes you "
                 "kept in earlier calls on this thread, oldest first:]"), \
                 prompt(up.requests[count])
-            # A newest note that is not text does not go into the prompt.
+            # A newest note that is not text goes into the prompt as its view.
             book = f"{notes}/anonymous/upstream/{mine}"
             subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
                            input=b"commit refs/heads/notes\ncommitter askai <askai> "
@@ -7881,8 +7918,8 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Once more", thread=mine)
             assert prompt(up.requests[count]).endswith(
-                "[askai: your newest note, z.bin:]\n\n[askai: the note is not UTF-8 "
-                "text: 3 bytes.]\n"), prompt(up.requests[count])[-200:]
+                "[askai: your newest note, z.bin:]\n\n" + note_view(b"\xff\x00\xfe")
+                + "\n"), prompt(up.requests[count])[-400:]
 
         # A small context: windows of an eighth of it, a reminder to write
         # notes past half, a warning past two thirds, and once full, the
