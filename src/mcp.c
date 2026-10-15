@@ -121,10 +121,10 @@ enum {
 	                             at most */
 	SUMMARY_MAX  = 16 << 10,  /* bytes of compact's summary */
 	JOBS_MAX     = 8,         /* jobs that an ask call's turns may start */
-	TIMERS_MAX   = 8,         /* timers they may have set at once */
+	TIMERS_MAX   = LEDGER_TIMERS,  /* timers they may have set at once */
 	WAIT_MAX     = 600,       /* seconds that a wait may take */
 	TIMER_MAX    = 3600,      /* seconds that a timer may be set to */
-	TIMER_NOTE   = 200,       /* bytes of a timer's note */
+	TIMER_NOTE   = LEDGER_NOTE,    /* bytes of a timer's note */
 	TRACE_MAX    = 48,        /* tool calls the trace tells of */
 	TRACE_ARGS   = 200,       /* bytes of a call's arguments in the trace
 	                             and in the log */
@@ -593,35 +593,28 @@ struct mcp_req {
 	                                           log */
 };
 
-/* A timer that a turn set: when it fires, its number, and its note. */
-struct mcp_timer {
-	uint64_t due;               /* loop time; 0: none set */
-	uint32_t id;
-	uint32_t len;               /* bytes of note */
-	char     note[TIMER_NOTE];
-};
-
 /* What an ask call's turns have under way besides themselves: the jobs
  * they started in the background, the timers they set, a wait call that
  * waits for those, what happened that the next result or message says, and
  * the answers they gave before what happened woke them. */
 struct mcp_agenda {
-	struct mcp_slot   jobs[JOBS_MAX];      /* by number - 1 */
-	struct mcp_timer  timers[TIMERS_MAX];
-	struct loop_timer alarm;     /* the first due: a timer, or the wait's end */
-	struct dstr       notices;   /* what happened, which none said yet */
-	struct dstr       told;      /* what the result or message being written
-	                                says */
-	struct dstr       said;      /* those answers, each with what woke the
-	                                turns after it, which the reply begins
-	                                with */
-	struct mcp_req   *req;
-	struct mcp_slot  *wait;      /* the wait call's slot, while it waits */
-	uint64_t          wait_end;  /* when it waits no more */
-	uint32_t          wait_for;  /* bits of the jobs it waits for; 0: any */
-	uint32_t          n_jobs;
-	uint32_t          n_timers;  /* timers ever set, their numbers */
-	uint32_t          waited;    /* seconds the wait may take */
+	struct mcp_slot     jobs[JOBS_MAX];      /* by number - 1 */
+	struct ledger_timer timers[TIMERS_MAX];  /* due 0: none set */
+	struct loop_timer   alarm;     /* the first due: a timer, or the wait's
+	                                  end */
+	struct dstr         notices;   /* what happened, which none said yet */
+	struct dstr         told;      /* what the result or message being
+	                                  written says */
+	struct dstr         said;      /* those answers, each with what woke the
+	                                  turns after it, which the reply begins
+	                                  with */
+	struct mcp_req     *req;
+	struct mcp_slot    *wait;      /* the wait call's slot, while it waits */
+	uint64_t            wait_end;  /* when it waits no more */
+	uint32_t            wait_for;  /* bits of the jobs it waits for; 0: any */
+	uint32_t            n_jobs;
+	uint32_t            n_timers;  /* timers ever set, their numbers */
+	uint32_t            waited;    /* seconds the wait may take */
 };
 
 struct mcp {
@@ -2311,18 +2304,18 @@ mcp_req_key (struct mcp_req const *req,
 }
 
 /* The owner of the records in the ledger that @p req opens and reads: the
- * principal of its client.  The principal of an anonymous client is 0, and
- * its owner is then a hash of its address, never 0.  For an upstream job of
- * an anonymous client without a session field, mcp_req_submit() uses the
- * same hash as the job's principal. */
+ * principal of its client, without the bit LEDGER_ANONYMOUS.  The principal
+ * of an anonymous client is 0, and its owner is then a hash of its address
+ * with the bit LEDGER_ANONYMOUS set.  The hash is the one that
+ * mcp_req_submit() uses as the principal of an upstream job of an anonymous
+ * client without a session field. */
 static uint64_t
 mcp_req_owner (struct mcp_req const *req)
 {
 	struct stream const *s = req->s;
 	if (s->principal)
-		return s->principal;
-	uint64_t h = util_hash(~req->mcp->st->seed, s->peer, sizeof s->peer);
-	return h + !h;
+		return s->principal & ~LEDGER_ANONYMOUS;
+	return util_hash(~req->mcp->st->seed, s->peer, sizeof s->peer) | LEDGER_ANONYMOUS;
 }
 
 /* Write the call's key into @p job, and name the request by a handle for
@@ -4019,7 +4012,7 @@ mcp_agenda_alarm (struct loop       *loop,
 	struct mcp_agenda *a = container_of(timer, struct mcp_agenda, alarm);
 	bool fired = false;
 	for (size_t i = 0; i < TIMERS_MAX; ++i) {
-		struct mcp_timer *t = &a->timers[i];
+		struct ledger_timer *t = &a->timers[i];
 		if (!t->due || t->due > loop->now)
 			continue;
 		t->due = 0;
@@ -4322,7 +4315,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 		mcp_slot_result(slot, TEXT("You have 8 timers set, the most at once."), true);
 		return;
 	}
-	struct mcp_timer *t = &a->timers[i];
+	struct ledger_timer *t = &a->timers[i];
 	t->due = req->mcp->loop->now + (uint64_t)secs * NS;
 	t->id = ++a->n_timers;
 	t->len = (uint32_t)len;
