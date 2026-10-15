@@ -33,6 +33,8 @@ enum config_flag {
 	                                    call runs (src/mcp.h) */
 	CFG_CLIENT_JOBS    = 1u << 6,  /**< offer clients background, jobs, wait
 	                                    and timer (src/mcp.h) */
+	CFG_BODY_GIVEN     = 1u << 7,  /**< --max-body was given, which the
+	                                    budgets then do not lower */
 };
 
 /**

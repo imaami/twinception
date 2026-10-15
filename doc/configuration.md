@@ -846,11 +846,15 @@ status 408.
 
 #### `max-body`
 
-The value is a size.  The default is `"8M"`.  It must not exceed
+The value is a size.  The default is `"8M"`, or `body-budget` or
+`client-budget` if that is less.  A value that is given must not exceed
 `body-budget`, nor `client-budget` if that is set.
 
 `max-body` limits a request body.  A larger body gets the status 413.  With
-0, `askai` refuses every body.
+0, `askai` refuses every body.  A file that a client hands `notes` inline
+has at most 4 MiB, and less if `max-body` has no room for 4 MiB in base64
+and 64 KiB of the rest of the request: `askai` advertises that size as
+`maxInlineBytes`.
 
 #### `min-body-rate`
 

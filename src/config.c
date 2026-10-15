@@ -767,6 +767,7 @@ config_apply_number (struct config *cfg,
 		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->head_time);
 		break;
 	case OPT_MAX_BODY:
+		cfg->flags |= CFG_BODY_GIVEN;
 		e = config_parse_size(arg, 0, SIZE_MAX / 2, &lim->body);
 		break;
 	case OPT_MIN_BODY_RATE:
@@ -1365,6 +1366,21 @@ config_file (struct config *cfg)
 	if (status)
 		return status;
 	return config_apply_file(cfg);
+}
+
+/* Lower the body limit, unless --max-body gave it, to the budgets for the
+ * bodies, when they are lower, so that a budget that a configuration of an
+ * askai with a smaller default lowered does not stop askai. */
+static void
+config_fit_body (struct config *cfg)
+{
+	struct httpd_limits *lim = &cfg->http.limits;
+	if (cfg->flags & CFG_BODY_GIVEN)
+		return;
+	if (lim->body > lim->bodies)
+		lim->body = lim->bodies;
+	if (lim->client_bodies && lim->body > lim->client_bodies)
+		lim->body = lim->client_bodies;
 }
 
 /* Check the limits on clients against each other. */
@@ -2101,6 +2117,7 @@ config_policy (struct config *cfg)
 static int
 config_finish (struct config *cfg)
 {
+	config_fit_body(cfg);
 	int status = config_check(cfg);
 	if (status)
 		return status;

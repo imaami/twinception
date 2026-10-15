@@ -643,10 +643,12 @@ model, fills `content` in with the file, by the extension
 
 - `askai` marks the argument `content` of the client's `notes` with
   `x-mcp-file`, and advertises the extension in `server/discover` with
-  `maxInlineBytes` 4 MiB.
+  `maxInlineBytes` 4 MiB, or less if `--max-body` has no room for 4 MiB in
+  base64 and 64 KiB of the rest of a request; `maxSize` of `x-mcp-file`
+  says the same.
 - The value is an RFC 2397 `data:` URI, base64 or percent-encoded, and its
   bytes, decoded, become the note, byte for byte.  A note of a file is at
-  most 4 MiB, and the request at most `--max-body` bytes.
+  most `maxInlineBytes`, and the request at most `--max-body` bytes.
 - `askai` refuses any other value and never fetches one: an `http` URL, or
   `mcp-file:pending`, the start of an upload out of band, which `askai`
   does not take yet.

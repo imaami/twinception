@@ -212,8 +212,9 @@ static char const meta_tasks[] = "io.modelcontextprotocol/tasks";
 static char const meta_files[] = "io.modelcontextprotocol/files";
 
 /* The bytes of the files that one request may hand askai inline, at most,
- * once decoded (maxInlineBytes of the extension). */
-enum { FILES_INLINE = 4 << 20 };
+ * once decoded (maxInlineBytes of the extension), if --max-body has room
+ * for them in base64 and FILES_ROOM bytes of the rest of the request. */
+enum { FILES_INLINE = 4 << 20, FILES_ROOM = 64 << 10 };
 
 /** The header field of a JSON response. */
 #define JSON_FIELD "Content-Type: application/json\r\n"
@@ -381,6 +382,10 @@ struct mcp_static {
 	struct roster            *roster;       /**< the tool calls that run and
 	                                             are not tasks */
 	struct web               *web;          /**< the plugins' HTTP requests */
+	size_t                    files_inline; /**< bytes of a file that a client
+	                                             hands askai inline, at most:
+	                                             FILES_INLINE, or less, as
+	                                             --max-body says */
 	struct uploads           *uploads;      /**< the files that turns
 	                                             attached, if the upstream
 	                                             takes files (ai_upload()) */
@@ -6331,8 +6336,9 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
                     bool                fresh)
 {
 	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
-	static_assert(FILES_INLINE == 4 << 20, "the problem says");
 	struct mcp_req *req = slot->req;
+	size_t most = req->mcp->st->files_inline;
+	char big[96];
 	size_t len = 0;
 	size_t name_len = 0;
 	size_t skip = 0;
@@ -6350,9 +6356,10 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 		: content && (!uri || datauri_parse(uri, uri_len, &data))
 		? TEXT("The content argument must be a data: URI, which the client fills "
 		       "in with a file that the user gave it.")
-		: content && data.size > FILES_INLINE
-		? TEXT("The file has more than 4 MiB, which this server takes at most in "
-		       "one request.")
+		: content && data.size > most
+		? ESC(big, util_format(big, sizeof big, "The file has more than %zu bytes, "
+		                       "which this server takes at most in one request.",
+		                       most))
 		: !content && (!text || !len || len > NOTES_TEXT || memchr(text, '\0', len))
 		? TEXT("The text argument must be a string of 1 byte to 4 MiB, and no NUL.")
 		: (struct mcp_piece){};
@@ -7849,6 +7856,7 @@ mcp_notes_schema (enum notes_side          side,
 	};
 	/* A turn attaches a note if its upstream takes files. */
 	bool files = side == NOTES_UPSTREAM && st && st->uploads;
+	size_t most = st ? st->files_inline : FILES_INLINE;
 	struct json_object *actions = jb_list(json_object_new_string("add"));
 	if (jb_push(actions, json_object_new_string("list")) ||
 	    jb_push(actions, json_object_new_string("read")) ||
@@ -7919,7 +7927,7 @@ mcp_notes_schema (enum notes_side          side,
 		    "description", json_object_new_string(
 			    "For add, instead of text: a file that the user gave, which "
 			    "your client attaches as it is. Do not write it yourself."),
-		    "x-mcp-file", jb_object("maxSize", json_object_new_int64(FILES_INLINE),
+		    "x-mcp-file", jb_object("maxSize", json_object_new_int64((int64_t)most),
 		                            nullptr),
 		    nullptr))) {
 		json_object_put(props);
@@ -8332,9 +8340,8 @@ mcp_static_tails (struct mcp_static  *st,
 			"tools", jb_object(nullptr),
 			"extensions", jb_object(
 				meta_tasks, jb_object(nullptr),
-				meta_files, jb_object("maxInlineBytes",
-				                      json_object_new_int64(FILES_INLINE),
-				                      nullptr),
+				meta_files, jb_object("maxInlineBytes", json_object_new_int64(
+				                              (int64_t)st->files_inline), nullptr),
 				nullptr),
 			nullptr),
 		nullptr);
@@ -8747,6 +8754,15 @@ mcp_static_uploads (struct mcp_static *st)
 	return e;
 }
 
+/* The bytes of a file that a client may hand askai inline with requests of
+ * @p body bytes at most, base64 taking 4 bytes for 3. */
+static size_t
+mcp_files_inline (size_t body)
+{
+	size_t room = body > FILES_ROOM ? (body - FILES_ROOM) / 4 * 3 : 0;
+	return room < FILES_INLINE ? room : FILES_INLINE;
+}
+
 struct mcp_static *
 mcp_static_create (struct config const *cfg,
                    struct manual       *manual,
@@ -8788,6 +8804,7 @@ mcp_static_create (struct config const *cfg,
 		.ledger = ledger,
 		.roster = roster,
 		.web = web,
+		.files_inline = mcp_files_inline(cfg->http.limits.body),
 		.seed = loop_clock(),
 		.lim = cfg->mcp,
 		.turns = cfg->turns

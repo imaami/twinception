@@ -965,6 +965,29 @@ def check_upstream_errors(binary, up):
 
 
 def check_modern(binary, up):
+    # With --max-body 1M, a file that a client hands in inline has at most
+    # (1 MiB - 64 KiB) / 4 * 3 bytes, as the discovery and the schema say,
+    # and a larger one, whose request still fits, is refused.  A budget
+    # below the default --max-body lowers it, and askai starts.
+    most = ((1 << 20) - (64 << 10)) // 4 * 3
+    with tempfile.TemporaryDirectory() as notes, \
+            Askai(binary, "-u", up.url(), "--max-body", "1M", "--notes", notes) as ai:
+        result = ai.modern("server/discover")[2]["result"]
+        assert result["capabilities"]["extensions"][
+            "io.modelcontextprotocol/files"] == {"maxInlineBytes": most}, result
+        [notes_tool] = [t for t in ai.rpc("tools/list")[2]["result"]["tools"]
+                        if t["name"] == "notes"]
+        assert notes_tool["inputSchema"]["properties"]["content"]["x-mcp-file"] == \
+            {"maxSize": most}, notes_tool
+        _, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
+            "action": "add", "file": "f.bin", "content": "data:;base64," +
+            base64.b64encode(b"x" * (most + 1)).decode()}})
+        assert text_of(body["result"]) == f"The file has more than {most} bytes, " \
+            "which this server takes at most in one request.", body
+    for budget in (("--client-budget", "4M"), ("--body-budget", "2M")):
+        with Askai(binary, "-u", up.url(), *budget):
+            pass
+
     with Askai(binary, "-u", up.url()) as ai:
         status, headers, body = ai.modern("server/discover")
         assert status == 200 and "mcp-session-id" not in headers
@@ -7228,7 +7251,7 @@ def check_notes(binary, up):
                     ({"content": "data:,x", "text": "x"},
                      "!Give the text or the content of a note, not both."),
                     ({"content": "data:;base64," + big},
-                     "!The file has more than 4 MiB")):
+                     f"!The file has more than {4 << 20} bytes")):
                 said = call({"action": "add", "file": "in/z.bin", "thread": shared}
                             | arguments)
                 assert said.startswith(why), (arguments, said[:200])
