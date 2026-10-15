@@ -925,8 +925,8 @@ def check_mcp_tasks(binary, up):
         os.chmod(path, 0o600)
         try:
             with Askai(binary, "-c", path, "--verbose") as ai:
-                def call(delay, meta=TAKES_TASKS):
-                    up.reply = lambda r: (200, ANSWERS["openai"], delay)
+                def call(delay, meta=TAKES_TASKS, answer=(200, ANSWERS["openai"])):
+                    up.reply = lambda r: (*answer, delay)
                     start = time.monotonic()
                     status, _, body = ai.modern("tools/call", {
                         "name": "ask_ai", "arguments": {"prompt": "Q"}}, meta=meta,
@@ -952,6 +952,7 @@ def check_mcp_tasks(binary, up):
                     result, took = call(delay, meta)
                     assert result["resultType"] == "complete" and text_of(result) == "A" \
                         and took >= at_least, (result, took)
+                direct = result
 
                 # A slow one is a task after a second, whose record its client
                 # polls until the call's result is in.
@@ -972,10 +973,22 @@ def check_mcp_tasks(binary, up):
                     body["result"]["resultType"] == "complete" and \
                     "result" not in body["result"], body
                 done = poll(tid)
-                assert done["status"] == "completed" and text_of(done["result"]) == "A" \
-                    and done["result"]["resultType"] == "complete", done
+                assert done["status"] == "completed" and done["result"] == direct, \
+                    (done, direct)
                 assert done["ttlMs"] >= 3_600_000 and done["createdAt"] == task["createdAt"] \
                     and done["createdAt"] < done["lastUpdatedAt"], done
+
+                # The task's result is the result of a direct call also when it
+                # is an error of the tool.
+                refused = (401, {"error": {"message": "bad key", "type": "auth"}})
+                failed, _ = call(0, answer=refused)
+                assert failed["isError"] is True and \
+                    text_of(failed) == "Upstream error (HTTP 401): bad key", failed
+                slow, _ = call(2, answer=refused)
+                assert slow["resultType"] == "task", slow
+                ended = poll(slow["taskId"])
+                assert ended["status"] == "completed" and ended["result"] == failed, \
+                    (ended, failed)
 
                 # Another identity's, an unknown id, a client that does not take
                 # tasks, a mismatched Mcp-Name, and a legacy client.
@@ -1015,10 +1028,10 @@ def check_mcp_tasks(binary, up):
                     gone["statusMessage"], gone
 
                 values = ai.metrics(alice)
-                assert values["askai_mcp_tasks_opened_total"] == 2 and \
-                    values['askai_mcp_tasks_ended_total{status="completed"}'] == 1 and \
+                assert values["askai_mcp_tasks_opened_total"] == 3 and \
+                    values['askai_mcp_tasks_ended_total{status="completed"}'] == 2 and \
                     values['askai_mcp_tasks_ended_total{status="cancelled"}'] == 1 and \
-                    values["askai_mcp_tasks_kept"] == 2 and \
+                    values["askai_mcp_tasks_kept"] == 3 and \
                     values["askai_mcp_task_result_bytes"] > 0, values
                 assert total(values, "askai_request_seconds_count", method="tasks/get") >= 4
 

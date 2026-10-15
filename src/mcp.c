@@ -1504,15 +1504,16 @@ mcp_req_put (struct mcp_req         *req,
 }
 
 /* Begin the reply: on an event stream, an event; then
- * '{"jsonrpc":"2.0","id":ID,"result":', or "error", without the id if the
- * request has none; for a task's call only '"result":', or "error", which
- * tasks/get writes into its own result. */
+ * '{"jsonrpc":"2.0","id":ID,', without the id if the request has none, and
+ * @p key, '"result":' or '"error":'.  An empty key begins a reply whose key
+ * and value are those that a record of the ledger has.  The reply of a
+ * task's call begins with only @p key, and the record of the task has the
+ * reply (mcp_req_show()). */
 static int
-mcp_req_open (struct mcp_req *req,
-              bool            error)
+mcp_req_open (struct mcp_req   *req,
+              struct mcp_piece  key)
 {
 	if (req->task) {
-		struct mcp_piece const key = error ? FRAG("\"error\":") : FRAG("\"result\":");
 		buf_consume(&req->reply, buf_peek(&req->reply).len);
 		return mcp_req_put(req, &key, 1);
 	}
@@ -1532,7 +1533,7 @@ mcp_req_open (struct mcp_req *req,
 		id[0],
 		id[1],
 		id[2],
-		error ? FRAG("\"error\":") : FRAG("\"result\":"),
+		key,
 	};
 	buf_consume(&req->reply, buf_peek(&req->reply).len);
 	return mcp_req_put(req, p, ARRAY_SIZE(p));
@@ -1587,7 +1588,7 @@ mcp_req_error_put (struct mcp_req         *req,
 		message,
 		n_data ? FRAG("\",\"data\":") : FRAG("\""),
 	};
-	int e = mcp_req_open(req, true);
+	int e = mcp_req_open(req, FRAG("\"error\":"));
 	if (e)
 		return e;
 	e = mcp_req_put(req, p, ARRAY_SIZE(p));
@@ -1642,7 +1643,7 @@ mcp_req_result (struct mcp_req         *req,
                 size_t                  n,
                 struct span             fields)
 {
-	int e = mcp_req_open(req, false);
+	int e = mcp_req_open(req, FRAG("\"result\":"));
 	mcp_req_close(req, 200, fields, e ? e : mcp_req_put(req, result, n));
 }
 
@@ -1655,7 +1656,7 @@ mcp_req_tool_open (struct mcp_req   *req,
 		FRAG("{\"content\":[{\"type\":\"text\",\"text\":\""),
 		ESC(text.ptr, text.len),
 	};
-	int e = mcp_req_open(req, false);
+	int e = mcp_req_open(req, FRAG("\"result\":"));
 	return e ? e : mcp_req_put(req, p, ARRAY_SIZE(p));
 }
 
@@ -1710,7 +1711,9 @@ mcp_req_trace_put (struct mcp_req *req)
 	return mcp_req_put(req, p, ARRAY_SIZE(p));
 }
 
-/* End a tool result, its trace after its text, and send it. */
+/* End a tool result, its trace after its text, and send it.  The result of
+ * a task's call ends without the modern tail, which mcp_req_show() adds for
+ * a modern reader of the record. */
 static void
 mcp_req_tool_close (struct mcp_req *req)
 {
@@ -1718,7 +1721,7 @@ mcp_req_tool_close (struct mcp_req *req)
 	struct mcp_piece const p[] = {
 		FRAG("]"),
 		req->failed ? FRAG(",\"isError\":true") : FRAG(""),
-		req->modern ? DSTR(&st->modern_tail) : FRAG("}"),
+		req->modern && !req->task ? DSTR(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
 	};
 	int e = mcp_req_trace_put(req);
@@ -2638,7 +2641,7 @@ mcp_req_detach (struct mcp_req     *req,
 		RAW(at, n),
 		FRAG("\",\"ttlMs\":null,\"pollIntervalMs\":1000}}"),
 	};
-	int e = mcp_req_open(req, false);
+	int e = mcp_req_open(req, FRAG("\"result\":"));
 	e = e ? e : mcp_req_put(req, p, ARRAY_SIZE(p));
 	e = e ? e : req->sse ? mcp_req_put(req, &FRAG("\n\n"), 1)
 	          : s->ops->head(s, 200, SPAN(JSON_FIELD), buf_peek(&req->reply).len);
@@ -5628,13 +5631,22 @@ mcp_req_tools_list (struct mcp_req *req)
 }
 
 /* Copy the result of the task that tasks/get shows into the reply, a slice
- * a step; then close it. */
+ * a step; then close it.  The record has the reply of the task's call:
+ * '"result":{...}' or '"error":{...}', and a '}' that closes the object
+ * around it.  A result in the record has no modern tail.  For a modern
+ * reader of a result, the copy leaves out the record's last two bytes, and
+ * the modern tail and a '}' follow the copy.  The reply of tasks/get ends
+ * with one more '}'. */
 static void
 mcp_req_show (struct mcp_req *req)
 {
+	static char const key[] = "\"result\":";
+	struct mcp_static const *st = req->mcp->st;
 	struct loop *loop = req->mcp->loop;
 	struct ledger_task *task = req->shown;
-	size_t left = task->len - req->off;
+	bool tail = req->modern && task->len > sizeof key &&
+	            !memcmp(task->result, key, sizeof key - 1);
+	size_t left = (tail ? task->len - 2 : task->len) - req->off;
 	size_t room = loop_room(loop, LOOP_COPY);
 	size_t n = left < room ? left : room;
 	int e = mcp_req_put(req, &RAW(task->result + req->off, n), 1);
@@ -5646,7 +5658,11 @@ mcp_req_show (struct mcp_req *req)
 	}
 	ledger_task_put(task);
 	req->shown = nullptr;
-	mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, &FRAG("}"), 1));
+	struct mcp_piece const p[] = {
+		tail ? DSTR(&st->modern_tail) : FRAG(""),
+		RAW("}}", (size_t)tail + (req->method == METHOD_TASKS_GET)),
+	};
+	mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, p, ARRAY_SIZE(p)));
 }
 
 /* Answer tasks/get with where @p task, a reference, stands: once its call
@@ -5707,7 +5723,7 @@ mcp_req_task_show (struct mcp_req     *req,
 		                                 "\"Internal error\"}}")
 		: FRAG("}"),
 	};
-	int e = mcp_req_open(req, false);
+	int e = mcp_req_open(req, FRAG("\"result\":"));
 	e = e ? e : mcp_req_put(req, p, ARRAY_SIZE(p));
 	if (e || !whole) {
 		ledger_task_put(task);

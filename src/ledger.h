@@ -99,8 +99,10 @@ struct ledger_task {
 	                                      lock; nullptr once the record is
 	                                      out of the ledger */
 	struct loop         *loop;       /**< the call's */
-	char                *result;     /**< the call's result, as JSON, once
-	                                      whole; nullptr if none */
+	char                *result;     /**< the call's reply, once whole:
+	                                      '"result":' or '"error":', its
+	                                      value, and a '}' (src/mcp.c);
+	                                      nullptr if none */
 	size_t               len;        /**< bytes of it written */
 	size_t               size;       /**< and to come */
 	uint64_t             hash;       /**< of its id */
