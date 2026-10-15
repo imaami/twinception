@@ -588,7 +588,8 @@ id.  Each side adds notes only to its own notebook, reads the other's with
 `"notebook": "other"`, and copies a note of the other's into its own, byte
 for byte, with the action `copy`.  With the APIs `generate` and
 `interactions`, the model also gets the action `attach`, which uploads a
-note to Gemini's Files API at the origin of the upstream's URL and gives it
+note to Gemini's Files API at the root of the API in the upstream's URL,
+the part before `/v1beta/`, and gives it
 to the model as a file.  A client adds a file that its program
 attaches, of at most 4 MiB, with the argument `content`, by the MCP
 extension `io.modelcontextprotocol/files` (section [Lending tools to the
@@ -609,7 +610,9 @@ call, with an error if the answer has no text.
 
 The value is an integer number of tokens from 0 to 2147483647.  The default
 is 0, and with 0 `askai` computes the size: `n_ctx` from the `/props` of
-`llama-server`, or else unknown.
+`llama-server`, or `inputTokenLimit` from `GET /v1beta/models/MODEL` of
+Gemini's API with the APIs `generate` and `interactions` and a `model`, or
+else unknown.
 
 `context` sets the context size of the upstream model.  `askai` uses it
 with `upstream-tools` in three ways:

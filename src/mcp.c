@@ -8718,8 +8718,8 @@ mcp_static_plugin (struct mcp_static     *st,
 
 /* Prepares the attach action of the notes tool, which the caller makes
  * only for turns that are lent tools, if @p st's upstream takes files
- * (ai_upload()) and the turns keep notes: the URL of the uploads, at the
- * origin of the upstream's URL, so that the key goes to no other host,
+ * (ai_upload_url()) and the turns keep notes: the URL of the uploads, on
+ * the host of the upstream's URL, so that the key goes to no other host,
  * their header lines, the upstream's and those of its API, and the table of
  * the files.  Returns 0, ENOMEM, or the error of uploads_create(). */
 static int
@@ -8727,22 +8727,17 @@ mcp_static_uploads (struct mcp_static *st)
 {
 	struct ai_endpoint const *ep = st->ep;
 	struct ai_upload const *up = ai_upload(ep->api);
-	size_t origin = ai_origin(ep->url);
-	if (!up || !st->notes || !origin)
+	if (!up || !st->notes || !(st->files_url = ai_upload_url(ep)))
 		return 0;
-	size_t path = strlen(up->path);
 	size_t n = 0;
 	size_t m = 0;
 	while (ep->headers && ep->headers[n])
 		++n;
 	while (up->lines[m])
 		++m;
-	st->files_url = malloc(origin + path + 1);
 	st->files_lines = malloc((n + m + 1) * sizeof *st->files_lines);
-	if (!st->files_url || !st->files_lines)
+	if (!st->files_lines)
 		return ENOMEM;
-	memcpy(st->files_url, ep->url, origin);
-	memcpy(st->files_url + origin, up->path, path + 1);
 	for (size_t i = 0; i < n; ++i)
 		st->files_lines[i] = ep->headers[i];
 	for (size_t i = 0; i <= m; ++i)

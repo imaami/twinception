@@ -2252,34 +2252,32 @@ config_reload (struct config       *cfg,
 }
 
 /* Log @p url as the item @p name, without its user, password and query,
- * which can have secrets; with @p path, its origin and then @p path. */
+ * which can have secrets. */
 static void
 config_log_url (char const *name,
-                char const *url,
-                char const *path)
+                char const *url)
 {
-	char const *host = strstr(url, "://");
-	host = host ? host + sizeof "://" - 1 : url;
-	char const *at = memchr(host, '@', strcspn(host, "/?#"));
-	char const *rest = at ? at + 1 : host;
-	size_t shown = strcspn(rest, path ? "/?#" : "?#");
-	LOG_ALL(LOG_INFO, "  %-9s %.*s%.*s%s", name, (int)(host - url), url, (int)shown,
-	        rest, path ? path : "");
+	int scheme = 0;
+	char const *rest = util_url_shown(url, &scheme);
+	LOG_ALL(LOG_INFO, "  %-9s %.*s%.*s", name, scheme, url, (int)strcspn(rest, "?#"), rest);
 }
 
 /* Log where the turns' attach action uploads the notes, which needs an API
- * that takes files (ai_upload()), --notes and --upstream-tools.  The URL,
- * which config_parse() checked, has a scheme. */
+ * that takes files (ai_upload()) at a URL of its API (ai_upload_url()),
+ * --notes and --upstream-tools. */
 static void
 config_log_files (struct config const *cfg)
 {
-	struct ai_upload const *up = ai_upload(cfg->ep.api);
-	if (!up)
+	char *url = ai_upload_url(&cfg->ep);
+	if (!ai_upload(cfg->ep.api))
 		LOG_ALL(LOG_INFO, "  files     off (the API takes none)");
+	else if (!url)
+		LOG_ALL(LOG_INFO, "  files     off (the URL has no /v1beta/)");
 	else if (!cfg->notes || !(cfg->flags & CFG_UPSTREAM_TOOLS))
 		LOG_ALL(LOG_INFO, "  files     off (--notes and --upstream-tools)");
 	else
-		config_log_url("files", cfg->ep.url, up->path);
+		config_log_url("files", url);
+	free(url);
 }
 
 void
@@ -2292,15 +2290,21 @@ config_log (struct config const *cfg)
 	LOG_ALL(LOG_INFO, "  provider  %s", ep->provider ? provider_names[ep->provider] : "none");
 	LOG_ALL(LOG_INFO, "  API       %s", api_names[ep->api]);
 	LOG_ALL(LOG_INFO, "  model     %s", ep->model ? ep->model : "none");
-	/* Home asks /props of a server that may be llama-server, but not when
-	 * told the slots and lending the upstream no tools (home_create()). */
+	/* Home asks /props of a server that may be llama-server, and Gemini's
+	 * API about its model, but not when told the slots and lending the
+	 * upstream no tools (home_create()). */
+	char *model = ai_props(ep) ? nullptr : ai_model_url(ep);
+	bool asked = !ep->slots || cfg->flags & CFG_UPSTREAM_TOOLS;
 	if (ep->context > 0)
 		LOG_ALL(LOG_INFO, "  context   %ld tokens", ep->context);
-	else if (ai_props(ep) && (!ep->slots || cfg->flags & CFG_UPSTREAM_TOOLS))
+	else if (ai_props(ep) && asked)
 		LOG_ALL(LOG_INFO, "  context   from llama-server");
+	else if (model && asked)
+		LOG_ALL(LOG_INFO, "  context   from the model");
 	else
 		LOG_ALL(LOG_INFO, "  context   unknown");
-	config_log_url("URL", ep->url, nullptr);
+	free(model);
+	config_log_url("URL", ep->url);
 	config_log_files(cfg);
 	mcp_report(&cfg->registry, cfg);
 	config_log_policy(cfg);

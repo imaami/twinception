@@ -282,10 +282,10 @@ extern struct ai_format const *
 ai_format (enum ai_api api);
 
 /** How the upstream of an API takes a file that a turn attaches: a POST
- *  of the file, which is UTF-8 text, to path at the origin of the
- *  upstream's URL, with the upstream's header lines and lines. */
+ *  of the file, which is UTF-8 text, to the URL that ai_upload_url() makes,
+ *  with the upstream's header lines and lines. */
 struct ai_upload {
-	char const        *path;
+	char const        *path;   /**< at the root of the API */
 	char const *const *lines;  /**< nullptr-terminated */
 };
 
@@ -294,10 +294,29 @@ struct ai_upload {
 extern struct ai_upload const *
 ai_upload (enum ai_api api);
 
-/** The length of the origin of @p url, its scheme and authority, or 0 if
- *  it has no scheme. */
-extern size_t
-ai_origin (char const *url);
+/**
+ * The URL of @p path and then @p tail, unless it is nullptr, at the root of
+ * Gemini's API that @p url, an upstream's URL, has: the part of @p url
+ * before "/v1beta/", which may have a path of a gateway, and the parameter
+ * key of the query of @p url, if it has one.  Returns a string for free(),
+ * or nullptr if @p url has no "/v1beta/" or askai runs out of memory.
+ */
+extern char *
+ai_gemini_url (char const *url,
+               char const *path,
+               char const *tail);
+
+/** The URL to which the upstream of @p ep takes files (ai_upload()), a
+ *  string for free(), or nullptr if it takes none or askai runs out of
+ *  memory. */
+extern char *
+ai_upload_url (struct ai_endpoint const *ep);
+
+/** The URL at which Gemini's API says what the model of @p ep has, its
+ *  inputTokenLimit among them, a string for free(), or nullptr if @p ep has
+ *  no model, no API of Gemini's, or no such URL (ai_gemini_url()). */
+extern char *
+ai_model_url (struct ai_endpoint const *ep);
 
 /**
  * Read the answer of HTTP @p status to an upload (ai_upload()), the @p len

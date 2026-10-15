@@ -1621,8 +1621,8 @@ home_props_end (struct home *home,
 		home_slots(home, n, why);
 }
 
-/* /props failed, as @p fmt says, which is logged: the default slots
- * (home_props_end()). */
+/* /props, or the model of Gemini's API, failed, as @p fmt says, which is
+ * logged: the default slots (home_props_end()). */
 [[gnu::format(printf, 2, 3)]]
 static void
 home_props_fail (struct home *home,
@@ -1634,7 +1634,7 @@ home_props_fail (struct home *home,
 	va_start(ap, fmt);
 	util_vformat(why, sizeof why, fmt, ap);
 	va_end(ap);
-	LOG(LOG_INFO, "upstream /props: %s", why);
+	LOG(LOG_INFO, "upstream %s: %s", ai_props(home->ep) ? "/props" : "model", why);
 	home_props_end(home, SLOTS, "the default");
 }
 
@@ -1658,7 +1658,8 @@ home_props_done (CURLcode    result,
 
 /* Let /props's answer on, once the step has the share for it, or parse it a
  * slice a step, and take the slots its total_slots says, unless told, and
- * the context its slots' n_ctx says, likewise. */
+ * the context its slots' n_ctx says, likewise.  The answer of Gemini's
+ * model says the context in inputTokenLimit, and no slots. */
 static void
 home_props_step (struct loop      *loop,
                  struct loop_step *step)
@@ -1679,9 +1680,11 @@ home_props_step (struct loop      *loop,
 	}
 	struct json_object *root = jb_parser_take(parser);
 	jb_parser_fini(parser, &home->pool, &home->reaper);
+	bool props = ai_props(home->ep);
 	struct json_object *total = jb_get(root, "total_slots");
-	struct json_object *ctx = jb_get(jb_get(root, "default_generation_settings"),
-	                                 "n_ctx");
+	struct json_object *ctx = props ? jb_get(jb_get(root, "default_generation_settings"),
+	                                         "n_ctx")
+	                                : jb_get(root, "inputTokenLimit");
 	int64_t n = json_object_is_type(total, json_type_int)
 	          ? json_object_get_int64(total) : 0;
 	int64_t tokens = json_object_is_type(ctx, json_type_int)
@@ -1690,10 +1693,12 @@ home_props_step (struct loop      *loop,
 	home_reap(home);
 	if (tokens > 0 && !home->context) {
 		home->context = tokens < INT32_MAX ? (uint32_t)tokens : INT32_MAX;
-		LOG(LOG_INFO, "upstream context: %" PRIu32 " tokens (llama-server's /props)",
-		    home->context);
+		LOG(LOG_INFO, "upstream context: %" PRIu32 " tokens (%s)", home->context,
+		    props ? "llama-server's /props" : "the model's inputTokenLimit");
 	}
-	if (n > 0)
+	if (!props)
+		home_props_end(home, SLOTS, "the default");
+	else if (n > 0)
 		home_props_end(home, n < UINT16_MAX ? (uint32_t)n : UINT16_MAX,
 		               "llama-server's /props");
 	else
@@ -1722,15 +1727,35 @@ home_props_get (struct home *home,
 	return e;
 }
 
+/* Ask Gemini's API what the context of the model holds, unless it is told:
+ * GET models/MODEL at the root of the API of the upstream's URL, whose
+ * answer the props step reads.  0 once asked, ENOTSUP if the upstream has
+ * no model or no such URL, else the error that kept it from asking. */
+static int
+home_model_get (struct home *home)
+{
+	struct ai_endpoint const *ep = home->ep;
+	char *url = home->context ? nullptr : ai_model_url(ep);
+	if (!url)
+		return ENOTSUP;
+	long ms = ep->timeout_ms > 0 && ep->timeout_ms < PROPS_MS ? ep->timeout_ms : PROPS_MS;
+	int e = http_post_json(home->http, url, nullptr, 0, false, ep->headers, ms,
+	                       home_props_write, home_props_done, home, &home->ask);
+	free(url);
+	return e;
+}
+
 /* Ask the upstream how many slots it has, as llama-server says at GET /props
  * of its endpoint's server (home_props_get()), unless it is known to be no
  * llama-server: a provider's but llama's, or one that has one of Gemini's
- * APIs (ENOTSUP); 0 once asked. */
+ * APIs, which is asked for the context of its model instead
+ * (home_model_get()); 0 once asked, else ENOTSUP or the error that kept it
+ * from asking. */
 static int
 home_props_ask (struct home *home)
 {
 	if (!ai_props(home->ep))
-		return ENOTSUP;
+		return home_model_get(home);
 	CURLU *u = curl_url();
 	if (!u)
 		return ENOMEM;

@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <stdckdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -1504,14 +1505,57 @@ ai_upload (enum ai_api api)
 	return api == AI_GENERATE || api == AI_INTERACTIONS ? &gemini : nullptr;
 }
 
-size_t
-ai_origin (char const *url)
+char *
+ai_gemini_url (char const *url,
+               char const *path,
+               char const *tail)
 {
-	char const *scheme = url ? strstr(url, "://") : nullptr;
+	static char const api[] = "/v1beta/";
+	static char const key[] = "key=";
+	char const *scheme = url && path ? strstr(url, "://") : nullptr;
 	if (!scheme)
-		return 0;
-	size_t origin = (size_t)(scheme - url) + sizeof "://" - 1;
-	return origin + strcspn(url + origin, "/?#");
+		return nullptr;
+	char const *host = scheme + sizeof "://" - 1;
+	size_t end = strcspn(host, "?#");
+	char const *root = memmem(host, end, api, sizeof api - 1);
+	if (!root)
+		return nullptr;
+	/* The last parameter key of the query, as the API reads it. */
+	char const *query = host[end] == '?' ? host + end : nullptr;
+	char const *found = nullptr;
+	size_t len = 0;
+	for (char const *p = query; p && (*p == '?' || *p == '&'); p += 1 + len) {
+		len = strcspn(p + 1, "&#");
+		if (len >= sizeof key - 1 && !strncmp(p + 1, key, sizeof key - 1))
+			found = p + 1;
+	}
+	size_t key_len = found ? strcspn(found, "&#") : 0;
+	tail = tail ? tail : "";
+	size_t size = (size_t)(root - url) + strlen(path) + strlen(tail) + 1 + key_len + 1;
+	char *out = malloc(size);
+	int n = out ? snprintf(out, size, "%.*s%s%s%s%.*s", (int)(root - url), url, path,
+	                       tail, found ? "?" : "", (int)key_len, found ? found : "")
+	            : -1;
+	if (n < 0 || (size_t)n >= size) {
+		free(out);
+		return nullptr;
+	}
+	return out;
+}
+
+char *
+ai_upload_url (struct ai_endpoint const *ep)
+{
+	struct ai_upload const *up = ep ? ai_upload(ep->api) : nullptr;
+	return up ? ai_gemini_url(ep->url, up->path, nullptr) : nullptr;
+}
+
+char *
+ai_model_url (struct ai_endpoint const *ep)
+{
+	bool gemini = ep && ep->model &&
+	              (ep->api == AI_GENERATE || ep->api == AI_INTERACTIONS);
+	return gemini ? ai_gemini_url(ep->url, "/v1beta/models/", ep->model) : nullptr;
 }
 
 /* @p text, a time of RFC 3339 in UTC, such as 2026-10-17T13:44:05.888Z, in

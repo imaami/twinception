@@ -240,13 +240,13 @@ class Upstream:
     """Fake AI endpoint; reply(request) gives (status, payload[, delay]).  A
     request that asks for a stream, as askai's do, gets a 200's JSON payload
     as the events of the same answer, unless plain is set, and a Stream as
-    it says; other answers carry the fields in headers.  GET /props gives
-    props, if set, else a 404, two seconds late if props is "hang", and
-    counts in gets.  A POST to a path under /upload/ is a file's upload to
-    Gemini's Files API, which goes into uploads, with its body in raw and
-    the values of its Content-Type in types, and gets what upload(request)
-    gives, by default a file named after the upload's number that expires
-    in 48 hours."""
+    it says; other answers carry the fields in headers.  A GET, such as
+    /props, gives props, if set, else a 404, two seconds late if props is
+    "hang", and counts in gets, its path in got.  A POST to a path with
+    /upload/ in it is a file's upload to Gemini's Files API, which goes into
+    uploads, with its body in raw and the values of its Content-Type in
+    types, and gets what upload(request) gives, by default a file named
+    after the upload's number that expires in 48 hours."""
 
     def __init__(self):
         self.requests = []
@@ -257,6 +257,7 @@ class Upstream:
         self.uploads = []
         self.upload = self.stored
         self.gets = 0
+        self.got = []
         self.arrived = threading.Event()
         self.cancelled = threading.Event()
         self.hangups = 0
@@ -272,6 +273,7 @@ class Upstream:
             def do_GET(self):
                 with upstream.lock:
                     upstream.gets += 1
+                    upstream.got.append(self.path)
                 props = upstream.props
                 if props == "hang":
                     time.sleep(2)
@@ -285,7 +287,7 @@ class Upstream:
 
             def do_POST(self):
                 raw = self.rfile.read(int(self.headers["Content-Length"]))
-                if self.path.startswith("/upload/"):
+                if "/upload/" in self.path:
                     request = {
                         "path": self.path,
                         "headers": {k.lower(): v for k, v in self.headers.items()},
@@ -5611,7 +5613,8 @@ def check_slots(binary, up):
     """Home asks llama-server's /props for its slots, the upstream calls it
     makes at once, in any protocol llama-server speaks; --slots says so
     instead, and without an answer, in time or at all, or for Gemini's
-    protocol, it makes four."""
+    protocol, it makes four.  Gemini's API is asked for the context of the
+    model, if the model is named."""
     up.props = {"total_slots": 2, "chat_template": "{{x}}" * 4000,
                 "default_generation_settings": {"n_ctx": 4096}}
     up.reply = lambda request: (200, ANSWERS["openai"],
@@ -5647,6 +5650,27 @@ def check_slots(binary, up):
         with Askai(binary, *args) as ai:
             ai.wait_log(r"upstream slots: 4 \(the default\)")
     assert up.gets == gets
+    # With a model, Gemini's API is asked about it, and its inputTokenLimit
+    # is the context, at the root of the API of the URL, with the URL's
+    # key; the slots are four.
+    up.props = {"name": "models/m", "inputTokenLimit": 50000, "total_slots": 2}
+    for args, path in (
+            (("--api", "generate", "-m", "m", "-u",
+              up.url("/gw/v1beta/models/m:generateContent?key=K")),
+             "/gw/v1beta/models/m?key=K"),
+            (("--api", "interactions", "-m", "m", "-u", up.url("/v1beta/interactions")),
+             "/v1beta/models/m")):
+        with Askai(binary, *args) as ai:
+            assert "context   from the model" in ai.listed("upstream:"), ai.log
+            ai.wait_log(r"^askai: upstream context: 50000 tokens \(the model's "
+                        r"inputTokenLimit\)$")
+            ai.wait_log(r"upstream slots: 4 \(the default\)")
+            assert up.got[-1] == path, up.got
+    up.props = None
+    with Askai(binary, "--api", "interactions", "-m", "m", "-u",
+               up.url("/v1beta/interactions")) as ai:
+        ai.wait_log(r"^askai: upstream model: HTTP 404$")
+        ai.wait_log(r"upstream slots: 4 \(the default\)")
     up.props = {"total_slots": 2}
     for args in (("--api", "messages", "-u", up.url("/v1/messages")),
                  ("-p", "llama", "-u", up.url()),
@@ -7687,8 +7711,10 @@ def check_attach(binary, up):
     large makes askai forget the files of the caller and begin again from
     the prompt.  A file that does not fit the context is refused, a URI
     that is not printable ASCII fails the upload, and the log has no user
-    name or password of the URL.  The other APIs do not offer attach, and
-    a client cannot call it."""
+    name or password of the URL.  The uploads go to the root of the API
+    under the path of the URL, with the key of its query, and a URL without
+    /v1beta/ and the other APIs do not offer attach.  A client cannot call
+    it."""
     script = []
     up.reply = lambda request: script.pop(0)(request)
     latin1 = b'char s[] = "caf\xe9";\n'
@@ -7882,6 +7908,34 @@ def check_attach(binary, up):
                     r"1 bytes")
         assert "web request POST http://127.0.0.1:" in "".join(ai.log) and \
             "PASSWORD" not in "".join(ai.log), ai.log
+
+    # The uploads go to the root of the API under the URL's path, with its
+    # key, and a URL without /v1beta/ offers no attach.
+    with tempfile.TemporaryDirectory() as notes:
+        with Askai(binary, "--api", "generate", "-u",
+                   up.url("/gw/v1beta/models/m:generateContent?alt=sse&key=QK"),
+                   "--upstream-tools", "--notes", notes) as ai:
+            assert ai.listed("upstream:")[-1] == \
+                f"files     {up.url('/gw/upload/v1beta/files')}", ai.log
+            status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
+                "action": "add", "file": "g.c", "text": "g"}})
+            thread = re.search("[0-9a-f]{32}", text_of(body["result"])).group(0)
+            script[:] = [lambda r: (200, generate_turn([[{"functionCall": {
+                             "name": "notes", "id": "c0", "args": {
+                                 "action": "attach", "file": "g.c",
+                                 "notebook": "other"}}}]])),
+                         lambda r: (200, generate_turn([[{"text": "A"}]]))]
+            assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
+            assert up.uploads[-1]["path"] == "/gw/upload/v1beta/files?key=QK", \
+                up.uploads[-1]
+        with Askai(binary, "--api", "generate", "-u",
+                   up.url("/v1/models/m:generateContent"), "--upstream-tools",
+                   "--notes", notes) as ai:
+            assert ai.listed("upstream:")[-1] == \
+                "files     off (the URL has no /v1beta/)", ai.log
+            script[:] = [lambda r: (200, generate_turn([[{"text": "A"}]]))]
+            ai.ask("Q")
+            assert "attach" not in json.dumps(up.last()["body"]["tools"])
 
     # Without the notes of the turns, the startup report says why the
     # upstream gets no files, and the other APIs offer no attach.
