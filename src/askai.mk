@@ -27,6 +27,7 @@ override SRC_askai := \
   roster.c            \
   task.c              \
   tls.c               \
+  uploads.c           \
   web.c
 
 override LIB_askai := \

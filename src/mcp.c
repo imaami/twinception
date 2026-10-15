@@ -101,6 +101,7 @@
 #include "shelf.h"
 #include "stream.h"
 #include "task.h"
+#include "uploads.h"
 #include "util.h"
 #include "web.h"
 
@@ -177,6 +178,9 @@ enum mcp_fetch : uint8_t {
 	FETCH_COPY = 32,   /* a flag that is set with FETCH_READ, then with the
 	                      values of an add: a copy of a note of the other
 	                      side's notebook into the caller's */
+	FETCH_ATTACH = 64, /* a flag that is set with FETCH_READ: the attach
+	                      action, which uploads the note as a file for the
+	                      turn */
 };
 
 static constexpr uint64_t NS = 1'000'000'000;
@@ -377,6 +381,12 @@ struct mcp_static {
 	struct roster            *roster;       /**< the tool calls that run and
 	                                             are not tasks */
 	struct web               *web;          /**< the plugins' HTTP requests */
+	struct uploads           *uploads;      /**< the files that turns
+	                                             attached, if the upstream
+	                                             takes files (ai_upload()) */
+	char                     *files_url;    /**< the URL of their uploads */
+	char const              **files_lines;  /**< the header lines of their
+	                                             uploads, nullptr-terminated */
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
 	uint32_t                  turns;        /**< upstream calls an ask call
@@ -512,6 +522,9 @@ struct mcp_req {
 	                                    client; likewise */
 	struct buf           calls;      /* a turn's tool calls, as its job had
 	                                    them, while they run */
+	struct buf           attached;   /* the files that a turn's calls
+	                                    attached, as its API's fragments
+	                                    have them, until its last result */
 	struct mcp_slot     *slots;      /* those calls', JOB_CALLS of them, from
 	                                    its first turn with calls to its end */
 	struct mcp_agenda   *agenda;     /* its turns' jobs and timers, from the
@@ -550,6 +563,9 @@ struct mcp_req {
 	size_t               prompt_at;  /* where the prompt's text ends in the
 	                                    upload: what askai adds goes there */
 	size_t               sent;       /* bytes of the upload as a turn went */
+	size_t               filed;      /* bytes of the files that the turns
+	                                    attached since the last turn's usage,
+	                                    which the upload does not hold */
 	size_t               at;         /* where the call whose result is written
 	                                    next is in calls */
 	size_t               launch_at;  /* and the call launched next */
@@ -618,6 +634,9 @@ struct mcp_req {
 	bool                 listed;     /* the list that the turn's items go in
 	                                    has one */
 	bool                 branch;     /* the thread has notes */
+	bool                 filing;     /* the conversation has a file that the
+	                                    turns attached, since it last began
+	                                    again from the prompt */
 	bool                 stopped;    /* the turns ran out with tools called */
 	bool                 cut;        /* the turn's answer reached the output
 	                                    token limit */
@@ -1439,6 +1458,7 @@ mcp_req_finish (struct mcp_req *req)
 	buf_fini(&req->upload);
 	buf_fini(&req->reply);
 	buf_fini(&req->calls);
+	buf_fini(&req->attached);
 	dstr_clear(&req->self.answer);
 	dstr_clear(&req->trace);
 	for (size_t k = 0; req->slots && k < JOB_CALLS; ++k)
@@ -2052,6 +2072,7 @@ mcp_req_progressed (struct mcp_req *req)
 
 static void mcp_req_turn_done (struct mcp_req *req);
 static void mcp_req_compact_full (struct mcp_req *req);
+static void mcp_req_unfile (struct mcp_req *req);
 
 /* Whether the @p len bytes at @p rest begin with what of the context
  * overflowed: its size, length or window. */
@@ -2074,13 +2095,16 @@ mcp_overflow_what (char const *rest,
 /* Whether @p why, a failed turn's reason, says that the request did not
  * fit the upstream's context: llama-server's "exceeds the available
  * context size", OpenAI's "maximum context length", others' "context
- * window". */
+ * window", and Gemini's "exceeds the maximum number of tokens allowed". */
 static bool
 mcp_overflowed (char const *why,
                 size_t      len)
 {
 	static char const word[] = "context ";
+	static char const gemini[] = "exceeds the maximum number of tokens";
 	size_t n = sizeof word - 1;
+	if (memmem(why, len, gemini, sizeof gemini - 1))
+		return true;
 	for (size_t i = 0; i + n <= len; ++i)
 		if (!strncasecmp(why + i, word, n) &&
 		    mcp_overflow_what(why + i + n, len - i - n))
@@ -2200,6 +2224,7 @@ mcp_req_job_done (struct mcp_req *req)
 			              FRAG("Cannot start the upstream request"), nullptr, 0);
 			return;
 		}
+		mcp_req_unfile(req);
 		if (mcp_req_refit(req, (char const *)why.ptr, why.len)) {
 			mcp_req_drop(req);
 			mcp_req_compact_full(req);
@@ -3014,6 +3039,30 @@ mcp_slot_fetch_back (struct loop     *loop,
 		loop_ready_bulk(loop, &slot->step);
 }
 
+/* Sends @p ask's request as the HTTP request of @p slot's call, whose step
+ * then takes the reply: 0, or the error of mcp_slot_name() or of
+ * web_wait_create(). */
+static int
+mcp_slot_send (struct mcp_slot *slot,
+               struct web_ask  *ask)
+{
+	struct mcp *mcp = slot->req->mcp;
+	int e = mcp_slot_name(slot, &ask->who);
+	if (e)
+		return e;
+	ask->loop = mcp->loop;
+	ask->home = mcp->home;
+	ask->back = mcp_slot_fetch_back;
+	struct web_wait *wait = web_wait_create(mcp->st->web, ask, &e);
+	if (!wait)
+		return e;
+	web_wait_leave(&slot->web);
+	slot->web = wait;
+	if (web_wait_done(wait))
+		loop_ready_bulk(mcp->loop, &slot->step);
+	return 0;
+}
+
 int
 mcp_slot_fetch (struct mcp_slot          *slot,
                 struct web_request const *request)
@@ -3048,30 +3097,14 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 		return mcp_slot_ready(slot);
 	if (slot->web && !web_wait_done(slot->web))
 		return EBUSY;
-	struct handle who;
-	int e = mcp_slot_name(slot, &who);
-	if (e)
-		return e;
-	struct mcp *mcp = slot->req->mcp;
 	struct plugin_loaded const *loaded = mcp_slot_loaded(slot);
-	struct web_ask const ask = {
+	struct web_ask ask = {
 		.request = request,
 		.plugin = loaded ? loaded->manifest.name : nullptr,
-		.loop = mcp->loop,
-		.home = mcp->home,
-		.back = mcp_slot_fetch_back,
 		.url = url_len,
-		.accept = accept_len,
-		.who = who
+		.accept = accept_len
 	};
-	struct web_wait *wait = web_wait_create(mcp->st->web, &ask, &e);
-	if (!wait)
-		return e;
-	web_wait_leave(&slot->web);
-	slot->web = wait;
-	if (web_wait_done(wait))
-		loop_ready_bulk(mcp->loop, &slot->step);
-	return 0;
+	return mcp_slot_send(slot, &ask);
 }
 
 int
@@ -3464,8 +3497,9 @@ static uint64_t
 mcp_req_tokens (struct mcp_req const *req)
 {
 	size_t len = buf_peek(&req->upload).len;
-	return req->used ? req->used + (len > req->sent ? len - req->sent : 0) / 4
-	                 : len / 4;
+	return req->used ? req->used + (len > req->sent ? len - req->sent : 0) / 4 +
+	                   req->filed / 4
+	                 : (len + req->filed) / 4;
 }
 
 /* A turn's tool call, as its job's calls, and then req->calls, hold it: a
@@ -3562,6 +3596,7 @@ mcp_req_turn_done (struct mcp_req *req)
 	struct job *job = req->job;
 	long told = mcp->st->ep->context;
 	req->used = job->used;
+	req->filed = 0;
 	req->context = told > 0 ? (uint32_t)told : job->context;
 	req->cut = ai_cut(mcp->st->ep->api, job->reason);
 	req->forced = 0;
@@ -5027,6 +5062,7 @@ mcp_req_calls_next (struct mcp_req *req)
 	if (req->part == req->n_calls) {
 		mcp_req_slots_drop(req);
 		buf_fini(&req->calls);
+		buf_fini(&req->attached);
 		if (mcp_req_full(req))
 			mcp_req_compact_full(req);
 		else
@@ -5227,7 +5263,8 @@ mcp_req_result_begin (struct mcp_req  *req,
 }
 
 /* Write the result of the call @p c, the one under way, into the upload,
- * and after the turn's last one the end of the messages. */
+ * and after the turn's last one the files that the turn's calls attached
+ * and the end of the messages. */
 static int
 mcp_req_result_put (struct mcp_req        *req,
                     struct mcp_call const *c)
@@ -5235,6 +5272,7 @@ mcp_req_result_put (struct mcp_req        *req,
 	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
 	struct mcp_slot const *slot = &req->slots[req->part];
 	struct span out = mcp_slot_output(slot);
+	struct span attached = buf_peek(&req->attached);
 	struct dstr const *told = req->agenda ? &req->agenda->told : nullptr;
 	size_t told_len = told ? dstr_len(told) : 0;
 	char made[CALL_ID];
@@ -5266,11 +5304,12 @@ mcp_req_result_put (struct mcp_req        *req,
 		ESC("\n\n", told_len ? 2 : 0),
 		ESC(told_len ? dstr_get(told) : nullptr, told_len),
 		BYTES(f->result_end),
+		RAW(attached.ptr, attached.len),
 		BYTES(f->results_end),
 		BYTES(f->end),
 	};
 	bool last = req->part + 1u == req->n_calls;
-	return mcp_req_upload(req, p, last ? ARRAY_SIZE(p) : ARRAY_SIZE(p) - 2);
+	return mcp_req_upload(req, p, last ? ARRAY_SIZE(p) : ARRAY_SIZE(p) - 3);
 }
 
 /* Write the result of the turn's call whose turn it is into the upload, a
@@ -5337,6 +5376,9 @@ mcp_req_add_start (struct mcp_req *req)
 {
 	struct span up = buf_peek(&req->upload);
 	buf_cut(&req->upload, req->prompt_at, up.len - req->prompt_at);
+	buf_fini(&req->attached);
+	req->filed = 0;
+	req->filing = false;
 	req->next = 0;
 	req->off = 0;
 	mcp_req_enter(req, PHASE_ADD);
@@ -5820,17 +5862,24 @@ mcp_notes_view (struct dstr *d,
 }
 
 static void mcp_slot_notes_got_copy (struct mcp_slot *slot, struct span text);
+static void mcp_slot_notes_got_attach (struct mcp_slot *slot, struct span text,
+                                       struct span id);
 
 /* Answers the read action with the output of git cat-file, or goes on with
- * the copy action. */
+ * the copy action or the attach action. */
 static void
 mcp_slot_notes_got_note (struct mcp_slot *slot)
 {
 	struct child const *c = slot->child;
 	struct span text = {};
-	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text) : EIO;
+	struct span id = {};
+	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text, &id) : EIO;
 	if (!r && slot->fetch & FETCH_COPY) {
 		mcp_slot_notes_got_copy(slot, text);
+		return;
+	}
+	if (!r && slot->fetch & FETCH_ATTACH) {
+		mcp_slot_notes_got_attach(slot, text, id);
 		return;
 	}
 	char const *s = (char const *)text.ptr;
@@ -5844,6 +5893,231 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 	                                               "it."), 1)
 	      : mcp_slot_notes_unread(slot);
 	mcp_slot_notes_end(slot, e, r);
+}
+
+/* Adds the file whose URI is the @p len bytes at @p uri, of @p bytes bytes,
+ * to the files that the turn attached, as its API's fragments have them
+ * (ai_format()).  The URI is printable ASCII (ai_uploaded()).  Returns 0 or
+ * ENOMEM. */
+static int
+mcp_req_attach (struct mcp_req *req,
+                char const     *uri,
+                size_t          len,
+                size_t          bytes)
+{
+	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
+	/* A turn has JOB_CALLS calls, so a few KiB of files at most. */
+	struct span to;
+	int e = buf_reserve(&req->attached, f->file.len + 6 * len + f->file_end.len,
+	                    SIZE_MAX, &to);
+	if (e)
+		return ENOMEM;
+	char *p = (char *)to.ptr;
+	memcpy(p, f->file.ptr, f->file.len);
+	size_t n = f->file.len + jb_escape(p + f->file.len, uri, len);
+	memcpy(p + n, f->file_end.ptr, f->file_end.len);
+	buf_commit(&req->attached, n + f->file_end.len);
+	req->filed += bytes;
+	req->filing = true;
+	return 0;
+}
+
+/* The turns' files of a conversation that failed may be gone from the
+ * upstream's store, so their notes are uploaded again. */
+static void
+mcp_req_unfile (struct mcp_req *req)
+{
+	if (req->filing)
+		uploads_forget(req->mcp->st->uploads, mcp_req_owner(req));
+}
+
+/* Sends the @p len bytes at @p body to the upstream's file store, as the
+ * HTTP request of @p slot's call: 0, or the error of mcp_slot_send(), such
+ * as EAGAIN if askai sends too many requests at once. */
+static int
+mcp_slot_post_file (struct mcp_slot *slot,
+                    char const      *body,
+                    size_t           len)
+{
+	static char const accept[] = "application/json";
+	struct mcp_static const *st = slot->req->mcp->st;
+	struct web_request const request = {
+		.url = st->files_url,
+		.body = body,
+		.len = len,
+		.accept = accept,
+		.max = 64 << 10,
+		.timeout = WEB_TIMEOUT_MAX
+	};
+	struct web_ask ask = {
+		.request = &request,
+		.url = strlen(st->files_url),
+		.accept = sizeof accept - 1,
+		.lines = st->files_lines
+	};
+	return mcp_slot_send(slot, &ask);
+}
+
+/* Fails the attach action of @p slot, and returns EFBIG, if the context of
+ * its ask call has no room for a file of @p bytes bytes, about a quarter as
+ * many tokens; else returns 0.  An unknown context is not checked. */
+static int
+mcp_slot_notes_fits (struct mcp_slot *slot,
+                     size_t           bytes)
+{
+	struct mcp_req *req = slot->req;
+	size_t used = mcp_req_tokens(req);
+	if (!req->context || used + bytes / 4 < req->context)
+		return 0;
+	dstr_clear(&slot->answer);
+	bool said = dstr_printf(&slot->answer, "The note is too large to attach: its "
+	                        "file of %zu bytes, about %zu tokens, does not fit the "
+	                        "context of %" PRIu32 " tokens, of which about %zu are "
+	                        "used. read shows it in parts.", bytes, bytes / 4,
+	                        req->context, used);
+	mcp_slot_notes_end(slot, said ? 0 : ENOMEM, true);
+	return EFBIG;
+}
+
+/* Says in the answer of @p slot that the note of @p len bytes follows the
+ * results as a file of @p bytes bytes, its view if @p view: 0 or ENOMEM. */
+static int
+mcp_slot_notes_attached (struct mcp_slot *slot,
+                         size_t           len,
+                         size_t           bytes,
+                         bool             view)
+{
+	dstr_clear(&slot->answer);
+	bool said = view ? dstr_printf(&slot->answer, "The note, %zu bytes, is not UTF-8 "
+	                               "text, so its view, %zu bytes, about %zu tokens, "
+	                               "in which each other byte is %sXX%s, follows the "
+	                               "results of this turn as a file.", len, bytes,
+	                               bytes / 4, view_open, view_close)
+	                 : dstr_printf(&slot->answer, "The note, %zu bytes, about %zu "
+	                               "tokens, follows the results of this turn as a "
+	                               "file.", len, bytes / 4);
+	return said ? 0 : ENOMEM;
+}
+
+/* Attaches @p text, the note whose object id is @p id, to the turn: the
+ * file that askai uploaded for the note and its owner, if it lasts, or else
+ * a new upload of the note, or of its view if it is not UTF-8 text, if the
+ * context has room for it.  The length of the upload, the note's and the
+ * object id stay in req->body until the upload's answer comes. */
+static void
+mcp_slot_notes_got_attach (struct mcp_slot *slot,
+                           struct span      text,
+                           struct span      id)
+{
+	struct mcp_req *req = slot->req;
+	struct mcp_static const *st = req->mcp->st;
+	char const *s = (char const *)text.ptr;
+	bool view = jb_utf8(s, text.len) < text.len || memchr(s, '\0', text.len);
+	char uri[UPLOADS_URI];
+	size_t len = 0;
+	size_t n = uploads_find(st->uploads, mcp_req_owner(req), (char const *)id.ptr,
+	                        id.len, (int64_t)(mcp_realtime() / NS), uri, &len);
+	if (n) {
+		if (mcp_slot_notes_fits(slot, len))
+			return;
+		LOG(LOG_VERBOSE, "upstream file %.*s attached again", (int)n, uri);
+		int e = mcp_req_attach(req, uri, n, len);
+		mcp_slot_notes_end(slot, e ? e : mcp_slot_notes_attached(slot, text.len, len,
+		                                                         view), false);
+		return;
+	}
+	dstr_auto shown = DSTR_INIT;
+	int e = view ? mcp_notes_view(&shown, s, text.len) : 0;
+	char const *body = view ? dstr_get(&shown) : s;
+	len = view ? dstr_len(&shown) : text.len;
+	if (!e && len > NOTES_MAX) {
+		dstr_clear(&slot->answer);
+		e = dstr_printf(&slot->answer, "The note is too large to attach: its file "
+		                "would have %zu bytes, and askai uploads %d MiB at most.",
+		                len, NOTES_MAX >> 20) ? 0 : ENOMEM;
+		mcp_slot_notes_end(slot, e, true);
+		return;
+	}
+	if (!e && mcp_slot_notes_fits(slot, len))
+		return;
+	/* The table keeps no id that is too long, so none is kept then. */
+	size_t const sizes[] = { len, text.len };
+	size_t kept = id.len <= UPLOADS_ID ? id.len : 0;
+	buf_fini(&req->body);
+	struct span to;
+	if (!e && !(e = buf_reserve(&req->body, sizeof sizes + kept,
+	                            sizeof sizes + UPLOADS_ID, &to))) {
+		memcpy(to.ptr, sizes, sizeof sizes);
+		memcpy(to.ptr + sizeof sizes, id.ptr, kept);
+		buf_commit(&req->body, sizeof sizes + kept);
+	}
+	e = e ? e : mcp_slot_post_file(slot, body, len);
+	if (e == EAGAIN) {
+		dstr_clear(&slot->answer);
+		e = CAT(&slot->answer, "askai sends too many requests at once to upload the "
+		        "note now. Try again later.") ? 0 : ENOMEM;
+		mcp_slot_notes_end(slot, e, true);
+		return;
+	}
+	if (e) {
+		mcp_slot_notes_end(slot, e, true);
+		return;
+	}
+	child_destroy(&slot->child);
+	mcp_slot_park(slot);
+}
+
+/* Takes the answer to the upload of the attach action: puts the file into
+ * the table of uploads and attaches it to the turn, or says why the upload
+ * failed. */
+static void
+mcp_slot_notes_uploaded (struct mcp_slot *slot)
+{
+	struct mcp_req *req = slot->req;
+	struct mcp_static const *st = req->mcp->st;
+	struct web_response r;
+	int e = mcp_slot_fetched(slot, &r);
+	if (e == EINPROGRESS) {
+		mcp_slot_park(slot);
+		return;
+	}
+	size_t sizes[2] = {};
+	struct span kept = buf_peek(&req->body);
+	struct span id = {};
+	if (kept.len >= sizeof sizes) {
+		memcpy(sizes, kept.ptr, sizeof sizes);
+		id = (struct span){ kept.ptr + sizeof sizes, kept.len - sizeof sizes };
+	}
+	dstr_auto uri = DSTR_INIT;
+	dstr_auto why = DSTR_INIT;
+	int64_t expires = 0;
+	if (!e)
+		e = r.e ? (dstr_cat(&why, r.error) ? EIO : ENOMEM)
+		    : ai_uploaded(st->ep->api, r.status, r.body, r.len, &uri, &expires, &why);
+	if (!e && dstr_len(&uri) > UPLOADS_URI)
+		e = dstr_printf(&why, "The upstream named the file with a URI of more "
+		                "than %d bytes.", UPLOADS_URI) ? EIO : ENOMEM;
+	if (!e) {
+		LOG(LOG_VERBOSE, "upstream file %s uploaded: %zu bytes", dstr_get(&uri),
+		    sizes[0]);
+		e = mcp_req_attach(req, dstr_get(&uri), dstr_len(&uri), sizes[0]);
+		if (!e && expires)
+			(void)uploads_keep(st->uploads, mcp_req_owner(req), (char const *)id.ptr,
+			                   id.len, dstr_get(&uri), dstr_len(&uri), sizes[0],
+			                   expires, (int64_t)(mcp_realtime() / NS));
+		/* A view is longer than its note, by its first line at least. */
+		e = e ? e : mcp_slot_notes_attached(slot, sizes[1], sizes[0],
+		                                    sizes[0] != sizes[1]);
+	}
+	buf_fini(&req->body);
+	if (e == EIO) {
+		dstr_clear(&slot->answer);
+		e = CAT(&slot->answer, "The upload of the note as a file failed: ") &&
+		    dstr_cat_n(&slot->answer, dstr_get(&why), dstr_len(&why)) ? 0 : ENOMEM;
+		mcp_slot_notes_end(slot, e, true);
+		return;
+	}
+	mcp_slot_notes_end(slot, e, false);
 }
 
 /* Appends @p head and the list of the notes in the output of git to the
@@ -5900,7 +6174,7 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 	struct mcp_req *req = slot->req;
 	struct child const *c = slot->child;
 	struct span text = {};
-	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text) : EIO;
+	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text, nullptr) : EIO;
 	char const *s = (char const *)text.ptr;
 	size_t len = text.len;
 	/* A note that is not UTF-8 text goes in as its view. */
@@ -6014,8 +6288,10 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 		[FETCH_FULL]    = mcp_slot_notes_compacted,
 	};
 	mcp_slot_unwait(slot);
-	(slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest
-	                            : steps[slot->fetch & FETCH_KIND])(slot);
+	/* The attach action's upload, which follows its read, has answered. */
+	(slot->web ? mcp_slot_notes_uploaded
+	 : slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest
+	 : steps[slot->fetch & FETCH_KIND])(slot);
 }
 
 /* The message for a file argument that is not a valid name. */
@@ -6183,12 +6459,13 @@ mcp_slot_notes_copy (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, FETCH_READ | FETCH_OTHER | FETCH_COPY, &in);
 }
 
-/* Starts the read action for the file name in @p args, in the caller's
- * notebook, or with @p other FETCH_OTHER in the other side's. */
+/* Starts the read action for the file name in @p args, or with @p flags
+ * FETCH_ATTACH the attach action, in the caller's notebook, or with @p flags
+ * FETCH_OTHER in the other side's. */
 static void
 mcp_slot_notes_read (struct mcp_slot    *slot,
                      struct json_object *args,
-                     uint8_t             other)
+                     uint8_t             flags)
 {
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
@@ -6198,11 +6475,11 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 		mcp_slot_result(slot, TEXT(bad_name), true);
 		return;
 	}
-	if (!other && !req->branch) {
+	if (!(flags & FETCH_OTHER) && !req->branch) {
 		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
 		return;
 	}
-	if (mcp_slot_offset(slot, args))
+	if (!(flags & FETCH_ATTACH) && mcp_slot_offset(slot, args))
 		return;
 	struct buf in = {};
 	int e = notes_read_input(&in, name + skip, len - skip);
@@ -6211,13 +6488,15 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, FETCH_READ | other, &in);
+	mcp_slot_notes_run(slot, FETCH_READ | flags, &in);
 }
 
-/* Starts a call of the notes tool: add a note, list the notes, or read a
- * note.  A call from a turn uses the thread of its ask call.  A client's
- * call names a thread, or starts a new thread with add.  A list or a read
- * with the notebook "other" reads the other side's notebook of the thread.
+/* Starts a call of the notes tool: add a note, list the notes, read a note,
+ * copy a note of the other side's notebook, or, in a turn whose upstream
+ * takes files, attach a note as a file.  A call from a turn uses the thread
+ * of its ask call.  A client's call names a thread, or starts a new thread
+ * with add.  A list, a read or an attach with the notebook "other" reads
+ * the other side's notebook of the thread.
  * An add writes only to the caller's own notebook, and a client's add to a
  * thread in which only the other AI keeps notes starts the client's
  * notebook there. */
@@ -6232,10 +6511,14 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	bool add = jb_is(action, "add");
 	bool read = jb_is(action, "read");
 	bool copy = jb_is(action, "copy");
+	/* A turn attaches a note if its upstream takes files. */
+	bool files = slot->role != ROLE_OWN && req->mcp->st->uploads;
+	uint8_t attach = files && jb_is(action, "attach") ? FETCH_ATTACH : 0;
 	uint8_t other = jb_is(notebook, "other") ? FETCH_OTHER : 0;
 	struct mcp_piece check =
-		!add && !read && !copy && !jb_is(action, "list")
-		? TEXT("The action argument must be add, list, read or copy.")
+		!add && !read && !copy && !attach && !jb_is(action, "list")
+		? files ? TEXT("The action argument must be add, list, read, copy or attach.")
+		        : TEXT("The action argument must be add, list, read or copy.")
 		: notebook && !other && !jb_is(notebook, "own")
 		? TEXT("The notebook argument must be own or other.")
 		: add && other
@@ -6278,8 +6561,8 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		mcp_slot_notes_add(slot, args, slot->role == ROLE_OWN && !thread);
 	else if (copy)
 		mcp_slot_notes_copy(slot, args);
-	else if (read)
-		mcp_slot_notes_read(slot, args, other);
+	else if (read || attach)
+		mcp_slot_notes_read(slot, args, other | attach);
 	else if (!other && !req->branch)
 		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
 	else if (!mcp_slot_offset(slot, args))
@@ -6990,6 +7273,8 @@ mcp_req_text (struct mcp_req *req)
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
+	if (failed)
+		mcp_req_unfile(req);
 	if (failed && mcp_req_refit(req, dstr_get(&req->self.answer), dstr_len(&req->self.answer))) {
 		mcp_req_compact_full(req);
 		return;
@@ -7505,11 +7790,26 @@ mcp_task_definition (void const *service)
 		nullptr);
 }
 
+/* A JSON string of the texts @p a, @p b and @p c, one after another, or
+ * nullptr if askai runs out of memory. */
+static struct json_object *
+mcp_text3 (char const *a,
+           char const *b,
+           char const *c)
+{
+	dstr_auto d = DSTR_INIT;
+	if (!dstr_cat(&d, a) || !dstr_cat(&d, b) || !dstr_cat(&d, c))
+		return nullptr;
+	return json_object_new_string_len(dstr_get(&d), (int)dstr_len(&d));
+}
+
 /* Returns the definition of the notes tool for the side @p side.  The
  * definition for the upstream has no thread argument, because a call of a
- * turn uses the thread of its ask call. */
+ * turn uses the thread of its ask call, and it has the action attach if
+ * the upstream takes files, which @p st says (mcp_static_uploads()). */
 static struct json_object *
-mcp_notes_schema (enum notes_side side)
+mcp_notes_schema (enum notes_side          side,
+                  struct mcp_static const *st)
 {
 	static_assert(NOTES_TEXT == 4 << 20 && NOTES_NAME == 255, "the descriptions say");
 	static char const *const descriptions[] = {
@@ -7547,10 +7847,13 @@ mcp_notes_schema (enum notes_side side)
 			"content instead of text keeps a file that the user gave, which "
 			"your client attaches. You add notes only to your own notebook.",
 	};
+	/* A turn attaches a note if its upstream takes files. */
+	bool files = side == NOTES_UPSTREAM && st && st->uploads;
 	struct json_object *actions = jb_list(json_object_new_string("add"));
 	if (jb_push(actions, json_object_new_string("list")) ||
 	    jb_push(actions, json_object_new_string("read")) ||
-	    jb_push(actions, json_object_new_string("copy"))) {
+	    jb_push(actions, json_object_new_string("copy")) ||
+	    (files && jb_push(actions, json_object_new_string("attach")))) {
 		json_object_put(actions);
 		actions = nullptr;
 	}
@@ -7563,18 +7866,18 @@ mcp_notes_schema (enum notes_side side)
 		"action", jb_object(
 			"type", json_object_new_string("string"),
 			"enum", actions,
-			"description", json_object_new_string(
+			"description", mcp_text3(
 				"add a note, list the notes, the oldest first, read a note, "
 				"or copy a note of the other notebook of the thread into "
-				"yours."),
+				"yours.", files ? " attach gives a note as a file." : "", ""),
 			nullptr),
 		"file", jb_object(
 			"type", json_object_new_string("string"),
-			"description", json_object_new_string(
-				"For add, read and copy: the file name of the note, at most "
-				"255 bytes. It can have directories, such as "
-				"findings/locks.md. Its extension, such as .md or .txt, shows "
-				"the format of the text."),
+			"description", mcp_text3(
+				"For add, read", files ? ", copy and attach" : " and copy",
+				": the file name of the note, at most 255 bytes. It can have "
+				"directories, such as findings/locks.md. Its extension, such "
+				"as .md or .txt, shows the format of the text."),
 			nullptr),
 		"as", jb_object(
 			"type", json_object_new_string("string"),
@@ -7597,14 +7900,15 @@ mcp_notes_schema (enum notes_side side)
 		"notebook", jb_object(
 			"type", json_object_new_string("string"),
 			"enum", notebooks,
-			"description", json_object_new_string(
+			"description", mcp_text3(
+				"For list", files ? ", read and attach" : " and read",
 				side == NOTES_CLIENT
-				? "For list and read: own, the default, for your notes in the "
-				  "thread, or other for the notes that the other AI keeps in it. "
-				  "add writes only to your own."
-				: "For list and read: own, the default, for your notes, or other "
-				  "for the notes that the client keeps in this thread. add "
-				  "writes only to your own."),
+				? ": own, the default, for your notes in the thread, or other "
+				  "for the notes that the other AI keeps in it. add writes only "
+				  "to your own."
+				: ": own, the default, for your notes, or other for the notes "
+				  "that the client keeps in this thread. add writes only to "
+				  "your own."),
 			nullptr),
 		nullptr);
 	/* The client's program, not its model, fills content in with a file
@@ -7632,7 +7936,11 @@ mcp_notes_schema (enum notes_side side)
 	}
 	return jb_object(
 		"name", json_object_new_string("notes"),
-		"description", json_object_new_string(descriptions[side]),
+		"description", mcp_text3(descriptions[side], files
+		                         ? " attach gives you a note of either notebook "
+		                           "whole, as a file after the results of the turn, "
+		                           "where read shows a large note in parts."
+		                         : "", ""),
 		"inputSchema", jb_object(
 			"type", json_object_new_string("object"),
 			"properties", props,
@@ -7652,16 +7960,14 @@ mcp_notes_schema (enum notes_side side)
 static struct json_object *
 mcp_notes_definition (void const *service)
 {
-	(void)service;
-	return mcp_notes_schema(NOTES_CLIENT);
+	return mcp_notes_schema(NOTES_CLIENT, service);
 }
 
 /* Returns the definition of the notes tool for the upstream. */
 static struct json_object *
 mcp_notes_upstream_definition (void const *service)
 {
-	(void)service;
-	return mcp_notes_schema(NOTES_UPSTREAM);
+	return mcp_notes_schema(NOTES_UPSTREAM, service);
 }
 
 /* The compact tool's definition, which only turns are given. */
@@ -8410,6 +8716,42 @@ mcp_static_plugin (struct mcp_static     *st,
 	return (struct mcp_plugin){ .plugin = plugin, .loaded = mcp_loaded_of(reg, plugin) };
 }
 
+/* Prepares the attach action of the notes tool, which the caller makes
+ * only for turns that are lent tools, if @p st's upstream takes files
+ * (ai_upload()) and the turns keep notes: the URL of the uploads, at the
+ * origin of the upstream's URL, so that the key goes to no other host,
+ * their header lines, the upstream's and those of its API, and the table of
+ * the files.  Returns 0, ENOMEM, or the error of uploads_create(). */
+static int
+mcp_static_uploads (struct mcp_static *st)
+{
+	struct ai_endpoint const *ep = st->ep;
+	struct ai_upload const *up = ai_upload(ep->api);
+	size_t origin = ai_origin(ep->url);
+	if (!up || !st->notes || !origin)
+		return 0;
+	size_t path = strlen(up->path);
+	size_t n = 0;
+	size_t m = 0;
+	while (ep->headers && ep->headers[n])
+		++n;
+	while (up->lines[m])
+		++m;
+	st->files_url = malloc(origin + path + 1);
+	st->files_lines = malloc((n + m + 1) * sizeof *st->files_lines);
+	if (!st->files_url || !st->files_lines)
+		return ENOMEM;
+	memcpy(st->files_url, ep->url, origin);
+	memcpy(st->files_url + origin, up->path, path + 1);
+	for (size_t i = 0; i < n; ++i)
+		st->files_lines[i] = ep->headers[i];
+	for (size_t i = 0; i <= m; ++i)
+		st->files_lines[n + i] = up->lines[i];
+	int e = 0;
+	st->uploads = uploads_create(&e);
+	return e;
+}
+
 struct mcp_static *
 mcp_static_create (struct config const *cfg,
                    struct manual       *manual,
@@ -8479,6 +8821,10 @@ mcp_static_create (struct config const *cfg,
 	}
 	st->lending = mcp_lending(cfg);
 	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
+	if (lends && (*e = mcp_static_uploads(st))) {
+		mcp_static_destroy(&st);
+		return nullptr;
+	}
 
 	/* Built with json-c, which escapes as replies need, then kept as text. */
 	struct json_object *info = jb_object("name", json_object_new_string("askai"),
@@ -8511,5 +8857,8 @@ mcp_static_destroy (struct mcp_static **p_static)
 	dstr_cleanup(&st->modern_tail);
 	dstr_cleanup(&st->server_meta);
 	dstr_cleanup(&st->versions);
+	uploads_destroy(&st->uploads);
+	free(st->files_url);
+	free(st->files_lines);
 	free(st);
 }

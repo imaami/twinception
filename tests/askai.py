@@ -242,7 +242,11 @@ class Upstream:
     as the events of the same answer, unless plain is set, and a Stream as
     it says; other answers carry the fields in headers.  GET /props gives
     props, if set, else a 404, two seconds late if props is "hang", and
-    counts in gets."""
+    counts in gets.  A POST to a path under /upload/ is a file's upload to
+    Gemini's Files API, which goes into uploads, with its body in raw and
+    the values of its Content-Type in types, and gets what upload(request)
+    gives, by default a file named after the upload's number that expires
+    in 48 hours."""
 
     def __init__(self):
         self.requests = []
@@ -250,6 +254,8 @@ class Upstream:
         self.plain = False
         self.props = None
         self.headers = {}
+        self.uploads = []
+        self.upload = self.stored
         self.gets = 0
         self.arrived = threading.Event()
         self.cancelled = threading.Event()
@@ -279,6 +285,23 @@ class Upstream:
 
             def do_POST(self):
                 raw = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path.startswith("/upload/"):
+                    request = {
+                        "path": self.path,
+                        "headers": {k.lower(): v for k, v in self.headers.items()},
+                        "types": self.headers.get_all("Content-Type"),
+                        "raw": raw,
+                    }
+                    with upstream.lock:
+                        upstream.uploads.append(request)
+                    status, payload = upstream.upload(request)
+                    wire = json.dumps(payload).encode()
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(wire)))
+                    self.end_headers()
+                    self.wfile.write(wire)
+                    return
                 request = {
                     "path": self.path,
                     "headers": {k.lower(): v for k, v in self.headers.items()},
@@ -338,6 +361,17 @@ class Upstream:
         with self.lock:
             self.hangups += 1
         self.cancelled.set()
+
+    def stored(self, request):
+        """The answer of Gemini's Files API to @p request: the file
+        files/fN, N the number of the upload, which expires in 48 hours."""
+        n = len(self.uploads)
+        expires = time.gmtime(time.time() + 48 * 3600)
+        return 200, {"file": {
+            "name": f"files/f{n}", "uri": f"https://files.test/v1beta/files/f{n}",
+            "mimeType": "text/plain", "sizeBytes": str(len(request["raw"])),
+            "expirationTime": time.strftime("%Y-%m-%dT%H:%M:%S.123456789Z", expires),
+            "state": "ACTIVE"}}
 
     @staticmethod
     def wait_for_hangup(conn, seconds):
@@ -3889,7 +3923,8 @@ def check_logs(binary, up):
         with Askai(binary, "-u", up.url()) as ai:
             assert ai.listed("upstream:") == [
                 "provider  none", "API       chat", "model     none",
-                "context   from llama-server", f"URL       {up.url()}"], told(ai)
+                "context   from llama-server", f"URL       {up.url()}",
+                "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
                 "ask_ai      on", "man         off (--man)", "git         off (--git PATH)",
                 "notes       off (--notes DIR)"] + [
@@ -3935,7 +3970,7 @@ def check_logs(binary, up):
                    "--upstream-tools", "--verbose", env={"ASKAI_TOKEN": "tok-31415"}) as ai:
             assert ai.listed("upstream:") == [
                 "provider  none", "API       chat", "model     M", "context   8000 tokens",
-                f"URL       {up.url()}"], told(ai)
+                f"URL       {up.url()}", "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
                 f"{name:<10}  on" for name in ("bro", "man", "test_task", "git", "notes")
             ] + [f"{name:<10}  off (--client-jobs)"
@@ -7639,6 +7674,238 @@ def check_turn_apis(binary, up):
           "signatures given back, results, waking: PASS")
 
 
+def check_attach(binary, up):
+    """In Gemini's generateContent and Interactions, a turn's notes call with
+    the action attach uploads a note of either notebook to the Files API at
+    the origin of the upstream's URL, with the upstream's header lines: the
+    note as it is if it is UTF-8 text, else its view.  The next request has
+    the file after the turn's results: a fileData part in their message, or
+    a user_input step with a document.  A later attach of the same note uses
+    the same file while it lasts more than 6 hours, and none whose expiry
+    the answer does not say.  A failed upload fails the call, the turns go
+    on, and nothing is attached.  A turn that the upstream refuses as too
+    large makes askai forget the files of the caller and begin again from
+    the prompt.  A file that does not fit the context is refused, a URI
+    that is not printable ASCII fails the upload, and the log has no user
+    name or password of the URL.  The other APIs do not offer attach, and
+    a client cannot call it."""
+    script = []
+    up.reply = lambda request: script.pop(0)(request)
+    latin1 = b'char s[] = "caf\xe9";\n'
+    code = "int main(void) { return 0; }\n"
+    attach = [{"action": "attach", "file": "latin1.c", "notebook": "other"},
+              {"action": "attach", "file": "own.c"}]
+    apis = {
+        "generate": ("/v1beta/models/m:generateContent", "contents",
+                     lambda body: body["tools"][0]["functionDeclarations"],
+                     "parametersJsonSchema",
+                     lambda calls: generate_turn([[
+                         {"functionCall": {"name": "notes", "args": a, "id": f"c{i}"}}
+                         for i, a in enumerate(calls)]]),
+                     lambda text: generate_turn([[{"text": text}]]),
+                     lambda uri: {"fileData": {"mimeType": "text/plain", "fileUri": uri}},
+                     lambda given: (given[-1]["parts"][:-2], given[-1]["parts"][-2:])),
+        "interactions": ("/v1beta/interactions", "input",
+                         lambda body: body["tools"], "parameters",
+                         lambda calls: interactions_turn([
+                             ("whole", f"c{i}", "notes", json.dumps(a))
+                             for i, a in enumerate(calls)]),
+                         lambda text: interactions_turn([("text", text, "")]),
+                         lambda uri: {"type": "user_input", "content": [{
+                             "type": "document", "mime_type": "text/plain",
+                             "uri": uri}]},
+                         lambda given: (given[-4:-2], given[-2:])),
+    }
+    with tempfile.TemporaryDirectory() as notes:
+        for api, (path, key, tools, schema, calls, answer, file, split) in apis.items():
+            with Askai(binary, "--api", api, "-u", up.url(path), "-m", "m",
+                       "-k", "TEST_KEY", "--header", "X-Gate: g", "--upstream-tools",
+                       "--notes", notes, env={"TEST_KEY": "secret"}) as ai:
+                assert ai.listed("upstream:")[-1] == \
+                    f"files     {up.url('/upload/v1beta/files')}", ai.log
+
+                def call(arguments):
+                    status, _, body = ai.rpc("tools/call", {"name": "notes",
+                                                            "arguments": arguments})
+                    assert status == 200, body
+                    result = body["result"]
+                    return ("!" if result.get("isError") else "") + text_of(result)
+
+                # The client keeps a note that is not UTF-8 text in a thread,
+                # and the upstream one of its own.
+                said = call({"action": "add", "file": "latin1.c", "content":
+                             "data:;base64," + base64.b64encode(latin1).decode()})
+                thread = re.search("[0-9a-f]{32}", said).group(0)
+                script[:] = [lambda r: (200, calls([{"action": "add", "file": "own.c",
+                                                     "text": code}])),
+                             lambda r: (200, answer("A"))]
+                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
+                assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
+                    == "!The action argument must be add, list, read or copy."
+
+                count = len(up.requests)
+                stored = len(up.uploads)
+                script[:] = [lambda r: (200, calls(attach)), lambda r: (200, answer("B"))]
+                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "B"
+                first, second = up.requests[count:]
+                [notes_tool] = [t for t in tools(first["body"]) if t["name"] == "notes"]
+                action = notes_tool[schema]["properties"]["action"]
+                assert action["enum"] == ["add", "list", "read", "copy", "attach"], action
+                assert "attach gives you a note" in notes_tool["description"], notes_tool
+                view, plain = up.uploads[stored:]
+                assert view["raw"] == note_view(latin1).encode() and \
+                    plain["raw"] == code.encode(), (view, plain)
+                for u in (view, plain):
+                    assert u["path"] == "/upload/v1beta/files", u
+                    h = u["headers"]
+                    assert (h["x-goog-api-key"], h["x-gate"], h["x-goog-upload-protocol"],
+                            u["types"], h["user-agent"]) == \
+                        ("secret", "g", "raw", ["text/plain"], "askai"), u
+                uris = [f"https://files.test/v1beta/files/f{n}"
+                        for n in (stored + 1, stored + 2)]
+                results, files = split(second["body"][key])
+                assert files == [file(u) for u in uris], files
+                results = json.dumps(results)
+                assert "is not UTF-8 text, so its view" in results and \
+                    f"The note, {len(code)} bytes, about {len(code) // 4} tokens, " \
+                    "follows the results" in results, results
+
+                # Again: the same files, with no upload.
+                count = len(up.requests)
+                script[:] = [lambda r: (200, calls(attach)), lambda r: (200, answer("C"))]
+                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "C"
+                assert len(up.uploads) == stored + 2
+                assert split(up.requests[count + 1]["body"][key])[1] == \
+                    [file(u) for u in uris]
+
+                # A failed upload fails the call, and nothing is attached.
+                up.upload = lambda request: (500, {"error": {"message": "store down"}})
+                count = len(up.requests)
+                script[:] = [lambda r: (200, calls([{"action": "add", "file": "new.c",
+                                                     "text": "x"}])),
+                             lambda r: (200, calls([{"action": "attach",
+                                                     "file": "new.c"}])),
+                             lambda r: (200, answer("D"))]
+                try:
+                    assert ai.ask("Q", thread=thread)["content"][0]["text"] == "D"
+                finally:
+                    up.upload = up.stored
+                last = json.dumps(up.requests[count + 2]["body"][key][-2:])
+                assert "The upload of the note as a file failed: Upstream error " \
+                    "(HTTP 500): store down" in last and "files.test" not in last, last
+
+                # The upstream refuses the turn after an attach as too large:
+                # the caller's files are forgotten, the conversation begins
+                # again from the prompt, and the next attach uploads anew.
+                too_many = {"error": {"code": 400, "message": "The input token count "
+                                      "(2000000) exceeds the maximum number of "
+                                      "tokens allowed (1048576)."}}
+                stored = len(up.uploads)
+                count = len(up.requests)
+                script[:] = [lambda r: (200, calls(attach[1:])),
+                             lambda r: (400, too_many), lambda r: (200, answer("E"))]
+                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "E"
+                assert len(up.uploads) == stored
+                assert "files.test" not in json.dumps(up.requests[count + 2]["body"][key])
+                script[:] = [lambda r: (200, calls(attach[1:])), lambda r: (200, answer("F"))]
+                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "F"
+                assert len(up.uploads) == stored + 1
+
+                # A file that expires within 6 hours, or whose expiry the
+                # answer does not say, is uploaded again.
+                def short(request, hours):
+                    status, payload = up.stored(request)
+                    if hours is None:
+                        del payload["file"]["expirationTime"]
+                    else:
+                        payload["file"]["expirationTime"] = time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + hours * 3600))
+                    return status, payload
+                for hours in (5, None):
+                    name = f"e{hours}.c"
+                    up.upload = lambda request, h=hours: short(request, h)
+                    stored = len(up.uploads)
+                    try:
+                        script[:] = [lambda r: (200, calls([
+                                         {"action": "add", "file": name, "text": name},
+                                         {"action": "attach", "file": name}])),
+                                     lambda r: (200, answer("G")),
+                                     lambda r: (200, calls([{"action": "attach",
+                                                             "file": name}])),
+                                     lambda r: (200, answer("H"))]
+                        assert ai.ask("Q", thread=thread)["content"][0]["text"] == "G"
+                        assert ai.ask("Q", thread=thread)["content"][0]["text"] == "H"
+                    finally:
+                        up.upload = up.stored
+                    assert len(up.uploads) == stored + 2, hours
+
+    # A file that does not fit a context of 1000 tokens is refused, a URI
+    # that is not printable ASCII fails the upload, and with --verbose the
+    # log has the upload's URL without the user name and the password, which
+    # the upload sends.
+    url = up.url("/v1beta/models/m:generateContent").replace(
+        "http://", "http://user:PASSWORD@")
+    with tempfile.TemporaryDirectory() as notes, \
+            Askai(binary, "--api", "generate", "-u", url, "--context", "1000",
+                  "--upstream-tools", "--notes", notes, "--verbose") as ai:
+        status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
+            "action": "add", "file": "big.c", "text": "x" * 8000}})
+        thread = re.search("[0-9a-f]{32}", text_of(body["result"])).group(0)
+        status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
+            "action": "add", "file": "small.c", "text": "y", "thread": thread}})
+        stored = len(up.uploads)
+        for name, upload, said in (
+                ("big.c", up.stored, "The note is too large to attach: its file of "
+                 "8000 bytes, about 2000 tokens, does not fit the context of 1000 "
+                 "tokens"),
+                ("small.c", lambda request: (200, {"file": {"uri": "files/a b"}}),
+                 "The upload of the note as a file failed: The upstream named the "
+                 "file with a URI that is not printable ASCII."),
+                ("small.c", up.stored, "The note, 1 bytes, about 0 tokens, follows")):
+            up.upload = upload
+            count = len(up.requests)
+            script[:] = [lambda r: (200, generate_turn([[{"functionCall": {
+                             "name": "notes", "id": "c0", "args": {
+                                 "action": "attach", "file": name,
+                                 "notebook": "other"}}}]])),
+                         lambda r: (200, generate_turn([[{"text": "A"}]]))]
+            try:
+                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
+            finally:
+                up.upload = up.stored
+            assert said in json.dumps(up.requests[count + 1]["body"]["contents"][-1]), \
+                up.requests[count + 1]["body"]["contents"][-1]
+        assert len(up.uploads) == stored + 2
+        assert up.uploads[-1]["headers"]["authorization"].startswith("Basic "), \
+            up.uploads[-1]
+        ai.wait_log(r"upstream file https://files\.test/v1beta/files/f\d+ uploaded: "
+                    r"1 bytes")
+        assert "web request POST http://127.0.0.1:" in "".join(ai.log) and \
+            "PASSWORD" not in "".join(ai.log), ai.log
+
+    # Without the notes of the turns, the startup report says why the
+    # upstream gets no files, and the other APIs offer no attach.
+    with Askai(binary, "--api", "interactions", "-u", up.url("/v1beta/interactions"),
+               "--upstream-tools") as ai:
+        assert ai.listed("upstream:")[-1] == \
+            "files     off (--notes and --upstream-tools)", ai.log
+    for protocol, path in (("openai", "/v1/chat/completions"),
+                           ("responses", "/v1/responses"),
+                           ("anthropic", "/v1/messages")):
+        with tempfile.TemporaryDirectory() as notes, \
+                Askai(binary, "--api", API[protocol], "-u", up.url(path), "-m", "m",
+                      "--upstream-tools", "--notes", notes) as ai:
+            script[:] = [lambda r, p=protocol: (200, ANSWERS[p])]
+            ai.ask("Q")
+            tools = json.dumps(up.last()["body"]["tools"])
+            assert '"notes"' in tools and "attach" not in tools, (protocol, tools)
+    up.reply = lambda request: (200, ANSWERS["openai"])
+    print("attach: notes uploaded once to Gemini's Files API, the note or its "
+          "view, given after the results in generateContent and Interactions, "
+          "expiries, failed uploads, turns too large, the context, URIs, the "
+          "log, other APIs: PASS")
+
+
 def check_turns(binary, up):
     """With --upstream-tools, an ask call lends the upstream the tools that
     its client's role lets the upstream call, never itself, and notes and
@@ -10785,6 +11052,7 @@ def main():
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_turns, check_notes, check_turn_apis,
+                      check_attach,
                       check_tasks,
                       lambda binary, up: check_plugin(binary, up, plugin),
                       lambda binary, up: check_instances(binary, up, plugin),

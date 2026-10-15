@@ -2251,17 +2251,35 @@ config_reload (struct config       *cfg,
 	return status;
 }
 
-/* Log @p url without its user, password and query, which can have
- * secrets. */
+/* Log @p url as the item @p name, without its user, password and query,
+ * which can have secrets; with @p path, its origin and then @p path. */
 static void
-config_log_url (char const *url)
+config_log_url (char const *name,
+                char const *url,
+                char const *path)
 {
 	char const *host = strstr(url, "://");
 	host = host ? host + sizeof "://" - 1 : url;
 	char const *at = memchr(host, '@', strcspn(host, "/?#"));
-	char const *path = at ? at + 1 : host;
-	LOG_ALL(LOG_INFO, "  URL       %.*s%.*s", (int)(host - url), url,
-	        (int)strcspn(path, "?#"), path);
+	char const *rest = at ? at + 1 : host;
+	size_t shown = strcspn(rest, path ? "/?#" : "?#");
+	LOG_ALL(LOG_INFO, "  %-9s %.*s%.*s%s", name, (int)(host - url), url, (int)shown,
+	        rest, path ? path : "");
+}
+
+/* Log where the turns' attach action uploads the notes, which needs an API
+ * that takes files (ai_upload()), --notes and --upstream-tools.  The URL,
+ * which config_parse() checked, has a scheme. */
+static void
+config_log_files (struct config const *cfg)
+{
+	struct ai_upload const *up = ai_upload(cfg->ep.api);
+	if (!up)
+		LOG_ALL(LOG_INFO, "  files     off (the API takes none)");
+	else if (!cfg->notes || !(cfg->flags & CFG_UPSTREAM_TOOLS))
+		LOG_ALL(LOG_INFO, "  files     off (--notes and --upstream-tools)");
+	else
+		config_log_url("files", cfg->ep.url, up->path);
 }
 
 void
@@ -2282,7 +2300,8 @@ config_log (struct config const *cfg)
 		LOG_ALL(LOG_INFO, "  context   from llama-server");
 	else
 		LOG_ALL(LOG_INFO, "  context   unknown");
-	config_log_url(ep->url);
+	config_log_url("URL", ep->url, nullptr);
+	config_log_files(cfg);
 	mcp_report(&cfg->registry, cfg);
 	config_log_policy(cfg);
 }

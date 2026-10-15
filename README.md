@@ -606,6 +606,23 @@ notes only to its own notebook, and reads both:
   A prompt that has the newest note has the same view.  The note itself
   is never converted, so the bytes of a string literal that an old
   protocol needs stay as they are.
+- The model's `attach`, with Gemini's APIs `generate` and `interactions`,
+  gives it a note of either notebook whole, as a file, where `read` shows
+  a large note in parts.  `askai` uploads the note to Gemini's Files API,
+  at the origin of the upstream's URL and with its header lines, so the
+  key goes to no other host: the note as it is if it is UTF-8 text, else
+  its view, as `text/plain`, 16 MiB at most.  The file follows the results
+  of the turn: a `fileData` part in their message, or a `user_input` step
+  with a `document` after them, as neither API shows the model a text file
+  in a result.  A note is uploaded once while its file lasts: `askai`
+  keeps the files of up to 128 notes, each for the client whose call
+  attached it, by the note's git object id, and gives a file out until 6
+  hours before it expires (Gemini keeps a file 48 hours).  A turn that
+  fails after an attach makes `askai` forget that client's files.  A file
+  counts as one token per 4 bytes in the context, and one that does not
+  fit a known context is refused; Gemini's "input token count exceeds the
+  maximum" makes `askai` begin the conversation again from the prompt, as
+  a full context does.  The other APIs do not offer `attach` yet.
 - A client reads the model's notes of a thread that an `ask_ai` answer
   named.  Its first `add` to that thread starts its own notebook there.
 - `ask_ai`'s `thread` can also name a thread that the client started with
@@ -1352,6 +1369,7 @@ askai:   API       chat
 askai:   model     none
 askai:   context   from llama-server
 askai:   URL       http://127.0.0.1:8081/v1/chat/completions
+askai:   files     off (the API takes none)
 askai: built-in tools for clients:
 askai:   bro         on
 askai:   man         on

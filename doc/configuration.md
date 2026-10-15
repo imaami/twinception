@@ -586,7 +586,10 @@ can continue an earlier thread of notes with its argument `thread`.  A
 thread has a notebook of the client and one of the upstream model under one
 id.  Each side adds notes only to its own notebook, reads the other's with
 `"notebook": "other"`, and copies a note of the other's into its own, byte
-for byte, with the action `copy`.  A client adds a file that its program
+for byte, with the action `copy`.  With the APIs `generate` and
+`interactions`, the model also gets the action `attach`, which uploads a
+note to Gemini's Files API at the origin of the upstream's URL and gives it
+to the model as a file.  A client adds a file that its program
 attaches, of at most 4 MiB, with the argument `content`, by the MCP
 extension `io.modelcontextprotocol/files` (section [Lending tools to the
 upstream](../README.md#lending-tools-to-the-upstream) of `README.md`).  The

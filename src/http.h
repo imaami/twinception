@@ -54,12 +54,13 @@ http_resolver (struct http    *http,
                struct blocker *blockers);
 
 /**
- * Start an asynchronous JSON POST of the @p len bytes at @p body, on a later
+ * Start an asynchronous POST of the @p len bytes at @p body, on a later
  * step, or a GET if @p body is nullptr.  @p headers is an optional
- * nullptr-terminated list of complete header lines; @p timeout_ms <= 0 means
- * no total timeout.  The headers are copied, and so is the body if @p copy;
- * otherwise it must stay as it is until @p done_cb runs or the request is
- * cancelled.
+ * nullptr-terminated list of complete header lines; a POST has the
+ * Content-Type application/json unless one of them is a Content-Type.
+ * @p timeout_ms <= 0 means no total timeout.  The headers are copied, and
+ * so is the body if @p copy; otherwise it must stay as it is until
+ * @p done_cb runs or the request is cancelled.
  */
 extern int
 http_post_json (struct http         *http,

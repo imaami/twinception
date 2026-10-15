@@ -226,13 +226,15 @@ notes_read_input (struct buf *in,
 
 /**
  * Reads @p out, the output of the command NOTES_READ, and stores the text
- * of the note in @p text.  Returns 0, ENOENT if no note has the name,
+ * of the note in @p text, and its object id, in hexadecimal, in @p id
+ * unless @p id is nullptr.  Returns 0, ENOENT if no note has the name,
  * EISDIR if the name is a directory of notes, and EIO if the output is not
  * what the command writes.
  */
 extern int
 notes_read_out (struct span  out,
-                struct span *text);
+                struct span *text,
+                struct span *id);
 
 /**
  * Reads the note before the offset @p *end in @p out, the output of the

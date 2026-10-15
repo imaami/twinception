@@ -11,7 +11,10 @@
  * askai can store a response for later requests.  The calls of every user
  * and every loop share the stored responses of a plugin.  A request is
  * equal to another request if both come from the same plugin and have the
- * same method, URL, Accept, max and body.
+ * same method, URL, Accept, header lines, max and body.
+ *
+ * askai's own tools send requests through the same service, such as the
+ * uploads of notes (src/mcp.c), with struct web_ask.
  */
 #ifndef TWINCEPTION_SRC_WEB_H_
 #define TWINCEPTION_SRC_WEB_H_
@@ -115,7 +118,10 @@ typedef void web_back_fn (struct loop     *loop,
                           struct web_wait *wait);
 
 /** A request of a call, after mcp_slot_fetch() has checked it, and the
- *  call that waits for its response. */
+ *  call that waits for its response.  A request of askai's own does not
+ *  pass mcp_slot_fetch(): its URL may have a user name and a password,
+ *  which the log leaves out, its body may be longer than WEB_SEND_MAX, and
+ *  it may have more header lines. */
 struct web_ask {
 	struct web_request const *request;
 	char const               *plugin;  /**< the name of the call's plugin,
@@ -129,6 +135,11 @@ struct web_ask {
 	size_t                    url;     /**< the length of request->url */
 	size_t                    accept;  /**< the length of request->accept,
 	                                        or 0 if it is nullptr */
+	char const *const        *lines;   /**< more header lines, which askai
+	                                        checked, nullptr-terminated, or
+	                                        nullptr; a line of User-Agent is
+	                                        left out, as askai sends its
+	                                        own */
 	struct handle             who;     /**< names the call on its loop */
 };
 
@@ -199,7 +210,8 @@ web_relieve (struct web        *web,
  * them.
  *
  * Returns the wait.  On failure it returns nullptr and stores the error
- * number in @p *e: EAGAIN if WEB_RUNS requests are under way, or ENOMEM.
+ * number in @p *e: EAGAIN if WEB_RUNS requests are under way, EINVAL if
+ * the header lines have more than 65535 bytes, or ENOMEM.
  */
 extern struct web_wait *
 web_wait_create (struct web           *web,

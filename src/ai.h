@@ -218,7 +218,9 @@ enum ai_format_flag {
  * The results of the calls follow: results, then each result after the
  * first result_sep, and result, the call's id, or its name and result_id
  * and its id, if it had one or call is not empty (AI_RESULT_NAMED), output,
- * the result's text, and result_end; then results_end.
+ * the result's text, and result_end; then each file that the calls
+ * attached, as file, its URI and file_end, if the API takes files
+ * (ai_upload()); then results_end.
  *
  * prompt_end ends the prompt's text, after which end ends the conversation
  * and the body: what askai adds to the prompt goes before it.  A message
@@ -251,6 +253,8 @@ struct ai_format {
 	                output,
 	                result_end,
 	                results_end,
+	                file,
+	                file_end,
 	                user,
 	                prompt_end,
 	                end;
@@ -276,6 +280,40 @@ ai_cut (enum ai_api       api,
 /** The format of turns in @p api. */
 extern struct ai_format const *
 ai_format (enum ai_api api);
+
+/** How the upstream of an API takes a file that a turn attaches: a POST
+ *  of the file, which is UTF-8 text, to path at the origin of the
+ *  upstream's URL, with the upstream's header lines and lines. */
+struct ai_upload {
+	char const        *path;
+	char const *const *lines;  /**< nullptr-terminated */
+};
+
+/** How the upstream of @p api takes a file, or nullptr if askai gives it
+ *  none. */
+extern struct ai_upload const *
+ai_upload (enum ai_api api);
+
+/** The length of the origin of @p url, its scheme and authority, or 0 if
+ *  it has no scheme. */
+extern size_t
+ai_origin (char const *url);
+
+/**
+ * Read the answer of HTTP @p status to an upload (ai_upload()), the @p len
+ * bytes at @p body: the URI of the file, printable ASCII, in @p uri, and
+ * the time at which the file expires, in seconds since the epoch, in
+ * @p *expires, or 0 if the answer does not say.  Returns 0, EIO with what
+ * went wrong in @p why, ENOMEM, or EINVAL if an argument is not valid.
+ */
+extern int
+ai_uploaded (enum ai_api  api,
+             long         status,
+             char const  *body,
+             size_t       len,
+             struct dstr *uri,
+             int64_t     *expires,
+             struct dstr *why);
 
 /** Say in the @p size bytes at @p buf that the model gave no answer, and
  *  why, if its stop @p reason is not nullptr; returns the length written. */

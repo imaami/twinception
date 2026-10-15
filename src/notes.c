@@ -502,9 +502,12 @@ notes_read_input (struct buf *in,
 
 int
 notes_read_out (struct span  out,
-                struct span *text)
+                struct span *text,
+                struct span *id)
 {
 	*text = (struct span){};
+	if (id)
+		*id = (struct span){};
 	char const *line = (char const *)out.ptr;
 	char const *nl = out.len ? memchr(line, '\n', out.len) : nullptr;
 	if (!nl)
@@ -530,6 +533,8 @@ notes_read_out (struct span  out,
 	}
 	size_t room = out.len - n - 1;
 	*text = (struct span){ out.ptr + n + 1, size < room ? (size_t)size : room };
+	if (id)
+		*id = (struct span){ out.ptr, oid };
 	return 0;
 }
 

@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 
@@ -814,16 +815,29 @@ http_destroy (struct http **p_http)
 	curl_global_cleanup();
 }
 
-/* Give @p request its header lines: a body's Content-Type, and @p headers,
- * nullptr-terminated, unless nullptr.  Appending keeps the list's head, the
- * request's.  0 or ENOMEM. */
+/* Whether @p headers, nullptr-terminated, unless nullptr, has a line of
+ * Content-Type. */
+static bool
+http_typed (char const *const *headers)
+{
+	static char const name[] = "Content-Type:";
+	for (; headers && *headers; ++headers)
+		if (!strncasecmp(*headers, name, sizeof name - 1))
+			return true;
+	return false;
+}
+
+/* Give @p request its header lines: a body's Content-Type, application/json
+ * unless @p headers has one, and @p headers, nullptr-terminated, unless
+ * nullptr.  Appending keeps the list's head, the request's.  0 or ENOMEM. */
 static int
 http_request_headers (struct http_request *request,
                       char const          *body,
                       char const *const   *headers)
 {
 	static char const json[] = "Content-Type: application/json";
-	if (body && !(request->headers = curl_slist_append(nullptr, json)))
+	if (body && !http_typed(headers) &&
+	    !(request->headers = curl_slist_append(nullptr, json)))
 		return ENOMEM;
 	for (; headers && *headers; ++headers) {
 		struct curl_slist *list = curl_slist_append(request->headers, *headers);

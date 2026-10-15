@@ -4,6 +4,7 @@
 #include <stdckdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "ai.h"
 #include "dstr.h"
@@ -1329,7 +1330,9 @@ ai_format (enum ai_api api)
 			.flags        = AI_ARGS_RAW,
 		},
 		/* Its turn's parts are the replay's, its calls among them, with
-		 * their thought signatures. */
+		 * their thought signatures.  A file goes after the results, in
+		 * their message, as the model does not see a text file in a
+		 * result. */
 		[AI_GENERATE] = {
 			.tools        = B("[{\"functionDeclarations\":["),
 			.tools_end    = B("]}]"),
@@ -1343,6 +1346,9 @@ ai_format (enum ai_api api)
 			.output       = B("\",\"response\":{\"output\":\""),
 			.result_end   = B("\"}}}"),
 			.results_end  = B("]}"),
+			.file         = B(",{\"fileData\":{\"mimeType\":\"text/plain\","
+			                  "\"fileUri\":\""),
+			.file_end     = B("\"}}"),
 			.user         = B(",{\"role\":\"user\",\"parts\":[{\"text\":\""),
 			.prompt_end   = B("\"}]}"),
 			.end          = B("]}"),
@@ -1351,7 +1357,9 @@ ai_format (enum ai_api api)
 		},
 		/* A turn is the replay's steps and the calls, in the input list,
 		 * a call with its signature.  Each result is a step after them,
-		 * which the API refuses without the call's name. */
+		 * which the API refuses without the call's name.  A file is a
+		 * user_input step after the results, as a result takes no
+		 * document. */
 		[AI_INTERACTIONS] = {
 			.tools        = B("["),
 			.tools_end    = B("]"),
@@ -1365,6 +1373,10 @@ ai_format (enum ai_api api)
 			.result_id    = B("\",\"call_id\":\""),
 			.output       = B("\",\"result\":\""),
 			.result_end   = B("\"}"),
+			.file         = B(",{\"type\":\"user_input\",\"content\":"
+			                  "[{\"type\":\"document\",\"mime_type\":"
+			                  "\"text/plain\",\"uri\":\""),
+			.file_end     = B("\"}]}"),
 			.user         = B(",{\"type\":\"user_input\",\"content\":"
 			                  "[{\"type\":\"text\",\"text\":\""),
 			.prompt_end   = B("\"}]}"),
@@ -1475,6 +1487,92 @@ ai_describe_error (struct dstr        *text,
 	              : QUOTE("empty response");
 #undef QUOTE
 	return ok ? 0 : ENOMEM;
+}
+
+struct ai_upload const *
+ai_upload (enum ai_api api)
+{
+	/* Gemini's Files API, which keeps a file for 48 hours.  It takes the
+	 * file as the whole body with the protocol raw. */
+	static char const *const gemini_lines[] = {
+		"X-Goog-Upload-Protocol: raw", "Content-Type: text/plain", nullptr
+	};
+	static struct ai_upload const gemini = {
+		.path = "/upload/v1beta/files",
+		.lines = gemini_lines
+	};
+	return api == AI_GENERATE || api == AI_INTERACTIONS ? &gemini : nullptr;
+}
+
+size_t
+ai_origin (char const *url)
+{
+	char const *scheme = url ? strstr(url, "://") : nullptr;
+	if (!scheme)
+		return 0;
+	size_t origin = (size_t)(scheme - url) + sizeof "://" - 1;
+	return origin + strcspn(url + origin, "/?#");
+}
+
+/* @p text, a time of RFC 3339 in UTC, such as 2026-10-17T13:44:05.888Z, in
+ * seconds since the epoch, without its fraction; 0 if it is no such time. */
+static int64_t
+ai_time (char const *text)
+{
+	struct tm tm = {};
+	int n = 0;
+	if (!text || sscanf(text, "%4d-%2d-%2dT%2d:%2d:%2d%n", &tm.tm_year, &tm.tm_mon,
+	                    &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &n) != 6)
+		return 0;
+	char const *zone = text + n;
+	zone += *zone == '.' ? 1 + strspn(zone + 1, "0123456789") : 0;
+	if (strcmp(zone, "Z"))
+		return 0;
+	tm.tm_year -= 1900;
+	tm.tm_mon -= 1;
+	time_t t = timegm(&tm);
+	return t == (time_t)-1 ? 0 : (int64_t)t;
+}
+
+/* The bytes of a URI that askai takes from an upstream: printable ASCII
+ * without a space, which goes into JSON and the log as it is. */
+static char const ai_uri_bytes[] =
+	"!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`"
+	"abcdefghijklmnopqrstuvwxyz{|}~";
+
+int
+ai_uploaded (enum ai_api  api,
+             long         status,
+             char const  *body,
+             size_t       len,
+             struct dstr *uri,
+             int64_t     *expires,
+             struct dstr *why)
+{
+	if (!uri || !expires || !why || (!body && len))
+		return EINVAL;
+	*expires = 0;
+	if (!ai_upload(api))
+		return dstr_cat(why, "The upstream takes no files.") ? EIO : ENOMEM;
+	struct json_object *root = len ? jb_parse(body, len, JSON_TOKENER_STRICT, 8)
+	                               : nullptr;
+	struct json_object *file = jb_get(root, "file");
+	struct json_object *named = jb_get(file, "uri");
+	char const *at = jb_text(named);
+	size_t n = at ? (size_t)json_object_get_string_len(named) : 0;
+	int e = 0;
+	if (status < 200 || status > 299 || !at) {
+		e = ai_describe_error(why, status, root, body, len);
+		e = e ? e : EIO;
+	} else if (!n || n > strspn(at, ai_uri_bytes)) {
+		e = dstr_cat(why, "The upstream named the file with a URI that is not "
+		             "printable ASCII.") ? EIO : ENOMEM;
+	} else {
+		*expires = ai_time(jb_text(jb_get(file, "expirationTime")));
+		e = dstr_cat_n(uri, at, n) ? 0 : ENOMEM;
+	}
+	json_object_put(root);
+	return e;
 }
 
 int
