@@ -6063,10 +6063,13 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 		                                                         view), false);
 		return;
 	}
-	/* A view longer than askai uploads is not made whole. */
+	/* The length of a view is counted before any of it is made, so that
+	 * a view longer than askai uploads is not made. */
 	dstr_auto shown = DSTR_INIT;
 	len = text.len;
-	int e = view ? mcp_notes_view(&shown, s, text.len, NOTES_MAX + 1, &len) : 0;
+	int e = view ? mcp_notes_view(&shown, s, text.len, 0, &len) : 0;
+	if (!e && view && len <= NOTES_MAX)
+		e = mcp_notes_view(&shown, s, text.len, SIZE_MAX, nullptr);
 	char const *body = view ? dstr_get(&shown) : s;
 	if (!e && len > NOTES_MAX) {
 		dstr_clear(&slot->answer);
