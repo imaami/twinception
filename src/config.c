@@ -95,7 +95,7 @@ static struct {
 			                    "models/",
 			[AI_INTERACTIONS] = "https://generativelanguage.googleapis.com/v1beta/"
 			                    "interactions",
-		}, { "GEMINI_API_KEY", "GOOGLE_API_KEY" }, AI_GENERATE
+		}, { "GEMINI_API_KEY", "GOOGLE_API_KEY" }, AI_INTERACTIONS
 	},
 	[AI_DEEPINFRA] = {
 		{

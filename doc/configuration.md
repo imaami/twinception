@@ -394,11 +394,10 @@ The value is a string: `chat` (Chat Completions), `responses` (OpenAI
 Responses), `messages` (Anthropic Messages), `generate` (Gemini
 generateContent) or `interactions` (Gemini Interactions).  The default is
 the API of the provider: `responses` for `openai`, `messages` for
-`anthropic`, `generate` for `google`, and `chat` for the other providers
-and without a provider.  OpenAI refuses function tools in `chat` for its
-reasoning models, so the turns of `upstream-tools` need `responses`
-there.
-`google` also serves `chat` and `interactions`.
+`anthropic`, `interactions` for `google`, and `chat` for the other
+providers and without a provider.  OpenAI refuses function tools in `chat`
+for its reasoning models, so the turns of `upstream-tools` need
+`responses` there.  `google` also serves `generate` and `chat`.
 
 `api` sets the format of the upstream requests and answers.  `askai`
 refuses an API that the provider does not serve, such as `"api":
@@ -424,9 +423,10 @@ sends no model name.
 
 With a provider other than `llama` and without `url`, `model` is required.
 With the API `generate`, `askai` sends no model name in the request body.
-With `"provider": "google"` and without `url`, `askai` adds the model to the
-URL.  With `url` and the API `generate`, the URL must name the model, and
-`model` changes only the default of `tool-description`.
+With `"provider": "google"`, the API `generate` and without `url`, `askai`
+adds the model to the URL.  With `url` and the API `generate`, the URL must
+name the model, and `model` changes only the default of
+`tool-description`.
 
 #### `key-env`
 

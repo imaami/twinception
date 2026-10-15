@@ -3402,14 +3402,21 @@ def check_configuration(binary, up, godbolt):
                      if re.search(r"MCP endpoint http://127\.0\.0\.1:\d+/mcp$", line)]
             assert len(ports) == 2 and os.path.exists(sock), ai.log
 
-    with Askai(binary, "-p", "google", "-m", "m",
+    # Google's API is Interactions by default.  The context is given, so
+    # that askai does not ask Google's API about the model.
+    with Askai(binary, "-p", "google", "-m", "m", "--context", "1000",
                env={"GOOGLE_API_KEY": "fallback-key"}) as ai:
         _, _, body = ai.rpc("tools/list")
         assert body["result"]["tools"][0]["name"] == "ask_ai"
-    with Askai(binary, "-p", "google", "--api", "interactions", "-m", "m",
-               env={"GEMINI_API_KEY": "k"}) as ai:
+        assert [ai.listed("upstream:")[i] for i in (1, 4)] == [
+            "API       interactions",
+            "URL       https://generativelanguage.googleapis.com/v1beta/interactions"
+        ], ai.log
+    with Askai(binary, "-p", "google", "--api", "generate", "-m", "m",
+               "--context", "1000", env={"GEMINI_API_KEY": "k"}) as ai:
         _, _, body = ai.rpc("tools/list")
         assert body["result"]["tools"][0]["name"] == "ask_ai"
+        assert ai.listed("upstream:")[1] == "API       generate", ai.log
     # With --url, the Interactions API is asked at that URL as it is given,
     # with the key in x-goog-api-key.
     with Askai(binary, "-p", "google", "--api", "interactions", "-m", "m",

@@ -301,14 +301,14 @@ read it with `tasks/get` and cancel it with `tasks/cancel`.
 `-p`, `--provider`, says who serves it, whose default API, URL for the API and
 key variables are then the defaults:
 
-| `-p`         | Default API | URLs of its APIs (without `-u`)                                                   | Key variables                            |
-| ------------ | ----------- | --------------------------------------------------------------------------------- | ---------------------------------------- |
-| `llama`      | `chat`      | `http://127.0.0.1:9931/v1/` + `chat/completions`, `responses`, `messages`         | `LLAMA_API_KEY`, if set                  |
-| `openai`     | `responses` | `https://api.openai.com/v1/` + `responses`, `chat/completions`                    | `OPENAI_API_KEY`                         |
-| `anthropic`  | `messages`  | `https://api.anthropic.com/v1/` + `messages`, `chat/completions`                  | `ANTHROPIC_API_KEY`                      |
-| `google`     | `generate`  | `https://generativelanguage.googleapis.com/v1beta/` + `models/MODEL:streamGenerateContent?alt=sse`, `interactions`, `openai/chat/completions` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
-| `deepinfra`  | `chat`      | `https://api.deepinfra.com/v1/openai/chat/completions`                            | `DEEPINFRA_API_KEY`, `DEEPINFRA_TOKEN`   |
-| `openrouter` | `chat`      | `https://openrouter.ai/api/v1/chat/completions`                                   | `OPENROUTER_API_KEY`                     |
+| `-p`         | Default API    | URLs of its APIs (without `-u`)                                                   | Key variables                            |
+| ------------ | -------------- | --------------------------------------------------------------------------------- | ---------------------------------------- |
+| `llama`      | `chat`         | `http://127.0.0.1:9931/v1/` + `chat/completions`, `responses`, `messages`         | `LLAMA_API_KEY`, if set                  |
+| `openai`     | `responses`    | `https://api.openai.com/v1/` + `responses`, `chat/completions`                    | `OPENAI_API_KEY`                         |
+| `anthropic`  | `messages`     | `https://api.anthropic.com/v1/` + `messages`, `chat/completions`                  | `ANTHROPIC_API_KEY`                      |
+| `google`     | `interactions` | `https://generativelanguage.googleapis.com/v1beta/` + `interactions`, `models/MODEL:streamGenerateContent?alt=sse`, `openai/chat/completions` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| `deepinfra`  | `chat`         | `https://api.deepinfra.com/v1/openai/chat/completions`                            | `DEEPINFRA_API_KEY`, `DEEPINFRA_TOKEN`   |
+| `openrouter` | `chat`         | `https://openrouter.ai/api/v1/chat/completions`                                   | `OPENROUTER_API_KEY`                     |
 
 The choice goes one way: a provider brings its API, URL and key, while `--api`
 alone brings none of them.  Without a provider, `-u` must say where the server
@@ -352,11 +352,11 @@ export ANTHROPIC_API_KEY=...
 export OPENROUTER_API_KEY=...
 ./askai -p openrouter -m MODEL
 
-# Ask a Gemini model, in Gemini's generateContent or Interactions API, or in
+# Ask a Gemini model, in Gemini's Interactions or generateContent API, or in
 # Google's chat completions.
 export GEMINI_API_KEY=...
 ./askai -p google -m MODEL
-./askai -p google --api interactions -m MODEL
+./askai -p google --api generate -m MODEL
 ./askai -p google --api chat -m MODEL
 ```
 
