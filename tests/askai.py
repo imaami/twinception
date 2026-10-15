@@ -7903,8 +7903,17 @@ def check_attach(binary, up):
         thread = re.search("[0-9a-f]{32}", text_of(body["result"])).group(0)
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "small.c", "text": "y", "thread": thread}})
+        # A view of more than 16 MiB is not uploaded, nor made whole.
+        huge = b"\xff" * ((2 << 20) + 4096)
+        status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
+            "action": "add", "file": "huge.bin", "thread": thread,
+            "content": "data:;base64," + base64.b64encode(huge).decode()}})
+        assert text_of(body["result"]) == "Noted.", body
         stored = len(up.uploads)
         for name, upload, said in (
+                ("huge.bin", up.stored, "The note is too large to attach: its file "
+                 f"would have {len(note_view(huge).encode())} bytes, and askai uploads "
+                 "16 MiB at most."),
                 ("big.c", up.stored, "The note is too large to attach: its file of "
                  "8000 bytes, about 2000 tokens, does not fit the context of 1000 "
                  "tokens"),
@@ -8282,6 +8291,26 @@ def check_turns(binary, up):
             assert prompt(up.requests[count]).endswith(
                 "[askai: your newest note, z.bin:]\n\n" + note_view(b"\xff\x00\xfe")
                 + "\n"), prompt(up.requests[count])[-400:]
+            # A view longer than the prompt's window of 64 KiB is cut there,
+            # with the length of the whole view and the offset to read on.
+            raw = b"\xff" * 100000
+            whole = note_view(raw).encode()
+            subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
+                           input=b"commit refs/heads/notes\ncommitter askai <askai> "
+                           + str(int(time.time())).encode() + b" +0000\ndata 0\n"
+                           b"from refs/heads/notes^0\nM 100644 inline y.bin\ndata "
+                           + str(len(raw)).encode() + b"\n" + raw + b"\n", check=True,
+                           env=os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
+                                             "GIT_CONFIG_NOSYSTEM": "1"})
+            count = len(up.requests)
+            ai.ask("Last", thread=mine)
+            shown = prompt(up.requests[count]).encode()
+            head = shown.index(b"[askai: your newest note, y.bin:]\n\n") + 35
+            cut = re.search(rb"\n\[askai: bytes 0 to (\d+) of (\d+); read the note with "
+                            rb'"offset": (\d+) for the rest\.\]', shown)
+            n = int(cut.group(1))
+            assert n <= 64 << 10 and int(cut.group(2)) == len(whole) and \
+                int(cut.group(3)) == n and shown[head:head + n] == whole[:n], cut
 
         # A small context: windows of an eighth of it, a reminder to write
         # notes past half, a warning past two thirds, and once full, the

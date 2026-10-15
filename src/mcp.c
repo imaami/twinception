@@ -5822,48 +5822,81 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 static char const view_open[] = "\xe2\x9f\xa6";   /* U+27E6 */
 static char const view_close[] = "\xe2\x9f\xa7";  /* U+27E7 */
 
+/* Whether the @p len bytes at @p s are UTF-8 text without a NUL, which a
+ * note shows as it is, and not as its view (mcp_notes_view()). */
+static bool
+mcp_notes_text (char const *s,
+                size_t      len)
+{
+	return !len || (jb_utf8(s, len) == len && !memchr(s, '\0', len));
+}
+
+/* Appends the @p n bytes at @p p of a view to @p d while the @p *size bytes
+ * of the view before them are fewer than @p max, and counts them in
+ * @p *size.  Returns 0 or ENOMEM. */
+static int
+mcp_notes_put (struct dstr *d,
+               size_t      *size,
+               size_t       max,
+               char const  *p,
+               size_t       n)
+{
+	bool put = *size < max;
+	*size += n;
+	return put && !dstr_cat_n(d, p, n) ? ENOMEM : 0;
+}
+
 /* Appends to @p d the view of a note of the @p len bytes at @p s that is not
  * UTF-8 text, or that has a NUL byte: a line that says how to read the
  * view, then the bytes as UTF-8 where they are valid UTF-8, each other byte
  * and each NUL as ⟦XX⟧, its value in hexadecimal, and each ⟦ of the text as
- * ⟦⟦.  The view tells every byte of the note, which stays as it is.
- * Returns 0 or ENOMEM. */
+ * ⟦⟦.  The view tells every byte of the note, which stays as it is.  Only
+ * the start of the view goes into @p d, up to the first piece that ends at
+ * or past @p max bytes, and the length of the whole view goes into
+ * @p *size, unless @p size is nullptr.  Returns 0 or ENOMEM. */
 static int
 mcp_notes_view (struct dstr *d,
                 char const  *s,
-                size_t       len)
+                size_t       len,
+                size_t       max,
+                size_t      *size)
 {
 	static char const hex[] = "0123456789ABCDEF";
 	size_t const open = sizeof view_open - 1;
-	if (!dstr_printf(d, "[askai: the note is not UTF-8 text: %zu bytes.  Each byte "
-	                 "that is not part of UTF-8 text, and each NUL, is shown as "
-	                 "%sXX%s, its value in hexadecimal, and a %s of the text as "
-	                 "%s%s.  The note itself is not changed.]\n\n", len, view_open,
-	                 view_close, view_open, view_open, view_open))
-		return ENOMEM;
-	for (size_t i = 0; i < len; ) {
+	size_t const close = sizeof view_close - 1;
+	char head[320];
+	size_t w = 0;
+	int e = mcp_notes_put(d, &w, max, head, util_format(head, sizeof head,
+	        "[askai: the note is not UTF-8 text: %zu bytes.  Each byte that is not "
+	        "part of UTF-8 text, and each NUL, is shown as %sXX%s, its value in "
+	        "hexadecimal, and a %s of the text as %s%s.  The note itself is not "
+	        "changed.]\n\n", len, view_open, view_close, view_open, view_open,
+	        view_open));
+	for (size_t i = 0; !e && i < len; ) {
 		size_t run = jb_utf8(s + i, len - i);
 		char const *nul = memchr(s + i, '\0', run);
 		if (nul)
 			run = (size_t)(nul - s) - i;
 		/* The valid text, with each ⟦ in it doubled. */
-		for (size_t at = i; at < i + run; ) {
+		for (size_t at = i; !e && at < i + run; ) {
 			char const *m = memmem(s + at, i + run - at, view_open, open);
 			size_t n = m ? (size_t)(m - s) - at + open : i + run - at;
-			if (!dstr_cat_n(d, s + at, n) || (m && !dstr_cat_n(d, view_open, open)))
-				return ENOMEM;
+			e = mcp_notes_put(d, &w, max, s + at, n);
+			e = e || !m ? e : mcp_notes_put(d, &w, max, view_open, open);
 			at += n;
 		}
 		i += run;
-		if (i == len)
+		if (e || i == len)
 			break;
 		unsigned char b = (unsigned char)s[i++];
 		char x[] = { hex[b >> 4], hex[b & 15] };
-		if (!dstr_cat_n(d, view_open, open) || !dstr_cat_n(d, x, 2) ||
-		    !dstr_cat_n(d, view_close, sizeof view_close - 1))
-			return ENOMEM;
+		e = mcp_notes_put(d, &w, max, view_open, open);
+		e = e ? e : mcp_notes_put(d, &w, max, x, 2);
+		e = e ? e : mcp_notes_put(d, &w, max, view_close, close);
 	}
-	return 0;
+	if (size)
+		*size = w;
+	return e;
 }
 
 static void mcp_slot_notes_got_copy (struct mcp_slot *slot, struct span text);
@@ -5888,10 +5921,9 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 		return;
 	}
 	char const *s = (char const *)text.ptr;
-	size_t utf8 = text.len ? jb_utf8(s, text.len) : 0;
-	int e = !r && (utf8 < text.len || memchr(s, '\0', text.len))
-	      ? mcp_notes_view(&slot->answer, s, text.len)
-	      : !r ? mcp_slot_say(slot, &ESC(s, utf8), 1)
+	int e = !r && !mcp_notes_text(s, text.len)
+	      ? mcp_notes_view(&slot->answer, s, text.len, SIZE_MAX, nullptr)
+	      : !r ? mcp_slot_say(slot, &ESC(s, text.len), 1)
 	      : r == ENOENT ? mcp_slot_say(slot, &TEXT("No note has that name."), 1)
 	      : r == EISDIR ? mcp_slot_say(slot, &TEXT("That name is a directory of "
 	                                               "notes. list shows the notes in "
@@ -6017,7 +6049,7 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 	struct mcp_req *req = slot->req;
 	struct mcp_static const *st = req->mcp->st;
 	char const *s = (char const *)text.ptr;
-	bool view = jb_utf8(s, text.len) < text.len || memchr(s, '\0', text.len);
+	bool view = !mcp_notes_text(s, text.len);
 	char uri[UPLOADS_URI];
 	size_t len = 0;
 	size_t n = uploads_find(st->uploads, mcp_req_owner(req), (char const *)id.ptr,
@@ -6031,10 +6063,11 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 		                                                         view), false);
 		return;
 	}
+	/* A view longer than askai uploads is not made whole. */
 	dstr_auto shown = DSTR_INIT;
-	int e = view ? mcp_notes_view(&shown, s, text.len) : 0;
+	len = text.len;
+	int e = view ? mcp_notes_view(&shown, s, text.len, NOTES_MAX + 1, &len) : 0;
 	char const *body = view ? dstr_get(&shown) : s;
-	len = view ? dstr_len(&shown) : text.len;
 	if (!e && len > NOTES_MAX) {
 		dstr_clear(&slot->answer);
 		e = dstr_printf(&slot->answer, "The note is too large to attach: its file "
@@ -6182,18 +6215,21 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text, nullptr) : EIO;
 	char const *s = (char const *)text.ptr;
 	size_t len = text.len;
-	/* A note that is not UTF-8 text goes in as its view. */
+	/* A note that is not UTF-8 text goes in as its view, of which only the
+	 * start that the prompt takes is made. */
+	size_t most = mcp_req_lend_max(req);
+	size_t shown = len;
 	dstr_auto view = DSTR_INIT;
-	if (!r && text.len && (jb_utf8(s, text.len) < text.len || memchr(s, '\0', len))) {
-		if (mcp_notes_view(&view, s, text.len)) {
+	if (!r && !mcp_notes_text(s, text.len)) {
+		if (mcp_notes_view(&view, s, text.len, most + 1, &len)) {
 			child_destroy(&slot->child);
 			mcp_req_fail(req, ENOMEM);
 			return;
 		}
 		s = dstr_get(&view);
-		len = dstr_len(&view);
+		shown = dstr_len(&view);
 	}
-	size_t n = mcp_clip(s, len, mcp_req_lend_max(req));
+	size_t n = mcp_clip(s, shown, most);
 	char more[128];
 	size_t m = n < len ? util_format(more, sizeof more, "\n[askai: bytes 0 to %zu of "
 	                                 "%zu; read the note with \"offset\": %zu for the "
