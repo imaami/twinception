@@ -435,8 +435,8 @@ struct mcp_slot {
 	                                  ended call. */
 	bool                failed;    /* the call failed */
 	bool                cancelled; /* a job's call, cancelled */
-	struct json_object *args;      /* a job's call's arguments, which the
-	                                  list of jobs shows */
+	struct json_object *args;      /* a copy of a job's call's arguments,
+	                                  which the list of jobs shows */
 	struct mcp_slot    *of;        /* the job whose output it gives, if it
 	                                  gives a job's */
 	char                note[352]; /* The text that askai adds to the
@@ -4090,8 +4090,12 @@ mcp_slot_background (struct mcp_slot    *slot,
 		return;
 	}
 	struct mcp_slot *job = &a->jobs[a->n_jobs];
-	job->args = call ? json_object_get(call) : json_object_new_object();
-	if (!job->args) {
+	/* job->args is a deep copy of the arguments.  mcp_req_args_free()
+	 * frees the arguments of the call of background once its result is
+	 * written, and the job usually runs longer than that. */
+	int bad = call ? json_object_deep_copy(call, &job->args, nullptr)
+	               : !(job->args = json_object_new_object());
+	if (bad) {
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}

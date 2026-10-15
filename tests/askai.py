@@ -7204,7 +7204,11 @@ def check_turns(binary, up):
                 said(1, "t1") == "Timer 1 will fire in 2 s.", turns(asked[1])
             assert said(2, "w1").startswith("[askai: job 1, git, finished: call jobs") and \
                 "timer" not in said(2, "w1"), said(2, "w1")
-            assert re.fullmatch(r"job 1: git \{.*\}: finished, \d+ bytes\n",
+            # The list shows the job's arguments exactly as the turn sent
+            # them.  The job has its own copy, which stays valid after askai
+            # frees the arguments of the turn's call of background.
+            wire = json.dumps(json.loads(slow), separators=(",", ":"))
+            assert re.fullmatch(r"job 1: git " + re.escape(wire) + r": finished, \d+ bytes\n",
                                 said(3, "j1")), said(3, "j1")
             assert said(3, "j2") == "[No output.]", said(3, "j2")
             assert said(4, "w2") == "[askai: timer 1 fired: check it.]\n", said(4, "w2")
