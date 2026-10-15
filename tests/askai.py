@@ -4327,29 +4327,8 @@ def check_unix(binary, up):
         run = subprocess.run([binary, "-u", up.url(), "-l", "unix:" + "x" * 200],
                              capture_output=True, text=True, timeout=5)
         assert run.returncode == 2 and "invalid --listen: unix:" in run.stderr, run
-    # A client of the socket gets a command of curl for the socket, and the
-    # upload over it adds the note.
-    with tempfile.TemporaryDirectory() as d:
-        sock = f"{d}/a'b.sock"
-        with Askai(binary, "-u", up.url(), "--notes", f"{d}/notes",
-                   "-l", f"unix:{sock}") as ai:
-            _, body = uds_rpc(sock, "tools/call", {"name": "notes", "arguments": {
-                "action": "upload", "file": "f.bin"}})
-            said = text_of(body["result"])
-            quoted = sock.replace("'", "'\\''")
-            target = re.search(f"curl --fail-with-body --unix-socket '{re.escape(quoted)}' "
-                               r"-T FILE 'http://localhost(/files/[A-Za-z0-9_-]+)'\n$",
-                               said).group(1)
-            with socket.socket(socket.AF_UNIX) as c:
-                c.settimeout(10)
-                c.connect(sock)
-                c.sendall(f"PUT {target} HTTP/1.1\r\nHost: localhost\r\n"
-                          "Content-Length: 3\r\n\r\n\x00\xff\n".encode("latin-1"))
-                answer = c.recv(4096)
-            assert answer.startswith(b"HTTP/1.1 201 "), answer
-
     print("unix sockets: SO_PEERCRED users and groups, tokens first, askai's own "
-          "policy, stale and busy socket files, transfers of notes: PASS")
+          "policy, stale and busy socket files: PASS")
 
 
 def tls_files(d, name, kind="ec"):
@@ -7016,17 +6995,15 @@ def check_notes(binary, up):
                          "offset": 5}) == "!No note has that name."
 
             for arguments, why in (
-                    ({"action": "list"},
-                     "list, read, copy and download need the thread argument"),
+                    ({"action": "list"}, "list, read and copy need the thread argument"),
                     ({"action": "read", "file": "plan.md"},
-                     "list, read, copy and download need the thread argument"),
+                     "list, read and copy need the thread argument"),
                     ({"action": "copy", "file": "plan.md"},
-                     "list, read, copy and download need the thread argument"),
+                     "list, read and copy need the thread argument"),
                     ({"action": "list", "thread": "xyz"},
                      "The thread argument must be the id of a thread"),
                     ({"action": "remove", "thread": thread},
-                     "The action argument must be add, list, read, copy, upload or "
-                     "download.")):
+                     "The action argument must be add, list, read or copy.")):
                 assert call(arguments).startswith("!" + why), (arguments, call(arguments))
             # A thread has a notebook of each side under one id.  A client
             # reads the upstream's notebook of a thread with "notebook":
@@ -7095,67 +7072,6 @@ def check_notes(binary, up):
             assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
                                    "notes:img/raw.bin"], capture_output=True, check=True,
                                   env=git_env).stdout == raw
-            # upload and download answer with a command of curl whose address
-            # has a ticket: a file's bytes go into a note, and a note's bytes
-            # out of it, without the token and without a model writing them.
-            def ticket_url(said):
-                return re.search(r"'http://[^/']+(/files/[A-Za-z0-9_-]+)'\n$",
-                                 said).group(1)
-
-            def transfer(method, target, body=None, headers=None, chunked=False):
-                c = http.client.HTTPConnection(ai.host, ai.port, timeout=10)
-                c.request(method, target, body=body, headers=headers or {},
-                          encode_chunked=chunked)
-                r = c.getresponse()
-                answer = (r.status, r.read())
-                c.close()
-                return answer
-
-            said = call({"action": "upload", "file": "up/blob.bin"})
-            assert re.fullmatch(
-                r"Run this command within 10 minutes, with FILE replaced by the path "
-                r"of the file\. It adds the file byte for byte to your notebook of "
-                r"the thread [0-9a-f]{32} as the note up/blob\.bin, as an add would, "
-                r"and answers with what happened\.\n\ncurl --fail-with-body -T FILE "
-                r"'http://127\.0\.0\.1:\d+/files/[A-Za-z0-9_-]+'\n", said), said
-            fresh = re.search(r"thread ([0-9a-f]{32})", said).group(1)
-            put = ticket_url(said)
-            blob = bytes(range(256)) * 512 + b"\0end"
-            assert transfer("PUT", put, blob) == \
-                (201, f"Added as a note of the thread {fresh}.\n".encode())
-            assert transfer("PUT", put, blob) == (409, b"A note of that name exists, "
-                                                  b"and a note cannot be changed. Add "
-                                                  b"the note under another name.\n")
-            assert call({"action": "list", "thread": fresh}).endswith(
-                "up/blob.bin  (binary)\n")
-            got = ticket_url(call({"action": "download", "file": "up/blob.bin",
-                                   "thread": fresh}))
-            assert transfer("GET", got) == (200, blob)
-            assert transfer("GET", ticket_url(call({
-                "action": "download", "file": "found.md", "thread": shared,
-                "notebook": "other"}))) == (200, b"found\n")
-            assert transfer("GET", ticket_url(call({
-                "action": "download", "file": "none.md", "thread": fresh}))) == \
-                (404, b"No note has that name.\n")
-            tampered = put[:-3] + ("A" if put[-3] != "A" else "B") + put[-2:]
-            for method, target, body, status in (
-                    ("GET", put, None, 403), ("PUT", got, b"x", 403),
-                    ("PUT", tampered, b"x", 403), ("DELETE", got, None, 405),
-                    ("GET", "/files/", None, 403)):
-                assert transfer(method, target, body)[0] == status, (method, target)
-            assert transfer("PUT", ticket_url(call({
-                "action": "upload", "file": "c.bin", "thread": fresh})), iter([b"ab"]),
-                {"Transfer-Encoding": "chunked"}, True) == \
-                (411, b"An upload needs a Content-Length field.\n")
-            for arguments, why in (
-                    ({"action": "upload", "file": "u.md", "notebook": "other",
-                      "thread": fresh}, "!You can add notes only to your own notebook."),
-                    ({"action": "download", "file": "u.md"},
-                     "!list, read, copy and download need the thread argument"),
-                    ({"action": "upload", "file": "a//b"}, "!The file argument must be"),
-                    ({"action": "upload", "file": "u.md", "thread": "2" * 32},
-                     "!Unknown thread: " + "2" * 32 + ".")):
-                assert call(arguments).startswith(why), (arguments, call(arguments))
             # A client cannot use a thread of another identity, nor read its
             # other notebook.
             for arguments in ({"action": "list"}, {"action": "read", "file": "plan.md"},
@@ -7873,8 +7789,7 @@ def check_turns(binary, up):
                 ("p", "notes", json.dumps({"action": "add", "file": "seen.md",
                                            "text": "seen"})),
                 ("q", "notes", json.dumps({"action": "copy", "file": "brief.md"})),
-                ("r", "notes", json.dumps({"action": "read", "file": "brief.md"})),
-                ("s", "notes", json.dumps({"action": "upload", "file": "x.md"}))]))]
+                ("r", "notes", json.dumps({"action": "read", "file": "brief.md"}))]))]
             count = len(up.requests)
             result = ai.ask("Go on", thread=mine)
             assert prompt(up.requests[count]) == "Go on\n\n[askai: you have no notes " \
@@ -7885,9 +7800,7 @@ def check_turns(binary, up):
                                 "brief\\.md  \\(1 line\\)\n", outputs[0]), outputs
             assert outputs[1:] == ["aim", "You can add notes only to your own notebook. "
                                    "The other notebook can only be read.", "Noted.",
-                                   "Copied into your notebook.", "aim",
-                                   "The action argument must be add, list, read or "
-                                   "copy."], outputs
+                                   "Copied into your notebook.", "aim"], outputs
             assert f"in the thread {mine}:" in result["content"][1]["text"], result
             assert "seen.md" in client_notes({"action": "list", "thread": mine,
                                               "notebook": "other"})

@@ -586,13 +586,8 @@ can continue an earlier thread of notes with its argument `thread`.  A
 thread has a notebook of the client and one of the upstream model under one
 id.  Each side adds notes only to its own notebook, reads the other's with
 `"notebook": "other"`, and copies a note of the other's into its own, byte
-for byte, with the action `copy`.  A client's `upload` and `download` give
-a command of `curl` that moves a file into its notebook, or a note into a
-file, over HTTP at `/files/TICKET`, by a ticket that needs no token (section
-[Lending tools to the upstream](../README.md#lending-tools-to-the-upstream)
-of `README.md`).  An upload has at most
-`max-body` bytes.  The directory and the directories above it must pass
-the rules of section [Permissions](#permissions).
+for byte, with the action `copy`.  The directory and the directories above
+it must pass the rules of section [Permissions](#permissions).
 
 #### `max-turns`
 

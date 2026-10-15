@@ -36,13 +36,6 @@ enum { STREAM_FIELDS = 8 };
 struct stream;
 
 /** Downward: the application's answer. */
-/** How the client of a stream reached the server (stream_ops.reach()). */
-struct stream_reach {
-	struct span host;  /**< the request's Host field, empty if none */
-	char const *path;  /**< the Unix socket's file, or nullptr over TCP */
-	uint64_t    tls;   /**< bool: over TLS; widened over the padding */
-};
-
 struct stream_ops {
 	/**
 	 * Begin the response.  @p fields are whole header lines, each ending in
@@ -73,9 +66,6 @@ struct stream_ops {
 	 *  transport may move its input between steps. */
 	struct span (*field)   (struct stream const *s,
 	                        size_t               i);
-	/** How the client reached the server, for an address that the
-	 *  application gives out.  The host is valid as field()'s values are. */
-	struct stream_reach (*reach) (struct stream const *s);
 };
 
 /** Upward: what a transport tells its application. */
@@ -90,12 +80,6 @@ struct stream_app {
 	 *  several lines; field() gives the first. */
 	uint64_t           lists;
 	void              *ctx;
-	/** A prefix of targets, such as "/files/", of which the application
-	 *  admits each request by a credential in the target itself: the
-	 *  transport passes such a request on whatever the policy grants, with
-	 *  no grant, and the application refuses those without the credential.
-	 *  nullptr for none. */
-	char const        *open;
 	/** A request: its method and target, and its body's length or
 	 *  STREAM_OPEN.  @p method and @p target are valid during the call. */
 	void (*on_head)     (void          *ctx,

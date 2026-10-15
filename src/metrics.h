@@ -48,7 +48,6 @@ enum metrics_method {
 	METHOD_TASKS_CANCEL,
 	METHOD_NOTIFY,      /**< notifications, and responses */
 	METHOD_METRICS,     /**< GET /metrics */
-	METHOD_FILES,       /**< PUT or GET /files/TICKET: a note's bytes */
 	METHOD_N
 };
 

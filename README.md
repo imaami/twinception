@@ -598,13 +598,6 @@ notes only to its own notebook, and reads both:
   text of the note does not pass through the model, so a file that is
   needed exactly, or one that is not text, keeps every byte.  `list` marks
   a note that is not text as `(binary)`, and `read` does not show it.
-- A client's `upload` and `download` answer with a command of `curl` to
-  run.  `upload` puts a file of the client's computer, such as one that the
-  user gave it, into the client's notebook as a note, and `download` writes
-  a note of either notebook into a file, byte for byte, without the text
-  passing through the model.  The address of the command is the one by
-  which the client reached `askai`, with `--unix-socket` for a Unix socket,
-  and ends in `/files/TICKET`.
 - A client reads the model's notes of a thread that an `ask_ai` answer
   named.  Its first `add` to that thread starts its own notebook there.
 - `ask_ai`'s `thread` can also name a thread that the client started with
@@ -612,15 +605,6 @@ notes only to its own notebook, and reads both:
   prompt says that the client keeps notes there.
 
 A client cannot open the threads of other identities.
-
-A ticket is good for 10 minutes.  It names the identity, the notebook, the
-thread and the note, and an HMAC with a key that `askai` makes as it starts
-signs it, so that no one can make or change one.  `PUT /files/TICKET` and
-`GET /files/TICKET` need no token and pass whatever the policy says, as the
-ticket is their credential: give the command only to whom the note is for.
-An upload needs a `Content-Length`, and has at most `--max-body` bytes.  A
-second upload with one ticket finds the note there, and is refused with
-409.
 
 ### Background jobs and timers for clients
 

@@ -132,7 +132,6 @@ static struct metrics_entry const table[] = {
 	METHOD(nullptr, "tasks/cancel", METHOD_TASKS_CANCEL),
 	METHOD(nullptr, "notification", METHOD_NOTIFY),
 	METHOD(nullptr, "metrics", METHOD_METRICS),
-	METHOD(nullptr, "files", METHOD_FILES),
 	METHOD(nullptr, "other", METHOD_OTHER),
 	CALLS("askai_calls_cancelled_total", "Tool calls that a loop cancelled while "
 	      "their job ran, for a hang-up, a closed stream, a drain or a "

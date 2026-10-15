@@ -100,7 +100,6 @@
 #include "shelf.h"
 #include "stream.h"
 #include "task.h"
-#include "ticket.h"
 #include "util.h"
 #include "web.h"
 
@@ -354,8 +353,6 @@ struct mcp_static {
 	uint32_t                  n_granted;      /**< those before the first
 	                                               that only turns are given */
 	struct mcp_lending        lending;
-	struct ticket_key         ticket;       /**< signs the tickets of
-	                                             transfers of notes */
 	struct dstr               list_tail;    /**< closes a modern tools/list
 	                                             result after its tools */
 	struct dstr               discover;     /**< the server/discover result */
@@ -404,8 +401,6 @@ enum mcp_phase {
 	PHASE_SEND,      /* sending the reply, a piece a step */
 	PHASE_FREE,      /* freeing the message, a slice a step, then ending */
 	PHASE_METRICS,   /* rendering the metrics, a share a step */
-	PHASE_FILE,      /* a transfer of a note's bytes over HTTP: taking in an
-	                    upload's body, then git's work, then the reply */
 };
 
 /* Where a client's string goes in the upstream request. */
@@ -756,13 +751,6 @@ mcp_is_metrics (struct span target)
 	return target.len >= n && !memcmp(target.ptr, path, n) &&
 	       (target.len == n || target.ptr[n] == '?');
 }
-
-/* The prefix of the targets of the transfers of notes over HTTP, which a
- * ticket in the target allows (ticket.h): PUT or GET /files/TICKET. */
-static char const FILES[] = "/files/";
-
-/* The seconds that a ticket of a transfer is good for. */
-static constexpr uint64_t TICKET_SECONDS = 600;
 
 /* The enum metrics_method of @p method, of @p len bytes. */
 static uint8_t
@@ -1852,9 +1840,6 @@ mcp_req_reply (struct mcp_req *req)
 	mcp_req_tool_close(req);
 }
 
-static void mcp_files_done (struct mcp_req *req, bool failed);
-static void mcp_files_sent (struct mcp_slot *slot, int r, struct span text);
-
 /* The output of @p slot's call is in: for a turn's tool call, the turn
  * takes it; else reply with it, a slice at a time, from the offset that a
  * man or git call asked for, a character's start, or an ask call's whole,
@@ -1869,10 +1854,6 @@ mcp_slot_respond (struct mcp_slot *slot,
 		return;
 	}
 	struct mcp_req *req = slot->req;
-	if (req->method == METHOD_FILES) {
-		mcp_files_done(req, failed);
-		return;
-	}
 	struct span text = mcp_req_output(req);
 	loop_timer_stop(req->mcp->loop, &req->timer);
 	size_t off = req->lent ? 0 : slot->skip;
@@ -5788,10 +5769,6 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 	struct child const *c = slot->child;
 	struct span text = {};
 	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text) : EIO;
-	if (slot->req->method == METHOD_FILES) {
-		mcp_files_sent(slot, r, text);
-		return;
-	}
 	if (!r && slot->fetch & FETCH_COPY) {
 		mcp_slot_notes_got_copy(slot, text);
 		return;
@@ -6132,113 +6109,6 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, FETCH_READ | other, &in);
 }
 
-/* Appends @p s to @p d in single quotes, as a shell reads it. */
-static bool
-mcp_shell_quote (struct dstr *d,
-                 char const  *s)
-{
-	if (!CAT(d, "'"))
-		return false;
-	for (char const *q; (q = strchr(s, '\'')); s = q + 1)
-		if (!dstr_cat_n(d, s, (size_t)(q - s)) || !CAT(d, "'\\''"))
-			return false;
-	return dstr_cat_n(d, s, strlen(s)) && CAT(d, "'");
-}
-
-/* Whether the Host field @p host can go into an address in a command: 1 to
- * 255 bytes of letters, digits, '.', '-', ':', '[' and ']'. */
-static bool
-mcp_host_plain (struct span host)
-{
-	if (!host.len || host.len > 255)
-		return false;
-	for (size_t i = 0; i < host.len; ++i) {
-		unsigned char c = host.ptr[i];
-		bool alnum = (c >= '0' && c <= '9') || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z');
-		if (!alnum && (!c || !strchr(".-:[]", c)))
-			return false;
-	}
-	return true;
-}
-
-/* Answers the upload and download actions of a client with a command of
- * curl that moves the bytes of a note over HTTP by a ticket (ticket.h),
- * without them passing through a model: for @p dir TICKET_UPLOAD, a file
- * of the client's computer into the client's notebook of the thread, as
- * the note that the file argument names, in a new thread if @p fresh; for
- * TICKET_DOWNLOAD, that note of the notebook of side @p side into a file.
- * The address is the one by which the client reached askai. */
-static void
-mcp_slot_notes_ticket (struct mcp_slot    *slot,
-                       struct json_object *args,
-                       uint8_t             dir,
-                       enum notes_side     side,
-                       bool                fresh)
-{
-	struct mcp_req *req = slot->req;
-	size_t len = 0;
-	size_t skip = 0;
-	char const *name = jb_str(jb_get(args, "file"), &len);
-	if (!name || notes_name(name, len, &skip)) {
-		mcp_slot_result(slot, TEXT(bad_name), true);
-		return;
-	}
-	struct stream_reach at = req->s ? req->s->ops->reach(req->s)
-	                                : (struct stream_reach){};
-	if (!at.path && !mcp_host_plain(at.host)) {
-		mcp_slot_result(slot, TEXT("The request's Host field cannot go into an "
-		                           "address, so no command can be given."), true);
-		return;
-	}
-	if (fresh && notes_id(req->thread)) {
-		mcp_req_fail(req, EIO);
-		return;
-	}
-	struct ticket t = {
-		.principal = req->principal,
-		.expiry = (uint64_t)time(nullptr) + TICKET_SECONDS,
-		.name_len = (uint8_t)(len - skip),
-		.dir = dir,
-		.side = side,
-	};
-	memcpy(t.thread, req->thread, NOTES_ID);
-	memcpy(t.name, name + skip, len - skip);
-	char ticket[TICKET_TEXT];
-	if (!ticket_write(&req->mcp->st->ticket, &t, ticket, sizeof ticket)) {
-		mcp_req_fail(req, EIO);
-		return;
-	}
-	static_assert(TICKET_SECONDS == 600, "the answer says 10 minutes");
-	struct dstr *d = &slot->answer;
-	bool up = dir == TICKET_UPLOAD;
-	bool ok = dstr_printf(d, up ? "Run this command within 10 minutes, with FILE "
-	                              "replaced by the path of the file. It adds the "
-	                              "file byte for byte to your notebook of the thread "
-	                              "%s as the note "
-	                            : "Run this command within 10 minutes, with FILE "
-	                              "replaced by the path to write. It writes the note ",
-	                      req->thread) &&
-	          dstr_cat_n(d, name + skip, len - skip) &&
-	          (up ? CAT(d, ", as an add would, and answers with what happened.")
-	              : dstr_printf(d, " of %s notebook of the thread %s to FILE, byte "
-	                               "for byte.", side == NOTES_CLIENT ? "your"
-	                                            : "the other AI's", req->thread)) &&
-	          CAT(d, "\n\ncurl ") &&
-	          (up ? CAT(d, "--fail-with-body ") : CAT(d, "--fail ")) &&
-	          (!at.path || (CAT(d, "--unix-socket ") && mcp_shell_quote(d, at.path) &&
-	                        CAT(d, " "))) &&
-	          (up ? CAT(d, "-T FILE '") : CAT(d, "-o FILE '")) &&
-	          (at.path ? CAT(d, "http://localhost")
-	                   : dstr_printf(d, "http%s://%.*s", at.tls ? "s" : "",
-	                                 (int)at.host.len, at.host.ptr)) &&
-	          dstr_printf(d, "%s%s'\n", FILES, ticket);
-	if (!ok) {
-		mcp_req_fail(req, ENOMEM);
-		return;
-	}
-	mcp_slot_respond(slot, false);
-}
-
 /* Starts a call of the notes tool: add a note, list the notes, or read a
  * note.  A call from a turn uses the thread of its ask call.  A client's
  * call names a thread, or starts a new thread with add.  A list or a read
@@ -6254,21 +6124,16 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	struct json_object *action = jb_get(args, "action");
 	struct json_object *thread = jb_get(args, "thread");
 	struct json_object *notebook = jb_get(args, "notebook");
-	bool client = slot->role == ROLE_OWN;
 	bool add = jb_is(action, "add");
 	bool read = jb_is(action, "read");
 	bool copy = jb_is(action, "copy");
-	bool upload = client && jb_is(action, "upload");
-	bool download = client && jb_is(action, "download");
 	uint8_t other = jb_is(notebook, "other") ? FETCH_OTHER : 0;
 	struct mcp_piece check =
-		!add && !read && !copy && !upload && !download && !jb_is(action, "list")
-		? client ? TEXT("The action argument must be add, list, read, copy, upload "
-		                "or download.")
-		         : TEXT("The action argument must be add, list, read or copy.")
+		!add && !read && !copy && !jb_is(action, "list")
+		? TEXT("The action argument must be add, list, read or copy.")
 		: notebook && !other && !jb_is(notebook, "own")
 		? TEXT("The notebook argument must be own or other.")
-		: (add || upload) && other
+		: add && other
 		? TEXT("You can add notes only to your own notebook. The other notebook "
 		       "can only be read.")
 		: (struct mcp_piece){};
@@ -6283,9 +6148,9 @@ mcp_slot_notes (struct mcp_slot    *slot,
 			thread && (!id || !notes_is_id(id, len))
 			? TEXT("The thread argument must be the id of a thread, as an add "
 			       "named it: 32 hexadecimal digits.")
-			: !thread && !add && !upload
-			? TEXT("list, read, copy and download need the thread argument: the "
-			       "id of a thread that an add or an answer named.")
+			: !thread && !add
+			? TEXT("list, read and copy need the thread argument: the id of a "
+			       "thread that an add or an answer named.")
 			: (struct mcp_piece){};
 		if (problem.ptr) {
 			mcp_slot_result(slot, problem, true);
@@ -6294,7 +6159,7 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		if (id) {
 			memcpy(req->thread, id, sizeof req->thread);
 			notes_repo(req->principal, NOTES_CLIENT, req->thread, req->repo);
-			req->branch = (!add && !copy && !upload) ||
+			req->branch = (!add && !copy) ||
 			              notes_exists(req->mcp->st->notes, req->repo);
 		}
 		if (id && !req->branch && !mcp_slot_other_exists(slot)) {
@@ -6305,10 +6170,7 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		}
 	}
 	if (add)
-		mcp_slot_notes_add(slot, args, client && !thread);
-	else if (upload || download)
-		mcp_slot_notes_ticket(slot, args, upload ? TICKET_UPLOAD : TICKET_DOWNLOAD,
-		                      other ? NOTES_UPSTREAM : NOTES_CLIENT, !thread);
+		mcp_slot_notes_add(slot, args, slot->role == ROLE_OWN && !thread);
 	else if (copy)
 		mcp_slot_notes_copy(slot, args);
 	else if (read)
@@ -7163,196 +7025,6 @@ mcp_begin (struct mcp           *mcp,
 	return req;
 }
 
-/* Answers a transfer of a note (FILES) that came to nothing with @p status
- * and the line @p text, as plain text. */
-static void
-mcp_files_refuse (struct stream *s,
-                  uint16_t       status,
-                  char const    *text)
-{
-	static char const fields[] = "Content-Type: text/plain; charset=utf-8\r\n";
-	char body[160];
-	size_t n = util_format(body, sizeof body, "%s\n", text);
-	if (!s->ops->head(s, status, SPAN(fields), n))
-		(void)s->ops->data(s, (struct span){ (unsigned char *)body, n });
-	s->ops->end(s, 0);
-}
-
-/* The same for a transfer with state, which goes. */
-static void
-mcp_files_fail (struct mcp_req *req,
-                uint16_t        status,
-                char const     *text)
-{
-	child_destroy(&req->self.child);
-	mcp_files_refuse(req->s, status, text);
-	req->s = nullptr;
-	mcp_req_finish(req);
-}
-
-/* Begins a transfer of a note over HTTP, which the ticket in @p target
- * allows: PUT /files/TICKET adds the body of @p length bytes as a new note
- * of the client's notebook, and GET /files/TICKET answers with the bytes of
- * a note.  The ticket waits in the request's reply until the body is in,
- * and an upload's body follows the head of its file part in the body. */
-static void
-mcp_files_head (struct mcp    *mcp,
-                struct stream *s,
-                struct span    method,
-                struct span    target,
-                size_t         length)
-{
-	struct mcp_static const *st = mcp->st;
-	bool put = mcp_span_is(method, "PUT", sizeof "PUT" - 1);
-	bool get = mcp_span_is(method, "GET", sizeof "GET" - 1);
-	size_t skip = sizeof FILES - 1;
-	struct ticket t = {};
-	int e = ticket_read(&st->ticket, (char const *)target.ptr + skip, target.len - skip,
-	                    (uint64_t)time(nullptr), &t);
-	uint8_t dir = put ? TICKET_UPLOAD : TICKET_DOWNLOAD;
-	uint16_t status = !st->notes ? 404 : !put && !get ? 405
-	                : e || t.dir != dir ? 403
-	                : put && length == STREAM_OPEN ? 411
-	                : put && length > NOTES_FILE ? 413 : 0;
-	char const *why = status == 404 ? "This server keeps no notes."
-	                : status == 405 ? "A transfer is a PUT or a GET."
-	                : e == ETIMEDOUT ? "The ticket has expired; ask for a new one."
-	                : status == 403 ? "The ticket is not one for this request."
-	                : status == 411 ? "An upload needs a Content-Length field."
-	                : "The file is too large for a note.";
-	if (status) {
-		mcp_files_refuse(s, status, why);
-		return;
-	}
-	struct mcp_req *req = mcp_begin(mcp, s, PHASE_FILE, METHOD_FILES);
-	if (!req)
-		return;
-	/* The request's own slot does git's work as a call of notes does. */
-	for (uint32_t id = 0; id < st->n_offers; ++id)
-		if (st->offers[id].kind->start == mcp_slot_notes)
-			req->self.tool = id;
-	req->principal = t.principal;
-	memcpy(req->thread, t.thread, NOTES_ID);
-	notes_repo(t.principal, NOTES_CLIENT, req->thread, req->repo);
-	struct span room;
-	e = buf_reserve(&req->reply, sizeof t, sizeof t, &room);
-	if (!e) {
-		memcpy(room.ptr, &t, sizeof t);
-		buf_commit(&req->reply, sizeof t);
-	}
-	if (!e && put)
-		e = notes_add_head(&req->body, t.name, t.name_len, length);
-	if (e)
-		mcp_files_fail(req, 500, "Out of memory.");
-}
-
-/* Starts git for the transfer whose ticket waits in the reply: the read of
- * the note for a download; for an upload, whose body is in, the check of
- * the name, or the making of the client's notebook of the thread if it has
- * none. */
-static void
-mcp_files_start (struct mcp_req *req)
-{
-	struct ticket t;
-	memcpy(&t, buf_peek(&req->reply).ptr, sizeof t);
-	buf_fini(&req->reply);
-	struct buf in = {};
-	int e;
-	uint8_t fetch;
-	if (t.dir == TICKET_DOWNLOAD) {
-		e = notes_read_input(&in, t.name, t.name_len);
-		fetch = FETCH_READ | (t.side == NOTES_UPSTREAM ? FETCH_OTHER : 0);
-	} else {
-		struct span lf;
-		e = buf_reserve(&req->body, 1, SIZE_MAX, &lf);
-		if (!e) {
-			lf.ptr[0] = '\n';
-			buf_commit(&req->body, 1);
-		}
-		req->branch = notes_exists(req->mcp->st->notes, req->repo);
-		if (!e && req->branch)
-			e = notes_check_input(&in, t.name, t.name_len);
-		fetch = req->branch ? FETCH_CHECK : FETCH_CREATE;
-	}
-	if (e) {
-		buf_fini(&in);
-		mcp_files_fail(req, 500, "Out of memory.");
-		return;
-	}
-	mcp_slot_notes_run(&req->self, fetch, &in);
-}
-
-/* Takes in more of the body of a transfer, and starts the transfer once
- * all of it is in. */
-static void
-mcp_files_body (struct mcp_req *req,
-                struct span     bytes,
-                bool            last)
-{
-	if (bytes.len && mcp_piece_write(&RAW(bytes.ptr, bytes.len), 0, bytes.len,
-	                                 &req->body, SIZE_MAX)) {
-		mcp_files_fail(req, 500, "Out of memory.");
-		return;
-	}
-	if (last)
-		mcp_files_start(req);
-}
-
-/* Answers a download with the bytes of the note, @p text, that git read
- * for the call in @p slot, or with why not, as @p r says. */
-static void
-mcp_files_sent (struct mcp_slot *slot,
-                int              r,
-                struct span      text)
-{
-	static char const fields[] = "Content-Type: application/octet-stream\r\n";
-	struct mcp_req *req = slot->req;
-	if (r) {
-		bool none = r == ENOENT || mcp_notes_none(slot->child);
-		mcp_files_fail(req, none || r == EISDIR ? 404 : 500,
-		               none ? "No note has that name."
-		               : r == EISDIR ? "That name is a directory of notes."
-		               : "The note could not be read.");
-		return;
-	}
-	struct span room;
-	int e = buf_reserve(&req->reply, text.len, SIZE_MAX, &room);
-	if (!e) {
-		memcpy(room.ptr, text.ptr, text.len);
-		buf_commit(&req->reply, text.len);
-		loop_work(req->mcp->loop, LOOP_COPY, text.len);
-	}
-	child_destroy(&slot->child);
-	slot->done = true;
-	LOG(LOG_VERBOSE, "notes: download of %zu bytes", text.len);
-	mcp_req_close(req, 200, SPAN(fields), e);
-}
-
-/* Answers an upload: 201 if the note was added, else 409 with the answer
- * that the steps of an add wrote. */
-static void
-mcp_files_done (struct mcp_req *req,
-                bool            failed)
-{
-	static char const fields[] = "Content-Type: text/plain; charset=utf-8\r\n";
-	char added[64 + NOTES_ID];
-	struct span text = mcp_req_output(req);
-	if (!failed)
-		text = (struct span){ (unsigned char *)added,
-		                      util_format(added, sizeof added, "Added as a note of "
-		                                  "the thread %s.", req->thread) };
-	struct span room;
-	int e = buf_reserve(&req->reply, text.len + 1, SIZE_MAX, &room);
-	if (!e) {
-		memcpy(room.ptr, text.ptr, text.len);
-		room.ptr[text.len] = '\n';
-		buf_commit(&req->reply, text.len + 1);
-	}
-	LOG(LOG_VERBOSE, "notes: upload %s: %.*s", failed ? "failed" : "added",
-	    (int)mcp_clip((char const *)text.ptr, text.len, 200), text.ptr);
-	mcp_req_close(req, failed ? 409 : 201, SPAN(fields), e);
-}
-
 static void
 mcp_on_head (void          *ctx,
              struct stream *s,
@@ -7361,10 +7033,6 @@ mcp_on_head (void          *ctx,
              size_t         length)
 {
 	struct mcp *mcp = ctx;
-	if (target.len >= sizeof FILES - 1 && !memcmp(target.ptr, FILES, sizeof FILES - 1)) {
-		mcp_files_head(mcp, s, method, target, length);
-		return;
-	}
 	if (mcp_span_is(method, "GET", sizeof "GET" - 1) && mcp_is_metrics(target)) {
 		if (s->trusted)
 			(void)mcp_begin(mcp, s, PHASE_METRICS, METHOD_METRICS);
@@ -7394,10 +7062,6 @@ mcp_on_body (struct stream *s,
              bool           last)
 {
 	struct mcp_req *req = s->user;
-	if (req->phase == PHASE_FILE) {
-		mcp_files_body(req, bytes, last);
-		return;
-	}
 	if (req->phase == PHASE_METRICS) {
 		/* A body to a GET says nothing. */
 		if (last)
@@ -7515,7 +7179,6 @@ mcp_create (struct loop              *loop,
 			.n_fields = F_N,
 			.lists = 1 << F_ACCEPT,
 			.ctx = mcp,
-			.open = FILES,
 			.on_head = mcp_on_head,
 			.on_body = mcp_on_body,
 			.on_writable = mcp_on_writable,
@@ -7769,20 +7432,13 @@ mcp_notes_schema (enum notes_side side)
 			"thread keeps the other AI's notes in it, and its answer names "
 			"the thread. list and read show the other AI's notes with "
 			"notebook other, and copy puts one of them into your notebook "
-			"byte for byte, without its text passing through you. upload and "
-			"download answer with a command of curl to run, which moves a "
-			"file of your computer into your notebook as a note, or a note "
-			"into a file, byte for byte: use upload for a file that the user "
-			"gave you, so that you need not write it out. You add notes only "
-			"to your own notebook.",
+			"byte for byte, without its text passing through you. You add "
+			"notes only to your own notebook.",
 	};
 	struct json_object *actions = jb_list(json_object_new_string("add"));
 	if (jb_push(actions, json_object_new_string("list")) ||
 	    jb_push(actions, json_object_new_string("read")) ||
-	    jb_push(actions, json_object_new_string("copy")) ||
-	    (side == NOTES_CLIENT &&
-	     (jb_push(actions, json_object_new_string("upload")) ||
-	      jb_push(actions, json_object_new_string("download"))))) {
+	    jb_push(actions, json_object_new_string("copy"))) {
 		json_object_put(actions);
 		actions = nullptr;
 	}
@@ -7796,20 +7452,15 @@ mcp_notes_schema (enum notes_side side)
 			"type", json_object_new_string("string"),
 			"enum", actions,
 			"description", json_object_new_string(
-				side == NOTES_CLIENT
-				? "add a note, list the notes, the oldest first, read a note, "
-				  "copy a note of the other notebook of the thread into yours, "
-				  "or get a command that uploads a file as a note or downloads "
-				  "a note into a file."
-				: "add a note, list the notes, the oldest first, read a note, "
-				  "or copy a note of the other notebook of the thread into "
-				  "yours."),
+				"add a note, list the notes, the oldest first, read a note, "
+				"or copy a note of the other notebook of the thread into "
+				"yours."),
 			nullptr),
 		"file", jb_object(
 			"type", json_object_new_string("string"),
 			"description", json_object_new_string(
-				"The file name of the note, at most 255 bytes. It can have "
-				"directories, such as "
+				"For add, read and copy: the file name of the note, at most "
+				"255 bytes. It can have directories, such as "
 				"findings/locks.md. Its extension, such as .md or .txt, shows "
 				"the format of the text."),
 			nullptr),
@@ -7836,9 +7487,9 @@ mcp_notes_schema (enum notes_side side)
 			"enum", notebooks,
 			"description", json_object_new_string(
 				side == NOTES_CLIENT
-				? "For list, read and download: own, the default, for your "
-				  "notes in the thread, or other for the notes that the other AI "
-				  "keeps in it. add, copy and upload write only to your own."
+				? "For list and read: own, the default, for your notes in the "
+				  "thread, or other for the notes that the other AI keeps in it. "
+				  "add writes only to your own."
 				: "For list and read: own, the default, for your notes, or other "
 				  "for the notes that the client keeps in this thread. add "
 				  "writes only to your own."),
@@ -8707,8 +8358,6 @@ mcp_static_create (struct config const *cfg,
 	*e = info && list ? mcp_static_build(st, info, list) : ENOMEM;
 	json_object_put(list);
 	json_object_put(info);
-	if (!*e)
-		*e = ticket_key_init(&st->ticket);
 	if (*e)
 		mcp_static_destroy(&st);
 	return st;
