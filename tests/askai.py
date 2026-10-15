@@ -7811,6 +7811,19 @@ def check_turns(binary, up):
                 "notes reads with \"notebook\": \"other\".]\n\n[askai: the notes you "
                 "kept in earlier calls on this thread, oldest first:]"), \
                 prompt(up.requests[count])
+            # A newest note that is not text does not go into the prompt.
+            book = f"{notes}/anonymous/upstream/{mine}"
+            subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
+                           input=b"commit refs/heads/notes\ncommitter askai <askai> "
+                           + str(int(time.time())).encode() + b" +0000\ndata 0\n"
+                           b"from refs/heads/notes^0\nM 100644 inline z.bin\ndata 3\n"
+                           b"\xff\x00\xfe\n", check=True, env=os.environ | {
+                               "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+            count = len(up.requests)
+            ai.ask("Once more", thread=mine)
+            assert prompt(up.requests[count]).endswith(
+                "[askai: your newest note, z.bin:]\n\n[askai: the note is not UTF-8 "
+                "text: 3 bytes.]\n"), prompt(up.requests[count])[-200:]
 
         # A small context: windows of an eighth of it, a reminder to write
         # notes past half, a warning past two thirds, and once full, the

@@ -5848,9 +5848,15 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 	size_t len = text.len ? jb_utf8(s, text.len) : 0;
 	size_t n = mcp_clip(s, len, mcp_req_lend_max(req));
 	char more[128];
-	size_t m = n < len ? util_format(more, sizeof more, "\n[askai: bytes 0 to %zu of "
+	size_t m = len < text.len
+	         ? util_format(more, sizeof more, "[askai: the note is not UTF-8 text: "
+	                       "%zu bytes.]", text.len)
+	         : n < len ? util_format(more, sizeof more, "\n[askai: bytes 0 to %zu of "
 	                                 "%zu; read the note with \"offset\": %zu for the "
 	                                 "rest.]", n, len, n) : 0;
+	/* A note that is not text is not shown at all. */
+	if (len < text.len)
+		n = 0;
 	struct mcp_piece const p[] = {
 		r ? TEXT("[askai: the note could not be read.]") : ESC(s, n),
 		ESC(more, m),
