@@ -19,7 +19,6 @@
     "slots": 4,
     "max-calls": 256,
     "upstream-tools": true,
-    "notes": "/var/lib/askai/notes",
     "max-turns": 32,
     "context": 131072,
     "tool-name": "ask_ai",
@@ -37,12 +36,6 @@
     "allow-origin": [
       "https://example.com"
     ],
-    "man": true,
-    "git": [
-      "/srv/git/proj"
-    ],
-    "git-timeout": 30,
-    "client-jobs": true,
     "loops": 0,
     "grace": 5,
     "memory-high": "1G",
@@ -90,6 +83,21 @@
       "deny": [
         "godbolt_compile"
       ]
+    },
+    "man": {
+      "enabled": true
+    },
+    "git": {
+      "repositories": [
+        "/srv/git/proj"
+      ],
+      "timeout": 30
+    },
+    "notes": {
+      "directory": "/var/lib/askai/notes"
+    },
+    "jobs": {
+      "clients": true
     }
   },
   "roles": {

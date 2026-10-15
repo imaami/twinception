@@ -697,6 +697,12 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc",
               if group in ("upstream", "service", "testing", "debugging")
               for name in members}
 
+# The member of the configuration file's member tools that sets each option
+# of a built-in tool: the object of the tool, and its name in that object.
+TOOL_MEMBERS = {"man": ("man", "enabled"), "git": ("git", "repositories"),
+                "git-timeout": ("git", "timeout"), "notes": ("notes", "directory"),
+                "client-jobs": ("jobs", "clients")}
+
 
 def note_view(data):
     """The view of the notes tool of a note of the bytes @p data that is not
@@ -726,14 +732,24 @@ def note_view(data):
 
 def grouped(members):
     """The configuration file's object for @p members, the options and the
-    other members in one object: each option goes into its group's
-    object."""
+    other members in one object: each option goes into its group's object,
+    and an option of a built-in tool into the object of the tool in tools,
+    beside the members of a tools that is an object."""
     file = {}
     for name, value in members.items():
         if name in GROUPS:
             file.setdefault(GROUPS[name], {})[name] = value
+        elif name in TOOL_MEMBERS:
+            tool, member = TOOL_MEMBERS[name]
+            file.setdefault("tools", {}).setdefault(tool, {})[member] = value
+        elif name == "tools" and isinstance(value, dict):
+            file.setdefault("tools", {}).update(value)
         else:
             file[name] = value
+    tools = members.get("tools")
+    assert tools is None or isinstance(tools, dict) or \
+        not any(name in TOOL_MEMBERS for name in members), \
+        "a tools that is no object cannot have the objects of the tools"
     return file
 
 
@@ -3231,23 +3247,27 @@ def check_configuration(binary, up, godbolt):
     assert set(documented) == options | others, set(documented) ^ (options | others)
 
     # doc/askai.example.json is strict JSON in the format of jq.  Its objects
-    # upstream, service, testing and debugging have every option, and it has
-    # the other members too.  askai starts with it, once the paths in it are
-    # those of files that exist, and its key variable is set; the listen
-    # addresses and the URL come from the command line.  The godbolt plugin
-    # is the one built beside askai.
+    # upstream, service, testing and debugging have every option but those
+    # of the built-in tools, which the objects of the tools in its member
+    # tools have, and it has the other members too.  askai starts with it,
+    # once the paths in it are those of files that exist, and its key
+    # variable is set; the listen addresses and the URL come from the command
+    # line.  The godbolt plugin is the one built beside askai.
     with open(os.path.join(doc, "askai.example.json")) as f:
         example = f.read()
     members = json.loads(example, parse_constant=constant)
     assert example == json.dumps(members, indent=2) + "\n", "not in the format of jq"
     groups = ("upstream", "service", "testing", "debugging")
     assert set(members) == set(groups) | others, set(members) ^ (set(groups) | others)
-    assert set(GROUPS) == options, set(GROUPS) ^ options
+    assert set(GROUPS) | set(TOOL_MEMBERS) == options and \
+        not set(GROUPS) & set(TOOL_MEMBERS), set(GROUPS) ^ options
+    assert all(member in members["tools"][tool]
+               for tool, member in TOOL_MEMBERS.values()), members["tools"]
     with tempfile.TemporaryDirectory() as d:
         d = os.path.realpath(d)
         subprocess.run(["git", "init", "-q", f"{d}/proj"], check=True)
-        members["upstream"]["notes"] = f"{d}/notes"
-        members["service"]["git"] = [f"{d}/proj"]
+        members["tools"]["notes"]["directory"] = f"{d}/notes"
+        members["tools"]["git"]["repositories"] = [f"{d}/proj"]
         members["plugins"][0]["path"] = os.path.realpath(godbolt)
         with open(f"{d}/askai.json", "w") as f:
             json.dump(members, f)
@@ -3263,6 +3283,20 @@ def check_configuration(binary, up, godbolt):
                 ["ask_ai", "man", "notes", "man", "git", "notes", "background", "jobs",
                  "wait", "timer", "godbolt_catalog", "godbolt_targets", "compact",
                  "no"], ai.log
+
+    # The list of the repositories has room for all of tools.git's, with a
+    # short command line.
+    with tempfile.TemporaryDirectory() as d:
+        repos = [f"{d}/r{i:02}" for i in range(24)]
+        for repo in repos:
+            subprocess.run(["git", "init", "-q", repo], check=True)
+        with open(f"{d}/askai.json", "w") as f:
+            json.dump({"upstream": {"url": up.url()},
+                       "tools": {"git": {"repositories": repos}}}, f)
+        os.chmod(f"{d}/askai.json", 0o600)
+        with Askai(binary, "-c", f"{d}/askai.json", loops=None) as ai:
+            assert [item.split()[-1] for item in ai.listed("git repositories:")] == \
+                repos, ai.log
 
     fails("-p", "anthropic", "-m", "m", message="set ANTHROPIC_API_KEY")
     fails("-p", "google", env={"GEMINI_API_KEY": "k"}, message="--model is required")
@@ -3448,7 +3482,8 @@ def check_configuration(binary, up, godbolt):
                 "tool-description": "From the file.", "header": ["X-A: 1", "X-B: 2"],
                 "temperature": 0.5, "extra": {"top_k": 5}, "max-tokens": 9
             },
-            "service": {"man": true},
+            "service": {},
+            "tools": {"man": {"enabled": true}},
             "testing": {"test-fifo": false},
             "debugging": {}
         }""" % up.url())
@@ -3478,9 +3513,26 @@ def check_configuration(binary, up, godbolt):
                 ('{"url": "%s"}' % up.url(), f"{path}: url must be in upstream"),
                 ('{%s, "testing": [1]}' % url, f"{path}: testing must be an object"),
                 ('{%s, "service": {"loops": [1]}}' % url, f"{path}: invalid --loops: [1]"),
-                ('{%s, "service": {"man": "yes"}}' % url, "invalid --man"),
+                ('{%s, "tools": {"man": {"enabled": "yes"}}}' % url, "invalid --man"),
                 ('{%s, "service": {"max-body": "1X"}}' % url, "invalid --max-body: 1X"),
-                ('{%s, "service": {"man": null}}' % url, "invalid --man: null"),
+                ('{%s, "tools": {"man": {"enabled": null}}}' % url,
+                 "invalid --man: null"),
+                # The options of the built-in tools are members of their objects
+                # in tools.
+                ('{%s, "service": {"man": true}}' % url,
+                 f"{path}: man must be tools.man.enabled"),
+                ('{%s, "notes": "/tmp"}' % url,
+                 f"{path}: notes must be tools.notes.directory"),
+                ('{"upstream": {"url": "%s", "git-timeout": 5}}' % up.url(),
+                 f"{path}: git-timeout must be tools.git.timeout"),
+                ('{%s, "tools": {"git": ["/tmp"]}}' % url,
+                 f"{path}: tools.git must be an object"),
+                ('{%s, "tools": {"git": {"timeout": 5, "paths": []}}}' % url,
+                 f"{path}: tools.git: unknown member paths"),
+                ('{%s, "tools": {"git": {"timeout": 0}}}' % url,
+                 f"{path}: invalid --git-timeout: 0"),
+                ('{%s, "tools": {"client": {"man": {}}}}' % url,
+                 f"{path}: tools: client: unknown member man"),
                 ('{"upstream": {"url": "%s", "temperature": NaN}}' % up.url(),
                  f"{path}: invalid temperature: NaN"),
                 ('{"upstream": {"url": "%s", "extra": {"a": [Infinity]}}}' % up.url(),
@@ -3491,7 +3543,7 @@ def check_configuration(binary, up, godbolt):
                 ('{"upstream": {"url": "ftp://x"}}', f"{path}: not an http(s) URL"),
                 ('{%s, "tools": ["nope"]}' % url,
                  f'{path}: tools: askai has no tool "nope"; the tools are none'),
-                ('{%s, "service": {"man": true}, "tools": {"client": [1]}}' % url,
+                ('{%s, "tools": {"man": {"enabled": true}, "client": [1]}}' % url,
                  f"{path}: tools: client: askai has no tool 1; the tools are man"),
                 ('{%s, "tools": ["ask_ai"]}' % url,
                  f"{path}: tools: ask_ai is the ask tool, which is always on"),
@@ -3501,10 +3553,10 @@ def check_configuration(binary, up, godbolt):
                  f"{path}: tools: allow and deny go into client and upstream"),
                 ('{%s, "tools": {"client": true, "x": 1}}' % url,
                  f"{path}: tools: unknown member x"),
-                ('{%s, "service": {"client-jobs": true}, "tools": {"deny": ["jobs"]}}' % url,
+                ('{%s, "tools": {"jobs": {"clients": true}, "deny": ["jobs"]}}' % url,
                  f"{path}: tools: background needs jobs"),
-                ('{%s, "service": {"client-jobs": true}, '
-                 '"tools": {"upstream": ["background"]}}' % url,
+                ('{%s, "tools": {"jobs": {"clients": true}, '
+                 '"upstream": ["background"]}}' % url,
                  f"{path}: tools: upstream: background needs jobs"),
                 ('{%s, "tools": 1}' % url,
                  f"{path}: tools: not true, false, a list or an object"),
@@ -3557,6 +3609,9 @@ def check_allow(binary, up):
         path = f"{d}/askai.json"
         on = {"url": up.url(), "upstream-tools": True, "notes": f"{d}/notes",
               "man": True, "client-jobs": True}
+        # A member tools that is no object has no objects of the tools, so
+        # the command line turns them on.
+        cli = ["--notes", f"{d}/notes", "--man", "--client-jobs"]
         jobs = ["background", "jobs", "wait", "timer"]
         for tools, clients, turns in (
                 (True, ["ask_ai", "man", "notes", *jobs],
@@ -3571,10 +3626,13 @@ def check_allow(binary, up):
                 ({"client": {"allow": ["notes"]}, "upstream": {"deny": ["notes"]}},
                  ["ask_ai", "notes"], ["man", *jobs, "compact"]),
                 ({"upstream": False}, ["ask_ai", "man", "notes", *jobs], [])):
+            whole = isinstance(tools, dict)
             with open(path, "w") as f:
-                json.dump(grouped(on | {"tools": tools}), f)
+                json.dump(grouped((on if whole else {"url": up.url(),
+                                                      "upstream-tools": True})
+                                  | {"tools": tools}), f)
             os.chmod(path, 0o600)
-            with Askai(binary, "-c", path) as ai:
+            with Askai(binary, "-c", path, *([] if whole else cli)) as ai:
                 listed = ai.rpc("tools/list")[2]["result"]["tools"]
                 assert [t["name"] for t in listed] == clients, (tools, listed)
                 assert lent(ai) == turns, (tools, up.requests[-1]["body"])
@@ -3852,7 +3910,7 @@ def check_reload(binary, up):
             reload(ai, "configuration reloaded")
             ai.wait_log(r"^askai: warning: other changed options need a restart$")
             assert tools(ai, "t1") == ["ask_ai", "man"]
-            write(first, tools=["nope"])
+            write(first, tools={"allow": ["nope"]})
             assert 'tools: askai has no tool "nope"; the tools are man' in \
                 reload(ai, "has no tool").strip() + "".join(ai.log)
             ai.wait_log("configuration not reloaded")

@@ -243,8 +243,9 @@ of its work, in a loop of turns that ends with its answer.  With `--notes`, a
 tool `notes` gives clients notebooks too.  With `--client-jobs`, clients get
 the tools `background`, `jobs`, `wait` and `timer`, with which a client runs
 its calls as jobs while it does other work (below).  A plugin that the
-configuration file lists adds tools of its own, and the member `tools` of
-the file can deny tools to clients or to the other model (below).
+configuration file lists adds tools of its own.  The member `tools` of the
+file can contain the objects of the built-in tools with their options, and
+can deny tools to clients or to the other model (below).
 
 It speaks MCP's Streamable HTTP transport, which is what the `llama-server` web
 UI's MCP client uses, and serves both protocol eras on one endpoint:
@@ -433,12 +434,14 @@ the output ends, that `man` still counts toward the limit of 16 processes.
 
 ### Reading git repositories
 
-With `--git PATH`, which may repeat, or the list `git` of a file's `service`,
-`askai` also offers the tool `git`: read-only git commands in the repositories
-listed, each a work tree's top or a git directory, and named by the last
-component of its path as given, less a `.git` suffix: `/srv/git/proj.git` is
-`proj`.  A name is 1 to 64 letters, digits and `_.-`, not beginning with a dot;
-a path without one, or two of one name, are refused as `askai` starts.  A call names its
+With `--git PATH`, which may repeat, or the list `tools.git.repositories` of a
+configuration file (the member `repositories` of the object `git` in the
+member `tools`), `askai` also offers the tool `git`: read-only git commands in
+the repositories listed, each a work tree's top or a git directory, and named
+by the last component of its path as given, less a `.git` suffix:
+`/srv/git/proj.git` is `proj`.  A name is 1 to 64 letters, digits and `_.-`,
+not beginning with a dot; a path without one, or two of one name, are refused
+as `askai` starts.  A call names its
 `repo` and its `command`, one of `log`, `show`, `diff`, `grep`, `blame`,
 `ls-files`, `ls-tree`, `cat-file` and `rev-parse`, and gives its `options`, its
 `revisions` and its `paths` apart, and for `grep` its `pattern`:
@@ -784,28 +787,40 @@ times their flights, mostly CPU (`askai_tls_handshakes_total`,
 
 `--config FILE` (`-c`) reads options from a JSON object before the command
 line.  The file must be strict JSON, so that tools such as `jq` can read it:
-comments and trailing commas are errors.  The options are members of four
-objects, and each member is named as a long option is:
+comments and trailing commas are errors.  The options but those of the
+built-in tools are members of four objects, and each member is named as a
+long option is:
 
 - `upstream` has the options of the upstream AI, the tools of the upstream
   and the ask tool: the options under "Upstream AI" in `askai --help`, such
-  as `url`, `upstream-tools`, `notes` and `tool-name`.
+  as `url`, `upstream-tools`, `max-turns` and `tool-name`.
 - `service` has the options of the MCP server and the limits on clients,
-  such as `listen`, `tls-cert`, `man`, `git` and `max-body`.
+  such as `listen`, `tls-cert`, `allow-origin` and `max-body`.
 - `testing` has the test aids, such as `test-fifo`.
 - `debugging` has `verbose` and `watchdog`.
 
+The options of the built-in tools are members of the objects of these tools
+in the top-level member `tools`, with the names that `askai --help` shows
+in parentheses:
+
+- `--man` is `tools.man.enabled`.
+- `--git` is `tools.git.repositories`.
+- `--git-timeout` is `tools.git.timeout`.
+- `--notes` is `tools.notes.directory`.
+- `--client-jobs` is `tools.jobs.clients`.
+
 An option at the top level of the file, or in another object than its own,
-stops `askai` with a message such as "url must be in upstream".  The values
-have these forms:
+stops `askai` with a message such as "url must be in upstream", or "man must
+be tools.man.enabled" for an option of a built-in tool.  The values have
+these forms:
 
 - An option with an argument takes a string or a number.  A number must be an
   integer, except for `temperature`: `"slots": 2.0` is refused.
 - `extra` takes an object, or a string of JSON text.
 - An option without an argument takes `true`.  `false` changes nothing, and
   the command line cannot turn off an option that the file sets.
-- A repeatable option (`header`, `allow-origin`, `listen` and `git`) takes one
-  value or an array of values.
+- A repeatable option (`header`, `allow-origin`, `listen` and
+  `tools.git.repositories`) is one value or an array of values.
 
 The command line overrides the file.  It adds to the lists of headers,
 allowed origins and git repositories of the file, but any `-l` replaces the
@@ -815,8 +830,8 @@ objects, the top level of the file can have six members:
 - `roles`, `identities`, `unix-groups` and `anonymous` are the policy below.
 - `plugins` lists the plugins that `askai` loads, each by its path or as an
   object with its path and its options (see Plugins).
-- `tools` allows or denies tools other than `ask_ai`, to clients and to the
-  upstream (below).
+- `tools` can contain the objects of the built-in tools, and allows or
+  denies tools other than `ask_ai`, to clients and to the upstream (below).
 
 Any other member stops `askai`, and so do `config` and `help`.  If two
 members of one object have the same name, the last one counts.  Only the
@@ -839,9 +854,9 @@ Four more members define who may connect, and what each client may do:
     "upstream-tools": true
   },
   "service": {
-    "listen": ["127.0.0.1:8090", "unix:/run/askai/askai.sock"],
-    "man": true
+    "listen": ["127.0.0.1:8090", "unix:/run/askai/askai.sock"]
   },
+  "tools": { "man": { "enabled": true } },
   "roles": {
     "admin":  { "tools": ["ask_ai", "man"], "metrics": true },
     "user":   { "tools": ["ask_ai"], "upstream": ["man"] },
@@ -873,7 +888,7 @@ Four more members define who may connect, and what each client may do:
   can differ from the tools that the clients of the role may call.  In the
   example, a client of the role `user` cannot call `man`, but the upstream
   can call it for the client.  Without `upstream`, the upstream may call the
-  tools that `tools` lists.  `upstream` can name `man`, `git`, `notes` and
+  tools that the role's `tools` lists.  `upstream` can name `man`, `git`, `notes` and
   the plugin tools that may be lent.  Without `--upstream-tools`, `upstream`
   must be empty or left out.  The turns also get `notes` whenever `--notes`
   is given, `compact`, `wait` and `timer` whenever they get any tool, and
@@ -918,8 +933,8 @@ clients may call the tools.  Any of the four members, also with the value
 and logs that.  So a file with `roles` alone refuses every client.
 
 The member `tools` allows or denies the tools other than `ask_ai`, to
-clients and to the upstream.  It turns no tool on.  Its value has one of
-these forms:
+clients and to the upstream.  Its value has one of these forms, which turn
+no tool on:
 
 - `true` allows all tools, and `false` none.
 - A list, or an object `{"allow": [...]}`, allows the tools of the list.
@@ -928,17 +943,37 @@ these forms:
   the forms above, sets clients and the upstream apart.  A missing member
   allows all.
 
+As an object, `tools` can also contain the objects `man`, `git`, `notes`
+and `jobs` with the options of the built-in tools, which turn these tools on as
+the options on the command line do.  These objects are members of `tools`
+itself, not of `client` or `upstream`.  An object without `allow`, `deny`,
+`client` and `upstream` allows all tools.
+
 ```json
-"tools": { "client": { "deny": ["git"] }, "upstream": ["man", "notes", "compact"] }
+{
+  "upstream": {
+    "url": "http://127.0.0.1:8081/v1/chat/completions",
+    "upstream-tools": true
+  },
+  "tools": {
+    "client": { "deny": ["git"] },
+    "upstream": ["man", "notes", "compact"],
+    "man": { "enabled": true },
+    "git": { "repositories": ["/srv/git/proj"] },
+    "notes": { "directory": "/var/lib/askai/notes" }
+  }
+}
 ```
 
-With this member, no client gets `git`, whatever its role grants, and a
-role may name `git` without an error.  The turns of an `ask_ai` call get
-at most `man`, `notes` and `compact`, and never `git`, `background`,
-`jobs`, `wait` or `timer`.  A name in `tools` must be a tool that `askai`
-offers in this run.  The startup log shows a tool that `tools` denies to
-clients as `off (tools)`.  A change of `tools` needs a restart.
-[`doc/configuration.md`](doc/configuration.md#tools) has the details.
+With this file, `askai` offers `man`, `git` and `notes`.  No client gets
+`git`, whatever its role grants, and a role may name `git` without an
+error.  The turns of an `ask_ai` call get at most `man`, `notes` and
+`compact`, and never `git`, `background`, `jobs`, `wait` or `timer`.  A
+name in `tools` must be a tool that `askai` offers in this run.  The
+startup log shows a tool that `tools` denies to clients as `off (tools)`.
+A change of `tools` needs a restart, also a change of an object of a
+built-in tool.  [`doc/configuration.md`](doc/configuration.md#tools) has
+the details.
 
 With `--config`, or a TLS listener, SIGHUP reloads who may connect and what
 they may do, and the TLS certificate and key: a blocker thread reads the
@@ -1353,10 +1388,13 @@ plugin:
   "upstream": {
     "url": "http://127.0.0.1:8081/v1/chat/completions",
     "tool-name": "bro",
-    "upstream-tools": true,
-    "notes": "/var/lib/askai/notes"
+    "upstream-tools": true
   },
-  "service": { "man": true, "git": "/srv/git/proj" },
+  "tools": {
+    "man": { "enabled": true },
+    "git": { "repositories": "/srv/git/proj" },
+    "notes": { "directory": "/var/lib/askai/notes" }
+  },
   "plugins": [{ "path": "/usr/libexec/askai/godbolt.so",
                 "options": { "share": "off" } }],
   "roles": {
@@ -1509,12 +1547,15 @@ askai: tool call bro from anonymous loopback (role user) answered after 3.9 s (3
                             objects upstream, service, testing and
                             debugging contain the options of the
                             sections below, named as the long options.
-                            true sets an option without argument, and
-                            an array lists the values of a repeatable
-                            option.  The command line overrides the
-                            file, but adds to its header, allow-origin
-                            and git lists.  Only the last --config is
-                            read.  See doc/configuration.md and
+                            Its member tools can contain the objects of
+                            the built-in tools, whose members the
+                            section Built-in tools names.  true sets an
+                            option without argument, and an array lists
+                            the values of a repeatable option.  The
+                            command line overrides the file, but adds
+                            to its header, allow-origin and git lists.
+                            Only the last --config is read.  See
+                            doc/configuration.md and
                             doc/askai.example.json.
   -h, --help                show this help
 
@@ -1570,11 +1611,6 @@ Upstream AI ("upstream"):
                             tool calls of each turn and sends the next
                             upstream request until an answer ends the
                             call
-      --notes DIR           also offer the tool notes: notebooks in git
-                            repositories under DIR, which askai makes if
-                            it does not exist; to clients as their role
-                            allows, and to the upstream with
-                            --upstream-tools
       --max-turns N         upstream calls that an ask call makes at
                             most, with --upstream-tools (default 32)
       --context TOKENS      context size of the upstream, used with
@@ -1611,25 +1647,6 @@ MCP server ("service"):
                             is exactly URL, such as https://example.com
                             (repeatable; '*' allows any; loopback
                             Origins are always allowed)
-      --man                 also offer the tool man, which returns a
-                            page of the manual as man(1) renders it, in
-                            plain UTF-8 text; askai renders each page
-                            once and stores it
-      --git PATH            also offer the tool git: read-only git
-                            commands in the repository at PATH, the top
-                            of a work tree or a bare repository, named
-                            by the last component of PATH less .git
-                            (repeatable)
-      --git-timeout SECONDS
-                            deadline of a git call, at which git gets
-                            SIGTERM, and SIGKILL one second later
-                            (default 30)
-      --client-jobs         also offer clients the tools background,
-                            jobs, wait and timer, as their role allows:
-                            background runs a call of another tool as a
-                            job, whose result askai stores for an hour;
-                            timer sets a timer; wait waits for jobs and
-                            timers
       --loops N             event loops that serve clients (default 0:
                             one fewer than the CPUs askai may use, at
                             least 1, at most 255)
@@ -1689,6 +1706,32 @@ KiB, MiB or GiB; 0 = none where noted):
       --send-timeout SECONDS
                             longest stall of pending output
                             (default 30, 0 = none)
+
+Built-in tools ("tools", each in the member in parentheses):
+      --man                 also offer the tool man, which returns a
+                            page of the manual as man(1) renders it, in
+                            plain UTF-8 text; askai renders each page
+                            once and stores it (tools.man.enabled)
+      --git PATH            also offer the tool git: read-only git
+                            commands in the repository at PATH, the top
+                            of a work tree or a bare repository, named
+                            by the last component of PATH less .git
+                            (repeatable; tools.git.repositories)
+      --git-timeout SECONDS
+                            deadline of a git call, at which git gets
+                            SIGTERM, and SIGKILL one second later
+                            (default 30; tools.git.timeout)
+      --notes DIR           also offer the tool notes: notebooks in git
+                            repositories under DIR, which askai makes if
+                            it does not exist; to clients as their role
+                            allows, and to the upstream with
+                            --upstream-tools (tools.notes.directory)
+      --client-jobs         also offer clients the tools background,
+                            jobs, wait and timer, as their role allows:
+                            background runs a call of another tool as a
+                            job, whose result askai stores for an hour;
+                            timer sets a timer; wait waits for jobs and
+                            timers (tools.jobs.clients)
 
 Test aids ("testing"):
       --test-man-recheck SECONDS

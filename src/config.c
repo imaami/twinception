@@ -1,6 +1,8 @@
 /** @file askai's configuration (config.h): the command line, and the
  *  configuration file, whose objects' members are applied as the long
- *  options of their names are, before the command line's. */
+ *  options of their names are, and the members of the objects of the
+ *  built-in tools in its member tools as their options, before the command
+ *  line's. */
 #define _GNU_SOURCE /* vasprintf() */
 #include <errno.h>
 #include <fcntl.h>
@@ -121,12 +123,15 @@ config_usage (struct config const *cfg,
 	        "                            objects upstream, service, testing and\n"
 	        "                            debugging contain the options of the\n"
 	        "                            sections below, named as the long options.\n"
-	        "                            true sets an option without argument, and\n"
-	        "                            an array lists the values of a repeatable\n"
-	        "                            option.  The command line overrides the\n"
-	        "                            file, but adds to its header, allow-origin\n"
-	        "                            and git lists.  Only the last --config is\n"
-	        "                            read.  See doc/configuration.md and\n"
+	        "                            Its member tools can contain the objects of\n"
+	        "                            the built-in tools, whose members the\n"
+	        "                            section Built-in tools names.  true sets an\n"
+	        "                            option without argument, and an array lists\n"
+	        "                            the values of a repeatable option.  The\n"
+	        "                            command line overrides the file, but adds\n"
+	        "                            to its header, allow-origin and git lists.\n"
+	        "                            Only the last --config is read.  See\n"
+	        "                            doc/configuration.md and\n"
 	        "                            doc/askai.example.json.\n"
 	        "  -h, --help                show this help\n"
 	        "\n"
@@ -183,11 +188,6 @@ config_usage (struct config const *cfg,
 	        "                            tool calls of each turn and sends the next\n"
 	        "                            upstream request until an answer ends the\n"
 	        "                            call\n"
-	        "      --notes DIR           also offer the tool notes: notebooks in git\n"
-	        "                            repositories under DIR, which askai makes if\n"
-	        "                            it does not exist; to clients as their role\n"
-	        "                            allows, and to the upstream with\n"
-	        "                            --upstream-tools\n"
 	        "      --max-turns N         upstream calls that an ask call makes at\n"
 	        "                            most, with --upstream-tools (default 32)\n"
 	        "      --context TOKENS      context size of the upstream, used with\n"
@@ -225,26 +225,6 @@ config_usage (struct config const *cfg,
 	        "                            is exactly URL, such as https://example.com\n"
 	        "                            (repeatable; '*' allows any; loopback\n"
 	        "                            Origins are always allowed)\n"
-	        "      --man                 also offer the tool man, which returns a\n"
-	        "                            page of the manual as man(1) renders it, in\n"
-	        "                            plain UTF-8 text; askai renders each page\n"
-	        "                            once and stores it\n"
-	        "      --git PATH            also offer the tool git: read-only git\n"
-	        "                            commands in the repository at PATH, the top\n"
-	        "                            of a work tree or a bare repository, named\n"
-	        "                            by the last component of PATH less .git\n"
-	        "                            (repeatable)\n"
-	        "      --git-timeout SECONDS\n"
-	        "                            deadline of a git call, at which git gets\n"
-	        "                            SIGTERM, and SIGKILL one second later\n"
-	        "                            (default 30)\n"
-	        "      --client-jobs         also offer clients the tools background,\n"
-	        "                            jobs, wait and timer, as their role allows:\n"
-	        "                            background runs a call of another tool as a\n"
-	        "                            job, whose result askai stores for an hour;\n"
-	        "                            timer sets a timer; wait waits for jobs and\n"
-	        "                            timers\n");
-	fprintf(out,
 	        "      --loops N             event loops that serve clients (default 0:\n"
 	        "                            one fewer than the CPUs askai may use, at\n"
 	        "                            least 1, at most 255)\n"
@@ -305,6 +285,33 @@ config_usage (struct config const *cfg,
 	        "      --send-timeout SECONDS\n"
 	        "                            longest stall of pending output\n"
 	        "                            (default 30, 0 = none)\n"
+	        "\n");
+	fprintf(out,
+	        "Built-in tools (\"tools\", each in the member in parentheses):\n"
+	        "      --man                 also offer the tool man, which returns a\n"
+	        "                            page of the manual as man(1) renders it, in\n"
+	        "                            plain UTF-8 text; askai renders each page\n"
+	        "                            once and stores it (tools.man.enabled)\n"
+	        "      --git PATH            also offer the tool git: read-only git\n"
+	        "                            commands in the repository at PATH, the top\n"
+	        "                            of a work tree or a bare repository, named\n"
+	        "                            by the last component of PATH less .git\n"
+	        "                            (repeatable; tools.git.repositories)\n"
+	        "      --git-timeout SECONDS\n"
+	        "                            deadline of a git call, at which git gets\n"
+	        "                            SIGTERM, and SIGKILL one second later\n"
+	        "                            (default 30; tools.git.timeout)\n"
+	        "      --notes DIR           also offer the tool notes: notebooks in git\n"
+	        "                            repositories under DIR, which askai makes if\n"
+	        "                            it does not exist; to clients as their role\n"
+	        "                            allows, and to the upstream with\n"
+	        "                            --upstream-tools (tools.notes.directory)\n"
+	        "      --client-jobs         also offer clients the tools background,\n"
+	        "                            jobs, wait and timer, as their role allows:\n"
+	        "                            background runs a call of another tool as a\n"
+	        "                            job, whose result askai stores for an hour;\n"
+	        "                            timer sets a timer; wait waits for jobs and\n"
+	        "                            timers (tools.jobs.clients)\n"
 	        "\n"
 	        "Test aids (\"testing\"):\n"
 	        "      --test-man-recheck SECONDS\n"
@@ -356,7 +363,8 @@ config_usage (struct config const *cfg,
 	        "other than the ask tool, to clients and to the upstream: true or false\n"
 	        "for all, a list of the tools it allows, an object with a list allow or a\n"
 	        "list deny, or an object whose members client and upstream each have one\n"
-	        "of those forms (see doc/configuration.md).\n"
+	        "of those forms (see doc/configuration.md).  As an object, it also has\n"
+	        "the objects man, git, notes and jobs of the built-in tools.\n"
 	        "SIGUSR1 prints to stderr, for each event loop, the times of its turns and\n"
 	        "steps, the lateness of its timers and the most work that one step did\n"
 	        "since the previous SIGUSR1.  The lines name the loops: loop1 to loopN\n"
@@ -496,9 +504,12 @@ enum {
 
 static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
 
-/* The objects of the configuration file that contain the options. */
+/* The objects of the configuration file that contain the options, and
+ * TOOLS for the options that an object of a built-in tool in the member
+ * tools contains (tool_members[]). */
 enum config_group : uint8_t {
-	GROUP_NONE, GROUP_UPSTREAM, GROUP_SERVICE, GROUP_TESTING, GROUP_DEBUGGING
+	GROUP_NONE, GROUP_UPSTREAM, GROUP_SERVICE, GROUP_TESTING, GROUP_DEBUGGING,
+	GROUP_TOOLS
 };
 
 static char const *const group_names[] = {
@@ -527,7 +538,7 @@ static char const *const group_names[] = {
 	X(UPSTREAM,  "slots",            required_argument, OPT_SLOTS)            \
 	X(UPSTREAM,  "max-calls",        required_argument, OPT_MAX_CALLS)        \
 	X(UPSTREAM,  "upstream-tools",   no_argument,       OPT_UPSTREAM_TOOLS)   \
-	X(UPSTREAM,  "notes",            required_argument, OPT_NOTES)            \
+	X(TOOLS,     "notes",            required_argument, OPT_NOTES)            \
 	X(UPSTREAM,  "max-turns",        required_argument, OPT_MAX_TURNS)        \
 	X(UPSTREAM,  "context",          required_argument, OPT_CONTEXT)          \
 	X(UPSTREAM,  "tool-name",        required_argument, OPT_TOOL_NAME)        \
@@ -537,10 +548,10 @@ static char const *const group_names[] = {
 	X(SERVICE,   "tls-key",          required_argument, OPT_TLS_KEY)          \
 	X(SERVICE,   "tls-allow-rsa",    no_argument,       OPT_TLS_ALLOW_RSA)    \
 	X(SERVICE,   "allow-origin",     required_argument, 'o')                  \
-	X(SERVICE,   "man",              no_argument,       OPT_MAN)              \
-	X(SERVICE,   "git",              required_argument, OPT_GIT)              \
-	X(SERVICE,   "git-timeout",      required_argument, OPT_GIT_TIMEOUT)      \
-	X(SERVICE,   "client-jobs",      no_argument,       OPT_CLIENT_JOBS)      \
+	X(TOOLS,     "man",              no_argument,       OPT_MAN)              \
+	X(TOOLS,     "git",              required_argument, OPT_GIT)              \
+	X(TOOLS,     "git-timeout",      required_argument, OPT_GIT_TIMEOUT)      \
+	X(TOOLS,     "client-jobs",      no_argument,       OPT_CLIENT_JOBS)      \
 	X(SERVICE,   "loops",            required_argument, OPT_LOOPS)            \
 	X(SERVICE,   "grace",            required_argument, OPT_GRACE)            \
 	X(SERVICE,   "memory-high",      required_argument, OPT_MEMORY_HIGH)      \
@@ -583,6 +594,21 @@ static struct option const options[] = {
 static enum config_group const groups[] = { CONFIG_OPTIONS(CONFIG_GROUP) };
 #undef CONFIG_GROUP
 #undef CONFIG_OPTIONS
+
+/* The member of the configuration file that sets each option of the group
+ * TOOLS: the object of its built-in tool in the member tools, and its name
+ * in that object. */
+static struct {
+	char const *tool;
+	char const *name;
+	int         val;
+} const tool_members[] = {
+	{ "man",   "enabled",      OPT_MAN },
+	{ "git",   "repositories", OPT_GIT },
+	{ "git",   "timeout",      OPT_GIT_TIMEOUT },
+	{ "notes", "directory",    OPT_NOTES },
+	{ "jobs",  "clients",      OPT_CLIENT_JOBS },
+};
 
 /* Bytes of a configuration file, at most. */
 enum { FILE_MAX = 1 << 20 };
@@ -1230,8 +1256,11 @@ static bool
 config_same_options (struct config const *cfg,
                      struct config const *from)
 {
+	/* The options of the group TOOLS are in the member tools, which is
+	 * compared whole. */
 	for (struct option const *o = options; o->name; ++o)
-		if (groups[o - options] && !config_reloadable(o->name) &&
+		if (groups[o - options] && groups[o - options] != GROUP_TOOLS &&
+		    !config_reloadable(o->name) &&
 		    !json_object_equal(config_file_value(cfg, o), config_file_value(from, o)))
 			return false;
 	return json_object_equal(json_object_object_get(cfg->file, "plugins"),
@@ -1257,15 +1286,21 @@ config_values (struct json_object *obj)
 /* Make room for the lists of headers, origins, listeners and repositories,
  * in one block, and point ep.headers, http.origins and http.listen at their
  * lists: each has room for every argument, every value of an option in
- * the configuration file and the three headers askai adds, and ends in
- * nullptr.  Returns 0, or
- * 1 if out of memory, having said so. */
+ * the configuration file, in its four objects of options and in the
+ * objects of the tools in its member tools, and the three headers askai
+ * adds, and ends in nullptr.  Returns 0, or 1 if out of memory, having said
+ * so. */
 static int
 config_lists (struct config *cfg)
 {
 	size_t room = (size_t)cfg->argc + 4;
 	for (size_t g = 1; g < ARRAY_SIZE(group_names); ++g)
 		room += config_values(json_object_object_get(cfg->file, group_names[g]));
+	struct json_object *tools = json_object_object_get(cfg->file, "tools");
+	struct json_object_iter it;
+	if (json_object_is_type(tools, json_type_object))
+		json_object_object_foreachC(tools, it)
+			room += config_values(it.val);
 	char const **block = malloc(4 * room * sizeof *block);
 	if (!block)
 		return config_oom(cfg);
@@ -1291,14 +1326,87 @@ config_named (char const *name)
 	return nullptr;
 }
 
+/* The member of the configuration file's member tools that sets option
+ * @p o of the group TOOLS. */
+static size_t
+config_tool_member (struct option const *o)
+{
+	size_t i = 0;
+	while (i + 1 < ARRAY_SIZE(tool_members) && tool_members[i].val != o->val)
+		++i;
+	return i;
+}
+
 /* Say that the configuration file has option @p o outside the object that
  * contains it; returns 2. */
 static int
 config_misplaced (struct config const *cfg,
                   struct option const *o)
 {
+	if (groups[o - options] == GROUP_TOOLS) {
+		size_t i = config_tool_member(o);
+		return config_complain(cfg, cfg->path, "%s must be tools.%s.%s", o->name,
+		                       tool_members[i].tool, tool_members[i].name);
+	}
 	return config_complain(cfg, cfg->path, "%s must be in %s", o->name,
 	                       group_names[groups[o - options]]);
+}
+
+/* Whether @p name names the object of a built-in tool in the member tools
+ * of the configuration file. */
+static bool
+config_is_tool (char const *name)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(tool_members); ++i)
+		if (!strcmp(name, tool_members[i].tool))
+			return true;
+	return false;
+}
+
+/* Apply the members of @p obj, the object of the built-in tool @p tool in
+ * the configuration file's member tools, as the options that
+ * tool_members[] names. */
+static int
+config_apply_tool (struct config      *cfg,
+                   char const         *tool,
+                   struct json_object *obj)
+{
+	if (!json_object_is_type(obj, json_type_object))
+		return config_complain(cfg, cfg->path, "tools.%s must be an object", tool);
+	struct json_object_iter it;
+	json_object_object_foreachC(obj, it) {
+		size_t i = 0;
+		while (i < ARRAY_SIZE(tool_members) && (strcmp(tool_members[i].tool, tool) ||
+		                                        strcmp(tool_members[i].name, it.key)))
+			++i;
+		if (i == ARRAY_SIZE(tool_members))
+			return config_complain(cfg, cfg->path, "tools.%s: unknown member %s",
+			                       tool, it.key);
+		struct option const *o = options;
+		while (o->val != tool_members[i].val)
+			++o;
+		int status = config_apply_member(cfg, o, it.val);
+		if (status)
+			return status;
+	}
+	return 0;
+}
+
+/* Apply the objects of the built-in tools in the configuration file's
+ * member tools, if it is an object; config_allow() reads the rest of it. */
+static int
+config_apply_tools (struct config *cfg)
+{
+	struct json_object *tools = json_object_object_get(cfg->file, "tools");
+	struct json_object_iter it;
+	if (json_object_is_type(tools, json_type_object))
+		json_object_object_foreachC(tools, it) {
+			int status = config_is_tool(it.key)
+			           ? config_apply_tool(cfg, it.key, it.val) : 0;
+			if (status)
+				return status;
+		}
+	return 0;
 }
 
 /* Apply the members of @p obj, the configuration file's object of group
@@ -1327,8 +1435,8 @@ config_apply_group (struct config      *cfg,
 
 /* Apply the options in the configuration file's objects upstream, service,
  * testing and debugging.  The policy's members, "plugins" and "tools" are
- * not options: policy_create(), config_registry() and config_allow() read
- * them. */
+ * not options: policy_create(), config_registry(), config_apply_tools()
+ * and config_allow() read them. */
 static int
 config_apply_file (struct config *cfg)
 {
@@ -1365,7 +1473,8 @@ config_file (struct config *cfg)
 	status = config_lists(cfg);
 	if (status)
 		return status;
-	return config_apply_file(cfg);
+	status = config_apply_file(cfg);
+	return status ? status : config_apply_tools(cfg);
 }
 
 /* Lower the body limit, unless --max-body gave it, to the budgets for the
@@ -1941,13 +2050,16 @@ config_allow_names (struct config const *cfg,
 
 /* The mask, in @p *mask, of the tools that @p spec allows: all for true,
  * none for false, those of a list, those of the member allow, or all but
- * those of the member deny.  The ask tool is not counted. */
+ * those of the member deny.  The ask tool is not counted.  With @p top,
+ * @p spec is the member tools itself, whose objects of the built-in tools
+ * are skipped (config_apply_tools()). */
 static int
 config_allow_form (struct config const *cfg,
                    char const          *where,
                    char const *const    tools[],
                    size_t               n,
                    struct json_object  *spec,
+                   bool                 top,
                    tool_mask           *mask)
 {
 	if (json_object_is_type(spec, json_type_boolean)) {
@@ -1961,7 +2073,8 @@ config_allow_form (struct config const *cfg,
 		                       "an object", where);
 	struct json_object_iter it;
 	json_object_object_foreachC(spec, it)
-		if (strcmp(it.key, "allow") && strcmp(it.key, "deny"))
+		if (strcmp(it.key, "allow") && strcmp(it.key, "deny") &&
+		    !(top && config_is_tool(it.key)))
 			return config_complain(cfg, cfg->path, "%s: unknown member %s",
 			                       where, it.key);
 	struct json_object *allow;
@@ -1989,9 +2102,10 @@ config_allow_spec (struct config const *cfg,
                    char const *const    tools[],
                    size_t               n,
                    struct json_object  *spec,
+                   bool                 top,
                    tool_mask           *mask)
 {
-	int status = config_allow_form(cfg, where, tools, n, spec, mask);
+	int status = config_allow_form(cfg, where, tools, n, spec, top, mask);
 	size_t background = config_find(tools, n, "background");
 	size_t jobs = config_find(tools, n, "jobs");
 	if (!status && background && *mask >> background & 1 && !(*mask >> jobs & 1))
@@ -2000,14 +2114,15 @@ config_allow_spec (struct config const *cfg,
 }
 
 /* Check that the member tools @p v, an object with the member client or
- * upstream, has no other member. */
+ * upstream, has no other member but the objects of the built-in tools. */
 static int
 config_allow_parts (struct config const *cfg,
                     struct json_object  *v)
 {
 	struct json_object_iter it;
 	json_object_object_foreachC(v, it) {
-		if (!strcmp(it.key, "client") || !strcmp(it.key, "upstream"))
+		if (!strcmp(it.key, "client") || !strcmp(it.key, "upstream") ||
+		    config_is_tool(it.key))
 			continue;
 		if (!strcmp(it.key, "allow") || !strcmp(it.key, "deny"))
 			return config_complain(cfg, cfg->path, "tools: allow and deny go "
@@ -2037,16 +2152,17 @@ config_allow (struct config *cfg)
 	bool lends = json_object_object_get_ex(v, "upstream", &upstream);
 	int status = 0;
 	if (!clients && !lends) {
-		status = config_allow_spec(cfg, "tools", tools, n, v, &cfg->tools_clients);
+		status = config_allow_spec(cfg, "tools", tools, n, v, true,
+		                           &cfg->tools_clients);
 		cfg->tools_upstream = cfg->tools_clients;
 	} else {
 		status = config_allow_parts(cfg, v);
 		if (!status && clients)
 			status = config_allow_spec(cfg, "tools: client", tools, n, client,
-			                           &cfg->tools_clients);
+			                           false, &cfg->tools_clients);
 		if (!status && lends)
 			status = config_allow_spec(cfg, "tools: upstream", tools, n, upstream,
-			                           &cfg->tools_upstream);
+			                           false, &cfg->tools_upstream);
 	}
 	/* mcp_register() adds the ask tool first, with the id 0. */
 	cfg->tools_clients |= 1;

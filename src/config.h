@@ -1,7 +1,8 @@
 /** @file askai's configuration: its command line, and the configuration
  *  file that --config names, whose objects upstream, service, testing and
  *  debugging have the options as members named as the long options are,
- *  the command line overriding the file (design section 9, S7). */
+ *  and whose member tools has the objects of the built-in tools, the
+ *  command line overriding the file (design section 9, S7). */
 #ifndef TWINCEPTION_SRC_CONFIG_H_
 #define TWINCEPTION_SRC_CONFIG_H_
 
