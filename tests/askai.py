@@ -519,10 +519,16 @@ class Askai:
         all_headers.update(headers or {})
         return self.rpc(method, params, rpc_id, all_headers, conn)
 
-    def ask(self, prompt="Q", **arguments):
+    def ask(self, prompt="Q", wait=10, **arguments):
+        """The result of an ask_ai call, which may take @p wait seconds."""
         arguments["prompt"] = prompt
-        status, _, body = self.rpc("tools/call",
-                                   {"name": "ask_ai", "arguments": arguments})
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=wait)
+        try:
+            status, _, body = self.rpc("tools/call",
+                                       {"name": "ask_ai", "arguments": arguments},
+                                       conn=conn)
+        finally:
+            conn.close()
         assert status == 200, (status, body)
         return body["result"]
 
@@ -897,7 +903,9 @@ def check_modern(binary, up):
         assert result["supportedVersions"][0] == MODERN
         assert LEGACY in result["supportedVersions"]
         assert result["capabilities"] == {
-            "tools": {}, "extensions": {"io.modelcontextprotocol/tasks": {}}}
+            "tools": {}, "extensions": {
+                "io.modelcontextprotocol/tasks": {},
+                "io.modelcontextprotocol/files": {"maxInlineBytes": 4 << 20}}}
         assert result["resultType"] == "complete"
         assert result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "askai"
         assert result["cacheScope"] == "public" and result["ttlMs"] > 0
@@ -4055,6 +4063,14 @@ def check_logs(binary, up):
             ai.wait_log(r'^askai: tool call notes from anonymous answered after \d+\.\d s '
                         r'\(\d+ bytes\); arguments \{"action":"add","file":"a\.md",'
                         r'"text":"\(80 bytes\)"\}$')
+            # A data: URI, a file, is shown by its size only, in any argument.
+            status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
+                "action": "add", "file": "b.bin", "content": "data:;base64,SECRETdata"}})
+            assert status == 200 and not body["result"].get("isError"), body
+            ai.wait_log(r'^askai: tool call notes from anonymous answered after \d+\.\d s '
+                        r'\(\d+ bytes\); arguments \{"action":"add","file":"b\.bin",'
+                        r'"content":"\(23 bytes\)"\}$')
+            assert not any("SECRET" in line for line in ai.log), ai.log
             # The arguments are JSON as json-c writes it, and a failure has its
             # text.
             odd = {"action": "read", "file": "a\"b\\c\né", "thread": "x",
@@ -4110,7 +4126,8 @@ def check_logs(binary, up):
             script[:] = [lambda r: (200, turn_stream([("d", "compact", json.dumps(
                 {"summary": "SUMMARYTEXT" * 400_000}))]))]
             ai.log.clear()
-            assert ai.ask("Q")["content"][0]["text"] == "A"
+            # A summary past 4 MiB takes a while under the sanitizers.
+            assert ai.ask("Q", wait=120)["content"][0]["text"] == "A"
             ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call compact failed after '
                         r'\d+\.\d s \(\d+ bytes\); arguments \{"summary":"\(4400000 bytes\)"\}; '
                         r'error ".+"$')
@@ -7072,6 +7089,43 @@ def check_notes(binary, up):
             assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
                                    "notes:img/raw.bin"], capture_output=True, check=True,
                                   env=git_env).stdout == raw
+            # The argument content of an add is a file that the client's program
+            # attaches (the extension io.modelcontextprotocol/files): a data:
+            # URI, base64 or percent-encoded, whose bytes become the note.
+            notes_tool = next(t for t in ai.rpc("tools/list", headers=auth(
+                "alice-1"))[2]["result"]["tools"] if t["name"] == "notes")
+            assert notes_tool["inputSchema"]["properties"]["content"] == {
+                "type": "string", "format": "uri", "description": "For add, instead "
+                "of text: a file that the user gave, which your client attaches as "
+                "it is. Do not write it yourself.",
+                "x-mcp-file": {"maxSize": 4 << 20}}, notes_tool
+            blob = bytes(range(256)) * 64 + b"\0end"
+            for name, uri in (("in/blob.bin", "data:application/octet-stream;base64,"
+                               + base64.b64encode(blob).decode()),
+                              ("in/text.md", "data:text/markdown,a%20b%0A")):
+                assert call({"action": "add", "file": name, "thread": shared,
+                             "content": uri}) == "Noted.", name
+            mine = f"{notes}/{who}/client/{shared}"
+            for name, want in (("in/blob.bin", blob), ("in/text.md", b"a b\n")):
+                assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
+                                       f"notes:{name}"], capture_output=True,
+                                      check=True, env=git_env).stdout == want, name
+            assert call({"action": "list", "thread": shared}).count("(binary)") >= 2
+            big = base64.b64encode(b"x" * ((4 << 20) + 1)).decode()
+            for arguments, why in (
+                    ({"content": "https://example.com/a.png"},
+                     "!The content argument must be a data: URI"),
+                    ({"content": "mcp-file:pending"},
+                     "!The content argument must be a data: URI"),
+                    ({"content": "data:;base64,SGV=bG8"},
+                     "!The content argument must be a data: URI"),
+                    ({"content": "data:,x", "text": "x"},
+                     "!Give the text or the content of a note, not both."),
+                    ({"content": "data:;base64," + big},
+                     "!The file has more than 4 MiB")):
+                said = call({"action": "add", "file": "in/z.bin", "thread": shared}
+                            | arguments)
+                assert said.startswith(why), (arguments, said[:200])
             # A client cannot use a thread of another identity, nor read its
             # other notebook.
             for arguments in ({"action": "list"}, {"action": "read", "file": "plan.md"},
@@ -7711,7 +7765,8 @@ def check_turns(binary, up):
                     ("f", "git", '{"repo":')])),
             ]
             count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
+            # A note past 4 MiB takes a while under the sanitizers.
+            assert ai.ask("Q", wait=120)["content"][0]["text"] == "A"
             calls, *results = turns(up.requests[count + 1])
             outputs = [m["content"] for m in results]
             with open(f"{repo}/big.txt") as f:
@@ -7789,7 +7844,9 @@ def check_turns(binary, up):
                 ("p", "notes", json.dumps({"action": "add", "file": "seen.md",
                                            "text": "seen"})),
                 ("q", "notes", json.dumps({"action": "copy", "file": "brief.md"})),
-                ("r", "notes", json.dumps({"action": "read", "file": "brief.md"}))]))]
+                ("r", "notes", json.dumps({"action": "read", "file": "brief.md"})),
+                ("s", "notes", json.dumps({"action": "add", "file": "c.bin",
+                                           "content": "data:,x"}))]))]
             count = len(up.requests)
             result = ai.ask("Go on", thread=mine)
             assert prompt(up.requests[count]) == "Go on\n\n[askai: you have no notes " \
@@ -7800,7 +7857,9 @@ def check_turns(binary, up):
                                 "brief\\.md  \\(1 line\\)\n", outputs[0]), outputs
             assert outputs[1:] == ["aim", "You can add notes only to your own notebook. "
                                    "The other notebook can only be read.", "Noted.",
-                                   "Copied into your notebook.", "aim"], outputs
+                                   "Copied into your notebook.", "aim",
+                                   "Only a client hands askai a file as content."], \
+                outputs
             assert f"in the thread {mine}:" in result["content"][1]["text"], result
             assert "seen.md" in client_notes({"action": "list", "thread": mine,
                                               "notebook": "other"})

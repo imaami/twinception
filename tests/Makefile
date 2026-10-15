@@ -3,13 +3,13 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-askai check-buf check-completion check-dstr \
-        check-handle check-instance check-ledger check-load check-turn \
-        check-twinception load load-build
+.PHONY: default check check-askai check-buf check-completion check-datauri \
+        check-dstr check-handle check-instance check-ledger check-load \
+        check-turn check-twinception load load-build
 default:; @:
 check: | check-completion check-twinception check-askai check-buf \
-         check-handle check-turn check-instance check-ledger check-dstr \
-         check-load
+         check-datauri check-handle check-turn check-instance check-ledger \
+         check-dstr check-load
 
 # Nothing below this comment is defined when tab-completing.
 
@@ -63,6 +63,11 @@ check-askai: | askai test_plugin.so godbolt.so
 check-buf: $Otests/buf
 	$<
 
+# Unit tests of the data: URIs of files that clients hand askai,
+# src/datauri.c.
+check-datauri: $Otests/datauri
+	$<
+
 # Unit tests of the event loop's handles, which include src/loop.c to reach
 # its slot table.
 check-handle: $Otests/handle
@@ -87,9 +92,10 @@ check-ledger: $Otests/ledger
 
 # The unit tests.  Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.
-override UNIT := buf handle instance ledger turn
+override UNIT := buf datauri handle instance ledger turn
 
 $Otests/buf: $Otests/src/buf.c.o
+$Otests/datauri: $Otests/src/datauri.c.o
 $Otests/handle $Otests/instance $Otests/ledger $Otests/turn: $Otests/src/log.c.o
 
 $(UNIT:%=$Otests/%): $Otests/%: $Otests/%.c.o
@@ -140,7 +146,8 @@ check-load: | load-build askai
 load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
--include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/log.c.d \
+-include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/datauri.c.d \
+         $Otests/src/log.c.d \
          $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif

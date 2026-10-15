@@ -179,6 +179,19 @@ notes_checked (struct span out,
                char        tip[NOTES_TIP + 1]);
 
 /**
+ * Writes to @p in the head of the file part of the input of the command
+ * NOTES_ADD, for a note of the @p name_len bytes at @p name whose text has
+ * @p len bytes, and reserves room for the text: the caller appends the
+ * text and then a line feed, as notes_add_file() does.  Returns 0, EINVAL
+ * for a null argument or a name longer than NOTES_NAME, or ENOMEM.
+ */
+extern int
+notes_add_head (struct buf *in,
+                char const *name,
+                size_t      name_len,
+                size_t      len);
+
+/**
  * Writes to @p in the file part of the input of the command NOTES_ADD.  The
  * valid name of the note is the @p name_len bytes at @p name, and its text
  * is the @p len bytes at @p text.  notes_add_input() puts the commit before

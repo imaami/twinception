@@ -586,8 +586,12 @@ can continue an earlier thread of notes with its argument `thread`.  A
 thread has a notebook of the client and one of the upstream model under one
 id.  Each side adds notes only to its own notebook, reads the other's with
 `"notebook": "other"`, and copies a note of the other's into its own, byte
-for byte, with the action `copy`.  The directory and the directories above
-it must pass the rules of section [Permissions](#permissions).
+for byte, with the action `copy`.  A client adds a file that its program
+attaches, of at most 4 MiB, with the argument `content`, by the MCP
+extension `io.modelcontextprotocol/files` (section [Lending tools to the
+upstream](../README.md#lending-tools-to-the-upstream) of `README.md`).  The
+directory and the directories above it must pass the rules of section
+[Permissions](#permissions).
 
 #### `max-turns`
 

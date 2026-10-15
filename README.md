@@ -607,6 +607,26 @@ notes only to its own notebook, and reads both:
 
 A client cannot open the threads of other identities.
 
+A client keeps a file that the user gave it, such as an attachment, with an
+`add` that has `content` instead of `text`.  The client's program, not its
+model, fills `content` in with the file, by the extension
+`io.modelcontextprotocol/files` of MCP, an experimental draft:
+
+- `askai` marks the argument `content` of the client's `notes` with
+  `x-mcp-file`, and advertises the extension in `server/discover` with
+  `maxInlineBytes` 4 MiB.
+- The value is an RFC 2397 `data:` URI, base64 or percent-encoded, and its
+  bytes, decoded, become the note, byte for byte.  A note of a file is at
+  most 4 MiB, and the request at most `--max-body` bytes.
+- `askai` refuses any other value and never fetches one: an `http` URL, or
+  `mcp-file:pending`, the start of an upload out of band, which `askai`
+  does not take yet.
+- The log shows every `data:` value of an argument only by its size.
+
+A client whose program does not know the extension shows its model the
+argument, and the model could write a `data:` URI itself; the description
+of the argument tells it not to.
+
 ### Background jobs and timers for clients
 
 With `--client-jobs`, `askai` offers clients four more tools: `background`,

@@ -80,6 +80,7 @@
 #include "buf.h"
 #include "child.h"
 #include "config.h"
+#include "datauri.h"
 #include "dstr.h"
 #include "git.h"
 #include "instance.h"
@@ -202,6 +203,13 @@ static char const meta_version[] = "io.modelcontextprotocol/protocolVersion";
 static char const meta_caps[] = "io.modelcontextprotocol/clientCapabilities";
 static char const meta_server[] = "io.modelcontextprotocol/serverInfo";
 static char const meta_tasks[] = "io.modelcontextprotocol/tasks";
+/* The extension by which a client hands askai a file that a model does not
+ * write: a data: URI in an argument that x-mcp-file marks. */
+static char const meta_files[] = "io.modelcontextprotocol/files";
+
+/* The bytes of the files that one request may hand askai inline, at most,
+ * once decoded (maxInlineBytes of the extension). */
+enum { FILES_INLINE = 4 << 20 };
 
 /** The header field of a JSON response. */
 #define JSON_FIELD "Content-Type: application/json\r\n"
@@ -1115,8 +1123,11 @@ mcp_shown_value (struct mcp_shown   *w,
 			first = false;
 			mcp_shown_put(w, it.key, strlen(it.key), true);
 			mcp_shown_put(w, "\":", 2, false);
-			bool by_size = sized && !strcmp(it.key, sized) &&
-			               json_object_is_type(it.val, json_type_string);
+			/* A data: URI is a file, which the log shows by its size too. */
+			bool string = json_object_is_type(it.val, json_type_string);
+			bool by_size = string && ((sized && !strcmp(it.key, sized)) ||
+			                          !strncasecmp(json_object_get_string(it.val),
+			                                       "data:", sizeof "data:" - 1));
 			if (!by_size) {
 				mcp_shown_value(w, it.val, nullptr);
 				continue;
@@ -5963,6 +5974,26 @@ static char const bad_name[] = "The file argument must be a file name of 1 to 25
                                "and no part can be ., .., .git or git~1, in any "
                                "case and also with spaces or dots after it.";
 
+/* Writes to @p in the file part of a note of the @p name_len bytes at
+ * @p name whose text is the data of @p d, decoded. */
+static int
+mcp_notes_add_data (struct buf           *in,
+                    char const           *name,
+                    size_t                name_len,
+                    struct datauri const *d)
+{
+	int e = notes_add_head(in, name, name_len, d->size);
+	struct span s;
+	if (!e)
+		e = buf_reserve(in, d->size + 1, SIZE_MAX, &s);
+	if (e)
+		return e;
+	datauri_decode(d, s.ptr);
+	s.ptr[d->size] = '\n';
+	buf_commit(in, d->size + 1);
+	return 0;
+}
+
 /* Starts the add action: a note with the file name and the text in
  * @p args.  If the caller's notebook of the thread has notes, git first
  * checks the name.  Else git first makes the repository of the notebook,
@@ -5973,15 +6004,29 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
                     bool                fresh)
 {
 	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
+	static_assert(FILES_INLINE == 4 << 20, "the problem says");
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
 	size_t name_len = 0;
 	size_t skip = 0;
+	size_t uri_len = 0;
+	struct json_object *content = jb_get(args, "content");
 	char const *text = jb_str(jb_get(args, "text"), &len);
 	char const *name = jb_str(jb_get(args, "file"), &name_len);
+	char const *uri = jb_str(content, &uri_len);
+	struct datauri data = {};
 	struct mcp_piece problem =
 		!name || notes_name(name, name_len, &skip) ? TEXT(bad_name)
-		: !text || !len || len > NOTES_TEXT || memchr(text, '\0', len)
+		: content && slot->role != ROLE_OWN
+		? TEXT("Only a client hands askai a file as content.")
+		: content && text ? TEXT("Give the text or the content of a note, not both.")
+		: content && (!uri || datauri_parse(uri, uri_len, &data))
+		? TEXT("The content argument must be a data: URI, which the client fills "
+		       "in with a file that the user gave it.")
+		: content && data.size > FILES_INLINE
+		? TEXT("The file has more than 4 MiB, which this server takes at most in "
+		       "one request.")
+		: !content && (!text || !len || len > NOTES_TEXT || memchr(text, '\0', len))
 		? TEXT("The text argument must be a string of 1 byte to 4 MiB, and no NUL.")
 		: (struct mcp_piece){};
 	if (problem.ptr) {
@@ -5995,7 +6040,10 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	 * can have left a file part there, so the body is cleared first. */
 	buf_fini(&req->body);
 	struct buf in = {};
-	int e = notes_add_file(&req->body, name, name_len, text, len);
+	int e = content ? mcp_notes_add_data(&req->body, name, name_len, &data)
+	                : notes_add_file(&req->body, name, name_len, text, len);
+	if (content)
+		loop_work(req->mcp->loop, LOOP_COPY, data.size);
 	if (!e && req->branch)
 		e = notes_check_input(&in, name, name_len);
 	else if (!e && fresh && !(e = notes_id(req->thread)))
@@ -7438,8 +7486,9 @@ mcp_notes_schema (enum notes_side side)
 			"thread keeps the other AI's notes in it, and its answer names "
 			"the thread. list and read show the other AI's notes with "
 			"notebook other, and copy puts one of them into your notebook "
-			"byte for byte, without its text passing through you. You add "
-			"notes only to your own notebook.",
+			"byte for byte, without its text passing through you. An add with "
+			"content instead of text keeps a file that the user gave, which "
+			"your client attaches. You add notes only to your own notebook.",
 	};
 	struct json_object *actions = jb_list(json_object_new_string("add"));
 	if (jb_push(actions, json_object_new_string("list")) ||
@@ -7501,6 +7550,20 @@ mcp_notes_schema (enum notes_side side)
 				  "writes only to your own."),
 			nullptr),
 		nullptr);
+	/* The client's program, not its model, fills content in with a file
+	 * (the extension io.modelcontextprotocol/files). */
+	if (side == NOTES_CLIENT && jb_set(props, "content", jb_object(
+		    "type", json_object_new_string("string"),
+		    "format", json_object_new_string("uri"),
+		    "description", json_object_new_string(
+			    "For add, instead of text: a file that the user gave, which "
+			    "your client attaches as it is. Do not write it yourself."),
+		    "x-mcp-file", jb_object("maxSize", json_object_new_int64(FILES_INLINE),
+		                            nullptr),
+		    nullptr))) {
+		json_object_put(props);
+		props = nullptr;
+	}
 	if (side == NOTES_CLIENT && jb_set(props, "thread", jb_object(
 		    "type", json_object_new_string("string"),
 		    "description", json_object_new_string(
@@ -7904,7 +7967,12 @@ mcp_static_tails (struct mcp_static  *st,
 		"supportedVersions", json_object_get(list),
 		"capabilities", jb_object(
 			"tools", jb_object(nullptr),
-			"extensions", jb_object(meta_tasks, jb_object(nullptr), nullptr),
+			"extensions", jb_object(
+				meta_tasks, jb_object(nullptr),
+				meta_files, jb_object("maxInlineBytes",
+				                      json_object_new_int64(FILES_INLINE),
+				                      nullptr),
+				nullptr),
 			nullptr),
 		nullptr);
 	e = mcp_serialize(&st->discover, mcp_modern_list(discover, info));
