@@ -2307,6 +2307,21 @@ mcp_req_key (struct mcp_req const *req,
 	return 0;
 }
 
+/* The owner of the records in the ledger that @p req opens and reads: the
+ * principal of its client.  The principal of an anonymous client is 0, and
+ * its owner is then a hash of its address, never 0.  For an upstream job of
+ * an anonymous client without a session field, mcp_req_submit() uses the
+ * same hash as the job's principal. */
+static uint64_t
+mcp_req_owner (struct mcp_req const *req)
+{
+	struct stream const *s = req->s;
+	if (s->principal)
+		return s->principal;
+	uint64_t h = util_hash(~req->mcp->st->seed, s->peer, sizeof s->peer);
+	return h + !h;
+}
+
 /* Write the call's key into @p job, and name the request by a handle for
  * the job's completion. */
 static int
@@ -2589,8 +2604,9 @@ mcp_req_task_open (struct mcp_req *req)
 	struct handle who;
 	int e = loop_handle(mcp->loop, req, HANDLE_REQ, &who);
 	if (!e) {
-		struct ledger_task *task = ledger_open(mcp->st->ledger, req->s->principal,
-		                                       mcp->loop, who, mcp_on_task_cancel, &e);
+		struct ledger_task *task = ledger_open(mcp->st->ledger, mcp_req_owner(req),
+		                                       LEDGER_TASK, req->self.tool, mcp->loop,
+		                                       who, mcp_on_task_cancel, &e);
 		if (task)
 			return task;
 		loop_forget(mcp->loop, who);
@@ -5658,6 +5674,9 @@ mcp_req_task_show (struct mcp_req     *req,
 	enum ledger_status status = atomic_load_explicit(&task->status, memory_order_acquire);
 	bool ended = status != LEDGER_WORKING;
 	bool whole = ended && task->result;
+	/* A tasks/get of a record whose call has ended marks the record read. */
+	if (ended)
+		atomic_store_explicit(&task->told, 1, memory_order_relaxed);
 	char created[ISO_TIME];
 	char updated[ISO_TIME];
 	char ttl[24];
@@ -5701,7 +5720,7 @@ mcp_req_task_show (struct mcp_req     *req,
 }
 
 /* tasks/get, tasks/update or tasks/cancel, of the task that @p params'
- * taskId names, which only its own principal finds; for a client that
+ * taskId names, which only its owner can look up; for a client that
  * takes tasks, as @p tasks says its request declares.  askai asks for no
  * input, so tasks/update has none to take. */
 static void
@@ -5723,7 +5742,7 @@ mcp_req_tasks (struct mcp_req     *req,
 	}
 	size_t len = 0;
 	char const *id = jb_str(jb_get(params, "taskId"), &len);
-	struct ledger_task *task = id ? ledger_find(st->ledger, req->s->principal, id, len)
+	struct ledger_task *task = id ? ledger_find(st->ledger, mcp_req_owner(req), id, len)
 	                              : nullptr;
 	if (!task) {
 		mcp_req_error(req, 200, INVALID_PARAMS,

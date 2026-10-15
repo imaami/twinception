@@ -267,11 +267,15 @@ declare the extension `io.modelcontextprotocol/tasks`, gets a task of a tool
 call that has not answered within a second: the call answers with the task's
 id and goes on without the client, which polls `tasks/get` for where it
 stands and, once it has ended, its result or error, or ends it with
-`tasks/cancel`.  Only the identity that made a task finds it; anonymous
-clients share one, so among them a task's id, 128 random bits, is the key.
-A task is kept ten minutes after its call ends, or less once 1024 tasks or
-64 MiB of results are kept.  `server/discover` lists the extension; askai
-asks for no input, so `tasks/update` has none to take.
+`tasks/cancel`.  A task's id is 128 random bits.  Each task has an owner:
+the identity of the client that started it, or the Unix user of a client of
+a Unix socket that has no identity.  The owner of an anonymous client's task
+over TCP is the client's address (IPv4, or the /64 of IPv6).  Only the owner
+of a task can read it with `tasks/get` or cancel it with `tasks/cancel`.
+askai removes a task an hour after its call ends.  It removes ended tasks
+sooner, the oldest first, when it has 1024 tasks or 64 MiB of results, and
+when the owner of 64 tasks starts another one.  `server/discover` lists the
+extension; askai asks for no input, so `tasks/update` has none to take.
 
 ### Upstream providers and APIs
 

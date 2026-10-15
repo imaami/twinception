@@ -487,7 +487,7 @@ class Askai:
             msg["params"] = params
         return self.post(msg, headers, conn)
 
-    def modern(self, method, params=None, rpc_id=1, headers=None, meta=None):
+    def modern(self, method, params=None, rpc_id=1, headers=None, meta=None, conn=None):
         params = dict(params or {})
         params["_meta"] = meta if meta is not None else {
             "io.modelcontextprotocol/protocolVersion": MODERN,
@@ -497,7 +497,7 @@ class Askai:
         if "name" in params or "taskId" in params:
             all_headers["Mcp-Name"] = params.get("name", params.get("taskId"))
         all_headers.update(headers or {})
-        return self.rpc(method, params, rpc_id, all_headers)
+        return self.rpc(method, params, rpc_id, all_headers, conn)
 
     def ask(self, prompt="Q", **arguments):
         arguments["prompt"] = prompt
@@ -903,9 +903,10 @@ def check_modern(binary, up):
 def check_mcp_tasks(binary, up):
     """MCP's tasks extension (2026-07-28): a tool call of a client that takes
     tasks becomes one once it has run a second, and its client polls it
-    with tasks/get until the result is in, which only its own identity
-    finds, or ends it with tasks/cancel.  A call that answers sooner, and
-    one of a client that does not take tasks, answer as ever."""
+    with tasks/get until the result is in, or ends it with tasks/cancel.
+    Only the owner of a task can read it: the client's identity, or the
+    address of an anonymous client.  A call that answers sooner, and one of
+    a client that does not take tasks, answer as ever."""
     def digest(token):
         return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
 
@@ -918,7 +919,8 @@ def check_mcp_tasks(binary, up):
             json.dump({"url": up.url(),
                        "roles": {"asker": {"tools": ["ask_ai"], "metrics": True}},
                        "identities": {"alice": {"role": "asker", "tokens": [digest("a-1")]},
-                                      "bob": {"role": "asker", "tokens": [digest("b-1")]}}},
+                                      "bob": {"role": "asker", "tokens": [digest("b-1")]}},
+                       "anonymous": {"loopback": "asker"}},
                       f)
         os.chmod(path, 0o600)
         try:
@@ -972,7 +974,7 @@ def check_mcp_tasks(binary, up):
                 done = poll(tid)
                 assert done["status"] == "completed" and text_of(done["result"]) == "A" \
                     and done["result"]["resultType"] == "complete", done
-                assert done["ttlMs"] >= 600_000 and done["createdAt"] == task["createdAt"] \
+                assert done["ttlMs"] >= 3_600_000 and done["createdAt"] == task["createdAt"] \
                     and done["createdAt"] < done["lastUpdatedAt"], done
 
                 # Another identity's, an unknown id, a client that does not take
@@ -1019,10 +1021,44 @@ def check_mcp_tasks(binary, up):
                     values["askai_mcp_tasks_kept"] == 2 and \
                     values["askai_mcp_task_result_bytes"] > 0, values
                 assert total(values, "askai_request_seconds_count", method="tasks/get") >= 4
+
+                # The task of an anonymous client belongs to the client's
+                # address.  A client at another address cannot read it, and an
+                # identity at the same address cannot either.  The anonymous
+                # client cannot read alice's task.  A new connection from the
+                # same address reads the task until its result is in.
+                def from_address(source, method, task_id, headers=None):
+                    conn = http.client.HTTPConnection(ai.host, ai.port, timeout=10,
+                                                      source_address=(source, 0))
+                    try:
+                        params = {"taskId": task_id} if task_id else {
+                            "name": "ask_ai", "arguments": {"prompt": "Q"}}
+                        return ai.modern(method, params, meta=TAKES_TASKS, headers=headers,
+                                         conn=conn)
+                    finally:
+                        conn.close()
+
+                up.reply = lambda r: (200, ANSWERS["openai"], 1.5)
+                status, _, body = from_address("127.0.0.1", "tools/call", None)
+                assert status == 200 and body["result"]["resultType"] == "task", body
+                anon = body["result"]["taskId"]
+                for source, headers, task_id in (("127.0.0.2", None, anon),
+                                                 ("127.0.0.1", alice, anon),
+                                                 ("127.0.0.1", None, tid)):
+                    status, _, body = from_address(source, "tasks/get", task_id, headers)
+                    assert status == 200 and "result" not in body and \
+                        body["error"]["code"] == -32602, (source, body)
+                for _ in range(100):
+                    status, _, body = from_address("127.0.0.1", "tasks/get", anon)
+                    if body["result"]["status"] != "working":
+                        break
+                    time.sleep(0.1)
+                assert status == 200 and body["result"]["status"] == "completed" and \
+                    text_of(body["result"]["result"]) == "A", body
         finally:
             up.reply = hold
     print("MCP tasks: calls that run a second become tasks, polled, bound to their "
-          "identity, cancelled: PASS")
+          "identity or address, cancelled: PASS")
 
 
 def check_http(binary, up):

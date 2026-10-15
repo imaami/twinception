@@ -235,17 +235,19 @@ static struct metrics_entry const table[] = {
 	TASKS_ALL("askai_tasks_ended_total", nullptr, "end=\"abandoned\"", abandoned),
 	LEDGERS("askai_mcp_tasks_opened_total", "Tool calls that became tasks of MCP's "
 	        "tasks extension.", "", opened, COUNTER),
-	LEDGERS("askai_mcp_tasks_ended_total", "Those whose calls ended, by how.",
-	        "status=\"completed\"", ended[LEDGER_COMPLETED], COUNTER),
+	LEDGERS("askai_mcp_tasks_ended_total", "Tasks and jobs whose calls ended, by "
+	        "status.", "status=\"completed\"", ended[LEDGER_COMPLETED], COUNTER),
 	LEDGERS("askai_mcp_tasks_ended_total", nullptr, "status=\"failed\"",
 	        ended[LEDGER_FAILED], COUNTER),
 	LEDGERS("askai_mcp_tasks_ended_total", nullptr, "status=\"cancelled\"",
 	        ended[LEDGER_CANCELLED], COUNTER),
-	LEDGERS("askai_mcp_tasks_gone_total", "Task records let go of, their time up "
-	        "or for room.", "", gone, COUNTER),
-	LEDGERS("askai_mcp_tasks_full_total", "Tool calls kept from becoming tasks, "
-	        "the ledger full of tasks at work.", "", full, COUNTER),
-	LEDGERS("askai_mcp_tasks_kept", "Task records kept.", "", kept, GAUGE),
+	LEDGERS("askai_mcp_tasks_gone_total", "Records of tasks and jobs removed, an "
+	        "hour after their calls ended or to make room.", "", gone, COUNTER),
+	LEDGERS("askai_mcp_tasks_full_total", "Tool calls that did not become tasks or "
+	        "jobs, because the calls of all records in the ledger ran.", "", full,
+	        COUNTER),
+	LEDGERS("askai_mcp_tasks_kept", "Records of tasks and jobs in the ledger.", "",
+	        kept, GAUGE),
 	LEDGERS("askai_mcp_task_result_bytes", "Their results.", "", bytes, GAUGE),
 	VALUE("askai_upstream_wait_seconds", "Time from an upstream request to its "
 	      "start in libcurl, its host's lookup included.", "", struct http_metrics,
