@@ -22,9 +22,10 @@ static char const *const limits[] = {
 	[AI_INTERACTIONS] = "incomplete",
 };
 
-/* The type of the step whose item is open in the replay, in Gemini's
- * Interactions, or the end of the answer, after which no event changes the
- * replay (struct ai_reader's kind). */
+/* The type of the open step, in Gemini's Interactions, or the end of the
+ * answer, after which no event changes the replay (struct ai_reader's
+ * kind).  An open thought is not in the replay until it has a summary item
+ * or a signature. */
 enum { INTERACTIONS_THOUGHT, INTERACTIONS_OUTPUT, INTERACTIONS_ENDED };
 
 /* The state of the summary array of the open thought (struct ai_reader's
@@ -665,14 +666,16 @@ ai_responses_event (struct ai_sink const *sink,
 #define REPLAY(s) ai_replay(sink, s, sizeof s - 1)
 
 /* Hand the start of tool call @p at, @p item, to @p sink: its id and name,
- * and its arguments, @p item's member @p key, if they are a JSON object that
- * is not empty.  A server that sends the arguments whole sends them in the
- * start. */
+ * its arguments, @p item's member @p key, if they are a JSON object that
+ * is not empty, and the JSON text of @p extra as its extra, unless
+ * @p extra is nullptr.  A server that sends the arguments whole sends them
+ * in the start. */
 static int
 ai_call_start (struct ai_sink const *sink,
                uint32_t              at,
                struct json_object   *item,
-               char const           *key)
+               char const           *key,
+               struct json_object   *extra)
 {
 	if (!sink->call)
 		return 0;
@@ -682,10 +685,15 @@ ai_call_start (struct ai_sink const *sink,
 	struct ai_call call = { .index = at };
 	call.id = ai_text_of(jb_get(item, "id"), &call.id_len);
 	call.name = ai_text_of(jb_get(item, "name"), &call.name_len);
+	call.extra = extra ? json_object_to_json_string_length(extra, JB_WIRE,
+	                                                       &call.extra_len)
+	                   : nullptr;
 	call.args = whole ? json_object_to_json_string_length(args, JB_WIRE,
 	                                                      &call.args_len)
 	                  : nullptr;
-	return whole && !call.args ? ENOMEM : sink->call(sink->user, &call);
+	if ((whole && !call.args) || (extra && !call.extra))
+		return ENOMEM;
+	return sink->call(sink->user, &call);
 }
 
 /* Hand what Anthropic's content block @p block, @p at in the content,
@@ -706,7 +714,7 @@ ai_messages_start (struct ai_sink const *sink,
 	};
 	switch (ai_kind(jb_get(block, "type"), kinds, KINDS)) {
 	case TOOL:
-		return ai_call_start(sink, at, block, "input");
+		return ai_call_start(sink, at, block, "input", nullptr);
 	case THINKING:
 		reader->open = at + 1;
 		return REPLAY(",{\"type\":\"thinking\",\"thinking\":\"");
@@ -909,9 +917,27 @@ ai_generate_part (struct ai_sink const *sink,
 	return e ? e : ai_replay_text(sink, text);
 }
 
+/* Whether the open thought of @p reader is in the replay: once it has a
+ * summary item or a signature.  The API refuses a thought with neither. */
+static bool
+ai_interactions_written (struct ai_reader const *reader)
+{
+	return reader->summary != SUMMARY_NONE || reader->sign;
+}
+
+/* Write the start of the open thought of @p reader into @p sink's replay,
+ * unless it is there already. */
+static int
+ai_interactions_head (struct ai_sink const   *sink,
+                      struct ai_reader const *reader)
+{
+	return ai_interactions_written(reader) ? 0 : REPLAY(",{\"type\":\"thought\"");
+}
+
 /* Close the open item in @p sink's replay, if there is one (@p reader).
- * For a thought, close its summary array if it is open, then the thought.
- * For a model output, close its text and the step. */
+ * For a thought, close its summary array if it is open, then the thought,
+ * if it is in the replay.  For a model output, close its text and the
+ * step. */
 static int
 ai_interactions_close (struct ai_sink const *sink,
                        struct ai_reader     *reader)
@@ -921,6 +947,8 @@ ai_interactions_close (struct ai_sink const *sink,
 	reader->open = 0;
 	if (reader->kind == INTERACTIONS_OUTPUT)
 		return REPLAY("\"}]}");
+	if (!ai_interactions_written(reader))
+		return 0;
 	return reader->summary == SUMMARY_OPEN ? REPLAY("]}") : REPLAY("}");
 }
 
@@ -951,8 +979,9 @@ ai_interactions_text (struct ai_sink const *sink,
 }
 
 /* Write @p item, a summary item of the open thought, whole to @p sink's
- * replay: after the earlier items, or in a new summary array.  Skip an item
- * that is not a JSON object, and an item that comes after the array is
+ * replay: after the earlier items, or in a new summary array, after the
+ * start of the thought if it is not in the replay yet.  Skip an item that
+ * is not a JSON object, and an item that comes after the array is
  * closed. */
 static int
 ai_interactions_summary (struct ai_sink const *sink,
@@ -963,15 +992,16 @@ ai_interactions_summary (struct ai_sink const *sink,
 		return 0;
 	if (reader->summary == SUMMARY_OPEN)
 		return ai_replay_item(sink, item);
+	int e = ai_interactions_head(sink, reader);
 	reader->summary = SUMMARY_OPEN;
 	static char const head[] = ",\"summary\":[";
-	return ai_replay_after(sink, head, sizeof head - 1, item);
+	return e ? e : ai_replay_after(sink, head, sizeof head - 1, item);
 }
 
-/* Write @p signature into the open thought in @p sink's replay.  Close the
- * summary array first if it is open.  Skip a signature that is not a
- * string, that is empty, or that comes after the thought already has a
- * signature. */
+/* Write @p signature into the open thought in @p sink's replay, after the
+ * start of the thought if it is not in the replay yet.  Close the summary
+ * array first if it is open.  Skip a signature that is not a string, that
+ * is empty, or that comes after the thought already has a signature. */
 static int
 ai_interactions_sign (struct ai_sink const *sink,
                       struct ai_reader     *reader,
@@ -979,9 +1009,9 @@ ai_interactions_sign (struct ai_sink const *sink,
 {
 	if (reader->sign || !ai_some_text(signature))
 		return 0;
+	int e = ai_interactions_head(sink, reader);
 	reader->sign = 1;
-	int e = 0;
-	if (reader->summary == SUMMARY_OPEN) {
+	if (!e && reader->summary == SUMMARY_OPEN) {
 		reader->summary = SUMMARY_CLOSED;
 		e = REPLAY("]");
 	}
@@ -990,10 +1020,11 @@ ai_interactions_sign (struct ai_sink const *sink,
 	return e ? e : REPLAY("\"");
 }
 
-/* Start the item of @p step, thought step @p at of Gemini's Interactions,
- * in @p sink's replay, and mark it open in @p reader.  Write its type, then
- * the signature and the summary items that the start event contains.  Set
- * out->thought if a summary item has text. */
+/* Mark @p step, thought step @p at of Gemini's Interactions, open in
+ * @p reader, and write the signature and the summary items that its start
+ * contains into @p sink's replay.  The thought enters the replay with its
+ * first summary item or its signature.  Set out->thought if a summary item
+ * has text. */
 static int
 ai_interactions_thought (struct ai_sink const *sink,
                          struct ai_reader     *reader,
@@ -1005,8 +1036,7 @@ ai_interactions_thought (struct ai_sink const *sink,
 	reader->kind = INTERACTIONS_THOUGHT;
 	reader->summary = SUMMARY_NONE;
 	reader->sign = 0;
-	int e = REPLAY(",{\"type\":\"thought\"");
-	e = e ? e : ai_interactions_sign(sink, reader, jb_get(step, "signature"));
+	int e = ai_interactions_sign(sink, reader, jb_get(step, "signature"));
 	struct json_object *summary = jb_get(step, "summary");
 	struct json_object *item;
 	for (size_t i = 0; !e && (item = jb_at(summary, i)); ++i) {
@@ -1020,9 +1050,9 @@ ai_interactions_thought (struct ai_sink const *sink,
  * Ignore a step of a type other than thought, model_output and
  * function_call, such as the step of a server tool; the open item stays
  * open.  For those three types, close the open item in the replay first.
- * Then start the item of a thought (ai_interactions_thought()), pass the
- * text of a model output (ai_interactions_text()), or mark the function
- * call as the last that started in @p reader and pass it to @p sink. */
+ * Then open a thought (ai_interactions_thought()), pass the text of a model
+ * output (ai_interactions_text()), or mark the function call as the last
+ * that started in @p reader and pass it to @p sink. */
 static int
 ai_interactions_start (struct ai_sink const *sink,
                        struct ai_reader     *reader,
@@ -1054,9 +1084,13 @@ ai_interactions_start (struct ai_sink const *sink,
 				                         jb_get(item, "text"));
 		return e;
 	}
-	case CALL:
+	case CALL: {
+		/* The signature that the first call of a turn carries. */
+		struct json_object *signature = jb_get(step, "signature");
 		reader->calls = at + 1;
-		return ai_call_start(sink, at, step, "arguments");
+		return ai_call_start(sink, at, step, "arguments",
+		                     ai_some_text(signature) ? signature : nullptr);
+	}
 	}
 	return 0;
 }
@@ -1315,8 +1349,9 @@ ai_format (enum ai_api api)
 			.conversation = "contents",
 			.flags        = AI_RESULT_NAMED,
 		},
-		/* A turn is the replay's steps and the calls, in the input list.
-		 * Each result is a step after them. */
+		/* A turn is the replay's steps and the calls, in the input list,
+		 * a call with its signature.  Each result is a step after them,
+		 * which the API refuses without the call's name. */
 		[AI_INTERACTIONS] = {
 			.tools        = B("["),
 			.tools_end    = B("]"),
@@ -1324,8 +1359,10 @@ ai_format (enum ai_api api)
 			.call_next    = B(",{\"type\":\"function_call\",\"id\":\""),
 			.name         = B("\",\"name\":\""),
 			.args         = B("\",\"arguments\":"),
+			.extra        = B(",\"signature\":"),
 			.call_end     = B("}"),
-			.result       = B(",{\"type\":\"function_result\",\"call_id\":\""),
+			.result       = B(",{\"type\":\"function_result\",\"name\":\""),
+			.result_id    = B("\",\"call_id\":\""),
 			.output       = B("\",\"result\":\""),
 			.result_end   = B("\"}"),
 			.user         = B(",{\"type\":\"user_input\",\"content\":"
@@ -1333,7 +1370,7 @@ ai_format (enum ai_api api)
 			.prompt_end   = B("\"}]}"),
 			.end          = B("]}"),
 			.conversation = "input",
-			.flags        = AI_ARGS_RAW,
+			.flags        = AI_ARGS_RAW | AI_RESULT_NAMED,
 		},
 	};
 #undef B
@@ -1374,8 +1411,34 @@ ai_tool (enum ai_api               api,
 	return tool;
 }
 
+/* The data of the first event of the event stream at @p body, of @p len
+ * bytes, parsed, if it is JSON text on a data line that ends in the first
+ * 4 KiB; else nullptr.  Gemini's Interactions sends the error of a streamed
+ * request as such an event, with a status that is not 2xx, so askai gathers
+ * the body whole and cannot parse it as JSON text. */
+static struct json_object *
+ai_error_event (char const *body,
+                size_t      len)
+{
+	static char const field[] = "data:";
+	size_t n = len < 4096 ? len : 4096;
+	for (size_t at = 0, end; at < n; at = end + 1) {
+		char const *nl = memchr(body + at, '\n', n - at);
+		if (!nl)
+			break;
+		end = (size_t)(nl - body);
+		if (end - at < sizeof field - 1 || memcmp(body + at, field, sizeof field - 1))
+			continue;
+		size_t from = at + sizeof field - 1;
+		end -= end > from && body[end - 1] == '\r';
+		return jb_parse(body + from, end - from, JSON_TOKENER_STRICT, 8);
+	}
+	return nullptr;
+}
+
 /* Say in @p text what the upstream's error answer, of HTTP @p status, says:
- * its message, or the start of the @p len bytes at @p body. */
+ * its message, or that of its first event, or the start of the @p len bytes
+ * at @p body. */
 static int
 ai_describe_error (struct dstr        *text,
                    long                status,
@@ -1395,6 +1458,14 @@ ai_describe_error (struct dstr        *text,
 		if (msg)
 			return dstr_cat(text, msg) ? 0 : ENOMEM;
 	}
+	struct json_object *event = root ? nullptr : ai_error_event(body, len);
+	char const *said = ai_event_error(event);
+	if (said) {
+		bool ok = dstr_cat(text, said);
+		json_object_put(event);
+		return ok ? 0 : ENOMEM;
+	}
+	json_object_put(event);
 
 	/* Quote the start of an unparsable body, as far as it is UTF-8 text. */
 	size_t cut = jb_utf8(body, len < 512 ? len : 512);

@@ -5242,13 +5242,14 @@ mcp_req_result_put (struct mcp_req        *req,
 	int e = mcp_req_call_id(req, c, req->part, made, &id);
 	if (e)
 		return e;
-	/* A result that names its call gives the id of a call that had one. */
+	/* A result that names its call gives the id of a call that had one,
+	 * or of one that the turn wrote with an id made up. */
 	struct mcp_piece key = id;
 	struct mcp_piece by = {};
 	struct mcp_piece also = {};
 	if (f->flags & AI_RESULT_NAMED) {
 		key = ESC(c->name.ptr, c->name.len);
-		if (c->id.len) {
+		if (c->id.len || f->call.len) {
 			by = BYTES(f->result_id);
 			also = id;
 		}

@@ -107,7 +107,8 @@ struct ai_call {
 	char const *extra;      /**< JSON text that the call carries back as it
 	                             came, which the API's turns place (struct
 	                             ai_format): Gemini's thought signature, in
-	                             chat completions its extra_content */
+	                             chat completions its extra_content, in
+	                             Gemini's Interactions its signature */
 	char const *args;       /**< a piece of its arguments' JSON text */
 	size_t      id_len;
 	size_t      name_len;
@@ -191,7 +192,8 @@ enum ai_format_flag {
 	AI_ARGS_RAW     = 1u << 0,  /**< a call's arguments are a JSON object,
 	                                 not the text of a JSON string */
 	AI_RESULT_NAMED = 1u << 1,  /**< a result names its call by name, and
-	                                 by id only if the call had one */
+	                                 by id if the call had one or the turn
+	                                 wrote the call (call) */
 };
 
 /**
@@ -215,8 +217,8 @@ enum ai_format_flag {
  *
  * The results of the calls follow: results, then each result after the
  * first result_sep, and result, the call's id, or its name and result_id
- * and its id if it had one (AI_RESULT_NAMED), output, the result's text,
- * and result_end; then results_end.
+ * and its id, if it had one or call is not empty (AI_RESULT_NAMED), output,
+ * the result's text, and result_end; then results_end.
  *
  * prompt_end ends the prompt's text, after which end ends the conversation
  * and the body: what askai adds to the prompt goes before it.  A message

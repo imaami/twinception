@@ -498,8 +498,9 @@ completions, in which Gemini's give their thought signature; the output
 items of the Responses API, its reasoning among them; the thinking blocks of
 Anthropic's Messages, with their signatures, in their places among the text
 and the calls; Gemini's parts, with their thought signatures; and the steps
-of Gemini's Interactions, thoughts with their signatures among them.  Each turn
-waits for an upstream slot like any call, so the scheduler's fairness holds
+of Gemini's Interactions, thoughts and calls with their signatures among
+them.  Each turn waits for an upstream slot like any call, so the
+scheduler's fairness holds
 turn by turn.  The caller gets the answer, and a second text that lists the calls the turns made, with their arguments (but
 those of `notes` and `compact`, which are the model's own) and the bytes of
 each output.  With a `progressToken`, its notifications say the turn and the

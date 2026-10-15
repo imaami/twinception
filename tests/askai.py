@@ -883,7 +883,8 @@ def check_upstream_errors(binary, up):
         result = ai.ask()
         assert result["isError"] and "Upstream request failed" in text_of(result)
 
-    # These answers of Gemini's Interactions are errors: an error body, an
+    # These answers of Gemini's Interactions are errors: an error body, as
+    # JSON or as an error event, an event that is no error quoted, an
     # answer that failed with no text, whole or streamed, an error event
     # without an error member, and a stream that ends with [DONE] and has
     # no interaction.completed, also when its events have the types that end
@@ -896,6 +897,12 @@ def check_upstream_errors(binary, up):
         for reply, message in (
                 ((400, {"error": {"code": "invalid_request", "message": "bad tool"}}),
                  "Upstream error (HTTP 400): bad tool"),
+                # It answers an error of a streamed request with its event.
+                ((400, sse_wire([("error", {"event_type": "error", "error": {
+                    "code": "invalid_request", "message": "Invalid input received."}})])),
+                 "Upstream error (HTTP 400): Invalid input received."),
+                ((400, b"event: x\ndata: {\"a\":1}\n\n"),
+                 'Upstream error (HTTP 400): event: x\ndata: {"a":1}\n\n'),
                 ((200, {"status": "failed", "steps": []}),
                  "The model returned no answer (stop reason: failed)."),
                 ((200, Stream(wire=error_event)),
@@ -6877,6 +6884,8 @@ def interactions_turn(steps, status=None, usage=None, after=()):
     ("call", id, name, arguments' JSON text in deltas) or ("whole", id,
     name, arguments' JSON text in its start), numbered in their order; the
     texts in deltas in pieces of 5 bytes and the arguments in pieces of 7.
+    A "call" or "whole" step may have a fifth element, the signature in its
+    start.
     A dict in @p steps is the data of an event that is sent as it is.  The
     end has @p status, by default requires_action if a step is a call, else
     completed, and @p usage; the events of the dicts in @p after follow it."""
@@ -6909,6 +6918,7 @@ def interactions_turn(steps, status=None, usage=None, after=()):
             whole = kind == "whole"
             start = {"type": "function_call", "id": s[1], "name": s[2],
                      "arguments": json.loads(s[3]) if whole else {}}
+            start |= {"signature": s[4]} if len(s) > 4 else {}
             deltas = [] if whole else [{"type": "arguments_delta", "arguments": t}
                                        for t in split(s[3], 7)]
         ev.append(event({"event_type": "step.start", "index": i, "step": start}))
@@ -7406,18 +7416,22 @@ def check_turn_apis(binary, up):
 
         # In Gemini's Interactions, the model's steps go back in their order,
         # each in the form of the non-streamed answer.  A thought has its
-        # summary items and its signature, and no empty signature.  A model
-        # output has the text of its start and of its deltas, and a step of
-        # blank text is left out.  A call has the arguments of its deltas or
-        # of its start.  Each result is a step after the model's steps.
+        # summary items and its signature, and no empty signature; a thought
+        # with neither is left out, as the API refuses it.  A model output
+        # has the text of its start and of its deltas, and a step of blank
+        # text is left out.  A call has the arguments of its deltas or of its
+        # start, and the signature of its start.  Each result is a step after
+        # the model's steps, with the name and the id of its call, as the API
+        # refuses a result without the name.
         def text(t):
             return {"type": "text", "text": t}
 
         def output(t):
             return {"type": "model_output", "content": [text(t)]}
 
-        def fcall(cid, name, args):
-            return {"type": "function_call", "id": cid, "name": name, "arguments": args}
+        def fcall(cid, name, args, signature=None):
+            return {"type": "function_call", "id": cid, "name": name, "arguments": args} | \
+                ({"signature": signature} if signature else {})
 
         def thought(summary, signature=None):
             return {"type": "thought"} | ({"summary": [text(t) for t in summary]}
@@ -7429,9 +7443,10 @@ def check_turn_apis(binary, up):
                 ({"index": at} if at is not None else {}) | data
 
         broken = '{"repo": "proj", "comm'
-        first_turn = [("thought", ["Plan "], ["it.", "Then go."], "sig/+1"),
+        first_turn = [("thought", [], [], None),
+                      ("thought", ["Plan "], ["it.", "Then go."], "sig/+1"),
                       ("text", "Lo", "oking."), ("text", "", " \n\n"),
-                      ("call", "c1", "git", json.dumps(log)),
+                      ("call", "c1", "git", json.dumps(log), "c2ln/+1="),
                       ("call", "c2", "git", broken),
                       ("whole", "c3", "git", json.dumps(log))]
         # The events of the second turn come in broken orders.  They have a
@@ -7525,17 +7540,18 @@ def check_turn_apis(binary, up):
             user = {"type": "user_input", "content": [text("Q")]}
             assert given[:6] == [
                 user, thought(["Plan ", "it.", "Then go."], "sig/+1"), output("Looking."),
-                fcall("c1", "git", log), fcall("c2", "git", {}),
+                fcall("c1", "git", log, "c2ln/+1="), fcall("c2", "git", {}),
                 fcall("c3", "git", log)], given
             assert b'"signature":"sig/+1"' in second["raw"], second["raw"]
-            assert [(g["type"], g["call_id"]) for g in given[6:]] == \
-                [("function_result", c) for c in ("c1", "c2", "c3")], given
+            assert b'"signature":"c2ln/+1="}' in second["raw"], second["raw"]
+            assert [(g["type"], g["name"], g["call_id"]) for g in given[6:]] == \
+                [("function_result", "git", c) for c in ("c1", "c2", "c3")], given
             assert re.fullmatch(logged, given[6]["result"]), given
             assert given[7]["result"] == "Your arguments were not a JSON object, " \
                 "so the call was not run.", given
             assert re.fullmatch(logged, given[8]["result"]), given
-            assert [sorted(g) for g in given[6:]] == [["call_id", "result", "type"]] * 3, \
-                given
+            assert [sorted(g) for g in given[6:]] == \
+                [["call_id", "name", "result", "type"]] * 3, given
             given = third["body"]["input"]
             assert given[:9] == second["body"]["input"], given
             made = given[17].get("id", "")
@@ -7546,8 +7562,9 @@ def check_turn_apis(binary, up):
                 thought(["s3"], "sig2"), output("Hi there"), fcall("c4", "git", log),
                 thought(["s5", "s6"]), fcall("c5", "git", log), output("Ok."),
                 thought(["s7"]), fcall(made, "", log), thought(["s8"])], given
-            assert [(g["type"], g["call_id"]) for g in given[19:]] == \
-                [("function_result", c) for c in ("c4", "c5", made)], given
+            assert [(g["type"], g["name"], g["call_id"]) for g in given[19:]] == \
+                [("function_result", n, c) for n, c in (("git", "c4"), ("git", "c5"),
+                                                        ("", made))], given
 
             # An answer that the turns doze after, a thought and text, goes
             # back as it came, then the message that wakes them.
