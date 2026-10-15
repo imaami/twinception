@@ -21,7 +21,7 @@
  * diff, textconv (a submodule's too), gpg and hooks, and its refreshing the
  * index.  The repository's other configuration, such as its filters, which
  * a work tree's files pass through, is trusted, as listing it says.  Its
- * output, its error included, is cut at 2 MiB; at its deadline it gets
+ * output, its error included, is cut at 4 MiB; at its deadline it gets
  * SIGTERM, and SIGKILL a second later.
  *
  * The git tool is git's kind of tool (src/tool.h), its part of a client

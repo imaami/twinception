@@ -3208,7 +3208,7 @@ def check_configuration(binary, up, godbolt):
           message="--max-body exceeds --body-budget")
     fails("--max-body", "2M", "--client-budget", "1M",
           message="--max-body exceeds --client-budget")
-    fails("--output-pause", "2M", message="--output-pause exceeds --max-output")
+    fails("--output-pause", "9M", message="--output-pause exceeds --max-output")
     fails("--max-calls", "0", message="invalid --max-calls")
     fails("--slots", "0", message="invalid --slots")
     fails("--slots", "65536", message="invalid --slots")
@@ -4108,11 +4108,11 @@ def check_logs(binary, up):
                                '{"prompt":"' + shown + "..."), got
             # A failed compact call logs the size of its summary.
             script[:] = [lambda r: (200, turn_stream([("d", "compact", json.dumps(
-                {"summary": "SUMMARYTEXT" * 2000}))]))]
+                {"summary": "SUMMARYTEXT" * 400_000}))]))]
             ai.log.clear()
             assert ai.ask("Q")["content"][0]["text"] == "A"
             ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call compact failed after '
-                        r'\d+\.\d s \(\d+ bytes\); arguments \{"summary":"\(22000 bytes\)"\}; '
+                        r'\d+\.\d s \(\d+ bytes\); arguments \{"summary":"\(4400000 bytes\)"\}; '
                         r'error ".+"$')
             assert "SUMMARYTEXT" not in "".join(ai.log), ai.log
             # A failed call of a turn has its error, and arguments that are no
@@ -6062,7 +6062,7 @@ echo)
 	echo "session $6 of $1"
 	;;
 broken) exit 3 ;;
-big) head -c 3145728 /dev/zero | tr '\0' x ;;
+big) head -c 5242880 /dev/zero | tr '\0' x ;;
 endless) yes ;;
 bytes) printf 'a\377b\303(c\342\202\254' ;;
 slow) sleep 1; echo slow ;;
@@ -6096,7 +6096,7 @@ def alive(pid):
 def check_man(binary, up):
     """The man tool, with --man only: its arguments checked; man run to find
     a page's file, then to render it, with an environment, signals, a session
-    and descriptors of its own; the page cut at 2 MiB and mended into UTF-8
+    and descriptors of its own; the page cut at 4 MiB and mended into UTF-8
     text, or why there is none, which a turn's call is given whole, whatever
     its offset.  Each page is rendered once and kept by its file, for every
     name it is found by, eight at most, and given while its file is
@@ -6254,14 +6254,14 @@ def check_man(binary, up):
                     assert result.get("isError") and text_of(result) == text, result
             assert runs("missing") == (4, 0) and runs("broken") == (2, 2)
 
-            # A page is cut at 2 MiB, and made UTF-8 text.
-            note = "\n\n[The page goes on past the 2 MiB shown.]\n"
+            # A page is cut at 4 MiB, and made UTF-8 text.
+            note = "\n\n[The page goes on past the 4 MiB shown.]\n"
             for _ in range(2):
                 result = man_call(ai, name="big")
                 assert not result.get("isError") and text_of(result) == \
-                    "x" * (2 << 20) + note
+                    "x" * (4 << 20) + note
             result = man_call(ai, name="endless")
-            assert text_of(result) == "y\n" * (1 << 20) + note, len(text_of(result))
+            assert text_of(result) == "y\n" * (2 << 20) + note, len(text_of(result))
             assert text_of(man_call(ai, name="bytes")) == "a?b?(c€"
             assert runs("big") == (1, 1), runs("big")
 
@@ -6422,7 +6422,7 @@ def check_git(binary, up):
     allowlists, revisions after --end-of-options and paths after --, run with
     a fixed environment and the settings that stop programs a repository
     could name; its output, errors included, made UTF-8 text and cut at
-    2 MiB; at the deadline SIGTERM, then SIGKILL a second later; a call that
+    4 MiB; at the deadline SIGTERM, then SIGKILL a second later; a call that
     goes, or askai stopping, kills it; and the repositories' names checked
     as askai starts."""
     def run(*args):
@@ -6444,7 +6444,7 @@ def check_git(binary, up):
         with open(f"{repo}/a.txt", "wb") as f:
             f.write(b"alpha\nbeta \xff\xfe gamma\n")
         with open(f"{repo}/big.txt", "wb") as f:
-            f.write(b"x" * (3 << 20))
+            f.write(b"x" * (5 << 20))
         sh("add", "a.txt", "big.txt")
         sh("commit", "-q", "-m", "first")
         subprocess.run(["git", "init", "-q", f"{d}/other"], check=True,
@@ -6603,8 +6603,8 @@ def check_git(binary, up):
                 "fatal: bad revision 'nosuch'\n\n[git exited with status 128.]"), result
             result = call(ai, repo="proj", command="cat-file", options=["-p"],
                           revisions=["HEAD:big.txt"])
-            assert not result.get("isError") and text_of(result) == "x" * (2 << 20) + \
-                "\n\n[The output goes on past the 2 MiB shown.]", len(text_of(result))
+            assert not result.get("isError") and text_of(result) == "x" * (4 << 20) + \
+                "\n\n[The output goes on past the 4 MiB shown.]", len(text_of(result))
             result = call(ai, repo="other", command="log")
             assert result.get("isError") and "does not have any commits" in \
                 text_of(result), result
@@ -6962,7 +6962,7 @@ def check_notes(binary, up):
                 said = call({"action": "add", "file": name, "text": "t",
                              "thread": thread})
                 assert said.startswith("!" + why), (name, said)
-            for text in ("", "x" * 8193, "a\0b"):
+            for text in ("", "x" * ((4 << 20) + 1), "a\0b"):
                 assert call({"action": "add", "file": "t.md", "text": text,
                              "thread": thread}).startswith("!The text argument"), text
             assert call({"action": "add", "file": "x" * 255, "text": "t",
@@ -7638,7 +7638,7 @@ def check_turns(binary, up):
                     ("a", "git", json.dumps(show)),
                     ("b", "git", json.dumps(show | {"offset": 65530})),
                     ("c", "notes", json.dumps({"action": "add", "file": "x.md",
-                                               "text": "x" * 8193})),
+                                               "text": "x" * ((4 << 20) + 1)})),
                     ("d", "man", '{"name":"ls"}'), ("e", "git", "[1]"),
                     ("f", "git", '{"repo":')])),
             ]
@@ -7650,8 +7650,8 @@ def check_turns(binary, up):
                 assert outputs[0] == f.read(), outputs[0][-200:]
             assert outputs[1] == "[The output has 44000 bytes, fewer than the offset.]", \
                 outputs[1]
-            assert outputs[2] == "The text argument must be a string of 1 to 8192 " \
-                "bytes, and no NUL.", outputs[2]
+            assert outputs[2] == "The text argument must be a string of 1 byte to " \
+                "4 MiB, and no NUL.", outputs[2]
             assert outputs[3] == "No tool of that name is yours to call.", outputs[3]
             assert outputs[4] == outputs[5] == "Your arguments were not a JSON " \
                 "object, so the call was not run.", outputs[4:]
@@ -7687,6 +7687,21 @@ def check_turns(binary, up):
             assert [total(values, "askai_turn_tool_calls_total", tool=t) for t in
                     ("git", "notes", "man", "compact", "unknown")] == [8, 7, 0, 0, 1], \
                 values
+
+            # A long newest note goes into the prompt cut to the window of a
+            # tool's output, with the offset to read on from.
+            size = 100 << 10
+            script[:] = [lambda r: (200, turn_stream([
+                ("k", "notes", json.dumps({"action": "add", "file": "long.md",
+                                           "text": "L" * size}))]))]
+            ai.ask("Q", thread=thread)
+            count = len(up.requests)
+            ai.ask("Again?", thread=thread)
+            shown = 64 << 10
+            assert prompt(up.requests[count]).endswith(
+                "[askai: your newest note, long.md:]\n\n" + "L" * shown +
+                f"\n[askai: bytes 0 to {shown} of {size}; read the note with "
+                f"\"offset\": {shown} for the rest.]\n"), prompt(up.requests[count])[-300:]
 
         # A small context: windows of an eighth of it, a reminder to write
         # notes past half, a warning past two thirds, and once full, the

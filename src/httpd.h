@@ -43,15 +43,16 @@ struct httpd_limits {
 	uint32_t write_time;     /**< seconds output may stall (close); zero: off */
 };
 
-/** The defaults of doc/core-design.md, section 3. */
+/** The defaults (doc/configuration.md, Limits on clients).  A message may
+ *  have 8 MiB, room for a text of 4 MiB with its JSON. */
 static inline struct httpd_limits
 httpd_limits (void)
 {
 	return (struct httpd_limits){
-		.body = 1 << 20,
+		.body = 8 << 20,
 		.bodies = 256 << 20,
 		.out_pause = 256 << 10,
-		.out_max = 1 << 20,
+		.out_max = 8 << 20,
 		.head = 16 << 10,
 		.fields = 64,
 		.clients = 256,

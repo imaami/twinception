@@ -48,7 +48,7 @@
     "max-head": "16K",
     "max-fields": 64,
     "head-timeout": 10,
-    "max-body": "1M",
+    "max-body": "8M",
     "min-body-rate": "4K",
     "body-grace": 5,
     "body-budget": "256M",
@@ -60,7 +60,7 @@
     "max-client-conns": 256,
     "idle-timeout": 30,
     "output-pause": "256K",
-    "max-output": "1M",
+    "max-output": "8M",
     "send-timeout": 30
   },
   "testing": {

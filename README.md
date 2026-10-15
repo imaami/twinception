@@ -403,7 +403,7 @@ session of its own, its standard error discarded, with an environment of its
 own: `PATH` and `MANPATH` as `askai` has them, `LC_ALL=C.UTF-8`, `MANWIDTH=80`,
 and `MANROFFOPT='-rHY=0 -dAD=l'`, which turns hyphenation and justification
 off, as a model reads words split across lines, or padded with spaces, less
-well.  A page longer than 2 MiB is cut there with a note saying so; `gcc(1)`,
+well.  A page longer than 4 MiB is cut there with a note saying so; `gcc(1)`,
 the longest page of many a system, renders to 1.4 MiB, which is some 370,000
 tokens, more than many a model's context holds.  An optional `offset`, in
 bytes, starts the reply further on in the page.
@@ -468,7 +468,7 @@ through, is trusted likewise: list only repositories whose configuration you
 trust.
 
 The reply is `git`'s output, its errors included, made UTF-8 text and cut at
-2 MiB with a note saying so, from the byte an optional `offset` names; an exit
+4 MiB with a note saying so, from the byte an optional `offset` names; an exit
 status other than 0 is noted, and is a tool error but for 1 with nothing
 written, as `grep` finding none.  At the
 deadline, `--git-timeout` (30 s), `git` gets SIGTERM, and SIGKILL a second
@@ -560,7 +560,7 @@ with one, and each thread is a bare git repository of its own,
 `DIR/WHO/upstream/ID`: `WHO` is the caller's identity, as a hash, or
 `anonymous`, and `ID` is 32 hexadecimal digits, random.  A note is a file.
 The model chooses its name, such as `plan.md` or `findings/locks.md`, and
-writes its text, at most 8 KiB.  The extension of the name shows the format of
+writes its text, at most 4 MiB.  The extension of the name shows the format of
 the text, which `askai` does not check.  Adding a note adds a commit to the
 branch `notes`, which `git fast-import` writes.  The tool `notes` adds a note,
 lists the notes, the oldest first, with the time that each was added, or reads
@@ -571,7 +571,8 @@ name with a control character or an empty part.  No part of a name can be `.`,
 because git refuses such names.  Slashes at the start of a name are left out.
 The caller sees that notes were kept, and the thread's id, not what they say.
 `ask_ai`'s `thread` argument goes on with a thread in a later call, whose
-prompt then has the list of the thread's notes and the newest note.  Only the
+prompt then has the list of the thread's notes and the newest note, cut as a
+tool's output in a turn is, with the offset to read on from.  Only the
 identity that wrote a thread can go on with it.  Two calls that add notes to
 one thread at once may make one of them fail, and the answer to that call asks
 to add the note again.  `git` runs there with no hooks.  Nothing prunes the
@@ -1145,13 +1146,13 @@ can act on:
 | Limit | Default | Breach |
 | ----- | ------- | ------ |
 | request line and headers | 16 KiB, 64 fields, sent within 10 s | 431, 408 |
-| request body | 1 MiB, averaging at least 4 KiB/s after 5 s | 413, 408 |
+| request body | 8 MiB, averaging at least 4 KiB/s after 5 s | 413, 408 |
 | JSON in a body | 32 levels deep, 1024 values, 1024 members in an object, numbers of 1 KiB | 400 |
 | bodies held for all clients | 256 MiB | 503 |
 | bodies held for one client address | a quarter of those | 503 |
 | connections per client address (IPv4, or IPv6 /64) | 256 | 503 |
 | idle keep-alive | 30 s | close |
-| pending output | 256 KiB holds requests back, 1 MiB unless one response is all of it | close |
+| pending output | 256 KiB holds requests back, 8 MiB unless one response is all of it | close |
 | output stalled | 30 s | close |
 
 The limits hold for the whole process, whichever event loop serves a client.
@@ -1574,7 +1575,7 @@ KiB, MiB or GiB; 0 = none where noted):
                             request line and headers, each from its
                             first byte (default 10, 0 = none)
       --max-body BYTES      request body, at most --body-budget
-                            (default 1M)
+                            (default 8M)
       --min-body-rate RATE  bytes per second that a request body must
                             average from the end of its headers, once
                             --body-grace has passed (default 4K,
@@ -1610,7 +1611,7 @@ KiB, MiB or GiB; 0 = none where noted):
                             (default 256K, at most --max-output)
       --max-output BYTES    close a connection whose pending output a
                             response would take past this, unless it
-                            is all that is pending (default 1M)
+                            is all that is pending (default 8M)
       --send-timeout SECONDS
                             longest stall of pending output
                             (default 30, 0 = none)

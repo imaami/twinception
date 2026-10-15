@@ -265,9 +265,11 @@ output of `GET /metrics`, the series
 context.  The upstream must accept tools in the request.  With
 `llama-server`, its chat template must accept tools, as with `--jinja`.
 
-The model calls `compact` with a summary.  `askai` then removes the
-conversation after the prompt, and adds the summary, the list of the notes
-and the newest note to the prompt.
+The model calls `compact` with a summary of at most 4 MiB.  `askai` then
+removes the conversation after the prompt, and adds the summary, the list of
+the notes and the newest note to the prompt.  A newest note longer than a
+tool result in a turn (section [`context`](#context)) is cut there, with the
+offset from which the model reads on with `notes`.
 
 `askai` also compacts the conversation without a summary when the context
 is full.  The context is full in these cases:
@@ -831,7 +833,7 @@ status 408.
 
 #### `max-body`
 
-The value is a size.  The default is `"1M"`.  It must not exceed
+The value is a size.  The default is `"8M"`.  It must not exceed
 `body-budget`, nor `client-budget` if that is set.
 
 `max-body` limits a request body.  A larger body gets the status 413.  With
@@ -929,7 +931,7 @@ pending.
 
 #### `max-output`
 
-The value is a size from 1 byte.  The default is `"1M"`.
+The value is a size from 1 byte.  The default is `"8M"`.
 
 `askai` closes a connection if a response would make its pending output
 larger than this size.  Only a response that is all of the pending output

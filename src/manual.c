@@ -20,7 +20,7 @@
 #include "util.h"
 
 enum {
-	MANUAL_MAX     = 2 << 20,  /**< bytes of a page kept: past those, cut short */
+	MANUAL_MAX     = 4 << 20,  /**< bytes of a page kept: past those, cut short */
 	MANUAL_SECONDS = 10,       /**< for man to find, or render, a page */
 	MANUAL_NAME    = 128,      /**< bytes of a page's name, at most */
 	MANUAL_SECTION = 16,       /**< and of a section's */
@@ -69,8 +69,8 @@ struct manual_loop {
 static constexpr uint64_t NS = 1'000'000'000;
 
 /* What ends a page cut short. */
-static char const cut[] = "\n\n[The page goes on past the 2 MiB shown.]\n";
-static_assert(MANUAL_MAX == 2 << 20, "the note says 2 MiB");
+static char const cut[] = "\n\n[The page goes on past the 4 MiB shown.]\n";
+static_assert(MANUAL_MAX == 4 << 20, "the note says 4 MiB");
 
 static char const busy[] = "Too many pages are being rendered; try again in a "
                            "few seconds.";
@@ -863,7 +863,7 @@ static struct json_object *
 manual_definition (void const *service)
 {
 	(void)service;
-	static_assert(MANUAL_MAX == 2 << 20, "the description says 2 MiB");
+	static_assert(MANUAL_MAX == 4 << 20, "the description says 4 MiB");
 	return jb_object(
 		"name", json_object_new_string("man"),
 		"title", json_object_new_string("Manual page"),

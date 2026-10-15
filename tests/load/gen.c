@@ -1107,7 +1107,7 @@ out:
  * so askai parses them in full: 1024 values (empty objects, or 507 keys), a
  * 1 MiB string, and a 1 MiB tool call prompt full of escapes.
  */
-enum { HOSTILE_KINDS = 7, HOSTILE_MAX = 4'200'000 };
+enum { HOSTILE_KINDS = 7, HOSTILE_MAX = 9'200'000 };
 
 static char *
 hostile_body (int     kind,
@@ -1140,8 +1140,9 @@ hostile_body (int     kind,
 		break;
 	case 2:
 		s[k++] = '"';
-		memset(s + k, 'x', 4'000'000);
-		k += 4'000'000;
+		/* Past the default body limit of 8 MiB. */
+		memset(s + k, 'x', 9'000'000);
+		k += 9'000'000;
 		s[k++] = '"';
 		break;
 	case 3:

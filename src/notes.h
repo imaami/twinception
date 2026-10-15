@@ -28,9 +28,9 @@
 struct notes;
 
 enum {
-	NOTES_TEXT = 8 << 10,  /**< bytes of the text of a note, at most */
+	NOTES_TEXT = 4 << 20,  /**< bytes of the text of a note, at most */
 	NOTES_NAME = 255,      /**< bytes of the name of a note, at most */
-	NOTES_MAX  = 1 << 20,  /**< bytes of the output of git, at most */
+	NOTES_MAX  = 16 << 20, /**< bytes of the output of git, at most */
 	NOTES_ID   = 32,       /**< hexadecimal digits of the id of a thread */
 	NOTES_REPO = 80,       /**< bytes of the argument of git that names the
 	                            repository of a thread, NUL included */

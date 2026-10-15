@@ -122,10 +122,10 @@ enum {
 	CACHE_TTL_MS = 300'000,   /* how long modern clients may cache lists */
 	UPLOAD_MAX   = 16 << 20,  /* bytes of a conversation's upstream request:
 	                             past those, its context is full */
-	CALLS_MAX    = 1 << 20,   /* bytes of a turn's tool calls */
+	CALLS_MAX    = 16 << 20,  /* bytes of a turn's tool calls */
 	LEND_MAX     = 64 << 10,  /* bytes of a tool's output that a turn takes,
 	                             at most */
-	SUMMARY_MAX  = 16 << 10,  /* bytes of compact's summary */
+	SUMMARY_MAX  = 4 << 20,   /* bytes of compact's summary */
 	JOBS_MAX     = 8,         /* jobs that an ask call's turns may start */
 	TIMERS_MAX   = LEDGER_TIMERS,  /* timers they may have set at once */
 	WAIT_MAX     = 600,       /* seconds that a wait may take */
@@ -3555,9 +3555,10 @@ mcp_req_turn_done (struct mcp_req *req)
 		bytes += len;
 		n += len != 0;
 	}
+	static_assert(CALLS_MAX == 16 << 20, "the result says");
 	if (bytes > CALLS_MAX) {
 		mcp_slot_result(&req->self, TEXT("The other AI's tool calls in one turn took "
-		                              "more than 1 MiB, so none was run."), true);
+		                              "more than 16 MiB, so none was run."), true);
 		return;
 	}
 	if (!n && !mcp_req_dozes(req)) {
@@ -5757,8 +5758,10 @@ mcp_slot_notes_prompt (struct mcp_slot  *slot,
 }
 
 /* Appends the newest note, which git read for the prompt, to the request's
- * answer, or else a line with the text that the note could not be read.
- * Then the ask call continues. */
+ * answer, or else a line with the text that the note could not be read.  A
+ * note longer than a tool's output in a turn (mcp_req_lend_max()) is cut
+ * there, with a line that says how to read on.  Then the ask call
+ * continues. */
 static void
 mcp_slot_notes_newest (struct mcp_slot *slot)
 {
@@ -5767,12 +5770,18 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 	struct span text = {};
 	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text) : EIO;
 	char const *s = (char const *)text.ptr;
-	size_t n = text.len ? jb_utf8(s, text.len) : 0;
+	size_t len = text.len ? jb_utf8(s, text.len) : 0;
+	size_t n = mcp_clip(s, len, mcp_req_lend_max(req));
+	char more[128];
+	size_t m = n < len ? util_format(more, sizeof more, "\n[askai: bytes 0 to %zu of "
+	                                 "%zu; read the note with \"offset\": %zu for the "
+	                                 "rest.]", n, len, n) : 0;
 	struct mcp_piece const p[] = {
 		r ? TEXT("[askai: the note could not be read.]") : ESC(s, n),
+		ESC(more, m),
 		TEXT("\n"),
 	};
-	int e = mcp_slot_say(slot, p, n && s[n - 1] == '\n' ? 1 : 2);
+	int e = mcp_slot_say(slot, p, n && s[n - 1] == '\n' && !m ? 1 : 3);
 	child_destroy(&slot->child);
 	if (e) {
 		mcp_req_fail(req, e);
@@ -5855,7 +5864,7 @@ static void
 mcp_slot_notes_add (struct mcp_slot    *slot,
                     struct json_object *args)
 {
-	static_assert(NOTES_TEXT == 8 << 10, "the problem says");
+	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
 	size_t name_len = 0;
@@ -5865,7 +5874,7 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	struct mcp_piece problem =
 		!name || notes_name(name, name_len, &skip) ? TEXT(bad_name)
 		: !text || !len || len > NOTES_TEXT || memchr(text, '\0', len)
-		? TEXT("The text argument must be a string of 1 to 8192 bytes, and no NUL.")
+		? TEXT("The text argument must be a string of 1 byte to 4 MiB, and no NUL.")
 		: (struct mcp_piece){};
 	if (problem.ptr) {
 		mcp_slot_result(slot, problem, true);
@@ -6000,13 +6009,13 @@ static void
 mcp_slot_compact (struct mcp_slot    *slot,
                   struct json_object *args)
 {
-	static_assert(SUMMARY_MAX == 16 << 10, "the problem says");
+	static_assert(SUMMARY_MAX == 4 << 20, "the problem says");
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
 	char const *summary = jb_str(jb_get(args, "summary"), &len);
 	if (!summary || !len || len > SUMMARY_MAX) {
-		mcp_slot_result(slot, TEXT("The summary argument must be a string of 1 to "
-		                           "16384 bytes."), true);
+		mcp_slot_result(slot, TEXT("The summary argument must be a string of 1 "
+		                           "byte to 4 MiB."), true);
 		return;
 	}
 	/* The trace names the call by its tool, the name it called. */
@@ -7193,7 +7202,7 @@ mcp_task_definition (void const *service)
 static struct json_object *
 mcp_notes_schema (enum notes_side side)
 {
-	static_assert(NOTES_TEXT == 8 << 10 && NOTES_NAME == 255, "the descriptions say");
+	static_assert(NOTES_TEXT == 4 << 20 && NOTES_NAME == 255, "the descriptions say");
 	static char const *const descriptions[] = {
 		[NOTES_UPSTREAM] =
 			"Your notebook for this task, which outlasts your context. A note "
@@ -7202,8 +7211,8 @@ mcp_notes_schema (enum notes_side side)
 			"find something, decide something, or finish or plan a step. A "
 			"note cannot be changed or removed, so add a new note instead. "
 			"When the context fills up, the conversation is compacted to the "
-			"task, a summary, the list of your notes and your newest note; "
-			"read the others when you need them. The notes are yours: the "
+			"task, a summary, the list of your notes and the start of your "
+			"newest note; read the others when you need them. The notes are yours: the "
 			"client sees that you keep them, not what they say.",
 		[NOTES_CLIENT] =
 			"A notebook that outlasts your context. A note is a file: you "
@@ -7238,7 +7247,7 @@ mcp_notes_schema (enum notes_side side)
 		"text", jb_object(
 			"type", json_object_new_string("string"),
 			"description", json_object_new_string(
-				"For add: the text of the note, at most 8 KiB."),
+				"For add: the text of the note, at most 4 MiB."),
 			nullptr),
 		"offset", jb_object(
 			"type", json_object_new_string("integer"),
@@ -7296,7 +7305,7 @@ static struct json_object *
 mcp_compact_definition (void const *service)
 {
 	(void)service;
-	static_assert(SUMMARY_MAX == 16 << 10, "the description says");
+	static_assert(SUMMARY_MAX == 4 << 20, "the description says");
 	return jb_object(
 		"name", json_object_new_string("compact"),
 		"description", json_object_new_string(
@@ -7313,7 +7322,7 @@ mcp_compact_definition (void const *service)
 					"type", json_object_new_string("string"),
 					"description", json_object_new_string(
 						"Where the task stands: what is done, what you found, "
-						"and what you will do next; at most 16 KiB."),
+						"and what you will do next; at most 4 MiB."),
 					nullptr),
 				nullptr),
 			"required", jb_list(json_object_new_string("summary")),

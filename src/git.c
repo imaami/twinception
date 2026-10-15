@@ -17,7 +17,7 @@
 #include "util.h"
 
 enum {
-	GIT_MAX   = 2 << 20,  /**< output bytes, at most */
+	GIT_MAX   = 4 << 20,  /**< output bytes, at most */
 	GIT_ARGV  = 128,      /**< a command's argv, its nullptr included */
 	GIT_WHY   = 256,      /**< bytes of what is wrong with a call */
 	GIT_NOTE  = 96,       /**< bytes ending the output, at most: a blank line, a note */
@@ -31,7 +31,7 @@ enum {
 /** From SIGTERM to SIGKILL at a git call's deadline. */
 static constexpr uint64_t GIT_GRACE_NS = 1'000'000'000;
 
-static_assert(GIT_MAX == 2 << 20 && GIT_GRACE_NS == 1'000'000'000, "git.h says");
+static_assert(GIT_MAX == 4 << 20 && GIT_GRACE_NS == 1'000'000'000, "git.h says");
 
 /* A repository: its name, its path, and the setting that has git trust it,
  * one string of the three. */
@@ -357,7 +357,7 @@ git_definition (void const *service)
 {
 	struct git const *git = service;
 	static_assert(OPTIONS == 16 && REVISIONS == 4 && PATHS == 32 &&
-	              GIT_MAX == 2 << 20, "the description says");
+	              GIT_MAX == 4 << 20, "the description says");
 	struct json_object *repos = json_object_new_array();
 	for (size_t i = 0; i < git->n; ++i)
 		repos = git_append(repos, git->repo[i].name);
@@ -369,7 +369,7 @@ git_definition (void const *service)
 		"title", json_object_new_string("Git"),
 		"description", json_object_new_string(
 			"Run a read-only git command in one of the repositories of the "
-			"server, and get its output, with its errors, up to 2 MiB. The "
+			"server, and get its output, with its errors, up to 4 MiB. The "
 			"commands are log, show, diff, grep, blame, ls-files, ls-tree, "
 			"cat-file and rev-parse. To read a file as of the last commit, use "
 			"show with the whole HEAD:path as the revision and no paths, for "
@@ -678,7 +678,7 @@ static void
 git_ended (struct mcp_slot *slot,
            struct child    *c)
 {
-	static_assert(GIT_MAX == 2 << 20, "the note says 2 MiB");
+	static_assert(GIT_MAX == 4 << 20, "the note says 4 MiB");
 	struct tool_text out = mcp_slot_answer(slot);
 	char buf[GIT_NOTE - 2];  /* the blank line takes 2 bytes at most */
 	struct tool_text note;
@@ -688,7 +688,7 @@ git_ended (struct mcp_slot *slot,
 		note = FORMAT(buf, "[git took longer than %.0f s, and was stopped.]",
 		              (double)gl->git->timeout / 1e9);
 	} else if (c->cut) {
-		note = TOOL_TEXT("[The output goes on past the 2 MiB shown.]");
+		note = TOOL_TEXT("[The output goes on past the 4 MiB shown.]");
 		failed = c->code == CLD_EXITED && c->status && (c->status != 1 || out.len);
 	} else if (c->code != CLD_EXITED) {
 		note = FORMAT(buf, "[git was killed by signal %d.]", c->status);
