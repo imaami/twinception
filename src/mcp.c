@@ -88,6 +88,7 @@
 #include "metrics.h"
 #include "notes.h"
 #include "plugin.h"
+#include "policy.h"
 #include "registry.h"
 #include "roster.h"
 #include "shelf.h"
@@ -125,7 +126,16 @@ enum {
 	TIMER_MAX    = 3600,      /* seconds that a timer may be set to */
 	TIMER_NOTE   = 200,       /* bytes of a timer's note */
 	TRACE_MAX    = 48,        /* tool calls the trace tells of */
-	TRACE_ARGS   = 200,       /* bytes of a call's arguments it tells */
+	TRACE_ARGS   = 200,       /* bytes of a call's arguments in the trace
+	                             and in the log */
+	SHOWN        = TRACE_ARGS + sizeof "...",  /* bytes of those in the log,
+	                                              with their mark and NUL */
+	PROMPT_LOG   = 100,       /* bytes of a prompt that the log shows, as
+	                             escaped JSON */
+	ERROR_LOG    = 200,       /* bytes of a failure's text that it shows,
+	                             likewise */
+	NAME_LOG     = 100,       /* bytes of a tool's name from a client or the
+	                             upstream that it shows, likewise */
 	CALL_ID      = sizeof "call_4294967295_4294967295",  /* bytes of a
 	                                                        made-up call id */
 	POLL_MS      = 1000,      /* between a task's polls, as its client is asked */
@@ -245,14 +255,15 @@ static constexpr uint64_t KF_SERIAL = 1ull << 32;
 
 /* A tool that askai offers: its definition as tools/list lists it, if a
  * role may grant it, and as the upstream's API has it, if it is lent, each
- * after a comma; its kind; its name; its plugin's part; how the turns are
- * lent it; its row in the turns' metrics; and what the trace tells of its
- * calls. */
+ * after a comma; its kind; its name; the argument whose value is logged as
+ * its size; its plugin's part; how the turns are lent it; its row in the
+ * turns' metrics; and what the trace shows of its calls. */
 struct mcp_offer {
 	struct dstr             listed;
 	struct dstr             lent;
 	struct tool_kind const *kind;
 	char const             *name;
+	char const             *sized;   /* or nullptr */
 	uint32_t                len;
 	uint8_t                 part;    /* its plugin's, in plugins[] and a
 	                                    loop's parts[] */
@@ -260,6 +271,29 @@ struct mcp_offer {
 	uint8_t                 metric;  /* enum metrics_lent */
 	uint8_t                 trace;   /* enum mcp_trace */
 };
+
+/* The tools that askai lends the turns: by[LEND_GRANTED] as a role grants
+ * them, by[LEND_ALWAYS] whenever the turns are lent anything, by[LEND_WITH]
+ * beside those, and by[LEND_DETACH] beside one of the tools in detach,
+ * which may run in the background. */
+struct mcp_lending {
+	tool_mask by[LEND_DETACH + 1];
+	tool_mask detach;
+};
+
+/* Returns the tools that @p l lends the turns of an ask call of a client
+ * whose role lets the upstream call @p upstream: those of them that are in
+ * by[LEND_GRANTED], and those in by[LEND_ALWAYS].  If there are any, the
+ * result also has the tools in by[LEND_WITH], and if one of them can run in
+ * the background, the tools in by[LEND_DETACH]. */
+static tool_mask
+mcp_lending_lent (struct mcp_lending const *l,
+                  tool_mask                 upstream)
+{
+	tool_mask lent = (upstream & l->by[LEND_GRANTED]) | l->by[LEND_ALWAYS];
+	tool_mask more = lent & l->detach ? l->by[LEND_DETACH] : 0;
+	return lent ? lent | l->by[LEND_WITH] | more : 0;
+}
 
 /* A plugin whose tools askai offers.  A built-in plugin can have a service,
  * the object that every loop shares, and a part of it on each client loop.
@@ -287,13 +321,7 @@ struct mcp_static {
 	uint32_t                  n_offers;
 	uint32_t                  n_granted;      /**< those before the first
 	                                               that only turns are given */
-	tool_mask                 lends;          /**< lent as a role grants them */
-	tool_mask                 always;         /**< lent whenever the turns are
-	                                               lent anything */
-	tool_mask                 with;           /**< lent beside those */
-	tool_mask                 detach;         /**< those that may run in the
-	                                               background */
-	tool_mask                 detached;       /**< lent beside one of those */
+	struct mcp_lending        lending;
 	struct dstr               list_tail;    /**< closes a modern tools/list
 	                                             result after its tools */
 	struct dstr               discover;     /**< the server/discover result */
@@ -500,6 +528,10 @@ struct mcp_req {
 	uint64_t             generation; /* The value that
 	                                    instance_table_generation() returned
 	                                    when the request began. */
+	uint64_t             asked;      /* its ask call's number among those of
+	                                    the loop, for the log; 0: none */
+	uint64_t             turn_at;    /* loop time as its last turn was
+	                                    submitted */
 	tool_mask            lent;       /* the tools its turns may call */
 	struct stream        stand_in;   /* a task's stream, which writes the
 	                                    reply into its record */
@@ -547,11 +579,18 @@ struct mcp_req {
 	bool                 stopped;    /* the turns ran out with tools called */
 	bool                 cut;        /* the turn's answer reached the output
 	                                    token limit */
+	bool                 logged;     /* the end of its tool call is logged */
 	char                 thread[NOTES_ID + 1];  /* the id of the thread of
 	                                               the notes */
 	char                 repo[NOTES_REPO];      /* the argument of git that
 	                                               names the repository of
 	                                               the thread */
+	char                 client[POLICY_WHO];  /* the client for the log,
+	                                             copied from its stream at
+	                                             its head; "": anonymous */
+	char                 call_args[SHOWN];  /* with --verbose, the arguments
+	                                           of its tool call for the
+	                                           log */
 };
 
 /* A timer that a turn set: when it fires, its number, and its note. */
@@ -604,6 +643,8 @@ struct mcp {
 	struct instance_table    instances; /* The instances of the plugins for
 	                                       the users whose calls run on this
 	                                       loop. */
+	uint64_t                 asked;     /* ask calls begun, which the log
+	                                       numbers */
 	uint64_t                 draining;  /* bool, widened over the padding */
 	void                    *parts[];   /* the plugins', as st->plugins[] */
 };
@@ -956,6 +997,206 @@ static struct mcp_offer const *
 mcp_slot_offer (struct mcp_slot const *slot)
 {
 	return &slot->req->mcp->st->offers[slot->tool];
+}
+
+/* "byte" or "bytes", for a count of @p n bytes in the log. */
+static char const *
+mcp_bytes (size_t n)
+{
+	return n == 1 ? "byte" : "bytes";
+}
+
+/* Write the @p len bytes at @p text into the @p size bytes at @p buf as a
+ * JSON string, which is one line, followed by "..." if cut.  The string has
+ * the longest prefix of whole characters whose escapes take at most @p max
+ * bytes and fit in @p size bytes with the quotes, the mark and the NUL. */
+static void
+mcp_quote (char       *buf,
+           size_t      size,
+           char const *text,
+           size_t      len,
+           size_t      max)
+{
+	static constexpr size_t frame = sizeof "\"\"...";
+	if (size < frame) {
+		if (size)
+			buf[0] = '\0';
+		return;
+	}
+	size_t n = jb_escape_fit(text, len, max < size - frame ? max : size - frame);
+	buf[0] = '"';
+	size_t end = 1 + jb_escape(buf + 1, text, n);
+	buf[end++] = '"';
+	if (n < len) {
+		memcpy(buf + end, "...", sizeof "..." - 1);
+		end += sizeof "..." - 1;
+	}
+	buf[end] = '\0';
+}
+
+/* The arguments of a call as the log shows them, written so far. */
+struct mcp_shown {
+	char     *buf;  /* SHOWN bytes */
+	size_t    len;
+	uint64_t  cut;  /* bool: cut at TRACE_ARGS bytes; widened over the
+	                   padding */
+};
+
+/* Append the @p n bytes at @p s, JSON text, or with @p text the inside of
+ * a JSON string, which is escaped, to @p w, up to TRACE_ARGS bytes in
+ * all, whole characters and whole escapes. */
+static void
+mcp_shown_put (struct mcp_shown *w,
+               char const       *s,
+               size_t            n,
+               bool              text)
+{
+	if (w->cut || !n)
+		return;
+	size_t room = TRACE_ARGS - w->len;
+	char escaped[TRACE_ARGS];
+	if (text) {
+		size_t k = jb_escape_fit(s, n, room);
+		w->cut = k < n;
+		n = jb_escape(escaped, s, k);
+		s = escaped;
+	}
+	size_t k = mcp_clip(s, n, room);
+	w->cut |= k < n;
+	memcpy(w->buf + w->len, s, k);
+	w->len += k;
+}
+
+/* Append @p v to @p w as compact JSON, as JB_WIRE writes it, until
+ * TRACE_ARGS bytes are written.  The string value of the member @p sized
+ * of an object, if not nullptr, is replaced by its size. */
+static void
+mcp_shown_value (struct mcp_shown   *w,
+                 struct json_object *v,
+                 char const         *sized)
+{
+	switch (json_object_get_type(v)) {
+	case json_type_object: {
+		bool first = true;
+		mcp_shown_put(w, "{", 1, false);
+		struct json_object_iter it;
+		json_object_object_foreachC(v, it) {
+			if (w->cut)
+				return;
+			/* A comma before each member but the first. */
+			mcp_shown_put(w, &",\""[first], 2 - first, false);
+			first = false;
+			mcp_shown_put(w, it.key, strlen(it.key), true);
+			mcp_shown_put(w, "\":", 2, false);
+			bool by_size = sized && !strcmp(it.key, sized) &&
+			               json_object_is_type(it.val, json_type_string);
+			if (!by_size) {
+				mcp_shown_value(w, it.val, nullptr);
+				continue;
+			}
+			char text[40];
+			int len = json_object_get_string_len(it.val);
+			int n = snprintf(text, sizeof text, "\"(%d %s)\"", len,
+			                 mcp_bytes((size_t)len));
+			if (n > 0 && n < (int)sizeof text)
+				mcp_shown_put(w, text, (size_t)n, false);
+		}
+		mcp_shown_put(w, "}", 1, false);
+		return;
+	}
+	case json_type_array: {
+		size_t n = json_object_array_length(v);
+		mcp_shown_put(w, "[", 1, false);
+		for (size_t i = 0; i < n && !w->cut; ++i) {
+			mcp_shown_put(w, ",", i != 0, false);
+			mcp_shown_value(w, json_object_array_get_idx(v, i), nullptr);
+		}
+		mcp_shown_put(w, "]", 1, false);
+		return;
+	}
+	case json_type_string:
+		mcp_shown_put(w, "\"", 1, false);
+		mcp_shown_put(w, json_object_get_string(v),
+		              (size_t)json_object_get_string_len(v), true);
+		mcp_shown_put(w, "\"", 1, false);
+		return;
+	default: {
+		/* A scalar's text is short. */
+		size_t len = 0;
+		char const *json = json_object_to_json_string_length(v, JB_WIRE, &len);
+		if (json)
+			mcp_shown_put(w, json, len, false);
+		return;
+	}
+	}
+}
+
+/* Write @p args, the arguments of a call of @p offer, into the SHOWN bytes
+ * at @p buf for the log: compact JSON on one line, cut to TRACE_ARGS bytes
+ * with "...", with the value of the argument that the offer names, a
+ * note's text or compact's summary, replaced by its size; the text @p none
+ * without arguments.  Only the bytes that are shown are written, however
+ * large the arguments are. */
+static void
+mcp_args_shown (struct mcp_offer const *offer,
+                struct json_object     *args,
+                struct tool_text        none,
+                char                    buf[static SHOWN])
+{
+	struct mcp_shown w = { .buf = buf };
+	if (args)
+		mcp_shown_value(&w, args, offer->sized);
+	else
+		mcp_shown_put(&w, none.ptr, none.len, false);
+	if (w.cut) {
+		memcpy(buf + w.len, "...", sizeof "..." - 1);
+		w.len += sizeof "..." - 1;
+	}
+	buf[w.len] = '\0';
+}
+
+/* The client of @p req as the log names it. */
+static char const *
+mcp_req_client (struct mcp_req const *req)
+{
+	return *req->client ? req->client : "anonymous";
+}
+
+/* Logs, once, the end of the client's tool call of @p req, which @p how
+ * names: the tool, the client, the time and the size of the output @p out;
+ * for an ask call its turns and their tool calls; with --verbose its
+ * arguments; and if the call @p failed, the text of @p out, if any.  A
+ * failure is logged at LOG_WARN, and else the line is one of --verbose.
+ * Each level has its own rate limit, so that the lines of --verbose do not
+ * hold back the failures. */
+static void
+mcp_req_log_call (struct mcp_req *req,
+                  char const     *how,
+                  struct span     out,
+                  bool            failed)
+{
+	static struct log_site sites[2];
+	enum log_level level = failed ? LOG_WARN : LOG_VERBOSE;
+	if (req->logged || req->self.tool == TOOL_MAX)
+		return;
+	req->logged = true;
+	if (level > log_threshold)
+		return;
+	char ask[128] = "";
+	if (req->asked)
+		util_format(ask, sizeof ask, "; ask call %" PRIu64 ".%" PRIu64 ", %" PRIu32
+		            " turn%s, %" PRIu32 " tool call%s%s", req->mcp->loop->id, req->asked,
+		            req->turn, req->turn == 1 ? "" : "s", req->traced,
+		            req->traced == 1 ? "" : "s",
+		            req->stopped ? ", stopped at --max-turns" : "");
+	char text[ERROR_LOG + 8] = "";
+	if (failed && out.len)
+		mcp_quote(text, sizeof text, (char const *)out.ptr, out.len, ERROR_LOG);
+	log_put(&sites[failed], "tool call %s from %s %s after %.1f s (%zu %s)%s%s%s%s%s",
+	        mcp_slot_offer(&req->self)->name, mcp_req_client(req), how,
+	        mcp_elapsed(req->self.start), out.len, mcp_bytes(out.len), ask,
+	        *req->call_args ? "; arguments " : "", req->call_args, *text ? "; error " : "",
+	        text);
 }
 
 /* Drops the call in @p slot.  If the call's own word is set, the call
@@ -1356,7 +1597,8 @@ mcp_req_error_put (struct mcp_req         *req,
 	return e ? e : mcp_req_put(req, &FRAG("}}"), 1);
 }
 
-/* Reply with a JSON-RPC error, as mcp_req_error_put() writes it. */
+/* Reply with a JSON-RPC error, as mcp_req_error_put() writes it; a tool
+ * call that ends so is logged as failed. */
 static void
 mcp_req_error (struct mcp_req         *req,
                uint16_t                status,
@@ -1365,6 +1607,9 @@ mcp_req_error (struct mcp_req         *req,
                struct mcp_piece const *data,
                size_t                  n_data)
 {
+	mcp_req_log_call(req, "failed",
+	                 (struct span){ (unsigned char *)(uintptr_t)message.ptr, message.len },
+	                 true);
 	mcp_req_close(req, status, SPAN(JSON_FIELD),
 	              mcp_req_error_put(req, code, message, data, n_data));
 }
@@ -1502,6 +1747,8 @@ mcp_slot_result (struct mcp_slot  *slot,
 		return;
 	}
 	req->failed = failed;
+	mcp_req_log_call(req, failed ? "failed" : "answered",
+	                 (struct span){ (unsigned char *)(uintptr_t)text.ptr, text.len }, failed);
 	int e = mcp_req_tool_open(req, text);
 	if (e) {
 		mcp_req_abort(req, e);
@@ -1570,13 +1817,6 @@ mcp_slot_respond (struct mcp_slot *slot,
 	}
 	struct mcp_req *req = slot->req;
 	struct span text = mcp_req_output(req);
-	char const *str = (char const *)text.ptr;
-	if (failed)
-		LOG(LOG_WARN, "tool call failed after %.1f s: %.*s", mcp_elapsed(slot->start),
-		    (int)mcp_clip(str, text.len, 300), str);
-	else
-		LOG(LOG_VERBOSE, "tool call answered after %.1f s (%zu bytes)",
-		    mcp_elapsed(slot->start), text.len);
 	loop_timer_stop(req->mcp->loop, &req->timer);
 	size_t off = req->lent ? 0 : slot->skip;
 	if (off > text.len) {
@@ -1586,6 +1826,7 @@ mcp_slot_respond (struct mcp_slot *slot,
 		mcp_slot_result(slot, ESC(why, n), true);
 		return;
 	}
+	mcp_req_log_call(req, failed ? "failed" : "answered", text, failed);
 	while (off < text.len && (text.ptr[off] & 0xc0) == 0x80)
 		++off;
 	req->failed = failed;
@@ -1805,6 +2046,64 @@ mcp_req_refit (struct mcp_req const *req,
 	return req->turn > 1 && !req->forced && mcp_overflowed(why, len);
 }
 
+/* Logs, with --verbose, how the turn of @p req's ask call that @p job ran
+ * ended: how, its HTTP status, its time and the size of its result.  The
+ * line of a streamed answer also has the tokens that the turn used of the
+ * context, its stop reason and its tool calls.  An answer that is not
+ * streamed, such as the body of an HTTP error, has none of these. */
+static void
+mcp_req_log_turn (struct mcp_req const *req,
+                  struct job const     *job)
+{
+	static char const *const ends[] = {
+		[JOB_ANSWERED]  = "answered",
+		[JOB_TEXT]      = "answered",
+		[JOB_FAILED]    = "failed",
+		[JOB_BUSY]      = "refused as busy",
+		[JOB_CANCELLED] = "cancelled",
+	};
+	static_assert(ARRAY_SIZE(ends) == JOB_CANCELLED + 1);
+	if (log_threshold < LOG_VERBOSE)
+		return;
+	uint8_t status = job->status < ARRAY_SIZE(ends) ? job->status : JOB_FAILED;
+	char http[24] = "no HTTP status";
+	if (job->http)
+		util_format(http, sizeof http, "HTTP %" PRIu16, job->http);
+	size_t len = buf_peek(&job->result).len;
+	if (status != JOB_TEXT) {
+		bool body = status == JOB_ANSWERED;
+		LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": %s, %s "
+		    "after %.1f s, %s%zu %s of %s", req->mcp->loop->id, req->asked, req->turn,
+		    body && job->http >= 400 ? "failed" : ends[status], http,
+		    mcp_elapsed(req->turn_at), body ? "not streamed, " : "", len, mcp_bytes(len),
+		    body ? "body" : "error text");
+		return;
+	}
+	long told = req->mcp->st->ep->context;
+	uint64_t context = told > 0 ? (uint64_t)told : job->context;
+	uint64_t used = job->used;
+	char tokens[96];
+	if (used && context)
+		util_format(tokens, sizeof tokens, "%" PRIu64 " of %" PRIu64 " tokens (%" PRIu64
+		            " %%)", used, context, used * 100 / context);
+	else if (used)
+		util_format(tokens, sizeof tokens, "%" PRIu64 " tokens of a context of "
+		            "unknown size", used);
+	else
+		util_format(tokens, sizeof tokens, "tokens unknown");
+	char reason[sizeof job->reason + 8] = "none";
+	if (*job->reason)
+		mcp_quote(reason, sizeof reason, job->reason, strlen(job->reason),
+		          sizeof job->reason);
+	uint32_t calls = 0;
+	for (size_t k = 0; k < JOB_CALLS; ++k)
+		calls += buf_peek(&job->calls[k]).len != 0;
+	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": answered, %s "
+	    "after %.1f s, %s, stop reason %s, %" PRIu32 " tool call%s, %zu %s of text",
+	    req->mcp->loop->id, req->asked, req->turn, http, mcp_elapsed(req->turn_at),
+	    tokens, reason, calls, calls == 1 ? "" : "s", len, mcp_bytes(len));
+}
+
 /* The job the request waits for has ended, home done with its upstream
  * request and its key: parse the answer, a slice a step, or reply with what
  * home says of it.  A request whose turns go on keeps the upstream request,
@@ -1817,6 +2116,7 @@ mcp_req_job_done (struct mcp_req *req)
 {
 	struct job *job = req->job;
 	struct span why = buf_peek(&job->result);
+	mcp_req_log_turn(req, job);
 	buf_fini(&job->key);
 	/* The message's reference; the request keeps the front's. */
 	(void)job_put(job, 1);
@@ -2065,6 +2365,7 @@ mcp_req_submit (struct mcp_req *req)
 	req->sent = buf_peek(&job->request).len;
 	req->base = req->next_note;
 	req->place = 0;
+	req->turn_at = loop_clock();
 	++req->turn;
 	/* The front's and home's, and the post adds the message's. */
 	atomic_store_explicit(&job->refs, 2, memory_order_relaxed);
@@ -2227,7 +2528,7 @@ mcp_on_task_cancel (struct loop *loop,
 	ledger_task_put(task);
 	if (!req)
 		return;
-	LOG(LOG_VERBOSE, "task cancelled after %.1f s", mcp_elapsed(req->head));
+	mcp_req_log_call(req, "cancelled by tasks/cancel", (struct span){}, false);
 	mcp_req_abort(req, ECANCELED);
 }
 
@@ -2249,7 +2550,8 @@ mcp_on_withdraw (struct loop *loop,
 		return;
 	if (!req->sse)
 		(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
-	LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", mcp_elapsed(req->self.start));
+	mcp_req_log_call(req, "cancelled by notifications/cancelled", (struct span){},
+	                 false);
 	mcp_req_finish(req);
 }
 
@@ -2347,7 +2649,8 @@ mcp_req_detach (struct mcp_req     *req,
 	json_object_put(req->token);
 	req->token = nullptr;
 	loop_timer_stop(mcp->loop, &req->timer);
-	LOG(LOG_VERBOSE, "tool call became task %.*s after %.1f s", LEDGER_ID, task->id,
+	LOG(LOG_VERBOSE, "tool call %s from %s became task %.*s after %.1f s",
+	    mcp_slot_offer(&req->self)->name, mcp_req_client(req), LEDGER_ID, task->id,
 	    mcp_elapsed(req->head));
 }
 
@@ -2770,6 +3073,28 @@ mcp_req_draft (struct mcp_req     *req,
 	return req->text ? mcp_req_copy(req, 0) : ENOMEM;
 }
 
+/* Logs, with --verbose, the start of the ask call of @p req, whose prompt
+ * is @p prompt: its client, the size of the prompt, the thread of its
+ * notes, if any, and the start of the prompt. */
+static void
+mcp_req_log_ask (struct mcp_req const *req,
+                 struct json_object   *prompt,
+                 bool                  resume)
+{
+	if (log_threshold < LOG_VERBOSE)
+		return;
+	size_t len = (size_t)json_object_get_string_len(prompt);
+	char text[PROMPT_LOG + 8];
+	mcp_quote(text, sizeof text, json_object_get_string(prompt), len, PROMPT_LOG);
+	char thread[NOTES_ID + 32] = "no thread";
+	if (*req->thread)
+		util_format(thread, sizeof thread, "thread %s (%s)", req->thread,
+		            resume ? "resumed" : "new");
+	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " from %s: prompt %zu %s, %s, %s",
+	    req->mcp->loop->id, req->asked, mcp_req_client(req), len, mcp_bytes(len), thread,
+	    text);
+}
+
 /* Start a call that asks the upstream, with the arguments @p args, of the
  * class the request asks for, lending the turns the tools req->lent says,
  * if any: build its upstream request, then submit its job.  The notes the turns keep, if askai keeps
@@ -2811,6 +3136,8 @@ mcp_req_ask (struct mcp_req     *req,
 		}
 		notes_repo(req->principal, NOTES_UPSTREAM, req->thread, req->repo);
 	}
+	req->asked = ++req->mcp->asked;
+	mcp_req_log_ask(req, prompt, id != nullptr);
 	mcp_req_wait(req);
 	int e = mcp_req_draft(req, prompt, system);
 	if (e) {
@@ -3019,19 +3346,12 @@ mcp_req_upload_failed (struct mcp_req *req,
 	mcp_req_fail(req, e);
 }
 
-/* Returns the tools that the turns of @p req may call.  These are the tools
- * that the client's role lets the upstream call and that askai can offer to
- * the upstream (st->lends), and the tools that askai always offers to the
- * upstream (st->always).  If there are any, the result also has the tools
- * in st->with, and if one of them can run in the background, the tools in
- * st->detached. */
+/* Returns the tools that the turns of @p req may call, as
+ * mcp_lending_lent() computes them for the client's role. */
 static tool_mask
 mcp_req_lent (struct mcp_req const *req)
 {
-	struct mcp_static const *st = req->mcp->st;
-	tool_mask lent = (req->s->upstream & st->lends) | st->always;
-	tool_mask more = lent & st->detach ? st->detached : 0;
-	return lent ? lent | st->with | more : 0;
+	return mcp_lending_lent(&req->mcp->st->lending, req->s->upstream);
 }
 
 /* The bytes of a tool's output that a turn takes, at most: an eighth of the
@@ -3444,6 +3764,21 @@ mcp_req_trace_end (struct mcp_req *req,
 	return dstr_printf(&req->trace, ": %zu bytes\n", bytes) ? 0 : ENOMEM;
 }
 
+/* The id of the tool of @p name, of @p len bytes, that askai offers;
+ * TOOL_MAX if none. */
+static uint32_t
+mcp_static_tool_of (struct mcp_static const *st,
+                    char const              *name,
+                    size_t                   len)
+{
+	for (uint32_t id = 0; id < st->n_offers; ++id) {
+		struct mcp_offer const *o = &st->offers[id];
+		if (o->len == len && !memcmp(o->name, name, len))
+			return id;
+	}
+	return TOOL_MAX;
+}
+
 /* The id of the tool of @p name, of @p len bytes, that the turns may
  * call; TOOL_MAX if none. */
 static uint32_t
@@ -3451,13 +3786,42 @@ mcp_req_tool_of (struct mcp_req const *req,
                  char const           *name,
                  size_t                len)
 {
+	uint32_t id = mcp_static_tool_of(req->mcp->st, name, len);
+	return id < TOOL_MAX && req->lent >> id & 1 ? id : TOOL_MAX;
+}
+
+/* The words of the log for the arguments of a turn's tool call of @p req
+ * that are not a JSON object, so that the call was not run: the output
+ * token limit cut them short, or the model wrote another value. */
+static struct tool_text
+mcp_req_no_args (struct mcp_req const *req)
+{
+	return req->cut ? TOOL_TEXT("cut short by the output token limit")
+	                : TOOL_TEXT("not a JSON object");
+}
+
+/* Logs, with --verbose, a turn's call of the tool @p name, which the turns
+ * of @p req may not call, with its arguments @p args: askai offers the
+ * tool, but not to this ask call, or askai offers no such tool.  The name
+ * comes from the upstream, so the line has it as a JSON string. */
+static void
+mcp_req_log_refused (struct mcp_req const *req,
+                     struct span           name,
+                     struct json_object   *args)
+{
+	if (log_threshold < LOG_VERBOSE)
+		return;
 	struct mcp_static const *st = req->mcp->st;
-	for (uint32_t id = 0; id < st->n_offers; ++id) {
-		struct mcp_offer const *o = &st->offers[id];
-		if (req->lent >> id & 1 && o->len == len && !memcmp(o->name, name, len))
-			return id;
-	}
-	return TOOL_MAX;
+	char const *str = (char const *)name.ptr;
+	uint32_t known = mcp_static_tool_of(st, str, name.len);
+	char quoted[NAME_LOG + 8];
+	mcp_quote(quoted, sizeof quoted, str, name.len, NAME_LOG);
+	char shown[SHOWN];
+	mcp_args_shown(&st->offers[known], args, mcp_req_no_args(req), shown);
+	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": tool call %s "
+	    "refused: %s; arguments %s", req->mcp->loop->id, req->asked, req->turn, quoted,
+	    known < TOOL_MAX ? "not lent to this ask call" : "askai offers no such tool",
+	    shown);
 }
 
 static void mcp_agenda_alarm (struct loop *loop, struct loop_timer *timer);
@@ -3995,6 +4359,8 @@ mcp_req_call_launch (struct mcp_req *req)
 	hist_add(&mcp->counts->calls.lent[tool->metric], 1);
 	mcp_req_notify_tool(req, tool->name);
 	loop_ready_bulk(mcp->loop, &req->step);
+	if (id == TOOL_MAX)
+		mcp_req_log_refused(req, c.name, args);
 	if (!args) {
 		/* mcp_slot_start() does not run for this call, so this line sets
 		 * slot->start.  mcp_slot_done() logs the time since slot->start. */
@@ -4095,28 +4461,47 @@ static void mcp_agenda_job_done (struct mcp_slot *slot);
  * order of the calls.  For a job, the function calls mcp_agenda_job_done(),
  * which adds a notice about the job to the agenda.
  *
- * With --verbose, the function logs one line with the name of the tool,
- * whether the call failed, the time that the call took and the size of the
- * output in bytes.  The line does not contain the arguments or the output,
- * because they can contain the text of the upstream's notes.  A failed call
- * is logged at the verbose level, because a model that calls a tool with
- * wrong arguments is not an error of askai.  A call that ends in another
- * way, such as a job that a jobs call cancels or a call that ends with its
- * request, ends in mcp_slot_drop() and has no line. */
+ * With --verbose, the function logs one line with the ask call, the turn,
+ * the name of the tool, whether the call failed, the time that the call
+ * took, the size of the output in bytes, the arguments, as mcp_args_shown()
+ * writes them, without the text of a note, and the text of a failure.  The
+ * line never contains the output of a call that succeeds, which can be the
+ * text of the upstream's notes.  A failed call is logged at the verbose
+ * level, because a model that calls a tool with wrong arguments is not an
+ * error of askai.  A call of a tool that the turns may not call is logged
+ * by mcp_req_call_launch() instead.  A call that ends in another way, such
+ * as a job that a jobs call cancels or a call that ends with its request,
+ * ends in mcp_slot_drop() and has no line. */
 static void
 mcp_slot_done (struct mcp_slot *slot,
                bool             failed)
 {
-	/* The first words of the log line for a call of a turn and for a job.
-	 * This function is not called for ROLE_OWN. */
+	/* The words of the log line for a call of a turn and for a job.  This
+	 * function is not called for ROLE_OWN. */
 	static char const *const label[] = {
-		[ROLE_TURN] = "tool call from a turn",
-		[ROLE_JOB]  = "background tool call from a turn",
+		[ROLE_TURN] = "tool call",
+		[ROLE_JOB]  = "background tool call",
 	};
+	struct mcp_req *req = slot->req;
 	struct span out = mcp_slot_output(slot);
-	LOG(LOG_VERBOSE, "%s to %s %s after %.1f s (%zu bytes)", label[slot->role],
-	    mcp_slot_offer(slot)->name, failed ? "failed" : "answered",
-	    mcp_elapsed(slot->start), out.len);
+	if (log_threshold >= LOG_VERBOSE && slot->tool != TOOL_MAX) {
+		struct mcp_offer const *offer = mcp_slot_offer(slot);
+		bool job = slot->role == ROLE_JOB;
+		/* A turn's call whose arguments are not a JSON object ends at once
+		 * in mcp_req_call_launch(), so req->cut is still the value of its
+		 * turn. */
+		char shown[SHOWN];
+		mcp_args_shown(offer, job ? slot->args : req->args[slot - req->slots],
+		               job ? TOOL_TEXT("none") : mcp_req_no_args(req), shown);
+		char text[ERROR_LOG + 8] = "";
+		if (failed && out.len)
+			mcp_quote(text, sizeof text, (char const *)out.ptr, out.len, ERROR_LOG);
+		LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": %s %s %s "
+		    "after %.1f s (%zu %s); arguments %s%s%s", req->mcp->loop->id, req->asked,
+		    req->turn, label[slot->role], offer->name, failed ? "failed" : "answered",
+		    mcp_elapsed(slot->start), out.len, mcp_bytes(out.len), shown,
+		    *text ? "; error " : "", text);
+	}
 	slot->failed = failed;
 	if (slot->role == ROLE_JOB) {
 		mcp_agenda_job_done(slot);
@@ -4125,7 +4510,7 @@ mcp_slot_done (struct mcp_slot *slot,
 	bool past = slot->skip > out.len;
 	mcp_slot_window(slot, out);
 	slot->note_len = (uint16_t)mcp_slot_note_window(slot, out.len, past);
-	loop_ready_bulk(slot->req->mcp->loop, &slot->req->step);
+	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
 /* Writes a notice about the context of @p req into the @p size bytes at
@@ -4134,7 +4519,7 @@ mcp_slot_done (struct mcp_slot *slot,
  * notice asks the turns to call compact, after each turn.  Below two thirds,
  * if the turns have the notes tool, the notice reminds them to write notes,
  * once when the context is a quarter full and once when it is half full.
- * Otherwise there is no notice. */
+ * Otherwise there is no notice.  With --verbose, a notice is logged. */
 static size_t
 mcp_req_context_note (struct mcp_req *req,
                       char           *buf,
@@ -4144,14 +4529,20 @@ mcp_req_context_note (struct mcp_req *req,
 	uint64_t context = req->context;
 	if (!context)
 		return 0;
-	if (tokens * 3 >= context * 2)
+	bool full = tokens * 3 >= context * 2;
+	uint8_t quarters = tokens * 2 >= context ? 2 : tokens * 4 >= context;
+	if (!full && (quarters <= req->reminded ||
+	              !(req->lent & req->mcp->st->lending.by[LEND_ALWAYS])))
+		return 0;
+	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": context "
+	    "notice, %" PRIu64 " %% full, %" PRIu64 " of %" PRIu64 " tokens: %s",
+	    req->mcp->loop->id, req->asked, req->turn, tokens * 100 / context, tokens,
+	    context, full ? "a request to call compact" : "a reminder to write notes");
+	if (full)
 		return util_format(buf, size, "\n\n[askai: your context is %" PRIu64 "%% full, "
 		                   "%" PRIu64 " of %" PRIu64 " tokens. Note what you need to "
 		                   "keep, then call compact.]", tokens * 100 / context, tokens,
 		                   context);
-	uint8_t quarters = tokens * 2 >= context ? 2 : tokens * 4 >= context;
-	if (quarters <= req->reminded || !(req->lent & req->mcp->st->always))
-		return 0;
 	req->reminded = quarters;
 	return util_format(buf, size, "\n\n[askai: your context is %" PRIu64 "%% full, "
 	                   "%" PRIu64 " of %" PRIu64 " tokens. Now is a good time to write "
@@ -4998,6 +5389,9 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	(void)mcp_req_trace(req, &c, args, o->trace);
 	(void)mcp_req_trace_end(req, false, len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
+	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": compacted by "
+	    "the upstream's compact call, summary %zu %s", req->mcp->loop->id, req->asked,
+	    req->turn, len, mcp_bytes(len));
 	req->reminded = 0;
 	dstr_clear(&req->self.answer);
 	struct mcp_piece const p[] = {
@@ -5037,6 +5431,8 @@ mcp_req_compact_full (struct mcp_req *req)
 		return;
 	}
 	hist_add(&req->mcp->counts->calls.compacted[1], 1);
+	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": context full, "
+	    "compacted by askai", req->mcp->loop->id, req->asked, req->turn);
 	req->reminded = 0;
 	mcp_req_drop(req);
 	mcp_req_args_free(req, 0, ARRAY_SIZE(req->args));
@@ -5089,8 +5485,18 @@ mcp_req_tools_call (struct mcp_req     *req,
 	/* One that the client's role may not call is not unknown, but not
 	 * available to it. */
 	if (!str || id == st->n_granted || !(req->s->tools >> id & 1)) {
-		struct mcp_piece head = str && id < st->n_granted
-		                      ? FRAG("Tool not available: ") : FRAG("Unknown tool: ");
+		bool known = str && id < st->n_granted;
+		/* An unknown name is the client's, so the log has it as a JSON
+		 * string. */
+		char quoted[NAME_LOG + 8] = "(none)";
+		if (str && !known)
+			mcp_quote(quoted, sizeof quoted, str, len, NAME_LOG);
+		LOG(LOG_WARN, "tool call %s from %s refused: %s",
+		    known ? st->offers[id].name : quoted, mcp_req_client(req),
+		    known ? "the role does not grant it" : str ? "askai offers no such tool"
+		                                               : "the call names no tool");
+		struct mcp_piece head = known ? FRAG("Tool not available: ")
+		                              : FRAG("Unknown tool: ");
 		struct mcp_piece what = str ? ESC(str, mcp_clip(str, len, 100))
 		                            : TEXT("(none)");
 		char msg[32 + 6 * 100];
@@ -5111,7 +5517,10 @@ mcp_req_tools_call (struct mcp_req     *req,
 		mcp_req_arm(req);
 	}
 	req->self.tool = (uint8_t)id;
-	mcp_slot_start(&req->self, jb_get(params, "arguments"));
+	struct json_object *args = jb_get(params, "arguments");
+	if (log_threshold >= LOG_VERBOSE)
+		mcp_args_shown(&st->offers[id], args, TOOL_TEXT("none"), req->call_args);
+	mcp_slot_start(&req->self, args);
 }
 
 static void
@@ -5757,6 +6166,11 @@ mcp_begin (struct mcp           *mcp,
 		.phase = phase,
 		.method = method
 	};
+	/* The client's name is in the policy, which a reload can free after
+	 * the head. */
+	if (s->who.len)
+		memcpy(req->client, s->who.ptr, s->who.len < sizeof req->client
+		                                ? s->who.len : sizeof req->client - 1);
 	s->user = req;
 	return req;
 }
@@ -5845,8 +6259,7 @@ static void
 mcp_on_cancel (struct stream *s)
 {
 	struct mcp_req *req = s->user;
-	if (req->call.bits)
-		LOG(LOG_VERBOSE, "tool call cancelled after %.1f s", mcp_elapsed(req->self.start));
+	mcp_req_log_call(req, "cancelled by a closed connection", (struct span){}, false);
 	req->s = nullptr;
 	mcp_req_finish(req);
 }
@@ -6051,7 +6464,8 @@ mcp_drain (struct mcp *mcp)
 /* Returns the definition of the ask tool.  @p service is the mcp_static,
  * which has the tool's configured name and description.  The definition has
  * the argument "thread" if the turns get the notes tool, which is the only
- * tool in st->always.  They get it with --notes and --upstream-tools. */
+ * tool in st->lending.by[LEND_ALWAYS].  They get it with --notes and
+ * --upstream-tools. */
 static struct json_object *
 mcp_tool_definition (void const *service)
 {
@@ -6071,7 +6485,7 @@ mcp_tool_definition (void const *service)
 				"or an answer format."),
 			nullptr),
 		nullptr);
-	if (st->always && jb_set(props, "thread", jb_object(
+	if (st->lending.by[LEND_ALWAYS] && jb_set(props, "thread", jb_object(
 		    "type", json_object_new_string("string"),
 		    "description", json_object_new_string(
 			    "Optional: the thread that an earlier answer named, to go on with "
@@ -6483,12 +6897,17 @@ mcp_static_tails (struct mcp_static  *st,
 
 /* What each kind of tool is: what its calls do, or the plugin whose one
  * tool it is; its name, but the ask tool's, which the configuration names;
- * how the turns are lent it, but a plugin's, which its kind's flags say;
- * its row in the turns' metrics; and what the trace tells of its calls. */
+ * the argument whose value is logged as its size; the option that turns it
+ * on, for the log, or nullptr for a test aid, which the log leaves out
+ * while it is off; how the turns are lent it, but a plugin's, which follows
+ * its kind's flags; its row in the turns' metrics; and what the trace shows
+ * of its calls. */
 struct mcp_row {
 	struct tool_kind        kind;
 	struct plugin const    *plugin;
 	char const             *ptr;
+	char const             *sized;
+	char const             *option;
 	uint32_t                len;
 	uint8_t                 lend;    /* enum mcp_lend */
 	uint8_t                 metric;  /* enum metrics_lent */
@@ -6506,20 +6925,24 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	[KIND_ASK]        = { { .definition = mcp_tool_definition, .start = mcp_slot_ask,
 	                        .step = mcp_slot_notes_out },
 	                      .metric = LENT_NONE },
-	[KIND_MAN]        = { .plugin = &manual_plugin, N("man"), .metric = LENT_MAN },
+	[KIND_MAN]        = { .plugin = &manual_plugin, N("man"), .metric = LENT_MAN,
+	                      .option = "--man" },
 	[KIND_TASK]       = { { .definition = mcp_task_definition, .start = mcp_slot_task,
 	                        .drop = mcp_slot_task_drop },
 	                      N("test_task"), LEND_NEVER, LENT_NONE },
-	[KIND_GIT]        = { .plugin = &git_plugin, N("git"), .metric = LENT_GIT },
+	[KIND_GIT]        = { .plugin = &git_plugin, N("git"), .metric = LENT_GIT,
+	                      .option = "--git PATH" },
 	/* The flag TOOL_LENT lets a role's "upstream" name the notes tool, which
 	 * the turns always get. */
 	[KIND_NOTES]      = { { .definition = mcp_notes_definition, .start = mcp_slot_notes,
 	                        .step = mcp_slot_notes_out,
 	                        .flags = KF_SERIAL | TOOL_LENT | TOOL_PAGED },
-	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION },
+	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION,
+	                      .sized = "text", .option = "--notes DIR" },
 	[KIND_COMPACT]    = { { .definition = mcp_compact_definition, .start = mcp_slot_compact,
 	                        .flags = KF_SERIAL },
-	                      N("compact"), LEND_WITH, LENT_COMPACT, TRACE_NAME },
+	                      N("compact"), LEND_WITH, LENT_COMPACT, TRACE_NAME,
+	                      .sized = "summary" },
 	[KIND_BACKGROUND] = { { .definition = mcp_background_definition,
 	                        .start = mcp_slot_background },
 	                      N("background"), LEND_DETACH, LENT_BACKGROUND },
@@ -6574,18 +6997,62 @@ mcp_static_build (struct mcp_static  *st,
  * the arguments of its calls. */
 static struct mcp_row const mcp_loaded_row = { .metric = LENT_PLUGIN };
 
+/* The row of the tool @p t of a registry: askai's own tool's, or that of
+ * the tools of the plugins askai loaded. */
+static struct mcp_row const *
+mcp_row_of (struct registry_tool const *t)
+{
+	/* mcp_register() gave each of askai's own tools its row. */
+	return t->data ? t->data : &mcp_loaded_row;
+}
+
+/* How the turns are lent the tool @p t of a registry, with
+ * --upstream-tools: by its row, or for the kind of a plugin, built in or
+ * loaded, which is not in a row, by its flags. */
+static enum mcp_lend
+mcp_lend_of (struct registry_tool const *t)
+{
+	struct mcp_row const *row = mcp_row_of(t);
+	if (t->kind == &row->kind)
+		return row->lend;
+	return t->kind->flags & TOOL_LENT ? LEND_GRANTED : LEND_NEVER;
+}
+
+/* The tools of the registry of @p cfg that askai lends the turns, by how it
+ * lends them: none without --upstream-tools. */
+static struct mcp_lending
+mcp_lending (struct config const *cfg)
+{
+	struct mcp_lending l = {};
+	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
+		return l;
+	struct registry const *reg = &cfg->registry;
+	for (uint32_t id = 0; id < reg->n_tools; ++id) {
+		struct registry_tool const *t = &reg->tools[id];
+		tool_mask bit = (tool_mask)1 << id;
+		l.by[mcp_lend_of(t)] |= bit;
+		l.detach |= t->kind->flags & TOOL_DETACH ? bit : 0;
+	}
+	return l;
+}
+
+/* The kinds of askai's own tools that @p cfg offers, as bits. */
+static uint32_t
+mcp_offered (struct config const *cfg)
+{
+	uint32_t turns = 1u << KIND_COMPACT | 1u << KIND_BACKGROUND | 1u << KIND_JOBS |
+	                 1u << KIND_WAIT | 1u << KIND_TIMER;
+	return 1u << KIND_ASK | (cfg->flags & CFG_MAN ? 1u << KIND_MAN : 0) |
+	       (cfg->flags & CFG_TEST_TASK ? 1u << KIND_TASK : 0) |
+	       (cfg->n_gits ? 1u << KIND_GIT : 0) | (cfg->notes ? 1u << KIND_NOTES : 0) |
+	       (cfg->flags & CFG_UPSTREAM_TOOLS ? turns : 0);
+}
+
 int
 mcp_register (struct registry     *reg,
               struct config const *cfg)
 {
-	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
-	uint32_t turns = 1u << KIND_COMPACT | 1u << KIND_BACKGROUND | 1u << KIND_JOBS |
-	                 1u << KIND_WAIT | 1u << KIND_TIMER;
-	uint32_t offered = 1u << KIND_ASK | (cfg->flags & CFG_MAN ? 1u << KIND_MAN : 0) |
-	                   (cfg->flags & CFG_TEST_TASK ? 1u << KIND_TASK : 0) |
-	                   (cfg->n_gits ? 1u << KIND_GIT : 0) |
-	                   (cfg->notes ? 1u << KIND_NOTES : 0) |
-	                   (lends ? turns : 0);
+	uint32_t offered = mcp_offered(cfg);
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
 		if (!(offered >> k & 1))
 			continue;
@@ -6615,6 +7082,150 @@ mcp_register (struct registry     *reg,
 	return 0;
 }
 
+/* The names of the tools in @p mask of @p reg, separated by commas, or
+ * "none" for no tool, into the @p size bytes at @p buf. */
+static void
+mcp_names (struct registry const *reg,
+           tool_mask              mask,
+           char                  *buf,
+           size_t                 size)
+{
+	size_t len = 0;
+	for (uint32_t id = 0; id < reg->n_tools; ++id)
+		if (mask >> id & 1)
+			len += util_format(buf + len, size - len, "%s%s", len ? ", " : "",
+			                   reg->tools[id].name);
+	if (!len)
+		util_format(buf, size, "none");
+}
+
+/* The plugin of @p reg that askai loaded as @p plugin; nullptr for a
+ * plugin built into askai. */
+static struct plugin_loaded const *
+mcp_loaded_of (struct registry const *reg,
+               struct plugin const   *plugin)
+{
+	for (uint32_t i = 0; i < reg->n_loaded; ++i)
+		if (reg->loaded[i]->plugin == plugin)
+			return reg->loaded[i];
+	return nullptr;
+}
+
+/* Logs askai's own tool of kind @p k: if @p on is true, with the details
+ * of @p cfg, and else with the option that turns it on.  A test aid, which
+ * has no such option in its row, is not logged while it is off. */
+static void
+mcp_report_own (struct config const *cfg,
+                enum mcp_kind        k,
+                bool                 on)
+{
+	struct mcp_row const *row = &mcp_rows[k];
+	char const *name = row->ptr ? row->ptr : cfg->tool.name;
+	if (!on) {
+		if (row->option)
+			LOG_ALL(LOG_INFO, "tool %s: built in; off, %s turns it on", name,
+			        row->option);
+		return;
+	}
+	char more[1024] = "";
+	switch (k) {
+	case KIND_ASK:
+		util_format(more, sizeof more, ", the ask tool");
+		break;
+	case KIND_TASK:
+		util_format(more, sizeof more, ", a test aid");
+		break;
+	case KIND_GIT:
+		for (size_t i = 0, n = 0; i < cfg->n_gits; ++i) {
+			size_t len = 0;
+			char const *repo = git_name(cfg->gits[i], &len);
+			n += util_format(more + n, sizeof more - n, "%s%.*s",
+			                 i ? ", " : ", repositories ", (int)len, repo);
+		}
+		break;
+	case KIND_NOTES:
+		util_format(more, sizeof more, ", directory %s", cfg->notes);
+		break;
+	default:
+		break;
+	}
+	LOG_ALL(LOG_INFO, "tool %s: built in; on%s", name, more);
+}
+
+/* Logs the tools that the upstream may call in the turns of an ask call
+ * with @p cfg, of its registry @p reg. */
+static void
+mcp_report_turns (struct registry const *reg,
+                  struct config const   *cfg)
+{
+	if (!(cfg->flags & CFG_UPSTREAM_TOOLS)) {
+		LOG_ALL(LOG_INFO, "upstream tools: none, --upstream-tools turns them on");
+		return;
+	}
+	struct mcp_lending l = mcp_lending(cfg);
+	char names[1024];
+	mcp_names(reg, l.by[LEND_GRANTED], names, sizeof names);
+	LOG_ALL(LOG_INFO, "upstream tools: %s, as the role of the client allows", names);
+	if (l.by[LEND_ALWAYS]) {
+		mcp_names(reg, l.by[LEND_ALWAYS], names, sizeof names);
+		LOG_ALL(LOG_INFO, "upstream tools: %s, in every ask call", names);
+	}
+	mcp_names(reg, l.by[LEND_WITH], names, sizeof names);
+	LOG_ALL(LOG_INFO, "upstream tools: %s, when the turns get at least one other tool",
+	        names);
+	char tools[1024];
+	tool_mask detach = (l.by[LEND_GRANTED] | l.by[LEND_ALWAYS]) & l.detach;
+	mcp_names(reg, l.by[LEND_DETACH], names, sizeof names);
+	mcp_names(reg, detach, tools, sizeof tools);
+	if (detach)
+		LOG_ALL(LOG_INFO, "upstream tools: %s, when the turns get one of %s (tools that "
+		        "can run in the background)", names, tools);
+	else
+		LOG_ALL(LOG_INFO, "upstream tools: %s, never, because no tool that the turns can "
+		        "get can run in the background", names);
+}
+
+void
+mcp_report (struct registry const *reg,
+            struct config const   *cfg)
+{
+	if (!reg || !cfg)
+		return;
+	uint32_t offered = mcp_offered(cfg);
+	for (enum mcp_kind k = 0; k <= KIND_NOTES; ++k)
+		mcp_report_own(cfg, k, offered >> k & 1);
+	for (uint32_t id = 0; id < reg->n_granted; ++id) {
+		struct registry_tool const *t = &reg->tools[id];
+		struct plugin_loaded const *p = mcp_loaded_of(reg, reg->plugins[t->part]);
+		if (p)
+			LOG_ALL(LOG_INFO, "tool %s: plugin %s (%s); on", t->name, p->manifest.name,
+			        p->path);
+	}
+	if (!reg->n_loaded)
+		LOG_ALL(LOG_INFO, "plugins: none");
+	for (uint32_t i = 0; i < reg->n_loaded; ++i) {
+		struct plugin_loaded const *p = reg->loaded[i];
+		char tools[1024];
+		size_t len = 0;
+		for (uint32_t k = 0; k < p->n_tools; ++k)
+			len += util_format(tools + len, sizeof tools - len, "%s%s", k ? ", " : "",
+			                   p->manifest.tools[k]);
+		LOG_ALL(LOG_INFO, "plugin %s: %s; tools %s; %s", p->manifest.name, p->path,
+		        tools, p->options ? "options given" : "no options");
+	}
+	mcp_report_turns(reg, cfg);
+}
+
+tool_mask
+mcp_lent (void const *cfg,
+          tool_mask   upstream)
+{
+	if (!cfg)
+		return 0;
+	struct mcp_lending l = mcp_lending(cfg);
+	return mcp_lending_lent(&l, upstream);
+}
+
 /* Returns the record of @p plugin for @p st: the plugin, its service and
  * its two part functions.  The service of askai's own kinds is @p st.  The
  * service of the man tool's plugin is @p manual, and the service of the git
@@ -6638,10 +7249,7 @@ mcp_static_plugin (struct mcp_static     *st,
 	for (size_t i = 0; i < ARRAY_SIZE(own); ++i)
 		if (own[i].plugin == plugin)
 			return own[i];
-	for (uint32_t i = 0; i < reg->n_loaded; ++i)
-		if (reg->loaded[i]->plugin == plugin)
-			return (struct mcp_plugin){ .plugin = plugin, .loaded = reg->loaded[i] };
-	return (struct mcp_plugin){ .plugin = plugin };
+	return (struct mcp_plugin){ .plugin = plugin, .loaded = mcp_loaded_of(reg, plugin) };
 }
 
 struct mcp_static *
@@ -6694,34 +7302,23 @@ mcp_static_create (struct config const *cfg,
 	/* A zeroed dstr is no empty string (dstr.h). */
 	for (uint32_t id = 0; id < reg->n_tools; ++id) {
 		struct registry_tool const *t = &reg->tools[id];
-		/* mcp_register() gave each of askai's own tools its row. */
-		struct mcp_row const *row = t->data ? t->data : &mcp_loaded_row;
+		struct mcp_row const *row = mcp_row_of(t);
 		struct mcp_offer *o = &st->offers[id];
+		/* The turns are lent tools with --upstream-tools. */
 		*o = (struct mcp_offer){
 			.listed = DSTR_INIT,
 			.lent = DSTR_INIT,
 			.kind = t->kind,
 			.name = t->name,
+			.sized = row->sized,
 			.len = t->len,
 			.part = (uint8_t)t->part,
-			.lend = row->lend,
+			.lend = lends ? mcp_lend_of(t) : LEND_NEVER,
 			.metric = row->metric,
 			.trace = row->trace
 		};
-		/* The kind of a plugin, built in or loaded, is not in a row.  Its
-		 * flags decide whether the turns are lent the tool. */
-		if (t->kind != &row->kind)
-			o->lend = o->kind->flags & TOOL_LENT ? LEND_GRANTED : LEND_NEVER;
-		/* The turns are lent tools with --upstream-tools. */
-		if (!lends)
-			o->lend = LEND_NEVER;
-		tool_mask bit = (tool_mask)1 << id;
-		st->lends |= o->lend == LEND_GRANTED ? bit : 0;
-		st->always |= o->lend == LEND_ALWAYS ? bit : 0;
-		st->with |= o->lend == LEND_WITH ? bit : 0;
-		st->detached |= o->lend == LEND_DETACH ? bit : 0;
-		st->detach |= o->kind->flags & TOOL_DETACH ? bit : 0;
 	}
+	st->lending = mcp_lending(cfg);
 	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
 
 	/* Built with json-c, which escapes as replies need, then kept as text. */

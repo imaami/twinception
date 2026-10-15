@@ -43,6 +43,21 @@ enum policy_kind {
 	POLICY_KINDS
 };
 
+/** Bytes of a role's or an identity's name, at most. */
+static constexpr size_t POLICY_NAME = 64;
+
+/** Bytes of the longest name of a client in the log, struct policy_grant's
+ *  member who, with a terminating NUL. */
+static constexpr size_t POLICY_WHO = sizeof "anonymous loopback (role )" + POLICY_NAME;
+
+/** The type of a function that returns the tools that the upstream may call
+ *  in the turns of an ask call, for a client whose role lets the upstream
+ *  call @p upstream: the tools of the role's member "upstream", or else the
+ *  role's tools.  @p ctx is the context that the caller of policy_log()
+ *  passes. */
+typedef tool_mask policy_lent_fn (void const *ctx,
+                                  tool_mask   upstream);
+
 /** The user of a Unix socket's client, as the kernel says (SO_PEERCRED,
  *  SO_PEERGROUPS). */
 struct policy_peer {
@@ -54,12 +69,20 @@ struct policy_peer {
 /** What a client may see and do, and whose share of the upstream its calls
  *  take. */
 struct policy_grant {
-	tool_mask tools;      /**< the tools it may list and call */
-	tool_mask upstream;   /**< the tools that the upstream may call in the
-	                           turns of its ask calls */
-	uint64_t  principal;  /**< its identity's, never 0; 0 if anonymous */
-	uint64_t  metrics;    /**< bool: it may read the metrics; widened over
-	                           the padding */
+	tool_mask        tools;      /**< the tools it may list and call */
+	tool_mask        upstream;   /**< the tools that the upstream may call in
+	                                  the turns of its ask calls */
+	struct tool_text who;        /**< the client for the log, at most
+	                                  POLICY_WHO - 1 bytes: "identity NAME",
+	                                  "role NAME" for a member of a Unix
+	                                  group, or "anonymous KIND (role
+	                                  NAME)"; empty for a client without an
+	                                  identity under askai's own policy.  The
+	                                  text is in the policy's memory. */
+	uint64_t         principal;  /**< its identity's, never 0; 0 if
+	                                  anonymous */
+	uint64_t         metrics;    /**< bool: it may read the metrics; widened
+	                                  over the padding */
 };
 
 /**
@@ -94,6 +117,33 @@ policy_get (struct policy *policy);
 /** Let go of a reference to @p policy, if not nullptr: the last frees it. */
 extern void
 policy_put (struct policy *policy);
+
+/**
+ * Logs @p policy, which policy_create() made from @p file.  @p tools has
+ * the names of the @p n_tools tools of askai, at most TOOL_MAX, by id.  The
+ * first @p n_granted of them are those that policy_create() got, which a
+ * role can grant.  @p lent, with @p ctx, returns the tools that the
+ * upstream may call for a role, and is nullptr if askai lends the upstream
+ * no tool.
+ *
+ * For askai's own policy, the function logs at LOG_INFO whether
+ * ASKAI_TOKEN is set.  For the policy of the file, it logs at LOG_INFO a
+ * line for each role with the tools that its clients may call, the tools
+ * that the upstream may call in their ask calls if @p lent is not nullptr,
+ * and whether they may read the metrics; the names of the identities; each
+ * Unix group with its role; and the role of each kind of anonymous client.
+ * Then it logs at LOG_WARN a line for each of the first @p n_granted tools
+ * that no role grants and no role lends to the upstream.  The lines have no
+ * rate limit.
+ */
+extern void
+policy_log (struct policy const *policy,
+            struct json_object  *file,
+            char const *const    tools[],
+            size_t               n_tools,
+            size_t               n_granted,
+            policy_lent_fn      *lent,
+            void const          *ctx);
 
 /**
  * The grant, in @p *grant, of a client that shows the bearer token of

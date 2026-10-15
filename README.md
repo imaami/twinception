@@ -691,8 +691,9 @@ Four more members define who may connect, and what each client may do:
   from `A-Z`, `a-z`, `0-9`, `_`, `.`, `@` and `-`.  A role without `tools`
   grants no tool, and `metrics` is `false` unless the role sets it.  A name in
   `tools` that `askai` does not offer in this run, such as `man` without
-  `--man`, stops `askai`.  `tools/list` shows a client the tools of its role
-  only, and a call of another tool is an error, "Tool not available: NAME".
+  `--man`, stops `askai`, and the error lists the tools that it offers.
+  `tools/list` shows a client the tools of its role only, and a call of
+  another tool is an error, "Tool not available: NAME".
   With `--upstream-tools`, the member `upstream` lists the tools that the
   upstream may call in the turns of the `ask_ai` calls of the role.  These
   can differ from the tools that the clients of the role may call.  In the
@@ -1113,6 +1114,147 @@ a second ends it at once, with exit status 3.  A signal that `askai` started
 with ignored, as under `nohup` or in a shell's background job, stays ignored.
 Invalid options or environment exit 2, and a failure to start or to serve 1.
 
+### Log
+
+`askai` writes its log to stderr, one line for each event, and each line
+begins with `askai: `.  As it starts, and before the lines with its MCP
+endpoints, it logs what it runs, one fact a line:
+
+- the upstream: its provider, API, URL, model and context size.  The URL is
+  logged without a user, a password and a query, which can have secrets.
+- each tool that a role can grant, in the order of `tools/list`, with where
+  it comes from, built in or a plugin and its path, and whether it is on.
+  For a built-in tool that is off, the line names the option that turns it
+  on.  The test aid `test_task` has a line only when it is on.
+- each plugin that `askai` loaded, with its path, its tools and whether it
+  got options.
+- the tools that the upstream may call in the turns of an ask call.
+  Without `--upstream-tools`, the line is `upstream tools: none,
+  --upstream-tools turns them on`.
+- the policy: `askai`'s own, and whether `ASKAI_TOKEN` is set; or, when the
+  configuration file has roles, identities, Unix groups or anonymous
+  clients, the file's policy, which turns `askai`'s own policy off.  The
+  file's policy is logged as each role with its tools, the tools that the
+  upstream may call in the turns of its `ask_ai` calls and `metrics`; the
+  names of the identities; the role of each Unix group; and the role of
+  each kind of anonymous client.  A warning follows for each tool that is
+  on but that no role grants or lends to the upstream, because nothing can
+  call it.  A reload logs the policy again.
+
+`askai` does not log client tokens, its API key or the headers that it
+sends.  It logs the error text of an upstream and the request URL of a
+plugin as they arrive, and these can contain a secret.  In this
+configuration file, no role lists a tool of the godbolt plugin:
+
+```json
+{
+  "url": "http://127.0.0.1:8081/v1/chat/completions",
+  "tool-name": "bro",
+  "upstream-tools": true,
+  "man": true,
+  "notes": "/var/lib/askai/notes",
+  "git": "/srv/git/proj",
+  "plugins": [{ "path": "/usr/libexec/askai/godbolt.so",
+                "options": { "share": "off" } }],
+  "roles": {
+    "admin": { "tools": ["bro", "man", "git", "notes"], "metrics": true },
+    "user":  { "tools": ["bro", "notes", "git", "man"] }
+  },
+  "identities": { "alice": { "role": "admin", "tokens": ["env:ALICE_TOKEN"] } },
+  "anonymous": { "loopback": "user" }
+}
+```
+
+`askai` logs these lines as it starts with it:
+
+```text
+askai: upstream provider: none
+askai: upstream API: chat
+askai: upstream URL: http://127.0.0.1:8081/v1/chat/completions
+askai: upstream model: none
+askai: upstream context: n_ctx from llama-server's /props, else unknown
+askai: tool bro: built in; on, the ask tool
+askai: tool man: built in; on
+askai: tool git: built in; on, repositories proj
+askai: tool notes: built in; on, directory /var/lib/askai/notes
+askai: tool godbolt_catalog: plugin godbolt (/usr/libexec/askai/godbolt.so); on
+askai: tool godbolt_compile: plugin godbolt (/usr/libexec/askai/godbolt.so); on
+askai: tool godbolt_preprocess: plugin godbolt (/usr/libexec/askai/godbolt.so); on
+askai: tool godbolt_macros: plugin godbolt (/usr/libexec/askai/godbolt.so); on
+askai: tool godbolt_targets: plugin godbolt (/usr/libexec/askai/godbolt.so); on
+askai: plugin godbolt: /usr/libexec/askai/godbolt.so; tools godbolt_catalog, godbolt_compile, godbolt_preprocess, godbolt_macros, godbolt_targets; options given
+askai: upstream tools: man, git, godbolt_catalog, godbolt_compile, godbolt_preprocess, godbolt_macros, godbolt_targets, as the role of the client allows
+askai: upstream tools: notes, in every ask call
+askai: upstream tools: compact, wait, timer, when the turns get at least one other tool
+askai: upstream tools: background, jobs, when the turns get one of man, git, godbolt_compile, godbolt_preprocess, godbolt_macros, godbolt_targets (tools that can run in the background)
+askai: policy: from the configuration file; askai's own policy is off
+askai: role admin: tools bro, man, git, notes; upstream man, git, notes, compact, background, jobs, wait, timer; metrics yes
+askai: role user: tools bro, man, git, notes; upstream man, git, notes, compact, background, jobs, wait, timer; metrics no
+askai: identities: 1 (alice)
+askai: unix-groups: none
+askai: anonymous loopback: role user
+askai: anonymous remote: refused
+askai: anonymous unix: refused
+askai: warning: tool godbolt_catalog: no role lists it
+askai: warning: tool godbolt_compile: no role lists it
+askai: warning: tool godbolt_preprocess: no role lists it
+askai: warning: tool godbolt_macros: no role lists it
+askai: warning: tool godbolt_targets: no role lists it
+askai: MCP endpoint http://127.0.0.1:8090/mcp
+```
+
+The lines `upstream slots` and `upstream context`, which come from
+llama-server's `/props`, can come before or after these lines.
+
+Without `--verbose`, `askai` logs each tool call of a client that fails,
+with its tool, its client, its time and the text of the failure.  It also
+logs each tool call of a client that it refuses, because the client's role
+does not grant the tool or `askai` offers no such tool:
+
+```text
+askai: tool call godbolt_compile from anonymous loopback (role user) refused: the role does not grant it
+askai: tool call "godbolt" from anonymous loopback (role user) refused: askai offers no such tool
+```
+
+The client is `identity NAME`, `role NAME` for a member of a Unix group,
+or `anonymous KIND (role NAME)` for a client that shows no token, where
+KIND is `loopback`, `remote` or `unix`.  Under `askai`'s own policy, a
+client without `ASKAI_TOKEN` is `anonymous`.  A name that `askai` does not
+offer is written as a JSON string.
+
+With `--verbose`, `askai` also logs these lines:
+
+- each tool call of a client as it ends: the tool, the client, how the call
+  ended, its time, the size of its output, its arguments as JSON on one line
+  and cut at 200 bytes, and the text of a failure.
+- each ask call as it starts: its number, `LOOP.N`, its client, the size of
+  its prompt, its thread of notes and the start of the prompt as a JSON
+  string of at most 100 bytes.  The lines of the call's turns begin with
+  `ask call LOOP.N turn T`, and the line of the call's end has the number
+  too.
+- each turn as its answer ends: the HTTP status, the time, the tokens of the
+  conversation and the context size, the stop reason, the tool calls and the
+  size of the text.  An answer that is not streamed, such as the body of an
+  HTTP error, has only its status, its time and its size.
+- each tool call of a turn, and of a job in the background, with its
+  arguments and the text of a failure.  A call of a tool that the ask call
+  does not lend, or that `askai` does not offer, is logged as refused.
+- each compaction, by the upstream's `compact` call or by `askai`, and each
+  notice about the context that `askai` adds to a result.
+- each web request of a plugin, and each man page that `askai` renders.
+
+The text of a note and the summary of `compact` are logged only by their
+sizes.  These are the lines of an ask call whose first turn calls two tools:
+
+```text
+askai: ask call 1.1 from anonymous loopback (role user): prompt 85 bytes, thread b73f6f9a14edb9977c9aa00761470f26 (new), "What is in the repository? Use git to look at its log, and keep a plan in your notes."
+askai: ask call 1.1 turn 1: answered, HTTP 200 after 2.4 s, 1230 of 8192 tokens (15 %), stop reason "tool_calls", 2 tool calls, 8 bytes of text
+askai: ask call 1.1 turn 1: tool call git answered after 0.1 s (14 bytes); arguments {"repo":"proj","command":"log","options":["--oneline"]}
+askai: ask call 1.1 turn 1: tool call notes answered after 0.0 s (6 bytes); arguments {"action":"add","file":"plan.md","text":"(210 bytes)"}
+askai: ask call 1.1 turn 2: answered, HTTP 200 after 1.3 s, 1512 of 8192 tokens (18 %), stop reason "stop", 0 tool calls, 30 bytes of text
+askai: tool call bro from anonymous loopback (role user) answered after 3.9 s (30 bytes); ask call 1.1, 2 turns, 2 tool calls; arguments {"prompt":"What is in the repository? Use git to look at its log, and keep a plan in your notes."}
+```
+
 ### askai options
 
 ```text
@@ -1239,9 +1381,12 @@ MCP server:
                             the background (default 600, 0 = on each
                             call)
   -v, --verbose             log each tool call of a client as it ends,
-                            each call of a turn and each job that
-                            answers or fails, and each man page that
-                            askai renders
+                            with its arguments, and each ask call as
+                            it starts; each upstream turn, each tool
+                            call of a turn or of a background job,
+                            each compaction and each notice about the
+                            context; each web request of a plugin; and
+                            each man page that askai renders
       --loops N             event loops that serve clients (default 0:
                             one fewer than the CPUs askai may use, at
                             least 1, at most 255)

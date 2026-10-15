@@ -922,7 +922,7 @@ def check_mcp_tasks(binary, up):
                       f)
         os.chmod(path, 0o600)
         try:
-            with Askai(binary, "-c", path) as ai:
+            with Askai(binary, "-c", path, "--verbose") as ai:
                 def call(delay, meta=TAKES_TASKS):
                     up.reply = lambda r: (200, ANSWERS["openai"], delay)
                     start = time.monotonic()
@@ -956,6 +956,8 @@ def check_mcp_tasks(binary, up):
                 task, took = call(2)
                 assert 0.9 <= took < 1.8, took
                 tid = task.pop("taskId")
+                ai.wait_log(rf"^askai: tool call ask_ai from identity alice became task "
+                            rf"{tid} after \d+\.\d s$")
                 assert re.fullmatch(r"[0-9a-f]{32}", tid) and \
                     re.fullmatch(iso, task["createdAt"]), task
                 assert task.pop("_meta")["io.modelcontextprotocol/serverInfo"]["name"] == \
@@ -1004,6 +1006,8 @@ def check_mcp_tasks(binary, up):
                 task, _ = call(30)
                 assert ask(task["taskId"], "tasks/cancel")[0] == 200
                 assert up.cancelled.wait(5)
+                ai.wait_log(r"^askai: tool call ask_ai from identity alice cancelled by "
+                            r"tasks/cancel after ")
                 gone = poll(task["taskId"])
                 assert gone["status"] == "cancelled" and "result" not in gone and \
                     gone["statusMessage"], gone
@@ -1345,7 +1349,7 @@ def check_cancellation(binary, up):
     # With two loops, home places a connection that comes while a call waits
     # on the loop that has none, so each notification reaches the call from
     # the other loop, through the roster (src/roster.h).
-    with Askai(binary, "-u", up.url(), loops=2) as ai:
+    with Askai(binary, "-u", up.url(), "--verbose", loops=2) as ai:
         def served(method):
             """How many requests of @p method each loop has served."""
             return {k: v for k, v in ai.metrics().items()
@@ -1391,6 +1395,7 @@ def check_cancellation(binary, up):
             session["Accept"] = accept
             calls, notes = served("tools/call"), served("notification")
             thread = threading.Thread(target=call, args=(results,))
+            ai.log.clear()
             thread.start()
             assert up.arrived.wait(5)
             status, _, _ = ai.rpc("notifications/cancelled",
@@ -1398,6 +1403,9 @@ def check_cancellation(binary, up):
                                   rpc_id=None, headers=session)
             assert status == 202
             thread.join(5)
+            ai.wait_log(r"^askai: tool call ask_ai from anonymous cancelled by "
+                        r"notifications/cancelled after \d+\.\d s \(0 bytes\); ask call "
+                        r'\d+\.\d+, 1 turn, 0 tool calls; arguments \{"prompt":"SLOW"\}$')
             status, headers, body = results[0]
             assert (status, body) == (expected, None), results
             assert (headers.get("content-type") == "text/event-stream") == \
@@ -1439,11 +1447,14 @@ def check_cancellation(binary, up):
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                            "params": {"name": "ask_ai",
                                       "arguments": {"prompt": "SLOW"}}}).encode()
+        ai.log.clear()
         with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
             sock.sendall(b"POST /mcp HTTP/1.1\r\nContent-Type: application/json\r\n"
                          b"Content-Length: %d\r\n\r\n" % len(body) + body)
             assert up.arrived.wait(5)
         assert up.cancelled.wait(2), "client hang-up did not cancel upstream"
+        ai.wait_log(r"^askai: tool call ask_ai from anonymous cancelled by a closed "
+                    r"connection after ")
         assert ai.rpc("ping")[0] == 200
 
         # Shutting down only the sending side cancels the call too, even
@@ -2984,8 +2995,8 @@ def check_reload(binary, up):
             assert line.strip().endswith("its other options take a restart"), line
             assert tools(ai, "t1") == ["ask_ai", "man"]
             write({"roles": {"a": {"tools": ["ask_twin"]}}}, **{"tool-name": "ask_twin"})
-            assert 'askai offers no tool "ask_twin"' in \
-                reload(ai, "offers no tool").strip() + "".join(ai.log)
+            assert 'askai offers no tool "ask_twin"; the tools are ask_ai, man\n' in \
+                reload(ai, "offers no tool") + "".join(ai.log)
             ai.wait_log("configuration not reloaded")
             assert tools(ai, "t1") == ["ask_ai", "man"]
             # A reload refuses a name for the ask tool that another of
@@ -3030,6 +3041,350 @@ def check_reload(binary, up):
     assert ai.proc.wait(5) == 0, "".join(ai.log)
     print("reload: SIGHUP with a configuration file reloads who may connect, "
           "under load; wrong files and other options logged: PASS")
+
+
+def check_logs(binary, up):
+    """As askai starts, before its endpoints, it logs the upstream, each tool
+    and whether it is on, the plugins, the tools of the upstream's turns and
+    the policy, with the tools that each role lends to the upstream and a
+    warning for each tool that no role lists; a reload logs the policy
+    again.  The lines have no rate limit.  A role that names a tool that
+    askai does not offer stops askai with the list of the tools that it
+    offers.  A client's tool call that fails or is refused is logged with
+    its error.  With --verbose, askai logs each tool call of a client with
+    its arguments, the start of each ask call, each upstream turn, each tool
+    call of a turn with the error of a failure, each compaction and each
+    notice about the context; of a note's text and of compact's summary only
+    the size.  No line has a token, an API key, a password or the query of
+    the URL."""
+    def told(ai):
+        return [line.removeprefix("askai: ").rstrip("\n") for line in ai.log]
+
+    def has(ai, *lines):
+        got = told(ai)
+        for line in lines:
+            assert line in got, (line, got)
+
+    def run(*args, env=None):
+        return subprocess.run([binary, "-l", "127.0.0.1:0", *args], capture_output=True,
+                              text=True, timeout=5, env={
+                                  k: v for k, v in os.environ.items()
+                                  if k not in KEY_VARS} | (env or {}))
+
+    script = []
+    scripted = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
+    up.reply = scripted
+    with tempfile.TemporaryDirectory() as d:
+        d = os.path.realpath(d)
+        repo = f"{d}/proj"
+        notes = f"{d}/notes"
+        subprocess.run(["git", "init", "-q", repo], check=True)
+
+        # The built-in tools but the ask tool are off, and so are the tools
+        # of the upstream.  askai's own policy applies, without ASKAI_TOKEN.
+        # test_task, a test aid, is left out while it is off.
+        with Askai(binary, "-u", up.url()) as ai:
+            has(ai, "upstream provider: none", "upstream API: chat",
+                f"upstream URL: {up.url()}", "upstream model: none",
+                "upstream context: n_ctx from llama-server's /props, else unknown",
+                "plugins: none", "upstream tools: none, --upstream-tools turns them on",
+                "policy: askai's own, without ASKAI_TOKEN: clients on loopback or a "
+                "Unix socket may do everything, and other clients may call every tool")
+            assert [line for line in told(ai) if line.startswith("tool ")] == [
+                "tool ask_ai: built in; on, the ask tool",
+                "tool man: built in; off, --man turns it on",
+                "tool git: built in; off, --git PATH turns it on",
+                "tool notes: built in; off, --notes DIR turns it on"], told(ai)
+
+        # Without --verbose, a failed call is still logged, with its error
+        # but without its arguments.
+        with Askai(binary, "-u", up.url(), "--notes", notes) as ai:
+            ai.rpc("tools/call", {"name": "notes", "arguments": {
+                "action": "read", "file": "SECRETFILE", "thread": "x"}})
+            line = ai.wait_log(r"^askai: tool call notes from anonymous failed ")
+            assert re.fullmatch(
+                r'askai: tool call notes from anonymous failed after \d+\.\d s \(90 bytes\); '
+                r'error "The thread argument must be the id of a thread, as an add named '
+                r'it: 32 hexadecimal digits\."\n', line), line
+            assert "SECRETFILE" not in "".join(ai.log), ai.log
+
+        # A provider by name, a context of unknown size, and no API key in
+        # the log.
+        with Askai(binary, "-p", "openai", "-u", up.url(), "-m", "M",
+                   env={"OPENAI_API_KEY": "sk-SECRETKEY"}) as ai:
+            has(ai, "upstream provider: openai", "upstream context: unknown, --context sets it")
+            assert "SECRETKEY" not in "".join(ai.log), ai.log
+
+        # The built-in tools are on, each line with its details.  The log
+        # has no user, password or query of the URL, and no token.  The
+        # call of a client with ASKAI_TOKEN names that identity.
+        url = up.url().replace("http://", "http://user:PASSWORD@") + "?key=SECRET"
+        with Askai(binary, "-u", url, "-m", "M", "--context", "8000", "--tool-name",
+                   "bro", "--man", "--test-task", "--git", repo, "--notes", notes,
+                   "--upstream-tools", "--verbose", env={"ASKAI_TOKEN": "tok-31415"}) as ai:
+            has(ai, f"upstream URL: {up.url()}, its query not logged",
+                "upstream model: M", "upstream context: 8000 tokens (--context)",
+                "tool bro: built in; on, the ask tool", "tool man: built in; on",
+                "tool test_task: built in; on, a test aid",
+                "tool git: built in; on, repositories proj",
+                f"tool notes: built in; on, directory {notes}",
+                "upstream tools: man, git, as the role of the client allows",
+                "upstream tools: notes, in every ask call",
+                "upstream tools: compact, wait, timer, when the turns get at least one "
+                "other tool",
+                "upstream tools: background, jobs, when the turns get one of man, git "
+                "(tools that can run in the background)",
+                "policy: askai's own, with ASKAI_TOKEN: each client must send it, and "
+                "may do everything")
+            assert ai.rpc("tools/call", {"name": "bro", "arguments": {"prompt": "Q"}},
+                          headers={"Authorization": "Bearer tok-31415"})[0] == 200
+            ai.wait_log(r"^askai: tool call bro from identity ASKAI_TOKEN answered ")
+            log = "".join(ai.log)
+            assert not any(word in log for word in ("PASSWORD", "SECRET", "tok-31415")), log
+
+        # askai logs each role of the file's policy with the tools that its
+        # ask calls lend to the upstream, the identities by their names, the
+        # groups and the anonymous clients, and a warning for man, which no
+        # role lists.
+        path = f"{d}/askai.json"
+
+        def write(**members):
+            with open(f"{path}.new", "w") as f:
+                json.dump({"url": up.url(), "man": True, "git": repo} | members, f)
+            os.chmod(f"{path}.new", 0o600)
+            os.rename(f"{path}.new", path)
+        digest = "sha256:" + hashlib.sha256(b"ci-token").hexdigest()
+        roles = {"admin": {"tools": ["ask_ai", "git"], "metrics": True},
+                 "user": {"tools": ["ask_ai"], "upstream": []}}
+        policy = {"roles": roles,
+                  "identities": {"alice": {"role": "admin", "tokens": ["env:ALICE"]},
+                                 "ci": {"role": "user", "tokens": [digest]}},
+                  "unix-groups": {"0": "admin"},
+                  "anonymous": {"loopback": "user"}}
+        alice = {"Authorization": "Bearer alice-token"}
+        write(**policy, **{"upstream-tools": True})
+        with Askai(binary, "-c", path, "--verbose", env={"ALICE": "alice-token"}) as ai:
+            has(ai, "policy: from the configuration file; askai's own policy is off",
+                "role admin: tools ask_ai, git; upstream git, compact, background, jobs, "
+                "wait, timer; metrics yes",
+                "role user: tools ask_ai; upstream none; metrics no",
+                "identities: 2 (alice, ci)", "unix-group 0: role admin",
+                "anonymous loopback: role user", "anonymous remote: refused",
+                "anonymous unix: refused")
+            assert [line for line in told(ai) if "no role lists" in line] == \
+                ["warning: tool man: no role lists it"], told(ai)
+            log = "".join(ai.log)
+            assert "alice-token" not in log and digest[7:] not in log, log
+            # An identity's call names the identity, and the call of an
+            # anonymous client on loopback names its kind and role.
+            assert ai.rpc("tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}},
+                          headers=alice)[0] == 200
+            ai.wait_log(r"^askai: tool call ask_ai from identity alice answered after ")
+            assert ai.rpc("tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}},
+                          headers={"Authorization": "Bearer ci-token"})[0] == 200
+            ai.wait_log(r"^askai: tool call ask_ai from identity ci answered after ")
+            ai.ask("Q")
+            ai.wait_log(r"^askai: tool call ask_ai from anonymous loopback \(role user\) "
+                        r"answered after ")
+            # A call of a tool that the role does not grant, or that askai
+            # does not offer, is logged as refused, the client's name of an
+            # unknown tool as a JSON string.
+            ai.rpc("tools/call", {"name": "man", "arguments": {"name": "ls"}})
+            ai.wait_log(r"^askai: tool call man from anonymous loopback \(role user\) "
+                        r"refused: the role does not grant it$")
+            ai.rpc("tools/call", {"name": "no\nsuch", "arguments": {}})
+            ai.wait_log(r'^askai: tool call "no\\nsuch" from anonymous loopback \(role '
+                        r'user\) refused: askai offers no such tool$')
+            # A turn's call of a tool that its ask call does not lend, or that
+            # askai does not offer, is logged as refused with its arguments.
+            script[:] = [lambda r: (200, turn_stream([("a", "man", '{"name":"ls"}'),
+                                                      ("b", "no\nsuch", "{}")]))]
+            assert ai.rpc("tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}},
+                          headers=alice)[0] == 200
+            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call "man" refused: not '
+                        r'lent to this ask call; arguments \{"name":"ls"\}$')
+            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call "no\\nsuch" refused: '
+                        r'askai offers no such tool; arguments \{\}$')
+            # A call that runs across a reload still names its client, which
+            # it copied from the old policy.
+            up.reply = lambda r: (200, turn_stream(text="A"), 1.5)
+            up.arrived.clear()
+            slow = threading.Thread(target=lambda: ai.rpc(
+                "tools/call", {"name": "ask_ai", "arguments": {"prompt": "R"}},
+                headers=alice))
+            slow.start()
+            assert up.arrived.wait(5)
+            # A reload logs the new policy.
+            write(**(policy | {"roles": roles | {"admin": {"tools": ["ask_ai", "man"]}}}),
+                  **{"upstream-tools": True})
+            ai.log.clear()
+            ai.proc.send_signal(signal.SIGHUP)
+            ai.wait_log("configuration reloaded")
+            ai.wait_log(r"^askai: role admin: tools ask_ai, man; upstream man, compact, "
+                        r"background, jobs, wait, timer; metrics no$")
+            ai.wait_log(r"^askai: warning: tool git: no role lists it$")
+            slow.join(5)
+            ai.wait_log(r"^askai: tool call ask_ai from identity alice answered after ")
+            up.reply = scripted
+
+        # A tool that a role lends to the upstream is listed, and notes,
+        # which every ask call lends, needs no role.
+        write(roles={"user": {"tools": ["ask_ai"], "upstream": ["man"]}},
+              anonymous={"loopback": "user"}, notes=notes, **{"upstream-tools": True})
+        with Askai(binary, "-c", path) as ai:
+            has(ai, "role user: tools ask_ai; upstream man, notes, compact, background, "
+                "jobs, wait, timer; metrics no")
+            assert [line for line in told(ai) if "no role lists" in line] == \
+                ["warning: tool git: no role lists it"], told(ai)
+
+        # The report is not rate-limited.
+        write(roles={f"r{i:02}": {"tools": ["ask_ai"]} for i in range(40)})
+        with Askai(binary, "-c", path) as ai:
+            assert [line for line in told(ai) if line.startswith("role r")] == \
+                [f"role r{i:02}: tools ask_ai; metrics no" for i in range(40)], told(ai)
+
+        # A role that names a tool askai does not offer stops askai, and the
+        # error lists the tools that askai offers or lends.
+        for members, message in (
+                ({"roles": {"r": {"tools": ["godbolt"]}}, "upstream-tools": True},
+                 'role r: askai offers no tool "godbolt"; the tools are ask_ai, man, git'),
+                ({"roles": {"r": {"upstream": ["ask_ai"]}}, "upstream-tools": True},
+                 'role r: askai offers no tool "ask_ai" to the upstream; the tools that '
+                 'it lends are man, git'),
+                ({"roles": {"r": {"upstream": ["git"]}}},
+                 'role r: askai offers no tool "git" to the upstream; it lends no tool')):
+            write(**members)
+            proc = run("-c", path)
+            assert proc.returncode == 2 and f"{path}: {message}\n" in proc.stderr, \
+                (members, proc.stderr)
+
+        # With --verbose, the line of a client's call of notes has only the
+        # size of the text.  An ask call logs its start, its turns, the calls
+        # of its turns, the notices about its context, its compactions, and
+        # its end with its arguments cut to 200 bytes.
+        with Askai(binary, "-u", up.url(), "--verbose", "--upstream-tools", "--notes",
+                   notes, "--context", "8000") as ai:
+            status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
+                "action": "add", "file": "a.md", "text": "NOTETEXT" * 10}})
+            assert status == 200 and not body["result"].get("isError"), body
+            ai.wait_log(r'^askai: tool call notes from anonymous answered after \d+\.\d s '
+                        r'\(\d+ bytes\); arguments \{"action":"add","file":"a\.md",'
+                        r'"text":"\(80 bytes\)"\}$')
+            # The arguments are JSON as json-c writes it, and a failure has its
+            # text.
+            odd = {"action": "read", "file": "a\"b\\c\né", "thread": "x",
+                   "n": [1, 2.5, True, None, {"k": "v"}, []], "o": {}}
+            status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": odd})
+            assert status == 200 and body["result"].get("isError"), body
+            line = ai.wait_log(r"^askai: tool call notes from anonymous failed ")
+            assert line.endswith("; arguments " + json.dumps(odd, separators=(",", ":"),
+                                                             ensure_ascii=False) +
+                                 '; error "The thread argument must be the id of a '
+                                 'thread, as an add named it: 32 hexadecimal '
+                                 'digits."\n'), line
+            script[:] = [
+                lambda r: (200, turn_stream([("a", "notes", json.dumps(
+                    {"action": "add", "file": "n.md", "text": "NOTETEXT"}))],
+                    used=(5500, 10))),
+                lambda r: (200, turn_stream([("b", "compact", json.dumps(
+                    {"summary": "SUMMARYTEXT"}))], used=(1000, 10))),
+                lambda r: (200, turn_stream([("c", "notes", '{"action":"list"}')],
+                                            used=(7990, 10))),
+            ]
+            assert ai.ask("x" * 300)["content"][0]["text"] == "A"
+            start = ai.wait_log(r'^askai: ask call \d+\.\d+ from anonymous: prompt 300 '
+                                r'bytes, thread [0-9a-f]{32} \(new\), "x{100}"\.\.\.$')
+            call = re.escape(re.search(r"ask call (\d+\.\d+)", start).group(1))
+            for pattern in (
+                    r'turn 1: answered, HTTP 200 after \d+\.\d s, 5510 of 8000 tokens '
+                    r'\(68 %\), stop reason "tool_calls", 1 tool call, 0 bytes of text',
+                    r'turn 1: tool call notes answered after \d+\.\d s \(\d+ bytes\); '
+                    r'arguments \{"action":"add","file":"n\.md","text":"\(8 bytes\)"\}',
+                    r"turn 1: context notice, 6\d % full, \d+ of 8000 tokens: a request "
+                    r"to call compact",
+                    r"turn 2: compacted by the upstream's compact call, summary 11 bytes",
+                    r"turn 3: context full, compacted by askai",
+                    r'turn 4: answered, HTTP 200 after \d+\.\d s, tokens unknown, stop '
+                    r'reason "stop", 0 tool calls, 1 byte of text'):
+                ai.wait_log(f"^askai: ask call {call} " + pattern + "$")
+            ai.wait_log(r"^askai: tool call ask_ai from anonymous answered after \d+\.\d s "
+                        rf"\(1 byte\); ask call {call}, 4 turns, 3 tool calls; arguments "
+                        r'\{"prompt":"x{189}\.\.\.$')
+            log = "".join(ai.log)
+            assert "NOTETEXT" not in log and "SUMMARYTEXT" not in log, log
+            # The cut is never inside an escape, and 200 bytes are not cut.
+            for prompt, shown in (('"' * 300, '\\"' * 94), ('\x01' * 300, '\\u0001' * 31),
+                                  ('x' * 187, None)):
+                ai.log.clear()
+                ai.ask(prompt)
+                line = ai.wait_log(r"^askai: tool call ask_ai from anonymous answered ")
+                got = line.rstrip("\n").split("; arguments ", 1)[1]
+                assert got == ('{"prompt":"' + "x" * 187 + '"}' if shown is None else
+                               '{"prompt":"' + shown + "..."), got
+            # A failed compact call logs the size of its summary.
+            script[:] = [lambda r: (200, turn_stream([("d", "compact", json.dumps(
+                {"summary": "SUMMARYTEXT" * 2000}))]))]
+            ai.log.clear()
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call compact failed after '
+                        r'\d+\.\d s \(\d+ bytes\); arguments \{"summary":"\(22000 bytes\)"\}; '
+                        r'error ".+"$')
+            assert "SUMMARYTEXT" not in "".join(ai.log), ai.log
+            # A failed call of a turn has its error, and arguments that are no
+            # JSON object say so.
+            script[:] = [lambda r: (200, turn_stream([("e", "timer", '{"seconds":0}'),
+                                                      ("f", "timer", "[1]")]))]
+            ai.log.clear()
+            ai.ask("Q")
+            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call timer failed after '
+                        r'\d+\.\d s \(\d+ bytes\); arguments \{"seconds":0\}; error "The '
+                        r'seconds argument must be a whole number from 1 to 3600\."$')
+            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call timer failed after '
+                        r'\d+\.\d s \(\d+ bytes\); arguments not a JSON object; error "Your '
+                        r'arguments were not a JSON object, so the call was not run\."$')
+            # An answer that is not streamed, such as an HTTP error's body, has
+            # no tokens, stop reason or tool calls.
+            script[:] = [lambda r: (401, {"error": {"message": "no"}})]
+            ai.log.clear()
+            ai.ask("Q")
+            ai.wait_log(r"^askai: ask call \d+\.\d+ turn 1: failed, HTTP 401 after \d+\.\d s, "
+                        r"not streamed, \d+ bytes of body$")
+            ai.wait_log(r'^askai: tool call ask_ai from anonymous failed after \d+\.\d s '
+                        r'\(\d+ bytes\); ask call \d+\.\d+, 1 turn, 0 tool calls; arguments '
+                        r'\{"prompt":"Q"\}; error "Upstream error \(HTTP 401\): no"$')
+            # A new thread, a reminder to write notes, and the thread resumed.
+            script[:] = [lambda r: (200, turn_stream([("a", "notes", '{"action":"list"}')],
+                                                     used=(2100, 10)))]
+            ai.log.clear()
+            ai.ask("Q")
+            start = ai.wait_log(r'^askai: ask call \d+\.\d+ from anonymous: prompt 1 byte, '
+                                r'thread [0-9a-f]{32} \(new\), "Q"$')
+            call = re.escape(re.search(r"ask call (\S+) ", start).group(1))
+            thread = re.search(r"thread (\w{32})", start).group(1)
+            ai.wait_log(rf"^askai: ask call {call} turn 1: context notice, 26 % full, \d+ of "
+                        r"8000 tokens: a reminder to write notes$")
+            ai.log.clear()
+            ai.ask("Q", thread=thread)
+            ai.wait_log(rf'^askai: ask call \d+\.\d+ from anonymous: prompt 1 byte, thread '
+                        rf'{thread} \(resumed\), "Q"$')
+
+        # Without notes an ask call has no thread.  A call that the turns
+        # stop at --max-turns fails without a text, so its line has no
+        # error.
+        with Askai(binary, "-u", up.url(), "--verbose", "--man", "--upstream-tools",
+                   "--max-turns", "2") as ai:
+            script[:] = [lambda r: (200, turn_stream([("a", "man", '{"name":"ls"}')]))] * 2
+            ai.ask("Q")
+            ai.wait_log(r'^askai: ask call \d+\.\d+ from anonymous: prompt 1 byte, no '
+                        r'thread, "Q"$')
+            ai.wait_log(r'^askai: tool call ask_ai from anonymous failed after \d+\.\d s '
+                        r'\(0 bytes\); ask call \d+\.\d+, 2 turns, 1 tool call, stopped at '
+                        r'--max-turns; arguments \{"prompt":"Q"\}$')
+    up.reply = lambda request: (200, ANSWERS["openai"])
+
+    print("logs: the upstream, tools, plugins and policy as askai starts, the "
+          "tools that an error lists, refused and failed calls, the lines of "
+          "--verbose: PASS")
 
 
 def uds_rpc(path, method="tools/list", params=None, headers=None):
@@ -3128,6 +3483,20 @@ def check_unix(binary, up):
             assert names(uds_rpc(sock, headers={"Authorization": "Bearer y"})) == 401
             # The other listener serves as before.
             assert ai.rpc("tools/list")[0] == 401
+
+        # The log names the client of a call over the socket: its identity,
+        # the role of its group, or its kind and role if anonymous.
+        for policy, who, end in (
+                ({"identities": {"me": {"role": "a", "unix-users": [me]}}}, "identity me",
+                 "answered "),
+                ({"unix-groups": {group: "g"}}, "role g",
+                 "refused: the role does not grant it$"),
+                ({"anonymous": {"unix": "t"}}, r"anonymous unix \(role t\)", "answered ")):
+            write(roles=roles, **policy)
+            with Askai(binary, "-c", path, "-l", f"unix:{sock}", "--verbose") as ai:
+                assert uds_rpc(sock, "tools/call", {"name": "ask_ai", "arguments": {
+                    "prompt": "Q"}})[0] == 200
+                ai.wait_log(rf"^askai: tool call ask_ai from {who} {end}")
 
         # A file left behind is taken over; a socket in use is not.
         with socket.socket(socket.AF_UNIX) as left:
@@ -6850,26 +7219,35 @@ def check_turns(binary, up):
             assert all(f"- {t} " in trace for t in ("background", "timer", "wait", "jobs")), \
                 trace
             # With --verbose, askai logs each call of a turn and each job that
-            # answers or fails.  The line contains the name of the tool, the
-            # time, the size of the output and whether the call failed.  It
-            # does not contain the arguments.
-            ai.wait_log(r"^askai: tool call from a turn to background answered after "
-                        r"\d+\.\d s \(14 bytes\)$")
-            for pattern in ("tool call from a turn to background failed",
-                            "tool call from a turn to wait failed",
-                            "tool call from a turn to jobs answered",
-                            "background tool call from a turn to git answered"):
-                ai.wait_log("^askai: " + pattern + r" after \d+\.\d s \(\d+ bytes\)$")
-            assert not any("SLOWPATH" in line for line in ai.log), ai.log
+            # answers or fails.  The line contains the ask call and the turn,
+            # the name of the tool, whether the call failed, the time, the
+            # size of the output, the arguments as compact JSON and the text
+            # of a failure.
+            ai.wait_log(r'^askai: ask call \d+\.\d+ turn \d+: tool call background '
+                        r'answered after \d+\.\d s \(14 bytes\); arguments \{"tool":'
+                        r'"git","arguments":\{"repo":"proj","command":"log","paths":'
+                        r'\["SLOWPATH"\]\}\}$')
+            for pattern in ("tool call background failed",
+                            "tool call wait failed"):
+                ai.wait_log(r"^askai: ask call \d+\.\d+ turn \d+: " + pattern +
+                            r' after \d+\.\d s \(\d+ bytes\); arguments \{.*\}; '
+                            r'error ".+"$')
+            for pattern in ("tool call jobs answered",
+                            "background tool call git answered"):
+                ai.wait_log(r"^askai: ask call \d+\.\d+ turn \d+: " + pattern +
+                            r" after \d+\.\d s \(\d+ bytes\); arguments \{.*\}$")
 
             # The output token limit can cut the arguments of a call short.
             # askai does not run such a call, and the time in the log line of
-            # the call is under one second.
+            # the call is under one second.  The line says why the arguments
+            # are no object.
             script[:] = [lambda r: (200, turn_stream([("z", "git", slow[:-9])],
                                                      reason="length"))]
             assert ai.ask("Q")["content"][0]["text"] == "A"
-            ai.wait_log(r"^askai: tool call from a turn to git failed after 0\.\d s "
-                        r"\(\d+ bytes\)$")
+            ai.wait_log(r"^askai: ask call \d+\.\d+ turn 1: tool call git failed after "
+                        r"0\.\d s \(\d+ bytes\); arguments cut short by the output token "
+                        r'limit; error "Your answer reached the output token limit, which '
+                        r'cut these arguments short, so the call was not run\."$')
 
             # An answer while a timer is set, or a job runs, leaves the call
             # open: the turns doze until it fires, or ends, which a message of
@@ -7290,14 +7668,37 @@ def check_plugin(binary, up, plugin):
                 f.write(copy)
             return f"{d}/{name}"
 
+        # A role that names the plugin instead of its tools stops askai, and
+        # the error lists the tools, the plugin's among them.
+        write([plugin], roles={"r": {"tools": ["test"]}})
+        run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                             timeout=5)
+        assert run.returncode == 2 and 'role r: askai offers no tool "test"; the tools ' \
+            'are ask_ai, man, test_echo, test_state, test_misuse, test_fetch, ' \
+            'test_config\n' in run.stderr, run.stderr
+
         # Without roles every client may call the plugin's tool.  Its id
-        # follows those of askai's own tools.
+        # follows those of askai's own tools.  As askai starts, before its
+        # endpoint, it logs each tool with its plugin, and the plugin with
+        # its path and its tools.
         write([plugin])
         with Askai(binary, "-c", path) as ai:
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in tools] == \
                 ["ask_ai", "man", "test_echo", "test_state", "test_misuse",
                  "test_fetch", "test_config"], tools
+            told = [line.rstrip("\n") for line in ai.log]
+            listed = [line for line in told if line.startswith("askai: tool ")]
+            assert listed == [
+                "askai: tool ask_ai: built in; on, the ask tool",
+                "askai: tool man: built in; on",
+                "askai: tool git: built in; off, --git PATH turns it on",
+                "askai: tool notes: built in; off, --notes DIR turns it on"] + [
+                f"askai: tool {t['name']}: plugin test ({plugin}); on"
+                for t in tools[2:]], listed
+            assert f"askai: plugin test: {plugin}; tools test_echo, test_state, " \
+                "test_misuse, test_fetch, test_config; no options" in told, told
             assert tools[2]["description"] == "Returns the text argument unchanged." \
                 and tools[2]["inputSchema"]["required"] == ["text"], tools[2]
             for text in ("plugin \u20ac", "", "x" * 100000):
@@ -7335,6 +7736,12 @@ def check_plugin(binary, up, plugin):
         write([plugin], **only)
         with Askai(binary, "-c", path) as ai:
             assert names(ai) == ["test_echo"]
+            told = [line.rstrip("\n") for line in ai.log]
+            assert "askai: role echo: tools test_echo; metrics no" in told, told
+            assert [line for line in told if "no role lists" in line] == [
+                f"askai: warning: tool {name}: no role lists it" for name in
+                ("ask_ai", "man", "test_state", "test_misuse", "test_fetch",
+                 "test_config")], told
             assert text_of(call(ai, "test_echo", {"text": "a"})["result"]) == "a"
             assert call(ai, "man", {"name": "ls"})["error"]["message"] == \
                 "Tool not available: man"
@@ -7344,6 +7751,10 @@ def check_plugin(binary, up, plugin):
             ai.proc.send_signal(signal.SIGHUP)
             line = ai.wait_log("configuration reloaded")
             assert not line.strip().endswith("take a restart"), line
+            # A reload logs the new policy.
+            ai.wait_log(r"^askai: role both: tools man, test_echo; metrics no$")
+            ai.wait_log(r"^askai: warning: tool test_config: no role lists it$")
+            assert not any("tool man: no role" in line for line in ai.log), ai.log
             assert names(ai) == ["man", "test_echo"]
             assert text_of(call(ai, "test_echo", {"text": "b"})["result"]) == "b"
             # A changed list of plugins takes a restart: the tool stays.
@@ -7368,6 +7779,16 @@ def check_plugin(binary, up, plugin):
         with Askai(binary, "-c", path) as ai:
             assert names(ai) == ["ask_ai", "man", "test_echo", "test_state",
                                  "test_misuse", "test_fetch", "test_config"]
+            # The kinds with TOOL_LENT can be lent, and those with
+            # TOOL_DETACH can run in the background.
+            told = [line.rstrip("\n") for line in ai.log]
+            for line in ("upstream tools: man, test_echo, test_state, test_misuse, as "
+                         "the role of the client allows",
+                         "upstream tools: compact, wait, timer, when the turns get at "
+                         "least one other tool",
+                         "upstream tools: background, jobs, when the turns get one of "
+                         "man, test_state (tools that can run in the background)"):
+                assert "askai: " + line in told, (line, told)
             count = len(up.requests)
             answer, trace = [c["text"] for c in ai.ask("Q")["content"]]
             first, second = up.requests[count:]
@@ -7487,6 +7908,10 @@ def check_plugin(binary, up, plugin):
             write(plugins)
             with Askai(binary, "-c", path) as ai:
                 assert greeting(ai) == expected, (plugins, greeting(ai))
+                given = "options" in plugins[0] if isinstance(plugins[0], dict) else False
+                assert f"askai: plugin test: {plugin}; tools test_echo, test_state, " \
+                    f"test_misuse, test_fetch, test_config; " \
+                    f"{'options given' if given else 'no options'}\n" in ai.log, ai.log
                 if expected == "greeting=hi":
                     write([{"path": plugin, "options": {"greeting": "yo"}}])
                     ai.log.clear()
@@ -9257,7 +9682,7 @@ def main():
                       check_answers, check_dense, check_connections,
                       check_cancellation, check_limits, check_loops, check_turn_order,
                       check_isolation, check_configuration, check_identities,
-                      check_reload, check_unix, check_tls, check_metrics,
+                      check_reload, check_logs, check_unix, check_tls, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_turns, check_notes, check_turn_apis,

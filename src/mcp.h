@@ -66,6 +66,32 @@ mcp_register (struct registry     *reg,
               struct config const *cfg);
 
 /**
+ * Logs at LOG_INFO, one line each, the tools that a role can grant of
+ * @p reg, which mcp_register() filled for @p cfg: in the order of
+ * tools/list, each tool with where it comes from and whether it is on, and
+ * askai's own tools that are off with the option that turns them on, but
+ * not test_task, a test aid.  Then
+ * it logs each plugin that askai loaded, with its path, its tools and
+ * whether it got options, and then the tools that the upstream may call in
+ * the turns of an ask call.  The lines have no rate limit.
+ */
+extern void
+mcp_report (struct registry const *reg,
+            struct config const   *cfg);
+
+/**
+ * Returns the tools that the upstream may call in the turns of an ask call
+ * of a client whose role lets the upstream call the tools @p upstream, with
+ * the configuration @p cfg, a struct config whose registry mcp_register()
+ * filled.  The tools are those that an ask call of such a client lends its
+ * turns.  Returns 0 if @p cfg is nullptr.  The function is a policy_lent_fn
+ * (src/policy.h).
+ */
+extern tool_mask
+mcp_lent (void const *cfg,
+          tool_mask   upstream);
+
+/**
  * What every loop's MCP shares, and nobody changes once it is made: the
  * configuration @p cfg, and the replies that never change, serialized.
  * With @p manual, it offers the tool man beside the ask tool: a page of the

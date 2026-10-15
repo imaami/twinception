@@ -238,12 +238,15 @@ config_usage (struct config const *cfg,
 	        "                            page (man -w) is older than this, the next\n"
 	        "                            man call for the page repeats the lookup in\n"
 	        "                            the background (default 600, 0 = on each\n"
-	        "                            call)\n"
-	        "  -v, --verbose             log each tool call of a client as it ends,\n"
-	        "                            each call of a turn and each job that\n"
-	        "                            answers or fails, and each man page that\n"
-	        "                            askai renders\n");
+	        "                            call)\n");
 	fprintf(out,
+	        "  -v, --verbose             log each tool call of a client as it ends,\n"
+	        "                            with its arguments, and each ask call as\n"
+	        "                            it starts; each upstream turn, each tool\n"
+	        "                            call of a turn or of a background job,\n"
+	        "                            each compaction and each notice about the\n"
+	        "                            context; each web request of a plugin; and\n"
+	        "                            each man page that askai renders\n"
 	        "      --loops N             event loops that serve clients (default 0:\n"
 	        "                            one fewer than the CPUs askai may use, at\n"
 	        "                            least 1, at most 255)\n"
@@ -266,7 +269,8 @@ config_usage (struct config const *cfg,
 	        "                            work in 250 us slices, run as a task on the\n"
 	        "                            client loops; or, given a prompt, an\n"
 	        "                            upstream call run as background work\n"
-	        "  -h, --help                show this help\n"
+	        "  -h, --help                show this help\n");
+	fprintf(out,
 	        "\n"
 	        "Limits on clients (BYTES and RATE may end in K, M or G for KiB, MiB or\n"
 	        "GiB; 0 = none where noted):\n"
@@ -547,7 +551,7 @@ config_complain (struct config const *cfg,
                  char const          *fmt,
                  ...)
 {
-	char what[512];
+	char what[1024];
 	va_list ap;
 	va_start(ap, fmt);
 	util_vformat(what, sizeof what, fmt, ap);
@@ -1781,29 +1785,41 @@ config_registry (struct config *cfg)
 	return 0;
 }
 
-/* Make the policy, who may connect and what they may do: the roles name
- * the tools that askai runs, which on a reload are the running
- * configuration's. */
-static int
-config_policy (struct config *cfg)
+/* The configuration whose tools the roles of @p cfg name: the running one
+ * on a reload, else @p cfg.  The names of all its tools go into @p tools,
+ * by id, and the mask of the tools that a role can grant and askai can lend
+ * to the upstream goes into @p *upstream. */
+static struct config const *
+config_tools (struct config const *cfg,
+              char const          *tools[static TOOL_MAX],
+              tool_mask           *upstream)
 {
-	struct registry const *reg = cfg->running ? &cfg->running->registry
-	                                          : &cfg->registry;
+	struct config const *run = cfg->running ? cfg->running : cfg;
+	struct registry const *reg = &run->registry;
 	/* The tools that a role can grant have the first ids of the registry.
 	 * With --upstream-tools, askai can offer such a tool to the upstream if
 	 * the tool's kind has the flag TOOL_LENT. */
-	bool lends = (cfg->running ? cfg->running : cfg)->flags & CFG_UPSTREAM_TOOLS;
-	char const *tools[TOOL_MAX];
-	tool_mask upstream = 0;
-	for (uint32_t id = 0; id < reg->n_granted; ++id) {
+	bool lends = run->flags & CFG_UPSTREAM_TOOLS;
+	*upstream = 0;
+	for (uint32_t id = 0; id < reg->n_tools; ++id) {
 		tools[id] = reg->tools[id].name;
-		if (lends && reg->tools[id].kind->flags & TOOL_LENT)
-			upstream |= (tool_mask)1 << id;
+		if (lends && id < reg->n_granted && reg->tools[id].kind->flags & TOOL_LENT)
+			*upstream |= (tool_mask)1 << id;
 	}
-	char why[256];
+	return run;
+}
+
+/* Make the policy, who may connect and what they may do, of the tools from
+ * config_tools() that a role can grant. */
+static int
+config_policy (struct config *cfg)
+{
+	char const *tools[TOOL_MAX];
+	tool_mask upstream;
+	size_t n = config_tools(cfg, tools, &upstream)->registry.n_granted;
+	char why[1024];
 	int e;
-	cfg->policy = policy_create(cfg->file, tools, reg->n_granted, upstream, why,
-	                            sizeof why, &e);
+	cfg->policy = policy_create(cfg->file, tools, n, upstream, why, sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
 	if (e)
@@ -1957,6 +1973,57 @@ config_reload (struct config       *cfg,
 	int status = config_parse(cfg);
 	cfg->restart = status < 0 && !config_same_options(cfg, from);
 	return status;
+}
+
+/* Log @p url without its user, password and query, which can have
+ * secrets. */
+static void
+config_log_url (char const *url)
+{
+	char const *host = strstr(url, "://");
+	host = host ? host + sizeof "://" - 1 : url;
+	char const *at = memchr(host, '@', strcspn(host, "/?#"));
+	char const *path = at ? at + 1 : host;
+	size_t len = strcspn(path, "?#");
+	LOG_ALL(LOG_INFO, "upstream URL: %.*s%.*s%s", (int)(host - url), url, (int)len, path,
+	        path[len] ? ", its query not logged" : "");
+}
+
+void
+config_log (struct config const *cfg)
+{
+	if (!cfg)
+		return;
+	struct ai_endpoint const *ep = &cfg->ep;
+	LOG_ALL(LOG_INFO, "upstream provider: %s",
+	        ep->provider ? provider_names[ep->provider] : "none");
+	LOG_ALL(LOG_INFO, "upstream API: %s", api_names[ep->api]);
+	config_log_url(ep->url);
+	LOG_ALL(LOG_INFO, "upstream model: %s", ep->model ? ep->model : "none");
+	/* Home asks /props of a server that may be llama-server
+	 * (home_props_ask()). */
+	if (ep->context > 0)
+		LOG_ALL(LOG_INFO, "upstream context: %ld tokens (--context)", ep->context);
+	else if (ai_llama_like(ep->provider) && ep->api != AI_GENERATE)
+		LOG_ALL(LOG_INFO, "upstream context: n_ctx from llama-server's /props, else "
+		        "unknown");
+	else
+		LOG_ALL(LOG_INFO, "upstream context: unknown, --context sets it");
+	mcp_report(&cfg->registry, cfg);
+	config_log_policy(cfg);
+}
+
+void
+config_log_policy (struct config const *cfg)
+{
+	if (!cfg)
+		return;
+	char const *tools[TOOL_MAX];
+	tool_mask upstream;
+	struct config const *run = config_tools(cfg, tools, &upstream);
+	policy_log(cfg->policy, cfg->file, tools, run->registry.n_tools,
+	           run->registry.n_granted, run->flags & CFG_UPSTREAM_TOOLS ? mcp_lent : nullptr,
+	           run);
 }
 
 void

@@ -22,7 +22,8 @@ enum config_flag {
 	CFG_TEST_FIFO      = 1u << 1,  /**< test aid: tool calls wait for the
 	                                    upstream in one queue, first in first
 	                                    out */
-	CFG_VERBOSE        = 1u << 2,  /**< log every tool call */
+	CFG_VERBOSE        = 1u << 2,  /**< log each tool call, ask call, turn
+	                                    and compaction (README.md, Log) */
 	CFG_TEST_TASK      = 1u << 3,  /**< test aid: offer test_task, CPU work
 	                                    done as a task (src/task.h) */
 	CFG_TLS_RSA        = 1u << 4,  /**< a TLS certificate's key may be RSA */
@@ -123,6 +124,20 @@ config (int   argc,
 extern int
 config_reload (struct config       *cfg,
                struct config const *from);
+
+/**
+ * Logs at LOG_INFO, one fact a line, what @p cfg runs: the upstream's
+ * provider, API, URL without its query, model and context size; the tools,
+ * the plugins and the tools of the upstream (mcp_report()); and the policy
+ * (config_log_policy()).  The lines have no rate limit.
+ */
+extern void
+config_log (struct config const *cfg);
+
+/** Logs the policy of @p cfg (policy_log()), whose roles name the tools of
+ *  the running configuration on a reload. */
+extern void
+config_log_policy (struct config const *cfg);
 
 extern void
 config_fini (struct config *cfg);

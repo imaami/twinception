@@ -423,12 +423,16 @@ askai_home_start (void           *ctx,
 	return e;
 }
 
+/* Every loop has started: log what askai runs, then open the door, whose
+ * endpoints are logged next. */
 static void
 askai_home_open (void        *ctx,
                  struct loop *loop)
 {
 	(void)loop;
-	httpd_home_open(((struct askai_home *)ctx)->keep.door);
+	struct askai_home *app = ctx;
+	config_log(app->cfg);
+	httpd_home_open(app->keep.door);
 }
 
 static void
@@ -505,6 +509,7 @@ askai_reload_apply (struct askai_home         *app,
 	}
 	LOG(LOG_INFO, "configuration reloaded: who may connect, and what they may do%s%s",
 	    cert, r->cfg.restart ? "; its other options take a restart" : "");
+	config_log_policy(&r->cfg);
 }
 
 /* The blocker has read the configuration: apply it, and reload again if a

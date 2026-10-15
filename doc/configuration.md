@@ -719,9 +719,16 @@ default is 20.  0 means no report.
 
 The value is `true`.  The default is off.
 
-`verbose` makes `askai` log each tool call of a client as it ends, each
-call of a turn and each job that ends with an answer or fails, each man
-page that `askai` renders, and each web request of a plugin as it ends.
+Without `verbose`, `askai` logs as it starts the upstream, each tool and
+whether it is on, each plugin with its tools, the tools of the upstream and
+the policy, and it logs each tool call of a client that it refuses or that
+fails.  Section [Log](../README.md#log) of `README.md` has an example.
+
+`verbose` makes `askai` also log each tool call of a client as it ends,
+with its arguments cut at 200 bytes, and each ask call as it starts and
+ends.  It also logs each upstream turn, each tool call of a turn or of a
+background job, each compaction, each notice about the context, each web
+request of a plugin, and each man page that `askai` renders.
 
 #### `memory-high`
 

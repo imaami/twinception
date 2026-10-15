@@ -549,3 +549,25 @@ jb_escape (char       *dst,
 	}
 	return (size_t)(out - dst);
 }
+
+size_t
+jb_escape_fit (char const *src,
+               size_t      len,
+               size_t      room)
+{
+	if (!src)
+		return 0;
+	/* The bytes that jb_escape() writes as two bytes: a backslash, then a
+	 * letter or the byte itself.  It writes the other control bytes as
+	 * \u00XX, six bytes. */
+	static char const brief[] = "\"\\\b\t\n\f\r";
+	size_t i = 0;
+	for (size_t used = 0; i < len; ++i) {
+		unsigned char c = (unsigned char)src[i];
+		used += c >= ' ' && c != '"' && c != '\\' ? 1
+		      : memchr(brief, c, sizeof brief - 1) ? 2 : 6;
+		if (used > room)
+			break;
+	}
+	return jb_utf8(src, i);
+}

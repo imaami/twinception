@@ -226,6 +226,9 @@ struct plugin_loaded {
 	                                     manifest names */
 	/** lens[i] is the length in bytes of manifest.tools[i]. */
 	uint8_t              lens[MANIFEST_TOOLS];
+	bool                 options;   /**< configure() got options */
+	char                 path[];    /**< the path of the file, as
+	                                     plugin_loaded_create() got it */
 };
 
 /**
@@ -256,9 +259,11 @@ struct plugin_loaded {
  * the definition of each named tool must have the tool's name.  The
  * function calls definition() with the configuration to check that.
  *
- * Returns the loaded plugin.  On failure it returns nullptr and stores the
- * error number in @p *e: ENOMEM, or EINVAL with the reason in the @p len
- * bytes at @p why.  The reason is worded to follow the path and a colon.
+ * Returns the loaded plugin, which has a copy of @p path.  On failure it
+ * returns nullptr and stores the error number in @p *e, unless @p e is
+ * nullptr: EFAULT if @p path or @p why is nullptr or @p len is 0, ENOMEM,
+ * or EINVAL with the reason in the @p len bytes at @p why.  The reason is
+ * worded to follow the path and a colon.
  */
 extern struct plugin_loaded *
 plugin_loaded_create (char const         *path,

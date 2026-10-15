@@ -509,11 +509,20 @@ plugin_loaded_create (char const         *path,
                       size_t              len,
                       int                *e)
 {
-	struct plugin_loaded *loaded = calloc(1, sizeof *loaded);
+	if (!e)
+		return nullptr;
+	if (!path || !why || !len) {
+		*e = EFAULT;
+		return nullptr;
+	}
+	size_t size = strlen(path) + 1;
+	struct plugin_loaded *loaded = calloc(1, sizeof *loaded + size);
 	if (!loaded) {
 		*e = ENOMEM;
 		return nullptr;
 	}
+	memcpy(loaded->path, path, size);
+	loaded->options = options != nullptr;
 	*e = plugin_loaded_init(loaded, path, options, why, len);
 	if (*e)
 		plugin_loaded_destroy(&loaded);

@@ -1368,6 +1368,7 @@ httpd_conn_grant (struct httpd_conn *conn)
 	conn->stream.principal = g.principal;
 	conn->stream.tools = g.tools;
 	conn->stream.upstream = g.upstream;
+	conn->stream.who = g.who;
 	conn->stream.trusted = g.metrics;
 	return ok;
 }
@@ -1629,6 +1630,8 @@ httpd_conn_begin (struct httpd_conn *conn)
 	app->on_head(app->ctx, &conn->stream,
 	             (struct span){ head, (size_t)req->target.off - 1 },
 	             (struct span){ head + req->target.off, req->target.len }, length);
+	/* The text is in the policy, which a reload can free (stream.h). */
+	conn->stream.who = (struct tool_text){};
 	if (conn->open && conn->body_in)
 		app->on_body(&conn->stream, (struct span){}, true);
 }

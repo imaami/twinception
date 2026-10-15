@@ -233,4 +233,15 @@ jb_escape (char       *dst,
            char const *src,
            size_t      len);
 
+/**
+ * Returns the length of the longest prefix of the @p len bytes of UTF-8
+ * text at @p src that is whole characters and whose escapes, as
+ * jb_escape() writes them, take at most @p room bytes; 0 if @p src is
+ * nullptr.
+ */
+extern size_t
+jb_escape_fit (char const *src,
+               size_t      len,
+               size_t      room);
+
 #endif /* TWINCEPTION_SRC_JB_H_ */

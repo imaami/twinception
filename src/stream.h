@@ -110,6 +110,12 @@ struct stream {
 	tool_mask                upstream;   /**< the tools that the upstream may
 	                                          call in the turns of its ask
 	                                          calls */
+	struct tool_text         who;        /**< the client for the log, as
+	                                          struct policy_grant names it.
+	                                          httpd clears the member after
+	                                          on_head() returns, because a
+	                                          reload can free the policy
+	                                          that has the text. */
 	uint64_t                 principal;  /**< the client's identity's
 	                                          (src/policy.h); 0: anonymous */
 	uint64_t                 peer[2];    /**< the client's address, as the

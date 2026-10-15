@@ -364,13 +364,16 @@ settled () {
 	echo "$line"
 }
 
-# Wait up to 5 s for a "SCHEME://127.0.0.1:PORT" line in FILE, SCHEME http
-# unless given; echo the first PORT.
+# Wait up to 5 s for "SCHEME://127.0.0.1:PORT" followed by PATH in FILE,
+# SCHEME http and PATH empty unless given; echo the first PORT.  askai logs
+# the URL of its upstream before its own endpoints, so the port of askai is
+# the one that /mcp follows.
 wait_port () {
-	local file=$1 scheme=${2:-http} i port
+	local file=$1 scheme=${2:-http} path=${3:-} i port
 	for ((i = 0; i < 100; ++i)); do
-		port=$(grep -oE "$scheme://127\.0\.0\.1:[0-9]+" "$file" 2> /dev/null |
+		port=$(grep -oE "$scheme://127\.0\.0\.1:[0-9]+$path" "$file" 2> /dev/null |
 		       head -1)
+		port=${port%"$path"}
 		[[ -n $port ]] && { echo "${port##*:}"; return 0; }
 		sleep 0.05
 	done
@@ -410,11 +413,11 @@ fi
 	-u "http://127.0.0.1:$mock_port/v1/chat/completions" -m m \
 	2> "$tmp/askai.err" &
 askai_pid=$!
-askai_port=$(wait_port "$tmp/askai.err") || {
+askai_port=$(wait_port "$tmp/askai.err" http /mcp) || {
 	echo "$self: askai did not start" >&2; cat "$tmp/askai.err" >&2; exit 1; }
 tls_port=
 if ((tls)); then
-	tls_port=$(wait_port "$tmp/askai.err" https) || {
+	tls_port=$(wait_port "$tmp/askai.err" https /mcp) || {
 		echo "$self: askai did not listen for TLS" >&2; cat "$tmp/askai.err" >&2
 		exit 1; }
 	gen_args+=(--tls-port "$tls_port" --tls-ca "$tmp/tls.crt" --tls-churn "$tls")
