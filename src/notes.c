@@ -409,15 +409,14 @@ notes_checked (struct span out,
 }
 
 int
-notes_add_file (struct buf *in,
+notes_add_head (struct buf *in,
                 char const *name,
                 size_t      name_len,
-                char const *text,
                 size_t      len)
 {
 	static char const m[] = "M 100644 inline \"";
 	char head[sizeof m + 2 * NOTES_NAME + sizeof "\"\ndata 18446744073709551615\n"];
-	if (name_len > NOTES_NAME)
+	if (!in || !name || name_len > NOTES_NAME)
 		return EINVAL;
 	/* The name is quoted as a C string. */
 	char *p = mempcpy(head, m, sizeof m - 1);
@@ -435,9 +434,27 @@ notes_add_file (struct buf *in,
 	if (e)
 		return e;
 	memcpy(s.ptr, head, h);
-	memcpy(s.ptr + h, text, len);
-	s.ptr[h + len] = '\n';
-	buf_commit(in, h + len + 1);
+	buf_commit(in, h);
+	return 0;
+}
+
+int
+notes_add_file (struct buf *in,
+                char const *name,
+                size_t      name_len,
+                char const *text,
+                size_t      len)
+{
+	int e = notes_add_head(in, name, name_len, len);
+	if (e)
+		return e;
+	struct span s;
+	e = buf_reserve(in, len + 1, SIZE_MAX, &s);
+	if (e)
+		return e;
+	memcpy(s.ptr, text, len);
+	s.ptr[len] = '\n';
+	buf_commit(in, len + 1);
 	return 0;
 }
 

@@ -33,6 +33,9 @@ enum {
 	NOTES_TEXT = 4 << 20,  /**< bytes of the text of a note, at most */
 	NOTES_NAME = 255,      /**< bytes of the name of a note, at most */
 	NOTES_MAX  = 16 << 20, /**< bytes of the output of git, at most */
+	NOTES_FILE = NOTES_MAX - (4 << 10),  /**< bytes of a note that a
+	                                          transfer adds, at most, so
+	                                          that git can read it whole */
 	NOTES_ID   = 32,       /**< hexadecimal digits of the id of a thread */
 	NOTES_REPO = 80,       /**< bytes of the argument of git that names the
 	                            repository of a thread, NUL included */
@@ -177,6 +180,19 @@ notes_check_input (struct buf *in,
 extern int
 notes_checked (struct span out,
                char        tip[NOTES_TIP + 1]);
+
+/**
+ * Writes to @p in the head of the file part of the input of the command
+ * NOTES_ADD, for a note of the @p name_len bytes at @p name whose text has
+ * @p len bytes, and reserves room for the text: the caller appends the
+ * text and then a line feed, as notes_add_file() does.  Returns 0, EINVAL
+ * for a null argument or a name longer than NOTES_NAME, or ENOMEM.
+ */
+extern int
+notes_add_head (struct buf *in,
+                char const *name,
+                size_t      name_len,
+                size_t      len);
 
 /**
  * Writes to @p in the file part of the input of the command NOTES_ADD.  The

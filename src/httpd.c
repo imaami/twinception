@@ -183,6 +183,8 @@ struct httpd_conn {
 	                                   client shakes hands by, a reference
 	                                   until the handshake is done */
 	struct ssl_st       *ssl;       /* TLS's end, once the client begins */
+	char const          *path;      /* home sets it: the file of the Unix
+	                                   socket of the client, or nullptr */
 	uint64_t             since;     /* when the request, the handshake, or the
 	                                   idle spell began */
 	uint64_t             stall;     /* when the output last stalled; 0: it flows */
@@ -1321,12 +1323,25 @@ httpd_stream_field (struct stream const *s,
 	return (struct span){ (unsigned char *)(uintptr_t)f.ptr, f.len };
 }
 
+static struct stream_reach
+httpd_stream_reach (struct stream const *s)
+{
+	struct httpd_conn const *conn = container_of(s, struct httpd_conn const, stream);
+	struct httpd_frag host = httpd_conn_field(conn, conn->req.host);
+	return (struct stream_reach){
+		.host = { (unsigned char *)(uintptr_t)host.ptr, host.len },
+		.path = conn->uds ? conn->path : nullptr,
+		.tls = conn->ssl != nullptr,
+	};
+}
+
 static struct stream_ops const httpd_stream_ops = {
 	.head = httpd_stream_head,
 	.data = httpd_stream_data,
 	.end = httpd_stream_end,
 	.waiting = httpd_stream_waiting,
 	.field = httpd_stream_field,
+	.reach = httpd_stream_reach,
 };
 
 /* The token of Authorization field @p auth, if it shows the bearer scheme;
@@ -1373,6 +1388,20 @@ httpd_conn_grant (struct httpd_conn *conn)
 	return ok;
 }
 
+/* Whether the target of the request on @p conn begins with the
+ * application's open prefix (struct stream_app), which the application
+ * admits by a credential in the target. */
+static bool
+httpd_conn_open (struct httpd_conn const *conn)
+{
+	char const *open = conn->srv->app->open;
+	if (!open)
+		return false;
+	char const *head = (char const *)buf_peek(&conn->in).ptr;
+	size_t n = strlen(open);
+	return conn->req.target.len >= n && !memcmp(head + conn->req.target.off, open, n);
+}
+
 /* Parse the head of @p len bytes at @p data, the input's start, and check it
  * against the Origin defence, the policy and the body budgets, and count its
  * body in those; nonzero is an HTTP error.  So a client that may not send a
@@ -1390,7 +1419,7 @@ httpd_conn_admit (struct httpd_conn *conn,
 	char const *origin = httpd_conn_field(conn, req->origin).ptr;
 	if (origin && !httpd_origin_allowed(srv, origin))
 		return 403; /* DNS rebinding defence */
-	if (!req->options && !httpd_conn_grant(conn))
+	if (!req->options && !httpd_conn_grant(conn) && !httpd_conn_open(conn))
 		return 401;
 	return httpd_conn_hold(conn, req->body) ? 503 : 0;
 }
@@ -2228,6 +2257,7 @@ httpd_conn_setup (struct httpd_conn *conn,
 	uint32_t uid = conn->uid;
 	uint32_t room = conn->room;
 	struct ssl_ctx_st *ctx = conn->ctx;
+	char const *path = conn->path;
 	int fd = conn->fd;
 	bool local = conn->local;
 	bool uds = conn->uds;
@@ -2244,6 +2274,7 @@ httpd_conn_setup (struct httpd_conn *conn,
 		.lane = lane,
 		.client = client,
 		.ctx = ctx,
+		.path = path,
 		.since = loop->now,
 		.groups = groups,
 		.n_groups = n_groups,
@@ -2567,14 +2598,15 @@ httpd_home_conn (struct httpd_home *home)
 
 /* Place the client on @p fd, from @p addr, on loopback if @p local, on a
  * client loop, in the storage of a connection given back if one is kept,
- * as the user @p cred says if over a Unix socket, to shake hands by @p ctx
- * if not nullptr; if out of memory, close @p fd. */
+ * as the user @p cred says if over the Unix socket of the file @p path, to
+ * shake hands by @p ctx if not nullptr; if out of memory, close @p fd. */
 static void
 httpd_home_place (struct httpd_home  *home,
                   int                 fd,
                   uint64_t const      addr[2],
                   bool                local,
                   struct ucred const *cred,
+                  char const         *path,
                   struct ssl_ctx_st  *ctx)
 {
 	struct httpd_conn *conn = httpd_home_conn(home);
@@ -2597,6 +2629,7 @@ httpd_home_place (struct httpd_home  *home,
 	conn->lane = lane;
 	conn->client = client;
 	conn->ctx = ctx ? tls_ctx_get(ctx) : nullptr;
+	conn->path = path;
 	conn->fd = fd;
 	conn->local = local;
 	loop_post(lane->loop, &conn->msg);
@@ -2650,7 +2683,8 @@ httpd_home_take (struct httpd_home             *home,
 		++home->refused;
 		return;
 	}
-	httpd_home_place(home, fd, addr, local, user, l->tls ? home->ctx : nullptr);
+	httpd_home_place(home, fd, addr, local, user, l->path,
+	                 l->tls ? home->ctx : nullptr);
 }
 
 /* Accept a client from @p l, and take it as httpd_home_take() does: 0, or

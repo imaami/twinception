@@ -25,6 +25,7 @@ override SRC_askai := \
   registry.c          \
   roster.c            \
   task.c              \
+  ticket.c            \
   tls.c               \
   web.c
 
