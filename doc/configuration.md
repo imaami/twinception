@@ -1267,8 +1267,8 @@ use:
 | `provider`, `url` and `model` in `upstream` | `llama`, a `llama-server` at `127.0.0.1:8081`, `local` | set the upstream to ask |
 | `key-env` in `upstream` | `"LLAMA_API_KEY"` | name a variable that is set and not empty, or remove the member; otherwise `askai` stops with exit status 2 |
 | `notes` in `upstream` | `"/var/lib/askai/notes"` | set a directory whose parent exists |
-| `listen` in `service` | `127.0.0.1:8090` and `unix:/run/askai/askai.sock` | set the addresses; the directory of a Unix socket must exist |
-| `tls-cert` and `tls-key` in `service` | files in `/etc/askai` | set your files; `askai` reads them only with a `tls:` listener |
+| `listen` in `service` | `127.0.0.1:8090`, `tls:8443` and `unix:/run/askai/askai.sock` | set the addresses; the directory of a Unix socket must exist |
+| `tls-cert` and `tls-key` in `service` | files in `/etc/askai` | set your files, which the listener `tls:8443` needs, or remove them with that listener |
 | `allow-origin` in `service` | `"https://example.com"` | set the Origins of your browser clients, or remove the member |
 | `git` in `service` | `"/srv/git/proj"` | set repositories that exist |
 | `test-stall` and `test-pressure` in `testing` | `100` and `"/run/askai/pressure"` | remove them: they are test aids |

@@ -28,6 +28,7 @@
   "service": {
     "listen": [
       "127.0.0.1:8090",
+      "tls:8443",
       "unix:/run/askai/askai.sock"
     ],
     "tls-cert": "/etc/askai/chain.pem",
