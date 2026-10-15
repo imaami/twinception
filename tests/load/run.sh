@@ -560,7 +560,10 @@ wait "$mock_pid" 2> /dev/null
 mock_rc=$?
 mock_pid=
 grep -E '^mock: (requests|http)' "$tmp/mock.err" | tee -a "$tmp/gen.out"
-grep -E '^askai: (jobs|tasks): ' "$tmp/askai.err" | tee -a "$tmp/gen.out"
+# askai's counts at stop: the lists "upstream requests:" and "tasks:".
+awk '/^askai: (upstream requests|tasks):$/ { on = 1; print; next }
+     on && /^askai:   / { print; next }
+     { on = 0 }' "$tmp/askai.err" | tee -a "$tmp/gen.out"
 if [[ -n ${RELOAD_S-} ]]; then
 	printf 'RELOADS sent=%d done=%d failed=%d\n' "$reloads" \
 	       "$(grep -c 'configuration reloaded' "$tmp/askai.err")" \
@@ -638,23 +641,11 @@ $1 == "LOOP" && $4 == "work" {
 			over = over " " $2 "/" $3 ":" $i
 	}
 }
-$1 == "askai:" && $2 == "jobs:" {
-	jobs_seen = 1
-	js["submitted"] = $3
-	js["completed"] = $5
-	js["cancelled"] = $7
-	js["rejected"] = $9
-	js["upstream"] = NF >= 11 ? $11 : $7
-	js["preempted"] = NF >= 14 ? $14 : 0
-}
-$1 == "askai:" && $2 == "tasks:" {
-	tasks_seen = 1
-	tk["submitted"] = $3
-	tk["done"] = $5
-	tk["cancelled"] = $7
-	tk["abandoned"] = $9
-	tk["moved"] = $11
-}
+!/^askai:   / { list = "" }
+$0 == "askai: upstream requests:" { list = "jobs"; jobs_seen = 1 }
+$0 == "askai: tasks:" { list = "tasks"; tasks_seen = 1 }
+list == "jobs" && /^askai:   / { js[$2] = $NF }
+list == "tasks" && /^askai:   / { tk[$2] = $NF }
 $1 == "TASKS" { kv(ts, 2) }
 $1 == "FAIR" && $2 == "probe" { kv(fp, 3) }
 $1 == "FAIR" && $2 == "tasks" { kv(ft, 3); tasks_fair = 1 }

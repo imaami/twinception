@@ -7668,8 +7668,8 @@ mcp_static_tails (struct mcp_static  *st,
  * tool it is; its definition as the turns get it, if that is not the
  * definition as clients list it; its name, but the ask tool's, which the
  * configuration names; the argument whose value is logged as its size; the
- * option that turns it on, for the log, or nullptr for a test aid, which
- * the log leaves out while it is off; how the turns are lent it, but a
+ * option that turns it on, for the log, or nullptr for compact and the test
+ * aid, which the log leaves out while they are off; how the turns are lent it, but a
  * plugin's, which follows its kind's flags; its row in the turns' metrics;
  * and what the trace shows of its calls. */
 struct mcp_row {
@@ -7879,23 +7879,6 @@ mcp_register (struct registry     *reg,
 	return 0;
 }
 
-/* The names of the tools in @p mask of @p reg, separated by commas, or
- * "none" for no tool, into the @p size bytes at @p buf. */
-static void
-mcp_names (struct registry const *reg,
-           tool_mask              mask,
-           char                  *buf,
-           size_t                 size)
-{
-	size_t len = 0;
-	for (uint32_t id = 0; id < reg->n_tools; ++id)
-		if (mask >> id & 1)
-			len += util_format(buf + len, size - len, "%s%s", len ? ", " : "",
-			                   reg->tools[id].name);
-	if (!len)
-		util_format(buf, size, "none");
-}
-
 /* The plugin of @p reg that askai loaded as @p plugin; nullptr for a
  * plugin built into askai. */
 static struct plugin_loaded const *
@@ -7908,78 +7891,57 @@ mcp_loaded_of (struct registry const *reg,
 	return nullptr;
 }
 
-/* Logs askai's own tool of kind @p k: if @p on is true, with the details
- * of @p cfg, and else with the option that turns it on.  A test aid, which
- * has no such option in its row, is not logged while it is off. */
+/* Logs askai's own tools for the clients of @p cfg, each on or off, and for
+ * a tool that is off, the option that turns it on.  A tool without such an
+ * option is not logged while it is off: compact, which only the turns get,
+ * and the test aid. */
 static void
-mcp_report_own (struct config const *cfg,
-                enum mcp_kind        k,
-                bool                 on)
+mcp_report_own (struct config const *cfg)
 {
-	struct mcp_row const *row = &mcp_rows[k];
-	char const *name = row->ptr ? row->ptr : cfg->tool.name;
-	if (!on) {
-		if (row->option)
-			LOG_ALL(LOG_INFO, "tool %s: built in; off, %s turns it on", name,
-			        row->option);
-		return;
+	uint32_t on = mcp_offered_clients(cfg);
+	int width = 0;
+	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
+		size_t len = mcp_rows[k].ptr ? mcp_rows[k].len : strlen(cfg->tool.name);
+		width = (int)len > width ? (int)len : width;
 	}
-	char more[1024] = "";
-	switch (k) {
-	case KIND_ASK:
-		util_format(more, sizeof more, ", the ask tool");
-		break;
-	case KIND_TASK:
-		util_format(more, sizeof more, ", a test aid");
-		break;
-	case KIND_GIT:
-		for (size_t i = 0, n = 0; i < cfg->n_gits; ++i) {
-			size_t len = 0;
-			char const *repo = git_name(cfg->gits[i], &len);
-			n += util_format(more + n, sizeof more - n, "%s%.*s",
-			                 i ? ", " : ", repositories ", (int)len, repo);
-		}
-		break;
-	case KIND_NOTES:
-		util_format(more, sizeof more, ", directory %s", cfg->notes);
-		break;
-	default:
-		break;
+	LOG_ALL(LOG_INFO, "built-in tools for clients:");
+	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
+		struct mcp_row const *row = &mcp_rows[k];
+		char const *name = row->ptr ? row->ptr : cfg->tool.name;
+		if (on >> k & 1)
+			LOG_ALL(LOG_INFO, "  %-*s  on", width, name);
+		else if (row->option)
+			LOG_ALL(LOG_INFO, "  %-*s  off (%s)", width, name, row->option);
 	}
-	LOG_ALL(LOG_INFO, "tool %s: built in; on%s", name, more);
 }
 
-/* Logs the tools that the upstream may call in the turns of an ask call
- * with @p cfg, of its registry @p reg. */
+/* Logs the git repositories of @p cfg, each with its name and path. */
 static void
-mcp_report_turns (struct registry const *reg,
-                  struct config const   *cfg)
+mcp_report_gits (struct config const *cfg)
 {
-	if (!(cfg->flags & CFG_UPSTREAM_TOOLS)) {
-		LOG_ALL(LOG_INFO, "upstream tools: none, --upstream-tools turns them on");
-		return;
+	int width = 0;
+	for (size_t i = 0; i < cfg->n_gits; ++i) {
+		size_t len = 0;
+		git_name(cfg->gits[i], &len);
+		width = (int)len > width ? (int)len : width;
 	}
-	struct mcp_lending l = mcp_lending(cfg);
-	char names[1024];
-	mcp_names(reg, l.by[LEND_GRANTED], names, sizeof names);
-	LOG_ALL(LOG_INFO, "upstream tools: %s, as the role of the client allows", names);
-	if (l.by[LEND_ALWAYS]) {
-		mcp_names(reg, l.by[LEND_ALWAYS], names, sizeof names);
-		LOG_ALL(LOG_INFO, "upstream tools: %s, in every ask call", names);
+	LOG_ALL(LOG_INFO, "git repositories:");
+	for (size_t i = 0; i < cfg->n_gits; ++i) {
+		size_t len = 0;
+		char const *repo = git_name(cfg->gits[i], &len);
+		LOG_ALL(LOG_INFO, "  %-*.*s  %s", width, (int)len, repo, cfg->gits[i]);
 	}
-	mcp_names(reg, l.by[LEND_WITH], names, sizeof names);
-	LOG_ALL(LOG_INFO, "upstream tools: %s, when the turns get at least one other tool",
-	        names);
-	char tools[1024];
-	tool_mask detach = (l.by[LEND_GRANTED] | l.by[LEND_ALWAYS]) & l.detach;
-	mcp_names(reg, l.by[LEND_DETACH], names, sizeof names);
-	mcp_names(reg, detach, tools, sizeof tools);
-	if (detach)
-		LOG_ALL(LOG_INFO, "upstream tools: %s, when the turns get one of %s (tools that "
-		        "can run in the background)", names, tools);
-	else
-		LOG_ALL(LOG_INFO, "upstream tools: %s, never, because no tool that the turns can "
-		        "get can run in the background", names);
+}
+
+/* Logs the plugin @p p: its file, whether it got options, and its tools. */
+static void
+mcp_report_plugin (struct plugin_loaded const *p)
+{
+	LOG_ALL(LOG_INFO, "plugin %s:", p->manifest.name);
+	LOG_ALL(LOG_INFO, "  file     %s", p->path);
+	LOG_ALL(LOG_INFO, "  options  %s", p->options ? "given" : "none");
+	for (uint32_t k = 0; k < p->n_tools; ++k)
+		LOG_ALL(LOG_INFO, "  %-7s  %s", k ? "" : "tools", p->manifest.tools[k]);
 }
 
 void
@@ -7988,37 +7950,26 @@ mcp_report (struct registry const *reg,
 {
 	if (!reg || !cfg)
 		return;
-	uint32_t granted = mcp_offered_clients(cfg);
-	for (enum mcp_kind k = 0; k < KIND_NONE; ++k)
-		if (k != KIND_COMPACT)
-			mcp_report_own(cfg, k, granted >> k & 1);
-	for (uint32_t id = 0; id < reg->n_granted; ++id) {
-		struct registry_tool const *t = &reg->tools[id];
-		struct plugin_loaded const *p = mcp_loaded_of(reg, reg->plugins[t->part]);
-		if (p)
-			LOG_ALL(LOG_INFO, "tool %s: plugin %s (%s); on", t->name, p->manifest.name,
-			        p->path);
-	}
+	mcp_report_own(cfg);
+	if (cfg->n_gits)
+		mcp_report_gits(cfg);
+	if (cfg->notes)
+		LOG_ALL(LOG_INFO, "notes directory: %s", cfg->notes);
 	if (!reg->n_loaded)
 		LOG_ALL(LOG_INFO, "plugins: none");
-	for (uint32_t i = 0; i < reg->n_loaded; ++i) {
-		struct plugin_loaded const *p = reg->loaded[i];
-		char tools[1024];
-		size_t len = 0;
-		for (uint32_t k = 0; k < p->n_tools; ++k)
-			len += util_format(tools + len, sizeof tools - len, "%s%s", k ? ", " : "",
-			                   p->manifest.tools[k]);
-		LOG_ALL(LOG_INFO, "plugin %s: %s; tools %s; %s", p->manifest.name, p->path,
-		        tools, p->options ? "options given" : "no options");
-	}
-	mcp_report_turns(reg, cfg);
+	for (uint32_t i = 0; i < reg->n_loaded; ++i)
+		mcp_report_plugin(reg->loaded[i]);
+	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
+		LOG_ALL(LOG_INFO, "upstream tools: off (--upstream-tools)");
 }
 
 tool_mask
 mcp_lent (void const *cfg,
+          tool_mask   tools,
           tool_mask   upstream)
 {
-	if (!cfg)
+	/* mcp_register() adds the ask tool first, with the id 0. */
+	if (!cfg || !(tools & 1))
 		return 0;
 	struct mcp_lending l = mcp_lending(cfg);
 	return mcp_lending_lent(&l, upstream);

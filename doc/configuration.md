@@ -88,7 +88,7 @@ applies these members:
   listener.  New connections use the new certificate and key.
 
 Every other member needs a restart, `plugins` included.  If another member
-has changed, the log line of the reload ends with "its other options take a
+has changed, the reload logs the warning "other changed options need a
 restart".  After a reload, `tools` and `upstream` of a role can name only
 the tools that the running `askai` offers.  `askai` reads the variable of
 an `env:` token from its own environment, and a reload does not change that

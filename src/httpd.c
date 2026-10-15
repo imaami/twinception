@@ -3026,9 +3026,8 @@ httpd_listener_announce (struct httpd_listener const *l,
 	                                       : "MCP endpoint http%s://%s:%s/mcp",
 	    l->tls ? "s" : "", addr, port);
 	if (anyone && !httpd_addr_loopback(&ss))
-		LOG(LOG_WARN, "warning: listening beyond loopback, where clients "
-		    "that show no token may call tools; anyone who can connect "
-		    "can spend your API credits");
+		LOG(LOG_WARN, "warning: listening beyond loopback, and clients without "
+		    "a token may call tools");
 }
 
 struct httpd_hub *

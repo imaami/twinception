@@ -1621,7 +1621,8 @@ home_props_end (struct home *home,
 		home_slots(home, n, why);
 }
 
-/* /props failed, as @p fmt says: the default slots (home_props_end()). */
+/* /props failed, as @p fmt says, which is logged: the default slots
+ * (home_props_end()). */
 [[gnu::format(printf, 2, 3)]]
 static void
 home_props_fail (struct home *home,
@@ -1633,7 +1634,8 @@ home_props_fail (struct home *home,
 	va_start(ap, fmt);
 	util_vformat(why, sizeof why, fmt, ap);
 	va_end(ap);
-	home_props_end(home, SLOTS, why);
+	LOG(LOG_INFO, "upstream /props: %s", why);
+	home_props_end(home, SLOTS, "the default");
 }
 
 static void
@@ -1646,10 +1648,10 @@ home_props_done (CURLcode    result,
 	home->ask = nullptr;
 	home->paused = false;
 	if (result)
-		home_props_fail(home, "the default: /props: %s",
+		home_props_fail(home, "%s",
 		                *error ? error : curl_easy_strerror(result));
 	else if (status != 200)
-		home_props_fail(home, "the default: /props: HTTP %ld", status);
+		home_props_fail(home, "HTTP %ld", status);
 	else
 		loop_ready_bulk(home->loop, &home->props);
 }
@@ -1695,7 +1697,7 @@ home_props_step (struct loop      *loop,
 		home_props_end(home, n < UINT16_MAX ? (uint32_t)n : UINT16_MAX,
 		               "llama-server's /props");
 	else
-		home_props_end(home, SLOTS, "the default: /props gives no total_slots");
+		home_props_fail(home, "no total_slots");
 }
 
 /* Ask for /props at the server of @p u, the upstream's URL; the answer may
@@ -1727,9 +1729,7 @@ home_props_get (struct home *home,
 static int
 home_props_ask (struct home *home)
 {
-	struct ai_endpoint const *ep = home->ep;
-	if (!ai_llama_like(ep->provider) || ep->api == AI_GENERATE ||
-	    ep->api == AI_INTERACTIONS)
+	if (!ai_props(home->ep))
 		return ENOTSUP;
 	CURLU *u = curl_url();
 	if (!u)
@@ -2060,11 +2060,20 @@ home_destroy (struct home **p_home)
 	while (!list_is_empty(&home->timeline))
 		home_cancel(home, container_of(home->timeline.next, struct job, due));
 	struct home_metrics const *m = home->metrics;
-	LOG(LOG_INFO, "jobs: %" PRIu64 " submitted, %" PRIu64 " completed, %" PRIu64
-	    " cancelled, %" PRIu64 " rejected; %" PRIu64 " cancelled upstream; %"
-	    PRIu64 " preempted", hist_get(&m->submitted), hist_get(&m->completed),
-	    hist_get(&m->cancelled), hist_get(&m->rejected), hist_get(&m->aborted),
-	    hist_get(&m->preempted));
+	struct {
+		char const             *name;
+		_Atomic uint64_t const *count;
+	} const counts[] = {
+		{ "submitted", &m->submitted },
+		{ "completed", &m->completed },
+		{ "cancelled", &m->cancelled },
+		{ "rejected",  &m->rejected  },
+		{ "aborted",   &m->aborted   },
+		{ "preempted", &m->preempted },
+	};
+	LOG_ALL(LOG_INFO, "upstream requests:");
+	for (size_t i = 0; i < ARRAY_SIZE(counts); ++i)
+		LOG_ALL(LOG_INFO, "  %-9s  %" PRIu64, counts[i].name, hist_get(counts[i].count));
 	home_fini(home);
 	free(home);
 }

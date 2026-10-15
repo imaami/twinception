@@ -846,6 +846,26 @@ policy_put (struct policy *policy)
 	free(policy);
 }
 
+/* Log the tools of @p mask, of the names @p tools of @p n tools, one a
+ * line, the first after @p key, which is padded to @p width columns; or
+ * none. */
+static void
+policy_log_tools (char const        *key,
+                  int                width,
+                  char const *const  tools[],
+                  size_t             n,
+                  tool_mask          mask)
+{
+	char const *first = key;
+	for (size_t i = 0; i < n; ++i)
+		if (mask >> i & 1 && tools[i]) {
+			LOG_ALL(LOG_INFO, "  %-*s  %s", width, key, tools[i]);
+			key = "";
+		}
+	if (key == first)
+		LOG_ALL(LOG_INFO, "  %-*s  none", width, key);
+}
+
 /* Log each role of the file's policy @p policy with the names @p tools of
  * the @p n_tools tools, and with the tools that the upstream may call,
  * which @p lent returns with @p ctx, if @p lent is not nullptr; returns
@@ -864,38 +884,48 @@ policy_log_roles (struct policy const *policy,
 	tool_mask listed = 0;
 	for (size_t i = 0; i < policy->n_roles; ++i) {
 		struct policy_role const *r = &policy->roles[i];
-		tool_mask up = lent ? lent(ctx, r->upstream) : 0;
-		char granted[1024];
-		char upstream[1024] = "";
-		policy_names(granted, sizeof granted, tools, n_tools, r->tools);
-		if (lent) {
-			size_t len = util_format(upstream, sizeof upstream, "; upstream ");
-			policy_names(upstream + len, sizeof upstream - len, tools, n_tools, up);
-		}
-		LOG_ALL(LOG_INFO, "%.*s: tools %s%s; metrics %s", (int)r->who.len, r->who.ptr,
-		        granted, upstream, r->metrics ? "yes" : "no");
+		tool_mask up = lent ? lent(ctx, r->tools, r->upstream) : 0;
+		LOG_ALL(LOG_INFO, "%.*s:", (int)r->who.len, r->who.ptr);
+		policy_log_tools("tools", 14, tools, n_tools, r->tools);
+		if (lent)
+			policy_log_tools("upstream tools", 14, tools, n_tools, up);
+		LOG_ALL(LOG_INFO, "  metrics         %s", r->metrics ? "yes" : "no");
 		listed |= r->tools | up;
 	}
 	return listed;
 }
 
-/* Log the names of the identities of the file's policy, @p ids in the
- * file. */
+/* The width of the longest member name of @p obj, an object. */
+static int
+policy_width (struct json_object *obj)
+{
+	int width = 0;
+	struct json_object_iter it;
+	json_object_object_foreachC(obj, it) {
+		int len = (int)strlen(it.key);
+		width = len > width ? len : width;
+	}
+	return width;
+}
+
+/* Log the identities of the file's policy, @p ids in the file, each with
+ * its role. */
 static void
 policy_log_identities (struct json_object *ids)
 {
-	size_t n = policy_members(ids);
-	if (!n) {
+	if (!policy_members(ids)) {
 		LOG_ALL(LOG_INFO, "identities: none");
 		return;
 	}
-	char names[1024];
-	size_t len = 0;
+	int width = policy_width(ids);
+	LOG_ALL(LOG_INFO, "identities:");
 	struct json_object_iter it;
-	json_object_object_foreachC(ids, it)
-		len += util_format(names + len, sizeof names - len, "%s%s", len ? ", " : "",
-		                   it.key);
-	LOG_ALL(LOG_INFO, "identities: %zu (%s)", n, names);
+	json_object_object_foreachC(ids, it) {
+		struct json_object *role = nullptr;
+		json_object_object_get_ex(it.val, "role", &role);
+		char const *name = json_object_get_string(role);
+		LOG_ALL(LOG_INFO, "  %-*s  role %s", width, it.key, name ? name : "none");
+	}
 }
 
 /* Log the role of each Unix group of the file's policy @p policy, @p groups
@@ -905,17 +935,46 @@ policy_log_groups (struct policy const *policy,
                    struct json_object  *groups)
 {
 	if (!policy->n_groups) {
-		LOG_ALL(LOG_INFO, "unix-groups: none");
+		LOG_ALL(LOG_INFO, "Unix groups: none");
 		return;
 	}
+	int width = policy_width(groups);
+	LOG_ALL(LOG_INFO, "Unix groups:");
 	struct policy_gid const *g = policy->groups;
 	struct json_object_iter it;
 	json_object_object_foreachC(groups, it) {
 		if (g == policy->groups + policy->n_groups)
 			return;
 		struct tool_text who = policy->roles[g++->role].who;
-		LOG_ALL(LOG_INFO, "unix-group %s: %.*s", it.key, (int)who.len, who.ptr);
+		LOG_ALL(LOG_INFO, "  %-*s  %.*s", width, it.key, (int)who.len, who.ptr);
 	}
+}
+
+/* Log askai's own policy @p policy, and if @p lent is not nullptr, the
+ * tools of the names @p tools of @p n_tools that the upstream may call,
+ * which @p lent returns with @p ctx.  The keys are padded to the width of
+ * the longest. */
+static void
+policy_log_own (struct policy const *policy,
+                char const *const    tools[],
+                size_t               n_tools,
+                policy_lent_fn      *lent,
+                void const          *ctx)
+{
+	if (policy->n_tokens) {
+		LOG_ALL(LOG_INFO, "policy: built in, with ASKAI_TOKEN");
+		LOG_ALL(LOG_INFO, "  clients with the token  all tools and metrics");
+		LOG_ALL(LOG_INFO, "  other clients           refused");
+	} else {
+		LOG_ALL(LOG_INFO, "policy: built in, without ASKAI_TOKEN");
+		LOG_ALL(LOG_INFO, "  loopback        all tools and metrics");
+		LOG_ALL(LOG_INFO, "  remote          all tools");
+		LOG_ALL(LOG_INFO, "  unix            all tools and metrics");
+	}
+	struct policy_role const *r = &policy->roles[0];
+	if (lent)
+		policy_log_tools("upstream tools", policy->n_tokens ? 22 : 14, tools, n_tools,
+		                 lent(ctx, r->tools, r->upstream));
 }
 
 void
@@ -934,28 +993,27 @@ policy_log (struct policy const *policy,
 	struct json_object *groups = nullptr;
 	struct json_object *anon = nullptr;
 	if (!policy_file(file, &roles, &ids, &groups, &anon)) {
-		if (policy->n_tokens)
-			LOG_ALL(LOG_INFO, "policy: askai's own, with ASKAI_TOKEN: each client "
-			        "must send it, and may do everything");
-		else
-			LOG_ALL(LOG_INFO, "policy: askai's own, without ASKAI_TOKEN: clients on "
-			        "loopback or a Unix socket may do everything, and other "
-			        "clients may call every tool");
+		policy_log_own(policy, tools, n_tools, lent, ctx);
 		return;
 	}
-	LOG_ALL(LOG_INFO, "policy: from the configuration file; askai's own policy is off");
+	LOG_ALL(LOG_INFO, "policy: from the configuration file");
 	tool_mask listed = policy_log_roles(policy, tools, n_tools, lent, ctx);
 	policy_log_identities(ids);
 	policy_log_groups(policy, groups);
+	LOG_ALL(LOG_INFO, "anonymous clients:");
 	for (size_t k = 0; k < POLICY_KINDS; ++k) {
 		int64_t role = policy->anonymous[k];
 		struct tool_text who = role < 0 ? TOOL_TEXT("refused") : policy->roles[role].who;
-		LOG_ALL(LOG_INFO, "anonymous %s: %.*s", policy_kinds[k].ptr, (int)who.len,
-		        who.ptr);
+		LOG_ALL(LOG_INFO, "  %-8s  %.*s", policy_kinds[k].ptr, (int)who.len, who.ptr);
 	}
+	tool_mask unlisted = 0;
 	for (size_t i = 0; i < n_granted; ++i)
-		if (tools[i] && !(listed >> i & 1))
-			LOG_ALL(LOG_WARN, "warning: tool %s: no role lists it", tools[i]);
+		unlisted |= tools[i] && !(listed >> i & 1) ? (tool_mask)1 << i : 0;
+	if (unlisted)
+		LOG_ALL(LOG_WARN, "warning: no role lists these tools:");
+	for (size_t i = 0; i < n_granted; ++i)
+		if (unlisted >> i & 1)
+			LOG_ALL(LOG_WARN, "  %s", tools[i]);
 }
 
 /* Grant @p role, if it is one, to the client of @p principal, which the

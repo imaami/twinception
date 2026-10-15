@@ -1993,9 +1993,8 @@ config_log_url (char const *url)
 	host = host ? host + sizeof "://" - 1 : url;
 	char const *at = memchr(host, '@', strcspn(host, "/?#"));
 	char const *path = at ? at + 1 : host;
-	size_t len = strcspn(path, "?#");
-	LOG_ALL(LOG_INFO, "upstream URL: %.*s%.*s%s", (int)(host - url), url, (int)len, path,
-	        path[len] ? ", its query not logged" : "");
+	LOG_ALL(LOG_INFO, "  URL       %.*s%.*s", (int)(host - url), url,
+	        (int)strcspn(path, "?#"), path);
 }
 
 void
@@ -2004,20 +2003,19 @@ config_log (struct config const *cfg)
 	if (!cfg)
 		return;
 	struct ai_endpoint const *ep = &cfg->ep;
-	LOG_ALL(LOG_INFO, "upstream provider: %s",
-	        ep->provider ? provider_names[ep->provider] : "none");
-	LOG_ALL(LOG_INFO, "upstream API: %s", api_names[ep->api]);
-	config_log_url(ep->url);
-	LOG_ALL(LOG_INFO, "upstream model: %s", ep->model ? ep->model : "none");
-	/* Home asks /props of a server that may be llama-server
-	 * (home_props_ask()). */
+	LOG_ALL(LOG_INFO, "upstream:");
+	LOG_ALL(LOG_INFO, "  provider  %s", ep->provider ? provider_names[ep->provider] : "none");
+	LOG_ALL(LOG_INFO, "  API       %s", api_names[ep->api]);
+	LOG_ALL(LOG_INFO, "  model     %s", ep->model ? ep->model : "none");
+	/* Home asks /props of a server that may be llama-server, but not when
+	 * told the slots and lending the upstream no tools (home_create()). */
 	if (ep->context > 0)
-		LOG_ALL(LOG_INFO, "upstream context: %ld tokens (--context)", ep->context);
-	else if (ai_llama_like(ep->provider) && ep->api != AI_GENERATE)
-		LOG_ALL(LOG_INFO, "upstream context: n_ctx from llama-server's /props, else "
-		        "unknown");
+		LOG_ALL(LOG_INFO, "  context   %ld tokens", ep->context);
+	else if (ai_props(ep) && (!ep->slots || cfg->flags & CFG_UPSTREAM_TOOLS))
+		LOG_ALL(LOG_INFO, "  context   from llama-server");
 	else
-		LOG_ALL(LOG_INFO, "upstream context: unknown, --context sets it");
+		LOG_ALL(LOG_INFO, "  context   unknown");
+	config_log_url(ep->url);
 	mcp_report(&cfg->registry, cfg);
 	config_log_policy(cfg);
 }

@@ -67,14 +67,13 @@ mcp_register (struct registry     *reg,
               struct config const *cfg);
 
 /**
- * Logs at LOG_INFO, one line each, the tools that a role can grant of
- * @p reg, which mcp_register() filled for @p cfg: in the order of
- * tools/list, each tool with where it comes from and whether it is on, and
- * askai's own tools that are off with the option that turns them on, but
- * not test_task, a test aid.  Then
- * it logs each plugin that askai loaded, with its path, its tools and
- * whether it got options, and then the tools that the upstream may call in
- * the turns of an ask call.  The lines have no rate limit.
+ * Logs at LOG_INFO, as lists with one item a line: askai's own tools for
+ * @p cfg, each on or off, and for a tool that is off, the option that turns
+ * it on, but not test_task, a test aid, while it is off; the git
+ * repositories and the notes directory; and each plugin of @p reg, which
+ * mcp_register() filled for @p cfg, with its file, whether it got options,
+ * and its tools.  Without --upstream-tools, it logs that the upstream gets
+ * no tools.  The lines have no rate limit.
  */
 extern void
 mcp_report (struct registry const *reg,
@@ -82,14 +81,16 @@ mcp_report (struct registry const *reg,
 
 /**
  * Returns the tools that the upstream may call in the turns of an ask call
- * of a client whose role lets the upstream call the tools @p upstream, with
- * the configuration @p cfg, a struct config whose registry mcp_register()
- * filled.  The tools are those that an ask call of such a client lends its
- * turns.  Returns 0 if @p cfg is nullptr.  The function is a policy_lent_fn
+ * of a client whose role grants the tools @p tools and lets the upstream
+ * call the tools @p upstream, with the configuration @p cfg, a struct config
+ * whose registry mcp_register() filled.  The tools are those that an ask
+ * call of such a client lends its turns, and none if @p tools lacks the ask
+ * tool.  Returns 0 if @p cfg is nullptr.  The function is a policy_lent_fn
  * (src/policy.h).
  */
 extern tool_mask
 mcp_lent (void const *cfg,
+          tool_mask   tools,
           tool_mask   upstream);
 
 /**

@@ -851,8 +851,8 @@ command-line option for it.
 `askai` loads the plugins as it starts, in the order of the array `plugins`,
 and never unloads one.  A reload loads nothing.  A change of `plugins`, also
 of the options of a plugin, takes effect when `askai` is restarted.  Until
-then, the log line of each successful reload ends with "its other options
-take a restart".
+then, each successful reload logs the warning "other changed options need a
+restart".
 
 The options of a plugin are an object, which the plugin defines.  As
 `askai` loads the plugin, it passes the object to the plugin's
@@ -1199,33 +1199,32 @@ Invalid options or environment exit 2, and a failure to start or to serve 1.
 
 `askai` writes its log to stderr, one line for each event, and each line
 begins with `askai: `.  As it starts, and before the lines with its MCP
-endpoints, it logs what it runs, one fact a line:
+endpoints, it logs what it runs as lists with one item a line:
 
-- the upstream: its provider, API, URL, model and context size.  The URL is
+- `upstream:` the provider, API, model, context size and URL.  The URL is
   logged without a user, a password and a query, which can have secrets.
-- each tool that a role can grant, in the order of `tools/list`, with where
-  it comes from, built in or a plugin and its path, and whether it is on.
-  For a built-in tool that is off, the line names the option that turns it
-  on.  The test aid `test_task` has a line only when it is on.
-- each plugin that `askai` loaded, with its path, its tools and whether it
-  got options.
-- the tools that the upstream may call in the turns of an ask call.
-  Without `--upstream-tools`, the line is `upstream tools: none,
-  --upstream-tools turns them on`.
-- the policy: `askai`'s own, and whether `ASKAI_TOKEN` is set; or, when the
-  configuration file has roles, identities, Unix groups or anonymous
-  clients, the file's policy, which turns `askai`'s own policy off.  The
-  file's policy is logged as each role with its tools, the tools that the
-  upstream may call in the turns of its `ask_ai` calls and `metrics`; the
-  names of the identities; the role of each Unix group; and the role of
-  each kind of anonymous client.  A warning follows for each tool that is
-  on but that no role grants or lends to the upstream, because nothing can
-  call it.  A reload logs the policy again.
+- `built-in tools for clients:` each tool, `on` or `off`, and for a tool
+  that is off, the option that turns it on.  The test aid `test_task` is
+  listed only when it is on.
+- `git repositories:` and `notes directory:`, when those tools are on.
+- `plugin NAME:` for each plugin that `askai` loaded: its file, whether the
+  configuration gives it options, and its tools.
+- `upstream tools: off (--upstream-tools)` without `--upstream-tools`.
+- the policy.  `askai`'s own policy is listed with whether `ASKAI_TOKEN` is
+  set and what each kind of client may do.  The policy of a configuration
+  file is listed as each role with its tools and `metrics`; each identity
+  and each Unix group with its role; and the role of each kind of anonymous
+  client.  With `--upstream-tools`, the policy also lists the tools that
+  the upstream may call in the turns of an `ask_ai` call, and none for a
+  role without `ask_ai`.
+- a warning with the tools that are on but that no role grants or lends to
+  the upstream, because nothing can call them.
 
-`askai` does not log client tokens, its API key or the headers that it
-sends.  It logs the error text of an upstream and the request URL of a
-plugin as they arrive, and these can contain a secret.  In this
-configuration file, no role lists a tool of the godbolt plugin:
+A reload logs the policy again.  `askai` does not log client tokens, its
+API key or the headers that it sends.  It logs the error text of an upstream
+and the request URL of a plugin as they arrive, and these can contain a
+secret.  In this configuration file, no role lists a tool of the godbolt
+plugin:
 
 ```json
 {
@@ -1249,47 +1248,80 @@ configuration file, no role lists a tool of the godbolt plugin:
 `askai` logs these lines as it starts with it:
 
 ```text
-askai: upstream provider: none
-askai: upstream API: chat
-askai: upstream URL: http://127.0.0.1:8081/v1/chat/completions
-askai: upstream model: none
-askai: upstream context: n_ctx from llama-server's /props, else unknown
-askai: tool bro: built in; on, the ask tool
-askai: tool man: built in; on
-askai: tool git: built in; on, repositories proj
-askai: tool notes: built in; on, directory /var/lib/askai/notes
-askai: tool background: built in; off, --client-jobs turns it on
-askai: tool jobs: built in; off, --client-jobs turns it on
-askai: tool wait: built in; off, --client-jobs turns it on
-askai: tool timer: built in; off, --client-jobs turns it on
-askai: tool godbolt_catalog: plugin godbolt (/usr/libexec/askai/godbolt.so); on
-askai: tool godbolt_compile: plugin godbolt (/usr/libexec/askai/godbolt.so); on
-askai: tool godbolt_preprocess: plugin godbolt (/usr/libexec/askai/godbolt.so); on
-askai: tool godbolt_macros: plugin godbolt (/usr/libexec/askai/godbolt.so); on
-askai: tool godbolt_targets: plugin godbolt (/usr/libexec/askai/godbolt.so); on
-askai: plugin godbolt: /usr/libexec/askai/godbolt.so; tools godbolt_catalog, godbolt_compile, godbolt_preprocess, godbolt_macros, godbolt_targets; options given
-askai: upstream tools: man, git, godbolt_catalog, godbolt_compile, godbolt_preprocess, godbolt_macros, godbolt_targets, as the role of the client allows
-askai: upstream tools: notes, in every ask call
-askai: upstream tools: compact, wait, timer, when the turns get at least one other tool
-askai: upstream tools: background, jobs, when the turns get one of man, git, godbolt_compile, godbolt_preprocess, godbolt_macros, godbolt_targets (tools that can run in the background)
-askai: policy: from the configuration file; askai's own policy is off
-askai: role admin: tools bro, man, git, notes; upstream man, git, notes, compact, background, jobs, wait, timer; metrics yes
-askai: role user: tools bro, man, git, notes; upstream man, git, notes, compact, background, jobs, wait, timer; metrics no
-askai: identities: 1 (alice)
-askai: unix-groups: none
-askai: anonymous loopback: role user
-askai: anonymous remote: refused
-askai: anonymous unix: refused
-askai: warning: tool godbolt_catalog: no role lists it
-askai: warning: tool godbolt_compile: no role lists it
-askai: warning: tool godbolt_preprocess: no role lists it
-askai: warning: tool godbolt_macros: no role lists it
-askai: warning: tool godbolt_targets: no role lists it
+askai: upstream:
+askai:   provider  none
+askai:   API       chat
+askai:   model     none
+askai:   context   from llama-server
+askai:   URL       http://127.0.0.1:8081/v1/chat/completions
+askai: built-in tools for clients:
+askai:   bro         on
+askai:   man         on
+askai:   git         on
+askai:   notes       on
+askai:   background  off (--client-jobs)
+askai:   jobs        off (--client-jobs)
+askai:   wait        off (--client-jobs)
+askai:   timer       off (--client-jobs)
+askai: git repositories:
+askai:   proj  /srv/git/proj
+askai: notes directory: /var/lib/askai/notes
+askai: plugin godbolt:
+askai:   file     /usr/libexec/askai/godbolt.so
+askai:   options  given
+askai:   tools    godbolt_catalog
+askai:            godbolt_compile
+askai:            godbolt_preprocess
+askai:            godbolt_macros
+askai:            godbolt_targets
+askai: policy: from the configuration file
+askai: role admin:
+askai:   tools           bro
+askai:                   man
+askai:                   git
+askai:                   notes
+askai:   upstream tools  man
+askai:                   git
+askai:                   notes
+askai:                   compact
+askai:                   background
+askai:                   jobs
+askai:                   wait
+askai:                   timer
+askai:   metrics         yes
+askai: role user:
+askai:   tools           bro
+askai:                   man
+askai:                   git
+askai:                   notes
+askai:   upstream tools  man
+askai:                   git
+askai:                   notes
+askai:                   compact
+askai:                   background
+askai:                   jobs
+askai:                   wait
+askai:                   timer
+askai:   metrics         no
+askai: identities:
+askai:   alice  role admin
+askai: Unix groups: none
+askai: anonymous clients:
+askai:   loopback  role user
+askai:   remote    refused
+askai:   unix      refused
+askai: warning: no role lists these tools:
+askai:   godbolt_catalog
+askai:   godbolt_compile
+askai:   godbolt_preprocess
+askai:   godbolt_macros
+askai:   godbolt_targets
 askai: MCP endpoint http://127.0.0.1:8090/mcp
 ```
 
-The lines `upstream slots` and `upstream context`, which come from
-llama-server's `/props`, can come before or after these lines.
+The lines `upstream slots`, `upstream context` and `upstream /props`, which
+come from llama-server's `/props`, can come before or after these lines.  As
+`askai` stops, it lists the counts of its requests to the upstream.
 
 Without `--verbose`, `askai` logs each tool call of a client that fails,
 with its tool, its client, its time and the text of the failure.  It also

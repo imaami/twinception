@@ -128,10 +128,10 @@ config_reload (struct config       *cfg,
                struct config const *from);
 
 /**
- * Logs at LOG_INFO, one fact a line, what @p cfg runs: the upstream's
- * provider, API, URL without its query, model and context size; the tools,
- * the plugins and the tools of the upstream (mcp_report()); and the policy
- * (config_log_policy()).  The lines have no rate limit.
+ * Logs at LOG_INFO, as lists with one item a line, what @p cfg runs: the
+ * upstream's provider, API, model, context size, and URL without its user,
+ * password and query; the tools and the plugins (mcp_report()); and the
+ * policy (config_log_policy()).  The lines have no rate limit.
  */
 extern void
 config_log (struct config const *cfg);

@@ -51,11 +51,12 @@ static constexpr size_t POLICY_NAME = 64;
 static constexpr size_t POLICY_WHO = sizeof "anonymous loopback (role )" + POLICY_NAME;
 
 /** The type of a function that returns the tools that the upstream may call
- *  in the turns of an ask call, for a client whose role lets the upstream
- *  call @p upstream: the tools of the role's member "upstream", or else the
- *  role's tools.  @p ctx is the context that the caller of policy_log()
- *  passes. */
+ *  in the turns of an ask call, for a client whose role grants @p tools and
+ *  lets the upstream call @p upstream: the tools of the role's member
+ *  "upstream", or else the role's tools.  @p ctx is the context that the
+ *  caller of policy_log() passes. */
 typedef tool_mask policy_lent_fn (void const *ctx,
+                                  tool_mask   tools,
                                   tool_mask   upstream);
 
 /** The user of a Unix socket's client, as the kernel says (SO_PEERCRED,
@@ -126,15 +127,16 @@ policy_put (struct policy *policy);
  * upstream may call for a role, and is nullptr if askai lends the upstream
  * no tool.
  *
- * For askai's own policy, the function logs at LOG_INFO whether
- * ASKAI_TOKEN is set.  For the policy of the file, it logs at LOG_INFO a
- * line for each role with the tools that its clients may call, the tools
- * that the upstream may call in their ask calls if @p lent is not nullptr,
- * and whether they may read the metrics; the names of the identities; each
- * Unix group with its role; and the role of each kind of anonymous client.
- * Then it logs at LOG_WARN a line for each of the first @p n_granted tools
- * that no role grants and no role lends to the upstream.  The lines have no
- * rate limit.
+ * The function logs at LOG_INFO, as lists with one item a line.  For
+ * askai's own policy, it logs whether ASKAI_TOKEN is set, what each kind of
+ * client may do, and the tools that the upstream may call if @p lent is not
+ * nullptr.  For the policy of the file, it logs each role with the tools
+ * that its clients may call, the tools that the upstream may call in their
+ * ask calls if @p lent is not nullptr, and whether they may read the
+ * metrics; each identity with its role; each Unix group with its role; and
+ * the role of each kind of anonymous client.  Then it logs at LOG_WARN a
+ * list of the first @p n_granted tools that no role grants and no role
+ * lends to the upstream.  The lines have no rate limit.
  */
 extern void
 policy_log (struct policy const *policy,

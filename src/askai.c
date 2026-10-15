@@ -493,22 +493,23 @@ askai_reload_apply (struct askai_home         *app,
                     struct askai_reload const *r)
 {
 	if (r->status >= 0) {
-		LOG(LOG_ERROR, "configuration not reloaded; the last stays");
+		LOG(LOG_ERROR, "configuration not reloaded");
 		return;
 	}
 	int e = httpd_home_policy(app->keep.door, r->cfg.policy);
 	if (e) {
-		LOG(LOG_ERROR, "configuration not reloaded: %s; the last stays",
+		LOG(LOG_ERROR, "configuration not reloaded: %s",
 		    e == EAGAIN ? "the server is not open" : strerror(e));
 		return;
 	}
 	char const *cert = "";
 	if (r->cfg.tls && app->cfg->tls) {
 		httpd_home_tls(app->keep.door, r->cfg.tls);
-		cert = ", and the TLS certificate";
+		cert = " and TLS certificate";
 	}
-	LOG(LOG_INFO, "configuration reloaded: who may connect, and what they may do%s%s",
-	    cert, r->cfg.restart ? "; its other options take a restart" : "");
+	LOG(LOG_INFO, "configuration reloaded: policy%s", cert);
+	if (r->cfg.restart)
+		LOG(LOG_WARN, "warning: other changed options need a restart");
 	config_log_policy(&r->cfg);
 }
 
@@ -724,12 +725,20 @@ askai_tasks_report (struct task_pool const *tasks,
 	uint64_t cancelled = hist_get(&t->cancelled);
 	uint64_t abandoned = hist_get(&t->abandoned);
 	uint64_t ended = done + cancelled + abandoned;
-	char rest[48] = "";
-	if (submitted > ended)
-		util_format(rest, sizeof rest, "; %" PRIu64 " under way", submitted - ended);
-	fprintf(stderr, "askai: tasks: %" PRIu64 " submitted, %" PRIu64 " done, %" PRIu64
-	        " cancelled, %" PRIu64 " abandoned; %" PRIu64 " moved%s\n", submitted, done,
-	        cancelled, abandoned, moved, rest);
+	struct {
+		char const *name;
+		uint64_t    count;
+	} const counts[] = {
+		{ "submitted", submitted },
+		{ "done",      done      },
+		{ "cancelled", cancelled },
+		{ "abandoned", abandoned },
+		{ "moved",     moved     },
+		{ "under way", submitted > ended ? submitted - ended : 0 },
+	};
+	fprintf(stderr, "askai: tasks:\n");
+	for (size_t i = 0; i < ARRAY_SIZE(counts); ++i)
+		fprintf(stderr, "askai:   %-9s  %" PRIu64 "\n", counts[i].name, counts[i].count);
 }
 
 /* Run the loops on @p s, as @p cfg says, until shut down; returns the exit

@@ -59,6 +59,16 @@ struct ai_endpoint {
 	enum ai_provider    provider;
 };
 
+/** Whether the upstream of @p ep may be llama-server, which says at /props
+ *  what it has: one that ai_llama_like() allows, with an API that is not
+ *  one of Gemini's. */
+static inline bool
+ai_props (struct ai_endpoint const *ep)
+{
+	return ai_llama_like(ep->provider) && ep->api != AI_GENERATE &&
+	       ep->api != AI_INTERACTIONS;
+}
+
 /**
  * Build the request body asking @p prompt, with @p system instructions unless
  * that is nullptr, and offering the model @p tools, an array as the API
