@@ -50,6 +50,7 @@
 #include "loop.h"
 
 struct home_principal;
+struct home_delivery_error;
 struct http_request;
 
 /** The bits of the messages to home. */
@@ -158,7 +159,11 @@ struct job {
 	struct jb_parser       parser;      /**< home's: of the stream's event */
 	struct loop           *front;       /**< the front's loop, set as it is made */
 	struct http_request   *transfer;    /**< home's: the request upstream */
+	char                  *cancel_url;  /**< home's: native background job's
+	                                         cancellation URL, or nullptr */
 	struct home_principal *who;         /**< home's: whose queue it is on */
+	struct home_delivery_error *delivery_error; /**< home's: transfer error kept
+	                                               while buffered events drain */
 	struct handle          call;        /**< the front's: what waits for it */
 	uint64_t               deadline;    /**< the front writes, before SUBMIT, when
 	                                         the call times out waiting, and home
@@ -167,6 +172,7 @@ struct job {
 	                                         0: never */
 	uint64_t               since;       /**< home's: when it started upstream */
 	uint64_t               active;      /**< home's: when its answer last sent */
+	uint64_t               provider_done; /**< home's: bool, native job is terminal */
 	uint64_t               principal;   /**< the front's, with the key: the hash,
 	                                         seeded, of whom the call is for */
 	uint64_t               peer[2];     /**< the front's: the client's address,
@@ -241,7 +247,9 @@ job_init (struct job  *job,
 	job->parser = (struct jb_parser){};
 	job->front = front;
 	job->transfer = nullptr;
+	job->cancel_url = nullptr;
 	job->who = nullptr;
+	job->delivery_error = nullptr;
 	job->call = (struct handle){};
 	job->deadline = job->since = job->active = job->principal = 0;
 	job->peer[0] = job->peer[1] = 0;
@@ -250,6 +258,7 @@ job_init (struct job  *job,
 	job->reader = (struct ai_reader){};
 	job->http = job->flags = 0;
 	job->status = job->asks = 0;
+	job->provider_done = false;
 	job->reason[0] = '\0';
 	atomic_init(&job->progress, 0);
 	atomic_init(&job->home_bits, 0);

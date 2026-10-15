@@ -3224,13 +3224,16 @@ mcp_req_log_ask (struct mcp_req const *req,
 	    text);
 }
 
+static int mcp_req_background (struct mcp_req *req, uint32_t tool, bool own_tool);
+
 /* Start a call that asks the upstream, with the arguments @p args, of the
  * class the request asks for, lending the turns the tools req->lent says,
  * if any: build its upstream request, then submit its job.  The notes the turns keep, if askai keeps
  * them, go in the thread the call goes on with, else in a new one. */
 static void
 mcp_req_ask (struct mcp_req     *req,
-             struct json_object *args)
+             struct json_object *args,
+             bool                background)
 {
 	struct mcp_static const *st = req->mcp->st;
 	struct notes const *notes = req->lent & st->lending.by[LEND_ALWAYS] ? st->notes
@@ -3256,6 +3259,8 @@ mcp_req_ask (struct mcp_req     *req,
 		mcp_slot_result(&req->self, problem, true);
 		return;
 	}
+	if (background && !req->task && mcp_req_background(req, req->self.tool, true))
+		return;
 	if (id) {
 		memcpy(req->thread, id, sizeof req->thread);
 		notes_repo(req->principal, NOTES_UPSTREAM, req->thread, req->repo);
@@ -3393,7 +3398,7 @@ mcp_slot_task (struct mcp_slot    *slot,
 		return;
 	}
 	slot->req->asks = JOB_BACKGROUND;
-	mcp_req_ask(slot->req, args);
+	mcp_req_ask(slot->req, args, false);
 }
 
 /* Let go of a test_task call's task, which cancels it if it runs. */
@@ -4277,6 +4282,41 @@ mcp_seconds_since (uint64_t from,
 	return to > from ? (to - from) / NS : 0;
 }
 
+/* Detach a client call into the ledger, with its result read through the
+ * same tool when @p own_tool, else through jobs. */
+static int
+mcp_req_background (struct mcp_req *req,
+                    uint32_t        tool,
+                    bool            own_tool)
+{
+	static_assert(LEDGER_RUNNING == 8, "the problem says");
+	struct mcp_static const *st = req->mcp->st;
+	int e;
+	struct ledger_task *task = mcp_req_record(req, LEDGER_JOB, tool, &e);
+	if (!task) {
+		mcp_slot_refused(&req->self, e, TEXT("You have 8 jobs and tasks running, the most "
+		                                     "at once: wait for one to end."));
+		return e;
+	}
+	char text[512];
+	size_t n = own_tool
+	         ? util_format(text, sizeof text, "Started job %.*s. Call %s with "
+	                       "{\"job\":\"%.*s\"} in one second for its status or result; add "
+	                       "\"action\":\"cancel\" to cancel it.", LEDGER_ID, task->id,
+	                       st->offers[tool].name, LEDGER_ID, task->id)
+	         : util_format(text, sizeof text, "Started job %.*s. Call wait to wait for "
+	                       "it, then jobs with the action result and this id.",
+	                       LEDGER_ID, task->id);
+	struct mcp_piece const p[] = {
+		FRAG("{\"content\":[{\"type\":\"text\",\"text\":\""),
+		ESC(text, n),
+		FRAG("\"}]"),
+		req->modern ? DSTR(&st->modern_tail) : FRAG("}"),
+		FRAG("}"),
+	};
+	return mcp_req_detach(req, task, p, ARRAY_SIZE(p));
+}
+
 /* A client's call of background in @p slot, the request's own: start a
  * call of the tool that @p args names, with the arguments in @p args, as a
  * job.  The request answers the client with the id of the job at once, and
@@ -4285,7 +4325,6 @@ static void
 mcp_slot_client_background (struct mcp_slot    *slot,
                             struct json_object *args)
 {
-	static_assert(LEDGER_RUNNING == 8, "the problem says");
 	struct mcp_req *req = slot->req;
 	struct mcp_static const *st = req->mcp->st;
 	size_t len = 0;
@@ -4304,25 +4343,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	int e;
-	struct ledger_task *task = mcp_req_record(req, LEDGER_JOB, id, &e);
-	if (!task) {
-		mcp_slot_refused(slot, e, TEXT("You have 8 jobs and tasks running, the most at "
-		                               "once: wait for one to end."));
-		return;
-	}
-	char text[160];
-	size_t n = util_format(text, sizeof text, "Started job %.*s. Call wait to wait for "
-	                       "it, then jobs with the action result and this id.",
-	                       LEDGER_ID, task->id);
-	struct mcp_piece const p[] = {
-		FRAG("{\"content\":[{\"type\":\"text\",\"text\":\""),
-		ESC(text, n),
-		FRAG("\"}]"),
-		req->modern ? DSTR(&st->modern_tail) : FRAG("}"),
-		FRAG("}"),
-	};
-	if (mcp_req_detach(req, task, p, ARRAY_SIZE(p)))
+	if (mcp_req_background(req, id, false))
 		return;
 	req->asks |= JOB_BACKGROUND;
 	slot->tool = (uint8_t)id;
@@ -4331,7 +4352,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	if (log_threshold >= LOG_VERBOSE)
 		mcp_args_shown(&st->offers[id], call, TOOL_TEXT("none"), req->call_args);
 	LOG(LOG_VERBOSE, "tool call background from %s became job %.*s, a call of %s",
-	    mcp_req_client(req), LEDGER_ID, task->id, st->offers[id].name);
+	    mcp_req_client(req), LEDGER_ID, req->task->id, st->offers[id].name);
 	/* Last, as the start of the job's call may end the request. */
 	mcp_slot_start(slot, call);
 }
@@ -4460,7 +4481,8 @@ mcp_slot_jobs_cancel (struct mcp_slot *slot,
  * has no such record, returns nullptr, and the call answers why. */
 static struct ledger_task *
 mcp_slot_client_find (struct mcp_slot    *slot,
-                      struct json_object *args)
+                      struct json_object *args,
+                      bool                own_tool)
 {
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
@@ -4472,9 +4494,16 @@ mcp_slot_client_find (struct mcp_slot    *slot,
 	}
 	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req), id,
 	                                       len);
+	if (task && own_tool && task->tool != slot->tool) {
+		ledger_task_put(task);
+		task = nullptr;
+	}
 	if (!task)
-		mcp_slot_result(slot, TEXT("No job of yours has that id; askai stores a job for "
-		                           "an hour after it ends."), true);
+		mcp_slot_result(slot, own_tool
+		                ? TEXT("No job of yours from this tool has that id; askai stores "
+		                       "a job for up to an hour after it ends.")
+		                : TEXT("No job of yours has that id; askai stores a job for "
+		                       "an hour after it ends."), true);
 	return task;
 }
 
@@ -4528,13 +4557,20 @@ mcp_slot_client_list (struct mcp_slot *slot)
  * which the record has, and which mcp_req_show() copies. */
 static void
 mcp_slot_client_result (struct mcp_slot    *slot,
-                        struct json_object *args)
+                        struct json_object *args,
+                        bool                own_tool)
 {
 	struct mcp_req *req = slot->req;
-	struct ledger_task *task = mcp_slot_client_find(slot, args);
+	struct ledger_task *task = mcp_slot_client_find(slot, args, own_tool);
 	if (!task)
 		return;
 	enum ledger_status status = atomic_load_explicit(&task->status, memory_order_acquire);
+	if (own_tool && status == LEDGER_WORKING) {
+		ledger_task_put(task);
+		mcp_slot_result(slot, TEXT("That job is still running. Call this same tool with "
+		                           "the same job id in one second for its result."), false);
+		return;
+	}
 	struct mcp_piece problem =
 		status == LEDGER_WORKING ? TEXT("That job still runs: wait for it.")
 		: status == LEDGER_CANCELLED ? TEXT("That job was cancelled.")
@@ -4561,7 +4597,8 @@ mcp_slot_client_result (struct mcp_slot    *slot,
  * jobs in @p slot. */
 static void
 mcp_slot_client_cancel (struct mcp_slot    *slot,
-                        struct json_object *args)
+                        struct json_object *args,
+                        bool                own_tool)
 {
 	struct mcp_req *req = slot->req;
 	struct json_object *timer = jb_get(args, "timer");
@@ -4570,7 +4607,7 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 		                           "what to cancel."), true);
 		return;
 	}
-	char text[96];
+	char text[192];
 	if (timer) {
 		if (!json_object_is_type(timer, json_type_int)) {
 			mcp_slot_result(slot, TEXT("The timer argument must be the number of a "
@@ -4588,7 +4625,7 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 		mcp_slot_result(slot, ESC(text, len), e != 0);
 		return;
 	}
-	struct ledger_task *task = mcp_slot_client_find(slot, args);
+	struct ledger_task *task = mcp_slot_client_find(slot, args, own_tool);
 	if (!task)
 		return;
 	bool runs = atomic_load_explicit(&task->status, memory_order_acquire) ==
@@ -4596,9 +4633,10 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 	size_t len = 0;
 	if (runs) {
 		ledger_task_cancel(task);
-		len = util_format(text, sizeof text, "askai is cancelling %s %.*s. Call wait to "
-		                  "wait for its end.", record_kinds[task->kind], LEDGER_ID,
-		                  task->id);
+		len = util_format(text, sizeof text, "askai is cancelling %s %.*s. %s",
+		                  record_kinds[task->kind], LEDGER_ID, task->id, own_tool
+		                  ? "Call this same tool with the job id to check its status."
+		                  : "Call wait to wait for its end.");
 	}
 	ledger_task_put(task);
 	mcp_slot_result(slot, runs ? ESC(text, len) : TEXT("That job runs no more."), !runs);
@@ -4613,11 +4651,11 @@ mcp_slot_client_jobs (struct mcp_slot    *slot,
 {
 	struct json_object *action = jb_get(args, "action");
 	if (jb_is(action, "result")) {
-		mcp_slot_client_result(slot, args);
+		mcp_slot_client_result(slot, args, false);
 		return;
 	}
 	if (jb_is(action, "cancel")) {
-		mcp_slot_client_cancel(slot, args);
+		mcp_slot_client_cancel(slot, args, false);
 		return;
 	}
 	if (!jb_is(action, "list")) {
@@ -6728,8 +6766,38 @@ mcp_slot_ask (struct mcp_slot    *slot,
               struct json_object *args)
 {
 	struct mcp_req *req = slot->req;
+	bool background = req->mcp->st->ep->background;
+	if (background && args) {
+		bool job = json_object_object_get_ex(args, "job", nullptr);
+		struct json_object *action;
+		bool has_action = json_object_object_get_ex(args, "action", &action);
+		struct mcp_piece problem =
+			job && (json_object_object_get_ex(args, "prompt", nullptr) ||
+			        json_object_object_get_ex(args, "system", nullptr) ||
+			        json_object_object_get_ex(args, "thread", nullptr) ||
+			        json_object_object_get_ex(args, "timer", nullptr))
+			? TEXT("Give a job id to check or cancel, or a prompt to start a job, not both.")
+			: has_action && !job
+			? TEXT("The action argument requires a job id.")
+			: has_action && !jb_is(action, "result") && !jb_is(action, "cancel")
+			? TEXT("The action argument must be result or cancel.")
+			: (struct mcp_piece){};
+		if (problem.ptr) {
+			mcp_slot_result(slot, problem, true);
+			return;
+		}
+		if (job) {
+			req->promote_at = UINT64_MAX;
+			mcp_req_arm(req);
+			if (has_action && jb_is(action, "cancel"))
+				mcp_slot_client_cancel(slot, args, true);
+			else
+				mcp_slot_client_result(slot, args, true);
+			return;
+		}
+	}
 	req->lent = mcp_req_lent(req);
-	mcp_req_ask(req, args);
+	mcp_req_ask(req, args, background);
 }
 
 /* Start a tool call: of the tool that the name in @p params names, compared
@@ -7783,18 +7851,55 @@ mcp_tool_definition (void const *service)
 		json_object_put(props);
 		props = nullptr;
 	}
+	if (st->ep->background) {
+		struct json_object *actions = jb_list(json_object_new_string("result"));
+		if (jb_push(actions, json_object_new_string("cancel"))) {
+			json_object_put(actions);
+			actions = nullptr;
+		}
+		int e = jb_set(props, "job", jb_object(
+			"type", json_object_new_string("string"),
+			"description", json_object_new_string(
+				"The job id returned by this tool. Give job instead of prompt, "
+				"system or thread to check its status or read its completed result."),
+			nullptr));
+		e |= jb_set(props, "action", jb_object(
+			"type", json_object_new_string("string"),
+			"enum", actions,
+			"default", json_object_new_string("result"),
+			"description", json_object_new_string(
+				"With job: result checks its status or returns its completed "
+				"answer; cancel stops the job. Omit action to use result."),
+			nullptr));
+		if (e) {
+			json_object_put(props);
+			props = nullptr;
+		}
+	}
+	struct dstr about = dstr("");
+	bool described = dstr_printf(&about, "%s%s", st->tool->description,
+	                             st->ep->background
+		? "\n\nWith prompt, start a job and return its id immediately. The job keeps "
+		  "running after this connection closes. Later call this same tool with job "
+		  "and no prompt to check its status or read its result; action cancel stops "
+		  "it. Results are kept for up to an hour after completion."
+		: "");
+	struct json_object *description = described
+	                               ? json_object_new_string(dstr_get(&about)) : nullptr;
+	dstr_cleanup(&about);
 	return jb_object(
 		"name", json_object_new_string(st->tool->name),
 		"title", json_object_new_string("Ask AI"),
-		"description", json_object_new_string(st->tool->description),
+		"description", description,
 		"inputSchema", jb_object(
 			"type", json_object_new_string("object"),
 			"properties", props,
-			"required", jb_list(json_object_new_string("prompt")),
+			"required", st->ep->background ? json_object_new_array()
+			                              : jb_list(json_object_new_string("prompt")),
 			"additionalProperties", json_object_new_boolean(0),
 			nullptr),
 		"annotations", jb_object(
-			"readOnlyHint", json_object_new_boolean(1),
+			"readOnlyHint", json_object_new_boolean(!st->ep->background),
 			"openWorldHint", json_object_new_boolean(1),
 			nullptr),
 		nullptr);

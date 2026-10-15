@@ -45,6 +45,8 @@ struct ai_endpoint {
 	char const         *model;
 	char const         *system;       /**< default system prompt, or nullptr */
 	char const *const  *headers;      /**< nullptr-terminated header lines */
+	uint64_t            background;   /**< nonzero: ask calls return jobs and
+	                                       keep their upstream streams alive */
 	long                max_tokens;   /**< <= 0 leaves the provider default */
 	long                timeout_ms;   /**< a call's in the queue, and then
 	                                       upstream; <= 0: none */
@@ -58,6 +60,19 @@ struct ai_endpoint {
 	enum ai_api         api;
 	enum ai_provider    provider;
 };
+
+/** Whether @p ep requests native background execution as well as keeping
+ *  its stream locally: OpenAI Responses or Gemini Interactions, including
+ *  an explicit URL with no named provider. */
+static inline bool
+ai_background (struct ai_endpoint const *ep)
+{
+	return ep->background &&
+	       ((ep->api == AI_RESPONSES &&
+	         (ep->provider == AI_NO_PROVIDER || ep->provider == AI_OPENAI)) ||
+	        (ep->api == AI_INTERACTIONS &&
+	         (ep->provider == AI_NO_PROVIDER || ep->provider == AI_GOOGLE)));
+}
 
 /** Whether the upstream of @p ep may be llama-server, which says at /props
  *  what it has: one that ai_llama_like() allows, with an API that is not

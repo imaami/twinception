@@ -308,7 +308,7 @@ class Upstream:
                     "path": self.path,
                     "headers": {k.lower(): v for k, v in self.headers.items()},
                     "raw": raw,
-                    "body": json.loads(raw),
+                    "body": json.loads(raw) if raw else {},
                 }
                 with upstream.lock:
                     upstream.requests.append(request)
@@ -1774,6 +1774,263 @@ def check_client_jobs(binary, up):
         up.reply = hold
     print("client jobs: background, jobs, wait and timer with --client-jobs, by "
           "owner, across loops and as tasks: PASS")
+
+
+def check_background(binary, up):
+    """An ordinary ask can detach immediately, keeping its upstream stream
+    alive after the client leaves.  The same tool polls and cancels its
+    owner's jobs; supported providers also get native background mode."""
+    pending = ("That job is still running. Call this same tool with the same "
+               "job id in one second for its result.")
+    unknown = ("No job of yours from this tool has that id; askai stores a job "
+               "for up to an hour after it ends.")
+    gates = []
+
+    class Gated(Stream):
+        """Hold the provider's events until the test releases them.  Prefix
+        events allow a test to observe a native id before cancelling it."""
+        def __init__(self, payload, prefix=()):
+            super().__init__(payload)
+            self.events = sse_of(payload)
+            if self.events[0][0] == "response.created":
+                self.events[0][1]["response"] = {"id": f"response_{len(gates)}"}
+            if prefix:
+                self.events = self.events[1:]
+            self.prefix = prefix
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            gates.append(self)
+
+        def pieces(self):
+            for event in self.prefix:
+                yield sse_wire([event])
+            self.entered.set()
+            assert self.release.wait(10), "provider gate was not released"
+            for event in self.events:
+                yield sse_wire([event])
+
+    def call(ai, arguments, name="ask_ai", headers=None, modern=False):
+        send = ai.modern if modern else ai.rpc
+        status, _, body = send("tools/call", {"name": name, "arguments": arguments},
+                               headers=headers)
+        assert status == 200 and "result" in body, body
+        return body["result"]
+
+    def start(ai, prompt="Q", **kwargs):
+        result = call(ai, {"prompt": prompt}, **kwargs)
+        match = re.fullmatch(r'Started job ([0-9a-f]{32})\. Call (\w+) with '
+                             r'\{"job":"\1"\} in one second for its status or '
+                             r'result; add "action":"cancel" to cancel it\.',
+                             text_of(result))
+        assert match and not result.get("isError"), result
+        assert match.group(2) == kwargs.get("name", "ask_ai"), result
+        return match.group(1)
+
+    def poll(ai, jid, **kwargs):
+        results = []
+        def ended():
+            result = call(ai, {"job": jid}, **kwargs)
+            results.append(result)
+            return text_of(result) != pending
+        wait_for(ended)
+        return results[-1]
+
+    def refused(ai, args, message, **kwargs):
+        result = call(ai, args, **kwargs)
+        assert result.get("isError") is True and text_of(result) == message, result
+
+    hold = up.reply
+    try:
+        # With the default, the tool still requires a prompt and returns
+        # the answer itself.  No provider gets the new field implicitly.
+        up.reply = lambda r: (200, ANSWERS["responses"])
+        with Askai(binary, "-u", up.url(), "--api", "responses") as ai:
+            tool = ai.rpc("tools/list")[2]["result"]["tools"][0]
+            assert tool["inputSchema"]["required"] == ["prompt"], tool
+            assert "job" not in tool["inputSchema"]["properties"], tool
+            assert text_of(ai.ask()) == "A"
+            assert "background" not in up.last()["body"], up.last()
+
+        # Each call closes its connection before any provider delta is
+        # released.  Both jobs must reach the provider while both gates are
+        # closed, then finish independently, including out of order.
+        for fmt in ("responses", "interactions", "openai"):
+            streams = [Gated(json.loads(json.dumps(ANSWERS[fmt]).replace(
+                '"A"', json.dumps(answer)))) for answer in ("first answer", "second answer")]
+            todo = iter(streams)
+            up.reply = lambda r: (200, next(todo))
+            count, hangups = len(up.requests), up.hangups
+            with Askai(binary, "-u", up.url(), "--api", API[fmt], "--background",
+                       "--slots", "2") as ai:
+                tools = ai.rpc("tools/list")[2]["result"]["tools"]
+                assert [t["name"] for t in tools] == ["ask_ai"], tools
+                schema = tools[0]["inputSchema"]
+                assert schema["required"] == [] and schema["properties"]["action"][
+                    "enum"] == ["result", "cancel"], schema
+                first = start(ai, "first")
+                assert streams[0].entered.wait(5)
+                second = start(ai, "second", modern=True)
+                assert streams[1].entered.wait(5)
+                assert first != second and len(up.requests) == count + 2
+                assert all(not stream.release.is_set() for stream in streams)
+                for request in up.requests[count:]:
+                    assert request["body"]["stream"] is True, request
+                    if fmt == "openai":
+                        assert "background" not in request["body"], request
+                    else:
+                        assert request["body"]["background"] is True and \
+                            request["body"]["store"] is False, request
+                for jid in (first, second):
+                    result = call(ai, {"job": jid})
+                    assert not result.get("isError") and text_of(result) == pending, result
+                streams[1].release.set()
+                result = poll(ai, second, modern=True)
+                assert not result.get("isError") and text_of(result) == "second answer", result
+                assert text_of(call(ai, {"job": first})) == pending
+                streams[0].release.set()
+                result = poll(ai, first)
+                assert not result.get("isError") and text_of(result) == "first answer", result
+                assert call(ai, {"job": first, "action": "result"}) == result
+                assert up.hangups == hangups and len(up.requests) == count + 2
+
+        # The JSON setting and a renamed tool work without --client-jobs.
+        # Fresh authenticated connections keep ownership; another identity
+        # can neither read nor cancel the first one's job.
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{d}/askai.json"
+            digest = lambda token: "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+            with open(path, "w") as f:
+                json.dump(grouped({"url": up.url(), "background": True,
+                    "tool-name": "expert", "roles": {"r": {"tools": ["expert"]}},
+                    "identities": {name: {"role": "r", "tokens": [digest(name)]}
+                                   for name in ("alice", "bob")}}), f)
+            os.chmod(path, 0o600)
+            stream = Gated(ANSWERS["openai"])
+            up.reply = lambda r: (200, stream)
+            alice = {"name": "expert", "headers": {"Authorization": "Bearer alice"}}
+            bob = {"name": "expert", "headers": {"Authorization": "Bearer bob"}}
+            with Askai(binary, "-c", path) as ai:
+                jid = start(ai, **alice)
+                assert stream.entered.wait(5)
+                for action in ("result", "cancel"):
+                    refused(ai, {"job": jid, "action": action}, unknown, **bob)
+                refused(ai, {"job": "0" * 32}, unknown, **alice)
+                count = len(up.requests)
+                for args, message in (
+                        ({}, "The prompt argument must be a non-empty string."),
+                        ({"prompt": ""}, "The prompt argument must be a non-empty string."),
+                        ({"action": "cancel"}, "The action argument requires a job id."),
+                        ({"job": jid, "action": "bogus"},
+                         "The action argument must be result or cancel."),
+                        ({"job": jid, "action": None},
+                         "The action argument must be result or cancel."),
+                        *[({"job": value}, "The job argument must be the id of a job of yours.")
+                          for value in (None, 2, "short")],
+                        *[({"job": jid, key: None}, "Give a job id to check or cancel, or "
+                           "a prompt to start a job, not both.")
+                          for key in ("prompt", "system", "thread", "timer")]):
+                    refused(ai, args, message, **alice)
+                assert len(up.requests) == count
+                stream.release.set()
+                assert text_of(poll(ai, jid, **alice)) == "A"
+                up.reply = lambda r: (400, {"error": {"message": "background failure"}})
+                result = poll(ai, start(ai, **alice), **alice)
+                assert result.get("isError") and "background failure" in text_of(result), result
+
+        # An existing client background job still belongs to its original
+        # tool.  A native upstream job must not be preempted and submitted
+        # a second time when an interactive job needs its only slot.
+        streams = [Gated(ANSWERS["responses"]) for _ in range(2)]
+        streams[1].release.set()
+        todo = iter(streams)
+        up.reply = lambda r: (200, next(todo))
+        count, hangups = len(up.requests), up.hangups
+        with Askai(binary, "-u", up.url(), "--api", "responses", "--background",
+                   "--client-jobs", "--test-task", "--slots", "1") as ai:
+            def wrapped(tool, arguments):
+                result = call(ai, {"tool": tool, "arguments": arguments}, name="background")
+                match = re.match(r"Started job ([0-9a-f]{32})\.", text_of(result))
+                assert match and not result.get("isError"), result
+                return match.group(1)
+            foreign = wrapped("test_task", {"slices": 1})
+            refused(ai, {"job": foreign}, unknown)
+            refused(ai, {"job": foreign, "action": "cancel"}, unknown)
+            first = wrapped("ask_ai", {"prompt": "first"})
+            assert streams[0].entered.wait(5)
+            second = start(ai, "second")
+            wait_for(lambda: ai.metrics()["askai_jobs_queued"] == 1)
+            assert len(up.requests) == count + 1
+            streams[0].release.set()
+            assert text_of(poll(ai, first)) == "A"
+            assert text_of(poll(ai, second)) == "A"
+            assert ai.metrics()["askai_jobs_preempted_total"] == 0
+            assert len(up.requests) == count + 2 and up.hangups == hangups
+
+        # Native cancellation needs the creation id.  The parsed-event
+        # metric is the barrier, so cancellation cannot race its arrival.
+        for fmt, provider, key in (("responses", "openai", "response"),
+                                    ("interactions", "google", "interaction")):
+            event = f"{key}.created"
+            field = "type" if fmt == "responses" else "event_type"
+            stream = Gated(ANSWERS[fmt], [(event, {field: event,
+                key: {"id": "job/with space?", "status": "in_progress"}})])
+            up.reply = lambda r: (200, {}) if "/cancel?" in r["path"] else (200, stream)
+            path = f"/v1/{fmt}/?key=test"
+            count = len(up.requests)
+            with Askai(binary, "-u", up.url(path), "-p", provider, "--api", API[fmt],
+                       "--background", "--header", "X-Cancel-Test: retained") as ai:
+                chunks = ai.metrics()["askai_upstream_chunks_total"]
+                jid = start(ai)
+                wait_for(lambda: ai.metrics()["askai_upstream_chunks_total"] > chunks)
+                result = call(ai, {"job": jid, "action": "cancel"})
+                assert not result.get("isError") and "cancelling job " + jid in text_of(result)
+                wait_for(lambda: len(up.requests) == count + 2)
+                request, cancel = up.requests[count:]
+                assert request["body"]["background"] is True, request
+                assert cancel["path"].lower() == f"/v1/{fmt}/job%2fwith%20space%3f/cancel?key=test", cancel
+                assert cancel["raw"] == b"" and cancel["headers"][
+                    "x-cancel-test"] == "retained", cancel
+                stream.release.set()
+                result = poll(ai, jid)
+                assert result.get("isError") and text_of(result) == "That job was cancelled.", result
+
+        # The transport can report failure with complete events still in
+        # its buffer.  Retain their creation id before reporting the error
+        # so the abandoned native job is cancelled.  A terminal Gemini
+        # status event instead proves that provider cleanup is unnecessary.
+        class Truncated(Stream):
+            def pieces(self):
+                yield self.wire
+                raise ConnectionResetError
+
+        for fmt, terminal in (("responses", False), ("interactions", False),
+                               ("interactions", True)):
+            key = "response" if fmt == "responses" else "interaction"
+            field = "type" if fmt == "responses" else "event_type"
+            created = f"{key}.created"
+            events = [(created, {field: created, key: {"id": "truncated_job",
+                                                       "status": "in_progress"}})]
+            if terminal:
+                events.append(("interaction.status_update", {
+                    "event_type": "interaction.status_update", "status": "completed",
+                    "interaction_id": "truncated_job"}))
+            stream = Truncated(wire=sse_wire(events))
+            up.reply = lambda r: (200, {}) if r["path"].endswith("/cancel") else (200, stream)
+            count = len(up.requests)
+            with Askai(binary, "-u", up.url(f"/v1/{fmt}"), "--api", API[fmt],
+                       "--background") as ai:
+                result = poll(ai, start(ai))
+                assert result.get("isError") and "cannot retain" not in text_of(result), result
+                if not terminal:
+                    wait_for(lambda: len(up.requests) == count + 2)
+                    assert up.last()["path"] == f"/v1/{fmt}/truncated_job/cancel", up.last()
+            assert len(up.requests) == count + (1 if terminal else 2)
+    finally:
+        for stream in gates:
+            stream.release.set()
+        up.reply = hold
+    print("background: immediate jobs, concurrent streams across client disconnect, "
+          "same-tool polling, ownership, errors and native cancellation: PASS")
 
 
 def check_http(binary, up):
@@ -3408,7 +3665,7 @@ def check_configuration(binary, up, godbolt):
                env={"GOOGLE_API_KEY": "fallback-key"}) as ai:
         _, _, body = ai.rpc("tools/list")
         assert body["result"]["tools"][0]["name"] == "ask_ai"
-        assert [ai.listed("upstream:")[i] for i in (1, 4)] == [
+        assert [ai.listed("upstream:")[i] for i in (1, 5)] == [
             "API       interactions",
             "URL       https://generativelanguage.googleapis.com/v1beta/interactions"
         ], ai.log
@@ -4013,7 +4270,7 @@ def check_logs(binary, up):
         # test_task, a test aid, is left out while it is off.
         with Askai(binary, "-u", up.url()) as ai:
             assert ai.listed("upstream:") == [
-                "provider  none", "API       chat", "model     none",
+                "provider  none", "API       chat", "model     none", "background off",
                 "context   from llama-server", f"URL       {up.url()}",
                 "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
@@ -4030,7 +4287,7 @@ def check_logs(binary, up):
         # With --slots and no tools for the upstream, askai asks no /props,
         # and the context is unknown.
         with Askai(binary, "-u", up.url(), "--slots", "2") as ai:
-            assert ai.listed("upstream:")[3] == "context   unknown", told(ai)
+            assert ai.listed("upstream:")[4] == "context   unknown", told(ai)
 
         # Without --verbose, a failed call is still logged, with its error
         # but without its arguments.
@@ -4060,7 +4317,8 @@ def check_logs(binary, up):
                    "bro", "--man", "--test-task", "--git", repo, "--notes", notes,
                    "--upstream-tools", "--verbose", env={"ASKAI_TOKEN": "tok-31415"}) as ai:
             assert ai.listed("upstream:") == [
-                "provider  none", "API       chat", "model     M", "context   8000 tokens",
+                "provider  none", "API       chat", "model     M", "background off",
+                "context   8000 tokens",
                 f"URL       {up.url()}", "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
                 f"{name:<10}  on" for name in ("bro", "man", "test_task", "git", "notes")
@@ -11212,7 +11470,8 @@ def main():
     up = Upstream()
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
-                      check_modern, check_mcp_tasks, check_client_jobs, check_http,
+                      check_modern, check_mcp_tasks, check_client_jobs, check_background,
+                      check_http,
                       check_large_bodies,
                       check_sse,
                       check_answers, check_dense, check_connections,

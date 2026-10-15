@@ -154,7 +154,8 @@ ai_request_responses (struct ai_endpoint const *ep,
 	    (system && jb_set(root, "instructions", json_object_get(system))) ||
 	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
 	    jb_set(root, "store", json_object_new_boolean(0)) ||
-	    ai_request_common(ep, root, nullptr, "max_output_tokens", ep->max_tokens))
+	    ai_request_common(ep, root, nullptr, "max_output_tokens", ep->max_tokens) ||
+	    (ai_background(ep) && jb_set(root, "background", json_object_new_boolean(1))))
 		return ENOMEM;
 	return jb_set(root, "stream", json_object_new_boolean(1));
 }
@@ -221,7 +222,8 @@ ai_request_interactions (struct ai_endpoint const *ep,
 	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
 	    jb_set(root, "store", json_object_new_boolean(0)) ||
 	    ai_request_common(ep, root, "generation_config", "max_output_tokens",
-	                      ep->max_tokens))
+	                      ep->max_tokens) ||
+	    (ai_background(ep) && jb_set(root, "background", json_object_new_boolean(1))))
 		return ENOMEM;
 	return jb_set(root, "stream", json_object_new_boolean(1));
 }

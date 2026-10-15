@@ -165,6 +165,11 @@ config_usage (struct config const *cfg,
 	        "  -x, --extra JSON          JSON object that askai merges into each\n"
 	        "                            request body, recursively; a null member\n"
 	        "                            removes that key\n"
+	        "      --background          return ask calls immediately as jobs, and\n"
+	        "                            keep their upstream streams alive after\n"
+	        "                            clients disconnect; request native background\n"
+	        "                            execution with OpenAI Responses and Gemini\n"
+	        "                            Interactions (default off)\n"
 	        "  -T, --timeout SECONDS     time limit on each upstream call: first on\n"
 	        "                            the wait for an upstream slot, then again on\n"
 	        "                            the call itself (default 600, 0 = none)\n"
@@ -499,7 +504,7 @@ enum {
 	OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO,
 	OPT_MAN, OPT_TEST_MAN_RECHECK, OPT_TEST_TASK, OPT_GIT, OPT_GIT_TIMEOUT,
 	OPT_TLS_CERT, OPT_TLS_KEY, OPT_TLS_ALLOW_RSA, OPT_UPSTREAM_TOOLS, OPT_NOTES,
-	OPT_MAX_TURNS, OPT_CONTEXT, OPT_API, OPT_CLIENT_JOBS
+	OPT_MAX_TURNS, OPT_CONTEXT, OPT_API, OPT_CLIENT_JOBS, OPT_BACKGROUND
 };
 
 static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
@@ -533,6 +538,7 @@ static char const *const group_names[] = {
 	X(UPSTREAM,  "temperature",      required_argument, 't')                  \
 	X(UPSTREAM,  "max-tokens",       required_argument, 'n')                  \
 	X(UPSTREAM,  "extra",            required_argument, 'x')                  \
+	X(UPSTREAM,  "background",       no_argument,       OPT_BACKGROUND)       \
 	X(UPSTREAM,  "timeout",          required_argument, 'T')                  \
 	X(UPSTREAM,  "chunk-timeout",    required_argument, OPT_CHUNK_TIMEOUT)    \
 	X(UPSTREAM,  "slots",            required_argument, OPT_SLOTS)            \
@@ -935,6 +941,7 @@ config_apply (struct config *cfg,
 	case OPT_TLS_ALLOW_RSA: cfg->flags |= CFG_TLS_RSA; break;
 	case OPT_UPSTREAM_TOOLS: cfg->flags |= CFG_UPSTREAM_TOOLS; break;
 	case OPT_CLIENT_JOBS: cfg->flags |= CFG_CLIENT_JOBS; break;
+	case OPT_BACKGROUND: ep->background = 1; break;
 	case OPT_NOTES: cfg->notes = arg; break;
 	case 'o':
 		config_push(cfg->origins, &cfg->n_origins, arg);
@@ -2423,6 +2430,8 @@ config_log (struct config const *cfg)
 	LOG_ALL(LOG_INFO, "  provider  %s", ep->provider ? provider_names[ep->provider] : "none");
 	LOG_ALL(LOG_INFO, "  API       %s", api_names[ep->api]);
 	LOG_ALL(LOG_INFO, "  model     %s", ep->model ? ep->model : "none");
+	LOG_ALL(LOG_INFO, "  background %s", !ep->background ? "off"
+	        : ai_background(ep) ? "on (upstream and local)" : "on (local)");
 	/* Home asks /props of a server that may be llama-server, and Gemini's
 	 * API about its model, but not when told the slots and lending the
 	 * upstream no tools (home_create()). */

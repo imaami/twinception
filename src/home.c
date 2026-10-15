@@ -31,6 +31,8 @@ enum {
 	                             json-c converts whole */
 	MAX_PROPS    = 1 << 20,   /* bytes of a /props answer */
 	PROPS_MS     = 10'000,    /* the most /props may take, or the timeout */
+	CANCEL_MS    = 5'000,     /* native cancellation's total lifetime */
+	MAX_JOB_ID   = 4096,      /* bytes of a native provider job's id */
 	KEYS_MAX     = 1 << 16,   /* the largest number of buckets of the
 	                             principals */
 	SLOTS        = 4,         /* upstream calls at once, unless told or found */
@@ -76,6 +78,22 @@ struct home_principal {
 	uint32_t               class;   /* 0 interactive, 1 background */
 };
 
+/* Best-effort cancellation outlives the local job, but not its deadline. */
+struct home_cancellation {
+	struct list          hook;
+	struct http_request *transfer;
+	uint64_t             deadline;
+	size_t               received;
+};
+
+/* Only failed native streams need this: buffered events can still carry
+ * the id that lets us cancel the provider's generation. */
+struct home_delivery_error {
+	long     retry;
+	CURLcode result;
+	char     message[CURL_ERROR_SIZE];
+};
+
 /*
  * Every job in flight is on the timeline, in the order of its deadline: the
  * front's, from its submission, while it waits, and from its start upstream
@@ -107,9 +125,11 @@ struct home {
 	                                          open */
 	struct loop_step          preempt;     /* preempts the jobs preempting */
 	struct loop_step          props;       /* reads /props */
+	struct loop_step          cleanup;     /* ends overdue native cancellations */
 	struct loop_timer         deadline;    /* the timeline's first */
 	struct loop_timer         quiet;       /* the answer silent longest */
 	struct loop_timer         breaker;     /* when the breaker half-opens */
+	struct loop_timer         cancel_due;  /* the first cancellation's deadline */
 	struct list               ring[2];     /* by class */
 	struct list               ready[2];    /* by class, by the jobs' queue
 	                                          hooks */
@@ -123,6 +143,7 @@ struct home {
 	struct list               idle;        /* the answers under way, the one
 	                                          silent longest first */
 	struct list               feeding;     /* the streams with bytes to read */
+	struct list               cancellations; /* native cancellations, oldest first */
 	struct shelf              spare;       /* principals kept for reuse */
 	struct jb_pool            pool;        /* the events' tokeners */
 	struct jb_reaper          reaper;      /* the events' values left to free */
@@ -147,6 +168,7 @@ struct home {
 	uint32_t                  failures;    /* in a row, closed */
 	uint32_t                  readied[2];  /* jobs ready, by class */
 	uint32_t                  running_bg;  /* background jobs running */
+	uint32_t                  cancelling;  /* native cancellation requests */
 	uint32_t                  draining;    /* bool, widened over the padding */
 	uint32_t                  alone;       /* bool, widened over the padding:
 	                                          the client loops have exited */
@@ -282,6 +304,7 @@ home_job_reset (struct job *job,
 	job->http = 0;
 	job->ev = job->evlen = job->line = job->scan = job->chunks = job->used = 0;
 	job->reader = (struct ai_reader){};
+	job->provider_done = false;
 	job->reason[0] = '\0';
 }
 
@@ -326,6 +349,10 @@ home_unstream (struct home *home,
 	jb_parser_fini(&job->parser, &home->pool, &home->reaper);
 	home_reap(home);
 	buf_fini(&job->wire);
+	curl_free(job->cancel_url);
+	job->cancel_url = nullptr;
+	free(job->delivery_error);
+	job->delivery_error = nullptr;
 }
 
 /* Takes @p job, which is in flight, off the timeline, off its principal's
@@ -355,6 +382,125 @@ home_retire (struct home *home,
 	home_unstream(home, job);
 }
 
+/* On shutdown, leave time for the bounded native cancellations too. */
+static void
+home_maybe_exit (struct home *home)
+{
+	if (home->alone && !hist_get(&home->metrics->in_flight) && !home->cancelling)
+		loop_exit(home->loop);
+}
+
+/* Forget a completed or expired native cancellation, and time the next. */
+static void
+home_cancel_drop (struct home              *home,
+                  struct home_cancellation *cancel)
+{
+	list_del(&cancel->hook);
+	free(cancel);
+	cancel = nullptr;
+	--home->cancelling;
+	uint64_t due = list_is_empty(&home->cancellations) ? UINT64_MAX
+	             : container_of(home->cancellations.next, struct home_cancellation,
+	                            hook)->deadline;
+	(void)loop_timer_set(home->loop, &home->cancel_due, due);
+	home_maybe_exit(home);
+}
+
+/* The cancellation's answer is immaterial and bounded, even on an error. */
+static size_t
+home_cancel_write (char const *data,
+                   size_t      len,
+                   void       *user)
+{
+	(void)data;
+	struct home_cancellation *cancel = user;
+	if (len > (64u << 10) - cancel->received)
+		return 0;
+	cancel->received += len;
+	loop_work(self->loop, LOOP_RECV, len);
+	return len;
+}
+
+static void
+home_cancel_done (CURLcode    result,
+                  long        status,
+                  char const *error,
+                  void       *user)
+{
+	(void)error;
+	struct home_cancellation *cancel = user;
+	cancel->transfer = nullptr;
+	if (result || status < 200 || status > 299)
+		LOG(LOG_WARN, "native background cancellation unconfirmed (HTTP %ld, %s)",
+		    status, curl_easy_strerror(result));
+	home_cancel_drop(self, cancel);
+}
+
+/* Cancel native work independently of the local job's lifetime. Closing
+ * its stream alone would leave it running at the provider. */
+static void
+home_native_cancel (struct home *home,
+                    struct job  *job)
+{
+	if (!ai_background(home->ep) || !(job->flags & RUNNING) || job->provider_done)
+		return;
+	if (!job->cancel_url) {
+		LOG(LOG_WARN, "native background cancellation unavailable: no provider job id");
+		return;
+	}
+	if (home->cancelling >= home->max) {
+		LOG(LOG_WARN, "native background cancellation unavailable: cleanup queue full");
+		return;
+	}
+	struct home_cancellation *cancel = calloc(1, sizeof *cancel);
+	if (!cancel) {
+		LOG(LOG_WARN, "native background cancellation unavailable: out of memory");
+		return;
+	}
+	cancel->deadline = home->loop->now + (uint64_t)CANCEL_MS * 1'000'000;
+	int e = http_post_json(home->http, job->cancel_url, "", 0, false,
+	                       home->ep->headers, CANCEL_MS, home_cancel_write,
+	                       home_cancel_done, cancel, &cancel->transfer);
+	if (e) {
+		free(cancel);
+		cancel = nullptr;
+		LOG(LOG_WARN, "native background cancellation unavailable: %s", strerror(e));
+		return;
+	}
+	list_append(&home->cancellations, &cancel->hook);
+	++home->cancelling;
+	if (home->cancel_due.due == UINT64_MAX)
+		(void)loop_timer_set(home->loop, &home->cancel_due, cancel->deadline);
+}
+
+/* Bound cancellation even while the bridge waits for a resolver or slot. */
+static void
+home_cleanup_step (struct loop      *loop,
+                   struct loop_step *step)
+{
+	struct home *home = container_of(step, struct home, cleanup);
+	while (!list_is_empty(&home->cancellations)) {
+		struct home_cancellation *cancel = container_of(home->cancellations.next,
+		                                               struct home_cancellation, hook);
+		if (cancel->deadline > loop->now)
+			return;
+		if (!loop_room(loop, LOOP_REQS)) {
+			loop_ready_bulk(loop, step);
+			return;
+		}
+		http_cancel(home->http, &cancel->transfer);
+		home_cancel_done(CURLE_OPERATION_TIMEDOUT, 0, "", cancel);
+		loop_work(loop, LOOP_REQS, 1);
+	}
+}
+
+static void
+home_cleanup_event (struct loop       *loop,
+                    struct loop_timer *timer)
+{
+	loop_ready_bulk(loop, &container_of(timer, struct home, cancel_due)->cleanup);
+}
+
 /* End @p job as @p status, counted in @p count, leaving the jobs in flight
  * if it is one (home_job_end()).  Alone, home has its loop exit once no job
  * is in flight. */
@@ -364,12 +510,13 @@ home_end (struct home      *home,
           enum job_status   status,
           _Atomic uint64_t *count)
 {
+	if (status == JOB_CANCELLED || status == JOB_FAILED)
+		home_native_cancel(home, job);
 	if (!list_is_empty(&job->due))
 		home_retire(home, job);
 	hist_add(count, 1);
 	home_job_end(job, status);
-	if (home->alone && !hist_get(&home->metrics->in_flight))
-		loop_exit(home->loop);
+	home_maybe_exit(home);
 }
 
 /* Put what @p fmt says, formatted, in @p job's result in its answer's place;
@@ -462,11 +609,14 @@ home_breaker_event (struct loop       *loop,
 }
 
 /* Whether @p job, a background job running, may be cut: not as the probe,
- * nor once its answer is all in. */
+ * nor once its answer is all in. Native background work cannot be restarted
+ * this way: closing its stream would leave the old generation running. */
 static bool
-home_job_cuttable (struct job const *job)
+home_job_cuttable (struct home const *home,
+                   struct job const  *job)
 {
-	return job->transfer && !(job->flags & (PROBE | DELIVERED | ENDED));
+	return !ai_background(home->ep) && job->transfer &&
+	       !(job->flags & (PROBE | DELIVERED | ENDED));
 }
 
 /* How many background jobs running hold slots they may not: with one slot,
@@ -496,7 +646,7 @@ home_preempt_excess (struct home *home)
 			return;
 		struct job *job = container_of(node, struct job, queue);
 		/* Once at most. */
-		if (!home_job_cuttable(job) || job->flags & PREEMPTED)
+		if (!home_job_cuttable(home, job) || job->flags & PREEMPTED)
 			continue;
 		job->flags |= PREEMPTED;
 		list_del(&job->queue);
@@ -765,6 +915,19 @@ home_job_done (CURLcode    result,
 	job->http = (uint16_t)status;
 	list_del(&job->idle);
 	list_del(&job->held);
+	if (result && job->flags & STREAM && ai_background(home->ep) &&
+	    buf_peek(&job->wire).len) {
+		job->delivery_error = malloc(sizeof *job->delivery_error);
+		if (job->delivery_error) {
+			job->delivery_error->result = result;
+			job->delivery_error->retry = http_retry_after(home->http);
+			util_format(job->delivery_error->message,
+			            sizeof job->delivery_error->message, "%s", error);
+			job->flags |= DELIVERED;
+			home_feed(home, job);
+			return;
+		}
+	}
 	if (result == CURLE_OK && job->flags & STREAM) {
 		job->flags |= DELIVERED;
 		home_feed(home, job);
@@ -1203,6 +1366,85 @@ home_parse (struct home      *home,
 	return over;
 }
 
+/* Build the cancellation URL from our endpoint and a single escaped id.
+ * In particular, a provider's id cannot replace the host or query. */
+static int
+home_native_id (struct home        *home,
+                struct job         *job,
+                struct json_object *value)
+{
+	size_t len = 0;
+	char const *id = jb_str(value, &len);
+	if (!id || !len || len > MAX_JOB_ID || memchr(id, '\0', len) ||
+	    (len == 1 && *id == '.') || (len == 2 && !memcmp(id, "..", 2)))
+		return EPROTO;
+	CURLU *url = curl_url();
+	char *escaped = curl_easy_escape(nullptr, id, (int)len);
+	char *path = nullptr;
+	char *joined = nullptr;
+	int e = ENOMEM;
+	if (!url || !escaped)
+		goto done;
+	if (curl_url_set(url, CURLUPART_URL, home->ep->url, 0) ||
+	    curl_url_get(url, CURLUPART_PATH, &path, 0)) {
+		e = EINVAL;
+		goto done;
+	}
+	size_t at = strlen(path);
+	while (at && path[at - 1] == '/')
+		--at;
+	size_t n = strlen(escaped);
+	static char const suffix[] = "/cancel";
+	if (at > SIZE_MAX - n - sizeof suffix - 1)
+		goto done;
+	joined = malloc(at + 1 + n + sizeof suffix);
+	if (!joined)
+		goto done;
+	memcpy(joined, path, at);
+	joined[at++] = '/';
+	memcpy(joined + at, escaped, n);
+	memcpy(joined + at + n, suffix, sizeof suffix);
+	if (curl_url_set(url, CURLUPART_PATH, joined, 0) ||
+	    curl_url_get(url, CURLUPART_URL, &job->cancel_url, 0)) {
+		e = EINVAL;
+		goto done;
+	}
+	e = 0;
+done:
+	free(joined);
+	joined = nullptr;
+	curl_free(path);
+	path = nullptr;
+	curl_free(escaped);
+	escaped = nullptr;
+	curl_url_cleanup(url);
+	return e;
+}
+
+/* Capture the native creation id while its event is alive, and remember
+ * terminal provider states so cleanup does not cancel completed work. */
+static int
+home_native_event (struct home        *home,
+                   struct job         *job,
+                   struct json_object *root)
+{
+	if (!ai_background(home->ep))
+		return 0;
+	bool responses = home->ep->api == AI_RESPONSES;
+	struct json_object *kind = jb_get(root, responses ? "type" : "event_type");
+	struct json_object *object = jb_get(root, responses ? "response" : "interaction");
+	struct json_object *status = jb_get(object, "status");
+	if (!responses && jb_is(kind, "interaction.status_update"))
+		status = jb_get(root, "status");
+	if (jb_is(status, "completed") || jb_is(status, "failed") ||
+	    jb_is(status, "cancelled") || jb_is(status, "incomplete"))
+		job->provider_done = true;
+	if (job->cancel_url || !jb_is(kind, responses ? "response.created"
+	                                            : "interaction.created"))
+		return 0;
+	return home_native_id(home, job, jb_get(object, "id"));
+}
+
 /* Take what @p root, an event of @p job's stream, says (ai_event()): its
  * text, and with JOB_TOOLS its thinking and tool calls; its usage, its end,
  * and its stop reason, which may be the output token limit.  Each event is
@@ -1214,6 +1456,11 @@ home_take (struct home        *home,
            struct job         *job,
            struct json_object *root)
 {
+	int e = home_native_event(home, job, root);
+	if (e) {
+		(void)home_job_erred(job, "cannot retain the native background job id", -1);
+		return e;
+	}
 	static struct ai_sink const plain = { .text = home_put_text };
 	static struct ai_sink const tools = {
 		.text = home_put_text,
@@ -1225,13 +1472,14 @@ home_take (struct home        *home,
 	sink.user = job;
 	size_t had = buf_peek(&job->result).len;
 	struct ai_event ev = {};
-	int e = ai_event(home->ep->api, &job->reader, root, &sink, &ev);
+	e = ai_event(home->ep->api, &job->reader, root, &sink, &ev);
 	hist_add(&home->metrics->chunks, 1);
 	if (buf_peek(&job->result).len > had)
 		home_job_progress(job, (uint64_t)++job->chunks << 32);
 	else if (ev.thought)
 		home_job_progress(job, (uint64_t)++job->chunks << 32 | JOB_THINKING);
 	job->used = ev.used ? ev.used : job->used;
+	job->provider_done |= ev.end != 0;
 	job->flags |= (ev.end ? ENDED : 0) | (e == ENOBUFS ? OVERFLOW : 0);
 	if (ev.reason) {
 		size_t len = jb_utf8(ev.reason, strnlen(ev.reason, sizeof job->reason - 1));
@@ -1411,7 +1659,10 @@ home_drained (struct home *home,
 		job->flags |= EVENT;
 		return 0;
 	}
-	if (job->flags & ENDED)
+	if (job->delivery_error) {
+		struct home_delivery_error const *error = job->delivery_error;
+		home_finish(home, job, error->result, error->message, error->retry);
+	} else if (job->flags & ENDED)
 		home_finish(home, job, CURLE_OK, "", 0);
 	else
 		home_finish(home, job, CURLE_PARTIAL_FILE,
@@ -1525,7 +1776,7 @@ home_preempt_step (struct loop      *loop,
 		struct job *job = container_of(home->preempting.next, struct job, queue);
 		list_del(&job->queue);
 		/* Its answer may be all in by now, or the interactive job gone. */
-		if (home_job_cuttable(job) && home_excess(home)) {
+		if (home_job_cuttable(home, job) && home_excess(home)) {
 			home_preempt(home, job);
 			continue;
 		}
@@ -1951,7 +2202,7 @@ home_arm (struct home         *home,
           struct http_metrics *metrics)
 {
 	struct loop_timer *const timers[] = {
-		&home->deadline, &home->quiet, &home->breaker,
+		&home->deadline, &home->quiet, &home->breaker, &home->cancel_due,
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(timers); ++i) {
 		int e = loop_timer_set(home->loop, timers[i], UINT64_MAX);
@@ -1969,16 +2220,25 @@ static void
 home_fini (struct home *home)
 {
 	http_cancel(home->http, &home->ask);
+	while (!list_is_empty(&home->cancellations)) {
+		struct home_cancellation *cancel = container_of(home->cancellations.next,
+		                                               struct home_cancellation, hook);
+		http_cancel(home->http, &cancel->transfer);
+		list_del(&cancel->hook);
+		free(cancel);
+		cancel = nullptr;
+	}
 	struct loop_step *const steps[] = {
 		&home->start, &home->stop, &home->drain, &home->overdue, &home->silent,
 		&home->resume, &home->feed, &home->reap, &home->shed, &home->preempt,
-		&home->props,
+		&home->props, &home->cleanup,
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(steps); ++i)
 		loop_unready(steps[i]);
 	loop_timer_stop(home->loop, &home->breaker);
 	loop_timer_stop(home->loop, &home->quiet);
 	loop_timer_stop(home->loop, &home->deadline);
+	loop_timer_stop(home->loop, &home->cancel_due);
 	http_destroy(&home->http);
 	jb_parser_fini(&home->parser, &home->pool, nullptr);
 	jb_reaper_fini(&home->reaper);
@@ -2019,9 +2279,11 @@ home_create (struct loop              *loop,
 		.shed.fn = home_shed_step,
 		.preempt.fn = home_preempt_step,
 		.props.fn = home_props_step,
+		.cleanup.fn = home_cleanup_step,
 		.deadline.fn = home_deadline_event,
 		.quiet.fn = home_quiet_event,
 		.breaker.fn = home_breaker_event,
+		.cancel_due.fn = home_cleanup_event,
 		.pool = {
 			.scalar = MAX_SCALAR,
 			.flags = JSON_TOKENER_VALIDATE_UTF8
@@ -2052,6 +2314,7 @@ home_create (struct loop              *loop,
 	list_init(&home->held);
 	list_init(&home->idle);
 	list_init(&home->feeding);
+	list_init(&home->cancellations);
 	list_init(&home->spare.list);
 	*e = home->whom ? home_arm(home, http) : ENOMEM;
 	if (*e) {
@@ -2115,8 +2378,7 @@ home_alone (struct home *home)
 {
 	home->alone = true;
 	home_drain(home);
-	if (!hist_get(&home->metrics->in_flight))
-		loop_exit(home->loop);
+	home_maybe_exit(home);
 }
 
 void

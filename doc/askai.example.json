@@ -14,6 +14,7 @@
     "extra": {
       "top_p": 0.95
     },
+    "background": false,
     "timeout": 600,
     "chunk-timeout": 60,
     "slots": 4,

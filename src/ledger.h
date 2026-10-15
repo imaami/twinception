@@ -1,8 +1,8 @@
 /** @file The ledger: records of tool calls that run on after askai has
  *  answered the requests that started them.  Such a call is a task of MCP's
  *  tasks extension (2026-07-28), or a job, which a client starts with the
- *  tool background.  A client reads a record from any connection, on any
- *  loop (src/mcp.c).
+ *  tool background or an ask call with --background.  A client reads a
+ *  record from any connection, on any loop (src/mcp.c).
  *
  * Each record has an owner and an id of 128 random bits.  The owner is a
  * 64-bit key: the principal of the client's identity or Unix user, or a
@@ -89,7 +89,7 @@ enum ledger_status {
 enum ledger_kind : uint16_t {
 	LEDGER_TASK,  /**< a tool call that became a task of MCP's tasks
 	                   extension */
-	LEDGER_JOB,   /**< a call of the tool background of a client */
+	LEDGER_JOB,   /**< a client's background wrapper or detached ask call */
 };
 
 /** What the ledger has done: any thread writes, any reads (src/hist.h). */

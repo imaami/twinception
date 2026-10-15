@@ -509,6 +509,25 @@ only if `max-tokens` is set.  Without `max-tokens`,
 `{"max_tokens": null, "max_completion_tokens": 4096}` removes `max_tokens`
 and adds `max_completion_tokens`.
 
+#### `background`
+
+The value is a boolean, default `false`; the command-line option is
+`--background`.  When enabled, an ordinary ask call returns immediately
+with a job ID.  AskAI keeps the upstream stream alive independently of the
+client connection.  Call the same ask tool with `{"job": "ID"}` to check
+for the result, or with `{"job": "ID", "action": "cancel"}` to cancel.
+This needs no `client-jobs` setting or additional tool grant.  The owner
+and the original ask tool must match when looking up a job.
+
+OpenAI Responses and Gemini Interactions also receive
+`"background": true`, while other named provider/API combinations use
+local detachment only.  Selecting `responses` or `interactions` with a URL
+and no provider requests native background execution too.  Streaming stays
+enabled.  The `store` default remains `false`; `extra` may override it.
+Changing `background` needs a restart.  See
+[Asking without keeping the client connected](../README.md#asking-without-keeping-the-client-connected)
+for the protocol, retention and cancellation details.
+
 #### `timeout`
 
 The value is an integer number of seconds from 0 to 2147483.  The default

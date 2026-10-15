@@ -329,7 +329,9 @@ Every API asks for a streamed answer: `stream: true` in the body, which
 whatever `alt` it had.  The tool still
 returns the whole answer at once; streaming lets `askai` report progress,
 notice a stalled answer (`--chunk-timeout`, 60 s between chunks once it has
-begun) and cancel generation upstream as soon as the client goes.  A server
+begun) and cancel a synchronous call when the client goes.  With
+`--background`, the call and its upstream stream instead belong to a job,
+which continues after the client's request ends.  A server
 that answers with plain JSON all the same is understood too.
 
 API keys are read from the environment, never from the command line.  A
@@ -368,6 +370,67 @@ completions, which `-p openai` uses only with `--api chat`:
 ```sh
 ./askai -p openai --api chat -m MODEL -n 4096 -x '{"max_tokens": null, "max_completion_tokens": 4096}'
 ```
+
+### Asking without keeping the client connected
+
+`--background`, or `"background": true` in the configuration file's
+`upstream` object, makes an ordinary ask call return immediately with a
+job ID and instructions to check back.  It is off by default.  For example:
+
+```sh
+./askai -p openai -m MODEL --background --tool-name ask_gpt
+./askai -p google -m MODEL --background --tool-name ask_gemini
+```
+
+The client starts work with the usual arguments:
+
+```json
+{"prompt": "Investigate this problem: ..."}
+```
+
+It checks the job by calling the **same tool on the same AskAI instance**,
+without repeating the prompt:
+
+```json
+{"job": "ID_FROM_THE_FIRST_REPLY"}
+```
+
+While work continues, this returns a successful pending message and asks
+the client to check again later.  Once the job ends, it returns the original
+answer or error.  `{"job": "ID_FROM_THE_FIRST_REPLY", "action": "cancel"}`
+cancels the job.  `action` defaults to `result`.  Do not combine `job` with
+`prompt`, `system` or `thread`.  The tool's description explains this protocol,
+including when `--tool-description` supplies its other instructions.
+
+Neither `--client-jobs` nor a grant of the generic `jobs` tool is needed.
+Separate instances can use distinct ask tool names, so a follow-up reaches
+the instance that owns the job.  The ID is AskAI's own 128-bit random ID;
+only the same owner can retrieve or cancel it.  Client disconnects,
+including a disconnected result check, do not cancel an accepted job.
+AskAI keeps consuming the upstream deltas and stores the completed result
+in its existing in-memory ledger.  The same limits apply as to
+[client jobs](#background-jobs-and-timers-for-clients): eight running jobs
+per owner and results retained for up to an hour, subject to the memory
+and record limits.  Restarting AskAI loses these jobs and results.
+
+For OpenAI Responses and Gemini Interactions, AskAI sends both
+`"background": true` and `"stream": true`.  It retains the existing
+`"store": false` default; `--extra` can change `store`, but cannot disable
+these two flags in this mode.  An explicitly selected `responses` or
+`interactions` API with a URL and no provider uses the same native behavior.
+Other provider/API combinations, including a named `llama` provider, keep
+the stream locally without adding an unsupported `background` field.
+
+Detaching a normal ask call does not lower its scheduling priority.  The
+existing `background` wrapper still requests background priority, but
+native provider background calls are never preempted and restarted: that
+would create a second provider job while the first still ran.
+
+The configured total and chunk timeouts still apply.  An explicit
+cancellation also attempts the provider's cancel endpoint when its ID is
+known.  That attempt is bounded and may fail; closing a native background
+stream alone does not cancel the provider's work.  AskAI does not resume
+an interrupted provider connection or recover jobs after a process restart.
 
 ### Connecting llama-server
 
@@ -1588,6 +1651,11 @@ Upstream AI ("upstream"):
   -x, --extra JSON          JSON object that askai merges into each
                             request body, recursively; a null member
                             removes that key
+      --background          return ask calls immediately as jobs, and
+                            keep their upstream streams alive after
+                            clients disconnect; request native background
+                            execution with OpenAI Responses and Gemini
+                            Interactions (default off)
   -T, --timeout SECONDS     time limit on each upstream call: first on
                             the wait for an upstream slot, then again on
                             the call itself (default 600, 0 = none)
