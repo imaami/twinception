@@ -3402,19 +3402,20 @@ def check_configuration(binary, up, godbolt):
         assert up.last()["headers"]["authorization"] == "Bearer from-header"
 
     # A URL that --url gives has ASKAI_API_KEY's key, if any, and never a
-    # provider's usual one; its API is the provider's, else chat completions.
-    for args, env, auth, path in (
-            ((), {}, None, "/x"),
-            ((), {"ASKAI_API_KEY": "askai-key"}, "Bearer askai-key", "/x"),
+    # provider's usual one; its API is the provider's, else chat completions:
+    # OpenAI's Responses for openai.
+    for args, env, auth, path, answer in (
+            ((), {}, None, "/x", "openai"),
+            ((), {"ASKAI_API_KEY": "askai-key"}, "Bearer askai-key", "/x", "openai"),
             (("-p", "openai"), {"OPENAI_API_KEY": "must-not-leak",
-                                "ASKAI_API_KEY": "askai-key"}, "Bearer askai-key", "/x"),
+                                "ASKAI_API_KEY": "askai-key"}, "Bearer askai-key", "/x",
+             "responses"),
             (("-p", "anthropic"), {"ANTHROPIC_API_KEY": "must-not-leak"}, None,
-             "/v1/messages"),
+             "/v1/messages", "anthropic"),
             (("-p", "llama", "--api", "messages"), {"LLAMA_API_KEY": "must-not-leak"},
-             None, "/v1/messages")):
+             None, "/v1/messages", "anthropic")):
         with Askai(binary, *args, "-u", up.url(path), env=env) as ai:
-            up.reply = lambda request, p=path: (200, ANSWERS["anthropic" if p != "/x"
-                                                             else "openai"])
+            up.reply = lambda request, a=answer: (200, ANSWERS[a])
             assert text_of(ai.ask()) == "A", args
             headers = up.last()["headers"]
             assert headers.get("authorization") == auth, (args, headers)

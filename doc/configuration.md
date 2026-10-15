@@ -378,8 +378,11 @@ APIs](../README.md#upstream-providers-and-apis) of `README.md` lists them.
 The value is a string: `chat` (Chat Completions), `responses` (OpenAI
 Responses), `messages` (Anthropic Messages), `generate` (Gemini
 generateContent) or `interactions` (Gemini Interactions).  The default is
-the API of the provider: `messages` for `anthropic`, `generate` for
-`google`, and `chat` for the other providers and without a provider.
+the API of the provider: `responses` for `openai`, `messages` for
+`anthropic`, `generate` for `google`, and `chat` for the other providers
+and without a provider.  OpenAI refuses function tools in `chat` for its
+reasoning models, so the turns of `upstream-tools` need `responses`
+there.
 `google` also serves `chat` and `interactions`.
 
 `api` sets the format of the upstream requests and answers.  `askai`

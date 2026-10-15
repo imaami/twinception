@@ -77,7 +77,7 @@ static struct {
 		{
 			[AI_CHAT]      = "https://api.openai.com/v1/chat/completions",
 			[AI_RESPONSES] = "https://api.openai.com/v1/responses",
-		}, { "OPENAI_API_KEY" }, AI_CHAT
+		}, { "OPENAI_API_KEY" }, AI_RESPONSES
 	},
 	[AI_ANTHROPIC] = {
 		{

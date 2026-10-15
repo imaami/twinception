@@ -303,7 +303,7 @@ key variables are then the defaults:
 | `-p`         | Default API | URLs of its APIs (without `-u`)                                                   | Key variables                            |
 | ------------ | ----------- | --------------------------------------------------------------------------------- | ---------------------------------------- |
 | `llama`      | `chat`      | `http://127.0.0.1:9931/v1/` + `chat/completions`, `responses`, `messages`         | `LLAMA_API_KEY`, if set                  |
-| `openai`     | `chat`      | `https://api.openai.com/v1/` + `chat/completions`, `responses`                    | `OPENAI_API_KEY`                         |
+| `openai`     | `responses` | `https://api.openai.com/v1/` + `responses`, `chat/completions`                    | `OPENAI_API_KEY`                         |
 | `anthropic`  | `messages`  | `https://api.anthropic.com/v1/` + `messages`, `chat/completions`                  | `ANTHROPIC_API_KEY`                      |
 | `google`     | `generate`  | `https://generativelanguage.googleapis.com/v1beta/` + `models/MODEL:streamGenerateContent?alt=sse`, `interactions`, `openai/chat/completions` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 | `deepinfra`  | `chat`      | `https://api.deepinfra.com/v1/openai/chat/completions`                            | `DEEPINFRA_API_KEY`, `DEEPINFRA_TOKEN`   |
@@ -361,10 +361,11 @@ export GEMINI_API_KEY=...
 
 `-x` deep-merges a JSON object into every request body, which reaches any
 provider-specific parameter; `null` members delete keys.  For example, OpenAI
-reasoning models want `max_completion_tokens` instead of `max_tokens`:
+reasoning models want `max_completion_tokens` instead of `max_tokens` in chat
+completions, which `-p openai` uses only with `--api chat`:
 
 ```sh
-./askai -p openai -m MODEL -n 4096 -x '{"max_tokens": null, "max_completion_tokens": 4096}'
+./askai -p openai --api chat -m MODEL -n 4096 -x '{"max_tokens": null, "max_completion_tokens": 4096}'
 ```
 
 ### Connecting llama-server
