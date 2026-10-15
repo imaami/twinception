@@ -298,10 +298,12 @@ struct mcp_offer {
 /* The tools that askai lends the turns: by[LEND_GRANTED] as a role grants
  * them, by[LEND_ALWAYS] whenever the turns are lent anything, by[LEND_WITH]
  * beside those, and by[LEND_DETACH] beside one of the tools in detach,
- * which may run in the background. */
+ * which may run in the background.  compact is the bit of the tool compact
+ * among them, if any. */
 struct mcp_lending {
 	tool_mask by[LEND_DETACH + 1];
 	tool_mask detach;
+	tool_mask compact;
 };
 
 /* Returns the tools that @p l lends the turns of an ask call of a client
@@ -3174,7 +3176,9 @@ static void
 mcp_req_ask (struct mcp_req     *req,
              struct json_object *args)
 {
-	struct notes const *notes = req->lent ? req->mcp->st->notes : nullptr;
+	struct mcp_static const *st = req->mcp->st;
+	struct notes const *notes = req->lent & st->lending.by[LEND_ALWAYS] ? st->notes
+	                                                                     : nullptr;
 	/* Argument problems go back to the model so it can correct itself. */
 	struct json_object *prompt = jb_get(args, "prompt");
 	struct json_object *system = jb_get(args, "system");
@@ -5136,7 +5140,8 @@ mcp_slot_done (struct mcp_slot *slot,
 /* Writes a notice about the context of @p req into the @p size bytes at
  * @p buf, and returns its length.  @p tokens is the number of tokens in the
  * context after the turn's results.  From two thirds of the context on, the
- * notice asks the turns to call compact, after each turn.  Below two thirds,
+ * notice asks the turns to call compact, after each turn, if they have it.
+ * Below two thirds,
  * if the turns have the notes tool, the notice reminds them to write notes,
  * once when the context is a quarter full and once when it is half full.
  * Otherwise there is no notice.  With --verbose, a notice is logged. */
@@ -5149,10 +5154,11 @@ mcp_req_context_note (struct mcp_req *req,
 	uint64_t context = req->context;
 	if (!context)
 		return 0;
+	struct mcp_lending const *l = &req->mcp->st->lending;
 	bool full = tokens * 3 >= context * 2;
 	uint8_t quarters = tokens * 2 >= context ? 2 : tokens * 4 >= context;
-	if (!full && (quarters <= req->reminded ||
-	              !(req->lent & req->mcp->st->lending.by[LEND_ALWAYS])))
+	if (full ? !(req->lent & l->compact)
+	         : quarters <= req->reminded || !(req->lent & l->by[LEND_ALWAYS]))
 		return 0;
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": context "
 	    "notice, %" PRIu64 " %% full, %" PRIu64 " of %" PRIu64 " tokens: %s",
@@ -7802,7 +7808,8 @@ mcp_lend_of (struct registry_tool const *t)
 }
 
 /* The tools of the registry of @p cfg that askai lends the turns, by how it
- * lends them: none without --upstream-tools. */
+ * lends them: none without --upstream-tools, and only those that the
+ * configuration file's member tools allows the upstream. */
 static struct mcp_lending
 mcp_lending (struct config const *cfg)
 {
@@ -7812,9 +7819,10 @@ mcp_lending (struct config const *cfg)
 	struct registry const *reg = &cfg->registry;
 	for (uint32_t id = 0; id < reg->n_tools; ++id) {
 		struct registry_tool const *t = &reg->tools[id];
-		tool_mask bit = (tool_mask)1 << id;
+		tool_mask bit = (tool_mask)1 << id & cfg->tools_upstream;
 		l.by[mcp_lend_of(t)] |= bit;
 		l.detach |= t->kind->flags & TOOL_DETACH ? bit : 0;
+		l.compact |= t->kind == &mcp_rows[KIND_COMPACT].kind ? bit : 0;
 	}
 	return l;
 }
@@ -7891,12 +7899,27 @@ mcp_loaded_of (struct registry const *reg,
 	return nullptr;
 }
 
+/* Whether the configuration file's member tools of @p cfg allows clients
+ * the tool @p name of @p reg. */
+static bool
+mcp_allowed (struct registry const *reg,
+             struct config const   *cfg,
+             char const            *name)
+{
+	for (uint32_t id = 0; id < reg->n_granted; ++id)
+		if (!strcmp(reg->tools[id].name, name))
+			return cfg->tools_clients >> id & 1;
+	return true;
+}
+
 /* Logs askai's own tools for the clients of @p cfg, each on or off, and for
- * a tool that is off, the option that turns it on.  A tool without such an
- * option is not logged while it is off: compact, which only the turns get,
- * and the test aid. */
+ * a tool that is off, the option that turns it on, or "tools" if the
+ * configuration file's member tools denies it to clients.  A tool without
+ * such an option is not logged while it is off: compact, which only the
+ * turns get, and the test aid. */
 static void
-mcp_report_own (struct config const *cfg)
+mcp_report_own (struct registry const *reg,
+                struct config const   *cfg)
 {
 	uint32_t on = mcp_offered_clients(cfg);
 	int width = 0;
@@ -7909,7 +7932,8 @@ mcp_report_own (struct config const *cfg)
 		struct mcp_row const *row = &mcp_rows[k];
 		char const *name = row->ptr ? row->ptr : cfg->tool.name;
 		if (on >> k & 1)
-			LOG_ALL(LOG_INFO, "  %-*s  on", width, name);
+			LOG_ALL(LOG_INFO, "  %-*s  %s", width, name,
+			        mcp_allowed(reg, cfg, name) ? "on" : "off (tools)");
 		else if (row->option)
 			LOG_ALL(LOG_INFO, "  %-*s  off (%s)", width, name, row->option);
 	}
@@ -7933,15 +7957,22 @@ mcp_report_gits (struct config const *cfg)
 	}
 }
 
-/* Logs the plugin @p p: its file, whether it got options, and its tools. */
+/* Logs the plugin @p p of @p reg: its file, whether it got options, and its
+ * tools, each that the configuration file's member tools of @p cfg denies
+ * clients with "off (tools)". */
 static void
-mcp_report_plugin (struct plugin_loaded const *p)
+mcp_report_plugin (struct registry const      *reg,
+                   struct config const        *cfg,
+                   struct plugin_loaded const *p)
 {
 	LOG_ALL(LOG_INFO, "plugin %s:", p->manifest.name);
 	LOG_ALL(LOG_INFO, "  file     %s", p->path);
 	LOG_ALL(LOG_INFO, "  options  %s", p->options ? "given" : "none");
-	for (uint32_t k = 0; k < p->n_tools; ++k)
-		LOG_ALL(LOG_INFO, "  %-7s  %s", k ? "" : "tools", p->manifest.tools[k]);
+	for (uint32_t k = 0; k < p->n_tools; ++k) {
+		char const *name = p->manifest.tools[k];
+		LOG_ALL(LOG_INFO, "  %-7s  %s%s", k ? "" : "tools", name,
+		        mcp_allowed(reg, cfg, name) ? "" : "  off (tools)");
+	}
 }
 
 void
@@ -7950,7 +7981,7 @@ mcp_report (struct registry const *reg,
 {
 	if (!reg || !cfg)
 		return;
-	mcp_report_own(cfg);
+	mcp_report_own(reg, cfg);
 	if (cfg->n_gits)
 		mcp_report_gits(cfg);
 	if (cfg->notes)
@@ -7958,7 +7989,7 @@ mcp_report (struct registry const *reg,
 	if (!reg->n_loaded)
 		LOG_ALL(LOG_INFO, "plugins: none");
 	for (uint32_t i = 0; i < reg->n_loaded; ++i)
-		mcp_report_plugin(reg->loaded[i]);
+		mcp_report_plugin(reg, cfg, reg->loaded[i]);
 	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
 		LOG_ALL(LOG_INFO, "upstream tools: off (--upstream-tools)");
 }

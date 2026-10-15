@@ -647,6 +647,28 @@ def total(values, name, **labels):
     return found
 
 
+# The object of the configuration file that each option is in, as
+# doc/askai.example.json has it.
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc",
+                       "askai.example.json")) as _f:
+    GROUPS = {name: group for group, members in json.load(_f).items()
+              if group in ("upstream", "service", "testing", "debugging")
+              for name in members}
+
+
+def grouped(members):
+    """The configuration file's object for @p members, the options and the
+    other members in one object: each option goes into its group's
+    object."""
+    file = {}
+    for name, value in members.items():
+        if name in GROUPS:
+            file.setdefault(GROUPS[name], {})[name] = value
+        else:
+            file[name] = value
+    return file
+
+
 def check_legacy_session(binary, up):
     with Askai(binary, "-u", up.url(), "-m", "m",
                env={"OPENAI_API_KEY": "must-not-leak"}) as ai:
@@ -936,11 +958,11 @@ def check_mcp_tasks(binary, up):
     with tempfile.TemporaryDirectory() as d:
         path = f"{d}/askai.json"
         with open(path, "w") as f:
-            json.dump({"url": up.url(),
-                       "roles": {"asker": {"tools": ["ask_ai"], "metrics": True}},
-                       "identities": {"alice": {"role": "asker", "tokens": [digest("a-1")]},
-                                      "bob": {"role": "asker", "tokens": [digest("b-1")]}},
-                       "anonymous": {"loopback": "asker"}},
+            json.dump(grouped({"url": up.url(),
+                               "roles": {"asker": {"tools": ["ask_ai"], "metrics": True}},
+                               "identities": {"alice": {"role": "asker", "tokens": [digest("a-1")]},
+                                              "bob": {"role": "asker", "tokens": [digest("b-1")]}},
+                               "anonymous": {"loopback": "asker"}}),
                       f)
         os.chmod(path, 0o600)
         try:
@@ -1166,7 +1188,7 @@ def check_client_jobs(binary, up):
 
             def write(members):
                 with open(path, "w") as f:
-                    json.dump({"url": up.url()} | members, f)
+                    json.dump(grouped({"url": up.url()} | members), f)
                 os.chmod(path, 0o600)
 
             # Without the option, askai offers none of the four.  With it, a
@@ -2099,11 +2121,11 @@ def check_cancellation(binary, up):
     with tempfile.TemporaryDirectory() as d:
         path = f"{os.path.realpath(d)}/askai.json"
         with open(path, "w") as f:
-            json.dump({"url": up.url(),
-                       "roles": {"caller": {"tools": ["ask_ai"]}, "none": {"tools": []}},
-                       "identities": {"alice": {"role": "caller", "tokens": [digest("alice")]},
-                                      "bob": {"role": "none", "tokens": [digest("bob")]}},
-                       "anonymous": {"loopback": "caller"}}, f)
+            json.dump(grouped({"url": up.url(),
+                               "roles": {"caller": {"tools": ["ask_ai"]}, "none": {"tools": []}},
+                               "identities": {"alice": {"role": "caller", "tokens": [digest("alice")]},
+                                              "bob": {"role": "none", "tokens": [digest("bob")]}},
+                               "anonymous": {"loopback": "caller"}}), f)
         os.chmod(path, 0o600)
         up.reply = slow
         with Askai(binary, "-c", path, loops=2) as ai:
@@ -3065,7 +3087,7 @@ def check_isolation(binary, up):
           "a slow teardown, a loop that cannot start: PASS")
 
 
-def check_configuration(binary, up):
+def check_configuration(binary, up, godbolt):
     def fails(*args, env=None, message):
         child_env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
         child_env.update(env or {})
@@ -3079,12 +3101,11 @@ def check_configuration(binary, up):
     usage = subprocess.run([binary, "--help"], capture_output=True, text=True,
                            timeout=5, check=True).stdout.split("\n")
     first = next(i for i, line in enumerate(usage) if line.startswith("  -c, --config"))
-    last = usage.index("", next(i for i, line in enumerate(usage)
-                                if line.startswith("--send-timeout", 6)))
+    last = usage.index("The members roles, identities, unix-groups and anonymous of the") - 1
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                            "README.md")) as f:
         readme = f.read().split("\n")
-    upstream = readme.index("Upstream AI:")
+    upstream = readme.index('Upstream AI ("upstream"):')
     start = max(i for i in range(upstream) if readme[i].startswith("```")) + 1
     end = readme.index("```", upstream)
     assert readme[start:end] == usage[first:last], \
@@ -3104,35 +3125,44 @@ def check_configuration(binary, up):
                              timeout=5, check=True).stdout
     options = set(re.findall(r"--([a-z-]+)", options)) - {"config", "help"}
     policy = {"roles", "identities", "unix-groups", "anonymous"}
+    others = policy | {"plugins", "tools"}
     documented = re.findall(r"^#### `([a-z-]+)`$", reference, re.M)
     assert len(documented) == len(set(documented)), documented
-    assert set(documented) == options | policy | {"plugins"}, \
-        set(documented) ^ (options | policy | {"plugins"})
+    assert set(documented) == options | others, set(documented) ^ (options | others)
 
-    # doc/askai.example.json is strict JSON in the format of jq.  It has each
-    # option but those in the table of the section "The example file" of
-    # doc/configuration.md, and "plugins", but no member of the policy.  So
-    # askai starts with it under its own policy: a client on loopback lists
-    # the tools and reads the metrics.
+    # doc/askai.example.json is strict JSON in the format of jq.  Its objects
+    # upstream, service, testing and debugging have every option, and it has
+    # the other members too.  askai starts with it, once the paths in it are
+    # those of files that exist, and its key variable is set; the listen
+    # addresses and the URL come from the command line.  The godbolt plugin
+    # is the one built beside askai.
     with open(os.path.join(doc, "askai.example.json")) as f:
         example = f.read()
     members = json.loads(example, parse_constant=constant)
     assert example == json.dumps(members, indent=2) + "\n", "not in the format of jq"
-    section = re.search(r"^## The example file$(.*?)^## ", reference,
-                        re.M | re.S).group(1)
-    left_out = re.findall(r"^\| `([a-z-]+)` \|", section, re.M)
-    assert len(left_out) == len(set(left_out)), left_out
-    assert set(left_out) <= options, set(left_out) - options
-    assert set(members) == options - set(left_out) | {"plugins"}, \
-        set(members) ^ (options - set(left_out) | {"plugins"})
+    groups = ("upstream", "service", "testing", "debugging")
+    assert set(members) == set(groups) | others, set(members) ^ (set(groups) | others)
+    assert set(GROUPS) == options, set(GROUPS) ^ options
     with tempfile.TemporaryDirectory() as d:
+        d = os.path.realpath(d)
+        subprocess.run(["git", "init", "-q", f"{d}/proj"], check=True)
+        members["upstream"]["notes"] = f"{d}/notes"
+        members["service"]["git"] = [f"{d}/proj"]
+        members["plugins"][0]["path"] = os.path.realpath(godbolt)
         with open(f"{d}/askai.json", "w") as f:
-            f.write(example)
+            json.dump(members, f)
         os.chmod(f"{d}/askai.json", 0o600)
-        with Askai(binary, "-c", f"{d}/askai.json", "-u", up.url()) as ai:
+        with Askai(binary, "-c", f"{d}/askai.json", "-u", up.url(),
+                   env={members["upstream"]["key-env"]: "k"}) as ai:
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
-            assert [t["name"] for t in tools] == ["ask_ai"], tools
-            assert ai.metrics()
+            assert [t["name"] for t in tools] == ["ask_ai", "man", "notes"], tools
+            assert ai.get("/metrics")[0] == 403
+            # The member tools denies godbolt_compile to the upstream, which
+            # the role user does not list.
+            assert [item.split()[-1] for item in ai.listed("role user:")] == \
+                ["ask_ai", "man", "notes", "man", "git", "notes", "background", "jobs",
+                 "wait", "timer", "godbolt_catalog", "godbolt_targets", "compact",
+                 "no"], ai.log
 
     fails("-p", "anthropic", "-m", "m", message="set ANTHROPIC_API_KEY")
     fails("-p", "google", env={"GEMINI_API_KEY": "k"}, message="--model is required")
@@ -3301,7 +3331,8 @@ def check_configuration(binary, up):
             [1.0, 1.0, [10.0, -0.5, {"b": 1.5}]], body
 
     # A configuration file: a JSON object in strict JSON, without comments,
-    # whose members are the long options, which the command line overrides.
+    # whose objects upstream, service, testing and debugging have the long
+    # options as members, which the command line overrides.
     with tempfile.TemporaryDirectory() as d:
         path = f"{d}/askai.json"
 
@@ -3311,10 +3342,14 @@ def check_configuration(binary, up):
             os.chmod(path, mode)
 
         write("""{
-            "url": "%s", "tool-name": "ask_file",
-            "tool-description": "From the file.", "man": true,
-            "header": ["X-A: 1", "X-B: 2"], "temperature": 0.5,
-            "extra": {"top_k": 5}, "max-tokens": 9, "test-fifo": false
+            "upstream": {
+                "url": "%s", "tool-name": "ask_file",
+                "tool-description": "From the file.", "header": ["X-A: 1", "X-B: 2"],
+                "temperature": 0.5, "extra": {"top_k": 5}, "max-tokens": 9
+            },
+            "service": {"man": true},
+            "testing": {"test-fifo": false},
+            "debugging": {}
         }""" % up.url())
         with Askai(binary, "-c", path, "--tool-name", "ask_cli", "-n", "7",
                    "-H", "X-C: 3") as ai:
@@ -3331,27 +3366,58 @@ def check_configuration(binary, up):
                                                          "max_tokens")} == \
                 {"temperature": 0.5, "top_k": 5, "max_tokens": 7}, request["body"]
 
-        url = '"url": "%s"' % up.url()
+        url = '"upstream": {"url": "%s"}' % up.url()
         for text, message in (
-                ('{%s, "bogus": 1}' % url, f"{path}: unknown option: bogus"),
-                ('{%s, "config": "x"}' % url, "unknown option: config"),
-                ('{%s, "loops": [1]}' % url, f"{path}: invalid --loops: [1]"),
-                ('{%s, "man": "yes"}' % url, "invalid --man"),
-                ('{%s, "max-body": "1X"}' % url, "invalid --max-body: 1X"),
-                ('{%s, "temperature": NaN}' % url, f"{path}: invalid temperature: NaN"),
-                ('{%s, "extra": {"a": [Infinity]}}' % url,
+                ('{%s, "bogus": 1}' % url, f"{path}: unknown member bogus"),
+                ('{%s, "config": "x"}' % url, "unknown member config"),
+                ('{%s, "service": {"help": true}}' % url, "service: unknown member help"),
+                ('{%s, "loops": 1}' % url, f"{path}: loops must be in service"),
+                ('{"upstream": {"url": "%s", "verbose": true}}' % up.url(),
+                 f"{path}: verbose must be in debugging"),
+                ('{"url": "%s"}' % up.url(), f"{path}: url must be in upstream"),
+                ('{%s, "testing": [1]}' % url, f"{path}: testing must be an object"),
+                ('{%s, "service": {"loops": [1]}}' % url, f"{path}: invalid --loops: [1]"),
+                ('{%s, "service": {"man": "yes"}}' % url, "invalid --man"),
+                ('{%s, "service": {"max-body": "1X"}}' % url, "invalid --max-body: 1X"),
+                ('{%s, "service": {"man": null}}' % url, "invalid --man: null"),
+                ('{"upstream": {"url": "%s", "temperature": NaN}}' % up.url(),
+                 f"{path}: invalid temperature: NaN"),
+                ('{"upstream": {"url": "%s", "extra": {"a": [Infinity]}}}' % up.url(),
                  f'{path}: --extra contains NaN, an infinity or a number outside '
                  'the range of a double: {"a":[Infinity]}'),
-                ('{%s, "header": [["X-A: 1", "X-B: 2"]]}' % url,
+                ('{"upstream": {"url": "%s", "header": [["X-A: 1", "X-B: 2"]]}}' % up.url(),
                  f'{path}: invalid --header: [["X-A: 1","X-B: 2"]]'),
-                ('{"url": "ftp://x"}', f"{path}: not an http(s) URL"),
-                ('{\n %s\n "loops": 1\n}' % url,
+                ('{"upstream": {"url": "ftp://x"}}', f"{path}: not an http(s) URL"),
+                ('{%s, "tools": ["nope"]}' % url,
+                 f'{path}: tools: askai has no tool "nope"; the tools are none'),
+                ('{%s, "service": {"man": true}, "tools": {"client": [1]}}' % url,
+                 f"{path}: tools: client: askai has no tool 1; the tools are man"),
+                ('{%s, "tools": ["ask_ai"]}' % url,
+                 f"{path}: tools: ask_ai is the ask tool, which is always on"),
+                ('{%s, "tools": {"allow": [], "deny": []}}' % url,
+                 f"{path}: tools: allow and deny together"),
+                ('{%s, "tools": {"client": true, "deny": []}}' % url,
+                 f"{path}: tools: allow and deny go into client and upstream"),
+                ('{%s, "tools": {"client": true, "x": 1}}' % url,
+                 f"{path}: tools: unknown member x"),
+                ('{%s, "service": {"client-jobs": true}, "tools": {"deny": ["jobs"]}}' % url,
+                 f"{path}: tools: background needs jobs"),
+                ('{%s, "service": {"client-jobs": true}, '
+                 '"tools": {"upstream": ["background"]}}' % url,
+                 f"{path}: tools: upstream: background needs jobs"),
+                ('{%s, "tools": 1}' % url,
+                 f"{path}: tools: not true, false, a list or an object"),
+                ('{%s, "tools": {"upstream": {"only": []}}}' % url,
+                 f"{path}: tools: upstream: unknown member only"),
+                ('{%s, "tools": {"deny": "man"}}' % url,
+                 f"{path}: tools: not a list of tools"),
+                ('{\n %s\n "debugging": {}\n}' % url,
                  f"{path}: 3:2: object value separator ',' expected"),
-                ('{\n %s, // the upstream\n "loops": 1\n}' % url,
+                ('{\n %s, // the upstream\n "debugging": {}\n}' % url,
                  f"{path}: 2:{len(url) + 4}: quoted object property name expected"),
-                ('{\n %s, /* the upstream */\n "loops": 1\n}' % url,
+                ('{\n %s, /* the upstream */\n "debugging": {}\n}' % url,
                  f"{path}: 2:{len(url) + 4}: quoted object property name expected"),
-                ('{\n %s,\n "loops": 1,\n}' % url, f"{path}: 4:1: unexpected character"),
+                ('{\n %s,\n "debugging": {},\n}' % url, f"{path}: 4:1: unexpected character"),
                 ('[1]', f"{path}: 1:1: not one JSON object"),
                 ('{%s} x' % url, f"{path}: 1:{len(url) + 4}: unexpected character"),
                 ('{%s}\0x' % url, f"{path}: 1:{len(url) + 3}: not one JSON object"),
@@ -3375,6 +3441,77 @@ def check_configuration(binary, up):
         assert run.returncode == 0 and "--config FILE" in run.stdout, run
 
     print("configuration and key handling, and the configuration file: PASS")
+
+
+def check_allow(binary, up):
+    """The member tools of the configuration file: the tools that it allows
+    clients and the upstream, of those that options turn on, whatever the
+    roles name; and what the report shows of it."""
+    def lent(ai):
+        count = len(up.requests)
+        assert text_of(ai.ask("Q")) == "A"
+        return [t["function"]["name"] for t in up.requests[count]["body"].get("tools", [])]
+
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/askai.json"
+        on = {"url": up.url(), "upstream-tools": True, "notes": f"{d}/notes",
+              "man": True, "client-jobs": True}
+        jobs = ["background", "jobs", "wait", "timer"]
+        for tools, clients, turns in (
+                (True, ["ask_ai", "man", "notes", *jobs],
+                 ["man", "notes", *jobs, "compact"]),
+                (False, ["ask_ai"], []),
+                (["man"], ["ask_ai", "man"], ["man"]),
+                ({"allow": ["man", "compact"]}, ["ask_ai", "man"], ["man", "compact"]),
+                ({"deny": ["man", "compact"]}, ["ask_ai", "notes", *jobs],
+                 ["notes", "wait", "timer"]),
+                ({}, ["ask_ai", "man", "notes", *jobs],
+                 ["man", "notes", *jobs, "compact"]),
+                ({"client": {"allow": ["notes"]}, "upstream": {"deny": ["notes"]}},
+                 ["ask_ai", "notes"], ["man", *jobs, "compact"]),
+                ({"upstream": False}, ["ask_ai", "man", "notes", *jobs], [])):
+            with open(path, "w") as f:
+                json.dump(grouped(on | {"tools": tools}), f)
+            os.chmod(path, 0o600)
+            with Askai(binary, "-c", path) as ai:
+                listed = ai.rpc("tools/list")[2]["result"]["tools"]
+                assert [t["name"] for t in listed] == clients, (tools, listed)
+                assert lent(ai) == turns, (tools, up.requests[-1]["body"])
+                # The default description of the ask tool, and its argument
+                # thread, follow what the turns get.
+                ask = listed[0]
+                assert ("It may use some of this server's tools" in ask["description"],
+                        "It keeps notes in a thread" in ask["description"],
+                        "thread" in ask["inputSchema"]["properties"]) == \
+                    (bool(turns), "notes" in turns, "notes" in turns), (tools, ask)
+                if turns and "notes" not in turns:
+                    _, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": {
+                        "prompt": "Q", "thread": "0" * 32}})
+                    assert "No notes are kept for you here" in text_of(body["result"]), \
+                        (tools, body)
+                report = [item.split() for item in ai.listed("built-in tools for clients:")]
+                off = [item[0] for item in report if item[1:] == ["off", "(tools)"]]
+                assert off == [t for t in ["man", "git", "notes", *jobs]
+                               if t not in clients and t != "git"], (tools, report)
+
+        # A role may name a tool that the member denies clients: no client
+        # gets it, and the warning about the tools that no role lists leaves
+        # it out.  The role's tools still lend it to the upstream.
+        with open(path, "w") as f:
+            json.dump(grouped(on | {"tools": {"client": {"deny": ["man"]}},
+                                    "roles": {"r": {"tools": ["ask_ai", "man", "notes"]}},
+                                    "anonymous": {"loopback": "r"}}), f)
+        os.chmod(path, 0o600)
+        with Askai(binary, "-c", path) as ai:
+            listed = ai.rpc("tools/list")[2]["result"]["tools"]
+            assert [t["name"] for t in listed] == ["ask_ai", "notes"], listed
+            assert lent(ai) == ["man", "notes", *jobs, "compact"]
+            assert [item.split()[-1] for item in ai.listed("role r:")][:2] == \
+                ["ask_ai", "notes"], ai.log
+            assert not any("no role lists" in line for line in ai.log), ai.log
+
+    print("tools: allowed and denied for clients and the upstream, whatever the "
+          "roles name, and shown in the report: PASS")
 
 
 def check_identities(binary, up):
@@ -3404,7 +3541,7 @@ def check_identities(binary, up):
 
         def write(**policy):
             with open(path, "w") as f:
-                json.dump({"url": up.url(), "man": True} | policy, f)
+                json.dump(grouped({"url": up.url(), "man": True} | policy), f)
             os.chmod(path, 0o600)
 
         write(roles=roles, identities=identities,
@@ -3531,7 +3668,7 @@ def check_identities(binary, up):
             assert run.returncode == 2 and f"{path}: {message}" in run.stderr, \
                 (policy, run.stderr)
         with open(path, "w") as f:
-            json.dump({"url": up.url(), "roles": {"r": {"tools": ["man"]}}}, f)
+            json.dump(grouped({"url": up.url(), "roles": {"r": {"tools": ["man"]}}}), f)
         run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path],
                              capture_output=True, text=True, timeout=5)
         assert run.returncode == 2 and 'askai offers no tool "man"' in run.stderr
@@ -3568,7 +3705,7 @@ def check_reload(binary, up):
         path = f"{d}/askai.json"
 
         def write(policy, **options):
-            text = json.dumps({"url": up.url(), "man": True} | options | policy)
+            text = json.dumps(grouped({"url": up.url(), "man": True} | options | policy))
             with open(f"{path}.new", "w") as f:
                 f.write(text)
             os.chmod(f"{path}.new", 0o600)
@@ -3608,6 +3745,16 @@ def check_reload(binary, up):
             write(first, man=False)
             reload(ai, "configuration reloaded")
             ai.wait_log(r"^askai: warning: other changed options need a restart$")
+            assert tools(ai, "t1") == ["ask_ai", "man"]
+            # So does a change of the member tools, which a reload checks.
+            write(first, tools={"deny": ["man"]})
+            reload(ai, "configuration reloaded")
+            ai.wait_log(r"^askai: warning: other changed options need a restart$")
+            assert tools(ai, "t1") == ["ask_ai", "man"]
+            write(first, tools=["nope"])
+            assert 'tools: askai has no tool "nope"; the tools are man' in \
+                reload(ai, "has no tool").strip() + "".join(ai.log)
+            ai.wait_log("configuration not reloaded")
             assert tools(ai, "t1") == ["ask_ai", "man"]
             write({"roles": {"a": {"tools": ["ask_twin"]}}}, **{"tool-name": "ask_twin"})
             assert 'askai offers no tool "ask_twin"; the tools are ask_ai, man\n' in \
@@ -3774,7 +3921,7 @@ def check_logs(binary, up):
 
         def write(**members):
             with open(f"{path}.new", "w") as f:
-                json.dump({"url": up.url(), "man": True, "git": repo} | members, f)
+                json.dump(grouped({"url": up.url(), "man": True, "git": repo} | members), f)
             os.chmod(f"{path}.new", 0o600)
             os.rename(f"{path}.new", path)
         digest = "sha256:" + hashlib.sha256(b"ci-token").hexdigest()
@@ -4075,7 +4222,7 @@ def check_unix(binary, up):
 
         def write(**policy):
             with open(path, "w") as f:
-                json.dump({"url": up.url(), "man": True} | policy, f)
+                json.dump(grouped({"url": up.url(), "man": True} | policy), f)
             os.chmod(path, 0o600)
 
         roles = {"a": {"tools": ["ask_ai", "man"], "metrics": True},
@@ -6537,7 +6684,7 @@ def check_git(binary, up):
         # Stopping askai ends a call, killing its git; a configuration file
         # lists the repositories too.
         with open(f"{d}/askai.json", "w") as f:
-            json.dump({"git": [repo, f"{d}/other"]}, f)
+            json.dump(grouped({"git": [repo, f"{d}/other"]}), f)
         os.chmod(f"{d}/askai.json", 0o600)
         os.unlink(f"{fake}/pid")
         ai = Askai(binary, "-u", up.url(), "-c", f"{d}/askai.json", env=env)
@@ -6755,13 +6902,13 @@ def check_notes(binary, up):
         notes = f"{d}/notes"
         path = f"{d}/askai.json"
         with open(path, "w") as f:
-            json.dump({"url": up.url(), "notes": notes,
-                       "roles": {"writer": {"tools": ["notes"]},
-                                 "asker": {"tools": ["ask_ai"]}},
-                       "identities": {
-                           "alice": {"role": "writer", "tokens": [digest("alice-1")]},
-                           "bob": {"role": "writer", "tokens": [digest("bob-1")]},
-                           "carol": {"role": "asker", "tokens": [digest("carol-1")]}}},
+            json.dump(grouped({"url": up.url(), "notes": notes,
+                               "roles": {"writer": {"tools": ["notes"]},
+                                         "asker": {"tools": ["ask_ai"]}},
+                               "identities": {
+                                   "alice": {"role": "writer", "tokens": [digest("alice-1")]},
+                                   "bob": {"role": "writer", "tokens": [digest("bob-1")]},
+                                   "carol": {"role": "asker", "tokens": [digest("carol-1")]}}}),
                       f)
         os.chmod(path, 0o600)
         with Askai(binary, "-c", path) as ai:
@@ -8296,8 +8443,8 @@ def check_plugin(binary, up, plugin):
         path = f"{d}/askai.json"
 
         def write(plugins, **options):
-            text = json.dumps({"url": up.url(), "man": True,
-                               "plugins": plugins} | options)
+            text = json.dumps(grouped({"url": up.url(), "man": True,
+                                       "plugins": plugins} | options))
             with open(f"{path}.new", "w") as f:
                 f.write(text)
             os.chmod(f"{path}.new", 0o600)
@@ -8761,7 +8908,7 @@ def check_instances(binary, up, plugin):
         path = f"{d}/askai.json"
 
         def write(**options):
-            text = json.dumps({"url": up.url(), "plugins": [plugin]} | options)
+            text = json.dumps(grouped({"url": up.url(), "plugins": [plugin]} | options))
             with open(f"{path}.new", "w") as f:
                 f.write(text)
             os.chmod(f"{path}.new", 0o600)
@@ -9000,12 +9147,12 @@ def check_misuse(binary, up, plugin):
     with tempfile.TemporaryDirectory() as d:
         path = f"{os.path.realpath(d)}/askai.json"
         with open(path, "w") as f:
-            json.dump({"url": up.url(), "plugins": [plugin],
-                       "upstream-tools": True, "max-turns": 2,
-                       "roles": {"all": {"tools": tools}},
-                       "identities": {"alice": {
-                           "role": "all",
-                           "tokens": ["sha256:" + hashlib.sha256(b"alice").hexdigest()]}}},
+            json.dump(grouped({"url": up.url(), "plugins": [plugin],
+                               "upstream-tools": True, "max-turns": 2,
+                               "roles": {"all": {"tools": tools}},
+                               "identities": {"alice": {
+                                   "role": "all",
+                                   "tokens": ["sha256:" + hashlib.sha256(b"alice").hexdigest()]}}}),
                       f)
         os.chmod(path, 0o600)
         with Askai(binary, "-c", path, loops=1) as ai:
@@ -9231,7 +9378,7 @@ def check_web(binary, up, plugin):
         with tempfile.TemporaryDirectory() as d:
             path = f"{os.path.realpath(d)}/askai.json"
             with open(path, "w") as f:
-                json.dump({"url": up.url(), "plugins": [plugin]}, f)
+                json.dump(grouped({"url": up.url(), "plugins": [plugin]}), f)
             os.chmod(path, 0o600)
             with Askai(binary, "-c", path, "--verbose", "--test-pressure",
                        level.name) as ai:
@@ -9729,8 +9876,8 @@ def check_godbolt(binary, up, godbolt):
 
             def write(options):
                 with open(path, "w") as f:
-                    json.dump({"url": up.url(),
-                               "plugins": [{"path": godbolt, "options": options}]}, f)
+                    json.dump(grouped({"url": up.url(),
+                                       "plugins": [{"path": godbolt, "options": options}]}), f)
                 os.chmod(path, 0o600)
 
             # A trailing '/' of the option url is left out.
@@ -10268,8 +10415,8 @@ def check_godbolt(binary, up, godbolt):
                     ({"share": "maybe"}, "share must be short, state or off"),
                     ({"share": True}, "share must be short, state or off")):
                 with open(path, "w") as f:
-                    json.dump({"url": up.url(), "plugins": [
-                        {"path": godbolt, "options": options}]}, f)
+                    json.dump(grouped({"url": up.url(), "plugins": [
+                                {"path": godbolt, "options": options}]}), f)
                 os.chmod(path, 0o600)
                 run = subprocess.run([binary, "-l", "127.0.0.1:0", "-c", path],
                                      stdin=subprocess.DEVNULL, capture_output=True,
@@ -10381,7 +10528,9 @@ def main():
                       check_sse,
                       check_answers, check_dense, check_connections,
                       check_cancellation, check_limits, check_loops, check_turn_order,
-                      check_isolation, check_configuration, check_identities,
+                      check_isolation,
+                      lambda binary, up: check_configuration(binary, up, godbolt),
+                      check_allow, check_identities,
                       check_reload, check_logs, check_unix, check_tls, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,

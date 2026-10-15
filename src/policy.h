@@ -93,8 +93,10 @@ struct policy_grant {
  *
  * @p tools has the names of the @p n_tools tools that a role can grant, at
  * most TOOL_MAX.  Bit i of a tool mask stands for the tool tools[i].  An
- * element is nullptr if askai does not offer that tool.  @p upstream is the
- * mask of the tools that askai can offer to the upstream.
+ * element is nullptr if askai does not offer that tool.  @p allowed is the
+ * mask of the tools that a client may get at all: a role may name the
+ * others, but grants them to no client.  @p upstream is the mask of the
+ * tools that askai can offer to the upstream.
  *
  * Returns the policy with one reference.  On failure it returns nullptr and
  * stores the error number in @p *e.  The error number is ENOMEM, or EINVAL
@@ -105,6 +107,7 @@ extern struct policy *
 policy_create (struct json_object *file,
                char const *const   tools[],
                size_t              n_tools,
+               tool_mask           allowed,
                tool_mask           upstream,
                char               *why,
                size_t              len,
@@ -135,8 +138,9 @@ policy_put (struct policy *policy);
  * ask calls if @p lent is not nullptr, and whether they may read the
  * metrics; each identity with its role; each Unix group with its role; and
  * the role of each kind of anonymous client.  Then it logs at LOG_WARN a
- * list of the first @p n_granted tools that no role grants and no role
- * lends to the upstream.  The lines have no rate limit.
+ * list of the first @p n_granted tools that a client may get, but that no
+ * role grants and no role lends to the upstream.  The lines have no rate
+ * limit.
  */
 extern void
 policy_log (struct policy const *policy,

@@ -66,6 +66,8 @@ struct policy_gid {
  * and the names of its clients for the log, in that order, so that each is
  * aligned. */
 struct policy {
+	tool_mask            allowed;                  /* the tools that the
+	                                                  roles may grant */
 	_Atomic uint64_t     refs;
 	struct policy_token *tokens;                   /* by digest */
 	struct policy_uid   *users;                    /* by uid */
@@ -763,6 +765,7 @@ struct policy *
 policy_create (struct json_object *file,
                char const *const   tools[],
                size_t              n_tools,
+               tool_mask           allowed,
                tool_mask           upstream,
                char               *why,
                size_t              len,
@@ -827,6 +830,11 @@ policy_create (struct json_object *file,
 		policy_put(p);
 		return nullptr;
 	}
+	/* Clients get only the allowed tools.  A role without the member
+	 * "upstream" lends the upstream its tools as the file lists them. */
+	p->allowed = allowed;
+	for (size_t i = 0; i < n_roles; ++i)
+		p->roles[i].tools &= allowed;
 	return p;
 }
 
@@ -1008,7 +1016,8 @@ policy_log (struct policy const *policy,
 	}
 	tool_mask unlisted = 0;
 	for (size_t i = 0; i < n_granted; ++i)
-		unlisted |= tools[i] && !(listed >> i & 1) ? (tool_mask)1 << i : 0;
+		unlisted |= tools[i] && (policy->allowed & ~listed) >> i & 1
+		          ? (tool_mask)1 << i : 0;
 	if (unlisted)
 		LOG_ALL(LOG_WARN, "warning: no role lists these tools:");
 	for (size_t i = 0; i < n_granted; ++i)

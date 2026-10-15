@@ -4,10 +4,11 @@
 the command line.  This document describes every member that the file can
 have: the form of its value, the values that `askai` accepts, its default,
 and what it does.  [`askai.example.json`](askai.example.json) is a complete
-file that sets every option to its default (section [The example
-file](#the-example-file)).  Section [Examples](#examples) has three short
-files.  [`README.md`](../README.md) describes how `askai` works, and `askai
---help` lists the options of the command line.
+file that sets every option, and has a plugin, the member `tools` and a
+policy (section [The example file](#the-example-file)).  Section
+[Examples](#examples) has three short files.  [`README.md`](../README.md)
+describes how `askai` works, and `askai --help` lists the options of the
+command line.
 
 ## How askai reads the file
 
@@ -20,14 +21,44 @@ the column.  The parser does not refuse every form that strict JSON forbids:
 it accepts a member name in single quotes, and the values `NaN` and
 `Infinity`.
 
-The name of a member is the long name of an option without the two dashes:
-`"max-turns": 8` in the file is `--max-turns 8` on the command line.  Five
-members are not options.  `roles`, `identities`, `unix-groups` and
-`anonymous` define who may connect (section [Who may
-connect](#who-may-connect)), and `plugins` lists the plugins that `askai`
-loads.  If the file has an unknown member, or the member `config` or
-`help`, `askai` stops with exit status 2.  If two members have the same
-name, `askai` uses the last one.
+The object of the file can have these members:
+
+- `upstream`, `service`, `testing` and `debugging` are objects that contain
+  the options.  The name of a member of one of these objects is the long
+  name of an option without the two dashes: `"max-turns": 8` in `upstream`
+  is `--max-turns 8` on the command line.  Each option is a member of one
+  of the four objects.  Section [Members](#members) lists the options of
+  each object, and `askai --help` lists them in a section for each object.
+- `tools` allows or denies tools to clients and to the upstream model
+  (section [Tools](#tools)).
+- `roles`, `identities`, `unix-groups` and `anonymous` define who may
+  connect (section [Who may connect](#who-may-connect)).
+- `plugins` lists the plugins that `askai` loads (section
+  [Plugins](#plugins)).
+
+This file sets the upstream, two options of `service` and one of
+`debugging`:
+
+```json
+{
+  "upstream": { "url": "http://127.0.0.1:8081/v1/chat/completions" },
+  "service": { "listen": "127.0.0.1:8090", "man": true },
+  "debugging": { "verbose": true }
+}
+```
+
+If a member is in the wrong place, `askai` stops with exit status 2.  The
+message begins with the path of the file and names the member:
+
+| Message | Cause |
+| ------- | ----- |
+| `url must be in upstream` | an option at the top level, or in another of the four objects than its own |
+| `upstream: unknown member bogus` | a member of one of the four objects that is not an option, also `config` and `help` |
+| `unknown member bogus` | an unknown member at the top level, also `config` and `help` |
+| `upstream must be an object` | one of the four objects is not an object |
+
+If two members of one object have the same name, `askai` uses the last
+one.
 
 A value has one of these forms:
 
@@ -63,8 +94,8 @@ combine as follows.
 - The command line cannot turn off an option without an argument that the
   file sets to `true`.
 - `askai` reads only the last `--config` of the command line.
-- Only the file can set `roles`, `identities`, `unix-groups`, `anonymous`
-  and `plugins`.
+- Only the file can set `tools`, `roles`, `identities`, `unix-groups`,
+  `anonymous` and `plugins`.
 
 `askai` checks the options against each other after it has applied both.
 For example, `max-body` must not exceed `body-budget`, also when the file
@@ -84,16 +115,17 @@ applies these members:
 - `roles`, `identities`, `unix-groups` and `anonymous`.  The new policy
   applies to the requests that begin after the reload.  The requests under
   way finish under the old policy.
-- `tls-cert`, `tls-key` and `tls-allow-rsa`, if `askai` serves a `tls:`
-  listener.  New connections use the new certificate and key.
+- `tls-cert`, `tls-key` and `tls-allow-rsa` of `service`, if `askai`
+  serves a `tls:` listener.  New connections use the new certificate and
+  key.
 
-Every other member needs a restart, `plugins` included.  If another member
-has changed, the reload logs the warning "other changed options need a
-restart".  After a reload, `tools` and `upstream` of a role can name only
-the tools that the running `askai` offers.  `askai` reads the variable of
-an `env:` token from its own environment, and a reload does not change that
-environment.  So a new value of the variable, or a variable that was not set
-when `askai` started, needs a restart.
+Every other member needs a restart, `plugins` and `tools` included.  If
+another member has changed, the reload logs the warning "other changed
+options need a restart".  After a reload, `tools` and `upstream` of a role
+can name only the tools that the running `askai` offers.  `askai` reads the
+variable of an `env:` token from its own environment, and a reload does not
+change that environment.  So a new value of the variable, or a variable
+that was not set when `askai` started, needs a restart.
 
 Without `--config` and without a `tls:` listener, `askai` stops on SIGHUP
 as it does on SIGTERM.  If `askai` starts with SIGHUP ignored, as `nohup`
@@ -134,16 +166,17 @@ The first set is the tools of the clients.  A client lists them with
 | Tool | `askai` offers it |
 | ---- | ----------------- |
 | `ask_ai`, or the name that `tool-name` sets | always |
-| `man` | with `"man": true` |
-| `git` | with `git` |
-| `notes` | with `notes` |
-| `test_task` | with `"test-task": true` |
-| `background`, `jobs`, `wait` and `timer` | with `"client-jobs": true` |
+| `man` | with `"man": true` in `service` |
+| `git` | with `git` in `service` |
+| `notes` | with `notes` in `upstream` |
+| `test_task` | with `"test-task": true` in `testing` |
+| `background`, `jobs`, `wait` and `timer` | with `"client-jobs": true` in `service` |
 | the tools of the plugins | with `plugins` |
 
 The second set is the tools of the upstream model.  `askai` offers them
 only with `"upstream-tools": true`, and only in the turns of an `ask_ai`
-call (section [Tools for the upstream model](#tools-for-the-upstream-model)).
+call (section [Tools for the upstream model, in
+`upstream`](#tools-for-the-upstream-model-in-upstream)).
 They are `man`, `git`, `notes` and the plugin tools whose kind has the flag
 `TOOL_LENT` (`src/tool.h`), and `compact`, `background`, `jobs`, `wait` and
 `timer`.  `compact` never appears in `tools/list`, and a role cannot name
@@ -155,11 +188,16 @@ timers are not those of the client.
 
 Without any of these options, `askai` offers only `ask_ai`.  A file does not
 change that: a member of the file turns on a tool as the option of the same
-name does, such as `"man": true` for `--man`.
+name does, such as `"man": true` in `service` for `--man`.
 
-The policy sets which client may call which of these tools.  `askai` uses
-its own policy when there is no file, and when the file has none of the
-members `roles`, `identities`, `unix-groups` and `anonymous`:
+The member `tools` turns no tool on.  It can deny each of these tools but
+`ask_ai`, to clients, to the upstream model, or to both (section
+[Tools](#tools)).
+
+The policy sets which client may call which of the tools that `tools` allows
+clients.  `askai` uses its own policy when there is no file, and when the
+file has none of the members `roles`, `identities`, `unix-groups` and
+`anonymous`:
 
 - If the environment variable `ASKAI_TOKEN` is set and not empty, `askai`
   accepts only the clients that send `Authorization: Bearer TOKEN` with that
@@ -172,7 +210,7 @@ members `roles`, `identities`, `unix-groups` and `anonymous`:
   that is not on loopback, `askai` logs a warning that clients without a
   token may call tools there.
 - The upstream model may call every tool that `askai` can offer to the
-  upstream.
+  upstream and that `tools` allows it.
 
 Any one of the four members turns `askai`'s own policy off, also with the
 value `null`.  `askai` then ignores `ASKAI_TOKEN`, and logs a note about it.
@@ -195,21 +233,26 @@ every client.
 ### How to turn on compaction
 
 Compaction has no member of its own.  `askai` offers the tool `compact` to
-the upstream model in the turns of an `ask_ai` call when both of these
-conditions are true:
+the upstream model in the turns of an `ask_ai` call when these conditions
+are true:
 
 1. `upstream-tools` is `true`.
-2. The turns get at least one other tool: `man`, `git` or a plugin tool that
-   the role of the client allows the upstream to call, or `notes`, which the
-   turns get in every call when `notes` is set.
+2. The turns get at least one other tool that `tools` allows the upstream:
+   `man`, `git` or a plugin tool that the role of the client allows the
+   upstream to call, or `notes`, which the turns get in every call when
+   `notes` is set.
+3. The member `tools` allows `compact` to the upstream.  Without `tools`,
+   it does.
 
 So the smallest file with compaction is this one:
 
 ```json
 {
-  "url": "http://127.0.0.1:8081/v1/chat/completions",
-  "upstream-tools": true,
-  "notes": "/var/lib/askai/notes"
+  "upstream": {
+    "url": "http://127.0.0.1:8081/v1/chat/completions",
+    "upstream-tools": true,
+    "notes": "/var/lib/askai/notes"
+  }
 }
 ```
 
@@ -301,12 +344,21 @@ In each case with `upstream-tools`, the turns also get these tools:
   background: `man`, `git`, or a plugin tool whose kind has the flag
   `TOOL_DETACH` (`src/tool.h`).
 
+The member `tools` applies before these rules: a tool that `tools` denies
+to the upstream does not count in them.  So the turns get `compact`,
+`wait` and `timer` only beside another tool that `tools` allows, and
+`background` and `jobs` only beside such a tool that can run in the
+background.  The turns never get a tool that `tools` denies, whatever
+`upstream` lists (section [Tools](#tools)).
+
 Under `askai`'s own policy, the upstream may call every tool that `askai`
 can offer to the upstream.
 
 ## Members
 
-### Upstream AI
+### The upstream AI, in `upstream`
+
+These options are members of the object `upstream`.
 
 #### `provider`
 
@@ -473,9 +525,10 @@ The value is an integer from 1 to 1000000.  The default is 256.
 else one MCP session or client address.  An `ask_ai` call past these limits
 fails at once with an error, and the client can try again later.
 
-### Tools for the upstream model
+### Tools for the upstream model, in `upstream`
 
-With `"upstream-tools": true`, `askai` runs each `ask_ai` call as a loop of
+These options are members of the object `upstream`.  With
+`"upstream-tools": true`, `askai` runs each `ask_ai` call as a loop of
 turns.  Each turn is an upstream call, and in its answer the model may call
 tools.  `askai` runs the calls, writes their results into the conversation,
 and sends the next request.  An answer that calls no tool ends the `ask_ai`
@@ -557,57 +610,10 @@ with `upstream-tools` in three ways:
 - `askai` compacts the conversation when the counted tokens reach the
   context size.
 
-### Tools for clients
+### The ask tool, in `upstream`
 
-#### `man`
-
-The value is `true`.  The default is off.
-
-With `man`, `askai` offers the tool `man`.  The tool returns a page of the
-manual as `man(1)` renders it, in plain UTF-8 text.  `askai` renders each
-page once and stores it.  With `upstream-tools`, the upstream may call
-`man` too, as the role of the client allows.
-
-#### `git`
-
-The value is the path of a repository, or an array of paths.  The default
-is no repository.  The command line adds to the paths of the file.
-
-With `git`, `askai` offers the tool `git`, which runs read-only git
-commands in these repositories.  Each path is the top of a work tree or a
-bare repository.  The tool names each repository by the last component of
-its path, without `.git`: `/srv/git/proj.git` is `proj`.  A name has 1 to
-64 characters from `A-Z`, `a-z`, `0-9`, `_`, `.` and `-`, and does not
-begin with a dot.  `askai` refuses two repositories with the same name.
-With `upstream-tools`, the upstream may call `git` too, as the role of the
-client allows.
-
-#### `git-timeout`
-
-The value is an integer number of seconds from 1 to 3600.  The default is
-30.
-
-At this deadline, `askai` sends SIGTERM to the process group of `git`, and
-SIGKILL one second later, and the call fails.
-
-#### `client-jobs`
-
-The value is `true`.  The default is off.
-
-With `client-jobs`, `askai` offers clients the tools `background`, `jobs`,
-`wait` and `timer`, as their role allows.  `background` starts a call of
-another tool of the client as a job, and answers at once with the job's id.
-`jobs` lists the client's jobs and timers, returns the result of an ended
-job, and cancels a job or a timer.  `wait` waits up to 10 minutes for a job
-to end or a timer to fire, and `timer` sets a timer of up to an hour.  The
-jobs and the timers belong to the client's identity, to the Unix user of a
-client of a Unix socket without an identity, or else to the client's
-address.  `askai` stores the result of a job for up to an hour after the job
-ends.  An owner runs at most 8 jobs and tasks at once, and has at most 8
-timers and 4 waits.  A change of `client-jobs` needs a restart.  The
-section [Background jobs and timers for
-clients](../README.md#background-jobs-and-timers-for-clients) of `README.md`
-describes the tools in detail.
+These options are members of the object `upstream`.  They set the name and
+the description of the tool with which clients ask the upstream model.
 
 #### `tool-name`
 
@@ -629,21 +635,17 @@ The value is a string.  `askai` computes the default from `model`,
 > complete, self-contained prompt. Use it for a second opinion, for hard
 > problems, or for knowledge you lack.
 
-With `model` set to M, the text begins with "Ask the AI model M".  With
-`upstream-tools`, `askai` adds "It may use some of this server's tools
-itself, and its answer lists the calls it made." after the second sentence.
-With `upstream-tools` and `notes`, it then also adds "It keeps notes in a
-thread, which a later call may go on with."
+With `model` set to M, the text begins with "Ask the AI model M".  If the
+turns of an `ask_ai` call can get a tool, `askai` adds "It may use some of
+this server's tools itself, and its answer lists the calls it made." after
+the second sentence.  If they can get `notes`, it then also adds "It keeps
+notes in a thread, which a later call may go on with."  The turns can get
+a tool with `upstream-tools`, when `askai` offers a tool that it can lend
+and `tools` allows the upstream that tool.
 
-#### `test-task`
+### MCP server and listeners, in `service`
 
-The value is `true`.  The default is off.
-
-`test-task` is a test aid.  With it, `askai` offers the tool `test_task`,
-which runs CPU work in slices of 250 µs as a task on the client loops, or,
-with a prompt, an upstream call as background work.
-
-### MCP server and listeners
+These options are members of the object `service`.
 
 #### `listen`
 
@@ -732,28 +734,6 @@ The value is an integer number of seconds from 1 to 3600.  The default is
 SIGTERM, or SIGHUP without a reload.  At the end of this time, `askai`
 exits at once with status 3.
 
-#### `watchdog`
-
-The value is an integer number of milliseconds from 0 to 60000.  The
-default is 20.  0 means no report.
-
-`askai` logs a turn of an event loop that is longer than this.
-
-#### `verbose`
-
-The value is `true`.  The default is off.
-
-Without `verbose`, `askai` logs as it starts the upstream, each tool and
-whether it is on, each plugin with its tools, the tools of the upstream and
-the policy, and it logs each tool call of a client that it refuses or that
-fails.  Section [Log](../README.md#log) of `README.md` has an example.
-
-`verbose` makes `askai` also log each tool call of a client as it ends,
-with its arguments cut at 200 bytes, and each ask call as it starts and
-ends.  It also logs each upstream turn, each tool call of a turn or of a
-background job, each compaction, each notice about the context, each web
-request of a plugin, and each man page that `askai` renders.
-
 #### `memory-high`
 
 The value is a size from 1 byte.  `askai` computes the default: a sixteenth
@@ -763,12 +743,67 @@ From this resident memory on, memory pressure is high, and from twice this
 value on, it is critical.  Under memory pressure, `askai` frees memory that
 it has stored for reuse.
 
-### Limits on clients
+### Tools for clients, in `service`
 
-These members limit what each client may send and what `askai` stores for
-it.  A client that exceeds a limit gets an HTTP status, or `askai` closes
-the connection.  A client address is an IPv4 address, an IPv6 /64, or the
-user of a Unix socket client.
+These options are members of the object `service`.
+
+#### `man`
+
+The value is `true`.  The default is off.
+
+With `man`, `askai` offers the tool `man`.  The tool returns a page of the
+manual as `man(1)` renders it, in plain UTF-8 text.  `askai` renders each
+page once and stores it.  With `upstream-tools`, the upstream may call
+`man` too, as the role of the client allows.
+
+#### `git`
+
+The value is the path of a repository, or an array of paths.  The default
+is no repository.  The command line adds to the paths of the file.
+
+With `git`, `askai` offers the tool `git`, which runs read-only git
+commands in these repositories.  Each path is the top of a work tree or a
+bare repository.  The tool names each repository by the last component of
+its path, without `.git`: `/srv/git/proj.git` is `proj`.  A name has 1 to
+64 characters from `A-Z`, `a-z`, `0-9`, `_`, `.` and `-`, and does not
+begin with a dot.  `askai` refuses two repositories with the same name.
+With `upstream-tools`, the upstream may call `git` too, as the role of the
+client allows.
+
+#### `git-timeout`
+
+The value is an integer number of seconds from 1 to 3600.  The default is
+30.
+
+At this deadline, `askai` sends SIGTERM to the process group of `git`, and
+SIGKILL one second later, and the call fails.
+
+#### `client-jobs`
+
+The value is `true`.  The default is off.
+
+With `client-jobs`, `askai` offers clients the tools `background`, `jobs`,
+`wait` and `timer`, as their role allows.  `background` starts a call of
+another tool of the client as a job, and answers at once with the job's id.
+`jobs` lists the client's jobs and timers, returns the result of an ended
+job, and cancels a job or a timer.  `wait` waits up to 10 minutes for a job
+to end or a timer to fire, and `timer` sets a timer of up to an hour.  The
+jobs and the timers belong to the client's identity, to the Unix user of a
+client of a Unix socket without an identity, or else to the client's
+address.  `askai` stores the result of a job for up to an hour after the job
+ends.  An owner runs at most 8 jobs and tasks at once, and has at most 8
+timers and 4 waits.  A change of `client-jobs` needs a restart.  The
+section [Background jobs and timers for
+clients](../README.md#background-jobs-and-timers-for-clients) of `README.md`
+describes the tools in detail.
+
+### Limits on clients, in `service`
+
+These options are members of the object `service`.  They limit what each
+client may send and what `askai` stores for it.  A client that exceeds a
+limit gets an HTTP status, or `askai` closes the connection.  A client
+address is an IPv4 address, an IPv6 /64, or the user of a Unix socket
+client.
 
 #### `max-head`
 
@@ -909,9 +944,10 @@ default is 30.  0 means no limit.
 `send-timeout` limits the longest stall of pending output.  If the output
 stalls longer, `askai` closes the connection.
 
-### Test aids
+### Test aids, in `testing`
 
-These members exist for the tests of `askai`.
+These options are members of the object `testing`.  They exist for the
+tests of `askai`.
 
 #### `test-man-recheck`
 
@@ -945,6 +981,141 @@ The value is `true`.  The default is off.
 With `test-fifo`, upstream calls wait in one queue for each class, first in
 first out, and without the limit of 8 queued calls for one principal.
 
+#### `test-task`
+
+The value is `true`.  The default is off.
+
+`test-task` is a test aid.  With it, `askai` offers the tool `test_task`,
+which runs CPU work in slices of 250 µs as a task on the client loops, or,
+with a prompt, an upstream call as background work.
+
+### Debugging, in `debugging`
+
+These options are members of the object `debugging`.
+
+#### `verbose`
+
+The value is `true`.  The default is off.
+
+Without `verbose`, `askai` logs as it starts the upstream, each tool and
+whether it is on, each plugin with its tools, the tools of the upstream and
+the policy, and it logs each tool call of a client that it refuses or that
+fails.  Section [Log](../README.md#log) of `README.md` has an example.
+
+`verbose` makes `askai` also log each tool call of a client as it ends,
+with its arguments cut at 200 bytes, and each ask call as it starts and
+ends.  It also logs each upstream turn, each tool call of a turn or of a
+background job, each compaction, each notice about the context, each web
+request of a plugin, and each man page that `askai` renders.
+
+#### `watchdog`
+
+The value is an integer number of milliseconds from 0 to 60000.  The
+default is 20.  0 means no report.
+
+`askai` logs a turn of an event loop that is longer than this.
+
+### Tools
+
+The member `tools` is at the top level of the file, beside the four objects
+of the options.
+
+#### `tools`
+
+The value is `true`, `false`, a list of tool names, or an object.  The
+default is `true`.
+
+`tools` allows or denies the tools that `askai` offers in this run, to
+clients and to the upstream model.  It turns no tool on: the options and
+`plugins` do that (section [Which tools are on, without a file and with
+one](#which-tools-are-on-without-a-file-and-with-one)).  The ask tool is
+always on, and `tools` cannot name it.  The policy sets which clients may
+call the ask tool.
+
+The value has one of these forms:
+
+| Value | The tools that it allows |
+| ----- | ------------------------ |
+| `true` | all |
+| `false` | none |
+| `["man", "git"]` | the tools of the list |
+| `{ "allow": ["man", "git"] }` | the tools of the list |
+| `{ "deny": ["man", "git"] }` | all but the tools of the list |
+| `{}` | all |
+
+Each of these forms applies to clients and to the upstream model.  An
+object with the members `client` and `upstream` sets the two apart.  Each
+of the two members has one of the forms of the table, and a missing member
+allows all.  With this file, clients get every tool, and the upstream model
+gets every tool but `godbolt_compile`:
+
+```json
+{
+  "upstream": { "url": "http://127.0.0.1:8081/v1/chat/completions" },
+  "tools": {
+    "client": true,
+    "upstream": { "deny": ["godbolt_compile"] }
+  }
+}
+```
+
+A name in a list must be a tool that `askai` offers in this run, other
+than the ask tool: `man`, `git`, `notes`, `test_task`, `background`,
+`jobs`, `wait`, `timer`, `compact` or a tool of a plugin, each only when
+`askai` offers it.  `compact` exists with `upstream-tools`, and
+`background`, `jobs`, `wait` and `timer` exist with `client-jobs` or
+`upstream-tools`.  Otherwise `askai` stops with exit status 2.  The message
+begins with the path of the file and `tools:`, or `tools: client:` or
+`tools: upstream:` for those members:
+
+| Message | Cause |
+| ------- | ----- |
+| `tools: askai has no tool "ls"; the tools are man, git` | a name of no tool, or of a tool that is off |
+| `tools: ask_ai is the ask tool, which is always on` | the name of the ask tool |
+| `tools: not a list of tools` | `allow` or `deny` is not an array |
+| `tools: not true, false, a list or an object` | a value of another type |
+| `tools: unknown member x` | a member other than `allow`, `deny`, `client` and `upstream` |
+| `tools: allow and deny together` | an object with both |
+| `tools: allow and deny go into client and upstream` | `allow` or `deny` beside `client` or `upstream` |
+| `tools: background needs jobs` | a form that allows `background` but not `jobs`, with which the output of a job is read |
+
+For clients, `tools` has these effects:
+
+- A client cannot list or call a tool that `tools` denies to clients,
+  whatever its role grants.  A role may name such a tool in `tools` or in
+  `upstream` without an error.  Under `askai`'s own policy, every client
+  gets the tools that `tools` allows clients.
+- What `tools` allows clients does not change the tools of the upstream.
+  A role without `upstream` still lends the upstream the tools that its
+  `tools` lists, also those that `tools` denies to clients.
+- The warning "no role lists these tools" at start leaves out the tools
+  that `tools` denies to clients.
+
+For the upstream model, `tools` has these effects:
+
+- The turns of an `ask_ai` call get only the tools that `tools` allows the
+  upstream.  This applies to every tool that the turns can get, also to
+  `notes`, `compact`, `background`, `jobs`, `wait` and `timer`.  So
+  with `"upstream": ["man"]`, the turns get `man` and no other tool: no
+  compaction, no jobs and no timers.
+- A denied tool does not count in the rules of section [What the role
+  member upstream means](#what-the-role-member-upstream-means).  With
+  `{"deny": ["man"]}` and no other tool to lend, the turns get no
+  `compact`, `wait` or `timer`, and an `ask_ai` call is one upstream
+  request.
+- Without `notes` in the turns, an `ask_ai` call refuses the argument
+  `thread`, and the ask tool does not list it.  From two thirds of the
+  context on, the notice to call `compact` comes only when the turns have
+  `compact`.
+- Without `upstream-tools`, the turns get no tool, whatever `tools`
+  allows.
+
+As it starts, `askai` logs a tool that `tools` denies to clients as `off
+(tools)`, in the list `built-in tools for clients:` and after the name of
+a tool of a plugin.  The lists `upstream tools` of the policy show the
+tools that the turns get.  A change of `tools` needs a restart.  A reload
+checks the names of `tools` against the tools of the running `askai`.
+
 ### Who may connect
 
 Any of these four members replaces `askai`'s own policy with the policy of
@@ -962,9 +1133,11 @@ optional.  There is no default.
 - `tools` is an array of the tools that the clients of the role may list
   and call.  The default is `[]`, no tool.  Each name must be a tool that
   `askai` offers in this run: the ask tool, `man`, `git`, `notes`,
-  `test_task` or a tool of a plugin.  With any other name, `askai` stops
-  with exit status 2, for example with `man` without `"man": true`, or with
-  `compact`.
+  `test_task`, `background`, `jobs`, `wait`, `timer` or a tool of a
+  plugin.  With any other name, `askai` stops with exit status 2, for
+  example with `man` without `"man": true`, or with `compact`.  A role may
+  name a tool that the member `tools` denies to clients, but its clients do
+  not get that tool.
 - `upstream` is an array of the tools that the upstream model may call in
   the turns of the `ask_ai` calls of these clients.  Section [What the role
   member upstream means](#what-the-role-member-upstream-means) describes
@@ -1043,7 +1216,7 @@ one.
 
 ```json
 {
-  "url": "http://127.0.0.1:8081/v1/chat/completions",
+  "upstream": { "url": "http://127.0.0.1:8081/v1/chat/completions" },
   "plugins": [
     "/usr/libexec/askai/one.so",
     { "path": "/usr/libexec/askai/godbolt.so",
@@ -1067,37 +1240,51 @@ of `README.md` describes plugins and the options of the godbolt plugin.
 
 ## The example file
 
-[`askai.example.json`](askai.example.json) sets every option that has a
-fixed default to that default, in the order of this document.  Its `url`
-is the usual URL of `llama-server`, because `url` has no default without a
-provider.  It has `"plugins": []` and none of the four members of the
-policy.  So with this file, `askai` offers the same tools, applies the same
-limits and uses its own policy, as with `-u URL` and no file.  One
-difference remains.  With `--config`, `askai` reloads the file on SIGHUP,
-and without a file, `askai` stops on SIGHUP (section [Reload with
-SIGHUP](#reload-with-sighup)).
+[`askai.example.json`](askai.example.json) has every member that the file
+can have.  It sets every option of the four objects, and it has a plugin,
+the member `tools` and a policy.  So it shows the form of each member in
+one file.  The numbers and sizes are the defaults, except `temperature`,
+`max-tokens`, `slots`, `context`, `memory-high` and `test-stall`.  The file
+turns on `upstream-tools`, `man`, `git`, `notes` and `client-jobs`.
 
-The file leaves out the options in this table.  `askai` computes their
-default from other options or from the system, or their default is none,
-which no value of the option can express.
+The file does not work as it is.  Change or remove these members before
+use:
 
-| Member | Default | Example value |
-| ------ | ------- | ------------- |
-| `provider` | none | `"llama"` |
-| `api` | the API of the provider, else `chat` | `"responses"` |
-| `model` | none | `"gpt-5"` |
-| `key-env` | at the URL of a provider, the first variable of the provider that is set; else `ASKAI_API_KEY` | `"ASKAI_API_KEY"` |
-| `temperature` | none | `0.7` |
-| `max-tokens` | none, but 4096 with `messages` | `4096` |
-| `slots` | `total_slots` of `/props`, else 4 | `4` |
-| `notes` | none | `"/var/lib/askai/notes"` |
-| `tool-description` | a text built from `model`, `upstream-tools` and `notes` | `"Ask another AI model a question."` |
-| `tls-cert` | none | `"/etc/askai/chain.pem"` |
-| `tls-key` | none | `"/etc/askai/key.pem"` |
-| `memory-high` | a sixteenth of RAM or of the lowest memory limit of its cgroups, at least 256 MiB | `"1G"` |
-| `client-budget` | a quarter of `body-budget`, at least `max-body` | `"64M"` |
-| `test-stall` | none | `100` |
-| `test-pressure` | none | `"/tmp/askai-pressure"` |
+| Member | Value in the file | What to do |
+| ------ | ----------------- | ---------- |
+| `provider`, `url` and `model` in `upstream` | `llama`, a `llama-server` at `127.0.0.1:8081`, `local` | set the upstream to ask |
+| `key-env` in `upstream` | `"LLAMA_API_KEY"` | name a variable that is set and not empty, or remove the member; otherwise `askai` stops with exit status 2 |
+| `notes` in `upstream` | `"/var/lib/askai/notes"` | set a directory whose parent exists |
+| `listen` in `service` | `127.0.0.1:8090` and `unix:/run/askai/askai.sock` | set the addresses; the directory of a Unix socket must exist |
+| `tls-cert` and `tls-key` in `service` | files in `/etc/askai` | set your files; `askai` reads them only with a `tls:` listener |
+| `allow-origin` in `service` | `"https://example.com"` | set the Origins of your browser clients, or remove the member |
+| `git` in `service` | `"/srv/git/proj"` | set repositories that exist |
+| `test-stall` and `test-pressure` in `testing` | `100` and `"/run/askai/pressure"` | remove them: they are test aids |
+| `path` of the plugin in `plugins` | `"/usr/libexec/askai/godbolt.so"` | set the real path of `godbolt.so`, or remove the plugin and the names of its tools in `tools` and `roles` |
+| `unix-users` of the identity `operator` | `["root"]` | set the Unix users of the clients of the role `admin` |
+| `tokens` of the identity `ci` | `"sha256:"` and 64 zeros | set the SHA-256 digest of a long random token; no token has the digest in the file |
+| `unix-groups` | `{ "users": "user" }` | set your groups, or remove the member |
+
+`test-fifo` and `test-task` are `false`, and `verbose` is `false`, so they
+change nothing.  `tls-allow-rsa` is `false` too.
+
+The file has these effects on the tools and the policy:
+
+- `tools` allows clients every tool, and denies `godbolt_compile` to the
+  upstream model.
+- The role `admin` grants every tool and `GET /metrics`.  It has no
+  `upstream`, so the upstream may call each tool of the role that `askai`
+  can lend, but not `godbolt_compile`, which the member `tools` denies to
+  the upstream.
+- The role `user` grants `ask_ai`, `man` and `notes`.  Its `upstream`
+  allows the upstream to call `man`, `git`, `notes`, `godbolt_catalog` and
+  `godbolt_targets`.
+- The identity `operator` is the Unix user `root` on the Unix socket, with
+  the role `admin`.  The identity `ci` has the role `user`.  The members of
+  the Unix group `users` get the role `user`.
+- A client on loopback without a token gets the role `user`.  `askai`
+  refuses a client without a token over TCP from another address, and
+  another user of the Unix socket.
 
 ## Examples
 
@@ -1105,11 +1292,13 @@ which no value of the option can express.
 
 ```json
 {
-  "url": "http://127.0.0.1:8081/v1/chat/completions"
+  "upstream": {
+    "url": "http://127.0.0.1:8081/v1/chat/completions"
+  }
 }
 ```
 
-`url` is the only member that this file needs, because it has no provider.
+`url` is the only option that this file needs, because it has no provider.
 `askai` listens on `127.0.0.1:8090` and offers the tool `ask_ai`, which
 sends its prompt to the `llama-server` at `127.0.0.1:8081`.  Every client
 may call `ask_ai`, under `askai`'s own policy.
@@ -1118,12 +1307,16 @@ may call `ask_ai`, under `askai`'s own policy.
 
 ```json
 {
-  "url": "http://127.0.0.1:8081/v1/chat/completions",
-  "man": true,
-  "git": ["/srv/git/proj.git"],
-  "upstream-tools": true,
-  "notes": "/var/lib/askai/notes",
-  "context": 131072
+  "upstream": {
+    "url": "http://127.0.0.1:8081/v1/chat/completions",
+    "upstream-tools": true,
+    "notes": "/var/lib/askai/notes",
+    "context": 131072
+  },
+  "service": {
+    "man": true,
+    "git": ["/srv/git/proj.git"]
+  }
 }
 ```
 
@@ -1141,10 +1334,14 @@ reminder to write notes at 32768 and at 65536 tokens, and a request to call
 
 ```json
 {
-  "url": "http://127.0.0.1:8081/v1/chat/completions",
-  "man": true,
-  "upstream-tools": true,
-  "listen": ["127.0.0.1:8090", "unix:/run/askai/askai.sock"],
+  "upstream": {
+    "url": "http://127.0.0.1:8081/v1/chat/completions",
+    "upstream-tools": true
+  },
+  "service": {
+    "listen": ["127.0.0.1:8090", "unix:/run/askai/askai.sock"],
+    "man": true
+  },
   "roles": {
     "admin": { "tools": ["ask_ai", "man"], "metrics": true },
     "user": { "tools": ["ask_ai"], "upstream": ["man"] },
@@ -1159,9 +1356,9 @@ reminder to write notes at 32768 and at 65536 tokens, and a request to call
 }
 ```
 
-The first members set the upstream URL, turn on `man` and `upstream-tools`,
-and set two listen addresses: `127.0.0.1:8090` and a Unix socket.  The
-members of the policy have these effects.
+The objects `upstream` and `service` set the upstream URL, turn on
+`upstream-tools` and `man`, and set two listen addresses: `127.0.0.1:8090`
+and a Unix socket.  The members of the policy have these effects.
 
 - The member `roles` turns `askai`'s own policy off.  A client may then call
   only the tools of its role.

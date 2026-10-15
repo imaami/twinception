@@ -1,6 +1,7 @@
 /** @file askai's configuration: its command line, and the configuration
- *  file that --config names, whose members are named as the long options
- *  are, the command line overriding the file (design section 9, S7). */
+ *  file that --config names, whose objects upstream, service, testing and
+ *  debugging have the options as members named as the long options are,
+ *  the command line overriding the file (design section 9, S7). */
 #ifndef TWINCEPTION_SRC_CONFIG_H_
 #define TWINCEPTION_SRC_CONFIG_H_
 
@@ -40,6 +41,11 @@ enum config_flag {
  * its own, which config_fini() frees.
  */
 struct config {
+	tool_mask             tools_clients;   /**< the tools, by id, that the
+	                                            file's member tools allows
+	                                            clients; the ask tool always */
+	tool_mask             tools_upstream;  /**< the tools, by id, that it
+	                                            allows the upstream */
 	struct ai_endpoint    ep;
 	struct mcp_tool       tool;
 	struct mcp_limits     mcp;

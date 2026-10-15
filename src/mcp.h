@@ -69,11 +69,13 @@ mcp_register (struct registry     *reg,
 /**
  * Logs at LOG_INFO, as lists with one item a line: askai's own tools for
  * @p cfg, each on or off, and for a tool that is off, the option that turns
- * it on, but not test_task, a test aid, while it is off; the git
+ * it on, or "tools" if the configuration file's member tools denies it to
+ * clients, but not test_task, a test aid, while it is off; the git
  * repositories and the notes directory; and each plugin of @p reg, which
  * mcp_register() filled for @p cfg, with its file, whether it got options,
- * and its tools.  Without --upstream-tools, it logs that the upstream gets
- * no tools.  The lines have no rate limit.
+ * and its tools, marked "off (tools)" if the member tools denies them to
+ * clients.  Without --upstream-tools, it logs that the upstream gets no
+ * tools.  The lines have no rate limit.
  */
 extern void
 mcp_report (struct registry const *reg,

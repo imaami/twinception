@@ -243,7 +243,8 @@ of its work, in a loop of turns that ends with its answer.  With `--notes`, a
 tool `notes` gives clients notebooks too.  With `--client-jobs`, clients get
 the tools `background`, `jobs`, `wait` and `timer`, with which a client runs
 its calls as jobs while it does other work (below).  A plugin that the
-configuration file lists adds tools of its own (below).
+configuration file lists adds tools of its own, and the member `tools` of
+the file can deny tools to clients or to the other model (below).
 
 It speaks MCP's Streamable HTTP transport, which is what the `llama-server` web
 UI's MCP client uses, and serves both protocol eras on one endpoint:
@@ -431,7 +432,7 @@ the output ends, that `man` still counts toward the limit of 16 processes.
 
 ### Reading git repositories
 
-With `--git PATH`, which may repeat, or a configuration file's `"git"` list,
+With `--git PATH`, which may repeat, or the list `git` of a file's `service`,
 `askai` also offers the tool `git`: read-only git commands in the repositories
 listed, each a work tree's top or a git directory, and named by the last
 component of its path as given, less a `.git` suffix: `/srv/git/proj.git` is
@@ -710,8 +711,20 @@ times their flights, mostly CPU (`askai_tls_handshakes_total`,
 
 `--config FILE` (`-c`) reads options from a JSON object before the command
 line.  The file must be strict JSON, so that tools such as `jq` can read it:
-comments and trailing commas are errors.  Each member is named as a long
-option is:
+comments and trailing commas are errors.  The options are members of four
+objects, and each member is named as a long option is:
+
+- `upstream` has the options of the upstream AI, the tools of the upstream
+  and the ask tool: the options under "Upstream AI" in `askai --help`, such
+  as `url`, `upstream-tools`, `notes` and `tool-name`.
+- `service` has the options of the MCP server and the limits on clients,
+  such as `listen`, `tls-cert`, `man`, `git` and `max-body`.
+- `testing` has the test aids, such as `test-fifo`.
+- `debugging` has `verbose` and `watchdog`.
+
+An option at the top level of the file, or in another object than its own,
+stops `askai` with a message such as "url must be in upstream".  The values
+have these forms:
 
 - An option with an argument takes a string or a number.  A number must be an
   integer, except for `temperature`: `"slots": 2.0` is refused.
@@ -723,29 +736,39 @@ option is:
 
 The command line overrides the file.  It adds to the lists of headers,
 allowed origins and git repositories of the file, but any `-l` replaces the
-`listen` list of the file, and `-x` replaces its `extra`.  A member that is
-neither an option nor one of the five members below stops `askai`, and so do
-`config` and `help`.  Four of the five members are the policy below.  The
-fifth, `plugins`, lists the plugins that `askai` loads, each by its path or
-as an object with its path and its options (see Plugins).  If two members
-have the same name, the last one counts.  Only the last `--config` is read.
+`listen` list of the file, and `-x` replaces its `extra`.  Besides the four
+objects, the top level of the file can have six members:
+
+- `roles`, `identities`, `unix-groups` and `anonymous` are the policy below.
+- `plugins` lists the plugins that `askai` loads, each by its path or as an
+  object with its path and its options (see Plugins).
+- `tools` allows or denies tools other than `ask_ai`, to clients and to the
+  upstream (below).
+
+Any other member stops `askai`, and so do `config` and `help`.  If two
+members of one object have the same name, the last one counts.  Only the
+last `--config` is read.
 The file must be a regular file of at most 1 MiB, not a symbolic link, and
 only root or `askai`'s user may change it or any directory above it (others
 may add to a sticky one, such as `/tmp`).
 [`doc/configuration.md`](doc/configuration.md) is the reference of every
 member: its values, its default and what it does.
-[`doc/askai.example.json`](doc/askai.example.json) sets each option that has
-a fixed default to that default, and `doc/configuration.md` lists the
-options that it leaves out.
+[`doc/askai.example.json`](doc/askai.example.json) has every member: each
+option with an example value, a plugin, `tools` and a policy.
+`doc/configuration.md` lists the values to change before you use it.
 
 Four more members define who may connect, and what each client may do:
 
 ```json
 {
-  "url": "http://127.0.0.1:8081/v1/chat/completions",
-  "man": true,
-  "upstream-tools": true,
-  "listen": ["127.0.0.1:8090", "unix:/run/askai/askai.sock"],
+  "upstream": {
+    "url": "http://127.0.0.1:8081/v1/chat/completions",
+    "upstream-tools": true
+  },
+  "service": {
+    "listen": ["127.0.0.1:8090", "unix:/run/askai/askai.sock"],
+    "man": true
+  },
   "roles": {
     "admin":  { "tools": ["ask_ai", "man"], "metrics": true },
     "user":   { "tools": ["ask_ai"], "upstream": ["man"] },
@@ -821,6 +844,29 @@ clients may call the tools.  Any of the four members, also with the value
 `null`, turns `askai`'s own policy off, and `askai` then ignores `ASKAI_TOKEN`
 and logs that.  So a file with `roles` alone refuses every client.
 
+The member `tools` allows or denies the tools other than `ask_ai`, to
+clients and to the upstream.  It turns no tool on.  Its value has one of
+these forms:
+
+- `true` allows all tools, and `false` none.
+- A list, or an object `{"allow": [...]}`, allows the tools of the list.
+- An object `{"deny": [...]}` allows all tools but those of the list.
+- An object with the members `client` and `upstream`, each of them one of
+  the forms above, sets clients and the upstream apart.  A missing member
+  allows all.
+
+```json
+"tools": { "client": { "deny": ["git"] }, "upstream": ["man", "notes", "compact"] }
+```
+
+With this member, no client gets `git`, whatever its role grants, and a
+role may name `git` without an error.  The turns of an `ask_ai` call get
+at most `man`, `notes` and `compact`, and never `git`, `background`,
+`jobs`, `wait` or `timer`.  A name in `tools` must be a tool that `askai`
+offers in this run.  The startup log shows a tool that `tools` denies to
+clients as `off (tools)`.  A change of `tools` needs a restart.
+[`doc/configuration.md`](doc/configuration.md#tools) has the details.
+
 With `--config`, or a TLS listener, SIGHUP reloads who may connect and what
 they may do, and the TLS certificate and key: a blocker thread reads the
 command line, the file and those again, and the new policy takes over for
@@ -839,7 +885,7 @@ command-line option for it.
 
 ```json
 {
-  "url": "http://127.0.0.1:8081/v1/chat/completions",
+  "upstream": { "url": "http://127.0.0.1:8081/v1/chat/completions" },
   "plugins": [
     "/usr/libexec/askai/one.so",
     { "path": "/usr/libexec/askai/test_plugin.so",
@@ -1204,11 +1250,13 @@ endpoints, it logs what it runs as lists with one item a line:
 - `upstream:` the provider, API, model, context size and URL.  The URL is
   logged without a user, a password and a query, which can have secrets.
 - `built-in tools for clients:` each tool, `on` or `off`, and for a tool
-  that is off, the option that turns it on.  The test aid `test_task` is
-  listed only when it is on.
+  that is off, the option that turns it on, or `tools` if the member
+  `tools` of the configuration file denies it to clients.  The test aid
+  `test_task` is listed only when it is on.
 - `git repositories:` and `notes directory:`, when those tools are on.
 - `plugin NAME:` for each plugin that `askai` loaded: its file, whether the
-  configuration gives it options, and its tools.
+  configuration gives it options, and its tools.  A tool that the member
+  `tools` denies to clients has `off (tools)` after its name.
 - `upstream tools: off (--upstream-tools)` without `--upstream-tools`.
 - the policy.  `askai`'s own policy is listed with whether `ASKAI_TOKEN` is
   set and what each kind of client may do.  The policy of a configuration
@@ -1217,8 +1265,9 @@ endpoints, it logs what it runs as lists with one item a line:
   client.  With `--upstream-tools`, the policy also lists the tools that
   the upstream may call in the turns of an `ask_ai` call, and none for a
   role without `ask_ai`.
-- a warning with the tools that are on but that no role grants or lends to
-  the upstream, because nothing can call them.
+- a warning with the tools that are on and that `tools` allows clients,
+  but that no role grants or lends to the upstream, because nothing can
+  call them.
 
 A reload logs the policy again.  `askai` does not log client tokens, its
 API key or the headers that it sends.  It logs the error text of an upstream
@@ -1228,12 +1277,13 @@ plugin:
 
 ```json
 {
-  "url": "http://127.0.0.1:8081/v1/chat/completions",
-  "tool-name": "bro",
-  "upstream-tools": true,
-  "man": true,
-  "notes": "/var/lib/askai/notes",
-  "git": "/srv/git/proj",
+  "upstream": {
+    "url": "http://127.0.0.1:8081/v1/chat/completions",
+    "tool-name": "bro",
+    "upstream-tools": true,
+    "notes": "/var/lib/askai/notes"
+  },
+  "service": { "man": true, "git": "/srv/git/proj" },
   "plugins": [{ "path": "/usr/libexec/askai/godbolt.so",
                 "options": { "share": "off" } }],
   "roles": {
@@ -1380,16 +1430,20 @@ askai: tool call bro from anonymous loopback (role user) answered after 3.9 s (3
 
 ```text
   -c, --config FILE         read options from FILE before the command
-                            line: a JSON object with long option names
-                            as members, without comments.  true sets an
-                            option without argument, and an array lists
-                            the values of a repeatable option.  The
-                            command line overrides the file, but adds to
-                            its header, allow-origin and git lists.
-                            Only the last --config is read.  See
-                            doc/configuration.md.
+                            line: a JSON object without comments.  Its
+                            objects upstream, service, testing and
+                            debugging contain the options of the
+                            sections below, named as the long options.
+                            true sets an option without argument, and
+                            an array lists the values of a repeatable
+                            option.  The command line overrides the
+                            file, but adds to its header, allow-origin
+                            and git lists.  Only the last --config is
+                            read.  See doc/configuration.md and
+                            doc/askai.example.json.
+  -h, --help                show this help
 
-Upstream AI:
+Upstream AI ("upstream"):
   -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),
                             openai, anthropic, google, deepinfra or
                             openrouter; the provider sets the defaults
@@ -1457,8 +1511,15 @@ Upstream AI:
                             full, askai compacts the conversation
                             (default: n_ctx from the /props of
                             llama-server, else unknown; 0 = the default)
+      --tool-name NAME      name of the ask tool, 1 to 128 characters
+                            from A-Z, a-z, 0-9, _, . and - (default
+                            ask_ai)
+      --tool-description TEXT
+                            description of the ask tool (default: a text
+                            built from --model, --upstream-tools and
+                            --notes)
 
-MCP server:
+MCP server ("service"):
   -l, --listen ADDR         [host:]port, where host is 127.0.0.1 if it
                             is left out; unix:PATH for a Unix socket; or
                             tls:[host:]port for TLS (repeatable;
@@ -1475,13 +1536,6 @@ MCP server:
                             is exactly URL, such as https://example.com
                             (repeatable; '*' allows any; loopback
                             Origins are always allowed)
-      --tool-name NAME      name of the ask tool, 1 to 128 characters
-                            from A-Z, a-z, 0-9, _, . and - (default
-                            ask_ai)
-      --tool-description TEXT
-                            description of the ask tool (default: a text
-                            built from --model, --upstream-tools and
-                            --notes)
       --man                 also offer the tool man, which returns a
                             page of the manual as man(1) renders it, in
                             plain UTF-8 text; askai renders each page
@@ -1501,45 +1555,17 @@ MCP server:
                             job, whose result askai stores for an hour;
                             timer sets a timer; wait waits for jobs and
                             timers
-      --test-man-recheck SECONDS
-                            test aid: once the lookup of the file of a
-                            page (man -w) is older than this, the next
-                            man call for the page repeats the lookup in
-                            the background (default 600, 0 = on each
-                            call)
-  -v, --verbose             log each tool call of a client as it ends,
-                            with its arguments, and each ask call as
-                            it starts; each upstream turn, each tool
-                            call of a turn or of a background job,
-                            each compaction and each notice about the
-                            context; each web request of a plugin; and
-                            each man page that askai renders
       --loops N             event loops that serve clients (default 0:
                             one fewer than the CPUs askai may use, at
                             least 1, at most 255)
       --grace SECONDS       time to finish the requests under way after
                             SIGINT, SIGTERM or SIGHUP (default 5)
-      --watchdog MS         log a turn of an event loop longer than
-                            this (default 20, 0 = none)
-      --test-stall MS       test aid: SIGUSR2 stops each event loop in
-                            one turn for this long
       --memory-high BYTES   resident memory from which memory pressure
                             is high (default: a sixteenth of RAM, or of
                             the lowest cgroup limit, at least 256M)
-      --test-pressure FILE  test aid: memory pressure is at least the
-                            level in FILE, 0 (none), 1 (high) or 2
-                            (critical), read each second
-      --test-fifo           test aid: upstream calls wait in one queue
-                            for each class, first in first out, and
-                            without the limit of 8 queued calls
-      --test-task           test aid: also offer the tool test_task: CPU
-                            work in 250 us slices, run as a task on the
-                            client loops; or, given a prompt, an
-                            upstream call run as background work
-  -h, --help                show this help
 
-Limits on clients (BYTES and RATE may end in K, M or G for KiB, MiB or
-GiB; 0 = none where noted):
+Limits on clients ("service"; BYTES and RATE may end in K, M or G for
+KiB, MiB or GiB; 0 = none where noted):
       --max-head BYTES      request line and headers (default 16K,
                             at most 65535)
       --max-fields N        header fields (default 64)
@@ -1588,6 +1614,36 @@ GiB; 0 = none where noted):
       --send-timeout SECONDS
                             longest stall of pending output
                             (default 30, 0 = none)
+
+Test aids ("testing"):
+      --test-man-recheck SECONDS
+                            once the lookup of the file of a page (man
+                            -w) is older than this, the next man call
+                            for the page repeats the lookup in the
+                            background (default 600, 0 = on each call)
+      --test-stall MS       SIGUSR2 stops each event loop in one turn
+                            for this long
+      --test-pressure FILE  memory pressure is at least the level in
+                            FILE, 0 (none), 1 (high) or 2 (critical),
+                            read each second
+      --test-fifo           upstream calls wait in one queue for each
+                            class, first in first out, and without the
+                            limit of 8 queued calls
+      --test-task           also offer the tool test_task: CPU work in
+                            250 us slices, run as a task on the client
+                            loops; or, given a prompt, an upstream call
+                            run as background work
+
+Debugging ("debugging"):
+  -v, --verbose             log each tool call of a client as it ends,
+                            with its arguments, and each ask call as
+                            it starts; each upstream turn, each tool
+                            call of a turn or of a background job,
+                            each compaction and each notice about the
+                            context; each web request of a plugin; and
+                            each man page that askai renders
+      --watchdog MS         log a turn of an event loop longer than
+                            this (default 20, 0 = none)
 ```
 
 ## dstr

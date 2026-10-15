@@ -1,6 +1,6 @@
 /** @file askai's configuration (config.h): the command line, and the
- *  configuration file, whose members are applied as the long options of
- *  their names are, before the command line's. */
+ *  configuration file, whose objects' members are applied as the long
+ *  options of their names are, before the command line's. */
 #define _GNU_SOURCE /* vasprintf() */
 #include <errno.h>
 #include <fcntl.h>
@@ -117,16 +117,20 @@ config_usage (struct config const *cfg,
 	        "MCP server (Streamable HTTP) with a tool that asks another AI.\n"
 	        "\n"
 	        "  -c, --config FILE         read options from FILE before the command\n"
-	        "                            line: a JSON object with long option names\n"
-	        "                            as members, without comments.  true sets an\n"
-	        "                            option without argument, and an array lists\n"
-	        "                            the values of a repeatable option.  The\n"
-	        "                            command line overrides the file, but adds to\n"
-	        "                            its header, allow-origin and git lists.\n"
-	        "                            Only the last --config is read.  See\n"
-	        "                            doc/configuration.md.\n"
+	        "                            line: a JSON object without comments.  Its\n"
+	        "                            objects upstream, service, testing and\n"
+	        "                            debugging contain the options of the\n"
+	        "                            sections below, named as the long options.\n"
+	        "                            true sets an option without argument, and\n"
+	        "                            an array lists the values of a repeatable\n"
+	        "                            option.  The command line overrides the\n"
+	        "                            file, but adds to its header, allow-origin\n"
+	        "                            and git lists.  Only the last --config is\n"
+	        "                            read.  See doc/configuration.md and\n"
+	        "                            doc/askai.example.json.\n"
+	        "  -h, --help                show this help\n"
 	        "\n"
-	        "Upstream AI:\n"
+	        "Upstream AI (\"upstream\"):\n"
 	        "  -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),\n"
 	        "                            openai, anthropic, google, deepinfra or\n"
 	        "                            openrouter; the provider sets the defaults\n"
@@ -151,7 +155,8 @@ config_usage (struct config const *cfg,
 	        "  -t, --temperature N       sampling temperature, a number from 0\n"
 	        "                            (default: none sent)\n"
 	        "  -n, --max-tokens N        output token limit (default: none sent, but\n"
-	        "                            4096 with the messages API)\n"
+	        "                            4096 with the messages API)\n", argv0);
+	fprintf(out,
 	        "  -x, --extra JSON          JSON object that askai merges into each\n"
 	        "                            request body, recursively; a null member\n"
 	        "                            removes that key\n"
@@ -177,8 +182,7 @@ config_usage (struct config const *cfg,
 	        "                            background and jobs; an ask call runs the\n"
 	        "                            tool calls of each turn and sends the next\n"
 	        "                            upstream request until an answer ends the\n"
-	        "                            call\n", argv0);
-	fprintf(out,
+	        "                            call\n"
 	        "      --notes DIR           also offer the tool notes: notebooks in git\n"
 	        "                            repositories under DIR, which askai makes if\n"
 	        "                            it does not exist; to clients as their role\n"
@@ -194,10 +198,17 @@ config_usage (struct config const *cfg,
 	        "                            is asked to call compact; and when it is\n"
 	        "                            full, askai compacts the conversation\n"
 	        "                            (default: n_ctx from the /props of\n"
-	        "                            llama-server, else unknown; 0 = the default)\n"
-	        "\n");
+	        "                            llama-server, else unknown; 0 = the default)\n");
 	fprintf(out,
-	        "MCP server:\n"
+	        "      --tool-name NAME      name of the ask tool, 1 to 128 characters\n"
+	        "                            from A-Z, a-z, 0-9, _, . and - (default\n"
+	        "                            ask_ai)\n"
+	        "      --tool-description TEXT\n"
+	        "                            description of the ask tool (default: a text\n"
+	        "                            built from --model, --upstream-tools and\n"
+	        "                            --notes)\n"
+	        "\n"
+	        "MCP server (\"service\"):\n"
 	        "  -l, --listen ADDR         [host:]port, where host is 127.0.0.1 if it\n"
 	        "                            is left out; unix:PATH for a Unix socket; or\n"
 	        "                            tls:[host:]port for TLS (repeatable;\n"
@@ -214,13 +225,6 @@ config_usage (struct config const *cfg,
 	        "                            is exactly URL, such as https://example.com\n"
 	        "                            (repeatable; '*' allows any; loopback\n"
 	        "                            Origins are always allowed)\n"
-	        "      --tool-name NAME      name of the ask tool, 1 to 128 characters\n"
-	        "                            from A-Z, a-z, 0-9, _, . and - (default\n"
-	        "                            ask_ai)\n"
-	        "      --tool-description TEXT\n"
-	        "                            description of the ask tool (default: a text\n"
-	        "                            built from --model, --upstream-tools and\n"
-	        "                            --notes)\n"
 	        "      --man                 also offer the tool man, which returns a\n"
 	        "                            page of the manual as man(1) renders it, in\n"
 	        "                            plain UTF-8 text; askai renders each page\n"
@@ -239,48 +243,19 @@ config_usage (struct config const *cfg,
 	        "                            background runs a call of another tool as a\n"
 	        "                            job, whose result askai stores for an hour;\n"
 	        "                            timer sets a timer; wait waits for jobs and\n"
-	        "                            timers\n"
-	        "      --test-man-recheck SECONDS\n"
-	        "                            test aid: once the lookup of the file of a\n"
-	        "                            page (man -w) is older than this, the next\n"
-	        "                            man call for the page repeats the lookup in\n"
-	        "                            the background (default 600, 0 = on each\n"
-	        "                            call)\n");
+	        "                            timers\n");
 	fprintf(out,
-	        "  -v, --verbose             log each tool call of a client as it ends,\n"
-	        "                            with its arguments, and each ask call as\n"
-	        "                            it starts; each upstream turn, each tool\n"
-	        "                            call of a turn or of a background job,\n"
-	        "                            each compaction and each notice about the\n"
-	        "                            context; each web request of a plugin; and\n"
-	        "                            each man page that askai renders\n"
 	        "      --loops N             event loops that serve clients (default 0:\n"
 	        "                            one fewer than the CPUs askai may use, at\n"
 	        "                            least 1, at most 255)\n"
 	        "      --grace SECONDS       time to finish the requests under way after\n"
 	        "                            SIGINT, SIGTERM or SIGHUP (default 5)\n"
-	        "      --watchdog MS         log a turn of an event loop longer than\n"
-	        "                            this (default 20, 0 = none)\n"
-	        "      --test-stall MS       test aid: SIGUSR2 stops each event loop in\n"
-	        "                            one turn for this long\n"
 	        "      --memory-high BYTES   resident memory from which memory pressure\n"
 	        "                            is high (default: a sixteenth of RAM, or of\n"
 	        "                            the lowest cgroup limit, at least 256M)\n"
-	        "      --test-pressure FILE  test aid: memory pressure is at least the\n"
-	        "                            level in FILE, 0 (none), 1 (high) or 2\n"
-	        "                            (critical), read each second\n"
-	        "      --test-fifo           test aid: upstream calls wait in one queue\n"
-	        "                            for each class, first in first out, and\n"
-	        "                            without the limit of 8 queued calls\n"
-	        "      --test-task           test aid: also offer the tool test_task: CPU\n"
-	        "                            work in 250 us slices, run as a task on the\n"
-	        "                            client loops; or, given a prompt, an\n"
-	        "                            upstream call run as background work\n"
-	        "  -h, --help                show this help\n");
-	fprintf(out,
 	        "\n"
-	        "Limits on clients (BYTES and RATE may end in K, M or G for KiB, MiB or\n"
-	        "GiB; 0 = none where noted):\n"
+	        "Limits on clients (\"service\"; BYTES and RATE may end in K, M or G for\n"
+	        "KiB, MiB or GiB; 0 = none where noted):\n"
 	        "      --max-head BYTES      request line and headers (default 16K,\n"
 	        "                            at most 65535)\n"
 	        "      --max-fields N        header fields (default 64)\n"
@@ -311,15 +286,15 @@ config_usage (struct config const *cfg,
 	        "      --sse-keepalive SECONDS\n"
 	        "                            time between the comment lines that askai\n"
 	        "                            writes on an idle event stream (default 15,\n"
-	        "                            0 = none)\n"
+	        "                            0 = none)\n");
+	fprintf(out,
 	        "      --max-client-conns N  connections per client address: an IPv4\n"
 	        "                            address, an IPv6 /64, or the user of a Unix\n"
 	        "                            socket client (default 256, 0 = none)\n"
 	        "      --idle-timeout SECONDS\n"
 	        "                            time a connection may stay open with no\n"
 	        "                            request under way, before its first request\n"
-	        "                            and between requests (default 30, 0 = none)\n");
-	fprintf(out,
+	        "                            and between requests (default 30, 0 = none)\n"
 	        "      --output-pause BYTES  pending output at which no more input is\n"
 	        "                            read from a connection, and a response is\n"
 	        "                            paused until at most half of this is pending\n"
@@ -330,6 +305,37 @@ config_usage (struct config const *cfg,
 	        "      --send-timeout SECONDS\n"
 	        "                            longest stall of pending output\n"
 	        "                            (default 30, 0 = none)\n"
+	        "\n"
+	        "Test aids (\"testing\"):\n"
+	        "      --test-man-recheck SECONDS\n"
+	        "                            once the lookup of the file of a page (man\n"
+	        "                            -w) is older than this, the next man call\n"
+	        "                            for the page repeats the lookup in the\n"
+	        "                            background (default 600, 0 = on each call)\n"
+	        "      --test-stall MS       SIGUSR2 stops each event loop in one turn\n"
+	        "                            for this long\n"
+	        "      --test-pressure FILE  memory pressure is at least the level in\n"
+	        "                            FILE, 0 (none), 1 (high) or 2 (critical),\n"
+	        "                            read each second\n"
+	        "      --test-fifo           upstream calls wait in one queue for each\n"
+	        "                            class, first in first out, and without the\n"
+	        "                            limit of 8 queued calls\n"
+	        "      --test-task           also offer the tool test_task: CPU work in\n"
+	        "                            250 us slices, run as a task on the client\n"
+	        "                            loops; or, given a prompt, an upstream call\n"
+	        "                            run as background work\n"
+	        "\n"
+	        "Debugging (\"debugging\"):\n"
+	        "  -v, --verbose             log each tool call of a client as it ends,\n"
+	        "                            with its arguments, and each ask call as\n"
+	        "                            it starts; each upstream turn, each tool\n"
+	        "                            call of a turn or of a background job,\n"
+	        "                            each compaction and each notice about the\n"
+	        "                            context; each web request of a plugin; and\n"
+	        "                            each man page that askai renders\n");
+	fprintf(out,
+	        "      --watchdog MS         log a turn of an event loop longer than\n"
+	        "                            this (default 20, 0 = none)\n"
 	        "\n"
 	        "The members roles, identities, unix-groups and anonymous of the\n"
 	        "configuration file define who may connect and what each client may do\n"
@@ -346,6 +352,11 @@ config_usage (struct config const *cfg,
 	        "path of a plugin, or an object whose member path is that path and\n"
 	        "whose member options is an object of the plugin's options (see\n"
 	        "README.md).\n"
+	        "The member tools of the configuration file allows or denies the tools\n"
+	        "other than the ask tool, to clients and to the upstream: true or false\n"
+	        "for all, a list of the tools it allows, an object with a list allow or a\n"
+	        "list deny, or an object whose members client and upstream each have one\n"
+	        "of those forms (see doc/configuration.md).\n"
 	        "SIGUSR1 prints to stderr, for each event loop, the times of its turns and\n"
 	        "steps, the lateness of its timers and the most work that one step did\n"
 	        "since the previous SIGUSR1.  The lines name the loops: loop1 to loopN\n"
@@ -362,7 +373,8 @@ config_usage (struct config const *cfg,
 	        "SIGTERM and SIGHUP stay ignored if askai starts with them ignored, except\n"
 	        "SIGHUP for a reload.\n"
 	        "Invalid options or environment exit 2.  A failure to start or to serve\n"
-	        "exits 1, also a --listen host name that cannot be resolved.\n",
+	        "exits 1, also a --listen host name that cannot be resolved.\n"
+	        "\n",
 	        BRAINSTEM_FORCED);
 }
 
@@ -484,67 +496,93 @@ enum {
 
 static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
 
+/* The objects of the configuration file that contain the options. */
+enum config_group : uint8_t {
+	GROUP_NONE, GROUP_UPSTREAM, GROUP_SERVICE, GROUP_TESTING, GROUP_DEBUGGING
+};
+
+static char const *const group_names[] = {
+	[GROUP_UPSTREAM]  = "upstream",
+	[GROUP_SERVICE]   = "service",
+	[GROUP_TESTING]   = "testing",
+	[GROUP_DEBUGGING] = "debugging",
+};
+
+/* Each option: the object of the configuration file that contains it, NONE
+ * for the two that the file cannot set; its long name; whether it takes an
+ * argument; and its short form or OPT_ value. */
+#define CONFIG_OPTIONS(X)                                                         \
+	X(UPSTREAM,  "provider",         required_argument, 'p')                  \
+	X(UPSTREAM,  "api",              required_argument, OPT_API)              \
+	X(UPSTREAM,  "url",              required_argument, 'u')                  \
+	X(UPSTREAM,  "model",            required_argument, 'm')                  \
+	X(UPSTREAM,  "key-env",          required_argument, 'k')                  \
+	X(UPSTREAM,  "header",           required_argument, 'H')                  \
+	X(UPSTREAM,  "system",           required_argument, 's')                  \
+	X(UPSTREAM,  "temperature",      required_argument, 't')                  \
+	X(UPSTREAM,  "max-tokens",       required_argument, 'n')                  \
+	X(UPSTREAM,  "extra",            required_argument, 'x')                  \
+	X(UPSTREAM,  "timeout",          required_argument, 'T')                  \
+	X(UPSTREAM,  "chunk-timeout",    required_argument, OPT_CHUNK_TIMEOUT)    \
+	X(UPSTREAM,  "slots",            required_argument, OPT_SLOTS)            \
+	X(UPSTREAM,  "max-calls",        required_argument, OPT_MAX_CALLS)        \
+	X(UPSTREAM,  "upstream-tools",   no_argument,       OPT_UPSTREAM_TOOLS)   \
+	X(UPSTREAM,  "notes",            required_argument, OPT_NOTES)            \
+	X(UPSTREAM,  "max-turns",        required_argument, OPT_MAX_TURNS)        \
+	X(UPSTREAM,  "context",          required_argument, OPT_CONTEXT)          \
+	X(UPSTREAM,  "tool-name",        required_argument, OPT_TOOL_NAME)        \
+	X(UPSTREAM,  "tool-description", required_argument, OPT_TOOL_DESCRIPTION) \
+	X(SERVICE,   "listen",           required_argument, 'l')                  \
+	X(SERVICE,   "tls-cert",         required_argument, OPT_TLS_CERT)         \
+	X(SERVICE,   "tls-key",          required_argument, OPT_TLS_KEY)          \
+	X(SERVICE,   "tls-allow-rsa",    no_argument,       OPT_TLS_ALLOW_RSA)    \
+	X(SERVICE,   "allow-origin",     required_argument, 'o')                  \
+	X(SERVICE,   "man",              no_argument,       OPT_MAN)              \
+	X(SERVICE,   "git",              required_argument, OPT_GIT)              \
+	X(SERVICE,   "git-timeout",      required_argument, OPT_GIT_TIMEOUT)      \
+	X(SERVICE,   "client-jobs",      no_argument,       OPT_CLIENT_JOBS)      \
+	X(SERVICE,   "loops",            required_argument, OPT_LOOPS)            \
+	X(SERVICE,   "grace",            required_argument, OPT_GRACE)            \
+	X(SERVICE,   "memory-high",      required_argument, OPT_MEMORY_HIGH)      \
+	X(SERVICE,   "max-head",         required_argument, OPT_MAX_HEAD)         \
+	X(SERVICE,   "max-fields",       required_argument, OPT_MAX_FIELDS)       \
+	X(SERVICE,   "head-timeout",     required_argument, OPT_HEAD_TIMEOUT)     \
+	X(SERVICE,   "max-body",         required_argument, OPT_MAX_BODY)         \
+	X(SERVICE,   "min-body-rate",    required_argument, OPT_MIN_BODY_RATE)    \
+	X(SERVICE,   "body-grace",       required_argument, OPT_BODY_GRACE)       \
+	X(SERVICE,   "body-budget",      required_argument, OPT_BODY_BUDGET)      \
+	X(SERVICE,   "client-budget",    required_argument, OPT_CLIENT_BUDGET)    \
+	X(SERVICE,   "max-depth",        required_argument, OPT_MAX_DEPTH)        \
+	X(SERVICE,   "max-values",       required_argument, OPT_MAX_VALUES)       \
+	X(SERVICE,   "max-members",      required_argument, OPT_MAX_MEMBERS)      \
+	X(SERVICE,   "sse-keepalive",    required_argument, OPT_SSE_KEEPALIVE)    \
+	X(SERVICE,   "max-client-conns", required_argument, OPT_MAX_CLIENT_CONNS) \
+	X(SERVICE,   "idle-timeout",     required_argument, OPT_IDLE_TIMEOUT)     \
+	X(SERVICE,   "output-pause",     required_argument, OPT_OUTPUT_PAUSE)     \
+	X(SERVICE,   "max-output",       required_argument, OPT_MAX_OUTPUT)       \
+	X(SERVICE,   "send-timeout",     required_argument, OPT_SEND_TIMEOUT)     \
+	X(TESTING,   "test-man-recheck", required_argument, OPT_TEST_MAN_RECHECK) \
+	X(TESTING,   "test-stall",       required_argument, OPT_TEST_STALL)       \
+	X(TESTING,   "test-pressure",    required_argument, OPT_TEST_PRESSURE)    \
+	X(TESTING,   "test-fifo",        no_argument,       OPT_TEST_FIFO)        \
+	X(TESTING,   "test-task",        no_argument,       OPT_TEST_TASK)        \
+	X(DEBUGGING, "verbose",          no_argument,       'v')                  \
+	X(DEBUGGING, "watchdog",         required_argument, OPT_WATCHDOG)         \
+	X(NONE,      "config",           required_argument, 'c')                  \
+	X(NONE,      "help",             no_argument,       'h')
+
+#define CONFIG_OPTION(group, name, arg, val) { name, arg, nullptr, val },
 static struct option const options[] = {
-	{ "config",           required_argument, nullptr, 'c' },
-	{ "provider",         required_argument, nullptr, 'p' },
-	{ "api",              required_argument, nullptr, OPT_API },
-	{ "url",              required_argument, nullptr, 'u' },
-	{ "model",            required_argument, nullptr, 'm' },
-	{ "key-env",          required_argument, nullptr, 'k' },
-	{ "header",           required_argument, nullptr, 'H' },
-	{ "system",           required_argument, nullptr, 's' },
-	{ "temperature",      required_argument, nullptr, 't' },
-	{ "max-tokens",       required_argument, nullptr, 'n' },
-	{ "extra",            required_argument, nullptr, 'x' },
-	{ "timeout",          required_argument, nullptr, 'T' },
-	{ "chunk-timeout",    required_argument, nullptr, OPT_CHUNK_TIMEOUT },
-	{ "slots",            required_argument, nullptr, OPT_SLOTS },
-	{ "max-calls",        required_argument, nullptr, OPT_MAX_CALLS },
-	{ "upstream-tools",   no_argument,       nullptr, OPT_UPSTREAM_TOOLS },
-	{ "notes",            required_argument, nullptr, OPT_NOTES },
-	{ "max-turns",        required_argument, nullptr, OPT_MAX_TURNS },
-	{ "context",          required_argument, nullptr, OPT_CONTEXT },
-	{ "listen",           required_argument, nullptr, 'l' },
-	{ "allow-origin",     required_argument, nullptr, 'o' },
-	{ "tls-cert",         required_argument, nullptr, OPT_TLS_CERT },
-	{ "tls-key",          required_argument, nullptr, OPT_TLS_KEY },
-	{ "tls-allow-rsa",    no_argument,       nullptr, OPT_TLS_ALLOW_RSA },
-	{ "tool-name",        required_argument, nullptr, OPT_TOOL_NAME },
-	{ "tool-description", required_argument, nullptr, OPT_TOOL_DESCRIPTION },
-	{ "man",              no_argument,       nullptr, OPT_MAN },
-	{ "test-man-recheck", required_argument, nullptr, OPT_TEST_MAN_RECHECK },
-	{ "git",              required_argument, nullptr, OPT_GIT },
-	{ "git-timeout",      required_argument, nullptr, OPT_GIT_TIMEOUT },
-	{ "client-jobs",      no_argument,       nullptr, OPT_CLIENT_JOBS },
-	{ "max-head",         required_argument, nullptr, OPT_MAX_HEAD },
-	{ "max-fields",       required_argument, nullptr, OPT_MAX_FIELDS },
-	{ "head-timeout",     required_argument, nullptr, OPT_HEAD_TIMEOUT },
-	{ "max-body",         required_argument, nullptr, OPT_MAX_BODY },
-	{ "min-body-rate",    required_argument, nullptr, OPT_MIN_BODY_RATE },
-	{ "body-grace",       required_argument, nullptr, OPT_BODY_GRACE },
-	{ "body-budget",      required_argument, nullptr, OPT_BODY_BUDGET },
-	{ "client-budget",    required_argument, nullptr, OPT_CLIENT_BUDGET },
-	{ "max-depth",        required_argument, nullptr, OPT_MAX_DEPTH },
-	{ "max-values",       required_argument, nullptr, OPT_MAX_VALUES },
-	{ "max-members",      required_argument, nullptr, OPT_MAX_MEMBERS },
-	{ "sse-keepalive",    required_argument, nullptr, OPT_SSE_KEEPALIVE },
-	{ "max-client-conns", required_argument, nullptr, OPT_MAX_CLIENT_CONNS },
-	{ "idle-timeout",     required_argument, nullptr, OPT_IDLE_TIMEOUT },
-	{ "output-pause",     required_argument, nullptr, OPT_OUTPUT_PAUSE },
-	{ "max-output",       required_argument, nullptr, OPT_MAX_OUTPUT },
-	{ "send-timeout",     required_argument, nullptr, OPT_SEND_TIMEOUT },
-	{ "loops",            required_argument, nullptr, OPT_LOOPS },
-	{ "grace",            required_argument, nullptr, OPT_GRACE },
-	{ "watchdog",         required_argument, nullptr, OPT_WATCHDOG },
-	{ "test-stall",       required_argument, nullptr, OPT_TEST_STALL },
-	{ "memory-high",      required_argument, nullptr, OPT_MEMORY_HIGH },
-	{ "test-pressure",    required_argument, nullptr, OPT_TEST_PRESSURE },
-	{ "test-fifo",        no_argument,       nullptr, OPT_TEST_FIFO },
-	{ "test-task",        no_argument,       nullptr, OPT_TEST_TASK },
-	{ "verbose",          no_argument,       nullptr, 'v' },
-	{ "help",             no_argument,       nullptr, 'h' },
+	CONFIG_OPTIONS(CONFIG_OPTION)
 	{ nullptr, 0, nullptr, 0 }
 };
+#undef CONFIG_OPTION
+
+/* The object that contains each option of options[]. */
+#define CONFIG_GROUP(group, name, arg, val) GROUP_##group,
+static enum config_group const groups[] = { CONFIG_OPTIONS(CONFIG_GROUP) };
+#undef CONFIG_GROUP
+#undef CONFIG_OPTIONS
 
 /* Bytes of a configuration file, at most. */
 enum { FILE_MAX = 1 << 20 };
@@ -1165,64 +1203,68 @@ config_of_policy (char const *key)
 	       !strcmp(key, "unix-groups") || !strcmp(key, "anonymous");
 }
 
-/* Whether the configuration file's member @p key takes effect on a reload:
- * the policy's, and TLS's certificate, key and key types. */
+/* Whether option @p name takes effect on a reload: TLS's certificate, key
+ * and key types. */
 static bool
-config_reloadable (char const *key)
+config_reloadable (char const *name)
 {
-	return config_of_policy(key) || !strncmp(key, "tls-", sizeof "tls-" - 1);
+	return !strncmp(name, "tls-", sizeof "tls-" - 1);
 }
 
-/* The members of @p cfg's configuration file, if it has one, but those
- * @p but is true of. */
-static size_t
-config_members_but (struct config const *cfg,
-                    bool               (*but) (char const *key))
+/* The value of option @p o, which the file can set, in @p cfg's
+ * configuration file, if it has one; nullptr if none. */
+static struct json_object *
+config_file_value (struct config const *cfg,
+                   struct option const *o)
 {
-	size_t n = 0;
-	struct json_object_iter it;
-	if (cfg->file)
-		json_object_object_foreachC(cfg->file, it)
-			n += !but(it.key);
-	return n;
+	struct json_object *group = json_object_object_get(cfg->file,
+	                                                   group_names[groups[o - options]]);
+	return json_object_object_get(group, o->name);
 }
 
 /* Whether @p cfg's configuration file and @p from's, if either has one, set
- * the same options, those a reload takes aside. */
+ * the same plugins, tools and options, but the options that take effect on
+ * a reload. */
 static bool
 config_same_options (struct config const *cfg,
                      struct config const *from)
 {
-	if (config_members_but(cfg, config_reloadable) !=
-	    config_members_but(from, config_reloadable))
-		return false;
-	if (!from->file)
-		return true;
-	struct json_object_iter it;
-	json_object_object_foreachC(from->file, it) {
-		struct json_object *v;
-		if (!config_reloadable(it.key) &&
-		    (!json_object_object_get_ex(cfg->file, it.key, &v) ||
-		     !json_object_equal(it.val, v)))
+	for (struct option const *o = options; o->name; ++o)
+		if (groups[o - options] && !config_reloadable(o->name) &&
+		    !json_object_equal(config_file_value(cfg, o), config_file_value(from, o)))
 			return false;
-	}
-	return true;
+	return json_object_equal(json_object_object_get(cfg->file, "plugins"),
+	                         json_object_object_get(from->file, "plugins")) &&
+	       json_object_equal(json_object_object_get(cfg->file, "tools"),
+	                         json_object_object_get(from->file, "tools"));
+}
+
+/* The values of the members of @p obj, if it is an object: the elements of
+ * an array, else 1 for each member. */
+static size_t
+config_values (struct json_object *obj)
+{
+	size_t n = 0;
+	struct json_object_iter it;
+	if (json_object_is_type(obj, json_type_object))
+		json_object_object_foreachC(obj, it)
+			n += json_object_is_type(it.val, json_type_array)
+			   ? json_object_array_length(it.val) : 1;
+	return n;
 }
 
 /* Make room for the lists of headers, origins, listeners and repositories,
  * in one block, and point ep.headers, http.origins and http.listen at their
- * lists: each may hold every argument, every string of the configuration
- * file and the three headers askai adds, and ends in nullptr.  Returns 0, or
+ * lists: each has room for every argument, every value of an option in
+ * the configuration file and the three headers askai adds, and ends in
+ * nullptr.  Returns 0, or
  * 1 if out of memory, having said so. */
 static int
 config_lists (struct config *cfg)
 {
 	size_t room = (size_t)cfg->argc + 4;
-	struct json_object_iter it;
-	if (cfg->file)
-		json_object_object_foreachC(cfg->file, it)
-			room += json_object_is_type(it.val, json_type_array)
-			      ? json_object_array_length(it.val) : 1;
+	for (size_t g = 1; g < ARRAY_SIZE(group_names); ++g)
+		room += config_values(json_object_object_get(cfg->file, group_names[g]));
 	char const **block = malloc(4 * room * sizeof *block);
 	if (!block)
 		return config_oom(cfg);
@@ -1237,22 +1279,68 @@ config_lists (struct config *cfg)
 	return 0;
 }
 
-/* Apply the configuration file's members but its policy's as the options of
- * their names.  The member "plugins" is not an option either:
- * config_registry() reads it. */
+/* The option named @p name that the configuration file can set; nullptr
+ * if there is none. */
+static struct option const *
+config_named (char const *name)
+{
+	for (struct option const *o = options; o->name; ++o)
+		if (groups[o - options] && !strcmp(o->name, name))
+			return o;
+	return nullptr;
+}
+
+/* Say that the configuration file has option @p o outside the object that
+ * contains it; returns 2. */
+static int
+config_misplaced (struct config const *cfg,
+                  struct option const *o)
+{
+	return config_complain(cfg, cfg->path, "%s must be in %s", o->name,
+	                       group_names[groups[o - options]]);
+}
+
+/* Apply the members of @p obj, the configuration file's object of group
+ * @p g, as the options of their names. */
+static int
+config_apply_group (struct config      *cfg,
+                    enum config_group   g,
+                    struct json_object *obj)
+{
+	if (!json_object_is_type(obj, json_type_object))
+		return config_complain(cfg, cfg->path, "%s must be an object",
+		                       group_names[g]);
+	struct json_object_iter it;
+	json_object_object_foreachC(obj, it) {
+		struct option const *o = config_named(it.key);
+		if (!o)
+			return config_complain(cfg, cfg->path, "%s: unknown member %s",
+			                       group_names[g], it.key);
+		int status = groups[o - options] != g ? config_misplaced(cfg, o)
+		                                      : config_apply_member(cfg, o, it.val);
+		if (status)
+			return status;
+	}
+	return 0;
+}
+
+/* Apply the options in the configuration file's objects upstream, service,
+ * testing and debugging.  The policy's members, "plugins" and "tools" are
+ * not options: policy_create(), config_registry() and config_allow() read
+ * them. */
 static int
 config_apply_file (struct config *cfg)
 {
 	struct json_object_iter it;
 	json_object_object_foreachC(cfg->file, it) {
-		if (config_of_policy(it.key) || !strcmp(it.key, "plugins"))
+		if (config_of_policy(it.key) || !strcmp(it.key, "plugins") ||
+		    !strcmp(it.key, "tools"))
 			continue;
-		struct option const *o = options;
-		while (o->name && strcmp(o->name, it.key))
-			++o;
-		if (!o->name || o->val == 'c' || o->val == 'h')
-			return config_complain(cfg, cfg->path, "unknown option: %s", it.key);
-		int status = config_apply_member(cfg, o, it.val);
+		size_t g = config_find(group_names, ARRAY_SIZE(group_names), it.key);
+		struct option const *o = config_named(it.key);
+		int status = g ? config_apply_group(cfg, (enum config_group)g, it.val)
+		           : o ? config_misplaced(cfg, o)
+		               : config_complain(cfg, cfg->path, "unknown member %s", it.key);
 		if (status)
 			return status;
 	}
@@ -1558,39 +1646,7 @@ config_headers (struct config *cfg,
 	return 0;
 }
 
-/* The tool's description, unless one is given. */
-static int
-config_description (struct config *cfg)
-{
-	if (cfg->tool.description)
-		return 0;
-	char const *who = "another AI model";
-	char const *model = "";
-	if (cfg->ep.model) {
-		who = "the AI model ";
-		model = cfg->ep.model;
-	}
-	cfg->description = config_aprintf("Ask %s%s a question or give it a task, and get "
-	                                  "its answer. It cannot see this conversation, your "
-	                                  "files or your tools, so write a complete, "
-	                                  "self-contained prompt.%s%s Use it for a second "
-	                                  "opinion, for hard problems, or for knowledge you "
-	                                  "lack.", who, model,
-	                                  cfg->flags & CFG_UPSTREAM_TOOLS
-	                                  ? " It may use some of this server's tools "
-	                                    "itself, and its answer lists the calls it "
-	                                    "made." : "",
-	                                  cfg->flags & CFG_UPSTREAM_TOOLS && cfg->notes
-	                                  ? " It keeps notes in a thread, which a later "
-	                                    "call may go on with." : "");
-	if (!cfg->description)
-		return config_oom(cfg);
-	cfg->tool.description = cfg->description;
-	return 0;
-}
-
-/* Work out the upstream's API key, URL and headers, and the tool's
- * description. */
+/* Work out the upstream's API key, URL and headers. */
 static int
 config_upstream (struct config *cfg)
 {
@@ -1603,10 +1659,7 @@ config_upstream (struct config *cfg)
 	status = cfg->ep.url ? config_url_generate(cfg) : config_url_own(cfg);
 	if (status)
 		return status;
-	status = config_headers(cfg, has_auth ? nullptr : key);
-	if (status)
-		return status;
-	return config_description(cfg);
+	return config_headers(cfg, has_auth ? nullptr : key);
 }
 
 /* Make TLS's context of the certificate chain of @p chain_len bytes at
@@ -1683,10 +1736,13 @@ config_note_token (struct config const *cfg)
 	char const *token = getenv("ASKAI_TOKEN");
 	if (cfg->logged || !token || !*token || !cfg->file)
 		return;
-	if (config_members_but(cfg, config_of_policy) <
-	    (size_t)json_object_object_length(cfg->file))
-		(void)config_complain(cfg, nullptr, "note: ASKAI_TOKEN is ignored, as "
-		                      "%s names who may connect", cfg->path);
+	struct json_object_iter it;
+	json_object_object_foreachC(cfg->file, it)
+		if (config_of_policy(it.key)) {
+			(void)config_complain(cfg, nullptr, "note: ASKAI_TOKEN is ignored, "
+			                      "as %s names who may connect", cfg->path);
+			return;
+		}
 }
 
 /* Checks the plugin file at @p path.  Only root and askai's user may change
@@ -1818,17 +1874,220 @@ config_tools (struct config const *cfg,
 	return run;
 }
 
+/* Say that @p v, in the member tools of the configuration file, is no
+ * name of a tool of the @p n tools @p tools that it may name: all but the
+ * ask tool, the first.  Returns 2. */
+static int
+config_allow_none (struct config const *cfg,
+                   char const          *where,
+                   char const *const    tools[],
+                   size_t               n,
+                   struct json_object  *v)
+{
+	char const *name = json_object_get_string(v);
+	if (json_object_is_type(v, json_type_string) && !strcmp(name, tools[0]))
+		return config_complain(cfg, cfg->path, "%s: %s is the ask tool, which is "
+		                       "always on", where, name);
+	char names[1024];
+	size_t len = 0;
+	for (size_t id = 1; id < n; ++id)
+		len += util_format(names + len, sizeof names - len, "%s%s", len ? ", " : "",
+		                   tools[id]);
+	return config_complain(cfg, cfg->path, "%s: askai has no tool %s; the tools "
+	                       "are %s", where, json_object_to_json_string(v),
+	                       len ? names : "none");
+}
+
+/* The mask, in @p *mask, of the tools that @p list names, an array of names
+ * of the @p n tools @p tools, the ask tool aside. */
+static int
+config_allow_names (struct config const *cfg,
+                    char const          *where,
+                    char const *const    tools[],
+                    size_t               n,
+                    struct json_object  *list,
+                    tool_mask           *mask)
+{
+	if (!json_object_is_type(list, json_type_array))
+		return config_complain(cfg, cfg->path, "%s: not a list of tools", where);
+	*mask = 0;
+	size_t len = json_object_array_length(list);
+	for (size_t i = 0; i < len; ++i) {
+		struct json_object *v = json_object_array_get_idx(list, i);
+		size_t id = json_object_is_type(v, json_type_string)
+		          ? config_find(tools, n, json_object_get_string(v)) : 0;
+		if (!id)
+			return config_allow_none(cfg, where, tools, n, v);
+		*mask |= (tool_mask)1 << id;
+	}
+	return 0;
+}
+
+/* The mask, in @p *mask, of the tools that @p spec allows: all for true,
+ * none for false, those of a list, those of the member allow, or all but
+ * those of the member deny.  The ask tool is not counted. */
+static int
+config_allow_form (struct config const *cfg,
+                   char const          *where,
+                   char const *const    tools[],
+                   size_t               n,
+                   struct json_object  *spec,
+                   tool_mask           *mask)
+{
+	if (json_object_is_type(spec, json_type_boolean)) {
+		*mask = json_object_get_boolean(spec) ? ~(tool_mask)0 : 0;
+		return 0;
+	}
+	if (json_object_is_type(spec, json_type_array))
+		return config_allow_names(cfg, where, tools, n, spec, mask);
+	if (!json_object_is_type(spec, json_type_object))
+		return config_complain(cfg, cfg->path, "%s: not true, false, a list or "
+		                       "an object", where);
+	struct json_object_iter it;
+	json_object_object_foreachC(spec, it)
+		if (strcmp(it.key, "allow") && strcmp(it.key, "deny"))
+			return config_complain(cfg, cfg->path, "%s: unknown member %s",
+			                       where, it.key);
+	struct json_object *allow;
+	struct json_object *deny;
+	bool allows = json_object_object_get_ex(spec, "allow", &allow);
+	if (!json_object_object_get_ex(spec, "deny", &deny)) {
+		if (allows)
+			return config_allow_names(cfg, where, tools, n, allow, mask);
+		*mask = ~(tool_mask)0;
+		return 0;
+	}
+	if (allows)
+		return config_complain(cfg, cfg->path, "%s: allow and deny together",
+		                       where);
+	int status = config_allow_names(cfg, where, tools, n, deny, mask);
+	*mask = ~*mask;
+	return status;
+}
+
+/* As config_allow_form(), and the mask must not have background without
+ * jobs, with which the output of a job is read. */
+static int
+config_allow_spec (struct config const *cfg,
+                   char const          *where,
+                   char const *const    tools[],
+                   size_t               n,
+                   struct json_object  *spec,
+                   tool_mask           *mask)
+{
+	int status = config_allow_form(cfg, where, tools, n, spec, mask);
+	size_t background = config_find(tools, n, "background");
+	size_t jobs = config_find(tools, n, "jobs");
+	if (!status && background && *mask >> background & 1 && !(*mask >> jobs & 1))
+		status = config_complain(cfg, cfg->path, "%s: background needs jobs", where);
+	return status;
+}
+
+/* Check that the member tools @p v, an object with the member client or
+ * upstream, has no other member. */
+static int
+config_allow_parts (struct config const *cfg,
+                    struct json_object  *v)
+{
+	struct json_object_iter it;
+	json_object_object_foreachC(v, it) {
+		if (!strcmp(it.key, "client") || !strcmp(it.key, "upstream"))
+			continue;
+		if (!strcmp(it.key, "allow") || !strcmp(it.key, "deny"))
+			return config_complain(cfg, cfg->path, "tools: allow and deny go "
+			                       "into client and upstream");
+		return config_complain(cfg, cfg->path, "tools: unknown member %s", it.key);
+	}
+	return 0;
+}
+
+/* The tools that the member tools of the configuration file allows clients
+ * and the upstream, of the tools that config_tools() names.  Without the
+ * member, it allows all.  It is one form of config_allow_spec() for both,
+ * or an object with the members client and upstream, either of which may be
+ * missing, each one of those forms for its own. */
+static int
+config_allow (struct config *cfg)
+{
+	struct json_object *v;
+	if (!json_object_object_get_ex(cfg->file, "tools", &v))
+		return 0;
+	char const *tools[TOOL_MAX];
+	tool_mask lendable;
+	size_t n = config_tools(cfg, tools, &lendable)->registry.n_tools;
+	struct json_object *client;
+	struct json_object *upstream;
+	bool clients = json_object_object_get_ex(v, "client", &client);
+	bool lends = json_object_object_get_ex(v, "upstream", &upstream);
+	int status = 0;
+	if (!clients && !lends) {
+		status = config_allow_spec(cfg, "tools", tools, n, v, &cfg->tools_clients);
+		cfg->tools_upstream = cfg->tools_clients;
+	} else {
+		status = config_allow_parts(cfg, v);
+		if (!status && clients)
+			status = config_allow_spec(cfg, "tools: client", tools, n, client,
+			                           &cfg->tools_clients);
+		if (!status && lends)
+			status = config_allow_spec(cfg, "tools: upstream", tools, n, upstream,
+			                           &cfg->tools_upstream);
+	}
+	/* mcp_register() adds the ask tool first, with the id 0. */
+	cfg->tools_clients |= 1;
+	return status;
+}
+
+/* The ask tool's description, unless one is given: with the sentences
+ * about tools and notes if the turns of a role that grants every tool get
+ * any tool and the tool notes. */
+static int
+config_description (struct config *cfg)
+{
+	if (cfg->tool.description)
+		return 0;
+	char const *tools[TOOL_MAX];
+	tool_mask lendable;
+	struct config const *run = config_tools(cfg, tools, &lendable);
+	tool_mask lent = mcp_lent(run, ~(tool_mask)0, ~(tool_mask)0);
+	/* config_find() returns 0, the ask tool's id, for none. */
+	size_t notes = config_find(tools, run->registry.n_tools, "notes");
+	char const *who = "another AI model";
+	char const *model = "";
+	if (cfg->ep.model) {
+		who = "the AI model ";
+		model = cfg->ep.model;
+	}
+	cfg->description = config_aprintf("Ask %s%s a question or give it a task, and get "
+	                                  "its answer. It cannot see this conversation, your "
+	                                  "files or your tools, so write a complete, "
+	                                  "self-contained prompt.%s%s Use it for a second "
+	                                  "opinion, for hard problems, or for knowledge you "
+	                                  "lack.", who, model,
+	                                  lent ? " It may use some of this server's tools "
+	                                         "itself, and its answer lists the calls it "
+	                                         "made." : "",
+	                                  notes && lent >> notes & 1
+	                                  ? " It keeps notes in a thread, which a later "
+	                                    "call may go on with." : "");
+	if (!cfg->description)
+		return config_oom(cfg);
+	cfg->tool.description = cfg->description;
+	return 0;
+}
+
 /* Make the policy, who may connect and what they may do, of the tools from
- * config_tools() that a role can grant. */
+ * config_tools() that a role can grant, and that the member tools of the
+ * running configuration allows clients. */
 static int
 config_policy (struct config *cfg)
 {
 	char const *tools[TOOL_MAX];
 	tool_mask upstream;
-	size_t n = config_tools(cfg, tools, &upstream)->registry.n_granted;
+	struct config const *run = config_tools(cfg, tools, &upstream);
 	char why[1024];
 	int e;
-	cfg->policy = policy_create(cfg->file, tools, n, upstream, why, sizeof why, &e);
+	cfg->policy = policy_create(cfg->file, tools, run->registry.n_granted,
+	                            run->tools_clients, upstream, why, sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
 	if (e)
@@ -1864,6 +2123,12 @@ config_finish (struct config *cfg)
 	if (status)
 		return status;
 	status = config_registry(cfg);
+	if (status)
+		return status;
+	status = config_allow(cfg);
+	if (status)
+		return status;
+	status = config_description(cfg);
 	if (status)
 		return status;
 	status = config_policy(cfg);
@@ -1914,6 +2179,8 @@ config_defaults (int   argc,
                  char *argv[])
 {
 	return (struct config){
+		.tools_clients = ~(tool_mask)0,
+		.tools_upstream = ~(tool_mask)0,
 		.ep = {
 			.timeout_ms = 600'000,
 			.chunk_ms = 60'000,

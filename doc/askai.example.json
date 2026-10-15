@@ -1,46 +1,151 @@
 {
-  "url": "http://127.0.0.1:8081/v1/chat/completions",
-  "header": [],
-  "system": "",
-  "extra": {},
-  "timeout": 600,
-  "chunk-timeout": 60,
-  "max-calls": 256,
-  "upstream-tools": false,
-  "max-turns": 32,
-  "context": 0,
-  "man": false,
-  "git": [],
-  "git-timeout": 30,
-  "client-jobs": false,
-  "tool-name": "ask_ai",
-  "test-task": false,
-  "listen": [
-    "127.0.0.1:8090"
+  "upstream": {
+    "provider": "llama",
+    "api": "chat",
+    "url": "http://127.0.0.1:8081/v1/chat/completions",
+    "model": "local",
+    "key-env": "LLAMA_API_KEY",
+    "header": [
+      "X-Title: askai"
+    ],
+    "system": "Answer precisely, and say when you are not sure.",
+    "temperature": 0.7,
+    "max-tokens": 4096,
+    "extra": {
+      "top_p": 0.95
+    },
+    "timeout": 600,
+    "chunk-timeout": 60,
+    "slots": 4,
+    "max-calls": 256,
+    "upstream-tools": true,
+    "notes": "/var/lib/askai/notes",
+    "max-turns": 32,
+    "context": 131072,
+    "tool-name": "ask_ai",
+    "tool-description": "Ask the local model a question or give it a task, and get its answer."
+  },
+  "service": {
+    "listen": [
+      "127.0.0.1:8090",
+      "unix:/run/askai/askai.sock"
+    ],
+    "tls-cert": "/etc/askai/chain.pem",
+    "tls-key": "/etc/askai/key.pem",
+    "tls-allow-rsa": false,
+    "allow-origin": [
+      "https://example.com"
+    ],
+    "man": true,
+    "git": [
+      "/srv/git/proj"
+    ],
+    "git-timeout": 30,
+    "client-jobs": true,
+    "loops": 0,
+    "grace": 5,
+    "memory-high": "1G",
+    "max-head": "16K",
+    "max-fields": 64,
+    "head-timeout": 10,
+    "max-body": "1M",
+    "min-body-rate": "4K",
+    "body-grace": 5,
+    "body-budget": "256M",
+    "client-budget": "64M",
+    "max-depth": 32,
+    "max-values": 1024,
+    "max-members": 1024,
+    "sse-keepalive": 15,
+    "max-client-conns": 256,
+    "idle-timeout": 30,
+    "output-pause": "256K",
+    "max-output": "1M",
+    "send-timeout": 30
+  },
+  "testing": {
+    "test-man-recheck": 600,
+    "test-stall": 100,
+    "test-pressure": "/run/askai/pressure",
+    "test-fifo": false,
+    "test-task": false
+  },
+  "debugging": {
+    "verbose": false,
+    "watchdog": 20
+  },
+  "plugins": [
+    {
+      "path": "/usr/libexec/askai/godbolt.so",
+      "options": {
+        "url": "https://godbolt.org",
+        "share": "short"
+      }
+    }
   ],
-  "tls-allow-rsa": false,
-  "allow-origin": [],
-  "loops": 0,
-  "grace": 5,
-  "watchdog": 20,
-  "verbose": false,
-  "max-head": "16K",
-  "max-fields": 64,
-  "head-timeout": 10,
-  "max-body": "1M",
-  "min-body-rate": "4K",
-  "body-grace": 5,
-  "body-budget": "256M",
-  "max-depth": 32,
-  "max-values": 1024,
-  "max-members": 1024,
-  "sse-keepalive": 15,
-  "max-client-conns": 256,
-  "idle-timeout": 30,
-  "output-pause": "256K",
-  "max-output": "1M",
-  "send-timeout": 30,
-  "test-man-recheck": 600,
-  "test-fifo": false,
-  "plugins": []
+  "tools": {
+    "client": true,
+    "upstream": {
+      "deny": [
+        "godbolt_compile"
+      ]
+    }
+  },
+  "roles": {
+    "admin": {
+      "tools": [
+        "ask_ai",
+        "man",
+        "git",
+        "notes",
+        "background",
+        "jobs",
+        "wait",
+        "timer",
+        "godbolt_catalog",
+        "godbolt_compile",
+        "godbolt_preprocess",
+        "godbolt_macros",
+        "godbolt_targets"
+      ],
+      "metrics": true
+    },
+    "user": {
+      "tools": [
+        "ask_ai",
+        "man",
+        "notes"
+      ],
+      "upstream": [
+        "man",
+        "git",
+        "notes",
+        "godbolt_catalog",
+        "godbolt_targets"
+      ],
+      "metrics": false
+    }
+  },
+  "identities": {
+    "operator": {
+      "role": "admin",
+      "unix-users": [
+        "root"
+      ]
+    },
+    "ci": {
+      "role": "user",
+      "tokens": [
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      ]
+    }
+  },
+  "unix-groups": {
+    "users": "user"
+  },
+  "anonymous": {
+    "loopback": "user",
+    "remote": null,
+    "unix": null
+  }
 }
