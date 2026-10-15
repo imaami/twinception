@@ -168,10 +168,14 @@ enum mcp_fetch : uint8_t {
 	FETCH_COMPACT,     /* list the notes for compact */
 	FETCH_FULL,        /* list the notes for a compaction of a context that
 	                      filled up */
+	FETCH_KIND = 7,    /* the mask of the values above */
 	FETCH_NEWEST = 8,  /* a flag that is set with one of the last three
 	                      values: read the newest note */
 	FETCH_OTHER = 16,  /* a flag that is set with FETCH_LIST or FETCH_READ:
 	                      the other side's notebook of the thread */
+	FETCH_COPY = 32,   /* a flag that is set with FETCH_READ, then with the
+	                      values of an add: a copy of a note of the other
+	                      side's notebook into the caller's */
 };
 
 static constexpr uint64_t NS = 1'000'000'000;
@@ -1256,7 +1260,8 @@ mcp_slot_drop (struct mcp_slot *slot)
 	slot->lent = (struct span){};
 	/* A git that writes notes runs to its end, because a kill could leave
 	 * a lock file behind (notes_unlock()). */
-	if (slot->fetch == FETCH_CREATE || slot->fetch == FETCH_ADD)
+	uint8_t kind = slot->fetch & FETCH_KIND;
+	if (kind == FETCH_CREATE || kind == FETCH_ADD)
 		child_release(&slot->child);
 	else
 		child_destroy(&slot->child);
@@ -5403,7 +5408,7 @@ static void
 mcp_req_notes_then (struct mcp_req *req,
                     uint8_t         fetch)
 {
-	if ((fetch & ~FETCH_NEWEST) == FETCH_RESUME)
+	if ((fetch & FETCH_KIND) == FETCH_RESUME)
 		mcp_req_enter(req, PHASE_BUILD);
 	else
 		mcp_req_go_on(req, TEXT("\n"));
@@ -5428,7 +5433,8 @@ mcp_slot_notes_failed (struct mcp_slot *slot,
 			mcp_req_notes_then(req, slot->fetch);
 		return;
 	}
-	if (slot->fetch == FETCH_COMPACT || slot->fetch == FETCH_FULL) {
+	if ((slot->fetch & FETCH_KIND) == FETCH_COMPACT ||
+	    (slot->fetch & FETCH_KIND) == FETCH_FULL) {
 		mcp_req_go_on(req, TEXT("\n\n[askai: your notes could not be read.]\n\n"));
 		return;
 	}
@@ -5491,7 +5497,7 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 		repo = other;
 	}
 	enum notes_cmd cmd = fetch & FETCH_NEWEST ? NOTES_READ
-	                                          : mcp_fetch_cmds[fetch & ~FETCH_OTHER];
+	                                          : mcp_fetch_cmds[fetch & FETCH_KIND];
 	/* git init and fast-import write.  If they are killed while they write,
 	 * they can leave a lock file behind.  So their deadline sends SIGTERM
 	 * first, and stale lock files are removed before they run. */
@@ -5632,7 +5638,7 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, FETCH_ADD, &in);
+	mcp_slot_notes_run(slot, FETCH_ADD | (slot->fetch & FETCH_COPY), &in);
 }
 
 /* Handles the end of git init for an add.  The function adds the note, or
@@ -5693,6 +5699,8 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 	                               "Give this thread to add more notes to it, to "
 	                               "list them, or to read one.", req->thread) : 0;
 	int e = !ok ? mcp_slot_notes_unadded(slot)
+	      : slot->fetch & FETCH_COPY ? mcp_slot_say(slot, &TEXT("Copied into your "
+	                                                         "notebook."), 1)
 	      : n ? mcp_slot_say(slot, &ESC(text, n), 1)
 	      : mcp_slot_say(slot, &TEXT("Noted."), 1);
 	mcp_slot_notes_end(slot, e, !ok);
@@ -5723,8 +5731,9 @@ mcp_slot_notes_listed (struct mcp_slot *slot,
 		char const *name = (char const *)entry.name.ptr;
 		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", k, (int)w, when) ||
 		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
-		    !dstr_printf(d, "  (%" PRIu64 " line%s)\n", entry.lines,
-		                 entry.lines == 1 ? "" : "s"))
+		    !(entry.lines == NOTES_BINARY ? CAT(d, "  (binary)\n")
+		      : dstr_printf(d, "  (%" PRIu64 " line%s)\n", entry.lines,
+		                    entry.lines == 1 ? "" : "s")))
 			return ENOMEM;
 		*newest = entry.name;
 	}
@@ -5750,15 +5759,28 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, e, !ok);
 }
 
-/* Answers the read action with the output of git cat-file. */
+static void mcp_slot_notes_got_copy (struct mcp_slot *slot, struct span text);
+
+/* Answers the read action with the output of git cat-file, or goes on with
+ * the copy action. */
 static void
 mcp_slot_notes_got_note (struct mcp_slot *slot)
 {
 	struct child const *c = slot->child;
 	struct span text = {};
 	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text) : EIO;
+	if (!r && slot->fetch & FETCH_COPY) {
+		mcp_slot_notes_got_copy(slot, text);
+		return;
+	}
 	char const *s = (char const *)text.ptr;
-	int e = !r ? mcp_slot_say(slot, &ESC(s, text.len ? jb_utf8(s, text.len) : 0), 1)
+	size_t utf8 = text.len ? jb_utf8(s, text.len) : 0;
+	char why[96];
+	int e = !r && utf8 < text.len
+	      ? mcp_slot_say(slot, &ESC(why, util_format(why, sizeof why, "That note is not "
+	                                                 "UTF-8 text: %zu bytes. It cannot "
+	                                                 "be shown here.", text.len)), 1)
+	      : !r ? mcp_slot_say(slot, &ESC(s, utf8), 1)
 	      : r == ENOENT ? mcp_slot_say(slot, &TEXT("No note has that name."), 1)
 	      : r == EISDIR ? mcp_slot_say(slot, &TEXT("That name is a directory of "
 	                                               "notes. list shows the notes in "
@@ -5925,7 +5947,7 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 	};
 	mcp_slot_unwait(slot);
 	(slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest
-	                            : steps[slot->fetch & ~FETCH_OTHER])(slot);
+	                            : steps[slot->fetch & FETCH_KIND])(slot);
 }
 
 /* The message for a file argument that is not a valid name. */
@@ -5981,6 +6003,81 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, req->branch ? FETCH_CHECK : FETCH_CREATE, &in);
 }
 
+/* Adds @p text, a note of the other side's notebook that git read for the
+ * copy action, to the caller's own notebook as an add does, under the name
+ * that waits in the request's body. */
+static void
+mcp_slot_notes_got_copy (struct mcp_slot *slot,
+                         struct span      text)
+{
+	struct mcp_req *req = slot->req;
+	char to[NOTES_NAME];
+	struct span name = buf_peek(&req->body);
+	size_t len = name.len < sizeof to ? name.len : sizeof to;
+	memcpy(to, name.ptr, len);
+	buf_fini(&req->body);
+	struct buf in = {};
+	int e = notes_add_file(&req->body, to, len, (char const *)text.ptr, text.len);
+	if (!e && req->branch)
+		e = notes_check_input(&in, to, len);
+	loop_work(req->mcp->loop, LOOP_COPY, text.len);
+	child_destroy(&slot->child);
+	if (e) {
+		buf_fini(&in);
+		buf_fini(&req->body);
+		mcp_req_fail(req, e);
+		return;
+	}
+	mcp_slot_notes_run(slot, (req->branch ? FETCH_CHECK : FETCH_CREATE) | FETCH_COPY,
+	                   &in);
+}
+
+/* Starts the copy action: git reads the note that the file argument names
+ * in the other side's notebook of the thread, and mcp_slot_notes_got_copy()
+ * adds it byte for byte to the caller's own notebook, under the name that
+ * the as argument gives, or else under the same name.  The text of the
+ * note does not pass through the caller. */
+static void
+mcp_slot_notes_copy (struct mcp_slot    *slot,
+                     struct json_object *args)
+{
+	struct mcp_req *req = slot->req;
+	size_t len = 0;
+	size_t skip = 0;
+	char const *name = jb_str(jb_get(args, "file"), &len);
+	if (!name || notes_name(name, len, &skip)) {
+		mcp_slot_result(slot, TEXT(bad_name), true);
+		return;
+	}
+	struct json_object *as = jb_get(args, "as");
+	size_t to_len = len;
+	size_t to_skip = skip;
+	char const *to = as ? jb_str(as, &to_len) : name;
+	if (!to || notes_name(to, to_len, &to_skip)) {
+		mcp_slot_result(slot, TEXT("The as argument must be a file name, as the file "
+		                           "argument is."), true);
+		return;
+	}
+	/* The name of the copy waits in the request's body while git reads the
+	 * note.  A call that ended early can have left a file part there. */
+	buf_fini(&req->body);
+	struct span s;
+	int e = buf_reserve(&req->body, to_len - to_skip, NOTES_NAME, &s);
+	struct buf in = {};
+	if (!e) {
+		memcpy(s.ptr, to + to_skip, to_len - to_skip);
+		buf_commit(&req->body, to_len - to_skip);
+		e = notes_read_input(&in, name + skip, len - skip);
+	}
+	if (e) {
+		buf_fini(&in);
+		buf_fini(&req->body);
+		mcp_req_fail(req, e);
+		return;
+	}
+	mcp_slot_notes_run(slot, FETCH_READ | FETCH_OTHER | FETCH_COPY, &in);
+}
+
 /* Starts the read action for the file name in @p args, in the caller's
  * notebook, or with @p other FETCH_OTHER in the other side's. */
 static void
@@ -6029,10 +6126,11 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	struct json_object *notebook = jb_get(args, "notebook");
 	bool add = jb_is(action, "add");
 	bool read = jb_is(action, "read");
+	bool copy = jb_is(action, "copy");
 	uint8_t other = jb_is(notebook, "other") ? FETCH_OTHER : 0;
 	struct mcp_piece check =
-		!add && !read && !jb_is(action, "list")
-		? TEXT("The action argument must be add, list or read.")
+		!add && !read && !copy && !jb_is(action, "list")
+		? TEXT("The action argument must be add, list, read or copy.")
 		: notebook && !other && !jb_is(notebook, "own")
 		? TEXT("The notebook argument must be own or other.")
 		: add && other
@@ -6051,8 +6149,8 @@ mcp_slot_notes (struct mcp_slot    *slot,
 			? TEXT("The thread argument must be the id of a thread, as an add "
 			       "named it: 32 hexadecimal digits.")
 			: !thread && !add
-			? TEXT("list and read need the thread argument: the id of a thread "
-			       "that an add named.")
+			? TEXT("list, read and copy need the thread argument: the id of a "
+			       "thread that an add or an answer named.")
 			: (struct mcp_piece){};
 		if (problem.ptr) {
 			mcp_slot_result(slot, problem, true);
@@ -6061,7 +6159,8 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		if (id) {
 			memcpy(req->thread, id, sizeof req->thread);
 			notes_repo(req->principal, NOTES_CLIENT, req->thread, req->repo);
-			req->branch = !add || notes_exists(req->mcp->st->notes, req->repo);
+			req->branch = (!add && !copy) ||
+			              notes_exists(req->mcp->st->notes, req->repo);
 		}
 		if (id && !req->branch && !mcp_slot_other_exists(slot)) {
 			char why[32 + NOTES_ID];
@@ -6072,6 +6171,8 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	}
 	if (add)
 		mcp_slot_notes_add(slot, args, slot->role == ROLE_OWN && !thread);
+	else if (copy)
+		mcp_slot_notes_copy(slot, args);
 	else if (read)
 		mcp_slot_notes_read(slot, args, other);
 	else if (!other && !req->branch)
@@ -7317,8 +7418,9 @@ mcp_notes_schema (enum notes_side side)
 			"task, a summary, the list of your notes and the start of your "
 			"newest note; read the others when you need them. The client can "
 			"read your notes, and can keep notes in this thread too: list and "
-			"read show them with notebook other. You add notes only to your "
-			"own notebook.",
+			"read show them with notebook other, and copy puts one of them "
+			"into your notebook byte for byte, for a file that you need as it "
+			"is. You add notes only to your own notebook.",
 		[NOTES_CLIENT] =
 			"A notebook that outlasts your context. A note is a file: you "
 			"choose its name, such as plan.md or findings/locks.md, and write "
@@ -7329,11 +7431,14 @@ mcp_notes_schema (enum notes_side side)
 			"of the other AI that the ask tool asks. An ask call with a "
 			"thread keeps the other AI's notes in it, and its answer names "
 			"the thread. list and read show the other AI's notes with "
-			"notebook other. You add notes only to your own notebook.",
+			"notebook other, and copy puts one of them into your notebook "
+			"byte for byte, without its text passing through you. You add "
+			"notes only to your own notebook.",
 	};
 	struct json_object *actions = jb_list(json_object_new_string("add"));
 	if (jb_push(actions, json_object_new_string("list")) ||
-	    jb_push(actions, json_object_new_string("read"))) {
+	    jb_push(actions, json_object_new_string("read")) ||
+	    jb_push(actions, json_object_new_string("copy"))) {
 		json_object_put(actions);
 		actions = nullptr;
 	}
@@ -7347,16 +7452,23 @@ mcp_notes_schema (enum notes_side side)
 			"type", json_object_new_string("string"),
 			"enum", actions,
 			"description", json_object_new_string(
-				"add a note, list the notes, the oldest first, or read a "
-				"note."),
+				"add a note, list the notes, the oldest first, read a note, "
+				"or copy a note of the other notebook of the thread into "
+				"yours."),
 			nullptr),
 		"file", jb_object(
 			"type", json_object_new_string("string"),
 			"description", json_object_new_string(
-				"For add and read: the file name of the note, at most 255 "
-				"bytes. It can have directories, such as findings/locks.md. "
-				"Its extension, such as .md or .txt, shows the format of the "
-				"text."),
+				"For add, read and copy: the file name of the note, at most "
+				"255 bytes. It can have directories, such as "
+				"findings/locks.md. Its extension, such as .md or .txt, shows "
+				"the format of the text."),
+			nullptr),
+		"as", jb_object(
+			"type", json_object_new_string("string"),
+			"description", json_object_new_string(
+				"For copy: the file name of the copy in your notebook. The "
+				"default is the name of the note."),
 			nullptr),
 		"text", jb_object(
 			"type", json_object_new_string("string"),

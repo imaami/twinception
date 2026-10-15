@@ -557,6 +557,9 @@ notes_entry_before (struct span         out,
 			.name = { (unsigned char *)(uintptr_t)(name + 1),
 			          (size_t)(s + at - 1 - name - 1) },
 		};
+		/* git's count of lines is "-" for a binary file. */
+		if (s[stat + 1] == '-')
+			entry->lines = NOTES_BINARY;
 		for (char const *d = s + stat + 1; d < tab && *d >= '0' && *d <= '9'; ++d)
 			entry->lines = entry->lines * 10 + (uint64_t)(*d - '0');
 		for (char const *d = s + time; d < s + stat - 1 && *d >= '0' && *d <= '9'; ++d)

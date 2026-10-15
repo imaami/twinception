@@ -71,8 +71,12 @@ struct notes_entry {
 	struct span name;
 	uint64_t    time;   /**< when it was added, in seconds since the
 	                         epoch */
-	uint64_t    lines;  /**< the number of lines of its text */
+	uint64_t    lines;  /**< the number of lines of its text, or
+	                         NOTES_BINARY if git sees no text in it */
 };
+
+/** The lines of a note that git sees as binary (struct notes_entry). */
+static constexpr uint64_t NOTES_BINARY = UINT64_MAX;
 
 /**
  * Creates the notes in the directory @p path.  If the directory does not

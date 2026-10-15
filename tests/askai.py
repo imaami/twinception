@@ -6995,13 +6995,15 @@ def check_notes(binary, up):
                          "offset": 5}) == "!No note has that name."
 
             for arguments, why in (
-                    ({"action": "list"}, "list and read need the thread argument"),
+                    ({"action": "list"}, "list, read and copy need the thread argument"),
                     ({"action": "read", "file": "plan.md"},
-                     "list and read need the thread argument"),
+                     "list, read and copy need the thread argument"),
+                    ({"action": "copy", "file": "plan.md"},
+                     "list, read and copy need the thread argument"),
                     ({"action": "list", "thread": "xyz"},
                      "The thread argument must be the id of a thread"),
                     ({"action": "remove", "thread": thread},
-                     "The action argument must be add, list or read.")):
+                     "The action argument must be add, list, read or copy.")):
                 assert call(arguments).startswith("!" + why), (arguments, call(arguments))
             # A thread has a notebook of each side under one id.  A client
             # reads the upstream's notebook of a thread with "notebook":
@@ -7039,6 +7041,37 @@ def check_notes(binary, up):
                                           "notebook": "other"})
             assert call({"action": "list", "thread": thread, "notebook": "other"}) == \
                 "!The other AI keeps no notes in this thread."
+            # copy puts a note of the other notebook into the client's, byte
+            # for byte, without its text in a call: also a file that is not
+            # text, which list marks and read does not show.
+            raw = bytes(range(256)) * 3
+            subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
+                           input=(f"commit refs/heads/notes\ncommitter askai <askai> "
+                                  f"{now} +0000\ndata 0\nfrom refs/heads/notes^0\n"
+                                  f"M 100644 inline img/raw.bin\ndata {len(raw)}\n"
+                                  ).encode() + raw + b"\n", check=True, env=git_env)
+            assert call({"action": "list", "thread": shared, "notebook": "other"}).endswith(
+                "img/raw.bin  (binary)\n")
+            for arguments, said in (
+                    ({"file": "found.md"}, "Copied into your notebook."),
+                    ({"file": "found.md", "as": "copies/f.md"}, "Copied into your notebook."),
+                    ({"file": "img/raw.bin"}, "Copied into your notebook."),
+                    ({"file": "found.md"}, "!A note of that name exists, and a note "
+                     "cannot be changed. Add the note under another name."),
+                    ({"file": "none.md"}, "!No note has that name."),
+                    ({"file": "found.md", "as": "a//b"}, "!The as argument must be a "
+                     "file name, as the file argument is."),
+                    ({"file": "../x"}, "!The file argument must be")):
+                got = call({"action": "copy", "thread": shared} | arguments)
+                assert got.startswith(said), (arguments, got)
+            for name in ("found.md", "copies/f.md"):
+                assert call({"action": "read", "file": name, "thread": shared}) == "found\n"
+            assert call({"action": "read", "file": "img/raw.bin", "thread": shared}) == \
+                f"That note is not UTF-8 text: {len(raw)} bytes. It cannot be shown here."
+            mine = f"{notes}/{who}/client/{shared}"
+            assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
+                                   "notes:img/raw.bin"], capture_output=True, check=True,
+                                  env=git_env).stdout == raw
             # A client cannot use a thread of another identity, nor read its
             # other notebook.
             for arguments in ({"action": "list"}, {"action": "read", "file": "plan.md"},
@@ -7754,7 +7787,9 @@ def check_turns(binary, up):
                 ("o", "notes", json.dumps({"action": "add", "file": "brief.md",
                                            "text": "seen", "notebook": "other"})),
                 ("p", "notes", json.dumps({"action": "add", "file": "seen.md",
-                                           "text": "seen"}))]))]
+                                           "text": "seen"})),
+                ("q", "notes", json.dumps({"action": "copy", "file": "brief.md"})),
+                ("r", "notes", json.dumps({"action": "read", "file": "brief.md"}))]))]
             count = len(up.requests)
             result = ai.ask("Go on", thread=mine)
             assert prompt(up.requests[count]) == "Go on\n\n[askai: you have no notes " \
@@ -7764,8 +7799,8 @@ def check_turns(binary, up):
             assert re.fullmatch(f"The client's notes, oldest first:\n\n1\\. {when}  "
                                 "brief\\.md  \\(1 line\\)\n", outputs[0]), outputs
             assert outputs[1:] == ["aim", "You can add notes only to your own notebook. "
-                                   "The other notebook can only be read.", "Noted."], \
-                outputs
+                                   "The other notebook can only be read.", "Noted.",
+                                   "Copied into your notebook.", "aim"], outputs
             assert f"in the thread {mine}:" in result["content"][1]["text"], result
             assert "seen.md" in client_notes({"action": "list", "thread": mine,
                                               "notebook": "other"})

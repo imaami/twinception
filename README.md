@@ -593,6 +593,11 @@ notes only to its own notebook, and reads both:
 - `list` and `read` take `"notebook": "other"` for the other side's
   notebook of the thread.  `own` is the default.  An `add` with `other` is
   refused.
+- `copy` puts a note of the other side's notebook into the caller's own,
+  byte for byte, under the same name or the name that `as` gives.  The
+  text of the note does not pass through the model, so a file that is
+  needed exactly, or one that is not text, keeps every byte.  `list` marks
+  a note that is not text as `(binary)`, and `read` does not show it.
 - A client reads the model's notes of a thread that an `ask_ai` answer
   named.  Its first `add` to that thread starts its own notebook there.
 - `ask_ai`'s `thread` can also name a thread that the client started with
