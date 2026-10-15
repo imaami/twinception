@@ -1,13 +1,15 @@
 /** @file This file declares the notes of --notes.  The upstream and the
  *  clients add notes to notebooks as they work (src/mcp.h).
  *
- * A notebook is a thread of notes.  Each thread is a bare git repository
- * in the directory that --notes names, at the path WHO/SIDE/ID.  WHO is the
- * principal of the client (src/policy.h) as 16 hexadecimal digits, or
- * "anonymous".  SIDE is "upstream" for the notes that the upstream writes
- * in the turns of an ask call, and "client" for the notes of the client.
- * ID is the id of the thread: 32 random hexadecimal digits.  askai makes
- * the repository when the first note of the thread is added.
+ * A notebook is one side's notes of a thread.  Each notebook is a bare git
+ * repository in the directory that --notes names, at the path WHO/SIDE/ID.
+ * WHO is the principal of the client (src/policy.h) as 16 hexadecimal
+ * digits, or "anonymous".  SIDE is "upstream" for the notes that the
+ * upstream writes in the turns of an ask call, and "client" for the notes
+ * of the client.  ID is the id of the thread: 32 random hexadecimal digits.
+ * A thread has up to two notebooks, one of each side, under one id.  Each
+ * side adds notes only to its own notebook and reads both.  askai makes a
+ * notebook's repository when its first note is added.
  *
  * A note is a file.  Its author chooses the name of the file and its text.
  * The name can have directories in it.  Adding a note adds one commit to
@@ -112,6 +114,12 @@ notes_repo (uint64_t        principal,
             enum notes_side side,
             char const     *id,
             char            repo[NOTES_REPO]);
+
+/** Whether the repository that @p repo names, which notes_repo() wrote,
+ *  exists.  false for a null argument. */
+extern bool
+notes_exists (struct notes const *notes,
+              char const         *repo);
 
 /**
  * Removes the lock files of git that are older than a minute from the

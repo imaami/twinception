@@ -170,6 +170,8 @@ enum mcp_fetch : uint8_t {
 	                      filled up */
 	FETCH_NEWEST = 8,  /* a flag that is set with one of the last three
 	                      values: read the newest note */
+	FETCH_OTHER = 16,  /* a flag that is set with FETCH_LIST or FETCH_READ:
+	                      the other side's notebook of the thread */
 };
 
 static constexpr uint64_t NS = 1'000'000'000;
@@ -5442,8 +5444,38 @@ mcp_slot_notes_failed (struct mcp_slot *slot,
 	                                           "be used now: %s.", strerror(e))), true);
 }
 
+/* The side of the notebook that the call in @p slot adds notes to: the
+ * client's for a client's call, else the upstream's. */
+static enum notes_side
+mcp_slot_side (struct mcp_slot const *slot)
+{
+	return slot->role == ROLE_OWN ? NOTES_CLIENT : NOTES_UPSTREAM;
+}
+
+/* Writes to @p repo the repository of the other side's notebook of the
+ * thread of the call in @p slot. */
+static void
+mcp_slot_other (struct mcp_slot const *slot,
+                char                   repo[NOTES_REPO])
+{
+	enum notes_side side = mcp_slot_side(slot) == NOTES_CLIENT ? NOTES_UPSTREAM
+	                                                          : NOTES_CLIENT;
+	notes_repo(slot->req->principal, side, slot->req->thread, repo);
+}
+
+/* Whether the other side keeps a notebook in the thread of the call in
+ * @p slot. */
+static bool
+mcp_slot_other_exists (struct mcp_slot const *slot)
+{
+	char repo[NOTES_REPO];
+	mcp_slot_other(slot, repo);
+	return notes_exists(slot->req->mcp->st->notes, repo);
+}
+
 /* Spawns git for @p fetch with the input in @p in, if not nullptr, and
- * frees @p in.  git uses the repository of the request's thread. */
+ * frees @p in.  git uses the repository of the request's thread, or with
+ * FETCH_OTHER that of the other side's notebook of the thread. */
 static void
 mcp_slot_notes_run (struct mcp_slot *slot,
                     uint8_t          fetch,
@@ -5452,15 +5484,22 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	struct mcp_req *req = slot->req;
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
-	enum notes_cmd cmd = fetch & FETCH_NEWEST ? NOTES_READ : mcp_fetch_cmds[fetch];
+	char other[NOTES_REPO];
+	char const *repo = req->repo;
+	if (fetch & FETCH_OTHER) {
+		mcp_slot_other(slot, other);
+		repo = other;
+	}
+	enum notes_cmd cmd = fetch & FETCH_NEWEST ? NOTES_READ
+	                                          : mcp_fetch_cmds[fetch & ~FETCH_OTHER];
 	/* git init and fast-import write.  If they are killed while they write,
 	 * they can leave a lock file behind.  So their deadline sends SIGTERM
 	 * first, and stale lock files are removed before they run. */
 	bool writes = cmd == NOTES_CREATE || cmd == NOTES_ADD;
 	if (writes)
-		notes_unlock(mcp->st->notes, req->repo);
+		notes_unlock(mcp->st->notes, repo);
 	char const *argv[NOTES_ARGV];
-	notes_argv(mcp->st->notes, req->repo, cmd, argv);
+	notes_argv(mcp->st->notes, repo, cmd, argv);
 	struct child_cmd const c = {
 		.file = "git",
 		.argv = argv,
@@ -5529,12 +5568,21 @@ mcp_slot_notes_end (struct mcp_slot *slot,
 }
 
 /* Appends to the answer of @p slot why git read no notes.  Exit status 128
- * means that the thread does not exist. */
+ * means that the notebook does not exist: the other side keeps no notes in
+ * the thread, or the caller has added none to it, or there is no such
+ * thread. */
 static int
 mcp_slot_notes_unread (struct mcp_slot *slot)
 {
 	if (!mcp_notes_none(slot->child))
-		return mcp_slot_say(slot, &TEXT("Your notes could not be read."), 1);
+		return mcp_slot_say(slot, &TEXT("The notes could not be read."), 1);
+	if (slot->fetch & FETCH_OTHER)
+		return mcp_slot_say(slot, mcp_slot_side(slot) == NOTES_CLIENT
+		                          ? &TEXT("The other AI keeps no notes in this thread.")
+		                          : &TEXT("The client keeps no notes in this thread."), 1);
+	if (mcp_slot_other_exists(slot))
+		return mcp_slot_say(slot, &TEXT("You have added no notes to this thread "
+		                                "yet."), 1);
 	char why[32 + NOTES_ID];
 	size_t n = util_format(why, sizeof why, "Unknown thread: %s.", slot->req->thread);
 	return mcp_slot_say(slot, &ESC(why, n), 1);
@@ -5576,9 +5624,8 @@ mcp_slot_notes_write (struct mcp_slot *slot,
                       char const      *tip)
 {
 	struct mcp_req *req = slot->req;
-	enum notes_side side = slot->role == ROLE_OWN ? NOTES_CLIENT : NOTES_UPSTREAM;
 	struct buf in = {};
-	int e = notes_add_input(&in, side, tip, buf_peek(&req->body));
+	int e = notes_add_input(&in, mcp_slot_side(slot), tip, buf_peek(&req->body));
 	buf_fini(&req->body);
 	if (e) {
 		buf_fini(&in);
@@ -5637,7 +5684,9 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
 	bool ok = mcp_notes_ok(slot->child);
-	bool fresh = !req->branch && slot->role == ROLE_OWN;
+	/* A client's first note in a thread of the other AI starts no thread. */
+	bool fresh = !req->branch && slot->role == ROLE_OWN &&
+	             !mcp_slot_other_exists(slot);
 	req->branch |= ok;
 	char text[160];
 	size_t n = fresh ? util_format(text, sizeof text, "Noted, in the new thread %s. "
@@ -5690,8 +5739,12 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 	struct child const *c = slot->child;
 	struct span newest;
 	bool ok = mcp_notes_listed(c);
-	int e = !ok ? mcp_slot_notes_unread(slot)
-	      : mcp_slot_say(slot, &TEXT("Your notes, oldest first:\n\n"), 1);
+	struct mcp_piece const head =
+		!(slot->fetch & FETCH_OTHER) ? TEXT("Your notes, oldest first:\n\n")
+		: mcp_slot_side(slot) == NOTES_CLIENT ? TEXT("The other AI's notes, oldest "
+		                                             "first:\n\n")
+		: TEXT("The client's notes, oldest first:\n\n");
+	int e = !ok ? mcp_slot_notes_unread(slot) : mcp_slot_say(slot, &head, 1);
 	if (!e && ok)
 		e = mcp_slot_notes_listed(slot, buf_peek(&c->out), c->cut, &newest);
 	mcp_slot_notes_end(slot, e, !ok);
@@ -5798,17 +5851,41 @@ mcp_slot_notes_resumed (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
 	struct child *c = slot->child;
+	char client[NOTES_REPO];
+	notes_repo(req->principal, NOTES_CLIENT, req->thread, client);
+	bool kept = notes_exists(req->mcp->st->notes, client);
 	if (!mcp_notes_listed(c)) {
+		bool none = mcp_notes_none(c);
+		child_destroy(&slot->child);
+		/* In a thread in which only the client keeps notes, the turns
+		 * start their notebook. */
+		if (none && kept) {
+			int e = mcp_slot_say(slot, &TEXT("\n\n[askai: you have no notes in this "
+			                                 "thread yet. The client keeps notes in "
+			                                 "it, which notes reads with \"notebook\": "
+			                                 "\"other\".]\n"), 1);
+			if (e)
+				mcp_req_fail(req, e);
+			else
+				mcp_req_notes_then(req, FETCH_RESUME);
+			return;
+		}
 		char why[64 + NOTES_ID];
-		size_t n = mcp_notes_none(c)
+		size_t n = none
 		         ? util_format(why, sizeof why, "Unknown thread: %s.", req->thread)
 		         : util_format(why, sizeof why, "Cannot read the notes of the "
 		                       "thread %s.", req->thread);
-		child_destroy(&slot->child);
 		mcp_slot_result(slot, ESC(why, n), true);
 		return;
 	}
 	req->branch = true;
+	if (kept && mcp_slot_say(slot, &TEXT("\n\n[askai: the client keeps notes in this "
+	                                     "thread too, which notes reads with "
+	                                     "\"notebook\": \"other\".]"), 1)) {
+		child_destroy(&slot->child);
+		mcp_req_fail(req, ENOMEM);
+		return;
+	}
 	mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: the notes you kept in earlier "
 	                                 "calls on this thread, oldest first:]\n\n"));
 }
@@ -5847,7 +5924,8 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 		[FETCH_FULL]    = mcp_slot_notes_compacted,
 	};
 	mcp_slot_unwait(slot);
-	(slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest : steps[slot->fetch])(slot);
+	(slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest
+	                            : steps[slot->fetch & ~FETCH_OTHER])(slot);
 }
 
 /* The message for a file argument that is not a valid name. */
@@ -5858,11 +5936,13 @@ static char const bad_name[] = "The file argument must be a file name of 1 to 25
                                "case and also with spaces or dots after it.";
 
 /* Starts the add action: a note with the file name and the text in
- * @p args.  If the thread has notes, git first checks the name.  Else git
- * first makes the repository of the thread. */
+ * @p args.  If the caller's notebook of the thread has notes, git first
+ * checks the name.  Else git first makes the repository of the notebook,
+ * in a new thread if @p fresh. */
 static void
 mcp_slot_notes_add (struct mcp_slot    *slot,
-                    struct json_object *args)
+                    struct json_object *args,
+                    bool                fresh)
 {
 	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
 	struct mcp_req *req = slot->req;
@@ -5890,7 +5970,7 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	int e = notes_add_file(&req->body, name, name_len, text, len);
 	if (!e && req->branch)
 		e = notes_check_input(&in, name, name_len);
-	else if (!e && slot->role == ROLE_OWN && !(e = notes_id(req->thread)))
+	else if (!e && fresh && !(e = notes_id(req->thread)))
 		notes_repo(req->principal, NOTES_CLIENT, req->thread, req->repo);
 	if (e) {
 		buf_fini(&in);
@@ -5901,10 +5981,12 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, req->branch ? FETCH_CHECK : FETCH_CREATE, &in);
 }
 
-/* Starts the read action for the file name in @p args. */
+/* Starts the read action for the file name in @p args, in the caller's
+ * notebook, or with @p other FETCH_OTHER in the other side's. */
 static void
 mcp_slot_notes_read (struct mcp_slot    *slot,
-                     struct json_object *args)
+                     struct json_object *args,
+                     uint8_t             other)
 {
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
@@ -5914,7 +5996,7 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 		mcp_slot_result(slot, TEXT(bad_name), true);
 		return;
 	}
-	if (!req->branch) {
+	if (!other && !req->branch) {
 		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
 		return;
 	}
@@ -5927,13 +6009,16 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, FETCH_READ, &in);
+	mcp_slot_notes_run(slot, FETCH_READ | other, &in);
 }
 
 /* Starts a call of the notes tool: add a note, list the notes, or read a
  * note.  A call from a turn uses the thread of its ask call.  A client's
- * call names one of the client's threads, or starts a new thread with
- * add. */
+ * call names a thread, or starts a new thread with add.  A list or a read
+ * with the notebook "other" reads the other side's notebook of the thread.
+ * An add writes only to the caller's own notebook, and a client's add to a
+ * thread in which only the other AI keeps notes starts the client's
+ * notebook there. */
 static void
 mcp_slot_notes (struct mcp_slot    *slot,
                 struct json_object *args)
@@ -5941,11 +6026,21 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	struct json_object *action = jb_get(args, "action");
 	struct json_object *thread = jb_get(args, "thread");
+	struct json_object *notebook = jb_get(args, "notebook");
 	bool add = jb_is(action, "add");
 	bool read = jb_is(action, "read");
-	if (!add && !read && !jb_is(action, "list")) {
-		mcp_slot_result(slot, TEXT("The action argument must be add, list or read."),
-		                true);
+	uint8_t other = jb_is(notebook, "other") ? FETCH_OTHER : 0;
+	struct mcp_piece check =
+		!add && !read && !jb_is(action, "list")
+		? TEXT("The action argument must be add, list or read.")
+		: notebook && !other && !jb_is(notebook, "own")
+		? TEXT("The notebook argument must be own or other.")
+		: add && other
+		? TEXT("You can add notes only to your own notebook. The other notebook "
+		       "can only be read.")
+		: (struct mcp_piece){};
+	if (check.ptr) {
+		mcp_slot_result(slot, check, true);
 		return;
 	}
 	if (slot->role == ROLE_OWN) {
@@ -5966,17 +6061,23 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		if (id) {
 			memcpy(req->thread, id, sizeof req->thread);
 			notes_repo(req->principal, NOTES_CLIENT, req->thread, req->repo);
-			req->branch = true;
+			req->branch = !add || notes_exists(req->mcp->st->notes, req->repo);
+		}
+		if (id && !req->branch && !mcp_slot_other_exists(slot)) {
+			char why[32 + NOTES_ID];
+			size_t n = util_format(why, sizeof why, "Unknown thread: %s.", req->thread);
+			mcp_slot_result(slot, ESC(why, n), true);
+			return;
 		}
 	}
 	if (add)
-		mcp_slot_notes_add(slot, args);
+		mcp_slot_notes_add(slot, args, slot->role == ROLE_OWN && !thread);
 	else if (read)
-		mcp_slot_notes_read(slot, args);
-	else if (!req->branch)
+		mcp_slot_notes_read(slot, args, other);
+	else if (!other && !req->branch)
 		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
 	else if (!mcp_slot_offset(slot, args))
-		mcp_slot_notes_run(slot, FETCH_LIST, nullptr);
+		mcp_slot_notes_run(slot, FETCH_LIST | other, nullptr);
 }
 
 /* Do the work of @p step's slot, as its call's kind does. */
@@ -7136,9 +7237,11 @@ mcp_tool_definition (void const *service)
 	if (st->lending.by[LEND_ALWAYS] && jb_set(props, "thread", jb_object(
 		    "type", json_object_new_string("string"),
 		    "description", json_object_new_string(
-			    "Optional: the thread that an earlier answer named, to go on with "
-			    "that work. The other AI keeps notes in a thread as it works, and "
-			    "starts with them."),
+			    "Optional: the thread that an earlier answer named, or that your "
+			    "own notes tool started, to go on with that work. The other AI "
+			    "keeps notes in a thread as it works, and starts with them. You "
+			    "and the other AI can each read the other's notes of the "
+			    "thread."),
 		    nullptr))) {
 		json_object_put(props);
 		props = nullptr;
@@ -7212,21 +7315,32 @@ mcp_notes_schema (enum notes_side side)
 			"note cannot be changed or removed, so add a new note instead. "
 			"When the context fills up, the conversation is compacted to the "
 			"task, a summary, the list of your notes and the start of your "
-			"newest note; read the others when you need them. The notes are yours: the "
-			"client sees that you keep them, not what they say.",
+			"newest note; read the others when you need them. The client can "
+			"read your notes, and can keep notes in this thread too: list and "
+			"read show them with notebook other. You add notes only to your "
+			"own notebook.",
 		[NOTES_CLIENT] =
 			"A notebook that outlasts your context. A note is a file: you "
 			"choose its name, such as plan.md or findings/locks.md, and write "
 			"its text. The notes are in threads. An add without a thread "
 			"starts a new thread and names it. Give that thread to add more "
 			"notes to it, to list them, or to read one. A note cannot be "
-			"changed or removed.",
+			"changed or removed. A thread has two notebooks: yours, and that "
+			"of the other AI that the ask tool asks. An ask call with a "
+			"thread keeps the other AI's notes in it, and its answer names "
+			"the thread. list and read show the other AI's notes with "
+			"notebook other. You add notes only to your own notebook.",
 	};
 	struct json_object *actions = jb_list(json_object_new_string("add"));
 	if (jb_push(actions, json_object_new_string("list")) ||
 	    jb_push(actions, json_object_new_string("read"))) {
 		json_object_put(actions);
 		actions = nullptr;
+	}
+	struct json_object *notebooks = jb_list(json_object_new_string("own"));
+	if (jb_push(notebooks, json_object_new_string("other"))) {
+		json_object_put(notebooks);
+		notebooks = nullptr;
 	}
 	struct json_object *props = jb_object(
 		"action", jb_object(
@@ -7255,6 +7369,18 @@ mcp_notes_schema (enum notes_side side)
 			"description", json_object_new_string(
 				"For list and read: the byte of the output to start from, to "
 				"read on past where it was cut."),
+			nullptr),
+		"notebook", jb_object(
+			"type", json_object_new_string("string"),
+			"enum", notebooks,
+			"description", json_object_new_string(
+				side == NOTES_CLIENT
+				? "For list and read: own, the default, for your notes in the "
+				  "thread, or other for the notes that the other AI keeps in it. "
+				  "add writes only to your own."
+				: "For list and read: own, the default, for your notes, or other "
+				  "for the notes that the client keeps in this thread. add "
+				  "writes only to your own."),
 			nullptr),
 		nullptr);
 	if (side == NOTES_CLIENT && jb_set(props, "thread", jb_object(

@@ -259,6 +259,18 @@ notes_is_dotgit (char const *part,
 	return false;
 }
 
+bool
+notes_exists (struct notes const *notes,
+              char const         *repo)
+{
+	if (!notes || !repo)
+		return false;
+	char path[NOTES_REPO + sizeof "/HEAD"];
+	stpcpy(stpcpy(path, repo + sizeof git_dir - 1), "/HEAD");
+	struct stat st;
+	return !fstatat(notes->fd, path, &st, AT_SYMLINK_NOFOLLOW);
+}
+
 void
 notes_unlock (struct notes const *notes,
               char const         *repo)

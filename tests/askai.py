@@ -6890,8 +6890,9 @@ def check_notes(binary, up):
     of a note from the byte that offset names.  A note is never changed, and
     the names that git refuses are refused.  Of two adds at once, one can
     fail, and its answer asks to add the note again.  A dropped add still
-    adds its note, and a stale lock file of git is removed.  A thread of
-    another identity, or of the upstream, is unknown to a client."""
+    adds its note, and a stale lock file of git is removed.  A client reads
+    the upstream's notebook of a thread and adds only to its own.  A thread
+    of another identity is unknown to a client."""
     def digest(token):
         return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
 
@@ -7002,16 +7003,50 @@ def check_notes(binary, up):
                     ({"action": "remove", "thread": thread},
                      "The action argument must be add, list or read.")):
                 assert call(arguments).startswith("!" + why), (arguments, call(arguments))
-            # A client cannot use a thread of another identity, or a thread of
-            # the upstream with the same id.
-            sh = ["git", "init", "-q", "--bare", f"{notes}/{who}/upstream/{'1' * 32}"]
-            subprocess.run(sh, check=True, env=os.environ | {
-                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
-            for token, other in (("bob-1", thread), ("alice-1", "1" * 32)):
-                for arguments in ({"action": "list"}, {"action": "read", "file": "plan.md"},
-                                  {"action": "add", "file": "z.md", "text": "z"}):
-                    said = call(arguments | {"thread": other}, token)
-                    assert said == f"!Unknown thread: {other}.", (token, arguments, said)
+            # A thread has a notebook of each side under one id.  A client
+            # reads the upstream's notebook of a thread with "notebook":
+            # "other", and adds notes only to its own: its first add to a
+            # thread of the upstream starts its own notebook there.
+            git_env = os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
+                                    "GIT_CONFIG_NOSYSTEM": "1"}
+            shared = "1" * 32
+            book = f"{notes}/{who}/upstream/{shared}"
+            subprocess.run(["git", "init", "-q", "--bare", book], check=True, env=git_env)
+            now = int(time.time())
+            subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
+                           input=(f"commit refs/heads/notes\ncommitter askai <askai> "
+                                  f"{now} +0000\ndata 0\nM 100644 inline found.md\n"
+                                  "data 6\nfound\n\n").encode(), check=True, env=git_env)
+            stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now))
+            assert call({"action": "list", "thread": shared, "notebook": "other"}) == \
+                f"The other AI's notes, oldest first:\n\n1. {stamp}  found.md  (1 line)\n"
+            assert call({"action": "read", "file": "found.md", "thread": shared,
+                         "notebook": "other"}) == "found\n"
+            assert call({"action": "list", "thread": shared}) == \
+                "!You have added no notes to this thread yet."
+            for arguments, why in (
+                    ({"action": "add", "file": "z.md", "text": "z", "notebook": "other"},
+                     "!You can add notes only to your own notebook. The other "
+                     "notebook can only be read."),
+                    ({"action": "list", "notebook": "theirs"},
+                     "!The notebook argument must be own or other.")):
+                assert call(arguments | {"thread": shared}) == why, (arguments, why)
+            assert call({"action": "add", "file": "mine.md", "text": "m",
+                         "thread": shared}) == "Noted."
+            assert shared in os.listdir(f"{notes}/{who}/client")
+            assert "mine.md" in call({"action": "list", "thread": shared})
+            assert "mine.md" not in call({"action": "list", "thread": shared,
+                                          "notebook": "other"})
+            assert call({"action": "list", "thread": thread, "notebook": "other"}) == \
+                "!The other AI keeps no notes in this thread."
+            # A client cannot use a thread of another identity, nor read its
+            # other notebook.
+            for arguments in ({"action": "list"}, {"action": "read", "file": "plan.md"},
+                              {"action": "add", "file": "z.md", "text": "z"}):
+                said = call(arguments | {"thread": thread}, "bob-1")
+                assert said == f"!Unknown thread: {thread}.", (arguments, said)
+            assert call({"action": "list", "thread": shared, "notebook": "other"},
+                        "bob-1") == "!The other AI keeps no notes in this thread."
         # When two adds to one thread run at once, one of them fails, and its
         # answer asks to add the note again.  A git that sleeps before
         # fast-import makes both adds check the same newest note.
@@ -7702,6 +7737,45 @@ def check_turns(binary, up):
                 "[askai: your newest note, long.md:]\n\n" + "L" * shown +
                 f"\n[askai: bytes 0 to {shown} of {size}; read the note with "
                 f"\"offset\": {shown} for the rest.]\n"), prompt(up.requests[count])[-300:]
+
+            # A thread that the client started with its own notes: an ask call
+            # goes on with it, its turns read the client's notebook and start
+            # their own, and the client reads that one.
+            def client_notes(arguments):
+                body = ai.rpc("tools/call", {"name": "notes",
+                                             "arguments": arguments})[2]
+                return text_of(body["result"])
+            said = client_notes({"action": "add", "file": "brief.md", "text": "aim"})
+            mine = re.search(r"new thread ([0-9a-f]{32})", said).group(1)
+            script[:] = [lambda r: (200, turn_stream([
+                ("m", "notes", json.dumps({"action": "list", "notebook": "other"})),
+                ("n", "notes", json.dumps({"action": "read", "file": "brief.md",
+                                           "notebook": "other"})),
+                ("o", "notes", json.dumps({"action": "add", "file": "brief.md",
+                                           "text": "seen", "notebook": "other"})),
+                ("p", "notes", json.dumps({"action": "add", "file": "seen.md",
+                                           "text": "seen"}))]))]
+            count = len(up.requests)
+            result = ai.ask("Go on", thread=mine)
+            assert prompt(up.requests[count]) == "Go on\n\n[askai: you have no notes " \
+                "in this thread yet. The client keeps notes in it, which notes reads " \
+                "with \"notebook\": \"other\".]\n", prompt(up.requests[count])
+            outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
+            assert re.fullmatch(f"The client's notes, oldest first:\n\n1\\. {when}  "
+                                "brief\\.md  \\(1 line\\)\n", outputs[0]), outputs
+            assert outputs[1:] == ["aim", "You can add notes only to your own notebook. "
+                                   "The other notebook can only be read.", "Noted."], \
+                outputs
+            assert f"in the thread {mine}:" in result["content"][1]["text"], result
+            assert "seen.md" in client_notes({"action": "list", "thread": mine,
+                                              "notebook": "other"})
+            count = len(up.requests)
+            ai.ask("Again", thread=mine)
+            assert prompt(up.requests[count]).startswith(
+                "Again\n\n[askai: the client keeps notes in this thread too, which "
+                "notes reads with \"notebook\": \"other\".]\n\n[askai: the notes you "
+                "kept in earlier calls on this thread, oldest first:]"), \
+                prompt(up.requests[count])
 
         # A small context: windows of an eighth of it, a reminder to write
         # notes past half, a warning past two thirds, and once full, the

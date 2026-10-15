@@ -569,7 +569,7 @@ removed: a name that a note or a directory of notes has is refused, as is a
 name with a control character or an empty part.  No part of a name can be `.`,
 `..`, `.git` or `git~1`, in any case and also with spaces or dots after it,
 because git refuses such names.  Slashes at the start of a name are left out.
-The caller sees that notes were kept, and the thread's id, not what they say.
+The answer names the thread, and the client can read its notes (below).
 `ask_ai`'s `thread` argument goes on with a thread in a later call, whose
 prompt then has the list of the thread's notes and the newest note, cut as a
 tool's output in a turn is, with the offset to read on from.  Only the
@@ -583,9 +583,23 @@ wrote all the notes to one repository, `DIR` itself.  `askai` refuses such a
 A role that names `notes` among its `tools` gives its clients notebooks of
 their own, with `--notes` alone.  A client's `add` without a `thread` starts
 a new thread, `DIR/WHO/client/ID`, and the answer names it.  The client gives
-that `thread` to add more notes to it, to list them or to read one.  A client
-cannot open the threads of the model, nor those of other identities.  With
+that `thread` to add more notes to it, to list them or to read one.  With
 `--upstream-tools`, the model gets `notes` whatever the role lists.
+
+A thread has up to two notebooks under one id: the client's,
+`DIR/WHO/client/ID`, and the model's, `DIR/WHO/upstream/ID`.  Each side adds
+notes only to its own notebook, and reads both:
+
+- `list` and `read` take `"notebook": "other"` for the other side's
+  notebook of the thread.  `own` is the default.  An `add` with `other` is
+  refused.
+- A client reads the model's notes of a thread that an `ask_ai` answer
+  named.  Its first `add` to that thread starts its own notebook there.
+- `ask_ai`'s `thread` can also name a thread that the client started with
+  its own `add`.  The turns then start their notebook in it, and the
+  prompt says that the client keeps notes there.
+
+A client cannot open the threads of other identities.
 
 ### Background jobs and timers for clients
 

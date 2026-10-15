@@ -582,9 +582,11 @@ directory itself as one git repository for all notes.  If the directory
 contains `HEAD`, as such a repository does, `askai` refuses it and stops
 with exit status 1.  Clients get `notes` as their role allows.  With
 `upstream-tools`, the turns of every `ask_ai` call get `notes`, and a call
-can continue an earlier thread of notes with its argument `thread`.  The
-directory and the directories above it must pass the rules of section
-[Permissions](#permissions).
+can continue an earlier thread of notes with its argument `thread`.  A
+thread has a notebook of the client and one of the upstream model under one
+id.  Each side adds notes only to its own notebook, and reads the other's
+with `"notebook": "other"`.  The directory and the directories above it
+must pass the rules of section [Permissions](#permissions).
 
 #### `max-turns`
 
