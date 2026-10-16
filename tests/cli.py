@@ -157,14 +157,16 @@ def check_commands(cli, server):
     print("cli commands: regenerate the last turn and clear local history: PASS")
 
 
-def read_until(proc, needle, timeout):
+def read_until(proc, needle, timeout, descriptor=None):
     """Read stdout through needle without waiting for the HTTP response to end."""
+    if descriptor is None:
+        descriptor = proc.stdout.fileno()
     output = b""
     until = time.monotonic() + timeout
     while needle not in output and time.monotonic() < until:
-        ready, _, _ = select.select([proc.stdout], [], [], max(0, until - time.monotonic()))
+        ready, _, _ = select.select([descriptor], [], [], max(0, until - time.monotonic()))
         if ready:
-            chunk = os.read(proc.stdout.fileno(), 65536)
+            chunk = os.read(descriptor, 65536)
             if not chunk:
                 break
             output += chunk
@@ -363,6 +365,37 @@ class Peer:
         self.directory.cleanup()
 
 
+def check_peer_autocomplete_error(cli, unused_server):
+    def reply(request):
+        raise AssertionError(f"autocomplete made a tool call: {request}")
+
+    with Peer(reply) as peer:
+        master, slave = pty.openpty()
+        before = termios.tcgetattr(slave)
+        environment = os.environ | {"TERM": "xterm-256color", "LC_ALL": "C.UTF-8",
+                                    "INPUTRC": os.devnull}
+        proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off"],
+                                stdin=slave, stdout=slave, stderr=slave, env=environment)
+        try:
+            read_until(proc, b"> ", 5, master)
+            # Exercise cli_run's callback, not the console fixture's callback:
+            # malformed pasted UTF-8 makes autocomplete_complete return EINVAL.
+            # Tab must leave editing alive so the user can repair the input.
+            os.write(master, b"\x1b[200~\xff\x1b[201~\t\x15/he\t\r")
+            read_until(proc, b"PgUp/PgDn search history by prefix", 5, master)
+            os.write(master, b"/ex\t\r")
+            assert proc.wait(timeout=5) == 0, proc.returncode
+            assert termios.tcgetattr(slave) == before, "terminal settings were not restored"
+            assert not any(request["method"] == "tools/call" for request in peer.requests), peer.requests
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            os.close(master)
+            os.close(slave)
+    print("cli autocomplete: rejected input preserves editing and subsequent Tab completion: PASS")
+
+
 def check_peer_errors(cli, unused_server):
     cases = [
         (200, "application/json", b'{"broken":', None),
@@ -527,7 +560,7 @@ def main():
         probe.close()
     for check in (check_history, check_input, check_commands, check_stream,
                   check_tools, check_cancel, check_broken_pipe, check_peer_errors, check_peer_stream,
-                  check_peer_catalog, check_peer_catalog_changed):
+                  check_peer_catalog, check_peer_catalog_changed, check_peer_autocomplete_error):
         check(cli, server)
 
 

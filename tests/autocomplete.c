@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "autocomplete-file.h"
@@ -183,6 +184,10 @@ static void autocomplete_files(void)
 	assert(mkdtemp(directory));
 	int fd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	assert(fd >= 0);
+	assert(!symlinkat("missing", fd, "dangling"));
+	assert(!mkdirat(fd, "folder", 0700));
+	assert(!symlinkat("folder", fd, "link-dir"));
+	assert(!symlinkat("normal", fd, "link-file"));
 	static char const *const names[] = {"normal", "bad\xc0\xaf", "bad\xc2\x9b", "bad\x1b[31m"};
 	for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
 		int file = openat(fd, names[i], O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
@@ -195,19 +200,29 @@ static void autocomplete_files(void)
 	assert(length > 0 && length < (int)sizeof line);
 	struct autocomplete_text input = {line, (size_t)length};
 	assert(!autocomplete_file_complete(files, input, input.len, commands, 1, &matches, &count));
-	assert(count == 1);
-	assert(matches[0].line.len == input.len + sizeof("normal") - 1);
-	assert(!memcmp(matches[0].line.data, input.data, input.len));
-	assert(!memcmp(matches[0].line.data + input.len, "normal", sizeof("normal") - 1));
+	static struct autocomplete_text const expected[] = {
+		TEXT("dangling"), TEXT("folder/"), TEXT("link-dir/"), TEXT("link-file"), TEXT("normal"),
+	};
+	assert(count == sizeof expected / sizeof *expected);
+	for (size_t i = 0; i < count; ++i) {
+		assert(matches[i].line.len == input.len + expected[i].len);
+		assert(matches[i].cursor == matches[i].line.len);
+		assert(!memcmp(matches[i].line.data, input.data, input.len));
+		assert(!memcmp(matches[i].line.data + input.len, expected[i].data, expected[i].len));
+	}
 	autocomplete_count_allocations = true;
 	for (size_t i = 0; i < 128; ++i) {
 		assert(!autocomplete_file_complete(files, input, input.len, commands, 1, &matches, &count));
-		assert(count == 1);
+		assert(count == sizeof expected / sizeof *expected);
 	}
 	autocomplete_count_allocations = false;
 	assert(!autocomplete_allocations && !autocomplete_frees);
 	for (size_t i = 0; i < sizeof names / sizeof *names; ++i)
 		assert(!unlinkat(fd, names[i], 0));
+	assert(!unlinkat(fd, "dangling", 0));
+	assert(!unlinkat(fd, "link-dir", 0));
+	assert(!unlinkat(fd, "link-file", 0));
+	assert(!unlinkat(fd, "folder", AT_REMOVEDIR));
 	assert(!close(fd));
 	fd = -1;
 	assert(!rmdir(directory));

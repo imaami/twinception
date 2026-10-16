@@ -75,28 +75,33 @@ check-cli: $Otests/cli-input $Otests/autocomplete | askai-cli askai
 # Readline and the completion catalog are tested without a server so these
 # checks also run where Unix sockets are prohibited. Keep their objects separate.
 override CLI_FLAGS := -std=gnu++17 -O2 -g -Wall -Wextra -Wpedantic -I$(SRC_DIR)
-override CLI_INCLUDES = $(shell $(PKG_CONFIG) --cflags readline json-c)
-override CLI_LIBS = $(shell $(PKG_CONFIG) --libs readline json-c)
+# Query each set of flags once, only when a recipe needs it, and fail there.
+override test-pkg-config = $(eval override $1 := $(shell $(PKG_CONFIG) $2))\
+                          $(if $(filter-out 0,$(.SHELLSTATUS)),$(error $(PKG_CONFIG) $2 failed for $@))$($1)
+override CLI_INCLUDES = $(call test-pkg-config,CLI_INCLUDES,--cflags readline)
+override CLI_LIBS = $(call test-pkg-config,CLI_LIBS,--libs readline)
+override JSON_INCLUDES = $(call test-pkg-config,JSON_INCLUDES,--cflags json-c)
+override JSON_LIBS = $(call test-pkg-config,JSON_LIBS,--libs json-c)
 override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete-fixture.c.o \
                                  $Otests/src/autocomplete.c.o $Otests/src/dstr.c.o $Otests/src/jb.c.o
 override AUTOCOMPLETE_WRAPS := -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 
 $Otests/cli-input: $Otests/cli-input.cpp.o $Otests/src/cli-console.cpp.o \
                    $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
-	$(CXX) $(CLI_FLAGS) $(CXXFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS)
+	$(CXX) $(CLI_FLAGS) $(CXXFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS)
 
 $Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
-	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) $(AUTOCOMPLETE_WRAPS) -o "$@" $^ $(CLI_LIBS) -lm
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) $(AUTOCOMPLETE_WRAPS) -o "$@" $^ $(JSON_LIBS) -lm
 
 $Otests/autocomplete.c.o $Otests/autocomplete-fixture.c.o \
 $Otests/src/autocomplete.c.o $Otests/src/autocomplete-file.c.o \
-$Otests/src/jb.c.o: CPPFLAGS += $(shell $(PKG_CONFIG) --cflags json-c)
+$Otests/src/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 $Otests/%.cpp.o: $(TEST_DIR)%.cpp | $Otests
-	$(CXX) $(CLI_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CLI_INCLUDES) -MMD -c -o "$@" "$<"
+	$(CXX) $(CLI_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CLI_INCLUDES) $(JSON_INCLUDES) -MMD -c -o "$@" "$<"
 
 $Otests/src/%.cpp.o: $(SRC_DIR)%.cpp | $Otests/src
-	$(CXX) $(CLI_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CLI_INCLUDES) -MMD -c -o "$@" "$<"
+	$(CXX) $(CLI_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CLI_INCLUDES) $(JSON_INCLUDES) -MMD -c -o "$@" "$<"
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf

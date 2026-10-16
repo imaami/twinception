@@ -69,6 +69,7 @@
  * event stream is its last event.
  */
 #define _GNU_SOURCE /* memrchr() */
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <json-c/printbuf.h>
@@ -2039,8 +2040,9 @@ mcp_req_notify (struct mcp_req *req,
 	req->next_note = value + 1;
 }
 
-/* A journal callback names the request by its generation-checked job handle;
- * cancellation invalidates it before the request can be reused. */
+/* A journal callback names the request by its generation-checked job handle.
+ * Home withholds DONE until DRAIN, which waits for this callback; cancellation
+ * invalidates the handle before the request can be reused. */
 struct mcp_delta_wait {
 	struct handle call;
 };
@@ -2414,6 +2416,8 @@ mcp_req_log_turn (struct mcp_req const *req,
 static void
 mcp_req_job_done (struct mcp_req *req)
 {
+	/* Waking the request invalidates the delta journal callback's handle. */
+	assert(!req->delta_saving);
 	struct job *job = req->job;
 	req->archive_error = journal_error(req->mcp->st->journal);
 	struct span why = buf_peek(&job->result);

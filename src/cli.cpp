@@ -974,13 +974,15 @@ int cli_run(const cli_options &options)
 	cli_check(error);
 	cli_console::set_completion_callback([&client, &files](std::string_view line, size_t cursor) {
 		cli_console::completion_matches matches;
-		cli_check(autocomplete_complete(client.catalog.get(), cli_span(line), cursor, &matches.data, &matches.size));
-		if (!matches.size) {
+		int e = autocomplete_complete(client.catalog.get(), cli_span(line), cursor, &matches.data, &matches.size);
+		if (!e && !matches.size) {
 			constexpr autocomplete_text commands[] = {{"/read ", sizeof "/read " - 1}};
-			cli_check(autocomplete_file_complete(files.get(), cli_span(line), cursor, commands,
-			                                     sizeof commands / sizeof commands[0], &matches.data, &matches.size));
+			e = autocomplete_file_complete(files.get(), cli_span(line), cursor, commands,
+			                               sizeof commands / sizeof commands[0], &matches.data, &matches.size);
 		}
-		return matches;
+		if (e == ENOMEM)
+			throw std::bad_alloc();
+		return e ? cli_console::completion_matches{} : matches;
 	});
 	if (tty)
 		cli_ui::show_info("Connected to " + client.tool + ". /help lists commands; Ctrl-C cancels an answer.");

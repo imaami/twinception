@@ -240,9 +240,7 @@ autocomplete_file_complete (struct autocomplete_file *const file,
 			bool is_directory = entry->d_type == DT_DIR;
 			if (entry->d_type == DT_UNKNOWN || entry->d_type == DT_LNK) {
 				struct stat info;
-				if (fstatat(dirfd(dir), entry->d_name, &info, 0))
-					continue;
-				is_directory = S_ISDIR(info.st_mode);
+				is_directory = !fstatat(dirfd(dir), entry->d_name, &info, 0) && S_ISDIR(info.st_mode);
 			}
 			if (slash && !is_directory)
 				continue;

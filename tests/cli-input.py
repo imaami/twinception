@@ -130,7 +130,7 @@ class Console:
             self.process.send_signal(signum)
         else:
             self.send(b"\x04")
-        expected = b"STOP " + str(signum).encode().hex().encode() if signum else b"EOF"
+        expected = b"STOP " + str(int(signum)).encode().hex().encode() if signum else b"EOF"
         assert self.record() == expected, (self.pending, self.output)
         status = self.process.wait(timeout=5)
         self.pump(0)
