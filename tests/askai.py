@@ -1851,6 +1851,37 @@ def check_background(binary, up):
             assert text_of(ai.ask()) == "A"
             assert "background" not in up.last()["body"], up.last()
 
+        # Gemini requires storage for a background interaction.  Preserve
+        # explicit --extra overrides, even those the provider will reject;
+        # null removes the key and lets Gemini's true default apply.
+        storage_error = "store=true is required for background interactions."
+        def interactions_reply(request):
+            body = request["body"]
+            if body.get("background") and body.get("store", True) is not True:
+                return 400, {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                                        "message": storage_error}}
+            return 200, ANSWERS["interactions"]
+        up.reply = interactions_reply
+        for background, extra in ((False, {}), (True, {}), (True, {"store": True}),
+                                   (True, {"store": False}), (True, {"store": None})):
+            options = ("--background",) if background else ()
+            if extra:
+                options += ("--extra", json.dumps(extra))
+            with Askai(binary, "-u", up.url("/v1beta/interactions"), "-p", "google",
+                       "--api", "interactions", *options) as ai:
+                result = poll(ai, start(ai)) if background else ai.ask()
+                if extra.get("store") is False:
+                    assert result.get("isError") and storage_error in text_of(result), result
+                else:
+                    assert not result.get("isError") and text_of(result) == "A", result
+                body = up.last()["body"]
+                assert body["stream"] is True, body
+                assert body.get("background", False) is background, body
+                if extra.get("store", True) is None:
+                    assert "store" not in body, body
+                else:
+                    assert body["store"] is extra.get("store", background), body
+
         # Each call closes its connection before any provider delta is
         # released.  Both jobs must reach the provider while both gates are
         # closed, then finish independently, including out of order.
@@ -1879,7 +1910,7 @@ def check_background(binary, up):
                         assert "background" not in request["body"], request
                     else:
                         assert request["body"]["background"] is True and \
-                            request["body"]["store"] is False, request
+                            request["body"]["store"] is (fmt == "interactions"), request
                 for jid in (first, second):
                     result = call(ai, {"job": jid})
                     assert not result.get("isError") and text_of(result) == pending, result

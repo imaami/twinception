@@ -414,10 +414,14 @@ per owner and results retained for up to an hour, subject to the memory
 and record limits.  Restarting AskAI loses these jobs and results.
 
 For OpenAI Responses and Gemini Interactions, AskAI sends both
-`"background": true` and `"stream": true`.  It retains the existing
-`"store": false` default; `--extra` can change `store`, but cannot disable
-these two flags in this mode.  An explicitly selected `responses` or
-`interactions` API with a URL and no provider uses the same native behavior.
+`"background": true` and `"stream": true`.  Native Gemini background
+requests default to `"store": true`, which the provider requires for
+background interactions.  OpenAI Responses and synchronous Gemini
+requests keep the `"store": false` default.  `--extra` can change `store`,
+but cannot disable `background` or `stream` in this mode; explicitly
+forcing `"store": false` can cause Gemini to reject the request.
+An explicitly selected `responses` or `interactions` API with a URL and no
+provider uses the same native behavior.
 Other provider/API combinations, including a named `llama` provider, keep
 the stream locally without adding an unsupported `background` field.
 

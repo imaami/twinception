@@ -207,8 +207,9 @@ ai_interactions_input (struct json_object *text)
 	                 "content", jb_list(content), nullptr);
 }
 
-/* The request body of Gemini's Interactions.  stream is set after --extra
- * is merged, so that the answer is always streamed. */
+/* The request body of Gemini's Interactions. Native background execution
+ * needs storage; --extra can still override that default. stream is set
+ * after --extra is merged, so that the answer is always streamed. */
 static int
 ai_request_interactions (struct ai_endpoint const *ep,
                          struct json_object       *root,
@@ -220,7 +221,7 @@ ai_request_interactions (struct ai_endpoint const *ep,
 	    jb_set(root, "input", jb_list(ai_interactions_input(prompt))) ||
 	    (system && jb_set(root, "system_instruction", json_object_get(system))) ||
 	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
-	    jb_set(root, "store", json_object_new_boolean(0)) ||
+	    jb_set(root, "store", json_object_new_boolean(ai_background(ep))) ||
 	    ai_request_common(ep, root, "generation_config", "max_output_tokens",
 	                      ep->max_tokens) ||
 	    (ai_background(ep) && jb_set(root, "background", json_object_new_boolean(1))))

@@ -523,7 +523,11 @@ OpenAI Responses and Gemini Interactions also receive
 `"background": true`, while other named provider/API combinations use
 local detachment only.  Selecting `responses` or `interactions` with a URL
 and no provider requests native background execution too.  Streaming stays
-enabled.  The `store` default remains `false`; `extra` may override it.
+enabled.  Native Gemini background requests default to `"store": true`,
+which the provider requires for background interactions.  OpenAI Responses
+and synchronous Gemini requests keep the `"store": false` default.
+`extra` may override `store`; explicitly forcing it to `false` can cause
+Gemini to reject a background request.
 Changing `background` needs a restart.  See
 [Asking without keeping the client connected](../README.md#asking-without-keeping-the-client-connected)
 for the protocol, retention and cancellation details.
