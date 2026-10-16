@@ -309,6 +309,12 @@ notes_directory (struct notes const *notes)
 	return notes->directory;
 }
 
+char const *
+notes_writer (struct notes const *notes)
+{
+	return notes->participant;
+}
+
 int
 notes_id (char id[NOTES_ID + 1])
 {

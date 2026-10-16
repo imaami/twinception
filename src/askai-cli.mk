@@ -1,5 +1,6 @@
 override SRC_askai-cli := \
   chat.cpp                \
+  chat-completion.cpp     \
   chat-console.cpp
 
 override LIB_askai-cli := \

@@ -7,7 +7,7 @@ its notes and transcripts. The client
 contains no model loader, tokenizer, sampler, local inference engine, or
 llama-server dependency.
 
-## Build and install
+## Build
 
 The client needs a C++17 compiler, libcurl with Unix-socket support, json-c,
 GNU Readline, and their development packages (`libreadline-dev` on Debian
@@ -16,16 +16,10 @@ and Ubuntu). From the repository root:
 ```sh
 make askai-cli
 build/askai-cli --help
-make install-askai-cli PREFIX="$HOME/.local"
 ```
 
 `make askai-cli` builds only the client. `make` also builds AskAI and the
-other programs. The targeted installer defaults to `/usr/local/bin`, accepts
-`PREFIX`, `BINDIR`, and `DESTDIR`, and installs only `askai-cli`. To remove it:
-
-```sh
-make uninstall-askai-cli PREFIX="$HOME/.local"
-```
+other programs. Run the resulting `build/askai-cli` executable directly.
 
 The client links libcurl, json-c, GNU Readline, and the C++ runtime. It does
 not link libllama, ggml, or any inference backend.
@@ -80,6 +74,10 @@ transcripts use the server's configured repositories and participant.
 | `/clear` | Clear the client's conversation history. |
 | `/regen` | Replace the last successful answer after a new answer succeeds. |
 | `/read PATH` | Read a UTF-8 prompt from a file. |
+| `/tools [NAME]` | List accessible tools, or show a tool's description and input schema. |
+| `/tool NAME key=VALUE ...` | Call a tool directly; a JSON object is also accepted. |
+| `/names` | List cached known session participants. |
+| `/refresh` | Refresh the accessible tools and shared-notebook participants. |
 | `/help` | Show commands. |
 | `/exit` | Leave the client. |
 
@@ -97,7 +95,7 @@ default:
 | Ctrl-W / Alt-D | Cut the preceding/following word. |
 | Ctrl-Y | Paste the last cut text. |
 | Alt-. | Insert the last argument from the previous history entry. |
-| Tab | Complete commands and file paths. |
+| Tab | Complete commands, paths, tools, parameters, values and participant names. |
 
 For example, type `Explain` and press PgUp to recall earlier prompts with
 that prefix, skipping unrelated entries. Input history is kept in memory
@@ -137,6 +135,60 @@ History also counts toward the server's `--max-body` and `--max-values`
 request limits. For longer conversations, increase those limits in the
 server configuration (for example `--max-values 8192`), or use `/clear`.
 The history API accepts at most 1024 earlier messages.
+
+## Tools and participant completion
+
+Tool completion uses the definitions returned by `tools/list`, including
+the access restrictions of the current connection. For example:
+
+```text
+/tools
+/tools notes
+/tool notes action=list
+/tool notes action=add file=plan.md text='Investigate the stalled request.'
+/tool notes {"action":"read","file":"plan.md"}
+```
+
+After `/tool `, Tab completes tool names. After the name it completes
+top-level parameter names as `name=`, omitting parameters already supplied.
+After `=`, it completes schema enum and constant values, booleans, known
+participant names for `participant`, `recipient` and `author`, and discovered
+selectors for `notebook`. `/tools ` also completes tool names. Completion
+preserves the other arguments when editing in the middle of a line.
+
+The `key=VALUE` form accepts single or double quotes and backslash escaping;
+it performs no shell expansion or execution. String parameters remain
+strings, while numbers, booleans, arrays and objects use JSON syntax. For
+example, `enabled=true`, `limit=20` and `options='["--stat"]'` supply typed
+values when those types appear in the schema. Use the full JSON-object form
+for complex arguments. The shorthand checks required parameters and basic
+types; full JSON objects go to the server for validation. For a string/null
+union, unquoted `null` is JSON null and quoted `'null'` is a string. Direct
+tool calls and their results do not enter the conversation sent to the model.
+
+The participant list comes from the shared notes repository. The client
+reads the notes tool's notebook selectors and deduplicates their participant
+component; principal hashes and the `client`/`upstream` sides are not names.
+The server also advertises its own configured participant before it has
+written a note. These are known contributors, not an online-presence roster.
+Without access to the notes tool there is no participant discovery. Older
+AskAI servers can supply contributors through their existing `notebooks`
+action, but cannot advertise themselves before their first note.
+
+At the start of a prompt, typing `ali` and pressing Tab can produce
+`alice: `; `@ali` completes to `@alice ` anywhere in the prompt. These are
+text completions, not message routing. `/names` displays the cached list;
+use `/refresh` to pick up another instance's newly written notes.
+
+Discovery runs at connection time and on `/refresh`. A server's
+`notifications/tools/list_changed` triggers a refresh before the next prompt.
+Each connection owns its completion data; pressing Tab never makes an MCP
+request. File completion still reads the local filesystem.
+
+Tool calls and progress use IRC-style action lines, for example
+`* you call notes` and `* ask_ai turn 1, calling git`. Reasoning remains in
+the current transcript. Multiple connections, IRC-style windows and private
+thought-stream tabs are future UI work.
 
 ## Initial prompts and scripts
 

@@ -247,8 +247,8 @@ def check_cancel(cli, server):
                                         stdout=slave, stderr=slave)
                 try:
                     assert upstream.arrived.wait(5), "client did not submit a prompt"
-                    assert not termios.tcgetattr(slave)[3] & termios.ICANON, \
-                        "interactive terminal mode was not active"
+                    assert termios.tcgetattr(slave) == before, \
+                        "Readline changed terminal settings while no prompt was active"
                     proc.send_signal(signum)
                     status = proc.wait(timeout=5)
                     assert status == 128 + signum, (signum, status)
@@ -300,7 +300,7 @@ class UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 class Peer:
     """An HTTP MCP peer for errors and SSE fragmentation, bound only to Unix."""
 
-    def __init__(self, reply):
+    def __init__(self, reply, method_reply=None):
         self.directory = tempfile.TemporaryDirectory(prefix="askai-chat-peer-")
         self.socket = self.directory.name + "/mcp.sock"
         self.requests = []
@@ -317,7 +317,10 @@ class Peer:
                 peer.requests.append(request)
                 method = request.get("method")
                 status, kind, body = 200, "application/json", None
-                if method == "initialize":
+                custom = method_reply(request) if method_reply else None
+                if custom is not None:
+                    status, kind, body = custom
+                elif method == "initialize":
                     body = {"result": {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
                                        "serverInfo": {"name": "test", "version": "1"}}}
                 elif method == "tools/list":
@@ -406,6 +409,108 @@ def check_peer_stream(cli, unused_server):
     print("chat SSE: fragmented CRLF/UTF-8, hidden reasoning and trace: PASS")
 
 
+def check_peer_catalog(cli, unused_server):
+    generation = 0
+    ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
+        "type": "object", "properties": {"prompt": {"type": "string"},
+        "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
+    git = {"name": "git", "description": "Read repository history", "inputSchema": {
+        "type": "object", "additionalProperties": False, "properties": {
+            "command": {"type": "string", "enum": ["log", "status"]},
+            "count": {"type": "integer"}, "recursive": {"type": "boolean"},
+            "message": {"type": "string"}}}}
+    notes = {"name": "notebook_service", "_meta": {"askai": {
+        "participant": "self", "notebooks": True}}, "inputSchema": {
+            "type": "object", "properties": {"action": {"enum": ["notebooks"]}}}}
+    lookup = {"name": "lookup", "inputSchema": {"type": "object", "properties": {
+        "query": {"type": "string"}}}}
+
+    def result(value):
+        return 200, "application/json", {"result": value}
+
+    def methods(request):
+        nonlocal generation
+        if request["method"] != "tools/list":
+            return None
+        cursor = request.get("params", {}).get("cursor")
+        if cursor is None:
+            generation += 1
+            return result({"tools": [ask], "nextCursor": "remaining"})
+        assert cursor == "remaining", request
+        return result({"tools": [git, notes] + ([lookup] if generation > 1 else [])})
+
+    def reply(request):
+        params = request["params"]
+        name = params["name"]
+        if name == "notebook_service":
+            assert params["arguments"] == {"action": "notebooks"}, request
+            names = ("alice/anonymous/client\nbob/0123456789abcdef/upstream\n"
+                     "alice/anonymous/upstream\nmalformed line\n"
+                     "bad/invalid/client\ntruncated/anonymous/clien") if generation == 1 else \
+                    "carol/anonymous/client\n"
+            return result({"content": [{"type": "text", "text": names}]})
+        if name == "git":
+            assert params["arguments"] == {"command": "log", "count": 2,
+                                            "recursive": True, "message": "hello world"}, request
+            token = params["_meta"]["progressToken"]
+            events = [
+                (None, {"jsonrpc": "2.0", "method": "notifications/progress", "params": {
+                    "progressToken": "other", "progress": 1, "message": "WRONG-PROGRESS"}}),
+                (None, {"jsonrpc": "2.0", "method": "notifications/progress", "params": {
+                    "progressToken": token, "progress": 1, "message": "reading history"}}),
+                (None, {"jsonrpc": "2.0", "id": request["id"], "result": {
+                    "content": [{"type": "text", "text": "TOOL-RESULT"}]}}),
+            ]
+            return 200, "text/event-stream", sse_wire(events)
+        if name == "lookup":
+            assert params["arguments"] == {"query": "latest"}, request
+            return result({"content": [{"type": "text", "text": "REFRESHED-TOOL"}]})
+        assert name == "ask_ai", request
+        assert params["arguments"]["messages"] == [], request
+        assert params["arguments"]["prompt"] == "Q\n", request
+        return result({"content": [{"type": "text", "text": "CHAT-RESULT"}]})
+
+    entered = ("/tools git\n/names\n"
+               "/tool git command=log count=2 recursive=true message='hello world'\n"
+               "Q\n/refresh\n/names\n/tools\n/tool lookup query=latest\n/exit\n")
+    with Peer(reply, methods) as peer:
+        output = succeeded(run(cli, peer.socket, text=entered))
+        for marker in ("TOOL-RESULT", "CHAT-RESULT", "REFRESHED-TOOL", "alice", "bob", "carol", "self"):
+            assert marker in output, (marker, output)
+        assert "malformed" not in output and "truncated" not in output, output
+        assert "* you call git" in output and "* git reading history" in output, output
+        assert "* git completed" in output and "WRONG-PROGRESS" not in output, output
+        calls = [request["params"]["name"] for request in peer.requests
+                 if request["method"] == "tools/call"]
+        assert calls == ["notebook_service", "git", "ask_ai", "notebook_service", "lookup"], calls
+        assert generation == 2, (generation, peer.requests)
+    print("chat catalog: paginated tools, typed invocation, notes participants and refresh: PASS")
+
+
+def check_peer_catalog_changed(cli, unused_server):
+    lists = 0
+
+    def methods(request):
+        nonlocal lists
+        if request["method"] == "tools/list":
+            lists += 1
+        return None
+
+    def reply(request):
+        events = [
+            (None, {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+            (None, {"jsonrpc": "2.0", "id": request["id"], "result": {
+                "content": [{"type": "text", "text": "changed"}]}}),
+        ]
+        return 200, "text/event-stream", sse_wire(events)
+
+    with Peer(reply, methods) as peer:
+        output = succeeded(run(cli, peer.socket, text="Q\n/exit\n"))
+        assert "changed" in output, output
+        assert lists == 2, (lists, peer.requests)
+    print("chat catalog: tools/list_changed refreshes before the next prompt: PASS")
+
+
 def main():
     if len(sys.argv) != 3:
         raise SystemExit("usage: chat.py ASKAI-CLI ASKAI")
@@ -421,7 +526,8 @@ def main():
     else:
         probe.close()
     for check in (check_history, check_input, check_commands, check_stream,
-                  check_tools, check_cancel, check_broken_pipe, check_peer_errors, check_peer_stream):
+                  check_tools, check_cancel, check_broken_pipe, check_peer_errors, check_peer_stream,
+                  check_peer_catalog, check_peer_catalog_changed):
         check(cli, server)
 
 

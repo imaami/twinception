@@ -168,6 +168,9 @@ def check_editing(binary):
         console.line(b"/read path\t\r", "/read path with space.txt\n")
         (console.root / "documents").mkdir()
         console.line(b"/read doc\tchild\r", "/read documents/child\n")
+        (console.root / "story.txt").write_text("fixture")
+        console.line(b"/read stale.txt" + LEFT * 7 + b"\t\r", "/read story.txt\n")
+        console.line(b"/read docstale/child" + LEFT * 11 + b"\t\r", "/read documents/child\n")
         console.finish()
     print("chat input editing: UTF-8, wrapping/resize, word erase and Tab: PASS")
 
@@ -190,6 +193,34 @@ def check_multiline(binary):
         console.line(UP + b"/\r", "first\nsecond\n")
         console.finish()
     print("chat input multiline: continuation, paste, explicit submit and whole-prompt recall: PASS")
+
+
+def check_catalog(binary):
+    with Console(binary, "--catalog") as console:
+        console.line(b"/tool gi\tcommand=lo\t\r", "/tool git command=log \n")
+        console.line(b"/tool git rec\tt\t\r", "/tool git recursive=true \n")
+        console.line(b"/tool git participant=al\t\r", "/tool git participant=alice \n")
+        console.line(b"al\thello\r", "alice: hello\n")
+        console.line(b"hello @al\tthere\r", "hello @alice there\n")
+        console.line(b"hello @al, next" + LEFT * 6 + b"\t\r", "hello @alice, next\n")
+        console.line(b"al: hi" + LEFT * 4 + b"\t\r", "alice: hi\n")
+        console.line("ä\t".encode() + b"hello\r", "äiti: hello\n")
+        # Completing within a token replaces its stale tail, preserving later
+        # arguments. Readline must honor both candidate text and cursor.
+        original = b"/tool git command=stale count=2"
+        console.line(original + LEFT * 10 + b"\t\r", "/tool git command=status count=2\n")
+        console.line(original + LEFT * 10 + b"\t\x1f\r", original.decode() + "\n")
+        console.line(b"/tool absent\t\r", "/tool absent\n")
+        console.finish()
+    with Console(binary, "--catalog", inputrc='"\\C-t": possible-completions\n') as console:
+        console.line(original + LEFT * 10 + b"\x14\r", original.decode() + "\n")
+        console.line(b"/unknown\t\x15" + original + LEFT * 10 + b"\x14\r",
+                     original.decode() + "\n")
+        console.finish()
+    with Console(binary, "--catalog", inputrc='"\\C-t": menu-complete\n') as console:
+        console.line(b"/tool git command=\x14\x14\r", "/tool git command=status \n")
+        console.finish()
+    print("chat input completion: MCP tools, typed arguments, names and token replacement: PASS")
 
 
 def check_inputrc(binary):
@@ -253,7 +284,7 @@ def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: chat-input.py CHAT-INPUT-HARNESS")
     binary = os.path.abspath(sys.argv[1])
-    for check in (check_history, check_editing, check_multiline, check_inputrc,
+    for check in (check_history, check_editing, check_multiline, check_catalog, check_inputrc,
                   check_signals, check_simple):
         check(binary)
 

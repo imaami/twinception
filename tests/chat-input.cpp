@@ -9,6 +9,7 @@
 #include <string_view>
 #include <unistd.h>
 
+#include "chat-completion-fixture.h"
 #include "chat-console.h"
 #include "chat-ui.h"
 
@@ -58,13 +59,15 @@ int main(int argc, char **argv)
 	auto parsed = std::from_chars(descriptor.data(), descriptor.data() + descriptor.size(), records);
 	if (parsed.ec != std::errc{} || parsed.ptr != descriptor.data() + descriptor.size() || records < 0)
 		return 2;
-	bool simple = false, multiline = false;
+	bool simple = false, multiline = false, completion = false;
 	for (int i = 2; i < argc; ++i) {
 		std::string_view option(argv[i]);
 		if (option == "--simple")
 			simple = true;
 		else if (option == "--multiline")
 			multiline = true;
+		else if (option == "--catalog")
+			completion = true;
 		else
 			return 2;
 	}
@@ -82,7 +85,15 @@ int main(int argc, char **argv)
 		chat_console::terminal terminal(simple, false, &chat_input_stop, error, wake[0]);
 		if (error)
 			return 1;
-		chat_ui::install_completion({"/help", "/clear", "/regen", "/read ", "/exit"}, {"/read "});
+		chat_completion::catalog catalog;
+		if (completion) {
+			chat_completion_fixture(catalog);
+			chat_console::set_completion_callback([&catalog](std::string_view line, size_t cursor) {
+				return catalog.complete(line, cursor);
+			});
+		} else {
+			chat_ui::install_completion({"/help", "/clear", "/regen", "/read ", "/exit"}, {"/read "});
+		}
 		for (;;) {
 			std::string text;
 			bool eof = false;

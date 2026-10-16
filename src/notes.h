@@ -97,6 +97,10 @@ notes_env (struct notes const *notes);
 extern char const *
 notes_directory (struct notes const *notes);
 
+/** The configured writer identity, shared by this instance's notebooks. */
+extern char const *
+notes_writer (struct notes const *notes);
+
 /** Writes the id of a new thread, 128 random bits as hexadecimal digits,
  *  to @p id, with a NUL after it.  Returns 0, or the error number if the
  *  kernel gave no random bits. */

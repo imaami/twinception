@@ -23,6 +23,7 @@
 #include <curl/curl.h>
 #include <json-c/json.h>
 
+#include "chat-completion.h"
 #include "chat-console.h"
 #include "chat-ui.h"
 
@@ -302,6 +303,8 @@ struct chat_client {
 	chat_signals &signals;
 	std::string socket, session, tool;
 	int64_t next_id = 0;
+	chat_completion::catalog catalog;
+	bool catalog_dirty = false;
 
 	void post(const std::string &wire, chat_response &response, bool interruptible = true,
 	          long timeout = 0)
@@ -427,8 +430,13 @@ struct chat_client {
 				    json_object_get_int64(event_id) != id || result)
 					throw std::runtime_error("Unexpected JSON-RPC response id");
 				result.reset(json_object_get(event));
-			} else if (notify)
-				notify(event, id);
+			} else {
+				json_object *method = chat_get(event, "method");
+				if (method && chat_text(method) == "notifications/tools/list_changed")
+					catalog_dirty = true;
+				if (notify)
+					notify(event, id);
+			}
 		};
 		try {
 			post(chat_wire(message.get()), response, true, !std::strcmp(method, "tools/call") ? 0 : 30);
@@ -468,9 +476,18 @@ struct chat_client {
 		auto ready = packet("notifications/initialized", chat_owned(json_object_new_object()), 0);
 		chat_response response;
 		post(chat_wire(ready.get()), response, true, 30);
+		refresh();
+	}
+
+	void refresh()
+	{
+		catalog_dirty = false;
+		chat_completion::catalog discovered;
+		std::vector<std::string> participants, notebooks;
+		std::string notebook_tool;
 		std::string cursor, chosen;
 		for (unsigned page = 0; page < 32; ++page) {
-			params = chat_owned(json_object_new_object());
+			auto params = chat_owned(json_object_new_object());
 			if (!cursor.empty())
 				chat_set(params.get(), "cursor", chat_string(cursor));
 			auto result = rpc("tools/list", std::move(params));
@@ -480,8 +497,29 @@ struct chat_client {
 			size_t count = json_object_array_length(tools);
 			for (size_t i = 0; i < count; ++i) {
 				json_object *entry = json_object_array_get_idx(tools, i);
+				discovered.add_tool(entry);
 				std::string name = chat_text(chat_get(entry, "name"));
 				json_object *props = chat_get(chat_get(entry, "inputSchema"), "properties");
+				json_object *meta = chat_get(chat_get(entry, "_meta"), "askai");
+				json_object *books = chat_get(meta, "notebooks");
+				bool note_source = json_object_is_type(books, json_type_boolean) &&
+				                   json_object_get_boolean(books);
+				// Older AskAI servers have the same read-only discovery action.
+				json_object *actions = chat_get(chat_get(props, "action"), "enum");
+				if (!meta && name == "notes" && chat_get(props, "notebook") &&
+				    json_object_is_type(actions, json_type_array)) {
+					for (size_t a = 0; a < json_object_array_length(actions); ++a) {
+						json_object *action = json_object_array_get_idx(actions, a);
+						if (json_object_is_type(action, json_type_string) && chat_text(action) == "notebooks")
+							note_source = true;
+					}
+				}
+				if (note_source && notebook_tool.empty()) {
+					notebook_tool = name;
+					json_object *self = chat_get(meta, "participant");
+					if (json_object_is_type(self, json_type_string))
+						participants.push_back(chat_text(self));
+				}
 				json_object *title = chat_get(entry, "title");
 				bool candidate = !tool.empty() ? name == tool
 				               : title && chat_text(title) == "Ask AI";
@@ -499,6 +537,34 @@ struct chat_client {
 				if (chosen.empty())
 					throw std::runtime_error("No accessible AskAI chat tool was found");
 				tool = chosen;
+				if (!notebook_tool.empty()) {
+					try {
+						auto args = chat_owned(json_object_new_object());
+						chat_set(args.get(), "action", chat_string("notebooks"));
+						auto call = chat_owned(json_object_new_object());
+						chat_set(call.get(), "name", chat_string(notebook_tool));
+						chat_set(call.get(), "arguments", std::move(args));
+						auto listing = rpc("tools/call", std::move(call));
+						if (json_object_get_boolean(chat_get(listing.get(), "isError")))
+							throw std::runtime_error("The notes tool rejected notebook discovery");
+						json_object *content = chat_get(listing.get(), "content");
+						if (!json_object_is_type(content, json_type_array))
+							throw std::runtime_error("Invalid notebook discovery result");
+						for (size_t b = 0; b < json_object_array_length(content); ++b) {
+							json_object *block = json_object_array_get_idx(content, b);
+							json_object *type = chat_get(block, "type");
+							if (json_object_is_type(type, json_type_string) && chat_text(type) == "text")
+								read_notebooks(chat_text(chat_get(block, "text")), participants, notebooks);
+						}
+					} catch (const chat_interrupted &) {
+						throw;
+					} catch (const std::exception &e) {
+						chat_ui::show_error("Participant discovery failed", e.what());
+					}
+				}
+				discovered.set_participants(std::move(participants));
+				discovered.set_notebooks(std::move(notebooks));
+				catalog = std::move(discovered);
 				return;
 			}
 			std::string after = chat_text(next);
@@ -507,6 +573,35 @@ struct chat_client {
 			cursor = std::move(after);
 		}
 		throw std::runtime_error("Too many tool-list pages");
+	}
+
+	static void read_notebooks(std::string_view text, std::vector<std::string> &names,
+	                           std::vector<std::string> &notebooks)
+	{
+		// A truncated last line is never an authoritative notebook selector.
+		for (size_t newline; (newline = text.find('\n')) != std::string_view::npos;) {
+			std::string_view line = text.substr(0, newline);
+			text.remove_prefix(newline + 1);
+			size_t first = line.find('/'), last = line.rfind('/');
+			if (first == std::string_view::npos || first == last || !first || first > 64)
+				continue;
+			std::string_view name = line.substr(0, first);
+			std::string_view principal = line.substr(first + 1, last - first - 1);
+			std::string_view side = line.substr(last + 1);
+			if ((side != "client" && side != "upstream") ||
+			    std::any_of(name.begin(), name.end(), [](unsigned char c) {
+				    return !(c >= 'A' && c <= 'Z') && !(c >= 'a' && c <= 'z') &&
+				           !(c >= '0' && c <= '9') && c != '_' && c != '-';
+			    }))
+				continue;
+			if (principal != "anonymous" &&
+			    (principal.size() != 16 || std::any_of(principal.begin(), principal.end(), [](unsigned char c) {
+				    return !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f');
+			    })))
+				continue;
+			names.emplace_back(name);
+			notebooks.emplace_back(line);
+		}
 	}
 };
 
@@ -557,6 +652,8 @@ void chat_help()
 	          "  --no-reasoning            Hide exposed reasoning\n"
 	          "  -h, --help               Show this help\n\n"
 	          "Commands: /help, /clear, /regen, /read FILE, /exit\n"
+	          "          /tools [NAME], /tool NAME key=VALUE ..., /names, /refresh\n"
+	          "Tab completes exposed tools, parameters, values and participant names.\n"
 	          "Readline: PgUp/PgDn search history by prefix; Ctrl-R searches history.\n"
 	          "End a line with \\ to continue it. Ctrl-C cancels the current answer;\n"
 	          "while entering a prompt it exits. Ctrl-D exits. Tools run in AskAI.");
@@ -616,6 +713,20 @@ chat_options chat_args(int argc, char **argv)
 
 using chat_history = std::vector<std::pair<std::string, std::string>>;
 
+void chat_progress(chat_ui::assistant_turn &display, json_object *event,
+                   std::string_view actor, std::string_view token)
+{
+	json_object *method = chat_get(event, "method");
+	if (!json_object_is_type(method, json_type_string) || chat_text(method) != "notifications/progress")
+		return;
+	json_object *params = chat_get(event, "params");
+	json_object *progress = chat_get(params, "progressToken");
+	json_object *message = chat_get(params, "message");
+	if (json_object_is_type(progress, json_type_string) && chat_text(progress) == token &&
+	    json_object_is_type(message, json_type_string))
+		display.action(actor, chat_text(message));
+}
+
 std::string chat_ask(chat_client &client, const chat_options &options,
                      const chat_history &history, size_t turns, const std::string &prompt)
 {
@@ -660,6 +771,7 @@ std::string chat_ask(chat_client &client, const chat_options &options,
 	chat_set(meta.get(), "progressToken", chat_string("chat"));
 	chat_set(params.get(), "_meta", std::move(meta));
 	auto result = client.rpc("tools/call", std::move(params), [&](json_object *event, int64_t id) {
+		chat_progress(display, event, client.tool, "chat");
 		json_object *method = chat_get(event, "method");
 		if (!method || chat_text(method) != "notifications/askai/delta")
 			return;
@@ -715,6 +827,67 @@ std::string chat_ask(chat_client &client, const chat_options &options,
 	return answer;
 }
 
+void chat_tools(const chat_client &client, std::string_view name)
+{
+	if (!name.empty()) {
+		const chat_completion::tool *entry = client.catalog.find_tool(name);
+		if (!entry)
+			throw std::runtime_error("No accessible tool named " + std::string(name));
+		chat_ui::show_info(entry->name);
+		if (!entry->description.empty())
+			chat_ui::show_message(entry->description);
+		chat_ui::show_message(json_object_to_json_string_ext(entry->schema.get(), JSON_C_TO_STRING_PRETTY));
+		return;
+	}
+	for (const auto &entry : client.catalog.tools()) {
+		std::string_view summary(entry.description);
+		summary = summary.substr(0, std::min(summary.find('\n'), size_t(160)));
+		chat_ui::show_message(entry.name + (summary.empty() ? "" : "  " + std::string(summary)));
+	}
+}
+
+void chat_tool_call(chat_client &client, std::string_view command)
+{
+	std::string name;
+	json_object *raw_arguments = nullptr;
+	client.catalog.parse_call(command, name, raw_arguments);
+	chat_json arguments(raw_arguments);
+	auto params = chat_owned(json_object_new_object());
+	chat_set(params.get(), "name", chat_string(name));
+	chat_set(params.get(), "arguments", std::move(arguments));
+	auto meta = chat_owned(json_object_new_object());
+	chat_set(meta.get(), "progressToken", chat_string("tool"));
+	chat_set(params.get(), "_meta", std::move(meta));
+	chat_ui::assistant_turn display;
+	display.action("you", "call " + name);
+	auto result = client.rpc("tools/call", std::move(params), [&](json_object *event, int64_t) {
+		chat_progress(display, event, name, "tool");
+	});
+	json_object *content = chat_get(result.get(), "content");
+	if (json_object_is_type(content, json_type_array)) {
+		for (size_t i = 0; i < json_object_array_length(content); ++i) {
+			json_object *block = json_object_array_get_idx(content, i);
+			json_object *type = chat_get(block, "type");
+			if (!json_object_is_type(type, json_type_string))
+				throw std::runtime_error("Malformed tool content");
+			std::string kind = chat_text(type);
+			if (kind == "text")
+				chat_ui::show_message(chat_text(chat_get(block, "text")));
+			else
+				chat_ui::show_message("[" + kind + " content]");
+		}
+	} else if (json_object *structured = chat_get(result.get(), "structuredContent")) {
+		chat_ui::show_message(json_object_to_json_string_ext(structured, JSON_C_TO_STRING_PRETTY));
+	} else {
+		throw std::runtime_error("AskAI returned no tool content");
+	}
+	if (json_object_get_boolean(chat_get(result.get(), "isError")))
+		throw std::runtime_error("Tool " + name + " failed");
+	display.action(name, "completed");
+	if (std::ferror(stdout))
+		throw std::runtime_error("Cannot write the tool output");
+}
+
 int chat_run(const chat_options &options)
 {
 	chat_curl curl;
@@ -726,15 +899,23 @@ int chat_run(const chat_options &options)
 	                                signals.pipe[0]);
 	if (error)
 		throw std::runtime_error(std::strerror(error));
-	chat_ui::install_completion({"/help", "/clear", "/regen", "/read ", "/exit"}, {"/read "});
-	chat_client client{signals, options.socket, {}, options.tool};
+	chat_client client{signals, options.socket, {}, options.tool, 0, {}, false};
 	client.connect();
+	chat_console::set_completion_callback([&client](std::string_view line, size_t cursor) {
+		auto matches = client.catalog.complete(line, cursor);
+		return matches.empty() ? chat_ui::complete_files(line, cursor, {"/read "}) : matches;
+	});
 	if (tty)
 		chat_ui::show_info("Connected to " + client.tool + ". /help lists commands; Ctrl-C cancels an answer.");
 	chat_history history;
 	bool initial = options.has_prompt;
 	for (;;) {
-		bool regenerate = false;
+		if (client.catalog_dirty) {
+			try { client.refresh(); }
+			catch (const chat_interrupted &) { throw; }
+			catch (const std::exception &e) { chat_ui::show_error("Cannot refresh completion metadata", e.what()); }
+		}
+		bool interpret = !initial;
 		std::string prompt;
 		if (initial) {
 			prompt = options.prompt;
@@ -748,41 +929,74 @@ int chat_run(const chat_options &options)
 				throw std::runtime_error(std::strerror(e));
 			if (eof && prompt.empty())
 				return 0;
-			std::string_view command = chat_trim(prompt);
-			if (command == "/exit" || command == "/quit")
-				return 0;
-			if (command == "/help") {
-				chat_ui::show_message("/clear starts a new conversation; /regen retries the last turn;\n"
-				                      "/read FILE sends a text file; /exit leaves the chat.\n"
-				                      "PgUp/PgDn search earlier prompts by prefix; Ctrl-R searches history.\n"
-				                      "End a line with \\ to continue it, or / to submit multiline input.\n"
-				                      "Ctrl-C cancels an answer. Tools and notes are handled by AskAI.");
-				continue;
-			}
-			if (command == "/clear") {
-				history.clear();
-				if (tty)
-					chat_ui::show_info("Conversation cleared.");
-				continue;
-			}
-			if (command == "/regen") {
-				if (history.empty()) {
-					chat_ui::show_error("There is no previous answer to regenerate");
-					continue;
-				}
-				prompt = history.back().first;
-				regenerate = true;
-			} else if (command.substr(0, 6) == "/read ") {
-				try { prompt = chat_read_file(std::string(chat_trim(command.substr(6)))); }
-				catch (const std::exception &e) { chat_ui::show_error(e.what()); continue; }
-			}
-		}
-		if (chat_trim(prompt).empty()) {
-			if (options.single)
-				throw std::runtime_error("The prompt is empty");
-			continue;
 		}
 		try {
+			bool regenerate = false;
+			if (interpret) {
+				std::string_view command = chat_trim(prompt);
+				size_t split = command.find_first_of(" \t\r\n");
+				std::string_view verb = command.substr(0, split);
+				std::string_view rest = split == std::string_view::npos ? std::string_view{} : chat_trim(command.substr(split));
+				if (command == "/exit" || command == "/quit")
+					return 0;
+				if (command == "/help") {
+					chat_ui::show_message("/clear starts a new conversation; /regen retries the last turn;\n"
+					                      "/read FILE sends a text file; /exit leaves the chat.\n"
+					                      "/tools [NAME] lists accessible tools or shows a tool's schema.\n"
+					                      "/tool NAME key=VALUE ... calls a tool directly; {JSON} is also accepted.\n"
+					                      "/names lists known session participants; /refresh updates discovery.\n"
+					                      "Tab completes tools, parameters, enum values, @names and leading nicknames.\n"
+					                      "PgUp/PgDn search history by prefix; Ctrl-R searches history.\n"
+					                      "End a line with \\ to continue it, or / to submit multiline input.\n"
+					                      "Ctrl-C cancels an answer or tool call. Direct tool results stay out of chat history.");
+					continue;
+				}
+				if (verb == "/tools") {
+					chat_tools(client, rest);
+					continue;
+				}
+				if (command == "/names") {
+					std::string names = "Known session participants:";
+					for (const auto &name : client.catalog.participants())
+						names += " " + name;
+					chat_ui::show_message(client.catalog.participants().empty()
+					                     ? "No participants discovered. /refresh reloads the shared notebooks."
+					                     : names);
+					continue;
+				}
+				if (command == "/refresh") {
+					client.refresh();
+					chat_ui::show_info("Tools and session participants refreshed.");
+					continue;
+				}
+				if (verb == "/tool") {
+					chat_tool_call(client, command);
+					if (options.single)
+						return 0;
+					continue;
+				}
+				if (command == "/clear") {
+					history.clear();
+					if (tty)
+						chat_ui::show_info("Conversation cleared.");
+					continue;
+				}
+				if (command == "/regen") {
+					if (history.empty())
+						throw std::runtime_error("There is no previous answer to regenerate");
+					prompt = history.back().first;
+					regenerate = true;
+				} else if (verb == "/read") {
+					if (rest.empty())
+						throw std::runtime_error("Usage: /read FILE");
+					prompt = chat_read_file(std::string(rest));
+				}
+			}
+			if (chat_trim(prompt).empty()) {
+				if (options.single)
+					throw std::runtime_error("The prompt is empty");
+				continue;
+			}
 			size_t turns = history.size() - static_cast<size_t>(regenerate);
 			std::string answer = chat_ask(client, options, history, turns, prompt);
 			if (regenerate)

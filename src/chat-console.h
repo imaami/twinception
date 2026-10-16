@@ -32,6 +32,9 @@ private:
 	bool active = false;
 };
 
+/** Candidates contain the complete replacement line and its byte cursor.
+ * Their suffixes after the cursor must be identical and an unchanged suffix
+ * of the input line. Readline replaces everything before that suffix. */
 using completion_callback = std::function<std::vector<std::pair<std::string, size_t>>(std::string_view, size_t)>;
 void set_completion_callback(completion_callback callback);
 

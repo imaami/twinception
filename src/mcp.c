@@ -8991,7 +8991,20 @@ mcp_notes_schema (enum notes_side          side,
 static struct json_object *
 mcp_notes_definition (void const *service)
 {
-	return mcp_notes_schema(NOTES_CLIENT, service);
+	struct mcp_static const *st = service;
+	struct json_object *def = mcp_notes_schema(NOTES_CLIENT, st);
+	/* Clients discover stored participants through notebooks. A new writer
+	 * has no branch yet, so publish its identity with the authorized tool. */
+	if (st && st->notes && jb_set(def, "_meta", jb_object(
+		    "askai", jb_object(
+			    "participant", json_object_new_string(notes_writer(st->notes)),
+			    "notebooks", json_object_new_boolean(1),
+			    nullptr),
+		    nullptr))) {
+		json_object_put(def);
+		def = nullptr;
+	}
+	return def;
 }
 
 /* Returns the definition of the notes tool for the upstream. */

@@ -213,9 +213,52 @@ namespace chat_console {
 		}
 		completion_matches = completion_cb(rl_line_buffer, static_cast<size_t>(end));
 		completion_matches.erase(std::remove_if(completion_matches.begin(), completion_matches.end(), [](const auto &candidate) {
-			return candidate.second > candidate.first.size() || candidate.first.size() >= INPUT_LIMIT;
+			return !candidate.second || candidate.second > candidate.first.size() || candidate.first.size() >= INPUT_LIMIT ||
+			       candidate.first.find('\0') != std::string::npos ||
+			       (candidate.second < candidate.first.size() && (static_cast<unsigned char>(candidate.first[candidate.second]) & 0xc0) == 0x80);
 		}), completion_matches.end());
+		if (completion_matches.empty()) {
+			return nullptr;
+		}
+		std::string_view line(rl_line_buffer, static_cast<size_t>(rl_end));
+		const auto &[first, cursor] = completion_matches.front();
+		std::string_view suffix = std::string_view(first).substr(cursor);
+		if (suffix.size() > line.size() || line.substr(line.size() - suffix.size()) != suffix ||
+		    std::any_of(completion_matches.begin(), completion_matches.end(), [suffix](const auto &candidate) {
+			return std::string_view(candidate.first).substr(candidate.second) != suffix;
+		    })) {
+			completion_matches.clear();
+			return nullptr;
+		}
 		char **matches = rl_completion_matches(text, complete_entry);
+		if (matches && rl_completion_type == '?' && !matches[1]) {
+			// Readline otherwise inserts a unique match after a failed attempt,
+			// even for possible-completions. Keep this request strictly a list.
+			char **listing = static_cast<char **>(calloc(3, sizeof *listing));
+			char *prefix = strdup("");
+			if (listing && prefix) {
+				listing[0] = prefix;
+				listing[1] = matches[0];
+				free(matches);
+				matches = listing;
+			} else {
+				free(listing);
+				listing = nullptr;
+				free(prefix);
+				prefix = nullptr;
+				free(matches[0]);
+				matches[0] = nullptr;
+				free(matches);
+				matches = nullptr;
+				input_error = ENOMEM;
+			}
+		}
+		if (matches && rl_completion_type != '?') {
+			// Native completion replaces [start, rl_point). Consume the stale
+			// token tail as well, leaving Readline in charge of undo and menus.
+			// Listing candidates alone must not move the editing cursor.
+			rl_point = static_cast<int>(line.size() - suffix.size());
+		}
 		completion_matches.clear();
 		return matches;
 	}

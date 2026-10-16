@@ -8037,6 +8037,11 @@ def check_notes(binary, up):
             for token, tools in (("alice-1", ["notes"]), ("carol-1", ["ask_ai"])):
                 listed = ai.rpc("tools/list", headers=auth(token))[2]["result"]["tools"]
                 assert [t["name"] for t in listed] == tools, listed
+                if token == "alice-1":
+                    assert listed[0]["_meta"]["askai"] == {
+                        "participant": "writers", "notebooks": True}, listed
+                else:
+                    assert all("askai" not in t.get("_meta", {}) for t in listed), listed
             assert call({"action": "list"}, "carol-1") == "Tool not available: notes"
 
             said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
