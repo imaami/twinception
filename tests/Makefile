@@ -3,11 +3,11 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-askai check-buf check-chat check-completion check-datauri \
+.PHONY: default check check-askai check-buf check-cli check-completion check-datauri \
         check-dstr check-handle check-instance check-ledger check-load \
         check-turn check-twinception load load-build
 default:; @:
-check: | check-completion check-twinception check-askai check-chat check-buf \
+check: | check-completion check-twinception check-askai check-cli check-buf \
          check-datauri check-handle check-turn check-instance check-ledger \
          check-dstr check-load
 
@@ -64,31 +64,39 @@ check-twinception: | twinception
 check-askai: | askai test_plugin.so godbolt.so
 	$(PYTHON) $(TEST_DIR)askai.py $Oaskai $Otest_plugin.so $Ogodbolt.so
 
-# Terminal editing, direct Unix-socket chat, and the client's argument handling.
-check-chat: $Otests/chat-input $Otests/chat-completion | askai-cli askai
-	$Otests/chat-completion
-	$(PYTHON) $(TEST_DIR)chat-input.py $Otests/chat-input
+# Terminal editing, the Unix-socket CLI, and its argument handling.
+check-cli: $Otests/cli-input $Otests/autocomplete | askai-cli askai
+	$Otests/autocomplete
+	$(PYTHON) $(TEST_DIR)cli-input.py $Otests/cli-input
 	$(PYTHON) $(TEST_DIR)chat-history.py $Oaskai
 	$(PYTHON) $(TEST_DIR)chat-stream.py $Oaskai
-	$(PYTHON) $(TEST_DIR)chat.py $Oaskai-cli $Oaskai
+	$(PYTHON) $(TEST_DIR)cli.py $Oaskai-cli $Oaskai
 
 # Readline and the completion catalog are tested without a server so these
 # checks also run where Unix sockets are prohibited. Keep their objects separate.
-override CHAT_FLAGS := -std=gnu++17 -O2 -g -Wall -Wextra -Wpedantic -I$(SRC_DIR)
-override CHAT_INCLUDES = $(shell $(PKG_CONFIG) --cflags readline json-c)
-override CHAT_LIBS = $(shell $(PKG_CONFIG) --libs readline json-c)
+override CLI_FLAGS := -std=gnu++17 -O2 -g -Wall -Wextra -Wpedantic -I$(SRC_DIR)
+override CLI_INCLUDES = $(shell $(PKG_CONFIG) --cflags readline json-c)
+override CLI_LIBS = $(shell $(PKG_CONFIG) --libs readline json-c)
+override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete-fixture.c.o \
+                                 $Otests/src/autocomplete.c.o $Otests/src/dstr.c.o $Otests/src/jb.c.o
+override AUTOCOMPLETE_WRAPS := -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 
-$Otests/chat-input: $Otests/chat-input.cpp.o $Otests/src/chat-console.cpp.o $Otests/src/chat-completion.cpp.o
-	$(CXX) $(CHAT_FLAGS) $(CXXFLAGS) $(LDFLAGS) -o "$@" $^ $(CHAT_LIBS)
+$Otests/cli-input: $Otests/cli-input.cpp.o $Otests/src/cli-console.cpp.o \
+                   $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
+	$(CXX) $(CLI_FLAGS) $(CXXFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS)
 
-$Otests/chat-completion: $Otests/chat-completion.cpp.o $Otests/src/chat-completion.cpp.o
-	$(CXX) $(CHAT_FLAGS) $(CXXFLAGS) $(LDFLAGS) -o "$@" $^ $(CHAT_LIBS)
+$Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) $(AUTOCOMPLETE_WRAPS) -o "$@" $^ $(CLI_LIBS) -lm
+
+$Otests/autocomplete.c.o $Otests/autocomplete-fixture.c.o \
+$Otests/src/autocomplete.c.o $Otests/src/autocomplete-file.c.o \
+$Otests/src/jb.c.o: CPPFLAGS += $(shell $(PKG_CONFIG) --cflags json-c)
 
 $Otests/%.cpp.o: $(TEST_DIR)%.cpp | $Otests
-	$(CXX) $(CHAT_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CHAT_INCLUDES) -MMD -c -o "$@" "$<"
+	$(CXX) $(CLI_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CLI_INCLUDES) -MMD -c -o "$@" "$<"
 
 $Otests/src/%.cpp.o: $(SRC_DIR)%.cpp | $Otests/src
-	$(CXX) $(CHAT_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CHAT_INCLUDES) -MMD -c -o "$@" "$<"
+	$(CXX) $(CLI_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CLI_INCLUDES) -MMD -c -o "$@" "$<"
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf
@@ -178,8 +186,9 @@ load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
 -include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/datauri.c.d \
-         $Otests/src/log.c.d $Otests/chat-input.cpp.d $Otests/chat-completion.cpp.d \
-         $Otests/src/chat-console.cpp.d $Otests/src/chat-completion.cpp.d \
+         $Otests/src/log.c.d $Otests/cli-input.cpp.d $Otests/autocomplete.c.d \
+         $Otests/autocomplete-fixture.c.d $Otests/src/cli-console.cpp.d \
+         $Otests/src/autocomplete.c.d $Otests/src/autocomplete-file.c.d $Otests/src/dstr.c.d \
          $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif

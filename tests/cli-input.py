@@ -150,7 +150,24 @@ def check_history(binary):
         console.line(b"unsent draft" + UP + DOWN + b"\r", "unsent draft\n")
         console.line(b"\x12beta\r", "beta middle\n")
         console.finish()
-    print("chat input history: prefix PgUp/PgDn, cursor, arrows, draft and Ctrl-R: PASS")
+    print("cli input history: prefix PgUp/PgDn, cursor, arrows, draft and Ctrl-R: PASS")
+
+
+def check_history_edits(binary):
+    # Readline mutates a recalled history entry when navigation leaves it.
+    # Its replacement can be shorter or longer than the submitted entry.
+    with Console(binary) as console:
+        console.line("newtext!\r", "newtext!\n")
+        console.line("longline\r", "longline\n")
+        console.line(UP + b"\x01\x0bx" + UP + b"\r", "newtext!\n")
+        console.line(UP + UP + DOWN + UP + b"\r", "x\n")
+        suffix = b" plus a considerably longer suffix"
+        console.line(UP + b"\x05" + suffix + UP + DOWN + b"\r", "x" + suffix.decode() + "\n")
+        console.line(UP + b"\r", "x" + suffix.decode() + "\n")
+        # Repeating the last submission must not append another history entry.
+        console.line(UP * 3 + b"\r", "newtext!\n")
+        console.finish()
+    print("cli input history edits: native mutation, shorter/longer entries and deduplication: PASS")
 
 
 def check_editing(binary):
@@ -172,7 +189,7 @@ def check_editing(binary):
         console.line(b"/read stale.txt" + LEFT * 7 + b"\t\r", "/read story.txt\n")
         console.line(b"/read docstale/child" + LEFT * 11 + b"\t\r", "/read documents/child\n")
         console.finish()
-    print("chat input editing: UTF-8, wrapping/resize, word erase and Tab: PASS")
+    print("cli input editing: UTF-8, wrapping/resize, word erase and Tab: PASS")
 
 
 def check_multiline(binary):
@@ -192,7 +209,7 @@ def check_multiline(binary):
         console.line(b"first\rsecond/\r", "first\nsecond\n")
         console.line(UP + b"/\r", "first\nsecond\n")
         console.finish()
-    print("chat input multiline: continuation, paste, explicit submit and whole-prompt recall: PASS")
+    print("cli input multiline: continuation, paste, explicit submit and whole-prompt recall: PASS")
 
 
 def check_catalog(binary):
@@ -220,7 +237,7 @@ def check_catalog(binary):
     with Console(binary, "--catalog", inputrc='"\\C-t": menu-complete\n') as console:
         console.line(b"/tool git command=\x14\x14\r", "/tool git command=status \n")
         console.finish()
-    print("chat input completion: MCP tools, typed arguments, names and token replacement: PASS")
+    print("cli input completion: MCP tools, typed arguments, names and token replacement: PASS")
 
 
 def check_inputrc(binary):
@@ -235,7 +252,7 @@ def check_inputrc(binary):
         # The rest of a macro must execute without another physical keystroke.
         console.line(b"", "world\n")
         console.finish()
-    print("chat input configuration: inputrc overrides and macros spanning submissions: PASS")
+    print("cli input configuration: inputrc overrides and macros spanning submissions: PASS")
 
 
 def check_signals(binary):
@@ -252,7 +269,7 @@ def check_signals(binary):
                     console.pump(max(0, deadline - time.monotonic()))
                     assert not console.pending, (console.pending, console.output)
                 console.finish(signum, keyboard)
-    print("chat input signals: Ctrl-C/SIGTERM unblock input and restore termios exactly: PASS")
+    print("cli input signals: Ctrl-C/SIGTERM unblock input and restore termios exactly: PASS")
 
 
 def check_simple(binary):
@@ -277,14 +294,14 @@ def check_simple(binary):
         wanted = [b"LINE " + text.encode().hex().encode() for text in expected] + [b"EOF"]
         assert records.splitlines() == wanted, (records, wanted, result)
         assert b"\x1b[" not in result.stdout, result.stdout
-    print("chat input pipes: automatic simple input, multiline and EOF: PASS")
+    print("cli input pipes: automatic simple input, multiline and EOF: PASS")
 
 
 def main():
     if len(sys.argv) != 2:
-        raise SystemExit("usage: chat-input.py CHAT-INPUT-HARNESS")
+        raise SystemExit("usage: cli-input.py CLI-INPUT-HARNESS")
     binary = os.path.abspath(sys.argv[1])
-    for check in (check_history, check_editing, check_multiline, check_catalog, check_inputrc,
+    for check in (check_history, check_history_edits, check_editing, check_multiline, check_catalog, check_inputrc,
                   check_signals, check_simple):
         check(binary)
 

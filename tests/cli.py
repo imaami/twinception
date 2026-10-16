@@ -56,8 +56,8 @@ class Session:
     """A real AskAI server and its Unix listener, with a fake upstream."""
 
     def __init__(self, binary, upstream, *args):
-        self.directory = tempfile.TemporaryDirectory(prefix="askai-chat-")
-        self.socket = f"{self.directory.name}/chat.sock"
+        self.directory = tempfile.TemporaryDirectory(prefix="askai-cli-")
+        self.socket = f"{self.directory.name}/cli.sock"
         self.server = Askai(binary, "-u", upstream.url(), "-l", "unix:" + self.socket,
                             *args)
 
@@ -89,7 +89,7 @@ def check_options(cli, unused_server):
                                       timeout=5)
         assert "libllama" not in dependencies.stdout.lower(), dependencies.stdout
         assert "libggml" not in dependencies.stdout.lower(), dependencies.stdout
-    print("chat options: explicit socket, rejected inference flags, no model runtime: PASS")
+    print("cli options: explicit socket, rejected inference flags, no model runtime: PASS")
 
 
 def check_history(cli, server):
@@ -112,7 +112,7 @@ def check_history(cli, server):
             assert not upstream.requests[0]["body"].get("background", False), upstream.requests[0]
     finally:
         upstream.close()
-    print("chat history: two native turns and foreground override: PASS")
+    print("cli history: two native turns and foreground override: PASS")
 
 
 def check_input(cli, server):
@@ -137,7 +137,7 @@ def check_input(cli, server):
                 assert history(upstream.last()) == [("user", "one\ntwo\n")], upstream.last()
     finally:
         upstream.close()
-    print("chat input: multiline UTF-8, /read, continuation and multiline submission: PASS")
+    print("cli input: multiline UTF-8, /read, continuation and multiline submission: PASS")
 
 
 def check_commands(cli, server):
@@ -154,7 +154,7 @@ def check_commands(cli, server):
             assert history(upstream.requests[3]) == [("user", "three\n")], upstream.requests[3]
     finally:
         upstream.close()
-    print("chat commands: regenerate the last turn and clear local history: PASS")
+    print("cli commands: regenerate the last turn and clear local history: PASS")
 
 
 def read_until(proc, needle, timeout):
@@ -200,25 +200,25 @@ def check_stream(cli, server):
                 proc.wait()
     finally:
         upstream.close()
-    print("chat streaming: deltas displayed before completion, final answer not duplicated: PASS")
+    print("cli streaming: deltas displayed before completion, final answer not duplicated: PASS")
 
 
 def check_tools(cli, server):
     upstream = Upstream()
     try:
-        with tempfile.TemporaryDirectory(prefix="askai-chat-git-") as directory:
+        with tempfile.TemporaryDirectory(prefix="askai-cli-git-") as directory:
             repo = directory + "/proj"
             subprocess.run(["git", "init", "-q", repo], check=True)
             subprocess.run(["git", "-C", repo, "-c", "user.name=test", "-c",
                             "user.email=t@t", "commit", "--allow-empty", "-q", "-m",
-                            "chat server tool result"], check=True)
+                            "cli server tool result"], check=True)
             arguments = json.dumps({"repo": "proj", "command": "log", "options": ["--oneline"]})
 
             def reply(request):
                 if len(upstream.requests) == 1:
                     return 200, turn_stream(calls=[("git-call", "git", arguments)])
                 assert any(message.get("role") == "tool" and
-                           "chat server tool result" in text_of(message)
+                           "cli server tool result" in text_of(message)
                            for message in request["body"]["messages"]), request
                 return 200, turn_stream(text="used server-side git")
 
@@ -229,7 +229,7 @@ def check_tools(cli, server):
                 assert len(upstream.requests) == 2, upstream.requests
     finally:
         upstream.close()
-    print("chat tools: AskAI executes the upstream tool call and continues the answer: PASS")
+    print("cli tools: AskAI executes the upstream tool call and continues the answer: PASS")
 
 
 def check_cancel(cli, server):
@@ -262,7 +262,7 @@ def check_cancel(cli, server):
                     os.close(slave)
     finally:
         upstream.close()
-    print("chat cancellation: Ctrl-C/SIGTERM cancel the request and restore the terminal: PASS")
+    print("cli cancellation: Ctrl-C/SIGTERM cancel the request and restore the terminal: PASS")
 
 
 def check_broken_pipe(cli, server):
@@ -286,7 +286,7 @@ def check_broken_pipe(cli, server):
                 proc.wait()
     finally:
         upstream.close()
-    print("chat output: a closed stdout pipe is reported as failure: PASS")
+    print("cli output: a closed stdout pipe is reported as failure: PASS")
 
 
 class UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -301,7 +301,7 @@ class Peer:
     """An HTTP MCP peer for errors and SSE fragmentation, bound only to Unix."""
 
     def __init__(self, reply, method_reply=None):
-        self.directory = tempfile.TemporaryDirectory(prefix="askai-chat-peer-")
+        self.directory = tempfile.TemporaryDirectory(prefix="askai-cli-peer-")
         self.socket = self.directory.name + "/mcp.sock"
         self.requests = []
         peer = self
@@ -338,7 +338,7 @@ class Peer:
                     body = json.dumps(body).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", kind)
-                self.send_header("Mcp-Session-Id", "chat-test-session")
+                self.send_header("Mcp-Session-Id", "cli-test-session")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 if kind == "text/event-stream":
@@ -383,7 +383,7 @@ def check_peer_errors(cli, unused_server):
             assert result.stderr, result
             if message:
                 assert message in result.stderr, (message, result)
-    print("chat errors: malformed JSON/SSE, wrong IDs, RPC/tool failures, HTTP denial: PASS")
+    print("cli errors: malformed JSON/SSE, wrong IDs, RPC/tool failures, HTTP denial: PASS")
 
 
 def check_peer_stream(cli, unused_server):
@@ -406,7 +406,7 @@ def check_peer_stream(cli, unused_server):
         assert output.strip() == "héllo λ", output
         call = next(request for request in peer.requests if request["method"] == "tools/call")
         assert call["params"]["arguments"]["background"] is False, call
-    print("chat SSE: fragmented CRLF/UTF-8, hidden reasoning and trace: PASS")
+    print("cli SSE: fragmented CRLF/UTF-8, hidden reasoning and trace: PASS")
 
 
 def check_peer_catalog(cli, unused_server):
@@ -468,14 +468,14 @@ def check_peer_catalog(cli, unused_server):
         assert name == "ask_ai", request
         assert params["arguments"]["messages"] == [], request
         assert params["arguments"]["prompt"] == "Q\n", request
-        return result({"content": [{"type": "text", "text": "CHAT-RESULT"}]})
+        return result({"content": [{"type": "text", "text": "CLI-RESULT"}]})
 
     entered = ("/tools git\n/names\n"
                "/tool git command=log count=2 recursive=true message='hello world'\n"
                "Q\n/refresh\n/names\n/tools\n/tool lookup query=latest\n/exit\n")
     with Peer(reply, methods) as peer:
         output = succeeded(run(cli, peer.socket, text=entered))
-        for marker in ("TOOL-RESULT", "CHAT-RESULT", "REFRESHED-TOOL", "alice", "bob", "carol", "self"):
+        for marker in ("TOOL-RESULT", "CLI-RESULT", "REFRESHED-TOOL", "alice", "bob", "carol", "self"):
             assert marker in output, (marker, output)
         assert "malformed" not in output and "truncated" not in output, output
         assert "* you call git" in output and "* git reading history" in output, output
@@ -484,7 +484,7 @@ def check_peer_catalog(cli, unused_server):
                  if request["method"] == "tools/call"]
         assert calls == ["notebook_service", "git", "ask_ai", "notebook_service", "lookup"], calls
         assert generation == 2, (generation, peer.requests)
-    print("chat catalog: paginated tools, typed invocation, notes participants and refresh: PASS")
+    print("cli catalog: paginated tools, typed invocation, notes participants and refresh: PASS")
 
 
 def check_peer_catalog_changed(cli, unused_server):
@@ -508,19 +508,19 @@ def check_peer_catalog_changed(cli, unused_server):
         output = succeeded(run(cli, peer.socket, text="Q\n/exit\n"))
         assert "changed" in output, output
         assert lists == 2, (lists, peer.requests)
-    print("chat catalog: tools/list_changed refreshes before the next prompt: PASS")
+    print("cli catalog: tools/list_changed refreshes before the next prompt: PASS")
 
 
 def main():
     if len(sys.argv) != 3:
-        raise SystemExit("usage: chat.py ASKAI-CLI ASKAI")
+        raise SystemExit("usage: cli.py ASKAI-CLI ASKAI")
     cli, server = map(os.path.abspath, sys.argv[1:])
     check_options(cli, server)
     try:
         probe = socket.socket(socket.AF_UNIX)
     except OSError as error:
         if error.errno in (errno.EPERM, errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT):
-            print(f"chat Unix integration: SKIP (socket(AF_UNIX): {error})")
+            print(f"cli Unix integration: SKIP (socket(AF_UNIX): {error})")
             return
         raise
     else:

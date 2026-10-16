@@ -1,7 +1,10 @@
 override SRC_askai-cli := \
-  chat.cpp                \
-  chat-completion.cpp     \
-  chat-console.cpp
+  autocomplete.c          \
+  autocomplete-file.c     \
+  cli.cpp                 \
+  cli-console.cpp         \
+  dstr.c                  \
+  jb.c
 
 override LIB_askai-cli := \
   json-c                  \

@@ -5,12 +5,15 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <clocale>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <new>
 #include <poll.h>
 #include <readline/history.h>
 #include <readline/readline.h>
@@ -18,7 +21,7 @@
 #include <unistd.h>
 #include <utility>
 
-#include "chat-console.h"
+#include "cli-console.hpp"
 
 #define ANSI_COLOR_RED     "\x1b[31m"
 #define ANSI_COLOR_GREEN   "\x1b[32m"
@@ -28,7 +31,7 @@
 #define ANSI_COLOR_RESET   "\x1b[0m"
 #define ANSI_BOLD          "\x1b[1m"
 
-namespace chat_console {
+namespace cli_console {
 
 	static constexpr size_t INPUT_LIMIT = 16 * 1024 * 1024;
 	static constexpr size_t HISTORY_LIMIT = 1024 * 1024;
@@ -47,11 +50,19 @@ namespace chat_console {
 	static termios initial_state{};
 	static volatile sig_atomic_t *interrupted = nullptr;
 	static char *accepted_line = nullptr;
+	static size_t accepted_length = 0;
 	static unsigned char input_buffer[4096];
 	static size_t input_offset = 0;
 	static size_t input_size = 0;
 	static completion_callback completion_cb = nullptr;
-	static std::vector<std::pair<std::string, size_t>> completion_matches;
+	static completion_matches candidates;
+	static std::array<size_t, 256> history_sizes{};
+	static std::string history_last_submitted;
+	static size_t history_first = 0;
+	static size_t history_count = 0;
+	// This budget counts submitted entries. Readline can retain edits to
+	// recalled entries; those mutable snapshots have no public length API.
+	static size_t history_bytes = 0;
 
 	static bool stopped() {
 		return interrupted && *interrupted;
@@ -164,6 +175,7 @@ namespace chat_console {
 
 	static void accept_line(char *line) {
 		accepted_line = line;
+		accepted_length = line ? strlen(line) : 0;
 		line_ready = true;
 		// The callback loop continues while a macro or key is pending, even
 		// after handler removal. Pause them until the next prompt is installed.
@@ -196,11 +208,18 @@ namespace chat_console {
 	}
 
 	static char *complete_entry(const char *, int state) {
-		if (state < 0 || static_cast<size_t>(state) >= completion_matches.size()) {
+		if (state < 0 || static_cast<size_t>(state) >= candidates.size) {
 			return nullptr;
 		}
-		const auto &[candidate, end] = completion_matches[state];
-		return strndup(candidate.c_str(), end);
+		const auto &candidate = candidates.data[state];
+		char *copy = static_cast<char *>(malloc(candidate.cursor + 1));
+		if (!copy) {
+			input_error = ENOMEM;
+			return nullptr;
+		}
+		memcpy(copy, candidate.line.data, candidate.cursor);
+		copy[candidate.cursor] = '\0';
+		return copy;
 	}
 
 	static char **complete(const char *text, int start, int end) {
@@ -211,23 +230,42 @@ namespace chat_console {
 		if (!completion_cb || start || end < 0) {
 			return nullptr;
 		}
-		completion_matches = completion_cb(rl_line_buffer, static_cast<size_t>(end));
-		completion_matches.erase(std::remove_if(completion_matches.begin(), completion_matches.end(), [](const auto &candidate) {
-			return !candidate.second || candidate.second > candidate.first.size() || candidate.first.size() >= INPUT_LIMIT ||
-			       candidate.first.find('\0') != std::string::npos ||
-			       (candidate.second < candidate.first.size() && (static_cast<unsigned char>(candidate.first[candidate.second]) & 0xc0) == 0x80);
-		}), completion_matches.end());
-		if (completion_matches.empty()) {
+		std::string_view line(rl_line_buffer, static_cast<size_t>(rl_end));
+		try {
+			candidates = completion_cb(line, static_cast<size_t>(end));
+		} catch (const std::bad_alloc &) {
+			input_error = ENOMEM;
+			return nullptr;
+		} catch (const std::exception &) {
+			input_error = EINVAL;
 			return nullptr;
 		}
-		std::string_view line(rl_line_buffer, static_cast<size_t>(rl_end));
-		const auto &[first, cursor] = completion_matches.front();
-		std::string_view suffix = std::string_view(first).substr(cursor);
-		if (suffix.size() > line.size() || line.substr(line.size() - suffix.size()) != suffix ||
-		    std::any_of(completion_matches.begin(), completion_matches.end(), [suffix](const auto &candidate) {
-			return std::string_view(candidate.first).substr(candidate.second) != suffix;
-		    })) {
-			completion_matches.clear();
+		if (!candidates.size) {
+			return nullptr;
+		}
+		if (!candidates.data) {
+			input_error = EINVAL;
+			return nullptr;
+		}
+		std::string_view suffix;
+		for (size_t i = 0; i < candidates.size; ++i) {
+			const auto &candidate = candidates.data[i];
+			std::string_view text(candidate.line.data, candidate.line.len);
+			if (!candidate.cursor || candidate.cursor > text.size() || text.size() >= INPUT_LIMIT ||
+			    text.find('\0') != std::string_view::npos ||
+			    (candidate.cursor < text.size() && (static_cast<unsigned char>(text[candidate.cursor]) & 0xc0) == 0x80)) {
+				candidates = {};
+				return nullptr;
+			}
+			std::string_view tail = text.substr(candidate.cursor);
+			if (!i) {
+				suffix = tail;
+				if (suffix.size() <= line.size() && line.substr(line.size() - suffix.size()) == suffix)
+					continue;
+			} else if (tail == suffix) {
+				continue;
+			}
+			candidates = {};
 			return nullptr;
 		}
 		char **matches = rl_completion_matches(text, complete_entry);
@@ -235,7 +273,7 @@ namespace chat_console {
 			// Readline otherwise inserts a unique match after a failed attempt,
 			// even for possible-completions. Keep this request strictly a list.
 			char **listing = static_cast<char **>(calloc(3, sizeof *listing));
-			char *prefix = strdup("");
+			char *prefix = static_cast<char *>(calloc(1, 1));
 			if (listing && prefix) {
 				listing[0] = prefix;
 				listing[1] = matches[0];
@@ -259,7 +297,7 @@ namespace chat_console {
 			// Listing candidates alone must not move the editing cursor.
 			rl_point = static_cast<int>(line.size() - suffix.size());
 		}
-		completion_matches.clear();
+		candidates = {};
 		return matches;
 	}
 
@@ -322,13 +360,15 @@ namespace chat_console {
 		accepted_line = nullptr;
 		set_display(DISPLAY_TYPE_RESET);
 		if (!simple_io) {
-			clear_history();
+			rl_clear_history();
 			rl_getc_function = rl_getc;
 			rl_input_available_hook = nullptr;
 			rl_attempted_completion_function = nullptr;
 			while (tcsetattr(STDIN_FILENO, TCSANOW, &initial_state) < 0 && errno == EINTR) {}
 		}
-		completion_matches.clear();
+		candidates = {};
+		history_first = history_count = history_bytes = 0;
+		std::string{}.swap(history_last_submitted);
 		completion_cb = nullptr;
 		interrupted = nullptr;
 		wake_fd = -1;
@@ -351,20 +391,23 @@ namespace chat_console {
 	}
 
 	static void remember(std::string_view text) {
-		if (!text.empty() && text.back() == '\n') {
-			text.remove_suffix(1);
-		}
 		if (text.empty() || text.size() > HISTORY_LIMIT) {
 			return;
 		}
-		HIST_ENTRY *last = history_get(history_base + history_length - 1);
-		if (last && text == last->line) {
+		if (text == history_last_submitted) {
 			return;
 		}
-		while (history_length && static_cast<size_t>(history_total_bytes()) + text.size() > HISTORY_LIMIT) {
+		while (history_count && (history_count == history_sizes.size() || history_bytes + text.size() > HISTORY_LIMIT)) {
 			free_history_entry(remove_history(0));
+			history_bytes -= history_sizes[history_first];
+			history_first = (history_first + 1) % history_sizes.size();
+			--history_count;
 		}
-		add_history(std::string(text).c_str());
+		add_history(text.data());
+		history_last_submitted.assign(text.data(), text.size());
+		history_sizes[(history_first + history_count) % history_sizes.size()] = text.size();
+		history_bytes += text.size();
+		++history_count;
 	}
 
 	static void read_simple(std::string &text, bool multiline, const char *prompt) {
@@ -448,12 +491,12 @@ namespace chat_console {
 			}
 			remove_callback();
 			if (accepted_line && !input_error) {
-				text = accepted_line;
+				text.assign(accepted_line, accepted_length);
 				if (text.size() >= INPUT_LIMIT) {
 					input_error = EFBIG;
 				} else {
-					text.push_back('\n');
 					remember(text);
+					text.push_back('\n');
 				}
 			} else if (!input_error) {
 				input_eof = true;

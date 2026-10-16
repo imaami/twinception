@@ -8,10 +8,10 @@
 #include <functional>
 #include <string>
 #include <string_view>
-#include <utility>
-#include <vector>
 
-namespace chat_console {
+#include "autocomplete.h"
+
+namespace cli_console {
 
 enum display_type {
 	DISPLAY_TYPE_RESET,
@@ -34,8 +34,13 @@ private:
 
 /** Candidates contain the complete replacement line and its byte cursor.
  * Their suffixes after the cursor must be identical and an unchanged suffix
- * of the input line. Readline replaces everything before that suffix. */
-using completion_callback = std::function<std::vector<std::pair<std::string, size_t>>(std::string_view, size_t)>;
+ * of the input line. Readline replaces everything before that suffix. The
+ * callback owns the memory and keeps it valid until its next invocation. */
+struct completion_matches {
+	const autocomplete_match *data = nullptr;
+	size_t size = 0;
+};
+using completion_callback = std::function<completion_matches(std::string_view, size_t)>;
 void set_completion_callback(completion_callback callback);
 
 /** Returns 0, EINTR, or an input error. EOF is reported separately from an empty line. */

@@ -9,7 +9,7 @@ llama-server dependency.
 
 ## Build
 
-The client needs a C++17 compiler, libcurl with Unix-socket support, json-c,
+The client needs C23 and C++17 compilers, libcurl with Unix-socket support, json-c,
 GNU Readline, and their development packages (`libreadline-dev` on Debian
 and Ubuntu). From the repository root:
 
@@ -101,8 +101,10 @@ For example, type `Explain` and press PgUp to recall earlier prompts with
 that prefix, skipping unrelated entries. Input history is kept in memory
 for the current client process and is separate from the conversation sent
 to the model; `/clear` clears the conversation, not Readline history. A
-multiline prompt is recalled as one entry. History holds up to 256 entries
-and 1 MiB of text; the client does not read or write a history file.
+multiline prompt is recalled as one entry. History retains up to 256 submitted
+entries, with a 1 MiB budget for their submitted text. Readline can retain edits
+to recalled entries beyond that budget. The client does not read or write a
+history file.
 
 Readline honors `~/.inputrc` or the file named by `INPUTRC`, including
 `set editing-mode vi`. Use an application-specific block to customize only
@@ -136,7 +138,7 @@ request limits. For longer conversations, increase those limits in the
 server configuration (for example `--max-values 8192`), or use `/clear`.
 The history API accepts at most 1024 earlier messages.
 
-## Tools and participant completion
+## Tools and participant autocomplete
 
 Tool completion uses the definitions returned by `tools/list`, including
 the access restrictions of the current connection. For example:
@@ -185,6 +187,15 @@ Discovery runs at connection time and on `/refresh`. A server's
 Each connection owns its completion data; pressing Tab never makes an MCP
 request. File completion still reads the local filesystem.
 
+Autocomplete is implemented by the C modules `autocomplete.c` and
+`autocomplete-file.c`. Their `.h` interfaces expose borrowed strings with
+explicit byte lengths and C linkage. Each module retains its work buffers
+and result storage until destruction, growing capacity as needed and keeping
+it between calls. Text storage uses `dstr` and UTF-8 validation uses `jb_utf8`.
+Candidate output is bounded to 256 entries and 16 MiB. The Readline adapter consumes
+those views directly; only the strings that Readline takes ownership of are
+copied. C++ console and display interfaces use `.hpp` headers.
+
 Tool calls and progress use IRC-style action lines, for example
 `* you call notes` and `* ask_ai turn 1, calling git`. Reasoning remains in
 the current transcript. Multiple connections, IRC-style windows and private
@@ -218,14 +229,17 @@ With `auto`, colors are enabled only on a terminal.
 
 ## Checks and source attribution
 
-`make check-chat` checks terminal input in a pseudo-terminal, argument
+`make check-cli` checks terminal input in a pseudo-terminal, argument
 handling, and Unix-socket integration against a mock upstream, without
 downloading a model. Environments that prohibit Unix sockets explicitly
 skip the socket-dependent checks.
+
+The C autocomplete tests also check counted input, C/C++ linkage, and
+allocator activity after warming the reusable completion buffers.
 
 The terminal console is derived from llama.cpp's MIT-licensed
 `common/console.cpp` and `tools/cli/cli-ui.h` at commit
 `b76b13379d3b7d67ab0bc424516bb6fd2522bd8e`;
 the retained license is in [llama-cli-LICENSE](llama-cli-LICENSE). The
-adaptation is in `src/chat-console.cpp`, `src/chat-console.h`, and
-`src/chat-ui.h`.
+adaptation is in `src/cli-console.cpp`, `src/cli-console.hpp`, and
+`src/cli-ui.hpp`.

@@ -11,7 +11,7 @@ no HTTP worker threads or polling loops.
 
 The same machinery also drives [`askai`](#askai-an-ask-an-ai-mcp-server), an MCP
 server that gives a model running in `llama-server` a tool for asking another AI.
-[`askai-cli`](doc/chat.md) is a standalone terminal chat client for that upstream
+[`askai-cli`](doc/cli.md) is a standalone terminal chat client for that upstream
 model, connected to `askai` through a Unix socket.
 
 ## Dependencies
@@ -29,9 +29,9 @@ model, connected to `askai` through a Unix socket.
 
 ```sh
 make            # builds twinception, askai, askai-cli and askai's plugins
-make askai-cli  # only the client; needs C++17, libcurl, json-c and Readline
+make askai-cli  # only the client; needs C23, C++17, libcurl, json-c and Readline
 make check      # end-to-end tests, the dstr trials and check-load
-make check-chat # only the terminal client's checks
+make check-cli # only the terminal client's checks
 make check-dstr # only the dstr trials
 make check-load # only askai's load verdict on a light mix (10-20 s)
 make load       # askai's load verdict on the storm (doc/core-measurements.md)
@@ -50,7 +50,7 @@ tools, tool parameters and known session participants. `/tools` lists the
 client's permitted tools; `/tool NAME key=VALUE ...` calls one directly.
 Tool activity appears as IRC-style action lines. It sends each chat turn
 to AskAI, where tools and notes run, and contains no local inference engine.
-See [terminal chat](doc/chat.md) for keys, discovery, commands and scripts.
+See [terminal chat](doc/cli.md) for keys, discovery, commands and scripts.
 
 ## Ordinary whole-turn swapping
 
