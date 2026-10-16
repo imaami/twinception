@@ -223,6 +223,7 @@ ledger_metrics (struct ledger const *ledger);
  *   LEDGER_OWNERS owners, or, for an @p owner with LEDGER_ANONYMOUS,
  *   LEDGER_OWNERS / 2 owners with LEDGER_ANONYMOUS;
  * - EINVAL for a null pointer or an unknown kind;
+ * - EEXIST if the random id is already in the ledger;
  * - ENOMEM, or the error of getrandom().
  */
 extern struct ledger_task *
@@ -235,6 +236,35 @@ ledger_open (struct ledger    *ledger,
              void            (*fn) (struct loop *loop,
                                     struct msg  *msg),
              int              *e);
+
+/** Restore a record from durable storage, copying @p id and @p result.
+ *  The id must contain LEDGER_ID lowercase hexadecimal bytes.  Preserves
+ *  @p created and @p ended, in CLOCK_REALTIME ns; for an ended record, an
+ *  @p ended of 0 uses the current time.  An ended record gets a fresh
+ *  LEDGER_KEEP retention period.  A working record requires @p loop and
+ *  @p fn, and an empty result and an @p ended of 0.  An ended record needs
+ *  neither a loop nor a cancel handler; a cancelled record has no result.
+ *
+ *  Returns a reference for the caller, as ledger_open() does.  Its limits
+ *  and errors apply, except the running limit applies only to working
+ *  jobs.  EEXIST means the id is already in the ledger, under any owner:
+ *  the existing record is never replaced or changed.  EINVAL also covers
+ *  malformed ids, statuses and result spans.  No file I/O is performed. */
+extern struct ledger_task *
+ledger_restore (struct ledger     *ledger,
+                uint64_t           owner,
+                enum ledger_kind   kind,
+                uint16_t           tool,
+                struct span        id,
+                uint64_t           created,
+                uint64_t           ended,
+                enum ledger_status status,
+                struct span        result,
+                struct loop       *loop,
+                struct handle      who,
+                void             (*fn) (struct loop *loop,
+                                        struct msg  *msg),
+                int               *e);
 
 /** The task's call: room for its result, of @p len bytes, to come; 0, or
  *  ENOMEM. */
@@ -267,6 +297,16 @@ ledger_find (struct ledger *ledger,
              uint64_t       owner,
              char const    *id,
              size_t         len);
+
+/** Remove an ended record owned by @p owner, dropping the ledger's
+ *  reference.  Other references remain valid.  Returns 0, ENOENT if the
+ *  id is absent or belongs to another owner, EBUSY if its call still
+ *  works, or EINVAL for a null pointer or an id length other than
+ *  LEDGER_ID.  Does not remove or cancel a working call. */
+extern int
+ledger_remove (struct ledger *ledger,
+               uint64_t       owner,
+               struct span    id);
 
 /** Ask to cancel the task: its call's loop gets the cancel, once, if the
  *  task works. */

@@ -374,8 +374,10 @@ completions, which `-p openai` uses only with `--api chat`:
 ### Asking without keeping the client connected
 
 `--background`, or `"background": true` in the configuration file's
-`upstream` object, makes an ordinary ask call return immediately with a
-job ID and instructions to check back.  It is off by default.  For example:
+`upstream` object, makes an ordinary ask call return a job ID and
+instructions to check back without waiting for generation.  Its admission
+record reaches the synced journal and a Git commit before that reply.  It
+is off by default.  For example:
 
 ```sh
 ./askai -p openai -m MODEL --background --tool-name ask_gpt
@@ -408,10 +410,14 @@ the instance that owns the job.  The ID is AskAI's own 128-bit random ID;
 only the same owner can retrieve or cancel it.  Client disconnects,
 including a disconnected result check, do not cancel an accepted job.
 AskAI keeps consuming the upstream deltas and stores the completed result
-in its existing in-memory ledger.  The same limits apply as to
+in its job ledger.  The same live limits apply as to
 [client jobs](#background-jobs-and-timers-for-clients): eight running jobs
 per owner and results retained for up to an hour, subject to the memory
-and record limits.  Restarting AskAI loses these jobs and results.
+and record limits.  Background mode also enables automatic transcript
+storage, described below.  After a restart, poll the same job ID using the
+same participant, transcript repository and caller identity.  AskAI loads
+the saved state on that check; completed results remain recoverable after
+the live ledger has forgotten them.
 
 For OpenAI Responses and Gemini Interactions, AskAI sends both
 `"background": true` and `"stream": true`.  Native Gemini background
@@ -422,8 +428,11 @@ but cannot disable `background` or `stream` in this mode; explicitly
 forcing `"store": false` can cause Gemini to reject the request.
 An explicitly selected `responses` or `interactions` API with a URL and no
 provider uses the same native behavior.
-Other provider/API combinations, including a named `llama` provider, keep
-the stream locally without adding an unsupported `background` field.
+Other provider/API combinations keep the stream locally without adding an
+unsupported `background` field.  With `-p llama`, AskAI assigns a unique
+`X-Conversation-Id` to each provider turn.  A llama-server that implements
+the resumable stream extension can continue that generation after the
+connection closes, and AskAI can reconnect with its saved byte offset.
 
 Detaching a normal ask call does not lower its scheduling priority.  The
 existing `background` wrapper still requests background priority, but
@@ -433,8 +442,71 @@ would create a second provider job while the first still ran.
 The configured total and chunk timeouts still apply.  An explicit
 cancellation also attempts the provider's cancel endpoint when its ID is
 known.  That attempt is bounded and may fail; closing a native background
-stream alone does not cancel the provider's work.  AskAI does not resume
-an interrupted provider connection or recover jobs after a process restart.
+stream alone does not cancel the provider's work.  Shutdown preserves
+durable background work for recovery instead of cancelling it upstream.
+An explicit `action: "cancel"` still cancels it.
+
+On recovery, AskAI reconstructs the current turn from the saved stream,
+then resumes OpenAI Responses using `starting_after`, Gemini Interactions
+using `last_event_id`, or llama-server's `/v1/stream` using `conv_id` and
+`from`.  It does not repeat the original generation POST.  A provider must
+still retain the response and its replay data.  Missing or expired provider
+state is reported as an error.  Other Chat Completions servers remain
+asynchronous while AskAI runs, but cannot resume after a restart without a
+server replay API.  An interrupted resumable connection suspends the job.
+The next check of the same job ID replays its saved data and resumes it,
+with the original deadline.  There is no autonomous network retry loop.
+
+llama-server's replay buffer is in memory and bounded.  Restarting
+llama-server, waiting beyond its retention period, or falling behind its
+buffer can make reconnection impossible.  Its current implementation can
+also cancel a request disconnected before its first result.  Durable
+transcripts preserve what AskAI received, but cannot restore data that the
+provider no longer has.
+
+Recovered tool turns reuse saved tool results.  AskAI records tool intent
+before executing it and records its result afterwards.  If a crash leaves
+an intent without a result, recovery reports an unknown tool outcome and
+stops; it does not execute a possibly completed side effect again.
+Interrupted tool jobs and timers are not restored, so recovery stops
+explicitly when it would depend on them.
+
+### Automatic transcripts
+
+The transcript repository is separate from the shared notes repository;
+neither repository may be inside the other's Git directory.
+With `--notes PATH`, it defaults to `PATH.transcripts.git`.  With
+`--background` alone, it defaults to
+`$XDG_STATE_HOME/askai/PARTICIPANT/transcripts.git`, using
+`$HOME/.local/state` when `XDG_STATE_HOME` is unset or empty.
+`--transcripts PATH` selects another location and also enables recording
+without notes or background mode.  Startup logs show the path and
+participant.  Use the same participant after restarting; distinct
+participants may share a transcript repository, but two live instances
+cannot both write as the same participant there.
+
+The branch `transcripts/PARTICIPANT` contains immutable records under
+`records/` and the latest record of each kind under `jobs/JOB_ID/`.
+Records include the request, raw provider response data, exposed reasoning,
+provider identifiers and resume cursors, tool activity and final results.
+The notes tool does not read this repository.  Authentication headers are
+not transcript records.
+
+The writer appends checksummed records to a local journal, syncs it, and
+commits available records to Git in batches.  It runs separately from the
+event loops.  A full writer queue applies backpressure; a storage failure
+fails the affected work instead of silently discarding its transcript.
+Acknowledged records have reached both the synced journal and Git.
+Startup imports complete journal records that were not yet committed and
+discards only an incomplete final record.  Corruption in a complete record
+stops startup.  Git commits can contain several deltas; there is no
+separate commit for every token.
+
+Automatic recovery also uses the repository's private
+`askai-journal/` state, including its journal and owner seed.  Preserve the
+whole repository directory when moving or backing up a live session.  A
+Git-only clone preserves browsable transcripts but does not currently
+support automatic job recovery.
 
 ### Connecting llama-server
 
@@ -628,46 +700,57 @@ window" error) or as the usage counts, `askai` does likewise without a
 summary, once until a turn goes through again; the next overflow is the
 call's error.
 
-With `--notes DIR`, the model keeps notes of its work.  `askai` makes `DIR` if
-it does not exist.  Each `ask_ai` call starts a thread of notes or goes on
-with one, and each thread is a bare git repository of its own,
-`DIR/WHO/upstream/ID`: `WHO` is the caller's identity, as a hash, or
-`anonymous`, and `ID` is 32 hexadecimal digits, random.  A note is a file.
-The model chooses its name, such as `plan.md` or `findings/locks.md`, and
-writes its text, at most 4 MiB.  The extension of the name shows the format of
-the text, which `askai` does not check.  Adding a note adds a commit to the
-branch `notes`, which `git fast-import` writes.  The tool `notes` adds a note,
+With `--notes PATH`, the repository at `PATH` is the shared session.
+`askai` creates a bare Git repository there if absent, and also accepts an
+existing ordinary repository or worktree.  All instances
+using that repository collaborate on its notes.  Give each instance a
+stable, distinct `--participant NAME`; the default is `--tool-name`, or
+`ask_ai`.  Names have 1 to 64 characters from `[A-Za-z0-9_-]`.
+
+Each participant writes only its own notebook branches,
+`notes/PARTICIPANT/WHO/client` and `notes/PARTICIPANT/WHO/upstream`, where
+`WHO` is the caller's identity hash or `anonymous`.  Every participant can
+read the other notebooks.  The repository, rather than an ask call or
+transport connection, determines which session a note belongs to.
+
+A note is a file.  The model chooses its name, such as `plan.md` or
+`findings/locks.md`, and writes its text, at most 4 MiB.  The extension of
+the name shows the format of the text, which `askai` does not check.
+Adding a note adds a commit to the caller's branch with `git fast-import`.
+The tool `notes` adds a note,
 lists the notes, the oldest first, with the time that each was added, or reads
 a note, a window at a time from its `offset`.  A note is never changed or
 removed: a name that a note or a directory of notes has is refused, as is a
 name with a control character or an empty part.  No part of a name can be `.`,
 `..`, `.git` or `git~1`, in any case and also with spaces or dots after it,
 because git refuses such names.  Slashes at the start of a name are left out.
-The answer names the thread, and the client can read its notes (below).
-`ask_ai`'s `thread` argument goes on with a thread in a later call, whose
-prompt then has the list of the thread's notes and the newest note, cut as a
-tool's output in a turn is, with the offset to read on from.  Only the
-identity that wrote a thread can go on with it.  Two calls that add notes to
-one thread at once may make one of them fail, and the answer to that call asks
-to add the note again.  `git` runs there with no hooks.  Nothing prunes the
-repositories: run `git gc` on them now and then.  Older versions of `askai`
-wrote all the notes to one repository, `DIR` itself.  `askai` refuses such a
-`DIR` and does not move its notes.
+The optional `thread` argument remains accepted for older clients, but
+does not create another repository or notebook.  A role that names
+`notes` among its `tools` gives clients their own notebooks with `--notes`
+alone.  With `--upstream-tools`, the model gets `notes` whatever the role
+lists.  `git` runs without hooks.  Nothing prunes the repository; run
+`git gc` as needed.
 
-A role that names `notes` among its `tools` gives its clients notebooks of
-their own, with `--notes` alone.  A client's `add` without a `thread` starts
-a new thread, `DIR/WHO/client/ID`, and the answer names it.  The client gives
-that `thread` to add more notes to it, to list them or to read one.  With
-`--upstream-tools`, the model gets `notes` whatever the role lists.
+Branches can have separate Git worktrees.  Writes made through the notes
+tool update Git objects and the branch; they do not update files in an
+already checked-out worktree.  Refresh a clean worktree explicitly before
+reading those files.  A nonempty directory from the older per-thread
+layout is not migrated automatically: keep it and choose a new session
+repository path.
 
-A thread has up to two notebooks under one id: the client's,
-`DIR/WHO/client/ID`, and the model's, `DIR/WHO/upstream/ID`.  Each side adds
-notes only to its own notebook, and reads both:
+New files committed through a worktree appear in the notebook, including
+several files added by one commit.  The notes tool remains add-only;
+external edits or deletions of existing notes are outside its immutable
+history assumptions.
 
+- `notebooks` lists the available notebook selectors.  Use another
+  participant's selector with `list`, `read`, `copy` or `attach` to read
+  that notebook.  A selector is `PARTICIPANT/WHO/SIDE`.
 - `list` and `read` take `"notebook": "other"` for the other side's
-  notebook of the thread.  `own` is the default.  An `add` with `other` is
-  refused.
-- `copy` puts a note of the other side's notebook into the caller's own,
+  notebook of the same participant and caller identity.  `own` is the
+  default.  `add` only writes to `own`; a caller cannot select another
+  participant's write branch.
+- `copy` puts a note of the selected notebook into the caller's own,
   byte for byte, under the same name or the name that `as` gives.  The
   text of the note does not pass through the model, so a file that is
   needed exactly, or one that is not text, keeps every byte.  `list` marks
@@ -699,13 +782,23 @@ notes only to its own notebook, and reads both:
   the maximum" makes `askai` begin the conversation again from the
   prompt, as a full context does.  The other APIs do not offer `attach`
   yet.
-- A client reads the model's notes of a thread that an `ask_ai` answer
-  named.  Its first `add` to that thread starts its own notebook there.
-- `ask_ai`'s `thread` can also name a thread that the client started with
-  its own `add`.  The turns then start their notebook in it, and the
-  prompt says that the client keeps notes there.
 
-A client cannot open the threads of other identities.
+For example, both instances below share one notes session:
+
+```sh
+./askai -p llama --background --upstream-tools \
+  --participant researcher --tool-name ask_researcher \
+  --notes /var/lib/askai/session.git --listen 127.0.0.1:8090
+./askai -p google -m MODEL --background --upstream-tools \
+  --participant reviewer --tool-name ask_reviewer \
+  --notes /var/lib/askai/session.git --listen 127.0.0.1:8091
+```
+
+Each calls `{"action":"notebooks"}` to discover the other's notebook,
+then reads it to follow that participant's progress.  Automatic provider
+transcripts go to a separate repository, by default
+`/var/lib/askai/session.git.transcripts.git`; `--transcripts PATH` changes
+that location.
 
 A client keeps a file that the user gave it, such as an attachment, with an
 `add` that has `content` instead of `text`.  The client's program, not its
@@ -806,8 +899,9 @@ header.  A Unix socket (`--listen unix:PATH`) knows its clients' users without
 a token; its file's mode follows `askai`'s umask, and `askai` removes it as it
 stops.  With `--git`, whoever may call the tool may read the repositories
 listed, and with `--upstream-tools`, so may the model that answers them.  An
-anonymous client's threads of notes are all under `anonymous`, kept apart only
-by their random ids.  Tokens cross the network in the clear but over TLS (below), or a
+session's notes are readable by everyone allowed to call `notes`, including
+anonymous clients if the policy grants it.  Each caller writes only its own
+notebook.  Tokens cross the network in the clear but over TLS (below), or a
 proxy that ends it.  A plugin is code that runs inside `askai` with all of
 `askai`'s rights.  Whoever may change the configuration file decides which
 files `askai` loads as plugins.  Whoever may change one of those files, or a
@@ -854,7 +948,8 @@ times their flights, mostly CPU (`askai_tls_handshakes_total`,
 
 `--config FILE` (`-c`) reads options from a JSON object before the command
 line.  The file must be strict JSON, so that tools such as `jq` can read it:
-comments and trailing commas are errors.  The options but those of the
+comments and trailing commas are errors.  `participant` and `transcripts`
+are top-level members.  The other options but those of the
 built-in tools are members of four objects, and each member is named as a
 long option is:
 
@@ -876,7 +971,8 @@ in parentheses:
 - `--notes` is `tools.notes.directory`.
 - `--client-jobs` is `tools.jobs.clients`.
 
-An option at the top level of the file, or in another object than its own,
+An option other than `participant` or `transcripts` at the top level of the
+file, or an option in another object than its own,
 stops `askai` with a message such as "url must be in upstream", or "man must
 be tools.man.enabled" for an option of a built-in tool.  The values have
 these forms:
@@ -1626,6 +1722,17 @@ askai: tool call bro from anonymous loopback (role user) answered after 3.9 s (3
                             doc/askai.example.json.
   -h, --help                show this help
 
+Session (top-level configuration members):
+      --participant NAME    stable writer identity, 1 to 64 characters
+                            from [A-Za-z0-9_-]; default: tool-name.  Use
+                            distinct names for collaborating instances
+      --transcripts PATH    separate git repository for requests, raw
+                            streams, reasoning and tool results; default:
+                            <notes>.transcripts.git with --notes, else
+                            $XDG_STATE_HOME/askai/NAME/transcripts.git
+                            with --background, using $HOME/.local/state
+                            if XDG_STATE_HOME is unset
+
 Upstream AI ("upstream"):
   -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),
                             openai, anthropic, google, deepinfra or
@@ -1793,9 +1900,10 @@ Built-in tools ("tools", each in the member in parentheses):
                             deadline of a git call, at which git gets
                             SIGTERM, and SIGKILL one second later
                             (default 30; tools.git.timeout)
-      --notes DIR           also offer the tool notes: notebooks in git
-                            repositories under DIR, which askai makes if
-                            it does not exist; to clients as their role
+      --notes PATH          shared session's git repository, created
+                            bare if absent.  Each participant
+                            writes its own branches and reads all notes;
+                            offer notes to clients as their role
                             allows, and to the upstream with
                             --upstream-tools (tools.notes.directory)
       --client-jobs         also offer clients the tools background,

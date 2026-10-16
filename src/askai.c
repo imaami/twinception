@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "ai.h"
 #include "blocker.h"
@@ -19,6 +21,7 @@
 #include "home.h"
 #include "http.h"
 #include "httpd.h"
+#include "journal.h"
 #include "ledger.h"
 #include "log.h"
 #include "loop.h"
@@ -127,7 +130,9 @@ struct askai_reload {
 /* What runs on home: the jobs (src/home.h), and the door, which accepts the
  * clients and places them on the client loops (src/httpd.h). */
 struct askai_home {
+	/* keep remains first: askai_keep_relieve receives this object. */
 	struct askai_keep         keep;
+	struct journal          *journal;
 	struct askai_reload       reload;
 	struct http_metrics       http;  /* here, as the client loops render it */
 	struct home_metrics       jobs;  /* likewise */
@@ -163,6 +168,7 @@ struct askai_shared {
 	struct httpd_hub    *hub;
 	struct git          *git;
 	struct notes        *notes;
+	struct journal      *journal;
 	struct ledger       *ledger;
 	struct roster       *roster;
 	struct web          *web;
@@ -540,6 +546,7 @@ askai_home_stop (void        *ctx,
 {
 	struct askai_home *app = ctx;
 	home_destroy(&app->keep.home);
+	journal_stop(app->journal);
 	web_home_stop(app->keep.web);
 	httpd_home_destroy(&app->keep.door);
 	askai_keep_stop(&app->keep, loop);
@@ -663,9 +670,52 @@ askai_shared_make (struct askai_shared *s,
 	    !(s->web = web_create(&e)))
 		return e;
 	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->notes,
-	                                s->ledger, s->roster, s->web, &e)))
+	                                s->ledger, s->roster, s->web, s->journal, &e)))
 		return e;
 	s->hub = httpd_hub_create(n, &e);
+	return e;
+}
+
+/* Repositories must not contain each other. In particular, a transcript
+ * directory must not turn a not-yet-initialized notes repo into a nonempty
+ * non-repository. journal_create() also rejects symbolic links and "..". */
+static int
+askai_separate_repos (char const *notes,
+                      char const *transcripts)
+{
+	char *cwd = *transcripts == '/' ? nullptr : getcwd(nullptr, 0);
+	if (*transcripts != '/' && !cwd)
+		return errno;
+	char *base = cwd ? util_concat(cwd, strlen(cwd), "/") : nullptr;
+	char *path = cwd ? base ? util_concat(base, strlen(base), transcripts) : nullptr
+	                 : strdup(transcripts);
+	free(cwd);
+	cwd = nullptr;
+	free(base);
+	base = nullptr;
+	if (!path)
+		return ENOMEM;
+	char *rest = path, *to = path;
+	int e = 0;
+	for (char *part; (part = strsep(&rest, "/")); ) {
+		if (!*part || !strcmp(part, "."))
+			continue;
+		if (!strcmp(part, "..")) {
+			e = EINVAL;
+			break;
+		}
+		size_t len = strlen(part);
+		*to++ = '/';
+		memmove(to, part, len);
+		to += len;
+	}
+	*to = '\0';
+	size_t n = strlen(notes), t = (size_t)(to - path);
+	if (!e && ((t >= n && !memcmp(path, notes, n) && (!path[n] || path[n] == '/')) ||
+	           (n >= t && !memcmp(notes, path, t) && (!notes[t] || notes[t] == '/'))))
+		e = EINVAL;
+	free(path);
+	path = nullptr;
 	return e;
 }
 
@@ -680,8 +730,28 @@ askai_shared_init (struct askai_shared *s,
 	int e = 0;
 	if (cfg->notes) {
 		char why[256];
-		if (!(s->notes = notes_create(cfg->notes, why, sizeof why, &e))) {
+		if (!(s->notes = notes_create(cfg->notes, cfg->participant, why, sizeof why, &e))) {
 			fprintf(stderr, "askai: --notes: %s: %s\n", cfg->notes, why);
+			return e;
+		}
+	}
+	if (cfg->transcripts) {
+		char why[256];
+		if (cfg->notes) {
+			if ((e = askai_separate_repos(notes_directory(s->notes), cfg->transcripts))) {
+				fprintf(stderr, "askai: notes and transcripts require separate, nonnested repositories\n");
+				return e;
+			}
+			struct stat notes, transcripts;
+			if (!stat(notes_directory(s->notes), &notes) && !stat(cfg->transcripts, &transcripts) &&
+			    notes.st_dev == transcripts.st_dev && notes.st_ino == transcripts.st_ino) {
+				fprintf(stderr, "askai: notes and transcripts require separate repositories\n");
+				return EINVAL;
+			}
+		}
+		if (!(s->journal = journal_create(cfg->transcripts, cfg->participant,
+		                                  why, sizeof why, &e))) {
+			fprintf(stderr, "askai: --transcripts: %s: %s\n", cfg->transcripts, why);
 			return e;
 		}
 	}
@@ -693,6 +763,7 @@ askai_shared_init (struct askai_shared *s,
 static void
 askai_shared_fini (struct askai_shared *s)
 {
+	journal_destroy(&s->journal);
 	task_pool_destroy(&s->tasks);
 	httpd_hub_destroy(&s->hub);
 	git_destroy(&s->git);
@@ -763,6 +834,7 @@ askai_run (struct askai_shared *s,
 	/* Its atomic members are valid as its storage is static: no struct
 	 * value is assigned over them. */
 	home->ep = &cfg->ep;
+	home->journal = s->journal;
 	home->hcfg = &cfg->http;
 	home->hub = s->hub;
 	home->metrics = &s->metrics;

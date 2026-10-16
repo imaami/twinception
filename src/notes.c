@@ -1,14 +1,15 @@
 /** @file The notes (notes.h). */
 #define _GNU_SOURCE /* memrchr(), mempcpy() */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/random.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "notes.h"
@@ -17,22 +18,17 @@
 /* The variables of the environment, its nullptr included. */
 enum { ENV = 10 };
 
-/* The branch that has the notes. */
-#define BRANCH "refs/heads/notes"
+/* Only this namespace is exposed by the notes tool. */
+#define BRANCH "refs/heads/notes/"
 
 struct notes {
 	char *env[ENV];
-	char *dir;    /* the real path of the directory of the threads */
-	int   fd;     /* the directory of the threads, open; -1 if not open */
+	char *dir;    /* the real path of the shared session repository */
+	char *participant;
+	char *directory; /* canonical Git common directory */
+	int   fd;     /* the repository directory, open; -1 if not open */
+	uint32_t bare;
 };
-
-/* The age in seconds past which a lock file in the repository of a thread
- * is stale.  No git of askai runs that long. */
-static constexpr time_t STALE = 60;
-static_assert(NOTES_NS + NOTES_GRACE < (uint64_t)STALE * 1'000'000'000);
-
-/* The option of git that names a repository. */
-static char const git_dir[] = "--git-dir=";
 
 /* The options of git before each command.  They stop the configuration of
  * the repository from making git run other programs, and they stop git
@@ -45,12 +41,14 @@ static char const *const fixed[] = {
 /* The words of each command after the options in fixed. */
 static char const *const cmds[][8] = {
 	[NOTES_CREATE] = { "init", "--bare", "--quiet", "--template=",
-	                   "--initial-branch=notes", "--" },
+	                   "--initial-branch=session", "--" },
 	[NOTES_CHECK]  = { "cat-file", "--batch-check" },
 	[NOTES_ADD]    = { "fast-import", "--quiet", "--date-format=now" },
 	[NOTES_LIST]   = { "log", "-z", "--no-renames", "--format=%ct", "--numstat",
-	                   BRANCH, "--" },
+	                   nullptr },
 	[NOTES_READ]   = { "cat-file", "--batch" },
+	[NOTES_BOOKS]  = { "for-each-ref", "--format=%(refname:strip=3)", BRANCH },
+	[NOTES_FORMAT] = { "rev-parse", "--show-object-format" },
 };
 
 /* The kinds of the objects in the output of git cat-file. */
@@ -81,21 +79,169 @@ notes_open (struct notes *notes,
 		return e;
 	}
 	struct stat st;
-	if (fstatat(notes->fd, "HEAD", &st, AT_SYMLINK_NOFOLLOW))
+	if (!fstatat(notes->fd, ".git", &st, AT_SYMLINK_NOFOLLOW)) {
+		if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))
+			return 0;
+		util_format(why, len, "the repository .git is not a file or directory");
+		return EINVAL;
+	}
+	if (!fstatat(notes->fd, "HEAD", &st, AT_SYMLINK_NOFOLLOW)) {
+		if (!S_ISREG(st.st_mode)) {
+			util_format(why, len, "the repository HEAD is not a regular file");
+			return EINVAL;
+		}
+		notes->bare = true;
 		return 0;
-	util_format(why, len, "the directory is a git repository.  Older versions "
-	            "of askai wrote all the notes to one repository.  askai now "
-	            "makes a repository for each thread in the directory.  Name a "
-	            "new directory");
-	return EINVAL;
+	}
+	/* Never silently start a new session over the old per-thread layout. */
+	int fd = dup(notes->fd);
+	if (fd < 0) {
+		e = errno;
+		util_format(why, len, "%s", strerror(e));
+		return e;
+	}
+	DIR *dir = fdopendir(fd);
+	if (!dir) {
+		e = errno;
+		close(fd);
+		util_format(why, len, "%s", strerror(e));
+		return e;
+	}
+	struct dirent *entry;
+	errno = 0; /* readdir distinguishes exhaustion from errors through errno. */
+	while ((entry = readdir(dir))) {
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+			continue;
+		e = EINVAL;
+		break;
+	}
+	if (!entry && errno)
+		e = errno;
+	if (closedir(dir) && !e)
+		e = errno;
+	if (e)
+		util_format(why, len, "notes now names one shared Git repository; this "
+		            "nonempty directory is not a repository. Keep the old notes "
+		            "directory and select a new repository path for the session");
+	notes->bare = true;
+	return e;
+}
+
+/* Resolves a Git path, relative to its containing directory when needed. */
+static int
+notes_resolve (char const *base,
+               char const *name,
+               char      **resolved)
+{
+	char *path = nullptr;
+	if (asprintf(&path, "%s%s%s", *name == '/' ? "" : base,
+	             *name == '/' ? "" : "/", name) < 0)
+		return ENOMEM;
+	*resolved = realpath(path, nullptr);
+	int e = *resolved ? 0 : errno;
+	free(path);
+	path = nullptr;
+	return e;
+}
+
+/* Reads Git's one-line indirection files at startup, outside the service loops. */
+static int
+notes_line (char const *base,
+            char const *name,
+            char      **line)
+{
+	char *path = nullptr;
+	if (asprintf(&path, "%s/%s", base, name) < 0)
+		return ENOMEM;
+	FILE *file = fopen(path, "re");
+	int e = file ? 0 : errno;
+	free(path);
+	path = nullptr;
+	if (e)
+		return e;
+	size_t size = 0;
+	ssize_t n = getline(line, &size, file);
+	e = n < 0 ? ferror(file) ? EIO : EINVAL : 0;
+	if (!e) {
+		while (n && ((*line)[n - 1] == '\n' || (*line)[n - 1] == '\r'))
+			(*line)[--n] = '\0';
+		if (!n || memchr(*line, '\0', (size_t)n))
+			e = EINVAL;
+	}
+	if (fclose(file) && !e)
+		e = errno;
+	return e;
+}
+
+/* Finds the common directory even when --notes names an attached worktree. */
+static int
+notes_common (struct notes *notes)
+{
+	if (notes->bare) {
+		notes->directory = strdup(notes->dir);
+		return notes->directory ? 0 : ENOMEM;
+	}
+	struct stat st;
+	if (fstatat(notes->fd, ".git", &st, AT_SYMLINK_NOFOLLOW))
+		return errno;
+	char *line = nullptr;
+	char *git = nullptr;
+	int e = 0;
+	if (S_ISDIR(st.st_mode))
+		e = notes_resolve(notes->dir, ".git", &git);
+	else {
+		e = notes_line(notes->dir, ".git", &line);
+		if (!e && strncmp(line, "gitdir: ", 8))
+			e = EINVAL;
+		if (!e)
+			e = notes_resolve(notes->dir, line + 8, &git);
+		free(line);
+		line = nullptr;
+	}
+	if (!e) {
+		e = notes_line(git, "commondir", &line);
+		if (e == ENOENT) {
+			notes->directory = git;
+			git = nullptr;
+			e = 0;
+		} else if (!e) {
+			e = notes_resolve(git, line, &notes->directory);
+		}
+	}
+	free(line);
+	line = nullptr;
+	free(git);
+	git = nullptr;
+	return e;
+}
+
+static bool
+notes_participant (char const *name,
+                   size_t      len)
+{
+	if (!name || !len || len > 64)
+		return false;
+	for (size_t i = 0; i < len; ++i)
+		if (!((name[i] >= 'a' && name[i] <= 'z') ||
+		      (name[i] >= 'A' && name[i] <= 'Z') ||
+		      (name[i] >= '0' && name[i] <= '9') || name[i] == '_' || name[i] == '-'))
+			return false;
+	return true;
 }
 
 struct notes *
 notes_create (char const *path,
+              char const *participant,
               char       *why,
               size_t      len,
               int        *e)
 {
+	if (!notes_participant(participant, participant ? strlen(participant) : 0)) {
+		*e = EINVAL;
+		util_format(why, len, "the participant must have 1 to 64 ASCII letters, "
+		            "digits, underscores or hyphens");
+		return nullptr;
+	}
 	static char const env_path[] = "PATH=";
 	char const *search = getenv("PATH");
 	struct notes *notes = calloc(1, sizeof *notes);
@@ -117,7 +263,15 @@ notes_create (char const *path,
 	static_assert(sizeof vars == sizeof notes->env);
 	memcpy(notes->env, vars, sizeof vars);
 	notes->fd = -1;
-	if ((*e = notes_open(notes, path, why, len)))
+	if (!(notes->participant = strdup(participant))) {
+		*e = ENOMEM;
+		util_format(why, len, "out of memory");
+		notes_destroy(&notes);
+		return nullptr;
+	}
+	if (!(*e = notes_open(notes, path, why, len)) && (*e = notes_common(notes)))
+		util_format(why, len, "cannot resolve the Git common directory: %s", strerror(*e));
+	if (*e)
 		notes_destroy(&notes);
 	return notes;
 }
@@ -130,7 +284,13 @@ notes_destroy (struct notes **p_notes)
 	struct notes *notes = *p_notes;
 	*p_notes = nullptr;
 	free(notes->env[0]);
+	notes->env[0] = nullptr;
 	free(notes->dir);
+	notes->dir = nullptr;
+	free(notes->participant);
+	notes->participant = nullptr;
+	free(notes->directory);
+	notes->directory = nullptr;
 	if (notes->fd >= 0)
 		close(notes->fd);
 	notes->fd = -1;
@@ -141,6 +301,12 @@ char *const *
 notes_env (struct notes const *notes)
 {
 	return notes->env;
+}
+
+char const *
+notes_directory (struct notes const *notes)
+{
+	return notes->directory;
 }
 
 int
@@ -184,28 +350,44 @@ notes_is_id (char const *s,
 }
 
 void
-notes_repo (uint64_t        principal,
-            enum notes_side side,
-            char const     *id,
-            char            repo[NOTES_REPO])
+notes_repo (struct notes const *notes,
+            uint64_t            principal,
+            enum notes_side     side,
+            char                repo[NOTES_REPO])
 {
-	static char const digits[] = "0123456789abcdef";
-	static char const sides[][sizeof "/upstream/"] = {
-		[NOTES_UPSTREAM] = "/upstream/",
-		[NOTES_CLIENT]   = "/client/",
-	};
-	static_assert(NOTES_REPO > sizeof git_dir - 1 + 16 + sizeof sides[0] - 1 + NOTES_ID);
-	char *p = mempcpy(repo, git_dir, sizeof git_dir - 1);
-	if (principal) {
-		for (unsigned i = 16; i--; principal >>= 4)
-			p[i] = digits[principal & 15];
-		p += 16;
-	} else {
-		p = stpcpy(p, "anonymous");
-	}
-	p = stpcpy(p, sides[side]);
-	memcpy(p, id, NOTES_ID);
-	p[NOTES_ID] = '\0';
+	static_assert(NOTES_REPO >= sizeof BRANCH + 64 + 1 + 16 + 1 + 8);
+	char who[17] = "anonymous";
+	if (principal)
+		util_format(who, sizeof who, "%016" PRIx64, principal);
+	util_format(repo, NOTES_REPO, BRANCH "%s/%s/%s", notes->participant, who,
+	            side == NOTES_CLIENT ? "client" : "upstream");
+}
+
+int
+notes_select (char const *name,
+              size_t      len,
+              char        repo[NOTES_REPO])
+{
+	if (!name || !len || sizeof BRANCH + len > NOTES_REPO)
+		return EINVAL;
+	char const *slash = memchr(name, '/', len);
+	size_t participant = slash ? (size_t)(slash - name) : 0;
+	if (!notes_participant(name, participant))
+		return EINVAL;
+	char const *who = slash + 1;
+	size_t rest = len - participant - 1;
+	slash = memchr(who, '/', rest);
+	size_t n = slash ? (size_t)(slash - who) : 0;
+	if (!((n == 9 && !memcmp(who, "anonymous", 9)) || (n == 16 && notes_hex(who, n))))
+		return EINVAL;
+	size_t side = rest - n - 1;
+	if (!((side == 6 && !memcmp(slash + 1, "client", 6)) ||
+	      (side == 8 && !memcmp(slash + 1, "upstream", 8))))
+		return EINVAL;
+	memcpy(repo, BRANCH, sizeof BRANCH - 1);
+	memcpy(repo + sizeof BRANCH - 1, name, len);
+	repo[sizeof BRANCH - 1 + len] = '\0';
+	return 0;
 }
 
 void
@@ -214,21 +396,23 @@ notes_argv (struct notes const *notes,
             enum notes_cmd      cmd,
             char const         *argv[NOTES_ARGV])
 {
-	static_assert(4 + ARRAY_SIZE(fixed) + ARRAY_SIZE(cmds[0]) + 1 <= NOTES_ARGV);
+	static_assert(4 + ARRAY_SIZE(fixed) + ARRAY_SIZE(cmds[0]) + 3 <= NOTES_ARGV);
 	size_t k = 0;
 	argv[k++] = "git";
 	argv[k++] = "-C";
 	argv[k++] = notes->dir;
-	/* git init makes the directories above the repository only if the
-	 * repository is its argument. */
-	if (cmd != NOTES_CREATE)
-		argv[k++] = repo;
+	if (cmd != NOTES_CREATE && notes->bare)
+		argv[k++] = "--git-dir=.";
 	for (size_t i = 0; i < ARRAY_SIZE(fixed); ++i)
 		argv[k++] = fixed[i];
 	for (size_t i = 0; i < ARRAY_SIZE(cmds[cmd]) && cmds[cmd][i]; ++i)
 		argv[k++] = cmds[cmd][i];
 	if (cmd == NOTES_CREATE)
-		argv[k++] = repo + sizeof git_dir - 1;
+		argv[k++] = ".";
+	if (cmd == NOTES_LIST) {
+		argv[k++] = repo;
+		argv[k++] = "--";
+	}
 	argv[k] = nullptr;
 }
 
@@ -260,37 +444,13 @@ notes_is_dotgit (char const *part,
 }
 
 bool
-notes_exists (struct notes const *notes,
-              char const         *repo)
+notes_exists (struct notes const *notes)
 {
-	if (!notes || !repo)
+	if (!notes)
 		return false;
-	char path[NOTES_REPO + sizeof "/HEAD"];
-	stpcpy(stpcpy(path, repo + sizeof git_dir - 1), "/HEAD");
 	struct stat st;
-	return !fstatat(notes->fd, path, &st, AT_SYMLINK_NOFOLLOW);
-}
-
-void
-notes_unlock (struct notes const *notes,
-              char const         *repo)
-{
-	static char const *const locks[] = {
-		"HEAD.lock", "config.lock", "refs/heads/notes.lock",
-	};
-	char path[NOTES_REPO + sizeof "/refs/heads/notes.lock"];
-	char *p = stpcpy(path, repo + sizeof git_dir - 1);
-	*p++ = '/';
-	time_t now = time(nullptr);
-	for (size_t i = 0; i < ARRAY_SIZE(locks); ++i) {
-		struct stat st;
-		stpcpy(p, locks[i]);
-		/* A lock file that cannot be removed makes the write fail, which
-		 * the log shows. */
-		if (!fstatat(notes->fd, path, &st, AT_SYMLINK_NOFOLLOW) &&
-		    now - st.st_mtime > STALE)
-			(void)unlinkat(notes->fd, path, 0);
-	}
+	return !fstatat(notes->fd, notes->bare ? "HEAD" : ".git", &st,
+	                AT_SYMLINK_NOFOLLOW);
 }
 
 int
@@ -322,24 +482,27 @@ notes_name (char const *name,
 
 int
 notes_check_input (struct buf *in,
+                   char const *repo,
                    char const *name,
                    size_t      len)
 {
-	static char const at[] = BRANCH ":";
+	size_t branch = strlen(repo);
 	/* The input has a line for the branch, a line for each directory in the
 	 * name, and a line for the name. */
 	size_t lines = 1;
 	for (size_t i = 0; i < len; ++i)
 		lines += name[i] == '/';
 	struct span s;
-	int e = buf_reserve(in, sizeof BRANCH + lines * (sizeof at + len), SIZE_MAX, &s);
+	int e = buf_reserve(in, branch + 1 + lines * (branch + 2 + len), SIZE_MAX, &s);
 	if (e)
 		return e;
-	char *p = mempcpy(s.ptr, BRANCH "\n", sizeof BRANCH);
+	char *p = mempcpy(s.ptr, repo, branch);
+	*p++ = '\n';
 	for (size_t i = 0; i <= len; ++i) {
 		if (i < len && name[i] != '/')
 			continue;
-		p = mempcpy(p, at, sizeof at - 1);
+		p = mempcpy(p, repo, branch);
+		*p++ = ':';
 		p = mempcpy(p, name, i);
 		*p++ = '\n';
 	}
@@ -459,6 +622,7 @@ notes_add_file (struct buf *in,
 
 int
 notes_add_input (struct buf      *in,
+                 char const      *repo,
                  enum notes_side  side,
                  char const      *tip,
                  struct span      file)
@@ -467,10 +631,10 @@ notes_add_input (struct buf      *in,
 		[NOTES_UPSTREAM] = "The upstream added a note.",
 		[NOTES_CLIENT]   = "A client added a note.",
 	};
-	char head[256];
-	int h = snprintf(head, sizeof head, "commit " BRANCH "\ncommitter askai <askai> "
-	                 "now\ndata <<END\n%s\nEND\n%s%s%s", messages[side],
-	                 *tip ? "from " : "", tip, *tip ? "\n" : "");
+	char head[NOTES_REPO + 256];
+	int h = snprintf(head, sizeof head, "commit %s\ncommitter askai <askai> "
+	                 "now\ndata <<END\n%s\nEND\nfrom %s\n", repo, messages[side],
+	                 *tip ? tip : "0000000000000000000000000000000000000000");
 	if (h < 0 || h >= (int)sizeof head)
 		return EINVAL;
 	struct span s;
@@ -485,18 +649,20 @@ notes_add_input (struct buf      *in,
 
 int
 notes_read_input (struct buf *in,
+                  char const *repo,
                   char const *name,
                   size_t      len)
 {
-	static char const at[] = BRANCH ":";
+	size_t branch = strlen(repo);
 	struct span s;
-	int e = buf_reserve(in, sizeof at + len, SIZE_MAX, &s);
+	int e = buf_reserve(in, branch + len + 2, SIZE_MAX, &s);
 	if (e)
 		return e;
-	char *p = mempcpy(s.ptr, at, sizeof at - 1);
+	char *p = mempcpy(s.ptr, repo, branch);
+	*p++ = ':';
 	p = mempcpy(p, name, len);
 	*p = '\n';
-	buf_commit(in, sizeof at + len);
+	buf_commit(in, branch + len + 2);
 	return 0;
 }
 
@@ -548,46 +714,78 @@ notes_token (char const *s,
 	return prev ? (size_t)(prev - s) + 1 : 0;
 }
 
+/* Parses one unsigned decimal field without accepting a prefix of a token. */
+static bool
+notes_number (char const *s,
+              size_t      len,
+              uint64_t   *value)
+{
+	*value = 0;
+	if (!len)
+		return false;
+	for (size_t i = 0; i < len; ++i) {
+		if (s[i] < '0' || s[i] > '9')
+			return false;
+		unsigned digit = (unsigned)(s[i] - '0');
+		if (*value > (UINT64_MAX - digit) / 10)
+			return false;
+		*value = *value * 10 + digit;
+	}
+	return true;
+}
+
 bool
-notes_entry_before (struct span         out,
-                    size_t             *end,
-                    struct notes_entry *entry)
+notes_entry_before (struct span          out,
+                    struct notes_cursor *cursor,
+                    struct notes_entry  *entry)
 {
 	char const *s = (char const *)out.ptr;
-	size_t at = *end;
-	/* Each note is two tokens that end with a NUL: the time, then a newline
-	 * and "LINES\tREMOVED\tNAME".  A cut output ends inside a token. */
+	size_t at = cursor->end;
+	/* Git emits TIMESTAMP\0, then one numstat token per file. Only the first
+	 * file token starts with a newline. A cut output may end within a token. */
 	if (at && s[at - 1]) {
 		char const *nul = memrchr(s, '\0', at);
 		at = nul ? (size_t)(nul - s) + 1 : 0;
 	}
 	while (at) {
 		size_t stat = notes_token(s, at - 1);
-		size_t time = stat ? notes_token(s, stat - 1) : 0;
-		char const *tab = s[stat] == '\n' ? memchr(s + stat, '\t', at - 1 - stat)
-		                                  : nullptr;
+		size_t start = stat + (s[stat] == '\n');
+		char const *tab = memchr(s + start, '\t', at - 1 - start);
 		char const *name = tab ? memchr(tab + 1, '\t', (size_t)(s + at - 1 - tab - 1))
 		                       : nullptr;
-		/* The loop skips a token that does not describe a file, and a file
-		 * without a time before it. */
-		if (!name || !stat) {
+		uint64_t lines = 0;
+		size_t digits = tab ? (size_t)(tab - s - start) : 0;
+		bool binary = digits == 1 && s[start] == '-';
+		if (!name || name + 1 == s + at - 1 ||
+		    (!binary && !notes_number(s + start, digits, &lines))) {
 			at = stat;
+			cursor->first = 0;
 			continue;
+		}
+		if (!cursor->first || stat < cursor->first) {
+			/* Find this commit's timestamp once, then reuse it for the other
+			 * files as the reverse iterator reaches them. */
+			size_t before = stat;
+			while (before) {
+				size_t token = notes_token(s, before - 1);
+				if (notes_number(s + token, before - 1 - token, &cursor->time)) {
+					cursor->first = before;
+					break;
+				}
+				before = token;
+			}
+			if (!before)
+				break;
 		}
 		*entry = (struct notes_entry){
 			.name = { (unsigned char *)(uintptr_t)(name + 1),
 			          (size_t)(s + at - 1 - name - 1) },
+			.time = cursor->time,
+			.lines = binary ? NOTES_BINARY : lines,
 		};
-		/* git's count of lines is "-" for a binary file. */
-		if (s[stat + 1] == '-')
-			entry->lines = NOTES_BINARY;
-		for (char const *d = s + stat + 1; d < tab && *d >= '0' && *d <= '9'; ++d)
-			entry->lines = entry->lines * 10 + (uint64_t)(*d - '0');
-		for (char const *d = s + time; d < s + stat - 1 && *d >= '0' && *d <= '9'; ++d)
-			entry->time = entry->time * 10 + (uint64_t)(*d - '0');
-		*end = time;
+		cursor->end = stat;
 		return true;
 	}
-	*end = 0;
+	cursor->end = 0;
 	return false;
 }

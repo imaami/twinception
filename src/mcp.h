@@ -14,6 +14,7 @@
 struct config;
 struct git;
 struct ledger;
+struct journal;
 struct roster;
 struct manual;
 struct mcp;
@@ -128,6 +129,7 @@ mcp_static_create (struct config const *cfg,
                    struct ledger       *ledger,
                    struct roster       *roster,
                    struct web          *web,
+                   struct journal      *journal,
                    int                 *e);
 
 extern void

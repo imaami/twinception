@@ -205,6 +205,196 @@ test_invalid (struct ledger *l)
 	CHECK(!l->n && !test_owners(l) && !l->n_owners);
 }
 
+/* A restored record preserves its identity, timestamps and copied result.
+ * The current handle receives cancellation for a working record; no
+ * restored id can replace any owner's record. */
+static void
+test_restore (void)
+{
+	int e = 0;
+	struct ledger *l = ledger_create(&e);
+	CHECK(l && !e);
+	if (!l)
+		return;
+	unsigned char id[] = "0123456789abcdef0123456789abcdef";
+	unsigned char result[] = "\"result\":{\"content\":[]}}";
+	struct span key = { id, LEDGER_ID };
+	struct span body = { result, sizeof result - 1 };
+	struct ledger_wait *w = test_wait(l, A, &e);
+	struct ledger_task *done = ledger_restore(l, A, LEDGER_JOB, 7, key, 10, 20,
+	                                         LEDGER_COMPLETED, body, nullptr,
+	                                         (struct handle){}, nullptr, &e);
+	CHECK(done && !e);
+	if (!done) {
+		ledger_wait_leave(l, &w);
+		ledger_destroy(&l);
+		return;
+	}
+	CHECK(done->created == 10 && done->ended == 20 && done->tool == 7 &&
+	      done->kind == LEDGER_JOB && atomic_load(&done->status) == LEDGER_COMPLETED &&
+	      done->len == body.len && !memcmp(done->result, body.ptr, body.len) &&
+	      done->result != (char *)result && test_found(l, A, done->id) &&
+	      !test_found(l, B, done->id) && !ledger_owner_find(l, A)->running);
+	CHECK(w && atomic_load(&w->posted));
+	test_deliver();
+	struct ledger_look look;
+	CHECK(!ledger_tell(l, w, nullptr, 0, &look) && look.n_tasks == 1 &&
+	      look.tasks[0] == done);
+	ledger_look_put(&look);
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 9, key, 99, 0, LEDGER_WORKING,
+	                      (struct span){}, test_loop, (struct handle){}, test_cancel,
+	                      &e) && e == EEXIST);
+	CHECK(!ledger_restore(l, B, LEDGER_JOB, 9, key, 99, 0, LEDGER_FAILED,
+	                      (struct span){}, nullptr, (struct handle){}, nullptr,
+	                      &e) && e == EEXIST);
+	CHECK(l->n == 1 && done->tool == 7 && done->created == 10 &&
+	      atomic_load(&done->status) == LEDGER_COMPLETED &&
+	      !ledger_owner_find(l, B));
+
+	/* Restore in reverse creation order; listing still orders by creation.
+	 * The recovered handle, rather than the one from the former process,
+	 * receives the cancel. */
+	id[0] = '1';
+	struct handle who = { .bits = UINT64_C(0x0100000300000004) };
+	struct ledger_task *running = ledger_restore(l, A, LEDGER_JOB, 8, key, 5, 0,
+	                                            LEDGER_WORKING, (struct span){},
+	                                            test_loop, who, test_cancel, &e);
+	CHECK(running && !e);
+	if (running) {
+		CHECK(running->who.bits == who.bits &&
+		      ledger_owner_find(l, A)->running == 1);
+		CHECK(!ledger_list(l, A, &look) && look.n_tasks == 2 &&
+		      look.tasks[0] == done && look.tasks[1] == running);
+		ledger_look_put(&look);
+		uint64_t seen = cancels;
+		ledger_task_cancel(running);
+		ledger_task_cancel(running);
+		test_deliver();
+		CHECK(cancels == seen + 1 && atomic_load(&running->refs) == 2);
+		ledger_end(l, running, LEDGER_CANCELLED);
+		ledger_task_put(running);
+	}
+	test_deliver();
+	ledger_wait_leave(l, &w);
+	clock_ns += (LEDGER_KEEP - 1) * NS;
+	CHECK(test_found(l, A, done->id));
+	clock_ns += 2 * NS;
+	CHECK(!test_found(l, A, done->id) && !l->n);
+	ledger_task_put(done);
+	ledger_destroy(&l);
+}
+
+/* Restoring never bypasses validation or working-job admission limits,
+ * but terminal records do not consume a running-job slot. */
+static void
+test_restore_limits (void)
+{
+	int e = 0;
+	struct ledger *l = ledger_create(&e);
+	CHECK(l && !e);
+	if (!l)
+		return;
+	unsigned char id[LEDGER_ID];
+	memset(id, '0', sizeof id);
+	struct span key = { id, sizeof id };
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, (struct span){ id, LEDGER_ID - 1 },
+	                      1, 0, LEDGER_WORKING, (struct span){}, test_loop,
+	                      (struct handle){}, test_cancel, &e) && e == EINVAL);
+	id[0] = 'G';
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 0, LEDGER_WORKING,
+	                      (struct span){}, test_loop, (struct handle){}, test_cancel,
+	                      &e) && e == EINVAL);
+	id[0] = '0';
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 0,
+	                      (enum ledger_status)-1, (struct span){}, nullptr,
+	                      (struct handle){}, nullptr, &e) && e == EINVAL);
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 0, LEDGER_FAILED,
+	                      (struct span){ nullptr, 1 }, nullptr, (struct handle){},
+	                      nullptr, &e) && e == EINVAL);
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 0, LEDGER_WORKING,
+	                      (struct span){}, nullptr, (struct handle){}, test_cancel,
+	                      &e) && e == EINVAL);
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 2, LEDGER_WORKING,
+	                      (struct span){}, test_loop, (struct handle){}, test_cancel,
+	                      &e) && e == EINVAL);
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 0, LEDGER_WORKING,
+	                      key, test_loop, (struct handle){}, test_cancel,
+	                      &e) && e == EINVAL);
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 2, LEDGER_CANCELLED,
+	                      key, nullptr, (struct handle){}, nullptr,
+	                      &e) && e == EINVAL);
+	CHECK(!l->n && !l->n_owners);
+	struct ledger_task *running[LEDGER_RUNNING];
+	for (size_t k = 0; k < LEDGER_RUNNING; ++k) {
+		id[0] = '0' + k;
+		running[k] = ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 0, LEDGER_WORKING,
+		                            (struct span){}, test_loop, (struct handle){},
+		                            test_cancel, &e);
+		CHECK(running[k] && !e);
+	}
+	id[0] = 'f';
+	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 0, LEDGER_WORKING,
+	                      (struct span){}, test_loop, (struct handle){}, test_cancel,
+	                      &e) && e == EBUSY);
+	struct ledger_task *done = ledger_restore(l, A, LEDGER_JOB, 1, key, 1, 2,
+	                                         LEDGER_FAILED, (struct span){}, nullptr,
+	                                         (struct handle){}, nullptr, &e);
+	CHECK(done && !e && ledger_owner_find(l, A)->running == LEDGER_RUNNING &&
+	      l->n == LEDGER_RUNNING + 1);
+	ledger_task_put(done);
+	for (size_t k = 0; k < LEDGER_RUNNING; ++k)
+		test_end(l, running[k]);
+	ledger_destroy(&l);
+}
+
+/* Removing an ended record allows its durable job to be restored under
+ * the same id without invalidating readers of the earlier record. */
+static void
+test_remove (void)
+{
+	int e = 0;
+	struct ledger *l = ledger_create(&e);
+	CHECK(l && !e);
+	if (!l)
+		return;
+	struct ledger_task *old = test_open(l, A, LEDGER_JOB, &e);
+	CHECK(old && !e);
+	if (!old) {
+		ledger_destroy(&l);
+		return;
+	}
+	struct span id = { (unsigned char *)old->id, LEDGER_ID };
+	CHECK(ledger_remove(nullptr, A, id) == EINVAL &&
+	      ledger_remove(l, A, (struct span){}) == EINVAL &&
+	      ledger_remove(l, A, (struct span){ id.ptr, LEDGER_ID - 1 }) == EINVAL &&
+	      ledger_remove(l, B, id) == ENOENT &&
+	      ledger_remove(l, A, id) == EBUSY && test_found(l, A, old->id));
+	unsigned char result[] = "\"error\":{\"message\":\"interrupted\"}}";
+	struct span body = { result, sizeof result - 1 };
+	CHECK(!ledger_task_reserve(old, body.len) && !ledger_task_write(old, body));
+	ledger_end(l, old, LEDGER_FAILED);
+	struct ledger_task *reader = ledger_find(l, A, old->id, LEDGER_ID);
+	CHECK(reader == old && atomic_load(&old->refs) == 3);
+	CHECK(ledger_remove(l, B, id) == ENOENT && !ledger_remove(l, A, id) &&
+	      ledger_remove(l, A, id) == ENOENT && !test_found(l, A, old->id) &&
+	      !old->owner && atomic_load(&old->refs) == 2 &&
+	      atomic_load(&old->status) == LEDGER_FAILED &&
+	      old->len == body.len && !memcmp(old->result, body.ptr, body.len) &&
+	      !l->n && !l->n_owners && !l->bytes);
+	struct ledger_task *next = ledger_restore(l, A, LEDGER_JOB, 5, id, old->created, 0,
+	                                         LEDGER_WORKING, (struct span){}, test_loop,
+	                                         (struct handle){}, test_cancel, &e);
+	CHECK(next && !e && next != old && test_found(l, A, old->id));
+	if (next) {
+		ledger_end(l, next, LEDGER_COMPLETED);
+		CHECK(!ledger_remove(l, A, id) && !l->n);
+		ledger_task_put(next);
+	}
+	ledger_task_put(reader);
+	ledger_task_put(old);
+	ledger_destroy(&l);
+}
+
 /* The limit of LEDGER_RUNNING records whose calls run applies to the jobs
  * of one owner.  A task of the owner is opened past it, and so is a job of
  * another owner.  A ledger full of records whose calls run refuses every
@@ -679,12 +869,13 @@ static void
 test_cancels (struct ledger *l)
 {
 	int e = 0;
+	uint64_t seen = cancels;
 	struct ledger_task *t = test_open(l, A, LEDGER_JOB, &e);
 	ledger_task_cancel(t);
 	ledger_task_cancel(t);
 	CHECK(atomic_load(&t->refs) == 3);
 	loop_fini(test_loop);
-	CHECK(cancels == 1 && atomic_load(&t->refs) == 2);
+	CHECK(cancels == seen + 1 && atomic_load(&t->refs) == 2);
 	test_end(l, t);
 }
 
@@ -710,6 +901,9 @@ main (void)
 		return 1;
 	}
 	test_invalid(l);
+	test_restore();
+	test_restore_limits();
+	test_remove();
 	test_caps(l);
 	clock_ns += 2 * LEDGER_KEEP * NS;
 	test_sweep(l);

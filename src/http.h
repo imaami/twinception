@@ -83,6 +83,10 @@ http_post_json (struct http         *http,
 extern int
 http_accept_encoding (struct http_request *request);
 
+/** Override the method before the queued transfer starts. */
+extern int
+http_method (struct http_request *request, char const *method);
+
 extern void
 http_cancel (struct http         *http,
              struct http_request **p_request);

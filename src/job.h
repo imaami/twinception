@@ -51,12 +51,15 @@
 
 struct home_principal;
 struct home_delivery_error;
+struct home_recovery;
 struct http_request;
+struct journal;
 
 /** The bits of the messages to home. */
 enum {
 	JOB_SUBMIT   = 1,  /**< run the job */
 	JOB_CANCEL   = 2,  /**< the front lets go: stop the job if it runs */
+	JOB_SUSPEND  = 4,  /**< let go on shutdown, leaving durable provider work alive */
 };
 
 /** The bits of the messages to the front. */
@@ -84,6 +87,7 @@ enum job_ask {
 	                               (home.c) */
 	JOB_TOOLS      = 1 << 2,  /**< keep a streamed answer's thinking and tool
 	                               calls, which the request offered tools for */
+	JOB_DURABLE    = 1 << 3,  /**< detached work whose journal permits recovery */
 };
 
 /** The header of a tool call in a streamed answer.  Each call is stored in
@@ -114,6 +118,7 @@ enum job_status {
 	JOB_FAILED,     /**< the result says why the upstream call failed */
 	JOB_BUSY,       /**< refused: too many jobs in flight, or queued for its
 	                     principal */
+	JOB_SUSPENDED,  /**< durable stream interrupted: poll to reattach from its journal */
 	JOB_CANCELLED,  /**< cancelled, or refused by a home that drains; the
 	                     result is empty */
 };
@@ -164,6 +169,8 @@ struct job {
 	struct home_principal *who;         /**< home's: whose queue it is on */
 	struct home_delivery_error *delivery_error; /**< home's: transfer error kept
 	                                               while buffered events drain */
+	struct home_recovery  *recovery;    /**< home's: journal and replay state */
+	struct journal        *journal;     /**< the front's: shared transcript writer */
 	struct handle          call;        /**< the front's: what waits for it */
 	uint64_t               deadline;    /**< the front writes, before SUBMIT, when
 	                                         the call times out waiting, and home
@@ -204,6 +211,7 @@ struct job {
 	uint32_t               context;     /**< home writes before DONE: the tokens
 	                                         the upstream's context holds, as
 	                                         /props says; 0: unknown */
+	uint32_t               archive_turn; /**< the front's: provider turn number */
 	struct ai_reader       reader;      /**< home's: of the stream's events */
 	uint16_t               http;        /**< home writes before DONE: the answer's
 	                                         HTTP status */
@@ -215,6 +223,7 @@ struct job {
 	char                   reason[42];  /**< home's: the answer's stop reason,
 	                                         longer than any the providers
 	                                         name */
+	char                   archive[33]; /**< the front's: transcript job id */
 };
 
 /** Home's handler of the messages to it (home.c). */
@@ -250,16 +259,20 @@ job_init (struct job  *job,
 	job->cancel_url = nullptr;
 	job->who = nullptr;
 	job->delivery_error = nullptr;
+	job->recovery = nullptr;
+	job->journal = nullptr;
 	job->call = (struct handle){};
 	job->deadline = job->since = job->active = job->principal = 0;
 	job->peer[0] = job->peer[1] = 0;
 	job->session = job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
 	job->used = job->context = 0;
+	job->archive_turn = 0;
 	job->reader = (struct ai_reader){};
 	job->http = job->flags = 0;
 	job->status = job->asks = 0;
 	job->provider_done = false;
 	job->reason[0] = '\0';
+	job->archive[0] = '\0';
 	atomic_init(&job->progress, 0);
 	atomic_init(&job->home_bits, 0);
 	atomic_init(&job->front_bits, 0);

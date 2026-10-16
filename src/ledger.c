@@ -432,7 +432,8 @@ ledger_insert (struct ledger       *l,
 	struct ledger_owner *o = ledger_owner_get(l, key, &e);
 	if (!o)
 		return e;
-	if (t->kind == LEDGER_JOB && o->running >= LEDGER_RUNNING)
+	bool working = atomic_load_explicit(&t->status, memory_order_relaxed) == LEDGER_WORKING;
+	if (working && t->kind == LEDGER_JOB && o->running >= LEDGER_RUNNING)
 		return EBUSY;
 	struct ledger_task *old = o->n >= LEDGER_MINE ? ledger_owner_ended(o) : nullptr;
 	if (old) {
@@ -445,9 +446,13 @@ ledger_insert (struct ledger       *l,
 	*bucket = t;
 	++l->n;
 	t->owner = o;
-	list_append(&o->records, &t->mine);
+	struct list *pos = o->records.prev;
+	while (pos != &o->records &&
+	       container_of(pos, struct ledger_task, mine)->created > t->created)
+		pos = pos->prev;
+	list_append(pos->next, &t->mine);
 	++o->n;
-	++o->running;
+	o->running += working;
 	return 0;
 }
 
@@ -548,6 +553,47 @@ ledger_open (struct ledger    *ledger,
 		*e = got < 0 ? errno : EAGAIN;
 		return nullptr;
 	}
+	unsigned char id[LEDGER_ID];
+	for (size_t i = 0; i < BITS; ++i) {
+		id[2 * i] = hex[bits[i] >> 4];
+		id[2 * i + 1] = hex[bits[i] & 15];
+	}
+	return ledger_restore(ledger, owner, kind, tool, (struct span){ id, sizeof id },
+	                      ledger_now(), 0, LEDGER_WORKING, (struct span){}, loop, who,
+	                      fn, e);
+}
+
+struct ledger_task *
+ledger_restore (struct ledger     *ledger,
+                uint64_t           owner,
+                enum ledger_kind   kind,
+                uint16_t           tool,
+                struct span        id,
+                uint64_t           created,
+                uint64_t           ended,
+                enum ledger_status status,
+                struct span        result,
+                struct loop       *loop,
+                struct handle      who,
+                void             (*fn) (struct loop *loop,
+                                        struct msg  *msg),
+                int               *e)
+{
+	if (!e)
+		return nullptr;
+	*e = EINVAL;
+	bool working = status == LEDGER_WORKING;
+	if (!ledger || !id.ptr || id.len != LEDGER_ID ||
+	    (kind != LEDGER_TASK && kind != LEDGER_JOB) ||
+	    status < LEDGER_WORKING || status >= LEDGER_STATUSES ||
+	    (result.len && !result.ptr) ||
+	    (working && (!loop || !fn || result.len || ended)) ||
+	    (status == LEDGER_CANCELLED && result.len))
+		return nullptr;
+	for (size_t i = 0; i < id.len; ++i)
+		if (!((id.ptr[i] >= '0' && id.ptr[i] <= '9') ||
+		      (id.ptr[i] >= 'a' && id.ptr[i] <= 'f')))
+			return nullptr;
 	struct ledger_task *t = malloc(sizeof *t);
 	if (!t) {
 		*e = ENOMEM;
@@ -559,36 +605,68 @@ ledger_open (struct ledger    *ledger,
 	t->owner = nullptr;
 	t->loop = loop;
 	t->result = nullptr;
-	t->len = t->size = 0;
-	t->created = ledger_now();
-	t->ended = t->due = 0;
+	t->len = t->size = result.len;
+	if (result.len) {
+		t->result = malloc(result.len);
+		if (!t->result) {
+			free(t);
+			t = nullptr;
+			*e = ENOMEM;
+			return nullptr;
+		}
+		memcpy(t->result, result.ptr, result.len);
+	}
+	t->created = created;
+	t->ended = working ? 0 : ended ? ended : ledger_now();
+	t->due = working ? 0 : loop_clock() + LEDGER_KEEP * NS;
 	t->who = who;
-	atomic_init(&t->status, LEDGER_WORKING);
+	atomic_init(&t->status, status);
 	atomic_init(&t->refs, 2);
 	atomic_init(&t->asked, 0);
 	atomic_init(&t->told, 0);
 	t->tool = tool;
 	t->kind = kind;
-	for (size_t i = 0; i < BITS; ++i) {
-		t->id[2 * i] = hex[bits[i] >> 4];
-		t->id[2 * i + 1] = hex[bits[i] & 15];
-	}
+	memcpy(t->id, id.ptr, LEDGER_ID);
 	t->hash = util_hash(0, t->id, LEDGER_ID);
 
 	struct ledger_metrics *m = &ledger->metrics;
+	struct ledger_task *gone = nullptr;
+	struct ledger_task *excess = nullptr;
+	struct ledger_wait *hits = nullptr;
 	pthread_mutex_lock(&ledger->lock);
-	struct ledger_task *gone = ledger_sweep(ledger, nullptr, true);
-	*e = ledger_insert(ledger, t, owner, &gone);
+	struct ledger_task *old = ledger->buckets[t->hash & (BUCKETS - 1)];
+	while (old && (old->hash != t->hash || memcmp(old->id, t->id, LEDGER_ID)))
+		old = old->next;
+	*e = EEXIST;
+	if (!old) {
+		gone = ledger_sweep(ledger, nullptr, true);
+		*e = ledger_insert(ledger, t, owner, &gone);
+	}
+	if (!*e) {
+		ledger_add(kind == LEDGER_JOB ? &m->jobs : &m->opened, 1);
+		ledger_add(&m->kept, 1);
+		if (!working) {
+			list_append(&ledger->ended, &t->hook);
+			ledger->bytes += t->len;
+			ledger_add(&m->ended[status], 1);
+			ledger_add(&m->bytes, t->len);
+			hits = ledger_owner_wake(t->owner);
+			excess = ledger_sweep(ledger, t, false);
+		}
+	}
 	pthread_mutex_unlock(&ledger->lock);
+	ledger_wake(hits);
 	ledger_put_all(gone);
+	ledger_put_all(excess);
 	if (*e) {
-		if (*e != ENOMEM)
+		if (*e == EBUSY || *e == ENOSPC)
 			ledger_add(*e == EBUSY ? &m->refused : &m->full, 1);
+		free(t->result);
+		t->result = nullptr;
 		free(t);
+		t = nullptr;
 		return nullptr;
 	}
-	ledger_add(kind == LEDGER_JOB ? &m->jobs : &m->opened, 1);
-	ledger_add(&m->kept, 1);
 	return t;
 }
 
@@ -662,6 +740,28 @@ ledger_find (struct ledger *ledger,
 	pthread_mutex_unlock(&ledger->lock);
 	ledger_put_all(gone);
 	return t;
+}
+
+int
+ledger_remove (struct ledger *ledger,
+               uint64_t       owner,
+               struct span    id)
+{
+	if (!ledger || !id.ptr || id.len != LEDGER_ID)
+		return EINVAL;
+	uint64_t hash = util_hash(0, id.ptr, id.len);
+	pthread_mutex_lock(&ledger->lock);
+	struct ledger_task *t = ledger->buckets[hash & (BUCKETS - 1)];
+	while (t && (t->hash != hash || memcmp(t->id, id.ptr, id.len) || t->owner->key != owner))
+		t = t->next;
+	int e = !t ? ENOENT :
+	        atomic_load_explicit(&t->status, memory_order_relaxed) == LEDGER_WORKING ? EBUSY : 0;
+	if (!e)
+		ledger_drop(ledger, t);
+	pthread_mutex_unlock(&ledger->lock);
+	if (!e)
+		ledger_task_put(t);
+	return e;
 }
 
 void

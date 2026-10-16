@@ -929,3 +929,11 @@ http_accept_encoding (struct http_request *request)
 	return curl_easy_setopt(request->easy, CURLOPT_ACCEPT_ENCODING, "") == CURLE_OK
 	       ? 0 : EIO;
 }
+
+int
+http_method (struct http_request *request, char const *method)
+{
+	if (!request || !method)
+		return EFAULT;
+	return curl_easy_setopt(request->easy, CURLOPT_CUSTOMREQUEST, method) ? EIO : 0;
+}

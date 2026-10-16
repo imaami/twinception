@@ -14,6 +14,7 @@ override SRC_askai := \
   httpd.c             \
   instance.c          \
   jb.c                \
+  journal.c           \
   ledger.c            \
   log.c               \
   loop.c              \

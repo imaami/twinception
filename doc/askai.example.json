@@ -1,4 +1,6 @@
 {
+  "participant": "local-model",
+  "transcripts": "/var/lib/askai/transcripts.git",
   "upstream": {
     "provider": "llama",
     "api": "chat",
@@ -95,7 +97,7 @@
       "timeout": 30
     },
     "notes": {
-      "directory": "/var/lib/askai/notes"
+      "directory": "/var/lib/askai/notes.git"
     },
     "jobs": {
       "clients": true

@@ -83,9 +83,11 @@
 #include "datauri.h"
 #include "dstr.h"
 #include "git.h"
+#include "home.h"
 #include "instance.h"
 #include "jb.h"
 #include "job.h"
+#include "journal.h"
 #include "ledger.h"
 #include "list.h"
 #include "log.h"
@@ -178,6 +180,8 @@ enum mcp_fetch : uint8_t {
 	FETCH_COPY = 32,   /* a flag that is set with FETCH_READ, then with the
 	                      values of an add: a copy of a note of the other
 	                      side's notebook into the caller's */
+	FETCH_BOOKS = 128, /* lists the session's notebooks */
+	FETCH_FORMAT = FETCH_BOOKS | FETCH_CHECK, /* object format for an unborn branch */
 	FETCH_ATTACH = 64, /* a flag that is set with FETCH_READ: the attach
 	                      action, which uploads the note as a file for the
 	                      turn */
@@ -378,6 +382,7 @@ struct mcp_static {
 	struct task_pool         *tasks;        /**< test_task's, if askai offers
 	                                             it */
 	struct notes             *notes;        /**< the notes', with --notes */
+	struct journal           *journal;      /**< durable requests and replies */
 	struct ledger            *ledger;       /**< the tasks' */
 	struct roster            *roster;       /**< the tool calls that run and
 	                                             are not tasks */
@@ -405,6 +410,7 @@ enum mcp_phase {
 	PHASE_PARSE,     /* parsing it, a slice a step */
 	PHASE_DISPATCH,  /* handing the message on, in a step of its own */
 	PHASE_BUILD,     /* writing the upstream request, a slice a step */
+	PHASE_JOURNAL,   /* waiting for durable storage, off the loop */
 	PHASE_CALL,      /* waiting for the upstream */
 	PHASE_TOOL,      /* waiting for its own call, which works in its slot's
 	                    steps */
@@ -493,9 +499,10 @@ struct mcp_slot {
 	                                  which the list of jobs shows */
 	struct mcp_slot    *of;        /* the job whose output it gives, if it
 	                                  gives a job's */
+	char                notebook[NOTES_REPO]; /* selected read branch; empty: own */
 	char                note[352]; /* The text that askai adds to the
 	                                  call's output.  With 352 bytes the
-	                                  slot is 512 bytes and has no padding
+	                                  slot is 640 bytes and has no padding
 	                                  at its end. */
 };
 
@@ -537,6 +544,19 @@ struct mcp_req {
 	struct ledger_task  *task;       /* the record of the task or the job
 	                                    that the call runs as, once it is
 	                                    one */
+	struct ledger_task  *admitted;   /* durable admission, before its reply */
+	struct journal_record *recovered; /* current turn's records, until submit */
+	struct json_object  *saved_tools[JOB_CALLS]; /* completed calls to replay */
+	struct handle        archive_call; /* an asynchronous journal operation */
+	uint64_t             archive_deadline; /* absolute realtime deadline */
+	uint64_t             replay_filed; /* current turn's restored attachments */
+	uint32_t             intents;    /* tool intents made durable this turn */
+	int                  archive_error;
+	bool                 detach_pending;
+	bool                 archived_end;
+	bool                 recovering;
+	bool                 suspended;
+	char                 archive[LEDGER_ID + 1];
 	struct ledger_task  *shown;      /* the record whose result tasks/get or
 	                                    a client's jobs copies, while it
 	                                    does */
@@ -638,7 +658,7 @@ struct mcp_req {
 	bool                 blocked;    /* waiting for on_writable() */
 	bool                 listed;     /* the list that the turn's items go in
 	                                    has one */
-	bool                 branch;     /* the thread has notes */
+	bool                 branch;     /* the caller's branch has notes */
 	bool                 filing;     /* the conversation has a file that the
 	                                    turns attached, since it last began
 	                                    again from the prompt */
@@ -648,9 +668,7 @@ struct mcp_req {
 	bool                 logged;     /* the end of its tool call is logged */
 	char                 thread[NOTES_ID + 1];  /* the id of the thread of
 	                                               the notes */
-	char                 repo[NOTES_REPO];      /* the argument of git that
-	                                               names the repository of
-	                                               the thread */
+	char                 repo[NOTES_REPO];      /* the caller's own notes branch */
 	char                 client[POLICY_WHO];  /* the client for the log,
 	                                             copied from its stream at
 	                                             its head; "": anonymous */
@@ -993,6 +1011,9 @@ static void
 mcp_shelve_job (struct mcp *mcp,
                 struct job *job)
 {
+	home_job_recovery_fini(job);
+	job->journal = nullptr;
+	job->archive[0] = '\0';
 	buf_fini(&job->request);
 	buf_fini(&job->key);
 	shelf_put(&mcp->jobs, &job->spare);
@@ -1294,7 +1315,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	instance_table_put(&slot->req->mcp->instances, &slot->inst);
 	slot->lent = (struct span){};
 	/* A git that writes notes runs to its end, because a kill could leave
-	 * a lock file behind (notes_unlock()). */
+	 * a lock file behind. Shared repositories require manual inspection of stale locks. */
 	uint8_t kind = slot->fetch & FETCH_KIND;
 	if (kind == FETCH_CREATE || kind == FETCH_ADD)
 		child_release(&slot->child);
@@ -1323,7 +1344,9 @@ mcp_req_drop (struct mcp_req *req)
 		return;
 	}
 	req->job = nullptr;
-	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_CANCEL);
+	job_post(job, mcp->home, &job->to_home, &job->home_bits,
+	         (mcp->draining || req->suspended) && job->asks & JOB_DURABLE
+	         ? JOB_SUSPEND : JOB_CANCEL);
 	if (!req->call.bits) {
 		if (job_put(job, 1))
 			mcp_shelve_job(mcp, job);
@@ -1405,6 +1428,8 @@ mcp_req_args_free (struct mcp_req *req,
  * if req->error is set or its reply, in the record, is an error or not whole,
  * else completed.  Publish that, and drop the call's reference to the
  * record. */
+static uint64_t mcp_req_owner (struct mcp_req const *req);
+
 static void
 mcp_req_task_end (struct mcp_req *req)
 {
@@ -1417,6 +1442,9 @@ mcp_req_task_end (struct mcp_req *req)
 	                          : req->error || failed ? LEDGER_FAILED
 	                          : LEDGER_COMPLETED;
 	ledger_end(req->mcp->st->ledger, task, status);
+	if (req->suspended)
+		(void)ledger_remove(req->mcp->st->ledger, mcp_req_owner(req),
+		                    (struct span){ (unsigned char *)task->id, LEDGER_ID });
 	loop_forget(req->mcp->loop, task->who);
 	ledger_task_put(task);
 	req->task = nullptr;
@@ -1437,10 +1465,30 @@ mcp_req_leave (struct mcp_req *req)
 
 /* The reply is queued, or the stream gone: let go of everything at once but
  * the values still to free, and end once those are freed. */
+static bool mcp_req_archive_end (struct mcp_req *req);
+
 static void
 mcp_req_finish (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
+	if (req->error)
+		mcp_req_drop(req);
+	if (mcp_req_archive_end(req))
+		return;
+	if (req->archive_call.bits)
+		loop_forget(mcp->loop, req->archive_call);
+	req->archive_call = (struct handle){};
+	if (req->admitted) {
+		ledger_end(mcp->st->ledger, req->admitted, LEDGER_CANCELLED);
+		loop_forget(mcp->loop, req->admitted->who);
+		ledger_task_put(req->admitted);
+		req->admitted = nullptr;
+	}
+	journal_records_destroy(&req->recovered);
+	for (size_t k = 0; k < JOB_CALLS; ++k) {
+		json_object_put(req->saved_tools[k]);
+		req->saved_tools[k] = nullptr;
+	}
 	mcp_req_leave(req);
 	if (req->task)
 		mcp_req_task_end(req);
@@ -1528,6 +1576,14 @@ static int
 mcp_req_write (struct mcp_req *req,
                struct span     bytes)
 {
+	if (*req->archive && bytes.len && !req->archive_error) {
+		int e = journal_put(req->mcp->st->journal, req->archive, "message",
+		                    bytes.ptr, bytes.len, nullptr, nullptr, nullptr);
+		if (e) {
+			req->archive_error = e;
+			return e;
+		}
+	}
 	int e = req->s->ops->data(req->s, bytes);
 	if (e != EAGAIN)
 		return e;
@@ -1747,9 +1803,8 @@ mcp_req_trace_tail (struct mcp_req const *req,
 		n += util_format(tail + n, size - n, "It was stopped after %" PRIu32
 		                 " turns, still calling tools.\n", req->turn);
 	if (req->branch)
-		n += util_format(tail + n, size - n, "It kept notes in the thread %s: to "
-		                 "go on with this work, give that as the thread "
-		                 "argument.", req->thread);
+		n += util_format(tail + n, size - n, "Its notes are saved in the shared session repository. "
+		                 "The ask-chain thread is %s.", req->thread);
 	return n;
 }
 
@@ -2144,6 +2199,7 @@ mcp_req_log_turn (struct mcp_req const *req,
 		[JOB_FAILED]    = "failed",
 		[JOB_BUSY]      = "refused as busy",
 		[JOB_CANCELLED] = "cancelled",
+		[JOB_SUSPENDED] = "suspended",
 	};
 	static_assert(ARRAY_SIZE(ends) == JOB_CANCELLED + 1);
 	if (log_threshold < LOG_VERBOSE)
@@ -2198,6 +2254,7 @@ static void
 mcp_req_job_done (struct mcp_req *req)
 {
 	struct job *job = req->job;
+	req->archive_error = journal_error(req->mcp->st->journal);
 	struct span why = buf_peek(&job->result);
 	mcp_req_log_turn(req, job);
 	buf_fini(&job->key);
@@ -2219,6 +2276,9 @@ mcp_req_job_done (struct mcp_req *req)
 	case JOB_CANCELLED:
 		mcp_req_fail(req, ESHUTDOWN);
 		return;
+	case JOB_SUSPENDED:
+		req->suspended = true;
+		break;
 	case JOB_BUSY:
 		why = SPAN(busy);
 		break;
@@ -2272,6 +2332,7 @@ mcp_on_job (struct loop *loop,
 			buf_fini(&job->calls[k]);
 		buf_fini(&job->thought);
 		buf_fini(&job->replay);
+		home_job_recovery_fini(job);
 		free(job);
 		return;
 	}
@@ -2406,6 +2467,123 @@ mcp_req_owner (struct mcp_req const *req)
 	return util_hash(~req->mcp->st->seed, s->peer, sizeof s->peer) | LEDGER_ANONYMOUS;
 }
 
+/* A journal callback names a request rather than keeping its address: a
+ * disconnect or shutdown may have ended it before the disk write ends. */
+struct mcp_archive_wait {
+	struct handle who;
+	void (*done) (struct mcp_req *req, int error);
+};
+
+static void
+mcp_archive_back (struct loop *loop,
+                  void        *arg,
+                  int          error)
+{
+	struct mcp_archive_wait *wait = arg;
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, wait->who, HANDLE_REQ);
+	if (req) {
+		loop_forget(loop, wait->who);
+		req->archive_call = (struct handle){};
+	}
+	void (*done)(struct mcp_req *, int) = wait->done;
+	free(wait);
+	wait = nullptr;
+	if (req)
+		done(req, error);
+}
+
+/* Copy a JSON record into the writer's bounded queue. A callback is a
+ * durability barrier: both the journal and its Git commit precede it. */
+static int
+mcp_req_archive (struct mcp_req    *req,
+                 char const        *kind,
+                 struct json_object *obj,
+                 void             (*done) (struct mcp_req *, int))
+{
+	if (!obj)
+		return ENOMEM;
+	size_t len = 0;
+	char const *text = json_object_to_json_string_length(obj, JB_WIRE, &len);
+	struct mcp_archive_wait *wait = done ? calloc(1, sizeof *wait) : nullptr;
+	int e = !text || (done && !wait) ? ENOMEM : 0;
+	if (!e && done) {
+		wait->done = done;
+		e = req->archive_call.bits ? EBUSY
+		  : loop_handle(req->mcp->loop, req, HANDLE_REQ, &wait->who);
+	}
+	if (!e)
+		e = journal_put(req->mcp->st->journal, req->archive, kind, text, len,
+		                done ? req->mcp->loop : nullptr,
+		                done ? mcp_archive_back : nullptr, wait);
+	json_object_put(obj);
+	if (e) {
+		if (wait && wait->who.bits)
+			loop_forget(req->mcp->loop, wait->who);
+		free(wait);
+		wait = nullptr;
+	} else if (wait) {
+		req->archive_call = wait->who;
+	}
+	return e;
+}
+
+static enum ledger_status
+mcp_req_archive_status (struct mcp_req const *req)
+{
+	struct ledger_task const *task = req->task;
+	bool failed = !task->result || task->len != task->size ||
+	              (task->len >= 8 && !memcmp(task->result, "\"error\":", 8));
+	return req->error == ECANCELED ? LEDGER_CANCELLED
+	     : req->error || failed ? LEDGER_FAILED : LEDGER_COMPLETED;
+}
+
+static void
+mcp_req_archive_finished (struct mcp_req *req,
+                          int             error)
+{
+	req->archived_end = true;
+	if (error) {
+		LOG(LOG_ERROR, "cannot persist job %s: %s", req->archive, strerror(error));
+		req->error = error;
+	}
+	mcp_req_finish(req);
+}
+
+/* A shutdown leaves the last provider checkpoint resumable. Explicit
+ * cancellation and completed results are durable before ledger publish. */
+static bool
+mcp_req_archive_end (struct mcp_req *req)
+{
+	if (!req->task || !*req->archive || req->archived_end || req->mcp->draining || req->suspended)
+		return false;
+	if (req->archive_call.bits) {
+		/* A cancel may supersede a pending state, intent or result write.
+		 * FIFO writes retain that evidence, followed by the cancellation;
+		 * its obsolete callback must not launch any more work. */
+		loop_forget(req->mcp->loop, req->archive_call);
+		req->archive_call = (struct handle){};
+	}
+	struct ledger_task const *task = req->task;
+	enum ledger_status status = mcp_req_archive_status(req);
+	size_t len = status == LEDGER_CANCELLED || task->len != task->size ? 0 : task->len;
+	struct json_object *obj = jb_object(
+		"status", json_object_new_int(status),
+		"ended", json_object_new_uint64((uint64_t)time(nullptr) * NS),
+		"result", json_object_new_string_len(task->result ? task->result : "",
+		                                     (int)len), nullptr);
+	int e = mcp_req_archive(req, status == LEDGER_CANCELLED ? "cancel" : "result",
+	                        obj, mcp_req_archive_finished);
+	if (e) {
+		req->archived_end = true;
+		req->error = e;
+		LOG(LOG_ERROR, "cannot persist job %s: %s", req->archive, strerror(e));
+		return false;
+	}
+	loop_unready(&req->step);
+	req->phase = PHASE_JOURNAL;
+	return true;
+}
+
 /* Write the call's key into @p job, and name the request by a handle for
  * the job's completion. */
 static int
@@ -2432,6 +2610,18 @@ mcp_req_submit (struct mcp_req *req)
 	struct job *job = mcp_take_job(mcp);
 	if (!job)
 		return ENOMEM;
+	job->journal = mcp->st->journal;
+	memcpy(job->archive, req->archive, sizeof job->archive);
+	job->archive_turn = req->turn + 1;
+	if (req->recovering) {
+		int re = home_job_restore(job, req->recovered);
+		journal_records_destroy(&req->recovered);
+		if (re) {
+			mcp_shelve_job(mcp, job);
+			return re;
+		}
+		req->recovering = false;
+	}
 	int e = mcp_req_name(req, job);
 	if (e) {
 		mcp_shelve_job(mcp, job);
@@ -2442,6 +2632,14 @@ mcp_req_submit (struct mcp_req *req)
 	req->upload = (struct buf){};
 	job->call = req->call;
 	job->deadline = ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
+	if (req->archive_deadline) {
+		struct timespec now;
+		if (!clock_gettime(CLOCK_REALTIME, &now)) {
+			uint64_t wall = (uint64_t)now.tv_sec * NS + (uint64_t)now.tv_nsec;
+			job->deadline = loop->now + (req->archive_deadline > wall
+			                         ? req->archive_deadline - wall : 1);
+		}
+	}
 	struct stream const *s = req->s;
 	if (s->principal) {
 		job->principal = s->principal;
@@ -2456,6 +2654,8 @@ mcp_req_submit (struct mcp_req *req)
 		               : util_hash(~seed, job->peer, sizeof job->peer);
 	}
 	uint8_t asks = req->asks | (req->token && req->sse ? JOB_NOTIFY : 0);
+	if (req->task && *req->archive)
+		asks |= JOB_DURABLE;
 	if (req->lent) {
 		asks |= JOB_TOOLS;
 		hist_add(&mcp->counts->calls.turns, 1);
@@ -3259,18 +3459,22 @@ mcp_req_ask (struct mcp_req     *req,
 		mcp_slot_result(&req->self, problem, true);
 		return;
 	}
-	if (background && !req->task && mcp_req_background(req, req->self.tool, true))
-		return;
+	if (background && !req->task) {
+		if (st->journal)
+			req->detach_pending = true;
+		else if (mcp_req_background(req, req->self.tool, true))
+			return;
+	}
 	if (id) {
 		memcpy(req->thread, id, sizeof req->thread);
-		notes_repo(req->principal, NOTES_UPSTREAM, req->thread, req->repo);
+		notes_repo(notes, req->principal, NOTES_UPSTREAM, req->repo);
 	} else if (notes) {
 		if (notes_id(req->thread)) {
 			mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a thread's id"),
 			              nullptr, 0);
 			return;
 		}
-		notes_repo(req->principal, NOTES_UPSTREAM, req->thread, req->repo);
+		notes_repo(notes, req->principal, NOTES_UPSTREAM, req->repo);
 	}
 	req->asked = ++req->mcp->asked;
 	mcp_req_log_ask(req, prompt, id != nullptr);
@@ -3281,11 +3485,11 @@ mcp_req_ask (struct mcp_req     *req,
 		return;
 	}
 	req->s->ops->waiting(req->s);
-	if (req->sse_ok)
+	if (req->sse_ok && !req->detach_pending)
 		mcp_req_stream(req);
-	/* The message, which holds the thread's id, goes now: going on with a
-	 * thread, its notes go with the prompt. */
-	bool resume = id;
+	/* Every ask starts with this participant's session notes. */
+	req->self.notebook[0] = '\0';
+	bool resume = notes && notes_exists(notes);
 	mcp_req_dispose(req);
 	if (resume) {
 		mcp_slot_notes_run(&req->self, FETCH_RESUME, nullptr);
@@ -3606,7 +3810,8 @@ mcp_req_turn_done (struct mcp_req *req)
 	struct job *job = req->job;
 	long told = mcp->st->ep->context;
 	req->used = job->used;
-	req->filed = 0;
+	req->filed = req->replay_filed;
+	req->replay_filed = 0;
 	req->context = told > 0 ? (uint32_t)told : job->context;
 	req->cut = ai_cut(mcp->st->ep->api, job->reason);
 	req->forced = 0;
@@ -4292,7 +4497,10 @@ mcp_req_background (struct mcp_req *req,
 	static_assert(LEDGER_RUNNING == 8, "the problem says");
 	struct mcp_static const *st = req->mcp->st;
 	int e;
-	struct ledger_task *task = mcp_req_record(req, LEDGER_JOB, tool, &e);
+	struct ledger_task *task = req->admitted;
+	req->admitted = nullptr;
+	if (!task)
+		task = mcp_req_record(req, LEDGER_JOB, tool, &e);
 	if (!task) {
 		mcp_slot_refused(&req->self, e, TEXT("You have 8 jobs and tasks running, the most "
 		                                     "at once: wait for one to end."));
@@ -5048,6 +5256,19 @@ mcp_slot_none (struct mcp_slot    *slot,
 	mcp_slot_result(slot, TEXT("No tool of that name is yours to call."), true);
 }
 
+static void
+mcp_req_intent_saved (struct mcp_req *req,
+                      int             error)
+{
+	if (error) {
+		req->archive_error = error;
+		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot persist job state"), nullptr, 0);
+		return;
+	}
+	req->intents |= UINT32_C(1) << req->launched;
+	mcp_req_enter(req, PHASE_CALLS);
+}
+
 /* Launch the turn's next tool call, in its slot, unless it must wait: a
  * call that keeps to itself until those before it are written, and those
  * after it until it is.  A call goes to the tool of its name that the turns
@@ -5071,6 +5292,23 @@ mcp_req_call_launch (struct mcp_req *req)
 		mcp_req_fail(req, ESHUTDOWN);
 		return;
 	}
+	if (*req->archive && !(req->intents >> k & 1) && !req->saved_tools[k]) {
+		struct json_object *intent = jb_object(
+			"index", json_object_new_int64(k),
+			"agenda", json_object_new_boolean(tool->kind->flags & KF_AGENDA),
+			"name", json_object_new_string_len((char const *)c.name.ptr, (int)c.name.len),
+			"arguments", req->args[k] ? json_object_get(req->args[k])
+			                          : json_object_new_object(), nullptr);
+		int e = mcp_req_archive(req, "tool-intent", intent, mcp_req_intent_saved);
+		if (e) {
+			req->archive_error = e;
+			mcp_req_fail(req, e);
+			return;
+		}
+		loop_unready(&req->step);
+		req->phase = PHASE_JOURNAL;
+		return;
+	}
 	/* Its arguments go once its result is written, or the request ends. */
 	struct json_object *args = req->args[k];
 	struct mcp_slot *slot = &req->slots[k];
@@ -5080,6 +5318,15 @@ mcp_req_call_launch (struct mcp_req *req)
 	hist_add(&mcp->counts->calls.lent[tool->metric], 1);
 	mcp_req_notify_tool(req, tool->name);
 	loop_ready_bulk(mcp->loop, &req->step);
+	if (req->saved_tools[k]) {
+		struct json_object *saved = req->saved_tools[k];
+		size_t len = 0;
+		char const *text = jb_str(jb_get(saved, "text"), &len);
+		slot->start = loop_clock();
+		slot->skip = json_object_get_uint64(jb_get(saved, "skip"));
+		mcp_slot_result(slot, ESC(text, len), json_object_get_boolean(jb_get(saved, "failed")));
+		return;
+	}
 	if (id == TOOL_MAX)
 		mcp_req_log_refused(req, c.name, args);
 	if (!args) {
@@ -5225,6 +5472,22 @@ mcp_slot_done (struct mcp_slot *slot,
 		    *text ? "; error " : "", text);
 	}
 	slot->failed = failed;
+	if (*req->archive && slot->role == ROLE_TURN && !req->saved_tools[slot - req->slots]) {
+		struct span files = buf_peek(&req->attached);
+		struct json_object *result = jb_object(
+			"index", json_object_new_int64(slot - req->slots),
+			"failed", json_object_new_boolean(failed),
+			"skip", json_object_new_uint64(slot->skip),
+			"branch", json_object_new_boolean(req->branch),
+			"filing", json_object_new_boolean(req->filing),
+			"filed", json_object_new_uint64(req->filed),
+			"attached", json_object_new_string_len(files.len ? (char const *)files.ptr : "", (int)files.len),
+			"text", json_object_new_string_len(out.len ? (char const *)out.ptr : "", (int)out.len),
+			nullptr);
+		int e = mcp_req_archive(req, "tool-result", result, nullptr);
+		if (e)
+			req->archive_error = e;
+	}
 	if (slot->role == ROLE_JOB) {
 		mcp_agenda_job_done(slot);
 		return;
@@ -5387,7 +5650,386 @@ mcp_req_result_write (struct mcp_req *req)
 	mcp_req_calls_next(req);
 }
 
-/* Submit the next turn, its upload whole; or, draining, end the call. */
+static void
+mcp_req_archive_submitted (struct mcp_req *req,
+                           int             error)
+{
+	if (!error && req->mcp->draining)
+		error = ESHUTDOWN;
+	if (error) {
+		req->archive_error = error;
+		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot persist job state"), nullptr, 0);
+		return;
+	}
+	if (req->detach_pending) {
+		req->detach_pending = false;
+		if (mcp_req_background(req, req->self.tool, true))
+			return;
+	}
+	int e = mcp_req_submit(req);
+	if (e)
+		mcp_req_fail(req, e);
+}
+
+/* The endpoint fingerprint never archives URL credentials or headers. */
+static uint64_t
+mcp_archive_endpoint (struct mcp_static const *st)
+{
+	struct ai_endpoint const *ep = st->ep;
+	uint64_t hash = util_hash(st->seed, ep->url, strlen(ep->url));
+	return ep->model ? util_hash(hash, ep->model, strlen(ep->model)) : hash;
+}
+
+static int
+mcp_req_checkpoint (struct mcp_req *req)
+{
+	struct mcp_static const *st = req->mcp->st;
+	int e = req->archive_error;
+	if (!e && req->detach_pending && !req->admitted)
+		req->admitted = mcp_req_record(req, LEDGER_JOB, req->self.tool, &e);
+	struct ledger_task const *task = req->task ? req->task : req->admitted;
+	if (!e && !*req->archive) {
+		if (task)
+			memcpy(req->archive, task->id, LEDGER_ID);
+		else
+			e = notes_id(req->archive);
+	}
+	if (e)
+		return e;
+	struct json_object *lent = json_object_new_array();
+	for (uint32_t i = 0; lent && i < st->n_offers; ++i)
+		if ((req->lent >> i) & 1)
+			if (json_object_array_add(lent, json_object_new_string(st->offers[i].name))) {
+				json_object_put(lent);
+				lent = nullptr;
+				break;
+			}
+	struct span upload = buf_peek(&req->upload);
+	uint64_t now = mcp_realtime();
+	req->archive_deadline = st->ep->timeout_ms > 0
+	                      ? now + (uint64_t)st->ep->timeout_ms * 1'000'000 : 0;
+	struct json_object *state = jb_object(
+		"version", json_object_new_int(1),
+		"owner", json_object_new_uint64(mcp_req_owner(req)),
+		"created", json_object_new_uint64(task ? task->created : now),
+		"tool", json_object_new_string(st->offers[req->self.tool].name),
+		"api", json_object_new_int(st->ep->api),
+		"provider", json_object_new_int(st->ep->provider),
+		"endpoint", json_object_new_uint64(mcp_archive_endpoint(st)),
+		"request", json_object_new_string_len((char const *)upload.ptr, (int)upload.len),
+		"turn", json_object_new_int64(req->turn + 1),
+		"deadline", json_object_new_uint64(req->archive_deadline),
+		"prompt_at", json_object_new_uint64(req->prompt_at),
+		"used", json_object_new_int64(req->used),
+		"context", json_object_new_int64(req->context),
+		"traced", json_object_new_int64(req->traced),
+		"trace", json_object_new_string_len(dstr_get(&req->trace), (int)dstr_len(&req->trace)),
+		"thread", json_object_new_string(req->thread),
+		"branch", json_object_new_boolean(req->branch),
+		"filing", json_object_new_boolean(req->filing),
+		"filed", json_object_new_uint64(req->filed),
+		"reminded", json_object_new_int(req->reminded),
+		"forced", json_object_new_int(req->forced),
+		"asks", json_object_new_int(req->asks),
+		"agenda", json_object_new_boolean(req->agenda != nullptr),
+		"lent", lent, nullptr);
+	req->intents = 0;
+	for (size_t k = 0; k < JOB_CALLS; ++k) {
+		json_object_put(req->saved_tools[k]);
+		req->saved_tools[k] = nullptr;
+	}
+	e = mcp_req_archive(req, "state", state, mcp_req_archive_submitted);
+	if (!e) {
+		loop_unready(&req->step);
+		req->phase = PHASE_JOURNAL;
+	}
+	return e;
+}
+
+struct mcp_recover_wait {
+	struct handle who;
+	struct json_object *args;
+	bool cancel;
+};
+
+/* Restored jobs use today's permissions and identities; the saved mask is
+ * expressed by tool names, because registry indices change with config. */
+static tool_mask
+mcp_archive_lent (struct mcp_req *req,
+                  struct json_object *state)
+{
+	struct json_object *names = jb_get(state, "lent");
+	tool_mask allowed = mcp_req_lent(req), saved = 0;
+	size_t n = json_object_array_length(names);
+	for (size_t k = 0; k < n; ++k) {
+		char const *name = jb_text(json_object_array_get_idx(names, k));
+		for (uint32_t i = 0; name && i < req->mcp->st->n_offers; ++i)
+			if (!strcmp(name, req->mcp->st->offers[i].name))
+				saved |= (tool_mask)1 << i;
+	}
+	return allowed & saved;
+}
+
+static struct json_object *
+mcp_archive_json (struct journal_record const *record)
+{
+	if (!record)
+		return nullptr;
+	struct json_object *obj = json_tokener_parse((char const *)record->data);
+	if (!json_object_is_type(obj, json_type_object)) {
+		json_object_put(obj);
+		return nullptr;
+	}
+	return obj;
+}
+
+static void
+mcp_recover_back (struct loop           *loop,
+                  void                  *arg,
+                  int                    error,
+                  struct journal_record *records)
+{
+	struct mcp_recover_wait *wait = arg;
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, wait->who, HANDLE_REQ);
+	struct json_object *args = wait->args;
+	bool cancel = wait->cancel;
+	if (req) {
+		loop_forget(loop, wait->who);
+		req->archive_call = (struct handle){};
+	}
+	free(wait);
+	wait = nullptr;
+	if (!req)
+		goto out;
+	struct mcp_static const *st = req->mcp->st;
+	size_t id_len = 0;
+	char const *id = jb_str(jb_get(args, "job"), &id_len);
+	struct ledger_task *found = ledger_find(st->ledger, mcp_req_owner(req), id, id_len);
+	if (found) {
+		ledger_task_put(found);
+		if (cancel)
+			mcp_slot_client_cancel(&req->self, args, true);
+		else
+			mcp_slot_client_result(&req->self, args, true);
+		goto out;
+	}
+	struct journal_record *checkpoint = nullptr, *end = nullptr;
+	for (struct journal_record *r = records; r; r = r->next) {
+		if (!strcmp(r->kind, "state")) {
+			checkpoint = r;
+			end = nullptr;
+		} else if (!strcmp(r->kind, "result") || !strcmp(r->kind, "cancel")) {
+			end = r;
+		}
+	}
+	struct json_object *state = mcp_archive_json(checkpoint);
+	char const *tool = jb_text(jb_get(state, "tool"));
+	char const *problem = error ? "Cannot read the durable job journal."
+	                     : !state || json_object_get_int(jb_get(state, "version")) != 1
+	                     ? "No recoverable job of yours has that id."
+	                     : json_object_get_uint64(jb_get(state, "owner")) != mcp_req_owner(req) ||
+	                       !tool || strcmp(tool, st->offers[req->self.tool].name)
+	                     ? "No job of yours from this tool has that id."
+	                     : nullptr;
+	if (problem)
+		goto failed;
+	uint64_t created = json_object_get_uint64(jb_get(state, "created"));
+	if (end) {
+		struct json_object *result = mcp_archive_json(end);
+		size_t len = 0;
+		char const *text = jb_str(jb_get(result, "result"), &len);
+		int status = json_object_get_int(jb_get(result, "status"));
+		struct ledger_task *task = nullptr;
+		int e = EINVAL;
+		if (text && status >= LEDGER_COMPLETED && status <= LEDGER_CANCELLED)
+			task = ledger_restore(st->ledger, mcp_req_owner(req), LEDGER_JOB, req->self.tool,
+			                       (struct span){ (unsigned char *)(uintptr_t)id, id_len },
+			                       created, json_object_get_uint64(jb_get(result, "ended")),
+			                       (enum ledger_status)status,
+			                       (struct span){ (unsigned char *)(uintptr_t)text, len },
+			                       nullptr, (struct handle){}, nullptr, &e);
+		json_object_put(result);
+		if (!task && e != EEXIST) {
+			problem = "Cannot restore this job's saved result.";
+			goto failed;
+		}
+		ledger_task_put(task);
+		json_object_put(state);
+		if (cancel)
+			mcp_slot_client_cancel(&req->self, args, true);
+		else
+			mcp_slot_client_result(&req->self, args, true);
+		goto out;
+	}
+	if (json_object_get_int(jb_get(state, "api")) != st->ep->api ||
+	    json_object_get_int(jb_get(state, "provider")) != st->ep->provider ||
+	    json_object_get_uint64(jb_get(state, "endpoint")) != mcp_archive_endpoint(st)) {
+		problem = "This job belongs to a different upstream endpoint, model or API.";
+		goto failed;
+	}
+	if (json_object_get_boolean(jb_get(state, "agenda"))) {
+		problem = "This interrupted job had background tools or timers. Their outcomes must be reconciled before continuing.";
+		goto failed;
+	}
+	uint32_t intents = 0, results = 0;
+	struct json_object *last_tool_result = nullptr;
+	for (struct journal_record *r = checkpoint->next; r; r = r->next) {
+		bool intent = !strcmp(r->kind, "tool-intent");
+		if (!intent && strcmp(r->kind, "tool-result"))
+			continue;
+		struct json_object *obj = mcp_archive_json(r);
+		int64_t k = json_object_get_int64(jb_get(obj, "index"));
+		if (!obj || k < 0 || k >= JOB_CALLS ||
+		    (!intent && !jb_text(jb_get(obj, "text")))) {
+			json_object_put(obj);
+			problem = "This job's tool journal is invalid; no calls were repeated.";
+			goto failed;
+		}
+		if (intent) {
+			if (json_object_get_boolean(jb_get(obj, "agenda"))) {
+				json_object_put(obj);
+				problem = "This interrupted turn started or used background tools or timers. Reconcile their outcomes before continuing.";
+				goto failed;
+			}
+			intents |= UINT32_C(1) << k;
+			json_object_put(obj);
+		} else {
+			results |= UINT32_C(1) << k;
+			json_object_put(req->saved_tools[k]);
+			req->saved_tools[k] = obj;
+			last_tool_result = obj;
+		}
+	}
+	if (intents & ~results) {
+		problem = "A tool call was interrupted with an unknown outcome; reconcile its effects before continuing. AskAI has not repeated it.";
+		goto failed;
+	}
+	size_t len = 0;
+	char const *request = jb_str(jb_get(state, "request"), &len);
+	int64_t turn = json_object_get_int64(jb_get(state, "turn"));
+	uint64_t prompt_at = json_object_get_uint64(jb_get(state, "prompt_at"));
+	struct json_object *names = jb_get(state, "lent");
+	if (!request || !len || turn < 1 || turn > UINT32_MAX || prompt_at > len ||
+	    !json_object_is_type(names, json_type_array)) {
+		problem = "This job's saved request is invalid; no provider request was sent.";
+		goto failed;
+	}
+	int e = mcp_piece_write(&RAW(request, len), 0, len, &req->upload, SIZE_MAX);
+	char const *trace = jb_str(jb_get(state, "trace"), &len);
+	if (!e && trace && !dstr_cat_n(&req->trace, trace, len))
+		e = ENOMEM;
+	struct handle who = {};
+	if (!e)
+		e = loop_handle(loop, req, HANDLE_REQ, &who);
+	struct ledger_task *task = !e
+		? ledger_restore(st->ledger, mcp_req_owner(req), LEDGER_JOB, req->self.tool,
+		                 (struct span){ (unsigned char *)(uintptr_t)id, id_len },
+		                 created, 0, LEDGER_WORKING, (struct span){}, loop, who,
+		                 mcp_on_task_cancel, &e) : nullptr;
+	if (!task) {
+		if (who.bits)
+			loop_forget(loop, who);
+		problem = "Cannot resume this job now; it may already be resuming on another request.";
+		goto failed;
+	}
+	req->admitted = task;
+	memcpy(req->archive, id, LEDGER_ID);
+	req->turn = (uint32_t)turn - 1;
+	req->prompt_at = prompt_at;
+	req->archive_deadline = json_object_get_uint64(jb_get(state, "deadline"));
+	req->lent = mcp_archive_lent(req, state);
+	req->asks = (uint8_t)json_object_get_int(jb_get(state, "asks"));
+	req->used = (uint32_t)json_object_get_int64(jb_get(state, "used"));
+	req->context = (uint32_t)json_object_get_int64(jb_get(state, "context"));
+	req->traced = (uint32_t)json_object_get_int64(jb_get(state, "traced"));
+	req->reminded = (uint8_t)json_object_get_int(jb_get(state, "reminded"));
+	req->forced = (uint8_t)json_object_get_int(jb_get(state, "forced"));
+	struct json_object *local = last_tool_result ? last_tool_result : state;
+	req->branch = json_object_get_boolean(jb_get(local, "branch"));
+	req->filing = json_object_get_boolean(jb_get(local, "filing"));
+	req->filed = json_object_get_uint64(jb_get(local, "filed"));
+	req->replay_filed = last_tool_result ? req->filed : 0;
+	char const *attached = jb_str(jb_get(local, "attached"), &len);
+	if (attached && len) {
+		e = mcp_piece_write(&RAW(attached, len), 0, len, &req->attached, SIZE_MAX);
+		if (e) {
+			problem = "Cannot restore this turn's saved attachments.";
+			goto failed;
+		}
+	}
+	char const *thread = jb_str(jb_get(state, "thread"), &len);
+	if (thread && notes_is_id(thread, len))
+		memcpy(req->thread, thread, NOTES_ID);
+	if (st->notes)
+		notes_repo(st->notes, req->principal, NOTES_UPSTREAM, req->repo);
+	req->intents = intents;
+	req->recovering = true;
+	req->asked = ++req->mcp->asked;
+	req->recovered = checkpoint->next;
+	checkpoint->next = nullptr;
+	json_object_put(state);
+	mcp_req_wait(req);
+	if (mcp_req_background(req, req->self.tool, true))
+		goto out;
+	if (cancel)
+		ledger_task_cancel(req->task);
+	e = mcp_req_submit(req);
+	if (e)
+		mcp_req_fail(req, e);
+	goto out;
+failed:
+	json_object_put(state);
+	mcp_slot_result(&req->self, ESC(problem, strlen(problem)), true);
+out:
+	json_object_put(args);
+	journal_records_destroy(&records);
+}
+
+/* Return true once this poll is waiting for disk, or has answered an
+ * admission error. Simultaneous polls converge at ledger_restore(). */
+static bool
+mcp_req_recover (struct mcp_req *req,
+                 struct json_object *args,
+                 bool cancel)
+{
+	if (!req->mcp->st->journal)
+		return false;
+	size_t len = 0;
+	char const *id = jb_str(jb_get(args, "job"), &len);
+	if (!id || !notes_is_id(id, len))
+		return false;
+	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req), id, len);
+	if (task) {
+		ledger_task_put(task);
+		return false;
+	}
+	struct mcp_recover_wait *wait = calloc(1, sizeof *wait);
+	int e = wait ? loop_handle(req->mcp->loop, req, HANDLE_REQ, &wait->who) : ENOMEM;
+	if (!e) {
+		wait->args = json_object_get(args);
+		wait->cancel = cancel;
+		e = journal_load_current(req->mcp->st->journal, id, req->mcp->loop,
+		                         mcp_recover_back, wait);
+	}
+	if (e) {
+		if (wait) {
+			if (wait->who.bits)
+				loop_forget(req->mcp->loop, wait->who);
+			json_object_put(wait->args);
+			free(wait);
+			wait = nullptr;
+		}
+		mcp_slot_result(&req->self, TEXT("Cannot load the durable job journal now."), true);
+		return true;
+	}
+	req->archive_call = wait->who;
+	mcp_req_wait(req);
+	req->s->ops->waiting(req->s);
+	req->phase = PHASE_JOURNAL;
+	return true;
+}
+
+/* Submit the next turn only after its request and ownership are durable. */
 static void
 mcp_req_turn_submit (struct mcp_req *req)
 {
@@ -5396,9 +6038,10 @@ mcp_req_turn_submit (struct mcp_req *req)
 		return;
 	}
 	mcp_req_wait(req);
-	if (mcp_req_submit(req))
+	int e = req->mcp->st->journal ? mcp_req_checkpoint(req) : mcp_req_submit(req);
+	if (e)
 		mcp_req_error(req, 500, INTERNAL_ERROR,
-		              FRAG("Cannot start the upstream request"), nullptr, 0);
+		              FRAG("Cannot persist or start the upstream request"), nullptr, 0);
 }
 
 /* The first turn's upload is written: submit it, after what askai adds to
@@ -5555,30 +6198,25 @@ mcp_slot_side (struct mcp_slot const *slot)
 	return slot->role == ROLE_OWN ? NOTES_CLIENT : NOTES_UPSTREAM;
 }
 
-/* Writes to @p repo the repository of the other side's notebook of the
- * thread of the call in @p slot. */
+/* Writes the opposite side's branch of this participant and principal. */
 static void
 mcp_slot_other (struct mcp_slot const *slot,
                 char                   repo[NOTES_REPO])
 {
 	enum notes_side side = mcp_slot_side(slot) == NOTES_CLIENT ? NOTES_UPSTREAM
 	                                                          : NOTES_CLIENT;
-	notes_repo(slot->req->principal, side, slot->req->thread, repo);
+	notes_repo(slot->req->mcp->st->notes, slot->req->principal, side, repo);
 }
 
-/* Whether the other side keeps a notebook in the thread of the call in
- * @p slot. */
-static bool
-mcp_slot_other_exists (struct mcp_slot const *slot)
+/* A read's explicitly selected notebook, or the server-selected own branch. */
+static char const *
+mcp_slot_notebook (struct mcp_slot const *slot)
 {
-	char repo[NOTES_REPO];
-	mcp_slot_other(slot, repo);
-	return notes_exists(slot->req->mcp->st->notes, repo);
+	return *slot->notebook ? slot->notebook : slot->req->repo;
 }
 
-/* Spawns git for @p fetch with the input in @p in, if not nullptr, and
- * frees @p in.  git uses the repository of the request's thread, or with
- * FETCH_OTHER that of the other side's notebook of the thread. */
+/* Spawns Git in the shared repository and frees its input. FETCH_OTHER
+ * selects the slot's read branch; writes always use the request's own branch. */
 static void
 mcp_slot_notes_run (struct mcp_slot *slot,
                     uint8_t          fetch,
@@ -5587,20 +6225,14 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	struct mcp_req *req = slot->req;
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
-	char other[NOTES_REPO];
-	char const *repo = req->repo;
-	if (fetch & FETCH_OTHER) {
-		mcp_slot_other(slot, other);
-		repo = other;
-	}
-	enum notes_cmd cmd = fetch & FETCH_NEWEST ? NOTES_READ
-	                                          : mcp_fetch_cmds[fetch & FETCH_KIND];
-	/* git init and fast-import write.  If they are killed while they write,
-	 * they can leave a lock file behind.  So their deadline sends SIGTERM
-	 * first, and stale lock files are removed before they run. */
+	char const *repo = fetch & FETCH_OTHER ? mcp_slot_notebook(slot) : req->repo;
+	enum notes_cmd cmd = (fetch & ~FETCH_COPY) == FETCH_FORMAT ? NOTES_FORMAT
+	                   : fetch & FETCH_BOOKS ? NOTES_BOOKS
+	                   : fetch & FETCH_NEWEST ? NOTES_READ
+	                   : mcp_fetch_cmds[fetch & FETCH_KIND];
+	/* A shared repository can have writers outside askai. Never remove their
+	 * lock files; graceful termination gives Git a chance to remove its own. */
 	bool writes = cmd == NOTES_CREATE || cmd == NOTES_ADD;
-	if (writes)
-		notes_unlock(mcp->st->notes, repo);
 	char const *argv[NOTES_ARGV];
 	notes_argv(mcp->st->notes, repo, cmd, argv);
 	struct child_cmd const c = {
@@ -5679,16 +6311,22 @@ mcp_slot_notes_unread (struct mcp_slot *slot)
 {
 	if (!mcp_notes_none(slot->child))
 		return mcp_slot_say(slot, &TEXT("The notes could not be read."), 1);
-	if (slot->fetch & FETCH_OTHER)
-		return mcp_slot_say(slot, mcp_slot_side(slot) == NOTES_CLIENT
-		                          ? &TEXT("The other AI keeps no notes in this thread.")
-		                          : &TEXT("The client keeps no notes in this thread."), 1);
-	if (mcp_slot_other_exists(slot))
-		return mcp_slot_say(slot, &TEXT("You have added no notes to this thread "
-		                                "yet."), 1);
-	char why[32 + NOTES_ID];
-	size_t n = util_format(why, sizeof why, "Unknown thread: %s.", slot->req->thread);
-	return mcp_slot_say(slot, &ESC(why, n), 1);
+	return mcp_slot_say(slot, &TEXT("This notebook has no notes yet."), 1);
+}
+
+/* Both ref updates and the first git init can contend across instances. */
+static bool
+mcp_notes_raced (struct child const *child)
+{
+	struct span const raced[] = {
+		SPAN("Not updating "), SPAN("not updating "), SPAN(" but expected "),
+		SPAN("File exists"),
+	};
+	struct span out = buf_peek(&child->out);
+	for (size_t i = 0; i < ARRAY_SIZE(raced) && out.len; ++i)
+		if (memmem(out.ptr, out.len, raced[i].ptr, raced[i].len))
+			return true;
+	return false;
 }
 
 /* Appends to the answer of @p slot why git did not add the note: git took
@@ -5697,22 +6335,14 @@ mcp_slot_notes_unread (struct mcp_slot *slot)
 static int
 mcp_slot_notes_unadded (struct mcp_slot *slot)
 {
-	/* git writes one of these errors if another call moved the branch
-	 * after the check of the name.  fast-import writes "not updating" if it
-	 * read the new tip.  The update of the branch writes "but expected" if
-	 * the tip moved after fast-import read it. */
-	struct span const raced[] = { SPAN("not updating "), SPAN(" but expected ") };
 	struct child const *c = slot->child;
 	struct span out = buf_peek(&c->out);
 	if (c->late)
 		return mcp_slot_say(slot, &TEXT("Could not add the note: it took too "
 		                                "long."), 1);
-	bool race = false;
-	for (size_t i = 0; i < ARRAY_SIZE(raced) && out.len; ++i)
-		race |= memmem(out.ptr, out.len, raced[i].ptr, raced[i].len) != nullptr;
-	if (race)
+	if (mcp_notes_raced(c))
 		return mcp_slot_say(slot, &TEXT("Could not add the note, because another "
-		                                "call added a note to this thread at the "
+		                                "call added a note to this notebook at the "
 		                                "same time. Add it again."), 1);
 	char const *why = (char const *)out.ptr;
 	LOG(LOG_WARN, "notes: git could not add a note: %.*s",
@@ -5727,8 +6357,12 @@ mcp_slot_notes_write (struct mcp_slot *slot,
                       char const      *tip)
 {
 	struct mcp_req *req = slot->req;
+	if (!*tip) {
+		mcp_slot_notes_run(slot, FETCH_FORMAT | (slot->fetch & FETCH_COPY), nullptr);
+		return;
+	}
 	struct buf in = {};
-	int e = notes_add_input(&in, mcp_slot_side(slot), tip, buf_peek(&req->body));
+	int e = notes_add_input(&in, req->repo, mcp_slot_side(slot), tip, buf_peek(&req->body));
 	buf_fini(&req->body);
 	if (e) {
 		buf_fini(&in);
@@ -5738,12 +6372,34 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 	mcp_slot_notes_run(slot, FETCH_ADD | (slot->fetch & FETCH_COPY), &in);
 }
 
+/* An explicit zero parent makes the first commit a root even if another
+ * writer creates the branch between our name check and fast-import. */
+static void
+mcp_slot_notes_format (struct mcp_slot *slot)
+{
+	struct span out = buf_peek(&slot->child->out);
+	size_t size = out.len == 5 && !memcmp(out.ptr, "sha1\n", 5) ? 40
+	            : out.len == 7 && !memcmp(out.ptr, "sha256\n", 7) ? 64 : 0;
+	if (!mcp_notes_ok(slot->child) || !size) {
+		buf_fini(&slot->req->body);
+		mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("Cannot determine the "
+		                                                "repository object format."), 1), true);
+		return;
+	}
+	char zero[NOTES_TIP + 1];
+	memset(zero, '0', size);
+	zero[size] = '\0';
+	child_destroy(&slot->child);
+	mcp_slot_notes_write(slot, zero);
+}
+
 /* Handles the end of git init for an add.  The function adds the note, or
  * ends the call if git failed. */
 static void
 mcp_slot_notes_created (struct mcp_slot *slot)
 {
-	if (mcp_notes_ok(slot->child)) {
+	if (mcp_notes_ok(slot->child) ||
+	    (mcp_notes_raced(slot->child) && notes_exists(slot->req->mcp->st->notes))) {
 		child_destroy(&slot->child);
 		mcp_slot_notes_write(slot, "");
 		return;
@@ -5780,25 +6436,16 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, e, true);
 }
 
-/* Handles the end of git fast-import for an add.  The answer to a client's
- * add that started a thread has the id of the thread. */
+/* Reports the end of git fast-import and records that the own branch exists. */
 static void
 mcp_slot_notes_added (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
 	bool ok = mcp_notes_ok(slot->child);
-	/* A client's first note in a thread of the other AI starts no thread. */
-	bool fresh = !req->branch && slot->role == ROLE_OWN &&
-	             !mcp_slot_other_exists(slot);
 	req->branch |= ok;
-	char text[160];
-	size_t n = fresh ? util_format(text, sizeof text, "Noted, in the new thread %s. "
-	                               "Give this thread to add more notes to it, to "
-	                               "list them, or to read one.", req->thread) : 0;
 	int e = !ok ? mcp_slot_notes_unadded(slot)
 	      : slot->fetch & FETCH_COPY ? mcp_slot_say(slot, &TEXT("Copied into your "
 	                                                         "notebook."), 1)
-	      : n ? mcp_slot_say(slot, &ESC(text, n), 1)
 	      : mcp_slot_say(slot, &TEXT("Noted."), 1);
 	mcp_slot_notes_end(slot, e, !ok);
 }
@@ -5817,9 +6464,9 @@ mcp_slot_notes_listed (struct mcp_slot *slot,
 	*newest = (struct span){};
 	if (cut && !CAT(d, "[The oldest notes are not in this list.]\n"))
 		return ENOMEM;
-	size_t end = out.len;
+	struct notes_cursor cursor = { .end = out.len };
 	struct notes_entry entry;
-	for (uint32_t k = 1; notes_entry_before(out, &end, &entry); ++k) {
+	for (uint32_t k = 1; notes_entry_before(out, &cursor, &entry); ++k) {
 		char when[sizeof "2026-10-14 12:34 UTC"];
 		struct tm tm;
 		time_t t = (time_t)entry.time;
@@ -5845,14 +6492,28 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 	struct child const *c = slot->child;
 	struct span newest;
 	bool ok = mcp_notes_listed(c);
-	struct mcp_piece const head =
-		!(slot->fetch & FETCH_OTHER) ? TEXT("Your notes, oldest first:\n\n")
-		: mcp_slot_side(slot) == NOTES_CLIENT ? TEXT("The other AI's notes, oldest "
-		                                             "first:\n\n")
-		: TEXT("The client's notes, oldest first:\n\n");
+	struct mcp_piece const head = slot->fetch & FETCH_OTHER
+	                           ? TEXT("Selected notebook, oldest first:\n\n")
+	                           : TEXT("Your notes, oldest first:\n\n");
 	int e = !ok ? mcp_slot_notes_unread(slot) : mcp_slot_say(slot, &head, 1);
 	if (!e && ok)
 		e = mcp_slot_notes_listed(slot, buf_peek(&c->out), c->cut, &newest);
+	mcp_slot_notes_end(slot, e, !ok);
+}
+
+/* Lists discoverable branch selectors. Git resolves both loose and packed refs. */
+static void
+mcp_slot_notes_got_books (struct mcp_slot *slot)
+{
+	struct child const *c = slot->child;
+	bool ok = mcp_notes_listed(c);
+	struct span out = buf_peek(&c->out);
+	int e = !ok ? mcp_slot_notes_unread(slot)
+	      : mcp_slot_say(slot, &TEXT("Session notebooks (use a selector as notebook):\n"), 1);
+	if (!e && ok && out.len)
+		e = mcp_slot_say(slot, &ESC((char const *)out.ptr, out.len), 1);
+	if (!e && ok && !out.len)
+		e = mcp_slot_say(slot, &TEXT("No notes have been added yet."), 1);
 	mcp_slot_notes_end(slot, e, !ok);
 }
 
@@ -6225,7 +6886,7 @@ mcp_slot_notes_prompt (struct mcp_slot  *slot,
 	size_t skip = 0;
 	bool named = newest.len && !notes_name(name, newest.len, &skip) && !skip;
 	if (!e && named && !(e = mcp_slot_say(slot, p, ARRAY_SIZE(p))))
-		e = notes_read_input(&in, name, newest.len);
+		e = notes_read_input(&in, req->repo, name, newest.len);
 	if (!e && newest.len && !named)
 		e = mcp_slot_say(slot, &TEXT("\n[askai: the newest note could not be "
 		                             "read.]\n"), 1);
@@ -6297,43 +6958,20 @@ mcp_slot_notes_resumed (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
 	struct child *c = slot->child;
-	char client[NOTES_REPO];
-	notes_repo(req->principal, NOTES_CLIENT, req->thread, client);
-	bool kept = notes_exists(req->mcp->st->notes, client);
 	if (!mcp_notes_listed(c)) {
 		bool none = mcp_notes_none(c);
 		child_destroy(&slot->child);
-		/* In a thread in which only the client keeps notes, the turns
-		 * start their notebook. */
-		if (none && kept) {
-			int e = mcp_slot_say(slot, &TEXT("\n\n[askai: you have no notes in this "
-			                                 "thread yet. The client keeps notes in "
-			                                 "it, which notes reads with \"notebook\": "
-			                                 "\"other\".]\n"), 1);
-			if (e)
-				mcp_req_fail(req, e);
-			else
-				mcp_req_notes_then(req, FETCH_RESUME);
+		if (none) {
+			mcp_req_notes_then(req, FETCH_RESUME);
 			return;
 		}
-		char why[64 + NOTES_ID];
-		size_t n = none
-		         ? util_format(why, sizeof why, "Unknown thread: %s.", req->thread)
-		         : util_format(why, sizeof why, "Cannot read the notes of the "
-		                       "thread %s.", req->thread);
-		mcp_slot_result(slot, ESC(why, n), true);
+		mcp_slot_result(slot, TEXT("Cannot read the session notes."), true);
 		return;
 	}
 	req->branch = true;
-	if (kept && mcp_slot_say(slot, &TEXT("\n\n[askai: the client keeps notes in this "
-	                                     "thread too, which notes reads with "
-	                                     "\"notebook\": \"other\".]"), 1)) {
-		child_destroy(&slot->child);
-		mcp_req_fail(req, ENOMEM);
-		return;
-	}
-	mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: the notes you kept in earlier "
-	                                 "calls on this thread, oldest first:]\n\n"));
+	mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: your earlier session notes, "
+	                                 "oldest first. Use notes action notebooks "
+	                                 "to discover the other participants:]\n\n"));
 }
 
 /* Handles the list of the notes for a compaction.  The list goes into the
@@ -6372,6 +7010,8 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 	mcp_slot_unwait(slot);
 	/* The attach action's upload, which follows its read, has answered. */
 	(slot->web ? mcp_slot_notes_uploaded
+	 : (slot->fetch & ~FETCH_COPY) == FETCH_FORMAT ? mcp_slot_notes_format
+	 : slot->fetch & FETCH_BOOKS ? mcp_slot_notes_got_books
 	 : slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest
 	 : steps[slot->fetch & FETCH_KIND])(slot);
 }
@@ -6403,17 +7043,15 @@ mcp_notes_add_data (struct buf           *in,
 	return 0;
 }
 
-/* Starts the add action: a note with the file name and the text in
- * @p args.  If the caller's notebook of the thread has notes, git first
- * checks the name.  Else git first makes the repository of the notebook,
- * in a new thread if @p fresh. */
+/* Adds an immutable note on the caller's branch, initializing the shared
+ * repository if needed. */
 static void
 mcp_slot_notes_add (struct mcp_slot    *slot,
-                    struct json_object *args,
-                    bool                fresh)
+                    struct json_object *args)
 {
 	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
 	struct mcp_req *req = slot->req;
+	bool initialized = notes_exists(req->mcp->st->notes);
 	size_t most = req->mcp->st->files_inline;
 	char big[96];
 	size_t len = 0;
@@ -6455,17 +7093,15 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	                : notes_add_file(&req->body, name, name_len, text, len);
 	if (content)
 		loop_work(req->mcp->loop, LOOP_COPY, data.size);
-	if (!e && req->branch)
-		e = notes_check_input(&in, name, name_len);
-	else if (!e && fresh && !(e = notes_id(req->thread)))
-		notes_repo(req->principal, NOTES_CLIENT, req->thread, req->repo);
+	if (!e && initialized)
+		e = notes_check_input(&in, req->repo, name, name_len);
 	if (e) {
 		buf_fini(&in);
 		buf_fini(&req->body);
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, req->branch ? FETCH_CHECK : FETCH_CREATE, &in);
+	mcp_slot_notes_run(slot, initialized ? FETCH_CHECK : FETCH_CREATE, &in);
 }
 
 /* Adds @p text, a note of the other side's notebook that git read for the
@@ -6476,6 +7112,7 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
                          struct span      text)
 {
 	struct mcp_req *req = slot->req;
+	bool initialized = notes_exists(req->mcp->st->notes);
 	char to[NOTES_NAME];
 	struct span name = buf_peek(&req->body);
 	size_t len = name.len < sizeof to ? name.len : sizeof to;
@@ -6483,8 +7120,8 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 	buf_fini(&req->body);
 	struct buf in = {};
 	int e = notes_add_file(&req->body, to, len, (char const *)text.ptr, text.len);
-	if (!e && req->branch)
-		e = notes_check_input(&in, to, len);
+	if (!e && initialized)
+		e = notes_check_input(&in, req->repo, to, len);
 	loop_work(req->mcp->loop, LOOP_COPY, text.len);
 	child_destroy(&slot->child);
 	if (e) {
@@ -6493,7 +7130,7 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, (req->branch ? FETCH_CHECK : FETCH_CREATE) | FETCH_COPY,
+	mcp_slot_notes_run(slot, (initialized ? FETCH_CHECK : FETCH_CREATE) | FETCH_COPY,
 	                   &in);
 }
 
@@ -6532,7 +7169,7 @@ mcp_slot_notes_copy (struct mcp_slot    *slot,
 	if (!e) {
 		memcpy(s.ptr, to + to_skip, to_len - to_skip);
 		buf_commit(&req->body, to_len - to_skip);
-		e = notes_read_input(&in, name + skip, len - skip);
+		e = notes_read_input(&in, mcp_slot_notebook(slot), name + skip, len - skip);
 	}
 	if (e) {
 		buf_fini(&in);
@@ -6559,14 +7196,10 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 		mcp_slot_result(slot, TEXT(bad_name), true);
 		return;
 	}
-	if (!(flags & FETCH_OTHER) && !req->branch) {
-		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
-		return;
-	}
 	if (!(flags & FETCH_ATTACH) && mcp_slot_offset(slot, args))
 		return;
 	struct buf in = {};
-	int e = notes_read_input(&in, name + skip, len - skip);
+	int e = notes_read_input(&in, mcp_slot_notebook(slot), name + skip, len - skip);
 	if (e) {
 		buf_fini(&in);
 		mcp_req_fail(req, e);
@@ -6575,82 +7208,69 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, FETCH_READ | flags, &in);
 }
 
-/* Starts a call of the notes tool: add a note, list the notes, read a note,
- * copy a note of the other side's notebook, or, in a turn whose upstream
- * takes files, attach a note as a file.  A call from a turn uses the thread
- * of its ask call.  A client's call names a thread, or starts a new thread
- * with add.  A list, a read or an attach with the notebook "other" reads
- * the other side's notebook of the thread.
- * An add writes only to the caller's own notebook, and a client's add to a
- * thread in which only the other AI keeps notes starts the client's
- * notebook there. */
+/* Notes are shared by repository path. The caller selects only a read branch;
+ * every write uses the instance's participant and the caller's principal/side. */
 static void
 mcp_slot_notes (struct mcp_slot    *slot,
                 struct json_object *args)
 {
 	struct mcp_req *req = slot->req;
+	struct notes const *notes = req->mcp->st->notes;
 	struct json_object *action = jb_get(args, "action");
 	struct json_object *thread = jb_get(args, "thread");
 	struct json_object *notebook = jb_get(args, "notebook");
 	bool add = jb_is(action, "add");
 	bool read = jb_is(action, "read");
 	bool copy = jb_is(action, "copy");
-	/* A turn attaches a note if its upstream takes files. */
+	bool books = jb_is(action, "notebooks");
 	bool files = slot->role != ROLE_OWN && req->mcp->st->uploads;
 	uint8_t attach = files && jb_is(action, "attach") ? FETCH_ATTACH : 0;
-	uint8_t other = jb_is(notebook, "other") ? FETCH_OTHER : 0;
+	bool own = !notebook || jb_is(notebook, "own");
+	bool other = jb_is(notebook, "other") || (copy && !notebook);
+	slot->notebook[0] = '\0';
+	size_t selected_len = 0;
+	char const *selected = jb_str(notebook, &selected_len);
+	bool invalid = !own && !other &&
+	               notes_select(selected, selected_len, slot->notebook);
 	struct mcp_piece check =
-		!add && !read && !copy && !attach && !jb_is(action, "list")
-		? files ? TEXT("The action argument must be add, list, read, copy or attach.")
-		        : TEXT("The action argument must be add, list, read or copy.")
-		: notebook && !other && !jb_is(notebook, "own")
-		? TEXT("The notebook argument must be own or other.")
-		: add && other
-		? TEXT("You can add notes only to your own notebook. The other notebook "
-		       "can only be read.")
+		!add && !read && !copy && !books && !attach && !jb_is(action, "list")
+		? files ? TEXT("The action must be add, list, read, copy, notebooks or attach.")
+		        : TEXT("The action must be add, list, read, copy or notebooks.")
+		: add && !own ? TEXT("You can add notes only to your own notebook.")
+		: invalid ? TEXT("The notebook must be own, other, or a selector returned "
+		                 "by action notebooks (participant/principal/side).")
 		: (struct mcp_piece){};
 	if (check.ptr) {
 		mcp_slot_result(slot, check, true);
 		return;
 	}
+	if (other)
+		mcp_slot_other(slot, slot->notebook);
 	if (slot->role == ROLE_OWN) {
 		size_t len = 0;
 		char const *id = jb_str(thread, &len);
-		struct mcp_piece problem =
-			thread && (!id || !notes_is_id(id, len))
-			? TEXT("The thread argument must be the id of a thread, as an add "
-			       "named it: 32 hexadecimal digits.")
-			: !thread && !add
-			? TEXT("list, read and copy need the thread argument: the id of a "
-			       "thread that an add or an answer named.")
-			: (struct mcp_piece){};
-		if (problem.ptr) {
-			mcp_slot_result(slot, problem, true);
+		if (thread && (!id || !notes_is_id(id, len))) {
+			mcp_slot_result(slot, TEXT("The optional thread must be 32 hexadecimal "
+			                           "digits. It does not select the notes session."), true);
 			return;
 		}
-		if (id) {
+		if (id)
 			memcpy(req->thread, id, sizeof req->thread);
-			notes_repo(req->principal, NOTES_CLIENT, req->thread, req->repo);
-			req->branch = (!add && !copy) ||
-			              notes_exists(req->mcp->st->notes, req->repo);
-		}
-		if (id && !req->branch && !mcp_slot_other_exists(slot)) {
-			char why[32 + NOTES_ID];
-			size_t n = util_format(why, sizeof why, "Unknown thread: %s.", req->thread);
-			mcp_slot_result(slot, ESC(why, n), true);
-			return;
-		}
+		notes_repo(notes, req->principal, NOTES_CLIENT, req->repo);
 	}
+	bool initialized = notes_exists(notes);
 	if (add)
-		mcp_slot_notes_add(slot, args, slot->role == ROLE_OWN && !thread);
+		mcp_slot_notes_add(slot, args);
+	else if (!initialized)
+		mcp_slot_result(slot, TEXT("No notes have been added to this session yet."), false);
+	else if (books && !mcp_slot_offset(slot, args))
+		mcp_slot_notes_run(slot, FETCH_BOOKS, nullptr);
 	else if (copy)
 		mcp_slot_notes_copy(slot, args);
 	else if (read || attach)
-		mcp_slot_notes_read(slot, args, other | attach);
-	else if (!other && !req->branch)
-		mcp_slot_result(slot, TEXT("You have added no notes yet."), false);
-	else if (!mcp_slot_offset(slot, args))
-		mcp_slot_notes_run(slot, FETCH_LIST | other, nullptr);
+		mcp_slot_notes_read(slot, args, (*slot->notebook ? FETCH_OTHER : 0) | attach);
+	else if (!books && !mcp_slot_offset(slot, args))
+		mcp_slot_notes_run(slot, FETCH_LIST | (*slot->notebook ? FETCH_OTHER : 0), nullptr);
 }
 
 /* Do the work of @p step's slot, as its call's kind does. */
@@ -6789,6 +7409,8 @@ mcp_slot_ask (struct mcp_slot    *slot,
 		if (job) {
 			req->promote_at = UINT64_MAX;
 			mcp_req_arm(req);
+			if (mcp_req_recover(req, args, has_action && jb_is(action, "cancel")))
+				return;
 			if (has_action && jb_is(action, "cancel"))
 				mcp_slot_client_cancel(slot, args, true);
 			else
@@ -7744,6 +8366,7 @@ mcp_destroy (struct mcp **p_mcp)
 	if (!mcp)
 		return;
 	*p_mcp = nullptr;
+	mcp->draining = true;
 
 	/* The transport has cancelled every stream by now, but for the
 	 * stand-ins of the calls that are tasks, which end here, their tasks
@@ -7842,11 +8465,9 @@ mcp_tool_definition (void const *service)
 	if (st->lending.by[LEND_ALWAYS] && jb_set(props, "thread", jb_object(
 		    "type", json_object_new_string("string"),
 		    "description", json_object_new_string(
-			    "Optional: the thread that an earlier answer named, or that your "
-			    "own notes tool started, to go on with that work. The other AI "
-			    "keeps notes in a thread as it works, and starts with them. You "
-			    "and the other AI can each read the other's notes of the "
-			    "thread."),
+			    "Optional ask-chain id from an earlier answer: 32 hexadecimal "
+			    "digits. Notes are shared by repository path and loaded at the "
+			    "start of every ask, independently of this argument."),
 		    nullptr))) {
 		json_object_put(props);
 		props = nullptr;
@@ -7965,54 +8586,33 @@ mcp_notes_schema (enum notes_side          side,
 	static_assert(NOTES_TEXT == 4 << 20 && NOTES_NAME == 255, "the descriptions say");
 	static char const *const descriptions[] = {
 		[NOTES_UPSTREAM] =
-			"Your notebook for this task, which outlasts your context. A note "
-			"is a file: you choose its name, such as plan.md or "
-			"findings/locks.md, and write its text. Add a note whenever you "
-			"find something, decide something, or finish or plan a step. A "
-			"note cannot be changed or removed, so add a new note instead. "
-			"When the context fills up, the conversation is compacted to the "
-			"task, a summary, the list of your notes and the start of your "
-			"newest note; read the others when you need them. A note that is "
-			"not UTF-8 text, such as code in an old encoding, reads with each "
-			"other byte as \xe2\x9f\xa6XX\xe2\x9f\xa7, its value in hexadecimal. "
-			"The client can "
-			"read your notes, and can keep notes in this thread too: list and "
-			"read show them with notebook other, and copy puts one of them "
-			"into your notebook byte for byte, for a file that you need as it "
-			"is. You add notes only to your own notebook.",
+			"Your persistent notebook in this shared Git session. Add findings, "
+			"decisions and plans as named files. Notes cannot be changed or removed; "
+			"add a new file for an update. All instances sharing the repository "
+			"can read every notebook, but you can write only your own. Use action "
+			"notebooks to discover the others, then list or read with that notebook "
+			"selector. Your notes are included after compaction; read older notes "
+			"when needed. Non-UTF-8 bytes are displayed as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
 		[NOTES_CLIENT] =
-			"A notebook that outlasts your context. A note is a file: you "
-			"choose its name, such as plan.md or findings/locks.md, and write "
-			"its text. The notes are in threads. An add without a thread "
-			"starts a new thread and names it. Give that thread to add more "
-			"notes to it, to list them, or to read one. A note cannot be "
-			"changed or removed. A note that is not UTF-8 text, such as code "
-			"in an old encoding, reads with each other byte as "
-			"\xe2\x9f\xa6XX\xe2\x9f\xa7, its value in hexadecimal. A thread "
-			"has two notebooks: yours, and that "
-			"of the other AI that the ask tool asks. An ask call with a "
-			"thread keeps the other AI's notes in it, and its answer names "
-			"the thread. list and read show the other AI's notes with "
-			"notebook other, and copy puts one of them into your notebook "
-			"byte for byte, without its text passing through you. An add with "
-			"content instead of text keeps a file that the user gave, which "
-			"your client attaches. You add notes only to your own notebook.",
+			"Your persistent notebook in this shared Git session. Notes are named "
+			"files that cannot be changed or removed. All instances sharing the "
+			"repository can read every notebook; only your own can be written. "
+			"Use action notebooks to discover selectors, then list or read one. "
+			"copy imports a note into your own notebook without changing its text. "
+			"content keeps an attached user file. Threads do not partition notes. "
+			"Non-UTF-8 bytes are displayed as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
 	};
 	/* A turn attaches a note if its upstream takes files. */
 	bool files = side == NOTES_UPSTREAM && st && st->uploads;
 	size_t most = st ? st->files_inline : FILES_INLINE;
 	struct json_object *actions = jb_list(json_object_new_string("add"));
-	if (jb_push(actions, json_object_new_string("list")) ||
+	if (jb_push(actions, json_object_new_string("notebooks")) ||
+	    jb_push(actions, json_object_new_string("list")) ||
 	    jb_push(actions, json_object_new_string("read")) ||
 	    jb_push(actions, json_object_new_string("copy")) ||
 	    (files && jb_push(actions, json_object_new_string("attach")))) {
 		json_object_put(actions);
 		actions = nullptr;
-	}
-	struct json_object *notebooks = jb_list(json_object_new_string("own"));
-	if (jb_push(notebooks, json_object_new_string("other"))) {
-		json_object_put(notebooks);
-		notebooks = nullptr;
 	}
 	struct json_object *props = jb_object(
 		"action", jb_object(
@@ -8020,8 +8620,8 @@ mcp_notes_schema (enum notes_side          side,
 			"enum", actions,
 			"description", mcp_text3(
 				"add a note, list the notes, the oldest first, read a note, "
-				"or copy a note of the other notebook of the thread into "
-				"yours.", files ? " attach gives a note as a file." : "", ""),
+				"copy a note into yours, or discover all session notebooks with "
+				"notebooks.", files ? " attach gives a note as a file." : "", ""),
 			nullptr),
 		"file", jb_object(
 			"type", json_object_new_string("string"),
@@ -8051,16 +8651,11 @@ mcp_notes_schema (enum notes_side          side,
 			nullptr),
 		"notebook", jb_object(
 			"type", json_object_new_string("string"),
-			"enum", notebooks,
 			"description", mcp_text3(
-				"For list", files ? ", read and attach" : " and read",
-				side == NOTES_CLIENT
-				? ": own, the default, for your notes in the thread, or other "
-				  "for the notes that the other AI keeps in it. add writes only "
-				  "to your own."
-				: ": own, the default, for your notes, or other for the notes "
-				  "that the client keeps in this thread. add writes only to "
-				  "your own."),
+				"For list, read and copy", files ? ", and attach" : "",
+				": own (default), other (the opposite side of this instance), "
+				"or participant/principal/side "
+				"from action notebooks. copy defaults to other. add accepts only own."),
 			nullptr),
 		nullptr);
 	/* The client's program, not its model, fills content in with a file
@@ -8080,8 +8675,8 @@ mcp_notes_schema (enum notes_side          side,
 	if (side == NOTES_CLIENT && jb_set(props, "thread", jb_object(
 		    "type", json_object_new_string("string"),
 		    "description", json_object_new_string(
-			    "The id of the thread, as an add named it. An add without a "
-			    "thread starts a new one. list and read need a thread."),
+			    "Optional legacy ask-chain id (32 hexadecimal digits). Notes belong "
+			    "to the configured shared repository, independent of this value."),
 		    nullptr))) {
 		json_object_put(props);
 		props = nullptr;
@@ -8916,6 +9511,7 @@ mcp_static_create (struct config const *cfg,
                    struct ledger       *ledger,
                    struct roster       *roster,
                    struct web          *web,
+                   struct journal      *journal,
                    int                 *e)
 {
 	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
@@ -8945,6 +9541,7 @@ mcp_static_create (struct config const *cfg,
 		.versions = DSTR_INIT,
 		.tasks = tasks,
 		.notes = notes,
+		.journal = journal,
 		.ledger = ledger,
 		.roster = roster,
 		.web = web,
@@ -8976,7 +9573,10 @@ mcp_static_create (struct config const *cfg,
 		};
 	}
 	st->lending = mcp_lending(cfg);
-	(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
+	if (journal)
+		st->seed = journal_seed(journal);
+	else
+		(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
 	if (lends && (*e = mcp_static_uploads(st))) {
 		mcp_static_destroy(&st);
 		return nullptr;

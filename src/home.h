@@ -16,7 +16,8 @@
  * messages of jobs only admit, refuse or note them; bulk steps start, read
  * and cancel them, a share at a time.  Each job admitted
  * counts against the descriptors, which home's door (src/httpd.h) budgets.
- * A home that drains cancels the jobs in flight and refuses new ones; once
+ * A home that drains stops local transfers and refuses new ones; durable
+ * background work remains at its provider for later recovery. Once
  * the client loops have all exited and no job is in flight, it has its loop
  * exit.
  */
@@ -36,6 +37,19 @@ struct home;
 struct http_metrics;
 struct httpd_home;
 struct loop;
+struct job;
+struct journal_record;
+
+/** Restore a provider turn from its journal records, after the turn's
+ *  request checkpoint. Copies all retained bytes; SUBMIT later replays
+ *  them without sending the original POST, then reattaches if possible. */
+extern int
+home_job_restore (struct job                  *job,
+                  struct journal_record const *records);
+
+/** Free a job's recovery state after its last home reference is gone. */
+extern void
+home_job_recovery_fini (struct job *job);
 
 /** What home counts of its jobs: home writes, any thread reads (hist.h).
  *  submitted = completed + cancelled + rejected + in_flight. */
@@ -85,11 +99,12 @@ home_create (struct loop              *loop,
              struct http_metrics      *http,
              int                      *e);
 
-/** Cancel the jobs in flight, which complete, then free home. */
+/** Stop the jobs in flight, which complete, then free home. */
 extern void
 home_destroy (struct home **p_home);
 
-/** Cancel the jobs in flight, a share a step, and refuse new ones. */
+/** Stop local transfers, a share a step, and refuse new ones. Durable
+ *  provider jobs are suspended, not cancelled. */
 extern void
 home_drain (struct home *home);
 

@@ -10,6 +10,7 @@
 #include <json-c/json.h>
 #include <json-c/json_visit.h>
 #include <libgen.h>
+#include <limits.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -134,6 +135,17 @@ config_usage (struct config const *cfg,
 	        "                            doc/configuration.md and\n"
 	        "                            doc/askai.example.json.\n"
 	        "  -h, --help                show this help\n"
+	        "\n"
+	        "Session (top-level configuration members):\n"
+	        "      --participant NAME    stable writer identity, 1 to 64 characters\n"
+	        "                            from [A-Za-z0-9_-]; default: tool-name.  Use\n"
+	        "                            distinct names for collaborating instances\n"
+	        "      --transcripts PATH    separate git repository for requests, raw\n"
+	        "                            streams, reasoning and tool results; default:\n"
+	        "                            <notes>.transcripts.git with --notes, else\n"
+	        "                            $XDG_STATE_HOME/askai/NAME/transcripts.git\n"
+	        "                            with --background, using $HOME/.local/state\n"
+	        "                            if XDG_STATE_HOME is unset\n"
 	        "\n"
 	        "Upstream AI (\"upstream\"):\n"
 	        "  -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),\n"
@@ -306,9 +318,10 @@ config_usage (struct config const *cfg,
 	        "                            deadline of a git call, at which git gets\n"
 	        "                            SIGTERM, and SIGKILL one second later\n"
 	        "                            (default 30; tools.git.timeout)\n"
-	        "      --notes DIR           also offer the tool notes: notebooks in git\n"
-	        "                            repositories under DIR, which askai makes if\n"
-	        "                            it does not exist; to clients as their role\n"
+	        "      --notes PATH          shared session's git repository, created\n"
+	        "                            bare if absent.  Each participant\n"
+	        "                            writes its own branches and reads all notes;\n"
+	        "                            offer notes to clients as their role\n"
 	        "                            allows, and to the upstream with\n"
 	        "                            --upstream-tools (tools.notes.directory)\n"
 	        "      --client-jobs         also offer clients the tools background,\n"
@@ -493,6 +506,14 @@ config_tool_name_valid (char const *name)
 	return n && n <= 128 && !name[n];
 }
 
+static bool
+config_participant_valid (char const *name)
+{
+	size_t n = strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	                        "0123456789_-");
+	return n && n <= 64 && !name[n];
+}
+
 /* The options without a short form. */
 enum {
 	OPT_TOOL_NAME = 0x100, OPT_TOOL_DESCRIPTION, OPT_MAX_HEAD, OPT_MAX_FIELDS,
@@ -504,7 +525,8 @@ enum {
 	OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO,
 	OPT_MAN, OPT_TEST_MAN_RECHECK, OPT_TEST_TASK, OPT_GIT, OPT_GIT_TIMEOUT,
 	OPT_TLS_CERT, OPT_TLS_KEY, OPT_TLS_ALLOW_RSA, OPT_UPSTREAM_TOOLS, OPT_NOTES,
-	OPT_MAX_TURNS, OPT_CONTEXT, OPT_API, OPT_CLIENT_JOBS, OPT_BACKGROUND
+	OPT_MAX_TURNS, OPT_CONTEXT, OPT_API, OPT_CLIENT_JOBS, OPT_BACKGROUND,
+	OPT_PARTICIPANT, OPT_TRANSCRIPTS
 };
 
 static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
@@ -514,7 +536,7 @@ static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
  * tools contains (tool_members[]). */
 enum config_group : uint8_t {
 	GROUP_NONE, GROUP_UPSTREAM, GROUP_SERVICE, GROUP_TESTING, GROUP_DEBUGGING,
-	GROUP_TOOLS
+	GROUP_TOOLS, GROUP_ROOT
 };
 
 static char const *const group_names[] = {
@@ -528,6 +550,8 @@ static char const *const group_names[] = {
  * for the two that the file cannot set; its long name; whether it takes an
  * argument; and its short form or OPT_ value. */
 #define CONFIG_OPTIONS(X)                                                         \
+	X(ROOT,      "participant",      required_argument, OPT_PARTICIPANT)      \
+	X(ROOT,      "transcripts",      required_argument, OPT_TRANSCRIPTS)      \
 	X(UPSTREAM,  "provider",         required_argument, 'p')                  \
 	X(UPSTREAM,  "api",              required_argument, OPT_API)              \
 	X(UPSTREAM,  "url",              required_argument, 'u')                  \
@@ -943,6 +967,13 @@ config_apply (struct config *cfg,
 	case OPT_CLIENT_JOBS: cfg->flags |= CFG_CLIENT_JOBS; break;
 	case OPT_BACKGROUND: ep->background = 1; break;
 	case OPT_NOTES: cfg->notes = arg; break;
+	case OPT_PARTICIPANT:
+		if (!config_participant_valid(arg))
+			return config_complain(cfg, where, "--participant: use 1-64 of "
+			                       "[A-Za-z0-9_-]: %s", arg);
+		cfg->participant = arg;
+		break;
+	case OPT_TRANSCRIPTS: cfg->transcripts = arg; break;
 	case 'o':
 		config_push(cfg->origins, &cfg->n_origins, arg);
 		break;
@@ -1251,8 +1282,9 @@ static struct json_object *
 config_file_value (struct config const *cfg,
                    struct option const *o)
 {
-	struct json_object *group = json_object_object_get(cfg->file,
-	                                                   group_names[groups[o - options]]);
+	enum config_group g = groups[o - options];
+	struct json_object *group = g == GROUP_ROOT ? cfg->file
+	                           : json_object_object_get(cfg->file, group_names[g]);
 	return json_object_object_get(group, o->name);
 }
 
@@ -1350,6 +1382,8 @@ static int
 config_misplaced (struct config const *cfg,
                   struct option const *o)
 {
+	if (groups[o - options] == GROUP_ROOT)
+		return config_complain(cfg, cfg->path, "%s must be at the top level", o->name);
 	if (groups[o - options] == GROUP_TOOLS) {
 		size_t i = config_tool_member(o);
 		return config_complain(cfg, cfg->path, "%s must be tools.%s.%s", o->name,
@@ -1455,6 +1489,8 @@ config_apply_file (struct config *cfg)
 		size_t g = config_find(group_names, ARRAY_SIZE(group_names), it.key);
 		struct option const *o = config_named(it.key);
 		int status = g ? config_apply_group(cfg, (enum config_group)g, it.val)
+		           : o && groups[o - options] == GROUP_ROOT
+		             ? config_apply_member(cfg, o, it.val)
 		           : o ? config_misplaced(cfg, o)
 		               : config_complain(cfg, cfg->path, "unknown member %s", it.key);
 		if (status)
@@ -1639,6 +1675,55 @@ config_check_notes (struct config const *cfg)
 	if (!config_safe(&st) || !config_safe_dirs(path))
 		return config_complain(cfg, nullptr, "--notes: %s: others than root "
 		                       "and askai's user may change it", path);
+	return 0;
+}
+
+/* A repository is the session; a participant keeps the same writer identity
+ * across restarts.  Resolve the transcript location once, before any service
+ * opens it.  The journal validates and creates its parent directories. */
+static int
+config_session (struct config *cfg)
+{
+	if (!cfg->participant)
+		cfg->participant = cfg->tool.name;
+	if (!config_participant_valid(cfg->participant) &&
+	    (cfg->notes || cfg->transcripts || cfg->ep.background))
+		return config_complain(cfg, nullptr, "--participant: use 1-64 of "
+		                       "[A-Za-z0-9_-]; set it explicitly if --tool-name "
+		                       "does not fit: %s", cfg->participant);
+	if (cfg->transcripts)
+		return *cfg->transcripts ? 0
+		       : config_complain(cfg, nullptr, "--transcripts: empty path");
+	if (cfg->notes) {
+		size_t n = strlen(cfg->notes);
+		while (n > 1 && cfg->notes[n - 1] == '/')
+			--n;
+		if (n > INT_MAX)
+			return config_complain(cfg, nullptr, "--notes: path too long");
+		cfg->transcripts_owned = config_aprintf("%.*s.transcripts.git", (int)n,
+		                                        cfg->notes);
+	} else if (cfg->ep.background) {
+		char const *state = getenv("XDG_STATE_HOME");
+		if (state && *state) {
+			if (*state != '/')
+				return config_complain(cfg, nullptr, "XDG_STATE_HOME must be "
+				                       "absolute, or set --transcripts explicitly");
+			cfg->transcripts_owned = config_aprintf("%s/askai/%s/transcripts.git",
+			                                        state, cfg->participant);
+		} else {
+			char const *home = getenv("HOME");
+			if (!home || *home != '/')
+				return config_complain(cfg, nullptr, "--background needs "
+				                       "--transcripts, XDG_STATE_HOME or an absolute HOME");
+			cfg->transcripts_owned = config_aprintf("%s/.local/state/askai/%s/transcripts.git",
+			                                        home, cfg->participant);
+		}
+	} else {
+		return 0;
+	}
+	if (!cfg->transcripts_owned)
+		return config_oom(cfg);
+	cfg->transcripts = cfg->transcripts_owned;
 	return 0;
 }
 
@@ -2206,8 +2291,9 @@ config_description (struct config *cfg)
 	                                         "itself, and its answer lists the calls it "
 	                                         "made." : "",
 	                                  notes && lent >> notes & 1
-	                                  ? " It keeps notes in a thread, which a later "
-	                                    "call may go on with." : "");
+	                                  ? " It keeps notes in the shared session repository. "
+	                                    "Each call loads its notes and can read the other "
+	                                    "participants' notes." : "");
 	if (!cfg->description)
 		return config_oom(cfg);
 	cfg->tool.description = cfg->description;
@@ -2254,6 +2340,9 @@ config_finish (struct config *cfg)
 	if (status)
 		return status;
 	status = config_check_notes(cfg);
+	if (status)
+		return status;
+	status = config_session(cfg);
 	if (status)
 		return status;
 	status = config_upstream(cfg);
@@ -2448,6 +2537,10 @@ config_log (struct config const *cfg)
 	free(model);
 	config_log_url("URL", ep->url);
 	config_log_files(cfg);
+	if (cfg->notes || cfg->transcripts)
+		LOG_ALL(LOG_INFO, "participant: %s", cfg->participant);
+	if (cfg->transcripts)
+		LOG_ALL(LOG_INFO, "transcripts repository: %s", cfg->transcripts);
 	mcp_report(&cfg->registry, cfg);
 	config_log_policy(cfg);
 }
@@ -2477,6 +2570,7 @@ config_fini (struct config *cfg)
 	free(cfg->url);
 	free(cfg->auth);
 	free(cfg->description);
+	free(cfg->transcripts_owned);
 	free(cfg->headers);
 	*cfg = (struct config){};
 }

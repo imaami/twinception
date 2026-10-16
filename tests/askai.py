@@ -14,6 +14,7 @@ import pwd
 import re
 import resource
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -258,6 +259,10 @@ class Upstream:
         self.upload = self.stored
         self.gets = 0
         self.got = []
+        self.get_requests = []
+        self.retrieve = None
+        self.deletes = []
+        self.delete = lambda request: (200, {})
         self.arrived = threading.Event()
         self.cancelled = threading.Event()
         self.hangups = 0
@@ -271,9 +276,15 @@ class Upstream:
                 pass
 
             def do_GET(self):
+                request = {"path": self.path,
+                           "headers": {k.lower(): v for k, v in self.headers.items()}}
                 with upstream.lock:
                     upstream.gets += 1
                     upstream.got.append(self.path)
+                    upstream.get_requests.append(request)
+                if upstream.retrieve:
+                    self.respond(*upstream.retrieve(request))
+                    return
                 props = upstream.props
                 if props == "hang":
                     time.sleep(2)
@@ -284,6 +295,13 @@ class Upstream:
                 self.send_header("Content-Length", str(len(wire)))
                 self.end_headers()
                 self.wfile.write(wire)
+
+            def do_DELETE(self):
+                request = {"path": self.path,
+                           "headers": {k.lower(): v for k, v in self.headers.items()}}
+                with upstream.lock:
+                    upstream.deletes.append(request)
+                self.respond(*upstream.delete(request))
 
             def do_POST(self):
                 raw = self.rfile.read(int(self.headers["Content-Length"]))
@@ -322,7 +340,11 @@ class Upstream:
                 if streamed and status == 200 and isinstance(payload, dict) and \
                         not upstream.plain:
                     payload = Stream(payload)
+                self.respond(status, payload)
+
+            def respond(self, status, payload):
                 if isinstance(payload, Stream):
+                    assert status == 200, (status, payload)
                     self.stream(payload)
                     return
                 wire = payload if isinstance(payload, bytes) else \
@@ -409,7 +431,12 @@ class Askai:
 
     def __init__(self, binary, *args, loops=4, env=None, nofile=None,
                  preload=None, ignore=(), default=(), data=None):
+        # Background jobs default to persistent state.  Every independent
+        # test process gets a private default; recovery tests give an
+        # explicit transcript repository shared by their restarts.
+        self.state = tempfile.TemporaryDirectory(prefix="askai-state-")
         child_env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
+        child_env["XDG_STATE_HOME"] = self.state.name
         child_env.update(env or {})
         if preload:
             # A sanitizer runtime insists on coming first otherwise.
@@ -581,7 +608,9 @@ class Askai:
 
     def stop(self):
         self.proc.send_signal(signal.SIGTERM)
-        assert self.proc.wait(timeout=5) == 0, "".join(self.log)
+        status = self.proc.wait(timeout=5)
+        assert status == 0, (status, "".join(self.log))
+        self.state.cleanup()
 
     def __enter__(self):
         return self
@@ -592,6 +621,7 @@ class Askai:
         else:
             self.proc.kill()
             self.proc.wait()
+            self.state.cleanup()
             sys.stderr.write("".join(self.log))
 
 
@@ -702,6 +732,7 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc",
 TOOL_MEMBERS = {"man": ("man", "enabled"), "git": ("git", "repositories"),
                 "git-timeout": ("git", "timeout"), "notes": ("notes", "directory"),
                 "client-jobs": ("jobs", "clients")}
+ROOT_MEMBERS = {"participant", "transcripts"}
 
 
 def note_view(data):
@@ -1782,8 +1813,7 @@ def check_background(binary, up):
     owner's jobs; supported providers also get native background mode."""
     pending = ("That job is still running. Call this same tool with the same "
                "job id in one second for its result.")
-    unknown = ("No job of yours from this tool has that id; askai stores a job "
-               "for up to an hour after it ends.")
+    unknown = "No job of yours from this tool has that id."
     gates = []
 
     class Gated(Stream):
@@ -1831,7 +1861,7 @@ def check_background(binary, up):
         def ended():
             result = call(ai, {"job": jid}, **kwargs)
             results.append(result)
-            return text_of(result) != pending
+            return text_of(result) != pending and not text_of(result).startswith(f"Started job {jid}.")
         wait_for(ended)
         return results[-1]
 
@@ -1840,6 +1870,7 @@ def check_background(binary, up):
         assert result.get("isError") is True and text_of(result) == message, result
 
     hold = up.reply
+    hold_retrieve = up.retrieve
     try:
         # With the default, the tool still requires a prompt and returns
         # the answer itself.  No provider gets the new field implicitly.
@@ -1945,7 +1976,7 @@ def check_background(binary, up):
                 assert stream.entered.wait(5)
                 for action in ("result", "cancel"):
                     refused(ai, {"job": jid, "action": action}, unknown, **bob)
-                refused(ai, {"job": "0" * 32}, unknown, **alice)
+                refused(ai, {"job": "0" * 32}, "No recoverable job of yours has that id.", **alice)
                 count = len(up.requests)
                 for args, message in (
                         ({}, "The prompt argument must be a non-empty string."),
@@ -1984,8 +2015,10 @@ def check_background(binary, up):
                 assert match and not result.get("isError"), result
                 return match.group(1)
             foreign = wrapped("test_task", {"slices": 1})
-            refused(ai, {"job": foreign}, unknown)
-            refused(ai, {"job": foreign, "action": "cancel"}, unknown)
+            foreign_unknown = ("No job of yours from this tool has that id; askai stores a job "
+                               "for up to an hour after it ends.")
+            refused(ai, {"job": foreign}, foreign_unknown)
+            refused(ai, {"job": foreign, "action": "cancel"}, foreign_unknown)
             first = wrapped("ask_ai", {"prompt": "first"})
             assert streams[0].entered.wait(5)
             second = start(ai, "second")
@@ -2025,10 +2058,9 @@ def check_background(binary, up):
                 result = poll(ai, jid)
                 assert result.get("isError") and text_of(result) == "That job was cancelled.", result
 
-        # The transport can report failure with complete events still in
-        # its buffer.  Retain their creation id before reporting the error
-        # so the abandoned native job is cancelled.  A terminal Gemini
-        # status event instead proves that provider cleanup is unnecessary.
+        # A failed transport can still have complete events in its buffer.
+        # Their durable creation id and cursor allow a later poll to
+        # reattach; a completed Gemini status must never restart the stream.
         class Truncated(Stream):
             def pieces(self):
                 yield self.wire
@@ -2041,27 +2073,616 @@ def check_background(binary, up):
             created = f"{key}.created"
             events = [(created, {field: created, key: {"id": "truncated_job",
                                                        "status": "in_progress"}})]
+            events[0][1]["sequence_number" if fmt == "responses" else "event_id"] = \
+                0 if fmt == "responses" else "created"
             if terminal:
                 events.append(("interaction.status_update", {
                     "event_type": "interaction.status_update", "status": "completed",
-                    "interaction_id": "truncated_job"}))
+                    "interaction_id": "truncated_job", "event_id": "completed"}))
             stream = Truncated(wire=sse_wire(events))
             up.reply = lambda r: (200, {}) if r["path"].endswith("/cancel") else (200, stream)
+            retrieved = []
+            def retrieve(request):
+                if request["path"] == "/props":
+                    return 404, {}
+                retrieved.append(request)
+                suffix = sse_of(ANSWERS[fmt])[1:]
+                for sequence, (_, event) in enumerate(suffix, 1):
+                    if isinstance(event, dict):
+                        event["sequence_number" if fmt == "responses" else "event_id"] = \
+                            sequence if fmt == "responses" else f"resumed-{sequence}"
+                return 200, Stream(wire=sse_wire(suffix))
+            up.retrieve = retrieve
             count = len(up.requests)
             with Askai(binary, "-u", up.url(f"/v1/{fmt}"), "--api", API[fmt],
                        "--background") as ai:
                 result = poll(ai, start(ai))
-                assert result.get("isError") and "cannot retain" not in text_of(result), result
-                if not terminal:
-                    wait_for(lambda: len(up.requests) == count + 2)
-                    assert up.last()["path"] == f"/v1/{fmt}/truncated_job/cancel", up.last()
-            assert len(up.requests) == count + (1 if terminal else 2)
+                if terminal:
+                    assert result.get("isError") and "cannot retain" not in text_of(result), result
+                    assert not retrieved, retrieved
+                else:
+                    assert not result.get("isError") and text_of(result) == "A", result
+                    assert len(retrieved) == 1, retrieved
+                    query = "starting_after=0" if fmt == "responses" else "last_event_id=created"
+                    assert retrieved[0]["path"] == f"/v1/{fmt}/truncated_job?stream=true&{query}", retrieved
+            assert len(up.requests) == count + 1, up.requests[count:]
     finally:
         for stream in gates:
             stream.release.set()
         up.reply = hold
+        up.retrieve = hold_retrieve
     print("background: immediate jobs, concurrent streams across client disconnect, "
-          "same-tool polling, ownership, errors and native cancellation: PASS")
+          "same-tool polling, ownership, errors, native cancellation and stream reattachment: PASS")
+
+
+def check_recovery(binary, up):
+    """A committed stream survives an AskAI restart.  Polling its original
+    local job id reattaches to the existing provider generation with its
+    exact cursor and current authentication, without another creation."""
+    pending = "That job is still running."
+    held = (up.reply, up.retrieve, up.delete)
+    gates = []
+
+    class Prefix(Stream):
+        def __init__(self, wire):
+            super().__init__(wire=wire)
+            self.sent = threading.Event()
+            self.release = threading.Event()
+            gates.append(self)
+
+        def pieces(self):
+            yield self.wire
+            self.sent.set()
+            assert self.release.wait(30), "recovery provider was not released"
+
+    def call(ai, arguments):
+        status, _, body = ai.rpc("tools/call", {"name": "ask_ai",
+                                               "arguments": arguments})
+        assert status == 200 and "result" in body, (status, body)
+        return body["result"]
+
+    def poll(ai, jid):
+        end = time.monotonic() + 15
+        while time.monotonic() < end:
+            result = call(ai, {"job": jid})
+            if text_of(result) == "before after" or result.get("isError"):
+                return result
+            assert pending in text_of(result) or "recover" in text_of(result).lower() or \
+                text_of(result).startswith(f"Started job {jid}."), result
+            time.sleep(0.02)
+        raise AssertionError(("job did not recover", jid, result, "".join(ai.log)))
+
+    def committed(repo, marker):
+        run = subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q", marker,
+                              "refs/heads/transcripts/recovery", "--", "records"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return run.returncode == 0
+
+    try:
+        for fmt, graceful in (("responses", False), ("interactions", True),
+                              ("openai", False)):
+            provider_id = "response recover/+id" if fmt == "responses" else "v1_recover/+id"
+            if fmt == "responses":
+                prefix = sse_wire([
+                    ("response.created", {"type": "response.created", "sequence_number": 20,
+                                          "response": {"id": provider_id, "status": "in_progress"}}),
+                    ("response.reasoning_text.delta", {"type": "response.reasoning_text.delta",
+                                                       "sequence_number": 21,
+                                                       "delta": "persisted reasoning"}),
+                    ("response.output_text.delta", {"type": "response.output_text.delta",
+                                                    "sequence_number": 22, "delta": "before "})])
+                suffix = sse_wire([
+                    ("response.output_text.delta", {"type": "response.output_text.delta",
+                                                    "sequence_number": 23, "delta": "after"}),
+                    ("response.completed", {"type": "response.completed", "sequence_number": 24,
+                                            "response": {"id": provider_id, "status": "completed",
+                                                         "output": [{"type": "message", "content": [
+                                                             {"type": "output_text", "text": "before after"}]}]}})])
+                endpoint = "/v1/responses"
+            elif fmt == "interactions":
+                def event(name, eid, **data):
+                    return name, {"event_type": name, "event_id": eid} | data
+                prefix = sse_wire([
+                    event("interaction.created", "ev-create", interaction={
+                        "id": provider_id, "status": "in_progress"}),
+                    event("step.start", "ev-thought", index=0, step={"type": "thought"}),
+                    event("step.delta", "ev-reason", index=0, delta={
+                        "type": "thought_summary", "content": {"type": "text", "text": "persisted reasoning"}}),
+                    event("step.stop", "ev-thought-end", index=0),
+                    event("step.start", "ev-text", index=1, step={"type": "model_output"}),
+                    event("step.delta", "ev+cursor/2", index=1,
+                          delta={"type": "text", "text": "before "})])
+                suffix = sse_wire([
+                    event("step.delta", "ev-after", index=1, delta={"type": "text", "text": "after"}),
+                    event("step.stop", "ev-stop", index=1),
+                    event("interaction.completed", "ev-end", interaction={
+                        "id": provider_id, "status": "completed"}), ("done", "[DONE]")])
+                endpoint = "/v1beta/interactions"
+            else:
+                prefix = sse_wire([
+                    (None, {"choices": [{"index": 0, "delta": {"role": "assistant"}}]}),
+                    (None, {"choices": [{"index": 0, "delta": {"reasoning_content": "persisted reasoning"}}]}),
+                    (None, {"choices": [{"index": 0, "delta": {"content": "before "}}]})])
+                suffix = sse_wire([
+                    (None, {"choices": [{"index": 0, "delta": {"content": "after"}}]}),
+                    (None, {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+                    (None, "[DONE]")])
+                endpoint = "/v1/chat/completions"
+            first = Prefix(prefix)
+            creations = []
+            retrievals = []
+            cancellations = []
+            def reply(request):
+                if request["path"].endswith("/cancel?tenant=test") or \
+                        "/cancel" in request["path"]:
+                    cancellations.append(request)
+                    return 200, {}
+                creations.append(request)
+                return 200, first
+            def retrieve(request):
+                if urllib.parse.urlsplit(request["path"]).path == "/props":
+                    return 404, {}
+                retrievals.append(request)
+                return 200, Stream(wire=suffix)
+            up.reply, up.retrieve = reply, retrieve
+            up.delete = lambda request: (cancellations.append(request) or 200, {})
+            with tempfile.TemporaryDirectory() as d:
+                repo = f"{d}/transcripts.git"
+                args = ("-u", up.url(endpoint) + "?tenant=test", "--api", API[fmt],
+                        "--background", "--slots", "2", "--participant", "recovery",
+                        "--transcripts", repo, "--header", "X-Recovery-Test: retained",
+                        "-k", "RECOVERY_API_KEY")
+                if fmt == "openai":
+                    args += ("-p", "llama")
+                env = {"RECOVERY_API_KEY": "RECOVERY_SECRET_NOT_IN_ARCHIVE"}
+                ai = Askai(binary, *args, env=env)
+                try:
+                    result = call(ai, {"prompt": "durable prompt"})
+                    match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
+                    assert match and not result.get("isError"), result
+                    jid = match.group(1)
+                    assert first.sent.wait(10), "provider prefix not delivered"
+                    wait_for(lambda: committed(repo, "persisted reasoning"), seconds=10)
+                    wait_for(lambda: committed(repo, "before "), seconds=10)
+                    if fmt != "openai":
+                        assert committed(repo, provider_id), provider_id
+                    assert not committed(repo, env["RECOVERY_API_KEY"]), "authentication archived"
+                    assert len(creations) == 1, creations
+                    if graceful:
+                        ai.stop()
+                    else:
+                        ai.proc.kill()
+                        assert ai.proc.wait(timeout=5) == -signal.SIGKILL
+                        ai.state.cleanup()
+                finally:
+                    first.release.set()
+                    if ai.proc.poll() is None:
+                        ai.proc.kill()
+                        ai.proc.wait(timeout=5)
+                assert not cancellations, cancellations
+                with Askai(binary, *args, env=env) as restarted:
+                    result = poll(restarted, jid)
+                    assert not result.get("isError") and text_of(result) == "before after", result
+                    assert len(creations) == 1 and len(retrievals) == 1, (creations, retrievals)
+                    got = retrievals[0]
+                    parsed = urllib.parse.urlsplit(got["path"])
+                    query = urllib.parse.parse_qs(parsed.query)
+                    assert query["tenant"] == ["test"], got
+                    assert got["headers"]["x-recovery-test"] == "retained", got
+                    key = "x-goog-api-key" if fmt == "interactions" else "authorization"
+                    assert env["RECOVERY_API_KEY"] in got["headers"][key], got
+                    if fmt == "openai":
+                        assert parsed.path == "/v1/stream", got
+                        assert query["conv_id"] == [creations[0]["headers"]["x-conversation-id"]], got
+                        assert query["from"] == [str(len(prefix))], (got, len(prefix))
+                        assert "background" not in creations[0]["body"], creations[0]
+                    else:
+                        path = re.sub(r"%[0-9a-fA-F]{2}", lambda m: m[0].upper(), parsed.path)
+                        assert path == endpoint + "/" + urllib.parse.quote(provider_id, safe=""), got
+                        assert query["stream"] == ["true"], got
+                        cursor = ("starting_after", "22") if fmt == "responses" else ("last_event_id", "ev+cursor/2")
+                        assert query[cursor[0]] == [cursor[1]], got
+                        assert creations[0]["body"]["background"] is True, creations[0]
+                    wait_for(lambda: committed(repo, "before after"), seconds=10)
+                # The completed local result is also durable.  This poll
+                # must neither retrieve the stream nor create a generation.
+                with Askai(binary, *args, env=env) as completed:
+                    result = poll(completed, jid)
+                    assert not result.get("isError") and text_of(result) == "before after", result
+                    assert len(creations) == len(retrievals) == 1
+                assert not cancellations, cancellations
+    finally:
+        for gate in gates:
+            gate.release.set()
+        up.reply, up.retrieve, up.delete = held
+    print("recovery: durable raw streams and reasoning, SIGKILL and graceful restart, "
+          "provider ids, exact cloud cursors and llama byte offsets, current auth, "
+          "no duplicate creations and completed local job retention: PASS")
+
+
+def check_recovery_tools(binary, up):
+    """A completed tool's output survives into the next resumed turn.  A
+    committed intent whose result is unknown must never execute again."""
+    hold = up.reply, up.retrieve
+    releases = []
+
+    class Held(Stream):
+        def __init__(self, wire):
+            super().__init__(wire=wire)
+            self.release = threading.Event()
+            releases.append(self.release)
+        def pieces(self):
+            yield self.wire
+            assert self.release.wait(30), "tool recovery stream was not released"
+
+    def call(ai, arguments):
+        status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": arguments})
+        assert status == 200 and "result" in body, (status, body)
+        return body["result"]
+
+    try:
+        for ambiguous in (False, True):
+            with tempfile.TemporaryDirectory() as d:
+                repo, archive, marker = f"{d}/proj", f"{d}/transcripts.git", f"{d}/launched"
+                subprocess.run(["git", "init", "-q", repo], check=True)
+                subprocess.run(["git", "-C", repo, "-c", "user.name=test", "-c", "user.email=t@t",
+                                "commit", "--allow-empty", "-q", "-m", "durable tool result"], check=True)
+                os.mkdir(f"{d}/bin")
+                with open(f"{d}/bin/git", "w") as f:
+                    f.write('#!/bin/sh\ncase " $* " in *" log "*)\n'
+                            f'  printf "launched\\n" >> {shlex.quote(marker)}\n' +
+                            ('  exec sleep 30\n' if ambiguous else '') +
+                            f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
+                os.chmod(f"{d}/bin/git", 0o755)
+                item = {"type": "function_call", "id": "fc_recover", "call_id": "call_recover",
+                        "name": "git", "arguments": json.dumps({"repo": "proj", "command": "log",
+                                                                    "options": ["--oneline"]}),
+                        "status": "completed"}
+                prefix = sse_wire([
+                    (None, {"type": "response.created", "sequence_number": 0,
+                            "response": {"id": "response_after_tool", "status": "in_progress"}}),
+                    (None, {"type": "response.output_text.delta", "sequence_number": 1,
+                            "delta": "continued "})])
+                suffix = sse_wire([
+                    (None, {"type": "response.output_text.delta", "sequence_number": 2, "delta": "answer"}),
+                    (None, {"type": "response.completed", "sequence_number": 3,
+                            "response": {"status": "completed", "output": []}})])
+                stream = Held(prefix)
+                creates, resumes = [], []
+                def reply(request):
+                    creates.append(request)
+                    return 200, responses_turn([item], response_id="response_tool") if len(creates) == 1 else stream
+                def retrieve(request):
+                    if request["path"] == "/props":
+                        return 404, {}
+                    resumes.append(request)
+                    return 200, Stream(wire=suffix)
+                up.reply, up.retrieve = reply, retrieve
+                args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
+                        "--upstream-tools", "--git", repo, "--slots", "2", "--context", "8000",
+                        "--participant", "tool-recovery", "--transcripts", archive)
+                env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
+                ai = Askai(binary, *args, env=env)
+                try:
+                    result = call(ai, {"prompt": "Use git once, then answer."})
+                    match = re.search(r"Started job ([0-9a-f]{32})\.", result["content"][0]["text"])
+                    assert match and not result.get("isError"), result
+                    jid = match.group(1)
+                    try:
+                        wait_for(lambda: os.path.exists(marker), seconds=10)
+                    except AssertionError:
+                        raise AssertionError((call(ai, {"job": jid}), "".join(ai.log), creates))
+                    if not ambiguous:
+                        wait_for(lambda: len(creates) == 2, seconds=10)
+                        given = creates[1]["body"]["input"]
+                        assert any(i.get("type") == "function_call_output" and
+                                   "durable tool result" in i["output"] for i in given), given
+                        def captured():
+                            return subprocess.run(["git", "--git-dir", archive, "grep", "-F", "-q",
+                                                   "response_after_tool", "refs/heads/transcripts/tool-recovery",
+                                                   "--", "records"], stdout=subprocess.DEVNULL,
+                                                  stderr=subprocess.DEVNULL).returncode == 0
+                        wait_for(captured, seconds=10)
+                    ai.proc.kill()
+                    assert ai.proc.wait(timeout=5) == -signal.SIGKILL
+                    ai.state.cleanup()
+                finally:
+                    stream.release.set()
+                    if ai.proc.poll() is None:
+                        ai.proc.kill()
+                        ai.proc.wait(timeout=5)
+                with Askai(binary, *args, env=env) as restarted:
+                    results = []
+                    def ended():
+                        result = call(restarted, {"job": jid})
+                        results.append(result)
+                        return result.get("isError") or result["content"][0]["text"] == "continued answer"
+                    wait_for(ended, seconds=15)
+                    result = results[-1]
+                    if ambiguous:
+                        assert result.get("isError") and "unknown outcome" in result["content"][0]["text"], result
+                        assert len(creates) == 1 and not resumes, (creates, resumes)
+                    else:
+                        assert not result.get("isError") and result["content"][0]["text"] == "continued answer", result
+                        assert len(creates) == 2 and len(resumes) == 1, (creates, resumes)
+                        assert resumes[0]["path"] == "/v1/responses/response_after_tool?stream=true&starting_after=1", resumes
+                    with open(marker) as f:
+                        assert f.read() == "launched\n", "a tool was executed twice"
+    finally:
+        for release in releases:
+            release.set()
+        up.reply, up.retrieve = hold
+    print("tool recovery: completed results and tool history retained, next turn "
+          "resumed, interrupted intents stopped without duplicate execution: PASS")
+
+
+def check_durable_cancel(binary, up):
+    """Explicit cancellation wins over an outstanding stream checkpoint,
+    reaches the provider, and remains cancelled after process restart."""
+    hold = up.reply, up.delete, up.retrieve
+    streams = []
+    class Staged(Stream):
+        def __init__(self, first, second):
+            super().__init__(wire=first)
+            self.second = second
+            self.advance = threading.Event()
+            self.release = threading.Event()
+            streams.append(self)
+        def pieces(self):
+            yield self.wire
+            assert self.advance.wait(15), "cancel stream did not advance"
+            yield self.second
+            assert self.release.wait(15), "cancel stream was not released"
+    def call(ai, args):
+        status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": args})
+        assert status == 200 and "result" in body, (status, body)
+        return body["result"]
+    def cancelled(ai, jid):
+        result = call(ai, {"job": jid})
+        if result.get("isError"):
+            assert text_of(result) == "That job was cancelled.", result
+            return True
+        return False
+    try:
+        for fmt in ("responses", "interactions", "openai"):
+            with tempfile.TemporaryDirectory() as d:
+                flag, blocked = f"{d}/delay", f"{d}/committing"
+                os.mkdir(f"{d}/bin")
+                with open(f"{d}/bin/git", "w") as f:
+                    f.write('#!/bin/sh\ncase " $* " in *" fast-import "*)\n'
+                            f'  if test -f {shlex.quote(flag)}; then\n'
+                            f'    touch {shlex.quote(blocked)}; sleep 0.2\n  fi;;\n'
+                            f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
+                os.chmod(f"{d}/bin/git", 0o755)
+                if fmt == "responses":
+                    first = [(None, {"type": "response.created", "sequence_number": 0,
+                                     "response": {"id": "cancel_job", "status": "in_progress"}})]
+                    second = [(None, {"type": "response.output_text.delta", "sequence_number": 1,
+                                      "delta": "discard on cancellation"})]
+                    endpoint = "/v1/responses"
+                elif fmt == "interactions":
+                    first = [(None, {"event_type": "interaction.created", "event_id": "created",
+                                     "interaction": {"id": "cancel_job", "status": "in_progress"}})]
+                    second = [(None, {"event_type": "step.start", "event_id": "step",
+                                      "index": 0, "step": {"type": "model_output"}})]
+                    endpoint = "/v1beta/interactions"
+                else:
+                    first = [(None, {"choices": [{"index": 0, "delta": {"role": "assistant"}}]})]
+                    second = [(None, {"choices": [{"index": 0, "delta": {"content": "cancel me"}}]})]
+                    endpoint = "/v1/chat/completions"
+                stream = Staged(sse_wire(first), sse_wire(second))
+                creations, cancels, resumes = [], [], []
+                def reply(request):
+                    if request["path"].endswith("/cancel"):
+                        cancels.append(request)
+                        return 200, {}
+                    creations.append(request)
+                    return 200, stream
+                up.reply = reply
+                up.delete = lambda request: (cancels.append(request) or 200, {})
+                up.retrieve = lambda request: (resumes.append(request) or 404, {})
+                args = ("-u", up.url(endpoint), "--api", API[fmt], "--background", "--slots", "2",
+                        "--participant", "cancel", "--transcripts", f"{d}/transcripts.git")
+                if fmt == "openai":
+                    args += ("-p", "llama")
+                env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
+                with Askai(binary, *args, env=env) as ai:
+                    result = call(ai, {"prompt": "cancel while committing"})
+                    match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
+                    assert match, result
+                    jid = match.group(1)
+                    wait_for(lambda: ai.metrics()["askai_upstream_chunks_total"] >= 1)
+                    with open(flag, "w"):
+                        pass
+                    stream.advance.set()
+                    wait_for(lambda: os.path.exists(blocked))
+                    result = call(ai, {"job": jid, "action": "cancel"})
+                    assert not result.get("isError") and "cancelling job " + jid in text_of(result), result
+                    os.unlink(flag)
+                    stream.release.set()
+                    wait_for(lambda: cancelled(ai, jid), seconds=10)
+                    wait_for(lambda: len(cancels) == 1)
+                    assert len(creations) == 1 and not resumes, (creations, resumes)
+                    if fmt == "openai":
+                        parsed = urllib.parse.urlsplit(cancels[0]["path"])
+                        assert parsed.path == "/v1/stream", cancels
+                        assert urllib.parse.parse_qs(parsed.query)["conv_id"] == \
+                            [creations[0]["headers"]["x-conversation-id"]], cancels
+                    else:
+                        assert cancels[0]["path"] == endpoint + "/cancel_job/cancel", cancels
+                with Askai(binary, *args, env=env) as ai:
+                    wait_for(lambda: cancelled(ai, jid), seconds=10)
+                    assert len(creations) == len(cancels) == 1 and not resumes, (creations, cancels, resumes)
+    finally:
+        for stream in streams:
+            stream.advance.set()
+            stream.release.set()
+        up.reply, up.delete, up.retrieve = hold
+    print("durable cancel: pending stream commit drained, provider cancelled once, "
+          "cancelled result retained after restart for cloud and llama: PASS")
+
+
+def check_archive_failure(binary, up):
+    """A Git checkpoint failure cannot acknowledge a durable background
+    job or submit its provider request as if its state had been saved."""
+    with tempfile.TemporaryDirectory() as d:
+        os.mkdir(f"{d}/bin")
+        flag = f"{d}/fail-git"
+        with open(f"{d}/bin/git", "w") as f:
+            f.write('#!/bin/sh\ncase " $* " in *" fast-import "*)\n'
+                    f'  if test -f {shlex.quote(flag)}; then exit 42; fi;;\n'
+                    f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
+        os.chmod(f"{d}/bin/git", 0o755)
+        with Askai(binary, "-u", up.url(), "--background", "--slots", "2",
+                   "--participant", "archive-failure", "--transcripts", f"{d}/transcripts.git",
+                   env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
+            with open(flag, "w"):
+                pass
+            before = len(up.requests)
+            status, _, body = ai.rpc("tools/call", {"name": "ask_ai",
+                                                   "arguments": {"prompt": "must be saved first"}})
+            assert status in (200, 500), (status, body)
+            if "error" in body:
+                message = body["error"]["message"]
+            else:
+                result = body["result"]
+                assert result.get("isError"), result
+                message = text_of(result)
+            assert any(word in message.lower() for word in ("persist", "journal", "archive", "storage")), message
+            assert "Started job" not in message and len(up.requests) == before, (message, up.requests[before:])
+    print("archive failure: checkpoint failure is visible and prevents provider submission: PASS")
+
+
+def check_journal_repair(binary, up):
+    """The durable log rebuilds missing Git checkpoints and ignores only
+    an incomplete final record.  Corruption inside a complete record is
+    rejected without truncating evidence or creating provider work."""
+    hold = up.reply
+    up.reply = lambda request: (200, ANSWERS["openai"])
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            repo = f"{d}/transcripts.git"
+            ref = "refs/heads/transcripts/integrity"
+            wal = f"{repo}/askai-journal/integrity/records.wal"
+            args = ("-u", up.url(), "--background", "--slots", "2", "--participant", "integrity",
+                    "--transcripts", repo)
+            def call(ai, arguments):
+                status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": arguments})
+                assert status == 200 and "result" in body, (status, body)
+                return body["result"]
+            def completed(ai, jid):
+                result = call(ai, {"job": jid})
+                assert not result.get("isError"), result
+                return text_of(result) == "A"
+            creates = len(up.requests)
+            with Askai(binary, *args) as ai:
+                result = call(ai, {"prompt": "integrity prompt"})
+                match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
+                assert match, result
+                jid = match.group(1)
+                wait_for(lambda: completed(ai, jid), seconds=10)
+            with open(wal, "rb") as f:
+                original = f.read()
+            assert original and b"integrity prompt" in original
+            subprocess.run(["git", "--git-dir", repo, "update-ref", "-d", ref], check=True)
+            with open(wal, "ab") as f:
+                f.write(b"an incomplete final record")
+            with Askai(binary, *args) as ai:
+                wait_for(lambda: completed(ai, jid), seconds=10)
+                subprocess.run(["git", "--git-dir", repo, "show-ref", "--verify", "--quiet", ref], check=True)
+                assert os.path.getsize(wal) == len(original), (os.path.getsize(wal), len(original))
+                assert len(up.requests) == creates + 1, "journal repair submitted a new generation"
+            corrupt = bytearray(original)
+            corrupt[original.index(b"integrity prompt")] ^= 1
+            with open(wal, "wb") as f:
+                f.write(corrupt)
+            run = subprocess.run([binary, "-l", "127.0.0.1:0", *args],
+                                 env={k: v for k, v in os.environ.items() if k not in KEY_VARS},
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+            assert run.returncode != 0 and ("transcript" in run.stderr.lower() or
+                                           "journal" in run.stderr.lower()), (run.returncode, run.stderr)
+            with open(wal, "rb") as f:
+                assert f.read() == corrupt, "complete corrupt record was silently truncated"
+            assert len(up.requests) == creates + 1
+    finally:
+        up.reply = hold
+    print("journal repair: missing Git checkpoint rebuilt, incomplete tail "
+          "truncated, complete-record corruption rejected without data loss: PASS")
+
+
+def check_shared_transcripts(binary, up):
+    """Two participants checkpoint their simultaneous requests and streams
+    into separate branches of the same default transcript repository."""
+    hold = up.reply
+    def reply(request):
+        prompt = request["body"]["messages"][0]["content"]
+        who = prompt.removeprefix("question ")
+        answer = {"choices": [{"message": {"role": "assistant", "content": f"answer for {who}",
+                                           "reasoning_content": f"reasoning for {who}"},
+                               "finish_reason": "stop"}]}
+        return 200, Stream(answer, sizes=(47, 83, 67, 101), gap=0.01)
+    def call(ai, args):
+        status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": args})
+        assert status == 200 and "result" in body, (status, body)
+        return body["result"]
+    up.reply = reply
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            notes = f"{d}/session"
+            repo = notes + ".transcripts.git"
+            nested = notes + "/logs.git"
+            run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(), "--notes", notes,
+                                  "--transcripts", nested], stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=5)
+            assert run.returncode != 0 and "nonnested" in run.stderr, (run.returncode, run.stderr)
+            assert not os.path.exists(nested), "rejected transcript path was initialized"
+            args = ("-u", up.url(), "--background", "--slots", "2", "--notes", notes)
+            with Askai(binary, *args, "--participant", "alice") as alice, \
+                    Askai(binary, *args, "--participant", "bob") as bob:
+                barrier = threading.Barrier(2)
+                results, errors = {}, []
+                def ask(name, ai):
+                    try:
+                        barrier.wait(timeout=5)
+                        result = call(ai, {"prompt": f"question {name}"})
+                        match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
+                        assert match and not result.get("isError"), result
+                        jid = match.group(1)
+                        def done():
+                            result = call(ai, {"job": jid})
+                            assert not result.get("isError"), result
+                            results[name] = result
+                            return text_of(result) == f"answer for {name}"
+                        wait_for(done, seconds=15)
+                    except Exception as e:
+                        errors.append(e)
+                workers = [threading.Thread(target=ask, args=(name, ai))
+                           for name, ai in (("alice", alice), ("bob", bob))]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join(20)
+                assert not errors and all(not worker.is_alive() for worker in workers), errors
+                assert results.keys() == {"alice", "bob"}, results
+            branches = subprocess.run(["git", "--git-dir", repo, "for-each-ref", "--format=%(refname)",
+                                       "refs/heads/transcripts/"], check=True, capture_output=True,
+                                      text=True).stdout.splitlines()
+            assert set(branches) == {f"refs/heads/transcripts/{name}" for name in ("alice", "bob")}, branches
+            for name in ("alice", "bob"):
+                ref = f"refs/heads/transcripts/{name}"
+                for marker in (f"question {name}", f"reasoning for {name}", f"answer for {name}"):
+                    subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q", marker, ref,
+                                    "--", "records"], check=True)
+                peer = "bob" if name == "alice" else "alice"
+                run = subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q", f"question {peer}",
+                                      ref, "--", "records"])
+                assert run.returncode == 1, (ref, peer)
+            subprocess.run(["git", "--git-dir", repo, "fsck", "--full", "--strict", "--no-reflogs"],
+                           check=True, capture_output=True)
+    finally:
+        up.reply = hold
+    print("shared transcripts: concurrent participants, separate branches, committed "
+          "requests/reasoning/results and intact shared Git objects: PASS")
 
 
 def check_http(binary, up):
@@ -3546,14 +4167,16 @@ def check_configuration(binary, up, godbolt):
     members = json.loads(example, parse_constant=constant)
     assert example == json.dumps(members, indent=2) + "\n", "not in the format of jq"
     groups = ("upstream", "service", "testing", "debugging")
-    assert set(members) == set(groups) | others, set(members) ^ (set(groups) | others)
-    assert set(GROUPS) | set(TOOL_MEMBERS) == options and \
+    assert set(members) == set(groups) | others | ROOT_MEMBERS, \
+        set(members) ^ (set(groups) | others | ROOT_MEMBERS)
+    assert set(GROUPS) | set(TOOL_MEMBERS) | ROOT_MEMBERS == options and \
         not set(GROUPS) & set(TOOL_MEMBERS), set(GROUPS) ^ options
     assert all(member in members["tools"][tool]
                for tool, member in TOOL_MEMBERS.values()), members["tools"]
     with tempfile.TemporaryDirectory() as d:
         d = os.path.realpath(d)
         subprocess.run(["git", "init", "-q", f"{d}/proj"], check=True)
+        members["transcripts"] = f"{d}/transcripts.git"
         members["tools"]["notes"]["directory"] = f"{d}/notes"
         members["tools"]["git"]["repositories"] = [f"{d}/proj"]
         members["plugins"][0]["path"] = os.path.realpath(godbolt)
@@ -3935,7 +4558,7 @@ def check_allow(binary, up):
                 # thread, follow what the turns get.
                 ask = listed[0]
                 assert ("It may use some of this server's tools" in ask["description"],
-                        "It keeps notes in a thread" in ask["description"],
+                        "It keeps notes in the shared session repository" in ask["description"],
                         "thread" in ask["inputSchema"]["properties"]) == \
                     (bool(turns), "notes" in turns, "notes" in turns), (tools, ask)
                 if turns and "notes" not in turns:
@@ -4327,9 +4950,9 @@ def check_logs(binary, up):
                 "action": "read", "file": "SECRETFILE", "thread": "x"}})
             line = ai.wait_log(r"^askai: tool call notes from anonymous failed ")
             assert re.fullmatch(
-                r'askai: tool call notes from anonymous failed after \d+\.\d s \(90 bytes\); '
-                r'error "The thread argument must be the id of a thread, as an add named '
-                r'it: 32 hexadecimal digits\."\n', line), line
+                r'askai: tool call notes from anonymous failed after \d+\.\d s \(88 bytes\); '
+                r'error "The optional thread must be 32 hexadecimal digits\. '
+                r'It does not select the notes session\."\n', line), line
             assert "SECRETFILE" not in "".join(ai.log), ai.log
 
         # A provider by name, a context of unknown size, and no API key in
@@ -4528,9 +5151,8 @@ def check_logs(binary, up):
             line = ai.wait_log(r"^askai: tool call notes from anonymous failed ")
             assert line.endswith("; arguments " + json.dumps(odd, separators=(",", ":"),
                                                              ensure_ascii=False) +
-                                 '; error "The thread argument must be the id of a '
-                                 'thread, as an add named it: 32 hexadecimal '
-                                 'digits."\n'), line
+                                 '; error "The optional thread must be 32 hexadecimal digits. '
+                                 'It does not select the notes session."\n'), line
             script[:] = [
                 lambda r: (200, turn_stream([("a", "notes", json.dumps(
                     {"action": "add", "file": "n.md", "text": "NOTETEXT"}))],
@@ -7290,7 +7912,7 @@ def split(text, n):
     return [text[k:k + n] for k in range(0, len(text), n)] or [""]
 
 
-def responses_turn(items, text=""):
+def responses_turn(items, text="", response_id=None):
     """A streamed answer of the Responses API of @p text, then the output
     @p items, each done whole."""
     ev = [(None, {"type": "response.created", "response": {"status": "in_progress"}})]
@@ -7300,6 +7922,10 @@ def responses_turn(items, text=""):
                    "item": item}) for i, item in enumerate(items)]
     ev.append((None, {"type": "response.completed", "response": {
         "status": "completed", "usage": {"input_tokens": 100, "output_tokens": 20}}}))
+    if response_id:
+        ev[0][1]["response"]["id"] = response_id
+        for sequence, (_, event) in enumerate(ev):
+            event["sequence_number"] = sequence
     return Stream(wire=sse_wire(ev))
 
 
@@ -7373,16 +7999,10 @@ def interactions_turn(steps, status=None, usage=None, after=()):
 
 
 def check_notes(binary, up):
-    """With --notes and without --upstream-tools, a role can grant the notes
-    tool to clients.  An add without a thread starts one, in a repository of
-    its own under the client's identity, and the answer names it.  A list
-    has the notes of a thread, the oldest first, and a read returns the text
-    of a note from the byte that offset names.  A note is never changed, and
-    the names that git refuses are refused.  Of two adds at once, one can
-    fail, and its answer asks to add the note again.  A dropped add still
-    adds its note, and a stale lock file of git is removed.  A client reads
-    the upstream's notebook of a thread and adds only to its own.  A thread
-    of another identity is unknown to a client."""
+    """Notes in one session repository have independently writable branches.
+    Preserve the immutable-file, binary-data, offset, race and disconnect
+    checks while all participants can discover and read each other's work.
+    A compatibility thread id no longer chooses a separate repository."""
     def digest(token):
         return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
 
@@ -7393,7 +8013,7 @@ def check_notes(binary, up):
         notes = f"{d}/notes"
         path = f"{d}/askai.json"
         with open(path, "w") as f:
-            json.dump(grouped({"url": up.url(), "notes": notes,
+            json.dump(grouped({"url": up.url(), "notes": notes, "participant": "writers",
                                "roles": {"writer": {"tools": ["notes"]},
                                          "asker": {"tools": ["ask_ai"]}},
                                "identities": {
@@ -7420,13 +8040,14 @@ def check_notes(binary, up):
             assert call({"action": "list"}, "carol-1") == "Tool not available: notes"
 
             said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
-            thread = re.fullmatch(r"Noted, in the new thread ([0-9a-f]{32})\. Give "
-                                  r"this thread to add more notes to it, to list "
-                                  r"them, or to read one\.", said).group(1)
-            [who] = os.listdir(notes)
-            assert re.fullmatch("[0-9a-f]{16}", who) and \
-                os.listdir(f"{notes}/{who}") == ["client"], who
-            assert os.listdir(f"{notes}/{who}/client") == [thread]
+            assert said == "Noted.", said
+            thread = "2" * 32
+            notebooks = call({"action": "notebooks"})
+            who = re.search(r"writers/([0-9a-f]{16})/client", notebooks).group(1)
+            own = f"refs/heads/notes/writers/{who}/client"
+            other = f"refs/heads/notes/writers/{who}/upstream"
+            assert os.path.isfile(f"{notes}/HEAD"), notes
+            assert not os.path.exists(f"{notes}/{who}"), notes
             long = "".join(f"line {i:04}\n" for i in range(800))
             assert call({"action": "add", "file": "a/b c.md", "text": long,
                          "thread": thread}) == "Noted."
@@ -7480,64 +8101,55 @@ def check_notes(binary, up):
             # Only list and read take an offset, and the answer of a call
             # that failed is whole.
             said = call({"action": "add", "file": "o.md", "text": "o", "offset": 500})
-            assert said.startswith("Noted, in the new thread "), said
+            assert said == "Noted.", said
             assert call({"action": "read", "file": "b", "thread": thread,
                          "offset": 5}) == "!No note has that name."
 
-            for arguments, why in (
-                    ({"action": "list"}, "list, read and copy need the thread argument"),
-                    ({"action": "read", "file": "plan.md"},
-                     "list, read and copy need the thread argument"),
-                    ({"action": "copy", "file": "plan.md"},
-                     "list, read and copy need the thread argument"),
-                    ({"action": "list", "thread": "xyz"},
-                     "The thread argument must be the id of a thread"),
-                    ({"action": "remove", "thread": thread},
-                     "The action argument must be add, list, read or copy.")):
-                assert call(arguments).startswith("!" + why), (arguments, call(arguments))
-            # A thread has a notebook of each side under one id.  A client
-            # reads the upstream's notebook of a thread with "notebook":
-            # "other", and adds notes only to its own: its first add to a
-            # thread of the upstream starts its own notebook there.
+            assert "plan.md" in call({"action": "list"})
+            assert call({"action": "read", "file": "plan.md"}) == "step 1"
+            assert call({"action": "list", "thread": "xyz"}).startswith(
+                "!The optional thread must be 32 hexadecimal digits.")
+            assert call({"action": "remove"}).startswith("!The action must")
+            # The opposite side's branch is a convenience alias.  Its
+            # files share the repository, but an add still writes only to
+            # the caller's own branch.
             git_env = os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
                                     "GIT_CONFIG_NOSYSTEM": "1"}
             shared = "1" * 32
-            book = f"{notes}/{who}/upstream/{shared}"
-            subprocess.run(["git", "init", "-q", "--bare", book], check=True, env=git_env)
+            book = notes
             now = int(time.time())
             subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
-                           input=(f"commit refs/heads/notes\ncommitter askai <askai> "
+                           input=(f"commit {other}\ncommitter askai <askai> "
                                   f"{now} +0000\ndata 0\nM 100644 inline found.md\n"
                                   "data 6\nfound\n\n").encode(), check=True, env=git_env)
             stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now))
             assert call({"action": "list", "thread": shared, "notebook": "other"}) == \
-                f"The other AI's notes, oldest first:\n\n1. {stamp}  found.md  (1 line)\n"
+                f"Selected notebook, oldest first:\n\n1. {stamp}  found.md  (1 line)\n"
             assert call({"action": "read", "file": "found.md", "thread": shared,
                          "notebook": "other"}) == "found\n"
-            assert call({"action": "list", "thread": shared}) == \
-                "!You have added no notes to this thread yet."
+            assert "found.md" not in call({"action": "list", "thread": shared})
             for arguments, why in (
                     ({"action": "add", "file": "z.md", "text": "z", "notebook": "other"},
-                     "!You can add notes only to your own notebook. The other "
-                     "notebook can only be read."),
+                     "!You can add notes only to your own notebook."),
                     ({"action": "list", "notebook": "theirs"},
-                     "!The notebook argument must be own or other.")):
+                     "!The notebook must be own, other, or a selector returned "
+                     "by action notebooks (participant/principal/side).")):
                 assert call(arguments | {"thread": shared}) == why, (arguments, why)
             assert call({"action": "add", "file": "mine.md", "text": "m",
                          "thread": shared}) == "Noted."
-            assert shared in os.listdir(f"{notes}/{who}/client")
+            assert "mine.md" in call({"action": "list", "thread": thread})
             assert "mine.md" in call({"action": "list", "thread": shared})
             assert "mine.md" not in call({"action": "list", "thread": shared,
                                           "notebook": "other"})
-            assert call({"action": "list", "thread": thread, "notebook": "other"}) == \
-                "!The other AI keeps no notes in this thread."
+            assert "found.md" in call({"action": "list", "thread": thread,
+                                       "notebook": "other"})
             # copy puts a note of the other notebook into the client's, byte
             # for byte, without its text in a call: also a file that is not
             # text, which list marks and read does not show.
             raw = bytes(range(256)) * 3
             subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
-                           input=(f"commit refs/heads/notes\ncommitter askai <askai> "
-                                  f"{now} +0000\ndata 0\nfrom refs/heads/notes^0\n"
+                           input=(f"commit {other}\ncommitter askai <askai> "
+                                  f"{now} +0000\ndata 0\nfrom {other}^0\n"
                                   f"M 100644 inline img/raw.bin\ndata {len(raw)}\n"
                                   ).encode() + raw + b"\n", check=True, env=git_env)
             assert call({"action": "list", "thread": shared, "notebook": "other"}).endswith(
@@ -7569,9 +8181,9 @@ def check_notes(binary, up):
             assert view == note_view(latin) and view.endswith(
                 'char *s = "caf\u27e6E9\u27e7 \u27e6AB\u27e7\u27e600\u27e7"; '
                 '/* \\x41 \u27e6\u27e6 */\n'), view
-            mine = f"{notes}/{who}/client/{shared}"
+            mine = notes
             assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
-                                   "notes:img/raw.bin"], capture_output=True, check=True,
+                                   f"{own}:img/raw.bin"], capture_output=True, check=True,
                                   env=git_env).stdout == raw
             # The argument content of an add is a file that the client's program
             # attaches (the extension io.modelcontextprotocol/files): a data:
@@ -7589,10 +8201,10 @@ def check_notes(binary, up):
                               ("in/text.md", "data:text/markdown,a%20b%0A")):
                 assert call({"action": "add", "file": name, "thread": shared,
                              "content": uri}) == "Noted.", name
-            mine = f"{notes}/{who}/client/{shared}"
+            mine = notes
             for name, want in (("in/blob.bin", blob), ("in/text.md", b"a b\n")):
                 assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
-                                       f"notes:{name}"], capture_output=True,
+                                       f"{own}:{name}"], capture_output=True,
                                       check=True, env=git_env).stdout == want, name
             assert call({"action": "list", "thread": shared}).count("(binary)") >= 2
             big = base64.b64encode(b"x" * ((4 << 20) + 1)).decode()
@@ -7610,14 +8222,18 @@ def check_notes(binary, up):
                 said = call({"action": "add", "file": "in/z.bin", "thread": shared}
                             | arguments)
                 assert said.startswith(why), (arguments, said[:200])
-            # A client cannot use a thread of another identity, nor read its
-            # other notebook.
-            for arguments in ({"action": "list"}, {"action": "read", "file": "plan.md"},
-                              {"action": "add", "file": "z.md", "text": "z"}):
-                said = call(arguments | {"thread": thread}, "bob-1")
-                assert said == f"!Unknown thread: {thread}.", (arguments, said)
-            assert call({"action": "list", "thread": shared, "notebook": "other"},
-                        "bob-1") == "!The other AI keeps no notes in this thread."
+            # Explicit selectors expose every notebook for reading,
+            # while each authenticated identity still has its own writer.
+            selector = f"writers/{who}/client"
+            assert selector in call({"action": "notebooks"}, "bob-1")
+            assert call({"action": "read", "file": "plan.md",
+                         "notebook": selector}, "bob-1") == "step 1"
+            assert call({"action": "add", "file": "forbidden.md", "text": "x",
+                         "notebook": selector}, "bob-1").startswith(
+                             "!You can add notes only to your own notebook.")
+            assert call({"action": "add", "file": "bob.md", "text": "b"},
+                        "bob-1") == "Noted."
+            assert "bob.md" not in call({"action": "list"})
         # When two adds to one thread run at once, one of them fails, and its
         # answer asks to add the note again.  A git that sleeps before
         # fast-import makes both adds check the same newest note.
@@ -7638,7 +8254,7 @@ def check_notes(binary, up):
                 for add in adds:
                     add.join(10)
                 assert sorted(said) == ["!Could not add the note, because another "
-                                        "call added a note to this thread at the "
+                                        "call added a note to this notebook at the "
                                         "same time. Add it again.", "Noted."], said
             assert not any("could not add" in line for line in ai.log), ai.log
             # An add whose client goes while git writes still adds the note.
@@ -7650,25 +8266,119 @@ def check_notes(binary, up):
             sock.close()
             time.sleep(1)
             assert "dropped.md" in call({"action": "list", "thread": thread})
-            # A lock file that git left behind is removed once it is a minute
-            # old, and the next add works.
-            book = f"{notes}/{who}/client/{thread}"
-            for lock in ("HEAD.lock", "refs/heads/notes.lock"):
+            # An old lock can still belong to another process using this
+            # shared repository.  Age alone must not authorize deleting it.
+            book = notes
+            for lock in ("HEAD.lock", f"{own}.lock"):
                 with open(f"{book}/{lock}", "w"):
                     pass
                 os.utime(f"{book}/{lock}", (time.time() - 120,) * 2)
+            assert "again" in call({"action": "add", "file": "unlocked.md", "text": "u",
+                                    "thread": thread})
+            for lock in ("HEAD.lock", f"{own}.lock"):
+                assert os.path.exists(f"{book}/{lock}"), lock
+                os.unlink(f"{book}/{lock}")
             assert call({"action": "add", "file": "unlocked.md", "text": "u",
                          "thread": thread}) == "Noted."
-            assert not os.path.exists(f"{book}/refs/heads/notes.lock")
         # A process can start askai with SIGCHLD ignored.  askai sets SIGCHLD
         # to its default action, so waitid() still returns the exit status
         # of git, and the note is added.
         with Askai(binary, "-c", path, ignore=(signal.SIGCHLD,)) as ai:
             said = call({"action": "add", "file": "y.md", "text": "y"})
-            assert said.startswith("Noted, in the new thread "), said
-    print("notes: granted by a role, threads of the clients' own, list, read, "
-          "offsets, names and texts refused, races, drops, stale locks, other "
-          "threads unknown: PASS")
+            assert said == "Noted.", said
+    print("notes: shared repository, separate identity branches, discovery, "
+          "read-only cross-notebook access, immutable files, copy, binary data, "
+          "offsets, races, drops and preservation of external locks: PASS")
+
+
+def check_shared_notes(binary, up):
+    """Independent instances use one repository as their session, including
+    a normal working repository; discovery crosses participant branches,
+    but writing and copying always update only the caller's own branch."""
+    def call(ai, **arguments):
+        status, _, body = ai.rpc("tools/call", {"name": "notes",
+                                               "arguments": arguments})
+        assert status == 200 and "result" in body, (status, body)
+        result = body["result"]
+        return ("!" if result.get("isError") else "") + text_of(result)
+
+    for working, object_format in ((False, "sha1"), (True, "sha1"), (True, "sha256")):
+        with tempfile.TemporaryDirectory() as d:
+            repo = f"{d}/session"
+            if working:
+                subprocess.run(["git", "init", "-q", f"--object-format={object_format}", repo], check=True)
+            def git(*args):
+                return subprocess.run(["git", "-C", repo, *args], check=True,
+                                      capture_output=True, text=True).stdout
+            with Askai(binary, "-u", up.url(), "--notes", repo,
+                       "--participant", "alice") as alice, \
+                    Askai(binary, "-u", up.url(), "--notes", repo,
+                          "--participant", "bob") as bob:
+                said = {}
+                def add(name, ai):
+                    said[name] = call(ai, action="add", file="plan.md", text=name)
+                threads = [threading.Thread(target=add, args=(name, ai))
+                           for name, ai in (("alice", alice), ("bob", bob))]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(10)
+                assert said.keys() == {"alice", "bob"}, said
+                for name, ai in (("alice", alice), ("bob", bob)):
+                    # Distinct branch transactions can still contend on a
+                    # repository-wide lock; the reported retry is safe.
+                    if said[name] != "Noted.":
+                        assert "again" in said[name], said
+                        assert call(ai, action="add", file="plan.md", text=name) == "Noted."
+                for name, ai in (("alice", alice), ("bob", bob)):
+                    assert call(ai, action="read", file="plan.md") == name
+                    notebooks = call(ai, action="notebooks")
+                    assert "alice/anonymous/client" in notebooks and \
+                        "bob/anonymous/client" in notebooks, notebooks
+                    peer = "bob" if name == "alice" else "alice"
+                    selector = f"{peer}/anonymous/client"
+                    assert call(ai, action="read", file="plan.md", notebook=selector) == peer
+                    assert call(ai, action="add", file="overwrite.md", text="no",
+                                notebook=selector).startswith(
+                                    "!You can add notes only to your own notebook.")
+                    assert call(ai, action="copy", file="plan.md", notebook=selector,
+                                **{"as": "peer.md"}) == "Copied into your notebook."
+                    assert call(ai, action="read", file="peer.md") == peer
+                    assert call(ai, action="read", file="plan.md", notebook="../HEAD").startswith("!")
+                branches = set(git("for-each-ref", "--format=%(refname)",
+                                   "refs/heads/notes/").splitlines())
+                assert branches == {f"refs/heads/notes/{name}/anonymous/client"
+                                    for name in ("alice", "bob")}, branches
+                git("pack-refs", "--all")
+                assert call(alice, action="add", file="after-pack.md", text="packed") == "Noted."
+                assert call(bob, action="read", file="after-pack.md",
+                            notebook="alice/anonymous/client") == "packed"
+                git("worktree", "add", "--quiet", f"{d}/alice-worktree",
+                    "notes/alice/anonymous/client")
+                with open(f"{d}/alice-worktree/plan.md") as f:
+                    assert f.read() == "alice"
+                with open(f"{d}/alice-worktree/peer.md") as f:
+                    assert f.read() == "bob"
+                for name, value in (("manual-one.md", "first manual note"),
+                                    ("manual-two.md", "second manual note")):
+                    with open(f"{d}/alice-worktree/{name}", "w") as f:
+                        f.write(value)
+                git("-C", f"{d}/alice-worktree", "add", "manual-one.md", "manual-two.md")
+                git("-C", f"{d}/alice-worktree", "-c", "user.name=test", "-c", "user.email=t@t",
+                    "commit", "-q", "-m", "Two notes from a worktree")
+                listed = call(bob, action="list", notebook="alice/anonymous/client")
+                assert all(name in listed for name in ("plan.md", "manual-one.md", "manual-two.md")), listed
+                assert call(alice, action="read", file="manual-one.md") == "first manual note"
+                assert call(bob, action="read", file="manual-two.md",
+                            notebook="alice/anonymous/client") == "second manual note"
+            # Restarting does not mint another notebook or lose its notes.
+            with Askai(binary, "-u", up.url(), "--notes", repo,
+                       "--participant", "alice") as ai:
+                assert call(ai, action="read", file="plan.md") == "alice"
+                assert call(ai, action="read", file="plan.md",
+                            notebook="bob/anonymous/client") == "bob"
+    print("shared notes: two instances, bare and working repositories, branch "
+          "isolation, discovery, cross-participant copy, packed refs and worktrees: PASS")
 
 
 def check_turn_apis(binary, up):
@@ -8124,7 +8834,7 @@ def check_attach(binary, up):
         for api, (path, key, tools, schema, calls, answer, file, split) in apis.items():
             with Askai(binary, "--api", api, "-u", up.url(path), "-m", "m",
                        "-k", "TEST_KEY", "--header", "X-Gate: g", "--upstream-tools",
-                       "--notes", notes, env={"TEST_KEY": "secret"}) as ai:
+                       "--notes", notes, "--participant", api, env={"TEST_KEY": "secret"}) as ai:
                 assert ai.listed("upstream:")[-1] == \
                     f"files     {up.url('/upload/v1beta/files')}", ai.log
 
@@ -8139,13 +8849,14 @@ def check_attach(binary, up):
                 # and the upstream one of its own.
                 said = call({"action": "add", "file": "latin1.c", "content":
                              "data:;base64," + base64.b64encode(latin1).decode()})
-                thread = re.search("[0-9a-f]{32}", said).group(0)
+                assert said == "Noted.", said
+                thread = "1" * 32
                 script[:] = [lambda r: (200, calls([{"action": "add", "file": "own.c",
                                                      "text": code}])),
                              lambda r: (200, answer("A"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
                 assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
-                    == "!The action argument must be add, list, read or copy."
+                    == "!The action must be add, list, read, copy or notebooks."
 
                 count = len(up.requests)
                 stored = len(up.uploads)
@@ -8154,7 +8865,7 @@ def check_attach(binary, up):
                 first, second = up.requests[count:]
                 [notes_tool] = [t for t in tools(first["body"]) if t["name"] == "notes"]
                 action = notes_tool[schema]["properties"]["action"]
-                assert action["enum"] == ["add", "list", "read", "copy", "attach"], action
+                assert action["enum"] == ["add", "notebooks", "list", "read", "copy", "attach"], action
                 assert "attach gives you a note" in notes_tool["description"], notes_tool
                 view, plain = up.uploads[stored:]
                 assert view["raw"] == note_view(latin1).encode() and \
@@ -8254,7 +8965,8 @@ def check_attach(binary, up):
                   "--upstream-tools", "--notes", notes, "--verbose") as ai:
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "big.c", "text": "x" * 8000}})
-        thread = re.search("[0-9a-f]{32}", text_of(body["result"])).group(0)
+        assert text_of(body["result"]) == "Noted.", body
+        thread = "2" * 32
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "small.c", "text": "y", "thread": thread}})
         # A view of more than 16 MiB is not uploaded, nor made whole.
@@ -8306,7 +9018,8 @@ def check_attach(binary, up):
                 f"files     {up.url('/gw/upload/v1beta/files')}", ai.log
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "g.c", "text": "g"}})
-            thread = re.search("[0-9a-f]{32}", text_of(body["result"])).group(0)
+            assert text_of(body["result"]) == "Noted.", body
+            thread = "3" * 32
             script[:] = [lambda r: (200, generate_turn([[{"functionCall": {
                              "name": "notes", "id": "c0", "args": {
                                  "action": "attach", "file": "g.c",
@@ -8355,9 +9068,8 @@ def check_turns(binary, up):
     window that offset moves, writes the turn and the results into the
     conversation, and asks on until an answer calls none, --max-turns turns
     at most; the client gets the answer and the calls' trace.  Notes are
-    files in the repository of the thread, listed and read back; their list
-    and the newest note go with the prompt to a call that goes on with the
-    thread.  compact has the conversation start again from the prompt, the
+    files on the participant branch of the shared repository, listed and
+    read back; their list and the newest note go with every ask prompt.  compact has the conversation start again from the prompt, the
     summary and the notes, and a context that is full, as the upstream
     reports or as askai counts, has it start again from the prompt and the
     notes."""
@@ -8398,9 +9110,10 @@ def check_turns(binary, up):
         notes = f"{d}/notes"
         with open(f"{d}/file", "w"):
             pass
-        sh("init", "-q", "--bare", f"{d}/old", cwd=d)
+        os.mkdir(f"{d}/old")
+        os.mkdir(f"{d}/old/anonymous")
         for path, message in ((f"{d}/file", "not a directory"),
-                              (f"{d}/old", "the directory is a git repository")):
+                              (f"{d}/old", "nonempty directory is not a repository")):
             proc = run("--upstream-tools", "--notes", path)
             assert proc.returncode and message in proc.stderr, (path, proc)
         # A time in a list of notes.
@@ -8418,7 +9131,15 @@ def check_turns(binary, up):
         def reply(request):
             return script.pop(0)(request) if script else (200, turn_stream(text="A"))
         up.reply = reply
-        args = ("-u", up.url(), "--upstream-tools", "--git", repo, "--notes", notes)
+        args = ("-u", up.url(), "--upstream-tools", "--git", repo,
+                "--participant", "turns", "--notes", notes)
+        branch = "refs/heads/notes/turns/anonymous/upstream"
+        sessions = 0
+
+        def isolated(*options):
+            nonlocal sessions
+            sessions += 1
+            return (*args[:-1], f"{notes}-{sessions}", *options)
         with Askai(binary, *args) as ai:
             tools = {t["name"]: t for t in ai.rpc("tools/list")[2]["result"]["tools"]}
             assert "thread" in tools["ask_ai"]["inputSchema"]["properties"], tools
@@ -8469,14 +9190,14 @@ def check_turns(binary, up):
                 listed), read
             text, trace = [c["text"] for c in result["content"]]
             assert text == "A", result
-            thread = re.search(r"in the thread ([0-9a-f]{32}):", trace).group(1)
+            thread = re.search(r"ask-chain thread is ([0-9a-f]{32})", trace).group(1)
             assert trace.startswith("The other AI made 3 tool calls in 3 turns:\n"
                                     f"- git {log}: 14 bytes\n"
                                     "- notes add: 6 bytes\n"
                                     f"- notes list: {len(listed)} bytes\n"), trace
             assert "found" not in trace, trace
-            book = f"{notes}/anonymous/upstream/{thread}"
-            assert sh("--git-dir", book, "show", "notes:found.md",
+            book = notes
+            assert sh("--git-dir", book, "show", f"{branch}:found.md",
                       cwd=d) == "found \"first\"", book
 
             # When an ask call goes on with a thread, the prompt has the list
@@ -8484,11 +9205,11 @@ def check_turns(binary, up):
             count = len(up.requests)
             result = ai.ask("And now?", thread=thread)
             assert re.fullmatch(
-                "And now\\?\n\n\\[askai: the notes you kept in earlier calls on "
-                f"this thread, oldest first:\\]\n\n1\\. {when}  found\\.md  "
+                "And now\\?\n\n\\[askai: your earlier session notes, oldest first. "
+                f"Use notes action notebooks to discover the other participants:\\]\n\n1\\. {when}  found\\.md  "
                 "\\(1 line\\)\n\n\\[askai: your newest note, found\\.md:\\]\n\n"
                 "found \"first\"\n", prompt(up.requests[count])), up.requests[count]
-            assert f"in the thread {thread}:" in result["content"][1]["text"], result
+            assert f"ask-chain thread is {thread}." in result["content"][1]["text"], result
 
             # Hooks in the repository of a thread do not run.  A note of a
             # name that a note has is refused.
@@ -8509,8 +9230,8 @@ def check_turns(binary, up):
                 "changed. Add the note under another name.", "n"], \
                 up.requests[count + 1]
             assert not os.path.exists(f"{d}/hooked")
-            for value, message in (("0" * 32, "Unknown thread: " + "0" * 32 + "."),
-                                   ("xyz", "must be a thread's id")):
+            assert ai.ask("Q", thread="0" * 32)["content"][0]["text"] == "A"
+            for value, message in (("xyz", "must be a thread's id"),):
                 result = ai.ask("Q", thread=value)
                 assert result.get("isError") and message in text_of(result), result
 
@@ -8568,7 +9289,7 @@ def check_turns(binary, up):
                 "The file argument must be a file name"), up.requests[count + 3]
 
             values = ai.metrics()
-            assert total(values, "askai_turns_total") == 12, values
+            assert total(values, "askai_turns_total") == 13, values
             assert [total(values, "askai_turn_tool_calls_total", tool=t) for t in
                     ("git", "notes", "man", "compact", "unknown")] == [8, 7, 0, 0, 1], \
                 values
@@ -8596,7 +9317,8 @@ def check_turns(binary, up):
                                              "arguments": arguments})[2]
                 return text_of(body["result"])
             said = client_notes({"action": "add", "file": "brief.md", "text": "aim"})
-            mine = re.search(r"new thread ([0-9a-f]{32})", said).group(1)
+            assert said == "Noted.", said
+            mine = "3" * 32
             script[:] = [lambda r: (200, turn_stream([
                 ("m", "notes", json.dumps({"action": "list", "notebook": "other"})),
                 ("n", "notes", json.dumps({"action": "read", "file": "brief.md",
@@ -8611,34 +9333,31 @@ def check_turns(binary, up):
                                            "content": "data:,x"}))]))]
             count = len(up.requests)
             result = ai.ask("Go on", thread=mine)
-            assert prompt(up.requests[count]) == "Go on\n\n[askai: you have no notes " \
-                "in this thread yet. The client keeps notes in it, which notes reads " \
-                "with \"notebook\": \"other\".]\n", prompt(up.requests[count])
+            assert prompt(up.requests[count]).startswith(
+                "Go on\n\n[askai: your earlier session notes, oldest first."), \
+                prompt(up.requests[count])
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
-            assert re.fullmatch(f"The client's notes, oldest first:\n\n1\\. {when}  "
+            assert re.fullmatch(f"Selected notebook, oldest first:\n\n1\\. {when}  "
                                 "brief\\.md  \\(1 line\\)\n", outputs[0]), outputs
-            assert outputs[1:] == ["aim", "You can add notes only to your own notebook. "
-                                   "The other notebook can only be read.", "Noted.",
+            assert outputs[1:] == ["aim", "You can add notes only to your own notebook.", "Noted.",
                                    "Copied into your notebook.", "aim",
                                    "Only a client hands askai a file as content."], \
                 outputs
-            assert f"in the thread {mine}:" in result["content"][1]["text"], result
+            assert f"ask-chain thread is {mine}." in result["content"][1]["text"], result
             assert "seen.md" in client_notes({"action": "list", "thread": mine,
                                               "notebook": "other"})
             count = len(up.requests)
             ai.ask("Again", thread=mine)
             assert prompt(up.requests[count]).startswith(
-                "Again\n\n[askai: the client keeps notes in this thread too, which "
-                "notes reads with \"notebook\": \"other\".]\n\n[askai: the notes you "
-                "kept in earlier calls on this thread, oldest first:]"), \
+                "Again\n\n[askai: your earlier session notes, oldest first."), \
                 prompt(up.requests[count])
             # A newest note that is not text goes into the prompt as its view.
-            book = f"{notes}/anonymous/upstream/{mine}"
+            book = notes
             subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
-                           input=b"commit refs/heads/notes\ncommitter askai <askai> "
+                           input=f"commit {branch}\ncommitter askai <askai> ".encode()
                            + str(int(time.time())).encode() + b" +0000\ndata 0\n"
-                           b"from refs/heads/notes^0\nM 100644 inline z.bin\ndata 3\n"
-                           b"\xff\x00\xfe\n", check=True, env=os.environ | {
+                           + f"from {branch}^0\nM 100644 inline z.bin\ndata 3\n".encode()
+                           + b"\xff\x00\xfe\n", check=True, env=os.environ | {
                                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
             count = len(up.requests)
             ai.ask("Once more", thread=mine)
@@ -8650,9 +9369,9 @@ def check_turns(binary, up):
             raw = b"\xff" * 100000
             whole = note_view(raw).encode()
             subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
-                           input=b"commit refs/heads/notes\ncommitter askai <askai> "
+                           input=f"commit {branch}\ncommitter askai <askai> ".encode()
                            + str(int(time.time())).encode() + b" +0000\ndata 0\n"
-                           b"from refs/heads/notes^0\nM 100644 inline y.bin\ndata "
+                           + f"from {branch}^0\nM 100644 inline y.bin\ndata ".encode()
                            + str(len(raw)).encode() + b"\n" + raw + b"\n", check=True,
                            env=os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
                                              "GIT_CONFIG_NOSYSTEM": "1"})
@@ -8669,7 +9388,7 @@ def check_turns(binary, up):
         # A small context: windows of an eighth of it, a reminder to write
         # notes past half, a warning past two thirds, and once full, the
         # conversation starts again.
-        with Askai(binary, *args, "--context", "8000") as ai:
+        with Askai(binary, *isolated("--context", "8000")) as ai:
             show = {"repo": "proj", "command": "show", "revisions": ["HEAD:big.txt"]}
             script[:] = [
                 lambda r: (200, turn_stream([("a", "git", json.dumps(show))],
@@ -8713,7 +9432,7 @@ def check_turns(binary, up):
                 r"Note what you need to keep, then call compact\.\]")
         for notes_on in (True, False):
             # The last two arguments are --notes and its directory.
-            what = args if notes_on else args[:-2]
+            what = isolated() if notes_on else args[:-2]
             call = (lambda c: (c, "notes", json.dumps(
                         {"action": "add", "file": f"{c}.md", "text": c}))) \
                 if notes_on else (lambda c: (c, "git", log))
@@ -8741,7 +9460,7 @@ def check_turns(binary, up):
                 for got, notice in zip(results, want):
                     assert re.fullmatch(out + notice, got), (notes_on, results)
 
-        with Askai(binary, *args, "--max-turns", "3") as ai:
+        with Askai(binary, *isolated("--max-turns", "3")) as ai:
             # compact: from the prompt, the summary and the notes; calls after
             # it do not run.
             script[:] = [
@@ -8778,7 +9497,8 @@ def check_turns(binary, up):
             assert turns(again) == [] and re.fullmatch(
                 "Q\n\n\\[askai: your context filled up, so the conversation since "
                 "the task is gone, your turns and the tools' results with it\\.\\]"
-                f"\n\n\\[askai: your notes, oldest first:\\]\n\n1\\. {when}  n2\\.md  "
+                f"\n\n\\[askai: your notes, oldest first:\\]\n\n1\\. {when}  n1\\.md  "
+                f"\\(1 line\\)\n2\\. {when}  n2\\.md  "
                 "\\(1 line\\)\n\n\\[askai: your newest note, n2\\.md:\\]\n\nn2\n\n"
                 "\\[askai: go on with the task\\.\\]", prompt(again)), prompt(again)
             script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
@@ -8917,7 +9637,7 @@ def check_turns(binary, up):
                     f"exec {shutil.which('git')} \"$@\"\n")
         os.chmod(f"{d}/bin/git", 0o755)
         slow = json.dumps({"repo": "proj", "command": "log", "paths": ["SLOWPATH"]})
-        with Askai(binary, *args, "--verbose",
+        with Askai(binary, *isolated("--verbose"),
                    env={"PATH": f"{d}/bin:" + os.environ["PATH"]}) as ai:
             for cancel in (True, False):
                 script[:] = [lambda r: (200, turn_stream([("s", "git", slow)]))]
@@ -9106,12 +9826,12 @@ def check_turns(binary, up):
 
         # llama-server's /props tells the context, with --slots too.
         up.props = {"total_slots": 2, "default_generation_settings": {"n_ctx": 6000}}
-        with Askai(binary, *args, "--slots", "1") as ai:
+        with Askai(binary, *isolated("--slots", "1")) as ai:
             ai.wait_log(r"upstream context: 6000 tokens \(llama-server's /props\)")
             assert any("upstream slots: 1 (--slots)" in line for line in ai.log), ai.log
             description = ai.rpc("tools/list")[2]["result"]["tools"][0]["description"]
             assert "It may use some of this server's tools itself" in description and \
-                "It keeps notes in a thread" in description, description
+                "It keeps notes in the shared session repository" in description, description
             script[:] = [lambda r: (200, turn_stream([("a", "git", json.dumps(show))]))]
             count = len(up.requests)
             ai.ask("Q")
@@ -9161,7 +9881,7 @@ def check_turns(binary, up):
             assert all(most <= bound for most, bound in units.values()), units
         # /props, while it takes long, does not hold the one slot's connection.
         up.props = "hang"
-        with Askai(binary, *args, "--slots", "1") as ai:
+        with Askai(binary, *isolated("--slots", "1")) as ai:
             start = time.monotonic()
             assert ai.ask("Q")["content"][0]["text"] == "A"
             assert time.monotonic() - start < 1, time.monotonic() - start
@@ -9174,7 +9894,7 @@ def check_turns(binary, up):
             json.dump({"roles": {"asker": {"tools": ["ask_ai"]}},
                        "anonymous": {"loopback": "asker"}}, f)
         os.chmod(path, 0o600)
-        with Askai(binary, *args, "-c", path) as ai:
+        with Askai(binary, *isolated("-c", path)) as ai:
             count = len(up.requests)
             assert text_of(ai.ask("Q")) == "A"
             assert [t["function"]["name"] for t in up.requests[count]["body"]["tools"]] \
@@ -9191,7 +9911,7 @@ def check_turns(binary, up):
             with open(path, "w") as f:
                 json.dump({"roles": {"asker": role},
                            "anonymous": {"loopback": "asker"}}, f)
-            with Askai(binary, *args, "-c", path) as ai:
+            with Askai(binary, *isolated("-c", path)) as ai:
                 tools = ai.rpc("tools/list")[2]["result"]["tools"]
                 assert [t["name"] for t in tools] == listed, tools
                 count = len(up.requests)
@@ -11501,8 +12221,9 @@ def main():
     up = Upstream()
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
-                      check_modern, check_mcp_tasks, check_client_jobs, check_background,
-                      check_http,
+                      check_modern, check_mcp_tasks, check_client_jobs, check_background, check_recovery, check_recovery_tools,
+                      check_durable_cancel, check_archive_failure, check_journal_repair,
+                      check_shared_transcripts, check_http,
                       check_large_bodies,
                       check_sse,
                       check_answers, check_dense, check_connections,
@@ -11513,7 +12234,7 @@ def main():
                       check_reload, check_logs, check_unix, check_tls, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_man, check_git, check_turns, check_notes, check_turn_apis,
+                      check_man, check_git, check_turns, check_notes, check_shared_notes, check_turn_apis,
                       check_attach,
                       check_tasks,
                       lambda binary, up: check_plugin(binary, up, plugin),

@@ -78,6 +78,7 @@ struct config {
 	                                         Gemini's */
 	char                 *auth;         /**< the API key's header line */
 	char                 *description;  /**< tool.description, by default */
+	char                 *transcripts_owned; /**< transcripts, when derived */
 	struct config const  *running;      /**< on a reload, the configuration
 	                                         askai runs with, whose tools the
 	                                         roles name; else nullptr */
@@ -88,6 +89,10 @@ struct config {
 	char const           *tls_key;      /**< its key's */
 	char const           *notes;        /**< the notes repository's path
 	                                         (src/notes.h), or nullptr */
+	char const           *participant;  /**< stable writer identity in the
+	                                         shared notes and transcript repos */
+	char const           *transcripts;  /**< durable transcripts repository's
+	                                         path, or nullptr */
 	size_t                n_headers;
 	size_t                n_origins;
 	size_t                n_listens;

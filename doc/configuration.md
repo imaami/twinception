@@ -23,12 +23,15 @@ it accepts a member name in single quotes, and the values `NaN` and
 
 The object of the file can have these members:
 
+- `participant` and `transcripts` set the session's writer identity and
+  the separate repository for automatic transcripts.  They correspond to
+  `--participant` and `--transcripts` (section [Session](#session)).
 - `upstream`, `service`, `testing` and `debugging` are objects that contain
   the options.  The name of a member of one of these objects is the long
   name of an option without the two dashes: `"max-turns": 8` in `upstream`
   is `--max-turns 8` on the command line.  Each option but `config`,
-  `help` and the five options of the built-in tools is a member of one of
-  the four objects.
+  `help`, the session options and the five options of the built-in tools
+  is a member of one of the four objects.
   Section [Members](#members) lists the options of each object, and
   `askai --help` lists them in a section for each object.
 - `tools` can contain the objects `man`, `git`, `notes` and `jobs` of the
@@ -371,6 +374,50 @@ background.  The turns never get a tool that `tools` denies, whatever
 Under `askai`'s own policy, the upstream may call every tool that `askai`
 can offer to the upstream.
 
+## Session
+
+#### `participant`
+
+The top-level member `participant` (`--participant NAME`) is a stable
+writer identity, with 1 to 64 characters from `[A-Za-z0-9_-]`.  It defaults
+to `upstream.tool-name`, normally `ask_ai`.  Set it explicitly if the tool
+name does not fit this form.  Collaborating instances use distinct
+participants and the same `tools.notes.directory`: the repository at that
+path is their session.  Keep the participant unchanged across restarts to
+continue its notes and recover its jobs.
+
+#### `transcripts`
+
+The top-level member `transcripts` (`--transcripts PATH`) names a separate
+bare Git repository for automatic request and response transcripts.  With
+notes configured, its default is the notes path followed by
+`.transcripts.git`; trailing slashes are removed first.  Without notes,
+`upstream.background: true` defaults to
+`$XDG_STATE_HOME/askai/PARTICIPANT/transcripts.git`, or
+`$HOME/.local/state/askai/PARTICIPANT/transcripts.git` when `XDG_STATE_HOME`
+is unset or empty.  These environment paths must be absolute.  Without
+notes or background mode, transcript storage is enabled by an explicit
+`transcripts` path.  Startup logs show the participant and resolved path.
+The transcript repository must differ from the notes repository; the
+notes tool does not expose it.  Missing transcript path components are
+created with mode 0700; symbolic links and `..` components are refused.
+Two live instances cannot write to the same transcript repository as the
+same participant.  Both options need a restart.
+
+For two instances sharing one notes session:
+
+```json
+{
+  "participant": "researcher",
+  "transcripts": "/var/lib/askai/session-transcripts.git",
+  "upstream": { "provider": "llama", "background": true },
+  "tools": { "notes": { "directory": "/var/lib/askai/session-notes.git" } }
+}
+```
+
+The second instance uses another `participant`, such as `reviewer`, and
+another listen address.  It can use the same transcript repository.
+
 ## Members
 
 ### The upstream AI, in `upstream`
@@ -667,7 +714,8 @@ With `model` set to M, the text begins with "Ask the AI model M".  If the
 turns of an `ask_ai` call can get a tool, `askai` adds "It may use some of
 this server's tools itself, and its answer lists the calls it made." after
 the second sentence.  If they can get `notes`, it then also adds "It keeps
-notes in a thread, which a later call may go on with."  The turns can get
+notes in the shared session repository. Each call loads its notes and can
+read the other participants' notes."  The turns can get
 a tool with `upstream-tools`, when `askai` offers a tool that it can lend
 and `tools` allows the upstream that tool.
 
@@ -1190,20 +1238,23 @@ SIGKILL one second later, and the call fails.
 The member of the file is `tools.notes.directory`.  The value is the path
 of a directory.  The default is none, and `askai` offers no tool `notes`.
 
-With `notes`, `askai` offers the tool `notes`, which stores notebooks in git
-repositories under the directory.  If the directory does not exist, `askai`
-makes it with mode 0700 when it starts.  The directory above it must exist,
-or `askai` stops with exit status 2.  Older versions of `askai` used the
-directory itself as one git repository for all notes.  If the directory
-contains `HEAD`, as such a repository does, `askai` refuses it and stops
-with exit status 1.  Clients get `notes` as their role allows.  With
-`upstream-tools`, the turns of every `ask_ai` call get `notes`, and a call
-can continue an earlier thread of notes with its argument `thread`.  A
-thread has a notebook of the client and one of the upstream model under one
-id.  Each side adds notes only to its own notebook, reads the other's with
-`"notebook": "other"`, and copies a note of the other's into its own, byte
-for byte, with the action `copy`.  With the APIs `generate` and
-`interactions`, the model also gets the action `attach`, which uploads a
+With `notes`, `askai` offers the tool `notes` and uses this path as one bare
+Git repository, or opens an existing ordinary repository or worktree.
+Every instance configured with the same repository joins the same
+session.  If the directory does not exist, `askai` makes it with
+mode 0700 when it starts.  The directory above it must exist, or `askai`
+stops with exit status 2.  Clients get `notes` as their role allows.  With
+`upstream-tools`, the turns of every `ask_ai` call get `notes`.
+
+The configured `participant`, caller identity and client/upstream side
+select the caller's writable notebook branch.  Callers can read every
+notebook in the shared session, but can only add notes to their own.
+`{"action":"notebooks"}` lists the notebooks.  `notebook` selects one
+for `list`, `read`, `copy` or `attach`; `own` is the default, `other` means
+the other side of the same participant and identity, and an explicit
+`PARTICIPANT/WHO/SIDE` selects another notebook.  The action `copy` adds a
+byte-for-byte copy to the caller's own notebook.  With the APIs `generate`
+and `interactions`, the model also gets the action `attach`, which uploads a
 note to Gemini's Files API at the root of the API in the upstream's URL,
 the part before `/v1beta/`, and gives it to the model as a file.  A client
 adds a file that its program attaches, of at most 4 MiB, or less with a
@@ -1379,7 +1430,9 @@ use:
 | `test-stall` and `test-pressure` in `testing` | `100` and `"/run/askai/pressure"` | remove them: they are test aids |
 | `path` of the plugin in `plugins` | `"/usr/libexec/askai/godbolt.so"` | set the real path of `godbolt.so`, or remove the plugin and the names of its tools in `tools` and `roles` |
 | `repositories` in `tools.git` | `"/srv/git/proj"` | set repositories that exist |
-| `directory` in `tools.notes` | `"/var/lib/askai/notes"` | set a directory whose parent exists |
+| `participant` | `"local-model"` | choose a distinct stable name for each instance |
+| `transcripts` | `"/var/lib/askai/transcripts.git"` | choose the separate transcript repository |
+| `directory` in `tools.notes` | `"/var/lib/askai/notes.git"` | set the shared session repository path whose parent exists |
 | `unix-users` of the identity `operator` | `["root"]` | set the Unix users of the clients of the role `admin` |
 | `tokens` of the identity `ci` | `"sha256:"` and 64 zeros | set the SHA-256 digest of a long random token; no token has the digest in the file |
 | `unix-groups` | `{ "users": "user" }` | set your groups, or remove the member |
@@ -1443,7 +1496,7 @@ may call `ask_ai`, under `askai`'s own policy.
 Every client may call `ask_ai`, `man`, `git` and `notes`, under `askai`'s
 own policy.  The turns of each `ask_ai` call get `man`, `git`, `notes`,
 `compact`, `background`, `jobs`, `wait` and `timer`.  `askai` stores the
-notes that the model adds with the tool `notes` in git repositories under
+notes that the model adds with the tool `notes` in the shared git repository at
 `/var/lib/askai/notes`.  With a context of 131072 tokens, `askai` adds a
 reminder to write notes at 32768 and at 65536 tokens, and a request to call
 `compact` from 87382 tokens on.  A tool result in a turn is a window of
