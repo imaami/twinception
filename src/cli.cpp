@@ -26,6 +26,7 @@
 #include "autocomplete.h"
 #include "autocomplete-file.h"
 #include "cli-console.hpp"
+#include "cli-state.h"
 #include "cli-ui.hpp"
 
 namespace {
@@ -344,6 +345,11 @@ struct cli_curl {
 	~cli_curl() { curl_global_cleanup(); }
 };
 
+struct cli_identity_changed : std::runtime_error {
+	cli_identity_changed() : std::runtime_error(
+		"AskAI changed its session, participant or ask tool; restart the client to select its history") {}
+};
+
 /** Every connection explicitly selects a Unix socket; no proxy or TCP fallback. */
 struct cli_client {
 	cli_signals &signals;
@@ -351,6 +357,9 @@ struct cli_client {
 	int64_t next_id = 0;
 	cli_autocomplete catalog;
 	bool catalog_dirty = false;
+	std::string session_key, participant, notes_tool;
+	std::vector<std::string> note_books;
+	bool notes_dirty = false;
 
 	void post(std::string_view wire, cli_response &response, bool interruptible = true,
 	          long timeout = 0)
@@ -531,6 +540,8 @@ struct cli_client {
 		auto discovered = cli_autocomplete_create();
 		std::vector<std::string> participants, notebooks;
 		std::string notebook_tool;
+		std::string discovered_session, discovered_participant;
+		bool note_files = false;
 		std::string cursor, chosen;
 		for (unsigned page = 0; page < 32; ++page) {
 			auto params = cli_owned(json_object_new_object());
@@ -563,8 +574,18 @@ struct cli_client {
 				if (note_source && notebook_tool.empty()) {
 					notebook_tool = name;
 					json_object *self = cli_get(meta, "participant");
-					if (json_object_is_type(self, json_type_string))
+					if (json_object_is_type(self, json_type_string)) {
 						participants.emplace_back(cli_text(self));
+						discovered_participant = cli_text(self);
+					}
+					json_object *identity = cli_get(meta, "session");
+					if (json_object_is_type(identity, json_type_string))
+						discovered_session = cli_text(identity);
+					if (cli_get(props, "file") && cli_get(props, "notebook") &&
+					    json_object_is_type(actions, json_type_array)) {
+						for (size_t a = 0, n = json_object_array_length(actions); a < n; ++a)
+							note_files |= cli_text(json_object_array_get_idx(actions, a)) == "list";
+					}
 				}
 				json_object *title = cli_get(entry, "title");
 				bool candidate = !tool.empty() ? name == tool
@@ -607,6 +628,10 @@ struct cli_client {
 						cli_ui::show_error("Participant discovery failed", e.what());
 					}
 				}
+				if (note_files) {
+					notebooks.emplace_back("own");
+					notebooks.emplace_back("other");
+				}
 				std::vector<autocomplete_text> names;
 				names.reserve(std::max(participants.size(), notebooks.size()));
 				for (const auto &name : participants)
@@ -616,8 +641,24 @@ struct cli_client {
 				for (const auto &name : notebooks)
 					names.push_back(cli_span(name));
 				cli_check(autocomplete_set_notebooks(discovered.get(), names.data(), names.size()));
+				if (note_files) {
+					try { discover_note_files(discovered.get(), notebook_tool, notebooks); }
+					catch (const cli_interrupted &) { throw; }
+					catch (const std::bad_alloc &) { throw; }
+					catch (const std::exception &e) {
+						cli_ui::show_error("Note filename discovery failed", e.what());
+					}
+				}
+				if (catalog && (session_key != discovered_session ||
+				                participant != discovered_participant || tool != chosen))
+					throw cli_identity_changed();
 				catalog = std::move(discovered);
 				tool = std::move(chosen);
+				notes_tool = note_files ? std::move(notebook_tool) : std::string{};
+				note_books = std::move(notebooks);
+				notes_dirty = false;
+				session_key = std::move(discovered_session);
+				participant = std::move(discovered_participant);
 				return;
 			}
 			std::string_view after = cli_text(next);
@@ -626,6 +667,81 @@ struct cli_client {
 			cursor = after;
 		}
 		throw std::runtime_error("Too many tool-list pages");
+	}
+
+	void refresh_notes()
+	{
+		notes_dirty = false;
+		if (notes_tool.empty())
+			return;
+		autocomplete_clear_note_files(catalog.get());
+		discover_note_files(catalog.get(), notes_tool, note_books);
+	}
+
+	void discover_note_files(autocomplete *discovered, std::string_view name,
+	                         std::vector<std::string> &notebooks)
+	{
+		std::sort(notebooks.begin(), notebooks.end());
+		notebooks.erase(std::unique(notebooks.begin(), notebooks.end()), notebooks.end());
+		if (notebooks.size() > 128)
+			throw std::runtime_error("More than 128 notebooks; filename discovery is bounded to 128");
+		std::vector<autocomplete_text> files;
+		files.reserve(256);
+		for (const auto &notebook : notebooks) {
+			auto args = cli_owned(json_object_new_object());
+			cli_set(args.get(), "action", cli_string("list"));
+			cli_set(args.get(), "notebook", cli_string(notebook));
+			auto call = cli_owned(json_object_new_object());
+			cli_set(call.get(), "name", cli_string(name));
+			cli_set(call.get(), "arguments", std::move(args));
+			auto listing = rpc("tools/call", std::move(call));
+			if (json_object_get_boolean(cli_get(listing.get(), "isError")))
+				continue;
+			json_object *content = cli_get(listing.get(), "content");
+			if (!json_object_is_type(content, json_type_array))
+				throw std::runtime_error("Invalid note filename discovery result");
+			files.clear();
+			for (size_t b = 0, n = json_object_array_length(content); b < n; ++b) {
+				json_object *block = json_object_array_get_idx(content, b);
+				if (cli_text(cli_get(block, "type")) == "text")
+					read_note_files(cli_text(cli_get(block, "text")), files);
+			}
+			cli_check(autocomplete_set_note_files(discovered, cli_span(name), cli_span(notebook),
+			                                     files.data(), files.size()));
+		}
+	}
+
+	static void read_note_files(std::string_view text, std::vector<autocomplete_text> &files)
+	{
+		// List records have a numeric index, fixed UTC date, filename and count.
+		// Reject incomplete lines; filenames may contain spaces or parentheses.
+		for (size_t newline; (newline = text.find('\n')) != std::string_view::npos;) {
+			std::string_view line = text.substr(0, newline);
+			text.remove_prefix(newline + 1);
+			size_t index = line.find(". ");
+			if (!index || index == std::string_view::npos ||
+			    line.substr(0, index).find_first_not_of("0123456789") != std::string_view::npos)
+				continue;
+			line.remove_prefix(index + 2);
+			constexpr size_t date_size = sizeof "2026-10-14 12:34 UTC  " - 1;
+			if (line.size() <= date_size || line.substr(17, 5) != "UTC  ")
+				continue;
+			line.remove_prefix(date_size);
+			size_t tail = line.rfind("  (");
+			if (!tail || tail == std::string_view::npos || line.back() != ')')
+				continue;
+			std::string_view count = line.substr(tail + 3, line.size() - tail - 4);
+			if (count != "binary") {
+				size_t space = count.find(' ');
+				if (!space || space == std::string_view::npos ||
+				    count.substr(0, space).find_first_not_of("0123456789") != std::string_view::npos ||
+				    (count.substr(space) != " line" && count.substr(space) != " lines"))
+					continue;
+			}
+			if (files.size() == 65536)
+				throw std::runtime_error("Too many note filenames");
+			files.push_back(cli_span(line.substr(0, tail)));
+		}
 	}
 
 	static void read_notebooks(std::string_view text, std::vector<std::string> &names,
@@ -659,9 +775,9 @@ struct cli_client {
 };
 
 struct cli_options {
-	std::string socket, tool, prompt, system;
+	std::string socket, tool, prompt, system, history_repo, session_id;
 	bool has_prompt = false, has_system = false, single = false, simple = false;
-	bool multiline = false, reasoning = true;
+	bool multiline = false, reasoning = true, no_history = false;
 	std::string color = "auto";
 };
 
@@ -703,6 +819,9 @@ void cli_help()
 	          "  --multiline-input        Enter adds a line; finish with a trailing /\n"
 	          "  --color auto|on|off       Terminal colors (default auto)\n"
 	          "  --no-reasoning            Hide exposed reasoning\n"
+	          "  --history-repo PATH      Separate Git repository for client history\n"
+	          "  --session-id ID          Override the saved-history session identity\n"
+	          "  --no-history             Disable saved client history\n"
 	          "  -h, --help               Show this help\n\n"
 	          "Commands: /help, /clear, /regen, /read FILE, /exit\n"
 	          "          /tools [NAME], /tool NAME key=VALUE ..., /names, /refresh\n"
@@ -728,6 +847,9 @@ cli_options cli_args(int argc, char **argv)
 		{"multiline-input", no_argument, nullptr, 'm'},
 		{"color", required_argument, nullptr, 'c'},
 		{"no-reasoning", no_argument, nullptr, 'r'},
+		{"history-repo", required_argument, nullptr, 'H'},
+		{"session-id", required_argument, nullptr, 'I'},
+		{"no-history", no_argument, nullptr, 'N'},
 		{"help", no_argument, nullptr, 'h'},
 		{"version", no_argument, nullptr, 'v'},
 		{nullptr, 0, nullptr, 0}
@@ -748,6 +870,11 @@ cli_options cli_args(int argc, char **argv)
 		case 'm': out.multiline = true; break;
 		case 'c': out.color = optarg; break;
 		case 'r': out.reasoning = false; break;
+		case 'H': out.history_repo = optarg; break;
+		case 'I': out.session_id = optarg; if (out.session_id.empty())
+			throw std::runtime_error("--session-id requires a nonempty identity");
+			break;
+		case 'N': out.no_history = true; break;
 		case 'h': cli_help(); std::exit(0);
 		case 'v': std::puts("askai-cli 1"); std::exit(0);
 		default: throw std::runtime_error("Invalid option; see --help");
@@ -759,12 +886,36 @@ cli_options cli_args(int argc, char **argv)
 		out.socket.erase(0, 5);
 	if (out.socket.empty())
 		throw std::runtime_error("Specify --socket PATH or ASKAI_SOCKET");
+	if (out.no_history && !out.history_repo.empty())
+		throw std::runtime_error("--history-repo and --no-history are mutually exclusive");
 	if (out.color != "auto" && out.color != "on" && out.color != "off")
 		throw std::runtime_error("--color must be auto, on or off");
 	return out;
 }
 
 using cli_history = std::vector<std::pair<std::string, std::string>>;
+
+struct cli_state_delete {
+	void operator()(struct cli_state *state) const { cli_state_destroy(&state); }
+};
+using cli_saved_state = std::unique_ptr<struct cli_state, cli_state_delete>;
+
+cli_state_text cli_state_span(std::string_view text)
+{
+	return {text.data(), text.size()};
+}
+
+void cli_state_check(const struct cli_state *state, int error)
+{
+	if (!error)
+		return;
+	std::string message = "Cannot save client history: " + std::string(std::strerror(error));
+	auto recovery = cli_state_recovery_file(state);
+	if (recovery.len)
+		message += ". Recovery snapshot in history repository: " + std::string(recovery.data, recovery.len);
+	throw std::runtime_error(message);
+}
+
 
 void cli_progress(cli_ui::assistant_turn &display, json_object *event,
                    std::string_view actor, std::string_view token)
@@ -775,14 +926,21 @@ void cli_progress(cli_ui::assistant_turn &display, json_object *event,
 	json_object *params = cli_get(event, "params");
 	json_object *progress = cli_get(params, "progressToken");
 	json_object *message = cli_get(params, "message");
-	if (json_object_is_type(progress, json_type_string) && cli_text(progress) == token &&
-	    json_object_is_type(message, json_type_string))
+	if (!json_object_is_type(progress, json_type_string) || cli_text(progress) != token ||
+	    !json_object_is_type(message, json_type_string))
+		return;
+	json_object *meta = cli_get(cli_get(params, "_meta"), "askai");
+	json_object *kind = cli_get(meta, "kind");
+	if (json_object_is_type(kind, json_type_string) && cli_text(kind) == "tool")
 		display.action(actor, cli_text(message));
+	else
+		display.progress(actor, cli_text(message));
 }
 
 std::string cli_ask(cli_client &client, const cli_options &options,
                      const cli_history &history, size_t turns, const std::string &prompt)
 {
+	client.notes_dirty |= !client.notes_tool.empty();
 	if (turns > 512)
 		throw std::runtime_error("Conversation has 512 turns; use /clear");
 	size_t bytes = prompt.size();
@@ -921,6 +1079,13 @@ void cli_tool_call(cli_client &client, std::string_view command)
 	}
 	std::string_view name = cli_view(tool->name);
 	cli_json arguments(raw_arguments);
+	if (name == client.notes_tool) {
+		json_object *value = cli_get(arguments.get(), "action");
+		if (json_object_is_type(value, json_type_string)) {
+			std::string_view action = cli_text(value);
+			client.notes_dirty |= action == "add" || action == "copy";
+		}
+	}
 	auto params = cli_owned(json_object_new_object());
 	cli_set(params.get(), "name", cli_string(name));
 	cli_set(params.get(), "arguments", std::move(arguments));
@@ -968,7 +1133,7 @@ int cli_run(const cli_options &options)
 	                                signals.pipe[0]);
 	if (error)
 		throw std::runtime_error(std::strerror(error));
-	cli_client client{signals, options.socket, {}, options.tool, 0, {}, false};
+	cli_client client{signals, options.socket, {}, options.tool, 0, {}, false, {}, {}, {}, {}, false};
 	client.connect();
 	cli_files files(autocomplete_file_create(&error));
 	cli_check(error);
@@ -987,12 +1152,55 @@ int cli_run(const cli_options &options)
 	if (tty)
 		cli_ui::show_info("Connected to " + client.tool + ". /help lists commands; Ctrl-C cancels an answer.");
 	cli_history history;
+	cli_saved_state saved;
+	if (!options.no_history && (tty || !options.history_repo.empty())) {
+		std::string identity;
+		if (!options.session_id.empty() || !client.session_key.empty()) {
+			identity = "session=";
+			identity += options.session_id.empty() ? client.session_key : options.session_id;
+		} else {
+			std::unique_ptr<char, decltype(&std::free)> canonical(realpath(options.socket.c_str(), nullptr), std::free);
+			if (!canonical)
+				throw std::runtime_error("Cannot identify history connection: " + std::string(std::strerror(errno)));
+			identity = "socket=";
+			identity += canonical.get();
+		}
+		for (const auto &part : {std::pair<std::string_view, std::string_view>{"participant=", client.participant},
+		                         {"tool=", client.tool},
+		                         {"system-policy=", options.has_system ? "override" : "default"},
+		                         {"system=", options.system}}) {
+			identity.push_back('\0');
+			identity += part.first;
+			identity += part.second;
+		}
+		saved.reset(cli_state_create(cli_state_span(options.history_repo), cli_state_span(identity), &error));
+		if (error)
+			throw std::runtime_error("Cannot open client history repository: " + std::string(std::strerror(error)));
+		for (size_t i = 0; i < cli_state_input_count(saved.get()); ++i) {
+			auto input = cli_state_input_at(saved.get(), i);
+			cli_check(cli_console::remember_input({input.data, input.len}));
+		}
+		for (size_t i = 0; i < cli_state_turn_count(saved.get()); ++i) {
+			auto turn = cli_state_turn_at(saved.get(), i);
+			history.emplace_back(std::string(turn.prompt.data, turn.prompt.len),
+			                     std::string(turn.answer.data, turn.answer.len));
+		}
+		if (tty && !history.empty())
+			cli_ui::show_info("Restored " + std::to_string(history.size()) +
+			                  " completed turns. /history displays them; /clear starts over.");
+	}
 	bool initial = options.has_prompt;
 	for (;;) {
 		if (client.catalog_dirty) {
 			try { client.refresh(); }
 			catch (const cli_interrupted &) { throw; }
+			catch (const cli_identity_changed &) { throw; }
 			catch (const std::exception &e) { cli_ui::show_error("Cannot refresh completion metadata", e.what()); }
+		} else if (client.notes_dirty) {
+			try { client.refresh_notes(); }
+			catch (const cli_interrupted &) { throw; }
+			catch (const cli_identity_changed &) { throw; }
+			catch (const std::exception &e) { cli_ui::show_error("Cannot refresh note filenames", e.what()); }
 		}
 		bool interpret = !initial;
 		std::string prompt;
@@ -1010,6 +1218,12 @@ int cli_run(const cli_options &options)
 				return 0;
 		}
 		try {
+			if (saved) {
+				std::string_view input = prompt;
+				if (interpret && !input.empty() && input.back() == '\n')
+					input.remove_suffix(1);
+				cli_state_check(saved.get(), cli_state_add_input(saved.get(), cli_state_span(input)));
+			}
 			bool regenerate = false;
 			if (interpret) {
 				std::string_view command = cli_trim(prompt);
@@ -1020,6 +1234,7 @@ int cli_run(const cli_options &options)
 					return 0;
 				if (command == "/help") {
 					cli_ui::show_message("/clear starts a new conversation; /regen retries the last turn;\n"
+					                      "/history displays the completed conversation.\n"
 					                      "/read FILE sends a text file; /exit leaves the chat.\n"
 					                      "/tools [NAME] lists accessible tools or shows a tool's schema.\n"
 					                      "/tool NAME key=VALUE ... calls a tool directly; {JSON} is also accepted.\n"
@@ -1057,8 +1272,22 @@ int cli_run(const cli_options &options)
 						return 0;
 					continue;
 				}
+				if (command == "/history") {
+					for (const auto &turn : history) {
+						cli_ui::show_info("you:");
+						cli_console::write(turn.first);
+						cli_console::write("\n");
+						cli_ui::show_info(client.tool + ":");
+						cli_console::write(turn.second);
+						cli_console::write("\n");
+					}
+					cli_console::flush();
+					continue;
+				}
 				if (command == "/clear") {
 					history.clear();
+					if (saved)
+						cli_state_check(saved.get(), cli_state_clear_turns(saved.get()));
 					if (tty)
 						cli_ui::show_info("Conversation cleared.");
 					continue;
@@ -1084,12 +1313,17 @@ int cli_run(const cli_options &options)
 			if (regenerate)
 				history.pop_back();
 			history.emplace_back(std::move(prompt), std::move(answer));
+			if (saved)
+				cli_state_check(saved.get(), cli_state_add_turn(saved.get(), cli_state_span(history.back().first),
+				                                   cli_state_span(history.back().second), regenerate));
 		} catch (const cli_interrupted &) {
 			if (options.single || cli_signal == SIGTERM)
 				return 128 + cli_signal;
 			cli_signal = 0;
 			signals.drain();
 			cli_ui::show_info("Cancelled.");
+		} catch (const cli_identity_changed &) {
+			throw;
 		} catch (const std::exception &e) {
 			cli_ui::show_error(e.what());
 			if (options.single || !tty)

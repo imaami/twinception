@@ -69,10 +69,10 @@
  * event stream is its last event.
  */
 #define _GNU_SOURCE /* memrchr() */
-#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <json-c/printbuf.h>
+#include <openssl/sha.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1996,12 +1996,14 @@ mcp_slot_respond (struct mcp_slot *slot,
 }
 
 /* Write a notification of progress @p value, saying the @p len bytes of
- * @p text, which need no escaping, into the reply. */
+ * @p text, which need no escaping, into the reply.  A tool notification
+ * identifies a call; other progress reports its current status. */
 static int
 mcp_req_notify_put (struct mcp_req *req,
                     uint64_t        value,
                     char const     *text,
-                    size_t          len)
+                    size_t          len,
+                    bool            tool)
 {
 	char num[24];
 	int n = snprintf(num, sizeof num, "%" PRIu64, value);
@@ -2020,7 +2022,9 @@ mcp_req_notify_put (struct mcp_req *req,
 		RAW(num, (size_t)n),
 		FRAG(",\"message\":\""),
 		RAW(text, len),
-		FRAG("\"}}\n\n"),
+		FRAG("\",\"_meta\":{\"askai\":{\"kind\":\""),
+		tool ? FRAG("tool") : FRAG("status"),
+		FRAG("\"}}}}\n\n"),
 	};
 	return mcp_req_put(req, p, ARRAY_SIZE(p));
 }
@@ -2031,9 +2035,10 @@ static void
 mcp_req_notify (struct mcp_req *req,
                 uint64_t        value,
                 char const     *text,
-                size_t          len)
+                size_t          len,
+                bool            tool)
 {
-	if (!mcp_req_notify_put(req, value, text, len))
+	if (!mcp_req_notify_put(req, value, text, len, tool))
 		(void)mcp_req_write(req, buf_peek(&req->reply));
 	buf_consume(&req->reply, buf_peek(&req->reply).len);
 	req->noted = req->mcp->loop->now;
@@ -2208,7 +2213,7 @@ mcp_req_progress (struct mcp_req *req)
 		n += util_format(text + n, sizeof text - n, "%s, %" PRIu32 " tokens",
 		                 progress & JOB_THINKING ? "thinking" : "generating",
 		                 tokens);
-	mcp_req_notify(req, value, text, n);
+	mcp_req_notify(req, value, text, n, false);
 }
 
 /* Notify the client that a turn calls @p tool, a tool askai names, unless
@@ -2223,7 +2228,7 @@ mcp_req_notify_tool (struct mcp_req *req,
 	char text[64];
 	size_t n = util_format(text, sizeof text, "turn %" PRIu32 ", calling %s",
 	                       req->turn, tool);
-	mcp_req_notify(req, req->next_note, text, n);
+	mcp_req_notify(req, req->next_note, text, n, true);
 }
 
 /* Set the request's timer for the first due of a keep-alive, a notification
@@ -2416,8 +2421,6 @@ mcp_req_log_turn (struct mcp_req const *req,
 static void
 mcp_req_job_done (struct mcp_req *req)
 {
-	/* Waking the request invalidates the delta journal callback's handle. */
-	assert(!req->delta_saving);
 	struct job *job = req->job;
 	req->archive_error = journal_error(req->mcp->st->journal);
 	struct span why = buf_peek(&job->result);
@@ -8997,10 +9000,29 @@ mcp_notes_definition (void const *service)
 {
 	struct mcp_static const *st = service;
 	struct json_object *def = mcp_notes_schema(NOTES_CLIENT, st);
+	if (!st || !st->notes)
+		return def;
+	/* The canonical common directory names the session, including attached
+	 * worktrees. Cache its fingerprint with the tool instead of exposing the
+	 * local path; it remains stable across instance and client restarts. */
+	char const *directory = notes_directory(st->notes);
+	unsigned char digest[SHA256_DIGEST_LENGTH];
+	if (!SHA256((unsigned char const *)directory, strlen(directory), digest)) {
+		json_object_put(def);
+		return nullptr;
+	}
+	static char const hex[] = "0123456789abcdef";
+	char session[2 * sizeof digest + 1];
+	for (size_t i = 0; i < sizeof digest; ++i) {
+		session[2 * i] = hex[digest[i] >> 4];
+		session[2 * i + 1] = hex[digest[i] & 15];
+	}
+	session[sizeof session - 1] = '\0';
 	/* Clients discover stored participants through notebooks. A new writer
 	 * has no branch yet, so publish its identity with the authorized tool. */
-	if (st && st->notes && jb_set(def, "_meta", jb_object(
+	if (jb_set(def, "_meta", jb_object(
 		    "askai", jb_object(
+			    "session", json_object_new_string_len(session, sizeof session - 1),
 			    "participant", json_object_new_string(notes_writer(st->notes)),
 			    "notebooks", json_object_new_boolean(1),
 			    nullptr),

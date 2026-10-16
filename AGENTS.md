@@ -87,6 +87,9 @@ This file provides guidance to agents such as ChatGPT, Claude, CodeRabbit, Copil
 
 - Untracked files (check `git status`) are arbitrary local temporaries, not part of the repo — only work with repository content.
 - `.gitignore` must stay sorted in the C locale (`LC_ALL=C sort`).
+- Keep every commit message line at most 72 characters long.
+- Runtime `assert()` belongs in tests, not in `src/`. Production code must
+  enforce required error handling even when compiled with `-DNDEBUG`.
 
 ## Craplets for tasks
 

@@ -58,8 +58,9 @@ select it explicitly, including when the server renames `ask_ai` to `bro`.
 Type a prompt at the terminal and press Enter. Responses appear as they
 arrive, with exposed reasoning shown separately. `--no-reasoning` hides
 reasoning in the terminal; it does not change generation or server archives.
-The client retains completed user prompts and final answers in memory for the
-current conversation. Earlier visible turns are sent as native provider chat
+The client retains completed user prompts and final answers for the current
+conversation and restores them on restart when history is enabled. Earlier
+visible turns are sent as native provider chat
 messages with each new prompt. Intermediate tool calls and reasoning are not
 replayed across user turns; the normal tool loop runs within each request.
 `--system TEXT` overrides the server's system instructions for this chat.
@@ -73,11 +74,12 @@ transcripts use the server's configured repositories and participant.
 | --- | --- |
 | `/clear` | Clear the client's conversation history. |
 | `/regen` | Replace the last successful answer after a new answer succeeds. |
+| `/history` | Display the restored and current completed conversation. |
 | `/read PATH` | Read a UTF-8 prompt from a file. |
 | `/tools [NAME]` | List accessible tools, or show a tool's description and input schema. |
 | `/tool NAME key=VALUE ...` | Call a tool directly; a JSON object is also accepted. |
 | `/names` | List cached known session participants. |
-| `/refresh` | Refresh the accessible tools and shared-notebook participants. |
+| `/refresh` | Refresh accessible tools, participants and notebook filenames. |
 | `/help` | Show commands. |
 | `/exit` | Leave the client. |
 
@@ -98,13 +100,12 @@ default:
 | Tab | Complete commands, paths, tools, parameters, values and participant names. |
 
 For example, type `Explain` and press PgUp to recall earlier prompts with
-that prefix, skipping unrelated entries. Input history is kept in memory
-for the current client process and is separate from the conversation sent
-to the model; `/clear` clears the conversation, not Readline history. A
-multiline prompt is recalled as one entry. History retains up to 256 submitted
-entries, with a 1 MiB budget for their submitted text. Readline can retain edits
-to recalled entries beyond that budget. The client does not read or write a
-history file.
+that prefix, skipping unrelated entries. Up and Ctrl-R include saved input
+from earlier client processes. Input recall is separate from the completed
+conversation sent to the model; `/clear` clears the conversation, not
+Readline history. A multiline prompt is recalled as one entry. Recall retains
+up to 256 submitted entries, with a 1 MiB budget for their submitted text.
+Readline can retain edits to recalled entries beyond that budget.
 
 Readline honors `~/.inputrc` or the file named by `INPUTRC`, including
 `set editing-mode vi`. Use an application-specific block to customize only
@@ -129,14 +130,76 @@ fails. Regeneration is a new request and may run tools again.
 The client imposes no generation timeout. AskAI's configured upstream timeout
 and context limits still apply. A chat request stays on its event stream even
 when the server has `--background` enabled; the server's native provider
-background mode remains enabled. Closing the client discards its in-memory
-conversation. The server's configured notes and transcript repositories
+background mode remains enabled. The server's configured notes and transcript repositories
 retain their contents, including when `/clear` starts a new conversation.
 
 History also counts toward the server's `--max-body` and `--max-values`
 request limits. For longer conversations, increase those limits in the
 server configuration (for example `--max-values 8192`), or use `/clear`.
 The history API accepts at most 1024 earlier messages.
+
+## Client history repository
+
+Interactive clients save input and completed turns in a private bare Git
+repository, separate from the server's notes and transcript repositories.
+The default is `$XDG_STATE_HOME/askai/cli.git`, or
+`~/.local/state/askai/cli.git` when `XDG_STATE_HOME` is unset. Git must be
+installed. Use `--history-repo PATH` to select a dedicated repository and
+`--no-history` to disable client persistence. Noninteractive runs do not
+persist by default; an explicit `--history-repo` enables it for scripts.
+
+Submitted commands and prompts are committed before execution. Completed
+answers are saved separately after success; failed and cancelled input stays
+in recall without becoming a completed model turn. Restoring input never
+executes it. `/read` records the command as input and, on success, the file's
+contents as the prompt. `/regen` keeps the previous successful answer until
+its replacement succeeds. `/clear` saves an empty conversation while retaining
+input recall and prior Git commits.
+
+History is associated with the server's session and participant, the selected
+ask tool, and the system-instruction override. Each terminal gets its own
+writer branch under `refs/heads/cli/`; a `latest` ref selects the snapshot used
+to restore a conversation. Concurrent terminals keep separate conversations.
+Startup recall combines exact-text-deduplicated input from up to 32 recent
+writer tips. The active snapshot holds at most 512 completed turns and 16 MiB
+of prompt/answer text. Older entries remain reachable through Git history.
+
+The server advertises a hash of its canonical shared notes repository path as
+the session key, so instances sharing that path share a session. This is a
+path identity, not a portable repository UUID: moving the repository changes
+it, while identical paths on different hosts can collide. Older servers and
+servers without notes fall back to the canonical socket path. Participant
+names are also identifiers, not authentication; changing a name selects
+different client history.
+
+Use `--session-id ID` to supply a stable explicit session key when relocating
+a repository or distinguishing otherwise identical paths on different hosts.
+Use the same value in clients that should share history. A metadata refresh
+that changes the server's session, participant or selected ask tool stops the
+client and requests a restart, preventing old conversation context from being
+sent into the newly identified session.
+
+Each commit includes a bounded binary `snapshot` plus readable `identity.txt`,
+`input.txt`, and, when available, `prompt.txt` and `answer.txt`. For example,
+`git --git-dir=/path/to/cli.git log --all --stat` shows archived changes.
+If committing fails after a complete snapshot has been synced, the client
+reports the recovery filename and leaves it in the repository. It does not
+silently execute input whose save failed. Recovery snapshots are retained
+for manual recovery; startup selects committed state.
+
+Git makes the archive inspectable and preserves concurrent branches, but it
+does not provide remote backup or secure deletion. `/clear` does not purge
+secrets from old commits. The repository grows beyond the bounded recall
+window and needs an explicit retention policy if long-term storage must be
+limited. Client snapshots contain submitted input and completed answers;
+provider identifiers, partial responses and reasoning remain the server's
+transcript responsibility. A client restart restores conversation context,
+not a live provider stream.
+
+Commits run synchronously at human input and completed-answer boundaries.
+This favors durable input before side effects; slow storage can delay those
+boundaries. It is not a suitable per-token persistence strategy. The server's
+stream journal has a different workload and remains separate.
 
 ## Tools and participant autocomplete
 
@@ -157,6 +220,12 @@ After `=`, it completes schema enum and constant values, booleans, known
 participant names for `participant`, `recipient` and `author`, and discovered
 selectors for `notebook`. `/tools ` also completes tool names. Completion
 preserves the other arguments when editing in the middle of a line.
+
+For notes tools, `file=` completes names from the selected notebook, including
+when `notebook=` follows the cursor. Read and attach default to `own`; copy
+defaults to `other`. Add, list and notebooks actions do not offer existing
+filenames. Local filesystem completion is limited to `/read PATH`, which
+reads a local prompt file; it does not supply notes paths.
 
 The `key=VALUE` form accepts single or double quotes and backslash escaping;
 it performs no shell expansion or execution. String parameters remain
@@ -182,10 +251,12 @@ At the start of a prompt, typing `ali` and pressing Tab can produce
 text completions, not message routing. `/names` displays the cached list;
 use `/refresh` to pick up another instance's newly written notes.
 
-Discovery runs at connection time and on `/refresh`. A server's
+Discovery runs at connection time and on `/refresh`. Notes filenames refresh
+before the next prompt after an ask or a direct note mutation. Use `/refresh`
+to see changes made by another client. A server's
 `notifications/tools/list_changed` triggers a refresh before the next prompt.
 Each connection owns its completion data; pressing Tab never makes an MCP
-request. File completion still reads the local filesystem.
+request. `/read` completion reads the local filesystem.
 
 Autocomplete is implemented by the C modules `autocomplete.c` and
 `autocomplete-file.c`. Their `.h` interfaces expose borrowed strings with
@@ -198,7 +269,9 @@ copied. C++ console and display interfaces use `.hpp` headers.
 
 Tool calls and progress use IRC-style action lines, for example
 `* you call notes` and `* ask_ai turn 1, calling git`. Reasoning remains in
-the current transcript. Multiple connections, IRC-style windows and private
+the current transcript. Token-count progress is coalesced while text streams,
+so it does not split reasoning into one block per delta. Actual tool actions
+still appear at their stream boundary. Multiple connections, IRC-style windows and private
 thought-stream tabs are future UI work.
 
 ## Initial prompts and scripts

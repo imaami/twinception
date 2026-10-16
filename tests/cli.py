@@ -2,6 +2,7 @@
 """Unix-socket chat checks against AskAI and a small malformed-peer fixture."""
 
 import errno
+import fcntl
 import http.server
 import json
 import os
@@ -10,6 +11,7 @@ import select
 import signal
 import socket
 import socketserver
+import struct
 import subprocess
 import sys
 import tempfile
@@ -244,7 +246,7 @@ def check_cancel(cli, server):
                 upstream.cancelled.clear()
                 master, slave = pty.openpty()
                 before = termios.tcgetattr(slave)
-                proc = subprocess.Popen([cli, "--socket", session.socket, "--single-turn",
+                proc = subprocess.Popen([cli, "--socket", session.socket, "--single-turn", "--no-history",
                                          "--prompt", "cancel me"], stdin=slave,
                                         stdout=slave, stderr=slave)
                 try:
@@ -374,7 +376,7 @@ def check_peer_autocomplete_error(cli, unused_server):
         before = termios.tcgetattr(slave)
         environment = os.environ | {"TERM": "xterm-256color", "LC_ALL": "C.UTF-8",
                                     "INPUTRC": os.devnull}
-        proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off"],
+        proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off", "--no-history"],
                                 stdin=slave, stdout=slave, stderr=slave, env=environment)
         try:
             read_until(proc, b"> ", 5, master)
@@ -440,6 +442,57 @@ def check_peer_stream(cli, unused_server):
         call = next(request for request in peer.requests if request["method"] == "tools/call")
         assert call["params"]["arguments"]["background"] is False, call
     print("cli SSE: fragmented CRLF/UTF-8, hidden reasoning and trace: PASS")
+
+
+def check_peer_progress(cli, unused_server):
+    def reply(request):
+        token = request["params"]["_meta"]["progressToken"]
+        events = []
+
+        def progress(text, kind="status"):
+            params = {"progressToken": token, "progress": len(events), "message": text}
+            if kind:
+                params["_meta"] = {"askai": {"kind": kind}}
+            events.append((None, {"jsonrpc": "2.0", "method": "notifications/progress",
+                                  "params": params}))
+
+        def delta(turn, kind, text):
+            events.append((None, {"jsonrpc": "2.0", "method": "notifications/askai/delta",
+                                  "params": {"requestId": request["id"], "turn": turn,
+                                             "kind": kind, "text": text}}))
+
+        progress("turn 1, generating, 0 tokens")
+        for count, text in enumerate(("The", " user", " says hi."), 1):
+            delta(1, "reasoning", text)
+            progress(f"turn 1, thinking, {count} tokens")
+        progress("turn 1, calling notes", "tool")
+        # Untyped progress from older servers must also leave deltas intact.
+        progress("turn 2, generating, 0 tokens", None)
+        delta(2, "reasoning", "Read")
+        progress("turn 2, thinking, 1 tokens", None)
+        delta(2, "reasoning", " the note.")
+        delta(2, "text", "Hello")
+        progress("turn 2, generating, 3 tokens", None)
+        delta(2, "text", " there.")
+        progress("turn 2, generating, 4 tokens", None)
+        events.append((None, {"jsonrpc": "2.0", "id": request["id"], "result": {
+            "content": [{"type": "text", "text": "Hello there."}]}}))
+        return 200, "text/event-stream", sse_wire(events)
+
+    with Peer(reply) as peer:
+        output = succeeded(run(cli, peer.socket, "--single-turn", "--prompt", "Q"))
+        assert output == (
+            "* ask_ai turn 1, generating, 0 tokens\n"
+            "[Start thinking]\n\n"
+            "The user says hi.\n[End thinking]\n"
+            "* ask_ai turn 1, thinking, 3 tokens\n"
+            "* ask_ai turn 1, calling notes\n"
+            "* ask_ai turn 2, generating, 0 tokens\n"
+            "[Start thinking]\n\n"
+            "Read the note.\n[End thinking]\n\n"
+            "Hello there.\n"
+            "* ask_ai turn 2, generating, 4 tokens\n"), output
+    print("cli progress: uninterrupted reasoning/text, coalesced counts and immediate tools: PASS")
 
 
 def check_peer_catalog(cli, unused_server):
@@ -544,6 +597,195 @@ def check_peer_catalog_changed(cli, unused_server):
     print("cli catalog: tools/list_changed refreshes before the next prompt: PASS")
 
 
+def check_peer_notes(cli, unused_server):
+    """Discover server note paths, then exercise the actual Readline callback."""
+    own = "design/äiti (1 line).md"
+    other = "thoughts/next.md"
+    selected = "reviews/note  (1 line).md"
+    selector = "bob/anonymous/upstream"
+    copied, learned = False, False
+    calls = []
+    ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
+        "type": "object", "properties": {"prompt": {"type": "string"},
+        "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
+    notes = {"name": "notebook_service", "_meta": {"askai": {
+        "participant": "self", "notebooks": True}}, "inputSchema": {
+            "type": "object", "properties": {
+                "action": {"type": "string", "enum": ["notebooks", "list", "read", "copy", "add"]},
+                "notebook": {"type": "string"}, "file": {"type": "string"}}}}
+
+    def result(text):
+        return 200, "application/json", {"result": {"content": [
+            {"type": "text", "text": text}]}}
+
+    def methods(request):
+        if request["method"] == "tools/list":
+            return 200, "application/json", {"result": {"tools": [ask, notes]}}
+        return None
+
+    def reply(request):
+        nonlocal copied, learned
+        params = request["params"]
+        if params["name"] == "ask_ai":
+            learned = True
+            return result("MODEL-NOTED")
+        assert params["name"] == "notebook_service", request
+        args = params["arguments"]
+        if args["action"] == "notebooks":
+            return result("Session notebooks (use a selector as notebook):\n" + selector + "\n")
+        if args["action"] == "list":
+            book = args["notebook"]
+            assert book in ("own", "other", selector), request
+            files = [own] if book == "own" else [other] if book == "other" else [selected]
+            if book == "own":
+                files += (["copied/new note.md"] if copied else [])
+                files += (["learned/server note.md"] if learned else [])
+            count = "2 lines" if book == "own" else "binary" if book == "other" else "1 line"
+            records = "".join(f"{index}. 2026-10-17 01:23 UTC  {name}  ({count})\n"
+                              for index, name in enumerate(files, 1))
+            return result("Selected notebook, oldest first:\n\n" + records +
+                          "77. 2026-10-17 01:23 UTC  partial.md  (1 line)")
+        assert args["action"] in ("read", "copy"), request
+        calls.append(args)
+        copied |= args["action"] == "copy"
+        return result("NOTE-OK")
+
+    with Peer(reply, methods) as peer:
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 240, 0, 0))
+        before = termios.tcgetattr(slave)
+        environment = os.environ | {"TERM": "xterm-256color", "LC_ALL": "C.UTF-8",
+                                    "INPUTRC": os.devnull,
+                                    "XDG_STATE_HOME": peer.directory.name + "/state"}
+        proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off", "--no-history"],
+                                stdin=slave, stdout=slave, stderr=slave, env=environment)
+        try:
+            read_until(proc, b"> ", 5, master)
+            before_tab = len(peer.requests)
+            os.write(master, b"/tool notebook_service action=read file=des\t")
+            read_until(proc, own.encode(), 5, master)
+            assert len(peer.requests) == before_tab, "Tab performed network discovery"
+            os.write(master, b"\r")
+            read_until(proc, b"\n> ", 5, master)
+            assert calls[-1] == {"action": "read", "file": own}, calls
+
+            prefix = "/tool notebook_service action=read file=re"
+            line = prefix + " notebook='" + selector + "'"
+            os.write(master, line.encode() + b"\x01" + b"\x1b[C" * len(prefix) + b"\t\r")
+            read_until(proc, b"\n> ", 5, master)
+            assert calls[-1] == {"action": "read", "file": selected, "notebook": selector}, calls
+
+            os.write(master, b"/tool notebook_service action=copy file=th\t\r")
+            read_until(proc, b"\n> ", 5, master)
+            assert calls[-1] == {"action": "copy", "file": other}, calls
+
+            os.write(master, b"/tool notebook_service action=read notebook=ow\tfile=cop\t\r")
+            read_until(proc, b"\n> ", 5, master)
+            assert calls[-1] == {"action": "read", "notebook": "own", "file": "copied/new note.md"}, calls
+
+            os.write(master, b"Write a note\r")
+            read_until(proc, b"\n> ", 5, master)
+            os.write(master, b"/tool notebook_service action=read file=learn\t\r")
+            read_until(proc, b"\n> ", 5, master)
+            assert calls[-1] == {"action": "read", "file": "learned/server note.md"}, calls
+
+            # A cut list record is not a filename candidate.
+            os.write(master, b"/tool notebook_service action=read file=part\t\r")
+            read_until(proc, b"\n> ", 5, master)
+            assert calls[-1] == {"action": "read", "file": "part"}, calls
+            os.write(master, b"/exit\r")
+            assert proc.wait(timeout=5) == 0, proc.returncode
+            assert termios.tcgetattr(slave) == before, "terminal settings were not restored"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            os.close(master)
+            os.close(slave)
+    print("cli notes: server paths, selectors, UTF-8 quotes, mutation refresh and offline Tab: PASS")
+
+
+def check_peer_history(cli, unused_server):
+    calls = []
+
+    def reply(request):
+        calls.append(request["params"]["arguments"])
+        return 200, "application/json", {"result": {"content": [
+            {"type": "text", "text": f"saved-answer-{len(calls)}"}]}}
+
+    with Peer(reply) as peer:
+        repository = peer.directory.name + "/history.git"
+        options = ("--history-repo", repository, "--session-id", "first-session")
+        succeeded(run(cli, peer.socket, *options, text="first prompt\n"))
+        output = succeeded(run(cli, peer.socket, *options, text="/history\nsecond prompt\n"))
+        assert "first prompt" in output and "saved-answer-1" in output, output
+        assert calls[1]["messages"] == [
+            {"role": "user", "content": "first prompt\n"},
+            {"role": "assistant", "content": "saved-answer-1"}], calls
+        succeeded(run(cli, peer.socket, *options, text="/regen\n"))
+        assert calls[2]["messages"] == calls[1]["messages"], calls
+        assert calls[2]["prompt"] == "second prompt\n", calls
+        output = succeeded(run(cli, peer.socket, *options, text="/history\n/clear\n"))
+        assert "saved-answer-3" in output and "saved-answer-2" not in output, output
+        output = succeeded(run(cli, peer.socket, *options, text="/history\nfresh prompt\n"))
+        assert "saved-answer-1" not in output and "saved-answer-3" not in output, output
+        assert calls[3]["messages"] == [], calls
+        succeeded(run(cli, peer.socket, "--history-repo", repository,
+                      "--session-id", "other-session", text="independent\n"))
+        assert calls[4]["messages"] == [], calls
+        # Redirected input remains stateless unless persistence is requested.
+        for _ in range(2):
+            succeeded(run(cli, peer.socket, text="stateless\n"))
+            assert calls[-1]["messages"] == [], calls
+        stored = subprocess.run(["git", "--git-dir=" + repository, "log", "--all", "--oneline"],
+                                check=True, capture_output=True, text=True, timeout=5)
+        assert stored.stdout, "no conversation snapshots were committed"
+    print("cli persistence: restart, native replay, regen, clear and session isolation: PASS")
+
+
+def check_peer_input_history(cli, unused_server):
+    calls = []
+
+    def reply(request):
+        calls.append(request["params"]["arguments"])
+        return 200, "application/json", {"result": {"content": [
+            {"type": "text", "text": "remembered-answer"}]}}
+
+    with Peer(reply) as peer:
+        options = ("--history-repo", peer.directory.name + "/history.git",
+                   "--session-id", "input-session")
+        succeeded(run(cli, peer.socket, *options, text="remembered prompt\n/help\n"))
+        master, slave = pty.openpty()
+        before = termios.tcgetattr(slave)
+        environment = os.environ | {"TERM": "xterm-256color", "LC_ALL": "C.UTF-8",
+                                    "INPUTRC": os.devnull}
+        proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off", *options],
+                                stdin=slave, stdout=slave, stderr=slave, env=environment)
+        try:
+            read_until(proc, b"\n> ", 5, master)
+            os.write(master, b"\x1b[A\r")
+            output = read_until(proc, b"\n> ", 5, master)
+            assert b"PgUp/PgDn search history by prefix" in output, output
+            assert len(calls) == 1, calls
+            os.write(master, b"remembered\x1b[5~\r")
+            output = read_until(proc, b"\n> ", 5, master)
+            assert b"remembered-answer" in output, output
+            assert len(calls) == 2 and calls[1]["prompt"] == "remembered prompt\n", calls
+            assert calls[1]["messages"] == [
+                {"role": "user", "content": "remembered prompt\n"},
+                {"role": "assistant", "content": "remembered-answer"}], calls
+            os.write(master, b"\x04")
+            assert proc.wait(timeout=5) == 0, proc.returncode
+            assert termios.tcgetattr(slave) == before, "terminal settings were not restored"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            os.close(master)
+            os.close(slave)
+    print("cli input persistence: Up recalls commands and PgUp recalls prompts after restart: PASS")
+
+
 def main():
     if len(sys.argv) != 3:
         raise SystemExit("usage: cli.py ASKAI-CLI ASKAI")
@@ -560,7 +802,9 @@ def main():
         probe.close()
     for check in (check_history, check_input, check_commands, check_stream,
                   check_tools, check_cancel, check_broken_pipe, check_peer_errors, check_peer_stream,
-                  check_peer_catalog, check_peer_catalog_changed, check_peer_autocomplete_error):
+                  check_peer_progress,
+                  check_peer_catalog, check_peer_catalog_changed, check_peer_autocomplete_error,
+                  check_peer_notes, check_peer_history, check_peer_input_history):
         check(cli, server)
 
 

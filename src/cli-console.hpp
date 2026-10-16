@@ -44,6 +44,9 @@ struct completion_matches {
 using completion_callback = std::function<completion_matches(std::string_view, std::size_t)>;
 void set_completion_callback(completion_callback callback);
 
+/** Add a counted entry to terminal recall, preserving embedded newlines. */
+int remember_input(std::string_view text);
+
 /** Returns 0, EINTR, or an input error. EOF is reported separately from an empty line. */
 int read_input(std::string &text, bool multiline, bool &eof, const char *prompt = "\n> ");
 

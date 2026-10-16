@@ -5,6 +5,7 @@
  */
 #pragma once
 
+#include <string>
 #include <string_view>
 
 #include "cli-console.hpp"
@@ -12,8 +13,13 @@
 namespace cli_ui {
 
 struct assistant_turn {
+	std::string status_actor;
+	std::string status_text;
 	bool reasoning = false;
 	bool trailing_newline = true;
+	bool streaming = false;
+	bool status_shown = false;
+	bool status_pending = false;
 	assistant_turn() {
 		cli_console::set_display(cli_console::DISPLAY_TYPE_RESET);
 	}
@@ -30,6 +36,7 @@ struct assistant_turn {
 		if (text.empty()) {
 			return;
 		}
+		streaming = true;
 		if (thinking != reasoning) {
 			newline();
 			if (thinking) {
@@ -52,10 +59,34 @@ struct assistant_turn {
 			reasoning = false;
 		}
 		cli_console::set_display(cli_console::DISPLAY_TYPE_RESET);
+		if (status_pending) {
+			write_action(status_actor, status_text);
+		}
+		status_actor.clear();
+		status_text.clear();
+		streaming = status_shown = status_pending = false;
 		cli_console::flush();
+	}
+	/** Keep token counts out of the streamed transcript. Show the first
+	 * status before streaming, then its latest value at a real boundary. */
+	void progress(std::string_view actor, std::string_view text) {
+		if (text.empty() || (actor == status_actor && text == status_text)) {
+			return;
+		}
+		status_actor.assign(actor);
+		status_text.assign(text);
+		status_pending = streaming || status_shown;
+		if (!status_pending) {
+			write_action(actor, text);
+			status_shown = true;
+		}
 	}
 	void action(std::string_view actor, std::string_view text) {
 		finish();
+		write_action(actor, text);
+	}
+private:
+	static void write_action(std::string_view actor, std::string_view text) {
 		cli_console::set_display(cli_console::DISPLAY_TYPE_INFO);
 		cli_console::write("* ");
 		cli_console::write(actor);

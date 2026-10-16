@@ -403,11 +403,21 @@ namespace cli_console {
 			history_first = (history_first + 1) % history_sizes.size();
 			--history_count;
 		}
-		add_history(text.data());
 		history_last_submitted.assign(text.data(), text.size());
+		add_history(history_last_submitted.c_str());
 		history_sizes[(history_first + history_count) % history_sizes.size()] = text.size();
 		history_bytes += text.size();
 		++history_count;
+	}
+
+	int remember_input(std::string_view text) {
+		if (!initialized || text.find('\0') != std::string_view::npos)
+			return EINVAL;
+		if (text.size() > HISTORY_LIMIT)
+			return EFBIG;
+		if (!simple_io)
+			remember(text);
+		return 0;
 	}
 
 	static void read_simple(std::string &text, bool multiline, const char *prompt) {

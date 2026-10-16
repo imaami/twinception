@@ -3,6 +3,7 @@ override SRC_askai-cli := \
   autocomplete-file.c     \
   cli.cpp                 \
   cli-console.cpp         \
+  cli-state.c             \
   dstr.c                  \
   jb.c
 

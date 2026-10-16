@@ -49,6 +49,13 @@ struct autocomplete_names {
 	size_t       capacity;
 };
 
+struct autocomplete_notebook {
+	struct dstr               tool;
+	struct dstr               selector;
+	struct autocomplete_names paths;
+	size_t                    storage;
+};
+
 struct autocomplete_token {
 	size_t begin;
 	size_t end;
@@ -56,26 +63,30 @@ struct autocomplete_token {
 };
 
 struct autocomplete {
-	struct autocomplete_entry *entries;
-	size_t                     count;
-	size_t                     capacity;
-	size_t                     storage;
-	struct autocomplete_names  participants;
-	struct autocomplete_names  notebooks;
-	struct autocomplete_token *tokens;
-	size_t                     token_count;
-	size_t                     token_capacity;
-	struct json_tokener       *parser;
-	struct dstr                nesting;
-	struct dstr                key;
-	struct dstr                decoded;
-	struct dstr                quoted;
-	struct dstr                json;
-	struct dstr                lines;
-	struct autocomplete_match  matches[256];
-	size_t                     offsets[256];
-	size_t                     match_count;
-	size_t                     match_begin;
+	struct autocomplete_entry    *entries;
+	size_t                        count;
+	size_t                        capacity;
+	size_t                        storage;
+	struct autocomplete_names     participants;
+	struct autocomplete_names     notebooks;
+	struct autocomplete_notebook *notes;
+	size_t                        notes_count;
+	size_t                        notes_capacity;
+	size_t                        notes_storage;
+	struct autocomplete_token    *tokens;
+	size_t                        token_count;
+	size_t                        token_capacity;
+	struct json_tokener          *parser;
+	struct dstr                   nesting;
+	struct dstr                   key;
+	struct dstr                   decoded;
+	struct dstr                   quoted;
+	struct dstr                   json;
+	struct dstr                   lines;
+	struct autocomplete_match     matches[256];
+	size_t                        offsets[256];
+	size_t                        match_count;
+	size_t                        match_begin;
 };
 
 static struct autocomplete_text
@@ -612,6 +623,7 @@ autocomplete_clear_tools (struct autocomplete *autocomplete)
 		autocomplete_entry_fini(&autocomplete->entries[i]);
 	autocomplete->count = 0;
 	autocomplete->storage = 0;
+	autocomplete_clear_note_files(autocomplete);
 }
 
 static void
@@ -638,6 +650,13 @@ autocomplete_destroy (struct autocomplete **p_autocomplete)
 	autocomplete->tokens = nullptr;
 	autocomplete_names_fini(&autocomplete->participants);
 	autocomplete_names_fini(&autocomplete->notebooks);
+	for (size_t i = 0; i < autocomplete->notes_capacity; ++i) {
+		dstr_cleanup(&autocomplete->notes[i].tool);
+		dstr_cleanup(&autocomplete->notes[i].selector);
+		autocomplete_names_fini(&autocomplete->notes[i].paths);
+	}
+	free(autocomplete->notes);
+	autocomplete->notes = nullptr;
 	if (autocomplete->parser)
 		json_tokener_free(autocomplete->parser);
 	autocomplete->parser = nullptr;
@@ -755,7 +774,8 @@ autocomplete_names_compare (void const *left,
 static int
 autocomplete_names_set (struct autocomplete_names      *names,
                         struct autocomplete_text const *values,
-                        size_t                          count)
+                        size_t                          count,
+                        bool                            identifier)
 {
 	if (count && !values)
 		return EINVAL;
@@ -770,7 +790,7 @@ autocomplete_names_set (struct autocomplete_names      *names,
 	}
 	names->count = 0;
 	for (size_t i = 0; i < count; ++i) {
-		if (!autocomplete_safe(values[i], true))
+		if (!autocomplete_safe(values[i], identifier))
 			continue;
 		int error = autocomplete_set(&names->values[names->count], values[i]);
 		if (error)
@@ -799,7 +819,7 @@ autocomplete_set_participants (struct autocomplete            *autocomplete,
                                struct autocomplete_text const *names,
                                size_t                          count)
 {
-	return autocomplete_names_set(&autocomplete->participants, names, count);
+	return autocomplete_names_set(&autocomplete->participants, names, count, true);
 }
 
 int
@@ -807,7 +827,76 @@ autocomplete_set_notebooks (struct autocomplete            *autocomplete,
                             struct autocomplete_text const *names,
                             size_t                          count)
 {
-	return autocomplete_names_set(&autocomplete->notebooks, names, count);
+	return autocomplete_names_set(&autocomplete->notebooks, names, count, true);
+}
+
+void
+autocomplete_clear_note_files (struct autocomplete *autocomplete)
+{
+	autocomplete->notes_count = 0;
+	autocomplete->notes_storage = 0;
+}
+
+int
+autocomplete_set_note_files (struct autocomplete            *autocomplete,
+                             struct autocomplete_text       tool,
+                             struct autocomplete_text       notebook,
+                             struct autocomplete_text const *paths,
+                             size_t                          count)
+{
+	if (!notebook.len)
+		notebook = AUTOCOMPLETE_TEXT("own");
+	if (tool.len > AUTOCOMPLETE_BYTES || notebook.len > AUTOCOMPLETE_BYTES - tool.len ||
+	    count > AUTOCOMPLETE_BYTES / sizeof(struct dstr))
+		return E2BIG;
+	if (!autocomplete_safe(tool, true) || !autocomplete_safe(notebook, true) ||
+	    (count && !paths) || !autocomplete_find_tool(autocomplete, tool))
+		return EINVAL;
+	size_t storage = tool.len + notebook.len;
+	if (count * sizeof(struct dstr) > AUTOCOMPLETE_BYTES - storage)
+		return E2BIG;
+	storage += count * sizeof(struct dstr);
+	for (size_t i = 0; i < count; ++i) {
+		if (paths[i].len > AUTOCOMPLETE_BYTES - storage)
+			return E2BIG;
+		storage += paths[i].len;
+	}
+	size_t index = 0;
+	for (; index < autocomplete->notes_count; ++index) {
+		struct autocomplete_notebook const *notes = &autocomplete->notes[index];
+		if (autocomplete_equal(autocomplete_dstr(&notes->tool), tool) &&
+		    autocomplete_equal(autocomplete_dstr(&notes->selector), notebook))
+			break;
+	}
+	bool replace = index < autocomplete->notes_count;
+	size_t remaining = autocomplete->notes_storage - (replace ? autocomplete->notes[index].storage : 0);
+	if ((!replace && index >= 4096) || storage > AUTOCOMPLETE_BYTES - remaining)
+		return E2BIG;
+	if (!replace) {
+		size_t previous = autocomplete->notes_capacity;
+		struct autocomplete_notebook *notes = autocomplete_grow(autocomplete->notes, &autocomplete->notes_capacity,
+		                                                         index + 1, sizeof *notes);
+		if (!notes)
+			return ENOMEM;
+		autocomplete->notes = notes;
+		for (size_t i = previous; i < autocomplete->notes_capacity; ++i)
+			notes[i] = (struct autocomplete_notebook){.tool = dstr(nullptr), .selector = dstr(nullptr)};
+	}
+	struct autocomplete_notebook *notes = &autocomplete->notes[index];
+	int error = autocomplete_set(&notes->tool, tool);
+	if (!error)
+		error = autocomplete_set(&notes->selector, notebook);
+	if (!error)
+		error = autocomplete_names_set(&notes->paths, paths, count, false);
+	if (error) {
+		notes->paths.count = 0;
+		return error;
+	}
+	notes->storage = storage;
+	autocomplete->notes_storage = remaining + storage;
+	if (!replace)
+		++autocomplete->notes_count;
+	return 0;
 }
 
 size_t
@@ -878,10 +967,62 @@ autocomplete_value_match (struct autocomplete       *autocomplete,
 }
 
 static int
+autocomplete_note_paths (struct autocomplete             *autocomplete,
+                         struct autocomplete_text         line,
+                         struct autocomplete_text         tool,
+                         struct autocomplete_names const **paths)
+{
+	*paths = nullptr;
+	struct autocomplete_token action = {.equals = SIZE_MAX};
+	struct autocomplete_token notebook = {.equals = SIZE_MAX};
+	for (size_t i = 2; i < autocomplete->token_count; ++i) {
+		struct autocomplete_token token = autocomplete->tokens[i];
+		if (token.equals == SIZE_MAX)
+			continue;
+		struct autocomplete_text key = autocomplete_slice(line, token.begin, token.equals);
+		struct autocomplete_token *selected = autocomplete_equal(key, AUTOCOMPLETE_TEXT("action")) ? &action
+		                                    : autocomplete_equal(key, AUTOCOMPLETE_TEXT("notebook")) ? &notebook : nullptr;
+		if (selected) {
+			if (selected->equals != SIZE_MAX)
+				return 0;
+			*selected = token;
+		}
+	}
+	bool copy = false;
+	if (action.equals != SIZE_MAX) {
+		int error = autocomplete_unquote(&autocomplete->key, autocomplete_slice(line, action.equals + 1, action.end));
+		if (error)
+			return error;
+		struct autocomplete_text value = autocomplete_dstr(&autocomplete->key);
+		copy = autocomplete_equal(value, AUTOCOMPLETE_TEXT("copy"));
+		if (!copy && !autocomplete_equal(value, AUTOCOMPLETE_TEXT("read")) &&
+		    !autocomplete_equal(value, AUTOCOMPLETE_TEXT("attach")))
+			return 0;
+	}
+	struct autocomplete_text selector = copy ? AUTOCOMPLETE_TEXT("other") : AUTOCOMPLETE_TEXT("own");
+	if (notebook.equals != SIZE_MAX) {
+		int error = autocomplete_unquote(&autocomplete->key, autocomplete_slice(line, notebook.equals + 1, notebook.end));
+		if (error)
+			return error;
+		selector = autocomplete_dstr(&autocomplete->key);
+	}
+	for (size_t i = 0; i < autocomplete->notes_count; ++i) {
+		struct autocomplete_notebook const *notes = &autocomplete->notes[i];
+		if (autocomplete_equal(autocomplete_dstr(&notes->tool), tool) &&
+		    autocomplete_equal(autocomplete_dstr(&notes->selector), selector)) {
+			*paths = &notes->paths;
+			break;
+		}
+	}
+	return 0;
+}
+
+static int
 autocomplete_values (struct autocomplete                *autocomplete,
                      struct autocomplete_text           line,
                      struct autocomplete_token          current,
                      size_t                             cursor,
+                     struct autocomplete_entry const    *entry,
                      struct autocomplete_property const *property)
 {
 	if (!property)
@@ -930,6 +1071,11 @@ autocomplete_values (struct autocomplete                *autocomplete,
 		names = &autocomplete->participants;
 	else if (autocomplete_equal(property->name, AUTOCOMPLETE_TEXT("notebook")))
 		names = &autocomplete->notebooks;
+	else if (autocomplete_equal(property->name, AUTOCOMPLETE_TEXT("file"))) {
+		error = autocomplete_note_paths(autocomplete, line, entry->tool.name, &names);
+		if (error)
+			return error;
+	}
 	bool quoted = !autocomplete_string_schema(schema);
 	for (size_t i = 0; names && i < names->count; ++i) {
 		error = autocomplete_value_match(autocomplete, line, current, prefix, autocomplete_dstr(&names->values[i]), true, quoted, mark);
@@ -965,6 +1111,7 @@ autocomplete_commands (struct autocomplete       *autocomplete,
 	if (!index) {
 		static struct autocomplete_text const commands[] = {
 			AUTOCOMPLETE_TEXT("/clear"), AUTOCOMPLETE_TEXT("/exit"), AUTOCOMPLETE_TEXT("/help"),
+			AUTOCOMPLETE_TEXT("/history"),
 			AUTOCOMPLETE_TEXT("/names"), AUTOCOMPLETE_TEXT("/read"), AUTOCOMPLETE_TEXT("/refresh"),
 			AUTOCOMPLETE_TEXT("/regen"), AUTOCOMPLETE_TEXT("/tool"), AUTOCOMPLETE_TEXT("/tools"),
 		};
@@ -1004,7 +1151,7 @@ autocomplete_commands (struct autocomplete       *autocomplete,
 		return 0;
 	if (current.equals < cursor) {
 		struct autocomplete_text key = autocomplete_slice(line, current.begin, current.equals);
-		return autocomplete_values(autocomplete, line, current, cursor, autocomplete_entry_property(entry, key));
+		return autocomplete_values(autocomplete, line, current, cursor, entry, autocomplete_entry_property(entry, key));
 	}
 	for (size_t i = 0; i < entry->count; ++i) {
 		struct autocomplete_text name = entry->properties[i].name;

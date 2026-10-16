@@ -87,6 +87,24 @@ autocomplete_set_notebooks (struct autocomplete            *ac,
                             struct autocomplete_text const *names,
                             STD(size_t)                     count);
 
+/** Drop cached note paths while retaining their working storage. Tool
+ * discovery also clears this cache. */
+extern void
+autocomplete_clear_note_files (struct autocomplete *ac);
+
+/** Replace a notes tool's file names in one notebook. Empty notebook and
+ * "own" select the caller's notebook; "other" selects the opposite side.
+ * Other selectors are those returned by the server. Copies, sorts and
+ * deduplicates safe UTF-8 paths, including spaces and quotes. All cached
+ * notebook lists together are limited to 16 MiB and 4096 lists. Returns
+ * 0, EINVAL, ENOMEM or E2BIG. No I/O is performed during completion. */
+extern int
+autocomplete_set_note_files (struct autocomplete            *ac,
+                             struct autocomplete_text       tool,
+                             struct autocomplete_text       notebook,
+                             struct autocomplete_text const *paths,
+                             STD(size_t)                     count);
+
 extern STD(size_t)
 autocomplete_participant_count (struct autocomplete const *ac);
 

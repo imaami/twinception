@@ -26,12 +26,15 @@ class Gate(Stream):
         yield self.last
 
 
-def begin(ai, rpc_id=41):
+def begin(ai, rpc_id=41, progress=False):
     conn = ai.connect()
+    meta = {"askai": {"stream": True}}
+    if progress:
+        meta["progressToken"] = rpc_id
     conn.request("POST", "/mcp", json.dumps({
         "jsonrpc": "2.0", "id": rpc_id, "method": "tools/call", "params": {
             "name": "ask_ai", "arguments": {"prompt": "Q", "background": False},
-            "_meta": {"askai": {"stream": True}}}}), headers={
+            "_meta": meta}}), headers={
                 "Content-Type": "application/json", "Accept": "text/event-stream"})
     response = conn.getresponse()
     assert response.status == 200 and response.getheader("Content-Type") == \
@@ -120,13 +123,23 @@ def check_tools(binary, up):
                     text="Checking.", reasoning="Need log."), turn_stream(text="Done.")]
         up.reply = lambda request: (200, replies.pop(0))
         with Askai(binary, "-u", up.url(), "--git", repo, "--upstream-tools") as ai:
-            conn, response = begin(ai)
+            conn, response = begin(ai, progress=True)
             messages = finish(response)
             conn.close()
             assert "".join(d["text"] for d in deltas(messages) if d["turn"] == 1) == "Checking."
             assert "".join(d["text"] for d in deltas(messages) if d["turn"] == 2) == "Done."
             assert messages[-1]["result"]["content"][0]["text"] == "Done."
             assert "first" in up.last()["raw"].decode() and not replies
+            progress = [m["params"] for m in messages
+                        if m.get("method") == "notifications/progress"]
+            assert progress and all(p["progressToken"] == 41 for p in progress)
+            assert all(p["_meta"]["askai"]["kind"] ==
+                       ("tool" if "calling " in p["message"] else "status")
+                       for p in progress), progress
+            assert any(p["_meta"]["askai"]["kind"] == "tool" and
+                       p["message"] == "turn 1, calling git" for p in progress), progress
+            assert any(p["_meta"]["askai"]["kind"] == "status"
+                       for p in progress), progress
     print("chat stream: tool execution continues through distinct streamed turns: PASS")
 
 

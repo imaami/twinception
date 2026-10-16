@@ -131,7 +131,10 @@ static void autocomplete_reuse (struct autocomplete *catalog)
 	static struct autocomplete_text const inputs[] = {
 		TEXT("/tool "), TEXT("/tool git "), TEXT("/tool lookup mixed="),
 		TEXT("/tool lookup structured="), TEXT("/tool git participant="),
-		TEXT("/tool git notebook="), TEXT("@"), TEXT("/tool git command=stale count=2")
+		TEXT("/tool git notebook="), TEXT("@"), TEXT("/tool git command=stale count=2"),
+		TEXT("/tool notes action=read file="), TEXT("/tool notes action=copy file="),
+		TEXT("/tool notes notebook=bob/0123456789abcdef/upstream file="),
+		TEXT("/tool notes action=read file='design docs/"), TEXT("/tool notes file=o")
 	};
 	/* Grow the line workspace first, then alternate long and short requests.
 	 * A long suffix also verifies that completion retains text after point. */
@@ -230,6 +233,41 @@ static void autocomplete_files(void)
 	assert(!files);
 }
 
+static void autocomplete_note_cache(struct autocomplete *catalog)
+{
+	struct autocomplete_match const *matches = nullptr;
+	size_t count = 0;
+	struct autocomplete_text input = TEXT("/tool notes file=");
+	assert(!autocomplete_complete(catalog, input, input.len, &matches, &count));
+	assert(count == 4); /* Unsafe paths omitted; duplicates removed. */
+	struct autocomplete_text const paths[] = {TEXT("updated plan.md"), TEXT("new/entry.md")};
+	assert(!autocomplete_set_note_files(catalog, TEXT("notes"), TEXT("own"), paths, 2));
+	autocomplete_has(catalog, input, TEXT("/tool notes file='updated plan.md'"), input.len);
+	input = TEXT("/tool notes file=find");
+	autocomplete_empty(catalog, input, input.len);
+	input = TEXT("/tool notes action=copy file=");
+	autocomplete_has(catalog, input, TEXT("/tool notes action=copy file=model/thoughts.md"), input.len);
+	assert(autocomplete_set_note_files(catalog, TEXT("absent"), TEXT("own"), paths, 2) == EINVAL);
+	assert(autocomplete_set_note_files(catalog, TEXT("notes"), TEXT("own"), nullptr, 1) == EINVAL);
+	assert(autocomplete_set_note_files(catalog, TEXT("notes"), TEXT("own"), paths, (size_t)-1) == E2BIG);
+	struct autocomplete_text huge = {"", 16 * 1024 * 1024};
+	assert(autocomplete_set_note_files(catalog, TEXT("notes"), TEXT("own"), &huge, 1) == E2BIG);
+	input = TEXT("/tool notes file=new");
+	autocomplete_has(catalog, input, TEXT("/tool notes file=new/entry.md"), input.len);
+	/* Clearing and refilling reuses capacity, including path strings. */
+	autocomplete_clear_note_files(catalog);
+	autocomplete_empty(catalog, input, input.len);
+	assert(!autocomplete_set_note_files(catalog, TEXT("notes"), TEXT(""), paths, 2));
+	for (unsigned i = 0; i < 128; ++i) {
+		autocomplete_count_allocations = true;
+		autocomplete_clear_note_files(catalog);
+		assert(!autocomplete_set_note_files(catalog, TEXT("notes"), TEXT(""), paths, 2));
+		autocomplete_count_allocations = false;
+	}
+	assert(!autocomplete_allocations && !autocomplete_frees);
+	autocomplete_has(catalog, input, TEXT("/tool notes file=new/entry.md"), input.len);
+}
+
 static void autocomplete_limits (struct autocomplete *catalog)
 {
 	size_t const limit = 16U * 1024U * 1024U;
@@ -280,12 +318,38 @@ int main(void)
 #define AT(input, expected, cursor) autocomplete_has(catalog, TEXT(input), TEXT(expected), cursor)
 #define EMPTY(input) autocomplete_empty(catalog, TEXT(input), sizeof(input) - 1)
 	HAS("/to", "/tool");
+	HAS("/his", "/history");
 	HAS("/tool gi", "/tool git");
 	HAS("/tool git com", "/tool git command=");
 	HAS("/tool git command=lo", "/tool git command=log");
 	HAS("/tool git recursive=t", "/tool git recursive=true");
 	HAS("/tool git participant=al", "/tool git participant=alice");
 	HAS("/tool git notebook=ali", "/tool git notebook=alice/anonymous/client");
+	HAS("/tool notes action=read file=find", "/tool notes action=read file=findings/locks.md");
+	HAS("/tool notes file=find", "/tool notes file=findings/locks.md");
+	HAS("/tool notes notebook=own file=find", "/tool notes notebook=own file=findings/locks.md");
+	HAS("/tool notes action=copy file=mo", "/tool notes action=copy file=model/thoughts.md");
+	HAS("/tool notes action=copy notebook=own file=find", "/tool notes action=copy notebook=own file=findings/locks.md");
+	HAS("/tool notes action=attach notebook=other file=mo", "/tool notes action=attach notebook=other file=model/thoughts.md");
+	HAS("/tool notes notebook=bob/0123456789abcdef/upstream file=re", "/tool notes notebook=bob/0123456789abcdef/upstream file=reviews/reply.md");
+	AT("/tool notes file=re notebook='bob/0123456789abcdef/upstream' action=read",
+	   "/tool notes file=reviews/reply.md notebook='bob/0123456789abcdef/upstream' action=read",
+	   sizeof("/tool notes file=re") - 1);
+	AT("/tool notes file=mo action=copy", "/tool notes file=model/thoughts.md action=copy", sizeof("/tool notes file=mo") - 1);
+	HAS("/tool notes file=des", "/tool notes file='design docs/first.md'");
+	HAS("/tool notes file=\"design docs/", "/tool notes file=\"design docs/first.md\"");
+	HAS("/tool notes file=design\\ docs/", "/tool notes file='design docs/first.md'");
+	HAS("/tool notes file=ä", "/tool notes file=äiti.md");
+	HAS("/tool notes file=o", "/tool notes file='o'\\''brien.md'");
+	EMPTY("/tool git file=");
+	EMPTY("/tool notes file=bad");
+	EMPTY("/tool notes action=add file=");
+	EMPTY("/tool notes action=list file=");
+	EMPTY("/tool notes action=notebooks file=");
+	EMPTY("/tool notes action=read action=copy file=");
+	EMPTY("/tool notes notebook=own notebook=other file=");
+	EMPTY("/tool notes notebook=absent file=");
+	EMPTY("/tool notes notebook='' file=");
 	HAS("/tool lookup mode=ex", "/tool lookup mode=exact");
 	HAS("/tool lookup depth=1", "/tool lookup depth=1");
 	HAS("/tool lookup mixed=t", "/tool lookup mixed='true'");
@@ -307,7 +371,7 @@ int main(void)
 	EMPTY("/tool git recipient=");
 	EMPTY("/tool git command=log com");
 	assert(autocomplete_participant_count(catalog) == 3);
-	assert(autocomplete_tool_count(catalog) == 4);
+	assert(autocomplete_tool_count(catalog) == 5);
 	assert(autocomplete_find_tool(catalog, (struct autocomplete_text){"gitJUNK", 3}));
 	char counted[] = {'@', 'a', 'l'};
 	autocomplete_has(catalog, (struct autocomplete_text){counted, sizeof counted}, TEXT("@alice"),
@@ -414,6 +478,7 @@ int main(void)
 	for (size_t i = 0; i < sizeof invalid / sizeof *invalid; ++i)
 		autocomplete_bad(catalog, invalid[i]);
 	autocomplete_reuse(catalog);
+	autocomplete_note_cache(catalog);
 	autocomplete_files();
 	autocomplete_limits(catalog);
 	struct autocomplete *other = autocomplete_create(&error);
