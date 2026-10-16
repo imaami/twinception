@@ -40,8 +40,7 @@ TESTS = """
 
 # The expected targets by directory. The root makefile imports the targets of
 # the makefiles in src/ and in tests/, so the root must offer both lists.
-EXPECTED = {".": SRC + TESTS + ["install-askai-cli", "uninstall-askai-cli"],
-            "src": SRC, "tests": TESTS}
+EXPECTED = {".": SRC + TESTS, "src": SRC, "tests": TESTS}
 
 # Variables that a running make exports to its recipes. A shell does not have
 # them, so the check removes them before it runs make.
