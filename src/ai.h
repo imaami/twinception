@@ -89,13 +89,16 @@ ai_props (struct ai_endpoint const *ep)
  * that is nullptr, and offering the model @p tools, an array as the API
  * has them, unless that is nullptr; nullptr if out of memory.  Its messages
  * are its last member, so that the turns of a conversation (ai_format())
- * may follow them.  All three are JSON values, which the body takes
- * references to; what it takes from @p ep, it copies.
+ * may follow them. @p history, unless nullptr, is an array of validated
+ * user/assistant objects with string role and content, before the new prompt.
+ * All four are JSON values, which the body takes references to; what it takes
+ * from @p ep, it copies.
  */
 extern struct json_object *
 ai_request (struct ai_endpoint const *ep,
             struct json_object       *system,
             struct json_object       *prompt,
+            struct json_object       *history,
             struct json_object       *tools);
 
 /** What an event of a streamed answer says besides its text. */

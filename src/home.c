@@ -396,6 +396,8 @@ home_job_drop_answer (struct job *job)
 		buf_fini(&job->calls[k]);
 	buf_fini(&job->thought);
 	buf_fini(&job->replay);
+	buf_fini(&job->delta);
+	job->delta_pending = job->delta_ended = false;
 }
 
 /* Drop @p n references to @p job, and hand it back to its front if they were
@@ -420,6 +422,7 @@ home_job_reset (struct job *job,
 	job->ev = job->evlen = job->line = job->scan = job->chunks = job->used = 0;
 	job->reader = (struct ai_reader){};
 	job->provider_done = false;
+	job->delta_pending = job->delta_ended = false;
 	job->reason[0] = '\0';
 }
 
@@ -432,6 +435,10 @@ home_job_end (struct job      *job,
               enum job_status  status)
 {
 	job->status = (uint8_t)status;
+	if (job->delta_pending && !(job->flags & DROPPED)) {
+		job->delta_ended = true;
+		return;
+	}
 	if (job->flags & DROPPED) {
 		home_job_drop_answer(job);
 		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DONE);
@@ -949,7 +956,7 @@ static void
 home_feed (struct home *home,
            struct job  *job)
 {
-	if (job->recovery && job->recovery->pending)
+	if (job->delta_pending || (job->recovery && job->recovery->pending))
 		return;
 	if (list_is_empty(&job->feed))
 		list_append(&home->feeding, &job->feed);
@@ -1047,7 +1054,7 @@ home_job_write (char const *data,
 		(void)loop_timer_set(home->loop, &home->quiet, job->active + home->silence);
 	if (!(job->flags & STREAM))
 		return home_receive(home, job, &job->result, data, len);
-	if (buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
+	if (job->delta_pending || buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
 		job->flags |= BACKED;
 		return CURL_WRITEFUNC_PAUSE;
 	}
@@ -1559,25 +1566,54 @@ home_append_text (struct home *home,
 	return 0;
 }
 
+/* Build one event's immutable mailbox. Parsing stops after publication, so a
+ * slow front holds at most one event; the provider's wire is bounded too. */
+static int
+home_put_delta (struct job *job,
+                char const *text,
+                size_t      len,
+                bool        thought)
+{
+	if (!(job->asks & JOB_STREAM) || job->flags & DROPPED || !len)
+		return 0;
+	if (len > MAX_RESPONSE)
+		return ENOBUFS;
+	struct job_delta header = { .len = (uint32_t)len, .thought = thought };
+	struct span s;
+	int e = buf_reserve(&job->delta, sizeof header + len, 2 * MAX_RESPONSE, &s);
+	if (e)
+		return e;
+	memcpy(s.ptr, &header, sizeof header);
+	memcpy(s.ptr + sizeof header, text, len);
+	buf_commit(&job->delta, sizeof header + len);
+	loop_work(self->loop, LOOP_COPY, sizeof header + len);
+	return 0;
+}
+
 /* The answer of the job @p user gains the @p len bytes of text at @p text
- * (home_append_text()). */
+ * (home_append_text()), then the immutable mailbox receives its copy. */
 static int
 home_put_text (void       *user,
                char const *text,
                size_t      len)
 {
 	struct job *job = user;
-	return home_append_text(self, &job->result, text, len);
+	int e = home_append_text(self, &job->result, text, len);
+	return e ? e : home_put_delta(job, text, len, false);
 }
 
-/* Its thinking, likewise. */
+/* Its thinking, likewise. Chat tool turns need a separate copy; the other
+ * APIs keep their reasoning in the replay, independently of the mailbox. */
 static int
 home_put_thought (void       *user,
                   char const *text,
                   size_t      len)
 {
 	struct job *job = user;
-	return home_append_text(self, &job->thought, text, len);
+	int e = job->asks & JOB_TOOLS && self->ep->api == AI_CHAT
+	      ? home_append_text(self, &job->thought, text, len)
+	      : jb_utf8(text, len) < len ? EILSEQ : 0;
+	return e ? e : home_put_delta(job, text, len, true);
 }
 
 /* Its replay, likewise: JSON text. */
@@ -1926,6 +1962,8 @@ home_take (struct home        *home,
 		.replay = home_put_replay
 	};
 	struct ai_sink sink = job->asks & JOB_TOOLS ? tools : plain;
+	if (job->asks & JOB_STREAM)
+		sink.thought = home_put_thought;
 	sink.user = job;
 	size_t had = buf_peek(&job->result).len;
 	struct ai_event ev = {};
@@ -1952,6 +1990,10 @@ home_take (struct home        *home,
 		(void)home_job_erred(job, "tool calls out of order, or too many", -1);
 	} else if (e == EILSEQ) {
 		(void)home_job_erred(job, "an answer that is not text", -1);
+	}
+	if (!(job->flags & DROPPED) && buf_peek(&job->delta).len) {
+		job->delta_pending = true;
+		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DELTA);
 	}
 	return e;
 }
@@ -2168,6 +2210,10 @@ home_read_stream (struct home *home,
                   struct job  *job)
 {
 	for (;;) {
+		if (job->delta_pending) {
+			list_del(&job->feed);
+			return true;
+		}
 		int e = job->flags & EVENT ? home_read_event(home, job) : home_scan(home, job);
 		if (e == ENODATA)
 			e = home_drained(home, job);
@@ -2635,6 +2681,19 @@ home_submit (struct home *home,
 	home_job_put(job, 1);
 }
 
+/* The front no longer reads the mailbox. A completion held for it can now
+ * go; otherwise an acknowledgment lets the parser resume in a bulk step. */
+static void
+home_delta_release (struct job *job)
+{
+	buf_fini(&job->delta);
+	job->delta_pending = false;
+	if (job->delta_ended) {
+		job->delta_ended = false;
+		home_job_end(job, job->status);
+	}
+}
+
 /* @p job's front lets go of it: home cancels it if it is in flight, and lets
  * go too, the result's storage back to the stash it came from.  Cancelling
  * one running takes a step, which then lets go of it. */
@@ -2643,6 +2702,7 @@ home_release (struct home *home,
               struct job  *job,
               uint32_t     bits)
 {
+	home_delta_release(job);
 	if (job->recovery) {
 		job->recovery->explicit_cancel = (bits & JOB_CANCEL) != 0;
 	}
@@ -2665,6 +2725,12 @@ static void
 home_job_orphan (struct job *job,
                  uint32_t    bits)
 {
+	if (bits & JOB_DRAIN && !(bits & (JOB_SUBMIT | JOB_CANCEL | JOB_SUSPEND))) {
+		home_delta_release(job);
+		home_job_put(job, 1);
+		return;
+	}
+	home_delta_release(job);
 	if (bits & JOB_SUBMIT) {
 		home_job_reset(job, 0);
 		home_job_end(job, JOB_CANCELLED);
@@ -2689,8 +2755,14 @@ home_job (struct loop *loop,
 	struct home *home = self;
 	if (bits & JOB_SUBMIT)
 		home_submit(home, job, bits);
-	else
+	else if (bits & (JOB_CANCEL | JOB_SUSPEND))
 		home_release(home, job, bits);
+	else if (bits & JOB_DRAIN) {
+		home_delta_release(job);
+		if (!list_is_empty(&job->due) && job->flags & STREAM)
+			home_feed(home, job);
+		home_job_put(job, 1);
+	}
 }
 
 /* Put @p home's timers in the heap from the start, so that setting them

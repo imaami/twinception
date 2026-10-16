@@ -37,7 +37,11 @@
  * stream while it waits, at most one each PROGRESS_NS, as home's PROGRESS
  * messages say how far it is: its place in its principal's queue, then the
  * chunks of its answer, which home reads from a streamed answer into its
- * text, so that the request only escapes that into the reply.  Closing the
+ * text, so that the request only escapes that into the reply. An ask call
+ * with params._meta.askai.stream true also receives notifications/askai/delta:
+ * bounded text or reasoning pieces copied from an immutable job mailbox.
+ * Home waits for its acknowledgment; with a transcript journal, each notice
+ * is committed before delivery. Closing the
  * stream, which in HTTP/1.1 means closing the connection or its sending side,
  * cancels the call in every era.  The caller of a call can also cancel it
  * with notifications/cancelled, on any connection of any loop.
@@ -126,6 +130,7 @@ enum {
 	CACHE_TTL_MS = 300'000,   /* how long modern clients may cache lists */
 	UPLOAD_MAX   = 16 << 20,  /* bytes of a conversation's upstream request:
 	                             past those, its context is full */
+	CHAT_HISTORY = 1024,      /* earlier visible messages of a chat */
 	CALLS_MAX    = 16 << 20,  /* bytes of a turn's tool calls */
 	LEND_MAX     = 64 << 10,  /* bytes of a tool's output that a turn takes,
 	                             at most */
@@ -527,6 +532,7 @@ struct mcp_req {
 	struct jb_parser     parser;     /* of the body, then of the answer */
 	struct jb_reaper     reaper;     /* what is freed a slice a step */
 	struct mcp_splice    splice[2];  /* prompt and system, in draft order */
+	struct mcp_splice   *history_splices; /* larger draft when chat history is given */
 	struct mcp_slot      self;       /* its own call: its answer, the tool
 	                                    that a client calls, and the notes'
 	                                    git it reads */
@@ -594,6 +600,8 @@ struct mcp_req {
 	size_t               at;         /* where the call whose result is written
 	                                    next is in calls */
 	size_t               launch_at;  /* and the call launched next */
+	size_t               delta_at;   /* header of the published mailbox piece */
+	size_t               delta_read; /* bytes consumed from that piece */
 	size_t               replayed;   /* bytes of the job's replay that the
 	                                    turn has written */
 	uint64_t             head;       /* loop_clock() at the request's head */
@@ -633,6 +641,7 @@ struct mcp_req {
 	uint32_t             traced;     /* tool calls the turns made */
 	uint32_t             launched;   /* the turn's calls launched */
 	uint16_t             splices;
+	uint16_t             splice_max; /* capacity of the draft's splice array */
 	uint16_t             next;       /* the splice to write next, or piece */
 	uint16_t             part;       /* the part of the turn being written,
 	                                    or its call under way */
@@ -656,6 +665,9 @@ struct mcp_req {
 	                                    due */
 	bool                 progress;   /* the job's progress moved on */
 	bool                 blocked;    /* waiting for on_writable() */
+	bool                 delta;      /* the job's immutable mailbox is published */
+	bool                 delta_saving; /* its notice waits for durable storage */
+	bool                 delta_saved; /* its notice is durable, ready to send */
 	bool                 listed;     /* the list that the turn's items go in
 	                                    has one */
 	bool                 branch;     /* the caller's branch has notes */
@@ -1016,6 +1028,7 @@ mcp_shelve_job (struct mcp *mcp,
 	job->archive[0] = '\0';
 	buf_fini(&job->request);
 	buf_fini(&job->key);
+	buf_fini(&job->delta);
 	shelf_put(&mcp->jobs, &job->spare);
 	hist_add(&mcp->counts->kept.jobs, 1);
 }
@@ -1344,6 +1357,7 @@ mcp_req_drop (struct mcp_req *req)
 		return;
 	}
 	req->job = nullptr;
+	req->delta = false;
 	job_post(job, mcp->home, &job->to_home, &job->home_bits,
 	         (mcp->draining || req->suspended) && job->asks & JOB_DURABLE
 	         ? JOB_SUSPEND : JOB_CANCEL);
@@ -1506,6 +1520,8 @@ mcp_req_finish (struct mcp_req *req)
 	json_object_put(req->id);
 	json_object_put(req->token);
 	req->draft = req->id = req->token = req->prompt = nullptr;
+	free(req->history_splices);
+	req->history_splices = nullptr;
 	jb_scan_reset(&req->scan);
 	buf_fini(&req->body);
 	buf_fini(&req->upload);
@@ -1569,6 +1585,18 @@ mcp_req_http_error (struct mcp_req *req,
 	mcp_req_finish(req);
 }
 
+/* Queue bytes the journal has accepted, remembering transport backpressure. */
+static int
+mcp_req_transport (struct mcp_req *req,
+                   struct span     bytes)
+{
+	int e = req->s->ops->data(req->s, bytes);
+	if (e != EAGAIN)
+		return e;
+	req->blocked = true;
+	return 0;
+}
+
 /* Queue @p bytes of the response: 0, or EPIPE once the stream can carry no
  * more.  Once the transport asks to wait, the request waits for
  * on_writable(). */
@@ -1584,11 +1612,7 @@ mcp_req_write (struct mcp_req *req,
 			return e;
 		}
 	}
-	int e = req->s->ops->data(req->s, bytes);
-	if (e != EAGAIN)
-		return e;
-	req->blocked = true;
-	return 0;
+	return mcp_req_transport(req, bytes);
 }
 
 /* Send as much of the reply as the step has the share for, the rest a piece
@@ -2015,6 +2039,143 @@ mcp_req_notify (struct mcp_req *req,
 	req->next_note = value + 1;
 }
 
+/* A journal callback names the request by its generation-checked job handle;
+ * cancellation invalidates it before the request can be reused. */
+struct mcp_delta_wait {
+	struct handle call;
+};
+
+static void
+mcp_delta_saved (struct loop *loop,
+                 void        *arg,
+                 int          error)
+{
+	struct mcp_delta_wait *wait = arg;
+	struct handle call = wait->call;
+	free(wait);
+	wait = nullptr;
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, call, HANDLE_REQ);
+	if (!req)
+		return;
+	req->delta_saving = false;
+	if (error) {
+		req->archive_error = error;
+		mcp_req_abort(req, error);
+		return;
+	}
+	req->delta_saved = true;
+	loop_ready_bulk(loop, &req->step);
+}
+
+/* Publish text from the immutable mailbox in bounded UTF-8 pieces. Home
+ * cannot change it, advance its parser or deliver DONE before the DRAIN
+ * acknowledgment. Transport backpressure therefore also bounds the mailbox. */
+static void
+mcp_req_delta (struct mcp_req *req)
+{
+	struct job *job = req->job;
+	struct loop *loop = req->mcp->loop;
+	struct span bytes = buf_peek(&job->delta);
+	if (req->delta_saving)
+		return;
+	if (req->delta_saved) {
+		struct span notice = buf_peek(&req->reply);
+		if (loop_room(loop, LOOP_SEND) < notice.len) {
+			loop_ready_bulk(loop, &req->step);
+			return;
+		}
+		int e = mcp_req_transport(req, notice);
+		loop_work(loop, LOOP_SEND, notice.len);
+		buf_consume(&req->reply, notice.len);
+		req->delta_saved = false;
+		if (e) {
+			mcp_req_abort(req, e);
+			return;
+		}
+	}
+	while (req->delta_at < bytes.len) {
+		if (req->blocked)
+			return;
+		struct job_delta header;
+		memcpy(&header, bytes.ptr + req->delta_at, sizeof header);
+		unsigned char const *text = bytes.ptr + req->delta_at + sizeof header;
+		size_t left = header.len - req->delta_read;
+		size_t room = loop_room(loop, LOOP_ESCAPE);
+		size_t send = loop_room(loop, LOOP_SEND);
+		/* Escaping a byte needs at most six bytes; ids are <= MAX_ID. */
+		size_t overhead = 6 * MAX_ID + 256;
+		send = send > overhead ? (send - overhead) / 6 : 0;
+		room = room < send ? room : send;
+		size_t n = left < room ? left : room;
+		n = n < 8192 ? n : 8192;
+		if (n < left)
+			while (n && (text[req->delta_read + n] & 0xc0) == 0x80)
+				--n;
+		if (!n) {
+			loop_ready_bulk(loop, &req->step);
+			return;
+		}
+		size_t id_len;
+		char const *id = json_object_to_json_string_length(req->id, JB_WIRE, &id_len);
+		if (!id) {
+			mcp_req_abort(req, ENOMEM);
+			return;
+		}
+		char turn[24];
+		size_t turn_len = util_format(turn, sizeof turn, "%" PRIu32, req->turn);
+		struct mcp_piece const p[] = {
+			FRAG("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/askai/delta\","
+			     "\"params\":{\"requestId\":"),
+			RAW(id, id_len), FRAG(",\"turn\":"), RAW(turn, turn_len),
+			FRAG(",\"kind\":\""), header.thought ? FRAG("reasoning") : FRAG("text"),
+			FRAG("\",\"text\":\""), ESC(text + req->delta_read, n), FRAG("\"}}\n\n"),
+		};
+		int e = mcp_req_put(req, p, ARRAY_SIZE(p));
+		loop_work(loop, LOOP_ESCAPE, n);
+		struct span notice = buf_peek(&req->reply);
+		if (e) {
+			mcp_req_abort(req, e);
+			return;
+		}
+		req->delta_read += n;
+		if (req->delta_read == header.len) {
+			req->delta_at += sizeof header + header.len;
+			req->delta_read = 0;
+		}
+		if (*req->archive && !req->archive_error) {
+			struct mcp_delta_wait *wait = malloc(sizeof *wait);
+			if (wait) {
+				wait->call = req->call;
+				e = journal_put(req->mcp->st->journal, req->archive, "message",
+				                notice.ptr, notice.len, loop, mcp_delta_saved, wait);
+			} else {
+				e = ENOMEM;
+			}
+			if (!e) {
+				req->delta_saving = true;
+				return;
+			}
+			free(wait);
+			wait = nullptr;
+			req->archive_error = e;
+		} else {
+			e = mcp_req_transport(req, notice);
+			loop_work(loop, LOOP_SEND, notice.len);
+			buf_consume(&req->reply, notice.len);
+		}
+		if (e) {
+			mcp_req_abort(req, e);
+			return;
+		}
+	}
+	if (req->blocked)
+		return;
+	req->delta = false;
+	job_post(job, req->mcp->home, &job->to_home, &job->home_bits, JOB_DRAIN);
+	if (req->tick)
+		loop_ready_bulk(loop, &req->step);
+}
+
 /* Notify the client how far the call has come, as its job's progress says:
  * its place in its principal's queue, then the tokens of its answer, thinking
  * or text, as a progress that grows with each notification, and with each
@@ -2332,6 +2493,7 @@ mcp_on_job (struct loop *loop,
 			buf_fini(&job->calls[k]);
 		buf_fini(&job->thought);
 		buf_fini(&job->replay);
+		buf_fini(&job->delta);
 		home_job_recovery_fini(job);
 		free(job);
 		return;
@@ -2341,6 +2503,15 @@ mcp_on_job (struct loop *loop,
 		return;
 	}
 	struct mcp_req *req = loop_lookup(loop, job->call, HANDLE_REQ);
+	if (bits & JOB_DELTA && req) {
+		if (req->sse) {
+			req->delta_at = req->delta_read = 0;
+			req->delta = true;
+			loop_ready_bulk(loop, &req->step);
+		} else {
+			job_post(job, self->home, &job->to_home, &job->home_bits, JOB_DRAIN);
+		}
+	}
 	if (!(bits & JOB_DONE)) {
 		if (req)
 			mcp_req_progressed(req);
@@ -2370,10 +2541,11 @@ mcp_splice_mark (struct json_object *str,
 	(void)level;
 	(void)flags;
 	struct mcp_req *req = json_object_get_userdata(str);
-	if (req->splices == ARRAY_SIZE(req->splice) ||
+	if (req->splices == req->splice_max ||
 	    printbuf_strappend(pb, "\"\"") < 0)
 		return -1;
-	req->splice[req->splices++] = (struct mcp_splice){ str, (size_t)pb->bpos - 1 };
+	struct mcp_splice *splices = req->history_splices ? req->history_splices : req->splice;
+	splices[req->splices++] = (struct mcp_splice){ str, (size_t)pb->bpos - 1 };
 	return 0;
 }
 
@@ -2383,8 +2555,10 @@ static int
 mcp_req_copy (struct mcp_req *req,
               size_t          k)
 {
-	size_t from = k ? req->splice[k - 1].at : 0;
-	size_t len = (k < req->splices ? req->splice[k].at : req->len) - from;
+	struct mcp_splice const *splices = req->history_splices ? req->history_splices
+	                                                     : req->splice;
+	size_t from = k ? splices[k - 1].at : 0;
+	size_t len = (k < req->splices ? splices[k].at : req->len) - from;
 	if (!len)
 		return 0;
 	return mcp_piece_write(&RAW(req->text, req->len), from, len, &req->upload,
@@ -2685,7 +2859,9 @@ mcp_req_build_slice (struct mcp_req *req)
 	struct loop *loop = req->mcp->loop;
 	if (req->next == req->splices)
 		return 0;
-	struct json_object *str = req->splice[req->next].str;
+	struct mcp_splice const *splices = req->history_splices ? req->history_splices
+	                                                     : req->splice;
+	struct json_object *str = splices[req->next].str;
 	size_t all = (size_t)json_object_get_string_len(str);
 	size_t len = all - req->off;
 	size_t room = loop_room(loop, LOOP_ESCAPE);
@@ -2726,6 +2902,8 @@ mcp_req_build (struct mcp_req *req)
 	}
 	json_object_put(req->draft);
 	req->draft = req->prompt = nullptr;
+	free(req->history_splices);
+	req->history_splices = nullptr;
 	req->next = 0;
 	mcp_req_turn_ready(req);
 }
@@ -3369,9 +3547,20 @@ mcp_lent_text (struct json_object *obj,
 static int
 mcp_req_draft (struct mcp_req     *req,
                struct json_object *prompt,
-               struct json_object *system)
+               struct json_object *system,
+               struct json_object *history)
 {
 	struct mcp_static const *st = req->mcp->st;
+	size_t n = history ? json_object_array_length(history) : 0;
+	req->splice_max = (uint16_t)(n + ARRAY_SIZE(req->splice));
+	if (n) {
+		req->history_splices = malloc(req->splice_max * sizeof *req->history_splices);
+		if (!req->history_splices)
+			return ENOMEM;
+		for (size_t k = 0; k < n; ++k)
+			json_object_set_serializer(jb_get(jb_at(history, k), "content"),
+			                           mcp_splice_mark, req, nullptr);
+	}
 	char const *sys = st->ep->system;
 	struct json_object *instructions = nullptr;
 	if (system) {
@@ -3392,7 +3581,7 @@ mcp_req_draft (struct mcp_req     *req,
 		json_object_set_serializer(tools, mcp_lent_text, req, nullptr);
 	}
 	json_object_set_serializer(prompt, mcp_splice_mark, req, nullptr);
-	req->draft = ai_request(st->ep, instructions, prompt, tools);
+	req->draft = ai_request(st->ep, instructions, prompt, history, tools);
 	json_object_put(instructions);
 	json_object_put(tools);
 	req->prompt = prompt;
@@ -3426,6 +3615,30 @@ mcp_req_log_ask (struct mcp_req const *req,
 
 static int mcp_req_background (struct mcp_req *req, uint32_t tool, bool own_tool);
 
+/* Only visible user and assistant text can be supplied as chat history.
+ * Tool calls, tool results and system messages remain server controlled. */
+static bool
+mcp_history_valid (struct json_object *history)
+{
+	if (!json_object_is_type(history, json_type_array))
+		return false;
+	size_t n = json_object_array_length(history);
+	if (n > CHAT_HISTORY)
+		return false;
+	for (size_t k = 0; k < n; ++k) {
+		struct json_object *message = jb_at(history, k);
+		if (!json_object_is_type(message, json_type_object) ||
+		    json_object_object_length(message) != 2 || !jb_text(jb_get(message, "content")))
+			return false;
+		size_t len = 0;
+		char const *role = jb_str(jb_get(message, "role"), &len);
+		if (!role || !((len == 4 && !memcmp(role, "user", 4)) ||
+		               (len == 9 && !memcmp(role, "assistant", 9))))
+			return false;
+	}
+	return true;
+}
+
 /* Start a call that asks the upstream, with the arguments @p args, of the
  * class the request asks for, lending the turns the tools req->lent says,
  * if any: build its upstream request, then submit its job.  The notes the turns keep, if askai keeps
@@ -3442,12 +3655,17 @@ mcp_req_ask (struct mcp_req     *req,
 	struct json_object *prompt = jb_get(args, "prompt");
 	struct json_object *system = jb_get(args, "system");
 	struct json_object *thread = jb_get(args, "thread");
+	struct json_object *history = nullptr;
+	bool has_history = json_object_object_get_ex(args, "messages", &history);
 	char const *text = jb_text(prompt);
 	size_t len = 0;
 	char const *id = jb_str(thread, &len);
 	struct mcp_piece problem =
 		!text || !*text ? TEXT("The prompt argument must be a non-empty string.")
 		: system && !jb_text(system) ? TEXT("The system argument must be a string.")
+		: has_history && !mcp_history_valid(history)
+		? TEXT("The messages argument must be an array of at most 1024 earlier "
+		       "messages, each with only role (user or assistant) and string content.")
 		: !thread ? (struct mcp_piece){}
 		: !notes ? TEXT("No notes are kept for you here, so there is no thread to "
 		                "go on with.")
@@ -3479,7 +3697,7 @@ mcp_req_ask (struct mcp_req     *req,
 	req->asked = ++req->mcp->asked;
 	mcp_req_log_ask(req, prompt, id != nullptr);
 	mcp_req_wait(req);
-	int e = mcp_req_draft(req, prompt, system);
+	int e = mcp_req_draft(req, prompt, system, history);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -7387,6 +7605,16 @@ mcp_slot_ask (struct mcp_slot    *slot,
 {
 	struct mcp_req *req = slot->req;
 	bool background = req->mcp->st->ep->background;
+	struct json_object *override = nullptr;
+	bool has_override = json_object_object_get_ex(args, "background", &override);
+	if (has_override && (!json_object_is_type(override, json_type_boolean) ||
+	                     (json_object_get_boolean(override) &&
+	                      (!background || (req->asks & JOB_STREAM))))) {
+		mcp_slot_result(slot, TEXT("The background argument must be false, or true "
+		                           "when server background mode is enabled and live "
+		                           "streaming is not requested."), true);
+		return;
+	}
 	if (background && args) {
 		bool job = json_object_object_get_ex(args, "job", nullptr);
 		struct json_object *action;
@@ -7394,6 +7622,8 @@ mcp_slot_ask (struct mcp_slot    *slot,
 		struct mcp_piece problem =
 			job && (json_object_object_get_ex(args, "prompt", nullptr) ||
 			        json_object_object_get_ex(args, "system", nullptr) ||
+			        json_object_object_get_ex(args, "messages", nullptr) ||
+			        has_override || (req->asks & JOB_STREAM) ||
 			        json_object_object_get_ex(args, "thread", nullptr) ||
 			        json_object_object_get_ex(args, "timer", nullptr))
 			? TEXT("Give a job id to check or cancel, or a prompt to start a job, not both.")
@@ -7418,6 +7648,10 @@ mcp_slot_ask (struct mcp_slot    *slot,
 			return;
 		}
 	}
+	if (has_override)
+		background = json_object_get_boolean(override);
+	else if (req->asks & JOB_STREAM)
+		background = false;
 	req->lent = mcp_req_lent(req);
 	mcp_req_ask(req, args, background);
 }
@@ -7463,6 +7697,19 @@ mcp_req_tools_call (struct mcp_req     *req,
 		mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, head.len + n), nullptr, 0);
 		return;
 	}
+	struct json_object *stream = nullptr;
+	bool has_stream = json_object_object_get_ex(jb_get(jb_get(params, "_meta"), "askai"),
+	                                            "stream", &stream);
+	if (has_stream && (!json_object_is_type(stream, json_type_boolean) ||
+	                   (json_object_get_boolean(stream) &&
+	                    (!req->sse_ok || st->offers[id].kind->start != mcp_slot_ask)))) {
+		mcp_req_error(req, 200, INVALID_PARAMS,
+		              FRAG("askai.stream must be boolean; true requires the ask tool "
+		                   "and an SSE-capable client"), nullptr, 0);
+		return;
+	}
+	if (has_stream && json_object_get_boolean(stream))
+		req->asks |= JOB_STREAM;
 	int e = mcp_req_enrol(req);
 	if (e) {
 		mcp_req_fail(req, e);
@@ -7470,7 +7717,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 	}
 	struct json_object *token = jb_get(jb_get(params, "_meta"), "progressToken");
 	req->token = mcp_id_valid(token) ? json_object_get(token) : nullptr;
-	if (tasks && !(st->offers[id].kind->flags & KF_AGENDA)) {
+	if (tasks && !(req->asks & JOB_STREAM) && !(st->offers[id].kind->flags & KF_AGENDA)) {
 		req->promote_at = req->mcp->loop->now + TASK_NS;
 		mcp_req_arm(req);
 	}
@@ -8039,6 +8286,10 @@ mcp_req_step (struct loop      *loop,
               struct loop_step *step)
 {
 	struct mcp_req *req = container_of(step, struct mcp_req, step);
+	if (req->delta) {
+		mcp_req_delta(req);
+		return;
+	}
 	if (req->tick && req->phase < PHASE_REPLY) {
 		req->tick = false;
 		mcp_req_tick(req);
@@ -8447,19 +8698,51 @@ static struct json_object *
 mcp_tool_definition (void const *service)
 {
 	struct mcp_static const *st = service;
+	struct json_object *roles = jb_list(json_object_new_string("user"));
+	struct json_object *required = jb_list(json_object_new_string("role"));
+	if (jb_push(roles, json_object_new_string("assistant")) ||
+	    jb_push(required, json_object_new_string("content"))) {
+		json_object_put(roles);
+		json_object_put(required);
+		return nullptr;
+	}
 	struct json_object *props = jb_object(
 		"prompt", jb_object(
 			"type", json_object_new_string("string"),
 			"description", json_object_new_string(
-				"The complete, self-contained question or task. The other AI "
-				"cannot see this conversation, so include all the context it "
-				"needs."),
+				"The new question or task. Include the context it needs, or supply "
+				"earlier user and assistant turns in messages for a continuing chat."),
 			nullptr),
 		"system", jb_object(
 			"type", json_object_new_string("string"),
 			"description", json_object_new_string(
 				"Optional system instructions for the other AI, such as a role "
 				"or an answer format."),
+			nullptr),
+		"messages", jb_object(
+			"type", json_object_new_string("array"),
+			"maxItems", json_object_new_int(CHAT_HISTORY),
+			"description", json_object_new_string(
+				"Earlier visible chat messages, in order, before the new prompt. "
+				"Each has role user or assistant and plain string content. The "
+				"client retains this history; thread does not retain messages."),
+			"items", jb_object(
+				"type", json_object_new_string("object"),
+				"properties", jb_object(
+					"role", jb_object("type", json_object_new_string("string"),
+					                  "enum", roles, nullptr),
+					"content", jb_object("type", json_object_new_string("string"), nullptr),
+					nullptr),
+				"required", required,
+				"additionalProperties", json_object_new_boolean(0),
+				nullptr),
+			nullptr),
+		"background", jb_object(
+			"type", json_object_new_string("boolean"),
+			"description", json_object_new_string(
+				"False waits for the answer on this connection. True requires server "
+				"background mode and returns a job id. Omission follows the server "
+				"setting, unless live streaming is requested."),
 			nullptr),
 		nullptr);
 	if (st->lending.by[LEND_ALWAYS] && jb_set(props, "thread", jb_object(
@@ -8503,7 +8786,8 @@ mcp_tool_definition (void const *service)
 		? "\n\nWith prompt, start a job and return its id immediately. The job keeps "
 		  "running after this connection closes. Later call this same tool with job "
 		  "and no prompt to check its status or read its result; action cancel stops "
-		  "it. Results are kept for up to an hour after completion."
+		  "it. Results are kept for up to an hour after completion. Set background "
+		  "false to wait for the answer on this connection."
 		: "");
 	struct json_object *description = described
 	                               ? json_object_new_string(dstr_get(&about)) : nullptr;

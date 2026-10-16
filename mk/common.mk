@@ -44,6 +44,9 @@ endif
 ifeq (,$(filter -flto=% -flto -fno-lto,$(CXXFLAGS)))
 override CXXFLAGS += -flto=auto
 endif
+ifeq (,$(filter -std=%,$(CXXFLAGS)))
+override CXXFLAGS += -std=gnu++17
+endif
 ifeq (,$(filter -O -O%,$(CXXFLAGS)))
 override CXXFLAGS += -O3
 endif
@@ -164,7 +167,9 @@ $(TGT:%=$O%) $(A_OBJ) $(O_OBJ) $(JSON) $Ocompile_commands.json: | $O
 
 ifneq (,$(O_TGT))
 $(O_TGT:%=$O%):
-	+$(strip $(CC) -o "$@" -MMD $(CFLAGS)         \
+	+$(strip $(if $(filter %.cpp,$(SRC_$(@F))),$(CXX),$(CC)) \
+	               -o "$@" -MMD                \
+	               $(if $(filter %.cpp,$(SRC_$(@F))),$(CXXFLAGS),$(CFLAGS)) \
 	               -ffile-prefix-map=$(SRCDIR)='' \
 	               $^ $(LDFLAGS) $(LDFLAGS_$(@F)) \
 	               $(LDLIBS) $(LDLIBS_$(@F)))

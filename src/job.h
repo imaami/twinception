@@ -17,7 +17,9 @@
  * exactly one completion.  Meanwhile home publishes the job's progress, its
  * place in its principal's queue and then the tokens of its answer, thinking
  * or text, and posts PROGRESS for a front that asked for it, a burst being
- * one message.
+ * one message. With JOB_STREAM, home publishes one immutable event mailbox
+ * through DELTA and pauses parsing. The front posts DRAIN after consuming it;
+ * home then reclaims it and resumes. DONE waits for that acknowledgment too.
  * The front posts CANCEL exactly once: before DONE it cancels the job, which
  * home then stops and ends as CANCELLED, and after DONE it lets go of the
  * job, having read the result.  Home keeps its reference until then, and
@@ -60,6 +62,7 @@ enum {
 	JOB_SUBMIT   = 1,  /**< run the job */
 	JOB_CANCEL   = 2,  /**< the front lets go: stop the job if it runs */
 	JOB_SUSPEND  = 4,  /**< let go on shutdown, leaving durable provider work alive */
+	JOB_DRAIN    = 8,  /**< the front has consumed the immutable delta mailbox */
 };
 
 /** The bits of the messages to the front. */
@@ -67,6 +70,7 @@ enum {
 	JOB_DONE     = 1,  /**< the job has ended: its status and result are set */
 	JOB_PROGRESS = 2,  /**< the job's progress moved on */
 	JOB_RETURN   = 4,  /**< home dropped the last reference, without one */
+	JOB_DELTA    = 8,  /**< the immutable delta mailbox is ready for the front */
 };
 
 /** Tool calls that a streamed answer may make, at most. */
@@ -88,6 +92,7 @@ enum job_ask {
 	JOB_TOOLS      = 1 << 2,  /**< keep a streamed answer's thinking and tool
 	                               calls, which the request offered tools for */
 	JOB_DURABLE    = 1 << 3,  /**< detached work whose journal permits recovery */
+	JOB_STREAM     = 1 << 4,  /**< publish text and thinking through the mailbox */
 };
 
 /** The header of a tool call in a streamed answer.  Each call is stored in
@@ -123,6 +128,12 @@ enum job_status {
 	                     result is empty */
 };
 
+/** A piece of the immutable delta mailbox: this header, then len UTF-8 bytes. */
+struct job_delta {
+	uint32_t len;
+	uint32_t thought;
+};
+
 /** An upstream call, shared by its front and home (R4). */
 struct job {
 	struct msg             to_home;     /**< SUBMIT, CANCEL: the front posts it */
@@ -143,6 +154,8 @@ struct job {
 	                                         read by home until DONE */
 	struct buf             result;      /**< home's: written before DONE, read
 	                                         by the front until CANCEL */
+	struct buf             delta;       /**< home writes until JOB_DELTA; immutable
+	                                         until the front posts JOB_DRAIN or CANCEL */
 	/** Home writes these buffers before DONE, and the front reads them
 	 *  until CANCEL.  With JOB_TOOLS, buffer k contains call k of a
 	 *  streamed answer (struct job_call).  The calls are numbered in the
@@ -216,6 +229,8 @@ struct job {
 	uint16_t               http;        /**< home writes before DONE: the answer's
 	                                         HTTP status */
 	uint16_t               flags;       /**< home's: what it notes of the run */
+	bool                   delta_pending; /**< home only: mailbox awaits its front */
+	bool                   delta_ended; /**< home only: DONE waits for the mailbox */
 	uint8_t                status;      /**< home writes before DONE: enum
 	                                         job_status */
 	uint8_t                asks;        /**< the front's, before SUBMIT: enum
@@ -249,7 +264,7 @@ job_init (struct job  *job,
 	list_init(&job->held);
 	list_init(&job->idle);
 	list_init(&job->feed);
-	job->request = job->result = job->thought = job->replay = (struct buf){};
+	job->request = job->result = job->thought = job->replay = job->delta = (struct buf){};
 	for (size_t k = 0; k < JOB_CALLS; ++k)
 		job->calls[k] = (struct buf){};
 	job->key = job->wire = (struct buf){};
@@ -271,6 +286,7 @@ job_init (struct job  *job,
 	job->http = job->flags = 0;
 	job->status = job->asks = 0;
 	job->provider_done = false;
+	job->delta_pending = job->delta_ended = false;
 	job->reason[0] = '\0';
 	job->archive[0] = '\0';
 	atomic_init(&job->progress, 0);

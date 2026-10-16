@@ -22,6 +22,7 @@ import sys
 SRC = """
     all
     askai clean-askai purge-askai
+    askai-cli clean-askai-cli purge-askai-cli
     godbolt.so clean-godbolt.so purge-godbolt.so
     test_plugin.so clean-test_plugin.so purge-test_plugin.so
     twinception clean-twinception purge-twinception
@@ -31,7 +32,7 @@ SRC = """
 
 TESTS = """
     default
-    check check-askai check-buf check-completion check-datauri check-dstr
+    check check-askai check-buf check-chat check-completion check-datauri check-dstr
     check-handle check-instance check-ledger check-load check-turn
     check-twinception
     load load-build
@@ -39,7 +40,8 @@ TESTS = """
 
 # The expected targets by directory. The root makefile imports the targets of
 # the makefiles in src/ and in tests/, so the root must offer both lists.
-EXPECTED = {".": SRC + TESTS, "src": SRC, "tests": TESTS}
+EXPECTED = {".": SRC + TESTS + ["install-askai-cli", "uninstall-askai-cli"],
+            "src": SRC, "tests": TESTS}
 
 # Variables that a running make exports to its recipes. A shell does not have
 # them, so the check removes them before it runs make.

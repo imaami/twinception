@@ -3,11 +3,11 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-askai check-buf check-completion check-datauri \
+.PHONY: default check check-askai check-buf check-chat check-completion check-datauri \
         check-dstr check-handle check-instance check-ledger check-load \
         check-turn check-twinception load load-build
 default:; @:
-check: | check-completion check-twinception check-askai check-buf \
+check: | check-completion check-twinception check-askai check-chat check-buf \
          check-datauri check-handle check-turn check-instance check-ledger \
          check-dstr check-load
 
@@ -42,8 +42,8 @@ override TEST_FLAGS := -std=gnu23 -O2 -g -Wall -Wextra -Wpedantic -pthread
 # the rules in this makefile only. They are defined below the tab-completion
 # guard, so the root makefile does not import them and tab completion does
 # not offer them.
-.PHONY: askai godbolt.so test_plugin.so twinception
-askai godbolt.so test_plugin.so twinception:
+.PHONY: askai askai-cli godbolt.so test_plugin.so twinception
+askai askai-cli godbolt.so test_plugin.so twinception:
 	+$(MAKE) -C "$(TEST_DIR)../src" $@ O="$O"
 
 # Compares the targets that bash tab completion offers for make in the
@@ -58,6 +58,12 @@ check-twinception: | twinception
 # check_godbolt().
 check-askai: | askai test_plugin.so godbolt.so
 	$(PYTHON) $(TEST_DIR)askai.py $Oaskai $Otest_plugin.so $Ogodbolt.so
+
+# Direct Unix-socket chat and the standalone client's argument handling.
+check-chat: | askai-cli askai
+	$(PYTHON) $(TEST_DIR)chat-history.py $Oaskai
+	$(PYTHON) $(TEST_DIR)chat-stream.py $Oaskai
+	$(PYTHON) $(TEST_DIR)chat.py $Oaskai-cli $Oaskai
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf

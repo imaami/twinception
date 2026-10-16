@@ -67,3 +67,14 @@ $(if $(filter purge,$(TARGETS)), \
     ) \
   ) \
 )
+
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+INSTALL ?= install
+
+.PHONY: install-askai-cli uninstall-askai-cli
+install-askai-cli: | askai-cli
+	$(INSTALL) -D -m 755 "$Oaskai-cli" "$(DESTDIR)$(BINDIR)/askai-cli"
+
+uninstall-askai-cli:
+	$(RM) "$(DESTDIR)$(BINDIR)/askai-cli"

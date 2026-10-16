@@ -54,6 +54,49 @@ ai_generate_content (char const         *role,
 	            : jb_object("parts", parts, nullptr);
 }
 
+/* A visible chat message, in the upstream API's own format. */
+static struct json_object *
+ai_input (enum ai_api        api,
+          char const        *role,
+          struct json_object *text)
+{
+	if (api == AI_GENERATE)
+		return ai_generate_content(!strcmp(role, "assistant") ? "model" : role, text);
+	if (api != AI_INTERACTIONS)
+		return ai_message(role, text);
+	struct json_object *content = jb_object("type", json_object_new_string("text"),
+	                                        "text", json_object_get(text), nullptr);
+	return jb_object("type", json_object_new_string(!strcmp(role, "assistant")
+	                                               ? "model_output" : "user_input"),
+	                 "content", jb_list(content), nullptr);
+}
+
+/* Earlier user and assistant messages, then the new prompt. Only chat
+ * completions includes the system message in this array. The caller has
+ * validated the history's roles and plain text contents. */
+static struct json_object *
+ai_conversation (enum ai_api        api,
+                 struct json_object *system,
+                 struct json_object *history,
+                 struct json_object *prompt)
+{
+	struct json_object *messages = json_object_new_array();
+	if (!messages)
+		return nullptr;
+	int e = system ? jb_push(messages, ai_message("system", system)) : 0;
+	size_t n = history ? json_object_array_length(history) : 0;
+	for (size_t k = 0; !e && k < n; ++k) {
+		struct json_object *message = jb_at(history, k);
+		e = jb_push(messages, ai_input(api, jb_text(jb_get(message, "role")),
+		                              jb_get(message, "content")));
+	}
+	if (e || jb_push(messages, ai_input(api, "user", prompt))) {
+		json_object_put(messages);
+		return nullptr;
+	}
+	return messages;
+}
+
 /* A copy of @p val, which the configuration holds: every loop reads it, so no
  * request may take a reference, whose count is not atomic.  nullptr if out of
  * memory. */
@@ -125,13 +168,11 @@ ai_request_chat (struct ai_endpoint const *ep,
                  struct json_object       *root,
                  struct json_object       *system,
                  struct json_object       *prompt,
+                 struct json_object       *history,
                  struct json_object       *tools)
 {
-	struct json_object *messages = json_object_new_array();
 	if (ai_request_model(ep, root) ||
-	    jb_set(root, "messages", messages) ||
-	    (system && jb_push(messages, ai_message("system", system))) ||
-	    jb_push(messages, ai_message("user", prompt)) ||
+	    jb_set(root, "messages", ai_conversation(AI_CHAT, system, history, prompt)) ||
 	    (tools && (jb_set(root, "tools", json_object_get(tools)) ||
 	               jb_set(root, "stream_options", jb_object(
 	                      "include_usage", json_object_new_boolean(1),
@@ -147,10 +188,11 @@ ai_request_responses (struct ai_endpoint const *ep,
                       struct json_object       *root,
                       struct json_object       *system,
                       struct json_object       *prompt,
+                      struct json_object       *history,
                       struct json_object       *tools)
 {
 	if (ai_request_model(ep, root) ||
-	    jb_set(root, "input", jb_list(ai_message("user", prompt))) ||
+	    jb_set(root, "input", ai_conversation(AI_RESPONSES, nullptr, history, prompt)) ||
 	    (system && jb_set(root, "instructions", json_object_get(system))) ||
 	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
 	    jb_set(root, "store", json_object_new_boolean(0)) ||
@@ -166,11 +208,12 @@ ai_request_messages (struct ai_endpoint const *ep,
                      struct json_object       *root,
                      struct json_object       *system,
                      struct json_object       *prompt,
+                     struct json_object       *history,
                      struct json_object       *tools)
 {
 	long max_tokens = ep->max_tokens > 0 ? ep->max_tokens : MESSAGES_MAX_TOKENS;
 	if (ai_request_model(ep, root) ||
-	    jb_set(root, "messages", jb_list(ai_message("user", prompt))) ||
+	    jb_set(root, "messages", ai_conversation(AI_MESSAGES, nullptr, history, prompt)) ||
 	    (system && jb_set(root, "system", json_object_get(system))) ||
 	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
 	    ai_request_common(ep, root, nullptr, "max_tokens", max_tokens))
@@ -184,27 +227,16 @@ ai_request_generate (struct ai_endpoint const *ep,
                      struct json_object       *root,
                      struct json_object       *system,
                      struct json_object       *prompt,
+                     struct json_object       *history,
                      struct json_object       *tools)
 {
-	if (jb_set(root, "contents", jb_list(ai_generate_content("user", prompt))) ||
+	if (jb_set(root, "contents", ai_conversation(AI_GENERATE, nullptr, history, prompt)) ||
 	    (system && jb_set(root, "systemInstruction",
 	                      ai_generate_content(nullptr, system))) ||
 	    (tools && jb_set(root, "tools", json_object_get(tools))))
 		return ENOMEM;
 	return ai_request_common(ep, root, "generationConfig", "maxOutputTokens",
 	                         ep->max_tokens);
-}
-
-/* Return a user_input step of Gemini's Interactions with the text @p text.
- * The text is the last value of each object and array around it, so that
- * the body ends after the text with prompt_end and end (ai_format()). */
-static struct json_object *
-ai_interactions_input (struct json_object *text)
-{
-	struct json_object *content = jb_object("type", json_object_new_string("text"),
-	                                        "text", json_object_get(text), nullptr);
-	return jb_object("type", json_object_new_string("user_input"),
-	                 "content", jb_list(content), nullptr);
 }
 
 /* The request body of Gemini's Interactions. Native background execution
@@ -215,10 +247,11 @@ ai_request_interactions (struct ai_endpoint const *ep,
                          struct json_object       *root,
                          struct json_object       *system,
                          struct json_object       *prompt,
+                         struct json_object       *history,
                          struct json_object       *tools)
 {
 	if (ai_request_model(ep, root) ||
-	    jb_set(root, "input", jb_list(ai_interactions_input(prompt))) ||
+	    jb_set(root, "input", ai_conversation(AI_INTERACTIONS, nullptr, history, prompt)) ||
 	    (system && jb_set(root, "system_instruction", json_object_get(system))) ||
 	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
 	    jb_set(root, "store", json_object_new_boolean(ai_background(ep))) ||
@@ -247,6 +280,7 @@ struct json_object *
 ai_request (struct ai_endpoint const *ep,
             struct json_object       *system,
             struct json_object       *prompt,
+            struct json_object       *history,
             struct json_object       *tools)
 {
 	struct json_object *root = json_object_new_object();
@@ -255,19 +289,19 @@ ai_request (struct ai_endpoint const *ep,
 	int e = 0;
 	switch (ep->api) {
 	case AI_CHAT:
-		e = ai_request_chat(ep, root, system, prompt, tools);
+		e = ai_request_chat(ep, root, system, prompt, history, tools);
 		break;
 	case AI_RESPONSES:
-		e = ai_request_responses(ep, root, system, prompt, tools);
+		e = ai_request_responses(ep, root, system, prompt, history, tools);
 		break;
 	case AI_MESSAGES:
-		e = ai_request_messages(ep, root, system, prompt, tools);
+		e = ai_request_messages(ep, root, system, prompt, history, tools);
 		break;
 	case AI_GENERATE:
-		e = ai_request_generate(ep, root, system, prompt, tools);
+		e = ai_request_generate(ep, root, system, prompt, history, tools);
 		break;
 	case AI_INTERACTIONS:
-		e = ai_request_interactions(ep, root, system, prompt, tools);
+		e = ai_request_interactions(ep, root, system, prompt, history, tools);
 		break;
 	}
 	if (e || ai_request_last(root, ai_format(ep->api)->conversation)) {
@@ -652,7 +686,7 @@ ai_responses_event (struct ai_sink const *sink,
 	case REASONING:
 	case SUMMARY:
 		out->thought = ai_some_text(delta);
-		return 0;
+		return ai_put_text(sink->thought, sink->user, delta);
 	case ITEM:
 		return ai_responses_item(sink, jb_get(ev, "output_index"),
 		                         jb_get(ev, "item"));
@@ -766,7 +800,8 @@ ai_messages_delta (struct ai_sink const *sink,
 	case THINKING: {
 		struct json_object *text = jb_get(delta, "thinking");
 		out->thought = ai_some_text(text);
-		return open ? ai_replay_text(sink, text) : 0;
+		int e = ai_put_text(sink->thought, sink->user, text);
+		return e ? e : open ? ai_replay_text(sink, text) : 0;
 	}
 	case SIGNATURE: {
 		if (!open)
@@ -906,7 +941,8 @@ ai_generate_part (struct ai_sink const *sink,
 	struct json_object *signature = jb_get(part, "thoughtSignature");
 	if (json_object_get_boolean(jb_get(part, "thought"))) {
 		out->thought |= ai_some_text(text);
-		return signature ? ai_generate_whole(sink, reader, part) : 0;
+		int e = ai_put_text(sink->thought, sink->user, text);
+		return e ? e : signature ? ai_generate_whole(sink, reader, part) : 0;
 	}
 	int e = ai_put_text(sink->text, sink->user, text);
 	if (e)
@@ -1045,8 +1081,10 @@ ai_interactions_thought (struct ai_sink const *sink,
 	struct json_object *summary = jb_get(step, "summary");
 	struct json_object *item;
 	for (size_t i = 0; !e && (item = jb_at(summary, i)); ++i) {
-		out->thought |= ai_some_text(jb_get(item, "text"));
-		e = ai_interactions_summary(sink, reader, item);
+		struct json_object *text = jb_get(item, "text");
+		out->thought |= ai_some_text(text);
+		e = ai_put_text(sink->thought, sink->user, text);
+		e = e ? e : ai_interactions_summary(sink, reader, item);
 	}
 	return e;
 }
@@ -1128,8 +1166,10 @@ ai_interactions_delta (struct ai_sink const *sink,
 		return ai_interactions_text(sink, reader, at, jb_get(delta, "text"));
 	case SUMMARY: {
 		struct json_object *item = jb_get(delta, "content");
-		out->thought = ai_some_text(jb_get(item, "text"));
-		return thought ? ai_interactions_summary(sink, reader, item) : 0;
+		struct json_object *text = jb_get(item, "text");
+		out->thought = ai_some_text(text);
+		int e = ai_put_text(sink->thought, sink->user, text);
+		return e ? e : thought ? ai_interactions_summary(sink, reader, item) : 0;
 	}
 	case SIGNATURE:
 		return thought ? ai_interactions_sign(sink, reader, jb_get(delta, "signature"))

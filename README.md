@@ -11,10 +11,13 @@ no HTTP worker threads or polling loops.
 
 The same machinery also drives [`askai`](#askai-an-ask-an-ai-mcp-server), an MCP
 server that gives a model running in `llama-server` a tool for asking another AI.
+[`askai-cli`](doc/chat.md) is a standalone terminal chat client for that upstream
+model, connected to `askai` through a Unix socket.
 
 ## Dependencies
 
 - C23 compiler
+- C++17 compiler (for `askai-cli`)
 - libcurl
 - json-c
 - OpenSSL 3.5 or later (libssl, libcrypto), and its `openssl` command for the
@@ -24,12 +27,26 @@ server that gives a model running in `llama-server` a tool for asking another AI
 ## Build
 
 ```sh
-make            # builds twinception, askai and askai's test plugin
-make check      # end-to-end tests of both, the dstr trials and check-load
+make            # builds twinception, askai, askai-cli and askai's plugins
+make askai-cli  # only the terminal client; needs C++17, libcurl and json-c
+make check      # end-to-end tests, the dstr trials and check-load
+make check-chat # only the terminal client's checks
 make check-dstr # only the dstr trials
 make check-load # only askai's load verdict on a light mix (10-20 s)
 make load       # askai's load verdict on the storm (doc/core-measurements.md)
 ```
+
+To chat directly with the model configured in an existing AskAI configuration:
+
+```sh
+build/askai --config /path/to/askai.json --listen unix:/path/to/askai.sock
+build/askai-cli --socket /path/to/askai.sock
+```
+
+The client retains the llama.cpp terminal input interface and sends each turn
+to AskAI. Tools and notes run on the server. It has no local inference engine
+or model-file options. See [terminal chat](doc/chat.md) for commands, scripts,
+and installation.
 
 ## Ordinary whole-turn swapping
 
