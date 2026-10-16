@@ -22,12 +22,17 @@ PYTHON := python3
 ifeq (,$(filter-out default undefined,$(origin CC)))
 override CC := $(shell command -v clang > /dev/null 2>&1 && echo clang || echo cc)
 endif
+ifeq (,$(filter-out default undefined,$(origin CXX)))
+override CXX := $(shell command -v clang++ > /dev/null 2>&1 && echo clang++ || echo c++)
+endif
 
 # Command-line flags are appended, e.g. CFLAGS='-O1 -g -fsanitize=address'.
 # No `override` here, it clobbers command-line variables.
 CFLAGS   :=
+CXXFLAGS :=
 CPPFLAGS :=
 LDFLAGS  :=
+PKG_CONFIG := pkg-config
 
 override SRC_DIR    := $(realpath $(TEST_DIR)../src)/
 override TEST_FLAGS := -std=gnu23 -O2 -g -Wall -Wextra -Wpedantic -pthread
@@ -59,11 +64,27 @@ check-twinception: | twinception
 check-askai: | askai test_plugin.so godbolt.so
 	$(PYTHON) $(TEST_DIR)askai.py $Oaskai $Otest_plugin.so $Ogodbolt.so
 
-# Direct Unix-socket chat and the standalone client's argument handling.
-check-chat: | askai-cli askai
+# Terminal editing, direct Unix-socket chat, and the client's argument handling.
+check-chat: $Otests/chat-input | askai-cli askai
+	$(PYTHON) $(TEST_DIR)chat-input.py $Otests/chat-input
 	$(PYTHON) $(TEST_DIR)chat-history.py $Oaskai
 	$(PYTHON) $(TEST_DIR)chat-stream.py $Oaskai
 	$(PYTHON) $(TEST_DIR)chat.py $Oaskai-cli $Oaskai
+
+# Readline is tested without a server so terminal checks also run where Unix
+# sockets are prohibited. Keep its objects separate from the main build.
+override CHAT_FLAGS := -std=gnu++17 -O2 -g -Wall -Wextra -Wpedantic -I$(SRC_DIR)
+override CHAT_READLINE = $(shell $(PKG_CONFIG) --cflags readline)
+override CHAT_LIBS = $(shell $(PKG_CONFIG) --libs readline)
+
+$Otests/chat-input: $Otests/chat-input.cpp.o $Otests/src/chat-console.cpp.o
+	$(CXX) $(CHAT_FLAGS) $(CXXFLAGS) $(LDFLAGS) -o "$@" $^ $(CHAT_LIBS)
+
+$Otests/%.cpp.o: $(TEST_DIR)%.cpp | $Otests
+	$(CXX) $(CHAT_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CHAT_READLINE) -MMD -c -o "$@" "$<"
+
+$Otests/src/%.cpp.o: $(SRC_DIR)%.cpp | $Otests/src
+	$(CXX) $(CHAT_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CHAT_READLINE) -MMD -c -o "$@" "$<"
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf
@@ -153,7 +174,7 @@ load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
 -include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/datauri.c.d \
-         $Otests/src/log.c.d \
+         $Otests/src/log.c.d $Otests/chat-input.cpp.d $Otests/src/chat-console.cpp.d \
          $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif

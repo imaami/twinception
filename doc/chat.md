@@ -1,15 +1,17 @@
 # Terminal chat through AskAI
 
-`askai-cli` adapts llama.cpp's terminal input interface into a standalone chat
-client for AskAI. The configured upstream model answers directly, and AskAI
-executes its permitted tools and stores its notes and transcripts. The client
+`askai-cli` is a standalone chat client for AskAI, adapted from llama.cpp's
+terminal interface and using GNU Readline for input. The configured upstream
+model answers directly, and AskAI executes its permitted tools and stores
+its notes and transcripts. The client
 contains no model loader, tokenizer, sampler, local inference engine, or
 llama-server dependency.
 
 ## Build and install
 
 The client needs a C++17 compiler, libcurl with Unix-socket support, json-c,
-and their development packages. From the repository root:
+GNU Readline, and their development packages (`libreadline-dev` on Debian
+and Ubuntu). From the repository root:
 
 ```sh
 make askai-cli
@@ -25,8 +27,8 @@ other programs. The targeted installer defaults to `/usr/local/bin`, accepts
 make uninstall-askai-cli PREFIX="$HOME/.local"
 ```
 
-The client links libcurl, json-c, and the C++ runtime. It does not link
-libllama, ggml, or any inference backend.
+The client links libcurl, json-c, GNU Readline, and the C++ runtime. It does
+not link libllama, ggml, or any inference backend.
 
 ## Connect
 
@@ -81,9 +83,40 @@ transcripts use the server's configured repositories and participant.
 | `/help` | Show commands. |
 | `/exit` | Leave the client. |
 
-The terminal editor supports arrow-key history, Home/End, word navigation
-with Ctrl-left/right, Backspace/Delete, and Tab completion for commands and
-file paths. A trailing `\` continues the prompt on another line. With
+The terminal editor uses GNU Readline and its normal Emacs key bindings by
+default:
+
+| Key | Effect |
+| --- | --- |
+| Up / Down | Browse input history. |
+| PgUp / PgDn | Recall earlier/later history matching the text before the cursor. |
+| Ctrl-R | Search history backward as you type; repeat to find older matches. |
+| Home / End, Ctrl-A / Ctrl-E | Move to the beginning/end of the line. |
+| Ctrl-left / Ctrl-right, Alt-B / Alt-F | Move by words. |
+| Ctrl-U / Ctrl-K | Cut to the beginning/end of the line. |
+| Ctrl-W / Alt-D | Cut the preceding/following word. |
+| Ctrl-Y | Paste the last cut text. |
+| Alt-. | Insert the last argument from the previous history entry. |
+| Tab | Complete commands and file paths. |
+
+For example, type `Explain` and press PgUp to recall earlier prompts with
+that prefix, skipping unrelated entries. Input history is kept in memory
+for the current client process and is separate from the conversation sent
+to the model; `/clear` clears the conversation, not Readline history. A
+multiline prompt is recalled as one entry. History holds up to 256 entries
+and 1 MiB of text; the client does not read or write a history file.
+
+Readline honors `~/.inputrc` or the file named by `INPUTRC`, including
+`set editing-mode vi`. Use an application-specific block to customize only
+this client:
+
+```text
+$if askai-cli
+set editing-mode vi
+$endif
+```
+
+A trailing `\` continues the prompt on another line. With
 `--multiline-input`, Enter continues the prompt and a trailing `\` submits
 it instead. A trailing `/` submits in either mode. Ctrl-D ends input.
 
@@ -133,9 +166,10 @@ With `auto`, colors are enabled only on a terminal.
 
 ## Checks and source attribution
 
-`make check-chat` checks argument handling and Unix-socket integration against
-a mock upstream, without downloading a model. Environments that prohibit
-Unix sockets explicitly skip the socket-dependent checks.
+`make check-chat` checks terminal input in a pseudo-terminal, argument
+handling, and Unix-socket integration against a mock upstream, without
+downloading a model. Environments that prohibit Unix sockets explicitly
+skip the socket-dependent checks.
 
 The terminal console is derived from llama.cpp's MIT-licensed
 `common/console.cpp` and `tools/cli/cli-ui.h` at commit

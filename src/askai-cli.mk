@@ -4,4 +4,5 @@ override SRC_askai-cli := \
 
 override LIB_askai-cli := \
   json-c                  \
-  libcurl
+  libcurl                 \
+  readline

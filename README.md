@@ -20,6 +20,7 @@ model, connected to `askai` through a Unix socket.
 - C++17 compiler (for `askai-cli`)
 - libcurl
 - json-c
+- GNU Readline (for `askai-cli`)
 - OpenSSL 3.5 or later (libssl, libcrypto), and its `openssl` command for the
   tests' certificates
 - Linux epoll + timerfd
@@ -28,7 +29,7 @@ model, connected to `askai` through a Unix socket.
 
 ```sh
 make            # builds twinception, askai, askai-cli and askai's plugins
-make askai-cli  # only the terminal client; needs C++17, libcurl and json-c
+make askai-cli  # only the client; needs C++17, libcurl, json-c and Readline
 make check      # end-to-end tests, the dstr trials and check-load
 make check-chat # only the terminal client's checks
 make check-dstr # only the dstr trials
@@ -43,10 +44,11 @@ build/askai --config /path/to/askai.json --listen unix:/path/to/askai.sock
 build/askai-cli --socket /path/to/askai.sock
 ```
 
-The client retains the llama.cpp terminal input interface and sends each turn
-to AskAI. Tools and notes run on the server. It has no local inference engine
-or model-file options. See [terminal chat](doc/chat.md) for commands, scripts,
-and installation.
+The client uses GNU Readline for terminal input, with searchable history,
+PgUp/PgDn prefix matching, and command and file completion. It sends each turn
+to AskAI, where tools and notes run. It has no local inference engine or
+model-file options. See [terminal chat](doc/chat.md) for keys, commands,
+scripts, and installation.
 
 ## Ordinary whole-turn swapping
 

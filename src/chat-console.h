@@ -22,9 +22,9 @@ enum display_type {
 	DISPLAY_TYPE_ERROR,
 };
 
-/** Owns the process terminal mode; create one instance in the client thread. */
+/** Owns Readline and terminal state; wake_fd is an optional nonblocking signal pipe. */
 struct terminal {
-	terminal(bool simple_io, bool color, volatile sig_atomic_t *interrupted, int &error);
+	terminal(bool simple_io, bool color, volatile sig_atomic_t *interrupted, int &error, int wake_fd = -1);
 	~terminal();
 	terminal(const terminal &) = delete;
 	terminal &operator=(const terminal &) = delete;

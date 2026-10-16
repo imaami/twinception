@@ -36,7 +36,8 @@ volatile sig_atomic_t chat_signal_write = -1;
 void chat_on_signal(int signum)
 {
 	int saved = errno;
-	chat_signal = signum;
+	if (signum != SIGWINCH)
+		chat_signal = signum;
 	if (chat_signal_write >= 0) {
 		unsigned char byte = static_cast<unsigned char>(signum);
 		(void)write(chat_signal_write, &byte, 1);
@@ -46,7 +47,7 @@ void chat_on_signal(int signum)
 
 struct chat_signals {
 	int pipe[2] = {-1, -1};
-	struct sigaction old_int{}, old_term{}, old_pipe{};
+	struct sigaction old_int{}, old_term{}, old_pipe{}, old_winch{};
 	unsigned installed = 0;
 
 	chat_signals()
@@ -64,10 +65,13 @@ struct chat_signals {
 			if (sigaction(SIGTERM, &action, &old_term))
 				throw std::runtime_error("Cannot install SIGTERM handler");
 			installed = 2;
+			if (sigaction(SIGWINCH, &action, &old_winch))
+				throw std::runtime_error("Cannot install SIGWINCH handler");
+			installed = 3;
 			action.sa_handler = SIG_IGN;
 			if (sigaction(SIGPIPE, &action, &old_pipe))
 				throw std::runtime_error("Cannot ignore SIGPIPE");
-			installed = 3;
+			installed = 4;
 		} catch (...) {
 			close();
 			throw;
@@ -82,6 +86,8 @@ struct chat_signals {
 		if (installed >= 2)
 			(void)sigaction(SIGTERM, &old_term, nullptr);
 		if (installed >= 3)
+			(void)sigaction(SIGWINCH, &old_winch, nullptr);
+		if (installed >= 4)
 			(void)sigaction(SIGPIPE, &old_pipe, nullptr);
 		for (int &fd : pipe) {
 			if (fd >= 0)
@@ -551,6 +557,7 @@ void chat_help()
 	          "  --no-reasoning            Hide exposed reasoning\n"
 	          "  -h, --help               Show this help\n\n"
 	          "Commands: /help, /clear, /regen, /read FILE, /exit\n"
+	          "Readline: PgUp/PgDn search history by prefix; Ctrl-R searches history.\n"
 	          "End a line with \\ to continue it. Ctrl-C cancels the current answer;\n"
 	          "while entering a prompt it exits. Ctrl-D exits. Tools run in AskAI.");
 }
@@ -715,7 +722,8 @@ int chat_run(const chat_options &options)
 	bool tty = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 	bool color = options.color == "on" || (options.color == "auto" && tty && !std::getenv("NO_COLOR"));
 	int error = 0;
-	chat_console::terminal terminal(options.simple || !tty, color, &chat_signal, error);
+	chat_console::terminal terminal(options.simple || !tty, color, &chat_signal, error,
+	                                signals.pipe[0]);
 	if (error)
 		throw std::runtime_error(std::strerror(error));
 	chat_ui::install_completion({"/help", "/clear", "/regen", "/read ", "/exit"}, {"/read "});
@@ -746,6 +754,7 @@ int chat_run(const chat_options &options)
 			if (command == "/help") {
 				chat_ui::show_message("/clear starts a new conversation; /regen retries the last turn;\n"
 				                      "/read FILE sends a text file; /exit leaves the chat.\n"
+				                      "PgUp/PgDn search earlier prompts by prefix; Ctrl-R searches history.\n"
 				                      "End a line with \\ to continue it, or / to submit multiline input.\n"
 				                      "Ctrl-C cancels an answer. Tools and notes are handled by AskAI.");
 				continue;

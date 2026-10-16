@@ -29,8 +29,8 @@ inline void install_completion(const std::vector<std::string> &commands,
 			return matches;
 		}
 		for (const auto &command : commands) {
-			if (!line.empty() && starts_with(command, line)) {
-				matches.emplace_back(command, command.size());
+			if (cursor && starts_with(command, line.substr(0, cursor))) {
+				matches.emplace_back(command + std::string(line.substr(cursor)), command.size());
 			}
 		}
 		if (!matches.empty()) {
@@ -66,7 +66,7 @@ inline void install_completion(const std::vector<std::string> &commands,
 			std::filesystem::directory_iterator end;
 			for (std::filesystem::directory_iterator it(directory, error); !error && it != end; it.increment(error)) {
 				std::string name = it->path().filename().string();
-				if (!starts_with(name, basename) || name.find_first_of("\n\r\t\033") != std::string::npos) {
+				if (!starts_with(name, basename) || std::any_of(name.begin(), name.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; })) {
 					continue;
 				}
 				if (it->is_directory(error)) {
@@ -82,25 +82,7 @@ inline void install_completion(const std::vector<std::string> &commands,
 				}
 			}
 			std::sort(matches.begin(), matches.end());
-			if (matches.size() > 1) {
-				size_t common = matches.front().second;
-				for (size_t i = 1; i < matches.size(); ++i) {
-					common = std::min(common, matches[i].second);
-					size_t j = 0;
-					while (j < common && matches[0].first[j] == matches[i].first[j]) {
-						++j;
-					}
-					common = j;
-				}
-				while (common > command.size() && common < matches[0].second &&
-				       (static_cast<unsigned char>(matches[0].first[common]) & 0xc0) == 0x80) {
-					--common;
-				}
-				if (common > cursor) {
-					std::string updated = matches[0].first.substr(0, common);
-					matches.insert(matches.begin(), {updated + suffix, common});
-				}
-			}
+
 			return matches;
 		}
 		return matches;
