@@ -5,6 +5,7 @@
 #pragma once
 
 #include <csignal>
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -24,7 +25,7 @@ enum display_type {
 
 /** Owns Readline and terminal state; wake_fd is an optional nonblocking signal pipe. */
 struct terminal {
-	terminal(bool simple_io, bool color, volatile sig_atomic_t *interrupted, int &error, int wake_fd = -1);
+	terminal(bool simple_io, bool color, volatile std::sig_atomic_t *interrupted, int &error, int wake_fd = -1);
 	~terminal();
 	terminal(const terminal &) = delete;
 	terminal &operator=(const terminal &) = delete;
@@ -38,9 +39,9 @@ private:
  * callback owns the memory and keeps it valid until its next invocation. */
 struct completion_matches {
 	const autocomplete_match *data = nullptr;
-	size_t size = 0;
+	std::size_t size = 0;
 };
-using completion_callback = std::function<completion_matches(std::string_view, size_t)>;
+using completion_callback = std::function<completion_matches(std::string_view, std::size_t)>;
 void set_completion_callback(completion_callback callback);
 
 /** Returns 0, EINTR, or an input error. EOF is reported separately from an empty line. */

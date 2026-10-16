@@ -2,6 +2,14 @@
 #ifndef TWINCEPTION_SRC_AUTOCOMPLETE_FILE_H_
 #define TWINCEPTION_SRC_AUTOCOMPLETE_FILE_H_
 
+#ifdef __cplusplus
+# include <cstddef>
+# define AUTOCOMPLETE_FILE_STD std::
+#else
+# include <stddef.h>
+# define AUTOCOMPLETE_FILE_STD
+#endif
+
 #include "autocomplete.h"
 
 #ifdef __cplusplus
@@ -24,14 +32,16 @@ autocomplete_file_destroy (struct autocomplete_file **p_file);
 extern int
 autocomplete_file_complete (struct autocomplete_file        *file,
                             struct autocomplete_text         line,
-                            size_t                           cursor,
+                            AUTOCOMPLETE_FILE_STD size_t      cursor,
                             struct autocomplete_text const  *commands,
-                            size_t                           command_count,
+                            AUTOCOMPLETE_FILE_STD size_t      command_count,
                             struct autocomplete_match const **matches,
-                            size_t                           *count);
+                            AUTOCOMPLETE_FILE_STD size_t      *count);
 
 #ifdef __cplusplus
 }
 #endif
+
+#undef AUTOCOMPLETE_FILE_STD
 
 #endif /* TWINCEPTION_SRC_AUTOCOMPLETE_FILE_H_ */
