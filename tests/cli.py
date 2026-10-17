@@ -405,6 +405,8 @@ def check_peer_errors(cli, unused_server):
         (200, "application/json", {"error": {"code": -32603, "message": "test RPC failure"}}, "test RPC failure"),
         (200, "application/json", {"result": {"isError": True, "content": [
             {"type": "text", "text": "test tool failure"}]}}, "test tool failure"),
+        (200, "application/json", {"result": {"content": [
+            {"type": "text\u0000suffix", "text": "must not be accepted"}]}}, "unsupported"),
         (401, "application/json", b'{"error":"denied"}', "401"),
         (200, "text/event-stream", sse_wire([(None, {
             "jsonrpc": "2.0", "method": "notifications/askai/delta",
@@ -419,6 +421,16 @@ def check_peer_errors(cli, unused_server):
             if message:
                 assert message in result.stderr, (message, result)
     print("cli errors: malformed JSON/SSE, wrong IDs, RPC/tool failures, HTTP denial: PASS")
+
+    def wrong_version(request):
+        if request.get("method") == "initialize":
+            return 200, "application/json", {"result": {"protocolVersion": "2025-11-25\u0000suffix"}}
+
+    with Peer(lambda request: (200, "application/json", {"result": {}}), wrong_version) as peer:
+        result = run(cli, peer.socket, "--single-turn", "--prompt", "Q")
+        assert result.returncode != 0 and "negotiate" in result.stderr, result
+        assert len(peer.requests) == 1, peer.requests
+    print("cli protocol strings: embedded NUL cannot hide a version or content-type suffix: PASS")
 
 
 def check_peer_stream(cli, unused_server):

@@ -98,8 +98,12 @@ class Console:
         assert condition(), (self.process.poll(), self.pending, self.output)
 
     def prompt(self):
-        self.until(lambda: b"test> " in self.output)
-        self.output = self.output.split(b"test> ", 1)[1]
+        # Completion listings also redraw "test> ". Only a newly installed
+        # callback enables bracketed paste; wait for that boundary before
+        # sending keys, especially Ctrl-D while the terminal is canonical.
+        marker = b"\x1b[?2004htest> "
+        self.until(lambda: marker in self.output)
+        self.output = self.output.split(marker, 1)[1]
 
     def send(self, data):
         if isinstance(data, str):

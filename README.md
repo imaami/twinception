@@ -14,10 +14,12 @@ server that gives a model running in `llama-server` a tool for asking another AI
 [`askai-cli`](doc/cli.md) is a standalone terminal chat client for that upstream
 model, connected to `askai` through a Unix socket.
 
+The [session architecture memo](doc/session-architecture.md) records the
+direction for shared notes, stable participants, and multiple execution routes.
+
 ## Dependencies
 
 - C23 compiler
-- C++17 compiler (for `askai-cli`)
 - libcurl
 - json-c
 - GNU Readline (for `askai-cli`)
@@ -29,7 +31,7 @@ model, connected to `askai` through a Unix socket.
 
 ```sh
 make            # builds twinception, askai, askai-cli and askai's plugins
-make askai-cli  # only the client; needs C23, C++17, libcurl, json-c and Readline
+make askai-cli  # only the client; needs C23, libcurl, json-c and Readline
 make check      # end-to-end tests, the dstr trials and check-load
 make check-cli # only the terminal client's checks
 make check-dstr # only the dstr trials
