@@ -11,12 +11,18 @@ no HTTP worker threads or polling loops.
 
 The same machinery also drives [`askai`](#askai-an-ask-an-ai-mcp-server), an MCP
 server that gives a model running in `llama-server` a tool for asking another AI.
+[`askai-cli`](doc/cli.md) is a standalone terminal chat client for that upstream
+model, connected to `askai` through a Unix socket.
+
+The [session architecture memo](doc/session-architecture.md) records the
+direction for shared notes, stable participants, and multiple execution routes.
 
 ## Dependencies
 
 - C23 compiler
 - libcurl
 - json-c
+- GNU Readline (for `askai-cli`)
 - OpenSSL 3.5 or later (libssl, libcrypto), and its `openssl` command for the
   tests' certificates
 - Linux epoll + timerfd
@@ -24,12 +30,29 @@ server that gives a model running in `llama-server` a tool for asking another AI
 ## Build
 
 ```sh
-make            # builds twinception, askai and askai's test plugin
-make check      # end-to-end tests of both, the dstr trials and check-load
+make            # builds twinception, askai, askai-cli and askai's plugins
+make askai-cli  # only the client; needs C23, libcurl, json-c and Readline
+make check      # end-to-end tests, the dstr trials and check-load
+make check-cli # only the terminal client's checks
 make check-dstr # only the dstr trials
 make check-load # only askai's load verdict on a light mix (10-20 s)
 make load       # askai's load verdict on the storm (doc/core-measurements.md)
 ```
+
+To chat directly with the model configured in an existing AskAI configuration:
+
+```sh
+build/askai --config /path/to/askai.json --listen unix:/path/to/askai.sock
+build/askai-cli --socket /path/to/askai.sock
+```
+
+The client uses GNU Readline for terminal input, with searchable history,
+PgUp/PgDn prefix matching, and completion of commands, file paths, exposed
+tools, tool parameters and known session participants. `/tools` lists the
+client's permitted tools; `/tool NAME key=VALUE ...` calls one directly.
+Tool activity appears as IRC-style action lines. It sends each chat turn
+to AskAI, where tools and notes run, and contains no local inference engine.
+See [terminal chat](doc/cli.md) for keys, discovery, commands and scripts.
 
 ## Ordinary whole-turn swapping
 
@@ -376,7 +399,7 @@ completions, which `-p openai` uses only with `--api chat`:
 `--background`, or `"background": true` in the configuration file's
 `upstream` object, makes an ordinary ask call return a job ID and
 instructions to check back without waiting for generation.  Its admission
-record reaches the synced journal and a Git commit before that reply.  It
+record reaches a synced private recovery checkpoint before that reply.  It
 is off by default.  For example:
 
 ```sh
@@ -416,8 +439,8 @@ per owner and results retained for up to an hour, subject to the memory
 and record limits.  Background mode also enables automatic transcript
 storage, described below.  After a restart, poll the same job ID using the
 same participant, transcript repository and caller identity.  AskAI loads
-the saved state on that check; completed results remain recoverable after
-the live ledger has forgotten them.
+the saved state on that check; retained completed checkpoints remain
+recoverable after the live ledger has forgotten them.
 
 For OpenAI Responses and Gemini Interactions, AskAI sends both
 `"background": true` and `"stream": true`.  Native Gemini background
@@ -446,23 +469,24 @@ stream alone does not cancel the provider's work.  Shutdown preserves
 durable background work for recovery instead of cancelling it upstream.
 An explicit `action: "cancel"` still cancels it.
 
-On recovery, AskAI reconstructs the current turn from the saved stream,
-then resumes OpenAI Responses using `starting_after`, Gemini Interactions
-using `last_event_id`, or llama-server's `/v1/stream` using `conv_id` and
-`from`.  It does not repeat the original generation POST.  A provider must
-still retain the response and its replay data.  Missing or expired provider
+On recovery, AskAI requests the original provider job's stream from its
+beginning and reconstructs the current turn in memory. OpenAI Responses
+and Gemini Interactions are retrieved without a continuation cursor;
+llama-server's `/v1/stream` uses the saved `conv_id` and `from=0`. It does
+not repeat the original generation POST. A provider must still retain the
+entire current turn's replay data. Missing or expired provider
 state is reported as an error.  Other Chat Completions servers remain
 asynchronous while AskAI runs, but cannot resume after a restart without a
 server replay API.  An interrupted resumable connection suspends the job.
-The next check of the same job ID replays its saved data and resumes it,
+The next check of the same job ID retrieves and replays that provider job,
 with the original deadline.  There is no autonomous network retry loop.
 
 llama-server's replay buffer is in memory and bounded.  Restarting
 llama-server, waiting beyond its retention period, or falling behind its
 buffer can make reconnection impossible.  Its current implementation can
 also cancel a request disconnected before its first result.  Durable
-transcripts preserve what AskAI received, but cannot restore data that the
-provider no longer has.
+reasoning files preserve received thought text, but cannot reconstruct
+missing answer or tool-call events that the provider no longer retains.
 
 Recovered tool turns reuse saved tool results.  AskAI records tool intent
 before executing it and records its result afterwards.  If a crash leaves
@@ -485,28 +509,53 @@ participant.  Use the same participant after restarting; distinct
 participants may share a transcript repository, but two live instances
 cannot both write as the same participant there.
 
-The branch `transcripts/PARTICIPANT` contains immutable records under
-`records/` and the latest record of each kind under `jobs/JOB_ID/`.
-Records include the request, raw provider response data, exposed reasoning,
-provider identifiers and resume cursors, tool activity and final results.
-The notes tool does not read this repository.  Authentication headers are
-not transcript records.
+Only decoded, concatenated reasoning text enters the branch
+`reasoning/PARTICIPANT`. No raw provider JSON, SSE envelopes, client
+notifications, prompts, answers or tool results are added to Git.
+Reasoning capture is independent of whether the client requests or displays
+thought deltas, and also handles complete, non-streaming provider responses.
 
-The writer appends checksummed records to a local journal, syncs it, and
-commits available records to Git in batches.  It runs separately from the
-event loops.  A full writer queue applies backpressure; a storage failure
-fails the affected work instead of silently discarding its transcript.
-Acknowledged records have reached both the synced journal and Git.
-Startup imports complete journal records that were not yet committed and
-discards only an incomplete final record.  Corruption in a complete record
-stops startup.  Git commits can contain several deltas; there is no
-separate commit for every token.
+The writer appends each thought piece to a private plaintext file under
+`askai-journal/PARTICIPANT/reasoning/JOB_ID/TURN.txt`. It preserves the exact
+decoded bytes, without adding separators between chunks. When the provider
+closes a reasoning block, reasoning gives way to answer text or a tool call,
+or the provider turn ends, the writer synchronizes the file and commits it.
+Another reasoning block in the same turn appends to that file; an unchanged
+file needs no new commit.
+All filesystem and Git operations run on the writer thread, off event loops.
 
-Automatic recovery also uses the repository's private
-`askai-journal/` state, including its journal and owner seed.  Preserve the
-whole repository directory when moving or backing up a live session.  A
-Git-only clone preserves browsable transcripts but does not currently
-support automatic job recovery.
+Unfinished files remain on disk through cancellation, failure and process
+restart. Their writes have reached the operating system before the append
+callback, but are not synced or committed per token; a power failure can
+lose an unsynced tail. During provider replay, the writer compares bytes
+against the existing prefix and appends only new bytes. A mismatch fails
+that recovery and preserves the original file. A full writer queue applies
+backpressure; storage errors are reported instead of silently losing text.
+
+Job recovery uses separate, private checkpoints under
+`askai-journal/PARTICIPANT/jobs/`, outside Git. They retain current request
+state, provider identifiers, tool intents/results and terminal status;
+superseded turn state and metadata are replaced. Checkpoints are bounded
+to 64 MiB per job, 256 MiB per participant and 1024 jobs, with space reserved
+for one additional terminal record of up to 16 MiB plus its header. Atomic
+replacement can temporarily use another 64 MiB. When space is needed, the oldest
+completed checkpoints may be removed; unfinished jobs and checkpoints
+migrated from the legacy journal are not evicted. These bounds do not prune
+saved reasoning text or Git history. The notes tool exposes neither archive
+nor checkpoints.
+
+Preserve the whole repository directory, including the private files and
+owner seed, when moving or backing up a live session. A Git-only clone
+preserves committed reasoning but cannot recover jobs or unfinished files.
+
+Existing `transcripts/PARTICIPANT` branches and legacy journals are left
+untouched. They are no longer extended or imported into Git at startup;
+legacy job recovery can still read the old journal. The new branch starts
+with a clean tree so it does not copy the old event directory into every
+commit. This change stops new event-history growth but does not reclaim
+existing disk usage. Ordinary `git gc` cannot remove history still reachable
+from the old branches. Archive or remove that history separately after
+preserving whatever it contains that you need.
 
 ### Connecting llama-server
 
@@ -1726,8 +1775,8 @@ Session (top-level configuration members):
       --participant NAME    stable writer identity, 1 to 64 characters
                             from [A-Za-z0-9_-]; default: tool-name.  Use
                             distinct names for collaborating instances
-      --transcripts PATH    separate git repository for requests, raw
-                            streams, reasoning and tool results; default:
+      --transcripts PATH    separate git repository for reasoning text,
+                            with private job recovery state; default:
                             <notes>.transcripts.git with --notes, else
                             $XDG_STATE_HOME/askai/NAME/transcripts.git
                             with --background, using $HOME/.local/state

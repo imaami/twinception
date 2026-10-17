@@ -22,6 +22,7 @@ import sys
 SRC = """
     all
     askai clean-askai purge-askai
+    askai-cli clean-askai-cli purge-askai-cli
     godbolt.so clean-godbolt.so purge-godbolt.so
     test_plugin.so clean-test_plugin.so purge-test_plugin.so
     twinception clean-twinception purge-twinception
@@ -31,7 +32,7 @@ SRC = """
 
 TESTS = """
     default
-    check check-askai check-buf check-completion check-datauri check-dstr
+    check check-askai check-buf check-cli check-completion check-datauri check-dstr
     check-handle check-instance check-ledger check-load check-turn
     check-twinception
     load load-build

@@ -163,11 +163,10 @@ endif
 $(TGT:%=$O%) $(A_OBJ) $(O_OBJ) $(JSON) $Ocompile_commands.json: | $O
 
 ifneq (,$(O_TGT))
-$(O_TGT:%=$O%):
-	+$(strip $(CC) -o "$@" -MMD $(CFLAGS)         \
-	               -ffile-prefix-map=$(SRCDIR)='' \
-	               $^ $(LDFLAGS) $(LDFLAGS_$(@F)) \
-	               $(LDLIBS) $(LDLIBS_$(@F)))
+$(O_TGT:%=$O%):; +$(strip $(CC) -o "$@" -MMD $(CFLAGS) \
+                         -ffile-prefix-map=$(SRCDIR)='' \
+                         $^ $(LDFLAGS) $(LDFLAGS_$(@F)) \
+                         $(LDLIBS) $(LDLIBS_$(@F)))
 endif
 
 ifneq (,$(SO_TGT))

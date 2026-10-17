@@ -3,11 +3,11 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-askai check-buf check-completion check-datauri \
+.PHONY: default check check-askai check-buf check-cli check-completion check-datauri \
         check-dstr check-handle check-instance check-ledger check-load \
         check-turn check-twinception load load-build
 default:; @:
-check: | check-completion check-twinception check-askai check-buf \
+check: | check-completion check-twinception check-askai check-cli check-buf \
          check-datauri check-handle check-turn check-instance check-ledger \
          check-dstr check-load
 
@@ -28,6 +28,7 @@ endif
 CFLAGS   :=
 CPPFLAGS :=
 LDFLAGS  :=
+PKG_CONFIG := pkg-config
 
 override SRC_DIR    := $(realpath $(TEST_DIR)../src)/
 override TEST_FLAGS := -std=gnu23 -O2 -g -Wall -Wextra -Wpedantic -pthread
@@ -42,8 +43,8 @@ override TEST_FLAGS := -std=gnu23 -O2 -g -Wall -Wextra -Wpedantic -pthread
 # the rules in this makefile only. They are defined below the tab-completion
 # guard, so the root makefile does not import them and tab completion does
 # not offer them.
-.PHONY: askai godbolt.so test_plugin.so twinception
-askai godbolt.so test_plugin.so twinception:
+.PHONY: askai askai-cli godbolt.so test_plugin.so twinception
+askai askai-cli godbolt.so test_plugin.so twinception:
 	+$(MAKE) -C "$(TEST_DIR)../src" $@ O="$O"
 
 # Compares the targets that bash tab completion offers for make in the
@@ -58,6 +59,56 @@ check-twinception: | twinception
 # check_godbolt().
 check-askai: | askai test_plugin.so godbolt.so
 	$(PYTHON) $(TEST_DIR)askai.py $Oaskai $Otest_plugin.so $Ogodbolt.so
+
+# Terminal editing, the Unix-socket CLI, and its argument handling.
+check-cli: $Otests/cli-input $Otests/cli-state $Otests/cli-ui $Otests/autocomplete | askai-cli askai
+	$Otests/autocomplete
+	$Otests/cli-ui
+	@directory=$$(mktemp -d) || exit 1; \
+	trap 'rm -rf "$$directory"' EXIT; \
+	"$Otests/cli-state" "$$directory/history"
+	$(PYTHON) $(TEST_DIR)cli-input.py $Otests/cli-input
+	$(PYTHON) $(TEST_DIR)chat-history.py $Oaskai
+	$(PYTHON) $(TEST_DIR)chat-stream.py $Oaskai
+	$(PYTHON) $(TEST_DIR)cli.py $Oaskai-cli $Oaskai
+
+# Readline and the completion catalog are tested without a server so these
+# checks also run where Unix sockets are prohibited. Keep their objects separate.
+# Query each set of flags once, only when a recipe needs it, and fail there.
+# Expand the shell call after eval parses the assignment, so its output is
+# never parsed as makefile text or expanded again for dollar references.
+override test-pkg-config = $(eval override $1 := $$(shell $$(PKG_CONFIG) $2))\
+                          $(if $(filter-out 0,$(.SHELLSTATUS)),$(error $(PKG_CONFIG) $2 failed for $@))$($1)
+override CLI_INCLUDES = $(call test-pkg-config,CLI_INCLUDES,--cflags readline)
+override CLI_LIBS = $(call test-pkg-config,CLI_LIBS,--libs readline)
+override JSON_INCLUDES = $(call test-pkg-config,JSON_INCLUDES,--cflags json-c)
+override JSON_LIBS = $(call test-pkg-config,JSON_LIBS,--libs json-c)
+override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete-fixture.c.o \
+                                 $Otests/src/autocomplete.c.o $Otests/src/dstr.c.o $Otests/src/jb.c.o
+override AUTOCOMPLETE_WRAPS := -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
+
+override CLI_CONSOLE_OBJECTS := $Otests/src/cli-console.c.o $Otests/src/buf.c.o
+
+$Otests/cli-input: $Otests/cli-input.c.o $(CLI_CONSOLE_OBJECTS) \
+                   $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
+$Otests/cli-input:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) -lm
+
+$Otests/cli-ui: $Otests/cli-ui.c.o $Otests/src/cli-ui.c.o $(CLI_CONSOLE_OBJECTS) \
+                $Otests/src/dstr.c.o $Otests/src/jb.c.o
+$Otests/cli-ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS)
+
+$Otests/cli-state: $Otests/cli-state.c.o $Otests/src/cli-state.c.o \
+                   $Otests/src/dstr.c.o $Otests/src/jb.c.o
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
+
+$Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) $(AUTOCOMPLETE_WRAPS) -o "$@" $^ $(JSON_LIBS) -lm
+
+$Otests/autocomplete.c.o $Otests/autocomplete-fixture.c.o \
+$Otests/src/autocomplete.c.o $Otests/src/autocomplete-file.c.o \
+$Otests/src/cli-state.c.o $Otests/src/cli-console.c.o $Otests/src/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
+
+$Otests/src/cli-console.c.o: CPPFLAGS += $(CLI_INCLUDES)
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf
@@ -147,7 +198,11 @@ load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
 -include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/datauri.c.d \
-         $Otests/src/log.c.d \
+         $Otests/src/log.c.d $Otests/cli-input.c.d $Otests/cli-ui.c.d $Otests/autocomplete.c.d \
+         $Otests/cli-state.c.d $Otests/src/cli-state.c.d \
+         $Otests/autocomplete-fixture.c.d $Otests/src/cli-console.c.d \
+         $Otests/src/autocomplete.c.d $Otests/src/autocomplete-file.c.d $Otests/src/dstr.c.d \
+         $Otests/src/cli-ui.c.d $Otests/src/jb.c.d \
          $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif
