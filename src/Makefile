@@ -12,7 +12,7 @@ $(foreach x,$(basename $(notdir $(THESE_MK))), \
   $(eval override CXXFLAGS_$x :=)              \
   $(eval override LDFLAGS_$x :=)               )
 
-override BIN := $(basename $(filter-out %.c.mk %.cpp.mk,$(notdir $(THESE_MK))))
+override BIN := $(basename $(filter-out %.c.mk,$(notdir $(THESE_MK))))
 
 include $(THESE_MK)
 include $(THIS_DIR)../mk/common.mk

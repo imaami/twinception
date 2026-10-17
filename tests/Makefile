@@ -22,14 +22,10 @@ PYTHON := python3
 ifeq (,$(filter-out default undefined,$(origin CC)))
 override CC := $(shell command -v clang > /dev/null 2>&1 && echo clang || echo cc)
 endif
-ifeq (,$(filter-out default undefined,$(origin CXX)))
-override CXX := $(shell command -v clang++ > /dev/null 2>&1 && echo clang++ || echo c++)
-endif
 
 # Command-line flags are appended, e.g. CFLAGS='-O1 -g -fsanitize=address'.
 # No `override` here, it clobbers command-line variables.
 CFLAGS   :=
-CXXFLAGS :=
 CPPFLAGS :=
 LDFLAGS  :=
 PKG_CONFIG := pkg-config
@@ -78,7 +74,6 @@ check-cli: $Otests/cli-input $Otests/cli-state $Otests/cli-ui $Otests/autocomple
 
 # Readline and the completion catalog are tested without a server so these
 # checks also run where Unix sockets are prohibited. Keep their objects separate.
-override CLI_FLAGS := -std=gnu++17 -O2 -g -Wall -Wextra -Wpedantic -I$(SRC_DIR)
 # Query each set of flags once, only when a recipe needs it, and fail there.
 # Expand the shell call after eval parses the assignment, so its output is
 # never parsed as makefile text or expanded again for dollar references.
@@ -92,12 +87,15 @@ override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete-fixture.c.o \
                                  $Otests/src/autocomplete.c.o $Otests/src/dstr.c.o $Otests/src/jb.c.o
 override AUTOCOMPLETE_WRAPS := -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 
-$Otests/cli-input: $Otests/cli-input.cpp.o $Otests/src/cli-console.cpp.o \
-                   $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
-	$(CXX) $(CLI_FLAGS) $(CXXFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS)
+override CLI_CONSOLE_OBJECTS := $Otests/src/cli-console.c.o $Otests/src/buf.c.o
 
-$Otests/cli-ui: $Otests/cli-ui.cpp.o $Otests/src/cli-console.cpp.o
-	$(CXX) $(CLI_FLAGS) $(CXXFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS)
+$Otests/cli-input: $Otests/cli-input.c.o $(CLI_CONSOLE_OBJECTS) \
+                   $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
+$Otests/cli-input:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) -lm
+
+$Otests/cli-ui: $Otests/cli-ui.c.o $Otests/src/cli-ui.c.o $(CLI_CONSOLE_OBJECTS) \
+                $Otests/src/dstr.c.o $Otests/src/jb.c.o
+$Otests/cli-ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS)
 
 $Otests/cli-state: $Otests/cli-state.c.o $Otests/src/cli-state.c.o \
                    $Otests/src/dstr.c.o $Otests/src/jb.c.o
@@ -108,13 +106,9 @@ $Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete-file.c.o
 
 $Otests/autocomplete.c.o $Otests/autocomplete-fixture.c.o \
 $Otests/src/autocomplete.c.o $Otests/src/autocomplete-file.c.o \
-$Otests/src/cli-state.c.o $Otests/src/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
+$Otests/src/cli-state.c.o $Otests/src/cli-console.c.o $Otests/src/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
-$Otests/%.cpp.o: $(TEST_DIR)%.cpp | $Otests
-	$(CXX) $(CLI_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CLI_INCLUDES) $(JSON_INCLUDES) -MMD -c -o "$@" "$<"
-
-$Otests/src/%.cpp.o: $(SRC_DIR)%.cpp | $Otests/src
-	$(CXX) $(CLI_FLAGS) $(CPPFLAGS) $(CXXFLAGS) $(CLI_INCLUDES) $(JSON_INCLUDES) -MMD -c -o "$@" "$<"
+$Otests/src/cli-console.c.o: CPPFLAGS += $(CLI_INCLUDES)
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf
@@ -204,10 +198,11 @@ load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
 -include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/datauri.c.d \
-         $Otests/src/log.c.d $Otests/cli-input.cpp.d $Otests/cli-ui.cpp.d $Otests/autocomplete.c.d \
+         $Otests/src/log.c.d $Otests/cli-input.c.d $Otests/cli-ui.c.d $Otests/autocomplete.c.d \
          $Otests/cli-state.c.d $Otests/src/cli-state.c.d \
-         $Otests/autocomplete-fixture.c.d $Otests/src/cli-console.cpp.d \
+         $Otests/autocomplete-fixture.c.d $Otests/src/cli-console.c.d \
          $Otests/src/autocomplete.c.d $Otests/src/autocomplete-file.c.d $Otests/src/dstr.c.d \
+         $Otests/src/cli-ui.c.d $Otests/src/jb.c.d \
          $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif

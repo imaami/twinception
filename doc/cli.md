@@ -9,7 +9,7 @@ llama-server dependency.
 
 ## Build
 
-The client needs C23 and C++17 compilers, libcurl with Unix-socket support, json-c,
+The client needs a C23 compiler, libcurl with Unix-socket support, json-c,
 GNU Readline, and their development packages (`libreadline-dev` on Debian
 and Ubuntu). From the repository root:
 
@@ -21,7 +21,7 @@ build/askai-cli --help
 `make askai-cli` builds only the client. `make` also builds AskAI and the
 other programs. Run the resulting `build/askai-cli` executable directly.
 
-The client links libcurl, json-c, GNU Readline, and the C++ runtime. It does
+The client links libcurl, json-c, GNU Readline, and the C math library. It does
 not link libllama, ggml, or any inference backend.
 
 ## Connect
@@ -266,7 +266,8 @@ and result storage until destruction, growing capacity as needed and keeping
 it between calls. Text storage uses `dstr` and UTF-8 validation uses `jb_utf8`.
 Candidate output is bounded to 256 entries and 16 MiB. The Readline adapter consumes
 those views directly; only the strings that Readline takes ownership of are
-copied. C++ console and display interfaces use `.hpp` headers.
+copied. The terminal, display, and MCP transport are C modules with explicit
+ownership and error returns; no C++ compiler or runtime is needed.
 
 Tool calls and progress use IRC-style action lines, for example
 `* you call notes` and `* ask_ai turn 1, calling git`. Reasoning remains in
@@ -315,5 +316,5 @@ The terminal console is derived from llama.cpp's MIT-licensed
 `common/console.cpp` and `tools/cli/cli-ui.h` at commit
 `b76b13379d3b7d67ab0bc424516bb6fd2522bd8e`;
 the retained license is in [llama-cli-LICENSE](llama-cli-LICENSE). The
-adaptation is in `src/cli-console.cpp`, `src/cli-console.hpp`, and
-`src/cli-ui.hpp`.
+adaptation is in `src/cli-console.c`, `src/cli-console.h`, `src/cli-ui.c`, and
+`src/cli-ui.h`.
