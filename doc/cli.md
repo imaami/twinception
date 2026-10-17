@@ -192,8 +192,9 @@ does not provide remote backup or secure deletion. `/clear` does not purge
 secrets from old commits. The repository grows beyond the bounded recall
 window and needs an explicit retention policy if long-term storage must be
 limited. Client snapshots contain submitted input and completed answers;
-provider identifiers, partial responses and reasoning remain the server's
-transcript responsibility. A client restart restores conversation context,
+provider identifiers remain in the server's private recovery checkpoints,
+and decoded reasoning in its reasoning archive. Raw response events are not
+archived. A client restart restores conversation context,
 not a live provider stream.
 
 Commits run synchronously at human input and completed-answer boundaries.

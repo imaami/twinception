@@ -19,7 +19,8 @@
  * or text, and posts PROGRESS for a front that asked for it, a burst being
  * one message. With JOB_STREAM, home publishes one immutable event mailbox
  * through DELTA and pauses parsing. The front posts DRAIN after consuming it;
- * home then reclaims it and resumes. DONE waits for that acknowledgment too.
+ * home then reclaims it and resumes. DONE waits for that acknowledgment and
+ * any archive callbacks, which hold their own references until they return.
  * The front posts CANCEL exactly once: before DONE it cancels the job, which
  * home then stops and ends as CANCELLED, and after DONE it lets go of the
  * job, having read the result.  Home keeps its reference until then, and
@@ -183,7 +184,8 @@ struct job {
 	struct home_delivery_error *delivery_error; /**< home's: transfer error kept
 	                                               while buffered events drain */
 	struct home_recovery  *recovery;    /**< home's: journal and replay state */
-	struct journal        *journal;     /**< the front's: shared transcript writer */
+	struct journal        *journal;     /**< the front's: shared reasoning archive
+	                                         and recovery checkpoint writer */
 	struct handle          call;        /**< the front's: what waits for it */
 	uint64_t               deadline;    /**< the front writes, before SUBMIT, when
 	                                         the call times out waiting, and home

@@ -13,6 +13,7 @@
 #include "ai.h"
 #include "buf.h"
 #include "config.h"
+#include "dstr.h"
 #include "hist.h"
 #include "home.h"
 #include "http.h"
@@ -96,19 +97,22 @@ struct home_delivery_error {
 	char     message[CURL_ERROR_SIZE];
 };
 
-/* A turn's replay is immutable until home starts it.  A single outstanding
- * journal write gates parsing and gives a paused curl writer its wakeup. */
+/* A turn's legacy replay is immutable until home starts it. Archive writes
+ * gate parsing, not reception; the wire and each event remain bounded. */
 struct home_recovery {
 	struct buf saved;
+	struct dstr cursor;
 	char *provider_id;
-	char *cursor;
 	uint64_t offset;
+	uint64_t thought_offset;
 	uint32_t pending;
 	uint32_t restoring;
 	uint32_t explicit_cancel;
-	uint32_t paused;
 	uint32_t deferred;
 	uint32_t opening;
+	uint32_t ending;
+	uint32_t thought_open;
+	uint32_t thought_final;
 	int error;
 };
 
@@ -204,6 +208,7 @@ static int home_open (struct home *home, struct job *job, bool resume);
 static int home_metadata (struct home *home, struct job *job, bool resume,
                           journal_done_cb *done);
 static void home_journal_done (struct loop *loop, void *arg, int error);
+static void home_archive_pending (struct home *home, struct job *job);
 static int home_provider_url (struct home *home, struct job *job,
                               bool cancel, char **out);
 static void home_timeline (struct home *home, struct job *job);
@@ -225,8 +230,7 @@ home_job_recovery_fini (struct job *job)
 	buf_fini(&r->saved);
 	free(r->provider_id);
 	r->provider_id = nullptr;
-	free(r->cursor);
-	r->cursor = nullptr;
+	dstr_cleanup(&r->cursor);
 	free(r);
 	job->recovery = nullptr;
 }
@@ -258,6 +262,7 @@ home_job_restore (struct job                  *job,
 	struct home_recovery *r = calloc(1, sizeof *r);
 	if (!r)
 		return ENOMEM;
+	r->cursor = dstr("");
 	job->recovery = r;
 	r->restoring = true;
 	for (; records; records = records->next) {
@@ -435,6 +440,10 @@ home_job_end (struct job      *job,
               enum job_status  status)
 {
 	job->status = (uint8_t)status;
+	if (job->recovery && job->recovery->pending) {
+		job->recovery->ending = true;
+		return;
+	}
 	if (job->delta_pending && !(job->flags & DROPPED)) {
 		job->delta_ended = true;
 		return;
@@ -742,13 +751,15 @@ home_breaker_event (struct loop       *loop,
 
 /* Whether @p job, a background job running, may be cut: not as the probe,
  * nor once its answer is all in. Native background work cannot be restarted
- * this way: closing its stream would leave the old generation running. */
+ * this way: closing its stream would leave the old generation running.
+ * Archived thinking also belongs to one generation, not its replacement. */
 static bool
 home_job_cuttable (struct home const *home,
                    struct job const  *job)
 {
 	return !ai_background(home->ep) && !home_llama(home) &&
 	       !(job->asks & JOB_DURABLE) && job->transfer &&
+	       !(job->recovery && (job->recovery->pending || job->recovery->thought_offset)) &&
 	       !(job->flags & (PROBE | DELIVERED | ENDED));
 }
 
@@ -918,7 +929,7 @@ home_finish (struct home *home,
 		                 result != CURLE_OUT_OF_MEMORY && !(job->flags & ERRED) &&
 		                 job->asks & JOB_DURABLE && job->journal && r &&
 		                 r->provider_id && !job->provider_done &&
-		                 (home_llama(home) || (ai_background(home->ep) && r->cursor)) &&
+		                 (home_llama(home) || ai_background(home->ep)) &&
 		                 (!job->deadline || home->loop->now < job->deadline);
 		home_end(home, job, resumable ? JOB_SUSPENDED : JOB_FAILED,
 		         &home->metrics->completed);
@@ -1008,22 +1019,6 @@ home_receive (struct home *home,
 		return 0;
 	}
 	struct home_recovery *r = job->recovery;
-	if (job->journal) {
-		if (r->pending) {
-			r->paused = true;
-			return CURL_WRITEFUNC_PAUSE;
-		}
-		e = journal_put(job->journal, job->archive,
-		                job->flags & STREAM ? "stream" : "body", data, len,
-		                home->loop, home_journal_done, job);
-		if (e) {
-			r->error = e;
-			return 0;
-		}
-		++r->pending;
-		++home->persisting;
-		atomic_fetch_add_explicit(&job->refs, 1, memory_order_relaxed);
-	}
 	memcpy(s.ptr, data, len);
 	buf_commit(to, len);
 	if (r && job->flags & STREAM)
@@ -1114,7 +1109,8 @@ home_job_done (CURLcode    result,
 	home_finish(home, job, result, error, http_retry_after(home->http));
 }
 
-/* The raw record is durable before its bytes can drive the tool loop. */
+/* Finish an append, reasoning commit or recovery checkpoint. DONE cannot
+ * expose the job for reuse until all archive callbacks have returned. */
 static void
 home_journal_done (struct loop *loop,
                    void        *arg,
@@ -1132,6 +1128,18 @@ home_journal_done (struct loop *loop,
 	}
 	if (error)
 		r->error = error;
+	if (r->pending)
+		goto done;
+	if (r->ending) {
+		r->ending = false;
+		if (r->error && job->status != JOB_CANCELLED) {
+			(void)home_job_say(job, "Transcript persistence failed: %s",
+			                   strerror(r->error));
+			job->status = JOB_FAILED;
+		}
+		home_job_end(job, job->status);
+		goto done;
+	}
 	if (list_is_empty(&job->due))
 		goto done;
 	if (r->error) {
@@ -1163,10 +1171,6 @@ home_journal_done (struct loop *loop,
 	}
 	if (job->flags & STREAM)
 		home_feed(home, job);
-	if (r->paused && job->transfer) {
-		r->paused = false;
-		home_hold(home, job);
-	}
 done:
 	home_job_put(job, 1);
 	home_maybe_exit(home);
@@ -1187,8 +1191,6 @@ home_metadata (struct home     *home,
 		                                    home->ep->api == AI_RESPONSES ? "responses" :
 		                                    home->ep->api == AI_INTERACTIONS ? "interactions" : "other"),
 		"provider_id", json_object_new_string(r->provider_id ? r->provider_id : ""),
-		"cursor", json_object_new_string(r->cursor ? r->cursor : ""),
-		"offset", json_object_new_uint64(r->offset),
 		"resume", json_object_new_boolean(resume), nullptr);
 	if (!meta)
 		return ENOMEM;
@@ -1198,16 +1200,13 @@ home_metadata (struct home     *home,
 	                           done ? home->loop : nullptr, done, done ? job : nullptr)
 	             : ENOMEM;
 	json_object_put(meta);
-	if (!e && done) {
-		++r->pending;
-		++home->persisting;
-		atomic_fetch_add_explicit(&job->refs, 1, memory_order_relaxed);
-	}
+	if (!e && done)
+		home_archive_pending(home, job);
 	return e;
 }
 
-/* A connection boundary is durable before any bytes can arrive.  This
- * prevents joining a truncated cloud event to the resumed connection. */
+/* Keep the provider identity before a connection starts. Restart recovery
+ * requests its stream from the beginning and verifies saved thought bytes. */
 static int
 home_connect (struct home *home,
                struct job  *job,
@@ -1215,6 +1214,13 @@ home_connect (struct home *home,
 {
 	if (!job->journal)
 		return home_open(home, job, resume);
+	if (resume && !job->recovery->offset) {
+		int e = journal_thought(job->journal, job->archive, job->archive_turn,
+		                        0, nullptr, 0, home->loop, home_journal_done, job);
+		if (e)
+			return e;
+		home_archive_pending(home, job);
+	}
 	job->recovery->opening = resume ? 2 : 1;
 	return home_metadata(home, job, resume, home_journal_done);
 }
@@ -1310,8 +1316,11 @@ home_start (struct home *home,
 		job->deadline = home->timeout ? loop->now + home->timeout : 0;
 	home_timeline(home, job);
 	home_job_progress(job, 0);
-	if (!job->recovery && (job->journal || ai_background(home->ep) || home_llama(home)))
+	if (!job->recovery && (job->journal || ai_background(home->ep) || home_llama(home))) {
 		job->recovery = calloc(1, sizeof *job->recovery);
+		if (job->recovery)
+			job->recovery->cursor = dstr("");
+	}
 	if (!job->recovery && (job->journal || ai_background(home->ep) || home_llama(home))) {
 		home_end(home, job, JOB_FAILED, &m->completed);
 		return;
@@ -1590,6 +1599,39 @@ home_put_delta (struct job *job,
 	return 0;
 }
 
+static void
+home_archive_pending (struct home *home,
+                      struct job  *job)
+{
+	++job->recovery->pending;
+	++home->persisting;
+	atomic_fetch_add_explicit(&job->refs, 1, memory_order_relaxed);
+}
+
+/* A boundary commits the concatenated text once. A later reasoning block
+ * in the same provider turn may append again and have its own boundary.
+ * The final boundary also verifies replay with no reasoning against any
+ * saved prefix; a provider cannot silently replace it with an empty turn. */
+static int
+home_thought_end (struct home *home,
+                  struct job  *job,
+                  bool         final)
+{
+	struct home_recovery *r = job->recovery;
+	if (!job->journal || r->thought_final || (!final && !r->thought_open))
+		return 0;
+	int e = journal_thought_end(job->journal, job->archive, job->archive_turn,
+	                            final, home->loop, home_journal_done, job);
+	if (e) {
+		r->error = e;
+		return e;
+	}
+	r->thought_open = false;
+	r->thought_final = final;
+	home_archive_pending(home, job);
+	return 0;
+}
+
 /* The answer of the job @p user gains the @p len bytes of text at @p text
  * (home_append_text()), then the immutable mailbox receives its copy. */
 static int
@@ -1598,7 +1640,9 @@ home_put_text (void       *user,
                size_t      len)
 {
 	struct job *job = user;
-	int e = home_append_text(self, &job->result, text, len);
+	int e = len ? home_thought_end(self, job, false) : 0;
+	if (!e)
+		e = home_append_text(self, &job->result, text, len);
 	return e ? e : home_put_delta(job, text, len, false);
 }
 
@@ -1613,6 +1657,20 @@ home_put_thought (void       *user,
 	int e = job->asks & JOB_TOOLS && self->ep->api == AI_CHAT
 	      ? home_append_text(self, &job->thought, text, len)
 	      : jb_utf8(text, len) < len ? EILSEQ : 0;
+	if (!e && len && job->journal) {
+		struct home_recovery *r = job->recovery;
+		e = len > UINT64_MAX - r->thought_offset ? EOVERFLOW :
+		    journal_thought(job->journal, job->archive, job->archive_turn,
+		                    r->thought_offset, text, len, self->loop,
+		                    home_journal_done, job);
+		if (e)
+			r->error = e;
+		else {
+			r->thought_offset += len;
+			r->thought_open = true;
+			home_archive_pending(self, job);
+		}
+	}
 	return e ? e : home_put_delta(job, text, len, true);
 }
 
@@ -1645,6 +1703,9 @@ home_put_call (void                 *user,
                struct ai_call const *call)
 {
 	struct job *job = user;
+	int end = home_thought_end(self, job, false);
+	if (end || !(job->asks & JOB_TOOLS))
+		return end;
 	/* This loop counts the calls in n and the bytes of all calls in bytes.
 	 * It sets k to the number of the call that has the index of the
 	 * piece, and c to the header of the last call. */
@@ -1781,11 +1842,14 @@ home_provider_url (struct home *home,
 		return ENOTSUP;
 	CURLU *url = curl_url();
 	char *escaped = curl_easy_escape(nullptr, r->provider_id, 0);
-	char *cursor = r->cursor ? curl_easy_escape(nullptr, r->cursor, 0) : nullptr;
+	size_t cursor_len = dstr_len(&r->cursor);
+	char *cursor = cursor_len
+	             ? curl_easy_escape(nullptr, dstr_get(&r->cursor), (int)cursor_len)
+	             : nullptr;
 	char *path = nullptr;
 	char *joined = nullptr;
 	int e = ENOMEM;
-	if (!url || !escaped || (r->cursor && !cursor))
+	if (!url || !escaped || (cursor_len && !cursor))
 		goto done;
 	if (curl_url_set(url, CURLUPART_URL, home->ep->url, 0) ||
 	    curl_url_get(url, CURLUPART_PATH, &path, 0)) {
@@ -1836,17 +1900,15 @@ home_provider_url (struct home *home,
 			goto done;
 		}
 	} else if (!cancel) {
-		if (!cursor) {
-			e = ENODATA;
-			goto done;
-		}
-		size_t n = strlen(cursor) + 48;
+		size_t n = (cursor ? strlen(cursor) : 0) + 48;
 		joined = malloc(n);
 		if (!joined)
 			goto done;
-		int count = snprintf(joined, n, "stream=true&%s=%s",
+		int count = cursor
+		          ? snprintf(joined, n, "stream=true&%s=%s",
 		                     home->ep->api == AI_RESPONSES ? "starting_after" : "last_event_id",
-		                     cursor);
+		                     cursor)
+		          : snprintf(joined, n, "stream=true");
 		if (count < 0 || (size_t)count >= n) {
 			e = EOVERFLOW;
 			goto done;
@@ -1908,7 +1970,9 @@ home_native_event (struct home        *home,
 	if (jb_is(status, "completed") || jb_is(status, "failed") ||
 	    jb_is(status, "cancelled") || jb_is(status, "incomplete"))
 		job->provider_done = true;
-	if (!job->cancel_url && jb_is(kind, responses ? "response.created" : "interaction.created")) {
+	bool created = !job->cancel_url &&
+	               jb_is(kind, responses ? "response.created" : "interaction.created");
+	if (created) {
 		int e = home_native_id(home, job, jb_get(object, "id"));
 		if (e)
 			return e;
@@ -1916,26 +1980,28 @@ home_native_event (struct home        *home,
 	struct json_object *value = jb_get(root, responses ? "sequence_number" : "event_id");
 	char number[32];
 	char const *cursor = nullptr;
+	size_t cursor_len = 0;
 	if (responses && json_object_is_type(value, json_type_int)) {
 		int64_t sequence = json_object_get_int64(value);
 		if (sequence < 0)
 			return EPROTO;
-		util_format(number, sizeof number, "%" PRIi64, sequence);
+		int n = snprintf(number, sizeof number, "%" PRIi64, sequence);
+		if (n < 0 || (size_t)n >= sizeof number)
+			return EOVERFLOW;
 		cursor = number;
+		cursor_len = (size_t)n;
 	} else if (!responses) {
-		size_t len;
-		cursor = jb_str(value, &len);
-		if (cursor && (len > MAX_JOB_ID || memchr(cursor, '\0', len)))
+		cursor = jb_str(value, &cursor_len);
+		if (cursor && (cursor_len > MAX_JOB_ID || memchr(cursor, '\0', cursor_len)))
 			return EPROTO;
 	}
 	if (cursor) {
-		char *copy = strdup(cursor);
-		if (!copy)
+		(void)dstr_clear(&job->recovery->cursor);
+		if (!dstr_cat_n(&job->recovery->cursor, cursor, cursor_len))
 			return ENOMEM;
-		free(job->recovery->cursor);
-		job->recovery->cursor = copy;
 	}
-	return job->recovery->restoring ? 0 : home_metadata(home, job, false, nullptr);
+	return !created || job->recovery->restoring ? 0 :
+	       home_metadata(home, job, false, home_journal_done);
 }
 
 /* Take what @p root, an event of @p job's stream, says (ai_event()): its
@@ -1954,7 +2020,10 @@ home_take (struct home        *home,
 		(void)home_job_erred(job, "cannot retain the native background job id", -1);
 		return e;
 	}
-	static struct ai_sink const plain = { .text = home_put_text };
+	static struct ai_sink const plain = {
+		.text = home_put_text,
+		.call = home_put_call
+	};
 	static struct ai_sink const tools = {
 		.text = home_put_text,
 		.thought = home_put_thought,
@@ -1962,12 +2031,14 @@ home_take (struct home        *home,
 		.replay = home_put_replay
 	};
 	struct ai_sink sink = job->asks & JOB_TOOLS ? tools : plain;
-	if (job->asks & JOB_STREAM)
+	if (job->asks & JOB_STREAM || job->journal)
 		sink.thought = home_put_thought;
 	sink.user = job;
 	size_t had = buf_peek(&job->result).len;
 	struct ai_event ev = {};
 	e = ai_event(home->ep->api, &job->reader, root, &sink, &ev);
+	if (!e && (ev.thought_end || ev.end))
+		e = home_thought_end(home, job, ev.end != 0);
 	hist_add(&home->metrics->chunks, 1);
 	if (buf_peek(&job->result).len > had)
 		home_job_progress(job, (uint64_t)++job->chunks << 32);
@@ -1990,6 +2061,11 @@ home_take (struct home        *home,
 		(void)home_job_erred(job, "tool calls out of order, or too many", -1);
 	} else if (e == EILSEQ) {
 		(void)home_job_erred(job, "an answer that is not text", -1);
+	}
+	if (e && job->recovery && job->recovery->error) {
+		(void)home_job_say(job, "Transcript persistence failed: %s",
+		                   strerror(job->recovery->error));
+		job->flags |= ERRED;
 	}
 	if (!(job->flags & DROPPED) && buf_peek(&job->delta).len) {
 		job->delta_pending = true;
@@ -2047,9 +2123,11 @@ home_read_event (struct home *home,
 	static char const done[] = "[DONE]";
 	char const *data = (char const *)buf_peek(&job->wire).ptr + job->ev;
 	int e = 0;
-	if (job->evlen == sizeof done - 1 && !memcmp(data, done, sizeof done - 1))
+	if (job->evlen == sizeof done - 1 && !memcmp(data, done, sizeof done - 1)) {
 		job->flags |= home->ep->api == AI_INTERACTIONS ? 0 : ENDED;
-	else if (!home_parse(home, &job->parser, data, job->evlen))
+		if (job->flags & ENDED)
+			e = home_thought_end(home, job, true);
+	} else if (!home_parse(home, &job->parser, data, job->evlen))
 		return EAGAIN;
 	else
 		e = home_event(home, job);
@@ -2210,7 +2288,7 @@ home_read_stream (struct home *home,
                   struct job  *job)
 {
 	for (;;) {
-		if (job->delta_pending) {
+		if (job->delta_pending || (job->recovery && job->recovery->pending)) {
 			list_del(&job->feed);
 			return true;
 		}

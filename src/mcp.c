@@ -40,8 +40,8 @@
  * text, so that the request only escapes that into the reply. An ask call
  * with params._meta.askai.stream true also receives notifications/askai/delta:
  * bounded text or reasoning pieces copied from an immutable job mailbox.
- * Home waits for its acknowledgment; with a transcript journal, each notice
- * is committed before delivery. Closing the
+ * Home waits for its acknowledgment. The transcript writer stores decoded
+ * reasoning independently of these transport notifications. Closing the
  * stream, which in HTTP/1.1 means closing the connection or its sending side,
  * cancels the call in every era.  The caller of a call can also cancel it
  * with notifications/cancelled, on any connection of any loop.
@@ -388,7 +388,7 @@ struct mcp_static {
 	struct task_pool         *tasks;        /**< test_task's, if askai offers
 	                                             it */
 	struct notes             *notes;        /**< the notes', with --notes */
-	struct journal           *journal;      /**< durable requests and replies */
+	struct journal           *journal;      /**< reasoning and recovery state */
 	struct ledger            *ledger;       /**< the tasks' */
 	struct roster            *roster;       /**< the tool calls that run and
 	                                             are not tasks */
@@ -667,8 +667,6 @@ struct mcp_req {
 	bool                 progress;   /* the job's progress moved on */
 	bool                 blocked;    /* waiting for on_writable() */
 	bool                 delta;      /* the job's immutable mailbox is published */
-	bool                 delta_saving; /* its notice waits for durable storage */
-	bool                 delta_saved; /* its notice is durable, ready to send */
 	bool                 listed;     /* the list that the turn's items go in
 	                                    has one */
 	bool                 branch;     /* the caller's branch has notes */
@@ -1486,6 +1484,8 @@ static void
 mcp_req_finish (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
+	loop_timer_stop(mcp->loop, &req->timer);
+	req->tick = false;
 	if (req->error)
 		mcp_req_drop(req);
 	if (mcp_req_archive_end(req))
@@ -1511,7 +1511,6 @@ mcp_req_finish (struct mcp_req *req)
 	req->shown = nullptr;
 	mcp_req_unwait(req);
 	mcp_req_drop(req);
-	loop_timer_stop(mcp->loop, &req->timer);
 	jb_parser_fini(&req->parser, req->phase == PHASE_ANSWER || req->phase == PHASE_ARGS
 	                             ? &mcp->answers : &mcp->pool,
 	               &req->reaper);
@@ -1586,34 +1585,17 @@ mcp_req_http_error (struct mcp_req *req,
 	mcp_req_finish(req);
 }
 
-/* Queue bytes the journal has accepted, remembering transport backpressure. */
+/* Queue response bytes, remembering transport backpressure. Home archives
+ * reasoning independently of this transport. */
 static int
-mcp_req_transport (struct mcp_req *req,
-                   struct span     bytes)
+mcp_req_write (struct mcp_req *req,
+               struct span     bytes)
 {
 	int e = req->s->ops->data(req->s, bytes);
 	if (e != EAGAIN)
 		return e;
 	req->blocked = true;
 	return 0;
-}
-
-/* Queue @p bytes of the response: 0, or EPIPE once the stream can carry no
- * more.  Once the transport asks to wait, the request waits for
- * on_writable(). */
-static int
-mcp_req_write (struct mcp_req *req,
-               struct span     bytes)
-{
-	if (*req->archive && bytes.len && !req->archive_error) {
-		int e = journal_put(req->mcp->st->journal, req->archive, "message",
-		                    bytes.ptr, bytes.len, nullptr, nullptr, nullptr);
-		if (e) {
-			req->archive_error = e;
-			return e;
-		}
-	}
-	return mcp_req_transport(req, bytes);
 }
 
 /* Send as much of the reply as the step has the share for, the rest a piece
@@ -2045,35 +2027,6 @@ mcp_req_notify (struct mcp_req *req,
 	req->next_note = value + 1;
 }
 
-/* A journal callback names the request by its generation-checked job handle.
- * Home withholds DONE until DRAIN, which waits for this callback; cancellation
- * invalidates the handle before the request can be reused. */
-struct mcp_delta_wait {
-	struct handle call;
-};
-
-static void
-mcp_delta_saved (struct loop *loop,
-                 void        *arg,
-                 int          error)
-{
-	struct mcp_delta_wait *wait = arg;
-	struct handle call = wait->call;
-	free(wait);
-	wait = nullptr;
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, call, HANDLE_REQ);
-	if (!req)
-		return;
-	req->delta_saving = false;
-	if (error) {
-		req->archive_error = error;
-		mcp_req_abort(req, error);
-		return;
-	}
-	req->delta_saved = true;
-	loop_ready_bulk(loop, &req->step);
-}
-
 /* Publish text from the immutable mailbox in bounded UTF-8 pieces. Home
  * cannot change it, advance its parser or deliver DONE before the DRAIN
  * acknowledgment. Transport backpressure therefore also bounds the mailbox. */
@@ -2083,23 +2036,6 @@ mcp_req_delta (struct mcp_req *req)
 	struct job *job = req->job;
 	struct loop *loop = req->mcp->loop;
 	struct span bytes = buf_peek(&job->delta);
-	if (req->delta_saving)
-		return;
-	if (req->delta_saved) {
-		struct span notice = buf_peek(&req->reply);
-		if (loop_room(loop, LOOP_SEND) < notice.len) {
-			loop_ready_bulk(loop, &req->step);
-			return;
-		}
-		int e = mcp_req_transport(req, notice);
-		loop_work(loop, LOOP_SEND, notice.len);
-		buf_consume(&req->reply, notice.len);
-		req->delta_saved = false;
-		if (e) {
-			mcp_req_abort(req, e);
-			return;
-		}
-	}
 	while (req->delta_at < bytes.len) {
 		if (req->blocked)
 			return;
@@ -2149,27 +2085,9 @@ mcp_req_delta (struct mcp_req *req)
 			req->delta_at += sizeof header + header.len;
 			req->delta_read = 0;
 		}
-		if (*req->archive && !req->archive_error) {
-			struct mcp_delta_wait *wait = malloc(sizeof *wait);
-			if (wait) {
-				wait->call = req->call;
-				e = journal_put(req->mcp->st->journal, req->archive, "message",
-				                notice.ptr, notice.len, loop, mcp_delta_saved, wait);
-			} else {
-				e = ENOMEM;
-			}
-			if (!e) {
-				req->delta_saving = true;
-				return;
-			}
-			free(wait);
-			wait = nullptr;
-			req->archive_error = e;
-		} else {
-			e = mcp_req_transport(req, notice);
-			loop_work(loop, LOOP_SEND, notice.len);
-			buf_consume(&req->reply, notice.len);
-		}
+		e = mcp_req_write(req, notice);
+		loop_work(loop, LOOP_SEND, notice.len);
+		buf_consume(&req->reply, notice.len);
 		if (e) {
 			mcp_req_abort(req, e);
 			return;
@@ -2673,8 +2591,8 @@ mcp_archive_back (struct loop *loop,
 		done(req, error);
 }
 
-/* Copy a JSON record into the writer's bounded queue. A callback is a
- * durability barrier: both the journal and its Git commit precede it. */
+/* Copy recovery state into the writer's bounded queue. A callback follows
+ * the durable private checkpoint; this control data does not enter Git. */
 static int
 mcp_req_archive (struct mcp_req    *req,
                  char const        *kind,
@@ -2712,8 +2630,8 @@ static enum ledger_status
 mcp_req_archive_status (struct mcp_req const *req)
 {
 	struct ledger_task const *task = req->task;
-	bool failed = !task->result || task->len != task->size ||
-	              (task->len >= 8 && !memcmp(task->result, "\"error\":", 8));
+	bool failed = task && (!task->result || task->len != task->size ||
+	                      (task->len >= 8 && !memcmp(task->result, "\"error\":", 8)));
 	return req->error == ECANCELED ? LEDGER_CANCELLED
 	     : req->error || failed ? LEDGER_FAILED : LEDGER_COMPLETED;
 }
@@ -2731,11 +2649,14 @@ mcp_req_archive_finished (struct mcp_req *req,
 }
 
 /* A shutdown leaves the last provider checkpoint resumable. Explicit
- * cancellation and completed results are durable before ledger publish. */
+ * cancellation and completed results are durable before ledger publish.
+ * Foreground calls also become terminal, so their checkpoints can expire. */
 static bool
 mcp_req_archive_end (struct mcp_req *req)
 {
-	if (!req->task || !*req->archive || req->archived_end || req->mcp->draining || req->suspended)
+	bool draining = req->mcp->draining;
+	if (!*req->archive || req->archived_end || req->suspended ||
+	    (draining && (req->task || req->admitted)))
 		return false;
 	if (req->archive_call.bits) {
 		/* A cancel may supersede a pending state, intent or result write.
@@ -2746,18 +2667,24 @@ mcp_req_archive_end (struct mcp_req *req)
 	}
 	struct ledger_task const *task = req->task;
 	enum ledger_status status = mcp_req_archive_status(req);
-	size_t len = status == LEDGER_CANCELLED || task->len != task->size ? 0 : task->len;
+	size_t len = !task || status == LEDGER_CANCELLED || task->len != task->size ? 0 : task->len;
 	struct json_object *obj = jb_object(
 		"status", json_object_new_int(status),
 		"ended", json_object_new_uint64((uint64_t)time(nullptr) * NS),
-		"result", json_object_new_string_len(task->result ? task->result : "",
+		"result", json_object_new_string_len(task && task->result ? task->result : "",
 		                                     (int)len), nullptr);
 	int e = mcp_req_archive(req, status == LEDGER_CANCELLED ? "cancel" : "result",
-	                        obj, mcp_req_archive_finished);
+	                        obj, draining ? nullptr : mcp_req_archive_finished);
 	if (e) {
 		req->archived_end = true;
 		req->error = e;
 		LOG(LOG_ERROR, "cannot persist job %s: %s", req->archive, strerror(e));
+		return false;
+	}
+	if (draining) {
+		/* The writer drains after the loops; no request must wait for it
+		 * on a loop which is itself being dismantled. */
+		req->archived_end = true;
 		return false;
 	}
 	loop_unready(&req->step);
@@ -8218,6 +8145,64 @@ mcp_req_parse (struct mcp_req *req)
 		loop_ready_bulk(loop, &req->step);
 }
 
+static void
+mcp_req_reasoning_done (struct mcp_req *req,
+                        int             error)
+{
+	if (error) {
+		req->archive_error = error;
+		mcp_req_fail(req, error);
+		return;
+	}
+	mcp_req_enter(req, PHASE_TEXT);
+}
+
+/* A provider may ignore stream=true and send one complete JSON body.
+ * Extract its exposed reasoning once, before releasing that parsed body;
+ * response text and wire JSON are not transcript records. */
+static int
+mcp_req_reasoning (struct mcp_req *req)
+{
+	struct journal *journal = req->mcp->st->journal;
+	struct job const *job = req->job;
+	if (!journal || !*req->archive || !req->msg || job->http < 200 ||
+	    job->http >= 300 || jb_get(req->msg, "error"))
+		return 0;
+	struct dstr thought = dstr("");
+	int e = ai_thoughts(req->mcp->st->ep->api, req->msg, &thought);
+	size_t len = dstr_len(&thought);
+	if (e) {
+		dstr_cleanup(&thought);
+		return e;
+	}
+	struct mcp_archive_wait *wait = calloc(1, sizeof *wait);
+	if (!wait) {
+		dstr_cleanup(&thought);
+		return ENOMEM;
+	}
+	wait->done = mcp_req_reasoning_done;
+	e = req->archive_call.bits ? EBUSY
+	  : loop_handle(req->mcp->loop, req, HANDLE_REQ, &wait->who);
+	if (!e && len)
+		e = journal_thought(journal, req->archive, job->archive_turn, 0,
+		                    dstr_get(&thought), len, nullptr, nullptr, nullptr);
+	loop_work(req->mcp->loop, LOOP_COPY, len);
+	dstr_cleanup(&thought);
+	if (!e)
+		e = journal_thought_end(journal, req->archive, job->archive_turn, true,
+		                        req->mcp->loop, mcp_archive_back, wait);
+	if (e) {
+		if (wait->who.bits)
+			loop_forget(req->mcp->loop, wait->who);
+		free(wait);
+		wait = nullptr;
+		return e;
+	}
+	req->archive_call = wait->who;
+	req->phase = PHASE_JOURNAL;
+	return 0;
+}
+
 /* Parse as much of the upstream's answer as the step has the share for, and
  * check it is UTF-8 text; once it is parsed, or found not to be JSON, read the
  * tool's output from it in a step of its own, as that copies the output. */
@@ -8235,8 +8220,17 @@ mcp_req_answer (struct mcp_req *req)
 		mcp_req_dispose(req);
 		over = true;
 	}
-	if (over)
+	if (over) {
 		req->phase = PHASE_TEXT;
+		int e = mcp_req_reasoning(req);
+		if (e) {
+			req->archive_error = e;
+			mcp_req_fail(req, e);
+			return;
+		}
+		if (req->phase == PHASE_JOURNAL)
+			return;
+	}
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
@@ -8495,6 +8489,7 @@ mcp_on_cancel (struct stream *s)
 	struct mcp_req *req = s->user;
 	mcp_req_log_call(req, "cancelled by a closed connection", (struct span){}, false);
 	req->s = nullptr;
+	req->error = ECANCELED;
 	mcp_req_finish(req);
 }
 

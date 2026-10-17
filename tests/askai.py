@@ -431,9 +431,9 @@ class Askai:
 
     def __init__(self, binary, *args, loops=4, env=None, nofile=None,
                  preload=None, ignore=(), default=(), data=None):
-        # Background jobs default to persistent state.  Every independent
-        # test process gets a private default; recovery tests give an
-        # explicit transcript repository shared by their restarts.
+        # Background jobs default to private recovery checkpoints. Every
+        # independent process gets a private repository; restart tests give
+        # an explicit repository shared by their processes.
         self.state = tempfile.TemporaryDirectory(prefix="askai-state-")
         child_env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
         child_env["XDG_STATE_HOME"] = self.state.name
@@ -2059,8 +2059,8 @@ def check_background(binary, up):
                 assert result.get("isError") and text_of(result) == "That job was cancelled.", result
 
         # A failed transport can still have complete events in its buffer.
-        # Their durable creation id and cursor allow a later poll to
-        # reattach; a completed Gemini status must never restart the stream.
+        # Their private creation id allows a later poll to replay the same
+        # generation; a completed Gemini status must never restart the stream.
         class Truncated(Stream):
             def pieces(self):
                 yield self.wire
@@ -2086,8 +2086,8 @@ def check_background(binary, up):
                 if request["path"] == "/props":
                     return 404, {}
                 retrieved.append(request)
-                suffix = sse_of(ANSWERS[fmt])[1:]
-                for sequence, (_, event) in enumerate(suffix, 1):
+                suffix = events + sse_of(ANSWERS[fmt])[1:]
+                for sequence, (_, event) in enumerate(suffix):
                     if isinstance(event, dict):
                         event["sequence_number" if fmt == "responses" else "event_id"] = \
                             sequence if fmt == "responses" else f"resumed-{sequence}"
@@ -2103,8 +2103,7 @@ def check_background(binary, up):
                 else:
                     assert not result.get("isError") and text_of(result) == "A", result
                     assert len(retrieved) == 1, retrieved
-                    query = "starting_after=0" if fmt == "responses" else "last_event_id=created"
-                    assert retrieved[0]["path"] == f"/v1/{fmt}/truncated_job?stream=true&{query}", retrieved
+                    assert retrieved[0]["path"] == f"/v1/{fmt}/truncated_job?stream=true", retrieved
             assert len(up.requests) == count + 1, up.requests[count:]
     finally:
         for stream in gates:
@@ -2116,9 +2115,9 @@ def check_background(binary, up):
 
 
 def check_recovery(binary, up):
-    """A committed stream survives an AskAI restart.  Polling its original
-    local job id reattaches to the existing provider generation with its
-    exact cursor and current authentication, without another creation."""
+    """Private checkpoints recover the same provider job from its beginning.
+    Existing plaintext thoughts are verified and not appended twice. Git
+    contains thoughts only, never response events or recovery checkpoints."""
     pending = "That job is still running."
     held = (up.reply, up.retrieve, up.delete)
     gates = []
@@ -2152,15 +2151,44 @@ def check_recovery(binary, up):
             time.sleep(0.02)
         raise AssertionError(("job did not recover", jid, result, "".join(ai.log)))
 
-    def committed(repo, marker):
-        run = subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q", marker,
-                              "refs/heads/transcripts/recovery", "--", "records"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return run.returncode == 0
+    def checkpointed(repo, marker):
+        directory = os.path.join(repo, "askai-journal", "recovery", "jobs")
+        if not os.path.isdir(directory):
+            return False
+        for name in os.listdir(directory):
+            if not re.fullmatch(r"[0-9a-f]{32}", name):
+                continue
+            with open(os.path.join(directory, name), "rb") as file:
+                if marker.encode() in file.read():
+                    return True
+        return False
+
+    def thoughts(repo):
+        directory = os.path.join(repo, "askai-journal", "recovery", "reasoning")
+        found = []
+        for root, _, files in os.walk(directory):
+            for name in files:
+                if name.endswith(".txt"):
+                    with open(os.path.join(root, name), "rb") as file:
+                        found.append(file.read())
+        return found
+
+    def tip(repo):
+        return subprocess.run(["git", "--git-dir", repo, "rev-parse", "--verify", "--quiet",
+                               "refs/heads/reasoning/recovery"], capture_output=True).stdout
+
+    def legacy_record(jid, kind, data, sequence):
+        header = (b"ASKAIJ1\n" + sequence.to_bytes(8, "big") + len(data).to_bytes(8, "big") +
+                  jid.encode() + kind.encode().ljust(32, b"\0"))
+        return header + hashlib.sha256(header + data).digest() + data
 
     try:
-        for fmt, graceful in (("responses", False), ("interactions", True),
-                              ("openai", False)):
+        cases = (("responses", False, "same"), ("interactions", True, "same"),
+                 ("openai", False, "same"), ("responses", False, "changed"),
+                 ("responses", False, "short"), ("responses", False, "empty"),
+                 ("responses", False, "blocks"), ("responses", False, "legacy"))
+        for fmt, graceful, replay in cases:
+            expected_thought = b"persisted reasoning"
             provider_id = "response recover/+id" if fmt == "responses" else "v1_recover/+id"
             if fmt == "responses":
                 prefix = sse_wire([
@@ -2208,6 +2236,11 @@ def check_recovery(binary, up):
                     (None, {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
                     (None, "[DONE]")])
                 endpoint = "/v1/chat/completions"
+            if replay == "blocks":
+                prefix += sse_wire([("response.reasoning_text.delta", {
+                    "type": "response.reasoning_text.delta", "sequence_number": 23,
+                    "delta": " continuation"})])
+                expected_thought += b" continuation"
             first = Prefix(prefix)
             creations = []
             retrievals = []
@@ -2223,7 +2256,10 @@ def check_recovery(binary, up):
                 if urllib.parse.urlsplit(request["path"]).path == "/props":
                     return 404, {}
                 retrievals.append(request)
-                return 200, Stream(wire=suffix)
+                replacements = {"changed": b"different reasoning", "short": b"persisted", "empty": b""}
+                replayed = prefix.replace(b"persisted reasoning", replacements[replay]) \
+                    if replay in replacements else prefix
+                return 200, Stream(wire=replayed + suffix)
             up.reply, up.retrieve = reply, retrieve
             up.delete = lambda request: (cancellations.append(request) or 200, {})
             with tempfile.TemporaryDirectory() as d:
@@ -2242,11 +2278,11 @@ def check_recovery(binary, up):
                     assert match and not result.get("isError"), result
                     jid = match.group(1)
                     assert first.sent.wait(10), "provider prefix not delivered"
-                    wait_for(lambda: committed(repo, "persisted reasoning"), seconds=10)
-                    wait_for(lambda: committed(repo, "before "), seconds=10)
+                    wait_for(lambda: thoughts(repo) == [expected_thought], seconds=10)
+                    wait_for(lambda: bool(tip(repo)), seconds=10)
                     if fmt != "openai":
-                        assert committed(repo, provider_id), provider_id
-                    assert not committed(repo, env["RECOVERY_API_KEY"]), "authentication archived"
+                        wait_for(lambda: checkpointed(repo, provider_id), seconds=10)
+                    assert not checkpointed(repo, env["RECOVERY_API_KEY"]), "authentication archived"
                     assert len(creations) == 1, creations
                     if graceful:
                         ai.stop()
@@ -2260,8 +2296,35 @@ def check_recovery(binary, up):
                         ai.proc.kill()
                         ai.proc.wait(timeout=5)
                 assert not cancellations, cancellations
+                before_tip = tip(repo)
+                checkpoint = f"{repo}/askai-journal/recovery/jobs/{jid}"
+                legacy = None
+                if replay == "legacy":
+                    with open(checkpoint, "rb") as file:
+                        legacy = file.read()
+                    offset, sequence = 0, 0
+                    while offset < len(legacy):
+                        sequence = int.from_bytes(legacy[offset + 8:offset + 16], "big")
+                        offset += 120 + int.from_bytes(legacy[offset + 16:offset + 24], "big")
+                    # Old WALs contain raw stream and client messages among the
+                    # checkpoints. Migration must leave that evidence untouched
+                    # and exclude it from the new bounded private snapshots.
+                    legacy += legacy_record(jid, "stream", prefix, sequence + 1)
+                    legacy += legacy_record(jid, "message", b"LEGACY_RAW_MESSAGE_SENTINEL", sequence + 2)
+                    legacy += b"incomplete legacy tail"
+                    wal = f"{repo}/askai-journal/recovery/records.wal"
+                    with open(wal, "wb") as file:
+                        file.write(legacy)
+                    os.chmod(wal, 0o600)
+                    os.unlink(checkpoint)
                 with Askai(binary, *args, env=env) as restarted:
                     result = poll(restarted, jid)
+                    if replay in ("changed", "short", "empty"):
+                        assert result.get("isError"), (replay, result)
+                        assert thoughts(repo) == [expected_thought], (replay, thoughts(repo))
+                        assert tip(repo) == before_tip, (replay, tip(repo), before_tip)
+                        assert len(creations) == len(retrievals) == 1, (creations, retrievals)
+                        continue
                     assert not result.get("isError") and text_of(result) == "before after", result
                     assert len(creations) == 1 and len(retrievals) == 1, (creations, retrievals)
                     got = retrievals[0]
@@ -2274,30 +2337,49 @@ def check_recovery(binary, up):
                     if fmt == "openai":
                         assert parsed.path == "/v1/stream", got
                         assert query["conv_id"] == [creations[0]["headers"]["x-conversation-id"]], got
-                        assert query["from"] == [str(len(prefix))], (got, len(prefix))
+                        assert query["from"] == ["0"], got
                         assert "background" not in creations[0]["body"], creations[0]
                     else:
                         path = re.sub(r"%[0-9a-fA-F]{2}", lambda m: m[0].upper(), parsed.path)
                         assert path == endpoint + "/" + urllib.parse.quote(provider_id, safe=""), got
                         assert query["stream"] == ["true"], got
-                        cursor = ("starting_after", "22") if fmt == "responses" else ("last_event_id", "ev+cursor/2")
-                        assert query[cursor[0]] == [cursor[1]], got
+                        assert "starting_after" not in query and "last_event_id" not in query, got
                         assert creations[0]["body"]["background"] is True, creations[0]
-                    wait_for(lambda: committed(repo, "before after"), seconds=10)
+                    wait_for(lambda: checkpointed(repo, "before after"), seconds=10)
+                    assert thoughts(repo) == [expected_thought], thoughts(repo)
+                    archived = subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q",
+                                               "before after", "refs/heads/reasoning/recovery"],
+                                              capture_output=True)
+                    assert archived.returncode == 1, archived.stderr
+                    commits = subprocess.run(["git", "--git-dir", repo, "rev-list", "--count",
+                                              "refs/heads/reasoning/recovery"],
+                                             check=True, capture_output=True, text=True)
+                    assert commits.stdout.strip() == ("2" if replay == "blocks" else "1"), commits.stdout
+                    if legacy is not None:
+                        with open(wal, "rb") as file:
+                            assert file.read() == legacy, "legacy WAL was changed"
+                        with open(checkpoint, "rb") as file:
+                            migrated = file.read()
+                        assert b"LEGACY_RAW_MESSAGE_SENTINEL" not in migrated
+                        assert b"response.reasoning_text.delta" not in migrated
                 # The completed local result is also durable.  This poll
                 # must neither retrieve the stream nor create a generation.
                 with Askai(binary, *args, env=env) as completed:
                     result = poll(completed, jid)
                     assert not result.get("isError") and text_of(result) == "before after", result
                     assert len(creations) == len(retrievals) == 1
+                    if legacy is not None:
+                        with open(wal, "rb") as file:
+                            assert file.read() == legacy, "second restart changed the legacy WAL"
                 assert not cancellations, cancellations
     finally:
         for gate in gates:
             gate.release.set()
         up.reply, up.retrieve, up.delete = held
-    print("recovery: durable raw streams and reasoning, SIGKILL and graceful restart, "
-          "provider ids, exact cloud cursors and llama byte offsets, current auth, "
-          "no duplicate creations and completed local job retention: PASS")
+    print("recovery: private checkpoints survive SIGKILL and graceful restart, "
+          "provider generations replay from zero without duplicated thoughts, "
+          "mismatched/short/missing reasoning rejected, multiblock replay, legacy migration "
+          "and second restart without raw-event duplication: PASS")
 
 
 def check_recovery_tools(binary, up):
@@ -2356,7 +2438,7 @@ def check_recovery_tools(binary, up):
                     if request["path"] == "/props":
                         return 404, {}
                     resumes.append(request)
-                    return 200, Stream(wire=suffix)
+                    return 200, Stream(wire=prefix + suffix)
                 up.reply, up.retrieve = reply, retrieve
                 args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
                         "--upstream-tools", "--git", repo, "--slots", "2", "--context", "8000",
@@ -2378,10 +2460,12 @@ def check_recovery_tools(binary, up):
                         assert any(i.get("type") == "function_call_output" and
                                    "durable tool result" in i["output"] for i in given), given
                         def captured():
-                            return subprocess.run(["git", "--git-dir", archive, "grep", "-F", "-q",
-                                                   "response_after_tool", "refs/heads/transcripts/tool-recovery",
-                                                   "--", "records"], stdout=subprocess.DEVNULL,
-                                                  stderr=subprocess.DEVNULL).returncode == 0
+                            path = f"{archive}/askai-journal/tool-recovery/jobs/{jid}"
+                            try:
+                                with open(path, "rb") as file:
+                                    return b"response_after_tool" in file.read()
+                            except FileNotFoundError:
+                                return False
                         wait_for(captured, seconds=10)
                     ai.proc.kill()
                     assert ai.proc.wait(timeout=5) == -signal.SIGKILL
@@ -2405,7 +2489,7 @@ def check_recovery_tools(binary, up):
                     else:
                         assert not result.get("isError") and result["content"][0]["text"] == "continued answer", result
                         assert len(creates) == 2 and len(resumes) == 1, (creates, resumes)
-                        assert resumes[0]["path"] == "/v1/responses/response_after_tool?stream=true&starting_after=1", resumes
+                        assert resumes[0]["path"] == "/v1/responses/response_after_tool?stream=true", resumes
                     with open(marker) as f:
                         assert f.read() == "launched\n", "a tool was executed twice"
     finally:
@@ -2417,8 +2501,8 @@ def check_recovery_tools(binary, up):
 
 
 def check_durable_cancel(binary, up):
-    """Explicit cancellation wins over an outstanding stream checkpoint,
-    reaches the provider, and remains cancelled after process restart."""
+    """Cancellation preserves received thoughts, reaches the provider once,
+    and remains cancelled in the private checkpoint after restart."""
     hold = up.reply, up.delete, up.retrieve
     streams = []
     class Staged(Stream):
@@ -2446,29 +2530,24 @@ def check_durable_cancel(binary, up):
     try:
         for fmt in ("responses", "interactions", "openai"):
             with tempfile.TemporaryDirectory() as d:
-                flag, blocked = f"{d}/delay", f"{d}/committing"
-                os.mkdir(f"{d}/bin")
-                with open(f"{d}/bin/git", "w") as f:
-                    f.write('#!/bin/sh\ncase " $* " in *" fast-import "*)\n'
-                            f'  if test -f {shlex.quote(flag)}; then\n'
-                            f'    touch {shlex.quote(blocked)}; sleep 0.2\n  fi;;\n'
-                            f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
-                os.chmod(f"{d}/bin/git", 0o755)
                 if fmt == "responses":
                     first = [(None, {"type": "response.created", "sequence_number": 0,
                                      "response": {"id": "cancel_job", "status": "in_progress"}})]
-                    second = [(None, {"type": "response.output_text.delta", "sequence_number": 1,
-                                      "delta": "discard on cancellation"})]
+                    second = [(None, {"type": "response.reasoning_text.delta", "sequence_number": 1,
+                                      "delta": "preserve on cancellation"})]
                     endpoint = "/v1/responses"
                 elif fmt == "interactions":
                     first = [(None, {"event_type": "interaction.created", "event_id": "created",
                                      "interaction": {"id": "cancel_job", "status": "in_progress"}})]
                     second = [(None, {"event_type": "step.start", "event_id": "step",
-                                      "index": 0, "step": {"type": "model_output"}})]
+                                      "index": 0, "step": {"type": "thought"}}),
+                              (None, {"event_type": "step.delta", "event_id": "thought",
+                                      "index": 0, "delta": {"type": "thought_summary",
+                                      "content": {"type": "text", "text": "preserve on cancellation"}}})]
                     endpoint = "/v1beta/interactions"
                 else:
                     first = [(None, {"choices": [{"index": 0, "delta": {"role": "assistant"}}]})]
-                    second = [(None, {"choices": [{"index": 0, "delta": {"content": "cancel me"}}]})]
+                    second = [(None, {"choices": [{"index": 0, "delta": {"reasoning_content": "preserve on cancellation"}}]})]
                     endpoint = "/v1/chat/completions"
                 stream = Staged(sse_wire(first), sse_wire(second))
                 creations, cancels, resumes = [], [], []
@@ -2485,20 +2564,24 @@ def check_durable_cancel(binary, up):
                         "--participant", "cancel", "--transcripts", f"{d}/transcripts.git")
                 if fmt == "openai":
                     args += ("-p", "llama")
-                env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
-                with Askai(binary, *args, env=env) as ai:
+                with Askai(binary, *args) as ai:
                     result = call(ai, {"prompt": "cancel while committing"})
                     match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
                     assert match, result
                     jid = match.group(1)
                     wait_for(lambda: ai.metrics()["askai_upstream_chunks_total"] >= 1)
-                    with open(flag, "w"):
-                        pass
                     stream.advance.set()
-                    wait_for(lambda: os.path.exists(blocked))
+                    def preserved():
+                        root = f"{d}/transcripts.git/askai-journal/cancel/reasoning"
+                        for directory, _, files in os.walk(root):
+                            for name in files:
+                                with open(os.path.join(directory, name), "rb") as file:
+                                    if file.read() == b"preserve on cancellation":
+                                        return True
+                        return False
+                    wait_for(preserved)
                     result = call(ai, {"job": jid, "action": "cancel"})
                     assert not result.get("isError") and "cancelling job " + jid in text_of(result), result
-                    os.unlink(flag)
                     stream.release.set()
                     wait_for(lambda: cancelled(ai, jid), seconds=10)
                     wait_for(lambda: len(cancels) == 1)
@@ -2510,60 +2593,81 @@ def check_durable_cancel(binary, up):
                             [creations[0]["headers"]["x-conversation-id"]], cancels
                     else:
                         assert cancels[0]["path"] == endpoint + "/cancel_job/cancel", cancels
-                with Askai(binary, *args, env=env) as ai:
+                with Askai(binary, *args) as ai:
                     wait_for(lambda: cancelled(ai, jid), seconds=10)
                     assert len(creations) == len(cancels) == 1 and not resumes, (creations, cancels, resumes)
+                    assert preserved(), "cancellation discarded the received thoughts"
     finally:
         for stream in streams:
             stream.advance.set()
             stream.release.set()
         up.reply, up.delete, up.retrieve = hold
-    print("durable cancel: pending stream commit drained, provider cancelled once, "
-          "cancelled result retained after restart for cloud and llama: PASS")
+    print("durable cancel: received thoughts preserved, provider cancelled once, "
+          "private cancelled result retained after restart for cloud and llama: PASS")
 
 
 def check_archive_failure(binary, up):
-    """A Git checkpoint failure cannot acknowledge a durable background
-    job or submit its provider request as if its state had been saved."""
-    with tempfile.TemporaryDirectory() as d:
-        os.mkdir(f"{d}/bin")
-        flag = f"{d}/fail-git"
-        with open(f"{d}/bin/git", "w") as f:
-            f.write('#!/bin/sh\ncase " $* " in *" fast-import "*)\n'
-                    f'  if test -f {shlex.quote(flag)}; then exit 42; fi;;\n'
-                    f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
-        os.chmod(f"{d}/bin/git", 0o755)
-        with Askai(binary, "-u", up.url(), "--background", "--slots", "2",
-                   "--participant", "archive-failure", "--transcripts", f"{d}/transcripts.git",
-                   env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
-            with open(flag, "w"):
-                pass
-            before = len(up.requests)
-            status, _, body = ai.rpc("tools/call", {"name": "ask_ai",
-                                                   "arguments": {"prompt": "must be saved first"}})
-            assert status in (200, 500), (status, body)
-            if "error" in body:
-                message = body["error"]["message"]
-            else:
-                result = body["result"]
-                assert result.get("isError"), result
-                message = text_of(result)
-            assert any(word in message.lower() for word in ("persist", "journal", "archive", "storage")), message
-            assert "Started job" not in message and len(up.requests) == before, (message, up.requests[before:])
-    print("archive failure: checkpoint failure is visible and prevents provider submission: PASS")
+    """A thought commit failure is visible without losing the appended file.
+    A private initial checkpoint does not need Git or prevent submission."""
+    hold = up.reply
+    up.reply = lambda request: (200, {"choices": [{"message": {
+        "role": "assistant", "reasoning_content": "preserved after failed Git commit",
+        "content": "answer"}, "finish_reason": "stop"}]})
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(f"{d}/bin")
+            flag = f"{d}/fail-git"
+            with open(f"{d}/bin/git", "w") as f:
+                f.write('#!/bin/sh\ncase " $* " in *" fast-import "*)\n'
+                        f'  if test -f {shlex.quote(flag)}; then exit 42; fi;;\n'
+                        f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
+            os.chmod(f"{d}/bin/git", 0o755)
+            with Askai(binary, "-u", up.url(), "--background", "--slots", "2",
+                       "--participant", "archive-failure", "--transcripts", f"{d}/transcripts.git",
+                       env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
+                with open(flag, "w"):
+                    pass
+                before = len(up.requests)
+                status, _, body = ai.rpc("tools/call", {"name": "ask_ai",
+                                                       "arguments": {"prompt": "save thoughts"}})
+                assert status == 200 and "result" in body, (status, body)
+                match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(body["result"]))
+                assert match, body
+                jid = match.group(1)
+                failures = []
+                def failed():
+                    status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": {"job": jid}})
+                    assert status == 200 and "result" in body, (status, body)
+                    if body["result"].get("isError"):
+                        failures.append(text_of(body["result"]))
+                        return True
+                    return False
+                wait_for(failed, seconds=10)
+                assert len(up.requests) == before + 1, up.requests[before:]
+                assert any(word in failures[0].lower() for word in
+                           ("persist", "journal", "archive", "storage")), failures
+                files = []
+                root = f"{d}/transcripts.git/askai-journal/archive-failure/reasoning"
+                for directory, _, names in os.walk(root):
+                    for name in names:
+                        with open(os.path.join(directory, name), "rb") as file:
+                            files.append(file.read())
+                assert files == [b"preserved after failed Git commit"], files
+    finally:
+        up.reply = hold
+    print("archive failure: provider submission uses a private checkpoint, Git failure "
+          "is reported and received plaintext survives: PASS")
 
 
 def check_journal_repair(binary, up):
-    """The durable log rebuilds missing Git checkpoints and ignores only
-    an incomplete final record.  Corruption inside a complete record is
-    rejected without truncating evidence or creating provider work."""
+    """Recovery checkpoints are independent of Git. Atomic snapshots cannot
+    have partial records; corruption must fail without truncating evidence."""
     hold = up.reply
     up.reply = lambda request: (200, ANSWERS["openai"])
     try:
         with tempfile.TemporaryDirectory() as d:
             repo = f"{d}/transcripts.git"
-            ref = "refs/heads/transcripts/integrity"
-            wal = f"{repo}/askai-journal/integrity/records.wal"
+            ref = "refs/heads/reasoning/integrity"
             args = ("-u", up.url(), "--background", "--slots", "2", "--participant", "integrity",
                     "--transcripts", repo)
             def call(ai, arguments):
@@ -2581,38 +2685,39 @@ def check_journal_repair(binary, up):
                 assert match, result
                 jid = match.group(1)
                 wait_for(lambda: completed(ai, jid), seconds=10)
-            with open(wal, "rb") as f:
+            checkpoint = f"{repo}/askai-journal/integrity/jobs/{jid}"
+            with open(checkpoint, "rb") as f:
                 original = f.read()
             assert original and b"integrity prompt" in original
             subprocess.run(["git", "--git-dir", repo, "update-ref", "-d", ref], check=True)
-            with open(wal, "ab") as f:
-                f.write(b"an incomplete final record")
             with Askai(binary, *args) as ai:
                 wait_for(lambda: completed(ai, jid), seconds=10)
-                subprocess.run(["git", "--git-dir", repo, "show-ref", "--verify", "--quiet", ref], check=True)
-                assert os.path.getsize(wal) == len(original), (os.path.getsize(wal), len(original))
-                assert len(up.requests) == creates + 1, "journal repair submitted a new generation"
+                assert len(up.requests) == creates + 1, "checkpoint restore submitted a generation"
+                # Reading a checkpoint never imports request/result data into Git.
+                absent = subprocess.run(["git", "--git-dir", repo, "show-ref", "--verify", "--quiet", ref])
+                assert absent.returncode == 1, absent.returncode
             corrupt = bytearray(original)
             corrupt[original.index(b"integrity prompt")] ^= 1
-            with open(wal, "wb") as f:
-                f.write(corrupt)
-            run = subprocess.run([binary, "-l", "127.0.0.1:0", *args],
-                                 env={k: v for k, v in os.environ.items() if k not in KEY_VARS},
-                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
-            assert run.returncode != 0 and ("transcript" in run.stderr.lower() or
-                                           "journal" in run.stderr.lower()), (run.returncode, run.stderr)
-            with open(wal, "rb") as f:
-                assert f.read() == corrupt, "complete corrupt record was silently truncated"
-            assert len(up.requests) == creates + 1
+            for damaged in (bytes(corrupt), original[:-1]):
+                with open(checkpoint, "wb") as f:
+                    f.write(damaged)
+                run = subprocess.run([binary, "-l", "127.0.0.1:0", *args],
+                                     env={k: v for k, v in os.environ.items() if k not in KEY_VARS},
+                                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+                assert run.returncode != 0 and ("transcript" in run.stderr.lower() or
+                                               "journal" in run.stderr.lower()), (run.returncode, run.stderr)
+                with open(checkpoint, "rb") as f:
+                    assert f.read() == damaged, "damaged checkpoint was silently truncated"
+                assert len(up.requests) == creates + 1
     finally:
         up.reply = hold
-    print("journal repair: missing Git checkpoint rebuilt, incomplete tail "
-          "truncated, complete-record corruption rejected without data loss: PASS")
+    print("checkpoint integrity: restore independent of Git, corrupted or truncated "
+          "atomic snapshots rejected without discarding evidence: PASS")
 
 
 def check_shared_transcripts(binary, up):
-    """Two participants checkpoint their simultaneous requests and streams
-    into separate branches of the same default transcript repository."""
+    """Two participants archive thoughts on independent branches of the same
+    default repository, with requests and answers excluded from Git."""
     hold = up.reply
     def reply(request):
         prompt = request["body"]["messages"][0]["content"]
@@ -2665,24 +2770,26 @@ def check_shared_transcripts(binary, up):
                 assert not errors and all(not worker.is_alive() for worker in workers), errors
                 assert results.keys() == {"alice", "bob"}, results
             branches = subprocess.run(["git", "--git-dir", repo, "for-each-ref", "--format=%(refname)",
-                                       "refs/heads/transcripts/"], check=True, capture_output=True,
+                                       "refs/heads/reasoning/"], check=True, capture_output=True,
                                       text=True).stdout.splitlines()
-            assert set(branches) == {f"refs/heads/transcripts/{name}" for name in ("alice", "bob")}, branches
+            assert set(branches) == {f"refs/heads/reasoning/{name}" for name in ("alice", "bob")}, branches
             for name in ("alice", "bob"):
-                ref = f"refs/heads/transcripts/{name}"
-                for marker in (f"question {name}", f"reasoning for {name}", f"answer for {name}"):
-                    subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q", marker, ref,
-                                    "--", "records"], check=True)
+                ref = f"refs/heads/reasoning/{name}"
+                subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q",
+                                f"reasoning for {name}", ref, "--", "reasoning"], check=True)
+                for marker in (f"question {name}", f"answer for {name}"):
+                    run = subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q", marker, ref])
+                    assert run.returncode == 1, (ref, marker)
                 peer = "bob" if name == "alice" else "alice"
-                run = subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q", f"question {peer}",
-                                      ref, "--", "records"])
+                run = subprocess.run(["git", "--git-dir", repo, "grep", "-F", "-q", f"reasoning for {peer}",
+                                      ref, "--", "reasoning"])
                 assert run.returncode == 1, (ref, peer)
             subprocess.run(["git", "--git-dir", repo, "fsck", "--full", "--strict", "--no-reflogs"],
                            check=True, capture_output=True)
     finally:
         up.reply = hold
     print("shared transcripts: concurrent participants, separate branches, committed "
-          "requests/reasoning/results and intact shared Git objects: PASS")
+          "reasoning only and intact shared Git objects: PASS")
 
 
 def check_http(binary, up):

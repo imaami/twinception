@@ -389,7 +389,7 @@ continue its notes and recover its jobs.
 #### `transcripts`
 
 The top-level member `transcripts` (`--transcripts PATH`) names a separate
-bare Git repository for automatic request and response transcripts.  With
+bare Git repository for decoded upstream reasoning text. With
 notes configured, its default is the notes path followed by
 `.transcripts.git`; trailing slashes are removed first.  Without notes,
 `upstream.background: true` defaults to
@@ -403,6 +403,19 @@ notes tool does not expose it.  Missing transcript path components are
 created with mode 0700; symbolic links and `..` components are refused.
 Two live instances cannot write to the same transcript repository as the
 same participant.  Both options need a restart.
+
+Thought deltas append to private plaintext files while reasoning is in
+progress. The writer syncs and commits a file when reasoning ends, rather
+than committing each event. Git contains only concatenated reasoning text
+on `reasoning/PARTICIPANT`; raw JSON, answer text and protocol envelopes
+are not archived. Interrupted files remain available on disk.
+
+Background recovery keeps bounded private checkpoints alongside the
+repository, outside Git. Restoring a job now requires the provider to replay
+its current turn from the beginning; saved thought prefixes are checked to
+avoid duplicate appends. See [automatic transcripts](../README.md#automatic-transcripts)
+for file locations, checkpoint limits and legacy archive handling. Existing
+event archives are preserved and do not shrink automatically.
 
 For two instances sharing one notes session:
 

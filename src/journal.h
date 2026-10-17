@@ -1,18 +1,26 @@
-/** @file Durable provider transcripts, in a repository separate from notes.
+/** @file Reasoning text archives and bounded, private recovery snapshots.
  *
- * Accepted records pass through a bounded queue to one writer thread.  The
- * writer appends checksummed records to its participant's write-ahead log,
- * synchronizes it, and commits a batch to refs/heads/transcripts/PARTICIPANT.
- * A completion means both the log and Git commit are durable.  Startup
- * imports complete records left in the log by an interrupted Git commit.
- * Each participant has an exclusive lock; distinct participants may share
- * the repository.  No disk or Git operation runs on an event loop.
+ * One worker appends decoded reasoning to persistent plain files and commits
+ * them only at reasoning boundaries. Recovery controls never enter Git.
+ * Completed checkpoints expire when the private recovery cache reaches its
+ * 1024-job or 256 MiB limit. A terminal-record reserve adds at most 16 MiB
+ * plus framing; atomic replacement uses at most 64 MiB of staging space.
+ * Active and legacy-migrated jobs are retained. Each participant has an
+ * exclusive writer lock. No disk or Git operation runs on an event loop.
  */
 #ifndef TWINCEPTION_SRC_JOURNAL_H_
 #define TWINCEPTION_SRC_JOURNAL_H_
 
-#include <stddef.h>
-#include <stdint.h>
+#ifdef __cplusplus
+# include <cstddef>
+# include <cstdint>
+# define STD(x) std::x
+extern "C" {
+#else
+# include <stddef.h>
+# include <stdint.h>
+# define STD(x) x
+#endif
 
 struct journal;
 struct loop;
@@ -26,8 +34,8 @@ enum {
 
 struct journal_record {
 	struct journal_record *next;
-	uint64_t               sequence;
-	size_t                 len;
+	STD(uint64_t)          sequence;
+	STD(size_t)            len;
 	char                   id[JOURNAL_ID + 1];
 	char                   kind[JOURNAL_KIND + 1];
 	unsigned char          data[];
@@ -43,7 +51,7 @@ typedef void journal_load_cb (struct loop *loop, void *arg, int error,
  *  symbolic links and parent-directory components are refused. */
 extern struct journal *
 journal_create (char const *path, char const *participant,
-                char *why, size_t why_len, int *e);
+                char *why, STD(size_t) why_len, int *e);
 
 /** Stops accepting writes, drains the queue, and joins the writer.  Call
  *  after producers stop and before any destination loop is finalized.
@@ -56,7 +64,8 @@ extern void journal_destroy (struct journal **p_journal);
 
 /** Copies and queues one record, or returns an errno without accepting it.
  *  EAGAIN means the queue is full.  A callback, if supplied, runs on loop
- *  after persistence; otherwise journal_error() reports asynchronous errors.
+ *  after the private recovery snapshot is durable; otherwise journal_error()
+ *  reports asynchronous errors. Raw stream/body/message records are ignored.
  *  Records of kind "cancel" with at most 1024 payload bytes can use a
  *  reserved allowance of 1024 queue entries and 2 MiB beyond the ordinary
  *  256-entry/32 MiB limit, so a full stream queue cannot prevent recording
@@ -64,28 +73,52 @@ extern void journal_destroy (struct journal **p_journal);
  *  A null journal disables recording and returns 0 (without a callback). */
 extern int
 journal_put (struct journal *journal, char const *id, char const *kind,
-             void const *data, size_t len, struct loop *loop,
+             void const *data, STD(size_t) len, struct loop *loop,
              journal_done_cb *done, void *arg);
 
+/** Append decoded reasoning at its logical byte offset. Replayed bytes
+ * must match the existing file; only a new suffix is appended. Completion
+ * means the bytes reached the file, not that each delta was synchronized.
+ * The file survives interruption and is synchronized at thought_end().
+ * An empty write at offset zero begins a new replay verification attempt;
+ * it resets the verified prefix without creating or changing a file. */
+extern int
+journal_thought (struct journal *journal, char const *id, STD(uint32_t) turn,
+                 STD(uint64_t) offset, void const *data, STD(size_t) len,
+                 struct loop *loop, journal_done_cb *done, void *arg);
+
+/** Synchronize and commit this turn's reasoning if it changed. Unchanged
+ * content is a successful asynchronous no-op. Intermediate boundaries leave
+ * an incompletely replayed existing file alone; final requires its entire
+ * prefix to have been verified. Missing files are successful no-ops. */
+extern int
+journal_thought_end (struct journal *journal, char const *id, STD(uint32_t) turn,
+                     bool final, struct loop *loop, journal_done_cb *done, void *arg);
+
 /** Loads matching records in sequence order on the writer.  Null id/kind
- *  matches all.  The callback owns its records even on error, and releases
+ *  matches all. New-format snapshots contain only recovery controls. The
+ *  callback owns its records even on error, and releases
  *  them with journal_records_destroy().  Reads exceeding JOURNAL_LOAD_MAX
  *  fail with EFBIG instead of growing without bound. */
 extern int
 journal_load (struct journal *journal, char const *id, char const *kind,
               struct loop *loop, journal_load_cb *done, void *arg);
 
-/** Loads only the newest "state" record of one job and the records after
- *  it.  Older turns remain in the archive but do not consume the recovery
- *  memory limit.  No state returns an empty list.  Ownership and callbacks
- *  follow journal_load(). */
+/** Loads the latest turn's private recovery controls. Missing new-format
+ * snapshots fall back to the legacy WAL, read-only. No state returns an
+ * empty list. Ownership and callbacks follow journal_load(). */
 extern int
 journal_load_current (struct journal *journal, char const *id,
                       struct loop *loop, journal_load_cb *done, void *arg);
 
 extern void journal_records_destroy (struct journal_record **p_records);
 extern int journal_error (struct journal const *journal);
-extern uint64_t journal_seed (struct journal const *journal);
+extern STD(uint64_t) journal_seed (struct journal const *journal);
 extern char const *journal_path (struct journal const *journal);
 
+#ifdef __cplusplus
+}
+#endif
+
+#undef STD
 #endif /* TWINCEPTION_SRC_JOURNAL_H_ */

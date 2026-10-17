@@ -107,7 +107,9 @@ struct ai_event {
 	char const *reason;     /**< the answer's stop reason, or nullptr */
 	uint32_t    used;       /**< the tokens of the request and the answer, if
 	                             it says; else 0 */
-	uint16_t    thought;    /**< bool: the event carries the model's thinking */
+	uint8_t     thought;    /**< bool: the event carries the model's thinking */
+	uint8_t     thought_end; /**< bool: a whole reasoning item, block or step
+	                              explicitly ended, after this event's pieces */
 	uint8_t     truncated;  /**< bool: the reason is the output token limit */
 	uint8_t     end;        /**< bool: the answer says it has ended */
 };
@@ -166,7 +168,8 @@ struct ai_reader {
 	uint32_t calls;  /**< the answer's tool calls so far, in Gemini's
 	                      generateContent, which numbers none; 1 + the step
 	                      of the last function call that started, in
-	                      Gemini's Interactions */
+	                      Gemini's Interactions; 1 + the open thinking block
+	                      in Anthropic's Messages, else 0 */
 	union {
 		uint32_t input;  /**< the request's tokens, in Anthropic's
 		                      Messages, which says them first and the
@@ -374,5 +377,14 @@ ai_answer (enum ai_api         api,
            size_t              len,
            struct dstr        *text,
            bool               *failed);
+
+/** Append only exposed reasoning text from a complete provider response
+ *  @p root to @p text. Strings are decoded and concatenated without inserted
+ *  separators; signatures, encrypted payloads and answer text are omitted.
+ *  Missing reasoning is not an error. The caller retains both objects. */
+extern int
+ai_thoughts (enum ai_api         api,
+             struct json_object *root,
+             struct dstr        *text);
 
 #endif /* TWINCEPTION_SRC_AI_H_ */
