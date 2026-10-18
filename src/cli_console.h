@@ -6,20 +6,12 @@
 #define TWINCEPTION_SRC_CLI_CONSOLE_H_
 
 #include "autocomplete.h"
+#include "cli_style.h"
 #include "cstr_view.h"
 
 struct cli_console;
 struct cli_io;
 struct cli_loop;
-
-enum cli_console_display {
-	CLI_CONSOLE_RESET,
-	CLI_CONSOLE_INFO,
-	CLI_CONSOLE_PROMPT,
-	CLI_CONSOLE_REASONING,
-	CLI_CONSOLE_USER_INPUT,
-	CLI_CONSOLE_ERROR,
-};
 
 /** The UI thread owns the console. loop and io outlive it. */
 extern struct cli_console *
@@ -80,6 +72,24 @@ extern int
 cli_console_remember (struct cli_console *console,
                       struct cstr_view    text);
 
+/** Classification only; called inside Readline and must not perform work. */
+typedef bool
+cli_console_immediate_fn (void            *context,
+                          struct cstr_view line);
+
+extern void
+cli_console_set_immediate (struct cli_console       *console,
+                           cli_console_immediate_fn *callback,
+                           void                     *context);
+
+/** Take an immediate command outside Readline, preserving a queued prompt.
+ * text has no appended newline. An occupied slot survives allocation errors.
+ * ready is false while Readline is active or when no command is pending. */
+extern int
+cli_console_take_immediate (struct cli_console *console,
+                            struct dstr        *text,
+                            bool               *ready);
+
 /** EOF is distinct from an empty submitted line. On error text is empty. */
 extern int
 cli_console_read (struct cli_console *console,
@@ -89,8 +99,8 @@ cli_console_read (struct cli_console *console,
                   char const         *prompt);
 
 extern int
-cli_console_set_display (struct cli_console       *console,
-                         enum cli_console_display  display);
+cli_console_set_display (struct cli_console *console,
+                         enum cli_style      display);
 
 /** Peer-supplied terminal controls are filtered, including UTF-8 C1 controls. */
 extern int

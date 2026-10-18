@@ -5,6 +5,7 @@ override SRC_askai-cli := \
   buf.c                   \
   cli.c                   \
   cli_client.c            \
+  cli_command.c           \
   cli_console.c           \
   cli_io.c                \
   cli_loop.c              \
@@ -13,6 +14,7 @@ override SRC_askai-cli := \
   cli_scrollback.c        \
   cli_signals.c           \
   cli_state.c             \
+  cli_style.c             \
   cli_ui.c                \
   cstr_view.c             \
   dstr.c                  \

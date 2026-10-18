@@ -65,6 +65,9 @@ int autocomplete_fixture (struct autocomplete *autocomplete)
 	struct cstr_view const opposite = CSTR_VIEW("other");
 	error = autocomplete_set_participants(autocomplete, participants,
 	                                      sizeof participants / sizeof *participants);
+	if (!error)
+		error = autocomplete_set_chat_participants(autocomplete, participants,
+		                                           sizeof participants / sizeof *participants);
 	if (error)
 		return error;
 	error = autocomplete_set_notebooks(autocomplete, notebooks, sizeof notebooks / sizeof *notebooks);

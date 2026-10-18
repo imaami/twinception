@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 
+#include "cli_style.h"
 #include "cstr_view.h"
 #include "dstr.h"
 #include "list.h"
@@ -17,6 +18,7 @@ struct cli_scrollback {
 	size_t      rows;
 	size_t      columns;
 	size_t      discarded;
+	size_t      styles;
 };
 
 extern void
@@ -29,6 +31,12 @@ cli_scrollback_fini (struct cli_scrollback *scrollback);
 extern int
 cli_scrollback_append (struct cli_scrollback *scrollback,
                        struct cstr_view       text);
+
+/** Retain a palette index with the text; adjacent equal styles coalesce. */
+extern int
+cli_scrollback_append_style (struct cli_scrollback *scrollback,
+                             struct cstr_view       text,
+                             enum cli_style         style);
 
 extern void
 cli_scrollback_scroll (struct cli_scrollback *scrollback,

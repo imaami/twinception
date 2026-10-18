@@ -185,13 +185,13 @@ def check_editing(binary):
         console.process.send_signal(signal.SIGWINCH)
         console.line(b"\x01RESIZED " + b"\x05 END\r", "RESIZED " + text + " END\n")
         console.line(b"alpha beta\x17gamma\r", "alpha gamma\n")
-        console.line(b"/he\t\r", "/help\n")
+        console.line(b"/he\t\r", "/help \n")
         (console.root / "path with space.txt").write_text("fixture")
-        console.line(b"/read path\t\r", "/read path with space.txt\n")
+        console.line(b"/read path\t\r", "/read path with space.txt \n")
         (console.root / "documents").mkdir()
         console.line(b"/read doc\tchild\r", "/read documents/child\n")
         (console.root / "story.txt").write_text("fixture")
-        console.line(b"/read stale.txt" + LEFT * 7 + b"\t\r", "/read story.txt\n")
+        console.line(b"/read stale.txt" + LEFT * 7 + b"\t\r", "/read story.txt \n")
         console.line(b"/read docstale/child" + LEFT * 11 + b"\t\r", "/read documents/child\n")
         console.finish()
     print("cli input editing: UTF-8, wrapping/resize, word erase and Tab: PASS")
@@ -215,6 +215,31 @@ def check_multiline(binary):
         console.line(UP + b"/\r", "first\nsecond\n")
         console.finish()
     print("cli input multiline: continuation, paste, explicit submit and whole-prompt recall: PASS")
+
+
+def check_completion_cursor(binary):
+    with Console(binary) as console:
+        (console.root / "only-file.txt").write_text("fixture")
+        console.line(b"/qu\t\tX\r", "/quit X\n")
+        console.line(b"/quit\t\tX\r", "/quit X\n")
+        console.line(b"/he\t\tX\r", "/help X\n")
+        console.line(b"/qu stale" + LEFT * 6 + b"\tX\r", "/quit Xstale\n")
+        console.line(b"/quit   stale" + LEFT * 8 + b"\tX\r", "/quit X  stale\n")
+        console.send(b"/read\t\tX")
+        console.until(lambda: b"> /read X\x1b[K" in console.output)
+        assert b"/read inputrc" not in console.output, "second Tab listed the next argument"
+        console.line(b"\r", "/read X\n")
+        console.finish()
+    with Console(binary, "--catalog") as console:
+        console.send(b"/tools\t\tX")
+        console.until(lambda: b"> /tools X\x1b[K" in console.output)
+        assert b"/tools git" not in console.output, "second Tab completed the next argument"
+        console.line(b"\r", "/tools X\n")
+        console.finish()
+    with Console(binary, inputrc='"\\C-t": possible-completions\n') as console:
+        console.line(b"/qu\x14X\r", "/quX\n")
+        console.finish()
+    print("cli input completion cursor: one separator, next word and explicit listing-only binding: PASS")
 
 
 def check_catalog(binary):
@@ -306,8 +331,8 @@ def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: cli-input.py CLI-INPUT-HARNESS")
     binary = os.path.abspath(sys.argv[1])
-    for check in (check_history, check_history_edits, check_editing, check_multiline, check_catalog, check_inputrc,
-                  check_signals, check_simple):
+    for check in (check_history, check_history_edits, check_editing, check_multiline, check_completion_cursor,
+                  check_catalog, check_inputrc, check_signals, check_simple):
         check(binary)
 
 

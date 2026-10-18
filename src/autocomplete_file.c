@@ -87,17 +87,18 @@ autocomplete_file_add (struct autocomplete_file *const file,
                        bool const                      is_directory,
                        struct cstr_view const          suffix)
 {
-	size_t const cursor = command.len + directory.len + name.len + is_directory;
+	size_t const cursor = command.len + directory.len + name.len + 1;
 	if (cursor > AUTOCOMPLETE_FILE_LIMIT ||
 	    suffix.len > AUTOCOMPLETE_FILE_LIMIT - cursor)
 		return E2BIG;
 	struct dstr *const line = &file->lines[index];
+	char const separator = is_directory ? '/' : ' ';
 	(void)dstr_clear(line);
 	if (!dstr_reserve(line, cursor + suffix.len) ||
 	    !dstr_cat_n(line, command.data, command.len) ||
 	    !dstr_cat_n(line, directory.data, directory.len) ||
 	    !dstr_cat_n(line, name.data, name.len) ||
-	    (is_directory && !dstr_cat_n(line, "/", 1)) ||
+	    !dstr_cat_n(line, &separator, 1) ||
 	    !dstr_cat_n(line, suffix.data, suffix.len))
 		return ENOMEM;
 	file->matches[index] = (struct autocomplete_match){
@@ -246,7 +247,7 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 			}
 			if (slash && !is_directory)
 				continue;
-			size_t const length = command.len + directory.len + name.len + is_directory + suffix.len;
+			size_t const length = command.len + directory.len + name.len + 1 + suffix.len;
 			if (length >= AUTOCOMPLETE_FILE_LIMIT - bytes)
 				break;
 			e = autocomplete_file_add(file, used, command, directory, name, is_directory, suffix);

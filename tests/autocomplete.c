@@ -12,6 +12,7 @@
 
 #include "autocomplete_file.h"
 #include "autocomplete_fixture.h"
+#include "cli_command.h"
 
 /* The linker wraps calls in our objects, including dstr. JSON-c's own
  * allocations remain inside the shared library and are not counted. */
@@ -82,6 +83,17 @@ static void autocomplete_empty (struct autocomplete *catalog, struct cstr_view i
 	size_t count = 0;
 	assert(!autocomplete_complete(catalog, input, cursor, &matches, &count));
 	assert(!count);
+}
+
+static void autocomplete_only (struct autocomplete *catalog, struct cstr_view input,
+                               size_t cursor, struct cstr_view expected, size_t point)
+{
+	struct autocomplete_match const *matches = nullptr;
+	size_t count = 0;
+	assert(!autocomplete_complete(catalog, input, cursor, &matches, &count));
+	assert(count == 1);
+	assert(cstr_view_equal(matches[0].line, expected));
+	assert(matches[0].cursor == point);
 }
 
 static struct json_object *autocomplete_parse (struct autocomplete *catalog,
@@ -202,7 +214,7 @@ static void autocomplete_files(void)
 	struct cstr_view input = {line, (size_t)length};
 	assert(!autocomplete_file_complete(files, input, input.len, commands, 1, &matches, &count));
 	static struct cstr_view const expected[] = {
-		CSTR_VIEW("dangling"), CSTR_VIEW("folder/"), CSTR_VIEW("link-dir/"), CSTR_VIEW("link-file"), CSTR_VIEW("normal"),
+		CSTR_VIEW("dangling "), CSTR_VIEW("folder/"), CSTR_VIEW("link-dir/"), CSTR_VIEW("link-file "), CSTR_VIEW("normal "),
 	};
 	assert(count == sizeof expected / sizeof *expected);
 	for (size_t i = 0; i < count; ++i) {
@@ -218,6 +230,13 @@ static void autocomplete_files(void)
 	}
 	autocomplete_count_allocations = false;
 	assert(!autocomplete_allocations && !autocomplete_frees);
+	char complete[sizeof directory + sizeof("/read /normal ")];
+	length = snprintf(complete, sizeof complete, "/read %s/normal ", directory);
+	assert(length > 0 && length < (int)sizeof complete);
+	struct cstr_view completed = {complete, (size_t)length};
+	assert(!autocomplete_file_complete(files, completed, completed.len - 1, commands, 1, &matches, &count));
+	assert(count == 1 && cstr_view_equal(matches[0].line, completed));
+	assert(matches[0].cursor == completed.len);
 	for (size_t i = 0; i < sizeof names / sizeof *names; ++i)
 		assert(!unlinkat(fd, names[i], 0));
 	assert(!unlinkat(fd, "dangling", 0));
@@ -305,18 +324,140 @@ static void autocomplete_limits (struct autocomplete *catalog)
 	line = nullptr;
 }
 
-int main(void)
+static void autocomplete_commands (void)
+{
+	struct cli_command_matches all = cli_command_prefix(CSTR_VIEW(""));
+	assert(all.count == CLI_COMMAND_COUNT);
+	for (size_t i = 0; i < all.count; ++i) {
+		struct cli_command const *command = &all.data[i];
+		assert(cli_command_at(command->id) == command);
+		assert(cli_command_find(command->name) == command);
+		assert(cstr_view_starts(command->completion, command->name));
+		assert(cstr_view_starts(command->usage, command->name));
+		if (i)
+			assert(cstr_view_compare(all.data[i - 1].name, command->name) < 0);
+		for (size_t length = 0; length <= command->name.len; ++length) {
+			struct cstr_view prefix = cstr_view_slice(command->name, 0, length);
+			struct cli_command_matches matches = cli_command_prefix(prefix);
+			size_t matched = 0;
+			for (size_t j = 0; j < all.count; ++j)
+				if (cstr_view_starts(all.data[j].name, prefix)) {
+					assert(matched < matches.count);
+					assert(&matches.data[matched++] == &all.data[j]);
+				}
+			assert(matched == matches.count);
+		}
+	}
+	assert(cli_command_prefix(CSTR_VIEW("/tool")).count == 2);
+	assert(cli_command_find((struct cstr_view){"/tools", 5})->id == CLI_COMMAND_TOOL);
+	assert(cli_command_find(CSTR_VIEW("/tools"))->id == CLI_COMMAND_TOOLS);
+	assert(!cli_command_find(CSTR_VIEW("/to")));
+	assert(!cli_command_find(CSTR_VIEW("/toolbox")));
+	assert(!cli_command_find(CSTR_VIEW("/tool ")));
+	assert(!cli_command_find(CSTR_VIEW("/tool\0")));
+	assert(!cli_command_prefix(CSTR_VIEW("/tool\0")).count);
+	assert(!cli_command_at(CLI_COMMAND_COUNT));
+	assert(!cli_command_at((enum cli_command_id)-1));
+}
+
+static void autocomplete_schema_flags (void)
+{
+	int error = 0;
+	struct autocomplete *catalog = autocomplete_create(&error);
+	assert(catalog && !error);
+	struct json_object *definition = json_tokener_parse(
+		"{\"name\":\"flags\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+		"\"participant\":{\"enum\":[]},\"recipient\":{\"enum\":true},"
+		"\"author\":{\"type\":null,\"enum\":null},"
+		"\"union\":{\"type\":[\"string\",\"integer\"],\"enum\":[\"42\",42]},"
+		"\"constant\":{\"type\":[\"boolean\",\"null\"],\"const\":null},"
+		"\"integer\":{\"type\":\"integer\"},\"number\":{\"type\":\"number\"},"
+		"\"nullable\":{\"type\":[\"boolean\",\"null\"]},\"any\":{},\"empty\":{\"type\":[]}}}}");
+	assert(definition && !autocomplete_add_tool(catalog, definition));
+	json_object_put(definition);
+	definition = nullptr;
+	struct cstr_view name = CSTR_VIEW("alice");
+	assert(!autocomplete_set_participants(catalog, &name, 1));
+	autocomplete_empty(catalog, CSTR_VIEW("/tool flags participant="), sizeof("/tool flags participant=") - 1);
+	autocomplete_empty(catalog, CSTR_VIEW("/tool flags recipient="), sizeof("/tool flags recipient=") - 1);
+	autocomplete_has(catalog, CSTR_VIEW("/tool flags author="), CSTR_VIEW("/tool flags author='alice'"), sizeof("/tool flags author=") - 1);
+	autocomplete_has(catalog, CSTR_VIEW("/tool flags union="), CSTR_VIEW("/tool flags union='42'"), sizeof("/tool flags union=") - 1);
+	autocomplete_has(catalog, CSTR_VIEW("/tool flags union="), CSTR_VIEW("/tool flags union=42"), sizeof("/tool flags union=") - 1);
+	autocomplete_has(catalog, CSTR_VIEW("/tool flags constant="), CSTR_VIEW("/tool flags constant=null"), sizeof("/tool flags constant=") - 1);
+	autocomplete_empty(catalog, CSTR_VIEW("/tool flags constant=t"), sizeof("/tool flags constant=t") - 1);
+	autocomplete_has(catalog, CSTR_VIEW("/tool flags nullable="), CSTR_VIEW("/tool flags nullable=true"), sizeof("/tool flags nullable=") - 1);
+	autocomplete_has(catalog, CSTR_VIEW("/tool flags nullable="), CSTR_VIEW("/tool flags nullable=null"), sizeof("/tool flags nullable=") - 1);
+	struct json_object *arguments = autocomplete_parse(catalog,
+		CSTR_VIEW("/tool flags union=42 integer=2.0 number=2 any='true'"), CSTR_VIEW("flags"));
+	struct json_object *value = nullptr;
+	assert(json_object_object_get_ex(arguments, "union", &value) && json_object_is_type(value, json_type_int));
+	assert(json_object_object_get_ex(arguments, "integer", &value) && json_object_is_type(value, json_type_double));
+	assert(json_object_object_get_ex(arguments, "number", &value) && json_object_is_type(value, json_type_int));
+	autocomplete_string(arguments, "any", CSTR_VIEW("true"));
+	json_object_put(arguments);
+	arguments = autocomplete_parse(catalog, CSTR_VIEW("/tool flags union='42'"), CSTR_VIEW("flags"));
+	autocomplete_string(arguments, "union", CSTR_VIEW("42"));
+	json_object_put(arguments);
+	arguments = nullptr;
+	autocomplete_bad(catalog, CSTR_VIEW("/tool flags integer=2.5"));
+	autocomplete_bad(catalog, CSTR_VIEW("/tool flags empty=true"));
+	autocomplete_destroy(&catalog);
+}
+
+static void autocomplete_chat_names (void)
 {
 	int error = 0;
 	struct autocomplete *catalog = autocomplete_create(&error);
 	assert(catalog && !error);
 	assert(!autocomplete_fixture(catalog));
+	static struct cstr_view const names[] = {CSTR_VIEW("rx6900xt"), CSTR_VIEW("rx9070xt")};
+	assert(!autocomplete_set_participants(catalog, names, sizeof names / sizeof *names));
+	assert(!autocomplete_set_chat_participants(catalog, names, 1));
+	autocomplete_only(catalog, CSTR_VIEW("@rx"), 3, CSTR_VIEW("@rx6900xt "), 10);
+	autocomplete_only(catalog, CSTR_VIEW("rx"), 2, CSTR_VIEW("rx6900xt: "), 10);
+	autocomplete_empty(catalog, CSTR_VIEW("@rx9"), 4);
+	assert(autocomplete_participant_count(catalog) == 2);
+	assert(cstr_view_equal(autocomplete_participant_at(catalog, 1), names[1]));
+	autocomplete_has(catalog, CSTR_VIEW("/tool git participant=rx9"),
+	                 CSTR_VIEW("/tool git participant=rx9070xt"), sizeof("/tool git participant=rx9") - 1);
+	/* A chat roster can contain several upstreams, independently of stored
+	 * notebook identities. Clearing it must not fall back to those identities. */
+	assert(!autocomplete_set_chat_participants(catalog, names, sizeof names / sizeof *names));
+	struct autocomplete_match const *matches = nullptr;
+	size_t count = 0;
+	assert(!autocomplete_complete(catalog, CSTR_VIEW("@rx"), 3, &matches, &count));
+	assert(count == 2);
+	assert(!autocomplete_set_chat_participants(catalog, nullptr, 0));
+	autocomplete_empty(catalog, CSTR_VIEW("@rx"), 3);
+	assert(autocomplete_participant_count(catalog) == 2);
+	autocomplete_destroy(&catalog);
+}
+
+int main(void)
+{
+	autocomplete_commands();
+	autocomplete_schema_flags();
+	autocomplete_chat_names();
+	int error = 0;
+	struct autocomplete *catalog = autocomplete_create(&error);
+	assert(catalog && !error);
+	assert(!autocomplete_fixture(catalog));
+	autocomplete_only(catalog, CSTR_VIEW("/qu"), 3, CSTR_VIEW("/quit "), 6);
+	autocomplete_only(catalog, CSTR_VIEW("/quit"), 5, CSTR_VIEW("/quit "), 6);
+	autocomplete_only(catalog, CSTR_VIEW("/quit "), 5, CSTR_VIEW("/quit "), 6);
+	autocomplete_only(catalog, CSTR_VIEW("/quit   "), 5, CSTR_VIEW("/quit   "), 6);
+	autocomplete_only(catalog, CSTR_VIEW("/he after"), 3, CSTR_VIEW("/help after"), 6);
+	autocomplete_only(catalog, CSTR_VIEW("/tools gi tail"), 9, CSTR_VIEW("/tools git tail"), 11);
 
 #define HAS(input, expected) autocomplete_has(catalog, CSTR_VIEW(input), CSTR_VIEW(expected), sizeof(input) - 1)
 #define AT(input, expected, cursor) autocomplete_has(catalog, CSTR_VIEW(input), CSTR_VIEW(expected), cursor)
 #define EMPTY(input) autocomplete_empty(catalog, CSTR_VIEW(input), sizeof(input) - 1)
 	HAS("/to", "/tool");
+	HAS("/to", "/tools");
+	HAS("/qu", "/quit");
 	HAS("/his", "/history");
+	HAS("/tools gi", "/tools git");
+	EMPTY("/toolbox gi");
 	HAS("/tool gi", "/tool git");
 	HAS("/tool git com", "/tool git command=");
 	HAS("/tool git command=lo", "/tool git command=log");
@@ -467,6 +608,7 @@ int main(void)
 		}
 	}
 	static struct cstr_view const invalid[] = {
+		CSTR_VIEW("/tools git"), CSTR_VIEW("/toolbox git"), CSTR_VIEW("/to git"),
 		CSTR_VIEW("/tool absent"), CSTR_VIEW("/tool git recursive=maybe"), CSTR_VIEW("/tool git count=1.5"),
 		CSTR_VIEW("/tool git message='unfinished"), CSTR_VIEW("/tool git command=log command=status"),
 		CSTR_VIEW("/tool git unknown=1"), CSTR_VIEW("/tool git options=no"), CSTR_VIEW("/tool git config=[]"),
@@ -483,6 +625,7 @@ int main(void)
 	assert(other && !error);
 	struct cstr_view carol = CSTR_VIEW("carol");
 	assert(!autocomplete_set_participants(other, &carol, 1));
+	assert(!autocomplete_set_chat_participants(other, &carol, 1));
 	autocomplete_empty(other, CSTR_VIEW("/tool gi"), sizeof("/tool gi") - 1);
 	autocomplete_empty(other, CSTR_VIEW("@al"), sizeof("@al") - 1);
 	autocomplete_has(other, CSTR_VIEW("@ca"), CSTR_VIEW("@carol"), sizeof("@ca") - 1);

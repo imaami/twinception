@@ -704,6 +704,10 @@ int cli_client_refresh(struct cli_client *client, struct cli_error *error)
 		e = cli_client_catalog_names(catalog, names, false);
 	if (!e)
 		e = cli_client_catalog_names(catalog, notebooks, true);
+	if (!e) {
+		struct cstr_view current = cstr_view_dstr(&participant);
+		e = autocomplete_set_chat_participants(catalog, &current, current.len ? 1 : 0);
+	}
 	if (e)
 		goto done;
 	if (files) {

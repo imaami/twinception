@@ -61,7 +61,16 @@ extern struct autocomplete_tool const *
 autocomplete_find_tool (struct autocomplete const *ac,
                         struct cstr_view           name);
 
-/** Copies, sorts and deduplicates safe names; keeps allocated capacity. */
+/** Copies, sorts and deduplicates names for chat mentions. Only include
+ * participants present in this chat, not identities discovered in storage.
+ * Keeps allocated capacity. */
+extern int
+autocomplete_set_chat_participants (struct autocomplete    *ac,
+                                    struct cstr_view const *names,
+                                    size_t                  count);
+
+/** Copies, sorts and deduplicates known notebook participant names, used
+ * for tool arguments and the participant listing. Keeps allocated capacity. */
 extern int
 autocomplete_set_participants (struct autocomplete    *ac,
                                struct cstr_view const *names,
