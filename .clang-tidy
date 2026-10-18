@@ -1,0 +1,31 @@
+---
+Checks:
+  - '*'
+  - '-altera-struct-pack-align'
+  - '-altera-unroll-loops'
+  - '-bugprone-easily-swappable-parameters'
+  - '-bugprone-sizeof-expression'
+  - '-concurrency-mt-unsafe'
+  - '-cppcoreguidelines-avoid-magic-numbers'
+  - '-google-readability-braces-around-statements'
+  - '-llvmlibc-restrict-system-libc-headers'
+  - '-readability-braces-around-statements'
+  - '-readability-function-cognitive-complexity'
+  - '-readability-identifier-length'
+  - '-readability-implicit-bool-conversion'
+  - '-readability-magic-numbers'
+  - '-readability-math-missing-parentheses'
+WarningsAsErrors: ''
+HeaderFileExtensions:
+  - h
+  - hpp
+ImplementationFileExtensions:
+  - c
+  - cpp
+HeaderFilterRegex: '.*'
+ExcludeHeaderFilterRegex: ''
+FormatStyle:     none
+CheckOptions:    {}
+SystemHeaders:   false
+...
+

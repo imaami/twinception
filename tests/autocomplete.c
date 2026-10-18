@@ -10,8 +10,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "autocomplete-file.h"
-#include "autocomplete-fixture.h"
+#include "autocomplete_file.h"
+#include "autocomplete_fixture.h"
 
 /* The linker wraps calls in our objects, including dstr. JSON-c's own
  * allocations remain inside the shared library and are not counted. */
@@ -52,10 +52,8 @@ void __wrap_free(void *ptr)
 	__real_free(ptr);
 }
 
-#define TEXT(s) ((struct autocomplete_text){s, sizeof(s) - 1})
-
-static void autocomplete_has (struct autocomplete *catalog, struct autocomplete_text input,
-                              struct autocomplete_text expected, size_t cursor)
+static void autocomplete_has (struct autocomplete *catalog, struct cstr_view input,
+                              struct cstr_view expected, size_t cursor)
 {
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
@@ -77,7 +75,7 @@ static void autocomplete_has (struct autocomplete *catalog, struct autocomplete_
 	abort();
 }
 
-static void autocomplete_empty (struct autocomplete *catalog, struct autocomplete_text input,
+static void autocomplete_empty (struct autocomplete *catalog, struct cstr_view input,
                                 size_t cursor)
 {
 	struct autocomplete_match const *matches = nullptr;
@@ -87,8 +85,8 @@ static void autocomplete_empty (struct autocomplete *catalog, struct autocomplet
 }
 
 static struct json_object *autocomplete_parse (struct autocomplete *catalog,
-                                               struct autocomplete_text input,
-                                               struct autocomplete_text expected_name)
+                                               struct cstr_view input,
+                                               struct cstr_view expected_name)
 {
 	struct autocomplete_tool const *tool = nullptr;
 	struct json_object *arguments = nullptr;
@@ -105,7 +103,7 @@ static struct json_object *autocomplete_parse (struct autocomplete *catalog,
 	return arguments;
 }
 
-static void autocomplete_bad (struct autocomplete *catalog, struct autocomplete_text input)
+static void autocomplete_bad (struct autocomplete *catalog, struct cstr_view input)
 {
 	struct autocomplete_tool const *tool = nullptr;
 	struct json_object *arguments = nullptr;
@@ -117,7 +115,7 @@ static void autocomplete_bad (struct autocomplete *catalog, struct autocomplete_
 }
 
 static void autocomplete_string (struct json_object *object, char const *key,
-                                 struct autocomplete_text expected)
+                                 struct cstr_view expected)
 {
 	struct json_object *value = nullptr;
 	assert(json_object_object_get_ex(object, key, &value));
@@ -128,20 +126,20 @@ static void autocomplete_string (struct json_object *object, char const *key,
 
 static void autocomplete_reuse (struct autocomplete *catalog)
 {
-	static struct autocomplete_text const inputs[] = {
-		TEXT("/tool "), TEXT("/tool git "), TEXT("/tool lookup mixed="),
-		TEXT("/tool lookup structured="), TEXT("/tool git participant="),
-		TEXT("/tool git notebook="), TEXT("@"), TEXT("/tool git command=stale count=2"),
-		TEXT("/tool notes action=read file="), TEXT("/tool notes action=copy file="),
-		TEXT("/tool notes notebook=bob/0123456789abcdef/upstream file="),
-		TEXT("/tool notes action=read file='design docs/"), TEXT("/tool notes file=o")
+	static struct cstr_view const inputs[] = {
+		CSTR_VIEW("/tool "), CSTR_VIEW("/tool git "), CSTR_VIEW("/tool lookup mixed="),
+		CSTR_VIEW("/tool lookup structured="), CSTR_VIEW("/tool git participant="),
+		CSTR_VIEW("/tool git notebook="), CSTR_VIEW("@"), CSTR_VIEW("/tool git command=stale count=2"),
+		CSTR_VIEW("/tool notes action=read file="), CSTR_VIEW("/tool notes action=copy file="),
+		CSTR_VIEW("/tool notes notebook=bob/0123456789abcdef/upstream file="),
+		CSTR_VIEW("/tool notes action=read file='design docs/"), CSTR_VIEW("/tool notes file=o")
 	};
 	/* Grow the line workspace first, then alternate long and short requests.
 	 * A long suffix also verifies that completion retains text after point. */
 	char long_line[8192];
 	memset(long_line, ' ', sizeof long_line);
 	memcpy(long_line, "/tool git com", sizeof("/tool git com") - 1);
-	struct autocomplete_text long_input = {long_line, sizeof long_line};
+	struct cstr_view long_input = {long_line, sizeof long_line};
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
 	assert(!autocomplete_complete(catalog, long_input, sizeof("/tool git com") - 1,
@@ -168,17 +166,17 @@ static void autocomplete_files(void)
 	int error = 0;
 	struct autocomplete_file *files = autocomplete_file_create(&error);
 	assert(files && !error);
-	static struct autocomplete_text const commands[] = {TEXT("/read ")};
+	static struct cstr_view const commands[] = {CSTR_VIEW("/read ")};
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
-	assert(!autocomplete_file_complete(files, (struct autocomplete_text){nullptr, 0}, 0,
+	assert(!autocomplete_file_complete(files, (struct cstr_view){nullptr, 0}, 0,
 	                                   commands, 1, &matches, &count));
 	assert(!count);
-	struct autocomplete_text invalid = TEXT("/read bad\xc0\xaf");
+	struct cstr_view invalid = CSTR_VIEW("/read bad\xc0\xaf");
 	assert(autocomplete_file_complete(files, invalid, invalid.len, commands, 1,
 	                                  &matches, &count) == EINVAL);
 	assert(!count);
-	invalid = TEXT("/read bad\0name");
+	invalid = CSTR_VIEW("/read bad\0name");
 	assert(autocomplete_file_complete(files, invalid, invalid.len, commands, 1,
 	                                  &matches, &count) == EINVAL);
 	assert(!count);
@@ -201,10 +199,10 @@ static void autocomplete_files(void)
 	char line[sizeof directory + sizeof("/read /")];
 	int length = snprintf(line, sizeof line, "/read %s/", directory);
 	assert(length > 0 && length < (int)sizeof line);
-	struct autocomplete_text input = {line, (size_t)length};
+	struct cstr_view input = {line, (size_t)length};
 	assert(!autocomplete_file_complete(files, input, input.len, commands, 1, &matches, &count));
-	static struct autocomplete_text const expected[] = {
-		TEXT("dangling"), TEXT("folder/"), TEXT("link-dir/"), TEXT("link-file"), TEXT("normal"),
+	static struct cstr_view const expected[] = {
+		CSTR_VIEW("dangling"), CSTR_VIEW("folder/"), CSTR_VIEW("link-dir/"), CSTR_VIEW("link-file"), CSTR_VIEW("normal"),
 	};
 	assert(count == sizeof expected / sizeof *expected);
 	for (size_t i = 0; i < count; ++i) {
@@ -237,35 +235,35 @@ static void autocomplete_note_cache(struct autocomplete *catalog)
 {
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
-	struct autocomplete_text input = TEXT("/tool notes file=");
+	struct cstr_view input = CSTR_VIEW("/tool notes file=");
 	assert(!autocomplete_complete(catalog, input, input.len, &matches, &count));
 	assert(count == 4); /* Unsafe paths omitted; duplicates removed. */
-	struct autocomplete_text const paths[] = {TEXT("updated plan.md"), TEXT("new/entry.md")};
-	assert(!autocomplete_set_note_files(catalog, TEXT("notes"), TEXT("own"), paths, 2));
-	autocomplete_has(catalog, input, TEXT("/tool notes file='updated plan.md'"), input.len);
-	input = TEXT("/tool notes file=find");
+	struct cstr_view const paths[] = {CSTR_VIEW("updated plan.md"), CSTR_VIEW("new/entry.md")};
+	assert(!autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW("own"), paths, 2));
+	autocomplete_has(catalog, input, CSTR_VIEW("/tool notes file='updated plan.md'"), input.len);
+	input = CSTR_VIEW("/tool notes file=find");
 	autocomplete_empty(catalog, input, input.len);
-	input = TEXT("/tool notes action=copy file=");
-	autocomplete_has(catalog, input, TEXT("/tool notes action=copy file=model/thoughts.md"), input.len);
-	assert(autocomplete_set_note_files(catalog, TEXT("absent"), TEXT("own"), paths, 2) == EINVAL);
-	assert(autocomplete_set_note_files(catalog, TEXT("notes"), TEXT("own"), nullptr, 1) == EINVAL);
-	assert(autocomplete_set_note_files(catalog, TEXT("notes"), TEXT("own"), paths, (size_t)-1) == E2BIG);
-	struct autocomplete_text huge = {"", 16 * 1024 * 1024};
-	assert(autocomplete_set_note_files(catalog, TEXT("notes"), TEXT("own"), &huge, 1) == E2BIG);
-	input = TEXT("/tool notes file=new");
-	autocomplete_has(catalog, input, TEXT("/tool notes file=new/entry.md"), input.len);
+	input = CSTR_VIEW("/tool notes action=copy file=");
+	autocomplete_has(catalog, input, CSTR_VIEW("/tool notes action=copy file=model/thoughts.md"), input.len);
+	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("absent"), CSTR_VIEW("own"), paths, 2) == EINVAL);
+	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW("own"), nullptr, 1) == EINVAL);
+	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW("own"), paths, (size_t)-1) == E2BIG);
+	struct cstr_view huge = {"", 16 * 1024 * 1024};
+	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW("own"), &huge, 1) == E2BIG);
+	input = CSTR_VIEW("/tool notes file=new");
+	autocomplete_has(catalog, input, CSTR_VIEW("/tool notes file=new/entry.md"), input.len);
 	/* Clearing and refilling reuses capacity, including path strings. */
 	autocomplete_clear_note_files(catalog);
 	autocomplete_empty(catalog, input, input.len);
-	assert(!autocomplete_set_note_files(catalog, TEXT("notes"), TEXT(""), paths, 2));
+	assert(!autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW(""), paths, 2));
 	for (unsigned i = 0; i < 128; ++i) {
 		autocomplete_count_allocations = true;
 		autocomplete_clear_note_files(catalog);
-		assert(!autocomplete_set_note_files(catalog, TEXT("notes"), TEXT(""), paths, 2));
+		assert(!autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW(""), paths, 2));
 		autocomplete_count_allocations = false;
 	}
 	assert(!autocomplete_allocations && !autocomplete_frees);
-	autocomplete_has(catalog, input, TEXT("/tool notes file=new/entry.md"), input.len);
+	autocomplete_has(catalog, input, CSTR_VIEW("/tool notes file=new/entry.md"), input.len);
 }
 
 static void autocomplete_limits (struct autocomplete *catalog)
@@ -274,17 +272,17 @@ static void autocomplete_limits (struct autocomplete *catalog)
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
 	/* The size check must precede reading any bytes from an oversized span. */
-	struct autocomplete_text oversized = {"", limit + 1};
+	struct cstr_view oversized = {"", limit + 1};
 	assert(autocomplete_complete(catalog, oversized, 0, &matches, &count) == E2BIG);
 	assert(!matches && !count);
 	struct autocomplete_tool const *tool = nullptr;
 	struct json_object *arguments = nullptr;
 	assert(autocomplete_parse_call(catalog, oversized, &tool, &arguments, nullptr) == E2BIG);
 	assert(!tool && !arguments);
-	struct autocomplete_text invalid = TEXT("@ali trailing\xff");
+	struct cstr_view invalid = CSTR_VIEW("@ali trailing\xff");
 	assert(autocomplete_complete(catalog, invalid, sizeof("@ali") - 1, &matches, &count) == EINVAL);
 	assert(!matches && !count);
-	invalid = TEXT("/tool git message=invalid\xff");
+	invalid = CSTR_VIEW("/tool git message=invalid\xff");
 	assert(autocomplete_parse_call(catalog, invalid, &tool, &arguments, nullptr) == EINVAL);
 	assert(!tool && !arguments);
 
@@ -293,7 +291,7 @@ static void autocomplete_limits (struct autocomplete *catalog)
 	assert(line);
 	memset(line, ' ', length);
 	memcpy(line, "/tool ", sizeof("/tool ") - 1);
-	assert(!autocomplete_complete(catalog, (struct autocomplete_text){line, length},
+	assert(!autocomplete_complete(catalog, (struct cstr_view){line, length},
 	                              sizeof("/tool ") - 1, &matches, &count));
 	assert(count >= 2 && count < autocomplete_tool_count(catalog));
 	size_t bytes = 0;
@@ -314,9 +312,9 @@ int main(void)
 	assert(catalog && !error);
 	assert(!autocomplete_fixture(catalog));
 
-#define HAS(input, expected) autocomplete_has(catalog, TEXT(input), TEXT(expected), sizeof(input) - 1)
-#define AT(input, expected, cursor) autocomplete_has(catalog, TEXT(input), TEXT(expected), cursor)
-#define EMPTY(input) autocomplete_empty(catalog, TEXT(input), sizeof(input) - 1)
+#define HAS(input, expected) autocomplete_has(catalog, CSTR_VIEW(input), CSTR_VIEW(expected), sizeof(input) - 1)
+#define AT(input, expected, cursor) autocomplete_has(catalog, CSTR_VIEW(input), CSTR_VIEW(expected), cursor)
+#define EMPTY(input) autocomplete_empty(catalog, CSTR_VIEW(input), sizeof(input) - 1)
 	HAS("/to", "/tool");
 	HAS("/his", "/history");
 	HAS("/tool gi", "/tool git");
@@ -372,19 +370,19 @@ int main(void)
 	EMPTY("/tool git command=log com");
 	assert(autocomplete_participant_count(catalog) == 3);
 	assert(autocomplete_tool_count(catalog) == 5);
-	assert(autocomplete_find_tool(catalog, (struct autocomplete_text){"gitJUNK", 3}));
+	assert(autocomplete_find_tool(catalog, (struct cstr_view){"gitJUNK", 3}));
 	char counted[] = {'@', 'a', 'l'};
-	autocomplete_has(catalog, (struct autocomplete_text){counted, sizeof counted}, TEXT("@alice"),
+	autocomplete_has(catalog, (struct cstr_view){counted, sizeof counted}, CSTR_VIEW("@alice"),
 	                 sizeof counted);
 
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
-	assert(autocomplete_complete(catalog, TEXT("x"), 2, &matches, &count) == EINVAL);
+	assert(autocomplete_complete(catalog, CSTR_VIEW("x"), 2, &matches, &count) == EINVAL);
 	assert(!count);
-	assert(autocomplete_complete(catalog, TEXT("@al\0ignored"), 3, &matches, &count) == EINVAL);
+	assert(autocomplete_complete(catalog, CSTR_VIEW("@al\0ignored"), 3, &matches, &count) == EINVAL);
 	assert(!count);
 
-#define PARSE(input, name) autocomplete_parse(catalog, TEXT(input), TEXT(name))
+#define PARSE(input, name) autocomplete_parse(catalog, CSTR_VIEW(input), CSTR_VIEW(name))
 	struct json_object *arguments = PARSE(
 		"/tool git command=log recursive=true count=42 message='hello world' "
 		"options='[\"--oneline\"]' config='{\"depth\":2}'", "git");
@@ -393,7 +391,7 @@ int main(void)
 	assert(json_object_is_type(value, json_type_boolean) && json_object_get_boolean(value));
 	assert(json_object_object_get_ex(arguments, "count", &value));
 	assert(json_object_is_type(value, json_type_int) && json_object_get_int(value) == 42);
-	autocomplete_string(arguments, "message", TEXT("hello world"));
+	autocomplete_string(arguments, "message", CSTR_VIEW("hello world"));
 	assert(json_object_object_get_ex(arguments, "options", &value));
 	assert(json_object_is_type(value, json_type_array) && json_object_array_length(value) == 1);
 	assert(json_object_object_get_ex(arguments, "config", &value));
@@ -402,19 +400,19 @@ int main(void)
 	arguments = nullptr;
 
 	arguments = PARSE("/tool git message=true", "git");
-	autocomplete_string(arguments, "message", TEXT("true"));
+	autocomplete_string(arguments, "message", CSTR_VIEW("true"));
 	json_object_put(arguments);
 	arguments = nullptr;
 	arguments = PARSE("/tool git {\"message\":\"hello \\\"world\\\"\",\"options\":[1,null]}", "git");
-	autocomplete_string(arguments, "message", TEXT("hello \"world\""));
+	autocomplete_string(arguments, "message", CSTR_VIEW("hello \"world\""));
 	json_object_put(arguments);
 	arguments = nullptr;
 	arguments = PARSE("/tool git repo=other\\ project", "git");
-	autocomplete_string(arguments, "repo", TEXT("other project"));
+	autocomplete_string(arguments, "repo", CSTR_VIEW("other project"));
 	json_object_put(arguments);
 	arguments = nullptr;
 	arguments = PARSE("/tool lookup code=001 depth=2", "lookup");
-	autocomplete_string(arguments, "code", TEXT("001"));
+	autocomplete_string(arguments, "code", CSTR_VIEW("001"));
 	assert(json_object_object_get_ex(arguments, "depth", &value));
 	assert(json_object_get_int(value) == 2);
 	json_object_put(arguments);
@@ -428,17 +426,17 @@ int main(void)
 	json_object_put(arguments);
 	arguments = nullptr;
 	arguments = PARSE("/tool required text='null'", "required");
-	autocomplete_string(arguments, "text", TEXT("null"));
+	autocomplete_string(arguments, "text", CSTR_VIEW("null"));
 	json_object_put(arguments);
 	arguments = nullptr;
 	arguments = PARSE("/tool git {\"message\":\"a\\u0000b\"}", "git");
-	autocomplete_string(arguments, "message", TEXT("a\0b"));
+	autocomplete_string(arguments, "message", CSTR_VIEW("a\0b"));
 	json_object_put(arguments);
 	arguments = nullptr;
 	static char const bounded[] = "/tool git message=tailJUNK";
 	arguments = autocomplete_parse(catalog,
-		(struct autocomplete_text){bounded, sizeof("/tool git message=tail") - 1}, TEXT("git"));
-	autocomplete_string(arguments, "message", TEXT("tail"));
+		(struct cstr_view){bounded, sizeof("/tool git message=tail") - 1}, CSTR_VIEW("git"));
+	autocomplete_string(arguments, "message", CSTR_VIEW("tail"));
 	json_object_put(arguments);
 	arguments = nullptr;
 	/* The server owns validation of full JSON, including complex schemas. */
@@ -446,15 +444,15 @@ int main(void)
 	assert(json_object_object_get_ex(arguments, "extension", &value) && json_object_get_boolean(value));
 	json_object_put(arguments);
 	arguments = nullptr;
-	static struct autocomplete_text const roundtrips[] = {
-		TEXT("/tool lookup mixed="), TEXT("/tool lookup structured=")
+	static struct cstr_view const roundtrips[] = {
+		CSTR_VIEW("/tool lookup mixed="), CSTR_VIEW("/tool lookup structured=")
 	};
 	for (size_t i = 0; i < sizeof roundtrips / sizeof *roundtrips; ++i) {
 		assert(!autocomplete_complete(catalog, roundtrips[i], roundtrips[i].len, &matches, &count));
 		assert(count);
 		for (size_t j = 0; j < count; ++j) {
-			struct autocomplete_text line = matches[j].line;
-			arguments = autocomplete_parse(catalog, line, TEXT("lookup"));
+			struct cstr_view line = matches[j].line;
+			arguments = autocomplete_parse(catalog, line, CSTR_VIEW("lookup"));
 			assert(json_object_object_get_ex(arguments, i ? "structured" : "mixed", &value));
 			if (!i && memchr(line.data, '\'', line.len))
 				assert(json_object_is_type(value, json_type_string));
@@ -468,12 +466,12 @@ int main(void)
 			arguments = nullptr;
 		}
 	}
-	static struct autocomplete_text const invalid[] = {
-		TEXT("/tool absent"), TEXT("/tool git recursive=maybe"), TEXT("/tool git count=1.5"),
-		TEXT("/tool git message='unfinished"), TEXT("/tool git command=log command=status"),
-		TEXT("/tool git unknown=1"), TEXT("/tool git options=no"), TEXT("/tool git config=[]"),
-		TEXT("/tool git {\"message\":\"hello\"} trailing"), TEXT("/tool git message"),
-		TEXT("/tool required"), TEXT("/tool git\0 message=ignored")
+	static struct cstr_view const invalid[] = {
+		CSTR_VIEW("/tool absent"), CSTR_VIEW("/tool git recursive=maybe"), CSTR_VIEW("/tool git count=1.5"),
+		CSTR_VIEW("/tool git message='unfinished"), CSTR_VIEW("/tool git command=log command=status"),
+		CSTR_VIEW("/tool git unknown=1"), CSTR_VIEW("/tool git options=no"), CSTR_VIEW("/tool git config=[]"),
+		CSTR_VIEW("/tool git {\"message\":\"hello\"} trailing"), CSTR_VIEW("/tool git message"),
+		CSTR_VIEW("/tool required"), CSTR_VIEW("/tool git\0 message=ignored")
 	};
 	for (size_t i = 0; i < sizeof invalid / sizeof *invalid; ++i)
 		autocomplete_bad(catalog, invalid[i]);
@@ -483,11 +481,11 @@ int main(void)
 	autocomplete_limits(catalog);
 	struct autocomplete *other = autocomplete_create(&error);
 	assert(other && !error);
-	struct autocomplete_text carol = TEXT("carol");
+	struct cstr_view carol = CSTR_VIEW("carol");
 	assert(!autocomplete_set_participants(other, &carol, 1));
-	autocomplete_empty(other, TEXT("/tool gi"), sizeof("/tool gi") - 1);
-	autocomplete_empty(other, TEXT("@al"), sizeof("@al") - 1);
-	autocomplete_has(other, TEXT("@ca"), TEXT("@carol"), sizeof("@ca") - 1);
+	autocomplete_empty(other, CSTR_VIEW("/tool gi"), sizeof("/tool gi") - 1);
+	autocomplete_empty(other, CSTR_VIEW("@al"), sizeof("@al") - 1);
+	autocomplete_has(other, CSTR_VIEW("@ca"), CSTR_VIEW("@carol"), sizeof("@ca") - 1);
 	autocomplete_clear_tools(catalog);
 	EMPTY("/tool gi");
 	HAS("@al", "@alice");
@@ -501,4 +499,3 @@ int main(void)
 #undef EMPTY
 #undef AT
 #undef HAS
-#undef TEXT

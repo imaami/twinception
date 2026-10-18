@@ -260,7 +260,7 @@ Each connection owns its completion data; pressing Tab never makes an MCP
 request. `/read` completion reads the local filesystem.
 
 Autocomplete is implemented by the C modules `autocomplete.c` and
-`autocomplete-file.c`. Their `.h` interfaces expose borrowed strings with
+`autocomplete_file.c`. Their `.h` interfaces expose borrowed strings with
 explicit byte lengths and C linkage. Each module retains its work buffers
 and result storage until destruction, growing capacity as needed and keeping
 it between calls. Text storage uses `dstr` and UTF-8 validation uses `jb_utf8`.
@@ -316,5 +316,5 @@ The terminal console is derived from llama.cpp's MIT-licensed
 `common/console.cpp` and `tools/cli/cli-ui.h` at commit
 `b76b13379d3b7d67ab0bc424516bb6fd2522bd8e`;
 the retained license is in [llama-cli-LICENSE](llama-cli-LICENSE). The
-adaptation is in `src/cli-console.c`, `src/cli-console.h`, `src/cli-ui.c`, and
-`src/cli-ui.h`.
+adaptation is in `src/cli_console.c`, `src/cli_console.h`, `src/cli_ui.c`, and
+`src/cli_ui.h`.

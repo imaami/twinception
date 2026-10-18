@@ -12,12 +12,13 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "autocomplete-file.h"
+#include "autocomplete_file.h"
 #include "buf.h"
-#include "cli-client.h"
-#include "cli-console.h"
-#include "cli-state.h"
-#include "cli-ui.h"
+#include "cli_client.h"
+#include "cli_console.h"
+#include "cli_state.h"
+#include "cli_ui.h"
+#include "dstr.h"
 #include "jb.h"
 
 static volatile sig_atomic_t cli_signal;
@@ -25,13 +26,14 @@ static volatile sig_atomic_t cli_signal_write = -1;
 
 struct cli_signals {
 	struct sigaction previous[4];
-	int pipe[2];
-	unsigned installed;
+	int              pipe[2];
+	unsigned         installed;
 };
 
 static int const cli_signal_numbers[] = {SIGINT, SIGTERM, SIGWINCH, SIGPIPE};
 
-static void cli_on_signal(int signum)
+static void
+cli_on_signal (int signum)
 {
 	int saved = errno;
 	if (signum != SIGWINCH)
@@ -43,7 +45,8 @@ static void cli_on_signal(int signum)
 	errno = saved;
 }
 
-static void cli_signals_fini(struct cli_signals *signals)
+static void
+cli_signals_fini (struct cli_signals *signals)
 {
 	cli_signal_write = -1;
 	while (signals->installed) {
@@ -57,7 +60,8 @@ static void cli_signals_fini(struct cli_signals *signals)
 	}
 }
 
-static int cli_signals_init(struct cli_signals *signals)
+static int
+cli_signals_init (struct cli_signals *signals)
 {
 	*signals = (struct cli_signals){.pipe = {-1, -1}};
 	if (pipe2(signals->pipe, O_CLOEXEC | O_NONBLOCK))
@@ -76,29 +80,34 @@ static int cli_signals_init(struct cli_signals *signals)
 	return 0;
 }
 
-static void cli_signals_drain(struct cli_signals *signals)
+static void
+cli_signals_drain (struct cli_signals *signals)
 {
 	char bytes[64];
 	while (read(signals->pipe[0], bytes, sizeof bytes) > 0) {}
 }
 
-static struct cli_text cli_trim(struct cli_text text)
+static struct cstr_view
+cli_trim (struct cstr_view text)
 {
 	while (text.len && strchr("\r\n \t", text.data[text.len - 1]) && text.data[text.len - 1])
 		--text.len;
 	while (text.len && (*text.data == ' ' || *text.data == '\t'))
-		text = cli_text_slice(text, 1, SIZE_MAX);
+		text = cstr_view_slice(text, 1, SIZE_MAX);
 	return text;
 }
 
-static int cli_read_file(struct dstr *text, struct cli_text path, struct cli_error *error)
+static int
+cli_read_file (struct dstr      *text,
+               struct cstr_view  path,
+               struct cli_error *error)
 {
 	dstr_auto expanded = dstr(nullptr), contents = dstr(nullptr);
 	__attribute__((cleanup(buf_fini))) struct buf bytes = {};
 	if (!path.len || !path.data || memchr(path.data, 0, path.len))
 		return EINVAL;
 	char const *home = getenv("HOME");
-	if (home && (cli_text_equal(path, CLI_TEXT("~")) || cli_text_starts(path, CLI_TEXT("~/")))) {
+	if (home && (cstr_view_equal(path, CSTR_VIEW("~")) || cstr_view_starts(path, CSTR_VIEW("~/")))) {
 		if (!dstr_cat(&expanded, home) || !dstr_cat_n(&expanded, path.data + 1, path.len - 1))
 			return ENOMEM;
 	} else if (!dstr_cat_n(&expanded, path.data, path.len)) {
@@ -130,7 +139,7 @@ static int cli_read_file(struct dstr *text, struct cli_text path, struct cli_err
 	if (fclose(file) && !e)
 		e = errno;
 	file = nullptr;
-	struct cli_text result = {(char const *)bytes.data, bytes.tail};
+	struct cstr_view result = {(char const *)bytes.data, bytes.tail};
 	if (!e && result.len && (memchr(result.data, 0, result.len) || jb_utf8(result.data, result.len) != result.len))
 		e = cli_error_set(error, EILSEQ, "Prompt files must contain UTF-8 text without NUL bytes");
 	if (!e && !dstr_cat_n(&contents, result.data, result.len))
@@ -143,12 +152,25 @@ static int cli_read_file(struct dstr *text, struct cli_text path, struct cli_err
 }
 
 struct cli_options {
-	char const *socket, *tool, *system, *history_repo, *session_id, *color;
-	struct dstr prompt;
-	bool has_prompt, has_system, single, simple, multiline, reasoning, no_history, done;
+	char const  *socket;
+	char const  *tool;
+	char const  *system;
+	char const  *history_repo;
+	char const  *session_id;
+	char const  *color;
+	struct dstr  prompt;
+	bool         has_prompt;
+	bool         has_system;
+	bool         single;
+	bool         simple;
+	bool         multiline;
+	bool         reasoning;
+	bool         no_history;
+	bool         done;
 };
 
-static int cli_help(void)
+static int
+cli_help (void)
 {
 	return puts("Usage: askai-cli --socket PATH [options]\n"
 	            "Chat with AskAI's upstream LLM over its Unix socket.\n\n"
@@ -174,7 +196,11 @@ static int cli_help(void)
 	            "while entering a prompt it exits. Ctrl-D exits. Tools run in AskAI.") < 0 ? EIO : 0;
 }
 
-static int cli_args(struct cli_options *out, int argc, char **argv, struct cli_error *error)
+static int
+cli_args (struct cli_options  *out,
+          int                  argc,
+          char               **argv,
+          struct cli_error    *error)
 {
 	out->socket = getenv("ASKAI_SOCKET");
 	static struct option const options[] = {
@@ -204,7 +230,7 @@ static int cli_args(struct cli_options *out, int argc, char **argv, struct cli_e
 			if (out->has_prompt)
 				return cli_error_set(error, EINVAL, "Use only one --prompt or --file");
 			int e = c == 'p' ? (dstr_cat(&out->prompt, optarg) ? 0 : ENOMEM)
-			                 : cli_read_file(&out->prompt, cli_text_cstr(optarg), error);
+			                 : cli_read_file(&out->prompt, cstr_view(optarg), error);
 			if (e)
 				return e;
 			out->has_prompt = true;
@@ -242,41 +268,42 @@ static int cli_args(struct cli_options *out, int argc, char **argv, struct cli_e
 }
 
 struct cli {
-	struct cli_client client;
-	struct cli_signals signals;
-	struct cli_console *console;
-	struct cli_state *saved;
+	struct cli_client         client;
+	struct cli_signals        signals;
+	struct cli_console       *console;
+	struct cli_state         *saved;
 	struct autocomplete_file *files;
-	struct json_object *history;
+	struct json_object       *history;
 	struct cli_options const *options;
-	bool tty;
+	bool                      tty;
 };
 
-static struct cli_state_text cli_state_text(struct cli_text text)
-{
-	return (struct cli_state_text){text.data, text.len};
-}
-
-static int cli_save_error(struct cli *cli, int e, struct cli_error *error)
+static int
+cli_save_error (struct cli       *cli,
+                int               e,
+                struct cli_error *error)
 {
 	if (!e)
 		return 0;
-	struct cli_state_text recovery = cli_state_recovery_file(cli->saved);
+	struct cstr_view recovery = cli_state_recovery_file(cli->saved);
 	return cli_error_set(error, e, "Cannot save client history: %s%s%.*s", strerror(e),
 	                     recovery.len ? ". Recovery snapshot in history repository: " : "",
 	                     (int)recovery.len, recovery.data ? recovery.data : "");
 }
 
-static int cli_complete(void *context, struct cli_text line, size_t cursor,
-                        struct autocomplete_match const **matches, size_t *count)
+static int
+cli_complete (void                             *context,
+              struct cstr_view                  line,
+              size_t                            cursor,
+              struct autocomplete_match const **matches,
+              size_t                           *count)
 {
 	struct cli *cli = context;
-	struct autocomplete_text input = {line.data, line.len};
-	int e = autocomplete_complete(cli->client.catalog, input, cursor, matches, count);
+	int e = autocomplete_complete(cli->client.catalog, line, cursor, matches, count);
 	if (!e && !*count) {
-		static struct autocomplete_text const commands[] = {{"/read ", sizeof "/read " - 1}};
-		e = autocomplete_file_complete(cli->files, input, cursor, commands,
-		                                sizeof commands / sizeof *commands, matches, count);
+		static struct cstr_view const commands[] = {{"/read ", sizeof "/read " - 1}};
+		e = autocomplete_file_complete(cli->files, line, cursor, commands,
+		                               sizeof commands / sizeof *commands, matches, count);
 	}
 	if (e) {
 		*matches = nullptr;
@@ -285,7 +312,9 @@ static int cli_complete(void *context, struct cli_text line, size_t cursor,
 	return e == ENOMEM ? e : 0;
 }
 
-static int cli_history_open(struct cli *cli, struct cli_error *error)
+static int
+cli_history_open (struct cli       *cli,
+                  struct cli_error *error)
 {
 	struct cli_options const *options = cli->options;
 	if (options->no_history || (!cli->tty && (!options->history_repo || !*options->history_repo)))
@@ -305,62 +334,69 @@ static int cli_history_open(struct cli *cli, struct cli_error *error)
 		if (!copied)
 			return ENOMEM;
 	}
-	struct cli_text parts[] = {
-		CLI_TEXT("\0participant="), cli_text_dstr(&cli->client.participant),
-		CLI_TEXT("\0tool="), cli_text_dstr(&cli->client.tool),
-		CLI_TEXT("\0system-policy="), options->has_system ? CLI_TEXT("override") : CLI_TEXT("default"),
-		CLI_TEXT("\0system="), cli_text_cstr(options->system)
+	struct cstr_view parts[] = {
+		CSTR_VIEW("\0participant="), cstr_view_dstr(&cli->client.participant),
+		CSTR_VIEW("\0tool="), cstr_view_dstr(&cli->client.tool),
+		CSTR_VIEW("\0system-policy="), options->has_system ? CSTR_VIEW("override") : CSTR_VIEW("default"),
+		CSTR_VIEW("\0system="), cstr_view(options->system)
 	};
 	for (size_t i = 0; i < sizeof parts / sizeof *parts; ++i)
 		if (!dstr_cat_n(&identity, parts[i].data, parts[i].len))
 			return ENOMEM;
 	int e = 0;
-	cli->saved = cli_state_create(cli_state_text(cli_text_cstr(options->history_repo)),
-	                              cli_state_text(cli_text_dstr(&identity)), &e);
+	cli->saved = cli_state_create(cstr_view(options->history_repo),
+	                              cstr_view_dstr(&identity), &e);
 	if (e)
 		return cli_error_set(error, e, "Cannot open client history repository: %s", strerror(e));
 	for (size_t i = 0, n = cli_state_input_count(cli->saved); !e && i < n; ++i) {
-		struct cli_state_text input = cli_state_input_at(cli->saved, i);
-		e = cli_console_remember(cli->console, (struct cli_text){input.data, input.len});
+		struct cstr_view input = cli_state_input_at(cli->saved, i);
+		e = cli_console_remember(cli->console, input);
 	}
 	for (size_t i = 0, n = cli_state_turn_count(cli->saved); !e && i < n; ++i) {
 		struct cli_state_turn turn = cli_state_turn_at(cli->saved, i);
-		e = jb_push(cli->history, jb_object("prompt", cli_client_string((struct cli_text){turn.prompt.data, turn.prompt.len}),
-		                                   "answer", cli_client_string((struct cli_text){turn.answer.data, turn.answer.len}), nullptr));
+		e = jb_push(cli->history, jb_object("prompt", cli_client_string(turn.prompt),
+		                                   "answer", cli_client_string(turn.answer), nullptr));
 	}
 	if (!e && cli->tty && json_object_array_length(cli->history)) {
 		dstr_auto message = dstr(nullptr);
 		if (!dstr_printf(&message, "Restored %zu completed turns. /history displays them; /clear starts over.",
 		                 json_object_array_length(cli->history)))
 			return ENOMEM;
-		e = cli_ui_info(cli->console, cli_text_dstr(&message));
+		e = cli_ui_info(cli->console, cstr_view_dstr(&message));
 	}
 	return e;
 }
 
 struct cli_stream {
-	struct cli_ui ui;
-	struct dstr text;
-	struct cli_text actor, token;
-	int64_t turn;
-	bool reasoning;
+	struct cli_ui    ui;
+	struct dstr      text;
+	struct cstr_view actor;
+	struct cstr_view token;
+	int64_t          turn;
+	bool             reasoning;
 };
 
-static int cli_progress(struct cli_stream *stream, struct json_object *event)
+static int
+cli_progress (struct cli_stream  *stream,
+              struct json_object *event)
 {
 	if (!cli_client_is(jb_get(event, "method"), "notifications/progress"))
 		return 0;
 	struct json_object *params = jb_get(event, "params");
-	struct cli_text token = cli_client_text(jb_get(params, "progressToken"));
-	struct cli_text message = cli_client_text(jb_get(params, "message"));
-	if (!token.data || !message.data || !cli_text_equal(token, stream->token))
+	struct cstr_view token = cli_client_text(jb_get(params, "progressToken"));
+	struct cstr_view message = cli_client_text(jb_get(params, "message"));
+	if (!token.data || !message.data || !cstr_view_equal(token, stream->token))
 		return 0;
 	struct json_object *meta = jb_get(jb_get(params, "_meta"), "askai");
 	return cli_client_is(jb_get(meta, "kind"), "tool") ? cli_ui_action(&stream->ui, stream->actor, message)
-	                                          : cli_ui_progress(&stream->ui, stream->actor, message);
+	                                                   : cli_ui_progress(&stream->ui, stream->actor, message);
 }
 
-static int cli_notify(void *context, struct json_object *event, int64_t id, struct cli_error *error)
+static int
+cli_notify (void               *context,
+            struct json_object *event,
+            int64_t             id,
+            struct cli_error   *error)
 {
 	struct cli_stream *stream = context;
 	int e = cli_progress(stream, event);
@@ -370,33 +406,37 @@ static int cli_notify(void *context, struct json_object *event, int64_t id, stru
 	struct json_object *request = jb_get(params, "requestId");
 	if (!json_object_is_type(request, json_type_int) || json_object_get_int64(request) != id)
 		return cli_error_set(error, EPROTO, "Unexpected streaming request id");
-	struct cli_text text = cli_client_text(jb_get(params, "text"));
-	struct cli_text kind = cli_client_text(jb_get(params, "kind"));
+	struct cstr_view text = cli_client_text(jb_get(params, "text"));
+	struct cstr_view kind = cli_client_text(jb_get(params, "kind"));
 	if (!text.data || !kind.data)
 		return cli_error_set(error, EPROTO, "Expected a JSON string from AskAI");
 	int64_t current = json_object_get_int64(jb_get(params, "turn"));
 	if (current != stream->turn) {
 		if (dstr_len(&stream->text))
-			e = cli_ui_push(&stream->ui, false, CLI_TEXT("\n"));
+			e = cli_ui_push(&stream->ui, false, CSTR_VIEW("\n"));
 		dstr_clear(&stream->text);
 		stream->turn = current;
 	}
 	if (e)
 		return e;
-	if (cli_text_equal(kind, CLI_TEXT("text"))) {
+	if (cstr_view_equal(kind, CSTR_VIEW("text"))) {
 		if (text.len > CLI_LIMIT - dstr_len(&stream->text))
 			return cli_error_set(error, EFBIG, "Assistant turn exceeds the client limit");
 		if (!dstr_cat_n(&stream->text, text.data, text.len))
 			return ENOMEM;
 		return cli_ui_push(&stream->ui, false, text);
 	}
-	if (cli_text_equal(kind, CLI_TEXT("reasoning")))
+	if (cstr_view_equal(kind, CSTR_VIEW("reasoning")))
 		return stream->reasoning ? cli_ui_push(&stream->ui, true, text) : 0;
 	return cli_error_set(error, EPROTO, "Unknown AskAI delta kind");
 }
 
-static int cli_ask(struct cli *cli, struct cli_text prompt, size_t turns,
-                   struct json_object **answer, struct cli_error *error)
+static int
+cli_ask (struct cli          *cli,
+         struct cstr_view     prompt,
+         size_t               turns,
+         struct json_object **answer,
+         struct cli_error    *error)
 {
 	*answer = nullptr;
 	cli->client.notes_dirty |= dstr_len(&cli->client.notes_tool) != 0;
@@ -414,36 +454,36 @@ static int cli_ask(struct cli *cli, struct cli_text prompt, size_t turns,
 		struct json_object *turn = jb_at(cli->history, i);
 		for (size_t j = 0; j < 2; ++j) {
 			struct json_object *value = jb_get(turn, keys[j]);
-			struct cli_text text = cli_client_text(value);
+			struct cstr_view text = cli_client_text(value);
 			if (text.len > CLI_LIMIT - bytes)
 				return cli_error_set(error, EFBIG, "Conversation exceeds the client limit; use /clear");
 			bytes += text.len;
 			int e = jb_push(messages, jb_object("role", json_object_new_string(roles[j]),
-			                                   "content", json_object_get(value), nullptr));
+			                                    "content", json_object_get(value), nullptr));
 			if (e)
 				return e;
 		}
 	}
 	cli_json_auto args = jb_object("prompt", cli_client_string(prompt),
-	                              "background", json_object_new_boolean(false),
-	                              "messages", json_object_get(messages), nullptr);
+	                               "background", json_object_new_boolean(false),
+	                               "messages", json_object_get(messages), nullptr);
 	if (!args)
 		return ENOMEM;
-	if (cli->options->has_system && jb_set(args, "system", cli_client_string(cli_text_cstr(cli->options->system))))
+	if (cli->options->has_system && jb_set(args, "system", cli_client_string(cstr_view(cli->options->system))))
 		return ENOMEM;
-	struct json_object *params = jb_object("name", cli_client_string(cli_text_dstr(&cli->client.tool)),
+	struct json_object *params = jb_object("name", cli_client_string(cstr_view_dstr(&cli->client.tool)),
 	                                      "arguments", json_object_get(args),
 	                                      "_meta", jb_object("askai", jb_object("stream", json_object_new_boolean(true), nullptr),
 	                                                         "progressToken", json_object_new_string("cli"), nullptr), nullptr);
 	struct cli_stream stream = {.ui = cli_ui(cli->console), .text = DSTR_INIT,
-	                            .actor = cli_text_dstr(&cli->client.tool), .token = CLI_TEXT("cli"),
+	                            .actor = cstr_view_dstr(&cli->client.tool), .token = CSTR_VIEW("cli"),
 	                            .reasoning = cli->options->reasoning};
 	cli_json_auto result = nullptr;
 	int e = cli_client_rpc(&cli->client, "tools/call", params, cli_notify, &stream, &result, error);
 	struct json_object *content = jb_get(result, "content");
 	struct json_object *first = jb_at(content, 0);
 	struct json_object *value = jb_get(first, "text");
-	struct cli_text text = cli_client_text(value);
+	struct cstr_view text = cli_client_text(value);
 	if (!e && !first)
 		e = cli_error_set(error, EPROTO, "AskAI returned no assistant text");
 	if (!e && (!cli_client_is(jb_get(first, "type"), "text") || !text.data))
@@ -451,15 +491,15 @@ static int cli_ask(struct cli *cli, struct cli_text prompt, size_t turns,
 	if (!e && json_object_get_boolean(jb_get(result, "isError")))
 		e = cli_error_set(error, EIO, "%.*s", (int)text.len, text.data);
 	if (!e) {
-		struct cli_text streamed = cli_text_dstr(&stream.text);
-		if (cli_text_starts(text, streamed))
-			e = cli_ui_push(&stream.ui, false, cli_text_slice(text, streamed.len, SIZE_MAX));
+		struct cstr_view streamed = cstr_view_dstr(&stream.text);
+		if (cstr_view_starts(text, streamed))
+			e = cli_ui_push(&stream.ui, false, cstr_view_slice(text, streamed.len, SIZE_MAX));
 		else if (streamed.len && text.len >= streamed.len &&
-		         cli_text_equal(cli_text_slice(text, text.len - streamed.len, SIZE_MAX), streamed)) {
+		         cstr_view_equal(cstr_view_slice(text, text.len - streamed.len, SIZE_MAX), streamed)) {
 			/* Agenda wakeups may include already displayed earlier turns. */
 		} else {
 			if (streamed.len)
-				e = cli_ui_push(&stream.ui, false, CLI_TEXT("\n"));
+				e = cli_ui_push(&stream.ui, false, CSTR_VIEW("\n"));
 			if (!e)
 				e = cli_ui_push(&stream.ui, false, text);
 		}
@@ -474,59 +514,80 @@ static int cli_ask(struct cli *cli, struct cli_text prompt, size_t turns,
 	return e;
 }
 
-static int cli_tools(struct cli *cli, struct cli_text name, struct cli_error *error)
+static int
+cli_tools (struct cli       *cli,
+           struct cstr_view  name,
+           struct cli_error *error)
 {
 	if (name.len) {
 		struct autocomplete_tool const *entry = autocomplete_find_tool(cli->client.catalog,
-		                                                               (struct autocomplete_text){name.data, name.len});
+		                                                               name);
 		if (!entry)
 			return cli_error_set(error, ENOENT, "No accessible tool named %.*s", (int)name.len, name.data);
-		int e = cli_ui_info(cli->console, (struct cli_text){entry->name.data, entry->name.len});
+		int e = cli_ui_info(cli->console, entry->name);
 		if (!e && entry->description.len)
-			e = cli_ui_message(cli->console, (struct cli_text){entry->description.data, entry->description.len});
-		struct cli_text wire;
+			e = cli_ui_message(cli->console, entry->description);
+		struct cstr_view wire;
 		if (!e)
 			e = cli_client_wire(entry->schema, JSON_C_TO_STRING_PRETTY, &wire, error);
 		return e ? e : cli_ui_message(cli->console, wire);
 	}
-	dstr_auto line = dstr(nullptr);
+
+	int ret = 0;
+	struct dstr line = DSTR_INIT;
+
 	for (size_t i = 0, count = autocomplete_tool_count(cli->client.catalog); i < count; ++i) {
 		struct autocomplete_tool const *entry = autocomplete_tool_at(cli->client.catalog, i);
-		struct cli_text summary = {entry->description.data, entry->description.len};
-		summary = cli_text_slice(summary, 0, 160);
+		struct cstr_view summary = entry->description;
+		summary = cstr_view_slice(summary, 0, 160);
 		char const *newline = summary.len ? memchr(summary.data, '\n', summary.len) : nullptr;
 		if (newline)
 			summary.len = (size_t)(newline - summary.data);
+
 		dstr_clear(&line);
 		if (!dstr_cat_n(&line, entry->name.data, entry->name.len) ||
-		    (summary.len && (!dstr_cat(&line, "  ") || !dstr_cat_n(&line, summary.data, summary.len))))
-			return ENOMEM;
-		int e = cli_ui_message(cli->console, cli_text_dstr(&line));
-		if (e)
-			return e;
+		    (summary.len && (!dstr_cat(&line, "  ") || !dstr_cat_n(&line, summary.data, summary.len)))) {
+			ret = ENOMEM;
+			break;
+		}
+
+		int e = cli_ui_message(cli->console, cstr_view_dstr(&line));
+		if (e) {
+			ret = e;
+			break;
+		}
 	}
-	return 0;
+
+	dstr_cleanup(&line);
+	return ret;
 }
 
-static int cli_tool_notify(void *context, struct json_object *event, int64_t id, struct cli_error *error)
+static int
+cli_tool_notify (void               *context,
+                 struct json_object *event,
+                 int64_t             id,
+                 struct cli_error   *error)
 {
 	(void)id;
 	(void)error;
 	return cli_progress(context, event);
 }
 
-static int cli_tool_content(struct cli *cli, struct json_object *result, struct cli_error *error)
+static int
+cli_tool_content (struct cli         *cli,
+                  struct json_object *result,
+                  struct cli_error   *error)
 {
 	struct json_object *content = jb_get(result, "content");
 	if (json_object_is_type(content, json_type_array)) {
 		for (size_t i = 0, count = json_object_array_length(content); i < count; ++i) {
 			struct json_object *block = jb_at(content, i);
-			struct cli_text kind = cli_client_text(jb_get(block, "type"));
+			struct cstr_view kind = cli_client_text(jb_get(block, "type"));
 			if (!kind.data)
 				return cli_error_set(error, EPROTO, "Malformed tool content");
 			int e;
-			if (cli_text_equal(kind, CLI_TEXT("text"))) {
-				struct cli_text text = cli_client_text(jb_get(block, "text"));
+			if (cstr_view_equal(kind, CSTR_VIEW("text"))) {
+				struct cstr_view text = cli_client_text(jb_get(block, "text"));
 				if (!text.data)
 					return cli_error_set(error, EPROTO, "Malformed tool content");
 				e = cli_ui_message(cli->console, text);
@@ -534,7 +595,7 @@ static int cli_tool_content(struct cli *cli, struct json_object *result, struct 
 				dstr_auto label = dstr(nullptr);
 				if (!dstr_cat(&label, "[") || !dstr_cat_n(&label, kind.data, kind.len) || !dstr_cat(&label, " content]"))
 					return ENOMEM;
-				e = cli_ui_message(cli->console, cli_text_dstr(&label));
+				e = cli_ui_message(cli->console, cstr_view_dstr(&label));
 			}
 			if (e)
 				return e;
@@ -544,22 +605,25 @@ static int cli_tool_content(struct cli *cli, struct json_object *result, struct 
 	struct json_object *structured = jb_get(result, "structuredContent");
 	if (!structured)
 		return cli_error_set(error, EPROTO, "AskAI returned no tool content");
-	struct cli_text wire;
+	struct cstr_view wire;
 	int e = cli_client_wire(structured, JSON_C_TO_STRING_PRETTY, &wire, error);
 	return e ? e : cli_ui_message(cli->console, wire);
 }
 
-static int cli_tool_call(struct cli *cli, struct cli_text command, struct cli_error *error)
+static int
+cli_tool_call (struct cli       *cli,
+               struct cstr_view  command,
+               struct cli_error *error)
 {
 	struct autocomplete_tool const *tool = nullptr;
 	cli_json_auto arguments = nullptr;
 	struct autocomplete_error diagnostic = {error->message, sizeof error->message, 0};
-	int e = autocomplete_parse_call(cli->client.catalog, (struct autocomplete_text){command.data, command.len},
+	int e = autocomplete_parse_call(cli->client.catalog, command,
 	                                 &tool, &arguments, &diagnostic);
 	if (e)
 		return e;
-	struct cli_text name = {tool->name.data, tool->name.len};
-	if (cli_text_equal(name, cli_text_dstr(&cli->client.notes_tool))) {
+	struct cstr_view name = tool->name;
+	if (cstr_view_equal(name, cstr_view_dstr(&cli->client.notes_tool))) {
 		struct json_object *action = jb_get(arguments, "action");
 		cli->client.notes_dirty |= cli_client_is(action, "add") || cli_client_is(action, "copy");
 	}
@@ -571,8 +635,8 @@ static int cli_tool_call(struct cli *cli, struct cli_text command, struct cli_er
 	if (!dstr_cat(&action, "call ") || !dstr_cat_n(&action, name.data, name.len))
 		return ENOMEM;
 	struct cli_stream stream = {.ui = cli_ui(cli->console), .text = DSTR_INIT,
-	                            .actor = name, .token = CLI_TEXT("tool")};
-	e = cli_ui_action(&stream.ui, CLI_TEXT("you"), cli_text_dstr(&action));
+	                            .actor = name, .token = CSTR_VIEW("tool")};
+	e = cli_ui_action(&stream.ui, CSTR_VIEW("you"), cstr_view_dstr(&action));
 	cli_json_auto result = nullptr;
 	if (!e)
 		e = cli_client_rpc(&cli->client, "tools/call", json_object_get(params), cli_tool_notify, &stream, &result, error);
@@ -581,46 +645,63 @@ static int cli_tool_call(struct cli *cli, struct cli_text command, struct cli_er
 	if (!e && json_object_get_boolean(jb_get(result, "isError")))
 		e = cli_error_set(error, EIO, "Tool %.*s failed", (int)name.len, name.data);
 	if (!e)
-		e = cli_ui_action(&stream.ui, name, CLI_TEXT("completed"));
+		e = cli_ui_action(&stream.ui, name, CSTR_VIEW("completed"));
 	cli_ui_fini(&stream.ui);
 	dstr_cleanup(&stream.text);
 	return e;
 }
 
-static int cli_history_show(struct cli *cli)
+static int
+cli_history_show (struct cli *cli)
 {
-	dstr_auto label = dstr(nullptr);
-	if (!dstr_cat(&label, dstr_get(&cli->client.tool)) || !dstr_cat(&label, ":"))
-		return ENOMEM;
-	for (size_t i = 0, count = json_object_array_length(cli->history); i < count; ++i) {
-		struct json_object *turn = jb_at(cli->history, i);
-		int e = cli_ui_info(cli->console, CLI_TEXT("you:"));
-		if (!e)
+	int e = 0;
+	struct dstr label = DSTR_INIT;
+
+	do {
+		if (!dstr_cat(&label, dstr_get(&cli->client.tool)) || !dstr_cat(&label, ":")) {
+			e = ENOMEM;
+			break;
+		}
+
+		for (size_t i = 0, count = json_object_array_length(cli->history); i < count; ++i) {
+			struct json_object *turn = jb_at(cli->history, i);
+			e = cli_ui_info(cli->console, CSTR_VIEW("you:"));
+			if (e)
+				break;
+
 			e = cli_ui_message(cli->console, cli_client_text(jb_get(turn, "prompt")));
-		if (!e)
-			e = cli_ui_info(cli->console, cli_text_dstr(&label));
-		if (!e)
+			if (e)
+				break;
+
+			e = cli_ui_info(cli->console, cstr_view_dstr(&label));
+			if (e)
+				break;
+
 			e = cli_ui_message(cli->console, cli_client_text(jb_get(turn, "answer")));
-		if (e)
-			return e;
-	}
-	return cli_console_flush(cli->console);
+			if (e)
+				break;
+		}
+	} while (0);
+
+	dstr_cleanup(&label);
+	return e ? e : cli_console_flush(cli->console);
 }
 
-static int cli_names(struct cli *cli)
+static int
+cli_names (struct cli *cli)
 {
 	size_t count = autocomplete_participant_count(cli->client.catalog);
 	if (!count)
-		return cli_ui_message(cli->console, CLI_TEXT("No participants discovered. /refresh reloads the shared notebooks."));
+		return cli_ui_message(cli->console, CSTR_VIEW("No participants discovered. /refresh reloads the shared notebooks."));
 	dstr_auto names = dstr(nullptr);
 	if (!dstr_cat(&names, "Known session participants:"))
 		return ENOMEM;
 	for (size_t i = 0; i < count; ++i) {
-		struct autocomplete_text name = autocomplete_participant_at(cli->client.catalog, i);
+		struct cstr_view name = autocomplete_participant_at(cli->client.catalog, i);
 		if (!dstr_cat(&names, " ") || !dstr_cat_n(&names, name.data, name.len))
 			return ENOMEM;
 	}
-	return cli_ui_message(cli->console, cli_text_dstr(&names));
+	return cli_ui_message(cli->console, cstr_view_dstr(&names));
 }
 
 enum cli_command_action { CLI_COMMAND_PROMPT, CLI_COMMAND_CONTINUE, CLI_COMMAND_EXIT, CLI_COMMAND_REGENERATE };
@@ -628,19 +709,19 @@ enum cli_command_action { CLI_COMMAND_PROMPT, CLI_COMMAND_CONTINUE, CLI_COMMAND_
 static int cli_command(struct cli *cli, struct dstr *prompt, enum cli_command_action *action,
                        struct cli_error *error)
 {
-	struct cli_text command = cli_trim(cli_text_dstr(prompt));
+	struct cstr_view command = cli_trim(cstr_view_dstr(prompt));
 	size_t split = 0;
 	while (split < command.len && !strchr(" \t\r\n", command.data[split]))
 		++split;
-	struct cli_text verb = cli_text_slice(command, 0, split);
-	struct cli_text rest = cli_trim(cli_text_slice(command, split, SIZE_MAX));
+	struct cstr_view verb = cstr_view_slice(command, 0, split);
+	struct cstr_view rest = cli_trim(cstr_view_slice(command, split, SIZE_MAX));
 	*action = CLI_COMMAND_CONTINUE;
-	if (cli_text_equal(command, CLI_TEXT("/exit")) || cli_text_equal(command, CLI_TEXT("/quit"))) {
+	if (cstr_view_equal(command, CSTR_VIEW("/exit")) || cstr_view_equal(command, CSTR_VIEW("/quit"))) {
 		*action = CLI_COMMAND_EXIT;
 		return 0;
 	}
-	if (cli_text_equal(command, CLI_TEXT("/help")))
-		return cli_ui_message(cli->console, CLI_TEXT(
+	if (cstr_view_equal(command, CSTR_VIEW("/help")))
+		return cli_ui_message(cli->console, CSTR_VIEW(
 			"/clear starts a new conversation; /regen retries the last turn;\n"
 			"/history displays the completed conversation.\n"
 			"/read FILE sends a text file; /exit leaves the chat.\n"
@@ -651,33 +732,33 @@ static int cli_command(struct cli *cli, struct dstr *prompt, enum cli_command_ac
 			"PgUp/PgDn search history by prefix; Ctrl-R searches history.\n"
 			"End a line with \\ to continue it, or / to submit multiline input.\n"
 			"Ctrl-C cancels an answer or tool call. Direct tool results stay out of chat history."));
-	if (cli_text_equal(verb, CLI_TEXT("/tools")))
+	if (cstr_view_equal(verb, CSTR_VIEW("/tools")))
 		return cli_tools(cli, rest, error);
-	if (cli_text_equal(command, CLI_TEXT("/names")))
+	if (cstr_view_equal(command, CSTR_VIEW("/names")))
 		return cli_names(cli);
-	if (cli_text_equal(command, CLI_TEXT("/refresh"))) {
+	if (cstr_view_equal(command, CSTR_VIEW("/refresh"))) {
 		int e = cli_client_refresh(&cli->client, error);
-		return e ? e : cli_ui_info(cli->console, CLI_TEXT("Tools and session participants refreshed."));
+		return e ? e : cli_ui_info(cli->console, CSTR_VIEW("Tools and session participants refreshed."));
 	}
-	if (cli_text_equal(verb, CLI_TEXT("/tool"))) {
+	if (cstr_view_equal(verb, CSTR_VIEW("/tool"))) {
 		if (cli->options->single)
 			*action = CLI_COMMAND_EXIT;
 		return cli_tool_call(cli, command, error);
 	}
-	if (cli_text_equal(command, CLI_TEXT("/history")))
+	if (cstr_view_equal(command, CSTR_VIEW("/history")))
 		return cli_history_show(cli);
-	if (cli_text_equal(command, CLI_TEXT("/clear"))) {
+	if (cstr_view_equal(command, CSTR_VIEW("/clear"))) {
 		size_t count = json_object_array_length(cli->history);
 		if (count)
 			(void)json_object_array_del_idx(cli->history, 0, count);
 		int e = cli->saved ? cli_save_error(cli, cli_state_clear_turns(cli->saved), error) : 0;
-		return e || !cli->tty ? e : cli_ui_info(cli->console, CLI_TEXT("Conversation cleared."));
+		return e || !cli->tty ? e : cli_ui_info(cli->console, CSTR_VIEW("Conversation cleared."));
 	}
-	if (cli_text_equal(command, CLI_TEXT("/regen"))) {
+	if (cstr_view_equal(command, CSTR_VIEW("/regen"))) {
 		size_t count = json_object_array_length(cli->history);
 		if (!count)
 			return cli_error_set(error, EINVAL, "There is no previous answer to regenerate");
-		struct cli_text previous = cli_client_text(jb_get(jb_at(cli->history, count - 1), "prompt"));
+		struct cstr_view previous = cli_client_text(jb_get(jb_at(cli->history, count - 1), "prompt"));
 		dstr_clear(prompt);
 		if (!dstr_cat_n(prompt, previous.data, previous.len))
 			return ENOMEM;
@@ -685,7 +766,7 @@ static int cli_command(struct cli *cli, struct dstr *prompt, enum cli_command_ac
 		return 0;
 	}
 	*action = CLI_COMMAND_PROMPT;
-	if (cli_text_equal(verb, CLI_TEXT("/read"))) {
+	if (cstr_view_equal(verb, CSTR_VIEW("/read"))) {
 		if (!rest.len)
 			return cli_error_set(error, EINVAL, "Usage: /read FILE");
 		return cli_read_file(prompt, rest, error);
@@ -697,10 +778,10 @@ static int cli_turn(struct cli *cli, struct dstr *prompt, bool interpret,
                     enum cli_command_action *action, struct cli_error *error)
 {
 	if (cli->saved) {
-		struct cli_text input = cli_text_dstr(prompt);
+		struct cstr_view input = cstr_view_dstr(prompt);
 		if (interpret && input.len && input.data[input.len - 1] == '\n')
 			--input.len;
-		int e = cli_save_error(cli, cli_state_add_input(cli->saved, cli_state_text(input)), error);
+		int e = cli_save_error(cli, cli_state_add_input(cli->saved, input), error);
 		if (e)
 			return e;
 	}
@@ -710,7 +791,7 @@ static int cli_turn(struct cli *cli, struct dstr *prompt, bool interpret,
 		if (e || *action == CLI_COMMAND_CONTINUE || *action == CLI_COMMAND_EXIT)
 			return e;
 	}
-	struct cli_text text = cli_text_dstr(prompt);
+	struct cstr_view text = cstr_view_dstr(prompt);
 	if (!cli_trim(text).len) {
 		*action = CLI_COMMAND_CONTINUE;
 		return cli->options->single ? cli_error_set(error, EINVAL, "The prompt is empty") : 0;
@@ -732,8 +813,8 @@ static int cli_turn(struct cli *cli, struct dstr *prompt, bool interpret,
 		return ENOMEM;
 	}
 	if (cli->saved)
-		e = cli_save_error(cli, cli_state_add_turn(cli->saved, cli_state_text(text),
-		                                          cli_state_text(cli_client_text(answer)), regenerate), error);
+		e = cli_save_error(cli, cli_state_add_turn(cli->saved, text,
+		                                          cli_client_text(answer), regenerate), error);
 	if (cli->options->single)
 		*action = CLI_COMMAND_EXIT;
 	return e;
@@ -750,7 +831,7 @@ static int cli_loop(struct cli *cli, struct cli_error *error)
 		if (e == EINTR || e == ENOMEM || cli->client.identity_changed)
 			return e;
 		if (e) {
-			e = cli_ui_error(catalog ? CLI_TEXT("Cannot refresh completion metadata") : CLI_TEXT("Cannot refresh note filenames"),
+			e = cli_ui_error(catalog ? CSTR_VIEW("Cannot refresh completion metadata") : CSTR_VIEW("Cannot refresh note filenames"),
 			                 cli_error_text(error, e));
 			if (e)
 				return e;
@@ -759,7 +840,7 @@ static int cli_loop(struct cli *cli, struct cli_error *error)
 		bool interpret = !initial;
 		dstr_auto prompt = dstr(nullptr);
 		if (initial) {
-			struct cli_text text = cli_text_dstr(&cli->options->prompt);
+			struct cstr_view text = cstr_view_dstr(&cli->options->prompt);
 			if (!dstr_cat_n(&prompt, text.data, text.len))
 				return ENOMEM;
 			initial = false;
@@ -778,7 +859,7 @@ static int cli_loop(struct cli *cli, struct cli_error *error)
 				return e;
 			cli_signal = 0;
 			cli_signals_drain(&cli->signals);
-			e = cli_ui_info(cli->console, CLI_TEXT("Cancelled."));
+			e = cli_ui_info(cli->console, CSTR_VIEW("Cancelled."));
 			if (e)
 				return e;
 			continue;
@@ -786,7 +867,7 @@ static int cli_loop(struct cli *cli, struct cli_error *error)
 		if (e) {
 			if (cli->options->single || !cli->tty || e == ENOMEM || ferror(stdout))
 				return e;
-			e = cli_ui_error(cli_error_text(error, e), (struct cli_text){});
+			e = cli_ui_error(cli_error_text(error, e), (struct cstr_view){});
 			if (e)
 				return e;
 		} else if (action == CLI_COMMAND_EXIT) {
@@ -795,7 +876,9 @@ static int cli_loop(struct cli *cli, struct cli_error *error)
 	}
 }
 
-static int cli_run(struct cli_options const *options, struct cli_error *error)
+static int
+cli_run (struct cli_options const *options,
+         struct cli_error         *error)
 {
 	if (curl_global_init(CURL_GLOBAL_DEFAULT))
 		return cli_error_set(error, EIO, "Cannot initialize libcurl");
@@ -825,7 +908,7 @@ static int cli_run(struct cli_options const *options, struct cli_error *error)
 		if (!dstr_printf(&message, "Connected to %s. /help lists commands; Ctrl-C cancels an answer.", dstr_get(&cli.client.tool)))
 			e = ENOMEM;
 		else
-			e = cli_ui_info(cli.console, cli_text_dstr(&message));
+			e = cli_ui_info(cli.console, cstr_view_dstr(&message));
 	}
 	if (!e)
 		e = cli_history_open(&cli, error);
@@ -843,7 +926,9 @@ static int cli_run(struct cli_options const *options, struct cli_error *error)
 	return e;
 }
 
-int main(int argc, char **argv)
+int
+main (int    argc,
+      char **argv)
 {
 	(void)setlocale(LC_ALL, "");
 	struct cli_options options = {.prompt = DSTR_INIT, .color = "auto", .reasoning = true};
@@ -855,9 +940,9 @@ int main(int argc, char **argv)
 	if (e == EINTR && cli_signal)
 		return 128 + cli_signal;
 	if (e) {
-		(void)cli_console_write_error(CLI_TEXT("askai-cli: "));
+		(void)cli_console_write_error(CSTR_VIEW("askai-cli: "));
 		(void)cli_console_write_error(cli_error_text(&error, e));
-		(void)cli_console_write_error(CLI_TEXT("\n"));
+		(void)cli_console_write_error(CSTR_VIEW("\n"));
 	}
 	return e ? 1 : 0;
 }

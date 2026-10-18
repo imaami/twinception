@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "app.h"
+#include "compat.h"
 #include "dstr.h"
 #include "http.h"
 #include "list.h"
@@ -152,7 +153,7 @@ app_turn_destroy (struct app_turn **p_turn)
 		return;
 	struct app_turn *turn = *p_turn;
 	*p_turn = nullptr;
-	for (size_t i = 0; i < ARRAY_SIZE(turn->user); ++i) {
+	for (size_t i = 0; i < array_size(turn->user); ++i) {
 		dstr_cleanup(&turn->reasoning[i]);
 		dstr_cleanup(&turn->answer[i]);
 		dstr_cleanup(&turn->user[i]);
@@ -883,7 +884,7 @@ app_finish_chat (struct app *app)
 	if (chat[0].stream.error || chat[1].stream.error)
 		return app_discard(app);
 
-	for (size_t i = 0; i < ARRAY_SIZE(app->chat); ++i) {
+	for (size_t i = 0; i < array_size(app->chat); ++i) {
 		app->pending->answer[i] = dstr_move(&chat[i].answer);
 		app->pending->reasoning[i] = dstr_move(&chat[i].reasoning);
 	}
@@ -988,7 +989,7 @@ app_chat_post (struct app_chat *chat)
 static int
 app_start_chat (struct app *app)
 {
-	for (size_t i = 0; i < ARRAY_SIZE(app->chat); ++i) {
+	for (size_t i = 0; i < array_size(app->chat); ++i) {
 		int e = app_chat_post(&app->chat[i]);
 		if (e)
 			return e;
@@ -1132,9 +1133,9 @@ app_rapid_text (struct app_rapid const   *rapid,
 		return nullptr;
 
 	size_t i = rapid->stream.app->rapid_stage == APP_RAPID_ANSWER
-	           ? ARRAY_SIZE(keys) - 1 : 0;
+	           ? array_size(keys) - 1 : 0;
 	struct json_object *text = nullptr;
-	while (i < ARRAY_SIZE(keys) &&
+	while (i < array_size(keys) &&
 	       !json_object_object_get_ex(delta, keys[i], &text))
 		++i;
 	return json_object_is_type(text, json_type_string) ? text : nullptr;
@@ -1387,7 +1388,7 @@ app_start_stage (struct app           *app,
                  long                  n_predict)
 {
 	app->rapid_stage = stage;
-	for (size_t i = 0; i < ARRAY_SIZE(app->rapid); ++i) {
+	for (size_t i = 0; i < array_size(app->rapid); ++i) {
 		int e = app_rapid_start(&app->rapid[i], n_predict);
 		if (e)
 			return e;
@@ -1430,7 +1431,7 @@ app_end_quantum (struct app *app)
 	app_print_quantum(app);
 	uint32_t requested = app->rapid[0].requested;
 	bool early = false;
-	for (size_t i = 0; i < ARRAY_SIZE(app->rapid); ++i) {
+	for (size_t i = 0; i < array_size(app->rapid); ++i) {
 		struct app_rapid *rapid = &app->rapid[i];
 		if (!dstr_cat_n(&rapid->emitted, dstr_get(&rapid->chunk),
 		                dstr_len(&rapid->chunk)))
@@ -1455,7 +1456,7 @@ app_end_quantum (struct app *app)
 static int
 app_commit_rapid (struct app *app)
 {
-	for (size_t i = 0; i < ARRAY_SIZE(app->rapid); ++i) {
+	for (size_t i = 0; i < array_size(app->rapid); ++i) {
 		app->pending->answer[i] = dstr_move(&app->rapid[i].answer);
 		app->pending->reasoning[i] = dstr_move(&app->rapid[i].emitted);
 	}
@@ -1498,7 +1499,7 @@ app_start_rapid (struct app *app)
 	app->rapid_stage = APP_RAPID_TEMPLATE;
 	app->rapid_used = 0;
 	app->rapid_round = 0;
-	for (size_t i = 0; i < ARRAY_SIZE(app->rapid); ++i) {
+	for (size_t i = 0; i < array_size(app->rapid); ++i) {
 		int e = app_rapid_begin(&app->rapid[i]);
 		if (e)
 			return e;
@@ -1772,7 +1773,7 @@ app (struct app_cfg const *cfg)
 static int
 app_init (struct app *app)
 {
-	for (size_t i = 0; i < ARRAY_SIZE(app->probe); ++i) {
+	for (size_t i = 0; i < array_size(app->probe); ++i) {
 		app->probe[i] = app_probe(app, i);
 		app->chat[i] = app_chat(app, i);
 		app->rapid[i] = app_rapid(app, i);
@@ -1785,7 +1786,7 @@ app_init (struct app *app)
 	if (e)
 		return e;
 
-	for (size_t i = 0; i < ARRAY_SIZE(app->template_url); ++i) {
+	for (size_t i = 0; i < array_size(app->template_url); ++i) {
 		e = app_urls(app, i);
 		if (e)
 			return e;
@@ -1809,7 +1810,7 @@ app_init (struct app *app)
 static void
 app_fini (struct app *app)
 {
-	for (size_t i = 0; i < ARRAY_SIZE(app->probe); ++i) {
+	for (size_t i = 0; i < array_size(app->probe); ++i) {
 		app_probe_fini(&app->probe[i]);
 		app_chat_fini(&app->chat[i]);
 		app_rapid_fini(&app->rapid[i]);
@@ -1851,7 +1852,7 @@ app_exec (struct app *app)
 	int e = app_init(app);
 	if (e)
 		return e;
-	for (size_t i = 0; i < ARRAY_SIZE(app->probe); ++i) {
+	for (size_t i = 0; i < array_size(app->probe); ++i) {
 		e = app_probe_begin(&app->probe[i]);
 		if (e)
 			return e;

@@ -1,12 +1,13 @@
 override SRC_askai-cli := \
   autocomplete.c          \
-  autocomplete-file.c     \
+  autocomplete_file.c     \
   buf.c                   \
   cli.c                   \
-  cli-client.c            \
-  cli-console.c           \
-  cli-state.c             \
-  cli-ui.c                \
+  cli_client.c            \
+  cli_console.c           \
+  cli_state.c             \
+  cli_ui.c                \
+  cstr_view.c             \
   dstr.c                  \
   jb.c
 

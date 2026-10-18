@@ -3,7 +3,7 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-askai check-buf check-cli check-completion check-datauri \
+.PHONY: default check check-askai check-buf check-cli check-completion check-cstr-view check-datauri \
         check-dstr check-handle check-instance check-ledger check-load \
         check-turn check-twinception load load-build
 default:; @:
@@ -61,13 +61,13 @@ check-askai: | askai test_plugin.so godbolt.so
 	$(PYTHON) $(TEST_DIR)askai.py $Oaskai $Otest_plugin.so $Ogodbolt.so
 
 # Terminal editing, the Unix-socket CLI, and its argument handling.
-check-cli: $Otests/cli-input $Otests/cli-state $Otests/cli-ui $Otests/autocomplete | askai-cli askai
+check-cli: $Otests/cli_input $Otests/cli_state $Otests/cli_ui $Otests/autocomplete | check-cstr-view askai-cli askai
 	$Otests/autocomplete
-	$Otests/cli-ui
+	$Otests/cli_ui
 	@directory=$$(mktemp -d) || exit 1; \
 	trap 'rm -rf "$$directory"' EXIT; \
-	"$Otests/cli-state" "$$directory/history"
-	$(PYTHON) $(TEST_DIR)cli-input.py $Otests/cli-input
+	"$Otests/cli_state" "$$directory/history"
+	$(PYTHON) $(TEST_DIR)cli-input.py $Otests/cli_input
 	$(PYTHON) $(TEST_DIR)chat-history.py $Oaskai
 	$(PYTHON) $(TEST_DIR)chat-stream.py $Oaskai
 	$(PYTHON) $(TEST_DIR)cli.py $Oaskai-cli $Oaskai
@@ -83,32 +83,39 @@ override CLI_INCLUDES = $(call test-pkg-config,CLI_INCLUDES,--cflags readline)
 override CLI_LIBS = $(call test-pkg-config,CLI_LIBS,--libs readline)
 override JSON_INCLUDES = $(call test-pkg-config,JSON_INCLUDES,--cflags json-c)
 override JSON_LIBS = $(call test-pkg-config,JSON_LIBS,--libs json-c)
-override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete-fixture.c.o \
+override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete_fixture.c.o \
                                  $Otests/src/autocomplete.c.o $Otests/src/dstr.c.o $Otests/src/jb.c.o
 override AUTOCOMPLETE_WRAPS := -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 
-override CLI_CONSOLE_OBJECTS := $Otests/src/cli-console.c.o $Otests/src/buf.c.o
+override CLI_CONSOLE_OBJECTS := $Otests/src/cli_console.c.o $Otests/src/buf.c.o
 
-$Otests/cli-input: $Otests/cli-input.c.o $(CLI_CONSOLE_OBJECTS) \
-                   $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
-$Otests/cli-input:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) -lm
+$Otests/cli_input $Otests/cli_ui $Otests/cli_state $Otests/autocomplete $Otests/cstr_view: $Otests/src/cstr_view.c.o
 
-$Otests/cli-ui: $Otests/cli-ui.c.o $Otests/src/cli-ui.c.o $(CLI_CONSOLE_OBJECTS) \
+$Otests/cstr_view: $Otests/cstr_view.c.o $Otests/src/dstr.c.o
+$Otests/cstr_view:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
+
+check-cstr-view: $Otests/cstr_view; $<
+
+$Otests/cli_input: $Otests/cli_input.c.o $(CLI_CONSOLE_OBJECTS) \
+                   $Otests/src/autocomplete_file.c.o $(AUTOCOMPLETE_OBJECTS)
+$Otests/cli_input:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) -lm
+
+$Otests/cli_ui: $Otests/cli_ui.c.o $Otests/src/cli_ui.c.o $(CLI_CONSOLE_OBJECTS) \
                 $Otests/src/dstr.c.o $Otests/src/jb.c.o
-$Otests/cli-ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS)
+$Otests/cli_ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS)
 
-$Otests/cli-state: $Otests/cli-state.c.o $Otests/src/cli-state.c.o \
+$Otests/cli_state: $Otests/cli_state.c.o $Otests/src/cli_state.c.o \
                    $Otests/src/dstr.c.o $Otests/src/jb.c.o
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
 
-$Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete-file.c.o $(AUTOCOMPLETE_OBJECTS)
+$Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete_file.c.o $(AUTOCOMPLETE_OBJECTS)
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) $(AUTOCOMPLETE_WRAPS) -o "$@" $^ $(JSON_LIBS) -lm
 
-$Otests/autocomplete.c.o $Otests/autocomplete-fixture.c.o \
-$Otests/src/autocomplete.c.o $Otests/src/autocomplete-file.c.o \
-$Otests/src/cli-state.c.o $Otests/src/cli-console.c.o $Otests/src/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
+$Otests/autocomplete.c.o $Otests/autocomplete_fixture.c.o \
+$Otests/src/autocomplete.c.o $Otests/src/autocomplete_file.c.o \
+$Otests/src/cli_state.c.o $Otests/src/cli_console.c.o $Otests/src/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
-$Otests/src/cli-console.c.o: CPPFLAGS += $(CLI_INCLUDES)
+$Otests/src/cli_console.c.o: CPPFLAGS += $(CLI_INCLUDES)
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf
@@ -198,11 +205,12 @@ load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
 -include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/datauri.c.d \
-         $Otests/src/log.c.d $Otests/cli-input.c.d $Otests/cli-ui.c.d $Otests/autocomplete.c.d \
-         $Otests/cli-state.c.d $Otests/src/cli-state.c.d \
-         $Otests/autocomplete-fixture.c.d $Otests/src/cli-console.c.d \
-         $Otests/src/autocomplete.c.d $Otests/src/autocomplete-file.c.d $Otests/src/dstr.c.d \
-         $Otests/src/cli-ui.c.d $Otests/src/jb.c.d \
+         $Otests/src/log.c.d $Otests/cli_input.c.d $Otests/cli_ui.c.d $Otests/autocomplete.c.d \
+         $Otests/cli_state.c.d $Otests/src/cli_state.c.d \
+         $Otests/autocomplete_fixture.c.d $Otests/src/cli_console.c.d \
+         $Otests/src/autocomplete.c.d $Otests/src/autocomplete_file.c.d $Otests/src/dstr.c.d \
+         $Otests/src/cli_ui.c.d $Otests/src/jb.c.d \
+         $Otests/cstr_view.c.d $Otests/src/cstr_view.c.d \
          $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif

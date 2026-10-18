@@ -3,7 +3,7 @@
 #include <errno.h>
 #include <json-c/json.h>
 
-#include "autocomplete-fixture.h"
+#include "autocomplete_fixture.h"
 
 int autocomplete_fixture (struct autocomplete *autocomplete)
 {
@@ -45,26 +45,24 @@ int autocomplete_fixture (struct autocomplete *autocomplete)
 	if (error)
 		return error;
 
-#define NAME(text) {text, sizeof(text) - 1}
-	static struct autocomplete_text const participants[] = {
-		NAME("alice"), NAME("bob"), NAME("äiti"), NAME("alice"),
-		NAME("bad\x1b[31m"), NAME("bad\xc2\x9b"), NAME("bad\xc0\xaf"),
-		NAME("bad\0name")
+	static struct cstr_view const participants[] = {
+		CSTR_VIEW("alice"), CSTR_VIEW("bob"), CSTR_VIEW("äiti"), CSTR_VIEW("alice"),
+		CSTR_VIEW("bad\x1b[31m"), CSTR_VIEW("bad\xc2\x9b"), CSTR_VIEW("bad\xc0\xaf"),
+		CSTR_VIEW("bad\0name")
 	};
-	static struct autocomplete_text const notebooks[] = {
-		NAME("alice/anonymous/client"), NAME("bob/0123456789abcdef/upstream")
+	static struct cstr_view const notebooks[] = {
+		CSTR_VIEW("alice/anonymous/client"), CSTR_VIEW("bob/0123456789abcdef/upstream")
 	};
-	static struct autocomplete_text const own[] = {
-		NAME("findings/locks.md"), NAME("design docs/first.md"), NAME("äiti.md"),
-		NAME("o'brien.md"), NAME("findings/locks.md"), NAME("bad\x1b[31m"),
-		NAME("bad\xc2\x9b"), NAME("bad\xc0\xaf"), NAME("bad\0name")
+	static struct cstr_view const own[] = {
+		CSTR_VIEW("findings/locks.md"), CSTR_VIEW("design docs/first.md"), CSTR_VIEW("äiti.md"),
+		CSTR_VIEW("o'brien.md"), CSTR_VIEW("findings/locks.md"), CSTR_VIEW("bad\x1b[31m"),
+		CSTR_VIEW("bad\xc2\x9b"), CSTR_VIEW("bad\xc0\xaf"), CSTR_VIEW("bad\0name")
 	};
-	static struct autocomplete_text const other[] = {NAME("model/thoughts.md")};
-	static struct autocomplete_text const peer[] = {NAME("reviews/reply.md")};
-	struct autocomplete_text const tool = NAME("notes");
-	struct autocomplete_text const empty = NAME("");
-	struct autocomplete_text const opposite = NAME("other");
-#undef NAME
+	static struct cstr_view const other[] = {CSTR_VIEW("model/thoughts.md")};
+	static struct cstr_view const peer[] = {CSTR_VIEW("reviews/reply.md")};
+	struct cstr_view const tool = CSTR_VIEW("notes");
+	struct cstr_view const empty = CSTR_VIEW("");
+	struct cstr_view const opposite = CSTR_VIEW("other");
 	error = autocomplete_set_participants(autocomplete, participants,
 	                                      sizeof participants / sizeof *participants);
 	if (error)
