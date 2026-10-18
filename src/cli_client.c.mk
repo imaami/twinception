@@ -1,1 +1,1 @@
-override INC_cli_client.c := json-c libcurl
+override INC_cli_client.c := json-c

@@ -6,26 +6,34 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
-#include <locale.h>
-#include <poll.h>
+#include <fcntl.h>
 #include <readline/history.h>
 #include <readline/readline.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
+#include <wchar.h>
 
 #include "buf.h"
 #include "cli_console.h"
+#include "cli_io.h"
+#include "cli_loop.h"
+#include "cli_scrollback.h"
+#include "compat.h"
 #include "dstr.h"
 #include "jb.h"
 
 enum {
 	CLI_CONSOLE_INPUT_LIMIT   = 1024 * 1024 * 16,
 	CLI_CONSOLE_HISTORY_LIMIT = 1024 * 1024,
-	CLI_CONSOLE_HISTORY_COUNT =  256
+	CLI_CONSOLE_HISTORY_COUNT =  256,
+	CLI_CONSOLE_OUTPUT_LIMIT  = 32 * 1024 * 1024
 };
 
 struct cli_console_output {
@@ -36,10 +44,28 @@ struct cli_console_output {
 	unsigned char  pending[4];
 };
 
+struct cli_console_io {
+	struct cli_io_job job;
+	ssize_t          count;
+	int              fd;
+	unsigned char    bytes[4096];
+};
+
 struct cli_console {
 	cli_console_complete_fn         *complete;
 	void                            *complete_context;
-	volatile sig_atomic_t           *interrupted;
+	struct cli_loop                 *loop;
+	struct cli_io                   *io;
+	FILE                            *terminal;
+	struct cli_loop_ref              input_ref;
+	struct cli_loop_step             input_step;
+	struct cli_loop_ref              output_ref;
+	struct cli_console_io            input_job;
+	struct cli_console_io            output_job;
+	struct cli_scrollback            scrollback;
+	struct buf                       output_queue;
+	struct dstr                      draft;
+	struct dstr                      prompt;
 	char                            *accepted_line;
 	struct autocomplete_match const *candidates;
 	size_t                           candidate_count;
@@ -52,11 +78,30 @@ struct cli_console {
 	size_t                           history_sizes[CLI_CONSOLE_HISTORY_COUNT];
 	struct dstr                      history_last;
 	struct termios                   initial_state;
+	struct termios                   resume_state;
 	struct cli_console_output        output;
+	enum cli_console_display         display;
 	int                              input_error;
 	int                              pending_input;
-	int                              wake_fd;
-	enum cli_console_display         display;
+	int                              input_flags;
+	int                              output_flags;
+	int                              draft_point;
+	int                              output_error;
+	unsigned                         rows;
+	unsigned                         columns;
+	unsigned                         frame;
+	bool                             fullscreen;
+	bool                             suspended;
+	bool                             terminal_saved;
+	bool                             dirty;
+	bool                             resize_pending;
+	bool                             interrupt_pending;
+	bool                             terminated;
+	bool                             busy;
+	bool                             input_regular;
+	bool                             output_regular;
+	bool                             input_working;
+	bool                             output_working;
 	bool                             color;
 	bool                             simple;
 	bool                             input_eof;
@@ -70,11 +115,9 @@ struct cli_console {
  * console, and the pointer is cleared before its storage is released. */
 static struct cli_console *cli_console_active;
 
-static bool
-cli_console_stopped (struct cli_console const *console)
-{
-	return console->interrupted && *console->interrupted;
-}
+static int cli_console_input_arm (struct cli_console *console);
+static int cli_console_output_drain (struct cli_console *console);
+static int cli_console_render (struct cli_console *console);
 
 static void
 cli_console_remove_callback (struct cli_console *console)
@@ -85,67 +128,125 @@ cli_console_remove_callback (struct cli_console *console)
 	}
 }
 
-static int
-cli_console_wait (struct cli_console *console)
+static void
+cli_console_input_done (struct cli_io_job *job)
 {
-	for (;;) {
-		if (cli_console_stopped(console))
-			return EINTR;
-		struct pollfd fds[] = {{STDIN_FILENO, POLLIN, 0}, {console->wake_fd, POLLIN, 0}};
-		if (poll(fds, 2, -1) < 0) {
-			if (errno == EINTR)
-				continue;
-			return errno;
-		}
-		if (cli_console_stopped(console))
-			return EINTR;
-		if (fds[1].revents & POLLIN) {
-			char events[64];
-			while (read(console->wake_fd, events, sizeof events) > 0) {}
-			if (cli_console_stopped(console))
-				return EINTR;
-			if (console->callback_active) {
-				rl_resize_terminal();
-				rl_redisplay();
-			}
-		}
-		if ((fds[0].revents | fds[1].revents) & (POLLERR | POLLNVAL))
-			return EIO;
-		if (fds[1].revents & POLLHUP)
-			return EPIPE;
-		if (fds[0].revents & (POLLIN | POLLHUP))
-			return 0;
+	struct cli_console *console = container_of(job, struct cli_console, input_job.job);
+	console->input_working = false;
+	console->input_error = console->terminated ? EINTR : job->error;
+	if (!job->error) {
+		ssize_t count = console->input_job.count;
+		console->input_eof = !count;
+		console->input_offset = 0;
+		console->input_size = (size_t)count;
+		memcpy(console->input_buffer, console->input_job.bytes, (size_t)count);
 	}
+}
+
+static int
+cli_console_input_work (struct cli_io_job *job)
+{
+	struct cli_console_io *input = container_of(job, struct cli_console_io, job);
+	do {
+		input->count = read(input->fd, input->bytes, sizeof input->bytes);
+	} while (input->count < 0 && errno == EINTR);
+	return input->count < 0 ? errno : 0;
+}
+
+static void
+cli_console_input_ready (struct cli_loop     *loop,
+                         struct cli_loop_ref *ref,
+                         uint32_t             events)
+{
+	(void)events;
+	struct cli_console *console = container_of(ref, struct cli_console, input_ref);
+	ssize_t count = read(ref->fd, console->input_buffer, sizeof console->input_buffer);
+	if (count < 0 && (errno == EAGAIN || errno == EINTR))
+		return;
+	cli_loop_unwatch(loop, ref);
+	if (count < 0) {
+		console->input_error = errno;
+		return;
+	}
+	console->input_eof = !count;
+	console->input_offset = 0;
+	console->input_size = (size_t)count;
+}
+
+static void
+cli_console_input_continue (struct cli_loop      *loop,
+                            struct cli_loop_step *step)
+{
+	(void)loop;
+	(void)step;
+}
+
+static int
+cli_console_input_arm (struct cli_console *console)
+{
+	if (console->input_offset < console->input_size || console->input_eof ||
+	    console->input_error || console->suspended || console->input_working ||
+	    console->input_ref.fd >= 0)
+		return 0;
+	if (!console->input_regular) {
+		int e = cli_loop_watch(console->loop, &console->input_ref, STDIN_FILENO,
+		                       EPOLLIN, cli_console_input_ready);
+		if (e != EPERM)
+			return e;
+		console->input_regular = true;
+	}
+	if (console->io) {
+		console->input_job.job.work = cli_console_input_work;
+		console->input_job.job.done = cli_console_input_done;
+		console->input_job.fd = STDIN_FILENO;
+		int e = cli_io_submit(console->io, &console->input_job.job);
+		if (!e)
+			console->input_working = true;
+		return e;
+	}
+	/* Console-only tests may omit a worker for a regular file. */
+	console->input_job.fd = STDIN_FILENO;
+	console->input_job.job.error = cli_console_input_work(&console->input_job.job);
+	cli_console_input_done(&console->input_job.job);
+	return console->input_error;
+}
+
+static int
+cli_console_wait (struct cli_console *console,
+                  uint64_t            deadline)
+{
+	while (!console->input_eof && !console->input_error &&
+	       console->input_offset == console->input_size) {
+		int e = cli_console_input_arm(console);
+		if (e)
+			return e;
+		if (console->input_offset < console->input_size || console->input_eof)
+			break;
+		if (deadline != UINT64_MAX && cli_loop_clock() >= deadline)
+			return 0;
+		e = cli_loop_turn(console->loop, deadline);
+		if (e)
+			return e;
+		if (!console->frame) {
+			e = cli_console_service(console);
+			if (e)
+				return e;
+		}
+	}
+	return console->input_error;
 }
 
 static int
 cli_console_byte (struct cli_console *console)
 {
-	if (cli_console_stopped(console))
-		console->input_error = EINTR;
-	if (console->input_eof || console->input_error)
+	if (console->input_error)
 		return EOF;
-	if (console->input_offset < console->input_size)
-		return console->input_buffer[console->input_offset++];
-	for (;;) {
-		console->input_error = cli_console_wait(console);
-		if (console->input_error)
+	if (console->input_offset == console->input_size) {
+		console->input_error = cli_console_wait(console, UINT64_MAX);
+		if (console->input_error || console->input_eof)
 			return EOF;
-		ssize_t size = read(STDIN_FILENO, console->input_buffer, sizeof console->input_buffer);
-		if (size > 0) {
-			console->input_size = (size_t)size;
-			console->input_offset = 1;
-			return console->input_buffer[0];
-		}
-		if (!size) {
-			console->input_eof = true;
-			return EOF;
-		}
-		if (errno != EINTR && errno != EAGAIN) {
-			console->input_error = errno;
-			return EOF;
-		}
 	}
+	return console->input_buffer[console->input_offset++];
 }
 
 static int
@@ -156,8 +257,7 @@ cli_console_getc (FILE *stream)
 	int byte = cli_console_byte(console);
 	if (byte == EOF && RL_ISSTATE(RL_STATE_MOREINPUT) && !console->input_error)
 		console->input_error = EIO;
-	/* Abort inside Readline's callback frame: EOF during a partial paste
-	 * makes Readline 8.2 use an unterminated buffer. */
+	/* Readline 8.2 cannot consume EOF midway through a bracketed paste. */
 	if (console->input_error)
 		rl_abort(0, 0);
 	return byte;
@@ -167,16 +267,12 @@ static int
 cli_console_available (void)
 {
 	struct cli_console *console = cli_console_active;
-	if (cli_console_stopped(console) ||
-	    console->input_error         ||
-	    console->input_offset < console->input_size)
-		return 1;
 	int timeout = rl_set_keyboard_input_timeout(-1);
-	struct timespec deadline = {timeout / 1000000, (timeout % 1000000) * 1000L};
-	struct pollfd fds[] = {{STDIN_FILENO, POLLIN, 0}, {console->wake_fd, POLLIN, 0}};
-	int ready = ppoll(fds, 2, &deadline, nullptr);
-	return cli_console_stopped(console) ||
-	       (ready > 0 && (fds[0].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)));
+	uint64_t deadline = timeout < 0 ? UINT64_MAX :
+	                    cli_loop_clock() + (uint64_t)timeout * 1000;
+	console->input_error = cli_console_wait(console, deadline);
+	return console->input_error || console->input_eof ||
+	       console->input_offset < console->input_size;
 }
 
 static void
@@ -311,75 +407,358 @@ cli_console_complete (char const *text,
 	return matches;
 }
 
-struct cli_console *
-cli_console_create (bool                   simple,
-                    bool                   color,
-                    volatile sig_atomic_t *interrupted,
-                    int                    wake_fd,
-                    int                   *e)
+static void
+cli_console_output_done (struct cli_io_job *job)
 {
-	if (cli_console_active) {
-		*e = EBUSY;
+	struct cli_console *console = container_of(job, struct cli_console, output_job.job);
+	console->output_working = false;
+	console->output_error = job->error;
+	if (!job->error)
+		buf_consume(&console->output_queue, (size_t)console->output_job.count);
+}
+
+static int
+cli_console_output_work (struct cli_io_job *job)
+{
+	struct cli_console_io *output = container_of(job, struct cli_console_io, job);
+	ssize_t count;
+	do {
+		count = write(output->fd, output->bytes, (size_t)output->count);
+	} while (count < 0 && errno == EINTR);
+	output->count = count;
+	return count < 0 ? errno : count ? 0 : EIO;
+}
+
+static void
+cli_console_output_ready (struct cli_loop     *loop,
+                          struct cli_loop_ref *ref,
+                          uint32_t             events)
+{
+	(void)loop;
+	(void)events;
+	struct cli_console *console = container_of(ref, struct cli_console, output_ref);
+	console->output_error = cli_console_output_drain(console);
+}
+
+static int
+cli_console_output_drain (struct cli_console *console)
+{
+	if (console->output_error || console->output_working || console->suspended)
+		return console->output_error;
+	struct span bytes = buf_peek(&console->output_queue);
+	if (!bytes.len) {
+		cli_loop_unwatch(console->loop, &console->output_ref);
+		return 0;
+	}
+	if (console->output_regular && console->io) {
+		size_t length = bytes.len < sizeof console->output_job.bytes
+		                ? bytes.len : sizeof console->output_job.bytes;
+		memcpy(console->output_job.bytes, bytes.ptr, length);
+		console->output_job.count = (ssize_t)length;
+		console->output_job.fd = STDOUT_FILENO;
+		console->output_job.job.work = cli_console_output_work;
+		console->output_job.job.done = cli_console_output_done;
+		int e = cli_io_submit(console->io, &console->output_job.job);
+		if (!e)
+			console->output_working = true;
+		return e;
+	}
+	/* A turn writes at most one bounded block. EPOLLOUT drives the rest. */
+	size_t length = bytes.len < 65536 ? bytes.len : 65536;
+	ssize_t count = write(STDOUT_FILENO, bytes.ptr, length);
+	if (count < 0 && errno != EAGAIN && errno != EINTR)
+		return errno;
+	if (count > 0)
+		buf_consume(&console->output_queue, (size_t)count);
+	if (console->output_queue.head == console->output_queue.tail) {
+		cli_loop_unwatch(console->loop, &console->output_ref);
+		return 0;
+	}
+	if (!console->output_regular && console->output_ref.fd < 0)
+		return cli_loop_watch(console->loop, &console->output_ref, STDOUT_FILENO,
+		                      EPOLLOUT, cli_console_output_ready);
+	return 0;
+}
+
+static int
+cli_console_queue (struct cli_console *console,
+                   struct cstr_view    text)
+{
+	struct span room;
+	int e = buf_reserve(&console->output_queue, text.len, CLI_CONSOLE_OUTPUT_LIMIT, &room);
+	if (e)
+		return e;
+	if (text.len)
+		memcpy(room.ptr, text.data, text.len);
+	buf_commit(&console->output_queue, text.len);
+	return cli_console_output_drain(console);
+}
+
+static ssize_t
+cli_console_terminal_write (void       *cookie,
+                            char const *data,
+                            size_t      length)
+{
+	struct cli_console *console = cookie;
+	int e = cli_console_queue(console, (struct cstr_view){data, length});
+	if (e) {
+		console->output_error = e;
+		return -1;
+	}
+	console->dirty = true;
+	return (ssize_t)length;
+}
+
+static void
+cli_console_redisplay (void)
+{
+	struct cli_console *console = cli_console_active;
+	dstr_clear(&console->draft);
+	if (!dstr_cat_n(&console->draft, rl_line_buffer, (size_t)rl_end))
+		console->input_error = ENOMEM;
+	console->draft_point = rl_point;
+	console->dirty = true;
+}
+
+static int
+cli_console_page_up (int count,
+                     int key)
+{
+	(void)count;
+	(void)key;
+	struct cli_console *console = cli_console_active;
+	cli_scrollback_scroll(&console->scrollback, console->rows - 2, true);
+	console->dirty = true;
+	return 0;
+}
+
+static int
+cli_console_page_down (int count,
+                       int key)
+{
+	(void)count;
+	(void)key;
+	struct cli_console *console = cli_console_active;
+	cli_scrollback_scroll(&console->scrollback, console->rows - 2, false);
+	console->dirty = true;
+	return 0;
+}
+
+static int
+cli_console_bottom (int count,
+                    int key)
+{
+	(void)count;
+	(void)key;
+	struct cli_console *console = cli_console_active;
+	cli_scrollback_bottom(&console->scrollback);
+	console->dirty = true;
+	return 0;
+}
+
+static int
+cli_console_dimensions (struct cli_console *console)
+{
+	struct winsize size = {};
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0)
+		return errno;
+	console->rows = size.ws_row >= 4 ? size.ws_row : 24;
+	console->columns = size.ws_col >= 8 ? size.ws_col : 80;
+	if (console->rows > 256)
+		console->rows = 256;
+	if (console->columns > 512)
+		console->columns = 512;
+	console->dirty = true;
+	return 0;
+}
+
+static int
+cli_console_editor_start (struct cli_console *console)
+{
+	if (console->simple || console->callback_active || console->line_ready || console->suspended)
+		return 0;
+	console->callback_active = true;
+	++console->frame;
+	rl_callback_handler_install(dstr_get(&console->prompt), cli_console_accept);
+	if (rl_executing_macro)
+		RL_SETSTATE(RL_STATE_MACROINPUT);
+	if (console->pending_input) {
+		rl_execute_next(console->pending_input);
+		console->pending_input = 0;
+	}
+	struct termios state;
+	int e = tcgetattr(STDIN_FILENO, &state) < 0 ? errno : 0;
+	if (!e) {
+		state.c_lflag |= NOFLSH;
+		e = tcsetattr(STDIN_FILENO, TCSANOW, &state) < 0 ? errno : 0;
+	}
+	--console->frame;
+	if (!e)
+		e = cli_console_input_arm(console);
+	cli_loop_ready(console->loop, &console->input_step);
+	return e;
+}
+
+struct cli_console *
+cli_console_create (bool             simple,
+                    bool             color,
+                    struct cli_loop *loop,
+                    struct cli_io   *io,
+                    int             *e)
+{
+	if (cli_console_active || !loop) {
+		*e = cli_console_active ? EBUSY : EINVAL;
 		return nullptr;
 	}
-
 	struct cli_console *console = calloc(1, sizeof *console);
 	if (!console) {
 		*e = ENOMEM;
 		return nullptr;
 	}
-
-	bool const tty_stdout = isatty(STDOUT_FILENO);
+	console->input_step.fn = cli_console_input_continue;
+	console->input_ref.fd = -1;
+	console->output_ref.fd = -1;
+	console->input_job.fd = -1;
+	console->output_job.fd = -1;
+	console->input_flags = -1;
+	console->output_flags = -1;
+	console->rows = 24;
+	console->columns = 80;
+	console->loop = loop;
+	console->io = io;
 	console->history_last = dstr(nullptr);
-	console->simple = simple || !tty_stdout ||
-	                  !isatty(STDIN_FILENO);
+	console->draft = dstr(nullptr);
+	console->prompt = dstr(nullptr);
+	cli_scrollback_init(&console->scrollback);
+	bool tty_stdout = isatty(STDOUT_FILENO);
+	console->simple = simple || !tty_stdout || !isatty(STDIN_FILENO);
 	console->color = color && tty_stdout;
-	console->interrupted = interrupted;
-	console->wake_fd = wake_fd;
-
+	char const *term = getenv("TERM");
+	console->fullscreen = !console->simple && term && *term && strcmp(term, "dumb");
+	struct stat input, output;
+	*e = fstat(STDIN_FILENO, &input) < 0 || fstat(STDOUT_FILENO, &output) < 0 ? errno : 0;
+	if (*e)
+		goto fail;
+	console->input_regular = S_ISREG(input.st_mode);
+	console->output_regular = S_ISREG(output.st_mode);
+	console->input_flags = fcntl(STDIN_FILENO, F_GETFL);
+	console->output_flags = fcntl(STDOUT_FILENO, F_GETFL);
+	if (console->input_flags < 0 || console->output_flags < 0 ||
+	    fcntl(STDIN_FILENO, F_SETFL, console->input_flags | O_NONBLOCK) < 0 ||
+	    fcntl(STDOUT_FILENO, F_SETFL, console->output_flags | O_NONBLOCK) < 0) {
+		*e = errno;
+		goto fail;
+	}
+	cli_console_active = console;
 	if (!console->simple) {
-		if (tcgetattr(STDIN_FILENO,
-		              &console->initial_state) < 0) {
+		if (tcgetattr(STDIN_FILENO, &console->initial_state) < 0) {
 			*e = errno;
-			free(console);
-			console = nullptr;
-			return nullptr;
+			goto fail;
 		}
-		(void)setlocale(LC_CTYPE, "");
+		console->terminal_saved = true;
+		console->terminal = fopencookie(console, "w", (cookie_io_functions_t){
+			.write = cli_console_terminal_write,
+		});
+		if (!console->terminal) {
+			*e = errno;
+			goto fail;
+		}
+		setbuf(console->terminal, nullptr);
 		rl_readline_name = "askai-cli";
 		rl_catch_signals = 0;
 		rl_catch_sigwinch = 0;
 		rl_instream = stdin;
-		rl_outstream = stdout;
+		rl_outstream = console->terminal;
 		rl_initialize();
+		console->fullscreen = console->fullscreen && rl_get_termcap("up") && rl_get_termcap("cl");
 		rl_add_defun("askai-accept-line", cli_console_submit, -1);
 		char const *names[] = {"emacs-standard", "vi-insertion", "vi-move"};
-		for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
+		for (size_t i = 0; i < array_size(names); ++i) {
 			Keymap map = rl_get_keymap_by_name(names[i]);
 			if (!map)
 				continue;
-			rl_bind_keyseq_in_map("\033[5~", rl_history_search_backward, map);
-			rl_bind_keyseq_in_map("\033[6~", rl_history_search_forward, map);
+			rl_bind_keyseq_in_map("\033[5~", console->fullscreen ? cli_console_page_up : rl_history_search_backward, map);
+			rl_bind_keyseq_in_map("\033[6~", console->fullscreen ? cli_console_page_down : rl_history_search_forward, map);
+			rl_bind_keyseq_in_map("\033[1;5F", cli_console_bottom, map);
 			rl_bind_keyseq_in_map("\033[1;5D", rl_backward_word, map);
 			rl_bind_keyseq_in_map("\033[1;5C", rl_forward_word, map);
 			rl_bind_key_in_map('\r', cli_console_submit, map);
 			rl_bind_key_in_map('\n', cli_console_submit, map);
+			rl_bind_key_in_map(0x1f, rl_undo_command, map);
 		}
 		rl_variable_bind("enable-bracketed-paste", "on");
-		/* User bindings, including $if askai-cli, override our defaults. */
 		(void)rl_read_init_file(nullptr);
 		rl_getc_function = cli_console_getc;
 		rl_input_available_hook = cli_console_available;
 		rl_attempted_completion_function = cli_console_complete;
 		rl_completer_word_break_characters = "";
 		rl_completer_quote_characters = "";
+		if (console->fullscreen)
+			rl_redisplay_function = cli_console_redisplay;
 		using_history();
 		stifle_history(CLI_CONSOLE_HISTORY_COUNT);
+		if (console->fullscreen) {
+			*e = cli_console_dimensions(console);
+			if (!*e)
+				*e = cli_console_queue(console, CSTR_VIEW("\033[?1049h\033[?7l\033[2J\033[H"));
+			if (*e)
+				goto fail;
+		}
 	}
-
-	cli_console_active = console;
 	*e = 0;
 	return console;
+fail:
+	cli_console_destroy(&console);
+	return nullptr;
+}
+
+int
+cli_console_suspend (struct cli_console *console)
+{
+	if (console->suspended)
+		return 0;
+	int e = 0;
+	if (console->terminal_saved) {
+		if (tcgetattr(STDIN_FILENO, &console->resume_state) < 0)
+			e = errno;
+		/* These short best-effort writes must never wait for a slow terminal. */
+		char const restore[] = "\033[?2004l\033[?7h\033[0m\033[?1049l";
+		if (console->fullscreen)
+			(void)write(STDOUT_FILENO, restore, sizeof restore - 1);
+		while (tcsetattr(STDIN_FILENO, TCSANOW, &console->initial_state) < 0) {
+			if (errno != EINTR) {
+				e = errno;
+				break;
+			}
+		}
+	}
+	console->suspended = true;
+	cli_loop_unwatch(console->loop, &console->input_ref);
+	cli_loop_unwatch(console->loop, &console->output_ref);
+	if (console->input_flags >= 0 && fcntl(STDIN_FILENO, F_SETFL, console->input_flags) < 0)
+		e = errno;
+	if (console->output_flags >= 0 && fcntl(STDOUT_FILENO, F_SETFL, console->output_flags) < 0)
+		e = errno;
+	return e;
+}
+
+int
+cli_console_resume (struct cli_console *console)
+{
+	if (!console->suspended)
+		return 0;
+	if ((console->input_flags >= 0 && fcntl(STDIN_FILENO, F_SETFL, console->input_flags | O_NONBLOCK) < 0) ||
+	    (console->output_flags >= 0 && fcntl(STDOUT_FILENO, F_SETFL, console->output_flags | O_NONBLOCK) < 0))
+		return errno;
+	console->suspended = false;
+	cli_loop_ready(console->loop, &console->input_step);
+	console->resize_pending = true;
+	console->dirty = true;
+	if (console->terminal_saved && tcsetattr(STDIN_FILENO, TCSANOW, &console->resume_state) < 0)
+		return errno;
+	if (console->fullscreen)
+		return cli_console_queue(console, CSTR_VIEW("\033[?1049h\033[?7l\033[2J\033[H\033[?2004h"));
+	return 0;
 }
 
 void
@@ -387,26 +766,34 @@ cli_console_destroy (struct cli_console **ptr)
 {
 	if (!ptr || !*ptr)
 		return;
-
 	struct cli_console *console = *ptr;
 	*ptr = nullptr;
-
 	cli_console_remove_callback(console);
+	cli_loop_unready(&console->input_step);
+	(void)cli_console_suspend(console);
 	free(console->accepted_line);
 	console->accepted_line = nullptr;
-	(void)cli_console_set_display(console, CLI_CONSOLE_RESET);
-
-	if (!console->simple) {
+	if (!console->simple && console->terminal) {
 		rl_clear_history();
 		rl_getc_function = rl_getc;
 		rl_input_available_hook = nullptr;
 		rl_attempted_completion_function = nullptr;
-		while (tcsetattr(STDIN_FILENO, TCSANOW,
-		                 &console->initial_state) < 0
-		       && errno == EINTR) {}
+		rl_redisplay_function = rl_redisplay;
+		rl_outstream = stdout;
+		(void)fclose(console->terminal);
+		console->terminal = nullptr;
 	}
+	if (console->input_flags >= 0)
+		(void)fcntl(STDIN_FILENO, F_SETFL, console->input_flags);
+	if (console->output_flags >= 0)
+		(void)fcntl(STDOUT_FILENO, F_SETFL, console->output_flags);
 	dstr_cleanup(&console->history_last);
-	cli_console_active = nullptr;
+	dstr_cleanup(&console->draft);
+	dstr_cleanup(&console->prompt);
+	cli_scrollback_fini(&console->scrollback);
+	buf_fini(&console->output_queue);
+	if (cli_console_active == console)
+		cli_console_active = nullptr;
 	free(console);
 }
 
@@ -414,19 +801,19 @@ int
 cli_console_set_display (struct cli_console       *console,
                          enum cli_console_display  display)
 {
-	if (console->color && console->display != display) {
-		static char const *const colors[] = {
-			"\x1b[0m", "\x1b[35m", "\x1b[33m", "\x1b[90m",
-			"\x1b[1m\x1b[32m", "\x1b[1m\x1b[31m"
-		};
-		if ((unsigned)display >= sizeof colors / sizeof *colors)
-			return EINVAL;
-		if (fputs(colors[display], stdout) == EOF || fflush(stdout))
-			return EIO;
-		console->display = display;
-	}
-	return 0;
+	static char const *const colors[] = {
+		"\033[0m", "\033[35m", "\033[33m", "\033[90m",
+		"\033[1m\033[32m", "\033[1m\033[31m"
+	};
+	if ((unsigned)display >= array_size(colors))
+		return EINVAL;
+	int e = 0;
+	if (console->color && !console->fullscreen && console->display != display)
+		e = cli_console_queue(console, cstr_view(colors[display]));
+	console->display = display;
+	return e;
 }
+
 
 int cli_console_remember(struct cli_console *console, struct cstr_view text)
 {
@@ -461,8 +848,9 @@ int cli_console_remember(struct cli_console *console, struct cstr_view text)
 static int cli_console_read_simple(struct cli_console *console, struct buf *bytes,
                                    bool multiline, char const *prompt)
 {
-	if ((prompt && fputs(prompt, stdout) == EOF) || fflush(stdout))
-		return EIO;
+	int error = cli_console_queue(console, cstr_view(prompt));
+	if (error)
+		return error;
 	bool more;
 	do {
 		size_t start = bytes->tail;
@@ -497,44 +885,213 @@ static int cli_console_read_simple(struct cli_console *console, struct buf *byte
 	return 0;
 }
 
-static int cli_console_readline(struct cli_console *console, char const *prompt)
+static int
+cli_console_render_draft (struct cli_console *console,
+                          struct dstr        *output,
+                          unsigned           *cursor)
 {
-	console->line_ready = false;
-	console->callback_active = true;
-	rl_callback_handler_install(prompt ? prompt : "", cli_console_accept);
-	if (rl_executing_macro)
-		RL_SETSTATE(RL_STATE_MACROINPUT);
-	if (console->pending_input) {
-		rl_execute_next(console->pending_input);
-		console->pending_input = 0;
+	struct cstr_view draft = cstr_view_dstr(&console->draft);
+	/* The input row scrolls horizontally; the complete draft remains owned
+	 * by Readline, including embedded newlines and its undo list. */
+	size_t point = console->draft_point < 0 ? 0 : (size_t)console->draft_point;
+	if (point > draft.len)
+		point = draft.len;
+	size_t start = point > console->columns / 2 ? point - console->columns / 2 : 0;
+	while (start && start < draft.len && ((unsigned char)draft.data[start] & 0xc0) == 0x80)
+		--start;
+	unsigned column = 0;
+	if (!dstr_cat(output, start ? "< " : "> "))
+		return ENOMEM;
+	column = 2;
+	*cursor = column + 1;
+	for (size_t i = start; i < draft.len;) {
+		if (i == point)
+			*cursor = column + 1;
+		mbstate_t state = {};
+		wchar_t character = L'?';
+		size_t bytes = mbrtowc(&character, draft.data + i, draft.len - i, &state);
+		if (!bytes || bytes == (size_t)-1 || bytes == (size_t)-2)
+			bytes = 1;
+		int cells = bytes == 1 && (unsigned char)draft.data[i] < 0x20 ? 1 : wcwidth(character);
+		unsigned width = cells < 0 ? 1 : (unsigned)cells;
+		if (column + width >= console->columns)
+			break;
+		if (bytes == 1 && (unsigned char)draft.data[i] < 0x20) {
+			if (!dstr_cat(output, " "))
+				return ENOMEM;
+		} else if (!dstr_cat_n(output, draft.data + i, bytes)) {
+			return ENOMEM;
+		}
+		i += bytes;
+		column += width;
+		if (i == point)
+			*cursor = column + 1;
+	}
+	return dstr_cat(output, "\033[K") ? 0 : ENOMEM;
+}
+
+static int
+cli_console_render (struct cli_console *console)
+{
+	if (!console->fullscreen || !console->dirty || console->suspended ||
+	    console->output_queue.head != console->output_queue.tail)
+		return 0;
+	dstr_auto screen = dstr("\033[?25l\033[H");
+	int e = cli_scrollback_render(&console->scrollback, console->columns,
+	                             console->rows - 2, &screen);
+	if (e)
+		return e;
+	dstr_auto status = dstr(nullptr);
+	if (!dstr_printf(&status, " askai | %s | %zu unread | PgUp/PgDn scroll, Ctrl-End follow",
+	                 console->busy ? "working" : "ready", console->scrollback.unread))
+		return ENOMEM;
+	size_t length = dstr_len(&status);
+	if (length > console->columns)
+		length = console->columns;
+	if (!dstr_cat(&screen, "\033[7m") || !dstr_cat_n(&screen, dstr_get(&status), length) ||
+	    !dstr_cat(&screen, "\033[K\033[0m\r\n"))
+		return ENOMEM;
+	unsigned cursor;
+	e = cli_console_render_draft(console, &screen, &cursor);
+	if (!e && !dstr_printf(&screen, "\033[%u;%uH\033[?25h", console->rows, cursor))
+		e = ENOMEM;
+	if (!e)
+		e = cli_console_queue(console, cstr_view_dstr(&screen));
+	if (!e)
+		console->dirty = false;
+	return e;
+}
+
+int
+cli_console_interrupt (struct cli_console *console,
+                       bool                terminate)
+{
+	if (terminate || console->simple) {
+		console->terminated = true;
+		console->input_error = EINTR;
+	} else if (!console->busy) {
+		console->interrupt_pending = true;
+	}
+	return 0;
+}
+
+int
+cli_console_resize (struct cli_console *console)
+{
+	console->resize_pending = true;
+	return 0;
+}
+
+int
+cli_console_busy (struct cli_console *console,
+                  bool                busy)
+{
+	console->busy = busy;
+	console->dirty = true;
+	if (busy && console->fullscreen)
+		return cli_console_editor_start(console);
+	return 0;
+}
+
+int
+cli_console_service (struct cli_console *console)
+{
+	if (console->suspended)
+		return 0;
+	if (console->loop->dispatching)
+		return EBUSY;
+	int e = cli_console_output_drain(console);
+	if (e)
+		return e;
+	if (!console->frame && !console->simple) {
+		if (console->resize_pending) {
+			console->resize_pending = false;
+			rl_resize_terminal();
+			if (console->fullscreen) {
+				e = cli_console_dimensions(console);
+				if (e)
+					return e;
+			} else if (console->callback_active) {
+				rl_redisplay();
+			}
+		}
+		if (console->interrupt_pending && console->callback_active) {
+			console->interrupt_pending = false;
+			/* rl_delete_text records the entire deletion in Readline's undo
+			 * list before mutating it. Ctrl-_ restores the draft. */
+			rl_begin_undo_group();
+			rl_delete_text(0, rl_end);
+			rl_end_undo_group();
+			rl_point = 0;
+			rl_redisplay_function();
+		}
+		for (unsigned count = 0; count < 64 && console->callback_active && !console->input_error; ++count) {
+			e = cli_console_input_arm(console);
+			if (e)
+				return e;
+			if (console->input_offset == console->input_size && !console->input_eof &&
+			    !rl_pending_input && !RL_ISSTATE(RL_STATE_MACROINPUT))
+				break;
+			++console->frame;
+			rl_callback_read_char();
+			--console->frame;
+			if (rl_end >= CLI_CONSOLE_INPUT_LIMIT)
+				console->input_error = EFBIG;
+		}
+		if (console->callback_active && !console->input_error) {
+			e = cli_console_input_arm(console);
+			if (e)
+				return e;
+			if (console->input_offset < console->input_size || rl_pending_input ||
+			    RL_ISSTATE(RL_STATE_MACROINPUT))
+				cli_loop_ready(console->loop, &console->input_step);
+		}
+	}
+	e = cli_console_render(console);
+	return e ? e : console->input_error;
+}
+
+static int
+cli_console_readline (struct cli_console *console,
+                      char const         *prompt)
+{
+	if (!console->callback_active && !console->line_ready) {
+		dstr_clear(&console->prompt);
+		if (!dstr_cat(&console->prompt, prompt ? prompt : ""))
+			return ENOMEM;
+		int e = cli_console_editor_start(console);
+		if (e)
+			return e;
 	}
 	while (!console->line_ready && !console->input_error) {
-		console->input_error = console->input_offset < console->input_size || rl_pending_input ||
-		                       RL_ISSTATE(RL_STATE_MACROINPUT) ? 0 : cli_console_wait(console);
-		if (console->input_error)
+		int e = cli_console_service(console);
+		if (e)
+			return e;
+		if (console->line_ready)
 			break;
-		if (console->wake_fd < 0)
-			rl_resize_terminal();
-		rl_callback_read_char();
-		if (cli_console_stopped(console))
-			console->input_error = EINTR;
-		else if (rl_end >= CLI_CONSOLE_INPUT_LIMIT)
-			console->input_error = EFBIG;
+		e = cli_loop_turn(console->loop, UINT64_MAX);
+		if (e)
+			return e;
 	}
 	if (console->input_error) {
 		rl_free_line_state();
 		rl_callback_sigcleanup();
+		cli_console_remove_callback(console);
 	}
-	cli_console_remove_callback(console);
 	return console->input_error;
 }
 
-int cli_console_read(struct cli_console *console, struct dstr *text,
-                     bool multiline, bool *eof, char const *prompt)
+int
+cli_console_read (struct cli_console *console,
+                  struct dstr        *text,
+                  bool                multiline,
+                  bool               *eof,
+                  char const         *prompt)
 {
 	dstr_clear(text);
 	*eof = false;
-	console->input_error = 0;
+	if (!console->terminated)
+		console->input_error = 0;
 	console->multiline = multiline;
 	int e = cli_console_set_display(console, CLI_CONSOLE_USER_INPUT);
 	struct buf bytes = {};
@@ -545,7 +1102,7 @@ int cli_console_read(struct cli_console *console, struct dstr *text,
 	} else if (!e) {
 		e = cli_console_readline(console, prompt);
 		line = (struct cstr_view){console->accepted_line, console->accepted_length};
-		if (!console->accepted_line)
+		if (!e && !console->accepted_line)
 			console->input_eof = true;
 	}
 	if (!e && line.len) {
@@ -561,24 +1118,33 @@ int cli_console_read(struct cli_console *console, struct dstr *text,
 			e = cli_console_remember(console, line);
 		if (!e && !dstr_cat(text, "\n"))
 			e = ENOMEM;
+		if (!e && console->fullscreen) {
+			e = cli_console_write(console, cstr_view_dstr(&console->prompt));
+			if (!e)
+				e = cli_console_write(console, cstr_view_dstr(text));
+		}
 	}
 	buf_fini(&bytes);
 	free(console->accepted_line);
 	console->accepted_line = nullptr;
 	console->accepted_length = 0;
-	if (e) {
-		dstr_clear(text);
-		if (!console->simple)
-			(void)fputc('\n', stdout);
+	console->line_ready = false;
+	if (!console->callback_active) {
+		dstr_clear(&console->draft);
+		console->draft_point = 0;
+		console->dirty = true;
 	}
+	if (e)
+		dstr_clear(text);
 	*eof = console->input_eof && !dstr_len(text);
 	int reset = cli_console_set_display(console, CLI_CONSOLE_RESET);
 	return e ? e : reset;
 }
 
+
 static int
 cli_console_output_write (struct cli_console_output *state,
-                          FILE                      *dest,
+                          struct dstr               *dest,
                           struct cstr_view           text)
 {
 	/* UTF-8 code points may straddle provider deltas. C1 controls are unsafe. */
@@ -590,31 +1156,33 @@ cli_console_output_write (struct cli_console_output *state,
 				state->value = (state->value << 6) | (byte & 0x3f);
 				if (state->used == state->expected) {
 					uint32_t value = state->value;
-					if (value < state->minimum ||
-					    value > 0x10ffff       ||
-					    (value >= 0xd800 && value <= 0xdfff) ||
-					    (value >= 0x0080 && value <= 0x009f))
-						(void)fputc('?', dest);
-					else
-						(void)fwrite(state->pending, 1,
-						             state->used, dest);
+					bool unsafe = value < state->minimum || value > 0x10ffff ||
+					              (value >= 0xd800 && value <= 0xdfff) ||
+					              (value >= 0x0080 && value <= 0x009f);
+					struct cstr_view bytes = unsafe ? CSTR_VIEW("?") :
+					                        (struct cstr_view){(char const *)state->pending, state->used};
+					if (!dstr_cat_n(dest, bytes.data, bytes.len))
+						return ENOMEM;
 					state->used = 0;
 				}
 				continue;
 			}
-			(void)fputc('?', dest);
+			if (!dstr_cat(dest, "?"))
+				return ENOMEM;
 			state->used = 0;
 		}
 		if (byte < 0x80) {
-			(void)fputc((byte >= 0x20 && byte != 0x7f) ||
-			            byte == '\n' || byte == '\t'
-			            ? byte : '?', dest);
+			char safe = (byte >= 0x20 && byte != 0x7f) || byte == '\n' || byte == '\t'
+			            ? (char)byte : '?';
+			if (!dstr_cat_n(dest, &safe, 1))
+				return ENOMEM;
 		} else {
 			state->expected = byte >= 0xc2 && byte <= 0xdf ? 2 :
 			                  byte >= 0xe0 && byte <= 0xef ? 3 :
 			                  byte >= 0xf0 && byte <= 0xf4 ? 4 : 0;
 			if (!state->expected) {
-				(void)fputc('?', dest);
+				if (!dstr_cat(dest, "?"))
+					return ENOMEM;
 				continue;
 			}
 			state->pending[0] = byte;
@@ -624,29 +1192,54 @@ cli_console_output_write (struct cli_console_output *state,
 			                 state->expected == 3 ? 0x800 : 0x10000;
 		}
 	}
-	return ferror(dest) ? EIO : 0;
+	return 0;
 }
 
 int
 cli_console_write (struct cli_console *console,
                    struct cstr_view    text)
 {
-	return cli_console_output_write(&console->output, stdout, text);
+	dstr_auto clean = dstr(nullptr);
+	int e = cli_console_output_write(&console->output, &clean, text);
+	if (e)
+		return e;
+	if (!console->fullscreen)
+		return cli_console_queue(console, cstr_view_dstr(&clean));
+	e = cli_scrollback_append(&console->scrollback, cstr_view_dstr(&clean));
+	console->dirty = true;
+	return e;
 }
 
 int
 cli_console_write_error (struct cstr_view text)
 {
-	static struct cli_console_output state;
-	int e = cli_console_output_write(&state, stderr, text);
-	return fflush(stderr) || e ? EIO : 0;
+	struct cli_console_output state = {};
+	dstr_auto clean = dstr(nullptr);
+	int e = cli_console_output_write(&state, &clean, text);
+	if (e)
+		return e;
+	size_t length = dstr_len(&clean);
+	return fwrite(dstr_get(&clean), 1, length, stderr) != length || fflush(stderr) ? EIO : 0;
 }
 
 int
 cli_console_flush (struct cli_console *console)
 {
-	(void)console;
-	return fflush(stdout) ? EIO : 0;
+	int e = cli_console_output_drain(console);
+	return e ? e : cli_console_render(console);
+}
+
+
+bool
+cli_console_pending (struct cli_console const *console)
+{
+	return console->output_working || console->output_queue.head != console->output_queue.tail;
+}
+
+bool
+cli_console_blocked (struct cli_console const *console)
+{
+	return console->output_queue.tail - console->output_queue.head >= 1024 * 1024;
 }
 
 void
@@ -656,4 +1249,12 @@ cli_console_set_completion (struct cli_console      *console,
 {
 	console->complete = callback;
 	console->complete_context = context;
+}
+
+int
+cli_console_error (struct cli_console *console,
+                   struct cstr_view    text)
+{
+	return console && console->fullscreen ? cli_console_write(console, text)
+	                                     : cli_console_write_error(text);
 }

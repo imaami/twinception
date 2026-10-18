@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "cli_console.h"
+#include "cli_loop.h"
 #include "cli_ui.h"
 
 int main(void)
@@ -17,7 +18,9 @@ int main(void)
 	assert(!fflush(stdout));
 	assert(dup2(fileno(capture), STDOUT_FILENO) >= 0);
 	int e = 0;
-	struct cli_console *console = cli_console_create(true, false, nullptr, -1, &e);
+	struct cli_loop loop;
+	assert(!cli_loop_init(&loop));
+	struct cli_console *console = cli_console_create(true, false, &loop, nullptr, &e);
 	assert(console && !e);
 	{
 		struct cli_ui display = cli_ui(console);
@@ -51,6 +54,7 @@ int main(void)
 		cli_ui_fini(&display);
 	}
 	cli_console_destroy(&console);
+	cli_loop_fini(&loop);
 	assert(!fflush(stdout));
 	assert(dup2(saved, STDOUT_FILENO) >= 0);
 	assert(!close(saved));

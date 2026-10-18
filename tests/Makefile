@@ -61,13 +61,15 @@ check-askai: | askai test_plugin.so godbolt.so
 	$(PYTHON) $(TEST_DIR)askai.py $Oaskai $Otest_plugin.so $Ogodbolt.so
 
 # Terminal editing, the Unix-socket CLI, and its argument handling.
-check-cli: $Otests/cli_input $Otests/cli_state $Otests/cli_ui $Otests/autocomplete | check-cstr-view askai-cli askai
+check-cli: $Otests/cli_io $Otests/cli_loop $Otests/cli_scrollback $Otests/cli_input \
+           $Otests/cli_state $Otests/cli_ui $Otests/autocomplete | check-cstr-view askai-cli askai
+check-cli:; $Otests/cli_loop && $Otests/cli_io && $Otests/cli_scrollback
 	$Otests/autocomplete
 	$Otests/cli_ui
 	@directory=$$(mktemp -d) || exit 1; \
 	trap 'rm -rf "$$directory"' EXIT; \
 	"$Otests/cli_state" "$$directory/history"
-	$(PYTHON) $(TEST_DIR)cli-input.py $Otests/cli_input
+	$(PYTHON) $(TEST_DIR)cli-input.py $Otests/cli_input && $(PYTHON) $(TEST_DIR)cli_events.py $Oaskai-cli
 	$(PYTHON) $(TEST_DIR)chat-history.py $Oaskai
 	$(PYTHON) $(TEST_DIR)chat-stream.py $Oaskai
 	$(PYTHON) $(TEST_DIR)cli.py $Oaskai-cli $Oaskai
@@ -87,7 +89,20 @@ override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete_fixture.c.o \
                                  $Otests/src/autocomplete.c.o $Otests/src/dstr.c.o $Otests/src/jb.c.o
 override AUTOCOMPLETE_WRAPS := -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 
-override CLI_CONSOLE_OBJECTS := $Otests/src/cli_console.c.o $Otests/src/buf.c.o
+override CLI_CONSOLE_OBJECTS := $Otests/src/cli_console.c.o $Otests/src/buf.c.o \
+                                $Otests/src/cli_loop.c.o $Otests/src/cli_mailbox.c.o \
+                                $Otests/src/cli_scrollback.c.o $Otests/src/cli_io.c.o \
+                                $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
+
+$Otests/cli_io: $Otests/cli_io.c.o $Otests/src/cli_io.c.o $Otests/src/cli_loop.c.o \
+                $Otests/src/cli_mailbox.c.o $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
+$Otests/cli_io:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
+
+$Otests/cli_loop: $Otests/cli_loop.c.o $Otests/src/cli_loop.c.o $Otests/src/cli_mailbox.c.o
+$Otests/cli_loop:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
+
+$Otests/cli_scrollback: $Otests/cli_scrollback.c.o $Otests/src/cli_scrollback.c.o $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o
+$Otests/cli_scrollback:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
 
 $Otests/cli_input $Otests/cli_ui $Otests/cli_state $Otests/autocomplete $Otests/cstr_view: $Otests/src/cstr_view.c.o
 
@@ -102,7 +117,7 @@ $Otests/cli_input:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LI
 
 $Otests/cli_ui: $Otests/cli_ui.c.o $Otests/src/cli_ui.c.o $(CLI_CONSOLE_OBJECTS) \
                 $Otests/src/dstr.c.o $Otests/src/jb.c.o
-$Otests/cli_ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS)
+$Otests/cli_ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) -lm
 
 $Otests/cli_state: $Otests/cli_state.c.o $Otests/src/cli_state.c.o \
                    $Otests/src/dstr.c.o $Otests/src/jb.c.o
@@ -207,6 +222,9 @@ load: | load-build askai
 -include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/datauri.c.d \
          $Otests/src/log.c.d $Otests/cli_input.c.d $Otests/cli_ui.c.d $Otests/autocomplete.c.d \
          $Otests/cli_state.c.d $Otests/src/cli_state.c.d \
+         $Otests/cli_loop.c.d $Otests/cli_io.c.d $Otests/cli_scrollback.c.d \
+         $Otests/src/cli_loop.c.d $Otests/src/cli_io.c.d $Otests/src/cli_mailbox.c.d \
+         $Otests/src/cli_scrollback.c.d $Otests/src/blocker.c.d $Otests/src/loop.c.d \
          $Otests/autocomplete_fixture.c.d $Otests/src/cli_console.c.d \
          $Otests/src/autocomplete.c.d $Otests/src/autocomplete_file.c.d $Otests/src/dstr.c.d \
          $Otests/src/cli_ui.c.d $Otests/src/jb.c.d \

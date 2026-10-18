@@ -1,14 +1,12 @@
-#include <curl/curl.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "buf.h"
 #include "cli_client.h"
-#include "cli_ui.h"
+#include "cli_network.h"
 #include "jb.h"
 
 int
@@ -60,11 +58,11 @@ cli_client_wire (struct json_object *value,
 }
 
 struct cli_client cli_client(char const *socket, char const *tool,
-                             volatile sig_atomic_t *interrupted, int wake_fd, int *e)
+                             struct cli_network *network, int *e)
 {
 	struct cli_client client = {.socket = DSTR_INIT, .session = DSTR_INIT, .tool = DSTR_INIT,
 	                            .session_key = DSTR_INIT, .participant = DSTR_INIT,
-	                            .notes_tool = DSTR_INIT, .interrupted = interrupted, .wake_fd = wake_fd};
+	                            .notes_tool = DSTR_INIT, .network = network};
 	*e = dstr_cat(&client.socket, socket) && dstr_cat(&client.tool, tool) ? 0 : ENOMEM;
 	return client;
 }
@@ -243,122 +241,26 @@ static size_t cli_client_response_header(char *ptr, size_t size, size_t count, v
 	return response->failure ? 0 : bytes;
 }
 
-static int cli_client_header(struct curl_slist **headers, char const *line)
-{
-	struct curl_slist *next = curl_slist_append(*headers, line);
-	if (!next)
-		return ENOMEM;
-	*headers = next;
-	return 0;
-}
-
 static int cli_client_post(struct cli_client *client, struct cstr_view wire,
                            struct cli_client_response *response, bool interruptible, long timeout)
 {
-	CURL *easy = curl_easy_init();
-	CURLM *multi = curl_multi_init();
-	struct curl_slist *headers = nullptr;
-	dstr_auto session_header = dstr(nullptr);
-	int e = easy && multi ? 0 : ENOMEM;
-	bool attached = false;
+	struct cli_network_result result;
+	int e = cli_network_perform(client->network, cstr_view_dstr(&client->socket),
+	                            cstr_view_dstr(&client->session), wire, timeout, interruptible,
+	                            cli_client_response_header, cli_client_response_receive, response, &result);
+	if (response->failure)
+		return response->failure;
 	if (e)
-		goto done;
-	e = cli_client_header(&headers, "Content-Type: application/json");
-	if (!e)
-		e = cli_client_header(&headers, "Accept: application/json, text/event-stream");
-	if (!e)
-		e = cli_client_header(&headers, "MCP-Protocol-Version: " CLI_VERSION);
-	if (!e && dstr_len(&client->session)) {
-		if (!dstr_cat(&session_header, "Mcp-Session-Id: ") || !dstr_cat(&session_header, dstr_get(&client->session)))
-			e = ENOMEM;
-		else
-			e = cli_client_header(&headers, dstr_get(&session_header));
-	}
-	if (e)
-		goto done;
-#define CLI_OPTION(key, value) do { \
-	CURLcode code = curl_easy_setopt(easy, (key), (value)); \
-	if (code != CURLE_OK) { \
-		e = cli_error_set(response->error, EIO, "%s", curl_easy_strerror(code)); \
-		goto done; \
-	} \
-} while (0)
-	CLI_OPTION(CURLOPT_URL, "http://localhost/mcp");
-	CLI_OPTION(CURLOPT_UNIX_SOCKET_PATH, dstr_get(&client->socket));
-	CLI_OPTION(CURLOPT_PROXY, "");
-	CLI_OPTION(CURLOPT_NOPROXY, "*");
-	CLI_OPTION(CURLOPT_FOLLOWLOCATION, 0L);
-	CLI_OPTION(CURLOPT_NOSIGNAL, 1L);
-	CLI_OPTION(CURLOPT_CONNECTTIMEOUT, 10L);
-	CLI_OPTION(CURLOPT_TIMEOUT, timeout);
-	CLI_OPTION(CURLOPT_POST, 1L);
-	CLI_OPTION(CURLOPT_POSTFIELDS, wire.data);
-	CLI_OPTION(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)wire.len);
-	CLI_OPTION(CURLOPT_HTTPHEADER, headers);
-	CLI_OPTION(CURLOPT_WRITEFUNCTION, cli_client_response_receive);
-	CLI_OPTION(CURLOPT_WRITEDATA, response);
-	CLI_OPTION(CURLOPT_HEADERFUNCTION, cli_client_response_header);
-	CLI_OPTION(CURLOPT_HEADERDATA, response);
-#undef CLI_OPTION
-	CURLMcode code = curl_multi_add_handle(multi, easy);
-	if (code != CURLM_OK)
-		goto multi_error;
-	attached = true;
-	int active;
-	do {
-		if (interruptible && client->interrupted && *client->interrupted) {
-			e = EINTR;
-			goto done;
-		}
-		code = curl_multi_perform(multi, &active);
-		if (code != CURLM_OK)
-			goto multi_error;
-		if (active) {
-			struct curl_waitfd wake = {client->wake_fd, CURL_WAIT_POLLIN, 0};
-			code = curl_multi_poll(multi, client->wake_fd >= 0 ? &wake : nullptr,
-			                       client->wake_fd >= 0 ? 1 : 0, 1000, nullptr);
-			if (code != CURLM_OK)
-				goto multi_error;
-			if (wake.revents) {
-				char bytes[64];
-				while (read(client->wake_fd, bytes, sizeof bytes) > 0) {}
-			}
-		}
-	} while (active);
-	e = response->failure;
-	if (e)
-		goto done;
-	int left;
-	CURLMsg *completed = curl_multi_info_read(multi, &left);
-	if (!completed || completed->msg != CURLMSG_DONE || completed->data.result != CURLE_OK) {
-		e = cli_error_set(response->error, EIO, "%s", completed && completed->msg == CURLMSG_DONE
-		                  ? curl_easy_strerror(completed->data.result) : "HTTP transfer did not complete");
-		goto done;
-	}
-	long status;
-	if (curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status) != CURLE_OK) {
-		e = cli_error_set(response->error, EIO, "Cannot read HTTP status");
-		goto done;
-	}
-	if (status < 200 || status >= 300) {
+		return result.message[0] ? cli_error_set(response->error, e, "%s", result.message) : e;
+	if (result.status < 200 || result.status >= 300) {
 		size_t length = response->body.tail < 1024 ? response->body.tail : 1024;
-		e = cli_error_set(response->error, EPROTO, "AskAI HTTP %ld%s%.*s", status, length ? ": " : "",
-		                  (int)length, length ? (char const *)response->body.data : "");
-	} else if (response->sse && (response->line.tail || response->data.tail)) {
-		e = cli_error_set(response->error, EPROTO, "AskAI closed an incomplete SSE event");
+		return cli_error_set(response->error, EPROTO, "AskAI HTTP %ld%s%.*s", result.status,
+		                      length ? ": " : "", (int)length,
+		                      length ? (char const *)response->body.data : "");
 	}
-	goto done;
-multi_error:
-	e = cli_error_set(response->error, EIO, "%s", curl_multi_strerror(code));
-done:
-	if (attached)
-		(void)curl_multi_remove_handle(multi, easy);
-	if (easy)
-		curl_easy_cleanup(easy);
-	if (multi)
-		(void)curl_multi_cleanup(multi);
-	curl_slist_free_all(headers);
-	return e;
+	if (response->sse && (response->line.tail || response->data.tail))
+		return cli_error_set(response->error, EPROTO, "AskAI closed an incomplete SSE event");
+	return 0;
 }
 
 static struct json_object *cli_client_packet(char const *method, struct json_object *params, int64_t id)
@@ -393,8 +295,8 @@ static void cli_client_cancel(struct cli_client *client, int64_t id)
 	struct json_object *params = jb_object("requestId", json_object_new_int64(id),
 	                                       "reason", json_object_new_string("Interrupted by the terminal user"), nullptr);
 	int e = cli_client_notification(client, "notifications/cancelled", params, false, 5, &error);
-	if (e)
-		(void)cli_ui_error(CSTR_VIEW("Cancellation could not be confirmed"), cli_error_text(&error, e));
+	if (e && client->report)
+		(void)client->report(client, CSTR_VIEW("Cancellation could not be confirmed"), cli_error_text(&error, e));
 }
 
 int cli_client_rpc(struct cli_client *client, char const *method,
@@ -787,7 +689,8 @@ int cli_client_refresh(struct cli_client *client, struct cli_error *error)
 		if (e == EINTR || e == ENOMEM)
 			goto done;
 		if (e) {
-			(void)cli_ui_error(CSTR_VIEW("Participant discovery failed"), cli_error_text(error, e));
+			if (client->report)
+				(void)client->report(client, CSTR_VIEW("Participant discovery failed"), cli_error_text(error, e));
 			error->message[0] = '\0';
 			e = 0;
 		}
@@ -808,7 +711,8 @@ int cli_client_refresh(struct cli_client *client, struct cli_error *error)
 		if (e == EINTR || e == ENOMEM)
 			goto done;
 		if (e) {
-			(void)cli_ui_error(CSTR_VIEW("Note filename discovery failed"), cli_error_text(error, e));
+			if (client->report)
+				(void)client->report(client, CSTR_VIEW("Note filename discovery failed"), cli_error_text(error, e));
 			error->message[0] = '\0';
 			e = 0;
 		}

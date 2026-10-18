@@ -3,7 +3,6 @@
 #define TWINCEPTION_SRC_CLI_CLIENT_H_
 
 #include <json-c/json.h>
-#include <signal.h>
 #include <stdint.h>
 
 #include "autocomplete.h"
@@ -28,8 +27,16 @@ extern struct cstr_view
 cli_error_text (struct cli_error const *error,
                 int                     e);
 
-/** All strings and the catalog are owned. Signal state and wake_fd are
- * borrowed. A client is confined to its calling thread. */
+struct cli_network;
+struct cli_client;
+
+/** Optional UI-thread handler for nonfatal discovery/cancellation details. */
+typedef int cli_client_report_fn (struct cli_client *client,
+                                  struct cstr_view    title,
+                                  struct cstr_view    detail);
+
+/** Strings and the catalog are owned; network is borrowed. The client and
+ * its protocol callbacks are confined to the UI thread. */
 struct cli_client {
 	struct dstr            socket;
 	struct dstr            session;
@@ -39,9 +46,9 @@ struct cli_client {
 	struct dstr            notes_tool;
 	struct autocomplete   *catalog;
 	struct json_object    *notebooks;
-	volatile sig_atomic_t *interrupted;
+	struct cli_network    *network;
+	cli_client_report_fn  *report;
 	int64_t                next_id;
-	int                    wake_fd;
 	bool                   catalog_dirty;
 	bool                   notes_dirty;
 	bool                   identity_changed;
@@ -50,8 +57,7 @@ struct cli_client {
 extern struct cli_client
 cli_client (char const            *socket,
             char const            *tool,
-            volatile sig_atomic_t *interrupted,
-            int                    wake_fd,
+            struct cli_network    *network,
             int                   *e);
 
 extern void

@@ -1,11 +1,13 @@
 # Terminal chat through AskAI
 
 `askai-cli` is a standalone chat client for AskAI, adapted from llama.cpp's
-terminal interface and using GNU Readline for input. The configured upstream
-model answers directly, and AskAI executes its permitted tools and stores
-its notes and transcripts. The client
-contains no model loader, tokenizer, sampler, local inference engine, or
-llama-server dependency.
+terminal interface and using GNU Readline for input. Capable interactive
+terminals use a full-screen transcript, status row, and input row;
+`--simple-io` keeps plain line input and output. Redirected input or output
+selects plain mode automatically. The configured upstream model answers
+directly, and AskAI executes its permitted tools and stores its notes and
+transcripts. The client contains no model loader, tokenizer, sampler, local
+inference engine, or llama-server dependency.
 
 ## Build
 
@@ -89,7 +91,9 @@ default:
 | Key | Effect |
 | --- | --- |
 | Up / Down | Browse input history. |
-| PgUp / PgDn | Recall earlier/later history matching the text before the cursor. |
+| PgUp / PgDn | Scroll the transcript in full-screen mode; search history by prefix in the ordinary Readline display. |
+| Ctrl-End | Return to the newest transcript output and clear the unread count. |
+| Ctrl-_ | Undo an edit, including clearing the draft with Ctrl-C. |
 | Ctrl-R | Search history backward as you type; repeat to find older matches. |
 | Home / End, Ctrl-A / Ctrl-E | Move to the beginning/end of the line. |
 | Ctrl-left / Ctrl-right, Alt-B / Alt-F | Move by words. |
@@ -99,8 +103,8 @@ default:
 | Alt-. | Insert the last argument from the previous history entry. |
 | Tab | Complete commands, paths, tools, parameters, values and participant names. |
 
-For example, type `Explain` and press PgUp to recall earlier prompts with
-that prefix, skipping unrelated entries. Up and Ctrl-R include saved input
+In the ordinary Readline display, type `Explain` and press PgUp to recall
+earlier prompts with that prefix, skipping unrelated entries. Up and Ctrl-R include saved input
 from earlier client processes. Input recall is separate from the completed
 conversation sent to the model; `/clear` clears the conversation, not
 Readline history. A multiline prompt is recalled as one entry. Recall retains
@@ -121,11 +125,17 @@ A trailing `\` continues the prompt on another line. With
 `--multiline-input`, Enter continues the prompt and a trailing `\` submits
 it instead. A trailing `/` submits in either mode. Ctrl-D ends input.
 
-Ctrl-C cancels an answer and returns to the prompt. While editing input it
-exits the client; in `--single-turn` mode cancellation exits with status 130.
+Ctrl-C cancels an answer without discarding the draft being edited. At an
+idle prompt it clears the draft; Ctrl-_ restores it. In `--single-turn` mode
+or with redirected input, cancellation exits with status 130.
 SIGTERM exits with status 143. Failed or cancelled turns do not enter the
 conversation history, and `/regen` preserves the old answer if regeneration
 fails. Regeneration is a new request and may run tools again.
+
+Full-screen scrollback retains up to 10,000 logical lines or 16 MiB per
+buffer. Older transcript content is evicted independently of drafts and
+saved input history. Scrolling away from the bottom preserves the viewport
+and shows an unread count; Ctrl-End resumes following new output.
 
 The client imposes no generation timeout. AskAI's configured upstream timeout
 and context limits still apply. A chat request stays on its event stream even
@@ -318,3 +328,23 @@ The terminal console is derived from llama.cpp's MIT-licensed
 the retained license is in [llama-cli-LICENSE](llama-cli-LICENSE). The
 adaptation is in `src/cli_console.c`, `src/cli_console.h`, `src/cli_ui.c`, and
 `src/cli_ui.h`.
+
+## Event ownership
+
+The main thread owns Readline, terminal state and scrollback. Its epoll loop
+uses signalfd and one-shot timerfd deadlines. A separate network thread uses
+the existing daemon loop unchanged, with libcurl socket/timer callbacks.
+Blocking file and Git work uses the existing blocker pool; operations on one
+history instance remain serialized. There is no periodic UI tick.
+
+Mailboxes belong to explicit owner objects. Messages transfer ownership on
+successful posting, with separate capacity for control traffic. Bounded
+network credits pause streaming when the UI cannot consume output. No CLI
+mailbox or owner lookup uses file-scope or thread-local state; Readline's
+single callback bridge remains the exception for editor callbacks.
+
+Shutdown keeps completion destinations alive until producers finish. If a
+system call remains stuck past the termination deadline, the client restores
+the terminal and exits without freeing storage still reachable by a worker.
+Contended history locks retry on a blocker with a bounded cancellation delay;
+they never hold up the UI loop.

@@ -101,7 +101,7 @@ class Console:
         # Completion listings also redraw "test> ". Only a newly installed
         # callback enables bracketed paste; wait for that boundary before
         # sending keys, especially Ctrl-D while the terminal is canonical.
-        marker = b"\x1b[?2004htest> "
+        marker = b"\x1b[?2004h"
         self.until(lambda: marker in self.output)
         self.output = self.output.split(marker, 1)[1]
 
@@ -143,7 +143,8 @@ class Console:
 
 
 def check_history(binary):
-    with Console(binary) as console:
+    bindings = '"\\e[5~": history-search-backward\n"\\e[6~": history-search-forward\n'
+    with Console(binary, inputrc=bindings) as console:
         for text in ("alpha first", "beta middle", "alpha second"):
             console.line(text + "\r", text + "\n")
         # The match is the prefix before point, not the unedited suffix. Point
