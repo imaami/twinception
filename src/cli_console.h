@@ -5,12 +5,12 @@
 #ifndef TWINCEPTION_SRC_CLI_CONSOLE_H_
 #define TWINCEPTION_SRC_CLI_CONSOLE_H_
 
-#include <signal.h>
-
 #include "autocomplete.h"
 #include "cstr_view.h"
 
 struct cli_console;
+struct cli_io;
+struct cli_loop;
 
 enum cli_console_display {
 	CLI_CONSOLE_RESET,
@@ -21,14 +21,43 @@ enum cli_console_display {
 	CLI_CONSOLE_ERROR,
 };
 
-/** Readline supports one active console. wake_fd is a borrowed nonblocking
- * signal pipe, or -1. The interrupt flag must outlive the console. */
+/** The UI thread owns the console. loop and io outlive it. */
 extern struct cli_console *
-cli_console_create (bool                   simple,
-                    bool                   color,
-                    volatile sig_atomic_t *interrupted,
-                    int                    wake_fd,
-                    int                   *e);
+cli_console_create (bool             simple,
+                    bool             color,
+                    struct cli_loop *loop,
+                    struct cli_io   *io,
+                    int             *e);
+
+/** Call after a completed reactor turn, never from descriptor dispatch. */
+extern int
+cli_console_service (struct cli_console *console);
+
+extern int
+cli_console_interrupt (struct cli_console *console,
+                       bool                terminate);
+
+extern int
+cli_console_resize (struct cli_console *console);
+
+extern int
+cli_console_suspend (struct cli_console *console);
+
+extern int
+cli_console_resume (struct cli_console *console);
+
+/** Keep the next draft editable while an operation runs. */
+extern int
+cli_console_busy (struct cli_console *console,
+                  bool                busy);
+
+/** Pending bytes are drained by UI turns; stop IO only once this is false. */
+extern bool
+cli_console_pending (struct cli_console const *console);
+
+/** Apply transport backpressure before the bounded output queue fills. */
+extern bool
+cli_console_blocked (struct cli_console const *console);
 
 extern void
 cli_console_destroy (struct cli_console **console);
@@ -70,6 +99,11 @@ cli_console_write (struct cli_console *console,
 
 extern int
 cli_console_write_error (struct cstr_view text);
+
+/** Full-screen diagnostics join scrollback; other modes retain stderr. */
+extern int
+cli_console_error (struct cli_console *console,
+                   struct cstr_view    text);
 
 extern int
 cli_console_flush (struct cli_console *console);

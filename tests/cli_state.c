@@ -34,11 +34,11 @@ main (int argc, char **argv)
 	int e = 0;
 	assert(!setenv("GIT_DIR", "/nonexistent/askai-history-wrong-repository", 1));
 	assert(!setenv("GIT_WORK_TREE", "/nonexistent/askai-history-wrong-worktree", 1));
-	struct cli_state *first = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), &e);
+	struct cli_state *first = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), nullptr, &e);
 	assert(first && !e);
 	assert(!cli_state_add_input(first, CSTR_VIEW("one\ntwo")));
 	assert(!cli_state_add_turn(first, CSTR_VIEW("one\ntwo"), CSTR_VIEW("answer"), 0));
-	struct cli_state *second = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), &e);
+	struct cli_state *second = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), nullptr, &e);
 	assert(second && !e);
 	check_text(cli_state_input_at(second, 0), CSTR_VIEW("one\ntwo"));
 	assert(cli_state_turn_count(second) == 1);
@@ -51,7 +51,7 @@ main (int argc, char **argv)
 	assert(!cli_state_add_turn(second, CSTR_VIEW("one\ntwo"), CSTR_VIEW("replacement"), 1));
 	cli_state_destroy(&first);
 	cli_state_destroy(&second);
-	first = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), &e);
+	first = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), nullptr, &e);
 	assert(first && !e);
 	check_text(cli_state_turn_at(first, 0).answer, CSTR_VIEW("replacement"));
 	check_text(cli_state_input_at(first, cli_state_input_count(first) - 1), CSTR_VIEW("A"));
@@ -60,7 +60,7 @@ main (int argc, char **argv)
 	assert(has_input(first, CSTR_VIEW("second writer")));
 	assert(!cli_state_clear_turns(first));
 	cli_state_destroy(&first);
-	first = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), &e);
+	first = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), nullptr, &e);
 	assert(first && !e && !cli_state_turn_count(first));
 	assert(has_input(first, CSTR_VIEW("first writer")));
 	assert(has_input(first, CSTR_VIEW("second writer")));
@@ -91,7 +91,7 @@ main (int argc, char **argv)
 	assert((status.st_mode & 0777) == 0600 && status.st_size > 0);
 	free(recovery_path);
 	recovery_path = nullptr;
-	first = cli_state_create(repo, CSTR_VIEW("session\0bob\0ask"), &e);
+	first = cli_state_create(repo, CSTR_VIEW("session\0bob\0ask"), nullptr, &e);
 	assert(first && !e && !cli_state_input_count(first));
 	cli_state_destroy(&first);
 	puts("CLI Git history: PASS");

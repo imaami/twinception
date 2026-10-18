@@ -4,28 +4,48 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <locale.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
+#include <sys/signalfd.h>
 #include <unistd.h>
 
 #include "autocomplete_file.h"
 #include "autocomplete_fixture.h"
 #include "cli_console.h"
+#include "cli_loop.h"
+#include "compat.h"
 #include "dstr.h"
 
-static volatile sig_atomic_t cli_input_stop;
-static volatile sig_atomic_t cli_input_wake = -1;
+struct cli_input_driver {
+	struct cli_loop loop;
+	struct cli_loop_ref signals;
+	struct cli_console *console;
+	int stop;
+};
 
-static void cli_input_signal(int signal)
+static void cli_input_signal(struct cli_loop *loop, struct cli_loop_ref *ref, uint32_t events)
 {
-	int saved = errno;
-	if (signal != SIGWINCH)
-		cli_input_stop = signal;
-	unsigned char byte = (unsigned char)signal;
-	(void)write(cli_input_wake, &byte, 1);
-	errno = saved;
+	(void)events;
+	struct cli_input_driver *driver = container_of(loop, struct cli_input_driver, loop);
+	struct signalfd_siginfo signal;
+	while (read(ref->fd, &signal, sizeof signal) == sizeof signal) {
+		if (signal.ssi_signo == SIGWINCH)
+			(void)cli_console_resize(driver->console);
+		else {
+			driver->stop = (int)signal.ssi_signo;
+			(void)cli_console_interrupt(driver->console, true);
+		}
+	}
+}
+
+static void cli_input_service(struct cli_loop *loop)
+{
+	struct cli_input_driver *driver = container_of(loop, struct cli_input_driver, loop);
+	(void)cli_console_service(driver->console);
 }
 
 static int cli_input_record(int fd, char const *kind, struct cstr_view text)
@@ -78,15 +98,15 @@ static int cli_input_complete(void *context, struct cstr_view line, size_t curso
 	return e;
 }
 
-static int cli_input_run(struct cli_console *console, int records, bool multiline)
+static int cli_input_run(struct cli_input_driver *driver, int records, bool multiline)
 {
 	for (;;) {
 		dstr_auto text = dstr(nullptr);
 		bool eof;
-		int e = cli_console_read(console, &text, multiline, &eof, "test> ");
+		int e = cli_console_read(driver->console, &text, multiline, &eof, "test> ");
 		if (e == EINTR) {
 			dstr_auto signum = dstr(nullptr);
-			if (!dstr_printf(&signum, "%d", (int)cli_input_stop))
+			if (!dstr_printf(&signum, "%d", driver->stop))
 				return ENOMEM;
 			return cli_input_record(records, "STOP ", cstr_view_dstr(&signum));
 		}
@@ -100,6 +120,7 @@ static int cli_input_run(struct cli_console *console, int records, bool multilin
 
 int main(int argc, char **argv)
 {
+	(void)setlocale(LC_CTYPE, "");
 	if (argc < 2)
 		return 2;
 	errno = 0;
@@ -119,17 +140,22 @@ int main(int argc, char **argv)
 		else
 			return 2;
 	}
-	int wake[2] = {-1, -1};
-	if (pipe2(wake, O_CLOEXEC | O_NONBLOCK))
-		return 1;
-	cli_input_wake = wake[1];
-	struct sigaction action = {.sa_handler = cli_input_signal};
-	int e = sigemptyset(&action.sa_mask) || sigaction(SIGINT, &action, nullptr) ||
-	        sigaction(SIGTERM, &action, nullptr) || sigaction(SIGWINCH, &action, nullptr) ? errno : 0;
-	struct cli_console *console = nullptr;
+	struct cli_input_driver driver = {.signals.fd = -1};
+	sigset_t mask;
+	int e = sigemptyset(&mask) || sigaddset(&mask, SIGINT) ||
+	        sigaddset(&mask, SIGTERM) || sigaddset(&mask, SIGWINCH) ||
+	        sigprocmask(SIG_BLOCK, &mask, nullptr) ? errno : 0;
+	int signal_fd = e ? -1 : signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
+	if (signal_fd < 0 && !e)
+		e = errno;
+	if (!e)
+		e = cli_loop_init(&driver.loop);
 	struct cli_input input = {};
 	if (!e)
-		console = cli_console_create(simple, false, &cli_input_stop, wake[0], &e);
+		driver.console = cli_console_create(simple, false, &driver.loop, nullptr, &e);
+	if (!e)
+		e = cli_loop_watch(&driver.loop, &driver.signals, signal_fd, EPOLLIN, cli_input_signal);
+	driver.loop.after_turn = cli_input_service;
 	if (!e)
 		input.catalog = autocomplete_create(&e);
 	if (!e)
@@ -137,17 +163,16 @@ int main(int argc, char **argv)
 	if (!e && completion)
 		e = autocomplete_fixture(input.catalog);
 	if (!e) {
-		cli_console_set_completion(console, cli_input_complete, &input);
-		e = cli_input_run(console, records, multiline);
+		cli_console_set_completion(driver.console, cli_input_complete, &input);
+		e = cli_input_run(&driver, records, multiline);
 	}
-	cli_console_destroy(&console);
+	cli_console_destroy(&driver.console);
+	cli_loop_fini(&driver.loop);
 	autocomplete_file_destroy(&input.files);
 	autocomplete_destroy(&input.catalog);
-	cli_input_wake = -1;
-	(void)close(wake[0]);
-	wake[0] = -1;
-	(void)close(wake[1]);
-	wake[1] = -1;
+	if (signal_fd >= 0)
+		(void)close(signal_fd);
+	signal_fd = -1;
 	(void)close(records);
 	records = -1;
 	return e ? 1 : 0;

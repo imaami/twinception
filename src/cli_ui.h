@@ -56,7 +56,8 @@ cli_ui_info (struct cli_console *console,
              struct cstr_view    text);
 
 extern int
-cli_ui_error (struct cstr_view title,
-              struct cstr_view detail);
+cli_ui_error (struct cli_console *console,
+              struct cstr_view    title,
+              struct cstr_view    detail);
 
 #endif /* TWINCEPTION_SRC_CLI_UI_H_ */

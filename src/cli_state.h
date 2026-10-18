@@ -4,6 +4,8 @@
 #ifndef TWINCEPTION_SRC_CLI_STATE_H_
 #define TWINCEPTION_SRC_CLI_STATE_H_
 
+#include <stdatomic.h>
+
 #include "cstr_view.h"
 
 struct cli_state;
@@ -18,11 +20,14 @@ struct cli_state_turn {
  * Each writer forks a random branch from the latest saved conversation.
  * Recall merges exact text from up to 32 recent writer tips; conversation
  * turns come only from the latest writer. The full identity is checked
- * when loading, so a filename hash collision cannot join conversations. */
+ * when loading, so a filename hash collision cannot join conversations.
+ * If cancel is nonnull, it must outlive the state; setting it interrupts
+ * contended history locks without blocking the UI. */
 extern struct cli_state *
-cli_state_create (struct cstr_view  path,
-                  struct cstr_view  identity,
-                  int              *e);
+cli_state_create (struct cstr_view    path,
+                  struct cstr_view    identity,
+                  _Atomic bool const *cancel,
+                  int                *e);
 
 extern void
 cli_state_destroy (struct cli_state **state);

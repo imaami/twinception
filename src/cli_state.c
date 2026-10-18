@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -14,6 +15,7 @@
 #include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "cli_state.h"
@@ -35,6 +37,7 @@ struct cli_state_pair {
 };
 
 struct cli_state {
+	_Atomic bool const   *cancel;
 	struct dstr           inputs[CLI_STATE_INPUTS];
 	struct cli_state_pair turns[CLI_STATE_TURNS];
 	struct cli_state_pair pending;
@@ -199,6 +202,28 @@ cli_state_read_text (int          fd,
 	return jb_utf8(dstr_get(text), dstr_len(text)) == dstr_len(text) ? 0 : EILSEQ;
 }
 
+/** flock has no readiness notification. Retry only this contended lock,
+ * on a blocker, with a bounded cancellation delay; no UI tick is involved. */
+static int
+cli_state_lock (struct cli_state *state,
+                int               fd)
+{
+	for (;;) {
+		if (state->cancel && atomic_load(state->cancel))
+			return EINTR;
+		if (!flock(fd, LOCK_EX | LOCK_NB))
+			return 0;
+		if (errno == EINTR)
+			continue;
+		if (errno != EWOULDBLOCK)
+			return errno;
+		struct timespec delay = {.tv_nsec = 20'000'000};
+		int e = clock_nanosleep(CLOCK_MONOTONIC, 0, &delay, nullptr);
+		if (e && e != EINTR)
+			return e;
+	}
+}
+
 /** Run Git directly, with bounded captured output and no shell. */
 static int
 cli_state_git (struct cli_state  *state,
@@ -231,9 +256,30 @@ cli_state_git (struct cli_state  *state,
 		e = posix_spawn_file_actions_adddup2(&actions, in[0], STDIN_FILENO);
 	if (!e)
 		e = posix_spawn_file_actions_adddup2(&actions, output_fd >= 0 ? output_fd : out[1], STDOUT_FILENO);
+	posix_spawnattr_t attributes;
+	bool attributes_live = false;
+	if (!e) {
+		e = posix_spawnattr_init(&attributes);
+		attributes_live = !e;
+	}
+	sigset_t empty, defaults;
+	if (!e && (sigemptyset(&empty) || sigemptyset(&defaults)))
+		e = errno;
+	int const signals[] = {SIGINT, SIGTERM, SIGHUP, SIGPIPE, SIGTSTP, SIGCONT};
+	for (size_t i = 0; !e && i < sizeof signals / sizeof *signals; ++i)
+		if (sigaddset(&defaults, signals[i]))
+			e = errno;
+	if (!e)
+		e = posix_spawnattr_setsigmask(&attributes, &empty);
+	if (!e)
+		e = posix_spawnattr_setsigdefault(&attributes, &defaults);
+	if (!e)
+		e = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
 	pid_t child = -1;
 	if (!e)
-		e = posix_spawnp(&child, "git", &actions, nullptr, argv, state->environment);
+		e = posix_spawnp(&child, "git", &actions, &attributes, argv, state->environment);
+	if (attributes_live)
+		(void)posix_spawnattr_destroy(&attributes);
 	if (actions_live)
 		(void)posix_spawn_file_actions_destroy(&actions);
 	(void)close(in[0]);
@@ -372,11 +418,8 @@ cli_state_commit (struct cli_state *state)
 	           !dstr_cat_n(&state->scratch, "\nprepare\ncommit\n", 16)))
 		e = ENOMEM;
 	if (!e) {
-		int locked;
-		do { locked = flock(state->lock, LOCK_EX); } while (locked && errno == EINTR);
-		if (locked)
-			e = errno;
-		else {
+		e = cli_state_lock(state, state->lock);
+		if (!e) {
 			e = cli_state_git_ok(state, (char const *[]){ "update-ref", "--stdin", nullptr }, cstr_view_dstr(&state->scratch));
 			if (flock(state->lock, LOCK_UN) && !e)
 				e = errno;
@@ -652,12 +695,8 @@ cli_state_repository_init (struct cli_state *state)
 	if (fd < 0)
 		return errno;
 	int e = cli_state_private(fd);
-	if (!e) {
-		int locked;
-		do { locked = flock(fd, LOCK_EX); } while (locked && errno == EINTR);
-		if (locked)
-			e = errno;
-	}
+	if (!e)
+		e = cli_state_lock(state, fd);
 	struct stat status;
 	bool exists = false;
 	if (!e) {
@@ -813,7 +852,10 @@ cli_state_repository (struct cli_state *state)
 }
 
 struct cli_state *
-cli_state_create (struct cstr_view path, struct cstr_view identity, int *e)
+cli_state_create (struct cstr_view    path,
+                  struct cstr_view    identity,
+                  _Atomic bool const *cancel,
+                  int                *e)
 {
 	*e = EINVAL;
 	if (!identity.data || !identity.len || identity.len > CLI_STATE_ID_BYTES ||
@@ -824,6 +866,7 @@ cli_state_create (struct cstr_view path, struct cstr_view identity, int *e)
 		*e = ENOMEM;
 		return nullptr;
 	}
+	state->cancel = cancel;
 	state->directory = state->lock = -1;
 	for (size_t i = 0; i < CLI_STATE_INPUTS; ++i)
 		state->inputs[i] = dstr("");

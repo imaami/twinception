@@ -248,11 +248,12 @@ def check_cancel(cli, server):
                 before = termios.tcgetattr(slave)
                 proc = subprocess.Popen([cli, "--socket", session.socket, "--single-turn", "--no-history",
                                          "--prompt", "cancel me"], stdin=slave,
-                                        stdout=slave, stderr=slave)
+                                        stdout=slave, stderr=slave,
+                                        env=os.environ | {"TERM": "xterm-256color"})
                 try:
                     assert upstream.arrived.wait(5), "client did not submit a prompt"
-                    assert termios.tcgetattr(slave) == before, \
-                        "Readline changed terminal settings while no prompt was active"
+                    assert termios.tcgetattr(slave)[3] & termios.NOFLSH, \
+                        "terminal signals must preserve pending input"
                     proc.send_signal(signum)
                     status = proc.wait(timeout=5)
                     assert status == 128 + signum, (signum, status)
@@ -384,7 +385,7 @@ def check_peer_autocomplete_error(cli, unused_server):
             # malformed pasted UTF-8 makes autocomplete_complete return EINVAL.
             # Tab must leave editing alive so the user can repair the input.
             os.write(master, b"\x1b[200~\xff\x1b[201~\t\x15/he\t\r")
-            read_until(proc, b"PgUp/PgDn search history by prefix", 5, master)
+            read_until(proc, b"PgUp/PgDn scroll;", 5, master)
             os.write(master, b"/ex\t\r")
             assert proc.wait(timeout=5) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "terminal settings were not restored"
@@ -666,7 +667,7 @@ def check_peer_notes(cli, unused_server):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 240, 0, 0))
         before = termios.tcgetattr(slave)
-        environment = os.environ | {"TERM": "xterm-256color", "LC_ALL": "C.UTF-8",
+        environment = os.environ | {"TERM": "dumb", "LC_ALL": "C.UTF-8",
                                     "INPUTRC": os.devnull,
                                     "XDG_STATE_HOME": peer.directory.name + "/state"}
         proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off", "--no-history"],
@@ -769,7 +770,7 @@ def check_peer_input_history(cli, unused_server):
         succeeded(run(cli, peer.socket, *options, text="remembered prompt\n/help\n"))
         master, slave = pty.openpty()
         before = termios.tcgetattr(slave)
-        environment = os.environ | {"TERM": "xterm-256color", "LC_ALL": "C.UTF-8",
+        environment = os.environ | {"TERM": "dumb", "LC_ALL": "C.UTF-8",
                                     "INPUTRC": os.devnull}
         proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off", *options],
                                 stdin=slave, stdout=slave, stderr=slave, env=environment)
@@ -777,7 +778,7 @@ def check_peer_input_history(cli, unused_server):
             read_until(proc, b"\n> ", 5, master)
             os.write(master, b"\x1b[A\r")
             output = read_until(proc, b"\n> ", 5, master)
-            assert b"PgUp/PgDn search history by prefix" in output, output
+            assert b"PgUp/PgDn scroll;" in output, output
             assert len(calls) == 1, calls
             os.write(master, b"remembered\x1b[5~\r")
             output = read_until(proc, b"\n> ", 5, master)
