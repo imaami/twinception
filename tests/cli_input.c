@@ -10,9 +10,10 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "autocomplete-file.h"
-#include "autocomplete-fixture.h"
-#include "cli-console.h"
+#include "autocomplete_file.h"
+#include "autocomplete_fixture.h"
+#include "cli_console.h"
+#include "dstr.h"
 
 static volatile sig_atomic_t cli_input_stop;
 static volatile sig_atomic_t cli_input_wake = -1;
@@ -27,7 +28,7 @@ static void cli_input_signal(int signal)
 	errno = saved;
 }
 
-static int cli_input_record(int fd, char const *kind, struct cli_text text)
+static int cli_input_record(int fd, char const *kind, struct cstr_view text)
 {
 	static char const digits[] = "0123456789abcdef";
 	dstr_auto record = dstr(nullptr);
@@ -41,7 +42,7 @@ static int cli_input_record(int fd, char const *kind, struct cli_text text)
 	}
 	if (!dstr_cat(&record, "\n"))
 		return ENOMEM;
-	struct cli_text remaining = cli_text_dstr(&record);
+	struct cstr_view remaining = cstr_view_dstr(&record);
 	while (remaining.len) {
 		ssize_t count = write(fd, remaining.data, remaining.len);
 		if (count < 0) {
@@ -51,7 +52,7 @@ static int cli_input_record(int fd, char const *kind, struct cli_text text)
 		}
 		if (!count)
 			return EIO;
-		remaining = cli_text_slice(remaining, (size_t)count, SIZE_MAX);
+		remaining = cstr_view_slice(remaining, (size_t)count, SIZE_MAX);
 	}
 	return 0;
 }
@@ -61,15 +62,14 @@ struct cli_input {
 	struct autocomplete_file *files;
 };
 
-static int cli_input_complete(void *context, struct cli_text line, size_t cursor,
+static int cli_input_complete(void *context, struct cstr_view line, size_t cursor,
                               struct autocomplete_match const **matches, size_t *count)
 {
 	struct cli_input *input = context;
-	struct autocomplete_text text = {line.data, line.len};
-	int e = autocomplete_complete(input->catalog, text, cursor, matches, count);
-	static struct autocomplete_text const commands[] = {{"/read ", sizeof "/read " - 1}};
+	int e = autocomplete_complete(input->catalog, line, cursor, matches, count);
+	static struct cstr_view const commands[] = {{"/read ", sizeof "/read " - 1}};
 	if (!e && !*count)
-		e = autocomplete_file_complete(input->files, text, cursor, commands,
+		e = autocomplete_file_complete(input->files, line, cursor, commands,
 		                                sizeof commands / sizeof *commands, matches, count);
 	if (e) {
 		*matches = nullptr;
@@ -88,11 +88,11 @@ static int cli_input_run(struct cli_console *console, int records, bool multilin
 			dstr_auto signum = dstr(nullptr);
 			if (!dstr_printf(&signum, "%d", (int)cli_input_stop))
 				return ENOMEM;
-			return cli_input_record(records, "STOP ", cli_text_dstr(&signum));
+			return cli_input_record(records, "STOP ", cstr_view_dstr(&signum));
 		}
 		if (e || eof)
-			return e ? e : cli_input_record(records, "EOF", (struct cli_text){});
-		e = cli_input_record(records, "LINE ", cli_text_dstr(&text));
+			return e ? e : cli_input_record(records, "EOF", (struct cstr_view){});
+		e = cli_input_record(records, "LINE ", cstr_view_dstr(&text));
 		if (e)
 			return e;
 	}

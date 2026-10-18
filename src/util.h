@@ -9,9 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "compat.h"
+
 #define ARRAY_SIZE(a) (sizeof (a) / sizeof *(a))
-#define container_of(ptr, T, member) ((T *)(void *)( \
-	(char *)(ptr) - offsetof(T, member)))
 
 /** A hash of the @p len bytes at @p data, seeded with @p seed: a seed no
  *  client knows keeps clients from picking keys that crowd one bucket. */
@@ -48,14 +48,34 @@ util_concat (char const *a,
  *  URL after its user name and password, if it has them.  Stores the length
  *  of the scheme and its "://" in @p *scheme. */
 static inline char const *
-util_url_shown (char const *url,
-                int        *scheme)
+util_url_shown (char const *restrict url,
+                int        *restrict scheme)
 {
-	char const *host = strstr(url, "://");
-	host = host ? host + sizeof "://" - 1 : url;
-	char const *at = memchr(host, '@', strcspn(host, "/?#"));
+	char const *host = url;
+	for (size_t i = 0; url[i]; ) {
+		if (url[i++] == ':' &&
+		    url[ i ] == '/' &&
+		    url[++i] == '/') {
+			host = &url[++i];
+			break;
+		}
+	}
+
 	*scheme = (int)(host - url);
-	return at ? at + 1 : host;
+
+	for (url = host;; ) {
+		switch (*url++) {
+		case '\0':
+		case '#':
+		case '?':
+		case '/':
+			return host;
+		case '@':
+			return url;
+		}
+	}
+
+	return host;
 }
 
 /**

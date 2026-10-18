@@ -1,18 +1,10 @@
-/** @file Retained filename completion storage for CLI commands. */
+/** @file
+ * Retained filename completion storage for CLI commands.
+ */
 #ifndef TWINCEPTION_SRC_AUTOCOMPLETE_FILE_H_
 #define TWINCEPTION_SRC_AUTOCOMPLETE_FILE_H_
 
 #include "autocomplete.h"
-
-#ifdef __cplusplus
-# define STD(x) std::x
-#else
-# define STD(x) x
-#endif
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 struct autocomplete_file;
 
@@ -31,17 +23,11 @@ autocomplete_file_destroy (struct autocomplete_file **pp);
  */
 extern int
 autocomplete_file_complete (struct autocomplete_file         *file,
-                            struct autocomplete_text          line,
-                            STD(size_t)                       cursor,
-                            struct autocomplete_text const   *cmds,
-                            STD(size_t)                       cmd_count,
+                            struct cstr_view                  line,
+                            size_t                            cursor,
+                            struct cstr_view const           *cmds,
+                            size_t                            cmd_count,
                             struct autocomplete_match const **matches,
-                            STD(size_t)                      *count);
-
-#ifdef __cplusplus
-}
-#endif
-
-#undef STD
+                            size_t                           *count);
 
 #endif /* TWINCEPTION_SRC_AUTOCOMPLETE_FILE_H_ */

@@ -5,18 +5,25 @@
  */
 #include <errno.h>
 
-#include "cli-ui.h"
+#include "cli_console.h"
+#include "cli_ui.h"
 
-struct cli_ui cli_ui(struct cli_console *console)
+struct cli_ui
+cli_ui (struct cli_console *console)
 {
-	return (struct cli_ui){.console = console, .actor = DSTR_INIT,
-	                       .status = DSTR_INIT, .trailing_newline = true};
+	return (struct cli_ui){
+		.console = console,
+		.actor = DSTR_INIT,
+		.status = DSTR_INIT,
+		.trailing_newline = true,
+	};
 }
 
-static int cli_ui_newline(struct cli_ui *ui)
+static int
+cli_ui_newline (struct cli_ui *ui)
 {
 	if (!ui->trailing_newline) {
-		int e = cli_console_write(ui->console, CLI_TEXT("\n"));
+		int e = cli_console_write(ui->console, CSTR_VIEW("\n"));
 		if (e)
 			return e;
 		ui->trailing_newline = true;
@@ -24,7 +31,10 @@ static int cli_ui_newline(struct cli_ui *ui)
 	return 0;
 }
 
-int cli_ui_push(struct cli_ui *ui, bool thinking, struct cli_text text)
+int
+cli_ui_push (struct cli_ui    *ui,
+             bool              thinking,
+             struct cstr_view  text)
 {
 	if (!text.len)
 		return 0;
@@ -35,8 +45,8 @@ int cli_ui_push(struct cli_ui *ui, bool thinking, struct cli_text text)
 		if (!e && thinking)
 			e = cli_console_set_display(ui->console, CLI_CONSOLE_REASONING);
 		if (!e)
-			e = cli_console_write(ui->console, thinking ? CLI_TEXT("[Start thinking]\n\n")
-			                                          : CLI_TEXT("[End thinking]\n\n"));
+			e = cli_console_write(ui->console, thinking ? CSTR_VIEW("[Start thinking]\n\n")
+			                                            : CSTR_VIEW("[End thinking]\n\n"));
 		if (!e && !thinking)
 			e = cli_console_set_display(ui->console, CLI_CONSOLE_RESET);
 		if (e)
@@ -48,10 +58,13 @@ int cli_ui_push(struct cli_ui *ui, bool thinking, struct cli_text text)
 	return e ? e : cli_console_flush(ui->console);
 }
 
-static int cli_ui_write_action(struct cli_ui *ui, struct cli_text actor, struct cli_text text)
+static int
+cli_ui_write_action (struct cli_ui    *ui,
+                     struct cstr_view  actor,
+                     struct cstr_view  text)
 {
 	int e = cli_console_set_display(ui->console, CLI_CONSOLE_INFO);
-	struct cli_text parts[] = {CLI_TEXT("* "), actor, CLI_TEXT(" "), text, CLI_TEXT("\n")};
+	struct cstr_view parts[] = {CSTR_VIEW("* "), actor, CSTR_VIEW(" "), text, CSTR_VIEW("\n")};
 	for (size_t i = 0; !e && i < sizeof parts / sizeof *parts; ++i)
 		e = cli_console_write(ui->console, parts[i]);
 	int reset = cli_console_set_display(ui->console, CLI_CONSOLE_RESET);
@@ -59,15 +72,16 @@ static int cli_ui_write_action(struct cli_ui *ui, struct cli_text actor, struct 
 	return e ? e : reset ? reset : flush;
 }
 
-int cli_ui_finish(struct cli_ui *ui)
+int
+cli_ui_finish (struct cli_ui *ui)
 {
 	int e = cli_ui_newline(ui);
 	if (!e && ui->reasoning)
-		e = cli_console_write(ui->console, CLI_TEXT("[End thinking]\n"));
+		e = cli_console_write(ui->console, CSTR_VIEW("[End thinking]\n"));
 	ui->reasoning = false;
 	int reset = cli_console_set_display(ui->console, CLI_CONSOLE_RESET);
 	if (!e && !reset && ui->pending)
-		e = cli_ui_write_action(ui, cli_text_dstr(&ui->actor), cli_text_dstr(&ui->status));
+		e = cli_ui_write_action(ui, cstr_view_dstr(&ui->actor), cstr_view_dstr(&ui->status));
 	dstr_clear(&ui->actor);
 	dstr_clear(&ui->status);
 	ui->streaming = ui->shown = ui->pending = false;
@@ -75,20 +89,25 @@ int cli_ui_finish(struct cli_ui *ui)
 	return e ? e : reset ? reset : flush;
 }
 
-void cli_ui_fini(struct cli_ui *ui)
+void
+cli_ui_fini (struct cli_ui *ui)
 {
 	(void)cli_ui_finish(ui);
 	dstr_cleanup(&ui->actor);
 	dstr_cleanup(&ui->status);
 }
 
-int cli_ui_progress(struct cli_ui *ui, struct cli_text actor, struct cli_text text)
+int
+cli_ui_progress (struct cli_ui    *ui,
+                 struct cstr_view  actor,
+                 struct cstr_view  text)
 {
-	if (!text.len || (cli_text_equal(actor, cli_text_dstr(&ui->actor)) &&
-	                 cli_text_equal(text, cli_text_dstr(&ui->status))))
+	if (!text.len || (cstr_view_equal(actor, cstr_view_dstr(&ui->actor)) &&
+	                  cstr_view_equal(text, cstr_view_dstr(&ui->status))))
 		return 0;
 	/* Reserve both before replacing either, leaving a valid status on failure. */
-	size_t actor_len = dstr_len(&ui->actor), status_len = dstr_len(&ui->status);
+	size_t actor_len = dstr_len(&ui->actor);
+	size_t status_len = dstr_len(&ui->status);
 	if (!dstr_reserve(&ui->actor, actor.len > actor_len ? actor.len - actor_len : 0) ||
 	    !dstr_reserve(&ui->status, text.len > status_len ? text.len - status_len : 0))
 		return ENOMEM;
@@ -103,21 +122,28 @@ int cli_ui_progress(struct cli_ui *ui, struct cli_text actor, struct cli_text te
 	return cli_ui_write_action(ui, actor, text);
 }
 
-int cli_ui_action(struct cli_ui *ui, struct cli_text actor, struct cli_text text)
+int
+cli_ui_action (struct cli_ui    *ui,
+               struct cstr_view  actor,
+               struct cstr_view  text)
 {
 	int e = cli_ui_finish(ui);
 	return e ? e : cli_ui_write_action(ui, actor, text);
 }
 
-int cli_ui_message(struct cli_console *console, struct cli_text text)
+int
+cli_ui_message (struct cli_console *console,
+                struct cstr_view    text)
 {
 	int e = cli_console_write(console, text);
 	if (!e)
-		e = cli_console_write(console, CLI_TEXT("\n"));
+		e = cli_console_write(console, CSTR_VIEW("\n"));
 	return e ? e : cli_console_flush(console);
 }
 
-int cli_ui_info(struct cli_console *console, struct cli_text text)
+int
+cli_ui_info (struct cli_console *console,
+             struct cstr_view    text)
 {
 	int e = cli_console_set_display(console, CLI_CONSOLE_INFO);
 	if (!e)
@@ -126,9 +152,11 @@ int cli_ui_info(struct cli_console *console, struct cli_text text)
 	return e ? e : reset;
 }
 
-int cli_ui_error(struct cli_text title, struct cli_text detail)
+int
+cli_ui_error (struct cstr_view title,
+              struct cstr_view detail)
 {
-	struct cli_text parts[] = {CLI_TEXT("Error: "), title, CLI_TEXT("\n"), detail, CLI_TEXT("\n")};
+	struct cstr_view parts[] = {CSTR_VIEW("Error: "), title, CSTR_VIEW("\n"), detail, CSTR_VIEW("\n")};
 	size_t count = detail.len ? sizeof parts / sizeof *parts : 3;
 	for (size_t i = 0; i < count; ++i) {
 		int e = cli_console_write_error(parts[i]);

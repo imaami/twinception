@@ -11,16 +11,8 @@
 #ifndef TWINCEPTION_SRC_JOURNAL_H_
 #define TWINCEPTION_SRC_JOURNAL_H_
 
-#ifdef __cplusplus
-# include <cstddef>
-# include <cstdint>
-# define STD(x) std::x
-extern "C" {
-#else
-# include <stddef.h>
-# include <stdint.h>
-# define STD(x) x
-#endif
+#include <stddef.h>
+#include <stdint.h>
 
 struct journal;
 struct loop;
@@ -34,8 +26,8 @@ enum {
 
 struct journal_record {
 	struct journal_record *next;
-	STD(uint64_t)          sequence;
-	STD(size_t)            len;
+	uint64_t               sequence;
+	size_t                 len;
 	char                   id[JOURNAL_ID + 1];
 	char                   kind[JOURNAL_KIND + 1];
 	unsigned char          data[];
@@ -51,7 +43,7 @@ typedef void journal_load_cb (struct loop *loop, void *arg, int error,
  *  symbolic links and parent-directory components are refused. */
 extern struct journal *
 journal_create (char const *path, char const *participant,
-                char *why, STD(size_t) why_len, int *e);
+                char *why, size_t      why_len, int *e);
 
 /** Stops accepting writes, drains the queue, and joins the writer.  Call
  *  after producers stop and before any destination loop is finalized.
@@ -72,9 +64,14 @@ extern void journal_destroy (struct journal **p_journal);
  *  one cancellation for each job in the ledger.
  *  A null journal disables recording and returns 0 (without a callback). */
 extern int
-journal_put (struct journal *journal, char const *id, char const *kind,
-             void const *data, STD(size_t) len, struct loop *loop,
-             journal_done_cb *done, void *arg);
+journal_put (struct journal  *journal,
+             char const      *id,
+             char const      *kind,
+             void const      *data,
+             size_t           len,
+             struct loop     *loop,
+             journal_done_cb *done,
+             void            *arg);
 
 /** Append decoded reasoning at its logical byte offset. Replayed bytes
  * must match the existing file; only a new suffix is appended. Completion
@@ -83,8 +80,8 @@ journal_put (struct journal *journal, char const *id, char const *kind,
  * An empty write at offset zero begins a new replay verification attempt;
  * it resets the verified prefix without creating or changing a file. */
 extern int
-journal_thought (struct journal *journal, char const *id, STD(uint32_t) turn,
-                 STD(uint64_t) offset, void const *data, STD(size_t) len,
+journal_thought (struct journal *journal, char const *id, uint32_t      turn,
+                 uint64_t offset, void const *data, size_t      len,
                  struct loop *loop, journal_done_cb *done, void *arg);
 
 /** Synchronize and commit this turn's reasoning if it changed. Unchanged
@@ -92,7 +89,7 @@ journal_thought (struct journal *journal, char const *id, STD(uint32_t) turn,
  * an incompletely replayed existing file alone; final requires its entire
  * prefix to have been verified. Missing files are successful no-ops. */
 extern int
-journal_thought_end (struct journal *journal, char const *id, STD(uint32_t) turn,
+journal_thought_end (struct journal *journal, char const *id, uint32_t      turn,
                      bool final, struct loop *loop, journal_done_cb *done, void *arg);
 
 /** Loads matching records in sequence order on the writer.  Null id/kind
@@ -108,17 +105,22 @@ journal_load (struct journal *journal, char const *id, char const *kind,
  * snapshots fall back to the legacy WAL, read-only. No state returns an
  * empty list. Ownership and callbacks follow journal_load(). */
 extern int
-journal_load_current (struct journal *journal, char const *id,
-                      struct loop *loop, journal_load_cb *done, void *arg);
+journal_load_current (struct journal *journal,
+                      char const      *id,
+                      struct loop     *loop,
+                      journal_load_cb *done,
+                      void            *arg);
 
-extern void journal_records_destroy (struct journal_record **p_records);
-extern int journal_error (struct journal const *journal);
-extern STD(uint64_t) journal_seed (struct journal const *journal);
-extern char const *journal_path (struct journal const *journal);
+extern void
+journal_records_destroy (struct journal_record **p_records);
 
-#ifdef __cplusplus
-}
-#endif
+extern int
+journal_error (struct journal const *journal);
 
-#undef STD
+extern uint64_t
+journal_seed (struct journal const *journal);
+
+extern char const *
+journal_path (struct journal const *journal);
+
 #endif /* TWINCEPTION_SRC_JOURNAL_H_ */

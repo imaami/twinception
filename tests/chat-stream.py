@@ -4,10 +4,12 @@
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from askai import (ANSWERS, API, Askai, Stream, Upstream, sse_of, sse_wire,
@@ -28,8 +30,13 @@ class Gate(Stream):
         yield self.last
 
 
-def begin(ai, rpc_id=41, progress=False):
+def begin(ai, rpc_id=41, progress=False, receive_buffer=None):
     conn = ai.connect()
+    if receive_buffer:
+        conn.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        conn.sock.settimeout(conn.timeout)
+        conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer)
+        conn.sock.connect((ai.host, ai.port))
     meta = {"askai": {"stream": True}}
     if progress:
         meta["progressToken"] = rpc_id
@@ -461,6 +468,38 @@ def check_cancel(binary, up):
     print("chat stream: disconnect releases a backpressured mailbox and upstream slot: PASS")
 
 
+def check_backpressure_timeout(binary, up):
+    text = "slow reader " * 500_000
+    # The comments keep reception active beyond the first large mailbox.
+    # Its consumer must drain that mailbox before curl can receive the end.
+    wire = sse_wire([(None, {"choices": [{"delta": {"content": text}}]})]) + \
+        b": waiting\n\n" * 200_000
+    with Askai(binary, "-u", up.url(), "--chunk-timeout", "1", "-T", "20",
+               "--send-timeout", "10", "--output-pause", "16K") as ai:
+        for completes in (True, False):
+            payload = Stream(wire=wire + (sse_wire([(None, "[DONE]")]) if completes else b""),
+                             stall=0 if completes else 3)
+            up.reply = lambda request, p=payload: (200, p)
+            conn, response = begin(ai, receive_buffer=16_384)
+            first = event(response)
+            assert first["method"] == "notifications/askai/delta", first
+            time.sleep(1.5)
+            values = ai.metrics()
+            assert values["askai_upstream_stalls_total"] == 0, values
+            assert values["askai_jobs_in_flight"] == 1, values
+            messages = finish(response, [first])
+            conn.close()
+            assert "".join(d["text"] for d in deltas(messages)) == text
+            result = messages[-1]["result"]
+            if completes:
+                assert text_of(result) == text
+            else:
+                assert result["isError"] and text_of(result) == \
+                    "Upstream answer stalled: nothing came for 1 s.", result
+                assert ai.metrics()["askai_upstream_stalls_total"] == 1
+    print("chat stream: mailbox pauses suspend upstream silence; resumed stalls time out: PASS")
+
+
 def main():
     binary = os.path.abspath(sys.argv[1])
     up = Upstream()
@@ -474,6 +513,7 @@ def main():
         check_journal_growth(binary, up)
         check_journal_crash(binary, up)
         check_cancel(binary, up)
+        check_backpressure_timeout(binary, up)
     finally:
         up.close()
 
