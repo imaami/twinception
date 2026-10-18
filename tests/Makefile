@@ -86,12 +86,13 @@ override CLI_LIBS = $(call test-pkg-config,CLI_LIBS,--libs readline)
 override JSON_INCLUDES = $(call test-pkg-config,JSON_INCLUDES,--cflags json-c)
 override JSON_LIBS = $(call test-pkg-config,JSON_LIBS,--libs json-c)
 override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete_fixture.c.o \
-                                 $Otests/src/autocomplete.c.o $Otests/src/dstr.c.o $Otests/src/jb.c.o
+                                 $Otests/src/autocomplete.c.o $Otests/src/cli_command.c.o \
+                                 $Otests/src/dstr.c.o $Otests/src/jb.c.o
 override AUTOCOMPLETE_WRAPS := -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 
 override CLI_CONSOLE_OBJECTS := $Otests/src/cli_console.c.o $Otests/src/buf.c.o \
                                 $Otests/src/cli_loop.c.o $Otests/src/cli_mailbox.c.o \
-                                $Otests/src/cli_scrollback.c.o $Otests/src/cli_io.c.o \
+                                $Otests/src/cli_scrollback.c.o $Otests/src/cli_style.c.o $Otests/src/cli_io.c.o \
                                 $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
 
 $Otests/cli_io: $Otests/cli_io.c.o $Otests/src/cli_io.c.o $Otests/src/cli_loop.c.o \
@@ -101,7 +102,8 @@ $Otests/cli_io:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 $Otests/cli_loop: $Otests/cli_loop.c.o $Otests/src/cli_loop.c.o $Otests/src/cli_mailbox.c.o
 $Otests/cli_loop:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
 
-$Otests/cli_scrollback: $Otests/cli_scrollback.c.o $Otests/src/cli_scrollback.c.o $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o
+$Otests/cli_scrollback: $Otests/cli_scrollback.c.o $Otests/src/cli_scrollback.c.o $Otests/src/cli_style.c.o \
+                       $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o
 $Otests/cli_scrollback:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
 
 $Otests/cli_input $Otests/cli_ui $Otests/cli_state $Otests/autocomplete $Otests/cstr_view: $Otests/src/cstr_view.c.o
@@ -224,9 +226,10 @@ load: | load-build askai
          $Otests/cli_state.c.d $Otests/src/cli_state.c.d \
          $Otests/cli_loop.c.d $Otests/cli_io.c.d $Otests/cli_scrollback.c.d \
          $Otests/src/cli_loop.c.d $Otests/src/cli_io.c.d $Otests/src/cli_mailbox.c.d \
-         $Otests/src/cli_scrollback.c.d $Otests/src/blocker.c.d $Otests/src/loop.c.d \
+         $Otests/src/cli_scrollback.c.d $Otests/src/cli_style.c.d $Otests/src/blocker.c.d $Otests/src/loop.c.d \
          $Otests/autocomplete_fixture.c.d $Otests/src/cli_console.c.d \
-         $Otests/src/autocomplete.c.d $Otests/src/autocomplete_file.c.d $Otests/src/dstr.c.d \
+         $Otests/src/autocomplete.c.d $Otests/src/autocomplete_file.c.d $Otests/src/cli_command.c.d \
+         $Otests/src/dstr.c.d \
          $Otests/src/cli_ui.c.d $Otests/src/jb.c.d \
          $Otests/cstr_view.c.d $Otests/src/cstr_view.c.d \
          $(LOAD)/gen.d $(LOAD)/mock.d

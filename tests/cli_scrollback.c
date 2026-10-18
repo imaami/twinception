@@ -1,5 +1,6 @@
 /** @file Transcript bounds, wrapping and viewport stability. */
 #include <assert.h>
+#include <errno.h>
 #include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,13 +26,19 @@ cli_scrollback_test_wrapping (void)
 	dstr_auto frame = dstr(nullptr);
 	assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("界界界\néx\n")));
 	cli_scrollback_test_render(&scrollback, 4, 4, &frame);
-	assert(!strcmp(dstr_get(&frame), "界界\033[K\r\n界\033[K\r\néx\033[K\r\n\033[K\r\n"));
+	assert(!strcmp(dstr_get(&frame), "界界\r\n界\033[K\r\néx\033[K\r\n\033[K\r\n"));
 	cli_scrollback_test_render(&scrollback, 8, 3, &frame);
 	assert(!strcmp(dstr_get(&frame), "界界界\033[K\r\néx\033[K\r\n\033[K\r\n"));
 	cli_scrollback_fini(&scrollback);
 	assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("abcd\tX")));
 	cli_scrollback_test_render(&scrollback, 5, 3, &frame);
-	assert(!strcmp(dstr_get(&frame), "abcd\033[K\r\n     \033[K\r\nX\033[K\r\n"));
+	assert(!strcmp(dstr_get(&frame), "abcd\033[K\r\n     \r\nX\033[K\r\n"));
+	cli_scrollback_fini(&scrollback);
+	assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("abcdeFGHIJk")));
+	cli_scrollback_test_render(&scrollback, 5, 3, &frame);
+	assert(!strcmp(dstr_get(&frame), "abcde\r\nFGHIJ\r\nk\033[K\r\n"));
+	cli_scrollback_test_render(&scrollback, 11, 1, &frame);
+	assert(!strcmp(dstr_get(&frame), "abcdeFGHIJk\r\n"));
 	cli_scrollback_fini(&scrollback);
 }
 
@@ -65,6 +72,49 @@ cli_scrollback_test_viewport (void)
 }
 
 static void
+cli_scrollback_test_styles (void)
+{
+	struct cli_scrollback scrollback;
+	cli_scrollback_init(&scrollback);
+	dstr_auto frame = dstr(nullptr);
+	assert(!cli_style_sequence(CLI_STYLE_COUNT).len);
+	assert(cli_scrollback_append_style(&scrollback, CSTR_VIEW("invalid"), CLI_STYLE_COUNT) == EINVAL);
+	assert(!scrollback.count && !scrollback.bytes && !scrollback.styles);
+	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("abc"), CLI_STYLE_REASONING));
+	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("def"), CLI_STYLE_REASONING));
+	assert(scrollback.styles == 1);
+	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("界\tx"), CLI_STYLE_USER_INPUT));
+	assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("!")));
+	cli_scrollback_test_render(&scrollback, 8, 3, &frame);
+	assert(!strcmp(dstr_get(&frame),
+	               "\033[0;90mabcdef\033[0;1;32m界\r\n"
+	               "        \r\nx\033[0m!\033[K\r\n"));
+	cli_scrollback_test_render(&scrollback, 3, 1, &frame);
+	assert(!strcmp(dstr_get(&frame), "\033[0;1;32mx\033[0m!\033[K\r\n"));
+	cli_scrollback_scroll(&scrollback, 2, true);
+	cli_scrollback_test_render(&scrollback, 3, 1, &frame);
+	assert(!strcmp(dstr_get(&frame), "\033[0;1;32m界\033[K\r\n\033[0m"));
+	cli_scrollback_fini(&scrollback);
+
+	for (size_t i = 0; i < 65536; ++i)
+		assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("x"), i % 2 ? CLI_STYLE_REASONING : CLI_STYLE_USER_INPUT));
+	assert(scrollback.styles == 65536);
+	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("x\n"), CLI_STYLE_REASONING));
+	assert(scrollback.bytes == 65537 && scrollback.count == 2);
+	assert(scrollback.styles == 65536);
+	cli_scrollback_fini(&scrollback);
+
+	/* Style storage has its own bound, even with one change per byte. */
+	for (size_t i = 0; i < 70000; ++i)
+		assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("x"), i % 2 ? CLI_STYLE_REASONING : CLI_STYLE_USER_INPUT));
+	assert(scrollback.styles <= 65536);
+	assert(scrollback.bytes < 70000);
+	cli_scrollback_test_render(&scrollback, 2, 1, &frame);
+	assert(!strcmp(dstr_get(&frame), "\033[0;1;32mx\033[0;90mx\r\n\033[0m"));
+	cli_scrollback_fini(&scrollback);
+}
+
+static void
 cli_scrollback_test_prefix_eviction (void)
 {
 	struct cli_scrollback scrollback;
@@ -74,7 +124,7 @@ cli_scrollback_test_prefix_eviction (void)
 	assert(text);
 	for (size_t i = 0; i < length; ++i)
 		text[i] = (char)('a' + i / 80 % 26);
-	assert(!cli_scrollback_append(&scrollback, (struct cstr_view){text, length}));
+	assert(!cli_scrollback_append_style(&scrollback, (struct cstr_view){text, length}, CLI_STYLE_INFO));
 	dstr_auto before = dstr(nullptr);
 	dstr_auto after = dstr(nullptr);
 	cli_scrollback_test_render(&scrollback, 80, 3, &before);
@@ -134,6 +184,7 @@ main (void)
 {
 	assert(setlocale(LC_CTYPE, "C.UTF-8"));
 	cli_scrollback_test_wrapping();
+	cli_scrollback_test_styles();
 	cli_scrollback_test_viewport();
 	cli_scrollback_test_long_line();
 	cli_scrollback_test_prefix_eviction();

@@ -9,15 +9,30 @@
 #include <string.h>
 
 #include "autocomplete.h"
+#include "cli_command.h"
 #include "dstr.h"
 #include "jb.h"
 
 enum { AUTOCOMPLETE_BYTES = 16 * 1024 * 1024 };
 
-enum autocomplete_candidate_flag {
-	AUTOCOMPLETE_STRING = 1,
-	AUTOCOMPLETE_QUOTED = 2,
-	AUTOCOMPLETE_VALID  = 4,
+enum autocomplete_flag : uint64_t {
+	AUTOCOMPLETE_STRING       = UINT64_C(1) << 0,
+	AUTOCOMPLETE_QUOTED       = UINT64_C(1) << 1,
+	AUTOCOMPLETE_VALID        = UINT64_C(1) << 2,
+	AUTOCOMPLETE_STRUCTURED   = UINT64_C(1) << 3,
+	AUTOCOMPLETE_USE_STRING   = UINT64_C(1) << 4,
+	AUTOCOMPLETE_TYPED        = UINT64_C(1) << 5,
+	AUTOCOMPLETE_UNION        = UINT64_C(1) << 6,
+	AUTOCOMPLETE_CONSTANT     = UINT64_C(1) << 7,
+	AUTOCOMPLETE_ENUMERATED   = UINT64_C(1) << 8,
+	AUTOCOMPLETE_NAMES        = UINT64_C(1) << 9,
+	AUTOCOMPLETE_TYPE_NULL    = UINT64_C(1) << 10,
+	AUTOCOMPLETE_TYPE_BOOLEAN = UINT64_C(1) << 11,
+	AUTOCOMPLETE_TYPE_NUMBER  = UINT64_C(1) << 12,
+	AUTOCOMPLETE_TYPE_INTEGER = UINT64_C(1) << 13,
+	AUTOCOMPLETE_TYPE_OBJECT  = UINT64_C(1) << 14,
+	AUTOCOMPLETE_TYPE_ARRAY   = UINT64_C(1) << 15,
+	AUTOCOMPLETE_TYPE_STRING  = UINT64_C(1) << 16,
 };
 
 struct autocomplete_candidate {
@@ -27,9 +42,9 @@ struct autocomplete_candidate {
 
 struct autocomplete_property {
 	struct cstr_view               name;
-	struct json_object            *schema;
 	struct autocomplete_candidate *values;
 	size_t                         count;
+	uint64_t                       flags;
 };
 
 struct autocomplete_entry {
@@ -65,6 +80,7 @@ struct autocomplete {
 	size_t                        count;
 	size_t                        capacity;
 	size_t                        storage;
+	struct autocomplete_names     chat_participants;
 	struct autocomplete_names     participants;
 	struct autocomplete_names     notebooks;
 	struct autocomplete_notebook *notes;
@@ -404,56 +420,60 @@ autocomplete_resolve (struct autocomplete  *autocomplete,
 	return 0;
 }
 
-static bool
-autocomplete_has_type (struct json_object *schema,
-                       struct cstr_view    type)
+static uint64_t
+autocomplete_type_flag (struct cstr_view type)
 {
-	struct json_object *value = autocomplete_get(schema, "type");
-	if (json_object_is_type(value, json_type_string))
-		return cstr_view_equal(autocomplete_json_text(value), type);
-	if (json_object_is_type(value, json_type_array))
-		for (size_t i = 0, count = json_object_array_length(value); i < count; ++i)
-			if (cstr_view_equal(autocomplete_json_text(json_object_array_get_idx(value, i)), type))
-				return true;
-	return false;
+	static struct {
+		struct cstr_view name;
+		uint64_t        flag;
+	} const types[] = {
+		{CSTR_VIEW("null"), AUTOCOMPLETE_TYPE_NULL},
+		{CSTR_VIEW("boolean"), AUTOCOMPLETE_TYPE_BOOLEAN},
+		{CSTR_VIEW("number"), AUTOCOMPLETE_TYPE_NUMBER},
+		{CSTR_VIEW("integer"), AUTOCOMPLETE_TYPE_INTEGER},
+		{CSTR_VIEW("object"), AUTOCOMPLETE_TYPE_OBJECT},
+		{CSTR_VIEW("array"), AUTOCOMPLETE_TYPE_ARRAY},
+		{CSTR_VIEW("string"), AUTOCOMPLETE_TYPE_STRING},
+	};
+	for (size_t i = 0; i < sizeof types / sizeof *types; ++i)
+		if (cstr_view_equal(types[i].name, type))
+			return types[i].flag;
+	return 0;
+}
+
+static uint64_t
+autocomplete_type_flags (struct json_object *type)
+{
+	if (!type)
+		return 0;
+	if (!json_object_is_type(type, json_type_array))
+		return AUTOCOMPLETE_TYPED | autocomplete_type_flag(autocomplete_json_text(type));
+	uint64_t flags = AUTOCOMPLETE_TYPED | AUTOCOMPLETE_UNION;
+	for (size_t i = 0, count = json_object_array_length(type); i < count; ++i)
+		flags |= autocomplete_type_flag(autocomplete_json_text(json_object_array_get_idx(type, i)));
+	return flags;
 }
 
 static bool
-autocomplete_accepted_type (struct json_object *schema,
+autocomplete_accepted_type (uint64_t            flags,
                             struct json_object *value)
 {
-	if (!autocomplete_get(schema, "type"))
+	if (!(flags & AUTOCOMPLETE_TYPED))
 		return true;
 	switch (json_object_get_type(value)) {
-	case json_type_null: return autocomplete_has_type(schema, CSTR_VIEW("null"));
-	case json_type_boolean: return autocomplete_has_type(schema, CSTR_VIEW("boolean"));
+	case json_type_null: return flags & AUTOCOMPLETE_TYPE_NULL;
+	case json_type_boolean: return flags & AUTOCOMPLETE_TYPE_BOOLEAN;
 	case json_type_double: {
 		double number = json_object_get_double(value);
-		return autocomplete_has_type(schema, CSTR_VIEW("number")) ||
-		       (autocomplete_has_type(schema, CSTR_VIEW("integer")) && isfinite(number) && floor(number) == number);
+		return (flags & AUTOCOMPLETE_TYPE_NUMBER) ||
+		       ((flags & AUTOCOMPLETE_TYPE_INTEGER) && isfinite(number) && floor(number) == number);
 	}
-	case json_type_int: return autocomplete_has_type(schema, CSTR_VIEW("integer")) || autocomplete_has_type(schema, CSTR_VIEW("number"));
-	case json_type_object: return autocomplete_has_type(schema, CSTR_VIEW("object"));
-	case json_type_array: return autocomplete_has_type(schema, CSTR_VIEW("array"));
-	case json_type_string: return autocomplete_has_type(schema, CSTR_VIEW("string"));
+	case json_type_int: return flags & (AUTOCOMPLETE_TYPE_INTEGER | AUTOCOMPLETE_TYPE_NUMBER);
+	case json_type_object: return flags & AUTOCOMPLETE_TYPE_OBJECT;
+	case json_type_array: return flags & AUTOCOMPLETE_TYPE_ARRAY;
+	case json_type_string: return flags & AUTOCOMPLETE_TYPE_STRING;
 	}
 	return false;
-}
-
-static bool
-autocomplete_string_schema (struct json_object *schema)
-{
-	if (autocomplete_get(schema, "type"))
-		return autocomplete_has_type(schema, CSTR_VIEW("string"));
-	if (json_object_is_type(autocomplete_get(schema, "const"), json_type_string))
-		return true;
-	struct json_object *values = autocomplete_get(schema, "enum");
-	if (!json_object_is_type(values, json_type_array) || !json_object_array_length(values))
-		return false;
-	for (size_t i = 0, count = json_object_array_length(values); i < count; ++i)
-		if (!json_object_is_type(json_object_array_get_idx(values, i), json_type_string))
-			return false;
-	return true;
 }
 
 static struct autocomplete_entry const *
@@ -506,15 +526,16 @@ autocomplete_entry_fini (struct autocomplete_entry *entry)
 static int
 autocomplete_candidate_init (struct autocomplete_candidate *candidate,
                              struct json_object            *value,
-                             struct json_object            *schema)
+                             uint64_t                       flags)
 {
 	*candidate = (struct autocomplete_candidate){.value = dstr(nullptr)};
-	bool string = json_object_is_type(value, json_type_string);
-	bool quoted = string &&
-	              (json_object_is_type(autocomplete_get(schema, "type"), json_type_array) || !autocomplete_string_schema(schema));
-	candidate->flags = (string ? AUTOCOMPLETE_STRING : 0) | (quoted ? AUTOCOMPLETE_QUOTED : 0);
+	if (json_object_is_type(value, json_type_string)) {
+		candidate->flags = AUTOCOMPLETE_STRING;
+		if ((flags & (AUTOCOMPLETE_UNION | AUTOCOMPLETE_STRING)) != AUTOCOMPLETE_STRING)
+			candidate->flags |= AUTOCOMPLETE_QUOTED;
+	}
 	struct cstr_view text = autocomplete_json_text(value);
-	if (!string) {
+	if (!(candidate->flags & AUTOCOMPLETE_STRING)) {
 		text.data = json_object_to_json_string_length(value, JSON_C_TO_STRING_PLAIN, &text.len);
 		if (!text.data)
 			return ENOMEM;
@@ -532,16 +553,40 @@ autocomplete_property_init (struct autocomplete_property *property,
                             struct json_object           *schema,
                             struct cstr_view              name)
 {
-	*property = (struct autocomplete_property){.name = name, .schema = schema};
-	int error = autocomplete_resolve(autocomplete, root, &property->schema);
+	*property = (struct autocomplete_property){.name = name};
+	int error = autocomplete_resolve(autocomplete, root, &schema);
 	if (error)
 		return error;
-	schema = property->schema;
 	struct json_object *constant = nullptr;
-	bool has_constant = schema && json_object_object_get_ex(schema, "const", &constant);
+	uint64_t flags = autocomplete_type_flags(autocomplete_get(schema, "type"));
+	if (schema && json_object_object_get_ex(schema, "const", &constant))
+		flags |= AUTOCOMPLETE_CONSTANT;
 	struct json_object *enumeration = autocomplete_get(schema, "enum");
-	bool has_enum = json_object_is_type(enumeration, json_type_array);
-	size_t count = has_constant ? 1 : has_enum ? json_object_array_length(enumeration) : 0;
+	size_t count = 0;
+	if (json_object_is_type(enumeration, json_type_array)) {
+		flags |= AUTOCOMPLETE_ENUMERATED;
+		count = json_object_array_length(enumeration);
+	}
+	if (flags & AUTOCOMPLETE_TYPE_STRING)
+		flags |= AUTOCOMPLETE_STRING;
+	else if (!(flags & AUTOCOMPLETE_TYPED)) {
+		if (json_object_is_type(constant, json_type_string))
+			flags |= AUTOCOMPLETE_STRING;
+		else if (count) {
+			flags |= AUTOCOMPLETE_STRING;
+			for (size_t i = 0; i < count; ++i)
+				if (!json_object_is_type(json_object_array_get_idx(enumeration, i), json_type_string)) {
+					flags &= ~AUTOCOMPLETE_STRING;
+					break;
+				}
+		}
+	}
+	if (schema && !enumeration && !(flags & AUTOCOMPLETE_CONSTANT) &&
+	    ((flags & (AUTOCOMPLETE_TYPED | AUTOCOMPLETE_TYPE_STRING)) != AUTOCOMPLETE_TYPED))
+		flags |= AUTOCOMPLETE_NAMES;
+	property->flags = flags;
+	if (flags & AUTOCOMPLETE_CONSTANT)
+		count = 1;
 	if (!count)
 		return 0;
 	if (count > SIZE_MAX / sizeof *property->values)
@@ -550,8 +595,8 @@ autocomplete_property_init (struct autocomplete_property *property,
 	if (!property->values)
 		return ENOMEM;
 	for (size_t i = 0; i < count; ++i) {
-		struct json_object *value = has_constant ? constant : json_object_array_get_idx(enumeration, i);
-		error = autocomplete_candidate_init(&property->values[i], value, schema);
+		struct json_object *value = flags & AUTOCOMPLETE_CONSTANT ? constant : json_object_array_get_idx(enumeration, i);
+		error = autocomplete_candidate_init(&property->values[i], value, flags);
 		++property->count;
 		if (error)
 			return error;
@@ -609,6 +654,7 @@ autocomplete_destroy (struct autocomplete **p_autocomplete)
 	autocomplete->entries = nullptr;
 	free(autocomplete->tokens);
 	autocomplete->tokens = nullptr;
+	autocomplete_names_fini(&autocomplete->chat_participants);
 	autocomplete_names_fini(&autocomplete->participants);
 	autocomplete_names_fini(&autocomplete->notebooks);
 	for (size_t i = 0; i < autocomplete->notes_capacity; ++i) {
@@ -776,6 +822,14 @@ autocomplete_names_set (struct autocomplete_names *names,
 }
 
 int
+autocomplete_set_chat_participants (struct autocomplete    *autocomplete,
+                                    struct cstr_view const *names,
+                                    size_t                  count)
+{
+	return autocomplete_names_set(&autocomplete->chat_participants, names, count, true);
+}
+
+int
 autocomplete_set_participants (struct autocomplete    *autocomplete,
                                struct cstr_view const *names,
                                size_t                  count)
@@ -883,10 +937,11 @@ autocomplete_replacement (struct autocomplete *autocomplete,
 {
 	if (autocomplete->match_count == sizeof autocomplete->matches / sizeof autocomplete->matches[0])
 		return 0;
-	bool space = separate && (end == line.len || !autocomplete_space((unsigned char)line.data[end]));
+	if (separate && end < line.len && autocomplete_space((unsigned char)line.data[end]))
+		++end;
 	if (value.len > SIZE_MAX - line.len - 2)
 		return ENOMEM;
-	size_t length = begin + value.len + space + line.len - end;
+	size_t length = begin + value.len + separate + line.len - end;
 	size_t offset = dstr_len(&autocomplete->lines);
 	if (length >= AUTOCOMPLETE_BYTES - offset)
 		return 0;
@@ -894,7 +949,7 @@ autocomplete_replacement (struct autocomplete *autocomplete,
 		return ENOMEM;
 	(void)dstr_cat_n(&autocomplete->lines, line.data, begin);
 	(void)dstr_cat_n(&autocomplete->lines, value.data, value.len);
-	if (space)
+	if (separate)
 		(void)dstr_cat_n(&autocomplete->lines, " ", 1);
 	(void)dstr_cat_n(&autocomplete->lines, line.data + end, line.len - end);
 	(void)dstr_cat_n(&autocomplete->lines, "", 1);
@@ -902,7 +957,7 @@ autocomplete_replacement (struct autocomplete *autocomplete,
 	if (!index || begin < autocomplete->match_begin)
 		autocomplete->match_begin = begin;
 	autocomplete->offsets[index] = offset;
-	autocomplete->matches[index] = (struct autocomplete_match){{nullptr, length}, begin + value.len + space};
+	autocomplete->matches[index] = (struct autocomplete_match){{nullptr, length}, begin + value.len + separate};
 	return 0;
 }
 
@@ -912,14 +967,13 @@ autocomplete_value_match (struct autocomplete      *autocomplete,
                           struct autocomplete_token current,
                           struct cstr_view          prefix,
                           struct cstr_view          value,
-                          bool                      string,
-                          bool                      quoted,
+                          uint64_t                  flags,
                           char                      mark)
 {
 	if (!cstr_view_starts(value, prefix))
 		return 0;
-	if (string) {
-		int error = autocomplete_quote(&autocomplete->quoted, value, mark ? mark : quoted ? '\'' : 0);
+	if (flags & AUTOCOMPLETE_STRING) {
+		int error = autocomplete_quote(&autocomplete->quoted, value, mark ? mark : flags & AUTOCOMPLETE_QUOTED ? '\'' : 0);
 		if (error)
 			return error == E2BIG ? 0 : error;
 		value = cstr_view_dstr(&autocomplete->quoted);
@@ -988,42 +1042,37 @@ autocomplete_values (struct autocomplete                *autocomplete,
 {
 	if (!property)
 		return 0;
-	struct json_object *schema = property->schema;
+	uint64_t flags = property->flags;
 	struct cstr_view input = cstr_view_slice(line, current.equals + 1, cursor - current.equals - 1);
 	int error = autocomplete_unquote(&autocomplete->decoded, input);
 	if (error)
 		return error;
 	struct cstr_view prefix = cstr_view_dstr(&autocomplete->decoded);
 	char mark = input.len && (input.data[0] == '\'' || input.data[0] == '"') ? input.data[0] : 0;
-	struct json_object *constant = nullptr;
-	bool has_constant = schema && json_object_object_get_ex(schema, "const", &constant);
-	bool has_enum = json_object_is_type(autocomplete_get(schema, "enum"), json_type_array);
 	for (size_t i = 0; i < property->count; ++i) {
 		struct autocomplete_candidate const *candidate = &property->values[i];
 		if (!(candidate->flags & AUTOCOMPLETE_VALID))
 			continue;
 		error = autocomplete_value_match(autocomplete, line, current, prefix, cstr_view_dstr(&candidate->value),
-		                                 candidate->flags & AUTOCOMPLETE_STRING, candidate->flags & AUTOCOMPLETE_QUOTED, mark);
+		                                 candidate->flags, mark);
 		if (error)
 			return error;
 	}
-	if (!has_constant && !has_enum) {
-		if (autocomplete_has_type(schema, CSTR_VIEW("boolean"))) {
-			error = autocomplete_value_match(autocomplete, line, current, prefix, CSTR_VIEW("false"), false, false, mark);
+	if (!(flags & (AUTOCOMPLETE_CONSTANT | AUTOCOMPLETE_ENUMERATED))) {
+		if (flags & AUTOCOMPLETE_TYPE_BOOLEAN) {
+			error = autocomplete_value_match(autocomplete, line, current, prefix, CSTR_VIEW("false"), 0, mark);
 			if (!error)
-				error = autocomplete_value_match(autocomplete, line, current, prefix, CSTR_VIEW("true"), false, false, mark);
+				error = autocomplete_value_match(autocomplete, line, current, prefix, CSTR_VIEW("true"), 0, mark);
 			if (error)
 				return error;
 		}
-		if (autocomplete_has_type(schema, CSTR_VIEW("null"))) {
-			error = autocomplete_value_match(autocomplete, line, current, prefix, CSTR_VIEW("null"), false, false, mark);
+		if (flags & AUTOCOMPLETE_TYPE_NULL) {
+			error = autocomplete_value_match(autocomplete, line, current, prefix, CSTR_VIEW("null"), 0, mark);
 			if (error)
 				return error;
 		}
 	}
-	bool names_allowed = schema && (!autocomplete_get(schema, "type") || autocomplete_has_type(schema, CSTR_VIEW("string"))) &&
-	                     !autocomplete_get(schema, "enum") && !has_constant;
-	if (!names_allowed)
+	if (!(flags & AUTOCOMPLETE_NAMES))
 		return 0;
 	struct autocomplete_names const *names = nullptr;
 	if (cstr_view_equal(property->name, CSTR_VIEW("participant")) ||
@@ -1037,9 +1086,9 @@ autocomplete_values (struct autocomplete                *autocomplete,
 		if (error)
 			return error;
 	}
-	bool quoted = !autocomplete_string_schema(schema);
+	flags = AUTOCOMPLETE_STRING | (flags & AUTOCOMPLETE_STRING ? 0 : AUTOCOMPLETE_QUOTED);
 	for (size_t i = 0; names && i < names->count; ++i) {
-		error = autocomplete_value_match(autocomplete, line, current, prefix, cstr_view_dstr(&names->values[i]), true, quoted, mark);
+		error = autocomplete_value_match(autocomplete, line, current, prefix, cstr_view_dstr(&names->values[i]), flags, mark);
 		if (error)
 			return error;
 	}
@@ -1070,17 +1119,10 @@ autocomplete_commands (struct autocomplete      *autocomplete,
 {
 	struct cstr_view prefix = cstr_view_slice(line, current.begin, cursor - current.begin);
 	if (!index) {
-		static struct cstr_view const commands[] = {
-			CSTR_VIEW("/clear"), CSTR_VIEW("/exit"), CSTR_VIEW("/help"),
-			CSTR_VIEW("/history"),
-			CSTR_VIEW("/names"), CSTR_VIEW("/read"), CSTR_VIEW("/refresh"),
-			CSTR_VIEW("/regen"), CSTR_VIEW("/tool"), CSTR_VIEW("/tools"),
-		};
-		for (size_t i = 0; i < sizeof commands / sizeof commands[0]; ++i) {
-			if (!cstr_view_starts(commands[i], prefix))
-				continue;
-			bool separate = cstr_view_equal(commands[i], CSTR_VIEW("/tool")) || cstr_view_equal(commands[i], CSTR_VIEW("/read"));
-			int error = autocomplete_replacement(autocomplete, line, current.begin, current.end, commands[i], separate);
+		struct cli_command_matches commands = cli_command_prefix(prefix);
+		for (size_t i = 0; i < commands.count; ++i) {
+			struct cli_command const *command = &commands.data[i];
+			int error = autocomplete_replacement(autocomplete, line, current.begin, current.end, command->name, true);
 			if (error)
 				return error;
 		}
@@ -1089,16 +1131,16 @@ autocomplete_commands (struct autocomplete      *autocomplete,
 	if (!autocomplete->token_count)
 		return 0;
 	struct autocomplete_token command_token = autocomplete->tokens[0];
-	struct cstr_view command = cstr_view_slice(line, command_token.begin, command_token.end - command_token.begin);
-	bool call = cstr_view_equal(command, CSTR_VIEW("/tool"));
-	if (!call && !cstr_view_equal(command, CSTR_VIEW("/tools")))
+	struct cli_command const *command = cli_command_find(cstr_view_slice(line, command_token.begin, command_token.end - command_token.begin));
+	if (!command || (command->args != CLI_COMMAND_ARGS_TOOL && command->args != CLI_COMMAND_ARGS_TOOL_CALL))
 		return 0;
+	bool call = command->args == CLI_COMMAND_ARGS_TOOL_CALL;
 	if (index == 1 || autocomplete->token_count == 1) {
 		for (size_t i = 0; i < autocomplete->count; ++i) {
 			struct cstr_view name = autocomplete->entries[i].tool.name;
 			if (!cstr_view_starts(name, prefix))
 				continue;
-			int error = autocomplete_replacement(autocomplete, line, current.begin, current.end, name, call);
+			int error = autocomplete_replacement(autocomplete, line, current.begin, current.end, name, true);
 			if (error)
 				return error;
 		}
@@ -1149,8 +1191,8 @@ autocomplete_mentions (struct autocomplete *autocomplete,
 	bool mention = line.data[begin] == '@';
 	struct cstr_view prefix = cstr_view_slice(line, begin + mention, cursor - begin - mention);
 	bool separate = end == line.len || autocomplete_space((unsigned char)line.data[end]);
-	for (size_t i = 0; i < autocomplete->participants.count; ++i) {
-		struct cstr_view name = cstr_view_dstr(&autocomplete->participants.values[i]);
+	for (size_t i = 0; i < autocomplete->chat_participants.count; ++i) {
+		struct cstr_view name = cstr_view_dstr(&autocomplete->chat_participants.values[i]);
 		if (!cstr_view_starts(name, prefix))
 			continue;
 		(void)dstr_clear(&autocomplete->quoted);
@@ -1291,38 +1333,39 @@ autocomplete_entry_validate (struct autocomplete_entry const *entry,
 static int
 autocomplete_convert (struct autocomplete *autocomplete,
                       struct cstr_view     raw,
-                      struct json_object  *schema,
+                      uint64_t             flags,
                       struct json_object **converted)
 {
 	*converted = nullptr;
-	bool structured = raw.len && (raw.data[0] == '{' || raw.data[0] == '[');
-	int error = structured ? autocomplete_set(&autocomplete->decoded, raw) : autocomplete_unquote(&autocomplete->decoded, raw);
+	if (raw.len) {
+		if (raw.data[0] == '{' || raw.data[0] == '[')
+			flags |= AUTOCOMPLETE_STRUCTURED;
+		else if (raw.data[0] == '\'' || raw.data[0] == '"')
+			flags |= AUTOCOMPLETE_QUOTED;
+	}
+	int error = flags & AUTOCOMPLETE_STRUCTURED ? autocomplete_set(&autocomplete->decoded, raw)
+	                                          : autocomplete_unquote(&autocomplete->decoded, raw);
 	if (error)
 		return error;
 	struct cstr_view decoded = cstr_view_dstr(&autocomplete->decoded);
-	bool string = autocomplete_string_schema(schema);
-	bool quoted = raw.len && (raw.data[0] == '\'' || raw.data[0] == '"');
-	bool use_string = (quoted && !autocomplete_get(schema, "type")) ||
-	                  (string && (quoted || !json_object_is_type(autocomplete_get(schema, "type"), json_type_array)));
-	if (!use_string) {
+	if ((flags & (AUTOCOMPLETE_QUOTED | AUTOCOMPLETE_TYPED)) == AUTOCOMPLETE_QUOTED ||
+	    (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_QUOTED)) == (AUTOCOMPLETE_STRING | AUTOCOMPLETE_QUOTED) ||
+	    (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_UNION)) == AUTOCOMPLETE_STRING)
+		flags |= AUTOCOMPLETE_USE_STRING;
+	if (!(flags & AUTOCOMPLETE_USE_STRING)) {
 		error = autocomplete_json_parse(autocomplete, decoded, converted);
-		if (!error)
-			use_string = string && !autocomplete_accepted_type(schema, *converted);
-		else if (error != EINVAL || (!string && autocomplete_get(schema, "type")))
+		if (!error) {
+			if (!(flags & AUTOCOMPLETE_STRING) || autocomplete_accepted_type(flags, *converted))
+				return 0;
+		} else if (error != EINVAL || (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_TYPED)) == AUTOCOMPLETE_TYPED)
 			return error;
-		else
-			use_string = true;
 	}
-	if (use_string) {
-		json_object_put(*converted);
-		*converted = nullptr;
-		if (decoded.len > INT_MAX)
-			return E2BIG;
-		*converted = json_object_new_string_len(decoded.data, (int)decoded.len);
-		if (!*converted)
-			return ENOMEM;
-	}
-	return 0;
+	json_object_put(*converted);
+	*converted = nullptr;
+	if (decoded.len > INT_MAX)
+		return E2BIG;
+	*converted = json_object_new_string_len(decoded.data, (int)decoded.len);
+	return *converted ? 0 : ENOMEM;
 }
 
 int
@@ -1345,9 +1388,13 @@ autocomplete_parse_call (struct autocomplete             *autocomplete,
 	int error = autocomplete_tokenize(autocomplete, line, true, diagnostic);
 	if (error)
 		return error;
-	if (autocomplete->token_count < 2 ||
-	    !cstr_view_equal(cstr_view_slice(line, autocomplete->tokens[0].begin, autocomplete->tokens[0].end - autocomplete->tokens[0].begin), CSTR_VIEW("/tool")))
-		return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Usage: /tool NAME key=VALUE ... or /tool NAME {JSON}"), CSTR_VIEW(""));
+	struct cli_command const *command = nullptr;
+	if (autocomplete->token_count) {
+		struct autocomplete_token token = autocomplete->tokens[0];
+		command = cli_command_find(cstr_view_slice(line, token.begin, token.end - token.begin));
+	}
+	if (autocomplete->token_count < 2 || !command || command->id != CLI_COMMAND_TOOL)
+		return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Usage: "), cli_command_at(CLI_COMMAND_TOOL)->usage);
 	struct autocomplete_token name_token = autocomplete->tokens[1];
 	struct cstr_view name = cstr_view_slice(line, name_token.begin, name_token.end - name_token.begin);
 	struct autocomplete_entry const *entry = autocomplete_entry_find(autocomplete, name, nullptr);
@@ -1387,14 +1434,14 @@ autocomplete_parse_call (struct autocomplete             *autocomplete,
 				error = autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Unknown tool argument: "), key);
 				goto fail;
 			}
-			struct json_object *schema = property ? property->schema : nullptr;
+			uint64_t flags = property ? property->flags : 0;
 			struct json_object *converted = nullptr;
-			error = autocomplete_convert(autocomplete, cstr_view_slice(line, token.equals + 1, token.end - token.equals - 1), schema, &converted);
+			error = autocomplete_convert(autocomplete, cstr_view_slice(line, token.equals + 1, token.end - token.equals - 1), flags, &converted);
 			if (error) {
 				error = autocomplete_diagnose(diagnostic, error, CSTR_VIEW("Invalid value for tool argument: "), key);
 				goto fail;
 			}
-			if (property && !autocomplete_accepted_type(schema, converted)) {
+			if (property && !autocomplete_accepted_type(flags, converted)) {
 				json_object_put(converted);
 				converted = nullptr;
 				error = autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Wrong type for tool argument: "), key);

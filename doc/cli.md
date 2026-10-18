@@ -83,7 +83,7 @@ transcripts use the server's configured repositories and participant.
 | `/names` | List cached known session participants. |
 | `/refresh` | Refresh accessible tools, participants and notebook filenames. |
 | `/help` | Show commands. |
-| `/exit` | Leave the client. |
+| `/exit`, `/quit` | Leave the client. |
 
 The terminal editor uses GNU Readline and its normal Emacs key bindings by
 default:
@@ -101,7 +101,7 @@ default:
 | Ctrl-W / Alt-D | Cut the preceding/following word. |
 | Ctrl-Y | Paste the last cut text. |
 | Alt-. | Insert the last argument from the previous history entry. |
-| Tab | Complete commands, paths, tools, parameters, values and participant names. |
+| Tab | Complete commands, paths, tools, parameters, values and participant names; press twice to list choices. |
 
 In the ordinary Readline display, type `Explain` and press PgUp to recall
 earlier prompts with that prefix, skipping unrelated entries. Up and Ctrl-R include saved input
@@ -112,8 +112,9 @@ up to 256 submitted entries, with a 1 MiB budget for their submitted text.
 Readline can retain edits to recalled entries beyond that budget.
 
 Readline honors `~/.inputrc` or the file named by `INPUTRC`, including
-`set editing-mode vi`. Use an application-specific block to customize only
-this client:
+`set editing-mode vi`. These bindings override the defaults, including
+PgUp/PgDn in full-screen mode. Use an application-specific block to customize
+only this client:
 
 ```text
 $if askai-cli
@@ -125,6 +126,23 @@ A trailing `\` continues the prompt on another line. With
 `--multiline-input`, Enter continues the prompt and a trailing `\` submits
 it instead. A trailing `/` submits in either mode. Ctrl-D ends input.
 
+While an answer runs in full-screen mode, Enter queues one prompt for the
+next turn and opens a fresh draft. The status row indicates a queued prompt;
+until it starts, another prompt submission leaves the fresh draft in place.
+Local commands remain available even with a prompt queued: `/help`,
+`/history`, `/names`, and `/tools` display their current data immediately.
+`/quit` and `/exit` initiate shutdown without waiting for generation.
+`/clear` and `/regen` cancel the current turn before changing conversation
+state. `/read`, `/tool`, and `/refresh` wait for the current operation because
+they start another turn or use the client's single active request slot.
+
+Completion choices appear across each row, wrapping at the terminal width,
+and remain in scrollback across redraws. Every listing requires a fresh pair
+of Tab presses within 400 ms; repeated single Tabs do not repeatedly print
+the choices. A unique completed word gets one separating space, with the
+cursor ready for the next word. The second Tab of that pair leaves it there.
+Directory completion ends with `/` so the path can continue.
+
 Ctrl-C cancels an answer without discarding the draft being edited. At an
 idle prompt it clears the draft; Ctrl-_ restores it. In `--single-turn` mode
 or with redirected input, cancellation exits with status 130.
@@ -135,7 +153,9 @@ fails. Regeneration is a new request and may run tools again.
 Full-screen scrollback retains up to 10,000 logical lines or 16 MiB per
 buffer. Older transcript content is evicted independently of drafts and
 saved input history. Scrolling away from the bottom preserves the viewport
-and shows an unread count; Ctrl-End resumes following new output.
+and shows an unread count; Ctrl-End resumes following new output. Colors are
+retained with text across scrolling and resizing. Adjacent text with the
+same style shares one run; rendering emits SGR only at visible style changes.
 
 The client imposes no generation timeout. AskAI's configured upstream timeout
 and context limits still apply. A chat request stays on its event stream even
@@ -258,9 +278,13 @@ AskAI servers can supply contributors through their existing `notebooks`
 action, but cannot advertise themselves before their first note.
 
 At the start of a prompt, typing `ali` and pressing Tab can produce
-`alice: `; `@ali` completes to `@alice ` anywhere in the prompt. These are
-text completions, not message routing. `/names` displays the cached list;
-use `/refresh` to pick up another instance's newly written notes.
+`alice: `; `@ali` completes to `@alice ` anywhere in the prompt. Chat name
+completion uses only participants advertised as present by the connected
+service. Currently that is its configured participant from notes metadata;
+servers without that metadata supply no chat name candidates. Notebook
+contributors remain available for tool argument completion and `/names`.
+These completions do not route messages. Use `/refresh` to pick up another
+instance's newly written notes.
 
 Discovery runs at connection time and on `/refresh`. Notes filenames refresh
 before the next prompt after an ask or a direct note mutation. Use `/refresh`
@@ -310,7 +334,7 @@ askai-cli --socket /path/to/askai.sock --single-turn --file question.txt
 `-p` and `-f` are aliases for `--prompt` and `--file`. `--simple-io` disables
 terminal input editing; this mode is also selected automatically when input
 or output is not a terminal. `--color auto|on|off` controls terminal colors.
-With `auto`, colors are enabled only on a terminal.
+With `auto`, colors are enabled only on a terminal when `NO_COLOR` is unset.
 
 ## Checks and source attribution
 
