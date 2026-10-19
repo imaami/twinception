@@ -4,6 +4,8 @@
 #ifndef TWINCEPTION_SRC_COMPAT_H_
 #define TWINCEPTION_SRC_COMPAT_H_
 
+#include <stddef.h>
+
 #define array_size(x) (sizeof (x) / sizeof (x)[0])
 #define container_of(ptr, T, member) \
         ((T *)(void *)((unsigned char *)(ptr) - offsetof(T, member)))
