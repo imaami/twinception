@@ -1172,7 +1172,9 @@ autocomplete_commands (struct autocomplete      *autocomplete,
 	}
 	for (size_t i = 0; i < entry->count; ++i) {
 		struct cstr_view name = entry->properties[i].name;
-		if (!cstr_view_starts(name, prefix) || autocomplete_used(autocomplete, line, name, index))
+		if (!cstr_view_starts(name, prefix) ||
+		    autocomplete_used(autocomplete, line, name,
+		                     current.end > current.begin ? index : SIZE_MAX))
 			continue;
 		int error = autocomplete_set(&autocomplete->quoted, name);
 		if (error)
