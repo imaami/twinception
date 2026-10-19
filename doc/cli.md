@@ -91,8 +91,11 @@ default:
 | Key | Effect |
 | --- | --- |
 | Up / Down | Browse input history. |
-| PgUp / PgDn | Scroll the transcript in full-screen mode; search history by prefix in the ordinary Readline display. |
-| Ctrl-End | Return to the newest transcript output and clear the unread count. |
+| PgUp / PgDn | Search input history by prefix. |
+| Alt-Up / Alt-Down, Ctrl-PgUp / Ctrl-PgDn | Scroll the selected pane backward/forward. |
+| Alt-Left / Alt-Right | Select conversation / reasoning for scrolling. |
+| F6 | Switch the selected pane. |
+| Ctrl-End | Follow new output in the selected pane and clear its unread count. |
 | Ctrl-_ | Undo an edit, including clearing the draft with Ctrl-C. |
 | Ctrl-R | Search history backward as you type; repeat to find older matches. |
 | Home / End, Ctrl-A / Ctrl-E | Move to the beginning/end of the line. |
@@ -103,7 +106,7 @@ default:
 | Alt-. | Insert the last argument from the previous history entry. |
 | Tab | Complete commands, paths, tools, parameters, values and participant names; press twice to list choices. |
 
-In the ordinary Readline display, type `Explain` and press PgUp to recall
+Type `Explain` and press PgUp to recall
 earlier prompts with that prefix, skipping unrelated entries. Up and Ctrl-R include saved input
 from earlier client processes. Input recall is separate from the completed
 conversation sent to the model; `/clear` clears the conversation, not
@@ -114,7 +117,8 @@ Readline can retain edits to recalled entries beyond that budget.
 Readline honors `~/.inputrc` or the file named by `INPUTRC`, including
 `set editing-mode vi`. These bindings override the defaults, including
 PgUp/PgDn in full-screen mode. Use an application-specific block to customize
-only this client:
+only this client. The `askai-scroll-up` and `askai-scroll-down` Readline
+functions can be bound to alternate keys if the terminal intercepts a shortcut:
 
 ```text
 $if askai-cli
@@ -136,8 +140,11 @@ Local commands remain available even with a prompt queued: `/help`,
 state. `/read`, `/tool`, and `/refresh` wait for the current operation because
 they start another turn or use the client's single active request slot.
 
-Completion choices appear across each row, wrapping at the terminal width,
-and remain in scrollback across redraws. Every listing requires a fresh pair
+Completion choices show only the word or value being completed, without
+repeating earlier words or a parameter's `name=` prefix. Choices appear
+across each row, wrapping at the conversation pane's width, and remain in
+scrollback across redraws. Commands, tools, parameters, values, participants
+and files have separate palette styles. Every listing requires a fresh pair
 of Tab presses within 400 ms; repeated single Tabs do not repeatedly print
 the choices. A unique completed word gets one separating space, with the
 cursor ready for the next word. The second Tab of that pair leaves it there.
@@ -150,12 +157,24 @@ SIGTERM exits with status 143. Failed or cancelled turns do not enter the
 conversation history, and `/regen` preserves the old answer if regeneration
 fails. Regeneration is a new request and may run tools again.
 
-Full-screen scrollback retains up to 10,000 logical lines or 16 MiB per
-buffer. Older transcript content is evicted independently of drafts and
+The full-screen display has a conversation pane on the left and a separate
+reasoning pane on the right, with 256-color foreground styles on the terminal's
+default background. Input stays on the bottom row from startup, including
+while connecting. Each pane has its own scroll position and unread count.
+Alt-Left selects conversation and Alt-Right selects reasoning. Alt-Up/Down
+or Ctrl-PgUp/PgDn scroll the selected pane; Ctrl-End follows new output.
+Input editing remains active. Both panes stay visible in narrow terminals,
+with their text rewrapped to fit. Terminals smaller than 8 columns or 6 rows
+show only input until resized; both buffers and the draft are retained.
+
+Each scrollback retains up to 10,000 logical lines or 16 MiB of text.
+Older transcript content is evicted independently of drafts and
 saved input history. Scrolling away from the bottom preserves the viewport
 and shows an unread count; Ctrl-End resumes following new output. Colors are
 retained with text across scrolling and resizing. Adjacent text with the
-same style shares one run; rendering emits SGR only at visible style changes.
+same style shares one run. Rendering updates changed rows in changed regions;
+editing the draft does not redraw scrollback. The cursor remains visible
+during output updates.
 
 The client imposes no generation timeout. AskAI's configured upstream timeout
 and context limits still apply. A chat request stays on its event stream even

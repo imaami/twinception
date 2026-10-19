@@ -20,10 +20,18 @@ cli_ui (struct cli_console *console)
 }
 
 static int
+cli_ui_write (struct cli_ui    *ui,
+              bool              reasoning,
+              struct cstr_view  text)
+{
+	return reasoning ? cli_console_reasoning(ui->console, text) : cli_console_write(ui->console, text);
+}
+
+static int
 cli_ui_newline (struct cli_ui *ui)
 {
 	if (!ui->trailing_newline) {
-		int e = cli_console_write(ui->console, CSTR_VIEW("\n"));
+		int e = cli_ui_write(ui, ui->reasoning, CSTR_VIEW("\n"));
 		if (e)
 			return e;
 		ui->trailing_newline = true;
@@ -47,15 +55,15 @@ cli_ui_push (struct cli_ui    *ui,
 		if (!e && thinking)
 			e = cli_console_set_display(ui->console, CLI_STYLE_REASONING);
 		if (!e)
-			e = cli_console_write(ui->console, thinking ? CSTR_VIEW("[Start thinking]\n\n")
-			                                            : CSTR_VIEW("[End thinking]\n\n"));
+			e = cli_ui_write(ui, true, thinking ? CSTR_VIEW("[Start thinking]\n\n")
+			                                    : CSTR_VIEW("[End thinking]\n\n"));
 		if (!e && !thinking)
 			e = cli_console_set_display(ui->console, CLI_STYLE_RESET);
 		if (e)
 			return e;
 		ui->reasoning = thinking;
 	}
-	e = cli_console_write(ui->console, text);
+	e = cli_ui_write(ui, thinking, text);
 	ui->trailing_newline = text.data[text.len - 1] == '\n';
 	return e ? e : cli_console_flush(ui->console);
 }
@@ -63,12 +71,22 @@ cli_ui_push (struct cli_ui    *ui,
 static int
 cli_ui_write_action (struct cli_ui    *ui,
                      struct cstr_view  actor,
-                     struct cstr_view  text)
+                     struct cstr_view  text,
+                     enum cli_style    style)
 {
-	int e = cli_console_set_display(ui->console, CLI_STYLE_INFO);
-	struct cstr_view parts[] = {CSTR_VIEW("* "), actor, CSTR_VIEW(" "), text, CSTR_VIEW("\n")};
-	for (size_t i = 0; !e && i < sizeof parts / sizeof *parts; ++i)
-		e = cli_console_write(ui->console, parts[i]);
+	int e = cli_console_set_display(ui->console, style == CLI_STYLE_TOOL_STATUS ? CLI_STYLE_TOOL_ACTOR : style);
+	if (!e)
+		e = cli_console_write(ui->console, CSTR_VIEW("* "));
+	if (!e)
+		e = cli_console_write(ui->console, actor);
+	if (!e)
+		e = cli_console_set_display(ui->console, style);
+	if (!e)
+		e = cli_console_write(ui->console, CSTR_VIEW(" "));
+	if (!e)
+		e = cli_console_write(ui->console, text);
+	if (!e)
+		e = cli_console_write(ui->console, CSTR_VIEW("\n"));
 	int reset = cli_console_set_display(ui->console, CLI_STYLE_RESET);
 	int flush = cli_console_flush(ui->console);
 	return e ? e : reset ? reset : flush;
@@ -81,11 +99,11 @@ cli_ui_finish (struct cli_ui *ui)
 	if (!e)
 		e = cli_ui_newline(ui);
 	if (!e && ui->reasoning)
-		e = cli_console_write(ui->console, CSTR_VIEW("[End thinking]\n"));
+		e = cli_ui_write(ui, true, CSTR_VIEW("[End thinking]\n"));
 	ui->reasoning = false;
 	int reset = cli_console_set_display(ui->console, CLI_STYLE_RESET);
 	if (!e && !reset && ui->pending)
-		e = cli_ui_write_action(ui, cstr_view_dstr(&ui->actor), cstr_view_dstr(&ui->status));
+		e = cli_ui_write_action(ui, cstr_view_dstr(&ui->actor), cstr_view_dstr(&ui->status), CLI_STYLE_PROGRESS);
 	dstr_clear(&ui->actor);
 	dstr_clear(&ui->status);
 	ui->streaming = ui->shown = ui->pending = false;
@@ -123,7 +141,7 @@ cli_ui_progress (struct cli_ui    *ui,
 	if (ui->pending)
 		return 0;
 	ui->shown = true;
-	return cli_ui_write_action(ui, actor, text);
+	return cli_ui_write_action(ui, actor, text, CLI_STYLE_PROGRESS);
 }
 
 int
@@ -132,7 +150,7 @@ cli_ui_action (struct cli_ui    *ui,
                struct cstr_view  text)
 {
 	int e = cli_ui_finish(ui);
-	return e ? e : cli_ui_write_action(ui, actor, text);
+	return e ? e : cli_ui_write_action(ui, actor, text, CLI_STYLE_TOOL_STATUS);
 }
 
 static int

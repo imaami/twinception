@@ -239,8 +239,11 @@ cli_scrollback_append_style (struct cli_scrollback *scrollback,
 static size_t
 cli_scrollback_character (struct cstr_view text,
                           size_t           column,
-                          size_t          *width)
+                          size_t          *width,
+                          bool            *replace)
 {
+	if (replace)
+		*replace = false;
 	if (text.data[0] == '\t') {
 		*width = 8 - column % 8;
 		return 1;
@@ -250,10 +253,17 @@ cli_scrollback_character (struct cstr_view text,
 	size_t bytes = mbrtowc(&character, text.data, text.len, &state);
 	if (!bytes || bytes == (size_t)-1 || bytes == (size_t)-2) {
 		*width = 1;
+		if (replace)
+			*replace = true;
 		return 1;
 	}
 	int cells = wcwidth(character);
-	*width = cells < 0 ? 1 : (size_t)cells;
+	/* A combining character without a preceding cell must not reach left
+	 * into another pane. Render one replacement cell at a row's origin. */
+	bool replacement = cells < 0 || (!cells && !column);
+	*width = replacement ? 1 : (size_t)cells;
+	if (replace)
+		*replace = replacement;
 	return bytes;
 }
 
@@ -272,7 +282,7 @@ cli_scrollback_line_rows (struct cli_scrollback_line *line,
 	struct cstr_view text = cstr_view_slice(cstr_view_dstr(&line->text), line->scanned, SIZE_MAX);
 	while (text.len) {
 		size_t width;
-		size_t length = cli_scrollback_character(text, line->column, &width);
+		size_t length = cli_scrollback_character(text, line->column, &width, nullptr);
 		if (width > columns)
 			width = columns;
 		if (line->column && line->column + width > columns) {
@@ -329,7 +339,7 @@ cli_scrollback_prefix (struct cli_scrollback_line *line,
 			return 0;
 		}
 		size_t width;
-		size_t length = cli_scrollback_character(text, column, &width);
+		size_t length = cli_scrollback_character(text, column, &width, nullptr);
 		if (width > line->columns)
 			width = line->columns;
 		if (column && column + width > line->columns) {
@@ -367,17 +377,71 @@ cli_scrollback_bottom (struct cli_scrollback *scrollback)
 	scrollback->unread = 0;
 }
 
+enum { CLI_SCROLLBACK_COLOR = 1u << 0 };
+
+struct cli_scrollback_frame {
+	struct dstr   *output;
+	struct dstr   *cache;
+	size_t         columns;
+	size_t         height;
+	size_t         left;
+	size_t         row;
+	size_t         start;
+	enum cli_style style;
+	uint32_t       flags;
+};
+
 static int
-cli_scrollback_style_write (enum cli_style *current,
-                            enum cli_style  style,
-                            struct dstr    *output)
+cli_scrollback_frame_style (struct cli_scrollback_frame *frame,
+                            enum cli_style               style)
 {
-	if (*current == style)
+	if (!(frame->flags & CLI_SCROLLBACK_COLOR))
+		return 0;
+	if (style == CLI_STYLE_RESET)
+		style = CLI_STYLE_TEXT;
+	if (frame->style == style)
 		return 0;
 	struct cstr_view sequence = cli_style_sequence(style);
-	if (!dstr_cat_n(output, sequence.data, sequence.len))
+	if (!dstr_cat_n(frame->output, sequence.data, sequence.len))
 		return ENOMEM;
-	*current = style;
+	frame->style = style;
+	return 0;
+}
+
+static int
+cli_scrollback_frame_begin (struct cli_scrollback_frame *frame)
+{
+	frame->start = dstr_len(frame->output);
+	frame->style = CLI_STYLE_COUNT;
+	return dstr_printf(frame->output, "\033[%zu;%zuH", frame->row, frame->left) ? 0 : ENOMEM;
+}
+
+static int
+cli_scrollback_frame_end (struct cli_scrollback_frame *frame,
+                          size_t                       column)
+{
+	if (column < frame->columns) {
+		int e = cli_scrollback_frame_style(frame, CLI_STYLE_RESET);
+		if (e)
+			return e;
+		static char const spaces[] = "                                                                ";
+		for (size_t remaining = frame->columns - column; remaining;) {
+			size_t count = remaining < sizeof spaces - 1 ? remaining : sizeof spaces - 1;
+			if (!dstr_cat_n(frame->output, spaces, count))
+				return ENOMEM;
+			remaining -= count;
+		}
+	}
+	if (frame->cache) {
+		struct cstr_view row = cstr_view_slice(cstr_view_dstr(frame->output), frame->start, SIZE_MAX);
+		if (cstr_view_equal(row, cstr_view_dstr(frame->cache)))
+			dstr_erase(frame->output, frame->start, SIZE_MAX);
+		else if (!dstr_clear(frame->cache) || !dstr_cat_n(frame->cache, row.data, row.len))
+			return ENOMEM;
+		++frame->cache;
+	}
+	if (--frame->height)
+		++frame->row;
 	return 0;
 }
 
@@ -386,18 +450,17 @@ static int
 cli_scrollback_line_write (struct cli_scrollback_line const *line,
                            size_t                           start,
                            size_t                           end,
-                           enum cli_style                  *style,
-                           struct dstr                     *output)
+                           struct cli_scrollback_frame     *frame)
 {
 	size_t next = cli_scrollback_style_after(line, start);
 	enum cli_style id = next ? line->styles[next - 1].id : CLI_STYLE_RESET;
 	while (start < end) {
 		size_t stop = next < line->style_count && line->styles[next].offset < end
 		              ? line->styles[next].offset : end;
-		int e = cli_scrollback_style_write(style, id, output);
+		int e = cli_scrollback_frame_style(frame, id);
 		if (e)
 			return e;
-		if (!dstr_cat_n(output, dstr_get(&line->text) + start, stop - start))
+		if (!dstr_cat_n(frame->output, dstr_get(&line->text) + start, stop - start))
 			return ENOMEM;
 		start = stop;
 		if (next < line->style_count)
@@ -408,11 +471,8 @@ cli_scrollback_line_write (struct cli_scrollback_line const *line,
 
 static int
 cli_scrollback_line_render (struct cli_scrollback_line *line,
-                            size_t                      columns,
                             size_t                     *skip,
-                            size_t                     *height,
-                            enum cli_style              *style,
-                            struct dstr                *output)
+                            struct cli_scrollback_frame *frame)
 {
 	size_t checkpoint = *skip / CLI_SCROLLBACK_CHECKPOINT;
 	size_t start = checkpoint ? line->checkpoints[checkpoint - 1] : 0;
@@ -420,40 +480,51 @@ cli_scrollback_line_render (struct cli_scrollback_line *line,
 	struct cstr_view text = cstr_view_slice(cstr_view_dstr(&line->text), start, SIZE_MAX);
 	size_t column = 0;
 	size_t offset = start;
-	while (text.len && *height) {
+	if (!*skip) {
+		int e = cli_scrollback_frame_begin(frame);
+		if (e)
+			return e;
+	}
+	while (text.len && frame->height) {
 		size_t width;
-		size_t length = cli_scrollback_character(text, column, &width);
-		if (width > columns)
-			width = columns;
-		if (column && column + width > columns) {
+		bool replace;
+		size_t length = cli_scrollback_character(text, column, &width, &replace);
+		if (width > frame->columns) {
+			replace |= text.data[0] != '\t';
+			width = frame->columns;
+		}
+		if (column && column + width > frame->columns) {
 			if (*skip)
 				--*skip;
 			else {
-				int e = cli_scrollback_line_write(line, start, offset, style, output);
+				int e = cli_scrollback_line_write(line, start, offset, frame);
 				if (e)
 					return e;
-				--*height;
-				/* With autowrap disabled a full row leaves the cursor on its
-				 * last cell. EL0 there would erase the final character. */
-				if (!dstr_cat(output, column < columns ? "\033[K\r\n" : "\r\n"))
-					return ENOMEM;
+				e = cli_scrollback_frame_end(frame, column);
+				if (e)
+					return e;
 			}
 			start = offset;
 			column = 0;
 			if (text.data[0] == '\t')
-				width = columns < 8 ? columns : 8;
-			if (!*height)
+				width = frame->columns < 8 ? frame->columns : 8;
+			if (!frame->height)
 				break;
-		}
-		if (!*skip) {
-			if (text.data[0] == '\t') {
-				int e = cli_scrollback_line_write(line, start, offset, style, output);
-				size_t next = cli_scrollback_style_after(line, offset);
-				if (!e)
-					e = cli_scrollback_style_write(style, next ? line->styles[next - 1].id : CLI_STYLE_RESET, output);
+			if (!*skip) {
+				int e = cli_scrollback_frame_begin(frame);
 				if (e)
 					return e;
-				if (!dstr_cat_n(output, "        ", width))
+			}
+		}
+		if (!*skip) {
+			if (text.data[0] == '\t' || replace) {
+				int e = cli_scrollback_line_write(line, start, offset, frame);
+				size_t next = cli_scrollback_style_after(line, offset);
+				if (!e)
+					e = cli_scrollback_frame_style(frame, next ? line->styles[next - 1].id : CLI_STYLE_RESET);
+				if (e)
+					return e;
+				if (!dstr_cat_n(frame->output, replace ? "?" : "        ", replace ? 1 : width))
 					return ENOMEM;
 				start = offset + length;
 			}
@@ -463,65 +534,77 @@ cli_scrollback_line_render (struct cli_scrollback_line *line,
 		offset += length;
 		text = cstr_view_slice(text, length, SIZE_MAX);
 	}
-	if (*height) {
+	if (frame->height) {
 		if (*skip)
 			--*skip;
 		else {
-			int e = cli_scrollback_line_write(line, start, offset, style, output);
+			int e = cli_scrollback_line_write(line, start, offset, frame);
 			if (e)
 				return e;
-			--*height;
-			if (!dstr_cat(output, column < columns ? "\033[K\r\n" : "\r\n"))
-				return ENOMEM;
+			e = cli_scrollback_frame_end(frame, column);
+			if (e)
+				return e;
 		}
 	}
 	return 0;
 }
 
 int
-cli_scrollback_render (struct cli_scrollback *scrollback,
-                       size_t                 columns,
-                       size_t                 height,
-                       struct dstr           *output)
+cli_scrollback_render_pane (struct cli_scrollback *scrollback,
+                            size_t                 left,
+                            size_t                 top,
+                            size_t                 columns,
+                            size_t                 height,
+                            bool                   color,
+                            struct dstr           *cache,
+                            struct dstr           *output)
 {
-	if (!columns || !height)
+	if (!left || !top || !columns || !height ||
+	    columns > SIZE_MAX - (left - 1) || height > SIZE_MAX - (top - 1))
 		return EINVAL;
+	struct cli_scrollback_frame frame = {
+		.output = output, .cache = cache, .columns = columns, .height = height,
+		.left = left, .row = top, .flags = color ? CLI_SCROLLBACK_COLOR : 0,
+	};
 	size_t rows = 0;
 	struct list *hook;
 	list_foreach(hook, &scrollback->lines) {
 		struct cli_scrollback_line *line = container_of(hook, struct cli_scrollback_line, hook);
-		int e = cli_scrollback_line_rows(line, columns);
+		int e = cli_scrollback_line_rows(line, frame.columns);
 		if (e)
 			return e;
 		rows += line->rows;
 	}
-	if (scrollback->offset && scrollback->columns == columns &&
+	if (scrollback->offset && scrollback->columns == frame.columns &&
 	    rows + scrollback->discarded > scrollback->rows)
 		scrollback->offset += rows + scrollback->discarded - scrollback->rows;
 	scrollback->discarded = 0;
 	scrollback->rows = rows;
-	scrollback->columns = columns;
-	size_t maximum = rows > height ? rows - height : 0;
+	scrollback->columns = frame.columns;
+	size_t maximum = rows > frame.height ? rows - frame.height : 0;
 	if (scrollback->offset > maximum)
 		scrollback->offset = maximum;
 	if (!scrollback->offset)
 		scrollback->unread = 0;
 	size_t skip = maximum - scrollback->offset;
-	enum cli_style style = CLI_STYLE_RESET;
 	list_foreach(hook, &scrollback->lines) {
 		struct cli_scrollback_line *line = container_of(hook, struct cli_scrollback_line, hook);
 		if (skip >= line->rows) {
 			skip -= line->rows;
 			continue;
 		}
-		int e = cli_scrollback_line_render(line, columns, &skip, &height, &style, output);
+		int e = cli_scrollback_line_render(line, &skip, &frame);
 		if (e)
 			return e;
-		if (!height)
+		if (!frame.height)
 			break;
 	}
-	while (height--)
-		if (!dstr_cat(output, "\033[K\r\n"))
-			return ENOMEM;
-	return cli_scrollback_style_write(&style, CLI_STYLE_RESET, output);
+	while (frame.height) {
+		int e = cli_scrollback_frame_begin(&frame);
+		if (!e)
+			e = cli_scrollback_frame_end(&frame, 0);
+		if (e)
+			return e;
+	}
+	return 0;
 }

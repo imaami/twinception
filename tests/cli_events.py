@@ -147,8 +147,7 @@ def check_saved_command_lock(cli):
                 terminal = Terminal(proc, master)
                 lock = -1
                 try:
-                    terminal.expect(b"\x1b[?2004h")
-                    terminal.expect(b"> \x1b[K\x1b[24;")
+                    terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
                     paths = [directory + "/" + name for name in os.listdir(directory)
                              if name.startswith("cli-") and name.endswith(".lock") and name != "cli-init.lock"]
                     assert len(paths) == 1, paths
@@ -156,11 +155,9 @@ def check_saved_command_lock(cli):
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     if interrupt:
                         os.write(master, b"/help\r")
-                        terminal.expect(b"> /help\x1b[K\r", timeout=2)
-                        terminal.expect(b"/regen", timeout=2)
-                        terminal.expect(b"> \x1b[K\x1b[24;", timeout=2)
+                        terminal.update(b"/regen", timeout=2)
                         os.write(master, b"/clear\r")
-                        terminal.expect(b"> /clear\x1b[K\r", timeout=2)
+                        terminal.update(b"> /clear", timeout=2)
                         # Cancelling a pending save must return to command
                         # processing, even though the next save still waits.
                         try:
@@ -245,6 +242,103 @@ class Terminal:
         consumed = self.pending[:end]
         self.pending = self.pending[end:]
         return consumed
+
+    def drain(self, timeout=0.05):
+        output, self.pending = self.pending, b""
+        while select.select([self.fd], [], [], timeout)[0]:
+            chunk = os.read(self.fd, 65536)
+            assert chunk, (output[-4096:], self.proc.poll())
+            output += chunk
+        return output
+
+    def update(self, *markers, timeout=5):
+        deadline = time.monotonic() + timeout
+        output = b""
+        for marker in markers:
+            if marker not in output:
+                output += self.expect(marker, timeout=max(0, deadline - time.monotonic()))
+        return output + self.drain()
+
+
+class Tmux:
+    """Use tmux's terminal emulator without touching any existing server."""
+
+    def __init__(self, cli, socket, *arguments, columns=100, rows=24):
+        self.directory = tempfile.TemporaryDirectory(prefix="askai-cli-tmux-")
+        self.socket = self.directory.name + "/tmux.sock"
+        self.pane = "events:0.0"
+        self.columns = columns
+        self.rows = rows
+        self.environment = os.environ.copy()
+        self.environment.pop("TMUX", None)
+        self.environment.pop("TMUX_PANE", None)
+        try:
+            self.run("new-session", "-d", "-s", "events", "-x", str(columns), "-y", str(rows), "sleep 30")
+            self.run("set-option", "-g", "status", "off")
+            self.run("set-option", "-w", "-t", "events:0", "remain-on-exit", "on")
+            self.run("set-option", "-w", "-t", "events:0", "window-size", "manual")
+            invocation = shlex.join(["env", "TERM=screen.xterm-256color", "LC_ALL=C.UTF-8",
+                                     "INPUTRC=" + os.devnull, cli, "--socket", socket,
+                                     "--no-history", "--color", "off", *arguments])
+            self.run("respawn-pane", "-k", "-t", self.pane, invocation)
+        except BaseException:
+            self.__exit__()
+            raise
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exception):
+        self.run("kill-server", check=False)
+        self.directory.cleanup()
+
+    def run(self, *arguments, check=True):
+        return subprocess.run(["tmux", "-u", "-S", self.socket, "-f", os.devnull, *arguments],
+                              env=self.environment, capture_output=True, text=True, timeout=3, check=check)
+
+    def capture(self):
+        return self.run("capture-pane", "-p", "-t", self.pane).stdout.splitlines()
+
+    def screen(self, condition, description, timeout=5):
+        deadline = time.monotonic() + timeout
+        previous = None
+        while True:
+            rows = self.capture()
+            tiny = self.columns < 8 or self.rows < 6
+            complete = len(rows) == self.rows and (tiny or all(
+                row.startswith("│") and row.endswith("│") and row.count("│") == 3
+                for row in rows[1:-3]))
+            # capture-pane can observe the middle of a frame write. Wait
+            # for a settled pane before comparing cells or splitting rows.
+            if complete and rows == previous and condition(rows):
+                return rows
+            assert time.monotonic() < deadline, (description, rows)
+            previous = rows
+            time.sleep(0.02)
+
+    def text(self, text):
+        self.run("send-keys", "-t", self.pane, "-l", text)
+
+    def keys(self, *keys):
+        self.run("send-keys", "-t", self.pane, *keys)
+
+    def resize(self, columns, rows=24):
+        self.columns, self.rows = columns, rows
+        self.run("resize-window", "-t", "events:0", "-x", str(columns), "-y", str(rows))
+
+    def quit(self):
+        self.keys("C-a", "C-k")
+        self.text("/quit")
+        self.keys("Enter")
+        deadline = time.monotonic() + 3
+        while True:
+            status = self.run("display-message", "-p", "-t", self.pane,
+                              "#{pane_dead}:#{pane_dead_status}").stdout.strip()
+            if status.startswith("1:"):
+                assert status == "1:0", status
+                return
+            assert time.monotonic() < deadline, ("CLI did not quit", status)
+            time.sleep(0.02)
 
 
 def check_tui_drafts(cli):
@@ -368,6 +462,14 @@ def check_partial_paste(cli):
         try:
             terminal.expect(b"\x1b[?2004h")
             assert arrived.wait(5), "CLI did not submit the first prompt"
+            terminal.update(b"askai | working")
+            os.write(master, b"z")
+            typed = terminal.update(b"> z\x1b[K")
+            positions = re.findall(rb"\x1b\[(\d+);(\d+)H", typed)
+            assert positions and all(row == b"24" for row, column in positions), typed
+            assert b"\x1b[?25" not in typed and b"Conversation" not in typed, typed
+            os.write(master, b"\x01\x0b")
+            terminal.update(b"> \x1b[K")
             os.write(master, b"\x1b[200~unfinished draft")
 
             def input_consumed():
@@ -380,7 +482,11 @@ def check_partial_paste(cli):
             # input is supplied before the response must become visible.
             time.sleep(0.05)
             release.set()
-            terminal.expect(marker.encode())
+            streamed = terminal.update(marker.encode())
+            positions = re.findall(rb"\x1b\[(\d+);(\d+)H", streamed)
+            assert not any(2 <= int(row) <= 21 and int(column) >= 60 for row, column in positions), streamed
+            assert b"\x1b[?25" not in streamed and b"> " not in streamed, streamed
+            assert "│".encode() not in streamed and b"Reasoning" not in streamed, streamed
             assert proc.poll() is None, "partial paste unexpectedly ended the client"
             proc.send_signal(signal.SIGTERM)
             assert proc.wait(timeout=3) == 128 + signal.SIGTERM, proc.returncode
@@ -390,7 +496,7 @@ def check_partial_paste(cli):
             finish(proc)
             os.close(master)
             os.close(slave)
-    print("cli events: streaming and TERM progress inside an incomplete bracketed paste: PASS", flush=True)
+    print("cli events: typing and streaming update only changed regions, and TERM interrupts an incomplete paste: PASS", flush=True)
 
 
 def check_keyboard(cli):
@@ -439,31 +545,24 @@ def check_keyboard(cli):
                 draft(prefix)
 
         try:
-            terminal.expect(b"\x1b[?2004h")
-            draft(b"")
+            terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
             editable("initial prompt")
             type_text(b"/")
             for listed in range(3):
                 os.write(master, b"\t")
-                frame = draft(b"/").rsplit(b"\x1b[?25l\x1b[H", 1)[-1]
-                assert frame.count(b"/clear") == listed, "first Tab repeated the listing"
+                output = terminal.drain()
+                assert b"/clear" not in output, "first Tab repeated the listing"
                 if not listed:
                     time.sleep(0.65)
                     os.write(master, b"\t")
-                    frame = draft(b"/").rsplit(b"\x1b[?25l\x1b[H", 1)[-1]
-                    assert b"/clear" not in frame, "widely separated Tabs were treated as a double Tab"
+                    output = terminal.drain()
+                    assert b"/clear" not in output, "widely separated Tabs were treated as a double Tab"
                 os.write(master, b"\t")
-                frame = draft(b"/").rsplit(b"\x1b[?25l\x1b[H", 1)[-1]
-                assert frame.count(b"/clear") == listed + 1, "second Tab did not list completions"
-                assert b"Completions:" not in frame, "completion listing has an unnecessary heading"
-                rows = [row for row in frame.split(b"\n") if b"/clear" in row]
-                for row in rows:
-                    row = row[row.index(b"/clear"):].split(b"\x1b[K", 1)[0]
-                    assert row.startswith(b"/clear /exit /help "), ("completion separators are not single spaces", row)
-                    assert b"  " not in row, ("completion row has repeated separators", row)
+                output = terminal.update(b"/clear /exit /help ")
+                assert output.count(b"/clear") == 1, "second Tab redrew old completion listings"
+                assert b"Completions:" not in output, "completion listing has an unnecessary heading"
             os.write(master, b"h")
-            frame = draft(b"/h").rsplit(b"\x1b[?25l\x1b[H", 1)[-1]
-            assert b"/clear" in frame, "completion choices vanished on the next redraw"
+            draft(b"/h")
             type_text(b"e", prefix=b"/h")
             os.write(master, b"\t")
             draft(b"/help ", point=len(b"/help "))
@@ -473,10 +572,7 @@ def check_keyboard(cli):
             draft(b"/help ")
             editable("completed command")
             os.write(master, b"\r")
-            terminal.expect(b"> /help \x1b[K\r")
-            terminal.expect(b"/regen")
-            terminal.expect(b"askai | ready")
-            draft(b"")
+            terminal.update(b"/regen")
             editable("after help")
             assert not prompts, prompts
 
@@ -484,7 +580,6 @@ def check_keyboard(cli):
             os.write(master, b"\r")
             assert arrived.wait(5), "ordinary Enter did not submit hi"
             terminal.expect(b"askai | working")
-            draft(b"")
             editable("while first answer is pending")
             type_text(b"queued second")
             os.write(master, b"\r")
@@ -494,12 +589,12 @@ def check_keyboard(cli):
             os.write(master, b"\r")
             # One pending line already occupies the queue. A second Enter
             # must leave this next draft intact and the editor usable.
-            draft(b"acx")
+            terminal.drain()
             editable("after Enter while busy")
             # This user binding invokes Readline's accept-line directly,
             # bypassing the CLI's Enter handler and its full-slot check.
             os.write(master, b"\x14")
-            draft(b"acx")
+            terminal.drain()
             editable("after custom accept-line with a queued line")
             os.write(master, b"\x7f")
             draft(b"ac")
@@ -527,13 +622,11 @@ def check_keyboard(cli):
             terminal.expect(b"keyboard-answer-one")
             terminal.expect(b"keyboard-answer-two")
             terminal.expect(b"askai | ready")
-            draft(b"habYc")
             editable("after the queued answer")
             assert prompts == ["hi\n", "queued second\n"], prompts
             os.write(master, b"\r")
             terminal.expect(b"keyboard-answer-three")
             terminal.expect(b"askai | ready")
-            draft(b"")
             editable("after third answer")
             assert prompts == ["hi\n", "queued second\n", "habYc\n"], prompts
             type_text(b"h")
@@ -589,12 +682,10 @@ def check_queued_input(cli):
                                     stderr=slave, env=environment)
             terminal = Terminal(proc, master)
             try:
-                terminal.expect(b"\x1b[?2004h")
+                terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
                 assert arrived[0].wait(5), "initial request did not arrive"
-                terminal.expect(b"> \x1b[K\x1b[24;")
                 os.write(master, b"\x14" if macro else b"queued before eof\r")
                 terminal.expect(b"1 queued")
-                terminal.expect(b"> \x1b[K\x1b[24;")
                 flags = termios.tcgetattr(slave)[3]
                 assert not flags & (termios.ICANON | termios.ECHO), (macro, flags)
                 if not macro:
@@ -608,7 +699,6 @@ def check_queued_input(cli):
                     terminal.expect(f"queue-answer-{index}".encode())
                 if macro:
                     terminal.expect(b"askai | ready")
-                    terminal.expect(b"> \x1b[K\x1b[24;")
                     os.write(master, b"\x04")
                 assert proc.wait(timeout=5) == 0, (macro, proc.returncode)
                 assert prompts == expected, (macro, prompts)
@@ -655,12 +745,9 @@ def check_chat_completion(cli):
             terminal.expect(b"> " + text + b"\x1b[K\x1b[24;" + str(3 + len(text)).encode() + b"H")
 
         try:
-            terminal.expect(b"\x1b[?2004h")
-            draft(b"")
+            terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
             os.write(master, b"/names\r")
             terminal.expect(b"Known session participants: rx6900xt rx9070xt")
-            terminal.expect(b"askai | ready")
-            draft(b"")
             for prefix, completed in ((b"@rx", b"@rx6900xt "),
                                       (b"rx", b"rx6900xt: "),
                                       (b"/tool notebook_service participant=rx9",
@@ -686,7 +773,7 @@ def check_chat_completion(cli):
 
 
 def check_fullscreen_colors(cli):
-    reasoning = "reasoning-color-visible".ljust(120, ".") + "wrapped-reasoning-visible"
+    reasoning = "reasoning-color-visible\n" + "." * 120 + "\nwrapped-reasoning-visible"
     answer = "answer-color-visible"
 
     def reply(request):
@@ -698,12 +785,13 @@ def check_fullscreen_colors(cli):
 
     def style(frame, marker, last=False):
         assert marker in frame, (marker, frame)
-        foreground, bold = None, False
+        foreground, background, bold = None, None, False
         position = frame.rindex(marker) if last else frame.index(marker)
         for match in re.finditer(rb"\x1b\[([0-9;]*)m", frame[:position]):
-            for code in (int(value or b"0") for value in match[1].split(b";")):
+            codes = iter(int(value or b"0") for value in match[1].split(b";"))
+            for code in codes:
                 if code == 0:
-                    foreground, bold = None, False
+                    foreground, background, bold = None, None, False
                 elif code == 1:
                     bold = True
                 elif code == 22:
@@ -712,7 +800,16 @@ def check_fullscreen_colors(cli):
                     foreground = code
                 elif code == 39:
                     foreground = None
-        return foreground, bold
+                elif code == 49:
+                    background = None
+                elif code in (38, 48):
+                    assert next(codes) == 5, ("unexpected color encoding", match[0])
+                    index = next(codes)
+                    if code == 38:
+                        foreground = index
+                    else:
+                        background = index
+        return foreground, background, bold
 
     for color, no_color in (("on", False), ("off", False), ("auto", True)):
         with Peer(reply) as peer:
@@ -729,20 +826,16 @@ def check_fullscreen_colors(cli):
                                     stderr=slave, env=environment)
             terminal = Terminal(proc, master)
 
-            def frame(marker):
-                output = terminal.expect(marker) + terminal.expect(b"\x1b[?25h")
-                return output.rsplit(b"\x1b[?25l\x1b[H", 1)[-1]
-
             def check(output, draft=False):
                 if color == "on":
-                    assert style(output, b"Connected to ask_ai.")[0] == 35, output
-                    assert style(output, b"reasoning-color-visible")[0] == 90, output
-                    assert style(output, b"wrapped-reasoning-visible")[0] == 90, output
-                    assert style(output, answer.encode())[0] is None, output
+                    assert style(output, b"Connected to ask_ai.")[:2] == (110, None), output
+                    assert style(output, b"reasoning-color-visible")[:2] == (146, None), output
+                    assert style(output, b"wrapped-reasoning-visible")[:2] == (146, None), output
+                    assert style(output, answer.encode())[:2] == (252, None), output
                     if draft:
-                        assert style(output, b"Error:") == (31, True), output
-                        assert style(output, b"draft-color-visible") == (32, True), output
-                        assert style(output, b"> ", last=True)[0] == 33, output
+                        assert style(output, b"Error:") == (203, None, False), output
+                        assert style(output, b"draft-color-visible")[:2] == (231, None), output
+                        assert style(output, b"> ", last=True)[:2] == (229, None), output
                 else:
                     codes = [int(value or b"0") for match in re.finditer(rb"\x1b\[([0-9;]*)m", output)
                              for value in match[1].split(b";")]
@@ -750,17 +843,16 @@ def check_fullscreen_colors(cli):
                                    for code in codes), (color, no_color, output)
 
             try:
-                initial = terminal.expect(answer.encode())
-                initial += terminal.expect(b"askai | ready") + terminal.expect(b"\x1b[?25h")
-                check(initial.rsplit(b"\x1b[?25l\x1b[H", 1)[-1])
+                output = terminal.update(answer.encode(), b"askai | ready")
+                check(output)
                 os.write(master, b"/tools absent\r")
-                terminal.expect(b"No accessible tool named absent")
-                frame(b"askai | ready")
+                output += terminal.update(b"No accessible tool named absent")
                 os.write(master, b"draft-color-visible")
-                check(frame(b"draft-color-visible"), draft=True)
-                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 60, 0, 0))
+                output += terminal.update(b"draft-color-visible")
+                check(output, draft=True)
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
                 proc.send_signal(signal.SIGWINCH)
-                check(frame(b"\x1b[?25l\x1b[H"), draft=True)
+                check(terminal.update(b"draft-color-visible"), draft=True)
                 os.write(master, b"\x01\x0b/quit\r")
                 assert proc.wait(timeout=3) == 0, (color, no_color, proc.returncode)
                 assert termios.tcgetattr(slave) == before, "color exit did not restore terminal settings"
@@ -772,74 +864,204 @@ def check_fullscreen_colors(cli):
 
 
 def check_terminal_cells(cli):
-    tmux = shutil.which("tmux")
-    if not tmux:
+    if not shutil.which("tmux"):
         print("cli events: terminal-cell wrapping: SKIP (tmux unavailable)", flush=True)
         return
-    lines = ["A" * 79 + "Z", "B" * 79 + "YX", "界" * 40, "\t" + "C" * 71 + "Q"]
+    # At 80 columns the conversation pane has 46 interior cells. Each
+    # boundary case ends at or immediately after its right border.
+    lines = ["A" * 45 + "Z", "B" * 45 + "YX", "界" * 23, "\t" + "C" * 37 + "Q"]
     answer = "\n".join(lines + ["cells-done"])
     with Peer(lambda request: response(answer)) as peer, \
-            tempfile.TemporaryDirectory(prefix="askai-cli-cells-") as directory:
-        socket = directory + "/tmux.sock"
-        pane = "cells:0.0"
-        environment = os.environ.copy()
-        environment.pop("TMUX", None)
-        environment.pop("TMUX_PANE", None)
-
-        def run(*arguments, check=True):
-            return subprocess.run([tmux, "-u", "-S", socket, "-f", os.devnull, *arguments],
-                                  env=environment, capture_output=True, text=True, timeout=3, check=check)
-
-        def screen(marker):
-            deadline = time.monotonic() + 5
-            while True:
-                output = run("capture-pane", "-p", "-t", pane).stdout
-                if marker in output and "askai | ready" in output:
-                    return output
-                assert time.monotonic() < deadline, ("terminal did not redraw", marker, output)
-                time.sleep(0.02)
-
-        try:
-            # Use a private server and configure the pane before starting the
-            # CLI; never attach to or change the user's tmux server.
-            run("new-session", "-d", "-s", "cells", "-x", "80", "-y", "24", "sleep 30")
-            run("set-option", "-g", "status", "off")
-            run("set-option", "-w", "-t", "cells:0", "remain-on-exit", "on")
-            run("set-option", "-w", "-t", "cells:0", "window-size", "manual")
-            command_line = shlex.join(["env", "TERM=screen.xterm-256color", "LC_ALL=C.UTF-8",
-                                       "INPUTRC=" + os.devnull, cli, "--socket", peer.socket,
-                                       "--no-history", "--color", "off", "--prompt", "wrap cells"])
-            run("respawn-pane", "-k", "-t", pane, command_line)
-            for columns in (80, 40):
-                if columns == 40:
-                    run("resize-window", "-t", "cells:0", "-x", str(columns), "-y", "24")
-                    run("send-keys", "-t", pane, "-l", "resize-marker")
-                output = screen("resize-marker" if columns == 40 else "cells-done")
-                expected = []
-                for text in lines:
-                    if text.startswith("界"):
-                        expected.extend(text[i:i + columns // 2] for i in range(0, len(text), columns // 2))
-                    else:
-                        text = text.expandtabs(8)
-                        expected.extend(text[i:i + columns] for i in range(0, len(text), columns))
-                expected.append("cells-done")
-                assert "\n".join(expected) in output, (columns, "rightmost transcript cells were lost", output)
-                status = " askai | ready | 0 unread | PgUp/PgDn scroll, Ctrl-End follow"
-                assert status[:columns] in output.splitlines(), (columns, "rightmost status cell was lost", output)
-            run("send-keys", "-t", pane, "C-a", "C-k")
-            run("send-keys", "-t", pane, "-l", "/quit")
-            run("send-keys", "-t", pane, "Enter")
-            deadline = time.monotonic() + 3
-            while True:
-                status = run("display-message", "-p", "-t", pane, "#{pane_dead}:#{pane_dead_status}").stdout.strip()
-                if status.startswith("1:"):
-                    assert status == "1:0", status
-                    break
-                assert time.monotonic() < deadline, ("CLI did not quit", status)
-                time.sleep(0.02)
-        finally:
-            run("kill-server", check=False)
+            Tmux(cli, peer.socket, "--prompt", "wrap cells", columns=80) as terminal:
+        for columns, interior in ((80, 46), (40, 22)):
+            if columns == 40:
+                terminal.resize(columns)
+                terminal.text("resize-marker")
+            marker = "resize-marker" if columns == 40 else "cells-done"
+            output = terminal.screen(lambda rows: marker in "\n".join(rows) and "askai | ready" in rows[-2],
+                                     "wrapped output did not redraw")
+            expected = []
+            for text in lines:
+                if text.startswith("界"):
+                    expected.extend(text[i:i + interior // 2] for i in range(0, len(text), interior // 2))
+                else:
+                    text = text.expandtabs(8)
+                    expected.extend(text[i:i + interior] for i in range(0, len(text), interior))
+            expected.append("cells-done")
+            actual = [row.split("│")[1].rstrip() for row in output[1:-3]]
+            assert "\n".join(expected) in "\n".join(actual), (columns, "rightmost pane cells were lost", output)
+            assert all(row.endswith("│") for row in output[1:-3]), ("right border was erased", output)
+            for text in ("x" * (columns - 4), "界" * ((columns - 4) // 2)):
+                terminal.keys("C-a", "C-k")
+                terminal.text(text)
+                terminal.screen(lambda rows: rows[-1] == "> " + text,
+                                "draft scrolled before reaching the right edge")
+                cursor = terminal.run("display-message", "-p", "-t", terminal.pane,
+                                      "#{cursor_x},#{cursor_y}").stdout.strip()
+                assert cursor == f"{columns - 2},23", (text, cursor)
+            terminal.keys("C-a", "C-k")
+            terminal.text("x" * columns + "suffix")
+            terminal.screen(lambda rows: rows[-1].endswith("suffix"), "long draft did not scroll into view")
+            terminal.keys("Left", "Left")
+            terminal.screen(lambda rows: terminal.run("display-message", "-p", "-t", terminal.pane,
+                                                      "#{cursor_x}").stdout.strip() == str(columns - 3),
+                            "cursor did not move left within the scrolled draft")
+            before = terminal.run("display-message", "-p", "-t", terminal.pane, "#{cursor_x}").stdout.strip()
+            terminal.text("q")
+            terminal.screen(lambda rows: "q" in rows[-1], "editing a scrolled draft did not update input")
+            after = terminal.run("display-message", "-p", "-t", terminal.pane, "#{cursor_x}").stdout.strip()
+            assert int(after) == int(before) + 1, ("editing jumped the viewport", before, after)
+            terminal.keys("C-a", "C-k")
+        terminal.quit()
     print("cli events: real terminal cells preserve full-width ASCII, wide text and tabs through resize: PASS", flush=True)
+
+
+def check_panels(cli):
+    if not shutil.which("tmux"):
+        print("cli events: panel cells and navigation: SKIP (tmux unavailable)", flush=True)
+        return
+    initializing = threading.Event()
+    release = threading.Event()
+    prompts = []
+    ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {"type": "object", "properties": {
+        "prompt": {"type": "string"}, "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
+    tools = [ask, {"name": "git", "inputSchema": {"type": "object", "properties": {
+        "command": {"type": "string", "enum": ["log", "status"]}}}},
+        {"name": "help", "inputSchema": {"type": "object", "properties": {}}},
+        {"name": "lookup", "inputSchema": {"type": "object", "properties": {}}}]
+
+    def methods(request):
+        if request["method"] == "initialize":
+            initializing.set()
+            release.wait(10)
+        elif request["method"] == "tools/list":
+            return 200, "application/json", {"result": {"tools": tools}}
+        return None
+
+    def reply(request):
+        prompts.append(request["params"]["arguments"]["prompt"])
+        reasoning = "\n".join(f"reason-{index:02}" for index in range(50)) if len(prompts) == 1 else "reason-new"
+        answer = "\n".join(f"answer-{index:02}" for index in range(50)) if len(prompts) == 1 else "answer-new"
+        events = [(None, {"jsonrpc": "2.0", "method": "notifications/askai/delta", "params": {
+            "requestId": request["id"], "kind": "reasoning", "text": reasoning}}),
+            (None, {"jsonrpc": "2.0", "id": request["id"], "result": {
+                "content": [{"type": "text", "text": answer}]}})]
+        return 200, "text/event-stream", sse_wire(events)
+
+    def pane(rows, index):
+        return [row.split("│")[index + 1].rstrip() for row in rows[1:-3]]
+
+    with Peer(reply, methods) as peer:
+        try:
+            with Tmux(cli, peer.socket, "--prompt", "initial panels") as terminal:
+                assert initializing.wait(5), "initialization did not reach the peer"
+                early = terminal.screen(lambda rows: len(rows) == 24 and rows[-1] == ">",
+                                        "input row was not drawn while initialization waited")
+                cursor = terminal.run("display-message", "-p", "-t", terminal.pane,
+                                      "#{cursor_x},#{cursor_y}").stdout.strip()
+                assert cursor == "2,23", ("startup cursor was not after the bottom prompt", cursor, early)
+                release.set()
+                output = terminal.screen(lambda rows: "answer-49" in "\n".join(pane(rows, 0)) and
+                                         "reason-49" in "\n".join(pane(rows, 1)) and "ready" in rows[-2],
+                                         "answer and reasoning did not reach separate panes")
+                assert "Conversation" in output[0] and "Reasoning" in output[0], output
+                assert "Alt-Left/Right" in output[-2] and "Alt-Up/Down" in output[-2], output
+                assert not any("reason-" in row for row in pane(output, 0)), output
+                assert not any("answer-" in row for row in pane(output, 1)), output
+                assert all(len(row) == 100 and row[0] == row[59] == row[-1] == "│"
+                           for row in output[1:-3]), ("pane borders are misplaced", output)
+
+                left = pane(output, 0)
+                right = pane(output, 1)
+                terminal.keys("F6")
+                for up, down in ((["C-PPage"], ["C-NPage"]), (["M-Up"], ["M-Down"]),
+                                 (["-H", "1b", "1b", "5b", "41"], ["-H", "1b", "1b", "5b", "42"]),
+                                 (["-H", "1b", "1b", "4f", "41"], ["-H", "1b", "1b", "4f", "42"])):
+                    terminal.keys(*up)
+                    scrolled = terminal.screen(lambda rows: pane(rows, 1) != right,
+                                               "reasoning pane did not scroll: " + " ".join(up))
+                    assert pane(scrolled, 0) == left, "scrolling reasoning moved the conversation"
+                    terminal.keys(*down)
+                    restored = terminal.screen(lambda rows: pane(rows, 1) == right,
+                                               "reasoning viewport was not restored: " + " ".join(down))
+                    assert pane(restored, 0) == left, "scrolling reasoning down moved the conversation"
+                terminal.keys("C-PPage")
+                scrolled = terminal.screen(lambda rows: pane(rows, 1) != right,
+                                           "reasoning pane did not scroll back up")
+                right = pane(scrolled, 1)
+                terminal.text("next panel turn")
+                terminal.keys("Enter")
+                updated = terminal.screen(lambda rows: "answer-new" in "\n".join(pane(rows, 0)) and
+                                          "ready" in rows[-2], "conversation did not follow its new answer")
+                assert pane(updated, 1) == right, "new reasoning moved a scrolled viewport"
+                terminal.keys("C-End")
+                followed = terminal.screen(lambda rows: "reason-new" in "\n".join(pane(rows, 1)),
+                                           "Ctrl-End did not resume following reasoning")
+                right = pane(followed, 1)
+                left = pane(followed, 0)
+                terminal.text("retained draft")
+                terminal.keys("M-Left", "M-Left", "C-PPage")
+                scrolled = terminal.screen(lambda rows: pane(rows, 0) != left and
+                                           "* Conversation" in rows[0] and
+                                           rows[-1].startswith("> retained draft"),
+                                           "conversation pane did not scroll independently")
+                assert pane(scrolled, 1) == right, "scrolling the conversation moved reasoning"
+                for columns in (60, 40):
+                    terminal.resize(columns)
+                    narrow = terminal.screen(lambda rows: len(rows[1]) == columns and
+                                             "Conversation" in rows[0] and "Reasoning" in rows[0],
+                                             "narrow terminal did not keep both panes visible")
+                    divider = (columns - 3) * 3 // 5 + 1
+                    assert all(len(row) == columns and row[divider] == "│" for row in narrow[1:-3]), narrow
+                    for key, title in (("M-Right", "Reasoning"), ("M-Left", "Conversation")):
+                        terminal.keys(key, key)
+                        selected = terminal.screen(lambda rows: "* " + title in rows[0],
+                                                   key + " did not select its pane")
+                        assert selected[1:-3] == narrow[1:-3], "pane selection moved the viewports"
+                        assert selected[-1].startswith("> retained draft"), selected
+                for prefix in ("5b", "4f"):
+                    for arrow, title in (("43", "Reasoning"), ("44", "Conversation")):
+                        terminal.keys("-H", "1b", "1b", prefix, arrow)
+                        selected = terminal.screen(lambda rows: "* " + title in rows[0],
+                                                   "escape-prefixed arrow did not select " + title)
+                        assert selected[1:-3] == narrow[1:-3] and selected[-1].startswith("> retained draft"), selected
+                terminal.keys("M-Right")
+
+                terminal.keys("C-a", "C-k")
+                terminal.text("/tool ")
+                terminal.keys("Tab", "Tab")
+                listing = terminal.screen(lambda rows: "Conversation" in rows[0] and
+                                          "git help lookup" in "\n".join(pane(rows, 0)),
+                                          "completion choices were not visible beside narrow reasoning")
+                assert "/tool git" not in "\n".join(pane(listing, 0)), listing
+                terminal.resize(100)
+                terminal.keys("C-a", "C-k")
+                terminal.text("/tool git command=")
+                terminal.keys("Tab", "Tab")
+                listing = terminal.screen(lambda rows: "log status" in "\n".join(pane(rows, 0)),
+                                          "value completion did not display short labels")
+                assert "command=log" not in "\n".join(pane(listing, 0)), listing
+                terminal.keys("C-a", "C-k")
+                terminal.text("tiny draft preserved")
+                terminal.resize(7, 5)
+                terminal.screen(lambda rows: rows[-1].startswith("< ") and not any(row.strip() for row in rows[:-1]),
+                                "tiny terminal did not switch to its bottom input row")
+                position = terminal.run("display-message", "-p", "-t", terminal.pane,
+                                        "#{cursor_x},#{cursor_y},#{pane_width},#{pane_height}").stdout.strip()
+                x, y, width, height = map(int, position.split(","))
+                assert (width, height) == (7, 5) and 0 <= x < width and y == height - 1, position
+                terminal.resize(100)
+                restored = terminal.screen(lambda rows: "Conversation" in rows[0] and "Reasoning" in rows[0] and
+                                           rows[-1].startswith("> tiny draft preserved"),
+                                           "normal panes or the draft were lost after a tiny resize")
+                assert "reason-new" in "\n".join(pane(restored, 1)), restored
+                terminal.keys("C-l")
+                terminal.screen(lambda rows: rows == restored, "Ctrl-L failed to restore the cached display")
+                assert prompts == ["initial panels", "next panel turn\n"], prompts
+                terminal.quit()
+        finally:
+            release.set()
+    print("cli events: early bottom input, separate panes, independent scrolling, Alt-arrow selection and completion labels: PASS", flush=True)
 
 
 def check_busy_commands(cli):
@@ -873,7 +1095,7 @@ def check_busy_commands(cli):
 
     with Peer(reply, methods) as peer:
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 160, 0, 0))
         before = termios.tcgetattr(slave)
         environment = os.environ | {"TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8",
                                     "INPUTRC": os.devnull}
@@ -884,17 +1106,14 @@ def check_busy_commands(cli):
         try:
             terminal.expect(b"history-answer-visible")
             terminal.expect(b"askai | ready")
-            terminal.expect(b"> \x1b[K\x1b[24;")
             os.write(master, b"held-generation\r")
             assert arrived.wait(5), "generation did not start"
             terminal.expect(b"askai | working")
-            terminal.expect(b"> \x1b[K\x1b[24;")
             requests = len(peer.requests)
             for queued in (False, True):
                 if queued:
                     os.write(master, b"queued-prompt-preserved\r")
                     terminal.expect(b"1 queued")
-                    terminal.expect(b"> \x1b[K\x1b[24;")
                 for name, marker in ((b"/help", b"/regen"),
                                      (b"/history", b"history-answer-visible"),
                                      (b"/names", b"cached-person"),
@@ -903,9 +1122,7 @@ def check_busy_commands(cli):
                     # command's older output while the screen is redrawn.
                     entered = b" " * queued + name
                     os.write(master, entered + b"\r")
-                    terminal.expect(b"> " + entered + b"\x1b[K\r", timeout=2)
-                    terminal.expect(marker, timeout=2)
-                    terminal.expect(b"> \x1b[K\x1b[24;", timeout=2)
+                    terminal.update(b"> " + entered, marker, timeout=2)
                     assert proc.poll() is None, (name, proc.returncode)
                     flags = termios.tcgetattr(slave)[3]
                     assert not flags & (termios.ICANON | termios.ECHO), (name, flags)
@@ -915,7 +1132,6 @@ def check_busy_commands(cli):
             terminal.expect(b"held-answer-finished")
             terminal.expect(b"queued-answer-finished")
             terminal.expect(b"askai | ready")
-            terminal.expect(b"> \x1b[K\x1b[24;")
             assert prompts == ["history-seed", "held-generation\n", "queued-prompt-preserved\n"], prompts
             os.write(master, b"/quit\r")
             assert proc.wait(timeout=3) == 0, proc.returncode
@@ -954,12 +1170,10 @@ def check_busy_quit(cli):
                                     stderr=slave, env=environment)
             terminal = Terminal(proc, master)
             try:
-                terminal.expect(b"\x1b[?2004h")
+                terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
                 assert arrived.wait(5), "generation did not start"
-                terminal.expect(b"> \x1b[K\x1b[24;")
                 os.write(master, b"queued-prompt\r")
                 terminal.expect(b"1 queued")
-                terminal.expect(b"> \x1b[K\x1b[24;")
                 started = time.monotonic()
                 os.write(master, name + b"\r")
                 assert proc.wait(timeout=3) == 0, (name, proc.returncode)
@@ -1013,22 +1227,18 @@ def check_interrupt_commands(cli):
                                         (b"second-seed-answer", b"held-turn\r")):
                     terminal.expect(marker)
                     terminal.expect(b"askai | ready")
-                    terminal.expect(b"> \x1b[K\x1b[24;")
                     os.write(master, entered)
                 assert arrived.wait(5), "generation did not start"
                 terminal.expect(b"askai | working")
-                terminal.expect(b"> \x1b[K\x1b[24;")
                 if name == b"/clear":
                     os.write(master, b"after-clear\r")
                     terminal.expect(b"1 queued")
-                    terminal.expect(b"> \x1b[K\x1b[24;")
                 os.write(master, name + b"\r")
                 assert cancelled.wait(2), (name, "active generation was not cancelled")
                 if name == b"/clear":
                     terminal.expect(b"Conversation cleared.", timeout=2)
                 terminal.expect(b"replacement-answer", timeout=2)
                 terminal.expect(b"askai | ready")
-                terminal.expect(b"> \x1b[K\x1b[24;")
                 assert not release.is_set(), "held response was released before interruption completed"
                 assert len(calls) == 4, (name, calls)
                 arguments = calls[3]["params"]["arguments"]
@@ -1043,7 +1253,6 @@ def check_interrupt_commands(cli):
                     os.write(master, b"history-probe\r")
                     terminal.expect(b"probe-answer")
                     terminal.expect(b"askai | ready")
-                    terminal.expect(b"> \x1b[K\x1b[24;")
                     assert len(calls) == 5, calls
                     probe = calls[4]["params"]["arguments"]
                     assert probe["prompt"] == "history-probe\n", probe
@@ -1164,14 +1373,15 @@ def check_blocked_worker(cli):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue mentions colors cells commands quit interrupt files slow worker ...]")
+        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue mentions colors cells panels commands quit interrupt files slow worker ...]")
     cli = os.path.realpath(sys.argv[1])
     checks = {"sticky": check_sticky_termination, "lock": check_history_lock,
               "saved-lock": check_saved_command_lock,
               "fds": check_descriptor_limit, "exhaust": check_descriptor_exhaustion,
               "tui": check_tui_drafts, "partial": check_partial_paste, "keys": check_keyboard,
               "queue": check_queued_input, "mentions": check_chat_completion, "colors": check_fullscreen_colors,
-              "cells": check_terminal_cells, "commands": check_busy_commands, "quit": check_busy_quit,
+              "cells": check_terminal_cells, "panels": check_panels,
+              "commands": check_busy_commands, "quit": check_busy_quit,
               "interrupt": check_interrupt_commands, "files": check_regular_files,
               "slow": check_slow_output, "worker": check_blocked_worker}
     selected = sys.argv[2:] or checks

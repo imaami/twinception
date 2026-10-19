@@ -65,12 +65,27 @@ cli_ui_test_colors (void)
 	slave = -1;
 	assert(!close(master));
 	master = -1;
-	assert(!strcmp(dstr_get(&output),
-	               "\033[0;90m[Start thinking]\n\nfirst thought\n"
-	               "\033[0mlocal command output\n"
-	               "\033[0;90mcontinued thought\n"
-	               "\033[0;35mlocal status\n\033[0m"
-	               "\033[0;90m[End thinking]\n\033[0m"));
+	struct {
+		struct cstr_view text;
+		enum cli_style  style;
+	} const expected[] = {
+		{CSTR_VIEW("[Start thinking]\n\nfirst thought\n"), CLI_STYLE_REASONING},
+		{CSTR_VIEW("local command output\n"), CLI_STYLE_RESET},
+		{CSTR_VIEW("continued thought\n"), CLI_STYLE_REASONING},
+		{CSTR_VIEW("local status\n"), CLI_STYLE_INFO},
+		{CSTR_VIEW(""), CLI_STYLE_RESET},
+		{CSTR_VIEW("[End thinking]\n"), CLI_STYLE_REASONING},
+		{CSTR_VIEW(""), CLI_STYLE_RESET},
+	};
+	struct cstr_view remaining = cstr_view_dstr(&output);
+	for (size_t i = 0; i < sizeof expected / sizeof *expected; ++i) {
+		struct cstr_view style = cli_style_sequence(expected[i].style);
+		assert(cstr_view_starts(remaining, style));
+		remaining = cstr_view_slice(remaining, style.len, SIZE_MAX);
+		assert(cstr_view_starts(remaining, expected[i].text));
+		remaining = cstr_view_slice(remaining, expected[i].text.len, SIZE_MAX);
+	}
+	assert(!remaining.len);
 }
 
 int main(void)

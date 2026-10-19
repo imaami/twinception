@@ -385,7 +385,7 @@ def check_peer_autocomplete_error(cli, unused_server):
             # malformed pasted UTF-8 makes autocomplete_complete return EINVAL.
             # Tab must leave editing alive so the user can repair the input.
             os.write(master, b"\x1b[200~\xff\x1b[201~\t\x15/he\t\r")
-            read_until(proc, b"PgUp/PgDn scroll;", 5, master)
+            read_until(proc, b"PgUp/PgDn search history;", 5, master)
             os.write(master, b"/ex\t\r")
             assert proc.wait(timeout=5) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "terminal settings were not restored"
@@ -778,7 +778,7 @@ def check_peer_input_history(cli, unused_server):
             read_until(proc, b"\n> ", 5, master)
             os.write(master, b"\x1b[A\r")
             output = read_until(proc, b"\n> ", 5, master)
-            assert b"PgUp/PgDn scroll;" in output, output
+            assert b"PgUp/PgDn search history;" in output, output
             assert len(calls) == 1, calls
             os.write(master, b"remembered\x1b[5~\r")
             output = read_until(proc, b"\n> ", 5, master)

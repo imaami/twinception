@@ -143,8 +143,7 @@ class Console:
 
 
 def check_history(binary):
-    bindings = '"\\e[5~": history-search-backward\n"\\e[6~": history-search-forward\n'
-    with Console(binary, inputrc=bindings) as console:
+    with Console(binary) as console:
         for text in ("alpha first", "beta middle", "alpha second"):
             console.line(text + "\r", text + "\n")
         # The match is the prefix before point, not the unedited suffix. Point
