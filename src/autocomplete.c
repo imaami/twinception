@@ -858,7 +858,7 @@ autocomplete_clear_note_files (struct autocomplete *ac)
 }
 
 int
-autocomplete_set_note_files (struct autocomplete    *autocomplete,
+autocomplete_set_note_files (struct autocomplete    *ac,
                              struct cstr_view        tool,
                              struct cstr_view        notebook,
                              struct cstr_view const *paths,
@@ -870,7 +870,7 @@ autocomplete_set_note_files (struct autocomplete    *autocomplete,
 	    count > AUTOCOMPLETE_BYTES / sizeof(struct dstr))
 		return E2BIG;
 	if (!autocomplete_safe(tool, true) || !autocomplete_safe(notebook, true) ||
-	    (count && !paths) || !autocomplete_find_tool(autocomplete, tool))
+	    (count && !paths) || !autocomplete_find_tool(ac, tool))
 		return EINVAL;
 	size_t storage = tool.len + notebook.len;
 	if (count * sizeof(struct dstr) > AUTOCOMPLETE_BYTES - storage)
@@ -882,27 +882,27 @@ autocomplete_set_note_files (struct autocomplete    *autocomplete,
 		storage += paths[i].len;
 	}
 	size_t index = 0;
-	for (; index < autocomplete->notes_count; ++index) {
-		struct autocomplete_notebook const *notes = &autocomplete->notes[index];
+	for (; index < ac->notes_count; ++index) {
+		struct autocomplete_notebook const *notes = &ac->notes[index];
 		if (cstr_view_equal(cstr_view_dstr(&notes->tool), tool) &&
 		    cstr_view_equal(cstr_view_dstr(&notes->selector), notebook))
 			break;
 	}
-	bool replace = index < autocomplete->notes_count;
-	size_t remaining = autocomplete->notes_storage - (replace ? autocomplete->notes[index].storage : 0);
+	bool replace = index < ac->notes_count;
+	size_t remaining = ac->notes_storage - (replace ? ac->notes[index].storage : 0);
 	if ((!replace && index >= 4096) || storage > AUTOCOMPLETE_BYTES - remaining)
 		return E2BIG;
 	if (!replace) {
-		size_t previous = autocomplete->notes_capacity;
-		struct autocomplete_notebook *notes = autocomplete_grow(autocomplete->notes, &autocomplete->notes_capacity,
+		size_t previous = ac->notes_capacity;
+		struct autocomplete_notebook *notes = autocomplete_grow(ac->notes, &ac->notes_capacity,
 		                                                         index + 1, sizeof *notes);
 		if (!notes)
 			return ENOMEM;
-		autocomplete->notes = notes;
-		for (size_t i = previous; i < autocomplete->notes_capacity; ++i)
+		ac->notes = notes;
+		for (size_t i = previous; i < ac->notes_capacity; ++i)
 			notes[i] = (struct autocomplete_notebook){.tool = dstr(nullptr), .selector = dstr(nullptr)};
 	}
-	struct autocomplete_notebook *notes = &autocomplete->notes[index];
+	struct autocomplete_notebook *notes = &ac->notes[index];
 	int error = autocomplete_set(&notes->tool, tool);
 	if (!error)
 		error = autocomplete_set(&notes->selector, notebook);
@@ -913,23 +913,23 @@ autocomplete_set_note_files (struct autocomplete    *autocomplete,
 		return error;
 	}
 	notes->storage = storage;
-	autocomplete->notes_storage = remaining + storage;
+	ac->notes_storage = remaining + storage;
 	if (!replace)
-		++autocomplete->notes_count;
+		++ac->notes_count;
 	return 0;
 }
 
 size_t
-autocomplete_participant_count (struct autocomplete const *autocomplete)
+autocomplete_participant_count (struct autocomplete const *ac)
 {
-	return autocomplete->participants.count;
+	return ac->participants.count;
 }
 
 struct cstr_view
-autocomplete_participant_at (struct autocomplete const *autocomplete,
+autocomplete_participant_at (struct autocomplete const *ac,
                              size_t                     index)
 {
-	return index < autocomplete->participants.count ? cstr_view_dstr(&autocomplete->participants.values[index]) : CSTR_VIEW("");
+	return index < ac->participants.count ? cstr_view_dstr(&ac->participants.values[index]) : CSTR_VIEW("");
 }
 
 static int
@@ -994,7 +994,7 @@ autocomplete_value_match (struct autocomplete      *ac,
 }
 
 static int
-autocomplete_note_paths (struct autocomplete              *autocomplete,
+autocomplete_note_paths (struct autocomplete              *ac,
                          struct cstr_view                  line,
                          struct cstr_view                  tool,
                          struct autocomplete_names const **paths)
@@ -1002,8 +1002,8 @@ autocomplete_note_paths (struct autocomplete              *autocomplete,
 	*paths = nullptr;
 	struct autocomplete_token action = {.equals = SIZE_MAX};
 	struct autocomplete_token notebook = {.equals = SIZE_MAX};
-	for (size_t i = 2; i < autocomplete->token_count; ++i) {
-		struct autocomplete_token token = autocomplete->tokens[i];
+	for (size_t i = 2; i < ac->token_count; ++i) {
+		struct autocomplete_token token = ac->tokens[i];
 		if (token.equals == SIZE_MAX)
 			continue;
 		struct cstr_view key = cstr_view_slice(line, token.begin, token.equals - token.begin);
@@ -1017,10 +1017,10 @@ autocomplete_note_paths (struct autocomplete              *autocomplete,
 	}
 	bool copy = false;
 	if (action.equals != SIZE_MAX) {
-		int error = autocomplete_unquote(&autocomplete->key, cstr_view_slice(line, action.equals + 1, action.end - action.equals - 1));
+		int error = autocomplete_unquote(&ac->key, cstr_view_slice(line, action.equals + 1, action.end - action.equals - 1));
 		if (error)
 			return error;
-		struct cstr_view value = cstr_view_dstr(&autocomplete->key);
+		struct cstr_view value = cstr_view_dstr(&ac->key);
 		copy = cstr_view_equal(value, CSTR_VIEW("copy"));
 		if (!copy && !cstr_view_equal(value, CSTR_VIEW("read")) &&
 		    !cstr_view_equal(value, CSTR_VIEW("attach")))
@@ -1028,13 +1028,13 @@ autocomplete_note_paths (struct autocomplete              *autocomplete,
 	}
 	struct cstr_view selector = copy ? CSTR_VIEW("other") : CSTR_VIEW("own");
 	if (notebook.equals != SIZE_MAX) {
-		int error = autocomplete_unquote(&autocomplete->key, cstr_view_slice(line, notebook.equals + 1, notebook.end - notebook.equals - 1));
+		int error = autocomplete_unquote(&ac->key, cstr_view_slice(line, notebook.equals + 1, notebook.end - notebook.equals - 1));
 		if (error)
 			return error;
-		selector = cstr_view_dstr(&autocomplete->key);
+		selector = cstr_view_dstr(&ac->key);
 	}
-	for (size_t i = 0; i < autocomplete->notes_count; ++i) {
-		struct autocomplete_notebook const *notes = &autocomplete->notes[i];
+	for (size_t i = 0; i < ac->notes_count; ++i) {
+		struct autocomplete_notebook const *notes = &ac->notes[i];
 		if (cstr_view_equal(cstr_view_dstr(&notes->tool), tool) &&
 		    cstr_view_equal(cstr_view_dstr(&notes->selector), selector)) {
 			*paths = &notes->paths;
@@ -1045,7 +1045,7 @@ autocomplete_note_paths (struct autocomplete              *autocomplete,
 }
 
 static int
-autocomplete_values (struct autocomplete                *autocomplete,
+autocomplete_values (struct autocomplete                *ac,
                      struct cstr_view                    line,
                      struct autocomplete_token           current,
                      size_t                              cursor,
@@ -1056,30 +1056,30 @@ autocomplete_values (struct autocomplete                *autocomplete,
 		return 0;
 	uint64_t flags = property->flags;
 	struct cstr_view input = cstr_view_slice(line, current.equals + 1, cursor - current.equals - 1);
-	int error = autocomplete_unquote(&autocomplete->decoded, input);
+	int error = autocomplete_unquote(&ac->decoded, input);
 	if (error)
 		return error;
-	struct cstr_view prefix = cstr_view_dstr(&autocomplete->decoded);
+	struct cstr_view prefix = cstr_view_dstr(&ac->decoded);
 	char mark = input.len && (input.data[0] == '\'' || input.data[0] == '"') ? input.data[0] : 0;
 	for (size_t i = 0; i < property->count; ++i) {
 		struct autocomplete_candidate const *candidate = &property->values[i];
 		if (!(candidate->flags & AUTOCOMPLETE_VALID))
 			continue;
-		error = autocomplete_value_match(autocomplete, line, current, prefix, cstr_view_dstr(&candidate->value),
+		error = autocomplete_value_match(ac, line, current, prefix, cstr_view_dstr(&candidate->value),
 		                                 candidate->flags, mark, AUTOCOMPLETE_VALUE);
 		if (error)
 			return error;
 	}
 	if (!(flags & (AUTOCOMPLETE_CONSTANT | AUTOCOMPLETE_ENUMERATED))) {
 		if (flags & AUTOCOMPLETE_TYPE_BOOLEAN) {
-			error = autocomplete_value_match(autocomplete, line, current, prefix, CSTR_VIEW("false"), 0, mark, AUTOCOMPLETE_VALUE);
+			error = autocomplete_value_match(ac, line, current, prefix, CSTR_VIEW("false"), 0, mark, AUTOCOMPLETE_VALUE);
 			if (!error)
-				error = autocomplete_value_match(autocomplete, line, current, prefix, CSTR_VIEW("true"), 0, mark, AUTOCOMPLETE_VALUE);
+				error = autocomplete_value_match(ac, line, current, prefix, CSTR_VIEW("true"), 0, mark, AUTOCOMPLETE_VALUE);
 			if (error)
 				return error;
 		}
 		if (flags & AUTOCOMPLETE_TYPE_NULL) {
-			error = autocomplete_value_match(autocomplete, line, current, prefix, CSTR_VIEW("null"), 0, mark, AUTOCOMPLETE_VALUE);
+			error = autocomplete_value_match(ac, line, current, prefix, CSTR_VIEW("null"), 0, mark, AUTOCOMPLETE_VALUE);
 			if (error)
 				return error;
 		}
@@ -1091,18 +1091,18 @@ autocomplete_values (struct autocomplete                *autocomplete,
 	if (cstr_view_equal(property->name, CSTR_VIEW("participant")) ||
 	    cstr_view_equal(property->name, CSTR_VIEW("recipient")) ||
 	    cstr_view_equal(property->name, CSTR_VIEW("author")))
-		names = &autocomplete->participants;
+		names = &ac->participants;
 	else if (cstr_view_equal(property->name, CSTR_VIEW("notebook")))
-		names = &autocomplete->notebooks;
+		names = &ac->notebooks;
 	else if (cstr_view_equal(property->name, CSTR_VIEW("file"))) {
 		kind = AUTOCOMPLETE_FILE;
-		error = autocomplete_note_paths(autocomplete, line, entry->tool.name, &names);
+		error = autocomplete_note_paths(ac, line, entry->tool.name, &names);
 		if (error)
 			return error;
 	}
 	flags = AUTOCOMPLETE_STRING | (flags & AUTOCOMPLETE_STRING ? 0 : AUTOCOMPLETE_QUOTED);
 	for (size_t i = 0; names && i < names->count; ++i) {
-		error = autocomplete_value_match(autocomplete, line, current, prefix, cstr_view_dstr(&names->values[i]), flags, mark, kind);
+		error = autocomplete_value_match(ac, line, current, prefix, cstr_view_dstr(&names->values[i]), flags, mark, kind);
 		if (error)
 			return error;
 	}
@@ -1110,13 +1110,13 @@ autocomplete_values (struct autocomplete                *autocomplete,
 }
 
 static bool
-autocomplete_used (struct autocomplete const *autocomplete,
+autocomplete_used (struct autocomplete const *ac,
                    struct cstr_view           line,
                    struct cstr_view           name,
                    size_t                     except)
 {
-	for (size_t i = 2; i < autocomplete->token_count; ++i) {
-		struct autocomplete_token token = autocomplete->tokens[i];
+	for (size_t i = 2; i < ac->token_count; ++i) {
+		struct autocomplete_token token = ac->tokens[i];
 		if (i != except && token.equals != SIZE_MAX &&
 		    cstr_view_equal(name, cstr_view_slice(line, token.begin, token.equals - token.begin)))
 			return true;
@@ -1125,7 +1125,7 @@ autocomplete_used (struct autocomplete const *autocomplete,
 }
 
 static int
-autocomplete_commands (struct autocomplete      *autocomplete,
+autocomplete_commands (struct autocomplete      *ac,
                        struct cstr_view          line,
                        struct autocomplete_token current,
                        size_t                    cursor,
@@ -1136,53 +1136,53 @@ autocomplete_commands (struct autocomplete      *autocomplete,
 		struct cli_command_matches commands = cli_command_prefix(prefix);
 		for (size_t i = 0; i < commands.count; ++i) {
 			struct cli_command const *command = &commands.data[i];
-			int error = autocomplete_replacement(autocomplete, line, current.begin, current.end, command->name, true, AUTOCOMPLETE_COMMAND);
+			int error = autocomplete_replacement(ac, line, current.begin, current.end, command->name, true, AUTOCOMPLETE_COMMAND);
 			if (error)
 				return error;
 		}
 		return 0;
 	}
-	if (!autocomplete->token_count)
+	if (!ac->token_count)
 		return 0;
-	struct autocomplete_token command_token = autocomplete->tokens[0];
+	struct autocomplete_token command_token = ac->tokens[0];
 	struct cli_command const *command = cli_command_find(cstr_view_slice(line, command_token.begin, command_token.end - command_token.begin));
 	if (!command || (command->args != CLI_COMMAND_ARGS_TOOL && command->args != CLI_COMMAND_ARGS_TOOL_CALL))
 		return 0;
 	bool call = command->args == CLI_COMMAND_ARGS_TOOL_CALL;
-	if (index == 1 || autocomplete->token_count == 1) {
-		for (size_t i = 0; i < autocomplete->count; ++i) {
-			struct cstr_view name = autocomplete->entries[i].tool.name;
+	if (index == 1 || ac->token_count == 1) {
+		for (size_t i = 0; i < ac->count; ++i) {
+			struct cstr_view name = ac->entries[i].tool.name;
 			if (!cstr_view_starts(name, prefix))
 				continue;
-			int error = autocomplete_replacement(autocomplete, line, current.begin, current.end, name, true, AUTOCOMPLETE_TOOL);
+			int error = autocomplete_replacement(ac, line, current.begin, current.end, name, true, AUTOCOMPLETE_TOOL);
 			if (error)
 				return error;
 		}
 		return 0;
 	}
-	if (!call || autocomplete->token_count < 2 || (prefix.len && prefix.data[0] == '{'))
+	if (!call || ac->token_count < 2 || (prefix.len && prefix.data[0] == '{'))
 		return 0;
-	struct autocomplete_token tool_token = autocomplete->tokens[1];
-	struct autocomplete_entry const *entry = autocomplete_entry_find(autocomplete, cstr_view_slice(line, tool_token.begin, tool_token.end - tool_token.begin), nullptr);
+	struct autocomplete_token tool_token = ac->tokens[1];
+	struct autocomplete_entry const *entry = autocomplete_entry_find(ac, cstr_view_slice(line, tool_token.begin, tool_token.end - tool_token.begin), nullptr);
 	if (!entry)
 		return 0;
 	if (current.equals < cursor) {
 		struct cstr_view key = cstr_view_slice(line, current.begin, current.equals - current.begin);
-		return autocomplete_values(autocomplete, line, current, cursor, entry, autocomplete_entry_property(entry, key));
+		return autocomplete_values(ac, line, current, cursor, entry, autocomplete_entry_property(entry, key));
 	}
 	for (size_t i = 0; i < entry->count; ++i) {
 		struct cstr_view name = entry->properties[i].name;
 		if (!cstr_view_starts(name, prefix) ||
-		    autocomplete_used(autocomplete, line, name,
+		    autocomplete_used(ac, line, name,
 		                     current.end > current.begin ? index : SIZE_MAX))
 			continue;
-		int error = autocomplete_set(&autocomplete->quoted, name);
+		int error = autocomplete_set(&ac->quoted, name);
 		if (error)
 			return error;
-		if (current.equals == SIZE_MAX && !dstr_cat_n(&autocomplete->quoted, "=", 1))
+		if (current.equals == SIZE_MAX && !dstr_cat_n(&ac->quoted, "=", 1))
 			return ENOMEM;
-		error = autocomplete_replacement(autocomplete, line, current.begin, current.equals == SIZE_MAX ? current.end : current.equals,
-		                                 cstr_view_dstr(&autocomplete->quoted), false, AUTOCOMPLETE_PARAMETER);
+		error = autocomplete_replacement(ac, line, current.begin, current.equals == SIZE_MAX ? current.end : current.equals,
+		                                 cstr_view_dstr(&ac->quoted), false, AUTOCOMPLETE_PARAMETER);
 		if (error)
 			return error;
 	}
@@ -1190,7 +1190,7 @@ autocomplete_commands (struct autocomplete      *autocomplete,
 }
 
 static int
-autocomplete_mentions (struct autocomplete *autocomplete,
+autocomplete_mentions (struct autocomplete *ac,
                        struct cstr_view     line,
                        size_t               cursor)
 {
@@ -1207,18 +1207,18 @@ autocomplete_mentions (struct autocomplete *autocomplete,
 	bool mention = line.data[begin] == '@';
 	struct cstr_view prefix = cstr_view_slice(line, begin + mention, cursor - begin - mention);
 	bool separate = end == line.len || autocomplete_space((unsigned char)line.data[end]);
-	for (size_t i = 0; i < autocomplete->chat_participants.count; ++i) {
-		struct cstr_view name = cstr_view_dstr(&autocomplete->chat_participants.values[i]);
+	for (size_t i = 0; i < ac->chat_participants.count; ++i) {
+		struct cstr_view name = cstr_view_dstr(&ac->chat_participants.values[i]);
 		if (!cstr_view_starts(name, prefix))
 			continue;
-		(void)dstr_clear(&autocomplete->quoted);
-		if (mention && !dstr_cat_n(&autocomplete->quoted, "@", 1))
+		(void)dstr_clear(&ac->quoted);
+		if (mention && !dstr_cat_n(&ac->quoted, "@", 1))
 			return ENOMEM;
-		if (!dstr_cat_n(&autocomplete->quoted, name.data, name.len))
+		if (!dstr_cat_n(&ac->quoted, name.data, name.len))
 			return ENOMEM;
-		if (!mention && !begin && separate && !dstr_cat_n(&autocomplete->quoted, ":", 1))
+		if (!mention && !begin && separate && !dstr_cat_n(&ac->quoted, ":", 1))
 			return ENOMEM;
-		int error = autocomplete_replacement(autocomplete, line, begin, end, cstr_view_dstr(&autocomplete->quoted), separate, AUTOCOMPLETE_NAME);
+		int error = autocomplete_replacement(ac, line, begin, end, cstr_view_dstr(&ac->quoted), separate, AUTOCOMPLETE_NAME);
 		if (error)
 			return error;
 	}
@@ -1226,11 +1226,11 @@ autocomplete_mentions (struct autocomplete *autocomplete,
 }
 
 static int
-autocomplete_match_compare (struct autocomplete const       *autocomplete,
+autocomplete_match_compare (struct autocomplete const       *ac,
                             struct autocomplete_match const *a,
                             struct autocomplete_match const *b)
 {
-	size_t begin = autocomplete->match_begin;
+	size_t begin = ac->match_begin;
 	int difference = cstr_view_compare(cstr_view_slice(a->line, begin, a->line.len - begin),
 	                                   cstr_view_slice(b->line, begin, b->line.len - begin));
 	return difference ? difference : (a->cursor > b->cursor) - (a->cursor < b->cursor);
@@ -1239,18 +1239,18 @@ autocomplete_match_compare (struct autocomplete const       *autocomplete,
 /** Heapsort keeps the bounded completion table off the allocator. libc
  * qsort may allocate a merge buffer even when all strings are borrowed. */
 static void
-autocomplete_match_sink (struct autocomplete *autocomplete,
+autocomplete_match_sink (struct autocomplete *ac,
                          size_t               count,
                          size_t               parent)
 {
-	struct autocomplete_match *matches = autocomplete->matches;
+	struct autocomplete_match *matches = ac->matches;
 	for (;;) {
 		size_t child = parent * 2 + 1;
 		if (child >= count)
 			return;
-		if (child + 1 < count && autocomplete_match_compare(autocomplete, &matches[child], &matches[child + 1]) < 0)
+		if (child + 1 < count && autocomplete_match_compare(ac, &matches[child], &matches[child + 1]) < 0)
 			++child;
-		if (autocomplete_match_compare(autocomplete, &matches[parent], &matches[child]) >= 0)
+		if (autocomplete_match_compare(ac, &matches[parent], &matches[child]) >= 0)
 			return;
 		struct autocomplete_match swap = matches[parent];
 		matches[parent] = matches[child];
@@ -1260,16 +1260,16 @@ autocomplete_match_sink (struct autocomplete *autocomplete,
 }
 
 static void
-autocomplete_matches_sort (struct autocomplete *autocomplete)
+autocomplete_matches_sort (struct autocomplete *ac)
 {
-	size_t count = autocomplete->match_count;
+	size_t count = ac->match_count;
 	for (size_t i = count / 2; i; --i)
-		autocomplete_match_sink(autocomplete, count, i - 1);
+		autocomplete_match_sink(ac, count, i - 1);
 	for (size_t i = count; i > 1; --i) {
-		struct autocomplete_match swap = autocomplete->matches[0];
-		autocomplete->matches[0] = autocomplete->matches[i - 1];
-		autocomplete->matches[i - 1] = swap;
-		autocomplete_match_sink(autocomplete, i - 1, 0);
+		struct autocomplete_match swap = ac->matches[0];
+		ac->matches[0] = ac->matches[i - 1];
+		ac->matches[i - 1] = swap;
+		autocomplete_match_sink(ac, i - 1, 0);
 	}
 }
 
