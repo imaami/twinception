@@ -11,6 +11,7 @@ override SRC_askai-cli := \
   cli_loop.c              \
   cli_mailbox.c           \
   cli_network.c           \
+  cli_render.c            \
   cli_scrollback.c        \
   cli_signals.c           \
   cli_state.c             \

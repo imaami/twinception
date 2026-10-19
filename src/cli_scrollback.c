@@ -1,11 +1,12 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wchar.h>
 
+#include "cli_render.h"
 #include "cli_scrollback.h"
 #include "compat.h"
 
@@ -248,16 +249,8 @@ cli_scrollback_character (struct cstr_view text,
 		*width = 8 - column % 8;
 		return 1;
 	}
-	mbstate_t state = {};
-	wchar_t character;
-	size_t bytes = mbrtowc(&character, text.data, text.len, &state);
-	if (!bytes || bytes == (size_t)-1 || bytes == (size_t)-2) {
-		*width = 1;
-		if (replace)
-			*replace = true;
-		return 1;
-	}
-	int cells = wcwidth(character);
+	int cells;
+	size_t bytes = cli_render_character(text, &cells);
 	/* A combining character without a preceding cell must not reach left
 	 * into another pane. Render one replacement cell at a row's origin. */
 	bool replacement = cells < 0 || (!cells && !column);
@@ -377,8 +370,6 @@ cli_scrollback_bottom (struct cli_scrollback *scrollback)
 	scrollback->unread = 0;
 }
 
-enum { CLI_SCROLLBACK_COLOR = 1u << 0 };
-
 struct cli_scrollback_frame {
 	struct dstr   *output;
 	struct dstr   *cache;
@@ -388,14 +379,14 @@ struct cli_scrollback_frame {
 	size_t         row;
 	size_t         start;
 	enum cli_style style;
-	uint32_t       flags;
+	uint32_t       color;
 };
 
 static int
 cli_scrollback_frame_style (struct cli_scrollback_frame *frame,
                             enum cli_style               style)
 {
-	if (!(frame->flags & CLI_SCROLLBACK_COLOR))
+	if (!frame->color)
 		return 0;
 	if (style == CLI_STYLE_RESET)
 		style = CLI_STYLE_TEXT;
@@ -409,14 +400,6 @@ cli_scrollback_frame_style (struct cli_scrollback_frame *frame,
 }
 
 static int
-cli_scrollback_frame_begin (struct cli_scrollback_frame *frame)
-{
-	frame->start = dstr_len(frame->output);
-	frame->style = CLI_STYLE_COUNT;
-	return dstr_printf(frame->output, "\033[%zu;%zuH", frame->row, frame->left) ? 0 : ENOMEM;
-}
-
-static int
 cli_scrollback_frame_end (struct cli_scrollback_frame *frame,
                           size_t                       column)
 {
@@ -424,24 +407,18 @@ cli_scrollback_frame_end (struct cli_scrollback_frame *frame,
 		int e = cli_scrollback_frame_style(frame, CLI_STYLE_RESET);
 		if (e)
 			return e;
-		static char const spaces[] = "                                                                ";
-		for (size_t remaining = frame->columns - column; remaining;) {
-			size_t count = remaining < sizeof spaces - 1 ? remaining : sizeof spaces - 1;
-			if (!dstr_cat_n(frame->output, spaces, count))
-				return ENOMEM;
-			remaining -= count;
-		}
-	}
-	if (frame->cache) {
-		struct cstr_view row = cstr_view_slice(cstr_view_dstr(frame->output), frame->start, SIZE_MAX);
-		if (cstr_view_equal(row, cstr_view_dstr(frame->cache)))
-			dstr_erase(frame->output, frame->start, SIZE_MAX);
-		else if (!dstr_clear(frame->cache) || !dstr_cat_n(frame->cache, row.data, row.len))
+		if (!dstr_printf(frame->output, "%*s", (int)(frame->columns - column), ""))
 			return ENOMEM;
-		++frame->cache;
 	}
+	int e = cli_render_row(frame->cache, frame->output, frame->start, frame->row, frame->left);
+	if (e)
+		return e;
+	if (frame->cache)
+		++frame->cache;
 	if (--frame->height)
 		++frame->row;
+	frame->start = dstr_len(frame->output);
+	frame->style = CLI_STYLE_COUNT;
 	return 0;
 }
 
@@ -480,11 +457,6 @@ cli_scrollback_line_render (struct cli_scrollback_line *line,
 	struct cstr_view text = cstr_view_slice(cstr_view_dstr(&line->text), start, SIZE_MAX);
 	size_t column = 0;
 	size_t offset = start;
-	if (!*skip) {
-		int e = cli_scrollback_frame_begin(frame);
-		if (e)
-			return e;
-	}
 	while (text.len && frame->height) {
 		size_t width;
 		bool replace;
@@ -498,9 +470,8 @@ cli_scrollback_line_render (struct cli_scrollback_line *line,
 				--*skip;
 			else {
 				int e = cli_scrollback_line_write(line, start, offset, frame);
-				if (e)
-					return e;
-				e = cli_scrollback_frame_end(frame, column);
+				if (!e)
+					e = cli_scrollback_frame_end(frame, column);
 				if (e)
 					return e;
 			}
@@ -510,11 +481,6 @@ cli_scrollback_line_render (struct cli_scrollback_line *line,
 				width = frame->columns < 8 ? frame->columns : 8;
 			if (!frame->height)
 				break;
-			if (!*skip) {
-				int e = cli_scrollback_frame_begin(frame);
-				if (e)
-					return e;
-			}
 		}
 		if (!*skip) {
 			if (text.data[0] == '\t' || replace) {
@@ -534,19 +500,14 @@ cli_scrollback_line_render (struct cli_scrollback_line *line,
 		offset += length;
 		text = cstr_view_slice(text, length, SIZE_MAX);
 	}
-	if (frame->height) {
-		if (*skip)
-			--*skip;
-		else {
-			int e = cli_scrollback_line_write(line, start, offset, frame);
-			if (e)
-				return e;
-			e = cli_scrollback_frame_end(frame, column);
-			if (e)
-				return e;
-		}
+	if (!frame->height)
+		return 0;
+	if (*skip) {
+		--*skip;
+		return 0;
 	}
-	return 0;
+	int e = cli_scrollback_line_write(line, start, offset, frame);
+	return e ? e : cli_scrollback_frame_end(frame, column);
 }
 
 int
@@ -559,12 +520,13 @@ cli_scrollback_render_pane (struct cli_scrollback *scrollback,
                             struct dstr           *cache,
                             struct dstr           *output)
 {
-	if (!left || !top || !columns || !height ||
+	if (!left || !top || !columns || columns > INT_MAX || !height ||
 	    columns > SIZE_MAX - (left - 1) || height > SIZE_MAX - (top - 1))
 		return EINVAL;
 	struct cli_scrollback_frame frame = {
 		.output = output, .cache = cache, .columns = columns, .height = height,
-		.left = left, .row = top, .flags = color ? CLI_SCROLLBACK_COLOR : 0,
+		.left = left, .row = top, .start = dstr_len(output), .style = CLI_STYLE_COUNT,
+		.color = color,
 	};
 	size_t rows = 0;
 	struct list *hook;
@@ -600,9 +562,7 @@ cli_scrollback_render_pane (struct cli_scrollback *scrollback,
 			break;
 	}
 	while (frame.height) {
-		int e = cli_scrollback_frame_begin(&frame);
-		if (!e)
-			e = cli_scrollback_frame_end(&frame, 0);
+		int e = cli_scrollback_frame_end(&frame, 0);
 		if (e)
 			return e;
 	}

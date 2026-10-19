@@ -18,12 +18,12 @@
 #include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
-#include <wchar.h>
 
 #include "buf.h"
 #include "cli_console.h"
 #include "cli_io.h"
 #include "cli_loop.h"
+#include "cli_render.h"
 #include "cli_scrollback.h"
 #include "compat.h"
 #include "dstr.h"
@@ -37,6 +37,7 @@ enum {
 	CLI_CONSOLE_TAB_INTERVAL  = 400 * 1000 * 1000,
 	CLI_CONSOLE_COMPLETIONS   = 256,
 	CLI_CONSOLE_ROWS          = 256,
+	CLI_CONSOLE_COLUMNS       = 512,
 };
 
 enum {
@@ -105,9 +106,7 @@ struct cli_console {
 	struct dstr                      draft;
 	struct dstr                      prompt;
 	struct dstr                      completion_labels;
-	struct dstr                      frame_cache;
-	struct dstr                      status_cache;
-	struct dstr                      input_cache;
+	struct dstr                      decorations[4];
 	char                            *accepted_line;
 	char                            *restored_line;
 	char                            *immediate_line;
@@ -408,6 +407,11 @@ cli_console_accept (char *line)
 		return;
 	}
 	size_t length = line ? strlen(line) : 0;
+	if (line && !length && console->busy) {
+		free(line);
+		line = nullptr;
+		return;
+	}
 	bool immediate = line && cli_console_is_immediate(console, (struct cstr_view){line, length});
 	if (line && (immediate ? console->immediate_line != nullptr : console->line_ready)) {
 		/* A custom inputrc binding may bypass our submit command. Restore
@@ -590,16 +594,9 @@ static size_t
 cli_console_text_width (struct cstr_view text)
 {
 	size_t width = 0;
-	mbstate_t state = {};
 	while (text.len) {
-		wchar_t character;
-		size_t length = mbrtowc(&character, text.data, text.len, &state);
-		int cells = length && length != (size_t)-1 && length != (size_t)-2
-		            ? wcwidth(character) : -1;
-		if (length == (size_t)-1 || length == (size_t)-2 || !length) {
-			state = (mbstate_t){};
-			length = 1;
-		}
+		int cells;
+		size_t length = cli_render_character(text, &cells);
 		width += cells < 0 ? 1 : (size_t)cells;
 		text = cstr_view_slice(text, length, SIZE_MAX);
 	}
@@ -791,8 +788,11 @@ cli_console_terminal_write (void       *cookie,
 		console->output_error = e;
 		return -1;
 	}
-	/* Readline may clear the screen or move the cursor outside our renderer. */
-	console->dirty |= CLI_CONSOLE_PAINT_RESET;
+	/* Bell and bracketed-paste mode changes leave the display intact. */
+	if ((length == 1 && *data == '\a') || (length == 8 && !memcmp(data, "\033[?2004", 7)))
+		return (ssize_t)length;
+	console->cursor_column = 0;
+	console->dirty |= length == 1 && *data == '\r' ? CLI_CONSOLE_PAINT_INPUT : CLI_CONSOLE_PAINT_RESET;
 	return (ssize_t)length;
 }
 
@@ -872,8 +872,8 @@ cli_console_dimensions (struct cli_console *console)
 	console->draft_start = 0;
 	if (console->rows > CLI_CONSOLE_ROWS)
 		console->rows = CLI_CONSOLE_ROWS;
-	if (console->columns > 512)
-		console->columns = 512;
+	if (console->columns > CLI_CONSOLE_COLUMNS)
+		console->columns = CLI_CONSOLE_COLUMNS;
 	console->dirty = CLI_CONSOLE_PAINT_ALL;
 	return 0;
 }
@@ -932,10 +932,8 @@ cli_console_create (bool             simple,
 	console->draft = dstr(nullptr);
 	console->prompt = dstr("\n> ");
 	console->completion_labels = dstr(nullptr);
-	console->frame_cache = dstr(nullptr);
-	console->status_cache = dstr(nullptr);
-	console->input_cache = dstr(nullptr);
-	console->cursor_column = 3;
+	for (size_t i = 0; i < 4; ++i)
+		console->decorations[i] = dstr(nullptr);
 	for (size_t i = 0; i < CLI_CONSOLE_PANES; ++i) {
 		cli_scrollback_init(&console->panes[i].scrollback);
 		for (size_t row = 0; row < CLI_CONSOLE_ROWS; ++row)
@@ -1000,6 +998,9 @@ cli_console_create (bool             simple,
 				rl_bind_keyseq_in_map("\033[1;3A", cli_console_page_up, map);
 				rl_bind_keyseq_in_map("\033[1;3B", cli_console_page_down, map);
 				rl_bind_keyseq_in_map("\033[1;5F", cli_console_bottom, map);
+				rl_bind_keyseq_in_map("\033[4;5~", cli_console_bottom, map);
+				rl_bind_keyseq_in_map("\033[8;5~", cli_console_bottom, map);
+				rl_bind_keyseq_in_map("\033[8^", cli_console_bottom, map);
 				rl_bind_keyseq_in_map("\033[17~", cli_console_focus, map);
 				rl_bind_keyseq_in_map("\033[1;3D", cli_console_focus, map);
 				rl_bind_keyseq_in_map("\033[1;3C", cli_console_focus, map);
@@ -1021,7 +1022,8 @@ cli_console_create (bool             simple,
 				rl_bind_key_in_map('\t', cli_console_tab, map);
 		}
 		rl_variable_bind("enable-bracketed-paste", "on");
-		(void)rl_read_init_file(nullptr);
+		char const *inputrc = getenv("INPUTRC");
+		(void)rl_read_init_file(inputrc && *inputrc ? inputrc : "~/.inputrc");
 		rl_prep_term_function = cli_console_prepare;
 		rl_completion_display_matches_hook = console->fullscreen ? cli_console_matches : nullptr;
 		rl_getc_function = cli_console_getc;
@@ -1036,7 +1038,7 @@ cli_console_create (bool             simple,
 		if (console->fullscreen) {
 			*e = cli_console_dimensions(console);
 			if (!*e)
-				*e = cli_console_queue(console, CSTR_VIEW("\033[?1049h\033[?7l\033[2J\033[H"));
+				*e = cli_console_queue(console, CSTR_VIEW("\033[?1049h\033[?7l"));
 			if (!*e)
 				*e = cli_console_flush(console);
 			if (*e)
@@ -1095,7 +1097,7 @@ cli_console_resume (struct cli_console *console)
 	if (console->terminal_saved && tcsetattr(STDIN_FILENO, TCSANOW, &console->resume_state) < 0)
 		return errno;
 	if (console->fullscreen)
-		return cli_console_queue(console, CSTR_VIEW("\033[?1049h\033[?7l\033[2J\033[H\033[?2004h"));
+		return cli_console_queue(console, CSTR_VIEW("\033[?1049h\033[?7l\033[?2004h"));
 	return 0;
 }
 
@@ -1139,9 +1141,8 @@ cli_console_destroy (struct cli_console **ptr)
 	dstr_cleanup(&console->draft);
 	dstr_cleanup(&console->prompt);
 	dstr_cleanup(&console->completion_labels);
-	dstr_cleanup(&console->frame_cache);
-	dstr_cleanup(&console->status_cache);
-	dstr_cleanup(&console->input_cache);
+	for (size_t i = 0; i < 4; ++i)
+		dstr_cleanup(&console->decorations[i]);
 	for (size_t i = 0; i < CLI_CONSOLE_PANES; ++i) {
 		cli_scrollback_fini(&console->panes[i].scrollback);
 		for (size_t row = 0; row < CLI_CONSOLE_ROWS; ++row)
@@ -1167,15 +1168,10 @@ cli_console_set_display (struct cli_console *console,
 	return e;
 }
 
-static int
-cli_console_render_style (struct cli_console *console,
-                          struct dstr        *output,
-                          enum cli_style      display)
+static char const *
+cli_console_style (struct cli_console *console, enum cli_style display)
 {
-	if (!console->color)
-		return 0;
-	struct cstr_view style = cli_style_sequence(display);
-	return dstr_cat_n(output, style.data, style.len) ? 0 : ENOMEM;
+	return console->color ? cli_style_sequence(display).data : "";
 }
 
 int cli_console_remember(struct cli_console *console, struct cstr_view text)
@@ -1281,97 +1277,61 @@ cli_console_render_draft (struct cli_console *console,
 	}
 	console->draft_start = start;
 	*cursor = column + (unsigned)before + 1;
-	int e = cli_console_render_style(console, output, CLI_STYLE_PROMPT);
-	if (e)
-		return e;
-	if (!dstr_cat_n(output, start ? "< " : "> ", column))
+	if (!dstr_printf(output, "%s%.*s%s", cli_console_style(console, CLI_STYLE_PROMPT),
+	                 (int)column, start ? "< " : "> ", cli_console_style(console, CLI_STYLE_USER_INPUT)))
 		return ENOMEM;
-	e = cli_console_render_style(console, output, CLI_STYLE_USER_INPUT);
-	if (e)
-		return e;
-	for (size_t i = start; i < draft.len;) {
-		mbstate_t state = {};
-		wchar_t character = L'?';
-		size_t bytes = mbrtowc(&character, draft.data + i, draft.len - i, &state);
-		int cells = bytes && bytes != (size_t)-1 && bytes != (size_t)-2 ? wcwidth(character) : -1;
-		if (!bytes || bytes == (size_t)-1 || bytes == (size_t)-2)
-			bytes = 1;
+	size_t run = start;
+	size_t i = start;
+	for (; i < draft.len;) {
+		int cells;
+		size_t bytes = cli_render_character(cstr_view_slice(draft, i, SIZE_MAX), &cells);
 		unsigned width = cells < 0 ? 1 : (unsigned)cells;
 		if (column + width >= console->columns)
 			break;
-		if (!dstr_cat_n(output, cells < 0 ? " " : draft.data + i, cells < 0 ? 1 : bytes))
-			return ENOMEM;
+		if (cells < 0) {
+			if (!dstr_cat_n(output, draft.data + run, i - run) || !dstr_cat(output, " "))
+				return ENOMEM;
+			run = i + bytes;
+		}
 		i += bytes;
 		column += width;
 	}
-	if (!dstr_cat(output, "\033[K"))
-		return ENOMEM;
-	return cli_console_render_style(console, output, CLI_STYLE_RESET);
-}
-
-static int
-cli_console_rule (struct dstr *output,
-                  size_t       columns)
-{
-	static char const rule[] = "────────────────────────────────";
-	while (columns) {
-		size_t count = columns < 32 ? columns : 32;
-		if (!dstr_cat_n(output, rule, count * 3))
-			return ENOMEM;
-		columns -= count;
-	}
-	return 0;
-}
-
-static int
-cli_console_pane_caption (struct cli_console      *console,
-                          struct dstr             *output,
-                          enum cli_console_pane_id pane,
-                          unsigned                 width,
-                          bool                     top)
-{
-	struct cli_scrollback const *scrollback = &console->panes[pane].scrollback;
-	dstr_auto caption = dstr(nullptr);
-	if (top) {
-		if (!dstr_printf(&caption, " %c %s ", console->focused == pane ? '*' : ' ',
-		                 pane == CLI_CONSOLE_CONVERSATION ? "Conversation" : "Reasoning"))
-			return ENOMEM;
-	} else if (!dstr_printf(&caption, " %s | %zu unread ", scrollback->offset ? "scrolling" : "live",
-	                        scrollback->unread)) {
-		return ENOMEM;
-	}
-	size_t length = dstr_len(&caption);
-	if (length > width)
-		length = width;
-	int e = cli_console_render_style(console, output, console->focused == pane
-	                                  ? CLI_STYLE_TITLE : CLI_STYLE_TITLE_INACTIVE);
-	if (!e && !dstr_cat_n(output, dstr_get(&caption), length))
-		e = ENOMEM;
-	if (!e)
-		e = cli_console_render_style(console, output, CLI_STYLE_FRAME);
-	return e ? e : cli_console_rule(output, width - length);
+	return dstr_cat_n(output, draft.data + run, i - run) &&
+	       dstr_printf(output, "%*s", (int)(console->columns - column), "") ? 0 : ENOMEM;
 }
 
 static int
 cli_console_frame (struct cli_console *console,
-                    struct dstr        *output,
-                    bool                top)
+                   struct dstr        *output,
+                   unsigned            edge)
 {
-	unsigned row = top ? 1 : console->rows - 2;
-	int e = cli_console_render_style(console, output, CLI_STYLE_FRAME);
-	if (!e && (!dstr_printf(output, "\033[%u;1H", row) || !dstr_cat(output, top ? "┌" : "└")))
-		e = ENOMEM;
-	if (!e)
-		e = cli_console_pane_caption(console, output, CLI_CONSOLE_CONVERSATION,
-		                             cli_console_pane_width(console, CLI_CONSOLE_CONVERSATION), top);
-	if (!e) {
-		if (!dstr_cat(output, top ? "┬" : "┴"))
-			e = ENOMEM;
-		else
-			e = cli_console_pane_caption(console, output, CLI_CONSOLE_REASONING,
-			                             cli_console_pane_width(console, CLI_CONSOLE_REASONING), top);
+#define CLI_CONSOLE_REPEAT8(x) x x x x x x x x
+	static char const rule[] = CLI_CONSOLE_REPEAT8(CLI_CONSOLE_REPEAT8(CLI_CONSOLE_REPEAT8("─")));
+#undef CLI_CONSOLE_REPEAT8
+	static_assert(sizeof rule == CLI_CONSOLE_COLUMNS * 3 + 1);
+	static char const *const corners[][3] = {{"┌", "┬", "┐"}, {"└", "┴", "┘"}};
+	static char const *const names[] = {"Conversation", "Reasoning"};
+	char const *const *border = corners[edge];
+	char const *frame_style = cli_console_style(console, CLI_STYLE_FRAME);
+	for (unsigned pane = 0; pane < CLI_CONSOLE_PANES; ++pane) {
+		struct cli_scrollback const *scrollback = &console->panes[pane].scrollback;
+		bool focused = console->focused == pane;
+		char caption[64];
+		int length = edge
+			? snprintf(caption, sizeof caption, " %s | %zu unread ",
+			           scrollback->offset ? "scrolling" : "live", scrollback->unread)
+			: snprintf(caption, sizeof caption, " %c %s ", focused ? '*' : ' ', names[pane]);
+		if (length < 0 || length >= (int)sizeof caption)
+			return EOVERFLOW;
+		unsigned width = cli_console_pane_width(console, pane);
+		if ((unsigned)length > width)
+			length = (int)width;
+		char const *title_style = cli_console_style(console, focused ? CLI_STYLE_TITLE : CLI_STYLE_TITLE_INACTIVE);
+		if (!dstr_printf(output, "%s%s%s%.*s%s%.*s", frame_style, border[pane], title_style,
+		                 length, caption, frame_style, (int)(width - (unsigned)length) * 3, rule))
+			return ENOMEM;
 	}
-	return e ? e : dstr_cat(output, top ? "┐" : "┘") ? 0 : ENOMEM;
+	return dstr_cat(output, border[CLI_CONSOLE_PANES]) ? 0 : ENOMEM;
 }
 
 static int
@@ -1391,50 +1351,15 @@ cli_console_panels (struct cli_console *console,
 	}
 	if (!(console->dirty & CLI_CONSOLE_PAINT_RESET))
 		return 0;
-	int e = cli_console_render_style(console, output, CLI_STYLE_FRAME);
-	for (unsigned row = 2; !e && row < console->rows - 2; ++row) {
-		if (!dstr_printf(output, "\033[%u;1H│\033[%u;%uH│", row, row, console->columns))
-			e = ENOMEM;
-		if (!e && !dstr_printf(output, "\033[%u;%uH│", row,
-		                      cli_console_pane_width(console, CLI_CONSOLE_CONVERSATION) + 2))
-			e = ENOMEM;
+	if (!dstr_cat(output, cli_console_style(console, CLI_STYLE_FRAME)))
+		return ENOMEM;
+	unsigned divider = cli_console_pane_width(console, CLI_CONSOLE_CONVERSATION) + 2;
+	for (unsigned row = 2; row < console->rows - 2; ++row) {
+		if (!dstr_printf(output, "\033[%u;1H│\033[%u;%uH│\033[%u;%uH│",
+		                 row, row, divider, row, console->columns))
+			return ENOMEM;
 	}
-	return e;
-}
-
-static int
-cli_console_status (struct cli_console *console,
-                    struct dstr        *output)
-{
-	dstr_auto status = dstr(nullptr);
-	if (!dstr_printf(&status, " askai | %s | Alt-Left/Right pane  Alt-Up/Down scroll  Ctrl-End follow",
-	                 console->line_ready ? "1 queued" : console->busy ? "working" : "ready"))
-		return ENOMEM;
-	size_t length = dstr_len(&status);
-	if (length > console->columns)
-		length = console->columns;
-	int e = cli_console_render_style(console, output, CLI_STYLE_STATUS);
-	if (e)
-		return e;
-	if (!dstr_printf(output, "\033[%u;1H", console->rows - 1) ||
-	    !dstr_cat_n(output, dstr_get(&status), length) ||
-	    (length < console->columns && !dstr_cat(output, "\033[K")))
-		return ENOMEM;
 	return 0;
-}
-
-static int
-cli_console_cache (struct dstr *cache,
-                   struct dstr *output,
-                   size_t       begin)
-{
-	struct cstr_view text = cstr_view_slice(cstr_view_dstr(output), begin, SIZE_MAX);
-	if (cstr_view_equal(text, cstr_view_dstr(cache))) {
-		dstr_erase(output, begin, text.len);
-		return 0;
-	}
-	dstr_clear(cache);
-	return dstr_cat_n(cache, text.data, text.len) ? 0 : ENOMEM;
 }
 
 static int
@@ -1444,48 +1369,49 @@ cli_console_render (struct cli_console *console)
 	    console->output_queue.head != console->output_queue.tail)
 		return 0;
 	if (console->dirty & CLI_CONSOLE_PAINT_RESET) {
-		dstr_clear(&console->frame_cache);
-		dstr_clear(&console->status_cache);
-		dstr_clear(&console->input_cache);
+		for (size_t i = 0; i < 4; ++i)
+			dstr_clear(&console->decorations[i]);
 		for (size_t i = 0; i < CLI_CONSOLE_PANES; ++i)
 			for (size_t row = 0; row < CLI_CONSOLE_ROWS; ++row)
 				dstr_clear(&console->panes[i].rows[row]);
 		console->dirty = CLI_CONSOLE_PAINT_ALL;
+		console->cursor_column = 0;
 	}
-	dstr_auto screen = dstr(nullptr);
+	dstr_auto screen = dstr("\0337");
 	bool framed = console->rows >= 6 && console->columns >= 8;
 	int e = framed ? cli_console_panels(console, &screen) : 0;
-	if (!e && framed && (console->dirty & CLI_CONSOLE_PAINT_FRAME)) {
-		size_t begin = dstr_len(&screen);
-		e = cli_console_frame(console, &screen, true);
-		if (!e)
-			e = cli_console_frame(console, &screen, false);
-		if (!e)
-			e = cli_console_cache(&console->frame_cache, &screen, begin);
-	}
-	if (!e && framed && (console->dirty & CLI_CONSOLE_PAINT_STATUS)) {
-		size_t begin = dstr_len(&screen);
-		e = cli_console_status(console, &screen);
-		if (!e)
-			e = cli_console_cache(&console->status_cache, &screen, begin);
-	}
 	if (!e && !framed && (console->dirty & CLI_CONSOLE_PAINT_RESET) && !dstr_cat(&screen, "\033[2J"))
 		e = ENOMEM;
 	unsigned cursor = console->cursor_column;
-	if (!e && (console->dirty & CLI_CONSOLE_PAINT_INPUT)) {
+	unsigned const flags[] = {CLI_CONSOLE_PAINT_FRAME, CLI_CONSOLE_PAINT_FRAME,
+	                          CLI_CONSOLE_PAINT_STATUS, CLI_CONSOLE_PAINT_INPUT};
+	unsigned const rows[] = {1, console->rows - 2, console->rows - 1, console->rows};
+	for (unsigned i = framed ? 0 : 3; !e && i < 4; ++i) {
+		if (!(console->dirty & flags[i]))
+			continue;
 		size_t begin = dstr_len(&screen);
-		if (!dstr_printf(&screen, "\033[%u;1H", console->rows))
+		if (i < 2)
+			e = cli_console_frame(console, &screen, i);
+		else if (i == 3)
+			e = cli_console_render_draft(console, &screen, &cursor);
+		else {
+			char const *state = console->line_ready ? "1 queued" : console->busy ? "working" : "ready";
+			dstr_auto status = dstr(nullptr);
+			if (!e && (!dstr_printf(&status, " askai | %s | Alt-Left/Right pane  Alt-Up/Down scroll  Ctrl-End follow", state) ||
+			           !dstr_printf(&screen, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS),
+		                         (int)console->columns, (int)console->columns, dstr_get(&status))))
+				e = ENOMEM;
+		}
+		if (!e)
+			e = cli_render_row(&console->decorations[i], &screen, begin, rows[i], 1);
+	}
+	if (!e && (dstr_len(&screen) > 2 || cursor != console->cursor_column)) {
+		if (!dstr_cat(&screen, "\0338") || (cursor != console->cursor_column &&
+		    !dstr_printf(&screen, "\033[%u;%uH", console->rows, cursor)))
 			e = ENOMEM;
 		if (!e)
-			e = cli_console_render_draft(console, &screen, &cursor);
-		if (!e)
-			e = cli_console_cache(&console->input_cache, &screen, begin);
+			e = cli_console_queue(console, cstr_view_dstr(&screen));
 	}
-	if (!e && (dstr_len(&screen) || cursor != console->cursor_column) &&
-	    !dstr_printf(&screen, "\033[%u;%uH", console->rows, cursor))
-		e = ENOMEM;
-	if (!e)
-		e = cli_console_queue(console, cstr_view_dstr(&screen));
 	if (!e) {
 		console->cursor_column = cursor;
 		console->dirty = 0;
@@ -1737,10 +1663,14 @@ cli_console_output_write (struct cli_console_output *state,
 			state->used = 0;
 		}
 		if (byte < 0x80) {
-			char safe = (byte >= 0x20 && byte != 0x7f) || byte == '\n' || byte == '\t'
-			            ? (char)byte : '?';
-			if (!dstr_cat_n(dest, &safe, 1))
+			bool safe = (byte >= 0x20 && byte != 0x7f) || byte == '\n' || byte == '\t';
+			size_t end = i + 1;
+			if (safe)
+				while (end < text.len && (unsigned char)text.data[end] - 0x20u < 0x5f)
+					++end;
+			if (!dstr_cat_n(dest, safe ? text.data + i : "?", end - i))
 				return ENOMEM;
+			i = end - 1;
 		} else {
 			state->expected = byte >= 0xc2 && byte <= 0xdf ? 2 :
 			                  byte >= 0xe0 && byte <= 0xef ? 3 :

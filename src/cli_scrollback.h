@@ -50,8 +50,8 @@ cli_scrollback_bottom (struct cli_scrollback *scrollback);
  * positioned and padded to columns cells; neighboring panes are not erased.
  * Color selects the shared palette, with TEXT as the pane's default style.
  * An optional caller-owned cache contains height initialized strings. Only
- * changed rows are emitted and the cache is updated; clear it after terminal
- * content is invalidated. Each emitted row establishes its own color. */
+ * changed spans are emitted and the cache is updated; clear it after terminal
+ * content is invalidated. Each emitted span establishes its own color. */
 extern int
 cli_scrollback_render_pane (struct cli_scrollback *scrollback,
                             size_t                 left,
