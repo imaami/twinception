@@ -480,18 +480,19 @@ dstr_vprintf_ (size_t const      obj_size,
 	va_list aq;
 	va_copy(aq, ap);
 	int const ret = vsnprintf(NULL, 0U, fmt, aq);
+	int err = errno;
 	va_end(aq);
 	if (ret < 0) {
-		int const e = errno ? errno : EILSEQ;
-		dstr_errno(e, "vsnprintf");
-		return e;
+		if (!err)
+			err = EILSEQ;
+		dstr_errno(err, "vsnprintf");
+		return err;
 	}
-
-	size_t const n = (size_t)ret;
-	if (!n)
+	if (!ret)
 		return 0;
 
-	int const err = dstr_grow_(obj_size, obj_raw, n, false);
+	size_t const len = (size_t)ret;
+	err = dstr_grow_(obj_size, obj_raw, len, false);
 	if (err)
 		return err;
 
@@ -503,23 +504,23 @@ dstr_vprintf_ (size_t const      obj_size,
 
 	/* The terminator lands on the meta byte of an in-place string that
 	 * the text fills, so the meta byte is assigned below, not adjusted */
-	int const m = vsnprintf(ptr, n + 1U, fmt, ap);
+	int const m = vsnprintf(ptr, len + 1U, fmt, ap);
 	if (m != ret) {
 		/* The arguments changed between the runs, or the second one
 		 * failed: wipe the output, and restore the meta byte that its
 		 * terminator may have overwritten */
-		int const e = m < 0 && errno ? errno : EILSEQ;
-		(void)memset(ptr, 0, n + 1U);
+		err = m < 0 && errno ? errno : EILSEQ;
+		(void)memset(ptr, 0, len + 1U);
 		if (i.state == DSTR_IS_SSO)
 			dstr_last_byte_(obj_size, obj_raw) = (unsigned char)i.space;
-		dstr_errno(e, "vsnprintf");
-		return e;
+		dstr_errno(err, "vsnprintf");
+		return err;
 	}
 
 	if (i.state == DSTR_IS_PTR)
-		(*dest)[1] += n;
+		(*dest)[1] += len;
 	else
-		dstr_last_byte_(obj_size, obj_raw) = (unsigned char)(i.space - n);
+		dstr_last_byte_(obj_size, obj_raw) = (unsigned char)(i.space - len);
 
 	return 0;
 }
