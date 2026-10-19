@@ -46,11 +46,20 @@ cli_scrollback_scroll (struct cli_scrollback *scrollback,
 extern void
 cli_scrollback_bottom (struct cli_scrollback *scrollback);
 
-/** Append at most height wrapped rows, with CRLF separators, to output. */
+/** Paint a rectangle at 1-based terminal coordinates. Every row is explicitly
+ * positioned and padded to columns cells; neighboring panes are not erased.
+ * Color selects the shared palette, with TEXT as the pane's default style.
+ * An optional caller-owned cache contains height initialized strings. Only
+ * changed rows are emitted and the cache is updated; clear it after terminal
+ * content is invalidated. Each emitted row establishes its own color. */
 extern int
-cli_scrollback_render (struct cli_scrollback *scrollback,
-                       size_t                 columns,
-                       size_t                 height,
-                       struct dstr           *output);
+cli_scrollback_render_pane (struct cli_scrollback *scrollback,
+                            size_t                 left,
+                            size_t                 top,
+                            size_t                 columns,
+                            size_t                 height,
+                            bool                   color,
+                            struct dstr           *cache,
+                            struct dstr           *output);
 
 #endif /* TWINCEPTION_SRC_CLI_SCROLLBACK_H_ */

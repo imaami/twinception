@@ -104,6 +104,8 @@ autocomplete_file_add (struct autocomplete_file *const file,
 	file->matches[index] = (struct autocomplete_match){
 		.line = cstr_view_dstr(line),
 		.cursor = cursor,
+		.label_begin = (uint32_t)(command.len + directory.len),
+		.kind = AUTOCOMPLETE_FILE,
 	};
 	return 0;
 }

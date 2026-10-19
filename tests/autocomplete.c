@@ -96,6 +96,43 @@ static void autocomplete_only (struct autocomplete *catalog, struct cstr_view in
 	assert(matches[0].cursor == point);
 }
 
+static void autocomplete_labels (struct autocomplete *catalog)
+{
+	static struct {
+		struct cstr_view input;
+		struct cstr_view replacement;
+		struct cstr_view label;
+		size_t cursor;
+		enum autocomplete_kind kind;
+		uint32_t begin;
+	} const cases[] = {
+		{CSTR_VIEW("/he"), CSTR_VIEW("/help "), CSTR_VIEW("/help"), 3, AUTOCOMPLETE_COMMAND, 0},
+		{CSTR_VIEW("/tool gi"), CSTR_VIEW("/tool git "), CSTR_VIEW("git"), 8, AUTOCOMPLETE_TOOL, 6},
+		{CSTR_VIEW("/tool git com"), CSTR_VIEW("/tool git command="), CSTR_VIEW("command="), 13, AUTOCOMPLETE_PARAMETER, 10},
+		{CSTR_VIEW("/tool git command=lo"), CSTR_VIEW("/tool git command=log "), CSTR_VIEW("log"), 20, AUTOCOMPLETE_VALUE, 18},
+		{CSTR_VIEW("/tool git repo=other"), CSTR_VIEW("/tool git repo='other project' "), CSTR_VIEW("'other project'"), 20, AUTOCOMPLETE_VALUE, 15},
+		{CSTR_VIEW("hello @al"), CSTR_VIEW("hello @alice "), CSTR_VIEW("@alice"), 9, AUTOCOMPLETE_NAME, 6},
+		{CSTR_VIEW("ää @al"), CSTR_VIEW("ää @alice "), CSTR_VIEW("@alice"), 8, AUTOCOMPLETE_NAME, 5},
+		{CSTR_VIEW("/tool git participant=al"), CSTR_VIEW("/tool git participant=alice "), CSTR_VIEW("alice"), 24, AUTOCOMPLETE_NAME, 22},
+		{CSTR_VIEW("/tool notes file=des"), CSTR_VIEW("/tool notes file='design docs/first.md' "), CSTR_VIEW("'design docs/first.md'"), 20, AUTOCOMPLETE_FILE, 17},
+		{CSTR_VIEW("/tool git command=stale count=2"), CSTR_VIEW("/tool git command=status count=2"), CSTR_VIEW("status"), 20, AUTOCOMPLETE_VALUE, 18},
+	};
+	for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+		struct autocomplete_match const *matches = nullptr;
+		size_t count = 0;
+		assert(!autocomplete_complete(catalog, cases[i].input, cases[i].cursor, &matches, &count));
+		assert(count == 1);
+		assert(cstr_view_equal(matches[0].line, cases[i].replacement));
+		assert(matches[0].label_begin == cases[i].begin);
+		assert(matches[0].kind == cases[i].kind);
+		size_t end = matches[0].cursor;
+		if (matches[0].line.data[end - 1] == ' ')
+			--end;
+		assert(cstr_view_equal(cstr_view_slice(matches[0].line, matches[0].label_begin,
+		                                      end - matches[0].label_begin), cases[i].label));
+	}
+}
+
 static struct json_object *autocomplete_parse (struct autocomplete *catalog,
                                                struct cstr_view input,
                                                struct cstr_view expected_name)
@@ -220,6 +257,8 @@ static void autocomplete_files(void)
 	for (size_t i = 0; i < count; ++i) {
 		assert(matches[i].line.len == input.len + expected[i].len);
 		assert(matches[i].cursor == matches[i].line.len);
+		assert(matches[i].label_begin == input.len);
+		assert(matches[i].kind == AUTOCOMPLETE_FILE);
 		assert(!memcmp(matches[i].line.data, input.data, input.len));
 		assert(!memcmp(matches[i].line.data + input.len, expected[i].data, expected[i].len));
 	}
@@ -442,6 +481,7 @@ int main(void)
 	struct autocomplete *catalog = autocomplete_create(&error);
 	assert(catalog && !error);
 	assert(!autocomplete_fixture(catalog));
+	autocomplete_labels(catalog);
 	autocomplete_only(catalog, CSTR_VIEW("/qu"), 3, CSTR_VIEW("/quit "), 6);
 	autocomplete_only(catalog, CSTR_VIEW("/quit"), 5, CSTR_VIEW("/quit "), 6);
 	autocomplete_only(catalog, CSTR_VIEW("/quit "), 5, CSTR_VIEW("/quit "), 6);

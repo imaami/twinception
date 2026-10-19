@@ -107,6 +107,11 @@ extern int
 cli_console_write (struct cli_console *console,
                    struct cstr_view    text);
 
+/** Reasoning has its own bounded buffer and viewport in the full-screen UI. */
+extern int
+cli_console_reasoning (struct cli_console *console,
+                       struct cstr_view    text);
+
 extern int
 cli_console_write_error (struct cstr_view text);
 

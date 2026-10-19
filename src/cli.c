@@ -125,7 +125,8 @@ cli_commands_text (struct dstr *text)
 			return ENOMEM;
 	}
 	if (!dstr_cat(text, "Tab completes; press twice to list choices.\n"
-	                   "PgUp/PgDn scroll; Ctrl-End follows output; Ctrl-R searches input history.\n"
+	                   "PgUp/PgDn search history; Alt-Up/Down or Ctrl-PgUp/PgDn scroll.\n"
+	                   "Alt-Left/Right selects a pane; Ctrl-End follows; Ctrl-R searches history.\n"
 	                   "End a line with \\ to continue it, or / to submit multiline input.\n"
 	                   "Ctrl-C cancels an answer or tool call. Direct tool results stay out of chat history."))
 		return ENOMEM;

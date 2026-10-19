@@ -7,6 +7,8 @@
 #ifndef TWINCEPTION_SRC_AUTOCOMPLETE_H_
 #define TWINCEPTION_SRC_AUTOCOMPLETE_H_
 
+#include <stdint.h>
+
 #include "cstr_view.h"
 
 struct autocomplete;
@@ -20,10 +22,24 @@ struct autocomplete_tool {
 	struct json_object *schema;
 };
 
-/** A full replacement line and the byte offset of its editing cursor. */
+enum autocomplete_kind : uint32_t {
+	AUTOCOMPLETE_COMMAND,
+	AUTOCOMPLETE_TOOL,
+	AUTOCOMPLETE_PARAMETER,
+	AUTOCOMPLETE_VALUE,
+	AUTOCOMPLETE_NAME,
+	AUTOCOMPLETE_FILE,
+	AUTOCOMPLETE_KIND_COUNT,
+};
+
+/** A full replacement line and the byte offset of its editing cursor.
+ * label_begin starts the suggested token, excluding already entered context.
+ * The displayed label ends at cursor, minus one appended separator space. */
 struct autocomplete_match {
-	struct cstr_view line;
-	size_t           cursor;
+	struct cstr_view       line;
+	size_t                 cursor;
+	uint32_t               label_begin;
+	enum autocomplete_kind kind;
 };
 
 /** Optional caller-owned diagnostic buffer. len is the number of bytes
