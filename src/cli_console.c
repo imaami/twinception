@@ -1707,6 +1707,7 @@ cli_console_write_pane (struct cli_console      *console,
 	console->dirty |= 1u << target;
 	if (pane->scrollback.offset)
 		console->dirty |= CLI_CONSOLE_PAINT_FRAME;
+	cli_loop_ready(console->loop, &console->input_step);
 	return e;
 }
 
