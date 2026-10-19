@@ -136,18 +136,12 @@ def check_saved_command_lock(cli):
     with Peer(lambda request: response("unexpected answer")) as peer:
         for interrupt in (True, False):
             with tempfile.TemporaryDirectory(prefix="askai-cli-saved-lock-") as directory:
-                master, slave = pty.openpty()
-                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-                before = termios.tcgetattr(slave)
-                environment = os.environ | {"TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8",
-                                            "INPUTRC": os.devnull}
-                proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off",
-                                         "--history-repo", directory, "--session-id", "saved-lock"],
-                                        stdin=slave, stdout=slave, stderr=slave, env=environment)
-                terminal = Terminal(proc, master)
+                terminal, master, slave, before = Terminal.spawn(
+                    cli, peer.socket, "--history-repo", directory, "--session-id", "saved-lock")
+                proc = terminal.proc
                 lock = -1
                 try:
-                    terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
+                    terminal.update(b"\x1b[?2004h", b"\x1b[24;3H")
                     paths = [directory + "/" + name for name in os.listdir(directory)
                              if name.startswith("cli-") and name.endswith(".lock") and name != "cli-init.lock"]
                     assert len(paths) == 1, paths
@@ -224,6 +218,30 @@ class Terminal:
         self.proc = proc
         self.fd = fd
         self.pending = b""
+        self.escape = b""
+        self.cursor = self.saved = (1, 1)
+        self.rows = {}
+
+    @classmethod
+    def spawn(cls, cli, socket, *arguments, columns=100, inputrc=os.devnull, color="off", environment=None):
+        master, slave = pty.openpty()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
+            before = termios.tcgetattr(slave)
+            environment = (os.environ if environment is None else environment) | {
+                "TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8", "INPUTRC": inputrc}
+            proc = subprocess.Popen([cli, "--socket", socket, "--color", color, *arguments],
+                                    stdin=slave, stdout=slave, stderr=slave, env=environment)
+        except BaseException:
+            os.close(master)
+            os.close(slave)
+            raise
+        return cls(proc, master), master, slave, before
+
+    def close(self, slave):
+        finish(self.proc)
+        os.close(self.fd)
+        os.close(slave)
 
     def expect(self, marker, timeout=5):
         deadline = time.monotonic() + timeout
@@ -237,6 +255,7 @@ class Terminal:
             except OSError as error:
                 raise AssertionError((marker, self.pending[-4096:], self.proc.poll())) from error
             assert chunk, (marker, self.pending[-4096:], self.proc.poll())
+            self.record(chunk)
             self.pending += chunk
         end = self.pending.index(marker) + len(marker)
         consumed = self.pending[:end]
@@ -248,7 +267,47 @@ class Terminal:
         while select.select([self.fd], [], [], timeout)[0]:
             chunk = os.read(self.fd, 65536)
             assert chunk, (output[-4096:], self.proc.poll())
+            self.record(chunk)
             output += chunk
+        return output
+
+    def record(self, chunk):
+        # ASCII editing checks use positioned cells; Unicode layout is checked
+        # separately with tmux's terminal emulator.
+        data = self.escape + chunk
+        while data:
+            match = re.match(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[^\[]|[^\x1b]+", data)
+            if not match:
+                break
+            token, data = match[0], data[match.end():]
+            position = re.fullmatch(rb"\x1b\[(\d+);(\d+)H", token)
+            if position:
+                self.cursor = tuple(map(int, position.groups()))
+            elif token == b"\x1b7":
+                self.saved = self.cursor
+            elif token == b"\x1b8":
+                self.cursor = self.saved
+            elif token == b"\x1b[2J":
+                self.rows.clear()
+            elif not token.startswith(b"\x1b"):
+                row, column = self.cursor
+                cells = self.rows.setdefault(row, bytearray(b" " * 512))
+                for byte in token:
+                    if byte == 13:
+                        column = 1
+                    elif 32 <= byte < 127:
+                        cells[column - 1] = byte
+                        column += 1
+                self.cursor = row, column
+        self.escape = data
+
+    def draft(self, text, point=None):
+        row = struct.unpack("HHHH", fcntl.ioctl(self.fd, termios.TIOCGWINSZ, b"\0" * 8))[0]
+        deadline, output = time.monotonic() + 5, self.drain()
+        while bytes(self.rows.get(row, b"")).rstrip() != (b"> " + text).rstrip() or \
+                (point is not None and self.cursor != (row, 3 + point)):
+            assert time.monotonic() < deadline, (text, self.rows.get(row), self.cursor, output)
+            output += self.drain()
         return output
 
     def update(self, *markers, timeout=5):
@@ -263,7 +322,7 @@ class Terminal:
 class Tmux:
     """Use tmux's terminal emulator without touching any existing server."""
 
-    def __init__(self, cli, socket, *arguments, columns=100, rows=24):
+    def __init__(self, cli, socket, *arguments, columns=100, rows=24, color="off", inputrc=os.devnull):
         self.directory = tempfile.TemporaryDirectory(prefix="askai-cli-tmux-")
         self.socket = self.directory.name + "/tmux.sock"
         self.pane = "events:0.0"
@@ -278,8 +337,8 @@ class Tmux:
             self.run("set-option", "-w", "-t", "events:0", "remain-on-exit", "on")
             self.run("set-option", "-w", "-t", "events:0", "window-size", "manual")
             invocation = shlex.join(["env", "TERM=screen.xterm-256color", "LC_ALL=C.UTF-8",
-                                     "INPUTRC=" + os.devnull, cli, "--socket", socket,
-                                     "--no-history", "--color", "off", *arguments])
+                                     "HOME=" + self.directory.name, "INPUTRC=" + inputrc,
+                                     cli, "--socket", socket, "--no-history", "--color", color, *arguments])
             self.run("respawn-pane", "-k", "-t", self.pane, invocation)
         except BaseException:
             self.__exit__()
@@ -409,17 +468,17 @@ def check_tui_drafts(cli):
             os.write(master, b"\r")
             terminal.expect(b"answer-two")
             assert prompts == ["first", draft + "\n"], prompts
-            terminal.expect(b"askai | ready")
+            terminal.expect(b"ready")
 
             restored = b"undo recovered"
             os.write(master, b"\x1b[200~" + restored + b"\x1b[201~")
             terminal.expect(restored)
             proc.send_signal(signal.SIGINT)
-            terminal.expect(b"> \x1b[K")
+            terminal.draft(b"", point=0)
             os.write(master, b"\x1f\r")
             terminal.expect(b"answer-three")
             assert prompts[-1] == restored.decode() + "\n", prompts
-            terminal.expect(b"askai | ready")
+            terminal.expect(b"ready")
             os.write(master, b"/exit\r")
             assert proc.wait(timeout=5) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "exit did not restore terminal settings"
@@ -450,26 +509,24 @@ def check_partial_paste(cli):
         return 200, "text/event-stream", sse_wire(events)
 
     with Peer(reply) as peer:
-        master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-        before = termios.tcgetattr(slave)
-        environment = os.environ | {"TERM": "xterm-256color", "LC_ALL": "C.UTF-8",
-                                    "INPUTRC": os.devnull}
-        proc = subprocess.Popen([cli, "--socket", peer.socket, "--no-history", "--color", "off",
-                                 "--prompt", "reply while I paste"], stdin=slave, stdout=slave,
-                                stderr=slave, env=environment)
-        terminal = Terminal(proc, master)
+        terminal, master, slave, before = Terminal.spawn(
+            cli, peer.socket, "--no-history", "--prompt", "reply while I paste")
+        proc = terminal.proc
         try:
             terminal.expect(b"\x1b[?2004h")
             assert arrived.wait(5), "CLI did not submit the first prompt"
-            terminal.update(b"askai | working")
+            terminal.update(b"working")
             os.write(master, b"z")
-            typed = terminal.update(b"> z\x1b[K")
+            typed = terminal.draft(b"z", point=1)
             positions = re.findall(rb"\x1b\[(\d+);(\d+)H", typed)
             assert positions and all(row == b"24" for row, column in positions), typed
             assert b"\x1b[?25" not in typed and b"Conversation" not in typed, typed
+            os.write(master, b"x")
+            typed = terminal.draft(b"zx", point=2)
+            assert re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[78]", b"", typed) == b"x", typed
+            assert b"\x1b[K" not in typed and b"\x1b[2J" not in typed, typed
             os.write(master, b"\x01\x0b")
-            terminal.update(b"> \x1b[K")
+            terminal.draft(b"", point=0)
             os.write(master, b"\x1b[200~unfinished draft")
 
             def input_consumed():
@@ -486,6 +543,9 @@ def check_partial_paste(cli):
             positions = re.findall(rb"\x1b\[(\d+);(\d+)H", streamed)
             assert not any(2 <= int(row) <= 21 and int(column) >= 60 for row, column in positions), streamed
             assert b"\x1b[?25" not in streamed and b"> " not in streamed, streamed
+            assert b"\x1b7" in streamed and b"\x1b8" in streamed, streamed
+            assert all(row != b"24" for row, column in positions), streamed
+            assert b"\x1b[K" not in streamed and b"\x1b[2J" not in streamed, streamed
             assert "│".encode() not in streamed and b"Reasoning" not in streamed, streamed
             assert proc.poll() is None, "partial paste unexpectedly ended the client"
             proc.send_signal(signal.SIGTERM)
@@ -493,9 +553,7 @@ def check_partial_paste(cli):
             assert termios.tcgetattr(slave) == before, "partial paste shutdown did not restore the terminal"
         finally:
             release.set()
-            finish(proc)
-            os.close(master)
-            os.close(slave)
+            terminal.close(slave)
     print("cli events: typing and streaming update only changed regions, and TERM interrupts an incomplete paste: PASS", flush=True)
 
 
@@ -513,28 +571,17 @@ def check_keyboard(cli):
         return response("keyboard-answer-two" if len(prompts) == 2 else "keyboard-answer-three")
 
     with Peer(reply) as peer, tempfile.TemporaryDirectory(prefix="askai-cli-keys-") as directory:
-        master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-        before = termios.tcgetattr(slave)
         inputrc = directory + "/inputrc"
         with open(inputrc, "w") as bindings:
             bindings.write('"\\e[5~": history-search-backward\n"\\e[6~": history-search-forward\n')
             bindings.write('"\\C-t": accept-line\n')
-        environment = os.environ | {"TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8",
-                                    "INPUTRC": inputrc}
-        proc = subprocess.Popen([cli, "--socket", peer.socket, "--no-history", "--color", "off"],
-                                stdin=slave, stdout=slave, stderr=slave, env=environment)
-        terminal = Terminal(proc, master)
+        terminal, master, slave, before = Terminal.spawn(
+            cli, peer.socket, "--no-history", inputrc=inputrc)
+        proc = terminal.proc
 
         def editable(phase):
             flags = termios.tcgetattr(slave)[3]
             assert not flags & (termios.ICANON | termios.ECHO), (phase, flags)
-
-        def draft(text, point=None):
-            # Require the actual input row, not an occurrence in a previous
-            # transcript or an echoed command. All drafts fit one row.
-            cursor = b"" if point is None else str(3 + point).encode() + b"H"
-            return terminal.expect(b"> " + text + b"\x1b[K\x1b[24;" + cursor)
 
         def type_text(text, prefix=b""):
             # Real keystrokes take separate turns. A paste or a whole line
@@ -542,10 +589,10 @@ def check_keyboard(cli):
             for byte in text:
                 os.write(master, bytes([byte]))
                 prefix += bytes([byte])
-                draft(prefix)
+                terminal.draft(prefix)
 
         try:
-            terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
+            terminal.update(b"\x1b[?2004h", b"\x1b[24;3H")
             editable("initial prompt")
             type_text(b"/")
             for listed in range(3):
@@ -562,14 +609,14 @@ def check_keyboard(cli):
                 assert output.count(b"/clear") == 1, "second Tab redrew old completion listings"
                 assert b"Completions:" not in output, "completion listing has an unnecessary heading"
             os.write(master, b"h")
-            draft(b"/h")
+            terminal.draft(b"/h")
             type_text(b"e", prefix=b"/h")
             os.write(master, b"\t")
-            draft(b"/help ", point=len(b"/help "))
+            terminal.draft(b"/help ", point=len(b"/help "))
             os.write(master, b"x")
-            draft(b"/help x")
+            terminal.draft(b"/help x")
             os.write(master, b"\x7f")
-            draft(b"/help ")
+            terminal.draft(b"/help ")
             editable("completed command")
             os.write(master, b"\r")
             terminal.update(b"/regen")
@@ -577,13 +624,16 @@ def check_keyboard(cli):
             assert not prompts, prompts
 
             type_text(b"hi")
-            os.write(master, b"\r")
-            assert arrived.wait(5), "ordinary Enter did not submit hi"
-            terminal.expect(b"askai | working")
+            os.write(master, b"\r\n")
+            assert arrived.wait(5), "CRLF did not submit hi"
+            terminal.expect(b"working")
+            os.write(master, b"\r\n\x14")
+            terminal.draft(b"")
+            assert b"working" in terminal.rows[23], "blank Enter occupied the pending input slot"
             editable("while first answer is pending")
             type_text(b"queued second")
             os.write(master, b"\r")
-            draft(b"")
+            terminal.draft(b"")
             editable("after queuing a line while busy")
             type_text(b"acx")
             os.write(master, b"\r")
@@ -597,58 +647,56 @@ def check_keyboard(cli):
             terminal.drain()
             editable("after custom accept-line with a queued line")
             os.write(master, b"\x7f")
-            draft(b"ac")
+            terminal.draft(b"ac")
             os.write(master, b"\x1b[D")
             os.write(master, b"b")
-            draft(b"abc")
+            terminal.draft(b"abc")
             os.write(master, b"\x1b[C")
             os.write(master, b"X")
-            draft(b"abcX")
+            terminal.draft(b"abcX")
             os.write(master, b"\x08")
-            draft(b"abc")
+            terminal.draft(b"abc")
             os.write(master, b"\x1bOD")
             os.write(master, b"Y")
-            draft(b"abYc")
+            terminal.draft(b"abYc")
             os.write(master, b"\x1bOC")
             os.write(master, b"D")
-            draft(b"abYcD")
+            terminal.draft(b"abYcD")
             os.write(master, b"\x7f")
-            draft(b"abYc")
+            terminal.draft(b"abYc")
             os.write(master, b"\x01h\x05")
-            draft(b"habYc")
+            terminal.draft(b"habYc")
             editable("after erase and cursor keys")
 
             release.set()
             terminal.expect(b"keyboard-answer-one")
             terminal.expect(b"keyboard-answer-two")
-            terminal.expect(b"askai | ready")
+            terminal.expect(b"ready")
             editable("after the queued answer")
             assert prompts == ["hi\n", "queued second\n"], prompts
             os.write(master, b"\r")
             terminal.expect(b"keyboard-answer-three")
-            terminal.expect(b"askai | ready")
+            terminal.expect(b"ready")
             editable("after third answer")
             assert prompts == ["hi\n", "queued second\n", "habYc\n"], prompts
             type_text(b"h")
             os.write(master, b"\x1b[5~")
-            draft(b"habYc")
+            terminal.draft(b"habYc")
             os.write(master, b"\x1b[5~")
-            draft(b"hi")
+            terminal.draft(b"hi")
             os.write(master, b"\x1b[6~")
-            draft(b"habYc")
+            terminal.draft(b"habYc")
             os.write(master, b"\x01\x0b")
-            draft(b"")
+            terminal.draft(b"")
             type_text(b"/qu")
             os.write(master, b"\t")
-            draft(b"/quit ", point=len(b"/quit "))
+            terminal.draft(b"/quit ", point=len(b"/quit "))
             os.write(master, b"\r")
             assert proc.wait(timeout=5) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "ordinary keyboard exit did not restore the terminal"
         finally:
             release.set()
-            finish(proc)
-            os.close(master)
-            os.close(slave)
+            terminal.close(slave)
     print("cli events: ordinary Tab/Enter/erase/arrows remain editable across busy and completed turns: PASS", flush=True)
 
 
@@ -669,20 +717,14 @@ def check_queued_input(cli):
             return response(f"queue-answer-{index}")
 
         with Peer(reply) as peer, tempfile.TemporaryDirectory(prefix="askai-cli-queue-") as directory:
-            master, slave = pty.openpty()
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-            before = termios.tcgetattr(slave)
             inputrc = directory + "/inputrc"
             with open(inputrc, "w") as bindings:
-                bindings.write('"\\C-t": "macro first\\C-mmacro second\\C-m"\n')
-            environment = os.environ | {"TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8",
-                                        "INPUTRC": inputrc}
-            proc = subprocess.Popen([cli, "--socket", peer.socket, "--no-history", "--color", "off",
-                                     "--prompt", "initial"], stdin=slave, stdout=slave,
-                                    stderr=slave, env=environment)
-            terminal = Terminal(proc, master)
+                bindings.write('"\\C-t": "\\C-mmacro first\\C-m\\C-mmacro second\\C-m"\n')
+            terminal, master, slave, before = Terminal.spawn(
+                cli, peer.socket, "--no-history", "--prompt", "initial", inputrc=inputrc)
+            proc = terminal.proc
             try:
-                terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
+                terminal.update(b"\x1b[?2004h", b"\x1b[24;3H")
                 assert arrived[0].wait(5), "initial request did not arrive"
                 os.write(master, b"\x14" if macro else b"queued before eof\r")
                 terminal.expect(b"1 queued")
@@ -698,7 +740,7 @@ def check_queued_input(cli):
                     release[index].set()
                     terminal.expect(f"queue-answer-{index}".encode())
                 if macro:
-                    terminal.expect(b"askai | ready")
+                    terminal.expect(b"ready")
                     os.write(master, b"\x04")
                 assert proc.wait(timeout=5) == 0, (macro, proc.returncode)
                 assert prompts == expected, (macro, prompts)
@@ -706,9 +748,7 @@ def check_queued_input(cli):
             finally:
                 for event in release:
                     event.set()
-                finish(proc)
-                os.close(master)
-                os.close(slave)
+                terminal.close(slave)
     print("cli events: queued input precedes EOF and multi-line macros resume in order: PASS", flush=True)
 
 
@@ -732,20 +772,12 @@ def check_chat_completion(cli):
         return response("rx6900xt/anonymous/upstream\nrx9070xt/anonymous/upstream\n")
 
     with Peer(reply, methods) as peer:
-        master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-        before = termios.tcgetattr(slave)
-        environment = os.environ | {"TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8",
-                                    "INPUTRC": os.devnull}
-        proc = subprocess.Popen([cli, "--socket", peer.socket, "--no-history", "--color", "off"],
-                                stdin=slave, stdout=slave, stderr=slave, env=environment)
-        terminal = Terminal(proc, master)
-
-        def draft(text):
-            terminal.expect(b"> " + text + b"\x1b[K\x1b[24;" + str(3 + len(text)).encode() + b"H")
+        terminal, master, slave, before = Terminal.spawn(
+            cli, peer.socket, "--no-history")
+        proc = terminal.proc
 
         try:
-            terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
+            terminal.update(b"\x1b[?2004h", b"\x1b[24;3H")
             os.write(master, b"/names\r")
             terminal.expect(b"Known session participants: rx6900xt rx9070xt")
             for prefix, completed in ((b"@rx", b"@rx6900xt "),
@@ -753,22 +785,20 @@ def check_chat_completion(cli):
                                       (b"/tool notebook_service participant=rx9",
                                        b"/tool notebook_service participant=rx9070xt ")):
                 os.write(master, prefix)
-                draft(prefix)
+                terminal.draft(prefix, point=len(prefix))
                 os.write(master, b"\t")
-                draft(completed)
+                terminal.draft(completed, point=len(completed))
                 os.write(master, b"x")
-                draft(completed + b"x")
+                terminal.draft(completed + b"x", point=len(completed) + 1)
                 os.write(master, b"\x01\x0b")
-                draft(b"")
+                terminal.draft(b"", point=0)
             os.write(master, b"/quit\r")
             assert proc.wait(timeout=3) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "completion exit did not restore terminal settings"
             calls = [request for request in peer.requests if request["method"] == "tools/call"]
             assert len(calls) == 1, calls
         finally:
-            finish(proc)
-            os.close(master)
-            os.close(slave)
+            terminal.close(slave)
     print("cli events: chat mentions use the connected GPU while notebook completion retains all participants: PASS", flush=True)
 
 
@@ -813,18 +843,13 @@ def check_fullscreen_colors(cli):
 
     for color, no_color in (("on", False), ("off", False), ("auto", True)):
         with Peer(reply) as peer:
-            master, slave = pty.openpty()
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-            before = termios.tcgetattr(slave)
-            environment = os.environ | {"TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8",
-                                        "INPUTRC": os.devnull}
+            environment = os.environ.copy()
             environment.pop("NO_COLOR", None)
             if no_color:
                 environment["NO_COLOR"] = "1"
-            proc = subprocess.Popen([cli, "--socket", peer.socket, "--no-history", "--color", color,
-                                     "--prompt", "color request"], stdin=slave, stdout=slave,
-                                    stderr=slave, env=environment)
-            terminal = Terminal(proc, master)
+            terminal, master, slave, before = Terminal.spawn(
+                cli, peer.socket, "--no-history", "--prompt", "color request", color=color, environment=environment)
+            proc = terminal.proc
 
             def check(output, draft=False):
                 if color == "on":
@@ -843,7 +868,7 @@ def check_fullscreen_colors(cli):
                                    for code in codes), (color, no_color, output)
 
             try:
-                output = terminal.update(answer.encode(), b"askai | ready")
+                output = terminal.update(answer.encode(), b"ready")
                 check(output)
                 os.write(master, b"/tools absent\r")
                 output += terminal.update(b"No accessible tool named absent")
@@ -857,9 +882,7 @@ def check_fullscreen_colors(cli):
                 assert proc.wait(timeout=3) == 0, (color, no_color, proc.returncode)
                 assert termios.tcgetattr(slave) == before, "color exit did not restore terminal settings"
             finally:
-                finish(proc)
-                os.close(master)
-                os.close(slave)
+                terminal.close(slave)
     print("cli events: full-screen colors survive redraw and obey --color off and NO_COLOR: PASS", flush=True)
 
 
@@ -953,7 +976,7 @@ def check_panels(cli):
 
     with Peer(reply, methods) as peer:
         try:
-            with Tmux(cli, peer.socket, "--prompt", "initial panels") as terminal:
+            with Tmux(cli, peer.socket, "--prompt", "initial panels", color="on", inputrc="") as terminal:
                 assert initializing.wait(5), "initialization did not reach the peer"
                 early = terminal.screen(lambda rows: len(rows) == 24 and rows[-1] == ">",
                                         "input row was not drawn while initialization waited")
@@ -994,9 +1017,14 @@ def check_panels(cli):
                 updated = terminal.screen(lambda rows: "answer-new" in "\n".join(pane(rows, 0)) and
                                           "ready" in rows[-2], "conversation did not follow its new answer")
                 assert pane(updated, 1) == right, "new reasoning moved a scrolled viewport"
-                terminal.keys("C-End")
-                followed = terminal.screen(lambda rows: "reason-new" in "\n".join(pane(rows, 1)),
-                                           "Ctrl-End did not resume following reasoning")
+                for end in (["C-End"], ["-H", "1b", "5b", "34", "3b", "35", "7e"],
+                            ["-H", "1b", "5b", "38", "3b", "35", "7e"], ["-H", "1b", "5b", "38", "5e"]):
+                    terminal.keys("C-PPage")
+                    terminal.screen(lambda rows: "reason-new" not in "\n".join(pane(rows, 1)),
+                                    "reasoning did not scroll before Ctrl-End")
+                    terminal.keys(*end)
+                    followed = terminal.screen(lambda rows: "reason-new" in "\n".join(pane(rows, 1)),
+                                               "Ctrl-End did not resume following reasoning: " + " ".join(end))
                 right = pane(followed, 1)
                 left = pane(followed, 0)
                 terminal.text("retained draft")
@@ -1094,21 +1122,15 @@ def check_busy_commands(cli):
         return response("queued-answer-finished")
 
     with Peer(reply, methods) as peer:
-        master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 160, 0, 0))
-        before = termios.tcgetattr(slave)
-        environment = os.environ | {"TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8",
-                                    "INPUTRC": os.devnull}
-        proc = subprocess.Popen([cli, "--socket", peer.socket, "--no-history", "--color", "off",
-                                 "--prompt", "history-seed"], stdin=slave, stdout=slave,
-                                stderr=slave, env=environment)
-        terminal = Terminal(proc, master)
+        terminal, master, slave, before = Terminal.spawn(
+            cli, peer.socket, "--no-history", "--prompt", "history-seed", columns=160)
+        proc = terminal.proc
         try:
             terminal.expect(b"history-answer-visible")
-            terminal.expect(b"askai | ready")
+            terminal.expect(b"ready")
             os.write(master, b"held-generation\r")
             assert arrived.wait(5), "generation did not start"
-            terminal.expect(b"askai | working")
+            terminal.expect(b"working")
             requests = len(peer.requests)
             for queued in (False, True):
                 if queued:
@@ -1131,16 +1153,14 @@ def check_busy_commands(cli):
             release.set()
             terminal.expect(b"held-answer-finished")
             terminal.expect(b"queued-answer-finished")
-            terminal.expect(b"askai | ready")
+            terminal.expect(b"ready")
             assert prompts == ["history-seed", "held-generation\n", "queued-prompt-preserved\n"], prompts
             os.write(master, b"/quit\r")
             assert proc.wait(timeout=3) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "local-command exit did not restore terminal settings"
         finally:
             release.set()
-            finish(proc)
-            os.close(master)
-            os.close(slave)
+            terminal.close(slave)
     print("cli events: local commands run during generation and preserve a queued prompt: PASS", flush=True)
 
 
@@ -1160,17 +1180,11 @@ def check_busy_quit(cli):
             return None
 
         with Peer(reply, methods) as peer:
-            master, slave = pty.openpty()
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-            before = termios.tcgetattr(slave)
-            environment = os.environ | {"TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8",
-                                        "INPUTRC": os.devnull}
-            proc = subprocess.Popen([cli, "--socket", peer.socket, "--no-history", "--color", "off",
-                                     "--prompt", "held-generation"], stdin=slave, stdout=slave,
-                                    stderr=slave, env=environment)
-            terminal = Terminal(proc, master)
+            terminal, master, slave, before = Terminal.spawn(
+                cli, peer.socket, "--no-history", "--prompt", "held-generation")
+            proc = terminal.proc
             try:
-                terminal.update(b"\x1b[?2004h", b"> \x1b[K\x1b[24;")
+                terminal.update(b"\x1b[?2004h", b"\x1b[24;3H")
                 assert arrived.wait(5), "generation did not start"
                 os.write(master, b"queued-prompt\r")
                 terminal.expect(b"1 queued")
@@ -1183,9 +1197,7 @@ def check_busy_quit(cli):
                 assert len(calls) == 1, (name, calls)
             finally:
                 release.set()
-                finish(proc)
-                os.close(master)
-                os.close(slave)
+                terminal.close(slave)
     print("cli events: /quit and /exit stop held generation with a queued prompt and restore the terminal: PASS", flush=True)
 
 
@@ -1213,23 +1225,17 @@ def check_interrupt_commands(cli):
             return None
 
         with Peer(reply, methods) as peer:
-            master, slave = pty.openpty()
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-            before = termios.tcgetattr(slave)
-            environment = os.environ | {"TERM": "screen.xterm-256color", "LC_ALL": "C.UTF-8",
-                                        "INPUTRC": os.devnull}
-            proc = subprocess.Popen([cli, "--socket", peer.socket, "--no-history", "--color", "off",
-                                     "--prompt", "first-seed"], stdin=slave, stdout=slave,
-                                    stderr=slave, env=environment)
-            terminal = Terminal(proc, master)
+            terminal, master, slave, before = Terminal.spawn(
+                cli, peer.socket, "--no-history", "--prompt", "first-seed")
+            proc = terminal.proc
             try:
                 for marker, entered in ((b"first-seed-answer", b"second-seed\r"),
                                         (b"second-seed-answer", b"held-turn\r")):
                     terminal.expect(marker)
-                    terminal.expect(b"askai | ready")
+                    terminal.expect(b"ready")
                     os.write(master, entered)
                 assert arrived.wait(5), "generation did not start"
-                terminal.expect(b"askai | working")
+                terminal.expect(b"working")
                 if name == b"/clear":
                     os.write(master, b"after-clear\r")
                     terminal.expect(b"1 queued")
@@ -1238,7 +1244,7 @@ def check_interrupt_commands(cli):
                 if name == b"/clear":
                     terminal.expect(b"Conversation cleared.", timeout=2)
                 terminal.expect(b"replacement-answer", timeout=2)
-                terminal.expect(b"askai | ready")
+                terminal.expect(b"ready")
                 assert not release.is_set(), "held response was released before interruption completed"
                 assert len(calls) == 4, (name, calls)
                 arguments = calls[3]["params"]["arguments"]
@@ -1252,7 +1258,7 @@ def check_interrupt_commands(cli):
                     assert arguments["messages"] == first, arguments
                     os.write(master, b"history-probe\r")
                     terminal.expect(b"probe-answer")
-                    terminal.expect(b"askai | ready")
+                    terminal.expect(b"ready")
                     assert len(calls) == 5, calls
                     probe = calls[4]["params"]["arguments"]
                     assert probe["prompt"] == "history-probe\n", probe
@@ -1264,9 +1270,7 @@ def check_interrupt_commands(cli):
                 assert termios.tcgetattr(slave) == before, (name, "terminal settings were not restored")
             finally:
                 release.set()
-                finish(proc)
-                os.close(master)
-                os.close(slave)
+                terminal.close(slave)
     print("cli events: /clear and /regen cancel active work and preserve the intended conversation history: PASS", flush=True)
 
 

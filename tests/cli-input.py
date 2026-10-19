@@ -225,13 +225,13 @@ def check_completion_cursor(binary):
         console.line(b"/qu stale" + LEFT * 6 + b"\tX\r", "/quit Xstale\n")
         console.line(b"/quit   stale" + LEFT * 8 + b"\tX\r", "/quit X  stale\n")
         console.send(b"/read\t\tX")
-        console.until(lambda: b"> /read X\x1b[K" in console.output)
+        console.until(lambda: b"/read X" in console.output and b"\x1b[24;10H" in console.output)
         assert b"/read inputrc" not in console.output, "second Tab listed the next argument"
         console.line(b"\r", "/read X\n")
         console.finish()
     with Console(binary, "--catalog") as console:
         console.send(b"/tools\t\tX")
-        console.until(lambda: b"> /tools X\x1b[K" in console.output)
+        console.until(lambda: b"/tools X" in console.output and b"\x1b[24;11H" in console.output)
         assert b"/tools git" not in console.output, "second Tab completed the next argument"
         console.line(b"\r", "/tools X\n")
         console.finish()

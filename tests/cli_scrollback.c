@@ -183,9 +183,8 @@ cli_scrollback_test_cache (void)
 	assert(!dstr_len(&frame));
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("!"), CLI_STYLE_USER_INPUT));
 	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, true, cache, &frame));
-	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[3;1H"), cli_style_sequence(CLI_STYLE_REASONING), CSTR_VIEW("third"),
-	                     cli_style_sequence(CLI_STYLE_USER_INPUT), CSTR_VIEW("!"),
-	                     cli_style_sequence(CLI_STYLE_TEXT), CSTR_VIEW("  "));
+	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[3;6H"), cli_style_sequence(CLI_STYLE_USER_INPUT),
+	                     CSTR_VIEW("!"), cli_style_sequence(CLI_STYLE_TEXT));
 	dstr_clear(&frame);
 	for (size_t i = 0; i < 3; ++i)
 		dstr_clear(&cache[i]);

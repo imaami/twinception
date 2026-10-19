@@ -63,9 +63,8 @@ cli_ui_push (struct cli_ui    *ui,
 			return e;
 		ui->reasoning = thinking;
 	}
-	e = cli_ui_write(ui, thinking, text);
 	ui->trailing_newline = text.data[text.len - 1] == '\n';
-	return e ? e : cli_console_flush(ui->console);
+	return cli_ui_write(ui, thinking, text);
 }
 
 static int
@@ -74,22 +73,22 @@ cli_ui_write_action (struct cli_ui    *ui,
                      struct cstr_view  text,
                      enum cli_style    style)
 {
+	dstr_auto line = dstr("* ");
+	if (!dstr_cat_n(&line, actor.data, actor.len) || !dstr_cat(&line, " ") ||
+	    !dstr_cat_n(&line, text.data, text.len) || !dstr_cat(&line, "\n"))
+		return ENOMEM;
+	struct cstr_view content = cstr_view_dstr(&line);
+	size_t split = style == CLI_STYLE_TOOL_STATUS ? actor.len + 2 : content.len;
 	int e = cli_console_set_display(ui->console, style == CLI_STYLE_TOOL_STATUS ? CLI_STYLE_TOOL_ACTOR : style);
 	if (!e)
-		e = cli_console_write(ui->console, CSTR_VIEW("* "));
-	if (!e)
-		e = cli_console_write(ui->console, actor);
-	if (!e)
+		e = cli_console_write(ui->console, cstr_view_slice(content, 0, split));
+	if (!e && split < content.len) {
 		e = cli_console_set_display(ui->console, style);
-	if (!e)
-		e = cli_console_write(ui->console, CSTR_VIEW(" "));
-	if (!e)
-		e = cli_console_write(ui->console, text);
-	if (!e)
-		e = cli_console_write(ui->console, CSTR_VIEW("\n"));
+		if (!e)
+			e = cli_console_write(ui->console, cstr_view_slice(content, split, SIZE_MAX));
+	}
 	int reset = cli_console_set_display(ui->console, CLI_STYLE_RESET);
-	int flush = cli_console_flush(ui->console);
-	return e ? e : reset ? reset : flush;
+	return e ? e : reset;
 }
 
 int
@@ -107,8 +106,7 @@ cli_ui_finish (struct cli_ui *ui)
 	dstr_clear(&ui->actor);
 	dstr_clear(&ui->status);
 	ui->streaming = ui->shown = ui->pending = false;
-	int flush = cli_console_flush(ui->console);
-	return e ? e : reset ? reset : flush;
+	return e ? e : reset;
 }
 
 void
@@ -158,13 +156,14 @@ cli_ui_write_message (struct cli_console *console,
                       struct cstr_view    text,
                       enum cli_style      display)
 {
+	dstr_auto line = dstr(nullptr);
+	if (!dstr_cat_n(&line, text.data, text.len) || !dstr_cat(&line, "\n"))
+		return ENOMEM;
 	int e = cli_console_set_display(console, display);
 	if (!e)
-		e = cli_console_write(console, text);
-	if (!e)
-		e = cli_console_write(console, CSTR_VIEW("\n"));
+		e = cli_console_write(console, cstr_view_dstr(&line));
 	int reset = cli_console_set_display(console, CLI_STYLE_RESET);
-	return e ? e : reset ? reset : cli_console_flush(console);
+	return e ? e : reset;
 }
 
 int
@@ -186,12 +185,9 @@ cli_ui_error (struct cli_console *console,
               struct cstr_view    title,
               struct cstr_view    detail)
 {
-	struct cstr_view parts[] = {CSTR_VIEW("Error: "), title, CSTR_VIEW("\n"), detail, CSTR_VIEW("\n")};
-	size_t count = detail.len ? sizeof parts / sizeof *parts : 3;
-	for (size_t i = 0; i < count; ++i) {
-		int e = cli_console_error(console, parts[i]);
-		if (e)
-			return e;
-	}
-	return cli_console_flush(console);
+	dstr_auto line = dstr("Error: ");
+	if (!dstr_cat_n(&line, title.data, title.len) || !dstr_cat(&line, "\n") ||
+	    (detail.len && (!dstr_cat_n(&line, detail.data, detail.len) || !dstr_cat(&line, "\n"))))
+		return ENOMEM;
+	return cli_console_error(console, cstr_view_dstr(&line));
 }

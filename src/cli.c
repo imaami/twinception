@@ -897,37 +897,22 @@ cli_tool_call (struct cli       *cli,
 static int
 cli_history_show (struct cli *cli)
 {
-	int e = 0;
-	struct dstr label = DSTR_INIT;
-
-	do {
-		if (!dstr_cat(&label, dstr_get(&cli->client.tool)) || !dstr_cat(&label, ":")) {
-			e = ENOMEM;
-			break;
-		}
-
-		for (size_t i = 0, count = json_object_array_length(cli->history); i < count; ++i) {
-			struct json_object *turn = jb_at(cli->history, i);
-			e = cli_ui_info(cli->console, CSTR_VIEW("you:"));
-			if (e)
-				break;
-
+	dstr_auto label = dstr(nullptr);
+	if (!dstr_printf(&label, "%s:", dstr_get(&cli->client.tool)))
+		return ENOMEM;
+	for (size_t i = 0, count = json_object_array_length(cli->history); i < count; ++i) {
+		struct json_object *turn = jb_at(cli->history, i);
+		int e = cli_ui_info(cli->console, CSTR_VIEW("you:"));
+		if (!e)
 			e = cli_ui_message(cli->console, cli_client_text(jb_get(turn, "prompt")));
-			if (e)
-				break;
-
+		if (!e)
 			e = cli_ui_info(cli->console, cstr_view_dstr(&label));
-			if (e)
-				break;
-
+		if (!e)
 			e = cli_ui_message(cli->console, cli_client_text(jb_get(turn, "answer")));
-			if (e)
-				break;
-		}
-	} while (0);
-
-	dstr_cleanup(&label);
-	return e ? e : cli_console_flush(cli->console);
+		if (e)
+			return e;
+	}
+	return 0;
 }
 
 static int
