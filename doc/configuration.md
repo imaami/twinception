@@ -647,7 +647,7 @@ tools:
 
 | Tool | What it does | When the turns get it |
 | ---- | ------------ | --------------------- |
-| `notes` | adds, lists and reads the notes of a thread | in every call with `notes` |
+| `notes` | writes, lists and reads shared session notebooks | in every call with `notes` |
 | `compact` | replaces the conversation after the prompt with a summary | with any other tool |
 | `background` | runs a call of a tool as a job, and returns the number of the job at once | with a tool that can run in the background |
 | `jobs` | lists the jobs, returns the output of a finished job, or cancels a job | with a tool that can run in the background |
@@ -1238,6 +1238,31 @@ begin with a dot.  `askai` refuses two repositories with the same name.
 With `upstream-tools`, the upstream may call `git` too, as the role of the
 client allows.
 
+Use `help: true` with a command to get its allowed options, argument
+limits and source selection without running it.  Each line below is a
+separate `git` tool call's arguments:
+
+```jsonl
+{"repo":"proj","command":"grep","help":true}
+{"repo":"proj","command":"status"}
+{"repo":"proj","command":"grep","options":["-n","-F","-C3"],"pattern":"journal_write","paths":["src/"]}
+```
+
+`status` reports the branch and staged, unstaged and untracked paths in
+porcelain v1 format without refreshing the index.  `grep` searches tracked
+working-tree files by default; add `--untracked` to include untracked
+files, `--cached` to search the index, or `"revisions":["HEAD"]` to search
+the committed tree.  `-F` means literal search, `-E` extended regex, and
+`-C3` three lines of context.  Option values stay attached in one array
+entry.  To read a committed file, use `command: "show"` with
+`"revisions":["HEAD:src/journal.c"]`; `":src/journal.c"` selects the index
+copy.  An immutable commit ID can replace `HEAD` for repeatable reads.
+
+Git output is captured up to 4 MiB.  An agent's response window may be
+smaller; its footer gives the exact next `offset` to use with the same
+arguments.  A successful search with no matches says `[No matches.]`;
+other nonzero Git exits are reported as errors.
+
 #### `git-timeout`
 
 The member of the file is `tools.git.timeout`.  The value is an integer
@@ -1261,17 +1286,30 @@ stops with exit status 2.  Clients get `notes` as their role allows.  With
 
 The configured `participant`, caller identity and client/upstream side
 select the caller's writable notebook branch.  Callers can read every
-notebook in the shared session, but can only add notes to their own.
-`{"action":"notebooks"}` lists the notebooks.  `notebook` selects one
-for `list`, `read`, `copy` or `attach`; `own` is the default, `other` means
-the other side of the same participant and identity, and an explicit
-`PARTICIPANT/WHO/SIDE` selects another notebook.  The action `copy` adds a
-byte-for-byte copy to the caller's own notebook.  With the APIs `generate`
+notebook in the shared session, but can only write their own.
+`{"action":"notebooks"}` identifies the caller's writable notebook even
+before its first note, and lists peers as read-only.  `notebook` selects one
+for `list`, `history`, `read`, `copy` or `attach`; `own` is the default,
+and an explicit `PARTICIPANT/WHO/SIDE` selects another notebook.  Agents
+receive their participant and writable selector in their initial prompt,
+and reads identify the source notebook separately from the note's contents.
+For compatibility, clients can also use `other` for the opposite side of
+the same participant and identity.
+
+`add` creates a new file and refuses an existing name.  `replace` updates
+an existing file in the caller's own notebook, adding a Git commit that
+preserves its previous contents.  Concurrent writes that race to update
+the same branch fail rather than discard another writer's changes.
+`list` shows each current file once, with its byte count and blob identity;
+`history` shows changes oldest first, with the lines added by each change.
+`copy` adds a byte-for-byte copy to the caller's own notebook.  Agents must
+name the source notebook explicitly; clients retain `other` as the default
+source.  With the APIs `generate`
 and `interactions`, the model also gets the action `attach`, which uploads a
 note to Gemini's Files API at the root of the API in the upstream's URL,
 the part before `/v1beta/`, and gives it to the model as a file.  A client
-adds a file that its program attaches, of at most 4 MiB, or less with a
-small `max-body`, with the argument `content`, by the MCP extension
+adds or replaces a file that its program attaches, of at most 4 MiB, or
+less with a small `max-body`, with the argument `content`, by the MCP extension
 `io.modelcontextprotocol/files` (section [Lending tools to the
 upstream](../README.md#lending-tools-to-the-upstream) of `README.md`).  The
 directory and the directories above it must pass the rules of section

@@ -537,8 +537,10 @@ static bool cli_client_charset(struct cstr_view text, char const *allowed)
 	return true;
 }
 
-static int cli_client_read_notebooks(struct cstr_view text, struct json_object *names,
-                                      struct json_object *notebooks)
+static int
+cli_client_read_notebooks (struct cstr_view    text,
+                          struct json_object *names,
+                          struct json_object *notebooks)
 {
 	/* A truncated last line is never an authoritative notebook selector. */
 	while (text.len) {
@@ -547,6 +549,13 @@ static int cli_client_read_notebooks(struct cstr_view text, struct json_object *
 			break;
 		struct cstr_view line = {text.data, (size_t)(newline - text.data)};
 		text = cstr_view_slice(text, line.len + 1, SIZE_MAX);
+		struct cstr_view self = CSTR_VIEW("Self (writable): ");
+		struct cstr_view peer = CSTR_VIEW(" (read-only)");
+		if (cstr_view_starts(line, self))
+			line = cstr_view_slice(line, self.len, SIZE_MAX);
+		if (line.len >= peer.len &&
+		    cstr_view_equal(cstr_view_slice(line, line.len - peer.len, SIZE_MAX), peer))
+			line.len -= peer.len;
 		char const *first = memchr(line.data, '/', line.len);
 		if (!first || first == line.data || first - line.data > 64)
 			continue;
@@ -600,7 +609,9 @@ static int cli_client_names_add(struct cli_client_names *names, struct cstr_view
 	return 0;
 }
 
-static int cli_client_read_files(struct cstr_view text, struct cli_client_names *files)
+static int
+cli_client_read_files (struct cstr_view         text,
+                      struct cli_client_names *files)
 {
 	while (text.len) {
 		char const *newline = memchr(text.data, '\n', text.len);
@@ -608,37 +619,48 @@ static int cli_client_read_files(struct cstr_view text, struct cli_client_names 
 			break;
 		struct cstr_view line = {text.data, (size_t)(newline - text.data)};
 		text = cstr_view_slice(text, line.len + 1, SIZE_MAX);
-		char const *dot = memchr(line.data, '.', line.len);
-		if (!dot)
-			continue;
-		size_t index = (size_t)(dot - line.data);
-		if (!index || index + 1 >= line.len || line.data[index + 1] != ' ' ||
-		    !cli_client_charset(cstr_view_slice(line, 0, index), "0123456789"))
-			continue;
-		line = cstr_view_slice(line, index + 2, SIZE_MAX);
-		size_t const date_size = sizeof "2026-10-14 12:34 UTC  " - 1;
-		if (line.len <= date_size || !cstr_view_equal(cstr_view_slice(line, 17, 5), CSTR_VIEW("UTC  ")))
-			continue;
-		line = cstr_view_slice(line, date_size, SIZE_MAX);
 		if (!line.len || line.data[line.len - 1] != ')')
 			continue;
-		size_t tail = line.len;
-		while (tail && !cstr_view_starts(cstr_view_slice(line, tail, SIZE_MAX), CSTR_VIEW("  (")))
+		size_t tail = line.len - 1;
+		while (tail && line.data[tail] != '(')
 			--tail;
-		if (!tail || line.len - tail < 4)
+		if (tail < 3 || line.data[tail - 1] != ' ' || line.data[tail - 2] != ' ')
 			continue;
+		tail -= 2;
 		struct cstr_view count = cstr_view_slice(line, tail + 3, line.len - tail - 4);
+		struct cstr_view suffix = {};
 		if (!cstr_view_equal(count, CSTR_VIEW("binary"))) {
 			char const *space = memchr(count.data, ' ', count.len);
 			if (!space || space == count.data)
 				continue;
 			size_t digits = (size_t)(space - count.data);
-			struct cstr_view suffix = cstr_view_slice(count, digits, SIZE_MAX);
-			if (!cli_client_charset(cstr_view_slice(count, 0, digits), "0123456789") ||
-			    (!cstr_view_equal(suffix, CSTR_VIEW(" line")) && !cstr_view_equal(suffix, CSTR_VIEW(" lines"))))
+			suffix = cstr_view_slice(count, digits, SIZE_MAX);
+			if (!cli_client_charset(cstr_view_slice(count, 0, digits), "0123456789"))
 				continue;
 		}
-		int e = cli_client_names_add(files, cstr_view_slice(line, 0, tail));
+		line.len = tail;
+		if (cstr_view_starts(suffix, CSTR_VIEW(" bytes, "))) {
+			struct cstr_view blob = cstr_view_slice(suffix, sizeof " bytes, " - 1, SIZE_MAX);
+			if ((blob.len != 40 && blob.len != 64) || !cli_client_charset(blob, "0123456789abcdef"))
+				continue;
+		} else {
+			if (suffix.len && !cstr_view_equal(suffix, CSTR_VIEW(" line")) &&
+			    !cstr_view_equal(suffix, CSTR_VIEW(" lines")))
+				continue;
+			char const *dot = memchr(line.data, '.', line.len);
+			if (!dot)
+				continue;
+			size_t index = (size_t)(dot - line.data);
+			if (!index || index + 1 >= line.len || line.data[index + 1] != ' ' ||
+			    !cli_client_charset(cstr_view_slice(line, 0, index), "0123456789"))
+				continue;
+			line = cstr_view_slice(line, index + 2, SIZE_MAX);
+			size_t const date_size = sizeof "2026-10-14 12:34 UTC  " - 1;
+			if (line.len <= date_size || !cstr_view_equal(cstr_view_slice(line, 17, 5), CSTR_VIEW("UTC  ")))
+				continue;
+			line = cstr_view_slice(line, date_size, SIZE_MAX);
+		}
+		int e = cli_client_names_add(files, line);
 		if (e)
 			return e;
 	}

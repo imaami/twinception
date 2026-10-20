@@ -3,12 +3,14 @@
  *
  * A call names a repository, by git_name() of the path it was listed by,
  * and a command of an allowlist: log, show, diff, grep, blame, ls-files,
- * ls-tree, cat-file or rev-parse.  Its options must each be one that
- * command's allowlist has, a value given with it after '=' (or, for a few
- * short ones, attached); its revisions follow --end-of-options (but for
- * those that take it amiss), and none may start with '-' or '/' or have a
- * ".." component, so that none names a file outside the repository, as git
- * diff's would; its paths follow "--", relative, with no ".." component;
+ * ls-tree, cat-file, rev-parse or status. With help:true it describes that
+ * command and its allowed options without starting git. Its options must
+ * each be one that command's allowlist has, a value given with it after '='
+ * (or, for a few short ones, attached); its revisions follow
+ * --end-of-options (but for those that take it amiss), and none may start
+ * with '-' or '/' or have a ".." component, so that none names a file
+ * outside the repository, as git diff's would; its paths follow "--",
+ * relative, with no ".." component;
  * grep's pattern follows -e; and rev-parse takes revisions only.  So
  * nothing a client sends is an option the allowlist lacks: none writes a
  * file, reads one outside the repository, or runs a program.  git runs with
@@ -23,6 +25,12 @@
  * a work tree's files pass through, is trusted, as listing it says.  Its
  * output, its error included, is cut at 4 MiB; at its deadline it gets
  * SIGTERM, and SIGKILL a second later.
+ *
+ * grep defaults to tracked working-tree files; --cached selects the index,
+ * and revisions select committed trees. Status always uses porcelain v1
+ * with the branch and untracked paths, without refreshing the index.
+ * grep's exit status 1 is a successful search with no matches; other
+ * nonzero exits are errors, including silent existence-check failures.
  *
  * The git tool is git's kind of tool (src/tool.h), its part of a client
  * loop the children there; a call's output is made UTF-8 text a share a

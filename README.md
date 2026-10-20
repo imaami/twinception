@@ -742,8 +742,8 @@ or in the last turn, ends the call, and its jobs and timers with it.
 
 `compact` takes a summary: the conversation after the prompt, its turns and
 the tools' results, goes, and `askai` adds to the prompt, in brackets, the
-summary, the list of the notes and the newest note; calls after `compact` in
-the same turn do not run.
+summary, the note history and the current text of the most recently written
+note; calls after `compact` in the same turn do not run.
 Should the context fill up all the same, as the upstream says (llama-server's
 "exceeds the available context size", or a "context length" or "context
 window" error) or as the usage counts, `askai` does likewise without a
@@ -766,14 +766,14 @@ transport connection, determines which session a note belongs to.
 A note is a file.  The model chooses its name, such as `plan.md` or
 `findings/locks.md`, and writes its text, at most 4 MiB.  The extension of
 the name shows the format of the text, which `askai` does not check.
-Adding a note adds a commit to the caller's branch with `git fast-import`.
-The tool `notes` adds a note,
-lists the notes, the oldest first, with the time that each was added, or reads
-a note, a window at a time from its `offset`.  A note is never changed or
-removed: a name that a note or a directory of notes has is refused, as is a
-name with a control character or an empty part.  No part of a name can be `.`,
-`..`, `.git` or `git~1`, in any case and also with spaces or dots after it,
-because git refuses such names.  Slashes at the start of a name are left out.
+The tool `notes` creates a file with `add` or updates an existing file with
+`replace`.  Each write adds a commit to the caller's branch with
+`git fast-import`; previous versions remain in history.  `add` refuses
+an existing name, and `replace` refuses a missing one.  Concurrent branch
+updates fail rather than overwrite another writer's changes.
+Names cannot contain control characters or empty parts.  No part can be
+`.`, `..`, `.git` or `git~1`, in any case and also with spaces or dots after
+it, because git refuses such names.  Slashes at the start are left out.
 The optional `thread` argument remains accepted for older clients, but
 does not create another repository or notebook.  A role that names
 `notes` among its `tools` gives clients their own notebooks with `--notes`
@@ -788,33 +788,39 @@ reading those files.  A nonempty directory from the older per-thread
 layout is not migrated automatically: keep it and choose a new session
 repository path.
 
-New files committed through a worktree appear in the notebook, including
-several files added by one commit.  The notes tool remains add-only;
-external edits or deletions of existing notes are outside its immutable
-history assumptions.
+Files committed through a worktree appear in the notebook, including
+several files added by one commit.  `list` reflects the current tree;
+`history` retains the record of changes.
 
-- `notebooks` lists the available notebook selectors.  Use another
-  participant's selector with `list`, `read`, `copy` or `attach` to read
-  that notebook.  A selector is `PARTICIPANT/WHO/SIDE`.
-- `list` and `read` take `"notebook": "other"` for the other side's
-  notebook of the same participant and caller identity.  `own` is the
-  default.  `add` only writes to `own`; a caller cannot select another
-  participant's write branch.
+- `notebooks` identifies the caller's writable notebook even before its
+  first note, and lists peers as read-only.  A selector is
+  `PARTICIPANT/WHO/SIDE`.  Models receive their participant and writable
+  selector in their initial prompt.
+- `notebook` selects a notebook for `list`, `history`, `read`, `copy` or
+  `attach`; `own` is the default.  `add` and `replace` write only to the
+  caller's own branch.  Clients retain `other` as an alias for the opposite
+  side of the same participant and caller identity.
+- `list` shows each current file once, with its byte count and blob ID.
+  `history` lists changes oldest first, with their times and lines added,
+  or `(binary)` for a change that Git sees as binary.
 - `copy` puts a note of the selected notebook into the caller's own,
   byte for byte, under the same name or the name that `as` gives.  The
   text of the note does not pass through the model, so a file that is
-  needed exactly, or one that is not text, keeps every byte.  `list` marks
-  a note that git sees as binary as `(binary)`.
+  needed exactly, or one that is not text, keeps every byte.  Models must
+  select the source notebook explicitly; clients retain `other` as the
+  default source.
 - `read` shows a note that is not UTF-8 text, such as code in an old
   encoding or in a mix of them, as a view that tells every byte: UTF-8
   where it is valid, each other byte and each NUL as `⟦XX⟧`, its value in
   hexadecimal, and a `⟦` of the text as `⟦⟦`, after a line that says so.
   A prompt that has the newest note has the same view.  The note itself
   is never converted, so the bytes of a string literal that an old
-  protocol needs stay as they are.
+  protocol needs stay as they are.  Reads are paged by `offset`; model
+  results identify the source notebook separately from the contents,
+  without changing the pagination offsets.
 - The model's `attach`, with Gemini's APIs `generate` and `interactions`,
-  gives it a note of either notebook whole, as a file, where `read` shows
-  a large note in parts.  `askai` uploads the note as it is if it is UTF-8
+  gives it a whole note from the selected notebook as a file, where `read`
+  shows a large note in parts.  `askai` uploads the note as it is if it is UTF-8
   text, else its view, as `text/plain`, 16 MiB at most, to Gemini's Files
   API at the root of Gemini's API in the upstream's URL, the part before
   `/v1beta/`, with the URL's `key` parameter and its header lines, so the

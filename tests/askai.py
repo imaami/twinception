@@ -761,6 +761,15 @@ def note_view(data):
             "itself is not changed.]\n\n" + "".join(out))
 
 
+def note_files(selector, contents, algorithm="sha1"):
+    """Expected current files, with independently computed Git blob identities."""
+    rows = [f"Notebook {selector} — current files (bytes, blob):\n\n"]
+    for name, data in sorted(contents.items()):
+        blob = hashlib.new(algorithm, f"blob {len(data)}\0".encode() + data).hexdigest()
+        rows.append(f"{name}  ({len(data)} bytes, {blob})\n")
+    return "".join(rows)
+
+
 def grouped(members):
     """The configuration file's object for @p members, the options and the
     other members in one object: each option goes into its group's object,
@@ -2500,6 +2509,123 @@ def check_recovery_tools(binary, up):
           "resumed, interrupted intents stopped without duplicate execution: PASS")
 
 
+def check_recovery_notes(binary, up):
+    """A saved peer-note read restores its source and byte window without Git."""
+    held = up.reply, up.retrieve
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            repo, notes, archive = f"{d}/proj", f"{d}/notes", f"{d}/transcripts.git"
+            blocked, release, reads = f"{d}/blocked", f"{d}/release", f"{d}/reads"
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            subprocess.run(["git", "-C", repo, "-c", "user.name=test", "-c", "user.email=t@t",
+                            "commit", "--allow-empty", "-q", "-m", "harmless"], check=True)
+            subprocess.run(["git", "init", "--bare", "-q", notes], check=True)
+            selector = "peer/anonymous/upstream"
+            ref = f"refs/heads/notes/{selector}"
+            original = "omit\n" + "".join(f"{i:04}: original note\n" for i in range(500))
+            def write_note(text, parent):
+                subprocess.run(["git", "--git-dir", notes, "fast-import", "--quiet",
+                                "--date-format=now"], check=True, input=(
+                    f"commit {ref}\ncommitter test <t@t> now\ndata 0\nfrom {parent}\n"
+                    f"M 100644 inline source.md\ndata {len(text)}\n{text}\n").encode())
+            write_note(original, "0" * 40)
+            os.mkdir(f"{d}/bin")
+            with open(f"{d}/bin/git", "w") as f:
+                f.write('#!/bin/sh\ncase " $* " in\n'
+                        f'*" cat-file --batch "*) printf "read\\n" >> {shlex.quote(reads)};;\n'
+                        f'*" diff "*) touch {shlex.quote(blocked)}; '
+                        f'while [ -d {shlex.quote(d)} ] && [ ! -e {shlex.quote(release)} ]; '
+                        'do sleep .02; done;;\n'
+                        f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
+            os.chmod(f"{d}/bin/git", 0o755)
+            calls = [{"type": "function_call", "id": f"fc_{name}", "call_id": name,
+                      "name": tool, "arguments": json.dumps(arguments), "status": "completed"}
+                     for name, tool, arguments in (
+                         ("read", "notes", {"action": "read", "file": "source.md",
+                                           "notebook": selector, "offset": 5}),
+                         ("gate", "git", {"repo": "proj", "command": "diff"}))]
+            creates, resumes = [], []
+            def reply(request):
+                creates.append(request)
+                return 200, responses_turn(calls, response_id="notes_source") \
+                    if len(creates) == 1 else responses_turn(
+                        [], text="recovered", response_id="notes_finished")
+            def retrieve(request):
+                if request["path"] == "/props":
+                    return 404, {}
+                resumes.append(request)
+                return 200, responses_turn(calls, response_id="notes_source")
+            up.reply, up.retrieve = reply, retrieve
+            args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
+                    "--upstream-tools", "--git", repo, "--notes", notes, "--context", "8000",
+                    "--participant", "note-recovery", "--transcripts", archive)
+            env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
+            ai = Askai(binary, *args, env=env)
+            try:
+                result = ai.ask("Read the peer note, then inspect the Git diff.")
+                jid = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result)).group(1)
+                wait_for(lambda: os.path.exists(blocked), seconds=10)
+                ai.proc.kill()
+                assert ai.proc.wait(timeout=5) == -signal.SIGKILL
+                ai.state.cleanup()
+                checkpoint = f"{archive}/askai-journal/note-recovery/jobs/{jid}"
+                with open(checkpoint, "rb") as f:
+                    snapshot = f.read()
+                # Retain real records through the note result, representing
+                # a crash just before the following Git call's intent.
+                at, saved = 0, None
+                while at < len(snapshot):
+                    size = int.from_bytes(snapshot[at + 16:at + 24], "big")
+                    kind = snapshot[at + 56:at + 88].rstrip(b"\0")
+                    value = json.loads(snapshot[at + 120:at + 120 + size])
+                    if kind == b"tool-result" and value["index"] == 0:
+                        saved = value
+                    if kind == b"tool-intent" and value["index"] == 1:
+                        break
+                    at += 120 + size
+                assert saved and at < len(snapshot), snapshot
+                assert (saved["notebook"], saved["text"], saved["skip"]) == \
+                    (selector, original, 5), saved
+                with open(checkpoint, "wb") as f:
+                    f.write(snapshot[:at])
+                write_note("changed after the crash", ref + "^0")
+            finally:
+                with open(release, "w"):
+                    pass
+                if ai.proc.poll() is None:
+                    ai.proc.kill()
+                    ai.proc.wait(timeout=5)
+                    ai.state.cleanup()
+            with Askai(binary, *args, env=env) as restarted:
+                def ended():
+                    status, _, body = restarted.rpc("tools/call", {
+                        "name": "ask_ai", "arguments": {"job": jid}})
+                    assert status == 200 and "result" in body, (status, body)
+                    result = body["result"]
+                    assert not result.get("isError"), result
+                    return result["content"][0]["text"] == "recovered"
+                wait_for(ended, seconds=15)
+                assert len(creates) == 2 and len(resumes) == 1, (creates, resumes)
+                assert resumes[0]["path"] == "/v1/responses/notes_source?stream=true", resumes
+                [output] = [item["output"] for item in creates[1]["body"]["input"]
+                            if item.get("call_id") == "read" and
+                            item.get("type") == "function_call_output"]
+                match = re.fullmatch(
+                    r"(.*)\n\n\[Bytes 5 to (\d+) of (\d+): for the rest, call again "
+                    r'with "offset": (\d+)\.\]' +
+                    re.escape(f"\n\n[askai: notebook {selector}]"), output, re.S)
+                assert match, output
+                end, total, offset = map(int, match.groups()[1:])
+                assert end == offset < total == len(original) and \
+                    match.group(1) == original[5:end], output
+                with open(reads) as f:
+                    assert f.read() == "read\n", "the recovered note was read again"
+    finally:
+        up.reply, up.retrieve = held
+    print("notes recovery: saved raw bytes, offset and peer provenance replayed "
+          "without rereading the changed notebook: PASS")
+
+
 def check_durable_cancel(binary, up):
     """Cancellation preserves received thoughts, reaches the provider once,
     and remains cancelled in the private checkpoint after restart."""
@@ -2721,7 +2847,7 @@ def check_shared_transcripts(binary, up):
     hold = up.reply
     def reply(request):
         prompt = request["body"]["messages"][0]["content"]
-        who = prompt.removeprefix("question ")
+        who = prompt.split("\n", 1)[0].removeprefix("question ")
         answer = {"choices": [{"message": {"role": "assistant", "content": f"answer for {who}",
                                            "reasoning_content": f"reasoning for {who}"},
                                "finish_reason": "stop"}]}
@@ -7691,6 +7817,11 @@ def check_git(binary, up):
         env = {"PATH": fake + ":" + os.environ.get("PATH", "/usr/bin:/bin"),
                "GIT_DIR": "/nowhere", "GIT_EXTERNAL_DIFF": "x", "HOME": d}
 
+        def bad_option(command, option):
+            return (f"options[0]: git {command} does not allow '{option}'. "
+                    "Attach values in one entry (--max-count=20, -n20). "
+                    "Use help:true for allowed options.")
+
         def call(ai, **arguments):
             status, _, body = ai.rpc("tools/call", {"name": "git",
                                                     "arguments": arguments})
@@ -7710,6 +7841,22 @@ def check_git(binary, up):
                 "HEAD:path" in schema["properties"]["revisions"]["description"], tools[1]
             assert text_of(call(ai, repo="proj", command="show",
                                 revisions=["HEAD:a.txt"])).startswith("alpha\n"), "show"
+            for command in schema["properties"]["command"]["enum"]:
+                result = call(ai, repo="proj", command=command, help=True)
+                assert not result.get("isError"), result
+                help_text = json.loads(text_of(result))
+                assert help_text["command"] == command and help_text["description"], result
+                assert help_text["limits"]["options"] == 16 and \
+                    help_text["limits"]["argument_bytes"] == 1024, result
+                assert help_text["limits"]["capture_bytes"] == 4 << 20 and \
+                    "exact next offset" in help_text["pagination"], result
+                assert help_text["pattern_required"] == (command == "grep"), result
+            help_text = json.loads(text_of(call(ai, repo="proj", command="grep", help=True)))
+            assert {"-F", "-E", "--cached", "--untracked", "-C#"} <= \
+                set(help_text["options"]), help_text
+            complete = text_of(call(ai, repo="proj", command="log", help=True))
+            result = call(ai, repo="proj", command="log", help=True, offset=100)
+            assert not result.get("isError") and text_of(result) == complete[100:], result
 
             # What a call may ask for.
             for arguments, text in (
@@ -7720,41 +7867,54 @@ def check_git(binary, up):
                      "The repo argument must name one of the repositories: "
                      "proj, other."),
                     ({"repo": "proj", "command": "push"},
-                     "The command argument must be one of log, show, diff, grep, "
-                     "blame, ls-files, ls-tree, cat-file and rev-parse."),
+                     "The command argument must be one of: log, show, diff, grep, "
+                     "blame, ls-files, ls-tree, cat-file, rev-parse, status. "
+                     "Use help:true for its options."),
                     ({"repo": "proj", "command": "log", "options": ["--output=/x"]},
-                     "git log takes no option --output=/x here."),
+                     bad_option("log", "--output=/x")),
                     ({"repo": "proj", "command": "log", "options": ["-n", "3"]},
-                     "git log takes no option -n here."),
+                     bad_option("log", "-n")),
                     ({"repo": "proj", "command": "grep", "pattern": "a",
-                      "options": ["-f"]}, "git grep takes no option -f here."),
+                      "options": ["-f"]}, bad_option("grep", "-f")),
                     ({"repo": "proj", "command": "grep", "pattern": "a",
                       "options": ["--no-index"]},
-                     "git grep takes no option --no-index here."),
+                     bad_option("grep", "--no-index")),
                     ({"repo": "proj", "command": "blame", "options": ["--contents=x"]},
-                     "git blame takes no option --contents=x here."),
+                     bad_option("blame", "--contents=x")),
                     ({"repo": "proj", "command": "log", "options": "--all"},
-                     "The options, revisions and paths arguments must be arrays of "
-                     "strings, at most 16, 4 and 32 of them, each of 1 to 1024 "
-                     "bytes."),
+                     "The options argument must be an array of strings "
+                     "(at most 16 entries)."),
+                    ({"repo": "proj", "command": "log", "options": None},
+                     "The options argument must be an array of strings "
+                     "(at most 16 entries)."),
+                    ({"repo": "proj", "command": "log", "paths": ["a.txt"] * 33},
+                     "The paths argument has 33 entries; its limit is 32."),
+                    ({"repo": "proj", "command": "log", "options": ["-n3", 3]},
+                     "options[1] must be a string of 1 to 1024 bytes with no NUL."),
+                    ({"repo": "proj", "command": "log", "help": "yes"},
+                     "The help argument must be a boolean."),
+                    ({"repo": "proj", "command": "log", "help": None},
+                     "The help argument must be a boolean."),
+                    ({"repo": "proj", "command": "grep", "help": True, "pattern": "x"},
+                     "With help:true, give only repo, command, help and optional offset."),
+                    ({"repo": "proj", "command": "grep", "help": True, "offset": -1},
+                     "The offset argument must be a whole number of bytes, from 0."),
                     ({"repo": "proj", "command": "log", "revisions": ["a\u0000b"]},
-                     "The options, revisions and paths arguments must be arrays of "
-                     "strings, at most 16, 4 and 32 of them, each of 1 to 1024 "
-                     "bytes."),
+                     "revisions[0] must be a string of 1 to 1024 bytes with no NUL."),
                     ({"repo": "proj", "command": "show", "revisions": ["--help"]},
-                     "A revision may not start with - or /, nor have a .. "
+                     "revisions[0] may not start with - or /, nor have a .. "
                      "component."),
                     ({"repo": "proj", "command": "diff", "revisions": ["/etc"]},
-                     "A revision may not start with - or /, nor have a .. "
+                     "revisions[0] may not start with - or /, nor have a .. "
                      "component."),
                     ({"repo": "proj", "command": "diff", "revisions": ["x/../.."]},
-                     "A revision may not start with - or /, nor have a .. "
+                     "revisions[0] may not start with - or /, nor have a .. "
                      "component."),
                     ({"repo": "proj", "command": "log", "paths": ["../x"]},
-                     "A path must be relative to the repository's top, with no .. "
+                     "paths[0] must be relative to the repository's top, with no .. "
                      "component."),
                     ({"repo": "proj", "command": "log", "paths": ["/etc/passwd"]},
-                     "A path must be relative to the repository's top, with no .. "
+                     "paths[0] must be relative to the repository's top, with no .. "
                      "component."),
                     ({"repo": "proj", "command": "ls-files", "revisions": ["HEAD"]},
                      "git ls-files takes no revisions."),
@@ -7813,7 +7973,7 @@ def check_git(binary, up):
                                 options=["-n"])) == "a.txt:2:beta ?? gamma\n"
             result = call(ai, repo="proj", command="grep", pattern="nothing here")
             assert not result.get("isError") and \
-                text_of(result) == "[git exited with status 1.]", result
+                text_of(result) == "[No matches.]", result
             result = call(ai, repo="proj", command="show", revisions=["nosuch"])
             assert result.get("isError") and text_of(result).startswith(
                 "fatal: bad revision 'nosuch'\n\n[git exited with status 128.]"), result
@@ -7835,6 +7995,44 @@ def check_git(binary, up):
                                 revisions=["HEAD"])) == head
             result = call(ai, repo="proj", command="rev-parse", revisions=["a.txt"])
             assert text_of(result) == "[No output.]", result
+            result = call(ai, repo="proj", command="cat-file", options=["-e"],
+                          revisions=["0" * 40])
+            assert result.get("isError") and \
+                text_of(result) == "[git exited with status 1.]", result
+
+            # Source selection is explicit and status does not refresh the index.
+            with open(f"{repo}/a.txt", "wb") as f:
+                f.write(b"staged source\n")
+            sh("add", "a.txt")
+            with open(f"{repo}/a.txt", "wb") as f:
+                f.write(b"working source\n")
+            with open(f"{repo}/loose.txt", "wb") as f:
+                f.write(b"untracked source\n")
+            sh("config", "status.showUntrackedFiles", "no")
+            with open(f"{repo}/.git/index", "rb") as f:
+                index_before = f.read()
+            status_text = text_of(call(ai, repo="proj", command="status"))
+            assert status_text == "## main\nMM a.txt\n?? loose.txt\n", status_text
+            with open(f"{repo}/.git/index", "rb") as f:
+                assert f.read() == index_before, "status wrote the index"
+            assert text_of(call(ai, repo="proj", command="status", paths=["a.txt"])) == \
+                "## main\nMM a.txt\n"
+            for options, revisions, pattern, expected in (
+                    (["-n", "-F"], [], "working source", "a.txt:1:working source\n"),
+                    (["-n", "-F", "--cached"], [], "staged source", "a.txt:1:staged source\n"),
+                    (["-n", "-F"], ["HEAD"], "alpha", "HEAD:a.txt:1:alpha\n"),
+                    (["-n", "-F", "--untracked"], [], "untracked source",
+                     "loose.txt:1:untracked source\n")):
+                result = call(ai, repo="proj", command="grep", options=options,
+                              revisions=revisions, pattern=pattern)
+                assert not result.get("isError") and text_of(result) == expected, result
+            result = call(ai, repo="proj", command="grep", pattern="alpha",
+                          paths=["a.txt"], options=["-F"])
+            assert not result.get("isError") and text_of(result) == "[No matches.]", result
+            with open(f"{repo}/a.txt", "wb") as f:
+                f.write(b"alpha\nbeta \xff\xfe gamma\n")
+            sh("add", "a.txt")
+            os.unlink(f"{repo}/loose.txt")
 
             # The deadline: SIGTERM, then SIGKILL a second later, to one that
             # stays; one that goes on SIGTERM is gone at once.
@@ -7915,7 +8113,7 @@ def check_git(binary, up):
             status, body = Replies(sock).next()
             assert status in (200, 503), (status, body)
         wait_for(lambda: not alive(pid))
-    print("git: offered with --git, arguments allowed and refused, argv, "
+    print("git: offered with --git, help, status, source selection, arguments, argv, "
           "environment, output, errors, mending, cut, deadline, cancel, stop: "
           "PASS")
 
@@ -8107,7 +8305,7 @@ def interactions_turn(steps, status=None, usage=None, after=()):
 
 def check_notes(binary, up):
     """Notes in one session repository have independently writable branches.
-    Preserve the immutable-file, binary-data, offset, race and disconnect
+    Preserve the version history, binary-data, offset, race and disconnect
     checks while all participants can discover and read each other's work.
     A compatibility thread id no longer chooses a separate repository."""
     def digest(token):
@@ -8146,16 +8344,25 @@ def check_notes(binary, up):
                 assert [t["name"] for t in listed] == tools, listed
                 if token == "alice-1":
                     assert listed[0]["_meta"]["askai"] == {
+                        "session": hashlib.sha256(os.path.realpath(notes).encode()).hexdigest(),
                         "participant": "writers", "notebooks": True}, listed
                 else:
                     assert all("askai" not in t.get("_meta", {}) for t in listed), listed
             assert call({"action": "list"}, "carol-1") == "Tool not available: notes"
 
+            notebooks = call({"action": "notebooks"})
+            who = re.search(r"Self \(writable\): writers/([0-9a-f]{16})/client",
+                            notebooks).group(1)
+            selector = f"writers/{who}/client"
+            assert not os.path.exists(f"{notes}/HEAD"), notebooks
+            assert call({"action": "replace", "file": "missing.md", "text": "x"}) == \
+                "!No note has that name. Use action add to create it."
+            assert not os.path.exists(f"{notes}/HEAD")
             said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
             assert said == "Noted.", said
             thread = "2" * 32
             notebooks = call({"action": "notebooks"})
-            who = re.search(r"writers/([0-9a-f]{16})/client", notebooks).group(1)
+            assert f"Self (writable): {selector}" in notebooks, notebooks
             own = f"refs/heads/notes/writers/{who}/client"
             other = f"refs/heads/notes/writers/{who}/upstream"
             assert os.path.isfile(f"{notes}/HEAD"), notes
@@ -8194,11 +8401,16 @@ def check_notes(binary, up):
 
             listed = call({"action": "list", "thread": thread})
             when = r"\d{4}-\d\d-\d\d \d\d:\d\d UTC"
+            assert listed == note_files(selector, {
+                "plan.md": b"step 1", "a/b c.md": long.encode(),
+                'q"\\.txt': b"q", "x" * 255: b"t"}), listed
+            history = call({"action": "history"})
             assert re.fullmatch(
-                f"Your notes, oldest first:\n\n1\\. {when}  plan\\.md  \\(1 line\\)\n"
+                f"Notebook {selector} — history, oldest first \\(lines added\\):\n\n"
+                f"1\\. {when}  plan\\.md  \\(1 line\\)\n"
                 f"2\\. {when}  a/b c\\.md  \\(800 lines\\)\n"
                 f'3\\. {when}  q"\\\\\\.txt  \\(1 line\\)\n4\\. {when}  x{{255}}  '
-                "\\(1 line\\)\n", listed), listed
+                "\\(1 line\\)\n", history), history
             assert call({"action": "read", "file": "/plan.md", "thread": thread}) == \
                 "step 1"
             assert call({"action": "read", "file": 'q"\\.txt', "thread": thread}) == "q"
@@ -8234,17 +8446,19 @@ def check_notes(binary, up):
                            input=(f"commit {other}\ncommitter askai <askai> "
                                   f"{now} +0000\ndata 0\nM 100644 inline found.md\n"
                                   "data 6\nfound\n\n").encode(), check=True, env=git_env)
-            stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now))
             assert call({"action": "list", "thread": shared, "notebook": "other"}) == \
-                f"Selected notebook, oldest first:\n\n1. {stamp}  found.md  (1 line)\n"
+                note_files(f"writers/{who}/upstream", {"found.md": b"found\n"})
             assert call({"action": "read", "file": "found.md", "thread": shared,
                          "notebook": "other"}) == "found\n"
             assert "found.md" not in call({"action": "list", "thread": shared})
             for arguments, why in (
                     ({"action": "add", "file": "z.md", "text": "z", "notebook": "other"},
-                     "!You can add notes only to your own notebook."),
+                     "!You can write notes only to your own notebook."),
+                    ({"action": "replace", "file": "found.md", "text": "z",
+                      "notebook": "other"},
+                     "!You can write notes only to your own notebook."),
                     ({"action": "list", "notebook": "theirs"},
-                     "!The notebook must be own, other, or a selector returned "
+                     "!The notebook must be own or a selector returned "
                      "by action notebooks (participant/principal/side).")):
                 assert call(arguments | {"thread": shared}) == why, (arguments, why)
             assert call({"action": "add", "file": "mine.md", "text": "m",
@@ -8257,21 +8471,22 @@ def check_notes(binary, up):
                                        "notebook": "other"})
             # copy puts a note of the other notebook into the client's, byte
             # for byte, without its text in a call: also a file that is not
-            # text, which list marks and read does not show.
+            # text, which read renders as a byte-preserving view.
             raw = bytes(range(256)) * 3
             subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
                            input=(f"commit {other}\ncommitter askai <askai> "
                                   f"{now} +0000\ndata 0\nfrom {other}^0\n"
                                   f"M 100644 inline img/raw.bin\ndata {len(raw)}\n"
                                   ).encode() + raw + b"\n", check=True, env=git_env)
-            assert call({"action": "list", "thread": shared, "notebook": "other"}).endswith(
-                "img/raw.bin  (binary)\n")
+            assert call({"action": "list", "thread": shared, "notebook": "other"}) == \
+                note_files(f"writers/{who}/upstream",
+                           {"found.md": b"found\n", "img/raw.bin": raw})
             for arguments, said in (
                     ({"file": "found.md"}, "Copied into your notebook."),
                     ({"file": "found.md", "as": "copies/f.md"}, "Copied into your notebook."),
                     ({"file": "img/raw.bin"}, "Copied into your notebook."),
-                    ({"file": "found.md"}, "!A note of that name exists, and a note "
-                     "cannot be changed. Add the note under another name."),
+                    ({"file": "found.md"}, "!A note of that name exists. Use action "
+                     "replace to update it, or add under another name."),
                     ({"file": "none.md"}, "!No note has that name."),
                     ({"file": "found.md", "as": "a//b"}, "!The as argument must be a "
                      "file name, as the file argument is."),
@@ -8303,7 +8518,7 @@ def check_notes(binary, up):
             notes_tool = next(t for t in ai.rpc("tools/list", headers=auth(
                 "alice-1"))[2]["result"]["tools"] if t["name"] == "notes")
             assert notes_tool["inputSchema"]["properties"]["content"] == {
-                "type": "string", "format": "uri", "description": "For add, instead "
+                "type": "string", "format": "uri", "description": "For add and replace, instead "
                 "of text: a file that the user gave, which your client attaches as "
                 "it is. Do not write it yourself.",
                 "x-mcp-file": {"maxSize": 4 << 20}}, notes_tool
@@ -8318,7 +8533,7 @@ def check_notes(binary, up):
                 assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
                                        f"{own}:{name}"], capture_output=True,
                                       check=True, env=git_env).stdout == want, name
-            assert call({"action": "list", "thread": shared}).count("(binary)") >= 2
+            assert call({"action": "history", "thread": shared}).count("(binary)") >= 2
             big = base64.b64encode(b"x" * ((4 << 20) + 1)).decode()
             for arguments, why in (
                     ({"content": "https://example.com/a.png"},
@@ -8342,10 +8557,45 @@ def check_notes(binary, up):
                          "notebook": selector}, "bob-1") == "step 1"
             assert call({"action": "add", "file": "forbidden.md", "text": "x",
                          "notebook": selector}, "bob-1").startswith(
-                             "!You can add notes only to your own notebook.")
+                             "!You can write notes only to your own notebook.")
             assert call({"action": "add", "file": "bob.md", "text": "b"},
                         "bob-1") == "Noted."
             assert "bob.md" not in call({"action": "list"})
+            # Replacements extend the branch, preserving each previous blob.
+            def git(*args):
+                return subprocess.check_output(["git", "--git-dir", notes, *args],
+                                               env=git_env)
+            before = git("rev-parse", own).decode().strip()
+            replaced = "Replaced. Previous versions remain in history."
+            assert call({"action": "replace", "file": "plan.md",
+                         "text": "step 2\nready"}) == replaced
+            assert git("rev-parse", f"{own}^").decode().strip() == before
+            assert git("show", f"{before}:plan.md") == b"step 1"
+            assert call({"action": "read", "file": "plan.md"}) == "step 2\nready"
+            listed = call({"action": "list"})
+            assert listed.count("plan.md") == 1, listed
+            assert note_files(selector, {"plan.md": b"step 2\nready"}).split("\n\n")[1] \
+                in listed, listed
+            history = call({"action": "history"})
+            assert history.count("plan.md") == 2, history
+            before = git("rev-parse", own)
+            for name, why in (("missing.md", "No note has that name. Use action add"),
+                              ("a", "That name is a directory of notes"),
+                              ("plan.md/x", "A directory in that name is a note")):
+                assert call({"action": "replace", "file": name, "text": "x"}).startswith(
+                    "!" + why), name
+            assert call({"action": "replace", "file": "plan.md", "text": ""}).startswith(
+                "!The text argument")
+            assert git("rev-parse", own) == before
+            replacement = b"\0\xffnew"
+            assert call({"action": "replace", "file": "legacy.c", "content":
+                         "data:;base64," + base64.b64encode(replacement).decode()}) == replaced
+            assert git("show", f"{own}^:legacy.c") == latin
+            assert git("show", f"{own}:legacy.c") == replacement
+            assert call({"action": "read", "file": "legacy.c"}) == note_view(replacement)
+            assert call({"action": "replace", "file": "legacy.c",
+                         "content": "data:,"}) == replaced
+            assert git("show", f"{own}:legacy.c") == b""
         # When two adds to one thread run at once, one of them fails, and its
         # answer asks to add the note again.  A git that sleeps before
         # fast-import makes both adds check the same newest note.
@@ -8365,10 +8615,24 @@ def check_notes(binary, up):
                     add.start()
                 for add in adds:
                     add.join(10)
-                assert sorted(said) == ["!Could not add the note, because another "
-                                        "call added a note to this notebook at the "
-                                        "same time. Add it again.", "Noted."], said
-            assert not any("could not add" in line for line in ai.log), ai.log
+                assert sorted(said) == ["!Could not write the note, because another "
+                                        "call changed this notebook at the same "
+                                        "time. Read its current state and retry.", "Noted."], said
+            said = []
+            before = git("rev-parse", own).decode().strip()
+            writers = [threading.Thread(target=lambda text=text: said.append(call(
+                {"action": "replace", "file": "plan.md", "text": text})))
+                for text in ("first contender", "second contender")]
+            for writer in writers:
+                writer.start()
+            for writer in writers:
+                writer.join(10)
+            assert len(said) == 2 and said.count(replaced) == 1, said
+            assert any("retry" in result for result in said), said
+            assert git("rev-parse", f"{own}^").decode().strip() == before
+            assert call({"action": "read", "file": "plan.md"}) in (
+                "first contender", "second contender")
+            assert not any("could not write" in line for line in ai.log), ai.log
             # An add whose client goes while git writes still adds the note.
             sock = socket.create_connection(("127.0.0.1", ai.port), 10)
             sock.sendall(rpc_request(1, {"name": "notes", "arguments": {
@@ -8385,7 +8649,7 @@ def check_notes(binary, up):
                 with open(f"{book}/{lock}", "w"):
                     pass
                 os.utime(f"{book}/{lock}", (time.time() - 120,) * 2)
-            assert "again" in call({"action": "add", "file": "unlocked.md", "text": "u",
+            assert "retry" in call({"action": "add", "file": "unlocked.md", "text": "u",
                                     "thread": thread})
             for lock in ("HEAD.lock", f"{own}.lock"):
                 assert os.path.exists(f"{book}/{lock}"), lock
@@ -8399,7 +8663,7 @@ def check_notes(binary, up):
             said = call({"action": "add", "file": "y.md", "text": "y"})
             assert said == "Noted.", said
     print("notes: shared repository, separate identity branches, discovery, "
-          "read-only cross-notebook access, immutable files, copy, binary data, "
+          "read-only cross-notebook access, versioned files, copy, binary data, "
           "offsets, races, drops and preservation of external locks: PASS")
 
 
@@ -8440,28 +8704,39 @@ def check_shared_notes(binary, up):
                     # Distinct branch transactions can still contend on a
                     # repository-wide lock; the reported retry is safe.
                     if said[name] != "Noted.":
-                        assert "again" in said[name], said
+                        assert "retry" in said[name], said
                         assert call(ai, action="add", file="plan.md", text=name) == "Noted."
                 for name, ai in (("alice", alice), ("bob", bob)):
                     assert call(ai, action="read", file="plan.md") == name
                     notebooks = call(ai, action="notebooks")
                     assert "alice/anonymous/client" in notebooks and \
                         "bob/anonymous/client" in notebooks, notebooks
+                    assert f"Self (writable): {name}/anonymous/client\n" in notebooks, notebooks
                     peer = "bob" if name == "alice" else "alice"
                     selector = f"{peer}/anonymous/client"
+                    assert f"{selector} (read-only)\n" in notebooks, notebooks
                     assert call(ai, action="read", file="plan.md", notebook=selector) == peer
                     assert call(ai, action="add", file="overwrite.md", text="no",
                                 notebook=selector).startswith(
-                                    "!You can add notes only to your own notebook.")
+                                    "!You can write notes only to your own notebook.")
                     assert call(ai, action="copy", file="plan.md", notebook=selector,
                                 **{"as": "peer.md"}) == "Copied into your notebook."
                     assert call(ai, action="read", file="peer.md") == peer
+                    assert call(ai, action="list") == note_files(
+                        f"{name}/anonymous/client", {"plan.md": name.encode(),
+                                                     "peer.md": peer.encode()},
+                        object_format)
                     assert call(ai, action="read", file="plan.md", notebook="../HEAD").startswith("!")
                 branches = set(git("for-each-ref", "--format=%(refname)",
                                    "refs/heads/notes/").splitlines())
                 assert branches == {f"refs/heads/notes/{name}/anonymous/client"
                                     for name in ("alice", "bob")}, branches
+                git("update-ref", b"refs/heads/notes/foreign/anonymous/client\xff",
+                    git("rev-parse", "refs/heads/notes/alice/anonymous/client").strip())
                 git("pack-refs", "--all")
+                for ai in (alice, bob):
+                    notebooks = call(ai, action="notebooks")
+                    assert "foreign/anonymous/client" not in notebooks, notebooks
                 assert call(alice, action="add", file="after-pack.md", text="packed") == "Noted."
                 assert call(bob, action="read", file="after-pack.md",
                             notebook="alice/anonymous/client") == "packed"
@@ -8968,7 +9243,7 @@ def check_attach(binary, up):
                              lambda r: (200, answer("A"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
                 assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
-                    == "!The action must be add, list, read, copy or notebooks."
+                    == "!The action must be one of: add replace notebooks list history read copy."
 
                 count = len(up.requests)
                 stored = len(up.uploads)
@@ -8977,8 +9252,8 @@ def check_attach(binary, up):
                 first, second = up.requests[count:]
                 [notes_tool] = [t for t in tools(first["body"]) if t["name"] == "notes"]
                 action = notes_tool[schema]["properties"]["action"]
-                assert action["enum"] == ["add", "notebooks", "list", "read", "copy", "attach"], action
-                assert "attach gives you a note" in notes_tool["description"], notes_tool
+                assert action["enum"] == ["add", "replace", "notebooks", "list", "history", "read", "copy", "attach"], action
+                assert "attach gives you a whole note" in notes_tool["description"], notes_tool
                 view, plain = up.uploads[stored:]
                 assert view["raw"] == note_view(latin1).encode() and \
                     plain["raw"] == code.encode(), (view, plain)
@@ -9033,7 +9308,10 @@ def check_attach(binary, up):
                              lambda r: (400, too_many), lambda r: (200, answer("E"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "E"
                 assert len(up.uploads) == stored
-                assert "files.test" not in json.dumps(up.requests[count + 2]["body"][key])
+                again = up.requests[count + 2]["body"][key]
+                assert "files.test" not in json.dumps(again)
+                prompt = again[0]["parts" if api == "generate" else "content"][0]["text"]
+                assert prompt.count(f"Your writable notebook is {api}/anonymous/upstream.") == 1, prompt
                 script[:] = [lambda r: (200, calls(attach[1:])), lambda r: (200, answer("F"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "F"
                 assert len(up.uploads) == stored + 1
@@ -9245,7 +9523,12 @@ def check_turns(binary, up):
         up.reply = reply
         args = ("-u", up.url(), "--upstream-tools", "--git", repo,
                 "--participant", "turns", "--notes", notes)
-        branch = "refs/heads/notes/turns/anonymous/upstream"
+        selector = "turns/anonymous/upstream"
+        branch = f"refs/heads/notes/{selector}"
+        provenance = f"\n\n[askai: notebook {selector}]"
+        identity = ("\n\n[askai: participant turns. Your writable notebook is "
+                    f"{selector}. Use notes action notebooks to discover "
+                    "peers; selectors identify their authors.]\n")
         sessions = 0
 
         def isolated(*options):
@@ -9280,8 +9563,13 @@ def check_turns(binary, up):
             # The upstream's notes use the thread of the ask call.
             assert "thread" not in body["tools"][1]["function"]["parameters"][
                 "properties"], body["tools"][1]
+            notes_tool = body["tools"][1]["function"]
+            assert "Participant: turns." in notes_tool["description"], notes_tool
+            assert not re.search(r"\bother\b", notes_tool["parameters"]["properties"][
+                "notebook"]["description"]), notes_tool
             assert body["stream_options"] == {"include_usage": True}, body
             assert list(body)[-1] == "messages" and turns(first) == [], body
+            assert prompt(first) == "What is there?" + identity, prompt(first)
             head, *results = turns(second)
             assert head["role"] == "assistant" and head["content"] == "Looking." and \
                 head["reasoning_content"] == "hmm", head
@@ -9297,16 +9585,15 @@ def check_turns(binary, up):
             assert read[0]["tool_calls"][0]["id"] == "call_2_0", read
             assert "reasoning_content" not in read[0], read
             listed = read[1]["content"]
-            assert read[1]["tool_call_id"] == "call_2_0" and re.fullmatch(
-                f"Your notes, oldest first:\n\n1\\. {when}  found\\.md  \\(1 line\\)\n",
-                listed), read
+            assert read[1]["tool_call_id"] == "call_2_0" and listed == note_files(
+                selector, {"found.md": b'found "first"'}), read
             text, trace = [c["text"] for c in result["content"]]
             assert text == "A", result
             thread = re.search(r"ask-chain thread is ([0-9a-f]{32})", trace).group(1)
             assert trace.startswith("The other AI made 3 tool calls in 3 turns:\n"
                                     f"- git {log}: 14 bytes\n"
                                     "- notes add: 6 bytes\n"
-                                    f"- notes list: {len(listed)} bytes\n"), trace
+                                    f"- notes list: {len(listed.encode())} bytes\n"), trace
             assert "found" not in trace, trace
             book = notes
             assert sh("--git-dir", book, "show", f"{branch}:found.md",
@@ -9317,9 +9604,10 @@ def check_turns(binary, up):
             count = len(up.requests)
             result = ai.ask("And now?", thread=thread)
             assert re.fullmatch(
-                "And now\\?\n\n\\[askai: your earlier session notes, oldest first. "
-                f"Use notes action notebooks to discover the other participants:\\]\n\n1\\. {when}  found\\.md  "
-                "\\(1 line\\)\n\n\\[askai: your newest note, found\\.md:\\]\n\n"
+                "And now\\?" + re.escape(identity) +
+                "\n\n\\[askai: your session note history, oldest first; repeated names are updates. "
+                f"Use notes action list for current files and notebooks to discover the other participants:\\]\n\n1\\. {when}  found\\.md  "
+                "\\(1 line\\)\n\n\\[askai: the current text of your most recently written note, found\\.md:\\]\n\n"
                 "found \"first\"\n", prompt(up.requests[count])), up.requests[count]
             assert f"ask-chain thread is {thread}." in result["content"][1]["text"], result
 
@@ -9338,8 +9626,8 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Q", thread=thread)
             assert [m["content"] for m in turns(up.requests[count + 1])[1:]] == [
-                "Noted.", "A note of that name exists, and a note cannot be "
-                "changed. Add the note under another name.", "n"], \
+                "Noted.", "A note of that name exists. Use action replace to "
+                "update it, or add under another name.", "n" + provenance], \
                 up.requests[count + 1]
             assert not os.path.exists(f"{d}/hooked")
             assert ai.ask("Q", thread="0" * 32)["content"][0]["text"] == "A"
@@ -9417,7 +9705,7 @@ def check_turns(binary, up):
             ai.ask("Again?", thread=thread)
             shown = 64 << 10
             assert prompt(up.requests[count]).endswith(
-                "[askai: your newest note, long.md:]\n\n" + "L" * shown +
+                "[askai: the current text of your most recently written note, long.md:]\n\n" + "L" * shown +
                 f"\n[askai: bytes 0 to {shown} of {size}; read the note with "
                 f"\"offset\": {shown} for the rest.]\n"), prompt(up.requests[count])[-300:]
 
@@ -9431,28 +9719,33 @@ def check_turns(binary, up):
             said = client_notes({"action": "add", "file": "brief.md", "text": "aim"})
             assert said == "Noted.", said
             mine = "3" * 32
+            client = "turns/anonymous/client"
             script[:] = [lambda r: (200, turn_stream([
-                ("m", "notes", json.dumps({"action": "list", "notebook": "other"})),
+                ("m", "notes", json.dumps({"action": "list", "notebook": client})),
                 ("n", "notes", json.dumps({"action": "read", "file": "brief.md",
-                                           "notebook": "other"})),
+                                           "notebook": client})),
                 ("o", "notes", json.dumps({"action": "add", "file": "brief.md",
-                                           "text": "seen", "notebook": "other"})),
+                                           "text": "seen", "notebook": client})),
                 ("p", "notes", json.dumps({"action": "add", "file": "seen.md",
                                            "text": "seen"})),
-                ("q", "notes", json.dumps({"action": "copy", "file": "brief.md"})),
+                ("q0", "notes", json.dumps({"action": "copy", "file": "brief.md"})),
+                ("q", "notes", json.dumps({"action": "copy", "file": "brief.md",
+                                           "notebook": client})),
                 ("r", "notes", json.dumps({"action": "read", "file": "brief.md"})),
                 ("s", "notes", json.dumps({"action": "add", "file": "c.bin",
                                            "content": "data:,x"}))]))]
             count = len(up.requests)
             result = ai.ask("Go on", thread=mine)
             assert prompt(up.requests[count]).startswith(
-                "Go on\n\n[askai: your earlier session notes, oldest first."), \
+                "Go on" + identity +
+                "\n\n[askai: your session note history, oldest first; repeated names are updates."), \
                 prompt(up.requests[count])
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
-            assert re.fullmatch(f"Selected notebook, oldest first:\n\n1\\. {when}  "
-                                "brief\\.md  \\(1 line\\)\n", outputs[0]), outputs
-            assert outputs[1:] == ["aim", "You can add notes only to your own notebook.", "Noted.",
-                                   "Copied into your notebook.", "aim",
+            assert outputs[0] == note_files(client, {"brief.md": b"aim"}), outputs
+            assert outputs[1:] == [f"aim\n\n[askai: notebook {client}]",
+                                   "You can write notes only to your own notebook.", "Noted.",
+                                   "For copy, give the source notebook selector from action notebooks.",
+                                   "Copied into your notebook.", "aim" + provenance,
                                    "Only a client hands askai a file as content."], \
                 outputs
             assert f"ask-chain thread is {mine}." in result["content"][1]["text"], result
@@ -9461,7 +9754,8 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Again", thread=mine)
             assert prompt(up.requests[count]).startswith(
-                "Again\n\n[askai: your earlier session notes, oldest first."), \
+                "Again" + identity +
+                "\n\n[askai: your session note history, oldest first; repeated names are updates."), \
                 prompt(up.requests[count])
             # A newest note that is not text goes into the prompt as its view.
             book = notes
@@ -9474,7 +9768,7 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Once more", thread=mine)
             assert prompt(up.requests[count]).endswith(
-                "[askai: your newest note, z.bin:]\n\n" + note_view(b"\xff\x00\xfe")
+                "[askai: the current text of your most recently written note, z.bin:]\n\n" + note_view(b"\xff\x00\xfe")
                 + "\n"), prompt(up.requests[count])[-400:]
             # A view longer than the prompt's window of 64 KiB is cut there,
             # with the length of the whole view and the offset to read on.
@@ -9490,7 +9784,8 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Last", thread=mine)
             shown = prompt(up.requests[count]).encode()
-            head = shown.index(b"[askai: your newest note, y.bin:]\n\n") + 35
+            marker = b"[askai: the current text of your most recently written note, y.bin:]\n\n"
+            head = shown.index(marker) + len(marker)
             cut = re.search(rb"\n\[askai: bytes 0 to (\d+) of (\d+); read the note with "
                             rb'"offset": (\d+) for the rest\.\]', shown)
             n = int(cut.group(1))
@@ -9530,8 +9825,18 @@ def check_turns(binary, up):
             again = up.requests[count + 3]
             assert turns(again) == [] and prompt(again) == (
                 "Q\n\n[askai: your context filled up, so the conversation since the "
-                "task is gone, your turns and the tools' results with it.]\n\n"
+                "task is gone, your turns and the tools' results with it.]" + identity + "\n\n"
                 "[askai: go on with the task.]"), again
+            # Explicit compaction also keeps identity before the first note.
+            script[:] = [lambda r: (200, turn_stream([("c", "compact", json.dumps(
+                {"summary": "S"}))]))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            again = up.requests[count + 1]
+            assert turns(again) == [] and prompt(again) == (
+                "Q\n\n[askai: you compacted the context: the conversation since the "
+                "task is gone, your turns and the tools' results with it. Your "
+                "summary of it:]\n\nS" + identity + "\n\n[askai: go on with the task.]"), again
 
         # The reminders to write notes: one at a quarter of the context and
         # one at half, each only once.  From two thirds on, each turn's last
@@ -9564,6 +9869,7 @@ def check_turns(binary, up):
                 assert ai.ask("Q")["content"][0]["text"] == "A"
                 sent = up.requests[count + 1:]
                 assert len(sent) == 9 and turns(sent[7]) == [], sent
+                assert prompt(sent[7]).count(identity) == int(notes_on), prompt(sent[7])
                 results = [turns(r)[-1]["content"] for r in sent[:7] + sent[8:]]
                 half = remind.replace("2\\d%", "5\\d%")
                 want = ["", remind, "", half, "", warn, warn, remind]
@@ -9587,9 +9893,11 @@ def check_turns(binary, up):
             assert turns(again) == [] and re.fullmatch(
                 "Q\n\n\\[askai: you compacted the context: the conversation since "
                 "the task is gone, your turns and the tools' results with it\\. "
-                "Your summary of it:\\]\n\nS\n\n\\[askai: your notes, oldest "
-                f"first:\\]\n\n1\\. {when}  n1\\.md  \\(1 line\\)\n\n\\[askai: your "
-                "newest note, n1\\.md:\\]\n\nn1\n\n\\[askai: go on with the task\\.\\]",
+                "Your summary of it:\\]\n\nS" + re.escape(identity) +
+                "\n\n\\[askai: your note history, oldest "
+                f"first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  \\(1 line\\)\n\n"
+                "\\[askai: the current text of your most recently written note, "
+                "n1\\.md:\\]\n\nn1\n\n\\[askai: go on with the task\\.\\]",
                 prompt(again)), prompt(again)
             assert "- compact: 1 bytes\n" in result["content"][1]["text"], result
             assert "git" not in result["content"][1]["text"], result
@@ -9608,10 +9916,11 @@ def check_turns(binary, up):
             again = up.requests[count + 2]
             assert turns(again) == [] and re.fullmatch(
                 "Q\n\n\\[askai: your context filled up, so the conversation since "
-                "the task is gone, your turns and the tools' results with it\\.\\]"
-                f"\n\n\\[askai: your notes, oldest first:\\]\n\n1\\. {when}  n1\\.md  "
+                "the task is gone, your turns and the tools' results with it\\.\\]" +
+                re.escape(identity) +
+                f"\n\n\\[askai: your note history, oldest first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  "
                 f"\\(1 line\\)\n2\\. {when}  n2\\.md  "
-                "\\(1 line\\)\n\n\\[askai: your newest note, n2\\.md:\\]\n\nn2\n\n"
+                "\\(1 line\\)\n\n\\[askai: the current text of your most recently written note, n2\\.md:\\]\n\nn2\n\n"
                 "\\[askai: go on with the task\\.\\]", prompt(again)), prompt(again)
             script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
                          lambda r: (400, full), lambda r: (400, full)]
@@ -9950,7 +10259,7 @@ def check_turns(binary, up):
             assert "[Bytes 0 to 2992 of 44000:" in turns(up.requests[count + 1])[1][
                 "content"], up.requests[count + 1]
 
-            # The list action returns every note, the oldest first.  The read
+            # The list action returns each current note once. The read
             # action returns a window of a long note, and a read with an offset
             # returns the rest.
             add = lambda c: json.dumps({"action": "add", "file": f"{c}/{c}.txt",
@@ -9968,13 +10277,12 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Q")
             reads = [m["content"] for m in turns(up.requests[count + 2])[5:]]
-            assert re.fullmatch("Your notes, oldest first:\n\n" + "".join(
-                f"{k}\\. {when}  {c}/{c}\\.txt  \\(6 lines\\)\n"
-                for k, c in ((1, "b"), (2, "c"), (3, "a"))), reads[0]), reads[0]
+            assert reads[0] == note_files(selector, {
+                f"{c}/{c}.txt": (f"{c * 1199}\n" * 6).encode() for c in "abc"}), reads[0]
             assert reads[1] == f"{'c' * 1199}\n" * 2 + "\n\n[Bytes 0 to 2400 of 7200: " \
-                "for the rest, call again with \"offset\": 2400.]", reads[1][-100:]
+                "for the rest, call again with \"offset\": 2400.]" + provenance, reads[1][-200:]
             assert reads[2] == f"{'c' * 1199}\n\n\n[Bytes 6000 to 7200 of 7200: its " \
-                "end.]", reads[2][-100:]
+                "end.]" + provenance, reads[2][-200:]
             # The result of the last call also has the warning that the context
             # is full.
             assert reads[3] == "That name is a directory of notes. list shows the " \
@@ -12334,7 +12642,7 @@ def main():
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
                       check_modern, check_mcp_tasks, check_client_jobs, check_background, check_recovery, check_recovery_tools,
-                      check_durable_cancel, check_archive_failure, check_journal_repair,
+                      check_recovery_notes, check_durable_cancel, check_archive_failure, check_journal_repair,
                       check_shared_transcripts, check_http,
                       check_large_bodies,
                       check_sse,

@@ -3,7 +3,8 @@
  * own refs/heads/notes/PARTICIPANT/WHO/SIDE branches. WHO is the client principal
  * or anonymous; SIDE is client or upstream. All notebooks can be read, but a
  * tool call's write branch is chosen by the server. Threads identify ask chains
- * and do not partition the notes. Notes are immutable files committed by Git.
+ * and do not partition the notes. Replacing a note adds a commit; earlier
+ * contents remain in the notebook's history.
  * Existing repositories can have worktrees; Git resolves their packed refs.
  * Concurrent changes to one branch fail rather than overwrite another writer.
  */
@@ -47,20 +48,28 @@ enum notes_cmd : uint8_t {
 	NOTES_CREATE,  /**< initializes the shared repository */
 	NOTES_CHECK,   /**< checks the name of a new note.  notes_check_input()
 	                    writes its input. */
-	NOTES_ADD,     /**< adds a note.  notes_add_input() writes its input. */
-	NOTES_LIST,    /**< writes the list of the notes, the newest first */
+	NOTES_ADD,     /**< writes a note.  notes_add_input() writes its input. */
+	NOTES_LIST,    /**< writes the note history, the newest first */
 	NOTES_READ,    /**< writes a note.  notes_read_input() writes its
 	                    input. */
 	NOTES_BOOKS,   /**< lists all participant notebook selectors */
 	NOTES_FORMAT,  /**< writes the Git object format for an unborn branch */
+	NOTES_FILES,   /**< lists the current notes, in tree order */
 };
 
-/** A note in the output of the command NOTES_LIST. */
+/** A current note in the output of NOTES_FILES. Views borrow its output. */
+struct notes_file {
+	struct span name;
+	struct span id;     /**< hexadecimal blob object id */
+	uint64_t    bytes;
+};
+
+/** A change to a note in the output of NOTES_LIST. */
 struct notes_entry {
 	struct span name;
-	uint64_t    time;   /**< when it was added, in seconds since the
+	uint64_t    time;   /**< when it was committed, in seconds since the
 	                         epoch */
-	uint64_t    lines;  /**< the number of lines of its text, or
+	uint64_t    lines;  /**< the number of lines added by this change, or
 	                         NOTES_BINARY if git sees no text in it */
 };
 
@@ -125,6 +134,11 @@ extern int
 notes_select (char const *name,
               size_t      len,
               char        repo[NOTES_REPO]);
+
+/** Returns the public selector within a ref made by notes_repo() or
+ * notes_select(). The view borrows @p repo. */
+extern char const *
+notes_selector (char const *repo);
 
 /** Whether the shared repository has been initialized. Branch existence is
  * resolved by Git, including packed refs. */
@@ -204,8 +218,9 @@ notes_add_file (struct buf *in,
 /**
  * Writes to @p in the input of the command NOTES_ADD.  The input is a
  * commit by the side @p side with @p file, the part that notes_add_file()
- * wrote. The parent is @p tip, or a zero object id of the repository format
- * for a root commit. An empty tip means the SHA-1 zero object id.
+ * wrote. A file replaces any existing note with the same name. The parent
+ * is @p tip, or a zero object id of the repository format for a root commit.
+ * An empty tip means the SHA-1 zero object id.
  * Returns 0 or ENOMEM.
  */
 extern int
@@ -236,9 +251,18 @@ notes_read_out (struct span  out,
                 struct span *id);
 
 /**
+ * Reads the next current note from @p out, the output of NOTES_FILES, into
+ * @p file, consuming its complete record. Returns 0, ENOENT at the end, or
+ * EIO for an incomplete or malformed record; errors leave @p out unchanged.
+ */
+extern int
+notes_file_next (struct span       *out,
+                 struct notes_file *file);
+
+/**
  * Reads a note in @p out, the output of NOTES_LIST, into @p entry and
  * advances @p cursor backwards. Start with cursor.end = out.len and its other
- * fields zero. Notes come oldest first, including all files of a multi-file
+ * fields zero. Changes come oldest first, including all files of a multi-file
  * commit. Incomplete records at a cut end are skipped. Returns false at end.
  */
 extern bool

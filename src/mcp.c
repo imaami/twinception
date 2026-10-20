@@ -166,7 +166,7 @@ enum {
 static_assert((int)LEDGER_RUNNING <= (int)JOB_QUEUED, "home queues the jobs that run");
 
 /* What git runs for in the notes (src/notes.h). */
-enum mcp_fetch : uint8_t {
+enum mcp_fetch : uint16_t {
 	FETCH_CREATE,      /* the notes tool's add: make the repository of a new
 	                      thread */
 	FETCH_CHECK,       /* the notes tool's add: check the name of the note */
@@ -191,6 +191,34 @@ enum mcp_fetch : uint8_t {
 	FETCH_ATTACH = 64, /* a flag that is set with FETCH_READ: the attach
 	                      action, which uploads the note as a file for the
 	                      turn */
+	FETCH_REPLACE = 256, /* replace an existing own note, retaining its history */
+	FETCH_FILES = 512,   /* list the current tree, rather than its history */
+};
+
+enum {
+	NOTE_WRITE  = 1 << 0,
+	NOTE_FILE   = 1 << 1,
+	NOTE_OFFSET = 1 << 2,
+	NOTE_UPLOAD = 1 << 3,
+};
+
+/** The notes actions, shared by dispatch and the published tool schema. */
+static struct {
+	char const    *name;
+	uint32_t       flags;
+	enum mcp_fetch fetch;
+	uint16_t       len;
+} const mcp_notes_actions[] = {
+#define NOTE(name, flags, fetch) { name, flags, fetch, sizeof name - 1 }
+	NOTE("add",       NOTE_WRITE | NOTE_FILE, 0),
+	NOTE("replace",   NOTE_WRITE | NOTE_FILE, FETCH_REPLACE),
+	NOTE("notebooks", NOTE_OFFSET,            FETCH_BOOKS),
+	NOTE("list",      NOTE_OFFSET,            FETCH_LIST | FETCH_FILES),
+	NOTE("history",   NOTE_OFFSET,            FETCH_LIST),
+	NOTE("read",      NOTE_FILE | NOTE_OFFSET, FETCH_READ),
+	NOTE("copy",      NOTE_FILE,              FETCH_READ | FETCH_OTHER | FETCH_COPY),
+	NOTE("attach",    NOTE_FILE | NOTE_UPLOAD, FETCH_READ | FETCH_ATTACH),
+#undef NOTE
 };
 
 static constexpr uint64_t NS = 1'000'000'000;
@@ -485,11 +513,12 @@ struct mcp_slot {
 	uint64_t            start;     /* loop_clock() as the call began */
 	struct handle       call;      /* names it to the post that completes
 	                                  it, as mcp_slot_name() makes it */
+	struct json_object *args;      /* a job's arguments, shown by jobs */
+	struct mcp_slot    *of;        /* the job whose output it gives, if any */
 	uint16_t            note_len;  /* bytes of note */
+	uint16_t            fetch;     /* enum mcp_fetch: what its notes' git is for */
 	uint8_t             tool;      /* its call's tool, by its offer's id;
 	                                  TOOL_MAX: none */
-	uint8_t             fetch;     /* enum mcp_fetch: what its notes' git is
-	                                  for */
 	uint8_t             role;      /* enum mcp_role */
 	bool                done;      /* true once the call has ended.  A
 	                                  call ends when it has its output,
@@ -501,15 +530,9 @@ struct mcp_slot {
 	                                  ended call. */
 	bool                failed;    /* the call failed */
 	bool                cancelled; /* a job's call, cancelled */
-	struct json_object *args;      /* a copy of a job's call's arguments,
-	                                  which the list of jobs shows */
-	struct mcp_slot    *of;        /* the job whose output it gives, if it
-	                                  gives a job's */
 	char                notebook[NOTES_REPO]; /* selected read branch; empty: own */
-	char                note[352]; /* The text that askai adds to the
-	                                  call's output.  With 352 bytes the
-	                                  slot is 640 bytes and has no padding
-	                                  at its end. */
+	char                note[511]; /* text appended to the tool output; fills
+	                                  the slot's trailing alignment */
 };
 
 static_assert(TOOL_MAX <= UINT8_MAX, "a slot's tool holds TOOL_MAX");
@@ -1333,6 +1356,8 @@ mcp_slot_drop (struct mcp_slot *slot)
 		child_release(&slot->child);
 	else
 		child_destroy(&slot->child);
+	slot->fetch = 0;
+	slot->notebook[0] = '\0';
 	loop_unready(&slot->step);
 	if (slot->call.bits)
 		loop_forget(slot->req->mcp->loop, slot->call);
@@ -3443,7 +3468,8 @@ mcp_slot_fetched (struct mcp_slot const *slot,
 	return 0;
 }
 
-static void mcp_slot_notes_run (struct mcp_slot *slot, uint8_t fetch, struct buf *in);
+static void mcp_slot_notes_run (struct mcp_slot *slot, uint16_t fetch, struct buf *in);
+static char const *mcp_slot_notebook (struct mcp_slot const *slot);
 
 /* Serialize the tools that the turns of @p obj's userdata, a request, may
  * call: their definitions as the upstream's API has them, each after a
@@ -3573,6 +3599,20 @@ mcp_history_valid (struct json_object *history)
 	return true;
 }
 
+/** Keep the writer's identity in both initial and compacted prompts. */
+static int
+mcp_req_notes_identity (struct mcp_req *req)
+{
+	if (!*req->repo)
+		return 0;
+	return dstr_printf(&req->self.answer,
+	                   "\n\n[askai: participant %s. Your writable notebook "
+	                   "is %s. Use notes action notebooks to discover "
+	                   "peers; selectors identify their authors.]\n",
+	                   notes_writer(req->mcp->st->notes), notes_selector(req->repo))
+	     ? 0 : ENOMEM;
+}
+
 /* Start a call that asks the upstream, with the arguments @p args, of the
  * class the request asks for, lending the turns the tools req->lent says,
  * if any: build its upstream request, then submit its job.  The notes the turns keep, if askai keeps
@@ -3632,6 +3672,8 @@ mcp_req_ask (struct mcp_req     *req,
 	mcp_req_log_ask(req, prompt, id != nullptr);
 	mcp_req_wait(req);
 	int e = mcp_req_draft(req, prompt, system, history);
+	if (!e)
+		e = mcp_req_notes_identity(req);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -5473,6 +5515,14 @@ mcp_req_call_launch (struct mcp_req *req)
 	if (req->saved_tools[k]) {
 		struct json_object *saved = req->saved_tools[k];
 		size_t len = 0;
+		char const *notebook = jb_str(jb_get(saved, "notebook"), &len);
+		if (notebook) {
+			if (notes_select(notebook, len, slot->notebook)) {
+				mcp_req_fail(req, EILSEQ);
+				return;
+			}
+			slot->fetch = FETCH_READ;
+		}
 		char const *text = jb_str(jb_get(saved, "text"), &len);
 		slot->start = loop_clock();
 		slot->skip = json_object_get_uint64(jb_get(saved, "skip"));
@@ -5624,6 +5674,9 @@ mcp_slot_done (struct mcp_slot *slot,
 		    *text ? "; error " : "", text);
 	}
 	slot->failed = failed;
+	char const *notebook = !failed &&
+	                      (slot->fetch & (FETCH_KIND | FETCH_COPY | FETCH_ATTACH)) == FETCH_READ
+	                    ? notes_selector(mcp_slot_notebook(slot)) : nullptr;
 	if (*req->archive && slot->role == ROLE_TURN && !req->saved_tools[slot - req->slots]) {
 		struct span files = buf_peek(&req->attached);
 		struct json_object *result = jb_object(
@@ -5636,6 +5689,10 @@ mcp_slot_done (struct mcp_slot *slot,
 			"attached", json_object_new_string_len(files.len ? (char const *)files.ptr : "", (int)files.len),
 			"text", json_object_new_string_len(out.len ? (char const *)out.ptr : "", (int)out.len),
 			nullptr);
+		if (notebook && jb_set(result, "notebook", json_object_new_string(notebook))) {
+			json_object_put(result);
+			result = nullptr;
+		}
 		int e = mcp_req_archive(req, "tool-result", result, nullptr);
 		if (e)
 			req->archive_error = e;
@@ -5647,6 +5704,11 @@ mcp_slot_done (struct mcp_slot *slot,
 	bool past = slot->skip > out.len;
 	mcp_slot_window(slot, out);
 	slot->note_len = (uint16_t)mcp_slot_note_window(slot, out.len, past);
+	if (notebook)
+		slot->note_len += (uint16_t)util_format(slot->note + slot->note_len,
+		                                        sizeof slot->note - slot->note_len,
+		                                        "\n\n[askai: notebook %s]",
+		                                        notebook);
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
@@ -6298,7 +6360,7 @@ static enum notes_cmd const mcp_fetch_cmds[] = {
  * adds the line that tells the upstream to go on with the task. */
 static void
 mcp_req_notes_then (struct mcp_req *req,
-                    uint8_t         fetch)
+                    uint16_t        fetch)
 {
 	if ((fetch & FETCH_KIND) == FETCH_RESUME)
 		mcp_req_enter(req, PHASE_BUILD);
@@ -6371,7 +6433,7 @@ mcp_slot_notebook (struct mcp_slot const *slot)
  * selects the slot's read branch; writes always use the request's own branch. */
 static void
 mcp_slot_notes_run (struct mcp_slot *slot,
-                    uint8_t          fetch,
+                    uint16_t         fetch,
                     struct buf      *in)
 {
 	struct mcp_req *req = slot->req;
@@ -6380,6 +6442,7 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	char const *repo = fetch & FETCH_OTHER ? mcp_slot_notebook(slot) : req->repo;
 	enum notes_cmd cmd = (fetch & ~FETCH_COPY) == FETCH_FORMAT ? NOTES_FORMAT
 	                   : fetch & FETCH_BOOKS ? NOTES_BOOKS
+	                   : fetch & FETCH_FILES ? NOTES_FILES
 	                   : fetch & FETCH_NEWEST ? NOTES_READ
 	                   : mcp_fetch_cmds[fetch & FETCH_KIND];
 	/* A shared repository can have writers outside askai. Never remove their
@@ -6481,8 +6544,8 @@ mcp_notes_raced (struct child const *child)
 	return false;
 }
 
-/* Appends to the answer of @p slot why git did not add the note: git took
- * too long, another call added a note to the thread at the same time, or
+/* Appends to the answer of @p slot why git did not write the note: git took
+ * too long, another call changed the notebook at the same time, or
  * another error, which the function logs. */
 static int
 mcp_slot_notes_unadded (struct mcp_slot *slot)
@@ -6490,16 +6553,16 @@ mcp_slot_notes_unadded (struct mcp_slot *slot)
 	struct child const *c = slot->child;
 	struct span out = buf_peek(&c->out);
 	if (c->late)
-		return mcp_slot_say(slot, &TEXT("Could not add the note: it took too "
+		return mcp_slot_say(slot, &TEXT("Could not write the note: it took too "
 		                                "long."), 1);
 	if (mcp_notes_raced(c))
-		return mcp_slot_say(slot, &TEXT("Could not add the note, because another "
-		                                "call added a note to this notebook at the "
-		                                "same time. Add it again."), 1);
+		return mcp_slot_say(slot, &TEXT("Could not write the note, because another "
+		                                "call changed this notebook at the same "
+		                                "time. Read its current state and retry."), 1);
 	char const *why = (char const *)out.ptr;
-	LOG(LOG_WARN, "notes: git could not add a note: %.*s",
+	LOG(LOG_WARN, "notes: git could not write a note: %.*s",
 	    (int)mcp_clip(why, out.len, 300), why);
-	return mcp_slot_say(slot, &TEXT("Could not add the note."), 1);
+	return mcp_slot_say(slot, &TEXT("Could not write the note."), 1);
 }
 
 /* Runs git to add the note whose file part is in the request's body.  The
@@ -6521,7 +6584,7 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, FETCH_ADD | (slot->fetch & FETCH_COPY), &in);
+	mcp_slot_notes_run(slot, FETCH_ADD | (slot->fetch & (FETCH_COPY | FETCH_REPLACE)), &in);
 }
 
 /* An explicit zero parent makes the first commit a root even if another
@@ -6569,15 +6632,20 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 	struct child const *c = slot->child;
 	char tip[NOTES_TIP + 1];
 	int r = mcp_notes_ok(c) ? notes_checked(buf_peek(&c->out), tip) : EIO;
+	bool replace = slot->fetch & FETCH_REPLACE;
+	if (replace)
+		r = r == EEXIST ? 0 : r ? r : ENOENT;
 	if (!r) {
 		child_destroy(&slot->child);
 		mcp_slot_notes_write(slot, tip);
 		return;
 	}
 	buf_fini(&slot->req->body);
-	int e = r == EEXIST ? mcp_slot_say(slot, &TEXT("A note of that name exists, and a "
-	                                               "note cannot be changed. Add the "
-	                                               "note under another name."), 1)
+	int e = r == EEXIST ? mcp_slot_say(slot, &TEXT("A note of that name exists. Use "
+	                                               "action replace to update it, or "
+	                                               "add under another name."), 1)
+	      : r == ENOENT ? mcp_slot_say(slot, &TEXT("No note has that name. Use action "
+	                                                "add to create it."), 1)
 	      : r == EISDIR ? mcp_slot_say(slot, &TEXT("That name is a directory of "
 	                                               "notes. Add the note under "
 	                                               "another name."), 1)
@@ -6598,6 +6666,8 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 	int e = !ok ? mcp_slot_notes_unadded(slot)
 	      : slot->fetch & FETCH_COPY ? mcp_slot_say(slot, &TEXT("Copied into your "
 	                                                         "notebook."), 1)
+	      : slot->fetch & FETCH_REPLACE ? mcp_slot_say(slot, &TEXT("Replaced. Previous "
+	                                                            "versions remain in history."), 1)
 	      : mcp_slot_say(slot, &TEXT("Noted."), 1);
 	mcp_slot_notes_end(slot, e, !ok);
 }
@@ -6637,20 +6707,56 @@ mcp_slot_notes_listed (struct mcp_slot *slot,
 	return 0;
 }
 
-/* Answers the list action with the output of git log. */
+/** Shows the selected notebook's current files or its change history. */
 static void
 mcp_slot_notes_got_list (struct mcp_slot *slot)
 {
 	struct child const *c = slot->child;
-	struct span newest;
 	bool ok = mcp_notes_listed(c);
-	struct mcp_piece const head = slot->fetch & FETCH_OTHER
-	                           ? TEXT("Selected notebook, oldest first:\n\n")
-	                           : TEXT("Your notes, oldest first:\n\n");
-	int e = !ok ? mcp_slot_notes_unread(slot) : mcp_slot_say(slot, &head, 1);
-	if (!e && ok)
-		e = mcp_slot_notes_listed(slot, buf_peek(&c->out), c->cut, &newest);
+	if (!ok) {
+		mcp_slot_notes_end(slot, mcp_slot_notes_unread(slot), true);
+		return;
+	}
+	bool files = slot->fetch & FETCH_FILES;
+	struct dstr *d = &slot->answer;
+	int e = dstr_printf(d, "Notebook %s — %s:\n\n",
+	                    notes_selector(mcp_slot_notebook(slot)),
+	                    files ? "current files (bytes, blob)" : "history, oldest first (lines added)")
+	      ? 0 : ENOMEM;
+	struct span out = buf_peek(&c->out);
+	if (!files) {
+		struct span newest;
+		e = e ? e : mcp_slot_notes_listed(slot, out, c->cut, &newest);
+	} else {
+		while (!e && out.len) {
+			struct notes_file file;
+			int r = notes_file_next(&out, &file);
+			if (r) {
+				if (!c->cut)
+					e = mcp_slot_say(slot, &TEXT("Cannot decode the notebook file list."), 1);
+				ok = c->cut;
+				break;
+			}
+			char const *name = (char const *)file.name.ptr;
+			if (!dstr_printf(d, "%.*s  (%" PRIu64 " bytes, %.*s)\n",
+			                 (int)jb_utf8(name, file.name.len), name, file.bytes,
+			                 (int)file.id.len, (char const *)file.id.ptr))
+				e = ENOMEM;
+		}
+		if (!e && c->cut)
+			e = mcp_slot_say(slot, &TEXT("[The file list exceeded the capture limit "
+			                             "and is incomplete.]\n"), 1);
+		loop_work(slot->req->mcp->loop, LOOP_COPY, buf_peek(&c->out).len);
+	}
 	mcp_slot_notes_end(slot, e, !ok);
+}
+
+/** Identifies the server-selected writer, including an unborn notebook. */
+static int
+mcp_slot_notes_identity (struct mcp_slot *slot)
+{
+	return dstr_printf(&slot->answer, "Self (writable): %s\n",
+	                   notes_selector(slot->req->repo)) ? 0 : ENOMEM;
 }
 
 /* Lists discoverable branch selectors. Git resolves both loose and packed refs. */
@@ -6662,10 +6768,28 @@ mcp_slot_notes_got_books (struct mcp_slot *slot)
 	struct span out = buf_peek(&c->out);
 	int e = !ok ? mcp_slot_notes_unread(slot)
 	      : mcp_slot_say(slot, &TEXT("Session notebooks (use a selector as notebook):\n"), 1);
-	if (!e && ok && out.len)
-		e = mcp_slot_say(slot, &ESC((char const *)out.ptr, out.len), 1);
-	if (!e && ok && !out.len)
-		e = mcp_slot_say(slot, &TEXT("No notes have been added yet."), 1);
+	if (!e && ok)
+		e = mcp_slot_notes_identity(slot);
+	char const *own = notes_selector(slot->req->repo);
+	size_t own_len = strlen(own);
+	while (!e && ok && out.len) {
+		unsigned char const *end = memchr(out.ptr, '\n', out.len);
+		if (!end)
+			break;
+		size_t len = (size_t)(end - out.ptr);
+		char const *name = (char const *)out.ptr;
+		char repo[NOTES_REPO];
+		if ((len != own_len || memcmp(out.ptr, own, len)) &&
+		    !notes_select(name, len, repo))
+			e = dstr_printf(&slot->answer, "%.*s (read-only)\n",
+			                (int)len, name)
+			  ? 0 : ENOMEM;
+		size_t n = len + 1;
+		out.ptr += n;
+		out.len -= n;
+	}
+	if (!e && ok && c->cut)
+		e = mcp_slot_say(slot, &TEXT("[The notebook list is incomplete.]\n"), 1);
 	mcp_slot_notes_end(slot, e, !ok);
 }
 
@@ -7029,7 +7153,7 @@ mcp_slot_notes_prompt (struct mcp_slot  *slot,
 		e = mcp_slot_notes_listed(slot, buf_peek(&c->out), c->cut, &newest);
 	char const *name = (char const *)newest.ptr;
 	struct mcp_piece const p[] = {
-		TEXT("\n[askai: your newest note, "),
+		TEXT("\n[askai: the current text of your most recently written note, "),
 		ESC(name, newest.len ? jb_utf8(name, newest.len) : 0),
 		TEXT(":]\n\n"),
 	};
@@ -7121,8 +7245,9 @@ mcp_slot_notes_resumed (struct mcp_slot *slot)
 		return;
 	}
 	req->branch = true;
-	mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: your earlier session notes, "
-	                                 "oldest first. Use notes action notebooks "
+	mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: your session note history, "
+	                                 "oldest first; repeated names are updates. "
+	                                 "Use notes action list for current files and notebooks "
 	                                 "to discover the other participants:]\n\n"));
 }
 
@@ -7133,7 +7258,8 @@ mcp_slot_notes_compacted (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
 	if (mcp_notes_listed(slot->child)) {
-		mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: your notes, oldest first:]\n\n"));
+		mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: your note history, oldest first; "
+		                                 "repeated names are updates:]\n\n"));
 		return;
 	}
 	child_destroy(&slot->child);
@@ -7195,11 +7321,12 @@ mcp_notes_add_data (struct buf           *in,
 	return 0;
 }
 
-/* Adds an immutable note on the caller's branch, initializing the shared
+/** Writes a versioned note on the caller's branch, initializing the shared
  * repository if needed. */
 static void
 mcp_slot_notes_add (struct mcp_slot    *slot,
-                    struct json_object *args)
+                    struct json_object *args,
+                    uint16_t            flags)
 {
 	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
 	struct mcp_req *req = slot->req;
@@ -7234,6 +7361,11 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
+	if (!initialized && (flags & FETCH_REPLACE)) {
+		mcp_slot_result(slot, TEXT("No note has that name. Use action add to create it."),
+		                true);
+		return;
+	}
 	name += skip;
 	name_len -= skip;
 	/* The file part of the note stays in the request's body while git
@@ -7253,7 +7385,7 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, initialized ? FETCH_CHECK : FETCH_CREATE, &in);
+	mcp_slot_notes_run(slot, (initialized ? FETCH_CHECK : FETCH_CREATE) | flags, &in);
 }
 
 /* Adds @p text, a note of the other side's notebook that git read for the
@@ -7338,7 +7470,7 @@ mcp_slot_notes_copy (struct mcp_slot    *slot,
 static void
 mcp_slot_notes_read (struct mcp_slot    *slot,
                      struct json_object *args,
-                     uint8_t             flags)
+                     uint16_t            flags)
 {
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
@@ -7348,8 +7480,6 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 		mcp_slot_result(slot, TEXT(bad_name), true);
 		return;
 	}
-	if (!(flags & FETCH_ATTACH) && mcp_slot_offset(slot, args))
-		return;
 	struct buf in = {};
 	int e = notes_read_input(&in, mcp_slot_notebook(slot), name + skip, len - skip);
 	if (e) {
@@ -7360,46 +7490,38 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, FETCH_READ | flags, &in);
 }
 
-/* Notes are shared by repository path. The caller selects only a read branch;
- * every write uses the instance's participant and the caller's principal/side. */
+/** Notes are shared by repository path; the server chooses every write branch. */
 static void
 mcp_slot_notes (struct mcp_slot    *slot,
                 struct json_object *args)
 {
 	struct mcp_req *req = slot->req;
 	struct notes const *notes = req->mcp->st->notes;
-	struct json_object *action = jb_get(args, "action");
-	struct json_object *thread = jb_get(args, "thread");
-	struct json_object *notebook = jb_get(args, "notebook");
-	bool add = jb_is(action, "add");
-	bool read = jb_is(action, "read");
-	bool copy = jb_is(action, "copy");
-	bool books = jb_is(action, "notebooks");
-	bool files = slot->role != ROLE_OWN && req->mcp->st->uploads;
-	uint8_t attach = files && jb_is(action, "attach") ? FETCH_ATTACH : 0;
-	bool own = !notebook || jb_is(notebook, "own");
-	bool other = jb_is(notebook, "other") || (copy && !notebook);
-	slot->notebook[0] = '\0';
-	size_t selected_len = 0;
-	char const *selected = jb_str(notebook, &selected_len);
-	bool invalid = !own && !other &&
-	               notes_select(selected, selected_len, slot->notebook);
-	struct mcp_piece check =
-		!add && !read && !copy && !books && !attach && !jb_is(action, "list")
-		? files ? TEXT("The action must be add, list, read, copy, notebooks or attach.")
-		        : TEXT("The action must be add, list, read, copy or notebooks.")
-		: add && !own ? TEXT("You can add notes only to your own notebook.")
-		: invalid ? TEXT("The notebook must be own, other, or a selector returned "
-		                 "by action notebooks (participant/principal/side).")
-		: (struct mcp_piece){};
-	if (check.ptr) {
-		mcp_slot_result(slot, check, true);
+	bool uploads = slot->role != ROLE_OWN && req->mcp->st->uploads;
+	size_t len = 0;
+	char const *action = jb_str(jb_get(args, "action"), &len);
+	size_t which = 0;
+	while (which < ARRAY_SIZE(mcp_notes_actions) &&
+	       (!action || len != mcp_notes_actions[which].len ||
+	        memcmp(action, mcp_notes_actions[which].name, len)))
+		++which;
+	if (which == ARRAY_SIZE(mcp_notes_actions) ||
+	    ((mcp_notes_actions[which].flags & NOTE_UPLOAD) && !uploads)) {
+		dstr_auto why = DSTR_INIT;
+		bool ok = CAT(&why, "The action must be one of:");
+		for (size_t i = 0; ok && i < ARRAY_SIZE(mcp_notes_actions); ++i)
+			if (uploads || !(mcp_notes_actions[i].flags & NOTE_UPLOAD))
+				ok = dstr_printf(&why, " %s", mcp_notes_actions[i].name);
+		if (!ok || !CAT(&why, "."))
+			mcp_req_fail(req, ENOMEM);
+		else
+			mcp_slot_result(slot, DSTR(&why), true);
 		return;
 	}
-	if (other)
-		mcp_slot_other(slot, slot->notebook);
+	uint32_t flags = mcp_notes_actions[which].flags;
+	uint16_t fetch = mcp_notes_actions[which].fetch;
 	if (slot->role == ROLE_OWN) {
-		size_t len = 0;
+		struct json_object *thread = jb_get(args, "thread");
 		char const *id = jb_str(thread, &len);
 		if (thread && (!id || !notes_is_id(id, len))) {
 			mcp_slot_result(slot, TEXT("The optional thread must be 32 hexadecimal "
@@ -7410,19 +7532,52 @@ mcp_slot_notes (struct mcp_slot    *slot,
 			memcpy(req->thread, id, sizeof req->thread);
 		notes_repo(notes, req->principal, NOTES_CLIENT, req->repo);
 	}
-	bool initialized = notes_exists(notes);
-	if (add)
-		mcp_slot_notes_add(slot, args);
-	else if (!initialized)
-		mcp_slot_result(slot, TEXT("No notes have been added to this session yet."), false);
-	else if (books && !mcp_slot_offset(slot, args))
-		mcp_slot_notes_run(slot, FETCH_BOOKS, nullptr);
-	else if (copy)
+	struct json_object *notebook = jb_get(args, "notebook");
+	char const *selected = jb_str(notebook, &len);
+	slot->notebook[0] = '\0';
+	if (jb_is(notebook, "other") ||
+	    (!notebook && (fetch & FETCH_COPY) && slot->role == ROLE_OWN)) {
+		mcp_slot_other(slot, slot->notebook);
+	} else if (notebook && !jb_is(notebook, "own")) {
+		if (notes_select(selected, len, slot->notebook)) {
+			mcp_slot_result(slot, TEXT("The notebook must be own or a selector returned "
+			                           "by action notebooks (participant/principal/side)."), true);
+			return;
+		}
+	}
+	if ((fetch & FETCH_COPY) && !notebook && slot->role != ROLE_OWN) {
+		mcp_slot_result(slot, TEXT("For copy, give the source notebook selector from "
+		                           "action notebooks."), true);
+		return;
+	}
+	if ((flags & NOTE_WRITE) && *slot->notebook && strcmp(slot->notebook, req->repo)) {
+		mcp_slot_result(slot, TEXT("You can write notes only to your own notebook."), true);
+		return;
+	}
+	if ((flags & NOTE_OFFSET) && mcp_slot_offset(slot, args))
+		return;
+	if (flags & NOTE_WRITE) {
+		mcp_slot_notes_add(slot, args, fetch);
+		return;
+	}
+	if (!notes_exists(notes)) {
+		if (fetch == FETCH_BOOKS) {
+			int e = mcp_slot_notes_identity(slot);
+			if (e)
+				mcp_req_fail(req, e);
+			else
+				mcp_slot_respond(slot, false);
+		} else {
+			mcp_slot_result(slot, TEXT("No notes have been added to this session yet."), false);
+		}
+		return;
+	}
+	if (fetch & FETCH_COPY)
 		mcp_slot_notes_copy(slot, args);
-	else if (read || attach)
-		mcp_slot_notes_read(slot, args, (*slot->notebook ? FETCH_OTHER : 0) | attach);
-	else if (!books && !mcp_slot_offset(slot, args))
-		mcp_slot_notes_run(slot, FETCH_LIST | (*slot->notebook ? FETCH_OTHER : 0), nullptr);
+	else if (flags & NOTE_FILE)
+		mcp_slot_notes_read(slot, args, fetch | (*slot->notebook ? FETCH_OTHER : 0));
+	else
+		mcp_slot_notes_run(slot, fetch | (*slot->notebook ? FETCH_OTHER : 0), nullptr);
 }
 
 /* Do the work of @p step's slot, as its call's kind does. */
@@ -7441,6 +7596,11 @@ static void
 mcp_req_compact_notes (struct mcp_req *req,
                        enum mcp_fetch  fetch)
 {
+	int e = mcp_req_notes_identity(req);
+	if (e) {
+		mcp_req_fail(req, e);
+		return;
+	}
 	if (req->branch) {
 		mcp_slot_notes_run(&req->self, fetch, nullptr);
 		return;
@@ -8873,15 +9033,15 @@ mcp_notes_schema (enum notes_side          side,
 	static char const *const descriptions[] = {
 		[NOTES_UPSTREAM] =
 			"Your persistent notebook in this shared Git session. Add findings, "
-			"decisions and plans as named files. Notes cannot be changed or removed; "
-			"add a new file for an update. All instances sharing the repository "
+			"decisions and plans as named files. Use replace to update your own "
+			"existing files; Git preserves every previous version. All instances sharing the repository "
 			"can read every notebook, but you can write only your own. Use action "
 			"notebooks to discover the others, then list or read with that notebook "
 			"selector. Your notes are included after compaction; read older notes "
 			"when needed. Non-UTF-8 bytes are displayed as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
 		[NOTES_CLIENT] =
 			"Your persistent notebook in this shared Git session. Notes are named "
-			"files that cannot be changed or removed. All instances sharing the "
+			"files; add creates one, replace updates one while preserving history. All instances sharing the "
 			"repository can read every notebook; only your own can be written. "
 			"Use action notebooks to discover selectors, then list or read one. "
 			"copy imports a note into your own notebook without changing its text. "
@@ -8891,28 +9051,30 @@ mcp_notes_schema (enum notes_side          side,
 	/* A turn attaches a note if its upstream takes files. */
 	bool files = side == NOTES_UPSTREAM && st && st->uploads;
 	size_t most = st ? st->files_inline : FILES_INLINE;
-	struct json_object *actions = jb_list(json_object_new_string("add"));
-	if (jb_push(actions, json_object_new_string("notebooks")) ||
-	    jb_push(actions, json_object_new_string("list")) ||
-	    jb_push(actions, json_object_new_string("read")) ||
-	    jb_push(actions, json_object_new_string("copy")) ||
-	    (files && jb_push(actions, json_object_new_string("attach")))) {
-		json_object_put(actions);
-		actions = nullptr;
+	struct json_object *actions = json_object_new_array();
+	for (size_t i = 0; actions && i < ARRAY_SIZE(mcp_notes_actions); ++i) {
+		if (!files && (mcp_notes_actions[i].flags & NOTE_UPLOAD))
+			continue;
+		if (jb_push(actions, json_object_new_string(mcp_notes_actions[i].name))) {
+			json_object_put(actions);
+			actions = nullptr;
+		}
 	}
 	struct json_object *props = jb_object(
 		"action", jb_object(
 			"type", json_object_new_string("string"),
 			"enum", actions,
 			"description", mcp_text3(
-				"add a note, list the notes, the oldest first, read a note, "
+				"add a note, replace an existing own note, list current files "
+				"with their byte sizes and blob ids, show history oldest first "
+				"(line counts are lines added by each change), read a note, "
 				"copy a note into yours, or discover all session notebooks with "
 				"notebooks.", files ? " attach gives a note as a file." : "", ""),
 			nullptr),
 		"file", jb_object(
 			"type", json_object_new_string("string"),
 			"description", mcp_text3(
-				"For add, read", files ? ", copy and attach" : " and copy",
+				"For add, replace, read", files ? ", copy and attach" : " and copy",
 				": the file name of the note, at most 255 bytes. It can have "
 				"directories, such as findings/locks.md. Its extension, such "
 				"as .md or .txt, shows the format of the text."),
@@ -8926,22 +9088,23 @@ mcp_notes_schema (enum notes_side          side,
 		"text", jb_object(
 			"type", json_object_new_string("string"),
 			"description", json_object_new_string(
-				"For add: the text of the note, at most 4 MiB."),
+				"For add and replace: the text of the note, at most 4 MiB."),
 			nullptr),
 		"offset", jb_object(
 			"type", json_object_new_string("integer"),
 			"minimum", json_object_new_int(0),
 			"description", json_object_new_string(
-				"For list and read: the byte of the output to start from, to "
+				"For list, history, notebooks and read: the byte of the output to start from, to "
 				"read on past where it was cut."),
 			nullptr),
 		"notebook", jb_object(
 			"type", json_object_new_string("string"),
 			"description", mcp_text3(
-				"For list, read and copy", files ? ", and attach" : "",
-				": own (default), other (the opposite side of this instance), "
-				"or participant/principal/side "
-				"from action notebooks. copy defaults to other. add accepts only own."),
+				"For list, history, read and copy", files ? ", and attach" : "",
+				": own (default), or a participant/principal/side selector "
+				"from action notebooks. That action identifies your writable "
+				"notebook even before your first note. For copy, explicitly "
+				"select the source. add and replace write only your own notebook."),
 			nullptr),
 		nullptr);
 	/* The client's program, not its model, fills content in with a file
@@ -8950,7 +9113,7 @@ mcp_notes_schema (enum notes_side          side,
 		    "type", json_object_new_string("string"),
 		    "format", json_object_new_string("uri"),
 		    "description", json_object_new_string(
-			    "For add, instead of text: a file that the user gave, which "
+			    "For add and replace, instead of text: a file that the user gave, which "
 			    "your client attaches as it is. Do not write it yourself."),
 		    "x-mcp-file", jb_object("maxSize", json_object_new_int64((int64_t)most),
 		                            nullptr),
@@ -8967,13 +9130,19 @@ mcp_notes_schema (enum notes_side          side,
 		json_object_put(props);
 		props = nullptr;
 	}
+	dstr_auto description = DSTR_INIT;
+	if (!dstr_printf(&description, "Participant: %s. %s%s",
+	                 st && st->notes ? notes_writer(st->notes) : "unconfigured",
+	                 descriptions[side], files
+	                 ? " attach gives you a whole note as a file after the results "
+	                   "of the turn, where read shows a large note in parts." : "")) {
+		json_object_put(props);
+		return nullptr;
+	}
 	return jb_object(
 		"name", json_object_new_string("notes"),
-		"description", mcp_text3(descriptions[side], files
-		                         ? " attach gives you a note of either notebook "
-		                           "whole, as a file after the results of the turn, "
-		                           "where read shows a large note in parts."
-		                         : "", ""),
+		"description", json_object_new_string_len(dstr_get(&description),
+		                                          (int)dstr_len(&description)),
 		"inputSchema", jb_object(
 			"type", json_object_new_string("object"),
 			"properties", props,
