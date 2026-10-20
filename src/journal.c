@@ -1,5 +1,6 @@
 /** @file The durable transcript writer (journal.h). */
 #define _GNU_SOURCE
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -27,19 +28,19 @@
 #include "util.h"
 
 enum {
-	JOURNAL_QUEUE = 256,
-	JOURNAL_BYTES = 32 << 20,
-	JOURNAL_CONTROL = 1024,
-	JOURNAL_CONTROL_BYTES = 2 << 20,
+	JOURNAL_QUEUE          = 256,
+	JOURNAL_BYTES          = 32 << 20,
+	JOURNAL_CONTROL        = 1024,
+	JOURNAL_CONTROL_BYTES  = 2 << 20,
 	JOURNAL_CONTROL_RECORD = 1024,
-	JOURNAL_JOBS = 1024,
+	JOURNAL_JOBS           = 1024,
 	JOURNAL_RECOVERY_BYTES = 256 << 20,
-	JOURNAL_FILES = 16,
-	JOURNAL_SCRATCH = 64 << 10,
-	JOURNAL_HEADER = 120,
-	JOURNAL_SIGNED = 88,
+	JOURNAL_FILES          = 16,
+	JOURNAL_SCRATCH        = 64 << 10,
+	JOURNAL_HEADER         = 120,
+	JOURNAL_SIGNED         = 88,
 	JOURNAL_TERMINAL_BYTES = JOURNAL_RECORD_MAX + JOURNAL_HEADER,
-	JOURNAL_GIT_MS = 10000,
+	JOURNAL_GIT_MS         = 10000,
 };
 
 struct journal_item {
@@ -123,7 +124,8 @@ struct journal {
 };
 
 static bool
-journal_word (char const *word, size_t max)
+journal_word (char const *word,
+              size_t      max)
 {
 	if (!word || !*word)
 		return false;
@@ -150,7 +152,9 @@ journal_id (char const *id)
 }
 
 static int
-journal_write (int fd, void const *data, size_t len)
+journal_write (int         fd,
+               void const *data,
+               size_t      len)
 {
 	unsigned char const *p = data;
 	while (len) {
@@ -168,9 +172,13 @@ journal_write (int fd, void const *data, size_t len)
 	return 0;
 }
 
-/* A short read is EOF, not success disguised as a complete record. */
+/** A short read is EOF, not success disguised as a complete record. */
 static int
-journal_read (int fd, void *data, size_t len, off_t at, size_t *got)
+journal_read (int     fd,
+              void   *data,
+              size_t  len,
+              off_t   at,
+              size_t *got)
 {
 	unsigned char *p = data;
 	*got = 0;
@@ -189,7 +197,8 @@ journal_read (int fd, void *data, size_t len, off_t at, size_t *got)
 }
 
 static void
-journal_number (unsigned char *to, uint64_t number)
+journal_number (unsigned char *to,
+                uint64_t       number)
 {
 	for (size_t i = 0; i < 8; ++i) {
 		to[7 - i] = (unsigned char)number;
@@ -207,8 +216,11 @@ journal_value (unsigned char const *from)
 }
 
 static int
-journal_digest (struct journal *j, unsigned char const *header,
-                void const *data, size_t len, unsigned char digest[32])
+journal_digest (struct journal      *j,
+                unsigned char const *header,
+                void const          *data,
+                size_t               len,
+                unsigned char        digest[32])
 {
 	unsigned n = 0;
 	bool ok = EVP_DigestInit_ex(j->digest, EVP_sha256(), nullptr) == 1 &&
@@ -219,7 +231,9 @@ journal_digest (struct journal *j, unsigned char const *header,
 }
 
 static int
-journal_directory (int parent, char const *name, int *fd)
+journal_directory (int         parent,
+                   char const *name,
+                   int        *fd)
 {
 	bool made = !mkdirat(parent, name, 0700);
 	if (!made && errno != EEXIST)
@@ -232,9 +246,10 @@ journal_directory (int parent, char const *name, int *fd)
 	return 0;
 }
 
-/* Walk, opening each component without following links. */
+/** Walk, opening each component without following links. */
 static int
-journal_open_path (struct journal *j, char const *path)
+journal_open_path (struct journal *j,
+                   char const     *path)
 {
 	if (!path || !*path)
 		return EINVAL;
@@ -280,7 +295,10 @@ journal_open_path (struct journal *j, char const *path)
 }
 
 static int
-journal_file_open (int dir, char const *name, int flags, int *fd)
+journal_file_open (int         dir,
+                   char const *name,
+                   int         flags,
+                   int        *fd)
 {
 	*fd = openat(dir, name, flags | O_CLOEXEC | O_NOFOLLOW, 0600);
 	if (*fd < 0)
@@ -295,7 +313,9 @@ journal_file_open (int dir, char const *name, int flags, int *fd)
 }
 
 static int
-journal_file (int dir, char const *name, int *fd)
+journal_file (int         dir,
+              char const *name,
+              int        *fd)
 {
 	return journal_file_open(dir, name, O_RDWR | O_CREAT, fd);
 }
@@ -313,12 +333,17 @@ journal_private (int fd)
 	return 0;
 }
 
-/* Fixed argv and environment.  Input/output are anonymous files, so a
+/** Fixed argv and environment.  Input/output are anonymous files, so a
  * child's output can never deadlock its input pipe.  Only the writer and
- * startup call this function. */
+ * startup call this function.
+ */
 static int
-journal_git (struct journal *j, char const *const *command, int input,
-             char **output, size_t maximum, int *status)
+journal_git (struct journal    *j,
+             char const *const *command,
+             int                input,
+             char             **output,
+             size_t             maximum,
+             int               *status)
 {
 	static char *const env[] = {
 		"PATH=/usr/bin:/bin", "HOME=/nonexistent", "LC_ALL=C",
@@ -357,7 +382,7 @@ journal_git (struct journal *j, char const *const *command, int input,
 		e = posix_spawn_file_actions_addfchdir_np(&actions, j->repo_fd);
 	if (!e)
 		e = posix_spawn_file_actions_adddup2(&actions, input >= 0 ? input : null,
-		                                    STDIN_FILENO);
+		                                     STDIN_FILENO);
 	if (!e)
 		e = posix_spawn_file_actions_adddup2(&actions, out, STDOUT_FILENO);
 	if (!e)
@@ -380,7 +405,8 @@ journal_git (struct journal *j, char const *const *command, int input,
 		e = posix_spawnattr_setpgroup(&attr, 0);
 	if (!e)
 		e = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK |
-		                                    POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP);
+		                                   POSIX_SPAWN_SETSIGDEF |
+		                                   POSIX_SPAWN_SETPGROUP);
 	pid_t pid = -1;
 	if (!e)
 		e = posix_spawnp(&pid, "git", &actions, &attr, (char *const *)argv, env);
@@ -500,11 +526,15 @@ journal_records_destroy (struct journal_record **p_records)
 	}
 }
 
-/* Reads one framed record. Legacy WALs may end with an incomplete write;
- * their intact prefix is usable, but they are never changed by this reader. */
+/** Reads one framed record. Legacy WALs may end with an incomplete write;
+ * their intact prefix is usable, but they are never changed by this reader.
+ */
 static int
-journal_record_read (struct journal *j, int fd, off_t *offset,
-                     struct journal_record **record, bool partial)
+journal_record_read (struct journal         *j,
+                     int                     fd,
+                     off_t                  *offset,
+                     struct journal_record **record,
+                     bool                    partial)
 {
 	unsigned char header[JOURNAL_HEADER];
 	size_t got = 0;
@@ -563,16 +593,22 @@ journal_control_kind (char const *kind)
 }
 
 static int
-journal_existing (int directory, char const *name, int *fd)
+journal_existing (int         directory,
+                  char const *name,
+                  int        *fd)
 {
 	return journal_file_open(directory, name, O_RDONLY, fd);
 }
 
-/* New snapshots are atomic replacements; legacy WAL tails may end with an
- * interrupted write. Neither loading nor migration modifies that WAL. */
+/** New snapshots are atomic replacements; legacy WAL tails may end with an
+ * interrupted write. Neither loading nor migration modifies that WAL.
+ */
 static int
-journal_records_read (struct journal *j, int fd, char const *id,
-                      char const *kind, bool legacy,
+journal_records_read (struct journal         *j,
+                      int                     fd,
+                      char const             *id,
+                      char const             *kind,
+                      bool                    legacy,
                       struct journal_record **out)
 {
 	off_t offset = 0;
@@ -634,7 +670,8 @@ journal_records_read (struct journal *j, int fd, char const *id,
 }
 
 static struct journal_job *
-journal_job_find (struct journal *j, char const *id)
+journal_job_find (struct journal *j,
+                  char const     *id)
 {
 	for (size_t k = 0; k < ARRAY_SIZE(j->jobs); ++k)
 		if (!strcmp(j->jobs[k].id, id))
@@ -674,7 +711,8 @@ journal_jobs_scan (struct journal *j)
 		if (!e && fstat(input, &st))
 			e = errno;
 		if (!e && (st.st_size < 0 || (uint64_t)st.st_size > JOURNAL_LOAD_MAX ||
-		           (uint64_t)st.st_size > JOURNAL_RECOVERY_BYTES + JOURNAL_TERMINAL_BYTES - j->recovery_bytes))
+		           (uint64_t)st.st_size >
+		           JOURNAL_RECOVERY_BYTES + JOURNAL_TERMINAL_BYTES - j->recovery_bytes))
 			e = EFBIG;
 		struct journal_record *records = nullptr;
 		if (!e)
@@ -703,11 +741,14 @@ journal_jobs_scan (struct journal *j)
 	return e;
 }
 
-/* Only completed jobs may expire. Active checkpoints never disappear to
- * make room for another job, even if that means refusing the new write. */
+/** Only completed jobs may expire. Active checkpoints never disappear to
+ * make room for another job, even if that means refusing the new write.
+ */
 static int
-journal_checkpoint_space (struct journal *j, struct journal_job *keep,
-                          uint64_t bytes, bool terminal)
+journal_checkpoint_space (struct journal     *j,
+                          struct journal_job *keep,
+                          uint64_t            bytes,
+                          bool                terminal)
 {
 	uint64_t previous = keep ? keep->bytes : 0;
 	uint64_t limit = JOURNAL_RECOVERY_BYTES + (terminal ? JOURNAL_TERMINAL_BYTES : 0);
@@ -734,7 +775,9 @@ journal_checkpoint_space (struct journal *j, struct journal_job *keep,
 }
 
 static struct journal_job *
-journal_job_enter (struct journal *j, char const *id, int *e)
+journal_job_enter (struct journal *j,
+                   char const     *id,
+                   int            *e)
 {
 	struct journal_job *job = journal_job_find(j, id);
 	*e = job ? 0 : journal_checkpoint_space(j, nullptr, 0, true);
@@ -753,8 +796,10 @@ journal_job_enter (struct journal *j, char const *id, int *e)
 }
 
 static int
-journal_record_write (struct journal *j, int fd,
-                      struct journal_record const *r, uint64_t sequence)
+journal_record_write (struct journal              *j,
+                      int                          fd,
+                      struct journal_record const *r,
+                      uint64_t                     sequence)
 {
 	unsigned char header[JOURNAL_HEADER] = {};
 	memcpy(header, "ASKAIJ1\n", 8);
@@ -769,7 +814,8 @@ journal_record_write (struct journal *j, int fd,
 }
 
 static int
-journal_checkpoint_write (struct journal *j, struct journal_record *record)
+journal_checkpoint_write (struct journal        *j,
+                          struct journal_record *record)
 {
 	if (!journal_control_kind(record->kind))
 		return !strcmp(record->kind, "stream") || !strcmp(record->kind, "body") ||
@@ -874,7 +920,8 @@ journal_checkpoint_write (struct journal *j, struct journal_record *record)
 }
 
 static int
-journal_load_records (struct journal *j, struct journal_item *item)
+journal_load_records (struct journal      *j,
+                      struct journal_item *item)
 {
 	if (*item->id) {
 		int fd = -1;
@@ -907,11 +954,13 @@ journal_load_records (struct journal *j, struct journal_item *item)
 	return 0;
 }
 
-/* A small descriptor cache keeps the common two-model workload free of
- * pathname traversal per delta, while bounding descriptors for many jobs. */
+/** A small descriptor cache keeps the common two-model workload free of
+ * pathname traversal per delta, while bounding descriptors for many jobs.
+ */
 static int
-journal_thought_file (struct journal *j, struct journal_item const *item,
-                      struct journal_file **out)
+journal_thought_file (struct journal            *j,
+                      struct journal_item const *item,
+                      struct journal_file      **out)
 {
 	struct journal_file *oldest = &j->files[0];
 	for (size_t k = 0; k < ARRAY_SIZE(j->files); ++k) {
@@ -974,7 +1023,8 @@ journal_thought_file (struct journal *j, struct journal_item const *item,
 }
 
 static int
-journal_thought_write (struct journal *j, struct journal_item const *item)
+journal_thought_write (struct journal            *j,
+                       struct journal_item const *item)
 {
 	struct journal_file *file = nullptr;
 	int e = journal_thought_file(j, item, &file);
@@ -1004,7 +1054,8 @@ journal_thought_write (struct journal *j, struct journal_item const *item)
 }
 
 static int
-journal_thought_commit (struct journal *j, struct journal_item const *item)
+journal_thought_commit (struct journal            *j,
+                        struct journal_item const *item)
 {
 	struct journal_job *job = journal_job_find(j, item->id);
 	if (job && job->thought_turn == item->turn && job->thought_error)
@@ -1068,7 +1119,7 @@ journal_thought_commit (struct journal *j, struct journal_item const *item)
 		if (now < 0)
 			e = EIO;
 		fprintf(output, "commit %s\ncommitter AskAI <askai@localhost> %" PRIdMAX
-		        " +0000\ndata 17\nRecord reasoning\n\n", j->ref, (intmax_t)now);
+		                " +0000\ndata 17\nRecord reasoning\n\n", j->ref, (intmax_t)now);
 		if (*j->tip)
 			fprintf(output, "from %s\n", j->tip);
 		fprintf(output, "M 100644 %s %s\n\ndone\n", oid, path);
@@ -1110,7 +1161,8 @@ journal_item_destroy (struct journal_item **p_item)
 }
 
 static void
-journal_complete (struct loop *loop, struct msg *msg)
+journal_complete (struct loop *loop,
+                  struct msg  *msg)
 {
 	struct journal_item *item = container_of(msg, struct journal_item, msg);
 	if (item->loaded) {
@@ -1124,7 +1176,8 @@ journal_complete (struct loop *loop, struct msg *msg)
 }
 
 static void
-journal_finish (struct journal_item *item, int error)
+journal_finish (struct journal_item *item,
+                int                  error)
 {
 	item->error = error;
 	if (item->loop)
@@ -1182,15 +1235,13 @@ journal_thread (void *arg)
 				if (!e)
 					job->thought_seen = item->offset + item->record->len;
 			}
-		}
-		else if (!e && (item->operation == JOURNAL_THOUGHT_END ||
-		               item->operation == JOURNAL_THOUGHT_FINISH)) {
+		} else if (!e && (item->operation == JOURNAL_THOUGHT_END ||
+		                  item->operation == JOURNAL_THOUGHT_FINISH)) {
 			e = journal_thought_commit(j, item);
 			struct journal_job *job = journal_job_find(j, item->id);
 			if (!e && job && !job->bytes && item->operation == JOURNAL_THOUGHT_FINISH)
 				job->terminal = true;
-		}
-		else if (!e)
+		} else if (!e)
 			e = journal_checkpoint_write(j, item->record);
 		/* Capacity and a mismatching replay concern one job. Disk errors
 		 * stop the writer rather than claiming subsequent writes worked. */
@@ -1202,7 +1253,8 @@ journal_thread (void *arg)
 }
 
 static int
-journal_enqueue (struct journal *j, struct journal_item *item)
+journal_enqueue (struct journal      *j,
+                 struct journal_item *item)
 {
 	int e = atomic_load(&j->error);
 	if (e)
@@ -1235,10 +1287,17 @@ journal_enqueue (struct journal *j, struct journal_item *item)
 }
 
 static int
-journal_submit (struct journal *j, char const *id, char const *kind,
-                uint32_t turn, uint64_t offset, uint8_t operation,
-                void const *data, size_t len, struct loop *loop,
-                journal_done_cb *done, void *arg)
+journal_submit (struct journal  *j,
+                char const      *id,
+                char const      *kind,
+                uint32_t         turn,
+                uint64_t         offset,
+                uint8_t          operation,
+                void const      *data,
+                size_t           len,
+                struct loop     *loop,
+                journal_done_cb *done,
+                void            *arg)
 {
 	if (!j)
 		return 0;
@@ -1276,18 +1335,29 @@ journal_submit (struct journal *j, char const *id, char const *kind,
 }
 
 int
-journal_put (struct journal *j, char const *id, char const *kind,
-             void const *data, size_t len, struct loop *loop,
-             journal_done_cb *done, void *arg)
+journal_put (struct journal  *j,
+             char const      *id,
+             char const      *kind,
+             void const      *data,
+             size_t           len,
+             struct loop     *loop,
+             journal_done_cb *done,
+             void            *arg)
 {
 	return journal_submit(j, id, kind, 0, 0, JOURNAL_CONTROL_PUT,
 	                      data, len, loop, done, arg);
 }
 
 int
-journal_thought (struct journal *j, char const *id, uint32_t turn,
-                 uint64_t offset, void const *data, size_t len,
-                 struct loop *loop, journal_done_cb *done, void *arg)
+journal_thought (struct journal  *j,
+                 char const      *id,
+                 uint32_t         turn,
+                 uint64_t         offset,
+                 void const      *data,
+                 size_t           len,
+                 struct loop     *loop,
+                 journal_done_cb *done,
+                 void            *arg)
 {
 	if (!turn)
 		return EINVAL;
@@ -1296,18 +1366,28 @@ journal_thought (struct journal *j, char const *id, uint32_t turn,
 }
 
 int
-journal_thought_end (struct journal *j, char const *id, uint32_t turn,
-                     bool final, struct loop *loop, journal_done_cb *done, void *arg)
+journal_thought_end (struct journal  *j,
+                     char const      *id,
+                     uint32_t         turn,
+                     bool             final,
+                     struct loop     *loop,
+                     journal_done_cb *done,
+                     void            *arg)
 {
 	if (!turn)
 		return EINVAL;
 	return journal_submit(j, id, "thought-end", turn, 0,
-	                      final ? JOURNAL_THOUGHT_FINISH : JOURNAL_THOUGHT_END, nullptr, 0, loop, done, arg);
+	                      final ? JOURNAL_THOUGHT_FINISH : JOURNAL_THOUGHT_END,
+	                      nullptr, 0, loop, done, arg);
 }
 
 static int
-journal_load_submit (struct journal *j, char const *id, char const *kind,
-                     struct loop *loop, journal_load_cb *done, void *arg)
+journal_load_submit (struct journal  *j,
+                     char const      *id,
+                     char const      *kind,
+                     struct loop     *loop,
+                     journal_load_cb *done,
+                     void            *arg)
 {
 	if (!j || !loop || !done || (id && !journal_id(id)) ||
 	    (kind && !journal_word(kind, JOURNAL_KIND)))
@@ -1331,15 +1411,22 @@ journal_load_submit (struct journal *j, char const *id, char const *kind,
 }
 
 int
-journal_load (struct journal *j, char const *id, char const *kind,
-              struct loop *loop, journal_load_cb *done, void *arg)
+journal_load (struct journal  *j,
+              char const      *id,
+              char const      *kind,
+              struct loop     *loop,
+              journal_load_cb *done,
+              void            *arg)
 {
 	return journal_load_submit(j, id, kind, loop, done, arg);
 }
 
 int
-journal_load_current (struct journal *j, char const *id,
-                      struct loop *loop, journal_load_cb *done, void *arg)
+journal_load_current (struct journal  *j,
+                      char const      *id,
+                      struct loop     *loop,
+                      journal_load_cb *done,
+                      void            *arg)
 {
 	if (!id)
 		return EINVAL;
@@ -1347,7 +1434,8 @@ journal_load_current (struct journal *j, char const *id,
 }
 
 static int
-journal_unlock (struct journal *j, char const *participant)
+journal_unlock (struct journal *j,
+                char const     *participant)
 {
 	/* Our participant lock excludes both other writers and their surviving
 	 * Git children.  Only this participant's loose-ref lock is ours. */
@@ -1384,7 +1472,9 @@ journal_unlock (struct journal *j, char const *participant)
 }
 
 static int
-journal_setup (struct journal *j, char const *path, char const *participant)
+journal_setup (struct journal *j,
+               char const     *path,
+               char const     *participant)
 {
 	int e = journal_open_path(j, path);
 	int init_fd = -1;
@@ -1482,8 +1572,11 @@ journal_setup (struct journal *j, char const *path, char const *participant)
 }
 
 struct journal *
-journal_create (char const *path, char const *participant,
-                char *why, size_t why_len, int *e)
+journal_create (char const *path,
+                char const *participant,
+                char       *why,
+                size_t      why_len,
+                int        *e)
 {
 	*e = 0;
 	if (!journal_word(participant, 64)) {
@@ -1498,8 +1591,7 @@ journal_create (char const *path, char const *participant,
 		return nullptr;
 	}
 	atomic_init(&j->error, 0);
-	j->repo_fd = j->state_fd = j->jobs_fd = j->thoughts_fd =
-	j->lock_fd = j->wal_fd = -1;
+	j->repo_fd = j->state_fd = j->jobs_fd = j->thoughts_fd = j->lock_fd = j->wal_fd = -1;
 	for (size_t k = 0; k < ARRAY_SIZE(j->files); ++k)
 		j->files[k].fd = -1;
 	j->digest = EVP_MD_CTX_new();
