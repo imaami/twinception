@@ -3,6 +3,7 @@
 #define TWINCEPTION_SRC_CLI_NETWORK_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "cstr_view.h"
 
@@ -23,6 +24,12 @@ struct cli_network_result {
 	long status;
 	char message[256];
 };
+
+/** Called once on the UI thread after this call's response bytes. The result
+ * is borrowed until return. Callbacks may submit, but must not wait. */
+typedef void cli_network_done_fn (void                            *context,
+                                  int                              error,
+                                  struct cli_network_result const *result);
 
 /** The UI loop and its mailbox outlive the network and its queued replies. */
 extern struct cli_network *
@@ -60,15 +67,36 @@ cli_network_set_ready (struct cli_network  *network,
 extern void
 cli_network_service (struct cli_network *network);
 
-/** UI-thread cancellation. Force also interrupts cancellation notifications. */
+/** Cancel the foreground call, or every call when force is true. */
 extern void
 cli_network_cancel (struct cli_network *network,
                     bool                force);
 
+/** Cancel one admitted call; force overrides its interruptible setting. */
+extern void
+cli_network_cancel_call (struct cli_network *network,
+                         uint64_t            id,
+                         bool                force);
+
+/** Copy and admit a request. On success, publish its id and eventually call
+ * done, including on shutdown. An admission error does not call done. */
+extern int
+cli_network_submit (struct cli_network      *network,
+                    struct cstr_view         socket,
+                    struct cstr_view         session,
+                    struct cstr_view         wire,
+                    long                     timeout,
+                    bool                     interruptible,
+                    cli_network_receive_fn  *header,
+                    cli_network_receive_fn  *body,
+                    void                    *context,
+                    cli_network_done_fn     *done,
+                    uint64_t                *id);
+
 /**
  * Submit copied request data, then service UI turns until completion. All
- * response callbacks run on this calling thread. Only one call per network
- * may be outstanding; nested calls return EBUSY. A successful callback must
+ * response callbacks run on this calling thread. Only one synchronous call
+ * may be outstanding; nested waits return EBUSY. A successful callback must
  * return size * count. Cancellation returns EINTR.
  */
 extern int

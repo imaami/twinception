@@ -632,20 +632,12 @@ def check_keyboard(cli):
             assert b"working" in terminal.rows[23], "blank Enter occupied the pending input slot"
             editable("while first answer is pending")
             type_text(b"queued second")
-            os.write(master, b"\r")
+            # Exercise the inputrc accept-line binding as well as the CLI's
+            # Enter command while a previous request is still running.
+            os.write(master, b"\x14")
             terminal.draft(b"")
             editable("after queuing a line while busy")
             type_text(b"acx")
-            os.write(master, b"\r")
-            # One pending line already occupies the queue. A second Enter
-            # must leave this next draft intact and the editor usable.
-            terminal.drain()
-            editable("after Enter while busy")
-            # This user binding invokes Readline's accept-line directly,
-            # bypassing the CLI's Enter handler and its full-slot check.
-            os.write(master, b"\x14")
-            terminal.drain()
-            editable("after custom accept-line with a queued line")
             os.write(master, b"\x7f")
             terminal.draft(b"ac")
             os.write(master, b"\x1b[D")
@@ -727,7 +719,7 @@ def check_queued_input(cli):
                 terminal.update(b"\x1b[?2004h", b"\x1b[24;3H")
                 assert arrived[0].wait(5), "initial request did not arrive"
                 os.write(master, b"\x14" if macro else b"queued before eof\r")
-                terminal.expect(b"1 queued")
+                terminal.expect(f"{len(expected) - 1} queued".encode())
                 flags = termios.tcgetattr(slave)[3]
                 assert not flags & (termios.ICANON | termios.ECHO), (macro, flags)
                 if not macro:
@@ -1164,6 +1156,160 @@ def check_busy_commands(cli):
     print("cli events: local commands run during generation and preserve a queued prompt: PASS", flush=True)
 
 
+def check_concurrent_tools(cli):
+    ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
+        "type": "object", "properties": {"prompt": {"type": "string"},
+        "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
+    probe = {"name": "probe", "inputSchema": {"type": "object", "properties": {
+        "token": {"type": "string"}}}}
+    for mode in ("complete", "interrupt", "idle-interrupt", "quit", "saturated"):
+        names = ("generation", "alpha", "beta", "gamma")
+        if mode == "saturated":
+            names += tuple(f"held-{index}" for index in range(12))
+        arrived = {name: threading.Event() for name in names}
+        release = {name: threading.Event() for name in names}
+        calls, cancelled = {}, set()
+
+        def methods(request):
+            if request["method"] == "tools/list":
+                return 200, "application/json", {"result": {"tools": [ask, probe]}}
+            if request["method"] == "notifications/cancelled":
+                cancelled.add(request["params"]["requestId"])
+                return 202, "application/json", b""
+            return None
+
+        def reply(request):
+            arguments = request["params"]["arguments"]
+            if request["params"]["name"] == "probe":
+                name = arguments["token"]
+            elif arguments["prompt"] == "seed":
+                name = "generation"
+            else:
+                calls["history"] = request
+                return response("history-checked")
+            calls[name] = request
+            arrived[name].set()
+            release[name].wait(20)
+            if name != "generation":
+                return response("result-" + name)
+            events = [(None, {"jsonrpc": "2.0", "method": "notifications/askai/delta",
+                "params": {"requestId": request["id"], "kind": kind, "text": text}})
+                for kind, text in (("reasoning", "generation-reasoning"),
+                                   ("text", "generation-answer"))]
+            events.append((None, {"jsonrpc": "2.0", "id": request["id"], "result": {
+                "content": [{"type": "text", "text": "generation-answer"}]}}))
+            return 200, "text/event-stream", sse_wire(events)
+
+        with Peer(reply, methods) as peer:
+            terminal, master, slave, before = Terminal.spawn(
+                cli, peer.socket, "--no-history", "--prompt", "seed", columns=140)
+            proc = terminal.proc
+            try:
+                terminal.update(b"\x1b[?2004h", b"\x1b[24;3H")
+                assert arrived["generation"].wait(5), "generation did not start"
+                os.write(master, b"/tool probe token=alpha\r")
+                assert arrived["alpha"].wait(2), "manual tool waited for generation"
+                # One input burst exercises repeated submission before a
+                # previous tool or the generation has produced a result.
+                os.write(master, b"/tool probe token=beta\r/tool probe token=gamma\r")
+                for name in ("beta", "gamma"):
+                    assert arrived[name].wait(2), (name, "tool waited for an earlier tool")
+                if mode == "saturated":
+                    for name in names[4:]:
+                        os.write(master, f"/tool probe token={name}\r".encode())
+                        assert arrived[name].wait(2), (name, "held calls exhausted transport capacity")
+                    os.write(master, b"/tool probe token=overflow\r")
+                    terminal.expect(b"Too many active requests", timeout=2)
+                    assert len(calls) == len(names), calls
+                    proc.send_signal(signal.SIGINT)
+                    terminal.expect(b"Cancelled.", timeout=2)
+                    await_condition(proc, lambda: bool(cancelled), "saturation blocked cancellation", timeout=2)
+                    assert cancelled == {calls["generation"]["id"]}, cancelled
+                    assert not any(event.is_set() for event in release.values())
+                assert len({calls[name]["id"] for name in names}) == len(names), calls
+                flags = termios.tcgetattr(slave)[3]
+                assert not flags & (termios.ICANON | termios.ECHO), flags
+                if mode not in ("quit", "saturated"):
+                    if mode == "interrupt":
+                        proc.send_signal(signal.SIGINT)
+                        terminal.expect(b"Cancelled.", timeout=2)
+                        await_condition(proc, lambda: bool(cancelled), "no foreground cancellation")
+                        assert cancelled == {calls["generation"]["id"]}, cancelled
+                    # Complete out of submission order, including the chat
+                    # response while two independent tools remain held.
+                    release["beta"].set()
+                    terminal.expect(b"result-beta", timeout=2)
+                    if mode != "interrupt":
+                        release["generation"].set()
+                        terminal.update(b"generation-reasoning", b"generation-answer", timeout=2)
+                    if mode == "idle-interrupt":
+                        proc.send_signal(signal.SIGINT)
+                        await_condition(proc, lambda: bool(cancelled), "no manual-tool cancellation")
+                        assert cancelled == {calls["gamma"]["id"]}, cancelled
+                    for name in (("alpha",) if mode == "idle-interrupt" else ("gamma", "alpha")):
+                        release[name].set()
+                        terminal.expect(("result-" + name).encode(), timeout=2)
+                    os.write(master, b"history-probe\r")
+                    terminal.expect(b"history-checked", timeout=2)
+                    history = [
+                        {"role": "user", "content": "seed"},
+                        {"role": "assistant", "content": "generation-answer"}] if mode != "interrupt" else []
+                    assert calls["history"]["params"]["arguments"]["messages"] == history, calls["history"]
+                    interrupted = {"interrupt": "generation", "idle-interrupt": "gamma"}.get(mode)
+                    expected = {calls[interrupted]["id"]} if interrupted else set()
+                    assert cancelled == expected, cancelled
+                started = time.monotonic()
+                os.write(master, b"/quit\r")
+                assert proc.wait(timeout=3) == 0, (mode, proc.returncode, terminal.drain()[-12000:])
+                assert time.monotonic() - started < 3, "quit waited for held requests"
+                assert termios.tcgetattr(slave) == before, "concurrent tools left terminal settings changed"
+            finally:
+                for event in release.values():
+                    event.set()
+                terminal.close(slave)
+    print("cli events: concurrent tools, burst input, independent streaming, cancellation and quit: PASS", flush=True)
+
+
+def check_queue_overflow(cli):
+    arrived, release = threading.Event(), threading.Event()
+
+    def reply(request):
+        arrived.set()
+        release.wait(20)
+        return response("held-generation")
+
+    with Peer(reply) as peer, tempfile.TemporaryDirectory(prefix="askai-cli-overflow-") as directory:
+        inputrc = directory + "/inputrc"
+        with open(inputrc, "w") as output:
+            output.write('"\\C-t": accept-line\n')
+        terminal, master, slave, before = Terminal.spawn(
+            cli, peer.socket, "--no-history", "--prompt", "held", inputrc=inputrc)
+        proc = terminal.proc
+        try:
+            terminal.update(b"\x1b[?2004h", b"\x1b[24;3H")
+            assert arrived.wait(5), "generation did not start"
+            os.write(master, b"".join(f"queued-{index}\r".encode() for index in range(32)))
+            terminal.expect(b"32 queued")
+            terminal.draft(b"")
+            os.write(master, b"overflow-draft")
+            terminal.draft(b"overflow-draft")
+            for enter in (b"\r", b"\x14"):
+                os.write(master, enter)
+                terminal.expect(b"Input queue full; draft kept.")
+                terminal.draft(b"overflow-draft", point=len(b"overflow-draft"))
+                flags = termios.tcgetattr(slave)[3]
+                assert not flags & (termios.ICANON | termios.ECHO), flags
+            os.write(master, b"\x01\x0b/quit\r")
+            assert proc.wait(timeout=3) == 0, proc.returncode
+            assert termios.tcgetattr(slave) == before, "full queue exit did not restore terminal settings"
+            calls = [request for request in peer.requests if request["method"] == "tools/call"]
+            assert len(calls) == 1, calls
+        finally:
+            release.set()
+            terminal.close(slave)
+    print("cli events: bounded input queue reports overflow, retains editable drafts and permits quit: PASS", flush=True)
+
+
 def check_busy_quit(cli):
     for name in (b"/quit", b"/exit"):
         arrived = threading.Event()
@@ -1377,15 +1523,16 @@ def check_blocked_worker(cli):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue mentions colors cells panels commands quit interrupt files slow worker ...]")
+        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue overflow mentions colors cells panels commands concurrent quit interrupt files slow worker ...]")
     cli = os.path.realpath(sys.argv[1])
     checks = {"sticky": check_sticky_termination, "lock": check_history_lock,
               "saved-lock": check_saved_command_lock,
               "fds": check_descriptor_limit, "exhaust": check_descriptor_exhaustion,
               "tui": check_tui_drafts, "partial": check_partial_paste, "keys": check_keyboard,
-              "queue": check_queued_input, "mentions": check_chat_completion, "colors": check_fullscreen_colors,
+              "queue": check_queued_input, "overflow": check_queue_overflow,
+              "mentions": check_chat_completion, "colors": check_fullscreen_colors,
               "cells": check_terminal_cells, "panels": check_panels,
-              "commands": check_busy_commands, "quit": check_busy_quit,
+              "commands": check_busy_commands, "concurrent": check_concurrent_tools, "quit": check_busy_quit,
               "interrupt": check_interrupt_commands, "files": check_regular_files,
               "slow": check_slow_output, "worker": check_blocked_worker}
     selected = sys.argv[2:] or checks

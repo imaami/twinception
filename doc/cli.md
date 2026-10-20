@@ -130,15 +130,19 @@ A trailing `\` continues the prompt on another line. With
 `--multiline-input`, Enter continues the prompt and a trailing `\` submits
 it instead. A trailing `/` submits in either mode. Ctrl-D ends input.
 
-While an answer runs in full-screen mode, Enter queues one prompt for the
-next turn and opens a fresh draft. The status row indicates a queued prompt;
-until it starts, another prompt submission leaves the fresh draft in place.
-Local commands remain available even with a prompt queued: `/help`,
+While an answer runs in full-screen mode, Enter queues prompts in submission
+order and opens a fresh draft. The status row shows the queued count. The
+queue holds up to 32 lines or 16 MiB; a full queue reports an error and keeps
+the draft editable. Local commands remain available with prompts queued: `/help`,
 `/history`, `/names`, and `/tools` display their current data immediately.
 `/quit` and `/exit` initiate shutdown without waiting for generation.
 `/clear` and `/regen` cancel the current turn before changing conversation
-state. `/read`, `/tool`, and `/refresh` wait for the current operation because
-they start another turn or use the client's single active request slot.
+state. `/read` and `/refresh` wait for the current operation. `/tool` starts
+independently of generation and other manual tool calls; results appear as
+they arrive and stay out of conversation history. Up to 16 requests may be
+outstanding, with a separate reserve for cancellation. Further tool calls
+report the capacity limit and remain available in input history for retry.
+Redirected input, `--simple-io`, and `--single-turn` retain sequential execution.
 
 Completion choices show only the word or value being completed, without
 repeating earlier words or a parameter's `name=` prefix. Choices appear
@@ -150,9 +154,12 @@ the choices. A unique completed word gets one separating space, with the
 cursor ready for the next word. The second Tab of that pair leaves it there.
 Directory completion ends with `/` so the path can continue.
 
-Ctrl-C cancels an answer without discarding the draft being edited. At an
-idle prompt it clears the draft; Ctrl-_ restores it. In `--single-turn` mode
-or with redirected input, cancellation exits with status 130.
+Ctrl-C cancels the foreground operation without discarding the draft being
+edited or cancelling independent manual tools. When only manual tools are
+active, it cancels the most recent one. At an idle prompt it clears the draft;
+Ctrl-_ restores it. `/quit` and `/exit` cancel all outstanding requests.
+In `--single-turn` mode or with redirected input, cancellation exits with
+status 130.
 SIGTERM exits with status 143. Failed or cancelled turns do not enter the
 conversation history, and `/regen` preserves the old answer if regeneration
 fails. Regeneration is a new request and may run tools again.

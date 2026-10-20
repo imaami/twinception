@@ -17,7 +17,7 @@
 	X(READ, read, FILE, WAIT, " FILE", "sends a text file.") \
 	X(REFRESH, refresh, NONE, WAIT, "", "updates tool and participant discovery.") \
 	X(REGEN, regen, NONE, INTERRUPT, "", "retries the last turn.") \
-	X(TOOL, tool, TOOL_CALL, WAIT, " NAME key=VALUE ... | {JSON}", "calls a tool directly; results stay out of chat history.") \
+	X(TOOL, tool, TOOL_CALL, CONCURRENT, " NAME key=VALUE ... | {JSON}", "calls a tool directly; results stay out of chat history.") \
 	X(TOOLS, tools, TOOL, LOCAL, " [NAME]", "lists accessible tools or shows a tool's schema.")
 
 enum cli_command_id {
@@ -38,6 +38,7 @@ enum cli_command_policy : uint64_t {
 	CLI_COMMAND_LOCAL,
 	CLI_COMMAND_WAIT,
 	CLI_COMMAND_INTERRUPT,
+	CLI_COMMAND_CONCURRENT,
 };
 
 struct cli_command {

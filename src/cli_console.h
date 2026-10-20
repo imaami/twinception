@@ -47,6 +47,15 @@ cli_console_busy (struct cli_console *console,
 extern bool
 cli_console_pending (struct cli_console const *console);
 
+/** Accepted input or EOF is waiting; do not delay it for metadata refresh. */
+extern bool
+cli_console_queued (struct cli_console const *console);
+
+/** Yield an interactive read once with EAGAIN, preserving its draft and
+ * editor. Accepted lines and EOF take priority. Simple input is unaffected. */
+extern void
+cli_console_yield (struct cli_console *console);
+
 /** Apply transport backpressure before the bounded output queue fills. */
 extern bool
 cli_console_blocked (struct cli_console const *console);
@@ -90,7 +99,9 @@ cli_console_take_immediate (struct cli_console *console,
                             struct dstr        *text,
                             bool               *ready);
 
-/** EOF is distinct from an empty submitted line. On error text is empty. */
+/** Read accepted lines in order, then EOF. The queue holds at most 32 lines
+ * and 16 MiB; rejection keeps the editable draft and aborts a running macro.
+ * EAGAIN yields without ending the editor. On error text is empty. */
 extern int
 cli_console_read (struct cli_console *console,
                   struct dstr        *text,
