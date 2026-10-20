@@ -5,7 +5,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
-#include <locale.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -718,7 +717,7 @@ cli_tools (struct cli       *cli,
 	for (size_t i = 0, count = autocomplete_tool_count(cli->client.catalog); i < count; ++i) {
 		struct autocomplete_tool const *entry = autocomplete_tool_at(cli->client.catalog, i);
 		struct cstr_view summary = entry->description;
-		summary = cstr_view_slice(summary, 0, 160);
+		summary.len = jb_utf8(summary.data, summary.len < 160 ? summary.len : 160);
 		char const *newline = summary.len ? memchr(summary.data, '\n', summary.len) : nullptr;
 		if (newline)
 			summary.len = (size_t)(newline - summary.data);
@@ -1296,7 +1295,6 @@ int
 main (int    argc,
       char **argv)
 {
-	(void)setlocale(LC_ALL, "");
 	struct cli_options options = {.prompt = DSTR_INIT, .color = "auto", .reasoning = true};
 	struct cli_error error = {};
 	unsigned exit_signal = 0;

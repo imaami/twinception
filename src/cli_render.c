@@ -1,10 +1,8 @@
-#define _GNU_SOURCE
-
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
-#include <wchar.h>
+#include <utf8proc.h>
 
 #include "cli_render.h"
 #include "dstr.h"
@@ -13,19 +11,19 @@ size_t
 cli_render_character (struct cstr_view text, int *width)
 {
 	unsigned char first = text.data[0];
-	if (first >= ' ' && first < '\177') {
-		*width = 1;
+	if (first < 0x80) {
+		*width = first >= ' ' && first != 0x7f ? 1 : -1;
 		return 1;
 	}
-	mbstate_t state = {};
-	wchar_t character;
-	size_t length = mbrtowc(&character, text.data, text.len, &state);
-	if (!length || length == (size_t)-1 || length == (size_t)-2) {
+	int32_t character;
+	ptrdiff_t length = utf8proc_iterate((uint8_t const *)text.data,
+	                                    text.len < 4 ? (ptrdiff_t)text.len : 4, &character);
+	if (length < 0) {
 		*width = -1;
 		return 1;
 	}
-	*width = wcwidth(character);
-	return length;
+	*width = character < 0xa0 ? -1 : utf8proc_charwidth(character);
+	return (size_t)length;
 }
 
 /** A negative width identifies a complete SGR sequence. */

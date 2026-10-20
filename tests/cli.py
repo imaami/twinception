@@ -26,6 +26,19 @@ def command(binary, path, *args):
     return [binary, "--socket", path, "--simple-io", *args]
 
 
+def unix_available():
+    try:
+        with tempfile.TemporaryDirectory(prefix="askai-cli-probe-") as directory, \
+                socket.socket(socket.AF_UNIX) as probe:
+            probe.bind(directory + "/socket")
+            return True
+    except OSError as error:
+        if error.errno not in (errno.EPERM, errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT):
+            raise
+        print(f"cli Unix integration: SKIP (Unix socket: {error})")
+        return False
+
+
 def run(binary, path, *args, text=None):
     return subprocess.run(command(binary, path, *args), input=text,
                           capture_output=True, text=True, timeout=15)
@@ -835,15 +848,8 @@ def main():
         raise SystemExit("usage: cli.py ASKAI-CLI ASKAI")
     cli, server = map(os.path.abspath, sys.argv[1:])
     check_options(cli, server)
-    try:
-        probe = socket.socket(socket.AF_UNIX)
-    except OSError as error:
-        if error.errno in (errno.EPERM, errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT):
-            print(f"cli Unix integration: SKIP (socket(AF_UNIX): {error})")
-            return
-        raise
-    else:
-        probe.close()
+    if not unix_available():
+        return
     for check in (check_history, check_input, check_commands, check_stream,
                   check_tools, check_cancel, check_broken_pipe, check_peer_errors, check_peer_stream,
                   check_peer_progress,

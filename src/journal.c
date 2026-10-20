@@ -70,7 +70,7 @@ enum {
 };
 
 struct journal_job {
-	uint64_t bytes;
+	uint64_t bytes; /* zero until a recovery checkpoint exists */
 	uint64_t touched;
 	uint64_t thought_seen;
 	uint32_t thought_turn;
@@ -579,8 +579,10 @@ journal_records_read (struct journal *j, int fd, char const *id,
 	uint64_t sequence = 0;
 	size_t bytes = 0;
 	struct journal_record **tail = out;
-	while (*tail)
+	while (*tail) {
+		bytes += sizeof **tail + (*tail)->len + 1;
 		tail = &(*tail)->next;
+	}
 	for (;;) {
 		struct journal_record *r = nullptr;
 		int e = journal_record_read(j, fd, &offset, &r, legacy);
@@ -721,13 +723,33 @@ journal_checkpoint_space (struct journal *j, struct journal_job *keep,
 		}
 		if (!oldest)
 			return ENOSPC;
-		if (unlinkat(j->jobs_fd, oldest->id, 0) || fsync(j->jobs_fd))
+		if (oldest->bytes &&
+		    (unlinkat(j->jobs_fd, oldest->id, 0) || fsync(j->jobs_fd)))
 			return errno;
 		j->recovery_bytes -= oldest->bytes;
 		--j->n_jobs;
 		*oldest = (struct journal_job){};
 	}
 	return 0;
+}
+
+static struct journal_job *
+journal_job_enter (struct journal *j, char const *id, int *e)
+{
+	struct journal_job *job = journal_job_find(j, id);
+	*e = job ? 0 : journal_checkpoint_space(j, nullptr, 0, true);
+	if (job || *e)
+		return job;
+	for (size_t k = 0; k < ARRAY_SIZE(j->jobs); ++k) {
+		job = &j->jobs[k];
+		if (*job->id)
+			continue;
+		memcpy(job->id, id, sizeof job->id);
+		++j->n_jobs;
+		return job;
+	}
+	*e = ENOSPC;
+	return nullptr;
 }
 
 static int
@@ -757,7 +779,7 @@ journal_checkpoint_write (struct journal *j, struct journal_record *record)
 	struct journal_record *records = nullptr;
 	int e = 0;
 	if (strcmp(record->kind, "state")) {
-		if (job) {
+		if (job && job->bytes) {
 			int input = -1;
 			e = journal_existing(j->jobs_fd, record->id, &input);
 			if (!e)
@@ -828,19 +850,8 @@ journal_checkpoint_write (struct journal *j, struct journal_record *record)
 	           fsync(j->jobs_fd)))
 		e = errno;
 	if (!e) {
-		if (!job) {
-			for (size_t k = 0; k < ARRAY_SIZE(j->jobs); ++k)
-				if (!*j->jobs[k].id) {
-					job = &j->jobs[k];
-					break;
-				}
-			if (!job)
-				e = ENOSPC;
-			else {
-				++j->n_jobs;
-				memcpy(job->id, record->id, sizeof job->id);
-			}
-		}
+		if (!job)
+			job = journal_job_enter(j, record->id, &e);
 		if (job) {
 			j->recovery_bytes = j->recovery_bytes - job->bytes + bytes;
 			job->bytes = bytes;
@@ -879,14 +890,10 @@ journal_load_records (struct journal *j, struct journal_item *item)
 			                         *item->kind ? item->kind : nullptr, true, &item->record);
 		return e;
 	}
-	size_t bytes = 0;
 	for (size_t k = 0; k < ARRAY_SIZE(j->jobs); ++k) {
 		struct journal_job const *job = &j->jobs[k];
-		if (!*job->id)
+		if (!job->bytes)
 			continue;
-		if (job->bytes > JOURNAL_LOAD_MAX - bytes)
-			return EFBIG;
-		bytes += (size_t)job->bytes;
 		int fd = -1;
 		int e = journal_existing(j->jobs_fd, job->id, &fd);
 		if (!e)
@@ -1158,24 +1165,31 @@ journal_thread (void *arg)
 		if (!e && item->loaded)
 			e = journal_load_records(j, item);
 		else if (!e && item->operation == JOURNAL_THOUGHT_PUT) {
-			struct journal_job *job = journal_job_find(j, item->id);
+			struct journal_job *job = journal_job_enter(j, item->id, &e);
 			bool begin = !item->offset && !item->record->len;
 			if (job && (begin || job->thought_turn != item->turn)) {
 				job->thought_turn = item->turn;
 				job->thought_seen = 0;
 				job->thought_error = 0;
 			}
-			e = begin ? 0 : job && job->thought_error ? job->thought_error :
-			    journal_thought_write(j, item);
+			if (!e)
+				e = begin ? 0 : job->thought_error ? job->thought_error :
+				    journal_thought_write(j, item);
 			if (job) {
 				job->thought_error = e;
+				if (!job->bytes)
+					job->terminal = false;
 				if (!e)
 					job->thought_seen = item->offset + item->record->len;
 			}
 		}
 		else if (!e && (item->operation == JOURNAL_THOUGHT_END ||
-		               item->operation == JOURNAL_THOUGHT_FINISH))
+		               item->operation == JOURNAL_THOUGHT_FINISH)) {
 			e = journal_thought_commit(j, item);
+			struct journal_job *job = journal_job_find(j, item->id);
+			if (!e && job && !job->bytes && item->operation == JOURNAL_THOUGHT_FINISH)
+				job->terminal = true;
+		}
 		else if (!e)
 			e = journal_checkpoint_write(j, item->record);
 		/* Capacity and a mismatching replay concern one job. Disk errors

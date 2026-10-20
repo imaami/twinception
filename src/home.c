@@ -1051,6 +1051,7 @@ home_job_write (char const *data,
 		return home_receive(home, job, &job->result, data, len);
 	if (job->delta_pending || buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
 		job->flags |= BACKED;
+		list_del(&job->idle);
 		return CURL_WRITEFUNC_PAUSE;
 	}
 	size_t n = home_receive(home, job, &job->wire, data, len);

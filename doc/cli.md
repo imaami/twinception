@@ -12,8 +12,8 @@ inference engine, or llama-server dependency.
 ## Build
 
 The client needs a C23 compiler, libcurl with Unix-socket support, json-c,
-GNU Readline, and their development packages (`libreadline-dev` on Debian
-and Ubuntu). From the repository root:
+GNU Readline, utf8proc, and their development packages (`libreadline-dev`
+and `libutf8proc-dev` on Debian and Ubuntu). From the repository root:
 
 ```sh
 make askai-cli
@@ -23,8 +23,8 @@ build/askai-cli --help
 `make askai-cli` builds only the client. `make` also builds AskAI and the
 other programs. Run the resulting `build/askai-cli` executable directly.
 
-The client links libcurl, json-c, GNU Readline, and the C math library. It does
-not link libllama, ggml, or any inference backend.
+The client links libcurl, json-c, GNU Readline, utf8proc, and the C math
+library. It does not link libllama, ggml, or any inference backend.
 
 ## Connect
 
@@ -66,6 +66,12 @@ visible turns are sent as native provider chat
 messages with each new prompt. Intermediate tool calls and reasoning are not
 replayed across user turns; the normal tool loop runs within each request.
 `--system TEXT` overrides the server's system instructions for this chat.
+
+Gemini Interactions requires prior thought signatures and tool steps for
+[stateless continuation](https://ai.google.dev/gemini-api/docs/text-generation#stateless-conversations).
+With this history format, those survive only within one ask call. Enabling
+provider storage with `--extra` does not supply continuation between CLI
+prompts: the client does not retain or send a `previous_interaction_id`.
 
 The model can call the same tools that AskAI lends it for an ordinary ask
 request. Enable those tools in the server configuration, for example

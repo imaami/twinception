@@ -1,6 +1,8 @@
 /** @file
  * Filename completion with retained, byte-counted work buffers.
  */
+#define _DEFAULT_SOURCE
+
 #include <dirent.h>
 #include <errno.h>
 #include <stdlib.h>

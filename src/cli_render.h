@@ -8,7 +8,8 @@
 
 struct dstr;
 
-/** Decode nonempty UTF-8 input. Invalid input consumes one byte, width -1. */
+/** Decode nonempty UTF-8 input and measure its first scalar, independent of locale.
+ * Invalid input consumes one byte; invalid input and C0/C1 controls have width -1. */
 extern size_t cli_render_character(struct cstr_view text, int *width);
 
 /** Replace output[begin:] with its change from cache, then update cache.

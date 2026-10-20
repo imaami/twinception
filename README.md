@@ -23,6 +23,7 @@ direction for shared notes, stable participants, and multiple execution routes.
 - libcurl
 - json-c
 - GNU Readline (for `askai-cli`)
+- utf8proc (for `askai-cli`)
 - OpenSSL 3.5 or later (libssl, libcrypto), and its `openssl` command for the
   tests' certificates
 - Linux epoll + timerfd
@@ -31,7 +32,7 @@ direction for shared notes, stable participants, and multiple execution routes.
 
 ```sh
 make            # builds twinception, askai, askai-cli and askai's plugins
-make askai-cli  # only the client; needs C23, libcurl, json-c and Readline
+make askai-cli  # only the client
 make check      # end-to-end tests, the dstr trials and check-load
 make check-cli # only the terminal client's checks
 make check-dstr # only the dstr trials
@@ -455,7 +456,7 @@ Other provider/API combinations keep the stream locally without adding an
 unsupported `background` field.  With `-p llama`, AskAI assigns a unique
 `X-Conversation-Id` to each provider turn.  A llama-server that implements
 the resumable stream extension can continue that generation after the
-connection closes, and AskAI can reconnect with its saved byte offset.
+connection closes, and AskAI can replay it from the beginning.
 
 Detaching a normal ask call does not lower its scheduling priority.  The
 existing `background` wrapper still requests background priority, but

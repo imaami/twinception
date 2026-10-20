@@ -1,11 +1,12 @@
 /** @file Transcript bounds, wrapping and viewport stability. */
 #include <assert.h>
 #include <errno.h>
-#include <locale.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "cli_render.h"
 #include "cli_scrollback.h"
 
 static void
@@ -38,6 +39,49 @@ cli_scrollback_test_parts (struct dstr const      *frame,
 } while (0)
 
 static void
+cli_scrollback_test_characters (void)
+{
+	struct {
+		struct cstr_view text;
+		uint32_t        bytes;
+		int             width;
+	} const cases[] = {
+		{CSTR_VIEW("a"), 1, 1},
+		{CSTR_VIEW("éx"), 2, 1},
+		{CSTR_VIEW("界x"), 3, 2},
+		{CSTR_VIEW("\U0001fae8"), 4, 2},
+		{CSTR_VIEW("\u0301x"), 2, 0},
+		{CSTR_VIEW("\u20dd"), 3, 0},
+		{CSTR_VIEW("\u200d"), 3, 0},
+		{CSTR_VIEW("\ufe0f"), 3, 0},
+		{CSTR_VIEW("\u00b7"), 2, 1},
+		{CSTR_VIEW("\u0378"), 2, 1},
+		{CSTR_VIEW("\ue000"), 3, 1},
+		{CSTR_VIEW("\U0010ffff"), 4, 1},
+		{CSTR_VIEW("\0"), 1, -1},
+		{CSTR_VIEW("\033"), 1, -1},
+		{CSTR_VIEW("\177"), 1, -1},
+		{CSTR_VIEW("\xc2\x9b"), 2, -1},
+		{CSTR_VIEW("\x80"), 1, -1},
+		{CSTR_VIEW("\xc0\xaf"), 1, -1},
+		{CSTR_VIEW("\xc2"), 1, -1},
+		{CSTR_VIEW("\xc2x"), 1, -1},
+		{CSTR_VIEW("\xe0\x80\x80"), 1, -1},
+		{CSTR_VIEW("\xed\xa0\x80"), 1, -1},
+		{CSTR_VIEW("\xe7\x95"), 1, -1},
+		{CSTR_VIEW("\xf0\x80\x80\x80"), 1, -1},
+		{CSTR_VIEW("\xf4\x90\x80\x80"), 1, -1},
+		{CSTR_VIEW("\xf0\x9f\x98"), 1, -1},
+		{CSTR_VIEW("\xff"), 1, -1},
+	};
+	for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+		int width;
+		assert(cli_render_character(cases[i].text, &width) == cases[i].bytes);
+		assert(width == cases[i].width);
+	}
+}
+
+static void
 cli_scrollback_test_wrapping (void)
 {
 	struct cli_scrollback scrollback;
@@ -58,6 +102,11 @@ cli_scrollback_test_wrapping (void)
 	assert(!strcmp(dstr_get(&frame), "\033[1;1Habcde\033[2;1HFGHIJ\033[3;1Hk    "));
 	cli_scrollback_test_render(&scrollback, 11, 1, false, &frame);
 	assert(!strcmp(dstr_get(&frame), "\033[1;1HabcdeFGHIJk"));
+	cli_scrollback_fini(&scrollback);
+	/* U+0378 is unassigned: an unknown width must not reject a whole row. */
+	assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("a\xcd\xb8" "b")));
+	cli_scrollback_test_render(&scrollback, 3, 1, false, &frame);
+	assert(!strcmp(dstr_get(&frame), "\033[1;1Ha\xcd\xb8" "b"));
 	cli_scrollback_fini(&scrollback);
 }
 
@@ -356,7 +405,7 @@ cli_scrollback_test_long_line (void)
 int
 main (void)
 {
-	assert(setlocale(LC_CTYPE, "C.UTF-8"));
+	cli_scrollback_test_characters();
 	cli_scrollback_test_wrapping();
 	cli_scrollback_test_styles();
 	cli_scrollback_test_pane();
