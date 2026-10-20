@@ -556,10 +556,11 @@ def check_peer_catalog(cli, unused_server):
         name = params["name"]
         if name == "notebook_service":
             assert params["arguments"] == {"action": "notebooks"}, request
-            names = ("alice/anonymous/client\nbob/0123456789abcdef/upstream\n"
+            names = ("Self (writable): alice/anonymous/client\n"
+                     "bob/0123456789abcdef/upstream (read-only)\n"
                      "alice/anonymous/upstream\nmalformed line\n"
                      "bad/invalid/client\ntruncated/anonymous/clien") if generation == 1 else \
-                    "carol/anonymous/client\n"
+                    "Self (writable): carol/anonymous/client\n"
             return result({"content": [{"type": "text", "text": names}]})
         if name == "git":
             assert params["arguments"] == {"command": "log", "count": 2,
@@ -623,23 +624,25 @@ def check_peer_catalog_changed(cli, unused_server):
     print("cli catalog: tools/list_changed refreshes before the next prompt: PASS")
 
 
-def check_peer_notes(cli, unused_server):
+def check_peer_notes(cli, unused_server, current=False):
     """Discover server note paths, then exercise the actual Readline callback."""
     own = "design/äiti (1 line).md"
     other = "thoughts/next.md"
     selected = "reviews/note  (1 line).md"
     selector = "bob/anonymous/upstream"
-    copied, learned = False, False
+    self_selector = "self/anonymous/client"
+    copied, learned, replaced = False, False, False
     calls = []
     held, release = threading.Event(), threading.Event()
     copied_listed, learned_listed = threading.Event(), threading.Event()
+    replaced_listed = threading.Event()
     ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
         "type": "object", "properties": {"prompt": {"type": "string"},
         "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
     notes = {"name": "notebook_service", "_meta": {"askai": {
         "participant": "self", "notebooks": True}}, "inputSchema": {
             "type": "object", "properties": {
-                "action": {"type": "string", "enum": ["notebooks", "list", "read", "copy", "add"]},
+                "action": {"type": "string", "enum": ["notebooks", "list", "read", "copy", "add", "replace"]},
                 "notebook": {"type": "string"}, "file": {"type": "string"}}}}
 
     def result(text):
@@ -652,7 +655,7 @@ def check_peer_notes(cli, unused_server):
         return None
 
     def reply(request):
-        nonlocal copied, learned
+        nonlocal copied, learned, replaced
         params = request["params"]
         if params["name"] == "ask_ai":
             learned = True
@@ -660,26 +663,40 @@ def check_peer_notes(cli, unused_server):
         assert params["name"] == "notebook_service", request
         args = params["arguments"]
         if args["action"] == "notebooks":
+            if current:
+                return result(f"Self (writable): {self_selector}\n\n"
+                              f"Other notebooks:\n{selector} (read-only)\n")
             return result("Session notebooks (use a selector as notebook):\n" + selector + "\n")
         if args["action"] == "list":
             book = args["notebook"]
-            assert book in ("own", "other", selector), request
-            files = [own] if book == "own" else [other] if book == "other" else [selected]
-            if book == "own":
+            assert book in ("own", "other", selector, self_selector), request
+            files = [other] if book == "other" else [selected] if book == selector else [own]
+            if book in ("own", self_selector):
                 files += (["copied/new note.md"] if copied else [])
                 files += (["learned/server note.md"] if learned else [])
                 if copied:
                     copied_listed.set()
                 if learned:
                     learned_listed.set()
+                if replaced:
+                    replaced_listed.set()
+            if current:
+                blob = "a" * (64 if book == selector else 40)
+                records = "".join(f"{name}  (123 bytes, {blob})\n" for name in files)
+                return result(f"Notebook {book} — current files (bytes, blob):\n\n" + records +
+                              f"nonhex.md  (123 bytes, {'g' * 40})\n"
+                              f"decimal.md  (12x bytes, {blob})\n"
+                              f"short.md  (123 bytes, abcd)\n"
+                              f"partial.md  (123 bytes, {blob})")
             count = "2 lines" if book == "own" else "binary" if book == "other" else "1 line"
             records = "".join(f"{index}. 2026-10-17 01:23 UTC  {name}  ({count})\n"
                               for index, name in enumerate(files, 1))
             return result("Selected notebook, oldest first:\n\n" + records +
                           "77. 2026-10-17 01:23 UTC  partial.md  (1 line)")
-        assert args["action"] in ("read", "copy"), request
+        assert args["action"] in ("read", "copy", "replace"), request
         calls.append(args)
         copied |= args["action"] == "copy"
+        replaced |= args["action"] == "replace"
         if args == {"action": "read", "file": "held.md"}:
             held.set()
             assert release.wait(5), "held note read was not released"
@@ -740,15 +757,21 @@ def check_peer_notes(cli, unused_server):
                                "copied/new note.md", copied_listed)
             completed({"action": "read", "notebook": "own", "file": "copied/new note.md"})
 
+            if current:
+                os.write(master, f"/tool notebook_service action=replace file='{own}'\r".encode())
+                completed({"action": "replace", "file": own})
+                assert replaced_listed.wait(5), "note replacement did not refresh filenames"
+
             os.write(master, b"Write a note\r")
             read_until(proc, b"MODEL-NOTED", 5, master)
             complete_refreshed(b"/tool notebook_service action=read file=learn",
                                "learned/server note.md", learned_listed)
             completed({"action": "read", "file": "learned/server note.md"})
 
-            # A cut list record is not a filename candidate.
-            os.write(master, b"/tool notebook_service action=read file=part\t\r")
-            completed({"action": "read", "file": "part"})
+            # Truncated records and malformed metadata are not candidates.
+            for prefix in (("part", "nonhex", "decimal", "short") if current else ("part",)):
+                os.write(master, f"/tool notebook_service action=read file={prefix}\t\r".encode())
+                completed({"action": "read", "file": prefix})
             os.write(master, b"/exit\r")
             assert proc.wait(timeout=5) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "terminal settings were not restored"
@@ -759,7 +782,8 @@ def check_peer_notes(cli, unused_server):
             proc.wait()
             os.close(master)
             os.close(slave)
-    print("cli notes: server paths, selectors, UTF-8 quotes, mutation refresh and offline Tab: PASS")
+    format_name = "current" if current else "legacy"
+    print(f"cli notes ({format_name}): paths, selectors, UTF-8, mutation refresh and offline Tab: PASS")
 
 
 def check_peer_history(cli, unused_server):
@@ -856,6 +880,7 @@ def main():
                   check_peer_catalog, check_peer_catalog_changed, check_peer_autocomplete_error,
                   check_peer_notes, check_peer_history, check_peer_input_history):
         check(cli, server)
+    check_peer_notes(cli, server, True)
 
 
 if __name__ == "__main__":

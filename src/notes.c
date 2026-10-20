@@ -49,6 +49,7 @@ static char const *const cmds[][8] = {
 	[NOTES_READ]   = { "cat-file", "--batch" },
 	[NOTES_BOOKS]  = { "for-each-ref", "--format=%(refname:strip=3)", BRANCH },
 	[NOTES_FORMAT] = { "rev-parse", "--show-object-format" },
+	[NOTES_FILES]  = { "ls-tree", "-r", "-z", "-l" },
 };
 
 /* The kinds of the objects in the output of git cat-file. */
@@ -396,6 +397,12 @@ notes_select (char const *name,
 	return 0;
 }
 
+char const *
+notes_selector (char const *repo)
+{
+	return repo + sizeof BRANCH - 1;
+}
+
 void
 notes_argv (struct notes const *notes,
             char const         *repo,
@@ -415,7 +422,7 @@ notes_argv (struct notes const *notes,
 		argv[k++] = cmds[cmd][i];
 	if (cmd == NOTES_CREATE)
 		argv[k++] = ".";
-	if (cmd == NOTES_LIST) {
+	if (cmd == NOTES_LIST || cmd == NOTES_FILES) {
 		argv[k++] = repo;
 		argv[k++] = "--";
 	}
@@ -634,8 +641,8 @@ notes_add_input (struct buf      *in,
                  struct span      file)
 {
 	static char const *const messages[] = {
-		[NOTES_UPSTREAM] = "The upstream added a note.",
-		[NOTES_CLIENT]   = "A client added a note.",
+		[NOTES_UPSTREAM] = "The upstream wrote a note.",
+		[NOTES_CLIENT]   = "A client wrote a note.",
 	};
 	char head[NOTES_REPO + 256];
 	int h = snprintf(head, sizeof head, "commit %s\ncommitter askai <askai> "
@@ -738,6 +745,41 @@ notes_number (char const *s,
 		*value = *value * 10 + digit;
 	}
 	return true;
+}
+
+int
+notes_file_next (struct span       *out,
+                 struct notes_file *file)
+{
+	*file = (struct notes_file){};
+	if (!out->len)
+		return ENOENT;
+	char const *s = (char const *)out->ptr;
+	char const *nul = memchr(s, '\0', out->len);
+	char const *tab = nul ? memchr(s, '\t', (size_t)(nul - s)) : nullptr;
+	if (!tab || tab - s < (ptrdiff_t)sizeof "100644 blob " ||
+	    memcmp(s + 6, " blob ", 6) || tab + 1 == nul)
+		return EIO;
+	char const *id = s + sizeof "100644 blob " - 1;
+	char const *end = memchr(id, ' ', (size_t)(tab - id));
+	size_t len = end ? (size_t)(end - id) : 0;
+	if ((len != 40 && len != NOTES_TIP) || !notes_hex(id, len))
+		return EIO;
+	char const *size = end + 1;
+	while (size < tab && *size == ' ')
+		++size;
+	uint64_t bytes;
+	if (!notes_number(size, (size_t)(tab - size), &bytes))
+		return EIO;
+	*file = (struct notes_file){
+		.name = { out->ptr + (tab + 1 - s), (size_t)(nul - tab - 1) },
+		.id = { out->ptr + (id - s), len },
+		.bytes = bytes,
+	};
+	size_t consumed = (size_t)(nul + 1 - s);
+	out->ptr += consumed;
+	out->len -= consumed;
+	return 0;
 }
 
 bool

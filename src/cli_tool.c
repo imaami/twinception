@@ -47,7 +47,7 @@ cli_tool_create (struct cli_client  *client,
 	uint64_t flags = 0;
 	if (cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool))) {
 		struct json_object *action = jb_get(arguments, "action");
-		if (cli_client_is(action, "add") || cli_client_is(action, "copy"))
+		if (cli_client_is(action, "add") || cli_client_is(action, "copy") || cli_client_is(action, "replace"))
 			flags |= CLI_TOOL_WRITES_NOTES;
 	}
 	struct cstr_view token = CSTR_VIEW("tool");
