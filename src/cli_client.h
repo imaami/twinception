@@ -92,6 +92,29 @@ cli_client_rpc (struct cli_client     *client,
                 struct json_object   **result,
                 struct cli_error      *error);
 
+/** Runs on the UI thread; result and error are borrowed for the callback. */
+typedef void cli_client_done_fn (void                   *context,
+                                 int                     e,
+                                 struct json_object     *result,
+                                 struct cli_error const *error);
+
+/** Consumes params. Success schedules exactly one completion; failure does
+ * not call done. The returned network request ID supports cancellation. */
+extern int
+cli_client_submit (struct cli_client    *client,
+                   char const           *method,
+                   struct json_object   *params,
+                   cli_client_notify_fn *notify,
+                   cli_client_done_fn   *done,
+                   void                 *context,
+                   uint64_t             *request,
+                   struct cli_error     *error);
+
+/** Cancel a request admitted by submit, without affecting other calls. */
+extern void
+cli_client_cancel_request (struct cli_client *client,
+                           uint64_t           request);
+
 /**
  * Invalid/non-string values yield an
  * empty view with a null data pointer.

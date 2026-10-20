@@ -618,6 +618,8 @@ def check_peer_notes(cli, unused_server):
     selector = "bob/anonymous/upstream"
     copied, learned = False, False
     calls = []
+    held, release = threading.Event(), threading.Event()
+    copied_listed, learned_listed = threading.Event(), threading.Event()
     ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
         "type": "object", "properties": {"prompt": {"type": "string"},
         "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
@@ -653,6 +655,10 @@ def check_peer_notes(cli, unused_server):
             if book == "own":
                 files += (["copied/new note.md"] if copied else [])
                 files += (["learned/server note.md"] if learned else [])
+                if copied:
+                    copied_listed.set()
+                if learned:
+                    learned_listed.set()
             count = "2 lines" if book == "own" else "binary" if book == "other" else "1 line"
             records = "".join(f"{index}. 2026-10-17 01:23 UTC  {name}  ({count})\n"
                               for index, name in enumerate(files, 1))
@@ -661,6 +667,9 @@ def check_peer_notes(cli, unused_server):
         assert args["action"] in ("read", "copy"), request
         calls.append(args)
         copied |= args["action"] == "copy"
+        if args == {"action": "read", "file": "held.md"}:
+            held.set()
+            assert release.wait(5), "held note read was not released"
         return result("NOTE-OK")
 
     with Peer(reply, methods) as peer:
@@ -672,6 +681,26 @@ def check_peer_notes(cli, unused_server):
                                     "XDG_STATE_HOME": peer.directory.name + "/state"}
         proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off", "--no-history"],
                                 stdin=slave, stdout=slave, stderr=slave, env=environment)
+
+        def completed(expected=None):
+            # A fresh draft is available before an asynchronous tool replies.
+            read_until(proc, b"* notebook_service completed", 5, master)
+            if expected is not None:
+                assert calls[-1] == expected, calls
+
+        def complete_refreshed(prefix, name, listed):
+            assert listed.wait(5), "note mutation did not trigger filename discovery"
+            output, expected = b"", name.encode()
+            deadline = time.monotonic() + 5
+            # The fixture sees a list request before its response is installed.
+            # Retry the same draft until local completion sees the new path.
+            while expected not in output and time.monotonic() < deadline:
+                os.write(master, b"\x01\x0b" + prefix + b"\t")
+                while select.select([master], [], [], 0.05)[0]:
+                    output += os.read(master, 65536)
+            assert expected in output, output
+            os.write(master, b"\r")
+
         try:
             read_until(proc, b"> ", 5, master)
             before_tab = len(peer.requests)
@@ -679,37 +708,39 @@ def check_peer_notes(cli, unused_server):
             read_until(proc, own.encode(), 5, master)
             assert len(peer.requests) == before_tab, "Tab performed network discovery"
             os.write(master, b"\r")
-            read_until(proc, b"\n> ", 5, master)
-            assert calls[-1] == {"action": "read", "file": own}, calls
+            completed({"action": "read", "file": own})
 
             prefix = "/tool notebook_service action=read file=re"
             line = prefix + " notebook='" + selector + "'"
             os.write(master, line.encode() + b"\x01" + b"\x1b[C" * len(prefix) + b"\t\r")
-            read_until(proc, b"\n> ", 5, master)
-            assert calls[-1] == {"action": "read", "file": selected, "notebook": selector}, calls
+            completed({"action": "read", "file": selected, "notebook": selector})
 
+            os.write(master, b"/tool notebook_service action=read file=held.md\r")
+            assert held.wait(5), "overlapping read did not start"
             os.write(master, b"/tool notebook_service action=copy file=th\t\r")
-            read_until(proc, b"\n> ", 5, master)
-            assert calls[-1] == {"action": "copy", "file": other}, calls
+            completed({"action": "copy", "file": other})
+            assert not copied_listed.is_set(), "discovery interrupted an active tool"
+            release.set()
+            completed()
 
-            os.write(master, b"/tool notebook_service action=read notebook=ow\tfile=cop\t\r")
-            read_until(proc, b"\n> ", 5, master)
-            assert calls[-1] == {"action": "read", "notebook": "own", "file": "copied/new note.md"}, calls
+            complete_refreshed(b"/tool notebook_service action=read notebook=ow\tfile=cop",
+                               "copied/new note.md", copied_listed)
+            completed({"action": "read", "notebook": "own", "file": "copied/new note.md"})
 
             os.write(master, b"Write a note\r")
-            read_until(proc, b"\n> ", 5, master)
-            os.write(master, b"/tool notebook_service action=read file=learn\t\r")
-            read_until(proc, b"\n> ", 5, master)
-            assert calls[-1] == {"action": "read", "file": "learned/server note.md"}, calls
+            read_until(proc, b"MODEL-NOTED", 5, master)
+            complete_refreshed(b"/tool notebook_service action=read file=learn",
+                               "learned/server note.md", learned_listed)
+            completed({"action": "read", "file": "learned/server note.md"})
 
             # A cut list record is not a filename candidate.
             os.write(master, b"/tool notebook_service action=read file=part\t\r")
-            read_until(proc, b"\n> ", 5, master)
-            assert calls[-1] == {"action": "read", "file": "part"}, calls
+            completed({"action": "read", "file": "part"})
             os.write(master, b"/exit\r")
             assert proc.wait(timeout=5) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "terminal settings were not restored"
         finally:
+            release.set()
             if proc.poll() is None:
                 proc.kill()
             proc.wait()

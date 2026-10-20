@@ -7,6 +7,7 @@
 #include "buf.h"
 #include "cli_client.h"
 #include "cli_network.h"
+#include "compat.h"
 #include "jb.h"
 
 int
@@ -91,6 +92,21 @@ struct cli_client_response {
 	int failure;
 	bool sse;
 };
+
+static struct cli_client_response
+cli_client_response (struct cli_client    *client,
+                     cli_client_notify_fn *notify,
+                     void                 *context,
+                     int64_t               id,
+                     struct cli_error     *error,
+                     int                  *e)
+{
+	*e = 0;
+	return (struct cli_client_response){
+		.session = DSTR_INIT, .client = client, .error = error,
+		.notify = notify, .context = context, .id = id,
+	};
+}
 
 static void cli_client_response_fini(struct cli_client_response *response)
 {
@@ -241,6 +257,26 @@ static size_t cli_client_response_header(char *ptr, size_t size, size_t count, v
 	return response->failure ? 0 : bytes;
 }
 
+static int
+cli_client_response_status (struct cli_client_response      *response,
+                            int                              e,
+                            struct cli_network_result const *result)
+{
+	if (response->failure)
+		return response->failure;
+	if (e)
+		return result->message[0] ? cli_error_set(response->error, e, "%s", result->message) : e;
+	if (result->status < 200 || result->status >= 300) {
+		size_t length = response->body.tail < 1024 ? response->body.tail : 1024;
+		return cli_error_set(response->error, EPROTO, "AskAI HTTP %ld%s%.*s", result->status,
+		                      length ? ": " : "", (int)length,
+		                      length ? (char const *)response->body.data : "");
+	}
+	if (response->sse && (response->line.tail || response->data.tail))
+		return cli_error_set(response->error, EPROTO, "AskAI closed an incomplete SSE event");
+	return 0;
+}
+
 static int cli_client_post(struct cli_client *client, struct cstr_view wire,
                            struct cli_client_response *response, bool interruptible, long timeout)
 {
@@ -248,19 +284,7 @@ static int cli_client_post(struct cli_client *client, struct cstr_view wire,
 	int e = cli_network_perform(client->network, cstr_view_dstr(&client->socket),
 	                            cstr_view_dstr(&client->session), wire, timeout, interruptible,
 	                            cli_client_response_header, cli_client_response_receive, response, &result);
-	if (response->failure)
-		return response->failure;
-	if (e)
-		return result.message[0] ? cli_error_set(response->error, e, "%s", result.message) : e;
-	if (result.status < 200 || result.status >= 300) {
-		size_t length = response->body.tail < 1024 ? response->body.tail : 1024;
-		return cli_error_set(response->error, EPROTO, "AskAI HTTP %ld%s%.*s", result.status,
-		                      length ? ": " : "", (int)length,
-		                      length ? (char const *)response->body.data : "");
-	}
-	if (response->sse && (response->line.tail || response->data.tail))
-		return cli_error_set(response->error, EPROTO, "AskAI closed an incomplete SSE event");
-	return 0;
+	return cli_client_response_status(response, e, &result);
 }
 
 static struct json_object *cli_client_packet(char const *method, struct json_object *params, int64_t id)
@@ -280,9 +304,11 @@ static int cli_client_notification(struct cli_client *client, char const *method
                                    long timeout, struct cli_error *error)
 {
 	cli_json_auto message = cli_client_packet(method, params, 0);
+	int e;
+	struct cli_client_response response = cli_client_response(client, nullptr, nullptr, 0, error, &e);
 	struct cstr_view wire;
-	int e = cli_client_wire(message, JB_WIRE, &wire, error);
-	struct cli_client_response response = {.session = DSTR_INIT, .client = client, .error = error};
+	if (!e)
+		e = cli_client_wire(message, JB_WIRE, &wire, error);
 	if (!e)
 		e = cli_client_post(client, wire, &response, interruptible, timeout);
 	cli_client_response_fini(&response);
@@ -299,6 +325,33 @@ static void cli_client_cancel(struct cli_client *client, int64_t id)
 		(void)client->report(client, CSTR_VIEW("Cancellation could not be confirmed"), cli_error_text(&error, e));
 }
 
+static int
+cli_client_response_result (struct cli_client_response *response,
+                            struct json_object        **result)
+{
+	if (dstr_len(&response->session)) {
+		dstr_cleanup(&response->client->session);
+		response->client->session = dstr_move(&response->session);
+	}
+	int e = response->sse ? 0 : cli_client_response_event(response,
+	               (struct cstr_view){(char const *)response->body.data, response->body.tail});
+	if (e)
+		return e;
+	if (!response->result)
+		return cli_error_set(response->error, EPROTO, "AskAI closed the stream without a result");
+	struct json_object *failure = jb_get(response->result, "error");
+	struct json_object *value = jb_get(response->result, "result");
+	if (failure) {
+		struct cstr_view text = cli_client_text(jb_get(failure, "message"));
+		return cli_error_set(response->error, EPROTO, "AskAI: %.*s", (int)text.len,
+		                      text.data ? text.data : "Invalid error response");
+	}
+	if (!json_object_is_type(value, json_type_object))
+		return cli_error_set(response->error, EPROTO, "AskAI returned no result object");
+	*result = json_object_get(value);
+	return 0;
+}
+
 int cli_client_rpc(struct cli_client *client, char const *method,
                     struct json_object *params, cli_client_notify_fn *notify,
                     void *context, struct json_object **result, struct cli_error *error)
@@ -310,37 +363,149 @@ int cli_client_rpc(struct cli_client *client, char const *method,
 	}
 	int64_t id = ++client->next_id;
 	cli_json_auto message = cli_client_packet(method, params, id);
-	struct cli_client_response response = {.session = DSTR_INIT, .client = client, .error = error,
-	                                       .notify = notify, .context = context, .id = id};
+	int e;
+	struct cli_client_response response = cli_client_response(client, notify, context, id, error, &e);
 	struct cstr_view wire;
-	int e = cli_client_wire(message, JB_WIRE, &wire, error);
+	if (!e)
+		e = cli_client_wire(message, JB_WIRE, &wire, error);
 	bool call = !strcmp(method, "tools/call");
 	if (!e)
 		e = cli_client_post(client, wire, &response, true, call ? 0 : 30);
 	if (e == EINTR && call)
 		cli_client_cancel(client, id);
-	if (!e && dstr_len(&response.session)) {
-		dstr_cleanup(&client->session);
-		client->session = dstr_move(&response.session);
-	}
-	if (!e && !response.sse)
-		e = cli_client_response_event(&response, (struct cstr_view){(char const *)response.body.data, response.body.tail});
-	if (!e && !response.result)
-		e = cli_error_set(error, EPROTO, "AskAI closed the stream without a result");
-	if (!e) {
-		struct json_object *failure = jb_get(response.result, "error");
-		struct json_object *value = jb_get(response.result, "result");
-		if (failure) {
-			struct cstr_view text = cli_client_text(jb_get(failure, "message"));
-			e = cli_error_set(error, EPROTO, "AskAI: %.*s", (int)text.len, text.data ? text.data : "Invalid error response");
-		} else if (!json_object_is_type(value, json_type_object)) {
-			e = cli_error_set(error, EPROTO, "AskAI returned no result object");
-		} else {
-			*result = json_object_get(value);
-		}
-	}
+	if (!e)
+		e = cli_client_response_result(&response, result);
 	cli_client_response_fini(&response);
 	return e;
+}
+
+struct cli_client_call {
+	struct cli_client_response response;
+	struct cli_error           error;
+	cli_client_done_fn         *done;
+};
+
+static struct cli_client_call *
+cli_client_call_create (struct cli_client    *client,
+                        cli_client_notify_fn *notify,
+                        cli_client_done_fn   *done,
+                        void                 *context,
+                        int64_t               id,
+                        int                  *e)
+{
+	struct cli_client_call *call = malloc(sizeof *call);
+	*e = call ? 0 : ENOMEM;
+	if (call)
+		*call = (struct cli_client_call){
+			.response = cli_client_response(client, notify, context, id, &call->error, e),
+			.done = done,
+		};
+	return call;
+}
+
+static void
+cli_client_call_destroy (struct cli_client_call **ptr)
+{
+	struct cli_client_call *call = *ptr;
+	if (!call)
+		return;
+	cli_client_response_fini(&call->response);
+	free(call);
+	*ptr = nullptr;
+}
+
+static int cli_client_call_start (struct cli_client *client, char const *method,
+                                  struct json_object *params, cli_client_notify_fn *notify,
+                                  cli_client_done_fn *done, void *context, int64_t id,
+                                  uint64_t *request, struct cli_error *error);
+
+static void
+cli_client_call_done (void                            *context,
+                      int                              e,
+                      struct cli_network_result const *status)
+{
+	struct cli_client_response *response = context;
+	struct cli_client_call *call = container_of(response, struct cli_client_call, response);
+	struct cli_client *client = response->client;
+	e = cli_client_response_status(response, e, status);
+	if (e == EINTR && response->id) {
+		struct json_object *params = jb_object("requestId", json_object_new_int64(response->id),
+		                       "reason", json_object_new_string("Interrupted by the terminal user"), nullptr);
+		struct cli_error error = {};
+		uint64_t request;
+		int cancelled = cli_client_call_start(client, "notifications/cancelled", params,
+		                                      nullptr, nullptr, nullptr, 0, &request, &error);
+		if (cancelled && cancelled != ESHUTDOWN && client->report)
+			(void)client->report(client, CSTR_VIEW("Cancellation could not be confirmed"),
+			                     cli_error_text(&error, cancelled));
+	}
+	cli_json_auto result = nullptr;
+	if (!e && response->id)
+		e = cli_client_response_result(response, &result);
+	if (call->done)
+		call->done(response->context, e, result, &call->error);
+	else if (e && e != ESHUTDOWN && client->report)
+		(void)client->report(client, CSTR_VIEW("Cancellation could not be confirmed"),
+		                     cli_error_text(&call->error, e));
+	cli_client_call_destroy(&call);
+}
+
+static int
+cli_client_call_start (struct cli_client    *client,
+                       char const           *method,
+                       struct json_object   *params,
+                       cli_client_notify_fn *notify,
+                       cli_client_done_fn   *done,
+                       void                 *context,
+                       int64_t               id,
+                       uint64_t             *request,
+                       struct cli_error     *error)
+{
+	cli_json_auto message = cli_client_packet(method, params, id);
+	struct cstr_view wire;
+	int e = cli_client_wire(message, JB_WIRE, &wire, error);
+	if (e)
+		return e;
+	struct cli_client_call *call = cli_client_call_create(client, notify, done, context, id, &e);
+	if (!call)
+		return e;
+	long timeout = !id ? 5 : !strcmp(method, "tools/call") ? 0 : 30;
+	e = cli_network_submit(client->network, cstr_view_dstr(&client->socket),
+	                        cstr_view_dstr(&client->session), wire, timeout, id != 0,
+	                        cli_client_response_header, cli_client_response_receive,
+	                        &call->response, cli_client_call_done, request);
+	if (e) {
+		cli_client_call_destroy(&call);
+		if (e == EAGAIN || e == ENOBUFS)
+			cli_error_set(error, e, "Too many active requests; retry when a tool completes");
+	}
+	return e;
+}
+
+int
+cli_client_submit (struct cli_client    *client,
+                   char const           *method,
+                   struct json_object   *params,
+                   cli_client_notify_fn *notify,
+                   cli_client_done_fn   *done,
+                   void                 *context,
+                   uint64_t             *request,
+                   struct cli_error     *error)
+{
+	*request = 0;
+	if (client->next_id == INT64_MAX || !done) {
+		json_object_put(params);
+		return done ? EOVERFLOW : EINVAL;
+	}
+	return cli_client_call_start(client, method, params, notify, done, context,
+	                              ++client->next_id, request, error);
+}
+
+void
+cli_client_cancel_request (struct cli_client *client,
+                           uint64_t           request)
+{
+	cli_network_cancel_call(client->network, request, false);
 }
 
 int cli_client_connect(struct cli_client *client, struct cli_error *error)
@@ -480,14 +645,17 @@ static int cli_client_read_files(struct cstr_view text, struct cli_client_names 
 	return 0;
 }
 
-static int cli_client_name_compare(void const *a, void const *b)
+static int
+cli_client_name_compare (void const *a,
+                         void const *b)
 {
 	struct cstr_view x = cli_client_text(*(struct json_object *const *)a);
 	struct cstr_view y = cli_client_text(*(struct json_object *const *)b);
 	return cstr_view_compare(x, y);
 }
 
-static void cli_client_unique(struct json_object *names)
+static void
+cli_client_unique (struct json_object *names)
 {
 	json_object_array_sort(names, cli_client_name_compare);
 	for (size_t i = json_object_array_length(names); i > 1; --i)
@@ -495,9 +663,12 @@ static void cli_client_unique(struct json_object *names)
 			(void)json_object_array_del_idx(names, i - 1, 1);
 }
 
-static int cli_client_discover_files(struct cli_client *client, struct autocomplete *catalog,
-                                     struct cstr_view tool, struct json_object *notebooks,
-                                     struct cli_error *error)
+static int
+cli_client_discover_files (struct cli_client   *client,
+                           struct autocomplete *catalog,
+                           struct cstr_view     tool,
+                           struct json_object  *notebooks,
+                           struct cli_error    *error)
 {
 	cli_client_unique(notebooks);
 	size_t count = json_object_array_length(notebooks);
@@ -537,7 +708,9 @@ static int cli_client_discover_files(struct cli_client *client, struct autocompl
 	return e;
 }
 
-int cli_client_refresh_notes(struct cli_client *client, struct cli_error *error)
+int
+cli_client_refresh_notes (struct cli_client *client,
+                          struct cli_error  *error)
 {
 	client->notes_dirty = false;
 	if (!dstr_len(&client->notes_tool))
@@ -546,12 +719,15 @@ int cli_client_refresh_notes(struct cli_client *client, struct cli_error *error)
 	return cli_client_discover_files(client, client->catalog, cstr_view_dstr(&client->notes_tool), client->notebooks, error);
 }
 
-static int cli_client_discover_books(struct cli_client *client, struct cstr_view tool,
-                                     struct json_object *names, struct json_object *notebooks,
-                                     struct cli_error *error)
+static int
+cli_client_discover_books (struct cli_client  *client,
+                           struct cstr_view    tool,
+                           struct json_object *names,
+                           struct json_object *notebooks,
+                           struct cli_error   *error)
 {
 	struct json_object *params = jb_object("name", cli_client_string(tool),
-	                                      "arguments", jb_object("action", json_object_new_string("notebooks"), nullptr), nullptr);
+	                                       "arguments", jb_object("action", json_object_new_string("notebooks"), nullptr), nullptr);
 	cli_json_auto listing = nullptr;
 	int e = cli_client_rpc(client, "tools/call", params, nullptr, nullptr, &listing, error);
 	if (e)
@@ -571,7 +747,9 @@ static int cli_client_discover_books(struct cli_client *client, struct cstr_view
 	return e;
 }
 
-static bool cli_client_has_action(struct json_object *actions, char const *name)
+static bool
+cli_client_has_action (struct json_object *actions,
+                       char const         *name)
 {
 	if (!json_object_is_type(actions, json_type_array))
 		return false;
@@ -581,7 +759,10 @@ static bool cli_client_has_action(struct json_object *actions, char const *name)
 	return false;
 }
 
-static int cli_client_catalog_names(struct autocomplete *catalog, struct json_object *names, bool notebooks)
+static int
+cli_client_catalog_names (struct autocomplete *catalog,
+                          struct json_object  *names,
+                          bool                 notebooks)
 {
 	cli_client_unique(names);
 	struct cli_client_names views = {};
@@ -595,9 +776,12 @@ static int cli_client_catalog_names(struct autocomplete *catalog, struct json_ob
 	return e;
 }
 
-int cli_client_refresh(struct cli_client *client, struct cli_error *error)
+int
+cli_client_refresh (struct cli_client *client,
+                    struct cli_error  *error)
 {
 	client->catalog_dirty = false;
+	client->notes_dirty = false;
 	int e = 0;
 	struct autocomplete *catalog = autocomplete_create(&e);
 	cli_json_auto names = json_object_new_array();
@@ -739,7 +923,6 @@ int cli_client_refresh(struct cli_client *client, struct cli_error *error)
 	cli_client_json_cleanup(&client->notebooks);
 	client->notebooks = notebooks;
 	notebooks = nullptr;
-	client->notes_dirty = false;
 	dstr_cleanup(&client->session_key);
 	client->session_key = dstr_move(&session);
 	dstr_cleanup(&client->participant);
