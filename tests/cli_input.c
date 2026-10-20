@@ -4,7 +4,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <locale.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,7 +119,6 @@ static int cli_input_run(struct cli_input_driver *driver, int records, bool mult
 
 int main(int argc, char **argv)
 {
-	(void)setlocale(LC_CTYPE, "");
 	if (argc < 2)
 		return 2;
 	errno = 0;

@@ -427,6 +427,9 @@ cli_state_commit (struct cli_state *state)
 	}
 	if (!e)
 		e = cli_state_copy(&state->parent, (struct cstr_view){ commit, commit_len });
+	if (!e)
+		(void)cli_state_git_ok(state, (char const *[]){ "gc", "--auto", "--quiet", nullptr },
+		                       (struct cstr_view){});
 	return e;
 }
 

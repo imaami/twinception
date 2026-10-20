@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <locale.h>
 #include <readline/history.h>
 #include <readline/readline.h>
 #include <stdint.h>
@@ -110,6 +111,8 @@ struct cli_console {
 	struct cli_loop                 *loop;
 	struct cli_io                   *io;
 	FILE                            *terminal;
+	locale_t                         locale;
+	locale_t                         previous_locale;
 	struct cli_loop_ref              input_ref;
 	struct cli_loop_step             input_step;
 	struct cli_loop_ref              output_ref;
@@ -1031,6 +1034,18 @@ cli_console_create (bool             simple,
 	}
 	cli_console_active = console;
 	if (!console->simple) {
+		/* Readline edits UTF-8 only in a UTF-8 locale; its initialization
+		 * resets the global locale, so keep the override in this thread. */
+		console->locale = newlocale(LC_CTYPE_MASK, "C.UTF-8", nullptr);
+		if (!console->locale) {
+			*e = errno;
+			goto fail;
+		}
+		console->previous_locale = uselocale(console->locale);
+		if (!console->previous_locale) {
+			*e = errno;
+			goto fail;
+		}
 		if (tcgetattr(STDIN_FILENO, &console->initial_state) < 0) {
 			*e = errno;
 			goto fail;
@@ -1050,6 +1065,9 @@ cli_console_create (bool             simple,
 		rl_instream = stdin;
 		rl_outstream = console->terminal;
 		rl_initialize();
+		rl_variable_bind("input-meta", "on");
+		rl_variable_bind("output-meta", "on");
+		rl_variable_bind("convert-meta", "off");
 		console->fullscreen = console->fullscreen && rl_get_termcap("up") && rl_get_termcap("cl");
 		rl_add_defun("askai-accept-line", cli_console_submit, -1);
 		rl_add_defun("askai-scroll-up", cli_console_page_up, -1);
@@ -1203,6 +1221,11 @@ cli_console_destroy (struct cli_console **ptr)
 		rl_outstream = stdout;
 		(void)fclose(console->terminal);
 		console->terminal = nullptr;
+	}
+	if (console->locale) {
+		(void)uselocale(console->previous_locale);
+		freelocale(console->locale);
+		console->locale = nullptr;
 	}
 	if (console->input_flags >= 0)
 		(void)fcntl(STDIN_FILENO, F_SETFL, console->input_flags);

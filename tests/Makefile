@@ -4,11 +4,11 @@ include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-askai check-buf check-cli check-completion check-cstr-view check-datauri \
-        check-dstr check-handle check-instance check-ledger check-load \
+        check-dstr check-handle check-instance check-journal check-ledger check-load \
         check-turn check-twinception load load-build
 default:; @:
 check: | check-completion check-twinception check-askai check-cli check-buf \
-         check-datauri check-handle check-turn check-instance check-ledger \
+         check-datauri check-handle check-turn check-instance check-journal check-ledger \
          check-dstr check-load
 
 # Nothing below this comment is defined when tab-completing.
@@ -85,6 +85,8 @@ override CLI_INCLUDES = $(call test-pkg-config,CLI_INCLUDES,--cflags readline)
 override CLI_LIBS = $(call test-pkg-config,CLI_LIBS,--libs readline)
 override JSON_INCLUDES = $(call test-pkg-config,JSON_INCLUDES,--cflags json-c)
 override JSON_LIBS = $(call test-pkg-config,JSON_LIBS,--libs json-c)
+override UTF8_INCLUDES = $(call test-pkg-config,UTF8_INCLUDES,--cflags libutf8proc)
+override UTF8_LIBS = $(call test-pkg-config,UTF8_LIBS,--libs libutf8proc)
 override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete_fixture.c.o \
                                  $Otests/src/autocomplete.c.o $Otests/src/cli_command.c.o \
                                  $Otests/src/dstr.c.o $Otests/src/jb.c.o
@@ -104,7 +106,7 @@ $Otests/cli_loop:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
 
 $Otests/cli_scrollback: $Otests/cli_scrollback.c.o $Otests/src/cli_render.c.o $Otests/src/cli_scrollback.c.o $Otests/src/cli_style.c.o \
                        $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o
-$Otests/cli_scrollback:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
+$Otests/cli_scrollback:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(UTF8_LIBS)
 
 $Otests/cli_input $Otests/cli_ui $Otests/cli_state $Otests/autocomplete $Otests/cstr_view: $Otests/src/cstr_view.c.o
 
@@ -115,11 +117,11 @@ check-cstr-view: $Otests/cstr_view; $<
 
 $Otests/cli_input: $Otests/cli_input.c.o $(CLI_CONSOLE_OBJECTS) \
                    $Otests/src/autocomplete_file.c.o $(AUTOCOMPLETE_OBJECTS)
-$Otests/cli_input:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) -lm
+$Otests/cli_input:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) $(UTF8_LIBS) -lm
 
 $Otests/cli_ui: $Otests/cli_ui.c.o $Otests/src/cli_ui.c.o $(CLI_CONSOLE_OBJECTS) \
                 $Otests/src/dstr.c.o $Otests/src/jb.c.o
-$Otests/cli_ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) -lm
+$Otests/cli_ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) $(UTF8_LIBS) -lm
 
 $Otests/cli_state: $Otests/cli_state.c.o $Otests/src/cli_state.c.o \
                    $Otests/src/dstr.c.o $Otests/src/jb.c.o
@@ -133,6 +135,7 @@ $Otests/src/autocomplete.c.o $Otests/src/autocomplete_file.c.o \
 $Otests/src/cli_state.c.o $Otests/src/cli_console.c.o $Otests/src/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 $Otests/src/cli_console.c.o: CPPFLAGS += $(CLI_INCLUDES)
+$Otests/src/cli_render.c.o: CPPFLAGS += $(UTF8_INCLUDES)
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf
@@ -164,6 +167,14 @@ check-instance: $Otests/instance
 # replaces clock_gettime() in them with a fake clock.
 check-ledger: $Otests/ledger
 	$<
+
+check-journal: $Otests/journal
+	@directory=$$(mktemp -d) || exit 1; \
+	trap 'rm -rf "$$directory"' EXIT; \
+	"$<" "$$directory/transcripts.git"
+
+$Otests/journal: $Otests/journal.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
+$Otests/journal:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lcrypto -lm
 
 # The unit tests.  Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.
@@ -221,7 +232,7 @@ check-load: | load-build askai
 load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
--include $(UNIT:%=$Otests/%.c.d) $Otests/src/buf.c.d $Otests/src/datauri.c.d \
+-include $(UNIT:%=$Otests/%.c.d) $Otests/journal.c.d $Otests/src/buf.c.d $Otests/src/datauri.c.d \
          $Otests/src/log.c.d $Otests/cli_input.c.d $Otests/cli_ui.c.d $Otests/autocomplete.c.d \
          $Otests/cli_state.c.d $Otests/src/cli_state.c.d \
          $Otests/cli_loop.c.d $Otests/cli_io.c.d $Otests/cli_scrollback.c.d \

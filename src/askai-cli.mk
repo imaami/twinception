@@ -28,6 +28,7 @@ override SRC_askai-cli := \
 override LIB_askai-cli := \
   json-c                  \
   libcurl                 \
+  libutf8proc             \
   readline
 
 override LDLIBS_askai-cli += -pthread -lm

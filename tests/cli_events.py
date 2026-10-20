@@ -18,7 +18,7 @@ import termios
 import threading
 import time
 
-from cli import Peer, command, sse_wire
+from cli import Peer, command, sse_wire, unix_available
 
 
 def response(text):
@@ -336,7 +336,7 @@ class Tmux:
             self.run("set-option", "-g", "status", "off")
             self.run("set-option", "-w", "-t", "events:0", "remain-on-exit", "on")
             self.run("set-option", "-w", "-t", "events:0", "window-size", "manual")
-            invocation = shlex.join(["env", "TERM=screen.xterm-256color", "LC_ALL=C.UTF-8",
+            invocation = shlex.join(["env", "TERM=screen.xterm-256color", "LC_ALL=POSIX",
                                      "HOME=" + self.directory.name, "INPUTRC=" + inputrc,
                                      cli, "--socket", socket, "--no-history", "--color", color, *arguments])
             self.run("respawn-pane", "-k", "-t", self.pane, invocation)
@@ -426,7 +426,7 @@ def check_tui_drafts(cli):
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         before = termios.tcgetattr(slave)
         before_flags = fcntl.fcntl(slave, fcntl.F_GETFL)
-        environment = os.environ | {"TERM": "xterm-256color", "LC_ALL": "C.UTF-8",
+        environment = os.environ | {"TERM": "xterm-256color", "LC_ALL": "C",
                                     "INPUTRC": os.devnull}
         proc = subprocess.Popen([cli, "--socket", peer.socket, "--no-history", "--color", "off",
                                  "--prompt", "first"], stdin=slave, stdout=slave, stderr=slave,
@@ -1084,6 +1084,28 @@ def check_panels(cli):
     print("cli events: early bottom input, separate panes, independent scrolling, Alt-arrow selection and completion labels: PASS", flush=True)
 
 
+def check_tool_summaries(cli):
+    cases = [(158, "é"), (159, "é"), (157, "界"), (158, "界")]
+    tools = [{"name": f"tool_{i}", "description": "a" * count + character + "overflow",
+              "inputSchema": {"type": "object"}} for i, (count, character) in enumerate(cases)]
+    tools[0].update(title="Ask AI", inputSchema={"type": "object", "properties": {
+        "prompt": {"type": "string"}, "messages": {"type": "array"}, "background": {"type": "boolean"}}})
+
+    def methods(request):
+        if request["method"] == "tools/list":
+            return 200, "application/json", {"result": {"tools": tools}}
+        return None
+
+    with Peer(lambda request: response("unexpected"), methods) as peer:
+        result = subprocess.run(command(cli, peer.socket, "--no-history"), input=b"/tools\n/quit\n",
+                                capture_output=True, timeout=5)
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+        for tool in tools:
+            summary = tool["description"].encode()[:160].decode("utf-8", errors="ignore")
+            assert (tool["name"] + "  " + summary + "\n").encode() in result.stdout, result.stdout
+    print("cli events: tool summaries preserve UTF-8 at the 160-byte boundary: PASS", flush=True)
+
+
 def check_busy_commands(cli):
     arrived = threading.Event()
     release = threading.Event()
@@ -1523,7 +1545,9 @@ def check_blocked_worker(cli):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue overflow mentions colors cells panels commands concurrent quit interrupt files slow worker ...]")
+        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue overflow mentions colors cells panels summaries commands concurrent quit interrupt files slow worker ...]")
+    if not unix_available():
+        raise SystemExit(0)
     cli = os.path.realpath(sys.argv[1])
     checks = {"sticky": check_sticky_termination, "lock": check_history_lock,
               "saved-lock": check_saved_command_lock,
@@ -1531,7 +1555,7 @@ if __name__ == "__main__":
               "tui": check_tui_drafts, "partial": check_partial_paste, "keys": check_keyboard,
               "queue": check_queued_input, "overflow": check_queue_overflow,
               "mentions": check_chat_completion, "colors": check_fullscreen_colors,
-              "cells": check_terminal_cells, "panels": check_panels,
+              "cells": check_terminal_cells, "panels": check_panels, "summaries": check_tool_summaries,
               "commands": check_busy_commands, "concurrent": check_concurrent_tools, "quit": check_busy_quit,
               "interrupt": check_interrupt_commands, "files": check_regular_files,
               "slow": check_slow_output, "worker": check_blocked_worker}
