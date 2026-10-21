@@ -15,8 +15,10 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "cstr_view.h"
 
 struct notes;
+struct notes_revision;
 
 enum {
 	NOTES_TEXT = 4 << 20,  /**< bytes of the text of a note, at most */
@@ -26,7 +28,7 @@ enum {
 	NOTES_REPO = 128,      /**< bytes of a full notebook branch ref, NUL included */
 	NOTES_TIP  = 64,       /**< hexadecimal digits of a commit's name, at
 	                            most */
-	NOTES_ARGV = 24,       /**< elements of the argv of git, nullptr
+	NOTES_ARGV = 25,       /**< elements of the argv of git, nullptr
 	                            included */
 };
 
@@ -55,6 +57,7 @@ enum notes_cmd : uint8_t {
 	NOTES_BOOKS,   /**< lists all participant notebook selectors */
 	NOTES_FORMAT,  /**< writes the Git object format for an unborn branch */
 	NOTES_FILES,   /**< lists the current notes, in tree order */
+	NOTES_HEAD,    /**< resolves a notebook branch to its full commit id */
 };
 
 /** A current note in the output of NOTES_FILES. Views borrow its output. */
@@ -67,6 +70,7 @@ struct notes_file {
 /** A change to a note in the output of NOTES_LIST. */
 struct notes_entry {
 	struct span name;
+	struct span commit; /**< hexadecimal commit id; borrows the history output */
 	uint64_t    time;   /**< when it was committed, in seconds since the
 	                         epoch */
 	uint64_t    lines;  /**< the number of lines added by this change, or
@@ -76,9 +80,10 @@ struct notes_entry {
 /** Reverse iterator over Git's note history. Initialize only end to the output
  * size. The cached commit boundary avoids rescanning multi-file commits. */
 struct notes_cursor {
-	size_t   end;
-	size_t   first;
-	uint64_t time;
+	struct span commit;
+	size_t      end;
+	size_t      first;
+	uint64_t    time;
 };
 
 /** The lines of a note that git sees as binary (struct notes_entry). */
@@ -121,6 +126,11 @@ extern bool
 notes_is_id (char const *s,
              size_t      len);
 
+/** Whether @p s is a full, lowercase SHA-1 or SHA-256 Git object id. */
+extern bool
+notes_is_revision (char const *s,
+                   size_t      len);
+
 /** Writes the caller's server-selected branch ref to @p repo. */
 extern void
 notes_repo (struct notes const *notes,
@@ -152,6 +162,62 @@ notes_argv (struct notes const *notes,
             char const         *repo,
             enum notes_cmd      cmd,
             char const         *argv[NOTES_ARGV]);
+
+/** Owns a historical read or diff's arguments and authorization state.
+ *  File names follow notes_name(); revisions are full lowercase commit ids
+ *  or "current". Empty revisions also select the notebook's pinned tip.
+ *  Returns nullptr and EINVAL or ENOMEM through @p e on failure. */
+extern struct notes_revision *
+notes_revision_create (struct cstr_view file,
+                       struct cstr_view from,
+                       struct cstr_view to,
+                       int             *e);
+
+extern void
+notes_revision_destroy (struct notes_revision **p_revision);
+
+/** Builds the current stage's Git argv: pin the selected notebook tip,
+ *  authorize explicit revisions by ancestry, then read or diff those exact
+ *  snapshots. @p revision and @p repo must outlive the argv. */
+extern void
+notes_revision_argv (struct notes_revision const *revision,
+                     struct notes const          *notes,
+                     char const                  *repo,
+                     bool                         diff,
+                     char const                  *argv[NOTES_ARGV]);
+
+/** Lists only this literal filename's history, before Git's output is capped. */
+extern void
+notes_revision_history_argv (struct notes_revision const *revision,
+                             struct notes const          *notes,
+                             char const                  *repo,
+                             char const                  *argv[NOTES_ARGV]);
+
+/** Consumes a successful authorization stage's complete output and advances
+ *  to the next stage. Never call after failed, cancelled or truncated Git
+ *  execution. Returns 0, EIO for malformed output, or EINVAL for an object-id
+ *  width that does not match the repository or if already ready. */
+extern int
+notes_revision_next (struct notes_revision *revision,
+                     struct span            out);
+
+/** Whether the next command reads the authorized snapshots. */
+extern bool
+notes_revision_ready (struct notes_revision const *revision);
+
+extern struct cstr_view
+notes_revision_file (struct notes_revision const *revision);
+
+/** Immutable ids after authorization; views borrow @p revision. The pinned
+ *  tip can also guard a later write against changes since authorization. */
+extern char const *
+notes_revision_from (struct notes_revision const *revision);
+
+extern char const *
+notes_revision_to (struct notes_revision const *revision);
+
+extern char const *
+notes_revision_tip (struct notes_revision const *revision);
 
 /**
  * Checks the name of a note, the @p len bytes at @p name.  Slashes at the
@@ -249,6 +315,13 @@ extern int
 notes_read_out (struct span  out,
                 struct span *text,
                 struct span *id);
+
+/** As notes_read_out(), but rejects incomplete output with EIO. Use this
+ *  before copying or restoring bytes rather than displaying a partial read. */
+extern int
+notes_read_full_out (struct span  out,
+                     struct span *text,
+                     struct span *id);
 
 /**
  * Reads the next current note from @p out, the output of NOTES_FILES, into

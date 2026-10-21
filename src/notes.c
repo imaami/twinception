@@ -30,12 +30,28 @@ struct notes {
 	uint32_t bare;
 };
 
+enum notes_revision_phase : uint8_t {
+	REVISION_HEAD,
+	REVISION_FROM,
+	REVISION_TO,
+	REVISION_DATA,
+};
+
+struct notes_revision {
+	char                      file[NOTES_NAME + 1];
+	char                      from[NOTES_TIP + 1];
+	char                      to[NOTES_TIP + 1];
+	char                      tip[NOTES_TIP + 1];
+	uint8_t                   file_len;
+	enum notes_revision_phase phase;
+};
+
 /* The options of git before each command.  They stop the configuration of
  * the repository from making git run other programs, and they stop git
  * from running the hooks of the repository when it updates a branch. */
 static char const *const fixed[] = {
-	"--no-pager", "--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c",
-	"log.showSignature=false",
+	"--no-pager", "--no-replace-objects", "--literal-pathspecs", "-c",
+	"core.bare=true", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false",
 };
 
 /* The words of each command after the options in fixed. */
@@ -44,12 +60,13 @@ static char const *const cmds[][8] = {
 	                   "--initial-branch=session", "--" },
 	[NOTES_CHECK]  = { "cat-file", "--batch-check" },
 	[NOTES_ADD]    = { "fast-import", "--quiet", "--date-format=now" },
-	[NOTES_LIST]   = { "log", "-z", "--no-renames", "--format=%ct", "--numstat",
+	[NOTES_LIST]   = { "log", "-z", "--no-renames", "--format=%ct %H", "--numstat",
 	                   nullptr },
 	[NOTES_READ]   = { "cat-file", "--batch" },
 	[NOTES_BOOKS]  = { "for-each-ref", "--format=%(refname:strip=3)", BRANCH },
 	[NOTES_FORMAT] = { "rev-parse", "--show-object-format" },
 	[NOTES_FILES]  = { "ls-tree", "-r", "-z", "-l" },
+	[NOTES_HEAD]   = { "rev-parse", "--verify", "--end-of-options" },
 };
 
 /* The kinds of the objects in the output of git cat-file. */
@@ -356,6 +373,13 @@ notes_is_id (char const *s,
 	return len == NOTES_ID && notes_hex(s, len);
 }
 
+bool
+notes_is_revision (char const *s,
+                   size_t      len)
+{
+	return (len == 40 || len == NOTES_TIP) && notes_hex(s, len);
+}
+
 void
 notes_repo (struct notes const *notes,
             uint64_t            principal,
@@ -403,21 +427,30 @@ notes_selector (char const *repo)
 	return repo + sizeof BRANCH - 1;
 }
 
-void
-notes_argv (struct notes const *notes,
-            char const         *repo,
-            enum notes_cmd      cmd,
-            char const         *argv[NOTES_ARGV])
+static size_t
+notes_argv_prefix (struct notes const *notes,
+                   bool                create,
+                   char const         *argv[NOTES_ARGV])
 {
-	static_assert(4 + ARRAY_SIZE(fixed) + ARRAY_SIZE(cmds[0]) + 3 <= NOTES_ARGV);
 	size_t k = 0;
 	argv[k++] = "git";
 	argv[k++] = "-C";
-	argv[k++] = notes->dir;
-	if (cmd != NOTES_CREATE && notes->bare)
+	argv[k++] = create ? notes->dir : notes->directory;
+	if (!create)
 		argv[k++] = "--git-dir=.";
 	for (size_t i = 0; i < ARRAY_SIZE(fixed); ++i)
 		argv[k++] = fixed[i];
+	return k;
+}
+
+static size_t
+notes_argv_command (struct notes const *notes,
+                    char const         *repo,
+                    enum notes_cmd      cmd,
+                    char const         *argv[NOTES_ARGV])
+{
+	static_assert(4 + ARRAY_SIZE(fixed) + ARRAY_SIZE(cmds[0]) + 3 <= NOTES_ARGV);
+	size_t k = notes_argv_prefix(notes, cmd == NOTES_CREATE, argv);
 	for (size_t i = 0; i < ARRAY_SIZE(cmds[cmd]) && cmds[cmd][i]; ++i)
 		argv[k++] = cmds[cmd][i];
 	if (cmd == NOTES_CREATE)
@@ -426,7 +459,220 @@ notes_argv (struct notes const *notes,
 		argv[k++] = repo;
 		argv[k++] = "--";
 	}
+	if (cmd == NOTES_HEAD)
+		argv[k++] = repo;
 	argv[k] = nullptr;
+	return k;
+}
+
+void
+notes_argv (struct notes const *notes,
+            char const         *repo,
+            enum notes_cmd      cmd,
+            char const         *argv[NOTES_ARGV])
+{
+	notes_argv_command(notes, repo, cmd, argv);
+}
+
+static int
+notes_head_out (struct span out,
+                char        tip[NOTES_TIP + 1])
+{
+	*tip = '\0';
+	if (!out.len || out.ptr[out.len - 1] != '\n' ||
+	    !notes_is_revision((char const *)out.ptr, out.len - 1))
+		return EIO;
+	memcpy(tip, out.ptr, out.len - 1);
+	tip[out.len - 1] = '\0';
+	return 0;
+}
+
+static void
+notes_ancestor_argv (struct notes const *notes,
+                     char const         *revision,
+                     char const         *tip,
+                     char const         *argv[NOTES_ARGV])
+{
+	static_assert(4 + ARRAY_SIZE(fixed) + 5 <= NOTES_ARGV);
+	size_t k = notes_argv_prefix(notes, false, argv);
+	argv[k++] = "merge-base";
+	argv[k++] = "--is-ancestor";
+	argv[k++] = revision;
+	argv[k++] = tip;
+	argv[k] = nullptr;
+}
+
+static void
+notes_diff_argv (struct notes const *notes,
+                 char const         *from,
+                 char const         *to,
+                 char const         *name,
+                 char const         *argv[NOTES_ARGV])
+{
+	static char const *const diff[] = {
+		"diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color",
+		"--submodule=short",
+	};
+	static_assert(4 + ARRAY_SIZE(fixed) + ARRAY_SIZE(diff) + 5 <= NOTES_ARGV);
+	size_t k = notes_argv_prefix(notes, false, argv);
+	for (size_t i = 0; i < ARRAY_SIZE(diff); ++i)
+		argv[k++] = diff[i];
+	argv[k++] = from;
+	argv[k++] = to;
+	argv[k++] = "--";
+	if (name)
+		argv[k++] = name;
+	argv[k] = nullptr;
+}
+
+/* Empty strings stand for the tip until the first stage pins it. */
+static int
+notes_revision_word (struct cstr_view word,
+                     char             dest[NOTES_TIP + 1])
+{
+	if (!word.len || cstr_view_equal(word, CSTR_VIEW("current"))) {
+		*dest = '\0';
+		return 0;
+	}
+	if (!notes_is_revision(word.data, word.len))
+		return EINVAL;
+	memcpy(dest, word.data, word.len);
+	dest[word.len] = '\0';
+	return 0;
+}
+
+struct notes_revision *
+notes_revision_create (struct cstr_view file,
+                       struct cstr_view from,
+                       struct cstr_view to,
+                       int             *e)
+{
+	static_assert(NOTES_NAME <= UINT8_MAX);
+	size_t skip;
+	*e = notes_name(file.data, file.len, &skip);
+	if (*e)
+		return nullptr;
+	struct notes_revision *revision = calloc(1, sizeof *revision);
+	if (!revision) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	*e = notes_revision_word(from, revision->from);
+	if (!*e)
+		*e = notes_revision_word(to, revision->to);
+	if (*e) {
+		notes_revision_destroy(&revision);
+		return nullptr;
+	}
+	revision->file_len = (uint8_t)(file.len - skip);
+	memcpy(revision->file, file.data + skip, revision->file_len);
+	return revision;
+}
+
+void
+notes_revision_destroy (struct notes_revision **p_revision)
+{
+	if (!p_revision)
+		return;
+	free(*p_revision);
+	*p_revision = nullptr;
+}
+
+void
+notes_revision_argv (struct notes_revision const *revision,
+                     struct notes const          *notes,
+                     char const                  *repo,
+                     bool                         diff,
+                     char const                  *argv[NOTES_ARGV])
+{
+	switch (revision->phase) {
+	case REVISION_HEAD:
+		notes_argv(notes, repo, NOTES_HEAD, argv);
+		break;
+	case REVISION_FROM:
+		notes_ancestor_argv(notes, revision->from, revision->tip, argv);
+		break;
+	case REVISION_TO:
+		notes_ancestor_argv(notes, revision->to, revision->tip, argv);
+		break;
+	case REVISION_DATA:
+		if (diff)
+			notes_diff_argv(notes, revision->from, revision->to, revision->file, argv);
+		else
+			notes_argv(notes, repo, NOTES_READ, argv);
+		break;
+	}
+}
+
+void
+notes_revision_history_argv (struct notes_revision const *revision,
+                             struct notes const          *notes,
+                             char const                  *repo,
+                             char const                  *argv[NOTES_ARGV])
+{
+	static_assert(4 + ARRAY_SIZE(fixed) + ARRAY_SIZE(cmds[NOTES_LIST]) + 4 <= NOTES_ARGV);
+	size_t k = notes_argv_command(notes, repo, NOTES_LIST, argv);
+	argv[k++] = revision->file;
+	argv[k] = nullptr;
+}
+
+int
+notes_revision_next (struct notes_revision *revision,
+                     struct span            out)
+{
+	if (revision->phase == REVISION_DATA)
+		return EINVAL;
+	if (revision->phase == REVISION_HEAD) {
+		int e = notes_head_out(out, revision->tip);
+		if (e)
+			return e;
+		if ((*revision->from && strlen(revision->from) != out.len - 1) ||
+		    (*revision->to && strlen(revision->to) != out.len - 1))
+			return EINVAL;
+		if (!*revision->from)
+			memcpy(revision->from, revision->tip, sizeof revision->from);
+		if (!*revision->to)
+			memcpy(revision->to, revision->tip, sizeof revision->to);
+		if (strcmp(revision->from, revision->tip)) {
+			revision->phase = REVISION_FROM;
+			return 0;
+		}
+	} else if (out.len)
+		return EIO;
+	revision->phase = revision->phase != REVISION_TO &&
+	                  strcmp(revision->to, revision->tip) &&
+	                  strcmp(revision->to, revision->from) ? REVISION_TO : REVISION_DATA;
+	return 0;
+}
+
+bool
+notes_revision_ready (struct notes_revision const *revision)
+{
+	return revision->phase == REVISION_DATA;
+}
+
+struct cstr_view
+notes_revision_file (struct notes_revision const *revision)
+{
+	return (struct cstr_view){ revision->file, revision->file_len };
+}
+
+char const *
+notes_revision_from (struct notes_revision const *revision)
+{
+	return revision->from;
+}
+
+char const *
+notes_revision_to (struct notes_revision const *revision)
+{
+	return revision->to;
+}
+
+char const *
+notes_revision_tip (struct notes_revision const *revision)
+{
+	return revision->tip;
 }
 
 /* Returns true if the part of a name of @p n bytes at @p part is a name
@@ -574,7 +820,7 @@ notes_checked (struct span out,
 			continue;
 		/* The name of a commit is 40 hexadecimal digits, or 64 with
 		 * SHA-256. */
-		if (kind != KIND_COMMIT || (oid != 40 && oid != NOTES_TIP) || !notes_hex(p, oid))
+		if (kind != KIND_COMMIT || !notes_is_revision(p, oid))
 			return EIO;
 		memcpy(tip, p, oid);
 		tip[oid] = '\0';
@@ -679,10 +925,11 @@ notes_read_input (struct buf *in,
 	return 0;
 }
 
-int
-notes_read_out (struct span  out,
-                struct span *text,
-                struct span *id)
+static int
+notes_read_decode (struct span  out,
+                   struct span *text,
+                   struct span *id,
+                   bool         full)
 {
 	*text = (struct span){};
 	if (id)
@@ -698,23 +945,44 @@ notes_read_out (struct span  out,
 		return ENOENT;
 	if (kind == KIND_TREE)
 		return EISDIR;
-	if (kind != KIND_BLOB)
+	if (kind != KIND_BLOB || !notes_is_revision(line, oid))
 		return EIO;
 	/* The size of the text is the last word of the line.  The loop stops
 	 * growing the size once it is past NOTES_MAX, and the end of the output
 	 * limits the text. */
 	uint64_t size = 0;
-	for (char const *d = (char const *)memrchr(line, ' ', n) + 1; d < nl; ++d) {
+	char const *digits = (char const *)memrchr(line, ' ', n) + 1;
+	if (digits == nl)
+		return EIO;
+	for (char const *d = digits; d < nl; ++d) {
 		if (*d < '0' || *d > '9')
 			return EIO;
 		if (size <= NOTES_MAX)
 			size = size * 10 + (uint64_t)(*d - '0');
 	}
 	size_t room = out.len - n - 1;
+	if (full && (!room || size != room - 1 || out.ptr[out.len - 1] != '\n'))
+		return EIO;
 	*text = (struct span){ out.ptr + n + 1, size < room ? (size_t)size : room };
 	if (id)
 		*id = (struct span){ out.ptr, oid };
 	return 0;
+}
+
+int
+notes_read_out (struct span  out,
+                struct span *text,
+                struct span *id)
+{
+	return notes_read_decode(out, text, id, false);
+}
+
+int
+notes_read_full_out (struct span  out,
+                     struct span *text,
+                     struct span *id)
+{
+	return notes_read_decode(out, text, id, true);
 }
 
 /* Returns the offset of the start of the token that ends with the NUL at
@@ -763,7 +1031,7 @@ notes_file_next (struct span       *out,
 	char const *id = s + sizeof "100644 blob " - 1;
 	char const *end = memchr(id, ' ', (size_t)(tab - id));
 	size_t len = end ? (size_t)(end - id) : 0;
-	if ((len != 40 && len != NOTES_TIP) || !notes_hex(id, len))
+	if (!notes_is_revision(id, len))
 		return EIO;
 	char const *size = end + 1;
 	while (size < tab && *size == ' ')
@@ -789,8 +1057,9 @@ notes_entry_before (struct span          out,
 {
 	char const *s = (char const *)out.ptr;
 	size_t at = cursor->end;
-	/* Git emits TIMESTAMP\0, then one numstat token per file. Only the first
-	 * file token starts with a newline. A cut output may end within a token. */
+	/* Git emits TIMESTAMP SPACE COMMIT\0, then one numstat token per file.
+	 * Only the first file token starts with a newline. A cut output may end
+	 * within a token. */
 	if (at && s[at - 1]) {
 		char const *nul = memrchr(s, '\0', at);
 		at = nul ? (size_t)(nul - s) + 1 : 0;
@@ -811,12 +1080,18 @@ notes_entry_before (struct span          out,
 			continue;
 		}
 		if (!cursor->first || stat < cursor->first) {
-			/* Find this commit's timestamp once, then reuse it for the other
+			/* Find this commit's header once, then reuse it for the other
 			 * files as the reverse iterator reaches them. */
 			size_t before = stat;
 			while (before) {
 				size_t token = notes_token(s, before - 1);
-				if (notes_number(s + token, before - 1 - token, &cursor->time)) {
+				size_t len = before - 1 - token;
+				char const *space = memchr(s + token, ' ', len);
+				size_t digits = space ? (size_t)(space - s - token) : len;
+				size_t oid = space ? len - digits - 1 : 0;
+				if (notes_is_revision(space ? space + 1 : nullptr, oid) &&
+				    notes_number(s + token, digits, &cursor->time)) {
+					cursor->commit = (struct span){ out.ptr + token + digits + 1, oid };
 					cursor->first = before;
 					break;
 				}
@@ -828,6 +1103,7 @@ notes_entry_before (struct span          out,
 		*entry = (struct notes_entry){
 			.name = { (unsigned char *)(uintptr_t)(name + 1),
 			          (size_t)(s + at - 1 - name - 1) },
+			.commit = cursor->commit,
 			.time = cursor->time,
 			.lines = binary ? NOTES_BINARY : lines,
 		};

@@ -6,6 +6,7 @@ override SRC_askai := \
   buf.c               \
   child.c             \
   config.c            \
+  cstr_view.c         \
   datauri.c           \
   dstr.c              \
   git.c               \

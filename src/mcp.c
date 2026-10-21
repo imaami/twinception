@@ -193,6 +193,9 @@ enum mcp_fetch : uint16_t {
 	                      turn */
 	FETCH_REPLACE = 256, /* replace an existing own note, retaining its history */
 	FETCH_FILES = 512,   /* list the current tree, rather than its history */
+	FETCH_REVISION = 1024, /* pin and authorize historical note revisions */
+	FETCH_DIFF = 2048,    /* compare two authorized revisions */
+	FETCH_RESTORE = 4096, /* restore historical bytes in a new own commit */
 };
 
 enum {
@@ -200,6 +203,7 @@ enum {
 	NOTE_FILE   = 1 << 1,
 	NOTE_OFFSET = 1 << 2,
 	NOTE_UPLOAD = 1 << 3,
+	NOTE_REVISION = 1 << 4,
 };
 
 /** The notes actions, shared by dispatch and the published tool schema. */
@@ -212,10 +216,12 @@ static struct {
 #define NOTE(name, flags, fetch) { name, flags, fetch, sizeof name - 1 }
 	NOTE("add",       NOTE_WRITE | NOTE_FILE, 0),
 	NOTE("replace",   NOTE_WRITE | NOTE_FILE, FETCH_REPLACE),
+	NOTE("restore",   NOTE_WRITE | NOTE_FILE | NOTE_REVISION, FETCH_READ | FETCH_RESTORE),
 	NOTE("notebooks", NOTE_OFFSET,            FETCH_BOOKS),
 	NOTE("list",      NOTE_OFFSET,            FETCH_LIST | FETCH_FILES),
 	NOTE("history",   NOTE_OFFSET,            FETCH_LIST),
-	NOTE("read",      NOTE_FILE | NOTE_OFFSET, FETCH_READ),
+	NOTE("read",      NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ),
+	NOTE("diff",      NOTE_FILE | NOTE_OFFSET, FETCH_READ | FETCH_DIFF),
 	NOTE("copy",      NOTE_FILE,              FETCH_READ | FETCH_OTHER | FETCH_COPY),
 	NOTE("attach",    NOTE_FILE | NOTE_UPLOAD, FETCH_READ | FETCH_ATTACH),
 #undef NOTE
@@ -6449,7 +6455,13 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	 * lock files; graceful termination gives Git a chance to remove its own. */
 	bool writes = cmd == NOTES_CREATE || cmd == NOTES_ADD;
 	char const *argv[NOTES_ARGV];
-	notes_argv(mcp->st->notes, repo, cmd, argv);
+	if (fetch & FETCH_REVISION)
+		notes_revision_argv(slot->own, mcp->st->notes, mcp_slot_notebook(slot),
+		                    fetch & FETCH_DIFF, argv);
+	else if (cmd == NOTES_LIST && slot->own)
+		notes_revision_history_argv(slot->own, mcp->st->notes, repo, argv);
+	else
+		notes_argv(mcp->st->notes, repo, cmd, argv);
 	struct child_cmd const c = {
 		.file = "git",
 		.argv = argv,
@@ -6471,6 +6483,14 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 		return;
 	}
 	mcp_slot_park(slot);
+}
+
+static void
+mcp_slot_notes_drop (struct mcp_slot *slot)
+{
+	struct notes_revision *revision = slot->own;
+	notes_revision_destroy(&revision);
+	slot->own = nullptr;
 }
 
 /* Returns true if git exited with status 0 before its deadline, and askai
@@ -6584,7 +6604,8 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, FETCH_ADD | (slot->fetch & (FETCH_COPY | FETCH_REPLACE)), &in);
+	mcp_slot_notes_run(slot, FETCH_ADD | (slot->fetch & (FETCH_COPY | FETCH_REPLACE | FETCH_RESTORE)),
+	                   &in);
 }
 
 /* An explicit zero parent makes the first commit a root even if another
@@ -6635,6 +6656,17 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 	bool replace = slot->fetch & FETCH_REPLACE;
 	if (replace)
 		r = r == EEXIST ? 0 : r ? r : ENOENT;
+	if (slot->fetch & FETCH_RESTORE) {
+		if (r == EEXIST)
+			r = 0;
+		if (!r && strcmp(tip, notes_revision_tip(slot->own))) {
+			buf_fini(&slot->req->body);
+			mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("The notebook changed during "
+			                                                "restore. Read its current state "
+			                                                "and retry."), 1), true);
+			return;
+		}
+	}
 	if (!r) {
 		child_destroy(&slot->child);
 		mcp_slot_notes_write(slot, tip);
@@ -6664,6 +6696,8 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 	bool ok = mcp_notes_ok(slot->child);
 	req->branch |= ok;
 	int e = !ok ? mcp_slot_notes_unadded(slot)
+	      : slot->fetch & FETCH_RESTORE ? mcp_slot_say(slot, &TEXT("Restored in a new commit. "
+	                                                            "Previous versions remain in history."), 1)
 	      : slot->fetch & FETCH_COPY ? mcp_slot_say(slot, &TEXT("Copied into your "
 	                                                         "notebook."), 1)
 	      : slot->fetch & FETCH_REPLACE ? mcp_slot_say(slot, &TEXT("Replaced. Previous "
@@ -6688,18 +6722,27 @@ mcp_slot_notes_listed (struct mcp_slot *slot,
 		return ENOMEM;
 	struct notes_cursor cursor = { .end = out.len };
 	struct notes_entry entry;
-	for (uint32_t k = 1; notes_entry_before(out, &cursor, &entry); ++k) {
+	bool history = (slot->fetch & FETCH_KIND) == FETCH_LIST;
+	struct cstr_view filter = history && slot->own ? notes_revision_file(slot->own)
+	                                             : (struct cstr_view){};
+	uint32_t k = 0;
+	while (notes_entry_before(out, &cursor, &entry)) {
+		char const *name = (char const *)entry.name.ptr;
+		/* Git also matches descendants if this path was once a directory. */
+		if (filter.len && !cstr_view_equal(filter, (struct cstr_view){ name, entry.name.len }))
+			continue;
 		char when[sizeof "2026-10-14 12:34 UTC"];
 		struct tm tm;
 		time_t t = (time_t)entry.time;
 		size_t w = gmtime_r(&t, &tm) ? strftime(when, sizeof when, "%Y-%m-%d %H:%M UTC",
 		                                        &tm) : 0;
-		char const *name = (char const *)entry.name.ptr;
-		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", k, (int)w, when) ||
+		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", ++k, (int)w, when) ||
 		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
-		    !(entry.lines == NOTES_BINARY ? CAT(d, "  (binary)\n")
-		      : dstr_printf(d, "  (%" PRIu64 " line%s)\n", entry.lines,
-		                    entry.lines == 1 ? "" : "s")))
+		    !(entry.lines == NOTES_BINARY ? CAT(d, "  (binary)")
+		      : dstr_printf(d, "  (%" PRIu64 " line%s)", entry.lines,
+		                    entry.lines == 1 ? "" : "s")) ||
+		    (history && !dstr_printf(d, "  commit %.*s", (int)entry.commit.len,
+		                            (char const *)entry.commit.ptr)) || !CAT(d, "\n"))
 			return ENOMEM;
 		*newest = entry.name;
 	}
@@ -6721,7 +6764,7 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 	struct dstr *d = &slot->answer;
 	int e = dstr_printf(d, "Notebook %s — %s:\n\n",
 	                    notes_selector(mcp_slot_notebook(slot)),
-	                    files ? "current files (bytes, blob)" : "history, oldest first (lines added)")
+	                    files ? "current files (bytes, blob)" : "history, oldest first (lines added, commit)")
 	      ? 0 : ENOMEM;
 	struct span out = buf_peek(&c->out);
 	if (!files) {
@@ -6878,6 +6921,58 @@ static void mcp_slot_notes_got_copy (struct mcp_slot *slot, struct span text);
 static void mcp_slot_notes_got_attach (struct mcp_slot *slot, struct span text,
                                        struct span id);
 
+/* Resolve and authorize every revision before reading any of its contents. */
+static void
+mcp_slot_notes_revision_step (struct mcp_slot *slot)
+{
+	if (!mcp_notes_ok(slot->child) ||
+	    notes_revision_next(slot->own, buf_peek(&slot->child->out))) {
+		mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("Cannot use that revision in this "
+		                                                "notebook. Use a full commit ID from "
+		                                                "its history; the notebook must exist "
+		                                                "and the revision must belong to it."), 1), true);
+		return;
+	}
+	child_destroy(&slot->child);
+	struct buf in = {};
+	int e = 0;
+	if (notes_revision_ready(slot->own) && !(slot->fetch & FETCH_DIFF)) {
+		struct cstr_view file = notes_revision_file(slot->own);
+		e = notes_read_input(&in, notes_revision_from(slot->own), file.data, file.len);
+	}
+	if (e) {
+		buf_fini(&in);
+		mcp_req_fail(slot->req, e);
+		return;
+	}
+	mcp_slot_notes_run(slot, slot->fetch, &in);
+}
+
+static void
+mcp_slot_notes_got_diff (struct mcp_slot *slot)
+{
+	struct child const *c = slot->child;
+	if (!mcp_notes_listed(c)) {
+		mcp_slot_notes_end(slot, mcp_slot_notes_unread(slot), true);
+		return;
+	}
+	struct cstr_view file = notes_revision_file(slot->own);
+	struct span out = buf_peek(&c->out);
+	struct dstr *d = &slot->answer;
+	int e = dstr_printf(d, "Notebook %s — %.*s\nfrom %s\nto %s\n\n",
+	                    notes_selector(mcp_slot_notebook(slot)), (int)file.len, file.data,
+	                    notes_revision_from(slot->own), notes_revision_to(slot->own)) ? 0 : ENOMEM;
+	char const *text = (char const *)out.ptr;
+	if (!e)
+		e = !out.len ? mcp_slot_say(slot, &TEXT("No differences.\n"), 1)
+		  : mcp_notes_text(text, out.len) ? mcp_slot_say(slot, &ESC(text, out.len), 1)
+		  : mcp_notes_view(d, text, out.len, SIZE_MAX, nullptr);
+	if (!e && c->cut)
+		e = mcp_slot_say(slot, &TEXT("\n[The diff exceeded the capture limit and is incomplete.]\n"), 1);
+	loop_work(slot->req->mcp->loop, LOOP_COPY, out.len);
+	mcp_slot_notes_end(slot, e, false);
+}
+
 /* Answers the read action with the output of git cat-file, or goes on with
  * the copy action or the attach action. */
 static void
@@ -6886,8 +6981,15 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 	struct child const *c = slot->child;
 	struct span text = {};
 	struct span id = {};
-	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text, &id) : EIO;
-	if (!r && slot->fetch & FETCH_COPY) {
+	int r = !mcp_notes_ok(c) ? EIO
+	      : slot->fetch & FETCH_RESTORE ? notes_read_full_out(buf_peek(&c->out), &text, &id)
+	      : notes_read_out(buf_peek(&c->out), &text, &id);
+	if (!r && (slot->fetch & FETCH_RESTORE) && text.len > NOTES_TEXT) {
+		mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("That revision exceeds the 4 MiB "
+		                                                "note size limit; it was not restored."), 1), true);
+		return;
+	}
+	if (!r && slot->fetch & (FETCH_COPY | FETCH_RESTORE)) {
 		mcp_slot_notes_got_copy(slot, text);
 		return;
 	}
@@ -6896,7 +6998,14 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 		return;
 	}
 	char const *s = (char const *)text.ptr;
-	int e = !r && !mcp_notes_text(s, text.len)
+	int e = 0;
+	if (!r && (slot->fetch & FETCH_REVISION)) {
+		struct cstr_view file = notes_revision_file(slot->own);
+		e = dstr_printf(&slot->answer, "Notebook %s — %.*s at %s:\n\n",
+		                 notes_selector(mcp_slot_notebook(slot)), (int)file.len, file.data,
+		                 notes_revision_from(slot->own)) ? 0 : ENOMEM;
+	}
+	e = e ? e : !r && !mcp_notes_text(s, text.len)
 	      ? mcp_notes_view(&slot->answer, s, text.len, SIZE_MAX, nullptr)
 	      : !r ? mcp_slot_say(slot, &ESC(s, text.len), 1)
 	      : r == ENOENT ? mcp_slot_say(slot, &TEXT("No note has that name."), 1)
@@ -7288,6 +7397,9 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 	mcp_slot_unwait(slot);
 	/* The attach action's upload, which follows its read, has answered. */
 	(slot->web ? mcp_slot_notes_uploaded
+	 : (slot->fetch & FETCH_REVISION) && !notes_revision_ready(slot->own)
+	 ? mcp_slot_notes_revision_step
+	 : slot->fetch & FETCH_DIFF ? mcp_slot_notes_got_diff
 	 : (slot->fetch & ~FETCH_COPY) == FETCH_FORMAT ? mcp_slot_notes_format
 	 : slot->fetch & FETCH_BOOKS ? mcp_slot_notes_got_books
 	 : slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest
@@ -7388,17 +7500,21 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, (initialized ? FETCH_CHECK : FETCH_CREATE) | flags, &in);
 }
 
-/* Adds @p text, a note of the other side's notebook that git read for the
- * copy action, to the caller's own notebook as an add does, under the name
- * that waits in the request's body. */
+/* Copies bytes into a new own commit: a copy's destination waits in the
+ * request body; a restore retains its source name and pinned notebook tip. */
 static void
 mcp_slot_notes_got_copy (struct mcp_slot *slot,
                          struct span      text)
 {
 	struct mcp_req *req = slot->req;
 	bool initialized = notes_exists(req->mcp->st->notes);
+	bool restore = slot->fetch & FETCH_RESTORE;
 	char to[NOTES_NAME];
 	struct span name = buf_peek(&req->body);
+	if (restore) {
+		struct cstr_view file = notes_revision_file(slot->own);
+		name = (struct span){ (unsigned char *)(uintptr_t)file.data, file.len };
+	}
 	size_t len = name.len < sizeof to ? name.len : sizeof to;
 	memcpy(to, name.ptr, len);
 	buf_fini(&req->body);
@@ -7414,7 +7530,8 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, (initialized ? FETCH_CHECK : FETCH_CREATE) | FETCH_COPY,
+	mcp_slot_notes_run(slot, (initialized ? FETCH_CHECK : FETCH_CREATE) |
+	                         (restore ? FETCH_RESTORE : FETCH_COPY),
 	                   &in);
 }
 
@@ -7490,6 +7607,42 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, FETCH_READ | flags, &in);
 }
 
+/** Starts a revision-aware read, diff or restore, or a filtered history. */
+static void
+mcp_slot_notes_revision (struct mcp_slot    *slot,
+                         struct json_object *args,
+                         uint16_t            fetch)
+{
+	static char const *const keys[][2] = { { "revision" }, { "from", "to" } };
+	bool diff = fetch & FETCH_DIFF;
+	struct cstr_view revisions[2] = {};
+	for (size_t i = 0; i < (diff ? 2 : 1); ++i) {
+		struct json_object *arg = jb_get(args, keys[diff][i]);
+		revisions[i].data = jb_str(arg, &revisions[i].len);
+		if ((i == 0 && !arg && (fetch & (FETCH_DIFF | FETCH_RESTORE))) ||
+		    (arg && !notes_is_revision(revisions[i].data, revisions[i].len) &&
+		     !cstr_view_equal(revisions[i], CSTR_VIEW("current")))) {
+			mcp_slot_result(slot, TEXT("Use a full commit ID from action history, or current. "
+			                           "diff requires from; restore requires revision."), true);
+			return;
+		}
+	}
+	struct cstr_view file = {};
+	file.data = jb_str(jb_get(args, "file"), &file.len);
+	int e = 0;
+	slot->own = notes_revision_create(file, revisions[0], revisions[1], &e);
+	if (!slot->own) {
+		if (e == EINVAL)
+			mcp_slot_result(slot, TEXT(bad_name), true);
+		else
+			mcp_req_fail(slot->req, e);
+		return;
+	}
+	if ((fetch & FETCH_KIND) != FETCH_LIST)
+		fetch |= FETCH_REVISION;
+	mcp_slot_notes_run(slot, fetch | (*slot->notebook ? FETCH_OTHER : 0), nullptr);
+}
+
 /** Notes are shared by repository path; the server chooses every write branch. */
 static void
 mcp_slot_notes (struct mcp_slot    *slot,
@@ -7520,6 +7673,13 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	}
 	uint32_t flags = mcp_notes_actions[which].flags;
 	uint16_t fetch = mcp_notes_actions[which].fetch;
+	struct json_object *revision = jb_get(args, "revision");
+	if ((revision && !(flags & NOTE_REVISION)) ||
+	    ((jb_get(args, "from") || jb_get(args, "to")) && !(fetch & FETCH_DIFF))) {
+		mcp_slot_result(slot, TEXT("revision applies to read and restore; from and to apply "
+		                           "to diff. Use history to find commit IDs."), true);
+		return;
+	}
 	if (slot->role == ROLE_OWN) {
 		struct json_object *thread = jb_get(args, "thread");
 		char const *id = jb_str(thread, &len);
@@ -7556,6 +7716,11 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	}
 	if ((flags & NOTE_OFFSET) && mcp_slot_offset(slot, args))
 		return;
+	if (revision || (fetch & (FETCH_DIFF | FETCH_RESTORE)) ||
+	    (fetch == FETCH_LIST && jb_get(args, "file"))) {
+		mcp_slot_notes_revision(slot, args, fetch);
+		return;
+	}
 	if (flags & NOTE_WRITE) {
 		mcp_slot_notes_add(slot, args, fetch);
 		return;
@@ -9067,17 +9232,42 @@ mcp_notes_schema (enum notes_side          side,
 			"description", mcp_text3(
 				"add a note, replace an existing own note, list current files "
 				"with their byte sizes and blob ids, show history oldest first "
-				"(line counts are lines added by each change), read a note, "
-				"copy a note into yours, or discover all session notebooks with "
+				"with commit IDs (line counts are lines added by each change), read a note, "
+				"diff two versions, or restore an old version in a new own commit. "
+				"To recover lost text: history with file, diff with file and from, then "
+				"read with revision for selected text or restore with revision for the whole file. "
+				"Use copy to import a note into yours, or discover all session notebooks with "
 				"notebooks.", files ? " attach gives a note as a file." : "", ""),
 			nullptr),
 		"file", jb_object(
 			"type", json_object_new_string("string"),
 			"description", mcp_text3(
-				"For add, replace, read", files ? ", copy and attach" : " and copy",
+				"For add, replace, restore, read, diff", files ? ", copy and attach" : " and copy",
 				": the file name of the note, at most 255 bytes. It can have "
 				"directories, such as findings/locks.md. Its extension, such "
-				"as .md or .txt, shows the format of the text."),
+				"as .md or .txt, shows the format of the text. Optional for history "
+				"to show only changes to that exact file name."),
+			nullptr),
+		"revision", jb_object(
+			"type", json_object_new_string("string"),
+			"description", json_object_new_string(
+				"For read: full commit ID from the selected notebook's history, "
+				"or current (default). Required for restore, which copies the exact "
+				"historical bytes into your own notebook in a new commit, preserving "
+				"all intervening history. No Git revision expressions."),
+			nullptr),
+		"from", jb_object(
+			"type", json_object_new_string("string"),
+			"description", json_object_new_string(
+				"Required for diff: the older full commit ID from this notebook's history, "
+				"or current. The diff compares that file at from against to."),
+			nullptr),
+		"to", jb_object(
+			"type", json_object_new_string("string"),
+			"description", json_object_new_string(
+				"For diff: full commit ID from the same notebook, or current (default). "
+				"Both revisions are resolved against one notebook snapshot. Output names "
+				"the resolved IDs; reuse them when continuing with offset."),
 			nullptr),
 		"as", jb_object(
 			"type", json_object_new_string("string"),
@@ -9094,17 +9284,17 @@ mcp_notes_schema (enum notes_side          side,
 			"type", json_object_new_string("integer"),
 			"minimum", json_object_new_int(0),
 			"description", json_object_new_string(
-				"For list, history, notebooks and read: the byte of the output to start from, to "
+				"For list, history, notebooks, read and diff: the byte of the output to start from, to "
 				"read on past where it was cut."),
 			nullptr),
 		"notebook", jb_object(
 			"type", json_object_new_string("string"),
 			"description", mcp_text3(
-				"For list, history, read and copy", files ? ", and attach" : "",
+				"For list, history, read, diff and copy", files ? ", and attach" : "",
 				": own (default), or a participant/principal/side selector "
 				"from action notebooks. That action identifies your writable "
 				"notebook even before your first note. For copy, explicitly "
-				"select the source. add and replace write only your own notebook."),
+				"select the source. add, replace and restore write only your own notebook."),
 			nullptr),
 		nullptr);
 	/* The client's program, not its model, fills content in with a file
@@ -9629,7 +9819,7 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	/* The flag TOOL_LENT lets a role's "upstream" name the notes tool, which
 	 * the turns always get. */
 	[KIND_NOTES]      = { { .definition = mcp_notes_definition, .start = mcp_slot_notes,
-	                        .step = mcp_slot_notes_out,
+	                        .step = mcp_slot_notes_out, .drop = mcp_slot_notes_drop,
 	                        .flags = KF_SERIAL | TOOL_LENT | TOOL_PAGED },
 	                      .upstream = mcp_notes_upstream_definition,
 	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION,

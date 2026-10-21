@@ -820,13 +820,26 @@ several files added by one commit.  `list` reflects the current tree;
   first note, and lists peers as read-only.  A selector is
   `PARTICIPANT/WHO/SIDE`.  Models receive their participant and writable
   selector in their initial prompt.
-- `notebook` selects a notebook for `list`, `history`, `read`, `copy` or
-  `attach`; `own` is the default.  `add` and `replace` write only to the
+- `notebook` selects a notebook for `list`, `history`, `read`, `diff`, `copy` or
+  `attach`; `own` is the default.  `add`, `replace` and `restore` write only to the
   caller's own branch.  Clients retain `other` as an alias for the opposite
   side of the same participant and caller identity.
 - `list` shows each current file once, with its byte count and blob ID.
-  `history` lists changes oldest first, with their times and lines added,
-  or `(binary)` for a change that Git sees as binary.
+  `history` lists changes oldest first, with full commit IDs, times and lines
+  added, or `(binary)` for a change that Git sees as binary. Give `file` to
+  restrict history to one exact filename, including deleted notes.
+- `read` accepts `revision`, a full commit ID from the selected notebook's
+  history, to retrieve an old version. `diff` requires `file` and `from`,
+  with `to` defaulting to `current`. Historical reads and diffs identify
+  the resolved commits in their output; offsets count that header too.
+  Reuse those IDs for stable pagination. Revisions must belong to the
+  selected notebook; Git revision expressions and unrelated commits are
+  refused.
+- `restore` requires `file` and `revision`. It copies that version's exact
+  bytes into a new commit in the caller's notebook, recreating a deleted
+  note if necessary. It preserves intervening history and other files,
+  and refuses concurrent notebook changes. To recover only part of an old
+  note, use `read` with `revision`, then `replace` with the combined text.
 - `copy` puts a note of the selected notebook into the caller's own,
   byte for byte, under the same name or the name that `as` gives.  The
   text of the note does not pass through the model, so a file that is
