@@ -662,6 +662,11 @@ deliberately added to ordinary history becomes available through that history.
 Paths are relative to the repository's top, with no `..` component
 or `:(...)` pathspec magic; a pattern follows `-e`.
 
+Option errors distinguish missing or malformed attached values, options outside
+the selected command's allowlist, and unavailable index or working-tree sources.
+Only value errors suggest changing how a value is attached; source errors explain
+how to select committed revisions instead.
+
 No option that writes a file (`--output`), reads a separate file (`grep -f`,
 `blame --contents`, `--no-index`) or runs a program (`grep -O`, `--ext-diff`,
 `--textconv`) can come from a client. `askai` runs `git` itself, with no shell,
@@ -1393,6 +1398,8 @@ it.  It has these tools:
   architecture.  Its filters select compilers by id, kind, family tag,
   architecture, and words in their ids, names, kinds, versions,
   architectures, release tracks and family tags.
+  Unknown compiler IDs produce a catalog lookup for the call's language;
+  use `match` to search, then reuse an exact returned ID.
 - `godbolt_compile` compiles source code once with each of up to 16
   compilers and each of up to 8 argument strings, and at most 32 times in
   all.  The output has a record for each compilation, with the exit code,

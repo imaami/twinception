@@ -7844,9 +7844,15 @@ def check_git(binary, up):
                "GIT_DIR": "/nowhere", "GIT_EXTERNAL_DIFF": "x", "HOME": d}
 
         def bad_option(command, option):
-            return (f"options[0]: git {command} does not allow '{option}'. "
-                    "Attach values in one entry (--max-count=20, -n20). "
-                    "Use help:true for allowed options.")
+            return (f"options[0]: '{option}' is not available for git {command} in "
+                    "this tool. Omit it; use help:true for this command's options.")
+
+        def source_option(option, index=0, pair=False):
+            source = "supply two commits or one A..B/A...B range in revisions." if pair else \
+                "select a commit with revisions (default HEAD)."
+            return (f"options[{index}]: '{option}' requests an unavailable data source. "
+                    "Index and working-tree reads are disabled. Omit this option and "
+                    + source)
 
         def call(ai, **arguments):
             status, _, body = ai.rpc("tools/call", {"name": "git",
@@ -7887,11 +7893,19 @@ def check_git(binary, up):
             assert not result.get("isError") and text_of(result) == complete[100:], result
 
             # What a call may ask for.
-            for command in ("push", "status", "ls-files"):
+            result = call(ai, repo="proj", command="push")
+            assert result.get("isError") and text_of(result) == \
+                "The command argument must be one of: " + ", ".join(commands) + \
+                ". Use help:true for its options.", result
+            for command in ("status", "ls-files"):
                 result = call(ai, repo="proj", command=command)
                 assert result.get("isError") and text_of(result) == \
-                    "The command argument must be one of: " + ", ".join(commands) + \
-                    ". Use help:true for its options.", result
+                    f"git {command} is unavailable: index and working-tree reads are " \
+                    "disabled. Use git ls-tree with options [\"-r\", \"--name-only\"] " \
+                    "to list committed files; revisions defaults to HEAD.", result
+            result = call(ai, repo="proj", command="ls-tree", options=["-r", "--name-only"])
+            assert not result.get("isError") and text_of(result) == \
+                "a.txt\nbig.txt\ndeleted.txt\n", result
             for arguments, text in (
                     (["x"], "Tool arguments must be an object."),
                     ({"repo": "proj", "command": "log", "x": 1},
@@ -7902,12 +7916,13 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "log", "options": ["--output=/x"]},
                      bad_option("log", "--output=/x")),
                     ({"repo": "proj", "command": "log", "options": ["-n", "3"]},
-                     bad_option("log", "-n")),
+                     "options[0]: '-n' needs an attached value. Use '-nNUMBER' as "
+                     "one options entry containing decimal digits."),
                     ({"repo": "proj", "command": "grep", "pattern": "a",
                       "options": ["-f"]}, bad_option("grep", "-f")),
                     ({"repo": "proj", "command": "grep", "pattern": "a",
                       "options": ["--no-index"]},
-                     bad_option("grep", "--no-index")),
+                     source_option("--no-index")),
                     ({"repo": "proj", "command": "blame", "options": ["--contents=x"]},
                      bad_option("blame", "--contents=x")),
                     ({"repo": "proj", "command": "log", "options": "--all"},
@@ -7961,6 +7976,40 @@ def check_git(binary, up):
                         "result"]
                 assert result.get("isError") and text_of(result) == text, \
                     (arguments, result)
+
+            # Repair instructions follow the selected command's spelling,
+            # including flags whose meaning differs between commands.
+            for command, option, fragments in (
+                    ("log", "--max-count", ("needs an attached value", "--max-count=VALUE")),
+                    ("log", "--max-count=", ("needs an attached value", "--max-count=VALUE")),
+                    ("log", "-n3x", ("nonnumeric attached value", "-nNUMBER", "decimal digits")),
+                    ("grep", "-C", ("needs an attached value", "-CNUMBER")),
+                    ("blame", "-L", ("needs an attached value", "-LVALUE"))):
+                extra = {"pattern": "alpha"} if command == "grep" else {}
+                result = call(ai, repo="proj", command=command, options=[option], **extra)
+                assert result.get("isError") and all(s in text_of(result) for s in fragments), \
+                    (command, option, result)
+            for option in ("--max-count", "--max-count=1", "--max-counter=1",
+                           "--formatting=x", "--cachedfoo"):
+                result = call(ai, repo="proj", command="show", options=[option])
+                assert result.get("isError") and text_of(result) == \
+                    bad_option("show", option), result
+            for command, options, extra in (
+                    ("log", ["-n1"], {}),
+                    ("log", ["--max-count=1"], {}),
+                    ("grep", ["-n", "-C3"], {"pattern": "alpha"}),
+                    ("blame", ["-C", "-L1,1"], {"paths": ["a.txt"]}),
+                    ("ls-tree", ["--abbrev"], {}),
+                    ("ls-tree", ["--abbrev=7"], {}),
+                    ("rev-parse", ["--short"], {}),
+                    ("rev-parse", ["--short=7"], {})):
+                result = call(ai, repo="proj", command=command, options=options, **extra)
+                assert not result.get("isError"), (command, options, result)
+            result = call(ai, repo="proj", command="grep", pattern="alpha",
+                          options=["-n", "--cached"])
+            assert result.get("isError") and text_of(result) == source_option("--cached", 1), result
+            result = call(ai, repo="proj", command="grep", pattern="alpha", options=["-n"])
+            assert not result.get("isError") and ":a.txt:1:alpha\n" in text_of(result), result
 
             # Its argv, environment, descriptors, signals and session.
             out = text_of(call(ai, repo="proj", command="log",
@@ -8122,7 +8171,8 @@ def check_git(binary, up):
                     {"revisions": ["HEAD", "HEAD"]}
                 result = call(ai, repo="proj", command=command, options=[option], **arguments)
                 assert result.get("isError") and text_of(result) == \
-                    bad_option(command, option), result
+                    (bad_option(command, option) if option == "--all" else
+                     source_option(option, pair=command == "diff")), result
             for revision in (":a.txt", ":0:a.txt", ":staged-only.txt", staged, staged[:12]):
                 for command in ("show", "cat-file"):
                     arguments = {"options": ["-p"]} if command == "cat-file" else {}
@@ -12339,6 +12389,11 @@ def check_godbolt(binary, up, godbolt):
             "element must have a string member id, at most 64 family tags, and at most " \
             "128 bytes in its kind, its architecture and each family tag."
 
+    def compiler_hint(language="c"):
+        return 'Call godbolt_catalog with {"action":"compilers","language":' + \
+            json.dumps(language) + '}. Optional match searches names, versions and ' \
+            'family tags. Use exact returned ids.'
+
     try:
         with tempfile.TemporaryDirectory() as d:
             path = f"{os.path.realpath(d)}/askai.json"
@@ -12411,11 +12466,14 @@ def check_godbolt(binary, up, godbolt):
                 assert ids(ids=["cti", "cg142"]) == ["cg142", "cti"]
                 assert refused(ai, "godbolt_catalog", action="compilers",
                                ids=["cvc19", "nope", "cti"], kind="default") == \
-                    "These ids are not in the list of language c, or the filters " \
-                    "exclude them: cvc19, nope, cti."
+                    "These ids were not selected: cvc19, nope, cti. Retry with action " \
+                    "\"compilers\" and without ids or other filters."
                 assert refused(ai, "godbolt_catalog", action="languages", ids=["c", "d"]) \
-                    == "These ids are not in the list of languages, or the filters " \
-                    "exclude them: d."
+                    == "These ids were not selected: d. Retry with action \"languages\" " \
+                    "and without ids or other filters."
+                assert refused(ai, "godbolt_catalog", action="families", ids=["nope"]) == \
+                    "These ids were not selected: nope. Retry with action \"compilers\" " \
+                    "and without ids or other filters."
                 assert refused(ai, "godbolt_catalog", action="languages", kind="x") == \
                     "kind, family and architecture are not valid with the action languages."
                 assert ok(ai, "godbolt_catalog", action="kinds") == \
@@ -12507,12 +12565,22 @@ def check_godbolt(binary, up, godbolt):
                 records, last = ce_records(ok(ai, "godbolt_compile", source=source,
                                               compilers=["gone", "boom", "cg142"]))
                 assert [r[2] for r in records] == [
-                    "HTTP 404: Compiler Explorer has no compiler with this id. "
-                    "godbolt_catalog lists the ids.",
+                    "HTTP 404: Compiler Explorer rejected this compiler id. " + compiler_hint(),
                     "HTTP 500: Something broke", "exit code 0"] and \
                     last == summary(3, 1, 0, 2, 0), records
                 text = refused(ai, "godbolt_compile", compilers=["gone"], source=source)
                 assert text.endswith(summary(1, 0, 0, 1, 0)), text
+                for language in ("x" * 64, "c++"):
+                    records, _ = ce_records(refused(ai, "godbolt_compile", compilers=["gone"],
+                                                    language=language, source=source))
+                    assert records[0][2].endswith(compiler_hint(language)), records
+                recovery = json.loads(re.search(r"with (\{.*?\})", records[0][2])[1])
+                found = ok(ai, "godbolt_catalog", **recovery, match="g++ 14.2 gcc")
+                compiler = found.split("\n")[1].split("\t")[0]
+                assert compiler == "cppg142", found
+                recovered, _ = ce_records(ok(ai, "godbolt_compile", compilers=[compiler],
+                                              language=recovery["language"], source=source))
+                assert recovered[0][2] == "exit code 0", recovered
                 records, last = ce_records(ok(ai, "godbolt_compile", compilers=["cg142"],
                                               args=["-DFAIL"], source=source))
                 assert records[0][2] == "exit code 1" and \
@@ -12619,7 +12687,11 @@ def check_godbolt(binary, up, godbolt):
                 sent = len(ce.bodies())
                 assert refused(ai, "godbolt_preprocess", compilers=["cg142", "nope"],
                                source=source) == "These compiler ids are not in the " \
-                    "list of language c: nope. godbolt_catalog lists the ids."
+                    "list of language c: nope. " + compiler_hint()
+                for name in ("godbolt_macros", "godbolt_targets"):
+                    assert refused(ai, name, language="c++", compilers=["cg142"]) == \
+                        "These compiler ids are not in the list of language c++: cg142. " + \
+                        compiler_hint("c++")
                 assert len(ce.bodies()) == sent
 
                 # godbolt_macros sends no request for MSVC, and its source is
