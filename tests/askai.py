@@ -8807,11 +8807,12 @@ def check_notes(binary, up):
                 'q"\\.txt': b"q", "x" * 255: b"t"}), listed
             history = call({"action": "history"})
             assert re.fullmatch(
-                f"Notebook {selector} — history, oldest first \\(lines added\\):\n\n"
-                f"1\\. {when}  plan\\.md  \\(1 line\\)\n"
-                f"2\\. {when}  a/b c\\.md  \\(800 lines\\)\n"
-                f'3\\. {when}  q"\\\\\\.txt  \\(1 line\\)\n4\\. {when}  x{{255}}  '
-                "\\(1 line\\)\n", history), history
+                f"Notebook {selector} — history, oldest first \\(lines added, commit\\):\n\n"
+                f"1\\. {when}  plan\\.md  \\(1 line\\)  commit [0-9a-f]{{40}}\n"
+                f"2\\. {when}  a/b c\\.md  \\(800 lines\\)  commit [0-9a-f]{{40}}\n"
+                f'3\\. {when}  q"\\\\\\.txt  \\(1 line\\)  commit [0-9a-f]{{40}}\n'
+                f"4\\. {when}  x{{255}}  \\(1 line\\)  commit [0-9a-f]{{40}}\n",
+                history), history
             assert call({"action": "read", "file": "/plan.md", "thread": thread}) == \
                 "step 1"
             assert call({"action": "read", "file": 'q"\\.txt', "thread": thread}) == "q"
@@ -9154,6 +9155,10 @@ def check_shared_notes(binary, up):
                 git("-C", f"{d}/alice-worktree", "add", "manual-one.md", "manual-two.md")
                 git("-C", f"{d}/alice-worktree", "-c", "user.name=test", "-c", "user.email=t@t",
                     "commit", "-q", "-m", "Two notes from a worktree")
+                manual = git("rev-parse", "refs/heads/notes/alice/anonymous/client").strip()
+                history = call(bob, action="history", notebook="alice/anonymous/client")
+                assert history.count(manual) == 2, history
+                assert all(name in history for name in ("manual-one.md", "manual-two.md")), history
                 listed = call(bob, action="list", notebook="alice/anonymous/client")
                 assert all(name in listed for name in ("plan.md", "manual-one.md", "manual-two.md")), listed
                 assert call(alice, action="read", file="manual-one.md") == "first manual note"
@@ -9167,6 +9172,219 @@ def check_shared_notes(binary, up):
                             notebook="bob/anonymous/client") == "bob"
     print("shared notes: two instances, bare and working repositories, branch "
           "isolation, discovery, cross-participant copy, packed refs and worktrees: PASS")
+
+
+def check_notes_history(binary, up):
+    """Agents can inspect and restore old notes without losing newer history;
+    a revision belongs to the selected notebook, not merely its repository."""
+    def call(ai, **arguments):
+        status, _, body = ai.rpc("tools/call", {"name": "notes",
+                                               "arguments": arguments})
+        assert status == 200 and "result" in body, (status, body)
+        result = body["result"]
+        return ("!" if result.get("isError") else "") + text_of(result)
+
+    env = os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
+                        "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"}
+    for object_format in ("sha1", "sha256"):
+        with tempfile.TemporaryDirectory() as d:
+            repo = f"{d}/notes"
+            subprocess.run(["git", "init", "--bare", "-q",
+                            f"--object-format={object_format}", repo], check=True, env=env)
+            armed, blocked = f"{d}/armed", f"{d}/blocked"
+            os.mkdir(f"{d}/bin")
+            with open(f"{d}/bin/git", "w") as f:
+                f.write('#!/bin/sh\ncase " $* " in *" cat-file --batch "*)\n'
+                        f'if [ -e {shlex.quote(armed)} ]; then touch {shlex.quote(blocked)}; '
+                        f'while [ -e {shlex.quote(armed)} ]; do sleep .01; done; fi;;\n'
+                        f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
+            os.chmod(f"{d}/bin/git", 0o755)
+
+            def git(*args, data=None):
+                return subprocess.run(["git", "--git-dir", repo, *args], input=data,
+                                      capture_output=True, check=True, env=env).stdout
+
+            selector = "alice/anonymous/client"
+            own = f"refs/heads/notes/{selector}"
+
+            def tip(ref=own):
+                return git("rev-parse", ref).decode().strip()
+
+            with Askai(binary, "-u", up.url(), "--notes", repo,
+                       "--participant", "alice", "--upstream-tools",
+                       env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as alice, \
+                    Askai(binary, "-u", up.url(), "--notes", repo,
+                          "--participant", "bob") as bob:
+                assert call(alice, action="add", file="plan.md", text="old plan\n") == "Noted."
+                first = tip()
+                assert len(first) == (40 if object_format == "sha1" else 64), first
+                assert not call(alice, action="replace", file="plan.md",
+                                text="new plan\n").startswith("!")
+                second = tip()
+                assert call(alice, action="add", file="unrelated.md", text="keep me") == "Noted."
+                third = tip()
+                history = call(alice, action="history", file="plan.md")
+                assert all(oid in history for oid in (first, second)), history
+                assert third not in history and "unrelated.md" not in history, history
+                assert history.index(first) < history.index(second), history
+                for revision, expected in ((first, "old plan\n"), (second, "new plan\n"),
+                                            ("current", "new plan\n")):
+                    actual = call(alice, action="read", file="plan.md", revision=revision)
+                    oid = third if revision == "current" else revision
+                    assert actual == f"Notebook {selector} — plan.md at {oid}:\n\n" + expected, actual
+                old = call(alice, action="read", file="plan.md", revision=first)
+                assert call(alice, action="read", file="plan.md", revision=first,
+                            offset=4) == old[4:]
+                diff = call(alice, action="diff", file="plan.md", **{"from": first})
+                assert not diff.startswith("!") and "-old plan\n" in diff and \
+                    "+new plan\n" in diff and "unrelated.md" not in diff, diff
+                assert "not UTF-8" not in diff, diff
+                assert call(alice, action="diff", file="plan.md",
+                            **{"from": first, "to": "current"}) == diff
+                backwards = call(alice, action="diff", file="plan.md",
+                                 **{"from": second, "to": first})
+                assert "-new plan\n" in backwards and "+old plan\n" in backwards, backwards
+                unchanged = call(alice, action="diff", file="plan.md",
+                                 **{"from": first, "to": first})
+                assert not unchanged.startswith("!") and "@@" not in unchanged, unchanged
+
+                # Selecting a peer permits its history and blobs, never its writes.
+                assert call(bob, action="read", file="plan.md", revision=first,
+                            notebook=selector) == old
+                peer_diff = call(bob, action="diff", file="plan.md", notebook=selector,
+                                 **{"from": first, "to": second})
+                assert not peer_diff.startswith("!") and \
+                    peer_diff.split("\n\n", 1)[1] == diff.split("\n\n", 1)[1], peer_diff
+                assert call(bob, action="restore", file="plan.md", revision=first,
+                            notebook=selector).startswith(
+                                "!You can write notes only to your own notebook.")
+                assert call(bob, action="add", file="plan.md", text="foreign note") == "Noted."
+                foreign = tip("refs/heads/notes/bob/anonymous/client")
+                stash = git("commit-tree", f"{own}^{{tree}}", "-p", third,
+                            data=b"unpublished saved work\n").decode().strip()
+                git("update-ref", "refs/stash", stash)
+                wrong_length = first[:40] if object_format == "sha256" else "1" * 64
+                if object_format == "sha1":
+                    git("update-ref", f"refs/heads/{wrong_length}", third)
+                blob = tip(f"{first}:plan.md")
+                for revision in (foreign, stash, wrong_length, blob, "0" * len(first), "HEAD", own,
+                                 first + "^", first[:12], "--all", ":plan.md", 123):
+                    for arguments in (
+                            {"action": "read", "revision": revision},
+                            {"action": "restore", "revision": revision},
+                            {"action": "diff", "from": revision},
+                            {"action": "diff", "from": first, "to": revision}):
+                        said = call(alice, file="plan.md", **arguments)
+                        assert said.startswith("!"), (arguments, said)
+                for arguments in ({"action": "restore"}, {"action": "diff"},
+                                  {"action": "read", "revision": first},
+                                  {"action": "restore", "revision": first}):
+                    said = call(alice, file="missing.md", **arguments)
+                    assert said.startswith("!"), (arguments, said)
+                assert tip() == third
+
+                # A restore appends a commit and leaves unrelated notes alone.
+                restored = call(alice, action="restore", file="plan.md", revision=first)
+                assert not restored.startswith("!"), restored
+                assert tip(f"{own}^") == third
+                assert git("show", f"{own}:plan.md") == b"old plan\n"
+                assert git("show", f"{second}:plan.md") == b"new plan\n"
+                assert git("show", f"{own}:unrelated.md") == b"keep me"
+                history = call(alice, action="history", file="plan.md")
+                assert all(oid in history for oid in (first, second, tip())), history
+
+                # The source can have disappeared from the current tree.
+                before = tip()
+                git("fast-import", "--quiet", "--date-format=now", data=(
+                    f"commit {own}\ncommitter test <t@t> now\ndata 0\n"
+                    f"from {before}\nD plan.md\n\n").encode())
+                deleted = tip()
+                assert call(alice, action="read", file="plan.md").startswith("!")
+                assert deleted in call(alice, action="history", file="plan.md")
+                assert not call(alice, action="restore", file="plan.md",
+                                revision=first).startswith("!")
+                assert tip(f"{own}^") == deleted
+                assert git("show", f"{own}:plan.md") == b"old plan\n"
+
+                # Restoration copies bytes, including empty and non-text blobs.
+                for name, raw in (("raw.bin", bytes(range(256))), ("empty.txt", b"")):
+                    uri = "data:;base64," + base64.b64encode(raw).decode()
+                    assert call(alice, action="add", file=name, content=uri) == "Noted."
+                    revision = tip()
+                    assert not call(alice, action="replace", file=name,
+                                    text="replacement").startswith("!")
+                    before = tip()
+                    assert not call(alice, action="restore", file=name,
+                                    revision=revision).startswith("!")
+                    assert tip(f"{own}^") == before
+                    assert git("show", f"{own}:{name}") == raw
+                    assert git("show", f"{before}:{name}") == b"replacement"
+                assert call(alice, action="add", file="[p]lan.md", text="literal name") == "Noted."
+                before = tip()
+                assert not call(alice, action="replace", file="plan.md",
+                                text="must not match a literal path").startswith("!")
+                literal = call(alice, action="diff", file="[p]lan.md", **{"from": before})
+                assert not literal.startswith("!") and "@@" not in literal, literal
+                if object_format == "sha1":
+                    # Exercise the model-facing workflow and its own writer too.
+                    upstream = "refs/heads/notes/alice/anonymous/upstream"
+                    git("update-ref", upstream, second)
+                    before = tip()
+                    actions = [{"action": "history", "file": "plan.md"},
+                               {"action": "read", "file": "plan.md", "revision": first},
+                               {"action": "diff", "file": "plan.md", "from": first},
+                               {"action": "restore", "file": "plan.md", "revision": first}]
+                    outputs = []
+                    held = up.reply
+
+                    def reply(request):
+                        messages = request["body"]["messages"]
+                        if messages[-1]["role"] == "tool":
+                            outputs.append(messages[-1]["content"])
+                        if len(outputs) == len(actions):
+                            return 200, turn_stream(text="Restored the old note.")
+                        action = actions[len(outputs)]
+                        return 200, turn_stream([(f"history-{len(outputs)}", "notes",
+                                                  json.dumps(action))])
+
+                    try:
+                        up.reply = reply
+                        assert alice.ask("Restore the old plan.")["content"][0]["text"] == \
+                            "Restored the old note."
+                    finally:
+                        up.reply = held
+                    assert first in outputs[0] and second in outputs[0], outputs
+                    assert first in outputs[1] and "old plan\n" in outputs[1], outputs
+                    assert "-old plan\n" in outputs[2] and "+new plan\n" in outputs[2], outputs
+                    assert "Restored" in outputs[3], outputs
+                    assert tip() == before and tip(f"{upstream}^") == second
+                    assert git("show", f"{upstream}:plan.md") == b"old plan\n"
+                    # A writer changing the notebook after the snapshot wins;
+                    # restoration must request a retry, not replace its update.
+                    results = []
+                    with open(armed, "w"):
+                        pass
+                    restoring = threading.Thread(target=lambda: results.append(call(
+                        alice, action="restore", file="plan.md", revision=first)))
+                    restoring.start()
+                    try:
+                        wait_for(lambda: os.path.exists(blocked), seconds=5)
+                        raw = b"concurrent writer's note\n"
+                        git("fast-import", "--quiet", "--date-format=now", data=(
+                            f"commit {own}\ncommitter test <t@t> now\ndata 0\n"
+                            f"from {before}\nM 100644 inline plan.md\ndata {len(raw)}\n"
+                            ).encode() + raw + b"\n")
+                        updated = tip()
+                    finally:
+                        os.unlink(armed)
+                        restoring.join(10)
+                    assert len(results) == 1 and results[0].startswith("!") and \
+                        "retry" in results[0], results
+                    assert tip() == updated and git("show", f"{own}:plan.md") == raw
+    print("notes history: revision IDs, historical reads and diffs, byte-exact "
+          "restoration without rewind, deleted notes, peer access and revision "
+          "confinement, concurrent writes, SHA-1 and SHA-256: PASS")
 
 
 def check_turn_apis(binary, up):
@@ -9644,7 +9862,7 @@ def check_attach(binary, up):
                              lambda r: (200, answer("A"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
                 assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
-                    == "!The action must be one of: add replace notebooks list history read copy."
+                    == "!The action must be one of: add replace restore notebooks list history read diff copy."
 
                 count = len(up.requests)
                 stored = len(up.uploads)
@@ -9653,7 +9871,11 @@ def check_attach(binary, up):
                 first, second = up.requests[count:]
                 [notes_tool] = [t for t in tools(first["body"]) if t["name"] == "notes"]
                 action = notes_tool[schema]["properties"]["action"]
-                assert action["enum"] == ["add", "replace", "notebooks", "list", "history", "read", "copy", "attach"], action
+                assert action["enum"] == ["add", "replace", "restore", "notebooks", "list",
+                                           "history", "read", "diff", "copy", "attach"], action
+                properties = notes_tool[schema]["properties"]
+                assert all(properties[name]["type"] == "string"
+                           for name in ("revision", "from", "to")), properties
                 assert "attach gives you a whole note" in notes_tool["description"], notes_tool
                 view, plain = up.uploads[stored:]
                 assert view["raw"] == note_view(latin1).encode() and \
@@ -13077,7 +13299,8 @@ def main():
                       check_reload, check_logs, check_unix, check_tls, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_man, check_git, check_git_scope, check_turns, check_notes, check_shared_notes, check_turn_apis,
+                      check_man, check_git, check_git_scope, check_turns, check_notes, check_shared_notes,
+                      check_notes_history, check_turn_apis,
                       check_attach,
                       check_tasks,
                       lambda binary, up: check_plugin(binary, up, plugin),
