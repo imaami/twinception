@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "child.h"
+#include "cstr_view.h"
 #include "git.h"
 #include "git_view.h"
 #include "jb.h"
@@ -129,19 +130,14 @@ static char const *const fixed[] = {
  * An option a command takes, as it is, or, ending in "=", with a value after
  * it; in "#", with digits attached; in "*", with any value attached.
  */
-struct opt {
-	char const *str;
-	size_t      len;
-};
-
-#define O(s) { s, sizeof s - 1 }
+#define O(s) CSTR_VIEW(s)
 #define DISPLAY O("--oneline"), O("--stat"), O("--shortstat"), O("--numstat"), \
 	O("--name-only"), O("--name-status"), O("--patch"), O("-p"), O("--no-patch"), \
 	O("--abbrev-commit"), O("--format="), O("--pretty="), O("--date="), \
 	O("--unified="), O("-U#"), O("--word-diff"), O("-w"), O("--ignore-all-space"), \
 	O("-b"), O("--ignore-space-change"), O("--decorate"), O("--no-decorate"), \
 	O("--diff-filter="), O("-M"), O("--find-renames")
-static struct opt const log_options[] = {
+static struct cstr_view const log_options[] = {
 	DISPLAY, O("--graph"), O("--reverse"), O("--first-parent"), O("--no-merges"),
 	O("--merges"), O("--follow"), O("--max-count="), O("-n#"),
 	O("--skip="), O("--since="), O("--until="), O("--after="), O("--before="),
@@ -149,10 +145,10 @@ static struct opt const log_options[] = {
 	O("--regexp-ignore-case"), O("--all-match"), O("--invert-grep"), O("-E"),
 	O("--extended-regexp"), O("-F"), O("--fixed-strings"), O("-S*"), O("-G*"), {}
 };
-static struct opt const show_options[] = { DISPLAY, O("-s"), {} };
-static struct opt const diff_options[] = { DISPLAY, {} };
+static struct cstr_view const show_options[] = { DISPLAY, O("-s"), {} };
+static struct cstr_view const diff_options[] = { DISPLAY, {} };
 #undef DISPLAY
-static struct opt const grep_options[] = {
+static struct cstr_view const grep_options[] = {
 	O("-n"), O("--line-number"), O("-i"), O("--ignore-case"), O("-w"),
 	O("--word-regexp"), O("-v"), O("--invert-match"), O("-l"),
 	O("--files-with-matches"), O("-L"), O("--files-without-match"), O("-c"),
@@ -163,21 +159,25 @@ static struct opt const grep_options[] = {
 	O("--max-count="), O("-m#"), O("--break"), O("--heading"), O("-p"),
 	O("--show-function"), O("-W"), O("--function-context"), O("--all-match"), {}
 };
-static struct opt const blame_options[] = {
+static struct cstr_view const blame_options[] = {
 	O("-w"), O("-M"), O("-C"), O("-s"), O("-e"), O("-l"), O("-t"), O("-f"),
 	O("--show-name"), O("--porcelain"), O("--line-porcelain"), O("--date="),
 	O("-L*"), O("--root"), O("--ignore-rev="), {}
 };
-static struct opt const ls_tree_options[] = {
+static struct cstr_view const ls_tree_options[] = {
 	O("-r"), O("-t"), O("-d"), O("--name-only"), O("--name-status"),
 	O("--object-only"), O("--long"), O("-l"), O("--full-name"), O("--full-tree"),
 	O("--abbrev"), O("--abbrev="), O("--format="), {}
 };
-static struct opt const cat_file_options[] = {
+static struct cstr_view const cat_file_options[] = {
 	O("-t"), O("-s"), O("-p"), O("-e"), {}
 };
-static struct opt const rev_parse_options[] = {
+static struct cstr_view const rev_parse_options[] = {
 	O("--short"), O("--short="), O("--verify"), O("-q"), O("--quiet"), {}
+};
+/* Rejected source selectors get a policy explanation, not syntax advice. */
+static struct cstr_view const source_options[] = {
+	O("--cached"), O("--staged"), O("--untracked"), O("--no-index"), {}
 };
 #undef O
 
@@ -193,11 +193,11 @@ enum {
 };
 
 static struct {
-	char const       *name;
-	struct opt const *options;
-	char const       *forced[3];  /* options askai gives it */
-	char const       *description;
-	uint64_t          takes;
+	char const             *name;
+	struct cstr_view const *options;
+	char const             *forced[3];  /* options askai gives it */
+	char const             *description;
+	uint64_t                takes;
 } const commands[] = {
 	{ "log",       log_options,       { "--no-ext-diff", "--no-textconv" },
 	  "Committed history; defaults to HEAD. Paths restrict the history.",
@@ -505,29 +505,41 @@ git_word (struct json_object *val,
 	return s && *len && *len <= WORD && !memchr(s, '\0', *len) ? s : nullptr;
 }
 
-/* Whether @p opt, of @p len bytes, is one of @p allowed. */
-static bool
-git_allowed (char const       *opt,
-             size_t            len,
-             struct opt const *allowed)
+/** Match the same spellings that help lists. ENODATA means a missing value,
+ * EINVAL nondecimal digits, ENOENT no matching spelling. An accepted spelling
+ * wins over a malformed alternative, such as --abbrev beside --abbrev=. */
+static int
+git_option_find (struct cstr_view const *allowed,
+                 char const             *opt,
+                 size_t                  len,
+                 struct cstr_view       *match)
 {
-	for (; allowed->str; ++allowed) {
-		char const *a = allowed->str;
+	*match = (struct cstr_view){};
+	int e = ENOENT;
+	for (; allowed->data; ++allowed) {
+		char const *a = allowed->data;
 		size_t n = allowed->len;
 		char last = a[n - 1];
 		if (last != '=' && last != '#' && last != '*') {
-			if (len == n && !memcmp(opt, a, n))
-				return true;
+			if (len == n && !memcmp(opt, a, n)) {
+				*match = *allowed;
+				return 0;
+			}
 			continue;
 		}
-		/* The value: after '=' its own, attached for the others. */
-		size_t at = last == '=' ? n : n - 1;
-		if (len <= at || memcmp(opt, a, at))
+		if (len < n - 1 || memcmp(opt, a, n - 1) ||
+		    (last == '=' && len >= n && opt[n - 1] != '='))
 			continue;
-		if (last != '#' || strspn(opt + at, "0123456789") == len - at)
-			return true;
+		size_t at = last == '=' ? n : n - 1;
+		*match = *allowed;
+		if (len <= at)
+			e = ENODATA;
+		else if (last == '#' && strspn(opt + at, "0123456789") != len - at)
+			e = EINVAL;
+		else
+			return 0;
 	}
-	return false;
+	return e;
 }
 
 /* Whether @p path is relative, with no ".." component. */
@@ -601,6 +613,43 @@ git_wrong_word (char       *why,
 	                 str, tail);
 }
 
+/** Validate one option, explaining only the repair its failure needs. */
+static int
+git_option_check (char const *opt,
+                  size_t      len,
+                  size_t      command,
+                  size_t      index,
+                  char       *why)
+{
+	struct cstr_view match;
+	int e = git_option_find(commands[command].options, opt, len, &match);
+	if (!e)
+		return 0;
+	int shown = (int)jb_utf8(opt, len < 80 ? len : 80);
+	if (match.data) {
+		char last = match.data[match.len - 1];
+		size_t at = match.len - (last != '=');
+		char const *value = last == '#' ? "NUMBER" : "VALUE";
+		char const *digits = last == '#' ? " containing decimal digits" : "";
+		return git_wrong(why, "options[%zu]: '%.*s' %s. Use '%.*s%s' as one "
+		                 "options entry%s.", index, shown, opt,
+		                 e == ENODATA ? "needs an attached value"
+		                              : "has a nonnumeric attached value",
+		                 (int)at, match.data, value, digits);
+	}
+	if (!git_option_find(source_options, opt, len, &match)) {
+		char const *source = commands[command].takes & PAIR
+			? "supply two commits or one A..B/A...B range in revisions."
+			: "select a commit with revisions (default HEAD).";
+		return git_wrong(why, "options[%zu]: '%.*s' requests an unavailable data "
+		                 "source. Index and working-tree reads are disabled. "
+		                 "Omit this option and %s", index, shown, opt, source);
+	}
+	return git_wrong(why, "options[%zu]: '%.*s' is not available for git %s in "
+	                 "this tool. Omit it; use help:true for this command's options.",
+	                 index, shown, opt, commands[command].name);
+}
+
 /* The repository named @p name, if one is listed so; else nullptr. */
 static struct git_repo const *
 git_find (struct git const *git,
@@ -669,6 +718,11 @@ git_call_command (struct git_call   *call,
 	while (cmd && c < ARRAY_SIZE(commands) && strcmp(cmd, commands[c].name))
 		++c;
 	if (!cmd || c == ARRAY_SIZE(commands)) {
+		if (cmd && (!strcmp(cmd, "status") || !strcmp(cmd, "ls-files")))
+			return git_wrong(why, "git %s is unavailable: index and working-tree "
+			                 "reads are disabled. Use git ls-tree with "
+			                 "options [\"-r\", \"--name-only\"] to list committed "
+			                 "files; revisions defaults to HEAD.", cmd);
 		size_t n = util_format(why, GIT_WHY, "The command argument must be one of:");
 		for (size_t i = 0; i < ARRAY_SIZE(commands) && n < GIT_WHY - 1; ++i)
 			n += util_format(why + n, GIT_WHY - n, "%s %s", i ? "," : "",
@@ -737,11 +791,9 @@ git_call_command (struct git_call   *call,
 	 * checked as it goes in. */
 	for (size_t i = 0; i < lens[0]; ++i) {
 		char const *s = jb_str(json_object_array_get_idx(lists[0], i), &len);
-		if (!git_allowed(s, len, commands[c].options))
-			return git_wrong(why, "options[%zu]: git %s does not allow '%.*s'. "
-			                 "Attach values in one entry (--max-count=20, -n20). "
-			                 "Use help:true for allowed options.", i, cmd,
-			                 (int)jb_utf8(s, len < 80 ? len : 80), s);
+		int e = git_option_check(s, len, c, i, why);
+		if (e)
+			return e;
 		if (!strncmp(s, git_ignore_rev, sizeof git_ignore_rev - 1)) {
 			struct git_root *root = &call->roots[call->n_roots++];
 			if (git_commit(root->name, s + sizeof git_ignore_rev - 1,
@@ -815,8 +867,8 @@ git_help (struct mcp_slot *slot,
           size_t           command)
 {
 	struct json_object *options = json_object_new_array();
-	for (struct opt const *o = commands[command].options; o->str; ++o)
-		options = git_append(options, o->str);
+	for (struct cstr_view const *o = commands[command].options; o->data; ++o)
+		options = git_append(options, o->data);
 	uint64_t takes = commands[command].takes;
 	struct json_object *help = jb_object(
 		"command", json_object_new_string(commands[command].name),

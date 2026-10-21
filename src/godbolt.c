@@ -839,6 +839,17 @@ godbolt_why (struct godbolt *call,
 			call->why[i] = ' ';
 }
 
+/** Format a compiler lookup that preserves the call's language. */
+static void
+godbolt_catalog_hint (struct godbolt *call,
+                      char const     *reason)
+{
+	godbolt_why(call, "%sCall godbolt_catalog with {\"action\":\"compilers\","
+	            "\"language\":\"%.*s\"}. Optional match searches names, versions and "
+	            "family tags. Use exact returned ids.", reason,
+	            (int)call->language.len, call->language.ptr);
+}
+
 /* Ends the call as failed with the text that @p fmt and its arguments
  * format.  Returns GODBOLT_ENDED. */
 [[gnu::format(printf, 2, 3)]]
@@ -974,8 +985,7 @@ godbolt_reason (struct godbolt            *call,
                 struct web_response const *r)
 {
 	if (call->kind_of == GODBOLT_POST_COMPILE && r->status == 404) {
-		godbolt_why(call, "HTTP 404: Compiler Explorer has no compiler with this "
-		            "id. godbolt_catalog lists the ids.");
+		godbolt_catalog_hint(call, "HTTP 404: Compiler Explorer rejected this compiler id. ");
 		return;
 	}
 	struct tool_text text = { r->body, r->body ? r->len : 0 };
@@ -1444,12 +1454,9 @@ godbolt_catalog_end (struct godbolt *call)
 	if (call->found != (1u << call->n_ids) - 1) {
 		char absent[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
 		godbolt_absent(call, absent);
-		return call->action == GODBOLT_LANGUAGES
-		     ? godbolt_refuse(call, "These ids are not in the list of languages, or the "
-		                      "filters exclude them: %s.", absent)
-		     : godbolt_refuse(call, "These ids are not in the list of language %.*s, or "
-		                      "the filters exclude them: %s.", (int)call->language.len,
-		                      call->language.ptr, absent);
+		return godbolt_refuse(call, "These ids were not selected: %s. Retry with action "
+		                      "\"%s\" and without ids or other filters.", absent,
+		                      call->action == GODBOLT_LANGUAGES ? "languages" : "compilers");
 	}
 	uint32_t const keys = call->doc ? (uint32_t)json_object_object_length(call->doc) : 0;
 	if (call->action > GODBOLT_COMPILERS)
@@ -1522,9 +1529,10 @@ godbolt_drivers_end (struct godbolt *call)
 	if (call->found != (1u << call->n_ids) - 1) {
 		char absent[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
 		godbolt_absent(call, absent);
+		godbolt_catalog_hint(call, "");
 		return godbolt_refuse(call, "These compiler ids are not in the list of language "
-		                      "%.*s: %s. godbolt_catalog lists the ids.",
-		                      (int)call->language.len, call->language.ptr, absent);
+		                      "%.*s: %s. %s", (int)call->language.len, call->language.ptr,
+		                      absent, call->why);
 	}
 	call->phase = call->share ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
