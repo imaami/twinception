@@ -632,7 +632,7 @@ by the last component of its path as given, less a `.git` suffix:
 not beginning with a dot; a path without one, or two of one name, are refused
 as `askai` starts.  A call names its
 `repo` and its `command`, one of `log`, `show`, `diff`, `grep`, `blame`,
-`ls-files`, `ls-tree`, `cat-file` and `rev-parse`, and gives its `options`, its
+`ls-tree`, `cat-file` and `rev-parse`, and gives its `options`, its
 `revisions` and its `paths` apart, and for `grep` its `pattern`:
 
 ```json
@@ -640,31 +640,50 @@ as `askai` starts.  A call names its
   "revisions": ["main..topic"], "paths": ["src"] }
 ```
 
-Each option must be one the command's allowlist has, its value attached
-(`--max-count=20`, not `-n 20`); revisions follow `--end-of-options` (but for
-the commands that take it amiss), and may not start with `-` or `/` nor have a
-`..` component; paths follow `--`, relative to the repository's top, with no
-`..` component; a pattern follows `-e`; `rev-parse` looks at revisions only.
-So no option that writes a file (`--output`), reads one from outside the
-repository (`grep -f`, `blame --contents`, `--no-index`) or runs a program
-(`grep -O`, `--ext-diff`, `--textconv`) can come from a client.  `askai` runs
-`git` itself, with no shell, in a session of its own, with an environment of its
-own (`PATH` as `askai` has it, `LC_ALL=C.UTF-8`, a `HOME` that does not exist,
-no system or global configuration, no terminal prompts, no optional locks, no
-repository looked for above the listed ones, and no remote protocol or fetch of
-a partial clone's missing objects) and with settings that stop what a
-repository's configuration could have it run: no pager, fsmonitor, gpg (which a
-log's format may ask for), hooks or submodule diff, and no refresh of the
-index, and `safe.directory` for the repository, as listing it trusts it.  The rest of a
-repository's own configuration, such as filters that a work tree's files pass
-through, is trusted likewise: list only repositories whose configuration you
-trust.
+Only committed content is visible. The default revision is `HEAD`, including
+for `grep`, `blame` and `ls-tree`; a staged deletion does not hide its committed
+file, and staged additions or edits, working-tree edits, untracked and ignored
+files are absent. Use `ls-tree -r --name-only` to list committed paths. Read a
+file with `show` and `"revisions": ["HEAD:src/main.c"]`. A commit ID can replace
+`HEAD` for repeatable reads. `diff` requires two commit revisions or one explicit
+range such as `main..topic` or `main...topic`.
 
-The reply is `git`'s output, its errors included, made UTF-8 text and cut at
-4 MiB with a note saying so, from the byte an optional `offset` names; an exit
-status other than 0 is noted, and is a tool error but for 1 with nothing
-written, as `grep` finding none.  At the
-deadline, `--git-timeout` (30 s), `git` gets SIGTERM, and SIGKILL a second
+Use `"help": true` with a command to list its options, source selection and
+argument limits. Each option must be on that command's allowlist, with its value
+attached (`--max-count=20`, not `-n 20`). Revisions name commits, optionally with
+`^` or `~` ancestry; `log` and `diff` also accept explicit ranges. `show` and
+`cat-file` accept `commit:path`. Index selectors such as `:path`, raw blob or
+tree IDs, stash and reflog selectors, and revision-list expansion syntax are
+rejected. `status`, `ls-files`, index and worktree options, and `log --all` are
+unavailable. Every resolved commit, including `blame --ignore-rev` values,
+must be reachable from `HEAD`, a branch, a tag or a remote-tracking ref.
+Knowing a stash or dangling commit's hash does not grant access. A commit
+deliberately added to ordinary history becomes available through that history.
+Paths are relative to the repository's top, with no `..` component
+or `:(...)` pathspec magic; a pattern follows `-e`.
+
+No option that writes a file (`--output`), reads a separate file (`grep -f`,
+`blame --contents`, `--no-index`) or runs a program (`grep -O`, `--ext-diff`,
+`--textconv`) can come from a client. `askai` runs `git` itself, with no shell,
+in a session of its own, with an environment of its own (`PATH` as `askai` has
+it, `LC_ALL=C.UTF-8`, a `HOME` that does not exist, no system or global
+configuration, no terminal prompts, no optional locks, no repository looked
+for above the listed ones, and no remote protocol or fetch of a partial clone's
+missing objects). Each call uses a private bare view of the approved refs and
+shared object storage, with no source worktree, index or local configuration.
+Validated shallow-history boundaries are preserved.
+Revisions are pinned to object IDs before execution; attributes and mailmaps
+come from the view's fixed `HEAD`. Replacement objects, pagers, fsmonitor, gpg,
+hooks and submodule diffs are disabled. Repository metadata and object storage
+remain trusted: this view is not an operating-system sandbox.
+
+The reply is `git`'s output, made UTF-8 text and cut at 4 MiB with a note saying
+so, from the byte an optional `offset` names. History validation failures return
+a generic error. Failed `show` and `cat-file` calls
+return a generic committed-object error, hiding Git's hints about local files;
+other Git errors are preserved. Nonzero exits are tool errors, except that
+`grep` finding no matches succeeds with `[No matches.]`. At the
+deadline, `--git-timeout` (30 s for validation and execution together), `git` gets SIGTERM, and SIGKILL a second
 later, and the call is a tool error; a call that goes, or `askai` stopping,
 kills `git` and the processes it started.
 If `git` exits while a process that it started still has the output open,

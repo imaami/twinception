@@ -8,6 +8,7 @@
 
 #include "child.h"
 #include "git.h"
+#include "git_view.h"
 #include "jb.h"
 #include "list.h"
 #include "log.h"
@@ -15,6 +16,9 @@
 #include "mcp.h"
 #include "plugin.h"
 #include "util.h"
+
+static char const git_commit_suffix[] = "^{commit}";
+static char const git_ignore_rev[] = "--ignore-rev=";
 
 enum {
 	GIT_MAX   = 4 << 20,  /**< output bytes, at most */
@@ -25,7 +29,9 @@ enum {
 	REVISIONS = 4,        /**< its revisions */
 	PATHS     = 32,       /**< its paths */
 	WORD      = 1024,     /**< bytes of an option, a revision, a path or a pattern */
-	ENV       = 12,       /**< git's environment, its nullptr included */
+	REV_WORD  = WORD + 64 + 1, /**< a full SHA-256 ID and the original path */
+	ROOTS     = 2 * REVISIONS + OPTIONS,
+	ENV       = 13,       /**< git's environment, its nullptr included */
 };
 
 /** From SIGTERM to SIGKILL at a git call's deadline. */
@@ -56,10 +62,42 @@ struct git_loop {
 	struct loop      *loop;
 };
 
-/** The operation remains known until its child's output is consumed. */
+enum git_phase : uint64_t {
+	GIT_META,
+	GIT_REFS,
+	GIT_RESOLVE,
+	GIT_CHECK,
+	GIT_RUN,
+};
+
+/** A root is resolved in place before any caller-visible command runs. */
+struct git_root {
+	char name[WORD + sizeof git_commit_suffix];
+	char option[sizeof git_ignore_rev + 64];
+};
+
+struct git_revision {
+	char const *path;
+	size_t      root;
+	size_t      dots;
+	char        text[REV_WORD];
+};
+
+/** One deadline and one immutable history view span every subprocess. */
 struct git_call {
-	struct child *child;
-	size_t        command;
+	struct child          *child;
+	struct git_view       *view;
+	struct git_repo const *repo;
+	struct json_object    *args;
+	struct buf             metadata;
+	char const            *argv[GIT_ARGV];
+	uint64_t               deadline;
+	size_t                 command;
+	size_t                 n_roots;
+	size_t                 n_revisions;
+	struct git_revision    revisions[REVISIONS];
+	struct git_root        roots[ROOTS];
+	enum git_phase         phase;
 };
 
 /* What git runs with whatever the call: no pager, nor a program that a
@@ -68,10 +106,12 @@ struct git_call {
  * show or log -p runs as a git of its own, without the options below); no
  * remote protocol (the environment's GIT_ALLOW_PROTOCOL, which a
  * repository's protocol.<name>.allow cannot override, stops them all); no
- * index refreshed by a work tree's diff; and options that writes would have
- * (gc.auto, maintenance.auto) off. */
+ * implicit worktree operations or replacement objects; and options that
+ * writes would have (gc.auto, maintenance.auto) off. */
 static char const *const fixed[] = {
 	"--no-pager",
+	"--no-replace-objects",
+	"-c", "core.bare=true",
 	"-c", "core.fsmonitor=false",
 	"-c", "log.showSignature=false",
 	"-c", "gpg.program=false",
@@ -103,26 +143,23 @@ struct opt {
 	O("--diff-filter="), O("-M"), O("--find-renames")
 static struct opt const log_options[] = {
 	DISPLAY, O("--graph"), O("--reverse"), O("--first-parent"), O("--no-merges"),
-	O("--merges"), O("--all"), O("--follow"), O("--max-count="), O("-n#"),
+	O("--merges"), O("--follow"), O("--max-count="), O("-n#"),
 	O("--skip="), O("--since="), O("--until="), O("--after="), O("--before="),
 	O("--author="), O("--committer="), O("--grep="), O("-i"),
 	O("--regexp-ignore-case"), O("--all-match"), O("--invert-grep"), O("-E"),
 	O("--extended-regexp"), O("-F"), O("--fixed-strings"), O("-S*"), O("-G*"), {}
 };
 static struct opt const show_options[] = { DISPLAY, O("-s"), {} };
-static struct opt const diff_options[] = {
-	DISPLAY, O("--cached"), O("--staged"), {}
-};
+static struct opt const diff_options[] = { DISPLAY, {} };
 #undef DISPLAY
 static struct opt const grep_options[] = {
 	O("-n"), O("--line-number"), O("-i"), O("--ignore-case"), O("-w"),
 	O("--word-regexp"), O("-v"), O("--invert-match"), O("-l"),
 	O("--files-with-matches"), O("-L"), O("--files-without-match"), O("-c"),
 	O("--count"), O("-E"), O("--extended-regexp"), O("-F"), O("--fixed-strings"),
-	O("-P"), O("--perl-regexp"), O("-G"), O("--basic-regexp"), O("--cached"),
-	O("--untracked"), O("-h"), O("-H"), O("--full-name"), O("-o"),
-	O("--only-matching"), O("-C#"), O("-A#"), O("-B#"), O("--context="),
-	O("--after-context="), O("--before-context="), O("--max-depth="),
+	O("-P"), O("--perl-regexp"), O("-G"), O("--basic-regexp"), O("-h"), O("-H"),
+	O("--full-name"), O("-o"), O("--only-matching"), O("-C#"), O("-A#"), O("-B#"),
+	O("--context="), O("--after-context="), O("--before-context="), O("--max-depth="),
 	O("--max-count="), O("-m#"), O("--break"), O("--heading"), O("-p"),
 	O("--show-function"), O("-W"), O("--function-context"), O("--all-match"), {}
 };
@@ -130,12 +167,6 @@ static struct opt const blame_options[] = {
 	O("-w"), O("-M"), O("-C"), O("-s"), O("-e"), O("-l"), O("-t"), O("-f"),
 	O("--show-name"), O("--porcelain"), O("--line-porcelain"), O("--date="),
 	O("-L*"), O("--root"), O("--ignore-rev="), {}
-};
-static struct opt const ls_files_options[] = {
-	O("--cached"), O("-c"), O("--others"), O("-o"), O("--exclude-standard"),
-	O("--stage"), O("-s"), O("--deleted"), O("-d"), O("--modified"), O("-m"),
-	O("--full-name"), O("--abbrev"), O("--abbrev="), O("--directory"),
-	O("--no-empty-directory"), O("--eol"), O("--format="), O("--deduplicate"), {}
 };
 static struct opt const ls_tree_options[] = {
 	O("-r"), O("-t"), O("-d"), O("--name-only"), O("--name-status"),
@@ -146,25 +177,19 @@ static struct opt const cat_file_options[] = {
 	O("-t"), O("-s"), O("-p"), O("-e"), {}
 };
 static struct opt const rev_parse_options[] = {
-	O("--abbrev-ref"), O("--abbrev-ref="), O("--short"), O("--short="),
-	O("--verify"), O("--symbolic"), O("--symbolic-full-name"), O("-q"),
-	O("--quiet"), O("--is-inside-work-tree"), O("--is-bare-repository"),
-	O("--is-shallow-repository"), {}
-};
-static struct opt const status_options[] = {
-	O("--untracked-files="), O("--ignore-submodules="), {}
+	O("--short"), O("--short="), O("--verify"), O("-q"), O("--quiet"), {}
 };
 #undef O
 
-/* Where a command takes what. */
+/* Where a command takes what; all revision roots must name commits. */
 enum {
-	REVS    = 1 << 0,  /* revisions */
-	FILES   = 1 << 1,  /* paths, after "--" */
-	END     = 1 << 2,  /* --end-of-options before its revisions, which those
-	                      that take it amiss lack: blame, which takes "--"
-	                      for a revision then; ls-files and ls-tree, which
-	                      take "--" for a path; rev-parse, which echoes it */
-	PATTERN = 1 << 3,  /* a pattern, which it needs, after -e */
+	FILES   = 1 << 0,  /* paths, after "--" */
+	END     = 1 << 1,  /* --end-of-options, except where git takes it amiss */
+	PATTERN = 1 << 2,  /* a required pattern, after -e */
+	OBJECT  = 1 << 3,  /* a committed path after a revision's colon */
+	RANGE   = 1 << 4,  /* a pair of commits separated by .. or ... */
+	PAIR    = 1 << 5,  /* exactly two commits, separately or as a range */
+	SINGLE  = 1 << 6,  /* at most one revision */
 };
 
 static struct {
@@ -176,43 +201,36 @@ static struct {
 } const commands[] = {
 	{ "log",       log_options,       { "--no-ext-diff", "--no-textconv" },
 	  "Committed history; defaults to HEAD. Paths restrict the history.",
-	  REVS | FILES | END },
+	  FILES | END | RANGE },
 	{ "show",      show_options,      { "--no-ext-diff", "--no-textconv" },
-	  "Committed objects; HEAD:path reads a committed file, :path its index copy.",
-	  REVS | FILES | END },
+	  "Committed contents; defaults to HEAD. HEAD:path reads a committed file.",
+	  FILES | END | OBJECT },
 	{ "diff",      diff_options,      { "--no-ext-diff", "--no-textconv" },
-	  "No revisions: index versus worktree. --cached: HEAD versus index. "
-	  "One revision: commit versus worktree; two: commit versus commit.",
-	  REVS | FILES | END },
+	  "Compare two commits: give two revisions, or one explicit A..B or A...B "
+	  "range. Paths restrict the comparison.", FILES | END | RANGE | PAIR },
 	{ "grep",      grep_options,      { "--no-textconv" },
-	  "Default: tracked worktree files. --untracked also searches untracked files; "
-	  "--cached searches the index. Revisions select committed trees. "
-	  "Use -F for literal search, -E for extended regex, -n for lines, -C3 for context.",
-	  REVS | FILES | END | PATTERN },
+	  "Search committed trees; defaults to HEAD. Use -F for literal search, "
+	  "-E for extended regex, -n for lines, -C3 for context.",
+	  FILES | END | PATTERN },
 	{ "blame",     blame_options,     { "--no-textconv" },
-	  "Default: worktree file annotated against HEAD. A revision selects its "
-	  "committed copy. Give one path; -L10,30 limits the line range.", REVS | FILES },
-	{ "ls-files",  ls_files_options,  {},
-	  "Default: tracked paths from the index. --modified shows worktree changes; "
-	  "--others --exclude-standard lists untracked files.", FILES },
+	  "Annotate a committed file; defaults to HEAD. Give one path; -L10,30 "
+	  "limits the line range.", FILES | SINGLE },
 	{ "ls-tree",   ls_tree_options,   {},
-	  "Paths in a committed tree; give its revision. -r recurses.", REVS | FILES },
+	  "Paths in a committed tree; defaults to HEAD. -r recurses.",
+	  FILES | SINGLE },
 	{ "cat-file",  cat_file_options,  {},
-	  "Inspect a committed object: -p for contents, -t for type, -s for bytes, "
-	  "-e for existence. Name a file with revision:path.", REVS | END },
-	/* Revisions only: no other argument is looked at as a path. */
+	  "Inspect committed contents: -p for contents, -t for type, -s for bytes, "
+	  "-e for existence. Defaults to HEAD; revision:path names a committed file.",
+	  END | OBJECT | SINGLE },
 	{ "rev-parse", rev_parse_options, { "--revs-only" },
-	  "Resolve revisions to immutable object IDs; --verify requires one valid "
-	  "revision. --abbrev-ref with HEAD gives the current branch.", REVS },
-	{ "status",    status_options,
-	  { "--porcelain=v1", "--branch", "--untracked-files=normal" },
-	  "Current branch and staged, unstaged and untracked paths. Porcelain XY: "
-	  "X is index versus HEAD, Y is worktree versus index, ?? is untracked. "
-	  "Read-only: the index is not refreshed.", FILES },
+	  "Resolve commit references to immutable commit IDs; defaults to HEAD. "
+	  "--verify requires one valid revision.", 0 },
 };
 
 static_assert(1 + ARRAY_SIZE(fixed) + 5 + 3 + OPTIONS + 2 + 1 + REVISIONS + 1 +
               PATHS + 1 <= GIT_ARGV, "a command fits argv");
+static_assert(1 + ARRAY_SIZE(fixed) + 5 + 10 + ROOTS + 1 <= GIT_ARGV,
+              "history validation fits argv");
 
 char const *
 git_name (char const *path,
@@ -321,7 +339,7 @@ git_load (struct git        *git,
 		env, ceilings, "HOME=/nonexistent", "LC_ALL=C.UTF-8",
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat",
-		"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none", nullptr
+		"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none", nullptr, nullptr
 	};
 	static_assert(sizeof vars == sizeof git->env);
 	memcpy(git->env, vars, sizeof vars);
@@ -407,9 +425,11 @@ git_definition (void const *service)
 			"server, and get its output, with its errors, up to 4 MiB. The "
 			"command enum lists the available operations. Use help:true with "
 			"any command for its exact options, limits and source selection. "
-			"Use status for the branch, staged, unstaged and untracked paths. "
-			"grep searches tracked working-tree files by default; --cached "
-			"searches the index, revisions select committed trees. "
+			"Only committed contents are visible; the index, working tree, "
+			"untracked and ignored files are unavailable. Commits must be "
+			"reachable from HEAD, branches, tags or remote-tracking refs. "
+			"Commands default to "
+			"HEAD, except diff, which needs two commits or an explicit range. "
 			"To read a file as of the last commit, use "
 			"show with the whole HEAD:path as the revision and no paths, for "
 			"example \"revisions\": [\"HEAD:src/main.c\"]. Any other commit "
@@ -439,8 +459,12 @@ git_definition (void const *service)
 				"revisions", git_strings("Revisions, such as HEAD~3, main..topic "
 				                         "or the hash of a commit. For show, "
 				                         "HEAD:path names the contents of a file "
-				                         "as of that commit. grep without "
-				                         "revisions searches the worktree.", REVISIONS),
+				                         "as of that commit. References and hashes "
+				                         "may use ^/~ ancestry and ^{commit}. Reflogs, "
+				                         "stash, index and raw blob/tree IDs are "
+				                         "excluded. The resolved commit must belong "
+				                         "to HEAD, branch, tag or remote-tracking "
+				                         "history.", REVISIONS),
 				"paths", git_strings("Paths in the repository, relative to its "
 				                     "top. They limit the output of a command "
 				                     "such as log or diff to those paths. They "
@@ -520,6 +544,35 @@ git_inside (char const *path)
 	return true;
 }
 
+/** A reference or hash with ^/~ ancestry or commit peels, checked as a commit. */
+static int
+git_commit (char       *dest,
+            char const *src,
+            size_t      len)
+{
+	memcpy(dest, src, len);
+	dest[len] = '\0';
+	size_t base = strcspn(dest, "^~:@{}");
+	if (!base || *dest == '-' || !git_inside(dest) || strstr(dest, "..") ||
+	    (base == 5 && !memcmp(dest, "stash", 5)) ||
+	    (base == 10 && !memcmp(dest, "refs/stash", 10)))
+		return EINVAL;
+	for (size_t at = base; at < len;) {
+		if (len - at >= sizeof git_commit_suffix - 1 &&
+		    !memcmp(dest + at, git_commit_suffix, sizeof git_commit_suffix - 1)) {
+			at += sizeof git_commit_suffix - 1;
+			continue;
+		}
+		if (dest[at] != '^' && dest[at] != '~')
+			return EINVAL;
+		++at;
+		while (dest[at] >= '0' && dest[at] <= '9')
+			++at;
+	}
+	memcpy(dest + len, git_commit_suffix, sizeof git_commit_suffix);
+	return 0;
+}
+
 /* Say in @p why, of GIT_WHY bytes, what is wrong with a call's arguments;
  * returns EINVAL. */
 [[gnu::format(printf, 2, 3)]]
@@ -589,19 +642,16 @@ git_known (char const *key)
 }
 
 /*
- * Validate @p args and select its command in @p *selected. Unless help is
- * requested, fill @p argv, of GIT_ARGV entries, with strings pointing into
- * @p args and @p git, which must outlive it. Returns 0; or EINVAL, @p why,
- * of GIT_WHY bytes, saying what is wrong with the arguments.
+ * Validate the call and retain its arguments and revision roots. Returns 0; or
+ * EINVAL, @p why, of GIT_WHY bytes, saying what is wrong with the arguments.
  */
 static int
-git_command (struct git const   *git,
-             struct json_object *args,
-             char const         *argv[],
-             size_t             *selected,
-             char               *why)
+git_call_command (struct git_call   *call,
+                  struct git const *git,
+                  char             *why)
 {
 	static_assert(WORD == 1024, "the problems say");
+	struct json_object *args = call->args;
 	if (!args)
 		return git_wrong(why, "Tool arguments must be an object.");
 	struct json_object_iter it;
@@ -613,6 +663,7 @@ git_command (struct git const   *git,
 	struct git_repo const *repo = git_find(git, git_word(jb_get(args, "repo"), &len));
 	if (!repo)
 		return git_repos_wrong(git, why);
+	call->repo = repo;
 	char const *cmd = git_word(jb_get(args, "command"), &len);
 	size_t c = 0;
 	while (cmd && c < ARRAY_SIZE(commands) && strcmp(cmd, commands[c].name))
@@ -626,7 +677,7 @@ git_command (struct git const   *git,
 			util_format(why + n, GIT_WHY - n, ". Use help:true for its options.");
 		return EINVAL;
 	}
-	*selected = c;
+	call->command = c;
 	uint64_t takes = commands[c].takes;
 	struct json_object *help;
 	if (json_object_object_get_ex(args, "help", &help)) {
@@ -661,8 +712,8 @@ git_command (struct git const   *git,
 				return git_wrong(why, "%s[%zu] must be a string of 1 to %d "
 				                 "bytes with no NUL.", names[l], i, WORD);
 	}
-	if (lens[1] && !(takes & REVS))
-		return git_wrong(why, "git %s takes no revisions.", cmd);
+	if ((takes & SINGLE) && lens[1] > 1)
+		return git_wrong(why, "git %s takes at most one revision.", cmd);
 	if (lens[2] && !(takes & FILES))
 		return git_wrong(why, "git %s takes no paths. To name a file, give the "
 		                 "revision HEAD:path.", cmd);
@@ -677,13 +728,7 @@ git_command (struct git const   *git,
 	}
 
 	size_t k = 0;
-	argv[k++] = "git";
-	for (size_t i = 0; i < ARRAY_SIZE(fixed); ++i)
-		argv[k++] = fixed[i];
-	argv[k++] = "-c";
-	argv[k++] = repo->safe;
-	argv[k++] = "-C";
-	argv[k++] = repo->path;
+	char const **argv = call->argv;
 	argv[k++] = cmd;
 	for (size_t i = 0; i < ARRAY_SIZE(commands[c].forced) && commands[c].forced[i];
 	     ++i)
@@ -697,6 +742,14 @@ git_command (struct git const   *git,
 			                 "Attach values in one entry (--max-count=20, -n20). "
 			                 "Use help:true for allowed options.", i, cmd,
 			                 (int)jb_utf8(s, len < 80 ? len : 80), s);
+		if (!strncmp(s, git_ignore_rev, sizeof git_ignore_rev - 1)) {
+			struct git_root *root = &call->roots[call->n_roots++];
+			if (git_commit(root->name, s + sizeof git_ignore_rev - 1,
+			               len - (sizeof git_ignore_rev - 1)))
+				return git_wrong(why, "--ignore-rev needs a commit reference or hash.");
+			root->option[0] = '-';
+			s = root->option;
+		}
 		argv[k++] = s;
 	}
 	if (pat) {
@@ -705,20 +758,51 @@ git_command (struct git const   *git,
 	}
 	if (takes & END)
 		argv[k++] = "--end-of-options";
-	for (size_t i = 0; i < lens[1]; ++i) {
-		char const *s = jb_text(json_object_array_get_idx(lists[1], i));
-		if (*s == '-' || !git_inside(s))
-			return git_wrong(why, "revisions[%zu] may not start with - or /, "
-			                 "nor have a .. component.", i);
-		argv[k++] = s;
+	size_t endpoints = lens[1];
+	call->n_revisions = lens[1] ? lens[1] : 1;
+	for (size_t i = 0; i < call->n_revisions; ++i) {
+		char const *s = "HEAD";
+		len = sizeof "HEAD" - 1;
+		if (lens[1])
+			s = jb_str(json_object_array_get_idx(lists[1], i), &len);
+		char const *path = strchr(s, ':');
+		size_t root = path ? (size_t)(path - s) : len;
+		if (path && (!(takes & OBJECT) || !path[1] || !git_inside(path + 1)))
+			return git_wrong(why, "revisions[%zu]: only show and cat-file take "
+			                 "commit:path, with a nonempty relative path.", i);
+		char const *range = strstr(s, "..");
+		if (range && range >= s + root)
+			range = nullptr;
+		if (range && (!(takes & RANGE) || ((takes & PAIR) && lens[1] != 1)))
+			return git_wrong(why, "revisions[%zu]: ranges are allowed only by "
+			                 "log, or as diff's single A..B or A...B argument.", i);
+		size_t left = range ? (size_t)(range - s) : root;
+		struct git_revision *rev = &call->revisions[i];
+		rev->root = call->n_roots;
+		rev->path = path ? path : "";
+		int e = git_commit(call->roots[call->n_roots++].name, s, left);
+		if (!e && range) {
+			++endpoints;
+			rev->dots = 2 + (range[2] == '.');
+			e = git_commit(call->roots[call->n_roots++].name, range + rev->dots,
+			               root - left - rev->dots);
+		}
+		if (e)
+			return git_wrong(why, "revisions[%zu]: use a commit reference or hash "
+			                 "with optional ^/~ ancestry. Stash, reflogs, index "
+			                 "selectors and revision expansions are unavailable.", i);
+		argv[k++] = rev->text;
 	}
+	if ((takes & PAIR) && endpoints != 2)
+		return git_wrong(why, "git diff needs two commits, or one explicit "
+		                 "A..B or A...B range.");
 	if (takes & FILES)
 		argv[k++] = "--";
 	for (size_t i = 0; i < lens[2]; ++i) {
 		char const *s = jb_text(json_object_array_get_idx(lists[2], i));
-		if (!git_inside(s))
+		if (!git_inside(s) || !strncmp(s, ":(", 2))
 			return git_wrong(why, "paths[%zu] must be relative to the repository's "
-			                 "top, with no .. component.", i);
+			                 "top, with no .. component or :(...) pathspec magic.", i);
 		argv[k++] = s;
 	}
 	argv[k] = nullptr;
@@ -747,7 +831,8 @@ git_help (struct mcp_slot *slot,
 			"its footer gives the exact next offset for the same arguments."),
 		"limits", jb_object(
 			"options", json_object_new_int(OPTIONS),
-			"revisions", json_object_new_int(takes & REVS ? REVISIONS : 0),
+			"revisions", json_object_new_int(takes & SINGLE ? 1 :
+			                                takes & PAIR ? 2 : REVISIONS),
 			"paths", json_object_new_int(takes & FILES ? PATHS : 0),
 			"argument_bytes", json_object_new_int(WORD),
 			"capture_bytes", json_object_new_int(GIT_MAX),
@@ -784,16 +869,17 @@ git_call_destroy (struct git_call **p_call)
 	if (!*p_call)
 		return;
 	child_destroy(&(*p_call)->child);
+	git_view_destroy(&(*p_call)->view);
+	buf_fini(&(*p_call)->metadata);
+	json_object_put((*p_call)->args);
 	free(*p_call);
 	*p_call = nullptr;
 }
 
 static struct git_call *
-git_call_create (struct git_loop        *gl,
-                 struct child_cmd const *cmd,
-                 size_t                  command,
-                 struct mcp_slot        *slot,
-                 int                    *e)
+git_call_create (struct json_object *args,
+                 uint64_t            deadline,
+                 int                *e)
 {
 	struct git_call *call = malloc(sizeof *call);
 	if (!call) {
@@ -801,12 +887,170 @@ git_call_create (struct git_loop        *gl,
 		return nullptr;
 	}
 	*call = (struct git_call){
-		.child = child_create(gl->loop, &gl->children, cmd, git_back, slot, e),
-		.command = command,
+		.args = json_object_get(args),
+		.deadline = deadline,
 	};
-	if (*e)
-		git_call_destroy(&call);
+	*e = 0;
 	return call;
+}
+
+/** Run one phase without extending the call's deadline. */
+static int
+git_call_run (struct git_call *call,
+              struct git_loop *gl,
+              struct mcp_slot *slot)
+{
+	char const *argv[GIT_ARGV] = { "git" };
+	size_t k = 1;
+	for (size_t i = 0; i < ARRAY_SIZE(fixed); ++i)
+		argv[k++] = fixed[i];
+	argv[k++] = "-c";
+	argv[k++] = call->repo->safe;
+	argv[k++] = "-C";
+	argv[k++] = call->view ? git_view_directory(call->view) : call->repo->path;
+	if (call->view)
+		argv[k++] = "--git-dir=.";
+	static char const *const meta[] = {
+		"rev-parse", "--path-format=absolute", "--git-path", "objects",
+		"--git-path", "shallow", "--show-object-format", "--verify", "--quiet",
+		"HEAD^{commit}", nullptr
+	};
+	static char const *const refs[] = {
+		"for-each-ref", "--format=%(objectname) %(refname)",
+		"refs/heads/", "refs/tags/", "refs/remotes/", nullptr
+	};
+	char const *const *words = call->argv;
+	if (call->phase == GIT_META)
+		words = meta;
+	else if (call->phase == GIT_REFS)
+		words = refs;
+	if (call->phase == GIT_RESOLVE || call->phase == GIT_CHECK) {
+		bool resolve = call->phase == GIT_RESOLVE;
+		argv[k++] = resolve ? "rev-parse" : "rev-list";
+		argv[k++] = resolve ? "--revs-only" : "--max-count=1";
+		if (!resolve) {
+			argv[k++] = "--not";
+			if (git_view_has_head(call->view))
+				argv[k++] = "HEAD";
+			argv[k++] = "--branches";
+			argv[k++] = "--tags";
+			argv[k++] = "--remotes";
+			argv[k++] = "--not";
+		}
+		argv[k++] = "--end-of-options";
+		for (size_t i = 0; i < call->n_roots; ++i)
+			argv[k++] = call->roots[i].name;
+		if (!resolve)
+			argv[k++] = "--";
+	} else {
+		for (size_t i = 0; words[i]; ++i)
+			argv[k++] = words[i];
+	}
+	argv[k] = nullptr;
+	char *env[ENV];
+	memcpy(env, gl->git->env, sizeof env);
+	if (call->view && git_view_has_head(call->view))
+		env[ENV - 2] = "GIT_ATTR_SOURCE=HEAD";
+	struct child_cmd const cmd = {
+		.file = "git",
+		.argv = argv,
+		.envp = env,
+		.max = GIT_MAX,
+		.deadline = call->deadline,
+		.grace = GIT_GRACE_NS,
+		.flags = call->phase == GIT_RUN ? CHILD_STDERR : 0,
+	};
+	int e = 0;
+	call->child = child_create(gl->loop, &gl->children, &cmd, git_back, slot, &e);
+	return e;
+}
+
+/** Replace every validated root with exactly one immutable commit ID. */
+static int
+git_call_resolve (struct git_call *call)
+{
+	struct span out = buf_peek(&call->child->out);
+	size_t width = 0;
+	for (size_t i = 0; i < call->n_roots; ++i) {
+		unsigned char *end = out.len ? memchr(out.ptr, '\n', out.len) : nullptr;
+		if (!end)
+			return EINVAL;
+		size_t len = (size_t)(end - out.ptr);
+		if ((!width && len != 40 && len != 64) || (width && len != width))
+			return EINVAL;
+		width = len;
+		for (size_t j = 0; j < len; ++j)
+			if (!(out.ptr[j] >= '0' && out.ptr[j] <= '9') &&
+			    !(out.ptr[j] >= 'a' && out.ptr[j] <= 'f'))
+				return EINVAL;
+		struct git_root *root = &call->roots[i];
+		memcpy(root->name, out.ptr, len);
+		root->name[len] = '\0';
+		if (root->option[0])
+			util_format(root->option, sizeof root->option, "%s%s", git_ignore_rev,
+			            root->name);
+		out.ptr = end + 1;
+		out.len -= len + 1;
+	}
+	if (out.len)
+		return EINVAL;
+	for (size_t i = 0; i < call->n_revisions; ++i) {
+		struct git_revision *rev = &call->revisions[i];
+		char const *first = call->roots[rev->root].name;
+		if (rev->dots)
+			util_format(rev->text, sizeof rev->text, "%s%.*s%s", first,
+			            (int)rev->dots, "...", call->roots[rev->root + 1].name);
+		else
+			util_format(rev->text, sizeof rev->text, "%s%s", first, rev->path);
+	}
+	return 0;
+}
+
+/** Internal discovery and authorization output must never reach the caller. */
+static void
+git_call_advance (struct git_call *call,
+                  struct mcp_slot *slot)
+{
+	struct child *c = call->child;
+	int e = c->late || c->cut || c->code != CLD_EXITED ? EIO : 0;
+	if (!e && c->status && !(call->phase == GIT_META && c->status == 1))
+		e = EINVAL;
+	if (!e) {
+		switch (call->phase) {
+		case GIT_META:
+			call->metadata = c->out;
+			c->out = (struct buf){};
+			break;
+		case GIT_REFS:
+			call->view = git_view_create(buf_peek(&call->metadata), buf_peek(&c->out), &e);
+			buf_fini(&call->metadata);
+			break;
+		case GIT_RESOLVE:
+			e = git_call_resolve(call);
+			break;
+		case GIT_CHECK:
+			e = buf_peek(&c->out).len ? EACCES : 0;
+			break;
+		case GIT_RUN:
+			break;
+		}
+	}
+	bool late = c->late;
+	child_destroy(&call->child);
+	if (!e) {
+		++call->phase;
+		e = git_call_run(call, mcp_slot_part(slot), slot);
+	}
+	if (!e) {
+		mcp_slot_park(slot);
+		return;
+	}
+	*mcp_slot_own(slot) = nullptr;
+	git_call_destroy(&call);
+	mcp_slot_tell(slot, late ? TOOL_TEXT("Git history validation timed out.")
+	                         : TOOL_TEXT("Cannot read the requested committed history. "
+	                                     "Use commits reachable from HEAD, branches, "
+	                                     "tags or remote-tracking refs."), TOOL_FAILED);
 }
 
 /* The text that util_format() writes into the array @p a. */
@@ -839,7 +1083,10 @@ git_ended (struct mcp_slot *slot,
 		note = TOOL_TEXT("[No matches.]");
 		failed = false;
 	} else if (c->status) {
-		note = FORMAT(buf, "[git exited with status %d.]", c->status);
+		char const *fmt = commands[call->command].takes & OBJECT
+			? "[The committed object could not be read (git exited with status %d).]"
+			: "[git exited with status %d.]";
+		note = FORMAT(buf, fmt, c->status);
 	} else {
 		note = out.len ? (struct tool_text){} : TOOL_TEXT("[No output.]");
 		failed = false;
@@ -871,7 +1118,17 @@ static void
 git_step (struct mcp_slot *slot)
 {
 	struct git_call *call = *mcp_slot_own(slot);
+	if (call->phase != GIT_RUN) {
+		git_call_advance(call, slot);
+		return;
+	}
 	struct child *c = call->child;
+	/* Git's failed object lookup may disclose whether a path exists on disk. */
+	if ((commands[call->command].takes & OBJECT) &&
+	    c->code == CLD_EXITED && c->status) {
+		git_ended(slot, call);
+		return;
+	}
 	struct span left = buf_peek(&c->out);
 	size_t room = loop_room(c->loop, LOOP_COPY);
 	size_t n = left.len < room ? left.len : room;
@@ -897,31 +1154,30 @@ git_start (struct mcp_slot    *slot,
            struct json_object *args)
 {
 	struct git_loop *gl = mcp_slot_part(slot);
-	struct git const *git = gl->git;
-	char const *argv[GIT_ARGV];
+	int e = 0;
+	struct git_call *call = git_call_create(args, gl->loop->now + gl->git->timeout, &e);
+	if (e) {
+		mcp_slot_fail(slot, e);
+		return;
+	}
 	char why[GIT_WHY];
-	size_t command;
-	if (git_command(git, args, argv, &command, why)) {
+	if (git_call_command(call, gl->git, why)) {
+		git_call_destroy(&call);
 		mcp_slot_tell(slot, (struct tool_text){ why, strlen(why) }, TOOL_FAILED);
 		return;
 	}
-	if (mcp_slot_offset(slot, args))
-		return;
-	if (json_object_get_boolean(jb_get(args, "help"))) {
-		git_help(slot, command);
+	if (mcp_slot_offset(slot, args)) {
+		git_call_destroy(&call);
 		return;
 	}
-	struct child_cmd const cmd = {
-		.file = "git",
-		.argv = argv,
-		.envp = git->env,
-		.max = GIT_MAX,
-		.deadline = gl->loop->now + git->timeout,
-		.grace = GIT_GRACE_NS,
-		.flags = CHILD_STDERR
-	};
-	int e = 0;
-	*mcp_slot_own(slot) = git_call_create(gl, &cmd, command, slot, &e);
+	if (json_object_get_boolean(jb_get(args, "help"))) {
+		git_help(slot, call->command);
+		git_call_destroy(&call);
+		return;
+	}
+	e = git_call_run(call, gl, slot);
+	if (e)
+		git_call_destroy(&call);
 	if (e == EBUSY) {
 		mcp_slot_tell(slot, TOOL_TEXT("Too many commands are running; try again in a "
 		                              "few seconds."), TOOL_FAILED);
@@ -933,6 +1189,7 @@ git_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, (struct tool_text){ why, n }, TOOL_FAILED);
 		return;
 	}
+	*mcp_slot_own(slot) = call;
 	mcp_slot_park(slot);
 }
 

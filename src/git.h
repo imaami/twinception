@@ -1,40 +1,37 @@
-/** @file The git tool (S8): read-only git commands in the repositories that
- *  askai lists (--git), each run as a child (child.h) on the call's loop.
+/** @file The git tool (S8): committed repository contents only.
  *
- * A call names a repository, by git_name() of the path it was listed by,
- * and a command of an allowlist: log, show, diff, grep, blame, ls-files,
- * ls-tree, cat-file, rev-parse or status. With help:true it describes that
- * command and its allowed options without starting git. Its options must
- * each be one that command's allowlist has, a value given with it after '='
- * (or, for a few short ones, attached); its revisions follow
- * --end-of-options (but for those that take it amiss), and none may start
- * with '-' or '/' or have a ".." component, so that none names a file
- * outside the repository, as git diff's would; its paths follow "--",
- * relative, with no ".." component;
- * grep's pattern follows -e; and rev-parse takes revisions only.  So
- * nothing a client sends is an option the allowlist lacks: none writes a
- * file, reads one outside the repository, or runs a program.  git runs with
- * a fixed environment: without system or global configuration, a HOME that
- * does not exist, no repository found above the listed ones'
- * (GIT_CEILING_DIRECTORIES), and no remote protocol or lazy fetch
- * (GIT_ALLOW_PROTOCOL, GIT_NO_LAZY_FETCH), which no repository's
- * configuration overrides; and with settings that stop what a repository's
- * own configuration could have it run: the fsmonitor, a pager, an external
- * diff, textconv (a submodule's too), gpg and hooks, and its refreshing the
- * index.  The repository's other configuration, such as its filters, which
- * a work tree's files pass through, is trusted, as listing it says.  Its
- * output, its error included, is cut at 4 MiB; at its deadline it gets
- * SIGTERM, and SIGKILL a second later.
+ * A call names a configured repository and an allowed command: log, show,
+ * diff, grep, blame, ls-tree, cat-file or rev-parse. help:true describes its
+ * options and limits without running git. Values belong in the same option
+ * string as their flag. Paths follow "--", relative to the repository top,
+ * with no ".." component or long-form pathspec magic.
  *
- * grep defaults to tracked working-tree files; --cached selects the index,
- * and revisions select committed trees. Status always uses porcelain v1
- * with the branch and untracked paths, without refreshing the index.
- * grep's exit status 1 is a successful search with no matches; other
- * nonzero exits are errors, including silent existence-check failures.
+ * Revision roots are references or hashes with ^/~ ancestry or ^{commit}. Each
+ * root is resolved to an immutable ID and checked for reachability from HEAD,
+ * branches, tags or remote-tracking refs before a show/cat-file :path suffix is
+ * applied. Raw blobs, index selectors, reflogs, private stash objects and revision
+ * expansions are unavailable. Log accepts A..B/A...B ranges; diff requires
+ * exactly two roots, separately or as one explicit range. Other commands
+ * default to HEAD. Blame's --ignore-rev roots undergo the same checks.
  *
- * The git tool is git's kind of tool (src/tool.h), its part of a client
- * loop the children there; a call's output is made UTF-8 text a share a
- * step (src/mcp.h), and a call that goes kills its git.
+ * Each call creates a private bare view with a snapshot of the approved refs
+ * and shared object storage, preserving validated shallow boundaries. It imports
+ * no worktree, index or local config; attributes and mailmaps come from its fixed
+ * HEAD when present. Git runs without replacement
+ * objects, system/global config, remote protocols or lazy fetching. Settings
+ * disable executable hooks,
+ * fsmonitor, pagers, external diffs, textconv and signature verification.
+ * Repository discovery cannot ascend above a configured repository. The
+ * source's metadata and object storage remain trusted; this is not an OS sandbox.
+ * No command reads the index or uncommitted files as its source. Internal
+ * validation failures are generic. Failed show/cat-file diagnostics
+ * are replaced so they cannot disclose whether a local path exists. Output
+ * is cut at 4 MiB; one deadline spans discovery, authorization and execution,
+ * sending SIGTERM, then SIGKILL a second later. Grep's
+ * exit status 1 means no matches; other nonzero exits are errors.
+ *
+ * Calls run as children (child.h) on their client loop. Their output is made
+ * UTF-8 a share per step (mcp.h); dropping a call kills its git child.
  */
 #ifndef TWINCEPTION_SRC_GIT_H_
 #define TWINCEPTION_SRC_GIT_H_

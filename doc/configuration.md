@@ -1230,9 +1230,9 @@ of a repository, or an array of paths.  The default is no repository.  The
 command line adds to the paths of the file.
 
 With `git`, `askai` offers the tool `git`, which runs read-only git
-commands in these repositories.  Each path is the top of a work tree or a
-bare repository.  The tool names each repository by the last component of
-its path, without `.git`: `/srv/git/proj.git` is `proj`.  A name has 1 to
+commands over committed content in these repositories. Each path is the top
+of a work tree or a bare repository. The tool names each repository by the last
+component of its path, without `.git`: `/srv/git/proj.git` is `proj`.  A name has 1 to
 64 characters from `A-Z`, `a-z`, `0-9`, `_`, `.` and `-`, and does not
 begin with a dot.  `askai` refuses two repositories with the same name.
 With `upstream-tools`, the upstream may call `git` too, as the role of the
@@ -1244,31 +1244,49 @@ separate `git` tool call's arguments:
 
 ```jsonl
 {"repo":"proj","command":"grep","help":true}
-{"repo":"proj","command":"status"}
+{"repo":"proj","command":"ls-tree","options":["-r","--name-only"]}
 {"repo":"proj","command":"grep","options":["-n","-F","-C3"],"pattern":"journal_write","paths":["src/"]}
 ```
 
-`status` reports the branch and staged, unstaged and untracked paths in
-porcelain v1 format without refreshing the index.  `grep` searches tracked
-working-tree files by default; add `--untracked` to include untracked
-files, `--cached` to search the index, or `"revisions":["HEAD"]` to search
-the committed tree.  `-F` means literal search, `-E` extended regex, and
-`-C3` three lines of context.  Option values stay attached in one array
-entry.  To read a committed file, use `command: "show"` with
-`"revisions":["HEAD:src/journal.c"]`; `":src/journal.c"` selects the index
-copy.  An immutable commit ID can replace `HEAD` for repeatable reads.
+The default revision is `HEAD`, including for `grep`, `blame` and `ls-tree`.
+Staged, working-tree, untracked and ignored content is not exposed. Use
+`ls-tree` to list committed files; a staged deletion does not hide its committed
+version. `status`, `ls-files`, `--cached`, `--staged`, `--untracked` and
+`log --all` are unavailable. `diff` requires two committed revisions or a range
+with both endpoints, such as `main..topic` or `main...topic`.
+
+`-F` means literal search, `-E` extended regex, and `-C3` three lines of context.
+Option values stay attached in one array entry. To read a committed file, use
+`command: "show"` with `"revisions":["HEAD:src/journal.c"]`. An immutable commit
+ID can replace `HEAD` for repeatable reads. Index selectors such as
+`":src/journal.c"`, raw blob or tree IDs, stash and reflog selectors, and
+revision-list expansion syntax are rejected. Paths must be relative, without
+`..` components or `:(...)` pathspec magic. Git replacement objects are ignored,
+so they cannot substitute uncommitted content for a committed object.
+Every requested commit, including `blame --ignore-rev` values, must be reachable
+from `HEAD`, a branch, a tag or a remote-tracking ref. Private stash snapshots
+and dangling commits are unavailable even by hash. Each call snapshots those
+refs into a private bare view sharing the object storage; it imports no worktree,
+index or local configuration, and preserves validated shallow boundaries.
+Revisions are resolved to immutable IDs, and
+attributes and mailmaps use the view's fixed `HEAD`. Repository metadata and
+object storage remain trusted; this is not an operating-system sandbox.
 
 Git output is captured up to 4 MiB.  An agent's response window may be
 smaller; its footer gives the exact next `offset` to use with the same
 arguments.  A successful search with no matches says `[No matches.]`;
-other nonzero Git exits are reported as errors.
+other nonzero Git exits are reported as errors. History validation failures are
+generic. Failed `show` and `cat-file`
+calls return a generic committed-object error so Git's local-file existence
+hints cannot reveal uncommitted paths.
 
 #### `git-timeout`
 
 The member of the file is `tools.git.timeout`.  The value is an integer
 number of seconds from 1 to 3600.  The default is 30.
 
-At this deadline, `askai` sends SIGTERM to the process group of `git`, and
+The deadline spans history discovery, authorization and execution. At this
+deadline, `askai` sends SIGTERM to the process group of `git`, and
 SIGKILL one second later, and the call fails.
 
 #### `notes`
