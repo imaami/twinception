@@ -9,6 +9,7 @@ override SRC_askai := \
   datauri.c           \
   dstr.c              \
   git.c               \
+  git_view.c          \
   home.c              \
   http.c              \
   httpd.c             \

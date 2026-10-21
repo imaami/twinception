@@ -2543,7 +2543,8 @@ def check_recovery_notes(binary, up):
                      for name, tool, arguments in (
                          ("read", "notes", {"action": "read", "file": "source.md",
                                            "notebook": selector, "offset": 5}),
-                         ("gate", "git", {"repo": "proj", "command": "diff"}))]
+                         ("gate", "git", {"repo": "proj", "command": "diff",
+                                          "revisions": ["HEAD", "HEAD"]}))]
             creates, resumes = [], []
             def reply(request):
                 creates.append(request)
@@ -7721,14 +7722,31 @@ def check_man(binary, up):
 
 
 FAKE_GIT = r"""#!/bin/sh
-# A stand-in for git: what the first revision names it does, else the real
-# git does the command.
+# Synthetic revisions pass resolution and authorization, then exercise the
+# final child. Discovery and real revisions use the installed Git.
 dir=${0%/*}
-rev= seen=
+rev= seen= command=
 for a; do
+    case $a in rev-parse|rev-list|log) command=$a ;; esac
     [ -n "$seen" ] && { rev=$a; break; }
     [ "$a" = --end-of-options ] && seen=1
 done
+rev=${rev%\^\{commit\}}
+case $rev in
+echo|1111111111111111111111111111111111111111)
+    rev=echo; oid=1111111111111111111111111111111111111111 ;;
+stubborn|2222222222222222222222222222222222222222)
+    rev=stubborn; oid=2222222222222222222222222222222222222222 ;;
+polite|3333333333333333333333333333333333333333)
+    rev=polite; oid=3333333333333333333333333333333333333333 ;;
+orphan|4444444444444444444444444444444444444444)
+    rev=orphan; oid=4444444444444444444444444444444444444444 ;;
+*) exec /usr/bin/git "$@" ;;
+esac
+case $command in
+rev-parse) printf '%s\n' "$oid"; exit 0 ;;
+rev-list) exit 0 ;;
+esac
 case $rev in
 echo)
     for a; do printf '%s\n' "$a"; done
@@ -7787,8 +7805,16 @@ def check_git(binary, up):
             f.write(b"alpha\nbeta \xff\xfe gamma\n")
         with open(f"{repo}/big.txt", "wb") as f:
             f.write(b"x" * (5 << 20))
-        sh("add", "a.txt", "big.txt")
+        with open(f"{repo}/deleted.txt", "w") as f:
+            f.write("committed deletion candidate\n")
+        sh("add", "a.txt", "big.txt", "deleted.txt")
         sh("commit", "-q", "-m", "first")
+        sh("switch", "-q", "-c", "topic")
+        with open(f"{repo}/a.txt", "w") as f:
+            f.write("committed topic text\n")
+        sh("add", "a.txt")
+        sh("commit", "-q", "-m", "topic")
+        sh("switch", "-q", "main")
         subprocess.run(["git", "init", "-q", f"{d}/other"], check=True,
                        env=os.environ | git)
         os.mkdir(f"{d}/plain")
@@ -7852,13 +7878,20 @@ def check_git(binary, up):
                     "exact next offset" in help_text["pagination"], result
                 assert help_text["pattern_required"] == (command == "grep"), result
             help_text = json.loads(text_of(call(ai, repo="proj", command="grep", help=True)))
-            assert {"-F", "-E", "--cached", "--untracked", "-C#"} <= \
-                set(help_text["options"]), help_text
+            assert {"-F", "-E", "-C#"} <= set(help_text["options"]) and not \
+                {"--cached", "--untracked"} & set(help_text["options"]), help_text
+            commands = schema["properties"]["command"]["enum"]
+            assert "status" not in commands and "ls-files" not in commands, commands
             complete = text_of(call(ai, repo="proj", command="log", help=True))
             result = call(ai, repo="proj", command="log", help=True, offset=100)
             assert not result.get("isError") and text_of(result) == complete[100:], result
 
             # What a call may ask for.
+            for command in ("push", "status", "ls-files"):
+                result = call(ai, repo="proj", command=command)
+                assert result.get("isError") and text_of(result) == \
+                    "The command argument must be one of: " + ", ".join(commands) + \
+                    ". Use help:true for its options.", result
             for arguments, text in (
                     (["x"], "Tool arguments must be an object."),
                     ({"repo": "proj", "command": "log", "x": 1},
@@ -7866,10 +7899,6 @@ def check_git(binary, up):
                     ({"repo": "nope", "command": "log"},
                      "The repo argument must name one of the repositories: "
                      "proj, other."),
-                    ({"repo": "proj", "command": "push"},
-                     "The command argument must be one of: log, show, diff, grep, "
-                     "blame, ls-files, ls-tree, cat-file, rev-parse, status. "
-                     "Use help:true for its options."),
                     ({"repo": "proj", "command": "log", "options": ["--output=/x"]},
                      bad_option("log", "--output=/x")),
                     ({"repo": "proj", "command": "log", "options": ["-n", "3"]},
@@ -7902,22 +7931,23 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "log", "revisions": ["a\u0000b"]},
                      "revisions[0] must be a string of 1 to 1024 bytes with no NUL."),
                     ({"repo": "proj", "command": "show", "revisions": ["--help"]},
-                     "revisions[0] may not start with - or /, nor have a .. "
-                     "component."),
+                     "revisions[0]: use a commit reference or hash with optional "
+                     "^/~ ancestry. Stash, reflogs, index selectors and revision "
+                     "expansions are unavailable."),
                     ({"repo": "proj", "command": "diff", "revisions": ["/etc"]},
-                     "revisions[0] may not start with - or /, nor have a .. "
-                     "component."),
+                     "revisions[0]: use a commit reference or hash with optional "
+                     "^/~ ancestry. Stash, reflogs, index selectors and revision "
+                     "expansions are unavailable."),
                     ({"repo": "proj", "command": "diff", "revisions": ["x/../.."]},
-                     "revisions[0] may not start with - or /, nor have a .. "
-                     "component."),
+                     "revisions[0]: use a commit reference or hash with optional "
+                     "^/~ ancestry. Stash, reflogs, index selectors and revision "
+                     "expansions are unavailable."),
                     ({"repo": "proj", "command": "log", "paths": ["../x"]},
                      "paths[0] must be relative to the repository's top, with no .. "
-                     "component."),
+                     "component or :(...) pathspec magic."),
                     ({"repo": "proj", "command": "log", "paths": ["/etc/passwd"]},
                      "paths[0] must be relative to the repository's top, with no .. "
-                     "component."),
-                    ({"repo": "proj", "command": "ls-files", "revisions": ["HEAD"]},
-                     "git ls-files takes no revisions."),
+                     "component or :(...) pathspec magic."),
                     ({"repo": "proj", "command": "cat-file", "paths": ["a.txt"]},
                      "git cat-file takes no paths. To name a file, give the "
                      "revision HEAD:path."),
@@ -7938,20 +7968,26 @@ def check_git(binary, up):
                                paths=["a.txt"]))
             argv, environ, rest = out.split("---\n")
             real = os.path.realpath(repo)
-            assert argv.split("\n")[:-1] == [
-                "--no-pager", "-c", "core.fsmonitor=false", "-c",
+            argv = argv.splitlines()
+            directory = argv[argv.index("-C") + 1]
+            assert re.fullmatch(r"/tmp/askai-git-[A-Za-z0-9]{6}", directory), argv
+            assert not os.path.exists(directory), directory
+            assert argv == [
+                "--no-pager", "--no-replace-objects", "-c", "core.bare=true", "-c",
+                "core.fsmonitor=false", "-c",
                 "log.showSignature=false", "-c", "gpg.program=false", "-c",
                 "gpg.ssh.program=false", "-c", "gpg.x509.program=false", "-c",
                 "core.hooksPath=/dev/null", "-c", "protocol.allow=never", "-c",
                 "diff.submodule=short", "-c", "diff.autoRefreshIndex=false", "-c",
                 "gc.auto=0", "-c", "maintenance.auto=false", "-c",
-                f"safe.directory={real}", "-C", real, "log", "--no-ext-diff",
-                "--no-textconv", "--oneline", "--end-of-options", "echo", "--",
+                f"safe.directory={real}", "-C", directory, "--git-dir=.",
+                "log", "--no-ext-diff", "--no-textconv", "--oneline",
+                "--end-of-options", "1" * 40, "--",
                 "a.txt"], argv
             environ = [v for v in environ.split("\n")[:-1]
                        if not v.startswith(("PWD=", "OLDPWD=", "SHLVL=", "_="))]
             top = os.path.realpath(d)
-            assert environ == ["GIT_ALLOW_PROTOCOL=none",
+            assert environ == ["GIT_ALLOW_PROTOCOL=none", "GIT_ATTR_SOURCE=HEAD",
                                f"GIT_CEILING_DIRECTORIES={top}:{top}",
                                "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
                                "GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0",
@@ -7967,72 +8003,156 @@ def check_git(binary, up):
                                   "SigIgn:\t0000000000000000"], lines
 
             # The real git: output, errors, mending, the cut, and grep's none.
+            head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], text=True,
+                                  capture_output=True, check=True,
+                                  env=os.environ | git).stdout.strip()
             assert text_of(call(ai, repo="proj", command="log",
                                 options=["--format=%s"])) == "first\n"
             assert text_of(call(ai, repo="proj", command="grep", pattern="beta",
-                                options=["-n"])) == "a.txt:2:beta ?? gamma\n"
+                                options=["-n"])) == f"{head}:a.txt:2:beta ?? gamma\n"
             result = call(ai, repo="proj", command="grep", pattern="nothing here")
             assert not result.get("isError") and \
                 text_of(result) == "[No matches.]", result
             result = call(ai, repo="proj", command="show", revisions=["nosuch"])
-            assert result.get("isError") and text_of(result).startswith(
-                "fatal: bad revision 'nosuch'\n\n[git exited with status 128.]"), result
+            assert result.get("isError") and "committed" in text_of(result), result
             result = call(ai, repo="proj", command="cat-file", options=["-p"],
                           revisions=["HEAD:big.txt"])
             assert not result.get("isError") and text_of(result) == "x" * (4 << 20) + \
                 "\n\n[The output goes on past the 4 MiB shown.]", len(text_of(result))
             result = call(ai, repo="other", command="log")
-            assert result.get("isError") and "does not have any commits" in \
-                text_of(result), result
-            assert text_of(call(ai, repo="proj", command="ls-files")) == \
-                "a.txt\nbig.txt\n"
+            assert result.get("isError"), result
+            assert text_of(call(ai, repo="proj", command="ls-tree",
+                                options=["--name-only"])) == \
+                "a.txt\nbig.txt\ndeleted.txt\n"
             assert text_of(call(ai, repo="proj", command="ls-tree",
                                 options=["--name-only"], revisions=["HEAD"],
                                 paths=["a.txt"])) == "a.txt\n"
-            head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], text=True,
-                                  capture_output=True, env=os.environ | git).stdout
             assert text_of(call(ai, repo="proj", command="rev-parse",
-                                revisions=["HEAD"])) == head
+                                revisions=["HEAD"])) == head + "\n"
             result = call(ai, repo="proj", command="rev-parse", revisions=["a.txt"])
-            assert text_of(result) == "[No output.]", result
+            assert result.get("isError") and "committed" in text_of(result), result
             result = call(ai, repo="proj", command="cat-file", options=["-e"],
                           revisions=["0" * 40])
-            assert result.get("isError") and \
-                text_of(result) == "[git exited with status 1.]", result
+            assert result.get("isError") and "committed" in text_of(result), result
 
-            # Source selection is explicit and status does not refresh the index.
+            # The committed tree defines the work. Neither the index nor the
+            # worktree may change which files, contents or names are visible.
             with open(f"{repo}/a.txt", "wb") as f:
-                f.write(b"staged source\n")
-            sh("add", "a.txt")
+                f.write(b"PRIVATE_STAGED_MODIFICATION\n")
+            with open(f"{repo}/staged-only.txt", "wb") as f:
+                f.write(b"PRIVATE_STAGED_ADDITION\n")
+            sh("add", "a.txt", "staged-only.txt")
+            sh("rm", "-q", "deleted.txt")
             with open(f"{repo}/a.txt", "wb") as f:
-                f.write(b"working source\n")
+                f.write(b"PRIVATE_WORKTREE_MODIFICATION\n")
             with open(f"{repo}/loose.txt", "wb") as f:
-                f.write(b"untracked source\n")
-            sh("config", "status.showUntrackedFiles", "no")
+                f.write(b"PRIVATE_UNTRACKED\n")
+            with open(f"{repo}/hidden.ignore", "wb") as f:
+                f.write(b"PRIVATE_IGNORED\n")
+            with open(f"{repo}/.gitattributes", "w") as f:
+                f.write("a.txt PRIVATE_ATTR\n")
+            with open(f"{repo}/.git/info/exclude", "w") as f:
+                f.write("hidden.ignore\n")
+            staged, committed = [subprocess.run(
+                ["git", "-C", repo, "rev-parse", revision], check=True,
+                capture_output=True, text=True, env=os.environ | git).stdout.strip()
+                for revision in (":a.txt", "HEAD:a.txt")]
+            sh("replace", committed, staged)
             with open(f"{repo}/.git/index", "rb") as f:
                 index_before = f.read()
-            status_text = text_of(call(ai, repo="proj", command="status"))
-            assert status_text == "## main\nMM a.txt\n?? loose.txt\n", status_text
-            with open(f"{repo}/.git/index", "rb") as f:
-                assert f.read() == index_before, "status wrote the index"
-            assert text_of(call(ai, repo="proj", command="status", paths=["a.txt"])) == \
-                "## main\nMM a.txt\n"
-            for options, revisions, pattern, expected in (
-                    (["-n", "-F"], [], "working source", "a.txt:1:working source\n"),
-                    (["-n", "-F", "--cached"], [], "staged source", "a.txt:1:staged source\n"),
-                    (["-n", "-F"], ["HEAD"], "alpha", "HEAD:a.txt:1:alpha\n"),
-                    (["-n", "-F", "--untracked"], [], "untracked source",
-                     "loose.txt:1:untracked source\n")):
-                result = call(ai, repo="proj", command="grep", options=options,
-                              revisions=revisions, pattern=pattern)
-                assert not result.get("isError") and text_of(result) == expected, result
+
+            for command, arguments in (
+                    ("grep", {"pattern": "PRIVATE_", "options": ["-n", "-F"]}),
+                    ("diff", {"revisions": ["HEAD", "HEAD"]}),
+                    ("diff", {"revisions": ["HEAD..HEAD"]}),
+                    ("diff", {"revisions": ["HEAD...HEAD"]})):
+                result = call(ai, repo="proj", command=command, **arguments)
+                assert not result.get("isError") and text_of(result) == \
+                    ("[No matches.]" if command == "grep" else "[No output.]"), result
             result = call(ai, repo="proj", command="grep", pattern="alpha",
-                          paths=["a.txt"], options=["-F"])
-            assert not result.get("isError") and text_of(result) == "[No matches.]", result
-            with open(f"{repo}/a.txt", "wb") as f:
-                f.write(b"alpha\nbeta \xff\xfe gamma\n")
-            sh("add", "a.txt")
-            os.unlink(f"{repo}/loose.txt")
+                          paths=["a.txt"], options=["-F", "-n"])
+            assert not result.get("isError") and text_of(result) == \
+                f"{head}:a.txt:1:alpha\n", result
+            for revisions in (["HEAD", "topic"], ["HEAD..topic"], ["HEAD...topic"]):
+                result = call(ai, repo="proj", command="diff", revisions=revisions)
+                assert not result.get("isError") and "+committed topic text" in \
+                    text_of(result) and "PRIVATE_" not in text_of(result), result
+            for revision in ("topic^:a.txt", head + ":a.txt", "HEAD^{commit}:a.txt"):
+                result = call(ai, repo="proj", command="show", revisions=[revision])
+                assert not result.get("isError") and text_of(result).startswith("alpha\n"), result
+            result = call(ai, repo="proj", command="log", options=["--format=%s"],
+                          revisions=["HEAD..topic"])
+            assert not result.get("isError") and text_of(result) == "topic\n", result
+            for command, arguments in (
+                    ("log", {"options": ["--oneline"]}),
+                    ("show", {}),
+                    ("show", {"revisions": ["HEAD:a.txt"]}),
+                    ("cat-file", {"options": ["-p"], "revisions": ["HEAD:a.txt"]}),
+                    ("blame", {"paths": ["a.txt"]}),
+                    ("ls-tree", {"options": ["-r", "--name-only"]}),
+                    ("rev-parse", {"revisions": ["HEAD"]})):
+                result = call(ai, repo="proj", command=command, **arguments)
+                text = text_of(result)
+                assert not result.get("isError") and not any(secret in text for secret in
+                    ("PRIVATE_", "staged-only.txt", "loose.txt", "hidden.ignore")), result
+                if command in ("show", "cat-file", "blame"):
+                    assert "alpha" in text, result
+                if command == "blame":
+                    assert "Not Committed Yet" not in text, result
+                if command == "ls-tree":
+                    assert text == "a.txt\nbig.txt\ndeleted.txt\n", result
+
+            # Missing committed paths must not disclose whether a local copy
+            # exists on disk or in the index through Git's error diagnostics.
+            for command in ("show", "cat-file"):
+                arguments = {"options": ["-p"]} if command == "cat-file" else {}
+                errors = []
+                for name in ("staged-only.txt", "loose.txt", "hidden.ignore", "absent.txt"):
+                    result = call(ai, repo="proj", command=command,
+                                  revisions=["HEAD:" + name], **arguments)
+                    assert result.get("isError"), result
+                    errors.append(text_of(result))
+                assert len(set(errors)) == 1 and not any(word in errors[0] for word in
+                    ("disk", "index", "staged-only.txt", "loose.txt", "hidden.ignore")), errors
+
+            for command, option in (("grep", "--cached"), ("grep", "--untracked"),
+                                    ("diff", "--cached"), ("diff", "--staged"),
+                                    ("log", "--all")):
+                arguments = {"pattern": "PRIVATE_"} if command == "grep" else \
+                    {"revisions": ["HEAD", "HEAD"]}
+                result = call(ai, repo="proj", command=command, options=[option], **arguments)
+                assert result.get("isError") and text_of(result) == \
+                    bad_option(command, option), result
+            for revision in (":a.txt", ":0:a.txt", ":staged-only.txt", staged, staged[:12]):
+                for command in ("show", "cat-file"):
+                    arguments = {"options": ["-p"]} if command == "cat-file" else {}
+                    result = call(ai, repo="proj", command=command,
+                                  revisions=[revision], **arguments)
+                    assert result.get("isError") and "PRIVATE_" not in text_of(result), \
+                        (command, revision, result)
+            for command, arguments in (
+                    ("diff", {}), ("diff", {"revisions": ["HEAD"]}),
+                    ("diff", {"revisions": ["HEAD", "HEAD", "HEAD"]}),
+                    ("diff", {"revisions": ["HEAD", "HEAD^!"]}),
+                    ("grep", {"pattern": "PRIVATE_", "revisions": ["HEAD^!"]}),
+                    ("blame", {"paths": ["a.txt"], "revisions": ["HEAD^!"]}),
+                    ("diff", {"revisions": ["HEAD.."]}),
+                    ("diff", {"revisions": ["..HEAD"]}),
+                    ("diff", {"revisions": ["HEAD..."]}),
+                    ("grep", {"pattern": "PRIVATE_", "revisions": ["HEAD..HEAD"]}),
+                    ("grep", {"pattern": "alpha", "paths": [":(attr:PRIVATE_ATTR)*"]}),
+                    ("grep", {"pattern": "alpha", "paths": [":(top,attr:PRIVATE_ATTR)*"]})):
+                result = call(ai, repo="proj", command=command, **arguments)
+                assert result.get("isError") and "PRIVATE_" not in text_of(result), \
+                    (command, arguments, result)
+            for revision in ("HEAD^!", "HEAD^@", "HEAD^-", "HEAD@{0}", "@{0}",
+                             "HEAD^{tree}:a.txt", "HEAD^{blob}:a.txt", "HEAD:../a.txt",
+                             "stash", "refs/stash", ":/first"):
+                result = call(ai, repo="proj", command="show", revisions=[revision])
+                assert result.get("isError") and "PRIVATE_" not in text_of(result), \
+                    (revision, result)
+            with open(f"{repo}/.git/index", "rb") as f:
+                assert f.read() == index_before, "git tool changed the index"
 
             # The deadline: SIGTERM, then SIGKILL a second later, to one that
             # stays; one that goes on SIGTERM is gone at once.
@@ -8087,6 +8207,21 @@ def check_git(binary, up):
             wait_for(lambda: not alive(pid))
             assert not os.path.exists(f"{fake}/signals")
 
+        # The same defaults work without any worktree or index.
+        bare = f"{d}/snapshot.git"
+        subprocess.run(["git", "clone", "--bare", "--quiet", repo, bare], check=True,
+                       env=os.environ | git, capture_output=True)
+        with Askai(binary, "-u", up.url(), "--git", bare) as ai:
+            for command, arguments, expected in (
+                    ("grep", {"pattern": "alpha", "options": ["-n"]},
+                     f"{head}:a.txt:1:alpha\n"),
+                    ("ls-tree", {"options": ["-r", "--name-only"]},
+                     "a.txt\nbig.txt\ndeleted.txt\n"),
+                    ("show", {"revisions": ["HEAD:deleted.txt"]},
+                     "committed deletion candidate\n")):
+                result = call(ai, repo="snapshot", command=command, **arguments)
+                assert not result.get("isError") and text_of(result) == expected, result
+
         # A process can start askai with SIGCHLD ignored.  askai sets SIGCHLD
         # to its default action, so waitid() still returns the exit status
         # of git.
@@ -8113,9 +8248,225 @@ def check_git(binary, up):
             status, body = Replies(sock).next()
             assert status in (200, 503), (status, body)
         wait_for(lambda: not alive(pid))
-    print("git: offered with --git, help, status, source selection, arguments, argv, "
+    print("git: offered with --git, help, committed-only sources, arguments, argv, "
           "environment, output, errors, mending, cut, deadline, cancel, stop: "
           "PASS")
+
+
+def check_git_scope(binary, up):
+    """Git reads approved commit history, including its mailmap, independently
+    of saved work, local configuration, and the repository's physical layout."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+
+    def sh(repo, *args, check=True):
+        return subprocess.run(["git", "-C", repo, "-c", "user.name=Original Author",
+                               "-c", "user.email=original@example.test", *args],
+                              env=env, capture_output=True, text=True, check=check)
+
+    def write(path, text):
+        with open(path, "w") as f:
+            f.write(text)
+
+    def call(ai, repo, command, **arguments):
+        status, _, body = ai.rpc("tools/call", {"name": "git", "arguments": {
+            "repo": repo, "command": command, **arguments}})
+        assert status == 200, (status, body)
+        result = body["result"]
+        assert "PRIVATE_" not in text_of(result), (command, arguments, result)
+        return result
+
+    def ok(ai, repo, command, **arguments):
+        result = call(ai, repo, command, **arguments)
+        assert not result.get("isError"), (command, arguments, result)
+        return text_of(result)
+
+    def mapped(ai, repo):
+        assert ok(ai, repo, "log", options=["-n1", "--format=%aN <%aE>"]) == \
+            "Published Author <published@example.test>\n"
+        text = ok(ai, repo, "blame", paths=["a.txt"], options=["--line-porcelain"])
+        assert "author Published Author\n" in text and \
+            "author-mail <published@example.test>\n" in text and "\talpha\n" in text, text
+
+    for object_format in ("sha1", "sha256"):
+        with tempfile.TemporaryDirectory() as d:
+            repo = f"{d}/scope"
+            os.mkdir(repo)
+            init = sh(repo, "init", "-q", "-b", "main",
+                      f"--object-format={object_format}", check=False)
+            if init.returncode and object_format == "sha256" and any(
+                    word in init.stderr.lower() for word in
+                    ("unknown hash", "unknown option", "not supported")):
+                print("git scope: SHA-256: SKIP (Git does not support it)")
+                continue
+            assert init.returncode == 0, init.stderr
+            write(f"{repo}/a.txt", "alpha\n")
+            write(f"{repo}/.mailmap", "Published Author <published@example.test> "
+                  "<original@example.test>\n")
+            sh(repo, "add", "a.txt", ".mailmap")
+            sh(repo, "commit", "-q", "-m", "ordinary history")
+            base = sh(repo, "rev-parse", "HEAD").stdout.strip()
+            assert len(base) == (40 if object_format == "sha1" else 64), base
+            sh(repo, "switch", "-q", "-c", "topic")
+            write(f"{repo}/topic.txt", "ordinary branch content\n")
+            sh(repo, "add", "topic.txt")
+            sh(repo, "commit", "-q", "-m", "topic history")
+            topic = sh(repo, "rev-parse", "HEAD").stdout.strip()
+            sh(repo, "switch", "-q", "main")
+            long_path = "/".join(["p" * 200] * 4 + ["q" * 218])
+            long_revision = "r:" + long_path
+            assert len(long_revision) == 1024
+            sh(repo, "switch", "-q", "-c", "r")
+            os.makedirs(os.path.dirname(f"{repo}/{long_path}"))
+            write(f"{repo}/{long_path}", "complete long path\n")
+            sh(repo, "add", long_path)
+            sh(repo, "commit", "-q", "-m", "long path history")
+            sh(repo, "switch", "-q", "main")
+            tagged, remote, detached = [sh(
+                repo, "commit-tree", base + "^{tree}", "-p", base, "-m", message
+            ).stdout.strip() for message in ("tag-only history", "remote-only history",
+                                            "detached history")]
+            sh(repo, "tag", "-a", "release", "-m", "release", tagged)
+            sh(repo, "update-ref", "refs/remotes/origin/topic", remote)
+
+            # Stash's main, index and untracked snapshots are all commit
+            # objects, but none belongs to the published history above.
+            write(f"{repo}/a.txt", "PRIVATE_STAGED_CONTENT\n")
+            sh(repo, "add", "a.txt")
+            write(f"{repo}/a.txt", "PRIVATE_DIRTY_CONTENT\n")
+            write(f"{repo}/private.txt", "PRIVATE_UNTRACKED_CONTENT\n")
+            sh(repo, "stash", "push", "-q", "--include-untracked", "-m", "saved work")
+            saved, staged, untracked = [sh(repo, "rev-parse", rev).stdout.strip()
+                                       for rev in ("refs/stash", "refs/stash^2",
+                                                   "refs/stash^3")]
+            assert sh(repo, "show", saved + ":a.txt").stdout == "PRIVATE_DIRTY_CONTENT\n"
+            assert sh(repo, "show", staged + ":a.txt").stdout == "PRIVATE_STAGED_CONTENT\n"
+            assert sh(repo, "show", untracked + ":private.txt").stdout == \
+                "PRIVATE_UNTRACKED_CONTENT\n"
+            sh(repo, "update-ref", "-d", "refs/stash")
+            sh(repo, "update-ref", "MERGE_AUTOSTASH", saved)
+            sh(repo, "update-ref", "refs/private/saved", saved)
+
+            with Askai(binary, "-u", up.url(), "--git", repo) as ai:
+                mapped(ai, "scope")
+                # Replacing a one-byte reference with a full object ID must
+                # leave room for every byte of a maximum-length path argument.
+                for command, arguments in (("show", {}),
+                                           ("cat-file", {"options": ["-p"]})):
+                    assert ok(ai, "scope", command, revisions=[long_revision],
+                              **arguments) == "complete long path\n", command
+                for revision, oid in (("HEAD", base), (base[:12], base),
+                                      ("topic", topic), ("release", tagged),
+                                      ("origin/topic", remote), ("topic^", base),
+                                      (saved + "^1", base)):
+                    assert ok(ai, "scope", "rev-parse", revisions=[revision]).strip() == \
+                        oid, revision
+                    assert ok(ai, "scope", "show", revisions=[revision + ":a.txt"]) == \
+                        "alpha\n", revision
+                assert ok(ai, "scope", "log", revisions=["main..topic"],
+                          options=["--format=%s"]) == "topic history\n"
+                for revisions in (["main", "topic"], ["main..topic"], ["main...topic"]):
+                    assert "+ordinary branch content" in ok(
+                        ai, "scope", "diff", revisions=revisions), revisions
+                assert "\talpha\n" in ok(ai, "scope", "blame", paths=["a.txt"],
+                    options=["--line-porcelain", "--ignore-rev=" + topic])
+
+                for command, arguments in (
+                        ("log", {"options": ["-p"]}), ("show", {}),
+                        ("cat-file", {"options": ["-p"]}),
+                        ("grep", {"pattern": "PRIVATE_"}),
+                        ("blame", {"paths": ["a.txt"]}), ("ls-tree", {}),
+                        ("rev-parse", {}), ("diff", {})):
+                    revisions = [base, saved] if command == "diff" else [saved]
+                    result = call(ai, "scope", command, revisions=revisions, **arguments)
+                    assert result.get("isError"), (command, result)
+                denied = (saved[:12], staged, staged[:12], untracked, untracked[:12],
+                          "MERGE_AUTOSTASH", "MERGE_AUTOSTASH^2", "refs/private/saved",
+                          detached)
+                for revision in denied:
+                    for command, arguments in (("show", {}),
+                                               ("cat-file", {"options": ["-p"]})):
+                        result = call(ai, "scope", command, revisions=[revision], **arguments)
+                        assert result.get("isError"), (command, revision, result)
+                for revision in (saved, saved[:12], "MERGE_AUTOSTASH", "refs/private/saved"):
+                    result = call(ai, "scope", "blame", paths=["a.txt"],
+                                  options=["--ignore-rev=" + revision])
+                    assert result.get("isError"), (revision, result)
+
+                # Implicit .mailmap reads must use the committed file whether
+                # the local copy is dirty, staged, or absent from the index.
+                for state in ("DIRTY", "STAGED", "UNTRACKED"):
+                    write(f"{repo}/.mailmap", f"PRIVATE_{state}_MAILMAP "
+                          "<private@example.test> <original@example.test>\n")
+                    if state == "STAGED":
+                        sh(repo, "add", ".mailmap")
+                        write(f"{repo}/.mailmap", "PRIVATE_WORKTREE_MAILMAP "
+                              "<private@example.test> <original@example.test>\n")
+                    elif state == "UNTRACKED":
+                        sh(repo, "rm", "-q", "--cached", "-f", ".mailmap")
+                    with open(f"{repo}/.git/index", "rb") as f:
+                        before = f.read()
+                    mapped(ai, "scope")
+                    with open(f"{repo}/.git/index", "rb") as f:
+                        assert f.read() == before, "mailmap lookup changed the index"
+
+                # Local configuration cannot opt a command back into reading
+                # files outside the committed snapshot.
+                write(f"{d}/private-map", "PRIVATE_CONFIG_MAILMAP "
+                      "<private@example.test> <original@example.test>\n")
+                write(f"{d}/private-ignore", "PRIVATE_CONFIG_IGNORE_REVS\n")
+                sh(repo, "config", "mailmap.file", f"{d}/private-map")
+                sh(repo, "config", "blame.ignoreRevsFile", f"{d}/private-ignore")
+                mapped(ai, "scope")
+
+            bare, linked = f"{d}/bare.git", f"{d}/linked"
+            sh(d, "clone", "--bare", "--quiet", repo, bare)
+            sh(repo, "worktree", "add", "--quiet", "--detach", linked, detached)
+            for directory in (bare, linked):
+                write(f"{directory}/.mailmap", "PRIVATE_LAYOUT_MAILMAP "
+                      "<private@example.test> <original@example.test>\n")
+            with Askai(binary, "-u", up.url(), "--git", bare, "--git", linked) as ai:
+                for name, oid in (("bare", base), ("linked", detached)):
+                    mapped(ai, name)
+                    assert ok(ai, name, "rev-parse").strip() == oid
+                    assert ok(ai, name, "show", revisions=["HEAD:a.txt"]) == "alpha\n"
+                    assert "alpha" in ok(ai, name, "grep", pattern="alpha")
+                    assert ok(ai, name, "ls-tree", options=["--name-only"]) == \
+                        ".mailmap\na.txt\n"
+                    result = call(ai, name, "show", revisions=[saved])
+                    assert result.get("isError"), (name, result)
+
+            # An unborn HEAD must not hide the repository's other history or
+            # make an explicit branch depend on a missing attribute source.
+            sh(bare, "symbolic-ref", "HEAD", "refs/heads/unborn")
+            with Askai(binary, "-u", up.url(), "--git", bare) as ai:
+                assert ok(ai, "bare", "show", revisions=["main:a.txt"]) == "alpha\n"
+                assert "alpha" in ok(ai, "bare", "grep", revisions=["main"], pattern="alpha")
+                assert "\talpha\n" in ok(ai, "bare", "blame", revisions=["main"],
+                                         paths=["a.txt"], options=["--line-porcelain"])
+                for command, arguments in (("show", {}), ("grep", {"pattern": "alpha"}),
+                                           ("blame", {"paths": ["a.txt"]})):
+                    result = call(ai, "bare", command, **arguments)
+                    assert result.get("isError"), (command, result)
+
+            # A real shallow clone omits its tip's parent object. The view
+            # must preserve that boundary for both ordinary and linked roots.
+            shallow, shallow_linked = f"{d}/shallow", f"{d}/shallow-linked"
+            sh(d, "clone", "--quiet", "--depth=1", "--branch=topic",
+               f"file://{repo}", shallow)
+            assert sh(shallow, "rev-parse", "--is-shallow-repository").stdout == "true\n"
+            assert sh(shallow, "cat-file", "-e", base, check=False).returncode != 0
+            sh(shallow, "worktree", "add", "--quiet", "--detach", shallow_linked, "HEAD")
+            with Askai(binary, "-u", up.url(), "--git", shallow,
+                       "--git", shallow_linked) as ai:
+                for name in ("shallow", "shallow-linked"):
+                    mapped(ai, name)
+                    assert ok(ai, name, "log", options=["--format=%s"]) == "topic history\n"
+                    assert ok(ai, name, "show", revisions=["HEAD:a.txt"]) == "alpha\n"
+                    assert ok(ai, name, "rev-parse").strip() == topic
+    print("git scope: committed mailmaps, saved-work exclusion, immutable history "
+          "roots, ignored revisions, local config, full-length paths, SHA-1/SHA-256 "
+          "bare, linked and shallow repositories: PASS")
 
 
 def turn_stream(calls=(), text="", reasoning="", used=None, order=(),
@@ -12654,7 +13005,7 @@ def main():
                       check_reload, check_logs, check_unix, check_tls, check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_man, check_git, check_turns, check_notes, check_shared_notes, check_turn_apis,
+                      check_man, check_git, check_git_scope, check_turns, check_notes, check_shared_notes, check_turn_apis,
                       check_attach,
                       check_tasks,
                       lambda binary, up: check_plugin(binary, up, plugin),
