@@ -9198,7 +9198,7 @@ mcp_notes_schema (enum notes_side          side,
 	static char const *const descriptions[] = {
 		[NOTES_UPSTREAM] =
 			"Your persistent notebook in this shared Git session. Add findings, "
-			"decisions and plans as named files. Use replace to update your own "
+			"decisions and plans as named files. replace can update your own "
 			"existing files; Git preserves every previous version. All instances sharing the repository "
 			"can read every notebook, but you can write only your own. Use action "
 			"notebooks to discover the others, then list or read with that notebook "
@@ -9321,7 +9321,14 @@ mcp_notes_schema (enum notes_side          side,
 		props = nullptr;
 	}
 	dstr_auto description = DSTR_INIT;
-	if (!dstr_printf(&description, "Participant: %s. %s%s",
+	if (!dstr_printf(&description, "Participant: %s. %s "
+	                 "Prefer small, controlled, incremental edits. Before using replace, "
+	                 "read the complete current file; send the complete updated file "
+	                 "while preserving unrelated passages, findings and evidence verbatim. "
+	                 "If an edit would overhaul most of a document, prefer add with a "
+	                 "new versioned filename, keep the previous file, and identify the "
+	                 "predecessor and what changed in the new document. Preserve existing "
+	                 "structure and useful detail across session resumes and model changes.%s",
 	                 st && st->notes ? notes_writer(st->notes) : "unconfigured",
 	                 descriptions[side], files
 	                 ? " attach gives you a whole note as a file after the results "
