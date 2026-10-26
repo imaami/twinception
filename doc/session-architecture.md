@@ -1,14 +1,24 @@
 # Sessions, participants, and execution routes
 
 Status: architectural direction, not a description of implemented behavior.
-Recorded 2026-10-17. Near-term changes need not implement this design, but
-should preserve the ability to evolve toward it.
+Recorded 2026-10-17; revised 2026-10-27 to keep one upstream per daemon.
+Near-term changes need not implement this design, but should preserve the
+ability to evolve toward it.
 
 ## Required deployment flexibility
 
-A user's workstation may run one AskAI service with both a local GPU model
-and an organization's LLM endpoint as upstreams. A terminal and a web UI
-may connect to that service through Unix sockets and HTTP respectively.
+Each AskAI daemon has one upstream: an LLM endpoint when executing work, or
+another AskAI service in pass-through/proxy mode. Supporting several LLM
+endpoints means running separate daemons; upstream selection within a daemon
+is outside this design.
+
+A user's workstation may run one AskAI daemon for a local GPU model and
+another for an organization's LLM endpoint. A terminal and a web UI may
+connect to the same service through Unix sockets and HTTP respectively.
+
+One `askai-cli` may maintain simultaneous connections to multiple AskAI
+services and select which service receives an operation. Multiple client
+connections to the same service remain supported too.
 
 The user may also run a per-user AskAI proxy on a shared Linux server,
 accessed through SSH. That proxy connects to a system AskAI service through
@@ -17,7 +27,7 @@ Unix account. The system service may select a more capable model and also
 accept users directly through HTTPS and JWT authentication.
 
 These are required compositions, not exceptional deployments. Adding a
-connection, proxy, service, or upstream must not implicitly create another
+connection, proxy, or service must not implicitly create another
 collaborator or notebook.
 
 ## Separate identity, participation, and execution
@@ -32,15 +42,15 @@ collaborator or notebook.
 - A **participant** is a person or a logical agent taking part in a session.
   It has a stable ID and a readable name. An agent is a continuing
   collaborator, not an inference endpoint or an AskAI process.
-- An **execution profile** selects an upstream, model, and allowed
-  capabilities. A service can offer several profiles. A participant can
-  change profiles without necessarily changing identity; distinct
-  participants can use the same profile.
 - A **conversation or task** scopes ongoing work within a session. Several
   conversations can share notes without sharing their entire context.
 - A **run** records a particular execution, including the responsible user,
-  participant, selected profile, and executing service. Concurrent runs and
+  participant, executing service, upstream, and model. Concurrent runs and
   retries do not implicitly create notebooks.
+
+Model selection and allowed capabilities follow the selected service's
+configuration and policy. A participant can use different services without
+necessarily changing identity; distinct participants can use the same service.
 
 A possible session roster is the user, a researcher, a reviewer, and a
 senior reviewer. The researcher might use the workstation GPU, the reviewer
@@ -60,7 +70,7 @@ a filtered view, not a storage partition exposed as a notebook address.
 The current `participant/principal/{client,upstream}` namespace encodes
 connection topology and should not become the permanent public contract.
 `client`, `upstream`, `own`, and `other` are relative to a connection and do
-not reliably describe authors through proxies or multiple upstreams.
+not reliably describe authors across proxies, services, or client connections.
 
 Each note has an immutable unique ID, author, title, content, and optional
 task/conversation and reply-to or supersedes references. Titles and original
@@ -118,7 +128,7 @@ participant performing it, and the service forwarding or executing it.
 `SO_PEERCRED` authenticates the process at the Unix-socket hop; it does not
 authenticate the original UI or prove arbitrary forwarded participant
 claims. The receiver validates membership, authority to act for a
-participant, and permission to use the requested execution profile.
+participant, and permission to use its model and tools.
 
 Forwarded IDs are context, not credentials. Network delegation may use
 scoped token exchange or another explicitly trusted mechanism. Neither
@@ -153,7 +163,8 @@ Git merging is not an initial distributed-session protocol.
 3. Define request context carrying session, conversation, participant, and
    operation IDs alongside separately validated authorization.
 4. Preserve that context through forwarding; make delegation explicit.
-5. Support multiple execution profiles per AskAI service.
+5. Support multiple connections in `askai-cli`, selecting among AskAI services
+   with one upstream each.
 6. Preserve independent service writer IDs for journal locking and recovery.
 
 Existing notes can be imported with their original service, principal, side,
@@ -162,8 +173,8 @@ merely because their filenames or display names match. Preserve existing
 data and ownership when changing identifier representations.
 
 Until these features exist, avoid choices that make notebook ownership
-depend permanently on sockets, connection counts, process names, upstream
-count, or model names. A common user identity does not itself make quotas,
+depend permanently on sockets, connection counts, process names, service
+selection, or model names. A common user identity does not itself make quotas,
 jobs, or conversations global; those are separate scope decisions.
 
 ## References
