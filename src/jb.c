@@ -517,6 +517,21 @@ jb_mend (char   *p,
 	return n;
 }
 
+/* The letter of the two-byte escape of each byte that has one; the other
+ * bytes below a space are escaped as \u00XX.  The table ends at '\\', the
+ * last byte that JSON escapes. */
+static char const jb_letters['\\' + 1] = {
+	['\b'] = 'b', ['\t'] = 't', ['\n'] = 'n', ['\f'] = 'f', ['\r'] = 'r',
+	['"'] = '"', ['\\'] = '\\',
+};
+
+/* Whether JSON escapes the byte @p c in a string. */
+static inline bool
+jb_escaped (unsigned char c)
+{
+	return c < ' ' || c == '"' || c == '\\';
+}
+
 size_t
 jb_escape (char       *dst,
            char const *src,
@@ -526,26 +541,20 @@ jb_escape (char       *dst,
 	char *out = dst;
 	for (char const *end = src + len; src < end; ++src) {
 		unsigned char c = (unsigned char)*src;
-		if (c >= ' ' && c != '"' && c != '\\') {
+		if (!jb_escaped(c)) {
 			*out++ = (char)c;
 			continue;
 		}
 		*out++ = '\\';
-		switch (c) {
-		case '\b': *out++ = 'b'; break;
-		case '\t': *out++ = 't'; break;
-		case '\n': *out++ = 'n'; break;
-		case '\f': *out++ = 'f'; break;
-		case '\r': *out++ = 'r'; break;
-		case '"':
-		case '\\': *out++ = (char)c; break;
-		default:
-			*out++ = 'u';
-			*out++ = '0';
-			*out++ = '0';
-			*out++ = hex[c >> 4];
-			*out++ = hex[c & 15];
+		if (jb_letters[c]) {
+			*out++ = jb_letters[c];
+			continue;
 		}
+		*out++ = 'u';
+		*out++ = '0';
+		*out++ = '0';
+		*out++ = hex[c >> 4];
+		*out++ = hex[c & 15];
 	}
 	return (size_t)(out - dst);
 }
@@ -557,15 +566,10 @@ jb_escape_fit (char const *src,
 {
 	if (!src)
 		return 0;
-	/* The bytes that jb_escape() writes as two bytes: a backslash, then a
-	 * letter or the byte itself.  It writes the other control bytes as
-	 * \u00XX, six bytes. */
-	static char const brief[] = "\"\\\b\t\n\f\r";
 	size_t i = 0;
 	for (size_t used = 0; i < len; ++i) {
 		unsigned char c = (unsigned char)src[i];
-		used += c >= ' ' && c != '"' && c != '\\' ? 1
-		      : memchr(brief, c, sizeof brief - 1) ? 2 : 6;
+		used += !jb_escaped(c) ? 1 : jb_letters[c] ? 2 : 6;
 		if (used > room)
 			break;
 	}

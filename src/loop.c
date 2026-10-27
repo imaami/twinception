@@ -747,7 +747,7 @@ int
 loop_exec (struct loop *loop)
 {
 	/* Wake on time: the default 50 µs of timer slack would be latency. */
-	(void)prctl(PR_SET_TIMERSLACK, 1UL);
+	(void)prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
 
 	while (!loop->exit) {
 		struct epoll_event events[EVENTS];

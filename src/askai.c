@@ -687,14 +687,11 @@ askai_separate_repos (char const *notes,
 	char *cwd = *transcripts == '/' ? nullptr : getcwd(nullptr, 0);
 	if (*transcripts != '/' && !cwd)
 		return errno;
-	char *base = cwd ? util_concat(cwd, strlen(cwd), "/") : nullptr;
-	char *path = cwd ? base ? util_concat(base, strlen(base), transcripts) : nullptr
-	                 : strdup(transcripts);
+	char *path;
+	int len = asprintf(&path, "%s/%s", cwd ? cwd : "", transcripts);
 	free(cwd);
 	cwd = nullptr;
-	free(base);
-	base = nullptr;
-	if (!path)
+	if (len < 0)
 		return ENOMEM;
 	char *rest = path, *to = path;
 	int e = 0;

@@ -79,6 +79,9 @@ static struct {
 	VALUE(name, help, labels, struct metrics_kept, field, KEPT, GAUGE, ONE)
 #define CALLS(name, help, field) \
 	VALUE(name, help, "", struct metrics_calls, field, CALLS, COUNTER, ONE)
+#define LENT(help, tool, i) \
+	VALUE("askai_turn_tool_calls_total", help, "tool=\"" tool "\"", \
+	      struct metrics_calls, lent[i], CALLS, COUNTER, ONE)
 #define CONNS(name, help, field, kind) \
 	VALUE(name, help, "", struct metrics_conns, field, CONNS, kind, ONE)
 #define JOBS(name, help, labels, field, kind) \
@@ -139,27 +142,17 @@ static struct metrics_entry const table[] = {
 	      "call gone (a stale handle).", dropped),
 	CALLS("askai_turns_total", "Upstream calls made as turns of ask calls that "
 	      "lend the upstream tools (--upstream-tools).", turns),
-	VALUE("askai_turn_tool_calls_total", "Tool calls the turns made, by tool; "
-	      "unknown: one not lent, or of no tool's name.", "tool=\"man\"",
-	      struct metrics_calls, lent[LENT_MAN], CALLS, COUNTER, ONE),
-	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"git\"",
-	      struct metrics_calls, lent[LENT_GIT], CALLS, COUNTER, ONE),
-	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"notes\"",
-	      struct metrics_calls, lent[LENT_NOTES], CALLS, COUNTER, ONE),
-	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"compact\"",
-	      struct metrics_calls, lent[LENT_COMPACT], CALLS, COUNTER, ONE),
-	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"background\"",
-	      struct metrics_calls, lent[LENT_BACKGROUND], CALLS, COUNTER, ONE),
-	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"jobs\"",
-	      struct metrics_calls, lent[LENT_JOBS], CALLS, COUNTER, ONE),
-	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"wait\"",
-	      struct metrics_calls, lent[LENT_WAIT], CALLS, COUNTER, ONE),
-	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"timer\"",
-	      struct metrics_calls, lent[LENT_TIMER], CALLS, COUNTER, ONE),
-	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"plugin\"",
-	      struct metrics_calls, lent[LENT_PLUGIN], CALLS, COUNTER, ONE),
-	VALUE("askai_turn_tool_calls_total", nullptr, "tool=\"unknown\"",
-	      struct metrics_calls, lent[LENT_NONE], CALLS, COUNTER, ONE),
+	LENT("Tool calls the turns made, by tool; unknown: one not lent, or of no "
+	     "tool's name.", "man", LENT_MAN),
+	LENT(nullptr, "git", LENT_GIT),
+	LENT(nullptr, "notes", LENT_NOTES),
+	LENT(nullptr, "compact", LENT_COMPACT),
+	LENT(nullptr, "background", LENT_BACKGROUND),
+	LENT(nullptr, "jobs", LENT_JOBS),
+	LENT(nullptr, "wait", LENT_WAIT),
+	LENT(nullptr, "timer", LENT_TIMER),
+	LENT(nullptr, "plugin", LENT_PLUGIN),
+	LENT(nullptr, "unknown", LENT_NONE),
 	VALUE("askai_compactions_total", "Contexts of ask calls' turns compacted: "
 	      "by the upstream's compact call, or by askai, the context full.",
 	      "by=\"upstream\"", struct metrics_calls, compacted[0], CALLS, COUNTER,
@@ -356,6 +349,7 @@ static struct metrics_entry const table[] = {
 #undef MAN
 #undef JOBS
 #undef CONNS
+#undef LENT
 #undef CALLS
 #undef KEPT
 #undef STASHED
