@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "compat.h"
 #include "godbolt_probe.h"
 
 #pragma GCC diagnostic push
@@ -159,16 +160,22 @@ godbolt_probe_add_claim (struct godbolt_probe    *p,
 }
 
 /* Records @p value for the fact @p fact, with each macro of @p names that is
- * on as evidence.  The list @p names ends with nullptr. */
-static void
+ * on as evidence.  The list @p names ends with nullptr.  Returns whether a
+ * macro of @p names is on. */
+static bool
 godbolt_probe_any (struct godbolt_probe    *p,
                    enum godbolt_probe_fact  fact,
                    char const              *value,
                    char const *const       *names)
 {
-	for (; *names; ++names)
-		if (godbolt_probe_on(p, *names))
+	bool any = false;
+	for (; *names; ++names) {
+		bool const on = godbolt_probe_on(p, *names);
+		if (on)
 			godbolt_probe_add_claim(p, fact, value, *names);
+		any |= on;
+	}
+	return any;
 }
 
 #define GODBOLT_PROBE_ANY(fact, value, ...)                                 \
@@ -195,19 +202,14 @@ godbolt_probe_architecture (struct godbolt_probe *p)
 		if (godbolt_probe_macro(p, "__riscv_xlen"))
 			godbolt_probe_cite(p, GODBOLT_PROBE_ARCHITECTURE, "__riscv_xlen");
 	}
-	if (godbolt_probe_on(p, "__powerpc64__") || godbolt_probe_on(p, "__ppc64__") ||
-	    godbolt_probe_on(p, "_ARCH_PPC64"))
-		GODBOLT_PROBE_ANY(ARCHITECTURE, "powerpc64", "__powerpc64__", "__ppc64__",
-		                  "_ARCH_PPC64");
-	else
+	if (!GODBOLT_PROBE_ANY(ARCHITECTURE, "powerpc64", "__powerpc64__", "__ppc64__",
+	                       "_ARCH_PPC64"))
 		GODBOLT_PROBE_ANY(ARCHITECTURE, "powerpc", "__powerpc__", "__ppc__", "_M_PPC");
-	GODBOLT_PROBE_ANY(ARCHITECTURE, "wasm64", "__wasm64__");
-	GODBOLT_PROBE_ANY(ARCHITECTURE, "wasm32", "__wasm32__");
-	if (!godbolt_probe_on(p, "__wasm64__") && !godbolt_probe_on(p, "__wasm32__"))
+	bool wasm = GODBOLT_PROBE_ANY(ARCHITECTURE, "wasm64", "__wasm64__");
+	wasm |= GODBOLT_PROBE_ANY(ARCHITECTURE, "wasm32", "__wasm32__");
+	if (!wasm)
 		GODBOLT_PROBE_ANY(ARCHITECTURE, "wasm", "__wasm__");
-	if (godbolt_probe_on(p, "__mips64") || godbolt_probe_on(p, "__mips64__"))
-		GODBOLT_PROBE_ANY(ARCHITECTURE, "mips64", "__mips64", "__mips64__");
-	else
+	if (!GODBOLT_PROBE_ANY(ARCHITECTURE, "mips64", "__mips64", "__mips64__"))
 		GODBOLT_PROBE_ANY(ARCHITECTURE, "mips", "__mips__", "__mips");
 	bool const l64 = godbolt_probe_on(p, "__loongarch64");
 	if (l64 || (godbolt_probe_integer(p, "__loongarch_grlen", &width) && width == 64))
@@ -215,13 +217,9 @@ godbolt_probe_architecture (struct godbolt_probe *p)
 		                        l64 ? "__loongarch64" : "__loongarch_grlen");
 	else
 		GODBOLT_PROBE_ANY(ARCHITECTURE, "loongarch", "__loongarch__");
-	if (godbolt_probe_on(p, "__s390x__"))
-		GODBOLT_PROBE_ANY(ARCHITECTURE, "s390x", "__s390x__");
-	else
+	if (!GODBOLT_PROBE_ANY(ARCHITECTURE, "s390x", "__s390x__"))
 		GODBOLT_PROBE_ANY(ARCHITECTURE, "s390", "__s390__");
-	if (godbolt_probe_on(p, "__sparc_v9__") || godbolt_probe_on(p, "__sparcv9"))
-		GODBOLT_PROBE_ANY(ARCHITECTURE, "sparc64", "__sparc_v9__", "__sparcv9");
-	else
+	if (!GODBOLT_PROBE_ANY(ARCHITECTURE, "sparc64", "__sparc_v9__", "__sparcv9"))
 		GODBOLT_PROBE_ANY(ARCHITECTURE, "sparc", "__sparc__");
 	GODBOLT_PROBE_ANY(ARCHITECTURE, "ia64", "__ia64__", "_M_IA64");
 	GODBOLT_PROBE_ANY(ARCHITECTURE, "avr", "__AVR__");
@@ -263,7 +261,7 @@ godbolt_probe_darwin (struct godbolt_probe *p)
 		{ "tvos", "TARGET_OS_TV", "__ENVIRONMENT_TV_OS_VERSION_MIN_REQUIRED__" },
 	};
 	bool specific = false;
-	for (size_t i = 0; i < sizeof variants / sizeof *variants; ++i) {
+	for (size_t i = 0; i < array_size(variants); ++i) {
 		bool const condition = godbolt_probe_on(p, variants[i].condition);
 		bool const version = variants[i].version && godbolt_probe_on(p, variants[i].version);
 		if (condition)
@@ -275,7 +273,7 @@ godbolt_probe_darwin (struct godbolt_probe *p)
 	static char const *const iphone[] = {
 		"TARGET_OS_IPHONE", "__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__"
 	};
-	for (size_t i = 0; !specific && i < sizeof iphone / sizeof *iphone; ++i)
+	for (size_t i = 0; !specific && i < array_size(iphone); ++i)
 		if (godbolt_probe_on(p, iphone[i]))
 			godbolt_probe_os(p, "ios", "darwin", iphone[i]);
 	if (godbolt_probe_on(p, "TARGET_OS_OSX"))
@@ -315,7 +313,7 @@ godbolt_probe_system (struct godbolt_probe *p)
 		godbolt_probe_os(p, "windows", "windows", "_WIN64");
 	else if (godbolt_probe_on(p, "_WIN32"))
 		godbolt_probe_os(p, "windows", "windows", "_WIN32");
-	for (size_t i = 0; i < sizeof names / sizeof *names; ++i)
+	for (size_t i = 0; i < array_size(names); ++i)
 		if (godbolt_probe_on(p, names[i].macro))
 			godbolt_probe_os(p, names[i].os, names[i].os, names[i].macro);
 	if (godbolt_probe_on(p, "__sun") && godbolt_probe_on(p, "__SVR4")) {
@@ -392,7 +390,7 @@ godbolt_probe_check_model (struct godbolt_probe *p,
 	for (uint32_t i = 0; differs && i < pointer->n; ++i)
 		godbolt_probe_cite(p, GODBOLT_PROBE_DATA_MODEL, pointer->evidence[i]);
 	static char const *const keys[] = { "__SIZEOF_INT__", "__SIZEOF_LONG__" };
-	for (size_t i = 0; byte && i < sizeof keys / sizeof *keys; ++i) {
+	for (size_t i = 0; byte && i < array_size(keys); ++i) {
 		uint64_t const want = i && !strcmp(model->value, "lp64") ? 64 : 32;
 		uint64_t size = 0;
 		if (!godbolt_probe_integer(p, keys[i], &size) ||
@@ -452,7 +450,7 @@ godbolt_probe_endianness (struct godbolt_probe *p)
 	};
 	uint64_t order = 0;
 	bool const known = godbolt_probe_integer(p, "__BYTE_ORDER__", &order);
-	for (size_t i = 0; known && i < sizeof orders / sizeof *orders; ++i) {
+	for (size_t i = 0; known && i < array_size(orders); ++i) {
 		uint64_t value = 0;
 		if (!godbolt_probe_integer(p, orders[i].key, &value) || value != order)
 			continue;
@@ -759,10 +757,7 @@ godbolt_probe_init (struct godbolt_probe *dest,
 	}
 	int const e = godbolt_probe_parse(dest, text ? text : "", len);
 	if (e) {
-		free(dest->store);
-		dest->store = nullptr;
-		dest->n_macros = 0;
-		dest->n_headers = 0;
+		godbolt_probe_fini(dest);
 		return e;
 	}
 	godbolt_probe_architecture(dest);

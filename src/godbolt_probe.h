@@ -86,9 +86,9 @@ godbolt_probe_source (size_t *len);
  *
  * Returns 0, or an error number with a constant reason in dest->why:
  * EOVERFLOW if a line is "[Truncated]", EPROTO if the block is missing or
- * not valid, or ENOMEM.  It returns EINVAL without a reason if @p dest is
- * nullptr, or if @p text is nullptr and @p len is not 0.  After an error,
- * @p dest has no memory to free.
+ * not valid, EINVAL if @p text is nullptr and @p len is not 0, or ENOMEM.
+ * It returns EINVAL without a reason if @p dest is nullptr.  After an
+ * error, @p dest has no memory to free.
  */
 extern int
 godbolt_probe_init (struct godbolt_probe *dest,
