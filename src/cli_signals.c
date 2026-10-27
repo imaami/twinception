@@ -65,12 +65,8 @@ cli_signals_init (struct cli_signals *signals,
 void
 cli_signals_fini (struct cli_signals *signals)
 {
-	int fd = signals->ref.fd;
 	if (signals->loop)
-		cli_loop_unwatch(signals->loop, &signals->ref);
-	if (fd >= 0)
-		(void)close(fd);
-	signals->ref.fd = -1;
+		cli_loop_close(signals->loop, &signals->ref);
 	if (signals->ignored)
 		(void)sigaction(SIGPIPE, &signals->pipe, nullptr);
 	if (signals->masked)

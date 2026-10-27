@@ -31,6 +31,7 @@
 #include "dstr.h"
 #include "jb.h"
 #include "list.h"
+#include "loop.h"
 
 static struct cstr_view
 cli_trim (struct cstr_view text)
@@ -286,7 +287,7 @@ static void
 cli_shutdown (struct cli *cli)
 {
 	if (!cli->exit_due)
-		cli->exit_due = cli_loop_clock() + 2'000'000'000;
+		cli->exit_due = loop_clock() + 2'000'000'000;
 	cli->reactor.until = cli->exit_due;
 	atomic_store(&cli->cancel_io, true);
 	cli_network_cancel(cli->network, true);
@@ -356,7 +357,7 @@ static void
 cli_service (struct cli_loop *loop)
 {
 	struct cli *cli = container_of(loop, struct cli, reactor);
-	if (cli->exit_due && cli_loop_clock() >= cli->exit_due)
+	if (cli->exit_due && loop_clock() >= cli->exit_due)
 		cli_force_exit(cli);
 	cli_network_service(cli->network);
 	if (cli->console) {
@@ -431,7 +432,7 @@ cli_work_wait (struct cli *cli,
 		int turn = cli_loop_turn(&cli->reactor, due);
 		if (turn)
 			cli_force_exit(cli);
-		if (cli->exit_due && cli_loop_clock() >= cli->exit_due && !work.done)
+		if (cli->exit_due && loop_clock() >= cli->exit_due && !work.done)
 			cli_force_exit(cli);
 	}
 	cli->busy = busy;
@@ -1231,7 +1232,7 @@ cli_run (struct cli_options const *options,
 		cli_shutdown(cli);
 		while (!list_is_empty(&cli->tools)) {
 			int turn = cli_loop_turn(&cli->reactor, cli->exit_due);
-			if (turn || cli_loop_clock() >= cli->exit_due)
+			if (turn || loop_clock() >= cli->exit_due)
 				cli_force_exit(cli);
 		}
 	}
@@ -1254,16 +1255,16 @@ cli_run (struct cli_options const *options,
 	if (cli->console)
 		(void)cli_console_suspend(cli->console);
 	cli_io_stop(cli->io);
-	uint64_t due = cli->exit_due ? cli->exit_due : cli_loop_clock() + 2'000'000'000;
+	uint64_t due = cli->exit_due ? cli->exit_due : loop_clock() + 2'000'000'000;
 	while (!cli_io_done(cli->io)) {
 		int turn = cli_loop_turn(&cli->reactor, due);
-		if (turn || cli_loop_clock() >= due)
+		if (turn || loop_clock() >= due)
 			cli_force_exit(cli);
 	}
 	cli_network_stop(cli->network);
 	while (!cli_network_done(cli->network)) {
 		int turn = cli_loop_turn(&cli->reactor, due);
-		if (turn || cli_loop_clock() >= due)
+		if (turn || loop_clock() >= due)
 			cli_force_exit(cli);
 	}
 	cli_network_destroy(&cli->network);

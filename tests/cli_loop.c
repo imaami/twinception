@@ -7,11 +7,11 @@
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
-#include <unistd.h>
 
 #include "cli_loop.h"
 #include "cli_mailbox.h"
 #include "compat.h"
+#include "loop.h"
 
 struct cli_loop_test {
 	struct cli_loop loop;
@@ -103,22 +103,18 @@ cli_loop_test_after (struct cli_loop *loop)
 }
 
 static void
-cli_loop_test_released (struct cli_loop_ref *ref)
-{
-	struct cli_loop_test_ref *watch = container_of(ref, struct cli_loop_test_ref, ref);
-	++watch->test->released;
-	free(watch);
-	watch = nullptr;
-}
-
-static void
 cli_loop_test_event (struct cli_loop     *loop,
                      struct cli_loop_ref *ref,
                      uint32_t             events)
 {
 	assert(events & EPOLLIN);
-	assert(!close(ref->fd));
-	cli_loop_release(loop, ref, cli_loop_test_released);
+	struct cli_loop_test_ref *watch = container_of(ref, struct cli_loop_test_ref, ref);
+	assert(cli_loop_counter(loop, ref) == 1);
+	cli_loop_close(loop, ref);
+	assert(ref->fd < 0 && !loop->error);
+	++watch->test->released;
+	free(watch);
+	watch = nullptr;
 }
 
 static void
@@ -132,10 +128,10 @@ cli_loop_test_turns (struct cli_loop_test *test)
 	assert(!cli_loop_turn(&test->loop, UINT64_MAX));
 	assert(test->turns == 3 && test->steps == 3);
 	test->loop.after_turn = nullptr;
-	uint64_t due = cli_loop_clock() + 10000000;
+	uint64_t due = loop_clock() + 10000000;
 	test->loop.until = due;
 	assert(!cli_loop_turn(&test->loop, UINT64_MAX));
-	assert(cli_loop_clock() >= due);
+	assert(loop_clock() >= due);
 	test->loop.until = UINT64_MAX;
 	for (size_t i = 0; i < 4; ++i) {
 		struct cli_loop_test_ref *watch = malloc(sizeof(*watch));
@@ -145,7 +141,7 @@ cli_loop_test_turns (struct cli_loop_test *test)
 		assert(fd >= 0);
 		assert(!cli_loop_watch(&test->loop, &watch->ref, fd, EPOLLIN, cli_loop_test_event));
 	}
-	assert(!cli_loop_turn(&test->loop, cli_loop_clock() + 1000000000));
+	assert(!cli_loop_turn(&test->loop, loop_clock() + 1000000000));
 	assert(test->released == 4);
 }
 
@@ -191,14 +187,14 @@ cli_loop_test_threads (struct cli_loop_test *test)
 		producers[i] = (struct cli_loop_test_producer){ &test->mailbox, i };
 		assert(!pthread_create(&threads[i], nullptr, cli_loop_test_produce, &producers[i]));
 	}
-	uint64_t deadline = cli_loop_clock() + 10000000000;
+	uint64_t deadline = loop_clock() + 10000000000;
 	for (;;) {
 		size_t received = 0;
 		for (size_t i = 0; i < array_size(test->received); ++i)
 			received += test->received[i];
 		if (received == 8000)
 			break;
-		assert(cli_loop_clock() < deadline);
+		assert(loop_clock() < deadline);
 		assert(!cli_loop_turn(&test->loop, deadline));
 	}
 	for (size_t i = 0; i < array_size(threads); ++i)

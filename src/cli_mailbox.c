@@ -14,15 +14,7 @@ cli_mailbox_wake (struct cli_loop     *loop,
 {
 	(void)events;
 	struct cli_mailbox *mailbox = container_of(ref, struct cli_mailbox, wake);
-	uint64_t count;
-	ssize_t n;
-	do {
-		n = read(ref->fd, &count, sizeof(count));
-	} while (n < 0 && errno == EINTR);
-	if (n < 0 && errno != EAGAIN)
-		loop->error = errno;
-	else if (n >= 0 && n != (ssize_t)sizeof(count))
-		loop->error = EIO;
+	(void)cli_loop_counter(loop, ref);
 	cli_loop_ready(loop, &mailbox->drain);
 }
 
@@ -164,11 +156,7 @@ cli_mailbox_fini (struct cli_mailbox *mailbox)
 	if (e && !mailbox->loop->error)
 		mailbox->loop->error = e;
 	cli_loop_unready(&mailbox->drain);
-	int fd = mailbox->wake.fd;
-	cli_loop_unwatch(mailbox->loop, &mailbox->wake);
-	if (fd >= 0)
-		close(fd);
-	mailbox->wake.fd = -1;
+	cli_loop_close(mailbox->loop, &mailbox->wake);
 	e = pthread_mutex_destroy(&mailbox->mutex);
 	if (e && !mailbox->loop->error)
 		mailbox->loop->error = e;

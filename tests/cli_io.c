@@ -74,14 +74,14 @@ cli_io_test_run (struct loop *network,
 		e = cli_io_submit(io, &jobs[i].job);
 		assert(e == (i == 32 ? EAGAIN : 0));
 	}
-	uint64_t deadline = cli_loop_clock() + 5000000000;
+	uint64_t deadline = loop_clock() + 5000000000;
 	while (completed != 32) {
-		assert(cli_loop_clock() < deadline);
+		assert(loop_clock() < deadline);
 		assert(!cli_loop_turn(&ui, deadline));
 	}
 	cli_io_stop(io);
 	while (!cli_io_done(io)) {
-		assert(cli_loop_clock() < deadline);
+		assert(loop_clock() < deadline);
 		assert(!cli_loop_turn(&ui, deadline));
 	}
 	cli_io_destroy(&io);

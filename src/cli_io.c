@@ -35,15 +35,7 @@ cli_io_notify (struct cli_loop     *loop,
 {
 	(void)events;
 	struct cli_io *io = container_of(ref, struct cli_io, notify);
-	uint64_t count;
-	int e;
-	do {
-		e = eventfd_read(ref->fd, &count) ? errno : 0;
-	} while (e == EINTR);
-	if (!e)
-		io->exited += (uint32_t)count;
-	else if (e != EAGAIN && !loop->error)
-		loop->error = e;
+	io->exited += (uint32_t)cli_loop_counter(loop, ref);
 	struct list completed;
 	list_init(&completed);
 	pthread_mutex_lock(&io->mutex);
@@ -188,15 +180,14 @@ cli_io_destroy (struct cli_io **p_io)
 	struct cli_io *io = *p_io;
 	bool notify_unused = !io->blocker;
 	blocker_destroy(&io->blocker);
-	int fd = io->notify.fd;
-	cli_loop_unwatch(io->mailbox->loop, &io->notify);
 	/* blocker_done() precedes each worker's final write. A normal start
 	 * accounts for both writes above. After a partial start the opaque
 	 * blocker does not expose how many workers exist: retain that fd
 	 * until process exit, as blocker_create() requires. */
-	if (fd >= 0 && (io->started || notify_unused))
-		(void)close(fd);
-	io->notify.fd = -1;
+	if (io->started || notify_unused)
+		cli_loop_close(io->mailbox->loop, &io->notify);
+	else
+		cli_loop_unwatch(io->mailbox->loop, &io->notify);
 	pthread_mutex_destroy(&io->mutex);
 	free(io);
 	*p_io = nullptr;

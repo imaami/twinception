@@ -30,6 +30,7 @@
 #include "dstr.h"
 #include "jb.h"
 #include "list.h"
+#include "loop.h"
 
 enum {
 	CLI_CONSOLE_INPUT_LIMIT   = 1024 * 1024 * 16,
@@ -332,7 +333,7 @@ cli_console_wait (struct cli_console *console,
 			return e;
 		if (console->input_offset < console->input_size || console->input_eof)
 			break;
-		if (deadline != UINT64_MAX && cli_loop_clock() >= deadline)
+		if (deadline != UINT64_MAX && loop_clock() >= deadline)
 			return 0;
 		e = cli_loop_turn(console->loop, deadline);
 		if (e)
@@ -379,7 +380,7 @@ cli_console_available (void)
 	struct cli_console *console = cli_console_active;
 	int timeout = rl_set_keyboard_input_timeout(-1);
 	uint64_t deadline = timeout < 0 ? UINT64_MAX :
-	                    cli_loop_clock() + (uint64_t)timeout * 1000;
+	                    loop_clock() + (uint64_t)timeout * 1000;
 	console->input_error = cli_console_wait(console, deadline);
 	return console->input_error || console->input_eof ||
 	       console->input_offset < console->input_size;
@@ -726,7 +727,7 @@ cli_console_tab (int count,
                  int key)
 {
 	struct cli_console *console = cli_console_active;
-	uint64_t now = cli_loop_clock();
+	uint64_t now = loop_clock();
 	bool repeated = rl_last_func == cli_console_tab && now - console->completion_time <= CLI_CONSOLE_TAB_INTERVAL;
 	console->completion_time = now;
 	if (repeated && (console->completion_flags & CLI_CONSOLE_TAB_COMPLETED)) {

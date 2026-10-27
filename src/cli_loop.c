@@ -8,14 +8,22 @@
 
 #include "cli_loop.h"
 #include "compat.h"
+#include "loop.h"
 
 uint64_t
-cli_loop_clock (void)
+cli_loop_counter (struct cli_loop     *loop,
+                  struct cli_loop_ref *ref)
 {
-	struct timespec now;
-	if (clock_gettime(CLOCK_MONOTONIC, &now))
-		return 0;
-	return (uint64_t)now.tv_sec * 1000000000 + (uint64_t)now.tv_nsec;
+	uint64_t count;
+	ssize_t n;
+	do {
+		n = read(ref->fd, &count, sizeof count);
+	} while (n < 0 && errno == EINTR);
+	if (n == (ssize_t)sizeof count)
+		return count;
+	if ((n >= 0 || errno != EAGAIN) && !loop->error)
+		loop->error = n < 0 ? errno : EIO;
+	return 0;
 }
 
 static void
@@ -24,15 +32,7 @@ cli_loop_timer_read (struct cli_loop     *loop,
                      uint32_t             events)
 {
 	(void)events;
-	uint64_t count;
-	ssize_t n;
-	do {
-		n = read(ref->fd, &count, sizeof(count));
-	} while (n < 0 && errno == EINTR);
-	if (n < 0 && errno != EAGAIN)
-		loop->error = errno;
-	else if (n >= 0 && n != (ssize_t)sizeof(count))
-		loop->error = EIO;
+	(void)cli_loop_counter(loop, ref);
 }
 
 int
@@ -45,7 +45,6 @@ cli_loop_init (struct cli_loop *loop)
 		.epfd = -1,
 	};
 	list_init(&loop->refs);
-	list_init(&loop->dead);
 	list_init(&loop->ready);
 	loop->epfd = epoll_create1(EPOLL_CLOEXEC);
 	if (loop->epfd < 0)
@@ -82,22 +81,6 @@ cli_loop_watch (struct cli_loop     *loop,
 	return 0;
 }
 
-int
-cli_loop_modify (struct cli_loop     *loop,
-                 struct cli_loop_ref *ref,
-                 uint32_t             events)
-{
-	if (!ref || ref->fd < 0)
-		return EINVAL;
-	if (ref->events == events)
-		return 0;
-	struct epoll_event event = { .events = events, .data.ptr = ref };
-	if (epoll_ctl(loop->epfd, EPOLL_CTL_MOD, ref->fd, &event))
-		return errno;
-	ref->events = events;
-	return 0;
-}
-
 void
 cli_loop_unwatch (struct cli_loop     *loop,
                   struct cli_loop_ref *ref)
@@ -112,26 +95,14 @@ cli_loop_unwatch (struct cli_loop     *loop,
 }
 
 void
-cli_loop_release (struct cli_loop     *loop,
-                  struct cli_loop_ref *ref,
-                  cli_loop_release_cb *release)
+cli_loop_close (struct cli_loop     *loop,
+                struct cli_loop_ref *ref)
 {
+	int fd = ref->fd;
+	if (fd < 0)
+		return;
 	cli_loop_unwatch(loop, ref);
-	ref->release = release;
-	list_append(&loop->dead, &ref->hook);
-}
-
-static void
-cli_loop_reap (struct cli_loop *loop)
-{
-	while (!list_is_empty(&loop->dead)) {
-		struct cli_loop_ref *ref = container_of(loop->dead.next, struct cli_loop_ref, hook);
-		list_del(&ref->hook);
-		cli_loop_release_cb *release = ref->release;
-		ref->release = nullptr;
-		if (release)
-			release(ref);
-	}
+	(void)close(fd);
 }
 
 void
@@ -196,11 +167,11 @@ cli_loop_turn (struct cli_loop *loop,
 		return loop->error;
 	if (deadline > loop->until)
 		deadline = loop->until;
-	bool expired = deadline != UINT64_MAX && deadline <= cli_loop_clock();
+	bool expired = deadline != UINT64_MAX && deadline <= loop_clock();
 	int e = cli_loop_timer_set(loop, expired ? UINT64_MAX : deadline);
 	if (e)
 		return e;
-	int timeout = expired || !list_is_empty(&loop->ready) || !list_is_empty(&loop->dead) ? 0 : -1;
+	int timeout = expired || !list_is_empty(&loop->ready) ? 0 : -1;
 	struct epoll_event events[64];
 	int n;
 	do {
@@ -215,7 +186,6 @@ cli_loop_turn (struct cli_loop *loop,
 			ref->cb(loop, ref, events[i].events);
 	}
 	cli_loop_steps(loop);
-	cli_loop_reap(loop);
 	loop->dispatching = 0;
 	if (!loop->error && loop->after_turn)
 		loop->after_turn(loop);
@@ -225,15 +195,11 @@ cli_loop_turn (struct cli_loop *loop,
 void
 cli_loop_fini (struct cli_loop *loop)
 {
-	cli_loop_reap(loop);
-	int timer_fd = loop->timer.fd;
+	cli_loop_close(loop, &loop->timer);
 	while (!list_is_empty(&loop->refs)) {
 		struct cli_loop_ref *ref = container_of(loop->refs.next, struct cli_loop_ref, hook);
 		cli_loop_unwatch(loop, ref);
 	}
-	if (timer_fd >= 0)
-		close(timer_fd);
-	loop->timer.fd = -1;
 	while (!list_is_empty(&loop->ready)) {
 		struct cli_loop_step *step = container_of(loop->ready.next, struct cli_loop_step, hook);
 		cli_loop_unready(step);

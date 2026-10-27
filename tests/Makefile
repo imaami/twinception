@@ -101,8 +101,9 @@ $Otests/cli_io: $Otests/cli_io.c.o $Otests/src/cli_io.c.o $Otests/src/cli_loop.c
                 $Otests/src/cli_mailbox.c.o $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
 $Otests/cli_io:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 
-$Otests/cli_loop: $Otests/cli_loop.c.o $Otests/src/cli_loop.c.o $Otests/src/cli_mailbox.c.o
-$Otests/cli_loop:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
+$Otests/cli_loop: $Otests/cli_loop.c.o $Otests/src/cli_loop.c.o $Otests/src/cli_mailbox.c.o \
+                  $Otests/src/loop.c.o $Otests/src/log.c.o
+$Otests/cli_loop:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 
 $Otests/cli_scrollback: $Otests/cli_scrollback.c.o $Otests/src/cli_render.c.o $Otests/src/cli_scrollback.c.o $Otests/src/cli_style.c.o \
                        $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o
