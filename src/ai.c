@@ -153,114 +153,40 @@ ai_request_common (struct ai_endpoint const *ep,
 	return 0;
 }
 
-/* The model, if @p ep names one, first in @p root. */
-static int
-ai_request_model (struct ai_endpoint const *ep,
-                  struct json_object       *root)
-{
-	return ep->model ? jb_set(root, "model", json_object_new_string(ep->model)) : 0;
-}
+/* How each API's body is built around its conversation, the member that
+ * ai_format() names: the member of the system prompt, which chat
+ * completions has in the conversation instead; the object of the
+ * generation options, or the body itself; the member of the token limit,
+ * and its default; and which other members it has. */
+enum {
+	BODY_MODEL  = 1 << 0,  /* the model, first */
+	BODY_USAGE  = 1 << 1,  /* with tools, the usage in the stream */
+	BODY_STORE  = 1 << 2,  /* "store", false */
+	BODY_KEEP   = 1 << 3,  /* "store", true with native background
+	                          execution, which needs storage */
+	BODY_STREAM = 1 << 4,  /* "stream", after --extra is merged, so that the
+	                          answer is always streamed */
+};
 
-/* Chat completions' body, which streams by the body, whatever --extra
- * says. */
-static int
-ai_request_chat (struct ai_endpoint const *ep,
-                 struct json_object       *root,
-                 struct json_object       *system,
-                 struct json_object       *prompt,
-                 struct json_object       *history,
-                 struct json_object       *tools)
-{
-	if (ai_request_model(ep, root) ||
-	    jb_set(root, "messages", ai_conversation(AI_CHAT, system, history, prompt)) ||
-	    (tools && (jb_set(root, "tools", json_object_get(tools)) ||
-	               jb_set(root, "stream_options", jb_object(
-	                      "include_usage", json_object_new_boolean(1),
-	                      nullptr)))) ||
-	    ai_request_common(ep, root, nullptr, "max_tokens", ep->max_tokens))
-		return ENOMEM;
-	return jb_set(root, "stream", json_object_new_boolean(1));
-}
-
-/* The Responses API's body, which streams by the body. */
-static int
-ai_request_responses (struct ai_endpoint const *ep,
-                      struct json_object       *root,
-                      struct json_object       *system,
-                      struct json_object       *prompt,
-                      struct json_object       *history,
-                      struct json_object       *tools)
-{
-	if (ai_request_model(ep, root) ||
-	    jb_set(root, "input", ai_conversation(AI_RESPONSES, nullptr, history, prompt)) ||
-	    (system && jb_set(root, "instructions", json_object_get(system))) ||
-	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
-	    jb_set(root, "store", json_object_new_boolean(0)) ||
-	    ai_request_common(ep, root, nullptr, "max_output_tokens", ep->max_tokens) ||
-	    (ai_background(ep) && jb_set(root, "background", json_object_new_boolean(1))))
-		return ENOMEM;
-	return jb_set(root, "stream", json_object_new_boolean(1));
-}
-
-/* Anthropic's body, which needs max_tokens and streams by the body. */
-static int
-ai_request_messages (struct ai_endpoint const *ep,
-                     struct json_object       *root,
-                     struct json_object       *system,
-                     struct json_object       *prompt,
-                     struct json_object       *history,
-                     struct json_object       *tools)
-{
-	long max_tokens = ep->max_tokens > 0 ? ep->max_tokens : MESSAGES_MAX_TOKENS;
-	if (ai_request_model(ep, root) ||
-	    jb_set(root, "messages", ai_conversation(AI_MESSAGES, nullptr, history, prompt)) ||
-	    (system && jb_set(root, "system", json_object_get(system))) ||
-	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
-	    ai_request_common(ep, root, nullptr, "max_tokens", max_tokens))
-		return ENOMEM;
-	return jb_set(root, "stream", json_object_new_boolean(1));
-}
-
-/* Gemini's body, whose URL names the model and asks for a stream. */
-static int
-ai_request_generate (struct ai_endpoint const *ep,
-                     struct json_object       *root,
-                     struct json_object       *system,
-                     struct json_object       *prompt,
-                     struct json_object       *history,
-                     struct json_object       *tools)
-{
-	if (jb_set(root, "contents", ai_conversation(AI_GENERATE, nullptr, history, prompt)) ||
-	    (system && jb_set(root, "systemInstruction",
-	                      ai_generate_content(nullptr, system))) ||
-	    (tools && jb_set(root, "tools", json_object_get(tools))))
-		return ENOMEM;
-	return ai_request_common(ep, root, "generationConfig", "maxOutputTokens",
-	                         ep->max_tokens);
-}
-
-/* The request body of Gemini's Interactions. Native background execution
- * needs storage; --extra can still override that default. stream is set
- * after --extra is merged, so that the answer is always streamed. */
-static int
-ai_request_interactions (struct ai_endpoint const *ep,
-                         struct json_object       *root,
-                         struct json_object       *system,
-                         struct json_object       *prompt,
-                         struct json_object       *history,
-                         struct json_object       *tools)
-{
-	if (ai_request_model(ep, root) ||
-	    jb_set(root, "input", ai_conversation(AI_INTERACTIONS, nullptr, history, prompt)) ||
-	    (system && jb_set(root, "system_instruction", json_object_get(system))) ||
-	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
-	    jb_set(root, "store", json_object_new_boolean(ai_background(ep))) ||
-	    ai_request_common(ep, root, "generation_config", "max_output_tokens",
-	                      ep->max_tokens) ||
-	    (ai_background(ep) && jb_set(root, "background", json_object_new_boolean(1))))
-		return ENOMEM;
-	return jb_set(root, "stream", json_object_new_boolean(1));
-}
+static struct ai_body {
+	char const *system;
+	char const *options;
+	char const *max;
+	int32_t     max_default;
+	uint32_t    flags;
+} const ai_bodies[] = {
+	[AI_CHAT]         = { nullptr, nullptr, "max_tokens", 0,
+	                      BODY_MODEL | BODY_USAGE | BODY_STREAM },
+	[AI_RESPONSES]    = { "instructions", nullptr, "max_output_tokens", 0,
+	                      BODY_MODEL | BODY_STORE | BODY_STREAM },
+	[AI_MESSAGES]     = { "system", nullptr, "max_tokens", MESSAGES_MAX_TOKENS,
+	                      BODY_MODEL | BODY_STREAM },
+	[AI_GENERATE]     = { "systemInstruction", "generationConfig", "maxOutputTokens", 0,
+	                      0 },
+	[AI_INTERACTIONS] = { "system_instruction", "generation_config",
+	                      "max_output_tokens", 0,
+	                      BODY_MODEL | BODY_STORE | BODY_KEEP | BODY_STREAM },
+};
 
 /* Move the conversation, @p root's member @p key, to its end, after what
  * --extra added, so that turns may follow it, unless --extra took it away. */
@@ -286,25 +212,28 @@ ai_request (struct ai_endpoint const *ep,
 	struct json_object *root = json_object_new_object();
 	if (!root)
 		return nullptr;
-	int e = 0;
-	switch (ep->api) {
-	case AI_CHAT:
-		e = ai_request_chat(ep, root, system, prompt, history, tools);
-		break;
-	case AI_RESPONSES:
-		e = ai_request_responses(ep, root, system, prompt, history, tools);
-		break;
-	case AI_MESSAGES:
-		e = ai_request_messages(ep, root, system, prompt, history, tools);
-		break;
-	case AI_GENERATE:
-		e = ai_request_generate(ep, root, system, prompt, history, tools);
-		break;
-	case AI_INTERACTIONS:
-		e = ai_request_interactions(ep, root, system, prompt, history, tools);
-		break;
-	}
-	if (e || ai_request_last(root, ai_format(ep->api)->conversation)) {
+	struct ai_body const *b = &ai_bodies[ep->api];
+	char const *conversation = ai_format(ep->api)->conversation;
+	bool background = ai_background(ep);
+	if ((b->flags & BODY_MODEL && ep->model &&
+	     jb_set(root, "model", json_object_new_string(ep->model))) ||
+	    jb_set(root, conversation, ai_conversation(ep->api, b->system ? nullptr : system,
+	                                               history, prompt)) ||
+	    (system && b->system &&
+	     jb_set(root, b->system, ep->api == AI_GENERATE
+	                             ? ai_generate_content(nullptr, system)
+	                             : json_object_get(system))) ||
+	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
+	    (tools && b->flags & BODY_USAGE &&
+	     jb_set(root, "stream_options", jb_object("include_usage",
+	                                              json_object_new_boolean(1), nullptr))) ||
+	    (b->flags & BODY_STORE &&
+	     jb_set(root, "store", json_object_new_boolean(b->flags & BODY_KEEP && background))) ||
+	    ai_request_common(ep, root, b->options, b->max,
+	                      ep->max_tokens > 0 ? ep->max_tokens : b->max_default) ||
+	    (background && jb_set(root, "background", json_object_new_boolean(1))) ||
+	    (b->flags & BODY_STREAM && jb_set(root, "stream", json_object_new_boolean(1))) ||
+	    ai_request_last(root, conversation)) {
 		json_object_put(root);
 		return nullptr;
 	}
