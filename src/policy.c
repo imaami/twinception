@@ -1096,3 +1096,10 @@ policy_grant (struct policy const      *policy,
 	return policy_grant_role(policy, policy->anonymous[kind], 0, policy->strangers[kind],
 	                         g);
 }
+
+void
+policy_sort_ids (uint32_t *ids,
+                 size_t    n)
+{
+	qsort(ids, n, sizeof *ids, policy_by_id);
+}

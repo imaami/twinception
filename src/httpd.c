@@ -79,6 +79,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/epoll.h>
+#include <sys/random.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -86,6 +87,7 @@
 #include <unistd.h>
 
 #include "buf.h"
+#include "cstr_view.h"
 #include "hist.h"
 #include "httpd.h"
 #include "list.h"
@@ -318,6 +320,8 @@ struct httpd_home {
 	size_t                  n_listeners;
 	size_t                  turn;       /* the listener to accept from next */
 	uint64_t                rng;        /* xorshift64 */
+	uint64_t                seed;       /* of the hash of the clients, which
+	                                       no client knows */
 	size_t                  conns;      /* placed, and not given back */
 	size_t                  fd_budget;  /* for conns + calls, from
 	                                       RLIMIT_NOFILE */
@@ -336,14 +340,6 @@ struct httpd_home {
 
 /* Home's door, for the connections given back. */
 static thread_local struct httpd_home *door;
-
-/* A run of response bytes. */
-struct httpd_frag {
-	char const *ptr;
-	size_t      len;
-};
-
-#define FRAG(s) ((struct httpd_frag){ s, sizeof s - 1 })
 
 /* Decimal @p n written backwards from @p end; returns its first digit. */
 static char *
@@ -373,28 +369,28 @@ httpd_after (uint64_t since,
 	return s ? since + s * NS : UINT64_MAX;
 }
 
-static struct httpd_frag
+static struct cstr_view
 httpd_reason (unsigned status)
 {
 	switch (status) {
-	case 200: return FRAG("OK");
-	case 202: return FRAG("Accepted");
-	case 204: return FRAG("No Content");
-	case 400: return FRAG("Bad Request");
-	case 401: return FRAG("Unauthorized");
-	case 403: return FRAG("Forbidden");
-	case 404: return FRAG("Not Found");
-	case 405: return FRAG("Method Not Allowed");
-	case 408: return FRAG("Request Timeout");
-	case 413: return FRAG("Content Too Large");
-	case 415: return FRAG("Unsupported Media Type");
-	case 417: return FRAG("Expectation Failed");
-	case 431: return FRAG("Request Header Fields Too Large");
-	case 500: return FRAG("Internal Server Error");
-	case 501: return FRAG("Not Implemented");
-	case 503: return FRAG("Service Unavailable");
-	case 505: return FRAG("HTTP Version Not Supported");
-	default:  return FRAG("Unknown");
+	case 200: return CSTR_VIEW("OK");
+	case 202: return CSTR_VIEW("Accepted");
+	case 204: return CSTR_VIEW("No Content");
+	case 400: return CSTR_VIEW("Bad Request");
+	case 401: return CSTR_VIEW("Unauthorized");
+	case 403: return CSTR_VIEW("Forbidden");
+	case 404: return CSTR_VIEW("Not Found");
+	case 405: return CSTR_VIEW("Method Not Allowed");
+	case 408: return CSTR_VIEW("Request Timeout");
+	case 413: return CSTR_VIEW("Content Too Large");
+	case 415: return CSTR_VIEW("Unsupported Media Type");
+	case 417: return CSTR_VIEW("Expectation Failed");
+	case 431: return CSTR_VIEW("Request Header Fields Too Large");
+	case 500: return CSTR_VIEW("Internal Server Error");
+	case 501: return CSTR_VIEW("Not Implemented");
+	case 503: return CSTR_VIEW("Service Unavailable");
+	case 505: return CSTR_VIEW("HTTP Version Not Supported");
+	default:  return CSTR_VIEW("Unknown");
 	}
 }
 
@@ -439,24 +435,16 @@ httpd_has_token (char const *list,
 	return false;
 }
 
-/* A string to match, with its length. */
-struct httpd_name {
-	char const *str;
-	size_t      len;
-};
-
-#define NAME(s) { s, sizeof s - 1 }
-
 /* Whether @p host, a Host field or an origin's host and port, names this
  * machine by loopback, whatever the port. */
 static bool
 httpd_loopback_host (char const *host)
 {
-	static struct httpd_name const names[] = {
-		NAME("localhost"), NAME("127.0.0.1"), NAME("[::1]")
+	static struct cstr_view const names[] = {
+		CSTR_VIEW_INIT("localhost"), CSTR_VIEW_INIT("127.0.0.1"), CSTR_VIEW_INIT("[::1]")
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
-		if (strncasecmp(host, names[i].str, names[i].len))
+		if (strncasecmp(host, names[i].data, names[i].len))
 			continue;
 		char const *port = host + names[i].len;
 		if (!*port)
@@ -481,19 +469,17 @@ enum httpd_header {
 	HEADERS
 };
 
-static struct httpd_name const httpd_headers[HEADERS] = {
-	[HEADER_HOST]              = NAME("host"),
-	[HEADER_ORIGIN]            = NAME("origin"),
-	[HEADER_AUTHORIZATION]     = NAME("authorization"),
-	[HEADER_ACRH]              = NAME("access-control-request-headers"),
-	[HEADER_CONTENT_LENGTH]    = NAME("content-length"),
-	[HEADER_TRANSFER_ENCODING] = NAME("transfer-encoding"),
-	[HEADER_CONNECTION]        = NAME("connection"),
-	[HEADER_EXPECT]            = NAME("expect"),
-	[HEADER_PNA]               = NAME("access-control-request-private-network"),
+static struct cstr_view const httpd_headers[HEADERS] = {
+	[HEADER_HOST]              = CSTR_VIEW_INIT("host"),
+	[HEADER_ORIGIN]            = CSTR_VIEW_INIT("origin"),
+	[HEADER_AUTHORIZATION]     = CSTR_VIEW_INIT("authorization"),
+	[HEADER_ACRH]              = CSTR_VIEW_INIT("access-control-request-headers"),
+	[HEADER_CONTENT_LENGTH]    = CSTR_VIEW_INIT("content-length"),
+	[HEADER_TRANSFER_ENCODING] = CSTR_VIEW_INIT("transfer-encoding"),
+	[HEADER_CONNECTION]        = CSTR_VIEW_INIT("connection"),
+	[HEADER_EXPECT]            = CSTR_VIEW_INIT("expect"),
+	[HEADER_PNA]               = CSTR_VIEW_INIT("access-control-request-private-network"),
 };
-
-#undef NAME
 
 /* Which of httpd_headers @p name, of @p len bytes, is; HEADERS if none. */
 static enum httpd_header
@@ -502,7 +488,7 @@ httpd_header (char const *name,
 {
 	size_t i = 0;
 	while (i < HEADERS && (len != httpd_headers[i].len ||
-	                       strncasecmp(name, httpd_headers[i].str, len)))
+	                       strncasecmp(name, httpd_headers[i].data, len)))
 		++i;
 	return (enum httpd_header)i;
 }
@@ -753,12 +739,12 @@ httpd_req_parse (struct httpd_req          *req,
 }
 
 /* The value of header @p f, empty with a null pointer if absent. */
-static struct httpd_frag
+static struct cstr_view
 httpd_conn_field (struct httpd_conn const *conn,
                   struct httpd_field       f)
 {
 	char const *head = (char const *)buf_peek(&conn->in).ptr;
-	return f.off ? (struct httpd_frag){ head + f.off, f.len } : (struct httpd_frag){};
+	return f.off ? (struct cstr_view){ head + f.off, f.len } : (struct cstr_view){};
 }
 
 /* The address a client is known by: IPv4 (as IPv4-mapped IPv6), or for other
@@ -785,10 +771,8 @@ static struct httpd_client **
 httpd_home_client_slot (struct httpd_home *home,
                         uint64_t const     key[2])
 {
-	uint64_t h = key[0] ^ key[1] * 0x9e3779b97f4a7c15;
-	h = (h ^ h >> 30) * 0xbf58476d1ce4e5b9;
-	h = (h ^ h >> 27) * 0x94d049bb133111eb;
-	struct httpd_client **p = &home->clients[(h ^ h >> 31) & (CLIENT_SLOTS - 1)];
+	uint64_t h = util_hash(home->seed, key, 2 * sizeof *key);
+	struct httpd_client **p = &home->clients[h & (CLIENT_SLOTS - 1)];
 	while (*p && ((*p)->addr[0] != key[0] || (*p)->addr[1] != key[1]))
 		p = &(*p)->next;
 	return p;
@@ -984,8 +968,8 @@ httpd_conn_park (struct httpd_conn *conn,
 }
 
 static size_t
-httpd_frag_len (struct httpd_frag const *f,
-                size_t                   n)
+httpd_frag_len (struct cstr_view const *f,
+                size_t                  n)
 {
 	size_t len = 0;
 	for (size_t i = 0; i < n; ++i)
@@ -1054,9 +1038,9 @@ httpd_conn_doom (struct httpd_conn *conn)
 /* Queue @p n fragments: 0, or EPIPE once the connection is doomed, or the
  * error that dooms it, out of memory. */
 static int
-httpd_conn_put (struct httpd_conn       *conn,
-                struct httpd_frag const *f,
-                size_t                   n)
+httpd_conn_put (struct httpd_conn      *conn,
+                struct cstr_view const *f,
+                size_t                  n)
 {
 	if (conn->doomed)
 		return EPIPE;
@@ -1071,7 +1055,7 @@ httpd_conn_put (struct httpd_conn       *conn,
 	}
 	for (size_t i = 0; i < n; ++i) {
 		if (f[i].len)
-			memcpy(s.ptr, f[i].ptr, f[i].len);
+			memcpy(s.ptr, f[i].data, f[i].len);
 		s.ptr += f[i].len;
 	}
 	buf_commit(&conn->out, total);
@@ -1085,28 +1069,28 @@ httpd_conn_put (struct httpd_conn       *conn,
  * all in, or to a request that asked so, or while the server drains, ends the
  * connection.  Returns as httpd_conn_put() does. */
 static int
-httpd_conn_head (struct httpd_conn       *conn,
-                 unsigned                 status,
-                 struct httpd_frag const *extra,
-                 size_t                   n_extra,
-                 size_t                   length)
+httpd_conn_head (struct httpd_conn      *conn,
+                 unsigned                status,
+                 struct cstr_view const *extra,
+                 size_t                  n_extra,
+                 size_t                  length)
 {
 	struct httpd_req const *req = &conn->req;
 	char digits[20];
-	struct httpd_frag framing[3] = {};
+	struct cstr_view framing[3] = {};
 	if (length != STREAM_OPEN) {
 		/* A 204 has no body to give the length of. */
 		if (status != 204) {
 			char const *len = httpd_decimal(digits + sizeof digits, length);
-			framing[0] = FRAG("Content-Length: ");
-			framing[1] = (struct httpd_frag){ len, (size_t)(digits + sizeof digits - len) };
-			framing[2] = FRAG("\r\n");
+			framing[0] = CSTR_VIEW("Content-Length: ");
+			framing[1] = (struct cstr_view){ len, (size_t)(digits + sizeof digits - len) };
+			framing[2] = CSTR_VIEW("\r\n");
 		}
 	} else if (req->http10) {
 		conn->closing = true;
 	} else {
 		conn->chunks = true;
-		framing[0] = FRAG("Transfer-Encoding: chunked\r\n");
+		framing[0] = CSTR_VIEW("Transfer-Encoding: chunked\r\n");
 	}
 	conn->closing |= req->close || conn->srv->draining || !conn->body_in;
 	conn->replied = true;
@@ -1115,28 +1099,28 @@ httpd_conn_head (struct httpd_conn       *conn,
 	char code[8];
 	code[7] = ' ';
 	char const *c = httpd_decimal(code + 7, status);
-	struct httpd_frag const origin = httpd_conn_field(conn, req->origin);
-	struct httpd_frag f[12 + 9];
+	struct cstr_view const origin = httpd_conn_field(conn, req->origin);
+	struct cstr_view f[12 + 9];
 	size_t n = 0;
-	f[n++] = FRAG("HTTP/1.1 ");
-	f[n++] = (struct httpd_frag){ c, (size_t)(code + 8 - c) };
+	f[n++] = CSTR_VIEW("HTTP/1.1 ");
+	f[n++] = (struct cstr_view){ c, (size_t)(code + 8 - c) };
 	f[n++] = httpd_reason(status);
-	f[n++] = FRAG("\r\n");
+	f[n++] = CSTR_VIEW("\r\n");
 	if (conn->closing)
-		f[n++] = FRAG("Connection: close\r\n");
+		f[n++] = CSTR_VIEW("Connection: close\r\n");
 	for (size_t i = 0; i < ARRAY_SIZE(framing); ++i)
 		f[n++] = framing[i];
-	if (origin.ptr) {
-		f[n++] = FRAG("Access-Control-Allow-Origin: ");
+	if (origin.data) {
+		f[n++] = CSTR_VIEW("Access-Control-Allow-Origin: ");
 		f[n++] = origin;
-		f[n++] = FRAG("\r\nAccess-Control-Allow-Credentials: true\r\n"
-		              "Access-Control-Expose-Headers: Mcp-Session-Id, "
-		              "WWW-Authenticate\r\n"
-		              "Vary: Origin\r\n");
+		f[n++] = CSTR_VIEW("\r\nAccess-Control-Allow-Credentials: true\r\n"
+		                   "Access-Control-Expose-Headers: Mcp-Session-Id, "
+		                   "WWW-Authenticate\r\n"
+		                   "Vary: Origin\r\n");
 	}
 	for (size_t i = 0; i < n_extra; ++i)
 		f[n++] = extra[i];
-	f[n++] = FRAG("\r\n");
+	f[n++] = CSTR_VIEW("\r\n");
 	return httpd_conn_put(conn, f, n);
 }
 
@@ -1144,17 +1128,17 @@ httpd_conn_head (struct httpd_conn       *conn,
  * (and no Content-Type), after @p extra header lines; at most 8 of each.  A
  * failure dooms the connection. */
 static void
-httpd_conn_respond (struct httpd_conn       *conn,
-                    unsigned                 status,
-                    struct httpd_frag const *extra,
-                    size_t                   n_extra,
-                    struct httpd_frag const *body,
-                    size_t                   n_body)
+httpd_conn_respond (struct httpd_conn      *conn,
+                    unsigned                status,
+                    struct cstr_view const *extra,
+                    size_t                  n_extra,
+                    struct cstr_view const *body,
+                    size_t                  n_body)
 {
-	struct httpd_frag head[9];
+	struct cstr_view head[9];
 	size_t n = 0;
 	if (body)
-		head[n++] = FRAG("Content-Type: application/json\r\n");
+		head[n++] = CSTR_VIEW("Content-Type: application/json\r\n");
 	for (size_t i = 0; i < n_extra; ++i)
 		head[n++] = extra[i];
 	if (!httpd_conn_head(conn, status, head, n, httpd_frag_len(body, n_body)))
@@ -1164,15 +1148,15 @@ httpd_conn_respond (struct httpd_conn       *conn,
 
 /* A JSON-RPC error saying the reason phrase. */
 static void
-httpd_conn_error (struct httpd_conn       *conn,
-                  unsigned                 status,
-                  struct httpd_frag const *extra,
-                  size_t                   n_extra)
+httpd_conn_error (struct httpd_conn      *conn,
+                  unsigned                status,
+                  struct cstr_view const *extra,
+                  size_t                  n_extra)
 {
-	struct httpd_frag const body[] = {
-		FRAG("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\""),
+	struct cstr_view const body[] = {
+		CSTR_VIEW("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\""),
 		httpd_reason(status),
-		FRAG("\"}}"),
+		CSTR_VIEW("\"}}"),
 	};
 	httpd_conn_respond(conn, status, extra, n_extra, body, ARRAY_SIZE(body));
 }
@@ -1196,19 +1180,19 @@ httpd_conn_preflight (struct httpd_conn *conn)
 {
 	struct httpd_req const *req = &conn->req;
 	if (!req->origin.off) {
-		httpd_conn_respond(conn, 204, &FRAG("Allow: POST, OPTIONS\r\n"), 1, nullptr, 0);
+		httpd_conn_respond(conn, 204, &CSTR_VIEW("Allow: POST, OPTIONS\r\n"), 1, nullptr, 0);
 		return;
 	}
 
-	struct httpd_frag const acrh = httpd_conn_field(conn, req->acrh);
-	struct httpd_frag const extra[] = {
-		FRAG("Access-Control-Allow-Methods: POST, GET, DELETE, OPTIONS\r\n"
-		     "Access-Control-Allow-Headers: "),
-		acrh.ptr ? acrh : FRAG("Content-Type, Authorization"),
-		FRAG("\r\nAccess-Control-Max-Age: 600\r\n"),
-		req->pna ? FRAG("Access-Control-Allow-Private-Network: true\r\n")
-		         : FRAG(""),
-		FRAG("Vary: Access-Control-Request-Headers\r\n"),
+	struct cstr_view const acrh = httpd_conn_field(conn, req->acrh);
+	struct cstr_view const extra[] = {
+		CSTR_VIEW("Access-Control-Allow-Methods: POST, GET, DELETE, OPTIONS\r\n"
+		          "Access-Control-Allow-Headers: "),
+		acrh.data ? acrh : CSTR_VIEW("Content-Type, Authorization"),
+		CSTR_VIEW("\r\nAccess-Control-Max-Age: 600\r\n"),
+		req->pna ? CSTR_VIEW("Access-Control-Allow-Private-Network: true\r\n")
+		         : CSTR_VIEW(""),
+		CSTR_VIEW("Vary: Access-Control-Request-Headers\r\n"),
 	};
 	httpd_conn_respond(conn, 204, extra, ARRAY_SIZE(extra), nullptr, 0);
 }
@@ -1220,7 +1204,7 @@ httpd_stream_head (struct stream *s,
                    size_t         length)
 {
 	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
-	struct httpd_frag const extra = { (char const *)fields.ptr, fields.len };
+	struct cstr_view const extra = { (char const *)fields.ptr, fields.len };
 	if (!conn->open || conn->replied || httpd_conn_head(conn, status, &extra, 1, length))
 		return EPIPE;
 	loop_ready(conn->srv->loop, &conn->step);
@@ -1253,13 +1237,13 @@ httpd_stream_data (struct stream *s,
 	/* In chunks, each is its size in hexadecimal, a CRLF, its bytes and
 	 * another. */
 	char digits[20];
-	struct httpd_frag f[] = { {}, { (char const *)bytes.ptr, bytes.len }, {} };
+	struct cstr_view f[] = { {}, { (char const *)bytes.ptr, bytes.len }, {} };
 	if (conn->chunks) {
 		char const *size = httpd_hex(digits + sizeof digits - 2, bytes.len);
 		digits[sizeof digits - 2] = '\r';
 		digits[sizeof digits - 1] = '\n';
-		f[0] = (struct httpd_frag){ size, (size_t)(digits + sizeof digits - size) };
-		f[2] = FRAG("\r\n");
+		f[0] = (struct cstr_view){ size, (size_t)(digits + sizeof digits - size) };
+		f[2] = CSTR_VIEW("\r\n");
 	}
 	if (httpd_conn_put(conn, f, ARRAY_SIZE(f)))
 		return EPIPE;
@@ -1287,7 +1271,7 @@ httpd_stream_end (struct stream *s,
 		conn->closing = true;
 		httpd_conn_doom(conn);
 	} else if (conn->chunks) {
-		(void)httpd_conn_put(conn, &FRAG("0\r\n\r\n"), 1);
+		(void)httpd_conn_put(conn, &CSTR_VIEW("0\r\n\r\n"), 1);
 	}
 	conn->done = true;
 	loop_ready(conn->srv->loop, &conn->step);
@@ -1306,8 +1290,8 @@ httpd_stream_field (struct stream const *s,
                     size_t               i)
 {
 	struct httpd_conn const *conn = container_of(s, struct httpd_conn const, stream);
-	struct httpd_frag f = httpd_conn_field(conn, conn->req.app[i]);
-	return (struct span){ (unsigned char *)(uintptr_t)f.ptr, f.len };
+	struct cstr_view f = httpd_conn_field(conn, conn->req.app[i]);
+	return (struct span){ (unsigned char *)(uintptr_t)f.data, f.len };
 }
 
 static struct stream_ops const httpd_stream_ops = {
@@ -1320,18 +1304,18 @@ static struct stream_ops const httpd_stream_ops = {
 
 /* The token of Authorization field @p auth, if it shows the bearer scheme;
  * else none, a null pointer.  Credentials of another scheme are none. */
-static struct httpd_frag
-httpd_bearer (struct httpd_frag auth)
+static struct cstr_view
+httpd_bearer (struct cstr_view auth)
 {
 	static char const scheme[] = "Bearer";
 	size_t n = sizeof scheme - 1;
-	if (auth.len < n || strncasecmp(auth.ptr, scheme, n))
-		return (struct httpd_frag){};
+	if (auth.len < n || strncasecmp(auth.data, scheme, n))
+		return (struct cstr_view){};
 	if (auth.len == n)
-		return (struct httpd_frag){ auth.ptr + n, 0 };
-	if (auth.ptr[n] != ' ')
-		return (struct httpd_frag){};
-	return (struct httpd_frag){ auth.ptr + n + 1, auth.len - n - 1 };
+		return (struct cstr_view){ auth.data + n, 0 };
+	if (auth.data[n] != ' ')
+		return (struct cstr_view){};
+	return (struct cstr_view){ auth.data + n + 1, auth.len - n - 1 };
 }
 
 /* Who the client of a freshly parsed head is, by its bearer token, or by
@@ -1342,8 +1326,8 @@ httpd_bearer (struct httpd_frag auth)
 static bool
 httpd_conn_grant (struct httpd_conn *conn)
 {
-	struct httpd_frag const token = httpd_bearer(httpd_conn_field(conn, conn->req.auth));
-	char const *host = httpd_conn_field(conn, conn->req.host).ptr;
+	struct cstr_view const token = httpd_bearer(httpd_conn_field(conn, conn->req.auth));
+	char const *host = httpd_conn_field(conn, conn->req.host).data;
 	enum policy_kind const kind = conn->uds ? POLICY_UNIX
 	                            : conn->local && (!host || httpd_loopback_host(host))
 	                            ? POLICY_LOOPBACK : POLICY_REMOTE;
@@ -1353,7 +1337,7 @@ httpd_conn_grant (struct httpd_conn *conn)
 		.uid = conn->uid
 	};
 	struct policy_grant g = {};
-	bool ok = policy_grant(conn->srv->policy, token.ptr, token.len, kind, &peer, &g);
+	bool ok = policy_grant(conn->srv->policy, token.data, token.len, kind, &peer, &g);
 	conn->stream.principal = g.principal;
 	conn->stream.tools = g.tools;
 	conn->stream.upstream = g.upstream;
@@ -1376,7 +1360,7 @@ httpd_conn_admit (struct httpd_conn *conn,
 	unsigned status = httpd_req_parse(req, data, len, srv->app, &srv->lim);
 	if (status)
 		return status;
-	char const *origin = httpd_conn_field(conn, req->origin).ptr;
+	char const *origin = httpd_conn_field(conn, req->origin).data;
 	if (origin && !httpd_origin_allowed(srv, origin))
 		return 403; /* DNS rebinding defence */
 	if (!req->options && !httpd_conn_grant(conn))
@@ -1592,7 +1576,7 @@ httpd_conn_body (struct httpd_conn *conn)
 	if (len < avail)
 		return NEXT_YIELD;
 	if (req->expect && !conn->cont) {
-		(void)httpd_conn_put(conn, &FRAG("HTTP/1.1 100 Continue\r\n\r\n"), 1);
+		(void)httpd_conn_put(conn, &CSTR_VIEW("HTTP/1.1 100 Continue\r\n\r\n"), 1);
 		conn->cont = true;
 	}
 	return NEXT_INPUT;
@@ -1651,11 +1635,11 @@ httpd_conn_refuse (struct httpd_conn *conn,
 	conn->closing = true;
 	switch (status) {
 	case 401:
-		httpd_conn_error(conn, status, &FRAG("WWW-Authenticate: Bearer\r\n"), 1);
+		httpd_conn_error(conn, status, &CSTR_VIEW("WWW-Authenticate: Bearer\r\n"), 1);
 		break;
 	case 503:
 		conn->req = (struct httpd_req){};
-		httpd_conn_error(conn, status, &FRAG("Retry-After: 1\r\n"), 1);
+		httpd_conn_error(conn, status, &CSTR_VIEW("Retry-After: 1\r\n"), 1);
 		break;
 	default:
 		conn->req = (struct httpd_req){};
@@ -1708,8 +1692,6 @@ httpd_conn_next (struct httpd_conn *conn,
 		return httpd_conn_parse(conn, end);
 	return conn->body_in ? NEXT_WAIT : httpd_conn_body(conn);
 }
-
-#undef FRAG
 
 /* The output is all sent: its storage goes back, and TLS sends what a read
  * left it to send, such as the answer to a key update, whose wait for room
@@ -2469,15 +2451,6 @@ httpd_home_lane (struct httpd_home *home)
 	return wy < wx || (wy == wx && y->conns < x->conns) ? y : x;
 }
 
-static int
-httpd_by_id (void const *a,
-             void const *b)
-{
-	uint32_t const *x = a;
-	uint32_t const *y = b;
-	return (*x > *y) - (*x < *y);
-}
-
 /* Make room for @p n groups in the storage kept with the connection: 0, or
  * ENOMEM. */
 static int
@@ -2519,7 +2492,7 @@ httpd_conn_groups (struct httpd_conn *conn,
 		n = 0;
 	conn->groups[n] = gid;
 	conn->n_groups = (uint32_t)n + 1;
-	qsort(conn->groups, n + 1, sizeof *conn->groups, httpd_by_id);
+	policy_sort_ids(conn->groups, n + 1);
 	return 0;
 }
 
@@ -3088,12 +3061,15 @@ httpd_home_create (struct loop            *loop,
 		.calls = calls,
 		.ctx = cfg->tls ? tls_ctx_get(cfg->tls) : nullptr,
 		.rng = loop_clock() | 1,
+		.seed = loop_clock(),
 		.cap = cfg->limits.clients,
 		.spare_fd = -1
 	};
 	struct policy_grant g;
 	home->anyone = policy_grant(cfg->policy, nullptr, 0, POLICY_REMOTE, nullptr,
 	                            &g) && g.tools;
+	/* Without random bytes, the clock seeds the hash. */
+	(void)getrandom(&home->seed, sizeof home->seed, GRND_NONBLOCK);
 	list_init(&home->spare.list);
 	list_init(&home->gone.list);
 	httpd_home_budget(home);

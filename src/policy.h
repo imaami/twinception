@@ -62,7 +62,7 @@ typedef tool_mask policy_lent_fn (void const *ctx,
 /** The user of a Unix socket's client, as the kernel says (SO_PEERCRED,
  *  SO_PEERGROUPS). */
 struct policy_peer {
-	uint32_t const *groups;    /**< its groups, sorted */
+	uint32_t const *groups;    /**< its groups, sorted (policy_sort_ids()) */
 	uint32_t        n_groups;
 	uint32_t        uid;
 };
@@ -164,5 +164,11 @@ policy_grant (struct policy const      *policy,
               enum policy_kind          kind,
               struct policy_peer const *peer,
               struct policy_grant      *grant);
+
+/** Sort the @p n ids at @p ids, such as a peer's groups, as policy_grant()
+ *  looks them up. */
+extern void
+policy_sort_ids (uint32_t *ids,
+                 size_t    n);
 
 #endif /* TWINCEPTION_SRC_POLICY_H_ */
