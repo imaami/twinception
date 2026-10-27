@@ -73,22 +73,13 @@ cli_ui_write_action (struct cli_ui    *ui,
                      struct cstr_view  text,
                      enum cli_style    style)
 {
-	dstr_auto line = dstr("* ");
-	if (!dstr_cat_n(&line, actor.data, actor.len) || !dstr_cat(&line, " ") ||
-	    !dstr_cat_n(&line, text.data, text.len) || !dstr_cat(&line, "\n"))
-		return ENOMEM;
-	struct cstr_view content = cstr_view_dstr(&line);
-	size_t split = style == CLI_STYLE_TOOL_STATUS ? actor.len + 2 : content.len;
-	int e = cli_console_set_display(ui->console, style == CLI_STYLE_TOOL_STATUS ? CLI_STYLE_TOOL_ACTOR : style);
-	if (!e)
-		e = cli_console_write(ui->console, cstr_view_slice(content, 0, split));
-	if (!e && split < content.len) {
-		e = cli_console_set_display(ui->console, style);
-		if (!e)
-			e = cli_console_write(ui->console, cstr_view_slice(content, split, SIZE_MAX));
-	}
-	int reset = cli_console_set_display(ui->console, CLI_STYLE_RESET);
-	return e ? e : reset;
+	/* A tool status shows its actor in a style of its own. */
+	enum cli_style lead = style == CLI_STYLE_TOOL_STATUS ? CLI_STYLE_TOOL_ACTOR : style;
+	struct cli_console_span const spans[] = {
+		{CSTR_VIEW("* "), lead}, {actor, lead},
+		{CSTR_VIEW(" "), style}, {text, style}, {CSTR_VIEW("\n"), style},
+	};
+	return cli_console_print(ui->console, spans, sizeof spans / sizeof *spans);
 }
 
 int
@@ -156,14 +147,8 @@ cli_ui_write_message (struct cli_console *console,
                       struct cstr_view    text,
                       enum cli_style      display)
 {
-	dstr_auto line = dstr(nullptr);
-	if (!dstr_cat_n(&line, text.data, text.len) || !dstr_cat(&line, "\n"))
-		return ENOMEM;
-	int e = cli_console_set_display(console, display);
-	if (!e)
-		e = cli_console_write(console, cstr_view_dstr(&line));
-	int reset = cli_console_set_display(console, CLI_STYLE_RESET);
-	return e ? e : reset;
+	struct cli_console_span const spans[] = {{text, display}, {CSTR_VIEW("\n"), display}};
+	return cli_console_print(console, spans, sizeof spans / sizeof *spans);
 }
 
 int

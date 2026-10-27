@@ -100,8 +100,7 @@ cli_render_row (struct dstr *cache, struct dstr *output,
 	size_t style_start = style.len ? (size_t)(style.data - text.data) : 0;
 	dstr_auto copy = dstr(nullptr);
 	struct dstr *saved = cache ? cache : &copy;
-	dstr_clear(saved);
-	if (!dstr_cat_n(saved, text.data, text.len))
+	if (cstr_view_store(text, saved))
 		return ENOMEM;
 	text = cstr_view_dstr(saved);
 	dstr_erase(output, begin, SIZE_MAX);

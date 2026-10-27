@@ -1,11 +1,8 @@
 #include "cli_style.h"
 
-struct cli_style_entry {
-	char    bytes[15];
-	uint8_t length;
-};
-
 static_assert(sizeof(struct cli_style_entry) == 16);
+
+static constexpr struct cli_style_entry cli_style_none[CLI_STYLE_COUNT] = {};
 
 #define CLI_STYLE(sequence) {sequence, sizeof(sequence) - 1}
 static constexpr struct cli_style_entry cli_style_table[CLI_STYLE_COUNT] = {
@@ -38,4 +35,10 @@ cli_style_sequence (enum cli_style style)
 	if (style >= CLI_STYLE_COUNT)
 		return (struct cstr_view){};
 	return (struct cstr_view){cli_style_table[style].bytes, cli_style_table[style].length};
+}
+
+struct cli_style_entry const *
+cli_style_palette (bool color)
+{
+	return color ? cli_style_table : cli_style_none;
 }

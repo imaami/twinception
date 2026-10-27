@@ -30,8 +30,19 @@ enum cli_style : uint32_t {
 	CLI_STYLE_COUNT,
 };
 
+/** The SGR sequence of a style, NUL-terminated. */
+struct cli_style_entry {
+	char    bytes[15];
+	uint8_t length;
+};
+
 /** Each sequence resets previous attributes. Invalid IDs return an empty view. */
 extern struct cstr_view
 cli_style_sequence (enum cli_style style);
+
+/** The sequences of all styles, indexed by style, or with !color one whose
+ * sequences are all empty. */
+extern struct cli_style_entry const *
+cli_style_palette (bool color);
 
 #endif /* TWINCEPTION_SRC_CLI_STYLE_H_ */

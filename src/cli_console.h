@@ -123,8 +123,24 @@ extern int
 cli_console_reasoning (struct cli_console *console,
                        struct cstr_view    text);
 
+/** A run of text, and the style it is written in. */
+struct cli_console_span {
+	struct cstr_view text;
+	enum cli_style   style;
+};
+
+/** Write the spans, each in its style, as cli_console_write() does, in one
+ * output request; the display ends in the reset style.  A span with a style
+ * past the last of enum cli_style is EINVAL, and nothing is written. */
 extern int
-cli_console_write_error (struct cstr_view text);
+cli_console_print (struct cli_console            *console,
+                   struct cli_console_span const *spans,
+                   size_t                         count);
+
+/** Write the parts to stderr, filtered as cli_console_write() filters. */
+extern int
+cli_console_write_error (struct cstr_view const *parts,
+                         size_t                  count);
 
 /** Full-screen diagnostics join scrollback; other modes retain stderr. */
 extern int

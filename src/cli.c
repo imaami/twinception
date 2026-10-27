@@ -1310,9 +1310,8 @@ main (int    argc,
 	if (e == EINTR && exit_signal)
 		return 128 + (int)exit_signal;
 	if (e) {
-		(void)cli_console_write_error(CSTR_VIEW("askai-cli: "));
-		(void)cli_console_write_error(cli_error_text(&error, e));
-		(void)cli_console_write_error(CSTR_VIEW("\n"));
+		struct cstr_view const line[] = {CSTR_VIEW("askai-cli: "), cli_error_text(&error, e), CSTR_VIEW("\n")};
+		(void)cli_console_write_error(line, array_size(line));
 	}
 	return e ? 1 : 0;
 }

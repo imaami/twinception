@@ -17,7 +17,7 @@ cli_scrollback_test_render (struct cli_scrollback *scrollback,
                             struct dstr           *frame)
 {
 	dstr_clear(frame);
-	assert(!cli_scrollback_render_pane(scrollback, 1, 1, columns, height, color, nullptr, frame));
+	assert(!cli_scrollback_render_pane(scrollback, 1, 1, columns, height, cli_style_palette(color), nullptr, frame));
 }
 
 static void
@@ -193,16 +193,17 @@ cli_scrollback_test_pane (void)
 	struct cli_scrollback scrollback;
 	cli_scrollback_init(&scrollback);
 	dstr_auto frame = dstr(nullptr);
-	assert(cli_scrollback_render_pane(&scrollback, 0, 1, 4, 3, false, nullptr, &frame) == EINVAL);
-	assert(cli_scrollback_render_pane(&scrollback, 1, 0, 4, 3, false, nullptr, &frame) == EINVAL);
-	assert(cli_scrollback_render_pane(&scrollback, SIZE_MAX, 1, 4, 3, false, nullptr, &frame) == EINVAL);
-	assert(cli_scrollback_render_pane(&scrollback, 1, SIZE_MAX, 4, 3, false, nullptr, &frame) == EINVAL);
+	assert(cli_scrollback_render_pane(&scrollback, 0, 1, 4, 3, cli_style_palette(false), nullptr, &frame) == EINVAL);
+	assert(cli_scrollback_render_pane(&scrollback, 1, 0, 4, 3, cli_style_palette(false), nullptr, &frame) == EINVAL);
+	assert(cli_scrollback_render_pane(&scrollback, SIZE_MAX, 1, 4, 3, cli_style_palette(false), nullptr, &frame) == EINVAL);
+	assert(cli_scrollback_render_pane(&scrollback, 1, SIZE_MAX, 4, 3, cli_style_palette(false), nullptr, &frame) == EINVAL);
+	assert(cli_scrollback_render_pane(&scrollback, 1, 1, 4, 3, nullptr, nullptr, &frame) == EINVAL);
 	assert(!dstr_len(&frame));
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("界éZ\nq"), CLI_STYLE_REASONING));
-	assert(!cli_scrollback_render_pane(&scrollback, 3, 2, 4, 3, false, nullptr, &frame));
+	assert(!cli_scrollback_render_pane(&scrollback, 3, 2, 4, 3, cli_style_palette(false), nullptr, &frame));
 	assert(!strcmp(dstr_get(&frame), "\033[2;3H界éZ\033[3;3Hq   \033[4;3H    "));
 	dstr_clear(&frame);
-	assert(!cli_scrollback_render_pane(&scrollback, 3, 2, 4, 3, true, nullptr, &frame));
+	assert(!cli_scrollback_render_pane(&scrollback, 3, 2, 4, 3, cli_style_palette(true), nullptr, &frame));
 	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[2;3H"), cli_style_sequence(CLI_STYLE_REASONING),
 	                     CSTR_VIEW("界éZ\033[3;3H"), cli_style_sequence(CLI_STYLE_REASONING), CSTR_VIEW("q"),
 	                     cli_style_sequence(CLI_STYLE_TEXT), CSTR_VIEW("   \033[4;3H"),
@@ -212,7 +213,7 @@ cli_scrollback_test_pane (void)
 	 * may draw into the neighboring column of a one-cell pane. */
 	assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("界\né\ń")));
 	dstr_clear(&frame);
-	assert(!cli_scrollback_render_pane(&scrollback, 5, 2, 1, 3, false, nullptr, &frame));
+	assert(!cli_scrollback_render_pane(&scrollback, 5, 2, 1, 3, cli_style_palette(false), nullptr, &frame));
 	assert(!strcmp(dstr_get(&frame), "\033[2;5H?\033[3;5Hé\033[4;5H?"));
 	cli_scrollback_fini(&scrollback);
 }
@@ -225,21 +226,21 @@ cli_scrollback_test_cache (void)
 	struct dstr cache[3] = {dstr(nullptr), dstr(nullptr), dstr(nullptr)};
 	dstr_auto frame = dstr(nullptr);
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("first\nsecond\nthird"), CLI_STYLE_REASONING));
-	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, true, cache, &frame));
+	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, cli_style_palette(true), cache, &frame));
 	assert(dstr_len(&frame));
 	dstr_clear(&frame);
-	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, true, cache, &frame));
+	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, cli_style_palette(true), cache, &frame));
 	assert(!dstr_len(&frame));
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("!"), CLI_STYLE_USER_INPUT));
-	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, true, cache, &frame));
+	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, cli_style_palette(true), cache, &frame));
 	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[3;6H"), cli_style_sequence(CLI_STYLE_USER_INPUT),
 	                     CSTR_VIEW("!"), cli_style_sequence(CLI_STYLE_TEXT));
 	dstr_clear(&frame);
 	for (size_t i = 0; i < 3; ++i)
 		dstr_clear(&cache[i]);
-	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, true, cache, &frame));
+	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, cli_style_palette(true), cache, &frame));
 	dstr_auto full = dstr(nullptr);
-	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, true, nullptr, &full));
+	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, cli_style_palette(true), nullptr, &full));
 	assert(cstr_view_equal(cstr_view_dstr(&frame), cstr_view_dstr(&full)));
 	for (size_t i = 0; i < 3; ++i)
 		dstr_cleanup(&cache[i]);
@@ -289,8 +290,8 @@ cli_scrollback_test_neighbors (void)
 	assert(!cli_scrollback_append(&left, CSTR_VIEW("abcdeF")));
 	assert(!cli_scrollback_append_style(&right, CSTR_VIEW("RIGHT"), CLI_STYLE_INFO));
 	dstr_auto frame = dstr(nullptr);
-	assert(!cli_scrollback_render_pane(&left, 2, 2, 5, 2, true, nullptr, &frame));
-	assert(!cli_scrollback_render_pane(&right, 8, 2, 5, 2, true, nullptr, &frame));
+	assert(!cli_scrollback_render_pane(&left, 2, 2, 5, 2, cli_style_palette(true), nullptr, &frame));
+	assert(!cli_scrollback_render_pane(&right, 8, 2, 5, 2, cli_style_palette(true), nullptr, &frame));
 	char screen[4 * 14];
 	memset(screen, '#', sizeof screen);
 	cli_scrollback_test_apply(screen, 4, 14, cstr_view_dstr(&frame));
@@ -318,19 +319,19 @@ cli_scrollback_test_pane_viewport (void)
 		assert(!cli_scrollback_append(&thoughts, cstr_view_dstr(&line)));
 	}
 	dstr_auto before = dstr(nullptr), after = dstr(nullptr);
-	assert(!cli_scrollback_render_pane(&chat, 2, 3, 3, 2, false, nullptr, &before));
-	assert(!cli_scrollback_render_pane(&thoughts, 6, 3, 3, 2, false, nullptr, &after));
+	assert(!cli_scrollback_render_pane(&chat, 2, 3, 3, 2, cli_style_palette(false), nullptr, &before));
+	assert(!cli_scrollback_render_pane(&thoughts, 6, 3, 3, 2, cli_style_palette(false), nullptr, &after));
 	cli_scrollback_scroll(&chat, 20, true);
 	dstr_clear(&before);
-	assert(!cli_scrollback_render_pane(&chat, 2, 3, 3, 2, false, nullptr, &before));
+	assert(!cli_scrollback_render_pane(&chat, 2, 3, 3, 2, cli_style_palette(false), nullptr, &before));
 	assert(!cli_scrollback_append(&chat, CSTR_VIEW("new\n")));
 	assert(!cli_scrollback_append(&thoughts, CSTR_VIEW("new\n")));
 	dstr_clear(&after);
-	assert(!cli_scrollback_render_pane(&chat, 2, 3, 3, 2, false, nullptr, &after));
+	assert(!cli_scrollback_render_pane(&chat, 2, 3, 3, 2, cli_style_palette(false), nullptr, &after));
 	assert(cstr_view_equal(cstr_view_dstr(&before), cstr_view_dstr(&after)));
 	assert(chat.offset == 21 && chat.unread);
 	dstr_clear(&after);
-	assert(!cli_scrollback_render_pane(&thoughts, 6, 3, 3, 2, false, nullptr, &after));
+	assert(!cli_scrollback_render_pane(&thoughts, 6, 3, 3, 2, cli_style_palette(false), nullptr, &after));
 	assert(!strcmp(dstr_get(&after), "\033[3;6Hnew\033[4;6H   "));
 	assert(!thoughts.offset && !thoughts.unread);
 	cli_scrollback_fini(&chat);

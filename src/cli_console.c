@@ -125,10 +125,13 @@ struct cli_console {
 	struct dstr                      prompt;
 	struct dstr                      completion_labels;
 	struct dstr                      decorations[4];
+	struct dstr                      clean;  /**< sanitized output */
+	struct dstr                      screen; /**< a frame of the full-screen UI */
 	struct list                      lines;
 	char                            *restored_line;
 	char                            *immediate_line;
 	struct autocomplete_match const *candidates;
+	struct cli_style_entry const    *palette;
 	uint64_t                         completion_time;
 	size_t                           candidate_count;
 	size_t                           completion_count;
@@ -172,7 +175,6 @@ struct cli_console {
 	bool                             output_regular;
 	bool                             input_working;
 	bool                             output_working;
-	bool                             color;
 	bool                             simple;
 	bool                             input_eof;
 	bool                             multiline;
@@ -630,23 +632,19 @@ cli_console_complete (char const *text,
 	if (matches && rl_completion_type == '?' && !matches[1]) {
 		/* A possible-completions request must never insert a unique match. */
 		char **listing = calloc(3, sizeof *listing);
-		do {
-			if (listing) {
-				listing[0] = calloc(1, 1);
-				if (listing[0]) {
-					listing[1] = matches[0];
-					break;
-				}
-
-				free(listing);
-				listing = nullptr;
-			}
-
+		char *empty = calloc(1, 1);
+		if (listing && empty) {
+			listing[0] = empty;
+			listing[1] = matches[0];
+		} else {
+			free(listing);
+			listing = nullptr;
+			free(empty);
+			empty = nullptr;
 			free(matches[0]);
 			matches[0] = nullptr;
 			console->input_error = ENOMEM;
-		} while (0);
-
+		}
 		free(matches);
 		matches = listing;
 	}
@@ -712,7 +710,7 @@ cli_console_matches (char **matches,
 		} else if (column)
 			e = cli_scrollback_append(scrollback, CSTR_VIEW(" "));
 		if (!e)
-			e = cli_scrollback_append_style(scrollback, text, console->color ? styles[completion->kind] : CLI_STYLE_RESET);
+			e = cli_scrollback_append_style(scrollback, text, styles[completion->kind]);
 		column += cells + (column ? 1 : 0);
 	}
 	if (!e)
@@ -875,14 +873,26 @@ cli_console_redisplay (void)
 {
 	struct cli_console *console = cli_console_active;
 	struct cstr_view text = {rl_line_buffer, (size_t)rl_end};
-	struct cstr_view old = cstr_view_dstr(&console->draft);
-	if (!cstr_view_equal(text, old)) {
-		dstr_clear(&console->draft);
-		if (!dstr_cat_n(&console->draft, text.data, text.len))
-			console->input_error = ENOMEM;
-	}
+	if (!cstr_view_equal(text, cstr_view_dstr(&console->draft)) &&
+	    cstr_view_store(text, &console->draft))
+		console->input_error = ENOMEM;
 	console->draft_point = rl_point;
 	console->dirty |= CLI_CONSOLE_PAINT_INPUT;
+}
+
+/* Scroll the focused pane a page back (-1) or forward (1), or to its
+ * bottom (0). */
+static int
+cli_console_scroll (int direction)
+{
+	struct cli_console *console = cli_console_active;
+	struct cli_scrollback *scrollback = &console->panes[console->focused].scrollback;
+	if (direction)
+		cli_scrollback_scroll(scrollback, console->rows > 4 ? console->rows - 4 : 1, direction < 0);
+	else
+		cli_scrollback_bottom(scrollback);
+	console->dirty |= (1u << console->focused) | CLI_CONSOLE_PAINT_FRAME;
+	return 0;
 }
 
 static int
@@ -891,11 +901,7 @@ cli_console_page_up (int count,
 {
 	(void)count;
 	(void)key;
-	struct cli_console *console = cli_console_active;
-	cli_scrollback_scroll(&console->panes[console->focused].scrollback,
-	                      console->rows > 4 ? console->rows - 4 : 1, true);
-	console->dirty |= (1u << console->focused) | CLI_CONSOLE_PAINT_FRAME;
-	return 0;
+	return cli_console_scroll(-1);
 }
 
 static int
@@ -904,11 +910,7 @@ cli_console_page_down (int count,
 {
 	(void)count;
 	(void)key;
-	struct cli_console *console = cli_console_active;
-	cli_scrollback_scroll(&console->panes[console->focused].scrollback,
-	                      console->rows > 4 ? console->rows - 4 : 1, false);
-	console->dirty |= (1u << console->focused) | CLI_CONSOLE_PAINT_FRAME;
-	return 0;
+	return cli_console_scroll(1);
 }
 
 static int
@@ -917,10 +919,7 @@ cli_console_bottom (int count,
 {
 	(void)count;
 	(void)key;
-	struct cli_console *console = cli_console_active;
-	cli_scrollback_bottom(&console->panes[console->focused].scrollback);
-	console->dirty |= (1u << console->focused) | CLI_CONSOLE_PAINT_FRAME;
-	return 0;
+	return cli_console_scroll(0);
 }
 
 static int
@@ -1007,6 +1006,8 @@ cli_console_create (bool             simple,
 	console->draft = dstr(nullptr);
 	console->prompt = dstr("\n> ");
 	console->completion_labels = dstr(nullptr);
+	console->clean = dstr(nullptr);
+	console->screen = dstr(nullptr);
 	for (size_t i = 0; i < 4; ++i)
 		console->decorations[i] = dstr(nullptr);
 	for (size_t i = 0; i < CLI_CONSOLE_PANES; ++i) {
@@ -1016,7 +1017,7 @@ cli_console_create (bool             simple,
 	}
 	bool tty_stdout = isatty(STDOUT_FILENO);
 	console->simple = simple || !tty_stdout || !isatty(STDIN_FILENO);
-	console->color = color && tty_stdout;
+	console->palette = cli_style_palette(color && tty_stdout);
 	char const *term = getenv("TERM");
 	console->fullscreen = !console->simple && term && *term && strcmp(term, "dumb");
 	struct stat input, output;
@@ -1236,6 +1237,8 @@ cli_console_destroy (struct cli_console **ptr)
 	dstr_cleanup(&console->draft);
 	dstr_cleanup(&console->prompt);
 	dstr_cleanup(&console->completion_labels);
+	dstr_cleanup(&console->clean);
+	dstr_cleanup(&console->screen);
 	for (size_t i = 0; i < 4; ++i)
 		dstr_cleanup(&console->decorations[i]);
 	for (size_t i = 0; i < CLI_CONSOLE_PANES; ++i) {
@@ -1255,9 +1258,10 @@ cli_console_set_display (struct cli_console *console,
 {
 	if (display >= CLI_STYLE_COUNT)
 		return EINVAL;
+	struct cli_style_entry const *sequence = &console->palette[display];
 	int e = 0;
-	if (console->color && !console->fullscreen && console->display != display)
-		e = cli_console_queue(console, cli_style_sequence(display));
+	if (!console->fullscreen && console->display != display && sequence->length)
+		e = cli_console_queue(console, (struct cstr_view){sequence->bytes, sequence->length});
 	if (!e)
 		console->display = display;
 	return e;
@@ -1266,7 +1270,7 @@ cli_console_set_display (struct cli_console *console,
 static char const *
 cli_console_style (struct cli_console *console, enum cli_style display)
 {
-	return console->color ? cli_style_sequence(display).data : "";
+	return console->palette[display].bytes;
 }
 
 int cli_console_remember(struct cli_console *console, struct cstr_view text)
@@ -1440,7 +1444,7 @@ cli_console_panels (struct cli_console *console,
 		unsigned left = i ? cli_console_pane_width(console, CLI_CONSOLE_CONVERSATION) + 3 : 2;
 		int e = cli_scrollback_render_pane(&pane->scrollback, left, 2,
 		                                   cli_console_pane_width(console, i), console->rows - 4,
-		                                   console->color, pane->rows, output);
+		                                   console->palette, pane->rows, output);
 		if (e)
 			return e;
 	}
@@ -1458,6 +1462,22 @@ cli_console_panels (struct cli_console *console,
 }
 
 static int
+cli_console_status (struct cli_console *console,
+                    struct dstr        *output)
+{
+	static char const hint[] = " | Alt-Left/Right pane  Alt-Up/Down scroll  Ctrl-End follow";
+	char status[128];
+	int length = console->line_count
+	           ? snprintf(status, sizeof status, " askai | %zu queued%s", console->line_count, hint)
+	           : snprintf(status, sizeof status, " askai | %s%s", console->busy ? "working" : "ready", hint);
+	if (length < 0)
+		return EIO;
+	/* The longest status, with a count of 20 digits, has 95 bytes. */
+	return dstr_printf(output, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS),
+	                   (int)console->columns, (int)console->columns, status) ? 0 : ENOMEM;
+}
+
+static int
 cli_console_render (struct cli_console *console)
 {
 	if (!console->fullscreen || !console->dirty || console->suspended ||
@@ -1472,10 +1492,13 @@ cli_console_render (struct cli_console *console)
 		console->dirty = CLI_CONSOLE_PAINT_ALL;
 		console->cursor_column = 0;
 	}
-	dstr_auto screen = dstr("\0337");
+	struct dstr *screen = &console->screen;
+	(void)dstr_clear(screen);
 	bool framed = console->rows >= 6 && console->columns >= 8;
-	int e = framed ? cli_console_panels(console, &screen) : 0;
-	if (!e && !framed && (console->dirty & CLI_CONSOLE_PAINT_RESET) && !dstr_cat(&screen, "\033[2J"))
+	int e = dstr_cat(screen, "\0337") ? 0 : ENOMEM;
+	if (!e && framed)
+		e = cli_console_panels(console, screen);
+	if (!e && !framed && (console->dirty & CLI_CONSOLE_PAINT_RESET) && !dstr_cat(screen, "\033[2J"))
 		e = ENOMEM;
 	unsigned cursor = console->cursor_column;
 	unsigned const flags[] = {CLI_CONSOLE_PAINT_FRAME, CLI_CONSOLE_PAINT_FRAME,
@@ -1484,31 +1507,22 @@ cli_console_render (struct cli_console *console)
 	for (unsigned i = framed ? 0 : 3; !e && i < 4; ++i) {
 		if (!(console->dirty & flags[i]))
 			continue;
-		size_t begin = dstr_len(&screen);
+		size_t begin = dstr_len(screen);
 		if (i < 2)
-			e = cli_console_frame(console, &screen, i);
+			e = cli_console_frame(console, screen, i);
 		else if (i == 3)
-			e = cli_console_render_draft(console, &screen, &cursor);
-		else {
-			dstr_auto status = dstr(nullptr);
-			char const *hint = " | Alt-Left/Right pane  Alt-Up/Down scroll  Ctrl-End follow";
-			bool written = console->line_count ? dstr_printf(&status, " askai | %zu queued%s", console->line_count, hint) :
-			               dstr_printf(&status, " askai | %s%s", console->busy ? "working" : "ready", hint);
-			if (!written)
-				e = ENOMEM;
-			if (!e && !dstr_printf(&screen, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS),
-			                       (int)console->columns, (int)console->columns, dstr_get(&status)))
-				e = ENOMEM;
-		}
+			e = cli_console_render_draft(console, screen, &cursor);
+		else
+			e = cli_console_status(console, screen);
 		if (!e)
-			e = cli_render_row(&console->decorations[i], &screen, begin, rows[i], 1);
+			e = cli_render_row(&console->decorations[i], screen, begin, rows[i], 1);
 	}
-	if (!e && (dstr_len(&screen) > 2 || cursor != console->cursor_column)) {
-		if (!dstr_cat(&screen, "\0338") || (cursor != console->cursor_column &&
-		    !dstr_printf(&screen, "\033[%u;%uH", console->rows, cursor)))
+	if (!e && (dstr_len(screen) > 2 || cursor != console->cursor_column)) {
+		if (!dstr_cat(screen, "\0338") || (cursor != console->cursor_column &&
+		    !dstr_printf(screen, "\033[%u;%uH", console->rows, cursor)))
 			e = ENOMEM;
 		if (!e)
-			e = cli_console_queue(console, cstr_view_dstr(&screen));
+			e = cli_console_queue(console, cstr_view_dstr(screen));
 	}
 	if (!e) {
 		console->cursor_column = cursor;
@@ -1710,13 +1724,11 @@ cli_console_read (struct cli_console *console,
 		if (!dstr_cat(text, "\n"))
 			e = ENOMEM;
 		if (!e && console->fullscreen) {
-			e = cli_console_set_display(console, CLI_STYLE_PROMPT);
-			if (!e)
-				e = cli_console_write(console, cstr_view_dstr(&console->prompt));
-			if (!e)
-				e = cli_console_set_display(console, CLI_STYLE_USER_INPUT);
-			if (!e)
-				e = cli_console_write(console, cstr_view_dstr(text));
+			struct cli_console_span const echo[] = {
+				{cstr_view_dstr(&console->prompt), CLI_STYLE_PROMPT},
+				{cstr_view_dstr(text), CLI_STYLE_USER_INPUT},
+			};
+			e = cli_console_print(console, echo, array_size(echo));
 		}
 	}
 	buf_fini(&bytes);
@@ -1806,19 +1818,58 @@ cli_console_write_pane (struct cli_console      *console,
                         enum cli_console_pane_id target,
                         struct cstr_view         text)
 {
-	dstr_auto clean = dstr(nullptr);
 	struct cli_console_pane *pane = &console->panes[target];
-	int e = cli_console_output_write(&pane->output, &clean, text);
+	struct dstr *clean = &console->clean;
+	(void)dstr_clear(clean);
+	int e = cli_console_output_write(&pane->output, clean, text);
 	if (e)
 		return e;
 	if (!console->fullscreen)
-		return cli_console_queue(console, cstr_view_dstr(&clean));
-	enum cli_style style = console->color ? console->display : CLI_STYLE_RESET;
-	e = cli_scrollback_append_style(&pane->scrollback, cstr_view_dstr(&clean), style);
+		return cli_console_queue(console, cstr_view_dstr(clean));
+	e = cli_scrollback_append_style(&pane->scrollback, cstr_view_dstr(clean), console->display);
 	console->dirty |= 1u << target;
 	if (pane->scrollback.offset)
 		console->dirty |= CLI_CONSOLE_PAINT_FRAME;
 	cli_loop_ready(console->loop, &console->input_step);
+	return e;
+}
+
+int
+cli_console_print (struct cli_console            *console,
+                   struct cli_console_span const *spans,
+                   size_t                         count)
+{
+	for (size_t i = 0; i < count; ++i)
+		if (spans[i].style >= CLI_STYLE_COUNT)
+			return EINVAL;
+	if (console->fullscreen) {
+		/* The full-screen UI keeps the style of each span with its text. */
+		int e = 0;
+		for (size_t i = 0; !e && i < count; ++i) {
+			console->display = spans[i].style;
+			e = cli_console_write_pane(console, CLI_CONSOLE_CONVERSATION, spans[i].text);
+		}
+		console->display = CLI_STYLE_RESET;
+		return e;
+	}
+	/* A stream changes its style only where the style changes. */
+	struct cli_console_output *state = &console->panes[CLI_CONSOLE_CONVERSATION].output;
+	struct dstr *clean = &console->clean;
+	enum cli_style display = console->display;
+	(void)dstr_clear(clean);
+	for (size_t i = 0; i <= count; ++i) {
+		enum cli_style style = i < count ? spans[i].style : CLI_STYLE_RESET;
+		struct cli_style_entry const *sequence = &console->palette[style];
+		if (style != display && !dstr_cat_n(clean, sequence->bytes, sequence->length))
+			return ENOMEM;
+		display = style;
+		int e = i < count ? cli_console_output_write(state, clean, spans[i].text) : 0;
+		if (e)
+			return e;
+	}
+	int e = cli_console_queue(console, cstr_view_dstr(clean));
+	if (!e)
+		console->display = CLI_STYLE_RESET;
 	return e;
 }
 
@@ -1837,13 +1888,16 @@ cli_console_reasoning (struct cli_console *console,
 }
 
 int
-cli_console_write_error (struct cstr_view text)
+cli_console_write_error (struct cstr_view const *parts,
+                         size_t                  count)
 {
 	struct cli_console_output state = {};
 	dstr_auto clean = dstr(nullptr);
-	int e = cli_console_output_write(&state, &clean, text);
-	if (e)
-		return e;
+	for (size_t i = 0; i < count; ++i) {
+		int e = cli_console_output_write(&state, &clean, parts[i]);
+		if (e)
+			return e;
+	}
 	size_t length = dstr_len(&clean);
 	return fwrite(dstr_get(&clean), 1, length, stderr) != length || fflush(stderr) ? EIO : 0;
 }
@@ -1897,11 +1951,9 @@ cli_console_error (struct cli_console *console,
                    struct cstr_view    text)
 {
 	if (!console || !console->fullscreen)
-		return cli_console_write_error(text);
+		return cli_console_write_error(&text, 1);
 	enum cli_style saved = console->display;
-	int e = cli_console_set_display(console, CLI_STYLE_ERROR);
-	if (!e)
-		e = cli_console_write(console, text);
+	int e = cli_console_print(console, &(struct cli_console_span){text, CLI_STYLE_ERROR}, 1);
 	int reset = cli_console_set_display(console, saved);
 	return e ? e : reset;
 }
@@ -1923,18 +1975,17 @@ cli_console_take_immediate (struct cli_console *console,
 	*ready = false;
 	if (console->frame || !console->immediate_line)
 		return 0;
-	dstr_clear(text);
-	if (!dstr_cat_n(text, console->immediate_line, console->immediate_length))
-		return ENOMEM;
-	dstr_auto echo = dstr(nullptr);
-	if (!dstr_cat_n(&echo, dstr_get(&console->prompt), dstr_len(&console->prompt)) ||
-	    !dstr_cat_n(&echo, console->immediate_line, console->immediate_length) ||
-	    !dstr_cat(&echo, "\n"))
-		return ENOMEM;
+	struct cstr_view line = {console->immediate_line, console->immediate_length};
+	int e = cstr_view_store(line, text);
+	if (e)
+		return e;
+	struct cli_console_span const echo[] = {
+		{cstr_view_dstr(&console->prompt), CLI_STYLE_USER_INPUT},
+		{line, CLI_STYLE_USER_INPUT},
+		{CSTR_VIEW("\n"), CLI_STYLE_USER_INPUT},
+	};
 	enum cli_style saved = console->display;
-	int e = cli_console_set_display(console, CLI_STYLE_USER_INPUT);
-	if (!e)
-		e = cli_console_write(console, cstr_view_dstr(&echo));
+	e = cli_console_print(console, echo, array_size(echo));
 	int reset = cli_console_set_display(console, saved);
 	if (!e)
 		e = reset;
