@@ -4506,7 +4506,8 @@ def check_configuration(binary, up, godbolt):
     # double.  JSON has no number that is NaN or infinite.
     for temperature in ("NaN", "Infinity", "1e400"):
         fails("-t", temperature, message="invalid temperature: " + temperature)
-    fails("-n", "0", message="invalid max token count")
+    fails("-n", "0", message="invalid --max-tokens")
+    fails("-T", "+5", message="invalid --timeout")
     fails("-x", "[1]", message="needs a JSON object")
     for extra in ('{"top_p": Infinity}', '{"a": [1, {"b": NaN}]}',
                   '{"a": -1e400}'):

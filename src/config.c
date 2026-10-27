@@ -404,58 +404,15 @@ config_usage (struct config const *cfg,
 	        BRAINSTEM_FORCED);
 }
 
-/* @p str, a decimal number from @p min to @p max, in @p *value; EINVAL if
- * it is not one. */
+/* @p str, a count from @p min to @p max in decimal digits, in @p *value; for
+ * a count of @p bytes, the digits may end in K, M or G for KiB, MiB or GiB.
+ * EINVAL if it is not one. */
 static int
-config_parse_number (char const *str,
-                     long long   min,
-                     long long   max,
-                     long long  *value)
-{
-	char *end;
-	/* strtoll() leaves errno as it was on success. */
-	errno = 0;
-	long long n = strtoll(str, &end, 10);
-	if (errno || end == str || *end || n < min || n > max)
-		return EINVAL;
-	*value = n;
-	return 0;
-}
-
-/* As config_parse_number(), into a long. */
-static int
-config_parse_long (char const *str,
-                   long        min,
-                   long        max,
-                   long       *value)
-{
-	long long n;
-	int e = config_parse_number(str, min, max, &n);
-	if (!e)
-		*value = (long)n;
-	return e;
-}
-
-/* As config_parse_number(), into a uint32_t. */
-static int
-config_parse_u32 (char const *str,
-                  uint32_t    min,
-                  uint32_t    max,
-                  uint32_t   *value)
-{
-	long long n;
-	int e = config_parse_number(str, min, max, &n);
-	if (!e)
-		*value = (uint32_t)n;
-	return e;
-}
-
-/* A byte count, which may end in K, M or G for KiB, MiB or GiB. */
-static int
-config_parse_size (char const *str,
-                   size_t      min,
-                   size_t      max,
-                   size_t     *value)
+config_parse_count (char const *str,
+                    uint64_t    min,
+                    uint64_t    max,
+                    bool        bytes,
+                    uint64_t   *value)
 {
 	static char const units[] = "KMG";
 	if (*str < '0' || *str > '9')
@@ -468,14 +425,14 @@ config_parse_size (char const *str,
 		return EINVAL;
 	unsigned shift = 0;
 	if (*end) {
-		char const *unit = strchr(units, *end);
+		char const *unit = bytes ? strchr(units, *end) : nullptr;
 		if (!unit || end[1])
 			return EINVAL;
 		shift = 10 * (unsigned)(unit - units + 1);
 	}
 	if (n > max >> shift || n << shift < min)
 		return EINVAL;
-	*value = (size_t)n << shift;
+	*value = (uint64_t)n << shift;
 	return 0;
 }
 
@@ -794,124 +751,94 @@ config_apply_extra (struct config *cfg,
 	return 0;
 }
 
-/* Apply option @p opt, which takes a number, with @p arg, as config_apply()
- * says. */
+/* How each numeric option is taken: the member of struct config at @p at,
+ * of @p width bytes, takes a count from @p min to @p max, in bytes if
+ * @p bytes, times @p scale; the option also sets the CFG_ flags @p flag. */
+static struct config_number {
+	uint64_t min;
+	uint64_t max;
+	uint64_t scale;
+	uint32_t flag;
+	int      opt;
+	uint16_t at;
+	uint8_t  width;
+	bool     bytes;
+} const numbers[] = {
+#define TAKE(opt, member, min, max, scale, bytes, flag)                     \
+	{ min, max, scale, flag, opt, offsetof(struct config, member),          \
+	  sizeof ((struct config *)nullptr)->member, bytes }
+#define N(opt, member, min, max) TAKE(opt, member, min, max, 1, false, 0)
+#define B(opt, member, min, max) TAKE(opt, member, min, max, 1, true, 0)
+	B(OPT_MAX_HEAD,          http.limits.head,          1, UINT16_MAX),
+	N(OPT_MAX_FIELDS,        http.limits.fields,        0, UINT32_MAX),
+	N(OPT_HEAD_TIMEOUT,      http.limits.head_time,     0, UINT32_MAX),
+	TAKE(OPT_MAX_BODY,       http.limits.body,          0, SIZE_MAX / 2, 1, true,
+	     CFG_BODY_GIVEN),
+	B(OPT_MIN_BODY_RATE,     http.limits.body_rate,     0, UINT32_MAX),
+	N(OPT_BODY_GRACE,        http.limits.body_grace,    0, UINT32_MAX),
+	B(OPT_BODY_BUDGET,       http.limits.bodies,        0, SIZE_MAX / 2),
+	B(OPT_CLIENT_BUDGET,     http.limits.client_bodies, 1, SIZE_MAX / 2),
+	N(OPT_MAX_CLIENT_CONNS,  http.limits.clients,       0, UINT32_MAX),
+	N(OPT_IDLE_TIMEOUT,      http.limits.idle_time,     0, UINT32_MAX),
+	B(OPT_OUTPUT_PAUSE,      http.limits.out_pause,     1, SIZE_MAX / 2),
+	B(OPT_MAX_OUTPUT,        http.limits.out_max,       1, SIZE_MAX / 2),
+	N(OPT_SEND_TIMEOUT,      http.limits.write_time,    0, UINT32_MAX),
+	N(OPT_MAX_DEPTH,         mcp.depth,                 1, INT32_MAX - 1),
+	N(OPT_MAX_VALUES,        mcp.values,                1, UINT32_MAX),
+	N(OPT_MAX_MEMBERS,       mcp.members,               1, UINT32_MAX - 1),
+	N(OPT_SSE_KEEPALIVE,     mcp.keepalive,             0, UINT32_MAX / 2),
+	TAKE(OPT_GRACE,          brainstem.grace_ms,        1, 3600, 1000, false, 0),
+	N(OPT_WATCHDOG,          brainstem.watchdog_ms,     0, 60'000),
+	N(OPT_TEST_STALL,        brainstem.stall_ms,        1, 3'600'000),
+	B(OPT_MEMORY_HIGH,       brainstem.memory_high,     1, SIZE_MAX / 2),
+	N(OPT_MAX_CALLS,         calls,                     1, 1'000'000),
+	N(OPT_TEST_MAN_RECHECK,  man_recheck,               0, 86'400),
+	TAKE(OPT_GIT_TIMEOUT,    git_timeout,               1, 3600, NS, false, 0),
+	N(OPT_MAX_TURNS,         turns,                     1, 1000),
+	/* As many as a handle's loop field names, home being 0. */
+	N(OPT_LOOPS,             loops,                     0, 255),
+	N(OPT_SLOTS,             ep.slots,                  1, UINT16_MAX),
+	N('n',                   ep.max_tokens,             1, INT32_MAX),
+	TAKE('T',                ep.timeout_ms,             0, INT32_MAX / 1000, 1000, false, 0),
+	TAKE(OPT_CHUNK_TIMEOUT,  ep.chunk_ms,               0, INT32_MAX / 1000, 1000, false, 0),
+	N(OPT_CONTEXT,           ep.context,                0, INT32_MAX),
+#undef B
+#undef N
+#undef TAKE
+};
+
+/* Apply the numeric option @p opt with @p arg, given in the configuration
+ * file @p where, or on the command line if that is nullptr; returns 0, or 2,
+ * having said why if @p opt is one. */
 static int
 config_apply_number (struct config *cfg,
                      int            opt,
                      char const    *arg,
                      char const    *where)
 {
-	struct ai_endpoint *ep = &cfg->ep;
-	struct httpd_limits *lim = &cfg->http.limits;
-	struct mcp_limits *mlim = &cfg->mcp;
-	struct brainstem_cfg *bs = &cfg->brainstem;
-	size_t size = 0;
-	uint32_t n = 0;
-	int e;
-	switch (opt) {
-	case OPT_MAX_HEAD:
-		e = config_parse_size(arg, 1, UINT16_MAX, &size);
-		lim->head = (uint32_t)size;
-		break;
-	case OPT_MAX_FIELDS:
-		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->fields);
-		break;
-	case OPT_HEAD_TIMEOUT:
-		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->head_time);
-		break;
-	case OPT_MAX_BODY:
-		cfg->flags |= CFG_BODY_GIVEN;
-		e = config_parse_size(arg, 0, SIZE_MAX / 2, &lim->body);
-		break;
-	case OPT_MIN_BODY_RATE:
-		e = config_parse_size(arg, 0, UINT32_MAX, &size);
-		lim->body_rate = (uint32_t)size;
-		break;
-	case OPT_BODY_GRACE:
-		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->body_grace);
-		break;
-	case OPT_BODY_BUDGET:
-		e = config_parse_size(arg, 0, SIZE_MAX / 2, &lim->bodies);
-		break;
-	case OPT_CLIENT_BUDGET:
-		e = config_parse_size(arg, 1, SIZE_MAX / 2, &lim->client_bodies);
-		break;
-	case OPT_MAX_DEPTH:
-		e = config_parse_u32(arg, 1, INT32_MAX - 1, &mlim->depth);
-		break;
-	case OPT_MAX_VALUES:
-		e = config_parse_u32(arg, 1, UINT32_MAX, &mlim->values);
-		break;
-	case OPT_MAX_MEMBERS:
-		e = config_parse_u32(arg, 1, UINT32_MAX - 1, &mlim->members);
-		break;
-	case OPT_SSE_KEEPALIVE:
-		e = config_parse_u32(arg, 0, UINT32_MAX / 2, &mlim->keepalive);
-		break;
-	case OPT_MAX_CLIENT_CONNS:
-		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->clients);
-		break;
-	case OPT_IDLE_TIMEOUT:
-		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->idle_time);
-		break;
-	case OPT_OUTPUT_PAUSE:
-		e = config_parse_size(arg, 1, SIZE_MAX / 2, &lim->out_pause);
-		break;
-	case OPT_MAX_OUTPUT:
-		e = config_parse_size(arg, 1, SIZE_MAX / 2, &lim->out_max);
-		break;
-	case OPT_SEND_TIMEOUT:
-		e = config_parse_u32(arg, 0, UINT32_MAX, &lim->write_time);
-		break;
-	case OPT_GRACE:
-		e = config_parse_u32(arg, 1, 3600, &n);
-		bs->grace_ms = n * 1000;
-		break;
-	case OPT_WATCHDOG:
-		e = config_parse_u32(arg, 0, 60'000, &bs->watchdog_ms);
-		break;
-	case OPT_TEST_STALL:
-		e = config_parse_u32(arg, 1, 3'600'000, &n);
-		bs->stall_ms = n;
-		break;
-	case OPT_MEMORY_HIGH:
-		e = config_parse_size(arg, 1, SIZE_MAX / 2, &size);
-		bs->memory_high = size;
-		break;
-	case OPT_MAX_CALLS:
-		e = config_parse_u32(arg, 1, 1'000'000, &cfg->calls);
-		break;
-	case OPT_SLOTS:
-		e = config_parse_u32(arg, 1, UINT16_MAX, &ep->slots);
-		break;
-	case OPT_CHUNK_TIMEOUT:
-		e = config_parse_long(arg, 0, INT32_MAX / 1000, &ep->chunk_ms);
-		ep->chunk_ms *= 1000;
-		break;
-	case OPT_TEST_MAN_RECHECK:
-		e = config_parse_u32(arg, 0, 86'400, &cfg->man_recheck);
-		break;
-	case OPT_GIT_TIMEOUT:
-		e = config_parse_u32(arg, 1, 3600, &n);
-		cfg->git_timeout = n * 1'000'000'000ULL;
-		break;
-	case OPT_MAX_TURNS:
-		e = config_parse_u32(arg, 1, 1000, &cfg->turns);
-		break;
-	case OPT_CONTEXT:
-		e = config_parse_long(arg, 0, INT32_MAX, &ep->context);
-		break;
-	case OPT_LOOPS:
-		/* As many as a handle's loop field names, home being 0. */
-		e = config_parse_u32(arg, 0, 255, &cfg->loops);
-		break;
-	default:
+	struct config_number const *n = numbers;
+	while (n < numbers + ARRAY_SIZE(numbers) && n->opt != opt)
+		++n;
+	if (n == numbers + ARRAY_SIZE(numbers))
 		return 2;
-	}
-	if (e)
+	uint64_t value;
+	if (config_parse_count(arg, n->min, n->max, n->bytes, &value))
 		return config_complain(cfg, where, "invalid --%s: %s",
 		                       config_option(opt)->name, arg);
+	/* Every member is an unsigned or a nonnegative count of 32 or 64 bits. */
+	value *= n->scale;
+	unsigned char *member = (unsigned char *)cfg + n->at;
+	switch (n->width) {
+	case sizeof (uint32_t): {
+		uint32_t narrow = (uint32_t)value;
+		memcpy(member, &narrow, sizeof narrow);
+		break;
+	}
+	case sizeof (uint64_t):
+		memcpy(member, &value, sizeof value);
+		break;
+	}
+	cfg->flags |= n->flag;
 	return 0;
 }
 
@@ -982,17 +909,8 @@ config_apply (struct config *cfg,
 		break;
 	case 't':
 		return config_apply_temperature(cfg, arg, where);
-	case 'n':
-		if (config_parse_long(arg, 1, INT32_MAX, &ep->max_tokens))
-			return config_complain(cfg, where, "invalid max token count: %s", arg);
-		break;
 	case 'x':
 		return config_apply_extra(cfg, arg, where);
-	case 'T':
-		if (config_parse_long(arg, 0, INT32_MAX / 1000, &ep->timeout_ms))
-			return config_complain(cfg, where, "invalid timeout: %s", arg);
-		ep->timeout_ms *= 1000;
-		break;
 	case OPT_TOOL_NAME:
 		if (!config_tool_name_valid(arg))
 			return config_complain(cfg, where, "tool names are 1-128 of "
@@ -1497,30 +1415,24 @@ config_file (struct config *cfg)
 	return status ? status : config_apply_tools(cfg);
 }
 
-/* Lower the body limit, unless --max-body gave it, to the budgets for the
- * bodies, when they are lower, so that a budget that a configuration of an
- * askai with a smaller default lowered does not stop askai. */
-static void
-config_fit_body (struct config *cfg)
+/* Check the limits on clients against each other.  A body limit that
+ * --max-body did not give shrinks to the budgets for the bodies, so that a
+ * configuration that lowers a budget does not stop askai. */
+static int
+config_check (struct config *cfg)
 {
 	struct httpd_limits *lim = &cfg->http.limits;
-	if (cfg->flags & CFG_BODY_GIVEN)
-		return;
-	if (lim->body > lim->bodies)
-		lim->body = lim->bodies;
-	if (lim->client_bodies && lim->body > lim->client_bodies)
-		lim->body = lim->client_bodies;
-}
-
-/* Check the limits on clients against each other. */
-static int
-config_check (struct config const *cfg)
-{
-	struct httpd_limits const *lim = &cfg->http.limits;
-	if (lim->body > lim->bodies)
-		return config_complain(cfg, nullptr, "--max-body exceeds --body-budget");
-	if (lim->client_bodies && lim->body > lim->client_bodies)
-		return config_complain(cfg, nullptr, "--max-body exceeds --client-budget");
+	size_t const budgets[] = {
+		lim->bodies, lim->client_bodies ? lim->client_bodies : SIZE_MAX
+	};
+	static char const *const names[] = { "--body-budget", "--client-budget" };
+	for (size_t i = 0; i < ARRAY_SIZE(budgets); ++i) {
+		if (lim->body <= budgets[i])
+			continue;
+		if (cfg->flags & CFG_BODY_GIVEN)
+			return config_complain(cfg, nullptr, "--max-body exceeds %s", names[i]);
+		lim->body = budgets[i];
+	}
 	if (lim->out_pause > lim->out_max)
 		return config_complain(cfg, nullptr, "--output-pause exceeds --max-output");
 	return 0;
@@ -2303,7 +2215,6 @@ config_policy (struct config *cfg)
 static int
 config_finish (struct config *cfg)
 {
-	config_fit_body(cfg);
 	int status = config_check(cfg);
 	if (status)
 		return status;
