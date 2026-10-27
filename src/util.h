@@ -118,6 +118,30 @@ util_word (char const *s,
 	return true;
 }
 
+/** The entry "NAME=value" of the process's environment whose "NAME=" is
+ *  the @p len bytes at @p name, or nullptr if it has none.  Nothing in
+ *  askai changes its environment, so the entry lasts. */
+static inline char *
+util_env (char const *name,
+          size_t      len)
+{
+	extern char **environ;
+	for (char **e = environ; e && *e; ++e)
+		if (!strncmp(*e, name, len))
+			return *e;
+	return nullptr;
+}
+
+/** The entry "PATH=..." of the process's environment for a child to
+ *  inherit, or "PATH=/usr/bin:/bin" if it has no PATH or an empty one. */
+static inline char *
+util_env_path (void)
+{
+	static char const name[] = "PATH=";
+	char *path = util_env(name, sizeof name - 1);
+	return path && path[sizeof name - 1] ? path : "PATH=/usr/bin:/bin";
+}
+
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a
  *  partial write.  Returns 0, or the error number, EIO if no byte could be
  *  written. */

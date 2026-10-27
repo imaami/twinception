@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "child.h"
+#include "git.h"
 #include "journal.h"
 #include "loop.h"
 #include "util.h"
@@ -301,19 +302,15 @@ journal_git (struct journal    *j,
              size_t             maximum,
              int               *status)
 {
-	static char *const env[] = {
-		"PATH=/usr/bin:/bin", "HOME=/nonexistent", "LC_ALL=C",
-		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1",
-		"GIT_ALLOW_PROTOCOL=none", "GIT_PAGER=cat", nullptr
+	static char const *const prefix[] = {
+		"git", "--git-dir=.", GIT_OPTIONS_FIXED,
+		"-c", "core.fsync=all", "-c", "core.fsyncMethod=fsync"
 	};
-	char const *argv[48] = {
-		"git", "--git-dir=.", "--no-pager", "--no-replace-objects",
-		"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-		"-c", "core.fsync=all", "-c", "core.fsyncMethod=fsync",
-		"-c", "gc.auto=0", "-c", "maintenance.auto=false"
-	};
-	size_t argc = 16;
+	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
+	char const *argv[48];
+	static_assert(ARRAY_SIZE(prefix) < ARRAY_SIZE(argv));
+	memcpy(argv, prefix, sizeof prefix);
+	size_t argc = ARRAY_SIZE(prefix);
 	for (size_t i = 0; command[i]; ++i) {
 		if (argc + 1 >= ARRAY_SIZE(argv))
 			return E2BIG;

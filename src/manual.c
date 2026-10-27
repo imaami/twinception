@@ -705,19 +705,6 @@ manual_loop_destroy (void **p_part)
 	free(ml);
 }
 
-/* The entry "@p name=value" of askai's environment, where @p name is @p len
- * bytes and ends in '='; nullptr if it has none. */
-static char *
-manual_env (char const *name,
-            size_t      len)
-{
-	extern char **environ;
-	for (char **e = environ; e && *e; ++e)
-		if (!strncmp(*e, name, len))
-			return *e;
-	return nullptr;
-}
-
 struct manual *
 manual_create (uint32_t  recheck,
                int      *e)
@@ -732,17 +719,14 @@ manual_create (uint32_t  recheck,
 	}
 	/* man's environment is askai's PATH and MANPATH, and UTF-8 text, 80
 	 * columns wide, neither hyphenated nor justified, for a model to read. */
-	static char const path[] = "PATH=";
 	static char const manpath[] = "MANPATH=";
 	char *env[ARRAY_SIZE(m->env)] = {
-		manual_env(path, sizeof path - 1),
+		util_env_path(),
 		"LC_ALL=C.UTF-8",
 		"MANWIDTH=80",
 		"MANROFFOPT=-rHY=0 -dAD=l",
-		manual_env(manpath, sizeof manpath - 1)
+		util_env(manpath, sizeof manpath - 1)
 	};
-	if (!*env)
-		*env = "PATH=/usr/bin:/bin";
 	memcpy(m->env, env, sizeof env);
 	m->buckets = buckets;
 	m->mask = BUCKETS - 1;

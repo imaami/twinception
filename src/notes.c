@@ -12,6 +12,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "git.h"
 #include "notes.h"
 #include "util.h"
 
@@ -46,12 +47,12 @@ struct notes_revision {
 	enum notes_revision_phase phase;
 };
 
-/* The options of git before each command.  They stop the configuration of
- * the repository from making git run other programs, and they stop git
- * from running the hooks of the repository when it updates a branch. */
+/* The options of git before each command: GIT_OPTIONS_FIXED, which stop
+ * the configuration of the repository from making git run other programs,
+ * literal paths, and no signature checks. */
 static char const *const fixed[] = {
-	"--no-pager", "--no-replace-objects", "--literal-pathspecs", "-c",
-	"core.bare=true", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false",
+	GIT_OPTIONS_FIXED, "--literal-pathspecs",
+	"-c", "core.bare=true", "-c", "log.showSignature=false",
 };
 
 /* The words of each command after the options in fixed. */
@@ -246,24 +247,13 @@ notes_create (char const *path,
 		            "digits, underscores or hyphens");
 		return nullptr;
 	}
-	static char const env_path[] = "PATH=";
-	char const *search = getenv("PATH");
 	struct notes *notes = calloc(1, sizeof *notes);
-	char *env = notes ? util_concat(env_path, sizeof env_path - 1,
-	                                search && *search ? search : "/usr/bin:/bin")
-	                  : nullptr;
-	if (!env) {
-		free(notes);
+	if (!notes) {
 		util_format(why, len, "out of memory");
 		*e = ENOMEM;
 		return nullptr;
 	}
-	char *const vars[ENV] = {
-		env, "HOME=/nonexistent", "LC_ALL=C.UTF-8", "GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
-		"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none", "GIT_PAGER=cat",
-		nullptr
-	};
+	char *const vars[ENV] = { util_env_path(), GIT_ENV_FIXED, nullptr };
 	static_assert(sizeof vars == sizeof notes->env);
 	memcpy(notes->env, vars, sizeof vars);
 	notes->fd = -1;
@@ -287,8 +277,6 @@ notes_destroy (struct notes **p_notes)
 		return;
 	struct notes *notes = *p_notes;
 	*p_notes = nullptr;
-	free(notes->env[0]);
-	notes->env[0] = nullptr;
 	free(notes->dir);
 	notes->dir = nullptr;
 	free(notes->participant);

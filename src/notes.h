@@ -28,7 +28,7 @@ enum {
 	NOTES_REPO = 128,      /**< bytes of a full notebook branch ref, NUL included */
 	NOTES_TIP  = 64,       /**< hexadecimal digits of a commit's name, at
 	                            most */
-	NOTES_ARGV = 25,       /**< elements of the argv of git, nullptr
+	NOTES_ARGV = 40,       /**< elements of the argv of git, nullptr
 	                            included */
 };
 

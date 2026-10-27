@@ -8062,13 +8062,13 @@ def check_git(binary, up):
             assert re.fullmatch(r"/tmp/askai-git-[A-Za-z0-9]{6}", directory), argv
             assert not os.path.exists(directory), directory
             assert argv == [
-                "--no-pager", "--no-replace-objects", "-c", "core.bare=true", "-c",
-                "core.fsmonitor=false", "-c",
-                "log.showSignature=false", "-c", "gpg.program=false", "-c",
+                "--no-pager", "--no-replace-objects", "-c", "core.fsmonitor=false",
+                "-c", "core.hooksPath=/dev/null", "-c", "gpg.program=false", "-c",
                 "gpg.ssh.program=false", "-c", "gpg.x509.program=false", "-c",
-                "core.hooksPath=/dev/null", "-c", "protocol.allow=never", "-c",
-                "diff.submodule=short", "-c", "diff.autoRefreshIndex=false", "-c",
-                "gc.auto=0", "-c", "maintenance.auto=false", "-c",
+                "protocol.allow=never", "-c", "gc.auto=0", "-c",
+                "maintenance.auto=false", "-c", "core.bare=true", "-c",
+                "log.showSignature=false", "-c", "diff.submodule=short", "-c",
+                "diff.autoRefreshIndex=false", "-c",
                 f"safe.directory={real}", "-C", directory, "--git-dir=.",
                 "log", "--no-ext-diff", "--no-textconv", "--oneline",
                 "--end-of-options", "1" * 40, "--",

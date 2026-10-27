@@ -101,29 +101,16 @@ struct git_call {
 	enum git_phase         phase;
 };
 
-/* What git runs with whatever the call: no pager, nor a program that a
- * repository's configuration names for the fsmonitor, gpg (which a log's
- * format may ask for), hooks, or a submodule's diff (which a superproject's
- * show or log -p runs as a git of its own, without the options below); no
- * remote protocol (the environment's GIT_ALLOW_PROTOCOL, which a
- * repository's protocol.<name>.allow cannot override, stops them all); no
- * implicit worktree operations or replacement objects; and options that
- * writes would have (gc.auto, maintenance.auto) off. */
+/* What git runs with whatever the call: GIT_OPTIONS_FIXED, no signature
+ * checks, no implicit worktree operations, and no submodule's diff (which a
+ * superproject's show or log -p runs as a git of its own, without these
+ * options). */
 static char const *const fixed[] = {
-	"--no-pager",
-	"--no-replace-objects",
+	GIT_OPTIONS_FIXED,
 	"-c", "core.bare=true",
-	"-c", "core.fsmonitor=false",
 	"-c", "log.showSignature=false",
-	"-c", "gpg.program=false",
-	"-c", "gpg.ssh.program=false",
-	"-c", "gpg.x509.program=false",
-	"-c", "core.hooksPath=/dev/null",
-	"-c", "protocol.allow=never",
 	"-c", "diff.submodule=short",
 	"-c", "diff.autoRefreshIndex=false",
-	"-c", "gc.auto=0",
-	"-c", "maintenance.auto=false",
 };
 
 /*
@@ -320,13 +307,6 @@ git_load (struct git        *git,
           char const *const  paths[],
           size_t             n)
 {
-	static char const env_path[] = "PATH=";
-	char const *path = getenv("PATH");
-	char *env = util_concat(env_path, sizeof env_path - 1,
-	                        path && *path ? path : "/usr/bin:/bin");
-	if (!env)
-		return ENOMEM;
-	git->env[0] = env;
 	for (; git->n < n; ++git->n) {
 		int e = git_repo_init(&git->repo[git->n], paths[git->n]);
 		if (e)
@@ -335,11 +315,10 @@ git_load (struct git        *git,
 	char *ceilings = git_ceilings(git);
 	if (!ceilings)
 		return ENOMEM;
+	/* The last but one is GIT_ATTR_SOURCE's, when a call has a HEAD. */
 	char *const vars[ENV] = {
-		env, ceilings, "HOME=/nonexistent", "LC_ALL=C.UTF-8",
-		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat",
-		"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none", nullptr, nullptr
+		util_env_path(), ceilings, GIT_ENV_FIXED, "GIT_OPTIONAL_LOCKS=0",
+		nullptr, nullptr
 	};
 	static_assert(sizeof vars == sizeof git->env);
 	memcpy(git->env, vars, sizeof vars);
@@ -372,7 +351,6 @@ git_destroy (struct git **p_git)
 	*p_git = nullptr;
 	for (size_t i = 0; i < git->n; ++i)
 		free(git->repo[i].name);
-	free(git->env[0]);
 	free(git->env[1]);
 	free(git);
 }
