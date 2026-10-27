@@ -10,6 +10,7 @@
 #include <strings.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "notes.h"
@@ -700,6 +701,34 @@ notes_is_dotgit (char const *part,
 		at += (size_t)(bs - s) + 1;
 	}
 	return false;
+}
+
+int
+notes_lock (struct notes const *notes,
+            char const         *repo,
+            int64_t            *age)
+{
+	*age = 0;
+	struct timespec now;
+	struct timespec up;
+	if (clock_gettime(CLOCK_REALTIME, &now) || clock_gettime(CLOCK_BOOTTIME, &up))
+		return errno;
+	char *path = nullptr;
+	if (asprintf(&path, "%s/%s.lock", notes->directory, repo) < 0)
+		return ENOMEM;
+	struct stat st;
+	int e = 0;
+	if (lstat(path, &st))
+		e = errno == ENOENT ? 0 : errno;
+	/* A margin keeps a clock step after the boot from making a live lock
+	 * look older than the boot. */
+	else if (!S_ISREG(st.st_mode) || st.st_mtime >= now.tv_sec - up.tv_sec - NOTES_STALE)
+		*age = now.tv_sec - st.st_mtime;
+	else if (unlink(path) && errno != ENOENT)
+		e = errno;
+	free(path);
+	path = nullptr;
+	return e;
 }
 
 bool

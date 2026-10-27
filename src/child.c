@@ -39,14 +39,23 @@ child_close (struct child    *c,
 	close(fd);
 }
 
-/* Kill the child's group, unless the child is reaped, and stop reading its
- * output. */
+/* Signal the child's group with @p sig, unless the child is reaped, and
+ * stop reading its output. */
+static void
+child_signal (struct child *c,
+              int           sig)
+{
+	if (c->pid > 0)
+		(void)kill(-c->pid, sig);
+	child_close(c, &c->pipe);
+}
+
+/* Stop the child: a child with a grace with SIGTERM, which lets it clean
+ * up (git removes its lock files), and any other with SIGKILL. */
 static void
 child_kill (struct child *c)
 {
-	if (c->pid > 0)
-		(void)kill(-c->pid, SIGKILL);
-	child_close(c, &c->pipe);
+	child_signal(c, c->grace ? SIGTERM : SIGKILL);
 }
 
 /* Reap the child if it has exited, and set its pid to 0.  After the reap,
@@ -166,7 +175,7 @@ child_due (struct child *c)
 	bool term = c->grace && !c->late && c->pid > 0;
 	c->late = true;
 	if (!term) {
-		child_kill(c);
+		child_signal(c, SIGKILL);
 		return;
 	}
 	/* Its grace starts on the timer, which stays in the heap. */
@@ -487,8 +496,10 @@ child_destroy (struct child **p_c)
 		child_dispose(c);
 		return;
 	}
+	/* The deadline still ends a child that SIGTERM did not. */
 	child_kill(c);
-	loop_timer_stop(c->loop, &c->timer);
+	if (!c->grace)
+		loop_timer_stop(c->loop, &c->timer);
 	buf_fini(&c->out);
 }
 

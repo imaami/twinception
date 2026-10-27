@@ -9067,19 +9067,29 @@ def check_notes(binary, up):
             time.sleep(1)
             assert "dropped.md" in call({"action": "list", "thread": thread})
             # An old lock can still belong to another process using this
-            # shared repository.  Age alone must not authorize deleting it.
+            # shared repository.  Age alone must not authorize deleting it,
+            # but the answer says how long the notebook has been locked.
             book = notes
             for lock in ("HEAD.lock", f"{own}.lock"):
                 with open(f"{book}/{lock}", "w"):
                     pass
                 os.utime(f"{book}/{lock}", (time.time() - 120,) * 2)
-            assert "retry" in call({"action": "add", "file": "unlocked.md", "text": "u",
-                                    "thread": thread})
+            said = call({"action": "add", "file": "unlocked.md", "text": "u",
+                         "thread": thread})
+            assert re.fullmatch(r"!Could not write the note: its notebook has been "
+                                r"locked for 1[2-3]\d s\.", said), said
+            assert any(f"{own}.lock is " in line for line in ai.log), ai.log
             for lock in ("HEAD.lock", f"{own}.lock"):
                 assert os.path.exists(f"{book}/{lock}"), lock
-                os.unlink(f"{book}/{lock}")
+            # No process holds a lock from before the system booted, as a
+            # crash leaves one: the next write removes it.
+            boot = time.time() - time.clock_gettime(time.CLOCK_BOOTTIME)
+            os.utime(f"{book}/{own}.lock", (boot - 120,) * 2)
             assert call({"action": "add", "file": "unlocked.md", "text": "u",
                          "thread": thread}) == "Noted."
+            assert not os.path.exists(f"{book}/{own}.lock")
+            assert os.path.exists(f"{book}/HEAD.lock")
+            os.unlink(f"{book}/HEAD.lock")
         # A process can start askai with SIGCHLD ignored.  askai sets SIGCHLD
         # to its default action, so waitid() still returns the exit status
         # of git, and the note is added.
@@ -9088,7 +9098,8 @@ def check_notes(binary, up):
             assert said == "Noted.", said
     print("notes: shared repository, separate identity branches, discovery, "
           "read-only cross-notebook access, versioned files, copy, binary data, "
-          "offsets, races, drops and preservation of external locks: PASS")
+          "offsets, races, drops, preservation of external locks and removal of "
+          "locks from before the boot: PASS")
 
 
 def check_shared_notes(binary, up):

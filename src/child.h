@@ -26,9 +26,10 @@ enum child_flag {
  * A child process, from its spawn until it is reaped and its owner has let
  * go of it.  Its session's process group is killed, with SIGKILL, once its
  * output goes past the cap, at its deadline, or as its owner lets go of it
- * before it has ended; at its deadline, if it has a grace, with SIGTERM
- * first, and SIGKILL once the grace has passed too; never once it is
- * reaped, as its id may name another group then.
+ * before it has ended.  A child with a grace gets SIGTERM instead, which
+ * lets it clean up, and at its deadline SIGKILL once the grace has passed
+ * too.  No signal goes to the group once the child is reaped, as its id
+ * may name another group then.
  *
  * The child is reaped only after it has exited and its output has ended.
  * Between the exit and the reap, the child is a zombie.  The kernel does

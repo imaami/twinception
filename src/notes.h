@@ -39,6 +39,11 @@ static constexpr uint64_t NOTES_NS = 10'000'000'000;
  *  in nanoseconds. */
 static constexpr uint64_t NOTES_GRACE = 1'000'000'000;
 
+/** The age in seconds past which a lock file of a notebook has outlived
+ *  every write of askai, so that its writer has died or hangs. */
+static constexpr int64_t NOTES_STALE = 60;
+static_assert(NOTES_NS + NOTES_GRACE < (uint64_t)NOTES_STALE * 1'000'000'000);
+
 /** The two authors within a participant and principal. */
 enum notes_side : uint8_t {
 	NOTES_UPSTREAM,  /**< the upstream in ask calls */
@@ -149,6 +154,18 @@ notes_select (char const *name,
  * notes_select(). The view borrows @p repo. */
 extern char const *
 notes_selector (char const *repo);
+
+/** Writes to @p *age how many seconds ago the lock file of the notebook
+ *  branch @p repo was last changed, or 0 if it has none.  A lock file last
+ *  changed more than NOTES_STALE before the system booted belongs to no
+ *  running process, as a crash can leave it, and is removed instead; the
+ *  margin keeps a step of the clock from making a live lock look older than
+ *  the boot.  Any other lock file stays, as its writer may be outside
+ *  askai.  Returns 0 or an error number. */
+extern int
+notes_lock (struct notes const *notes,
+            char const         *repo,
+            int64_t            *age);
 
 /** Whether the shared repository has been initialized. Branch existence is
  * resolved by Git, including packed refs. */

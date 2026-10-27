@@ -1356,7 +1356,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	instance_table_put(&slot->req->mcp->instances, &slot->inst);
 	slot->lent = (struct span){};
 	/* A git that writes notes runs to its end, because a kill could leave
-	 * a lock file behind. Shared repositories require manual inspection of stale locks. */
+	 * a lock file behind. */
 	uint8_t kind = slot->fetch & FETCH_KIND;
 	if (kind == FETCH_CREATE || kind == FETCH_ADD)
 		child_release(&slot->child);
@@ -6450,9 +6450,15 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	                   : fetch & FETCH_FILES ? NOTES_FILES
 	                   : fetch & FETCH_NEWEST ? NOTES_READ
 	                   : mcp_fetch_cmds[fetch & FETCH_KIND];
-	/* A shared repository can have writers outside askai. Never remove their
-	 * lock files; graceful termination gives Git a chance to remove its own. */
+	/* Git removes its own lock files on SIGTERM, and notes_lock() removes
+	 * one that a crash left.  The lock file of a live writer, which may be
+	 * outside askai, stays. */
 	bool writes = cmd == NOTES_CREATE || cmd == NOTES_ADD;
+	int64_t age;
+	int e = cmd == NOTES_ADD ? notes_lock(mcp->st->notes, req->repo, &age) : 0;
+	if (e)
+		LOG(LOG_WARN, "notes: cannot check the lock of %s: %s",
+		    notes_selector(req->repo), strerror(e));
 	char const *argv[NOTES_ARGV];
 	if (fetch & FETCH_REVISION)
 		notes_revision_argv(slot->own, mcp->st->notes, mcp_slot_notebook(slot),
@@ -6473,7 +6479,6 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 		.flags = writes ? CHILD_STDERR : 0
 	};
 	slot->fetch = fetch;
-	int e = 0;
 	slot->child = child_create(loop, &mcp->children, &c, mcp_on_notes, slot, &e);
 	if (in)
 		buf_fini(in);
@@ -6564,8 +6569,9 @@ mcp_notes_raced (struct child const *child)
 }
 
 /* Appends to the answer of @p slot why git did not write the note: git took
- * too long, another call changed the notebook at the same time, or
- * another error, which the function logs. */
+ * too long, a writer that died or hangs left the notebook locked, which the
+ * function logs, another call changed the notebook at the same time, or
+ * another error, which the function logs too. */
 static int
 mcp_slot_notes_unadded (struct mcp_slot *slot)
 {
@@ -6574,6 +6580,18 @@ mcp_slot_notes_unadded (struct mcp_slot *slot)
 	if (c->late)
 		return mcp_slot_say(slot, &TEXT("Could not write the note: it took too "
 		                                "long."), 1);
+	struct notes const *notes = slot->req->mcp->st->notes;
+	char const *repo = slot->req->repo;
+	int64_t age = 0;
+	if (out.len && memmem(out.ptr, out.len, "File exists", sizeof "File exists" - 1) &&
+	    !notes_lock(notes, repo, &age) && age > NOTES_STALE) {
+		LOG(LOG_WARN, "notes: %s/%s.lock is %" PRId64 " s old; remove it if no "
+		    "git process uses the repository", notes_directory(notes), repo, age);
+		char said[128];
+		return mcp_slot_say(slot, &ESC(said, util_format(said, sizeof said,
+		                    "Could not write the note: its notebook has been "
+		                    "locked for %" PRId64 " s.", age)), 1);
+	}
 	if (mcp_notes_raced(c))
 		return mcp_slot_say(slot, &TEXT("Could not write the note, because another "
 		                                "call changed this notebook at the same "
