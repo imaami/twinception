@@ -1,6 +1,7 @@
 /** @file Byte buffer for sockets, TLS and pipes, and its stash (buf.h). */
 #include <errno.h>
 #include <stdbit.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -233,4 +234,40 @@ buf_stash_release (struct buf_stash  *stash,
 	if (level >= BUF_CRITICAL)
 		stash->peak = stash->held;
 	return done;
+}
+
+int
+buf_vprintf (struct buf *buf,
+             char const *fmt,
+             va_list     ap)
+{
+	for (size_t room = 128;;) {
+		struct span s;
+		int e = buf_reserve(buf, room, SIZE_MAX, &s);
+		if (e)
+			return e;
+		va_list copy;
+		va_copy(copy, ap);
+		int n = vsnprintf((char *)s.ptr, s.len, fmt, copy);
+		va_end(copy);
+		if (n < 0)
+			return EOVERFLOW;
+		if ((size_t)n < s.len) {
+			buf_commit(buf, (size_t)n);
+			return 0;
+		}
+		room = (size_t)n + 1;
+	}
+}
+
+int
+buf_printf (struct buf *buf,
+            char const *fmt,
+            ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	int e = buf_vprintf(buf, fmt, ap);
+	va_end(ap);
+	return e;
 }

@@ -3,6 +3,7 @@
 #ifndef TWINCEPTION_SRC_BUF_H_
 #define TWINCEPTION_SRC_BUF_H_
 
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -117,6 +118,22 @@ buf_reserve (struct buf  *buf,
              size_t       min,
              size_t       max,
              struct span *room);
+
+/** Append text, formatted as by vprintf(), growing the buffer as it needs.
+ *  Returns 0, buf_reserve()'s error, or EOVERFLOW if vsnprintf() cannot
+ *  format it. */
+[[gnu::format(printf, 2, 0)]]
+extern int
+buf_vprintf (struct buf *buf,
+             char const *fmt,
+             va_list     ap);
+
+/** As buf_vprintf(), with the format's arguments. */
+[[gnu::format(printf, 2, 3)]]
+extern int
+buf_printf (struct buf *buf,
+            char const *fmt,
+            ...);
 
 /** Make @p len bytes written into the last reservation readable. */
 static inline void

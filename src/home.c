@@ -634,23 +634,11 @@ home_job_say (struct job *job,
               ...)
 {
 	buf_consume(&job->result, buf_peek(&job->result).len);
-	for (size_t room = 128;;) {
-		struct span s;
-		int e = buf_reserve(&job->result, room, SIZE_MAX, &s);
-		if (e)
-			return e;
-		va_list ap;
-		va_start(ap, fmt);
-		int n = vsnprintf((char *)s.ptr, s.len, fmt, ap);
-		va_end(ap);
-		if (n < 0)
-			return EOVERFLOW;
-		if ((size_t)n < s.len) {
-			buf_commit(&job->result, (size_t)n);
-			return 0;
-		}
-		room = (size_t)n + 1;
-	}
+	va_list ap;
+	va_start(ap, fmt);
+	int e = buf_vprintf(&job->result, fmt, ap);
+	va_end(ap);
+	return e;
 }
 
 /* The upstream erred, as the @p len bytes at @p what say, all of them if

@@ -1,7 +1,6 @@
 /** @file Prometheus text exposition of the core's metrics (metrics.h). */
 #include <errno.h>
 #include <inttypes.h>
-#include <stdarg.h>
 #include <stdio.h>
 
 #include "blocker.h"
@@ -365,33 +364,6 @@ static struct metrics_entry const table[] = {
 #undef WORK
 #undef LOOP_HIST
 
-/* Append text, formatted as by printf(); returns 0, buf_reserve()'s error,
- * or EOVERFLOW if vsnprintf() cannot format it. */
-[[gnu::format(printf, 2, 3)]]
-static int
-metrics_put (struct buf *out,
-             char const *fmt,
-             ...)
-{
-	for (size_t room = 256;;) {
-		struct span s;
-		int e = buf_reserve(out, room, SIZE_MAX, &s);
-		if (e)
-			return e;
-		va_list ap;
-		va_start(ap, fmt);
-		int n = vsnprintf((char *)s.ptr, s.len, fmt, ap);
-		va_end(ap);
-		if (n < 0)
-			return EOVERFLOW;
-		if ((size_t)n < s.len) {
-			buf_commit(out, (size_t)n);
-			return 0;
-		}
-		room = (size_t)n + 1;
-	}
-}
-
 /* A histogram's cumulative buckets, to its own resolution, then its sum and
  * count; the count is the buckets' total, which a writer may have moved on
  * from meanwhile. */
@@ -407,8 +379,8 @@ metrics_put_hist (struct buf         *out,
 	for (size_t b = 0; b < ARRAY_SIZE(bounds); ++b) {
 		for (size_t end = hist_index(bounds[b].ns); i <= end; ++i)
 			n += hist_get(&h->bucket[i]);
-		int e = metrics_put(out, "%s_bucket{%s%sle=\"%s\"} %" PRIu64 "\n", name, labels,
-		                    sep, bounds[b].le, n);
+		int e = buf_printf(out, "%s_bucket{%s%sle=\"%s\"} %" PRIu64 "\n", name, labels,
+		                   sep, bounds[b].le, n);
 		if (e)
 			return e;
 	}
@@ -416,11 +388,11 @@ metrics_put_hist (struct buf         *out,
 		n += hist_get(&h->bucket[i]);
 	char const *open = *labels ? "{" : "";
 	char const *close = *labels ? "}" : "";
-	return metrics_put(out, "%s_bucket{%s%sle=\"+Inf\"} %" PRIu64 "\n"
-	                   "%s_sum%s%s%s %.9g\n%s_count%s%s%s %" PRIu64 "\n",
-	                   name, labels, sep, n,
-	                   name, open, labels, close, (double)hist_get(&h->sum) / 1e9,
-	                   name, open, labels, close, n);
+	return buf_printf(out, "%s_bucket{%s%sle=\"+Inf\"} %" PRIu64 "\n"
+	                  "%s_sum%s%s%s %.9g\n%s_count%s%s%s %" PRIu64 "\n",
+	                  name, labels, sep, n,
+	                  name, open, labels, close, (double)hist_get(&h->sum) / 1e9,
+	                  name, open, labels, close, n);
 }
 
 static int
@@ -435,17 +407,17 @@ metrics_put_value (struct buf             *out,
 	char const *close = *labels ? "}" : "";
 	switch (scale) {
 	case NANO:
-		return metrics_put(out, "%s%s%s%s %.9f\n", name, open, labels, close,
-		                   (double)v / 1e9);
+		return buf_printf(out, "%s%s%s%s %.9f\n", name, open, labels, close,
+		                  (double)v / 1e9);
 	case MICRO:
-		return metrics_put(out, "%s%s%s%s %.6f\n", name, open, labels, close,
-		                   (double)v / 1e6);
+		return buf_printf(out, "%s%s%s%s %.6f\n", name, open, labels, close,
+		                  (double)v / 1e6);
 	case PERMYRIAD:
-		return metrics_put(out, "%s%s%s%s %.4f\n", name, open, labels, close,
-		                   (double)v / 1e4);
+		return buf_printf(out, "%s%s%s%s %.4f\n", name, open, labels, close,
+		                  (double)v / 1e4);
 	default:
-		return metrics_put(out, "%s%s%s%s %" PRIu64 "\n", name, open, labels, close,
-		                   v);
+		return buf_printf(out, "%s%s%s%s %" PRIu64 "\n", name, open, labels, close,
+		                  v);
 	}
 }
 
@@ -477,8 +449,8 @@ metrics_put_series (struct buf                 *out,
                     unsigned                   *cost)
 {
 	if (m->help && first) {
-		int e = metrics_put(out, "# HELP %s %s\n# TYPE %s %s\n", m->name, m->help,
-		                    m->name, kinds[m->kind]);
+		int e = buf_printf(out, "# HELP %s %s\n# TYPE %s %s\n", m->name, m->help,
+		                   m->name, kinds[m->kind]);
 		if (e)
 			return e;
 	}
