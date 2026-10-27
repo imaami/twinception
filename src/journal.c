@@ -723,8 +723,7 @@ journal_checkpoint_write (struct journal        *j,
                           struct journal_record *record)
 {
 	if (!journal_control_kind(record->kind))
-		return !strcmp(record->kind, "stream") || !strcmp(record->kind, "body") ||
-		       !strcmp(record->kind, "message") ? 0 : EINVAL;
+		return EINVAL;
 	struct journal_job *job = journal_job_find(j, record->id);
 	bool state = !strcmp(record->kind, "state");
 	bool terminal = journal_terminal(record->kind);

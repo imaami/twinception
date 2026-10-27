@@ -74,8 +74,9 @@ journal_destroy (struct journal **p_journal);
  * after the private recovery snapshot is durable.  After a record of a job
  * is lost, later records of that job fail with the same error until a
  * "state" snapshot or a terminal record ("result" or "cancel") replaces
- * them all; other jobs are not affected. Raw stream/body/message records
- * are ignored.
+ * them all; other jobs are not affected.  Other kinds than "state",
+ * "meta", "tool-intent", "tool-result", "result", "cancel" and "legacy"
+ * fail with EINVAL.
  * Records of kind "cancel" with at most 1024 payload bytes can use a
  * reserved allowance of 1024 queue entries and 2 MiB beyond the ordinary
  * 256-entry/32 MiB limit, so a full stream queue cannot prevent recording

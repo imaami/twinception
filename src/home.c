@@ -12,7 +12,6 @@
 #include "ai.h"
 #include "buf.h"
 #include "config.h"
-#include "dstr.h"
 #include "hist.h"
 #include "home.h"
 #include "http.h"
@@ -95,13 +94,11 @@ struct home_delivery_error {
 	char     message[CURL_ERROR_SIZE];
 };
 
-/* A turn's legacy replay is immutable until home starts it. Archive writes
- * gate parsing, not reception; the wire and each event remain bounded. */
+/* Archive writes gate parsing, not reception; the wire and each event
+ * remain bounded.  A restored job restarts its provider stream from the
+ * beginning, which home_start() reattaches to. */
 struct home_recovery {
-	struct buf saved;
-	struct dstr cursor;
 	char *provider_id;
-	uint64_t offset;
 	uint64_t thought_offset;
 	uint32_t pending;
 	uint32_t restoring;
@@ -219,36 +216,24 @@ home_llama (struct home const *home)
 	        home->ep->api == AI_MESSAGES);
 }
 
+/* Whether the provider keeps a job's generation, which askai can reattach
+ * to and must cancel: native background execution, or llama's. */
+static bool
+home_native (struct home const *home)
+{
+	return ai_background(home->ep) || home_llama(home);
+}
+
 void
 home_job_recovery_fini (struct job *job)
 {
 	struct home_recovery *r = job->recovery;
 	if (!r)
 		return;
-	buf_fini(&r->saved);
 	free(r->provider_id);
 	r->provider_id = nullptr;
-	dstr_cleanup(&r->cursor);
 	free(r);
 	job->recovery = nullptr;
-}
-
-/* Keep only complete SSE frames before a cloud resume.  Llama resumes
- * bytes, so its partial frame is deliberately retained. */
-static void
-home_replay_trim (struct buf *saved)
-{
-	struct span s = buf_peek(saved);
-	size_t end = 0, line = 0;
-	for (size_t k = 0; k < s.len; ++k) {
-		if (s.ptr[k] != '\n')
-			continue;
-		size_t len = k - line;
-		if (!len || (len == 1 && s.ptr[line] == '\r'))
-			end = k + 1;
-		line = k + 1;
-	}
-	saved->tail = saved->head + end;
 }
 
 int
@@ -260,41 +245,24 @@ home_job_restore (struct job                  *job,
 	struct home_recovery *r = calloc(1, sizeof *r);
 	if (!r)
 		return ENOMEM;
-	r->cursor = dstr("");
 	job->recovery = r;
 	r->restoring = true;
 	for (; records; records = records->next) {
-		if (!strcmp(records->kind, "meta")) {
-			struct json_object *meta = jb_parse((char const *)records->data,
-			                                    records->len, 0, 8);
-			if (!meta) {
-				home_job_recovery_fini(job);
-				return EPROTO;
-			}
-			if (json_object_get_boolean(jb_get(meta, "resume")) &&
-			    !jb_is(jb_get(meta, "provider"), "llama"))
-				home_replay_trim(&r->saved);
-			char const *id = jb_text(jb_get(meta, "provider_id"));
-			if (id && *id && !r->provider_id) {
-				r->provider_id = strdup(id);
-				if (!r->provider_id) {
-					json_object_put(meta);
-					home_job_recovery_fini(job);
-					return ENOMEM;
-				}
-			}
-			json_object_put(meta);
-		} else if (!strcmp(records->kind, "stream")) {
-			struct span s;
-			int e = buf_reserve(&r->saved, records->len, JOURNAL_LOAD_MAX, &s);
-			if (e) {
-				home_job_recovery_fini(job);
-				return e;
-			}
-			memcpy(s.ptr, records->data, records->len);
-			buf_commit(&r->saved, records->len);
-			r->offset += records->len;
+		if (strcmp(records->kind, "meta"))
+			continue;
+		struct json_object *meta = jb_parse((char const *)records->data,
+		                                    records->len, 0, 8);
+		if (!meta) {
+			home_job_recovery_fini(job);
+			return EPROTO;
 		}
+		char const *id = jb_text(jb_get(meta, "provider_id"));
+		if (id && *id && !r->provider_id && !(r->provider_id = strdup(id))) {
+			json_object_put(meta);
+			home_job_recovery_fini(job);
+			return ENOMEM;
+		}
+		json_object_put(meta);
 	}
 	return 0;
 }
@@ -572,8 +540,7 @@ static void
 home_native_cancel (struct home *home,
                     struct job  *job)
 {
-	if ((!ai_background(home->ep) && !home_llama(home)) ||
-	    !(job->flags & RUNNING) || job->provider_done)
+	if (!home_native(home) || !(job->flags & RUNNING) || job->provider_done)
 		return;
 	if (!job->cancel_url && job->recovery && job->recovery->provider_id)
 		(void)home_provider_url(home, job, true, &job->cancel_url);
@@ -755,8 +722,7 @@ static bool
 home_job_cuttable (struct home const *home,
                    struct job const  *job)
 {
-	return !ai_background(home->ep) && !home_llama(home) &&
-	       !(job->asks & JOB_DURABLE) && job->transfer &&
+	return !home_native(home) && !(job->asks & JOB_DURABLE) && job->transfer &&
 	       !(job->recovery && (job->recovery->pending || job->recovery->thought_offset)) &&
 	       !(job->flags & (PROBE | DELIVERED | ENDED));
 }
@@ -927,7 +893,7 @@ home_finish (struct home *home,
 		                 result != CURLE_OUT_OF_MEMORY && !(job->flags & ERRED) &&
 		                 job->asks & JOB_DURABLE && job->journal && r &&
 		                 r->provider_id && !job->provider_done &&
-		                 (home_llama(home) || ai_background(home->ep)) &&
+		                 home_native(home) &&
 		                 (!job->deadline || home->loop->now < job->deadline);
 		home_end(home, job, resumable ? JOB_SUSPENDED : JOB_FAILED,
 		         &home->metrics->completed);
@@ -1016,11 +982,8 @@ home_receive (struct home *home,
 		job->flags |= e == ENOBUFS ? OVERFLOW : 0;
 		return 0;
 	}
-	struct home_recovery *r = job->recovery;
 	memcpy(s.ptr, data, len);
 	buf_commit(to, len);
-	if (r && job->flags & STREAM)
-		r->offset += len;
 	loop_work(loop, LOOP_RECV, len);
 	return len;
 }
@@ -1072,33 +1035,31 @@ home_job_done (CURLcode    result,
 	job->http = (uint16_t)status;
 	list_del(&job->idle);
 	list_del(&job->held);
-	if (job->recovery && job->recovery->pending) {
-		job->delivery_error = malloc(sizeof *job->delivery_error);
-		if (job->delivery_error) {
-			job->delivery_error->result = result;
-			job->delivery_error->retry = http_retry_after(home->http);
-			util_format(job->delivery_error->message,
-			            sizeof job->delivery_error->message, "%s", error);
-			job->recovery->deferred = true;
-			job->flags |= DELIVERED;
-			return;
-		}
-		job->recovery->error = ENOMEM;
+	/* An archive write under way, or the events still to read of a
+	 * native background stream, wait for the transfer's end, which the
+	 * job keeps. */
+	bool pending = job->recovery && job->recovery->pending;
+	bool events = result && job->flags & STREAM && ai_background(home->ep) &&
+	              buf_peek(&job->wire).len;
+	struct home_delivery_error *d = pending || events ? malloc(sizeof *d) : nullptr;
+	if (d) {
+		*d = (struct home_delivery_error){
+			.retry = http_retry_after(home->http),
+			.result = result
+		};
+		util_format(d->message, sizeof d->message, "%s", error);
+		job->delivery_error = d;
+		job->flags |= DELIVERED;
+	}
+	if (pending) {
+		if (!d)
+			job->recovery->error = ENOMEM;
 		job->recovery->deferred = true;
 		return;
 	}
-	if (result && job->flags & STREAM && ai_background(home->ep) &&
-	    buf_peek(&job->wire).len) {
-		job->delivery_error = malloc(sizeof *job->delivery_error);
-		if (job->delivery_error) {
-			job->delivery_error->result = result;
-			job->delivery_error->retry = http_retry_after(home->http);
-			util_format(job->delivery_error->message,
-			            sizeof job->delivery_error->message, "%s", error);
-			job->flags |= DELIVERED;
-			home_feed(home, job);
-			return;
-		}
+	if (d) {
+		home_feed(home, job);
+		return;
 	}
 	if (result == CURLE_OK && job->flags & STREAM) {
 		job->flags |= DELIVERED;
@@ -1213,7 +1174,7 @@ home_connect (struct home *home,
 {
 	if (!job->journal)
 		return home_open(home, job, resume);
-	if (resume && !job->recovery->offset) {
+	if (resume) {
 		int e = journal_thought(job->journal, job->archive, job->archive_turn,
 		                        0, nullptr, 0, home->loop, home_journal_done, job);
 		if (e)
@@ -1315,33 +1276,31 @@ home_start (struct home *home,
 		job->deadline = home->timeout ? loop->now + home->timeout : 0;
 	home_timeline(home, job);
 	home_job_progress(job, 0);
-	if (!job->recovery && (job->journal || ai_background(home->ep) || home_llama(home))) {
-		job->recovery = calloc(1, sizeof *job->recovery);
-		if (job->recovery)
-			job->recovery->cursor = dstr("");
-	}
-	if (!job->recovery && (job->journal || ai_background(home->ep) || home_llama(home))) {
+	if (!job->recovery && (job->journal || home_native(home)) &&
+	    !(job->recovery = calloc(1, sizeof *job->recovery))) {
 		home_end(home, job, JOB_FAILED, &m->completed);
 		return;
 	}
+	/* A restored job reattaches to its provider stream; it never submits
+	 * the original request again. */
 	struct home_recovery *r = job->recovery;
-	if (r && r->restoring) {
-		if (!home_llama(home))
-			home_replay_trim(&r->saved);
-		job->flags |= STREAM | SEEN;
-		job->http = 200;
-		home_feed(home, job);
-		return;
-	}
+	bool resume = r && r->restoring;
 	int e = 0;
-	if (!e && home_llama(home)) {
+	if (resume) {
+		r->restoring = false;
+	} else if (home_llama(home)) {
 		r->provider_id = calloc(1, 33);
 		e = r->provider_id ? util_random_hex(r->provider_id, 16) : ENOMEM;
 	}
 	if (!e)
-		e = home_connect(home, job, false);
+		e = home_connect(home, job, resume);
 	if (e) {
-		(void)home_job_say(job, "Cannot start provider stream: %s", strerror(e));
+		if (resume)
+			(void)home_job_say(job, "Cannot reattach provider stream: %s. The "
+			                   "original request will not be submitted again.",
+			                   strerror(e));
+		else
+			(void)home_job_say(job, "Cannot start provider stream: %s", strerror(e));
 		home_end(home, job, JOB_FAILED, &m->completed);
 	}
 }
@@ -1812,8 +1771,8 @@ home_parse (struct home      *home,
 	return over;
 }
 
-/* The provider can supply a path component and cursor, never a host or a
- * replacement query. Current authentication and configured query survive. */
+/* The provider can supply a path component, never a host or a replacement
+ * query. Current authentication and configured query survive. */
 static int
 home_provider_url (struct home *home,
                     struct job  *job,
@@ -1823,18 +1782,14 @@ home_provider_url (struct home *home,
 	struct home_recovery *r = job->recovery;
 	if (!r || !r->provider_id || !*r->provider_id)
 		return ENODATA;
-	if (!home_llama(home) && !ai_background(home->ep))
+	if (!home_native(home))
 		return ENOTSUP;
 	CURLU *url = curl_url();
 	char *escaped = curl_easy_escape(nullptr, r->provider_id, 0);
-	size_t cursor_len = dstr_len(&r->cursor);
-	char *cursor = cursor_len
-	             ? curl_easy_escape(nullptr, dstr_get(&r->cursor), (int)cursor_len)
-	             : nullptr;
 	char *path = nullptr;
 	char *joined = nullptr;
 	int e = ENOMEM;
-	if (!url || !escaped || (cursor_len && !cursor))
+	if (!url || !escaped)
 		goto done;
 	if (curl_url_set(url, CURLUPART_URL, home->ep->url, 0) ||
 	    curl_url_get(url, CURLUPART_PATH, &path, 0)) {
@@ -1879,27 +1834,14 @@ home_provider_url (struct home *home,
 		joined = malloc(n);
 		if (!joined)
 			goto done;
-		int count = snprintf(joined, n, "conv_id=%s&from=%" PRIu64, escaped, r->offset);
-		if (count < 0 || (size_t)count >= n) {
-			e = EOVERFLOW;
-			goto done;
-		}
-	} else if (!cancel) {
-		size_t n = (cursor ? strlen(cursor) : 0) + 48;
-		joined = malloc(n);
-		if (!joined)
-			goto done;
-		int count = cursor
-		          ? snprintf(joined, n, "stream=true&%s=%s",
-		                     home->ep->api == AI_RESPONSES ? "starting_after" : "last_event_id",
-		                     cursor)
-		          : snprintf(joined, n, "stream=true");
+		int count = snprintf(joined, n, "conv_id=%s&from=0", escaped);
 		if (count < 0 || (size_t)count >= n) {
 			e = EOVERFLOW;
 			goto done;
 		}
 	}
-	if ((joined && curl_url_set(url, CURLUPART_QUERY, joined, CURLU_APPENDQUERY)) ||
+	char const *query = joined ? joined : cancel ? nullptr : "stream=true";
+	if ((query && curl_url_set(url, CURLUPART_QUERY, query, CURLU_APPENDQUERY)) ||
 	    curl_url_get(url, CURLUPART_URL, out, 0)) {
 		e = EINVAL;
 		goto done;
@@ -1912,8 +1854,6 @@ done:
 	path = nullptr;
 	curl_free(escaped);
 	escaped = nullptr;
-	curl_free(cursor);
-	cursor = nullptr;
 	curl_url_cleanup(url);
 	return e;
 }
@@ -1962,31 +1902,7 @@ home_native_event (struct home        *home,
 		if (e)
 			return e;
 	}
-	struct json_object *value = jb_get(root, responses ? "sequence_number" : "event_id");
-	char number[32];
-	char const *cursor = nullptr;
-	size_t cursor_len = 0;
-	if (responses && json_object_is_type(value, json_type_int)) {
-		int64_t sequence = json_object_get_int64(value);
-		if (sequence < 0)
-			return EPROTO;
-		int n = snprintf(number, sizeof number, "%" PRIi64, sequence);
-		if (n < 0 || (size_t)n >= sizeof number)
-			return EOVERFLOW;
-		cursor = number;
-		cursor_len = (size_t)n;
-	} else if (!responses) {
-		cursor = jb_str(value, &cursor_len);
-		if (cursor && (cursor_len > MAX_JOB_ID || memchr(cursor, '\0', cursor_len)))
-			return EPROTO;
-	}
-	if (cursor) {
-		(void)dstr_clear(&job->recovery->cursor);
-		if (!dstr_cat_n(&job->recovery->cursor, cursor, cursor_len))
-			return ENOMEM;
-	}
-	return !created || job->recovery->restoring ? 0 :
-	       home_metadata(home, job, false, home_journal_done);
+	return created ? home_metadata(home, job, false, home_journal_done) : 0;
 }
 
 /* Take what @p root, an event of @p job's stream, says (ai_event()): its
@@ -2205,39 +2121,6 @@ static int
 home_drained (struct home *home,
               struct job  *job)
 {
-	struct home_recovery *r = job->recovery;
-	if (r && r->restoring) {
-		struct span saved = buf_peek(&r->saved);
-		if (saved.len) {
-			size_t n = saved.len < LOOP_STEP_RECV ? saved.len : LOOP_STEP_RECV;
-			struct span to;
-			int e = buf_reserve(&job->wire, n, MAX_RESPONSE, &to);
-			if (e) {
-				home_cut(home, job, CURLE_OUT_OF_MEMORY);
-				return ECANCELED;
-			}
-			memcpy(to.ptr, saved.ptr, n);
-			buf_commit(&job->wire, n);
-			buf_consume(&r->saved, n);
-			loop_work(home->loop, LOOP_COPY, n);
-			return 0;
-		}
-		r->restoring = false;
-		buf_fini(&r->saved);
-		if (job->flags & ENDED) {
-			home_finish(home, job, CURLE_OK, "", 0);
-			return ECANCELED;
-		}
-		list_del(&job->feed);
-		int e = home_connect(home, job, true);
-		if (e) {
-			(void)home_job_say(job, "Cannot reattach provider stream: %s. "
-			                   "The original request will not be submitted again.", strerror(e));
-			home_end(home, job, JOB_FAILED, &home->metrics->completed);
-			return ECANCELED;
-		}
-		return ENODATA;
-	}
 	if (!(job->flags & DELIVERED)) {
 		list_del(&job->feed);
 		if (job->flags & BACKED) {
