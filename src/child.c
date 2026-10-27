@@ -3,6 +3,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdatomic.h>
@@ -240,23 +242,26 @@ child_fd (posix_spawn_file_actions_t *fa,
 	               : posix_spawn_file_actions_addopen(fa, to, "/dev/null", oflag, 0);
 }
 
-/* Have @p fa give the child @p out as its output, @p in, or /dev/null, as
- * its input, and @p out as its error too with CHILD_STDERR in @p flags, else
- * /dev/null, and no other descriptor. */
+/* Have @p fa give the child the descriptors @p fds: its directory first, as
+ * a later action may replace that descriptor; its output, its input, or
+ * /dev/null for either, and its output as its error too with CHILD_STDERR in
+ * @p flags, else /dev/null; the descriptor it keeps, and no other. */
 static int
-child_fds (posix_spawn_file_actions_t *fa,
-           int                         in,
-           int                         out,
-           uint32_t                    flags)
+child_fds_actions (struct child_fds const     *fds,
+                   posix_spawn_file_actions_t *fa,
+                   uint32_t                    flags)
 {
-	int e = child_fd(fa, out, STDOUT_FILENO, O_WRONLY);
-	if (e)
-		return e;
-	if ((e = child_fd(fa, in, STDIN_FILENO, O_RDONLY)))
-		return e;
-	if ((e = child_fd(fa, flags & CHILD_STDERR ? out : -1, STDERR_FILENO, O_WRONLY)))
-		return e;
-	return posix_spawn_file_actions_addclosefrom_np(fa, STDERR_FILENO + 1);
+	int e = fds->dir < 0 ? 0 : posix_spawn_file_actions_addfchdir_np(fa, fds->dir);
+	if (!e)
+		e = child_fd(fa, fds->out, STDOUT_FILENO, O_WRONLY);
+	if (!e)
+		e = child_fd(fa, fds->in, STDIN_FILENO, O_RDONLY);
+	if (!e)
+		e = child_fd(fa, flags & CHILD_STDERR ? fds->out : -1, STDERR_FILENO, O_WRONLY);
+	int first = STDERR_FILENO + 1;  /* the first descriptor it does not keep */
+	if (!e && fds->keep >= 0)
+		e = posix_spawn_file_actions_adddup2(fa, fds->keep, first++);
+	return e ? e : posix_spawn_file_actions_addclosefrom_np(fa, first);
 }
 
 /* Have @p attr give the child a session of its own, an empty signal mask
@@ -278,17 +283,16 @@ child_attr (posix_spawnattr_t *attr)
 	                                      POSIX_SPAWN_SETSIGDEF);
 }
 
-/* Spawn @p cmd's file into @p pidfd, its input @p in if not -1 and its
- * output the pipe end @p out, through @p fa and @p attr, fresh. */
+/* Spawn @p cmd's file into @p pidfd, with the descriptors @p fds, through
+ * @p fa and @p attr, fresh. */
 static int
 child_cmd_spawn (struct child_cmd const     *cmd,
                  posix_spawn_file_actions_t *fa,
                  posix_spawnattr_t          *attr,
-                 int                         in,
-                 int                         out,
+                 struct child_fds const     *fds,
                  int                        *pidfd)
 {
-	int e = child_fds(fa, in, out, cmd->flags);
+	int e = child_fds_actions(fds, fa, cmd->flags);
 	if (e)
 		return e;
 	if ((e = child_attr(attr)))
@@ -301,8 +305,7 @@ child_cmd_spawn (struct child_cmd const     *cmd,
 /* As child_cmd_spawn(), with file actions and attributes of its own. */
 static int
 child_cmd_exec (struct child_cmd const *cmd,
-                int                     in,
-                int                     out,
+                struct child_fds const *fds,
                 int                    *pidfd)
 {
 	posix_spawn_file_actions_t fa;
@@ -311,7 +314,7 @@ child_cmd_exec (struct child_cmd const *cmd,
 		return e;
 	posix_spawnattr_t attr;
 	if (!(e = posix_spawnattr_init(&attr))) {
-		e = child_cmd_spawn(cmd, &fa, &attr, in, out, pidfd);
+		e = child_cmd_spawn(cmd, &fa, &attr, fds, pidfd);
 		posix_spawnattr_destroy(&attr);
 	}
 	posix_spawn_file_actions_destroy(&fa);
@@ -390,19 +393,18 @@ child_pipe (struct child *c,
 	return 0;
 }
 
-/* Time @p c, and spawn its process as @p cmd says, its input @p in and its
- * output @p out. */
+/* Time @p c, and spawn its process as @p cmd says, with the descriptors
+ * @p fds. */
 static int
-child_run (struct child           *c,
-           struct child_cmd const *cmd,
-           int                     in,
-           int                     out)
+child_launch (struct child           *c,
+              struct child_cmd const *cmd,
+              struct child_fds const *fds)
 {
 	int e = cmd->deadline ? loop_timer_set(c->loop, &c->timer, cmd->deadline) : 0;
 	if (e)
 		return e;
 	int pidfd = -1;
-	if ((e = child_cmd_exec(cmd, in, out, &pidfd)))
+	if ((e = child_cmd_exec(cmd, fds, &pidfd)))
 		return e;
 	return child_watch(c, pidfd);
 }
@@ -413,17 +415,80 @@ static int
 child_start (struct child           *c,
              struct child_cmd const *cmd)
 {
-	int in = -1;
-	int e = cmd->in.len ? child_input(cmd->in, &in) : 0;
+	struct child_fds fds = { .in = -1, .out = -1, .dir = -1, .keep = -1 };
+	int e = cmd->in.len ? child_input(cmd->in, &fds.in) : 0;
 	if (e)
 		return e;
-	int out = -1;
-	if (!(e = child_pipe(c, &out))) {
-		e = child_run(c, cmd, in, out);
-		close(out);
+	if (!(e = child_pipe(c, &fds.out))) {
+		e = child_launch(c, cmd, &fds);
+		close(fds.out);
 	}
-	if (in >= 0)
-		close(in);
+	if (fds.in >= 0)
+		close(fds.in);
+	return e;
+}
+
+/* Wait for @p pidfd's process, which runs @p cmd, to exit: at its deadline,
+ * SIGTERM, and SIGKILL once its grace has passed too, or at once without
+ * one.  Returns 0, ETIMEDOUT if the deadline came, or why the wait failed,
+ * which kills the process. */
+static int
+child_await (struct child_cmd const *cmd,
+             int                     pidfd)
+{
+	struct pollfd watch = { .fd = pidfd, .events = POLLIN };
+	uint64_t deadline = cmd->deadline;
+	int e = 0;
+	for (;;) {
+		int timeout = -1;
+		if (deadline) {
+			uint64_t now = loop_clock();
+			uint64_t ms = now < deadline ? (deadline - now + 999'999) / 1'000'000 : 0;
+			timeout = ms < INT_MAX ? (int)ms : INT_MAX;
+		}
+		int ready = poll(&watch, 1, timeout);
+		if (ready > 0)
+			return e;
+		if (ready < 0 && errno == EINTR)
+			continue;
+		bool term = !ready && !e && cmd->grace;
+		if (!e)
+			e = ready ? errno : ETIMEDOUT;
+		(void)pidfd_send_signal(pidfd, term ? SIGTERM : SIGKILL, nullptr, 0);
+		if (!term)
+			return e;
+		deadline = loop_clock() + cmd->grace;
+	}
+}
+
+int
+child_run (struct child_cmd const *cmd,
+           struct child_fds        fds,
+           int                    *status)
+{
+	int own = -1;
+	int e = fds.in < 0 && cmd->in.len ? child_input(cmd->in, &own) : 0;
+	if (own >= 0)
+		fds.in = own;
+	int pidfd = -1;
+	if (!e)
+		e = child_cmd_exec(cmd, &fds, &pidfd);
+	if (own >= 0)
+		close(own);
+	if (e)
+		return e;
+	e = child_await(cmd, pidfd);
+	siginfo_t info = {};
+	while (waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED))
+		if (errno != EINTR) {
+			e = e ? e : errno;
+			break;
+		}
+	close(pidfd);
+	if (!e && info.si_code != CLD_EXITED)
+		e = EIO;
+	if (!e)
+		*status = info.si_status;
 	return e;
 }
 

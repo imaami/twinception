@@ -3,6 +3,7 @@ override SRC_askai-cli := \
   autocomplete_file.c     \
   blocker.c               \
   buf.c                   \
+  child.c                 \
   cli.c                   \
   cli_client.c            \
   cli_command.c           \

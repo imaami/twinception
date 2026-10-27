@@ -5,18 +5,17 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <signal.h>
-#include <spawn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "child.h"
 #include "cli_state.h"
 #include "cstr_view.h"
 #include "dstr.h"
@@ -201,95 +200,38 @@ cli_state_git (struct cli_state  *state,
                int                output_fd,
                int               *status)
 {
-	char *argv[32] = { "git", "-C", (char *)dstr_get(&state->path),
-	                  "-c", "user.name=AskAI CLI", "-c",
-	                  "user.email=askai-cli@localhost", "-c",
-	                  "core.fsync=committed" };
+	char const *argv[32] = { "git", "-C", dstr_get(&state->path),
+	                         "-c", "user.name=AskAI CLI", "-c",
+	                         "user.email=askai-cli@localhost", "-c",
+	                         "core.fsync=committed" };
 	size_t count = 9;
 	for (size_t i = 0; arguments[i]; ++i) {
-		if (count == sizeof argv / sizeof argv[0] - 1)
+		if (count == ARRAY_SIZE(argv) - 1)
 			return E2BIG;
-		argv[count++] = (char *)arguments[i];
+		argv[count++] = arguments[i];
 	}
-	int in[2] = { -1, -1 }, out[2] = { -1, -1 };
-	if (pipe2(in, O_CLOEXEC))
+	int out = output_fd >= 0 ? output_fd : memfd_create("askai-cli-git", MFD_CLOEXEC);
+	if (out < 0)
 		return errno;
-	int e = !pipe2(out, O_CLOEXEC) ? 0 : errno;
-	posix_spawn_file_actions_t actions;
-	bool actions_live = false;
-	if (!e) {
-		e = posix_spawn_file_actions_init(&actions);
-		actions_live = !e;
-	}
-	if (!e)
-		e = posix_spawn_file_actions_adddup2(&actions, in[0], STDIN_FILENO);
-	if (!e)
-		e = posix_spawn_file_actions_adddup2(&actions, output_fd >= 0 ? output_fd : out[1], STDOUT_FILENO);
-	posix_spawnattr_t attributes;
-	bool attributes_live = false;
-	if (!e) {
-		e = posix_spawnattr_init(&attributes);
-		attributes_live = !e;
-	}
-	sigset_t empty, defaults;
-	if (!e && (sigemptyset(&empty) || sigemptyset(&defaults)))
-		e = errno;
-	int const signals[] = {SIGINT, SIGTERM, SIGHUP, SIGPIPE, SIGTSTP, SIGCONT};
-	for (size_t i = 0; !e && i < sizeof signals / sizeof *signals; ++i)
-		if (sigaddset(&defaults, signals[i]))
-			e = errno;
-	if (!e)
-		e = posix_spawnattr_setsigmask(&attributes, &empty);
-	if (!e)
-		e = posix_spawnattr_setsigdefault(&attributes, &defaults);
-	if (!e)
-		e = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
-	pid_t child = -1;
-	if (!e)
-		e = posix_spawnp(&child, "git", &actions, &attributes, argv, state->environment);
-	if (attributes_live)
-		(void)posix_spawnattr_destroy(&attributes);
-	if (actions_live)
-		(void)posix_spawn_file_actions_destroy(&actions);
-	(void)close(in[0]);
-	in[0] = -1;
-	if (out[1] >= 0)
-		(void)close(out[1]);
-	out[1] = -1;
-	if (!e && input.len)
-		e = util_write_all(in[1], input.data, input.len);
-	(void)close(in[1]);
-	in[1] = -1;
+	struct child_cmd const cmd = {
+		.file = "git",
+		.argv = argv,
+		.envp = state->environment,
+		.in   = { (unsigned char *)(uintptr_t)input.data, input.len },
+	};
+	int e = child_run(&cmd, (struct child_fds){ -1, out, -1, -1 }, status);
 	(void)dstr_clear(&state->output);
-	if (child >= 0 && output_fd < 0) {
-		char buffer[256];
-		for (;;) {
-			ssize_t size = read(out[0], buffer, sizeof buffer);
-			if (size < 0 && errno == EINTR)
-				continue;
-			if (size <= 0) {
-				if (size < 0 && !e)
-					e = errno;
-				break;
-			}
-			if (!e && (size_t)size > 4096 - dstr_len(&state->output))
-				e = EFBIG;
-			if (!e && !dstr_cat_n(&state->output, buffer, (size_t)size))
-				e = ENOMEM;
-		}
-	}
-	if (out[0] >= 0)
-		(void)close(out[0]);
-	out[0] = -1;
-	if (child >= 0) {
-		int result = 0;
-		pid_t waited;
-		do { waited = waitpid(child, &result, 0); } while (waited < 0 && errno == EINTR);
-		if (waited < 0 && !e)
-			e = errno;
-		else if (waited >= 0)
-			*status = WIFEXITED(result) ? WEXITSTATUS(result) : 128;
-	}
+	if (output_fd >= 0)
+		return e;
+	char buffer[4097];
+	size_t got = 0;
+	if (!e)
+		e = util_read_all(out, buffer, sizeof buffer, 0, &got);
+	if (!e && got == sizeof buffer)
+		e = EFBIG;
+	if (!e && !dstr_cat_n(&state->output, buffer, got))
+		e = ENOMEM;
+	close(out);
 	return e;
 }
 

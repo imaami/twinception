@@ -124,7 +124,8 @@ $Otests/cli_ui: $Otests/cli_ui.c.o $Otests/src/cli_ui.c.o $(CLI_CONSOLE_OBJECTS)
 $Otests/cli_ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS) $(JSON_LIBS) $(UTF8_LIBS) -lm
 
 $Otests/cli_state: $Otests/cli_state.c.o $Otests/src/cli_state.c.o \
-                   $Otests/src/dstr.c.o $Otests/src/jb.c.o
+                   $Otests/src/dstr.c.o $Otests/src/jb.c.o $Otests/src/child.c.o \
+                   $Otests/src/buf.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
 
 $Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete_file.c.o $(AUTOCOMPLETE_OBJECTS)
@@ -173,7 +174,8 @@ check-journal: $Otests/journal
 	trap 'rm -rf "$$directory"' EXIT; \
 	"$<" "$$directory/transcripts.git"
 
-$Otests/journal: $Otests/journal.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
+$Otests/journal: $Otests/journal.c.o $Otests/src/loop.c.o $Otests/src/log.c.o \
+                 $Otests/src/child.c.o $Otests/src/buf.c.o
 $Otests/journal:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lcrypto -lm
 
 # The unit tests.  Each test links the object of its own source and the
@@ -240,7 +242,7 @@ load: | load-build askai
          $Otests/src/cli_render.c.d $Otests/src/cli_scrollback.c.d $Otests/src/cli_style.c.d $Otests/src/blocker.c.d $Otests/src/loop.c.d \
          $Otests/autocomplete_fixture.c.d $Otests/src/cli_console.c.d \
          $Otests/src/autocomplete.c.d $Otests/src/autocomplete_file.c.d $Otests/src/cli_command.c.d \
-         $Otests/src/dstr.c.d \
+         $Otests/src/dstr.c.d $Otests/src/child.c.d \
          $Otests/src/cli_ui.c.d $Otests/src/jb.c.d \
          $Otests/cstr_view.c.d $Otests/src/cstr_view.c.d \
          $(LOAD)/gen.d $(LOAD)/mock.d

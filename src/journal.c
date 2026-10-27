@@ -6,22 +6,19 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <openssl/evp.h>
-#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
-#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
 #include <sys/mman.h>
-#include <sys/pidfd.h>
 #include <sys/random.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "child.h"
 #include "journal.h"
 #include "loop.h"
 #include "util.h"
@@ -39,9 +36,12 @@ enum {
 	JOURNAL_HEADER         = 120,
 	JOURNAL_SIGNED         = 88,
 	JOURNAL_TERMINAL_BYTES = JOURNAL_RECORD_MAX + JOURNAL_HEADER,
-	JOURNAL_GIT_MS         = 10000,
-	JOURNAL_GRACE_MS       = 1000,
 };
+
+/* The time a git of the journal may take, and then its grace from SIGTERM,
+ * which has it remove its lock files, to SIGKILL. */
+static constexpr uint64_t JOURNAL_GIT_NS = 10 * NS;
+static constexpr uint64_t JOURNAL_GRACE_NS = NS;
 
 struct journal_item {
 	struct msg             msg;
@@ -321,102 +321,23 @@ journal_git (struct journal    *j,
 	}
 	argv[argc] = nullptr;
 	int out = memfd_create("askai-journal-git", MFD_CLOEXEC);
-	int null = open("/dev/null", O_RDWR | O_CLOEXEC);
-	int e = out < 0 || null < 0 ? errno : 0;
-	posix_spawn_file_actions_t actions;
-	posix_spawnattr_t attr;
-	bool have_actions = false, have_attr = false;
-	if (!e) {
-		e = posix_spawn_file_actions_init(&actions);
-		have_actions = !e;
-	}
-	if (!e) {
-		e = posix_spawnattr_init(&attr);
-		have_attr = !e;
-	}
-	if (!e)
-		e = posix_spawn_file_actions_addfchdir_np(&actions, j->repo_fd);
-	if (!e)
-		e = posix_spawn_file_actions_adddup2(&actions, input >= 0 ? input : null,
-		                                     STDIN_FILENO);
-	if (!e)
-		e = posix_spawn_file_actions_adddup2(&actions, out, STDOUT_FILENO);
-	if (!e)
-		e = posix_spawn_file_actions_adddup2(&actions, null, STDERR_FILENO);
-	/* A Git child can outlive an abruptly killed AskAI.  Keep the same
+	if (out < 0)
+		return errno;
+	/* A Git child can outlive an abruptly killed AskAI.  It keeps the same
 	 * flock open through exec, so restart cannot race that child. */
-	if (!e && j->lock_fd >= 0)
-		e = posix_spawn_file_actions_adddup2(&actions, j->lock_fd, j->lock_fd);
-	sigset_t mask, defaults;
-	sigemptyset(&mask);
-	sigemptyset(&defaults);
-	sigaddset(&defaults, SIGPIPE);
-	sigaddset(&defaults, SIGINT);
-	sigaddset(&defaults, SIGTERM);
-	if (!e)
-		e = posix_spawnattr_setsigmask(&attr, &mask);
-	if (!e)
-		e = posix_spawnattr_setsigdefault(&attr, &defaults);
-	if (!e)
-		e = posix_spawnattr_setpgroup(&attr, 0);
-	if (!e)
-		e = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK |
-		                                   POSIX_SPAWN_SETSIGDEF |
-		                                   POSIX_SPAWN_SETPGROUP);
-	pid_t pid = -1;
-	if (!e)
-		e = posix_spawnp(&pid, "git", &actions, &attr, (char *const *)argv, env);
-	if (have_actions)
-		posix_spawn_file_actions_destroy(&actions);
-	if (have_attr)
-		posix_spawnattr_destroy(&attr);
-	int result = 0;
-	if (!e) {
-		int pidfd = pidfd_open(pid, 0);
-		if (pidfd < 0 && errno != ESRCH)
-			e = errno;
-		if (pidfd >= 0) {
-			struct pollfd watch = { .fd = pidfd, .events = POLLIN };
-			uint64_t deadline = loop_clock() + (uint64_t)JOURNAL_GIT_MS * 1'000'000;
-			for (;;) {
-				uint64_t now = loop_clock();
-				int timeout = now >= deadline ? 0 :
-				              (int)((deadline - now + 999'999) / 1'000'000);
-				int ready = poll(&watch, 1, timeout);
-				if (ready > 0)
-					break;
-				if (ready < 0 && errno == EINTR)
-					continue;
-				if (ready < 0)
-					e = errno;
-				if (e)
-					break;
-				/* Git removes its lock files on SIGTERM; SIGKILL
-				 * follows if it has not exited after a grace. */
-				e = ETIMEDOUT;
-				(void)pidfd_send_signal(pidfd, SIGTERM, nullptr, 0);
-				deadline = loop_clock() + (uint64_t)JOURNAL_GRACE_MS * 1'000'000;
-			}
-			if (e)
-				(void)pidfd_send_signal(pidfd, SIGKILL, nullptr, 0);
-			close(pidfd);
-			pidfd = -1;
-		} else if (e) {
-			(void)kill(pid, SIGKILL);
-		}
-		pid_t got;
-		do {
-			got = waitpid(pid, &result, 0);
-		} while (got < 0 && errno == EINTR);
-		if (got < 0 && !e)
-			e = errno;
-		else if (!e && !WIFEXITED(result))
-			e = EIO;
-		else if (!e && status)
-			*status = WEXITSTATUS(result);
-		else if (!e && WEXITSTATUS(result))
-			e = EIO;
-	}
+	struct child_cmd const cmd = {
+		.file     = "git",
+		.argv     = argv,
+		.envp     = env,
+		.deadline = loop_clock() + JOURNAL_GIT_NS,
+		.grace    = JOURNAL_GRACE_NS,
+	};
+	int code = 0;
+	int e = child_run(&cmd, (struct child_fds){ input, out, j->repo_fd, j->lock_fd }, &code);
+	if (!e && status)
+		*status = code;
+	else if (!e && code)
+		e = EIO;
 	if (!e && output) {
 		struct stat st;
 		if (fstat(out, &st))
@@ -433,10 +354,7 @@ journal_git (struct journal    *j,
 			(*output)[got] = '\0';
 		}
 	}
-	if (out >= 0)
-		close(out);
-	if (null >= 0)
-		close(null);
+	close(out);
 	return e;
 }
 

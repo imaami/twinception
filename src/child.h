@@ -2,7 +2,9 @@
  *  pidfd, in a session of its own.  The steps of the loop that spawned it
  *  read its standard output from a pipe into a capped buffer.  The pidfd
  *  becomes readable when the child exits, so askai does not use SIGCHLD.
- *  The child is reaped by its pid after its output has also ended. */
+ *  The child is reaped by its pid after its output has also ended.
+ *  child_run() instead runs a child on the calling thread, its output in a
+ *  file, and reaps it through its pidfd. */
 #ifndef TWINCEPTION_SRC_CHILD_H_
 #define TWINCEPTION_SRC_CHILD_H_
 
@@ -14,7 +16,8 @@
 #include "list.h"
 #include "loop.h"
 
-/** The maximum number of children in the process that are not reaped. */
+/** The maximum number of children of loops (child_create()) in the
+ *  process that are not reaped. */
 enum { CHILD_MAX = 16 };
 
 /** How a child is spawned. */
@@ -83,6 +86,17 @@ struct child_cmd {
 	uint32_t           flags;     /**< enum child_flag */
 };
 
+/** The descriptors of a child that child_run() runs, each -1 if it has
+ *  none: its input, else cmd->in or /dev/null; its output, else /dev/null;
+ *  the directory it runs in, else the caller's; and a descriptor that it
+ *  keeps as descriptor 3, such as a file's lock. */
+struct child_fds {
+	int in;
+	int out;
+	int dir;
+	int keep;
+};
+
 /**
  * Spawn @p cmd: its standard error /dev/null, but with CHILD_STDERR its
  * output too; its output a pipe, its signal mask empty and every signal's
@@ -104,6 +118,21 @@ child_create (struct loop            *loop,
               void                  (*done) (struct child *c),
               void                   *owner,
               int                    *e);
+
+/**
+ * Run @p cmd to its end on the calling thread, which no loop needs: spawned
+ * as child_create() spawns it, but with the descriptors @p fds, its output
+ * into a file such as a memfd, uncapped and unread.  If cmd->deadline, a
+ * time of loop_clock(), is set, at that time it gets SIGTERM, and SIGKILL
+ * once its grace has passed too, or SIGKILL at once without a grace, and the
+ * run fails with ETIMEDOUT.  It does not count toward CHILD_MAX.  Returns 0
+ * and its exit status in @p *status, EIO if a signal killed it, or the error
+ * that stopped the spawn or the wait.
+ */
+extern int
+child_run (struct child_cmd const *cmd,
+           struct child_fds        fds,
+           int                    *status);
 
 /** Let go of @p *p_c, which becomes nullptr: free it, if it has ended;
  *  else kill it, stop reading its output, and free it once it is reaped. */
