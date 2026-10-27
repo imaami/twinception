@@ -2371,7 +2371,6 @@ static void
 mcp_req_job_done (struct mcp_req *req)
 {
 	struct job *job = req->job;
-	req->archive_error = journal_error(req->mcp->st->journal);
 	struct span why = buf_peek(&job->result);
 	mcp_req_log_turn(req, job);
 	buf_fini(&job->key);

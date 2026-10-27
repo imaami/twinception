@@ -2780,10 +2780,32 @@ def check_archive_failure(binary, up):
                         with open(os.path.join(directory, name), "rb") as file:
                             files.append(file.read())
                 assert files == [b"preserved after failed Git commit"], files
+                # The failure concerns that job alone: the next one goes on
+                # and commits its reasoning once Git works again.
+                os.unlink(flag)
+                status, _, body = ai.rpc("tools/call", {"name": "ask_ai",
+                                                       "arguments": {"prompt": "again"}})
+                match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(body["result"]))
+                assert status == 200 and match, (status, body)
+                answers = []
+                def answered():
+                    status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": {
+                        "job": match.group(1)}})
+                    text = text_of(body["result"])
+                    if "answer" not in text:
+                        return False
+                    answers.append(body["result"])
+                    return True
+                wait_for(answered, seconds=10)
+                assert not answers[0].get("isError"), answers
+                log = subprocess.run(["git", "--git-dir", f"{d}/transcripts.git", "log",
+                                      "--format=%s", "refs/heads/reasoning/archive-failure"],
+                                     capture_output=True, check=True).stdout
+                assert log == b"Record reasoning\n", log
     finally:
         up.reply = hold
     print("archive failure: provider submission uses a private checkpoint, Git failure "
-          "is reported and received plaintext survives: PASS")
+          "is reported, received plaintext survives and later jobs go on: PASS")
 
 
 def check_journal_repair(binary, up):

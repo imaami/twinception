@@ -60,7 +60,7 @@ journal_test_thoughts (struct journal *j)
 	journal_stop(j);
 	loop_fini(&events);
 	assert(journal_test_completed == 2 * (JOURNAL_FILES + 1) + 9);
-	assert(!journal_error(j));
+	assert(!journal_job_find(j, id)->thought_error);
 	assert(!journal_job_find(j, id)->terminal);
 	struct journal_item load = {};
 	assert(!journal_load_records(j, &load) && !load.record);
@@ -98,6 +98,39 @@ journal_test_filtered (struct journal *j)
 	*load.kind = '\0';
 	assert(journal_load_records(j, &load) == EFBIG);
 	journal_records_destroy(&load.record);
+}
+
+/* A lost record fails its job's later appends, until a snapshot or a
+ * terminal record replaces them; another job goes on meanwhile. */
+static void
+journal_test_gap (struct journal *j)
+{
+	struct journal_record r = {};
+	struct journal_record other = { .kind = "state" };
+	journal_test_id(r.id, 100);
+	journal_test_id(other.id, 101);
+	memcpy(r.kind, "state", sizeof "state");
+	assert(!journal_checkpoint_write(j, &r));
+	int jobs = j->jobs_fd;
+	j->jobs_fd = -1;
+	memcpy(r.kind, "tool-intent", sizeof "tool-intent");
+	assert(journal_checkpoint_write(j, &r) == EBADF);
+	j->jobs_fd = jobs;
+	memcpy(r.kind, "tool-result", sizeof "tool-result");
+	assert(journal_checkpoint_write(j, &r) == EBADF);
+	assert(!journal_checkpoint_write(j, &other));
+	memcpy(other.kind, "meta", sizeof "meta");
+	assert(!journal_checkpoint_write(j, &other));
+	memcpy(r.kind, "state", sizeof "state");
+	assert(!journal_checkpoint_write(j, &r));
+	memcpy(r.kind, "tool-intent", sizeof "tool-intent");
+	assert(!journal_checkpoint_write(j, &r));
+	j->jobs_fd = -1;
+	assert(journal_checkpoint_write(j, &r) == EBADF);
+	j->jobs_fd = jobs;
+	memcpy(r.kind, "result", sizeof "result");
+	assert(!journal_checkpoint_write(j, &r));
+	assert(!journal_job_find(j, r.id)->error && journal_job_find(j, r.id)->terminal);
 }
 
 static void
@@ -138,6 +171,7 @@ main (int argc, char **argv)
 	assert(j && !e);
 	journal_test_thoughts(j);
 	journal_test_filtered(j);
+	journal_test_gap(j);
 	journal_test_legacy(j);
 	/* Finished, checkpoint-less jobs must not exhaust the bounded table. */
 	for (unsigned k = JOURNAL_FILES + 2; k <= JOURNAL_JOBS + 1; ++k) {

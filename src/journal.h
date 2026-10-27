@@ -71,8 +71,11 @@ journal_destroy (struct journal **p_journal);
 
 /** Copies and queues one record, or returns an errno without accepting it.
  * EAGAIN means the queue is full.  A callback, if supplied, runs on loop
- * after the private recovery snapshot is durable; otherwise journal_error()
- * reports asynchronous errors. Raw stream/body/message records are ignored.
+ * after the private recovery snapshot is durable.  After a record of a job
+ * is lost, later records of that job fail with the same error until a
+ * "state" snapshot or a terminal record ("result" or "cancel") replaces
+ * them all; other jobs are not affected. Raw stream/body/message records
+ * are ignored.
  * Records of kind "cancel" with at most 1024 payload bytes can use a
  * reserved allowance of 1024 queue entries and 2 MiB beyond the ordinary
  * 256-entry/32 MiB limit, so a full stream queue cannot prevent recording
@@ -148,9 +151,6 @@ journal_load_current (struct journal  *journal,
 
 extern void
 journal_records_destroy (struct journal_record **p_records);
-
-extern int
-journal_error (struct journal const *journal);
 
 extern uint64_t
 journal_seed (struct journal const *journal);

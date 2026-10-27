@@ -10,7 +10,6 @@
 #include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +40,7 @@ enum {
 	JOURNAL_SIGNED         = 88,
 	JOURNAL_TERMINAL_BYTES = JOURNAL_RECORD_MAX + JOURNAL_HEADER,
 	JOURNAL_GIT_MS         = 10000,
+	JOURNAL_GRACE_MS       = 1000,
 };
 
 struct journal_item {
@@ -60,6 +60,9 @@ struct journal_item {
 	char                   kind[JOURNAL_KIND + 1];
 };
 
+/* The prefix of the participant's reasoning branch. */
+static char const REF[] = "refs/heads/reasoning/";
+
 static_assert((sizeof(struct journal_item) + sizeof(struct journal_record) +
                JOURNAL_CONTROL_RECORD + 1) * JOURNAL_CONTROL <= JOURNAL_CONTROL_BYTES);
 
@@ -76,6 +79,8 @@ struct journal_job {
 	uint64_t thought_seen;
 	uint32_t thought_turn;
 	int      thought_error;
+	int      error;   /* the error of a lost record; the job's later
+	                     appends fail with it */
 	char     id[JOURNAL_ID + 1];
 	bool     terminal;
 	bool     legacy;
@@ -109,7 +114,6 @@ struct journal {
 	unsigned char          scratch[JOURNAL_SCRATCH];
 	size_t                 queued;
 	size_t                 bytes;
-	_Atomic int            error;
 	int                    repo_fd;
 	int                    state_fd;
 	int                    jobs_fd;
@@ -421,8 +425,7 @@ journal_git (struct journal    *j,
 			e = errno;
 		if (pidfd >= 0) {
 			struct pollfd watch = { .fd = pidfd, .events = POLLIN };
-			uint64_t start = loop_clock();
-			uint64_t deadline = start + (uint64_t)JOURNAL_GIT_MS * 1'000'000;
+			uint64_t deadline = loop_clock() + (uint64_t)JOURNAL_GIT_MS * 1'000'000;
 			for (;;) {
 				uint64_t now = loop_clock();
 				int timeout = now >= deadline ? 0 :
@@ -430,14 +433,17 @@ journal_git (struct journal    *j,
 				int ready = poll(&watch, 1, timeout);
 				if (ready > 0)
 					break;
-				if (!ready) {
-					e = ETIMEDOUT;
-					break;
-				}
-				if (errno != EINTR) {
+				if (ready < 0 && errno == EINTR)
+					continue;
+				if (ready < 0)
 					e = errno;
+				if (e)
 					break;
-				}
+				/* Git removes its lock files on SIGTERM; SIGKILL
+				 * follows if it has not exited after a grace. */
+				e = ETIMEDOUT;
+				(void)pidfd_send_signal(pidfd, SIGTERM, nullptr, 0);
+				deadline = loop_clock() + (uint64_t)JOURNAL_GRACE_MS * 1'000'000;
 			}
 			if (e)
 				(void)pidfd_send_signal(pidfd, SIGKILL, nullptr, 0);
@@ -513,6 +519,44 @@ journal_tip (struct journal *j)
 	return e;
 }
 
+static int
+journal_unlock (struct journal *j)
+{
+	/* Our participant lock excludes both other writers and their surviving
+	 * Git children.  Only this participant's loose-ref lock is ours. */
+	char const *participant = j->ref + sizeof REF - 1;
+	static char const *const dirs[] = { "refs", "heads", "reasoning" };
+	int fd = fcntl(j->repo_fd, F_DUPFD_CLOEXEC, 3);
+	if (fd < 0)
+		return errno;
+	int e = 0;
+	for (size_t i = 0; i < ARRAY_SIZE(dirs); ++i) {
+		int next = openat(fd, dirs[i], O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+		if (next < 0) {
+			e = errno == ENOENT ? 0 : errno;
+			close(fd);
+			return e;
+		}
+		close(fd);
+		fd = next;
+	}
+	char name[70];
+	int n = snprintf(name, sizeof name, "%s.lock", participant);
+	if (n < 0 || n >= (int)sizeof name)
+		e = EOVERFLOW;
+	struct stat st;
+	if (!e && fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW))
+		e = errno == ENOENT ? 0 : errno;
+	else if (!e) {
+		if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1)
+			e = EACCES;
+		else if (unlinkat(fd, name, 0) || fsync(fd))
+			e = errno;
+	}
+	close(fd);
+	return e;
+}
+
 void
 journal_records_destroy (struct journal_record **p_records)
 {
@@ -583,13 +627,19 @@ incomplete:
 	return partial ? 0 : EILSEQ;
 }
 
+/* A record after which the job runs no more. */
+static bool
+journal_terminal (char const *kind)
+{
+	return !strcmp(kind, "result") || !strcmp(kind, "cancel");
+}
+
 static bool
 journal_control_kind (char const *kind)
 {
 	return !strcmp(kind, "state") || !strcmp(kind, "meta") ||
 	       !strcmp(kind, "tool-intent") || !strcmp(kind, "tool-result") ||
-	       !strcmp(kind, "result") || !strcmp(kind, "cancel") ||
-	       !strcmp(kind, "legacy");
+	       journal_terminal(kind) || !strcmp(kind, "legacy");
 }
 
 static int
@@ -727,7 +777,7 @@ journal_jobs_scan (struct journal *j)
 			               (uint64_t)st.st_mtim.tv_sec * 1'000'000'000 +
 			               (uint64_t)st.st_mtim.tv_nsec;
 			for (struct journal_record *r = records; r; r = r->next) {
-				job->terminal |= !strcmp(r->kind, "result") || !strcmp(r->kind, "cancel");
+				job->terminal |= journal_terminal(r->kind);
 				job->legacy |= !strcmp(r->kind, "legacy");
 			}
 			j->recovery_bytes += job->bytes;
@@ -821,10 +871,17 @@ journal_checkpoint_write (struct journal        *j,
 		return !strcmp(record->kind, "stream") || !strcmp(record->kind, "body") ||
 		       !strcmp(record->kind, "message") ? 0 : EINVAL;
 	struct journal_job *job = journal_job_find(j, record->id);
+	bool state = !strcmp(record->kind, "state");
+	bool terminal = journal_terminal(record->kind);
+	/* A lost record leaves a gap in its job's checkpoint, so the job's
+	 * later records fail with its error, until a state snapshot or a
+	 * terminal record, which keeps only the state, replaces them all. */
+	if (job && job->error && !state && !terminal)
+		return job->error;
 	bool legacy = job && job->legacy;
 	struct journal_record *records = nullptr;
 	int e = 0;
-	if (strcmp(record->kind, "state")) {
+	if (!state) {
 		if (job && job->bytes) {
 			int input = -1;
 			e = journal_existing(j->jobs_fd, record->id, &input);
@@ -856,7 +913,6 @@ journal_checkpoint_write (struct journal        *j,
 	/* A completed job needs only its owner/state and result. Drop tool
 	 * evidence once the terminal record makes further execution impossible.
 	 * A terminal reserve lets even a full active cache retire a job. */
-	bool terminal = !strcmp(record->kind, "result") || !strcmp(record->kind, "cancel");
 	if (!strcmp(record->kind, "meta") || terminal) {
 		struct journal_record **at = &records;
 		while (*at) {
@@ -907,13 +963,16 @@ journal_checkpoint_write (struct journal        *j,
 			job->legacy = legacy;
 			job->terminal = terminal;
 			for (struct journal_record *r = records; r; r = r->next)
-				job->terminal |= !strcmp(r->kind, "result") || !strcmp(r->kind, "cancel");
-			if (!strcmp(record->kind, "state")) {
+				job->terminal |= journal_terminal(r->kind);
+			job->error = 0;
+			if (state) {
 				job->thought_error = 0;
 				job->thought_turn = 0;
 				job->thought_seen = 0;
 			}
 		}
+	} else if (job) {
+		job->error = e;
 	}
 	journal_records_destroy(&records);
 	return e;
@@ -1054,6 +1113,29 @@ journal_thought_write (struct journal            *j,
 }
 
 static int
+journal_thought_put (struct journal            *j,
+                     struct journal_item const *item)
+{
+	int e = 0;
+	struct journal_job *job = journal_job_enter(j, item->id, &e);
+	if (!job)
+		return e;
+	bool begin = !item->offset && !item->record->len;
+	if (begin || job->thought_turn != item->turn) {
+		job->thought_turn = item->turn;
+		job->thought_seen = 0;
+		job->thought_error = 0;
+	}
+	e = begin ? 0 : job->thought_error ? job->thought_error : journal_thought_write(j, item);
+	job->thought_error = e;
+	if (!job->bytes)
+		job->terminal = false;
+	if (!e)
+		job->thought_seen = item->offset + item->record->len;
+	return e;
+}
+
+static int
 journal_thought_commit (struct journal            *j,
                         struct journal_item const *item)
 {
@@ -1141,9 +1223,12 @@ journal_thought_commit (struct journal            *j,
 		close(fd);
 	free(oid);
 	oid = nullptr;
-	if (!e)
-		e = journal_tip(j);
-	if (!e) {
+	/* Only this writer's children write its ref, and they have all been
+	 * reaped: a lock that one left is stale, and the ref may have moved. */
+	if (e)
+		(void)journal_unlock(j);
+	int tip = journal_tip(j);
+	if (!e && !(e = tip)) {
 		file->committed = true;
 		file->committed_size = file->size;
 	}
@@ -1214,39 +1299,21 @@ journal_thread (void *arg)
 		pthread_mutex_unlock(&j->lock);
 		if (!item)
 			break;
-		int e = atomic_load(&j->error);
-		if (!e && item->loaded)
+		/* An error concerns only its own job, and a reasoning error
+		 * only its own turn's reasoning. */
+		int e;
+		if (item->loaded)
 			e = journal_load_records(j, item);
-		else if (!e && item->operation == JOURNAL_THOUGHT_PUT) {
-			struct journal_job *job = journal_job_enter(j, item->id, &e);
-			bool begin = !item->offset && !item->record->len;
-			if (job && (begin || job->thought_turn != item->turn)) {
-				job->thought_turn = item->turn;
-				job->thought_seen = 0;
-				job->thought_error = 0;
-			}
-			if (!e)
-				e = begin ? 0 : job->thought_error ? job->thought_error :
-				    journal_thought_write(j, item);
-			if (job) {
-				job->thought_error = e;
-				if (!job->bytes)
-					job->terminal = false;
-				if (!e)
-					job->thought_seen = item->offset + item->record->len;
-			}
-		} else if (!e && (item->operation == JOURNAL_THOUGHT_END ||
-		                  item->operation == JOURNAL_THOUGHT_FINISH)) {
-			e = journal_thought_commit(j, item);
-			struct journal_job *job = journal_job_find(j, item->id);
-			if (!e && job && !job->bytes && item->operation == JOURNAL_THOUGHT_FINISH)
-				job->terminal = true;
-		} else if (!e)
+		else if (item->operation == JOURNAL_CONTROL_PUT)
 			e = journal_checkpoint_write(j, item->record);
-		/* Capacity and a mismatching replay concern one job. Disk errors
-		 * stop the writer rather than claiming subsequent writes worked. */
-		if (e && e != EFBIG && e != ENOMEM && e != ENOSPC && e != EILSEQ)
-			atomic_store(&j->error, e);
+		else if (item->operation == JOURNAL_THOUGHT_PUT)
+			e = journal_thought_put(j, item);
+		else if (!(e = journal_thought_commit(j, item)) &&
+		         item->operation == JOURNAL_THOUGHT_FINISH) {
+			struct journal_job *job = journal_job_find(j, item->id);
+			if (job && !job->bytes)
+				job->terminal = true;
+		}
 		journal_finish(item, e);
 	}
 	return nullptr;
@@ -1256,9 +1323,7 @@ static int
 journal_enqueue (struct journal      *j,
                  struct journal_item *item)
 {
-	int e = atomic_load(&j->error);
-	if (e)
-		return e;
+	int e = 0;
 	/* One small cancellation per ledger job must fit even when ordinary
 	 * transcript traffic saturates its queue.  These extra bounds remain
 	 * finite and cannot be used by streams, loads, or oversized records. */
@@ -1434,44 +1499,6 @@ journal_load_current (struct journal  *j,
 }
 
 static int
-journal_unlock (struct journal *j,
-                char const     *participant)
-{
-	/* Our participant lock excludes both other writers and their surviving
-	 * Git children.  Only this participant's loose-ref lock is ours. */
-	static char const *const dirs[] = { "refs", "heads", "reasoning" };
-	int fd = fcntl(j->repo_fd, F_DUPFD_CLOEXEC, 3);
-	if (fd < 0)
-		return errno;
-	int e = 0;
-	for (size_t i = 0; i < ARRAY_SIZE(dirs); ++i) {
-		int next = openat(fd, dirs[i], O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-		if (next < 0) {
-			e = errno == ENOENT ? 0 : errno;
-			close(fd);
-			return e;
-		}
-		close(fd);
-		fd = next;
-	}
-	char name[70];
-	int n = snprintf(name, sizeof name, "%s.lock", participant);
-	if (n < 0 || n >= (int)sizeof name)
-		e = EOVERFLOW;
-	struct stat st;
-	if (!e && fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW))
-		e = errno == ENOENT ? 0 : errno;
-	else if (!e) {
-		if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1)
-			e = EACCES;
-		else if (unlinkat(fd, name, 0) || fsync(fd))
-			e = errno;
-	}
-	close(fd);
-	return e;
-}
-
-static int
 journal_setup (struct journal *j,
                char const     *path,
                char const     *participant)
@@ -1565,7 +1592,7 @@ journal_setup (struct journal *j,
 		close(init_fd);
 	}
 	if (!e)
-		e = journal_unlock(j, participant);
+		e = journal_unlock(j);
 	if (!e)
 		e = journal_tip(j);
 	return e ? e : journal_jobs_scan(j);
@@ -1590,13 +1617,11 @@ journal_create (char const *path,
 		util_format(why, why_len, "%s", strerror(*e));
 		return nullptr;
 	}
-	atomic_init(&j->error, 0);
 	j->repo_fd = j->state_fd = j->jobs_fd = j->thoughts_fd = j->lock_fd = j->wal_fd = -1;
 	for (size_t k = 0; k < ARRAY_SIZE(j->files); ++k)
 		j->files[k].fd = -1;
 	j->digest = EVP_MD_CTX_new();
-	j->ref = util_concat("refs/heads/reasoning/", sizeof "refs/heads/reasoning/" - 1,
-	                     participant);
+	j->ref = util_concat(REF, sizeof REF - 1, participant);
 	if (!j->ref || !j->digest)
 		*e = ENOMEM;
 	if (!*e) {
@@ -1692,12 +1717,6 @@ journal_destroy (struct journal **p_journal)
 	j->path = nullptr;
 	free(j);
 	j = nullptr;
-}
-
-int
-journal_error (struct journal const *j)
-{
-	return j ? atomic_load(&j->error) : 0;
 }
 
 uint64_t
