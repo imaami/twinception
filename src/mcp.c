@@ -233,7 +233,9 @@ static constexpr uint64_t TASK_NS = 1'000'000'000;  /* a call's run before it
                                                        becomes a task, for a
                                                        client that takes them */
 
-/** Newest first; the first MODERN revisions carry their version in _meta. */
+/** Newest first; the first MODERN revisions carry their version in _meta.
+ *  The last, PRE_STREAMS, is the revision before Streamable HTTP, whose
+ *  clients take no event stream. */
 static char const versions[][sizeof "2026-07-28"] = {
 	"2026-07-28",
 	"2025-11-25",
@@ -241,10 +243,7 @@ static char const versions[][sizeof "2026-07-28"] = {
 	"2025-03-26",
 	"2024-11-05",
 };
-enum { MODERN = 1 };
-
-/** The revision before Streamable HTTP, whose clients take no event stream. */
-static char const pre_streams[] = "2024-11-05";
+enum { MODERN = 1, PRE_STREAMS = ARRAY_SIZE(versions) - 1 };
 
 static char const meta_version[] = "io.modelcontextprotocol/protocolVersion";
 static char const meta_caps[] = "io.modelcontextprotocol/clientCapabilities";
@@ -1078,6 +1077,20 @@ mcp_req_forget (struct mcp_req *req)
 
 static void mcp_slot_step (struct loop *loop, struct loop_step *step);
 
+/* A slot of @p req for a call in @p role, with no call yet. */
+static struct mcp_slot
+mcp_slot (struct mcp_req *req,
+          enum mcp_role   role)
+{
+	return (struct mcp_slot){
+		.step.fn = mcp_slot_step,
+		.answer = DSTR_INIT,
+		.req = req,
+		.tool = TOOL_MAX,
+		.role = role
+	};
+}
+
 /* Make @p req's slots for a turn's calls, unless it has them. */
 static int
 mcp_req_slots_make (struct mcp_req *req)
@@ -1088,13 +1101,7 @@ mcp_req_slots_make (struct mcp_req *req)
 	if (!req->slots)
 		return ENOMEM;
 	for (size_t k = 0; k < JOB_CALLS; ++k)
-		req->slots[k] = (struct mcp_slot){
-			.step.fn = mcp_slot_step,
-			.answer = DSTR_INIT,
-			.req = req,
-			.tool = TOOL_MAX,
-			.role = ROLE_TURN
-		};
+		req->slots[k] = mcp_slot(req, ROLE_TURN);
 	return 0;
 }
 
@@ -1479,24 +1486,30 @@ mcp_req_args_free (struct mcp_req *req,
 		loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
-/* The call of a task or a job ends: cancelled as its client asked, failed
- * if req->error is set or its reply, in the record, is an error or not whole,
- * else completed.  Publish that, and drop the call's reference to the
- * record. */
 static uint64_t mcp_req_owner (struct mcp_req const *req);
 
+/* How the call of a task or a job ends: cancelled as its client asked,
+ * failed if req->error is set or its reply, in the record, is an error or
+ * not whole, else completed. */
+static enum ledger_status
+mcp_req_status (struct mcp_req const *req)
+{
+	static char const erred[] = "\"error\":";
+	size_t n = sizeof erred - 1;
+	struct ledger_task const *task = req->task;
+	bool failed = task && (!task->result || task->len != task->size ||
+	                      (task->len >= n && !memcmp(task->result, erred, n)));
+	return req->error == ECANCELED ? LEDGER_CANCELLED
+	     : req->error || failed ? LEDGER_FAILED : LEDGER_COMPLETED;
+}
+
+/* The call of a task or a job ends: publish how (mcp_req_status()), and
+ * drop the call's reference to the record. */
 static void
 mcp_req_task_end (struct mcp_req *req)
 {
-	static char const erred[] = "\"error\":";
 	struct ledger_task *task = req->task;
-	size_t n = sizeof erred - 1;
-	bool failed = !task->result || task->len != task->size ||
-	              (task->len >= n && !memcmp(task->result, erred, n));
-	enum ledger_status status = req->error == ECANCELED ? LEDGER_CANCELLED
-	                          : req->error || failed ? LEDGER_FAILED
-	                          : LEDGER_COMPLETED;
-	ledger_end(req->mcp->st->ledger, task, status);
+	ledger_end(req->mcp->st->ledger, task, mcp_req_status(req));
 	if (req->suspended)
 		(void)ledger_remove(req->mcp->st->ledger, mcp_req_owner(req),
 		                    (struct span){ (unsigned char *)task->id, LEDGER_ID });
@@ -2091,36 +2104,32 @@ mcp_req_delta (struct mcp_req *req)
 	struct job *job = req->job;
 	struct loop *loop = req->mcp->loop;
 	struct span bytes = buf_peek(&job->delta);
+	size_t id_len;
+	char const *id = json_object_to_json_string_length(req->id, JB_WIRE, &id_len);
+	if (!id) {
+		mcp_req_abort(req, ENOMEM);
+		return;
+	}
+	char turn[24];
+	size_t turn_len = util_format(turn, sizeof turn, "%" PRIu32, req->turn);
 	while (req->delta_at < bytes.len) {
 		if (req->blocked)
 			return;
 		struct job_delta header;
 		memcpy(&header, bytes.ptr + req->delta_at, sizeof header);
-		unsigned char const *text = bytes.ptr + req->delta_at + sizeof header;
-		size_t left = header.len - req->delta_read;
+		char const *text = (char const *)bytes.ptr + req->delta_at + sizeof header;
 		size_t room = loop_room(loop, LOOP_ESCAPE);
 		size_t send = loop_room(loop, LOOP_SEND);
 		/* Escaping a byte needs at most six bytes; ids are <= MAX_ID. */
 		size_t overhead = 6 * MAX_ID + 256;
 		send = send > overhead ? (send - overhead) / 6 : 0;
 		room = room < send ? room : send;
-		size_t n = left < room ? left : room;
-		n = n < 8192 ? n : 8192;
-		if (n < left)
-			while (n && (text[req->delta_read + n] & 0xc0) == 0x80)
-				--n;
+		size_t n = mcp_clip(text + req->delta_read, header.len - req->delta_read,
+		                    room < 8192 ? room : 8192);
 		if (!n) {
 			loop_ready_bulk(loop, &req->step);
 			return;
 		}
-		size_t id_len;
-		char const *id = json_object_to_json_string_length(req->id, JB_WIRE, &id_len);
-		if (!id) {
-			mcp_req_abort(req, ENOMEM);
-			return;
-		}
-		char turn[24];
-		size_t turn_len = util_format(turn, sizeof turn, "%" PRIu32, req->turn);
 		struct mcp_piece const p[] = {
 			FRAG("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/askai/delta\","
 			     "\"params\":{\"requestId\":"),
@@ -2618,17 +2627,37 @@ struct mcp_archive_wait {
 	void (*done) (struct mcp_req *req, int error);
 };
 
+/* Name @p req by a handle in @p *who for a journal callback, which no other
+ * may be waiting for: 0, EBUSY, or why the handle could not be made. */
+static int
+mcp_req_archive_wait (struct mcp_req *req,
+                      struct handle  *who)
+{
+	return req->archive_call.bits ? EBUSY
+	     : loop_handle(req->mcp->loop, req, HANDLE_REQ, who);
+}
+
+/* The request that @p who, the handle of a journal callback, names, its
+ * handle freed; nullptr if the request has ended, or the loop ends. */
+static struct mcp_req *
+mcp_req_archived (struct loop  *loop,
+                  struct handle who)
+{
+	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, who, HANDLE_REQ);
+	if (req) {
+		loop_forget(loop, who);
+		req->archive_call = (struct handle){};
+	}
+	return req;
+}
+
 static void
 mcp_archive_back (struct loop *loop,
                   void        *arg,
                   int          error)
 {
 	struct mcp_archive_wait *wait = arg;
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, wait->who, HANDLE_REQ);
-	if (req) {
-		loop_forget(loop, wait->who);
-		req->archive_call = (struct handle){};
-	}
+	struct mcp_req *req = mcp_req_archived(loop, wait->who);
 	void (*done)(struct mcp_req *, int) = wait->done;
 	free(wait);
 	wait = nullptr;
@@ -2652,8 +2681,7 @@ mcp_req_archive (struct mcp_req    *req,
 	int e = !text || (done && !wait) ? ENOMEM : 0;
 	if (!e && done) {
 		wait->done = done;
-		e = req->archive_call.bits ? EBUSY
-		  : loop_handle(req->mcp->loop, req, HANDLE_REQ, &wait->who);
+		e = mcp_req_archive_wait(req, &wait->who);
 	}
 	if (!e)
 		e = journal_put(req->mcp->st->journal, req->archive, kind, text, len,
@@ -2669,16 +2697,6 @@ mcp_req_archive (struct mcp_req    *req,
 		req->archive_call = wait->who;
 	}
 	return e;
-}
-
-static enum ledger_status
-mcp_req_archive_status (struct mcp_req const *req)
-{
-	struct ledger_task const *task = req->task;
-	bool failed = task && (!task->result || task->len != task->size ||
-	                      (task->len >= 8 && !memcmp(task->result, "\"error\":", 8)));
-	return req->error == ECANCELED ? LEDGER_CANCELLED
-	     : req->error || failed ? LEDGER_FAILED : LEDGER_COMPLETED;
 }
 
 static void
@@ -2704,7 +2722,7 @@ mcp_req_archive_end (struct mcp_req *req)
 		return false;
 	req->archived_end = true;
 	struct ledger_task const *task = req->task;
-	enum ledger_status status = mcp_req_archive_status(req);
+	enum ledger_status status = mcp_req_status(req);
 	size_t len = !task || status == LEDGER_CANCELLED || task->len != task->size ? 0 : task->len;
 	struct json_object *obj = jb_object(
 		"status", json_object_new_int(status),
@@ -3227,14 +3245,21 @@ mcp_slot_finish (struct mcp_slot *slot,
 	return 0;
 }
 
+/* Whether a plugin may use @p slot: 0, EFAULT for no slot, or EINVAL for a
+ * call that has ended. */
+static int
+mcp_slot_live (struct mcp_slot const *slot)
+{
+	return !slot ? EFAULT : slot->done ? EINVAL : 0;
+}
+
 int
 mcp_slot_fail (struct mcp_slot *slot,
                int              e)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int refused = mcp_slot_live(slot);
+	if (refused)
+		return refused;
 	slot->done = true;
 	mcp_req_fail(slot->req, e);
 	return 0;
@@ -3244,10 +3269,9 @@ int
 mcp_slot_offset (struct mcp_slot    *slot,
                  struct json_object *args)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = mcp_slot_live(slot);
+	if (e)
+		return e;
 	struct json_object *o = jb_get(args, "offset");
 	int64_t n = !o ? 0
 	          : json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : -1;
@@ -3317,10 +3341,9 @@ mcp_slot_lend (struct mcp_slot  *slot,
 int
 mcp_slot_park (struct mcp_slot *slot)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = mcp_slot_live(slot);
+	if (e)
+		return e;
 	struct mcp_req *req = slot->req;
 	if (mcp_slot_offer(slot)->kind->flags & TOOL_STREAM && req->sse_ok && !req->sse)
 		mcp_req_stream(req);
@@ -3334,10 +3357,9 @@ mcp_slot_park (struct mcp_slot *slot)
 int
 mcp_slot_ready (struct mcp_slot *slot)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = mcp_slot_live(slot);
+	if (e)
+		return e;
 	if (!mcp_slot_offer(slot)->kind->step) {
 		(void)mcp_slot_tell(slot, TOOL_TEXT("The tool's kind has no step(), so the "
 		                                    "call cannot go on."), TOOL_FAILED);
@@ -3354,13 +3376,11 @@ mcp_slot_name (struct mcp_slot *slot,
 	if (!who)
 		return EFAULT;
 	*who = (struct handle){};
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
-	int e = slot->call.bits ? 0 : loop_handle(slot->req->mcp->loop, slot, HANDLE_SLOT,
-	                                          &slot->call);
-	*who = slot->call;
+	int e = mcp_slot_live(slot);
+	if (!e && !slot->call.bits)
+		e = loop_handle(slot->req->mcp->loop, slot, HANDLE_SLOT, &slot->call);
+	if (!e)
+		*who = slot->call;
 	return e;
 }
 
@@ -3463,10 +3483,9 @@ mcp_slot_fetched (struct mcp_slot const *slot,
 	if (!response)
 		return EFAULT;
 	*response = (struct web_response){};
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = mcp_slot_live(slot);
+	if (e)
+		return e;
 	if (!slot->web)
 		return ENOENT;
 	if (!web_wait_done(slot->web))
@@ -3664,17 +3683,16 @@ mcp_req_ask (struct mcp_req     *req,
 		else if (mcp_req_background(req, req->self.tool, true))
 			return;
 	}
+	/* A thread's id comes with notes only (the problems above). */
 	if (id) {
 		memcpy(req->thread, id, sizeof req->thread);
-		notes_repo(notes, req->principal, NOTES_UPSTREAM, req->repo);
-	} else if (notes) {
-		if (notes_id(req->thread)) {
-			mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a thread's id"),
-			              nullptr, 0);
-			return;
-		}
-		notes_repo(notes, req->principal, NOTES_UPSTREAM, req->repo);
+	} else if (notes && notes_id(req->thread)) {
+		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a thread's id"),
+		              nullptr, 0);
+		return;
 	}
+	if (notes)
+		notes_repo(notes, req->principal, NOTES_UPSTREAM, req->repo);
 	req->asked = ++req->mcp->asked;
 	mcp_req_log_ask(req, prompt, id != nullptr);
 	mcp_req_wait(req);
@@ -4309,8 +4327,9 @@ mcp_req_trace_end (struct mcp_req *req,
 	return dstr_printf(&req->trace, ": %zu bytes\n", bytes) ? 0 : ENOMEM;
 }
 
-/* The id of the tool of @p name, of @p len bytes, that askai offers;
- * TOOL_MAX if none. */
+/* The id of the tool of @p name, of @p len bytes, that askai offers,
+ * compared byte for byte; TOOL_MAX if none, as for nullptr and 0.  The
+ * tools that a role can grant have the ids below st->n_granted. */
 static uint32_t
 mcp_static_tool_of (struct mcp_static const *st,
                     char const              *name,
@@ -4369,22 +4388,6 @@ mcp_req_log_refused (struct mcp_req const *req,
 	    shown);
 }
 
-/* Returns the id of the tool whose name is the @p len bytes at @p name,
- * compared byte for byte, among those that a role can grant; or
- * st->n_granted, if none of them has the name. */
-static uint32_t
-mcp_req_granted (struct mcp_req const *req,
-                 char const           *name,
-                 size_t                len)
-{
-	struct mcp_static const *st = req->mcp->st;
-	uint32_t id = 0;
-	while (id < st->n_granted &&
-	       (st->offers[id].len != len || memcmp(st->offers[id].name, name, len)))
-		++id;
-	return id;
-}
-
 static void mcp_agenda_alarm (struct loop *loop, struct loop_timer *timer);
 
 /* An agenda for the turns of @p req, whose jobs are its own slots; nullptr,
@@ -4405,13 +4408,7 @@ mcp_agenda_create (struct mcp_req *req,
 		.req = req
 	};
 	for (size_t k = 0; k < JOBS_MAX; ++k)
-		a->jobs[k] = (struct mcp_slot){
-			.step.fn = mcp_slot_step,
-			.answer = DSTR_INIT,
-			.req = req,
-			.tool = TOOL_MAX,
-			.role = ROLE_JOB
-		};
+		a->jobs[k] = mcp_slot(req, ROLE_JOB);
 	return a;
 }
 
@@ -4727,10 +4724,10 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	struct mcp_static const *st = req->mcp->st;
 	size_t len = 0;
 	char const *name = jb_str(jb_get(args, "tool"), &len);
-	uint32_t id = name ? mcp_req_granted(req, name, len) : st->n_granted;
+	uint32_t id = mcp_static_tool_of(st, name, len);
 	struct json_object *call = jb_get(args, "arguments");
 	struct mcp_piece problem =
-		id == st->n_granted || !(req->s->tools >> id & 1) ||
+		id >= st->n_granted || !(req->s->tools >> id & 1) ||
 		st->offers[id].kind->flags & KF_AGENDA
 		? TEXT("The tool argument must name a tool of yours other than background, "
 		       "jobs, wait and timer.")
@@ -5451,7 +5448,6 @@ mcp_req_intent_saved (struct mcp_req *req,
                       int             error)
 {
 	if (error) {
-		req->archive_error = error;
 		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot persist job state"), nullptr, 0);
 		return;
 	}
@@ -5470,13 +5466,13 @@ mcp_req_call_launch (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	uint32_t k = req->launched;
-	if (k == req->n_calls ||
-	    (k > req->part && mcp_slot_offer(&req->slots[k - 1])->kind->flags & KF_SERIAL))
+	if (k == req->n_calls)
 		return;
 	struct mcp_call c = mcp_call_at(buf_peek(&req->calls).ptr + req->launch_at);
 	uint32_t id = mcp_req_tool_of(req, (char const *)c.name.ptr, c.name.len);
 	struct mcp_offer const *tool = &mcp->st->offers[id];
-	if (tool->kind->flags & KF_SERIAL && k > req->part)
+	if (k > req->part &&
+	    (tool->kind->flags | mcp_slot_offer(&req->slots[k - 1])->kind->flags) & KF_SERIAL)
 		return;
 	if (mcp->draining) {
 		mcp_req_fail(req, ESHUTDOWN);
@@ -5491,7 +5487,6 @@ mcp_req_call_launch (struct mcp_req *req)
 			                          : json_object_new_object(), nullptr);
 		int e = mcp_req_archive(req, "tool-intent", intent, mcp_req_intent_saved);
 		if (e) {
-			req->archive_error = e;
 			mcp_req_fail(req, e);
 			return;
 		}
@@ -5867,7 +5862,6 @@ mcp_req_archive_submitted (struct mcp_req *req,
 	if (!error && req->mcp->draining)
 		error = ESHUTDOWN;
 	if (error) {
-		req->archive_error = error;
 		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot persist job state"), nullptr, 0);
 		return;
 	}
@@ -5971,10 +5965,11 @@ mcp_archive_lent (struct mcp_req *req,
 	tool_mask allowed = mcp_req_lent(req), saved = 0;
 	size_t n = json_object_array_length(names);
 	for (size_t k = 0; k < n; ++k) {
-		char const *name = jb_text(json_object_array_get_idx(names, k));
-		for (uint32_t i = 0; name && i < req->mcp->st->n_offers; ++i)
-			if (!strcmp(name, req->mcp->st->offers[i].name))
-				saved |= (tool_mask)1 << i;
+		size_t len = 0;
+		char const *name = jb_str(json_object_array_get_idx(names, k), &len);
+		uint32_t id = mcp_static_tool_of(req->mcp->st, name, len);
+		if (id < TOOL_MAX)
+			saved |= (tool_mask)1 << id;
 	}
 	return allowed & saved;
 }
@@ -5999,13 +5994,9 @@ mcp_recover_back (struct loop           *loop,
                   struct journal_record *records)
 {
 	struct mcp_recover_wait *wait = arg;
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, wait->who, HANDLE_REQ);
+	struct mcp_req *req = mcp_req_archived(loop, wait->who);
 	struct json_object *args = wait->args;
 	bool cancel = wait->cancel;
-	if (req) {
-		loop_forget(loop, wait->who);
-		req->archive_call = (struct handle){};
-	}
 	free(wait);
 	wait = nullptr;
 	if (!req)
@@ -6016,10 +6007,7 @@ mcp_recover_back (struct loop           *loop,
 	struct ledger_task *found = ledger_find(st->ledger, mcp_req_owner(req), id, id_len);
 	if (found) {
 		ledger_task_put(found);
-		if (cancel)
-			mcp_slot_client_cancel(&req->self, args, true);
-		else
-			mcp_slot_client_result(&req->self, args, true);
+		(cancel ? mcp_slot_client_cancel : mcp_slot_client_result)(&req->self, args, true);
 		goto out;
 	}
 	struct journal_record *checkpoint = nullptr, *end = nullptr;
@@ -6064,10 +6052,7 @@ mcp_recover_back (struct loop           *loop,
 		}
 		ledger_task_put(task);
 		json_object_put(state);
-		if (cancel)
-			mcp_slot_client_cancel(&req->self, args, true);
-		else
-			mcp_slot_client_result(&req->self, args, true);
+		(cancel ? mcp_slot_client_cancel : mcp_slot_client_result)(&req->self, args, true);
 		goto out;
 	}
 	if (json_object_get_int(jb_get(state, "api")) != st->ep->api ||
@@ -6215,7 +6200,7 @@ mcp_req_recover (struct mcp_req *req,
 		return false;
 	}
 	struct mcp_recover_wait *wait = calloc(1, sizeof *wait);
-	int e = wait ? loop_handle(req->mcp->loop, req, HANDLE_REQ, &wait->who) : ENOMEM;
+	int e = wait ? mcp_req_archive_wait(req, &wait->who) : ENOMEM;
 	if (!e) {
 		wait->args = json_object_get(args);
 		wait->cancel = cancel;
@@ -6815,15 +6800,17 @@ static void
 mcp_slot_notes_got_books (struct mcp_slot *slot)
 {
 	struct child const *c = slot->child;
-	bool ok = mcp_notes_listed(c);
+	if (!mcp_notes_listed(c)) {
+		mcp_slot_notes_end(slot, mcp_slot_notes_unread(slot), true);
+		return;
+	}
 	struct span out = buf_peek(&c->out);
-	int e = !ok ? mcp_slot_notes_unread(slot)
-	      : mcp_slot_say(slot, &TEXT("Session notebooks (use a selector as notebook):\n"), 1);
-	if (!e && ok)
+	int e = mcp_slot_say(slot, &TEXT("Session notebooks (use a selector as notebook):\n"), 1);
+	if (!e)
 		e = mcp_slot_notes_identity(slot);
 	char const *own = notes_selector(slot->req->repo);
 	size_t own_len = strlen(own);
-	while (!e && ok && out.len) {
+	while (!e && out.len) {
 		unsigned char const *end = memchr(out.ptr, '\n', out.len);
 		if (!end)
 			break;
@@ -6839,9 +6826,9 @@ mcp_slot_notes_got_books (struct mcp_slot *slot)
 		out.ptr += n;
 		out.len -= n;
 	}
-	if (!e && ok && c->cut)
+	if (!e && c->cut)
 		e = mcp_slot_say(slot, &TEXT("[The notebook list is incomplete.]\n"), 1);
-	mcp_slot_notes_end(slot, e, !ok);
+	mcp_slot_notes_end(slot, e, false);
 }
 
 /* The marker of a byte that is not shown as text in a note's view. */
@@ -7543,14 +7530,15 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 	                   &in);
 }
 
-/* Starts the copy action: git reads the note that the file argument names
- * in the other side's notebook of the thread, and mcp_slot_notes_got_copy()
- * adds it byte for byte to the caller's own notebook, under the name that
- * the as argument gives, or else under the same name.  The text of the
- * note does not pass through the caller. */
+/* Starts the read action for the file name in @p args, with @p fetch: the
+ * fetch of read, of attach, or of copy, after which
+ * mcp_slot_notes_got_copy() adds the note byte for byte to the caller's own
+ * notebook, under the name that the as argument gives, or else under the
+ * same name.  The text of a copied note does not pass through the caller. */
 static void
-mcp_slot_notes_copy (struct mcp_slot    *slot,
-                     struct json_object *args)
+mcp_slot_notes_read (struct mcp_slot    *slot,
+                     struct json_object *args,
+                     uint16_t            fetch)
 {
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
@@ -7560,59 +7548,34 @@ mcp_slot_notes_copy (struct mcp_slot    *slot,
 		mcp_slot_result(slot, TEXT(bad_name), true);
 		return;
 	}
-	struct json_object *as = jb_get(args, "as");
-	size_t to_len = len;
-	size_t to_skip = skip;
-	char const *to = as ? jb_str(as, &to_len) : name;
-	if (!to || notes_name(to, to_len, &to_skip)) {
-		mcp_slot_result(slot, TEXT("The as argument must be a file name, as the file "
-		                           "argument is."), true);
-		return;
+	int e = 0;
+	if (fetch & FETCH_COPY) {
+		struct json_object *as = jb_get(args, "as");
+		size_t to_len = len;
+		size_t to_skip = skip;
+		char const *to = as ? jb_str(as, &to_len) : name;
+		if (!to || notes_name(to, to_len, &to_skip)) {
+			mcp_slot_result(slot, TEXT("The as argument must be a file name, as the "
+			                           "file argument is."), true);
+			return;
+		}
+		/* The name of the copy waits in the request's body while git reads
+		 * the note.  A call that ended early can have left a file part
+		 * there. */
+		buf_fini(&req->body);
+		e = mcp_piece_write(&RAW(to + to_skip, to_len - to_skip), 0, to_len - to_skip,
+		                    &req->body, NOTES_NAME);
 	}
-	/* The name of the copy waits in the request's body while git reads the
-	 * note.  A call that ended early can have left a file part there. */
-	buf_fini(&req->body);
-	struct span s;
-	int e = buf_reserve(&req->body, to_len - to_skip, NOTES_NAME, &s);
 	struct buf in = {};
-	if (!e) {
-		memcpy(s.ptr, to + to_skip, to_len - to_skip);
-		buf_commit(&req->body, to_len - to_skip);
+	if (!e)
 		e = notes_read_input(&in, mcp_slot_notebook(slot), name + skip, len - skip);
-	}
 	if (e) {
 		buf_fini(&in);
 		buf_fini(&req->body);
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, FETCH_READ | FETCH_OTHER | FETCH_COPY, &in);
-}
-
-/* Starts the read action for the file name in @p args, or with @p flags
- * FETCH_ATTACH the attach action, in the caller's notebook, or with @p flags
- * FETCH_OTHER in the other side's. */
-static void
-mcp_slot_notes_read (struct mcp_slot    *slot,
-                     struct json_object *args,
-                     uint16_t            flags)
-{
-	struct mcp_req *req = slot->req;
-	size_t len = 0;
-	size_t skip = 0;
-	char const *name = jb_str(jb_get(args, "file"), &len);
-	if (!name || notes_name(name, len, &skip)) {
-		mcp_slot_result(slot, TEXT(bad_name), true);
-		return;
-	}
-	struct buf in = {};
-	int e = notes_read_input(&in, mcp_slot_notebook(slot), name + skip, len - skip);
-	if (e) {
-		buf_fini(&in);
-		mcp_req_fail(req, e);
-		return;
-	}
-	mcp_slot_notes_run(slot, FETCH_READ | flags, &in);
+	mcp_slot_notes_run(slot, fetch, &in);
 }
 
 /** Starts a revision-aware read, diff or restore, or a filtered history. */
@@ -7745,9 +7708,7 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		}
 		return;
 	}
-	if (fetch & FETCH_COPY)
-		mcp_slot_notes_copy(slot, args);
-	else if (flags & NOTE_FILE)
+	if (flags & NOTE_FILE)
 		mcp_slot_notes_read(slot, args, fetch | (*slot->notebook ? FETCH_OTHER : 0));
 	else
 		mcp_slot_notes_run(slot, fetch | (*slot->notebook ? FETCH_OTHER : 0), nullptr);
@@ -7906,12 +7867,9 @@ mcp_slot_ask (struct mcp_slot    *slot,
 		if (job) {
 			req->promote_at = UINT64_MAX;
 			mcp_req_arm(req);
-			if (mcp_req_recover(req, args, has_action && jb_is(action, "cancel")))
-				return;
-			if (has_action && jb_is(action, "cancel"))
-				mcp_slot_client_cancel(slot, args, true);
-			else
-				mcp_slot_client_result(slot, args, true);
+			bool cancel = has_action && jb_is(action, "cancel");
+			if (!mcp_req_recover(req, args, cancel))
+				(cancel ? mcp_slot_client_cancel : mcp_slot_client_result)(slot, args, true);
 			return;
 		}
 	}
@@ -7940,11 +7898,11 @@ mcp_req_tools_call (struct mcp_req     *req,
 	}
 	size_t len = 0;
 	char const *str = jb_str(jb_get(params, "name"), &len);
-	uint32_t id = str ? mcp_req_granted(req, str, len) : st->n_granted;
+	uint32_t id = mcp_static_tool_of(st, str, len);
 	/* One that the client's role may not call is not unknown, but not
 	 * available to it. */
-	if (!str || id == st->n_granted || !(req->s->tools >> id & 1)) {
-		bool known = str && id < st->n_granted;
+	if (id >= st->n_granted || !(req->s->tools >> id & 1)) {
+		bool known = id < st->n_granted;
 		/* An unknown name is the client's, so the log has it as a JSON
 		 * string. */
 		char quoted[NAME_LOG + 8] = "(none)";
@@ -8364,7 +8322,7 @@ mcp_req_request (struct mcp_req     *req,
 	/* Without the header a legacy client speaks 2025-03-26, which has
 	 * event streams; 2024-11-05 has none. */
 	req->sse_ok = mcp_accepts_sse(s->ops->field(s, F_ACCEPT)) &&
-	              !mcp_span_is(header, pre_streams, sizeof pre_streams - 1);
+	              !mcp_span_is(header, versions[PRE_STREAMS], sizeof versions[0] - 1);
 	mcp_req_route(req, params, false);
 }
 
@@ -8476,7 +8434,6 @@ mcp_req_reasoning_done (struct mcp_req *req,
                         int             error)
 {
 	if (error) {
-		req->archive_error = error;
 		mcp_req_fail(req, error);
 		return;
 	}
@@ -8507,8 +8464,7 @@ mcp_req_reasoning (struct mcp_req *req)
 		return ENOMEM;
 	}
 	wait->done = mcp_req_reasoning_done;
-	e = req->archive_call.bits ? EBUSY
-	  : loop_handle(req->mcp->loop, req, HANDLE_REQ, &wait->who);
+	e = mcp_req_archive_wait(req, &wait->who);
 	if (!e && len)
 		e = journal_thought(journal, req->archive, job->archive_turn, 0,
 		                    dstr_get(&thought), len, nullptr, nullptr, nullptr);
@@ -8550,7 +8506,6 @@ mcp_req_answer (struct mcp_req *req)
 		req->phase = PHASE_TEXT;
 		int e = mcp_req_reasoning(req);
 		if (e) {
-			req->archive_error = e;
 			mcp_req_fail(req, e);
 			return;
 		}
@@ -8606,6 +8561,26 @@ mcp_req_metrics (struct mcp_req *req)
 	mcp_req_close(req, 200, SPAN(fields), e);
 }
 
+/* The work of each phase that works in steps; the others wait. */
+static void (*const mcp_phase_steps[]) (struct mcp_req *req) = {
+	[PHASE_PARSE]    = mcp_req_parse,
+	[PHASE_DISPATCH] = mcp_req_dispatch,
+	[PHASE_BUILD]    = mcp_req_build,
+	[PHASE_ANSWER]   = mcp_req_answer,
+	[PHASE_TEXT]     = mcp_req_text,
+	[PHASE_ARGS]     = mcp_req_turn_args,
+	[PHASE_TURN]     = mcp_req_turn_write,
+	[PHASE_CALLS]    = mcp_req_calls_next,
+	[PHASE_RESULT]   = mcp_req_result_write,
+	[PHASE_ADD]      = mcp_req_add_write,
+	[PHASE_WAKE]     = mcp_req_add_write,
+	[PHASE_SHOW]     = mcp_req_show,
+	[PHASE_REPLY]    = mcp_req_reply,
+	[PHASE_SEND]     = mcp_req_send,
+	[PHASE_METRICS]  = mcp_req_metrics,
+};
+static_assert(ARRAY_SIZE(mcp_phase_steps) == PHASE_METRICS + 1);
+
 /* A keep-alive, if one is due before the reply, a slice of what is left to
  * free, then the phase's work. */
 static void
@@ -8631,53 +8606,8 @@ mcp_req_step (struct loop      *loop,
 			return;
 		}
 	}
-	switch (req->phase) {
-	case PHASE_PARSE:
-		mcp_req_parse(req);
-		break;
-	case PHASE_DISPATCH:
-		mcp_req_dispatch(req);
-		break;
-	case PHASE_BUILD:
-		mcp_req_build(req);
-		break;
-	case PHASE_ANSWER:
-		mcp_req_answer(req);
-		break;
-	case PHASE_TEXT:
-		mcp_req_text(req);
-		break;
-	case PHASE_ARGS:
-		mcp_req_turn_args(req);
-		break;
-	case PHASE_TURN:
-		mcp_req_turn_write(req);
-		break;
-	case PHASE_CALLS:
-		mcp_req_calls_next(req);
-		break;
-	case PHASE_RESULT:
-		mcp_req_result_write(req);
-		break;
-	case PHASE_ADD:
-	case PHASE_WAKE:
-		mcp_req_add_write(req);
-		break;
-	case PHASE_SHOW:
-		mcp_req_show(req);
-		break;
-	case PHASE_REPLY:
-		mcp_req_reply(req);
-		break;
-	case PHASE_SEND:
-		mcp_req_send(req);
-		break;
-	case PHASE_METRICS:
-		mcp_req_metrics(req);
-		break;
-	default:
-		break;
-	}
+	if (mcp_phase_steps[req->phase])
+		mcp_phase_steps[req->phase](req);
 }
 
 static void
@@ -9022,6 +8952,54 @@ mcp_drain (struct mcp *mcp)
 	loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 
+/* A JSON string of the texts @p a, @p b and @p c, one after another, or
+ * nullptr if askai runs out of memory. */
+static struct json_object *
+mcp_text3 (char const *a,
+           char const *b,
+           char const *c)
+{
+	dstr_auto d = DSTR_INIT;
+	if (!dstr_cat(&d, a) || !dstr_cat(&d, b) || !dstr_cat(&d, c))
+		return nullptr;
+	return json_object_new_string_len(dstr_get(&d), (int)dstr_len(&d));
+}
+
+/* A property of @p type, as JSON Schema has one, that @p about describes. */
+static struct json_object *
+mcp_property (char const *type,
+              char const *about)
+{
+	return jb_object("type", json_object_new_string(type),
+	                 "description", json_object_new_string(about), nullptr);
+}
+
+/* The schema of an object of the @p properties, those @p required. */
+static struct json_object *
+mcp_schema (struct json_object *properties,
+            struct json_object *required)
+{
+	return jb_object("type", json_object_new_string("object"),
+	                 "properties", properties,
+	                 "required", required,
+	                 "additionalProperties", json_object_new_boolean(0),
+	                 nullptr);
+}
+
+/* A JSON array of the strings @p words, which end in nullptr; nullptr if
+ * out of memory. */
+static struct json_object *
+mcp_words (char const *const words[])
+{
+	struct json_object *arr = json_object_new_array();
+	for (size_t i = 0; arr && words[i]; ++i)
+		if (jb_push(arr, json_object_new_string(words[i]))) {
+			json_object_put(arr);
+			arr = nullptr;
+		}
+	return arr;
+}
+
 /* Returns the definition of the ask tool.  @p service is the mcp_static,
  * which has the tool's configured name and description.  The definition has
  * the argument "thread" if the turns get the notes tool, which is the only
@@ -9031,27 +9009,13 @@ static struct json_object *
 mcp_tool_definition (void const *service)
 {
 	struct mcp_static const *st = service;
-	struct json_object *roles = jb_list(json_object_new_string("user"));
-	struct json_object *required = jb_list(json_object_new_string("role"));
-	if (jb_push(roles, json_object_new_string("assistant")) ||
-	    jb_push(required, json_object_new_string("content"))) {
-		json_object_put(roles);
-		json_object_put(required);
-		return nullptr;
-	}
 	struct json_object *props = jb_object(
-		"prompt", jb_object(
-			"type", json_object_new_string("string"),
-			"description", json_object_new_string(
-				"The new question or task. Include the context it needs, or supply "
-				"earlier user and assistant turns in messages for a continuing chat."),
-			nullptr),
-		"system", jb_object(
-			"type", json_object_new_string("string"),
-			"description", json_object_new_string(
-				"Optional system instructions for the other AI, such as a role "
-				"or an answer format."),
-			nullptr),
+		"prompt", mcp_property("string",
+			"The new question or task. Include the context it needs, or supply "
+			"earlier user and assistant turns in messages for a continuing chat."),
+		"system", mcp_property("string",
+			"Optional system instructions for the other AI, such as a role "
+			"or an answer format."),
 		"messages", jb_object(
 			"type", json_object_new_string("array"),
 			"maxItems", json_object_new_int(CHAT_HISTORY),
@@ -9063,46 +9027,34 @@ mcp_tool_definition (void const *service)
 				"type", json_object_new_string("object"),
 				"properties", jb_object(
 					"role", jb_object("type", json_object_new_string("string"),
-					                  "enum", roles, nullptr),
+					                  "enum", mcp_words((char const *[]){
+					                          "user", "assistant", nullptr }),
+					                  nullptr),
 					"content", jb_object("type", json_object_new_string("string"), nullptr),
 					nullptr),
-				"required", required,
+				"required", mcp_words((char const *[]){ "role", "content", nullptr }),
 				"additionalProperties", json_object_new_boolean(0),
 				nullptr),
 			nullptr),
-		"background", jb_object(
-			"type", json_object_new_string("boolean"),
-			"description", json_object_new_string(
-				"False waits for the answer on this connection. True requires server "
-				"background mode and returns a job id. Omission follows the server "
-				"setting, unless live streaming is requested."),
-			nullptr),
+		"background", mcp_property("boolean",
+			"False waits for the answer on this connection. True requires server "
+			"background mode and returns a job id. Omission follows the server "
+			"setting, unless live streaming is requested."),
 		nullptr);
-	if (st->lending.by[LEND_ALWAYS] && jb_set(props, "thread", jb_object(
-		    "type", json_object_new_string("string"),
-		    "description", json_object_new_string(
-			    "Optional ask-chain id from an earlier answer: 32 hexadecimal "
-			    "digits. Notes are shared by repository path and loaded at the "
-			    "start of every ask, independently of this argument."),
-		    nullptr))) {
+	if (st->lending.by[LEND_ALWAYS] && jb_set(props, "thread", mcp_property("string",
+		    "Optional ask-chain id from an earlier answer: 32 hexadecimal "
+		    "digits. Notes are shared by repository path and loaded at the "
+		    "start of every ask, independently of this argument."))) {
 		json_object_put(props);
 		props = nullptr;
 	}
 	if (st->ep->background) {
-		struct json_object *actions = jb_list(json_object_new_string("result"));
-		if (jb_push(actions, json_object_new_string("cancel"))) {
-			json_object_put(actions);
-			actions = nullptr;
-		}
-		int e = jb_set(props, "job", jb_object(
-			"type", json_object_new_string("string"),
-			"description", json_object_new_string(
-				"The job id returned by this tool. Give job instead of prompt, "
-				"system or thread to check its status or read its completed result."),
-			nullptr));
+		int e = jb_set(props, "job", mcp_property("string",
+			"The job id returned by this tool. Give job instead of prompt, "
+			"system or thread to check its status or read its completed result."));
 		e |= jb_set(props, "action", jb_object(
 			"type", json_object_new_string("string"),
-			"enum", actions,
+			"enum", mcp_words((char const *[]){ "result", "cancel", nullptr }),
 			"default", json_object_new_string("result"),
 			"description", json_object_new_string(
 				"With job: result checks its status or returns its completed "
@@ -9113,29 +9065,20 @@ mcp_tool_definition (void const *service)
 			props = nullptr;
 		}
 	}
-	struct dstr about = dstr("");
-	bool described = dstr_printf(&about, "%s%s", st->tool->description,
-	                             st->ep->background
-		? "\n\nWith prompt, start a job and return its id immediately. The job keeps "
-		  "running after this connection closes. Later call this same tool with job "
-		  "and no prompt to check its status or read its result; action cancel stops "
-		  "it. Results are kept for up to an hour after completion. Set background "
-		  "false to wait for the answer on this connection."
-		: "");
-	struct json_object *description = described
-	                               ? json_object_new_string(dstr_get(&about)) : nullptr;
-	dstr_cleanup(&about);
 	return jb_object(
 		"name", json_object_new_string(st->tool->name),
 		"title", json_object_new_string("Ask AI"),
-		"description", description,
-		"inputSchema", jb_object(
-			"type", json_object_new_string("object"),
-			"properties", props,
-			"required", st->ep->background ? json_object_new_array()
-			                              : jb_list(json_object_new_string("prompt")),
-			"additionalProperties", json_object_new_boolean(0),
-			nullptr),
+		"description", mcp_text3(st->tool->description, st->ep->background
+			? "\n\nWith prompt, start a job and return its id immediately. The job "
+			  "keeps running after this connection closes. Later call this same "
+			  "tool with job and no prompt to check its status or read its result; "
+			  "action cancel stops it. Results are kept for up to an hour after "
+			  "completion. Set background false to wait for the answer on this "
+			  "connection."
+			: "", ""),
+		"inputSchema", mcp_schema(props, st->ep->background
+		                                 ? json_object_new_array()
+		                                 : jb_list(json_object_new_string("prompt"))),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(!st->ep->background),
 			"openWorldHint", json_object_new_boolean(1),
@@ -9177,19 +9120,6 @@ mcp_task_definition (void const *service)
 			"openWorldHint", json_object_new_boolean(0),
 			nullptr),
 		nullptr);
-}
-
-/* A JSON string of the texts @p a, @p b and @p c, one after another, or
- * nullptr if askai runs out of memory. */
-static struct json_object *
-mcp_text3 (char const *a,
-           char const *b,
-           char const *c)
-{
-	dstr_auto d = DSTR_INIT;
-	if (!dstr_cat(&d, a) || !dstr_cat(&d, b) || !dstr_cat(&d, c))
-		return nullptr;
-	return json_object_new_string_len(dstr_get(&d), (int)dstr_len(&d));
 }
 
 /* Returns the definition of the notes tool for the side @p side.  The
@@ -9254,38 +9184,23 @@ mcp_notes_schema (enum notes_side          side,
 				"as .md or .txt, shows the format of the text. Optional for history "
 				"to show only changes to that exact file name."),
 			nullptr),
-		"revision", jb_object(
-			"type", json_object_new_string("string"),
-			"description", json_object_new_string(
-				"For read: full commit ID from the selected notebook's history, "
-				"or current (default). Required for restore, which copies the exact "
-				"historical bytes into your own notebook in a new commit, preserving "
-				"all intervening history. No Git revision expressions."),
-			nullptr),
-		"from", jb_object(
-			"type", json_object_new_string("string"),
-			"description", json_object_new_string(
-				"Required for diff: the older full commit ID from this notebook's history, "
-				"or current. The diff compares that file at from against to."),
-			nullptr),
-		"to", jb_object(
-			"type", json_object_new_string("string"),
-			"description", json_object_new_string(
-				"For diff: full commit ID from the same notebook, or current (default). "
-				"Both revisions are resolved against one notebook snapshot. Output names "
-				"the resolved IDs; reuse them when continuing with offset."),
-			nullptr),
-		"as", jb_object(
-			"type", json_object_new_string("string"),
-			"description", json_object_new_string(
-				"For copy: the file name of the copy in your notebook. The "
-				"default is the name of the note."),
-			nullptr),
-		"text", jb_object(
-			"type", json_object_new_string("string"),
-			"description", json_object_new_string(
-				"For add and replace: the text of the note, at most 4 MiB."),
-			nullptr),
+		"revision", mcp_property("string",
+			"For read: full commit ID from the selected notebook's history, "
+			"or current (default). Required for restore, which copies the exact "
+			"historical bytes into your own notebook in a new commit, preserving "
+			"all intervening history. No Git revision expressions."),
+		"from", mcp_property("string",
+			"Required for diff: the older full commit ID from this notebook's history, "
+			"or current. The diff compares that file at from against to."),
+		"to", mcp_property("string",
+			"For diff: full commit ID from the same notebook, or current (default). "
+			"Both revisions are resolved against one notebook snapshot. Output names "
+			"the resolved IDs; reuse them when continuing with offset."),
+		"as", mcp_property("string",
+			"For copy: the file name of the copy in your notebook. The "
+			"default is the name of the note."),
+		"text", mcp_property("string",
+			"For add and replace: the text of the note, at most 4 MiB."),
 		"offset", jb_object(
 			"type", json_object_new_string("integer"),
 			"minimum", json_object_new_int(0),
@@ -9317,12 +9232,9 @@ mcp_notes_schema (enum notes_side          side,
 		json_object_put(props);
 		props = nullptr;
 	}
-	if (side == NOTES_CLIENT && jb_set(props, "thread", jb_object(
-		    "type", json_object_new_string("string"),
-		    "description", json_object_new_string(
-			    "Optional legacy ask-chain id (32 hexadecimal digits). Notes belong "
-			    "to the configured shared repository, independent of this value."),
-		    nullptr))) {
+	if (side == NOTES_CLIENT && jb_set(props, "thread", mcp_property("string",
+		    "Optional legacy ask-chain id (32 hexadecimal digits). Notes belong "
+		    "to the configured shared repository, independent of this value."))) {
 		json_object_put(props);
 		props = nullptr;
 	}
@@ -9346,12 +9258,7 @@ mcp_notes_schema (enum notes_side          side,
 		"name", json_object_new_string("notes"),
 		"description", json_object_new_string_len(dstr_get(&description),
 		                                          (int)dstr_len(&description)),
-		"inputSchema", jb_object(
-			"type", json_object_new_string("object"),
-			"properties", props,
-			"required", jb_list(json_object_new_string("action")),
-			"additionalProperties", json_object_new_boolean(0),
-			nullptr),
+		"inputSchema", mcp_schema(props, jb_list(json_object_new_string("action"))),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(0),
 			"destructiveHint", json_object_new_boolean(0),
@@ -9418,41 +9325,14 @@ mcp_compact_definition (void const *service)
 			"askai says that the context fills up, or once you are done with a "
 			"part of the work whose details you no longer need. Calls after it "
 			"in the same turn do not run."),
-		"inputSchema", jb_object(
-			"type", json_object_new_string("object"),
-			"properties", jb_object(
-				"summary", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"Where the task stands: what is done, what you found, "
-						"and what you will do next; at most 4 MiB."),
-					nullptr),
+		"inputSchema", mcp_schema(
+			jb_object(
+				"summary", mcp_property("string",
+					"Where the task stands: what is done, what you found, "
+					"and what you will do next; at most 4 MiB."),
 				nullptr),
-			"required", jb_list(json_object_new_string("summary")),
-			"additionalProperties", json_object_new_boolean(0),
-			nullptr),
+			jb_list(json_object_new_string("summary"))),
 		nullptr);
-}
-
-/* A property of @p type, as JSON Schema has one, that @p about describes. */
-static struct json_object *
-mcp_property (char const *type,
-              char const *about)
-{
-	return jb_object("type", json_object_new_string(type),
-	                 "description", json_object_new_string(about), nullptr);
-}
-
-/* The schema of an object of the @p properties, those @p required. */
-static struct json_object *
-mcp_schema (struct json_object *properties,
-            struct json_object *required)
-{
-	return jb_object("type", json_object_new_string("object"),
-	                 "properties", properties,
-	                 "required", required,
-	                 "additionalProperties", json_object_new_boolean(0),
-	                 nullptr);
 }
 
 /* The definition of background as the turns get it; nullptr if out of
@@ -9475,11 +9355,8 @@ mcp_background_definition (void const *service)
 			jb_object(
 				"tool", mcp_property("string", "The name of the tool to call, "
 				                     "such as git or man."),
-				"arguments", jb_object(
-					"type", json_object_new_string("object"),
-					"description", json_object_new_string(
-						"Its arguments, as you would give them to it."),
-					nullptr),
+				"arguments", mcp_property("object",
+					"Its arguments, as you would give them to it."),
 				nullptr),
 			jb_list(json_object_new_string("tool"))),
 		nullptr);
@@ -9490,13 +9367,7 @@ mcp_background_definition (void const *service)
 static struct json_object *
 mcp_jobs_actions (void)
 {
-	struct json_object *actions = jb_list(json_object_new_string("list"));
-	if (jb_push(actions, json_object_new_string("result")) ||
-	    jb_push(actions, json_object_new_string("cancel"))) {
-		json_object_put(actions);
-		return nullptr;
-	}
-	return actions;
+	return mcp_words((char const *[]){ "list", "result", "cancel", nullptr });
 }
 
 /* The definition of jobs as the turns get it, likewise. */
