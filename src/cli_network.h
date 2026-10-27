@@ -7,16 +7,19 @@
 
 #include "cstr_view.h"
 
+/** The MCP protocol version that each request names and a session negotiates. */
+#define CLI_VERSION "2025-11-25"
+
 struct cli_loop;
 struct cli_mailbox;
 struct cli_network;
 struct loop;
 
-/** Runs on the UI thread. Bytes are borrowed until the callback returns. */
-typedef size_t cli_network_receive_fn (char   *bytes,
-                                       size_t  size,
-                                       size_t  count,
-                                       void   *context);
+/** Runs on the UI thread. Bytes are borrowed until the callback returns.
+ * Returns 0, or an error number that fails and cancels the call. */
+typedef int cli_network_receive_fn (char const *bytes,
+                                    size_t      length,
+                                    void       *context);
 
 typedef bool cli_network_ready_fn (void *context);
 
@@ -96,8 +99,8 @@ cli_network_submit (struct cli_network      *network,
 /**
  * Submit copied request data, then service UI turns until completion. All
  * response callbacks run on this calling thread. Only one synchronous call
- * may be outstanding; nested waits return EBUSY. A successful callback must
- * return size * count. Cancellation returns EINTR.
+ * may be outstanding; nested waits return EBUSY. Cancellation returns
+ * EINTR.
  */
 extern int
 cli_network_perform (struct cli_network       *network,

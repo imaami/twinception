@@ -11,7 +11,9 @@
 #include "cli_mailbox.h"
 #include "cli_network.h"
 #include "compat.h"
+#include "dstr.h"
 #include "loop.h"
+#include "util.h"
 
 enum {
 	CLI_NETWORK_BYTES = 256 * 1024,
@@ -129,21 +131,27 @@ cli_network_chunk_return (struct cli_network_chunk *chunk)
 	}
 }
 
+/* Free the transfer and the copies of the request, but not the request. */
+static void
+cli_network_request_release (struct cli_network_request *request)
+{
+	curl_slist_free_all(request->headers);
+	request->headers = nullptr;
+	curl_easy_cleanup(request->easy);
+	request->easy = nullptr;
+	free(request->socket);
+	request->socket = nullptr;
+	free(request->wire);
+	request->wire = nullptr;
+}
+
 static void
 cli_network_request_destroy (struct cli_network_request **ptr)
 {
 	struct cli_network_request *request = *ptr;
 	if (!request)
 		return;
-	curl_slist_free_all(request->headers);
-	request->headers = nullptr;
-	if (request->easy)
-		curl_easy_cleanup(request->easy);
-	request->easy = nullptr;
-	free(request->socket);
-	request->socket = nullptr;
-	free(request->wire);
-	request->wire = nullptr;
+	cli_network_request_release(request);
 	free(request);
 	*ptr = nullptr;
 }
@@ -180,13 +188,8 @@ cli_network_finish (struct cli_network_request *request,
 	struct cli_network *network = request->network;
 	if (error && !request->error)
 		request->error = error;
-	if (detail && !request->result.message[0]) {
-		size_t length = strlen(detail);
-		if (length >= sizeof request->result.message)
-			length = sizeof request->result.message - 1;
-		memcpy(request->result.message, detail, length);
-		request->result.message[length] = '\0';
-	}
+	if (detail && !request->result.message[0])
+		(void)util_format(request->result.message, sizeof request->result.message, "%s", detail);
 	if (request->easy && curl_easy_getinfo(request->easy, CURLINFO_RESPONSE_CODE,
 	                                     &request->result.status) != CURLE_OK && !request->error)
 		request->error = EIO;
@@ -194,15 +197,7 @@ cli_network_finish (struct cli_network_request *request,
 		(void)curl_multi_remove_handle(network->multi, request->easy);
 		request->flags &= ~CLI_NETWORK_ATTACHED;
 	}
-	curl_slist_free_all(request->headers);
-	request->headers = nullptr;
-	if (request->easy)
-		curl_easy_cleanup(request->easy);
-	request->easy = nullptr;
-	free(request->socket);
-	request->socket = nullptr;
-	free(request->wire);
-	request->wire = nullptr;
+	cli_network_request_release(request);
 	list_del(&request->hook);
 	list_append(&network->completions, &request->hook);
 	cli_network_publish(network);
@@ -270,8 +265,9 @@ cli_network_deliver (struct cli_network *network)
 				if (bytes >= 64 * 1024 || (network->ready && !network->ready(network->ready_context)))
 					break;
 				cli_network_receive_fn *receive = chunk->header ? call->header : call->body;
-				if (receive && receive(chunk->bytes, 1, chunk->length, call->context) != chunk->length) {
-					call->error = EIO;
+				int e = receive ? receive(chunk->bytes, chunk->length, call->context) : 0;
+				if (e) {
+					call->error = e;
 					cli_network_cancel_call(network, call->id, true);
 				}
 			}
@@ -845,25 +841,6 @@ cli_network_start (struct loop *loop,
 	cli_network_action(network, CURL_SOCKET_TIMEOUT, 0);
 }
 
-static int
-cli_network_call_init (struct cli_network_call   *call,
-                       cli_network_receive_fn    *header,
-                       cli_network_receive_fn    *body,
-                       cli_network_done_fn       *done,
-                       void                      *context,
-                       struct cli_network_result *result,
-                       uint64_t                   id,
-                       size_t                     bytes,
-                       bool                       interruptible)
-{
-	*call = (struct cli_network_call){
-		.header = header, .body = body, .complete = done, .context = context, .result = result,
-		.id = id, .bytes = bytes, .flags = interruptible ? CLI_NETWORK_INTERRUPTIBLE : 0,
-	};
-	list_init(&call->received);
-	return 0;
-}
-
 static struct cli_network_request *
 cli_network_request_create (struct cli_network        *network,
                             struct cstr_view           socket,
@@ -885,10 +862,12 @@ cli_network_request_create (struct cli_network        *network,
 		return nullptr;
 	atomic_init(&request->cancelled, false);
 	request->network = network;
-	*e = cli_network_call_init(&request->call, header, body, done, context, result,
-	                           ++network->sequence, bytes, interruptible);
-	if (*e)
-		goto fail;
+	request->call = (struct cli_network_call){
+		.header = header, .body = body, .complete = done, .context = context, .result = result,
+		.id = ++network->sequence, .bytes = bytes,
+		.flags = interruptible ? CLI_NETWORK_INTERRUPTIBLE : 0,
+	};
+	list_init(&request->call.received);
 	request->start.fn = cli_network_start;
 	request->done.fn = cli_network_request_done;
 	request->done.bytes = sizeof *request;
@@ -904,24 +883,12 @@ cli_network_request_create (struct cli_network        *network,
 	if (!*e)
 		*e = cli_network_add_header(request, "Accept: application/json, text/event-stream");
 	if (!*e)
-		*e = cli_network_add_header(request, "MCP-Protocol-Version: 2025-11-25");
+		*e = cli_network_add_header(request, "MCP-Protocol-Version: " CLI_VERSION);
 	if (!*e && session.len) {
-		static char const prefix[] = "Mcp-Session-Id: ";
-		if (session.len > SIZE_MAX - sizeof prefix) {
-			*e = EOVERFLOW;
-			goto fail;
-		}
-		char *line = malloc(sizeof prefix + session.len);
-		if (!line) {
-			*e = ENOMEM;
-			goto fail;
-		}
-		memcpy(line, prefix, sizeof prefix - 1);
-		memcpy(line + sizeof prefix - 1, session.data, session.len);
-		line[sizeof prefix - 1 + session.len] = '\0';
-		*e = cli_network_add_header(request, line);
-		free(line);
-		line = nullptr;
+		/* Admission bounds the session to far less than INT_MAX bytes. */
+		dstr_auto line = dstr(nullptr);
+		*e = dstr_printf(&line, "Mcp-Session-Id: %.*s", (int)session.len, session.data)
+		   ? cli_network_add_header(request, dstr_get(&line)) : ENOMEM;
 	}
 	if (*e)
 		goto fail;

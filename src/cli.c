@@ -681,13 +681,11 @@ cli_ask (struct cli          *cli,
 	uint64_t flags = CLI_STREAM_DELTAS;
 	if (cli->options->reasoning)
 		flags |= CLI_STREAM_REASONING;
-	int e;
 	struct cli_stream stream = cli_stream(cli->console, cstr_view_dstr(&cli->client.tool),
-	                                      CSTR_VIEW("cli"), flags, &e);
+	                                      CSTR_VIEW("cli"), flags);
 	cli_json_auto result = nullptr;
-	if (!e)
-		e = cli_client_rpc(&cli->client, "tools/call", json_object_get(params),
-		                   cli_stream_notify, &stream, &result, error);
+	int e = cli_client_rpc(&cli->client, "tools/call", json_object_get(params),
+	                       cli_stream_notify, &stream, &result, error);
 	if (!e)
 		e = cli_stream_result(&stream, result, answer, error);
 	cli_stream_fini(&stream);

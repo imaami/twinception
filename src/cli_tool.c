@@ -55,19 +55,16 @@ cli_tool_create (struct cli_client  *client,
 	                                 "arguments", json_object_get(arguments),
 	                                 "_meta", jb_object("progressToken",
 	                                                    cli_client_string(token), nullptr), nullptr);
-	*e = ENOMEM;
-	if (!params)
-		return nullptr;
-	struct cli_tool *tool = malloc(sizeof *tool);
+	struct cli_tool *tool = params ? malloc(sizeof *tool) : nullptr;
+	*e = tool ? 0 : ENOMEM;
 	if (!tool)
 		return nullptr;
 	*tool = (struct cli_tool){.client = client, .console = console,
 	                          .name = json_object_get(jb_get(params, "name")),
 	                          .params = json_object_get(params), .flags = flags};
 	list_init(&tool->hook);
-	*e = cli_stream_init(&tool->stream, console, cli_tool_name(tool), token, 0);
-	if (*e)
-		cli_tool_destroy(&tool);
+	/* The stream views the name that the tool owns. */
+	tool->stream = cli_stream(console, cli_tool_name(tool), token, 0);
 	return tool;
 }
 

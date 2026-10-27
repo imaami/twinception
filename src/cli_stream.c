@@ -8,10 +8,8 @@ struct cli_stream
 cli_stream (struct cli_console *console,
             struct cstr_view    actor,
             struct cstr_view    token,
-            uint64_t            flags,
-            int                *e)
+            uint64_t            flags)
 {
-	*e = 0;
 	return (struct cli_stream){
 		.ui = cli_ui(console),
 		.text = DSTR_INIT,
@@ -19,18 +17,6 @@ cli_stream (struct cli_console *console,
 		.token = token,
 		.flags = flags,
 	};
-}
-
-int
-cli_stream_init (struct cli_stream  *stream,
-                 struct cli_console *console,
-                 struct cstr_view    actor,
-                 struct cstr_view    token,
-                 uint64_t            flags)
-{
-	int e;
-	*stream = cli_stream(console, actor, token, flags, &e);
-	return e;
 }
 
 void

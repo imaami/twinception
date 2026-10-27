@@ -3,12 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "buf.h"
 #include "cli_client.h"
 #include "cli_network.h"
 #include "compat.h"
 #include "jb.h"
+#include "util.h"
 
 int
 cli_error_set (struct cli_error *error,
@@ -98,10 +100,8 @@ cli_client_response (struct cli_client    *client,
                      cli_client_notify_fn *notify,
                      void                 *context,
                      int64_t               id,
-                     struct cli_error     *error,
-                     int                  *e)
+                     struct cli_error     *error)
 {
-	*e = 0;
 	return (struct cli_client_response){
 		.session = DSTR_INIT, .client = client, .error = error,
 		.notify = notify, .context = context, .id = id,
@@ -168,14 +168,9 @@ static int cli_client_response_line(struct cli_client_response *response)
 	return e;
 }
 
-static size_t cli_client_response_receive(char *ptr, size_t size, size_t count, void *context)
+static int cli_client_response_receive(char const *ptr, size_t bytes, void *context)
 {
 	struct cli_client_response *response = context;
-	if (size && count > SIZE_MAX / size) {
-		response->failure = EOVERFLOW;
-		return 0;
-	}
-	size_t bytes = size * count;
 	if (!response->sse) {
 		response->failure = cli_client_response_append(&response->body, (struct cstr_view){ptr, bytes});
 	} else {
@@ -193,33 +188,18 @@ static size_t cli_client_response_receive(char *ptr, size_t size, size_t count, 
 	}
 	if (response->failure == EFBIG)
 		cli_error_set(response->error, EFBIG, "AskAI response exceeds the 16 MiB client limit");
-	return response->failure ? 0 : bytes;
+	return response->failure;
 }
 
+/* Whether the ASCII text a equals the literal b, ignoring case. */
 static bool cli_client_equal_case(struct cstr_view a, struct cstr_view b)
 {
-	if (a.len != b.len)
-		return false;
-	for (size_t i = 0; i < a.len; ++i) {
-		unsigned char x = (unsigned char)a.data[i], y = (unsigned char)b.data[i];
-		if (x >= 'A' && x <= 'Z')
-			x += 'a' - 'A';
-		if (y >= 'A' && y <= 'Z')
-			y += 'a' - 'A';
-		if (x != y)
-			return false;
-	}
-	return true;
+	return a.len == b.len && !strncasecmp(a.data, b.data, a.len);
 }
 
-static size_t cli_client_response_header(char *ptr, size_t size, size_t count, void *context)
+static int cli_client_response_header(char const *ptr, size_t bytes, void *context)
 {
 	struct cli_client_response *response = context;
-	if (size && count > SIZE_MAX / size) {
-		response->failure = EOVERFLOW;
-		return 0;
-	}
-	size_t bytes = size * count;
 	struct cstr_view line = {ptr, bytes};
 	if (cstr_view_starts(line, CSTR_VIEW("HTTP/"))) {
 		response->sse = false;
@@ -227,7 +207,7 @@ static size_t cli_client_response_header(char *ptr, size_t size, size_t count, v
 	}
 	char const *colon = memchr(ptr, ':', bytes);
 	if (!colon)
-		return bytes;
+		return 0;
 	struct cstr_view key = {ptr, (size_t)(colon - ptr)};
 	struct cstr_view value = cstr_view_slice(line, key.len + 1, SIZE_MAX);
 	while (value.len && (value.data[value.len - 1] == '\r' || value.data[value.len - 1] == '\n' ||
@@ -246,15 +226,10 @@ static size_t cli_client_response_header(char *ptr, size_t size, size_t count, v
 		bool valid = value.len <= 1024;
 		for (size_t i = 0; valid && i < value.len; ++i)
 			valid = (unsigned char)value.data[i] >= 0x21 && (unsigned char)value.data[i] <= 0x7e;
-		if (!valid)
-			response->failure = cli_error_set(response->error, EPROTO, "Invalid MCP session header");
-		else {
-			dstr_clear(&response->session);
-			if (!dstr_cat_n(&response->session, value.data, value.len))
-				response->failure = ENOMEM;
-		}
+		response->failure = valid ? cstr_view_store(value, &response->session)
+		                          : cli_error_set(response->error, EPROTO, "Invalid MCP session header");
 	}
-	return response->failure ? 0 : bytes;
+	return response->failure;
 }
 
 static int
@@ -304,25 +279,13 @@ static int cli_client_notification(struct cli_client *client, char const *method
                                    long timeout, struct cli_error *error)
 {
 	cli_json_auto message = cli_client_packet(method, params, 0);
-	int e;
-	struct cli_client_response response = cli_client_response(client, nullptr, nullptr, 0, error, &e);
+	struct cli_client_response response = cli_client_response(client, nullptr, nullptr, 0, error);
 	struct cstr_view wire;
-	if (!e)
-		e = cli_client_wire(message, JB_WIRE, &wire, error);
+	int e = cli_client_wire(message, JB_WIRE, &wire, error);
 	if (!e)
 		e = cli_client_post(client, wire, &response, interruptible, timeout);
 	cli_client_response_fini(&response);
 	return e;
-}
-
-static void cli_client_cancel(struct cli_client *client, int64_t id)
-{
-	struct cli_error error = {};
-	struct json_object *params = jb_object("requestId", json_object_new_int64(id),
-	                                       "reason", json_object_new_string("Interrupted by the terminal user"), nullptr);
-	int e = cli_client_notification(client, "notifications/cancelled", params, false, 5, &error);
-	if (e && client->report)
-		(void)client->report(client, CSTR_VIEW("Cancellation could not be confirmed"), cli_error_text(&error, e));
 }
 
 static int
@@ -352,6 +315,44 @@ cli_client_response_result (struct cli_client_response *response,
 	return 0;
 }
 
+struct cli_client_call {
+	struct cli_client_response response;
+	struct cli_error           error;
+	cli_client_done_fn         *done;
+};
+
+static int cli_client_call_start (struct cli_client *client, char const *method,
+                                  struct json_object *params, cli_client_notify_fn *notify,
+                                  cli_client_done_fn *done, void *context, int64_t id,
+                                  uint64_t *request, struct cli_error *error);
+
+static void
+cli_client_unconfirmed (struct cli_client      *client,
+                        int                     e,
+                        struct cli_error const *error)
+{
+	if (e && e != ESHUTDOWN && client->report)
+		(void)client->report(client, CSTR_VIEW("Cancellation could not be confirmed"),
+		                     cli_error_text(error, e));
+}
+
+/* Tell AskAI that the call id was interrupted. With wait, wait up to 5 s for
+ * the reply; otherwise cli_client_call_done receives it. */
+static void
+cli_client_cancel (struct cli_client *client,
+                   int64_t            id,
+                   bool               wait)
+{
+	struct json_object *params = jb_object("requestId", json_object_new_int64(id),
+	                                       "reason", json_object_new_string("Interrupted by the terminal user"), nullptr);
+	struct cli_error error = {};
+	uint64_t request;
+	int e = wait ? cli_client_notification(client, "notifications/cancelled", params, false, 5, &error)
+	             : cli_client_call_start(client, "notifications/cancelled", params,
+	                                     nullptr, nullptr, nullptr, 0, &request, &error);
+	cli_client_unconfirmed(client, e, &error);
+}
+
 int cli_client_rpc(struct cli_client *client, char const *method,
                     struct json_object *params, cli_client_notify_fn *notify,
                     void *context, struct json_object **result, struct cli_error *error)
@@ -363,27 +364,19 @@ int cli_client_rpc(struct cli_client *client, char const *method,
 	}
 	int64_t id = ++client->next_id;
 	cli_json_auto message = cli_client_packet(method, params, id);
-	int e;
-	struct cli_client_response response = cli_client_response(client, notify, context, id, error, &e);
+	struct cli_client_response response = cli_client_response(client, notify, context, id, error);
 	struct cstr_view wire;
-	if (!e)
-		e = cli_client_wire(message, JB_WIRE, &wire, error);
+	int e = cli_client_wire(message, JB_WIRE, &wire, error);
 	bool call = !strcmp(method, "tools/call");
 	if (!e)
 		e = cli_client_post(client, wire, &response, true, call ? 0 : 30);
 	if (e == EINTR && call)
-		cli_client_cancel(client, id);
+		cli_client_cancel(client, id, true);
 	if (!e)
 		e = cli_client_response_result(&response, result);
 	cli_client_response_fini(&response);
 	return e;
 }
-
-struct cli_client_call {
-	struct cli_client_response response;
-	struct cli_error           error;
-	cli_client_done_fn         *done;
-};
 
 static struct cli_client_call *
 cli_client_call_create (struct cli_client    *client,
@@ -397,7 +390,7 @@ cli_client_call_create (struct cli_client    *client,
 	*e = call ? 0 : ENOMEM;
 	if (call)
 		*call = (struct cli_client_call){
-			.response = cli_client_response(client, notify, context, id, &call->error, e),
+			.response = cli_client_response(client, notify, context, id, &call->error),
 			.done = done,
 		};
 	return call;
@@ -414,11 +407,6 @@ cli_client_call_destroy (struct cli_client_call **ptr)
 	*ptr = nullptr;
 }
 
-static int cli_client_call_start (struct cli_client *client, char const *method,
-                                  struct json_object *params, cli_client_notify_fn *notify,
-                                  cli_client_done_fn *done, void *context, int64_t id,
-                                  uint64_t *request, struct cli_error *error);
-
 static void
 cli_client_call_done (void                            *context,
                       int                              e,
@@ -428,25 +416,15 @@ cli_client_call_done (void                            *context,
 	struct cli_client_call *call = container_of(response, struct cli_client_call, response);
 	struct cli_client *client = response->client;
 	e = cli_client_response_status(response, e, status);
-	if (e == EINTR && response->id) {
-		struct json_object *params = jb_object("requestId", json_object_new_int64(response->id),
-		                       "reason", json_object_new_string("Interrupted by the terminal user"), nullptr);
-		struct cli_error error = {};
-		uint64_t request;
-		int cancelled = cli_client_call_start(client, "notifications/cancelled", params,
-		                                      nullptr, nullptr, nullptr, 0, &request, &error);
-		if (cancelled && cancelled != ESHUTDOWN && client->report)
-			(void)client->report(client, CSTR_VIEW("Cancellation could not be confirmed"),
-			                     cli_error_text(&error, cancelled));
-	}
+	if (e == EINTR && response->id)
+		cli_client_cancel(client, response->id, false);
 	cli_json_auto result = nullptr;
 	if (!e && response->id)
 		e = cli_client_response_result(response, &result);
 	if (call->done)
 		call->done(response->context, e, result, &call->error);
-	else if (e && e != ESHUTDOWN && client->report)
-		(void)client->report(client, CSTR_VIEW("Cancellation could not be confirmed"),
-		                     cli_error_text(&call->error, e));
+	else
+		cli_client_unconfirmed(client, e, &call->error);
 	cli_client_call_destroy(&call);
 }
 
@@ -523,25 +501,22 @@ int cli_client_connect(struct cli_client *client, struct cli_error *error)
 	return e ? e : cli_client_refresh(client, error);
 }
 
-static int cli_client_set_text(struct dstr *dest, struct cstr_view text)
-{
-	dstr_clear(dest);
-	return dstr_cat_n(dest, text.data, text.len) ? 0 : ENOMEM;
-}
-
-static bool cli_client_charset(struct cstr_view text, char const *allowed)
+static bool cli_client_digits(struct cstr_view text)
 {
 	for (size_t i = 0; i < text.len; ++i)
-		if (!text.data[i] || !strchr(allowed, (unsigned char)text.data[i]))
+		if (text.data[i] < '0' || text.data[i] > '9')
 			return false;
 	return true;
 }
 
+/* Parse notebook selectors into lists[0], the participant names, and
+ * lists[1], the notebooks. */
 static int
-cli_client_read_notebooks (struct cstr_view    text,
-                          struct json_object *names,
-                          struct json_object *notebooks)
+cli_client_read_notebooks (struct cstr_view  text,
+                           void             *lists)
 {
+	struct json_object *names = ((struct json_object **)lists)[0];
+	struct json_object *notebooks = ((struct json_object **)lists)[1];
 	/* A truncated last line is never an authoritative notebook selector. */
 	while (text.len) {
 		char const *newline = memchr(text.data, '\n', text.len);
@@ -557,7 +532,7 @@ cli_client_read_notebooks (struct cstr_view    text,
 		    cstr_view_equal(cstr_view_slice(line, line.len - peer.len, SIZE_MAX), peer))
 			line.len -= peer.len;
 		char const *first = memchr(line.data, '/', line.len);
-		if (!first || first == line.data || first - line.data > 64)
+		if (!first)
 			continue;
 		struct cstr_view name = {line.data, (size_t)(first - line.data)};
 		struct cstr_view rest = cstr_view_slice(line, name.len + 1, SIZE_MAX);
@@ -567,10 +542,10 @@ cli_client_read_notebooks (struct cstr_view    text,
 		struct cstr_view principal = {rest.data, (size_t)(last - rest.data)};
 		struct cstr_view side = cstr_view_slice(rest, principal.len + 1, SIZE_MAX);
 		if ((!cstr_view_equal(side, CSTR_VIEW("client")) && !cstr_view_equal(side, CSTR_VIEW("upstream"))) ||
-		    !cli_client_charset(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"))
+		    !util_word(name.data, name.len, UTIL_WORD_MAX))
 			continue;
 		if (!cstr_view_equal(principal, CSTR_VIEW("anonymous")) &&
-		    (principal.len != 16 || !cli_client_charset(principal, "0123456789abcdef")))
+		    (principal.len != 16 || !util_is_hex(principal.data, principal.len)))
 			continue;
 		int e = jb_push(names, cli_client_string(name));
 		if (!e)
@@ -610,8 +585,8 @@ static int cli_client_names_add(struct cli_client_names *names, struct cstr_view
 }
 
 static int
-cli_client_read_files (struct cstr_view         text,
-                      struct cli_client_names *files)
+cli_client_read_files (struct cstr_view  text,
+                       void             *files)
 {
 	while (text.len) {
 		char const *newline = memchr(text.data, '\n', text.len);
@@ -635,13 +610,13 @@ cli_client_read_files (struct cstr_view         text,
 				continue;
 			size_t digits = (size_t)(space - count.data);
 			suffix = cstr_view_slice(count, digits, SIZE_MAX);
-			if (!cli_client_charset(cstr_view_slice(count, 0, digits), "0123456789"))
+			if (!cli_client_digits(cstr_view_slice(count, 0, digits)))
 				continue;
 		}
 		line.len = tail;
 		if (cstr_view_starts(suffix, CSTR_VIEW(" bytes, "))) {
 			struct cstr_view blob = cstr_view_slice(suffix, sizeof " bytes, " - 1, SIZE_MAX);
-			if ((blob.len != 40 && blob.len != 64) || !cli_client_charset(blob, "0123456789abcdef"))
+			if (!util_is_oid(blob.data, blob.len))
 				continue;
 		} else {
 			if (suffix.len && !cstr_view_equal(suffix, CSTR_VIEW(" line")) &&
@@ -652,7 +627,7 @@ cli_client_read_files (struct cstr_view         text,
 				continue;
 			size_t index = (size_t)(dot - line.data);
 			if (!index || index + 1 >= line.len || line.data[index + 1] != ' ' ||
-			    !cli_client_charset(cstr_view_slice(line, 0, index), "0123456789"))
+			    !cli_client_digits(cstr_view_slice(line, 0, index)))
 				continue;
 			line = cstr_view_slice(line, index + 2, SIZE_MAX);
 			size_t const date_size = sizeof "2026-10-14 12:34 UTC  " - 1;
@@ -685,6 +660,38 @@ cli_client_unique (struct json_object *names)
 			(void)json_object_array_del_idx(names, i - 1, 1);
 }
 
+/* Call the notes tool with params and pass the text of each text block of
+ * its result to parse. A result that is an error parses nothing: it fails
+ * with "The notes tool rejected <what> discovery", unless lenient. */
+static int
+cli_client_notes (struct cli_client  *client,
+                  struct json_object *params,
+                  char const         *what,
+                  bool                lenient,
+                  int               (*parse) (struct cstr_view text, void *context),
+                  void               *context,
+                  struct cli_error   *error)
+{
+	cli_json_auto listing = nullptr;
+	int e = cli_client_rpc(client, "tools/call", params, nullptr, nullptr, &listing, error);
+	if (e)
+		return e;
+	if (json_object_get_boolean(jb_get(listing, "isError")))
+		return lenient ? 0 : cli_error_set(error, EPROTO, "The notes tool rejected %s discovery", what);
+	struct json_object *content = jb_get(listing, "content");
+	if (!json_object_is_type(content, json_type_array))
+		return cli_error_set(error, EPROTO, "Invalid %s discovery result", what);
+	for (size_t i = 0, n = json_object_array_length(content); !e && i < n; ++i) {
+		struct json_object *block = jb_at(content, i);
+		if (!cli_client_is(jb_get(block, "type"), "text"))
+			continue;
+		struct cstr_view text = cli_client_text(jb_get(block, "text"));
+		e = text.data ? parse(text, context) : EPROTO;
+	}
+	return e;
+}
+
+/* The notebooks are sorted and unique. */
 static int
 cli_client_discover_files (struct cli_client   *client,
                            struct autocomplete *catalog,
@@ -692,7 +699,6 @@ cli_client_discover_files (struct cli_client   *client,
                            struct json_object  *notebooks,
                            struct cli_error    *error)
 {
-	cli_client_unique(notebooks);
 	size_t count = json_object_array_length(notebooks);
 	if (count > 128)
 		return cli_error_set(error, E2BIG, "More than 128 notebooks; filename discovery is bounded to 128");
@@ -703,25 +709,8 @@ cli_client_discover_files (struct cli_client   *client,
 		struct json_object *params = jb_object("name", cli_client_string(tool),
 		                                      "arguments", jb_object("action", json_object_new_string("list"),
 		                                                             "notebook", cli_client_string(notebook), nullptr), nullptr);
-		cli_json_auto listing = nullptr;
-		e = cli_client_rpc(client, "tools/call", params, nullptr, nullptr, &listing, error);
-		if (e)
-			break;
-		if (json_object_get_boolean(jb_get(listing, "isError")))
-			continue;
-		struct json_object *content = jb_get(listing, "content");
-		if (!json_object_is_type(content, json_type_array)) {
-			e = cli_error_set(error, EPROTO, "Invalid note filename discovery result");
-			break;
-		}
 		files.count = 0;
-		for (size_t j = 0, n = json_object_array_length(content); !e && j < n; ++j) {
-			struct json_object *block = jb_at(content, j);
-			if (cli_client_is(jb_get(block, "type"), "text")) {
-				struct cstr_view text = cli_client_text(jb_get(block, "text"));
-				e = text.data ? cli_client_read_files(text, &files) : EPROTO;
-			}
-		}
+		e = cli_client_notes(client, params, "note filename", true, cli_client_read_files, &files, error);
 		if (!e)
 			e = autocomplete_set_note_files(catalog, tool,
 			                                notebook, files.data, files.count);
@@ -750,23 +739,8 @@ cli_client_discover_books (struct cli_client  *client,
 {
 	struct json_object *params = jb_object("name", cli_client_string(tool),
 	                                       "arguments", jb_object("action", json_object_new_string("notebooks"), nullptr), nullptr);
-	cli_json_auto listing = nullptr;
-	int e = cli_client_rpc(client, "tools/call", params, nullptr, nullptr, &listing, error);
-	if (e)
-		return e;
-	if (json_object_get_boolean(jb_get(listing, "isError")))
-		return cli_error_set(error, EPROTO, "The notes tool rejected notebook discovery");
-	struct json_object *content = jb_get(listing, "content");
-	if (!json_object_is_type(content, json_type_array))
-		return cli_error_set(error, EPROTO, "Invalid notebook discovery result");
-	for (size_t i = 0, n = json_object_array_length(content); !e && i < n; ++i) {
-		struct json_object *block = jb_at(content, i);
-		if (cli_client_is(jb_get(block, "type"), "text")) {
-			struct cstr_view text = cli_client_text(jb_get(block, "text"));
-			e = text.data ? cli_client_read_notebooks(text, names, notebooks) : EPROTO;
-		}
-	}
-	return e;
+	struct json_object *lists[] = {names, notebooks};
+	return cli_client_notes(client, params, "notebook", false, cli_client_read_notebooks, lists, error);
 }
 
 static bool
@@ -796,6 +770,22 @@ cli_client_catalog_names (struct autocomplete *catalog,
 		              : autocomplete_set_participants(catalog, views.data, views.count);
 	cli_client_names_fini(&views);
 	return e;
+}
+
+/* Report the failure e of an optional discovery and go on, unless it was
+ * interrupted or ran out of memory. */
+static int
+cli_client_soft (struct cli_client *client,
+                 struct cstr_view   title,
+                 struct cli_error  *error,
+                 int                e)
+{
+	if (!e || e == EINTR || e == ENOMEM)
+		return e;
+	if (client->report)
+		(void)client->report(client, title, cli_error_text(error, e));
+	error->message[0] = '\0';
+	return 0;
 }
 
 int
@@ -848,16 +838,16 @@ cli_client_refresh (struct cli_client *client,
 			if (!meta && cstr_view_equal(name, CSTR_VIEW("notes")) && jb_get(props, "notebook"))
 				source |= cli_client_has_action(actions, "notebooks");
 			if (source && !dstr_len(&notebook_tool)) {
-				e = cli_client_set_text(&notebook_tool, name);
+				e = cstr_view_store(name, &notebook_tool);
 				struct json_object *self = jb_get(meta, "participant");
 				if (!e && json_object_is_type(self, json_type_string)) {
 					e = jb_push(names, json_object_get(self));
 					if (!e)
-						e = cli_client_set_text(&participant, cli_client_text(self));
+						e = cstr_view_store(cli_client_text(self), &participant);
 				}
 				struct json_object *identity = jb_get(meta, "session");
 				if (!e && json_object_is_type(identity, json_type_string))
-					e = cli_client_set_text(&session, cli_client_text(identity));
+					e = cstr_view_store(cli_client_text(identity), &session);
 				files = jb_get(props, "file") && jb_get(props, "notebook") && cli_client_has_action(actions, "list");
 			}
 			bool candidate = dstr_len(&client->tool) ? cstr_view_equal(name, cstr_view_dstr(&client->tool))
@@ -869,7 +859,7 @@ cli_client_refresh (struct cli_client *client,
 			else if (dstr_len(&chosen))
 				e = cli_error_set(error, EPROTO, "Multiple chat tools; select one with --tool");
 			else
-				e = cli_client_set_text(&chosen, name);
+				e = cstr_view_store(name, &chosen);
 		}
 		if (e)
 			break;
@@ -882,7 +872,7 @@ cli_client_refresh (struct cli_client *client,
 		if (!after.len || cstr_view_equal(after, cstr_view_dstr(&cursor)))
 			e = cli_error_set(error, EPROTO, "Invalid tool-list cursor");
 		else
-			e = cli_client_set_text(&cursor, after);
+			e = cstr_view_store(after, &cursor);
 	}
 	if (!e && !complete)
 		e = cli_error_set(error, E2BIG, "Too many tool-list pages");
@@ -890,18 +880,11 @@ cli_client_refresh (struct cli_client *client,
 		e = cli_error_set(error, EPROTO, "No accessible AskAI chat tool was found");
 	if (e)
 		goto done;
-	if (dstr_len(&notebook_tool)) {
-		e = cli_client_discover_books(client, cstr_view_dstr(&notebook_tool), names, notebooks, error);
-		if (e == EINTR || e == ENOMEM)
-			goto done;
-		if (e) {
-			if (client->report)
-				(void)client->report(client, CSTR_VIEW("Participant discovery failed"), cli_error_text(error, e));
-			error->message[0] = '\0';
-			e = 0;
-		}
-	}
-	if (files) {
+	if (dstr_len(&notebook_tool))
+		e = cli_client_soft(client, CSTR_VIEW("Participant discovery failed"), error,
+		                    cli_client_discover_books(client, cstr_view_dstr(&notebook_tool),
+		                                              names, notebooks, error));
+	if (!e && files) {
 		e = jb_push(notebooks, json_object_new_string("own"));
 		if (!e)
 			e = jb_push(notebooks, json_object_new_string("other"));
@@ -914,19 +897,12 @@ cli_client_refresh (struct cli_client *client,
 		struct cstr_view current = cstr_view_dstr(&participant);
 		e = autocomplete_set_chat_participants(catalog, &current, current.len ? 1 : 0);
 	}
+	if (!e && files)
+		e = cli_client_soft(client, CSTR_VIEW("Note filename discovery failed"), error,
+		                    cli_client_discover_files(client, catalog, cstr_view_dstr(&notebook_tool),
+		                                              notebooks, error));
 	if (e)
 		goto done;
-	if (files) {
-		e = cli_client_discover_files(client, catalog, cstr_view_dstr(&notebook_tool), notebooks, error);
-		if (e == EINTR || e == ENOMEM)
-			goto done;
-		if (e) {
-			if (client->report)
-				(void)client->report(client, CSTR_VIEW("Note filename discovery failed"), cli_error_text(error, e));
-			error->message[0] = '\0';
-			e = 0;
-		}
-	}
 	if (client->catalog && (!cstr_view_equal(cstr_view_dstr(&client->session_key), cstr_view_dstr(&session)) ||
 	                        !cstr_view_equal(cstr_view_dstr(&client->participant), cstr_view_dstr(&participant)) ||
 	                        !cstr_view_equal(cstr_view_dstr(&client->tool), cstr_view_dstr(&chosen)))) {

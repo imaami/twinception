@@ -10,7 +10,6 @@
 #include "dstr.h"
 
 enum { CLI_LIMIT = 16 * 1024 * 1024 };
-#define CLI_VERSION "2025-11-25"
 
 /** Optional detail accompanying an error number; no allocation on failure. */
 struct cli_error {

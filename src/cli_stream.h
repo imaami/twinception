@@ -33,15 +33,7 @@ extern struct cli_stream
 cli_stream (struct cli_console *console,
             struct cstr_view    actor,
             struct cstr_view    token,
-            uint64_t            flags,
-            int                *e);
-
-extern int
-cli_stream_init (struct cli_stream  *stream,
-                 struct cli_console *console,
-                 struct cstr_view    actor,
-                 struct cstr_view    token,
-                 uint64_t            flags);
+            uint64_t            flags);
 
 /** Finishes pending output and releases owned storage. */
 extern void
