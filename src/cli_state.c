@@ -12,7 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
-#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -22,6 +21,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "jb.h"
+#include "util.h"
 
 enum {
 	CLI_STATE_INPUTS = 256,
@@ -95,46 +95,15 @@ cli_state_private (int fd)
 	return 0;
 }
 
-static int
-cli_state_write (int         fd,
-                 void const *bytes,
-                 size_t      len)
-{
-	char const *data = bytes;
-	while (len) {
-		ssize_t count = write(fd, data, len);
-		if (count < 0) {
-			if (errno == EINTR)
-				continue;
-			return errno;
-		}
-		if (!count)
-			return EIO;
-		data += count;
-		len -= (size_t)count;
-	}
-	return 0;
-}
-
+/* A short read is a snapshot cut short. */
 static int
 cli_state_read (int     fd,
                 void   *bytes,
                 size_t  len)
 {
-	char *data = bytes;
-	while (len) {
-		ssize_t count = read(fd, data, len);
-		if (count < 0) {
-			if (errno == EINTR)
-				continue;
-			return errno;
-		}
-		if (!count)
-			return EINVAL;
-		data += count;
-		len -= (size_t)count;
-	}
-	return 0;
+	size_t got;
+	int e = util_read_all(fd, bytes, len, -1, &got);
+	return e ? e : got < len ? EINVAL : 0;
 }
 
 static int
@@ -147,7 +116,7 @@ cli_state_write_number (int    fd,
 		(unsigned char)(value >>  8),
 		(unsigned char) value
 	};
-	return cli_state_write(fd, bytes, sizeof bytes);
+	return util_write_all(fd, bytes, sizeof bytes);
 }
 
 static int
@@ -170,7 +139,7 @@ cli_state_write_text (int                fd,
 {
 	size_t n = dstr_len(text);
 	int e = cli_state_write_number(fd, n);
-	return e ? e : cli_state_write(fd, dstr_get(text), n);
+	return e ? e : util_write_all(fd, dstr_get(text), n);
 }
 
 static int
@@ -288,7 +257,7 @@ cli_state_git (struct cli_state  *state,
 		(void)close(out[1]);
 	out[1] = -1;
 	if (!e && input.len)
-		e = cli_state_write(in[1], input.data, input.len);
+		e = util_write_all(in[1], input.data, input.len);
 	(void)close(in[1]);
 	in[1] = -1;
 	(void)dstr_clear(&state->output);
@@ -339,11 +308,8 @@ cli_state_oid (struct cli_state *state, char oid[65], size_t *len)
 	struct cstr_view output = cstr_view_dstr(&state->output);
 	if (output.len && output.data[output.len - 1] == '\n')
 		--output.len;
-	if (output.len != 40 && output.len != 64)
+	if (!util_is_oid(output.data, output.len))
 		return EINVAL;
-	for (size_t i = 0; i < output.len; ++i)
-		if (!strchr("0123456789abcdef", output.data[i]) || !output.data[i])
-			return EINVAL;
 	memcpy(oid, output.data, output.len);
 	oid[output.len] = '\0';
 	*len = output.len;
@@ -444,7 +410,7 @@ cli_state_save (struct cli_state *state)
 	if (!e && ftruncate(fd, 0))
 		e = errno;
 	if (!e)
-		e = cli_state_write(fd, cli_state_magic, sizeof cli_state_magic - 1);
+		e = util_write_all(fd, cli_state_magic, sizeof cli_state_magic - 1);
 	if (!e)
 		e = cli_state_write_text(fd, &state->identity);
 	if (!e)
@@ -767,22 +733,11 @@ cli_state_repository (struct cli_state *state)
 	for (size_t i = 0; i < 16; ++i)
 		group[i] = "0123456789abcdef"[(hash >> (60 - 4 * i)) & 15];
 	group[16] = '\0';
-	unsigned char random[16];
-	size_t received = 0;
-	while (received < sizeof random) {
-		ssize_t count = getrandom(random + received, sizeof random - received, 0);
-		if (count < 0 && errno == EINTR)
-			continue;
-		if (count <= 0)
-			return count < 0 ? errno : EIO;
-		received += (size_t)count;
-	}
 	char writer[33];
-	for (size_t i = 0; i < sizeof random; ++i) {
-		writer[2 * i] = "0123456789abcdef"[random[i] >> 4];
-		writer[2 * i + 1] = "0123456789abcdef"[random[i] & 15];
-	}
 	writer[32] = '\0';
+	e = util_random_hex(writer, 16);
+	if (e)
+		return e;
 	for (size_t i = 0; i < identity.len; ++i) {
 		char byte = identity.data[i] ? identity.data[i] : '\n';
 		if (!dstr_cat_n(&state->metadata, &byte, 1))

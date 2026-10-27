@@ -10,6 +10,7 @@
 
 #include "cstr_view.h"
 #include "git_view.h"
+#include "util.h"
 
 static char const git_view_template[] = "/tmp/askai-git-XXXXXX";
 
@@ -37,13 +38,7 @@ static bool
 git_view_oid (struct span oid,
               size_t      width)
 {
-	if (oid.len != width)
-		return false;
-	for (size_t i = 0; i < oid.len; ++i)
-		if (!(oid.ptr[i] >= '0' && oid.ptr[i] <= '9') &&
-		    !(oid.ptr[i] >= 'a' && oid.ptr[i] <= 'f'))
-			return false;
-	return true;
+	return oid.len == width && util_is_hex((char const *)oid.ptr, width);
 }
 
 static int
@@ -51,7 +46,8 @@ git_view_refs (struct span refs,
                size_t      width)
 {
 	static struct cstr_view const prefixes[] = {
-		CSTR_VIEW("refs/heads/"), CSTR_VIEW("refs/tags/"), CSTR_VIEW("refs/remotes/")
+		CSTR_VIEW_INIT("refs/heads/"), CSTR_VIEW_INIT("refs/tags/"),
+		CSTR_VIEW_INIT("refs/remotes/")
 	};
 	while (refs.len) {
 		struct span line;
@@ -84,18 +80,7 @@ git_view_file (struct git_view *view,
 	                0600);
 	if (fd < 0)
 		return errno;
-	int e = 0;
-	while (data.len) {
-		ssize_t n = write(fd, data.ptr, data.len);
-		if (n < 0 && errno == EINTR)
-			continue;
-		if (n <= 0) {
-			e = n ? errno : EIO;
-			break;
-		}
-		data.ptr += (size_t)n;
-		data.len -= (size_t)n;
-	}
+	int e = util_write_all(fd, data.ptr, data.len);
 	if (close(fd) && !e)
 		e = errno;
 	fd = -1;
@@ -127,19 +112,10 @@ git_view_shallow (struct git_view *view,
 	if (!e && !data)
 		e = ENOMEM;
 	size_t used = 0;
-	while (!e) {
-		ssize_t n = read(fd, data + used, size + 1 - used);
-		if (n < 0 && errno == EINTR)
-			continue;
-		if (n <= 0) {
-			if (n)
-				e = errno;
-			break;
-		}
-		used += (size_t)n;
-		if (used > size)
-			e = EFBIG;
-	}
+	if (!e)
+		e = util_read_all(fd, data, size + 1, -1, &used);
+	if (!e && used > size)
+		e = EFBIG;
 	if (close(fd) && !e)
 		e = errno;
 	fd = -1;

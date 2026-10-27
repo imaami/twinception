@@ -131,11 +131,6 @@ extern bool
 notes_is_id (char const *s,
              size_t      len);
 
-/** Whether @p s is a full, lowercase SHA-1 or SHA-256 Git object id. */
-extern bool
-notes_is_revision (char const *s,
-                   size_t      len);
-
 /** Writes the caller's server-selected branch ref to @p repo. */
 extern void
 notes_repo (struct notes const *notes,

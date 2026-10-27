@@ -4,8 +4,6 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/random.h>
-#include <time.h>
 
 #include "ledger.h"
 #include "list.h"
@@ -22,8 +20,6 @@ static_assert(!(BUCKETS & (BUCKETS - 1)), "a mask picks the bucket");
 static_assert(!(OWNER_BUCKETS & (OWNER_BUCKETS - 1)), "a mask picks the bucket");
 static_assert(LEDGER_MINE > 1, "ledger_insert() must not free the owner as it "
                                "removes a record of the owner");
-
-static constexpr uint64_t NS = 1'000'000'000;
 
 /* The records, timers and waits of one owner.  The ledger frees the owner
  * when it has none of them left. */
@@ -64,16 +60,6 @@ ledger_sub (_Atomic uint64_t *p,
             uint64_t          n)
 {
 	atomic_fetch_sub_explicit(p, n, memory_order_relaxed);
-}
-
-/* The time of day, CLOCK_REALTIME ns; 0 if the clock cannot tell. */
-static uint64_t
-ledger_now (void)
-{
-	struct timespec ts;
-	if (clock_gettime(CLOCK_REALTIME, &ts))
-		return 0;
-	return (uint64_t)ts.tv_sec * NS + (uint64_t)ts.tv_nsec;
 }
 
 /* The owner whose key is @p key, the lock held; nullptr if the ledger has
@@ -540,26 +526,17 @@ ledger_open (struct ledger    *ledger,
                                     struct msg  *msg),
              int              *e)
 {
-	static char const hex[] = "0123456789abcdef";
 	if (!e)
 		return nullptr;
 	if (!ledger || !loop || !fn || (kind != LEDGER_TASK && kind != LEDGER_JOB)) {
 		*e = EINVAL;
 		return nullptr;
 	}
-	unsigned char bits[BITS];
-	ssize_t got = getrandom(bits, sizeof bits, 0);
-	if (got != (ssize_t)sizeof bits) {
-		*e = got < 0 ? errno : EAGAIN;
-		return nullptr;
-	}
 	unsigned char id[LEDGER_ID];
-	for (size_t i = 0; i < BITS; ++i) {
-		id[2 * i] = hex[bits[i] >> 4];
-		id[2 * i + 1] = hex[bits[i] & 15];
-	}
+	if ((*e = util_random_hex((char *)id, BITS)))
+		return nullptr;
 	return ledger_restore(ledger, owner, kind, tool, (struct span){ id, sizeof id },
-	                      ledger_now(), 0, LEDGER_WORKING, (struct span){}, loop, who,
+	                      util_realtime(), 0, LEDGER_WORKING, (struct span){}, loop, who,
 	                      fn, e);
 }
 
@@ -588,12 +565,9 @@ ledger_restore (struct ledger     *ledger,
 	    status < LEDGER_WORKING || status >= LEDGER_STATUSES ||
 	    (result.len && !result.ptr) ||
 	    (working && (!loop || !fn || result.len || ended)) ||
-	    (status == LEDGER_CANCELLED && result.len))
+	    (status == LEDGER_CANCELLED && result.len) ||
+	    !util_is_hex((char const *)id.ptr, id.len))
 		return nullptr;
-	for (size_t i = 0; i < id.len; ++i)
-		if (!((id.ptr[i] >= '0' && id.ptr[i] <= '9') ||
-		      (id.ptr[i] >= 'a' && id.ptr[i] <= 'f')))
-			return nullptr;
 	struct ledger_task *t = malloc(sizeof *t);
 	if (!t) {
 		*e = ENOMEM;
@@ -617,7 +591,7 @@ ledger_restore (struct ledger     *ledger,
 		memcpy(t->result, result.ptr, result.len);
 	}
 	t->created = created;
-	t->ended = working ? 0 : ended ? ended : ledger_now();
+	t->ended = working ? 0 : ended ? ended : util_realtime();
 	t->due = working ? 0 : loop_clock() + LEDGER_KEEP * NS;
 	t->who = who;
 	atomic_init(&t->status, status);
@@ -705,7 +679,7 @@ ledger_end (struct ledger      *ledger,
 		task->result = nullptr;
 		task->len = task->size = 0;
 	}
-	task->ended = ledger_now();
+	task->ended = util_realtime();
 	task->due = loop_clock() + LEDGER_KEEP * NS;
 	pthread_mutex_lock(&ledger->lock);
 	atomic_store_explicit(&task->status, status, memory_order_release);

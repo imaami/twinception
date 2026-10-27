@@ -30,7 +30,7 @@ enum source {
 	SOURCES
 };
 enum kind { COUNTER, GAUGE, HISTOGRAM };
-enum scale { ONE, NS, US, PERMYRIAD };
+enum scale { ONE, NANO, MICRO, PERMYRIAD };
 
 /* A series, or a loop's; help, given for the first of a family only, starts
  * the family. */
@@ -65,13 +65,13 @@ static struct {
 };
 
 #define LOOP_HIST(name, help, labels, field) \
-	{ name, help, labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NS }
+	{ name, help, labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NANO }
 #define WORK(help, unit, u) \
 	{ "askai_loop_step_work_max", help, "unit=\"" unit "\"", \
 	  offsetof(struct loop_metrics, work[u]), LOOP, GAUGE, ONE }
 #define METHOD(help, method, m) \
 	{ "askai_request_seconds", help, "method=\"" method "\"", \
-	  (m) * sizeof (struct hist), METHODS, HISTOGRAM, NS }
+	  (m) * sizeof (struct hist), METHODS, HISTOGRAM, NANO }
 #define VALUE(name, help, labels, type, field, source, kind, scale) \
 	{ name, help, labels, offsetof(type, field), source, kind, scale }
 #define STASHED(name, help, labels, field, kind, scale) \
@@ -179,7 +179,7 @@ static struct metrics_entry const table[] = {
 	      struct metrics_conns, unshaken, CONNS, COUNTER, ONE),
 	VALUE("askai_tls_flight_seconds", "Time a TLS handshake's flight took on a "
 	      "client loop: its CPU, mostly.", "", struct metrics_conns, flights,
-	      CONNS, HISTOGRAM, NS),
+	      CONNS, HISTOGRAM, NANO),
 	JOBS("askai_jobs_submitted_total", "Jobs (upstream calls) submitted to home.",
 	     "", submitted, COUNTER),
 	JOBS("askai_jobs_ended_total", "Jobs home ended: completed with the "
@@ -262,9 +262,9 @@ static struct metrics_entry const table[] = {
 	LEDGERS("askai_mcp_task_result_bytes", "Their results.", "", bytes, GAUGE),
 	VALUE("askai_upstream_wait_seconds", "Time from an upstream request to its "
 	      "start in libcurl, its host's lookup included.", "", struct http_metrics,
-	      wait, HTTP, HISTOGRAM, NS),
+	      wait, HTTP, HISTOGRAM, NANO),
 	VALUE("askai_upstream_run_seconds", "Time an upstream request ran in libcurl.",
-	      "", struct http_metrics, run, HTTP, HISTOGRAM, NS),
+	      "", struct http_metrics, run, HTTP, HISTOGRAM, NANO),
 	VALUE("askai_upstream_lookups_total", "Upstream host lookups, by result.",
 	      "result=\"ok\"", struct http_metrics, lookups[1], HTTP, COUNTER, ONE),
 	VALUE("askai_upstream_lookups_total", nullptr, "result=\"failed\"",
@@ -299,11 +299,11 @@ static struct metrics_entry const table[] = {
 	      struct brainstem_metrics, psi[2], PSI, GAUGE, PERMYRIAD),
 	VALUE("askai_pressure_stalled_seconds_total", "Time some task stalled on the "
 	      "resource (PSI some total).", "resource=\"cpu\"", struct brainstem_metrics,
-	      psi_total[0], PSI, COUNTER, US),
+	      psi_total[0], PSI, COUNTER, MICRO),
 	VALUE("askai_pressure_stalled_seconds_total", nullptr, "resource=\"memory\"",
-	      struct brainstem_metrics, psi_total[1], PSI, COUNTER, US),
+	      struct brainstem_metrics, psi_total[1], PSI, COUNTER, MICRO),
 	VALUE("askai_pressure_stalled_seconds_total", nullptr, "resource=\"io\"",
-	      struct brainstem_metrics, psi_total[2], PSI, COUNTER, US),
+	      struct brainstem_metrics, psi_total[2], PSI, COUNTER, MICRO),
 	VALUE("askai_memory_pressure_level", "Memory pressure: 0 none, 1 high, 2 "
 	      "critical (design section 5).", "", struct brainstem_metrics, pressure,
 	      BRAINSTEM, GAUGE, ONE),
@@ -348,7 +348,7 @@ static struct metrics_entry const table[] = {
 	STASHED("askai_memory_trims_total", "Allocator trims a loop ran, the last of a "
 	        "relief's, for every loop.", "", trims, COUNTER, ONE),
 	STASHED("askai_memory_trim_seconds_total", "The time those took.", "", trim_ns,
-	        COUNTER, NS),
+	        COUNTER, NANO),
 };
 
 #undef INPUT
@@ -434,10 +434,10 @@ metrics_put_value (struct buf             *out,
 	char const *open = *labels ? "{" : "";
 	char const *close = *labels ? "}" : "";
 	switch (scale) {
-	case NS:
+	case NANO:
 		return metrics_put(out, "%s%s%s%s %.9f\n", name, open, labels, close,
 		                   (double)v / 1e9);
-	case US:
+	case MICRO:
 		return metrics_put(out, "%s%s%s%s %.6f\n", name, open, labels, close,
 		                   (double)v / 1e6);
 	case PERMYRIAD:

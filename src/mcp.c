@@ -227,7 +227,6 @@ static struct {
 #undef NOTE
 };
 
-static constexpr uint64_t NS = 1'000'000'000;
 static constexpr uint64_t PROGRESS_NS = 100'000'000;  /* between a call's
                                                          notifications */
 static constexpr uint64_t TASK_NS = 1'000'000'000;  /* a call's run before it
@@ -2709,7 +2708,7 @@ mcp_req_archive_end (struct mcp_req *req)
 	size_t len = !task || status == LEDGER_CANCELLED || task->len != task->size ? 0 : task->len;
 	struct json_object *obj = jb_object(
 		"status", json_object_new_int(status),
-		"ended", json_object_new_uint64((uint64_t)time(nullptr) * NS),
+		"ended", json_object_new_uint64(util_realtime()),
 		"result", json_object_new_string_len(task && task->result ? task->result : "",
 		                                     (int)len), nullptr);
 	int e = mcp_req_archive(req, status == LEDGER_CANCELLED ? "cancel" : "result",
@@ -2777,14 +2776,10 @@ mcp_req_submit (struct mcp_req *req)
 	req->upload = (struct buf){};
 	job->call = req->call;
 	job->deadline = ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
-	if (req->archive_deadline) {
-		struct timespec now;
-		if (!clock_gettime(CLOCK_REALTIME, &now)) {
-			uint64_t wall = (uint64_t)now.tv_sec * NS + (uint64_t)now.tv_nsec;
-			job->deadline = loop->now + (req->archive_deadline > wall
-			                         ? req->archive_deadline - wall : 1);
-		}
-	}
+	uint64_t wall = req->archive_deadline ? util_realtime() : 0;
+	if (wall)
+		job->deadline = loop->now + (req->archive_deadline > wall
+		                             ? req->archive_deadline - wall : 1);
 	struct stream const *s = req->s;
 	if (s->principal) {
 		job->principal = s->principal;
@@ -4673,17 +4668,6 @@ mcp_seconds (struct json_object *args,
 	return secs >= 1 && secs <= max ? secs : 0;
 }
 
-/* Returns the time of day in CLOCK_REALTIME ns, the clock of the times of
- * the records of the ledger, or 0 if clock_gettime() fails. */
-static uint64_t
-mcp_realtime (void)
-{
-	struct timespec ts;
-	if (clock_gettime(CLOCK_REALTIME, &ts))
-		return 0;
-	return (uint64_t)ts.tv_sec * NS + (uint64_t)ts.tv_nsec;
-}
-
 /* Returns the whole seconds from @p from to @p to, or 0 if @p to is not
  * later. */
 static uint64_t
@@ -4934,7 +4918,7 @@ mcp_slot_client_list (struct mcp_slot *slot)
 	int e = ledger_list(st->ledger, mcp_req_owner(req), &look);
 	if (e)
 		return e;
-	uint64_t day = mcp_realtime();
+	uint64_t day = util_realtime();
 	uint64_t now = loop_clock();
 	bool ok = true;
 	for (uint32_t i = 0; ok && i < look.n_tasks; ++i) {
@@ -5930,7 +5914,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 			lent = nullptr;
 		}
 	struct span upload = buf_peek(&req->upload);
-	uint64_t now = mcp_realtime();
+	uint64_t now = util_realtime();
 	req->archive_deadline = st->ep->timeout_ms > 0
 	                      ? now + (uint64_t)st->ep->timeout_ms * 1'000'000 : 0;
 	struct json_object *state = jb_object(
@@ -7161,7 +7145,7 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 	char uri[UPLOADS_URI];
 	size_t len = 0;
 	size_t n = uploads_find(st->uploads, mcp_req_owner(req), (char const *)id.ptr,
-	                        id.len, (int64_t)(mcp_realtime() / NS), uri, &len);
+	                        id.len, (int64_t)(util_realtime() / NS), uri, &len);
 	if (n) {
 		if (mcp_slot_notes_fits(slot, len))
 			return;
@@ -7253,7 +7237,7 @@ mcp_slot_notes_uploaded (struct mcp_slot *slot)
 		if (!e && expires)
 			(void)uploads_keep(st->uploads, mcp_req_owner(req), (char const *)id.ptr,
 			                   id.len, dstr_get(&uri), dstr_len(&uri), sizes[0],
-			                   expires, (int64_t)(mcp_realtime() / NS));
+			                   expires, (int64_t)(util_realtime() / NS));
 		/* A view is longer than its note, by its first line at least. */
 		e = e ? e : mcp_slot_notes_attached(slot, sizes[1], sizes[0],
 		                                    sizes[0] != sizes[1]);
@@ -7644,7 +7628,7 @@ mcp_slot_notes_revision (struct mcp_slot    *slot,
 		struct json_object *arg = jb_get(args, keys[diff][i]);
 		revisions[i].data = jb_str(arg, &revisions[i].len);
 		if ((i == 0 && !arg && (fetch & (FETCH_DIFF | FETCH_RESTORE))) ||
-		    (arg && !notes_is_revision(revisions[i].data, revisions[i].len) &&
+		    (arg && !util_is_oid(revisions[i].data, revisions[i].len) &&
 		     !cstr_view_equal(revisions[i], CSTR_VIEW("current")))) {
 			mcp_slot_result(slot, TEXT("Use a full commit ID from action history, or current. "
 			                           "diff requires from; restore requires revision."), true);
@@ -8016,7 +8000,6 @@ mcp_req_initialize (struct mcp_req     *req,
                     struct json_object *params)
 {
 	static char const head[] = JSON_FIELD "Mcp-Session-Id: ";
-	static char const hex[] = "0123456789abcdef";
 	size_t len = 0;
 	char const *version = jb_str(jb_get(params, "protocolVersion"), &len);
 	if (!mcp_is_legacy(version, len)) {
@@ -8025,17 +8008,11 @@ mcp_req_initialize (struct mcp_req     *req,
 	}
 
 	/* Never stored: the ID only scopes the request IDs a client cancels. */
-	unsigned char rnd[16];
-	char fields[sizeof head - 1 + 2 * sizeof rnd + 2];
+	char fields[sizeof head - 1 + 32 + 2];
 	struct span f = SPAN(JSON_FIELD);
-	if (getrandom(rnd, sizeof rnd, 0) == (ssize_t)sizeof rnd) {
-		char *id = fields + sizeof head - 1;
-		for (size_t i = 0; i < sizeof rnd; ++i) {
-			id[2 * i] = hex[rnd[i] >> 4];
-			id[2 * i + 1] = hex[rnd[i] & 15];
-		}
+	if (!util_random_hex(fields + sizeof head - 1, 16)) {
 		memcpy(fields, head, sizeof head - 1);
-		memcpy(id + 2 * sizeof rnd, "\r\n", 2);
+		memcpy(fields + sizeof fields - 2, "\r\n", 2);
 		f = (struct span){ (unsigned char *)fields, sizeof fields };
 	}
 
@@ -9401,12 +9378,8 @@ mcp_notes_definition (void const *service)
 		json_object_put(def);
 		return nullptr;
 	}
-	static char const hex[] = "0123456789abcdef";
 	char session[2 * sizeof digest + 1];
-	for (size_t i = 0; i < sizeof digest; ++i) {
-		session[2 * i] = hex[digest[i] >> 4];
-		session[2 * i + 1] = hex[digest[i] & 15];
-	}
+	util_hex(session, digest, sizeof digest);
 	session[sizeof session - 1] = '\0';
 	/* Clients discover stored participants through notebooks. A new writer
 	 * has no branch yet, so publish its identity with the authorized tool. */

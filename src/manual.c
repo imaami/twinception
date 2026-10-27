@@ -66,8 +66,6 @@ struct manual_loop {
 	struct loop    *loop;
 };
 
-static constexpr uint64_t NS = 1'000'000'000;
-
 /* What ends a page cut short. */
 static char const cut[] = "\n\n[The page goes on past the 4 MiB shown.]\n";
 static_assert(MANUAL_MAX == 4 << 20, "the note says 4 MiB");

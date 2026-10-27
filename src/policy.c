@@ -319,13 +319,6 @@ policy_build_gid (struct policy_build *b,
 	return e;
 }
 
-/* The value of hexadecimal digit @p c. */
-static unsigned
-policy_nibble (char c)
-{
-	return c <= '9' ? (unsigned)(c - '0') : (unsigned)((c | 0x20) - 'a' + 10);
-}
-
 /* Read @p spec, "sha256:HEX" or "env:NAME", into @p digest. */
 static int
 policy_build_token (struct policy_build *b,
@@ -342,8 +335,8 @@ policy_build_token (struct policy_build *b,
 			return policy_build_fail(b, "identity %s: sha256: needs %d hex digits",
 			                         who, 2 * DIGEST);
 		for (size_t i = 0; i < DIGEST; ++i)
-			digest[i] = (unsigned char)(policy_nibble(hex[2 * i]) << 4 |
-			                            policy_nibble(hex[2 * i + 1]));
+			digest[i] = (unsigned char)(util_hex_digit(hex[2 * i]) << 4 |
+			                            util_hex_digit(hex[2 * i + 1]));
 		return 0;
 	}
 	if (strncmp(spec, env, sizeof env - 1))

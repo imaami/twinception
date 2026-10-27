@@ -509,9 +509,7 @@ config_tool_name_valid (char const *name)
 static bool
 config_participant_valid (char const *name)
 {
-	size_t n = strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	                        "0123456789_-");
-	return n && n <= 64 && !name[n];
+	return util_word(name, strnlen(name, UTIL_WORD_MAX + 1), UTIL_WORD_MAX);
 }
 
 /* The options without a short form. */
@@ -1131,27 +1129,6 @@ config_safe_dirs (char const *path)
 	return ok && !stat("/", &st) && config_safe(&st);
 }
 
-/* Read up to @p size bytes of the file open as @p fd into @p buf, as many as
- * there are, their count into @p *p_len; 0, or why a read failed. */
-static int
-config_read (int     fd,
-             char   *buf,
-             size_t  size,
-             size_t *p_len)
-{
-	*p_len = 0;
-	while (*p_len < size) {
-		ssize_t n = read(fd, buf + *p_len, size - *p_len);
-		if (n > 0)
-			*p_len += (size_t)n;
-		else if (!n)
-			return 0;
-		else if (errno != EINTR)
-			return errno;
-	}
-	return 0;
-}
-
 /* As config_slurp() says, the file at @p path being open as @p fd. */
 static int
 config_slurp_fd (struct config const *cfg,
@@ -1178,7 +1155,7 @@ config_slurp_fd (struct config const *cfg,
 	if (!text)
 		return config_oom(cfg);
 	size_t len;
-	int e = config_read(fd, text, (size_t)st.st_size, &len);
+	int e = util_read_all(fd, text, (size_t)st.st_size, -1, &len);
 	if (e) {
 		explicit_bzero(text, len);
 		free(text);

@@ -318,23 +318,6 @@ child_cmd_exec (struct child_cmd const *cmd,
 	return e;
 }
 
-/* Write the bytes of @p in to @p fd, a file, and rewind it. */
-static int
-child_write_all (int         fd,
-                 struct span in)
-{
-	for (size_t done = 0; done < in.len; ) {
-		ssize_t n = write(fd, in.ptr + done, in.len - done);
-		if (n > 0)
-			done += (size_t)n;
-		else if (!n)
-			return EIO;
-		else if (errno != EINTR)
-			return errno;
-	}
-	return lseek(fd, 0, SEEK_SET) ? errno : 0;
-}
-
 /* A file in memory that holds the bytes of @p in, read from its start, in
  * @p *fd; 0 or an error. */
 static int
@@ -344,7 +327,9 @@ child_input (struct span  in,
 	*fd = memfd_create("askai-input", MFD_CLOEXEC);
 	if (*fd < 0)
 		return errno;
-	int e = child_write_all(*fd, in);
+	int e = util_write_all(*fd, in.ptr, in.len);
+	if (!e && lseek(*fd, 0, SEEK_SET))
+		e = errno;
 	if (e) {
 		close(*fd);
 		*fd = -1;

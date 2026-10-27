@@ -8,7 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/random.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -234,20 +233,6 @@ notes_common (struct notes *notes)
 	return e;
 }
 
-static bool
-notes_participant (char const *name,
-                   size_t      len)
-{
-	if (!name || !len || len > 64)
-		return false;
-	for (size_t i = 0; i < len; ++i)
-		if (!((name[i] >= 'a' && name[i] <= 'z') ||
-		      (name[i] >= 'A' && name[i] <= 'Z') ||
-		      (name[i] >= '0' && name[i] <= '9') || name[i] == '_' || name[i] == '-'))
-			return false;
-	return true;
-}
-
 struct notes *
 notes_create (char const *path,
               char const *participant,
@@ -255,7 +240,7 @@ notes_create (char const *path,
               size_t      len,
               int        *e)
 {
-	if (!notes_participant(participant, participant ? strlen(participant) : 0)) {
+	if (!participant || !util_word(participant, strlen(participant), UTIL_WORD_MAX)) {
 		*e = EINVAL;
 		util_format(why, len, "the participant must have 1 to 64 ASCII letters, "
 		            "digits, underscores or hyphens");
@@ -337,48 +322,15 @@ notes_writer (struct notes const *notes)
 int
 notes_id (char id[NOTES_ID + 1])
 {
-	static char const hex[] = "0123456789abcdef";
-	unsigned char rnd[NOTES_ID / 2];
-	/* For so few bytes, getrandom() returns fewer bytes only if a signal
-	 * interrupts it. */
-	ssize_t got;
-	while ((got = getrandom(rnd, sizeof rnd, 0)) < 0)
-		if (errno != EINTR)
-			return errno;
-	if (got != (ssize_t)sizeof rnd)
-		return EIO;
-	for (size_t i = 0; i < sizeof rnd; ++i) {
-		id[2 * i] = hex[rnd[i] >> 4];
-		id[2 * i + 1] = hex[rnd[i] & 15];
-	}
 	id[NOTES_ID] = '\0';
-	return 0;
-}
-
-/* Returns true if the @p n bytes at @p s are lowercase hexadecimal
- * digits. */
-static bool
-notes_hex (char const *s,
-           size_t      n)
-{
-	for (size_t i = 0; i < n; ++i)
-		if ((s[i] < '0' || s[i] > '9') && (s[i] < 'a' || s[i] > 'f'))
-			return false;
-	return true;
+	return util_random_hex(id, NOTES_ID / 2);
 }
 
 bool
 notes_is_id (char const *s,
              size_t      len)
 {
-	return len == NOTES_ID && notes_hex(s, len);
-}
-
-bool
-notes_is_revision (char const *s,
-                   size_t      len)
-{
-	return (len == 40 || len == NOTES_TIP) && notes_hex(s, len);
+	return len == NOTES_ID && util_is_hex(s, len);
 }
 
 void
@@ -404,13 +356,13 @@ notes_select (char const *name,
 		return EINVAL;
 	char const *slash = memchr(name, '/', len);
 	size_t participant = slash ? (size_t)(slash - name) : 0;
-	if (!notes_participant(name, participant))
+	if (!util_word(name, participant, UTIL_WORD_MAX))
 		return EINVAL;
 	char const *who = slash + 1;
 	size_t rest = len - participant - 1;
 	slash = memchr(who, '/', rest);
 	size_t n = slash ? (size_t)(slash - who) : 0;
-	if (!((n == 9 && !memcmp(who, "anonymous", 9)) || (n == 16 && notes_hex(who, n))))
+	if (!((n == 9 && !memcmp(who, "anonymous", 9)) || (n == 16 && util_is_hex(who, n))))
 		return EINVAL;
 	size_t side = rest - n - 1;
 	if (!((side == 6 && !memcmp(slash + 1, "client", 6)) ||
@@ -481,7 +433,7 @@ notes_head_out (struct span out,
 {
 	*tip = '\0';
 	if (!out.len || out.ptr[out.len - 1] != '\n' ||
-	    !notes_is_revision((char const *)out.ptr, out.len - 1))
+	    !util_is_oid((char const *)out.ptr, out.len - 1))
 		return EIO;
 	memcpy(tip, out.ptr, out.len - 1);
 	tip[out.len - 1] = '\0';
@@ -535,7 +487,7 @@ notes_revision_word (struct cstr_view word,
 		*dest = '\0';
 		return 0;
 	}
-	if (!notes_is_revision(word.data, word.len))
+	if (!util_is_oid(word.data, word.len))
 		return EINVAL;
 	memcpy(dest, word.data, word.len);
 	dest[word.len] = '\0';
@@ -849,7 +801,7 @@ notes_checked (struct span out,
 			continue;
 		/* The name of a commit is 40 hexadecimal digits, or 64 with
 		 * SHA-256. */
-		if (kind != KIND_COMMIT || !notes_is_revision(p, oid))
+		if (kind != KIND_COMMIT || !util_is_oid(p, oid))
 			return EIO;
 		memcpy(tip, p, oid);
 		tip[oid] = '\0';
@@ -974,7 +926,7 @@ notes_read_decode (struct span  out,
 		return ENOENT;
 	if (kind == KIND_TREE)
 		return EISDIR;
-	if (kind != KIND_BLOB || !notes_is_revision(line, oid))
+	if (kind != KIND_BLOB || !util_is_oid(line, oid))
 		return EIO;
 	/* The size of the text is the last word of the line.  The loop stops
 	 * growing the size once it is past NOTES_MAX, and the end of the output
@@ -1060,7 +1012,7 @@ notes_file_next (struct span       *out,
 	char const *id = s + sizeof "100644 blob " - 1;
 	char const *end = memchr(id, ' ', (size_t)(tab - id));
 	size_t len = end ? (size_t)(end - id) : 0;
-	if (!notes_is_revision(id, len))
+	if (!util_is_oid(id, len))
 		return EIO;
 	char const *size = end + 1;
 	while (size < tab && *size == ' ')
@@ -1118,7 +1070,7 @@ notes_entry_before (struct span          out,
 				char const *space = memchr(s + token, ' ', len);
 				size_t digits = space ? (size_t)(space - s - token) : len;
 				size_t oid = space ? len - digits - 1 : 0;
-				if (notes_is_revision(space ? space + 1 : nullptr, oid) &&
+				if (util_is_oid(space ? space + 1 : nullptr, oid) &&
 				    notes_number(s + token, digits, &cursor->time)) {
 					cursor->commit = (struct span){ out.ptr + token + digits + 1, oid };
 					cursor->first = before;

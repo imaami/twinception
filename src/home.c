@@ -8,7 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/random.h>
 
 #include "ai.h"
 #include "buf.h"
@@ -42,7 +41,6 @@ enum {
 	FAILURES     = 5,         /* failures in a row that open the breaker */
 };
 
-static constexpr uint64_t NS = 1'000'000'000;
 static constexpr uint64_t BACKOFF_MIN = NS;
 static constexpr uint64_t BACKOFF_MAX = 60 * NS;
 
@@ -1337,22 +1335,8 @@ home_start (struct home *home,
 	}
 	int e = 0;
 	if (!e && home_llama(home)) {
-		unsigned char random[16];
-		if (getrandom(random, sizeof random, 0) != sizeof random)
-			e = EIO;
-		else {
-			static char const hex[] = "0123456789abcdef";
-			r->provider_id = malloc(33);
-			if (!r->provider_id)
-				e = ENOMEM;
-			else {
-				for (size_t k = 0; k < sizeof random; ++k) {
-					r->provider_id[2 * k] = hex[random[k] >> 4];
-					r->provider_id[2 * k + 1] = hex[random[k] & 15];
-				}
-				r->provider_id[32] = '\0';
-			}
-		}
+		r->provider_id = calloc(1, 33);
+		e = r->provider_id ? util_random_hex(r->provider_id, 16) : ENOMEM;
 	}
 	if (!e)
 		e = home_connect(home, job, false);

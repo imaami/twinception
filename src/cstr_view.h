@@ -19,8 +19,12 @@ struct cstr_view {
 	size_t      len;
 };
 
+/** The initializer of a view of a string literal's bytes, excluding its
+ *  final NUL, which a table of static storage can take. Rejects pointers. */
+#define CSTR_VIEW_INIT(s) { "" s, sizeof (s) - 1 }
+
 /** A string literal's bytes, excluding its final NUL. Rejects pointers. */
-#define CSTR_VIEW(s) ((struct cstr_view){ "" s, sizeof (s) - 1 })
+#define CSTR_VIEW(s) ((struct cstr_view)CSTR_VIEW_INIT(s))
 
 /** Measure a NUL-terminated string once. A null pointer gives an empty view. */
 extern struct cstr_view

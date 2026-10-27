@@ -53,8 +53,6 @@ enum {
 	WEB_GROW      = 16 << 10,  /* bytes of the first storage of a body */
 };
 
-static constexpr uint64_t NS = 1'000'000'000;
-
 /* The bits of the message of a run to home. */
 enum {
 	RUN_SUBMIT = 1,  /* send the request */

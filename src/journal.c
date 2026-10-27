@@ -131,73 +131,25 @@ static bool
 journal_word (char const *word,
               size_t      max)
 {
-	if (!word || !*word)
-		return false;
-	size_t n = 0;
-	for (; word[n] && n < max; ++n) {
-		unsigned char c = (unsigned char)word[n];
-		if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
-		    !(c >= '0' && c <= '9') && c != '-' && c != '_')
-			return false;
-	}
-	return n && n <= max && !word[n];
+	return word && util_word(word, strnlen(word, max + 1), max);
 }
 
 static bool
 journal_id (char const *id)
 {
-	if (!id)
-		return false;
-	for (size_t i = 0; i < JOURNAL_ID; ++i)
-		if (!(id[i] >= 'a' && id[i] <= 'f') &&
-		    !(id[i] >= '0' && id[i] <= '9'))
-			return false;
-	return !id[JOURNAL_ID];
+	return id && util_is_hex(id, JOURNAL_ID) && !id[JOURNAL_ID];
 }
 
-static int
-journal_write (int         fd,
-               void const *data,
-               size_t      len)
+/* The length of the object name that is all of git's output @p out but for
+ * its newline, which this replaces with a NUL; 0 if @p out is not that. */
+static size_t
+journal_oid (char *out)
 {
-	unsigned char const *p = data;
-	while (len) {
-		ssize_t n = write(fd, p, len);
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			return errno;
-		}
-		if (!n)
-			return EIO;
-		p += n;
-		len -= (size_t)n;
-	}
-	return 0;
-}
-
-/** A short read is EOF, not success disguised as a complete record. */
-static int
-journal_read (int     fd,
-              void   *data,
-              size_t  len,
-              off_t   at,
-              size_t *got)
-{
-	unsigned char *p = data;
-	*got = 0;
-	while (*got < len) {
-		ssize_t n = pread(fd, p + *got, len - *got, at + (off_t)*got);
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			return errno;
-		}
-		if (!n)
-			break;
-		*got += (size_t)n;
-	}
-	return 0;
+	size_t n = strcspn(out, "\n");
+	if (!util_is_oid(out, n) || out[n] != '\n' || out[n + 1])
+		return 0;
+	out[n] = '\0';
+	return n;
 }
 
 static void
@@ -475,7 +427,7 @@ journal_git (struct journal    *j,
 			e = ENOMEM;
 		else {
 			size_t got = 0;
-			e = journal_read(out, *output, (size_t)st.st_size, 0, &got);
+			e = util_read_all(out, *output, (size_t)st.st_size, 0, &got);
 			if (!e && got != (size_t)st.st_size)
 				e = EIO;
 			(*output)[got] = '\0';
@@ -495,25 +447,13 @@ journal_tip (struct journal *j)
 	char *out = nullptr;
 	int status = 0;
 	int e = journal_git(j, command, -1, &out, 80, &status);
+	size_t n = 0;
 	if (!e && status == 1)
 		j->tip[0] = '\0';
-	else if (!e && status)
+	else if (!e && (status || !(n = journal_oid(out))))
 		e = EIO;
-	else if (!e) {
-		size_t n = strcspn(out, "\n");
-		if ((n != 40 && n != 64) || out[n] != '\n' || out[n + 1])
-			e = EIO;
-		else {
-			for (size_t i = 0; i < n; ++i)
-				if (!(out[i] >= '0' && out[i] <= '9') &&
-				    !(out[i] >= 'a' && out[i] <= 'f'))
-					e = EIO;
-			if (!e) {
-				memcpy(j->tip, out, n);
-				j->tip[n] = '\0';
-			}
-		}
-	}
+	else if (!e)
+		memcpy(j->tip, out, n + 1);
 	free(out);
 	out = nullptr;
 	return e;
@@ -582,7 +522,7 @@ journal_record_read (struct journal         *j,
 {
 	unsigned char header[JOURNAL_HEADER];
 	size_t got = 0;
-	int e = journal_read(fd, header, sizeof header, *offset, &got);
+	int e = util_read_all(fd, header, sizeof header, *offset, &got);
 	*record = nullptr;
 	if (e || !got)
 		return e;
@@ -604,7 +544,7 @@ journal_record_read (struct journal         *j,
 		journal_records_destroy(&r);
 		return EILSEQ;
 	}
-	e = journal_read(fd, r->data, r->len, *offset + JOURNAL_HEADER, &got);
+	e = util_read_all(fd, r->data, r->len, *offset + JOURNAL_HEADER, &got);
 	if (e || got != r->len) {
 		journal_records_destroy(&r);
 		if (e)
@@ -859,8 +799,8 @@ journal_record_write (struct journal              *j,
 	memcpy(header + 56, r->kind, JOURNAL_KIND);
 	int e = journal_digest(j, header, r->data, r->len, header + JOURNAL_SIGNED);
 	if (!e)
-		e = journal_write(fd, header, sizeof header);
-	return e ? e : journal_write(fd, r->data, r->len);
+		e = util_write_all(fd, header, sizeof header);
+	return e ? e : util_write_all(fd, r->data, r->len);
 }
 
 static int
@@ -957,9 +897,9 @@ journal_checkpoint_write (struct journal        *j,
 		if (job) {
 			j->recovery_bytes = j->recovery_bytes - job->bytes + bytes;
 			job->bytes = bytes;
-			struct timespec now;
-			if (!clock_gettime(CLOCK_REALTIME, &now))
-				job->touched = (uint64_t)now.tv_sec * 1'000'000'000 + (uint64_t)now.tv_nsec;
+			uint64_t now = util_realtime();
+			if (now)
+				job->touched = now;
 			job->legacy = legacy;
 			job->terminal = terminal;
 			for (struct journal_record *r = records; r; r = r->next)
@@ -1097,7 +1037,7 @@ journal_thought_write (struct journal            *j,
 	for (size_t at = 0; at < same; ) {
 		size_t n = same - at < sizeof j->scratch ? same - at : sizeof j->scratch;
 		size_t got;
-		e = journal_read(file->fd, j->scratch, n, (off_t)(item->offset + at), &got);
+		e = util_read_all(file->fd, j->scratch, n, (off_t)(item->offset + at), &got);
 		if (e || got != n || memcmp(j->scratch, record->data + at, n))
 			return e ? e : EILSEQ;
 		at += n;
@@ -1106,7 +1046,7 @@ journal_thought_write (struct journal            *j,
 		return 0;
 	if (lseek(file->fd, 0, SEEK_END) < 0)
 		return errno;
-	e = journal_write(file->fd, record->data + same, record->len - same);
+	e = util_write_all(file->fd, record->data + same, record->len - same);
 	if (!e)
 		file->size += record->len - same;
 	return e;
@@ -1156,11 +1096,9 @@ journal_thought_commit (struct journal            *j,
 	char const *hash[] = { "hash-object", "-w", "--stdin", nullptr };
 	char *oid = nullptr;
 	e = journal_git(j, hash, file->fd, &oid, 80, nullptr);
-	size_t oid_len = oid ? strcspn(oid, "\n") : 0;
-	if (!e && ((oid_len != 40 && oid_len != 64) || oid[oid_len] != '\n' || oid[oid_len + 1]))
+	size_t oid_len = e ? 0 : journal_oid(oid);
+	if (!e && !oid_len)
 		e = EILSEQ;
-	if (!e)
-		oid[oid_len] = '\0';
 	char path[96];
 	int n = snprintf(path, sizeof path, "reasoning/%.2s/%s/%" PRIu32 ".txt",
 	                 item->id, item->id, item->turn);
@@ -1567,7 +1505,7 @@ journal_setup (struct journal *j,
 		if (n != (ssize_t)sizeof j->seed)
 			e = n < 0 ? errno : EIO;
 		if (!e)
-			e = journal_write(seed_fd, &j->seed, sizeof j->seed);
+			e = util_write_all(seed_fd, &j->seed, sizeof j->seed);
 		if (!e && fdatasync(seed_fd))
 			e = errno;
 	} else if (!e) {
@@ -1575,7 +1513,7 @@ journal_setup (struct journal *j,
 			e = EILSEQ;
 		size_t n = 0;
 		if (!e)
-			e = journal_read(seed_fd, &j->seed, sizeof j->seed, 0, &n);
+			e = util_read_all(seed_fd, &j->seed, sizeof j->seed, 0, &n);
 		if (!e && n != sizeof j->seed)
 			e = EIO;
 		if (!e && !j->seed)
@@ -1606,7 +1544,7 @@ journal_create (char const *path,
                 int        *e)
 {
 	*e = 0;
-	if (!journal_word(participant, 64)) {
+	if (!journal_word(participant, UTIL_WORD_MAX)) {
 		*e = EINVAL;
 		util_format(why, why_len, "invalid transcript participant");
 		return nullptr;

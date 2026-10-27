@@ -88,17 +88,12 @@ plugin_file_read (struct plugin_file const *f,
 {
 	if (off > end || n > end - off)
 		return plugin_refuse(f->why, f->len, "a truncated or malformed ELF file");
-	for (size_t done = 0; done < n; ) {
-		ssize_t r = pread(f->fd, (char *)buf + done, n - done,
-		                  (off_t)(off + done));
-		if (r > 0)
-			done += (size_t)r;
-		else if (!r)
-			return plugin_refuse(f->why, f->len, "became shorter while it was read");
-		else if (errno != EINTR)
-			return plugin_refuse(f->why, f->len, "cannot read it: %s",
-			                     strerror(errno));
-	}
+	size_t got;
+	int e = util_read_all(f->fd, buf, n, (off_t)off, &got);
+	if (e)
+		return plugin_refuse(f->why, f->len, "cannot read it: %s", strerror(e));
+	if (got < n)
+		return plugin_refuse(f->why, f->len, "became shorter while it was read");
 	return 0;
 }
 

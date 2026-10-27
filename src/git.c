@@ -130,7 +130,7 @@ static char const *const fixed[] = {
  * An option a command takes, as it is, or, ending in "=", with a value after
  * it; in "#", with digits attached; in "*", with any value attached.
  */
-#define O(s) CSTR_VIEW(s)
+#define O(s) CSTR_VIEW_INIT(s)
 #define DISPLAY O("--oneline"), O("--stat"), O("--shortstat"), O("--numstat"), \
 	O("--name-only"), O("--name-status"), O("--patch"), O("-p"), O("--no-patch"), \
 	O("--abbrev-commit"), O("--format="), O("--pretty="), O("--date="), \
@@ -1028,13 +1028,9 @@ git_call_resolve (struct git_call *call)
 		if (!end)
 			return EINVAL;
 		size_t len = (size_t)(end - out.ptr);
-		if ((!width && len != 40 && len != 64) || (width && len != width))
+		if (!util_is_oid((char const *)out.ptr, len) || (width && len != width))
 			return EINVAL;
 		width = len;
-		for (size_t j = 0; j < len; ++j)
-			if (!(out.ptr[j] >= '0' && out.ptr[j] <= '9') &&
-			    !(out.ptr[j] >= 'a' && out.ptr[j] <= 'f'))
-				return EINVAL;
 		struct git_root *root = &call->roots[i];
 		memcpy(root->name, out.ptr, len);
 		root->name[len] = '\0';

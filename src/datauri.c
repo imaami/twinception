@@ -4,6 +4,7 @@
 #include <strings.h>
 
 #include "datauri.h"
+#include "util.h"
 
 /* The value of base64 digit @p c of the standard alphabet, or -1. */
 static int
@@ -13,14 +14,6 @@ datauri_digit (unsigned char c)
 	     : c >= 'a' && c <= 'z' ? c - 'a' + 26
 	     : c >= '0' && c <= '9' ? c - '0' + 52
 	     : c == '+' ? 62 : c == '/' ? 63 : -1;
-}
-
-/* The value of hexadecimal digit @p c, or -1. */
-static int
-datauri_hex (unsigned char c)
-{
-	return c >= '0' && c <= '9' ? c - '0'
-	     : (c | 0x20) >= 'a' && (c | 0x20) <= 'f' ? (c | 0x20) - 'a' + 10 : -1;
 }
 
 /* Checks base64 data in @p d and counts its bytes: digits, then at most
@@ -56,8 +49,8 @@ datauri_parse_percent (struct datauri *d)
 		}
 		if (d->len - i < 3)
 			return EINVAL;
-		if (datauri_hex((unsigned char)d->data[i + 1]) < 0 ||
-		    datauri_hex((unsigned char)d->data[i + 2]) < 0)
+		if (util_hex_digit((unsigned char)d->data[i + 1]) > 15 ||
+		    util_hex_digit((unsigned char)d->data[i + 2]) > 15)
 			return EINVAL;
 		i += 3;
 	}
@@ -97,8 +90,8 @@ datauri_decode (struct datauri const *d,
 	if (!d->base64) {
 		for (size_t i = 0; i < d->len; ) {
 			if (d->data[i] == '%') {
-				*out++ = (unsigned char)(datauri_hex((unsigned char)d->data[i + 1]) << 4 |
-				                         datauri_hex((unsigned char)d->data[i + 2]));
+				*out++ = (unsigned char)(util_hex_digit((unsigned char)d->data[i + 1]) << 4 |
+				                         util_hex_digit((unsigned char)d->data[i + 2]));
 				i += 3;
 			} else {
 				*out++ = (unsigned char)d->data[i++];

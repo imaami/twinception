@@ -114,8 +114,6 @@ enum {
 	                               would rehash every client in one step */
 };
 
-static constexpr uint64_t NS = 1'000'000'000;
-
 /* An event bit epoll never reports, for the timer finding a deadline passed. */
 static constexpr uint32_t DEADLINE = 1u << 31;
 
@@ -365,15 +363,6 @@ httpd_hex (char   *end,
 	do *--end = "0123456789abcdef"[n % 16];
 	while (n /= 16);
 	return end;
-}
-
-/* The value of hexadecimal digit @p c, or 16 if it is none. */
-static unsigned
-httpd_hexdigit (unsigned char c)
-{
-	return (unsigned)(c - '0') < 10 ? (unsigned)(c - '0')
-	     : (unsigned)((c | 0x20) - 'a') < 6 ? (unsigned)((c | 0x20) - 'a') + 10
-	     : 16;
 }
 
 /* @p s seconds after @p since; never, if @p s is 0. */
@@ -1444,7 +1433,7 @@ httpd_conn_chunk_size (struct httpd_conn    *conn,
 	size_t size = 0;
 	size_t i = 0;
 	bool over = false;
-	for (unsigned v; i < n && (v = httpd_hexdigit(line[i])) < 16; ++i) {
+	for (unsigned v; i < n && (v = util_hex_digit(line[i])) < 16; ++i) {
 		over |= size > SIZE_MAX >> 4;
 		size = size << 4 | v;
 	}
