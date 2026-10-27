@@ -468,6 +468,8 @@ enum mcp_phase {
 	PHASE_SHOW,      /* copying a task's result into the reply, likewise */
 	PHASE_REPLY,     /* escaping the output into the reply, a slice a step */
 	PHASE_SEND,      /* sending the reply, a piece a step */
+	PHASE_END,       /* waiting for its end record to be durable, off the
+	                    loop; nothing but that changes how it ended */
 	PHASE_FREE,      /* freeing the message, a slice a step, then ending */
 	PHASE_METRICS,   /* rendering the metrics, a share a step */
 };
@@ -550,7 +552,9 @@ static void mcp_agenda_destroy (struct mcp_agenda **p_agenda);
 /** A request, from its stream's head to its end or cancellation. */
 struct mcp_req {
 	struct list          hook;       /* on mcp->calls while a tool call runs,
-	                                    then on mcp->freeing, then spare */
+	                                    on mcp->ending while its end record
+	                                    is written, then on mcp->freeing,
+	                                    then spare */
 	struct list          task_hook;  /* on mcp->tasks while the call is a
 	                                    task */
 	struct loop_step     step;       /* the phase's work, and keep-alives */
@@ -745,6 +749,7 @@ struct mcp {
 	struct list              calls;     /* requests with a tool call under way */
 	struct list              tasks;     /* requests whose call is a task */
 	struct list              freeing;   /* requests freeing their message */
+	struct list              ending;    /* requests writing their end record */
 	struct list              children;  /* the notes' gits */
 	struct shelf             spare;     /* finished requests */
 	struct shelf             jobs;      /* jobs let go of */
@@ -1408,13 +1413,17 @@ static void
 mcp_req_wait (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
+	/* A reply under way is no longer a call that a drain could end. */
+	if (req->phase >= PHASE_REPLY)
+		return;
 	if (!req->hook.next)
 		list_append(&mcp->calls, &req->hook);
 	if (mcp->draining)
 		loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 
-/* Take the request off the calls under way, if it is among them. */
+/* Take the request off the calls under way, or off the calls that write
+ * their end record, if it is on either list. */
 static void
 mcp_req_unwait (struct mcp_req *req)
 {
@@ -1517,13 +1526,24 @@ mcp_req_finish (struct mcp_req *req)
 	struct mcp *mcp = req->mcp;
 	loop_timer_stop(mcp->loop, &req->timer);
 	req->tick = false;
-	if (req->error)
-		mcp_req_drop(req);
-	if (mcp_req_archive_end(req))
-		return;
+	/* Its job, slots, handles and agenda go first, so that no work of the
+	 * call reaches it while its end is written. */
+	mcp_req_drop(req);
+	mcp_agenda_destroy(&req->agenda);
+	/* Neither a drain nor a notifications/cancelled reaches the call while
+	 * its end is written.  A cancel may supersede a pending state, intent
+	 * or result write: FIFO writes keep that evidence, followed by the
+	 * end, and the obsolete callback must not launch any more work. */
+	mcp_req_leave(req);
+	mcp_req_unwait(req);
 	if (req->archive_call.bits)
 		loop_forget(mcp->loop, req->archive_call);
 	req->archive_call = (struct handle){};
+	jb_parser_fini(&req->parser, req->phase == PHASE_ANSWER || req->phase == PHASE_ARGS
+	                             ? &mcp->answers : &mcp->pool,
+	               &req->reaper);
+	if (mcp_req_archive_end(req))
+		return;
 	if (req->admitted) {
 		ledger_end(mcp->st->ledger, req->admitted, LEDGER_CANCELLED);
 		loop_forget(mcp->loop, req->admitted->who);
@@ -1535,16 +1555,10 @@ mcp_req_finish (struct mcp_req *req)
 		json_object_put(req->saved_tools[k]);
 		req->saved_tools[k] = nullptr;
 	}
-	mcp_req_leave(req);
 	if (req->task)
 		mcp_req_task_end(req);
 	ledger_task_put(req->shown);
 	req->shown = nullptr;
-	mcp_req_unwait(req);
-	mcp_req_drop(req);
-	jb_parser_fini(&req->parser, req->phase == PHASE_ANSWER || req->phase == PHASE_ARGS
-	                             ? &mcp->answers : &mcp->pool,
-	               &req->reaper);
 	mcp_req_dispose(req);
 	mcp_req_args_free(req, 0, ARRAY_SIZE(req->args));
 	json_object_put(req->draft);
@@ -1565,7 +1579,6 @@ mcp_req_finish (struct mcp_req *req)
 		dstr_cleanup(&req->slots[k].answer);
 	free(req->slots);
 	req->slots = nullptr;
-	mcp_agenda_destroy(&req->agenda);
 	if (!req->reaper.n) {
 		mcp_req_end(req);
 		return;
@@ -1580,7 +1593,13 @@ static void
 mcp_req_abort (struct mcp_req *req,
                int             e)
 {
-	req->error = e;
+	/* A call whose end is being written ends as it did: when the write is
+	 * done, or at once if askai drains or its loop stops, as no journal
+	 * callback reaches the call then. */
+	if (req->phase != PHASE_END)
+		req->error = e;
+	else if (!req->mcp->draining && !req->mcp->loop->exit)
+		return;
 	mcp_req_finish(req);
 }
 
@@ -2670,7 +2689,6 @@ static void
 mcp_req_archive_finished (struct mcp_req *req,
                           int             error)
 {
-	req->archived_end = true;
 	if (error) {
 		LOG(LOG_ERROR, "cannot persist job %s: %s", req->archive, strerror(error));
 		req->error = error;
@@ -2688,13 +2706,7 @@ mcp_req_archive_end (struct mcp_req *req)
 	if (!*req->archive || req->archived_end || req->suspended ||
 	    (draining && (req->task || req->admitted)))
 		return false;
-	if (req->archive_call.bits) {
-		/* A cancel may supersede a pending state, intent or result write.
-		 * FIFO writes retain that evidence, followed by the cancellation;
-		 * its obsolete callback must not launch any more work. */
-		loop_forget(req->mcp->loop, req->archive_call);
-		req->archive_call = (struct handle){};
-	}
+	req->archived_end = true;
 	struct ledger_task const *task = req->task;
 	enum ledger_status status = mcp_req_archive_status(req);
 	size_t len = !task || status == LEDGER_CANCELLED || task->len != task->size ? 0 : task->len;
@@ -2706,19 +2718,17 @@ mcp_req_archive_end (struct mcp_req *req)
 	int e = mcp_req_archive(req, status == LEDGER_CANCELLED ? "cancel" : "result",
 	                        obj, draining ? nullptr : mcp_req_archive_finished);
 	if (e) {
-		req->archived_end = true;
 		req->error = e;
 		LOG(LOG_ERROR, "cannot persist job %s: %s", req->archive, strerror(e));
 		return false;
 	}
-	if (draining) {
-		/* The writer drains after the loops; no request must wait for it
-		 * on a loop which is itself being dismantled. */
-		req->archived_end = true;
+	/* The writer drains after the loops; no request must wait for it on a
+	 * loop which is itself being dismantled. */
+	if (draining)
 		return false;
-	}
 	loop_unready(&req->step);
-	req->phase = PHASE_JOURNAL;
+	list_append(&req->mcp->ending, &req->hook);
+	req->phase = PHASE_END;
 	return true;
 }
 
@@ -8829,10 +8839,11 @@ static void
 mcp_on_cancel (struct stream *s)
 {
 	struct mcp_req *req = s->user;
-	mcp_req_log_call(req, "cancelled by a closed connection", (struct span){}, false);
 	req->s = nullptr;
-	req->error = ECANCELED;
-	mcp_req_finish(req);
+	/* A reply that has gone whole ends as it did (mcp_req_abort()). */
+	if (req->phase != PHASE_END)
+		mcp_req_log_call(req, "cancelled by a closed connection", (struct span){}, false);
+	mcp_req_abort(req, ECANCELED);
 }
 
 /* The on_policy() function of the stream application.  The loop of @p ctx,
@@ -8924,6 +8935,7 @@ mcp_create (struct loop              *loop,
 	list_init(&mcp->calls);
 	list_init(&mcp->tasks);
 	list_init(&mcp->freeing);
+	list_init(&mcp->ending);
 	list_init(&mcp->children);
 	list_init(&mcp->spare.list);
 	list_init(&mcp->jobs.list);
@@ -8965,12 +8977,15 @@ mcp_destroy (struct mcp **p_mcp)
 
 	/* The transport has cancelled every stream by now, but for the
 	 * stand-ins of the calls that are tasks, which end here, their tasks
-	 * failed.  Then only requests still freeing their message are left,
-	 * and what the parts do, such as the man fetches.  The parts go once
-	 * what they keep is given back. */
+	 * failed.  The calls whose end record is still being written end here
+	 * too, as no journal callback reaches them now.  Then only requests
+	 * still freeing their message are left, and what the parts do, such as
+	 * the man fetches.  The parts go once what they keep is given back. */
 	while (!list_is_empty(&mcp->tasks))
 		mcp_req_abort(container_of(mcp->tasks.next, struct mcp_req, task_hook),
 		              ESHUTDOWN);
+	while (!list_is_empty(&mcp->ending))
+		mcp_req_abort(container_of(mcp->ending.next, struct mcp_req, hook), ESHUTDOWN);
 	while (!list_is_empty(&mcp->freeing))
 		mcp_req_end(container_of(mcp->freeing.next, struct mcp_req, hook));
 	while (mcp_relieve(mcp, BUF_CRITICAL, SIZE_MAX))
