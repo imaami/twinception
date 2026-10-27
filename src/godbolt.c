@@ -41,12 +41,23 @@
 
 #include <json-c/json.h>
 
+#include "compat.h"
 #include "godbolt_probe.h"
 #include "plugin.h"
 
-PLUGIN_MANIFEST(.name = "godbolt",
-                .tools = { "godbolt_catalog", "godbolt_compile", "godbolt_preprocess",
-                           "godbolt_macros", "godbolt_targets" });
+/* The tools: the name after godbolt_, the constant of enum godbolt_tool,
+ * and the flags of the kind besides TOOL_LENT, TOOL_PAGED and
+ * TOOL_STREAM. */
+#define GODBOLT_TOOLS_X(X)                      \
+	X(catalog, CATALOG, 0)                  \
+	X(compile, COMPILE, TOOL_DETACH)        \
+	X(preprocess, PREPROCESS, TOOL_DETACH)  \
+	X(macros, MACROS, TOOL_DETACH)          \
+	X(targets, TARGETS, TOOL_DETACH)
+
+#define GODBOLT_NAME(name, NAME, extra) "godbolt_" #name,
+PLUGIN_MANIFEST(.name = "godbolt", .tools = { GODBOLT_TOOLS_X(GODBOLT_NAME) });
+#undef GODBOLT_NAME
 
 enum {
 	GODBOLT_URL_MAX      = 255,       /* bytes of the option url */
@@ -130,11 +141,9 @@ static struct godbolt_config const godbolt_defaults = {
 
 /* The tools, in the order of the manifest. */
 enum godbolt_tool : uint8_t {
-	GODBOLT_CATALOG,
-	GODBOLT_COMPILE,
-	GODBOLT_PREPROCESS,
-	GODBOLT_MACROS,
-	GODBOLT_TARGETS,
+#define GODBOLT_TOOL(name, NAME, extra) GODBOLT_##NAME,
+	GODBOLT_TOOLS_X(GODBOLT_TOOL)
+#undef GODBOLT_TOOL
 	GODBOLT_TOOLS
 };
 
@@ -181,14 +190,21 @@ enum godbolt_again : uint32_t {
 	GODBOLT_AGAIN_TIMEDOUT = 1u << 2,
 };
 
-/* The limits of a kind of request, and the failures after which the plugin
- * sends it again. */
+/* The initializer of a struct tool_text in a static table, where the
+ * compound literal of TOOL_TEXT() is not a constant. */
+#define GODBOLT_TEXT(s) { "" s, sizeof s - 1 }
+
+/* The URL and the limits of a kind of request, and the failures after
+ * which the plugin sends it again.  The URL is the base URL, the path, the
+ * segment that godbolt_request() gets, and the tail. */
 struct godbolt_rule {
-	uint32_t max;      /* bytes of the response body */
-	uint32_t timeout;  /* seconds */
-	uint32_t keep;     /* seconds, but godbolt_request() sets the keep of
-	                      a compilation */
-	uint32_t again;    /* enum godbolt_again */
+	struct tool_text path;
+	struct tool_text tail;
+	uint32_t         max;      /* bytes of the response body */
+	uint32_t         timeout;  /* seconds */
+	uint32_t         keep;     /* seconds, but godbolt_request() sets the keep
+	                              of a compilation */
+	uint32_t         again;    /* enum godbolt_again */
 };
 
 /* The plugin does not send a compilation again after 504 or a timeout,
@@ -196,12 +212,17 @@ struct godbolt_rule {
  * request of a short link again after 504 and EIO, because Compiler
  * Explorer returns the same link for the same state. */
 static struct godbolt_rule const godbolt_rules[] = {
-	[GODBOLT_GET_LANGUAGES] = { 1 << 20, 30, 86400, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO |
+	[GODBOLT_GET_LANGUAGES] = { GODBOLT_TEXT("/api/languages"), GODBOLT_TEXT(""),
+	                            1 << 20, 30, 86400, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO |
 	                                                GODBOLT_AGAIN_TIMEDOUT },
-	[GODBOLT_GET_COMPILERS] = { 4 << 20, 30, 3600, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO |
+	[GODBOLT_GET_COMPILERS] = { GODBOLT_TEXT("/api/compilers/"),
+	                            GODBOLT_TEXT("?fields=" GODBOLT_FIELDS),
+	                            4 << 20, 30, 3600, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO |
 	                                               GODBOLT_AGAIN_TIMEDOUT },
-	[GODBOLT_POST_COMPILE]  = { 4 << 20, 60, 300, 0 },
-	[GODBOLT_POST_SHORTEN]  = { 4 << 10, 30, 86400, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO },
+	[GODBOLT_POST_COMPILE]  = { GODBOLT_TEXT("/api/compiler/"), GODBOLT_TEXT("/compile"),
+	                            4 << 20, 60, 300, 0 },
+	[GODBOLT_POST_SHORTEN]  = { GODBOLT_TEXT("/api/shortener"), GODBOLT_TEXT(""),
+	                            4 << 10, 30, 86400, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO },
 };
 
 /* What the next step of a call does. */
@@ -223,17 +244,19 @@ enum godbolt_phase : uint8_t {
 
 /* The state of the call's request. */
 enum godbolt_wait : uint8_t {
-	GODBOLT_IDLE,     /* no request is under way */
-	GODBOLT_FETCH,    /* the request is under way */
+	GODBOLT_IDLE,     /* the request is under way or done, or there is
+	                     none */
 	GODBOLT_TIMER,    /* the timer sends the request again later */
-	GODBOLT_REFUSED,  /* askai refused the request that the timer sent,
-	                     and call->why has the reason */
+	GODBOLT_REFUSED,  /* askai refused the request, or the timer could not
+	                     be set, and call->why has the reason, which the
+	                     next step reads as the result of the request */
 };
 
 /* The values that the functions of a phase return. */
 enum godbolt_go {
 	GODBOLT_GO,     /* the next step goes on */
-	GODBOLT_WAIT,   /* a request is under way, or the timer is set */
+	GODBOLT_WAIT,   /* a request is under way, the timer is set, or the
+	                   next step is queued */
 	GODBOLT_BAD,    /* the request failed, and call->why has the reason */
 	GODBOLT_ENDED,  /* the function ended the call, so the call's memory
 	                   may be gone */
@@ -250,46 +273,35 @@ enum godbolt_array : uint8_t {
 	GODBOLT_LIST_BAD,    /* the text is not a JSON array */
 };
 
-/* The initializer of a struct tool_text in a static table, where the
- * compound literal of TOOL_TEXT() is not a constant. */
-#define GODBOLT_TEXT(s) { "" s, sizeof s - 1 }
+/* The actions of godbolt_catalog: the constant of enum godbolt_action, the
+ * name, the singular of the noun, and the first line of the output. */
+#define GODBOLT_ACTIONS_X(X)                                          \
+	X(LANGUAGES, "languages", "language", "id\tname\n")           \
+	X(COMPILERS, "compilers", "compiler",                         \
+	  "id\tname\tkind\tversion\tarchitecture\ttrack\tfamilies\n") \
+	X(KINDS, "kinds", "kind", "kind\tcompilers\n")                \
+	X(FAMILIES, "families", "family", "family\tcompilers\n")      \
+	X(ARCHITECTURES, "architectures", "architecture", "architecture\tcompilers\n")
 
-/* The actions of godbolt_catalog. */
 enum godbolt_action : uint8_t {
-	GODBOLT_LANGUAGES,
-	GODBOLT_COMPILERS,
-	GODBOLT_KINDS,
-	GODBOLT_FAMILIES,
-	GODBOLT_ARCHITECTURES,
+#define GODBOLT_ACTION(NAME, name, singular, header) GODBOLT_##NAME,
+	GODBOLT_ACTIONS_X(GODBOLT_ACTION)
+#undef GODBOLT_ACTION
 	GODBOLT_ACTIONS
 };
 
-static struct tool_text const godbolt_actions[] = {
-	[GODBOLT_LANGUAGES]     = GODBOLT_TEXT("languages"),
-	[GODBOLT_COMPILERS]     = GODBOLT_TEXT("compilers"),
-	[GODBOLT_KINDS]         = GODBOLT_TEXT("kinds"),
-	[GODBOLT_FAMILIES]      = GODBOLT_TEXT("families"),
-	[GODBOLT_ARCHITECTURES] = GODBOLT_TEXT("architectures"),
+static struct {
+	struct tool_text name;
+	struct tool_text header;
+	char const      *singular;
+} const godbolt_actions[] = {
+#define GODBOLT_ACTION(NAME, name, singular, header) \
+	{ GODBOLT_TEXT(name), GODBOLT_TEXT(header), singular },
+	GODBOLT_ACTIONS_X(GODBOLT_ACTION)
+#undef GODBOLT_ACTION
 };
 
-/* The singular of the noun of each action. */
-static char const *const godbolt_singulars[] = {
-	[GODBOLT_LANGUAGES]     = "language",
-	[GODBOLT_COMPILERS]     = "compiler",
-	[GODBOLT_KINDS]         = "kind",
-	[GODBOLT_FAMILIES]      = "family",
-	[GODBOLT_ARCHITECTURES] = "architecture",
-};
-
-/* The first line of the output of each action. */
-static struct tool_text const godbolt_headers[] = {
-	[GODBOLT_LANGUAGES]     = GODBOLT_TEXT("id\tname\n"),
-	[GODBOLT_COMPILERS]     = GODBOLT_TEXT("id\tname\tkind\tversion\tarchitecture\t"
-	                                    "track\tfamilies\n"),
-	[GODBOLT_KINDS]         = GODBOLT_TEXT("kind\tcompilers\n"),
-	[GODBOLT_FAMILIES]      = GODBOLT_TEXT("family\tcompilers\n"),
-	[GODBOLT_ARCHITECTURES] = GODBOLT_TEXT("architecture\tcompilers\n"),
-};
+#undef GODBOLT_ACTIONS_X
 
 /* The ends of the compilations, which the last line of the output
  * counts. */
@@ -327,7 +339,9 @@ static char const *const godbolt_arg_names[] = {
 	"limit", "offset", "compilers", "args", "source", "filters", "headers", "share"
 };
 
-static_assert(sizeof godbolt_arg_names / sizeof *godbolt_arg_names == GODBOLT_ARG_COUNT);
+static_assert(array_size(godbolt_arg_names) == GODBOLT_ARG_COUNT);
+static_assert(GODBOLT_ARG_FAMILY == GODBOLT_ARG_KIND + 1 &&
+              GODBOLT_ARG_ARCHITECTURE == GODBOLT_ARG_KIND + 2, "the order of values[]");
 
 /* The reason of the refusal of each argument. */
 static struct tool_text const godbolt_arg_rules[] = {
@@ -429,7 +443,7 @@ static struct {
 	{ GODBOLT_TEXT("trim"), 1u << 6 },
 };
 
-enum { GODBOLT_FILTERS = sizeof godbolt_filters / sizeof *godbolt_filters };
+enum { GODBOLT_FILTERS = array_size(godbolt_filters) };
 
 /* The filters that the Compiler Explorer site sets by default:
  * commentOnly, demangle, directives, intel and labels. */
@@ -502,10 +516,8 @@ struct godbolt_args {
 	struct tool_text words[GODBOLT_WORDS];
 	struct tool_text language;
 	struct tool_text source;
-	struct tool_text kind;
-	struct tool_text family;
-	struct tool_text architecture;
-	struct tool_text why;       /* the reason of a refusal */
+	struct tool_text values[3]; /* the arguments kind, family and
+	                               architecture, in this order */
 	uint32_t         limit;
 	uint8_t          n_ids;
 	uint8_t          n_args;
@@ -514,17 +526,14 @@ struct godbolt_args {
 	uint8_t          filters;   /* bits of godbolt_filters[] */
 	uint8_t          headers;   /* the argument headers */
 	uint8_t          share;     /* the argument share */
-	char             text[96];  /* the bytes of why, unless why is a
-	                               constant */
+	uint8_t          paged;     /* the argument offset is more than 0 */
 };
 
 /* A call of a tool.  The call's own word points to it, and drop() frees
  * it.  The texts of the call's arguments are copies in blob, at the
  * end of the same allocation. */
 struct godbolt {
-	struct loop_timer            timer;     /* the first member, so that the
-	                                           timer function can cast the
-	                                           timer to the call */
+	struct loop_timer            timer;     /* sends the request again */
 	struct web_request           req;       /* the request under way, or the
 	                                           request that the timer sends */
 	struct godbolt_probe         probe;     /* the parsed output of the probe
@@ -546,10 +555,12 @@ struct godbolt {
 	struct tool_text             words[GODBOLT_WORDS];   /* in lower case */
 	struct tool_text             language;
 	struct tool_text             source;
-	struct tool_text             kind;
-	struct tool_text             family;
-	struct tool_text             architecture;
-	size_t                       cap;       /* bytes of body */
+	struct tool_text             values[3]; /* kind, family and
+	                                           architecture */
+	struct tool_text             resp;      /* the body of the last response,
+	                                           valid until the next request;
+	                                           never nullptr once
+	                                           godbolt_result() stored it */
 	size_t                       head;      /* bytes of body before the part
 	                                           that differs for the state and
 	                                           for each compilation */
@@ -561,7 +572,9 @@ struct godbolt {
 	                                           element being parsed */
 	size_t                       written;   /* bytes of output */
 	size_t                       arg_at;    /* the offset in body of the
-	                                           escaped argument string */
+	                                           escaped argument string that
+	                                           godbolt_cat_arguments()
+	                                           wrote last */
 	size_t                       arg_len;   /* its length */
 	size_t                       byte;      /* bytes of the text of the
 	                                           section written */
@@ -600,6 +613,8 @@ struct godbolt {
 	uint8_t                      n_ids;
 	uint8_t                      n_args;
 	uint8_t                      n_words;
+	uint8_t                      jobs;      /* compilations of the call,
+	                                           n_ids times n_args */
 	uint8_t                      job;       /* the compilation, or in the
 	                                           phase GODBOLT_STATE the
 	                                           compilation that the state
@@ -634,6 +649,8 @@ static_assert(GODBOLT_URL_MAX + sizeof "/api/compiler/" + 3 * GODBOLT_ID_MAX +
               sizeof "/compile" <= sizeof ((struct godbolt *)nullptr)->url);
 static_assert(GODBOLT_URL_MAX + sizeof "/api/compilers/" + 3 * GODBOLT_LANGUAGE_MAX +
               sizeof "?fields=" GODBOLT_FIELDS <= sizeof ((struct godbolt *)nullptr)->url);
+
+#undef GODBOLT_FIELDS
 
 /* Returns the lower-case form of the ASCII letter @p c, or @p c. */
 static char
@@ -674,18 +691,53 @@ godbolt_or (struct tool_text t,
 	return t.len ? t : otherwise;
 }
 
-/* Returns the string member @p name of @p obj, or an empty text whose ptr
- * is nullptr if @p obj has no such member.  The text is NUL-terminated. */
+/* Returns 7 if @p t is http:// and more, 8 if it is https:// and more, or
+ * 0, also if it has a byte that is not printable ASCII or is a space. */
+static size_t
+godbolt_scheme (struct tool_text t)
+{
+	size_t const scheme = t.len > 7 && !memcmp(t.ptr, "http://", 7) ? 7
+	                    : t.len > 8 && !memcmp(t.ptr, "https://", 8) ? 8 : 0;
+	for (size_t i = 0; scheme && i < t.len; ++i)
+		if (t.ptr[i] <= ' ' || t.ptr[i] > '~')
+			return 0;
+	return scheme;
+}
+
+/* Returns the member @p name of @p obj, or nullptr if @p obj has no such
+ * member. */
+static struct json_object *
+godbolt_get (struct json_object *obj,
+             char const         *name)
+{
+	struct json_object *v = nullptr;
+	return json_object_object_get_ex(obj, name, &v) ? v : nullptr;
+}
+
+/* Returns the string @p v, or an empty text whose ptr is nullptr if @p v is
+ * not a string.  The text is NUL-terminated. */
+static struct tool_text
+godbolt_string (struct json_object *v)
+{
+	if (!json_object_is_type(v, json_type_string))
+		return (struct tool_text){};
+	return (struct tool_text){ json_object_get_string(v),
+	                           (size_t)json_object_get_string_len(v) };
+}
+
+/* Returns the string member @p name of @p obj, as godbolt_string() does. */
 static struct tool_text
 godbolt_member (struct json_object *obj,
                 char const         *name)
 {
-	struct json_object *v = nullptr;
-	if (!json_object_object_get_ex(obj, name, &v) ||
-	    !json_object_is_type(v, json_type_string))
-		return (struct tool_text){};
-	return (struct tool_text){ json_object_get_string(v),
-	                           (size_t)json_object_get_string_len(v) };
+	return godbolt_string(godbolt_get(obj, name));
+}
+
+/* Returns the number of elements of @p v, or 0 if @p v is not an array. */
+static size_t
+godbolt_array_len (struct json_object *v)
+{
+	return json_object_is_type(v, json_type_array) ? json_object_array_length(v) : 0;
 }
 
 /* Returns @p n, or less if the first @p n of the @p len bytes at @p s would
@@ -850,12 +902,12 @@ godbolt_catalog_hint (struct godbolt *call,
 	            (int)call->language.len, call->language.ptr);
 }
 
-/* Ends the call as failed with the text that @p fmt and its arguments
- * format.  Returns GODBOLT_ENDED. */
+/* Ends the call in @p slot as failed with the text that @p fmt and its
+ * arguments format.  Returns GODBOLT_ENDED. */
 [[gnu::format(printf, 2, 3)]]
 static enum godbolt_go
-godbolt_refuse (struct godbolt *call,
-                char const     *fmt,
+godbolt_refuse (struct mcp_slot *slot,
+                char const      *fmt,
                 ...)
 {
 	char text[TOOL_TELL_MAX];
@@ -864,10 +916,10 @@ godbolt_refuse (struct godbolt *call,
 	int n = vsnprintf(text, sizeof text, fmt, ap);
 	va_end(ap);
 	if (n < 0)
-		mcp_slot_tell(call->slot, TOOL_TEXT("The plugin could not format the reason of "
-		                                    "the failure."), TOOL_FAILED);
+		mcp_slot_tell(slot, TOOL_TEXT("The plugin could not format the reason of the "
+		                              "failure."), TOOL_FAILED);
 	else
-		mcp_slot_tell(call->slot, (struct tool_text){
+		mcp_slot_tell(slot, (struct tool_text){
 			text, n < (int)sizeof text ? (size_t)n : sizeof text - 1 }, TOOL_FAILED);
 	return GODBOLT_ENDED;
 }
@@ -887,19 +939,24 @@ godbolt_fail (struct godbolt *call)
 	return GODBOLT_ENDED;
 }
 
-/* Sets the call's request to a request of the kind @p kind, with the URL in
- * call->url and the @p len bytes of the body at @p body.  A compilation of
- * a call without offset has the keep 1, so that it gets no response that
- * askai received more than a second earlier.  A compilation of a call with
- * offset has the keep 300, so that it gets the response that the same call
- * without offset received, while askai still stores it. */
+/* Sets the call's request to a request of the kind @p kind, with the @p len
+ * bytes of the body at @p body.  The function writes the URL of the rule
+ * of @p kind, with @p segment after the path, to call->url.  A compilation
+ * of a call without offset has the keep 1, so that it gets no response
+ * that askai received more than a second earlier.  A compilation of a call
+ * with offset has the keep 300, so that it gets the response that the same
+ * call without offset received, while askai still stores it. */
 static void
 godbolt_request (struct godbolt   *call,
                  enum godbolt_req  kind,
+                 struct tool_text  segment,
                  char const       *body,
                  size_t            len)
 {
 	struct godbolt_rule const *rule = &godbolt_rules[kind];
+	char *u = godbolt_cat(call->url, (struct tool_text){ call->cfg->url, call->cfg->len });
+	u = godbolt_cat_path(godbolt_cat(u, rule->path), segment);
+	*godbolt_cat(u, rule->tail) = '\0';
 	call->req = (struct web_request){
 		.url = call->url,
 		.body = body,
@@ -913,9 +970,20 @@ godbolt_request (struct godbolt   *call,
 	call->attempt = 0;
 }
 
+/* Makes the next step read the failure in call->why as the result of the
+ * call's request: godbolt_result() then returns GODBOLT_BAD.  Returns
+ * GODBOLT_WAIT. */
+static enum godbolt_go
+godbolt_refused (struct godbolt *call)
+{
+	call->wait = GODBOLT_REFUSED;
+	(void)mcp_slot_ready(call->slot);
+	return GODBOLT_WAIT;
+}
+
 /* Sets the call's timer to send the request again in @p seconds.  Returns
- * GODBOLT_WAIT.  If the timer cannot be set, it returns GODBOLT_BAD with
- * the reason in call->why, or GODBOLT_ENDED after ENOMEM. */
+ * GODBOLT_WAIT, or GODBOLT_ENDED after ENOMEM.  If the timer cannot be
+ * set, the next step reads the reason (godbolt_refused()). */
 static enum godbolt_go
 godbolt_later (struct godbolt *call,
                uint32_t        seconds)
@@ -928,24 +996,22 @@ godbolt_later (struct godbolt *call,
 	}
 	if (e) {
 		godbolt_why(call, "askai could not set the timer to send the request again");
-		return GODBOLT_BAD;
+		return godbolt_refused(call);
 	}
 	call->wait = GODBOLT_TIMER;
 	return GODBOLT_WAIT;
 }
 
-/* Sends the call's request.  Returns GODBOLT_WAIT if the request is under
- * way or the timer sends it later, GODBOLT_BAD with the reason in
- * call->why if askai refused it, or GODBOLT_ENDED. */
+/* Sends the call's request.  Returns GODBOLT_WAIT, or GODBOLT_ENDED.  The
+ * next step reads the response, or the reason if askai refused the request
+ * (godbolt_refused()). */
 static enum godbolt_go
 godbolt_send (struct godbolt *call)
 {
-	int e = mcp_slot_fetch(call->slot, &call->req);
+	int const e = mcp_slot_fetch(call->slot, &call->req);
 	++call->attempt;
-	if (!e) {
-		call->wait = GODBOLT_FETCH;
+	if (!e)
 		return GODBOLT_WAIT;
-	}
 	if (e == EAGAIN && call->attempt < GODBOLT_ATTEMPTS)
 		return godbolt_later(call, 1);
 	if (e == ENOMEM) {
@@ -954,105 +1020,101 @@ godbolt_send (struct godbolt *call)
 	}
 	godbolt_why(call, "%s", e == EAGAIN ? "askai sends too many requests at once"
 	                                    : "askai refused the request");
-	return GODBOLT_BAD;
+	return godbolt_refused(call);
 }
 
-/* The timer function of a call.  It sends the call's request again.  If
- * askai refuses the request, the next step of the call reads the reason in
- * call->why. */
+/* The timer function of a call.  It sends the call's request again. */
 static void
 godbolt_fired (struct loop       *loop,
                struct loop_timer *timer)
 {
 	(void)loop;
-	struct godbolt *call = (struct godbolt *)timer;
+	struct godbolt *call = timer ? container_of(timer, struct godbolt, timer) : nullptr;
 	if (!call || !call->slot)
 		return;
 	call->wait = GODBOLT_IDLE;
-	if (godbolt_send(call) == GODBOLT_BAD) {
-		call->wait = GODBOLT_REFUSED;
-		(void)mcp_slot_ready(call->slot);
-	}
+	(void)godbolt_send(call);
 }
 
-/* Stores in call->why the reason of the response @p r, whose status is an
- * error.  The reason is the member message of a JSON object, or else the
- * first line of the body, and it has at most GODBOLT_REASON_MAX bytes.  A
- * compilation with an unknown compiler id gets 404, and its reason names
- * godbolt_catalog. */
+/* Stores in call->why the reason of the response in call->resp, whose
+ * status @p status is an error.  The reason is the member message of a
+ * JSON object, or else the first line of the body, and it has at most
+ * GODBOLT_REASON_MAX bytes.  A compilation with an unknown compiler id gets
+ * 404, and its reason names godbolt_catalog. */
 static void
-godbolt_reason (struct godbolt            *call,
-                struct web_response const *r)
+godbolt_reason (struct godbolt *call,
+                uint32_t        status)
 {
-	if (call->kind_of == GODBOLT_POST_COMPILE && r->status == 404) {
+	if (call->kind_of == GODBOLT_POST_COMPILE && status == 404) {
 		godbolt_catalog_hint(call, "HTTP 404: Compiler Explorer rejected this compiler id. ");
 		return;
 	}
-	struct tool_text text = { r->body, r->body ? r->len : 0 };
+	struct tool_text text = call->resp;
 	struct json_object *doc = nullptr;
 	if (text.len <= LOOP_STEP_PARSE) {
 		json_tokener_reset(call->tok);
-		doc = json_tokener_parse_ex(call->tok, text.ptr ? text.ptr : "", (int)text.len);
+		doc = json_tokener_parse_ex(call->tok, text.ptr, (int)text.len);
 		loop_work(call->loop, LOOP_PARSE, text.len);
 		text = godbolt_or(godbolt_member(doc, "message"), text);
 	}
-	char const *nl = text.len ? memchr(text.ptr, '\n', text.len) : nullptr;
+	char const *nl = memchr(text.ptr, '\n', text.len);
 	size_t n = nl ? (size_t)(nl - text.ptr) : text.len;
 	n = godbolt_cut(text.ptr, text.len, n < GODBOLT_REASON_MAX ? n : GODBOLT_REASON_MAX);
-	godbolt_why(call, "HTTP %" PRIu32 "%s%.*s", r->status, n ? ": " : "", (int)n,
-	            n ? text.ptr : "");
+	godbolt_why(call, "HTTP %" PRIu32 "%s%.*s", status, n ? ": " : "", (int)n, text.ptr);
 	json_object_put(doc);
 }
 
-/* Reads the result of the call's request into @p r.  Returns GODBOLT_GO
- * for a whole response with a status from 200 to 299.  Returns GODBOLT_WAIT
- * if the request is under way, or if the function set the timer to send it
- * again.  Returns GODBOLT_BAD with the reason in call->why if the request
- * failed, or GODBOLT_ENDED if the function ended the call. */
+/* Reads the result of the call's request, and stores the body of the
+ * response in call->resp.  Returns GODBOLT_GO for a whole response with a
+ * status from 200 to 299.  Returns GODBOLT_WAIT if the request is under
+ * way, if the function set the timer to send it again, or if it could not
+ * set the timer, when the next step returns GODBOLT_BAD.  Returns
+ * GODBOLT_BAD with the reason in call->why if the request failed or askai
+ * refused it, or GODBOLT_ENDED if the function ended the call. */
 static enum godbolt_go
-godbolt_result (struct godbolt      *call,
-                struct web_response *r)
+godbolt_result (struct godbolt *call)
 {
-	*r = (struct web_response){};
 	if (call->wait == GODBOLT_REFUSED) {
 		call->wait = GODBOLT_IDLE;
 		return GODBOLT_BAD;
 	}
-	int e = mcp_slot_fetched(call->slot, r);
+	struct web_response r;
+	int e = mcp_slot_fetched(call->slot, &r);
 	if (e == EINPROGRESS)
 		return GODBOLT_WAIT;
 	call->wait = GODBOLT_IDLE;
-	if (e || (!r->body && r->len) || !r->error) {
+	if (e || (!r.body && r.len) || !r.error) {
 		godbolt_why(call, "askai has no response to the request");
 		return GODBOLT_BAD;
 	}
-	if (r->e == ESHUTDOWN || r->e == ENOMEM) {
-		mcp_slot_fail(call->slot, r->e);
+	if (r.e == ESHUTDOWN || r.e == ENOMEM) {
+		mcp_slot_fail(call->slot, r.e);
 		return GODBOLT_ENDED;
 	}
 	uint32_t const again = godbolt_rules[call->kind_of].again;
-	bool const retry = r->e ? (r->e == EIO && again & GODBOLT_AGAIN_EIO) ||
-	                          (r->e == ETIMEDOUT && again & GODBOLT_AGAIN_TIMEDOUT)
-	                        : r->status == 429 || r->status == 502 || r->status == 503 ||
-	                          (r->status == 504 && again & GODBOLT_AGAIN_504);
-	if (retry && r->retry > GODBOLT_RETRY_MAX) {
+	bool const retry = r.e ? (r.e == EIO && again & GODBOLT_AGAIN_EIO) ||
+	                         (r.e == ETIMEDOUT && again & GODBOLT_AGAIN_TIMEDOUT)
+	                       : r.status == 429 || r.status == 502 || r.status == 503 ||
+	                         (r.status == 504 && again & GODBOLT_AGAIN_504);
+	if (retry && r.retry > GODBOLT_RETRY_MAX) {
 		godbolt_why(call, "HTTP %" PRIu32 ", and Retry-After is %" PRIu32 " s",
-		            r->status, r->retry);
+		            r.status, r.retry);
 		return GODBOLT_BAD;
 	}
 	if (retry && call->attempt < GODBOLT_ATTEMPTS) {
 		uint32_t const wait = 1u << (call->attempt - 1);
-		return godbolt_later(call, r->retry > wait ? r->retry : wait);
+		return godbolt_later(call, r.retry > wait ? r.retry : wait);
 	}
+	call->resp = (struct tool_text){ r.body ? r.body : "", r.len };
 	size_t const max = call->req.max;
-	if (r->e == EFBIG)
+	if (r.e == EFBIG)
 		godbolt_why(call, "the response is larger than %zu %s",
 		            max >= 1 << 20 ? max >> 20 : max >> 10, max >= 1 << 20 ? "MiB" : "KiB");
-	else if (r->e)
+	else if (r.e)
 		godbolt_why(call, "the request failed: %.*s",
-		            (int)godbolt_cut(r->error, strnlen(r->error, 201), 200), r->error);
-	else if (r->status < 200 || r->status > 299)
-		godbolt_reason(call, r);
+		            (int)godbolt_cut(r.error, strnlen(r.error, 201), 200), r.error);
+	else if (r.status < 200 || r.status > 299)
+		godbolt_reason(call, r.status);
 	else
 		return GODBOLT_GO;
 	return GODBOLT_BAD;
@@ -1077,12 +1139,29 @@ godbolt_array_next (uint8_t s,
 	return GODBOLT_LIST_VALUE;
 }
 
+/* Returns the bytes of JSON text that the step may still parse. */
+static uint64_t
+godbolt_parse_room (struct godbolt const *call)
+{
+	uint64_t const room = loop_room(call->loop, LOOP_PARSE);
+	uint64_t const values = loop_room(call->loop, LOOP_VALUES) * GODBOLT_VALUE_BYTES;
+	return room < values ? room : values;
+}
+
+/* Counts @p n bytes of JSON text parsed as work of the step. */
+static void
+godbolt_parsed (struct godbolt const *call,
+                uint64_t              n)
+{
+	loop_work(call->loop, LOOP_PARSE, n);
+	loop_work(call->loop, LOOP_VALUES, n / GODBOLT_VALUE_BYTES);
+}
+
 /*
- * Parses the elements of the JSON array in the @p len bytes at @p body,
- * from call->off on, as far as the bounds of the step allow.  It calls @p fn
- * for each element, and frees the element after that.  The element is
- * nullptr for the JSON value null.  fn returns 0, or an error number that
- * stops the parse.
+ * Parses the elements of the JSON array in call->resp, from call->off on,
+ * as far as the bounds of the step allow.  It calls @p fn for each element,
+ * and frees the element after that.  The element is nullptr for the JSON
+ * value null.  fn returns 0, or an error number that stops the parse.
  *
  * Returns 0, or the error number of fn.  After the end of the array,
  * call->list is GODBOLT_LIST_END.  If the text is not a JSON array, or if
@@ -1091,14 +1170,12 @@ godbolt_array_next (uint8_t s,
  */
 static int
 godbolt_list_parse (struct godbolt *call,
-                    char const     *body,
-                    size_t          len,
                     int           (*fn) (struct godbolt     *call,
                                          struct json_object *element))
 {
-	uint64_t room = loop_room(call->loop, LOOP_PARSE);
-	uint64_t const values = loop_room(call->loop, LOOP_VALUES) * GODBOLT_VALUE_BYTES;
-	room = room < values ? room : values;
+	char const *const body = call->resp.ptr;
+	size_t const len = call->resp.len;
+	uint64_t const room = godbolt_parse_room(call);
 	uint64_t used = 0;
 	int e = 0;
 	while (!e && call->list < GODBOLT_LIST_END && used < room && call->off < len) {
@@ -1135,8 +1212,7 @@ godbolt_list_parse (struct godbolt *call,
 		}
 		json_object_put(v);
 	}
-	loop_work(call->loop, LOOP_PARSE, used);
-	loop_work(call->loop, LOOP_VALUES, used / GODBOLT_VALUE_BYTES);
+	godbolt_parsed(call, used);
 	if (!e && call->list < GODBOLT_LIST_END && call->off == len) {
 		godbolt_why(call, "the text ends before the end of the JSON array");
 		call->list = GODBOLT_LIST_BAD;
@@ -1146,62 +1222,32 @@ godbolt_list_parse (struct godbolt *call,
 
 static_assert(GODBOLT_ELEMENT_MAX == 4 << 10, "the reason says 4 KiB");
 
-/* Returns the number of family tags in @p tags, or 0 if @p tags is not an
- * array. */
-static size_t
-godbolt_tags (struct json_object *tags)
-{
-	return json_object_is_type(tags, json_type_array) ? json_object_array_length(tags) : 0;
-}
-
-/* Returns the family tag @p i of @p tags, or an empty text if the element
- * is not a string. */
-static struct tool_text
-godbolt_tag (struct json_object *tags,
-             size_t              i)
-{
-	struct json_object *tag = json_object_array_get_idx(tags, i);
-	if (!json_object_is_type(tag, json_type_string))
-		return (struct tool_text){};
-	return (struct tool_text){ json_object_get_string(tag),
-	                           (size_t)json_object_get_string_len(tag) };
-}
-
-/* Returns whether a compiler with the family tags @p tags has the family
- * @p family.  A compiler without tags has the family unknown. */
+/* Returns whether a compiler with the @p n family tags @p tags has the
+ * family @p family.  A compiler without tags has the family unknown. */
 static bool
-godbolt_tagged (struct json_object *tags,
-                struct tool_text    family)
+godbolt_tagged (struct tool_text const *tags,
+                size_t                  n,
+                struct tool_text        family)
 {
-	size_t const n = godbolt_tags(tags);
-	bool any = false;
-	for (size_t i = 0; i < n; ++i) {
-		struct tool_text const t = godbolt_tag(tags, i);
-		if (t.len && godbolt_same(t, family))
+	for (size_t i = 0; i < n; ++i)
+		if (godbolt_same(tags[i], family))
 			return true;
-		any |= t.len != 0;
-	}
-	return !any && godbolt_same(family, TOOL_TEXT("unknown"));
+	return !n && godbolt_same(family, TOOL_TEXT("unknown"));
 }
 
 /* Returns whether an element of a list matches the words of the argument
  * match and the argument ids.  Each word must be in one of the @p n texts
- * of @p f, or in one of the family tags @p tags.  @p f[0] is the id of the
- * element.  If the call has ids, the function sets the bit of the id in
- * call->found. */
+ * of @p f.  @p f[0] is the id of the element.  If the call has ids, the
+ * function sets the bit of the id in call->found. */
 static bool
 godbolt_matches (struct godbolt         *call,
                  struct tool_text const *f,
-                 size_t                  n,
-                 struct json_object     *tags)
+                 size_t                  n)
 {
-	size_t const n_tags = godbolt_tags(tags);
 	for (uint8_t w = 0; w < call->n_words; ++w) {
 		bool hit = false;
 		for (size_t i = 0; !hit && i < n; ++i)
 			hit = godbolt_has(f[i], call->words[w]);
-		for (size_t i = 0; !hit && i < n_tags; ++i)
-			hit = godbolt_has(godbolt_tag(tags, i), call->words[w]);
 		if (!hit)
 			return false;
 	}
@@ -1252,7 +1298,7 @@ godbolt_language_row (struct godbolt     *call,
 	}
 	++call->total;
 	struct tool_text const f[] = { id, godbolt_member(element, "name") };
-	if (!godbolt_matches(call, f, 2, nullptr) || ++call->matching > call->limit)
+	if (!godbolt_matches(call, f, 2) || ++call->matching > call->limit)
 		return 0;
 	++call->listed;
 	godbolt_put_field(call, f[0]);
@@ -1277,7 +1323,7 @@ godbolt_count (struct godbolt   *call,
 	}
 	if (json_object_object_length(call->doc) == GODBOLT_KEYS) {
 		godbolt_why(call, "the list has more than 256 different %s",
-		            godbolt_actions[call->action].ptr);
+		            godbolt_actions[call->action].name.ptr);
 		call->list = GODBOLT_LIST_BAD;
 		return call->e;
 	}
@@ -1289,55 +1335,40 @@ godbolt_count (struct godbolt   *call,
 	return call->e;
 }
 
-/* Counts each family tag in @p tags once, or the family unknown if there is
- * no tag.  @p tags has at most GODBOLT_TAGS elements.  Returns 0, or
- * call->e. */
+/* Counts each of the @p n family tags @p tags once, or the family unknown
+ * if there is no tag.  Returns 0, or call->e. */
 static int
-godbolt_count_families (struct godbolt     *call,
-                        struct json_object *tags)
+godbolt_count_families (struct godbolt         *call,
+                        struct tool_text const *tags,
+                        size_t                  n)
 {
-	size_t const n = godbolt_tags(tags);
-	bool any = false;
 	for (size_t i = 0; i < n; ++i) {
-		struct tool_text const t = godbolt_tag(tags, i);
-		bool seen = !t.len;
-		for (size_t k = 0; !seen && k < i; ++k)
-			seen = godbolt_same(t, godbolt_tag(tags, k));
-		if (!seen)
-			godbolt_count(call, t);
-		any |= t.len != 0;
+		size_t k = 0;
+		while (k < i && !godbolt_same(tags[i], tags[k]))
+			++k;
+		if (k == i)
+			godbolt_count(call, tags[i]);
 	}
-	return any ? call->e : godbolt_count(call, TOOL_TEXT("unknown"));
+	return n ? call->e : godbolt_count(call, TOOL_TEXT("unknown"));
 }
 
-/* Returns whether a compiler has a kind @p kind and an architecture
- * @p architecture of at most GODBOLT_VALUE_MAX bytes, and at most
- * GODBOLT_TAGS family tags @p tags of at most GODBOLT_VALUE_MAX bytes. */
-static bool
-godbolt_compiler_valid (struct tool_text    kind,
-                        struct tool_text    architecture,
-                        struct json_object *tags)
-{
-	size_t const n = godbolt_tags(tags);
-	bool valid = n <= GODBOLT_TAGS && kind.len <= GODBOLT_VALUE_MAX &&
-	             architecture.len <= GODBOLT_VALUE_MAX;
-	for (size_t i = 0; valid && i < n; ++i)
-		valid = godbolt_tag(tags, i).len <= GODBOLT_VALUE_MAX;
-	return valid;
-}
+/* The columns of a row of the catalog before the family tags. */
+enum { GODBOLT_COLUMNS = 6 };
 
 /* Counts an element of a list of compilers.  If the filters select the
  * compiler, the function writes the compiler as a row, or it counts the
- * compiler's kind, family tags or architecture.  An element without an id
- * is left out, and so is an element for which godbolt_compiler_valid()
- * returns false.  Returns 0, or call->e. */
+ * compiler's kind, family tags or architecture.  An element is left out
+ * if it has no id, more than GODBOLT_TAGS family tags, or more than
+ * GODBOLT_VALUE_MAX bytes in its kind, its architecture or a family tag.
+ * Returns 0, or call->e. */
 static int
 godbolt_compiler_row (struct godbolt     *call,
                       struct json_object *element)
 {
-	struct json_object *tags = nullptr;
-	(void)json_object_object_get_ex(element, "compilerCategories", &tags);
-	struct tool_text const f[] = {
+	struct json_object *tags = godbolt_get(element, "compilerCategories");
+	size_t const n_tags = godbolt_array_len(tags);
+	/* The columns, and then the family tags that are not empty. */
+	struct tool_text f[GODBOLT_COLUMNS + GODBOLT_TAGS] = {
 		godbolt_member(element, "id"),
 		godbolt_member(element, "name"),
 		godbolt_or(godbolt_member(element, "compilerType"), TOOL_TEXT("default")),
@@ -1345,39 +1376,44 @@ godbolt_compiler_row (struct godbolt     *call,
 		godbolt_or(godbolt_member(element, "instructionSet"), TOOL_TEXT("unknown")),
 		godbolt_member(element, "releaseTrack"),
 	};
-	if (!f[0].len || !godbolt_compiler_valid(f[2], f[4], tags)) {
+	size_t n = GODBOLT_COLUMNS;
+	bool valid = f[0].len && n_tags <= GODBOLT_TAGS && f[2].len <= GODBOLT_VALUE_MAX &&
+	             f[4].len <= GODBOLT_VALUE_MAX;
+	for (size_t i = 0; valid && i < n_tags; ++i) {
+		f[n] = godbolt_string(json_object_array_get_idx(tags, i));
+		valid = f[n].len <= GODBOLT_VALUE_MAX;
+		n += f[n].len != 0;
+	}
+	if (!valid) {
 		++call->malformed;
 		return 0;
 	}
 	++call->total;
-	if ((call->kind.len && !godbolt_same(f[2], call->kind)) ||
-	    (call->architecture.len && !godbolt_same(f[4], call->architecture)) ||
-	    (call->family.len && !godbolt_tagged(tags, call->family)) ||
-	    !godbolt_matches(call, f, sizeof f / sizeof *f, tags))
+	struct tool_text const *const t = f + GODBOLT_COLUMNS;
+	struct tool_text const *const v = call->values;
+	if ((v[0].len && !godbolt_same(f[2], v[0])) ||
+	    (v[1].len && !godbolt_tagged(t, n - GODBOLT_COLUMNS, v[1])) ||
+	    (v[2].len && !godbolt_same(f[4], v[2])) ||
+	    !godbolt_matches(call, f, n))
 		return 0;
 	++call->matching;
-	if (call->action == GODBOLT_KINDS || call->action == GODBOLT_ARCHITECTURES)
-		return godbolt_count(call, f[call->action == GODBOLT_KINDS ? 2 : 4]);
-	if (call->action == GODBOLT_FAMILIES)
-		return godbolt_count_families(call, tags);
+	switch (call->action) {
+	case GODBOLT_KINDS:
+		return godbolt_count(call, f[2]);
+	case GODBOLT_ARCHITECTURES:
+		return godbolt_count(call, f[4]);
+	case GODBOLT_FAMILIES:
+		return godbolt_count_families(call, t, n - GODBOLT_COLUMNS);
+	}
 	if (call->listed == call->limit)
 		return 0;
 	++call->listed;
-	for (size_t i = 0; i < sizeof f / sizeof *f; ++i) {
-		godbolt_put_field(call, f[i]);
-		godbolt_put(call, TOOL_TEXT("\t"));
-	}
-	size_t const n = godbolt_tags(tags);
-	struct tool_text sep = {};
 	for (size_t i = 0; i < n; ++i) {
-		struct tool_text const t = godbolt_tag(tags, i);
-		if (!t.len)
-			continue;
-		godbolt_put(call, sep);
-		godbolt_put_field(call, t);
-		sep = TOOL_TEXT(",");
+		godbolt_put_field(call, f[i]);
+		godbolt_put(call, i < GODBOLT_COLUMNS ? TOOL_TEXT("\t")
+		                  : i + 1 < n ? TOOL_TEXT(",") : (struct tool_text){});
 	}
-	return godbolt_put(call, sep.len ? TOOL_TEXT("\n") : TOOL_TEXT("unknown\n"));
+	return godbolt_put(call, n > GODBOLT_COLUMNS ? TOOL_TEXT("\n") : TOOL_TEXT("unknown\n"));
 }
 
 /* A key of the counts of the catalog, and its count. */
@@ -1451,26 +1487,24 @@ godbolt_absent (struct godbolt const *call,
 static enum godbolt_go
 godbolt_catalog_end (struct godbolt *call)
 {
+	bool const languages = call->action == GODBOLT_LANGUAGES;
 	if (call->found != (1u << call->n_ids) - 1) {
 		char absent[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
 		godbolt_absent(call, absent);
-		return godbolt_refuse(call, "These ids were not selected: %s. Retry with action "
-		                      "\"%s\" and without ids or other filters.", absent,
-		                      call->action == GODBOLT_LANGUAGES ? "languages" : "compilers");
+		return godbolt_refuse(call->slot, "These ids were not selected: %s. Retry with "
+		                      "action \"%s\" and without ids or other filters.", absent,
+		                      languages ? "languages" : "compilers");
 	}
 	uint32_t const keys = call->doc ? (uint32_t)json_object_object_length(call->doc) : 0;
 	if (call->action > GODBOLT_COMPILERS)
 		godbolt_tallies(call);
-	if (call->malformed && call->action == GODBOLT_LANGUAGES)
+	if (call->malformed)
 		godbolt_putf(call, "The plugin left out %" PRIu32 " element%s of the list. An "
-		             "element must have a string member id.\n", call->malformed,
-		             godbolt_s(call->malformed));
-	else if (call->malformed)
-		godbolt_putf(call, "The plugin left out %" PRIu32 " element%s of the list. An "
-		             "element must have a string member id, at most 64 family tags, "
-		             "and at most 128 bytes in its kind, its architecture and each "
-		             "family tag.\n", call->malformed, godbolt_s(call->malformed));
-	if (call->action == GODBOLT_LANGUAGES)
+		             "element must have a string member id%s.\n", call->malformed,
+		             godbolt_s(call->malformed), languages ? "" : ", at most 64 family "
+		             "tags, and at most 128 bytes in its kind, its architecture and each "
+		             "family tag");
+	if (languages)
 		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching language%s. "
 		             "Compiler Explorer has %" PRIu32 " language%s.\n", call->listed,
 		             call->matching, godbolt_s(call->matching), call->total,
@@ -1484,7 +1518,8 @@ godbolt_catalog_end (struct godbolt *call)
 		godbolt_putf(call, "Listed %" PRIu32 " of the %" PRIu32 " %s of the %" PRIu32
 		             " matching compiler%s. The list of language %.*s has %" PRIu32
 		             " compiler%s.\n", call->listed, keys, keys == 1
-		             ? godbolt_singulars[call->action] : godbolt_actions[call->action].ptr,
+		             ? godbolt_actions[call->action].singular
+		             : godbolt_actions[call->action].name.ptr,
 		             call->matching, godbolt_s(call->matching), (int)call->language.len,
 		             call->language.ptr, call->total, godbolt_s(call->total));
 	if (call->e)
@@ -1530,9 +1565,9 @@ godbolt_drivers_end (struct godbolt *call)
 		char absent[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
 		godbolt_absent(call, absent);
 		godbolt_catalog_hint(call, "");
-		return godbolt_refuse(call, "These compiler ids are not in the list of language "
-		                      "%.*s: %s. %s", (int)call->language.len, call->language.ptr,
-		                      absent, call->why);
+		return godbolt_refuse(call->slot, "These compiler ids are not in the list of "
+		                      "language %.*s: %s. %s", (int)call->language.len,
+		                      call->language.ptr, absent, call->why);
 	}
 	call->phase = call->share ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
@@ -1540,39 +1575,26 @@ godbolt_drivers_end (struct godbolt *call)
 
 /* Sends the request of the list of languages, or of the list of compilers
  * of the call's language.  The next step reads the response.  Returns
- * GODBOLT_WAIT, or GODBOLT_ENDED if the call failed. */
+ * GODBOLT_WAIT, or GODBOLT_ENDED. */
 static enum godbolt_go
 godbolt_list_send (struct godbolt *call)
 {
-	char *u = godbolt_cat(call->url, (struct tool_text){ call->cfg->url, call->cfg->len });
-	enum godbolt_req kind = GODBOLT_GET_COMPILERS;
-	if (call->action == GODBOLT_LANGUAGES) {
-		u = godbolt_cat(u, TOOL_TEXT("/api/languages"));
-		kind = GODBOLT_GET_LANGUAGES;
-	} else {
-		u = godbolt_cat(u, TOOL_TEXT("/api/compilers/"));
-		u = godbolt_cat_path(u, call->language);
-		u = godbolt_cat(u, TOOL_TEXT("?fields=" GODBOLT_FIELDS));
-	}
-	*u = '\0';
-	godbolt_request(call, kind, nullptr, 0);
+	if (call->action == GODBOLT_LANGUAGES)
+		godbolt_request(call, GODBOLT_GET_LANGUAGES, (struct tool_text){}, nullptr, 0);
+	else
+		godbolt_request(call, GODBOLT_GET_COMPILERS, call->language, nullptr, 0);
 	call->phase = GODBOLT_LIST;
-	enum godbolt_go const r = godbolt_send(call);
-	return r != GODBOLT_BAD ? r : godbolt_refuse(call, "askai could not get the list from "
-	                                             "Compiler Explorer (%s).", call->why);
+	return godbolt_send(call);
 }
-
-#undef GODBOLT_FIELDS
 
 /* The phase GODBOLT_LIST.  It reads the response to the request of the
  * list.  For godbolt_catalog, it writes the first line of the output. */
 static enum godbolt_go
 godbolt_list (struct godbolt *call)
 {
-	struct web_response r;
-	enum godbolt_go const got = godbolt_result(call, &r);
+	enum godbolt_go const got = godbolt_result(call);
 	if (got == GODBOLT_BAD)
-		return godbolt_refuse(call, "askai could not get the list of %s from "
+		return godbolt_refuse(call->slot, "askai could not get the list of %s from "
 		                      "Compiler Explorer (%s).", call->action == GODBOLT_LANGUAGES
 		                      ? "languages" : "compilers", call->why);
 	if (got != GODBOLT_GO)
@@ -1587,7 +1609,8 @@ godbolt_list (struct godbolt *call)
 		mcp_slot_fail(call->slot, ENOMEM);
 		return GODBOLT_ENDED;
 	}
-	return godbolt_put(call, godbolt_headers[call->action]) ? godbolt_fail(call) : GODBOLT_GO;
+	return godbolt_put(call, godbolt_actions[call->action].header) ? godbolt_fail(call)
+	                                                                : GODBOLT_GO;
 }
 
 /* The phase GODBOLT_ROWS.  It parses the next elements of the list.  After
@@ -1596,17 +1619,14 @@ godbolt_list (struct godbolt *call)
 static enum godbolt_go
 godbolt_rows (struct godbolt *call)
 {
-	struct web_response r;
-	if (mcp_slot_fetched(call->slot, &r) || (!r.body && r.len))
-		return godbolt_refuse(call, "askai has no response to the request of the list.");
 	bool const catalog = call->tool == GODBOLT_CATALOG;
-	if (godbolt_list_parse(call, r.body, r.len, !catalog ? godbolt_driver_row
-	                                            : call->action == GODBOLT_LANGUAGES
-	                                            ? godbolt_language_row : godbolt_compiler_row))
+	if (godbolt_list_parse(call, !catalog ? godbolt_driver_row
+	                             : call->action == GODBOLT_LANGUAGES ? godbolt_language_row
+	                             : godbolt_compiler_row))
 		return godbolt_fail(call);
 	if (call->list == GODBOLT_LIST_BAD)
-		return godbolt_refuse(call, "Compiler Explorer sent a list that is not valid: %s.",
-		                      call->why);
+		return godbolt_refuse(call->slot, "Compiler Explorer sent a list that is not "
+		                      "valid: %s.", call->why);
 	if (call->list != GODBOLT_LIST_END)
 		return GODBOLT_GO;
 	return catalog ? godbolt_catalog_end(call) : godbolt_drivers_end(call);
@@ -1617,9 +1637,8 @@ godbolt_rows (struct godbolt *call)
 static size_t
 godbolt_state_size (struct godbolt const *call)
 {
-	uint32_t const jobs = (uint32_t)call->n_ids * call->n_args;
 	size_t need = 0;
-	for (uint32_t j = 0; j < jobs; ++j)
+	for (uint32_t j = 0; j < call->jobs; ++j)
 		need += 6 * call->args[j % call->n_args].len + GODBOLT_ID_MAX + 512;
 	return need;
 }
@@ -1635,9 +1654,9 @@ godbolt_escape_source (struct godbolt *call)
 {
 	struct tool_text const prefix = TOOL_TEXT("{\"sessions\":[{\"source\":\"");
 	if (!call->body) {
-		call->cap = prefix.len + 6 * call->source.len + GODBOLT_TAIL_MAX +
-		            (call->share ? godbolt_state_size(call) : 0);
-		call->body = malloc(call->cap);
+		size_t const cap = prefix.len + 6 * call->source.len + GODBOLT_TAIL_MAX +
+		                   (call->share ? godbolt_state_size(call) : 0);
+		call->body = malloc(cap);
 		if (!call->body) {
 			mcp_slot_fail(call->slot, ENOMEM);
 			return GODBOLT_ENDED;
@@ -1654,8 +1673,8 @@ godbolt_escape_source (struct godbolt *call)
 	if (call->off < call->source.len)
 		return GODBOLT_GO;
 	if (call->head - GODBOLT_SKIP > WEB_SEND_MAX - GODBOLT_TAIL_MAX)
-		return godbolt_refuse(call, "The body of a request would be longer than 4 MiB, "
-		                      "because the source has %zu bytes as a JSON string.",
+		return godbolt_refuse(call->slot, "The body of a request would be longer than "
+		                      "4 MiB, because the source has %zu bytes as a JSON string.",
 		                      call->head - prefix.len);
 	if (call->tool != GODBOLT_COMPILE)
 		return godbolt_list_send(call);
@@ -1673,18 +1692,17 @@ godbolt_job_recipe (struct godbolt const *call,
 	return &godbolt_recipes[call->tool][call->drivers[job / call->n_args]];
 }
 
-/* Writes the arguments of the compilation @p job to @p d, as the inside of
- * a JSON string.  The arguments are the flags of the recipe and the
- * argument string, separated by spaces.  Stores in @p *arg where the
- * escaped argument string begins.  Returns the end of the text in @p d. */
+/* Writes the arguments of the compilation call->job to @p d, which is in
+ * the body, as the inside of a JSON string.  The arguments are the flags
+ * of the recipe and the argument string, separated by spaces.  Stores in
+ * call->arg_at and call->arg_len where the escaped argument string is in
+ * the body.  Returns the end of the text in @p d. */
 static char *
-godbolt_cat_arguments (struct godbolt const  *call,
-                       char                  *d,
-                       uint32_t               job,
-                       char                 **arg)
+godbolt_cat_arguments (struct godbolt *call,
+                       char           *d)
 {
-	struct godbolt_recipe const *r = godbolt_job_recipe(call, job);
-	struct tool_text const a = call->args[job % call->n_args];
+	struct godbolt_recipe const *r = godbolt_job_recipe(call, call->job);
+	struct tool_text const a = call->args[call->job % call->n_args];
 	char const *const flags = d;
 	if (r->windows)
 		d = godbolt_cat(d, godbolt_same(call->language, TOOL_TEXT("c")) ? TOOL_TEXT("/TC")
@@ -1692,27 +1710,25 @@ godbolt_cat_arguments (struct godbolt const  *call,
 	d = godbolt_cat(d, d > flags && r->flags.len ? TOOL_TEXT(" ") : (struct tool_text){});
 	d = godbolt_cat(d, r->flags);
 	d = godbolt_cat(d, d > flags && a.len ? TOOL_TEXT(" ") : (struct tool_text){});
-	*arg = d;
+	char *const end = godbolt_escape(d, a.ptr, a.len);
+	call->arg_at = (size_t)(d - call->body);
+	call->arg_len = (size_t)(end - d);
 	loop_work(call->loop, LOOP_ESCAPE, a.len);
-	return godbolt_escape(d, a.ptr, a.len);
+	return end;
 }
 
 /* Writes the part of the body of the request of the compilation call->job
  * that follows the source: the language, the arguments, the filters and
- * the compiler options.  Stores in call->arg_at and call->arg_len where the
- * escaped argument string is in the body. */
+ * the compiler options. */
 static void
 godbolt_job_body (struct godbolt *call)
 {
 	char *d = godbolt_cat(call->body + call->head, TOOL_TEXT("\",\"lang\":\""));
 	d = godbolt_cat(d, call->language);
 	d = godbolt_cat(d, TOOL_TEXT("\",\"options\":{\"userArguments\":\""));
-	char *arg;
-	d = godbolt_cat_arguments(call, d, call->job, &arg);
-	call->arg_at = (size_t)(arg - call->body);
-	call->arg_len = (size_t)(d - arg);
+	d = godbolt_cat_arguments(call, d);
 	d = godbolt_cat(d, TOOL_TEXT("\",\"filters\":"));
-	d = godbolt_cat_filters(d, call->tool == GODBOLT_COMPILE ? call->filters : 0);
+	d = godbolt_cat_filters(d, call->filters);
 	d = godbolt_cat(d, TOOL_TEXT(",\"compilerOptions\":"));
 	d = godbolt_cat(d, godbolt_job_recipe(call, call->job)->options);
 	d = godbolt_cat(d, TOOL_TEXT("}}"));
@@ -1760,9 +1776,8 @@ static_assert(GODBOLT_LINK_MAX == 8192, "the text of the line has 8192 bytes");
 static enum godbolt_go
 godbolt_state_begin (struct godbolt *call)
 {
-	uint32_t const jobs = (uint32_t)call->n_ids * call->n_args;
 	uint32_t sent = 0;
-	for (uint32_t j = 0; j < jobs; ++j)
+	for (uint32_t j = 0; j < call->jobs; ++j)
 		sent += godbolt_job_recipe(call, j)->from != GODBOLT_FROM_NONE;
 	call->phase = GODBOLT_JOB;
 	if (!sent)
@@ -1786,40 +1801,31 @@ godbolt_state_begin (struct godbolt *call)
 static enum godbolt_go
 godbolt_state (struct godbolt *call)
 {
-	uint32_t const jobs = (uint32_t)call->n_ids * call->n_args;
 	char *d = call->body + call->len;
-	for (; call->job < jobs; ++call->job) {
+	for (; call->job < call->jobs; ++call->job) {
 		if (godbolt_job_recipe(call, call->job)->from == GODBOLT_FROM_NONE)
 			continue;
 		if (loop_room(call->loop, LOOP_ESCAPE) < call->args[call->job % call->n_args].len)
 			break;
-		char *arg;
 		d = godbolt_cat(d, d[-1] == '[' ? TOOL_TEXT("{\"id\":\"") : TOOL_TEXT(",{\"id\":\""));
 		d = godbolt_cat(d, call->ids[call->job / call->n_args]);
 		d = godbolt_cat(d, TOOL_TEXT("\",\"options\":\""));
-		d = godbolt_cat_arguments(call, d, call->job, &arg);
+		d = godbolt_cat_arguments(call, d);
 		d = godbolt_cat(d, TOOL_TEXT("\",\"filters\":"));
-		d = godbolt_cat_filters(d, call->tool == GODBOLT_COMPILE ? call->filters : 0);
+		d = godbolt_cat_filters(d, call->filters);
 		d = godbolt_cat(d, TOOL_TEXT(",\"libs\":[]}"));
 	}
 	call->len = (size_t)(d - call->body);
-	if (call->job < jobs)
+	if (call->job < call->jobs)
 		return GODBOLT_GO;
 	call->len = (size_t)(godbolt_cat(d, TOOL_TEXT("]}]}")) - call->body);
 	call->job = 0;
 	call->phase = GODBOLT_JOB;
 	if (call->cfg->share == GODBOLT_SHARE_STATE)
 		return godbolt_state_link(call) ? godbolt_fail(call) : GODBOLT_GO;
-	char *u = godbolt_cat(call->url, (struct tool_text){ call->cfg->url, call->cfg->len });
-	*godbolt_cat(u, TOOL_TEXT("/api/shortener")) = '\0';
-	godbolt_request(call, GODBOLT_POST_SHORTEN, call->body, call->len);
+	godbolt_request(call, GODBOLT_POST_SHORTEN, (struct tool_text){}, call->body, call->len);
 	call->phase = GODBOLT_LINK;
-	enum godbolt_go const r = godbolt_send(call);
-	if (r != GODBOLT_BAD)
-		return r;
-	call->phase = GODBOLT_JOB;
-	return godbolt_putf(call, "Link: none. The request for a short link failed (%.*s).\n",
-	                    (int)call->why_len, call->why) ? godbolt_fail(call) : GODBOLT_GO;
+	return godbolt_send(call);
 }
 
 /* The phase GODBOLT_LINK.  It reads the response with the short link, and
@@ -1830,8 +1836,7 @@ godbolt_state (struct godbolt *call)
 static enum godbolt_go
 godbolt_link (struct godbolt *call)
 {
-	struct web_response r;
-	enum godbolt_go const got = godbolt_result(call, &r);
+	enum godbolt_go const got = godbolt_result(call);
 	if (got == GODBOLT_WAIT || got == GODBOLT_ENDED)
 		return got;
 	call->phase = GODBOLT_JOB;
@@ -1839,16 +1844,11 @@ godbolt_link (struct godbolt *call)
 		return godbolt_putf(call, "Link: none. The request for a short link failed (%.*s).\n",
 		                    (int)call->why_len, call->why) ? godbolt_fail(call) : GODBOLT_GO;
 	json_tokener_reset(call->tok);
-	struct json_object *doc = json_tokener_parse_ex(call->tok, r.body ? r.body : "",
-	                                                (int)r.len);
-	loop_work(call->loop, LOOP_PARSE, r.len);
+	struct json_object *doc = json_tokener_parse_ex(call->tok, call->resp.ptr,
+	                                                (int)call->resp.len);
+	loop_work(call->loop, LOOP_PARSE, call->resp.len);
 	struct tool_text const link = godbolt_member(doc, "url");
-	bool valid = link.len <= GODBOLT_SHORT_MAX &&
-	             ((link.len > 7 && !memcmp(link.ptr, "http://", 7)) ||
-	              (link.len > 8 && !memcmp(link.ptr, "https://", 8)));
-	for (size_t i = 0; valid && i < link.len; ++i)
-		valid = link.ptr[i] > ' ' && link.ptr[i] <= '~';
-	if (valid) {
+	if (link.len <= GODBOLT_SHORT_MAX && godbolt_scheme(link)) {
 		godbolt_put(call, TOOL_TEXT("Link: "));
 		godbolt_put(call, link);
 		godbolt_put(call, TOOL_TEXT("\n"));
@@ -1915,7 +1915,6 @@ static enum godbolt_go
 godbolt_end (struct godbolt *call)
 {
 	uint32_t const *c = call->counts;
-	uint32_t const jobs = (uint32_t)call->n_ids * call->n_args;
 	if (call->tool == GODBOLT_TARGETS)
 		godbolt_put(call, TOOL_TEXT("The facts come from predefined macros. data_model "
 		                            "describes only the sizes of int, long and "
@@ -1923,8 +1922,8 @@ godbolt_end (struct godbolt *call)
 	godbolt_putf(call, "Of %" PRIu32 " compilation%s, %" PRIu32 " ended with exit code "
 	             "0, %" PRIu32 " ended with another exit code or a timeout, %" PRIu32
 	             " ended with a failed request, and %" PRIu32 " ended without a "
-	             "request.\n", jobs, godbolt_s(jobs), c[GODBOLT_ZERO], c[GODBOLT_OTHER],
-	             c[GODBOLT_FAILED], c[GODBOLT_UNSENT]);
+	             "request.\n", call->jobs, godbolt_s(call->jobs), c[GODBOLT_ZERO],
+	             c[GODBOLT_OTHER], c[GODBOLT_FAILED], c[GODBOLT_UNSENT]);
 	if (call->e)
 		return godbolt_fail(call);
 	mcp_slot_finish(call->slot, c[GODBOLT_ZERO] || c[GODBOLT_OTHER] ? 0 : TOOL_FAILED);
@@ -1937,7 +1936,7 @@ godbolt_end (struct godbolt *call)
 static enum godbolt_go
 godbolt_job (struct godbolt *call)
 {
-	if (call->job == call->n_ids * call->n_args)
+	if (call->job == call->jobs)
 		return godbolt_end(call);
 	godbolt_job_body(call);
 	if (call->full) {
@@ -1948,15 +1947,10 @@ godbolt_job (struct godbolt *call)
 		godbolt_why(call, "not sent, because MSVC cannot output its predefined macros");
 		return godbolt_record(call, GODBOLT_UNSENT);
 	}
-	char *u = godbolt_cat(call->url, (struct tool_text){ call->cfg->url, call->cfg->len });
-	u = godbolt_cat(u, TOOL_TEXT("/api/compiler/"));
-	u = godbolt_cat_path(u, call->ids[call->job / call->n_args]);
-	*godbolt_cat(u, TOOL_TEXT("/compile")) = '\0';
-	godbolt_request(call, GODBOLT_POST_COMPILE, call->body + GODBOLT_SKIP,
-	                call->len - GODBOLT_SKIP);
+	godbolt_request(call, GODBOLT_POST_COMPILE, call->ids[call->job / call->n_args],
+	                call->body + GODBOLT_SKIP, call->len - GODBOLT_SKIP);
 	call->phase = GODBOLT_ANSWER;
-	enum godbolt_go const r = godbolt_send(call);
-	return r == GODBOLT_BAD ? godbolt_record(call, GODBOLT_FAILED) : r;
+	return godbolt_send(call);
 }
 
 /* The phase GODBOLT_ANSWER.  It reads the response to the compilation, and
@@ -1964,8 +1958,7 @@ godbolt_job (struct godbolt *call)
 static enum godbolt_go
 godbolt_answer (struct godbolt *call)
 {
-	struct web_response r;
-	enum godbolt_go const got = godbolt_result(call, &r);
+	enum godbolt_go const got = godbolt_result(call);
 	if (got == GODBOLT_BAD)
 		return godbolt_record(call, GODBOLT_FAILED);
 	if (got != GODBOLT_GO)
@@ -1974,16 +1967,6 @@ godbolt_answer (struct godbolt *call)
 	call->off = 0;
 	call->phase = GODBOLT_PARSE;
 	return GODBOLT_GO;
-}
-
-/* Returns the member @p name of @p obj, or nullptr if @p obj has no such
- * member. */
-static struct json_object *
-godbolt_get (struct json_object *obj,
-             char const         *name)
-{
-	struct json_object *v = nullptr;
-	return json_object_object_get_ex(obj, name, &v) ? v : nullptr;
 }
 
 /* Adds the section @p sec, whose text is @p v, to the record. */
@@ -2060,12 +2043,9 @@ static int
 godbolt_targets_parse (struct godbolt *call)
 {
 	struct json_object *v = call->secs[0];
-	struct tool_text text = {};
+	struct tool_text text = godbolt_string(v);
 	char *joined = nullptr;
-	if (json_object_is_type(v, json_type_string)) {
-		text = (struct tool_text){ json_object_get_string(v),
-		                           (size_t)json_object_get_string_len(v) };
-	} else if (json_object_is_type(v, json_type_array)) {
+	if (json_object_is_type(v, json_type_array)) {
 		int e;
 		joined = godbolt_join(call, v, &text.len, &e);
 		if (!joined)
@@ -2131,26 +2111,19 @@ godbolt_classify (struct godbolt *call)
 static enum godbolt_go
 godbolt_parse (struct godbolt *call)
 {
-	struct web_response r;
-	if (mcp_slot_fetched(call->slot, &r) || (!r.body && r.len)) {
-		godbolt_why(call, "askai has no response to the request");
-		return godbolt_record(call, GODBOLT_FAILED);
-	}
-	uint64_t room = loop_room(call->loop, LOOP_PARSE);
-	uint64_t const values = loop_room(call->loop, LOOP_VALUES) * GODBOLT_VALUE_BYTES;
-	room = room < values ? room : values;
-	size_t n = r.len - call->off;
+	struct tool_text const body = call->resp;
+	uint64_t const room = godbolt_parse_room(call);
+	size_t n = body.len - call->off;
 	n = n < room ? n : (size_t)room;
-	if (!n && call->off < r.len)
+	if (!n && call->off < body.len)
 		return GODBOLT_GO;
-	struct json_object *doc = n ? json_tokener_parse_ex(call->tok, r.body + call->off, (int)n)
+	struct json_object *doc = n ? json_tokener_parse_ex(call->tok, body.ptr + call->off, (int)n)
 	                            : nullptr;
 	enum json_tokener_error const err = n ? json_tokener_get_error(call->tok)
 	                                      : json_tokener_continue;
-	loop_work(call->loop, LOOP_PARSE, n);
-	loop_work(call->loop, LOOP_VALUES, n / GODBOLT_VALUE_BYTES);
+	godbolt_parsed(call, n);
 	call->off += n;
-	if (err == json_tokener_continue && call->off < r.len)
+	if (err == json_tokener_continue && call->off < body.len)
 		return GODBOLT_GO;
 	if (err == json_tokener_continue)
 		godbolt_why(call, "the response is not valid: the JSON text ends early");
@@ -2260,9 +2233,7 @@ godbolt_section (struct godbolt *call)
 {
 	struct json_object *v = call->secs[call->sec];
 	bool const text = json_object_is_type(v, json_type_string);
-	size_t const n = text ? (size_t)json_object_get_string_len(v)
-	               : json_object_is_type(v, json_type_array) ? json_object_array_length(v)
-	               : 0;
+	size_t const n = text ? (size_t)json_object_get_string_len(v) : godbolt_array_len(v);
 	if (n && !call->opened)
 		godbolt_put(call, godbolt_sections[call->sec_of[call->sec]]);
 	call->opened = 1;
@@ -2325,7 +2296,7 @@ godbolt_facts (struct godbolt *call)
 		godbolt_put(call, c->n ? TOOL_TEXT(")\n") : TOOL_TEXT("\n"));
 	}
 	bool any = false;
-	for (size_t i = 0; i < sizeof versions / sizeof *versions; ++i) {
+	for (size_t i = 0; i < array_size(versions); ++i) {
 		char const *value = godbolt_probe_macro(p, versions[i].ptr);
 		if (!value)
 			continue;
@@ -2382,9 +2353,8 @@ godbolt_write (struct godbolt *call)
 static size_t
 godbolt_json_size (struct json_object *v)
 {
-	return json_object_is_type(v, json_type_array) ? json_object_array_length(v)
-	     : json_object_is_type(v, json_type_object) ? (size_t)json_object_object_length(v)
-	     : 0;
+	return json_object_is_type(v, json_type_object) ? (size_t)json_object_object_length(v)
+	                                                : godbolt_array_len(v);
 }
 
 /* Returns the child of @p v that godbolt_json_cut() removes: the last
@@ -2522,13 +2492,11 @@ godbolt_text (struct json_object *v,
               size_t              max,
               char const         *set)
 {
-	if (!json_object_is_type(v, json_type_string))
+	struct tool_text const t = godbolt_string(v);
+	if (!t.ptr || t.len < min || t.len > max ||
+	    (set ? strspn(t.ptr, set) : strlen(t.ptr)) != t.len)
 		return (struct tool_text){};
-	char const *s = json_object_get_string(v);
-	size_t const n = (size_t)json_object_get_string_len(v);
-	if (n < min || n > max || (set ? strspn(s, set) : strlen(s)) != n)
-		return (struct tool_text){};
-	return (struct tool_text){ s, n };
+	return t;
 }
 
 /* Reads the array of ids @p v into a->ids.  Returns 0, or EINVAL. */
@@ -2536,7 +2504,7 @@ static int
 godbolt_args_ids (struct godbolt_args *a,
                   struct json_object  *v)
 {
-	size_t const n = json_object_is_type(v, json_type_array) ? json_object_array_length(v) : 0;
+	size_t const n = godbolt_array_len(v);
 	if (!n || n > GODBOLT_IDS)
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i) {
@@ -2559,7 +2527,7 @@ static int
 godbolt_args_strings (struct godbolt_args *a,
                       struct json_object  *v)
 {
-	size_t const n = json_object_is_type(v, json_type_array) ? json_object_array_length(v) : 0;
+	size_t const n = godbolt_array_len(v);
 	if (!n || n > GODBOLT_ARGS)
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i) {
@@ -2626,7 +2594,7 @@ godbolt_args_set (struct godbolt_args *a,
 	case GODBOLT_ARG_ACTION: {
 		struct tool_text const t = godbolt_text(v, 1, GODBOLT_ID_MAX, nullptr);
 		for (a->action = 0; a->action < GODBOLT_ACTIONS; ++a->action)
-			if (godbolt_same(t, godbolt_actions[a->action]))
+			if (godbolt_same(t, godbolt_actions[a->action].name))
 				return 0;
 		return EINVAL;
 	}
@@ -2639,14 +2607,10 @@ godbolt_args_set (struct godbolt_args *a,
 	case GODBOLT_ARG_MATCH:
 		return godbolt_args_words(a, v);
 	case GODBOLT_ARG_KIND:
-		a->kind = godbolt_text(v, 1, GODBOLT_VALUE_MAX, nullptr);
-		return a->kind.ptr ? 0 : EINVAL;
 	case GODBOLT_ARG_FAMILY:
-		a->family = godbolt_text(v, 1, GODBOLT_VALUE_MAX, nullptr);
-		return a->family.ptr ? 0 : EINVAL;
 	case GODBOLT_ARG_ARCHITECTURE:
-		a->architecture = godbolt_text(v, 1, GODBOLT_VALUE_MAX, nullptr);
-		return a->architecture.ptr ? 0 : EINVAL;
+		a->values[arg - GODBOLT_ARG_KIND] = godbolt_text(v, 1, GODBOLT_VALUE_MAX, nullptr);
+		return a->values[arg - GODBOLT_ARG_KIND].ptr ? 0 : EINVAL;
 	case GODBOLT_ARG_LIMIT: {
 		int64_t const n = json_object_is_type(v, json_type_int) ? json_object_get_int64(v)
 		                                                        : 0;
@@ -2655,6 +2619,7 @@ godbolt_args_set (struct godbolt_args *a,
 	}
 	case GODBOLT_ARG_OFFSET:
 		/* mcp_slot_offset() checks the offset. */
+		a->paged = json_object_get_int64(v) > 0;
 		return 0;
 	case GODBOLT_ARG_ARGS:
 		return godbolt_args_strings(a, v);
@@ -2675,29 +2640,13 @@ godbolt_args_set (struct godbolt_args *a,
 	return EINVAL;
 }
 
-/* Formats @p fmt and its arguments into a->text, and sets a->why to that
- * text.  Returns EINVAL. */
-[[gnu::format(printf, 2, 3)]]
-static int
-godbolt_args_refuse (struct godbolt_args *a,
-                     char const          *fmt,
-                     ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	int const n = vsnprintf(a->text, sizeof a->text, fmt, ap);
-	va_end(ap);
-	a->why = (struct tool_text){ a->text, n < 0 ? 0 : (size_t)n < sizeof a->text
-	                                              ? (size_t)n : sizeof a->text - 1 };
-	return EINVAL;
-}
-
-/* Checks the arguments @p args of a call of the tool @p tool, and reads
- * them into @p a.  If the configuration @p cfg turns links off, the tool
- * has no argument share.  Returns 0, or EINVAL with the reason in
- * a->why. */
-static int
+/* Checks the arguments @p args of a call of the tool @p tool in @p slot,
+ * and reads them into @p a.  If the configuration @p cfg turns links off,
+ * the tool has no argument share.  Returns GODBOLT_GO, or GODBOLT_ENDED
+ * after it ended the call with the reason of a refusal. */
+static enum godbolt_go
 godbolt_args_read (struct godbolt_args         *a,
+                   struct mcp_slot             *slot,
                    struct json_object          *args,
                    enum godbolt_tool            tool,
                    struct godbolt_config const *cfg)
@@ -2709,12 +2658,10 @@ godbolt_args_read (struct godbolt_args         *a,
 		.language = TOOL_TEXT("c"),
 		.limit = GODBOLT_LIMIT,
 		.n_args = 1,
-		.filters = GODBOLT_SITE_FILTERS
+		.filters = tool == GODBOLT_COMPILE ? GODBOLT_SITE_FILTERS : 0
 	};
-	if (args && !json_object_is_type(args, json_type_object)) {
-		a->why = TOOL_TEXT("The arguments must be a JSON object.");
-		return EINVAL;
-	}
+	if (args && !json_object_is_type(args, json_type_object))
+		return godbolt_refuse(slot, "The arguments must be a JSON object.");
 	uint32_t seen = 0;
 	struct json_object_iter it;
 	if (args) json_object_object_foreachC(args, it) {
@@ -2726,35 +2673,28 @@ godbolt_args_read (struct godbolt_args         *a,
 			seen |= bit;
 			if (!godbolt_args_set(a, (enum godbolt_arg)i, it.val))
 				continue;
-			a->why = godbolt_arg_rules[i];
-			return EINVAL;
+			return godbolt_refuse(slot, "%s", godbolt_arg_rules[i].ptr);
 		}
-		if (t->args & off & bit) {
-			a->why = TOOL_TEXT("Links are turned off on this server, so the tool has no "
-			                   "argument share.");
-			return EINVAL;
-		}
-		return godbolt_args_refuse(a, "The tool has no argument %.*s.",
-		                           (int)godbolt_cut(it.key, strnlen(it.key, 49), 48), it.key);
+		if (t->args & off & bit)
+			return godbolt_refuse(slot, "Links are turned off on this server, so the "
+			                      "tool has no argument share.");
+		return godbolt_refuse(slot, "The tool has no argument %.*s.",
+		                      (int)godbolt_cut(it.key, strnlen(it.key, 49), 48), it.key);
 	}
 	uint32_t const missing = t->needs & ~seen;
 	uint32_t i = 0;
 	while (i < GODBOLT_ARG_COUNT && !(missing >> i & 1))
 		++i;
 	if (i < GODBOLT_ARG_COUNT)
-		return godbolt_args_refuse(a, "The argument %s is required.", godbolt_arg_names[i]);
+		return godbolt_refuse(slot, "The argument %s is required.", godbolt_arg_names[i]);
 	if (a->action == GODBOLT_LANGUAGES && tool == GODBOLT_CATALOG &&
-	    (a->kind.len || a->family.len || a->architecture.len)) {
-		a->why = TOOL_TEXT("kind, family and architecture are not valid with the action "
-		                   "languages.");
-		return EINVAL;
-	}
-	if ((uint32_t)a->n_ids * a->n_args > GODBOLT_JOBS) {
-		a->why = TOOL_TEXT("The number of compilers times the number of argument strings "
-		                   "must be at most 32.");
-		return EINVAL;
-	}
-	return 0;
+	    (a->values[0].len || a->values[1].len || a->values[2].len))
+		return godbolt_refuse(slot, "kind, family and architecture are not valid with the "
+		                      "action languages.");
+	if ((uint32_t)a->n_ids * a->n_args > GODBOLT_JOBS)
+		return godbolt_refuse(slot, "The number of compilers times the number of argument "
+		                      "strings must be at most 32.");
+	return GODBOLT_GO;
 }
 
 /* Copies @p t to *@p p, advances *@p p past the copy, and returns the
@@ -2791,8 +2731,8 @@ godbolt_create (struct godbolt_args const *a,
 	struct tool_text source = a->source.len ? a->source : TOOL_TEXT("\n");
 	if (targets)
 		source.ptr = godbolt_probe_source(&source.len);
-	size_t bytes = a->language.len + head.len + source.len + a->kind.len + a->family.len +
-	               a->architecture.len;
+	size_t bytes = a->language.len + head.len + source.len + a->values[0].len +
+	               a->values[1].len + a->values[2].len;
 	for (uint8_t i = 0; i < a->n_ids; ++i)
 		bytes += a->ids[i].len;
 	for (uint8_t i = 0; i < a->n_args; ++i)
@@ -2815,11 +2755,13 @@ godbolt_create (struct godbolt_args const *a,
 		.n_ids = a->n_ids,
 		.n_args = a->n_args,
 		.n_words = a->n_words,
+		.jobs = (uint8_t)(a->n_ids * a->n_args),
 		.tool = tool,
 		.action = tool == GODBOLT_CATALOG ? a->action : GODBOLT_COMPILERS,
 		.filters = a->filters,
 		.headers = a->headers,
-		.share = a->share
+		.share = a->share,
+		.paged = a->paged
 	};
 	char *p = call->blob;
 	for (uint8_t i = 0; i < a->n_ids; ++i)
@@ -2834,9 +2776,8 @@ godbolt_create (struct godbolt_args const *a,
 	call->language = godbolt_copy(&p, a->language);
 	call->source = (struct tool_text){ p, head.len + source.len };
 	p = godbolt_cat(godbolt_cat(p, head), source);
-	call->kind = godbolt_copy(&p, a->kind);
-	call->family = godbolt_copy(&p, a->family);
-	call->architecture = godbolt_copy(&p, a->architecture);
+	for (size_t i = 0; i < array_size(a->values); ++i)
+		call->values[i] = godbolt_copy(&p, a->values[i]);
 	loop_work(loop, LOOP_COPY, bytes);
 	*e = 0;
 	return call;
@@ -2861,21 +2802,13 @@ godbolt_start (struct mcp_slot    *slot,
 	void **own = mcp_slot_own(slot);
 	if (!cfg || !loop || !own || cfg->len > GODBOLT_URL_MAX ||
 	    cfg->share >= GODBOLT_SHARES) {
-		mcp_slot_tell(slot, TOOL_TEXT("The call has no valid configuration of the "
-		                              "godbolt plugin, no loop or no own word."),
-		              TOOL_FAILED);
+		godbolt_refuse(slot, "The call has no valid configuration of the godbolt plugin, "
+		               "no loop or no own word.");
 		return;
 	}
 	struct godbolt_args a;
-	if (godbolt_args_read(&a, args, tool, cfg)) {
-		mcp_slot_tell(slot, a.why, TOOL_FAILED);
+	if (godbolt_args_read(&a, slot, args, tool, cfg) || mcp_slot_offset(slot, args))
 		return;
-	}
-	if (mcp_slot_offset(slot, args))
-		return;
-	struct json_object *offset = nullptr;
-	bool const paged = json_object_object_get_ex(args, "offset", &offset) &&
-	                   json_object_get_int64(offset) > 0;
 	int e;
 	struct godbolt *call = godbolt_create(&a, tool, loop, &e);
 	if (!call) {
@@ -2885,7 +2818,6 @@ godbolt_start (struct mcp_slot    *slot,
 	*own = call;
 	call->slot = slot;
 	call->cfg = cfg;
-	call->paged = paged;
 	if (tool != GODBOLT_CATALOG) {
 		call->phase = GODBOLT_ESCAPE;
 		if (!mcp_slot_ready(slot))
@@ -2896,40 +2828,18 @@ godbolt_start (struct mcp_slot    *slot,
 		mcp_slot_park(slot);
 }
 
-static void
-godbolt_catalog_start (struct mcp_slot    *slot,
-                       struct json_object *args)
-{
-	godbolt_start(slot, args, GODBOLT_CATALOG);
-}
+/* The start() of each kind. */
+#define GODBOLT_START(name, NAME, extra)                        \
+	static void                                             \
+	godbolt_##name##_start (struct mcp_slot    *slot,       \
+	                        struct json_object *args)       \
+	{                                                       \
+		godbolt_start(slot, args, GODBOLT_##NAME);      \
+	}
 
-static void
-godbolt_compile_start (struct mcp_slot    *slot,
-                       struct json_object *args)
-{
-	godbolt_start(slot, args, GODBOLT_COMPILE);
-}
+GODBOLT_TOOLS_X(GODBOLT_START)
 
-static void
-godbolt_preprocess_start (struct mcp_slot    *slot,
-                          struct json_object *args)
-{
-	godbolt_start(slot, args, GODBOLT_PREPROCESS);
-}
-
-static void
-godbolt_macros_start (struct mcp_slot    *slot,
-                      struct json_object *args)
-{
-	godbolt_start(slot, args, GODBOLT_MACROS);
-}
-
-static void
-godbolt_targets_start (struct mcp_slot    *slot,
-                       struct json_object *args)
-{
-	godbolt_start(slot, args, GODBOLT_TARGETS);
-}
+#undef GODBOLT_START
 
 /* Stores the reason of a refusal of the options in the @p len bytes at
  * @p why, formatted from @p fmt and its arguments.  Returns EINVAL. */
@@ -2958,19 +2868,15 @@ godbolt_config_url (struct godbolt_config *c,
                     struct json_object    *v)
 {
 	struct tool_text const t = godbolt_text(v, 1, GODBOLT_URL_MAX, nullptr);
-	size_t const scheme = t.len > 7 && !memcmp(t.ptr, "http://", 7) ? 7
-	                    : t.len > 8 && !memcmp(t.ptr, "https://", 8) ? 8 : 0;
+	size_t const scheme = godbolt_scheme(t);
 	if (!scheme)
 		return EINVAL;
 	size_t n = t.len;
 	while (n > scheme && t.ptr[n - 1] == '/')
 		--n;
 	size_t const host = strcspn(t.ptr + scheme, "/");
-	if (n == scheme || !host || memchr(t.ptr + scheme, '@', host))
+	if (n == scheme || !host || memchr(t.ptr + scheme, '@', host) || strpbrk(t.ptr, "?#"))
 		return EINVAL;
-	for (size_t i = 0; i < n; ++i)
-		if (t.ptr[i] <= ' ' || t.ptr[i] > '~' || t.ptr[i] == '?' || t.ptr[i] == '#')
-			return EINVAL;
 	memcpy(c->url, t.ptr, n);
 	c->url[n] = '\0';
 	c->len = (uint32_t)n;
@@ -3289,44 +3195,20 @@ godbolt_targets_definition (void const *service)
 #undef GODBOLT_DEF_SOURCE
 #undef GODBOLT_DEF_LANGUAGE
 
-struct plugin const askai_plugin = {
-	.tools = {
-		{
-			.definition = godbolt_catalog_definition,
-			.start = godbolt_catalog_start,
-			.step = godbolt_step,
-			.drop = godbolt_drop,
-			.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM
-		},
-		{
-			.definition = godbolt_compile_definition,
-			.start = godbolt_compile_start,
-			.step = godbolt_step,
-			.drop = godbolt_drop,
-			.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | TOOL_DETACH
-		},
-		{
-			.definition = godbolt_preprocess_definition,
-			.start = godbolt_preprocess_start,
-			.step = godbolt_step,
-			.drop = godbolt_drop,
-			.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | TOOL_DETACH
-		},
-		{
-			.definition = godbolt_macros_definition,
-			.start = godbolt_macros_start,
-			.step = godbolt_step,
-			.drop = godbolt_drop,
-			.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | TOOL_DETACH
-		},
-		{
-			.definition = godbolt_targets_definition,
-			.start = godbolt_targets_start,
-			.step = godbolt_step,
-			.drop = godbolt_drop,
-			.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | TOOL_DETACH
-		},
+#define GODBOLT_KIND(name, NAME, extra)                                 \
+	{                                                               \
+		.definition = godbolt_##name##_definition,              \
+		.start = godbolt_##name##_start,                        \
+		.step = godbolt_step,                                   \
+		.drop = godbolt_drop,                                   \
+		.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | (extra) \
 	},
+
+struct plugin const askai_plugin = {
+	.tools = { GODBOLT_TOOLS_X(GODBOLT_KIND) },
 	.configure = godbolt_configure,
 	.config_size = sizeof (struct godbolt_config)
 };
+
+#undef GODBOLT_KIND
+#undef GODBOLT_TOOLS_X
