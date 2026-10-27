@@ -721,6 +721,11 @@ struct mcp_req {
 	                                           log */
 };
 
+/* A job's archive id is also its ledger id, or a thread's id, and the
+ * journal's: the same 32 hexadecimal digits. */
+static_assert((int)LEDGER_ID == (int)NOTES_ID && (int)LEDGER_ID == (int)JOURNAL_ID &&
+              sizeof ((struct job *)nullptr)->archive == LEDGER_ID + 1);
+
 /* What an ask call's turns have under way besides themselves: the jobs
  * they started in the background, the timers they set, a wait call that
  * waits for those, what happened that the next result or message says, and
@@ -1924,6 +1929,9 @@ mcp_slot_result (struct mcp_slot  *slot,
 	struct mcp_req *req = slot->req;
 	slot->done = true;
 	if (slot->role != ROLE_OWN) {
+		/* An offset does not apply to the answer of a failed call. */
+		if (failed)
+			slot->skip = 0;
 		dstr_clear(&slot->answer);
 		if (!dstr_cat_n(&slot->answer, text.ptr, text.len)) {
 			mcp_req_fail(req, ENOMEM);
@@ -5504,7 +5512,7 @@ mcp_req_call_launch (struct mcp_req *req)
 	if (*req->archive && !(req->intents >> k & 1) && !req->saved_tools[k]) {
 		struct json_object *intent = jb_object(
 			"index", json_object_new_int64(k),
-			"agenda", json_object_new_boolean(tool->kind->flags & KF_AGENDA),
+			"agenda", json_object_new_boolean((tool->kind->flags & KF_AGENDA) != 0),
 			"name", json_object_new_string_len((char const *)c.name.ptr, (int)c.name.len),
 			"arguments", req->args[k] ? json_object_get(req->args[k])
 			                          : json_object_new_object(), nullptr);
@@ -5927,12 +5935,11 @@ mcp_req_checkpoint (struct mcp_req *req)
 		return e;
 	struct json_object *lent = json_object_new_array();
 	for (uint32_t i = 0; lent && i < st->n_offers; ++i)
-		if ((req->lent >> i) & 1)
-			if (json_object_array_add(lent, json_object_new_string(st->offers[i].name))) {
-				json_object_put(lent);
-				lent = nullptr;
-				break;
-			}
+		if ((req->lent >> i & 1) &&
+		    jb_push(lent, json_object_new_string(st->offers[i].name))) {
+			json_object_put(lent);
+			lent = nullptr;
+		}
 	struct span upload = buf_peek(&req->upload);
 	uint64_t now = mcp_realtime();
 	req->archive_deadline = st->ep->timeout_ms > 0
@@ -6133,7 +6140,16 @@ mcp_recover_back (struct loop           *loop,
 		problem = "A tool call was interrupted with an unknown outcome; reconcile its effects before continuing. AskAI has not repeated it.";
 		goto failed;
 	}
+	/* Before the job is admitted again, a failure here leaves its
+	 * checkpoint as it was, with no end record. */
+	struct json_object *local = last_tool_result ? last_tool_result : state;
 	size_t len = 0;
+	char const *attached = jb_str(jb_get(local, "attached"), &len);
+	if (attached && len &&
+	    mcp_piece_write(&RAW(attached, len), 0, len, &req->attached, SIZE_MAX)) {
+		problem = "Cannot restore this turn's saved attachments.";
+		goto failed;
+	}
 	char const *request = jb_str(jb_get(state, "request"), &len);
 	int64_t turn = json_object_get_int64(jb_get(state, "turn"));
 	uint64_t prompt_at = json_object_get_uint64(jb_get(state, "prompt_at"));
@@ -6173,19 +6189,10 @@ mcp_recover_back (struct loop           *loop,
 	req->traced = (uint32_t)json_object_get_int64(jb_get(state, "traced"));
 	req->reminded = (uint8_t)json_object_get_int(jb_get(state, "reminded"));
 	req->forced = (uint8_t)json_object_get_int(jb_get(state, "forced"));
-	struct json_object *local = last_tool_result ? last_tool_result : state;
 	req->branch = json_object_get_boolean(jb_get(local, "branch"));
 	req->filing = json_object_get_boolean(jb_get(local, "filing"));
 	req->filed = json_object_get_uint64(jb_get(local, "filed"));
 	req->replay_filed = last_tool_result ? req->filed : 0;
-	char const *attached = jb_str(jb_get(local, "attached"), &len);
-	if (attached && len) {
-		e = mcp_piece_write(&RAW(attached, len), 0, len, &req->attached, SIZE_MAX);
-		if (e) {
-			problem = "Cannot restore this turn's saved attachments.";
-			goto failed;
-		}
-	}
 	char const *thread = jb_str(jb_get(state, "thread"), &len);
 	if (thread && notes_is_id(thread, len))
 		memcpy(req->thread, thread, NOTES_ID);
@@ -6197,6 +6204,8 @@ mcp_recover_back (struct loop           *loop,
 	req->recovered = checkpoint->next;
 	checkpoint->next = nullptr;
 	json_object_put(state);
+	/* As an ask does: the turns parse their answers into req->msg. */
+	mcp_req_dispose(req);
 	mcp_req_wait(req);
 	if (mcp_req_background(req, req->self.tool, true))
 		goto out;
@@ -6408,7 +6417,6 @@ mcp_slot_notes_failed (struct mcp_slot *slot,
 		return;
 	}
 	buf_fini(&req->body);
-	slot->skip = 0;
 	if (e == EBUSY) {
 		mcp_slot_result(slot, TEXT("Too many commands are running; try again in "
 		                           "a few seconds."), true);

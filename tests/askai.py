@@ -2393,7 +2393,9 @@ def check_recovery(binary, up):
 
 def check_recovery_tools(binary, up):
     """A completed tool's output survives into the next resumed turn.  A
-    committed intent whose result is unknown must never execute again."""
+    committed intent whose result is unknown must never execute again, and
+    one of a background tool or timer (here wait) stops the job with its own
+    message."""
     hold = up.reply, up.retrieve
     releases = []
 
@@ -2412,7 +2414,9 @@ def check_recovery_tools(binary, up):
         return body["result"]
 
     try:
-        for ambiguous in (False, True):
+        for mode in ("done", "ambiguous", "agenda"):
+            ambiguous = mode != "done"
+            agenda = mode == "agenda"
             with tempfile.TemporaryDirectory() as d:
                 repo, archive, marker = f"{d}/proj", f"{d}/transcripts.git", f"{d}/launched"
                 subprocess.run(["git", "init", "-q", repo], check=True)
@@ -2429,6 +2433,8 @@ def check_recovery_tools(binary, up):
                         "name": "git", "arguments": json.dumps({"repo": "proj", "command": "log",
                                                                     "options": ["--oneline"]}),
                         "status": "completed"}
+                if agenda:
+                    item.update(name="wait", arguments=json.dumps({"seconds": 30}))
                 prefix = sse_wire([
                     (None, {"type": "response.created", "sequence_number": 0,
                             "response": {"id": "response_after_tool", "status": "in_progress"}}),
@@ -2451,7 +2457,8 @@ def check_recovery_tools(binary, up):
                 up.reply, up.retrieve = reply, retrieve
                 args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
                         "--upstream-tools", "--git", repo, "--slots", "2", "--context", "8000",
-                        "--participant", "tool-recovery", "--transcripts", archive)
+                        "--participant", "tool-recovery", "--transcripts", archive) + \
+                       (("--client-jobs",) if agenda else ())
                 env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
                 ai = Askai(binary, *args, env=env)
                 try:
@@ -2459,8 +2466,16 @@ def check_recovery_tools(binary, up):
                     match = re.search(r"Started job ([0-9a-f]{32})\.", result["content"][0]["text"])
                     assert match and not result.get("isError"), result
                     jid = match.group(1)
+                    def intended():
+                        path = f"{archive}/askai-journal/tool-recovery/jobs/{jid}"
+                        try:
+                            with open(path, "rb") as file:
+                                return b'"agenda":true' in file.read()
+                        except FileNotFoundError:
+                            return False
                     try:
-                        wait_for(lambda: os.path.exists(marker), seconds=10)
+                        wait_for(intended if agenda else lambda: os.path.exists(marker),
+                                 seconds=10)
                     except AssertionError:
                         raise AssertionError((call(ai, {"job": jid}), "".join(ai.log), creates))
                     if not ambiguous:
@@ -2493,20 +2508,23 @@ def check_recovery_tools(binary, up):
                     wait_for(ended, seconds=15)
                     result = results[-1]
                     if ambiguous:
-                        assert result.get("isError") and "unknown outcome" in result["content"][0]["text"], result
+                        said = "background tools or timers" if agenda else "unknown outcome"
+                        assert result.get("isError") and said in result["content"][0]["text"], result
                         assert len(creates) == 1 and not resumes, (creates, resumes)
                     else:
                         assert not result.get("isError") and result["content"][0]["text"] == "continued answer", result
                         assert len(creates) == 2 and len(resumes) == 1, (creates, resumes)
                         assert resumes[0]["path"] == "/v1/responses/response_after_tool?stream=true", resumes
-                    with open(marker) as f:
-                        assert f.read() == "launched\n", "a tool was executed twice"
+                    if not agenda:
+                        with open(marker) as f:
+                            assert f.read() == "launched\n", "a tool was executed twice"
     finally:
         for release in releases:
             release.set()
         up.reply, up.retrieve = hold
     print("tool recovery: completed results and tool history retained, next turn "
-          "resumed, interrupted intents stopped without duplicate execution: PASS")
+          "resumed, interrupted intents stopped without duplicate execution, "
+          "interrupted background tools named: PASS")
 
 
 def check_recovery_notes(binary, up):
