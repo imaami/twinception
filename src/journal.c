@@ -58,7 +58,6 @@ struct journal_item {
 	uint32_t               turn;
 	uint8_t                operation;
 	char                   id[JOURNAL_ID + 1];
-	char                   kind[JOURNAL_KIND + 1];
 };
 
 /* The prefix of the participant's reasoning branch. */
@@ -103,7 +102,6 @@ struct journal {
 	pthread_t              thread;
 	struct journal_item   *first;
 	struct journal_item   *last;
-	char                  *path;
 	char                  *ref;
 	uint64_t               seed;
 	uint64_t               clock;
@@ -203,6 +201,21 @@ journal_directory (int         parent,
 	return 0;
 }
 
+/* Make sure only askai's user may change the directory open as @p fd,
+ * which no one else may read either. */
+static int
+journal_private (int fd)
+{
+	struct stat st;
+	if (fstat(fd, &st))
+		return errno;
+	if (st.st_uid != geteuid() || (st.st_mode & 0022))
+		return EACCES;
+	if ((st.st_mode & 0077) && (fchmod(fd, 0700) || fsync(fd)))
+		return errno;
+	return 0;
+}
+
 /** Walk, opening each component without following links. */
 static int
 journal_open_path (struct journal *j,
@@ -230,18 +243,8 @@ journal_open_path (struct journal *j,
 	}
 	free(copy);
 	copy = nullptr;
-	struct stat st;
-	if (!e && fstat(fd, &st))
-		e = errno;
-	if (!e && (st.st_uid != geteuid() || (st.st_mode & 0022)))
-		e = EACCES;
-	if (!e && (st.st_mode & 0077) && (fchmod(fd, 0700) || fsync(fd)))
-		e = errno;
-	if (!e) {
-		j->path = realpath(path, nullptr);
-		if (!j->path)
-			e = errno;
-	}
+	if (!e)
+		e = journal_private(fd);
 	if (e) {
 		if (fd >= 0)
 			close(fd);
@@ -275,19 +278,6 @@ journal_file (int         dir,
               int        *fd)
 {
 	return journal_file_open(dir, name, O_RDWR | O_CREAT, fd);
-}
-
-static int
-journal_private (int fd)
-{
-	struct stat st;
-	if (fstat(fd, &st))
-		return errno;
-	if (st.st_uid != geteuid() || (st.st_mode & 0022))
-		return EACCES;
-	if ((st.st_mode & 0077) && (fchmod(fd, 0700) || fsync(fd)))
-		return errno;
-	return 0;
 }
 
 /** Fixed argv and environment.  Input/output are anonymous files, so a
@@ -512,7 +502,6 @@ static int
 journal_records_read (struct journal         *j,
                       int                     fd,
                       char const             *id,
-                      char const             *kind,
                       bool                    legacy,
                       struct journal_record **out)
 {
@@ -520,10 +509,6 @@ journal_records_read (struct journal         *j,
 	uint64_t sequence = 0;
 	size_t bytes = 0;
 	struct journal_record **tail = out;
-	while (*tail) {
-		bytes += sizeof **tail + (*tail)->len + 1;
-		tail = &(*tail)->next;
-	}
 	for (;;) {
 		struct journal_record *r = nullptr;
 		int e = journal_record_read(j, fd, &offset, &r, legacy);
@@ -558,10 +543,6 @@ journal_records_read (struct journal         *j,
 					at = &old->next;
 				}
 			}
-		}
-		if (kind && strcmp(r->kind, kind)) {
-			journal_records_destroy(&r);
-			continue;
 		}
 		size_t size = sizeof *r + r->len + 1;
 		if (size > JOURNAL_LOAD_MAX - bytes) {
@@ -621,7 +602,7 @@ journal_jobs_scan (struct journal *j)
 			e = EFBIG;
 		struct journal_record *records = nullptr;
 		if (!e)
-			e = journal_records_read(j, input, entry->d_name, nullptr, false, &records);
+			e = journal_records_read(j, input, entry->d_name, false, &records);
 		if (input >= 0)
 			close(input);
 		if (!e) {
@@ -740,11 +721,11 @@ journal_checkpoint_write (struct journal        *j,
 			int input = -1;
 			e = journal_existing(j->jobs_fd, record->id, &input);
 			if (!e)
-				e = journal_records_read(j, input, record->id, nullptr, false, &records);
+				e = journal_records_read(j, input, record->id, false, &records);
 			if (input >= 0)
 				close(input);
 		} else if (j->wal_fd >= 0) {
-			e = journal_records_read(j, j->wal_fd, record->id, nullptr, true, &records);
+			e = journal_records_read(j, j->wal_fd, record->id, true, &records);
 			legacy = records != nullptr;
 		}
 	}
@@ -836,35 +817,16 @@ static int
 journal_load_records (struct journal      *j,
                       struct journal_item *item)
 {
-	if (*item->id) {
-		int fd = -1;
-		int e = journal_existing(j->jobs_fd, item->id, &fd);
-		if (!e)
-			e = journal_records_read(j, fd, item->id, *item->kind ? item->kind : nullptr,
-			                         false, &item->record);
-		if (fd >= 0)
-			close(fd);
-		if (e == ENOENT)
-			e = j->wal_fd < 0 ? 0 :
-			    journal_records_read(j, j->wal_fd, item->id,
-			                         *item->kind ? item->kind : nullptr, true, &item->record);
-		return e;
-	}
-	for (size_t k = 0; k < ARRAY_SIZE(j->jobs); ++k) {
-		struct journal_job const *job = &j->jobs[k];
-		if (!job->bytes)
-			continue;
-		int fd = -1;
-		int e = journal_existing(j->jobs_fd, job->id, &fd);
-		if (!e)
-			e = journal_records_read(j, fd, job->id, *item->kind ? item->kind : nullptr,
-			                         false, &item->record);
-		if (fd >= 0)
-			close(fd);
-		if (e)
-			return e;
-	}
-	return 0;
+	int fd = -1;
+	int e = journal_existing(j->jobs_fd, item->id, &fd);
+	if (!e)
+		e = journal_records_read(j, fd, item->id, false, &item->record);
+	if (fd >= 0)
+		close(fd);
+	if (e == ENOENT)
+		e = j->wal_fd < 0 ? 0 : journal_records_read(j, j->wal_fd, item->id, true,
+		                                             &item->record);
+	return e;
 }
 
 /** A small descriptor cache keeps the common two-model workload free of
@@ -904,18 +866,17 @@ journal_thought_file (struct journal            *j,
 	int n = snprintf(name, sizeof name, "%" PRIu32 ".txt", item->turn);
 	if (!e && (n < 0 || n >= (int)sizeof name))
 		e = EOVERFLOW;
-	if (!e) {
-		if (append)
-			e = journal_file(directory, name, &oldest->fd);
-		else
-			e = journal_file_open(directory, name, O_RDWR, &oldest->fd);
-	}
+	/* Every write appends, wherever a commit left the offset.  Only a new
+	 * file's name needs its directory synchronized. */
+	if (!e)
+		e = journal_file_open(directory, name, O_RDWR | O_APPEND | (append ? O_CREAT : 0),
+		                      &oldest->fd);
 	struct stat st;
 	if (!e && fstat(oldest->fd, &st))
 		e = errno;
 	if (!e && st.st_size < 0)
 		e = EILSEQ;
-	if (!e && fsync(directory))
+	if (!e && append && !st.st_size && fsync(directory))
 		e = errno;
 	if (directory >= 0)
 		close(directory);
@@ -958,8 +919,6 @@ journal_thought_write (struct journal            *j,
 	}
 	if (same == record->len)
 		return 0;
-	if (lseek(file->fd, 0, SEEK_END) < 0)
-		return errno;
 	e = util_write_all(file->fd, record->data + same, record->len - same);
 	if (!e)
 		file->size += record->len - same;
@@ -1298,16 +1257,14 @@ journal_thought_end (struct journal  *j,
 	                      nullptr, 0, loop, done, arg);
 }
 
-static int
-journal_load_submit (struct journal  *j,
-                     char const      *id,
-                     char const      *kind,
-                     struct loop     *loop,
-                     journal_load_cb *done,
-                     void            *arg)
+int
+journal_load_current (struct journal  *j,
+                      char const      *id,
+                      struct loop     *loop,
+                      journal_load_cb *done,
+                      void            *arg)
 {
-	if (!j || !loop || !done || (id && !journal_id(id)) ||
-	    (kind && !journal_word(kind, JOURNAL_KIND)))
+	if (!j || !loop || !done || !journal_id(id))
 		return EINVAL;
 	struct journal_item *item = calloc(1, sizeof *item);
 	if (!item)
@@ -1317,37 +1274,11 @@ journal_load_submit (struct journal  *j,
 	item->loaded = done;
 	item->arg = arg;
 	item->bytes = sizeof *item;
-	if (id)
-		memcpy(item->id, id, JOURNAL_ID + 1);
-	if (kind)
-		memcpy(item->kind, kind, strlen(kind) + 1);
+	memcpy(item->id, id, JOURNAL_ID + 1);
 	int e = journal_enqueue(j, item);
 	if (e)
 		journal_item_destroy(&item);
 	return e;
-}
-
-int
-journal_load (struct journal  *j,
-              char const      *id,
-              char const      *kind,
-              struct loop     *loop,
-              journal_load_cb *done,
-              void            *arg)
-{
-	return journal_load_submit(j, id, kind, loop, done, arg);
-}
-
-int
-journal_load_current (struct journal  *j,
-                      char const      *id,
-                      struct loop     *loop,
-                      journal_load_cb *done,
-                      void            *arg)
-{
-	if (!id)
-		return EINVAL;
-	return journal_load_submit(j, id, nullptr, loop, done, arg);
 }
 
 static int
@@ -1565,8 +1496,6 @@ journal_destroy (struct journal **p_journal)
 		pthread_mutex_destroy(&j->lock);
 	free(j->ref);
 	j->ref = nullptr;
-	free(j->path);
-	j->path = nullptr;
 	free(j);
 	j = nullptr;
 }
@@ -1577,8 +1506,3 @@ journal_seed (struct journal const *j)
 	return j ? j->seed : 0;
 }
 
-char const *
-journal_path (struct journal const *j)
-{
-	return j ? j->path : nullptr;
-}

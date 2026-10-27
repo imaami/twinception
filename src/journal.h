@@ -125,23 +125,12 @@ journal_thought_end (struct journal  *journal,
                      journal_done_cb *done,
                      void            *arg);
 
-/** Loads matching records in sequence order on the writer.  Null id/kind
- * matches all. New-format snapshots contain only recovery controls. The
- * callback owns its records even on error, and releases
- * them with journal_records_destroy().  Reads exceeding JOURNAL_LOAD_MAX
- * fail with EFBIG instead of growing without bound.
- */
-extern int
-journal_load (struct journal  *journal,
-              char const      *id,
-              char const      *kind,
-              struct loop     *loop,
-              journal_load_cb *done,
-              void            *arg);
-
-/** Loads the latest turn's private recovery controls. Missing new-format
- * snapshots fall back to the legacy WAL, read-only. No state returns an
- * empty list. Ownership and callbacks follow journal_load().
+/** Loads the latest turn's private recovery controls of the job @p id, in
+ * sequence order, on the writer. Missing new-format snapshots fall back to
+ * the legacy WAL, read-only. No state returns an empty list. The callback
+ * owns its records even on error, and releases them with
+ * journal_records_destroy(). Reads exceeding JOURNAL_LOAD_MAX fail with
+ * EFBIG instead of growing without bound.
  */
 extern int
 journal_load_current (struct journal  *journal,
@@ -155,8 +144,5 @@ journal_records_destroy (struct journal_record **p_records);
 
 extern uint64_t
 journal_seed (struct journal const *journal);
-
-extern char const *
-journal_path (struct journal const *journal);
 
 #endif /* TWINCEPTION_SRC_JOURNAL_H_ */

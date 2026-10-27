@@ -1,4 +1,4 @@
-/** @file Filtered recovery limits and checkpoint-independent reasoning. */
+/** @file Recovery loads and gaps, and checkpoint-independent reasoning. */
 #define _GNU_SOURCE
 #include <assert.h>
 
@@ -63,11 +63,14 @@ journal_test_thoughts (struct journal *j)
 	assert(!journal_job_find(j, id)->thought_error);
 	assert(!journal_job_find(j, id)->terminal);
 	struct journal_item load = {};
+	memcpy(load.id, id, sizeof load.id);
 	assert(!journal_load_records(j, &load) && !load.record);
 }
 
+/* A load returns its own job's records, in order, however many other jobs
+ * the recovery cache holds. */
 static void
-journal_test_filtered (struct journal *j)
+journal_test_load (struct journal *j)
 {
 	struct journal_record *record = calloc(1, sizeof *record + JOURNAL_RECORD_MAX + 1);
 	assert(record);
@@ -83,20 +86,12 @@ journal_test_filtered (struct journal *j)
 	free(record);
 	record = nullptr;
 	assert(j->recovery_bytes > JOURNAL_LOAD_MAX);
-	struct journal_item load = { .kind = "meta" };
+	struct journal_item load = {};
+	journal_test_id(load.id, 2);
 	assert(!journal_load_records(j, &load));
-	unsigned count = 0;
-	for (struct journal_record *r = load.record; r; r = r->next) {
-		assert(!strcmp(r->kind, "meta") && r->len == 1);
-		++count;
-	}
-	assert(count == 4);
-	journal_records_destroy(&load.record);
-	memcpy(load.kind, "state", sizeof "state");
-	assert(journal_load_records(j, &load) == EFBIG);
-	journal_records_destroy(&load.record);
-	*load.kind = '\0';
-	assert(journal_load_records(j, &load) == EFBIG);
+	struct journal_record const *r = load.record;
+	assert(r && !strcmp(r->kind, "state") && r->len == JOURNAL_RECORD_MAX);
+	assert(r->next && !strcmp(r->next->kind, "meta") && !r->next->next);
 	journal_records_destroy(&load.record);
 }
 
@@ -170,7 +165,7 @@ main (int argc, char **argv)
 	struct journal *j = journal_create(argv[1], "test", why, sizeof why, &e);
 	assert(j && !e);
 	journal_test_thoughts(j);
-	journal_test_filtered(j);
+	journal_test_load(j);
 	journal_test_gap(j);
 	journal_test_legacy(j);
 	/* Finished, checkpoint-less jobs must not exhaust the bounded table. */
@@ -183,6 +178,6 @@ main (int argc, char **argv)
 	}
 	assert(j->n_jobs == JOURNAL_JOBS);
 	journal_destroy(&j);
-	puts("Journal filtered loads and reasoning verification: PASS");
+	puts("Journal loads, write gaps, legacy migration and reasoning verification: PASS");
 	return 0;
 }
