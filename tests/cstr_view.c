@@ -46,6 +46,11 @@ main (void)
 	struct cstr_view borrowed = cstr_view_dstr(&owned);
 	assert(borrowed.data == dstr_get(&owned));
 	assert(cstr_view_equal(borrowed, text));
+	assert(!cstr_view_store(CSTR_VIEW("replaced"), &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("replaced")));
+	assert(!cstr_view_store(empty, &owned) && !dstr_len(&owned));
+	assert(!cstr_view_store(text, &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), text));
 	dstr_cleanup(&owned);
-	puts("cstr views: empty values, counted NULs, byte order and bounded slices: PASS");
+	puts("cstr views: empty values, counted NULs, byte order, bounded slices and stores: PASS");
 }

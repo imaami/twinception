@@ -34,6 +34,12 @@ cstr_view (char const *text);
 extern struct cstr_view
 cstr_view_dstr (struct dstr const *text);
 
+/** Replace the contents of dest with the bytes of text, which must not
+ * point into dest. Returns 0, or ENOMEM with dest left empty. */
+extern int
+cstr_view_store (struct cstr_view  text,
+                 struct dstr      *dest);
+
 /** Compare all bytes, including embedded NULs. Empty views compare equal. */
 extern bool
 cstr_view_equal (struct cstr_view left,
