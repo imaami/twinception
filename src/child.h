@@ -150,4 +150,13 @@ child_release (struct child **p_c);
 extern void
 child_destroy_all (struct list *list);
 
+/** Open /dev/null on each of the descriptors 0 to 2 that is closed, for the
+ *  other direction than its use, so that a read of 0 or a write of 1 or 2
+ *  still fails.  A program that starts children calls this first: the file
+ *  actions of a child replace its descriptors 0 to 2 before they copy the
+ *  ones it gets, so one of those with such a number would be lost or
+ *  swapped.  Returns 0 or an error number. */
+extern int
+child_std_open (void);
+
 #endif /* TWINCEPTION_SRC_CHILD_H_ */

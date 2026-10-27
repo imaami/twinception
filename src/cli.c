@@ -14,6 +14,7 @@
 
 #include "autocomplete_file.h"
 #include "buf.h"
+#include "child.h"
 #include "cli_client.h"
 #include "cli_command.h"
 #include "cli_console.h"
@@ -1298,7 +1299,12 @@ main (int    argc,
 	struct cli_options options = {.prompt = DSTR_INIT, .color = "auto", .reasoning = true};
 	struct cli_error error = {};
 	unsigned exit_signal = 0;
-	int e = cli_args(&options, argc, argv, &error);
+	/* Before askai-cli opens any file, so that none takes such a number. */
+	int e = child_std_open();
+	if (e)
+		(void)cli_error_set(&error, e, "Cannot open /dev/null: %s", strerror(e));
+	else
+		e = cli_args(&options, argc, argv, &error);
 	if (!e && !options.done)
 		e = cli_run(&options, &error, &exit_signal);
 	dstr_cleanup(&options.prompt);

@@ -16,6 +16,7 @@
 #include "blocker.h"
 #include "brainstem.h"
 #include "buf.h"
+#include "child.h"
 #include "config.h"
 #include "git.h"
 #include "home.h"
@@ -897,6 +898,13 @@ int
 main (int   argc,
       char *argv[])
 {
+	/* Before askai opens any file, so that none takes such a number. */
+	int e = child_std_open();
+	if (e) {
+		LOG(LOG_ERROR, "cannot open /dev/null for a closed standard descriptor: %s",
+		    strerror(e));
+		return 1;
+	}
 	int status;
 	struct config cfg = config(argc, argv, &status);
 	if (status < 0)

@@ -570,3 +570,23 @@ child_destroy_all (struct list *list)
 	while (!list_is_empty(list))
 		child_dispose(container_of(list->next, struct child, hook));
 }
+
+int
+child_std_open (void)
+{
+	for (int fd = STDIN_FILENO; fd <= STDERR_FILENO; ++fd) {
+		if (fcntl(fd, F_GETFD) >= 0)
+			continue;
+		/* The lowest free number is fd, as those below it are open.  It is
+		 * open for the other direction than its use, so that a read of 0
+		 * or a write of 1 or 2 still fails with EBADF, as if closed. */
+		int got = open("/dev/null", fd == STDIN_FILENO ? O_WRONLY : O_RDONLY);
+		if (got < 0)
+			return errno;
+		if (got != fd) {
+			close(got);
+			return EBADF;
+		}
+	}
+	return 0;
+}
