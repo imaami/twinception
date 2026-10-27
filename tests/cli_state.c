@@ -73,6 +73,9 @@ main (int argc, char **argv)
 	large = nullptr;
 	char *saved_path = strdup(getenv("PATH"));
 	assert(saved_path && !setenv("PATH", "/nonexistent/askai-git", 1));
+	/* A saved input that repeats needs no Git; an unsaved one retries. */
+	assert(!cli_state_add_input(first, cli_state_input_at(first, cli_state_input_count(first) - 1)));
+	assert(cli_state_add_input(first, CSTR_VIEW("recoverable after Git failure")) == ENOENT);
 	assert(cli_state_add_input(first, CSTR_VIEW("recoverable after Git failure")) == ENOENT);
 	assert(!setenv("PATH", saved_path, 1));
 	free(saved_path);
