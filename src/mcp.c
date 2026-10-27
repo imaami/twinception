@@ -1064,9 +1064,7 @@ mcp_shelve_job (struct mcp *mcp,
 	home_job_recovery_fini(job);
 	job->journal = nullptr;
 	job->archive[0] = '\0';
-	buf_fini(&job->request);
-	buf_fini(&job->key);
-	buf_fini(&job->delta);
+	job_fini(job);
 	shelf_put(&mcp->jobs, &job->spare);
 	hist_add(&mcp->counts->kept.jobs, 1);
 }
@@ -2468,14 +2466,7 @@ mcp_on_job (struct loop *loop,
 		uint32_t refs = bits & JOB_RETURN ? 0 : bits & JOB_DONE ? 2 : 1;
 		if (refs && !job_put(job, refs))
 			return;
-		buf_fini(&job->request);
-		buf_fini(&job->key);
-		buf_fini(&job->result);
-		for (size_t k = 0; k < JOB_CALLS; ++k)
-			buf_fini(&job->calls[k]);
-		buf_fini(&job->thought);
-		buf_fini(&job->replay);
-		buf_fini(&job->delta);
+		job_fini(job);
 		home_job_recovery_fini(job);
 		free(job);
 		return;
@@ -2505,8 +2496,6 @@ mcp_on_job (struct loop *loop,
 		mcp_req_job_done(req);
 		return;
 	}
-	buf_fini(&job->request);
-	buf_fini(&job->key);
 	hist_add(&self->counts->calls.dropped, 1);
 	if (job_put(job, 2))
 		mcp_shelve_job(self, job);
