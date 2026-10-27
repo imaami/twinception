@@ -353,6 +353,15 @@ cli_force_exit (struct cli *cli)
 	_Exit(cli->exit_signal ? 128 + (int)cli->exit_signal : cli->quitting && !cli->ui_error ? 0 : 1);
 }
 
+/** Run a reactor turn until due; exit at once after a failure or past due. */
+static void
+cli_wait (struct cli *cli,
+          uint64_t    due)
+{
+	if (cli_loop_turn(&cli->reactor, due) || loop_clock() >= due)
+		cli_force_exit(cli);
+}
+
 static void
 cli_service (struct cli_loop *loop)
 {
@@ -427,14 +436,8 @@ cli_work_wait (struct cli *cli,
 		return e;
 	bool busy = cli->busy;
 	cli->busy = true;
-	while (!work.done) {
-		uint64_t due = cli->exit_due ? cli->exit_due : UINT64_MAX;
-		int turn = cli_loop_turn(&cli->reactor, due);
-		if (turn)
-			cli_force_exit(cli);
-		if (cli->exit_due && loop_clock() >= cli->exit_due && !work.done)
-			cli_force_exit(cli);
-	}
+	while (!work.done)
+		cli_wait(cli, cli->exit_due ? cli->exit_due : UINT64_MAX);
 	cli->busy = busy;
 	if (!busy && !cli->exit_signal && !cli->quitting)
 		atomic_store(&cli->cancel_io, false);
@@ -519,6 +522,27 @@ cli_save_error (struct cli       *cli,
 	return cli_error_set(error, e, "Cannot save client history: %s%s%.*s", strerror(e),
 	                     recovery.len ? ". Recovery snapshot in history repository: " : "",
 	                     (int)recovery.len, recovery.data ? recovery.data : "");
+}
+
+/** Save an input, without the newline that ends it if it is a line. */
+static int
+cli_history_input (struct cli       *cli,
+                   struct cstr_view  input,
+                   bool              line,
+                   struct cli_error *error)
+{
+	if (line && input.len && input.data[input.len - 1] == '\n')
+		--input.len;
+	return cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_INPUT, input, (struct cstr_view){}, false), error);
+}
+
+/** Mark the client busy or idle; manual tool calls keep it shown busy. */
+static int
+cli_busy (struct cli *cli,
+          bool        busy)
+{
+	cli->busy = busy;
+	return cli_console_busy(cli->console, busy || !list_is_empty(&cli->tools));
 }
 
 struct cli_completion_work {
@@ -755,7 +779,7 @@ cli_manual_done (struct cli_tool        *tool,
 		if (cli->client.notes_dirty || cli->client.catalog_dirty)
 			cli_console_yield(cli->console);
 	}
-	e = cli_console_busy(cli->console, cli->busy || !list_is_empty(&cli->tools));
+	e = cli_busy(cli, cli->busy);
 	if (e && !cli->ui_error)
 		cli->ui_error = e;
 }
@@ -888,11 +912,8 @@ cli_command_run (struct cli               *cli,
 		if (!count)
 			return cli_error_set(error, EINVAL, "There is no previous answer to regenerate");
 		struct cstr_view previous = cli_client_text(jb_get(jb_at(cli->history, count - 1), "prompt"));
-		dstr_clear(prompt);
-		if (!dstr_cat_n(prompt, previous.data, previous.len))
-			return ENOMEM;
 		*action = CLI_ACTION_REGENERATE;
-		return 0;
+		return cstr_view_store(previous, prompt);
 	}
 	case CLI_COMMAND_READ:
 		*action = CLI_ACTION_PROMPT;
@@ -999,10 +1020,7 @@ cli_turn (struct cli       *cli,
 		return e;
 	}
 	if (cli->saved) {
-		struct cstr_view input = cstr_view_dstr(prompt);
-		if (interpret && input.len && input.data[input.len - 1] == '\n')
-			--input.len;
-		int e = cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_INPUT, input, (struct cstr_view){}, false), error);
+		int e = cli_history_input(cli, cstr_view_dstr(prompt), interpret, error);
 		if (e)
 			return e;
 	}
@@ -1063,11 +1081,7 @@ cli_chat (struct cli       *cli,
 			bool handled = input->flags & CLI_INPUT_HANDLED;
 			cli_input_destroy(&input);
 			if (handled) {
-				struct cstr_view record = cstr_view_dstr(&prompt);
-				if (record.len && record.data[record.len - 1] == '\n')
-					--record.len;
-				int e = cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_INPUT,
-				                                              record, (struct cstr_view){}, false), error);
+				int e = cli_history_input(cli, cstr_view_dstr(&prompt), true, error);
 				if (e == EINTR && !cli->exit_signal && !cli->quitting) {
 					atomic_store(&cli->cancel_io, false);
 					e = cli_input_append(cli, &prompt, CLI_INPUT_HANDLED);
@@ -1082,13 +1096,11 @@ cli_chat (struct cli       *cli,
 		               list_is_empty(&cli->tools) && (catalog || cli->client.notes_dirty);
 		int e = 0;
 		if (refresh) {
-			cli->busy = true;
-			e = cli_console_busy(cli->console, true);
+			e = cli_busy(cli, true);
 			if (!e)
 				e = catalog ? cli_client_refresh(&cli->client, error)
 				            : cli_client_refresh_notes(&cli->client, error);
-			cli->busy = false;
-			int display = cli_console_busy(cli->console, !list_is_empty(&cli->tools));
+			int display = cli_busy(cli, false);
 			if (!e)
 				e = display;
 		}
@@ -1128,12 +1140,10 @@ cli_chat (struct cli       *cli,
 				return cli->quitting ? 0 : e;
 		}
 		enum cli_action action;
-		cli->busy = true;
-		e = cli_console_busy(cli->console, true);
+		e = cli_busy(cli, true);
 		if (!e)
 			e = cli_turn(cli, &prompt, interpret, &action, error);
-		cli->busy = false;
-		int display = cli_console_busy(cli->console, !list_is_empty(&cli->tools));
+		int display = cli_busy(cli, false);
 		if (!e)
 			e = display;
 		if (cli->quitting)
@@ -1228,18 +1238,13 @@ cli_run (struct cli_options const *options,
 	cli->quitting = true;
 	if (!list_is_empty(&cli->tools)) {
 		cli_shutdown(cli);
-		while (!list_is_empty(&cli->tools)) {
-			int turn = cli_loop_turn(&cli->reactor, cli->exit_due);
-			if (turn || loop_clock() >= cli->exit_due)
-				cli_force_exit(cli);
-		}
+		while (!list_is_empty(&cli->tools))
+			cli_wait(cli, cli->exit_due);
 	}
 	if (!e && cli->ui_error)
 		e = cli->ui_error;
 	if (cli->exit_signal)
 		e = EINTR;
-	if (e == EPIPE)
-		(void)cli_error_set(error, e, "Cannot write the client output: %s", strerror(e));
 	if (!e && cli->console) {
 		e = cli_console_flush(cli->console);
 		while (!e && cli_console_pending(cli->console) && !cli->exit_signal) {
@@ -1254,17 +1259,11 @@ cli_run (struct cli_options const *options,
 		(void)cli_console_suspend(cli->console);
 	cli_io_stop(cli->io);
 	uint64_t due = cli->exit_due ? cli->exit_due : loop_clock() + 2'000'000'000;
-	while (!cli_io_done(cli->io)) {
-		int turn = cli_loop_turn(&cli->reactor, due);
-		if (turn || loop_clock() >= due)
-			cli_force_exit(cli);
-	}
+	while (!cli_io_done(cli->io))
+		cli_wait(cli, due);
 	cli_network_stop(cli->network);
-	while (!cli_network_done(cli->network)) {
-		int turn = cli_loop_turn(&cli->reactor, due);
-		if (turn || loop_clock() >= due)
-			cli_force_exit(cli);
-	}
+	while (!cli_network_done(cli->network))
+		cli_wait(cli, due);
 	cli_network_destroy(&cli->network);
 	cli_console_destroy(&cli->console);
 	cli_io_destroy(&cli->io);
@@ -1283,7 +1282,7 @@ cli_run (struct cli_options const *options,
 		curl_global_cleanup();
 	if (cli->exit_signal)
 		e = EINTR;
-	if (e == EPIPE && !error->message[0])
+	if (e == EPIPE)
 		(void)cli_error_set(error, e, "Cannot write the client output: %s", strerror(e));
 	*exit_signal = cli->exit_signal;
 	free(cli);
