@@ -86,10 +86,8 @@ static int cli_input_complete(void *context, struct cstr_view line, size_t curso
 {
 	struct cli_input *input = context;
 	int e = autocomplete_complete(input->catalog, line, cursor, matches, count);
-	static struct cstr_view const commands[] = {{"/read ", sizeof "/read " - 1}};
 	if (!e && !*count)
-		e = autocomplete_file_complete(input->files, line, cursor, commands,
-		                                sizeof commands / sizeof *commands, matches, count);
+		e = autocomplete_file_complete(input->files, line, cursor, CSTR_VIEW("/read "), matches, count);
 	if (e) {
 		*matches = nullptr;
 		*count = 0;

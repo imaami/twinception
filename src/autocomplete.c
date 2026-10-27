@@ -83,9 +83,7 @@ struct autocomplete {
 	size_t                        count;
 	size_t                        capacity;
 	size_t                        storage;
-	struct autocomplete_names     chat_participants;
-	struct autocomplete_names     participants;
-	struct autocomplete_names     notebooks;
+	struct autocomplete_names     lists[AUTOCOMPLETE_LISTS];
 	struct autocomplete_notebook *notes;
 	size_t                        notes_count;
 	size_t                        notes_capacity;
@@ -105,14 +103,6 @@ struct autocomplete {
 	size_t                        match_count;
 	size_t                        match_begin;
 };
-
-static struct json_object *
-autocomplete_get (struct json_object *object,
-                  char const         *key)
-{
-	struct json_object *value = nullptr;
-	return object && json_object_object_get_ex(object, key, &value) ? value : nullptr;
-}
 
 static struct cstr_view
 autocomplete_json_text (struct json_object *value)
@@ -135,7 +125,14 @@ autocomplete_name_byte (unsigned char byte)
 	       (byte >= '0' && byte <= '9') || byte == '_' || byte == '-' || byte >= 0x80;
 }
 
-static bool
+bool
+autocomplete_line (struct cstr_view line)
+{
+	return line.data ? !memchr(line.data, '\0', line.len) && jb_utf8(line.data, line.len) == line.len
+	                 : !line.len;
+}
+
+bool
 autocomplete_safe (struct cstr_view value,
                    bool             identifier)
 {
@@ -216,14 +213,6 @@ autocomplete_buffer_reserve (struct dstr *buffer,
 }
 
 static int
-autocomplete_set (struct dstr     *output,
-                  struct cstr_view value)
-{
-	(void)dstr_clear(output);
-	return dstr_cat_n(output, value.data, value.len) ? 0 : ENOMEM;
-}
-
-static int
 autocomplete_unquote (struct dstr     *output,
                       struct cstr_view value)
 {
@@ -274,7 +263,7 @@ autocomplete_quote (struct dstr     *output,
 	if (length > AUTOCOMPLETE_BYTES)
 		return E2BIG;
 	if (!needs)
-		return autocomplete_set(output, value);
+		return cstr_view_store(value, output);
 	(void)dstr_clear(output);
 	if (autocomplete_buffer_reserve(output, length))
 		return ENOMEM;
@@ -365,7 +354,7 @@ autocomplete_json_parse (struct autocomplete *autocomplete,
 	*result = nullptr;
 	if (value.len >= INT_MAX)
 		return E2BIG;
-	int error = autocomplete_set(&autocomplete->json, value);
+	int error = cstr_view_store(value, &autocomplete->json);
 	if (error)
 		return error;
 	if (!autocomplete->parser) {
@@ -394,7 +383,7 @@ autocomplete_resolve (struct autocomplete  *autocomplete,
                       struct json_object  **schema)
 {
 	for (unsigned depth = 0; *schema && depth < 16; ++depth) {
-		struct cstr_view ref = autocomplete_json_text(autocomplete_get(*schema, "$ref"));
+		struct cstr_view ref = autocomplete_json_text(jb_get(*schema, "$ref"));
 		if (!cstr_view_starts(ref, CSTR_VIEW("#/")))
 			break;
 		struct json_object *next = root;
@@ -411,7 +400,7 @@ autocomplete_resolve (struct autocomplete  *autocomplete,
 					byte = ref.data[++i] == '0' ? '~' : '/';
 				(void)dstr_cat_n(&autocomplete->key, &byte, 1);
 			}
-			next = autocomplete_get(next, dstr_get(&autocomplete->key));
+			next = jb_get(next, dstr_get(&autocomplete->key));
 			if (end == ref.len)
 				break;
 			begin = end + 1;
@@ -430,13 +419,13 @@ autocomplete_type_flag (struct cstr_view type)
 		struct cstr_view name;
 		uint64_t         flag;
 	} const types[] = {
-		{CSTR_VIEW("null"), AUTOCOMPLETE_TYPE_NULL},
-		{CSTR_VIEW("boolean"), AUTOCOMPLETE_TYPE_BOOLEAN},
-		{CSTR_VIEW("number"), AUTOCOMPLETE_TYPE_NUMBER},
-		{CSTR_VIEW("integer"), AUTOCOMPLETE_TYPE_INTEGER},
-		{CSTR_VIEW("object"), AUTOCOMPLETE_TYPE_OBJECT},
-		{CSTR_VIEW("array"), AUTOCOMPLETE_TYPE_ARRAY},
-		{CSTR_VIEW("string"), AUTOCOMPLETE_TYPE_STRING},
+		{CSTR_VIEW_INIT("null"), AUTOCOMPLETE_TYPE_NULL},
+		{CSTR_VIEW_INIT("boolean"), AUTOCOMPLETE_TYPE_BOOLEAN},
+		{CSTR_VIEW_INIT("number"), AUTOCOMPLETE_TYPE_NUMBER},
+		{CSTR_VIEW_INIT("integer"), AUTOCOMPLETE_TYPE_INTEGER},
+		{CSTR_VIEW_INIT("object"), AUTOCOMPLETE_TYPE_OBJECT},
+		{CSTR_VIEW_INIT("array"), AUTOCOMPLETE_TYPE_ARRAY},
+		{CSTR_VIEW_INIT("string"), AUTOCOMPLETE_TYPE_STRING},
 	};
 	for (size_t i = 0; i < array_size(types); ++i)
 		if (cstr_view_equal(types[i].name, type))
@@ -546,7 +535,7 @@ autocomplete_candidate_init (struct autocomplete_candidate *candidate,
 	if (text.len && !autocomplete_safe(text, false))
 		return 0;
 	candidate->flags |= AUTOCOMPLETE_VALID;
-	return autocomplete_set(&candidate->value, text);
+	return cstr_view_store(text, &candidate->value);
 }
 
 static int
@@ -561,10 +550,10 @@ autocomplete_property_init (struct autocomplete_property *property,
 	if (error)
 		return error;
 	struct json_object *constant = nullptr;
-	uint64_t flags = autocomplete_type_flags(autocomplete_get(schema, "type"));
+	uint64_t flags = autocomplete_type_flags(jb_get(schema, "type"));
 	if (schema && json_object_object_get_ex(schema, "const", &constant))
 		flags |= AUTOCOMPLETE_CONSTANT;
-	struct json_object *enumeration = autocomplete_get(schema, "enum");
+	struct json_object *enumeration = jb_get(schema, "enum");
 	size_t count = 0;
 	if (json_object_is_type(enumeration, json_type_array)) {
 		flags |= AUTOCOMPLETE_ENUMERATED;
@@ -657,9 +646,8 @@ autocomplete_destroy (struct autocomplete **pp)
 	ac->entries = nullptr;
 	free(ac->tokens);
 	ac->tokens = nullptr;
-	autocomplete_names_fini(&ac->chat_participants);
-	autocomplete_names_fini(&ac->participants);
-	autocomplete_names_fini(&ac->notebooks);
+	for (size_t i = 0; i < AUTOCOMPLETE_LISTS; ++i)
+		autocomplete_names_fini(&ac->lists[i]);
 	for (size_t i = 0; i < ac->notes_capacity; ++i) {
 		dstr_cleanup(&ac->notes[i].tool);
 		dstr_cleanup(&ac->notes[i].selector);
@@ -684,17 +672,17 @@ int
 autocomplete_add_tool (struct autocomplete *ac,
                        struct json_object  *def)
 {
-	struct cstr_view name = autocomplete_json_text(autocomplete_get(def, "name"));
+	struct cstr_view name = autocomplete_json_text(jb_get(def, "name"));
 	if (!autocomplete_safe(name, true))
 		return 0;
 	size_t position = 0;
 	struct autocomplete_entry const *previous = autocomplete_entry_find(ac, name, &position);
 	bool replace = previous != nullptr;
 	struct autocomplete_entry entry = {
-		.tool = {name, autocomplete_json_text(autocomplete_get(def, "title")),
-		         autocomplete_json_text(autocomplete_get(def, "description")), autocomplete_get(def, "inputSchema")},
+		.tool = {name, autocomplete_json_text(jb_get(def, "title")),
+		         autocomplete_json_text(jb_get(def, "description")), jb_get(def, "inputSchema")},
 		.definition = json_object_get(def),
-		.root = autocomplete_get(def, "inputSchema"),
+		.root = jb_get(def, "inputSchema"),
 	};
 	size_t schema_size = 0;
 	int error = 0;
@@ -711,7 +699,7 @@ autocomplete_add_tool (struct autocomplete *ac,
 	error = autocomplete_resolve(ac, entry.root, &entry.root);
 	if (error)
 		goto fail;
-	struct json_object *properties = autocomplete_get(entry.root, "properties");
+	struct json_object *properties = jb_get(entry.root, "properties");
 	if (json_object_is_type(properties, json_type_object)) {
 		size_t count = (size_t)json_object_object_length(properties);
 		if (count) {
@@ -804,7 +792,7 @@ autocomplete_names_set (struct autocomplete_names *names,
 	for (size_t i = 0; i < count; ++i) {
 		if (!autocomplete_safe(values[i], identifier))
 			continue;
-		int error = autocomplete_set(&names->values[names->count], values[i]);
+		int error = cstr_view_store(values[i], &names->values[names->count]);
 		if (error)
 			return error;
 		++names->count;
@@ -827,27 +815,12 @@ autocomplete_names_set (struct autocomplete_names *names,
 }
 
 int
-autocomplete_set_chat_participants (struct autocomplete    *ac,
-                                    struct cstr_view const *names,
-                                    size_t                  count)
+autocomplete_set_names (struct autocomplete    *ac,
+                        enum autocomplete_list  list,
+                        struct cstr_view const *names,
+                        size_t                  count)
 {
-	return autocomplete_names_set(&ac->chat_participants, names, count, true);
-}
-
-int
-autocomplete_set_participants (struct autocomplete    *ac,
-                               struct cstr_view const *names,
-                               size_t                  count)
-{
-	return autocomplete_names_set(&ac->participants, names, count, true);
-}
-
-int
-autocomplete_set_notebooks (struct autocomplete    *ac,
-                            struct cstr_view const *names,
-                            size_t                  count)
-{
-	return autocomplete_names_set(&ac->notebooks, names, count, true);
+	return list < AUTOCOMPLETE_LISTS ? autocomplete_names_set(&ac->lists[list], names, count, true) : EINVAL;
 }
 
 void
@@ -903,9 +876,9 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 			notes[i] = (struct autocomplete_notebook){.tool = dstr(nullptr), .selector = dstr(nullptr)};
 	}
 	struct autocomplete_notebook *notes = &ac->notes[index];
-	int error = autocomplete_set(&notes->tool, tool);
+	int error = cstr_view_store(tool, &notes->tool);
 	if (!error)
-		error = autocomplete_set(&notes->selector, notebook);
+		error = cstr_view_store(notebook, &notes->selector);
 	if (!error)
 		error = autocomplete_names_set(&notes->paths, paths, count, false);
 	if (error) {
@@ -922,14 +895,15 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 size_t
 autocomplete_participant_count (struct autocomplete const *ac)
 {
-	return ac->participants.count;
+	return ac->lists[AUTOCOMPLETE_PARTICIPANTS].count;
 }
 
 struct cstr_view
 autocomplete_participant_at (struct autocomplete const *ac,
                              size_t                     index)
 {
-	return index < ac->participants.count ? cstr_view_dstr(&ac->participants.values[index]) : CSTR_VIEW("");
+	struct autocomplete_names const *names = &ac->lists[AUTOCOMPLETE_PARTICIPANTS];
+	return index < names->count ? cstr_view_dstr(&names->values[index]) : CSTR_VIEW("");
 }
 
 static int
@@ -1091,9 +1065,9 @@ autocomplete_values (struct autocomplete                *ac,
 	if (cstr_view_equal(property->name, CSTR_VIEW("participant")) ||
 	    cstr_view_equal(property->name, CSTR_VIEW("recipient")) ||
 	    cstr_view_equal(property->name, CSTR_VIEW("author")))
-		names = &ac->participants;
+		names = &ac->lists[AUTOCOMPLETE_PARTICIPANTS];
 	else if (cstr_view_equal(property->name, CSTR_VIEW("notebook")))
-		names = &ac->notebooks;
+		names = &ac->lists[AUTOCOMPLETE_NOTEBOOKS];
 	else if (cstr_view_equal(property->name, CSTR_VIEW("file"))) {
 		kind = AUTOCOMPLETE_FILE;
 		error = autocomplete_note_paths(ac, line, entry->tool.name, &names);
@@ -1176,7 +1150,7 @@ autocomplete_commands (struct autocomplete      *ac,
 		    autocomplete_used(ac, line, name,
 		                     current.end > current.begin ? index : SIZE_MAX))
 			continue;
-		int error = autocomplete_set(&ac->quoted, name);
+		int error = cstr_view_store(name, &ac->quoted);
 		if (error)
 			return error;
 		if (current.equals == SIZE_MAX && !dstr_cat_n(&ac->quoted, "=", 1))
@@ -1207,8 +1181,9 @@ autocomplete_mentions (struct autocomplete *ac,
 	bool mention = line.data[begin] == '@';
 	struct cstr_view prefix = cstr_view_slice(line, begin + mention, cursor - begin - mention);
 	bool separate = end == line.len || autocomplete_space((unsigned char)line.data[end]);
-	for (size_t i = 0; i < ac->chat_participants.count; ++i) {
-		struct cstr_view name = cstr_view_dstr(&ac->chat_participants.values[i]);
+	struct autocomplete_names const *names = &ac->lists[AUTOCOMPLETE_CHAT_PARTICIPANTS];
+	for (size_t i = 0; i < names->count; ++i) {
+		struct cstr_view name = cstr_view_dstr(&names->values[i]);
 		if (!cstr_view_starts(name, prefix))
 			continue;
 		(void)dstr_clear(&ac->quoted);
@@ -1226,11 +1201,10 @@ autocomplete_mentions (struct autocomplete *ac,
 }
 
 static int
-autocomplete_match_compare (struct autocomplete const       *ac,
-                            struct autocomplete_match const *a,
-                            struct autocomplete_match const *b)
+autocomplete_match_compare (struct autocomplete_match const *a,
+                            struct autocomplete_match const *b,
+                            size_t                           begin)
 {
-	size_t begin = ac->match_begin;
 	int difference = cstr_view_compare(cstr_view_slice(a->line, begin, a->line.len - begin),
 	                                   cstr_view_slice(b->line, begin, b->line.len - begin));
 	return difference ? difference : (a->cursor > b->cursor) - (a->cursor < b->cursor);
@@ -1239,18 +1213,18 @@ autocomplete_match_compare (struct autocomplete const       *ac,
 /** Heapsort keeps the bounded completion table off the allocator. libc
  * qsort may allocate a merge buffer even when all strings are borrowed. */
 static void
-autocomplete_match_sink (struct autocomplete *ac,
-                         size_t               count,
-                         size_t               parent)
+autocomplete_match_sink (struct autocomplete_match *matches,
+                         size_t                     count,
+                         size_t                     parent,
+                         size_t                     begin)
 {
-	struct autocomplete_match *matches = ac->matches;
 	for (;;) {
 		size_t child = parent * 2 + 1;
 		if (child >= count)
 			return;
-		if (child + 1 < count && autocomplete_match_compare(ac, &matches[child], &matches[child + 1]) < 0)
+		if (child + 1 < count && autocomplete_match_compare(&matches[child], &matches[child + 1], begin) < 0)
 			++child;
-		if (autocomplete_match_compare(ac, &matches[parent], &matches[child]) >= 0)
+		if (autocomplete_match_compare(&matches[parent], &matches[child], begin) >= 0)
 			return;
 		struct autocomplete_match swap = matches[parent];
 		matches[parent] = matches[child];
@@ -1259,17 +1233,18 @@ autocomplete_match_sink (struct autocomplete *ac,
 	}
 }
 
-static void
-autocomplete_matches_sort (struct autocomplete *ac)
+void
+autocomplete_match_sort (struct autocomplete_match *matches,
+                         size_t                     count,
+                         size_t                     begin)
 {
-	size_t count = ac->match_count;
 	for (size_t i = count / 2; i; --i)
-		autocomplete_match_sink(ac, count, i - 1);
+		autocomplete_match_sink(matches, count, i - 1, begin);
 	for (size_t i = count; i > 1; --i) {
-		struct autocomplete_match swap = ac->matches[0];
-		ac->matches[0] = ac->matches[i - 1];
-		ac->matches[i - 1] = swap;
-		autocomplete_match_sink(ac, i - 1, 0);
+		struct autocomplete_match swap = matches[0];
+		matches[0] = matches[i - 1];
+		matches[i - 1] = swap;
+		autocomplete_match_sink(matches, i - 1, 0, begin);
 	}
 }
 
@@ -1284,8 +1259,7 @@ autocomplete_complete (struct autocomplete              *ac,
 	*count = 0;
 	if (line.len > AUTOCOMPLETE_BYTES)
 		return E2BIG;
-	if ((!line.data && line.len) || cursor > line.len ||
-	    (line.len && (memchr(line.data, '\0', line.len) || jb_utf8(line.data, line.len) != line.len)) ||
+	if (!autocomplete_line(line) || cursor > line.len ||
 	    (cursor < line.len && ((unsigned char)line.data[cursor] & 0xc0) == 0x80))
 		return EINVAL;
 	if (!line.data)
@@ -1317,11 +1291,10 @@ autocomplete_complete (struct autocomplete              *ac,
 		return error;
 	for (size_t i = 0; i < ac->match_count; ++i)
 		ac->matches[i].line.data = dstr_get(&ac->lines) + ac->offsets[i];
-	if (ac->match_count > 1)
-		autocomplete_matches_sort(ac);
+	autocomplete_match_sort(ac->matches, ac->match_count, ac->match_begin);
 	size_t used = 0;
 	for (size_t i = 0; i < ac->match_count; ++i) {
-		if (used && !autocomplete_match_compare(ac, &ac->matches[used - 1], &ac->matches[i]))
+		if (used && !autocomplete_match_compare(&ac->matches[used - 1], &ac->matches[i], ac->match_begin))
 			continue;
 		ac->matches[used++] = ac->matches[i];
 	}
@@ -1335,7 +1308,7 @@ autocomplete_entry_validate (struct autocomplete_entry const *entry,
                              struct json_object              *arguments,
                              struct autocomplete_error       *diagnostic)
 {
-	struct json_object *required = autocomplete_get(entry->root, "required");
+	struct json_object *required = jb_get(entry->root, "required");
 	if (json_object_is_type(required, json_type_array))
 		for (size_t i = 0, count = json_object_array_length(required); i < count; ++i) {
 			struct cstr_view key = autocomplete_json_text(json_object_array_get_idx(required, i));
@@ -1359,7 +1332,7 @@ autocomplete_convert (struct autocomplete *autocomplete,
 		else if (raw.data[0] == '\'' || raw.data[0] == '"')
 			flags |= AUTOCOMPLETE_QUOTED;
 	}
-	int error = flags & AUTOCOMPLETE_STRUCTURED ? autocomplete_set(&autocomplete->decoded, raw)
+	int error = flags & AUTOCOMPLETE_STRUCTURED ? cstr_view_store(raw, &autocomplete->decoded)
 	                                            : autocomplete_unquote(&autocomplete->decoded, raw);
 	if (error)
 		return error;
@@ -1396,8 +1369,7 @@ autocomplete_parse_call (struct autocomplete             *ac,
 	(void)autocomplete_diagnose(diagnostic, 0, CSTR_VIEW(""), CSTR_VIEW(""));
 	if (line.len > AUTOCOMPLETE_BYTES)
 		return autocomplete_diagnose(diagnostic, E2BIG, CSTR_VIEW("Tool command is too long"), CSTR_VIEW(""));
-	if ((!line.data && line.len) ||
-	    (line.len && (memchr(line.data, '\0', line.len) || jb_utf8(line.data, line.len) != line.len)))
+	if (!autocomplete_line(line))
 		return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Invalid tool command bytes"), CSTR_VIEW(""));
 	if (!line.data)
 		line.data = "";
@@ -1429,7 +1401,7 @@ autocomplete_parse_call (struct autocomplete             *ac,
 		result = json_object_new_object();
 		if (!result)
 			return ENOMEM;
-		struct json_object *additional = autocomplete_get(entry->root, "additionalProperties");
+		struct json_object *additional = jb_get(entry->root, "additionalProperties");
 		for (size_t i = 2; i < ac->token_count; ++i) {
 			struct autocomplete_token token = ac->tokens[i];
 			if (token.equals == SIZE_MAX || !autocomplete_safe(cstr_view_slice(line, token.begin, token.equals - token.begin), true)) {
@@ -1437,7 +1409,7 @@ autocomplete_parse_call (struct autocomplete             *ac,
 				goto fail;
 			}
 			struct cstr_view key = cstr_view_slice(line, token.begin, token.equals - token.begin);
-			error = autocomplete_set(&ac->key, key);
+			error = cstr_view_store(key, &ac->key);
 			if (error)
 				goto fail;
 			struct json_object *existing = nullptr;

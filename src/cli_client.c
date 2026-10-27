@@ -756,9 +756,9 @@ cli_client_has_action (struct json_object *actions,
 }
 
 static int
-cli_client_catalog_names (struct autocomplete *catalog,
-                          struct json_object  *names,
-                          bool                 notebooks)
+cli_client_catalog_names (struct autocomplete    *catalog,
+                          enum autocomplete_list  list,
+                          struct json_object     *names)
 {
 	cli_client_unique(names);
 	struct cli_client_names views = {};
@@ -766,8 +766,7 @@ cli_client_catalog_names (struct autocomplete *catalog,
 	for (size_t i = 0, count = json_object_array_length(names); !e && i < count; ++i)
 		e = cli_client_names_add(&views, cli_client_text(jb_at(names, i)));
 	if (!e)
-		e = notebooks ? autocomplete_set_notebooks(catalog, views.data, views.count)
-		              : autocomplete_set_participants(catalog, views.data, views.count);
+		e = autocomplete_set_names(catalog, list, views.data, views.count);
 	cli_client_names_fini(&views);
 	return e;
 }
@@ -890,12 +889,12 @@ cli_client_refresh (struct cli_client *client,
 			e = jb_push(notebooks, json_object_new_string("other"));
 	}
 	if (!e)
-		e = cli_client_catalog_names(catalog, names, false);
+		e = cli_client_catalog_names(catalog, AUTOCOMPLETE_PARTICIPANTS, names);
 	if (!e)
-		e = cli_client_catalog_names(catalog, notebooks, true);
+		e = cli_client_catalog_names(catalog, AUTOCOMPLETE_NOTEBOOKS, notebooks);
 	if (!e) {
 		struct cstr_view current = cstr_view_dstr(&participant);
-		e = autocomplete_set_chat_participants(catalog, &current, current.len ? 1 : 0);
+		e = autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, &current, current.len ? 1 : 0);
 	}
 	if (!e && files)
 		e = cli_client_soft(client, CSTR_VIEW("Note filename discovery failed"), error,

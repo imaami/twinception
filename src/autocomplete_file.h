@@ -15,18 +15,17 @@ extern void
 autocomplete_file_destroy (struct autocomplete_file **pp);
 
 /**
- * Completes one filename after a matching command (including its trailing
- * space). Results and scratch buffers remain owned by file until the next
- * call or destruction; input spans must not alias that storage. Keeps
- * capacity, returns at most 256 matches / 16 MiB of text. A missing or
- * unreadable directory has no matches. Returns 0 or an error number.
+ * Completes one filename after command (including its trailing space).
+ * Results and scratch buffers remain owned by file until the next call or
+ * destruction; input spans must not alias that storage. Keeps capacity,
+ * returns at most 256 matches / 16 MiB of text. A missing or unreadable
+ * directory has no matches. Returns 0 or an error number.
  */
 extern int
 autocomplete_file_complete (struct autocomplete_file         *file,
                             struct cstr_view                  line,
                             size_t                            cursor,
-                            struct cstr_view const           *cmds,
-                            size_t                            cmd_count,
+                            struct cstr_view                  command,
                             struct autocomplete_match const **matches,
                             size_t                           *count);
 

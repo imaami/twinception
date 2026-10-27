@@ -1,8 +1,8 @@
 #include "cli_command.h"
 
 #define CLI_COMMAND_ENTRY(id, word, args, policy, syntax, description) \
-	{CSTR_VIEW("/" #word), CSTR_VIEW("/" #word " "), \
-	 CSTR_VIEW("/" #word syntax), CSTR_VIEW(description), \
+	{CSTR_VIEW_INIT("/" #word), CSTR_VIEW_INIT("/" #word " "), \
+	 CSTR_VIEW_INIT("/" #word syntax), CSTR_VIEW_INIT(description), \
 	 CLI_COMMAND_##policy, CLI_COMMAND_##id, CLI_COMMAND_ARGS_##args},
 static struct cli_command const cli_command_table[] = {
 	CLI_COMMANDS(CLI_COMMAND_ENTRY)

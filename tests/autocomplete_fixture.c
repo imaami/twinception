@@ -46,31 +46,31 @@ int autocomplete_fixture (struct autocomplete *autocomplete)
 		return error;
 
 	static struct cstr_view const participants[] = {
-		CSTR_VIEW("alice"), CSTR_VIEW("bob"), CSTR_VIEW("äiti"), CSTR_VIEW("alice"),
-		CSTR_VIEW("bad\x1b[31m"), CSTR_VIEW("bad\xc2\x9b"), CSTR_VIEW("bad\xc0\xaf"),
-		CSTR_VIEW("bad\0name")
+		CSTR_VIEW_INIT("alice"), CSTR_VIEW_INIT("bob"), CSTR_VIEW_INIT("äiti"), CSTR_VIEW_INIT("alice"),
+		CSTR_VIEW_INIT("bad\x1b[31m"), CSTR_VIEW_INIT("bad\xc2\x9b"), CSTR_VIEW_INIT("bad\xc0\xaf"),
+		CSTR_VIEW_INIT("bad\0name")
 	};
 	static struct cstr_view const notebooks[] = {
-		CSTR_VIEW("alice/anonymous/client"), CSTR_VIEW("bob/0123456789abcdef/upstream")
+		CSTR_VIEW_INIT("alice/anonymous/client"), CSTR_VIEW_INIT("bob/0123456789abcdef/upstream")
 	};
 	static struct cstr_view const own[] = {
-		CSTR_VIEW("findings/locks.md"), CSTR_VIEW("design docs/first.md"), CSTR_VIEW("äiti.md"),
-		CSTR_VIEW("o'brien.md"), CSTR_VIEW("findings/locks.md"), CSTR_VIEW("bad\x1b[31m"),
-		CSTR_VIEW("bad\xc2\x9b"), CSTR_VIEW("bad\xc0\xaf"), CSTR_VIEW("bad\0name")
+		CSTR_VIEW_INIT("findings/locks.md"), CSTR_VIEW_INIT("design docs/first.md"), CSTR_VIEW_INIT("äiti.md"),
+		CSTR_VIEW_INIT("o'brien.md"), CSTR_VIEW_INIT("findings/locks.md"), CSTR_VIEW_INIT("bad\x1b[31m"),
+		CSTR_VIEW_INIT("bad\xc2\x9b"), CSTR_VIEW_INIT("bad\xc0\xaf"), CSTR_VIEW_INIT("bad\0name")
 	};
-	static struct cstr_view const other[] = {CSTR_VIEW("model/thoughts.md")};
-	static struct cstr_view const peer[] = {CSTR_VIEW("reviews/reply.md")};
+	static struct cstr_view const other[] = {CSTR_VIEW_INIT("model/thoughts.md")};
+	static struct cstr_view const peer[] = {CSTR_VIEW_INIT("reviews/reply.md")};
 	struct cstr_view const tool = CSTR_VIEW("notes");
 	struct cstr_view const empty = CSTR_VIEW("");
 	struct cstr_view const opposite = CSTR_VIEW("other");
-	error = autocomplete_set_participants(autocomplete, participants,
-	                                      sizeof participants / sizeof *participants);
+	error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_PARTICIPANTS, participants,
+	                               sizeof participants / sizeof *participants);
 	if (!error)
-		error = autocomplete_set_chat_participants(autocomplete, participants,
-		                                           sizeof participants / sizeof *participants);
+		error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_CHAT_PARTICIPANTS, participants,
+		                               sizeof participants / sizeof *participants);
 	if (error)
 		return error;
-	error = autocomplete_set_notebooks(autocomplete, notebooks, sizeof notebooks / sizeof *notebooks);
+	error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_NOTEBOOKS, notebooks, sizeof notebooks / sizeof *notebooks);
 	if (!error)
 		error = autocomplete_set_note_files(autocomplete, tool, empty, own, sizeof own / sizeof *own);
 	if (!error)

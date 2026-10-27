@@ -557,9 +557,8 @@ static int
 cli_completion_work (void *data)
 {
 	struct cli_completion_work *work = data;
-	struct cstr_view const commands[] = {cli_command_at(CLI_COMMAND_READ)->completion};
 	return autocomplete_file_complete(work->files, work->line, work->cursor,
-	                                  commands, array_size(commands), &work->matches, &work->count);
+	                                  cli_command_at(CLI_COMMAND_READ)->completion, &work->matches, &work->count);
 }
 
 static int

@@ -77,25 +77,24 @@ extern struct autocomplete_tool const *
 autocomplete_find_tool (struct autocomplete const *ac,
                         struct cstr_view           name);
 
-/** Copies, sorts and deduplicates names for chat mentions. Only include
- * participants present in this chat, not identities discovered in storage.
- * Keeps allocated capacity. */
-extern int
-autocomplete_set_chat_participants (struct autocomplete    *ac,
-                                    struct cstr_view const *names,
-                                    size_t                  count);
+enum autocomplete_list : uint32_t {
+	/** Names for chat mentions: only the participants present in this
+	 * chat, not identities discovered in storage. */
+	AUTOCOMPLETE_CHAT_PARTICIPANTS,
+	/** Known notebook participants, for tool arguments and the listing. */
+	AUTOCOMPLETE_PARTICIPANTS,
+	/** Notebook selectors, for tool arguments. */
+	AUTOCOMPLETE_NOTEBOOKS,
+	AUTOCOMPLETE_LISTS,
+};
 
-/** Copies, sorts and deduplicates known notebook participant names, used
- * for tool arguments and the participant listing. Keeps allocated capacity. */
+/** Copies, sorts and deduplicates the names of a list. Keeps allocated
+ * capacity. Returns 0, EINVAL or ENOMEM. */
 extern int
-autocomplete_set_participants (struct autocomplete    *ac,
-                               struct cstr_view const *names,
-                               size_t                  count);
-
-extern int
-autocomplete_set_notebooks (struct autocomplete    *ac,
-                            struct cstr_view const *names,
-                            size_t                  count);
+autocomplete_set_names (struct autocomplete    *ac,
+                        enum autocomplete_list  list,
+                        struct cstr_view const *names,
+                        size_t                  count);
 
 /** Drop cached note paths while retaining their working storage. Tool
  * discovery also clears this cache. */
@@ -132,6 +131,24 @@ autocomplete_complete (struct autocomplete              *ac,
                        size_t                            cursor,
                        struct autocomplete_match const **matches,
                        size_t                           *count);
+
+/** Whether line, which may be empty without data, is UTF-8 without NULs,
+ * as completion input must be. */
+extern bool
+autocomplete_line (struct cstr_view line);
+
+/** Whether text is nonempty UTF-8 without C0, DEL or C1 controls; with
+ * identifier, also without spaces, quotes, backslashes or '='. */
+extern bool
+autocomplete_safe (struct cstr_view text,
+                   bool             identifier);
+
+/** Sort matches in place, without allocating, by their lines from begin,
+ * then by cursor. */
+extern void
+autocomplete_match_sort (struct autocomplete_match *matches,
+                         size_t                     count,
+                         size_t                     begin);
 
 /** Parses /tool NAME key=VALUE ... or /tool NAME {JSON}. On success the
  * caller owns args and borrows tool from the catalog. On failure both
