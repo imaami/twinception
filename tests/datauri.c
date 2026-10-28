@@ -8,9 +8,9 @@
 static unsigned failures;
 
 #define CHECK(cond) \
-	((cond) ? (void)0 \
-	        : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-	                                     __FILE__, __LINE__, #cond)))
+        ((cond) ? (void)0 \
+                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
+                                             __FILE__, __LINE__, #cond)))
 
 /* Whether @p uri decodes to the @p len bytes at @p want. */
 static bool

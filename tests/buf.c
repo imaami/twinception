@@ -21,9 +21,9 @@ __asan_default_options (void)
 static unsigned failures;
 
 #define CHECK(cond) \
-	((cond) ? (void)0 \
-	        : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-	                                     __FILE__, __LINE__, #cond)))
+        ((cond) ? (void)0 \
+                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
+                                             __FILE__, __LINE__, #cond)))
 
 /* Append @p len bytes of @p src through a reservation of exactly @p len. */
 static bool

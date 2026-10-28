@@ -32,9 +32,9 @@ turn_clock_gettime (clockid_t        id,
 static unsigned failures;
 
 #define CHECK(cond) \
-	((cond) ? (void)0 \
-	        : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-	                                     __FILE__, __LINE__, #cond)))
+        ((cond) ? (void)0 \
+                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
+                                             __FILE__, __LINE__, #cond)))
 
 /*
  * The variable t stores the state of one run.  In each turn, the handler of

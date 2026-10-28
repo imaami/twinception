@@ -8,9 +8,9 @@
 static unsigned failures;
 
 #define CHECK(cond) \
-	((cond) ? (void)0 \
-	        : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-	                                     __FILE__, __LINE__, #cond)))
+        ((cond) ? (void)0 \
+                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
+                                             __FILE__, __LINE__, #cond)))
 
 /* The slot @p h names, whatever its generation. */
 static uint32_t

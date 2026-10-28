@@ -90,12 +90,12 @@ enum req_id {
 };
 
 #define RPC(id, method, params) \
-	"{\"jsonrpc\":\"2.0\",\"id\":" #id ",\"method\":\"" method "\"" params "}"
+        "{\"jsonrpc\":\"2.0\",\"id\":" #id ",\"method\":\"" method "\"" params "}"
 #define META \
-	"\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"," \
-	"\"io.modelcontextprotocol/clientCapabilities\":{}}"
+        "\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"," \
+        "\"io.modelcontextprotocol/clientCapabilities\":{}}"
 #define ERA26(method) \
-	"MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: " method "\r\n"
+        "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: " method "\r\n"
 #define REQ(hdrs, body) { hdrs, body, sizeof body - 1 }
 
 /* Headers and bodies as tests/askai.py sends them. */
@@ -2016,15 +2016,15 @@ main (int   argc,
 	pthread_t th[BG_MAX];
 	int nth = 0;
 #define START(cond, fn, ...) \
-	do { \
-		if (cond) { \
-			bgs[nth] = (struct bg){ .tcp = tcp, .lat = &lat[nth], __VA_ARGS__ }; \
-			bgs[nth].tcp.src = (uint32_t)(127 << 24 | (nth + 1) << 16); \
-			bgs[nth].tcp.per = bgs[nth].count && fn == jobs_thread; \
-			bgs[nth].t = &bgs[nth].tcp; \
-			nth += !pthread_create(&th[nth], nullptr, fn, &bgs[nth]); \
-		} \
-	} while (0)
+        do { \
+                if (cond) { \
+                        bgs[nth] = (struct bg){ .tcp = tcp, .lat = &lat[nth], __VA_ARGS__ }; \
+                        bgs[nth].tcp.src = (uint32_t)(127 << 24 | (nth + 1) << 16); \
+                        bgs[nth].tcp.per = bgs[nth].count && fn == jobs_thread; \
+                        bgs[nth].t = &bgs[nth].tcp; \
+                        nth += !pthread_create(&th[nth], nullptr, fn, &bgs[nth]); \
+                } \
+        } while (0)
 	START(idle > 0, hold_thread, .name = "idle", .mode = HOLD_IDLE, .count = idle,
 	      .key = { "opened", "served", "closed" });
 	START(loris > 0, hold_thread, .name = "loris", .mode = HOLD_LORIS,

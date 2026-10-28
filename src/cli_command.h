@@ -8,17 +8,17 @@
 
 /** Keep commands in C-locale order: lookup narrows a sorted prefix range. */
 #define CLI_COMMANDS(X) \
-	X(CLEAR, clear, NONE, INTERRUPT, "", "starts a new conversation;") \
-	X(EXIT, exit, NONE, LOCAL, "", "leaves the chat.") \
-	X(HELP, help, NONE, LOCAL, "", "lists commands and editing keys.") \
-	X(HISTORY, history, NONE, LOCAL, "", "displays the completed conversation.") \
-	X(NAMES, names, NONE, LOCAL, "", "lists known session participants.") \
-	X(QUIT, quit, NONE, LOCAL, "", "leaves the chat.") \
-	X(READ, read, FILE, WAIT, " FILE", "sends a text file.") \
-	X(REFRESH, refresh, NONE, WAIT, "", "updates tool and participant discovery.") \
-	X(REGEN, regen, NONE, INTERRUPT, "", "retries the last turn.") \
-	X(TOOL, tool, TOOL_CALL, CONCURRENT, " NAME key=VALUE ... | {JSON}", "calls a tool directly; results stay out of chat history.") \
-	X(TOOLS, tools, TOOL, LOCAL, " [NAME]", "lists accessible tools or shows a tool's schema.")
+        X(CLEAR, clear, NONE, INTERRUPT, "", "starts a new conversation;") \
+        X(EXIT, exit, NONE, LOCAL, "", "leaves the chat.") \
+        X(HELP, help, NONE, LOCAL, "", "lists commands and editing keys.") \
+        X(HISTORY, history, NONE, LOCAL, "", "displays the completed conversation.") \
+        X(NAMES, names, NONE, LOCAL, "", "lists known session participants.") \
+        X(QUIT, quit, NONE, LOCAL, "", "leaves the chat.") \
+        X(READ, read, FILE, WAIT, " FILE", "sends a text file.") \
+        X(REFRESH, refresh, NONE, WAIT, "", "updates tool and participant discovery.") \
+        X(REGEN, regen, NONE, INTERRUPT, "", "retries the last turn.") \
+        X(TOOL, tool, TOOL_CALL, CONCURRENT, " NAME key=VALUE ... | {JSON}", "calls a tool directly; results stay out of chat history.") \
+        X(TOOLS, tools, TOOL, LOCAL, " [NAME]", "lists accessible tools or shows a tool's schema.")
 
 enum cli_command_id {
 #define CLI_COMMAND_ID(id, word, args, policy, syntax, description) CLI_COMMAND_##id,

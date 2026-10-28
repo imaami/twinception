@@ -179,8 +179,8 @@ godbolt_probe_any (struct godbolt_probe    *p,
 }
 
 #define GODBOLT_PROBE_ANY(fact, value, ...)                                 \
-	godbolt_probe_any(p, GODBOLT_PROBE_##fact, value,                   \
-	                  (char const *const[]){ __VA_ARGS__, nullptr })
+        godbolt_probe_any(p, GODBOLT_PROBE_##fact, value,                   \
+                          (char const *const[]){ __VA_ARGS__, nullptr })
 
 /* Derives the architecture.  The function checks the macros of a wider
  * variant of an instruction set before the macros of its family. */

@@ -12,9 +12,9 @@
 static unsigned failures;
 
 #define CHECK(cond) \
-	((cond) ? (void)0 \
-	        : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-	                                     __FILE__, __LINE__, #cond)))
+        ((cond) ? (void)0 \
+                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
+                                             __FILE__, __LINE__, #cond)))
 
 static uint64_t made;
 static uint64_t destroyed;

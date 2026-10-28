@@ -505,67 +505,67 @@ static char const *const group_names[] = {
  * for the two that the file cannot set; its long name; whether it takes an
  * argument; and its short form or OPT_ value. */
 #define CONFIG_OPTIONS(X)                                                         \
-	X(ROOT,      "participant",      required_argument, OPT_PARTICIPANT)      \
-	X(ROOT,      "transcripts",      required_argument, OPT_TRANSCRIPTS)      \
-	X(UPSTREAM,  "provider",         required_argument, 'p')                  \
-	X(UPSTREAM,  "api",              required_argument, OPT_API)              \
-	X(UPSTREAM,  "url",              required_argument, 'u')                  \
-	X(UPSTREAM,  "model",            required_argument, 'm')                  \
-	X(UPSTREAM,  "key-env",          required_argument, 'k')                  \
-	X(UPSTREAM,  "header",           required_argument, 'H')                  \
-	X(UPSTREAM,  "system",           required_argument, 's')                  \
-	X(UPSTREAM,  "temperature",      required_argument, 't')                  \
-	X(UPSTREAM,  "max-tokens",       required_argument, 'n')                  \
-	X(UPSTREAM,  "extra",            required_argument, 'x')                  \
-	X(UPSTREAM,  "background",       no_argument,       OPT_BACKGROUND)       \
-	X(UPSTREAM,  "timeout",          required_argument, 'T')                  \
-	X(UPSTREAM,  "chunk-timeout",    required_argument, OPT_CHUNK_TIMEOUT)    \
-	X(UPSTREAM,  "slots",            required_argument, OPT_SLOTS)            \
-	X(UPSTREAM,  "max-calls",        required_argument, OPT_MAX_CALLS)        \
-	X(UPSTREAM,  "upstream-tools",   no_argument,       OPT_UPSTREAM_TOOLS)   \
-	X(TOOLS,     "notes",            required_argument, OPT_NOTES)            \
-	X(UPSTREAM,  "max-turns",        required_argument, OPT_MAX_TURNS)        \
-	X(UPSTREAM,  "context",          required_argument, OPT_CONTEXT)          \
-	X(UPSTREAM,  "tool-name",        required_argument, OPT_TOOL_NAME)        \
-	X(UPSTREAM,  "tool-description", required_argument, OPT_TOOL_DESCRIPTION) \
-	X(SERVICE,   "listen",           required_argument, 'l')                  \
-	X(SERVICE,   "tls-cert",         required_argument, OPT_TLS_CERT)         \
-	X(SERVICE,   "tls-key",          required_argument, OPT_TLS_KEY)          \
-	X(SERVICE,   "tls-allow-rsa",    no_argument,       OPT_TLS_ALLOW_RSA)    \
-	X(SERVICE,   "allow-origin",     required_argument, 'o')                  \
-	X(TOOLS,     "man",              no_argument,       OPT_MAN)              \
-	X(TOOLS,     "git",              required_argument, OPT_GIT)              \
-	X(TOOLS,     "git-timeout",      required_argument, OPT_GIT_TIMEOUT)      \
-	X(TOOLS,     "client-jobs",      no_argument,       OPT_CLIENT_JOBS)      \
-	X(SERVICE,   "loops",            required_argument, OPT_LOOPS)            \
-	X(SERVICE,   "grace",            required_argument, OPT_GRACE)            \
-	X(SERVICE,   "memory-high",      required_argument, OPT_MEMORY_HIGH)      \
-	X(SERVICE,   "max-head",         required_argument, OPT_MAX_HEAD)         \
-	X(SERVICE,   "max-fields",       required_argument, OPT_MAX_FIELDS)       \
-	X(SERVICE,   "head-timeout",     required_argument, OPT_HEAD_TIMEOUT)     \
-	X(SERVICE,   "max-body",         required_argument, OPT_MAX_BODY)         \
-	X(SERVICE,   "min-body-rate",    required_argument, OPT_MIN_BODY_RATE)    \
-	X(SERVICE,   "body-grace",       required_argument, OPT_BODY_GRACE)       \
-	X(SERVICE,   "body-budget",      required_argument, OPT_BODY_BUDGET)      \
-	X(SERVICE,   "client-budget",    required_argument, OPT_CLIENT_BUDGET)    \
-	X(SERVICE,   "max-depth",        required_argument, OPT_MAX_DEPTH)        \
-	X(SERVICE,   "max-values",       required_argument, OPT_MAX_VALUES)       \
-	X(SERVICE,   "max-members",      required_argument, OPT_MAX_MEMBERS)      \
-	X(SERVICE,   "sse-keepalive",    required_argument, OPT_SSE_KEEPALIVE)    \
-	X(SERVICE,   "max-client-conns", required_argument, OPT_MAX_CLIENT_CONNS) \
-	X(SERVICE,   "idle-timeout",     required_argument, OPT_IDLE_TIMEOUT)     \
-	X(SERVICE,   "output-pause",     required_argument, OPT_OUTPUT_PAUSE)     \
-	X(SERVICE,   "max-output",       required_argument, OPT_MAX_OUTPUT)       \
-	X(SERVICE,   "send-timeout",     required_argument, OPT_SEND_TIMEOUT)     \
-	X(TESTING,   "test-man-recheck", required_argument, OPT_TEST_MAN_RECHECK) \
-	X(TESTING,   "test-stall",       required_argument, OPT_TEST_STALL)       \
-	X(TESTING,   "test-pressure",    required_argument, OPT_TEST_PRESSURE)    \
-	X(TESTING,   "test-fifo",        no_argument,       OPT_TEST_FIFO)        \
-	X(TESTING,   "test-task",        no_argument,       OPT_TEST_TASK)        \
-	X(DEBUGGING, "verbose",          no_argument,       'v')                  \
-	X(DEBUGGING, "watchdog",         required_argument, OPT_WATCHDOG)         \
-	X(NONE,      "config",           required_argument, 'c')                  \
-	X(NONE,      "help",             no_argument,       'h')
+        X(ROOT,      "participant",      required_argument, OPT_PARTICIPANT)      \
+        X(ROOT,      "transcripts",      required_argument, OPT_TRANSCRIPTS)      \
+        X(UPSTREAM,  "provider",         required_argument, 'p')                  \
+        X(UPSTREAM,  "api",              required_argument, OPT_API)              \
+        X(UPSTREAM,  "url",              required_argument, 'u')                  \
+        X(UPSTREAM,  "model",            required_argument, 'm')                  \
+        X(UPSTREAM,  "key-env",          required_argument, 'k')                  \
+        X(UPSTREAM,  "header",           required_argument, 'H')                  \
+        X(UPSTREAM,  "system",           required_argument, 's')                  \
+        X(UPSTREAM,  "temperature",      required_argument, 't')                  \
+        X(UPSTREAM,  "max-tokens",       required_argument, 'n')                  \
+        X(UPSTREAM,  "extra",            required_argument, 'x')                  \
+        X(UPSTREAM,  "background",       no_argument,       OPT_BACKGROUND)       \
+        X(UPSTREAM,  "timeout",          required_argument, 'T')                  \
+        X(UPSTREAM,  "chunk-timeout",    required_argument, OPT_CHUNK_TIMEOUT)    \
+        X(UPSTREAM,  "slots",            required_argument, OPT_SLOTS)            \
+        X(UPSTREAM,  "max-calls",        required_argument, OPT_MAX_CALLS)        \
+        X(UPSTREAM,  "upstream-tools",   no_argument,       OPT_UPSTREAM_TOOLS)   \
+        X(TOOLS,     "notes",            required_argument, OPT_NOTES)            \
+        X(UPSTREAM,  "max-turns",        required_argument, OPT_MAX_TURNS)        \
+        X(UPSTREAM,  "context",          required_argument, OPT_CONTEXT)          \
+        X(UPSTREAM,  "tool-name",        required_argument, OPT_TOOL_NAME)        \
+        X(UPSTREAM,  "tool-description", required_argument, OPT_TOOL_DESCRIPTION) \
+        X(SERVICE,   "listen",           required_argument, 'l')                  \
+        X(SERVICE,   "tls-cert",         required_argument, OPT_TLS_CERT)         \
+        X(SERVICE,   "tls-key",          required_argument, OPT_TLS_KEY)          \
+        X(SERVICE,   "tls-allow-rsa",    no_argument,       OPT_TLS_ALLOW_RSA)    \
+        X(SERVICE,   "allow-origin",     required_argument, 'o')                  \
+        X(TOOLS,     "man",              no_argument,       OPT_MAN)              \
+        X(TOOLS,     "git",              required_argument, OPT_GIT)              \
+        X(TOOLS,     "git-timeout",      required_argument, OPT_GIT_TIMEOUT)      \
+        X(TOOLS,     "client-jobs",      no_argument,       OPT_CLIENT_JOBS)      \
+        X(SERVICE,   "loops",            required_argument, OPT_LOOPS)            \
+        X(SERVICE,   "grace",            required_argument, OPT_GRACE)            \
+        X(SERVICE,   "memory-high",      required_argument, OPT_MEMORY_HIGH)      \
+        X(SERVICE,   "max-head",         required_argument, OPT_MAX_HEAD)         \
+        X(SERVICE,   "max-fields",       required_argument, OPT_MAX_FIELDS)       \
+        X(SERVICE,   "head-timeout",     required_argument, OPT_HEAD_TIMEOUT)     \
+        X(SERVICE,   "max-body",         required_argument, OPT_MAX_BODY)         \
+        X(SERVICE,   "min-body-rate",    required_argument, OPT_MIN_BODY_RATE)    \
+        X(SERVICE,   "body-grace",       required_argument, OPT_BODY_GRACE)       \
+        X(SERVICE,   "body-budget",      required_argument, OPT_BODY_BUDGET)      \
+        X(SERVICE,   "client-budget",    required_argument, OPT_CLIENT_BUDGET)    \
+        X(SERVICE,   "max-depth",        required_argument, OPT_MAX_DEPTH)        \
+        X(SERVICE,   "max-values",       required_argument, OPT_MAX_VALUES)       \
+        X(SERVICE,   "max-members",      required_argument, OPT_MAX_MEMBERS)      \
+        X(SERVICE,   "sse-keepalive",    required_argument, OPT_SSE_KEEPALIVE)    \
+        X(SERVICE,   "max-client-conns", required_argument, OPT_MAX_CLIENT_CONNS) \
+        X(SERVICE,   "idle-timeout",     required_argument, OPT_IDLE_TIMEOUT)     \
+        X(SERVICE,   "output-pause",     required_argument, OPT_OUTPUT_PAUSE)     \
+        X(SERVICE,   "max-output",       required_argument, OPT_MAX_OUTPUT)       \
+        X(SERVICE,   "send-timeout",     required_argument, OPT_SEND_TIMEOUT)     \
+        X(TESTING,   "test-man-recheck", required_argument, OPT_TEST_MAN_RECHECK) \
+        X(TESTING,   "test-stall",       required_argument, OPT_TEST_STALL)       \
+        X(TESTING,   "test-pressure",    required_argument, OPT_TEST_PRESSURE)    \
+        X(TESTING,   "test-fifo",        no_argument,       OPT_TEST_FIFO)        \
+        X(TESTING,   "test-task",        no_argument,       OPT_TEST_TASK)        \
+        X(DEBUGGING, "verbose",          no_argument,       'v')                  \
+        X(DEBUGGING, "watchdog",         required_argument, OPT_WATCHDOG)         \
+        X(NONE,      "config",           required_argument, 'c')                  \
+        X(NONE,      "help",             no_argument,       'h')
 
 #define CONFIG_OPTION(group, name, arg, val) { name, arg, nullptr, val },
 static struct option const options[] = {
@@ -765,8 +765,8 @@ static struct config_number {
 	bool     bytes;
 } const numbers[] = {
 #define TAKE(opt, member, min, max, scale, bytes, flag)                     \
-	{ min, max, scale, flag, opt, offsetof(struct config, member),          \
-	  sizeof ((struct config *)nullptr)->member, bytes }
+        { min, max, scale, flag, opt, offsetof(struct config, member),          \
+          sizeof ((struct config *)nullptr)->member, bytes }
 #define N(opt, member, min, max) TAKE(opt, member, min, max, 1, false, 0)
 #define B(opt, member, min, max) TAKE(opt, member, min, max, 1, true, 0)
 	B(OPT_MAX_HEAD,          http.limits.head,          1, UINT16_MAX),

@@ -119,11 +119,11 @@ static char const *const fixed[] = {
  */
 #define O(s) CSTR_VIEW_INIT(s)
 #define DISPLAY O("--oneline"), O("--stat"), O("--shortstat"), O("--numstat"), \
-	O("--name-only"), O("--name-status"), O("--patch"), O("-p"), O("--no-patch"), \
-	O("--abbrev-commit"), O("--format="), O("--pretty="), O("--date="), \
-	O("--unified="), O("-U#"), O("--word-diff"), O("-w"), O("--ignore-all-space"), \
-	O("-b"), O("--ignore-space-change"), O("--decorate"), O("--no-decorate"), \
-	O("--diff-filter="), O("-M"), O("--find-renames")
+        O("--name-only"), O("--name-status"), O("--patch"), O("-p"), O("--no-patch"), \
+        O("--abbrev-commit"), O("--format="), O("--pretty="), O("--date="), \
+        O("--unified="), O("-U#"), O("--word-diff"), O("-w"), O("--ignore-all-space"), \
+        O("-b"), O("--ignore-space-change"), O("--decorate"), O("--no-decorate"), \
+        O("--diff-filter="), O("-M"), O("--find-renames")
 static struct cstr_view const log_options[] = {
 	DISPLAY, O("--graph"), O("--reverse"), O("--first-parent"), O("--no-merges"),
 	O("--merges"), O("--follow"), O("--max-count="), O("-n#"),

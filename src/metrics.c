@@ -64,39 +64,39 @@ static struct {
 };
 
 #define LOOP_HIST(name, help, labels, field) \
-	{ name, help, labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NANO }
+        { name, help, labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NANO }
 #define WORK(help, unit, u) \
-	{ "askai_loop_step_work_max", help, "unit=\"" unit "\"", \
-	  offsetof(struct loop_metrics, work[u]), LOOP, GAUGE, ONE }
+        { "askai_loop_step_work_max", help, "unit=\"" unit "\"", \
+          offsetof(struct loop_metrics, work[u]), LOOP, GAUGE, ONE }
 #define METHOD(help, method, m) \
-	{ "askai_request_seconds", help, "method=\"" method "\"", \
-	  (m) * sizeof (struct hist), METHODS, HISTOGRAM, NANO }
+        { "askai_request_seconds", help, "method=\"" method "\"", \
+          (m) * sizeof (struct hist), METHODS, HISTOGRAM, NANO }
 #define VALUE(name, help, labels, type, field, source, kind, scale) \
-	{ name, help, labels, offsetof(type, field), source, kind, scale }
+        { name, help, labels, offsetof(type, field), source, kind, scale }
 #define STASHED(name, help, labels, field, kind, scale) \
-	VALUE(name, help, labels, struct buf_stash_metrics, field, STASH, kind, scale)
+        VALUE(name, help, labels, struct buf_stash_metrics, field, STASH, kind, scale)
 #define KEPT(name, help, labels, field) \
-	VALUE(name, help, labels, struct metrics_kept, field, KEPT, GAUGE, ONE)
+        VALUE(name, help, labels, struct metrics_kept, field, KEPT, GAUGE, ONE)
 #define CALLS(name, help, field) \
-	VALUE(name, help, "", struct metrics_calls, field, CALLS, COUNTER, ONE)
+        VALUE(name, help, "", struct metrics_calls, field, CALLS, COUNTER, ONE)
 #define LENT(help, tool, i) \
-	VALUE("askai_turn_tool_calls_total", help, "tool=\"" tool "\"", \
-	      struct metrics_calls, lent[i], CALLS, COUNTER, ONE)
+        VALUE("askai_turn_tool_calls_total", help, "tool=\"" tool "\"", \
+              struct metrics_calls, lent[i], CALLS, COUNTER, ONE)
 #define CONNS(name, help, field, kind) \
-	VALUE(name, help, "", struct metrics_conns, field, CONNS, kind, ONE)
+        VALUE(name, help, "", struct metrics_conns, field, CONNS, kind, ONE)
 #define JOBS(name, help, labels, field, kind) \
-	VALUE(name, help, labels, struct home_metrics, field, JOBS, kind, ONE)
+        VALUE(name, help, labels, struct home_metrics, field, JOBS, kind, ONE)
 #define MAN(name, help, labels, field, kind) \
-	VALUE(name, help, labels, struct manual_metrics, field, MAN, kind, ONE)
+        VALUE(name, help, labels, struct manual_metrics, field, MAN, kind, ONE)
 #define TASKS(name, help, field, kind) \
-	VALUE(name, help, "", struct task_metrics, field, TASKS, kind, ONE)
+        VALUE(name, help, "", struct task_metrics, field, TASKS, kind, ONE)
 #define TASKS_ALL(name, help, labels, field) \
-	VALUE(name, help, labels, struct task_pool_metrics, field, TASKS_ALL, COUNTER, ONE)
+        VALUE(name, help, labels, struct task_pool_metrics, field, TASKS_ALL, COUNTER, ONE)
 #define LEDGERS(name, help, labels, field, kind) \
-	VALUE(name, help, labels, struct ledger_metrics, field, LEDGER, kind, ONE)
+        VALUE(name, help, labels, struct ledger_metrics, field, LEDGER, kind, ONE)
 #define INPUT(help, input, i) \
-	VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
-	      struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
+        VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
+              struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
 
 static_assert(LEDGER_RUNNING == 8, "the help of askai_mcp_jobs_refused_total says");
 

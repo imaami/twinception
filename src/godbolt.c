@@ -49,11 +49,11 @@
  * and the flags of the kind besides TOOL_LENT, TOOL_PAGED and
  * TOOL_STREAM. */
 #define GODBOLT_TOOLS_X(X)                      \
-	X(catalog, CATALOG, 0)                  \
-	X(compile, COMPILE, TOOL_DETACH)        \
-	X(preprocess, PREPROCESS, TOOL_DETACH)  \
-	X(macros, MACROS, TOOL_DETACH)          \
-	X(targets, TARGETS, TOOL_DETACH)
+        X(catalog, CATALOG, 0)                  \
+        X(compile, COMPILE, TOOL_DETACH)        \
+        X(preprocess, PREPROCESS, TOOL_DETACH)  \
+        X(macros, MACROS, TOOL_DETACH)          \
+        X(targets, TARGETS, TOOL_DETACH)
 
 #define GODBOLT_NAME(name, NAME, extra) "godbolt_" #name,
 PLUGIN_MANIFEST(.name = "godbolt", .tools = { GODBOLT_TOOLS_X(GODBOLT_NAME) });
@@ -101,7 +101,7 @@ enum {
 /* The fields of the list of compilers that the plugin requests.  Each call
  * requests the same fields, so askai stores one list for each language. */
 #define GODBOLT_FIELDS \
-	"id,name,compilerType,compilerCategories,semver,instructionSet,releaseTrack"
+        "id,name,compilerType,compilerCategories,semver,instructionSet,releaseTrack"
 
 /* The bytes of a compiler id, and of a language id. */
 static char const godbolt_id_bytes[] =
@@ -276,12 +276,12 @@ enum godbolt_array : uint8_t {
 /* The actions of godbolt_catalog: the constant of enum godbolt_action, the
  * name, the singular of the noun, and the first line of the output. */
 #define GODBOLT_ACTIONS_X(X)                                          \
-	X(LANGUAGES, "languages", "language", "id\tname\n")           \
-	X(COMPILERS, "compilers", "compiler",                         \
-	  "id\tname\tkind\tversion\tarchitecture\ttrack\tfamilies\n") \
-	X(KINDS, "kinds", "kind", "kind\tcompilers\n")                \
-	X(FAMILIES, "families", "family", "family\tcompilers\n")      \
-	X(ARCHITECTURES, "architectures", "architecture", "architecture\tcompilers\n")
+        X(LANGUAGES, "languages", "language", "id\tname\n")           \
+        X(COMPILERS, "compilers", "compiler",                         \
+          "id\tname\tkind\tversion\tarchitecture\ttrack\tfamilies\n") \
+        X(KINDS, "kinds", "kind", "kind\tcompilers\n")                \
+        X(FAMILIES, "families", "family", "family\tcompilers\n")      \
+        X(ARCHITECTURES, "architectures", "architecture", "architecture\tcompilers\n")
 
 enum godbolt_action : uint8_t {
 #define GODBOLT_ACTION(NAME, name, singular, header) GODBOLT_##NAME,
@@ -296,7 +296,7 @@ static struct {
 	char const      *singular;
 } const godbolt_actions[] = {
 #define GODBOLT_ACTION(NAME, name, singular, header) \
-	{ GODBOLT_TEXT(name), GODBOLT_TEXT(header), singular },
+        { GODBOLT_TEXT(name), GODBOLT_TEXT(header), singular },
 	GODBOLT_ACTIONS_X(GODBOLT_ACTION)
 #undef GODBOLT_ACTION
 };
@@ -471,8 +471,8 @@ struct godbolt_recipe {
 };
 
 #define GODBOLT_PP \
-	GODBOLT_TEXT("{\"producePp\":{\"filter-headers\":false,\"clang-format\":false}," \
-	             "\"skipAsm\":true}")
+        GODBOLT_TEXT("{\"producePp\":{\"filter-headers\":false,\"clang-format\":false}," \
+                     "\"skipAsm\":true}")
 #define GODBOLT_SKIP_ASM GODBOLT_TEXT("{\"skipAsm\":true}")
 
 /* The recipes of the tools for each kind of driver.  These are the recipes
@@ -2830,12 +2830,12 @@ godbolt_start (struct mcp_slot    *slot,
 
 /* The start() of each kind. */
 #define GODBOLT_START(name, NAME, extra)                        \
-	static void                                             \
-	godbolt_##name##_start (struct mcp_slot    *slot,       \
-	                        struct json_object *args)       \
-	{                                                       \
-		godbolt_start(slot, args, GODBOLT_##NAME);      \
-	}
+        static void                                             \
+        godbolt_##name##_start (struct mcp_slot    *slot,       \
+                                struct json_object *args)       \
+        {                                                       \
+                godbolt_start(slot, args, GODBOLT_##NAME);      \
+        }
 
 GODBOLT_TOOLS_X(GODBOLT_START)
 
@@ -3004,33 +3004,33 @@ godbolt_definition (void const        *service,
 
 /* The parts of the definitions that several tools share. */
 #define GODBOLT_DEF_LANGUAGE(what, examples)                                    \
-	"\"language\":{\"type\":\"string\",\"default\":\"c\",\"description\":"  \
-	"\"The Compiler Explorer id of the language of " what ", such as "       \
-	examples ". The default is c.\"}"
+        "\"language\":{\"type\":\"string\",\"default\":\"c\",\"description\":"  \
+        "\"The Compiler Explorer id of the language of " what ", such as "       \
+        examples ". The default is c.\"}"
 #define GODBOLT_DEF_SOURCE                                                      \
-	"\"source\":{\"type\":\"string\",\"description\":\"The source code "    \
-	"itself, not a file name. It has at most 1 MiB of UTF-8.\"}"
+        "\"source\":{\"type\":\"string\",\"description\":\"The source code "    \
+        "itself, not a file name. It has at most 1 MiB of UTF-8.\"}"
 #define GODBOLT_DEF_COMPILERS                                                   \
-	"\"compilers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"     \
-	"\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"  \
-	"\"Exact compiler ids from godbolt_catalog, not display names. The "     \
-	"number of ids times the number of argument strings must be at most "    \
-	"32.\"}"
+        "\"compilers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"     \
+        "\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"  \
+        "\"Exact compiler ids from godbolt_catalog, not display names. The "     \
+        "number of ids times the number of argument strings must be at most "    \
+        "32.\"}"
 #define GODBOLT_DEF_ARGS                                                        \
-	"\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"          \
-	"\"minItems\":1,\"maxItems\":8,\"default\":[\"\"],\"description\":"     \
-	"\"Argument strings, such as \\\"-O2 -std=c23\\\". Each string has all " \
-	"the extra arguments of one compilation, and it is not one argument. "   \
-	"Each compiler compiles once with each string. The array has at most 8 " \
-	"strings, and each string has at most 8192 bytes. No shell interprets "  \
-	"them.\"}"
+        "\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"          \
+        "\"minItems\":1,\"maxItems\":8,\"default\":[\"\"],\"description\":"     \
+        "\"Argument strings, such as \\\"-O2 -std=c23\\\". Each string has all " \
+        "the extra arguments of one compilation, and it is not one argument. "   \
+        "Each compiler compiles once with each string. The array has at most 8 " \
+        "strings, and each string has at most 8192 bytes. No shell interprets "  \
+        "them.\"}"
 #define GODBOLT_DEF_OFFSET                                                      \
-	"\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":"       \
-	"\"The byte of the output to start from, to read on past where it was "  \
-	"cut.\"}"
+        "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":"       \
+        "\"The byte of the output to start from, to read on past where it was "  \
+        "cut.\"}"
 #define GODBOLT_DEF_HINTS                                                       \
-	"\"annotations\":{\"readOnlyHint\":true,\"destructiveHint\":false,"      \
-	"\"idempotentHint\":true,\"openWorldHint\":true}"
+        "\"annotations\":{\"readOnlyHint\":true,\"destructiveHint\":false,"      \
+        "\"idempotentHint\":true,\"openWorldHint\":true}"
 
 static struct json_object *
 godbolt_catalog_definition (void const *service)
@@ -3196,13 +3196,13 @@ godbolt_targets_definition (void const *service)
 #undef GODBOLT_DEF_LANGUAGE
 
 #define GODBOLT_KIND(name, NAME, extra)                                 \
-	{                                                               \
-		.definition = godbolt_##name##_definition,              \
-		.start = godbolt_##name##_start,                        \
-		.step = godbolt_step,                                   \
-		.drop = godbolt_drop,                                   \
-		.flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | (extra) \
-	},
+        {                                                               \
+                .definition = godbolt_##name##_definition,              \
+                .start = godbolt_##name##_start,                        \
+                .step = godbolt_step,                                   \
+                .drop = godbolt_drop,                                   \
+                .flags = TOOL_LENT | TOOL_PAGED | TOOL_STREAM | (extra) \
+        },
 
 struct plugin const askai_plugin = {
 	.tools = { GODBOLT_TOOLS_X(GODBOLT_KIND) },

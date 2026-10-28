@@ -53,11 +53,11 @@ list_transplant (struct list *list,
 }
 
 #define list_foreach(pos, head) \
-	for ((pos) = (head)->next; (pos) != (head); (pos) = (pos)->next)
+        for ((pos) = (head)->next; (pos) != (head); (pos) = (pos)->next)
 
 #define list_foreach_safe(pos, tmp, head) \
-	for ((pos) = (head)->next, (tmp) = (pos)->next; \
-	     (pos) != (head); \
-	     (pos) = (tmp), (tmp) = (pos)->next)
+        for ((pos) = (head)->next, (tmp) = (pos)->next; \
+             (pos) != (head); \
+             (pos) = (tmp), (tmp) = (pos)->next)
 
 #endif /* TWINCEPTION_SRC_LIST_H_ */

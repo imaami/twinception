@@ -34,8 +34,8 @@ cli_scrollback_test_parts (struct dstr const      *frame,
 }
 
 #define CLI_SCROLLBACK_FRAME(frame, ...) do { \
-	struct cstr_view const parts[] = {__VA_ARGS__}; \
-	cli_scrollback_test_parts(frame, parts, sizeof parts / sizeof *parts); \
+        struct cstr_view const parts[] = {__VA_ARGS__}; \
+        cli_scrollback_test_parts(frame, parts, sizeof parts / sizeof *parts); \
 } while (0)
 
 static void

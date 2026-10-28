@@ -880,12 +880,12 @@ http_post_json (struct http         *http,
 	}
 
 #define SETOPT(opt, value) \
-	do { \
-		if (curl_easy_setopt(request->easy, (opt), (value)) != CURLE_OK) { \
-			http_cancel(http, &request); \
-			return EIO; \
-		} \
-	} while (0)
+        do { \
+                if (curl_easy_setopt(request->easy, (opt), (value)) != CURLE_OK) { \
+                        http_cancel(http, &request); \
+                        return EIO; \
+                } \
+        } while (0)
 
 	SETOPT(CURLOPT_URL, url);
 	SETOPT(CURLOPT_HTTPHEADER, request->headers);

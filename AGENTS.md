@@ -77,6 +77,7 @@ This file provides guidance to agents such as ChatGPT, Claude, CodeRabbit, Copil
 ### Readability
 
 - Tabs indent, spaces align: continuation lines of a declaration or argument list are tab-indented to the statement's level, then space-padded into column alignment. Don't "fix" space-aligned continuations into tabs.
+- Multi-line macro definitions are the exception: indent their continuation lines with spaces, not tabs, or the aligned trailing backslashes move out of line when the tab width changes. Use 8 spaces by default; 1, 2, or 4 are fine when that keeps every line of the macro within a column limit.
 - Spotting the worst cases of tab abuse is easy: anything `git grep -P '[^\t]\t' -- '**\.[ch]'` matches is wrong. But to understand line continuations you need to imagine switching tab width from 8 to 3 - do the continuation lines stay aligned? If not, think about why.
 - Place angle-bracketed include statements above double-quoted ones. Separate these into groups by placing an empty line in between the two.
 - A separating empty line is only mandatory between `<>` and `""` groups, but it is also allowed within these two groups at your discretion.
@@ -118,4 +119,11 @@ This file provides guidance to agents such as ChatGPT, Claude, CodeRabbit, Copil
 
   ```bash
   git grep -P '[^\t]\t' -- '**\.[ch]'
+  ```
+
+- This lists the continuation lines of multi-line macros that start with a tab:
+
+  ```bash
+  git ls-files -z -- '*.[ch]' | xargs -0 awk 'FNR == 1 { c = 0 }
+    c && /^\t/ { print FILENAME ":" FNR ": " $0 } { c = /\\$/ }'
   ```

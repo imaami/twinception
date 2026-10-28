@@ -52,21 +52,21 @@ extern enum log_level log_threshold;
  * arguments and all, and each call site has its own rate limit.
  */
 #define LOG(level, ...) \
-	do { \
-		if ((level) <= log_threshold) { \
-			static struct log_site log_site_; \
-			log_put(&log_site_, __VA_ARGS__); \
-		} \
-	} while (0)
+        do { \
+                if ((level) <= log_threshold) { \
+                        static struct log_site log_site_; \
+                        log_put(&log_site_, __VA_ARGS__); \
+                } \
+        } while (0)
 
 /** As LOG(), but without the rate limit of a call site: for lines that
  *  must all appear, such as those that describe the configuration as askai
  *  starts. */
 #define LOG_ALL(level, ...) \
-	do { \
-		if ((level) <= log_threshold) \
-			log_put(nullptr, __VA_ARGS__); \
-	} while (0)
+        do { \
+                if ((level) <= log_threshold) \
+                        log_put(nullptr, __VA_ARGS__); \
+        } while (0)
 
 /** The work of LOG(): with no @p site, the line has no rate limit, which
  *  suits what an operator asked for, such as statistics. */

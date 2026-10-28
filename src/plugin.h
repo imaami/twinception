@@ -171,14 +171,14 @@ struct plugin {
  *  PLUGIN_MANIFEST() stores the plugin's values in the manifest so that
  *  askai can compare them with its own. */
 #define PLUGIN_ABI(X)                                                      \
-	X(sizeof (void *)) X(sizeof (long)) X(alignof (max_align_t))       \
-	X(sizeof (enum buf_pressure)) X(sizeof (struct tool_text))         \
-	X(sizeof (struct tool_kind)) X(offsetof (struct tool_kind, flags)) \
-	X(sizeof (struct plugin)) X(offsetof (struct plugin, instance_init)) \
-	X(sizeof (struct handle)) X(sizeof (struct msg))                   \
-	X(offsetof (struct msg, fn)) X(sizeof (struct loop_timer))         \
-	X(offsetof (struct loop_timer, fn)) X(sizeof (struct web_request)) \
-	X(sizeof (struct web_response)) X(offsetof (struct plugin, configure))
+        X(sizeof (void *)) X(sizeof (long)) X(alignof (max_align_t))       \
+        X(sizeof (enum buf_pressure)) X(sizeof (struct tool_text))         \
+        X(sizeof (struct tool_kind)) X(offsetof (struct tool_kind, flags)) \
+        X(sizeof (struct plugin)) X(offsetof (struct plugin, instance_init)) \
+        X(sizeof (struct handle)) X(sizeof (struct msg))                   \
+        X(offsetof (struct msg, fn)) X(sizeof (struct loop_timer))         \
+        X(offsetof (struct loop_timer, fn)) X(sizeof (struct web_request)) \
+        X(sizeof (struct web_response)) X(offsetof (struct plugin, configure))
 #define PLUGIN_ABI_U32(x) (uint32_t)(x),
 #define PLUGIN_ABI_N(x) + 1
 static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
@@ -197,19 +197,19 @@ static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
  * the plugin is a link error.
  */
 #define PLUGIN_MANIFEST(...)                                         \
-	MANIFEST_NO_ASAN                                             \
-	[[gnu::section(".note.askai"), gnu::used, gnu::aligned(4),   \
-	  gnu::visibility("hidden")]]                                \
-	struct manifest_note const plugin_manifest = {               \
-		.namesz = sizeof "askai",                            \
-		.descsz = sizeof (struct manifest),                  \
-		.type   = MANIFEST_TYPE,                             \
-		.owner  = "askai",                                   \
-		.desc   = { .epoch = PLUGIN_EPOCH,                   \
-		            .abi = { PLUGIN_ABI(PLUGIN_ABI_U32) },   \
-		            __VA_ARGS__ }                            \
-	};                                                           \
-	EXPORT extern struct plugin const askai_plugin
+        MANIFEST_NO_ASAN                                             \
+        [[gnu::section(".note.askai"), gnu::used, gnu::aligned(4),   \
+          gnu::visibility("hidden")]]                                \
+        struct manifest_note const plugin_manifest = {               \
+                .namesz = sizeof "askai",                            \
+                .descsz = sizeof (struct manifest),                  \
+                .type   = MANIFEST_TYPE,                             \
+                .owner  = "askai",                                   \
+                .desc   = { .epoch = PLUGIN_EPOCH,                   \
+                            .abi = { PLUGIN_ABI(PLUGIN_ABI_U32) },   \
+                            __VA_ARGS__ }                            \
+        };                                                           \
+        EXPORT extern struct plugin const askai_plugin
 
 /* The rest of this file is askai's side.  A plugin does not use it. */
 

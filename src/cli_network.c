@@ -740,12 +740,12 @@ cli_network_create (struct cli_loop    *ui,
 		goto fail;
 	}
 #define CLI_NETWORK_MULTI(option, value) \
-	do { \
-		if (curl_multi_setopt(network->multi, option, value) != CURLM_OK) { \
-			*e = EIO; \
-			goto fail; \
-		} \
-	} while (0)
+        do { \
+                if (curl_multi_setopt(network->multi, option, value) != CURLM_OK) { \
+                        *e = EIO; \
+                        goto fail; \
+                } \
+        } while (0)
 	CLI_NETWORK_MULTI(CURLMOPT_SOCKETFUNCTION, cli_network_socket);
 	CLI_NETWORK_MULTI(CURLMOPT_SOCKETDATA, network);
 	CLI_NETWORK_MULTI(CURLMOPT_TIMERFUNCTION, cli_network_timer);
@@ -893,13 +893,13 @@ cli_network_request_create (struct cli_network        *network,
 	if (*e)
 		goto fail;
 #define CLI_NETWORK_OPTION(option, value) \
-	do { \
-		CURLcode code = curl_easy_setopt(request->easy, option, value); \
-		if (code != CURLE_OK) { \
-			*e = EIO; \
-			goto fail; \
-		} \
-	} while (0)
+        do { \
+                CURLcode code = curl_easy_setopt(request->easy, option, value); \
+                if (code != CURLE_OK) { \
+                        *e = EIO; \
+                        goto fail; \
+                } \
+        } while (0)
 	CLI_NETWORK_OPTION(CURLOPT_URL, "http://localhost/mcp");
 	CLI_NETWORK_OPTION(CURLOPT_UNIX_SOCKET_PATH, request->socket);
 	CLI_NETWORK_OPTION(CURLOPT_PROXY, "");

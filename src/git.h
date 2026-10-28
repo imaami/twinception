@@ -50,24 +50,24 @@ struct plugin;
  *  (GIT_ALLOW_PROTOCOL, which a repository's configuration cannot
  *  override, stops them all). */
 #define GIT_ENV_FIXED \
-	"HOME=/nonexistent", "LC_ALL=C.UTF-8", "GIT_CONFIG_NOSYSTEM=1", \
-	"GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", \
-	"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none"
+        "HOME=/nonexistent", "LC_ALL=C.UTF-8", "GIT_CONFIG_NOSYSTEM=1", \
+        "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", \
+        "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none"
 
 /** The options before the command of every git that askai runs: no pager,
  *  replacement objects or remote protocol, nor a program that a
  *  repository's configuration names for the fsmonitor, gpg (which a log's
  *  format may ask for) or hooks, and no automatic gc or maintenance. */
 #define GIT_OPTIONS_FIXED \
-	"--no-pager", "--no-replace-objects", \
-	"-c", "core.fsmonitor=false", \
-	"-c", "core.hooksPath=/dev/null", \
-	"-c", "gpg.program=false", \
-	"-c", "gpg.ssh.program=false", \
-	"-c", "gpg.x509.program=false", \
-	"-c", "protocol.allow=never", \
-	"-c", "gc.auto=0", \
-	"-c", "maintenance.auto=false"
+        "--no-pager", "--no-replace-objects", \
+        "-c", "core.fsmonitor=false", \
+        "-c", "core.hooksPath=/dev/null", \
+        "-c", "gpg.program=false", \
+        "-c", "gpg.ssh.program=false", \
+        "-c", "gpg.x509.program=false", \
+        "-c", "protocol.allow=never", \
+        "-c", "gc.auto=0", \
+        "-c", "maintenance.auto=false"
 
 /**
  * The name of the repository listed as @p path: the last component of the
