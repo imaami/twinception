@@ -8746,6 +8746,10 @@ mcp_on_cancel (struct stream *s)
 {
 	struct mcp_req *req = s->user;
 	req->s = nullptr;
+	/* A call that frees its message has ended, and its end record, if it
+	 * has one, is written or was withheld by a drain on purpose. */
+	if (req->phase == PHASE_FREE)
+		return;
 	/* A reply that has gone whole ends as it did (mcp_req_abort()). */
 	if (req->phase != PHASE_END)
 		mcp_req_log_call(req, "cancelled by a closed connection", (struct span){}, false);
