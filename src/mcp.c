@@ -594,6 +594,7 @@ struct mcp_req {
 	bool                 archived_end;
 	bool                 recovering;
 	bool                 suspended;
+	bool                 withdrawn;  /* a notifications/cancelled ended it */
 	char                 archive[LEDGER_ID + 1];
 	struct ledger_task  *shown;      /* the record whose result tasks/get or
 	                                    a client's jobs copies, while it
@@ -1488,9 +1489,9 @@ mcp_req_args_free (struct mcp_req *req,
 
 static uint64_t mcp_req_owner (struct mcp_req const *req);
 
-/* How the call of a task or a job ends: cancelled as its client asked,
- * failed if req->error is set or its reply, in the record, is an error or
- * not whole, else completed. */
+/* How the call of a task or a job ends: cancelled as its client asked, by a
+ * cancel or a notifications/cancelled, failed if req->error is set or its
+ * reply, in the record, is an error or not whole, else completed. */
 static enum ledger_status
 mcp_req_status (struct mcp_req const *req)
 {
@@ -1499,7 +1500,7 @@ mcp_req_status (struct mcp_req const *req)
 	struct ledger_task const *task = req->task;
 	bool failed = task && (!task->result || task->len != task->size ||
 	                      (task->len >= n && !memcmp(task->result, erred, n)));
-	return req->error == ECANCELED ? LEDGER_CANCELLED
+	return req->error == ECANCELED || req->withdrawn ? LEDGER_CANCELLED
 	     : req->error || failed ? LEDGER_FAILED : LEDGER_COMPLETED;
 }
 
@@ -2998,9 +2999,9 @@ mcp_on_task_cancel (struct loop *loop,
  * client cancels a tool call with notifications/cancelled.  @p msg is the
  * member cancel of the call's record.  If the call still runs on @p loop
  * and its reply has not begun, the function ends the call with
- * mcp_req_finish(), as a hang-up does.  Before that, it answers a JSON
- * request with the status 202 and no body.  An event stream ends without a
- * response. */
+ * mcp_req_finish(), as a hang-up does, and its end record says cancelled.
+ * Before that, it answers a JSON request with the status 202 and no body.
+ * An event stream ends without a response. */
 static void
 mcp_on_withdraw (struct loop *loop,
                  struct msg  *msg)
@@ -3014,6 +3015,7 @@ mcp_on_withdraw (struct loop *loop,
 		(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
 	mcp_req_log_call(req, "cancelled by notifications/cancelled", (struct span){},
 	                 false);
+	req->withdrawn = true;
 	mcp_req_finish(req);
 }
 

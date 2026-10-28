@@ -2751,6 +2751,61 @@ def check_durable_cancel(binary, up):
           "private cancelled result retained after restart for cloud and llama: PASS")
 
 
+def check_withdrawn_end(binary, up):
+    """A foreground call that a notifications/cancelled withdraws ends
+    cancelled in its journal, and a poll of its job id says so."""
+    hold = up.reply
+    up.reply = lambda request: (200, ANSWERS["openai"], 2.0)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            jobs = f"{d}/transcripts.git/askai-journal/withdrawn/jobs"
+
+            def records():
+                """The job's records, as (kind, data) pairs."""
+                names = os.listdir(jobs) if os.path.isdir(jobs) else []
+                if len(names) != 1:
+                    return []
+                with open(os.path.join(jobs, names[0]), "rb") as file:
+                    data = file.read()
+                found, offset = [], 0
+                while offset + 120 <= len(data):
+                    size = int.from_bytes(data[offset + 16:offset + 24], "big")
+                    kind = data[offset + 56:offset + 88].split(b"\0")[0].decode()
+                    found.append((kind, data[offset + 120:offset + 120 + size]))
+                    offset += 120 + size
+                return found
+
+            with Askai(binary, "-u", up.url(), "--background", "--participant", "withdrawn",
+                       "--transcripts", f"{d}/transcripts.git") as ai:
+                _, headers, _ = ai.rpc("initialize", {"protocolVersion": LEGACY})
+                session = {"Mcp-Session-Id": headers["mcp-session-id"],
+                           "MCP-Protocol-Version": LEGACY}
+                up.arrived.clear()
+                results = []
+                thread = threading.Thread(target=lambda: results.append(ai.rpc(
+                    "tools/call", {"name": "ask_ai", "arguments": {
+                        "prompt": "withdrawn", "background": False}},
+                    rpc_id=42, headers=session)))
+                thread.start()
+                assert up.arrived.wait(5)
+                assert ai.rpc("notifications/cancelled", {"requestId": 42}, rpc_id=None,
+                              headers=session)[0] == 202
+                thread.join(5)
+                wait_for(lambda: any(kind in ("result", "cancel") for kind, _ in records()))
+                ends = [(kind, json.loads(data)) for kind, data in records()
+                        if kind in ("result", "cancel")]
+                # 3 is LEDGER_CANCELLED (src/ledger.h).
+                assert len(ends) == 1 and ends[0][0] == "cancel" and \
+                    ends[0][1]["status"] == 3, ends
+                status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": {
+                    "job": os.listdir(jobs)[0]}}, headers=session)
+                assert status == 200 and body["result"].get("isError") and \
+                    text_of(body["result"]) == "That job was cancelled.", body
+    finally:
+        up.reply = hold
+    print("withdrawn call: its end record and a poll of its job say cancelled: PASS")
+
+
 def check_archive_failure(binary, up):
     """A thought commit failure is visible without losing the appended file.
     A private initial checkpoint does not need Git or prevent submission."""
@@ -13339,7 +13394,8 @@ def main():
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
                       check_modern, check_mcp_tasks, check_client_jobs, check_background, check_recovery, check_recovery_tools,
-                      check_recovery_notes, check_durable_cancel, check_archive_failure, check_journal_repair,
+                      check_recovery_notes, check_durable_cancel, check_withdrawn_end,
+                      check_archive_failure, check_journal_repair,
                       check_shared_transcripts, check_http,
                       check_large_bodies,
                       check_sse,
