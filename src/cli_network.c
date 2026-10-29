@@ -10,6 +10,7 @@
 #include "cli_loop.h"
 #include "cli_mailbox.h"
 #include "cli_network.h"
+#include "cli_socket.h"
 #include "compat.h"
 #include "dstr.h"
 #include "loop.h"
@@ -75,14 +76,6 @@ struct cli_network_chunk {
 	char                      bytes[];
 };
 
-struct cli_network_socket {
-	struct list      hook;
-	struct loop_ref  ref;
-	struct loop_step step;
-	curl_socket_t    fd;
-	int              events;
-};
-
 struct cli_network {
 	struct loop                 loop;
 	struct loop_timer           timer;
@@ -91,7 +84,7 @@ struct cli_network {
 	struct msg                  progress;
 	struct msg                  cancel;
 	struct msg                  stop;
-	struct cli_mailbox_msg       ended;
+	struct cli_mailbox_msg      ended;
 	struct list                 sockets;
 	struct list                 requests;
 	struct list                 completions;
@@ -381,39 +374,6 @@ cli_network_header (char   *bytes,
 	return cli_network_receive(request, bytes, size * count, true);
 }
 
-static void
-cli_network_socket_step (struct loop      *loop,
-                         struct loop_step *step)
-{
-	struct cli_network_socket *socket = container_of(step, struct cli_network_socket, step);
-	int events = socket->events;
-	socket->events = 0;
-	cli_network_action(container_of(loop, struct cli_network, loop), socket->fd, events);
-}
-
-static void
-cli_network_socket_event (struct loop     *loop,
-                          struct loop_ref *ref,
-                          uint32_t         events)
-{
-	struct cli_network_socket *socket = container_of(ref, struct cli_network_socket, ref);
-	if (events & EPOLLIN)
-		socket->events |= CURL_CSELECT_IN;
-	if (events & EPOLLOUT)
-		socket->events |= CURL_CSELECT_OUT;
-	if (events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
-		socket->events |= CURL_CSELECT_ERR;
-	loop_ready_bulk(loop, &socket->step);
-}
-
-static void
-cli_network_socket_release (struct loop_ref *ref)
-{
-	struct cli_network_socket *socket = container_of(ref, struct cli_network_socket, ref);
-	free(socket);
-	socket = nullptr;
-}
-
 static int
 cli_network_socket (CURL          *easy,
                     curl_socket_t  fd,
@@ -423,13 +383,13 @@ cli_network_socket (CURL          *easy,
 {
 	(void)easy;
 	struct cli_network *network = context;
-	struct cli_network_socket *socket = assigned;
+	struct cli_socket *socket = assigned;
 	if (action == CURL_POLL_REMOVE) {
 		if (socket) {
 			(void)curl_multi_assign(network->multi, fd, nullptr);
 			list_del(&socket->hook);
 			loop_unready(&socket->step);
-			loop_release(&network->loop, &socket->ref, cli_network_socket_release);
+			loop_release(&network->loop, &socket->ref, cli_socket_release);
 		}
 		return 0;
 	}
@@ -445,9 +405,9 @@ cli_network_socket (CURL          *easy,
 		return -1;
 	socket->fd = fd;
 	socket->ref.fd = -1;
-	socket->step.fn = cli_network_socket_step;
+	socket->step.fn = cli_socket_step;
 	int e = loop_watch(&network->loop, &socket->ref, fd, events,
-	                   cli_network_socket_event, nullptr);
+	                   cli_socket_event, nullptr);
 	if (e) {
 		free(socket);
 		socket = nullptr;
@@ -457,7 +417,7 @@ cli_network_socket (CURL          *easy,
 	if (curl_multi_assign(network->multi, fd, socket) == CURLM_OK)
 		return 0;
 	list_del(&socket->hook);
-	loop_release(&network->loop, &socket->ref, cli_network_socket_release);
+	loop_release(&network->loop, &socket->ref, cli_socket_release);
 	return -1;
 }
 
@@ -651,10 +611,10 @@ cli_network_run (void *context)
 	network->multi = nullptr;
 	struct list *node, *next;
 	list_foreach_safe (node, next, &network->sockets) {
-		struct cli_network_socket *socket = container_of(node, struct cli_network_socket, hook);
+		struct cli_socket *socket = to_cli_socket(node);
 		list_del(&socket->hook);
 		loop_unready(&socket->step);
-		loop_release(&network->loop, &socket->ref, cli_network_socket_release);
+		loop_release(&network->loop, &socket->ref, cli_socket_release);
 	}
 	(void)loop_timer_stop(&network->loop, &network->timer);
 	loop_unready(&network->timeout);

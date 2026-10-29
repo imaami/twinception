@@ -15,6 +15,7 @@ override SRC_askai-cli := \
   cli_render.c            \
   cli_scrollback.c        \
   cli_signals.c           \
+  cli_socket.c            \
   cli_state.c             \
   cli_stream.c            \
   cli_style.c             \
