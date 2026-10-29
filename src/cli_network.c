@@ -841,6 +841,24 @@ cli_network_start (struct loop *loop,
 	cli_network_action(network, CURL_SOCKET_TIMEOUT, 0);
 }
 
+static void
+cli_network_call_init (struct cli_network_call   *call,
+                       cli_network_receive_fn    *header,
+                       cli_network_receive_fn    *body,
+                       cli_network_done_fn       *done,
+                       void                      *context,
+                       struct cli_network_result *result,
+                       uint64_t                   id,
+                       size_t                     bytes,
+                       bool                       interruptible)
+{
+	*call = (struct cli_network_call){
+		.header = header, .body = body, .complete = done, .context = context, .result = result,
+		.id = id, .bytes = bytes, .flags = interruptible ? CLI_NETWORK_INTERRUPTIBLE : 0,
+	};
+	list_init(&call->received);
+}
+
 static struct cli_network_request *
 cli_network_request_create (struct cli_network        *network,
                             struct cstr_view           socket,
@@ -862,12 +880,8 @@ cli_network_request_create (struct cli_network        *network,
 		return nullptr;
 	atomic_init(&request->cancelled, false);
 	request->network = network;
-	request->call = (struct cli_network_call){
-		.header = header, .body = body, .complete = done, .context = context, .result = result,
-		.id = ++network->sequence, .bytes = bytes,
-		.flags = interruptible ? CLI_NETWORK_INTERRUPTIBLE : 0,
-	};
-	list_init(&request->call.received);
+	cli_network_call_init(&request->call, header, body, done, context, result,
+	                      ++network->sequence, bytes, interruptible);
 	request->start.fn = cli_network_start;
 	request->done.fn = cli_network_request_done;
 	request->done.bytes = sizeof *request;
