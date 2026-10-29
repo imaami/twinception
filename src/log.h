@@ -47,9 +47,9 @@ extern struct log_metrics log_metrics;
 extern enum log_level log_threshold;
 
 /**
- * Log a line at @p level, formatted as by printf() after the program's name;
- * the line break is added.  A level above log_threshold skips the call,
- * arguments and all, and each call site has its own rate limit.
+ * Log a line at @p level, formatted as by printf(), and add a line break.
+ * A level above log_threshold skips the call, arguments and all, and each
+ * call site has its own rate limit.
  */
 #define LOG(level, ...) \
         do { \

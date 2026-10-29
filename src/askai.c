@@ -729,7 +729,7 @@ askai_shared_init (struct askai_shared *s,
 	if (cfg->notes) {
 		char why[256];
 		if (!(s->notes = notes_create(cfg->notes, cfg->participant, why, sizeof why, &e))) {
-			fprintf(stderr, "askai: --notes: %s: %s\n", cfg->notes, why);
+			fprintf(stderr, "--notes: %s: %s\n", cfg->notes, why);
 			return e;
 		}
 	}
@@ -737,24 +737,24 @@ askai_shared_init (struct askai_shared *s,
 		char why[256];
 		if (cfg->notes) {
 			if ((e = askai_separate_repos(notes_directory(s->notes), cfg->transcripts))) {
-				fprintf(stderr, "askai: notes and transcripts require separate, nonnested repositories\n");
+				fprintf(stderr, "notes and transcripts require separate, nonnested repositories\n");
 				return e;
 			}
 			struct stat notes, transcripts;
 			if (!stat(notes_directory(s->notes), &notes) && !stat(cfg->transcripts, &transcripts) &&
 			    notes.st_dev == transcripts.st_dev && notes.st_ino == transcripts.st_ino) {
-				fprintf(stderr, "askai: notes and transcripts require separate repositories\n");
+				fprintf(stderr, "notes and transcripts require separate repositories\n");
 				return EINVAL;
 			}
 		}
 		if (!(s->journal = journal_create(cfg->transcripts, cfg->participant,
 		                                  why, sizeof why, &e))) {
-			fprintf(stderr, "askai: --transcripts: %s: %s\n", cfg->transcripts, why);
+			fprintf(stderr, "--transcripts: %s: %s\n", cfg->transcripts, why);
 			return e;
 		}
 	}
 	if ((e = askai_shared_make(s, cfg, n)))
-		fprintf(stderr, "askai: %s\n", strerror(e));
+		fprintf(stderr, "%s\n", strerror(e));
 	return e;
 }
 
@@ -805,9 +805,9 @@ askai_tasks_report (struct task_pool const *tasks,
 		{ "moved",     moved     },
 		{ "under way", submitted > ended ? submitted - ended : 0 },
 	};
-	fprintf(stderr, "askai: tasks:\n");
+	fprintf(stderr, "tasks:\n");
 	for (size_t i = 0; i < ARRAY_SIZE(counts); ++i)
-		fprintf(stderr, "askai:   %-9s  %" PRIu64 "\n", counts[i].name, counts[i].count);
+		fprintf(stderr, "  %-9s  %" PRIu64 "\n", counts[i].name, counts[i].count);
 }
 
 /* Run the loops on @p s, as @p cfg says, until shut down; returns the exit

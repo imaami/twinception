@@ -524,8 +524,8 @@ class Askai:
 
     def listed(self, header):
         """The items of the list under the first line @p header of the log,
-        without the prefix and the indent, or None without that line."""
-        lines = [line.removeprefix("askai: ").rstrip("\n") for line in list(self.log)]
+        without the indent, or None without that line."""
+        lines = [line.rstrip("\n") for line in list(self.log)]
         if header not in lines:
             return None
         items = []
@@ -1157,7 +1157,7 @@ def check_mcp_tasks(binary, up):
                 task, took = call(2)
                 assert 0.9 <= took < 1.8, took
                 tid = task.pop("taskId")
-                ai.wait_log(rf"^askai: tool call ask_ai from identity alice became task "
+                ai.wait_log(rf"^tool call ask_ai from identity alice became task "
                             rf"{tid} after \d+\.\d s$")
                 assert re.fullmatch(r"[0-9a-f]{32}", tid) and \
                     re.fullmatch(iso, task["createdAt"]), task
@@ -1219,7 +1219,7 @@ def check_mcp_tasks(binary, up):
                 task, _ = call(30)
                 assert ask(task["taskId"], "tasks/cancel")[0] == 200
                 assert up.cancelled.wait(5)
-                ai.wait_log(r"^askai: tool call ask_ai from identity alice cancelled by "
+                ai.wait_log(r"^tool call ask_ai from identity alice cancelled by "
                             rf"its client after \d+\.\d s \(0 bytes\); task "
                             rf"{task['taskId']}; ask call ")
                 gone = poll(task["taskId"])
@@ -1691,9 +1691,9 @@ def check_client_jobs(binary, up):
                     values["askai_mcp_waits"] == 0, values
                 assert [re.sub(r"\d+\.\d+", "N", re.sub(r"[0-9a-f]{32}", "ID", line))
                         for line in ai.log if "SECRET" in line] == [
-                    'askai: ask call N from anonymous: prompt 6 bytes, no thread, '
+                    'ask call N from anonymous: prompt 6 bytes, no thread, '
                     '"SECRET"\n',
-                    "askai: tool call ask_ai from anonymous answered after N s (1 byte); "
+                    "tool call ask_ai from anonymous answered after N s (1 byte); "
                     "job ID; ask call N, 1 turn, 0 tool calls; arguments "
                     '{"prompt":"SECRET"}\n'], ai.log
 
@@ -3392,7 +3392,7 @@ def check_cancellation(binary, up):
                                   rpc_id=None, headers=session)
             assert status == 202
             thread.join(5)
-            ai.wait_log(r"^askai: tool call ask_ai from anonymous cancelled by "
+            ai.wait_log(r"^tool call ask_ai from anonymous cancelled by "
                         r"notifications/cancelled after \d+\.\d s \(0 bytes\); ask call "
                         r'\d+\.\d+, 1 turn, 0 tool calls; arguments \{"prompt":"SLOW"\}$')
             status, headers, body = results[0]
@@ -3442,7 +3442,7 @@ def check_cancellation(binary, up):
                          b"Content-Length: %d\r\n\r\n" % len(body) + body)
             assert up.arrived.wait(5)
         assert up.cancelled.wait(2), "client hang-up did not cancel upstream"
-        ai.wait_log(r"^askai: tool call ask_ai from anonymous cancelled by a closed "
+        ai.wait_log(r"^tool call ask_ai from anonymous cancelled by a closed "
                     r"connection after ")
         assert ai.rpc("ping")[0] == 200
 
@@ -3863,20 +3863,20 @@ def check_limits(binary, up):
         loops = ai.loops()
         assert len(loops) == 5, loops
         for _ in range(100):
-            if sum(re.match(r"askai: stats \w+ work ", line) is not None
+            if sum(re.match(r"stats \w+ work ", line) is not None
                    for line in ai.log) == len(loops):
                 break
             time.sleep(0.01)
-        stats = [line.split()[2:4] for line in ai.log if line.startswith("askai: stats ")]
+        stats = [line.split()[1:3] for line in ai.log if line.startswith("stats ")]
         names = ["turn", "interactive", "bulk", "timer_late", "work"]
         for loop in loops:
             assert [s[1] for s in stats if s[0] == loop] == names, (loop, ai.log)
-        assert re.search(r"^askai: stats loop\d+ turn n=[1-9]\d* ", "".join(ai.log),
+        assert re.search(r"^stats loop\d+ turn n=[1-9]\d* ", "".join(ai.log),
                          re.M)
         # The most work of each unit a step did, against its bound, on the
         # loop that served the ping.
         line = next(line for line in ai.log
-                    if re.match(r"askai: stats loop\d+ work .* reqs=1/", line))
+                    if re.match(r"stats loop\d+ work .* reqs=1/", line))
         units = {k: tuple(map(int, v.split("/")))
                  for k, v in re.findall(r" (\w+)=(\d+/\d+)", line)}
         assert set(units) >= {"events", "timers", "reqs", "recv", "send", "body",
@@ -4141,7 +4141,7 @@ def work(ai):
     ai.log.clear()
     ai.proc.send_signal(signal.SIGUSR1)
     loops = ai.loops()
-    lines = tuple(f"askai: stats {loop} work " for loop in loops)
+    lines = tuple(f"stats {loop} work " for loop in loops)
     for _ in range(200):
         if sum(line.startswith(lines) for line in ai.log) == len(lines):
             break
@@ -4154,7 +4154,7 @@ def work(ai):
             most, bound = map(int, v.split("/"))
             units[name + k] = (max(most, units.get(name + k, (0,))[0]), bound)
     steps = sum(int(re.search(r" n=(\d+)", line).group(1)) for line in ai.log
-                if re.match(r"askai: stats loop\d+ bulk ", line))
+                if re.match(r"stats loop\d+ bulk ", line))
     return units, steps
 
 
@@ -5143,7 +5143,7 @@ def check_reload(binary, up):
             # Other options keep, until a restart.
             write(first, **{"tool-description": "New."})
             reload(ai, "configuration reloaded")
-            ai.wait_log(r"^askai: warning: other changed options need a restart$")
+            ai.wait_log(r"^warning: other changed options need a restart$")
             _, _, body = ai.rpc("tools/list", headers=auth("t1"))
             assert body["result"]["tools"][0]["description"] != "New.", body
             # The roles name the tools that askai runs, not those the file
@@ -5151,12 +5151,12 @@ def check_reload(binary, up):
             # and a new name for the ask tool is no tool yet.
             write(first, man=False)
             reload(ai, "configuration reloaded")
-            ai.wait_log(r"^askai: warning: other changed options need a restart$")
+            ai.wait_log(r"^warning: other changed options need a restart$")
             assert tools(ai, "t1") == ["ask_ai", "man"]
             # So does a change of the member tools, which a reload checks.
             write(first, tools={"deny": ["man"]})
             reload(ai, "configuration reloaded")
-            ai.wait_log(r"^askai: warning: other changed options need a restart$")
+            ai.wait_log(r"^warning: other changed options need a restart$")
             assert tools(ai, "t1") == ["ask_ai", "man"]
             write(first, tools={"allow": ["nope"]})
             assert 'tools: askai has no tool "nope"; the tools are man' in \
@@ -5227,7 +5227,7 @@ def check_logs(binary, up):
     of a note's text and of compact's summary only the size.  No line has a token, an API key, a password or the query of
     the URL."""
     def told(ai):
-        return [line.removeprefix("askai: ").rstrip("\n") for line in ai.log]
+        return [line.rstrip("\n") for line in ai.log]
 
     def has(ai, *lines):
         got = told(ai)
@@ -5278,9 +5278,9 @@ def check_logs(binary, up):
         with Askai(binary, "-u", up.url(), "--notes", notes) as ai:
             ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "read", "file": "SECRETFILE", "thread": "x"}})
-            line = ai.wait_log(r"^askai: tool call notes from anonymous failed ")
+            line = ai.wait_log(r"^tool call notes from anonymous failed ")
             assert re.fullmatch(
-                r'askai: tool call notes from anonymous failed after \d+\.\d s \(88 bytes\); '
+                r'tool call notes from anonymous failed after \d+\.\d s \(88 bytes\); '
                 r'error "The optional thread must be 32 hexadecimal digits\. '
                 r'It does not select the notes session\."\n', line), line
             assert "SECRETFILE" not in "".join(ai.log), ai.log
@@ -5318,7 +5318,7 @@ def check_logs(binary, up):
                                                  "jobs", "wait", "timer")], told(ai)
             assert ai.rpc("tools/call", {"name": "bro", "arguments": {"prompt": "Q"}},
                           headers={"Authorization": "Bearer tok-31415"})[0] == 200
-            ai.wait_log(r"^askai: tool call bro from identity ASKAI_TOKEN answered ")
+            ai.wait_log(r"^tool call bro from identity ASKAI_TOKEN answered ")
             log = "".join(ai.log)
             assert not any(word in log for word in ("PASSWORD", "SECRET", "tok-31415")), log
 
@@ -5365,21 +5365,21 @@ def check_logs(binary, up):
             # anonymous client on loopback names its kind and role.
             assert ai.rpc("tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}},
                           headers=alice)[0] == 200
-            ai.wait_log(r"^askai: tool call ask_ai from identity alice answered after ")
+            ai.wait_log(r"^tool call ask_ai from identity alice answered after ")
             assert ai.rpc("tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}},
                           headers={"Authorization": "Bearer ci-token"})[0] == 200
-            ai.wait_log(r"^askai: tool call ask_ai from identity ci answered after ")
+            ai.wait_log(r"^tool call ask_ai from identity ci answered after ")
             ai.ask("Q")
-            ai.wait_log(r"^askai: tool call ask_ai from anonymous loopback \(role user\) "
+            ai.wait_log(r"^tool call ask_ai from anonymous loopback \(role user\) "
                         r"answered after ")
             # A call of a tool that the role does not grant, or that askai
             # does not offer, is logged as refused, the client's name of an
             # unknown tool as a JSON string.
             ai.rpc("tools/call", {"name": "man", "arguments": {"name": "ls"}})
-            ai.wait_log(r"^askai: tool call man from anonymous loopback \(role user\) "
+            ai.wait_log(r"^tool call man from anonymous loopback \(role user\) "
                         r"refused: the role does not grant it$")
             ai.rpc("tools/call", {"name": "no\nsuch", "arguments": {}})
-            ai.wait_log(r'^askai: tool call "no\\nsuch" from anonymous loopback \(role '
+            ai.wait_log(r'^tool call "no\\nsuch" from anonymous loopback \(role '
                         r'user\) refused: askai offers no such tool$')
             # A turn's call of a tool that its ask call does not lend, or that
             # askai does not offer, is logged as refused with its arguments.
@@ -5387,9 +5387,9 @@ def check_logs(binary, up):
                                                       ("b", "no\nsuch", "{}")]))]
             assert ai.rpc("tools/call", {"name": "ask_ai", "arguments": {"prompt": "Q"}},
                           headers=alice)[0] == 200
-            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call "man" refused: not '
+            ai.wait_log(r'^ask call \d+\.\d+ turn 1: tool call "man" refused: not '
                         r'lent to this ask call; arguments \{"name":"ls"\}$')
-            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call "no\\nsuch" refused: '
+            ai.wait_log(r'^ask call \d+\.\d+ turn 1: tool call "no\\nsuch" refused: '
                         r'askai offers no such tool; arguments \{\}$')
             # A call that runs across a reload still names its client, which
             # it copied from the old policy.
@@ -5414,7 +5414,7 @@ def check_logs(binary, up):
                 "metrics         no"])
             ai.wait_list("warning: no role lists these tools:", ["git"])
             slow.join(5)
-            ai.wait_log(r"^askai: tool call ask_ai from identity alice answered after ")
+            ai.wait_log(r"^tool call ask_ai from identity alice answered after ")
             up.reply = scripted
 
         # A tool that a role lends to the upstream is listed, and notes,
@@ -5461,14 +5461,14 @@ def check_logs(binary, up):
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "a.md", "text": "NOTETEXT" * 10}})
             assert status == 200 and not body["result"].get("isError"), body
-            ai.wait_log(r'^askai: tool call notes from anonymous answered after \d+\.\d s '
+            ai.wait_log(r'^tool call notes from anonymous answered after \d+\.\d s '
                         r'\(\d+ bytes\); arguments \{"action":"add","file":"a\.md",'
                         r'"text":"\(80 bytes\)"\}$')
             # A data: URI, a file, is shown by its size only, in any argument.
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "b.bin", "content": "data:;base64,SECRETdata"}})
             assert status == 200 and not body["result"].get("isError"), body
-            ai.wait_log(r'^askai: tool call notes from anonymous answered after \d+\.\d s '
+            ai.wait_log(r'^tool call notes from anonymous answered after \d+\.\d s '
                         r'\(\d+ bytes\); arguments \{"action":"add","file":"b\.bin",'
                         r'"content":"\(23 bytes\)"\}$')
             assert not any("SECRET" in line for line in ai.log), ai.log
@@ -5478,7 +5478,7 @@ def check_logs(binary, up):
                    "n": [1, 2.5, True, None, {"k": "v"}, []], "o": {}}
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": odd})
             assert status == 200 and body["result"].get("isError"), body
-            line = ai.wait_log(r"^askai: tool call notes from anonymous failed ")
+            line = ai.wait_log(r"^tool call notes from anonymous failed ")
             assert line.endswith("; arguments " + json.dumps(odd, separators=(",", ":"),
                                                              ensure_ascii=False) +
                                  '; error "The optional thread must be 32 hexadecimal digits. '
@@ -5493,7 +5493,7 @@ def check_logs(binary, up):
                                             used=(7990, 10))),
             ]
             assert ai.ask("x" * 300)["content"][0]["text"] == "A"
-            start = ai.wait_log(r'^askai: ask call \d+\.\d+ from anonymous: prompt 300 '
+            start = ai.wait_log(r'^ask call \d+\.\d+ from anonymous: prompt 300 '
                                 r'bytes, thread [0-9a-f]{32} \(new\), "x{100}"\.\.\.$')
             call = re.escape(re.search(r"ask call (\d+\.\d+)", start).group(1))
             for pattern in (
@@ -5507,8 +5507,8 @@ def check_logs(binary, up):
                     r"turn 3: context full, compacted by askai",
                     r'turn 4: answered, HTTP 200 after \d+\.\d s, tokens unknown, stop '
                     r'reason "stop", 0 tool calls, 1 byte of text'):
-                ai.wait_log(f"^askai: ask call {call} " + pattern + "$")
-            ai.wait_log(r"^askai: tool call ask_ai from anonymous answered after \d+\.\d s "
+                ai.wait_log(f"^ask call {call} " + pattern + "$")
+            ai.wait_log(r"^tool call ask_ai from anonymous answered after \d+\.\d s "
                         rf"\(1 byte\); ask call {call}, 4 turns, 3 tool calls; arguments "
                         r'\{"prompt":"x{189}\.\.\.$')
             log = "".join(ai.log)
@@ -5518,7 +5518,7 @@ def check_logs(binary, up):
                                   ('x' * 187, None)):
                 ai.log.clear()
                 ai.ask(prompt)
-                line = ai.wait_log(r"^askai: tool call ask_ai from anonymous answered ")
+                line = ai.wait_log(r"^tool call ask_ai from anonymous answered ")
                 got = line.rstrip("\n").split("; arguments ", 1)[1]
                 assert got == ('{"prompt":"' + "x" * 187 + '"}' if shown is None else
                                '{"prompt":"' + shown + "..."), got
@@ -5528,7 +5528,7 @@ def check_logs(binary, up):
             ai.log.clear()
             # A summary past 4 MiB takes a while under the sanitizers.
             assert ai.ask("Q", wait=120)["content"][0]["text"] == "A"
-            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call compact failed after '
+            ai.wait_log(r'^ask call \d+\.\d+ turn 1: tool call compact failed after '
                         r'\d+\.\d s \(\d+ bytes\); arguments \{"summary":"\(4400000 bytes\)"\}; '
                         r'error ".+"$')
             assert "SUMMARYTEXT" not in "".join(ai.log), ai.log
@@ -5538,10 +5538,10 @@ def check_logs(binary, up):
                                                       ("f", "timer", "[1]")]))]
             ai.log.clear()
             ai.ask("Q")
-            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call timer failed after '
+            ai.wait_log(r'^ask call \d+\.\d+ turn 1: tool call timer failed after '
                         r'\d+\.\d s \(\d+ bytes\); arguments \{"seconds":0\}; error "The '
                         r'seconds argument must be a whole number from 1 to 3600\."$')
-            ai.wait_log(r'^askai: ask call \d+\.\d+ turn 1: tool call timer failed after '
+            ai.wait_log(r'^ask call \d+\.\d+ turn 1: tool call timer failed after '
                         r'\d+\.\d s \(\d+ bytes\); arguments not a JSON object; error "Your '
                         r'arguments were not a JSON object, so the call was not run\."$')
             # An answer that is not streamed, such as an HTTP error's body, has
@@ -5549,9 +5549,9 @@ def check_logs(binary, up):
             script[:] = [lambda r: (401, {"error": {"message": "no"}})]
             ai.log.clear()
             ai.ask("Q")
-            ai.wait_log(r"^askai: ask call \d+\.\d+ turn 1: failed, HTTP 401 after \d+\.\d s, "
+            ai.wait_log(r"^ask call \d+\.\d+ turn 1: failed, HTTP 401 after \d+\.\d s, "
                         r"not streamed, \d+ bytes of body$")
-            ai.wait_log(r'^askai: tool call ask_ai from anonymous failed after \d+\.\d s '
+            ai.wait_log(r'^tool call ask_ai from anonymous failed after \d+\.\d s '
                         r'\(\d+ bytes\); ask call \d+\.\d+, 1 turn, 0 tool calls; arguments '
                         r'\{"prompt":"Q"\}; error "Upstream error \(HTTP 401\): no"$')
             # A new thread, a reminder to write notes, and the thread resumed.
@@ -5559,15 +5559,15 @@ def check_logs(binary, up):
                                                      used=(2100, 10)))]
             ai.log.clear()
             ai.ask("Q")
-            start = ai.wait_log(r'^askai: ask call \d+\.\d+ from anonymous: prompt 1 byte, '
+            start = ai.wait_log(r'^ask call \d+\.\d+ from anonymous: prompt 1 byte, '
                                 r'thread [0-9a-f]{32} \(new\), "Q"$')
             call = re.escape(re.search(r"ask call (\S+) ", start).group(1))
             thread = re.search(r"thread (\w{32})", start).group(1)
-            ai.wait_log(rf"^askai: ask call {call} turn 1: context notice, 26 % full, \d+ of "
+            ai.wait_log(rf"^ask call {call} turn 1: context notice, 26 % full, \d+ of "
                         r"8000 tokens: a reminder to write notes$")
             ai.log.clear()
             ai.ask("Q", thread=thread)
-            ai.wait_log(rf'^askai: ask call \d+\.\d+ from anonymous: prompt 1 byte, thread '
+            ai.wait_log(rf'^ask call \d+\.\d+ from anonymous: prompt 1 byte, thread '
                         rf'{thread} \(resumed\), "Q"$')
 
         # Without notes an ask call has no thread.  A call that the turns
@@ -5577,9 +5577,9 @@ def check_logs(binary, up):
                    "--max-turns", "2") as ai:
             script[:] = [lambda r: (200, turn_stream([("a", "man", '{"name":"ls"}')]))] * 2
             ai.ask("Q")
-            ai.wait_log(r'^askai: ask call \d+\.\d+ from anonymous: prompt 1 byte, no '
+            ai.wait_log(r'^ask call \d+\.\d+ from anonymous: prompt 1 byte, no '
                         r'thread, "Q"$')
-            ai.wait_log(r'^askai: tool call ask_ai from anonymous failed after \d+\.\d s '
+            ai.wait_log(r'^tool call ask_ai from anonymous failed after \d+\.\d s '
                         r'\(0 bytes\); ask call \d+\.\d+, 2 turns, 1 tool call, stopped at '
                         r'--max-turns; arguments \{"prompt":"Q"\}$')
 
@@ -5593,9 +5593,9 @@ def check_logs(binary, up):
                 "tool": "ask_ai", "arguments": {"prompt": "Q"}}})
             assert status == 200 and not body["result"].get("isError"), body
             jid = re.search(r"Started job (\w{32})\.", text_of(body["result"])).group(1)
-            ai.wait_log(rf"^askai: tool call background from anonymous became job {jid}, "
+            ai.wait_log(rf"^tool call background from anonymous became job {jid}, "
                         r"a call of ask_ai$")
-            ai.wait_log(r"^askai: tool call ask_ai from anonymous answered after \d+\.\d s "
+            ai.wait_log(r"^tool call ask_ai from anonymous answered after \d+\.\d s "
                         rf"\(1 byte\); job {jid}; ask call \d+\.\d+, 1 turn, 0 tool calls; "
                         r'arguments \{"prompt":"Q"\}$')
     up.reply = lambda request: (200, ANSWERS["openai"])
@@ -5714,7 +5714,7 @@ def check_unix(binary, up):
             with Askai(binary, "-c", path, "-l", f"unix:{sock}", "--verbose") as ai:
                 assert uds_rpc(sock, "tools/call", {"name": "ask_ai", "arguments": {
                     "prompt": "Q"}})[0] == 200
-                ai.wait_log(rf"^askai: tool call ask_ai from {who} {end}")
+                ai.wait_log(rf"^tool call ask_ai from {who} {end}")
 
         # A file left behind is taken over; a socket in use is not.
         with socket.socket(socket.AF_UNIX) as left:
@@ -6352,8 +6352,8 @@ def check_lookups(binary, up):
         assert result["isError"] and \
             "cannot look up nonexistent.invalid: " in text_of(result), result
         assert ai.metrics()['askai_upstream_lookups_total{result="failed"}'] == 2
-        ai.wait_log(r"^askai: upstream /props: cannot look up ")
-        ai.wait_log(r"^askai: upstream slots: 4 \(the default\)$")
+        ai.wait_log(r"^upstream /props: cannot look up ")
+        ai.wait_log(r"^upstream slots: 4 \(the default\)$")
 
     print("upstream host lookups on a blocker thread: PASS")
 
@@ -6966,8 +6966,8 @@ def check_slots(binary, up):
     for props, why in (({"total_slots": "2"}, "no total_slots"), (None, "HTTP 404")):
         up.props = props
         with Askai(binary, "-u", up.url()) as ai:
-            ai.wait_log(f"^askai: upstream /props: {why}$")
-            ai.wait_log(r"^askai: upstream slots: 4 \(the default\)$")
+            ai.wait_log(f"^upstream /props: {why}$")
+            ai.wait_log(r"^upstream slots: 4 \(the default\)$")
     gets = up.gets
     with Askai(binary, "-u", up.url(), "--slots", "3") as ai:
         ai.wait_log(r"upstream slots: 3 \(--slots\)")
@@ -6992,14 +6992,14 @@ def check_slots(binary, up):
              "/v1beta/models/m")):
         with Askai(binary, *args) as ai:
             assert "context   from the model" in ai.listed("upstream:"), ai.log
-            ai.wait_log(r"^askai: upstream context: 50000 tokens \(the model's "
+            ai.wait_log(r"^upstream context: 50000 tokens \(the model's "
                         r"inputTokenLimit\)$")
             ai.wait_log(r"upstream slots: 4 \(the default\)")
             assert up.got[-1] == path, up.got
     up.props = None
     with Askai(binary, "--api", "interactions", "-m", "m", "-u",
                up.url("/v1beta/interactions")) as ai:
-        ai.wait_log(r"^askai: upstream model: HTTP 404$")
+        ai.wait_log(r"^upstream model: HTTP 404$")
         ai.wait_log(r"upstream slots: 4 \(the default\)")
     up.props = {"total_slots": 2}
     for args in (("--api", "messages", "-u", up.url("/v1/messages")),
@@ -7010,8 +7010,8 @@ def check_slots(binary, up):
     # /props may take the calls' timeout at most.
     up.props = "hang"
     with Askai(binary, "-u", up.url(), "-T", "1") as ai:
-        ai.wait_log(r"^askai: upstream /props: Operation timed out")
-        ai.wait_log(r"^askai: upstream slots: 4 \(the default\)$")
+        ai.wait_log(r"^upstream /props: Operation timed out")
+        ai.wait_log(r"^upstream slots: 4 \(the default\)$")
     up.props = None
     up.reply = lambda request: (200, ANSWERS["openai"])
 
@@ -10880,18 +10880,18 @@ def check_turns(binary, up):
             # the name of the tool, whether the call failed, the time, the
             # size of the output, the arguments as compact JSON and the text
             # of a failure.
-            ai.wait_log(r'^askai: ask call \d+\.\d+ turn \d+: tool call background '
+            ai.wait_log(r'^ask call \d+\.\d+ turn \d+: tool call background '
                         r'answered after \d+\.\d s \(14 bytes\); arguments \{"tool":'
                         r'"git","arguments":\{"repo":"proj","command":"log","paths":'
                         r'\["SLOWPATH"\]\}\}$')
             for pattern in ("tool call background failed",
                             "tool call wait failed"):
-                ai.wait_log(r"^askai: ask call \d+\.\d+ turn \d+: " + pattern +
+                ai.wait_log(r"^ask call \d+\.\d+ turn \d+: " + pattern +
                             r' after \d+\.\d s \(\d+ bytes\); arguments \{.*\}; '
                             r'error ".+"$')
             for pattern in ("tool call jobs answered",
                             "background tool call git answered"):
-                ai.wait_log(r"^askai: ask call \d+\.\d+ turn \d+: " + pattern +
+                ai.wait_log(r"^ask call \d+\.\d+ turn \d+: " + pattern +
                             r" after \d+\.\d s \(\d+ bytes\); arguments \{.*\}$")
 
             # The output token limit can cut the arguments of a call short.
@@ -10901,7 +10901,7 @@ def check_turns(binary, up):
             script[:] = [lambda r: (200, turn_stream([("z", "git", slow[:-9])],
                                                      reason="length"))]
             assert ai.ask("Q")["content"][0]["text"] == "A"
-            ai.wait_log(r"^askai: ask call \d+\.\d+ turn 1: tool call git failed after "
+            ai.wait_log(r"^ask call \d+\.\d+ turn 1: tool call git failed after "
                         r"0\.\d s \(\d+ bytes\); arguments cut short by the output token "
                         r'limit; error "Your answer reached the output token limit, which '
                         r'cut these arguments short, so the call was not run\."$')
@@ -11443,7 +11443,7 @@ def check_plugin(binary, up, plugin):
             write([], **only)
             ai.log.clear()
             ai.proc.send_signal(signal.SIGHUP)
-            ai.wait_log(r"^askai: warning: other changed options need a restart$")
+            ai.wait_log(r"^warning: other changed options need a restart$")
             assert names(ai) == ["test_echo"]
 
         # With "upstream-tools" the registry also has the tools that only
@@ -11516,12 +11516,12 @@ def check_plugin(binary, up, plugin):
                 (patched("abi.so", 1, word(1) + 1),
                  f"its ABI value 0 is {word(1) + 1}, askai's is {word(1)}"),
                 (patched("probes.so", 32, 1), "its ABI value 31 is 1, askai's is 0")):
-            fails([listed], f"askai: {listed}: {message}")
+            fails([listed], f"{listed}: {message}")
         # A copy that calls mcp_slot_tel1(), which askai does not export.
         with open(f"{d}/import.so", "wb") as f:
             assert b"mcp_slot_tell\0" in image
             f.write(image.replace(b"mcp_slot_tell\0", b"mcp_slot_tel1\0"))
-        fails([f"{d}/import.so"], f"askai: {d}/import.so: cannot load it: ",
+        fails([f"{d}/import.so"], f"{d}/import.so: cannot load it: ",
               "undefined symbol: mcp_slot_tel1")
         # A copy in which kind 0 of askai_plugin has the flag 1 << 32, which
         # src/tool.h does not define for plugins.  The manifest's ABI value
@@ -11531,13 +11531,13 @@ def check_plugin(binary, up, plugin):
         copy[flags:flags + 8] = (number(flags, 8) | 1 << 32).to_bytes(8, sys.byteorder)
         with open(f"{d}/flags.so", "wb") as f:
             f.write(copy)
-        fails([f"{d}/flags.so"], f"askai: {d}/flags.so: kind 0 of its askai_plugin "
+        fails([f"{d}/flags.so"], f"{d}/flags.so: kind 0 of its askai_plugin "
               "has flags that tool.h does not define for plugins: 0x100000000")
         # A copy whose definition of test_echo has the name test_ech0.
         assert image.count(b'{"name":"test_echo",') == 1
         with open(f"{d}/name.so", "wb") as f:
             f.write(image.replace(b'{"name":"test_echo",', b'{"name":"test_ech0",'))
-        fails([f"{d}/name.so"], f"askai: {d}/name.so: the definition of its tool "
+        fails([f"{d}/name.so"], f"{d}/name.so: the definition of its tool "
               "test_echo has another name")
         # Only root and askai's user may change a plugin file and the
         # directories above it.  The path of a plugin is the file's real
@@ -11549,13 +11549,13 @@ def check_plugin(binary, up, plugin):
         shutil.copy(plugin, f"{d}/shared/test.so")
         os.symlink(plugin, f"{d}/link.so")
         for listed in (f"{d}/open.so", f"{d}/shared/test.so"):
-            fails([listed], f"askai: {listed}: others than root and askai's "
+            fails([listed], f"{listed}: others than root and askai's "
                   "user may change it")
         for listed in (f"{d}/link.so", f"{d}/shared/../import.so",
                        f"{os.path.dirname(plugin)}/./{os.path.basename(plugin)}"):
-            fails([listed], f"askai: {listed}: not the file's real path, which "
+            fails([listed], f"{listed}: not the file's real path, which "
                   f"is {os.path.realpath(listed)}")
-        fails([f"{d}/none.so"], f"askai: {d}/none.so: cannot open it: No such "
+        fails([f"{d}/none.so"], f"{d}/none.so: cannot open it: No such "
               "file or directory")
         # A plugin's state is in its instances.  askai refuses a file with
         # thread-local storage, with a constructor, or with writable data
@@ -11572,15 +11572,15 @@ def check_plugin(binary, up, plugin):
                  "has a constructor or a destructor")):
             listed = patched(name, index, value)
             if refuses_state:
-                fails([listed], f"askai: {listed}: {message}")
-        fails([plugin, plugin], f"askai: {plugin}: its tool test_echo has the "
+                fails([listed], f"{listed}: {message}")
+        fails([plugin, plugin], f"{plugin}: its tool test_echo has the "
               "name of a tool that askai already has")
-        fails([plugin], f"askai: {plugin}: its tool test_echo has the name of a "
+        fails([plugin], f"{plugin}: its tool test_echo has the name of a "
               "tool that askai already has", args=("--tool-name", "test_echo"))
-        fails(["test_plugin.so"], f"askai: {path}: plugins: not an absolute "
+        fails(["test_plugin.so"], f"{path}: plugins: not an absolute "
               "path: test_plugin.so")
-        fails([5], f"askai: {path}: plugins: not an absolute path: 5")
-        fails(plugin, f"askai: {path}: plugins: not an array")
+        fails([5], f"{path}: plugins: not an absolute path: 5")
+        fails(plugin, f"{path}: plugins: not an array")
         # An element of "plugins" can be an object with the members path
         # and options.  configure() of the plugin checks the options, and
         # test_config shows the greeting that it stored.  A plugin without
@@ -11610,25 +11610,25 @@ def check_plugin(binary, up, plugin):
                     write([{"path": plugin, "options": {"greeting": "yo"}}])
                     ai.log.clear()
                     ai.proc.send_signal(signal.SIGHUP)
-                    ai.wait_log(r"^askai: warning: other changed options need a restart$")
+                    ai.wait_log(r"^warning: other changed options need a restart$")
                     assert greeting(ai) == "greeting=hi"
         for plugins, message in (
-                ([{"path": plugin, "options": 5}], f"askai: {path}: plugins: the "
+                ([{"path": plugin, "options": 5}], f"{path}: plugins: the "
                  "member options of a plugin is not an object"),
-                ([{"path": plugin, "options": None}], f"askai: {path}: plugins: the "
+                ([{"path": plugin, "options": None}], f"{path}: plugins: the "
                  "member options of a plugin is not an object"),
-                ([{"path": plugin, "name": "x"}], f"askai: {path}: plugins: unknown "
+                ([{"path": plugin, "name": "x"}], f"{path}: plugins: unknown "
                  "member of a plugin: name"),
-                ([{"options": {}}], f"askai: {path}: plugins: a plugin has no member "
+                ([{"options": {}}], f"{path}: plugins: a plugin has no member "
                  "path"),
-                ([{"path": "test_plugin.so"}], f"askai: {path}: plugins: not an "
+                ([{"path": "test_plugin.so"}], f"{path}: plugins: not an "
                  "absolute path: test_plugin.so"),
-                ([{"path": plugin, "options": {"greeting": 5}}], f"askai: {plugin}: "
+                ([{"path": plugin, "options": {"greeting": 5}}], f"{plugin}: "
                  "options: greeting: not a string of at most 63 bytes"),
                 ([{"path": plugin, "options": {"greeting": "x" * 64}}],
-                 f"askai: {plugin}: options: greeting: not a string of at most 63 "
+                 f"{plugin}: options: greeting: not a string of at most 63 "
                  "bytes"),
-                ([{"path": plugin, "options": {"colour": "red"}}], f"askai: {plugin}: "
+                ([{"path": plugin, "options": {"colour": "red"}}], f"{plugin}: "
                  "options: unknown option: colour")):
             fails(plugins, message)
 
@@ -11646,7 +11646,7 @@ def check_plugin(binary, up, plugin):
         copy[size_at:size_at + 8] = bytes(8)
         with open(f"{d}/size.so", "wb") as f:
             f.write(copy)
-        fails([f"{d}/size.so"], f"askai: {d}/size.so: its askai_plugin has "
+        fails([f"{d}/size.so"], f"{d}/size.so: its askai_plugin has "
               "configure() without a config_size of 1 to 4096")
         configure = address(b"askai_plugin") + word(17)
         spare = address(b"askai_plugin") + 7 * word(6) + 2 * word(1)
@@ -11665,7 +11665,7 @@ def check_plugin(binary, up, plugin):
         copy[offset(configure):offset(configure) + 8] = bytes(8)
         with open(f"{d}/bare.so", "wb") as f:
             f.write(copy)
-        fails([{"path": f"{d}/bare.so", "options": {}}], f"askai: {d}/bare.so: "
+        fails([{"path": f"{d}/bare.so", "options": {}}], f"{d}/bare.so: "
               "options: the plugin has no options")
         write([f"{d}/bare.so"])
         with Askai(binary, "-c", path) as ai:
@@ -12239,7 +12239,7 @@ def check_web(binary, up, plugin):
                 headers, _ = last["/text?get"]
                 assert headers["User-Agent"] == "askai (plugin test)" and \
                     headers["Accept"] == "text/plain", dict(headers)
-                ai.wait_log(r"^askai: web request GET http://127\.0\.0\.1:\d+/text\?get "
+                ai.wait_log(r"^web request GET http://127\.0\.0\.1:\d+/text\?get "
                             r"answered with status 200 after \d+ ms \(5 bytes\)$")
 
                 # A POST sends the body as JSON.
@@ -13292,7 +13292,7 @@ def check_godbolt(binary, up, godbolt):
                                      stdin=subprocess.DEVNULL, capture_output=True,
                                      text=True, timeout=5, check=False)
                 assert run.returncode == 2 and \
-                    f"askai: {godbolt}: options: {why}" in run.stderr, \
+                    f"{godbolt}: options: {why}" in run.stderr, \
                     (options, run.returncode, run.stderr)
     finally:
         ce.close()

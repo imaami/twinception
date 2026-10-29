@@ -261,23 +261,23 @@ loop_stats () {
 	kill -USR1 "$askai_pid" 2> /dev/null || return 1
 	((++dumps))
 	for ((i = 0; i < 100; ++i)); do
-		(($(grep -cE '^askai: stats ([a-z0-9]+ )?timer_late ' "$tmp/askai.err") >=
+		(($(grep -cE '^stats ([a-z0-9]+ )?timer_late ' "$tmp/askai.err") >=
 		  dumps * loops)) && break
 		sleep 0.01
 	done
 	((i < 100)) || return 1
 	sleep 0.05
 	[[ -z $phase ]] || awk -v phase="$phase" '
-	$1 == "askai:" && $2 == "stats" {
-		named = $3 !~ /^(turn|interactive|bulk|timer_late|work)$/
-		name = named ? $3 : "loop1"
-		kind = named ? $4 : $3
+	$1 == "stats" {
+		named = $2 !~ /^(turn|interactive|bulk|timer_late|work)$/
+		name = named ? $2 : "loop1"
+		kind = named ? $3 : $2
 		if (kind == "turn") {
 			if (!(name in last))
 				order[n++] = name
 			last[name] = ""
 		}
-		sub(named ? "^askai: stats [a-z0-9]+ " : "^askai: stats ", "")
+		sub(named ? "^stats [a-z0-9]+ " : "^stats ", "")
 		last[name] = last[name] "LOOP " phase " " name " " $0 "\n"
 	}
 	END {
@@ -561,8 +561,8 @@ mock_rc=$?
 mock_pid=
 grep -E '^mock: (requests|http)' "$tmp/mock.err" | tee -a "$tmp/gen.out"
 # askai's counts at stop: the lists "upstream requests:" and "tasks:".
-awk '/^askai: (upstream requests|tasks):$/ { on = 1; print; next }
-     on && /^askai:   / { print; next }
+awk '/^(upstream requests|tasks):$/ { on = 1; print; next }
+     on && /^  / { print; next }
      { on = 0 }' "$tmp/askai.err" | tee -a "$tmp/gen.out"
 if [[ -n ${RELOAD_S-} ]]; then
 	printf 'RELOADS sent=%d done=%d failed=%d\n' "$reloads" \
@@ -641,11 +641,11 @@ $1 == "LOOP" && $4 == "work" {
 			over = over " " $2 "/" $3 ":" $i
 	}
 }
-!/^askai:   / { list = "" }
-$0 == "askai: upstream requests:" { list = "jobs"; jobs_seen = 1 }
-$0 == "askai: tasks:" { list = "tasks"; tasks_seen = 1 }
-list == "jobs" && /^askai:   / { js[$2] = $NF }
-list == "tasks" && /^askai:   / { tk[$2] = $NF }
+!/^  / { list = "" }
+$0 == "upstream requests:" { list = "jobs"; jobs_seen = 1 }
+$0 == "tasks:" { list = "tasks"; tasks_seen = 1 }
+list == "jobs" && /^  / { js[$1] = $NF }
+list == "tasks" && /^  / { tk[$1] = $NF }
 $1 == "TASKS" { kv(ts, 2) }
 $1 == "FAIR" && $2 == "probe" { kv(fp, 3) }
 $1 == "FAIR" && $2 == "tasks" { kv(ft, 3); tasks_fair = 1 }

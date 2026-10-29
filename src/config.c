@@ -619,7 +619,7 @@ config_complain (struct config const *cfg,
 	if (cfg->logged)
 		LOG(LOG_ERROR, "%s%s%s", where, colon, what);
 	else
-		fprintf(stderr, "askai: %s%s%s\n", where, colon, what);
+		fprintf(stderr, "%s%s%s\n", where, colon, what);
 	return 2;
 }
 

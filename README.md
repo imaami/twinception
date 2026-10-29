@@ -1609,9 +1609,9 @@ Invalid options or environment exit 2, and a failure to start or to serve 1.
 
 ### Log
 
-`askai` writes its log to stderr, one line for each event, and each line
-begins with `askai: `.  As it starts, and before the lines with its MCP
-endpoints, it logs what it runs as lists with one item a line:
+`askai` writes its log to stderr, one line for each event.  As it starts,
+and before the lines with its MCP endpoints, it logs what it runs as lists
+with one item a line:
 
 - `upstream:` the provider, API, model, context size and URL.  The URL is
   logged without a user, a password and a query, which can have secrets.
@@ -1667,76 +1667,76 @@ plugin:
 `askai` logs these lines as it starts with it:
 
 ```text
-askai: upstream:
-askai:   provider  none
-askai:   API       chat
-askai:   model     none
-askai:   context   from llama-server
-askai:   URL       http://127.0.0.1:8081/v1/chat/completions
-askai:   files     off (the API takes none)
-askai: built-in tools for clients:
-askai:   bro         on
-askai:   man         on
-askai:   git         on
-askai:   notes       on
-askai:   background  off (--client-jobs)
-askai:   jobs        off (--client-jobs)
-askai:   wait        off (--client-jobs)
-askai:   timer       off (--client-jobs)
-askai: git repositories:
-askai:   proj  /srv/git/proj
-askai: notes directory: /var/lib/askai/notes
-askai: plugin godbolt:
-askai:   file     /usr/libexec/askai/godbolt.so
-askai:   options  given
-askai:   tools    godbolt_catalog
-askai:            godbolt_compile
-askai:            godbolt_preprocess
-askai:            godbolt_macros
-askai:            godbolt_targets
-askai: policy: from the configuration file
-askai: role admin:
-askai:   tools           bro
-askai:                   man
-askai:                   git
-askai:                   notes
-askai:   upstream tools  man
-askai:                   git
-askai:                   notes
-askai:                   compact
-askai:                   background
-askai:                   jobs
-askai:                   wait
-askai:                   timer
-askai:   metrics         yes
-askai: role user:
-askai:   tools           bro
-askai:                   man
-askai:                   git
-askai:                   notes
-askai:   upstream tools  man
-askai:                   git
-askai:                   notes
-askai:                   compact
-askai:                   background
-askai:                   jobs
-askai:                   wait
-askai:                   timer
-askai:   metrics         no
-askai: identities:
-askai:   alice  role admin
-askai: Unix groups: none
-askai: anonymous clients:
-askai:   loopback  role user
-askai:   remote    refused
-askai:   unix      refused
-askai: warning: no role lists these tools:
-askai:   godbolt_catalog
-askai:   godbolt_compile
-askai:   godbolt_preprocess
-askai:   godbolt_macros
-askai:   godbolt_targets
-askai: MCP endpoint http://127.0.0.1:8090/mcp
+upstream:
+  provider  none
+  API       chat
+  model     none
+  context   from llama-server
+  URL       http://127.0.0.1:8081/v1/chat/completions
+  files     off (the API takes none)
+built-in tools for clients:
+  bro         on
+  man         on
+  git         on
+  notes       on
+  background  off (--client-jobs)
+  jobs        off (--client-jobs)
+  wait        off (--client-jobs)
+  timer       off (--client-jobs)
+git repositories:
+  proj  /srv/git/proj
+notes directory: /var/lib/askai/notes
+plugin godbolt:
+  file     /usr/libexec/askai/godbolt.so
+  options  given
+  tools    godbolt_catalog
+           godbolt_compile
+           godbolt_preprocess
+           godbolt_macros
+           godbolt_targets
+policy: from the configuration file
+role admin:
+  tools           bro
+                  man
+                  git
+                  notes
+  upstream tools  man
+                  git
+                  notes
+                  compact
+                  background
+                  jobs
+                  wait
+                  timer
+  metrics         yes
+role user:
+  tools           bro
+                  man
+                  git
+                  notes
+  upstream tools  man
+                  git
+                  notes
+                  compact
+                  background
+                  jobs
+                  wait
+                  timer
+  metrics         no
+identities:
+  alice  role admin
+Unix groups: none
+anonymous clients:
+  loopback  role user
+  remote    refused
+  unix      refused
+warning: no role lists these tools:
+  godbolt_catalog
+  godbolt_compile
+  godbolt_preprocess
+  godbolt_macros
+  godbolt_targets
+MCP endpoint http://127.0.0.1:8090/mcp
 ```
 
 The lines `upstream slots`, `upstream context`, `upstream /props` and
@@ -1750,8 +1750,8 @@ logs each tool call of a client that it refuses, because the client's role
 does not grant the tool or `askai` offers no such tool:
 
 ```text
-askai: tool call godbolt_compile from anonymous loopback (role user) refused: the role does not grant it
-askai: tool call "godbolt" from anonymous loopback (role user) refused: askai offers no such tool
+tool call godbolt_compile from anonymous loopback (role user) refused: the role does not grant it
+tool call "godbolt" from anonymous loopback (role user) refused: askai offers no such tool
 ```
 
 The client is `identity NAME`, `role NAME` for a member of a Unix group,
@@ -1789,12 +1789,12 @@ The text of a note and the summary of `compact` are logged only by their
 sizes.  These are the lines of an ask call whose first turn calls two tools:
 
 ```text
-askai: ask call 1.1 from anonymous loopback (role user): prompt 85 bytes, thread b73f6f9a14edb9977c9aa00761470f26 (new), "What is in the repository? Use git to look at its log, and keep a plan in your notes."
-askai: ask call 1.1 turn 1: answered, HTTP 200 after 2.4 s, 1230 of 8192 tokens (15 %), stop reason "tool_calls", 2 tool calls, 8 bytes of text
-askai: ask call 1.1 turn 1: tool call git answered after 0.1 s (14 bytes); arguments {"repo":"proj","command":"log","options":["--oneline"]}
-askai: ask call 1.1 turn 1: tool call notes answered after 0.0 s (6 bytes); arguments {"action":"add","file":"plan.md","text":"(210 bytes)"}
-askai: ask call 1.1 turn 2: answered, HTTP 200 after 1.3 s, 1512 of 8192 tokens (18 %), stop reason "stop", 0 tool calls, 30 bytes of text
-askai: tool call bro from anonymous loopback (role user) answered after 3.9 s (30 bytes); ask call 1.1, 2 turns, 2 tool calls; arguments {"prompt":"What is in the repository? Use git to look at its log, and keep a plan in your notes."}
+ask call 1.1 from anonymous loopback (role user): prompt 85 bytes, thread b73f6f9a14edb9977c9aa00761470f26 (new), "What is in the repository? Use git to look at its log, and keep a plan in your notes."
+ask call 1.1 turn 1: answered, HTTP 200 after 2.4 s, 1230 of 8192 tokens (15 %), stop reason "tool_calls", 2 tool calls, 8 bytes of text
+ask call 1.1 turn 1: tool call git answered after 0.1 s (14 bytes); arguments {"repo":"proj","command":"log","options":["--oneline"]}
+ask call 1.1 turn 1: tool call notes answered after 0.0 s (6 bytes); arguments {"action":"add","file":"plan.md","text":"(210 bytes)"}
+ask call 1.1 turn 2: answered, HTTP 200 after 1.3 s, 1512 of 8192 tokens (18 %), stop reason "stop", 0 tool calls, 30 bytes of text
+tool call bro from anonymous loopback (role user) answered after 3.9 s (30 bytes); ask call 1.1, 2 turns, 2 tool calls; arguments {"prompt":"What is in the repository? Use git to look at its log, and keep a plan in your notes."}
 ```
 
 ### askai options
