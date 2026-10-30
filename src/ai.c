@@ -174,6 +174,8 @@ enum {
 	                          execution, which needs storage */
 	BODY_STREAM = 1 << 4,  /* "stream", after --extra is merged, so that the
 	                          answer is always streamed */
+	BODY_PARTS  = 1 << 5,  /* the system prompt in an object with an array
+	                          of parts */
 };
 
 static struct ai_body {
@@ -190,7 +192,7 @@ static struct ai_body {
 	[AI_MESSAGES]     = { "system", nullptr, "max_tokens", MESSAGES_MAX_TOKENS,
 	                      BODY_MODEL | BODY_STREAM },
 	[AI_GENERATE]     = { "systemInstruction", "generationConfig", "maxOutputTokens", 0,
-	                      0 },
+	                      BODY_PARTS },
 	[AI_INTERACTIONS] = { "system_instruction", "generation_config",
 	                      "max_output_tokens", 0,
 	                      BODY_MODEL | BODY_STORE | BODY_KEEP | BODY_STREAM },
@@ -224,29 +226,36 @@ ai_request (struct ai_endpoint const *ep,
 	struct ai_body const *b = &ai_bodies[ep->api];
 	char const *conversation = ai_format(ep->api)->conversation;
 	bool background = ai_background(ep);
-	if ((b->flags & BODY_MODEL && ep->model &&
-	     jb_set(root, "model", json_object_new_string(ep->model))) ||
-	    jb_set(root, conversation, ai_conversation(ep->api, b->system ? nullptr : system,
-	                                               history, prompt)) ||
-	    (system && b->system &&
-	     jb_set(root, b->system, ep->api == AI_GENERATE
-	                             ? ai_generate_content(nullptr, system)
-	                             : json_object_get(system))) ||
-	    (tools && jb_set(root, "tools", json_object_get(tools))) ||
-	    (tools && b->flags & BODY_USAGE &&
-	     jb_set(root, "stream_options", jb_object("include_usage",
-	                                              json_object_new_boolean(1), nullptr))) ||
+	if (b->flags & BODY_MODEL && ep->model &&
+	    jb_set(root, "model", json_object_new_string(ep->model)))
+		goto fail;
+	/* Chat completions has the system prompt as a message in the
+	 * conversation.  The other APIs have it in the member b->system. */
+	if (b->system) {
+		if (system && jb_set(root, b->system, b->flags & BODY_PARTS
+		                                      ? ai_generate_content(nullptr, system)
+		                                      : json_object_get(system)))
+			goto fail;
+		system = nullptr;
+	}
+	if (jb_set(root, conversation, ai_conversation(ep->api, system, history, prompt)) ||
+	    (tools && (jb_set(root, "tools", json_object_get(tools)) ||
+	               (b->flags & BODY_USAGE &&
+	                jb_set(root, "stream_options",
+	                       jb_object("include_usage", json_object_new_boolean(1),
+	                                 nullptr))))) ||
 	    (b->flags & BODY_STORE &&
 	     jb_set(root, "store", json_object_new_boolean(b->flags & BODY_KEEP && background))) ||
 	    ai_request_common(ep, root, b->options, b->max,
 	                      ep->max_tokens > 0 ? ep->max_tokens : b->max_default) ||
 	    (background && jb_set(root, "background", json_object_new_boolean(1))) ||
 	    (b->flags & BODY_STREAM && jb_set(root, "stream", json_object_new_boolean(1))) ||
-	    ai_request_last(root, conversation)) {
-		json_object_put(root);
-		return nullptr;
-	}
+	    ai_request_last(root, conversation))
+		goto fail;
 	return root;
+fail:
+	json_object_put(root);
+	return nullptr;
 }
 
 /* Append @p val's text to @p text, if it is a string. */
