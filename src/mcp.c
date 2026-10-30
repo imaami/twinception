@@ -3377,22 +3377,14 @@ mcp_slot_finish (struct mcp_slot *slot,
 	return 0;
 }
 
-/* Whether a plugin may use @p slot: 0, EFAULT for no slot, or EINVAL for a
- * call that has ended.
- */
-static int
-mcp_slot_live (struct mcp_slot const *slot)
-{
-	return !slot ? EFAULT : slot->done ? EINVAL : 0;
-}
-
 int
 mcp_slot_fail (struct mcp_slot *slot,
                int              e)
 {
-	int refused = mcp_slot_live(slot);
-	if (refused)
-		return refused;
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
 	slot->done = true;
 	mcp_req_fail(slot->req, e);
 	return 0;
@@ -3402,9 +3394,10 @@ int
 mcp_slot_offset (struct mcp_slot    *slot,
                  struct json_object *args)
 {
-	int e = mcp_slot_live(slot);
-	if (e)
-		return e;
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
 	struct json_object *o = jb_get(args, "offset");
 	int64_t n = !o ? 0
 	          : json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : -1;
@@ -3475,9 +3468,10 @@ mcp_slot_lend (struct mcp_slot  *slot,
 int
 mcp_slot_park (struct mcp_slot *slot)
 {
-	int e = mcp_slot_live(slot);
-	if (e)
-		return e;
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
 	struct mcp_req *req = slot->req;
 	if (mcp_slot_offer(slot)->kind->flags & TOOL_STREAM && req->sse_ok && !req->sse)
 		mcp_req_stream(req);
@@ -3491,9 +3485,10 @@ mcp_slot_park (struct mcp_slot *slot)
 int
 mcp_slot_ready (struct mcp_slot *slot)
 {
-	int e = mcp_slot_live(slot);
-	if (e)
-		return e;
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
 	if (!mcp_slot_offer(slot)->kind->step) {
 		(void)mcp_slot_tell(slot, TOOL_TEXT("The tool's kind has no step(), so the "
 		                                    "call cannot go on."), TOOL_FAILED);
@@ -3510,9 +3505,12 @@ mcp_slot_name (struct mcp_slot *slot,
 	if (!who)
 		return EFAULT;
 	*who = (struct handle){};
-	int e = mcp_slot_live(slot);
-	if (!e && !slot->call.bits)
-		e = loop_handle(slot->req->mcp->loop, slot, HANDLE_SLOT, &slot->call);
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
+	int e = slot->call.bits ? 0 : loop_handle(slot->req->mcp->loop, slot, HANDLE_SLOT,
+	                                          &slot->call);
 	if (!e)
 		*who = slot->call;
 	return e;
@@ -3619,9 +3617,10 @@ mcp_slot_fetched (struct mcp_slot const *slot,
 	if (!response)
 		return EFAULT;
 	*response = (struct web_response){};
-	int e = mcp_slot_live(slot);
-	if (e)
-		return e;
+	if (!slot)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
 	if (!slot->web)
 		return ENOENT;
 	if (!web_wait_done(slot->web))
@@ -6167,7 +6166,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 struct mcp_recover_wait {
 	struct handle who;
 	struct json_object *args;
-	bool cancel;
+	typeof(mcp_slot_client_result) *handler;
 };
 
 /* Restored jobs use today's permissions and identities; the saved mask is
@@ -6212,7 +6211,7 @@ mcp_recover_back (struct loop           *loop,
 	struct mcp_recover_wait *wait = arg;
 	struct mcp_req *req = mcp_req_archived(loop, wait->who);
 	struct json_object *args = wait->args;
-	bool cancel = wait->cancel;
+	typeof(mcp_slot_client_result) *handler = wait->handler;
 	free(wait);
 	wait = nullptr;
 	if (!req)
@@ -6223,7 +6222,7 @@ mcp_recover_back (struct loop           *loop,
 	struct ledger_task *found = ledger_find(st->ledger, mcp_req_owner(req), id, id_len);
 	if (found) {
 		ledger_task_put(found);
-		(cancel ? mcp_slot_client_cancel : mcp_slot_client_result)(&req->self, args, true);
+		handler(&req->self, args, true);
 		goto out;
 	}
 	struct journal_record *checkpoint = nullptr, *end = nullptr;
@@ -6268,7 +6267,7 @@ mcp_recover_back (struct loop           *loop,
 		}
 		ledger_task_put(task);
 		json_object_put(state);
-		(cancel ? mcp_slot_client_cancel : mcp_slot_client_result)(&req->self, args, true);
+		handler(&req->self, args, true);
 		goto out;
 	}
 	if (jb_int(jb_get(state, "api"), 0) != st->ep->api ||
@@ -6383,7 +6382,7 @@ mcp_recover_back (struct loop           *loop,
 	mcp_req_wait(req);
 	if (mcp_req_background(req, req->self.tool, true))
 		goto out;
-	if (cancel)
+	if (handler == mcp_slot_client_cancel)
 		ledger_task_cancel(req->task);
 	e = mcp_req_submit(req);
 	if (e)
@@ -6399,11 +6398,14 @@ out:
 
 /* Return true once this poll is waiting for disk, or has answered an
  * admission error. Simultaneous polls converge at ledger_restore().
+ * @p handler is mcp_slot_client_result() or mcp_slot_client_cancel().
+ * mcp_recover_back() calls it for a job that is in the ledger or has ended,
+ * and cancels a resumed job if @p handler is mcp_slot_client_cancel().
  */
 static bool
-mcp_req_recover (struct mcp_req *req,
-                 struct json_object *args,
-                 bool cancel)
+mcp_req_recover (struct mcp_req                 *req,
+                 struct json_object             *args,
+                 typeof(mcp_slot_client_result) *handler)
 {
 	if (!req->mcp->st->journal)
 		return false;
@@ -6420,7 +6422,7 @@ mcp_req_recover (struct mcp_req *req,
 	int e = wait ? mcp_req_archive_wait(req, &wait->who) : ENOMEM;
 	if (!e) {
 		wait->args = json_object_get(args);
-		wait->cancel = cancel;
+		wait->handler = handler;
 		e = journal_load_current(req->mcp->st->journal, id, req->mcp->loop,
 		                         mcp_recover_back, wait);
 	}
@@ -8110,9 +8112,11 @@ mcp_slot_ask (struct mcp_slot    *slot,
 		if (job) {
 			req->promote_at = UINT64_MAX;
 			mcp_req_arm(req);
-			bool cancel = has_action && jb_is(action, "cancel");
-			if (!mcp_req_recover(req, args, cancel))
-				(cancel ? mcp_slot_client_cancel : mcp_slot_client_result)(slot, args, true);
+			typeof(mcp_slot_client_result) *handler =
+				has_action && jb_is(action, "cancel") ? mcp_slot_client_cancel
+				                                      : mcp_slot_client_result;
+			if (!mcp_req_recover(req, args, handler))
+				handler(slot, args, true);
 			return;
 		}
 	}
