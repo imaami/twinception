@@ -2531,9 +2531,10 @@ httpd_conn_room (struct httpd_conn *conn,
 	return 0;
 }
 
-/* Read the groups of the user of Unix socket @p fd, whose primary group is
- * @p gid, into @p conn, sorted, growing the storage it keeps for them if
- * need be: 0, or ENOMEM.
+/* Read the groups of the user of Unix socket @p fd into @p conn, sorted,
+ * growing the storage for them if needed.  @p gid is the effective gid that
+ * SO_PEERCRED reports.  It can differ from the primary group of the user
+ * after newgrp or in a set-group-ID program.  Returns 0, or ENOMEM.
  */
 static int
 httpd_conn_groups (struct httpd_conn *conn,
@@ -2541,8 +2542,9 @@ httpd_conn_groups (struct httpd_conn *conn,
                    gid_t              gid)
 {
 	static_assert(_Generic((gid_t)0, uint32_t: true, default: false));
-	/* Room for the supplementary groups, as many as the kernel last said,
-	 * and the primary one, which those may lack. */
+	/* Room for the supplementary groups, as many as the kernel last
+	 * reported, and for the effective gid, which may be missing from the
+	 * supplementary groups. */
 	size_t n = 0;
 	int e = ERANGE;
 	while (e == ERANGE) {

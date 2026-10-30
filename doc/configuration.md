@@ -1420,8 +1420,14 @@ the name, `askai` stops with exit status 2 at start.  There is no default.
 A client on a Unix socket that sends no token and that no identity names
 gets the role of a group that the client is a member of.  If the client is
 a member of several groups of `unix-groups`, `askai` uses the role of the
-first of them in the file.  The groups of the client are its primary group
-and its supplementary groups at the time it connected.
+first of them in the file.
+
+The kernel reports the user and the groups of the process that connected
+to the socket, as they were when it called `connect()`.  The user of the
+client is its effective uid (`SO_PEERCRED`).  The groups of the client are
+its effective gid (`SO_PEERCRED`) and its supplementary groups
+(`SO_PEERGROUPS`).  After `newgrp`, or in a set-group-ID program, the
+effective gid can differ from the primary group of the user.
 
 #### `anonymous`
 

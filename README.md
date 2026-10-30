@@ -1164,11 +1164,13 @@ Four more members define who may connect, and what each client may do:
   `askai` does not change, so a new `env:` token needs a restart.  The same
   token in two places, or the same user in two identities, stops `askai`.  A
   client of a Unix socket is the identity whose `unix-users` (names or uids)
-  contains its user, as the kernel reports it (`SO_PEERCRED`).  A token that
-  the client sends counts first.
+  contains its user, the effective uid that the kernel reports
+  (`SO_PEERCRED`).  A token that the client sends counts first.
 - **`unix-groups`** gives the other users of a Unix socket the role of the
-  first of their groups it names, among the groups they had as they
-  connected (`SO_PEERGROUPS`).
+  first of their groups it names.  Their groups are the effective gid
+  (`SO_PEERCRED`) and the supplementary groups (`SO_PEERGROUPS`) that they
+  had when they connected.  After `newgrp`, the effective gid can differ
+  from the primary group.
 - **`anonymous`** names the role of a client that shows no token: `loopback`,
   one on loopback that names it as `localhost`, `127.0.0.1` or `[::1]`;
   `remote`, any other over TCP; `unix`, a user of a Unix socket that no
