@@ -327,9 +327,9 @@ static int cli_client_call_start (struct cli_client *client, char const *method,
                                   uint64_t *request, struct cli_error *error);
 
 static void
-cli_client_unconfirmed (struct cli_client      *client,
-                        int                     e,
-                        struct cli_error const *error)
+cli_client_report_cancel (struct cli_client      *client,
+                          int                     e,
+                          struct cli_error const *error)
 {
 	if (e && e != ESHUTDOWN && client->report)
 		(void)client->report(client, CSTR_VIEW("Cancellation could not be confirmed"),
@@ -351,7 +351,7 @@ cli_client_cancel (struct cli_client *client,
 	int e = wait ? cli_client_notification(client, "notifications/cancelled", params, false, 5, &error)
 	             : cli_client_call_start(client, "notifications/cancelled", params,
 	                                     nullptr, nullptr, nullptr, 0, &request, &error);
-	cli_client_unconfirmed(client, e, &error);
+	cli_client_report_cancel(client, e, &error);
 }
 
 int cli_client_rpc(struct cli_client *client, char const *method,
@@ -425,7 +425,7 @@ cli_client_call_done (void                            *context,
 	if (call->done)
 		call->done(response->context, e, result, &call->error);
 	else
-		cli_client_unconfirmed(client, e, &call->error);
+		cli_client_report_cancel(client, e, &call->error);
 	cli_client_call_destroy(&call);
 }
 
@@ -510,15 +510,20 @@ static bool cli_client_digits(struct cstr_view text)
 	return true;
 }
 
-/* Parse notebook selectors into lists[0], the participant names, and
- * lists[1], the notebooks.
+/* The arrays that cli_client_read_notebooks() appends to. */
+struct cli_client_notebooks {
+	struct json_object *names;      /* the participant names */
+	struct json_object *notebooks;  /* the notebook selectors */
+};
+
+/* Parse notebook selectors into the arrays of @p context, a struct
+ * cli_client_notebooks.
  */
 static int
 cli_client_read_notebooks (struct cstr_view  text,
-                           void             *lists)
+                           void             *context)
 {
-	struct json_object *names = ((struct json_object **)lists)[0];
-	struct json_object *notebooks = ((struct json_object **)lists)[1];
+	struct cli_client_notebooks const *lists = context;
 	/* A truncated last line is never an authoritative notebook selector. */
 	while (text.len) {
 		char const *newline = memchr(text.data, '\n', text.len);
@@ -549,9 +554,9 @@ cli_client_read_notebooks (struct cstr_view  text,
 		if (!cstr_view_equal(principal, CSTR_VIEW("anonymous")) &&
 		    (principal.len != 16 || !util_is_hex(principal.data, principal.len)))
 			continue;
-		int e = jb_push(names, cli_client_string(name));
+		int e = jb_push(lists->names, cli_client_string(name));
 		if (!e)
-			e = jb_push(notebooks, cli_client_string(line));
+			e = jb_push(lists->notebooks, cli_client_string(line));
 		if (e)
 			return e;
 	}
@@ -742,8 +747,8 @@ cli_client_discover_books (struct cli_client  *client,
 {
 	struct json_object *params = jb_object("name", cli_client_string(tool),
 	                                       "arguments", jb_object("action", json_object_new_string("notebooks"), nullptr), nullptr);
-	struct json_object *lists[] = {names, notebooks};
-	return cli_client_notes(client, params, "notebook", false, cli_client_read_notebooks, lists, error);
+	struct cli_client_notebooks lists = {names, notebooks};
+	return cli_client_notes(client, params, "notebook", false, cli_client_read_notebooks, &lists, error);
 }
 
 static bool
@@ -778,10 +783,10 @@ cli_client_catalog_names (struct autocomplete    *catalog,
  * interrupted or ran out of memory.
  */
 static int
-cli_client_soft (struct cli_client *client,
-                 struct cstr_view   title,
-                 struct cli_error  *error,
-                 int                e)
+cli_client_report_optional (struct cli_client *client,
+                            struct cstr_view   title,
+                            struct cli_error  *error,
+                            int                e)
 {
 	if (!e || e == EINTR || e == ENOMEM)
 		return e;
@@ -884,9 +889,9 @@ cli_client_refresh (struct cli_client *client,
 	if (e)
 		goto done;
 	if (dstr_len(&notebook_tool))
-		e = cli_client_soft(client, CSTR_VIEW("Participant discovery failed"), error,
-		                    cli_client_discover_books(client, cstr_view_dstr(&notebook_tool),
-		                                              names, notebooks, error));
+		e = cli_client_report_optional(client, CSTR_VIEW("Participant discovery failed"), error,
+		                               cli_client_discover_books(client, cstr_view_dstr(&notebook_tool),
+		                                                         names, notebooks, error));
 	if (!e && files) {
 		e = jb_push(notebooks, json_object_new_string("own"));
 		if (!e)
@@ -901,9 +906,9 @@ cli_client_refresh (struct cli_client *client,
 		e = autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, &current, current.len ? 1 : 0);
 	}
 	if (!e && files)
-		e = cli_client_soft(client, CSTR_VIEW("Note filename discovery failed"), error,
-		                    cli_client_discover_files(client, catalog, cstr_view_dstr(&notebook_tool),
-		                                              notebooks, error));
+		e = cli_client_report_optional(client, CSTR_VIEW("Note filename discovery failed"), error,
+		                               cli_client_discover_files(client, catalog, cstr_view_dstr(&notebook_tool),
+		                                                         notebooks, error));
 	if (e)
 		goto done;
 	if (client->catalog && (!cstr_view_equal(cstr_view_dstr(&client->session_key), cstr_view_dstr(&session)) ||
