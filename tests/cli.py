@@ -631,18 +631,19 @@ def check_peer_notes(cli, unused_server, current=False):
     selected = "reviews/note  (1 line).md"
     selector = "bob/anonymous/upstream"
     self_selector = "self/anonymous/client"
-    copied, learned, replaced = False, False, False
+    copied, learned, replaced, restored = False, False, False, False
     calls = []
     held, release = threading.Event(), threading.Event()
     copied_listed, learned_listed = threading.Event(), threading.Event()
-    replaced_listed = threading.Event()
+    replaced_listed, restored_listed = threading.Event(), threading.Event()
     ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
         "type": "object", "properties": {"prompt": {"type": "string"},
         "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
     notes = {"name": "notebook_service", "_meta": {"askai": {
         "participant": "self", "notebooks": True}}, "inputSchema": {
             "type": "object", "properties": {
-                "action": {"type": "string", "enum": ["notebooks", "list", "read", "copy", "add", "replace"]},
+                "action": {"type": "string", "enum": ["notebooks", "list", "read", "copy", "add",
+                                                      "replace", "restore"]},
                 "notebook": {"type": "string"}, "file": {"type": "string"}}}}
 
     def result(text):
@@ -655,7 +656,7 @@ def check_peer_notes(cli, unused_server, current=False):
         return None
 
     def reply(request):
-        nonlocal copied, learned, replaced
+        nonlocal copied, learned, replaced, restored
         params = request["params"]
         if params["name"] == "ask_ai":
             learned = True
@@ -680,6 +681,8 @@ def check_peer_notes(cli, unused_server, current=False):
                     learned_listed.set()
                 if replaced:
                     replaced_listed.set()
+                if restored:
+                    restored_listed.set()
             if current:
                 blob = "a" * (64 if book == selector else 40)
                 records = "".join(f"{name}  (123 bytes, {blob})\n" for name in files)
@@ -693,10 +696,11 @@ def check_peer_notes(cli, unused_server, current=False):
                               for index, name in enumerate(files, 1))
             return result("Selected notebook, oldest first:\n\n" + records +
                           "77. 2026-10-17 01:23 UTC  partial.md  (1 line)")
-        assert args["action"] in ("read", "copy", "replace"), request
+        assert args["action"] in ("read", "copy", "replace", "restore"), request
         calls.append(args)
         copied |= args["action"] == "copy"
         replaced |= args["action"] == "replace"
+        restored |= args["action"] == "restore"
         if args == {"action": "read", "file": "held.md"}:
             held.set()
             assert release.wait(5), "held note read was not released"
@@ -761,6 +765,10 @@ def check_peer_notes(cli, unused_server, current=False):
                 os.write(master, f"/tool notebook_service action=replace file='{own}'\r".encode())
                 completed({"action": "replace", "file": own})
                 assert replaced_listed.wait(5), "note replacement did not refresh filenames"
+                # A restore can bring back a note that is gone from the tree.
+                os.write(master, f"/tool notebook_service action=restore file='{own}'\r".encode())
+                completed({"action": "restore", "file": own})
+                assert restored_listed.wait(5), "note restoration did not refresh filenames"
 
             os.write(master, b"Write a note\r")
             read_until(proc, b"MODEL-NOTED", 5, master)
