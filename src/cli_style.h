@@ -7,8 +7,6 @@
 
 #include <stdint.h>
 
-#include "cstr_view.h"
-
 enum cli_style : uint32_t {
 	CLI_STYLE_RESET,
 	CLI_STYLE_INFO,
@@ -38,10 +36,6 @@ struct cli_style_entry {
 	char    bytes[15];
 	uint8_t length;
 };
-
-/** Each sequence resets previous attributes. Invalid IDs return an empty view. */
-extern struct cstr_view
-cli_style_sequence (enum cli_style style);
 
 /** The sequences of all styles, indexed by style, or with !color one whose
  * sequences are all empty.

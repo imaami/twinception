@@ -29,14 +29,6 @@ static constexpr struct cli_style_entry cli_style_table[CLI_STYLE_COUNT] = {
 };
 #undef CLI_STYLE
 
-struct cstr_view
-cli_style_sequence (enum cli_style style)
-{
-	if (style >= CLI_STYLE_COUNT)
-		return (struct cstr_view){};
-	return (struct cstr_view){cli_style_table[style].bytes, cli_style_table[style].length};
-}
-
 struct cli_style_entry const *
 cli_style_palette (bool color)
 {

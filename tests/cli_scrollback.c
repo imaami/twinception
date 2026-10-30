@@ -33,6 +33,14 @@ cli_scrollback_test_parts (struct dstr const      *frame,
 	assert(!text.len);
 }
 
+/* The SGR sequence of @p style in the color palette. */
+static struct cstr_view
+cli_scrollback_test_sgr (enum cli_style style)
+{
+	struct cli_style_entry const *entry = &cli_style_palette(true)[style];
+	return (struct cstr_view){entry->bytes, entry->length};
+}
+
 #define CLI_SCROLLBACK_FRAME(frame, ...) do { \
         struct cstr_view const parts[] = {__VA_ARGS__}; \
         cli_scrollback_test_parts(frame, parts, sizeof parts / sizeof *parts); \
@@ -145,7 +153,6 @@ cli_scrollback_test_styles (void)
 	struct cli_scrollback scrollback;
 	cli_scrollback_init(&scrollback);
 	dstr_auto frame = dstr(nullptr);
-	assert(!cli_style_sequence(CLI_STYLE_COUNT).len);
 	assert(cli_scrollback_append_style(&scrollback, CSTR_VIEW("invalid"), CLI_STYLE_COUNT) == EINVAL);
 	assert(!scrollback.count && !scrollback.bytes && !scrollback.styles);
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("abc"), CLI_STYLE_REASONING));
@@ -154,18 +161,18 @@ cli_scrollback_test_styles (void)
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("界\tx"), CLI_STYLE_USER_INPUT));
 	assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("!")));
 	cli_scrollback_test_render(&scrollback, 8, 3, true, &frame);
-	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[1;1H"), cli_style_sequence(CLI_STYLE_REASONING), CSTR_VIEW("abcdef"),
-	                     cli_style_sequence(CLI_STYLE_USER_INPUT), CSTR_VIEW("界\033[2;1H"),
-	                     cli_style_sequence(CLI_STYLE_USER_INPUT), CSTR_VIEW("        \033[3;1H"),
-	                     cli_style_sequence(CLI_STYLE_USER_INPUT), CSTR_VIEW("x"),
-	                     cli_style_sequence(CLI_STYLE_TEXT), CSTR_VIEW("!      "));
+	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[1;1H"), cli_scrollback_test_sgr(CLI_STYLE_REASONING), CSTR_VIEW("abcdef"),
+	                     cli_scrollback_test_sgr(CLI_STYLE_USER_INPUT), CSTR_VIEW("界\033[2;1H"),
+	                     cli_scrollback_test_sgr(CLI_STYLE_USER_INPUT), CSTR_VIEW("        \033[3;1H"),
+	                     cli_scrollback_test_sgr(CLI_STYLE_USER_INPUT), CSTR_VIEW("x"),
+	                     cli_scrollback_test_sgr(CLI_STYLE_TEXT), CSTR_VIEW("!      "));
 	cli_scrollback_test_render(&scrollback, 3, 1, true, &frame);
-	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[1;1H"), cli_style_sequence(CLI_STYLE_USER_INPUT), CSTR_VIEW("x"),
-	                     cli_style_sequence(CLI_STYLE_TEXT), CSTR_VIEW("! "));
+	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[1;1H"), cli_scrollback_test_sgr(CLI_STYLE_USER_INPUT), CSTR_VIEW("x"),
+	                     cli_scrollback_test_sgr(CLI_STYLE_TEXT), CSTR_VIEW("! "));
 	cli_scrollback_scroll(&scrollback, 2, true);
 	cli_scrollback_test_render(&scrollback, 3, 1, true, &frame);
-	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[1;1H"), cli_style_sequence(CLI_STYLE_USER_INPUT), CSTR_VIEW("界"),
-	                     cli_style_sequence(CLI_STYLE_TEXT), CSTR_VIEW(" "));
+	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[1;1H"), cli_scrollback_test_sgr(CLI_STYLE_USER_INPUT), CSTR_VIEW("界"),
+	                     cli_scrollback_test_sgr(CLI_STYLE_TEXT), CSTR_VIEW(" "));
 	cli_scrollback_fini(&scrollback);
 
 	for (size_t i = 0; i < 65536; ++i)
@@ -182,8 +189,8 @@ cli_scrollback_test_styles (void)
 	assert(scrollback.styles <= 65536);
 	assert(scrollback.bytes < 70000);
 	cli_scrollback_test_render(&scrollback, 2, 1, true, &frame);
-	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[1;1H"), cli_style_sequence(CLI_STYLE_USER_INPUT), CSTR_VIEW("x"),
-	                     cli_style_sequence(CLI_STYLE_REASONING), CSTR_VIEW("x"));
+	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[1;1H"), cli_scrollback_test_sgr(CLI_STYLE_USER_INPUT), CSTR_VIEW("x"),
+	                     cli_scrollback_test_sgr(CLI_STYLE_REASONING), CSTR_VIEW("x"));
 	cli_scrollback_fini(&scrollback);
 }
 
@@ -204,10 +211,10 @@ cli_scrollback_test_pane (void)
 	assert(!strcmp(dstr_get(&frame), "\033[2;3H界éZ\033[3;3Hq   \033[4;3H    "));
 	dstr_clear(&frame);
 	assert(!cli_scrollback_render_pane(&scrollback, 3, 2, 4, 3, cli_style_palette(true), nullptr, &frame));
-	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[2;3H"), cli_style_sequence(CLI_STYLE_REASONING),
-	                     CSTR_VIEW("界éZ\033[3;3H"), cli_style_sequence(CLI_STYLE_REASONING), CSTR_VIEW("q"),
-	                     cli_style_sequence(CLI_STYLE_TEXT), CSTR_VIEW("   \033[4;3H"),
-	                     cli_style_sequence(CLI_STYLE_TEXT), CSTR_VIEW("    "));
+	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[2;3H"), cli_scrollback_test_sgr(CLI_STYLE_REASONING),
+	                     CSTR_VIEW("界éZ\033[3;3H"), cli_scrollback_test_sgr(CLI_STYLE_REASONING), CSTR_VIEW("q"),
+	                     cli_scrollback_test_sgr(CLI_STYLE_TEXT), CSTR_VIEW("   \033[4;3H"),
+	                     cli_scrollback_test_sgr(CLI_STYLE_TEXT), CSTR_VIEW("    "));
 	cli_scrollback_fini(&scrollback);
 	/* Neither an oversized wide character nor a leading combining character
 	 * may draw into the neighboring column of a one-cell pane. */
@@ -233,8 +240,8 @@ cli_scrollback_test_cache (void)
 	assert(!dstr_len(&frame));
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("!"), CLI_STYLE_USER_INPUT));
 	assert(!cli_scrollback_render_pane(&scrollback, 1, 1, 8, 3, cli_style_palette(true), cache, &frame));
-	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[3;6H"), cli_style_sequence(CLI_STYLE_USER_INPUT),
-	                     CSTR_VIEW("!"), cli_style_sequence(CLI_STYLE_TEXT));
+	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[3;6H"), cli_scrollback_test_sgr(CLI_STYLE_USER_INPUT),
+	                     CSTR_VIEW("!"), cli_scrollback_test_sgr(CLI_STYLE_TEXT));
 	dstr_clear(&frame);
 	for (size_t i = 0; i < 3; ++i)
 		dstr_clear(&cache[i]);
