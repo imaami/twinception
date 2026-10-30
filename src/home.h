@@ -66,9 +66,12 @@ struct loop;
 struct job;
 struct journal_record;
 
-/** Restore a provider turn from its journal records, after the turn's
- *  request checkpoint. Copies all retained bytes; SUBMIT later replays
- *  them without sending the original POST, then reattaches if possible.
+/** Prepare @p job to resume a provider turn after a restart.  The function
+ *  reads the provider's job id from the "meta" records in @p records.
+ *  home_start() then reconnects to the provider's stream of that job, and
+ *  does not send the request again.  Returns 0, EBUSY if @p job already
+ *  has recovery state, EPROTO if a "meta" record cannot be parsed, or
+ *  ENOMEM if the recovery state cannot be allocated.
  */
 extern int
 home_job_restore (struct job                  *job,
