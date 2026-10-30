@@ -7,6 +7,7 @@ import fcntl
 import gzip
 import grp
 import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -5999,6 +6000,123 @@ def check_peers(binary, up):
           "403, decimal, hexadecimal and octal ranges, subordinate and overflow "
           "gids refused in unix-groups, the lists at start and at the tick, and "
           "a reload: PASS")
+
+
+def check_principals(binary, up):
+    """Principals are HMAC-SHA-256 values keyed with askai-journal/
+    principal.key of the transcripts repository.  Bit 62 is set for an
+    identity and clear for a Unix user, and bit 63 is never set.  A Unix
+    user keeps its principal across a restart and in every participant
+    that shares the notes directory, but not with another notes directory.
+    An identity keeps its principal across a reload.  The notebook
+    selectors show the principals."""
+    notebooks = {"name": "notes", "arguments": {"action": "notebooks"}}
+
+    def principal(reply):
+        status, body = reply
+        assert status == 200 and not body["result"].get("isError"), reply
+        selector = re.search(r"^Self \(writable\): (\S+)$", text_of(body["result"]),
+                             re.M).group(1)
+        hex_digits = selector.split("/")[1]
+        assert re.fullmatch(r"[0-9a-f]{16}", hex_digits), selector
+        return int(hex_digits, 16)
+
+    def bearer(token):
+        return {"Authorization": f"Bearer {token}"}
+
+    def expected(secret, anchor, identity):
+        """The principal of @p anchor with the key @p secret: the first 8
+        bytes of HMAC-SHA-256 as a big-endian number, with bits 63 and 62
+        cleared, bit 62 set for an identity, and 1 in place of 0."""
+        h = int.from_bytes(hmac.new(secret, anchor, hashlib.sha256).digest()[:8], "big")
+        h = h & ((1 << 62) - 1) | (1 << 62 if identity else 0)
+        return h or 1
+
+    with tempfile.TemporaryDirectory() as d:
+        sock = f"{d}/askai.sock"
+        notes = f"{d}/notes"
+        key = f"{notes}.transcripts.git/askai-journal/principal.key"
+
+        def start(participant, *args, directory=notes, env=None):
+            return Askai(binary, "-u", up.url(), "--notes", directory, "--participant",
+                         participant, "-l", f"unix:{sock}", *args, env=env)
+
+        with start("alice"):
+            uid = principal(uds_rpc(sock, "tools/call", notebooks))
+        assert uid >> 62 == 0, hex(uid)
+        st = os.stat(key)
+        assert st.st_size == 32 and st.st_mode & 0o777 == 0o600, st
+        with open(key, "rb") as f:
+            secret = f.read()
+        assert uid == expected(secret, b"uid:%d" % os.getuid(), False), hex(uid)
+        with start("alice"):
+            assert principal(uds_rpc(sock, "tools/call", notebooks)) == uid
+        with start("bob"):
+            assert principal(uds_rpc(sock, "tools/call", notebooks)) == uid
+        with start("alice", directory=f"{d}/other"):
+            assert principal(uds_rpc(sock, "tools/call", notebooks)) != uid
+
+        # ASKAI_TOKEN is an identity over TCP.  On the socket, the calls
+        # stay those of the Unix user.
+        with start("alice", env={"ASKAI_TOKEN": "s3cret"}) as ai:
+            status, _, body = ai.rpc("tools/call", notebooks, headers=bearer("s3cret"))
+            token = principal((status, body))
+            assert token >> 62 == 1, hex(token)
+            assert token == expected(secret, b"identity:ASKAI_TOKEN", True), hex(token)
+            assert principal(uds_rpc(sock, "tools/call", notebooks,
+                                     headers=bearer("s3cret"))) == uid
+
+        # An identity of the file keeps its principal across a reload.
+        path = f"{d}/askai.json"
+        with open(path, "w") as f:
+            json.dump(grouped({"url": up.url(), "roles": {"a": {"tools": ["notes"]}},
+                               "identities": {"i": {"role": "a", "tokens": [
+                                   "sha256:" + hashlib.sha256(b"t").hexdigest()]}}}), f)
+        os.chmod(path, 0o600)
+        with Askai(binary, "-c", path, "--notes", notes, "--participant", "alice") as ai:
+            status, _, body = ai.rpc("tools/call", notebooks, headers=bearer("t"))
+            identity = principal((status, body))
+            assert identity >> 62 == 1 and identity != token, hex(identity)
+            assert identity == expected(secret, b"identity:i", True), hex(identity)
+            ai.proc.send_signal(signal.SIGHUP)
+            ai.wait_log(r"^configuration reloaded")
+            status, _, body = ai.rpc("tools/call", notebooks, headers=bearer("t"))
+            assert principal((status, body)) == identity
+
+        # A key file of the wrong size, with only zero bytes or with a mode
+        # that lets other users read it stops askai, and so does such an
+        # owner.seed.  The message names the file and the problem.
+        seed = f"{notes}.transcripts.git/askai-journal/alice/owner.seed"
+        kept = {name: open(name, "rb").read() for name in (key, seed)}
+        for name, data, mode, problem in (
+                (key, b"k" * 31, 0o600,
+                 "askai-journal/principal.key: the file has 31 bytes, not 32"),
+                (key, bytes(32), 0o600,
+                 "askai-journal/principal.key: the file has only zero bytes"),
+                (key, kept[key], 0o644, "askai-journal/principal.key: the mode of "
+                                        "the file lets other users access it"),
+                (seed, b"s" * 3, 0o600,
+                 "askai-journal/alice/owner.seed: the file has 3 bytes, not 8"),
+                (seed, bytes(8), 0o600,
+                 "askai-journal/alice/owner.seed: the file has only zero bytes")):
+            with open(name, "wb") as f:
+                f.write(data)
+            os.chmod(name, mode)
+            run = subprocess.run([binary, "-u", up.url(), "--notes", notes, "--participant",
+                                  "alice", "-l", "127.0.0.1:0"],
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                 timeout=10)
+            assert run.returncode == 1 and \
+                f"--transcripts: {notes}.transcripts.git: {problem}" in \
+                run.stderr.splitlines(), (problem, run)
+            with open(name, "wb") as f:
+                f.write(kept[name])
+            os.chmod(name, 0o600)
+        with start("alice"):
+            assert principal(uds_rpc(sock, "tools/call", notebooks)) == uid
+    print("principals: HMAC-SHA-256 with the key of the transcripts repository, "
+          "tagged by kind, the same across restarts and participants, an identity's "
+          "across a reload, a bad key or owner seed named: PASS")
 
 
 def tls_files(d, name, kind="ec"):
@@ -13707,7 +13825,8 @@ def main():
                       check_isolation,
                       lambda binary, up: check_configuration(binary, up, godbolt),
                       check_allow, check_identities,
-                      check_reload, check_logs, check_unix, check_peers, check_tls,
+                      check_reload, check_logs, check_unix, check_peers,
+                      check_principals, check_tls,
                       check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,

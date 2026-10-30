@@ -20,12 +20,22 @@
  * first of its groups that the member names.  The member "anonymous" names
  * the role, if any, of a client that sends no token, by how it connects.
  *
- * A token that no identity has is refused.  A client without a token is
- * refused if no role is named for it.  A policy without tokens treats
- * every client as one that sends no token.  The principal of the calls of
- * a client on a Unix socket is derived from its uid, unless it sends the
- * token of an identity.  Group names are looked up through NSS when the
- * policy is made, which may block.
+ * Over TCP, a token that no identity has is refused, and a policy without
+ * tokens treats every client as one that sends no token.  A client on a
+ * Unix socket may not send a token, except ASKAI_TOKEN under askai's own
+ * policy.  A client without a token is refused if no role is named for it.
+ * Group names are looked up through NSS when the policy is made, which may
+ * block.
+ *
+ * A principal tells whose calls they are.  It is the owner of notes
+ * branches, jobs, tasks and plugin instances, and it selects the queue of
+ * the scheduler.  The principal is derived from the first 8 bytes of
+ * HMAC-SHA-256 with a secret key (policy_key()) over "uid:N" for a Unix
+ * user, or over "identity:NAME" for an identity.  Bit 63 is never set.  Bit
+ * 62 is set for an identity and clear for a Unix user, so the two kinds
+ * never share a principal.  A client on a Unix socket always has the
+ * principal of its uid.  The principal 0 means an anonymous client over
+ * TCP.
  *
  * A file without these members keeps askai's own policy.  With ASKAI_TOKEN
  * set, clients must send it, and may do everything.  Without it, a client
@@ -54,6 +64,9 @@ enum policy_kind {
 
 /** Bytes of a role's or an identity's name, at most. */
 static constexpr size_t POLICY_NAME = 64;
+
+/** Bytes of the key of the principals (policy_key()). */
+static constexpr size_t POLICY_KEY = 32;
 
 /** Bytes of the longest name of a client in the log, with a terminating
  *  NUL.  mcp.c names a client on a Unix socket "uid N (WHO)", where WHO is
@@ -102,9 +115,12 @@ typedef tool_mask policy_lent_fn (void const *ctx,
  *  SO_PEERGROUPS).
  */
 struct policy_peer {
-	uint32_t const *groups;    /**< its groups, sorted (policy_sort_ids()) */
-	uint32_t        n_groups;
-	uint32_t        uid;
+	uint32_t const *groups;     /**< its groups, sorted (policy_sort_ids()) */
+	uint64_t        principal;  /**< the principal of its uid
+	                                 (policy_principal_uid()) */
+	uint64_t        n_groups;   /**< the number of groups, at most
+	                                 UINT32_MAX, in a uint64_t that fills
+	                                 the padding at the end of the struct */
 };
 
 /** What a client may see and do, and whose share of the upstream its calls
@@ -123,8 +139,9 @@ struct policy_grant {
 	                                  It is empty for a client without a
 	                                  token under askai's own policy.  The
 	                                  text is in the policy's memory. */
-	uint64_t         principal;  /**< its identity's, never 0; 0 if
-	                                  anonymous */
+	uint64_t         principal;  /**< the principal of its identity or of
+	                                  its Unix user, never 0, or 0 for an
+	                                  anonymous client over TCP */
 	uint64_t         metrics;    /**< bool: it may read the metrics; widened
 	                                  over the padding */
 };
@@ -148,9 +165,10 @@ struct policy_grant {
  *
  * Returns the policy with one reference.  On failure it returns nullptr and
  * stores the error number in @p *e.  The error number is ENOMEM, EINVAL if
- * the file is wrong, or the error that kept /etc/subuid or /etc/subgid
- * from being read.  For any error but ENOMEM, the function writes a
- * message of at most @p len bytes to @p why.
+ * the file is wrong, EIO if HMAC-SHA-256 fails as the function computes
+ * the principals of the identities, or the error that kept /etc/subuid or
+ * /etc/subgid from being read.  For any error but ENOMEM, the function
+ * writes a message of at most @p len bytes to @p why.
  */
 extern struct policy *
 policy_create (struct json_object *file,
@@ -243,5 +261,28 @@ policy_sort_ids (uint32_t *ids,
 extern enum policy_admit
 policy_admit_uid (struct policy const *policy,
                   uint32_t             uid);
+
+/**
+ * Sets the key of the principals of @p policy to @p key, and computes the
+ * principals of its identities again.  policy_create() computes them with
+ * a key of zero bytes, so the caller sets the real key before anyone else
+ * takes a reference to @p policy.  Returns 0, EINVAL if an argument is
+ * nullptr, EBUSY if @p policy has more than one reference, or EIO if
+ * HMAC-SHA-256 fails.
+ */
+extern int
+policy_key (struct policy       *policy,
+            unsigned char const  key[POLICY_KEY]);
+
+/**
+ * Returns the principal of the calls of a client on a Unix socket whose uid
+ * is @p uid, with the key of @p policy, and stores 0 in @p *e.  On failure
+ * it returns 0 and stores EINVAL in @p *e if @p policy is nullptr, or EIO
+ * if HMAC-SHA-256 fails.
+ */
+extern uint64_t
+policy_principal_uid (struct policy const *policy,
+                      uint32_t             uid,
+                      int                 *e);
 
 #endif /* TWINCEPTION_SRC_POLICY_H_ */

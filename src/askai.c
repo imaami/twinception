@@ -33,6 +33,7 @@
 #include "mcp.h"
 #include "metrics.h"
 #include "notes.h"
+#include "policy.h"
 #include "roster.h"
 #include "task.h"
 #include "util.h"
@@ -153,7 +154,13 @@ struct askai_home {
 	struct metrics_src       *metrics;
 	struct config const      *cfg;
 	struct loop              *loop;  /* home's: the client loops' jobs go there */
+	unsigned char             key[POLICY_KEY];  /* The key of the
+	                                               principals, which
+	                                               askai_shared_init()
+	                                               sets. */
 };
+
+static_assert(POLICY_KEY == JOURNAL_KEY);
 
 /* What runs on a client loop: MCP over HTTP. */
 struct askai_client {
@@ -524,7 +531,9 @@ askai_reload_apply (struct askai_home         *app,
 		LOG(LOG_ERROR, "configuration not reloaded");
 		return;
 	}
-	int e = httpd_home_policy(app->keep.door, r->cfg.policy);
+	int e = policy_key(r->cfg.policy, app->key);
+	if (!e)
+		e = httpd_home_policy(app->keep.door, r->cfg.policy);
 	if (e) {
 		LOG(LOG_ERROR, "configuration not reloaded: %s",
 		    e == EAGAIN ? "the server is not open" : strerror(e));
@@ -776,6 +785,20 @@ askai_shared_init (struct askai_shared *s,
 			fprintf(stderr, "--transcripts: %s: %s\n", cfg->transcripts, why);
 			return e;
 		}
+	}
+	/* journal_key() copies the key that journal_create() read from
+	 * askai-journal/principal.key, so the principals stay the same across
+	 * restarts.  Notes always come with a journal.  Without a journal,
+	 * askai stores nothing that outlives the process, and random bytes
+	 * are enough for the key.  No other reference to the policy exists
+	 * yet, which policy_key() requires. */
+	unsigned char *key = s->home.key;
+	e = s->journal ? journal_key(s->journal, key) : util_random(key, sizeof s->home.key);
+	if (!e)
+		e = policy_key(cfg->http.policy, key);
+	if (e) {
+		fprintf(stderr, "cannot make the principal key: %s\n", strerror(e));
+		return e;
 	}
 	if ((e = askai_shared_make(s, cfg, n)))
 		fprintf(stderr, "%s\n", strerror(e));

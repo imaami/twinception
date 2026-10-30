@@ -200,8 +200,11 @@ struct httpd_conn {
 	uint32_t            *groups;    /* home sets them: a Unix socket's user's
 	                                   groups, sorted, in storage kept with
 	                                   the connection's */
+	uint64_t             principal; /* The principal of the uid of a
+	                                   client on a Unix socket.
+	                                   httpd_conn_user() sets it on home's
+	                                   loop. */
 	uint32_t             n_groups;
-	uint32_t             uid;       /* and the user */
 	uint32_t             room;      /* groups the groups' storage holds */
 	uint32_t             events;    /* reported since the last step, and DEADLINE */
 	uint32_t             scan;      /* where to resume looking for the head's end */
@@ -1378,8 +1381,8 @@ httpd_conn_grant (struct httpd_conn *conn)
 	                            ? POLICY_LOOPBACK : POLICY_REMOTE;
 	struct policy_peer const peer = {
 		.groups = conn->groups,
-		.n_groups = conn->n_groups,
-		.uid = conn->uid
+		.principal = conn->principal,
+		.n_groups = conn->n_groups
 	};
 	struct policy_grant g = {};
 	enum policy_verdict v = policy_grant(conn->srv->policy, token.data, token.len,
@@ -2284,8 +2287,8 @@ httpd_conn_setup (struct httpd_conn *conn,
 	struct httpd_lane *lane = conn->lane;
 	struct httpd_client *client = conn->client;
 	uint32_t *groups = conn->groups;
+	uint64_t principal = conn->principal;
 	uint32_t n_groups = conn->n_groups;
-	uint32_t uid = conn->uid;
 	uint32_t room = conn->room;
 	struct ssl_ctx_st *ctx = conn->ctx;
 	int fd = conn->fd;
@@ -2306,8 +2309,8 @@ httpd_conn_setup (struct httpd_conn *conn,
 		.ctx = ctx,
 		.since = loop->now,
 		.groups = groups,
+		.principal = principal,
 		.n_groups = n_groups,
-		.uid = uid,
 		.room = room,
 		.fd = fd,
 		.local = local,
@@ -2599,21 +2602,24 @@ httpd_conn_groups (struct httpd_conn *conn,
 }
 
 /* The user of the client on @p fd, as @p cred says if over a Unix socket,
- * with the user's groups; else none: 0, or ENOMEM.
+ * with the user's groups and the principal of its uid under @p policy;
+ * else none.  Returns 0, ENOMEM, or the error of policy_principal_uid().
  */
 static int
-httpd_conn_user (struct httpd_conn  *conn,
-                 int                 fd,
-                 struct ucred const *cred)
+httpd_conn_user (struct httpd_conn   *conn,
+                 int                  fd,
+                 struct ucred const  *cred,
+                 struct policy const *policy)
 {
 	conn->uds = cred;
 	if (!cred) {
 		conn->n_groups = 0;
-		conn->uid = 0;
+		conn->principal = 0;
 		return 0;
 	}
-	conn->uid = cred->uid;
-	return httpd_conn_groups(conn, fd, cred->gid);
+	int e = 0;
+	conn->principal = policy_principal_uid(policy, cred->uid, &e);
+	return e ? e : httpd_conn_groups(conn, fd, cred->gid);
 }
 
 /* Storage for a connection: one given back, if home keeps any; nullptr if
@@ -2634,7 +2640,8 @@ httpd_home_conn (struct httpd_home *home)
 /* Place the client on @p fd, from @p addr, on loopback if @p local, on a
  * client loop, in the storage of a connection given back if one is kept,
  * as the user @p cred says if over a Unix socket, to shake hands by @p ctx
- * if not nullptr; if out of memory, close @p fd.
+ * if not nullptr.  If out of memory, or if the principal of the user cannot
+ * be computed, close @p fd.
  */
 static void
 httpd_home_place (struct httpd_home  *home,
@@ -2649,8 +2656,8 @@ httpd_home_place (struct httpd_home  *home,
 		close(fd);
 		return;
 	}
-	struct httpd_client *client = httpd_conn_user(conn, fd, cred) ? nullptr
-	                            : httpd_home_client_get(home, addr);
+	struct httpd_client *client = httpd_conn_user(conn, fd, cred, home->policy)
+	                            ? nullptr : httpd_home_client_get(home, addr);
 	if (!client) {
 		shelf_put(&home->spare, &conn->hook);
 		close(fd);

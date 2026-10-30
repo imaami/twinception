@@ -22,6 +22,7 @@ struct loop;
 enum {
 	JOURNAL_ID         = 32,
 	JOURNAL_KIND       = 32,
+	JOURNAL_KEY        = 32,  /**< bytes of the principal key */
 	JOURNAL_RECORD_MAX = 16 << 20,
 	JOURNAL_LOAD_MAX   = 64 << 20,
 };
@@ -49,7 +50,13 @@ journal_load_cb (struct loop           *loop,
 /** Opens or creates a bare repository and starts its writer.  Called at
  * startup, off the loops.  Participant is 1..64 ASCII letters, digits,
  * underscores or hyphens.  Missing path components are made with 0700;
- * symbolic links and parent-directory components are refused.
+ * symbolic links and parent-directory components are refused.  On failure
+ * the function returns nullptr, stores the error number in @p *e, and
+ * writes a message of at most @p why_len bytes to @p why.  A problem with
+ * askai-journal/principal.key or with the owner.seed of the participant
+ * is named in the message, such as "askai-journal/principal.key: the file
+ * has 31 bytes, not 32".  The error number is EINVAL if @p why is nullptr
+ * or @p why_len is 0.
  */
 extern struct journal *
 journal_create (char const *path,
@@ -146,5 +153,16 @@ journal_records_destroy (struct journal_record **p_records);
 
 extern uint64_t
 journal_seed (struct journal const *journal);
+
+/**
+ * Copies the principal key of the repository of @p journal to @p key.  The
+ * key is the file askai-journal/principal.key of the repository: 32 random
+ * bytes with mode 0600, which journal_create() makes if the file is empty.
+ * Every participant and every daemon that uses the repository reads the
+ * same key.  Returns 0, or EINVAL if an argument is nullptr.
+ */
+extern int
+journal_key (struct journal const *journal,
+             unsigned char         key[JOURNAL_KEY]);
 
 #endif /* TWINCEPTION_SRC_JOURNAL_H_ */

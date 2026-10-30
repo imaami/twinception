@@ -2278,8 +2278,10 @@ config_policy (struct config *cfg)
 	                            run->tools_clients, upstream, why, sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
-	/* Only EINVAL is about the file.  Another error is about a file that
-	 * the policy reads, such as /etc/subuid, which the message names. */
+	/* EINVAL means that the configuration file is wrong.  Another error
+	 * comes from a file that the policy reads, such as /etc/subuid, or is
+	 * EIO from HMAC-SHA-256.  The message says which, so it does not
+	 * begin with the path of the configuration file. */
 	if (e)
 		return config_complain(cfg, e == EINVAL ? cfg->path : nullptr, "%s", why);
 	cfg->http.policy = cfg->policy;

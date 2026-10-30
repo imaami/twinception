@@ -445,6 +445,36 @@ For two instances sharing one notes session:
 The second instance uses another `participant`, such as `reviewer`, and
 another listen address.  It can use the same transcript repository.
 
+#### Principals and their key
+
+A principal tells whose calls they are: the owner of a notes branch, of
+jobs, tasks and timers, and of plugin instances, and the queue of the
+scheduler.  `askai` derives the principal of a Unix user from its uid, and
+the principal of an identity from its name, with HMAC-SHA-256 and a secret
+key of 32 random bytes.  Bit 62 of a principal is set for an identity and
+clear for a Unix user, and bit 63 is never set, so a Unix user and an
+identity never share a principal.  Notebook selectors show principals as
+16 hexadecimal digits.
+
+The key is the file `askai-journal/principal.key` in the transcript
+repository, with mode 0600.  `askai` makes it with random bytes at the
+first start, while it holds the lock of the repository.  Every participant
+and every instance that uses the same transcript repository reads the same
+key, so a user has the same principal in all of them and across restarts.
+Instances that share a notes directory share the key only if they also
+share the transcript repository, which is the default.  With notes, there
+is always a transcript repository.  Without one, `askai` stores nothing
+that outlives the process, and uses a random key for each run.  A key file
+that does not have exactly 32 bytes, that has only zero bytes, or whose
+mode lets other users access it stops `askai`.  The message names the
+file and the problem, such as `--transcripts: PATH:
+askai-journal/principal.key: the file has 31 bytes, not 32`.
+
+Principals from versions of `askai` without the key differ from the new
+ones.  Notes branches and stored jobs made by those versions are no longer
+anyone's own, but their selectors still read them.  Removing or replacing
+`principal.key` has the same effect.
+
 ## Members
 
 ### The upstream AI, in `upstream`

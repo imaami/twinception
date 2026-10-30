@@ -2715,18 +2715,18 @@ mcp_req_key (struct mcp_req const *req,
 }
 
 /* The owner of the records in the ledger that @p req opens and reads: the
- * principal of its client, without the bit LEDGER_ANONYMOUS.  The principal
- * of an anonymous client is 0, and its owner is then a hash of its address
- * with the bit LEDGER_ANONYMOUS set.  The hash is the one that
- * mcp_req_submit() uses as the principal of an upstream job of an anonymous
- * client without a session field.
+ * principal of its client, which never has the bit LEDGER_ANONYMOUS
+ * (src/policy.h).  The principal of an anonymous client is 0, and its owner
+ * is then a hash of its address with the bit LEDGER_ANONYMOUS set.  The hash
+ * is the one that mcp_req_submit() uses as the principal of an upstream job
+ * of an anonymous client without a session field.
  */
 static uint64_t
 mcp_req_owner (struct mcp_req const *req)
 {
 	struct stream const *s = req->s;
 	if (s->principal)
-		return s->principal & ~LEDGER_ANONYMOUS;
+		return s->principal;
 	return util_hash(~req->mcp->st->seed, s->peer, sizeof s->peer) | LEDGER_ANONYMOUS;
 }
 

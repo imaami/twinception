@@ -282,12 +282,12 @@ mcp_slot_loop (struct mcp_slot const *slot);
 
 /** Returns the principal of the call's user.  policy_grant()
  *  (src/policy.h) determines the user of a client in this order.  If the
- *  client sent a token and the policy has tokens, the user is the identity
- *  that has the token.  Otherwise, if the client is connected over a Unix
- *  socket, the user is the identity that lists the client's Unix user, or
- *  else the Unix user itself.  Otherwise the client is anonymous, and its
+ *  client is connected over a Unix socket, the user is its Unix user.  If a
+ *  client over TCP sent a token and the policy has tokens, the user is the
+ *  identity that has the token.  Otherwise the client is anonymous, and its
  *  principal is 0.  A call that a turn of the client's ask call makes has
- *  the principal of the client.
+ *  the principal of the client.  Bit 63 of a principal is never set, and
+ *  bit 62 is set for an identity and clear for a Unix user.
  */
 EXPORT
 extern uint64_t

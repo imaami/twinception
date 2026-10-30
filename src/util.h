@@ -52,6 +52,24 @@ util_hex (char *restrict       dst,
 	}
 }
 
+/** Fill the @p n bytes at @p dst, at most 256, with random bytes from the
+ *  kernel.  Returns 0, or the error number.
+ */
+static inline int
+util_random (void   *dst,
+             size_t  n)
+{
+	if (n > 256)
+		return EINVAL;
+	/* For so few bytes, getrandom() returns fewer only if a signal
+	 * interrupts it before it has any. */
+	ssize_t got;
+	while ((got = getrandom(dst, n, 0)) < 0)
+		if (errno != EINTR)
+			return errno;
+	return (size_t)got == n ? 0 : EIO;
+}
+
 /** Write @p n random bytes, at most 256, from the kernel to @p dst as 2 @p n
  *  lowercase hexadecimal digits, without a NUL.  Returns 0, or the error
  *  number.
@@ -63,16 +81,10 @@ util_random_hex (char   *dst,
 	unsigned char bits[256];
 	if (n > sizeof bits)
 		return EINVAL;
-	/* For so few bytes, getrandom() returns fewer only if a signal
-	 * interrupts it before it has any. */
-	ssize_t got;
-	while ((got = getrandom(bits, n, 0)) < 0)
-		if (errno != EINTR)
-			return errno;
-	if ((size_t)got != n)
-		return EIO;
-	util_hex(dst, bits, n);
-	return 0;
+	int e = util_random(bits, n);
+	if (!e)
+		util_hex(dst, bits, n);
+	return e;
 }
 
 /** Whether the @p n bytes at @p s are lowercase hexadecimal digits. */

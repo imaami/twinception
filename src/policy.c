@@ -6,6 +6,8 @@
 #include <grp.h>
 #include <inttypes.h>
 #include <json-c/json.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -19,10 +21,11 @@
 
 enum { DIGEST = SHA256_DIGEST_LENGTH };
 
-/* Principals are hashes of identities' names, which the configuration
- * picks, not clients.
+/* The bit of a principal that marks an identity.  A Unix user's principal
+ * has it clear, and no principal has bit 63 set, so the principals of the
+ * two kinds differ, and none has the bit LEDGER_ANONYMOUS (src/ledger.h).
  */
-static constexpr uint64_t SEED = 0x9e3779b97f4a7c15;
+static constexpr uint64_t POLICY_IDENTITY = UINT64_C(1) << 62;
 
 /* The members of "anonymous", by the kind of client.  TOOL_TEXT() is a
  * compound literal, which a static initializer may not have.
@@ -104,6 +107,12 @@ struct policy {
 	                                                  log, "anonymous KIND
 	                                                  (role NAME)"; empty in
 	                                                  askai's own policy */
+	unsigned char        key[POLICY_KEY];          /* The key that the
+	                                                  principals are
+	                                                  computed with.  It is
+	                                                  all zero until
+	                                                  policy_key() sets
+	                                                  it. */
 	uint32_t             overflow_uid;             /* the kernel's overflow
 	                                                  uid, which
 	                                                  policy_admit_uid()
@@ -181,15 +190,66 @@ policy_name_len (char const *name)
 	return n <= POLICY_NAME && !name[n] ? n : 0;
 }
 
-/* The principal of the identity @p name of @p len bytes: never 0, which is
- * anonymous.
+/* Compute in @p *principal the principal of the anchor @p text of @p len
+ * bytes, "uid:N" or "identity:NAME", with the key of @p policy.  It is the
+ * first 8 bytes of HMAC-SHA-256 as a big-endian number, with bits 63 and 62
+ * cleared and @p tag added, and 1 in place of 0, which means anonymous.
+ * Returns 0, or EIO if HMAC() fails.
  */
-static uint64_t
-policy_principal (char const *name,
-                  size_t      len)
+static int
+policy_principal_of (struct policy const *policy,
+                     uint64_t             tag,
+                     char const          *text,
+                     size_t               len,
+                     uint64_t            *principal)
 {
-	uint64_t h = util_hash(SEED, name, len);
-	return h + !h;
+	unsigned char md[EVP_MAX_MD_SIZE];
+	unsigned int n = 0;
+	if (!HMAC(EVP_sha256(), policy->key, (int)sizeof policy->key,
+	          (unsigned char const *)text, len, md, &n) || n < sizeof *principal)
+		return EIO;
+	uint64_t h = 0;
+	for (size_t i = 0; i < sizeof h; ++i)
+		h = h << 8 | md[i];
+	h = (h & (POLICY_IDENTITY - 1)) | tag;
+	*principal = h + !h;
+	return 0;
+}
+
+/* Compute in @p *principal the principal of the identity that @p who,
+ * "identity NAME", names, with the key of @p policy.  Returns 0, EINVAL if
+ * @p who has another form, or EIO if HMAC() fails.
+ */
+static int
+policy_principal_identity (struct policy const *policy,
+                           struct tool_text     who,
+                           uint64_t            *principal)
+{
+	static char const prefix[] = "identity ";
+	if (who.len < sizeof prefix - 1 || memcmp(who.ptr, prefix, sizeof prefix - 1))
+		return EINVAL;
+	char anchor[sizeof "identity:" + POLICY_NAME];
+	int n = snprintf(anchor, sizeof anchor, "identity:%.*s",
+	                 (int)(who.len - (sizeof prefix - 1)), who.ptr + sizeof prefix - 1);
+	if (n < 0 || n >= (int)sizeof anchor)
+		return EINVAL;
+	return policy_principal_of(policy, POLICY_IDENTITY, anchor, (size_t)n, principal);
+}
+
+/* Compute the principal of each token of @p policy from the name of its
+ * identity, with the key of @p policy.  Returns 0, or the error of
+ * policy_principal_identity().
+ */
+static int
+policy_principals (struct policy *policy)
+{
+	for (size_t i = 0; i < policy->n_tokens; ++i) {
+		struct policy_token *t = &policy->tokens[i];
+		int e = policy_principal_identity(policy, t->who, &t->principal);
+		if (e)
+			return e;
+	}
+	return 0;
 }
 
 /* Copy the @p n texts @p parts, one after another, into the policy's
@@ -206,14 +266,6 @@ policy_build_who (struct policy_build    *b,
 		b->names += parts[i].len;
 	}
 	return (struct tool_text){ who, (size_t)(b->names - who) };
-}
-
-/* The principal of the calls of Unix user @p uid. */
-static uint64_t
-policy_principal_uid (uint32_t uid)
-{
-	uint64_t h = util_hash(~SEED, &uid, sizeof uid);
-	return h + !h;
 }
 
 /* The index of the role that @p name, a string, names; -1 if none does. */
@@ -235,20 +287,18 @@ policy_build_role (struct policy_build const *b,
 	return -1;
 }
 
-/* Append a token of @p digest for the identity @p who of @p principal and
- * @p role.
+/* Append a token of @p digest for the identity @p who of @p role.
+ * policy_principals() computes its principal.
  */
 static void
 policy_token_add (struct policy       *p,
                   unsigned char const *digest,
                   struct tool_text     who,
-                  uint64_t             principal,
                   uint64_t             role)
 {
 	struct policy_token *t = &p->tokens[p->n_tokens++];
 	memcpy(t->digest, digest, DIGEST);
 	t->who = who;
-	t->principal = principal;
 	t->role = role;
 }
 
@@ -709,7 +759,6 @@ policy_build_identity (struct policy_build *b,
 	size_t n = tokens ? json_object_array_length(tokens) : 0;
 	if (!n)
 		return policy_build_fail(b, "identity %s needs tokens", who);
-	uint64_t principal = policy_principal(who, len);
 	struct tool_text name = policy_build_who(b, 2, (struct tool_text const[]){
 		TOOL_TEXT("identity "), { who, len } });
 	for (size_t i = 0; i < n; ++i) {
@@ -721,7 +770,7 @@ policy_build_identity (struct policy_build *b,
 		int e = policy_build_token(b, who, json_object_get_string(spec), digest);
 		if (e)
 			return e;
-		policy_token_add(b->p, digest, name, principal, (uint64_t)r);
+		policy_token_add(b->p, digest, name, (uint64_t)r);
 	}
 	return 0;
 }
@@ -866,11 +915,9 @@ policy_build_own (struct policy_build *b,
 		p->anonymous[POLICY_UNIX] = 0;
 		return;
 	}
-	static char const id[] = "ASKAI_TOKEN";
 	unsigned char digest[DIGEST];
 	SHA256((unsigned char const *)token, strlen(token), digest);
-	policy_token_add(p, digest, TOOL_TEXT("identity ASKAI_TOKEN"),
-	                 policy_principal(id, sizeof id - 1), 0);
+	policy_token_add(p, digest, TOOL_TEXT("identity ASKAI_TOKEN"), 0);
 	p->unix_token = true;
 }
 
@@ -990,7 +1037,16 @@ policy_create (struct json_object *file,
 	else
 		policy_build_own(&b, token);
 	free(b.buf);
+	b.buf = nullptr;
 	free(b.subgids);
+	b.subgids = nullptr;
+	/* The tokens get the principals of a key of zero bytes, until
+	 * policy_key() sets the real key.  A failure is reported as EIO, so
+	 * that EINVAL always means that the file is wrong. */
+	if (!*e && policy_principals(p)) {
+		*e = EIO;
+		util_format(why, len, "cannot compute the principals of the identities");
+	}
 	if (*e) {
 		policy_put(p);
 		return nullptr;
@@ -1250,6 +1306,37 @@ policy_admit_uid (struct policy const *policy,
 	     ? POLICY_SUBORDINATE : POLICY_ADMIT;
 }
 
+int
+policy_key (struct policy       *policy,
+            unsigned char const  key[POLICY_KEY])
+{
+	if (!policy || !key)
+		return EINVAL;
+	if (atomic_load_explicit(&policy->refs, memory_order_acquire) != 1)
+		return EBUSY;
+	memcpy(policy->key, key, sizeof policy->key);
+	return policy_principals(policy);
+}
+
+uint64_t
+policy_principal_uid (struct policy const *policy,
+                      uint32_t             uid,
+                      int                 *e)
+{
+	if (!e)
+		return 0;
+	if (!policy) {
+		*e = EINVAL;
+		return 0;
+	}
+	char anchor[sizeof "uid:4294967295"];
+	int n = snprintf(anchor, sizeof anchor, "uid:%" PRIu32, uid);
+	uint64_t principal = 0;
+	*e = n < 0 || n >= (int)sizeof anchor ? EINVAL
+	   : policy_principal_of(policy, 0, anchor, (size_t)n, &principal);
+	return principal;
+}
+
 /* Grant @p role, if it is one, to the client of @p principal, which the
  * log names as @p who, or else as its role.
  */
@@ -1308,7 +1395,7 @@ policy_grant_unix (struct policy const      *policy,
 			break;
 		}
 	}
-	return policy_grant_role(policy, role, policy_principal_uid(peer->uid),
+	return policy_grant_role(policy, role, peer->principal,
 	                         (struct tool_text){}, g);
 }
 
@@ -1334,7 +1421,7 @@ policy_grant (struct policy const      *policy,
 	 * remain those of the Unix user. */
 	if (policy_grant_token(policy, token, len, g) != POLICY_GRANTED)
 		return POLICY_REFUSED;
-	g->principal = policy_principal_uid(peer->uid);
+	g->principal = peer->principal;
 	return POLICY_GRANTED;
 }
 

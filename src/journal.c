@@ -16,7 +16,6 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/mman.h>
-#include <sys/random.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -115,6 +114,9 @@ struct journal {
 	struct journal_file    files[JOURNAL_FILES];
 	EVP_MD_CTX            *digest;
 	unsigned char          scratch[JOURNAL_SCRATCH];
+	unsigned char          key[JOURNAL_KEY];  /* the key of the principals,
+	                                             read from
+	                                             askai-journal/principal.key */
 	size_t                 queued;
 	size_t                 bytes;
 	int                    repo_fd;
@@ -260,6 +262,25 @@ journal_open_path (struct journal *j,
 	return 0;
 }
 
+/* Returns the reason why the file that @p st describes is not a private
+ * file of askai's user, or nullptr if it is one.  A private file is a
+ * regular file with one link that askai's user owns and that no other user
+ * may access.
+ */
+static char const *
+journal_file_problem (struct stat const *st)
+{
+	if (!S_ISREG(st->st_mode))
+		return "the file is not a regular file";
+	if (st->st_uid != geteuid())
+		return "askai's user does not own the file";
+	if (st->st_mode & 0077)
+		return "the mode of the file lets other users access it";
+	if (st->st_nlink != 1)
+		return "the file has more than one hard link";
+	return nullptr;
+}
+
 static int
 journal_file_open (int         dir,
                    char const *name,
@@ -272,10 +293,7 @@ journal_file_open (int         dir,
 	struct stat st;
 	if (fstat(*fd, &st))
 		return errno;
-	if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
-	    (st.st_mode & 0077) || st.st_nlink != 1)
-		return EACCES;
-	return 0;
+	return journal_file_problem(&st) ? EACCES : 0;
 }
 
 static int
@@ -1288,10 +1306,84 @@ journal_load_current (struct journal  *j,
 	return e;
 }
 
+/* Whether the @p len bytes at @p buf are all zero. */
+static bool
+journal_zero (unsigned char const *buf,
+              size_t               len)
+{
+	for (size_t i = 0; i < len; ++i)
+		if (buf[i])
+			return false;
+	return true;
+}
+
+/* Read the secret of @p len bytes, at most 256, in the file @p name of the
+ * directory @p dir into @p secret.  If the file is empty or new, fill
+ * @p secret with random bytes that are not all zero, and write them to the
+ * file first.  The file has mode 0600.  The caller holds a lock that keeps
+ * other processes from making the same file at the same time.  Returns 0,
+ * EILSEQ if the file does not have exactly @p len bytes or has only zero
+ * bytes, EACCES if it is not a private file of askai's user
+ * (journal_file_problem()), or another error number.  On failure, the
+ * function writes to the @p why_len bytes at @p why the path of the file,
+ * @p shown and @p name, and what is wrong with it.
+ */
+static int
+journal_secret (int         dir,
+                char const *shown,
+                char const *name,
+                void       *secret,
+                size_t      len,
+                char       *why,
+                size_t      why_len)
+{
+	int fd = -1;
+	int e = journal_file(dir, name, &fd);
+	struct stat st;
+	if (!e && fstat(fd, &st))
+		e = errno;
+	/* journal_file() refuses a file that is not private with EACCES. */
+	char const *problem = nullptr;
+	if (e == EACCES && !fstatat(dir, name, &st, AT_SYMLINK_NOFOLLOW))
+		problem = journal_file_problem(&st);
+	char wrong[64];
+	if (!e && !st.st_size) {
+		do
+			e = util_random(secret, len);
+		while (!e && journal_zero(secret, len));
+		if (!e)
+			e = util_write_all(fd, secret, len);
+		if (!e && fdatasync(fd))
+			e = errno;
+	} else if (!e && st.st_size != (off_t)len) {
+		e = EILSEQ;
+		util_format(wrong, sizeof wrong, "the file has %jd bytes, not %zu",
+		            (intmax_t)st.st_size, len);
+		problem = wrong;
+	} else if (!e) {
+		size_t n = 0;
+		e = util_read_all(fd, secret, len, 0, &n);
+		if (!e && n != len)
+			e = EIO;
+		if (!e && journal_zero(secret, len)) {
+			e = EILSEQ;
+			problem = "the file has only zero bytes";
+		}
+	}
+	if (fd >= 0)
+		close(fd);
+	if (e)
+		util_format(why, why_len, "%s/%s: %s", shown, name,
+		            problem ? problem : strerror(e));
+	return e;
+}
+
 static int
 journal_setup (struct journal *j,
                char const     *path,
-               char const     *participant)
+               char const     *participant,
+               char           *why,
+               size_t          why_len)
 {
 	int e = journal_open_path(j, path);
 	int init_fd = -1;
@@ -1342,39 +1434,18 @@ journal_setup (struct journal *j,
 		if (e == ENOENT)
 			e = 0;
 	}
-	int seed_fd = -1;
+	/* Every participant of the repository reads the same principal.key.
+	 * Each participant has its own owner.seed. */
+	char shown[sizeof "askai-journal/" + UTIL_WORD_MAX];
+	(void)util_format(shown, sizeof shown, "askai-journal/%s", participant);
 	if (!e)
-		e = journal_file(j->state_fd, "owner.seed", &seed_fd);
-	if (!e && fstat(seed_fd, &st))
+		e = journal_secret(state, "askai-journal", "principal.key", j->key,
+		                   sizeof j->key, why, why_len);
+	if (!e)
+		e = journal_secret(j->state_fd, shown, "owner.seed", &j->seed,
+		                   sizeof j->seed, why, why_len);
+	if (!e && (fsync(state) || fsync(j->state_fd) || fsync(j->repo_fd)))
 		e = errno;
-	if (!e && !st.st_size) {
-		ssize_t n;
-		do {
-			do {
-				n = getrandom(&j->seed, sizeof j->seed, 0);
-			} while (n < 0 && errno == EINTR);
-		} while (n == (ssize_t)sizeof j->seed && !j->seed);
-		if (n != (ssize_t)sizeof j->seed)
-			e = n < 0 ? errno : EIO;
-		if (!e)
-			e = util_write_all(seed_fd, &j->seed, sizeof j->seed);
-		if (!e && fdatasync(seed_fd))
-			e = errno;
-	} else if (!e) {
-		if (st.st_size != (off_t)sizeof j->seed)
-			e = EILSEQ;
-		size_t n = 0;
-		if (!e)
-			e = util_read_all(seed_fd, &j->seed, sizeof j->seed, 0, &n);
-		if (!e && n != sizeof j->seed)
-			e = EIO;
-		if (!e && !j->seed)
-			e = EILSEQ;
-	}
-	if (!e && (fsync(j->state_fd) || fsync(j->repo_fd)))
-		e = errno;
-	if (seed_fd >= 0)
-		close(seed_fd);
 	if (state >= 0)
 		close(state);
 	if (init_fd >= 0) {
@@ -1396,6 +1467,13 @@ journal_create (char const *path,
                 int        *e)
 {
 	*e = 0;
+	if (!why || !why_len) {
+		*e = EINVAL;
+		return nullptr;
+	}
+	/* journal_setup() writes a message of its own for some errors.  For
+	 * the others, the message is the text of the error number. */
+	*why = '\0';
 	if (!journal_word(participant, UTIL_WORD_MAX)) {
 		*e = EINVAL;
 		util_format(why, why_len, "invalid transcript participant");
@@ -1423,7 +1501,7 @@ journal_create (char const *path,
 		j->cond_ready = !*e;
 	}
 	if (!*e)
-		*e = journal_setup(j, path, participant);
+		*e = journal_setup(j, path, participant, why, why_len);
 	if (!*e) {
 		/* Creation precedes brainstem_run(), which routes asynchronous
 		 * signals through signalfd.  Inherit its worker mask at creation,
@@ -1445,7 +1523,8 @@ journal_create (char const *path,
 		}
 	}
 	if (*e) {
-		util_format(why, why_len, "%s", strerror(*e));
+		if (!*why)
+			util_format(why, why_len, "%s", strerror(*e));
 		journal_destroy(&j);
 	}
 	return j;
@@ -1513,3 +1592,12 @@ journal_seed (struct journal const *j)
 	return j ? j->seed : 0;
 }
 
+int
+journal_key (struct journal const *j,
+             unsigned char         key[JOURNAL_KEY])
+{
+	if (!j || !key)
+		return EINVAL;
+	memcpy(key, j->key, sizeof j->key);
+	return 0;
+}

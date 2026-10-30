@@ -118,8 +118,13 @@ struct stream {
 	                                          on_head() returns, because a
 	                                          reload can free the policy
 	                                          that has the text. */
-	uint64_t                 principal;  /**< the client's identity's
-	                                          (src/policy.h); 0: anonymous */
+	uint64_t                 principal;  /**< The principal of the client's
+	                                          identity or Unix user
+	                                          (src/policy.h).  Bit 63 is
+	                                          never set, and bit 62 is set
+	                                          for an identity.  It is 0 for
+	                                          an anonymous client over
+	                                          TCP. */
 	uint64_t                 peer[2];    /**< the client's address, as the
 	                                          limits per address key it:
 	                                          IPv4, mapped, or an IPv6 /64.

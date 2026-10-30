@@ -533,6 +533,11 @@ against the existing prefix and appends only new bytes. A mismatch fails
 that recovery and preserves the original file. A full writer queue applies
 backpressure; storage errors are reported instead of silently losing text.
 
+The file `askai-journal/principal.key`, outside Git and with mode 0600,
+contains the 32-byte key of the principals.  Every participant of the
+repository reads the same key (section Configuration file, identities and
+roles, below).
+
 Job recovery uses separate, private checkpoints under
 `askai-journal/PARTICIPANT/jobs/`, outside Git. They retain current request
 state, provider identifiers, tool intents/results and terminal status;
@@ -1191,19 +1196,26 @@ Four more members define who may connect, and what each client may do:
   group names.  `null`, as leaving it out, refuses them.
 
 A token that no identity has is refused with 401, on the request's head before
-its body, as is a client without one that no role is named for.  Any token on a
-Unix socket is refused with 400.  An identity's
-calls are one principal of the scheduler's, whichever of its tokens they show,
-and each user of a Unix socket is one; anonymous TCP clients are their
-sessions or addresses, as before.  The principal of an identity or of a Unix
-user is also the owner of its tasks, jobs and timers.  Group names are looked
-up as the file is read, which with a directory service such as SSSD may
-wait on it.  Without those four members, `askai`'s own policy applies.  With
-`ASKAI_TOKEN` set, clients must send it and may do everything.  Else clients on
-loopback that name it so, or on a Unix socket, may do everything, and other
-clients may call the tools.  Any of the four members, also with the value
-`null`, turns `askai`'s own policy off, and `askai` then ignores `ASKAI_TOKEN`
-and logs that.  So a file with `roles` alone refuses every client.
+its body, as is a client without one that no role is named for.  Under a policy
+from the file, and under `askai`'s own policy without `ASKAI_TOKEN`, any token
+on a Unix socket is refused with 400.  An identity's calls are one principal of
+the scheduler's, whichever of its tokens they show, and each user of a Unix
+socket is one; anonymous TCP clients are their sessions or addresses, as before.
+The principal of an identity or of a Unix user is also the owner of its tasks,
+jobs, timers and notes branch.  `askai` derives it with HMAC-SHA-256 from the
+name of the identity or the uid of the user, keyed with the file
+`askai-journal/principal.key` of the transcripts repository, so it stays the
+same across restarts and in every instance that uses that repository (see
+"Principals and their key" in doc/configuration.md).  Notes branches and stored
+jobs from versions of `askai` without the key are no longer anyone's own, but
+stay readable by their selectors.  Group names are looked up as the file is
+read, which with a directory service such as SSSD may wait on it.  Without those
+four members, `askai`'s own policy applies.  With `ASKAI_TOKEN` set, clients
+must send it and may do everything.  Else clients on loopback that name it so,
+or on a Unix socket, may do everything, and other clients may call the tools.
+Any of the four members, also with the value `null`, turns `askai`'s own policy
+off, and `askai` then ignores `ASKAI_TOKEN` and logs that.  So a file with
+`roles` alone refuses every client.
 
 The member `tools` allows or denies the tools other than `ask_ai`, to
 clients and to the upstream.  Its value has one of these forms, which turn
