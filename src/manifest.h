@@ -17,7 +17,7 @@ static constexpr uint32_t MANIFEST_TYPE = 0x61736b01; // `{1,'k','s','a'}`
 
 enum {
 	MANIFEST_ABI   = 32, //!< Length of the @ref manifest::abi array
-	MANIFEST_NAME  = 32, //!< NUL-terminated size of `char[]` fields
+	MANIFEST_NAME  = 32, //!< Size of each name field in @ref manifest
 	MANIFEST_NEEDS =  4, //!< Max item count of @ref manifest::needs
 	MANIFEST_TOOLS =  8, //!< Max item count of @ref manifest::tools
 };

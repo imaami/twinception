@@ -13,6 +13,14 @@
 
 _Atomic uint32_t buf_pressure;
 
+/* The calling thread's stash, which buf_stash_attach() sets.  The buffer
+ * functions have no stash parameter.  They take blocks from the calling
+ * thread's stash, and put the blocks that buffers stop using into it,
+ * including blocks that came from another thread's stash.  Only the
+ * calling thread changes its stash, so the stash needs no lock.  In a
+ * thread without a stash, the buffer functions call malloc() and free()
+ * directly.
+ */
 static thread_local struct buf_stash *mine;
 
 /* The class whose blocks hold @p size bytes; BUF_CLASSES or more if none. */

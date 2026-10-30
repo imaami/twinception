@@ -1,27 +1,51 @@
 /** @file home.h
  *
- * Home: the sidekick thread that runs every client loop's jobs, and
- * serves no client (design sections 1 and 4).
+ * Home is a thread with its own loop.  It runs the jobs (src/job.h), which
+ * are the upstream calls that the client loops hand over to it, and it
+ * serves no client itself (design sections 1 and 4).  Home's door
+ * (src/httpd.h) accepts the clients and places each on a client loop.
  *
- * Home owns the curl bridge (src/http.h), with its timers and its host
- * lookups on the blockers, and the scheduler of the jobs.  Admission ends a
- * job at once as BUSY with --max-calls jobs in flight, or with eight queued
- * for its principal, the call's session or else its client's address.  A job
- * that a free slot takes at once, nobody waiting, queues for none; the others
- * wait in their principal's queue for one of the S upstream slots, which home
- * gives the principals with jobs queued in turn, a job each, round-robin.
- * It runs a job's request upstream until its deadline at most, reads a
- * streamed answer's events a step's share at a time into its text, or gathers
- * a plain answer, which it never parses, likewise, and completes the job
- * (src/job.h), publishing its progress meanwhile.  A breaker on the
- * upstream's failures refuses jobs while the upstream seems down, and lets
- * a probe through now and then.  The messages of jobs only admit, refuse or
- * note them; bulk steps start, read and cancel them, a share at a time.
- * Each job admitted counts against the descriptors, which home's door
- * (src/httpd.h) budgets. A home that drains stops local transfers and refuses
- * new ones; durable background work remains at its provider for later
- * recovery. Once the client loops have all exited and no job is in flight,
- * it has its loop exit.
+ * Home owns the curl bridge (src/http.h) and the scheduler of the jobs.
+ * The bridge's host lookups run on the blocker threads.
+ *
+ * Home ends a new job at once as BUSY if --max-calls jobs are in flight,
+ * or if JOB_QUEUED jobs of the same class are already queued for the job's
+ * principal.  The principal is the client's identity, else the call's
+ * session, else the client's address.  A job that arrives while an
+ * upstream slot is free for it, and while no job that would start before
+ * it waits, starts without queueing.  The other jobs wait in their
+ * principal's queue.  Home gives the free slots in turn to the principals
+ * that have jobs queued, one job each.
+ *
+ * Home sends a job's request upstream, and ends the job at its deadline if
+ * the job has not ended by then.  It parses the events of a streamed answer
+ * into the job's text, tool calls and thinking, or collects a plain answer
+ * without parsing it.  While the job waits, home publishes its place in its
+ * principal's queue, and while the job runs, how far its answer has come
+ * (src/job.h).  Then home completes the job.
+ *
+ * A circuit breaker opens after several upstream failures in a row, or
+ * when the answer to a failed request says when to retry.  While the
+ * breaker is open, home refuses new jobs and ends the jobs that wait.
+ * After the time that the answer gave, or else after a backoff that
+ * doubles each time the breaker opens, home lets one job through as a
+ * probe.  If the probe succeeds, the breaker closes.
+ *
+ * The messages from the client loops admit or refuse new jobs, cancel jobs
+ * that wait, and move running jobs to the lists of the bulk steps.  Bulk
+ * steps of home's loop start the jobs, read their answers and cancel them,
+ * with a limited amount of work in each step, because each call into
+ * libcurl takes some tens of microseconds.  An admitted job may need a
+ * descriptor for its upstream connection.  If the client connections and
+ * the jobs in flight already hold as many descriptors as they may, the
+ * door has the client loop with the least recently active idle connection
+ * close that connection, if any connection is idle.
+ *
+ * When home drains, it cancels the jobs in flight and refuses new jobs.
+ * It does not cancel durable background work at its provider, so that
+ * askai can recover the work later.  Once all client loops have exited, no
+ * job is in flight, and no provider cancellation or journal callback is
+ * pending, home makes its loop exit.
  */
 #ifndef TWINCEPTION_SRC_HOME_H_
 #define TWINCEPTION_SRC_HOME_H_

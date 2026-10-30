@@ -78,11 +78,13 @@ This file provides guidance to agents such as ChatGPT, Claude, CodeRabbit, Copil
 
 - Tabs indent, spaces align: continuation lines of a declaration or argument list are tab-indented to the statement's level, then space-padded into column alignment. Don't "fix" space-aligned continuations into tabs.
 - Multi-line macro definitions are the exception: indent their continuation lines with spaces, not tabs, or the aligned trailing backslashes move out of line when the tab width changes. Use 8 spaces by default; 1, 2, or 4 are fine when that keeps every line of the macro within a column limit.
+- A macro defined inside a function body may instead be indented with the function's code, as an exception to the rule above: its `#define` line and its continuation lines then start with the same number of tabs, and spaces after those tabs align the continuation lines. Every line then moves by the same amount when the tab width changes, so the backslashes stay aligned.
 - Spotting the worst cases of tab abuse is easy: anything `git grep -P '[^\t]\t' -- '**\.[ch]'` matches is wrong. But to understand line continuations you need to imagine switching tab width from 8 to 3 - do the continuation lines stay aligned? If not, think about why.
 - Place angle-bracketed include statements above double-quoted ones. Separate these into groups by placing an empty line in between the two.
 - A separating empty line is only mandatory between `<>` and `""` groups, but it is also allowed within these two groups at your discretion.
 - Sort grouped includes - those not separated by empty lines - by header name in the C locale. Ignore whitespace so that e.g. `#include` and `# include` sort equal.
 - Use Doxygen comments `/** */` to document the code for which it makes sense. Comments inside function bodies must be ordinary non-doxygenated comments.
+- A comment after a member's semicolon can be `/**< */` or `//!<`. In one case with custom tags and nested anonymous unions, Doxygen rendered the member correctly only with `//!<`; `/**< */` and `/*!< */` did not work. Don't convert one form to the other until the repo has a Doxygen build that can show the difference.
 
 ### Repository structure
 
@@ -121,9 +123,10 @@ This file provides guidance to agents such as ChatGPT, Claude, CodeRabbit, Copil
   git grep -P '[^\t]\t' -- '**\.[ch]'
   ```
 
-- This lists the continuation lines of multi-line macros that start with a tab:
+- This lists the continuation lines of multi-line macros (each line after one that ends in a backslash) that don't start with the same number of tabs as the macro's first line:
 
   ```bash
   git ls-files -z -- '*.[ch]' | xargs -0 awk 'FNR == 1 { c = 0 }
-    c && /^\t/ { print FILENAME ":" FNR ": " $0 } { c = /\\$/ }'
+    { t = $0; sub(/[^\t].*/, "", t) } !c { d = t }
+    c && t != d { print FILENAME ":" FNR ": " $0 } { c = /\\$/ }'
   ```

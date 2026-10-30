@@ -1,6 +1,9 @@
 /** @file ledger.c
  *
- * The ledger.
+ * The ledger of tool calls that keep running after askai has answered the
+ * requests that started them (src/ledger.h).  One mutex protects the hash
+ * table of the records by id, the hash table of the owners by key, and the
+ * list of the records whose calls have ended.
  */
 #include <errno.h>
 #include <pthread.h>

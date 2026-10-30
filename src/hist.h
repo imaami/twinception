@@ -96,7 +96,11 @@ hist_get (_Atomic uint64_t const *p)
 	return atomic_load_explicit(p, memory_order_relaxed);
 }
 
-/** Add @p n to @p p, which only the calling thread writes. */
+/** Add @p n to @p p, which only the calling thread writes.  With one
+ *  writer, a relaxed load and a relaxed store are enough.  On 64-bit
+ *  targets they compile to ordinary load and store instructions, which cost
+ *  less than the atomic read-modify-write of atomic_fetch_add().
+ */
 static inline void
 hist_add (_Atomic uint64_t *p,
           uint64_t          n)

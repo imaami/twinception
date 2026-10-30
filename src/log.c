@@ -22,23 +22,31 @@
 #include "log.h"
 
 enum {
-	RING      = 256 << 10,  /* bytes a thread's ring holds: a power of two */
-	RINGS_MAX = 511,        /* a writev() takes two pieces of each and a
-	                           note, of IOV_MAX (1024) at most */
-	LINE      = 1 << 10,    /* the longest line; the rest is cut */
-	BURST     = 32,         /* lines a call site may log a second */
+	RING      = 256 << 10,  /* size of each thread's ring in bytes, a power
+	                           of two */
+	RINGS_MAX = 511,        /* largest number of rings, because one
+	                           writev() gets up to two iovecs per ring and
+	                           one for the dropped-lines note, and IOV_MAX
+	                           is 1024 */
+	LINE      = 1 << 10,    /* bytes in the buffer that a line is formatted
+	                           in; longer lines are cut and end in "..." */
+	BURST     = 32,         /* lines one call site may log per second */
 };
 
 /* The logger's state. */
 enum { RUNNING, STOPPING, DONE };
 
-/* The owner's half and the logger's half each have a cache line.
+/* A thread's ring buffer.  data points to its RING bytes.  The thread that
+ * uses the ring writes head and the bytes, and the logger thread writes
+ * tail and seen.  alignas(64) puts head and data on one cache line, and
+ * tail and seen on the next, so that a write by one of the two threads does
+ * not invalidate the cache line that the other thread writes.
  */
 struct log_ring {
-	alignas(64) _Atomic size_t head;  /* bytes put, by the thread it is for */
+	alignas(64) _Atomic size_t head;  /* bytes put in so far */
 	unsigned char             *data;
-	alignas(64) _Atomic size_t tail;  /* bytes written out, by the logger */
-	size_t                     seen;  /* the head that its batch took */
+	alignas(64) _Atomic size_t tail;  /* bytes written out or dropped */
+	size_t                     seen;  /* head as read for the batch */
 };
 
 static struct {
@@ -51,18 +59,31 @@ static struct {
 	_Atomic uint32_t  state;
 } lg = { .wake_fd = -1, .notify_fd = -1 };
 
+/* The calling thread's ring.  log_attach() sets it to one of lg.rings or
+ * to &full, and log_fini() sets it to nullptr in the thread that calls
+ * log_fini().  It is also nullptr in a thread that has not called
+ * log_attach().  While it is nullptr, log_emit() writes the thread's lines
+ * straight to stderr.
+ */
 static thread_local struct log_ring *self;
 
-/* For a thread that found no ring left: always full, so its lines are dropped
- * and counted, and it never blocks on stderr.
+/* The ring of the threads that call log_attach() after all rings are taken.
+ * Its head is RING bytes ahead of its tail, so the check for free space in
+ * log_emit() always fails, and log_emit() drops each line and counts it in
+ * log_metrics.dropped.  These threads do not write to stderr themselves,
+ * because a write to stderr could block them.
  */
 static struct log_ring full = { .head = RING };
 
 struct log_metrics log_metrics;
 enum log_level log_threshold = LOG_INFO;
 
-/* Whether the site may log a line now; if so, @p *missed is how many it held
- * back since its last.  Racing threads may miscount by a line or two.
+/* Returns true if @p site may log a line now, which is when it has logged
+ * fewer than BURST lines in the current second.  Then @p *missed is the
+ * number of lines of the site that were suppressed since its last logged
+ * line.  When threads use the site at the same time around the start of a
+ * new second, the count can be reset late or more than once, so the site
+ * may log more or fewer than BURST lines in that second.
  */
 static bool
 log_site_allow (struct log_site *site,
@@ -108,15 +129,23 @@ log_emit (char const *line,
 	size_t first = len < RING - at ? len : RING - at;
 	memcpy(r->data + at, line, first);
 	memcpy(r->data, line + first, len - first);
-	/* Sequentially consistent with the look at asleep: either the logger
-	 * sees this line before it sleeps, or this sees it asleep. */
+	/* The store to r->head and the load of lg.asleep after it are
+	 * sequentially consistent, and so are the logger's store to
+	 * lg.asleep and its loads of the heads in log_pending().  So either
+	 * the logger's last check before it sleeps reads the new head, or
+	 * this thread reads lg.asleep as 1 and wakes the logger. */
 	atomic_store(&r->head, head + len);
 	atomic_fetch_add_explicit(&log_metrics.lines, 1, memory_order_relaxed);
 	if (atomic_load(&lg.asleep) && atomic_exchange(&lg.asleep, 0))
 		(void)eventfd_write(lg.wake_fd, 1);
 }
 
-/* Length @p len of a line after a vsnprintf() into it returned @p n. */
+/* Returns the length @p len of a line plus @p n, the return value of a
+ * vsnprintf() or snprintf() that appended to the line, but at most @p max.
+ * A negative @p n adds nothing, and a sum that overflows gives @p max.  The
+ * call was given a buffer of @p max - @p len bytes, so the result is @p max
+ * only if the text did not fit.
+ */
 static const_inline size_t
 log_grown (size_t       len,
            size_t const max,
@@ -244,8 +273,10 @@ log_thread (void *arg)
 		if (atomic_load(&lg.state) != RUNNING)
 			break;
 
-		/* Say so before the last look, so that a line put after it, or
-		 * the order to stop, wakes this. */
+		/* Set lg.asleep before the last check of the state and the
+		 * heads in log_pending().  A thread that puts a line after
+		 * that check reads lg.asleep as 1 and wakes the logger, and so
+		 * does log_stop() if it changes the state after that check. */
 		atomic_store(&lg.asleep, 1);
 		if (!log_pending()) {
 			eventfd_t v;
