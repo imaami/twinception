@@ -6641,11 +6641,13 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	 * one that a crash left.  The lock file of a live writer, which may be
 	 * outside askai, stays. */
 	bool writes = mcp_notes_writes(cmd);
-	int64_t age;
-	int e = cmd == NOTES_ADD ? notes_lock(mcp->st->notes, req->repo, &age) : 0;
-	if (e)
-		LOG(LOG_WARN, "notes: cannot check the lock of %s: %s",
-		    notes_selector(req->repo), strerror(e));
+	if (cmd == NOTES_ADD) {
+		int64_t age;
+		int e = notes_lock(mcp->st->notes, req->repo, &age);
+		if (e)
+			LOG(LOG_WARN, "notes: cannot check the lock of %s: %s",
+			    notes_selector(req->repo), strerror(e));
+	}
 	char const *argv[NOTES_ARGV];
 	if (fetch & FETCH_REVISION)
 		notes_revision_argv(slot->own, mcp->st->notes, mcp_slot_notebook(slot),
@@ -6666,6 +6668,7 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 		.flags = writes ? CHILD_STDERR : 0
 	};
 	slot->fetch = fetch;
+	int e = 0;
 	slot->child = child_create(loop, &mcp->children, &c, mcp_on_notes, slot, &e);
 	if (in)
 		buf_fini(in);
@@ -6769,15 +6772,18 @@ static int
 mcp_slot_notes_unadded (struct mcp_slot *slot)
 {
 	struct child const *c = slot->child;
-	struct span out = buf_peek(&c->out);
 	if (c->late)
 		return mcp_slot_say(slot, &TEXT("Could not write the note: it took too "
 		                                "long."), 1);
-	struct notes const *notes = slot->req->mcp->st->notes;
-	char const *repo = slot->req->repo;
-	int64_t age = 0;
-	if (out.len && memmem(out.ptr, out.len, "File exists", sizeof "File exists" - 1) &&
-	    !notes_lock(notes, repo, &age) && age > NOTES_STALE) {
+	if (mcp_notes_raced(c)) {
+		struct notes const *notes = slot->req->mcp->st->notes;
+		char const *repo = slot->req->repo;
+		int64_t age = 0;
+		if (notes_lock(notes, repo, &age) || age <= NOTES_STALE)
+			return mcp_slot_say(slot, &TEXT("Could not write the note, because "
+			                                "another call changed this notebook at "
+			                                "the same time. Read its current state "
+			                                "and retry."), 1);
 		LOG(LOG_WARN, "notes: %s/%s.lock is %" PRId64 " s old; remove it if no "
 		    "git process uses the repository", notes_directory(notes), repo, age);
 		char said[128];
@@ -6785,10 +6791,7 @@ mcp_slot_notes_unadded (struct mcp_slot *slot)
 		                    "Could not write the note: its notebook has been "
 		                    "locked for %" PRId64 " s.", age)), 1);
 	}
-	if (mcp_notes_raced(c))
-		return mcp_slot_say(slot, &TEXT("Could not write the note, because another "
-		                                "call changed this notebook at the same "
-		                                "time. Read its current state and retry."), 1);
+	struct span out = buf_peek(&c->out);
 	char const *why = (char const *)out.ptr;
 	LOG(LOG_WARN, "notes: git could not write a note: %.*s",
 	    (int)mcp_clip(why, out.len, 300), why);
