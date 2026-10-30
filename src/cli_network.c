@@ -671,8 +671,8 @@ cli_network_ended (struct cli_mailbox     *mailbox,
 	(void)mailbox;
 	struct cli_network *network = container_of(message, struct cli_network, ended);
 	int e = atomic_load(&network->failure);
-	if (e != ESHUTDOWN && !network->ui->error)
-		network->ui->error = e;
+	if (e != ESHUTDOWN)
+		cli_loop_fail(network->ui, e);
 }
 
 void

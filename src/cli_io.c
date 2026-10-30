@@ -38,7 +38,9 @@ cli_io_notify (struct cli_loop     *loop,
 {
 	(void)events;
 	struct cli_io *io = container_of(ref, struct cli_io, notify);
-	io->exited += (uint32_t)cli_loop_counter(loop, ref);
+	uint64_t count;
+	cli_loop_fail(loop, cli_loop_ref_counter(ref, &count));
+	io->exited += (uint32_t)count;
 	struct list completed;
 	list_init(&completed);
 	pthread_mutex_lock(&io->mutex);

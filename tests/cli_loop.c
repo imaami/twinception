@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <unistd.h>
 
 #include "cli_loop.h"
 #include "cli_mailbox.h"
@@ -109,12 +110,41 @@ cli_loop_test_event (struct cli_loop     *loop,
 {
 	assert(events & EPOLLIN);
 	struct cli_loop_test_ref *watch = container_of(ref, struct cli_loop_test_ref, ref);
-	assert(cli_loop_counter(loop, ref) == 1);
+	uint64_t count = 0;
+	assert(!cli_loop_ref_counter(ref, &count) && count == 1);
 	cli_loop_close(loop, ref);
 	assert(ref->fd < 0 && !loop->error);
 	++watch->test->released;
 	free(watch);
 	watch = nullptr;
+}
+
+/* An empty counter reads as 0, and a counter reads as its value.  A read
+ * error becomes the loop error, and a later error or 0 does not replace
+ * it.
+ */
+static void
+cli_loop_test_errors (struct cli_loop_test *test)
+{
+	struct cli_loop_ref ref = { .fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC) };
+	assert(ref.fd >= 0);
+	uint64_t count = 1;
+	assert(!cli_loop_ref_counter(&ref, &count) && !count);
+	assert(!eventfd_write(ref.fd, 3));
+	assert(!cli_loop_ref_counter(&ref, &count) && count == 3);
+	assert(!close(ref.fd));
+	count = 1;
+	assert(cli_loop_ref_counter(&ref, &count) == EBADF && !count);
+	ref.fd = -1;
+	assert(!test->loop.error);
+	cli_loop_fail(&test->loop, 0);
+	assert(!test->loop.error);
+	cli_loop_fail(&test->loop, EBADF);
+	cli_loop_fail(&test->loop, EIO);
+	cli_loop_fail(&test->loop, 0);
+	assert(test->loop.error == EBADF);
+	assert(cli_loop_turn(&test->loop, 0) == EBADF);
+	test->loop.error = 0;
 }
 
 static void
@@ -162,7 +192,7 @@ cli_loop_test_limits (struct cli_loop_test *test)
 	assert(!cli_mailbox_post(&test->mailbox, &next->msg, true));
 	assert(!cli_loop_turn(&test->loop, UINT64_MAX));
 	assert(test->received[0] == 2);
-	cli_mailbox_close(&test->mailbox);
+	assert(!cli_mailbox_close(&test->mailbox));
 	next = cli_loop_test_message(0, 2);
 	assert(cli_mailbox_post(&test->mailbox, &next->msg, true) == ESHUTDOWN);
 	free(next);
@@ -207,6 +237,7 @@ main (void)
 {
 	struct cli_loop_test test = {};
 	assert(!cli_loop_init(&test.loop));
+	cli_loop_test_errors(&test);
 	cli_loop_test_turns(&test);
 	cli_loop_test_limits(&test);
 	cli_loop_test_threads(&test);

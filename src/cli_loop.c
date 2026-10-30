@@ -13,20 +13,30 @@
 #include "compat.h"
 #include "loop.h"
 
-uint64_t
-cli_loop_counter (struct cli_loop     *loop,
-                  struct cli_loop_ref *ref)
+int
+cli_loop_ref_counter (struct cli_loop_ref const *ref,
+                      uint64_t                  *count)
 {
-	uint64_t count;
+	*count = 0;
+	uint64_t value;
 	ssize_t n;
 	do {
-		n = read(ref->fd, &count, sizeof count);
+		n = read(ref->fd, &value, sizeof value);
 	} while (n < 0 && errno == EINTR);
-	if (n == (ssize_t)sizeof count)
-		return count;
-	if ((n >= 0 || errno != EAGAIN) && !loop->error)
-		loop->error = n < 0 ? errno : EIO;
+	if (n < 0)
+		return errno == EAGAIN ? 0 : errno;
+	if (n != (ssize_t)sizeof value)
+		return EIO;
+	*count = value;
 	return 0;
+}
+
+void
+cli_loop_fail (struct cli_loop *loop,
+               int              e)
+{
+	if (e && !loop->error)
+		loop->error = e;
 }
 
 static void
@@ -35,7 +45,8 @@ cli_loop_timer_read (struct cli_loop     *loop,
                      uint32_t             events)
 {
 	(void)events;
-	(void)cli_loop_counter(loop, ref);
+	uint64_t count;
+	cli_loop_fail(loop, cli_loop_ref_counter(ref, &count));
 }
 
 int
@@ -91,8 +102,8 @@ cli_loop_unwatch (struct cli_loop     *loop,
 	if (!ref || ref->fd < 0)
 		return;
 	if (epoll_ctl(loop->epfd, EPOLL_CTL_DEL, ref->fd, nullptr) &&
-	    errno != ENOENT && errno != EBADF && !loop->error)
-		loop->error = errno;
+	    errno != ENOENT && errno != EBADF)
+		cli_loop_fail(loop, errno);
 	list_del(&ref->hook);
 	*ref = (struct cli_loop_ref){ .fd = -1 };
 }

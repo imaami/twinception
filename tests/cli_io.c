@@ -59,7 +59,7 @@ cli_io_test_run (struct loop *network,
 	 * owner's existing wake descriptor. Closing tests shutdown rejection. */
 	assert(!cli_mailbox_init(&mailbox, &ui, (struct cli_mailbox_limits){}));
 	if (closed)
-		cli_mailbox_close(&mailbox);
+		assert(!cli_mailbox_close(&mailbox));
 	int e;
 	struct cli_io *io = cli_io_create(network, &mailbox, &e);
 	assert(io && !e);

@@ -286,6 +286,17 @@ struct cli_input {
 
 static int cli_immediate (struct cli *cli);
 
+/* Store @p e as the error of the UI, unless @p e is 0 or the UI already has
+ * an error.
+ */
+static void
+cli_fail (struct cli *cli,
+          int         e)
+{
+	if (e && !cli->ui_error)
+		cli->ui_error = e;
+}
+
 static void
 cli_shutdown (struct cli *cli)
 {
@@ -341,8 +352,7 @@ cli_signal (struct cli_signals *signals,
 		cli_shutdown(cli);
 		break;
 	}
-	if (e && !cli->ui_error)
-		cli->ui_error = e;
+	cli_fail(cli, e);
 }
 
 /** A wait may leave a stuck syscall to process exit, but must never unwind
@@ -377,8 +387,8 @@ cli_service (struct cli_loop *loop)
 		int e = cli_console_service(cli->console);
 		if (!e && !cli->quitting)
 			e = cli_immediate(cli);
-		if (e && e != EINTR && !cli->ui_error)
-			cli->ui_error = e;
+		if (e != EINTR)
+			cli_fail(cli, e);
 	}
 	if (cli->ui_error)
 		cli_shutdown(cli);
@@ -400,8 +410,7 @@ cli_report (struct cli_client *client,
 	if (cli->quitting)
 		return 0;
 	int e = cli_ui_error(cli->console, title, detail);
-	if (e && !cli->ui_error)
-		cli->ui_error = e;
+	cli_fail(cli, e);
 	return e;
 }
 
@@ -776,15 +785,11 @@ cli_manual_done (struct cli_tool        *tool,
 {
 	struct cli *cli = context;
 	if (!cli->quitting && !cli->exit_signal) {
-		e = cli_tool_finish(tool, e, result, error);
-		if (e && !cli->ui_error)
-			cli->ui_error = e;
+		cli_fail(cli, cli_tool_finish(tool, e, result, error));
 		if (cli->client.notes_dirty || cli->client.catalog_dirty)
 			cli_console_yield(cli->console);
 	}
-	e = cli_busy(cli, cli->busy);
-	if (e && !cli->ui_error)
-		cli->ui_error = e;
+	cli_fail(cli, cli_busy(cli, cli->busy));
 }
 
 static int

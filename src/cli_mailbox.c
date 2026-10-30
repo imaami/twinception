@@ -17,7 +17,8 @@ cli_mailbox_wake (struct cli_loop     *loop,
 {
 	(void)events;
 	struct cli_mailbox *mailbox = container_of(ref, struct cli_mailbox, wake);
-	(void)cli_loop_counter(loop, ref);
+	uint64_t count;
+	cli_loop_fail(loop, cli_loop_ref_counter(ref, &count));
 	cli_loop_ready(loop, &mailbox->drain);
 }
 
@@ -55,9 +56,7 @@ cli_mailbox_drain (struct cli_loop      *loop,
                     struct cli_loop_step *step)
 {
 	struct cli_mailbox *mailbox = container_of(step, struct cli_mailbox, drain);
-	int e = cli_mailbox_dispatch(mailbox, 32);
-	if (e && !loop->error)
-		loop->error = e;
+	cli_loop_fail(loop, cli_mailbox_dispatch(mailbox, 32));
 }
 
 int
@@ -134,19 +133,17 @@ cli_mailbox_post (struct cli_mailbox     *mailbox,
 	return e;
 }
 
-void
+int
 cli_mailbox_close (struct cli_mailbox *mailbox)
 {
 	if (!mailbox->mutex_ready)
-		return;
+		return 0;
 	int e = pthread_mutex_lock(&mailbox->mutex);
-	if (e) {
-		if (!mailbox->loop->error)
-			mailbox->loop->error = e;
-		return;
-	}
+	if (e)
+		return e;
 	mailbox->closed = 1;
 	pthread_mutex_unlock(&mailbox->mutex);
+	return 0;
 }
 
 void
@@ -154,14 +151,10 @@ cli_mailbox_fini (struct cli_mailbox *mailbox)
 {
 	if (!mailbox->mutex_ready)
 		return;
-	cli_mailbox_close(mailbox);
-	int e = cli_mailbox_dispatch(mailbox, SIZE_MAX);
-	if (e && !mailbox->loop->error)
-		mailbox->loop->error = e;
+	cli_loop_fail(mailbox->loop, cli_mailbox_close(mailbox));
+	cli_loop_fail(mailbox->loop, cli_mailbox_dispatch(mailbox, SIZE_MAX));
 	cli_loop_unready(&mailbox->drain);
 	cli_loop_close(mailbox->loop, &mailbox->wake);
-	e = pthread_mutex_destroy(&mailbox->mutex);
-	if (e && !mailbox->loop->error)
-		mailbox->loop->error = e;
+	cli_loop_fail(mailbox->loop, pthread_mutex_destroy(&mailbox->mutex));
 	mailbox->mutex_ready = 0;
 }

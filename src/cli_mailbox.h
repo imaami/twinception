@@ -72,8 +72,11 @@ extern int
 cli_mailbox_dispatch (struct cli_mailbox *mailbox,
                       size_t              limit);
 
-/** Owner thread only. Reject future posts, leaving accepted messages queued. */
-extern void
+/** Call only on the thread that owns the loop. Rejects future posts and
+ * leaves accepted messages queued. Returns 0 or the error of
+ * pthread_mutex_lock().
+ */
+extern int
 cli_mailbox_close (struct cli_mailbox *mailbox);
 
 /** Owner thread, after every producer has stopped. Calls fn for remaining

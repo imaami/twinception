@@ -78,13 +78,22 @@ extern void
 cli_loop_close (struct cli_loop     *loop,
                 struct cli_loop_ref *ref);
 
-/** Read the 8-byte counter of the eventfd or timerfd of ref. Returns the
- * count, or 0 if there was none or the read failed; a failure other than
- * EAGAIN becomes the loop error unless one is already set.
+/** Read the 8-byte counter of the eventfd or timerfd of @p ref into
+ * @p *count, and return 0.  For an empty counter, read() fails with
+ * EAGAIN, and the function stores 0 and returns 0.  After any other
+ * error, it stores 0 and returns the error number of read(), or EIO for a
+ * short read.
  */
-extern uint64_t
-cli_loop_counter (struct cli_loop     *loop,
-                  struct cli_loop_ref *ref);
+extern int
+cli_loop_ref_counter (struct cli_loop_ref const *ref,
+                      uint64_t                  *count);
+
+/** Store @p e as the loop error, unless @p e is 0 or the loop already has
+ * an error.  cli_loop_turn() returns the loop error.
+ */
+extern void
+cli_loop_fail (struct cli_loop *loop,
+               int              e);
 
 extern void
 cli_loop_ready (struct cli_loop      *loop,

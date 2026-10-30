@@ -30,7 +30,7 @@ cli_signals_read (struct cli_loop     *loop,
 			continue;
 		if (n < 0 && errno == EAGAIN)
 			return;
-		loop->error = n < 0 ? errno : EIO;
+		cli_loop_fail(loop, n < 0 ? errno : EIO);
 		return;
 	}
 }
