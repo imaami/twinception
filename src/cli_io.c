@@ -1,4 +1,7 @@
-/** @file Bounded blocking work using the existing blocker pool. */
+/** @file cli_io.c
+ *
+ * Bounded blocking work using the existing blocker pool.
+ */
 #include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>

@@ -1,4 +1,7 @@
-/** @file Signal delivery without asynchronous handlers or shared flags. */
+/** @file cli_signals.c
+ *
+ * Signal delivery without asynchronous handlers or shared flags.
+ */
 #include <errno.h>
 #include <pthread.h>
 #include <stddef.h>

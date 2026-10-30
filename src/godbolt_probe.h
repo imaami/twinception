@@ -1,5 +1,6 @@
-/** @file The probe of godbolt_targets (src/godbolt.c), and the parser of
- *  its output.
+/** @file godbolt_probe.h
+ *
+ * The probe of godbolt_targets (src/godbolt.c), and the parser of its output.
  *
  * The probe is C source that a compiler only preprocesses.  The output has a
  * block from a line GBPROBE_BEGIN_1 to a line GBPROBE_END_1.  The block has
@@ -39,14 +40,16 @@ enum {
 };
 
 /** A record of the block.  The name and the value are NUL-terminated, in the
- *  memory of the probe. */
+ *  memory of the probe.
+ */
 struct godbolt_probe_record {
 	char const *name;
 	char const *value;
 };
 
 /** A fact about the target, and the names of the macros that it comes
- *  from. */
+ *  from.
+ */
 struct godbolt_probe_claim {
 	char const *value;     /**< a constant text, or nullptr if no macro
 	                            is evidence of the fact */
@@ -71,7 +74,8 @@ struct godbolt_probe {
 
 /** Returns the source of the probe, NUL-terminated, and stores its length
  *  in @p *len.  A line "#define GODBOLT_PROBE_HEADERS 1" before the source
- *  makes the compiler include the headers of the header records. */
+ *  makes the compiler include the headers of the header records.
+ */
 extern char const *
 godbolt_probe_source (size_t *len);
 
@@ -100,7 +104,8 @@ extern void
 godbolt_probe_fini (struct godbolt_probe *probe);
 
 /** Returns the expansion of the macro @p name, or nullptr if the block of
- *  @p probe has no record of the macro. */
+ *  @p probe has no record of the macro.
+ */
 extern char const *
 godbolt_probe_macro (struct godbolt_probe const *probe,
                      char const                 *name);

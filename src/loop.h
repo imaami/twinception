@@ -1,5 +1,8 @@
-/** @file Event loop: epoll, a timer heap, two budgeted ready lists and an
- *  inbox that other threads post to. */
+/** @file loop.h
+ *
+ * Event loop: epoll, a timer heap, two budgeted ready lists and an
+ * inbox that other threads post to.
+ */
 #ifndef TWINCEPTION_SRC_LOOP_H_
 #define TWINCEPTION_SRC_LOOP_H_
 
@@ -66,7 +69,8 @@ struct loop_step {
 };
 
 /** What a loop has done since it began: its one writer is the loop, and any
- *  thread may read it (src/hist.h).  Times are in ns. */
+ *  thread may read it (src/hist.h).  Times are in ns.
+ */
 struct loop_metrics {
 	struct hist      turn;
 	struct hist      step[2];           /**< interactive, bulk */
@@ -173,14 +177,16 @@ loop_handle (struct loop   *loop,
 /** Returns the object that @p h names on @p loop if loop_handle() stored
  *  it with @p kind.  Returns nullptr if the slot of @p h has been freed
  *  since the handle was made, if the handle is another loop's, or if the
- *  object has another kind. */
+ *  object has another kind.
+ */
 extern void *
 loop_lookup (struct loop const *loop,
              struct handle      h,
              uint32_t           kind);
 
 /** Free the slot @p h names, if it still does: its generation advances, so no
- *  copy of @p h names anything any more. */
+ *  copy of @p h names anything any more.
+ */
 extern void
 loop_forget (struct loop   *loop,
              struct handle  h);
@@ -213,7 +219,8 @@ loop_release (struct loop     *loop,
               loop_release_cb *release);
 
 /** Call the release callbacks loop_release() deferred, now: only outside the
- *  dispatch of events, as each turn's end and loop_fini() do. */
+ *  dispatch of events, as each turn's end and loop_fini() do.
+ */
 extern void
 loop_reap (struct loop *loop);
 

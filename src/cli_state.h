@@ -22,7 +22,8 @@ struct cli_state_turn {
  * turns come only from the latest writer. The full identity is checked
  * when loading, so a filename hash collision cannot join conversations.
  * If cancel is nonnull, it must outlive the state; setting it interrupts
- * contended history locks without blocking the UI. */
+ * contended history locks without blocking the UI.
+ */
 extern struct cli_state *
 cli_state_create (struct cstr_view    path,
                   struct cstr_view    identity,
@@ -33,7 +34,8 @@ extern void
 cli_state_destroy (struct cli_state **state);
 
 /** Relative recovery filename inside the repository after a Git failure.
- * An empty view means no complete uncommitted snapshot is available. */
+ * An empty view means no complete uncommitted snapshot is available.
+ */
 extern struct cstr_view
 cli_state_recovery_file (struct cli_state const *state);
 
@@ -55,13 +57,15 @@ cli_state_turn_at (struct cli_state const *state,
 /** Each mutation commits a snapshot and readable records before returning.
  * A write failure leaves the in-memory update available for a retry.
  * Inputs retain their newlines, up to 256 entries and 1 MiB of text.
- * Oversized individual inputs return EFBIG rather than silently vanish. */
+ * Oversized individual inputs return EFBIG rather than silently vanish.
+ */
 extern int
 cli_state_add_input (struct cli_state *state,
                      struct cstr_view  text);
 
 /** Retains at most 512 completed turns and 16 MiB of text. Nonzero replace
- * replaces the last completed turn; incomplete turns never enter state. */
+ * replaces the last completed turn; incomplete turns never enter state.
+ */
 extern int
 cli_state_add_turn (struct cli_state *state,
                     struct cstr_view  prompt,

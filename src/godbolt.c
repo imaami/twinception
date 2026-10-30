@@ -1,5 +1,7 @@
-/** @file The godbolt plugin.  Its tools use a Compiler Explorer service,
- *  https://godbolt.org unless the option "url" names another one.
+/** @file godbolt.c
+ *
+ * The godbolt plugin.  Its tools use a Compiler Explorer service,
+ * https://godbolt.org unless the option "url" names another one.
  *
  * godbolt_catalog lists the languages of the service, the compilers of one
  * language, or the numbers of compilers of each kind, family or
@@ -47,7 +49,8 @@
 
 /* The tools: the name after godbolt_, the constant of enum godbolt_tool,
  * and the flags of the kind besides TOOL_LENT, TOOL_PAGED and
- * TOOL_STREAM. */
+ * TOOL_STREAM.
+ */
 #define GODBOLT_TOOLS_X(X)                      \
         X(catalog, CATALOG, 0)                  \
         X(compile, COMPILE, TOOL_DETACH)        \
@@ -99,7 +102,8 @@ enum {
 };
 
 /* The fields of the list of compilers that the plugin requests.  Each call
- * requests the same fields, so askai stores one list for each language. */
+ * requests the same fields, so askai stores one list for each language.
+ */
 #define GODBOLT_FIELDS \
         "id,name,compilerType,compilerCategories,semver,instructionSet,releaseTrack"
 
@@ -110,7 +114,8 @@ static char const godbolt_language_bytes[] =
 	"+-0123456789_abcdefghijklmnopqrstuvwxyz";
 
 /* The plugin's configuration.  configure() stores it, and mcp_slot_config()
- * returns it.  It is plain data without pointers. */
+ * returns it.  It is plain data without pointers.
+ */
 struct godbolt_config {
 	uint32_t len;                       /* the length of url in bytes */
 	uint32_t share;                     /* enum godbolt_share */
@@ -119,7 +124,8 @@ struct godbolt_config {
 };
 
 /* The kinds of link for the argument share of a call.  The option share
- * selects the kind. */
+ * selects the kind.
+ */
 enum godbolt_share : uint32_t {
 	GODBOLT_SHARE_SHORT,  /* a link /z/ID that Compiler Explorer makes and
 	                         stores permanently */
@@ -132,7 +138,8 @@ enum godbolt_share : uint32_t {
 static char const *const godbolt_shares[] = { "short", "state", "off" };
 
 /* The configuration without options.  definition() uses it if askai passes
- * no configuration. */
+ * no configuration.
+ */
 static struct godbolt_config const godbolt_defaults = {
 	.len = sizeof "https://godbolt.org" - 1,
 	.share = GODBOLT_SHARE_SHORT,
@@ -149,7 +156,8 @@ enum godbolt_tool : uint8_t {
 
 /* The kinds of driver of a compiler.  The list of compilers has the kind of
  * each compiler as its compilerType.  GODBOLT_GNU is every kind but
- * win32-vc and clang-cl. */
+ * win32-vc and clang-cl.
+ */
 enum godbolt_driver : uint8_t {
 	GODBOLT_GNU,
 	GODBOLT_MSVC,
@@ -183,7 +191,8 @@ enum godbolt_req : uint8_t {
 };
 
 /* The failures after which the plugin sends a request again, besides the
- * statuses 429, 502 and 503. */
+ * statuses 429, 502 and 503.
+ */
 enum godbolt_again : uint32_t {
 	GODBOLT_AGAIN_504      = 1u << 0,
 	GODBOLT_AGAIN_EIO      = 1u << 1,
@@ -191,12 +200,14 @@ enum godbolt_again : uint32_t {
 };
 
 /* The initializer of a struct tool_text in a static table, where the
- * compound literal of TOOL_TEXT() is not a constant. */
+ * compound literal of TOOL_TEXT() is not a constant.
+ */
 #define GODBOLT_TEXT(s) { "" s, sizeof s - 1 }
 
 /* The URL and the limits of a kind of request, and the failures after
  * which the plugin sends it again.  The URL is the base URL, the path, the
- * segment that godbolt_request() gets, and the tail. */
+ * segment that godbolt_request() gets, and the tail.
+ */
 struct godbolt_rule {
 	struct tool_text path;
 	struct tool_text tail;
@@ -210,7 +221,8 @@ struct godbolt_rule {
 /* The plugin does not send a compilation again after 504 or a timeout,
  * because Compiler Explorer can still be compiling it.  It sends the
  * request of a short link again after 504 and EIO, because Compiler
- * Explorer returns the same link for the same state. */
+ * Explorer returns the same link for the same state.
+ */
 static struct godbolt_rule const godbolt_rules[] = {
 	[GODBOLT_GET_LANGUAGES] = { GODBOLT_TEXT("/api/languages"), GODBOLT_TEXT(""),
 	                            1 << 20, 30, 86400, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO |
@@ -274,7 +286,8 @@ enum godbolt_array : uint8_t {
 };
 
 /* The actions of godbolt_catalog: the constant of enum godbolt_action, the
- * name, the singular of the noun, and the first line of the output. */
+ * name, the singular of the noun, and the first line of the output.
+ */
 #define GODBOLT_ACTIONS_X(X)                                          \
         X(LANGUAGES, "languages", "language", "id\tname\n")           \
         X(COMPILERS, "compilers", "compiler",                         \
@@ -304,7 +317,8 @@ static struct {
 #undef GODBOLT_ACTIONS_X
 
 /* The ends of the compilations, which the last line of the output
- * counts. */
+ * counts.
+ */
 enum godbolt_outcome : uint8_t {
 	GODBOLT_ZERO,    /* exit code 0 */
 	GODBOLT_OTHER,   /* another exit code, or a timeout */
@@ -314,7 +328,8 @@ enum godbolt_outcome : uint8_t {
 };
 
 /* The arguments of the tools.  Bit i of a mask of struct godbolt_params
- * stands for the argument godbolt_arg_names[i]. */
+ * stands for the argument godbolt_arg_names[i].
+ */
 enum godbolt_arg : uint8_t {
 	GODBOLT_ARG_ACTION,
 	GODBOLT_ARG_LANGUAGE,
@@ -425,7 +440,8 @@ static struct godbolt_params const godbolt_params[] = {
 
 /* The filters of a compilation, in the order of the request body.  A
  * filter whose bit is 0 is always false.  The argument filters can set
- * each of the others. */
+ * each of the others.
+ */
 static struct {
 	struct tool_text name;
 	uint8_t          bit;
@@ -446,7 +462,8 @@ static struct {
 enum { GODBOLT_FILTERS = array_size(godbolt_filters) };
 
 /* The filters that the Compiler Explorer site sets by default:
- * commentOnly, demangle, directives, intel and labels. */
+ * commentOnly, demangle, directives, intel and labels.
+ */
 static constexpr uint8_t GODBOLT_SITE_FILTERS = 0x1f;
 
 /* The first line of each section of a record. */
@@ -479,7 +496,8 @@ struct godbolt_recipe {
  * of godbolt-c with one change: godbolt-c refused a kind of compiler
  * without a recipe, and here such a kind gets the recipe of GCC.  Compiler
  * Explorer itself appends -E for the preprocessed view of any C or C++
- * compiler.  An MSVC compiler cannot output its predefined macros. */
+ * compiler.  An MSVC compiler cannot output its predefined macros.
+ */
 static struct godbolt_recipe const godbolt_recipes[GODBOLT_TOOLS][GODBOLT_DRIVERS] = {
 	[GODBOLT_COMPILE] = {
 		[GODBOLT_GNU]      = { GODBOLT_TEXT(""), GODBOLT_TEXT("{}"), GODBOLT_FROM_ASM, 0 },
@@ -509,7 +527,8 @@ static struct godbolt_recipe const godbolt_recipes[GODBOLT_TOOLS][GODBOLT_DRIVER
 #undef GODBOLT_TEXT
 
 /* The arguments of a call after the checks.  The texts point into the
- * call's JSON arguments. */
+ * call's JSON arguments.
+ */
 struct godbolt_args {
 	struct tool_text ids[GODBOLT_IDS];
 	struct tool_text args[GODBOLT_ARGS];
@@ -531,7 +550,8 @@ struct godbolt_args {
 
 /* A call of a tool.  The call's own word points to it, and drop() frees
  * it.  The texts of the call's arguments are copies in blob, at the
- * end of the same allocation. */
+ * end of the same allocation.
+ */
 struct godbolt {
 	struct loop_timer            timer;     /* sends the request again */
 	struct web_request           req;       /* the request under way, or the
@@ -668,7 +688,8 @@ godbolt_same (struct tool_text a,
 }
 
 /* Returns whether @p text contains @p word in any letter case.  @p word is
- * in lower case and not empty. */
+ * in lower case and not empty.
+ */
 static bool
 godbolt_has (struct tool_text text,
              struct tool_text word)
@@ -692,7 +713,8 @@ godbolt_or (struct tool_text t,
 }
 
 /* Returns 7 if @p t is http:// and more, 8 if it is https:// and more, or
- * 0, also if it has a byte that is not printable ASCII or is a space. */
+ * 0, also if it has a byte that is not printable ASCII or is a space.
+ */
 static size_t
 godbolt_scheme (struct tool_text t)
 {
@@ -705,7 +727,8 @@ godbolt_scheme (struct tool_text t)
 }
 
 /* Returns the member @p name of @p obj, or nullptr if @p obj has no such
- * member. */
+ * member.
+ */
 static struct json_object *
 godbolt_get (struct json_object *obj,
              char const         *name)
@@ -715,7 +738,8 @@ godbolt_get (struct json_object *obj,
 }
 
 /* Returns the string @p v, or an empty text whose ptr is nullptr if @p v is
- * not a string.  The text is NUL-terminated. */
+ * not a string.  The text is NUL-terminated.
+ */
 static struct tool_text
 godbolt_string (struct json_object *v)
 {
@@ -742,7 +766,8 @@ godbolt_array_len (struct json_object *v)
 
 /* Returns @p n, or less if the first @p n of the @p len bytes at @p s would
  * end inside a UTF-8 character, so that a cut after the returned length
- * does not split a character.  The cut moves back by at most 3 bytes. */
+ * does not split a character.  The cut moves back by at most 3 bytes.
+ */
 static size_t
 godbolt_cut (char const *s,
              size_t      len,
@@ -755,7 +780,8 @@ godbolt_cut (char const *s,
 }
 
 /* Returns "s" if @p n is not 1, for the plural of a noun after a count, and
- * "" if it is. */
+ * "" if it is.
+ */
 static char const *
 godbolt_s (uint64_t n)
 {
@@ -774,7 +800,8 @@ godbolt_cat (char             *d,
 
 /* Writes @p t to @p d, with each '+' as %2B.  '+' is the only byte of an
  * id that needs an escape in the path of a URL.  Returns the end of the
- * text in @p d. */
+ * text in @p d.
+ */
 static char *
 godbolt_cat_path (char             *d,
                   struct tool_text  t)
@@ -790,7 +817,8 @@ godbolt_cat_path (char             *d,
 
 /* Writes the @p n bytes at @p s as the inside of a JSON string to @p d,
  * which has room for 6 * @p n bytes.  A quote, a backslash and a control
- * byte get an escape.  Returns the end of the text in @p d. */
+ * byte get an escape.  Returns the end of the text in @p d.
+ */
 static char *
 godbolt_escape (char       *d,
                 char const *s,
@@ -820,7 +848,8 @@ godbolt_escape (char       *d,
 
 /* Writes the 11 filters of a compilation as a JSON object to @p d.  The
  * filters that @p bits has are true.  Returns the end of the text in
- * @p d. */
+ * @p d.
+ */
 static char *
 godbolt_cat_filters (char    *d,
                      uint8_t  bits)
@@ -840,7 +869,8 @@ godbolt_cat_filters (char    *d,
 
 /* Appends @p t to the call's output, unless an earlier write failed.
  * Returns 0, or call->e, the error number of the call's first failed
- * write. */
+ * write.
+ */
 static int
 godbolt_put (struct godbolt   *call,
              struct tool_text  t)
@@ -853,7 +883,8 @@ godbolt_put (struct godbolt   *call,
 }
 
 /* Appends the text that @p fmt and its arguments format to the call's
- * output.  The text has at most 511 bytes.  Returns 0, or call->e. */
+ * output.  The text has at most 511 bytes.  Returns 0, or call->e.
+ */
 [[gnu::format(printf, 2, 3)]]
 static int
 godbolt_putf (struct godbolt *call,
@@ -873,7 +904,8 @@ godbolt_putf (struct godbolt *call,
 }
 
 /* Stores the text that @p fmt and its arguments format in call->why.  Each
- * control byte of the text becomes a space. */
+ * control byte of the text becomes a space.
+ */
 [[gnu::format(printf, 2, 3)]]
 static void
 godbolt_why (struct godbolt *call,
@@ -903,7 +935,8 @@ godbolt_catalog_hint (struct godbolt *call,
 }
 
 /* Ends the call in @p slot as failed with the text that @p fmt and its
- * arguments format.  Returns GODBOLT_ENDED. */
+ * arguments format.  Returns GODBOLT_ENDED.
+ */
 [[gnu::format(printf, 2, 3)]]
 static enum godbolt_go
 godbolt_refuse (struct mcp_slot *slot,
@@ -928,7 +961,8 @@ godbolt_refuse (struct mcp_slot *slot,
  * is call->e.  After ENOMEM or ESHUTDOWN, the call ends with the error
  * number.  After any other error, for example EFBIG when the output has
  * reached its largest length, the call fails with the output that it has.
- * Returns GODBOLT_ENDED. */
+ * Returns GODBOLT_ENDED.
+ */
 static enum godbolt_go
 godbolt_fail (struct godbolt *call)
 {
@@ -945,7 +979,8 @@ godbolt_fail (struct godbolt *call)
  * of a call without offset has the keep 1, so that it gets no response
  * that askai received more than a second earlier.  A compilation of a call
  * with offset has the keep 300, so that it gets the response that the same
- * call without offset received, while askai still stores it. */
+ * call without offset received, while askai still stores it.
+ */
 static void
 godbolt_request (struct godbolt   *call,
                  enum godbolt_req  kind,
@@ -972,7 +1007,8 @@ godbolt_request (struct godbolt   *call,
 
 /* Makes the next step read the failure in call->why as the result of the
  * call's request: godbolt_result() then returns GODBOLT_BAD.  Returns
- * GODBOLT_WAIT. */
+ * GODBOLT_WAIT.
+ */
 static enum godbolt_go
 godbolt_refused (struct godbolt *call)
 {
@@ -983,7 +1019,8 @@ godbolt_refused (struct godbolt *call)
 
 /* Sets the call's timer to send the request again in @p seconds.  Returns
  * GODBOLT_WAIT, or GODBOLT_ENDED after ENOMEM.  If the timer cannot be
- * set, the next step reads the reason (godbolt_refused()). */
+ * set, the next step reads the reason (godbolt_refused()).
+ */
 static enum godbolt_go
 godbolt_later (struct godbolt *call,
                uint32_t        seconds)
@@ -1004,7 +1041,8 @@ godbolt_later (struct godbolt *call,
 
 /* Sends the call's request.  Returns GODBOLT_WAIT, or GODBOLT_ENDED.  The
  * next step reads the response, or the reason if askai refused the request
- * (godbolt_refused()). */
+ * (godbolt_refused()).
+ */
 static enum godbolt_go
 godbolt_send (struct godbolt *call)
 {
@@ -1040,7 +1078,8 @@ godbolt_fired (struct loop       *loop,
  * status @p status is an error.  The reason is the member message of a
  * JSON object, or else the first line of the body, and it has at most
  * GODBOLT_REASON_MAX bytes.  A compilation with an unknown compiler id gets
- * 404, and its reason names godbolt_catalog. */
+ * 404, and its reason names godbolt_catalog.
+ */
 static void
 godbolt_reason (struct godbolt *call,
                 uint32_t        status)
@@ -1070,7 +1109,8 @@ godbolt_reason (struct godbolt *call,
  * way, if the function set the timer to send it again, or if it could not
  * set the timer, when the next step returns GODBOLT_BAD.  Returns
  * GODBOLT_BAD with the reason in call->why if the request failed or askai
- * refused it, or GODBOLT_ENDED if the function ended the call. */
+ * refused it, or GODBOLT_ENDED if the function ended the call.
+ */
 static enum godbolt_go
 godbolt_result (struct godbolt *call)
 {
@@ -1123,7 +1163,8 @@ godbolt_result (struct godbolt *call)
 /* Returns the state of the parse of a JSON array after the byte @p c,
  * which is outside an element, in the state @p s.  For a byte that begins
  * an element, the function returns GODBOLT_LIST_VALUE, and the parse of the
- * element begins with that byte. */
+ * element begins with that byte.
+ */
 static uint8_t
 godbolt_array_next (uint8_t s,
                     char    c)
@@ -1223,7 +1264,8 @@ godbolt_list_parse (struct godbolt *call,
 static_assert(GODBOLT_ELEMENT_MAX == 4 << 10, "the reason says 4 KiB");
 
 /* Returns whether a compiler with the @p n family tags @p tags has the
- * family @p family.  A compiler without tags has the family unknown. */
+ * family @p family.  A compiler without tags has the family unknown.
+ */
 static bool
 godbolt_tagged (struct tool_text const *tags,
                 size_t                  n,
@@ -1238,7 +1280,8 @@ godbolt_tagged (struct tool_text const *tags,
 /* Returns whether an element of a list matches the words of the argument
  * match and the argument ids.  Each word must be in one of the @p n texts
  * of @p f.  @p f[0] is the id of the element.  If the call has ids, the
- * function sets the bit of the id in call->found. */
+ * function sets the bit of the id in call->found.
+ */
 static bool
 godbolt_matches (struct godbolt         *call,
                  struct tool_text const *f,
@@ -1264,7 +1307,8 @@ godbolt_matches (struct godbolt         *call,
 
 /* Writes @p t as a column of a row of the catalog.  A tab, a newline, a
  * carriage return and a backslash become \t, \n, \r and \\.  Returns 0, or
- * call->e. */
+ * call->e.
+ */
 static int
 godbolt_put_field (struct godbolt   *call,
                    struct tool_text  t)
@@ -1286,7 +1330,8 @@ godbolt_put_field (struct godbolt   *call,
 
 /* Counts an element of the list of languages, and writes it as a row if the
  * filters select it and the output has fewer rows than the limit.  Returns
- * 0, or call->e. */
+ * 0, or call->e.
+ */
 static int
 godbolt_language_row (struct godbolt     *call,
                       struct json_object *element)
@@ -1311,7 +1356,8 @@ godbolt_language_row (struct godbolt     *call,
  * NUL-terminated.  If the counts have GODBOLT_KEYS keys and @p key is not
  * one of them, the function sets call->list to GODBOLT_LIST_BAD, which
  * ends the parse of the list, and stores the reason in call->why.
- * Returns 0, or call->e, which is ENOMEM if json-c runs out of memory. */
+ * Returns 0, or call->e, which is ENOMEM if json-c runs out of memory.
+ */
 static int
 godbolt_count (struct godbolt   *call,
                struct tool_text  key)
@@ -1336,7 +1382,8 @@ godbolt_count (struct godbolt   *call,
 }
 
 /* Counts each of the @p n family tags @p tags once, or the family unknown
- * if there is no tag.  Returns 0, or call->e. */
+ * if there is no tag.  Returns 0, or call->e.
+ */
 static int
 godbolt_count_families (struct godbolt         *call,
                         struct tool_text const *tags,
@@ -1360,7 +1407,8 @@ enum { GODBOLT_COLUMNS = 6 };
  * compiler's kind, family tags or architecture.  An element is left out
  * if it has no id, more than GODBOLT_TAGS family tags, or more than
  * GODBOLT_VALUE_MAX bytes in its kind, its architecture or a family tag.
- * Returns 0, or call->e. */
+ * Returns 0, or call->e.
+ */
 static int
 godbolt_compiler_row (struct godbolt     *call,
                       struct json_object *element)
@@ -1423,7 +1471,8 @@ struct godbolt_tally {
 };
 
 /* Compares the keys of two struct godbolt_tally byte by byte, for
- * qsort(). */
+ * qsort().
+ */
 static int
 godbolt_tally_cmp (void const *a,
                    void const *b)
@@ -1436,7 +1485,8 @@ godbolt_tally_cmp (void const *a,
  * many as the limit allows, and stores the number of rows in call->listed.
  * The counts have at most GODBOLT_KEYS keys of at most GODBOLT_VALUE_MAX
  * bytes, so one step writes them.  Returns 0, or call->e, which is ENOMEM
- * if memory runs out. */
+ * if memory runs out.
+ */
 static int
 godbolt_tallies (struct godbolt *call)
 {
@@ -1464,7 +1514,8 @@ godbolt_tallies (struct godbolt *call)
 
 /* Writes the ids of the call that are not in the list to @p d, separated by
  * ", ", and a NUL.  @p d has room for GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1
- * bytes. */
+ * bytes.
+ */
 static void
 godbolt_absent (struct godbolt const *call,
                 char                 *d)
@@ -1483,7 +1534,8 @@ godbolt_absent (struct godbolt const *call,
  * the argument ids is not in the list, the call fails.  Otherwise the
  * function writes the counts of an action that counts, a line on the
  * elements that the plugin left out, and the last line of the output, which
- * has the numbers of the items.  Returns GODBOLT_ENDED. */
+ * has the numbers of the items.  Returns GODBOLT_ENDED.
+ */
 static enum godbolt_go
 godbolt_catalog_end (struct godbolt *call)
 {
@@ -1534,7 +1586,8 @@ static_assert(GODBOLT_TAGS == 64 && GODBOLT_VALUE_MAX == 128 && GODBOLT_KEYS == 
 /* Stores the kind of driver of a compiler of the call, if the element of
  * the list of compilers is one of them.  When the list has had each
  * compiler of the call, the function sets call->list to GODBOLT_LIST_END,
- * which ends the parse.  Returns 0. */
+ * which ends the parse.  Returns 0.
+ */
 static int
 godbolt_driver_row (struct godbolt     *call,
                     struct json_object *element)
@@ -1557,7 +1610,8 @@ godbolt_driver_row (struct godbolt     *call,
 /* Ends the parse of the list of compilers of a tool that compiles.  If a
  * compiler of the call is not in the list, the call fails.  Otherwise the
  * next step begins the state of a call with share, or the first
- * compilation. */
+ * compilation.
+ */
 static enum godbolt_go
 godbolt_drivers_end (struct godbolt *call)
 {
@@ -1575,7 +1629,8 @@ godbolt_drivers_end (struct godbolt *call)
 
 /* Sends the request of the list of languages, or of the list of compilers
  * of the call's language.  The next step reads the response.  Returns
- * GODBOLT_WAIT, or GODBOLT_ENDED. */
+ * GODBOLT_WAIT, or GODBOLT_ENDED.
+ */
 static enum godbolt_go
 godbolt_list_send (struct godbolt *call)
 {
@@ -1588,7 +1643,8 @@ godbolt_list_send (struct godbolt *call)
 }
 
 /* The phase GODBOLT_LIST.  It reads the response to the request of the
- * list.  For godbolt_catalog, it writes the first line of the output. */
+ * list.  For godbolt_catalog, it writes the first line of the output.
+ */
 static enum godbolt_go
 godbolt_list (struct godbolt *call)
 {
@@ -1615,7 +1671,8 @@ godbolt_list (struct godbolt *call)
 
 /* The phase GODBOLT_ROWS.  It parses the next elements of the list.  After
  * the end of the list, godbolt_catalog ends the call, and the other tools
- * begin to compile. */
+ * begin to compile.
+ */
 static enum godbolt_go
 godbolt_rows (struct godbolt *call)
 {
@@ -1633,7 +1690,8 @@ godbolt_rows (struct godbolt *call)
 }
 
 /* Returns the largest number of bytes that the state of the call can need
- * after the source in the body. */
+ * after the source in the body.
+ */
 static size_t
 godbolt_state_size (struct godbolt const *call)
 {
@@ -1648,7 +1706,8 @@ godbolt_state_size (struct godbolt const *call)
  * source is the same for the state and for every compilation.  The first
  * step allocates the body with room for an escape of 6 bytes for each byte
  * of the source, and for the state of a call with share, so that no step
- * copies the body to a larger allocation. */
+ * copies the body to a larger allocation.
+ */
 static enum godbolt_go
 godbolt_escape_source (struct godbolt *call)
 {
@@ -1696,7 +1755,8 @@ godbolt_job_recipe (struct godbolt const *call,
  * the body, as the inside of a JSON string.  The arguments are the flags
  * of the recipe and the argument string, separated by spaces.  Stores in
  * call->arg_at and call->arg_len where the escaped argument string is in
- * the body.  Returns the end of the text in @p d. */
+ * the body.  Returns the end of the text in @p d.
+ */
 static char *
 godbolt_cat_arguments (struct godbolt *call,
                        char           *d)
@@ -1719,7 +1779,8 @@ godbolt_cat_arguments (struct godbolt *call,
 
 /* Writes the part of the body of the request of the compilation call->job
  * that follows the source: the language, the arguments, the filters and
- * the compiler options. */
+ * the compiler options.
+ */
 static void
 godbolt_job_body (struct godbolt *call)
 {
@@ -1738,7 +1799,8 @@ godbolt_job_body (struct godbolt *call)
 /* Writes the link to the state of the call, which has the state in base64,
  * on the first line of the output.  If the link would be longer than
  * GODBOLT_LINK_MAX bytes, the line has the reason instead.  Returns 0, or
- * call->e. */
+ * call->e.
+ */
 static int
 godbolt_state_link (struct godbolt *call)
 {
@@ -1772,7 +1834,8 @@ static_assert(GODBOLT_LINK_MAX == 8192, "the text of the line has 8192 bytes");
 /* The phase GODBOLT_SHARE.  It begins the state of the call after the
  * source in the body, as a ClientState of Compiler Explorer.  The state has
  * one session with the language and a compiler for each compilation that
- * the call sends.  A call that sends no compilation gets no link. */
+ * the call sends.  A call that sends no compilation gets no link.
+ */
 static enum godbolt_go
 godbolt_state_begin (struct godbolt *call)
 {
@@ -1797,7 +1860,8 @@ godbolt_state_begin (struct godbolt *call)
  * bytes from the start of the body are the state.  With the option share
  * state, the function writes the link to the state.  With the option share
  * short, it sends the state to Compiler Explorer, which stores the state
- * and returns a short link. */
+ * and returns a short link.
+ */
 static enum godbolt_go
 godbolt_state (struct godbolt *call)
 {
@@ -1832,7 +1896,8 @@ godbolt_state (struct godbolt *call)
  * writes the link on the first line of the output.  The link must be an
  * http or https URL of at most GODBOLT_SHORT_MAX bytes of printable ASCII
  * without spaces.  After a failed request, the line has no link but the
- * reason, and the compilations go on. */
+ * reason, and the compilations go on.
+ */
 static enum godbolt_go
 godbolt_link (struct godbolt *call)
 {
@@ -1861,7 +1926,8 @@ godbolt_link (struct godbolt *call)
 }
 
 /* Writes the first line of the record of the compilation call->job, with
- * the status in call->why.  Returns 0, or call->e. */
+ * the status in call->why.  Returns 0, or call->e.
+ */
 static int
 godbolt_header (struct godbolt *call)
 {
@@ -1897,7 +1963,8 @@ godbolt_next (struct godbolt *call)
 
 /* Writes the record of the compilation call->job, which has no response,
  * with the status in call->why, and counts it as @p count.  Then the next
- * step begins the next compilation. */
+ * step begins the next compilation.
+ */
 static enum godbolt_go
 godbolt_record (struct godbolt       *call,
                 enum godbolt_outcome  count)
@@ -1910,7 +1977,8 @@ godbolt_record (struct godbolt       *call,
 }
 
 /* Writes the last line of the output, and ends the call.  The call fails
- * if no compilation has a result.  Returns GODBOLT_ENDED. */
+ * if no compilation has a result.  Returns GODBOLT_ENDED.
+ */
 static enum godbolt_go
 godbolt_end (struct godbolt *call)
 {
@@ -1932,7 +2000,8 @@ godbolt_end (struct godbolt *call)
 
 /* The phase GODBOLT_JOB.  It sends the request of the compilation
  * call->job, or it writes the record of a compilation that it does not
- * send.  After the last compilation, it ends the call. */
+ * send.  After the last compilation, it ends the call.
+ */
 static enum godbolt_go
 godbolt_job (struct godbolt *call)
 {
@@ -1954,7 +2023,8 @@ godbolt_job (struct godbolt *call)
 }
 
 /* The phase GODBOLT_ANSWER.  It reads the response to the compilation, and
- * it begins the parse of a response with a status from 200 to 299. */
+ * it begins the parse of a response with a status from 200 to 299.
+ */
 static enum godbolt_go
 godbolt_answer (struct godbolt *call)
 {
@@ -1982,7 +2052,8 @@ godbolt_section_add (struct godbolt     *call,
 /* Stores in call->secs the texts of the sections of the record, where the
  * recipe of the compilation has them.  A record of a recipe that
  * preprocesses gets a note if the response has no text of the
- * preprocessor, and a note on a cut if the preprocessor left out lines. */
+ * preprocessor, and a note on a cut if the preprocessor left out lines.
+ */
 static void
 godbolt_sections_find (struct godbolt *call)
 {
@@ -2006,7 +2077,8 @@ godbolt_sections_find (struct godbolt *call)
 
 /* Returns the member text of each element of the array @p v, each with a
  * newline after it, and stores the length in @p *len.  The caller frees
- * the text.  On failure it returns nullptr and stores ENOMEM in @p *e. */
+ * the text.  On failure it returns nullptr and stores ENOMEM in @p *e.
+ */
 static char *
 godbolt_join (struct godbolt     *call,
               struct json_object *v,
@@ -2038,7 +2110,8 @@ godbolt_join (struct godbolt     *call,
  * has a valid block, the record has the facts and the messages of the
  * compiler.  Otherwise the status of the record has the reason, and the
  * record has the output.  The function parses the whole output in one
- * step.  Returns 0, or ENOMEM. */
+ * step.  Returns 0, or ENOMEM.
+ */
 static int
 godbolt_targets_parse (struct godbolt *call)
 {
@@ -2070,7 +2143,8 @@ godbolt_targets_parse (struct godbolt *call)
 
 /* Reads the parsed response to a compilation, and stores its status in
  * call->why and the texts of its sections in call->secs.  The next step
- * writes the record. */
+ * writes the record.
+ */
 static enum godbolt_go
 godbolt_classify (struct godbolt *call)
 {
@@ -2107,7 +2181,8 @@ godbolt_classify (struct godbolt *call)
 
 /* The phase GODBOLT_PARSE.  It parses the next slice of the response to
  * the compilation.  A response that is not valid JSON gets a record with
- * the reason. */
+ * the reason.
+ */
 static enum godbolt_go
 godbolt_parse (struct godbolt *call)
 {
@@ -2136,7 +2211,8 @@ godbolt_parse (struct godbolt *call)
 }
 
 /* Ends the record at the limit of the output, with a note.  Later
- * compilations are not sent.  Returns 0, or call->e. */
+ * compilations are not sent.  Returns 0, or call->e.
+ */
 static int
 godbolt_full (struct godbolt *call)
 {
@@ -2151,7 +2227,8 @@ static_assert(GODBOLT_FULL == 14 << 20, "the text of the note has 14 MiB");
  * bounds of the step and the room left in the output allow, and advances
  * call->byte.  If the output has no room left, or room only for the first
  * bytes of a UTF-8 character, the function ends the record with the note
- * of godbolt_full().  Returns 0, or call->e. */
+ * of godbolt_full().  Returns 0, or call->e.
+ */
 static int
 godbolt_slice (struct godbolt *call,
                char const     *s,
@@ -2180,7 +2257,8 @@ godbolt_slice (struct godbolt *call,
 
 /* Writes as much of the string @p v of @p len bytes as godbolt_slice()
  * allows, and a newline after the end of a string that has none.  Returns
- * 0, or call->e. */
+ * 0, or call->e.
+ */
 static int
 godbolt_section_text (struct godbolt     *call,
                       struct json_object *v,
@@ -2199,7 +2277,8 @@ godbolt_section_text (struct godbolt     *call,
  * of the step allow, each with a newline after it.  Each line is the member
  * text of an element, and godbolt_slice() writes it, so that call->item is
  * the line and call->byte the byte of the line.  The lookups of a line
- * count as one value of LOOP_VALUES work.  Returns 0, or call->e. */
+ * count as one value of LOOP_VALUES work.  Returns 0, or call->e.
+ */
 static int
 godbolt_section_lines (struct godbolt     *call,
                        struct json_object *v,
@@ -2227,7 +2306,8 @@ godbolt_section_lines (struct godbolt     *call,
 /* Writes as much of the section call->sec of the record as the bounds of
  * the step allow.  A section whose text is empty is left out.  After the
  * end of the section, call->sec is the next section.  Returns 0, or
- * call->e. */
+ * call->e.
+ */
 static int
 godbolt_section (struct godbolt *call)
 {
@@ -2253,7 +2333,8 @@ godbolt_section (struct godbolt *call)
 }
 
 /* Writes @p s, a NUL-terminated text of the probe, to the call's output.
- * Returns 0, or call->e. */
+ * Returns 0, or call->e.
+ */
 static int
 godbolt_puts (struct godbolt *call,
               char const     *s)
@@ -2264,7 +2345,8 @@ godbolt_puts (struct godbolt *call,
 /* Writes the facts about the target that follow from the output of the
  * probe, one to a line, and the versions of the compiler.  With the
  * argument headers, it also writes which target headers the compiler has.
- * Returns 0, or call->e. */
+ * Returns 0, or call->e.
+ */
 static int
 godbolt_facts (struct godbolt *call)
 {
@@ -2321,7 +2403,8 @@ godbolt_facts (struct godbolt *call)
 }
 
 /* The phase GODBOLT_WRITE.  It writes the record of the compilation, as
- * much of it as the bounds of the step allow. */
+ * much of it as the bounds of the step allow.
+ */
 static enum godbolt_go
 godbolt_write (struct godbolt *call)
 {
@@ -2349,7 +2432,8 @@ godbolt_write (struct godbolt *call)
 }
 
 /* Returns the number of the children of the JSON value @p v: the elements
- * of an array, the members of an object, or 0. */
+ * of an array, the members of an object, or 0.
+ */
 static size_t
 godbolt_json_size (struct json_object *v)
 {
@@ -2359,7 +2443,8 @@ godbolt_json_size (struct json_object *v)
 
 /* Returns the child of @p v that godbolt_json_cut() removes: the last
  * element of an array, or the first member of an object.  @p v has
- * children. */
+ * children.
+ */
 static struct json_object *
 godbolt_json_child (struct json_object *v)
 {
@@ -2370,7 +2455,8 @@ godbolt_json_child (struct json_object *v)
 }
 
 /* Removes the child that godbolt_json_child() returns from @p v, and frees
- * it.  @p v has children. */
+ * it.  @p v has children.
+ */
 static void
 godbolt_json_cut (struct json_object *v)
 {
@@ -2386,7 +2472,8 @@ godbolt_json_cut (struct json_object *v)
  * one value at a time, as many values as the bounds of the step allow.
  * The value that it frees is at the end of the path of children that
  * godbolt_json_child() returns, so it has no children of its own.  Then the
- * next step begins the next compilation. */
+ * next step begins the next compilation.
+ */
 static enum godbolt_go
 godbolt_free (struct godbolt *call)
 {
@@ -2430,7 +2517,8 @@ static enum godbolt_go (*const godbolt_phases[]) (struct godbolt *call) = {
 };
 
 /* The step() of every kind of the plugin.  It runs the call's phase, and it
- * queues the next step if the phase goes on. */
+ * queues the next step if the phase goes on.
+ */
 static void
 godbolt_step (struct mcp_slot *slot)
 {
@@ -2447,7 +2535,8 @@ godbolt_step (struct mcp_slot *slot)
 }
 
 /* Frees the call @p *p_call and what it holds, and sets @p *p_call to
- * nullptr.  The call's timer is not set. */
+ * nullptr.  The call's timer is not set.
+ */
 static void
 godbolt_destroy (struct godbolt **p_call)
 {
@@ -2462,7 +2551,8 @@ godbolt_destroy (struct godbolt **p_call)
 }
 
 /* The drop() of every kind of the plugin.  It stops the call's timer, and
- * frees the call. */
+ * frees the call.
+ */
 static void
 godbolt_drop (struct mcp_slot *slot)
 {
@@ -2485,7 +2575,8 @@ godbolt_drop (struct mcp_slot *slot)
 
 /* Returns the string @p v if it has @p min to @p max bytes and no NUL
  * byte, and if each of its bytes is in @p set, unless @p set is nullptr.
- * Otherwise it returns an empty text whose ptr is nullptr. */
+ * Otherwise it returns an empty text whose ptr is nullptr.
+ */
 static struct tool_text
 godbolt_text (struct json_object *v,
               size_t              min,
@@ -2522,7 +2613,8 @@ godbolt_args_ids (struct godbolt_args *a,
 }
 
 /* Reads the array of argument strings @p v into a->args.  Returns 0, or
- * EINVAL. */
+ * EINVAL.
+ */
 static int
 godbolt_args_strings (struct godbolt_args *a,
                       struct json_object  *v)
@@ -2541,7 +2633,8 @@ godbolt_args_strings (struct godbolt_args *a,
 }
 
 /* Reads the words of the argument match @p v into a->words.  ASCII white
- * space separates the words.  Returns 0, or EINVAL. */
+ * space separates the words.  Returns 0, or EINVAL.
+ */
 static int
 godbolt_args_words (struct godbolt_args *a,
                     struct json_object  *v)
@@ -2562,7 +2655,8 @@ godbolt_args_words (struct godbolt_args *a,
 }
 
 /* Reads the argument filters @p v into a->filters.  Returns 0, or
- * EINVAL. */
+ * EINVAL.
+ */
 static int
 godbolt_args_filters (struct godbolt_args *a,
                       struct json_object  *v)
@@ -2584,7 +2678,8 @@ godbolt_args_filters (struct godbolt_args *a,
 }
 
 /* Reads the value @p v of the argument @p arg into @p a.  Returns 0, or
- * EINVAL if the value breaks the rule of the argument. */
+ * EINVAL if the value breaks the rule of the argument.
+ */
 static int
 godbolt_args_set (struct godbolt_args *a,
                   enum godbolt_arg     arg,
@@ -2643,7 +2738,8 @@ godbolt_args_set (struct godbolt_args *a,
 /* Checks the arguments @p args of a call of the tool @p tool in @p slot,
  * and reads them into @p a.  If the configuration @p cfg turns links off,
  * the tool has no argument share.  Returns GODBOLT_GO, or GODBOLT_ENDED
- * after it ended the call with the reason of a refusal. */
+ * after it ended the call with the reason of a refusal.
+ */
 static enum godbolt_go
 godbolt_args_read (struct godbolt_args         *a,
                    struct mcp_slot             *slot,
@@ -2698,7 +2794,8 @@ godbolt_args_read (struct godbolt_args         *a,
 }
 
 /* Copies @p t to *@p p, advances *@p p past the copy, and returns the
- * copy. */
+ * copy.
+ */
 static struct tool_text
 godbolt_copy (char             **p,
               struct tool_text   t)
@@ -2709,7 +2806,8 @@ godbolt_copy (char             **p,
 }
 
 /* The line before the source of the probe that makes the compiler include
- * the target headers of the probe. */
+ * the target headers of the probe.
+ */
 #define GODBOLT_HEADERS_LINE "#define GODBOLT_PROBE_HEADERS 1\n"
 
 /* Allocates the state of a call of the tool @p tool on the loop @p loop,
@@ -2718,7 +2816,8 @@ godbolt_copy (char             **p,
  * becomes "\n", as in godbolt-c.  The source of godbolt_targets is the
  * probe, after a line that makes the compiler include the target headers
  * if the argument headers is true.  Returns the state.  On failure it
- * returns nullptr and stores ENOMEM in @p *e. */
+ * returns nullptr and stores ENOMEM in @p *e.
+ */
 static struct godbolt *
 godbolt_create (struct godbolt_args const *a,
                 enum godbolt_tool          tool,
@@ -2789,7 +2888,8 @@ godbolt_create (struct godbolt_args const *a,
  * them.  godbolt_catalog sends the request of its list.  The other tools
  * escape the source in their steps first, and godbolt_preprocess,
  * godbolt_macros and godbolt_targets then read the kinds of their
- * compilers from the list of compilers. */
+ * compilers from the list of compilers.
+ */
 static void
 godbolt_start (struct mcp_slot    *slot,
                struct json_object *args,
@@ -2842,7 +2942,8 @@ GODBOLT_TOOLS_X(GODBOLT_START)
 #undef GODBOLT_START
 
 /* Stores the reason of a refusal of the options in the @p len bytes at
- * @p why, formatted from @p fmt and its arguments.  Returns EINVAL. */
+ * @p why, formatted from @p fmt and its arguments.  Returns EINVAL.
+ */
 [[gnu::format(printf, 3, 4)]]
 static int
 godbolt_configure_refuse (char       *why,
@@ -2862,7 +2963,8 @@ godbolt_configure_refuse (char       *why,
 /* Stores the URL @p v in the configuration @p c without its trailing '/'.
  * Returns 0, or EINVAL if @p v is not an http or https URL of at most
  * GODBOLT_URL_MAX bytes, or if it has a user name, a password, a query, a
- * fragment or a byte that is not printable ASCII or is a space. */
+ * fragment or a byte that is not printable ASCII or is a space.
+ */
 static int
 godbolt_config_url (struct godbolt_config *c,
                     struct json_object    *v)
@@ -2884,7 +2986,8 @@ godbolt_config_url (struct godbolt_config *c,
 }
 
 /* Stores the option share @p v in the configuration @p c.  Returns 0, or
- * EINVAL if @p v is not short, state or off. */
+ * EINVAL if @p v is not short, state or off.
+ */
 static int
 godbolt_config_share (struct godbolt_config *c,
                       struct json_object    *v)
@@ -2899,7 +3002,8 @@ godbolt_config_share (struct godbolt_config *c,
 }
 
 /* The plugin's configure().  It stores the defaults, and then the options
- * of @p options: "url" and "share". */
+ * of @p options: "url" and "share".
+ */
 static int
 godbolt_configure (void               *config,
                    struct json_object *options,
@@ -2945,7 +3049,8 @@ godbolt_configure (void               *config,
  * the property share and a sentence on links to the definition.  With
  * short links, readOnlyHint is false, because Compiler Explorer stores the
  * source of a link.  Returns nullptr if json-c runs out of memory, or if
- * the configuration is not valid. */
+ * the configuration is not valid.
+ */
 static struct json_object *
 godbolt_definition (void const        *service,
                     enum godbolt_tool  tool,

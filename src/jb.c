@@ -1,4 +1,7 @@
-/** @file Terse, leak-safe helpers for building and reading json-c values. */
+/** @file jb.c
+ *
+ * Terse, leak-safe helpers for building and reading json-c values.
+ */
 #include <errno.h>
 #include <json-c/printbuf.h>
 #include <limits.h>
@@ -139,7 +142,8 @@ jb_scan_grow (struct jb_scan *scan)
 }
 
 /* Open a container, counting its members if @p members limits them; 0 or
- * ENOMEM. */
+ * ENOMEM.
+ */
 static int
 jb_scan_open (struct jb_scan *scan,
               uint32_t        members)
@@ -158,7 +162,8 @@ jb_scan_open (struct jb_scan *scan,
 
 /* Skip @p data, within a string, to its next quote, or to a backslash before
  * it, counting the bytes; @p *quote is the next quote once looked for, else
- * @p end.  Returns where it stopped, @p end if the string goes on past it. */
+ * @p end.  Returns where it stopped, @p end if the string goes on past it.
+ */
 static char const *
 jb_scan_string (struct jb_scan  *scan,
                 char const      *data,
@@ -292,7 +297,8 @@ jb_reaper_take (struct jb_reaper   *reaper,
 
 /* Take a value out of the container @p top, in @p *val, a reference of its
  * own: an array's last element, or an object's first member, each O(1).
- * False if @p top is empty. */
+ * False if @p top is empty.
+ */
 static bool
 jb_pop (struct json_object  *top,
         struct json_object **val)
@@ -367,7 +373,8 @@ jb_pool_release (struct jb_pool *pool,
 }
 
 /* A tokener whose stack holds nothing, from @p pool or new; nullptr if out of
- * memory. */
+ * memory.
+ */
 static struct json_tokener *
 jb_pool_take (struct jb_pool *pool)
 {
@@ -519,7 +526,8 @@ jb_mend (char   *p,
 
 /* The letter of the two-byte escape of each byte that has one; the other
  * bytes below a space are escaped as \u00XX.  The table ends at '\\', the
- * last byte that JSON escapes. */
+ * last byte that JSON escapes.
+ */
 static char const jb_letters['\\' + 1] = {
 	['\b'] = 'b', ['\t'] = 't', ['\n'] = 'n', ['\f'] = 'f', ['\r'] = 'r',
 	['"'] = '"', ['\\'] = '\\',

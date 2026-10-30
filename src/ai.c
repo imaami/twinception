@@ -1,5 +1,7 @@
-/** @file Upstream AI APIs: request bodies and answer parsing,
- *  whole or streamed. */
+/** @file ai.c
+ *
+ * Upstream AI APIs: request bodies and answer parsing, whole or streamed.
+ */
 #include <errno.h>
 #include <stdckdint.h>
 #include <stdio.h>
@@ -27,11 +29,13 @@ static char const *const limits[] = {
 /* The type of the open step, in Gemini's Interactions, or the end of the
  * answer, after which no event changes the replay (struct ai_reader's
  * kind).  An open thought is not in the replay until it has a summary item
- * or a signature. */
+ * or a signature.
+ */
 enum { INTERACTIONS_THOUGHT, INTERACTIONS_OUTPUT, INTERACTIONS_ENDED };
 
 /* The state of the summary array of the open thought (struct ai_reader's
- * summary). */
+ * summary).
+ */
 enum { SUMMARY_NONE, SUMMARY_OPEN, SUMMARY_CLOSED };
 
 static struct json_object *
@@ -73,7 +77,8 @@ ai_input (enum ai_api        api,
 
 /* Earlier user and assistant messages, then the new prompt. Only chat
  * completions includes the system message in this array. The caller has
- * validated the history's roles and plain text contents. */
+ * validated the history's roles and plain text contents.
+ */
 static struct json_object *
 ai_conversation (enum ai_api        api,
                  struct json_object *system,
@@ -99,7 +104,8 @@ ai_conversation (enum ai_api        api,
 
 /* A copy of @p val, which the configuration holds: every loop reads it, so no
  * request may take a reference, whose count is not atomic.  nullptr if out of
- * memory. */
+ * memory.
+ */
 static struct json_object *
 ai_copy (struct json_object *val)
 {
@@ -131,7 +137,8 @@ ai_merge (struct json_object *dst,
 /* Write the token limit under @p max_key, unless @p max_tokens is not
  * positive, and the temperature into @p root.  If @p config is not nullptr,
  * write them into a new object, @p root's member @p config, which is added
- * only if one of them is set.  Then merge --extra into @p root. */
+ * only if one of them is set.  Then merge --extra into @p root.
+ */
 static int
 ai_request_common (struct ai_endpoint const *ep,
                    struct json_object       *root,
@@ -157,7 +164,8 @@ ai_request_common (struct ai_endpoint const *ep,
  * ai_format() names: the member of the system prompt, which chat
  * completions has in the conversation instead; the object of the
  * generation options, or the body itself; the member of the token limit,
- * and its default; and which other members it has. */
+ * and its default; and which other members it has.
+ */
 enum {
 	BODY_MODEL  = 1 << 0,  /* the model, first */
 	BODY_USAGE  = 1 << 1,  /* with tools, the usage in the stream */
@@ -189,7 +197,8 @@ static struct ai_body {
 };
 
 /* Move the conversation, @p root's member @p key, to its end, after what
- * --extra added, so that turns may follow it, unless --extra took it away. */
+ * --extra added, so that turns may follow it, unless --extra took it away.
+ */
 static int
 ai_request_last (struct json_object *root,
                  char const         *key)
@@ -251,7 +260,8 @@ ai_append (struct dstr        *text,
 }
 
 /* The text of chat completions' answer @p root, into @p text, and its stop
- * reason in @p *reason. */
+ * reason in @p *reason.
+ */
 static int
 ai_chat_answer (struct json_object  *root,
                 struct dstr         *text,
@@ -325,7 +335,8 @@ ai_generate_answer (struct json_object  *root,
 
 /* The text of the model_output steps of Gemini's Interactions' answer
  * @p root, into @p text, and its status, as its stop reason, in
- * @p *reason. */
+ * @p *reason.
+ */
 static int
 ai_interactions_answer (struct json_object  *root,
                         struct dstr         *text,
@@ -361,7 +372,8 @@ ai_no_answer (char       *buf,
 }
 
 /* Hand @p val's text to @p put, if it is a string and @p put is not
- * nullptr. */
+ * nullptr.
+ */
 static int
 ai_put_text (int               (*put) (void       *user,
                                        char const *text,
@@ -374,7 +386,8 @@ ai_put_text (int               (*put) (void       *user,
 }
 
 /* @p val's text and its length in @p *len, if it is a string; else
- * nullptr. */
+ * nullptr.
+ */
 static char const *
 ai_text_of (struct json_object *val,
             size_t             *len)
@@ -385,7 +398,8 @@ ai_text_of (struct json_object *val,
 }
 
 /* @p val as a call's index, or a content block's: AI_CALL_NEXT if it is
- * none. */
+ * none.
+ */
 static uint32_t
 ai_index (struct json_object *val)
 {
@@ -398,7 +412,8 @@ ai_index (struct json_object *val)
  * the token count of its answer.  Return UINT32_MAX if the sum is larger
  * than UINT32_MAX.  Return 0, which means that the count is not known, if
  * @p prompt is not positive, if @p answer is negative, or if the sum
- * overflows int64_t. */
+ * overflows int64_t.
+ */
 static uint32_t
 ai_used (int64_t prompt,
          int64_t answer)
@@ -411,7 +426,8 @@ ai_used (int64_t prompt,
 
 /* Return @p val as a token count if it is a JSON integer, else 0.  json-c
  * also parses NaN, which json_object_get_int64() cannot convert.  ai_used()
- * treats a request count of 0 as not known and an answer count of 0 as 0. */
+ * treats a request count of 0 as not known and an answer count of 0 as 0.
+ */
 static int64_t
 ai_count (struct json_object *val)
 {
@@ -419,7 +435,8 @@ ai_count (struct json_object *val)
 }
 
 /* The place of @p type, an event's or an item's, among the @p n @p names; @p n
- * if it is none of them. */
+ * if it is none of them.
+ */
 static size_t
 ai_kind (struct json_object *type,
          char const *const  *names,
@@ -432,7 +449,8 @@ ai_kind (struct json_object *type,
 }
 
 /* Give @p sink's replay, if it keeps one, the @p len bytes of JSON text at
- * @p json. */
+ * @p json.
+ */
 static int
 ai_replay (struct ai_sink const *sink,
            char const           *json,
@@ -442,7 +460,8 @@ ai_replay (struct ai_sink const *sink,
 }
 
 /* Give it the text of @p val, if that is a string, escaped as a JSON
- * string's. */
+ * string's.
+ */
 static int
 ai_replay_text (struct ai_sink const *sink,
                 struct json_object   *val)
@@ -455,7 +474,8 @@ ai_replay_text (struct ai_sink const *sink,
 }
 
 /* Pass @p val, an item of the answer, whole, to @p sink's replay, if it has
- * one, after the @p len bytes at @p head. */
+ * one, after the @p len bytes at @p head.
+ */
 static int
 ai_replay_after (struct ai_sink const *sink,
                  char const           *head,
@@ -542,7 +562,8 @@ ai_cut (enum ai_api       api,
 }
 
 /* Hand the pieces of chat completions' @p delta to @p sink, saying in @p out
- * whether it carries thinking. */
+ * whether it carries thinking.
+ */
 static int
 ai_chat_delta (struct ai_sink const *sink,
                struct json_object   *delta,
@@ -570,7 +591,8 @@ ai_chat_delta (struct ai_sink const *sink,
 
 /* Hand @p item, an output item of the Responses API, @p at in the output,
  * to @p sink: a function call as a call, and a call, a reasoning item or a
- * message, whole, to the replay. */
+ * message, whole, to the replay.
+ */
 static int
 ai_responses_item (struct ai_sink const *sink,
                    struct json_object   *at,
@@ -593,7 +615,8 @@ ai_responses_item (struct ai_sink const *sink,
 
 /* Hand the pieces of the Responses API's event @p ev to @p sink, saying in
  * @p out whether it carries thinking, and the end and the tokens used once
- * it ends. */
+ * it ends.
+ */
 static int
 ai_responses_event (struct ai_sink const *sink,
                     struct json_object   *ev,
@@ -640,7 +663,8 @@ ai_responses_event (struct ai_sink const *sink,
  * its arguments, @p item's member @p key, if they are a JSON object that
  * is not empty, and the JSON text of @p extra as its extra, unless
  * @p extra is nullptr.  A server that sends the arguments whole sends them
- * in the start. */
+ * in the start.
+ */
 static int
 ai_call_start (struct ai_sink const *sink,
                uint32_t              at,
@@ -670,7 +694,8 @@ ai_call_start (struct ai_sink const *sink,
 /* Hand what Anthropic's content block @p block, @p at in the content,
  * begins with to @p sink: a tool call's id and name; or, to the replay, the
  * start of a thinking block, which @p reader then has open, or a redacted
- * one whole. */
+ * one whole.
+ */
 static int
 ai_messages_start (struct ai_sink const *sink,
                    struct ai_reader     *reader,
@@ -701,7 +726,8 @@ ai_messages_start (struct ai_sink const *sink,
  * replay with the block's item that @p reader has open, or a text block's
  * first text that is not white space, which opens its item, as a turn may
  * have no blank one; or a piece of a tool call's arguments.  Says in @p out
- * whether it carries thinking. */
+ * whether it carries thinking.
+ */
 static int
 ai_messages_delta (struct ai_sink const *sink,
                    struct ai_reader     *reader,
@@ -756,7 +782,8 @@ ai_messages_delta (struct ai_sink const *sink,
 /* Hand the pieces of Anthropic's event @p ev to @p sink, as @p reader keeps
  * the reading, saying in @p out whether it carries thinking, the tokens
  * used as the answer ends, and the end of the message.  An event of a
- * content block with no index may carry text only. */
+ * content block with no index may carry text only.
+ */
 static int
 ai_messages_event (struct ai_sink const *sink,
                    struct ai_reader     *reader,
@@ -827,7 +854,8 @@ ai_generate_close (struct ai_sink const *sink,
 }
 
 /* Hand Gemini's function call @p fc to @p sink, numbered as @p reader
- * counts the calls. */
+ * counts the calls.
+ */
 static int
 ai_generate_call (struct ai_sink const *sink,
                   struct ai_reader     *reader,
@@ -846,7 +874,8 @@ ai_generate_call (struct ai_sink const *sink,
 }
 
 /* End the text part that @p reader has open, then give @p sink's replay
- * @p part whole. */
+ * @p part whole.
+ */
 static int
 ai_generate_whole (struct ai_sink const *sink,
                    struct ai_reader     *reader,
@@ -859,7 +888,8 @@ ai_generate_whole (struct ai_sink const *sink,
 /* Hand Gemini's part @p part to @p sink, as @p reader keeps the reading: a
  * function call, which goes whole to the replay, as does a part with a
  * thought signature, in which it came; or text, which goes on in the text
- * part open in the replay, or thinking, as @p out says. */
+ * part open in the replay, or thinking, as @p out says.
+ */
 static int
 ai_generate_part (struct ai_sink const *sink,
                   struct ai_reader     *reader,
@@ -894,7 +924,8 @@ ai_generate_part (struct ai_sink const *sink,
 }
 
 /* Whether the open thought of @p reader is in the replay: once it has a
- * summary item or a signature.  The API refuses a thought with neither. */
+ * summary item or a signature.  The API refuses a thought with neither.
+ */
 static bool
 ai_interactions_written (struct ai_reader const *reader)
 {
@@ -902,7 +933,8 @@ ai_interactions_written (struct ai_reader const *reader)
 }
 
 /* Write the start of the open thought of @p reader into @p sink's replay,
- * unless it is there already. */
+ * unless it is there already.
+ */
 static int
 ai_interactions_head (struct ai_sink const   *sink,
                       struct ai_reader const *reader)
@@ -913,7 +945,8 @@ ai_interactions_head (struct ai_sink const   *sink,
 /* Close the open item in @p sink's replay, if there is one (@p reader).
  * For a thought, close its summary array if it is open, then the thought,
  * if it is in the replay.  For a model output, close its text and the
- * step. */
+ * step.
+ */
 static int
 ai_interactions_close (struct ai_sink const *sink,
                        struct ai_reader     *reader)
@@ -932,7 +965,8 @@ ai_interactions_close (struct ai_sink const *sink,
  * @p sink's text and to its replay.  The text goes into the open item if
  * that item is the model output of step @p at.  If no item is open, text
  * that is not only white space starts a new model output item for step
- * @p at.  Otherwise the replay does not get the text. */
+ * @p at.  Otherwise the replay does not get the text.
+ */
 static int
 ai_interactions_text (struct ai_sink const *sink,
                       struct ai_reader     *reader,
@@ -958,7 +992,8 @@ ai_interactions_text (struct ai_sink const *sink,
  * replay: after the earlier items, or in a new summary array, after the
  * start of the thought if it is not in the replay yet.  Skip an item that
  * is not a JSON object, and an item that comes after the array is
- * closed. */
+ * closed.
+ */
 static int
 ai_interactions_summary (struct ai_sink const *sink,
                          struct ai_reader     *reader,
@@ -977,7 +1012,8 @@ ai_interactions_summary (struct ai_sink const *sink,
 /* Write @p signature into the open thought in @p sink's replay, after the
  * start of the thought if it is not in the replay yet.  Close the summary
  * array first if it is open.  Skip a signature that is not a string, that
- * is empty, or that comes after the thought already has a signature. */
+ * is empty, or that comes after the thought already has a signature.
+ */
 static int
 ai_interactions_sign (struct ai_sink const *sink,
                       struct ai_reader     *reader,
@@ -1000,7 +1036,8 @@ ai_interactions_sign (struct ai_sink const *sink,
  * @p reader, and write the signature and the summary items that its start
  * contains into @p sink's replay.  The thought enters the replay with its
  * first summary item or its signature.  Set out->thought if a summary item
- * has text. */
+ * has text.
+ */
 static int
 ai_interactions_thought (struct ai_sink const *sink,
                          struct ai_reader     *reader,
@@ -1030,7 +1067,8 @@ ai_interactions_thought (struct ai_sink const *sink,
  * open.  For those three types, close the open item in the replay first.
  * Then open a thought (ai_interactions_thought()), pass the text of a model
  * output (ai_interactions_text()), or mark the function call as the last
- * that started in @p reader and pass it to @p sink. */
+ * that started in @p reader and pass it to @p sink.
+ */
 static int
 ai_interactions_start (struct ai_sink const *sink,
                        struct ai_reader     *reader,
@@ -1080,7 +1118,8 @@ ai_interactions_start (struct ai_sink const *sink,
  * the arguments of a function call to @p sink.  If step @p at is not the
  * function call that started last (@p reader), close the open item in the
  * replay first, because a piece that starts a new call places the call at
- * the current end of the replay, and mark step @p at as that call. */
+ * the current end of the replay, and mark step @p at as that call.
+ */
 static int
 ai_interactions_delta (struct ai_sink const *sink,
                        struct ai_reader     *reader,
@@ -1126,7 +1165,8 @@ ai_interactions_delta (struct ai_sink const *sink,
  * the state of the reading in @p reader.  interaction.completed closes the
  * open item in the replay, sets out->end and the tokens used, and makes
  * the reading ignore the events after it.  A step event without an index
- * can pass only text to @p sink. */
+ * can pass only text to @p sink.
+ */
 static int
 ai_interactions_event (struct ai_sink const *sink,
                        struct ai_reader     *reader,
@@ -1409,7 +1449,8 @@ ai_tool (enum ai_api               api,
  * bytes, parsed, if it is JSON text on a data line that ends in the first
  * 4 KiB; else nullptr.  Gemini's Interactions sends the error of a streamed
  * request as such an event, with a status that is not 2xx, so askai gathers
- * the body whole and cannot parse it as JSON text. */
+ * the body whole and cannot parse it as JSON text.
+ */
 static struct json_object *
 ai_error_event (char const *body,
                 size_t      len)
@@ -1432,7 +1473,8 @@ ai_error_event (char const *body,
 
 /* Say in @p text what the upstream's error answer, of HTTP @p status, says:
  * its message, or that of its first event, or the start of the @p len bytes
- * at @p body. */
+ * at @p body.
+ */
 static int
 ai_describe_error (struct dstr        *text,
                    long                status,
@@ -1540,7 +1582,8 @@ ai_model_url (struct ai_endpoint const *ep)
 }
 
 /* @p text, a time of RFC 3339 in UTC, such as 2026-10-17T13:44:05.888Z, in
- * seconds since the epoch, without its fraction; 0 if it is no such time. */
+ * seconds since the epoch, without its fraction; 0 if it is no such time.
+ */
 static int64_t
 ai_time (char const *text)
 {
@@ -1560,7 +1603,8 @@ ai_time (char const *text)
 }
 
 /* The bytes of a URI that askai takes from an upstream: printable ASCII
- * without a space, which goes into JSON and the log as it is. */
+ * without a space, which goes into JSON and the log as it is.
+ */
 static char const ai_uri_bytes[] =
 	"!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`"
 	"abcdefghijklmnopqrstuvwxyz{|}~";

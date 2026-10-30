@@ -1,4 +1,7 @@
-/** @file Atomic, counted snapshots; never stores provider reasoning. */
+/** @file cli_state.c
+ *
+ * Atomic, counted snapshots; never stores provider reasoning.
+ */
 #ifndef _GNU_SOURCE
 # define _GNU_SOURCE
 #endif
@@ -37,32 +40,32 @@ struct cli_state_pair {
 };
 
 struct cli_state {
-	_Atomic bool const   *cancel;
-	struct dstr           inputs[CLI_STATE_INPUTS];
-	struct cli_state_pair turns[CLI_STATE_TURNS];
-	struct cli_state_pair pending;
-	struct dstr           identity;
-	struct dstr           path;
-	struct dstr           name;
-	struct dstr           temporary;
-	struct dstr           branch;
-	struct dstr           latest;
-	struct dstr           parent;
-	struct dstr           output;
-	struct dstr           tree;
-	struct dstr           metadata;
-	char                **environment;
-	struct dstr           scratch;
-	size_t                input_first;
-	size_t                input_count;
-	size_t                input_bytes;
-	size_t                turn_count;
-	size_t                turn_bytes;
-	int                   directory;
-	int                   lock;
-	char                  identity_blob[65]; /**< empty until hashed */
-	bool                  snapshot_pending;
-	bool                  unsaved;           /**< the last save failed */
+	_Atomic bool const     *cancel;
+	struct dstr             inputs[CLI_STATE_INPUTS];
+	struct cli_state_pair   turns[CLI_STATE_TURNS];
+	struct cli_state_pair   pending;
+	struct dstr             identity;
+	struct dstr             path;
+	struct dstr             name;
+	struct dstr             temporary;
+	struct dstr             branch;
+	struct dstr             latest;
+	struct dstr             parent;
+	struct dstr             output;
+	struct dstr             tree;
+	struct dstr             metadata;
+	char                  **environment;
+	struct dstr             scratch;
+	size_t                  input_first;
+	size_t                  input_count;
+	size_t                  input_bytes;
+	size_t                  turn_count;
+	size_t                  turn_bytes;
+	int                     directory;
+	int                     lock;
+	char                    identity_blob[65]; /**< empty until hashed */
+	bool                    snapshot_pending;
+	bool                    unsaved;           /**< the last save failed */
 };
 
 static char const cli_state_magic[] = "ASKAI-CLI-1\n";
@@ -77,16 +80,15 @@ cli_state_valid (struct cstr_view text)
 	        && jb_utf8(text.data, text.len) == text.len);
 }
 
-static int
+static force_inline int
 cli_state_private (int fd)
 {
-	struct stat status;
-	if (fstat(fd, &status))
-		return errno;
-	if (!S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
-	    (status.st_mode & 0077) || status.st_nlink != 1)
-		return EACCES;
-	return 0;
+	struct stat s = {0};
+	return fstat(fd, &s) ? errno
+	                     : (S_ISREG(s.st_mode) &&
+	                        !(s.st_mode & 077) &&
+	                        s.st_nlink == 1    &&
+	                        s.st_uid == geteuid() ? 0 : EACCES);
 }
 
 /* A short read is a snapshot cut short. */
@@ -105,9 +107,9 @@ cli_state_write_number (int    fd,
                         size_t value)
 {
 	unsigned char bytes[] = {
-		(unsigned char)(value >> 24),
-		(unsigned char)(value >> 16),
-		(unsigned char)(value >>  8),
+		(unsigned char)(value >> 24U),
+		(unsigned char)(value >> 16U),
+		(unsigned char)(value >>  8U),
 		(unsigned char) value
 	};
 	return util_write_all(fd, bytes, sizeof bytes);
@@ -166,7 +168,8 @@ cli_state_read_text (int          fd,
 }
 
 /** flock has no readiness notification. Retry only this contended lock,
- * on a blocker, with a bounded cancellation delay; no UI tick is involved. */
+ * on a blocker, with a bounded cancellation delay; no UI tick is involved.
+ */
 static int
 cli_state_lock (struct cli_state *state,
                 int               fd)
@@ -190,21 +193,29 @@ cli_state_lock (struct cli_state *state,
 /** Run Git directly, with bounded captured output and no shell. */
 static int
 cli_state_git (struct cli_state  *state,
-               char const *const  arguments[],
+               char const *const  args[],
                struct cstr_view   input,
                int                output_fd,
                int               *status)
 {
-	char const *argv[32] = { "git", "-C", dstr_get(&state->path),
-	                         "-c", "user.name=AskAI CLI", "-c",
-	                         "user.email=askai-cli@localhost", "-c",
-	                         "core.fsync=committed" };
-	size_t count = 9;
-	for (size_t i = 0; arguments[i]; ++i) {
-		if (count == ARRAY_SIZE(argv) - 1)
+	#define ARGV "git", "-C", dstr_get(&state->path)           \
+	                  , "-c", "user.name=AskAI CLI"            \
+	                  , "-c", "user.email=askai-cli@localhost" \
+	                  , "-c", "core.fsync=committed"
+	char const *argv[32] = { ARGV };
+
+	#define ARGC array_size((char const *[]){ ARGV })
+	static_assert(ARGC < array_size(argv));
+
+	for (size_t i = 0U; args[i]; ++i) {
+		if (i == last_index(argv) - ARGC)
 			return E2BIG;
-		argv[count++] = arguments[i];
+		argv[ARGC + i] = args[i];
 	}
+
+	#undef ARGC
+	#undef ARGV
+
 	int out = output_fd >= 0 ? output_fd : memfd_create("askai-cli-git", MFD_CLOEXEC);
 	if (out < 0)
 		return errno;
@@ -231,11 +242,12 @@ cli_state_git (struct cli_state  *state,
 }
 
 static int
-cli_state_git_ok (struct cli_state *state, char const *const arguments[],
-                  struct cstr_view input)
+cli_state_git_ok (struct cli_state  *state,
+                  char const *const  args[],
+                  struct cstr_view   input)
 {
 	int status = 0;
-	int e = cli_state_git(state, arguments, input, -1, &status);
+	int e = cli_state_git(state, args, input, -1, &status);
 	return e ? e : status ? EIO : 0;
 }
 
@@ -277,7 +289,9 @@ cli_state_tree_blob (struct cli_state *state,
 static int
 cli_state_commit (struct cli_state *state)
 {
-	char blob[65], tree[65], commit[65];
+	char blob[65];
+	char tree[65];
+	char commit[65];
 	(void)dstr_clear(&state->tree);
 	int e = cli_state_git_ok(state, (char const *[]){ "hash-object", "-w", "--", dstr_get(&state->name), nullptr },
 	                         (struct cstr_view){});
@@ -306,11 +320,11 @@ cli_state_commit (struct cli_state *state)
 	if (!e)
 		e = cli_state_oid(state, tree);
 	static char const message[] = "Save CLI input history and completed conversation\n";
-	char const *arguments[] = { "commit-tree", tree, "-F", "-", "-p", dstr_get(&state->parent), nullptr };
+	char const *args[] = { "commit-tree", tree, "-F", "-", "-p", dstr_get(&state->parent), nullptr };
 	if (!dstr_len(&state->parent))
-		arguments[4] = nullptr;
+		args[4] = nullptr;
 	if (!e)
-		e = cli_state_git_ok(state, arguments, (struct cstr_view){ message, sizeof message - 1 });
+		e = cli_state_git_ok(state, args, (struct cstr_view){ message, sizeof message - 1 });
 	if (!e)
 		e = cli_state_oid(state, commit);
 	(void)dstr_clear(&state->scratch);
@@ -353,7 +367,7 @@ cli_state_save (struct cli_state *state)
 	if (!e)
 		e = cli_state_write_number(fd, state->turn_count);
 	for (size_t i = 0; !e && i < state->input_count; ++i)
-		e = cli_state_write_text(fd, &state->inputs[(state->input_first + i) % CLI_STATE_INPUTS]);
+		e = cli_state_write_text(fd, &state->inputs[(state->input_first + i) % array_size(state->inputs)]);
 	for (size_t i = 0; !e && i < state->turn_count; ++i) {
 		e = cli_state_write_text(fd, &state->turns[i].prompt);
 		if (!e)
@@ -400,10 +414,11 @@ cli_state_default_path (struct cli_state *state)
 		return ENOMEM;
 	/* Only the private leaf holds data. Existing parent modes are preserved. */
 	size_t len = dstr_len(&state->path);
+	char const *path = dstr_get(&state->path);
 	for (size_t i = 1; i <= len; ++i) {
-		if (i < len && dstr_get(&state->path)[i] != '/')
+		if (i < len && path[i] != '/')
 			continue;
-		int e = cstr_view_store((struct cstr_view){ dstr_get(&state->path), i }, &state->scratch);
+		int e = cstr_view_store((struct cstr_view){ path, i }, &state->scratch);
 		if (e)
 			return e;
 		if (mkdir(dstr_get(&state->scratch), 0700) && errno != EEXIST)
@@ -413,18 +428,19 @@ cli_state_default_path (struct cli_state *state)
 }
 
 static int
-cli_state_push_input (struct cli_state *state, struct cstr_view text)
+cli_state_push_input (struct cli_state *state,
+                      struct cstr_view  text)
 {
 	int e = cstr_view_store(text, &state->scratch);
 	if (e)
 		return e;
-	while (state->input_count && (state->input_count == CLI_STATE_INPUTS ||
+	while (state->input_count && (state->input_count == array_size(state->inputs) ||
 	       text.len > CLI_STATE_INPUT_BYTES - state->input_bytes)) {
 		state->input_bytes -= dstr_len(&state->inputs[state->input_first]);
-		state->input_first = (state->input_first + 1) % CLI_STATE_INPUTS;
+		state->input_first = (state->input_first + 1) % array_size(state->inputs);
 		--state->input_count;
 	}
-	size_t index = (state->input_first + state->input_count) % CLI_STATE_INPUTS;
+	size_t index = (state->input_first + state->input_count) % array_size(state->inputs);
 	struct dstr previous = state->inputs[index];
 	state->inputs[index] = state->scratch;
 	state->scratch = previous;
@@ -434,9 +450,11 @@ cli_state_push_input (struct cli_state *state, struct cstr_view text)
 }
 
 /* Add text to the input recall, or move an equal input to the newest place,
- * where Up finds it first. */
+ * where Up finds it first.
+ */
 static int
-cli_state_recall (struct cli_state *state, struct cstr_view text)
+cli_state_recall (struct cli_state *state,
+                  struct cstr_view  text)
 {
 	if (!cli_state_valid(text))
 		return EILSEQ;
@@ -445,17 +463,18 @@ cli_state_recall (struct cli_state *state, struct cstr_view text)
 			continue;
 		struct dstr *inputs = state->inputs;
 		size_t first = state->input_first;
-		struct dstr entry = inputs[(first + j) % CLI_STATE_INPUTS];
+		struct dstr entry = inputs[(first + j) % array_size(state->inputs)];
 		for (size_t k = j; k + 1 < state->input_count; ++k)
-			inputs[(first + k) % CLI_STATE_INPUTS] = inputs[(first + k + 1) % CLI_STATE_INPUTS];
-		inputs[(first + state->input_count - 1) % CLI_STATE_INPUTS] = entry;
+			inputs[(first + k) % array_size(state->inputs)] = inputs[(first + k + 1) % array_size(state->inputs)];
+		inputs[(first + state->input_count - 1) % array_size(state->inputs)] = entry;
 		return 0;
 	}
 	return cli_state_push_input(state, text);
 }
 
 /* Copy the snapshot of the commit rev to fd, from its start, and read its
- * header: check its magic and identity and read its counts. */
+ * header: check its magic and identity and read its counts.
+ */
 static int
 cli_state_snapshot (struct cli_state *state,
                     int               fd,
@@ -489,7 +508,8 @@ cli_state_snapshot (struct cli_state *state,
 		e = cli_state_read_number(fd, inputs);
 	if (!e)
 		e = cli_state_read_number(fd, turns);
-	if (!e && (*inputs > CLI_STATE_INPUTS || *turns > CLI_STATE_TURNS))
+	if (!e && (*inputs > array_size(state->inputs) ||
+	           *turns > array_size(state->turns)))
 		e = EFBIG;
 	return e;
 }
@@ -501,25 +521,28 @@ cli_state_read_turns (struct cli_state *state,
                       size_t            count)
 {
 	size_t budget = CLI_STATE_TURN_BYTES;
-	int e = 0;
-	for (size_t i = 0; !e && i < count; ++i) {
-		e = cli_state_read_text(fd, &state->turns[i].prompt, &budget);
-		if (!e)
-			e = cli_state_read_text(fd, &state->turns[i].answer, &budget);
+
+	for (size_t i = 0; i < count; ++i) {
+		struct cli_state_pair *t = &state->turns[i];
+		int e = cli_state_read_text(fd, &t->prompt, &budget);
+		if (e || (e = cli_state_read_text(fd, &t->answer, &budget)))
+			return e;
 	}
-	if (e)
-		return e;
+
 	state->turn_count = count;
 	state->turn_bytes = CLI_STATE_TURN_BYTES - budget;
-	char trailing;
-	size_t got;
-	e = util_read_all(fd, &trailing, 1, -1, &got);
-	return e ? e : got ? EINVAL : 0;
+
+	char trailing = '\0';
+	size_t got = 0;
+	int e = util_read_all(fd, &trailing, 1, -1, &got);
+
+	return !e && got ? EINVAL : e;
 }
 
 /** Load the turns of the latest snapshot, the parent, and merge the input
  * recall of up to 32 recent writers of the group. Completed conversations
- * from different writers never mix. */
+ * from different writers never mix.
+ */
 static int
 cli_state_load (struct cli_state *state,
                 uint64_t          group)
@@ -622,8 +645,8 @@ cli_state_repository_init (struct cli_state *state)
 					e = errno;
 					break;
 				}
-				if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..") &&
-				    strcmp(entry->d_name, "cli-init.lock")) {
+				if ((entry->d_name[0] != '.' || entry->d_name[1 + (entry->d_name[1] == '.')])
+				    && strncmp(entry->d_name, "cli-init.lock", sizeof entry->d_name) != 0) {
 					e = EEXIST;
 					break;
 				}
@@ -715,9 +738,9 @@ cli_state_create (struct cstr_view    path,
 	}
 	state->cancel = cancel;
 	state->directory = state->lock = -1;
-	for (size_t i = 0; i < CLI_STATE_INPUTS; ++i)
+	for (size_t i = 0; i < array_size(state->inputs); ++i)
 		state->inputs[i] = dstr("");
-	for (size_t i = 0; i < CLI_STATE_TURNS; ++i)
+	for (size_t i = 0; i < array_size(state->turns); ++i)
 		state->turns[i] = (struct cli_state_pair){ dstr(""), dstr("") };
 	state->pending = (struct cli_state_pair){ dstr(""), dstr("") };
 	state->identity = state->path = state->name = state->temporary = state->scratch = dstr("");
@@ -736,7 +759,8 @@ cli_state_create (struct cstr_view    path,
 		struct stat status;
 		if (fstat(state->directory, &status))
 			*e = errno;
-		else if (status.st_uid != geteuid() || (status.st_mode & 0077))
+		else if ((status.st_mode & 0077) ||
+		         status.st_uid != geteuid())
 			*e = EACCES;
 	}
 	if (!*e) {
@@ -768,24 +792,28 @@ cli_state_destroy (struct cli_state **pstate)
 	if (!pstate || !*pstate)
 		return;
 	struct cli_state *state = *pstate;
+
 	if (state->directory >= 0) {
 		if (!state->snapshot_pending && dstr_len(&state->name))
 			(void)unlinkat(state->directory, dstr_get(&state->name), 0);
 		if (dstr_len(&state->temporary))
 			(void)unlinkat(state->directory, dstr_get(&state->temporary), 0);
+		(void)close(state->directory);
+		state->directory = -1;
 	}
+
 	if (state->lock >= 0)
 		(void)close(state->lock);
 	state->lock = -1;
-	if (state->directory >= 0)
-		(void)close(state->directory);
-	state->directory = -1;
-	for (size_t i = 0; i < CLI_STATE_INPUTS; ++i)
+
+	for (size_t i = 0; i < array_size(state->inputs); ++i)
 		dstr_cleanup(&state->inputs[i]);
-	for (size_t i = 0; i < CLI_STATE_TURNS; ++i) {
+
+	for (size_t i = 0; i < array_size(state->turns); ++i) {
 		dstr_cleanup(&state->turns[i].prompt);
 		dstr_cleanup(&state->turns[i].answer);
 	}
+
 	dstr_cleanup(&state->pending.prompt);
 	dstr_cleanup(&state->pending.answer);
 	dstr_cleanup(&state->identity);
@@ -820,10 +848,11 @@ cli_state_input_count (struct cli_state const *state)
 }
 
 struct cstr_view
-cli_state_input_at (struct cli_state const *state, size_t index)
+cli_state_input_at (struct cli_state const *state,
+                    size_t                  index)
 {
 	return state && index < state->input_count
-	       ? cstr_view_dstr(&state->inputs[(state->input_first + index) % CLI_STATE_INPUTS])
+	       ? cstr_view_dstr(&state->inputs[(state->input_first + index) % array_size(state->inputs)])
 	       : (struct cstr_view){};
 }
 
@@ -834,7 +863,8 @@ cli_state_turn_count (struct cli_state const *state)
 }
 
 struct cli_state_turn
-cli_state_turn_at (struct cli_state const *state, size_t index)
+cli_state_turn_at (struct cli_state const *state,
+                   size_t                  index)
 {
 	return state && index < state->turn_count
 	       ? (struct cli_state_turn){ cstr_view_dstr(&state->turns[index].prompt),
@@ -843,7 +873,8 @@ cli_state_turn_at (struct cli_state const *state, size_t index)
 }
 
 int
-cli_state_add_input (struct cli_state *state, struct cstr_view text)
+cli_state_add_input (struct cli_state *state,
+                     struct cstr_view  text)
 {
 	if (!state || !cli_state_valid(text))
 		return EINVAL;
@@ -872,7 +903,7 @@ cli_state_add_turn (struct cli_state *state,
 	    !cli_state_valid(prompt) || !cli_state_valid(answer))
 		return EINVAL;
 	size_t index = state->turn_count - (replace != 0);
-	if (index >= CLI_STATE_TURNS)
+	if (index >= array_size(state->turns))
 		return EFBIG;
 	size_t bytes = state->turn_bytes;
 	if (replace)

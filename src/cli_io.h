@@ -1,4 +1,7 @@
-/** @file Blocking CLI work, returned to its UI owner through a mailbox. */
+/** @file cli_io.h
+ *
+ * Blocking CLI work, returned to its UI owner through a mailbox.
+ */
 #ifndef TWINCEPTION_SRC_CLI_IO_H_
 #define TWINCEPTION_SRC_CLI_IO_H_
 
@@ -9,7 +12,8 @@ struct cli_io;
 
 /** Embed in the object containing a job's arguments and result. Only work
  * runs on a blocker; done runs on the UI. From successful submission until
- * done, the caller must not access the job or its mutable arguments. */
+ * done, the caller must not access the job or its mutable arguments.
+ */
 struct cli_io_job {
 	struct blocker_job     blocker;
 	struct cli_mailbox_msg result;
@@ -37,7 +41,8 @@ extern bool
 cli_io_done (struct cli_io const *io);
 
 /** Requires cli_io_done(). Keep the network loop and mailbox alive until
- * then. A stuck syscall is left to process exit, never pthread_cancel(). */
+ * then. A stuck syscall is left to process exit, never pthread_cancel().
+ */
 extern void
 cli_io_destroy (struct cli_io **p_io);
 

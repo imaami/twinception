@@ -21,7 +21,6 @@
 #include "compat.h"
 #include "log.h"
 
-// @bug beat poetry gobbledygook comments
 enum {
 	RING      = 256 << 10,  /* bytes a thread's ring holds: a power of two */
 	RINGS_MAX = 511,        /* a writev() takes two pieces of each and a
@@ -34,12 +33,6 @@ enum {
 enum { RUNNING, STOPPING, DONE };
 
 /* The owner's half and the logger's half each have a cache line.
- *
- * @bug How does this make sense at all, in any situation? Basically just
- *      empty 64-byte holes for one single variable per each vast expanse
- *      of wasted space. This is _not_ what cache line optimizations are.
- *
- * @bug Another syllable mystery mosh pit
  */
 struct log_ring {
 	alignas(64) _Atomic size_t head;  /* bytes put, by the thread it is for */
@@ -58,34 +51,23 @@ static struct {
 	_Atomic uint32_t  state;
 } lg = { .wake_fd = -1, .notify_fd = -1 };
 
-// @bug Singletons and thread-local singleton-cosplaying things, nope
 static thread_local struct log_ring *self;
 
-// @bug About these crimes against sentence structures such as the comment
-//      below: a thread doesn't "find" anything. That's flowery language
-//      not suitable for documentation.
-
 /* For a thread that found no ring left: always full, so its lines are dropped
- * and counted, and it never blocks on stderr. */
+ * and counted, and it never blocks on stderr.
+ */
 static struct log_ring full = { .head = RING };
 
 struct log_metrics log_metrics;
 enum log_level log_threshold = LOG_INFO;
 
-// @bug "held" and so on. nope
-
 /* Whether the site may log a line now; if so, @p *missed is how many it held
- * back since its last.  Racing threads may miscount by a line or two. */
+ * back since its last.  Racing threads may miscount by a line or two.
+ */
 static bool
 log_site_allow (struct log_site *site,
                 uint32_t        *missed)
 {
-	// @bug When everything is an atomic and every atomic is, for some
-	//      reason, treated as a separate entity in sequence with the
-	//      rest, _where_ is the atomicity? The entire log.c is full of
-	//      "atomic" code that looks like someone mistook atomicity for
-	//      a window decoration or t-shirt color. I have mentioned the
-	//      use of atomic types, but this just looks like ritualistic.
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
 	uint64_t now = (uint64_t)ts.tv_sec;
@@ -105,7 +87,8 @@ log_site_allow (struct log_site *site,
 }
 
 /* Put a whole line into the calling thread's ring, or drop it if it does not
- * fit; without a ring, write it out. */
+ * fit; without a ring, write it out.
+ */
 static void
 log_emit (char const *line,
           size_t      len)
@@ -116,12 +99,6 @@ log_emit (char const *line,
 		(void)n;
 		return;
 	}
-	// @bug And again here and later on, it's as if someone thought that
-	//      chaining atomic operations in series makes code _more_ atomic.
-	//      Even if the program itself actually does work correctly, as I
-	//      think this might do, that just emphasizes the baffling amount
-	//      of serialized atomic ops all over the place. It's useless or
-	//      clueless, or both.
 	size_t head = atomic_load_explicit(&r->head, memory_order_relaxed);
 	if (RING - (head - atomic_load_explicit(&r->tail, memory_order_acquire)) < len) {
 		atomic_fetch_add_explicit(&log_metrics.dropped, 1, memory_order_relaxed);
@@ -138,8 +115,6 @@ log_emit (char const *line,
 	if (atomic_load(&lg.asleep) && atomic_exchange(&lg.asleep, 0))
 		(void)eventfd_write(lg.wake_fd, 1);
 }
-
-// @bug "vsnprintf into it" is so vague it should be a shade of beige
 
 /* Length @p len of a line after a vsnprintf() into it returned @p n. */
 static const_inline size_t
@@ -189,7 +164,8 @@ log_put (struct log_site *site,
 }
 
 /* Write all @p n buffers at @p iov to stderr, waiting as long as it takes for
- * room; on an error, drop the rest. */
+ * room; on an error, drop the rest.
+ */
 static void
 log_write_all (struct iovec *iov,
                size_t        n)
@@ -356,8 +332,6 @@ log_done (void)
 	return !lg.rings || atomic_load(&lg.state) == DONE;
 }
 
-// @bug A `*_fini()` function THAT DOESN'T TAKE AN OBJECT POINTER ARGUMENT
-//      and for which there is NO CORRESPONDING INIT FUNCTION EITHER, ahhhhhhh
 void
 log_fini (void)
 {
@@ -371,11 +345,6 @@ log_fini (void)
 	lg.rings = nullptr;
 	lg.n = 0;
 	lg.wake_fd = -1;
-	// @bug This is just a random side note because this entire file
-	//      is completely bonkers and beyond repair, but I have to
-	//      ask: why the ahhhhhh are these god damned state indicator
-	//      variables even separate ones instead of a single bit flag
-	//      store variable? I could be misreading this specific part.
 	atomic_store(&lg.attached, 0);
 	atomic_store(&lg.state, RUNNING);
 	self = nullptr;

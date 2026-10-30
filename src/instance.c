@@ -1,4 +1,7 @@
-/** @file Plugin instances (instance.h). */
+/** @file instance.c
+ *
+ * Plugin instances.
+ */
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +15,8 @@ static_assert(!(INSTANCE_MAX & (INSTANCE_MAX - 1)),
               "INSTANCE_MAX - 1 is the mask that selects a bucket");
 
 /* The table's record of one instance.  The plugin's bytes follow the record
- * in the same allocation. */
+ * in the same allocation.
+ */
 struct instance {
 	struct list          hook;        /* links the instance into one of the
 	                                     table's lists: busy, idle or gone */
@@ -32,7 +36,8 @@ struct instance {
 /* Returns true if an instance for principal, made for a request of
  * generation, goes into the buckets, so that later calls of the user get
  * the same instance.  It returns false for an anonymous client and for a
- * request that began before the last flush. */
+ * request that began before the last flush.
+ */
 static bool
 instance_table_lists (struct instance_table const *t,
                       uint64_t                     principal,
@@ -44,7 +49,8 @@ instance_table_lists (struct instance_table const *t,
 /* Returns the address of the pointer that links the instance of plugin for
  * principal into its bucket.  If the bucket has no such instance, it
  * returns the address of the null pointer at the end of the bucket's
- * chain. */
+ * chain.
+ */
 static struct instance **
 instance_table_find (struct instance_table *t,
                      struct plugin const   *plugin,
@@ -59,7 +65,8 @@ instance_table_find (struct instance_table *t,
 }
 
 /* Removes inst from its bucket and moves it from the list idle to the list
- * gone.  The table's step destroys it later. */
+ * gone.  The table's step destroys it later.
+ */
 static void
 instance_table_retire (struct instance_table *t,
                        struct instance       *inst)
@@ -72,7 +79,8 @@ instance_table_retire (struct instance_table *t,
 }
 
 /* Destroys instances on the list gone, at most max.  Returns the number of
- * instances destroyed. */
+ * instances destroyed.
+ */
 static size_t
 instance_table_reap (struct instance_table *t,
                      size_t                 max)
@@ -90,7 +98,8 @@ instance_table_reap (struct instance_table *t,
 
 /* The table's step.  It destroys instances on the list gone, as many as
  * the step may still do of LOOP_RELEASE work.  If instances are left on the
- * list, it queues itself again. */
+ * list, it queues itself again.
+ */
 static void
 instance_table_step (struct loop      *loop,
                      struct loop_step *step)
@@ -126,7 +135,8 @@ instance_table_fini (struct instance_table *t)
  * the error number of instance_init().  It returns EIO if instance_init()
  * returned EBUSY, because instance_table_get() returns EBUSY only for a
  * full table.  It also returns EIO if instance_init() returned a number
- * that is not positive, because such a number is no error number. */
+ * that is not positive, because such a number is no error number.
+ */
 static int
 instance_table_make (struct instance_table  *t,
                      struct plugin const    *plugin,
@@ -230,7 +240,8 @@ instance_table_flush (struct instance_table *t)
 }
 
 /* Calls relieve() of the plugin for each instance on list, until max units
- * are freed.  Returns the number of units freed. */
+ * are freed.  Returns the number of units freed.
+ */
 static size_t
 instance_list_relieve (struct list const *list,
                        enum buf_pressure  level,

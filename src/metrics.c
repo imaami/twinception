@@ -1,4 +1,7 @@
-/** @file Prometheus text exposition of the core's metrics (metrics.h). */
+/** @file metrics.c
+ *
+ * Prometheus text exposition of the core's metrics.
+ */
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -17,11 +20,13 @@
 #include "util.h"
 
 /* What a call renders at most, a histogram costing 8 and a value 1: a
- * histogram's buckets take a pass over all of its own. */
+ * histogram's buckets take a pass over all of its own.
+ */
 enum { BUDGET = 32 };
 
 /* Where a series is: those before PER_LOOP are each loop's, rendered for
- * every loop that has them, labelled with its name. */
+ * every loop that has them, labelled with its name.
+ */
 enum source {
 	LOOP, STASH, KEPT, CALLS, METHODS, CONNS, TASKS, PER_LOOP,
 	HTTP = PER_LOOP, BLOCKERS, JOBS, MAN, TASKS_ALL, LEDGER, BRAINSTEM, LOGGER, PSI,
@@ -32,7 +37,8 @@ enum kind { COUNTER, GAUGE, HISTOGRAM };
 enum scale { ONE, NANO, MICRO, PERMYRIAD };
 
 /* A series, or a loop's; help, given for the first of a family only, starts
- * the family. */
+ * the family.
+ */
 struct metrics_entry {
 	char const *name;
 	char const *help;
@@ -360,7 +366,8 @@ static struct metrics_entry const table[] = {
 
 /* A histogram's cumulative buckets, to its own resolution, then its sum and
  * count; the count is the buckets' total, which a writer may have moved on
- * from meanwhile. */
+ * from meanwhile.
+ */
 static int
 metrics_put_hist (struct buf         *out,
                   char const         *name,
@@ -433,7 +440,8 @@ metrics_loop_source (struct metrics_loop const *l,
 }
 
 /* Entry @p m's series at @p at, labelled @p labels, its family's help and
- * type first if @p first, counted into @p *cost. */
+ * type first if @p first, counted into @p *cost.
+ */
 static int
 metrics_put_series (struct buf                 *out,
                     struct metrics_entry const *m,
@@ -458,7 +466,8 @@ metrics_put_series (struct buf                 *out,
 
 /* Loop @p loop's series of entry @p m, if it has them: labelled with its
  * name, and @p m's labels, if any.  A loop's family starts with the first
- * loop, which has them all. */
+ * loop, which has them all.
+ */
 static int
 metrics_put_loop (struct buf                 *out,
                   struct metrics_entry const *m,
@@ -480,7 +489,8 @@ metrics_put_loop (struct buf                 *out,
 
 /* The metrics are series, from @p *pos on: an entry's for each loop in turn,
  * which only a loop's have more than one of.  A loop that lacks an entry's
- * series, which only home does, is passed over. */
+ * series, which only home does, is passed over.
+ */
 int
 metrics_render (struct metrics_src const *src,
                 size_t                   *pos,

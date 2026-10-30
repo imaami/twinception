@@ -236,7 +236,8 @@ cli_scrollback_append_style (struct cli_scrollback *scrollback,
 /** Measure the character at the start of text, at column of a row of
  * columns cells. Returns its length in bytes, with its cells in *width and
  * whether it is shown as a replacement cell in *replace. *wrap is whether
- * it starts the next row; a tab that does is measured at that row's start. */
+ * it starts the next row; a tab that does is measured at that row's start.
+ */
 static size_t
 cli_scrollback_cell (struct cstr_view  text,
                      size_t            column,
@@ -262,7 +263,8 @@ cli_scrollback_cell (struct cstr_view  text,
 }
 
 /** Extend cached wrapping only over newly appended bytes. Sparse byte
- * checkpoints let rendering seek near its first visible row. */
+ * checkpoints let rendering seek near its first visible row.
+ */
 static int
 cli_scrollback_line_rows (struct cli_scrollback_line *line,
                           size_t                      columns)

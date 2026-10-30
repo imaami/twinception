@@ -1741,7 +1741,7 @@ hist_print (char const        *name,
 	       hist_pct(h, 0.999) / 1e3, h->max / 1e3);
 	if (!h->count)
 		return;
-	for (int oct = 0; oct <= HIST_OCTAVES; ++oct) {
+	for (unsigned oct = 0U; oct <= HIST_OCTAVES; ++oct) {
 		uint64_t lo = oct ? (uint64_t)HIST_SUB << (oct - 1) : 0;
 		uint64_t hi = (uint64_t)HIST_SUB << oct;
 		uint64_t c = 0;

@@ -1,4 +1,7 @@
-/** @file Changed-span output for independently positioned terminal rows. */
+/** @file cli_render.h
+ *
+ * Changed-span output for independently positioned terminal rows.
+ */
 #ifndef TWINCEPTION_SRC_CLI_RENDER_H_
 #define TWINCEPTION_SRC_CLI_RENDER_H_
 
@@ -8,16 +11,26 @@
 
 struct dstr;
 
-/** Decode nonempty UTF-8 input and measure its first scalar, independent of locale.
- * Invalid input consumes one byte; invalid input and C0/C1 controls have width -1. */
-extern size_t cli_render_character(struct cstr_view text, int *width);
+/**
+ * Decode nonempty UTF-8 input and measure its first scalar, independent
+ * of locale. Invalid input consumes one byte; invalid input and C0/C1
+ * controls have width -1.
+ */
+extern size_t
+cli_render_character (struct cstr_view  text,
+                      int              *width);
 
-/** Replace output[begin:] with its change from cache, then update cache.
+/**
+ * Replace output[begin:] with its change from cache, then update cache.
  * Rows contain terminal-safe UTF-8, complete resetting SGR sequences and
  * padding to the same cell width. Geometry changes require clearing cache.
- * A null cache paints the complete row. Coordinates are one-based. */
+ * A null cache paints the complete row. Coordinates are one-based.
+ */
 extern int
-cli_render_row (struct dstr *cache, struct dstr *output,
-                size_t begin, size_t row, size_t column);
+cli_render_row (struct dstr *cache,
+                struct dstr *output,
+                size_t       begin,
+                size_t       row,
+                size_t       column);
 
 #endif /* TWINCEPTION_SRC_CLI_RENDER_H_ */

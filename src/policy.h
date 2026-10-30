@@ -1,6 +1,8 @@
-/** @file Identities and roles (design section 9, S7): who a client is, by
- *  the bearer token it shows, or by how it connects when it shows none, and
- *  what the role it is given lets it see and do.
+/** @file policy.h
+ *
+ * Identities and roles (design section 9, S7): who a client is, by
+ * the bearer token it shows, or by how it connects when it shows none, and
+ * what the role it is given lets it see and do.
  *
  * The configuration file's "roles" name what each role may see and do: the
  * tools it may list and call, and whether it may read the metrics.  A
@@ -47,20 +49,23 @@ enum policy_kind {
 static constexpr size_t POLICY_NAME = 64;
 
 /** Bytes of the longest name of a client in the log, struct policy_grant's
- *  member who, with a terminating NUL. */
+ *  member who, with a terminating NUL.
+ */
 static constexpr size_t POLICY_WHO = sizeof "anonymous loopback (role )" + POLICY_NAME;
 
 /** The type of a function that returns the tools that the upstream may call
  *  in the turns of an ask call, for a client whose role grants @p tools and
  *  lets the upstream call @p upstream: the tools of the role's member
  *  "upstream", or else the role's tools.  @p ctx is the context that the
- *  caller of policy_log() passes. */
+ *  caller of policy_log() passes.
+ */
 typedef tool_mask policy_lent_fn (void const *ctx,
                                   tool_mask   tools,
                                   tool_mask   upstream);
 
 /** The user of a Unix socket's client, as the kernel says (SO_PEERCRED,
- *  SO_PEERGROUPS). */
+ *  SO_PEERGROUPS).
+ */
 struct policy_peer {
 	uint32_t const *groups;    /**< its groups, sorted (policy_sort_ids()) */
 	uint32_t        n_groups;
@@ -68,7 +73,8 @@ struct policy_peer {
 };
 
 /** What a client may see and do, and whose share of the upstream its calls
- *  take. */
+ *  take.
+ */
 struct policy_grant {
 	tool_mask        tools;      /**< the tools it may list and call */
 	tool_mask        upstream;   /**< the tools that the upstream may call in
@@ -114,7 +120,8 @@ policy_create (struct json_object *file,
                int                *e);
 
 /** Another reference to @p policy, which a reload does not change, but
- *  replaces. */
+ *  replaces.
+ */
 extern struct policy *
 policy_get (struct policy *policy);
 
@@ -166,7 +173,8 @@ policy_grant (struct policy const      *policy,
               struct policy_grant      *grant);
 
 /** Sort the @p n ids at @p ids, such as a peer's groups, as policy_grant()
- *  looks them up. */
+ *  looks them up.
+ */
 extern void
 policy_sort_ids (uint32_t *ids,
                  size_t    n);

@@ -1,4 +1,6 @@
-/** @file The git tool (S8): committed repository contents only.
+/** @file git.h
+ *
+ * The git tool (S8): committed repository contents only.
  *
  * A call names a configured repository and an allowed command: log, show,
  * diff, grep, blame, ls-tree, cat-file or rev-parse. help:true describes its
@@ -48,7 +50,8 @@ struct plugin;
  *  the git tool's, the notes' and the journal's: no home, system or global
  *  configuration, terminal prompt, pager, lazy fetch or remote protocol
  *  (GIT_ALLOW_PROTOCOL, which a repository's configuration cannot
- *  override, stops them all). */
+ *  override, stops them all).
+ */
 #define GIT_ENV_FIXED \
         "HOME=/nonexistent", "LC_ALL=C.UTF-8", "GIT_CONFIG_NOSYSTEM=1", \
         "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", \
@@ -57,7 +60,8 @@ struct plugin;
 /** The options before the command of every git that askai runs: no pager,
  *  replacement objects or remote protocol, nor a program that a
  *  repository's configuration names for the fsmonitor, gpg (which a log's
- *  format may ask for) or hooks, and no automatic gc or maintenance. */
+ *  format may ask for) or hooks, and no automatic gc or maintenance.
+ */
 #define GIT_OPTIONS_FIXED \
         "--no-pager", "--no-replace-objects", \
         "-c", "core.fsmonitor=false", \
@@ -94,15 +98,18 @@ extern void
 git_destroy (struct git **p_git);
 
 /** The plugin of the git tool.  It is built into askai (src/plugin.h), and
- *  its service is a struct git. */
+ *  its service is a struct git.
+ */
 extern struct plugin const git_plugin;
 
 /** Creates the git tool's part of a client loop (src/mcp.h).  The service
- *  argument points to the struct git.  The only error number is ENOMEM. */
+ *  argument points to the struct git.  The only error number is ENOMEM.
+ */
 extern mcp_part_create_fn git_loop_create;
 
 /** Kills the children that the git calls on the loop run.  Then it frees
- *  the part and sets the caller's pointer to nullptr. */
+ *  the part and sets the caller's pointer to nullptr.
+ */
 extern mcp_part_destroy_fn git_loop_destroy;
 
 #endif /* TWINCEPTION_SRC_GIT_H_ */

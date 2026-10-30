@@ -1,5 +1,8 @@
-/** @file Shelves: finished objects a thread keeps for reuse, and gives back
- *  under memory pressure (design section 5). */
+/** @file shelf.h
+ *
+ * Shelves: finished objects a thread keeps for reuse, and gives back
+ * under memory pressure (design section 5).
+ */
 #ifndef TWINCEPTION_SRC_SHELF_H_
 #define TWINCEPTION_SRC_SHELF_H_
 
@@ -10,7 +13,8 @@
 
 /** Finished objects kept for reuse, the last kept last, and the fewest kept
  *  through windows of reuse: those went unused.  Zeroed and its list
- *  initialized, it is empty. */
+ *  initialized, it is empty.
+ */
 struct shelf {
 	struct list list;
 	size_t      n;
@@ -27,7 +31,8 @@ shelf_put (struct shelf *shelf,
 }
 
 /** Take the object kept last off the shelf, whose storage is the likeliest to
- *  fit; nullptr if none is kept. */
+ *  fit; nullptr if none is kept.
+ */
 static inline struct list *
 shelf_take (struct shelf *shelf)
 {
@@ -41,7 +46,8 @@ shelf_take (struct shelf *shelf)
 }
 
 /** Take the object kept first off the shelf, to free it: it counts as one that
- *  went unused, if any did. */
+ *  went unused, if any did.
+ */
 static inline struct list *
 shelf_drop (struct shelf *shelf)
 {
@@ -54,7 +60,8 @@ shelf_drop (struct shelf *shelf)
 }
 
 /** How many of the objects kept a relief at @p level frees: at BUF_HIGH those
- *  unused through the window before and this one so far, at BUF_CRITICAL all. */
+ *  unused through the window before and this one so far, at BUF_CRITICAL all.
+ */
 static inline size_t
 shelf_unused (struct shelf const *shelf,
               enum buf_pressure   level)

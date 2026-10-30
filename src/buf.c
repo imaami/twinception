@@ -1,4 +1,7 @@
-/** @file Byte buffer for sockets, TLS and pipes, and its stash (buf.h). */
+/** @file buf.c
+ *
+ * Byte buffer and stash.
+ */
 #include <errno.h>
 #include <stdbit.h>
 #include <stdio.h>
@@ -29,7 +32,8 @@ buf_block (size_t size)
 }
 
 /* Give a block of class @p c back to the allocator: blocks of a class are
- * alike, so it counts as one that went unused, if any did. */
+ * alike, so it counts as one that went unused, if any did.
+ */
 static void
 buf_stash_drop (struct buf_stash *stash,
                 unsigned          c)
@@ -47,7 +51,8 @@ buf_stash_drop (struct buf_stash *stash,
 
 /* Storage for @p size bytes, from @p stash if it has a block; *cap gets the
  * storage's size.  A miss first gives back the stash's largest blocks that
- * would keep, with what buffers hold, more than twice their peak. */
+ * would keep, with what buffers hold, more than twice their peak.
+ */
 static unsigned char *
 buf_stash_take (struct buf_stash *stash,
                 size_t            size,
@@ -80,7 +85,8 @@ buf_stash_take (struct buf_stash *stash,
 }
 
 /* Give up the @p cap bytes of storage at @p data: to @p stash, if there is
- * one, they are a class's block and memory pressure is not critical. */
+ * one, they are a class's block and memory pressure is not critical.
+ */
 static void
 buf_stash_give (struct buf_stash *stash,
                 unsigned char    *data,
@@ -107,7 +113,8 @@ buf_stash_give (struct buf_stash *stash,
 }
 
 /* Move the readable bytes to the start of new storage for at least @p size
- * bytes; 0 or ENOMEM. */
+ * bytes; 0 or ENOMEM.
+ */
 static int
 buf_move (struct buf *buf,
           size_t      size)

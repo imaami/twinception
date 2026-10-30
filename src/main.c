@@ -1,4 +1,7 @@
-/** @file Command-line option parsing and process entry point. */
+/** @file main.c
+ *
+ * Command-line option parsing and process entry point.
+ */
 #include <errno.h>
 #include <getopt.h>
 #include <signal.h>
@@ -67,7 +70,8 @@ main_lookup (char const *const names[],
 }
 
 /* The provider @p str names, in @p *provider; EINVAL, with it unchanged, if
- * it names none. */
+ * it names none.
+ */
 static int
 main_provider (char const        *str,
                enum app_provider *provider)
@@ -80,7 +84,8 @@ main_provider (char const        *str,
 }
 
 /* The history mode @p str names, in @p *mode; EINVAL, with it unchanged, if
- * it names none. */
+ * it names none.
+ */
 static int
 main_history_mode (char const            *str,
                    enum app_history_mode *mode)
@@ -144,7 +149,8 @@ main_invalid (int         e,
 }
 
 /* Take option @p opt, with its argument @p arg, into @p cfg: EINVAL, said,
- * if the argument is not valid, and EINVAL if @p opt is no option. */
+ * if the argument is not valid, and EINVAL if @p opt is no option.
+ */
 static int
 main_option (struct app_cfg *cfg,
              int             opt,
@@ -189,7 +195,8 @@ main_option (struct app_cfg *cfg,
 }
 
 /* Fill in model @p i's URL, and the model of DeepInfra, as its provider has
- * them: EINVAL, said, if rapid mode cannot use that model. */
+ * them: EINVAL, said, if rapid mode cannot use that model.
+ */
 static int
 main_model (struct app_cfg *cfg,
             size_t          i)
@@ -224,7 +231,8 @@ main_model (struct app_cfg *cfg,
 }
 
 /* The DeepInfra API key, from the first of the variables that has one:
- * EINVAL, said, if neither has. */
+ * EINVAL, said, if neither has.
+ */
 static int
 main_key (struct app_cfg *cfg)
 {
@@ -245,7 +253,8 @@ main_key (struct app_cfg *cfg)
 }
 
 /* Fill in what @p cfg was not given: EINVAL, said, if what it was given does
- * not go together. */
+ * not go together.
+ */
 static int
 main_complete (struct app_cfg *cfg)
 {

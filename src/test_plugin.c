@@ -1,4 +1,6 @@
-/** @file A plugin for the tests (tests/askai.py).  It has five tools.
+/** @file test_plugin.c
+ *
+ * A plugin for the tests (tests/askai.py).  It has five tools.
  *
  * The output of a test_echo call is the value of the call's string argument
  * "text".
@@ -31,7 +33,8 @@
  *
  * Each function that askai calls checks the pointers that it gets once, at
  * its start, and the plugin checks what the getters of the call API
- * return before it uses that. */
+ * return before it uses that.
+ */
 #include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
@@ -62,7 +65,8 @@ struct test_plugin_instance {
 };
 
 /* The memory of a test_state call that waits.  The pointer that
- * mcp_slot_own() returns for the call points to it. */
+ * mcp_slot_own() returns for the call points to it.
+ */
 struct test_plugin_wait {
 	struct loop_timer  timer;
 	struct mcp_slot   *slot;
@@ -72,7 +76,8 @@ struct test_plugin_wait {
 
 /* The plugin's instance_init().  It stores the user of the instance and
  * sets the number of calls to 0.  Returns 0, or EINVAL if askai passed no
- * instance or no loop. */
+ * instance or no loop.
+ */
 static int
 test_plugin_instance_init (void        *instance,
                            uint64_t     principal,
@@ -86,7 +91,8 @@ test_plugin_instance_init (void        *instance,
 }
 
 /* Returns the definition of test_echo as a new reference, or nullptr if
- * json-c cannot allocate memory. */
+ * json-c cannot allocate memory.
+ */
 static struct json_object *
 test_plugin_echo_definition (void const *service)
 {
@@ -102,7 +108,8 @@ test_plugin_echo_definition (void const *service)
 
 /* Ends the call before it returns.  The output is the value of the string
  * argument "text".  The call fails if "text" is missing or is not a
- * string. */
+ * string.
+ */
 static void
 test_plugin_echo_start (struct mcp_slot    *slot,
                         struct json_object *args)
@@ -131,7 +138,8 @@ test_plugin_echo_start (struct mcp_slot    *slot,
 }
 
 /* Returns the definition of test_state as a new reference, or nullptr if
- * json-c cannot allocate memory. */
+ * json-c cannot allocate memory.
+ */
 static struct json_object *
 test_plugin_state_definition (void const *service)
 {
@@ -167,7 +175,8 @@ test_plugin_state_tell (struct mcp_slot *slot)
 
 /* The timer function of a call that waits.  It runs when the wait is over,
  * and it ends the call.  If the call has "fail" true, it ends the call with
- * mcp_slot_fail() and EIO. */
+ * mcp_slot_fail() and EIO.
+ */
 static void
 test_plugin_wait_fired (struct loop       *loop,
                         struct loop_timer *timer)
@@ -191,7 +200,8 @@ test_plugin_wait_fired (struct loop       *loop,
  * before it ends the call.
  *
  * With "wait_ms", it stores "text" in the instance and parks the call.  The
- * call's timer ends the call later. */
+ * call's timer ends the call later.
+ */
 static void
 test_plugin_state_start (struct mcp_slot    *slot,
                          struct json_object *args)
@@ -255,7 +265,8 @@ test_plugin_state_start (struct mcp_slot    *slot,
  * The text shows that mcp_slot_instance() returns the instance inside
  * drop().  Last, the function tries to end the call, which drop() must not
  * do.  askai has ended the call before it calls drop(), so it ignores the
- * attempt.  check_misuse drops such calls. */
+ * attempt.  check_misuse drops such calls.
+ */
 static void
 test_plugin_state_drop (struct mcp_slot *slot)
 {
@@ -279,7 +290,8 @@ test_plugin_state_drop (struct mcp_slot *slot)
 }
 
 /* Returns the definition of test_misuse as a new reference, or nullptr if
- * json-c cannot allocate memory. */
+ * json-c cannot allocate memory.
+ */
 static struct json_object *
 test_plugin_misuse_definition (void const *service)
 {
@@ -295,7 +307,8 @@ test_plugin_misuse_definition (void const *service)
 }
 
 /* The timer function of the timers that test_plugin_misuse_invalid()
- * passes.  askai must never call it. */
+ * passes.  askai must never call it.
+ */
 static void
 test_plugin_never (struct loop       *loop,
                    struct loop_timer *timer)
@@ -306,7 +319,8 @@ test_plugin_never (struct loop       *loop,
 }
 
 /* The function of the message that test_plugin_misuse_invalid() posts.  It
- * frees the message. */
+ * frees the message.
+ */
 static void
 test_plugin_msg_free (struct loop *loop,
                       struct msg  *msg)
@@ -324,7 +338,8 @@ test_plugin_msg_free (struct loop *loop,
  * range.  Then it ends the call with
  * the text "refused R of N", where N is the number of these inputs and R is
  * the number of them that the functions refused as their documentation
- * says. */
+ * says.
+ */
 static void
 test_plugin_misuse_invalid (struct mcp_slot *slot,
                             struct loop     *loop)
@@ -429,7 +444,8 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
  * own slot for each of them.  The table also names requests, and a handle
  * of a request must not give a slot.  The call ends with the text "foreign
  * F own O", where F is the number of handles that gave another object and O
- * is the number of handles that gave the call's own slot. */
+ * is the number of handles that gave the call's own slot.
+ */
 static void
 test_plugin_misuse_handles (struct mcp_slot *slot,
                             struct loop     *loop)
@@ -476,7 +492,8 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
  *   text.
  * - "invalid": test_plugin_misuse_invalid() runs.
  * - "handles": test_plugin_misuse_handles() runs.
- * Any other case ends the call as failed. */
+ * Any other case ends the call as failed.
+ */
 static void
 test_plugin_misuse_start (struct mcp_slot    *slot,
                           struct json_object *args)
@@ -546,7 +563,8 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 }
 
 /* Returns the definition of test_fetch as a new reference, or nullptr if
- * json-c cannot allocate memory. */
+ * json-c cannot allocate memory.
+ */
 static struct json_object *
 test_plugin_fetch_definition (void const *service)
 {
@@ -567,7 +585,8 @@ test_plugin_fetch_definition (void const *service)
 }
 
 /* Returns the string member @p name of @p args, and stores its length in
- * @p *len.  Returns nullptr if @p args has no such string. */
+ * @p *len.  Returns nullptr if @p args has no such string.
+ */
 static char const *
 test_plugin_string (struct json_object *args,
                     char const         *name,
@@ -583,7 +602,8 @@ test_plugin_string (struct json_object *args,
 }
 
 /* Returns the integer member @p name of @p args, or @p otherwise if
- * @p args has no such member. */
+ * @p args has no such member.
+ */
 static int64_t
 test_plugin_integer (struct json_object *args,
                      char const         *name,
@@ -603,7 +623,8 @@ test_plugin_integer (struct json_object *args,
  * is the error number.  With "twice" true, the function calls
  * mcp_slot_fetch() a second time after the first has succeeded, and the
  * call ends with the text "twice: E", where E is the error number of the
- * second call. */
+ * second call.
+ */
 static void
 test_plugin_fetch_start (struct mcp_slot    *slot,
                          struct json_object *args)
@@ -641,7 +662,8 @@ test_plugin_fetch_start (struct mcp_slot    *slot,
 
 /* The step() of test_fetch.  It writes the result of the call's request
  * and ends the call.  The kind has no drop(), because askai frees the
- * response. */
+ * response.
+ */
 static void
 test_plugin_fetch_step (struct mcp_slot *slot)
 {
@@ -673,7 +695,8 @@ test_plugin_fetch_step (struct mcp_slot *slot)
 }
 
 /* Stores the reason of a refusal of the options in the @p len bytes at
- * @p why, formatted from @p fmt and its arguments.  Returns EINVAL. */
+ * @p why, formatted from @p fmt and its arguments.  Returns EINVAL.
+ */
 [[gnu::format(printf, 3, 4)]]
 static int
 test_plugin_refuse (char       *why,
@@ -692,7 +715,8 @@ test_plugin_refuse (char       *why,
 
 /* The plugin's configure().  It stores the default greeting, and then the
  * option "greeting" if @p options has it.  It refuses another member, and a
- * greeting that is not a string of at most 63 bytes. */
+ * greeting that is not a string of at most 63 bytes.
+ */
 static int
 test_plugin_configure (void               *config,
                        struct json_object *options,
@@ -725,7 +749,8 @@ test_plugin_configure (void               *config,
 /* Returns the definition of test_config as a new reference, or nullptr if
  * json-c cannot allocate memory.  @p service is the configuration, or
  * nullptr if the plugin has none.  The description ends with the greeting
- * in parentheses, or with "(none)". */
+ * in parentheses, or with "(none)".
+ */
 static struct json_object *
 test_plugin_config_definition (void const *service)
 {
@@ -751,7 +776,8 @@ test_plugin_config_definition (void const *service)
 }
 
 /* Ends the call with "greeting=" and the greeting of the configuration, or
- * with "none" if mcp_slot_config() returns nullptr. */
+ * with "none" if mcp_slot_config() returns nullptr.
+ */
 static void
 test_plugin_config_start (struct mcp_slot    *slot,
                           struct json_object *args)

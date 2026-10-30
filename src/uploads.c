@@ -1,4 +1,7 @@
-/** @file The files that askai uploaded for notes (uploads.h). */
+/** @file uploads.c
+ *
+ * The files that askai uploaded for notes.
+ */
 #include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -48,7 +51,8 @@ uploads_destroy (struct uploads **p_uploads)
 }
 
 /* The file of @p owner for the @p len bytes at @p id in @p u, or nullptr.
- * The caller holds the lock. */
+ * The caller holds the lock.
+ */
 static struct uploads_file *
 uploads_of (struct uploads *u,
             uint64_t        owner,

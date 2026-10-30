@@ -1,4 +1,7 @@
-/** @file Incremental Server-Sent Events interface. */
+/** @file sse.h
+ *
+ * Incremental Server-Sent Events interface.
+ */
 #ifndef TWINCEPTION_SRC_SSE_H_
 #define TWINCEPTION_SRC_SSE_H_
 
@@ -26,7 +29,8 @@ sse (sse_event_cb *event,
      void         *user);
 
 /** Drop what @p sse holds of a stream, keeping its buffers, to parse
- *  another. */
+ *  another.
+ */
 extern void
 sse_reset (struct sse *sse);
 
@@ -36,7 +40,8 @@ sse_feed (struct sse *sse,
           size_t      len);
 
 /** The stream has ended: its last line, unterminated, and its last event
- *  are dispatched.  Returns 0, ENOMEM, or the event callback's error. */
+ *  are dispatched.  Returns 0, ENOMEM, or the event callback's error.
+ */
 extern int
 sse_end (struct sse *sse);
 

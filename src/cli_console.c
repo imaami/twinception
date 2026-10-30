@@ -185,7 +185,8 @@ struct cli_console {
 };
 
 /* Only Readline's callbacks use this bridge. All owned state lives in the
- * console, and the pointer is cleared before its storage is released. */
+ * console, and the pointer is cleared before its storage is released.
+ */
 static struct cli_console *cli_console_active;
 
 static int cli_console_input_arm (struct cli_console *console);
@@ -881,7 +882,8 @@ cli_console_redisplay (void)
 }
 
 /* Scroll the focused pane a page back (-1) or forward (1), or to its
- * bottom (0). */
+ * bottom (0).
+ */
 static int
 cli_console_scroll (int direction)
 {

@@ -1,6 +1,9 @@
-/** @file HTTP/1.1 transport for request streams (src/stream.h): home's door,
- *  which accepts the clients and places each on a client loop, and the client
- *  loops' servers, which serve them (design section 3). */
+/** @file httpd.h
+ *
+ * HTTP/1.1 transport for request streams (src/stream.h): home's door,
+ * which accepts the clients and places each on a client loop, and the client
+ * loops' servers, which serve them (design section 3).
+ */
 #ifndef TWINCEPTION_SRC_HTTPD_H_
 #define TWINCEPTION_SRC_HTTPD_H_
 
@@ -44,7 +47,8 @@ struct httpd_limits {
 };
 
 /** The defaults (doc/configuration.md, Limits on clients).  A message may
- *  have 8 MiB, room for a text of 4 MiB with its JSON. */
+ *  have 8 MiB, room for a text of 4 MiB with its JSON.
+ */
 static inline struct httpd_limits
 httpd_limits (void)
 {
@@ -78,7 +82,8 @@ struct httpd_cfg {
 };
 
 /** httpd_listen_addr() returns the parts of a listen address in this
- *  struct. */
+ *  struct.
+ */
 struct httpd_listen_addr {
 	char const *path;       /**< The path of a Unix socket, or nullptr for a
 	                             TCP address.  It points into the parsed
@@ -145,21 +150,24 @@ extern void
 httpd_home_destroy (struct httpd_home **p_home);
 
 /** Every client loop's server runs: accept clients, unless the door has
- *  drained already. */
+ *  drained already.
+ */
 extern void
 httpd_home_open (struct httpd_home *home);
 
 /** Have every client loop's server take @p policy, a reference each, for
  *  the requests that begin from then on, and let go of its last.  Returns 0,
  *  or EAGAIN unless the door is open, as before every client loop runs and
- *  once draining. */
+ *  once draining.
+ */
 extern int
 httpd_home_policy (struct httpd_home *home,
                    struct policy     *policy);
 
 /** Have the TLS listeners' clients from now on shake hands by @p ctx, a
  *  reference home takes, and let go of the last; with no TLS listener, do
- *  nothing.  Those who shook hands before go on as they are. */
+ *  nothing.  Those who shook hands before go on as they are.
+ */
 extern void
 httpd_home_tls (struct httpd_home *home,
                 struct ssl_ctx_st *ctx);
@@ -170,18 +178,21 @@ httpd_home_drain (struct httpd_home *home);
 
 /** A job was admitted, which may need a descriptor upstream: if clients and
  *  calls hold the descriptors they may, have the least recently active idle
- *  connection closed. */
+ *  connection closed.
+ */
 extern void
 httpd_home_crowd (struct httpd_home *home);
 
 /** Begin a window of reuse of what home keeps, as buf_stash_age() does for
- *  a stash. */
+ *  a stash.
+ */
 extern void
 httpd_home_age (struct httpd_home *home);
 
 /** Free the connections and client addresses' entries kept for reuse, up
  *  to @p max units of release work, at BUF_HIGH those unused since the last
- *  window began; returns the units, 0 once none are left to free. */
+ *  window began; returns the units, 0 once none are left to free.
+ */
 extern size_t
 httpd_home_relieve (struct httpd_home *home,
                     enum buf_pressure  level,
@@ -189,7 +200,8 @@ httpd_home_relieve (struct httpd_home *home,
 
 /** Serve @p app, whose fields may number STREAM_FIELDS at most, on client
  *  loop @p i of @p hub, its @p loop; nullptr, with the error in @p *e, if
- *  it cannot. */
+ *  it cannot.
+ */
 extern struct httpd *
 httpd_create (struct loop             *loop,
               struct httpd_hub        *hub,

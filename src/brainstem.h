@@ -1,5 +1,7 @@
-/** @file The brainstem: the main thread, which minds the process and the
- *  machine it runs on, never client work (design sections 1 and 6).
+/** @file brainstem.h
+ *
+ * The brainstem: the main thread, which minds the process and the
+ * machine it runs on, never client work (design sections 1 and 6).
  *
  * It blocks every asynchronous signal before it starts a thread, so that it
  * alone takes them, through a signalfd; grows the descriptor table while the
@@ -38,11 +40,13 @@ struct blocker;
 struct loop;
 
 /** The exit status of a shutdown the brainstem forced; the time between the
- *  loops' reliefs of memory pressure that lasts. */
+ *  loops' reliefs of memory pressure that lasts.
+ */
 enum { BRAINSTEM_FORCED = 3, BRAINSTEM_RELIEF_MS = 10'000 };
 
 /** The least default resident threshold: the default body budget, which
- *  bounds the working set the default limits allow. */
+ *  bounds the working set the default limits allow.
+ */
 static constexpr uint64_t MEMORY_HIGH_MIN = 256 << 20;
 
 /** The inputs to the memory pressure level. */
@@ -57,7 +61,8 @@ enum brainstem_input {
 };
 
 /** What runs on a loop's thread, with the loop's context: @p ctx, or for
- *  the client loops an array of them, loop k's at ctx + (k - 1) * stride. */
+ *  the client loops an array of them, loop k's at ctx + (k - 1) * stride.
+ */
 struct brainstem_app {
 	void   *ctx;
 	size_t  stride;
@@ -138,7 +143,8 @@ extern int
 brainstem_run (struct brainstem_cfg const *cfg);
 
 /** The CPUs the process may run on: those of its affinity, but no more than
- *  the cpu.max quotas of its cgroup and their ancestors allow. */
+ *  the cpu.max quotas of its cgroup and their ancestors allow.
+ */
 extern size_t
 brainstem_cpus (void);
 
@@ -154,7 +160,8 @@ brainstem_relieved (uint64_t bytes);
 
 /** On the last loop of a relief, once its trim is done, or skipped as the
  *  pressure cleared: returns the bytes the loops gave back, and lets the
- *  next relief begin. */
+ *  next relief begin.
+ */
 extern uint64_t
 brainstem_trimmed (void);
 

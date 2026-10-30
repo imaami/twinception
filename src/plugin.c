@@ -1,5 +1,8 @@
-/** @file askai's side of a plugin (plugin.h): reading the manifest from the
- *  plugin's file, and loading the plugin. */
+/** @file plugin.c
+ *
+ * askai's side of a plugin: reading the manifest from the plugin's file,
+ * and loading the plugin.
+ */
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -25,7 +28,8 @@
  * that is built with -fsanitize=address, -fsanitize=thread or
  * -fsanitize=undefined refuses no plugin file for such state, so that a
  * plugin can be built with the same sanitizer.  It then also loads a file
- * that has thread-local storage. */
+ * that has thread-local storage.
+ */
 #if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
     __has_feature(undefined_behavior_sanitizer)
 static constexpr bool PLUGIN_STATE_REFUSED = false;
@@ -34,7 +38,8 @@ static constexpr bool PLUGIN_STATE_REFUSED = true;
 #endif
 
 /* What plugin_manifest_read() knows about the plugin's file while it reads
- * the file. */
+ * the file.
+ */
 struct plugin_file {
 	uint64_t         size;        /* the size of the file in bytes, from
 	                                 fstat() */
@@ -61,7 +66,8 @@ struct plugin_file {
 };
 
 /* Writes the reason for a refusal into the len bytes at why.  Returns
- * EINVAL. */
+ * EINVAL.
+ */
 [[gnu::format(printf, 3, 4)]]
 static int
 plugin_refuse (char       *why,
@@ -78,7 +84,8 @@ plugin_refuse (char       *why,
 
 /* Reads the n bytes at offset off of the file into buf.  The bytes must
  * end at or before offset end, and end must not be greater than f->size.
- * Returns 0, or EINVAL with the reason in f->why. */
+ * Returns 0, or EINVAL with the reason in f->why.
+ */
 static int
 plugin_file_read (struct plugin_file const *f,
                   uint64_t                  off,
@@ -102,7 +109,8 @@ plugin_file_read (struct plugin_file const *f,
  * padded to a multiple of pad + 1 bytes.  The desc is padded to a multiple
  * of pad + 1 bytes too.  Copies the desc of an askai manifest to f->dest
  * and counts it in f->found.  Returns 0, or EINVAL with the reason in
- * f->why. */
+ * f->why.
+ */
 static int
 plugin_file_notes (struct plugin_file *f,
                    uint64_t            off,
@@ -140,7 +148,8 @@ plugin_file_notes (struct plugin_file *f,
 }
 
 /* Records in f->state what the file has, unless something is recorded
- * there already. */
+ * there already.
+ */
 static void
 plugin_file_state (struct plugin_file *f,
                    char const         *what)
@@ -151,7 +160,8 @@ plugin_file_state (struct plugin_file *f,
 
 /* Reads the entries of the PT_DYNAMIC segment: the bytes of the file from
  * offset off to offset end.  Records in f->state an entry for a constructor
- * or a destructor.  Returns 0, or EINVAL with the reason in f->why. */
+ * or a destructor.  Returns 0, or EINVAL with the reason in f->why.
+ */
 static int
 plugin_file_dynamic (struct plugin_file *f,
                      uint64_t            off,
@@ -183,7 +193,8 @@ plugin_file_dynamic (struct plugin_file *f,
  * PT_NOTE segment and the entries of the PT_DYNAMIC segment.  It records in
  * *f the addresses of the writable PT_LOAD segments and of the PT_GNU_RELRO
  * segment, and a PT_TLS segment in f->state.  Returns 0, or EINVAL with the
- * reason in f->why. */
+ * reason in f->why.
+ */
 static int
 plugin_file_segment (struct plugin_file *f,
                      ElfW(Phdr) const   *ph)
@@ -225,7 +236,8 @@ plugin_file_segment (struct plugin_file *f,
  * thread-local storage, no constructor or destructor, and no writable data
  * that is still writable when the plugin's code runs.
  *
- * Returns 0, or EINVAL with the reason in the len bytes at why. */
+ * Returns 0, or EINVAL with the reason in the len bytes at why.
+ */
 static int
 plugin_manifest_read (struct manifest *dest,
                       int              fd,
@@ -293,7 +305,8 @@ plugin_manifest_read (struct manifest *dest,
 
 /* A name is 1 to 31 characters of [-0-9_a-z] followed by a NUL.  Returns
  * the length of the name in the MANIFEST_NAME bytes at name, or 0 if those
- * bytes are not a name. */
+ * bytes are not a name.
+ */
 static uint8_t
 plugin_name_len (char const *name)
 {
@@ -308,7 +321,8 @@ plugin_name_len (char const *name)
  * tool names must be valid, and the tool names must be the leading entries
  * of m->tools.  Stores the number of tool names in *n_tools and the length
  * of m->tools[i] in lens[i].  Returns 0, or EINVAL with the reason in the
- * len bytes at why. */
+ * len bytes at why.
+ */
 static int
 plugin_manifest_check (struct manifest const *m,
                        uint32_t              *n_tools,
@@ -348,7 +362,8 @@ plugin_manifest_check (struct manifest const *m,
 /* Calls definition() of the kind of the manifest's tool i, and checks that
  * the definition is an object whose member "name" is the tool's name.
  * Returns 0, ENOMEM if definition() returned nullptr, or EINVAL with the
- * reason in the len bytes at why. */
+ * reason in the len bytes at why.
+ */
 static int
 plugin_loaded_definition (struct plugin_loaded const *loaded,
                           uint32_t                    i,
@@ -373,7 +388,8 @@ plugin_loaded_definition (struct plugin_loaded const *loaded,
  * names: those kinds of the plugin must have definition() and start(), and
  * the kinds after them must have neither.  The flags of every kind must be
  * among TOOL_FLAGS.  Returns 0, ENOMEM, or EINVAL with the reason in the
- * len bytes at why. */
+ * len bytes at why.
+ */
 static int
 plugin_loaded_load (struct plugin_loaded *dest,
                     char const           *path,
@@ -420,7 +436,8 @@ plugin_loaded_load (struct plugin_loaded *dest,
  * plugin's element of "plugins", or nullptr.  A plugin without configure()
  * gets no configuration, and it is refused if options is not nullptr.  The
  * reason of configure() follows "options: " in why.  Returns 0, ENOMEM, or
- * EINVAL with the reason in the len bytes at why. */
+ * EINVAL with the reason in the len bytes at why.
+ */
 static int
 plugin_loaded_configure (struct plugin_loaded *dest,
                          struct json_object   *options,
@@ -468,7 +485,8 @@ plugin_loaded_configure (struct plugin_loaded *dest,
  * configuration from options, and then checks that the definition of each
  * named tool has the tool's name.  definition() gets the configuration.  No
  * code of the plugin runs before its manifest has passed the checks.
- * Returns 0, ENOMEM, or EINVAL with the reason in the len bytes at why. */
+ * Returns 0, ENOMEM, or EINVAL with the reason in the len bytes at why.
+ */
 static int
 plugin_loaded_init (struct plugin_loaded *dest,
                     char const           *path,

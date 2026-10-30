@@ -1,9 +1,11 @@
-/** @file The files that askai uploaded to the upstream's file store for the
- *  notes that turns attached (src/mcp.c), which later turns reuse until the
- *  store lets them expire.  A file is found by its owner, the client whose
- *  ask call attached it, and by the object id of its note, which names the
- *  note's bytes, and so the bytes that askai uploaded.  An owner finds only
- *  its own files, so that no client learns what another attached.
+/** @file uploads.h
+ *
+ * The files that askai uploaded to the upstream's file store for the
+ * notes that turns attached (src/mcp.c), which later turns reuse until the
+ * store lets them expire.  A file is found by its owner, the client whose
+ * ask call attached it, and by the object id of its note, which names the
+ * note's bytes, and so the bytes that askai uploaded.  An owner finds only
+ * its own files, so that no client learns what another attached.
  *
  * All loops share the table.  It has a mutex, which each function locks
  * for the time of its access.  When the table is full, a new file takes
@@ -26,12 +28,14 @@ enum {
 struct uploads;
 
 /** Creates an empty table.  Returns it, or nullptr with the error number
- *  in @p *e. */
+ *  in @p *e.
+ */
 extern struct uploads *
 uploads_create (int *e);
 
 /** Destroys the table of @p *p_uploads, unless it is nullptr, and sets
- *  @p *p_uploads to nullptr. */
+ *  @p *p_uploads to nullptr.
+ */
 extern void
 uploads_destroy (struct uploads **p_uploads);
 
@@ -75,7 +79,8 @@ uploads_keep (struct uploads *uploads,
 
 /** Removes the files of @p owner from the table, so that their notes are
  *  uploaded again: a turn that had one of them failed, perhaps because the
- *  store no longer has it. */
+ *  store no longer has it.
+ */
 extern void
 uploads_forget (struct uploads *uploads,
                 uint64_t        owner);

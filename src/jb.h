@@ -1,4 +1,7 @@
-/** @file Terse, leak-safe helpers for building and reading json-c values. */
+/** @file jb.h
+ *
+ * Terse, leak-safe helpers for building and reading json-c values.
+ */
 #ifndef TWINCEPTION_SRC_JB_H_
 #define TWINCEPTION_SRC_JB_H_
 
@@ -23,14 +26,16 @@ extern struct json_object *
 jb_list (struct json_object *val);
 
 /** Set @p key to @p val, which is consumed even on failure or when @p obj
- *  is nullptr; returns 0 or ENOMEM. */
+ *  is nullptr; returns 0 or ENOMEM.
+ */
 extern int
 jb_set (struct json_object *obj,
         char const         *key,
         struct json_object *val);
 
 /** Append @p val, which is consumed even on failure or when @p arr is
- *  nullptr; returns 0 or ENOMEM. */
+ *  nullptr; returns 0 or ENOMEM.
+ */
 extern int
 jb_push (struct json_object *arr,
          struct json_object *val);
@@ -50,7 +55,8 @@ extern char const *
 jb_text (struct json_object *val);
 
 /** @p val's text and its length in @p *len, if it is a string; else
- *  nullptr. */
+ *  nullptr.
+ */
 extern char const *
 jb_str (struct json_object *val,
         size_t             *len);
@@ -156,7 +162,8 @@ struct jb_pool {
 };
 
 /** Free a tokener whose string buffer is over @p keep bytes; returns that
- *  buffer's size, 0 if there is none. */
+ *  buffer's size, 0 if there is none.
+ */
 extern size_t
 jb_pool_release (struct jb_pool *pool,
                  size_t          keep);
@@ -207,7 +214,8 @@ jb_parser_fini (struct jb_parser *parser,
                 struct jb_reaper *reaper);
 
 /** Length of the longest prefix of the @p len bytes at @p str that is UTF-8
- *  text (RFC 3629), which json-c checks more leniently. */
+ *  text (RFC 3629), which json-c checks more leniently.
+ */
 extern size_t
 jb_utf8 (char const *str,
          size_t      len);

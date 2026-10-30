@@ -1,13 +1,16 @@
-/** @file The part of the event loop (src/loop.h) that a plugin
- *  (src/plugin.h) uses.  struct loop is an incomplete type in this header,
- *  so a plugin does not depend on the members of struct loop.
+/** @file loop_export.h
+ *
+ * The part of the event loop (src/loop.h) that a plugin (src/plugin.h) uses.
+ * struct loop is an incomplete type in this header, so a plugin does not
+ * depend on the members of struct loop.
  *
  * Each exported function checks its inputs before it uses them, because a
  * plugin calls it across the boundary of a shared object.  A function that
  * returns an error number returns EFAULT for a pointer that is nullptr,
  * also for a message or a timer without a function, and EINVAL for a value
  * out of range, also for a timer whose member slot is not its place in the
- * loop's heap.  loop_now() and loop_room() return 0 for such inputs. */
+ * loop's heap.  loop_now() and loop_room() return 0 for such inputs.
+ */
 #ifndef TWINCEPTION_SRC_LOOP_EXPORT_H_
 #define TWINCEPTION_SRC_LOOP_EXPORT_H_
 
@@ -100,7 +103,8 @@ struct msg {
 
 /** A deadline in the loop's timer heap.  An object has one timer and sets
  *  it again for each of its deadlines.  It does not have one timer for
- *  each event. */
+ *  each event.
+ */
 struct loop_timer {
 	uint64_t due;   /**< the deadline in nanoseconds of CLOCK_MONOTONIC.  A
 	                     timer that is due at UINT64_MAX never fires. */
@@ -144,7 +148,8 @@ loop_timer_set (struct loop       *loop,
 /** Removes @p timer from the heap of @p loop.  It does nothing if the timer
  *  is not in the heap.  Returns 0, EFAULT if @p loop or @p timer is
  *  nullptr, or EINVAL if the member slot of @p timer is not 0 and is not the
- *  timer's place in the heap. */
+ *  timer's place in the heap.
+ */
 EXPORT
 extern int
 loop_timer_stop (struct loop       *loop,
@@ -152,14 +157,16 @@ loop_timer_stop (struct loop       *loop,
 
 /** Returns the time at which the current turn of @p loop began, in
  *  nanoseconds of CLOCK_MONOTONIC.  loop_timer_set() uses the same clock.
- *  Returns 0 if @p loop is nullptr. */
+ *  Returns 0 if @p loop is nullptr.
+ */
 EXPORT
 extern uint64_t
 loop_now (struct loop const *loop);
 
 /** Counts @p n units of the work @p u for the step that is running.
  *  Returns 0, EFAULT if @p loop is nullptr, or EINVAL if @p u is out of
- *  range. */
+ *  range.
+ */
 EXPORT
 extern int
 loop_work (struct loop    *loop,
@@ -168,7 +175,8 @@ loop_work (struct loop    *loop,
 
 /** Returns the number of units of the work @p u that the step that is
  *  running may still do.  Returns 0 if @p loop is nullptr or @p u is out of
- *  range. */
+ *  range.
+ */
 EXPORT
 extern uint64_t
 loop_room (struct loop const *loop,

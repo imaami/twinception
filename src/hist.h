@@ -1,4 +1,6 @@
-/** @file Log-linear latency histogram with HdrHistogram-style bucketing.
+/** @file hist.h
+ *
+ * Log-linear latency histogram with HdrHistogram-style bucketing.
  *
  * Values are nanoseconds.  The first @ref HIST_SUB values are counted exactly;
  * above that each power-of-two octave is split into @ref HIST_SUB linear
@@ -36,11 +38,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum {
-	HIST_SIG_BITS = 7,                      /**< ~0.8 % relative resolution */
-	HIST_SUB      = 1 << HIST_SIG_BITS,     /**< linear sub-buckets per octave */
-	HIST_OCTAVES  = 64 - HIST_SIG_BITS,     /**< octaves a uint64 ns value spans */
-	HIST_BUCKETS  = (HIST_OCTAVES + 1) * HIST_SUB,
+#include "compat.h"
+
+enum : unsigned {
+	HIST_SIG_BITS = 7U,                      /**< ~0.8 % relative resolution */
+	HIST_SUB      = 1U << HIST_SIG_BITS,     /**< linear sub-buckets per octave */
+	HIST_OCTAVES  = 64U - HIST_SIG_BITS,     /**< octaves a uint64 ns value spans */
+	HIST_BUCKETS  = (HIST_OCTAVES + 1U) * HIST_SUB,
 };
 
 /** Bucketed value counts plus exact count, sum and extrema. */
@@ -53,32 +57,39 @@ struct hist {
 };
 
 /** Initialize @p h, empty, in storage just allocated (the file's note on
- *  atomics); hist_clear() empties it after that. */
+ *  atomics); hist_clear() empties it after that.
+ */
 static inline void
 hist_init (struct hist *h)
 {
-	atomic_init(&h->count, 0);
-	atomic_init(&h->sum, 0);
-	atomic_init(&h->min, 0);
-	atomic_init(&h->max, 0);
-	for (size_t i = 0; i < HIST_BUCKETS; ++i)
-		atomic_init(&h->bucket[i], 0);
+	atomic_init(&h->count, 0U);
+	atomic_init(&h->sum, 0U);
+	atomic_init(&h->min, 0U);
+	atomic_init(&h->max, 0U);
+
+	for (size_t i = 0; i < array_size(h->bucket); ++i) {
+		atomic_init(&h->bucket[i], 0U);
+	}
 }
 
 /** Empty @p h; only the histogram's one writer may. */
 static inline void
 hist_clear (struct hist *h)
 {
-	atomic_store_explicit(&h->count, 0, memory_order_relaxed);
-	atomic_store_explicit(&h->sum, 0, memory_order_relaxed);
-	atomic_store_explicit(&h->min, 0, memory_order_relaxed);
-	atomic_store_explicit(&h->max, 0, memory_order_relaxed);
-	for (size_t i = 0; i < HIST_BUCKETS; ++i)
-		atomic_store_explicit(&h->bucket[i], 0, memory_order_relaxed);
+	atomic_store_explicit(&h->count, 0U, memory_order_relaxed);
+	atomic_store_explicit(&h->sum, 0U, memory_order_relaxed);
+	atomic_store_explicit(&h->min, 0U, memory_order_relaxed);
+	atomic_store_explicit(&h->max, 0U, memory_order_relaxed);
+
+	for (size_t i = 0; i < array_size(h->bucket); ++i) {
+		atomic_store_explicit(&h->bucket[i], 0U,
+		                      memory_order_relaxed);
+	}
 }
 
 /** A relaxed load of @p p, for readers of a histogram or a single-writer
- *  counter. */
+ *  counter.
+ */
 static inline uint64_t
 hist_get (_Atomic uint64_t const *p)
 {
@@ -93,27 +104,36 @@ hist_add (_Atomic uint64_t *p,
 	atomic_store_explicit(p, hist_get(p) + n, memory_order_relaxed);
 }
 
+#define clz64(x) (unsigned)(_Generic(*(typeof(x) *)0,               \
+        long: __builtin_clzl, unsigned long long: __builtin_clzll,  \
+        unsigned long: __builtin_clzl, long long: __builtin_clzll)) \
+        (_Generic(*(typeof(x) *)0,                                  \
+                  unsigned long: (x), long long: (typeof(1ULL))(x), \
+                  unsigned long long: (x), long: (typeof(1UL))(x)))
+
 /** The bucket index a value falls in: a linear floor, then octave + offset. */
-static inline size_t
+static const_inline size_t
 hist_index (uint64_t v)
 {
 	if (v < HIST_SUB)
 		return (size_t)v;
-	int octave = 63 - __builtin_clzll(v) - HIST_SIG_BITS;
-	uint64_t sub = (v - ((uint64_t)HIST_SUB << octave)) >> octave;
-	return (size_t)(octave + 1) * HIST_SUB + (size_t)sub;
+	unsigned const x = 63U - clz64(v) - HIST_SIG_BITS;
+	uint64_t const y = (v - ((uint64_t)HIST_SUB << x)) >> x;
+	return (size_t)((x + 1U) * (uint64_t)HIST_SUB + y);
 }
 
+#undef clz64
+
 /** Midpoint of a bucket's value range, for reporting a percentile. */
-static inline uint64_t
-hist_value (size_t idx)
+static const_inline uint64_t
+hist_value (size_t i)
 {
-	if (idx < HIST_SUB)
-		return idx;
-	int octave = (int)(idx / HIST_SUB) - 1;
-	uint64_t sub = idx % HIST_SUB;
-	uint64_t low = ((uint64_t)HIST_SUB << octave) + (sub << octave);
-	return low + ((uint64_t)1 << octave) / 2;
+	if (i < HIST_SUB)
+		return i;
+	unsigned const x = i / HIST_SUB - 1U;
+	return ((uint64_t)(i % HIST_SUB) << x)
+	     + ((uint64_t)     HIST_SUB  << x)
+	     + ((uint64_t)1              << x) / 2U;
 }
 
 /** Record @p v; only the histogram's one writer may. */
@@ -134,10 +154,10 @@ hist_record (struct hist *h,
 /** How many recorded values lie above @p v, to the bucket resolution. */
 static inline uint64_t
 hist_above (struct hist const *h,
-            uint64_t           v)
+            uint64_t const     v)
 {
-	uint64_t n = 0;
-	for (size_t i = hist_index(v) + 1; i < HIST_BUCKETS; ++i)
+	uint64_t n = 0U;
+	for (size_t i = hist_index(v) + 1U; i < array_size(h->bucket); ++i)
 		n += hist_get(&h->bucket[i]);
 	return n;
 }
@@ -148,20 +168,24 @@ hist_pct (struct hist const *h,
           double             p)
 {
 	uint64_t count = hist_get(&h->count);
-	uint64_t max = hist_get(&h->max);
 	if (!count)
 		return 0;
+
 	uint64_t rank = (uint64_t)((double)count * p + 0.5);
-	if (rank < 1)
-		rank = 1;
-	uint64_t seen = 0;
-	for (size_t i = 0; i < HIST_BUCKETS; ++i) {
+	if (!rank)
+		rank = 1U;
+
+	uint64_t max = hist_get(&h->max);
+
+	uint64_t seen = 0U;
+	for (size_t i = 0U; i < array_size(h->bucket); ++i) {
 		seen += hist_get(&h->bucket[i]);
 		if (seen >= rank) {
-			uint64_t v = hist_value(i);
-			return v > max ? max : v;
+			uint64_t val = hist_value(i);
+			return val > max ? max : val;
 		}
 	}
+
 	return max;
 }
 

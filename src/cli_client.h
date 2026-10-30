@@ -1,4 +1,7 @@
-/** @file Unix-socket MCP connection, independent of terminal and history. */
+/** @file cli_client.h
+ *
+ * Unix-socket MCP connection, independent of terminal and history.
+ */
 #ifndef TWINCEPTION_SRC_CLI_CLIENT_H_
 #define TWINCEPTION_SRC_CLI_CLIENT_H_
 
@@ -35,7 +38,8 @@ typedef int cli_client_report_fn (struct cli_client *client,
                                   struct cstr_view    detail);
 
 /** Strings and the catalog are owned; network is borrowed. The client and
- * its protocol callbacks are confined to the UI thread. */
+ * its protocol callbacks are confined to the UI thread.
+ */
 struct cli_client {
 	struct dstr            socket;
 	struct dstr            session;
@@ -81,7 +85,8 @@ cli_client_notify_fn (void               *context,
                       struct cli_error   *error);
 
 /** Consumes params on every path. On success the caller owns *result;
- * on failure *result is null. Notifications borrow their event. */
+ * on failure *result is null. Notifications borrow their event.
+ */
 extern int
 cli_client_rpc (struct cli_client     *client,
                 char const            *method,
@@ -98,7 +103,8 @@ typedef void cli_client_done_fn (void                   *context,
                                  struct cli_error const *error);
 
 /** Consumes params. Success schedules exactly one completion; failure does
- * not call done. The returned network request ID supports cancellation. */
+ * not call done. The returned network request ID supports cancellation.
+ */
 extern int
 cli_client_submit (struct cli_client    *client,
                    char const           *method,

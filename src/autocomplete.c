@@ -1211,7 +1211,8 @@ autocomplete_match_compare (struct autocomplete_match const *a,
 }
 
 /** Heapsort keeps the bounded completion table off the allocator. libc
- * qsort may allocate a merge buffer even when all strings are borrowed. */
+ * qsort may allocate a merge buffer even when all strings are borrowed.
+ */
 static void
 autocomplete_match_sink (struct autocomplete_match *matches,
                          size_t                     count,

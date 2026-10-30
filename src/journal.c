@@ -1,4 +1,7 @@
-/** @file The durable transcript writer (journal.h). */
+/** @file journal.c
+ *
+ * The durable transcript writer.
+ */
 #define _GNU_SOURCE
 
 #include <dirent.h>
@@ -40,7 +43,8 @@ enum {
 };
 
 /* The time a git of the journal may take, and then its grace from SIGTERM,
- * which has it remove its lock files, to SIGKILL. */
+ * which has it remove its lock files, to SIGKILL.
+ */
 static constexpr uint64_t JOURNAL_GIT_NS = 10 * NS;
 static constexpr uint64_t JOURNAL_GRACE_NS = NS;
 
@@ -140,7 +144,8 @@ journal_id (char const *id)
 }
 
 /* The length of the object name that is all of git's output @p out but for
- * its newline, which this replaces with a NUL; 0 if @p out is not that. */
+ * its newline, which this replaces with a NUL; 0 if @p out is not that.
+ */
 static size_t
 journal_oid (char *out)
 {
@@ -202,7 +207,8 @@ journal_directory (int         parent,
 }
 
 /* Make sure only askai's user may change the directory open as @p fd,
- * which no one else may read either. */
+ * which no one else may read either.
+ */
 static int
 journal_private (int fd)
 {

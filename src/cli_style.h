@@ -1,4 +1,7 @@
-/** @file Terminal styles identified by index, with one shared SGR palette. */
+/** @file cli_style.h
+ *
+ * Terminal styles identified by index, with one shared SGR palette.
+ */
 #ifndef TWINCEPTION_SRC_CLI_STYLE_H_
 #define TWINCEPTION_SRC_CLI_STYLE_H_
 
@@ -41,7 +44,8 @@ extern struct cstr_view
 cli_style_sequence (enum cli_style style);
 
 /** The sequences of all styles, indexed by style, or with !color one whose
- * sequences are all empty. */
+ * sequences are all empty.
+ */
 extern struct cli_style_entry const *
 cli_style_palette (bool color);
 

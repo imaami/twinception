@@ -297,14 +297,16 @@ dstr (char const *const str)
 
 /* `x` if it is a string literal of at most `n` bytes, otherwise "": the
  * branches of __builtin_choose_expr() that aren't taken are still type
- * checked. Internal; stays defined (see 7) */
+ * checked. Internal; stays defined (see 7)
+ */
 # define dstr_fit_(x, n) \
   __builtin_choose_expr( \
     dstr_is_literal_(x) && sizeof (__typeof__(x)) <= (n), x, "")
 
 /* Initializer for a string literal: a constant if it fits in place
  * (the meta byte of a full one is its terminator), otherwise allocated
- * without measuring. Internal; stays defined (see 7) */
+ * without measuring. Internal; stays defined (see 7)
+ */
 # define dstr_literal_(x) \
   __builtin_choose_expr( \
     sizeof (__typeof__(x)) < sizeof (struct dstr), \

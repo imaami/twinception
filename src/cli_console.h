@@ -52,7 +52,8 @@ extern bool
 cli_console_queued (struct cli_console const *console);
 
 /** Yield an interactive read once with EAGAIN, preserving its draft and
- * editor. Accepted lines and EOF take priority. Simple input is unaffected. */
+ * editor. Accepted lines and EOF take priority. Simple input is unaffected.
+ */
 extern void
 cli_console_yield (struct cli_console *console);
 
@@ -64,7 +65,8 @@ extern void
 cli_console_destroy (struct cli_console **console);
 
 /** Candidates are borrowed until the next callback. Their suffixes after
- * the cursor must be identical, unchanged suffixes of the input line. */
+ * the cursor must be identical, unchanged suffixes of the input line.
+ */
 typedef int
 cli_console_complete_fn (void                             *context,
                          struct cstr_view                  line,
@@ -93,7 +95,8 @@ cli_console_set_immediate (struct cli_console       *console,
 
 /** Take an immediate command outside Readline, preserving a queued prompt.
  * text has no appended newline. An occupied slot survives allocation errors.
- * ready is false while Readline is active or when no command is pending. */
+ * ready is false while Readline is active or when no command is pending.
+ */
 extern int
 cli_console_take_immediate (struct cli_console *console,
                             struct dstr        *text,
@@ -101,7 +104,8 @@ cli_console_take_immediate (struct cli_console *console,
 
 /** Read accepted lines in order, then EOF. The queue holds at most 32 lines
  * and 16 MiB; rejection keeps the editable draft and aborts a running macro.
- * EAGAIN yields without ending the editor. On error text is empty. */
+ * EAGAIN yields without ending the editor. On error text is empty.
+ */
 extern int
 cli_console_read (struct cli_console *console,
                   struct dstr        *text,
@@ -131,7 +135,8 @@ struct cli_console_span {
 
 /** Write the spans, each in its style, as cli_console_write() does, in one
  * output request; the display ends in the reset style.  A span with a style
- * past the last of enum cli_style is EINVAL, and nothing is written. */
+ * past the last of enum cli_style is EINVAL, and nothing is written.
+ */
 extern int
 cli_console_print (struct cli_console            *console,
                    struct cli_console_span const *spans,

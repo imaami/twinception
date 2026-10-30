@@ -1,8 +1,11 @@
-/** @file askai's configuration (config.h): the command line, and the
- *  configuration file, whose objects' members are applied as the long
- *  options of their names are, and the members of the objects of the
- *  built-in tools in its member tools as their options, before the command
- *  line's. */
+/** @file config.c
+ *
+ * askai's configuration (config.h): the command line, and the
+ * configuration file, whose objects' members are applied as the long
+ * options of their names are, and the members of the objects of the
+ * built-in tools in its member tools as their options, before the command
+ * line's.
+ */
 #define _GNU_SOURCE /* vasprintf() */
 #include <errno.h>
 #include <fcntl.h>
@@ -62,7 +65,8 @@ static char const *const provider_names[] = {
 /* What each provider has: its URL for each API it serves, Gemini's
  * generateContent's followed by the model and ":streamGenerateContent"; the
  * variables tried for its key, at its own URLs only; and its default API.
- * No provider's are those of a URL that --url gives. */
+ * No provider's are those of a URL that --url gives.
+ */
 static struct {
 	char const  *url[ARRAY_SIZE(api_names)];
 	char const  *keys[2];
@@ -406,7 +410,8 @@ config_usage (struct config const *cfg,
 
 /* @p str, a count from @p min to @p max in decimal digits, in @p *value; for
  * a count of @p bytes, the digits may end in K, M or G for KiB, MiB or GiB.
- * EINVAL if it is not one. */
+ * EINVAL if it is not one.
+ */
 static int
 config_parse_count (char const *str,
                     uint64_t    min,
@@ -488,7 +493,8 @@ static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
 
 /* The objects of the configuration file that contain the options, and
  * TOOLS for the options that an object of a built-in tool in the member
- * tools contains (tool_members[]). */
+ * tools contains (tool_members[]).
+ */
 enum config_group : uint8_t {
 	GROUP_NONE, GROUP_UPSTREAM, GROUP_SERVICE, GROUP_TESTING, GROUP_DEBUGGING,
 	GROUP_TOOLS, GROUP_ROOT
@@ -503,7 +509,8 @@ static char const *const group_names[] = {
 
 /* Each option: the object of the configuration file that contains it, NONE
  * for the two that the file cannot set; its long name; whether it takes an
- * argument; and its short form or OPT_ value. */
+ * argument; and its short form or OPT_ value.
+ */
 #define CONFIG_OPTIONS(X)                                                         \
         X(ROOT,      "participant",      required_argument, OPT_PARTICIPANT)      \
         X(ROOT,      "transcripts",      required_argument, OPT_TRANSCRIPTS)      \
@@ -582,7 +589,8 @@ static enum config_group const groups[] = { CONFIG_OPTIONS(CONFIG_GROUP) };
 
 /* The member of the configuration file that sets each option of the group
  * TOOLS: the object of its built-in tool in the member tools, and its name
- * in that object. */
+ * in that object.
+ */
 static struct {
 	char const *tool;
 	char const *name;
@@ -600,7 +608,8 @@ enum { FILE_MAX = 1 << 20 };
 
 /* Say what is wrong, as of the configuration file @p where unless that is
  * nullptr: on stderr, or in the log on a reload.  Returns 2, the exit status
- * for an invalid option or environment. */
+ * for an invalid option or environment.
+ */
 [[gnu::format(printf, 3, 4)]]
 static int
 config_complain (struct config const *cfg,
@@ -642,7 +651,8 @@ config_option (int opt)
 }
 
 /* Append @p item to the nullptr-terminated @p list of @p *n items, which
- * has room for it (config_lists()). */
+ * has room for it (config_lists()).
+ */
 static void
 config_push (char const **list,
              size_t       *n,
@@ -668,7 +678,8 @@ config_aprintf (char const *fmt,
 }
 
 /* The index of @p name among the @p n @p names, which begin at 1; 0 if it
- * is none of them. */
+ * is none of them.
+ */
 static size_t
 config_find (char const *const *names,
              size_t             n,
@@ -686,7 +697,8 @@ config_find (char const *const *names,
  * default serializer of json-c, which prints the value of the double.  The
  * parser of json-c sets for each double a serializer that prints the text
  * of the number as the parser read it, and json-c reads some numbers that
- * JSON does not allow, such as "1.". */
+ * JSON does not allow, such as "1.".
+ */
 static int
 config_extra_number (struct json_object *val,
                       int,
@@ -705,7 +717,8 @@ config_extra_number (struct json_object *val,
 
 /* Set the sampling temperature to @p arg, a finite number not below 0.
  * @p where is the path of the configuration file that contains @p arg, or
- * nullptr if @p arg is from the command line. */
+ * nullptr if @p arg is from the command line.
+ */
 static int
 config_apply_temperature (struct config *cfg,
                           char const    *arg,
@@ -730,7 +743,8 @@ config_apply_temperature (struct config *cfg,
 /* Set the object that is merged into each request body to @p arg, a JSON
  * object whose numbers are finite.  @p where is the path of the
  * configuration file that contains @p arg, or nullptr if @p arg is from the
- * command line. */
+ * command line.
+ */
 static int
 config_apply_extra (struct config *cfg,
                     char const    *arg,
@@ -753,7 +767,8 @@ config_apply_extra (struct config *cfg,
 
 /* How each numeric option is taken: the member of struct config at @p at,
  * of @p width bytes, takes a count from @p min to @p max, in bytes if
- * @p bytes, times @p scale; the option also sets the CFG_ flags @p flag. */
+ * @p bytes, times @p scale; the option also sets the CFG_ flags @p flag.
+ */
 static struct config_number {
 	uint64_t min;
 	uint64_t max;
@@ -809,7 +824,8 @@ static struct config_number {
 
 /* Apply the numeric option @p opt with @p arg, given in the configuration
  * file @p where, or on the command line if that is nullptr; returns 0, or 2,
- * having said why if @p opt is one. */
+ * having said why if @p opt is one.
+ */
 static int
 config_apply_number (struct config *cfg,
                      int            opt,
@@ -844,7 +860,8 @@ config_apply_number (struct config *cfg,
 
 /* Apply option @p opt with @p arg, given in the configuration file @p where,
  * or on the command line if that is nullptr; returns 0, or 2, having said
- * why. */
+ * why.
+ */
 static int
 config_apply (struct config *cfg,
               int            opt,
@@ -939,7 +956,8 @@ config_apply (struct config *cfg,
 }
 
 /* Say that @p val, a member of the configuration file or an element of one,
- * is no value of option @p o; returns 2. */
+ * is no value of option @p o; returns 2.
+ */
 static int
 config_invalid (struct config const *cfg,
                 struct option const *o,
@@ -951,7 +969,8 @@ config_invalid (struct config const *cfg,
 
 /* The argument that @p val gives option @p o, which takes one: a string, or
  * a number or, for --extra, an object, as JSON text; nullptr if it is none
- * of those. */
+ * of those.
+ */
 static char const *
 config_value_arg (struct option const *o,
                   struct json_object  *val)
@@ -973,7 +992,8 @@ config_value_arg (struct option const *o,
 
 /* Apply @p val, a member of the configuration file or an element of one, as
  * option @p o: true for an option that takes no argument, else the
- * argument config_value_arg() finds. */
+ * argument config_value_arg() finds.
+ */
 static int
 config_apply_value (struct config       *cfg,
                     struct option const *o,
@@ -993,7 +1013,8 @@ config_apply_value (struct config       *cfg,
 }
 
 /* Apply @p val, a member of the configuration file, as option @p o: a value
- * config_apply_value() takes, or an array of them for a repeatable option. */
+ * config_apply_value() takes, or an array of them for a repeatable option.
+ */
 static int
 config_apply_member (struct config       *cfg,
                      struct option const *o,
@@ -1018,7 +1039,8 @@ config_apply_member (struct config       *cfg,
 
 /* Whether @p st's file only root and askai's user may change: for a
  * directory, others may add entries to it if only their owners may remove
- * them (the sticky bit, as on /tmp). */
+ * them (the sticky bit, as on /tmp).
+ */
 static bool
 config_safe (struct stat const *st)
 {
@@ -1028,7 +1050,8 @@ config_safe (struct stat const *st)
 }
 
 /* Whether every directory above @p path is config_safe(); false if that
- * cannot be told. */
+ * cannot be told.
+ */
 static bool
 config_safe_dirs (char const *path)
 {
@@ -1089,7 +1112,8 @@ config_slurp_fd (struct config const *cfg,
  * length into @p *p_len: a regular file of FILE_MAX bytes at most that only
  * root and askai's user may change, nor replace, and that has none of the
  * permission bits @p hide, such as S_IROTH for a secret, which is wiped
- * from memory freed here.  Returns 0, or the exit status, having said why. */
+ * from memory freed here.  Returns 0, or the exit status, having said why.
+ */
 static int
 config_slurp (struct config const *cfg,
               char const          *path,
@@ -1108,7 +1132,8 @@ config_slurp (struct config const *cfg,
 }
 
 /* Say that the configuration file's @p text is not as config_json() says,
- * @p what being wrong at byte @p end; returns 2. */
+ * @p what being wrong at byte @p end; returns 2.
+ */
 static int
 config_json_fail (struct config const *cfg,
                   char const          *text,
@@ -1129,7 +1154,8 @@ config_json_fail (struct config const *cfg,
  * cfg->file.  The file must be one JSON object in strict JSON, so that tools
  * such as jq can read it.  With JSON_TOKENER_STRICT, json-c reports comments
  * and trailing commas as errors.  Only blanks may follow the object.  Returns
- * 0, or the exit status after a message about the error. */
+ * 0, or the exit status after a message about the error.
+ */
 static int
 config_json (struct config *cfg,
              char const    *text,
@@ -1155,7 +1181,8 @@ config_json (struct config *cfg,
 }
 
 /* Whether the configuration file's member @p key is of its policy, who may
- * connect and what they may do (src/policy.h), rather than an option. */
+ * connect and what they may do (src/policy.h), rather than an option.
+ */
 static bool
 config_of_policy (char const *key)
 {
@@ -1164,7 +1191,8 @@ config_of_policy (char const *key)
 }
 
 /* Whether option @p name takes effect on a reload: TLS's certificate, key
- * and key types. */
+ * and key types.
+ */
 static bool
 config_reloadable (char const *name)
 {
@@ -1172,7 +1200,8 @@ config_reloadable (char const *name)
 }
 
 /* The value of option @p o, which the file can set, in @p cfg's
- * configuration file, if it has one; nullptr if none. */
+ * configuration file, if it has one; nullptr if none.
+ */
 static struct json_object *
 config_file_value (struct config const *cfg,
                    struct option const *o)
@@ -1185,7 +1214,8 @@ config_file_value (struct config const *cfg,
 
 /* Whether @p cfg's configuration file and @p from's, if either has one, set
  * the same plugins, tools and options, but the options that take effect on
- * a reload. */
+ * a reload.
+ */
 static bool
 config_same_options (struct config const *cfg,
                      struct config const *from)
@@ -1204,7 +1234,8 @@ config_same_options (struct config const *cfg,
 }
 
 /* The values of the members of @p obj, if it is an object: the elements of
- * an array, else 1 for each member. */
+ * an array, else 1 for each member.
+ */
 static size_t
 config_values (struct json_object *obj)
 {
@@ -1223,7 +1254,8 @@ config_values (struct json_object *obj)
  * the configuration file, in its four objects of options and in the
  * objects of the tools in its member tools, and the three headers askai
  * adds, and ends in nullptr.  Returns 0, or 1 if out of memory, having said
- * so. */
+ * so.
+ */
 static int
 config_lists (struct config *cfg)
 {
@@ -1250,7 +1282,8 @@ config_lists (struct config *cfg)
 }
 
 /* The option named @p name that the configuration file can set; nullptr
- * if there is none. */
+ * if there is none.
+ */
 static struct option const *
 config_named (char const *name)
 {
@@ -1261,7 +1294,8 @@ config_named (char const *name)
 }
 
 /* The member of the configuration file's member tools that sets option
- * @p o of the group TOOLS. */
+ * @p o of the group TOOLS.
+ */
 static size_t
 config_tool_member (struct option const *o)
 {
@@ -1272,7 +1306,8 @@ config_tool_member (struct option const *o)
 }
 
 /* Say that the configuration file has option @p o outside the object that
- * contains it; returns 2. */
+ * contains it; returns 2.
+ */
 static int
 config_misplaced (struct config const *cfg,
                   struct option const *o)
@@ -1289,7 +1324,8 @@ config_misplaced (struct config const *cfg,
 }
 
 /* Whether @p name names the object of a built-in tool in the member tools
- * of the configuration file. */
+ * of the configuration file.
+ */
 static bool
 config_is_tool (char const *name)
 {
@@ -1301,7 +1337,8 @@ config_is_tool (char const *name)
 
 /* Apply the members of @p obj, the object of the built-in tool @p tool in
  * the configuration file's member tools, as the options that
- * tool_members[] names. */
+ * tool_members[] names.
+ */
 static int
 config_apply_tool (struct config      *cfg,
                    char const         *tool,
@@ -1329,7 +1366,8 @@ config_apply_tool (struct config      *cfg,
 }
 
 /* Apply the objects of the built-in tools in the configuration file's
- * member tools, if it is an object; config_allow() reads the rest of it. */
+ * member tools, if it is an object; config_allow() reads the rest of it.
+ */
 static int
 config_apply_tools (struct config *cfg)
 {
@@ -1346,7 +1384,8 @@ config_apply_tools (struct config *cfg)
 }
 
 /* Apply the members of @p obj, the configuration file's object of group
- * @p g, as the options of their names. */
+ * @p g, as the options of their names.
+ */
 static int
 config_apply_group (struct config      *cfg,
                     enum config_group   g,
@@ -1372,7 +1411,8 @@ config_apply_group (struct config      *cfg,
 /* Apply the options in the configuration file's objects upstream, service,
  * testing and debugging.  The policy's members, "plugins" and "tools" are
  * not options: policy_create(), config_registry(), config_apply_tools()
- * and config_allow() read them. */
+ * and config_allow() read them.
+ */
 static int
 config_apply_file (struct config *cfg)
 {
@@ -1395,7 +1435,8 @@ config_apply_file (struct config *cfg)
 }
 
 /* Read the configuration file, which config_slurp() reads, as config_json()
- * says, make room for the lists, and apply the file's options. */
+ * says, make room for the lists, and apply the file's options.
+ */
 static int
 config_file (struct config *cfg)
 {
@@ -1417,7 +1458,8 @@ config_file (struct config *cfg)
 
 /* Check the limits on clients against each other.  A body limit that
  * --max-body did not give shrinks to the budgets for the bodies, so that a
- * configuration that lowers a budget does not stop askai. */
+ * configuration that lowers a budget does not stop askai.
+ */
 static int
 config_check (struct config *cfg)
 {
@@ -1439,7 +1481,8 @@ config_check (struct config *cfg)
 }
 
 /* Whether @p path is a work tree's top or a git directory, so that git
- * finds no repository around it. */
+ * finds no repository around it.
+ */
 static bool
 config_git_repo (char const *path)
 {
@@ -1454,7 +1497,8 @@ config_git_repo (char const *path)
 }
 
 /* Check that repository @p i is one config_git_repo() is true of, named
- * apart from those before it. */
+ * apart from those before it.
+ */
 static int
 config_check_git (struct config const *cfg,
                   size_t               i)
@@ -1492,7 +1536,8 @@ config_check_gits (struct config const *cfg)
 }
 
 /* Settle the upstream's API, unless --api chose it: its provider's default.
- * A provider must serve it; with none, --url must say where it is. */
+ * A provider must serve it; with none, --url must say where it is.
+ */
 static int
 config_api (struct config *cfg)
 {
@@ -1523,7 +1568,8 @@ config_check_upstream (struct config const *cfg)
 }
 
 /* Checks that only root and askai's user can make the directory of the
- * notes, which does not exist yet, in the directory above it. */
+ * notes, which does not exist yet, in the directory above it.
+ */
 static int
 config_check_notes_parent (struct config const *cfg)
 {
@@ -1546,7 +1592,8 @@ config_check_notes_parent (struct config const *cfg)
 
 /* Checks the directory of the notes, if --notes names one.  Only root and
  * askai's user may be able to change it, or to make it if it does not
- * exist. */
+ * exist.
+ */
 static int
 config_check_notes (struct config const *cfg)
 {
@@ -1569,7 +1616,8 @@ config_check_notes (struct config const *cfg)
 
 /* A repository is the session; a participant keeps the same writer identity
  * across restarts.  Resolve the transcript location once, before any service
- * opens it.  The journal validates and creates its parent directories. */
+ * opens it.  The journal validates and creates its parent directories.
+ */
 static int
 config_session (struct config *cfg)
 {
@@ -1667,7 +1715,8 @@ config_key_usual (struct config const *cfg,
 }
 
 /* Point the upstream at the provider's own URL for its API: for Gemini's
- * generateContent, at the model's method that streams, in SSE. */
+ * generateContent, at the model's method that streams, in SSE.
+ */
 static int
 config_url_own (struct config *cfg)
 {
@@ -1687,7 +1736,8 @@ config_url_own (struct config *cfg)
 }
 
 /* The '?' or '&' that begins the alt parameter of @p query, a URL's query
- * or ""; nullptr if it has none. */
+ * or ""; nullptr if it has none.
+ */
 static char const *
 config_url_alt (char const *query)
 {
@@ -1696,7 +1746,8 @@ config_url_alt (char const *query)
 }
 
 /* Gemini streams from :streamGenerateContent, in SSE with alt=sse, whatever
- * alt the URL that --url gives had. */
+ * alt the URL that --url gives had.
+ */
 static int
 config_url_generate (struct config *cfg)
 {
@@ -1733,7 +1784,8 @@ config_url_generate (struct config *cfg)
 
 /* Add the headers that askai sends unless they are given: the API key's
  * with @p key, unless that is nullptr, anthropic-version for Messages, and
- * User-Agent. */
+ * User-Agent.
+ */
 static int
 config_headers (struct config *cfg,
                 char const    *key)
@@ -1770,7 +1822,8 @@ config_upstream (struct config *cfg)
 
 /* Make TLS's context of the certificate chain of @p chain_len bytes at
  * @p chain and the key that --tls-key's file holds, which none but its owner
- * and its group may read, wiped once read. */
+ * and its group may read, wiped once read.
+ */
 static int
 config_tls_key (struct config *cfg,
                 char const    *chain,
@@ -1795,7 +1848,8 @@ config_tls_key (struct config *cfg,
 }
 
 /* Make the TLS listeners' context from the certificate chain's file and its
- * key's, the chain wiped once read too, as one file may hold the two. */
+ * key's, the chain wiped once read too, as one file may hold the two.
+ */
 static int
 config_tls (struct config *cfg)
 {
@@ -1815,7 +1869,8 @@ config_tls (struct config *cfg)
 
 /* Add the listen address 127.0.0.1:8090 if cfg->listens is empty.  Refuse a
  * listen address that httpd_listen_addr() cannot parse.  If an address begins with
- * "tls:", make the TLS context. */
+ * "tls:", make the TLS context.
+ */
 static int
 config_listens (struct config *cfg)
 {
@@ -1835,7 +1890,8 @@ config_listens (struct config *cfg)
 }
 
 /* Note that ASKAI_TOKEN goes unused if the configuration file names who may
- * connect, but on a reload. */
+ * connect, but on a reload.
+ */
 static void
 config_note_token (struct config const *cfg)
 {
@@ -1854,7 +1910,8 @@ config_note_token (struct config const *cfg)
 /* Checks the plugin file at @p path.  Only root and askai's user may change
  * the file and the directories above it.  The path must be the file's real
  * path, so it has no symbolic link.  Then nobody else can replace the file
- * between this check and the dlopen() in plugin.c. */
+ * between this check and the dlopen() in plugin.c.
+ */
 static int
 config_check_plugin (struct config const *cfg,
                      char const          *path)
@@ -1882,7 +1939,8 @@ config_check_plugin (struct config const *cfg,
  * "plugins", and adds its tools to the registry.  The element is the
  * absolute path of the plugin, or an object.  The object's member "path" is
  * that path, and its member "options", if it has one, is an object of the
- * plugin's options.  The object has no other member. */
+ * plugin's options.  The object has no other member.
+ */
 static int
 config_plugin (struct config      *cfg,
                struct json_object *v)
@@ -1932,7 +1990,8 @@ config_plugin (struct config      *cfg,
  * of the plugins that the configuration file lists in "plugins", loaded in
  * the order of the array.  A reload adds only askai's own
  * tools, so that it refuses the same --tool-name as a start does.  A reload
- * loads no plugin, and config_policy() reads the registry of cfg->running. */
+ * loads no plugin, and config_policy() reads the registry of cfg->running.
+ */
 static int
 config_registry (struct config *cfg)
 {
@@ -1959,7 +2018,8 @@ config_registry (struct config *cfg)
 /* The configuration whose tools the roles of @p cfg name: the running one
  * on a reload, else @p cfg.  The names of all its tools go into @p tools,
  * by id, and the mask of the tools that a role can grant and askai can lend
- * to the upstream goes into @p *upstream. */
+ * to the upstream goes into @p *upstream.
+ */
 static struct config const *
 config_tools (struct config const *cfg,
               char const          *tools[static TOOL_MAX],
@@ -1982,7 +2042,8 @@ config_tools (struct config const *cfg,
 
 /* Say that @p v, in the member tools of the configuration file, is no
  * name of a tool of the @p n tools @p tools that it may name: all but the
- * ask tool, the first.  Returns 2. */
+ * ask tool, the first.  Returns 2.
+ */
 static int
 config_allow_none (struct config const *cfg,
                    char const          *where,
@@ -2005,7 +2066,8 @@ config_allow_none (struct config const *cfg,
 }
 
 /* The mask, in @p *mask, of the tools that @p list names, an array of names
- * of the @p n tools @p tools, the ask tool aside. */
+ * of the @p n tools @p tools, the ask tool aside.
+ */
 static int
 config_allow_names (struct config const *cfg,
                     char const          *where,
@@ -2033,7 +2095,8 @@ config_allow_names (struct config const *cfg,
  * none for false, those of a list, those of the member allow, or all but
  * those of the member deny.  The ask tool is not counted.  With @p top,
  * @p spec is the member tools itself, whose objects of the built-in tools
- * are skipped (config_apply_tools()). */
+ * are skipped (config_apply_tools()).
+ */
 static int
 config_allow_form (struct config const *cfg,
                    char const          *where,
@@ -2076,7 +2139,8 @@ config_allow_form (struct config const *cfg,
 }
 
 /* As config_allow_form(), and the mask must not have background without
- * jobs, with which the output of a job is read. */
+ * jobs, with which the output of a job is read.
+ */
 static int
 config_allow_spec (struct config const *cfg,
                    char const          *where,
@@ -2095,7 +2159,8 @@ config_allow_spec (struct config const *cfg,
 }
 
 /* Check that the member tools @p v, an object with the member client or
- * upstream, has no other member but the objects of the built-in tools. */
+ * upstream, has no other member but the objects of the built-in tools.
+ */
 static int
 config_allow_parts (struct config const *cfg,
                     struct json_object  *v)
@@ -2117,7 +2182,8 @@ config_allow_parts (struct config const *cfg,
  * and the upstream, of the tools that config_tools() names.  Without the
  * member, it allows all.  It is one form of config_allow_spec() for both,
  * or an object with the members client and upstream, either of which may be
- * missing, each one of those forms for its own. */
+ * missing, each one of those forms for its own.
+ */
 static int
 config_allow (struct config *cfg)
 {
@@ -2152,7 +2218,8 @@ config_allow (struct config *cfg)
 
 /* The ask tool's description, unless one is given: with the sentences
  * about tools and notes if the turns of a role that grants every tool get
- * any tool and the tool notes. */
+ * any tool and the tool notes.
+ */
 static int
 config_description (struct config *cfg)
 {
@@ -2191,7 +2258,8 @@ config_description (struct config *cfg)
 
 /* Make the policy, who may connect and what they may do, of the tools from
  * config_tools() that a role can grant, and that the member tools of the
- * running configuration allows clients. */
+ * running configuration allows clients.
+ */
 static int
 config_policy (struct config *cfg)
 {
@@ -2319,7 +2387,8 @@ config_defaults (int   argc,
 }
 
 /* Read the command line and the file it names into @p cfg, as config()
- * says. */
+ * says.
+ */
 static int
 config_parse (struct config *cfg)
 {
@@ -2369,7 +2438,8 @@ config_reload (struct config       *cfg,
 }
 
 /* Log @p url as the item @p name, without its user, password and query,
- * which can have secrets. */
+ * which can have secrets.
+ */
 static void
 config_log_url (char const *name,
                 char const *url)
@@ -2381,7 +2451,8 @@ config_log_url (char const *name,
 
 /* Log where the turns' attach action uploads the notes, which needs an API
  * that takes files (ai_upload()) at a URL of its API (ai_upload_url()),
- * --notes and --upstream-tools. */
+ * --notes and --upstream-tools.
+ */
 static void
 config_log_files (struct config const *cfg)
 {

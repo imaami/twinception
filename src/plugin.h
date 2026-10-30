@@ -1,6 +1,8 @@
-/** @file Plugins.  A plugin provides kinds of tool (src/tool.h).  The calls
- *  of its tools use the call API of src/mcp.h.  The man tool and the git
- *  tool are plugins that are built into askai.
+/** @file plugin.h
+ *
+ * Plugins. A plugin provides kinds of tool (src/tool.h).  The calls
+ * of its tools use the call API of src/mcp.h. The man tool and the git
+ * tool are plugins that are built into askai.
  *
  * Every other plugin is a shared object that askai's make rules build
  * (src/NAME.so.mk).  The configuration file lists the plugins in its member
@@ -67,7 +69,8 @@
  *  interface changes and no PLUGIN_ABI() value changes.  An example is a
  *  function whose behavior changes while its declaration stays the same.
  *  PLUGIN_MANIFEST() stores it in the manifest so that askai does not load
- *  a plugin that was built with a different value. */
+ *  a plugin that was built with a different value.
+ */
 static constexpr uint32_t PLUGIN_EPOCH = 4;
 
 /** The largest value of instance_size, in bytes. */
@@ -100,13 +103,15 @@ typedef int plugin_instance_init_fn (void        *instance,
  *  to, and it stops the instance's timers.  askai frees the bytes of the
  *  instance itself.  askai calls the function on the thread of the
  *  instance's loop, when no call uses the instance and no function of the
- *  plugin is running. */
+ *  plugin is running.
+ */
 typedef void plugin_instance_fini_fn (void *instance);
 
 /** Frees memory that @p instance has allocated only for reuse, at most
  *  @p max LOOP_RELEASE units.  askai calls it under memory pressure of the
  *  level @p level.  Returns the number of units freed.  It returns 0 when
- *  the instance has no such memory left. */
+ *  the instance has no such memory left.
+ */
 typedef size_t plugin_relieve_fn (void              *instance,
                                   enum buf_pressure  level,
                                   size_t             max);
@@ -135,7 +140,8 @@ typedef int plugin_configure_fn (void               *config,
                                  size_t              len);
 
 /** The largest number of kinds that a plugin has.  It equals the number of
- *  tool names that a manifest has room for. */
+ *  tool names that a manifest has room for.
+ */
 static constexpr unsigned PLUGIN_TOOLS = MANIFEST_TOOLS;
 
 struct plugin {
@@ -169,7 +175,8 @@ struct plugin {
  *  plugin.  They can differ if askai and the plugin are built with
  *  different compilers or with different compiler options.
  *  PLUGIN_MANIFEST() stores the plugin's values in the manifest so that
- *  askai can compare them with its own. */
+ *  askai can compare them with its own.
+ */
 #define PLUGIN_ABI(X)                                                      \
         X(sizeof (void *)) X(sizeof (long)) X(alignof (max_align_t))       \
         X(sizeof (enum buf_pressure)) X(sizeof (struct tool_text))         \
@@ -273,7 +280,8 @@ plugin_loaded_create (char const         *path,
                       int                *e);
 
 /** Frees the loaded plugin *@p p_loaded and its configuration, and sets
- *  *@p p_loaded to nullptr.  The shared object stays loaded. */
+ *  *@p p_loaded to nullptr.  The shared object stays loaded.
+ */
 extern void
 plugin_loaded_destroy (struct plugin_loaded **p_loaded);
 

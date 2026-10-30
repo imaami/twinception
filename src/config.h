@@ -1,8 +1,11 @@
-/** @file askai's configuration: its command line, and the configuration
- *  file that --config names, whose objects upstream, service, testing and
- *  debugging have the options as members named as the long options are,
- *  and whose member tools has the objects of the built-in tools, the
- *  command line overriding the file (design section 9, S7). */
+/** @file config.h
+ *
+ * askai's configuration: its command line, and the configuration
+ * file that --config names, whose objects upstream, service, testing and
+ * debugging have the options as members named as the long options are,
+ * and whose member tools has the objects of the built-in tools, the
+ * command line overriding the file (design section 9, S7).
+ */
 #ifndef TWINCEPTION_SRC_CONFIG_H_
 #define TWINCEPTION_SRC_CONFIG_H_
 
@@ -152,7 +155,8 @@ extern void
 config_log (struct config const *cfg);
 
 /** Logs the policy of @p cfg (policy_log()), whose roles name the tools of
- *  the running configuration on a reload. */
+ *  the running configuration on a reload.
+ */
 extern void
 config_log_policy (struct config const *cfg);
 

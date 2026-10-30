@@ -1,7 +1,11 @@
-/** @file A plugin's manifest: an ELF note, owner "askai", in a PT_NOTE
- *  segment of the plugin's file, which askai reads before it loads the
- *  plugin (src/plugin.h).  Bytes and 32-bit words: the note's alignment of
- *  4 holds no wider member, and a pointer would need a relocation. */
+/** @file manifest.h
+ *
+ * A plugin's manifest: an ELF note, owner "askai", in a PT_NOTE
+ * segment of the plugin's file, which askai reads before it loads
+ * the plugin (src/plugin.h). Bytes and 32-bit words: the note's
+ * alignment of 4 holds no wider member, and a pointer would need
+ * a relocation.
+ */
 #ifndef TWINCEPTION_SRC_MANIFEST_H_
 #define TWINCEPTION_SRC_MANIFEST_H_
 
@@ -9,25 +13,30 @@
 #include <stdint.h>
 
 /** The note type of a manifest; a note's owner gives its types meaning. */
-static constexpr uint32_t MANIFEST_TYPE = 0x61736b01;  /* "ask", 1 */
+static constexpr uint32_t MANIFEST_TYPE = 0x61736b01; // `{1,'k','s','a'}`
 
 enum {
-	MANIFEST_ABI   = 32,  /**< layout probes at most */
-	MANIFEST_NAME  = 32,  /**< bytes of a name, its NULs included */
-	MANIFEST_NEEDS = 4,   /**< plugins one may need */
-	MANIFEST_TOOLS = 8,   /**< tools one may have */
+	MANIFEST_ABI   = 32, //!< Length of the @ref manifest::abi array
+	MANIFEST_NAME  = 32, //!< NUL-terminated size of `char[]` fields
+	MANIFEST_NEEDS =  4, //!< Max item count of @ref manifest::needs
+	MANIFEST_TOOLS =  8, //!< Max item count of @ref manifest::tools
 };
 
-/** What a plugin says of itself.  A name is 1 to 31 of [-0-9_a-z], then
- *  NULs; an entry of needs or tools is a name or all NULs, the names
- *  first, each once, and none of needs the plugin's own. */
+/**
+ * What a plugin says of itself.  A name is 1 to 31 of [-0-9_a-z], then
+ * NULs; an entry of needs or tools is a name or all NULs, the names
+ * first, each once, and none of needs the plugin's own.
+ */
 struct manifest {
-	uint32_t epoch;                                 /**< PLUGIN_EPOCH */
-	uint32_t abi[MANIFEST_ABI];                     /**< PLUGIN_ABI(), then
-	                                                     zeros */
-	char     name[MANIFEST_NAME];
-	char     needs[MANIFEST_NEEDS][MANIFEST_NAME];  /**< plugins it needs */
-	char     tools[MANIFEST_TOOLS][MANIFEST_NAME];  /**< at least one */
+	uint32_t epoch;               //!< PLUGIN_EPOCH
+	uint32_t abi[MANIFEST_ABI];   //!< PLUGIN_ABI() followed by zeros
+	char     name[MANIFEST_NAME]; //!< Plugin name followed by NULs
+
+	/** Names of other plugins this plugin depends on; can be empty */
+	char needs[MANIFEST_NEEDS][MANIFEST_NAME];
+
+	/** Names of tools this plugin provides; must have at least one */
+	char tools[MANIFEST_TOOLS][MANIFEST_NAME];
 };
 
 /** A whole note, as the plugin's file holds it. */
@@ -35,7 +44,7 @@ struct manifest_note {
 	uint32_t        namesz;
 	uint32_t        descsz;
 	uint32_t        type;
-	char            owner[8];  /**< "askai", its NUL, and padding to 4 */
+	char            owner[8]; //!< `{'a', 's', 'k', 'a', 'i', 0, 0, 0}`
 	struct manifest desc;
 };
 

@@ -1,4 +1,7 @@
-/** @file TLS (tls.h). */
+/** @file tls.c
+ *
+ * TLS.
+ */
 #include <errno.h>
 #include <limits.h>
 #include <openssl/err.h>
@@ -13,7 +16,8 @@
 #include "util.h"
 
 /* A key's passphrase is never asked for: an encrypted key fails to load,
- * rather than have OpenSSL ask the terminal. */
+ * rather than have OpenSSL ask the terminal.
+ */
 static int
 tls_no_passphrase (char *buf,
                    int   size,
@@ -30,7 +34,8 @@ tls_no_passphrase (char *buf,
 /* HTTP/1.1, among the protocols the client offers; or else the handshake
  * fails, as RFC 7301 says.  A client that offers none speaks it too.  The
  * list is scanned by hand: SSL_select_next_proto() points at a protocol of
- * the client's even when none matches. */
+ * the client's even when none matches.
+ */
 static int
 tls_alpn (SSL                  *ssl,
           unsigned char const **out,
@@ -58,7 +63,8 @@ tls_alpn (SSL                  *ssl,
  * read ahead lies where epoll does not see it; records written one at a
  * time, from output that may move between tries; one stateless ticket, as
  * no session is cached; a client that closes without close_notify ends its
- * input, as HTTP's framing catches a cut request. */
+ * input, as HTTP's framing catches a cut request.
+ */
 static bool
 tls_ctx_set_up (SSL_CTX *ctx)
 {
@@ -76,7 +82,8 @@ tls_ctx_set_up (SSL_CTX *ctx)
 }
 
 /* The certificate chain from @p len bytes of PEM at @p pem: the leaf's, then
- * the others, which are sent as they are (NO_AUTO_CHAIN). */
+ * the others, which are sent as they are (NO_AUTO_CHAIN).
+ */
 static bool
 tls_ctx_use_chain (SSL_CTX    *ctx,
                    char const *pem,
@@ -121,7 +128,8 @@ tls_ctx_use_key (SSL_CTX    *ctx,
 }
 
 /* What is wrong with the type of @p ctx's key, or nullptr: ECDSA on a curve
- * TLS 1.3 signs with, Ed25519, or RSA if @p cfg allows it. */
+ * TLS 1.3 signs with, Ed25519, or RSA if @p cfg allows it.
+ */
 static char const *
 tls_ctx_key_type (SSL_CTX             *ctx,
                   struct config const *cfg)
@@ -149,7 +157,8 @@ tls_ctx_key_type (SSL_CTX             *ctx,
 
 /* Say in the @p len bytes at @p why that @p what failed, and OpenSSL's
  * reason, its last error, which the queue then lacks.  Returns ENOMEM if
- * OpenSSL ran out of memory, or reports no error, else EINVAL. */
+ * OpenSSL ran out of memory, or reports no error, else EINVAL.
+ */
 static int
 tls_fail (char       *why,
           size_t      len,

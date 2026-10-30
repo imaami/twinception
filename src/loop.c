@@ -1,5 +1,8 @@
-/** @file Event loop: epoll, a 4-ary timer heap, budgeted ready lists and an
- *  inbox. */
+/** @file loop.c
+ *
+ * Event loop: epoll, a 4-ary timer heap, budgeted ready lists and an
+ * inbox.
+ */
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -48,12 +51,14 @@ struct loop_slot {
 
 /* What the loop times, in ns: a turn from epoll returning to its end, an
  * interactive step and a bulk one (TIME_STEP + bulk), and how long after its
- * due time a timer fired. */
+ * due time a timer fired.
+ */
 enum { TIME_TURN, TIME_STEP, TIME_BULK, TIME_LATE, TIMINGS };
 
 /* The statistics since the last report.  The histograms come first and the
  * plain counts after them, so that a new window wipes the counts with one
- * memset() and clears the histograms by atomic stores (loop_stats_empty()). */
+ * memset() and clears the histograms by atomic stores (loop_stats_empty()).
+ */
 struct loop_stats {
 	struct hist time[TIMINGS];
 	uint64_t    over[TIMINGS];     /* those over 1 ms, counted exactly, as the
@@ -98,7 +103,8 @@ static char const *const unit_name[LOOP_UNITS] = {
 };
 
 /* Record @p ns as timing @p t in the statistics since the last report, and in
- * @p metric. */
+ * @p metric.
+ */
 static void
 loop_stats_time (struct loop_stats *s,
                  size_t             t,
@@ -111,7 +117,8 @@ loop_stats_time (struct loop_stats *s,
 }
 
 /* Empty @p s for a window of statistics: if it was just allocated, its
- * histograms are initialized, and otherwise only cleared. */
+ * histograms are initialized, and otherwise only cleared.
+ */
 static void
 loop_stats_empty (struct loop_stats *s,
                   bool               fresh)
@@ -691,7 +698,8 @@ loop_run (struct loop *loop,
 }
 
 /* Do not sleep while steps or messages are queued; otherwise until the next
- * timer. */
+ * timer.
+ */
 static struct timespec *
 loop_timeout (struct loop const *loop,
               struct timespec   *ts)

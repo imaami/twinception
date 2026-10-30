@@ -1,8 +1,10 @@
-/** @file The ledger: records of tool calls that run on after askai has
- *  answered the requests that started them.  Such a call is a task of MCP's
- *  tasks extension (2026-07-28), or a job, which a client starts with the
- *  tool background or an ask call with --background.  A client reads a
- *  record from any connection, on any loop (src/mcp.c).
+/** @file ledger.h
+ *
+ * The ledger: records of tool calls that run on after askai has
+ * answered the requests that started them.  Such a call is a task of MCP's
+ * tasks extension (2026-07-28), or a job, which a client starts with the
+ * tool background or an ask call with --background.  A client reads a
+ * record from any connection, on any loop (src/mcp.c).
  *
  * Each record has an owner and an id of 128 random bits.  The owner is a
  * 64-bit key: the principal of the client's identity or Unix user, or a
@@ -73,7 +75,8 @@ static constexpr size_t LEDGER_BYTES = 64 << 20;
 
 /** The bit of the key of an owner that is an anonymous client's address.
  *  The ledger has at most LEDGER_OWNERS / 2 such owners, so that anonymous
- *  clients cannot fill the table of owners for identities and Unix users. */
+ *  clients cannot fill the table of owners for identities and Unix users.
+ */
 static constexpr uint64_t LEDGER_ANONYMOUS = UINT64_C(1) << 63;
 
 /** Where a task stands: working, or how its call ended. */
@@ -122,7 +125,8 @@ struct ledger_timer {
 
 /** A call of an owner that waits for the owner's records' calls to end
  *  and for its timers to fire.  The ledger has a reference to it while the
- *  wait is in the ledger, and each posted message has one. */
+ *  wait is in the ledger, and each posted message has one.
+ */
 struct ledger_wait {
 	struct msg           wake;    /**< posted to loop, msg.fn the waiting
 	                                   call's, when a record of the owner
@@ -144,7 +148,8 @@ struct ledger_wait {
 };
 
 /** What ledger_list() or ledger_tell() returns of one owner, as the ledger
- *  had it under its lock. */
+ *  had it under its lock.
+ */
 struct ledger_look {
 	struct ledger_task  *tasks[LEDGER_MINE];     /**< references to records */
 	struct ledger_timer  timers[LEDGER_TIMERS];
@@ -159,7 +164,8 @@ struct ledger_look {
 
 /** A record of a task or a job.  The ledger has a reference to it while
  *  the record is in the ledger, the call one while it runs, and each
- *  reader and each posted cancel one. */
+ *  reader and each posted cancel one.
+ */
 struct ledger_task {
 	struct msg           cancel;     /**< posted to loop, msg.fn the call's,
 	                                      once a client asks to cancel the
@@ -249,7 +255,8 @@ ledger_open (struct ledger    *ledger,
  *  and errors apply, except the running limit applies only to working
  *  jobs.  EEXIST means the id is already in the ledger, under any owner:
  *  the existing record is never replaced or changed.  EINVAL also covers
- *  malformed ids, statuses and result spans.  No file I/O is performed. */
+ *  malformed ids, statuses and result spans.  No file I/O is performed.
+ */
 extern struct ledger_task *
 ledger_restore (struct ledger     *ledger,
                 uint64_t           owner,
@@ -267,13 +274,15 @@ ledger_restore (struct ledger     *ledger,
                 int               *e);
 
 /** The task's call: room for its result, of @p len bytes, to come; 0, or
- *  ENOMEM. */
+ *  ENOMEM.
+ */
 extern int
 ledger_task_reserve (struct ledger_task *task,
                      size_t              len);
 
 /** The task's call: the next @p bytes of its result; 0, or EPIPE past the
- *  room made. */
+ *  room made.
+ */
 extern int
 ledger_task_write (struct ledger_task *task,
                    struct span         bytes);
@@ -291,7 +300,8 @@ ledger_end (struct ledger      *ledger,
             enum ledger_status  status);
 
 /** The record with the id @p id, of @p len bytes, as a reference, if the
- *  record is in the ledger and its owner is @p owner; else nullptr. */
+ *  record is in the ledger and its owner is @p owner; else nullptr.
+ */
 extern struct ledger_task *
 ledger_find (struct ledger *ledger,
              uint64_t       owner,
@@ -302,14 +312,16 @@ ledger_find (struct ledger *ledger,
  *  reference.  Other references remain valid.  Returns 0, ENOENT if the
  *  id is absent or belongs to another owner, EBUSY if its call still
  *  works, or EINVAL for a null pointer or an id length other than
- *  LEDGER_ID.  Does not remove or cancel a working call. */
+ *  LEDGER_ID.  Does not remove or cancel a working call.
+ */
 extern int
 ledger_remove (struct ledger *ledger,
                uint64_t       owner,
                struct span    id);
 
 /** Ask to cancel the task: its call's loop gets the cancel, once, if the
- *  task works. */
+ *  task works.
+ */
 extern void
 ledger_task_cancel (struct ledger_task *task);
 
@@ -344,7 +356,8 @@ ledger_timer_set (struct ledger *ledger,
  *  not fired.  Returns 0, ENOENT if the owner has no such timer, EALREADY
  *  if the timer has fired and no ledger_tell() has returned it yet, or
  *  EINVAL for a null pointer.  For a fired timer that the ledger has
- *  removed LEDGER_KEEP seconds after its time, it returns ENOENT. */
+ *  removed LEDGER_KEEP seconds after its time, it returns ENOENT.
+ */
 extern int
 ledger_timer_cancel (struct ledger *ledger,
                      uint64_t       owner,
@@ -372,14 +385,16 @@ ledger_wait_enter (struct ledger  *ledger,
                    int            *e);
 
 /** The handler of the message of @p wait calls this first: from then on,
- *  the ledger can post the message again.  Does nothing for nullptr. */
+ *  the ledger can post the message again.  Does nothing for nullptr.
+ */
 extern void
 ledger_wait_heard (struct ledger_wait *wait);
 
 /** Take the wait @p *p_wait out of the ledger, drop the reference to it
  *  that ledger_wait_enter() returned, and set @p *p_wait to nullptr.  The
  *  ledger then posts the wait's message no more.  Does nothing for a null
- *  pointer. */
+ *  pointer.
+ */
 extern void
 ledger_wait_leave (struct ledger       *ledger,
                    struct ledger_wait **p_wait);
@@ -422,7 +437,8 @@ ledger_tell (struct ledger      *ledger,
              struct ledger_look *out);
 
 /** Drop the references to records in @p look, which is then empty of them.
- *  Does nothing for nullptr. */
+ *  Does nothing for nullptr.
+ */
 extern void
 ledger_look_put (struct ledger_look *look);
 

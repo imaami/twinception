@@ -1,5 +1,10 @@
-/** @file Child processes (child.h). */
-#define _GNU_SOURCE /* pipe2(), memfd_create(), POSIX_SPAWN_SETSID */
+/** @file child.c
+ *
+ * Child processes.
+ */
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE /* pipe2(), memfd_create(), POSIX_SPAWN_SETSID */
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,7 +34,8 @@ enum {
 static _Atomic uint32_t alive;
 
 /* Stop watching @p ref, which is the pidfd or the output pipe of the child,
- * and close its descriptor. */
+ * and close its descriptor.
+ */
 static void
 child_close (struct child    *c,
              struct loop_ref *ref)
@@ -42,7 +48,8 @@ child_close (struct child    *c,
 }
 
 /* Signal the child's group with @p sig, unless the child is reaped, and
- * stop reading its output. */
+ * stop reading its output.
+ */
 static void
 child_signal (struct child *c,
               int           sig)
@@ -53,7 +60,8 @@ child_signal (struct child *c,
 }
 
 /* Stop the child: a child with a grace with SIGTERM, which lets it clean
- * up (git removes its lock files), and any other with SIGKILL. */
+ * up (git removes its lock files), and any other with SIGKILL.
+ */
 static void
 child_kill (struct child *c)
 {
@@ -64,7 +72,8 @@ child_kill (struct child *c)
  * the kernel can reuse the id, so no signal goes to the group of the child
  * after this call.  A child that has not exited yet stays unreaped until
  * askai exits.  Apart from child_exited() and the error paths of
- * child_create(), only this function decrements alive. */
+ * child_create(), only this function decrements alive.
+ */
 static void
 child_reap (struct child *c)
 {
@@ -89,7 +98,8 @@ child_dispose (struct child *c)
 }
 
 /* read() @p len bytes into @p buf, from @p fd, again after a signal: the
- * bytes, or a negative error. */
+ * bytes, or a negative error.
+ */
 static ssize_t
 child_pipe_read (int     fd,
                  void   *buf,
@@ -106,7 +116,8 @@ child_pipe_read (int     fd,
 
 /* Read as much of the child's output as the step has the share for, the rest
  * in its next step, up to the cap and a byte more, which says the output
- * goes on past it.  Its end, or that byte, ends the reading. */
+ * goes on past it.  Its end, or that byte, ends the reading.
+ */
 static void
 child_read (struct child *c)
 {
@@ -153,7 +164,8 @@ child_read (struct child *c)
  * reaches a process of the group that has the output pipe open after the
  * child has exited.  If waitid() fails, the child was reaped elsewhere, and
  * the kernel can already have reused its id for another process.  So this
- * function then sets the pid to 0 without a call of waitpid(). */
+ * function then sets the pid to 0 without a call of waitpid().
+ */
 static void
 child_exited (struct child *c)
 {
@@ -170,7 +182,8 @@ child_exited (struct child *c)
 }
 
 /* Its deadline has come: SIGTERM, and SIGKILL once its grace has passed too,
- * or SIGKILL at once without one. */
+ * or SIGKILL at once without one.
+ */
 static void
 child_due (struct child *c)
 {
@@ -186,7 +199,8 @@ child_due (struct child *c)
 }
 
 /* Once the child is reaped and its output is all in, hand it to its owner,
- * or free it if the owner has let go. */
+ * or free it if the owner has let go.
+ */
 static void
 child_step (struct loop      *loop,
             struct loop_step *step)
@@ -231,7 +245,8 @@ child_late (struct loop       *loop,
 }
 
 /* Have @p fa give the child @p fd as its descriptor @p to, or /dev/null,
- * opened with @p oflag, if @p fd is -1. */
+ * opened with @p oflag, if @p fd is -1.
+ */
 static int
 child_fd (posix_spawn_file_actions_t *fa,
           int                         fd,
@@ -245,7 +260,8 @@ child_fd (posix_spawn_file_actions_t *fa,
 /* Have @p fa give the child the descriptors @p fds: its directory first, as
  * a later action may replace that descriptor; its output, its input, or
  * /dev/null for either, and its output as its error too with CHILD_STDERR in
- * @p flags, else /dev/null; the descriptor it keeps, and no other. */
+ * @p flags, else /dev/null; the descriptor it keeps, and no other.
+ */
 static int
 child_fds_actions (struct child_fds const     *fds,
                    posix_spawn_file_actions_t *fa,
@@ -266,7 +282,8 @@ child_fds_actions (struct child_fds const     *fds,
 
 /* Have @p attr give the child a session of its own, an empty signal mask
  * and every signal's default action: askai blocks every signal but the
- * faults' and ignores SIGPIPE, which a child would inherit. */
+ * faults' and ignores SIGPIPE, which a child would inherit.
+ */
 static int
 child_attr (posix_spawnattr_t *attr)
 {
@@ -284,7 +301,8 @@ child_attr (posix_spawnattr_t *attr)
 }
 
 /* Spawn @p cmd's file into @p pidfd, with the descriptors @p fds, through
- * @p fa and @p attr, fresh. */
+ * @p fa and @p attr, fresh.
+ */
 static int
 child_cmd_spawn (struct child_cmd const     *cmd,
                  posix_spawn_file_actions_t *fa,
@@ -322,7 +340,8 @@ child_cmd_exec (struct child_cmd const *cmd,
 }
 
 /* A file in memory that holds the bytes of @p in, read from its start, in
- * @p *fd; 0 or an error. */
+ * @p *fd; 0 or an error.
+ */
 static int
 child_input (struct span  in,
              int         *fd)
@@ -341,7 +360,8 @@ child_input (struct span  in,
 }
 
 /* Kill and reap @p pidfd's process, which could not be watched, at once;
- * returns @p e. */
+ * returns @p e.
+ */
 static int
 child_unwatched (int pidfd,
                  int e)
@@ -353,7 +373,8 @@ child_unwatched (int pidfd,
 }
 
 /* Watch @p pidfd, @p c's process, which has run: if it cannot be, kill and
- * reap it at once. */
+ * reap it at once.
+ */
 static int
 child_watch (struct child *c,
              int           pidfd)
@@ -373,7 +394,8 @@ child_watch (struct child *c,
 }
 
 /* A pipe for @p c's output: its read end watched, and the write end in
- * @p *out. */
+ * @p *out.
+ */
 static int
 child_pipe (struct child *c,
             int          *out)
@@ -394,7 +416,8 @@ child_pipe (struct child *c,
 }
 
 /* Time @p c, and spawn its process as @p cmd says, with the descriptors
- * @p fds. */
+ * @p fds.
+ */
 static int
 child_launch (struct child           *c,
               struct child_cmd const *cmd,
@@ -410,7 +433,8 @@ child_launch (struct child           *c,
 }
 
 /* Spawn @p c's process as @p cmd says, reading its output and timing it;
- * on an error, its pipe and timer may be left for child_dispose(). */
+ * on an error, its pipe and timer may be left for child_dispose().
+ */
 static int
 child_start (struct child           *c,
              struct child_cmd const *cmd)
@@ -431,7 +455,8 @@ child_start (struct child           *c,
 /* Wait for @p pidfd's process, which runs @p cmd, to exit: at its deadline,
  * SIGTERM, and SIGKILL once its grace has passed too, or at once without
  * one.  Returns 0, ETIMEDOUT if the deadline came, or why the wait failed,
- * which kills the process. */
+ * which kills the process.
+ */
 static int
 child_await (struct child_cmd const *cmd,
              int                     pidfd)

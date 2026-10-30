@@ -1,4 +1,7 @@
-/** @file Manual tool request ownership and presentation. */
+/** @file cli_tool.c
+ *
+ * Manual tool request ownership and presentation.
+ */
 #include <errno.h>
 #include <stdlib.h>
 

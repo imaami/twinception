@@ -1,4 +1,7 @@
-/** @file The tool registry (registry.h). */
+/** @file registry.c
+ *
+ * The tool registry.
+ */
 #include <errno.h>
 #include <string.h>
 
@@ -17,7 +20,8 @@ registry_fini (struct registry *reg)
 /* Returns the index of plugin in reg->plugins.  A plugin that is not there
  * yet is appended.  The caller has checked that the registry has room for
  * one more tool, and every plugin in it has at least one tool, so it has
- * room for one more plugin. */
+ * room for one more plugin.
+ */
 static uint32_t
 registry_part (struct registry     *reg,
                struct plugin const *plugin)
@@ -69,9 +73,9 @@ registry_load (struct registry    *reg,
 		            ARRAY_SIZE(reg->loaded));
 		return EINVAL;
 	}
-	int e;
-	struct plugin_loaded *loaded = plugin_loaded_create(path, options, why, len,
-	                                                    &e);
+	int e = 0;
+	struct plugin_loaded *loaded = plugin_loaded_create(path, options,
+	                                                    why, len, &e);
 	if (!loaded)
 		return e;
 	/* The loop adds tools whose names are pointers into loaded->manifest.

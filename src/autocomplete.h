@@ -34,7 +34,8 @@ enum autocomplete_kind : uint32_t {
 
 /** A full replacement line and the byte offset of its editing cursor.
  * label_begin starts the suggested token, excluding already entered context.
- * The displayed label ends at cursor, minus one appended separator space. */
+ * The displayed label ends at cursor, minus one appended separator space.
+ */
 struct autocomplete_match {
 	struct cstr_view       line;
 	size_t                 cursor;
@@ -43,7 +44,8 @@ struct autocomplete_match {
 };
 
 /** Optional caller-owned diagnostic buffer. len is the number of bytes
- * written, excluding NUL; messages are truncated to capacity - 1. */
+ * written, excluding NUL; messages are truncated to capacity - 1.
+ */
 struct autocomplete_error {
 	char   *data;
 	size_t  capacity;
@@ -61,7 +63,8 @@ extern void
 autocomplete_clear_tools (struct autocomplete *ac);
 
 /** Retains the immutable descriptor. Invalid names are ignored. Returns
- * 0, ENOMEM or E2BIG (4096 tools / 16 MiB of discovery data). */
+ * 0, ENOMEM or E2BIG (4096 tools / 16 MiB of discovery data).
+ */
 extern int
 autocomplete_add_tool (struct autocomplete *ac,
                        struct json_object  *def);
@@ -89,7 +92,8 @@ enum autocomplete_list : uint32_t {
 };
 
 /** Copies, sorts and deduplicates the names of a list. Keeps allocated
- * capacity. Returns 0, EINVAL or ENOMEM. */
+ * capacity. Returns 0, EINVAL or ENOMEM.
+ */
 extern int
 autocomplete_set_names (struct autocomplete    *ac,
                         enum autocomplete_list  list,
@@ -97,7 +101,8 @@ autocomplete_set_names (struct autocomplete    *ac,
                         size_t                  count);
 
 /** Drop cached note paths while retaining their working storage. Tool
- * discovery also clears this cache. */
+ * discovery also clears this cache.
+ */
 extern void
 autocomplete_clear_note_files (struct autocomplete *ac);
 
@@ -106,7 +111,8 @@ autocomplete_clear_note_files (struct autocomplete *ac);
  * Other selectors are those returned by the server. Copies, sorts and
  * deduplicates safe UTF-8 paths, including spaces and quotes. All cached
  * notebook lists together are limited to 16 MiB and 4096 lists. Returns
- * 0, EINVAL, ENOMEM or E2BIG. No I/O is performed during completion. */
+ * 0, EINVAL, ENOMEM or E2BIG. No I/O is performed during completion.
+ */
 extern int
 autocomplete_set_note_files (struct autocomplete    *ac,
                              struct cstr_view        tool,
@@ -124,7 +130,8 @@ autocomplete_participant_at (struct autocomplete const *ac,
 /** No I/O. Matches are borrowed until the next completion or destruction.
  * At most 256 matches and 16 MiB of replacement text (including trailing
  * NULs) are returned. Candidates that exceed this budget are omitted. Input
- * is limited to 16 MiB. Returns 0, EINVAL, E2BIG or ENOMEM. */
+ * is limited to 16 MiB. Returns 0, EINVAL, E2BIG or ENOMEM.
+ */
 extern int
 autocomplete_complete (struct autocomplete              *ac,
                        struct cstr_view                  line,
@@ -133,18 +140,21 @@ autocomplete_complete (struct autocomplete              *ac,
                        size_t                           *count);
 
 /** Whether line, which may be empty without data, is UTF-8 without NULs,
- * as completion input must be. */
+ * as completion input must be.
+ */
 extern bool
 autocomplete_line (struct cstr_view line);
 
 /** Whether text is nonempty UTF-8 without C0, DEL or C1 controls; with
- * identifier, also without spaces, quotes, backslashes or '='. */
+ * identifier, also without spaces, quotes, backslashes or '='.
+ */
 extern bool
 autocomplete_safe (struct cstr_view text,
                    bool             identifier);
 
 /** Sort matches in place, without allocating, by their lines from begin,
- * then by cursor. */
+ * then by cursor.
+ */
 extern void
 autocomplete_match_sort (struct autocomplete_match *matches,
                          size_t                     count,
@@ -154,7 +164,8 @@ autocomplete_match_sort (struct autocomplete_match *matches,
  * caller owns args and borrows tool from the catalog. On failure both
  * are null. Shorthand checks basic types; full JSON is validated by the
  * server. Input is limited to 16 MiB (E2BIG otherwise). Returns 0 or an
- * error number and optionally a diagnostic. */
+ * error number and optionally a diagnostic.
+ */
 extern int
 autocomplete_parse_call (struct autocomplete             *ac,
                          struct cstr_view                 line,

@@ -1,5 +1,8 @@
-/** @file MCP's Streamable HTTP transport and JSON-RPC semantics, over request
- *  streams (src/stream.h). */
+/** @file mcp.h
+ *
+ * MCP's Streamable HTTP transport and JSON-RPC semantics, over request
+ * streams (src/stream.h).
+ */
 #ifndef TWINCEPTION_SRC_MCP_H_
 #define TWINCEPTION_SRC_MCP_H_
 
@@ -157,7 +160,8 @@ mcp_create (struct loop              *loop,
             int                      *e);
 
 /** Cancel every request under way, give back what is kept, destroy the
- *  parts, last first, and free MCP. */
+ *  parts, last first, and free MCP.
+ */
 extern void
 mcp_destroy (struct mcp **p_mcp);
 
@@ -193,7 +197,8 @@ mcp_relieve (struct mcp        *mcp,
              size_t             max);
 
 /** End the tool calls that wait for the upstream with an error, a share a
- *  step, and refuse new ones: the server drains. */
+ *  step, and refuse new ones: the server drains.
+ */
 extern void
 mcp_drain (struct mcp *mcp);
 
@@ -230,7 +235,8 @@ mcp_app (struct mcp *mcp);
  *  @p service is the plugin's service, the object that all loops share.
  *  askai calls the function on the thread of @p loop, before the loop's
  *  first call.  Returns the part.  On failure it returns nullptr and stores
- *  the error number in @p *e.  Only the built-in plugins have parts. */
+ *  the error number in @p *e.  Only the built-in plugins have parts.
+ */
 typedef void *mcp_part_create_fn (void        *service,
                                   struct loop *loop,
                                   int         *e);
@@ -238,11 +244,13 @@ typedef void *mcp_part_create_fn (void        *service,
 /** Destroys the part @p *p_part and sets @p *p_part to nullptr.  askai
  *  calls the function when the loop stops, after it has dropped every call
  *  on the loop.  mcp_create() also calls it for the parts that it has
- *  created if it cannot create the part of a later plugin. */
+ *  created if it cannot create the part of a later plugin.
+ */
 typedef void mcp_part_destroy_fn (void **p_part);
 
 /** Returns the part of the call's plugin on the call's loop.  Only the
- *  built-in plugins have parts, so askai does not export this function. */
+ *  built-in plugins have parts, so askai does not export this function.
+ */
 extern void *
 mcp_slot_part (struct mcp_slot const *slot);
 
@@ -251,20 +259,23 @@ mcp_slot_part (struct mcp_slot const *slot);
  *  (src/plugin.h).  It returns nullptr if the plugin has no instances.
  *  askai destroys an instance only when no call uses it and no function of
  *  the plugin is running.  A kind can therefore use the instance until the
- *  function that ends the call returns. */
+ *  function that ends the call returns.
+ */
 EXPORT
 extern void *
 mcp_slot_instance (struct mcp_slot const *slot);
 
 /** Returns the configuration that configure() of the call's plugin stored
  *  (src/plugin.h), or nullptr if the plugin has no configure().  All calls
- *  and loops share the configuration, and nothing changes it. */
+ *  and loops share the configuration, and nothing changes it.
+ */
 EXPORT
 extern void const *
 mcp_slot_config (struct mcp_slot const *slot);
 
 /** Returns the loop that runs the call.  A kind passes it to the functions
- *  of src/loop_export.h, for example loop_timer_set() and loop_room(). */
+ *  of src/loop_export.h, for example loop_timer_set() and loop_room().
+ */
 EXPORT
 extern struct loop *
 mcp_slot_loop (struct mcp_slot const *slot);
@@ -276,7 +287,8 @@ mcp_slot_loop (struct mcp_slot const *slot);
  *  socket, the user is the identity that lists the client's Unix user, or
  *  else the Unix user itself.  Otherwise the client is anonymous, and its
  *  principal is 0.  A call that a turn of the client's ask call makes has
- *  the principal of the client. */
+ *  the principal of the client.
+ */
 EXPORT
 extern uint64_t
 mcp_slot_principal (struct mcp_slot const *slot);
@@ -284,7 +296,8 @@ mcp_slot_principal (struct mcp_slot const *slot);
 /** Returns the address of the call's own word, a pointer that the kind can
  *  set.  The word is nullptr when the call starts.  If the kind sets it,
  *  askai calls the kind's drop() when it drops the call.  A kind without
- *  drop() must not set it. */
+ *  drop() must not set it.
+ */
 EXPORT
 extern void **
 mcp_slot_own (struct mcp_slot *slot);
@@ -293,7 +306,8 @@ mcp_slot_own (struct mcp_slot *slot);
  *  if the member is missing or is a whole number from 0.  Otherwise it ends
  *  the call as failed with a text that says why, and returns EINVAL.  It
  *  returns EFAULT if @p slot is nullptr, and EINVAL if the call has
- *  ended. */
+ *  ended.
+ */
 EXPORT
 extern int
 mcp_slot_offset (struct mcp_slot    *slot,
@@ -319,12 +333,14 @@ mcp_slot_write (struct mcp_slot  *slot,
                 size_t           *taken);
 
 /** Not exported yet: the output written, which mcp_slot_write() and
- *  mcp_slot_tell() must not be given: they append to it. */
+ *  mcp_slot_tell() must not be given: they append to it.
+ */
 extern struct tool_text
 mcp_slot_answer (struct mcp_slot const *slot);
 
 /** Not exported yet: lent output, which own keeps, that mcp_slot_finish()
- *  gives instead of what is written. */
+ *  gives instead of what is written.
+ */
 extern void
 mcp_slot_lend (struct mcp_slot  *slot,
                struct tool_text  text);
@@ -333,7 +349,8 @@ mcp_slot_lend (struct mcp_slot  *slot,
  *  start() returns.  askai can free the call's arguments in this function.
  *  For a kind with TOOL_STREAM, the reply becomes an event stream if the
  *  client accepts one.  Returns 0, EFAULT if @p slot is nullptr, or EINVAL
- *  if the call has ended. */
+ *  if the call has ended.
+ */
 EXPORT
 extern int
 mcp_slot_park (struct mcp_slot *slot);
@@ -341,7 +358,8 @@ mcp_slot_park (struct mcp_slot *slot);
 /** Queues the step() of the call's kind as a bulk step of the loop.
  *  Returns 0, EFAULT if @p slot is nullptr, or EINVAL if the call has ended.
  *  If the kind has no step(), the function ends the call as failed and
- *  returns EINVAL. */
+ *  returns EINVAL.
+ */
 EXPORT
 extern int
 mcp_slot_ready (struct mcp_slot *slot);
@@ -414,7 +432,8 @@ mcp_slot_fetched (struct mcp_slot const *slot,
  *  ends or is dropped, so a second call of this function stores the same
  *  handle.  Returns 0, or ENOMEM.  It returns EFAULT if @p who or @p slot
  *  is nullptr, and EINVAL if the call has ended.  If it fails and @p who is
- *  not nullptr, it stores the handle 0 in @p *who. */
+ *  not nullptr, it stores the handle 0 in @p *who.
+ */
 EXPORT
 extern int
 mcp_slot_name (struct mcp_slot *slot,
@@ -436,7 +455,8 @@ mcp_slot_named (struct loop const *loop,
  *  part of UTF-8.  With TOOL_FAILED in @p flags, the call fails.  Returns
  *  0, EFAULT if @p slot is nullptr or @p text has a length and no bytes, or
  *  EINVAL if the call has ended or @p flags has other bits than
- *  TOOL_FAILED. */
+ *  TOOL_FAILED.
+ */
 EXPORT
 extern int
 mcp_slot_tell (struct mcp_slot  *slot,
@@ -448,7 +468,8 @@ mcp_slot_tell (struct mcp_slot  *slot,
  *  turn's call gets the part of the output that the turn takes.  With
  *  TOOL_FAILED in @p flags, the call fails.  Returns 0, EFAULT if @p slot is
  *  nullptr, or EINVAL if the call has ended or @p flags has other bits than
- *  TOOL_FAILED. */
+ *  TOOL_FAILED.
+ */
 EXPORT
 extern int
 mcp_slot_finish (struct mcp_slot *slot,

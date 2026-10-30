@@ -1,4 +1,6 @@
-/** @file Reasoning text archives and bounded, private recovery snapshots.
+/** @file journal.h
+ *
+ * Reasoning text archives and bounded, private recovery snapshots.
  *
  * One worker appends decoded reasoning to persistent plain files and commits
  * them only at reasoning boundaries. Recovery controls never enter Git.

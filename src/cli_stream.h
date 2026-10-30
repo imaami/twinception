@@ -1,4 +1,7 @@
-/** @file Per-request progress, deltas and assistant result rendering. */
+/** @file cli_stream.h
+ *
+ * Per-request progress, deltas and assistant result rendering.
+ */
 #ifndef TWINCEPTION_SRC_CLI_STREAM_H_
 #define TWINCEPTION_SRC_CLI_STREAM_H_
 
@@ -13,13 +16,14 @@ struct cli_error;
 struct json_object;
 
 enum {
-	CLI_STREAM_DELTAS = 1u << 0,
-	CLI_STREAM_REASONING = 1u << 1,
+	CLI_STREAM_DELTAS    = 1U << 0,
+	CLI_STREAM_REASONING = 1U << 1,
 };
 
 /** Owns rendering state and accumulated text; borrows its console, actor
  * and token. The borrowed strings must remain readable and unchanged until
- * fini. Members provide storage for embedding, not a caller interface. */
+ * fini. Members provide storage for embedding, not a caller interface.
+ */
 struct cli_stream {
 	struct cli_ui    ui;
 	struct dstr      text;
@@ -40,7 +44,8 @@ extern void
 cli_stream_fini (struct cli_stream *stream);
 
 /** cli_client notification callback. Always handles matching progress;
- * assistant deltas require CLI_STREAM_DELTAS. */
+ * assistant deltas require CLI_STREAM_DELTAS.
+ */
 extern int
 cli_stream_notify (void               *context,
                    struct json_object *event,
@@ -48,7 +53,8 @@ cli_stream_notify (void               *context,
                    struct cli_error   *error);
 
 /** Reconciles final assistant text with streamed deltas and finishes output.
- * Borrows result; gives the caller an owned answer, or null on failure. */
+ * Borrows result; gives the caller an owned answer, or null on failure.
+ */
 extern int
 cli_stream_result (struct cli_stream   *stream,
                    struct json_object  *result,

@@ -1,4 +1,6 @@
-/** @file Logging that never blocks the caller (design section 6).
+/** @file log.h
+ *
+ * Logging that never blocks the caller (design section 6).
  *
  * Each thread that logs formats its lines whole into its own ring, a single-
  * producer single-consumer byte ring, and one logger thread writes the rings
@@ -27,7 +29,8 @@ enum log_level {
 };
 
 /** A call site's rate limit: at most LOG_BURST lines a second, after which
- *  the site's next line says how many it held back. */
+ *  the site's next line says how many it held back.
+ */
 struct log_site {
 	_Atomic uint64_t second;  /**< of CLOCK_MONOTONIC_COARSE, the window's */
 	_Atomic uint32_t count;   /**< lines in the window */
@@ -61,7 +64,8 @@ extern enum log_level log_threshold;
 
 /** As LOG(), but without the rate limit of a call site: for lines that
  *  must all appear, such as those that describe the configuration as askai
- *  starts. */
+ *  starts.
+ */
 #define LOG_ALL(level, ...) \
         do { \
                 if ((level) <= log_threshold) \
@@ -69,7 +73,8 @@ extern enum log_level log_threshold;
         } while (0)
 
 /** The work of LOG(): with no @p site, the line has no rate limit, which
- *  suits what an operator asked for, such as statistics. */
+ *  suits what an operator asked for, such as statistics.
+ */
 [[gnu::format(printf, 2, 3)]]
 extern void
 log_put (struct log_site *site,
@@ -86,7 +91,8 @@ log_start (size_t rings,
            int    notify_fd);
 
 /** Give the calling thread a ring of its own; without one left, it drops its
- *  lines, counted. */
+ *  lines, counted.
+ */
 extern void
 log_attach (void);
 
@@ -99,7 +105,8 @@ extern bool
 log_done (void);
 
 /** Free the logger once it is done, and no thread but the caller logs any
- *  more; the caller then logs to stderr itself. */
+ *  more; the caller then logs to stderr itself.
+ */
 extern void
 log_fini (void);
 

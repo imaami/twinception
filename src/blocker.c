@@ -1,5 +1,10 @@
-/** @file Blocker threads and their bounded job queue (blocker.h). */
-#define _GNU_SOURCE /* pthread_setname_np() */
+/** @file blocker.c
+ *
+ * Blocker threads and their bounded job queue.
+ */
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE /* pthread_setname_np() */
+#endif
 
 #include <errno.h>
 #include <pthread.h>
@@ -13,7 +18,8 @@
 enum { QUEUE = 256 }; /* jobs waiting at most */
 
 /* The queue's lock and condition variable are POSIX's, of which C11's mtx_t
- * and cnd_t are wrappers in glibc that ThreadSanitizer does not see. */
+ * and cnd_t are wrappers in glibc that ThreadSanitizer does not see.
+ */
 struct blocker {
 	struct blocker_metrics metrics;
 	struct list            queue;
@@ -27,7 +33,8 @@ struct blocker {
 };
 
 /* The queue's next job, under the lock, waiting for one; nullptr once the
- * queue is empty and the blockers stop. */
+ * queue is empty and the blockers stop.
+ */
 static struct blocker_job *
 blocker_next (struct blocker *b)
 {
@@ -43,7 +50,8 @@ blocker_next (struct blocker *b)
 }
 
 /* A blocker thread: run the queue's jobs, or once told to stop, cancel
- * them, until it is empty. */
+ * them, until it is empty.
+ */
 static void *
 blocker_thread (void *arg)
 {

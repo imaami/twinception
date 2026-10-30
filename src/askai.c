@@ -1,5 +1,7 @@
-/** @file askai: an MCP server whose tool asks another AI, and whose other,
- *  optional one reads the manual. */
+/** @file askai.c
+ *
+ * An MCP server that connects to an AI endpoint.
+ */
 #include <errno.h>
 #include <inttypes.h>
 #include <malloc.h>
@@ -41,20 +43,23 @@ enum { RELIEVE_KEPT, RELIEVE_STASH, RELIEVE_END, RELIEVED };
 /* glibc's tuning (see askai_tune()): blocks from this size up get mappings
  * of their own, and where nothing limits the address space, heaps keep this
  * much of their tops; and a free of this much trims the top of its arena's
- * heap. */
+ * heap.
+ */
 enum { MMAP_MIN = 32 << 20, TOP_PAD = 64 << 20, TOP_FREE = 64 << 10 };
 
 /* The heaps' top pad: glibc's default, or TOP_PAD (see askai_tune()). */
 static int top_pad = 128 << 10;
 
 /* Blocks of TOP_FREE, one from each loop's arena that relieved memory
- * pressure, chained through their first bytes, for the trim to free. */
+ * pressure, chained through their first bytes, for the trim to free.
+ */
 static _Atomic(void *) tops;
 
 /* Free @p block under a low threshold and pad (glibc), which gives back the
  * top of the arena it came from, as only such a free does.  The settings are
  * the process's, lowered for this free alone, and only one thread at a time
- * does it (brainstem_relieved()). */
+ * does it (brainstem_relieved()).
+ */
 static void
 askai_top_trim (void *block)
 {
@@ -88,7 +93,8 @@ askai_strict_commit (void)
 }
 
 /* What a loop thread keeps for reuse, and its reliefs of memory pressure
- * (design section 5); first in each loop's app, which it stands for. */
+ * (design section 5); first in each loop's app, which it stands for.
+ */
 struct askai_keep {
 	struct buf_stash    stash;
 	struct loop_step    relief;
@@ -108,7 +114,8 @@ struct askai_keep {
 /* The trim's walk of the arenas, on a blocker, for the keep of the loop that
  * trims, and its time, which the blocker writes: here, as one trim at a time
  * walks, and a blocker still busy at shutdown is left to the process's exit,
- * after the loops' keeps are gone. */
+ * after the loops' keeps are gone.
+ */
 static struct {
 	struct blocker_job  job;
 	struct askai_keep  *keep;
@@ -119,7 +126,8 @@ static struct {
  * a blocker reads the command line, the file and the TLS certificate and key
  * again, then home hands the client loops the new policy (src/policy.h),
  * and its door the new TLS context; the other options take a restart, which
- * askai says.  One at a time, a SIGHUP meanwhile having another follow. */
+ * askai says.  One at a time, a SIGHUP meanwhile having another follow.
+ */
 struct askai_reload {
 	struct blocker_job job;
 	struct config      cfg;     /* as the blocker read it */
@@ -129,7 +137,8 @@ struct askai_reload {
 };
 
 /* What runs on home: the jobs (src/home.h), and the door, which accepts the
- * clients and places them on the client loops (src/httpd.h). */
+ * clients and places them on the client loops (src/httpd.h).
+ */
 struct askai_home {
 	/* keep remains first: askai_keep_relieve receives this object. */
 	struct askai_keep         keep;
@@ -160,7 +169,8 @@ struct askai_client {
 
 /* What every loop shares, made before any starts, and home and the metrics,
  * which a blocker still busy at shutdown, such as a reload's, may write to
- * until the process exits (askai_serve()). */
+ * until the process exits (askai_serve()).
+ */
 struct askai_shared {
 	struct askai_home    home;
 	struct metrics_src   metrics;
@@ -179,7 +189,8 @@ struct askai_shared {
 };
 
 /* Free the relief's kept objects, as much a step as its share of release
- * work allows; 0 once none are left. */
+ * work allows; 0 once none are left.
+ */
 static size_t
 askai_keep_release (struct askai_keep *keep,
                     enum buf_pressure  level,
@@ -195,7 +206,8 @@ askai_keep_release (struct askai_keep *keep,
 }
 
 /* The relief's share is done: leave a block for the trim, and if this loop's
- * is the last share of all, run the trim. */
+ * is the last share of all, run the trim.
+ */
 static void
 askai_keep_relieved (struct askai_keep *keep,
                      struct loop       *loop)
@@ -249,7 +261,8 @@ askai_keep_relief (struct loop      *loop,
  * pages within their heaps and the top of the main arena's, whatever the
  * settings: on a blocker, as it takes each arena's lock in turn, so that a
  * loop that allocates meanwhile waits only for its own arena's part, where
- * on a loop the walk of them all would be one step. */
+ * on a loop the walk of them all would be one step.
+ */
 static void
 askai_walk (struct blocker_job *job)
 {
@@ -305,7 +318,8 @@ askai_keep_walk (struct askai_keep *keep,
 /* The last loop of a relief trims the allocator for every loop: a bulk step
  * for each loop's block, which gives back that arena's top, then the walk of
  * them all on a blocker, or here if none takes it.  The pressure cleared,
- * the blocks are only freed. */
+ * the blocks are only freed.
+ */
 static void
 askai_keep_trim (struct loop      *loop,
                  struct loop_step *step)
@@ -328,7 +342,8 @@ askai_keep_trim (struct loop      *loop,
 }
 
 /* Begin a window of reuse, over which a relief at high pressure finds what
- * went unused: as long as the brainstem waits between reliefs. */
+ * went unused: as long as the brainstem waits between reliefs.
+ */
 static void
 askai_keep_age (struct loop       *loop,
                 struct loop_timer *timer)
@@ -357,7 +372,8 @@ askai_keep_relieve (void        *ctx,
 }
 
 /* Give the calling thread @p keep's stash, and begin its windows of reuse;
- * a trim walks the arenas on @p blockers. */
+ * a trim walks the arenas on @p blockers.
+ */
 static int
 askai_keep_start (struct askai_keep *keep,
                   struct loop       *loop,
@@ -374,7 +390,8 @@ askai_keep_start (struct askai_keep *keep,
 }
 
 /* Give back all that @p keep's stash keeps, and the blocks of a trim cut
- * short, and leave the thread without. */
+ * short, and leave the thread without.
+ */
 static void
 askai_keep_stop (struct askai_keep *keep,
                  struct loop       *loop)
@@ -391,7 +408,8 @@ askai_keep_stop (struct askai_keep *keep,
 }
 
 /* Home's keep, door and scheduler, and home's part of the service of HTTP
- * requests (src/web.h). */
+ * requests (src/web.h).
+ */
 static int
 askai_home_parts (struct askai_home *app,
                   struct loop       *loop,
@@ -431,7 +449,8 @@ askai_home_start (void           *ctx,
 }
 
 /* Every loop has started: log what askai runs, then open the door, whose
- * endpoints are logged next. */
+ * endpoints are logged next.
+ */
 static void
 askai_home_open (void        *ctx,
                  struct loop *loop)
@@ -494,7 +513,8 @@ askai_home_reload (void        *ctx,
 
 /* Hand the client loops the reloaded policy, and the door its TLS context,
  * unless the configuration is wrong, as the log says then.  A context made
- * only as the file now names a TLS listener serves none until a restart. */
+ * only as the file now names a TLS listener serves none until a restart.
+ */
 static void
 askai_reload_apply (struct askai_home         *app,
                     struct askai_reload const *r)
@@ -521,7 +541,8 @@ askai_reload_apply (struct askai_home         *app,
 }
 
 /* The blocker has read the configuration: apply it, and reload again if a
- * SIGHUP came meanwhile. */
+ * SIGHUP came meanwhile.
+ */
 static void
 askai_reload_done (struct loop *loop,
                    struct msg  *msg)
@@ -628,7 +649,8 @@ askai_client_stop (void        *ctx,
  * top pad as large as a heap keeps a thread's heaps, and makes each writable
  * whole as glibc creates it; as that counts against RLIMIT_DATA, RLIMIT_AS
  * and a strict commit limit, under any of those the pad stays glibc's.  Only
- * descriptors limit the connections: take all the hard limit allows. */
+ * descriptors limit the connections: take all the hard limit allows.
+ */
 static void
 askai_tune (void)
 {
@@ -679,7 +701,8 @@ askai_shared_make (struct askai_shared *s,
 
 /* Repositories must not contain each other. In particular, a transcript
  * directory must not turn a not-yet-initialized notes repo into a nonempty
- * non-repository. journal_create() also rejects symbolic links and "..". */
+ * non-repository. journal_create() also rejects symbolic links and "..".
+ */
 static int
 askai_separate_repos (char const *notes,
                       char const *transcripts)
@@ -719,7 +742,8 @@ askai_separate_repos (char const *notes,
 
 /* What every loop shares, for @p n client loops, made before any starts:
  * the immutable, and what home's door shares with the client loops'
- * servers.  On an error, stderr says what. */
+ * servers.  On an error, stderr says what.
+ */
 static int
 askai_shared_init (struct askai_shared *s,
                    struct config const *cfg,
@@ -780,7 +804,8 @@ askai_shared_fini (struct askai_shared *s)
 /* Say how the tasks of @p n client loops ended: every loop has stopped, and
  * the counts are whole, but where a blocker still busy kept the loops
  * unfinished, their inboxes unread, the tasks those held are under way
- * still. */
+ * still.
+ */
 static void
 askai_tasks_report (struct task_pool const *tasks,
                     size_t                  n)
@@ -812,7 +837,8 @@ askai_tasks_report (struct task_pool const *tasks,
 
 /* Run the loops on @p s, as @p cfg says, until shut down; returns the exit
  * status.  Each loop sets its metrics as it starts, and home opens its door
- * only once all have, so that no request renders them before. */
+ * only once all have, so that no request renders them before.
+ */
 static int
 askai_run (struct askai_shared *s,
            struct config const *cfg)
@@ -876,7 +902,8 @@ askai_run (struct askai_shared *s,
 
 /* Serve until shut down, as @p cfg says; returns the exit status.  What the
  * loops share is static: a blocker still busy at shutdown is left to the
- * process's exit, as is what it writes to. */
+ * process's exit, as is what it writes to.
+ */
 static int
 askai_serve (struct config const *cfg)
 {

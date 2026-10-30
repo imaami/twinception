@@ -1,4 +1,7 @@
-/** @file Tasks (task.h). */
+/** @file task.c
+ *
+ * Tasks.
+ */
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -55,7 +58,8 @@ task_lane_leave (struct task_lane *lane,
 }
 
 /* The lighter of two lanes picked at random by @p self's loop, none of them
- * @p self's own if @p other; @p self's if there is no other to pick. */
+ * @p self's own if @p other; @p self's if there is no other to pick.
+ */
 static struct task_lane *
 task_pool_choose (struct task_pool *pool,
                   struct task_lane *self,
@@ -87,7 +91,8 @@ task_pool_choose (struct task_pool *pool,
 }
 
 /* A task moved to this loop; once the loop has stopped, it never runs, and
- * the loop lets go of it. */
+ * the loop lets go of it.
+ */
 static void
 task_arrive (struct loop *loop,
              struct msg  *msg)
@@ -104,7 +109,8 @@ task_arrive (struct loop *loop,
 
 /* After a slice of @p task, which @p lane holds on @p loop: queue it for the
  * next, or move it, while the loop holds more than TASK_BACKLOG, to a loop
- * that holds two fewer at least. */
+ * that holds two fewer at least.
+ */
 static void
 task_lane_next (struct task_lane *lane,
                 struct task      *task,
@@ -126,7 +132,8 @@ task_lane_next (struct task_lane *lane,
 }
 
 /* A slice of a task, unless it is cancelled: then, or once it is done, it
- * goes back to its owner. */
+ * goes back to its owner.
+ */
 static void
 task_step (struct loop      *loop,
            struct loop_step *step)

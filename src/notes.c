@@ -1,4 +1,7 @@
-/** @file The notes (notes.h). */
+/** @file notes.c
+ *
+ * The notes tool.
+ */
 #define _GNU_SOURCE /* memrchr(), mempcpy() */
 #include <dirent.h>
 #include <errno.h>
@@ -49,7 +52,8 @@ struct notes_revision {
 
 /* The options of git before each command: GIT_OPTIONS_FIXED, which stop
  * the configuration of the repository from making git run other programs,
- * literal paths, and no signature checks. */
+ * literal paths, and no signature checks.
+ */
 static char const *const fixed[] = {
 	GIT_OPTIONS_FIXED, "--literal-pathspecs",
 	"-c", "core.bare=true", "-c", "log.showSignature=false",
@@ -81,7 +85,8 @@ enum notes_kind {
 
 /* Makes the directory @p path if it does not exist, and stores its real
  * path in notes->dir.  Returns 0, or the error number with a message in
- * @p why, of @p len bytes. */
+ * @p why, of @p len bytes.
+ */
 static int
 notes_open (struct notes *notes,
             char const   *path,
@@ -621,7 +626,8 @@ notes_revision_tip (struct notes_revision const *revision)
  * only by spaces and dots up to the end, a backslash or a colon.  The check
  * looks at the part and at each piece of it after a backslash.  git refuses
  * such names on every system (core.protectNTFS), so askai refuses them
- * before git runs. */
+ * before git runs.
+ */
 static bool
 notes_is_dotgit (char const *part,
                  size_t      n)
@@ -740,7 +746,8 @@ notes_check_input (struct buf *in,
 
 /* Returns the kind of the object of the line of @p len bytes at @p line,
  * without its newline, in the output of git cat-file: "OID TYPE SIZE", or
- * "NAME missing".  Stores the length of OID in @p *oid. */
+ * "NAME missing".  Stores the length of OID in @p *oid.
+ */
 static enum notes_kind
 notes_kind (char const *line,
             size_t      len,
@@ -955,7 +962,8 @@ notes_read_full_out (struct span  out,
 }
 
 /* Returns the offset of the start of the token that ends with the NUL at
- * the offset @p nul in @p s. */
+ * the offset @p nul in @p s.
+ */
 static size_t
 notes_token (char const *s,
              size_t      nul)

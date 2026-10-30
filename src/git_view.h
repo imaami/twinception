@@ -1,4 +1,7 @@
-/** @file Private bare snapshots for the git tool. */
+/** @file git_view.h
+ *
+ * Private bare snapshots for the git tool.
+ */
 #ifndef TWINCEPTION_SRC_GIT_VIEW_H_
 #define TWINCEPTION_SRC_GIT_VIEW_H_
 

@@ -42,7 +42,8 @@ struct http_socket {
 };
 
 /* Requests handed to curl per step: each one connects, so a burst of them
- * would make one long step. */
+ * would make one long step.
+ */
 enum { START_BATCH = 2 };
 
 /* How long looked-up addresses serve new requests. */
@@ -111,7 +112,8 @@ struct http_lookup {
  * transfer's handle stays until the done callback returns, so that
  * http_type() can read the answer's Content-Type from it.  A done callback
  * can end another request, so the handle of the outer callback is restored
- * after the callback. */
+ * after the callback.
+ */
 static void
 http_finish (struct http         *http,
              struct http_request *request,
@@ -159,7 +161,8 @@ http_check_done (struct http *http)
 
 /* Have the request of @p easy fail with @p e on a later step.  The socket
  * callback cannot remove it, and an error returned there would fail every
- * transfer. */
+ * transfer.
+ */
 static void
 http_doom (struct http *http,
            CURL        *easy,
@@ -386,7 +389,8 @@ http_request_pin (struct http_request *request,
 /* Append the address of @p ai, if it is one, to the @p len bytes of
  * @p l's entry, as libcurl takes it: IPv6 in brackets, after a comma but for
  * the first, which follows the ':' that ends "name:port:".  There is room
- * for INET6_ADDRSTRLEN + 3 bytes.  Returns the new length. */
+ * for INET6_ADDRSTRLEN + 3 bytes.  Returns the new length.
+ */
 static size_t
 http_lookup_put (struct http_lookup    *l,
                  size_t                 len,
@@ -419,7 +423,8 @@ http_lookup_put (struct http_lookup    *l,
 }
 
 /* On a blocker: look the host up, and write its addresses as libcurl takes
- * them: "name:port:address,...". */
+ * them: "name:port:address,...".
+ */
 static void
 http_look_up (struct blocker_job *job)
 {
@@ -468,7 +473,8 @@ http_queue (struct http         *http,
 }
 
 /* Start @p request, which waited for @p host's addresses, or fail it, saying
- * @p why if the host has none. */
+ * @p why if the host has none.
+ */
 static void
 http_host_resume (struct http_host    *host,
                   struct http_request *request,
@@ -493,7 +499,8 @@ http_host_resume (struct http_host    *host,
 
 /* @p host's lookup @p l has come back: keep the addresses it found, and
  * start the requests that waited for them, or fail them.  A lookup that
- * fails leaves the addresses the host had. */
+ * fails leaves the addresses the host had.
+ */
 static void
 http_host_found (struct http_host   *host,
                  struct http_lookup *l)
@@ -559,7 +566,8 @@ http_host_lookup (struct http_host *host)
 }
 
 /* The host @p name, of @p n bytes with its NUL, and @p port, of @p p:
- * found, or added; nullptr if out of memory. */
+ * found, or added; nullptr if out of memory.
+ */
 static struct http_host *
 http_find_host (struct http *http,
                 char const  *name,
@@ -590,7 +598,8 @@ http_find_host (struct http *http,
 
 /* The host that @p url names, if the bridge looks names up and it is one,
  * rather than an address; else, and when out of memory, nullptr, which
- * leaves the lookup to libcurl. */
+ * leaves the lookup to libcurl.
+ */
 static struct http_host *
 http_named_host (struct http *http,
                  char const  *url)
@@ -614,7 +623,8 @@ http_named_host (struct http *http,
 }
 
 /* Have @p request, to @p host, wait for its addresses, or with fresh ones,
- * queue it. */
+ * queue it.
+ */
 static int
 http_host_take (struct http_host    *host,
                 struct http_request *request)
@@ -630,7 +640,8 @@ http_host_take (struct http_host    *host,
 }
 
 /* Arm @p http's timer, which stays in the heap from then on, and give curl
- * its callbacks. */
+ * its callbacks.
+ */
 static int
 http_setup (struct http *http)
 {
@@ -816,7 +827,8 @@ http_destroy (struct http **p_http)
 }
 
 /* Whether @p headers, nullptr-terminated, unless nullptr, has a line of
- * Content-Type. */
+ * Content-Type.
+ */
 static bool
 http_typed (char const *const *headers)
 {
@@ -829,7 +841,8 @@ http_typed (char const *const *headers)
 
 /* Give @p request its header lines: a body's Content-Type, application/json
  * unless @p headers has one, and @p headers, nullptr-terminated, unless
- * nullptr.  Appending keeps the list's head, the request's.  0 or ENOMEM. */
+ * nullptr.  Appending keeps the list's head, the request's.  0 or ENOMEM.
+ */
 static int
 http_request_headers (struct http_request *request,
                       char const          *body,

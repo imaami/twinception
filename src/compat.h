@@ -1,4 +1,5 @@
-/** @file
+/** @file compat.h
+ *
  * Compatibility macros.
  */
 #ifndef TWINCEPTION_SRC_COMPAT_H_
@@ -7,6 +8,7 @@
 #include <stddef.h>
 
 #define array_size(x) (sizeof (x) / sizeof (x)[0])
+#define last_index(x) (array_size(x) - 1U)
 #define container_of(ptr, T, member) \
         ((T *)(void *)((unsigned char *)(ptr) - offsetof(T, member)))
 

@@ -1,4 +1,7 @@
-/** @file The ledger (ledger.h). */
+/** @file ledger.c
+ *
+ * The ledger.
+ */
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -22,7 +25,8 @@ static_assert(LEDGER_MINE > 1, "ledger_insert() must not free the owner as it "
                                "removes a record of the owner");
 
 /* The records, timers and waits of one owner.  The ledger frees the owner
- * when it has none of them left. */
+ * when it has none of them left.
+ */
 struct ledger_owner {
 	struct list          records;   /* by their member mine, oldest first */
 	struct list          waits;     /* by their member hook */
@@ -63,7 +67,8 @@ ledger_sub (_Atomic uint64_t *p,
 }
 
 /* The owner whose key is @p key, the lock held; nullptr if the ledger has
- * no such owner. */
+ * no such owner.
+ */
 static struct ledger_owner *
 ledger_owner_find (struct ledger *l,
                    uint64_t       key)
@@ -85,7 +90,8 @@ ledger_owner_timed (struct ledger_owner const *o)
 }
 
 /* Free @p o, the lock held, if it has no records, no waits and no
- * timers. */
+ * timers.
+ */
 static void
 ledger_owner_gc (struct ledger       *l,
                  struct ledger_owner *o)
@@ -102,7 +108,8 @@ ledger_owner_gc (struct ledger       *l,
 }
 
 /* Remove the timers of @p o that fired LEDGER_KEEP seconds or more before
- * @p now, the lock held. */
+ * @p now, the lock held.
+ */
 static void
 ledger_owner_expire (struct ledger_owner *o,
                      uint64_t             now)
@@ -115,7 +122,8 @@ ledger_owner_expire (struct ledger_owner *o,
 }
 
 /* Remove the expired timers of every owner, and free the owners that then
- * have nothing, the lock held. */
+ * have nothing, the lock held.
+ */
 static void
 ledger_owners_expire (struct ledger *l)
 {
@@ -130,7 +138,8 @@ ledger_owners_expire (struct ledger *l)
 
 /* Whether the ledger has room for a new owner whose key is @p key, the lock
  * held: fewer than LEDGER_OWNERS owners, and for a key with
- * LEDGER_ANONYMOUS, fewer than LEDGER_OWNERS / 2 owners with it. */
+ * LEDGER_ANONYMOUS, fewer than LEDGER_OWNERS / 2 owners with it.
+ */
 static bool
 ledger_owner_room (struct ledger const *l,
                    uint64_t             key)
@@ -142,7 +151,8 @@ ledger_owner_room (struct ledger const *l,
 /* The owner whose key is @p key, the lock held, made if the ledger has no
  * such owner.  If it cannot be made, returns nullptr with the error in
  * @p *e: ENOSPC while the ledger has no room for it, after the removal of
- * every owner's expired timers, or ENOMEM. */
+ * every owner's expired timers, or ENOMEM.
+ */
 static struct ledger_owner *
 ledger_owner_get (struct ledger *l,
                   uint64_t       key,
@@ -186,7 +196,8 @@ ledger_owner_timer (struct ledger_owner *o,
 
 /* A timer of @p o that is not in use, after the removal of the timers that
  * have expired by @p now, the lock held; nullptr if @p o has LEDGER_TIMERS
- * timers. */
+ * timers.
+ */
 static struct ledger_timer *
 ledger_owner_spare (struct ledger_owner *o,
                     uint64_t             now)
@@ -200,7 +211,8 @@ ledger_owner_spare (struct ledger_owner *o,
 
 /* Put each wait of @p o whose message is not posted on a chain by its
  * member hit, with a reference for the message, the lock held.  Returns
- * the chain, for ledger_wake() once the lock is not held. */
+ * the chain, for ledger_wake() once the lock is not held.
+ */
 static struct ledger_wait *
 ledger_owner_wake (struct ledger_owner *o)
 {
@@ -248,7 +260,8 @@ ledger_look_timer (struct ledger_look        *out,
 
 /* Put copies of the timers of @p o into @p out, and the time of the first
  * that has not fired by @p now, the lock held; with @p take, only those
- * that have fired, which @p o then has no more. */
+ * that have fired, which @p o then has no more.
+ */
 static void
 ledger_owner_timers (struct ledger_owner *o,
                      uint64_t             now,
@@ -283,7 +296,8 @@ ledger_listed (char const *ids,
 
 /* Put references into @p out to the ended records of @p o, the oldest
  * first: those that no one has read, or, if @p n is not 0, those whose ids
- * are among the @p n at @p ids; mark them read.  The lock held. */
+ * are among the @p n at @p ids; mark them read.  The lock held.
+ */
 static void
 ledger_owner_tell (struct ledger_owner *o,
                    char const          *ids,
@@ -314,7 +328,8 @@ ledger_look_empty (struct ledger_look *out)
 }
 
 /* The oldest record of @p o whose call has ended, the lock held; nullptr if
- * the calls of all its records run. */
+ * the calls of all its records run.
+ */
 static struct ledger_task *
 ledger_owner_ended (struct ledger_owner const *o)
 {
@@ -329,7 +344,8 @@ ledger_owner_ended (struct ledger_owner const *o)
 
 /* Take @p t, an ended record, out of the table, off the ended list and off
  * its owner's list, the lock held, and free the owner if it has no records
- * left.  The ledger's reference to @p t is then the caller's to drop. */
+ * left.  The ledger's reference to @p t is then the caller's to drop.
+ */
 static void
 ledger_drop (struct ledger      *l,
              struct ledger_task *t)
@@ -352,7 +368,8 @@ ledger_drop (struct ledger      *l,
 }
 
 /* The owner with the most records whose calls have ended, the lock held;
- * nullptr if the calls of all records run. */
+ * nullptr if the calls of all records run.
+ */
 static struct ledger_owner *
 ledger_owner_most (struct ledger const *l)
 {
@@ -405,7 +422,8 @@ ledger_sweep (struct ledger      *l,
 /* Put @p t, a new record, into the ledger for the owner @p key, the lock
  * held.  If the owner has LEDGER_MINE records or more, removes its oldest
  * ended record from the ledger and chains it to @p *gone.  Returns 0,
- * EBUSY, ENOSPC or ENOMEM, as ledger_open() describes. */
+ * EBUSY, ENOSPC or ENOMEM, as ledger_open() describes.
+ */
 static int
 ledger_insert (struct ledger       *l,
                struct ledger_task  *t,

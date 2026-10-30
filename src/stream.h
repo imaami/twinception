@@ -1,4 +1,6 @@
-/** @file Request streams: all an application such as MCP sees of HTTP.
+/** @file stream.h
+ *
+ * Request streams: all an application such as MCP sees of HTTP.
  *
  * A transport, HTTP/1.1 now and HTTP/2 later, turns each request into a
  * stream.  It tells the application about the stream upward (struct

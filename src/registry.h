@@ -1,5 +1,7 @@
-/** @file The tool registry: the tools that askai offers, and the plugins
- *  that have them.
+/** @file registry.h
+ *
+ * The tool registry: the tools that askai offers, and the plugins
+ * that have them.
  *
  * A tool's id is its index in the registry.  The tools that a role can
  * grant (src/policy.h) come first, so their ids are also the bits of a
@@ -60,7 +62,8 @@ struct registry {
 };
 
 /** Frees the loaded plugins' records and leaves @p reg empty.  The shared
- *  objects stay loaded (src/plugin.h). */
+ *  objects stay loaded (src/plugin.h).
+ */
 extern void
 registry_fini (struct registry *reg);
 

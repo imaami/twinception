@@ -1,4 +1,7 @@
-/** @file Private bare snapshots (git_view.h). */
+/** @file git_view.c
+ *
+ * Private bare snapshots.
+ */
 #define _GNU_SOURCE /* mkdtemp(), openat(), symlinkat() */
 
 #include <errno.h>

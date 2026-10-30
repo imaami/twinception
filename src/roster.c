@@ -1,4 +1,7 @@
-/** @file The roster (roster.h). */
+/** @file roster.c
+ *
+ * The roster.
+ */
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -9,7 +12,8 @@
 #include "roster.h"
 
 /* The number of buckets of the table.  It is a power of two, because
- * BUCKETS - 1 is the mask that selects a bucket. */
+ * BUCKETS - 1 is the mask that selects a bucket.
+ */
 enum { BUCKETS = 1024 };
 
 static_assert(!(BUCKETS & (BUCKETS - 1)), "BUCKETS - 1 is a mask");

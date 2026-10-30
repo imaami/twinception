@@ -1,4 +1,7 @@
-/** @file The git tool (git.h). */
+/** @file git.c
+ *
+ * The git tool.
+ */
 #include <errno.h>
 #include <json-c/json.h>
 #include <signal.h>
@@ -41,7 +44,8 @@ static constexpr uint64_t GIT_GRACE_NS = 1'000'000'000;
 static_assert(GIT_MAX == 4 << 20 && GIT_GRACE_NS == 1'000'000'000, "git.h says");
 
 /* A repository: its name, its path, and the setting that has git trust it,
- * one string of the three. */
+ * one string of the three.
+ */
 struct git_repo {
 	char *name;
 	char *path;
@@ -56,7 +60,8 @@ struct git {
 };
 
 /* What a client loop has of the git tool, its part of it: the children of
- * the calls there, the git, and the loop. */
+ * the calls there, the git, and the loop.
+ */
 struct git_loop {
 	struct list       children;
 	struct git const *git;
@@ -104,7 +109,8 @@ struct git_call {
 /* What git runs with whatever the call: GIT_OPTIONS_FIXED, no signature
  * checks, no implicit worktree operations, and no submodule's diff (which a
  * superproject's show or log -p runs as a git of its own, without these
- * options). */
+ * options).
+ */
 static char const *const fixed[] = {
 	GIT_OPTIONS_FIXED,
 	"-c", "core.bare=true",
@@ -244,7 +250,8 @@ git_name (char const *path,
 }
 
 /* Set @p r up for the repository listed as @p path: its name, its real
- * path, and its safe.directory setting, in one allocation. */
+ * path, and its safe.directory setting, in one allocation.
+ */
 static int
 git_repo_init (struct git_repo *r,
                char const      *path)
@@ -275,7 +282,8 @@ git_repo_init (struct git_repo *r,
 
 /* GIT_CEILING_DIRECTORIES: the listed repositories' parents, so that git
  * finds no repository above one listed, as it would look for one without
- * one there; nullptr if out of memory. */
+ * one there; nullptr if out of memory.
+ */
 static char *
 git_ceilings (struct git const *git)
 {
@@ -382,7 +390,8 @@ git_strings (char const *description,
 
 /* Returns the definition of the git tool.  @p service is the struct git,
  * and the definition lists the names of its repositories.  Returns nullptr
- * if out of memory. */
+ * if out of memory.
+ */
 static struct json_object *
 git_definition (void const *service)
 {
@@ -473,7 +482,8 @@ git_definition (void const *service)
 }
 
 /* @p val's string, of 1 to WORD bytes and no NUL, and its length in @p *len;
- * nullptr if it is not one. */
+ * nullptr if it is not one.
+ */
 static char const *
 git_word (struct json_object *val,
           size_t             *len)
@@ -485,7 +495,8 @@ git_word (struct json_object *val,
 
 /** Match the same spellings that help lists. ENODATA means a missing value,
  * EINVAL nondecimal digits, ENOENT no matching spelling. An accepted spelling
- * wins over a malformed alternative, such as --abbrev beside --abbrev=. */
+ * wins over a malformed alternative, such as --abbrev beside --abbrev=.
+ */
 static int
 git_option_find (struct cstr_view const *allowed,
                  char const             *opt,
@@ -564,7 +575,8 @@ git_commit (char       *dest,
 }
 
 /* Say in @p why, of GIT_WHY bytes, what is wrong with a call's arguments;
- * returns EINVAL. */
+ * returns EINVAL.
+ */
 [[gnu::format(printf, 2, 3)]]
 static int
 git_wrong (char       *why,
@@ -579,7 +591,8 @@ git_wrong (char       *why,
 }
 
 /* Say that @p str, cut at @p max bytes but never inside a character, is
- * wrong, after @p head and before @p tail; returns EINVAL. */
+ * wrong, after @p head and before @p tail; returns EINVAL.
+ */
 static int
 git_wrong_word (char       *why,
                 char const *head,
@@ -886,7 +899,8 @@ git_help (struct mcp_slot *slot,
 }
 
 /* A git call's git has ended, its output all in: take it in steps of the
- * call's own. */
+ * call's own.
+ */
 static void
 git_back (struct child *c)
 {
@@ -1085,7 +1099,8 @@ git_call_advance (struct git_call *call,
 /* @p call's git has ended, its output all taken: let go
  * of it; after the output, a blank line between, say how git ended if it
  * failed, that the output was cut, or that there was none; then finish.  An
- * exit status of 1 from grep means it found no matches. */
+ * exit status of 1 from grep means it found no matches.
+ */
 static void
 git_ended (struct mcp_slot *slot,
            struct git_call *call)
@@ -1139,7 +1154,8 @@ git_ended (struct mcp_slot *slot,
 /* Take a share of the output of @p slot's git into the call's output, made
  * UTF-8 text, a character cut at the share's end left to the next; once all
  * is in, end, in the next step if the share has no room left for the
- * note. */
+ * note.
+ */
 static void
 git_step (struct mcp_slot *slot)
 {
@@ -1174,7 +1190,8 @@ git_step (struct mcp_slot *slot)
 
 /* Start a git call in @p slot: the command @p args asks for, in the
  * repository it names, run as the call's own child on the loop of the
- * tool's part. */
+ * tool's part.
+ */
 static void
 git_start (struct mcp_slot    *slot,
            struct json_object *args)
@@ -1230,7 +1247,8 @@ git_drop (struct mcp_slot *slot)
 
 /* Creates the git tool's part of @p loop for @p service, a struct git.  The
  * part has the list of the children that the git calls on the loop run.
- * Returns the part, or nullptr with ENOMEM in @p *e. */
+ * Returns the part, or nullptr with ENOMEM in @p *e.
+ */
 void *
 git_loop_create (void        *service,
                  struct loop *loop,
@@ -1249,7 +1267,8 @@ git_loop_create (void        *service,
 
 /* Free the children of the calls on the loop, as it stops, killing any
  * still alive; then free @p *p_part, the git tool's part of the loop, and
- * set it to nullptr. */
+ * set it to nullptr.
+ */
 void
 git_loop_destroy (void **p_part)
 {

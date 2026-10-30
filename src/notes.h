@@ -1,4 +1,6 @@
-/** @file Shared session notes. --notes names one Git repository, shared by
+/** @file notes.h
+ *
+ * Shared session notes. --notes names one Git repository, shared by
  * every participating askai instance. Each configured participant writes its
  * own refs/heads/notes/PARTICIPANT/WHO/SIDE branches. WHO is the client principal
  * or anonymous; SIDE is client or upstream. All notebooks can be read, but a
@@ -36,11 +38,13 @@ enum {
 static constexpr uint64_t NOTES_NS = 10'000'000'000;
 
 /** The time from SIGTERM to SIGKILL at the deadline of a git that writes,
- *  in nanoseconds. */
+ *  in nanoseconds.
+ */
 static constexpr uint64_t NOTES_GRACE = 1'000'000'000;
 
 /** The age in seconds past which a lock file of a notebook has outlived
- *  every write of askai, so that its writer has died or hangs. */
+ *  every write of askai, so that its writer has died or hangs.
+ */
 static constexpr int64_t NOTES_STALE = 60;
 static_assert(NOTES_NS + NOTES_GRACE < (uint64_t)NOTES_STALE * 1'000'000'000);
 
@@ -83,7 +87,8 @@ struct notes_entry {
 };
 
 /** Reverse iterator over Git's note history. Initialize only end to the output
- * size. The cached commit boundary avoids rescanning multi-file commits. */
+ * size. The cached commit boundary avoids rescanning multi-file commits.
+ */
 struct notes_cursor {
 	struct span commit;
 	size_t      end;
@@ -97,7 +102,8 @@ static constexpr uint64_t NOTES_BINARY = UINT64_MAX;
 /** Opens the shared session repository at @p path for @p participant. An
  * empty directory is initialized lazily on its first note. A nonempty directory
  * that is not a repository is refused, preserving the old per-thread layout.
- * Returns nullptr and an error number and message on failure. */
+ * Returns nullptr and an error number and message on failure.
+ */
 extern struct notes *
 notes_create (char const *path,
               char const *participant,
@@ -122,7 +128,8 @@ notes_writer (struct notes const *notes);
 
 /** Writes the id of a new thread, 128 random bits as hexadecimal digits,
  *  to @p id, with a NUL after it.  Returns 0, or the error number if the
- *  kernel gave no random bits. */
+ *  kernel gave no random bits.
+ */
 extern int
 notes_id (char id[NOTES_ID + 1]);
 
@@ -139,14 +146,16 @@ notes_repo (struct notes const *notes,
             char                repo[NOTES_REPO]);
 
 /** Validates an explicit PARTICIPANT/WHO/SIDE read selector and writes its
- * full branch ref to @p repo. Returns 0 or EINVAL. */
+ * full branch ref to @p repo. Returns 0 or EINVAL.
+ */
 extern int
 notes_select (char const *name,
               size_t      len,
               char        repo[NOTES_REPO]);
 
 /** Returns the public selector within a ref made by notes_repo() or
- * notes_select(). The view borrows @p repo. */
+ * notes_select(). The view borrows @p repo.
+ */
 extern char const *
 notes_selector (char const *repo);
 
@@ -156,19 +165,22 @@ notes_selector (char const *repo);
  *  running process, as a crash can leave it, and is removed instead; the
  *  margin keeps a step of the clock from making a live lock look older than
  *  the boot.  Any other lock file stays, as its writer may be outside
- *  askai.  Returns 0 or an error number. */
+ *  askai.  Returns 0 or an error number.
+ */
 extern int
 notes_lock (struct notes const *notes,
             char const         *repo,
             int64_t            *age);
 
 /** Whether the shared repository has been initialized. Branch existence is
- * resolved by Git, including packed refs. */
+ * resolved by Git, including packed refs.
+ */
 extern bool
 notes_exists (struct notes const *notes);
 
 /** Writes the argv of the command @p cmd for the notebook branch @p repo to
- *  @p argv.  @p repo must outlive @p argv. */
+ *  @p argv.  @p repo must outlive @p argv.
+ */
 extern void
 notes_argv (struct notes const *notes,
             char const         *repo,
@@ -178,7 +190,8 @@ notes_argv (struct notes const *notes,
 /** Owns a historical read or diff's arguments and authorization state.
  *  File names follow notes_name(); revisions are full lowercase commit ids
  *  or "current". Empty revisions also select the notebook's pinned tip.
- *  Returns nullptr and EINVAL or ENOMEM through @p e on failure. */
+ *  Returns nullptr and EINVAL or ENOMEM through @p e on failure.
+ */
 extern struct notes_revision *
 notes_revision_create (struct cstr_view file,
                        struct cstr_view from,
@@ -190,7 +203,8 @@ notes_revision_destroy (struct notes_revision **p_revision);
 
 /** Builds the current stage's Git argv: pin the selected notebook tip,
  *  authorize explicit revisions by ancestry, then read or diff those exact
- *  snapshots. @p revision and @p repo must outlive the argv. */
+ *  snapshots. @p revision and @p repo must outlive the argv.
+ */
 extern void
 notes_revision_argv (struct notes_revision const *revision,
                      struct notes const          *notes,
@@ -208,7 +222,8 @@ notes_revision_history_argv (struct notes_revision const *revision,
 /** Consumes a successful authorization stage's complete output and advances
  *  to the next stage. Never call after failed, cancelled or truncated Git
  *  execution. Returns 0, EIO for malformed output, or EINVAL for an object-id
- *  width that does not match the repository or if already ready. */
+ *  width that does not match the repository or if already ready.
+ */
 extern int
 notes_revision_next (struct notes_revision *revision,
                      struct span            out);
@@ -221,7 +236,8 @@ extern struct cstr_view
 notes_revision_file (struct notes_revision const *revision);
 
 /** Immutable ids after authorization; views borrow @p revision. The pinned
- *  tip can also guard a later write against changes since authorization. */
+ *  tip can also guard a later write against changes since authorization.
+ */
 extern char const *
 notes_revision_from (struct notes_revision const *revision);
 
@@ -247,7 +263,8 @@ notes_name (char const *name,
             size_t     *skip);
 
 /** Writes the input of the command NOTES_CHECK for the valid name of
- *  @p len bytes at @p name to @p in.  Returns 0 or ENOMEM. */
+ *  @p len bytes at @p name to @p in.  Returns 0 or ENOMEM.
+ */
 extern int
 notes_check_input (struct buf *in,
                    char const *repo,
@@ -309,7 +326,8 @@ notes_add_input (struct buf      *in,
                  struct span      file);
 
 /** Writes the input of the command NOTES_READ for the valid name of @p len
- *  bytes at @p name to @p in.  Returns 0 or ENOMEM. */
+ *  bytes at @p name to @p in.  Returns 0 or ENOMEM.
+ */
 extern int
 notes_read_input (struct buf *in,
                   char const *repo,
@@ -329,7 +347,8 @@ notes_read_out (struct span  out,
                 struct span *id);
 
 /** As notes_read_out(), but rejects incomplete output with EIO. Use this
- *  before copying or restoring bytes rather than displaying a partial read. */
+ *  before copying or restoring bytes rather than displaying a partial read.
+ */
 extern int
 notes_read_full_out (struct span  out,
                      struct span *text,

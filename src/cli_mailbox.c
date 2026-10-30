@@ -1,4 +1,7 @@
-/** @file Object-owned CLI mailbox implementation (cli_mailbox.h). */
+/** @file cli_mailbox.c
+ *
+ * Object-owned CLI mailbox implementation.
+ */
 #include <errno.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>

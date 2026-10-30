@@ -1,4 +1,7 @@
-/** @file String view construction, comparison and slicing (cstr_view.h). */
+/** @file cstr_view.c
+ *
+ * String view construction, comparison and slicing.
+ */
 #include <errno.h>
 #include <string.h>
 

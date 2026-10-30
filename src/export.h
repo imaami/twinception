@@ -14,7 +14,8 @@
 
 /** Default visibility on a declaration: its definition, which sees it,
  *  takes it on, and a plugin's call of it stays an import however the
- *  plugin hides its own symbols. */
+ *  plugin hides its own symbols.
+ */
 #define EXPORT [[gnu::visibility("default")]]
 
 #endif /* TWINCEPTION_SRC_EXPORT_H_ */

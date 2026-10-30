@@ -1,4 +1,7 @@
-/** @file CLI command spellings, syntax, completion and execution policy. */
+/** @file cli_command.h
+ *
+ * CLI command spellings, syntax, completion and execution policy.
+ */
 #ifndef TWINCEPTION_SRC_CLI_COMMAND_H_
 #define TWINCEPTION_SRC_CLI_COMMAND_H_
 
@@ -61,12 +64,14 @@ extern struct cli_command const *
 cli_command_at (enum cli_command_id id);
 
 /** Exact counted token lookup. Arguments and surrounding whitespace are
- * the caller's responsibility. Embedded NUL bytes never match. */
+ * the caller's responsibility. Embedded NUL bytes never match.
+ */
 extern struct cli_command const *
 cli_command_find (struct cstr_view token);
 
 /** Returns a borrowed contiguous range in lexical order. An empty prefix
- * selects every command. No allocation and no rescanning shared prefixes. */
+ * selects every command. No allocation and no rescanning shared prefixes.
+ */
 extern struct cli_command_matches
 cli_command_prefix (struct cstr_view prefix);
 

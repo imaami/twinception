@@ -1,6 +1,8 @@
-/** @file HTTP requests that the calls of a plugin's tools send through askai
- *  with mcp_slot_fetch() (src/mcp.h), and the responses that askai stores
- *  for reuse.
+/** @file web.h
+ *
+ * HTTP requests that the calls of a plugin's tools send through askai
+ * with mcp_slot_fetch() (src/mcp.h), and the responses that askai stores
+ * for reuse.
  *
  * A plugin starts no thread and does not block (src/plugin.h), so it cannot
  * use libcurl or a socket itself.  A call of a plugin's tool passes a
@@ -36,7 +38,8 @@ enum {
 };
 
 /** An HTTP request that a call sends with mcp_slot_fetch().  askai copies
- *  the request and the bytes that its members point to. */
+ *  the request and the bytes that its members point to.
+ */
 struct web_request {
 	/** The URL, NUL-terminated.  It begins with http:// or https://, and
 	 *  it has at most WEB_URL_MAX bytes.  Each byte is printable ASCII and
@@ -121,7 +124,8 @@ typedef void web_back_fn (struct loop     *loop,
  *  call that waits for its response.  A request of askai's own does not
  *  pass mcp_slot_fetch(): its URL may have a user name and a password,
  *  which the log leaves out, its body may be longer than WEB_SEND_MAX, and
- *  it may have more header lines. */
+ *  it may have more header lines.
+ */
 struct web_ask {
 	struct web_request const *request;
 	char const               *plugin;  /**< the name of the call's plugin,
@@ -161,7 +165,8 @@ extern struct web *
 web_create (int *e);
 
 /** Frees the service @p *p_web and its stored responses, and sets
- *  @p *p_web to nullptr.  No request may be under way. */
+ *  @p *p_web to nullptr.  No request may be under way.
+ */
 extern void
 web_destroy (struct web **p_web);
 
@@ -180,7 +185,8 @@ web_home_start (struct web     *web,
 
 /** Ends every request that is under way with ESHUTDOWN, and posts the
  *  reply to each of its waits.  Then destroys the part of the service on
- *  home's loop.  It runs on home's thread after home's loop has stopped. */
+ *  home's loop.  It runs on home's thread after home's loop has stopped.
+ */
 extern void
 web_home_stop (struct web *web);
 
@@ -219,14 +225,16 @@ web_wait_create (struct web           *web,
                  int                  *e);
 
 /** Returns whether @p wait has its reply.  Only the thread of the wait's
- *  loop calls it. */
+ *  loop calls it.
+ */
 extern bool
 web_wait_done (struct web_wait const *wait);
 
 /** Stores the reply of @p wait in @p *response.  web_wait_done() must
  *  return true for @p wait.  The age is computed from @p now, the loop's time
  *  (loop_now()).  The pointers in @p *response stay valid until
- *  web_wait_leave(). */
+ *  web_wait_leave().
+ */
 extern void
 web_wait_response (struct web_wait const *wait,
                    struct web_response   *response,

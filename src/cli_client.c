@@ -337,7 +337,8 @@ cli_client_unconfirmed (struct cli_client      *client,
 }
 
 /* Tell AskAI that the call id was interrupted. With wait, wait up to 5 s for
- * the reply; otherwise cli_client_call_done receives it. */
+ * the reply; otherwise cli_client_call_done receives it.
+ */
 static void
 cli_client_cancel (struct cli_client *client,
                    int64_t            id,
@@ -510,7 +511,8 @@ static bool cli_client_digits(struct cstr_view text)
 }
 
 /* Parse notebook selectors into lists[0], the participant names, and
- * lists[1], the notebooks. */
+ * lists[1], the notebooks.
+ */
 static int
 cli_client_read_notebooks (struct cstr_view  text,
                            void             *lists)
@@ -662,7 +664,8 @@ cli_client_unique (struct json_object *names)
 
 /* Call the notes tool with params and pass the text of each text block of
  * its result to parse. A result that is an error parses nothing: it fails
- * with "The notes tool rejected <what> discovery", unless lenient. */
+ * with "The notes tool rejected <what> discovery", unless lenient.
+ */
 static int
 cli_client_notes (struct cli_client  *client,
                   struct json_object *params,
@@ -772,7 +775,8 @@ cli_client_catalog_names (struct autocomplete    *catalog,
 }
 
 /* Report the failure e of an optional discovery and go on, unless it was
- * interrupted or ran out of memory. */
+ * interrupted or ran out of memory.
+ */
 static int
 cli_client_soft (struct cli_client *client,
                  struct cstr_view   title,

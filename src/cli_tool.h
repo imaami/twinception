@@ -1,4 +1,7 @@
-/** @file Manual tool calls, including their asynchronous request lifetime. */
+/** @file cli_tool.h
+ *
+ * Manual tool calls, including their asynchronous request lifetime.
+ */
 #ifndef TWINCEPTION_SRC_CLI_TOOL_H_
 #define TWINCEPTION_SRC_CLI_TOOL_H_
 
@@ -12,7 +15,8 @@ struct json_object;
 struct list;
 
 /** Parse a command and own its request parameters. The client and console
- * are borrowed and must outlive the call. */
+ * are borrowed and must outlive the call.
+ */
 extern struct cli_tool *
 cli_tool_create (struct cli_client  *client,
                  struct cli_console *console,
@@ -30,7 +34,8 @@ cli_tool_run (struct cli_tool  *tool,
               struct cli_error *error);
 
 /** The call has left the active list. Arguments are borrowed until return;
- * the module destroys the call after this callback. */
+ * the module destroys the call after this callback.
+ */
 typedef void cli_tool_done_fn (struct cli_tool        *tool,
                                void                   *context,
                                int                     e,
@@ -39,7 +44,8 @@ typedef void cli_tool_done_fn (struct cli_tool        *tool,
 
 /** Success transfers ownership to the module, links the call into active,
  * and schedules done exactly once. Failure leaves ownership with the caller.
- * The list, callback context, client and console must outlive completion. */
+ * The list, callback context, client and console must outlive completion.
+ */
 extern int
 cli_tool_submit (struct cli_tool  *tool,
                  struct list      *active,

@@ -1,4 +1,6 @@
-/** @file HTTP requests of tool calls, and the stored responses (web.h).
+/** @file web.c
+ *
+ * HTTP requests of tool calls, and the stored responses.
  *
  * A request that home sends is a run.  The client loop of the call that
  * asks for a request makes the run, which has a copy of the request, its
@@ -69,7 +71,8 @@ static char const stopping[] = "askai is stopping.";
  * web_ask, each of those after a NUL.  The URL, the Accept and the lines
  * have no NUL, and the key has the lengths, so the bytes have one reading.
  * The line of User-Agent has the name of the plugin, so the plugins do not
- * share responses. */
+ * share responses.
+ */
 struct web_key {
 	uint64_t hash;
 	uint64_t max;     /* the request's max */
@@ -82,7 +85,8 @@ struct web_key {
 
 /* A response, or the reason why none came.  No thread changes it after
  * home has made it.  Each wait that has it, and the table, have a reference
- * to it. */
+ * to it.
+ */
 struct web_reply {
 	char            *body;      /* nullptr if the body is empty */
 	char const      *type;      /* in text */
@@ -98,7 +102,8 @@ struct web_reply {
 };
 
 /* A stored response in the table.  It is accessed only with the mutex
- * locked. */
+ * locked.
+ */
 struct web_entry {
 	struct web_entry *next;     /* in its bucket */
 	struct list       hook;     /* on web->kept, in the order of expires */
@@ -208,7 +213,8 @@ web_key_size (struct web_key const *key)
 }
 
 /* Returns the hash of @p key, whose bytes are at @p data, seeded with
- * @p seed. */
+ * @p seed.
+ */
 static uint64_t
 web_key_hash (uint64_t              seed,
               struct web_key const *key,
@@ -219,7 +225,8 @@ web_key_hash (uint64_t              seed,
 }
 
 /* Returns whether the key @p a, whose bytes are at @p ad, is equal to the
- * key @p b, whose bytes are at @p bd. */
+ * key @p b, whose bytes are at @p bd.
+ */
 static bool
 web_key_equal (struct web_key const *a,
                char const           *ad,
@@ -249,7 +256,8 @@ web_reply_put (struct web_reply *reply)
 }
 
 /* Releases @p n references to @p run, and frees the run if they were the
- * last. */
+ * last.
+ */
 static void
 web_run_put (struct web_run *run,
              uint32_t        n)
@@ -261,7 +269,8 @@ web_run_put (struct web_run *run,
 }
 
 /* Frees the entries of the list @p gone, which the member next links, and
- * releases their references to the replies. */
+ * releases their references to the replies.
+ */
 static void
 web_entries_free (struct web_entry *gone)
 {
@@ -274,7 +283,8 @@ web_entries_free (struct web_entry *gone)
 
 /* Returns the entry whose key is equal to @p key, whose bytes are at
  * @p data, or nullptr if the table has none.  The caller has locked the
- * mutex. */
+ * mutex.
+ */
 static struct web_entry *
 web_find (struct web const     *web,
           struct web_key const *key,
@@ -288,7 +298,8 @@ web_find (struct web const     *web,
 
 /* Returns the run under way whose key is equal to @p key, whose bytes are
  * at @p data, whose timeout is @p timeout seconds and whose keep is not 0,
- * or nullptr if there is none.  The caller has locked the mutex. */
+ * or nullptr if there is none.  The caller has locked the mutex.
+ */
 static struct web_run *
 web_find_run (struct web const     *web,
               struct web_key const *key,
@@ -306,7 +317,8 @@ web_find_run (struct web const     *web,
 
 /* Removes @p entry from the table and from the list of stored responses.
  * The caller has locked the mutex, and frees the entry after it has
- * unlocked the mutex. */
+ * unlocked the mutex.
+ */
 static void
 web_unlink (struct web       *web,
             struct web_entry *entry)
@@ -359,7 +371,8 @@ web_keep (struct web       *web,
 /* Makes the reply of @p run from @p end.  If the run did not fail, the body
  * that the run received moves to the reply.  Otherwise the body is freed.
  * Returns the reply with one reference.  On failure it returns nullptr and
- * stores ENOMEM in @p *e. */
+ * stores ENOMEM in @p *e.
+ */
 static struct web_reply *
 web_reply_create (struct web_run       *run,
                   struct web_end const *end,
@@ -403,7 +416,8 @@ web_reply_create (struct web_run       *run,
 }
 
 /* Returns the bytes that an entry for @p reply, the response to @p run,
- * counts against WEB_CACHE_MAX. */
+ * counts against WEB_CACHE_MAX.
+ */
 static size_t
 web_entry_bytes (struct web_run const   *run,
                  struct web_reply const *reply)
@@ -413,7 +427,8 @@ web_entry_bytes (struct web_run const   *run,
 
 /* Makes the entry of the table for @p reply, the response to @p run, with
  * a reference to the reply.  Returns the entry.  On failure it returns
- * nullptr and stores ENOMEM in @p *e. */
+ * nullptr and stores ENOMEM in @p *e.
+ */
 static struct web_entry *
 web_entry_create (struct web_run const *run,
                   struct web_reply     *reply,
@@ -486,7 +501,8 @@ web_run_end (struct web           *web,
 }
 
 /* Ends @p run, which home runs, with the result @p end, and logs the end
- * with --verbose. */
+ * with --verbose.
+ */
 static void
 web_run_finish (struct web           *web,
                 struct web_run       *run,
@@ -516,7 +532,8 @@ web_run_finish (struct web           *web,
  * @p user, a run.  If the step's share of receiving has no room for them,
  * the function pauses the transfer, and the resume step resumes it later.
  * A body that grows past the request's max fails the run with EFBIG.
- * Returns what a write callback of curl returns. */
+ * Returns what a write callback of curl returns.
+ */
 static size_t
 web_run_write (char const *data,
                size_t      len,
@@ -598,7 +615,8 @@ web_run_done (CURLcode    result,
 
 /* The deadline of a run has passed, and the overdue step ends the run.
  * curl has a timeout too, but it begins only when curl gets the transfer,
- * after the lookup of the host. */
+ * after the lookup of the host.
+ */
 static void
 web_run_late (struct loop       *loop,
               struct loop_timer *timer)
@@ -611,7 +629,8 @@ web_run_late (struct loop       *loop,
 }
 
 /* Ends the runs whose deadline has passed with ETIMEDOUT, as many in a step
- * as the step's share of requests allows. */
+ * as the step's share of requests allows.
+ */
 static void
 web_overdue_step (struct loop      *loop,
                   struct loop_step *step)
@@ -629,7 +648,8 @@ web_overdue_step (struct loop      *loop,
 }
 
 /* Resumes the paused runs, the first paused first, while the step's share
- * of receiving has room for a write of curl. */
+ * of receiving has room for a write of curl.
+ */
 static void
 web_resume_step (struct loop      *loop,
                  struct loop_step *step)
@@ -649,7 +669,8 @@ web_resume_step (struct loop      *loop,
 }
 
 /* Starts the transfer of @p run on home's bridge, or ends the run if it
- * cannot start. */
+ * cannot start.
+ */
 static void
 web_run_start (struct web     *web,
                struct web_run *run)
@@ -702,7 +723,8 @@ web_run_start (struct web     *web,
 
 /* Handles @p msg, the message of a run, on home's loop.  After home's loop
  * has stopped, home's part of the service is gone, and a new run ends with
- * ESHUTDOWN. */
+ * ESHUTDOWN.
+ */
 static void
 web_run_mail (struct loop *loop,
               struct msg  *msg)
@@ -725,7 +747,8 @@ web_run_mail (struct loop *loop,
 }
 
 /* Handles @p msg, the message of a wait, on the wait's loop, when the wait
- * has its reply. */
+ * has its reply.
+ */
 static void
 web_wait_mail (struct loop *loop,
                struct msg  *msg)
@@ -837,7 +860,8 @@ web_relieve (struct web        *web,
 }
 
 /* Whether the header line @p line goes with a request: all but a line of
- * User-Agent, as askai sends its own. */
+ * User-Agent, as askai sends its own.
+ */
 static bool
 web_line_kept (char const *line)
 {

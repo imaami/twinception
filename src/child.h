@@ -1,10 +1,13 @@
-/** @file Child processes (design section 4).  Each child is spawned with a
- *  pidfd, in a session of its own.  The steps of the loop that spawned it
- *  read its standard output from a pipe into a capped buffer.  The pidfd
- *  becomes readable when the child exits, so askai does not use SIGCHLD.
- *  The child is reaped by its pid after its output has also ended.
- *  child_run() instead runs a child on the calling thread, its output in a
- *  file, and reaps it through its pidfd. */
+/** @file child.h
+ *
+ * Child processes (design section 4).  Each child is spawned with a
+ * pidfd, in a session of its own.  The steps of the loop that spawned it
+ * read its standard output from a pipe into a capped buffer.  The pidfd
+ * becomes readable when the child exits, so askai does not use SIGCHLD.
+ * The child is reaped by its pid after its output has also ended.
+ * child_run() instead runs a child on the calling thread, its output in a
+ * file, and reaps it through its pidfd.
+ */
 #ifndef TWINCEPTION_SRC_CHILD_H_
 #define TWINCEPTION_SRC_CHILD_H_
 
@@ -17,7 +20,8 @@
 #include "loop.h"
 
 /** The maximum number of children of loops (child_create()) in the
- *  process that are not reaped. */
+ *  process that are not reaped.
+ */
 enum { CHILD_MAX = 16 };
 
 /** How a child is spawned. */
@@ -89,7 +93,8 @@ struct child_cmd {
 /** The descriptors of a child that child_run() runs, each -1 if it has
  *  none: its input, else cmd->in or /dev/null; its output, else /dev/null;
  *  the directory it runs in, else the caller's; and a descriptor that it
- *  keeps as descriptor 3, such as a file's lock. */
+ *  keeps as descriptor 3, such as a file's lock.
+ */
 struct child_fds {
 	int in;
 	int out;
@@ -135,18 +140,21 @@ child_run (struct child_cmd const *cmd,
            int                    *status);
 
 /** Let go of @p *p_c, which becomes nullptr: free it, if it has ended;
- *  else kill it, stop reading its output, and free it once it is reaped. */
+ *  else kill it, stop reading its output, and free it once it is reaped.
+ */
 extern void
 child_destroy (struct child **p_c);
 
 /** Lets go of @p *p_c, which becomes nullptr, without killing it.  The
  *  child runs until it ends, its output reaches the cap, or its deadline
- *  comes, and its loop frees it then. */
+ *  comes, and its loop frees it then.
+ */
 extern void
 child_release (struct child **p_c);
 
 /** Free every child on @p list as its loop stops; any still alive is killed
- *  and left to the process's exit to reap. */
+ *  and left to the process's exit to reap.
+ */
 extern void
 child_destroy_all (struct list *list);
 
@@ -155,7 +163,8 @@ child_destroy_all (struct list *list);
  *  still fails.  A program that starts children calls this first: the file
  *  actions of a child replace its descriptors 0 to 2 before they copy the
  *  ones it gets, so one of those with such a number would be lost or
- *  swapped.  Returns 0 or an error number. */
+ *  swapped.  Returns 0 or an error number.
+ */
 extern int
 child_std_open (void);
 

@@ -1,4 +1,7 @@
-/** @file The manual (manual.h). */
+/** @file manual.c
+ *
+ * Man pages tool.
+ */
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -32,7 +35,8 @@ enum {
 
 /** A page as man rendered it, UTF-8 text, a page cut short ending in a note
  *  that says so; no one changes it.  The manual holds a reference while it
- *  keeps the page, and each reader one. */
+ *  keeps the page, and each reader one.
+ */
 struct manual_page {
 	struct timespec  ctime;  /**< its file's, as man began */
 	dev_t            dev;
@@ -44,7 +48,8 @@ struct manual_page {
 };
 
 /** A call that waits for a page: posted to its loop, msg.fn its handler,
- *  once the page is in or man has failed; the handler frees it. */
+ *  once the page is in or man has failed; the handler frees it.
+ */
 struct manual_wait {
 	struct msg           msg;
 	struct manual_wait  *next;
@@ -58,7 +63,8 @@ struct manual_wait {
 };
 
 /** What a client loop has of the manual, the man tool's part of it: the
- *  fetches it runs, and their children. */
+ *  fetches it runs, and their children.
+ */
 struct manual_loop {
 	struct list     fetches;
 	struct list     children;
@@ -101,7 +107,8 @@ struct manual_entry {
 
 /* A fetch of an alias's page, on the loop of the ask that began it: man
  * finds the file, then renders it, unless the manual has the page as the
- * file is. */
+ * file is.
+ */
 struct manual_fetch {
 	struct list          hook;     /* on its loop's fetches */
 	struct loop_step     step;     /* copying the page in */
@@ -150,7 +157,8 @@ manual_page_put (struct manual_page *page)
 }
 
 /* Free @p *p_w, a waiter's post, and the page it holds, if any, and set it
- * to nullptr. */
+ * to nullptr.
+ */
 static void
 manual_wait_destroy (struct manual_wait **p_w)
 {
@@ -186,7 +194,8 @@ manual_lookup (struct manual const *m,
 }
 
 /* Double the buckets, if memory allows: longer chains are all it costs if
- * not. */
+ * not.
+ */
 static void
 manual_grow (struct manual *m)
 {
@@ -208,7 +217,8 @@ manual_grow (struct manual *m)
 }
 
 /* A new entry keyed by @p key, in the table, the buckets doubling once the
- * entries outnumber them; nullptr if out of memory. */
+ * entries outnumber them; nullptr if out of memory.
+ */
 static struct manual_entry *
 manual_add (struct manual *m,
             char const    *key,
@@ -245,7 +255,8 @@ manual_del (struct manual       *m,
 }
 
 /* Free @p *p_f, its waiters posted, and the page it holds, if any, and set
- * it to nullptr. */
+ * it to nullptr.
+ */
 static void
 manual_fetch_destroy (struct manual_fetch **p_f)
 {
@@ -259,7 +270,8 @@ manual_fetch_destroy (struct manual_fetch **p_f)
 }
 
 /* The fetch failed, as @p why says: the alias goes, and each waiter is
- * posted why. */
+ * posted why.
+ */
 static void
 manual_fetch_fail (struct manual_fetch *f,
                    char const          *why)
@@ -331,7 +343,8 @@ manual_fetch_done (struct manual_fetch *f,
 }
 
 /* Run man with @p argv, its output up to @p max bytes, then @p done; else
- * fail the fetch with why not.  Counts the run in @p runs. */
+ * fail the fetch with why not.  Counts the run in @p runs.
+ */
 static void
 manual_fetch_run (struct manual_fetch *f,
                   char const          *argv[],
@@ -379,7 +392,8 @@ manual_entry_none (struct manual_entry const *a,
 }
 
 /* Whether man, @p c, ended well, or its output was cut short; else @p why
- * says what went wrong. */
+ * says what went wrong.
+ */
 static bool
 manual_fetch_ended (struct manual_fetch const *f,
                     struct child const        *c,
@@ -410,7 +424,8 @@ manual_fetch_ended (struct manual_fetch const *f,
 }
 
 /* Copy as much of the page in as the step has the share for, made UTF-8
- * text, the rest in bulk steps; then the fetch is over. */
+ * text, the rest in bulk steps; then the fetch is over.
+ */
 static void
 manual_fetch_copy (struct loop      *loop,
                    struct loop_step *step)
@@ -465,7 +480,8 @@ manual_fetch_rendered (struct child *c)
 }
 
 /* Man has found the alias's file, or failed to: give the page the manual
- * has, if the file is as it was, else render it. */
+ * has, if the file is as it was, else render it.
+ */
 static void
 manual_fetch_found (struct child *c)
 {
@@ -514,7 +530,8 @@ manual_fetch_found (struct child *c)
 
 /* Have @p w, if not nullptr, wait for the page of the alias @p key: join
  * the fetch under way, or begin one; without a waiter, begin one only if
- * none is under way.  Returns 0 or ENOMEM. */
+ * none is under way.  Returns 0 or ENOMEM.
+ */
 static int
 manual_loop_ask (struct manual_loop *ml,
                  char const         *key,
@@ -567,7 +584,8 @@ manual_loop_ask (struct manual_loop *ml,
 }
 
 /* End @p slot's call with @p page, a reference, which the call keeps as
- * its own until it drops. */
+ * its own until it drops.
+ */
 static void
 manual_give (struct mcp_slot    *slot,
              struct manual_page *page)
@@ -579,7 +597,8 @@ manual_give (struct mcp_slot    *slot,
 
 /* The page a man call waited for is in, or man failed: reply with the
  * page, or why there is none, unless the call has gone.  Once the loop has
- * stopped, MCP is gone, and the post is only freed. */
+ * stopped, MCP is gone, and the post is only freed.
+ */
 static void
 manual_back (struct loop *loop,
              struct msg  *msg)
@@ -670,7 +689,8 @@ manual_find (struct manual_loop  *ml,
 
 /* Creates the man tool's part of @p loop for @p service, a struct manual.
  * The part has the list of the fetches that the loop runs and the list of
- * their children.  Returns the part, or nullptr with ENOMEM in @p *e. */
+ * their children.  Returns the part, or nullptr with ENOMEM in @p *e.
+ */
 void *
 manual_loop_create (void        *service,
                     struct loop *loop,
@@ -690,7 +710,8 @@ manual_loop_create (void        *service,
 
 /* End the fetches the loop runs, as it stops: their waiters learn that the
  * server is shutting down, and their children are killed.  Then free
- * @p *p_part, the man tool's part of the loop, and set it to nullptr. */
+ * @p *p_part, the man tool's part of the loop, and set it to nullptr.
+ */
 void
 manual_loop_destroy (void **p_part)
 {
@@ -774,7 +795,8 @@ manual_metrics (struct manual const *manual)
 }
 
 /* Whether @p s, of @p len bytes, is 1 to @p max of the characters of @p set,
- * the first not '-', which man would take for an option. */
+ * the first not '-', which man would take for an option.
+ */
 static bool
 manual_word (char const *s,
              size_t      len,
@@ -786,7 +808,8 @@ manual_word (char const *s,
 
 /* Start a man call in @p slot for the page that @p args names, of the
  * section it names if any: reply with it if the manual, the man tool's
- * part of the loop, has it, else wait for it, named. */
+ * part of the loop, has it, else wait for it, named.
+ */
 static void
 manual_start (struct mcp_slot    *slot,
               struct json_object *args)

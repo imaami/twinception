@@ -1,4 +1,7 @@
-/** @file Public configuration and entry point for the experiment. */
+/** @file app.h
+ *
+ * Public configuration and entry point for the experiment.
+ */
 #ifndef TWINCEPTION_SRC_APP_H_
 #define TWINCEPTION_SRC_APP_H_
 

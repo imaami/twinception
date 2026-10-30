@@ -1,5 +1,7 @@
-/** @file Jobs: the upstream calls that client loops hand to home (design
- *  section 4).
+/** @file job.h
+ *
+ * Jobs are upstream calls that the client loops hand over to home
+ * (design section 4).
  *
  * A job is shared by the loop that asks for it, its front, and home, which
  * runs it: the one mutable object two threads share (R4).  Each field has one
@@ -99,7 +101,8 @@ enum job_ask {
 /** The header of a tool call in a streamed answer.  Each call is stored in
  *  its own buffer of job->calls.  The buffer contains this header and then
  *  the bytes of the id, the name, the extra and the JSON text of the
- *  arguments of the call. */
+ *  arguments of the call.
+ */
 struct job_call {
 	uint32_t index;   /**< the index of the call in the answer, or the
 	                       number of its buffer if the answer gave none */
@@ -298,7 +301,8 @@ job_init (struct job  *job,
 }
 
 /** Free @p job's buffers, which job_init() leaves empty, so that a job
- *  kept for reuse holds no storage. */
+ *  kept for reuse holds no storage.
+ */
 static inline void
 job_fini (struct job *job)
 {
@@ -314,7 +318,8 @@ job_fini (struct job *job)
 }
 
 /** Set @p bit in @p word, and post @p msg to @p loop with a reference if
- *  that made the word non-zero. */
+ *  that made the word non-zero.
+ */
 static inline void
 job_post (struct job       *job,
           struct loop      *loop,
@@ -330,7 +335,8 @@ job_post (struct job       *job,
 }
 
 /** Drop @p n references; true if they were the last, which leaves the job
- *  to the caller alone. */
+ *  to the caller alone.
+ */
 static inline bool
 job_put (struct job *job,
          uint32_t    n)

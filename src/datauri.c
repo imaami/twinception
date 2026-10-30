@@ -1,4 +1,7 @@
-/** @file RFC 2397 data: URIs (datauri.h). */
+/** @file datauri.c
+ *
+ * RFC 2397 data: URIs.
+ */
 #include <errno.h>
 #include <string.h>
 #include <strings.h>
@@ -17,7 +20,8 @@ datauri_digit (unsigned char c)
 }
 
 /* Checks base64 data in @p d and counts its bytes: digits, then at most
- * two '=' that fill the last group of four. */
+ * two '=' that fill the last group of four.
+ */
 static int
 datauri_parse_base64 (struct datauri *d)
 {

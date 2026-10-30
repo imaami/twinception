@@ -1,4 +1,6 @@
-/** @file The core's metrics in Prometheus's text format, for GET /metrics.
+/** @file metrics.h
+ *
+ * The core's metrics in Prometheus's text format, for GET /metrics.
  *
  * Every histogram and gauge has one writer thread, as do most counters; those
  * of log lines and of blocker jobs, which several threads count into, are
@@ -52,7 +54,8 @@ enum metrics_method {
 };
 
 /** What a loop keeps for reuse besides its stash's storage: the loop
- *  writes, any thread reads (hist.h). */
+ *  writes, any thread reads (hist.h).
+ */
 struct metrics_kept {
 	_Atomic uint64_t spares;    /**< finished requests */
 	_Atomic uint64_t jobs;      /**< jobs let go of */
@@ -61,7 +64,8 @@ struct metrics_kept {
 };
 
 /** The tools that an ask call's turns may call (src/mcp.h), as a call's
- *  tool, which the metrics count by. */
+ *  tool, which the metrics count by.
+ */
 enum metrics_lent {
 	LENT_NONE,     /**< one not lent, or of no tool's name */
 	LENT_MAN,
@@ -78,7 +82,8 @@ enum metrics_lent {
 
 /** What a client loop counts of its tool calls' jobs, and of the turns of
  *  the ask calls that lend the upstream tools: the loop writes, any thread
- *  reads. */
+ *  reads.
+ */
 struct metrics_calls {
 	_Atomic uint64_t cancelled;     /**< calls it cancelled while their job ran */
 	_Atomic uint64_t dropped;       /**< completions it dropped, their call
@@ -92,7 +97,8 @@ struct metrics_calls {
 };
 
 /** What a client loop's MCP counts: the loop writes, any thread reads.  It
- *  lasts until every loop has finished, as any loop may render it. */
+ *  lasts until every loop has finished, as any loop may render it.
+ */
 struct metrics_mcp {
 	struct metrics_kept  kept;
 	struct metrics_calls calls;
@@ -120,7 +126,8 @@ metrics_mcp_init (struct metrics_mcp *m)
 }
 
 /** What a client loop counts of its connections: the loop writes, any
- *  thread reads. */
+ *  thread reads.
+ */
 struct metrics_conns {
 	_Atomic uint64_t open;      /**< connections it serves */
 	_Atomic uint64_t taken;     /**< connections home placed on it */
@@ -130,7 +137,8 @@ struct metrics_conns {
 };
 
 /** A loop's metrics, labelled with its name; those it lacks are nullptr.  Each
- *  loop sets its own as it starts, before home opens its door to clients. */
+ *  loop sets its own as it starts, before home opens its door to clients.
+ */
 struct metrics_loop {
 	char                            name[8];
 	struct loop_metrics const      *loop;

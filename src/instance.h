@@ -1,5 +1,7 @@
-/** @file Plugin instances: the memory that a plugin (src/plugin.h) has for
- *  each user whose calls run on one client loop.
+/** @file instance.h
+ *
+ * Plugin instances: the memory that a plugin (src/plugin.h) has for
+ * each user whose calls run on one client loop.
  *
  * Each client loop has one table.  Only the thread of the loop calls the
  * functions of the table, and askai passes an instance only to functions
@@ -83,19 +85,22 @@ struct instance_table {
 };
 
 /** Initializes @p dest as the empty table of @p loop.  It allocates nothing,
- *  so it always returns 0. */
+ *  so it always returns 0.
+ */
 extern int
 instance_table_init (struct instance_table *dest,
                      struct loop           *loop);
 
 /** Destroys every instance of @p table.  No call may use an instance when
- *  this function is called. */
+ *  this function is called.
+ */
 extern void
 instance_table_fini (struct instance_table *table);
 
 /** Returns the generation of @p table.  A request stores this number when
  *  it begins, and passes it to instance_table_get() for each of its
- *  calls. */
+ *  calls.
+ */
 static inline uint64_t
 instance_table_generation (struct instance_table const *table)
 {
@@ -131,7 +136,8 @@ instance_table_get (struct instance_table  *table,
 
 /** Removes the caller's call from the users of the instance
  *  @p *p_instance, and sets @p *p_instance to nullptr.  It does nothing if
- *  @p *p_instance is nullptr. */
+ *  @p *p_instance is nullptr.
+ */
 extern void
 instance_table_put (struct instance_table  *table,
                     void                  **p_instance);
@@ -140,7 +146,8 @@ instance_table_put (struct instance_table  *table,
  *  After this call, no call of a later request gets an instance that
  *  exists now.  The table's step destroys the instances that no call uses.
  *  An instance that a call uses is destroyed after its last call has been
- *  dropped. */
+ *  dropped.
+ */
 extern void
 instance_table_flush (struct instance_table *table);
 

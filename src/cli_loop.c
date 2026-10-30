@@ -1,4 +1,7 @@
-/** @file CLI reactor implementation (cli_loop.h). */
+/** @file cli_loop.c
+ *
+ * CLI reactor implementation.
+ */
 #include <errno.h>
 #include <stddef.h>
 #include <sys/epoll.h>

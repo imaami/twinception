@@ -1,4 +1,7 @@
-/** @file Upstream AI APIs: request bodies and answer parsing. */
+/** @file ai.h
+ *
+ * Upstream AI APIs: request bodies and answer parsing.
+ */
 #ifndef TWINCEPTION_SRC_AI_H_
 #define TWINCEPTION_SRC_AI_H_
 
@@ -9,7 +12,8 @@ struct dstr;
 struct json_object;
 
 /** How the upstream's requests and answers are written: 0 only until the
- *  configuration has chosen. */
+ *  configuration has chosen.
+ */
 enum ai_api : uint16_t {
 	AI_CHAT = 1,      /**< chat completions, OpenAI's and the many copies */
 	AI_RESPONSES,     /**< OpenAI's Responses */
@@ -19,7 +23,8 @@ enum ai_api : uint16_t {
 };
 
 /** Who serves the upstream, as askai knows them: their URLs, the variables
- *  of their keys and their default API. */
+ *  of their keys and their default API.
+ */
 enum ai_provider : uint16_t {
 	AI_NO_PROVIDER,  /**< a server that --url names alone */
 	AI_LLAMA,        /**< llama-server, which says at /props what it has */
@@ -31,7 +36,8 @@ enum ai_provider : uint16_t {
 };
 
 /** Whether @p p may be llama-server, which may need no key or model and
- *  says at /props what it has: llama, or a server that no provider names. */
+ *  says at /props what it has: llama, or a server that no provider names.
+ */
 static inline bool
 ai_llama_like (enum ai_provider p)
 {
@@ -63,7 +69,8 @@ struct ai_endpoint {
 
 /** Whether @p ep requests native background execution as well as keeping
  *  its stream locally: OpenAI Responses or Gemini Interactions, including
- *  an explicit URL with no named provider. */
+ *  an explicit URL with no named provider.
+ */
 static inline bool
 ai_background (struct ai_endpoint const *ep)
 {
@@ -76,7 +83,8 @@ ai_background (struct ai_endpoint const *ep)
 
 /** Whether the upstream of @p ep may be llama-server, which says at /props
  *  what it has: one that ai_llama_like() allows, with an API that is not
- *  one of Gemini's. */
+ *  one of Gemini's.
+ */
 static inline bool
 ai_props (struct ai_endpoint const *ep)
 {
@@ -115,12 +123,14 @@ struct ai_event {
 };
 
 /** A tool call's index that an event does not give: the call it says
- *  something of is a new one if it gives a new id, else the last. */
+ *  something of is a new one if it gives a new id, else the last.
+ */
 static constexpr uint32_t AI_CALL_NEXT = UINT32_MAX;
 
 /** What an event says of a tool call that the model makes: of call @p index
  *  of its answer, or AI_CALL_NEXT, the parts it gives, each nullptr if it
- *  gives none. */
+ *  gives none.
+ */
 struct ai_call {
 	char const *id;
 	char const *name;
@@ -141,7 +151,8 @@ struct ai_call {
  *  its thinking's text, its tool calls and its replay: the JSON text of
  *  what its turn gives back as it came (struct ai_format), in pieces, each
  *  of its items after a comma.  Each returns 0, or an error, which ends the
- *  reading of the event. */
+ *  reading of the event.
+ */
 struct ai_sink {
 	int  (*text)    (void       *user,
 	                 char const *text,
@@ -158,7 +169,8 @@ struct ai_sink {
 };
 
 /** What the reading of a streamed answer keeps from one event to the next:
- *  zeroed before its first. */
+ *  zeroed before its first.
+ */
 struct ai_reader {
 	uint32_t open;   /**< 1 + the content block whose item in the replay
 	                      is open, in Anthropic's Messages, or 1 + the step
@@ -208,7 +220,8 @@ ai_event (enum ai_api            api,
           struct ai_event       *out);
 
 /** How the turns of an API differ beyond their fragments (struct
- *  ai_format's flags). */
+ *  ai_format's flags).
+ */
 enum ai_format_flag {
 	AI_ARGS_RAW     = 1u << 0,  /**< a call's arguments are a JSON object,
 	                                 not the text of a JSON string */
@@ -293,7 +306,8 @@ ai_tool (enum ai_api               api,
          struct json_object const *def);
 
 /** Whether @p reason, an answer's stop reason, is @p api's output
- *  token limit, which cuts it short. */
+ *  token limit, which cuts it short.
+ */
 extern bool
 ai_cut (enum ai_api       api,
         char const       *reason);
@@ -304,14 +318,16 @@ ai_format (enum ai_api api);
 
 /** How the upstream of an API takes a file that a turn attaches: a POST
  *  of the file, which is UTF-8 text, to the URL that ai_upload_url() makes,
- *  with the upstream's header lines and lines. */
+ *  with the upstream's header lines and lines.
+ */
 struct ai_upload {
 	char const        *path;   /**< at the root of the API */
 	char const *const *lines;  /**< nullptr-terminated */
 };
 
 /** How the upstream of @p api takes a file, or nullptr if askai gives it
- *  none. */
+ *  none.
+ */
 extern struct ai_upload const *
 ai_upload (enum ai_api api);
 
@@ -329,13 +345,15 @@ ai_gemini_url (char const *url,
 
 /** The URL to which the upstream of @p ep takes files (ai_upload()), a
  *  string for free(), or nullptr if it takes none or askai runs out of
- *  memory. */
+ *  memory.
+ */
 extern char *
 ai_upload_url (struct ai_endpoint const *ep);
 
 /** The URL at which Gemini's API says what the model of @p ep has, its
  *  inputTokenLimit among them, a string for free(), or nullptr if @p ep has
- *  no model, no API of Gemini's, or no such URL (ai_gemini_url()). */
+ *  no model, no API of Gemini's, or no such URL (ai_gemini_url()).
+ */
 extern char *
 ai_model_url (struct ai_endpoint const *ep);
 
@@ -356,7 +374,8 @@ ai_uploaded (enum ai_api  api,
              struct dstr *why);
 
 /** Say in the @p size bytes at @p buf that the model gave no answer, and
- *  why, if its stop @p reason is not nullptr; returns the length written. */
+ *  why, if its stop @p reason is not nullptr; returns the length written.
+ */
 extern size_t
 ai_no_answer (char       *buf,
               size_t      size,
@@ -381,7 +400,8 @@ ai_answer (enum ai_api         api,
 /** Append only exposed reasoning text from a complete provider response
  *  @p root to @p text. Strings are decoded and concatenated without inserted
  *  separators; signatures, encrypted payloads and answer text are omitted.
- *  Missing reasoning is not an error. The caller retains both objects. */
+ *  Missing reasoning is not an error. The caller retains both objects.
+ */
 extern int
 ai_thoughts (enum ai_api         api,
              struct json_object *root,

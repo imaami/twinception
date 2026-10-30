@@ -1,4 +1,7 @@
-/** @file Paired-model conversation state and reasoning-trace exchange. */
+/** @file app.c
+ *
+ * Paired-model conversation state and reasoning-trace exchange.
+ */
 #include <errno.h>
 #include <fcntl.h>
 #include <json-c/json.h>
@@ -51,7 +54,8 @@ struct app_probe {
 };
 
 /* A model's streamed request: its events go to the parser, and the last
- * bytes of the response are kept to show if it fails. */
+ * bytes of the response are kept to show if it fails.
+ */
 struct app_stream {
 	struct http_request *request;
 	struct sse           sse;
@@ -217,7 +221,8 @@ app_prompt_create (char const *text,
 }
 
 /* Set @p obj's @p key to @p val, which it takes: ENOMEM if @p val is
- * nullptr, a value that could not be made, or cannot be added. */
+ * nullptr, a value that could not be made, or cannot be added.
+ */
 static int
 app_json_set (struct json_object *obj,
               char const         *key,
@@ -272,7 +277,8 @@ app_json_choice (struct json_object const *root)
 }
 
 /* Append a message of @p role saying @p content, with @p reasoning as its
- * reasoning_content unless that is nullptr, to @p messages. */
+ * reasoning_content unless that is nullptr, to @p messages.
+ */
 static int
 app_json_message (struct json_object *messages,
                   char const         *role,
@@ -294,7 +300,8 @@ app_json_message (struct json_object *messages,
 }
 
 /* DeepInfra's switches for a model to reason, and to keep the reasoning it
- * is given. */
+ * is given.
+ */
 static int
 app_json_deepinfra (struct json_object *root)
 {
@@ -345,7 +352,8 @@ app_history_json (struct app const   *app,
 }
 
 /* A request body whose "messages", in @p *messages, begin with the system
- * message, if there is one; nullptr if out of memory. */
+ * message, if there is one; nullptr if out of memory.
+ */
 static struct json_object *
 app_body (struct app const    *app,
           struct json_object **messages)
@@ -364,7 +372,8 @@ app_body (struct app const    *app,
 }
 
 /* As app_body(), the history as model @p model sees it and the pending
- * turn's user message to it following. */
+ * turn's user message to it following.
+ */
 static struct json_object *
 app_pending_body (struct app const    *app,
                   size_t               model,
@@ -382,7 +391,8 @@ app_pending_body (struct app const    *app,
 }
 
 /* POST @p body and release it; a null @p body, which failed to build, is
- * ENOMEM. */
+ * ENOMEM.
+ */
 static int
 app_post (struct app          *app,
           size_t               model,
@@ -632,7 +642,8 @@ app_probe_post (struct app_probe *probe)
 }
 
 /* Take in @p reply to @p probe's stage: the next stage is posted, or the
- * probe is done and the app goes on. */
+ * probe is done and the app goes on.
+ */
 static int
 app_probe_end (struct app_probe       *probe,
                struct app_reply const *reply)
@@ -673,7 +684,8 @@ app_probe_done (CURLcode    result,
 
 /* Begin the template check of @p probe's model: a llama model must pass
  * one, unless -P skips it, which rapid mode does not allow.  The probe of
- * any other model is done at once. */
+ * any other model is done at once.
+ */
 static int
 app_probe_begin (struct app_probe *probe)
 {
@@ -745,7 +757,8 @@ app_stream_write (char const *data,
 
 /* The JSON of an event of @p s, or nullptr with the error in @p *e: 0 for
  * the [DONE] that ends the stream, EPROTO for an event that is not JSON,
- * EREMOTEIO for one that reports an error, or ENOMEM. */
+ * EREMOTEIO for one that reports an error, or ENOMEM.
+ */
 static struct json_object *
 app_stream_event (struct app_stream *s,
                   char const        *data,
@@ -782,7 +795,8 @@ app_stream_event (struct app_stream *s,
 }
 
 /* The error, if any, that the request of @p s ended with: its own, the
- * parser's, or what @p reply or a missing end of the stream says. */
+ * parser's, or what @p reply or a missing end of the stream says.
+ */
 static int
 app_stream_error (struct app_stream      *s,
                   struct app_reply const *reply)
@@ -798,7 +812,8 @@ app_stream_error (struct app_stream      *s,
 }
 
 /* As app_stream_error(), an error shown as app_reply_report() does, with
- * the tail of the response. */
+ * the tail of the response.
+ */
 static int
 app_stream_check (struct app_stream      *s,
                   struct app_reply const *reply,
@@ -853,7 +868,8 @@ app_discard (struct app *app)
 }
 
 /* Take the pending turn, answered, into the history and show it; then go on
- * with a crosstalk round, if one is due, or else the next prompt. */
+ * with a crosstalk round, if one is due, or else the next prompt.
+ */
 static int
 app_commit (struct app *app)
 {
@@ -1009,7 +1025,8 @@ app_rapid_fini (struct app_rapid *rapid)
 }
 
 /* Make @p rapid ready for a request of @p requested tokens, 0 if it has no
- * limit. */
+ * limit.
+ */
 static void
 app_rapid_reset (struct app_rapid *rapid,
                  uint32_t          requested)
@@ -1033,7 +1050,8 @@ app_rapid_template_write (char const *data,
 
 /* Append the prompt of @p rapid's /apply-template response to its base:
  * EPROTO if the response has none, or ENOMEM, either said to be invalid
- * JSON. */
+ * JSON.
+ */
 static int
 app_rapid_template_parse (struct app_rapid *rapid)
 {
@@ -1086,7 +1104,8 @@ app_rapid_template_body (struct app_rapid const *rapid)
 }
 
 /* Begin @p rapid's part of the pending turn: a llama model's template
- * renders the turn's prompt, which DeepInfra renders itself. */
+ * renders the turn's prompt, which DeepInfra renders itself.
+ */
 static int
 app_rapid_begin (struct app_rapid *rapid)
 {
@@ -1108,7 +1127,8 @@ app_rapid_begin (struct app_rapid *rapid)
 }
 
 /* Where @p rapid's text goes: the answer in its stage, the quantum's
- * reasoning otherwise. */
+ * reasoning otherwise.
+ */
 static struct dstr *
 app_rapid_out (struct app_rapid *rapid)
 {
@@ -1118,7 +1138,8 @@ app_rapid_out (struct app_rapid *rapid)
 
 /* The text of a DeepInfra @p choice's delta: the first of its reasoning
  * and its content that it has, but its content alone in the answer stage;
- * nullptr if that is no string. */
+ * nullptr if that is no string.
+ */
 static struct json_object *
 app_rapid_text (struct app_rapid const   *rapid,
                 struct json_object const *choice)
@@ -1142,7 +1163,8 @@ app_rapid_text (struct app_rapid const   *rapid,
 }
 
 /* Take in a DeepInfra event's first @p choice: its text, and whether it
- * finished at the token limit. */
+ * finished at the token limit.
+ */
 static int
 app_rapid_deepinfra_event (struct app_rapid         *rapid,
                            struct json_object const *choice)
@@ -1178,7 +1200,8 @@ app_rapid_count (struct app_rapid         *rapid,
 }
 
 /* Take in a llama.cpp /completion event: its text and tokens, and whether
- * and why it stopped. */
+ * and why it stopped.
+ */
 static int
 app_rapid_llama_event (struct app_rapid         *rapid,
                        struct json_object const *root)
@@ -1235,7 +1258,8 @@ app_rapid_done (CURLcode    result,
 }
 
 /* Append to @p messages the assistant message that @p rapid's model goes
- * on from: the other model's reasoning, as its own, closed for the answer. */
+ * on from: the other model's reasoning, as its own, closed for the answer.
+ */
 static int
 app_rapid_prefill (struct app_rapid const *rapid,
                    struct json_object     *messages)
@@ -1284,7 +1308,8 @@ app_rapid_deepinfra_body (struct app_rapid const *rapid,
 
 /* The raw prompt that @p rapid's model goes on from, in @p prompt: the
  * turn's, up to its generation tail, then the reasoning tail and the other
- * model's reasoning, as its own, and for the answer the transition to it. */
+ * model's reasoning, as its own, and for the answer the transition to it.
+ */
 static int
 app_rapid_prompt (struct app_rapid const *rapid,
                   struct dstr            *prompt)
@@ -1321,7 +1346,8 @@ app_rapid_prompt (struct app_rapid const *rapid,
 }
 
 /* A /completion request body for @p rapid's model, which stops at the
- * transition to the answer while it reasons. */
+ * transition to the answer while it reasons.
+ */
 static struct json_object *
 app_rapid_llama_body (struct app_rapid const *rapid,
                       struct dstr const      *prompt,
@@ -1360,7 +1386,8 @@ app_rapid_llama_body (struct app_rapid const *rapid,
 }
 
 /* Post @p rapid's model the request of the stage, of at most @p n_predict
- * tokens if that is positive. */
+ * tokens if that is positive.
+ */
 static int
 app_rapid_start (struct app_rapid *rapid,
                  long              n_predict)
@@ -1424,7 +1451,8 @@ app_print_quantum (struct app const *app)
 
 /* Both models have reasoned a quantum, which each adds to what the other
  * goes on from: they answer once the budget is spent, or either stopped
- * short, and reason on if not. */
+ * short, and reason on if not.
+ */
 static int
 app_end_quantum (struct app *app)
 {
@@ -1533,7 +1561,8 @@ app_pop_prompt (struct app *app)
 }
 
 /* Start a turn on the next prompt, unless a turn or a template check is
- * under way; with no prompt, ask for one, or end once there will be none. */
+ * under way; with no prompt, ask for one, or end once there will be none.
+ */
 static int
 app_advance (struct app *app)
 {
@@ -1613,7 +1642,8 @@ app_stdin_drain (struct app *app)
 }
 
 /* Read stdin, and queue its lines, and once it has ended, the rest; then
- * go on. */
+ * go on.
+ */
 static int
 app_stdin_read (struct app *app)
 {
@@ -1660,7 +1690,8 @@ app_stdin_event (struct loop     *loop,
 }
 
 /* Model @p i's /apply-template and /completion URLs, which replace the
- * chat-completions path of its URL; none if it has no such path. */
+ * chat-completions path of its URL; none if it has no such path.
+ */
 static int
 app_urls (struct app *app,
           size_t      i)
@@ -1748,7 +1779,8 @@ app_rapid (struct app *app,
 }
 
 /* What of the app does not depend on where it is; app_init() does the rest
- * in place. */
+ * in place.
+ */
 static struct app
 app (struct app_cfg const *cfg)
 {
@@ -1769,7 +1801,8 @@ app (struct app_cfg const *cfg)
 }
 
 /* Set up @p app, which app() made, in place; on failure, app_fini() frees
- * what it has. */
+ * what it has.
+ */
 static int
 app_init (struct app *app)
 {
@@ -1845,7 +1878,8 @@ app_fini (struct app *app)
 }
 
 /* Set up @p app, check the templates, then take turns until the prompts
- * run out or one fails: its error, or the loop's. */
+ * run out or one fails: its error, or the loop's.
+ */
 static int
 app_exec (struct app *app)
 {

@@ -1,4 +1,7 @@
-/** @file Process signals delivered to one explicitly owned UI descriptor. */
+/** @file cli_signals.h
+ *
+ * Process signals delivered to one explicitly owned UI descriptor.
+ */
 #ifndef TWINCEPTION_SRC_CLI_SIGNALS_H_
 #define TWINCEPTION_SRC_CLI_SIGNALS_H_
 

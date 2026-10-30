@@ -1,5 +1,8 @@
-/** @file Small compile-time, container, hashing, formatting, text and
- *  file helpers. */
+/** @file util.h
+ *
+ * Small compile-time, container, hashing, formatting, text and
+ * file helpers.
+ */
 #ifndef TWINCEPTION_SRC_UTIL_H_
 #define TWINCEPTION_SRC_UTIL_H_
 
@@ -22,7 +25,8 @@
 static constexpr uint64_t NS = 1'000'000'000;
 
 /** The wall clock, CLOCK_REALTIME, in nanoseconds since the epoch, or 0 if
- *  it cannot be read or is before the epoch. */
+ *  it cannot be read or is before the epoch.
+ */
 static inline uint64_t
 util_realtime (void)
 {
@@ -33,7 +37,8 @@ util_realtime (void)
 }
 
 /** Write the @p n bytes at @p src to @p dst as 2 @p n lowercase hexadecimal
- *  digits, without a NUL. */
+ *  digits, without a NUL.
+ */
 static inline void
 util_hex (char *restrict       dst,
           void const *restrict src,
@@ -49,7 +54,8 @@ util_hex (char *restrict       dst,
 
 /** Write @p n random bytes, at most 256, from the kernel to @p dst as 2 @p n
  *  lowercase hexadecimal digits, without a NUL.  Returns 0, or the error
- *  number. */
+ *  number.
+ */
 static inline int
 util_random_hex (char   *dst,
                  size_t  n)
@@ -81,7 +87,8 @@ util_is_hex (char const *s,
 }
 
 /** Whether the @p n bytes at @p s are the full name of a Git object: 40
- *  (SHA-1) or 64 (SHA-256) lowercase hexadecimal digits. */
+ *  (SHA-1) or 64 (SHA-256) lowercase hexadecimal digits.
+ */
 static inline bool
 util_is_oid (char const *s,
              size_t      n)
@@ -90,7 +97,8 @@ util_is_oid (char const *s,
 }
 
 /** The value of the hexadecimal digit @p c, of either case, or 16 if @p c
- *  is not one. */
+ *  is not one.
+ */
 static inline unsigned
 util_hex_digit (unsigned char c)
 {
@@ -103,7 +111,8 @@ util_hex_digit (unsigned char c)
 enum { UTIL_WORD_MAX = 64 };
 
 /** Whether the @p n bytes at @p s, 1 to @p max of them, are ASCII letters,
- *  digits, underscores or hyphens, as the words in askai's Git refs are. */
+ *  digits, underscores or hyphens, as the words in askai's Git refs are.
+ */
 static inline bool
 util_word (char const *s,
            size_t      n,
@@ -120,7 +129,8 @@ util_word (char const *s,
 
 /** The entry "NAME=value" of the process's environment whose "NAME=" is
  *  the @p len bytes at @p name, or nullptr if it has none.  Nothing in
- *  askai changes its environment, so the entry lasts. */
+ *  askai changes its environment, so the entry lasts.
+ */
 static inline char *
 util_env (char const *name,
           size_t      len)
@@ -133,7 +143,8 @@ util_env (char const *name,
 }
 
 /** The entry "PATH=..." of the process's environment for a child to
- *  inherit, or "PATH=/usr/bin:/bin" if it has no PATH or an empty one. */
+ *  inherit, or "PATH=/usr/bin:/bin" if it has no PATH or an empty one.
+ */
 static inline char *
 util_env_path (void)
 {
@@ -144,7 +155,8 @@ util_env_path (void)
 
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a
  *  partial write.  Returns 0, or the error number, EIO if no byte could be
- *  written. */
+ *  written.
+ */
 static inline int
 util_write_all (int         fd,
                 void const *buf,
@@ -166,7 +178,8 @@ util_write_all (int         fd,
 /** Read up to @p len bytes from @p fd into @p buf, from the offset @p at
  *  with pread(), or from where the file stands with read() if @p at is
  *  negative, again after a signal or a partial read, until the end of the
- *  file; their count goes to @p *got.  Returns 0, or the error number. */
+ *  file; their count goes to @p *got.  Returns 0, or the error number.
+ */
 static inline int
 util_read_all (int     fd,
                void   *buf,
@@ -189,7 +202,8 @@ util_read_all (int     fd,
 }
 
 /** A hash of the @p len bytes at @p data, seeded with @p seed: a seed no
- *  client knows keeps clients from picking keys that crowd one bucket. */
+ *  client knows keeps clients from picking keys that crowd one bucket.
+ */
 static inline uint64_t
 util_hash (uint64_t    seed,
            void const *data,
@@ -204,7 +218,8 @@ util_hash (uint64_t    seed,
 }
 
 /** The @p a_len bytes at @p a, then the string @p b, in memory of their
- *  own; nullptr if out of memory. */
+ *  own; nullptr if out of memory.
+ */
 static inline char *
 util_concat (char const *a,
              size_t      a_len,
@@ -221,7 +236,8 @@ util_concat (char const *a,
 
 /** The part of @p url that a log shows after its scheme: the rest of the
  *  URL after its user name and password, if it has them.  Stores the length
- *  of the scheme and its "://" in @p *scheme. */
+ *  of the scheme and its "://" in @p *scheme.
+ */
 static inline char const *
 util_url_shown (char const *restrict url,
                 int        *restrict scheme)

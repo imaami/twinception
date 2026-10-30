@@ -1,36 +1,49 @@
-/** @file Minimal intrusive circular doubly-linked list. */
+/** @file list.h
+ *
+ * Minimal intrusive circular doubly-linked list.
+ */
 #ifndef TWINCEPTION_SRC_LIST_H_
 #define TWINCEPTION_SRC_LIST_H_
+
+#include "compat.h"
 
 struct list {
 	struct list *next;
 	struct list *prev;
 };
 
-static inline void
-list_init (struct list *list)
+static force_inline struct list
+list (struct list *self_pointer)
 {
-	list->next = list;
-	list->prev = list;
+	return (struct list){
+		.next = self_pointer,
+		.prev = self_pointer
+	};
 }
 
-static inline bool
-list_is_empty (struct list const *list)
+static force_inline void
+list_init (struct list *dest)
 {
-	return list->next == list;
+	*dest = list(dest);
+}
+
+static force_inline bool
+list_is_empty (struct list const *ptr)
+{
+	return ptr == (struct list const *)ptr->next;
 }
 
 static inline void
-list_append (struct list *list,
+list_append (struct list *dest,
              struct list *node)
 {
-	node->prev = list->prev;
-	node->next = list;
-	list->prev->next = node;
-	list->prev = node;
+	node->prev = dest->prev;
+	node->next = dest;
+	dest->prev->next = node;
+	dest->prev = node;
 }
 
-static inline void
+static force_inline void
 list_del (struct list *node)
 {
 	node->prev->next = node->next;
@@ -38,18 +51,18 @@ list_del (struct list *node)
 	list_init(node);
 }
 
-/** Move every node of @p src to the end of @p list, leaving @p src empty. */
+/** Move every node of @p src to the end of @p dest, leaving @p src empty. */
 static inline void
-list_transplant (struct list *list,
+list_transplant (struct list *dest,
                  struct list *src)
 {
-	if (list_is_empty(src))
-		return;
-	src->next->prev = list->prev;
-	list->prev->next = src->next;
-	src->prev->next = list;
-	list->prev = src->prev;
-	list_init(src);
+	if (!list_is_empty(src)) {
+		src->next->prev = dest->prev;
+		dest->prev->next = src->next;
+		src->prev->next = dest;
+		dest->prev = src->prev;
+		list_init(src);
+	}
 }
 
 #define list_foreach(pos, head) \

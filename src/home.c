@@ -1,5 +1,8 @@
-/** @file Home's jobs: admission, the scheduler, the runs of the jobs over
- *  the curl bridge, streamed answers and the breaker (home.h). */
+/** @file home.c
+ *
+ * Home's jobs: admission, the scheduler, the runs of the jobs over
+ * the curl bridge, streamed answers and the breaker.
+ */
 #include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
@@ -68,7 +71,8 @@ enum { CLOSED, OPEN, HALF };
 
 /* Whom jobs of a class are for: an identity, a session, or a client's
  * address.  An entry exists while the principal has jobs of the class
- * queued, which tell who it is, and is kept for reuse after. */
+ * queued, which tell who it is, and is kept for reuse after.
+ */
 struct home_principal {
 	struct list            ring;    /* on home's ring of its class, or its shelf */
 	struct list            jobs;    /* queued, oldest first, by their queue hooks */
@@ -87,7 +91,8 @@ struct home_cancellation {
 };
 
 /* Only failed native streams need this: buffered events can still carry
- * the id that lets us cancel the provider's generation. */
+ * the id that lets us cancel the provider's generation.
+ */
 struct home_delivery_error {
 	long     retry;
 	CURLcode result;
@@ -96,7 +101,8 @@ struct home_delivery_error {
 
 /* Archive writes gate parsing, not reception; the wire and each event
  * remain bounded.  A restored job restarts its provider stream from the
- * beginning, which home_start() reattaches to. */
+ * beginning, which home_start() reattaches to.
+ */
 struct home_recovery {
 	char *provider_id;
 	uint64_t thought_offset;
@@ -217,7 +223,8 @@ home_llama (struct home const *home)
 }
 
 /* Whether the provider keeps a job's generation, which askai can reattach
- * to and must cancel: native background execution, or llama's. */
+ * to and must cancel: native background execution, or llama's.
+ */
 static bool
 home_native (struct home const *home)
 {
@@ -275,7 +282,8 @@ home_job_class (struct job const *job)
 }
 
 /* The upstream slots that background jobs may hold at most: all but one,
- * which stays for interactive work, unless there is only one. */
+ * which stays for interactive work, unless there is only one.
+ */
 static uint32_t
 home_background_slots (struct home const *home)
 {
@@ -297,7 +305,8 @@ home_principal_is (struct home_principal const *p,
 }
 
 /* The link that holds the principal @p job is for, or where it would be
- * appended; for all of a class one in a queue first in first out. */
+ * appended; for all of a class one in a queue first in first out.
+ */
 static struct home_principal **
 home_find_whom (struct home const *home,
                 struct job const  *job)
@@ -328,7 +337,8 @@ home_job_progress (struct job *job,
 /* Take @p job off its principal's queue, the jobs behind it each a place
  * nearer, at most JOB_QUEUED - 1 (in one queue for all, which has no cap,
  * they keep the places they had); a principal with none left goes on the
- * shelf. */
+ * shelf.
+ */
 static void
 home_unqueue (struct home *home,
               struct job  *job)
@@ -372,7 +382,8 @@ home_job_drop_answer (struct job *job)
 }
 
 /* Drop @p n references to @p job, and hand it back to its front if they were
- * the last. */
+ * the last.
+ */
 static void
 home_job_put (struct job *job,
               uint32_t    n)
@@ -400,7 +411,8 @@ home_job_reset (struct job *job,
 /* @p job has ended as @p status: its completion goes to its front.  The
  * result of a job cancelled, which its front does not read, goes back to the
  * stash at once, and so does that of one its front let go of as it ran,
- * which home lets go of too. */
+ * which home lets go of too.
+ */
 static void
 home_job_end (struct job      *job,
               enum job_status  status)
@@ -435,7 +447,8 @@ home_reap (struct home *home)
 
 /* Let go of what @p job's answer under way holds: its places among the
  * answers silent, held back and to read, its event's parser, whose values
- * the reap step frees, and its wire. */
+ * the reap step frees, and its wire.
+ */
 static void
 home_unstream (struct home *home,
                struct job  *job)
@@ -454,7 +467,8 @@ home_unstream (struct home *home,
 
 /* Takes @p job, which is in flight, off the timeline, off its principal's
  * queue and off its list of jobs.  If the job runs upstream, the function
- * frees its upstream slot, so that the next job can start. */
+ * frees its upstream slot, so that the next job can start.
+ */
 static void
 home_retire (struct home *home,
              struct job  *job)
@@ -535,7 +549,8 @@ home_cancel_done (CURLcode    result,
 }
 
 /* Cancel native work independently of the local job's lifetime. Closing
- * its stream alone would leave it running at the provider. */
+ * its stream alone would leave it running at the provider.
+ */
 static void
 home_native_cancel (struct home *home,
                     struct job  *job)
@@ -606,7 +621,8 @@ home_cleanup_event (struct loop       *loop,
 
 /* End @p job as @p status, counted in @p count, leaving the jobs in flight
  * if it is one (home_job_end()).  Alone, home has its loop exit once no job
- * is in flight. */
+ * is in flight.
+ */
 static void
 home_end (struct home      *home,
           struct job       *job,
@@ -626,7 +642,8 @@ home_end (struct home      *home,
 }
 
 /* Put what @p fmt says, formatted, in @p job's result in its answer's place;
- * returns 0 or the error number that left it empty. */
+ * returns 0 or the error number that left it empty.
+ */
 [[gnu::format(printf, 2, 3)]]
 static int
 home_job_say (struct job *job,
@@ -642,7 +659,8 @@ home_job_say (struct job *job,
 }
 
 /* The upstream erred, as the @p len bytes at @p what say, all of them if
- * @p len is negative: say so in @p job's result (home_job_say()). */
+ * @p len is negative: say so in @p job's result (home_job_say()).
+ */
 static int
 home_job_erred (struct job *job,
                 char const *what,
@@ -653,7 +671,8 @@ home_job_erred (struct job *job,
 }
 
 /* The breaker is open: end @p job, which may not go upstream, with when to
- * try again. */
+ * try again.
+ */
 static void
 home_refuse (struct home *home,
              struct job  *job)
@@ -674,7 +693,8 @@ home_breaker_set (struct home *home,
 }
 
 /* Refuse the upstream jobs for a spell: what Retry-After asked for, @p retry
- * seconds, or else the backoff, which doubles for the next. */
+ * seconds, or else the backoff, which doubles for the next.
+ */
 static void
 home_breaker_open (struct home *home,
                    long         retry)
@@ -705,7 +725,8 @@ home_breaker_event (struct loop       *loop,
 /* Whether @p job, a background job running, may be cut: not as the probe,
  * nor once its answer is all in. Native background work cannot be restarted
  * this way: closing its stream would leave the old generation running.
- * Archived thinking also belongs to one generation, not its replacement. */
+ * Archived thinking also belongs to one generation, not its replacement.
+ */
 static bool
 home_job_cuttable (struct home const *home,
                    struct job const  *job)
@@ -717,7 +738,8 @@ home_job_cuttable (struct home const *home,
 
 /* How many background jobs running hold slots they may not: with one slot,
  * the one an interactive job waits for; else those beyond the S - 1 they
- * may hold, as S may shrink. */
+ * may hold, as S may shrink.
+ */
 static uint32_t
 home_excess (struct home const *home)
 {
@@ -728,7 +750,8 @@ home_excess (struct home const *home)
 }
 
 /* Have the background jobs that hold slots they may not, but for those being
- * preempted already, preempted, the first to have started first. */
+ * preempted already, preempted, the first to have started first.
+ */
 static void
 home_preempt_excess (struct home *home)
 {
@@ -753,7 +776,8 @@ home_preempt_excess (struct home *home)
 }
 
 /* The probe, @p job, has gone through, which closes the breaker, unless
- * @p failure, which opens it again, for @p retry seconds or the backoff. */
+ * @p failure, which opens it again, for @p retry seconds or the backoff.
+ */
 static void
 home_breaker_probed (struct home *home,
                      struct job  *job,
@@ -779,7 +803,8 @@ home_breaker_probed (struct home *home,
  * probe, opens the breaker, as does one whose answer said when to retry; the
  * probe's success, which its answer's beginning tells, closes it.  Other
  * jobs' outcomes count only while it is closed, and a job cancelled counts
- * not at all. */
+ * not at all.
+ */
 static void
 home_breaker_note (struct home *home,
                    struct job  *job,
@@ -802,7 +827,8 @@ home_breaker_note (struct home *home,
 
 /* Whether @p job's run upstream, ended with @p result, is the upstream's
  * failure: a transfer that failed, but for a write home refused or memory it
- * ran out of, or an answer whose status is a server error or 429. */
+ * ran out of, or an answer whose status is a server error or 429.
+ */
 static bool
 home_job_failure (struct job const *job,
                   CURLcode          result)
@@ -813,7 +839,8 @@ home_job_failure (struct job const *job,
 }
 
 /* Say in @p job's result why its run upstream, ended with @p result and
- * libcurl's @p error, failed, unless an error event of its stream has. */
+ * libcurl's @p error, failed, unless an error event of its stream has.
+ */
 static int
 home_explain (struct home *home,
               struct job  *job,
@@ -837,7 +864,8 @@ home_explain (struct home *home,
 
 /* Complete @p job, whose stream has ended whole, with its tool calls and
  * text, or its text, or why it has none in its place: a text cut short says
- * so, while the front tells tool calls cut short. */
+ * so, while the front tells tool calls cut short.
+ */
 static void
 home_finish_text (struct home *home,
                   struct job  *job)
@@ -865,7 +893,8 @@ home_finish_text (struct home *home,
 
 /* @p job's run upstream is over, with @p result and libcurl's @p error, and
  * @p retry the seconds its answer's Retry-After asked for: complete it with
- * the answer, its text, or why there is none in its place. */
+ * the answer, its text, or why there is none in its place.
+ */
 static void
 home_finish (struct home *home,
              struct job  *job,
@@ -894,7 +923,8 @@ home_finish (struct home *home,
 }
 
 /* End @p job's run upstream now, with @p result, cancelling its transfer if
- * it still has one: the upstream sees a hang-up. */
+ * it still has one: the upstream sees a hang-up.
+ */
 static void
 home_cut (struct home *home,
           struct job  *job,
@@ -928,7 +958,8 @@ home_feed (struct home *home,
 
 /* @p job's answer begins: note its status, and whether it is an event
  * stream.  The upstream answers: the other jobs need not wait for the
- * probe's end, which may be minutes away. */
+ * probe's end, which may be minutes away.
+ */
 static void
 home_head (struct home *home,
            struct job  *job)
@@ -950,7 +981,8 @@ home_head (struct home *home,
  * MAX_RESPONSE bytes, as much a step as its share of receiving takes: curl
  * holds the rest back until a later step lets it on (home_resume_step()).
  * A write over a whole share, which curl does not make, would count in full.
- * Returns as a write callback does. */
+ * Returns as a write callback does.
+ */
 static size_t
 home_receive (struct home *home,
               struct job  *job,
@@ -979,7 +1011,8 @@ home_receive (struct home *home,
 /* Gather the upstream's answer, a stream into the wire and a plain one into
  * the result (home_receive()).  A stream is held back too while a step's
  * share of it waits to be read.  Each write counts as the answer's sign of
- * life. */
+ * life.
+ */
 static size_t
 home_job_write (char const *data,
                 size_t      len,
@@ -1010,7 +1043,8 @@ home_job_write (char const *data,
 }
 
 /* The upstream call has ended.  A stream's end, once all of it is read; any
- * other answer, or none, at once. */
+ * other answer, or none, at once.
+ */
 static void
 home_job_done (CURLcode    result,
                long        status,
@@ -1058,7 +1092,8 @@ home_job_done (CURLcode    result,
 }
 
 /* Finish an append, reasoning commit or recovery checkpoint. DONE cannot
- * expose the job for reuse until all archive callbacks have returned. */
+ * expose the job for reuse until all archive callbacks have returned.
+ */
 static void
 home_journal_done (struct loop *loop,
                    void        *arg,
@@ -1154,7 +1189,8 @@ home_metadata (struct home     *home,
 }
 
 /* Keep the provider identity before a connection starts. Restart recovery
- * requests its stream from the beginning and verifies saved thought bytes. */
+ * requests its stream from the beginning and verifies saved thought bytes.
+ */
 static int
 home_connect (struct home *home,
                struct job  *job,
@@ -1217,7 +1253,8 @@ home_open (struct home *home,
 }
 
 /* Order by deadline: restored jobs retain their original remaining time,
- * which can be shorter than a newly started job's. */
+ * which can be shorter than a newly started job's.
+ */
 static void
 home_timeline (struct home *home,
                struct job  *job)
@@ -1294,7 +1331,8 @@ home_start (struct home *home,
 }
 
 /* The job of class @p c to start next: the first ready, else the oldest of
- * the ring's first principal; nullptr if none waits. */
+ * the ring's first principal; nullptr if none waits.
+ */
 static struct job *
 home_first (struct home const *home,
             uint32_t           c)
@@ -1310,7 +1348,8 @@ home_first (struct home const *home,
 
 /* The job to start next: an interactive one, then a background one; but none
  * of the background ones to @p start while they hold all the slots they may;
- * nullptr if none waits. */
+ * nullptr if none waits.
+ */
 static struct job *
 home_next (struct home const *home,
            bool               start)
@@ -1323,7 +1362,8 @@ home_next (struct home const *home,
 
 /* Start jobs waiting while slots are free, home does not drain, the breaker
  * lets them and the step's share of requests allows: those ready first, then
- * the next principal on the ring starts its first and goes to the back. */
+ * the next principal on the ring starts its first and goes to the back.
+ */
 static void
 home_start_step (struct loop      *loop,
                  struct loop_step *step)
@@ -1360,7 +1400,8 @@ home_deadline_event (struct loop       *loop,
 }
 
 /* Cancel @p job's transfer, if it has one: one whose request had gone
- * upstream counts as cancelled there. */
+ * upstream counts as cancelled there.
+ */
 static void
 home_abort (struct home *home,
             struct job  *job)
@@ -1381,7 +1422,8 @@ home_cancel (struct home *home,
 
 /* End @p job, past its deadline: one running times out, one waiting for a
  * slot does too, refused, and one dropped is cancelled.  libcurl short of
- * memory may lose a transfer's own timeout. */
+ * memory may lose a transfer's own timeout.
+ */
 static void
 home_expire (struct home *home,
              struct job  *job)
@@ -1408,7 +1450,8 @@ home_expire (struct home *home,
 }
 
 /* End the jobs past their deadline, oldest first, as many a step as its share
- * of requests allows (home_expire()); then wait for the next one's. */
+ * of requests allows (home_expire()); then wait for the next one's.
+ */
 static void
 home_overdue_step (struct loop      *loop,
                    struct loop_step *step)
@@ -1439,7 +1482,8 @@ home_quiet_event (struct loop       *loop,
 
 /* End the answers that sent nothing for the chunk timeout, the one silent
  * longest first, as many a step as its share of requests allows; then wait
- * for the next. */
+ * for the next.
+ */
 static void
 home_silent_step (struct loop      *loop,
                   struct loop_step *step)
@@ -1465,7 +1509,8 @@ home_silent_step (struct loop      *loop,
 
 /* Let the answers held back on, oldest first, while the step's share of
  * receiving has room for a write from curl, which may hold one back again;
- * curl reads on in a later step. */
+ * curl reads on in a later step.
+ */
 static void
 home_resume_step (struct loop      *loop,
                   struct loop_step *step)
@@ -1486,7 +1531,8 @@ home_resume_step (struct loop      *loop,
 
 /* Add the @p len bytes of text at @p text to @p to, a job's answer, its
  * thinking or its replay, if they are UTF-8 (json-c lets overlong forms through), and the
- * buffer stays within MAX_RESPONSE; it is copied whole. */
+ * buffer stays within MAX_RESPONSE; it is copied whole.
+ */
 static int
 home_append_text (struct home *home,
                   struct buf  *to,
@@ -1508,7 +1554,8 @@ home_append_text (struct home *home,
 }
 
 /* Build one event's immutable mailbox. Parsing stops after publication, so a
- * slow front holds at most one event; the provider's wire is bounded too. */
+ * slow front holds at most one event; the provider's wire is bounded too.
+ */
 static int
 home_put_delta (struct job *job,
                 char const *text,
@@ -1543,7 +1590,8 @@ home_archive_pending (struct home *home,
 /* A boundary commits the concatenated text once. A later reasoning block
  * in the same provider turn may append again and have its own boundary.
  * The final boundary also verifies replay with no reasoning against any
- * saved prefix; a provider cannot silently replace it with an empty turn. */
+ * saved prefix; a provider cannot silently replace it with an empty turn.
+ */
 static int
 home_thought_end (struct home *home,
                   struct job  *job,
@@ -1565,7 +1613,8 @@ home_thought_end (struct home *home,
 }
 
 /* The answer of the job @p user gains the @p len bytes of text at @p text
- * (home_append_text()), then the immutable mailbox receives its copy. */
+ * (home_append_text()), then the immutable mailbox receives its copy.
+ */
 static int
 home_put_text (void       *user,
                char const *text,
@@ -1579,7 +1628,8 @@ home_put_text (void       *user,
 }
 
 /* Its thinking, likewise. Chat tool turns need a separate copy; the other
- * APIs keep their reasoning in the replay, independently of the mailbox. */
+ * APIs keep their reasoning in the replay, independently of the mailbox.
+ */
 static int
 home_put_thought (void       *user,
                   char const *text,
@@ -1629,7 +1679,8 @@ home_put_replay (void       *user,
  * some servers send them again.  The function returns EPROTO if a call
  * breaks this order or if there are more than JOB_CALLS calls.  It returns
  * ENOBUFS if the calls together would have more than MAX_RESPONSE bytes,
- * and EILSEQ if a piece is not UTF-8. */
+ * and EILSEQ if a piece is not UTF-8.
+ */
 static int
 home_put_call (void                 *user,
                struct ai_call const *call)
@@ -1737,7 +1788,8 @@ home_put_call (void                 *user,
 }
 
 /* Parse on with @p parser, the @p len bytes at @p json, a slice as far as
- * the step's shares allow, which it counts; true once the parse is over. */
+ * the step's shares allow, which it counts; true once the parse is over.
+ */
 static bool
 home_parse (struct home      *home,
             struct jb_parser *parser,
@@ -1760,7 +1812,8 @@ home_parse (struct home      *home,
 }
 
 /* The provider can supply a path component, never a host or a replacement
- * query. Current authentication and configured query survive. */
+ * query. Current authentication and configured query survive.
+ */
 static int
 home_provider_url (struct home *home,
                     struct job  *job,
@@ -1866,7 +1919,8 @@ home_native_id (struct home        *home,
 }
 
 /* Capture the native creation id while its event is alive, and remember
- * terminal provider states so cleanup does not cancel completed work. */
+ * terminal provider states so cleanup does not cancel completed work.
+ */
 static int
 home_native_event (struct home        *home,
                    struct job         *job,
@@ -1898,7 +1952,8 @@ home_native_event (struct home        *home,
  * and its stop reason, which may be the output token limit.  Each event is
  * a chunk, and one with text or thinking a token.  An error it says, or one
  * that taking it meets of the answer, goes in the result.  Returns the
- * error that taking it met: one past MAX_RESPONSE is an overflow. */
+ * error that taking it met: one past MAX_RESPONSE is an overflow.
+ */
 static int
 home_take (struct home        *home,
            struct job         *job,
@@ -1966,7 +2021,8 @@ home_take (struct home        *home,
 /* Take the event parsed in @p job's parser (home_take()), and free its
  * value, the reap step what the step's share does not allow; returns the
  * error that taking it met: ENOMEM if parsing it ran out of memory.  An
- * event that is not JSON text errs. */
+ * event that is not JSON text errs.
+ */
 static int
 home_event (struct home *home,
             struct job  *job)
@@ -2004,7 +2060,8 @@ home_event (struct home *home,
  * is not JSON text ends it, as a whole answer that is not would.  The data
  * [DONE], which is not JSON text, is not parsed.  It ends the answer,
  * except in Gemini's Interactions, where it is skipped, because only
- * interaction.completed ends the answer there. */
+ * interaction.completed ends the answer there.
+ */
 static int
 home_read_event (struct home *home,
                  struct job  *job)
@@ -2036,7 +2093,8 @@ home_read_event (struct home *home,
 /* Take in the line of @p job's stream that ends at @p end, its line break:
  * a data line's data joins the event's, moved down to follow it after a
  * line break, and a blank line ends the event, which has some; every other
- * line says nothing, and goes once no event's data precedes it (SSE). */
+ * line says nothing, and goes once no event's data precedes it (SSE).
+ */
 static void
 home_job_line (struct job *job,
                size_t      end)
@@ -2073,7 +2131,8 @@ home_job_line (struct job *job,
 /* Look for the line break that ends the line of @p job's stream read, as far
  * as the step's share of parsing allows, and take in the line it ends.  0
  * once it has looked, EAGAIN if the share has run out, ENODATA if all of the
- * wire has been looked at already. */
+ * wire has been looked at already.
+ */
 static int
 home_scan (struct home *home,
            struct job  *job)
@@ -2104,7 +2163,8 @@ home_scan (struct home *home,
  * list of streams to read, and goes on if it was held back for reading.  One
  * delivered ends with its last event read, the last line and the last event
  * needing no line breaks (0 until then): cut off, as a transfer cut short,
- * unless an event said the answer had ended (ECANCELED). */
+ * unless an event said the answer had ended (ECANCELED).
+ */
 static int
 home_drained (struct home *home,
               struct job  *job)
@@ -2138,7 +2198,8 @@ home_drained (struct home *home,
 
 /* Read @p job's stream as far as the step's shares allow, its lines and each
  * event whole, until it has nothing more to read for now, or has ended
- * (home_drained()): true then, false if the shares ran out first. */
+ * (home_drained()): true then, false if the shares ran out first.
+ */
 static bool
 home_read_stream (struct home *home,
                   struct job  *job)
@@ -2157,7 +2218,8 @@ home_read_stream (struct home *home,
 }
 
 /* Read the streams, each as far as the step's shares allow, the one that
- * used them up going to the back for the next step. */
+ * used them up going to the back for the next step.
+ */
 static void
 home_feed_step (struct loop      *loop,
                 struct loop_step *step)
@@ -2189,7 +2251,8 @@ home_reap_step (struct loop      *loop,
 }
 
 /* The breaker opened: end the jobs waiting, in the order they would have
- * started, as many a step as its share of requests allows. */
+ * started, as many a step as its share of requests allows.
+ */
 static void
 home_shed_step (struct loop      *loop,
                 struct loop_step *step)
@@ -2211,7 +2274,8 @@ home_shed_step (struct loop      *loop,
 /* Cut the upstream call of @p job, a background job that an interactive one
  * preempts, and have it wait again, ready, first of the background jobs, its
  * deadline as it was.  A preemption is no outcome of the upstream's, which
- * the breaker counts. */
+ * the breaker counts.
+ */
 static void
 home_preempt (struct home *home,
               struct job  *job)
@@ -2236,7 +2300,8 @@ home_preempt (struct home *home,
 }
 
 /* Preempt the background jobs that interactive ones preempt, as many a step
- * as its share of requests allows (home_preempt()). */
+ * as its share of requests allows (home_preempt()).
+ */
 static void
 home_preempt_step (struct loop      *loop,
                    struct loop_step *step)
@@ -2260,7 +2325,8 @@ home_preempt_step (struct loop      *loop,
 }
 
 /* Cancel the jobs dropped, as many a step as its share of requests
- * allows. */
+ * allows.
+ */
 static void
 home_stop_step (struct loop      *loop,
                 struct loop_step *step)
@@ -2291,7 +2357,8 @@ home_drain_step (struct loop      *loop,
 }
 
 /* Let the slots of the upstream be @p n, and say so, and why, unless
- * @p why is nullptr: for now. */
+ * @p why is nullptr: for now.
+ */
 static void
 home_slots (struct home *home,
             uint32_t     n,
@@ -2308,7 +2375,8 @@ home_slots (struct home *home,
 }
 
 /* Gather /props's answer, up to MAX_PROPS bytes, as much a step as its share
- * of receiving takes, the rest held back for the props step. */
+ * of receiving takes, the rest held back for the props step.
+ */
 static size_t
 home_props_write (char const *data,
                   size_t      len,
@@ -2333,7 +2401,8 @@ home_props_write (char const *data,
 
 /* /props is over: take @p n slots, saying @p why, unless told the slots,
  * which take all the connections again, /props having had one of its
- * own. */
+ * own.
+ */
 static void
 home_props_end (struct home *home,
                 uint32_t     n,
@@ -2347,7 +2416,8 @@ home_props_end (struct home *home,
 }
 
 /* /props, or the model of Gemini's API, failed, as @p fmt says, which is
- * logged: the default slots (home_props_end()). */
+ * logged: the default slots (home_props_end()).
+ */
 [[gnu::format(printf, 2, 3)]]
 static void
 home_props_fail (struct home *home,
@@ -2384,7 +2454,8 @@ home_props_done (CURLcode    result,
 /* Let /props's answer on, once the step has the share for it, or parse it a
  * slice a step, and take the slots its total_slots says, unless told, and
  * the context its slots' n_ctx says, likewise.  The answer of Gemini's
- * model says the context in inputTokenLimit, and no slots. */
+ * model says the context in inputTokenLimit, and no slots.
+ */
 static void
 home_props_step (struct loop      *loop,
                  struct loop_step *step)
@@ -2432,7 +2503,8 @@ home_props_step (struct loop      *loop,
 
 /* Ask for /props at the server of @p u, the upstream's URL; the answer may
  * take PROPS_MS, or the calls' timeout if shorter.  0 once asked, else the
- * error that kept it from asking. */
+ * error that kept it from asking.
+ */
 static int
 home_props_get (struct home *home,
                 CURLU       *u)
@@ -2455,7 +2527,8 @@ home_props_get (struct home *home,
 /* Ask Gemini's API what the context of the model holds, unless it is told:
  * GET models/MODEL at the root of the API of the upstream's URL, whose
  * answer the props step reads.  0 once asked, ENOTSUP if the upstream has
- * no model or no such URL, else the error that kept it from asking. */
+ * no model or no such URL, else the error that kept it from asking.
+ */
 static int
 home_model_get (struct home *home)
 {
@@ -2475,7 +2548,8 @@ home_model_get (struct home *home)
  * llama-server: a provider's but llama's, or one that has one of Gemini's
  * APIs, which is asked for the context of its model instead
  * (home_model_get()); 0 once asked, else ENOTSUP or the error that kept it
- * from asking. */
+ * from asking.
+ */
 static int
 home_props_ask (struct home *home)
 {
@@ -2510,7 +2584,8 @@ home_register (struct home *home,
 
 /* Whether a slot is free for a job of class @p c at once: the breaker
  * closed, no job of its class or before it waiting, and, for a background
- * job, the background ones holding fewer slots than they may. */
+ * job, the background ones holding fewer slots than they may.
+ */
 static bool
 home_vacant (struct home const *home,
              uint32_t           c)
@@ -2525,7 +2600,8 @@ home_vacant (struct home const *home,
 /* Admit @p job of class @p c to the queue of its principal, whose entry
  * @p slot holds, or else a new one, kept or allocated, at the back of its
  * class's ring; ENOMEM if out of memory.  An interactive job that waits with
- * one slot preempts a background one. */
+ * one slot preempts a background one.
+ */
 static int
 home_wait (struct home            *home,
            struct job             *job,
@@ -2560,7 +2636,8 @@ home_wait (struct home            *home,
  * principal (unless all of a class share one queue, first in first out).
  * If a slot is free for it (home_vacant()), it is ready, queued for none, so
  * that a burst the slots free take at once is not refused; else it waits
- * (home_wait()). */
+ * (home_wait()).
+ */
 static void
 home_admit (struct home *home,
             struct job  *job)
@@ -2597,7 +2674,8 @@ home_admit (struct home *home,
 
 /* @p job comes, with @p bits: a job may come back for another run, and what
  * home noted of the last goes before any end.  Home admits it, or ends it
- * cancelled if its front has let go of it already, and lets go too. */
+ * cancelled if its front has let go of it already, and lets go too.
+ */
 static void
 home_submit (struct home *home,
              struct job  *job,
@@ -2616,7 +2694,8 @@ home_submit (struct home *home,
 }
 
 /* The front no longer reads the mailbox. A completion held for it can now
- * go; otherwise an acknowledgment lets the parser resume in a bulk step. */
+ * go; otherwise an acknowledgment lets the parser resume in a bulk step.
+ */
 static void
 home_delta_release (struct job *job)
 {
@@ -2630,7 +2709,8 @@ home_delta_release (struct job *job)
 
 /* @p job's front lets go of it: home cancels it if it is in flight, and lets
  * go too, the result's storage back to the stash it came from.  Cancelling
- * one running takes a step, which then lets go of it. */
+ * one running takes a step, which then lets go of it.
+ */
 static void
 home_release (struct home *home,
               struct job  *job,
@@ -2654,7 +2734,8 @@ home_release (struct home *home,
 }
 
 /* @p job comes, with @p bits, after home's loop has stopped: it ends at once
- * if submitted, and nothing counts. */
+ * if submitted, and nothing counts.
+ */
 static void
 home_job_orphan (struct job *job,
                  uint32_t    bits)
@@ -2700,7 +2781,8 @@ home_job (struct loop *loop,
 }
 
 /* Put @p home's timers in the heap from the start, so that setting them
- * never fails, and make its curl bridge, which counts into @p metrics. */
+ * never fails, and make its curl bridge, which counts into @p metrics.
+ */
 static int
 home_arm (struct home         *home,
           struct http_metrics *metrics)
@@ -2719,7 +2801,8 @@ home_arm (struct home         *home,
 }
 
 /* Free what @p home holds, but for its jobs, however far home_create() got
- * in making it. */
+ * in making it.
+ */
 static void
 home_fini (struct home *home)
 {

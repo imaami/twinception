@@ -1,4 +1,7 @@
-/** @file Incremental Server-Sent Events framing. */
+/** @file sse.c
+ *
+ * Incremental Server-Sent Events framing.
+ */
 #include <errno.h>
 #include <string.h>
 

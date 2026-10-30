@@ -1,4 +1,7 @@
-/** @file Network ownership and asynchronous Unix-socket HTTP transport. */
+/** @file cli_network.h
+ *
+ * Network ownership and asynchronous Unix-socket HTTP transport.
+ */
 #ifndef TWINCEPTION_SRC_CLI_NETWORK_H_
 #define TWINCEPTION_SRC_CLI_NETWORK_H_
 
@@ -16,7 +19,8 @@ struct cli_network;
 struct loop;
 
 /** Runs on the UI thread. Bytes are borrowed until the callback returns.
- * Returns 0, or an error number that fails and cancels the call. */
+ * Returns 0, or an error number that fails and cancels the call.
+ */
 typedef int cli_network_receive_fn (char const *bytes,
                                     size_t      length,
                                     void       *context);
@@ -29,7 +33,8 @@ struct cli_network_result {
 };
 
 /** Called once on the UI thread after this call's response bytes. The result
- * is borrowed until return. Callbacks may submit, but must not wait. */
+ * is borrowed until return. Callbacks may submit, but must not wait.
+ */
 typedef void cli_network_done_fn (void                            *context,
                                   int                              error,
                                   struct cli_network_result const *result);
@@ -66,7 +71,8 @@ cli_network_set_ready (struct cli_network  *network,
                        void                *context);
 
 /** Deliver bounded response work after a complete UI turn, including turns
- * serviced from Readline input hooks. Never call from event dispatch. */
+ * serviced from Readline input hooks. Never call from event dispatch.
+ */
 extern void
 cli_network_service (struct cli_network *network);
 
@@ -82,7 +88,8 @@ cli_network_cancel_call (struct cli_network *network,
                          bool                force);
 
 /** Copy and admit a request. On success, publish its id and eventually call
- * done, including on shutdown. An admission error does not call done. */
+ * done, including on shutdown. An admission error does not call done.
+ */
 extern int
 cli_network_submit (struct cli_network      *network,
                     struct cstr_view         socket,

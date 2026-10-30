@@ -1,7 +1,13 @@
-/** @file The brainstem: signals, threads, watchdog, resources, shutdown
- *  (brainstem.h). */
-#define _GNU_SOURCE /* CPU_COUNT(), getdents64(), ppoll(), pthread_setname_np(),
-                       sched_getaffinity(), sigorset() */
+/** @file brainstem.c
+ *
+ * Signals, threads, watchdog, resources, shutdown.
+ */
+#ifndef _GNU_SOURCE
+/* CPU_COUNT(), getdents64(), ppoll(), pthread_setname_np(),
+ * sched_getaffinity(), sigorset()
+ */
+# define _GNU_SOURCE
+#endif
 
 #include <dirent.h>
 #include <errno.h>
@@ -31,7 +37,8 @@
 static constexpr uint64_t MS = 1'000'000;
 
 /* The loops' threads start in the order of their loops' numbers: home
- * first, as the client loops post jobs and connections to it. */
+ * first, as the client loops post jobs and connections to it.
+ */
 enum { HOME };
 
 enum {
@@ -129,7 +136,8 @@ struct brainstem {
 struct brainstem_metrics brainstem_metrics;
 
 /* The loops of the relief under way that have yet to end theirs, plus one
- * for its trim; 0 while none is under way.  And the bytes they gave back. */
+ * for its trim; 0 while none is under way.  And the bytes they gave back.
+ */
 static _Atomic uint32_t relieving;
 static _Atomic uint64_t relieved;
 
@@ -216,7 +224,8 @@ brainstem_order_all (struct brainstem *bs,
  * is still under way; EAGAIN if it is, or no loop runs, or one starts, as it
  * might run by the time the orders go out, ordered but not counted.  A loop
  * that exits before it ends its share holds up the reliefs after, which only
- * shutdown does. */
+ * shutdown does.
+ */
 static int
 brainstem_relieve (struct brainstem *bs)
 {
@@ -250,7 +259,8 @@ brainstem_trimmed (void)
 }
 
 /* On the loop's thread, its loop started: start the app, then run the loop
- * until it exits; 0 or the error that ended it. */
+ * until it exits; 0 or the error that ended it.
+ */
 static int
 brainstem_thread_exec (struct brainstem_thread *t)
 {
@@ -282,7 +292,8 @@ brainstem_thread_main (void *arg)
 }
 
 /* Sleep until @p until at most, or until a thread reports or a signal comes;
- * returns whether a signal came. */
+ * returns whether a signal came.
+ */
 static bool
 brainstem_nap (struct brainstem *bs,
                uint64_t          until)
@@ -309,7 +320,8 @@ brainstem_nap (struct brainstem *bs,
 
 /* End the process now, once the logger has had a moment.  No signal matters
  * any more, and one left unread would end every wait at once.  A loop thread
- * not joined is let go, to end with the process. */
+ * not joined is let go, to end with the process.
+ */
 [[noreturn]] static void
 brainstem_force (struct brainstem *bs,
                  char const       *why)
@@ -338,7 +350,8 @@ brainstem_thread_force (struct brainstem_thread *t,
 }
 
 /* Have each running loop drain, once, by the end of four fifths of the grace
- * period, which leaves the rest to the threads that wind down after them. */
+ * period, which leaves the rest to the threads that wind down after them.
+ */
 static void
 brainstem_drain (struct brainstem *bs)
 {
@@ -373,7 +386,8 @@ brainstem_reload (struct brainstem *bs)
 /* Take signal @p signo: SIGUSR1 logs the loops' statistics, SIGUSR2 holds
  * them in a turn (a test aid), and SIGHUP has home reload, if it has a
  * reload; any other, SIGHUP without one included, shuts down, and a second
- * shutdown signal ends the process at once. */
+ * shutdown signal ends the process at once.
+ */
 static void
 brainstem_signal (struct brainstem *bs,
                   uint32_t          signo)
@@ -406,7 +420,8 @@ brainstem_signals (struct brainstem *bs)
 
 /* Report @p t's turn under way once it has gone on longer than @p threshold,
  * and while draining, end the process once it has gone on for STUCK_MS; of a
- * turn, the time since bs->resumed counts only. */
+ * turn, the time since bs->resumed counts only.
+ */
 static void
 brainstem_thread_watch (struct brainstem_thread *t,
                         uint64_t                 now,
@@ -457,7 +472,8 @@ brainstem_watch (struct brainstem *bs,
 }
 
 /* The start of the file at @p path, as a string in the @p size bytes at
- * @p buf, empty if unreadable; 0 or the error number. */
+ * @p buf, empty if unreadable; 0 or the error number.
+ */
 static int
 brainstem_read (char const *path,
                 char       *buf,
@@ -475,7 +491,8 @@ brainstem_read (char const *path,
 }
 
 /* Whether a gauge went over its threshold (1) or back under it (-1), as bit
- * @p bit of bs->high keeps track of. */
+ * @p bit of bs->high keeps track of.
+ */
 static int
 brainstem_crossed (struct brainstem *bs,
                    uint32_t          bit,
@@ -495,7 +512,8 @@ brainstem_crossed (struct brainstem *bs,
 }
 
 /* The number the file at @p path starts with, or @p none if it starts with
- * none, as a cgroup's "max" does, or is unreadable. */
+ * none, as a cgroup's "max" does, or is unreadable.
+ */
 static uint64_t
 brainstem_number (char const *path,
                   char       *buf,
@@ -518,7 +536,8 @@ brainstem_field (char const *text,
 }
 
 /* The length of the path of the cgroup above the one whose directory's path
- * is the first @p len bytes of @p dir; 0 above cgroup_root. */
+ * is the first @p len bytes of @p dir; 0 above cgroup_root.
+ */
 static size_t
 brainstem_cgroup_up (char const *dir,
                      size_t      len)
@@ -580,7 +599,8 @@ brainstem_cgroup (struct brainstem *bs,
 }
 
 /* Move each input's memory pressure level with its @p fullness, with
- * hysteresis, and publish it; returns the highest. */
+ * hysteresis, and publish it; returns the highest.
+ */
 static uint32_t
 brainstem_inputs (struct brainstem *bs,
                   uint64_t const   *fullness)
@@ -671,7 +691,8 @@ brainstem_pressure (struct brainstem *bs,
 
 /* Count into @p *fds each entry of /proc/self/fd but ".", ".." and the
  * directory's own descriptor, read through @p buf without malloc(), whose
- * arena lock a trim on a loop may hold. */
+ * arena lock a trim on a loop may hold.
+ */
 static int
 brainstem_fd_count (char     *buf,
                     size_t    size,
@@ -747,7 +768,8 @@ brainstem_psi (struct brainstem *bs,
 }
 
 /* Once a second: resident memory, descriptors against their limit, the
- * pressure stall information where the kernel has it, and memory pressure. */
+ * pressure stall information where the kernel has it, and memory pressure.
+ */
 static void
 brainstem_sample (struct brainstem *bs,
                   uint64_t          now)
@@ -765,7 +787,8 @@ brainstem_sample (struct brainstem *bs,
 }
 
 /* Wait at most until @p until, then mind signals, the watchdog, resources
- * and the grace period. */
+ * and the grace period.
+ */
 static void
 brainstem_mind (struct brainstem *bs,
                 uint64_t          until)
@@ -793,7 +816,8 @@ brainstem_mind (struct brainstem *bs,
 }
 
 /* Create @p t's thread, which inherits the mask that blocks every signal, on
- * a stack of STACK bytes. */
+ * a stack of STACK bytes.
+ */
 static int
 brainstem_thread_create (struct brainstem_thread *t)
 {
@@ -808,7 +832,8 @@ brainstem_thread_create (struct brainstem_thread *t)
 }
 
 /* Start @p t's thread, and wait while its loop starts; 0 or the error that
- * kept the thread from starting. */
+ * kept the thread from starting.
+ */
 static int
 brainstem_thread_start (struct brainstem_thread *t)
 {
@@ -850,7 +875,8 @@ brainstem_fd_table (struct brainstem const *bs)
 /* Find the process's cgroup v2 directory, for its limits: the path of
  * /proc/self/cgroup's "0::" line, under where cgroup v2 is mounted, in
  * memory of its own with @p room bytes after it, its NUL among them; its
- * length goes to @p *len, 0 if out of memory, when nullptr is returned. */
+ * length goes to @p *len, 0 if out of memory, when nullptr is returned.
+ */
 static char *
 brainstem_cgroup_dir (size_t  room,
                       size_t *len)
@@ -905,7 +931,8 @@ brainstem_cpus (void)
 }
 
 /* Join @p t's thread, if it has exited; one that exited on its own, as the
- * brainstem did not shut down, starts the shutdown. */
+ * brainstem did not shut down, starts the shutdown.
+ */
 static void
 brainstem_thread_join (struct brainstem_thread *t)
 {
@@ -919,7 +946,8 @@ brainstem_thread_join (struct brainstem_thread *t)
 
 /* Lay @p t, storage just allocated, as the thread of @p bs that runs @p app
  * with the context @p ctx; its place in bs->threads numbers its loop.  Its
- * atomics are initialized in place, once, as loop_place() does its loop's. */
+ * atomics are initialized in place, once, as loop_place() does its loop's.
+ */
 static void
 brainstem_thread_place (struct brainstem_thread    *t,
                         struct brainstem           *bs,
@@ -939,7 +967,8 @@ brainstem_thread_place (struct brainstem_thread    *t,
 }
 
 /* Allocate the threads, home's, then the client loops', each with the
- * context of its own. */
+ * context of its own.
+ */
 static int
 brainstem_place_threads (struct brainstem *bs)
 {
@@ -956,7 +985,8 @@ brainstem_place_threads (struct brainstem *bs)
 }
 
 /* Block every signal but those faults raise, in the threads to come too, as
- * they inherit the mask, and ignore SIGPIPE; returns the mask before. */
+ * they inherit the mask, and ignore SIGPIPE; returns the mask before.
+ */
 static sigset_t
 brainstem_block (void)
 {
@@ -1001,7 +1031,8 @@ brainstem_mine (struct brainstem_cfg const *cfg)
 
 /* Set up @p bs, as brainstem_run() declares it, for @p cfg: the threads, the
  * signalfd that takes @p mine, the eventfd the threads report through, the
- * cgroup's paths, the logger and the blockers. */
+ * cgroup's paths, the logger and the blockers.
+ */
 static int
 brainstem_init (struct brainstem           *bs,
                 struct brainstem_cfg const *cfg,
@@ -1040,7 +1071,8 @@ brainstem_init (struct brainstem           *bs,
 
 /* Start home's thread, then the client loops', until a signal comes or one
  * does not run; returns whether all run, the error that kept one from
- * starting in @p *e. */
+ * starting in @p *e.
+ */
 static bool
 brainstem_start_all (struct brainstem *bs,
                      int              *e)
@@ -1076,7 +1108,8 @@ brainstem_start (struct brainstem *bs)
 }
 
 /* Tell @p t's loop, if it runs, that it is alone, and wait for it to
- * exit. */
+ * exit.
+ */
 static void
 brainstem_alone (struct brainstem        *bs,
                  struct brainstem_thread *t)
@@ -1089,7 +1122,8 @@ brainstem_alone (struct brainstem        *bs,
 }
 
 /* Join the client loops' threads that have exited; returns whether a client
- * loop runs. */
+ * loop runs.
+ */
 static bool
 brainstem_clients_run (struct brainstem *bs)
 {
@@ -1103,7 +1137,8 @@ brainstem_clients_run (struct brainstem *bs)
 }
 
 /* The client loops exit first, in any order; then home, told it is alone,
- * once its jobs end.  Returns the first error a loop ended with, 0 if none. */
+ * once its jobs end.  Returns the first error a loop ended with, 0 if none.
+ */
 static int
 brainstem_wait (struct brainstem *bs)
 {
@@ -1149,7 +1184,8 @@ brainstem_stop_blockers (struct brainstem *bs)
 }
 
 /* Free what @p bs holds, once the threads that use it are done, and let the
- * logger write what it holds, within FLUSH_MS. */
+ * logger write what it holds, within FLUSH_MS.
+ */
 static void
 brainstem_fini (struct brainstem *bs)
 {

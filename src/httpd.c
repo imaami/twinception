@@ -1,4 +1,6 @@
-/** @file HTTP/1.1 transport for request streams (src/stream.h), which carry
+/** @file httpd.c
+ *
+ * HTTP/1.1 transport for request streams (src/stream.h), which carry
  * MCP's Streamable HTTP.
  *
  * Every path is the endpoint.  A connection serves one request at a time.
@@ -121,12 +123,14 @@ static constexpr uint32_t DEADLINE = 1u << 31;
 
 /* And one that steps keep: TLS holds input that epoll no longer reports, the
  * rest of a record a read had no room for, or records a read that waited to
- * send left. */
+ * send left.
+ */
 static constexpr uint32_t HELD = 1u << 30;
 
 /* The head starts the input buffer until the request is done, so header
  * values are kept as offsets into it, which survive the buffer moving; 0 is
- * absent, since the method is at 0.  Heads are at most 65535 bytes. */
+ * absent, since the method is at 0.  Heads are at most 65535 bytes.
+ */
 struct httpd_field {
 	uint16_t off;
 	uint16_t len;
@@ -153,7 +157,8 @@ struct httpd_req {
 
 /* The connections from one client address: home's, which counts them, and
  * keeps the entry for reuse once none is left; the client loops count the
- * bytes of bodies they hold for it. */
+ * bytes of bodies they hold for it.
+ */
 struct httpd_client {
 	struct list          spare;    /* on home's shelf, once unused */
 	struct httpd_client *next;     /* in its hash chain */
@@ -254,7 +259,8 @@ struct httpd_lane {
 };
 
 /* What home's door and the client loops' servers share (R4): made before
- * any loop starts, its atomic members initialized then. */
+ * any loop starts, its atomic members initialized then.
+ */
 struct httpd_hub {
 	_Atomic size_t     bodies;  /* body bytes held for all clients */
 	struct loop       *home;    /* home's door sets it, before any client
@@ -264,7 +270,8 @@ struct httpd_hub {
 };
 
 /* A client loop's server.  Each connection list runs from the least
- * recently active one. */
+ * recently active one.
+ */
 struct httpd {
 	struct list              idle;        /* keep-alives between requests */
 	struct list              busy;        /* the others */
@@ -303,7 +310,8 @@ struct httpd_listener {
 
 /* Home's door: the listeners, and the clients' addresses, connections and
  * descriptors.  Each connection is a client loop's from the moment it is
- * placed, until it is given back. */
+ * placed, until it is given back.
+ */
 struct httpd_home {
 	struct shelf            spare;      /* connections kept for reuse */
 	struct shelf            gone;       /* and addresses' entries */
@@ -436,7 +444,8 @@ httpd_has_token (char const *list,
 }
 
 /* Whether @p host, a Host field or an origin's host and port, names this
- * machine by loopback, whatever the port. */
+ * machine by loopback, whatever the port.
+ */
 static bool
 httpd_loopback_host (char const *host)
 {
@@ -519,7 +528,8 @@ httpd_origin_allowed (struct httpd const *srv,
 
 /* The length of the head at the input's start, which @p in holds: the
  * request line, the header lines and the empty line; 0 while it is partial.
- * Only its first lim.head bytes are looked at, and those once. */
+ * Only its first lim.head bytes are looked at, and those once.
+ */
 static size_t
 httpd_conn_head_length (struct httpd_conn *conn,
                         struct span        in)
@@ -556,7 +566,8 @@ httpd_next_line (char **cursor)
 }
 
 /* Keep @p f in @p kept, unless a field came there before: a list's first
- * line stands for it, and any other may come once. */
+ * line stands for it, and any other may come once.
+ */
 static unsigned
 httpd_field_keep (struct httpd_field *kept,
                   struct httpd_field  f,
@@ -600,7 +611,8 @@ httpd_req_length (struct httpd_req *req,
 /* Record header field @p name, of @p name_len bytes, whose value is
  * @p value, @p f in the head, if it is one that matters here or to @p app;
  * nonzero is an HTTP error.  None of those read here is ever the
- * application's. */
+ * application's.
+ */
 static unsigned
 httpd_req_header (struct httpd_req        *req,
                   struct stream_app const *app,
@@ -650,7 +662,8 @@ httpd_req_header (struct httpd_req        *req,
 }
 
 /* A header line of the head at @p data: a token, a colon, and a value that
- * holds no control character but tabs, with white space around it. */
+ * holds no control character but tabs, with white space around it.
+ */
 static unsigned
 httpd_req_field (struct httpd_req        *req,
                  struct stream_app const *app,
@@ -678,7 +691,8 @@ httpd_req_field (struct httpd_req        *req,
 }
 
 /* The request line, which starts the head: the method stays there, as a
- * string. */
+ * string.
+ */
 static unsigned
 httpd_req_line (struct httpd_req *req,
                 char             *line)
@@ -708,7 +722,8 @@ httpd_req_line (struct httpd_req *req,
 }
 
 /* Parse a complete head in place, leaving the method at its start as a
- * string; nonzero is an HTTP error. */
+ * string; nonzero is an HTTP error.
+ */
 static unsigned
 httpd_req_parse (struct httpd_req          *req,
                  char                      *data,
@@ -748,7 +763,8 @@ httpd_conn_field (struct httpd_conn const *conn,
 }
 
 /* The address a client is known by: IPv4 (as IPv4-mapped IPv6), or for other
- * IPv6 the /64 prefix, which is what one host is usually given. */
+ * IPv6 the /64 prefix, which is what one host is usually given.
+ */
 static void
 httpd_addr_key (struct sockaddr_storage const *ss,
                 uint64_t                       key[2])
@@ -766,7 +782,8 @@ httpd_addr_key (struct sockaddr_storage const *ss,
 }
 
 /* The link that holds client @p key in home's table, or where it would be
- * appended. */
+ * appended.
+ */
 static struct httpd_client **
 httpd_home_client_slot (struct httpd_home *home,
                         uint64_t const     key[2])
@@ -779,7 +796,8 @@ httpd_home_client_slot (struct httpd_home *home,
 }
 
 /* Count a connection from client @p key, in an entry kept for reuse if
- * there is one; nullptr if out of memory. */
+ * there is one; nullptr if out of memory.
+ */
 static struct httpd_client *
 httpd_home_client_get (struct httpd_home *home,
                        uint64_t const     key[2])
@@ -808,7 +826,8 @@ httpd_home_client_get (struct httpd_home *home,
 }
 
 /* A connection of @p client's has been given back; after the last, as the
- * loop that closed it touches the entry no more, home keeps it for reuse. */
+ * loop that closed it touches the entry no more, home keeps it for reuse.
+ */
 static void
 httpd_home_client_put (struct httpd_home   *home,
                        struct httpd_client *client)
@@ -838,7 +857,8 @@ httpd_addr_loopback (struct sockaddr_storage const *ss)
 }
 
 /* The connection has closed, and its events are dispatched: give it back to
- * home, which counts it no more. */
+ * home, which counts it no more.
+ */
 static void
 httpd_conn_release (struct loop_ref *ref)
 {
@@ -859,7 +879,8 @@ httpd_conn_unhold (struct httpd_conn *conn)
 }
 
 /* Take @p n bytes from @p budget, of which @p max may be taken: 0, or
- * ENOBUFS if they do not fit.  Every client loop takes from the same. */
+ * ENOBUFS if they do not fit.  Every client loop takes from the same.
+ */
 static int
 httpd_budget_take (_Atomic size_t *budget,
                    size_t          n,
@@ -875,7 +896,8 @@ httpd_budget_take (_Atomic size_t *budget,
 }
 
 /* Count @p n more body bytes in the budgets: 0, or ENOBUFS if they do not
- * fit. */
+ * fit.
+ */
 static int
 httpd_conn_hold (struct httpd_conn *conn,
                  size_t             n)
@@ -907,7 +929,8 @@ httpd_conn_cancel (struct httpd_conn *conn)
 }
 
 /* Tell home how many connections idle, and when the least recently active
- * of them began to, as either changed. */
+ * of them began to, as either changed.
+ */
 static void
 httpd_show_idle (struct httpd *srv)
 {
@@ -985,7 +1008,8 @@ httpd_conn_input (struct httpd_conn const *conn)
 }
 
 /* Whether TLS waits for room to send what a read left it, such as the
- * answer to a key update: it reads nothing more meanwhile. */
+ * answer to a key update: it reads nothing more meanwhile.
+ */
 static bool
 httpd_conn_blocked (struct httpd_conn const *conn)
 {
@@ -1027,7 +1051,8 @@ httpd_conn_ready (struct httpd_conn *conn)
 }
 
 /* Close the connection at its next step: output must not close it at once,
- * as an application may be writing it. */
+ * as an application may be writing it.
+ */
 static void
 httpd_conn_doom (struct httpd_conn *conn)
 {
@@ -1036,7 +1061,8 @@ httpd_conn_doom (struct httpd_conn *conn)
 }
 
 /* Queue @p n fragments: 0, or EPIPE once the connection is doomed, or the
- * error that dooms it, out of memory. */
+ * error that dooms it, out of memory.
+ */
 static int
 httpd_conn_put (struct httpd_conn      *conn,
                 struct cstr_view const *f,
@@ -1067,7 +1093,8 @@ httpd_conn_put (struct httpd_conn      *conn,
  * STREAM_OPEN, which to HTTP/1.1 clients goes in chunks and to others ends
  * with the connection.  A response that begins before its request's body is
  * all in, or to a request that asked so, or while the server drains, ends the
- * connection.  Returns as httpd_conn_put() does. */
+ * connection.  Returns as httpd_conn_put() does.
+ */
 static int
 httpd_conn_head (struct httpd_conn      *conn,
                  unsigned                status,
@@ -1126,7 +1153,8 @@ httpd_conn_head (struct httpd_conn      *conn,
 
 /* Queue a complete response of our own: @p body, which is nullptr for none
  * (and no Content-Type), after @p extra header lines; at most 8 of each.  A
- * failure dooms the connection. */
+ * failure dooms the connection.
+ */
 static void
 httpd_conn_respond (struct httpd_conn      *conn,
                     unsigned                status,
@@ -1162,7 +1190,8 @@ httpd_conn_error (struct httpd_conn      *conn,
 }
 
 /* Fail the request under way with @p status, taking the stream back from the
- * application; with a response begun already, the connection just closes. */
+ * application; with a response begun already, the connection just closes.
+ */
 static void
 httpd_conn_fail (struct httpd_conn *conn,
                  unsigned           status)
@@ -1303,7 +1332,8 @@ static struct stream_ops const httpd_stream_ops = {
 };
 
 /* The token of Authorization field @p auth, if it shows the bearer scheme;
- * else none, a null pointer.  Credentials of another scheme are none. */
+ * else none, a null pointer.  Credentials of another scheme are none.
+ */
 static struct cstr_view
 httpd_bearer (struct cstr_view auth)
 {
@@ -1322,7 +1352,8 @@ httpd_bearer (struct cstr_view auth)
  * how it connects if it shows none, and what it may do, into its stream;
  * whether it may connect (src/policy.h).  A client on loopback that names
  * another host may be a page whose name was rebound to 127.0.0.1, whose GET
- * carries no Origin: it connects as a remote one. */
+ * carries no Origin: it connects as a remote one.
+ */
 static bool
 httpd_conn_grant (struct httpd_conn *conn)
 {
@@ -1349,7 +1380,8 @@ httpd_conn_grant (struct httpd_conn *conn)
 /* Parse the head of @p len bytes at @p data, the input's start, and check it
  * against the Origin defence, the policy and the body budgets, and count its
  * body in those; nonzero is an HTTP error.  So a client that may not send a
- * body holds none of the budgets.  A chunked body is counted as it comes. */
+ * body holds none of the budgets.  A chunked body is counted as it comes.
+ */
 static unsigned
 httpd_conn_admit (struct httpd_conn *conn,
                   char              *data,
@@ -1369,7 +1401,8 @@ httpd_conn_admit (struct httpd_conn *conn,
 }
 
 /* A chunked body as it is decoded in place: the @p len bytes at @p raw are
- * read from @p rd on, and their data moved down to @p wr. */
+ * read from @p rd on, and their data moved down to @p wr.
+ */
 struct httpd_dechunk {
 	unsigned char *raw;
 	size_t         len;
@@ -1380,7 +1413,8 @@ struct httpd_dechunk {
 /* Take the line @p d reads next, which must end in CRLF within @p max bytes,
  * into @p *line, less its CRLF: 0, with @p *line empty and a null pointer
  * while the line is not all in, or an HTTP error, @p too_long if no LF comes
- * within @p max bytes, 400 if no CR precedes it, again with @p *line empty. */
+ * within @p max bytes, 400 if no CR precedes it, again with @p *line empty.
+ */
 static unsigned
 httpd_dechunk_line (struct httpd_dechunk *d,
                     size_t                max,
@@ -1402,7 +1436,8 @@ httpd_dechunk_line (struct httpd_dechunk *d,
 
 /* A chunk-size line: the size, in hexadecimal, and any extensions, which
  * follow it after optional white space; only the line's end may hold a
- * control character. */
+ * control character.
+ */
 static unsigned
 httpd_conn_chunk_size (struct httpd_conn    *conn,
                        struct httpd_dechunk *d)
@@ -1463,7 +1498,8 @@ httpd_conn_chunk_end (struct httpd_conn    *conn,
 
 /* A line of the trailer section, which counts against the head's limits;
  * each but the empty line that ends it must be a field: a request that
- * follows a missing empty line is no trailer. */
+ * follows a missing empty line is no trailer.
+ */
 static unsigned
 httpd_conn_trailer (struct httpd_conn    *conn,
                     struct httpd_dechunk *d)
@@ -1541,7 +1577,8 @@ enum httpd_next {
 /* Take in what has come of the body, within the step's share: hand it to the
  * application, if it has the stream, and cut it out of the input.  Then wait
  * for more, for 100 Continue first if the client asked so, or for the next
- * step if the share ran out first. */
+ * step if the share ran out first.
+ */
 static enum httpd_next
 httpd_conn_body (struct httpd_conn *conn)
 {
@@ -1626,7 +1663,8 @@ httpd_conn_reset (struct httpd_conn *conn)
 /* Answer a head that came to nothing with @p status, and end the connection.
  * Only a 401 echoes the Origin, which passed the check by then; the rest
  * echo none, a 503 of the body budgets, which follows the check too,
- * included. */
+ * included.
+ */
 static enum httpd_next
 httpd_conn_refuse (struct httpd_conn *conn,
                    unsigned           status)
@@ -1649,7 +1687,8 @@ httpd_conn_refuse (struct httpd_conn *conn,
 }
 
 /* Begin the next request, once its head is in, unless the connection ends,
- * or the step has no share left for that or has run to @p end. */
+ * or the step has no share left for that or has run to @p end.
+ */
 static enum httpd_next
 httpd_conn_parse (struct httpd_conn *conn,
                   uint64_t           end)
@@ -1678,7 +1717,8 @@ httpd_conn_parse (struct httpd_conn *conn,
 }
 
 /* Advance the request under way, or begin the next unless the step has no
- * share left for that or has run to @p end. */
+ * share left for that or has run to @p end.
+ */
 static enum httpd_next
 httpd_conn_next (struct httpd_conn *conn,
                  uint64_t           end)
@@ -1697,7 +1737,8 @@ httpd_conn_next (struct httpd_conn *conn,
  * left it to send, such as the answer to a key update, whose wait for room
  * stalls as the output's does.  With nothing left, the request's own clock
  * restarts, as it was held up meanwhile.  Returns 0, or the error that closed
- * the connection. */
+ * the connection.
+ */
 static int
 httpd_conn_sent (struct httpd_conn *conn)
 {
@@ -1721,7 +1762,8 @@ httpd_conn_sent (struct httpd_conn *conn)
 }
 
 /* A send would block: the write-stall clock starts, and restarts only once
- * WRITE_PROGRESS bytes have gone out, so a trickle cannot hold it. */
+ * WRITE_PROGRESS bytes have gone out, so a trickle cannot hold it.
+ */
 static void
 httpd_conn_stall (struct httpd_conn *conn)
 {
@@ -1734,7 +1776,8 @@ httpd_conn_stall (struct httpd_conn *conn)
 /* Send what is queued, within the step's share: 0, or the error that closed
  * the connection.  TLS sends a record a call, whole, of TLS_RECORD bytes or
  * the output's last, so that a call after one that waited is never shorter,
- * and none sends records unseen. */
+ * and none sends records unseen.
+ */
 static int
 httpd_conn_flush (struct httpd_conn *conn)
 {
@@ -1811,7 +1854,8 @@ httpd_conn_arm (struct httpd_conn *conn)
 
 /* A deadline ran out: a slow head or body is answered 408 and the connection
  * ends once that is sent; otherwise it closes at once.  Returns 0, or
- * ETIMEDOUT once it is closed. */
+ * ETIMEDOUT once it is closed.
+ */
 static int
 httpd_conn_expire (struct httpd_conn *conn)
 {
@@ -1825,7 +1869,8 @@ httpd_conn_expire (struct httpd_conn *conn)
 
 /* Discard what a lingering client still sends, a read a step; close once it
  * has closed too.  Returns 0, or once the connection is closed EPIPE, or
- * recv()'s error. */
+ * recv()'s error.
+ */
 static int
 httpd_conn_discard (struct httpd_conn *conn)
 {
@@ -1844,7 +1889,8 @@ httpd_conn_discard (struct httpd_conn *conn)
 /* The last response is sent: linger, unless the client has closed already,
  * when what it sent is discarded and the connection closed.  A stream the
  * application still has is cancelled.  TLS says it ends, and is gone: what
- * the client sends from then on is only discarded. */
+ * the client sends from then on is only discarded.
+ */
 static void
 httpd_conn_end (struct httpd_conn *conn)
 {
@@ -1921,7 +1967,8 @@ httpd_conn_wait (struct httpd_conn *conn,
 }
 
 /* One step: requests, as far as the step's share and STEP_NS allow, then one
- * send of their responses; once the last is sent, the connection ends. */
+ * send of their responses; once the last is sent, the connection ends.
+ */
 static void
 httpd_conn_pump (struct httpd_conn *conn)
 {
@@ -1967,7 +2014,8 @@ httpd_conn_pump (struct httpd_conn *conn)
 
 /* One recv, or one TLS record, straight into the input's free tail.  A
  * head's clock starts with its first byte, which may be in TLS still.
- * Returns 0, or the error that closed the connection. */
+ * Returns 0, or the error that closed the connection.
+ */
 static int
 httpd_conn_read (struct httpd_conn *conn)
 {
@@ -2006,7 +2054,8 @@ httpd_conn_read (struct httpd_conn *conn)
 /* A TLS listener's client begins the handshake with its first bytes: its end
  * of TLS is made then.  Returns 0, or EAGAIN while it has sent none, or EPIPE
  * once the connection is closed: a client that closes without a word, such
- * as a probe of the port, began no handshake. */
+ * as a probe of the port, began no handshake.
+ */
 static int
 httpd_conn_hello (struct httpd_conn *conn)
 {
@@ -2027,7 +2076,8 @@ httpd_conn_hello (struct httpd_conn *conn)
 /* A flight of the handshake, from the client's first bytes on within the
  * head's deadline; once it is done, the connection serves as any other.
  * Each flight's time is its CPU's, mostly.  A step woken by the client's FIN
- * alone counts none. */
+ * alone counts none.
+ */
 static void
 httpd_conn_shake (struct httpd_conn *conn)
 {
@@ -2108,7 +2158,8 @@ httpd_conn_event (struct loop     *loop,
 }
 
 /* Fired early, re-arm for the deadline as it now stands; else let the step
- * act on it. */
+ * act on it.
+ */
 static void
 httpd_conn_timer (struct loop       *loop,
                   struct loop_timer *timer)
@@ -2133,7 +2184,8 @@ httpd_home_watch (struct httpd_home *home,
 }
 
 /* Take the spare descriptor, given up to accept a client once descriptors
- * run out: 0, or open()'s error. */
+ * run out: 0, or open()'s error.
+ */
 static int
 httpd_home_spare (struct httpd_home *home)
 {
@@ -2154,7 +2206,8 @@ httpd_conn_destroy (struct httpd_conn **p_conn)
 }
 
 /* Let go of the client of a connection home placed and no loop set up: its
- * descriptor, and what it was to shake hands by. */
+ * descriptor, and what it was to shake hands by.
+ */
 static void
 httpd_conn_drop (struct httpd_conn *conn)
 {
@@ -2166,7 +2219,8 @@ httpd_conn_drop (struct httpd_conn *conn)
 
 /* Home has a connection back: it counts it no more, and keeps its storage
  * for the next client.  A descriptor came free, so the spare may be had again.
- * Once home's loop has stopped, its door is gone, and it is freed. */
+ * Once home's loop has stopped, its door is gone, and it is freed.
+ */
 static void
 httpd_conn_back (struct loop *loop,
                  struct msg  *msg)
@@ -2186,7 +2240,8 @@ httpd_conn_back (struct loop *loop,
 }
 
 /* Set up a connection home placed on the loop, or close it at once while the
- * server drains, giving it back to home. */
+ * server drains, giving it back to home.
+ */
 static void
 httpd_conn_setup (struct httpd_conn *conn,
                   struct httpd      *srv)
@@ -2245,7 +2300,8 @@ httpd_conn_setup (struct httpd_conn *conn,
 
 /* The client loop takes a connection home placed on it, for a step to set
  * up; once the loop has stopped, its server and home's door may be gone, and
- * it is only closed and freed. */
+ * it is only closed and freed.
+ */
 static void
 httpd_conn_take (struct loop *loop,
                  struct msg  *msg)
@@ -2262,7 +2318,8 @@ httpd_conn_take (struct loop *loop,
 }
 
 /* Set up the connections home handed over, as many a step as its share of
- * accepts allows. */
+ * accepts allows.
+ */
 static void
 httpd_take_step (struct loop      *loop,
                  struct loop_step *step)
@@ -2281,7 +2338,8 @@ httpd_take_step (struct loop      *loop,
 }
 
 /* On a client loop: take the policy home stored last, and let go of the
- * one before; once the loop has stopped, only let go of it. */
+ * one before; once the loop has stopped, only let go of it.
+ */
 static void
 httpd_lane_policy (struct loop *loop,
                    struct msg  *msg)
@@ -2311,7 +2369,8 @@ httpd_lane_evict (struct loop *loop,
 }
 
 /* Close the least recently active idle connections home asked for, as many
- * a step as its share allows; once none is idle, none is left to close. */
+ * a step as its share allows; once none is idle, none is left to close.
+ */
 static void
 httpd_evict_step (struct loop      *loop,
                   struct loop_step *step)
@@ -2328,7 +2387,8 @@ httpd_evict_step (struct loop      *loop,
 }
 
 /* Draining: close the idle connections, and from the deadline on every one
- * left, as many a step as its share allows. */
+ * left, as many a step as its share allows.
+ */
 static void
 httpd_drain_step (struct loop      *loop,
                   struct loop_step *step)
@@ -2352,7 +2412,8 @@ httpd_deadline_event (struct loop       *loop,
 }
 
 /* Whether clients hold all the descriptors they may: one for each connection,
- * and one more for each job in flight, for its upstream connection. */
+ * and one more for each job in flight, for its upstream connection.
+ */
 static bool
 httpd_home_full (struct httpd_home const *home)
 {
@@ -2360,7 +2421,8 @@ httpd_home_full (struct httpd_home const *home)
 }
 
 /* Leave FD_RESERVE descriptors and the two each client loop holds, its
- * epoll's and its inbox's, or half of fewer, to all but clients. */
+ * epoll's and its inbox's, or half of fewer, to all but clients.
+ */
 static void
 httpd_home_budget (struct httpd_home *home)
 {
@@ -2412,7 +2474,8 @@ httpd_home_evict (struct httpd_home *home)
  * from the time its turns took since the last look, SAMPLE_NS ago at least.
  * A connection placed since counts once more, as its work is yet to show in
  * the utilisation: so connections that come and go spread over the loops
- * too, rather than go to the lightest until the next look. */
+ * too, rather than go to the lightest until the next look.
+ */
 static uint64_t
 httpd_home_weight (struct httpd_home *home,
                    struct httpd_lane *lane)
@@ -2430,7 +2493,8 @@ httpd_home_weight (struct httpd_home *home,
 }
 
 /* The lighter of two client loops chosen at random (design section 3), or
- * of two as light the one with fewer connections. */
+ * of two as light the one with fewer connections.
+ */
 static struct httpd_lane *
 httpd_home_lane (struct httpd_home *home)
 {
@@ -2452,7 +2516,8 @@ httpd_home_lane (struct httpd_home *home)
 }
 
 /* Make room for @p n groups in the storage kept with the connection: 0, or
- * ENOMEM. */
+ * ENOMEM.
+ */
 static int
 httpd_conn_room (struct httpd_conn *conn,
                  size_t             n)
@@ -2469,7 +2534,8 @@ httpd_conn_room (struct httpd_conn *conn,
 
 /* Read the groups of the user of Unix socket @p fd, whose primary group is
  * @p gid, into @p conn, sorted, growing the storage it keeps for them if
- * need be: 0, or ENOMEM. */
+ * need be: 0, or ENOMEM.
+ */
 static int
 httpd_conn_groups (struct httpd_conn *conn,
                    int                fd,
@@ -2497,7 +2563,8 @@ httpd_conn_groups (struct httpd_conn *conn,
 }
 
 /* The user of the client on @p fd, as @p cred says if over a Unix socket,
- * with the user's groups; else none: 0, or ENOMEM. */
+ * with the user's groups; else none: 0, or ENOMEM.
+ */
 static int
 httpd_conn_user (struct httpd_conn  *conn,
                  int                 fd,
@@ -2514,7 +2581,8 @@ httpd_conn_user (struct httpd_conn  *conn,
 }
 
 /* Storage for a connection: one given back, if home keeps any; nullptr if
- * out of memory. */
+ * out of memory.
+ */
 static struct httpd_conn *
 httpd_home_conn (struct httpd_home *home)
 {
@@ -2530,7 +2598,8 @@ httpd_home_conn (struct httpd_home *home)
 /* Place the client on @p fd, from @p addr, on loopback if @p local, on a
  * client loop, in the storage of a connection given back if one is kept,
  * as the user @p cred says if over a Unix socket, to shake hands by @p ctx
- * if not nullptr; if out of memory, close @p fd. */
+ * if not nullptr; if out of memory, close @p fd.
+ */
 static void
 httpd_home_place (struct httpd_home  *home,
                   int                 fd,
@@ -2616,7 +2685,8 @@ httpd_home_take (struct httpd_home             *home,
 }
 
 /* Accept a client from @p l, and take it as httpd_home_take() does: 0, or
- * accept()'s error. */
+ * accept()'s error.
+ */
 static int
 httpd_home_accept (struct httpd_home           *home,
                    struct httpd_listener const *l,
@@ -2650,7 +2720,8 @@ httpd_home_shed (struct httpd_home           *home,
 
 /* Whether accept() failing with @p e concerns only the connection it took,
  * so the next may be accepted: Linux passes on a pending connection's network
- * error, and firewall rules may forbid one. */
+ * error, and firewall rules may forbid one.
+ */
 static bool
 httpd_accept_next (int e)
 {
@@ -2669,7 +2740,8 @@ httpd_accept_next (int e)
  * sent.  The listeners that clients wait on take turns, a client each.
  * Only with the spare descriptor at hand, to accept a client with when
  * descriptors run out; without it, listening pauses until a connection is
- * given back, or the tick. */
+ * given back, or the tick.
+ */
 static void
 httpd_home_accept_step (struct loop      *loop,
                         struct loop_step *step)
@@ -2742,7 +2814,8 @@ httpd_home_tick (struct loop       *loop,
 /* Address @p sa was in use as the listener's Unix socket was bound: if its
  * file is a socket left there, which no server listens on, remove it and
  * bind again.  Returns 0, or EADDRINUSE if the file is no such socket, or
- * the error that kept the probe, the removal or the bind from working. */
+ * the error that kept the probe, the removal or the bind from working.
+ */
 static int
 httpd_listener_rebind (struct httpd_listener    *l,
                        struct sockaddr_un const *sa)
@@ -2764,7 +2837,8 @@ httpd_listener_rebind (struct httpd_listener    *l,
 }
 
 /* Bind the listener's Unix socket to @p sa and listen: a file left there,
- * which no server listens on, goes first.  Returns 0, or the error. */
+ * which no server listens on, goes first.  Returns 0, or the error.
+ */
 static int
 httpd_listener_bind_uds (struct httpd_listener    *l,
                          struct sockaddr_un const *sa)
@@ -2779,7 +2853,8 @@ httpd_listener_bind_uds (struct httpd_listener    *l,
 
 /* Make @p l listen on the Unix socket at @p path, which is @p len bytes
  * long.  httpd_listen_addr() has checked that the path fits in sun_path.  When
- * httpd_home_drain() closes the listener, it removes the socket file. */
+ * httpd_home_drain() closes the listener, it removes the socket file.
+ */
 static int
 httpd_listener_uds (struct httpd_listener *l,
                     char const            *path,
@@ -2820,7 +2895,8 @@ httpd_listener_bind (struct httpd_listener *l,
 /* Copy the host of @p len bytes at @p host, the part of a listen address
  * before its last colon, to a->host, without brackets.  A host in brackets,
  * and a host with a colon, must be an IPv6 address, which may have a zone
- * after a '%'.  Returns 0 or EINVAL. */
+ * after a '%'.  Returns 0 or EINVAL.
+ */
 static int
 httpd_listen_host (struct httpd_listen_addr *a,
                    char const               *host,
@@ -2890,7 +2966,8 @@ httpd_listen_addr (char const *text,
 }
 
 /* Make @p l listen on the listen address @p addr.  Returns 0 or an error
- * number. */
+ * number.
+ */
 static int
 httpd_listener_open (struct httpd_listener *l,
                      char const            *addr)
@@ -2926,7 +3003,8 @@ httpd_listener_open (struct httpd_listener *l,
 }
 
 /* Listen on @p addr with the next listener, watched for no events until the
- * door opens. */
+ * door opens.
+ */
 static int
 httpd_home_listen (struct httpd_home *home,
                    char const        *addr)
@@ -2944,7 +3022,8 @@ httpd_home_listen (struct httpd_home *home,
 }
 
 /* Listen on each of @p listen, take the spare descriptor, and start the
- * tick. */
+ * tick.
+ */
 static int
 httpd_home_start (struct httpd_home *home,
                   char const *const *listen)
@@ -2967,7 +3046,8 @@ httpd_home_start (struct httpd_home *home,
 }
 
 /* Say where clients find the endpoint of @p l; warn if clients that show no
- * token may call tools from beyond loopback (@p anyone) there. */
+ * token may call tools from beyond loopback (@p anyone) there.
+ */
 static void
 httpd_listener_announce (struct httpd_listener const *l,
                          bool                         anyone)

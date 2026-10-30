@@ -1,6 +1,8 @@
-/** @file TLS (S9, design section 3): the context the TLS listeners'
- *  connections shake hands by, and a connection's end of TLS, which its
- *  client loop drives a step at a time.
+/** @file tls.h
+ *
+ * TLS (S9, design section 3): the context the TLS listeners'
+ * connections shake hands by, and a connection's end of TLS,
+ * which its client loop drives a step at a time.
  *
  * The context is OpenSSL's SSL_CTX: TLS 1.3 only, ALPN http/1.1, key
  * exchange X25519MLKEM768 first, one ticket a connection and no session
@@ -65,19 +67,22 @@ extern void
 tls_ctx_put (struct ssl_ctx_st *ctx);
 
 /** The server's end of TLS for the client on socket @p fd, by @p ctx;
- *  nullptr if out of memory. */
+ *  nullptr if out of memory.
+ */
 extern struct ssl_st *
 tls_create (struct ssl_ctx_st *ctx,
             int                fd);
 
 /** Shake hands a flight further, a flight of the server's being sent
- *  whole; or, after the handshake, send what a read left to send. */
+ *  whole; or, after the handshake, send what a read left to send.
+ */
 extern enum tls_shake
 tls_shake (struct ssl_st *ssl);
 
 /** As recv() into @p buf, from a record at most: 0 once the client has
  *  closed, or -EAGAIN if it waits for the socket, to read or to send first
- *  (tls_blocked()), else -EPROTO. */
+ *  (tls_blocked()), else -EPROTO.
+ */
 extern ssize_t
 tls_recv (struct ssl_st *ssl,
           void          *buf,
@@ -87,14 +92,16 @@ tls_recv (struct ssl_st *ssl,
  *  else -EPROTO.  Once it has waited, it must be called again with
  *  the same bytes, which may have moved, and at least as many, as a call
  *  that waited may have sent a record before, which the next one counts;
- *  so calls of TLS_RECORD bytes at most never send part of one unseen. */
+ *  so calls of TLS_RECORD bytes at most never send part of one unseen.
+ */
 extern ssize_t
 tls_send (struct ssl_st *ssl,
           void const    *buf,
           size_t         len);
 
 /** Whether bytes the client sent wait in @p ssl, which the socket no longer
- *  holds: a record's rest, or part of one. */
+ *  holds: a record's rest, or part of one.
+ */
 extern bool
 tls_pending (struct ssl_st const *ssl);
 
@@ -105,12 +112,14 @@ tls_blocked (struct ssl_st const *ssl);
 /** Say the connection ends (close_notify), if @p ssl is not nullptr and its
  *  handshake is done, as far as the socket takes it now; tls_destroy(),
  *  which must follow, frees @p ssl and clears what this leaves in the error
- *  queue. */
+ *  queue.
+ */
 extern void
 tls_close (struct ssl_st *ssl);
 
 /** Free @p *p_ssl, if not nullptr, saying nothing more to the client, and
- *  set it to nullptr. */
+ *  set it to nullptr.
+ */
 extern void
 tls_destroy (struct ssl_st **p_ssl);
 

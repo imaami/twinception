@@ -20,7 +20,8 @@ struct cstr_view {
 };
 
 /** The initializer of a view of a string literal's bytes, excluding its
- *  final NUL, which a table of static storage can take. Rejects pointers. */
+ *  final NUL, which a table of static storage can take. Rejects pointers.
+ */
 #define CSTR_VIEW_INIT(s) { "" s, sizeof (s) - 1 }
 
 /** A string literal's bytes, excluding its final NUL. Rejects pointers. */
@@ -35,7 +36,8 @@ extern struct cstr_view
 cstr_view_dstr (struct dstr const *text);
 
 /** Replace the contents of dest with the bytes of text, which must not
- * point into dest. Returns 0, or ENOMEM with dest left empty. */
+ * point into dest. Returns 0, or ENOMEM with dest left empty.
+ */
 extern int
 cstr_view_store (struct cstr_view  text,
                  struct dstr      *dest);

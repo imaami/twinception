@@ -1,4 +1,7 @@
-/** @file Identities and roles (policy.h). */
+/** @file policy.c
+ *
+ * Identities and roles.
+ */
 #include <errno.h>
 #include <grp.h>
 #include <json-c/json.h>
@@ -16,11 +19,13 @@
 enum { DIGEST = SHA256_DIGEST_LENGTH };
 
 /* Principals are hashes of identities' names, which the configuration
- * picks, not clients. */
+ * picks, not clients.
+ */
 static constexpr uint64_t SEED = 0x9e3779b97f4a7c15;
 
 /* The members of "anonymous", by the kind of client.  TOOL_TEXT() is a
- * compound literal, which a static initializer may not have. */
+ * compound literal, which a static initializer may not have.
+ */
 #define KIND(s) { "" s, sizeof s - 1 }
 static struct tool_text const policy_kinds[POLICY_KINDS] = {
 	[POLICY_LOOPBACK] = KIND("loopback"),
@@ -64,7 +69,8 @@ struct policy_gid {
 
 /* One block has a policy and, after it, its tokens, users, roles, groups
  * and the names of its clients for the log, in that order, so that each is
- * aligned. */
+ * aligned.
+ */
 struct policy {
 	tool_mask            allowed;                  /* the tools that the
 	                                                  roles may grant */
@@ -125,7 +131,8 @@ policy_build_fail (struct policy_build *b,
 
 /* Say that @p what, such as "unix-groups: no group", names no user or group
  * @p name, as @p e says, ENOENT for none at all; returns EINVAL, or @p e if
- * that is ENOMEM. */
+ * that is ENOMEM.
+ */
 static int
 policy_build_none (struct policy_build *b,
                    char const          *what,
@@ -140,7 +147,8 @@ policy_build_none (struct policy_build *b,
 }
 
 /* The length of @p name, a role's or an identity's; 0 if it is not a
- * valid name. */
+ * valid name.
+ */
 static size_t
 policy_name_len (char const *name)
 {
@@ -150,7 +158,8 @@ policy_name_len (char const *name)
 }
 
 /* The principal of the identity @p name of @p len bytes: never 0, which is
- * anonymous. */
+ * anonymous.
+ */
 static uint64_t
 policy_principal (char const *name,
                   size_t      len)
@@ -160,7 +169,8 @@ policy_principal (char const *name,
 }
 
 /* Copy the @p n texts @p parts, one after another, into the policy's
- * block, and return the copy, which names a client in the log. */
+ * block, and return the copy, which names a client in the log.
+ */
 static struct tool_text
 policy_build_who (struct policy_build    *b,
                   size_t                  n,
@@ -202,7 +212,8 @@ policy_build_role (struct policy_build const *b,
 }
 
 /* Append a token of @p digest for the identity @p who of @p principal and
- * @p role. */
+ * @p role.
+ */
 static void
 policy_token_add (struct policy       *p,
                   unsigned char const *digest,
@@ -269,7 +280,8 @@ policy_build_grow (struct policy_build *b)
 }
 
 /* Unix user @p name, a number itself or a name the system knows, in
- * @p *uid; ENOENT if it knows none, ENOMEM, or why the lookup failed. */
+ * @p *uid; ENOENT if it knows none, ENOMEM, or why the lookup failed.
+ */
 static int
 policy_build_uid (struct policy_build *b,
                   char const          *name,
@@ -354,7 +366,8 @@ policy_build_token (struct policy_build *b,
 
 /* Write the names of the tools in @p mask of the @p n tools @p tools into
  * the @p size bytes at @p buf, separated by commas, or "none" for no tool;
- * returns the length. */
+ * returns the length.
+ */
 static size_t
 policy_names (char              *buf,
               size_t             size,
@@ -382,7 +395,8 @@ policy_build_all (struct policy_build const *b)
 
 /* Write the reason why role @p name may not name @p v: askai offers no such
  * tool, or with @p up lends no such tool to the upstream.  The reason lists
- * the tools that askai offers or lends.  Returns EINVAL. */
+ * the tools that askai offers or lends.  Returns EINVAL.
+ */
 static int
 policy_build_no_tool (struct policy_build *b,
                       char const          *name,
@@ -404,7 +418,8 @@ policy_build_no_tool (struct policy_build *b,
 
 /* Reads the list of tool names @p list of role @p name into @p r.  @p key
  * is the name of the list's member, "tools" or "upstream".  The member
- * "upstream" may name only the tools that askai can offer to the upstream. */
+ * "upstream" may name only the tools that askai can offer to the upstream.
+ */
 static int
 policy_build_tools (struct policy_build *b,
                     struct policy_role  *r,
@@ -511,7 +526,8 @@ policy_build_user (struct policy_build *b,
 }
 
 /* The members of identity @p who, @p id: its role, its tokens and its Unix
- * users. */
+ * users.
+ */
 static int
 policy_build_identity (struct policy_build *b,
                        char const          *who,
@@ -634,7 +650,8 @@ policy_build_groups (struct policy_build *b,
 }
 
 /* The role, if any, of a client that shows no token and connects as
- * @p kind, which @p val, null for none, names. */
+ * @p kind, which @p val, null for none, names.
+ */
 static int
 policy_build_kind (struct policy_build *b,
                    char const          *kind,
@@ -697,7 +714,8 @@ policy_build_file (struct policy_build *b,
 
 /* askai's own policy: with ASKAI_TOKEN, @p token, an identity of
  * everything, that clients must be; else everything for clients on loopback,
- * and the tools for others. */
+ * and the tools for others.
+ */
 static void
 policy_build_own (struct policy_build *b,
                   char const          *token)
@@ -739,7 +757,8 @@ policy_elements (struct json_object *obj,
 
 /* The members of the configuration file's object @p file that make the
  * policy, each left as it is if absent; whether @p file has any of them,
- * which turns askai's own policy off. */
+ * which turns askai's own policy off.
+ */
 static bool
 policy_file (struct json_object  *file,
              struct json_object **roles,
@@ -849,7 +868,8 @@ policy_put (struct policy *policy)
 
 /* Log the tools of @p mask, of the names @p tools of @p n tools, one a
  * line, the first after @p key, which is padded to @p width columns; or
- * none. */
+ * none.
+ */
 static void
 policy_log_tools (char const        *key,
                   int                width,
@@ -870,7 +890,8 @@ policy_log_tools (char const        *key,
 /* Log each role of the file's policy @p policy with the names @p tools of
  * the @p n_tools tools, and with the tools that the upstream may call,
  * which @p lent returns with @p ctx, if @p lent is not nullptr; returns
- * the tools that the roles grant or lend. */
+ * the tools that the roles grant or lend.
+ */
 static tool_mask
 policy_log_roles (struct policy const *policy,
                   char const *const    tools[],
@@ -910,7 +931,8 @@ policy_width (struct json_object *obj)
 }
 
 /* Log the identities of the file's policy, @p ids in the file, each with
- * its role. */
+ * its role.
+ */
 static void
 policy_log_identities (struct json_object *ids)
 {
@@ -930,7 +952,8 @@ policy_log_identities (struct json_object *ids)
 }
 
 /* Log the role of each Unix group of the file's policy @p policy, @p groups
- * in the file, for at most the groups of the policy. */
+ * in the file, for at most the groups of the policy.
+ */
 static void
 policy_log_groups (struct policy const *policy,
                    struct json_object  *groups)
@@ -954,7 +977,8 @@ policy_log_groups (struct policy const *policy,
 /* Log askai's own policy @p policy, and if @p lent is not nullptr, the
  * tools of the names @p tools of @p n_tools that the upstream may call,
  * which @p lent returns with @p ctx.  The keys are padded to the width of
- * the longest. */
+ * the longest.
+ */
 static void
 policy_log_own (struct policy const *policy,
                 char const *const    tools[],
@@ -1019,7 +1043,8 @@ policy_log (struct policy const *policy,
 }
 
 /* Grant @p role, if it is one, to the client of @p principal, which the
- * log names as @p who, or else as its role. */
+ * log names as @p who, or else as its role.
+ */
 static bool
 policy_grant_role (struct policy const *policy,
                    int64_t              role,
@@ -1041,7 +1066,8 @@ policy_grant_role (struct policy const *policy,
 }
 
 /* Grant the client that shows the token of @p len bytes at @p token the
- * role of the identity it proves, if any. */
+ * role of the identity it proves, if any.
+ */
 static bool
 policy_grant_token (struct policy const *policy,
                     char const          *token,
@@ -1057,7 +1083,8 @@ policy_grant_token (struct policy const *policy,
 
 /* Grant Unix user @p peer, who shows no token, the role of the identity it
  * is, or else of its first group the policy names, or else the anonymous
- * one over a Unix socket. */
+ * one over a Unix socket.
+ */
 static bool
 policy_grant_unix (struct policy const      *policy,
                    struct policy_peer const *peer,

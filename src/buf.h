@@ -1,5 +1,7 @@
-/** @file Byte buffer for sockets, TLS and pipes, and the stash its storage
- *  comes from. */
+/** @file buf.h
+ *
+ * Byte buffer for sockets, TLS and pipes.
+ */
 #ifndef TWINCEPTION_SRC_BUF_H_
 #define TWINCEPTION_SRC_BUF_H_
 
@@ -41,7 +43,8 @@ struct span {
 };
 
 /** Size classes of storage: powers of two from 4 KiB to 32 MiB, glibc's
- *  largest mmap threshold.  Larger storage is allocated and freed as is. */
+ *  largest mmap threshold.  Larger storage is allocated and freed as is.
+ */
 enum {
 	BUF_CLASS_MIN = 12,  /**< log2 of the smallest class */
 	BUF_CLASSES   = 14,
@@ -61,7 +64,8 @@ enum buf_pressure {
 };
 
 /** The process's memory pressure, an enum buf_pressure: one thread, the
- *  brainstem, sets it, and any thread may read it. */
+ *  brainstem, sets it, and any thread may read it.
+ */
 extern _Atomic uint32_t buf_pressure;
 
 /** What a stash keeps and has done: its thread writes, any reads (hist.h). */
@@ -121,7 +125,8 @@ buf_reserve (struct buf  *buf,
 
 /** Append text, formatted as by vprintf(), growing the buffer as it needs.
  *  Returns 0, buf_reserve()'s error, or EOVERFLOW if vsnprintf() cannot
- *  format it. */
+ *  format it.
+ */
 [[gnu::format(printf, 2, 0)]]
 extern int
 buf_vprintf (struct buf *buf,
@@ -187,12 +192,14 @@ extern void
 buf_wipe (struct buf *buf);
 
 /** Give the storage up, to the stash if the thread has one, leaving an
- *  empty buffer. */
+ *  empty buffer.
+ */
 extern void
 buf_fini (struct buf *buf);
 
 /** Make @p stash, in zeroed storage just allocated, valid: its atomic
- *  members are initialized in place (src/hist.h). */
+ *  members are initialized in place (src/hist.h).
+ */
 static inline void
 buf_stash_init (struct buf_stash *stash)
 {
@@ -207,18 +214,21 @@ buf_stash_init (struct buf_stash *stash)
 }
 
 /** Make @p stash, zeroed to begin, the calling thread's; nullptr leaves the
- *  thread with none. */
+ *  thread with none.
+ */
 extern void
 buf_stash_attach (struct buf_stash *stash);
 
 /** Begin a window of reuse, which the thread does every so often: at
  *  BUF_HIGH, buf_stash_release() gives back the blocks unused through the
- *  last window and this one so far. */
+ *  last window and this one so far.
+ */
 extern void
 buf_stash_age (struct buf_stash *stash);
 
 /** The units of release work that giving back @p bytes counts: one per
- *  2^BUF_UNIT bytes, and at least one. */
+ *  2^BUF_UNIT bytes, and at least one.
+ */
 static inline size_t
 buf_units (size_t bytes)
 {

@@ -1,4 +1,7 @@
-/** @file Unix-socket MCP chat client. Inference, tools and notes belong to AskAI. */
+/** @file cli.c
+ *
+ * Unix-socket MCP chat client. Inference, tools and notes belong to AskAI.
+ */
 #define _GNU_SOURCE
 
 #include <curl/curl.h>
@@ -344,7 +347,8 @@ cli_signal (struct cli_signals *signals,
 
 /** A wait may leave a stuck syscall to process exit, but must never unwind
  * storage that its worker still owns. Restore the terminal without freeing
- * any of those objects, then let the kernel reclaim the entire process. */
+ * any of those objects, then let the kernel reclaim the entire process.
+ */
 static void
 cli_force_exit (struct cli *cli)
 {

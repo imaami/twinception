@@ -1,5 +1,7 @@
-/** @file Tasks (design sections 1 and 4, S8): CPU work done a slice a step,
- *  each slice TASK_SLICE_NS at most, on the bulk list of a client loop.
+/** @file task.h
+ *
+ * Tasks (design sections 1 and 4, S8): CPU work done a slice a step,
+ * each slice TASK_SLICE_NS at most, on the bulk list of a client loop.
  *
  * Its owner, on a client loop, submits a task, which goes to the lighter of
  * two client loops, chosen at random: the one holding fewer tasks, each loop
@@ -63,7 +65,8 @@ struct task {
 };
 
 /** A client loop's tasks, as GET /metrics renders them: the loop writes, any
- *  thread reads (hist.h). */
+ *  thread reads (hist.h).
+ */
 struct task_metrics {
 	_Atomic uint64_t held;    /**< tasks it holds */
 	_Atomic uint64_t slices;  /**< slices it ran */
@@ -71,7 +74,8 @@ struct task_metrics {
 };
 
 /** How tasks ended, which any client loop adds to: submitted = done +
- *  cancelled + abandoned + those under way. */
+ *  cancelled + abandoned + those under way.
+ */
 struct task_pool_metrics {
 	_Atomic uint64_t submitted;  /**< owners count */
 	_Atomic uint64_t done;       /**< their slices done; runners count */
@@ -92,14 +96,16 @@ extern void
 task_pool_destroy (struct task_pool **p_pool);
 
 /** Take client loop @p loop's part, as it starts: tasks may come to it from
- *  then on. */
+ *  then on.
+ */
 extern void
 task_pool_attach (struct task_pool *pool,
                   struct loop      *loop);
 
 /** Let go of the tasks client loop @p loop holds, as it stops: they never run
  *  again, nor go back to their owners, who let go of them as they end the
- *  calls that wait for them; and have placers and movers pass it by. */
+ *  calls that wait for them; and have placers and movers pass it by.
+ */
 extern void
 task_pool_detach (struct task_pool *pool,
                   struct loop      *loop);
@@ -112,7 +118,8 @@ extern struct task_pool_metrics const *
 task_pool_metrics (struct task_pool const *pool);
 
 /** Initialize @p task, in storage just allocated, for its owner @p loop:
- *  slices in @p slice, back to @p back. */
+ *  slices in @p slice, back to @p back.
+ */
 extern void
 task_init (struct task      *task,
            struct task_pool *pool,
@@ -129,7 +136,8 @@ task_submit (struct task *task,
              struct loop *loop);
 
 /** The owner lets go of @p task: cancel it, if it is not back, and put the
- *  owner's reference. */
+ *  owner's reference.
+ */
 extern void
 task_drop (struct task *task);
 

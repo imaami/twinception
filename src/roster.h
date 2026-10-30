@@ -1,7 +1,9 @@
-/** @file The roster is the table of the tool calls that run on the client
- *  loops and have not become tasks.  A notifications/cancelled that comes
- *  to any loop reaches the call that it names through the roster
- *  (src/mcp.c).
+/** @file roster.h
+ *
+ * The roster is the table of the tool calls that run on the client
+ * loops and have not become tasks.  A notifications/cancelled that comes
+ * to any loop reaches the call that it names through the roster
+ * (src/mcp.c).
  *
  * A call's loop puts a record of the call into the roster when the call
  * starts.  The loop takes the record out when the call ends or becomes a
@@ -35,7 +37,8 @@ struct roster;
 
 /** The record of a call.  The members key, len, hash, loop and who do not
  *  change while the record is in the roster, so they are read without the
- *  roster's lock. */
+ *  roster's lock.
+ */
 struct roster_call {
 	/** The message that roster_cancel() posts to loop when a client asks
 	 *  to cancel the call.  Its function drops the reference that
@@ -56,12 +59,14 @@ struct roster_call {
 };
 
 /** Creates an empty roster.  Returns the roster.  On failure it returns
- *  nullptr and stores the error number in @p *e. */
+ *  nullptr and stores the error number in @p *e.
+ */
 extern struct roster *
 roster_create (int *e);
 
 /** Frees the roster and sets @p *p_roster to nullptr.  No loop may run, and
- *  every call must have left the roster. */
+ *  every call must have left the roster.
+ */
 extern void
 roster_destroy (struct roster **p_roster);
 
@@ -89,7 +94,8 @@ roster_enter (struct roster  *roster,
  *  reference to it, and sets @p *p_call to nullptr.  The loop of the call
  *  calls this function.  After it returns, roster_cancel() does not match
  *  the record.
- *  It does nothing if @p *p_call is nullptr. */
+ *  It does nothing if @p *p_call is nullptr.
+ */
 extern void
 roster_leave (struct roster       *roster,
               struct roster_call **p_call);
@@ -97,14 +103,16 @@ roster_leave (struct roster       *roster,
 /** Asks to cancel each call in the roster whose key is @p key.  @p hash is
  *  the seeded hash of @p key.  The loop of each such call gets the record's
  *  message once, also if clients ask more than once.  Any thread can call
- *  this function. */
+ *  this function.
+ */
 extern void
 roster_cancel (struct roster *roster,
                struct span    key,
                uint64_t       hash);
 
 /** Drops a reference to the record @p call.  The last drop frees the
- *  record.  It does nothing if @p call is nullptr. */
+ *  record.  It does nothing if @p call is nullptr.
+ */
 extern void
 roster_call_put (struct roster_call *call);
 

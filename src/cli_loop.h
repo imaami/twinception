@@ -1,4 +1,7 @@
-/** @file CLI reactor: explicit descriptor ownership and complete event turns. */
+/** @file cli_loop.h
+ *
+ * CLI reactor: explicit descriptor ownership and complete event turns.
+ */
 #ifndef TWINCEPTION_SRC_CLI_LOOP_H_
 #define TWINCEPTION_SRC_CLI_LOOP_H_
 
@@ -18,7 +21,8 @@ typedef void cli_loop_step_cb (struct cli_loop      *loop,
 typedef void cli_loop_turn_cb (struct cli_loop *loop);
 
 /** Embed this in the object owning a watched descriptor. The descriptor is
- * borrowed: unwatching does not close it. */
+ * borrowed: unwatching does not close it.
+ */
 struct cli_loop_ref {
 	struct list  hook;
 	cli_loop_cb *cb;
@@ -27,14 +31,16 @@ struct cli_loop_ref {
 };
 
 /** A bounded piece of owner-thread work, initialized with its fn set and
- * an empty (zeroed) hook. Requeueing runs it in a later turn. */
+ * an empty (zeroed) hook. Requeueing runs it in a later turn.
+ */
 struct cli_loop_step {
 	struct list       hook;
 	cli_loop_step_cb *fn;
 };
 
 /** One thread owns a loop. Descriptor callbacks must not enter Readline;
- * after_turn runs after dispatch and ready work. */
+ * after_turn runs after dispatch and ready work.
+ */
 struct cli_loop {
 	struct list          refs;
 	struct list          ready;
@@ -51,7 +57,8 @@ extern int
 cli_loop_init (struct cli_loop *loop);
 
 /** Unwatch borrowed descriptors. Call only outside a turn, after owners
- * have stopped using the loop. */
+ * have stopped using the loop.
+ */
 extern void
 cli_loop_fini (struct cli_loop *loop);
 
@@ -73,7 +80,8 @@ cli_loop_close (struct cli_loop     *loop,
 
 /** Read the 8-byte counter of the eventfd or timerfd of ref. Returns the
  * count, or 0 if there was none or the read failed; a failure other than
- * EAGAIN becomes the loop error unless one is already set. */
+ * EAGAIN becomes the loop error unless one is already set.
+ */
 extern uint64_t
 cli_loop_counter (struct cli_loop     *loop,
                   struct cli_loop_ref *ref);
@@ -87,7 +95,8 @@ cli_loop_unready (struct cli_loop_step *step);
 
 /** Wait for events, pending work, or an absolute CLOCK_MONOTONIC deadline
  * in nanoseconds. UINT64_MAX means no deadline. No periodic tick is used.
- * Calling from dispatch returns EBUSY; after_turn may start another turn. */
+ * Calling from dispatch returns EBUSY; after_turn may start another turn.
+ */
 extern int
 cli_loop_turn (struct cli_loop *loop,
                uint64_t         deadline);

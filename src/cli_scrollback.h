@@ -1,4 +1,7 @@
-/** @file Bounded transcript storage, independent of terminal and connections. */
+/** @file cli_scrollback.h
+ *
+ * Bounded transcript storage, independent of terminal and connections.
+ */
 #ifndef TWINCEPTION_SRC_CLI_SCROLLBACK_H_
 #define TWINCEPTION_SRC_CLI_SCROLLBACK_H_
 
@@ -52,7 +55,8 @@ cli_scrollback_bottom (struct cli_scrollback *scrollback);
  * pane's default style.
  * An optional caller-owned cache contains height initialized strings. Only
  * changed spans are emitted and the cache is updated; clear it after terminal
- * content is invalidated. Each emitted span establishes its own color. */
+ * content is invalidated. Each emitted span establishes its own color.
+ */
 extern int
 cli_scrollback_render_pane (struct cli_scrollback        *scrollback,
                             size_t                        left,
