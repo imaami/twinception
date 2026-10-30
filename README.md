@@ -1125,7 +1125,7 @@ Four more members define who may connect, and what each client may do:
     "reader": { "tools": ["man"] }
   },
   "identities": {
-    "alice": { "role": "admin", "unix-users": ["alice"],
+    "alice": { "role": "admin",
                "tokens": ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"] },
     "ci":    { "role": "user", "tokens": ["env:ASKAI_CI_TOKEN"] }
   },
@@ -1161,34 +1161,32 @@ Four more members define who may connect, and what each client may do:
   `jobs`, `wait` and `timer`, which are then the client's own tools (see
   Background jobs and timers for clients above).
 - An **identity** has a name, with the same rule as a role name, a `role`,
-  and `tokens` or `unix-users` or both, of which one must not be empty.  A
-  client proves an identity with a bearer token, `Authorization: Bearer
-  TOKEN`.  `"sha256:HEX"` is the SHA-256 digest of the token (`printf %s
-  TOKEN | sha256sum`), so the file does not contain the token.  `"env:NAME"`
-  reads the token from the environment of `askai`.  A reload reads the file
-  again, so it can change a `sha256:` token, but the environment of a running
-  `askai` does not change, so a new `env:` token needs a restart.  The same
-  token in two places, or the same user in two identities, stops `askai`.  A
-  client of a Unix socket is the identity whose `unix-users` (names or uids)
-  contains its user, the effective uid that the kernel reports
-  (`SO_PEERCRED`).  A token that the client sends counts first.
-- **`unix-groups`** gives the other users of a Unix socket the role of the
-  first of their groups it names.  Their groups are the effective gid
+  and `tokens`, which must not be empty.  A client proves an identity with a
+  bearer token, `Authorization: Bearer TOKEN`.  `"sha256:HEX"` is the SHA-256
+  digest of the token (`printf %s TOKEN | sha256sum`), so the file does not
+  contain the token.  `"env:NAME"` reads the token from the environment of
+  `askai`.  A reload reads the file again, so it can change a `sha256:`
+  token, but the environment of a running `askai` does not change, so a new
+  `env:` token needs a restart.  The same token in two places stops `askai`.
+  No Unix user is an identity.  A token that a client of a Unix socket sends
+  counts first.
+- **`unix-groups`** gives the users of a Unix socket the role of the first
+  of their groups it names.  Their groups are the effective gid
   (`SO_PEERCRED`) and the supplementary groups (`SO_PEERGROUPS`) that they
   had when they connected.  After `newgrp`, the effective gid can differ
   from the primary group.
 - **`anonymous`** names the role of a client that shows no token: `loopback`,
   one on loopback that names it as `localhost`, `127.0.0.1` or `[::1]`;
   `remote`, any other over TCP; `unix`, a user of a Unix socket that no
-  identity or group names.  `null`, as leaving it out, refuses them.
+  group names.  `null`, as leaving it out, refuses them.
 
 A token that no identity has is refused with 401, on the request's head before
 its body, as is a client without one that no role is named for.  An identity's
 calls are one principal of the scheduler's, whichever of its tokens they show,
-and each other user of a Unix socket is one; anonymous TCP clients are their
+and each user of a Unix socket is one; anonymous TCP clients are their
 sessions or addresses, as before.  The principal of an identity or of a Unix
-user is also the owner of its tasks, jobs and timers.  User and group names are
-looked up as the file is read, which with a directory service such as SSSD may
+user is also the owner of its tasks, jobs and timers.  Group names are looked
+up as the file is read, which with a directory service such as SSSD may
 wait on it.  Without those four members, `askai`'s own policy applies.  With
 `ASKAI_TOKEN` set, clients must send it and may do everything.  Else clients on
 loopback that name it so, or on a Unix socket, may do everything, and other
@@ -1299,9 +1297,8 @@ instance, and only one loop thread uses an instance.
 `askai` determines the user of a call in this order.  If the client sent a
 token and the policy has tokens, the user is the identity that has the token.
 Under `askai`'s own policy, all clients that send `ASKAI_TOKEN` are one user.
-Otherwise, if the client is connected over a Unix socket, the user is the
-identity that lists the client's Unix user in `unix-users`, or else the Unix
-user itself.  Every other client is anonymous.  A tool call that the other
+Otherwise, if the client is connected over a Unix socket, the user is its Unix
+user.  Every other client is anonymous.  A tool call that the other
 model makes in a turn of a user's `ask_ai` call is a call of that user.
 
 A user whose connections are on several loop threads has one instance on each

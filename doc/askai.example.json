@@ -139,12 +139,6 @@
     }
   },
   "identities": {
-    "operator": {
-      "role": "admin",
-      "unix-users": [
-        "root"
-      ]
-    },
     "ci": {
       "role": "user",
       "tokens": [
@@ -153,6 +147,7 @@
     }
   },
   "unix-groups": {
+    "root": "admin",
     "users": "user"
   },
   "anonymous": {

@@ -232,8 +232,9 @@ value `null`.  `askai` then ignores `ASKAI_TOKEN`, and logs a note about it.
 Under a policy from the file, these rules apply:
 
 - `askai` accepts a client only if the client sends the token of an
-  identity, or connects as a Unix user that an identity or `unix-groups`
-  names, or connects in a way for which `anonymous` names a role.  Other
+  identity, or connects to a Unix socket as a member of a group that
+  `unix-groups` names, or connects in a way for which `anonymous` names a
+  role.  Other
   clients get the status 401.
 - A client may list and call only the tools that its role lists in `tools`.
   A role without `tools` grants no tool.
@@ -1385,29 +1386,24 @@ optional.  There is no default.
 #### `identities`
 
 The value is an object.  Each member is an identity: its name, and an
-object with the members `role`, `tokens` and `unix-users`.  There is no
-default.
+object with the members `role` and `tokens`.  There is no default.
 
 - `role` is the name of a role.  It is required.
-- `tokens` is an array of tokens.  `"sha256:HEX"` is the SHA-256 digest of
-  the token in 64 hexadecimal digits, as `printf %s TOKEN | sha256sum`
-  prints it, so the file does not contain the token.  `"env:NAME"` names an
-  environment variable of `askai` that contains the token.  If the variable
-  is not set or is empty, `askai` stops with exit status 2.
-- `unix-users` is an array of Unix users: user names, or uids as strings of
-  digits or as integers.  `askai` looks up each user name when it reads the
-  file.  If no user has the name, `askai` stops with exit status 2 at
-  start.  A client on a Unix socket that sends no token is the identity
-  that lists its user.
+- `tokens` is an array of tokens, which must not be empty.  `"sha256:HEX"`
+  is the SHA-256 digest of the token in 64 hexadecimal digits, as `printf %s
+  TOKEN | sha256sum` prints it, so the file does not contain the token.
+  `"env:NAME"` names an environment variable of `askai` that contains the
+  token.  If the variable is not set or is empty, `askai` stops with exit
+  status 2.
 
-At least one of `tokens` and `unix-users` must not be empty.  A client
-authenticates as an identity with `Authorization: Bearer TOKEN`.  If the
+An identity has no other members.  No Unix user is an identity: a client
+on a Unix socket that sends no token gets its role from `unix-groups` or
+`anonymous`.  A client authenticates as an identity with `Authorization: Bearer TOKEN`.  If the
 policy has any token, the token that a client sends determines its
 identity, and an unknown token gets the status 401, also on a Unix socket.
 If the policy has no token, `askai` ignores the tokens of the clients.  If
-the identities list the same token twice, or the same Unix user twice, also
-within one identity, `askai` stops with exit status 2.  A user name and its
-uid are the same user.  All calls of an identity share one queue of the
+the identities list the same token twice, also within one identity, `askai`
+stops with exit status 2.  All calls of an identity share one queue of the
 scheduler.
 
 #### `unix-groups`
@@ -1420,8 +1416,8 @@ There is no default.  The entry of a group, with the names of its members,
 may take up to 64 MiB.  Give a very large directory group by its gid,
 which `askai` does not look up.
 
-A client on a Unix socket that sends no token and that no identity names
-gets the role of a group that the client is a member of.  If the client is
+A client on a Unix socket that sends no token gets the role of a group
+that the client is a member of.  If the client is
 a member of several groups of `unix-groups`, `askai` uses the role of the
 first of them in the file.
 
@@ -1443,8 +1439,7 @@ that sends a token when no identity has `tokens`.  The member `loopback`
 applies to a client over TCP from a loopback address that sends the `Host`
 `localhost`, `127.0.0.1` or `[::1]` with any port, or no `Host`.  The member
 `remote` applies to any other client over TCP.  The member `unix` applies
-to a user of a Unix socket that no identity and no group of `unix-groups`
-names.
+to a user of a Unix socket that no group of `unix-groups` names.
 
 If `remote` names a role with tools, `askai` logs a warning for each TCP
 listener that is not on loopback, because clients without a token may call
@@ -1511,9 +1506,8 @@ use:
 | `participant` | `"local-model"` | choose a distinct stable name for each instance |
 | `transcripts` | `"/var/lib/askai/transcripts.git"` | choose the separate transcript repository |
 | `directory` in `tools.notes` | `"/var/lib/askai/notes.git"` | set the shared session repository path whose parent exists |
-| `unix-users` of the identity `operator` | `["root"]` | set the Unix users of the clients of the role `admin` |
 | `tokens` of the identity `ci` | `"sha256:"` and 64 zeros | set the SHA-256 digest of a long random token; no token has the digest in the file |
-| `unix-groups` | `{ "users": "user" }` | set your groups, or remove the member |
+| `unix-groups` | `{ "root": "admin", "users": "user" }` | set your groups, or remove the member; the first group of a client that the member names gives the client its role |
 
 `test-fifo` and `test-task` are `false`, and `verbose` is `false`, so they
 change nothing.  `tls-allow-rsa` is `false` too.
@@ -1530,9 +1524,10 @@ The file has these effects on the tools and the policy:
 - The role `user` grants `ask_ai`, `man` and `notes`.  Its `upstream`
   allows the upstream to call `man`, `git`, `notes`, `godbolt_catalog` and
   `godbolt_targets`.
-- The identity `operator` is the Unix user `root` on the Unix socket, with
-  the role `admin`.  The identity `ci` has the role `user`.  The members of
-  the Unix group `users` get the role `user`.
+- The identity `ci` has the role `user`.  On the Unix socket, the members
+  of the Unix group `root` get the role `admin`, and the members of the
+  Unix group `users` get the role `user`.  A member of both groups gets
+  `admin`, because `root` comes first.
 - A client on loopback without a token gets the role `user`.  `askai`
   refuses a client without a token over TCP from another address, and
   another user of the Unix socket.
@@ -1602,9 +1597,9 @@ reminder to write notes at 32768 and at 65536 tokens, and a request to call
   },
   "identities": {
     "alice": { "role": "admin", "tokens": ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"] },
-    "ci": { "role": "user", "tokens": ["env:ASKAI_CI_TOKEN"] },
-    "bob": { "role": "user", "unix-users": ["bob"] }
+    "ci": { "role": "user", "tokens": ["env:ASKAI_CI_TOKEN"] }
   },
+  "unix-groups": { "developers": "user" },
   "anonymous": { "loopback": "guest", "remote": null, "unix": null }
 }
 ```
@@ -1632,8 +1627,9 @@ the policy have these effects.
 - The identity `ci` has the role `user`.  A client that sends the token in
   the environment variable `ASKAI_CI_TOKEN` of `askai` is `ci`.  `askai`
   does not start if the variable is not set.
-- The identity `bob` has the role `user`.  A client of the Unix user `bob`
-  on the Unix socket is `bob` if it sends no token.  The user must exist.
+- The member `unix-groups` gives the role `user` to a client on the Unix
+  socket that is a member of the Unix group `developers` and sends no
+  token.  The group must exist.
 - The member `anonymous` sets the role `guest` for a client on loopback
   without a token.  `askai` refuses a client without a token over TCP from
   another address, and another user of the Unix socket.

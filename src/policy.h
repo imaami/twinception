@@ -1,29 +1,36 @@
 /** @file policy.h
  *
- * Identities and roles (design section 9, S7): who a client is, by
- * the bearer token it shows, or by how it connects when it shows none, and
- * what the role it is given lets it see and do.
+ * Identities and roles (design section 9, S7).  The policy decides who a
+ * client is and what it may see and do.  A client is identified by the
+ * bearer token that it sends, or, if it sends none, by how it connects.
  *
- * The configuration file's "roles" name what each role may see and do: the
- * tools it may list and call, and whether it may read the metrics.  A
- * role's member "upstream" lists the tools that the upstream may call in
- * the turns of the role's ask calls.  Without it, the upstream may call
- * the tools that the role's clients may call.  Its
- * "identities" name who may connect, each with a role and the tokens that
- * prove it, each a SHA-256 digest ("sha256:HEX") or an environment variable
- * that holds the token ("env:NAME"), or the Unix users ("unix-users", names
- * or uids) it is when it connects over a Unix socket.  Its "unix-groups"
- * give the other users of a Unix socket the role of the first of their
- * groups it names; its "anonymous" names the role, if any, of a client that
- * shows no token, by how it connects.  A token no identity has is refused,
- * as is a client without one that no role is named for; a policy that knows
- * no tokens takes every client as one that shows none.  A Unix socket's
- * user is the principal of its calls but for an identity's.  Users and
- * groups are looked up as the policy is made, which may block.  A file
- * without those sections keeps askai's own policy: with ASKAI_TOKEN set,
- * clients must show it, and may do everything; else a client on loopback
- * that names a loopback host, or over a Unix socket, may do everything, and
- * any other may call the tools.
+ * The member "roles" of the configuration file names what each role may
+ * see and do: the tools that its clients may list and call, and whether
+ * they may read the metrics.  The member "upstream" of a role lists the
+ * tools that the upstream may call in the turns of the role's ask calls.
+ * Without it, the upstream may call the tools that the role's clients may
+ * call.
+ *
+ * The member "identities" names the clients that prove who they are with
+ * a token.  Each identity has a role and a list of tokens.  A token is
+ * given as its SHA-256 digest ("sha256:HEX") or as the name of an
+ * environment variable that holds it ("env:NAME").
+ *
+ * The member "unix-groups" gives a client on a Unix socket the role of the
+ * first of its groups that the member names.  The member "anonymous" names
+ * the role, if any, of a client that sends no token, by how it connects.
+ *
+ * A token that no identity has is refused.  A client without a token is
+ * refused if no role is named for it.  A policy without tokens treats
+ * every client as one that sends no token.  The principal of the calls of
+ * a client on a Unix socket is derived from its uid, unless it sends the
+ * token of an identity.  Group names are looked up through NSS when the
+ * policy is made, which may block.
+ *
+ * A file without these members keeps askai's own policy.  With ASKAI_TOKEN
+ * set, clients must send it, and may do everything.  Without it, a client
+ * on loopback that names a loopback host, or a client on a Unix socket, may
+ * do everything, and any other client may call the tools.
  */
 #ifndef TWINCEPTION_SRC_POLICY_H_
 #define TWINCEPTION_SRC_POLICY_H_

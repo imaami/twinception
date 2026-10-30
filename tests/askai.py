@@ -5655,9 +5655,9 @@ def uds_rpc(path, method="tools/list", params=None, headers=None):
 
 def check_unix(binary, up):
     """A Unix socket beside TCP (--listen unix:PATH): its clients are who the
-    kernel says (SO_PEERCRED, SO_PEERGROUPS), an identity's Unix user or
-    else a user of a group the policy names, a token still counting first,
-    and askai's own policy lets them do everything.  A socket file left by a
+    kernel says (SO_PEERCRED, SO_PEERGROUPS), a user of a group the policy
+    names, a token still counting first, and askai's own policy lets them do
+    everything.  No Unix user is an identity.  A socket file left by a
     server gone is taken over, one a server listens on is not, and askai
     removes its own as it stops."""
     me = pwd.getpwuid(os.getuid()).pw_name
@@ -5719,10 +5719,7 @@ def check_unix(binary, up):
         assert not os.path.exists(sock)
 
         for policy, tools in (
-                ({"identities": {"me": {"role": "a", "unix-users": [me]}},
-                  "unix-groups": {group: "g"}}, ["ask_ai", "man"]),
-                ({"identities": {"me": {"role": "a", "unix-users": [os.getuid()]}}},
-                 ["ask_ai", "man"]),
+                ({"unix-groups": {group: "a"}}, ["ask_ai", "man"]),
                 ({"unix-groups": {group: "g", "root": "a"}}, ["man"]),
                 ({"unix-groups": {str(os.getgid()): "g"}}, ["man"]),
                 ({"anonymous": {"unix": "t"}}, ["ask_ai"]),
@@ -5730,8 +5727,8 @@ def check_unix(binary, up):
             write(roles=roles, **policy)
             with Askai(binary, "-c", path, "-l", f"unix:{sock}") as ai:
                 assert names(uds_rpc(sock)) == tools, (policy, uds_rpc(sock))
-        write(roles=roles, identities={"tok": {"role": "t", "tokens": [digest("x")]},
-                                       "me": {"role": "g", "unix-users": [me]}})
+        write(roles=roles, identities={"tok": {"role": "t", "tokens": [digest("x")]}},
+              **{"unix-groups": {group: "g"}})
         with Askai(binary, "-c", path, "-l", f"unix:{sock}") as ai:
             assert names(uds_rpc(sock)) == ["man"]
             assert names(uds_rpc(sock, headers={"Authorization": "Bearer x"})) == \
@@ -5740,11 +5737,9 @@ def check_unix(binary, up):
             # The other listener serves as before.
             assert ai.rpc("tools/list")[0] == 401
 
-        # The log names the client of a call over the socket: its identity,
-        # the role of its group, or its kind and role if anonymous.
+        # The log names the client of a call over the socket: the role of its
+        # group, or its kind and role if anonymous.
         for policy, who, end in (
-                ({"identities": {"me": {"role": "a", "unix-users": [me]}}}, "identity me",
-                 "answered "),
                 ({"unix-groups": {group: "g"}}, "role g",
                  "refused: the role does not grant it$"),
                 ({"anonymous": {"unix": "t"}}, r"anonymous unix \(role t\)", "answered ")):
@@ -5768,17 +5763,13 @@ def check_unix(binary, up):
         with Askai(binary, "-c", path, "-l", f"unix:{sock}", preload=peers) as ai:
             ai.wait_list("Unix groups:", ["peers-big  role g"])
         for policy, message in (
-                ({"identities": {"e": {"role": "a",
-                                       "unix-users": ["no_such_user_xyz"]}}},
-                 'identity e: no user "no_such_user_xyz"'),
+                ({"identities": {"e": {"role": "a", "unix-users": [me]}}},
+                 "identity e: unknown member unix-users"),
+                ({"identities": {"e": {"role": "a", "tokens": "x"}}},
+                 "identity e: tokens must be an array"),
                 ({"unix-groups": {"no_such_group_xyz": "a"}},
                  "unix-groups: no group no_such_group_xyz"),
                 ({"unix-groups": {group: "z"}}, f'unix-groups: {group}: no role "z"'),
-                ({"identities": {"e": {"role": "a", "unix-users": [me]},
-                                 "f": {"role": "g", "unix-users": [os.getuid()]}}},
-                 f"two identities are Unix user {os.getuid()}"),
-                ({"identities": {"e": {"role": "a", "unix-users": me}}},
-                 "identity e: tokens and unix-users are arrays"),
                 ({"unix-groups": {"peers-huge": "a"}},
                  "unix-groups: the entry of group peers-huge is larger than 64 MiB; "
                  "give its gid instead"),
@@ -5795,8 +5786,9 @@ def check_unix(binary, up):
         run = subprocess.run([binary, "-u", up.url(), "-l", "unix:" + "x" * 200],
                              capture_output=True, text=True, timeout=5)
         assert run.returncode == 2 and "invalid --listen: unix:" in run.stderr, run
-    print("unix sockets: SO_PEERCRED users and groups, tokens first, askai's own "
-          "policy, large and failed group lookups, stale and busy socket files: PASS")
+    print("unix sockets: SO_PEERCRED users and groups, no unix-users, tokens first, "
+          "askai's own policy, large and failed group lookups, stale and busy socket "
+          "files: PASS")
 
 
 def tls_files(d, name, kind="ec"):

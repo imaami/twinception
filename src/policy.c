@@ -6,7 +6,6 @@
 #include <grp.h>
 #include <json-c/json.h>
 #include <openssl/sha.h>
-#include <pwd.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -53,22 +52,14 @@ struct policy_token {
 	uint64_t         role;
 };
 
-/* A Unix user, by uid first, and the identity it is. */
-struct policy_uid {
-	uint32_t         uid;
-	uint32_t         role;
-	uint64_t         principal;
-	struct tool_text who;        /* "identity NAME", for the log */
-};
-
 /* A Unix group, by gid first, and its role. */
 struct policy_gid {
 	uint32_t gid;
 	uint32_t role;
 };
 
-/* One block has a policy and, after it, its tokens, users, roles, groups
- * and the names of its clients for the log, in that order, so that each is
+/* One block has a policy and, after it, its tokens, roles, groups and the
+ * names of its clients for the log, in that order, so that each is
  * aligned.
  */
 struct policy {
@@ -76,13 +67,11 @@ struct policy {
 	                                                  roles may grant */
 	_Atomic uint64_t     refs;
 	struct policy_token *tokens;                   /* by digest */
-	struct policy_uid   *users;                    /* by uid */
 	struct policy_role  *roles;
 	struct policy_gid   *groups;                   /* in the configuration's
 	                                                  order, which the first
 	                                                  that a user is in wins */
 	size_t               n_tokens;
-	size_t               n_users;
 	size_t               n_roles;
 	size_t               n_groups;
 	int64_t              anonymous[POLICY_KINDS];  /* a role; -1: none */
@@ -94,8 +83,7 @@ struct policy {
 };
 
 static_assert(alignof (struct policy_token) <= alignof (struct policy) &&
-              alignof (struct policy_uid) <= alignof (struct policy_token) &&
-              alignof (struct policy_role) <= alignof (struct policy_uid) &&
+              alignof (struct policy_role) <= alignof (struct policy_token) &&
               alignof (struct policy_gid) <= alignof (struct policy_role));
 
 /* What policy_create() works from, and where it says what is wrong. */
@@ -106,8 +94,8 @@ struct policy_build {
 	struct json_object *roles;    /* the file's, or nullptr */
 	char const *const  *tools;
 	char               *why;
-	char               *buf;      /* for user and group lookups, kept while
-	                                 the policy is made */
+	char               *buf;      /* for group lookups, kept while the
+	                                 policy is made */
 	char               *names;    /* where the next name for the log goes,
 	                                 in the policy's block */
 	size_t              n_tools;
@@ -127,23 +115,6 @@ policy_build_fail (struct policy_build *b,
 	util_vformat(b->why, b->len, fmt, ap);
 	va_end(ap);
 	return EINVAL;
-}
-
-/* Say that @p what, such as "identity NAME: no user", names no user
- * @p name, as @p e says, ENOENT for none at all; returns EINVAL, or @p e if
- * that is ENOMEM.
- */
-static int
-policy_build_none (struct policy_build *b,
-                   char const          *what,
-                   char const          *name,
-                   int                  e)
-{
-	if (e == ENOMEM)
-		return e;
-	if (e == ENOENT)
-		return policy_build_fail(b, "%s %s", what, name);
-	return policy_build_fail(b, "%s %s: %s", what, name, strerror(e));
 }
 
 /* The length of @p name, a role's or an identity's; 0 if it is not a
@@ -184,7 +155,7 @@ policy_build_who (struct policy_build    *b,
 	return (struct tool_text){ who, (size_t)(b->names - who) };
 }
 
-/* The principal of the calls of Unix user @p uid that no identity is. */
+/* The principal of the calls of Unix user @p uid. */
 static uint64_t
 policy_principal_uid (uint32_t uid)
 {
@@ -264,60 +235,18 @@ policy_number (char const *name,
 	return true;
 }
 
-/* Bytes of the buffer for one user or group entry from NSS, at most.  A
- * group entry lists the names of its members, so the entry of a large
- * directory group can take megabytes.
+/* Bytes of the buffer for one group entry from NSS, at most.  A group
+ * entry lists the names of its members, so the entry of a large directory
+ * group can take megabytes.
  */
 static constexpr size_t POLICY_ENTRY_MAX = 64 << 20;
 
-/* Double the size of the lookup buffer, starting from 1 KiB.  Returns 0,
- * ENOMEM, or ERANGE if the size would exceed POLICY_ENTRY_MAX.
- */
-static int
-policy_build_grow (struct policy_build *b)
-{
-	size_t size = b->size ? 2 * b->size : 1 << 10;
-	if (size > POLICY_ENTRY_MAX)
-		return ERANGE;
-	char *buf = realloc(b->buf, size);
-	if (!buf)
-		return ENOMEM;
-	b->buf = buf;
-	b->size = size;
-	return 0;
-}
-
-/* Unix user @p name, a number itself or a name the system knows, in
- * @p *uid; ENOENT if it knows none, ENOMEM, or why the lookup failed.
- */
-static int
-policy_build_uid (struct policy_build *b,
-                  char const          *name,
-                  uint32_t            *uid)
-{
-	if (policy_number(name, uid))
-		return 0;
-	int e = b->buf ? 0 : policy_build_grow(b);
-	for (; !e; e = policy_build_grow(b)) {
-		struct passwd pw;
-		struct passwd *r = nullptr;
-		int found = getpwnam_r(name, &pw, b->buf, b->size, &r);
-		if (found == ERANGE)
-			continue;
-		if (found)
-			return found;
-		if (!r)
-			return ENOENT;
-		*uid = (uint32_t)r->pw_uid;
-		return 0;
-	}
-	return e;
-}
-
 /* Look up the Unix group @p name of unix-groups, a gid in decimal or a
- * group name that NSS resolves, and store its gid in @p *gid.  The message
- * says "no group" only if the lookup succeeded and found no such group.
- * Returns 0, ENOMEM, or EINVAL with the reason in b->why.
+ * group name that NSS resolves, and store its gid in @p *gid.  The lookup
+ * buffer starts at 1 KiB and doubles while getgrnam_r() reports ERANGE, up
+ * to POLICY_ENTRY_MAX bytes.  The message says "no group" only if the
+ * lookup succeeded and found no such group.  Returns 0, ENOMEM, or EINVAL
+ * with the reason in b->why.
  */
 static int
 policy_build_gid (struct policy_build *b,
@@ -330,13 +259,16 @@ policy_build_gid (struct policy_build *b,
 	struct group *r = nullptr;
 	int e = 0;
 	while (!b->buf || (e = getgrnam_r(name, &gr, b->buf, b->size, &r)) == ERANGE) {
-		e = policy_build_grow(b);
-		if (e == ERANGE)
+		size_t size = b->size ? 2 * b->size : 1 << 10;
+		if (size > POLICY_ENTRY_MAX)
 			return policy_build_fail(b, "unix-groups: the entry of group %s is "
 			                         "larger than %zu MiB; give its gid instead",
 			                         name, POLICY_ENTRY_MAX >> 20);
-		if (e)
-			return e;
+		char *buf = realloc(b->buf, size);
+		if (!buf)
+			return ENOMEM;
+		b->buf = buf;
+		b->size = size;
 	}
 	if (e == ENOMEM)
 		return e;
@@ -527,25 +459,7 @@ policy_build_roles (struct policy_build *b)
 	return 0;
 }
 
-/* Unix user @p user, a number or a name, in @p *uid. */
-static int
-policy_build_user (struct policy_build *b,
-                   struct json_object  *user,
-                   uint32_t            *uid)
-{
-	if (json_object_is_type(user, json_type_string))
-		return policy_build_uid(b, json_object_get_string(user), uid);
-	int64_t n = json_object_is_type(user, json_type_int) ? json_object_get_int64(user)
-	                                                     : -1;
-	if (n < 0 || n >= UINT32_MAX)
-		return EINVAL;
-	*uid = (uint32_t)n;
-	return 0;
-}
-
-/* The members of identity @p who, @p id: its role, its tokens and its Unix
- * users.
- */
+/* The members of identity @p who, @p id: its role and its tokens. */
 static int
 policy_build_identity (struct policy_build *b,
                        char const          *who,
@@ -558,15 +472,12 @@ policy_build_identity (struct policy_build *b,
 		return policy_build_fail(b, "identity %s must be an object", who);
 	struct json_object *role = nullptr;
 	struct json_object *tokens = nullptr;
-	struct json_object *users = nullptr;
 	struct json_object_iter m;
 	json_object_object_foreachC(id, m) {
 		if (!strcmp(m.key, "role"))
 			role = m.val;
 		else if (!strcmp(m.key, "tokens"))
 			tokens = m.val;
-		else if (!strcmp(m.key, "unix-users"))
-			users = m.val;
 		else
 			return policy_build_fail(b, "identity %s: unknown member %s", who, m.key);
 	}
@@ -574,32 +485,14 @@ policy_build_identity (struct policy_build *b,
 	if (r < 0)
 		return policy_build_fail(b, "identity %s: no role %s", who,
 		                         role ? json_object_to_json_string(role) : "named");
-	if ((tokens && !json_object_is_type(tokens, json_type_array)) ||
-	    (users && !json_object_is_type(users, json_type_array)))
-		return policy_build_fail(b, "identity %s: tokens and unix-users are arrays",
-		                         who);
+	if (tokens && !json_object_is_type(tokens, json_type_array))
+		return policy_build_fail(b, "identity %s: tokens must be an array", who);
 	size_t n = tokens ? json_object_array_length(tokens) : 0;
-	size_t k = users ? json_object_array_length(users) : 0;
-	if (!n && !k)
-		return policy_build_fail(b, "identity %s needs tokens or unix-users", who);
+	if (!n)
+		return policy_build_fail(b, "identity %s needs tokens", who);
 	uint64_t principal = policy_principal(who, len);
 	struct tool_text name = policy_build_who(b, 2, (struct tool_text const[]){
 		TOOL_TEXT("identity "), { who, len } });
-	char what[POLICY_NAME + 32];
-	util_format(what, sizeof what, "identity %s: no user", who);
-	for (size_t i = 0; i < k; ++i) {
-		struct json_object *user = json_object_array_get_idx(users, i);
-		uint32_t uid = 0;
-		int e = policy_build_user(b, user, &uid);
-		if (e)
-			return policy_build_none(b, what, json_object_to_json_string(user), e);
-		b->p->users[b->p->n_users++] = (struct policy_uid){
-			.uid = uid,
-			.role = (uint32_t)r,
-			.principal = principal,
-			.who = name
-		};
-	}
 	for (size_t i = 0; i < n; ++i) {
 		struct json_object *spec = json_object_array_get_idx(tokens, i);
 		unsigned char digest[DIGEST];
@@ -634,12 +527,6 @@ policy_build_identities (struct policy_build *b,
 	for (size_t i = 1; i < p->n_tokens; ++i)
 		if (!policy_by_digest(&p->tokens[i - 1], &p->tokens[i]))
 			return policy_build_fail(b, "two tokens of the identities are the same");
-	if (p->n_users)
-		qsort(p->users, p->n_users, sizeof *p->users, policy_by_id);
-	for (size_t i = 1; i < p->n_users; ++i)
-		if (p->users[i - 1].uid == p->users[i].uid)
-			return policy_build_fail(b, "two identities are Unix user %u",
-			                         p->users[i].uid);
 	return 0;
 }
 
@@ -817,7 +704,6 @@ policy_create (struct json_object *file,
 
 	/* Room for as many of each as the file names, or askai's own policy. */
 	size_t n_tokens = token != nullptr;
-	size_t n_users = 0;
 	size_t n_roles = mine ? policy_members(b.roles) : 2;
 	size_t n_groups = policy_members(groups);
 	/* Room for the longest name of each role, identity and kind of
@@ -828,12 +714,9 @@ policy_create (struct json_object *file,
 	                      : 0;
 	struct json_object_iter it;
 	if (policy_members(ids))
-		json_object_object_foreachC(ids, it) {
+		json_object_object_foreachC(ids, it)
 			n_tokens += policy_elements(it.val, "tokens");
-			n_users += policy_elements(it.val, "unix-users");
-		}
 	struct policy *p = calloc(1, sizeof *p + n_tokens * sizeof *p->tokens +
-	                             n_users * sizeof *p->users +
 	                             n_roles * sizeof *p->roles +
 	                             n_groups * sizeof *p->groups + n_names);
 	if (!p) {
@@ -842,8 +725,7 @@ policy_create (struct json_object *file,
 	}
 	atomic_init(&p->refs, 1);
 	p->tokens = (struct policy_token *)(p + 1);
-	p->users = (struct policy_uid *)(p->tokens + n_tokens);
-	p->roles = (struct policy_role *)(p->users + n_users);
+	p->roles = (struct policy_role *)(p->tokens + n_tokens);
 	p->groups = (struct policy_gid *)(p->roles + n_roles);
 	p->n_roles = n_roles;
 	b.names = (char *)(p->groups + n_groups);
@@ -1099,20 +981,14 @@ policy_grant_token (struct policy const *policy,
 	return t && policy_grant_role(policy, (int64_t)t->role, t->principal, t->who, g);
 }
 
-/* Grant Unix user @p peer, who shows no token, the role of the identity it
- * is, or else of its first group the policy names, or else the anonymous
- * one over a Unix socket.
+/* Grant Unix user @p peer, who shows no token, the role of its first group
+ * that the policy names, or else the anonymous role over a Unix socket.
  */
 static bool
 policy_grant_unix (struct policy const      *policy,
                    struct policy_peer const *peer,
                    struct policy_grant      *g)
 {
-	struct policy_uid const *u = !policy->n_users ? nullptr
-	                           : bsearch(&peer->uid, policy->users, policy->n_users,
-	                                     sizeof *policy->users, policy_by_id);
-	if (u)
-		return policy_grant_role(policy, u->role, u->principal, u->who, g);
 	int64_t role = policy->anonymous[POLICY_UNIX];
 	struct tool_text who = policy->strangers[POLICY_UNIX];
 	for (size_t i = 0; i < policy->n_groups; ++i) {
