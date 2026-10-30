@@ -217,6 +217,18 @@ util_hash (uint64_t    seed,
 	return h ^ h >> 33;
 }
 
+/** Returns a seed for util_hash().  The seed is 8 random bytes from the
+ *  kernel, or the wall clock if the kernel has no random bytes yet.
+ */
+static inline uint64_t
+util_seed (void)
+{
+	uint64_t seed;
+	if (getrandom(&seed, sizeof seed, GRND_NONBLOCK) == (ssize_t)sizeof seed)
+		return seed;
+	return util_realtime();
+}
+
 /** The @p a_len bytes at @p a, then the string @p b, in memory of their
  *  own; nullptr if out of memory.
  */

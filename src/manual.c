@@ -7,7 +7,6 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 
@@ -752,9 +751,7 @@ manual_create (uint32_t  recheck,
 	m->buckets = buckets;
 	m->mask = BUCKETS - 1;
 	m->entries = 0;
-	/* Without random bytes, the clock seeds the hash. */
-	m->seed = loop_clock();
-	(void)getrandom(&m->seed, sizeof m->seed, GRND_NONBLOCK);
+	m->seed = util_seed();
 	m->recheck = recheck * NS;
 	struct manual_metrics *mm = &m->metrics;
 	atomic_init(&mm->pages, 0);

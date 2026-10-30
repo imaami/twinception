@@ -80,7 +80,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/random.h>
 #include <time.h>
 
 #include "ai.h"
@@ -10441,10 +10440,7 @@ mcp_static_create (struct config const *cfg,
 		};
 	}
 	st->lending = mcp_lending(cfg);
-	if (journal)
-		st->seed = journal_seed(journal);
-	else
-		(void)getrandom(&st->seed, sizeof st->seed, GRND_NONBLOCK);
+	st->seed = journal ? journal_seed(journal) : util_seed();
 	if (lends && (*e = mcp_static_uploads(st))) {
 		mcp_static_destroy(&st);
 		return nullptr;

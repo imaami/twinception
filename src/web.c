@@ -39,7 +39,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/random.h>
 
 #include "http.h"
 #include "list.h"
@@ -781,9 +780,7 @@ web_create (int *e)
 	web->loop = nullptr;
 	web->bytes = 0;
 	web->n_runs = 0;
-	/* Without random bytes, the clock seeds the hash. */
-	web->seed = loop_clock();
-	(void)getrandom(&web->seed, sizeof web->seed, GRND_NONBLOCK);
+	web->seed = util_seed();
 	return web;
 }
 

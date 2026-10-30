@@ -81,7 +81,6 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/epoll.h>
-#include <sys/random.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -328,8 +327,8 @@ struct httpd_home {
 	size_t                  n_listeners;
 	size_t                  turn;       /* the listener to accept from next */
 	uint64_t                rng;        /* xorshift64 */
-	uint64_t                seed;       /* of the hash of the clients, which
-	                                       no client knows */
+	uint64_t                seed;       /* the seed of util_hash() for the
+	                                       table of clients */
 	size_t                  conns;      /* placed, and not given back */
 	size_t                  fd_budget;  /* for conns + calls, from
 	                                       RLIMIT_NOFILE */
@@ -991,8 +990,8 @@ httpd_conn_park (struct httpd_conn *conn,
 }
 
 static size_t
-httpd_frag_len (struct cstr_view const *f,
-                size_t                  n)
+httpd_views_len (struct cstr_view const *f,
+                 size_t                  n)
 {
 	size_t len = 0;
 	for (size_t i = 0; i < n; ++i)
@@ -1070,7 +1069,7 @@ httpd_conn_put (struct httpd_conn      *conn,
 {
 	if (conn->doomed)
 		return EPIPE;
-	size_t total = httpd_frag_len(f, n);
+	size_t total = httpd_views_len(f, n);
 	if (!total)
 		return 0;
 	struct span s;
@@ -1169,7 +1168,7 @@ httpd_conn_respond (struct httpd_conn      *conn,
 		head[n++] = CSTR_VIEW("Content-Type: application/json\r\n");
 	for (size_t i = 0; i < n_extra; ++i)
 		head[n++] = extra[i];
-	if (!httpd_conn_head(conn, status, head, n, httpd_frag_len(body, n_body)))
+	if (!httpd_conn_head(conn, status, head, n, httpd_views_len(body, n_body)))
 		(void)httpd_conn_put(conn, body, n_body);
 	conn->done = true;
 }
@@ -3141,15 +3140,13 @@ httpd_home_create (struct loop            *loop,
 		.calls = calls,
 		.ctx = cfg->tls ? tls_ctx_get(cfg->tls) : nullptr,
 		.rng = loop_clock() | 1,
-		.seed = loop_clock(),
+		.seed = util_seed(),
 		.cap = cfg->limits.clients,
 		.spare_fd = -1
 	};
 	struct policy_grant g;
 	home->anyone = policy_grant(cfg->policy, nullptr, 0, POLICY_REMOTE, nullptr,
 	                            &g) && g.tools;
-	/* Without random bytes, the clock seeds the hash. */
-	(void)getrandom(&home->seed, sizeof home->seed, GRND_NONBLOCK);
 	list_init(&home->spare.list);
 	list_init(&home->gone.list);
 	httpd_home_budget(home);
