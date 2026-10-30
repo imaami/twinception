@@ -129,7 +129,7 @@ policy_build_fail (struct policy_build *b,
 	return EINVAL;
 }
 
-/* Say that @p what, such as "unix-groups: no group", names no user or group
+/* Say that @p what, such as "identity NAME: no user", names no user
  * @p name, as @p e says, ENOENT for none at all; returns EINVAL, or @p e if
  * that is ENOMEM.
  */
@@ -264,12 +264,20 @@ policy_number (char const *name,
 	return true;
 }
 
-/* Double the lookups' buffer, up to 1 MiB: ERANGE past that, or ENOMEM. */
+/* Bytes of the buffer for one user or group entry from NSS, at most.  A
+ * group entry lists the names of its members, so the entry of a large
+ * directory group can take megabytes.
+ */
+static constexpr size_t POLICY_ENTRY_MAX = 64 << 20;
+
+/* Double the size of the lookup buffer, starting from 1 KiB.  Returns 0,
+ * ENOMEM, or ERANGE if the size would exceed POLICY_ENTRY_MAX.
+ */
 static int
 policy_build_grow (struct policy_build *b)
 {
 	size_t size = b->size ? 2 * b->size : 1 << 10;
-	if (size > 1 << 20)
+	if (size > POLICY_ENTRY_MAX)
 		return ERANGE;
 	char *buf = realloc(b->buf, size);
 	if (!buf)
@@ -306,7 +314,11 @@ policy_build_uid (struct policy_build *b,
 	return e;
 }
 
-/* Unix group @p name, as policy_build_uid() finds a user. */
+/* Look up the Unix group @p name of unix-groups, a gid in decimal or a
+ * group name that NSS resolves, and store its gid in @p *gid.  The message
+ * says "no group" only if the lookup succeeded and found no such group.
+ * Returns 0, ENOMEM, or EINVAL with the reason in b->why.
+ */
 static int
 policy_build_gid (struct policy_build *b,
                   char const          *name,
@@ -314,21 +326,27 @@ policy_build_gid (struct policy_build *b,
 {
 	if (policy_number(name, gid))
 		return 0;
-	int e = b->buf ? 0 : policy_build_grow(b);
-	for (; !e; e = policy_build_grow(b)) {
-		struct group gr;
-		struct group *r = nullptr;
-		int found = getgrnam_r(name, &gr, b->buf, b->size, &r);
-		if (found == ERANGE)
-			continue;
-		if (found)
-			return found;
-		if (!r)
-			return ENOENT;
-		*gid = (uint32_t)r->gr_gid;
-		return 0;
+	struct group gr;
+	struct group *r = nullptr;
+	int e = 0;
+	while (!b->buf || (e = getgrnam_r(name, &gr, b->buf, b->size, &r)) == ERANGE) {
+		e = policy_build_grow(b);
+		if (e == ERANGE)
+			return policy_build_fail(b, "unix-groups: the entry of group %s is "
+			                         "larger than %zu MiB; give its gid instead",
+			                         name, POLICY_ENTRY_MAX >> 20);
+		if (e)
+			return e;
 	}
-	return e;
+	if (e == ENOMEM)
+		return e;
+	if (e)
+		return policy_build_fail(b, "unix-groups: cannot look up group %s: %s",
+		                         name, strerror(e));
+	if (!r)
+		return policy_build_fail(b, "unix-groups: no group %s", name);
+	*gid = (uint32_t)r->gr_gid;
+	return 0;
 }
 
 /* Read @p spec, "sha256:HEX" or "env:NAME", into @p digest. */
@@ -642,7 +660,7 @@ policy_build_groups (struct policy_build *b,
 			                         json_object_to_json_string(it.val));
 		int e = policy_build_gid(b, it.key, &g->gid);
 		if (e)
-			return policy_build_none(b, "unix-groups: no group", it.key, e);
+			return e;
 		g++->role = (uint32_t)r;
 		++b->p->n_groups;
 	}

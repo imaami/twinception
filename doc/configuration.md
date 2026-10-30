@@ -1415,7 +1415,10 @@ scheduler.
 The value is an object.  Each member maps a Unix group, by its name or by
 its gid as a string of digits, to the name of a role.  `null` is refused.
 `askai` looks up each group name when it reads the file.  If no group has
-the name, `askai` stops with exit status 2 at start.  There is no default.
+the name, or the lookup fails, `askai` stops with exit status 2 at start.
+There is no default.  The entry of a group, with the names of its members,
+may take up to 64 MiB.  Give a very large directory group by its gid,
+which `askai` does not look up.
 
 A client on a Unix socket that sends no token and that no identity names
 gets the role of a group that the client is a member of.  If the client is

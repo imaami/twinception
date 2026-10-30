@@ -4392,58 +4392,77 @@ def check_turn_order(binary, up):
     print("turn order: replies are not held back by a flood of requests: PASS")
 
 
+SHIMS = []
+
+
+def shim(name):
+    """The LD_PRELOAD library built from tests/NAME.c, such as epfail or
+    peers.  It is built once, into a directory removed as the tests end."""
+    if not SHIMS:
+        SHIMS.append(tempfile.TemporaryDirectory(prefix="askai-shims-"))
+    library = os.path.join(SHIMS[0].name, name + ".so")
+    if not os.path.exists(library):
+        source = os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".c")
+        build = subprocess.run([os.environ.get("CC", "cc"), "-std=gnu23", "-shared",
+                                "-fPIC", "-o", library, source], capture_output=True,
+                               text=True, check=False)
+        assert build.returncode == 0, build.stderr
+    return library
+
+
+def preloaded(library, **variables):
+    """The environment for an askai that subprocess.run() starts, with
+    @p library preloaded, @p variables set and no API key."""
+    env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
+    env.update(variables, LD_PRELOAD=library, ASAN_OPTIONS=":".join(filter(
+        None, (env.get("ASAN_OPTIONS"), "verify_asan_link_order=0"))))
+    return env
+
+
 def check_isolation(binary, up):
     """A socket that cannot be watched fails its own tool call, not askai."""
-    source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "epfail.c")
-    with tempfile.TemporaryDirectory() as tmp:
-        shim = os.path.join(tmp, "epfail.so")
-        build = subprocess.run([os.environ.get("CC", "cc"), "-std=gnu23", "-shared",
-                                "-fPIC", "-o", shim, source], capture_output=True, text=True,
-                               check=False)
-        assert build.returncode == 0, build.stderr
-        with Askai(binary, "-u", up.url(), preload=shim) as ai:
-            for _ in range(3):
-                result = ai.ask()
-                assert result["isError"] and "cannot watch the socket" in \
-                    text_of(result), result
+    epfail = shim("epfail")
+    with Askai(binary, "-u", up.url(), preload=epfail) as ai:
+        for _ in range(3):
+            result = ai.ask()
+            assert result["isError"] and "cannot watch the socket" in \
+                text_of(result), result
+        assert ai.rpc("ping")[0] == 200
+
+    # A connection's own error from accept() does not hold up the next.
+    with Askai(binary, "-u", up.url(), preload=epfail,
+               env={"EPFAIL_ACCEPT": "1"}) as ai:
+        for _ in range(4):
+            start = time.monotonic()
             assert ai.rpc("ping")[0] == 200
+            assert time.monotonic() - start < 1, "accepting paused"
+        assert not any("accept" in line for line in ai.log), ai.log
 
-        # A connection's own error from accept() does not hold up the next.
-        with Askai(binary, "-u", up.url(), preload=shim,
-                   env={"EPFAIL_ACCEPT": "1"}) as ai:
-            for _ in range(4):
-                start = time.monotonic()
-                assert ai.rpc("ping")[0] == 200
-                assert time.monotonic() - start < 1, "accepting paused"
-            assert not any("accept" in line for line in ai.log), ai.log
+    # A request that cannot be parsed for want of memory, here of a
+    # tokener, gets 500 Out of memory, not 400 Parse error.
+    with Askai(binary, "-u", up.url(), preload=epfail,
+               env={"EPFAIL_TOKENER": "1"}) as ai:
+        status, _, body = ai.rpc("ping")
+        assert status == 500 and body["error"] == {
+            "code": -32603, "message": "Out of memory"}, (status, body)
 
-        # A request that cannot be parsed for want of memory, here of a
-        # tokener, gets 500 Out of memory, not 400 Parse error.
-        with Askai(binary, "-u", up.url(), preload=shim,
-                   env={"EPFAIL_TOKENER": "1"}) as ai:
-            status, _, body = ai.rpc("ping")
-            assert status == 500 and body["error"] == {
-                "code": -32603, "message": "Out of memory"}, (status, body)
+    # What follows the loop's last turn is no turn: a slow teardown is
+    # neither reported nor taken for a stuck loop.
+    with Askai(binary, "-u", up.url(), preload=epfail,
+               env={"EPFAIL_CLEANUP_MS": "1200"}) as ai:
+        assert ai.rpc("ping")[0] == 200
+    assert not any("watchdog" in line for line in ai.log), ai.log
 
-        # What follows the loop's last turn is no turn: a slow teardown is
-        # neither reported nor taken for a stuck loop.
-        with Askai(binary, "-u", up.url(), preload=shim,
-                   env={"EPFAIL_CLEANUP_MS": "1200"}) as ai:
-            assert ai.rpc("ping")[0] == 200
-        assert not any("watchdog" in line for line in ai.log), ai.log
-
-        # A client loop that cannot start, the second of four, shuts the
-        # others down, which have started, and askai exits 1.
-        env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
-        env.update(LD_PRELOAD=shim, EPFAIL_EPOLL="3", ASAN_OPTIONS=":".join(filter(
-            None, (env.get("ASAN_OPTIONS"), "verify_asan_link_order=0"))))
-        start = time.monotonic()
-        run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(), "--loops",
-                              "4"], env=env, stdin=subprocess.DEVNULL,
-                             capture_output=True, text=True, timeout=10, check=False)
-        assert run.returncode == 1 and "cannot start loop2's event loop" in \
-            run.stderr, (run.returncode, run.stderr)
-        assert time.monotonic() - start < 3, run.stderr
+    # A client loop that cannot start, the second of four, shuts the
+    # others down, which have started, and askai exits 1.
+    start = time.monotonic()
+    run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(), "--loops", "4"],
+                         env=preloaded(epfail, EPFAIL_EPOLL="3"),
+                         stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                         timeout=10, check=False)
+    assert run.returncode == 1 and "cannot start loop2's event loop" in \
+        run.stderr, (run.returncode, run.stderr)
+    assert time.monotonic() - start < 3, run.stderr
 
     print("failure isolation: an unwatchable upstream socket, accept errors, "
           "a parse out of memory, a slow teardown, a loop that cannot start: PASS")
@@ -5732,6 +5751,11 @@ def check_unix(binary, up):
                                  capture_output=True, text=True, timeout=10)
             assert run.returncode == 1 and "Address already in use" in run.stderr, run
             assert names(uds_rpc(sock)) == ["ask_ai"]
+        # A group entry larger than 1 MiB loads (tests/peers.c).
+        peers = shim("peers")
+        write(roles=roles, **{"unix-groups": {"peers-big": "g"}})
+        with Askai(binary, "-c", path, "-l", f"unix:{sock}", preload=peers) as ai:
+            ai.wait_list("Unix groups:", ["peers-big  role g"])
         for policy, message in (
                 ({"identities": {"e": {"role": "a",
                                        "unix-users": ["no_such_user_xyz"]}}},
@@ -5743,17 +5767,25 @@ def check_unix(binary, up):
                                  "f": {"role": "g", "unix-users": [os.getuid()]}}},
                  f"two identities are Unix user {os.getuid()}"),
                 ({"identities": {"e": {"role": "a", "unix-users": me}}},
-                 "identity e: tokens and unix-users are arrays")):
+                 "identity e: tokens and unix-users are arrays"),
+                ({"unix-groups": {"peers-huge": "a"}},
+                 "unix-groups: the entry of group peers-huge is larger than 64 MiB; "
+                 "give its gid instead"),
+                ({"unix-groups": {"peers-eio": "a"}},
+                 "unix-groups: cannot look up group peers-eio: Input/output error"),
+                ({"unix-groups": {"peers-gone": "a"}},
+                 "unix-groups: cannot look up group peers-gone: "
+                 "No such file or directory")):
             write(roles=roles, **policy)
-            run = subprocess.run([binary, "-c", path], capture_output=True, text=True,
-                                 timeout=5)
+            run = subprocess.run([binary, "-c", path], env=preloaded(peers),
+                                 capture_output=True, text=True, timeout=5)
             assert run.returncode == 2 and f"{path}: {message}" in run.stderr, \
                 (policy, run.stderr)
         run = subprocess.run([binary, "-u", up.url(), "-l", "unix:" + "x" * 200],
                              capture_output=True, text=True, timeout=5)
         assert run.returncode == 2 and "invalid --listen: unix:" in run.stderr, run
     print("unix sockets: SO_PEERCRED users and groups, tokens first, askai's own "
-          "policy, stale and busy socket files: PASS")
+          "policy, large and failed group lookups, stale and busy socket files: PASS")
 
 
 def tls_files(d, name, kind="ec"):
