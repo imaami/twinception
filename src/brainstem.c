@@ -69,6 +69,19 @@ enum { HIGH_FDS = 1, HIGH_PSI = 2 };
 /* Where cgroup v2 is mounted. */
 static char const cgroup_root[] = "/sys/fs/cgroup";
 
+/* The memory files of a cgroup that brainstem_cgroup() reads.  It writes
+ * each name after a directory's path in bs->cgroup, which has room for the
+ * longest of them.
+ */
+static char const cgroup_high[] = "/memory.high";
+static char const cgroup_max[] = "/memory.max";
+static char const cgroup_stat[] = "/memory.stat";
+static char const cgroup_current[] = "/memory.current";
+static constexpr size_t cgroup_room = sizeof cgroup_current;
+static_assert(sizeof cgroup_high <= cgroup_room &&
+              sizeof cgroup_max <= cgroup_room &&
+              sizeof cgroup_stat <= cgroup_room);
+
 /*
  * Where each input's memory pressure level rises to high and to critical,
  * and where it falls back below each: the input's fullness, in hundredths of
@@ -564,28 +577,24 @@ brainstem_cgroup (struct brainstem *bs,
                   uint64_t         *limit,
                   uint64_t         *least)
 {
-	static char const high_file[] = "/memory.high";
-	static char const max_file[] = "/memory.max";
-	static char const stat_file[] = "/memory.stat";
-	static char const current_file[] = "/memory.current";
-	/* The files' names go after each directory's, which bs->cgroup has room
-	 * for, and which the walk up does not look at. */
+	/* The walk up does not look past a directory's path, where the
+	 * files' names go. */
 	char *path = bs->cgroup;
 	uint64_t most = 0;
 	*usage = *limit = *least = 0;
 	for (size_t len = bs->cg_len; len; len = brainstem_cgroup_up(path, len)) {
-		memcpy(path + len, high_file, sizeof high_file);
+		memcpy(path + len, cgroup_high, sizeof cgroup_high);
 		uint64_t high = brainstem_number(path, buf, size, UINT64_MAX);
-		memcpy(path + len, max_file, sizeof max_file);
+		memcpy(path + len, cgroup_max, sizeof cgroup_max);
 		uint64_t cap = brainstem_number(path, buf, size, UINT64_MAX);
 		cap = high < cap ? high : cap;
 		if (!cap || cap == UINT64_MAX)
 			continue;
 		*least = *least && *least < cap ? *least : cap;
-		memcpy(path + len, stat_file, sizeof stat_file);
+		memcpy(path + len, cgroup_stat, sizeof cgroup_stat);
 		uint64_t cache = brainstem_read(path, buf, size)
 		               ? 0 : brainstem_field(buf, "\ninactive_file ", 0);
-		memcpy(path + len, current_file, sizeof current_file);
+		memcpy(path + len, cgroup_current, sizeof cgroup_current);
 		uint64_t use = brainstem_number(path, buf, size, 0);
 		use -= cache < use ? cache : use;
 		uint64_t full = use * 10'000 / cap;
@@ -1054,7 +1063,7 @@ brainstem_init (struct brainstem           *bs,
 		return errno;
 	brainstem_fd_table(bs);
 	size_t len;
-	bs->cgroup = brainstem_cgroup_dir(sizeof "/memory.current", &len);
+	bs->cgroup = brainstem_cgroup_dir(cgroup_room, &len);
 	if (!bs->cgroup)
 		return ENOMEM;
 	bs->cg_len = len;
