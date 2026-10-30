@@ -156,6 +156,53 @@ journal_test_legacy (struct journal *j)
 	journal_records_destroy(&load.record);
 }
 
+/* Run "sh -c @p script" with child_run(), with a deadline @p after_ms from
+ * now, or none if 0, and a grace of @p grace_ms.  Returns its result, its
+ * exit status in @p *status, and how long it ran in @p *ms.
+ */
+static int
+journal_test_run (char const *script,
+                  uint64_t    after_ms,
+                  uint64_t    grace_ms,
+                  int        *status,
+                  uint64_t   *ms)
+{
+	char const *const argv[] = { "sh", "-c", script, nullptr };
+	char *const envp[] = { "PATH=/usr/bin:/bin", nullptr };
+	uint64_t start = loop_clock();
+	struct child_cmd const cmd = {
+		.file = "sh",
+		.argv = argv,
+		.envp = envp,
+		.deadline = after_ms ? start + after_ms * 1'000'000 : 0,
+		.grace = grace_ms * 1'000'000,
+	};
+	*status = -1;
+	int e = child_run(&cmd, child_fds(), status);
+	*ms = (loop_clock() - start) / 1'000'000;
+	return e;
+}
+
+/* child_run(): exit statuses, a death by a signal, and a deadline without
+ * a grace, with a grace that the command honors, and with a grace that it
+ * ignores.
+ */
+static void
+journal_test_child_run (void)
+{
+	int status;
+	uint64_t ms;
+	assert(!journal_test_run("exit 3", 0, 0, &status, &ms) && status == 3);
+	assert(journal_test_run("kill -KILL $$", 0, 0, &status, &ms) == EIO);
+	assert(journal_test_run("exec sleep 5", 100, 0, &status, &ms) == ETIMEDOUT);
+	assert(ms >= 100 && ms < 2000);
+	assert(journal_test_run("exec sleep 5", 100, 3000, &status, &ms) == ETIMEDOUT);
+	assert(ms >= 100 && ms < 2000);
+	assert(journal_test_run("trap '' TERM; exec sleep 5", 100, 300, &status, &ms) ==
+	       ETIMEDOUT);
+	assert(ms >= 400 && ms < 2500);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -178,6 +225,8 @@ main (int argc, char **argv)
 	}
 	assert(j->n_jobs == JOURNAL_JOBS);
 	journal_destroy(&j);
-	puts("Journal loads, write gaps, legacy migration and reasoning verification: PASS");
+	journal_test_child_run();
+	puts("Journal loads, write gaps, legacy migration, reasoning verification "
+	     "and child_run(): PASS");
 	return 0;
 }

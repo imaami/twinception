@@ -326,7 +326,8 @@ journal_git (struct journal    *j,
 		.grace    = JOURNAL_GRACE_NS,
 	};
 	int code = 0;
-	int e = child_run(&cmd, (struct child_fds){ input, out, j->repo_fd, j->lock_fd }, &code);
+	struct child_fds fds = { .in = input, .out = out, .dir = j->repo_fd, .keep = j->lock_fd };
+	int e = child_run(&cmd, fds, &code);
 	if (!e && status)
 		*status = code;
 	else if (!e && code)

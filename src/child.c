@@ -439,7 +439,7 @@ static int
 child_start (struct child           *c,
              struct child_cmd const *cmd)
 {
-	struct child_fds fds = { .in = -1, .out = -1, .dir = -1, .keep = -1 };
+	struct child_fds fds = child_fds();
 	int e = cmd->in.len ? child_input(cmd->in, &fds.in) : 0;
 	if (e)
 		return e;
@@ -463,6 +463,7 @@ child_await (struct child_cmd const *cmd,
 {
 	struct pollfd watch = { .fd = pidfd, .events = POLLIN };
 	uint64_t deadline = cmd->deadline;
+	uint64_t grace = cmd->grace;
 	int e = 0;
 	for (;;) {
 		int timeout = -1;
@@ -476,13 +477,18 @@ child_await (struct child_cmd const *cmd,
 			return e;
 		if (ready < 0 && errno == EINTR)
 			continue;
-		bool term = !ready && !e && cmd->grace;
-		if (!e)
-			e = ready ? errno : ETIMEDOUT;
-		(void)pidfd_send_signal(pidfd, term ? SIGTERM : SIGKILL, nullptr, 0);
-		if (!term)
-			return e;
-		deadline = loop_clock() + cmd->grace;
+		/* At the first timeout, send SIGTERM if the command has a grace. */
+		if (!ready && grace) {
+			(void)pidfd_send_signal(pidfd, SIGTERM, nullptr, 0);
+			deadline = loop_clock() + grace;
+			grace = 0;
+			e = ETIMEDOUT;
+			continue;
+		}
+		/* errno is read before pidfd_send_signal() can change it. */
+		int why = e ? e : ready ? errno : ETIMEDOUT;
+		(void)pidfd_send_signal(pidfd, SIGKILL, nullptr, 0);
+		return why;
 	}
 }
 
@@ -492,26 +498,26 @@ child_run (struct child_cmd const *cmd,
            int                    *status)
 {
 	int own = -1;
-	int e = fds.in < 0 && cmd->in.len ? child_input(cmd->in, &own) : 0;
-	if (own >= 0)
+	if (fds.in < 0 && cmd->in.len) {
+		int e = child_input(cmd->in, &own);
+		if (e)
+			return e;
 		fds.in = own;
+	}
 	int pidfd = -1;
-	if (!e)
-		e = child_cmd_exec(cmd, &fds, &pidfd);
+	int e = child_cmd_exec(cmd, &fds, &pidfd);
 	if (own >= 0)
 		close(own);
 	if (e)
 		return e;
-	e = child_await(cmd, pidfd);
+	int waited = child_await(cmd, pidfd);
 	siginfo_t info = {};
-	while (waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED))
-		if (errno != EINTR) {
-			e = e ? e : errno;
-			break;
-		}
+	int failed;
+	do {
+		failed = waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED);
+	} while (failed && errno == EINTR);
+	e = waited ? waited : failed ? errno : info.si_code != CLD_EXITED ? EIO : 0;
 	close(pidfd);
-	if (!e && info.si_code != CLD_EXITED)
-		e = EIO;
 	if (!e)
 		*status = info.si_status;
 	return e;

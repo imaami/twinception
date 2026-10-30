@@ -225,7 +225,9 @@ cli_state_git (struct cli_state  *state,
 		.envp = state->environment,
 		.in   = { (unsigned char *)(uintptr_t)input.data, input.len },
 	};
-	int e = child_run(&cmd, (struct child_fds){ -1, out, -1, -1 }, status);
+	struct child_fds fds = child_fds();
+	fds.out = out;
+	int e = child_run(&cmd, fds, status);
 	(void)dstr_clear(&state->output);
 	if (output_fd >= 0)
 		return e;

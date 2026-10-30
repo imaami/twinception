@@ -102,6 +102,13 @@ struct child_fds {
 	int keep;
 };
 
+/** Returns a struct child_fds whose descriptors are all -1. */
+static inline struct child_fds
+child_fds (void)
+{
+	return (struct child_fds){ .in = -1, .out = -1, .dir = -1, .keep = -1 };
+}
+
 /**
  * Spawn @p cmd: its standard error /dev/null, but with CHILD_STDERR its
  * output too; its output a pipe, its signal mask empty and every signal's
