@@ -552,7 +552,6 @@ jb_escape (char       *dst,
            char const *src,
            size_t      len)
 {
-	static char const hex[] = "0123456789abcdef";
 	char *out = dst;
 	for (char const *end = src + len; src < end; ++src) {
 		unsigned char c = (unsigned char)*src;
@@ -568,8 +567,8 @@ jb_escape (char       *dst,
 		*out++ = 'u';
 		*out++ = '0';
 		*out++ = '0';
-		*out++ = hex[c >> 4];
-		*out++ = hex[c & 15];
+		util_hex(out, &c, 1);
+		out += 2;
 	}
 	return (size_t)(out - dst);
 }
