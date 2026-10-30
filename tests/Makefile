@@ -3,11 +3,11 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-askai check-buf check-cli check-completion check-cstr-view check-datauri \
-        check-dstr check-handle check-instance check-journal check-ledger check-load \
+.PHONY: default check check-ai check-askai check-buf check-cli check-completion check-cstr-view \
+        check-datauri check-dstr check-handle check-instance check-journal check-ledger check-load \
         check-turn check-twinception load load-build
 default:; @:
-check: | check-completion check-twinception check-askai check-cli check-buf \
+check: | check-completion check-twinception check-askai check-cli check-ai check-buf \
          check-datauri check-handle check-turn check-instance check-journal check-ledger \
          check-dstr check-load
 
@@ -138,6 +138,16 @@ $Otests/src/cli_state.c.o $Otests/src/cli_console.c.o $Otests/src/jb.c.o: CPPFLA
 
 $Otests/src/cli_console.c.o: CPPFLAGS += $(CLI_INCLUDES)
 $Otests/src/cli_render.c.o: CPPFLAGS += $(UTF8_INCLUDES)
+
+# Unit tests of the upstream event parser, src/ai.c.  The test wraps
+# json_object_get_int64() to find values that are not JSON integers.
+check-ai: $Otests/ai
+	$<
+
+$Otests/ai: $Otests/ai.c.o $Otests/src/ai.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -Wl,--wrap=json_object_get_int64 -o "$@" $^ $(JSON_LIBS)
+
+$Otests/ai.c.o $Otests/src/ai.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf

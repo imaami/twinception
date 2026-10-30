@@ -649,8 +649,8 @@ ai_responses_event (struct ai_sink const *sink,
 	case CUT: {
 		struct json_object *usage = jb_get(jb_get(ev, "response"), "usage");
 		out->end = 1;
-		out->used = ai_used(json_object_get_int64(jb_get(usage, "input_tokens")),
-		                    json_object_get_int64(jb_get(usage, "output_tokens")));
+		out->used = ai_used(ai_count(jb_get(usage, "input_tokens")),
+		                    ai_count(jb_get(usage, "output_tokens")));
 		return 0;
 	}
 	}
@@ -822,17 +822,17 @@ ai_messages_event (struct ai_sink const *sink,
 		struct json_object *usage = jb_get(jb_get(ev, "message"), "usage");
 		struct json_object *written = jb_get(usage, "cache_creation_input_tokens");
 		struct json_object *cached = jb_get(usage, "cache_read_input_tokens");
-		int64_t n = json_object_get_int64(jb_get(usage, "input_tokens"));
+		int64_t n = ai_count(jb_get(usage, "input_tokens"));
 		/* A sum that overflows int64_t is not a token count. */
-		bool over = ckd_add(&n, n, json_object_get_int64(written)) ||
-		            ckd_add(&n, n, json_object_get_int64(cached));
+		bool over = ckd_add(&n, n, ai_count(written)) ||
+		            ckd_add(&n, n, ai_count(cached));
 		reader->input = over ? 0 : ai_used(n, 0);
 		return 0;
 	}
 	case MESSAGE_DELTA: {
 		struct json_object *usage = jb_get(ev, "usage");
 		out->used = ai_used(reader->input,
-		                    json_object_get_int64(jb_get(usage, "output_tokens")));
+		                    ai_count(jb_get(usage, "output_tokens")));
 		return 0;
 	}
 	case MESSAGE_STOP:
@@ -1238,12 +1238,12 @@ ai_event (enum ai_api            api,
 		struct json_object *choices = jb_get(ev, "choices");
 		struct json_object *choice;
 		for (size_t i = 0; (choice = jb_at(choices, i)) &&
-		                   json_object_get_int64(jb_get(choice, "index")); ++i)
+		                   ai_count(jb_get(choice, "index")); ++i)
 			;
 		/* With include_usage, a last event of its own, with no choices. */
 		struct json_object *usage = jb_get(ev, "usage");
-		out->used = ai_used(json_object_get_int64(jb_get(usage, "prompt_tokens")),
-		                    json_object_get_int64(jb_get(usage, "completion_tokens")));
+		out->used = ai_used(ai_count(jb_get(usage, "prompt_tokens")),
+		                    ai_count(jb_get(usage, "completion_tokens")));
 		reason = jb_get(choice, "finish_reason");
 		e = ai_chat_delta(sink, jb_get(choice, "delta"), out);
 		break;
@@ -1268,7 +1268,7 @@ ai_event (enum ai_api            api,
 		if (!e && reason)
 			e = ai_generate_close(sink, reader);
 		struct json_object *usage = jb_get(ev, "usageMetadata");
-		out->used = ai_used(json_object_get_int64(jb_get(usage, "totalTokenCount")), 0);
+		out->used = ai_used(ai_count(jb_get(usage, "totalTokenCount")), 0);
 		break;
 	}
 	case AI_INTERACTIONS:
