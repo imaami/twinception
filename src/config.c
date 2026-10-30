@@ -1457,11 +1457,11 @@ config_file (struct config *cfg)
 }
 
 /* Check the limits on clients against each other.  A body limit that
- * --max-body did not give shrinks to the budgets for the bodies, so that a
- * configuration that lowers a budget does not stop askai.
+ * --max-body did not give is lowered to the budgets for the bodies, so that
+ * a configuration that lowers a budget does not stop askai.
  */
 static int
-config_check (struct config *cfg)
+config_fit_limits (struct config *cfg)
 {
 	struct httpd_limits *lim = &cfg->http.limits;
 	size_t const budgets[] = {
@@ -2283,7 +2283,7 @@ config_policy (struct config *cfg)
 static int
 config_finish (struct config *cfg)
 {
-	int status = config_check(cfg);
+	int status = config_fit_limits(cfg);
 	if (status)
 		return status;
 	status = config_check_gits(cfg);
