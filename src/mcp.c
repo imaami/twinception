@@ -5723,7 +5723,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		}
 		char const *text = jb_str(jb_get(saved, "text"), &len);
 		slot->start = loop_clock();
-		slot->skip = json_object_get_uint64(jb_get(saved, "skip"));
+		slot->skip = jb_uint(jb_get(saved, "skip"), 0);
 		mcp_slot_result(slot, ESC(text, len), json_object_get_boolean(jb_get(saved, "failed")));
 		return;
 	}
@@ -6238,26 +6238,26 @@ mcp_recover_back (struct loop           *loop,
 	struct json_object *state = mcp_archive_json(checkpoint);
 	char const *tool = jb_text(jb_get(state, "tool"));
 	char const *problem = error ? "Cannot read the durable job journal."
-	                     : !state || json_object_get_int(jb_get(state, "version")) != 1
+	                     : !state || jb_int(jb_get(state, "version"), 0) != 1
 	                     ? "No recoverable job of yours has that id."
-	                     : json_object_get_uint64(jb_get(state, "owner")) != mcp_req_owner(req) ||
+	                     : jb_uint(jb_get(state, "owner"), 0) != mcp_req_owner(req) ||
 	                       !tool || strcmp(tool, st->offers[req->self.tool].name)
 	                     ? "No job of yours from this tool has that id."
 	                     : nullptr;
 	if (problem)
 		goto failed;
-	uint64_t created = json_object_get_uint64(jb_get(state, "created"));
+	uint64_t created = jb_uint(jb_get(state, "created"), 0);
 	if (end) {
 		struct json_object *result = mcp_archive_json(end);
 		size_t len = 0;
 		char const *text = jb_str(jb_get(result, "result"), &len);
-		int status = json_object_get_int(jb_get(result, "status"));
+		int64_t status = jb_int(jb_get(result, "status"), 0);
 		struct ledger_task *task = nullptr;
 		int e = EINVAL;
 		if (text && status >= LEDGER_COMPLETED && status <= LEDGER_CANCELLED)
 			task = ledger_restore(st->ledger, mcp_req_owner(req), LEDGER_JOB, req->self.tool,
 			                       (struct span){ (unsigned char *)(uintptr_t)id, id_len },
-			                       created, json_object_get_uint64(jb_get(result, "ended")),
+			                       created, jb_uint(jb_get(result, "ended"), 0),
 			                       (enum ledger_status)status,
 			                       (struct span){ (unsigned char *)(uintptr_t)text, len },
 			                       nullptr, (struct handle){}, nullptr, &e);
@@ -6271,9 +6271,9 @@ mcp_recover_back (struct loop           *loop,
 		(cancel ? mcp_slot_client_cancel : mcp_slot_client_result)(&req->self, args, true);
 		goto out;
 	}
-	if (json_object_get_int(jb_get(state, "api")) != st->ep->api ||
-	    json_object_get_int(jb_get(state, "provider")) != st->ep->provider ||
-	    json_object_get_uint64(jb_get(state, "endpoint")) != mcp_archive_endpoint(st)) {
+	if (jb_int(jb_get(state, "api"), 0) != st->ep->api ||
+	    jb_int(jb_get(state, "provider"), 0) != st->ep->provider ||
+	    jb_uint(jb_get(state, "endpoint"), 0) != mcp_archive_endpoint(st)) {
 		problem = "This job belongs to a different upstream endpoint, model or API.";
 		goto failed;
 	}
@@ -6288,7 +6288,7 @@ mcp_recover_back (struct loop           *loop,
 		if (!intent && strcmp(r->kind, "tool-result"))
 			continue;
 		struct json_object *obj = mcp_archive_json(r);
-		int64_t k = json_object_get_int64(jb_get(obj, "index"));
+		int64_t k = jb_int(jb_get(obj, "index"), 0);
 		if (!obj || k < 0 || k >= JOB_CALLS ||
 		    (!intent && !jb_text(jb_get(obj, "text")))) {
 			json_object_put(obj);
@@ -6325,8 +6325,8 @@ mcp_recover_back (struct loop           *loop,
 		goto failed;
 	}
 	char const *request = jb_str(jb_get(state, "request"), &len);
-	int64_t turn = json_object_get_int64(jb_get(state, "turn"));
-	uint64_t prompt_at = json_object_get_uint64(jb_get(state, "prompt_at"));
+	int64_t turn = jb_int(jb_get(state, "turn"), 0);
+	uint64_t prompt_at = jb_uint(jb_get(state, "prompt_at"), 0);
 	struct json_object *names = jb_get(state, "lent");
 	if (!request || !len || turn < 1 || turn > UINT32_MAX || prompt_at > len ||
 	    !json_object_is_type(names, json_type_array)) {
@@ -6355,17 +6355,17 @@ mcp_recover_back (struct loop           *loop,
 	memcpy(req->archive, id, LEDGER_ID);
 	req->turn = (uint32_t)turn - 1;
 	req->prompt_at = prompt_at;
-	req->archive_deadline = json_object_get_uint64(jb_get(state, "deadline"));
+	req->archive_deadline = jb_uint(jb_get(state, "deadline"), 0);
 	req->lent = mcp_archive_lent(req, state);
-	req->asks = (uint8_t)json_object_get_int(jb_get(state, "asks"));
-	req->used = (uint32_t)json_object_get_int64(jb_get(state, "used"));
-	req->context = (uint32_t)json_object_get_int64(jb_get(state, "context"));
-	req->traced = (uint32_t)json_object_get_int64(jb_get(state, "traced"));
-	req->reminded = (uint8_t)json_object_get_int(jb_get(state, "reminded"));
-	req->forced = (uint8_t)json_object_get_int(jb_get(state, "forced"));
+	req->asks = (uint8_t)jb_int(jb_get(state, "asks"), 0);
+	req->used = (uint32_t)jb_int(jb_get(state, "used"), 0);
+	req->context = (uint32_t)jb_int(jb_get(state, "context"), 0);
+	req->traced = (uint32_t)jb_int(jb_get(state, "traced"), 0);
+	req->reminded = (uint8_t)jb_int(jb_get(state, "reminded"), 0);
+	req->forced = (uint8_t)jb_int(jb_get(state, "forced"), 0);
 	req->branch = json_object_get_boolean(jb_get(local, "branch"));
 	req->filing = json_object_get_boolean(jb_get(local, "filing"));
-	req->filed = json_object_get_uint64(jb_get(local, "filed"));
+	req->filed = jb_uint(jb_get(local, "filed"), 0);
 	req->replay_filed = last_tool_result ? req->filed : 0;
 	char const *thread = jb_str(jb_get(state, "thread"), &len);
 	if (thread && notes_is_id(thread, len))

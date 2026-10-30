@@ -59,10 +59,37 @@ parse (char const *text,
 	return e;
 }
 
+/* Whether jb_int() and jb_uint() give @p want_int and @p want_uint for the
+ * value of "v" in @p json, with -7 and 7 as their defaults.
+ */
+static bool
+integer (char const *json,
+         int64_t     want_int,
+         uint64_t    want_uint)
+{
+	struct json_object *obj = json_tokener_parse(json);
+	struct json_object *v = jb_get(obj, "v");
+	bool ok = jb_int(v, -7) == want_int && jb_uint(v, 7) == want_uint;
+	json_object_put(obj);
+	return ok;
+}
+
 int
 main (void)
 {
 	unsigned steps;
+
+	/* Only a JSON integer is read; anything else gives the default. */
+	CHECK(integer("{\"v\": 42}", 42, 42));
+	CHECK(integer("{\"v\": -42}", -42, 0));
+	CHECK(integer("{\"v\": 18446744073709551615}", INT64_MAX, UINT64_MAX));
+	CHECK(integer("{\"v\": NaN}", -7, 7));
+	CHECK(integer("{\"v\": Infinity}", -7, 7));
+	CHECK(integer("{\"v\": 1.5}", -7, 7));
+	CHECK(integer("{\"v\": \"42\"}", -7, 7));
+	CHECK(integer("{\"v\": true}", -7, 7));
+	CHECK(integer("{}", -7, 7));
+	CHECK(jb_int(nullptr, -7) == -7 && jb_uint(nullptr, 7) == 7);
 
 	/* One JSON value, whole or a slice at a time. */
 	CHECK(parse("{\"a\": [1, 2, \"three\"]}", SIZE_MAX, &steps) == 0 && steps == 1);

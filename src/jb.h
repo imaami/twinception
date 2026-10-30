@@ -168,6 +168,27 @@ extern size_t
 jb_pool_release (struct jb_pool *pool,
                  size_t          keep);
 
+/** @p val as an integer if it is a JSON integer, else @p otherwise.  json-c
+ *  parses NaN too, which json_object_get_int64() and the like cannot convert
+ *  to an integer without undefined behavior.
+ */
+static inline int64_t
+jb_int (struct json_object const *val,
+        int64_t                   otherwise)
+{
+	return json_object_is_type(val, json_type_int) ? json_object_get_int64(val)
+	                                               : otherwise;
+}
+
+/** As jb_int(), for a value up to UINT64_MAX; a negative integer gives 0. */
+static inline uint64_t
+jb_uint (struct json_object const *val,
+         uint64_t                  otherwise)
+{
+	return json_object_is_type(val, json_type_int) ? json_object_get_uint64(val)
+	                                               : otherwise;
+}
+
 /** A parse a slice at a time; zeroed to begin. */
 struct jb_parser {
 	struct json_tokener *tok;
