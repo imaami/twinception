@@ -761,8 +761,9 @@ struct mcp_req {
 	                                               the notes */
 	char                 repo[NOTES_REPO];      /* the caller's own notes branch */
 	char                 client[POLICY_WHO];  /* the client for the log,
-	                                             copied from its stream at
-	                                             its head; "": anonymous */
+	                                             which mcp_begin() writes
+	                                             from its stream; "": an
+	                                             anonymous TCP client */
 	char                 call_args[SHOWN];  /* with --verbose, the arguments
 	                                           of its tool call for the
 	                                           log */
@@ -8928,10 +8929,20 @@ mcp_begin (struct mcp           *mcp,
 		.method = method
 	};
 	/* The client's name is in the policy, which a reload can free after
-	 * the head. */
-	if (s->who.len)
-		memcpy(req->client, s->who.ptr, s->who.len < sizeof req->client
-		                                ? s->who.len : sizeof req->client - 1);
+	 * the head, so it is copied.  The log names a client on a Unix socket
+	 * by its uid, which is in peer[1] (src/stream.h), with the name from
+	 * the policy after it in parentheses. */
+	if (s->peer[0] != UINT64_MAX) {
+		if (s->who.len)
+			memcpy(req->client, s->who.ptr, s->who.len < sizeof req->client
+			                                ? s->who.len : sizeof req->client - 1);
+	} else {
+		size_t n = util_format(req->client, sizeof req->client, "uid %" PRIu64,
+		                       s->peer[1]);
+		if (s->who.len)
+			(void)util_format(req->client + n, sizeof req->client - n, " (%.*s)",
+			                  (int)s->who.len, s->who.ptr);
+	}
 	s->user = req;
 	return req;
 }

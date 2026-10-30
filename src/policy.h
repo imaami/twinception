@@ -55,10 +55,20 @@ enum policy_kind {
 /** Bytes of a role's or an identity's name, at most. */
 static constexpr size_t POLICY_NAME = 64;
 
-/** Bytes of the longest name of a client in the log, struct policy_grant's
- *  member who, with a terminating NUL.
+/** Bytes of the longest name of a client in the log, with a terminating
+ *  NUL.  mcp.c names a client on a Unix socket "uid N (WHO)", where WHO is
+ *  the member who of struct policy_grant, and other clients by who alone.
  */
-static constexpr size_t POLICY_WHO = sizeof "anonymous loopback (role )" + POLICY_NAME;
+static constexpr size_t POLICY_WHO = sizeof "uid 4294967295 (identity )" + POLICY_NAME;
+
+/** The answer of policy_grant(). */
+enum policy_verdict {
+	POLICY_GRANTED,     /**< the client may connect */
+	POLICY_REFUSED,     /**< an unknown token, or no role for a client
+	                         without one: HTTP 401 */
+	POLICY_UNIX_TOKEN,  /**< a token on a Unix socket, which the policy
+	                         does not accept there: HTTP 400 */
+};
 
 /** The type of a function that returns the tools that the upstream may call
  *  in the turns of an ask call, for a client whose role grants @p tools and
@@ -87,11 +97,13 @@ struct policy_grant {
 	tool_mask        upstream;   /**< the tools that the upstream may call in
 	                                  the turns of its ask calls */
 	struct tool_text who;        /**< the client for the log, at most
-	                                  POLICY_WHO - 1 bytes: "identity NAME",
-	                                  "role NAME" for a member of a Unix
-	                                  group, or "anonymous KIND (role
-	                                  NAME)"; empty for a client without an
-	                                  identity under askai's own policy.  The
+	                                  POLICY_WHO - 1 bytes: "identity NAME"
+	                                  for a client that sent a token, "role
+	                                  NAME" for another client on a Unix
+	                                  socket, or "anonymous KIND (role
+	                                  NAME)" for another client over TCP.
+	                                  It is empty for a client without a
+	                                  token under askai's own policy.  The
 	                                  text is in the policy's memory. */
 	uint64_t         principal;  /**< its identity's, never 0; 0 if
 	                                  anonymous */
@@ -166,12 +178,21 @@ policy_log (struct policy const *policy,
             void const          *ctx);
 
 /**
- * The grant, in @p *grant, of a client that shows the bearer token of
- * @p len bytes at @p token, or none if that is nullptr, and connects as
- * @p kind, as the user @p peer if over a Unix socket; false if it may not
- * connect.
+ * Decides what a client may do.  The client sends the bearer token of
+ * @p len bytes at @p token, or none if @p token is nullptr, and connects
+ * as @p kind.  On a Unix socket, @p peer is its user.
+ *
+ * Over TCP, a token counts if the policy has any token, and otherwise the
+ * role of @p kind in "anonymous" applies.  On a Unix socket, a client
+ * without a token gets the role of its first group in "unix-groups", or
+ * else the role of "unix" in "anonymous".  A token on a Unix socket is
+ * accepted only under askai's own policy with ASKAI_TOKEN.  It then grants
+ * the role of ASKAI_TOKEN, and the principal stays that of the Unix user.
+ *
+ * Returns POLICY_GRANTED with the grant in @p *grant, or why the client
+ * may not connect.
  */
-extern bool
+extern enum policy_verdict
 policy_grant (struct policy const      *policy,
               char const               *token,
               size_t                    len,

@@ -122,7 +122,10 @@ struct stream {
 	                                          (src/policy.h); 0: anonymous */
 	uint64_t                 peer[2];    /**< the client's address, as the
 	                                          limits per address key it:
-	                                          IPv4, mapped, or an IPv6 /64 */
+	                                          IPv4, mapped, or an IPv6 /64.
+	                                          For a client on a Unix socket
+	                                          it is {UINT64_MAX, uid}, which
+	                                          no TCP address has. */
 	uint64_t                 trusted;    /**< bool: its role may see
 	                                          diagnostics; widened over the
 	                                          padding */

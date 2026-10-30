@@ -76,12 +76,17 @@ struct policy {
 	size_t               n_groups;
 	int64_t              anonymous[POLICY_KINDS];  /* a role; -1: none */
 	struct tool_text     strangers[POLICY_KINDS];  /* the names of anonymous
-	                                                  clients for the log,
-	                                                  "anonymous KIND (role
-	                                                  NAME)"; empty in
+	                                                  TCP clients for the
+	                                                  log, "anonymous KIND
+	                                                  (role NAME)"; empty in
 	                                                  askai's own policy */
+	uint64_t             unix_token;               /* bool: a client on a
+	                                                  Unix socket may send
+	                                                  ASKAI_TOKEN; widened
+	                                                  over the padding */
 };
 
+static_assert(sizeof "anonymous loopback (role )" + POLICY_NAME <= POLICY_WHO);
 static_assert(alignof (struct policy_token) <= alignof (struct policy) &&
               alignof (struct policy_role) <= alignof (struct policy_token) &&
               alignof (struct policy_gid) <= alignof (struct policy_role));
@@ -617,9 +622,10 @@ policy_build_file (struct policy_build *b,
 	return policy_build_anonymous(b, anonymous);
 }
 
-/* askai's own policy: with ASKAI_TOKEN, @p token, an identity of
- * everything, that clients must be; else everything for clients on loopback,
- * and the tools for others.
+/* Build askai's own policy.  With ASKAI_TOKEN, @p token, every client must
+ * send the token, also on a Unix socket, and may do everything.  Without
+ * it, clients on loopback and on a Unix socket may do everything, and other
+ * clients may call the tools.
  */
 static void
 policy_build_own (struct policy_build *b,
@@ -640,6 +646,7 @@ policy_build_own (struct policy_build *b,
 	SHA256((unsigned char const *)token, strlen(token), digest);
 	policy_token_add(p, digest, TOOL_TEXT("identity ASKAI_TOKEN"),
 	                 policy_principal(id, sizeof id - 1), 0);
+	p->unix_token = true;
 }
 
 /* The members of @p obj, if an object. */
@@ -945,7 +952,7 @@ policy_log (struct policy const *policy,
 /* Grant @p role, if it is one, to the client of @p principal, which the
  * log names as @p who, or else as its role.
  */
-static bool
+static enum policy_verdict
 policy_grant_role (struct policy const *policy,
                    int64_t              role,
                    uint64_t             principal,
@@ -953,7 +960,7 @@ policy_grant_role (struct policy const *policy,
                    struct policy_grant *g)
 {
 	if (role < 0)
-		return false;
+		return POLICY_REFUSED;
 	struct policy_role const *r = &policy->roles[role];
 	*g = (struct policy_grant){
 		.principal = principal,
@@ -962,13 +969,13 @@ policy_grant_role (struct policy const *policy,
 		.who = who.len ? who : r->who,
 		.metrics = r->metrics
 	};
-	return true;
+	return POLICY_GRANTED;
 }
 
 /* Grant the client that shows the token of @p len bytes at @p token the
  * role of the identity it proves, if any.
  */
-static bool
+static enum policy_verdict
 policy_grant_token (struct policy const *policy,
                     char const          *token,
                     size_t               len,
@@ -978,31 +985,33 @@ policy_grant_token (struct policy const *policy,
 	SHA256((unsigned char const *)token, len, digest);
 	struct policy_token const *t = bsearch(digest, policy->tokens, policy->n_tokens,
 	                                       sizeof *policy->tokens, policy_by_digest);
-	return t && policy_grant_role(policy, (int64_t)t->role, t->principal, t->who, g);
+	if (!t)
+		return POLICY_REFUSED;
+	return policy_grant_role(policy, (int64_t)t->role, t->principal, t->who, g);
 }
 
 /* Grant Unix user @p peer, who shows no token, the role of its first group
  * that the policy names, or else the anonymous role over a Unix socket.
+ * The log names the client by its role, and mcp.c adds the uid.
  */
-static bool
+static enum policy_verdict
 policy_grant_unix (struct policy const      *policy,
                    struct policy_peer const *peer,
                    struct policy_grant      *g)
 {
 	int64_t role = policy->anonymous[POLICY_UNIX];
-	struct tool_text who = policy->strangers[POLICY_UNIX];
 	for (size_t i = 0; i < policy->n_groups; ++i) {
 		if (bsearch(&policy->groups[i].gid, peer->groups, peer->n_groups,
 		            sizeof *peer->groups, policy_by_id)) {
 			role = policy->groups[i].role;
-			who = (struct tool_text){};
 			break;
 		}
 	}
-	return policy_grant_role(policy, role, policy_principal_uid(peer->uid), who, g);
+	return policy_grant_role(policy, role, policy_principal_uid(peer->uid),
+	                         (struct tool_text){}, g);
 }
 
-bool
+enum policy_verdict
 policy_grant (struct policy const      *policy,
               char const               *token,
               size_t                    len,
@@ -1010,12 +1019,22 @@ policy_grant (struct policy const      *policy,
               struct policy_peer const *peer,
               struct policy_grant      *g)
 {
-	if (token && policy->n_tokens)
-		return policy_grant_token(policy, token, len, g);
-	if (kind == POLICY_UNIX && peer)
+	if (kind != POLICY_UNIX || !peer) {
+		if (token && policy->n_tokens)
+			return policy_grant_token(policy, token, len, g);
+		return policy_grant_role(policy, policy->anonymous[kind], 0,
+		                         policy->strangers[kind], g);
+	}
+	if (!token)
 		return policy_grant_unix(policy, peer, g);
-	return policy_grant_role(policy, policy->anonymous[kind], 0, policy->strangers[kind],
-	                         g);
+	if (!policy->unix_token)
+		return POLICY_UNIX_TOKEN;
+	/* ASKAI_TOKEN under askai's own policy grants its role, and the calls
+	 * remain those of the Unix user. */
+	if (policy_grant_token(policy, token, len, g) != POLICY_GRANTED)
+		return POLICY_REFUSED;
+	g->principal = policy_principal_uid(peer->uid);
+	return POLICY_GRANTED;
 }
 
 void

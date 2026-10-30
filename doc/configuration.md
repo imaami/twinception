@@ -216,14 +216,16 @@ file has none of the members `roles`, `identities`, `unix-groups` and
 
 - If the environment variable `ASKAI_TOKEN` is set and not empty, `askai`
   accepts only the clients that send `Authorization: Bearer TOKEN` with that
-  value as TOKEN.  These clients may call every tool that `askai` offers,
-  and they may read `GET /metrics`.
-- Otherwise `askai` accepts every client, and every client may call every
-  tool that `askai` offers.  Only clients on a Unix socket, and clients on
-  loopback that send the `Host` `localhost`, `127.0.0.1` or `[::1]` with
-  any port, or no `Host`, may read `GET /metrics`.  For each TCP listener
-  that is not on loopback, `askai` logs a warning that clients without a
-  token may call tools there.
+  value as TOKEN, also on a Unix socket.  These clients may call every tool
+  that `askai` offers, and they may read `GET /metrics`.  The calls of a
+  client on a Unix socket that sends the token remain the calls of its Unix
+  user, for its notes, jobs and plugin instances.
+- Otherwise `askai` accepts every client but one that sends a token on a
+  Unix socket, and every client may call every tool that `askai` offers.
+  Only clients on a Unix socket, and clients on loopback that send the
+  `Host` `localhost`, `127.0.0.1` or `[::1]` with any port, or no `Host`,
+  may read `GET /metrics`.  For each TCP listener that is not on loopback,
+  `askai` logs a warning that clients without a token may call tools there.
 - The upstream model may call every tool that `askai` can offer to the
   upstream and that `tools` allows it.
 
@@ -231,11 +233,12 @@ Any one of the four members turns `askai`'s own policy off, also with the
 value `null`.  `askai` then ignores `ASKAI_TOKEN`, and logs a note about it.
 Under a policy from the file, these rules apply:
 
-- `askai` accepts a client only if the client sends the token of an
-  identity, or connects to a Unix socket as a member of a group that
-  `unix-groups` names, or connects in a way for which `anonymous` names a
-  role.  Other
-  clients get the status 401.
+- Over TCP, `askai` accepts a client only if the client sends the token of
+  an identity, or if `anonymous` names a role for the way that the client
+  connects.  On a Unix socket, `askai` accepts a client only if the client
+  sends no token and is a member of a group that `unix-groups` names, or if
+  `anonymous` names a role for `unix`.  A client on a Unix socket that sends
+  a token gets the status 400.  Other clients get the status 401.
 - A client may list and call only the tools that its role lists in `tools`.
   A role without `tools` grants no tool.
 - A client may read `GET /metrics` only if its role has `"metrics": true`.
@@ -1345,11 +1348,11 @@ another tool of the client as a job, and answers at once with the job's id.
 `jobs` lists the client's jobs and timers, returns the result of an ended
 job, and cancels a job or a timer.  `wait` waits up to 10 minutes for a job
 to end or a timer to fire, and `timer` sets a timer of up to an hour.  The
-jobs and the timers belong to the client's identity, to the Unix user of a
-client of a Unix socket without an identity, or else to the client's
-address.  `askai` stores the result of a job for up to an hour after the job
-ends.  An owner runs at most 8 jobs and tasks at once, and has at most 8
-timers and 4 waits.  A change of `client-jobs` needs a restart.  The
+jobs and the timers belong to the Unix user of a client of a Unix socket,
+to the identity of a client over TCP, or else to the client's address.
+`askai` stores the result of a job for up to an hour after the job ends.
+An owner runs at most 8 jobs and tasks at once, and has at most 8 timers
+and 4 waits.  A change of `client-jobs` needs a restart.  The
 section [Background jobs and timers for
 clients](../README.md#background-jobs-and-timers-for-clients) of `README.md`
 describes the tools in detail.
@@ -1396,15 +1399,16 @@ object with the members `role` and `tokens`.  There is no default.
   token.  If the variable is not set or is empty, `askai` stops with exit
   status 2.
 
-An identity has no other members.  No Unix user is an identity: a client
-on a Unix socket that sends no token gets its role from `unix-groups` or
-`anonymous`.  A client authenticates as an identity with `Authorization: Bearer TOKEN`.  If the
-policy has any token, the token that a client sends determines its
-identity, and an unknown token gets the status 401, also on a Unix socket.
-If the policy has no token, `askai` ignores the tokens of the clients.  If
-the identities list the same token twice, also within one identity, `askai`
-stops with exit status 2.  All calls of an identity share one queue of the
-scheduler.
+An identity has no other members.  A client over TCP authenticates as an
+identity with `Authorization: Bearer TOKEN`.  If the policy has any token,
+the token that a client over TCP sends determines its identity, and an
+unknown token gets the status 401.  If the policy has no token, `askai`
+ignores the tokens of the clients over TCP.  No Unix user is an identity.  A
+client on a Unix socket that sends a token gets the status 400, also when
+the token is valid, and a client there that sends no token gets its role
+from `unix-groups` or `anonymous`.  If the identities list the same token
+twice, also within one identity, `askai` stops with exit status 2.  All
+calls of an identity share one queue of the scheduler.
 
 #### `unix-groups`
 
@@ -1435,7 +1439,7 @@ Each value is the name of a role or `null`.  If a member is missing or
 `null`, `askai` refuses those clients.  There is no default.
 
 `anonymous` sets the role of a client that sends no token, and of a client
-that sends a token when no identity has `tokens`.  The member `loopback`
+over TCP that sends a token when no identity has `tokens`.  The member `loopback`
 applies to a client over TCP from a loopback address that sends the `Host`
 `localhost`, `127.0.0.1` or `[::1]` with any port, or no `Host`.  The member
 `remote` applies to any other client over TCP.  The member `unix` applies

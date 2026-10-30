@@ -297,7 +297,7 @@ id and goes on without the client, which polls `tasks/get` for where it
 stands and, once it has ended, its result or error, or ends it with
 `tasks/cancel`.  A task's id is 128 random bits.  Each task has an owner:
 the identity of the client that started it, or the Unix user of a client of
-a Unix socket that has no identity.  The owner of an anonymous client's task
+a Unix socket.  The owner of an anonymous client's task
 over TCP is the client's address (IPv4, or the /64 of IPv6).  Only the owner
 of a task can read it with `tasks/get` or cancel it with `tasks/cancel`.
 askai removes a task an hour after its call ends.  It removes ended tasks
@@ -949,8 +949,8 @@ them.  A role grants them by name, as any other tool:
 - `timer` sets a timer of 1 second to an hour, with a note of up to 200
   bytes.
 
-The jobs and the timers belong to an owner: the client's identity, the Unix
-user of a client of a Unix socket without an identity, or else the client's
+The jobs and the timers belong to an owner: the Unix user of a client of a
+Unix socket, the identity of a client over TCP, or else the client's
 address (IPv4, or the /64 of IPv6).  Every connection of the owner, on any
 event loop, can list, wait for, read and cancel the same jobs and timers.
 Agents with the same identity, the same Unix user or the same address share
@@ -990,7 +990,9 @@ which defeats DNS-rebinding attacks.  Before listening anywhere else, set
 then send `Authorization: Bearer <token>`, which the web UI can add as a custom
 header.  A Unix socket (`--listen unix:PATH`) knows its clients' users without
 a token; its file's mode follows `askai`'s umask, and `askai` removes it as it
-stops.  With `--git`, whoever may call the tool may read the repositories
+stops.  A client that sends a bearer token on a Unix socket gets the status 400,
+so that no user can act as another with a token, except for `ASKAI_TOKEN` under
+`askai`'s own policy.  With `--git`, whoever may call the tool may read the repositories
 listed, and with `--upstream-tools`, so may the model that answers them.  An
 session's notes are readable by everyone allowed to call `notes`, including
 anonymous clients if the policy grants it.  Each caller writes only its own
@@ -1168,8 +1170,8 @@ Four more members define who may connect, and what each client may do:
   `askai`.  A reload reads the file again, so it can change a `sha256:`
   token, but the environment of a running `askai` does not change, so a new
   `env:` token needs a restart.  The same token in two places stops `askai`.
-  No Unix user is an identity.  A token that a client of a Unix socket sends
-  counts first.
+  No Unix user is an identity, and a client of a Unix socket cannot send a
+  token.
 - **`unix-groups`** gives the users of a Unix socket the role of the first
   of their groups it names.  Their groups are the effective gid
   (`SO_PEERCRED`) and the supplementary groups (`SO_PEERGROUPS`) that they
@@ -1181,7 +1183,8 @@ Four more members define who may connect, and what each client may do:
   group names.  `null`, as leaving it out, refuses them.
 
 A token that no identity has is refused with 401, on the request's head before
-its body, as is a client without one that no role is named for.  An identity's
+its body, as is a client without one that no role is named for.  Any token on a
+Unix socket is refused with 400.  An identity's
 calls are one principal of the scheduler's, whichever of its tokens they show,
 and each user of a Unix socket is one; anonymous TCP clients are their
 sessions or addresses, as before.  The principal of an identity or of a Unix
@@ -1294,12 +1297,13 @@ allocates and that the plugin initializes.  Each call of a tool of such a
 plugin uses one instance of the plugin.  Two users never get the same
 instance, and only one loop thread uses an instance.
 
-`askai` determines the user of a call in this order.  If the client sent a
-token and the policy has tokens, the user is the identity that has the token.
-Under `askai`'s own policy, all clients that send `ASKAI_TOKEN` are one user.
-Otherwise, if the client is connected over a Unix socket, the user is its Unix
-user.  Every other client is anonymous.  A tool call that the other
-model makes in a turn of a user's `ask_ai` call is a call of that user.
+`askai` determines the user of a call in this order.  If the client is
+connected over a Unix socket, the user is its Unix user, also when it sends
+`ASKAI_TOKEN`.  If a client over TCP sent a token and the policy has tokens,
+the user is the identity that has the token.  Under `askai`'s own policy, all
+clients over TCP that send `ASKAI_TOKEN` are one user.  Every other client is
+anonymous.  A tool call that the other model makes in a turn of a user's
+`ask_ai` call is a call of that user.
 
 A user whose connections are on several loop threads has one instance on each
 of them, and these instances share nothing.  Each call of an anonymous client
@@ -1574,9 +1578,9 @@ At most `--max-calls` (256) are under way, and eight queued for one principal
 (a call that a free slot takes at once waits in no queue); a tool call past
 those is answered at once with a tool error that says to try again.  A client that goes while its call waits or
 runs cancels it, upstream too, as does a `notifications/cancelled` for it from
-the same caller, which can come on any connection.  The caller is the client's
-identity if it has one.  Otherwise it is the user of a Unix socket, or the
-address of a TCP client (IPv4, or IPv6 /64).  The notification must also carry
+the same caller, which can come on any connection.  The caller is the user of
+a Unix socket's client.  For a TCP client, it is the client's identity if it
+has one, and otherwise the client's address (IPv4, or IPv6 /64).  The notification must also carry
 the same `Mcp-Session-Id` field as the call, or none if the call has none.
 After five upstream failures in a row (connection
 errors, timeouts, HTTP 5xx and 429), or an answer's `Retry-After`, tool calls
@@ -1759,10 +1763,13 @@ tool call godbolt_compile from anonymous loopback (role user) refused: the role 
 tool call "godbolt" from anonymous loopback (role user) refused: askai offers no such tool
 ```
 
-The client is `identity NAME`, `role NAME` for a member of a Unix group,
-or `anonymous KIND (role NAME)` for a client that shows no token, where
-KIND is `loopback`, `remote` or `unix`.  Under `askai`'s own policy, a
-client without `ASKAI_TOKEN` is `anonymous`.  A name that `askai` does not
+The client over TCP is `identity NAME`, or `anonymous KIND (role NAME)`
+for a client that shows no token, where KIND is `loopback` or `remote`.
+A client on a Unix socket is `uid N (role NAME)`, with its uid as a
+number and the role that its group or `anonymous` gives it.  Under
+`askai`'s own policy, a client over TCP without `ASKAI_TOKEN` is
+`anonymous`, a client on a Unix socket is `uid N`, and one that sends
+`ASKAI_TOKEN` there is `uid N (identity ASKAI_TOKEN)`.  A name that `askai` does not
 offer is written as a JSON string.
 
 With `--verbose`, `askai` also logs these lines:

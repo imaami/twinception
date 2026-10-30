@@ -1173,16 +1173,19 @@ httpd_conn_respond (struct httpd_conn      *conn,
 	conn->done = true;
 }
 
-/* A JSON-RPC error saying the reason phrase. */
+/* A JSON-RPC error with @p message, or with the reason phrase of @p status
+ * if @p message is empty.  @p message must need no escaping in JSON.
+ */
 static void
 httpd_conn_error (struct httpd_conn      *conn,
                   unsigned                status,
+                  struct cstr_view        message,
                   struct cstr_view const *extra,
                   size_t                  n_extra)
 {
 	struct cstr_view const body[] = {
 		CSTR_VIEW("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\""),
-		httpd_reason(status),
+		message.len ? message : httpd_reason(status),
 		CSTR_VIEW("\"}}"),
 	};
 	httpd_conn_respond(conn, status, extra, n_extra, body, ARRAY_SIZE(body));
@@ -1200,7 +1203,7 @@ httpd_conn_fail (struct httpd_conn *conn,
 	if (conn->replied)
 		httpd_conn_doom(conn);
 	else
-		httpd_conn_error(conn, status, nullptr, 0);
+		httpd_conn_error(conn, status, (struct cstr_view){}, nullptr, 0);
 }
 
 static void
@@ -1293,7 +1296,7 @@ httpd_stream_end (struct stream *s,
 	conn->open = conn->waits = conn->writable = false;
 	conn->stream.user = nullptr;
 	if (!conn->replied) {
-		httpd_conn_error(conn, 500, nullptr, 0);
+		httpd_conn_error(conn, 500, (struct cstr_view){}, nullptr, 0);
 	} else if (error) {
 		/* The client sees the body cut short as the connection closes. */
 		conn->closing = true;
@@ -1347,13 +1350,13 @@ httpd_bearer (struct cstr_view auth)
 	return (struct cstr_view){ auth.data + n + 1, auth.len - n - 1 };
 }
 
-/* Who the client of a freshly parsed head is, by its bearer token, or by
- * how it connects if it shows none, and what it may do, into its stream;
- * whether it may connect (src/policy.h).  A client on loopback that names
- * another host may be a page whose name was rebound to 127.0.0.1, whose GET
- * carries no Origin: it connects as a remote one.
+/* Decide with policy_grant() (src/policy.h) who the client of a freshly
+ * parsed head is and what it may do, and store the grant in its stream.
+ * Returns the verdict of policy_grant().  A client on loopback that names
+ * another host may be a page whose name was rebound to 127.0.0.1 and whose
+ * GET carries no Origin, so it counts as a remote client.
  */
-static bool
+static enum policy_verdict
 httpd_conn_grant (struct httpd_conn *conn)
 {
 	struct cstr_view const token = httpd_bearer(httpd_conn_field(conn, conn->req.auth));
@@ -1367,25 +1370,37 @@ httpd_conn_grant (struct httpd_conn *conn)
 		.uid = conn->uid
 	};
 	struct policy_grant g = {};
-	bool ok = policy_grant(conn->srv->policy, token.data, token.len, kind, &peer, &g);
+	enum policy_verdict v = policy_grant(conn->srv->policy, token.data, token.len,
+	                                     kind, &peer, &g);
 	conn->stream.principal = g.principal;
 	conn->stream.tools = g.tools;
 	conn->stream.upstream = g.upstream;
 	conn->stream.who = g.who;
 	conn->stream.trusted = g.metrics;
-	return ok;
+	return v;
 }
 
 /* Parse the head of @p len bytes at @p data, the input's start, and check it
  * against the Origin defence, the policy and the body budgets, and count its
  * body in those; nonzero is an HTTP error.  So a client that may not send a
  * body holds none of the budgets.  A chunked body is counted as it comes.
+ * For an error with its own message, @p *why is set to the message.
  */
 static unsigned
 httpd_conn_admit (struct httpd_conn *conn,
                   char              *data,
-                  size_t             len)
+                  size_t             len,
+                  struct cstr_view  *why)
 {
+	/* The status and the message of each verdict that refuses a client. */
+	static struct {
+		unsigned         status;
+		struct cstr_view why;
+	} const refusal[] = {
+		[POLICY_REFUSED]    = { 401, {} },
+		[POLICY_UNIX_TOKEN] = { 400, CSTR_VIEW_INIT("A Unix socket accepts no bearer "
+		                                            "token: the Unix user is the client") },
+	};
 	struct httpd *srv = conn->srv;
 	struct httpd_req *req = &conn->req;
 	unsigned status = httpd_req_parse(req, data, len, srv->app, &srv->lim);
@@ -1394,8 +1409,11 @@ httpd_conn_admit (struct httpd_conn *conn,
 	char const *origin = httpd_conn_field(conn, req->origin).data;
 	if (origin && !httpd_origin_allowed(srv, origin))
 		return 403; /* DNS rebinding defence */
-	if (!req->options && !httpd_conn_grant(conn))
-		return 401;
+	enum policy_verdict v = req->options ? POLICY_GRANTED : httpd_conn_grant(conn);
+	if (v != POLICY_GRANTED) {
+		*why = refusal[v].why;
+		return refusal[v].status;
+	}
 	return httpd_conn_hold(conn, req->body) ? 503 : 0;
 }
 
@@ -1659,28 +1677,31 @@ httpd_conn_reset (struct httpd_conn *conn)
 	conn->chunks = conn->cont = false;
 }
 
-/* Answer a head that came to nothing with @p status, and end the connection.
- * Only a 401 echoes the Origin, which passed the check by then; the rest
- * echo none, a 503 of the body budgets, which follows the check too,
- * included.
+/* Answer a head that came to nothing with @p status and @p message, or the
+ * reason phrase if @p message is empty, and end the connection.  Only a 401
+ * keeps the request, so that the response echoes its Origin, which has
+ * passed the check by then.  Every other status clears the request and
+ * echoes no Origin, a 503 of the body budgets included.
  */
 static enum httpd_next
 httpd_conn_refuse (struct httpd_conn *conn,
-                   unsigned           status)
+                   unsigned           status,
+                   struct cstr_view   message)
 {
 	loop_work(conn->srv->loop, LOOP_REQS, 1);
 	conn->closing = true;
 	switch (status) {
 	case 401:
-		httpd_conn_error(conn, status, &CSTR_VIEW("WWW-Authenticate: Bearer\r\n"), 1);
+		httpd_conn_error(conn, status, message,
+		                 &CSTR_VIEW("WWW-Authenticate: Bearer\r\n"), 1);
 		break;
 	case 503:
 		conn->req = (struct httpd_req){};
-		httpd_conn_error(conn, status, &CSTR_VIEW("Retry-After: 1\r\n"), 1);
+		httpd_conn_error(conn, status, message, &CSTR_VIEW("Retry-After: 1\r\n"), 1);
 		break;
 	default:
 		conn->req = (struct httpd_req){};
-		httpd_conn_error(conn, status, nullptr, 0);
+		httpd_conn_error(conn, status, message, nullptr, 0);
 	}
 	return NEXT_END;
 }
@@ -1704,10 +1725,12 @@ httpd_conn_parse (struct httpd_conn *conn,
 	struct span in = buf_peek(&conn->in);
 	size_t head = httpd_conn_head_length(conn, in);
 	if (!head)
-		return in.len < srv->lim.head ? NEXT_INPUT : httpd_conn_refuse(conn, 431);
-	unsigned status = httpd_conn_admit(conn, (char *)in.ptr, head);
+		return in.len < srv->lim.head ? NEXT_INPUT
+		       : httpd_conn_refuse(conn, 431, (struct cstr_view){});
+	struct cstr_view why = {};
+	unsigned status = httpd_conn_admit(conn, (char *)in.ptr, head, &why);
 	if (status)
-		return httpd_conn_refuse(conn, status);
+		return httpd_conn_refuse(conn, status, why);
 	loop_work(loop, LOOP_REQS, 1);
 	conn->parsed = true;
 	conn->since = loop->now;
@@ -3147,8 +3170,8 @@ httpd_home_create (struct loop            *loop,
 		.spare_fd = -1
 	};
 	struct policy_grant g;
-	home->anyone = policy_grant(cfg->policy, nullptr, 0, POLICY_REMOTE, nullptr,
-	                            &g) && g.tools;
+	home->anyone = policy_grant(cfg->policy, nullptr, 0, POLICY_REMOTE, nullptr, &g) ==
+	               POLICY_GRANTED && g.tools;
 	list_init(&home->spare.list);
 	list_init(&home->gone.list);
 	httpd_home_budget(home);

@@ -5656,8 +5656,10 @@ def uds_rpc(path, method="tools/list", params=None, headers=None):
 def check_unix(binary, up):
     """A Unix socket beside TCP (--listen unix:PATH): its clients are who the
     kernel says (SO_PEERCRED, SO_PEERGROUPS), a user of a group the policy
-    names, a token still counting first, and askai's own policy lets them do
-    everything.  No Unix user is an identity.  A socket file left by a
+    names, and askai's own policy lets them do everything.  No Unix user is
+    an identity.  A bearer token is refused there, but for ASKAI_TOKEN under
+    askai's own policy, which keeps the calls those of the Unix user.  The
+    log names such a client by its uid.  A socket file left by a
     server gone is taken over, one a server listens on is not, and askai
     removes its own as it stops."""
     me = pwd.getpwuid(os.getuid()).pw_name
@@ -5727,24 +5729,73 @@ def check_unix(binary, up):
             write(roles=roles, **policy)
             with Askai(binary, "-c", path, "-l", f"unix:{sock}") as ai:
                 assert names(uds_rpc(sock)) == tools, (policy, uds_rpc(sock))
+        # A bearer token on the socket gets 400, a valid one too: the client
+        # is its Unix user.  Without a token, its group counts.  This holds
+        # for a file policy with tokens or without, and for askai's own
+        # policy without ASKAI_TOKEN.
+        def bearer(token):
+            return {"Authorization": f"Bearer {token}"}
+        refused = (400, "A Unix socket accepts no bearer token: the Unix user is the client")
+        def refusal(reply):
+            status, body = reply
+            return status, body["error"]["message"]
         write(roles=roles, identities={"tok": {"role": "t", "tokens": [digest("x")]}},
               **{"unix-groups": {group: "g"}})
         with Askai(binary, "-c", path, "-l", f"unix:{sock}") as ai:
             assert names(uds_rpc(sock)) == ["man"]
-            assert names(uds_rpc(sock, headers={"Authorization": "Bearer x"})) == \
-                ["ask_ai"]
-            assert names(uds_rpc(sock, headers={"Authorization": "Bearer y"})) == 401
+            for token in ("x", "y"):
+                assert refusal(uds_rpc(sock, headers=bearer(token))) == refused
             # The other listener serves as before.
             assert ai.rpc("tools/list")[0] == 401
+            assert ai.rpc("tools/list", headers=bearer("x"))[0] == 200
+            assert ai.rpc("tools/list", headers=bearer("y"))[0] == 401
+        write(roles=roles, **{"unix-groups": {group: "g"}})
+        with Askai(binary, "-c", path, "-l", f"unix:{sock}") as ai:
+            assert refusal(uds_rpc(sock, headers=bearer("x"))) == refused
+        with Askai(binary, "-u", up.url(), "--man", "-l", f"unix:{sock}") as ai:
+            assert refusal(uds_rpc(sock, headers=bearer("x"))) == refused
+            assert names(uds_rpc(sock)) == ["ask_ai", "man"]
 
-        # The log names the client of a call over the socket: the role of its
-        # group, or its kind and role if anonymous.
+        # Under askai's own policy with ASKAI_TOKEN, a client on the socket
+        # must send the token.  Its calls stay those of its Unix user: its
+        # notebook is the one it has without ASKAI_TOKEN.  Over TCP, the
+        # token's calls are those of the identity ASKAI_TOKEN.
+        uid = os.getuid()
+        notes = f"{d}/notes"
+        notebooks = {"name": "notes", "arguments": {"action": "notebooks"}}
+
+        def own(reply):
+            status, body = reply
+            assert status == 200 and not body["result"].get("isError"), reply
+            return re.search(r"^Self \(writable\): (\S+)$", text_of(body["result"]),
+                             re.M).group(1)
+        with Askai(binary, "-u", up.url(), "--notes", notes, "-l", f"unix:{sock}") as ai:
+            mine = own(uds_rpc(sock, "tools/call", notebooks))
+        with Askai(binary, "-u", up.url(), "--man", "--notes", notes, "-l",
+                   f"unix:{sock}", "--verbose", env={"ASKAI_TOKEN": "s3cret"}) as ai:
+            assert names(uds_rpc(sock)) == 401
+            assert names(uds_rpc(sock, headers=bearer("wrong"))) == 401
+            assert names(uds_rpc(sock, headers=bearer("s3cret"))) == ["ask_ai", "man", "notes"]
+            assert own(uds_rpc(sock, "tools/call", notebooks, headers=bearer("s3cret"))) == mine
+            status, _, body = ai.rpc("tools/call", notebooks, headers=bearer("s3cret"))
+            assert own((status, body)) != mine
+            assert uds_rpc(sock, "tools/call", {"name": "ask_ai", "arguments": {
+                "prompt": "Q"}}, headers=bearer("s3cret"))[0] == 200
+            ai.wait_log(rf"^tool call ask_ai from uid {uid} \(identity ASKAI_TOKEN\) "
+                        "answered ")
+
+        # The log names the client of a call over the socket by its uid, with
+        # the role of its group or its anonymous role.  Under askai's own
+        # policy, it names the uid alone.
         for policy, who, end in (
-                ({"unix-groups": {group: "g"}}, "role g",
+                ({"unix-groups": {group: "g"}}, rf"uid {uid} \(role g\)",
                  "refused: the role does not grant it$"),
-                ({"anonymous": {"unix": "t"}}, r"anonymous unix \(role t\)", "answered ")):
-            write(roles=roles, **policy)
-            with Askai(binary, "-c", path, "-l", f"unix:{sock}", "--verbose") as ai:
+                ({"anonymous": {"unix": "t"}}, rf"uid {uid} \(role t\)", "answered "),
+                (None, f"uid {uid}", "answered ")):
+            args = ("-u", up.url()) if policy is None else ("-c", path)
+            if policy is not None:
+                write(roles=roles, **policy)
+            with Askai(binary, *args, "-l", f"unix:{sock}", "--verbose") as ai:
                 assert uds_rpc(sock, "tools/call", {"name": "ask_ai", "arguments": {
                     "prompt": "Q"}})[0] == 200
                 ai.wait_log(rf"^tool call ask_ai from {who} {end}")
@@ -5786,9 +5837,9 @@ def check_unix(binary, up):
         run = subprocess.run([binary, "-u", up.url(), "-l", "unix:" + "x" * 200],
                              capture_output=True, text=True, timeout=5)
         assert run.returncode == 2 and "invalid --listen: unix:" in run.stderr, run
-    print("unix sockets: SO_PEERCRED users and groups, no unix-users, tokens first, "
-          "askai's own policy, large and failed group lookups, stale and busy socket "
-          "files: PASS")
+    print("unix sockets: SO_PEERCRED users and groups, no unix-users, tokens refused "
+          "but ASKAI_TOKEN, clients logged by uid, askai's own policy, large and "
+          "failed group lookups, stale and busy socket files: PASS")
 
 
 def tls_files(d, name, kind="ec"):
