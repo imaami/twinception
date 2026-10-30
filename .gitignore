@@ -8,6 +8,7 @@
 /*.creator.user
 /.qtc_clangd/
 /.vscode/
+/.zed/
 /build/
 /doc/html/
 /doc/latex/
