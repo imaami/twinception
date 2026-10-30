@@ -46,21 +46,22 @@
 struct git;
 struct plugin;
 
-/** The words of the environment, after PATH, of every git that askai runs,
- *  the git tool's, the notes' and the journal's: no home, system or global
- *  configuration, terminal prompt, pager, lazy fetch or remote protocol
- *  (GIT_ALLOW_PROTOCOL, which a repository's configuration cannot
- *  override, stops them all).
+/** The environment entries after PATH of every git process that askai
+ *  starts for the git tool, the notes and the journal.  They set LC_ALL to
+ *  C.UTF-8, and turn off the home, system and global configuration, the
+ *  terminal prompt, the pager, lazy fetching and every remote protocol.  A
+ *  repository's configuration cannot override GIT_ALLOW_PROTOCOL.
  */
 #define GIT_ENV_FIXED \
         "HOME=/nonexistent", "LC_ALL=C.UTF-8", "GIT_CONFIG_NOSYSTEM=1", \
         "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", \
         "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none"
 
-/** The options before the command of every git that askai runs: no pager,
- *  replacement objects or remote protocol, nor a program that a
- *  repository's configuration names for the fsmonitor, gpg (which a log's
- *  format may ask for) or hooks, and no automatic gc or maintenance.
+/** The options before the command of every git process that askai starts.
+ *  They turn off the pager, replacement objects, every remote protocol,
+ *  automatic gc and maintenance.  They also keep git from running a
+ *  program that a repository's configuration names for the fsmonitor, for
+ *  gpg or for hooks.  The format of a log can make git run gpg.
  */
 #define GIT_OPTIONS_FIXED \
         "--no-pager", "--no-replace-objects", \
