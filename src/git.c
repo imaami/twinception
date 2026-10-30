@@ -36,6 +36,9 @@ enum {
 	REV_WORD  = WORD + 64 + 1, /**< a full SHA-256 ID and the original path */
 	ROOTS     = 2 * REVISIONS + OPTIONS,
 	ENV       = 13,       /**< git's environment, its nullptr included */
+	CEILINGS  = 1,        /**< the index of GIT_CEILING_DIRECTORIES in it */
+	ATTR      = ENV - 2,  /**< the index of GIT_ATTR_SOURCE in it, which is
+	                           set when a call has a HEAD */
 };
 
 /** From SIGTERM to SIGKILL at a git call's deadline. */
@@ -324,7 +327,7 @@ git_load (struct git        *git,
 	if (!ceilings)
 		return ENOMEM;
 	/* The last but one is GIT_ATTR_SOURCE's, when a call has a HEAD. */
-	char *const vars[ENV] = {
+	char *const vars[] = {
 		util_env_path(), ceilings, GIT_ENV_FIXED, "GIT_OPTIONAL_LOCKS=0",
 		nullptr, nullptr
 	};
@@ -359,7 +362,7 @@ git_destroy (struct git **p_git)
 	*p_git = nullptr;
 	for (size_t i = 0; i < git->n; ++i)
 		free(git->repo[i].name);
-	free(git->env[1]);
+	free(git->env[CEILINGS]);
 	free(git);
 }
 
@@ -994,7 +997,7 @@ git_call_run (struct git_call *call,
 	char *env[ENV];
 	memcpy(env, gl->git->env, sizeof env);
 	if (call->view && git_view_has_head(call->view))
-		env[ENV - 2] = "GIT_ATTR_SOURCE=HEAD";
+		env[ATTR] = "GIT_ATTR_SOURCE=HEAD";
 	struct child_cmd const cmd = {
 		.file = "git",
 		.argv = argv,

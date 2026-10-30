@@ -258,7 +258,7 @@ notes_create (char const *path,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	char *const vars[ENV] = { util_env_path(), GIT_ENV_FIXED, nullptr };
+	char *const vars[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
 	static_assert(sizeof vars == sizeof notes->env);
 	memcpy(notes->env, vars, sizeof vars);
 	notes->fd = -1;
