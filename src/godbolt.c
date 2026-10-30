@@ -2735,17 +2735,42 @@ godbolt_args_set (struct godbolt_args *a,
 	return EINVAL;
 }
 
-/* Checks the arguments @p args of a call of the tool @p tool in @p slot,
- * and reads them into @p a.  If the configuration @p cfg turns links off,
- * the tool has no argument share.  Returns GODBOLT_GO, or GODBOLT_ENDED
- * after it ended the call with the reason of a refusal.
+/* Stores the reason of a refusal in the @p len bytes at @p why, formatted
+ * from @p fmt and its arguments, and its length in @p *n unless @p n is
+ * nullptr.  Returns EINVAL.
  */
-static enum godbolt_go
+[[gnu::format(printf, 4, 5)]]
+static int
+godbolt_invalid (char       *why,
+                 size_t      len,
+                 size_t     *n,
+                 char const *fmt,
+                 ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	int k = vsnprintf(why, len, fmt, ap);
+	va_end(ap);
+	if (k < 0)
+		*why = '\0';
+	if (n)
+		*n = k < 0 ? 0 : (size_t)k < len ? (size_t)k : len - 1;
+	return EINVAL;
+}
+
+/* Checks the arguments @p args of a call of the tool @p tool, and reads
+ * them into @p a.  If the configuration @p cfg turns links off, the tool
+ * has no argument share.  Returns 0, or EINVAL with the reason of the
+ * refusal in the @p len bytes at @p why and its length in @p *n.
+ */
+static int
 godbolt_args_read (struct godbolt_args         *a,
-                   struct mcp_slot             *slot,
                    struct json_object          *args,
                    enum godbolt_tool            tool,
-                   struct godbolt_config const *cfg)
+                   struct godbolt_config const *cfg,
+                   char                        *why,
+                   size_t                       len,
+                   size_t                      *n)
 {
 	struct godbolt_params const *t = &godbolt_params[tool];
 	uint32_t const off = cfg->share == GODBOLT_SHARE_OFF ? 1u << GODBOLT_ARG_SHARE : 0;
@@ -2757,7 +2782,7 @@ godbolt_args_read (struct godbolt_args         *a,
 		.filters = tool == GODBOLT_COMPILE ? GODBOLT_SITE_FILTERS : 0
 	};
 	if (args && !json_object_is_type(args, json_type_object))
-		return godbolt_refuse(slot, "The arguments must be a JSON object.");
+		return godbolt_invalid(why, len, n, "The arguments must be a JSON object.");
 	uint32_t seen = 0;
 	struct json_object_iter it;
 	if (args) json_object_object_foreachC(args, it) {
@@ -2769,28 +2794,29 @@ godbolt_args_read (struct godbolt_args         *a,
 			seen |= bit;
 			if (!godbolt_args_set(a, (enum godbolt_arg)i, it.val))
 				continue;
-			return godbolt_refuse(slot, "%s", godbolt_arg_rules[i].ptr);
+			return godbolt_invalid(why, len, n, "%s", godbolt_arg_rules[i].ptr);
 		}
 		if (t->args & off & bit)
-			return godbolt_refuse(slot, "Links are turned off on this server, so the "
-			                      "tool has no argument share.");
-		return godbolt_refuse(slot, "The tool has no argument %.*s.",
-		                      (int)godbolt_cut(it.key, strnlen(it.key, 49), 48), it.key);
+			return godbolt_invalid(why, len, n, "Links are turned off on this server, so "
+			                       "the tool has no argument share.");
+		return godbolt_invalid(why, len, n, "The tool has no argument %.*s.",
+		                       (int)godbolt_cut(it.key, strnlen(it.key, 49), 48), it.key);
 	}
 	uint32_t const missing = t->needs & ~seen;
 	uint32_t i = 0;
 	while (i < GODBOLT_ARG_COUNT && !(missing >> i & 1))
 		++i;
 	if (i < GODBOLT_ARG_COUNT)
-		return godbolt_refuse(slot, "The argument %s is required.", godbolt_arg_names[i]);
+		return godbolt_invalid(why, len, n, "The argument %s is required.",
+		                       godbolt_arg_names[i]);
 	if (a->action == GODBOLT_LANGUAGES && tool == GODBOLT_CATALOG &&
 	    (a->values[0].len || a->values[1].len || a->values[2].len))
-		return godbolt_refuse(slot, "kind, family and architecture are not valid with the "
-		                      "action languages.");
+		return godbolt_invalid(why, len, n, "kind, family and architecture are not valid "
+		                       "with the action languages.");
 	if ((uint32_t)a->n_ids * a->n_args > GODBOLT_JOBS)
-		return godbolt_refuse(slot, "The number of compilers times the number of argument "
-		                      "strings must be at most 32.");
-	return GODBOLT_GO;
+		return godbolt_invalid(why, len, n, "The number of compilers times the number of "
+		                       "argument strings must be at most 32.");
+	return 0;
 }
 
 /* Copies @p t to *@p p, advances *@p p past the copy, and returns the
@@ -2907,7 +2933,13 @@ godbolt_start (struct mcp_slot    *slot,
 		return;
 	}
 	struct godbolt_args a;
-	if (godbolt_args_read(&a, slot, args, tool, cfg) || mcp_slot_offset(slot, args))
+	char why[TOOL_TELL_MAX];
+	size_t n;
+	if (godbolt_args_read(&a, args, tool, cfg, why, sizeof why, &n)) {
+		mcp_slot_tell(slot, (struct tool_text){ why, n }, TOOL_FAILED);
+		return;
+	}
+	if (mcp_slot_offset(slot, args))
 		return;
 	int e;
 	struct godbolt *call = godbolt_create(&a, tool, loop, &e);
@@ -2940,25 +2972,6 @@ godbolt_start (struct mcp_slot    *slot,
 GODBOLT_TOOLS_X(GODBOLT_START)
 
 #undef GODBOLT_START
-
-/* Stores the reason of a refusal of the options in the @p len bytes at
- * @p why, formatted from @p fmt and its arguments.  Returns EINVAL.
- */
-[[gnu::format(printf, 3, 4)]]
-static int
-godbolt_configure_refuse (char       *why,
-                          size_t      len,
-                          char const *fmt,
-                          ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	int n = vsnprintf(why, len, fmt, ap);
-	va_end(ap);
-	if (n < 0)
-		*why = '\0';
-	return EINVAL;
-}
 
 /* Stores the URL @p v in the configuration @p c without its trailing '/'.
  * Returns 0, or EINVAL if @p v is not an http or https URL of at most
@@ -3013,30 +3026,30 @@ godbolt_configure (void               *config,
 	if (!why || !len)
 		return EINVAL;
 	if (!config)
-		return godbolt_configure_refuse(why, len, "askai passed no storage for the "
-		                                "configuration");
+		return godbolt_invalid(why, len, nullptr, "askai passed no storage for the "
+		                       "configuration");
 	struct godbolt_config *c = config;
 	*c = godbolt_defaults;
 	if (!options)
 		return 0;
 	if (!json_object_is_type(options, json_type_object))
-		return godbolt_configure_refuse(why, len, "not an object");
+		return godbolt_invalid(why, len, nullptr, "not an object");
 	struct json_object_iter it;
 	json_object_object_foreachC(options, it) {
 		if (!strcmp(it.key, "url")) {
 			if (godbolt_config_url(c, it.val))
-				return godbolt_configure_refuse(why, len, "url must be an http or "
-				                                "https URL of at most 255 bytes, "
-				                                "without a user name, a password, a "
-				                                "query or a fragment");
+				return godbolt_invalid(why, len, nullptr, "url must be an http or "
+				                       "https URL of at most 255 bytes, "
+				                       "without a user name, a password, a "
+				                       "query or a fragment");
 		} else if (!strcmp(it.key, "share")) {
 			if (godbolt_config_share(c, it.val))
-				return godbolt_configure_refuse(why, len, "share must be short, state "
-				                                "or off");
+				return godbolt_invalid(why, len, nullptr, "share must be short, state "
+				                       "or off");
 		} else {
 			int const n = (int)godbolt_cut(it.key, strnlen(it.key, 65), 64);
-			return godbolt_configure_refuse(why, len, "the member %.*s is not an "
-			                                "option", n, it.key);
+			return godbolt_invalid(why, len, nullptr, "the member %.*s is not an "
+			                       "option", n, it.key);
 		}
 	}
 	return 0;
