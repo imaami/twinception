@@ -3271,7 +3271,10 @@ def check_connections(binary, up):
 
     # Out of descriptors, the least recently active idle connection makes
     # room; with none idle, the spare descriptor turns the newcomer away.
-    with Askai(binary, "-u", up.url(), loops=1) as ai:
+    # askai stays dumpable here (tests/peers.c), so that the test can list
+    # its descriptors in /proc.
+    with Askai(binary, "-u", up.url(), loops=1, preload=shim("peers"),
+               env={"PEERS_DUMPABLE": "1"}) as ai:
         fds = f"/proc/{ai.proc.pid}/fd"
         used = {int(fd) for fd in os.listdir(fds)}
         room = [fd for fd in range(max(used) + 9) if fd not in used][:8]
@@ -4290,7 +4293,7 @@ def check_dense(binary, up):
         def rss():
             with open(f"/proc/{ai.proc.pid}/status") as f:
                 return int(re.search(r"VmRSS:\s+(\d+)", f.read()).group(1))
-        with open(f"/proc/{ai.proc.pid}/exe", "rb") as f:
+        with open(binary, "rb") as f:
             exe = f.read()
             sanitized = b"__asan_init" in exe or b"__tsan_init" in exe
         kept = rss()
@@ -5348,6 +5351,14 @@ def check_logs(binary, up):
             ai.wait_log(r"^tool call bro from identity ASKAI_TOKEN answered ")
             log = "".join(ai.log)
             assert not any(word in log for word in ("PASSWORD", "SECRET", "tok-31415")), log
+            # askai is not dumpable, so another process of its user cannot
+            # read the token from its environment.  root can.
+            if os.geteuid():
+                try:
+                    with open(f"/proc/{ai.proc.pid}/environ", "rb") as f:
+                        raise AssertionError(f"/proc/PID/environ is readable: {f.read()!r}")
+                except PermissionError:
+                    pass
 
         # askai logs each role of the file's policy with the tools that its
         # ask calls lend to the upstream, the identities with their roles, the

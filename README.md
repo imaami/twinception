@@ -1002,6 +1002,12 @@ directory above it, decides which code runs.  `askai` refuses a
 configuration file or a plugin's file that others than root and `askai`'s user
 may change, or that is in a directory that they may change (below).
 
+`askai` makes itself non-dumpable as it starts (`PR_SET_DUMPABLE`), before it
+reads any token or key.  Other processes of its user cannot read its memory or
+its environment in `/proc` or attach to it with `ptrace`, and it leaves no core
+dump.  A debugger must run as root.  The programs that `askai` runs, such as
+`git` and `man`, are dumpable again after they start.
+
 ### TLS
 
 `--listen tls:[host:]port` serves HTTPS on that address: TLS 1.3 only, with

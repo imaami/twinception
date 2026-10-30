@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -921,6 +922,16 @@ int
 main (int   argc,
       char *argv[])
 {
+	/* askai reads tokens, API keys and the TLS key from its environment
+	 * and from files.  A process that is not dumpable writes no core dump,
+	 * and other processes of the same user cannot read its memory or its
+	 * environment in /proc or attach to it with ptrace.  Set this before
+	 * any secret is read.  A child becomes dumpable again when it calls
+	 * execve(). */
+	if (prctl(PR_SET_DUMPABLE, 0UL, 0UL, 0UL, 0UL)) {
+		LOG(LOG_ERROR, "cannot make the process non-dumpable: %s", strerror(errno));
+		return 1;
+	}
 	/* Before askai opens any file, so that none takes such a number. */
 	int e = child_std_open();
 	if (e) {
