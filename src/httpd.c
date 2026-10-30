@@ -324,6 +324,10 @@ struct httpd_home {
 	struct ssl_ctx_st      *ctx;        /* a reference: what TLS listeners'
 	                                       clients shake hands by; nullptr:
 	                                       there is none */
+	struct policy          *policy;     /* A reference to the policy.  Home
+	                                       checks the uid of each client on
+	                                       a Unix socket with this policy
+	                                       and policy_admit_uid(). */
 	size_t                  n_listeners;
 	size_t                  turn;       /* the listener to accept from next */
 	uint64_t                rng;        /* xorshift64 */
@@ -337,6 +341,14 @@ struct httpd_home {
 	uint32_t                refused;    /* turned away for descriptors since
 	                                       the tick */
 	uint32_t                capped;     /* turned away by the cap since then */
+	uint32_t                denied[3];  /* The number of clients on a Unix
+	                                       socket that policy_admit_uid()
+	                                       refused since the last tick.
+	                                       The index is the answer of
+	                                       policy_admit_uid(). */
+	uint32_t                last[3];    /* The uid of the last client that
+	                                       policy_admit_uid() refused, for
+	                                       each answer. */
 	uint32_t                open;       /* bool: accepting */
 	uint32_t                anyone;     /* bool: clients that show no token
 	                                       may call tools from beyond
@@ -2657,12 +2669,50 @@ httpd_home_place (struct httpd_home  *home,
 	loop_post(lane->loop, &conn->msg);
 }
 
+/* HEAD() is the head of a 403 response whose body has @p length bytes, and
+ * BODY() is the body of a JSON-RPC error with @p text.  FORBIDDEN() defines
+ * the response @p name and checks that its body has @p length bytes.
+ */
+#define HEAD(length) "HTTP/1.1 403 Forbidden\r\n"                \
+                     "Content-Type: application/json\r\n"        \
+                     "Connection: close\r\n"                     \
+                     "Content-Length: " #length "\r\n\r\n"
+#define BODY(text) "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600," \
+                   "\"message\":\"Forbidden: " text "\"}}"
+#define FORBIDDEN(name, length, text)                                   \
+        static char const name[] = HEAD(length) BODY(text);             \
+        static_assert(sizeof name - sizeof HEAD(length) == length)
+FORBIDDEN(httpd_unmapped, 136, "the uid cannot be mapped (no credentials, "
+                               "or the kernel's overflow uid)");
+FORBIDDEN(httpd_subordinate, 122, "the uid is a subordinate id of another "
+                                  "user (/etc/subuid)");
+#undef FORBIDDEN
+#undef BODY
+#undef HEAD
+
+/* The response to a client on a Unix socket that policy_admit_uid()
+ * refuses, and the name of the refusal in the log, by the answer of
+ * policy_admit_uid().
+ */
+static struct {
+	struct cstr_view response;
+	char const      *name;
+} const httpd_refusals[] = {
+	[POLICY_UNMAPPED]    = { { httpd_unmapped, sizeof httpd_unmapped - 1 },
+	                         "unmapped uid" },
+	[POLICY_SUBORDINATE] = { { httpd_subordinate, sizeof httpd_subordinate - 1 },
+	                         "subordinate uid" },
+};
+static_assert(ARRAY_SIZE(httpd_refusals) == ARRAY_SIZE((struct httpd_home){}.denied));
+
 /*
  * Place the client on @p fd, from listener @p l, unless its address is at
- * the cap, which is said in plain HTTP but to TLS's clients.  A client
- * beyond the descriptor budget, or one accepted in the spare descriptor's
- * place (@p shed), has the least recently active idle connection closed to
- * make room, or is turned away if none is idle.
+ * the cap, which is said in plain HTTP but to TLS's clients.  A client on a
+ * Unix socket whose uid policy_admit_uid() refuses gets a 403 response
+ * before it counts against the cap.  A client beyond the descriptor budget,
+ * or one accepted in the spare descriptor's place (@p shed), has the least
+ * recently active idle connection closed to make room, or is turned away if
+ * none is idle.
  */
 static void
 httpd_home_take (struct httpd_home             *home,
@@ -2671,6 +2721,7 @@ httpd_home_take (struct httpd_home             *home,
                  struct sockaddr_storage const *ss,
                  bool                           shed)
 {
+	static_assert(_Generic((uid_t)0, uint32_t: true, default: false));
 	/* A Unix socket's client is on this machine, and counts as its user,
 	 * against the cap. */
 	uint64_t addr[2] = { UINT64_MAX };
@@ -2686,6 +2737,15 @@ httpd_home_take (struct httpd_home             *home,
 		++home->refused;
 		return;
 	} else {
+		enum policy_admit admit = policy_admit_uid(home->policy, cred.uid);
+		if (admit != POLICY_ADMIT) {
+			struct cstr_view const r = httpd_refusals[admit].response;
+			(void)send(fd, r.data, r.len, MSG_DONTWAIT | MSG_NOSIGNAL);
+			close(fd);
+			++home->denied[admit];
+			home->last[admit] = cred.uid;
+			return;
+		}
 		addr[1] = cred.uid;
 		user = &cred;
 	}
@@ -2828,6 +2888,16 @@ httpd_home_tick (struct loop       *loop,
 		LOG(LOG_WARN, "connection cap per client: turned %" PRIu32
 		    " clients away", home->capped);
 	home->refused = home->capped = 0;
+	uint32_t denied = 0;
+	for (size_t i = 0; i < ARRAY_SIZE(home->denied); ++i)
+		denied |= home->denied[i];
+	if (denied)
+		LOG(LOG_WARN, "Unix socket peers turned away:");
+	for (size_t i = 0; i < ARRAY_SIZE(home->denied); ++i)
+		if (home->denied[i])
+			LOG(LOG_WARN, "  %-15s  %" PRIu32 " (last uid %" PRIu32 ")",
+			    httpd_refusals[i].name, home->denied[i], home->last[i]);
+	memset(home->denied, 0, sizeof home->denied);
 	if (home->spare_fd < 0)
 		(void)httpd_home_spare(home);
 	if (home->open)
@@ -3164,6 +3234,7 @@ httpd_home_create (struct loop            *loop,
 		.clients = clients,
 		.calls = calls,
 		.ctx = cfg->tls ? tls_ctx_get(cfg->tls) : nullptr,
+		.policy = policy_get(cfg->policy),
 		.rng = loop_clock() | 1,
 		.seed = util_seed(),
 		.cap = cfg->limits.clients,
@@ -3210,6 +3281,7 @@ httpd_home_destroy (struct httpd_home **p_home)
 	free(home->clients);
 	free(home->listeners);
 	tls_ctx_put(home->ctx);
+	policy_put(home->policy);
 	door = nullptr;
 	free(home);
 }
@@ -3235,6 +3307,10 @@ httpd_home_policy (struct httpd_home *home,
 	/* Once the door is open, every client loop runs. */
 	if (!home->open)
 		return EAGAIN;
+	/* Home checks the uid of each new client on a Unix socket with this
+	 * policy (policy_admit_uid()). */
+	policy_put(home->policy);
+	home->policy = policy_get(policy);
 	/* A policy the loop has yet to take is replaced, its message still on
 	 * its way; else the message goes again. */
 	struct httpd_hub *hub = home->hub;

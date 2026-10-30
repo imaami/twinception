@@ -4,10 +4,12 @@
  */
 #include <errno.h>
 #include <grp.h>
+#include <inttypes.h>
 #include <json-c/json.h>
 #include <openssl/sha.h>
 #include <stdarg.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -58,9 +60,27 @@ struct policy_gid {
 	uint32_t role;
 };
 
-/* One block has a policy and, after it, its tokens, roles, groups and the
- * names of its clients for the log, in that order, so that each is
- * aligned.
+/* A range of subordinate ids from /etc/subuid or /etc/subgid, by its first
+ * id first.
+ */
+struct policy_range {
+	uint32_t first;
+	uint32_t last;
+};
+
+/* The files that list the ranges of subordinate ids that are delegated to
+ * users for user namespaces (newuidmap, newgidmap), and the files of the
+ * ids that the kernel reports for a uid or a gid that the user namespace of
+ * askai cannot map.
+ */
+static char const POLICY_SUBUID[] = "/etc/subuid";
+static char const POLICY_SUBGID[] = "/etc/subgid";
+static char const POLICY_OVERFLOWUID[] = "/proc/sys/kernel/overflowuid";
+static char const POLICY_OVERFLOWGID[] = "/proc/sys/kernel/overflowgid";
+
+/* One block has a policy and, after it, its tokens, roles, groups,
+ * subordinate uids and the names of its clients for the log, in that
+ * order, so that each is aligned.
  */
 struct policy {
 	tool_mask            allowed;                  /* the tools that the
@@ -71,41 +91,69 @@ struct policy {
 	struct policy_gid   *groups;                   /* in the configuration's
 	                                                  order, which the first
 	                                                  that a user is in wins */
+	struct policy_range *subuids;                  /* the ranges of
+	                                                  /etc/subuid, sorted and
+	                                                  merged */
 	size_t               n_tokens;
 	size_t               n_roles;
 	size_t               n_groups;
+	size_t               n_subuids;
 	int64_t              anonymous[POLICY_KINDS];  /* a role; -1: none */
 	struct tool_text     strangers[POLICY_KINDS];  /* the names of anonymous
 	                                                  TCP clients for the
 	                                                  log, "anonymous KIND
 	                                                  (role NAME)"; empty in
 	                                                  askai's own policy */
-	uint64_t             unix_token;               /* bool: a client on a
-	                                                  Unix socket may send
-	                                                  ASKAI_TOKEN; widened
-	                                                  over the padding */
+	uint32_t             overflow_uid;             /* the kernel's overflow
+	                                                  uid, which
+	                                                  policy_admit_uid()
+	                                                  refuses */
+	uint32_t             overflow_gid;             /* the kernel's overflow
+	                                                  gid, which unix-groups
+	                                                  may not name */
+	int                  overflow_errors[2];       /* The errors that kept
+	                                                  the overflow uid and
+	                                                  gid from being read,
+	                                                  or 0 for an id that
+	                                                  was read.  An id that
+	                                                  was not read is
+	                                                  65534. */
+	uint64_t             unix_token;               /* Nonzero if a client
+	                                                  on a Unix socket may
+	                                                  send ASKAI_TOKEN.  It
+	                                                  is a bool, widened to
+	                                                  fill the padding at
+	                                                  the end of the
+	                                                  struct. */
 };
 
 static_assert(sizeof "anonymous loopback (role )" + POLICY_NAME <= POLICY_WHO);
 static_assert(alignof (struct policy_token) <= alignof (struct policy) &&
               alignof (struct policy_role) <= alignof (struct policy_token) &&
-              alignof (struct policy_gid) <= alignof (struct policy_role));
+              alignof (struct policy_gid) <= alignof (struct policy_role) &&
+              alignof (struct policy_range) <= alignof (struct policy_gid));
 
 /* What policy_create() works from, and where it says what is wrong. */
 struct policy_build {
-	tool_mask           upstream;  /* the tools that askai can offer to the
-	                                  upstream */
-	struct policy      *p;
-	struct json_object *roles;    /* the file's, or nullptr */
-	char const *const  *tools;
-	char               *why;
-	char               *buf;      /* for group lookups, kept while the
-	                                 policy is made */
-	char               *names;    /* where the next name for the log goes,
-	                                 in the policy's block */
-	size_t              n_tools;
-	size_t              len;
-	size_t              size;     /* of buf */
+	tool_mask            upstream;  /* the tools that askai can offer to
+	                                   the upstream */
+	struct policy       *p;
+	struct json_object  *roles;     /* the member roles of the file, or
+	                                   nullptr */
+	char const *const   *tools;
+	char                *why;
+	char                *buf;       /* the buffer for group lookups, which
+	                                   policy_create() frees at the end */
+	char                *names;     /* the place in the policy's block
+	                                   where the next name for the log is
+	                                   written */
+	struct policy_range *subgids;   /* the ranges of /etc/subgid, sorted
+	                                   and merged, which policy_create()
+	                                   frees at the end */
+	size_t               n_tools;
+	size_t               len;
+	size_t               size;      /* the size of buf */
+	size_t               n_subgids;
 };
 
 /* Say what is wrong; returns EINVAL. */
@@ -238,6 +286,172 @@ policy_number (char const *name,
 		return false;
 	*id = (uint32_t)n;
 	return true;
+}
+
+/* Read the number at @p s, a field of /etc/subuid or /etc/subgid, into
+ * @p *n.  newuidmap and newgidmap read the fields with strtoul() and base
+ * 0, so this function reads them with strtoull() and base 0 too: decimal,
+ * hexadecimal after "0x", or octal after "0".  Returns the end of the
+ * number, or nullptr if there is no number, if it has a minus sign, or if
+ * it does not fit in 64 bits.
+ */
+static char const *
+policy_range_number (char const *s,
+                     uint64_t   *n)
+{
+	char *end;
+	/* strtoull() leaves errno as it was on success. */
+	errno = 0;
+	unsigned long long v = strtoull(s, &end, 0);
+	if (end == s || errno || memchr(s, '-', (size_t)(end - s)))
+		return nullptr;
+	*n = v;
+	return end;
+}
+
+/* Parse @p line of /etc/subuid or /etc/subgid, "OWNER:START:COUNT", into
+ * @p *r.  A range that would end above UINT32_MAX ends at UINT32_MAX,
+ * because some versions of newuidmap accept a COUNT that large.  Returns
+ * false for a line without that form, with a START above UINT32_MAX, or
+ * with a COUNT of 0.  The parser accepts text after COUNT, which newuidmap
+ * refuses.  For such a line askai refuses uids that newuidmap does not
+ * map, so askai can refuse more clients than needed, but never fewer.
+ */
+static bool
+policy_range_parse (char const          *line,
+                    struct policy_range *r)
+{
+	uint64_t start = 0;
+	uint64_t count = 0;
+	char const *s = strchr(line, ':');
+	if (!s || !(s = policy_range_number(s + 1, &start)) || *s != ':' ||
+	    !policy_range_number(s + 1, &count) || !count || start > UINT32_MAX)
+		return false;
+	/* The number of ids above START, up to UINT32_MAX.  Neither this
+	 * subtraction nor the addition below can wrap around. */
+	uint64_t room = UINT32_MAX - start;
+	*r = (struct policy_range){
+		.first = (uint32_t)start,
+		.last = (uint32_t)(start + (count - 1 < room ? count - 1 : room))
+	};
+	return true;
+}
+
+/* Write to b->why that the file @p path cannot be read because of @p e,
+ * unless @p e is ENOMEM.  Returns @p e.
+ */
+static int
+policy_build_unreadable (struct policy_build *b,
+                         char const          *path,
+                         int                  e)
+{
+	if (e != ENOMEM)
+		util_format(b->why, b->len, "cannot read %s: %s", path, strerror(e));
+	return e;
+}
+
+/* Read the ranges of subordinate ids in @p path, /etc/subuid or
+ * /etc/subgid, into @p *p_ranges and @p *p_n, sorted by their first id and
+ * merged where they overlap or touch.  Lines that policy_range_parse()
+ * refuses are skipped.  A missing file has no ranges.  Returns 0, ENOMEM,
+ * or the error that kept the file from being read, with the reason in
+ * b->why.
+ */
+static int
+policy_build_ranges (struct policy_build  *b,
+                     char const           *path,
+                     struct policy_range **p_ranges,
+                     size_t               *p_n)
+{
+	*p_ranges = nullptr;
+	*p_n = 0;
+	FILE *f = fopen(path, "re");
+	if (!f)
+		return errno == ENOENT ? 0 : policy_build_unreadable(b, path, errno);
+	int e = 0;
+	struct policy_range *ranges = nullptr;
+	size_t n = 0;
+	size_t room = 0;
+	char *line = nullptr;
+	size_t size = 0;
+	while (getline(&line, &size, f) >= 0) {
+		struct policy_range r;
+		if (!policy_range_parse(line, &r))
+			continue;
+		if (n == room) {
+			room = room ? 2 * room : 16;
+			struct policy_range *more = reallocarray(ranges, room, sizeof *ranges);
+			if (!more) {
+				e = ENOMEM;
+				break;
+			}
+			ranges = more;
+		}
+		ranges[n++] = r;
+	}
+	/* getline() also fails at the end of the file, which is no error. */
+	if (!e && !feof(f))
+		e = errno ? errno : EIO;
+	free(line);
+	line = nullptr;
+	(void)fclose(f);
+	if (e) {
+		free(ranges);
+		ranges = nullptr;
+		return policy_build_unreadable(b, path, e);
+	}
+	if (n)
+		qsort(ranges, n, sizeof *ranges, policy_by_id);
+	size_t k = 0;
+	for (size_t i = 1; i < n; ++i) {
+		if (ranges[i].first > (uint64_t)ranges[k].last + 1)
+			ranges[++k] = ranges[i];
+		else if (ranges[i].last > ranges[k].last)
+			ranges[k].last = ranges[i].last;
+	}
+	*p_ranges = ranges;
+	*p_n = n ? k + 1 : 0;
+	return 0;
+}
+
+/* Whether @p id lies in one of the @p n sorted and disjoint @p ranges. */
+static bool
+policy_ranges_have (struct policy_range const *ranges,
+                    size_t                     n,
+                    uint32_t                   id)
+{
+	size_t lo = 0;
+	size_t hi = n;
+	while (lo < hi) {
+		size_t mid = lo + (hi - lo) / 2;
+		if (ranges[mid].last < id)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo < n && ranges[lo].first <= id;
+}
+
+/* Read the decimal id in @p path, /proc/sys/kernel/overflowuid or
+ * overflowgid, into @p *id.  If the file cannot be read, @p *id is 65534,
+ * the kernel's default.  Returns 0, or the error that kept the file from
+ * being read, EILSEQ if it holds no id.
+ */
+static int
+policy_read_overflow (char const *path,
+                      uint32_t   *id)
+{
+	*id = 65534;
+	FILE *f = fopen(path, "re");
+	if (!f)
+		return errno;
+	char text[16];
+	int e = fgets(text, sizeof text, f) ? 0 : ferror(f) ? errno : EILSEQ;
+	(void)fclose(f);
+	if (e)
+		return e;
+	text[strcspn(text, "\n")] = '\0';
+	return policy_number(text, id) ? 0 : EILSEQ;
 }
 
 /* Bytes of the buffer for one group entry from NSS, at most.  A group
@@ -553,6 +767,17 @@ policy_build_groups (struct policy_build *b,
 		int e = policy_build_gid(b, it.key, &g->gid);
 		if (e)
 			return e;
+		/* A process in a user namespace can have such a gid without
+		 * being a member of the group, so the gid must not give a role.
+		 * The kernel reports the overflow gid for every gid that the user
+		 * namespace of askai cannot map. */
+		if (g->gid == b->p->overflow_gid)
+			return policy_build_fail(b, "unix-groups: %s: gid %" PRIu32 " is the "
+			                         "kernel's overflow gid", it.key, g->gid);
+		if (policy_ranges_have(b->subgids, b->n_subgids, g->gid))
+			return policy_build_fail(b, "unix-groups: %s: gid %" PRIu32 " is a "
+			                         "subordinate id of another user (%s)", it.key,
+			                         g->gid, POLICY_SUBGID);
 		g++->role = (uint32_t)r;
 		++b->p->n_groups;
 	}
@@ -723,28 +948,49 @@ policy_create (struct json_object *file,
 	if (policy_members(ids))
 		json_object_object_foreachC(ids, it)
 			n_tokens += policy_elements(it.val, "tokens");
-	struct policy *p = calloc(1, sizeof *p + n_tokens * sizeof *p->tokens +
-	                             n_roles * sizeof *p->roles +
-	                             n_groups * sizeof *p->groups + n_names);
-	if (!p) {
+	/* The subordinate uids go into the policy's block, and the
+	 * subordinate gids are needed only to check unix-groups. */
+	struct policy_range *subuids;
+	size_t n_subuids;
+	*e = policy_build_ranges(&b, POLICY_SUBUID, &subuids, &n_subuids);
+	if (!*e && n_groups)
+		*e = policy_build_ranges(&b, POLICY_SUBGID, &b.subgids, &b.n_subgids);
+	struct policy *p = nullptr;
+	if (!*e && !(p = calloc(1, sizeof *p + n_tokens * sizeof *p->tokens +
+	                           n_roles * sizeof *p->roles +
+	                           n_groups * sizeof *p->groups +
+	                           n_subuids * sizeof *p->subuids + n_names)))
 		*e = ENOMEM;
+	if (*e) {
+		free(subuids);
+		subuids = nullptr;
+		free(b.subgids);
+		b.subgids = nullptr;
 		return nullptr;
 	}
 	atomic_init(&p->refs, 1);
 	p->tokens = (struct policy_token *)(p + 1);
 	p->roles = (struct policy_role *)(p->tokens + n_tokens);
 	p->groups = (struct policy_gid *)(p->roles + n_roles);
+	p->subuids = (struct policy_range *)(p->groups + n_groups);
 	p->n_roles = n_roles;
-	b.names = (char *)(p->groups + n_groups);
+	p->n_subuids = n_subuids;
+	if (n_subuids)
+		memcpy(p->subuids, subuids, n_subuids * sizeof *subuids);
+	free(subuids);
+	subuids = nullptr;
+	p->overflow_errors[0] = policy_read_overflow(POLICY_OVERFLOWUID, &p->overflow_uid);
+	p->overflow_errors[1] = policy_read_overflow(POLICY_OVERFLOWGID, &p->overflow_gid);
+	b.names = (char *)(p->subuids + n_subuids);
 	for (size_t k = 0; k < POLICY_KINDS; ++k)
 		p->anonymous[k] = -1;
 	b.p = p;
-	*e = 0;
 	if (mine)
 		*e = policy_build_file(&b, ids, groups, anon);
 	else
 		policy_build_own(&b, token);
 	free(b.buf);
+	free(b.subgids);
 	if (*e) {
 		policy_put(p);
 		return nullptr;
@@ -909,6 +1155,49 @@ policy_log_own (struct policy const *policy,
 		                 lent(ctx, r->tools, r->upstream));
 }
 
+/* Write the label of the uids of @p r into the @p size bytes at @p buf:
+ * "uid N" for one uid, else "uids FIRST-LAST".  Returns its length.
+ */
+static size_t
+policy_range_label (char                *buf,
+                    size_t               size,
+                    struct policy_range  r)
+{
+	if (r.first == r.last)
+		return util_format(buf, size, "uid %" PRIu32, r.first);
+	return util_format(buf, size, "uids %" PRIu32 "-%" PRIu32, r.first, r.last);
+}
+
+/* Log the uids of the clients on a Unix socket that policy_admit_uid()
+ * refuses, each with the reason, after a warning for each overflow id that
+ * could not be read.  The first column is as wide as the longest label.
+ */
+static void
+policy_log_peers (struct policy const *policy)
+{
+	static char const *const files[] = { POLICY_OVERFLOWUID, POLICY_OVERFLOWGID };
+	for (size_t i = 0; i < sizeof files / sizeof *files; ++i)
+		if (policy->overflow_errors[i])
+			LOG_ALL(LOG_WARN, "warning: cannot read %s: %s", files[i],
+			        strerror(policy->overflow_errors[i]));
+	char label[32];
+	int width = (int)sizeof "subordinate uids" - 1;
+	for (size_t i = 0; i < policy->n_subuids; ++i) {
+		int n = (int)policy_range_label(label, sizeof label, policy->subuids[i]);
+		width = n > width ? n : width;
+	}
+	LOG_ALL(LOG_INFO, "Unix socket peers refused:");
+	LOG_ALL(LOG_INFO, "  %-*s  no credentials", width, "uid 4294967295");
+	(void)util_format(label, sizeof label, "uid %" PRIu32, policy->overflow_uid);
+	LOG_ALL(LOG_INFO, "  %-*s  overflow uid", width, label);
+	if (!policy->n_subuids)
+		LOG_ALL(LOG_INFO, "  %-*s  none", width, "subordinate uids");
+	for (size_t i = 0; i < policy->n_subuids; ++i) {
+		(void)policy_range_label(label, sizeof label, policy->subuids[i]);
+		LOG_ALL(LOG_INFO, "  %-*s  subordinate (%s)", width, label, POLICY_SUBUID);
+	}
+}
+
 void
 policy_log (struct policy const *policy,
             struct json_object  *file,
@@ -926,6 +1215,7 @@ policy_log (struct policy const *policy,
 	struct json_object *anon = nullptr;
 	if (!policy_file(file, &roles, &ids, &groups, &anon)) {
 		policy_log_own(policy, tools, n_tools, lent, ctx);
+		policy_log_peers(policy);
 		return;
 	}
 	LOG_ALL(LOG_INFO, "policy: from the configuration file");
@@ -947,6 +1237,17 @@ policy_log (struct policy const *policy,
 	for (size_t i = 0; i < n_granted; ++i)
 		if (unlisted >> i & 1)
 			LOG_ALL(LOG_WARN, "  %s", tools[i]);
+	policy_log_peers(policy);
+}
+
+enum policy_admit
+policy_admit_uid (struct policy const *policy,
+                  uint32_t             uid)
+{
+	if (!policy || uid == UINT32_MAX || uid == policy->overflow_uid)
+		return POLICY_UNMAPPED;
+	return policy_ranges_have(policy->subuids, policy->n_subuids, uid)
+	     ? POLICY_SUBORDINATE : POLICY_ADMIT;
 }
 
 /* Grant @p role, if it is one, to the client of @p principal, which the

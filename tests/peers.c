@@ -1,6 +1,7 @@
 /**
- * @file LD_PRELOAD shim for tests/askai.py.  It lets askai see groups that
- * the test machine does not have, and lets a test keep askai dumpable.
+ * @file LD_PRELOAD shim for tests/askai.py.  It lets askai see users, groups
+ * and Unix socket peers that the test machine does not have, and lets a
+ * test keep askai dumpable.
  *
  * getgrnam_r() answers these group names itself, and passes every other
  * name on to the C library:
@@ -9,6 +10,16 @@
  * - "peers-eio" fails with EIO;
  * - "peers-gone" fails with ENOENT.
  *
+ * With PEERS_CRED set, it names a file that holds a uid, a gid and any
+ * number of further gids, in decimal and separated by spaces.  The shim
+ * reads the file at each call of getsockopt() with SO_PEERCRED, which then
+ * reports the uid and the gid, and with SO_PEERGROUPS, which then reports
+ * the further gids.  A test can change the file between connections.
+ *
+ * With PEERS_SUBUID, PEERS_SUBGID, PEERS_OVERFLOWUID or PEERS_OVERFLOWGID
+ * set, fopen() of /etc/subuid, /etc/subgid, /proc/sys/kernel/overflowuid or
+ * /proc/sys/kernel/overflowgid opens the file that the variable names.
+ *
  * With PEERS_DUMPABLE set, prctl(PR_SET_DUMPABLE) does nothing and returns
  * 0, so that a test can list /proc/PID/fd of askai.
  */
@@ -16,12 +27,26 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <grp.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+/* The next definition of the function @p name, after this library's. */
+static void *
+peers_next (char const *name)
+{
+	void *sym = dlsym(RTLD_NEXT, name);
+	if (!sym)
+		abort();
+	return sym;
+}
 
 int
 getgrnam_r (char const    *name,
@@ -36,7 +61,7 @@ getgrnam_r (char const    *name,
 	static char *members[] = { NULL };
 	if (!real) {
 		/* POSIX makes function and object pointers alike; ISO C does not. */
-		void *sym = dlsym(RTLD_NEXT, "getgrnam_r");
+		void *sym = peers_next("getgrnam_r");
 		memcpy(&real, &sym, sizeof real);
 	}
 	*result = NULL;
@@ -68,7 +93,7 @@ prctl (int option,
 {
 	static int (*real) (int, ...);
 	if (!real) {
-		void *sym = dlsym(RTLD_NEXT, "prctl");
+		void *sym = peers_next("prctl");
 		memcpy(&real, &sym, sizeof real);
 	}
 	/* The C library's prctl() reads four more arguments, as this does. */
@@ -81,4 +106,119 @@ prctl (int option,
 	if (option == PR_SET_DUMPABLE && getenv("PEERS_DUMPABLE"))
 		return 0;
 	return real(option, arg[0], arg[1], arg[2], arg[3]);
+}
+
+/* Read the ids in the file that PEERS_CRED names into @p ids, at most
+ * @p max of them.  Returns how many there are, or -1 if the file cannot be
+ * read.
+ */
+static long
+peers_cred (unsigned long *ids,
+            size_t         max)
+{
+	char const *path = getenv("PEERS_CRED");
+	int fd = path ? open(path, O_RDONLY | O_CLOEXEC) : -1;
+	if (fd < 0)
+		return -1;
+	char text[4096];
+	ssize_t len = read(fd, text, sizeof text - 1);
+	close(fd);
+	if (len < 0)
+		return -1;
+	text[len] = '\0';
+	size_t n = 0;
+	for (char *s = text, *end; n < max; s = end) {
+		errno = 0;
+		ids[n] = strtoul(s, &end, 10);
+		if (end == s || errno)
+			break;
+		++n;
+	}
+	return (long)n;
+}
+
+int
+getsockopt (int        fd,
+            int        level,
+            int        name,
+            void      *value,
+            socklen_t *len)
+{
+	static int (*real) (int, int, int, void *, socklen_t *);
+	if (!real) {
+		void *sym = peers_next("getsockopt");
+		memcpy(&real, &sym, sizeof real);
+	}
+	unsigned long ids[64];
+	long n = level != SOL_SOCKET || (name != SO_PEERCRED && name != SO_PEERGROUPS)
+	       ? -1 : peers_cred(ids, sizeof ids / sizeof *ids);
+	if (n < 2)
+		return real(fd, level, name, value, len);
+	if (name == SO_PEERCRED) {
+		int e = real(fd, level, name, value, len);
+		if (e)
+			return e;
+		struct ucred *cred = value;
+		cred->uid = (uid_t)ids[0];
+		cred->gid = (gid_t)ids[1];
+		return 0;
+	}
+	socklen_t need = (socklen_t)((size_t)(n - 2) * sizeof(gid_t));
+	if (*len < need) {
+		*len = need;
+		errno = ERANGE;
+		return -1;
+	}
+	gid_t *groups = value;
+	for (long i = 2; i < n; ++i)
+		groups[i - 2] = (gid_t)ids[i];
+	*len = need;
+	return 0;
+}
+
+/* The file that the variable of the shim opens in place of @p path, or
+ * @p path itself.
+ */
+static char const *
+peers_path (char const *path)
+{
+	static struct {
+		char const *path;
+		char const *variable;
+	} const files[] = {
+		{ "/etc/subuid",                  "PEERS_SUBUID"      },
+		{ "/etc/subgid",                  "PEERS_SUBGID"      },
+		{ "/proc/sys/kernel/overflowuid", "PEERS_OVERFLOWUID" },
+		{ "/proc/sys/kernel/overflowgid", "PEERS_OVERFLOWGID" },
+	};
+	for (size_t i = 0; i < sizeof files / sizeof *files; ++i) {
+		char const *other = getenv(files[i].variable);
+		if (other && !strcmp(path, files[i].path))
+			return other;
+	}
+	return path;
+}
+
+FILE *
+fopen (char const *path,
+       char const *mode)
+{
+	static FILE *(*real) (char const *, char const *);
+	if (!real) {
+		void *sym = peers_next("fopen");
+		memcpy(&real, &sym, sizeof real);
+	}
+	return real(peers_path(path), mode);
+}
+
+FILE *
+fopen64 (char const *path,
+         char const *mode)
+{
+	static FILE *(*real) (char const *, char const *);
+	if (!real) {
+		void *sym = peers_next("fopen64");
+		memcpy(&real, &sym, sizeof real);
+	}
+	return real(peers_path(path), mode);
 }

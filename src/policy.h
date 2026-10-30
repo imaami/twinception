@@ -61,6 +61,24 @@ static constexpr size_t POLICY_NAME = 64;
  */
 static constexpr size_t POLICY_WHO = sizeof "uid 4294967295 (identity )" + POLICY_NAME;
 
+/** Whether a client on a Unix socket may connect at all, by its uid, as
+ *  policy_admit_uid() answers.
+ */
+enum policy_admit {
+	POLICY_ADMIT,        /**< The client may connect, and policy_grant()
+	                          decides what it may do. */
+	POLICY_UNMAPPED,     /**< The client is refused.  Its uid is
+	                          4294967295, which a socket without
+	                          credentials reports, or the kernel's overflow
+	                          uid, which the kernel reports for every uid
+	                          that the user namespace of askai cannot
+	                          map. */
+	POLICY_SUBORDINATE,  /**< The client is refused.  Its uid is in a
+	                          range of /etc/subuid, so the user that the
+	                          range is delegated to can use the uid in a
+	                          user namespace. */
+};
+
 /** The answer of policy_grant(). */
 enum policy_verdict {
 	POLICY_GRANTED,     /**< the client may connect */
@@ -123,10 +141,16 @@ struct policy_grant {
  * others, but grants them to no client.  @p upstream is the mask of the
  * tools that askai can offer to the upstream.
  *
+ * The function reads the subordinate uids of /etc/subuid, which
+ * policy_admit_uid() refuses, and the kernel's overflow uid and gid.  If
+ * "unix-groups" names a group, it also reads /etc/subgid.  It refuses a
+ * group in "unix-groups" whose gid is subordinate or the overflow gid.
+ *
  * Returns the policy with one reference.  On failure it returns nullptr and
- * stores the error number in @p *e.  The error number is ENOMEM, or EINVAL
- * if the file is wrong.  For EINVAL the function writes a message of at
- * most @p len bytes to @p why.
+ * stores the error number in @p *e.  The error number is ENOMEM, EINVAL if
+ * the file is wrong, or the error that kept /etc/subuid or /etc/subgid
+ * from being read.  For any error but ENOMEM, the function writes a
+ * message of at most @p len bytes to @p why.
  */
 extern struct policy *
 policy_create (struct json_object *file,
@@ -165,8 +189,10 @@ policy_put (struct policy *policy);
  * metrics; each identity with its role; each Unix group with its role; and
  * the role of each kind of anonymous client.  Then it logs at LOG_WARN a
  * list of the first @p n_granted tools that a client may get, but that no
- * role grants and no role lends to the upstream.  The lines have no rate
- * limit.
+ * role grants and no role lends to the upstream.  For both kinds of
+ * policy, it ends with the list of the uids that policy_admit_uid()
+ * refuses, after a warning at LOG_WARN for an overflow id that it could
+ * not read.  The lines have no rate limit.
  */
 extern void
 policy_log (struct policy const *policy,
@@ -206,5 +232,16 @@ policy_grant (struct policy const      *policy,
 extern void
 policy_sort_ids (uint32_t *ids,
                  size_t    n);
+
+/**
+ * Decides whether a client on a Unix socket whose uid is @p uid, as
+ * SO_PEERCRED reports it, may connect at all.  The answer does not depend
+ * on the roles: a refused uid is refused under every policy, askai's own
+ * included.  A null @p policy admits no uid, and the answer is then
+ * POLICY_UNMAPPED.
+ */
+extern enum policy_admit
+policy_admit_uid (struct policy const *policy,
+                  uint32_t             uid);
 
 #endif /* TWINCEPTION_SRC_POLICY_H_ */

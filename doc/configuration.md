@@ -130,7 +130,11 @@ applies these members:
 
 - `roles`, `identities`, `unix-groups` and `anonymous`.  The new policy
   applies to the requests that begin after the reload.  The requests under
-  way finish under the old policy.
+  way finish under the old policy.  The reload also reads `/etc/subuid`
+  and the kernel's overflow uid and gid again, and `/etc/subgid` if
+  `unix-groups` names a group (section [Clients that askai refuses on a
+  Unix socket](#clients-that-askai-refuses-on-a-unix-socket)).  The new
+  ranges apply to the connections that `askai` accepts after the reload.
 - `tls-cert`, `tls-key` and `tls-allow-rsa` of `service`, if `askai`
   serves a `tls:` listener.  New connections use the new certificate and
   key.
@@ -208,6 +212,12 @@ objects of the built-in tools in the member `tools` turn tools on as their
 options do, such as `"enabled": true` in `tools.man` for `--man`.  The
 other members and the other forms of `tools` turn no tool on.  They can deny each of these tools but `ask_ai`, to clients,
 to the upstream model, or to both (section [Tools](#tools)).
+
+As `askai` accepts a connection on a Unix socket, it refuses the client
+with the status 403 if the uid of the client is in a range of
+`/etc/subuid`, is 4294967295, or is the kernel's overflow uid.  This holds
+under every policy (section [Clients that askai refuses on a Unix
+socket](#clients-that-askai-refuses-on-a-unix-socket)).
 
 The policy sets which client may call which of the tools that `tools` allows
 clients.  `askai` uses its own policy when there is no file, and when the
@@ -1431,6 +1441,42 @@ client is its effective uid (`SO_PEERCRED`).  The groups of the client are
 its effective gid (`SO_PEERCRED`) and its supplementary groups
 (`SO_PEERGROUPS`).  After `newgrp`, or in a set-group-ID program, the
 effective gid can differ from the primary group of the user.
+
+A group in `unix-groups` may not have a gid in a range of `/etc/subgid`, or
+the kernel's overflow gid (`/proc/sys/kernel/overflowgid`, usually 65534).
+`askai` then stops with exit status 2 at start, and a reload keeps the old
+policy.  A process in a user namespace can have such a gid without being a
+member of the group, so such a gid gives no role.
+
+#### Clients that askai refuses on a Unix socket
+
+`askai` refuses some clients on a Unix socket under every policy, its own
+included.  It answers them with the status 403 as soon as it accepts the
+connection, before they count against `max-client-conns`:
+
+- a client whose uid is in a range of `/etc/subuid`.  The user that a
+  range is delegated to can run processes with the uids of the range in a
+  user namespace (`newuidmap`), so such a uid does not identify the user
+  of the account that has the uid;
+- uid 4294967295, which the kernel reports for a socket without
+  credentials;
+- the kernel's overflow uid (`/proc/sys/kernel/overflowuid`, usually
+  65534).  The kernel reports it for every uid that the user namespace of
+  `askai` cannot map.  So if 65534 is the overflow uid, a process that runs
+  as `nobody` is refused.
+
+`askai` reads `/etc/subuid` as it starts and on each reload, and
+`/etc/subgid` only when `unix-groups` names a group.  It does not read the
+other sources that `/etc/nsswitch.conf` may name for `subid`.  It reads
+START and COUNT of a line `OWNER:START:COUNT` as `newuidmap` reads them:
+decimal, hexadecimal after `0x`, or octal after `0`.  A range that would
+end above uid 4294967295 ends there.  A missing file has no ranges.  If a
+file that `askai` reads exists but cannot be read, `askai` stops with exit
+status 2 at start, and a reload keeps the old policy.  If `askai` cannot read the overflow uid or gid, as with
+systemd's `ProcSubset=pid`, it uses 65534 and logs a warning.  The
+startup report lists the uids that `askai` refuses under "Unix socket
+peers refused", and every 5 seconds `askai` logs how many clients it
+refused under "Unix socket peers turned away".
 
 #### `anonymous`
 

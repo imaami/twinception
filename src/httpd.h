@@ -156,8 +156,10 @@ extern void
 httpd_home_open (struct httpd_home *home);
 
 /** Have every client loop's server take @p policy, a reference each, for
- *  the requests that begin from then on, and let go of its last.  Returns 0,
- *  or EAGAIN unless the door is open, as before every client loop runs and
+ *  the requests that begin from then on, and let go of its last.  Home
+ *  also takes a reference, and from then on checks the uid of each new
+ *  client on a Unix socket with it (policy_admit_uid()).  Returns 0, or
+ *  EAGAIN unless the door is open, as before every client loop runs and
  *  once draining.
  */
 extern int

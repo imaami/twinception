@@ -374,9 +374,12 @@ config_usage (struct config const *cfg,
 	        "'Authorization: Bearer TOKEN' with that value as TOKEN, and these may\n"
 	        "request GET /metrics.  Otherwise askai accepts every client but one\n"
 	        "that sends a token on a Unix socket, and only clients on a Unix\n"
-	        "socket, or on loopback with no Host header or the Host\n"
-	        "localhost, 127.0.0.1 or [::1], may request GET /metrics, which returns\n"
-	        "metrics in the Prometheus text format.\n"
+	        "socket, or on loopback with no Host header or the Host localhost,\n"
+	        "127.0.0.1 or [::1], may request GET /metrics, which returns metrics in\n"
+	        "the Prometheus text format.\n"
+	        "Under every policy, askai refuses a client on a Unix socket whose uid\n"
+	        "is in a range of /etc/subuid, is 4294967295 or is the kernel's\n"
+	        "overflow uid (see doc/configuration.md).\n"
 	        "The member plugins of the configuration file is an array of the\n"
 	        "plugins that askai loads as it starts.  An element is the absolute\n"
 	        "path of a plugin, or an object whose member path is that path and\n"
@@ -394,8 +397,10 @@ config_usage (struct config const *cfg,
 	        "serve clients, and home accepts them and runs the upstream calls.\n"
 	        "With --config or a tls: listener, SIGHUP reloads the configuration file\n"
 	        "and the TLS certificate and key.  A reload applies only the members\n"
-	        "roles, identities, unix-groups and anonymous and the TLS files.  Other\n"
-	        "options need a restart.  A failed reload changes nothing.\n"
+	        "roles, identities, unix-groups and anonymous and the TLS files.  It\n"
+	        "also reads /etc/subuid and the kernel's overflow ids again, and\n"
+	        "/etc/subgid if unix-groups names a group.  Other options need a\n"
+	        "restart.  A failed reload changes nothing.\n"
 	        "Without --config or a tls: listener, SIGHUP stops askai as SIGTERM does.\n"
 	        "The first SIGINT or SIGTERM ends the tool calls under way with an error,\n"
 	        "finishes the other requests and exits 0.  During that shutdown, a second\n"
@@ -2273,8 +2278,10 @@ config_policy (struct config *cfg)
 	                            run->tools_clients, upstream, why, sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
+	/* Only EINVAL is about the file.  Another error is about a file that
+	 * the policy reads, such as /etc/subuid, which the message names. */
 	if (e)
-		return config_complain(cfg, cfg->path, "%s", why);
+		return config_complain(cfg, e == EINVAL ? cfg->path : nullptr, "%s", why);
 	cfg->http.policy = cfg->policy;
 	config_note_token(cfg);
 	return 0;

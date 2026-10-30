@@ -992,7 +992,13 @@ header.  A Unix socket (`--listen unix:PATH`) knows its clients' users without
 a token; its file's mode follows `askai`'s umask, and `askai` removes it as it
 stops.  A client that sends a bearer token on a Unix socket gets the status 400,
 so that no user can act as another with a token, except for `ASKAI_TOKEN` under
-`askai`'s own policy.  With `--git`, whoever may call the tool may read the repositories
+`askai`'s own policy.  `askai` also refuses, with 403 as it accepts the
+connection, a client whose uid one user can give to processes of another: a
+subordinate uid of `/etc/subuid`, which the user that the range is delegated to
+can take in a user namespace, uid 4294967295, and the kernel's overflow uid
+(usually 65534, so a process that runs as `nobody` is refused).  It reads
+`/etc/subuid` at start and on each reload, and the startup report lists the
+refused uids.  With `--git`, whoever may call the tool may read the repositories
 listed, and with `--upstream-tools`, so may the model that answers them.  An
 session's notes are readable by everyone allowed to call `notes`, including
 anonymous clients if the policy grants it.  Each caller writes only its own
@@ -1176,7 +1182,9 @@ Four more members define who may connect, and what each client may do:
   of their groups it names.  Their groups are the effective gid
   (`SO_PEERCRED`) and the supplementary groups (`SO_PEERGROUPS`) that they
   had when they connected.  After `newgrp`, the effective gid can differ
-  from the primary group.
+  from the primary group.  A group whose gid is in a range of `/etc/subgid`,
+  or is the kernel's overflow gid, stops `askai`, because a process in a user
+  namespace can have such a gid without being a member of the group.
 - **`anonymous`** names the role of a client that shows no token: `loopback`,
   one on loopback that names it as `localhost`, `127.0.0.1` or `[::1]`;
   `remote`, any other over TCP; `unix`, a user of a Unix socket that no

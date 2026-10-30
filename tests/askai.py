@@ -5842,6 +5842,165 @@ def check_unix(binary, up):
           "failed group lookups, stale and busy socket files: PASS")
 
 
+def check_peers(binary, up):
+    """askai refuses a client on a Unix socket whose uid a user namespace
+    can give to another user, with a 403 as it accepts the connection: a
+    subordinate uid of /etc/subuid, uid 4294967295 and the kernel's overflow
+    uid.  unix-groups may not name a subordinate gid of /etc/subgid or the
+    overflow gid.  A reload reads the files again.  tests/peers.c makes up
+    the credentials of the clients and the contents of the files."""
+    peers = shim("peers")
+    unmapped = ("Forbidden: the uid cannot be mapped (no credentials, or the kernel's "
+                "overflow uid)")
+    subordinate = "Forbidden: the uid is a subordinate id of another user (/etc/subuid)"
+    with tempfile.TemporaryDirectory() as d:
+        sock = f"{d}/askai.sock"
+        path = f"{d}/askai.json"
+        cred = f"{d}/cred"
+        files = {"PEERS_CRED": cred, "PEERS_SUBUID": f"{d}/subuid",
+                 "PEERS_SUBGID": f"{d}/subgid", "PEERS_OVERFLOWUID": f"{d}/overflowuid",
+                 "PEERS_OVERFLOWGID": f"{d}/overflowgid"}
+
+        def put(file, text):
+            with open(file, "w") as f:
+                f.write(text)
+        put(files["PEERS_SUBUID"], "x:100000:65536\nbad\ny:300000:10\n")
+        put(files["PEERS_SUBGID"], "x:100000:65536\n")
+        put(files["PEERS_OVERFLOWUID"], "70000\n")
+        put(files["PEERS_OVERFLOWGID"], "70001\n")
+
+        def peer(uid, *groups):
+            """The next client is @p uid, with the gid of the test and
+            @p groups."""
+            put(cred, " ".join(str(i) for i in (uid, os.getgid(), *groups)))
+
+        def refusal():
+            """The message of the 403 that the next client gets before it
+            sends anything."""
+            with socket.socket(socket.AF_UNIX) as conn:
+                conn.settimeout(10)
+                conn.connect(sock)
+                replies = Replies(conn)
+                status, body = replies.next()
+                assert replies.next() is None, "the connection stayed open"
+            assert status == 403, (status, body)
+            return body["error"]["message"]
+
+        def ask():
+            return uds_rpc(sock, "tools/call", {"name": "ask_ai", "arguments": {
+                "prompt": "Q"}})[0]
+
+        def listed(*items):
+            width = max(len(label) for label, _ in items)
+            return [f"{label:<{width}}  {why}" for label, why in items]
+
+        # askai's own policy, which lets a Unix socket's clients do everything.
+        with Askai(binary, "-u", up.url(), "-l", f"unix:{sock}", "--verbose",
+                   preload=peers, env=files) as ai:
+            ai.wait_list("Unix socket peers refused:", listed(
+                ("uid 4294967295", "no credentials"), ("uid 70000", "overflow uid"),
+                ("uids 100000-165535", "subordinate (/etc/subuid)"),
+                ("uids 300000-300009", "subordinate (/etc/subuid)")))
+            for uid in (100000, 165535, 300009):
+                peer(uid)
+                assert refusal() == subordinate, uid
+            for uid in (4294967295, 70000):
+                peer(uid)
+                assert refusal() == unmapped, uid
+            for uid in (99999, 165536, 300010, 4294967294):
+                peer(uid)
+                assert ask() == 200, uid
+                ai.wait_log(rf"^tool call ask_ai from uid {uid} answered ")
+            ai.wait_list("Unix socket peers turned away:", [
+                "unmapped uid     2 (last uid 70000)",
+                "subordinate uid  3 (last uid 300009)"], timeout=10)
+
+        # Without /etc/subuid no uid is subordinate.  If the overflow uid
+        # cannot be read, it is 65534.
+        missing = files | {"PEERS_SUBUID": f"{d}/none", "PEERS_OVERFLOWUID": f"{d}/none"}
+        with Askai(binary, "-u", up.url(), "-l", f"unix:{sock}", preload=peers,
+                   env=missing) as ai:
+            ai.wait_log(r"^warning: cannot read /proc/sys/kernel/overflowuid: "
+                        "No such file or directory$")
+            ai.wait_list("Unix socket peers refused:", listed(
+                ("uid 4294967295", "no credentials"), ("uid 65534", "overflow uid"),
+                ("subordinate uids", "none")))
+            peer(65534)
+            assert refusal() == unmapped
+            peer(100000)
+            assert uds_rpc(sock)[0] == 200
+
+        # newuidmap reads START and COUNT with base 0, and so does askai:
+        # 0x186a0 is 100000, and 0100000 is 32768 in octal.  A range that
+        # would end above uid 4294967295 ends there.
+        based = files | {"PEERS_SUBUID": f"{d}/subuid-based",
+                         "PEERS_SUBGID": f"{d}/subgid-based"}
+        put(based["PEERS_SUBUID"], "h:0x186a0:0x10000\no:0100000:65536\n"
+                                   "c:4000000000:4294967296\n")
+        put(based["PEERS_SUBGID"], "h:0x186a0:0x10000\no:0100000:65536\n")
+        with Askai(binary, "-u", up.url(), "-l", f"unix:{sock}", preload=peers,
+                   env=based) as ai:
+            ai.wait_list("Unix socket peers refused:", listed(
+                ("uid 4294967295", "no credentials"), ("uid 70000", "overflow uid"),
+                ("uids 32768-98303", "subordinate (/etc/subuid)"),
+                ("uids 100000-165535", "subordinate (/etc/subuid)"),
+                ("uids 4000000000-4294967295", "subordinate (/etc/subuid)")))
+            for uid in (32768, 98303, 100000, 165535, 4000000000, 4294967294):
+                peer(uid)
+                assert refusal() == subordinate, uid
+            for uid in (32767, 98304, 99999, 165536, 3999999999):
+                peer(uid)
+                assert uds_rpc(sock)[0] == 200, uid
+
+        # A gid above INT32_MAX gives a role.  A reload reads /etc/subuid
+        # again.
+        put(path, json.dumps(grouped({
+            "url": up.url(), "man": True, "roles": {"g": {"tools": ["man"]}},
+            "unix-groups": {"3000000000": "g"}})))
+        os.chmod(path, 0o600)
+        with Askai(binary, "-c", path, "-l", f"unix:{sock}", preload=peers,
+                   env=files) as ai:
+            peer(os.getuid(), 3000000000)
+            status, body = uds_rpc(sock)
+            assert status == 200 and [t["name"] for t in body["result"]["tools"]] == \
+                ["man"], (status, body)
+            peer(os.getuid())
+            assert uds_rpc(sock)[0] == 401
+            peer(500000, 3000000000)
+            assert uds_rpc(sock)[0] == 200
+            put(files["PEERS_SUBUID"], "x:100000:65536\nz:500000:5\n")
+            ai.proc.send_signal(signal.SIGHUP)
+            ai.wait_log(r"^configuration reloaded")
+            assert refusal() == subordinate
+
+        # unix-groups may not name a subordinate gid or the overflow gid, and
+        # askai stops if it cannot read /etc/subuid.
+        for policy, env, message in (
+                ({"unix-groups": {"100500": "g"}}, files,
+                 f"{path}: unix-groups: 100500: gid 100500 is a subordinate id of "
+                 "another user (/etc/subgid)"),
+                ({"unix-groups": {"100500": "g"}}, based,
+                 f"{path}: unix-groups: 100500: gid 100500 is a subordinate id of "
+                 "another user (/etc/subgid)"),
+                ({"unix-groups": {"40000": "g"}}, based,
+                 f"{path}: unix-groups: 40000: gid 40000 is a subordinate id of "
+                 "another user (/etc/subgid)"),
+                ({"unix-groups": {"70001": "g"}}, files,
+                 f"{path}: unix-groups: 70001: gid 70001 is the kernel's overflow gid"),
+                ({}, files | {"PEERS_SUBUID": d}, "cannot read /etc/subuid: Is a directory"),
+                ({"unix-groups": {"165536": "g"}}, files | {"PEERS_SUBGID": d},
+                 "cannot read /etc/subgid: Is a directory")):
+            put(path, json.dumps(grouped({"url": up.url(), "roles": {"g": {}}} | policy)))
+            run = subprocess.run([binary, "-c", path], env=preloaded(peers, **env),
+                                 capture_output=True, text=True, timeout=5)
+            assert run.returncode == 2 and message in run.stderr.splitlines(), \
+                (policy, run.stderr)
+    print("Unix socket peers: subordinate, overflow and missing uids refused with "
+          "403, decimal, hexadecimal and octal ranges, subordinate and overflow "
+          "gids refused in unix-groups, the lists at start and at the tick, and "
+          "a reload: PASS")
+
+
 def tls_files(d, name, kind="ec"):
     """A self-signed certificate for 127.0.0.1, of a key of @p kind, and the
     key, in @p d: (certificate's file, key's file)."""
@@ -13548,7 +13707,8 @@ def main():
                       check_isolation,
                       lambda binary, up: check_configuration(binary, up, godbolt),
                       check_allow, check_identities,
-                      check_reload, check_logs, check_unix, check_tls, check_metrics,
+                      check_reload, check_logs, check_unix, check_peers, check_tls,
+                      check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_git_scope, check_turns, check_notes, check_shared_notes,
