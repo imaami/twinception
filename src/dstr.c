@@ -57,10 +57,10 @@ dstr_len_ (size_t const        obj_size,
 		return dstr_sso_len_(obj_size, obj_raw);
 
 	if (dstr_is_ptr_(obj_size, obj_raw)) {
-		typedef uintptr_t obj_type[obj_size / sizeof (uintptr_t)];
+		typedef char *obj_type[obj_size / sizeof (char *)];
 		obj_type const *const dest = (typeof(dest))obj_raw;
-		if ((char const *)(*dest)[0] && (char const *)(*dest)[1])
-			return dstr_ptr_len_((uintptr_t const *)(obj_raw));
+		if ((*dest)[0] && (*dest)[1])
+			return dstr_ptr_len_(*dest);
 	}
 
 	return 0U;
@@ -74,9 +74,9 @@ dstr_space_left_ (size_t const        obj_size,
 		return dstr_sso_space_left_(obj_size, obj_raw);
 
 	if (dstr_is_ptr_(obj_size, obj_raw)) {
-		typedef uintptr_t obj_type[obj_size / sizeof (uintptr_t)];
+		typedef char *obj_type[obj_size / sizeof (char *)];
 		obj_type const *const dest = (typeof(dest))obj_raw;
-		if ((char const *)(*dest)[0] && (char const *)(*dest)[1])
+		if ((*dest)[0] && (*dest)[1])
 			return dstr_ptr_space_left_(obj_size, obj_raw);
 	}
 
@@ -105,7 +105,7 @@ dstr_init_n_ (size_t const      obj_size,
 	if (!len)
 		return 0;
 
-	typedef uintptr_t obj_type[obj_size / sizeof (uintptr_t)];
+	typedef char *obj_type[obj_size / sizeof (char *)];
 	obj_type *const dest = (typeof(dest))obj_raw;
 
 	if (len < obj_size) {
@@ -126,8 +126,8 @@ dstr_init_n_ (size_t const      obj_size,
 
 	(void)memcpy(buf, src_str, len);
 
-	(*dest)[0] = (uintptr_t)buf;
-	(*dest)[1] = (uintptr_t)&buf[len];
+	(*dest)[0] = (char *)buf;
+	(*dest)[1] = (char *)&buf[len];
 	dstr_last_uptr_(obj_size, obj_raw) = (uintptr_t)n_blocks
 	                                   << DSTR_BLK_COUNT_POS;
 	dstr_last_byte_(obj_size, obj_raw) |= DSTR_PTR_FLAG;
@@ -142,7 +142,7 @@ dstr_init_n_ (size_t const      obj_size,
  *
  * @param[in]  obj_size The object's size in bytes
  * @param[out] obj_raw  Pointer to the object itself, freshly initialized
- * @param[in]  src_str  Pointer to the source string, or `NULL`
+ * @param[in]  src_str  Pointer to the source string, or `nullptr`
  *
  * @return 0 on success or an errno value on failure
  */
@@ -159,8 +159,8 @@ dstr_init_ (size_t const      obj_size,
 /**
  * @brief Wipe and free a heap buffer
  *
- * @param[in] buf The buffer, or `NULL`
- * @param[in] end The end of the string in it, or `NULL`
+ * @param[in] buf The buffer, or `nullptr`
+ * @param[in] end The end of the string in it, or `nullptr`
  */
 void
 dstr_free_ (void *const buf,
@@ -191,16 +191,15 @@ dstr_info_ (size_t const        obj_size,
 		};
 
 	if (dstr_is_ptr_(obj_size, obj_raw)) {
-		typedef uintptr_t uptr_arr[obj_size / sizeof (uintptr_t)];
-		uptr_arr const *const uptr = (uptr_arr const *)obj_raw;
+		typedef char *obj_type[obj_size / sizeof (char *)];
+		obj_type const *const ptr = (typeof(ptr))obj_raw;
 
-		if ((unsigned char const *)(*uptr)[0] &&
-		    (unsigned char const *)(*uptr)[1]) {
+		if ((*ptr)[0] && (*ptr)[1]) {
 			size_t const blk = dstr_ptr_block_count_(obj_size,
 			                                         obj_raw);
 			if (blk) {
 				size_t const size = blk * DSTR_BLK_SIZE;
-				size_t const len = dstr_ptr_len_(*uptr);
+				size_t const len = dstr_ptr_len_(*ptr);
 				if (len < size) {
 					return (struct dstr_info){
 						.blocks = blk,
@@ -254,8 +253,8 @@ dstr_resize_ (size_t const  obj_size,
 	size_t new_size = n_blocks ? n_blocks * DSTR_BLK_SIZE : obj_size;
 	size_t orig_len = i.length;
 
-	typedef uintptr_t obj_type[obj_size / sizeof (uintptr_t)];
-	obj_type *const dest = (obj_type *)obj_raw;
+	typedef char *obj_type[obj_size / sizeof (char *)];
+	obj_type *const dest = (typeof(dest))obj_raw;
 
 	if (i.state == DSTR_IS_PTR) {
 		/* Grow or shrink the storage of an object that owns
@@ -293,7 +292,7 @@ dstr_resize_ (size_t const  obj_size,
 				(void)memset(ptr, 0, orig_len);
 			}
 			free(ptr);
-			ptr = NULL;
+			ptr = nullptr;
 
 			/* Encode the string length as available space
 			 * and write it to the last byte (this acts as
@@ -318,7 +317,7 @@ dstr_resize_ (size_t const  obj_size,
 			if (!p) {
 				/* Update end pointer if data was wiped. */
 				if (truncate)
-					(*dest)[1] = (uintptr_t)&ptr[i.length];
+					(*dest)[1] = (char *)&ptr[i.length];
 
 				/* Only failure to grow buffer is fatal. */
 				if (new_size > cur_size) {
@@ -336,8 +335,8 @@ dstr_resize_ (size_t const  obj_size,
 					(void)memset(&ptr[cur_size], 0,
 					             new_size - cur_size);
 
-				(*dest)[0] = (uintptr_t)ptr;
-				(*dest)[1] = (uintptr_t)&ptr[i.length];
+				(*dest)[0] = (char *)ptr;
+				(*dest)[1] = (char *)&ptr[i.length];
 				dstr_last_uptr_(obj_size, obj_raw) = (uintptr_t)n_blocks
 				                                   << DSTR_BLK_COUNT_POS;
 				dstr_last_byte_(obj_size, obj_raw) |= DSTR_PTR_FLAG
@@ -363,8 +362,8 @@ dstr_resize_ (size_t const  obj_size,
 
 		/* Zero out the object and store allocation metadata */
 		(void)memset(obj_raw, 0, obj_size);
-		(*dest)[0] = (uintptr_t)ptr;
-		(*dest)[1] = (uintptr_t)&ptr[i.length];
+		(*dest)[0] = (char *)ptr;
+		(*dest)[1] = (char *)&ptr[i.length];
 		dstr_last_uptr_(obj_size, obj_raw) = (uintptr_t)n_blocks
 		                                   << DSTR_BLK_COUNT_POS;
 		dstr_last_byte_(obj_size, obj_raw) |= DSTR_PTR_FLAG;
@@ -479,7 +478,7 @@ dstr_vprintf_ (size_t const      obj_size,
 	/* Measure with a copy of the arguments, they are read again */
 	va_list aq;
 	va_copy(aq, ap);
-	int const ret = vsnprintf(NULL, 0U, fmt, aq);
+	int const ret = vsnprintf(nullptr, 0U, fmt, aq);
 	int err = errno;
 	va_end(aq);
 	if (ret < 0) {
@@ -497,9 +496,9 @@ dstr_vprintf_ (size_t const      obj_size,
 		return err;
 
 	struct dstr_info const i = dstr_info_(obj_size, obj_raw);
-	typedef uintptr_t obj_type[obj_size / sizeof (uintptr_t)];
-	obj_type *const dest = (obj_type *)obj_raw;
-	char *const ptr = i.state == DSTR_IS_PTR ? (char *)(*dest)[1]
+	typedef char *obj_type[obj_size / sizeof (char *)];
+	obj_type *const dest = (typeof(dest))obj_raw;
+	char *const ptr = i.state == DSTR_IS_PTR ? (*dest)[1]
 	                                         : (char *)&obj_raw[i.length];
 
 	/* The terminator lands on the meta byte of an in-place string that

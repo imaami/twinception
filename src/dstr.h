@@ -82,6 +82,7 @@ _Static_assert(DSTR_OBJ_SIZE >= DSTR_MIN_SIZE,
                "sizeof (struct dstr) is too small");
 _Static_assert(!(DSTR_OBJ_SIZE % sizeof (uintptr_t)),
                "sizeof (struct dstr) is not a multiple of sizeof (uintptr_t)");
+_Static_assert(sizeof (uintptr_t) == sizeof (char *), "weird uintptr_t width");
 
 /**
  * @brief A dynamic UTF-8 string object
@@ -91,17 +92,35 @@ _Static_assert(!(DSTR_OBJ_SIZE % sizeof (uintptr_t)),
  */
 struct dstr {
 	union {
-		unsigned char raw[DSTR_OBJ_SIZE];
-		char          str[DSTR_OBJ_SIZE];
-		uintptr_t     ptr[DSTR_OBJ_SIZE / sizeof (uintptr_t)];
+		unsigned char  raw[DSTR_OBJ_SIZE];
+		char           str[DSTR_OBJ_SIZE];
+		char          *ptr[DSTR_OBJ_SIZE / sizeof (char *)];
+		uintptr_t      uptr[DSTR_OBJ_SIZE / sizeof (uintptr_t)];
 
 		/** The in-place string and the meta byte as separate members,
 		 *  so that an initializer can set both (see dstr()) */
 		struct {
-			char          str[DSTR_OBJ_SIZE > 1 ?
-			                  DSTR_OBJ_SIZE - 1 : 1];
+			char          str[DSTR_OBJ_SIZE - 1];
 			unsigned char meta;
 		} sso;
+
+		/** An allocated string's metadata starts with the buffer
+		 *  pointer, followed by the end pointer. All the rest of
+		 *  the elements are `uintptr_t`. There must always be at
+		 *  least one `uintrptr_t`. There may be several of these
+		 *  depending on compile-time settings, but only the last
+		 *  one is ever used for metadata storage.
+		 */ 
+		union {
+			struct {
+				char      *ptr[DSTR_OBJ_SIZE / sizeof (char *) - 1];
+				uintptr_t  last_uptr;
+			};
+			struct {
+				unsigned char pad_[DSTR_OBJ_SIZE - 1];
+				unsigned char meta;
+			};
+		} mem;
 	};
 };
 
@@ -155,7 +174,7 @@ struct dstr_info {
   ((uintptr_t *)&(obj_raw)[0])[(obj_size) / sizeof (uintptr_t) - 1U]
 
 #define dstr_last_uptr(obj) \
-  (obj)->ptr[sizeof *(obj) / sizeof (obj)->ptr[0] - 1U]
+  (obj)->uptr[sizeof *(obj) / sizeof (obj)->uptr[0] - 1U]
 
 #define dstr_is_sso_(obj_size, obj_raw) \
   (dstr_last_byte_(obj_size, obj_raw) < (obj_size))
@@ -182,7 +201,7 @@ struct dstr_info {
   (size_t)((unsigned char const *)((obj_uptr)[1]) \
          - (unsigned char const *)((obj_uptr)[0]))
 
-#define dstr_ptr_len(obj) dstr_ptr_len_((obj)->ptr)
+#define dstr_ptr_len(obj) dstr_ptr_len_((obj)->uptr)
 
 #define dstr_uptr_block_count_(up) \
   (((up) >> DSTR_BLK_COUNT_POS) & DSTR_BLK_COUNT_MASK)
@@ -250,7 +269,7 @@ dstr_n_ (char const *const src,
 /**
  * @brief RAII-style initializer for @ref dstr
  *
- * Passing `NULL` is equivalent to passing an empty string (`""`).
+ * Passing `nullptr` is equivalent to passing an empty string (`""`).
  *
  * A string whose length the compiler knows is copied inline, so that a
  * local object can fold into constants. Any other string is measured
@@ -258,7 +277,7 @@ dstr_n_ (char const *const src,
  *
  * @note Doesn't return a pointer - this is a direct initializer
  *
- * @param str Pointer to an initial UTF-8 string, or `NULL`
+ * @param str Pointer to an initial UTF-8 string, or `nullptr`
  * @return Initialized @ref dstr object by value
  */
 static dstr_inline struct dstr
@@ -335,7 +354,7 @@ dstr (char const *const str)
  * `(dstr)(x)`. Not for static initializers: use @ref DSTR_INIT.
  *
  * @param x A UTF-8 string literal, a pointer to a UTF-8 string or
- *          `char` array, or `NULL`
+ *          `char` array, or `nullptr`
  * @return Initialized @ref dstr object by value
  */
 # define dstr(x) \
@@ -349,18 +368,20 @@ dstr (char const *const str)
 #endif /* __clang__ && __clang_major__ < 9 */
 
 /**
- * @brief Zero out string content, free allocated memory, and reset the
- *        @ref dstr object to an empty state
+ * @brief Zero out string content, free allocated memory, and reset
+ *        the @ref dstr object to a freshly-initialized empty state
  *
- * Reusing the @ref dstr object is safe after the call, it becomes a
- * freshly initialized empty string. Passing `NULL` is a no-op.
+ * Reusing the @ref dstr object is safe after the call. After this
+ * function returns, `ds` is like any other valid empty @ref dstr.
+ *
+ * `dstr_cleanup(nullptr)` does nothing, and does so with success.
  *
  * @note The pointed-to @ref dstr object itself is _not_ freed,
  *       only its internal resources are. This is in line with the
  *       intended use of @ref dstr, i.e. a local variable or
  *       struct member, not a pointer.
  *
- * @param ds Pointer to the @ref dstr object, or `NULL`
+ * @param ds Pointer to the @ref dstr object, or `nullptr`
  */
 static dstr_inline void
 dstr_cleanup (struct dstr *const ds)
@@ -392,8 +413,7 @@ dstr_len (struct dstr const *const ds)
 	if (ds) {
 		if (dstr_is_sso(ds))
 			return dstr_sso_len(ds);
-		if (dstr_is_ptr(ds) &&
-		    (char *)ds->ptr[0] && (char *)ds->ptr[1])
+		if (dstr_is_ptr(ds) && ds->ptr[0] && ds->ptr[1])
 			return dstr_ptr_len(ds);
 	}
 	return 0U;
@@ -441,8 +461,7 @@ dstr_space_left (struct dstr const *const ds)
 		if (dstr_is_sso(ds))
 			return dstr_sso_space_left(ds);
 
-		if (dstr_is_ptr(ds) &&
-		    (char *)ds->ptr[0] && (char *)ds->ptr[1])
+		if (dstr_is_ptr(ds) && ds->ptr[0] && ds->ptr[1])
 			return dstr_ptr_space_left(ds);
 	}
 	return 0U;
@@ -460,8 +479,7 @@ dstr_info (struct dstr const *const ds)
 			};
 		}
 
-		if (dstr_is_ptr(ds) && (char *)ds->ptr[0]
-		                    && (char *)ds->ptr[1]) {
+		if (dstr_is_ptr(ds) && ds->ptr[0] && ds->ptr[1]) {
 			size_t const blk = dstr_ptr_block_count(ds);
 			if (blk) {
 				size_t const size = blk * DSTR_BLK_SIZE;
@@ -505,7 +523,7 @@ dstr_get (struct dstr const *const ds)
 		if (dstr_is_ptr(ds))
 			return (char const *)ds->ptr[0];
 	}
-	return NULL;
+	return nullptr;
 }
 
 /**
@@ -525,7 +543,7 @@ dstr_raw (struct dstr *const ds)
 		if (dstr_is_ptr(ds))
 			return (unsigned char *)ds->ptr[0];
 	}
-	return NULL;
+	return nullptr;
 }
 
 /**
@@ -545,10 +563,10 @@ dstr_get_write_ptr (struct dstr *const ds)
 			return &ds->str[
 				dstr_sso_len(ds)
 			];
-		if (dstr_is_ptr(ds) && (char *)ds->ptr[0])
-			return (char *)ds->ptr[1];
+		if (dstr_is_ptr(ds) && ds->ptr[0])
+			return ds->ptr[1];
 	}
-	return NULL;
+	return nullptr;
 }
 
 /**
@@ -557,8 +575,8 @@ dstr_get_write_ptr (struct dstr *const ds)
  *
  * @param ds    Pointer to the @ref dstr object
  * @param len   Number of additional bytes to reserve
- * @param exact Round the new size up to a multiple of the block size
- *              only, and don't count the growth
+ * @param exact Round the new size up to a multiple of the block
+ *              size only, and don't count the growth
  */
 static dstr_inline struct dstr *
 dstr_reserve_ (struct dstr *const ds,
@@ -574,7 +592,7 @@ dstr_reserve_ (struct dstr *const ds,
 			return ds; // Enough space already
 		break;
 	default:
-		return NULL; // Null object or broken state
+		return nullptr; // `ds` null or corrupted
 	}
 
 	extern int
@@ -586,7 +604,7 @@ dstr_reserve_ (struct dstr *const ds,
 	/* Grow a copy, so that the object's address doesn't escape */
 	struct dstr tmp = *ds;
 	if (dstr_grow_(sizeof tmp, &tmp.raw[0], len, exact))
-		return NULL;
+		return nullptr;
 
 	*ds = tmp;
 	return ds;
@@ -611,7 +629,7 @@ dstr_reserve_ (struct dstr *const ds,
  *
  * If `len` is 0, nothing is done and `ds` is returned.
  *
- * If `ds` is `NULL`, nothing is done and `NULL` is returned.
+ * If `ds` is `nullptr`, nothing is done and `nullptr` is returned.
  *
  * @note If calling this function returns non-null, all references to
  *       the string content of `ds` should be considered invalid and
@@ -621,8 +639,8 @@ dstr_reserve_ (struct dstr *const ds,
  * @param len Number of additional bytes to reserve
  *
  * @return Pointer to the input object on success (including when no
- *         action needed to be taken), otherwise `NULL`
- * @retval `NULL` if `ds` is `NULL`
+ *         action needed to be taken), otherwise `nullptr`
+ * @retval `nullptr` if `ds` is `nullptr`
  */
 static dstr_inline struct dstr *
 dstr_reserve (struct dstr *const ds,
@@ -639,10 +657,11 @@ dstr_reserve (struct dstr *const ds,
  * and `src` needn't be null-terminated: dstr_len() counts every byte,
  * while dstr_get() reads as a C string up to the first null character.
  *
- * On success, `ds` is returned. If `len` is 0, nothing is done and `ds`
- * is returned, whatever `src` is. If `ds` is `NULL`, or `src` is `NULL`
- * and `len` isn't 0, nothing is done and `NULL` is returned. If memory
- * allocation fails, nothing is done and `NULL` is returned.
+ * On success, `ds` is returned. If `len` is 0, nothing is done and
+ * `ds` is returned, whatever `src` is. If `ds` is `nullptr`, or `src`
+ * is `nullptr` and `len` isn't 0, nothing is done and `nullptr` is
+ * returned. If memory allocation fails, nothing is done and `nullptr`
+ * is returned.
  *
  * The buffer grows like it does for dstr_cat().
  *
@@ -652,7 +671,7 @@ dstr_reserve (struct dstr *const ds,
  * @param ds  Pointer to the @ref dstr object
  * @param src Pointer to the bytes to append
  * @param len Number of bytes to append
- * @return Pointer to the input object on success, otherwise `NULL`
+ * @return Pointer to the input object on success, otherwise `nullptr`
  */
 static dstr_inline struct dstr *
 dstr_cat_n (struct dstr *const ds,
@@ -662,12 +681,12 @@ dstr_cat_n (struct dstr *const ds,
 	if (!len)
 		return ds;
 	if (!src)
-		return NULL;
+		return nullptr;
 
 	char *const ptr = dstr_get_write_ptr(
 		dstr_reserve_(ds, len, false));
 	if (!ptr)
-		return NULL;
+		return nullptr;
 
 	(void)memcpy(ptr, src, len);
 
@@ -689,10 +708,10 @@ dstr_cat_n (struct dstr *const ds,
 /**
  * @brief Append a null-terminated UTF-8 string to a @ref dstr object
  *
- * On success, `ds` is returned. If `src` is `NULL` or points to an
- * empty string, nothing is done and `ds` is returned. If `ds` is
- * `NULL`, nothing is done and `NULL` is returned. If memory allocation
- * fails, nothing is done and `NULL` is returned.
+ * On success, `ds` is returned. If `src` is `nullptr` or points to
+ * an empty string, nothing is done and `ds` is returned. If `ds` is
+ * `nullptr`, nothing is done and `nullptr` is returned. If memory
+ * allocation fails, nothing is done and `nullptr` is returned.
  *
  * When the buffer must grow, its new size is rounded up to a multiple
  * of a step. The step starts at `DSTR_BLK_SIZE` and doubles with every
@@ -719,10 +738,10 @@ dstr_cat (struct dstr *const ds,
  * The text that `snprintf()` would make of `fmt` and the arguments is
  * appended; like all @ref dstr content, it must be UTF-8. On success,
  * `ds` is returned, also when the text is empty. If `ds` or `fmt` is
- * `NULL`, or the text can't be formatted (as when a wide character has
- * no multibyte encoding, or the text would be longer than `INT_MAX`
- * bytes), nothing is appended and `NULL` is returned. If memory
- * allocation fails, nothing is done and `NULL` is returned.
+ * `nullptr`, or the text can't be formatted (as when a wide character
+ * has no multibyte encoding, or the text would be longer than `INT_MAX`
+ * bytes), nothing is appended and `nullptr` is returned. If memory
+ * allocation fails, nothing is done and `nullptr` is returned.
  *
  * The buffer grows like it does for dstr_cat().
  *
@@ -735,7 +754,7 @@ dstr_cat (struct dstr *const ds,
  * @param ds  Pointer to the @ref dstr object
  * @param fmt `printf()` format string
  * @param ... Arguments for `fmt`
- * @return Pointer to the input object on success, otherwise `NULL`
+ * @return Pointer to the input object on success, otherwise `nullptr`
  */
 dstr_printf_like(2, 3) static inline struct dstr *
 dstr_printf (struct dstr *const ds,
@@ -743,7 +762,7 @@ dstr_printf (struct dstr *const ds,
              ...)
 {
 	if (!ds || !fmt)
-		return NULL;
+		return nullptr;
 
 	extern int
 	dstr_vprintf_ (size_t         obj_size,
@@ -760,7 +779,7 @@ dstr_printf (struct dstr *const ds,
 	va_end(ap);
 
 	*ds = tmp;
-	return err ? NULL : ds;
+	return err ? nullptr : ds;
 }
 
 /**
@@ -773,14 +792,14 @@ dstr_printf (struct dstr *const ds,
  * come. The bytes that the string no longer covers are wiped.
  *
  * On success, `ds` is returned. If `pos` is the length of the string or
- * `len` is 0, nothing is done and `ds` is returned. If `ds` is `NULL`
- * or not a valid object, or `pos` is past the end of the string,
- * nothing is done and `NULL` is returned.
+ * `len` is 0, nothing is done and `ds` is returned. If `ds` is `nullptr`
+ * or not a valid object, or `pos` is past the end of the string, nothing
+ * is done and `nullptr` is returned.
  *
  * @param ds  Pointer to the @ref dstr object
  * @param pos Offset of the first byte to erase
  * @param len Number of bytes to erase
- * @return Pointer to the input object on success, otherwise `NULL`
+ * @return Pointer to the input object on success, otherwise `nullptr`
  */
 static dstr_inline struct dstr *
 dstr_erase (struct dstr *const ds,
@@ -790,7 +809,7 @@ dstr_erase (struct dstr *const ds,
 	struct dstr_info const info = dstr_info(ds);
 	if ((info.state != DSTR_IS_SSO && info.state != DSTR_IS_PTR) ||
 	    pos > info.length)
-		return NULL; // Null object, broken state or out of range
+		return nullptr; // Null object, broken state or out of range
 
 	size_t const n = len < info.length - pos ? len : info.length - pos;
 	if (!n)
@@ -799,7 +818,7 @@ dstr_erase (struct dstr *const ds,
 	/* Move the rest down and wipe the bytes it leaves behind, up to
 	 * the old terminator */
 	size_t const end = info.length - n;
-	char *const str = info.state == DSTR_IS_PTR ? (char *)ds->ptr[0]
+	char *const str = info.state == DSTR_IS_PTR ?  ds->ptr[0]
 	                                            : &ds->str[0];
 	(void)memmove(&str[pos], &str[pos + n], end - pos);
 	(void)memset(&str[end], 0, n);
@@ -820,8 +839,8 @@ dstr_erase (struct dstr *const ds,
  * `dstr_erase(ds, 0, SIZE_MAX)`.
  *
  * @param ds Pointer to the @ref dstr object
- * @return Pointer to the input object on success, otherwise `NULL`
- * @retval `NULL` if `ds` is `NULL` or not a valid object
+ * @return Pointer to the input object on success, otherwise `nullptr`
+ * @retval `nullptr` if `ds` is `nullptr` or not a valid object
  */
 static dstr_inline struct dstr *
 dstr_clear (struct dstr *const ds)
@@ -835,12 +854,12 @@ dstr_clear (struct dstr *const ds)
  * Returns the object by value and resets `*ds` to an empty string. An
  * allocated buffer changes owners: nothing is copied, allocated or
  * freed. `*ds` can be used again like a freshly initialized object.
- * Passing `NULL` returns an empty string.
+ * Passing `nullptr` returns an empty string.
  *
  * @note Doesn't return a pointer - like dstr(), this is a direct
  *       initializer
  *
- * @param ds Pointer to the @ref dstr object, or `NULL`
+ * @param ds Pointer to the @ref dstr object, or `nullptr`
  * @return The moved @ref dstr object by value
  */
 static dstr_inline struct dstr
