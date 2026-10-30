@@ -201,6 +201,38 @@ enum mcp_fetch : uint16_t {
 	FETCH_RESTORE = 4096, /* restore historical bytes in a new own commit */
 };
 
+/* The command of git for each enum mcp_fetch.  FETCH_NEWEST reads a note
+ * with NOTES_READ.
+ */
+static enum notes_cmd const mcp_fetch_cmds[] = {
+	[FETCH_CREATE]  = NOTES_CREATE,
+	[FETCH_CHECK]   = NOTES_CHECK,
+	[FETCH_ADD]     = NOTES_ADD,
+	[FETCH_LIST]    = NOTES_LIST,
+	[FETCH_READ]    = NOTES_READ,
+	[FETCH_RESUME]  = NOTES_LIST,
+	[FETCH_COMPACT] = NOTES_LIST,
+	[FETCH_FULL]    = NOTES_LIST,
+};
+
+/* The command of git that runs for @p fetch. */
+static enum notes_cmd
+mcp_fetch_cmd (uint16_t fetch)
+{
+	return (fetch & ~FETCH_COPY) == FETCH_FORMAT ? NOTES_FORMAT
+	     : fetch & FETCH_BOOKS ? NOTES_BOOKS
+	     : fetch & FETCH_FILES ? NOTES_FILES
+	     : fetch & FETCH_NEWEST ? NOTES_READ
+	     : mcp_fetch_cmds[fetch & FETCH_KIND];
+}
+
+/* Whether git writes to the notes when it runs @p cmd. */
+static bool
+mcp_notes_writes (enum notes_cmd cmd)
+{
+	return cmd == NOTES_CREATE || cmd == NOTES_ADD;
+}
+
 enum {
 	NOTE_WRITE  = 1 << 0,
 	NOTE_FILE   = 1 << 1,
@@ -1405,8 +1437,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	slot->lent = (struct span){};
 	/* A git that writes notes runs to its end, because a kill could leave
 	 * a lock file behind. */
-	uint8_t kind = slot->fetch & FETCH_KIND;
-	if (kind == FETCH_CREATE || kind == FETCH_ADD)
+	if (mcp_notes_writes(mcp_fetch_cmd(slot->fetch)))
 		child_release(&slot->child);
 	else
 		child_destroy(&slot->child);
@@ -6513,20 +6544,6 @@ mcp_on_notes (struct child *c)
 	mcp_slot_ready(c->owner);
 }
 
-/* The command of git for each enum mcp_fetch.  FETCH_NEWEST reads a note
- * with NOTES_READ.
- */
-static enum notes_cmd const mcp_fetch_cmds[] = {
-	[FETCH_CREATE]  = NOTES_CREATE,
-	[FETCH_CHECK]   = NOTES_CHECK,
-	[FETCH_ADD]     = NOTES_ADD,
-	[FETCH_LIST]    = NOTES_LIST,
-	[FETCH_READ]    = NOTES_READ,
-	[FETCH_RESUME]  = NOTES_LIST,
-	[FETCH_COMPACT] = NOTES_LIST,
-	[FETCH_FULL]    = NOTES_LIST,
-};
-
 /* Continues the ask call after the notes for the prompt are in the
  * request's answer.  If @p fetch has FETCH_RESUME, the call goes on with a
  * thread and builds its upstream request.  After a compaction, the function
@@ -6616,15 +6633,11 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
 	char const *repo = fetch & FETCH_OTHER ? mcp_slot_notebook(slot) : req->repo;
-	enum notes_cmd cmd = (fetch & ~FETCH_COPY) == FETCH_FORMAT ? NOTES_FORMAT
-	                   : fetch & FETCH_BOOKS ? NOTES_BOOKS
-	                   : fetch & FETCH_FILES ? NOTES_FILES
-	                   : fetch & FETCH_NEWEST ? NOTES_READ
-	                   : mcp_fetch_cmds[fetch & FETCH_KIND];
+	enum notes_cmd cmd = mcp_fetch_cmd(fetch);
 	/* Git removes its own lock files on SIGTERM, and notes_lock() removes
 	 * one that a crash left.  The lock file of a live writer, which may be
 	 * outside askai, stays. */
-	bool writes = cmd == NOTES_CREATE || cmd == NOTES_ADD;
+	bool writes = mcp_notes_writes(cmd);
 	int64_t age;
 	int e = cmd == NOTES_ADD ? notes_lock(mcp->st->notes, req->repo, &age) : 0;
 	if (e)

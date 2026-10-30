@@ -9494,6 +9494,56 @@ def check_notes_history(binary, up):
           "confinement, concurrent writes, SHA-1 and SHA-256: PASS")
 
 
+def check_notes_cancel(binary, up):
+    """A notes call that the client cancels stops its git at once when that
+    git only reads.  The notebooks action, which lists the session's
+    notebooks, is such a call."""
+    with tempfile.TemporaryDirectory() as d:
+        notes, path = f"{d}/notes", f"{d}/askai.json"
+        digest = "sha256:" + hashlib.sha256(b"alice-1").hexdigest()
+        with open(path, "w") as f:
+            json.dump(grouped({"url": up.url(), "notes": notes, "participant": "p",
+                               "roles": {"writer": {"tools": ["notes"]}},
+                               "identities": {"alice": {"role": "writer",
+                                                        "tokens": [digest]}}}), f)
+        os.chmod(path, 0o600)
+        # A git that sleeps on for-each-ref once armed, and says its pid.
+        armed, pidfile = f"{d}/armed", f"{d}/pid"
+        os.mkdir(f"{d}/bin")
+        with open(f"{d}/bin/git", "w") as f:
+            f.write('#!/bin/sh\ncase " $* " in *" for-each-ref "*)\n'
+                    f'  if [ -e {shlex.quote(armed)} ]; then\n'
+                    f'    echo $$ > {shlex.quote(pidfile)}; exec sleep 30\n'
+                    f'  fi;;\nesac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
+        os.chmod(f"{d}/bin/git", 0o755)
+        auth = {"Authorization": "Bearer alice-1"}
+        with Askai(binary, "-c", path,
+                   env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
+            status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
+                "action": "add", "file": "a.md", "text": "x"}}, headers=auth)
+            assert status == 200 and text_of(body["result"]) == "Noted.", body
+            _, headers, _ = ai.rpc("initialize", {"protocolVersion": LEGACY},
+                                   headers=auth)
+            session = auth | {"Mcp-Session-Id": headers["mcp-session-id"],
+                              "MCP-Protocol-Version": LEGACY}
+            open(armed, "w").close()
+            listing = threading.Thread(target=lambda: ai.rpc(
+                "tools/call", {"name": "notes", "arguments": {"action": "notebooks"}},
+                rpc_id=42, headers=session))
+            listing.start()
+            try:
+                wait_for(lambda: os.path.exists(pidfile) and os.path.getsize(pidfile))
+                pid = int(open(pidfile).read())
+                assert ai.rpc("notifications/cancelled", {"requestId": 42}, rpc_id=None,
+                              headers=session)[0] == 202
+                # Well under the 10 s deadline of a notes git.
+                wait_for(lambda: not alive(pid), 2)
+            finally:
+                os.unlink(armed)
+                listing.join(10)
+    print("notes: a cancelled notebooks listing stops its git at once: PASS")
+
+
 def check_turn_apis(binary, up):
     """With --upstream-tools, the turns of the Responses API, Anthropic's
     Messages, Gemini's generateContent and Gemini's Interactions: the tools
@@ -13408,7 +13458,7 @@ def main():
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_git_scope, check_turns, check_notes, check_shared_notes,
-                      check_notes_history, check_turn_apis,
+                      check_notes_history, check_notes_cancel, check_turn_apis,
                       check_attach,
                       check_tasks,
                       lambda binary, up: check_plugin(binary, up, plugin),
