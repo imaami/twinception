@@ -118,7 +118,7 @@ jb_parse (char const *data,
 {
 	struct jb_pool pool = { .depth = depth, .flags = flags };
 	struct jb_parser parser = {};
-	while (!jb_parser_step(&parser, &pool, data, len, SIZE_MAX, UINT32_MAX))
+	while (jb_parser_step(&parser, &pool, data, len, SIZE_MAX, UINT32_MAX) == EAGAIN)
 		;
 	struct json_object *root = jb_parser_take(&parser);
 	jb_parser_fini(&parser, &pool, nullptr);
@@ -392,7 +392,17 @@ jb_pool_take (struct jb_pool *pool)
 	return tok;
 }
 
-bool
+/* End @p parser's parse with the error @p e, and return it. */
+static int
+jb_parser_end (struct jb_parser *parser,
+               int               e)
+{
+	parser->done = true;
+	parser->error = e;
+	return e;
+}
+
+int
 jb_parser_step (struct jb_parser *parser,
                 struct jb_pool   *pool,
                 char const       *data,
@@ -401,11 +411,9 @@ jb_parser_step (struct jb_parser *parser,
                 uint32_t          values)
 {
 	if (parser->done)
-		return true;
-	if (!parser->tok && !(parser->tok = jb_pool_take(pool))) {
-		parser->done = parser->failed = true;
-		return true;
-	}
+		return parser->error;
+	if (!parser->tok && !(parser->tok = jb_pool_take(pool)))
+		return jb_parser_end(parser, ENOMEM);
 
 	/* Up to the value that would be one too many; within a string, not
 	 * within a character: json-c finds UTF-8 split between slices invalid. */
@@ -419,35 +427,34 @@ jb_parser_step (struct jb_parser *parser,
 	size_t end = off + jb_scan(&parser->cut, data + off, room, UINT32_MAX, most,
 	                           UINT32_MAX, scalar);
 	if (end < off + room && parser->cut.state == JB_SCAN_SCALAR &&
-	    parser->cut.run == scalar) {
-		parser->done = parser->failed = true;
-		return true;
-	}
+	    parser->cut.run == scalar)
+		return jb_parser_end(parser, EINVAL);
 	for (int i = 0; i < 3 && end > off + 1 && end < len &&
 	                ((unsigned char)data[end] & 0xc0) == 0x80; ++i)
 		--end;
 
 	struct json_tokener *tok = parser->tok;
-	bool ok = true;
 	if (!parser->root) {
 		parser->root = json_tokener_parse_ex(tok, data + off, (int)(end - off));
 		if (parser->root)
 			parser->off += json_tokener_get_parse_end(tok);
-		else if (json_tokener_get_error(tok) != json_tokener_continue)
-			ok = false;
-		/* A number or literal at the very end only ends at a terminator. */
-		else if ((parser->off = end) == len)
-			ok = (parser->root = json_tokener_parse_ex(tok, "", 1)) != nullptr;
+		/* A number or literal at the very end of the data only ends at a
+		 * terminator, so the tokener gets one there. */
+		else if (json_tokener_get_error(tok) != json_tokener_continue ||
+		         ((parser->off = end) == len &&
+		          !(parser->root = json_tokener_parse_ex(tok, "", 1))))
+			return jb_parser_end(parser, json_tokener_get_error(tok) ==
+			                             json_tokener_error_memory ? ENOMEM : EINVAL);
 	}
 
 	/* What follows the value must be white space, however it is sliced. */
-	while (ok && parser->root && parser->off < end &&
+	while (parser->root && parser->off < end &&
 	       (data[parser->off] == ' ' || data[parser->off] == '\t' ||
 	        data[parser->off] == '\r' || data[parser->off] == '\n'))
 		++parser->off;
-	parser->failed = !ok || parser->off != end;
-	parser->done = parser->failed || end == len;
-	return parser->done;
+	if (parser->off != end)
+		return jb_parser_end(parser, EINVAL);
+	return end == len ? jb_parser_end(parser, 0) : EAGAIN;
 }
 
 /*

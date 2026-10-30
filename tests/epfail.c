@@ -8,6 +8,8 @@
  * set, curl_multi_cleanup() takes that many milliseconds longer, as a
  * teardown may on a busy machine.  With EPFAIL_EPOLL set to N, the Nth
  * epoll_create1() fails with EMFILE, as when an event loop cannot start.
+ * With EPFAIL_TOKENER set, json-c cannot make a tokener, as when memory
+ * runs out.
  */
 #define _GNU_SOURCE
 
@@ -102,4 +104,36 @@ curl_multi_cleanup (void *multi)
 			;
 	}
 	return real(multi);
+}
+
+/* Wrappers of json-c's tokener constructors.  struct json_tokener is
+ * declared but not defined here, because the wrappers only pass pointers
+ * to it.
+ */
+struct json_tokener;
+
+struct json_tokener *
+json_tokener_new_ex (int depth)
+{
+	static struct json_tokener *(*real) (int);
+	if (getenv("EPFAIL_TOKENER"))
+		return nullptr;
+	if (!real) {
+		void *sym = dlsym(RTLD_NEXT, "json_tokener_new_ex");
+		memcpy(&real, &sym, sizeof real);
+	}
+	return real(depth);
+}
+
+struct json_tokener *
+json_tokener_new (void)
+{
+	static struct json_tokener *(*real) (void);
+	if (getenv("EPFAIL_TOKENER"))
+		return nullptr;
+	if (!real) {
+		void *sym = dlsym(RTLD_NEXT, "json_tokener_new");
+		memcpy(&real, &sym, sizeof real);
+	}
+	return real();
 }

@@ -1804,7 +1804,8 @@ home_parse (struct home      *home,
 	size_t off = parser->off;
 	uint32_t seen = parser->cut.values;
 	size_t copied = parser->cut.copied;
-	bool over = jb_parser_step(parser, &home->pool, json, len, bytes, (uint32_t)values);
+	bool over = jb_parser_step(parser, &home->pool, json, len, bytes,
+	                           (uint32_t)values) != EAGAIN;
 	loop_work(loop, LOOP_PARSE, parser->off - off);
 	loop_work(loop, LOOP_VALUES, parser->cut.values - seen);
 	loop_work(loop, LOOP_COPY, parser->cut.copied - copied);
@@ -2032,9 +2033,7 @@ home_event (struct home *home,
 	uint32_t n = parser->cut.values;
 	struct json_object *root = jb_parser_take(parser);
 	if (!root) {
-		struct json_tokener *tok = parser->tok;
-		bool memory = !tok ||
-		              json_tokener_get_error(tok) == json_tokener_error_memory;
+		bool memory = parser->error == ENOMEM;
 		jb_parser_fini(parser, &home->pool, &home->reaper);
 		home_reap(home);
 		if (memory)

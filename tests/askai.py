@@ -4397,8 +4397,8 @@ def check_isolation(binary, up):
     source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "epfail.c")
     with tempfile.TemporaryDirectory() as tmp:
         shim = os.path.join(tmp, "epfail.so")
-        build = subprocess.run([os.environ.get("CC", "cc"), "-shared", "-fPIC", "-o",
-                                shim, source], capture_output=True, text=True,
+        build = subprocess.run([os.environ.get("CC", "cc"), "-std=gnu23", "-shared",
+                                "-fPIC", "-o", shim, source], capture_output=True, text=True,
                                check=False)
         assert build.returncode == 0, build.stderr
         with Askai(binary, "-u", up.url(), preload=shim) as ai:
@@ -4416,6 +4416,14 @@ def check_isolation(binary, up):
                 assert ai.rpc("ping")[0] == 200
                 assert time.monotonic() - start < 1, "accepting paused"
             assert not any("accept" in line for line in ai.log), ai.log
+
+        # A request that cannot be parsed for want of memory, here of a
+        # tokener, gets 500 Out of memory, not 400 Parse error.
+        with Askai(binary, "-u", up.url(), preload=shim,
+                   env={"EPFAIL_TOKENER": "1"}) as ai:
+            status, _, body = ai.rpc("ping")
+            assert status == 500 and body["error"] == {
+                "code": -32603, "message": "Out of memory"}, (status, body)
 
         # What follows the loop's last turn is no turn: a slow teardown is
         # neither reported nor taken for a stuck loop.
@@ -4438,7 +4446,7 @@ def check_isolation(binary, up):
         assert time.monotonic() - start < 3, run.stderr
 
     print("failure isolation: an unwatchable upstream socket, accept errors, "
-          "a slow teardown, a loop that cannot start: PASS")
+          "a parse out of memory, a slow teardown, a loop that cannot start: PASS")
 
 
 def check_configuration(binary, up, godbolt):

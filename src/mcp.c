@@ -3988,8 +3988,8 @@ mcp_slot_say (struct mcp_slot        *slot,
 }
 
 static void mcp_req_calls_next (struct mcp_req *req);
-static bool mcp_req_slice (struct mcp_req *req, struct jb_pool *pool,
-                           struct span json);
+static int mcp_req_slice (struct mcp_req *req, struct jb_pool *pool,
+                          struct span json);
 static void mcp_req_turn_submit (struct mcp_req *req);
 static void mcp_req_add_start (struct mcp_req *req);
 
@@ -4230,8 +4230,9 @@ mcp_req_turn_arg (struct mcp_req *req,
 		req->args[req->part] = json_object_new_object();
 		return req->args[req->part] ? 0 : ENOMEM;
 	}
-	if (!mcp_req_slice(req, &req->mcp->answers, args))
-		return EAGAIN;
+	int e = mcp_req_slice(req, &req->mcp->answers, args);
+	if (e == EAGAIN || e == ENOMEM)
+		return e;
 	struct json_object *v = req->msg;
 	req->msg = nullptr;
 	if (v && !json_object_is_type(v, json_type_object)) {
@@ -8632,9 +8633,11 @@ mcp_req_dispatch (struct mcp_req *req)
 }
 
 /* Parse as much of @p json as the step has the share for, with a tokener from
- * @p pool; true once the parse is over, with its value in req->msg.
+ * @p pool.  Returns EAGAIN while bytes remain.  Once the parse is over, its
+ * value is in req->msg, and the function returns 0, or ENOMEM or EINVAL with
+ * req->msg nullptr (jb_parser_step()).
  */
-static bool
+static int
 mcp_req_slice (struct mcp_req *req,
                struct jb_pool *pool,
                struct span     json)
@@ -8644,21 +8647,21 @@ mcp_req_slice (struct mcp_req *req,
 	uint64_t bytes = loop_room(loop, LOOP_PARSE);
 	uint64_t values = loop_room(loop, LOOP_VALUES);
 	if (bytes < 4 || !values)
-		return false;
+		return EAGAIN;
 	size_t off = parser->off;
 	uint32_t seen = parser->cut.values;
 	size_t copied = parser->cut.copied;
-	bool over = jb_parser_step(parser, pool, (char const *)json.ptr, json.len, bytes,
-	                           (uint32_t)values);
+	int e = jb_parser_step(parser, pool, (char const *)json.ptr, json.len, bytes,
+	                       (uint32_t)values);
 	loop_work(loop, LOOP_PARSE, parser->off - off);
 	loop_work(loop, LOOP_VALUES, parser->cut.values - seen);
 	loop_work(loop, LOOP_COPY, parser->cut.copied - copied);
-	if (over) {
+	if (e != EAGAIN) {
 		req->values = parser->cut.values;
 		req->msg = jb_parser_take(parser);
 		jb_parser_fini(parser, pool, &req->reaper);
 	}
-	return over;
+	return e;
 }
 
 /* Parse as much of the body as the step has the share for, the rest a slice
@@ -8670,11 +8673,16 @@ mcp_req_parse (struct mcp_req *req)
 {
 	struct loop *loop = req->mcp->loop;
 	bool whole = !req->parser.off;
-	if (!mcp_req_slice(req, &req->mcp->pool, buf_peek(&req->body))) {
+	int e = mcp_req_slice(req, &req->mcp->pool, buf_peek(&req->body));
+	if (e == EAGAIN) {
 		loop_ready_bulk(loop, &req->step);
 		return;
 	}
 	buf_fini(&req->body);
+	if (e == ENOMEM) {
+		mcp_req_fail(req, e);
+		return;
+	}
 	req->phase = PHASE_DISPATCH;
 	if (whole)
 		mcp_req_dispatch(req);
@@ -8749,8 +8757,13 @@ mcp_req_answer (struct mcp_req *req)
 	struct span json = buf_peek(&req->job->result);
 	char const *text = json.len ? (char const *)json.ptr : "";
 	size_t off = req->parser.off;
-	bool over = mcp_req_slice(req, &req->mcp->answers, (struct span){
+	int e = mcp_req_slice(req, &req->mcp->answers, (struct span){
 		(unsigned char *)(uintptr_t)text, json.len });
+	if (e == ENOMEM) {
+		mcp_req_fail(req, e);
+		return;
+	}
+	bool over = e != EAGAIN;
 	size_t end = !over ? req->parser.off : req->msg ? json.len : off;
 	if (jb_utf8(text + off, end - off) < end - off) {
 		jb_parser_fini(&req->parser, &req->mcp->answers, &req->reaper);
@@ -8759,7 +8772,7 @@ mcp_req_answer (struct mcp_req *req)
 	}
 	if (over) {
 		req->phase = PHASE_TEXT;
-		int e = mcp_req_reasoning(req);
+		e = mcp_req_reasoning(req);
 		if (e) {
 			mcp_req_fail(req, e);
 			return;

@@ -4,10 +4,10 @@ include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-cli check-completion check-cstr-view \
-        check-datauri check-dstr check-handle check-instance check-journal check-ledger check-load \
+        check-datauri check-dstr check-jb check-handle check-instance check-journal check-ledger check-load \
         check-turn check-twinception load load-build
 default:; @:
-check: | check-completion check-twinception check-askai check-cli check-ai check-buf \
+check: | check-completion check-twinception check-askai check-cli check-ai check-jb check-buf \
          check-datauri check-handle check-turn check-instance check-journal check-ledger \
          check-dstr check-load
 
@@ -148,6 +148,17 @@ $Otests/ai: $Otests/ai.c.o $Otests/src/ai.c.o $Otests/src/jb.c.o $Otests/src/dst
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -Wl,--wrap=json_object_get_int64 -o "$@" $^ $(JSON_LIBS)
 
 $Otests/ai.c.o $Otests/src/ai.c.o: CPPFLAGS += $(JSON_INCLUDES)
+
+# Unit tests of the JSON helpers, src/jb.c.  The test wraps json-c's
+# tokener constructors to make them fail.
+check-jb: $Otests/jb
+	$<
+
+$Otests/jb: $Otests/jb.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) \
+	-Wl,--wrap=json_tokener_new,--wrap=json_tokener_new_ex -o "$@" $^ $(JSON_LIBS)
+
+$Otests/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf

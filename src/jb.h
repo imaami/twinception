@@ -176,17 +176,22 @@ struct jb_parser {
 	struct jb_scan       cut;     /**< where slices end; cut.values: values
 	                                   parsed, cut.copied: string bytes copied */
 	uint32_t             done;    /**< bool, widened over the padding */
-	uint32_t             failed;  /**< bool, likewise */
+	int                  error;   /**< 0 if the parse succeeded, ENOMEM if
+	                                   memory ran out, or EINVAL if the text
+	                                   is not one JSON value or breaks the
+	                                   pool's limits; valid once done is
+	                                   set */
 };
 
 /**
  * Parse the next slice of the @p len bytes at @p data, as jb_parse() would,
  * with a tokener from @p pool and within its limits: at most @p bytes bytes,
- * 4 at least, and @p values values.  Returns true once the parse is over,
- * when jb_parser_take() gives the value, nullptr on error.  A slice never
- * ends within a character, whose bytes it leaves to the next.
+ * 4 at least, and @p values values.  Returns EAGAIN while bytes remain to be
+ * parsed.  Once the parse is over, returns 0, and jb_parser_take() gives the
+ * value, or the error that parser->error also keeps.  A slice never ends
+ * within a character, whose bytes it leaves to the next.
  */
-extern bool
+extern int
 jb_parser_step (struct jb_parser *parser,
                 struct jb_pool   *pool,
                 char const       *data,
@@ -198,7 +203,7 @@ jb_parser_step (struct jb_parser *parser,
 static inline struct json_object *
 jb_parser_take (struct jb_parser *parser)
 {
-	struct json_object *root = parser->failed ? nullptr : parser->root;
+	struct json_object *root = parser->error ? nullptr : parser->root;
 	if (root)
 		parser->root = nullptr;
 	return root;
