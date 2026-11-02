@@ -49,7 +49,7 @@
 # define dstr_error(fmt, ...) do{}while(0)
 #endif /* NDEBUG */
 
-dstr_useless static dstr_inline size_t
+dstr_useless static force_inline size_t
 dstr_len_ (size_t const        obj_size,
            unsigned char const obj_raw[const obj_size])
 {
@@ -66,7 +66,7 @@ dstr_len_ (size_t const        obj_size,
 	return 0U;
 }
 
-dstr_useless static dstr_inline size_t
+dstr_useless static force_inline size_t
 dstr_space_left_ (size_t const        obj_size,
                   unsigned char const obj_raw[const obj_size])
 {
@@ -174,7 +174,7 @@ dstr_free_ (void *const buf,
 	free(buf);
 }
 
-static dstr_inline struct dstr_info
+static force_inline struct dstr_info
 dstr_info_ (size_t const        obj_size,
             unsigned char const obj_raw[const obj_size])
 {

@@ -53,8 +53,9 @@
 #define TWINCEPTION_SRC_DSTR_H_
 
 #include <stdarg.h> /* va_list */
-#include <stdbool.h>
 #include <string.h> /* strlen() */
+
+#include "compat.h"
 
 #ifdef __clang__
 # pragma clang diagnostic push
@@ -107,10 +108,10 @@ struct dstr {
 		/** An allocated string's metadata starts with the buffer
 		 *  pointer, followed by the end pointer. All the rest of
 		 *  the elements are `uintptr_t`. There must always be at
-		 *  least one `uintrptr_t`. There may be several of these
+		 *  least one `uintptr_t`. There may be several of these
 		 *  depending on compile-time settings, but only the last
 		 *  one is ever used for metadata storage.
-		 */ 
+		 */
 		union {
 			struct {
 				char      *ptr[DSTR_OBJ_SIZE / sizeof (char *) - 1];
@@ -222,14 +223,10 @@ struct dstr_info {
 
 /* Note: MSVC support isn't actually planned */
 #ifndef _MSC_VER
-# define dstr_inline       inline __attribute__((always_inline))
-# define dstr_const_inline dstr_inline __attribute__((const))
 # define dstr_useless      __attribute__((unused))
 # define dstr_printf_like(fmt_idx, arg_idx) \
   __attribute__((format(printf, fmt_idx, arg_idx)))
 #else
-# define dstr_inline       __forceinline
-# define dstr_const_inline __forceinline
 # define dstr_useless
 # define dstr_printf_like(fmt_idx, arg_idx)
 #endif
@@ -244,7 +241,7 @@ struct dstr_info {
  * compiler can see through it; a longer one is allocated by the
  * library.
  */
-static dstr_inline struct dstr
+static force_inline struct dstr
 dstr_n_ (char const *const src,
          size_t const      len)
 {
@@ -280,7 +277,7 @@ dstr_n_ (char const *const src,
  * @param str Pointer to an initial UTF-8 string, or `nullptr`
  * @return Initialized @ref dstr object by value
  */
-static dstr_inline struct dstr
+static force_inline struct dstr
 dstr (char const *const str)
 {
 	if (__builtin_constant_p(!str) && !str)
@@ -383,7 +380,7 @@ dstr (char const *const str)
  *
  * @param ds Pointer to the @ref dstr object, or `nullptr`
  */
-static dstr_inline void
+static force_inline void
 dstr_cleanup (struct dstr *const ds)
 {
 	extern void
@@ -407,7 +404,7 @@ dstr_cleanup (struct dstr *const ds)
  * @param ds Pointer to the @ref dstr object
  * @return The string length in bytes
  */
-static dstr_inline size_t
+static force_inline size_t
 dstr_len (struct dstr const *const ds)
 {
 	if (ds) {
@@ -430,7 +427,7 @@ dstr_len (struct dstr const *const ds)
  * @param ds Pointer to the @ref dstr object
  * @return The allocated block count
  */
-static dstr_inline size_t
+static force_inline size_t
 dstr_get_block_count (struct dstr const *const ds)
 {
 	if (!ds || !dstr_is_ptr(ds))
@@ -454,7 +451,7 @@ dstr_get_block_count (struct dstr const *const ds)
  * @return Available space still left in the buffer before more needs
  *         to be allocated
  */
-static dstr_inline size_t
+static force_inline size_t
 dstr_space_left (struct dstr const *const ds)
 {
 	if (ds) {
@@ -467,7 +464,7 @@ dstr_space_left (struct dstr const *const ds)
 	return 0U;
 }
 
-static dstr_inline struct dstr_info
+static force_inline struct dstr_info
 dstr_info (struct dstr const *const ds)
 {
 	if (ds) {
@@ -514,7 +511,7 @@ dstr_info (struct dstr const *const ds)
  * @param ds Pointer to the @ref dstr object.
  * @return Pointer to the content string
  */
-static dstr_inline char const *
+static force_inline char const *
 dstr_get (struct dstr const *const ds)
 {
 	if (ds) {
@@ -534,7 +531,7 @@ dstr_get (struct dstr const *const ds)
  * @param ds Pointer to the @ref dstr object.
  * @return Pointer to the raw content bytes
  */
-static dstr_inline unsigned char *
+static force_inline unsigned char *
 dstr_raw (struct dstr *const ds)
 {
 	if (ds) {
@@ -555,7 +552,7 @@ dstr_raw (struct dstr *const ds)
  *
  * @param ds Pointer to the @ref dstr object.
  */
-static dstr_inline char *
+static force_inline char *
 dstr_get_write_ptr (struct dstr *const ds)
 {
 	if (ds) {
@@ -578,7 +575,7 @@ dstr_get_write_ptr (struct dstr *const ds)
  * @param exact Round the new size up to a multiple of the block
  *              size only, and don't count the growth
  */
-static dstr_inline struct dstr *
+static force_inline struct dstr *
 dstr_reserve_ (struct dstr *const ds,
                size_t const       len,
                _Bool const        exact)
@@ -642,7 +639,7 @@ dstr_reserve_ (struct dstr *const ds,
  *         action needed to be taken), otherwise `nullptr`
  * @retval `nullptr` if `ds` is `nullptr`
  */
-static dstr_inline struct dstr *
+static force_inline struct dstr *
 dstr_reserve (struct dstr *const ds,
               size_t const       len)
 {
@@ -673,7 +670,7 @@ dstr_reserve (struct dstr *const ds,
  * @param len Number of bytes to append
  * @return Pointer to the input object on success, otherwise `nullptr`
  */
-static dstr_inline struct dstr *
+static force_inline struct dstr *
 dstr_cat_n (struct dstr *const ds,
             char const *const  src,
             size_t const       len)
@@ -725,7 +722,7 @@ dstr_cat_n (struct dstr *const ds,
  *       the buffer grows, `src` is freed or overwritten before it is
  *       read.
  */
-static dstr_inline struct dstr *
+static force_inline struct dstr *
 dstr_cat (struct dstr *const ds,
           char const *const  src)
 {
@@ -801,7 +798,7 @@ dstr_printf (struct dstr *const ds,
  * @param len Number of bytes to erase
  * @return Pointer to the input object on success, otherwise `nullptr`
  */
-static dstr_inline struct dstr *
+static force_inline struct dstr *
 dstr_erase (struct dstr *const ds,
             size_t const       pos,
             size_t const       len)
@@ -842,7 +839,7 @@ dstr_erase (struct dstr *const ds,
  * @return Pointer to the input object on success, otherwise `nullptr`
  * @retval `nullptr` if `ds` is `nullptr` or not a valid object
  */
-static dstr_inline struct dstr *
+static force_inline struct dstr *
 dstr_clear (struct dstr *const ds)
 {
 	return dstr_erase(ds, 0U, SIZE_MAX);
@@ -862,7 +859,7 @@ dstr_clear (struct dstr *const ds)
  * @param ds Pointer to the @ref dstr object, or `nullptr`
  * @return The moved @ref dstr object by value
  */
-static dstr_inline struct dstr
+static force_inline struct dstr
 dstr_move (struct dstr *const ds)
 {
 	if (!ds)

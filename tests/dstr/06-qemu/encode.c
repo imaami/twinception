@@ -153,7 +153,7 @@ SUITE (struct hell_totals *t)
 
 	/* Every count with block counts across the whole field, in forged
 	 * objects that are only read: the field and the count never mix */
-	static unsigned char buf[8];
+	static char buf[8];
 	uintptr_t const counts[] = {
 		1U, 2U, UCHAR_MAX, (uintptr_t)UCHAR_MAX + 1U,
 		DSTR_BLK_COUNT_MASK >> 1,
@@ -165,9 +165,9 @@ SUITE (struct hell_totals *t)
 		for (size_t i = 0; i < sizeof counts / sizeof counts[0]; ++i) {
 			struct dstr f;
 			memset(&f, 0, sizeof f);
-			f.ptr[0] = (uintptr_t)&buf[0];
-			f.ptr[1] = (uintptr_t)&buf[5];
-			f.ptr[OBJ / sizeof f.ptr[0] - 1U] =
+			f.ptr[0] = &buf[0];
+			f.ptr[1] = &buf[5];
+			f.uptr[OBJ / sizeof f.uptr[0] - 1U] =
 				(counts[i] << DSTR_BLK_COUNT_POS) |
 				((uintptr_t)en_meta(k) << meta_pos);
 			HELL_EQ(dstr_len(&f), 5U);

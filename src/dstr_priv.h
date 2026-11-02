@@ -16,8 +16,6 @@
 
 #undef dstr_printf_like
 #undef dstr_useless
-#undef dstr_const_inline
-#undef dstr_inline
 #undef dstr_ptr_space_left
 #undef dstr_ptr_space_left_
 #undef dstr_ptr_block_count

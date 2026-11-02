@@ -816,23 +816,23 @@ al_grow_fits (void)
 }
 
 /** Buffer that forged objects point to; never freed */
-static unsigned char al_fake[DSTR_BLK_SIZE];
+static char fake[DSTR_BLK_SIZE];
 
 /**
  * @brief A forged heap object: buffer `buf`, string end `end`, block
  *        count `blocks` and the meta byte `meta`
  */
 static struct dstr
-al_forge (uintptr_t     buf,
-          uintptr_t     end,
-          uintptr_t     blocks,
-          unsigned char meta)
+al_forge (char          *buf,
+          char          *end,
+          uintptr_t      blocks,
+          unsigned char  meta)
 {
 	struct dstr f;
 	(void)memset(&f, 0, sizeof f);
 	f.ptr[0] = buf;
 	f.ptr[1] = end;
-	f.ptr[OBJ / sizeof f.ptr[0] - 1U] = blocks << DSTR_BLK_COUNT_POS;
+	f.uptr[OBJ / sizeof f.uptr[0] - 1U] = blocks << DSTR_BLK_COUNT_POS;
 	f.raw[OBJ - 1U] |= meta;
 	return f;
 }
@@ -858,8 +858,7 @@ al_grow_bad (void)
 	}
 
 	/* A forged object is valid as long as it is consistent... */
-	uintptr_t const fake = (uintptr_t)&al_fake[0];
-	struct dstr f = al_forge(fake, fake + 10U, 1, al_meta(3));
+	struct dstr f = al_forge(&fake[0], &fake[10], 1, al_meta(3));
 	HELL_EQ(dstr_info(&f).state, DSTR_IS_PTR);
 	HELL_EQ(dstr_space_left(&f), DSTR_BLK_SIZE - 11U);
 	al_grow_same(&f, DSTR_BLK_SIZE - 11U, 0);
@@ -868,12 +867,12 @@ al_grow_bad (void)
 	 * with a string that doesn't fit or ends before it starts, or with
 	 * a meta byte that is neither in place nor heap */
 	struct dstr const bad[] = {
-		al_forge(0, fake + 10U, 1, al_meta(3)),
-		al_forge(fake, 0, 1, al_meta(3)),
-		al_forge(fake, fake, 0, al_meta(3)),
-		al_forge(fake, fake + DSTR_BLK_SIZE, 1, al_meta(3)),
-		al_forge(fake + 1U, fake, 1, al_meta(3)),
-		al_forge(fake, fake, 1, (unsigned char)OBJ),
+		al_forge(nullptr, &fake[10], 1, al_meta(3)),
+		al_forge(&fake[0], nullptr, 1, al_meta(3)),
+		al_forge(&fake[0], &fake[0], 0, al_meta(3)),
+		al_forge(&fake[0], &fake[DSTR_BLK_SIZE], 1, al_meta(3)),
+		al_forge(&fake[1], &fake[0], 1, al_meta(3)),
+		al_forge(&fake[0], &fake[0], 1, (unsigned char)OBJ),
 	};
 	for (size_t i = 0; i < sizeof bad / sizeof bad[0]; ++i) {
 		if (bad[i].raw[OBJ - 1U] == OBJ && OBJ >= DSTR_PTR_FLAG)

@@ -8,7 +8,6 @@
 
 #include <errno.h>
 #include <stdarg.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -160,9 +159,9 @@ util_env (char const *name,
 static inline char *
 util_env_path (void)
 {
-	static char const name[] = "PATH=";
-	char *path = util_env(name, sizeof name - 1);
-	return path && path[sizeof name - 1] ? path : "PATH=/usr/bin:/bin";
+	char *p = util_env("PATH=", sizeof "PATH=" - 1U);
+	return p && p[sizeof "PATH=" - 1U]
+	       ? p : "PATH=/usr/bin:/bin";
 }
 
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a
@@ -293,11 +292,6 @@ util_url_shown (char const *restrict url,
 	return host;
 }
 
-/**
- * Format words that a log, a client or the model reads into the @p size
- * bytes at @p buf, @p size > 0, as vsnprintf() does: text cut short ends in
- * "...", and a format that fails gives "?".  Returns the length written.
- */
 [[gnu::format(printf, 3, 0)]]
 static inline size_t
 util_vformat (char       *buf,
@@ -305,22 +299,40 @@ util_vformat (char       *buf,
               char const *fmt,
               va_list     ap)
 {
-	static char const cut[] = "...";
-	int n = vsnprintf(buf, size, fmt, ap);
-	if (n < 0) {
-		size_t len = size > 1;
-		memcpy(buf, "?", len);
-		buf[len] = '\0';
-		return len;
+	/* Set `len` to `SIZE_MAX` if args are valid, otherwise 0. */
+	size_t len = !buf | !size;
+
+	if (--len) {
+		union { int i; unsigned u; } x = {
+			vsnprintf(buf, size, fmt, ap)
+		};
+		bool const err = x.u & ~(~0U >> 1U);
+
+		/* Wipe on error, otherwise assign the length. */
+		len += err;
+		len &= x.u;
+
+		if (err)
+			/* Terminate buffer on error just in case. */
+			buf[0] = '\0';
+
+		if (len >= size) {
+			/* Truncated write. Adjust the length we intend to
+			 * return, and indicate truncation by changing the
+			 * last characters to "..." if there's room left.
+			 */
+			len = --size;
+			if (len > 2U) {
+				buf[len - 3U] = '.';
+				buf[len - 2U] = '.';
+				buf[len - 1U] = '.';
+			}
+		}
 	}
-	if ((size_t)n < size)
-		return (size_t)n;
-	if (size >= sizeof cut)
-		memcpy(buf + size - sizeof cut, cut, sizeof cut);
-	return size - 1;
+
+	return len;
 }
 
-/** As util_vformat(), with the format's arguments. */
 [[gnu::format(printf, 3, 4)]]
 static inline size_t
 util_format (char       *buf,
