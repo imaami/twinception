@@ -181,7 +181,8 @@ uint64_t
 loop_clock (void)
 {
 	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
+	if (clock_gettime(CLOCK_MONOTONIC, &ts))
+		return 0;
 	return (uint64_t)ts.tv_sec * 1'000'000'000 + (uint64_t)ts.tv_nsec;
 }
 

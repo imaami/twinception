@@ -238,7 +238,7 @@ loop_ready_bulk (struct loop      *loop,
 extern void
 loop_unready (struct loop_step *step);
 
-/** CLOCK_MONOTONIC in nanoseconds. */
+/** CLOCK_MONOTONIC in nanoseconds, or 0 if it cannot be read. */
 extern uint64_t
 loop_clock (void);
 

@@ -8,16 +8,23 @@
 #include <stdio.h>
 #include <time.h>
 
-/* clock_ns is the time of the fake clock in nanoseconds. */
+#include "compat.h"
+
+/* clock_ns is the time of the fake clock in nanoseconds.  While
+ * clock_fails is set, the fake clock fails. */
 static uint64_t clock_ns;
+static bool     clock_fails;
 
 /* This function replaces clock_gettime() in src/loop.c.  It ignores @p id
- * and stores the time clock_ns in @p ts. */
+ * and stores the time clock_ns in @p ts, or returns -1 and leaves @p ts as
+ * it was while clock_fails is set. */
 static int
 turn_clock_gettime (clockid_t        id,
                     struct timespec *ts)
 {
 	(void)id;
+	if (clock_fails)
+		return -1;
 	*ts = (struct timespec){
 		.tv_sec = (time_t)(clock_ns / 1'000'000'000),
 		.tv_nsec = (long)(clock_ns % 1'000'000'000)
@@ -173,9 +180,22 @@ test_no_room (void)
 	CHECK(t.fresh_steps >= 49 && t.ongoing_steps >= 49);
 }
 
+/* A clock that cannot be read gives the time 0, not the time that the
+ * timespec held from an earlier reading. */
+static void
+test_clock_fails (void)
+{
+	clock_ns = 1'000'000'000;
+	CHECK(loop_clock() == 1'000'000'000);
+	clock_fails = true;
+	CHECK(!loop_clock());
+	clock_fails = false;
+}
+
 int
 main (void)
 {
+	test_clock_fails();
 	test_room();
 	test_one_step();
 	test_no_room();
