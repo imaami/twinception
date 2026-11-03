@@ -1289,7 +1289,7 @@ separate `git` tool call's arguments:
 ```jsonl
 {"repo":"proj","command":"grep","help":true}
 {"repo":"proj","command":"ls-tree","options":["-r","--name-only"]}
-{"repo":"proj","command":"grep","options":["-n","-F","-C3"],"pattern":"journal_write","paths":["src/"]}
+{"repo":"proj","command":"grep","options":["-F","-C3"],"pattern":"journal_write","paths":["src/"]}
 ```
 
 The default revision is `HEAD`, including for `grep`, `blame` and `ls-tree`.
@@ -1300,6 +1300,7 @@ version. `status`, `ls-files`, `--cached`, `--staged`, `--untracked` and
 with both endpoints, such as `main..topic` or `main...topic`.
 
 `-F` means literal search, `-E` extended regex, and `-C3` three lines of context.
+Every match is numbered: `commit:path:line:text`, with the full commit ID.
 Option values stay attached in one array entry. To read a committed file, use
 `command: "show"` with `"revisions":["HEAD:src/journal.c"]`. An immutable commit
 ID can replace `HEAD` for repeatable reads. Index selectors such as

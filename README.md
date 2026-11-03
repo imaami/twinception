@@ -648,7 +648,8 @@ as `askai` starts.  A call names its
 Only committed content is visible. The default revision is `HEAD`, including
 for `grep`, `blame` and `ls-tree`; a staged deletion does not hide its committed
 file, and staged additions or edits, working-tree edits, untracked and ignored
-files are absent. Use `ls-tree -r --name-only` to list committed paths. Read a
+files are absent. Use `ls-tree -r --name-only` to list committed paths. `grep`
+gives each match as `commit:path:line:text`, with the full commit ID. Read a
 file with `show` and `"revisions": ["HEAD:src/main.c"]`. A commit ID can replace
 `HEAD` for repeatable reads. `diff` requires two commit revisions or one explicit
 range such as `main..topic` or `main...topic`.

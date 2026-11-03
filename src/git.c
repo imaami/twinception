@@ -206,9 +206,10 @@ static struct {
 	{ "diff",      diff_options,      { "--no-ext-diff", "--no-textconv" },
 	  "Compare two commits: give two revisions, or one explicit A..B or A...B "
 	  "range. Paths restrict the comparison.", FILES | END | RANGE | PAIR },
-	{ "grep",      grep_options,      { "--no-textconv" },
-	  "Search committed trees; defaults to HEAD. Use -F for literal search, "
-	  "-E for extended regex, -n for lines, -C3 for context.",
+	{ "grep",      grep_options,      { "--no-textconv", "-n" },
+	  "Search committed trees; defaults to HEAD. Each match is "
+	  "commit:path:line:text. Use -F for literal search, -E for extended "
+	  "regex, -C3 for context.",
 	  FILES | END | PATTERN },
 	{ "blame",     blame_options,     { "--no-textconv" },
 	  "Annotate a committed file; defaults to HEAD. Give one path; -L10,30 "

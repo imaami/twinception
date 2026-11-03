@@ -8355,6 +8355,7 @@ def check_git(binary, up):
             help_text = json.loads(text_of(call(ai, repo="proj", command="grep", help=True)))
             assert {"-F", "-E", "-C#"} <= set(help_text["options"]) and not \
                 {"--cached", "--untracked"} & set(help_text["options"]), help_text
+            assert "commit:path:line:text" in help_text["description"], help_text
             commands = schema["properties"]["command"]["enum"]
             assert "status" not in commands and "ls-files" not in commands, commands
             complete = text_of(call(ai, repo="proj", command="log", help=True))
@@ -8528,6 +8529,9 @@ def check_git(binary, up):
                                 options=["--format=%s"])) == "first\n"
             assert text_of(call(ai, repo="proj", command="grep", pattern="beta",
                                 options=["-n"])) == f"{head}:a.txt:2:beta ?? gamma\n"
+            # Every match has its line's number, -n or not.
+            assert text_of(call(ai, repo="proj", command="grep", pattern="beta")) == \
+                f"{head}:a.txt:2:beta ?? gamma\n"
             result = call(ai, repo="proj", command="grep", pattern="nothing here")
             assert not result.get("isError") and \
                 text_of(result) == "[No matches.]", result
