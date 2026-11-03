@@ -1306,7 +1306,9 @@ ID can replace `HEAD` for repeatable reads. Index selectors such as
 `":src/journal.c"`, raw blob or tree IDs, stash and reflog selectors, and
 revision-list expansion syntax are rejected. Paths must be relative, without
 `..` components or `:(...)` pathspec magic. Git replacement objects are ignored,
-so they cannot substitute uncommitted content for a committed object.
+so they cannot substitute uncommitted content for a committed object. Path
+names in the output are as they are (`core.quotePath=false`); only a name with
+`"`, `\` or a control character is quoted.
 Every requested commit, including `blame --ignore-rev` values, must be reachable
 from `HEAD`, a branch, a tag or a remote-tracking ref. Private stash snapshots
 and dangling commits are unavailable even by hash. Each call snapshots those

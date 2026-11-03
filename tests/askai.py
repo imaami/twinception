@@ -8279,7 +8279,9 @@ def check_git(binary, up):
         sh("switch", "-q", "-c", "topic")
         with open(f"{repo}/a.txt", "w") as f:
             f.write("committed topic text\n")
-        sh("add", "a.txt")
+        with open(f"{repo}/ä.txt", "w") as f:
+            f.write("alpha\n")
+        sh("add", "a.txt", "ä.txt")
         sh("commit", "-q", "-m", "topic")
         sh("switch", "-q", "main")
         subprocess.run(["git", "init", "-q", f"{d}/other"], check=True,
@@ -8495,7 +8497,7 @@ def check_git(binary, up):
                 "protocol.allow=never", "-c", "gc.auto=0", "-c",
                 "maintenance.auto=false", "-c", "core.bare=true", "-c",
                 "log.showSignature=false", "-c", "diff.submodule=short", "-c",
-                "diff.autoRefreshIndex=false", "-c",
+                "diff.autoRefreshIndex=false", "-c", "core.quotePath=false", "-c",
                 f"safe.directory={real}", "-C", directory, "--git-dir=.",
                 "log", "--no-ext-diff", "--no-textconv", "--oneline",
                 "--end-of-options", "1" * 40, "--",
@@ -8543,6 +8545,17 @@ def check_git(binary, up):
             assert text_of(call(ai, repo="proj", command="ls-tree",
                                 options=["--name-only"], revisions=["HEAD"],
                                 paths=["a.txt"])) == "a.txt\n"
+            # Path names are not quoted (core.quotePath=false), so a grep
+            # match gives a path that works in a commit:path revision.
+            topic = subprocess.run(["git", "-C", repo, "rev-parse", "topic"], text=True,
+                                   capture_output=True, check=True,
+                                   env=os.environ | git).stdout.strip()
+            assert text_of(call(ai, repo="proj", command="ls-tree",
+                                options=["--name-only"], revisions=["topic"])) == \
+                "a.txt\nbig.txt\ndeleted.txt\nä.txt\n"
+            assert text_of(call(ai, repo="proj", command="grep", pattern="alpha",
+                                options=["-n"], revisions=["topic"])) == \
+                f"{topic}:ä.txt:1:alpha\n"
             assert text_of(call(ai, repo="proj", command="rev-parse",
                                 revisions=["HEAD"])) == head + "\n"
             result = call(ai, repo="proj", command="rev-parse", revisions=["a.txt"])

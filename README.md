@@ -684,8 +684,10 @@ shared object storage, with no source worktree, index or local configuration.
 Validated shallow-history boundaries are preserved.
 Revisions are pinned to object IDs before execution; attributes and mailmaps
 come from the view's fixed `HEAD`. Replacement objects, pagers, fsmonitor, gpg,
-hooks and submodule diffs are disabled. Repository metadata and object storage
-remain trusted: this view is not an operating-system sandbox.
+hooks and submodule diffs are disabled. Path names are printed as they are
+(`core.quotePath=false`); only a name with `"`, `\` or a control character is
+quoted. Repository metadata and object storage remain trusted: this view is
+not an operating-system sandbox.
 
 The reply is `git`'s output, made UTF-8 text and cut at 4 MiB with a note saying
 so, from the byte an optional `offset` names. History validation failures return
