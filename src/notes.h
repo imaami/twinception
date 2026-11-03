@@ -92,11 +92,12 @@ struct notes_part {
 /** A change to a note in the output of NOTES_LIST. */
 struct notes_entry {
 	struct span name;
-	struct span commit; /**< hexadecimal commit id; borrows the history output */
-	uint64_t    time;   /**< when it was committed, in seconds since the
-	                         epoch */
-	uint64_t    lines;  /**< the number of lines added by this change, or
-	                         NOTES_BINARY if git sees no text in it */
+	struct span commit;  /**< hexadecimal commit id; borrows the history output */
+	struct span subject; /**< the commit's subject; borrows the history output */
+	uint64_t    time;    /**< when it was committed, in seconds since the
+	                          epoch */
+	uint64_t    lines;   /**< the number of lines added by this change, or
+	                          NOTES_BINARY if git sees no text in it */
 };
 
 /** Reverse iterator over Git's note history. Initialize only end to the output
@@ -104,6 +105,7 @@ struct notes_entry {
  */
 struct notes_cursor {
 	struct span commit;
+	struct span subject;
 	size_t      end;
 	size_t      first;
 	uint64_t    time;

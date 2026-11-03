@@ -9545,12 +9545,16 @@ def check_notes(binary, up):
                 "plan.md": b"step 1", "a/b c.md": long.encode(),
                 'q"\\.txt': b"q", "x" * 255: b"t"}), listed
             history = call({"action": "history"})
+            rows = (("plan.md", "1 line", 'Add "plan.md" (6 bytes)'),
+                    ("a/b c.md", "800 lines", 'Add "a/b c.md" (8000 bytes)'),
+                    ('q"\\.txt', "1 line", 'Add "q\\"\\\\.txt" (1 byte)'),
+                    ("x" * 255, "1 line", f'Add "{"x" * 255}" (1 byte)'))
             assert re.fullmatch(
-                f"Notebook {selector} — history, oldest first \\(lines added, commit\\):\n\n"
-                f"1\\. {when}  plan\\.md  \\(1 line\\)  commit [0-9a-f]{{40}}\n"
-                f"2\\. {when}  a/b c\\.md  \\(800 lines\\)  commit [0-9a-f]{{40}}\n"
-                f'3\\. {when}  q"\\\\\\.txt  \\(1 line\\)  commit [0-9a-f]{{40}}\n'
-                f"4\\. {when}  x{{255}}  \\(1 line\\)  commit [0-9a-f]{{40}}\n",
+                f"Notebook {selector} — history, oldest first \\(lines added, commit, "
+                "message\\):\n\n" + "".join(
+                    f"{k}\\. {when}  {re.escape(name)}  \\({lines}\\)  commit "
+                    f"[0-9a-f]{{40}}  {re.escape(subject)}\n"
+                    for k, (name, lines, subject) in enumerate(rows, 1)),
                 history), history
             assert call({"action": "read", "file": "/plan.md", "thread": thread}) == \
                 "step 1"
@@ -9717,7 +9721,7 @@ def check_notes(binary, up):
             assert note_files(selector, {"plan.md": b"step 2\nready"}).split("\n\n")[1] \
                 in listed, listed
             history = call({"action": "history"})
-            assert history.count("plan.md") == 2, history
+            assert history.count("  plan.md  (") == 2, history
             before = git("rev-parse", own)
             for name, why in (("missing.md", "No note has that name. Use action add"),
                               ("a", "That name is a directory of notes"),
@@ -9950,12 +9954,21 @@ def check_shared_notes(binary, up):
                 manual = git("rev-parse", "refs/heads/notes/alice/anonymous/client").strip()
                 history = call(bob, action="history", notebook="alice/anonymous/client")
                 assert history.count(manual) == 2, history
+                assert history.count(f"{manual}  Two notes from a worktree\n") == 2, history
                 assert all(name in history for name in ("manual-one.md", "manual-two.md")), history
                 listed = call(bob, action="list", notebook="alice/anonymous/client")
                 assert all(name in listed for name in ("plan.md", "manual-one.md", "manual-two.md")), listed
                 assert call(alice, action="read", file="manual-one.md") == "first manual note"
                 assert call(bob, action="read", file="manual-two.md",
                             notebook="alice/anonymous/client") == "second manual note"
+                # A commit with an empty message ends its row at its id.
+                with open(f"{d}/alice-worktree/manual-two.md", "a") as f:
+                    f.write(", changed")
+                git("-C", f"{d}/alice-worktree", "-c", "user.name=test", "-c", "user.email=t@t",
+                    "commit", "-q", "-a", "--allow-empty-message", "-m", "")
+                silent = git("rev-parse", "refs/heads/notes/alice/anonymous/client").strip()
+                history = call(bob, action="history", notebook="alice/anonymous/client")
+                assert history.endswith(f"  manual-two.md  (1 line)  commit {silent}\n"), history
             # Restarting does not mint another notebook or lose its notes.
             with Askai(binary, "-u", up.url(), "--notes", repo,
                        "--participant", "alice") as ai:
@@ -10106,6 +10119,8 @@ def check_notes_history(binary, up):
                     assert said == unchanged_result(name, size, current) and tip() == current, said
                 history = call(alice, action="history", file="plan.md")
                 assert all(oid in history for oid in (first, second, tip())), history
+                assert history.endswith(f"  commit {current}  Restore \"plan.md\" from {first} "
+                                        "(9 to 9 bytes)\n"), history
 
                 # The source can have disappeared from the current tree.
                 before = tip()

@@ -7072,13 +7072,16 @@ mcp_slot_notes_listed (struct mcp_slot *slot,
 		time_t t = (time_t)entry.time;
 		size_t w = gmtime_r(&t, &tm) ? strftime(when, sizeof when, "%Y-%m-%d %H:%M UTC",
 		                                        &tm) : 0;
+		char const *subject = (char const *)entry.subject.ptr;
+		size_t said = history ? jb_utf8(subject, entry.subject.len) : 0;
 		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", ++k, (int)w, when) ||
 		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
 		    !(entry.lines == NOTES_BINARY ? CAT(d, "  (binary)")
 		      : dstr_printf(d, "  (%" PRIu64 " line%s)", entry.lines,
 		                    entry.lines == 1 ? "" : "s")) ||
-		    (history && !dstr_printf(d, "  commit %.*s", (int)entry.commit.len,
-		                            (char const *)entry.commit.ptr)) || !CAT(d, "\n"))
+		    (history && !dstr_printf(d, "  commit %.*s%s%.*s", (int)entry.commit.len,
+		                            (char const *)entry.commit.ptr, said ? "  " : "",
+		                            (int)said, said ? subject : "")) || !CAT(d, "\n"))
 			return ENOMEM;
 		*newest = entry.name;
 	}
@@ -7100,7 +7103,8 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 	struct dstr *d = &slot->answer;
 	int e = dstr_printf(d, "Notebook %s — %s:\n\n",
 	                    notes_selector(mcp_slot_notebook(slot)),
-	                    files ? "current files (bytes, blob)" : "history, oldest first (lines added, commit)")
+	                    files ? "current files (bytes, blob)"
+	                          : "history, oldest first (lines added, commit, message)")
 	      ? 0 : ENOMEM;
 	struct span out = buf_peek(&c->out);
 	if (!files) {
@@ -9592,7 +9596,8 @@ mcp_notes_schema (enum notes_side          side,
 			"description", mcp_text3(
 				"add a note, replace an existing own note, list current files "
 				"with their byte sizes and blob ids, show history oldest first "
-				"with commit IDs (line counts are lines added by each change), read a note, "
+				"with commit IDs and messages (line counts are lines added by each change), "
+				"read a note, "
 				"diff two versions, or restore an old version in a new own commit "
 				"unless the note already has its bytes. "
 				"To recover lost text: history with file, diff with file and from, then "

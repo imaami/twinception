@@ -66,7 +66,7 @@ static char const *const cmds[][8] = {
 	                   "--initial-branch=session", "--" },
 	[NOTES_CHECK]  = { "cat-file", "--batch-check" },
 	[NOTES_ADD]    = { "fast-import", "--quiet", "--date-format=now" },
-	[NOTES_LIST]   = { "log", "-z", "--no-renames", "--format=%ct %H", "--numstat",
+	[NOTES_LIST]   = { "log", "-z", "--no-renames", "--format=%ct %H %s", "--numstat",
 	                   nullptr },
 	[NOTES_READ]   = { "cat-file", "--batch" },
 	[NOTES_BOOKS]  = { "for-each-ref", "--format=%(refname:strip=3)", BRANCH },
@@ -1142,9 +1142,11 @@ notes_entry_before (struct span          out,
 {
 	char const *s = (char const *)out.ptr;
 	size_t at = cursor->end;
-	/* Git emits TIMESTAMP SPACE COMMIT\0, then one numstat token per file.
-	 * Only the first file token starts with a newline. A cut output may end
-	 * within a token. */
+	/* Git emits TIMESTAMP SPACE COMMIT SPACE SUBJECT\0, then one numstat
+	 * token per file. Only the first file token starts with a newline. A
+	 * numstat token has no space before its first tab, and a header has
+	 * one, so neither can pass as the other. A cut output may end within
+	 * a token. */
 	if (at && s[at - 1]) {
 		char const *nul = memrchr(s, '\0', at);
 		at = nul ? (size_t)(nul - s) + 1 : 0;
@@ -1173,10 +1175,13 @@ notes_entry_before (struct span          out,
 				size_t len = before - 1 - token;
 				char const *space = memchr(s + token, ' ', len);
 				size_t digits = space ? (size_t)(space - s - token) : len;
-				size_t oid = space ? len - digits - 1 : 0;
-				if (util_is_oid(space ? space + 1 : nullptr, oid) &&
-				    notes_number(s + token, digits, &cursor->time)) {
+				char const *id = space ? space + 1 : nullptr;
+				char const *sep = id ? memchr(id, ' ', len - digits - 1) : nullptr;
+				size_t oid = sep ? (size_t)(sep - id) : 0;
+				if (util_is_oid(id, oid) && notes_number(s + token, digits, &cursor->time)) {
 					cursor->commit = (struct span){ out.ptr + token + digits + 1, oid };
+					cursor->subject = (struct span){ out.ptr + token + digits + oid + 2,
+					                                 len - digits - oid - 2 };
 					cursor->first = before;
 					break;
 				}
@@ -1189,6 +1194,7 @@ notes_entry_before (struct span          out,
 			.name = { (unsigned char *)(uintptr_t)(name + 1),
 			          (size_t)(s + at - 1 - name - 1) },
 			.commit = cursor->commit,
+			.subject = cursor->subject,
 			.time = cursor->time,
 			.lines = binary ? NOTES_BINARY : lines,
 		};
