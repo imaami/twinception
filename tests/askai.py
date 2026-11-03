@@ -771,6 +771,15 @@ def note_files(selector, contents, algorithm="sha1"):
     return "".join(rows)
 
 
+def saved(message, commit="[0-9a-f]{40}|[0-9a-f]{64}"):
+    """A regular expression for the result of a note write whose commit has
+    the message @p message. @p commit is a regular expression for the ID of
+    the commit, such as the ID itself."""
+    kept = " Previous versions remain in history." if message.startswith(
+        ("Replace ", "Restore ")) else ""
+    return f"Saved in commit (?:{commit}): " + re.escape(f"{message}.{kept}")
+
+
 def grouped(members):
     """The configuration file's object for @p members, the options and the
     other members in one object: each option goes into its group's object,
@@ -9457,24 +9466,36 @@ def check_notes(binary, up):
             who = re.search(r"Self \(writable\): writers/([0-9a-f]{16})/client",
                             notebooks).group(1)
             selector = f"writers/{who}/client"
+            own = f"refs/heads/notes/{selector}"
+            other = f"refs/heads/notes/writers/{who}/upstream"
+            git_env = os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
+                                    "GIT_CONFIG_NOSYSTEM": "1"}
+
+            def git(*args):
+                return subprocess.check_output(["git", "--git-dir", notes, *args],
+                                               env=git_env)
+
+            def wrote(said, message, ref=own):
+                """Whether @p said is the result of a write that made the
+                tip of @p ref, with the commit message @p message."""
+                return re.fullmatch(saved(message, git("rev-parse", ref).decode().strip()),
+                                    said)
             assert not os.path.exists(f"{notes}/HEAD"), notebooks
             assert call({"action": "replace", "file": "missing.md", "text": "x"}) == \
                 "!No note has that name. Use action add to create it."
             assert not os.path.exists(f"{notes}/HEAD")
             said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
-            assert said == "Noted.", said
+            assert wrote(said, 'Add "plan.md" (6 bytes)'), said
             thread = "2" * 32
             notebooks = call({"action": "notebooks"})
             assert f"Self (writable): {selector}" in notebooks, notebooks
-            own = f"refs/heads/notes/writers/{who}/client"
-            other = f"refs/heads/notes/writers/{who}/upstream"
             assert os.path.isfile(f"{notes}/HEAD"), notes
             assert not os.path.exists(f"{notes}/{who}"), notes
             long = "".join(f"line {i:04}\n" for i in range(800))
-            assert call({"action": "add", "file": "a/b c.md", "text": long,
-                         "thread": thread}) == "Noted."
-            assert call({"action": "add", "file": 'q"\\.txt', "text": "q",
-                         "thread": thread}) == "Noted."
+            said = call({"action": "add", "file": "a/b c.md", "text": long, "thread": thread})
+            assert wrote(said, 'Add "a/b c.md" (8000 bytes)'), said
+            said = call({"action": "add", "file": 'q"\\.txt', "text": "q", "thread": thread})
+            assert wrote(said, 'Add "q\\"\\\\.txt" (1 byte)'), said
             for name, why in (("plan.md", "A note of that name exists"),
                               ("a", "That name is a directory of notes"),
                               ("plan.md/x", "A directory in that name is a note"),
@@ -9499,8 +9520,8 @@ def check_notes(binary, up):
             for text in ("", "x" * ((4 << 20) + 1), "a\0b"):
                 assert call({"action": "add", "file": "t.md", "text": text,
                              "thread": thread}).startswith("!The text argument"), text
-            assert call({"action": "add", "file": "x" * 255, "text": "t",
-                         "thread": thread}) == "Noted."
+            said = call({"action": "add", "file": "x" * 255, "text": "t", "thread": thread})
+            assert wrote(said, f'Add "{"x" * 255}" (1 byte)'), said
 
             listed = call({"action": "list", "thread": thread})
             when = r"\d{4}-\d\d-\d\d \d\d:\d\d UTC"
@@ -9529,7 +9550,7 @@ def check_notes(binary, up):
             # Only list and read take an offset, and the answer of a call
             # that failed is whole.
             said = call({"action": "add", "file": "o.md", "text": "o", "offset": 500})
-            assert said == "Noted.", said
+            assert wrote(said, 'Add "o.md" (1 byte)'), said
             assert call({"action": "read", "file": "b", "thread": thread,
                          "offset": 5}) == "!No note has that name."
 
@@ -9541,8 +9562,6 @@ def check_notes(binary, up):
             # The opposite side's branch is a convenience alias.  Its
             # files share the repository, but an add still writes only to
             # the caller's own branch.
-            git_env = os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
-                                    "GIT_CONFIG_NOSYSTEM": "1"}
             shared = "1" * 32
             book = notes
             now = int(time.time())
@@ -9565,8 +9584,8 @@ def check_notes(binary, up):
                      "!The notebook must be own or a selector returned "
                      "by action notebooks (participant/principal/side).")):
                 assert call(arguments | {"thread": shared}) == why, (arguments, why)
-            assert call({"action": "add", "file": "mine.md", "text": "m",
-                         "thread": shared}) == "Noted."
+            said = call({"action": "add", "file": "mine.md", "text": "m", "thread": shared})
+            assert wrote(said, 'Add "mine.md" (1 byte)'), said
             assert "mine.md" in call({"action": "list", "thread": thread})
             assert "mine.md" in call({"action": "list", "thread": shared})
             assert "mine.md" not in call({"action": "list", "thread": shared,
@@ -9585,10 +9604,12 @@ def check_notes(binary, up):
             assert call({"action": "list", "thread": shared, "notebook": "other"}) == \
                 note_files(f"writers/{who}/upstream",
                            {"found.md": b"found\n", "img/raw.bin": raw})
+            source = f"from writers/{who}/upstream"
             for arguments, said in (
-                    ({"file": "found.md"}, "Copied into your notebook."),
-                    ({"file": "found.md", "as": "copies/f.md"}, "Copied into your notebook."),
-                    ({"file": "img/raw.bin"}, "Copied into your notebook."),
+                    ({"file": "found.md"}, f'Copy "found.md" {source} (6 bytes)'),
+                    ({"file": "found.md", "as": "copies/f.md"},
+                     f'Copy "copies/f.md" {source} (6 bytes)'),
+                    ({"file": "img/raw.bin"}, f'Copy "img/raw.bin" {source} (768 bytes)'),
                     ({"file": "found.md"}, "!A note of that name exists. Use action "
                      "replace to update it, or add under another name."),
                     ({"file": "none.md"}, "!No note has that name."),
@@ -9596,7 +9617,8 @@ def check_notes(binary, up):
                      "file name, as the file argument is."),
                     ({"file": "../x"}, "!The file argument must be")):
                 got = call({"action": "copy", "thread": shared} | arguments)
-                assert got.startswith(said), (arguments, got)
+                assert got.startswith(said) if said[0] == "!" else wrote(got, said), \
+                    (arguments, got)
             for name in ("found.md", "copies/f.md"):
                 assert call({"action": "read", "file": name, "thread": shared}) == "found\n"
             assert call({"action": "read", "file": "img/raw.bin", "thread": shared}) == \
@@ -9605,9 +9627,9 @@ def check_notes(binary, up):
             # and an escape of C: the view shows each byte, and the copy keeps
             # them.
             latin = b'char *s = "caf\xe9 \xab\x00"; /* \\x41 \xe2\x9f\xa6 */\n'
-            assert call({"action": "add", "file": "legacy.c", "thread": shared,
-                         "content": "data:;base64," + base64.b64encode(latin).decode()}) \
-                == "Noted."
+            said = call({"action": "add", "file": "legacy.c", "thread": shared,
+                         "content": "data:;base64," + base64.b64encode(latin).decode()})
+            assert wrote(said, 'Add "legacy.c" (36 bytes)'), said
             view = call({"action": "read", "file": "legacy.c", "thread": shared})
             assert view == note_view(latin) and view.endswith(
                 'char *s = "caf\u27e6E9\u27e7 \u27e6AB\u27e7\u27e600\u27e7"; '
@@ -9627,11 +9649,11 @@ def check_notes(binary, up):
                 "it is. Do not write it yourself.",
                 "x-mcp-file": {"maxSize": 4 << 20}}, notes_tool
             blob = bytes(range(256)) * 64 + b"\0end"
-            for name, uri in (("in/blob.bin", "data:application/octet-stream;base64,"
-                               + base64.b64encode(blob).decode()),
-                              ("in/text.md", "data:text/markdown,a%20b%0A")):
-                assert call({"action": "add", "file": name, "thread": shared,
-                             "content": uri}) == "Noted.", name
+            for name, uri, size in (("in/blob.bin", "data:application/octet-stream;base64,"
+                                     + base64.b64encode(blob).decode(), len(blob)),
+                                    ("in/text.md", "data:text/markdown,a%20b%0A", 4)):
+                said = call({"action": "add", "file": name, "thread": shared, "content": uri})
+                assert wrote(said, f'Add "{name}" ({size} bytes)'), said
             mine = notes
             for name, want in (("in/blob.bin", blob), ("in/text.md", b"a b\n")):
                 assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
@@ -9656,23 +9678,21 @@ def check_notes(binary, up):
             # Explicit selectors expose every notebook for reading,
             # while each authenticated identity still has its own writer.
             selector = f"writers/{who}/client"
-            assert selector in call({"action": "notebooks"}, "bob-1")
+            books = call({"action": "notebooks"}, "bob-1")
+            assert selector in books, books
+            bob = re.search(r"Self \(writable\): (\S+)\n", books).group(1)
             assert call({"action": "read", "file": "plan.md",
                          "notebook": selector}, "bob-1") == "step 1"
             assert call({"action": "add", "file": "forbidden.md", "text": "x",
                          "notebook": selector}, "bob-1").startswith(
                              "!You can write notes only to your own notebook.")
-            assert call({"action": "add", "file": "bob.md", "text": "b"},
-                        "bob-1") == "Noted."
+            said = call({"action": "add", "file": "bob.md", "text": "b"}, "bob-1")
+            assert wrote(said, 'Add "bob.md" (1 byte)', f"refs/heads/notes/{bob}"), said
             assert "bob.md" not in call({"action": "list"})
             # Replacements extend the branch, preserving each previous blob.
-            def git(*args):
-                return subprocess.check_output(["git", "--git-dir", notes, *args],
-                                               env=git_env)
             before = git("rev-parse", own).decode().strip()
-            replaced = "Replaced. Previous versions remain in history."
-            assert call({"action": "replace", "file": "plan.md",
-                         "text": "step 2\nready"}) == replaced
+            said = call({"action": "replace", "file": "plan.md", "text": "step 2\nready"})
+            assert wrote(said, 'Replace "plan.md" (6 to 12 bytes)'), said
             assert git("rev-parse", f"{own}^").decode().strip() == before
             assert git("show", f"{before}:plan.md") == b"step 1"
             assert call({"action": "read", "file": "plan.md"}) == "step 2\nready"
@@ -9692,17 +9712,17 @@ def check_notes(binary, up):
                 "!The text argument")
             assert git("rev-parse", own) == before
             replacement = b"\0\xffnew"
-            assert call({"action": "replace", "file": "legacy.c", "content":
-                         "data:;base64," + base64.b64encode(replacement).decode()}) == replaced
+            said = call({"action": "replace", "file": "legacy.c", "content":
+                         "data:;base64," + base64.b64encode(replacement).decode()})
+            assert wrote(said, 'Replace "legacy.c" (36 to 5 bytes)'), said
             assert git("show", f"{own}^:legacy.c") == latin
             assert git("show", f"{own}:legacy.c") == replacement
             assert call({"action": "read", "file": "legacy.c"}) == note_view(replacement)
-            assert call({"action": "replace", "file": "legacy.c",
-                         "content": "data:,"}) == replaced
+            said = call({"action": "replace", "file": "legacy.c", "content": "data:,"})
+            assert wrote(said, 'Replace "legacy.c" (5 to 0 bytes)'), said
             assert git("show", f"{own}:legacy.c") == b""
             # Each commit message is one line: the action, the name as the
             # fast-import file part quotes it, and the sizes.
-            source = f"from writers/{who}/upstream"
             subjects = git("log", "--reverse", "--format=%s", own).decode().splitlines()
             assert subjects == [
                 'Add "plan.md" (6 bytes)', 'Add "a/b c.md" (8000 bytes)',
@@ -9735,9 +9755,11 @@ def check_notes(binary, up):
                     add.start()
                 for add in adds:
                     add.join(10)
-                assert sorted(said) == ["!Could not write the note, because another "
-                                        "call changed this notebook at the same "
-                                        "time. Read its current state and retry.", "Noted."], said
+                retry = ("!Could not write the note, because another call changed this "
+                         "notebook at the same time. Read its current state and retry.")
+                assert len(said) == 2 and retry in said, said
+                added = said[1 - said.index(retry)]
+                assert any(wrote(added, f'Add "race/{k}{x}.md" (1 byte)') for x in "ab"), said
             said = []
             before = git("rev-parse", own).decode().strip()
             writers = [threading.Thread(target=lambda text=text: said.append(call(
@@ -9747,11 +9769,12 @@ def check_notes(binary, up):
                 writer.start()
             for writer in writers:
                 writer.join(10)
-            assert len(said) == 2 and said.count(replaced) == 1, said
+            text = call({"action": "read", "file": "plan.md"})
+            assert text in ("first contender", "second contender"), text
+            won = [r for r in said if wrote(r, f'Replace "plan.md" (12 to {len(text)} bytes)')]
+            assert len(said) == 2 and len(won) == 1, said
             assert any("retry" in result for result in said), said
             assert git("rev-parse", f"{own}^").decode().strip() == before
-            assert call({"action": "read", "file": "plan.md"}) in (
-                "first contender", "second contender")
             assert not any("could not write" in line for line in ai.log), ai.log
             # An add whose client goes while git writes still adds the note.
             sock = socket.create_connection(("127.0.0.1", ai.port), 10)
@@ -9781,8 +9804,8 @@ def check_notes(binary, up):
             # crash leaves one: the next write removes it.
             boot = time.time() - time.clock_gettime(time.CLOCK_BOOTTIME)
             os.utime(f"{book}/{own}.lock", (boot - 120,) * 2)
-            assert call({"action": "add", "file": "unlocked.md", "text": "u",
-                         "thread": thread}) == "Noted."
+            said = call({"action": "add", "file": "unlocked.md", "text": "u", "thread": thread})
+            assert wrote(said, 'Add "unlocked.md" (1 byte)'), said
             assert not os.path.exists(f"{book}/{own}.lock")
             assert os.path.exists(f"{book}/HEAD.lock")
             os.unlink(f"{book}/HEAD.lock")
@@ -9791,7 +9814,7 @@ def check_notes(binary, up):
         # of git, and the note is added.
         with Askai(binary, "-c", path, ignore=(signal.SIGCHLD,)) as ai:
             said = call({"action": "add", "file": "y.md", "text": "y"})
-            assert said == "Noted.", said
+            assert wrote(said, 'Add "y.md" (1 byte)'), said
     print("notes: shared repository, separate identity branches, discovery, "
           "read-only cross-notebook access, versioned files, copy, binary data, "
           "offsets, races, drops, preservation of external locks and removal of "
@@ -9831,12 +9854,15 @@ def check_shared_notes(binary, up):
                 for thread in threads:
                     thread.join(10)
                 assert said.keys() == {"alice", "bob"}, said
+                def wrote(said, name, message):
+                    tip = git("rev-parse", f"refs/heads/notes/{name}/anonymous/client").strip()
+                    return re.fullmatch(saved(message, tip), said)
                 for name, ai in (("alice", alice), ("bob", bob)):
                     # Distinct branch transactions can still contend on a
                     # repository-wide lock; the reported retry is safe.
-                    if said[name] != "Noted.":
-                        assert "retry" in said[name], said
-                        assert call(ai, action="add", file="plan.md", text=name) == "Noted."
+                    if "retry" in said[name]:
+                        said[name] = call(ai, action="add", file="plan.md", text=name)
+                    assert wrote(said[name], name, f'Add "plan.md" ({len(name)} bytes)'), said
                 for name, ai in (("alice", alice), ("bob", bob)):
                     assert call(ai, action="read", file="plan.md") == name
                     notebooks = call(ai, action="notebooks")
@@ -9850,8 +9876,10 @@ def check_shared_notes(binary, up):
                     assert call(ai, action="add", file="overwrite.md", text="no",
                                 notebook=selector).startswith(
                                     "!You can write notes only to your own notebook.")
-                    assert call(ai, action="copy", file="plan.md", notebook=selector,
-                                **{"as": "peer.md"}) == "Copied into your notebook."
+                    copied = call(ai, action="copy", file="plan.md", notebook=selector,
+                                  **{"as": "peer.md"})
+                    assert wrote(copied, name, f'Copy "peer.md" from {selector} '
+                                 f'({len(peer)} bytes)'), copied
                     assert call(ai, action="read", file="peer.md") == peer
                     assert call(ai, action="list") == note_files(
                         f"{name}/anonymous/client", {"plan.md": name.encode(),
@@ -9868,7 +9896,8 @@ def check_shared_notes(binary, up):
                 for ai in (alice, bob):
                     notebooks = call(ai, action="notebooks")
                     assert "foreign/anonymous/client" not in notebooks, notebooks
-                assert call(alice, action="add", file="after-pack.md", text="packed") == "Noted."
+                added = call(alice, action="add", file="after-pack.md", text="packed")
+                assert wrote(added, "alice", 'Add "after-pack.md" (6 bytes)'), added
                 assert call(bob, action="read", file="after-pack.md",
                             notebook="alice/anonymous/client") == "packed"
                 git("worktree", "add", "--quiet", f"{d}/alice-worktree",
@@ -9940,18 +9969,23 @@ def check_notes_history(binary, up):
             def tip(ref=own):
                 return git("rev-parse", ref).decode().strip()
 
+            def wrote(said, message, ref=own):
+                return re.fullmatch(saved(message, tip(ref)), said)
+
             with Askai(binary, "-u", up.url(), "--notes", repo,
                        "--participant", "alice", "--upstream-tools",
                        env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as alice, \
                     Askai(binary, "-u", up.url(), "--notes", repo,
                           "--participant", "bob") as bob:
-                assert call(alice, action="add", file="plan.md", text="old plan\n") == "Noted."
+                said = call(alice, action="add", file="plan.md", text="old plan\n")
+                assert wrote(said, 'Add "plan.md" (9 bytes)'), said
                 first = tip()
                 assert len(first) == (40 if object_format == "sha1" else 64), first
                 assert not call(alice, action="replace", file="plan.md",
                                 text="new plan\n").startswith("!")
                 second = tip()
-                assert call(alice, action="add", file="unrelated.md", text="keep me") == "Noted."
+                said = call(alice, action="add", file="unrelated.md", text="keep me")
+                assert wrote(said, 'Add "unrelated.md" (7 bytes)'), said
                 third = tip()
                 history = call(alice, action="history", file="plan.md")
                 assert all(oid in history for oid in (first, second)), history
@@ -9988,7 +10022,9 @@ def check_notes_history(binary, up):
                 assert call(bob, action="restore", file="plan.md", revision=first,
                             notebook=selector).startswith(
                                 "!You can write notes only to your own notebook.")
-                assert call(bob, action="add", file="plan.md", text="foreign note") == "Noted."
+                said = call(bob, action="add", file="plan.md", text="foreign note")
+                assert wrote(said, 'Add "plan.md" (12 bytes)',
+                             "refs/heads/notes/bob/anonymous/client"), said
                 foreign = tip("refs/heads/notes/bob/anonymous/client")
                 stash = git("commit-tree", f"{own}^{{tree}}", "-p", third,
                             data=b"unpublished saved work\n").decode().strip()
@@ -10015,7 +10051,8 @@ def check_notes_history(binary, up):
 
                 # A restore appends a commit and leaves unrelated notes alone.
                 restored = call(alice, action="restore", file="plan.md", revision=first)
-                assert not restored.startswith("!"), restored
+                assert wrote(restored, f'Restore "plan.md" from {first} (9 to 9 bytes)'), \
+                    restored
                 assert tip(f"{own}^") == third
                 assert git("show", f"{own}:plan.md") == b"old plan\n"
                 assert git("show", f"{second}:plan.md") == b"new plan\n"
@@ -10043,7 +10080,8 @@ def check_notes_history(binary, up):
                 # Restoration copies bytes, including empty and non-text blobs.
                 for name, raw in (("raw.bin", bytes(range(256))), ("empty.txt", b"")):
                     uri = "data:;base64," + base64.b64encode(raw).decode()
-                    assert call(alice, action="add", file=name, content=uri) == "Noted."
+                    said = call(alice, action="add", file=name, content=uri)
+                    assert wrote(said, f'Add "{name}" ({len(raw)} bytes)'), said
                     revision = tip()
                     assert not call(alice, action="replace", file=name,
                                     text="replacement").startswith("!")
@@ -10053,7 +10091,8 @@ def check_notes_history(binary, up):
                     assert tip(f"{own}^") == before
                     assert git("show", f"{own}:{name}") == raw
                     assert git("show", f"{before}:{name}") == b"replacement"
-                assert call(alice, action="add", file="[p]lan.md", text="literal name") == "Noted."
+                said = call(alice, action="add", file="[p]lan.md", text="literal name")
+                assert wrote(said, 'Add "[p]lan.md" (12 bytes)'), said
                 before = tip()
                 assert not call(alice, action="replace", file="plan.md",
                                 text="must not match a literal path").startswith("!")
@@ -10090,7 +10129,8 @@ def check_notes_history(binary, up):
                     assert first in outputs[0] and second in outputs[0], outputs
                     assert first in outputs[1] and "old plan\n" in outputs[1], outputs
                     assert "-old plan\n" in outputs[2] and "+new plan\n" in outputs[2], outputs
-                    assert "Restored" in outputs[3], outputs
+                    assert wrote(outputs[3], f'Restore "plan.md" from {first} (9 to 9 bytes)',
+                                 upstream), outputs
                     assert tip() == before and tip(f"{upstream}^") == second
                     assert git("show", f"{upstream}:plan.md") == b"old plan\n"
                     # A writer changing the notebook after the snapshot wins;
@@ -10147,7 +10187,8 @@ def check_notes_cancel(binary, up):
                    env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "a.md", "text": "x"}}, headers=auth)
-            assert status == 200 and text_of(body["result"]) == "Noted.", body
+            assert status == 200 and re.fullmatch(saved('Add "a.md" (1 byte)'),
+                                                  text_of(body["result"])), body
             _, headers, _ = ai.rpc("initialize", {"protocolVersion": LEGACY},
                                    headers=auth)
             session = auth | {"Mcp-Session-Id": headers["mcp-session-id"],
@@ -10638,7 +10679,7 @@ def check_attach(binary, up):
                 # and the upstream one of its own.
                 said = call({"action": "add", "file": "latin1.c", "content":
                              "data:;base64," + base64.b64encode(latin1).decode()})
-                assert said == "Noted.", said
+                assert re.fullmatch(saved(f'Add "latin1.c" ({len(latin1)} bytes)'), said), said
                 thread = "1" * 32
                 script[:] = [lambda r: (200, calls([{"action": "add", "file": "own.c",
                                                      "text": code}])),
@@ -10761,7 +10802,7 @@ def check_attach(binary, up):
                   "--upstream-tools", "--notes", notes, "--verbose") as ai:
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "big.c", "text": "x" * 8000}})
-        assert text_of(body["result"]) == "Noted.", body
+        assert re.fullmatch(saved('Add "big.c" (8000 bytes)'), text_of(body["result"])), body
         thread = "2" * 32
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "small.c", "text": "y", "thread": thread}})
@@ -10770,7 +10811,8 @@ def check_attach(binary, up):
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "huge.bin", "thread": thread,
             "content": "data:;base64," + base64.b64encode(huge).decode()}})
-        assert text_of(body["result"]) == "Noted.", body
+        assert re.fullmatch(saved(f'Add "huge.bin" ({len(huge)} bytes)'),
+                            text_of(body["result"])), body
         stored = len(up.uploads)
         for name, upload, said in (
                 ("huge.bin", up.stored, "The note is too large to attach: its file "
@@ -10814,7 +10856,7 @@ def check_attach(binary, up):
                 f"files     {up.url('/gw/upload/v1beta/files')}", ai.log
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "g.c", "text": "g"}})
-            assert text_of(body["result"]) == "Noted.", body
+            assert re.fullmatch(saved('Add "g.c" (1 byte)'), text_of(body["result"])), body
             thread = "3" * 32
             script[:] = [lambda r: (200, generate_turn([[{"functionCall": {
                              "name": "notes", "id": "c0", "args": {
@@ -10941,6 +10983,9 @@ def check_turns(binary, up):
             nonlocal sessions
             sessions += 1
             return (*args[:-1], f"{notes}-{sessions}", *options)
+
+        def tip(ref=branch, book=notes):
+            return sh("--git-dir", book, "rev-parse", ref, cwd=d).strip()
         with Askai(binary, *args) as ai:
             tools = {t["name"]: t for t in ai.rpc("tools/list")[2]["result"]["tools"]}
             assert "thread" in tools["ask_ai"]["inputSchema"]["properties"], tools
@@ -10986,7 +11031,8 @@ def check_turns(binary, up):
             assert [(m["role"], m["tool_call_id"]) for m in results] == \
                 [("tool", "c1"), ("tool", "c2")], results
             assert re.fullmatch(r"[0-9a-f]{7} first\n", results[0]["content"]), results
-            assert results[1]["content"] == "Noted.", results
+            assert re.fullmatch(saved('Add "found.md" (13 bytes)', tip()),
+                                results[1]["content"]), results
             read = turns(third)[3:]
             assert read[0]["tool_calls"][0]["id"] == "call_2_0", read
             assert "reasoning_content" not in read[0], read
@@ -10998,7 +11044,7 @@ def check_turns(binary, up):
             thread = re.search(r"ask-chain thread is ([0-9a-f]{32})", trace).group(1)
             assert trace.startswith("The other AI made 3 tool calls in 3 turns:\n"
                                     f"- git {log}: 14 bytes\n"
-                                    "- notes add: 6 bytes\n"
+                                    f"- notes add: {len(results[1]['content'].encode())} bytes\n"
                                     f"- notes list: {len(listed.encode())} bytes\n"), trace
             assert "found" not in trace, trace
             book = notes
@@ -11033,10 +11079,11 @@ def check_turns(binary, up):
                 ("j", "notes", json.dumps({"action": "read", "file": "next.md"}))]))]
             count = len(up.requests)
             ai.ask("Q", thread=thread)
-            assert [m["content"] for m in turns(up.requests[count + 1])[1:]] == [
-                "Noted.", "A note of that name exists. Use action replace to "
-                "update it, or add under another name.", "n" + provenance], \
-                up.requests[count + 1]
+            outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
+            assert re.fullmatch(saved('Add "next.md" (1 byte)', tip()), outputs[0]), outputs
+            assert outputs[1:] == ["A note of that name exists. Use action replace to "
+                                   "update it, or add under another name.", "n" + provenance], \
+                outputs
             assert not os.path.exists(f"{d}/hooked")
             assert ai.ask("Q", thread="0" * 32)["content"][0]["text"] == "A"
             for value, message in (("xyz", "must be a thread's id"),):
@@ -11136,10 +11183,11 @@ def check_turns(binary, up):
                 body = ai.rpc("tools/call", {"name": "notes",
                                              "arguments": arguments})[2]
                 return text_of(body["result"])
-            said = client_notes({"action": "add", "file": "brief.md", "text": "aim"})
-            assert said == "Noted.", said
-            mine = "3" * 32
             client = "turns/anonymous/client"
+            said = client_notes({"action": "add", "file": "brief.md", "text": "aim"})
+            assert re.fullmatch(saved('Add "brief.md" (3 bytes)',
+                                      tip(f"refs/heads/notes/{client}")), said), said
+            mine = "3" * 32
             script[:] = [lambda r: (200, turn_stream([
                 ("m", "notes", json.dumps({"action": "list", "notebook": client})),
                 ("n", "notes", json.dumps({"action": "read", "file": "brief.md",
@@ -11162,12 +11210,16 @@ def check_turns(binary, up):
                 prompt(up.requests[count])
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
             assert outputs[0] == note_files(client, {"brief.md": b"aim"}), outputs
-            assert outputs[1:] == [f"aim\n\n[askai: notebook {client}]",
-                                   "You can write notes only to your own notebook.", "Noted.",
-                                   "For copy, give the source notebook selector from action notebooks.",
-                                   "Copied into your notebook.", "aim" + provenance,
-                                   "Only a client hands askai a file as content."], \
-                outputs
+            want = [re.escape(f"aim\n\n[askai: notebook {client}]"),
+                    re.escape("You can write notes only to your own notebook."),
+                    saved('Add "seen.md" (4 bytes)', tip(f"{branch}^")),
+                    re.escape("For copy, give the source notebook selector from action "
+                              "notebooks."),
+                    saved(f'Copy "brief.md" from {client} (3 bytes)', tip()),
+                    re.escape("aim" + provenance),
+                    re.escape("Only a client hands askai a file as content.")]
+            assert len(outputs) == 8 and all(
+                re.fullmatch(w, o) for w, o in zip(want, outputs[1:])), outputs
             assert f"ask-chain thread is {mine}." in result["content"][1]["text"], result
             assert "seen.md" in client_notes({"action": "list", "thread": mine,
                                               "notebook": "other"})
@@ -11273,7 +11325,8 @@ def check_turns(binary, up):
             call = (lambda c: (c, "notes", json.dumps(
                         {"action": "add", "file": f"{c}.md", "text": c}))) \
                 if notes_on else (lambda c: (c, "git", log))
-            out = r"Noted\." if notes_on else r"[0-9a-f]{7} first\n"
+            out = (r'Saved in commit [0-9a-f]{40}: Add "\w\.md" \(1 byte\)\.' if notes_on
+                   else r"[0-9a-f]{7} first\n")
             with Askai(binary, *what, "--context", "8000") as ai:
                 # The tokens after each turn: 13%, 26%, 31%, 52%, 57%, 68%, 69%,
                 # then compact, then 26% again.

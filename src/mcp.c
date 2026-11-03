@@ -605,7 +605,12 @@ struct mcp_req {
 	                                    task */
 	struct loop_step     step;       /* the phase's work, and keep-alives */
 	struct loop_timer    timer;      /* the next keep-alive */
-	struct buf           body;       /* the request body */
+	struct buf           body;       /* the request body; then scratch of
+	                                    one notes call at a time
+	                                    (KF_SERIAL): a write's file part
+	                                    and then its commit message, a
+	                                    copy's name, or an upload's sizes
+	                                    and id */
 	struct buf           upload;     /* the upstream request, until its job
 	                                    takes it */
 	struct buf           reply;      /* our response body, until sent */
@@ -6865,7 +6870,9 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 	size_t n = e ? 0 : mcp_slot_notes_message(slot, &part, before, msg);
 	e = e ? e : !n ? EINVAL
 	  : notes_add_input(&in, req->repo, tip, (struct span){ (unsigned char *)msg, n }, file);
+	/* req->body keeps the commit message for mcp_slot_notes_saved(). */
 	buf_fini(&req->body);
+	e = e ? e : mcp_piece_write(&RAW(msg, n), 0, n, &req->body, NOTES_MESSAGE);
 	if (e) {
 		buf_fini(&in);
 		mcp_req_fail(req, e);
@@ -6960,6 +6967,28 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, e, true);
 }
 
+/* Appends to the answer of @p slot that git fast-import saved the note,
+ * with the id of the new commit and the commit message from req->body.
+ */
+static int
+mcp_slot_notes_saved (struct mcp_slot *slot)
+{
+	char commit[NOTES_TIP + 1];
+	if (notes_add_out(buf_peek(&slot->child->out), commit))
+		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
+	struct span msg = buf_peek(&slot->req->body);
+	char const *m = (char const *)msg.ptr;
+	struct mcp_piece const p[] = {
+		*commit ? TEXT("Saved in commit ") : TEXT("Saved"),
+		RAW(commit, strlen(commit)),
+		TEXT(": "),
+		ESC(m, jb_utf8(m, msg.len)),
+		slot->fetch & (FETCH_REPLACE | FETCH_RESTORE)
+		? TEXT(". Previous versions remain in history.") : TEXT("."),
+	};
+	return mcp_slot_say(slot, p, ARRAY_SIZE(p));
+}
+
 /* Reports the end of git fast-import and records that the own branch exists. */
 static void
 mcp_slot_notes_added (struct mcp_slot *slot)
@@ -6967,14 +6996,8 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 	struct mcp_req *req = slot->req;
 	bool ok = mcp_notes_ok(slot->child);
 	req->branch |= ok;
-	int e = !ok ? mcp_slot_notes_unadded(slot)
-	      : slot->fetch & FETCH_RESTORE ? mcp_slot_say(slot, &TEXT("Restored in a new commit. "
-	                                                            "Previous versions remain in history."), 1)
-	      : slot->fetch & FETCH_COPY ? mcp_slot_say(slot, &TEXT("Copied into your "
-	                                                         "notebook."), 1)
-	      : slot->fetch & FETCH_REPLACE ? mcp_slot_say(slot, &TEXT("Replaced. Previous "
-	                                                            "versions remain in history."), 1)
-	      : mcp_slot_say(slot, &TEXT("Noted."), 1);
+	int e = ok ? mcp_slot_notes_saved(slot) : mcp_slot_notes_unadded(slot);
+	buf_fini(&req->body);
 	mcp_slot_notes_end(slot, e, !ok);
 }
 

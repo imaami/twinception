@@ -339,7 +339,8 @@ notes_part_init (struct notes_part *part,
  * with @p file, the part that notes_add_file() wrote. A file replaces any
  * existing note with the same name. The parent is @p tip, or a zero object
  * id of the repository format for a root commit. An empty tip means the
- * SHA-1 zero object id. Returns 0, EINVAL for a null argument, a NUL in
+ * SHA-1 zero object id. notes_add_out() reads the new commit's id from
+ * the output. Returns 0, EINVAL for a null argument, a NUL in
  * @p message or a message of NOTES_MESSAGE bytes or more, or ENOMEM.
  */
 extern int
@@ -348,6 +349,16 @@ notes_add_input (struct buf  *in,
                  char const  *tip,
                  struct span  message,
                  struct span  file);
+
+/**
+ * Reads @p out, the output of the command NOTES_ADD, and writes the id of
+ * the new commit, its last line, to @p commit. Returns 0, EINVAL for a
+ * null @p commit, or EIO with an empty @p commit if the last line is not
+ * a commit id.
+ */
+extern int
+notes_add_out (struct span out,
+               char        commit[NOTES_TIP + 1]);
 
 /** Writes the input of the command NOTES_READ for the valid name of @p len
  *  bytes at @p name to @p in.  Returns 0 or ENOMEM.

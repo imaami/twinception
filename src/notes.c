@@ -936,27 +936,43 @@ notes_add_input (struct buf  *in,
                  struct span  message,
                  struct span  file)
 {
+	static char const mark[] = "get-mark :1\n";
 	char head[NOTES_REPO + NOTES_MESSAGE + NOTES_TIP +
-	          sizeof "commit \ncommitter askai <askai> now\ndata 18446744073709551615\n\n"
-	                 "from \n"];
+	          sizeof "commit \nmark :1\ncommitter askai <askai> now\n"
+	                 "data 18446744073709551615\n\nfrom \n"];
 	if (!in || !repo || !tip || !message.ptr || message.len >= NOTES_MESSAGE ||
 	    memchr(message.ptr, '\0', message.len))
 		return EINVAL;
 	/* The count of the data includes the line feed after the message. */
-	int h = snprintf(head, sizeof head, "commit %s\ncommitter askai <askai> now\n"
+	int h = snprintf(head, sizeof head, "commit %s\nmark :1\ncommitter askai <askai> now\n"
 	                 "data %zu\n%.*s\nfrom %s\n", repo, message.len + 1,
 	                 (int)message.len, (char const *)message.ptr,
 	                 *tip ? tip : "0000000000000000000000000000000000000000");
 	if (h < 0 || h >= (int)sizeof head)
 		return EINVAL;
+	/* get-mark ends the commit, and git writes the commit's id. */
+	size_t len = (size_t)h + file.len + sizeof mark - 1;
 	struct span s;
-	int e = buf_reserve(in, (size_t)h + file.len, SIZE_MAX, &s);
+	int e = buf_reserve(in, len, SIZE_MAX, &s);
 	if (e)
 		return e;
 	memcpy(s.ptr, head, (size_t)h);
 	memcpy(s.ptr + h, file.ptr, file.len);
-	buf_commit(in, (size_t)h + file.len);
+	memcpy(s.ptr + h + file.len, mark, sizeof mark - 1);
+	buf_commit(in, len);
 	return 0;
+}
+
+int
+notes_add_out (struct span out,
+               char        commit[NOTES_TIP + 1])
+{
+	if (!commit)
+		return EINVAL;
+	unsigned char *nl = out.len > 1 ? memrchr(out.ptr, '\n', out.len - 1) : nullptr;
+	if (nl)
+		out = (struct span){ nl + 1, out.len - (size_t)(nl + 1 - out.ptr) };
+	return notes_head_out(out, commit);
 }
 
 int
