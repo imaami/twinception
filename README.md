@@ -493,6 +493,9 @@ Recovered tool turns reuse saved tool results.  AskAI records tool intent
 before executing it and records its result afterwards.  If a crash leaves
 an intent without a result, recovery reports an unknown tool outcome and
 stops; it does not execute a possibly completed side effect again.
+A `findings` call changes nothing but the review record, which the
+checkpoint keeps, so AskAI records neither its intent nor its result, and
+a recovered turn makes the call again.
 Interrupted tool jobs and timers are not restored, so recovery stops
 explicitly when it would depend on them.
 
@@ -548,7 +551,8 @@ replacement can temporarily use another 64 MiB. When space is needed, the oldest
 completed checkpoints may be removed; unfinished jobs and checkpoints
 migrated from the legacy journal are not evicted. These bounds do not prune
 saved reasoning text or Git history. The notes tool exposes neither archive
-nor checkpoints.
+nor checkpoints. The checkpoint of a background job keeps its review record
+too.
 
 Preserve the whole repository directory, including the private files and
 owner seed, when moving or backing up a live session. A Git-only clone
@@ -826,7 +830,8 @@ After a compaction, the record follows the summary, within a tool's window;
 past that, its last line names the `offset` that `show` reads on from. Its
 header says that the system text, the client's messages and the prompt stay
 word for word, so the model need not copy the task into notes. The record
-holds at most 4 MiB, and a new call starts with an empty one.
+holds at most 4 MiB, and a new call starts with an empty one. A background
+job that resumes after a restart gets its record back from its checkpoint.
 
 With `--notes PATH`, the repository at `PATH` is the shared session.
 `askai` creates a bare Git repository there if absent, and also accepts an

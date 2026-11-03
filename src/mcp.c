@@ -388,6 +388,12 @@ static constexpr uint64_t KF_SERIAL = 1ull << 32;
  */
 static constexpr uint64_t KF_AGENDA = 1ull << 33;
 
+/* Kind flag for findings (bit 34, above TOOL_FLAGS). A findings call
+ * changes only the review record, and the job checkpoint saves the record.
+ * The journal does not record the call, so a resumed turn runs it again.
+ */
+static constexpr uint64_t KF_RERUN = 1ull << 34;
+
 /* A tool that askai offers: its definition as tools/list lists it, if a
  * role may grant it, and as the upstream's API has it, if it is lent, each
  * after a comma; its kind; its name; the argument whose value is logged as
@@ -3858,16 +3864,17 @@ mcp_req_notes_identity (struct mcp_req *req)
 	     ? 0 : ENOMEM;
 }
 
-/* Create req->review if the turns of @p req are lent findings. The record
- * gets REVIEW_READS if they are also lent git. Returns 0 or ENOMEM.
+/* Create req->review if the tool mask @p lent has findings. The record
+ * gets REVIEW_READS if @p lent also has git. Returns 0 or ENOMEM.
  */
 static int
-mcp_req_review_make (struct mcp_req *req)
+mcp_req_review_make (struct mcp_req *req,
+                     tool_mask       lent)
 {
 	struct mcp_lending const *l = &req->mcp->st->lending;
 	int e = 0;
-	if (req->lent & l->findings)
-		req->review = review_create(req->lent & l->git ? REVIEW_READS : 0, &e);
+	if (lent & l->findings)
+		req->review = review_create(lent & l->git ? REVIEW_READS : 0, &e);
 	return e;
 }
 
@@ -3933,7 +3940,7 @@ mcp_req_ask (struct mcp_req     *req,
 	if (!e)
 		e = mcp_req_notes_identity(req);
 	if (!e)
-		e = mcp_req_review_make(req);
+		e = mcp_req_review_make(req, req->lent);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -5775,7 +5782,8 @@ mcp_req_call_launch (struct mcp_req *req)
 		mcp_req_fail(req, ESHUTDOWN);
 		return;
 	}
-	if (*req->archive && !(req->intents >> k & 1) && !req->saved_tools[k]) {
+	if (*req->archive && !(tool->kind->flags & KF_RERUN) && !(req->intents >> k & 1) &&
+	    !req->saved_tools[k]) {
 		struct json_object *intent = jb_object(
 			"index", json_object_new_int64(k),
 			"agenda", json_object_new_boolean((tool->kind->flags & KF_AGENDA) != 0),
@@ -5812,6 +5820,15 @@ mcp_req_call_launch (struct mcp_req *req)
 			slot->fetch = FETCH_READ;
 		}
 		char const *text = jb_str(jb_get(saved, "text"), &len);
+		struct json_object *source = jb_get(saved, "source");
+		if (source && req->review) {
+			int e = 0;
+			slot->read = review_read_restore(source, (struct tool_text){ text, len }, &e);
+			if (e) {
+				mcp_req_fail(req, e == EINVAL ? EILSEQ : e);
+				return;
+			}
+		}
 		slot->start = loop_clock();
 		slot->skip = jb_uint(jb_get(saved, "skip"), 0);
 		mcp_slot_result(slot, ESC(text, len), json_object_get_boolean(jb_get(saved, "failed")));
@@ -5969,7 +5986,8 @@ mcp_slot_done (struct mcp_slot *slot,
 	char const *notebook = !failed &&
 	                      (slot->fetch & (FETCH_KIND | FETCH_COPY | FETCH_ATTACH)) == FETCH_READ
 	                    ? notes_selector(mcp_slot_notebook(slot)) : nullptr;
-	if (*req->archive && slot->role == ROLE_TURN && !req->saved_tools[slot - req->slots]) {
+	if (*req->archive && slot->role == ROLE_TURN &&
+	    !(mcp_slot_offer(slot)->kind->flags & KF_RERUN) && !req->saved_tools[slot - req->slots]) {
 		struct span files = buf_peek(&req->attached);
 		struct json_object *result = jb_object(
 			"index", json_object_new_int64(slot - req->slots),
@@ -5982,6 +6000,10 @@ mcp_slot_done (struct mcp_slot *slot,
 			"text", json_object_new_string_len(out.len ? (char const *)out.ptr : "", (int)out.len),
 			nullptr);
 		if (notebook && jb_set(result, "notebook", json_object_new_string(notebook))) {
+			json_object_put(result);
+			result = nullptr;
+		}
+		if (slot->read && jb_set(result, "source", review_read_json(slot->read, &(int){}))) {
 			json_object_put(result);
 			result = nullptr;
 		}
@@ -6258,6 +6280,12 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"asks", json_object_new_int(req->asks),
 		"agenda", json_object_new_boolean(req->agenda != nullptr),
 		"lent", lent, nullptr);
+	/* Only a task's checkpoint can be resumed, so only it keeps the review
+	 * record. */
+	if (task && req->review && jb_set(state, "review", review_json(req->review, &(int){}))) {
+		json_object_put(state);
+		state = nullptr;
+	}
 	req->intents = 0;
 	for (size_t k = 0; k < JOB_CALLS; ++k) {
 		json_object_put(req->saved_tools[k]);
@@ -6440,7 +6468,20 @@ mcp_recover_back (struct loop           *loop,
 		problem = "This job's saved request is invalid; no provider request was sent.";
 		goto failed;
 	}
-	int e = mcp_piece_write(&RAW(request, len), 0, len, &req->upload, SIZE_MAX);
+	/* req->lent is set only after the job is admitted (below), so a poll
+	 * that fails here answers with the problem alone, without the turns'
+	 * trace (mcp_req_trace_put()). */
+	struct json_object const *review = jb_get(state, "review");
+	tool_mask lent = mcp_archive_lent(req, state);
+	int e = mcp_req_review_make(req, lent);
+	if (!e && req->review && review)
+		e = review_restore(req->review, review);
+	if (e) {
+		problem = e == ENOMEM ? "Cannot restore this job's saved review record now."
+		        : "This job's saved review record is invalid; no provider request was sent.";
+		goto failed;
+	}
+	e = mcp_piece_write(&RAW(request, len), 0, len, &req->upload, SIZE_MAX);
 	char const *trace = jb_str(jb_get(state, "trace"), &len);
 	if (!e && trace && !dstr_cat_n(&req->trace, trace, len))
 		e = ENOMEM;
@@ -6463,7 +6504,7 @@ mcp_recover_back (struct loop           *loop,
 	req->turn = (uint32_t)turn - 1;
 	req->prompt_at = prompt_at;
 	req->archive_deadline = jb_uint(jb_get(state, "deadline"), 0);
-	req->lent = mcp_archive_lent(req, state);
+	req->lent = lent;
 	req->asks = (uint8_t)jb_int(jb_get(state, "asks"), 0);
 	req->used = (uint32_t)jb_int(jb_get(state, "used"), 0);
 	req->context = (uint32_t)jb_int(jb_get(state, "context"), 0);
@@ -10265,7 +10306,7 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                      .sized = "summary" },
 	[KIND_FINDINGS]   = { { .definition = findings_definition, .start = findings_start,
 	                        .step = findings_step, .drop = findings_drop,
-	                        .flags = KF_SERIAL | TOOL_PAGED },
+	                        .flags = KF_SERIAL | KF_RERUN | TOOL_PAGED },
 	                      N("findings"), LEND_WITH, LENT_FINDINGS, TRACE_ACTION,
 	                      .sized = "claim" },
 	/* With --client-jobs, clients list the next four kinds with a

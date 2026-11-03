@@ -2683,6 +2683,220 @@ def check_recovery_notes(binary, up):
           "without rereading the changed notebook: PASS")
 
 
+def check_recovery_review(binary, up):
+    """A resumed job gets its review record back from its checkpoint. The
+    checkpoint holds the pending lines of the results in its request, and
+    the log takes them once the resumed request is answered. The saved git
+    read of the interrupted turn restores its lines from its saved result,
+    and git does not run again. The journal has no findings calls
+    (KF_RERUN), and the resumed turn makes them again. An invalid record in
+    the checkpoint stops the job before any request. A resume that is
+    refused because the owner already runs 8 jobs answers with only the
+    problem. A call that is not a job saves no record in its checkpoints."""
+    held = up.reply, up.retrieve
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            repo, archive = f"{d}/proj", f"{d}/transcripts.git"
+            blocked, release, reads = f"{d}/blocked", f"{d}/release", f"{d}/reads"
+            os.makedirs(f"{repo}/src")
+            with open(f"{repo}/src/a.c", "w") as f:
+                f.write("".join(f"int x{i};\n" for i in range(300)))
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            subprocess.run(["git", "-C", repo, "add", "src/a.c"], check=True)
+            subprocess.run(["git", "-C", repo, "-c", "user.name=test", "-c", "user.email=t@t",
+                            "commit", "-q", "-m", "reviewed"], check=True)
+            head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+            os.mkdir(f"{d}/bin")
+            with open(f"{d}/bin/git", "w") as f:
+                f.write('#!/bin/sh\ncase " $* " in\n'
+                        f'*" cat-file "*) printf "read\\n" >> {shlex.quote(reads)};;\n'
+                        f'*" diff "*) touch {shlex.quote(blocked)}; '
+                        f'while [ -d {shlex.quote(d)} ] && [ ! -e {shlex.quote(release)} ]; '
+                        'do sleep .02; done;;\n'
+                        f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
+            os.chmod(f"{d}/bin/git", 0o755)
+
+            def items(*calls):
+                return [{"type": "function_call", "id": f"fc_{name}", "call_id": name,
+                         "name": tool, "arguments": json.dumps(arguments),
+                         "status": "completed"} for name, tool, arguments in calls]
+
+            def read(line):
+                return {"repo": "proj", "command": "read", "revisions": ["HEAD:src/a.c"],
+                        "line": line, "count": 10}
+            first = items(("read1", "git", read(1)),
+                          ("add", "findings", {"action": "add", "claim": "C",
+                                               "location": "src/a.c:5"}))
+            second = items(("read2", "git", read(11)),
+                           ("update", "findings", {"action": "update", "id": 1,
+                                                   "state": "verified", "evidence": "E"}),
+                           ("gate", "git", {"repo": "proj", "command": "diff",
+                                            "revisions": ["HEAD", "HEAD"]}))
+            show = items(("show", "findings", {"action": "show"}),
+                         ("history", "findings", {"action": "show", "id": 1}))
+            creates, resumes = [], []
+            jobs = f"{archive}/askai-journal/review-recovery/jobs"
+
+            def records(data):
+                """The offset, the kind and the value of each record of the
+                file of a job, whose bytes are @p data."""
+                at = 0
+                while at < len(data):
+                    size = int.from_bytes(data[at + 16:at + 24], "big")
+                    yield (at, data[at + 56:at + 88].rstrip(b"\0").decode(),
+                           json.loads(data[at + 120:at + 120 + size]))
+                    at += 120 + size
+
+            def reply(request):
+                creates.append(request)
+                turns = [(first, "review_first"), (second, "review_second"),
+                         (show, "review_show"), ([], "review_end")]
+                calls, response_id = turns[min(len(creates), 4) - 1]
+                return 200, responses_turn(calls, text="" if calls else "recovered",
+                                           response_id=response_id)
+
+            def retrieve(request):
+                if request["path"] == "/props":
+                    return 404, {}
+                resumes.append(request)
+                return 200, responses_turn(second, response_id="review_second")
+            up.reply, up.retrieve = reply, retrieve
+            args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
+                    "--upstream-tools", "--git", repo, "--participant", "review-recovery",
+                    "--transcripts", archive)
+            env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
+            ai = Askai(binary, *args, env=env)
+            try:
+                result = ai.ask("Review src/a.c.")
+                jid = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result)).group(1)
+                wait_for(lambda: os.path.exists(blocked), seconds=10)
+                ai.proc.kill()
+                assert ai.proc.wait(timeout=5) == -signal.SIGKILL
+                ai.state.cleanup()
+                with open(f"{jobs}/{jid}", "rb") as f:
+                    snapshot = f.read()
+                # Keep the records up to the gate's intent, as if askai had
+                # stopped just before it. The second turn's checkpoint has
+                # the record of the first turn, with the lines of its read
+                # still pending, and the journal has the second turn's read,
+                # but no findings call.
+                found = list(records(snapshot))
+                cut = next(k for k, (_, kind, value) in enumerate(found)
+                           if kind == "tool-intent" and value["index"] == 2)
+                kinds = [(kind, value.get("index")) for _, kind, value in found[:cut]]
+                assert kinds[0] == ("state", None) and [
+                    k for k in kinds if k[0].startswith("tool-")] == [
+                        ("tool-intent", 0), ("tool-result", 0)], kinds
+                state = found[0][2]
+                assert state["review"]["reads"] == [] and state["review"]["pending"] == [{
+                    "repo": "proj", "commit": head, "path": "src/a.c", "total": 300,
+                    "lines": [1, 10, 1]}], state["review"]
+                assert [f["claim"] for f in state["review"]["findings"]] == ["C"], state
+                [source] = [value["source"] for _, kind, value in found[:cut]
+                            if kind == "tool-result"]
+                assert (source["commit"], source["path"], source["first"], source["last"],
+                        source["total"]) == (head, "src/a.c", 11, 20, 300), source
+                good = snapshot[:found[cut][0]]
+            finally:
+                with open(release, "w"):
+                    pass
+                if ai.proc.poll() is None:
+                    ai.proc.kill()
+                    ai.proc.wait(timeout=5)
+                    ai.state.cleanup()
+            # A checkpoint whose review record is invalid stops the job before
+            # any request, and stays as it was.
+            size = int.from_bytes(good[16:24], "big")
+            state["review"]["pending"][0]["lines"] = [10, 1, 1]
+            data = json.dumps(state, separators=(",", ":")).encode()
+            signed = good[:16] + len(data).to_bytes(8, "big") + good[24:88]
+            bad = signed + hashlib.sha256(signed + data).digest() + data + good[120 + size:]
+            with open(f"{jobs}/{jid}", "wb") as f:
+                f.write(bad)
+            with Askai(binary, *args, env=env) as restarted:
+                status, _, body = restarted.rpc("tools/call", {"name": "ask_ai",
+                                                               "arguments": {"job": jid}})
+                assert status == 200 and body["result"].get("isError") and \
+                    text_of(body["result"]) == "This job's saved review record is " \
+                    "invalid; no provider request was sent.", (status, body)
+            with open(f"{jobs}/{jid}", "rb") as f:
+                assert f.read() == bad and not resumes and len(creates) == 2
+            with open(f"{jobs}/{jid}", "wb") as f:
+                f.write(good)
+            with Askai(binary, *args, env=env) as restarted:
+                # A poll that cannot resume the job, because its owner already
+                # runs 8 jobs, answers with the problem alone, and leaves the
+                # checkpoint as it was.
+                up.reply = lambda request: (200, responses_turn(
+                    [], text="busy", response_id="busy"), 3)
+                busy = [re.search(r"Started job ([0-9a-f]{32})\.", text_of(
+                    restarted.ask("Q"))).group(1) for _ in range(8)]
+                status, _, body = restarted.rpc("tools/call", {"name": "ask_ai",
+                                                               "arguments": {"job": jid}})
+                assert status == 200 and body["result"].get("isError") and \
+                    text_of(body["result"]) == "Cannot resume this job now; it may " \
+                    "already be resuming on another request.", (status, body)
+
+                def idle(job):
+                    status, _, body = restarted.rpc("tools/call", {
+                        "name": "ask_ai", "arguments": {"job": job}})
+                    return status == 200 and text_of(body["result"]) == "busy"
+                wait_for(lambda: all(idle(job) for job in busy), seconds=15)
+                up.reply = reply
+
+                def ended():
+                    status, _, body = restarted.rpc("tools/call", {
+                        "name": "ask_ai", "arguments": {"job": jid}})
+                    assert status == 200 and "result" in body, (status, body)
+                    result = body["result"]
+                    assert not result.get("isError"), result
+                    return result["content"][0]["text"] == "recovered"
+                wait_for(ended, seconds=15)
+                assert len(creates) == 4 and len(resumes) == 1, (creates, resumes)
+                # A call that is not a job cannot be resumed, so its
+                # checkpoints have no review record.
+                up.reply = lambda request: (200, responses_turn(
+                    [], text="done", response_id="plain_end") if any(
+                        i.get("type") == "function_call_output"
+                        for i in request["body"]["input"]) else responses_turn(
+                            items(("plain", "findings", {"action": "add", "claim": "F"})),
+                            response_id="plain_add"))
+                result = restarted.ask("Q", background=False)
+                assert result["content"][0]["text"] == "done", result
+                states = []
+                for name in os.listdir(jobs):
+                    with open(f"{jobs}/{name}", "rb") as f:
+                        states += [value for _, kind, value in records(f.read())
+                                   if kind == "state" and name not in (jid, *busy)]
+                assert len(states) == 1 and states[0]["turn"] == 2 and \
+                    "review" not in states[0], states
+
+            def output(request, call):
+                [text] = [item["output"] for item in request["body"]["input"]
+                          if item.get("call_id") == call and
+                          item.get("type") == "function_call_output"]
+                return text
+            said = output(creates[2], "update")
+            assert said == f"Finding 1 is now verified, src/a.c:5 at {head[:12]}; it was " \
+                "candidate.", said
+            assert output(creates[3], "show") == REVIEW + (
+                "[askai: your findings; findings action show with an id gives one's "
+                f"history:]\n1. verified, src/a.c:5 at {head[:12]}\n   claim: C\n"
+                "   evidence: E\n[askai: what you read with git read in this call:]\n"
+                f"proj {head}\n  src/a.c  lines 1-20: 20 of 300 lines"), creates[3]
+            # The call made again has the turn of the first.
+            assert output(creates[3], "history") == \
+                f"Finding 1: verified, src/a.c:5 at {head[:12]}\nclaim: C\nturn 1: " \
+                f"candidate\nturn 2: verified at {head[:12]}\n  evidence: E", creates[3]
+            with open(reads) as f:
+                assert f.read() == "read\nread\n", "a saved read ran again"
+    finally:
+        up.reply, up.retrieve = held
+    print("review recovery: the checkpoint's review record, a saved read's lines "
+          "and a findings call made again: PASS")
+
+
 def check_durable_cancel(binary, up):
     """Cancellation preserves received thoughts, reaches the provider once,
     and remains cancelled in the private checkpoint after restart."""
@@ -14848,8 +15062,8 @@ def main():
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
                       check_modern, check_mcp_tasks, check_client_jobs, check_background, check_recovery, check_recovery_tools,
-                      check_recovery_notes, check_durable_cancel, check_withdrawn_end,
-                      check_archive_failure, check_journal_repair,
+                      check_recovery_notes, check_recovery_review, check_durable_cancel,
+                      check_withdrawn_end, check_archive_failure, check_journal_repair,
                       check_shared_transcripts, check_http,
                       check_large_bodies,
                       check_sse,
