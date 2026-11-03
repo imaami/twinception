@@ -6809,20 +6809,62 @@ mcp_slot_notes_unadded (struct mcp_slot *slot)
 	return mcp_slot_say(slot, &TEXT("Could not write the note."), 1);
 }
 
+/* The size before a write that adds a note. */
+static constexpr uint64_t NO_NOTE = UINT64_MAX;
+
+/* Writes the commit message of the note write in @p slot to @p msg and
+ * returns its length, or 0 if it does not fit. @p part is the file part
+ * of the write, and @p before is the size of the note before it, or NO_NOTE.
+ */
+static size_t
+mcp_slot_notes_message (struct mcp_slot const   *slot,
+                        struct notes_part const *part,
+                        uint64_t                 before,
+                        char                     msg[NOTES_MESSAGE])
+{
+	static_assert(sizeof "Restore  from  (18446744073709551615 to 18446744073709551615 "
+	                     "bytes)" + 2 * NOTES_NAME + 2 + NOTES_REPO <= NOTES_MESSAGE);
+	uint16_t fetch = slot->fetch;
+	char const *verb = fetch & FETCH_RESTORE ? "Restore" : fetch & FETCH_COPY ? "Copy"
+	                 : fetch & FETCH_REPLACE ? "Replace" : "Add";
+	/* A restore keeps its revision in slot->own, and a copy its source
+	 * notebook in slot->notebook, until the call ends. */
+	char const *from = fetch & FETCH_RESTORE ? notes_revision_from(slot->own)
+	                 : fetch & FETCH_COPY ? notes_selector(mcp_slot_notebook(slot)) : "";
+	char const *sep = *from ? " from " : "";
+	int len = (int)part->name.len;
+	char const *name = (char const *)part->name.ptr;
+	uint64_t after = part->data.len;
+	int n = before == NO_NOTE
+	      ? snprintf(msg, NOTES_MESSAGE, "%s %.*s%s%s (%" PRIu64 " byte%s)", verb, len,
+	                 name, sep, from, after, after == 1 ? "" : "s")
+	      : snprintf(msg, NOTES_MESSAGE, "%s %.*s%s%s (%" PRIu64 " to %" PRIu64 " bytes)",
+	                 verb, len, name, sep, from, before, after);
+	return n < 0 || n >= NOTES_MESSAGE ? 0 : (size_t)n;
+}
+
 /* Runs git to add the note whose file part is in the request's body.  The
- * new commit has the parent @p tip, or no parent if @p tip is empty.
+ * new commit has the parent @p tip, or no parent if @p tip is empty. The
+ * note had @p before bytes, or there was none if @p before is NO_NOTE.
  */
 static void
 mcp_slot_notes_write (struct mcp_slot *slot,
-                      char const      *tip)
+                      char const      *tip,
+                      uint64_t         before)
 {
 	struct mcp_req *req = slot->req;
 	if (!*tip) {
 		mcp_slot_notes_run(slot, FETCH_FORMAT | (slot->fetch & FETCH_COPY), nullptr);
 		return;
 	}
+	struct span file = buf_peek(&req->body);
+	struct notes_part part;
+	char msg[NOTES_MESSAGE];
 	struct buf in = {};
-	int e = notes_add_input(&in, req->repo, mcp_slot_side(slot), tip, buf_peek(&req->body));
+	int e = notes_part_init(&part, file);
+	size_t n = e ? 0 : mcp_slot_notes_message(slot, &part, before, msg);
+	e = e ? e : !n ? EINVAL
+	  : notes_add_input(&in, req->repo, tip, (struct span){ (unsigned char *)msg, n }, file);
 	buf_fini(&req->body);
 	if (e) {
 		buf_fini(&in);
@@ -6852,7 +6894,7 @@ mcp_slot_notes_format (struct mcp_slot *slot)
 	memset(zero, '0', size);
 	zero[size] = '\0';
 	child_destroy(&slot->child);
-	mcp_slot_notes_write(slot, zero);
+	mcp_slot_notes_write(slot, zero, NO_NOTE);
 }
 
 /* Handles the end of git init for an add.  The function adds the note, or
@@ -6864,7 +6906,7 @@ mcp_slot_notes_created (struct mcp_slot *slot)
 	if (mcp_notes_ok(slot->child) ||
 	    (mcp_notes_raced(slot->child) && notes_exists(slot->req->mcp->st->notes))) {
 		child_destroy(&slot->child);
-		mcp_slot_notes_write(slot, "");
+		mcp_slot_notes_write(slot, "", NO_NOTE);
 		return;
 	}
 	buf_fini(&slot->req->body);
@@ -6880,7 +6922,9 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 {
 	struct child const *c = slot->child;
 	char tip[NOTES_TIP + 1];
-	int r = mcp_notes_ok(c) ? notes_checked(buf_peek(&c->out), tip) : EIO;
+	struct notes_file note = {};
+	int r = mcp_notes_ok(c) ? notes_checked(buf_peek(&c->out), tip, &note) : EIO;
+	uint64_t before = r == EEXIST ? note.bytes : NO_NOTE;
 	bool replace = slot->fetch & FETCH_REPLACE;
 	if (replace)
 		r = r == EEXIST ? 0 : r ? r : ENOENT;
@@ -6897,7 +6941,7 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 	}
 	if (!r) {
 		child_destroy(&slot->child);
-		mcp_slot_notes_write(slot, tip);
+		mcp_slot_notes_write(slot, tip, before);
 		return;
 	}
 	buf_fini(&slot->req->body);

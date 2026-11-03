@@ -5,8 +5,8 @@
  * own refs/heads/notes/PARTICIPANT/WHO/SIDE branches. WHO is the client principal
  * or anonymous; SIDE is client or upstream. All notebooks can be read, but a
  * tool call's write branch is chosen by the server. Threads identify ask chains
- * and do not partition the notes. Replacing a note adds a commit; earlier
- * contents remain in the notebook's history.
+ * and do not partition the notes. Each write adds a commit whose message
+ * says what the write did; earlier contents remain in the notebook's history.
  * Existing repositories can have worktrees; Git resolves their packed refs.
  * Concurrent changes to one branch fail rather than overwrite another writer.
  */
@@ -32,6 +32,8 @@ enum {
 	                            most */
 	NOTES_ARGV = 40,       /**< elements of the argv of git, nullptr
 	                            included */
+	NOTES_MESSAGE = 1024,  /**< bytes of the commit message of a note
+	                            write, NUL included, at most */
 };
 
 /** The time from the start of git to its deadline, in nanoseconds. */
@@ -69,11 +71,20 @@ enum notes_cmd : uint8_t {
 	NOTES_HEAD,    /**< resolves a notebook branch to its full commit id */
 };
 
-/** A current note in the output of NOTES_FILES. Views borrow its output. */
+/** A current note in the output of NOTES_FILES or NOTES_CHECK. Views
+ *  borrow that output. From NOTES_CHECK, the name is empty.
+ */
 struct notes_file {
 	struct span name;
 	struct span id;     /**< hexadecimal blob object id */
 	uint64_t    bytes;
+};
+
+/** The file part of the input of NOTES_ADD. Views borrow the part. */
+struct notes_part {
+	struct span name; /**< the name as the file part quotes it, quotes
+	                       included */
+	struct span data; /**< the bytes of the note */
 };
 
 /** A change to a note in the output of NOTES_LIST. */
@@ -274,14 +285,17 @@ notes_check_input (struct buf *in,
 /**
  * Reads @p out, the output of the command NOTES_CHECK. If the branch has
  * notes, the function writes the name of the newest commit to @p tip, else
- * an empty string.  Returns 0 if a note of the name can be added.  Returns
- * EEXIST if a note of the name exists, EISDIR if notes are in a directory
- * of the name, ENOTDIR if a directory in the name is a note, and EIO if the
- * output is not what the command writes.
+ * an empty string. If a note has the name, it writes the note's blob id
+ * and size to @p note, else it zeroes @p note. Returns 0 if a note of the
+ * name can be added. Returns EEXIST if a note of the name exists, EISDIR
+ * if notes are in a directory of the name, ENOTDIR if a directory in the
+ * name is a note, EIO if the output is not what the command writes, and
+ * EINVAL for a null @p tip or @p note.
  */
 extern int
-notes_checked (struct span out,
-               char        tip[NOTES_TIP + 1]);
+notes_checked (struct span        out,
+               char               tip[NOTES_TIP + 1],
+               struct notes_file *note);
 
 /**
  * Writes to @p in the head of the file part of the input of the command
@@ -311,19 +325,29 @@ notes_add_file (struct buf *in,
                 size_t      len);
 
 /**
- * Writes to @p in the input of the command NOTES_ADD.  The input is a
- * commit by the side @p side with @p file, the part that notes_add_file()
- * wrote. A file replaces any existing note with the same name. The parent
- * is @p tip, or a zero object id of the repository format for a root commit.
- * An empty tip means the SHA-1 zero object id.
- * Returns 0 or ENOMEM.
+ * Reads @p file, a file part that notes_add_file() wrote, or that
+ * notes_add_head() and its caller wrote, into @p part. Returns 0, or
+ * EINVAL for a null @p part or a @p file that is not such a file part.
  */
 extern int
-notes_add_input (struct buf      *in,
-                 char const      *repo,
-                 enum notes_side  side,
-                 char const      *tip,
-                 struct span      file);
+notes_part_init (struct notes_part *part,
+                 struct span        file);
+
+/**
+ * Writes to @p in the input of the command NOTES_ADD.  The input is a
+ * commit with the message @p message, one line without its line feed, and
+ * with @p file, the part that notes_add_file() wrote. A file replaces any
+ * existing note with the same name. The parent is @p tip, or a zero object
+ * id of the repository format for a root commit. An empty tip means the
+ * SHA-1 zero object id. Returns 0, EINVAL for a null argument, a NUL in
+ * @p message or a message of NOTES_MESSAGE bytes or more, or ENOMEM.
+ */
+extern int
+notes_add_input (struct buf  *in,
+                 char const  *repo,
+                 char const  *tip,
+                 struct span  message,
+                 struct span  file);
 
 /** Writes the input of the command NOTES_READ for the valid name of @p len
  *  bytes at @p name to @p in.  Returns 0 or ENOMEM.

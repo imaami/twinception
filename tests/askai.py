@@ -9700,6 +9700,22 @@ def check_notes(binary, up):
             assert call({"action": "replace", "file": "legacy.c",
                          "content": "data:,"}) == replaced
             assert git("show", f"{own}:legacy.c") == b""
+            # Each commit message is one line: the action, the name as the
+            # fast-import file part quotes it, and the sizes.
+            source = f"from writers/{who}/upstream"
+            subjects = git("log", "--reverse", "--format=%s", own).decode().splitlines()
+            assert subjects == [
+                'Add "plan.md" (6 bytes)', 'Add "a/b c.md" (8000 bytes)',
+                'Add "q\\"\\\\.txt" (1 byte)', f'Add "{"x" * 255}" (1 byte)',
+                'Add "o.md" (1 byte)', 'Add "mine.md" (1 byte)',
+                f'Copy "found.md" {source} (6 bytes)',
+                f'Copy "copies/f.md" {source} (6 bytes)',
+                f'Copy "img/raw.bin" {source} (768 bytes)', 'Add "legacy.c" (36 bytes)',
+                'Add "in/blob.bin" (16388 bytes)', 'Add "in/text.md" (4 bytes)',
+                'Replace "plan.md" (6 to 12 bytes)', 'Replace "legacy.c" (36 to 5 bytes)',
+                'Replace "legacy.c" (5 to 0 bytes)'], subjects
+            assert git("cat-file", "commit", own).endswith(
+                b'\n\nReplace "legacy.c" (5 to 0 bytes)\n')
         # When two adds to one thread run at once, one of them fails, and its
         # answer asks to add the note again.  A git that sleeps before
         # fast-import makes both adds check the same newest note.
@@ -10004,6 +10020,8 @@ def check_notes_history(binary, up):
                 assert git("show", f"{own}:plan.md") == b"old plan\n"
                 assert git("show", f"{second}:plan.md") == b"new plan\n"
                 assert git("show", f"{own}:unrelated.md") == b"keep me"
+                assert git("log", "-1", "--format=%s", own).decode() == \
+                    f'Restore "plan.md" from {first} (9 to 9 bytes)\n'
                 history = call(alice, action="history", file="plan.md")
                 assert all(oid in history for oid in (first, second, tip())), history
 
@@ -10019,6 +10037,8 @@ def check_notes_history(binary, up):
                                 revision=first).startswith("!")
                 assert tip(f"{own}^") == deleted
                 assert git("show", f"{own}:plan.md") == b"old plan\n"
+                assert git("log", "-1", "--format=%s", own).decode() == \
+                    f'Restore "plan.md" from {first} (9 bytes)\n'
 
                 # Restoration copies bytes, including empty and non-text blobs.
                 for name, raw in (("raw.bin", bytes(range(256))), ("empty.txt", b"")):
@@ -10984,6 +11004,8 @@ def check_turns(binary, up):
             book = notes
             assert sh("--git-dir", book, "show", f"{branch}:found.md",
                       cwd=d) == "found \"first\"", book
+            assert sh("--git-dir", book, "log", "-1", "--format=%s", branch,
+                      cwd=d) == 'Add "found.md" (13 bytes)\n', book
 
             # When an ask call goes on with a thread, the prompt has the list
             # of the notes of the thread and the newest note.

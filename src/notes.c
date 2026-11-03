@@ -749,6 +749,26 @@ notes_check_input (struct buf *in,
 	return 0;
 }
 
+/* Parses one unsigned decimal field without accepting a prefix of a token. */
+static bool
+notes_number (char const *s,
+              size_t      len,
+              uint64_t   *value)
+{
+	*value = 0;
+	if (!len)
+		return false;
+	for (size_t i = 0; i < len; ++i) {
+		if (s[i] < '0' || s[i] > '9')
+			return false;
+		unsigned digit = (unsigned)(s[i] - '0');
+		if (*value > (UINT64_MAX - digit) / 10)
+			return false;
+		*value = *value * 10 + digit;
+	}
+	return true;
+}
+
 /* Returns the kind of the object of the line of @p len bytes at @p line,
  * without its newline, in the output of git cat-file: "OID TYPE SIZE", or
  * "NAME missing".  Stores the length of OID in @p *oid.
@@ -780,22 +800,28 @@ notes_kind (char const *line,
 }
 
 int
-notes_checked (struct span out,
-               char        tip[NOTES_TIP + 1])
+notes_checked (struct span        out,
+               char               tip[NOTES_TIP + 1],
+               struct notes_file *note)
 {
+	if (!tip || !note)
+		return EINVAL;
 	char const *p = (char const *)out.ptr;
 	char const *end = p + out.len;
 	*tip = '\0';
+	*note = (struct notes_file){};
 	/* The first line is about the branch, the last line is about the name,
 	 * and the lines between are about the directories in the name. */
 	size_t lines = 0;
 	bool dir_note = false;
 	enum notes_kind kind = KIND_OTHER;
+	char const *line = p;
+	size_t oid = 0;
 	for (char const *nl; p < end; p = nl + 1, ++lines) {
 		if (!(nl = memchr(p, '\n', (size_t)(end - p))))
 			return EIO;
 		dir_note |= lines > 1 && kind == KIND_BLOB;
-		size_t oid = 0;
+		line = p;
 		kind = notes_kind(p, (size_t)(nl - p), &oid);
 		if (lines || kind == KIND_MISSING)
 			continue;
@@ -806,9 +832,21 @@ notes_checked (struct span out,
 		memcpy(tip, p, oid);
 		tip[oid] = '\0';
 	}
-	return lines < 2 || kind == KIND_OTHER || kind == KIND_COMMIT ? EIO
-	     : dir_note ? ENOTDIR : kind == KIND_TREE ? EISDIR
-	     : kind == KIND_BLOB ? EEXIST : 0;
+	int r = lines < 2 || kind == KIND_OTHER || kind == KIND_COMMIT ? EIO
+	      : dir_note ? ENOTDIR : kind == KIND_TREE ? EISDIR
+	      : kind == KIND_BLOB ? EEXIST : 0;
+	if (r != EEXIST)
+		return r;
+	/* The last line is "OID blob SIZE". */
+	char const *size = line + oid + sizeof " blob " - 1;
+	uint64_t bytes;
+	if (!util_is_oid(line, oid) || !notes_number(size, (size_t)(end - 1 - size), &bytes))
+		return EIO;
+	*note = (struct notes_file){
+		.id = { out.ptr + (line - (char const *)out.ptr), oid },
+		.bytes = bytes,
+	};
+	return EEXIST;
 }
 
 int
@@ -861,19 +899,53 @@ notes_add_file (struct buf *in,
 }
 
 int
-notes_add_input (struct buf      *in,
-                 char const      *repo,
-                 enum notes_side  side,
-                 char const      *tip,
-                 struct span      file)
+notes_part_init (struct notes_part *part,
+                 struct span        file)
 {
-	static char const *const messages[] = {
-		[NOTES_UPSTREAM] = "The upstream wrote a note.",
-		[NOTES_CLIENT]   = "A client wrote a note.",
+	static char const m[] = "M 100644 inline ";
+	static char const data[] = "data ";
+	if (!part)
+		return EINVAL;
+	*part = (struct notes_part){};
+	/* The part is "M 100644 inline NAME\ndata N\n", the N bytes and a line
+	 * feed. A name has no control characters (notes_name()). */
+	char const *s = (char const *)file.ptr;
+	char const *nl = file.len > sizeof m - 1 && !memcmp(s, m, sizeof m - 1)
+	               ? memchr(s, '\n', file.len) : nullptr;
+	/* The offset of N. */
+	size_t at = nl ? (size_t)(nl - s) + sizeof data : 0;
+	char const *end = nl && file.len > at && !memcmp(nl + 1, data, sizeof data - 1)
+	                ? memchr(s + at, '\n', file.len - at) : nullptr;
+	uint64_t len;
+	if (!end || !notes_number(s + at, (size_t)(end - s) - at, &len))
+		return EINVAL;
+	size_t start = (size_t)(end - s) + 1;
+	if (start == file.len || len != file.len - start - 1 || s[file.len - 1] != '\n')
+		return EINVAL;
+	*part = (struct notes_part){
+		.name = { file.ptr + sizeof m - 1, (size_t)(nl - s) - (sizeof m - 1) },
+		.data = { file.ptr + start, (size_t)len },
 	};
-	char head[NOTES_REPO + 256];
-	int h = snprintf(head, sizeof head, "commit %s\ncommitter askai <askai> "
-	                 "now\ndata <<END\n%s\nEND\nfrom %s\n", repo, messages[side],
+	return 0;
+}
+
+int
+notes_add_input (struct buf  *in,
+                 char const  *repo,
+                 char const  *tip,
+                 struct span  message,
+                 struct span  file)
+{
+	char head[NOTES_REPO + NOTES_MESSAGE + NOTES_TIP +
+	          sizeof "commit \ncommitter askai <askai> now\ndata 18446744073709551615\n\n"
+	                 "from \n"];
+	if (!in || !repo || !tip || !message.ptr || message.len >= NOTES_MESSAGE ||
+	    memchr(message.ptr, '\0', message.len))
+		return EINVAL;
+	/* The count of the data includes the line feed after the message. */
+	int h = snprintf(head, sizeof head, "commit %s\ncommitter askai <askai> now\n"
+	                 "data %zu\n%.*s\nfrom %s\n", repo, message.len + 1,
+	                 (int)message.len, (char const *)message.ptr,
 	                 *tip ? tip : "0000000000000000000000000000000000000000");
 	if (h < 0 || h >= (int)sizeof head)
 		return EINVAL;
@@ -975,26 +1047,6 @@ notes_token (char const *s,
 {
 	char const *prev = memrchr(s, '\0', nul);
 	return prev ? (size_t)(prev - s) + 1 : 0;
-}
-
-/* Parses one unsigned decimal field without accepting a prefix of a token. */
-static bool
-notes_number (char const *s,
-              size_t      len,
-              uint64_t   *value)
-{
-	*value = 0;
-	if (!len)
-		return false;
-	for (size_t i = 0; i < len; ++i) {
-		if (s[i] < '0' || s[i] > '9')
-			return false;
-		unsigned digit = (unsigned)(s[i] - '0');
-		if (*value > (UINT64_MAX - digit) / 10)
-			return false;
-		*value = *value * 10 + digit;
-	}
-	return true;
 }
 
 int

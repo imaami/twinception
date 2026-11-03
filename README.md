@@ -826,9 +826,12 @@ A note is a file.  The model chooses its name, such as `plan.md` or
 the name shows the format of the text, which `askai` does not check.
 The tool `notes` creates a file with `add` or updates an existing file with
 `replace`.  Each write adds a commit to the caller's branch with
-`git fast-import`; previous versions remain in history.  `add` refuses
-an existing name, and `replace` refuses a missing one.  Concurrent branch
-updates fail rather than overwrite another writer's changes.
+`git fast-import`. Its message says what the write did, the note's name
+and its size before and after, such as
+`Replace "plan.md" (1234 to 1302 bytes)`; previous versions remain in
+history. `add` refuses an existing name, and `replace` refuses a missing
+one. Concurrent branch updates fail rather than overwrite another
+writer's changes.
 Names cannot contain control characters or empty parts.  No part can be
 `.`, `..`, `.git` or `git~1`, in any case and also with spaces or dots after
 it, because git refuses such names.  Slashes at the start are left out.

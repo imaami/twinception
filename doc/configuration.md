@@ -1373,8 +1373,11 @@ the same participant and identity.
 
 `add` creates a new file and refuses an existing name.  `replace` updates
 an existing file in the caller's own notebook, adding a Git commit that
-preserves its previous contents.  Concurrent writes that race to update
-the same branch fail rather than discard another writer's changes.
+preserves its previous contents. The message of each write's commit says
+what the write did, the note's name and its size before and after, such
+as `Replace "plan.md" (1234 to 1302 bytes)`. Concurrent writes that race
+to update the same branch fail rather than discard another writer's
+changes.
 `list` shows each current file once, with its byte count and blob identity;
 `history` shows changes oldest first, with the lines added by each change.
 `copy` adds a byte-for-byte copy to the caller's own notebook.  Agents must
