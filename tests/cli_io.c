@@ -71,7 +71,7 @@ cli_io_test_run (struct loop *network,
 			.job.done = cli_io_test_done,
 			.completed = &completed,
 		};
-		e = cli_io_submit(io, &jobs[i].job);
+		e = cli_io_submit(io, &jobs[i].job, sizeof jobs[i]);
 		assert(e == (i == 32 ? EAGAIN : 0));
 	}
 	uint64_t deadline = loop_clock() + 5000000000;
@@ -90,6 +90,54 @@ cli_io_test_run (struct loop *network,
 	cli_loop_fini(&ui);
 }
 
+/* A completion that the mailbox accepts is charged the size that its
+ * submission gave, the whole object that embeds the job. */
+static void
+cli_io_test_charge (struct loop *network)
+{
+	struct cli_loop ui;
+	assert(!cli_loop_init(&ui));
+	struct cli_mailbox mailbox;
+	assert(!cli_mailbox_init(&mailbox, &ui, (struct cli_mailbox_limits){
+		.control_messages = 1, .control_bytes = SIZE_MAX
+	}));
+	int e;
+	struct cli_io *io = cli_io_create(network, &mailbox, &e);
+	assert(io && !e);
+	size_t completed = 0;
+	struct cli_io_test_job job = {
+		.job.work = cli_io_test_work,
+		.job.done = cli_io_test_done,
+		.completed = &completed,
+	};
+	assert(!cli_io_submit(io, &job.job, sizeof job));
+	/* The UI loop has not turned yet, so the completion waits in the
+	 * mailbox's control queue. */
+	uint64_t deadline = loop_clock() + 5000000000;
+	size_t messages = 0;
+	size_t bytes = 0;
+	while (!messages) {
+		assert(loop_clock() < deadline);
+		assert(!pthread_mutex_lock(&mailbox.mutex));
+		messages = mailbox.messages[1];
+		bytes = mailbox.bytes[1];
+		pthread_mutex_unlock(&mailbox.mutex);
+	}
+	assert(bytes == sizeof job);
+	while (!completed) {
+		assert(loop_clock() < deadline);
+		assert(!cli_loop_turn(&ui, deadline));
+	}
+	cli_io_stop(io);
+	while (!cli_io_done(io)) {
+		assert(loop_clock() < deadline);
+		assert(!cli_loop_turn(&ui, deadline));
+	}
+	cli_io_destroy(&io);
+	cli_mailbox_fini(&mailbox);
+	cli_loop_fini(&ui);
+}
+
 int
 main (void)
 {
@@ -99,6 +147,7 @@ main (void)
 	assert(!pthread_create(&thread, nullptr, cli_io_test_network, &network));
 	cli_io_test_run(&network, false);
 	cli_io_test_run(&network, true);
+	cli_io_test_charge(&network);
 	struct msg stop = { .fn = cli_io_test_stop };
 	loop_post(&network, &stop);
 	assert(!pthread_join(thread, nullptr));

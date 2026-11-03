@@ -444,7 +444,7 @@ cli_work_wait (struct cli *cli,
 		return EINTR;
 	struct cli_work work = {.job = {.work = cli_work_run, .done = cli_work_done},
 	                        .fn = fn, .data = data};
-	int e = cli_io_submit(cli->io, &work.job);
+	int e = cli_io_submit(cli->io, &work.job, sizeof work);
 	if (e)
 		return e;
 	bool busy = cli->busy;

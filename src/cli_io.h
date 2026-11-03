@@ -28,10 +28,14 @@ cli_io_create (struct loop        *network,
                struct cli_mailbox *mailbox,
                int                *e);
 
-/** UI thread only. A refused submission leaves ownership with its caller. */
+/** UI thread only. A refused submission leaves ownership with its caller.
+ * @p bytes is the size of the object that embeds @p job, with any payload
+ * it owns, which its result charges against the mailbox.
+ */
 extern int
 cli_io_submit (struct cli_io     *io,
-               struct cli_io_job *job);
+               struct cli_io_job *job,
+               size_t             bytes);
 
 extern void
 cli_io_stop (struct cli_io *io);

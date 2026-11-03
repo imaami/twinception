@@ -142,7 +142,8 @@ cli_io_create (struct loop        *network,
 
 int
 cli_io_submit (struct cli_io     *io,
-               struct cli_io_job *job)
+               struct cli_io_job *job,
+               size_t             bytes)
 {
 	if (!io || !job || !job->work || !job->done)
 		return EINVAL;
@@ -155,7 +156,7 @@ cli_io_submit (struct cli_io     *io,
 	job->blocker = (struct blocker_job){
 		.done = {.fn = cli_io_complete}, .work = cli_io_work, .loop = io->network
 	};
-	job->result = (struct cli_mailbox_msg){.fn = cli_io_result, .bytes = sizeof job->result};
+	job->result = (struct cli_mailbox_msg){.fn = cli_io_result, .bytes = bytes};
 	int e = blocker_submit(io->blocker, &job->blocker);
 	if (!e)
 		++io->pending;
