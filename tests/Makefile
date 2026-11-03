@@ -5,11 +5,11 @@ $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-cli check-completion check-cstr-view \
         check-datauri check-dstr check-jb check-handle check-instance check-journal check-ledger check-load \
-        check-turn check-twinception load load-build
+        check-review check-turn check-twinception load load-build
 default:; @:
 check: | check-completion check-twinception check-askai check-cli check-ai check-jb check-buf \
          check-datauri check-handle check-turn check-instance check-journal check-ledger \
-         check-dstr check-load
+         check-review check-dstr check-load
 
 # Nothing below this comment is defined when tab-completing.
 
@@ -160,6 +160,15 @@ $Otests/jb: $Otests/jb.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o
 
 $Otests/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
+# Unit tests of the review record of an ask call, src/review.c.
+check-review: $Otests/review
+	$<
+
+$Otests/review: $Otests/review.c.o $Otests/src/review.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
+
+$Otests/review.c.o $Otests/src/review.c.o: CPPFLAGS += $(JSON_INCLUDES)
+
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf
 	$<
@@ -267,6 +276,7 @@ load: | load-build askai
          $Otests/src/dstr.c.d $Otests/src/child.c.d \
          $Otests/src/cli_ui.c.d $Otests/src/jb.c.d \
          $Otests/cstr_view.c.d $Otests/src/cstr_view.c.d \
+         $Otests/review.c.d $Otests/src/review.c.d \
          $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif
