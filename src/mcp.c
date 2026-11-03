@@ -581,6 +581,9 @@ struct mcp_slot {
 	                                  it, as mcp_slot_name() makes it */
 	struct json_object *args;      /* a job's arguments, shown by jobs */
 	struct mcp_slot    *of;        /* the job whose output it gives, if any */
+	struct review_read *read;      /* the lines of a file that its output
+	                                  shows, for the review record
+	                                  (mcp_slot_source()), if any */
 	uint16_t            note_len;  /* bytes of note */
 	uint16_t            fetch;     /* enum mcp_fetch: what its notes' git is for */
 	uint8_t             tool;      /* its call's tool, by its offer's id;
@@ -1434,9 +1437,9 @@ mcp_req_log_call (struct mcp_req *req,
  * between two turns too, and its own slot has no own word, so that slot
  * does not count as ended then.  Last, the function releases the call's
  * HTTP request and its reply, puts the call's instance back
- * (instance_table_put()), clears the lent output, destroys the child of
- * the call's notes, removes the call's step from the loop's queue and frees
- * the call's handle.
+ * (instance_table_put()), clears the lent output, frees the lines that the
+ * output shows, destroys the child of the call's notes, removes the call's
+ * step from the loop's queue and frees the call's handle.
  */
 static void
 mcp_slot_drop (struct mcp_slot *slot)
@@ -1454,6 +1457,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	web_wait_leave(&slot->web);
 	instance_table_put(&slot->req->mcp->instances, &slot->inst);
 	slot->lent = (struct span){};
+	review_read_destroy(&slot->read);
 	/* A git that writes notes runs to its end, because a kill could leave
 	 * a lock file behind. */
 	if (mcp_notes_writes(mcp_fetch_cmd(slot->fetch)))
@@ -3516,6 +3520,28 @@ mcp_slot_turn (struct mcp_slot const *slot)
 	return slot->req->turn;
 }
 
+int
+mcp_slot_source (struct mcp_slot            *slot,
+                 struct review_source const *src)
+{
+	if (!slot || !src)
+		return EFAULT;
+	if (slot->done)
+		return EINVAL;
+	review_read_destroy(&slot->read);
+	/* A turn's window is at most mcp_slot_window_max() bytes of the output,
+	 * so no window shows a longer single line whole. Keep no such line, so
+	 * that review_shown() does not scan it. */
+	if (!slot->req->review ||
+	    (src->first == src->last && src->len > mcp_slot_window_max(slot)))
+		return 0;
+	int e = 0;
+	slot->read = review_read_create(src, mcp_slot_answer(slot), &e);
+	if (slot->read)
+		loop_work(slot->req->mcp->loop, LOOP_COPY, src->len);
+	return e;
+}
+
 /* Its request parks, if the slot is its own; a turn's call keeps it among
  * the calls a drain ends.
  */
@@ -4229,10 +4255,13 @@ mcp_req_dozes (struct mcp_req const *req)
 	       mcp_agenda_pending(req->agenda);
 }
 
-/* A turn has ended, its job's answer in: an answer that calls no tool is the
- * call's answer, unless the turns doze after it, as are the last turn's;
- * else parse the arguments of the calls it makes, then write the turn into
- * the upload, then run them, or doze.
+/* Handle the end of a turn, once the answer of its job has arrived. First,
+ * review_answered() moves the pending lines of the review record into its
+ * read log (src/review.h). An answer that calls no tool is the answer of
+ * the ask call, unless the turns doze after it. The answer of the last turn
+ * is the answer of the ask call too. Otherwise parse the arguments of the
+ * calls that the answer makes, then write the turn into the upload and run
+ * the calls, or doze.
  */
 static void
 mcp_req_turn_done (struct mcp_req *req)
@@ -4246,6 +4275,11 @@ mcp_req_turn_done (struct mcp_req *req)
 	req->context = told > 0 ? (uint32_t)told : job->context;
 	req->cut = ai_cut(mcp->st->ep->api, job->reason);
 	req->forced = 0;
+	int e = req->review ? review_answered(req->review) : 0;
+	if (e) {
+		mcp_req_fail(req, e);
+		return;
+	}
 	/* The calls are in the first n buffers of job->calls. */
 	uint16_t n = 0;
 	size_t bytes = 0;
@@ -6084,9 +6118,30 @@ mcp_req_result_put (struct mcp_req        *req,
 	return mcp_req_upload(req, p, last ? ARRAY_SIZE(p) : ARRAY_SIZE(p) - 3);
 }
 
-/* Write the result of the turn's call whose turn it is into the upload, a
- * slice a step, then its line of the trace; then let go of its output,
- * and go on with the calls.
+/* Pass review_shown() the lines of a committed file that the result in
+ * @p slot shows whole. The lines of a jobs call are those of its job
+ * (slot->of). Returns 0 if the result shows no such lines, or the error
+ * of review_shown().
+ */
+static int
+mcp_req_shown (struct mcp_req        *req,
+               struct mcp_slot const *slot)
+{
+	struct review_read const *read = (slot->of ? slot->of : slot)->read;
+	if (!read)
+		return 0;
+	/* review_shown() scans the output from the numbered lines to the end
+	 * of the window. */
+	loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
+	struct span out = mcp_slot_output(slot);
+	struct tool_text text = { (char const *)out.ptr, out.len };
+	return review_shown(req->review, read, text, slot->skip, slot->window, req->turn);
+}
+
+/* Write the result of the turn's call req->part into the upload, one slice
+ * in each step. Then write its line of the trace, pass the lines that it
+ * shows to mcp_req_shown(), drop the call's output and go on with the next
+ * call.
  */
 static void
 mcp_req_result_write (struct mcp_req *req)
@@ -6104,6 +6159,11 @@ mcp_req_result_write (struct mcp_req *req)
 	struct mcp_slot *slot = &req->slots[req->part];
 	(void)mcp_req_trace(req, &c, req->args[req->part], mcp_slot_offer(slot)->trace);
 	(void)mcp_req_trace_end(req, slot->failed, mcp_slot_output(slot).len);
+	e = mcp_req_shown(req, slot);
+	if (e) {
+		mcp_req_fail(req, e);
+		return;
+	}
 	mcp_slot_drop(slot);
 	slot->of = nullptr;
 	dstr_clear(&slot->answer);
@@ -8134,7 +8194,8 @@ mcp_slot_step (struct loop      *loop,
 }
 
 /* Compaction has left the summary, if any, in what askai adds to the
- * prompt. The review record, if any, follows it, cut to
+ * prompt. review_compacted() drops the pending lines of the review record
+ * (see src/review.h). The record, if any, follows the summary, cut to
  * mcp_req_lend_max() bytes, and then the notes, read for @p fetch, if the
  * thread has any.
  */
@@ -8142,6 +8203,7 @@ static void
 mcp_req_compact_notes (struct mcp_req *req,
                        enum mcp_fetch  fetch)
 {
+	review_compacted(req->review);
 	int e = mcp_req_notes_identity(req);
 	if (!e && req->review)
 		e = CAT(&req->self.answer, "\n\n")

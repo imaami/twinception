@@ -817,7 +817,11 @@ were wrong; the finding's history keeps each change and the old text.
 `show` gives the record, a window at a time, or with `id` one finding's
 history. A finding becomes `verified` or `disproved` only if the lines of
 its location are in the record's log of what `git` `read` showed the turns,
-and the record, not the model, names the commit that they were read at.
+and the record, not the model, names the commit of the latest read that
+showed them.
+The log takes the lines of a result once the upstream has answered the
+request with it, so the lines that a turn reads count from the next turn
+on, and not at all if a compaction removes the result first.
 After a compaction, the record follows the summary, within a tool's window;
 past that, its last line names the `offset` that `show` reads on from. Its
 header says that the system text, the client's messages and the prompt stay

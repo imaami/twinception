@@ -19,6 +19,7 @@
 #include "loop.h"
 #include "mcp.h"
 #include "plugin.h"
+#include "review.h"
 #include "util.h"
 
 static char const git_commit_suffix[] = "^{commit}";
@@ -51,13 +52,14 @@ static constexpr uint64_t GIT_GRACE_NS = 1'000'000'000;
 
 static_assert(GIT_MAX == 4 << 20 && GIT_GRACE_NS == 1'000'000'000, "git.h says");
 
-/* A repository: its name, its path, and the setting that has git trust it,
- * one string of the three.
+/* A configured repository. name, path and safe share one allocation: the
+ * name, the real path, and the safe.directory setting for git.
  */
 struct git_repo {
-	char *name;
-	char *path;
-	char *safe;
+	char   *name;
+	char   *path;
+	char   *safe;
+	size_t  name_len;
 };
 
 struct git {
@@ -93,13 +95,15 @@ struct git_root {
 
 struct git_revision {
 	char const *path;
+	size_t      path_len;
 	size_t      root;
 	size_t      dots;
 	char        text[REV_WORD];
 };
 
 /* The lines that a read asks for, and how far the scan and then the
- * writing have come. Offsets are into git's output, call->child->out.
+ * writing have come. Offsets are into git's output, call->child->out,
+ * except head and mark, which are into the call's output (mcp_slot_answer()).
  */
 struct git_read {
 	size_t line;    /* the number of the first line to give, from 1 */
@@ -112,6 +116,10 @@ struct git_read {
 	size_t from;    /* the offset of the first line to give */
 	size_t to;      /* the offset after the last line to give */
 	size_t last;    /* the number of the last line to give */
+	size_t head;    /* the bytes of the header in the output, 0 until it is
+	                   written */
+	size_t mark;    /* the offset in the output where the last line written
+	                   starts */
 	size_t oid_len; /* the length of the commit ID at the start of rev */
 	size_t rev_len; /* the length of rev, or 0 until the scan begins */
 	char   rev[6 * REV_WORD]; /* the revision as commit:path, escaped for a
@@ -314,6 +322,7 @@ git_repo_init (struct git_repo *r,
 	}
 	r->name = memcpy(s, name, len);
 	r->name[len] = '\0';
+	r->name_len = len;
 	r->path = memcpy(s + len + 1, real, real_len + 1);
 	r->safe = r->path + real_len + 1;
 	memcpy(r->safe, safe, sizeof safe - 1);
@@ -902,6 +911,7 @@ git_call_command (struct git_call   *call,
 		struct git_revision *rev = &call->revisions[i];
 		rev->root = call->n_roots;
 		rev->path = path ? path : "";
+		rev->path_len = len - root;
 		int e = git_commit(call->roots[call->n_roots++].name, s, left);
 		if (!e && range) {
 			++endpoints;
@@ -1321,11 +1331,11 @@ git_write (struct mcp_slot        *slot,
  * is left of the @p window bytes after the longest header and footer.
  */
 static void
-git_read_begin (struct git_read *read,
-                char const      *rev,
-                size_t           oid_len,
-                char const      *repo,
-                size_t           window)
+git_read_begin (struct git_read       *read,
+                char const            *rev,
+                size_t                 oid_len,
+                struct git_repo const *repo,
+                size_t                 window)
 {
 	read->oid_len = oid_len;
 	read->rev_len = jb_escape(read->rev, rev, strlen(rev));
@@ -1335,7 +1345,7 @@ git_read_begin (struct git_read *read,
 	size_t reserve = sizeof "[Repository , file  at commit : lines  to  of at least .]\n" +
 	                 sizeof "\n\n[To read on, call again with \"revisions\": "
 	                        "[\"\"] and \"line\": .]" +
-	                 strlen(repo) + 2 * read->rev_len + 4 * 20;
+	                 repo->name_len + 2 * read->rev_len + 4 * 20;
 	read->room = window > reserve ? window - reserve : 0;
 	read->last = read->line - 1;
 }
@@ -1416,12 +1426,12 @@ git_read_past (struct git_read const *read,
 static int
 git_read_head (struct git_read const *read,
                struct mcp_slot       *slot,
-               char const            *repo,
+               struct git_repo const *repo,
                bool                   cut)
 {
 	char lines[sizeof ": lines  to  of at least .]\n" + 3 * 20];
 	struct tool_text const p[] = {
-		TOOL_TEXT("[Repository "), { repo, strlen(repo) }, TOOL_TEXT(", file "),
+		TOOL_TEXT("[Repository "), { repo->name, repo->name_len }, TOOL_TEXT(", file "),
 		{ read->rev + read->oid_len + 1, read->rev_len - read->oid_len - 1 },
 		TOOL_TEXT(" at commit "), { read->rev, read->oid_len },
 		read->total ? FORMAT(lines, ": lines %zu to %zu of %s%zu.]\n", read->line,
@@ -1460,6 +1470,8 @@ git_read_lines (struct git_read *read,
 		size_t fixed = num.len + LINE_COST;
 		if (room < fixed + 4)
 			return EAGAIN;
+		if (num.len)
+			read->mark = mcp_slot_answer(slot).len;
 		size_t left = read->to - read->at;
 		size_t n = left < room - fixed ? left : room - fixed;
 		unsigned char const *nl = memchr(blob.ptr + read->at, '\n', n);
@@ -1523,6 +1535,37 @@ git_read_foot (struct git_read const *read,
 	return git_write(slot, p, ARRAY_SIZE(p));
 }
 
+/* Pass mcp_slot_source() the numbered lines of the read in @p call, from
+ * read->head to @p end in the output, for the review record. If the 4 MiB
+ * cut ends inside the last line, that line is left out. total is 0
+ * (unknown) when the output was cut. Return 0 or the error of
+ * mcp_slot_source().
+ */
+static int
+git_read_shown (struct git_read const *read,
+                struct mcp_slot       *slot,
+                struct git_call const *call,
+                size_t                 end)
+{
+	struct child const *c = call->child;
+	bool part = read->last >= read->line && c->cut &&
+	            buf_peek(&c->out).ptr[read->to - 1] != '\n';
+	if (read->last - part < read->line)
+		return 0;
+	struct git_revision const *rev = &call->revisions[0];
+	struct review_source const src = {
+		.repo   = { call->repo->name, call->repo->name_len },
+		.commit = { call->roots[rev->root].name, read->oid_len },
+		.path   = { rev->path + 1, rev->path_len - 1 },
+		.at     = read->head,
+		.len    = (part ? read->mark : end) - read->head,
+		.first  = read->line,
+		.last   = read->last - part,
+		.total  = c->cut ? 0 : read->total,
+	};
+	return mcp_slot_source(slot, &src);
+}
+
 /* Scan the file of the read in @p call, as far as the room of the step
  * goes, after a check that its first BINARY bytes have no NUL. When the
  * scan ends, number the lines in the next step, or refuse the read if the
@@ -1546,8 +1589,8 @@ git_scan (struct mcp_slot *slot,
 			return;
 		}
 		struct git_revision const *rev = &call->revisions[0];
-		git_read_begin(read, rev->text, strlen(call->roots[rev->root].name),
-		               call->repo->name, mcp_slot_window_max(slot));
+		git_read_begin(read, rev->text, strlen(call->roots[rev->root].name), call->repo,
+		               mcp_slot_window_max(slot));
 	}
 	git_read_scan(read, blob, c->loop);
 	if (read->start < blob.len) {
@@ -1569,7 +1612,8 @@ git_scan (struct mcp_slot *slot,
 }
 
 /* Write the header, the lines and the footer of the read in @p call, as
- * far as the room of each step goes. Then finish the call.
+ * far as the room of each step goes. Then pass the shown lines to
+ * mcp_slot_source() (git_read_shown()) and finish the call.
  */
 static void
 git_number (struct mcp_slot *slot,
@@ -1578,12 +1622,18 @@ git_number (struct mcp_slot *slot,
 	struct git_read *read = &call->read;
 	struct child *c = call->child;
 	struct span blob = buf_peek(&c->out);
-	int e = mcp_slot_answer(slot).len ? 0
-	      : git_read_head(read, slot, call->repo->name, c->cut);
+	int e = 0;
+	if (!read->head) {
+		e = git_read_head(read, slot, call->repo, c->cut);
+		read->head = mcp_slot_answer(slot).len;
+	}
 	if (!e)
 		e = git_read_lines(read, slot, blob);
+	size_t end = mcp_slot_answer(slot).len;
 	if (!e)
 		e = git_read_foot(read, slot, blob, c->cut);
+	if (!e)
+		e = git_read_shown(read, slot, call, end);
 	if (e == EAGAIN) {
 		mcp_slot_ready(slot);
 		return;

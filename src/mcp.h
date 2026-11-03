@@ -27,6 +27,7 @@ struct metrics_src;
 struct notes;
 struct registry;
 struct review;
+struct review_source;
 struct stream_app;
 struct task_pool;
 struct web;
@@ -366,6 +367,18 @@ mcp_slot_review (struct mcp_slot const *slot);
  */
 extern uint32_t
 mcp_slot_turn (struct mcp_slot const *slot);
+
+/** Keeps a copy of @p src, which describes the numbered lines of a
+ *  committed file in the call's output, for the review record of the ask
+ *  call (review_shown()). It keeps nothing if mcp_slot_review() is nullptr
+ *  or @p src is a single line longer than mcp_slot_window_max(). Returns
+ *  0, EFAULT for nullptr, EINVAL if the call has ended or @p src does not
+ *  fit the output (review_read_create()), or ENOMEM. This function is not
+ *  exported yet.
+ */
+extern int
+mcp_slot_source (struct mcp_slot            *slot,
+                 struct review_source const *src);
 
 /** Makes the call wait.  start() calls it last, if the call goes on after
  *  start() returns.  askai can free the call's arguments in this function.

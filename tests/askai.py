@@ -12021,12 +12021,19 @@ def check_review(binary, up):
     they are lent. It keeps the review record of the ask call. add
     records a finding, update changes one and keeps its history, and show
     pages the record or the history of one finding. verified and disproved
-    need the lines of the location read with git read. Trailing askai
-    notices are dropped from a claim or evidence. After each compaction the
-    record is shown again, up to the window of a tool, and show gives the
-    rest. With tools.upstream.deny, the turns get no findings and
-    compaction is unchanged. Without the git tool, findings refuses
-    verified and disproved and suggests no git read."""
+    need the lines of the location read with git read. The record logs the
+    lines that a read result shows the turns whole, at the commit that the
+    read resolved. It does not log a line that the window or the 4 MiB
+    limit cuts. The lines of a job's read count once jobs returns its
+    result. A location gets the commit of the latest read that showed its
+    lines. Lines are logged after the upstream answers the request with
+    the result, and not if a compaction removes the result first. A short
+    path resolves to the only logged path that ends with it. Trailing
+    askai notices are dropped from a claim or evidence. After each
+    compaction the record is shown again, up to the window of a tool, and
+    show gives the rest. With tools.upstream.deny, the turns get no
+    findings and compaction is unchanged. Without the git tool, findings
+    refuses verified and disproved and suggests no git read."""
     findings_head = ("[askai: your findings; findings action show with an id gives "
                      "one's history:]\n")
     with tempfile.TemporaryDirectory() as d:
@@ -12198,6 +12205,223 @@ def check_review(binary, up):
             assert found and int(found[3]) == len(text) and found[1] == text[:int(found[2])], \
                 shown[-200:]
 
+        def mixed(*calls):
+            """A turn that makes the @p calls, each a tool's name and its
+            arguments."""
+            return lambda r: (200, turn_stream([(f"m{k}", name, json.dumps(c))
+                                                for k, (name, c) in enumerate(calls)]))
+
+        def read(path, line, count=None, **more):
+            """The arguments of a git read of @p path at HEAD from @p line."""
+            return {"repo": "proj", "command": "read", "revisions": [f"HEAD:{path}"],
+                    "line": line, **({"count": count} if count else {}), **more}
+
+        def add(claim, location, state="verified"):
+            return {"action": "add", "claim": claim, "location": location, "state": state,
+                    "evidence": "E" + claim}
+
+        later_turn = (" The log takes the lines of a read once you have seen them, so call "
+                      "again in a later turn.")
+
+        def missing(state, location, path, line, logged=True):
+            """The refusal of lines that are not in the log, of a path that
+            it has if @p logged is true."""
+            return (f"{state} needs the lines of its location in your read log, and "
+                    f"{location} not in it. Read them with the git tool's read command, "
+                    f"with \"revisions\": [\"HEAD:{path}\"] and \"line\": {line}" +
+                    ("" if logged else ", where the path is the file's whole path from the "
+                     "top of the repository") + "." + later_turn)
+
+        def second(request):
+            """Commit src/x.c, tests/x.c, a line more of src/a.c, a file of
+            one long line and one past 4 MiB, then give the turn of the
+            reads at that commit."""
+            for name, text in (("src/x.c", "a\nb\n"), ("tests/x.c", "a\nb\n"),
+                               ("src/long.c", "y" * (2 << 20) + "\nz\n"),
+                               ("src/cut.c", ("x" * 999 + "\n") * 4200)):
+                os.makedirs(os.path.dirname(f"{repo}/{name}"), exist_ok=True)
+                with open(f"{repo}/{name}", "w") as f:
+                    f.write(text)
+            with open(f"{repo}/src/a.c", "a") as f:
+                f.write("int y;\n")
+            sh("add", "src", "tests")
+            sh("commit", "-q", "-m", "second")
+            return mixed(("git", read("src/a.c", 1, 5)), ("git", read("src/x.c", 1)),
+                         ("git", read("tests/x.c", 1)),
+                         ("findings", add("C4", "src/a.c:3")))(request)
+
+        # The record logs the lines that a read result shows the turns
+        # whole, at the commit that the read resolved, after the upstream
+        # has seen them. verified and disproved need the lines of the
+        # location in the log. A short path resolves to the only logged
+        # path that ends with it.
+        head = sh("rev-parse", "HEAD").strip()
+        with Askai(binary, *args) as ai:
+            script[:] = [
+                mixed(("git", read("src/a.c", 1, 10)), ("findings", add("C1", "src/a.c:3-4"))),
+                mixed(("git", read("src/a.c", 45, 16)), ("findings", add("C1", "src/a.c:3-4")),
+                      ("findings", add("C2", "a.c:50", "disproved"))),
+                mixed(("findings", add("C2", "a.c:50", "disproved")),
+                      ("findings", add("C3", "src/a.c:60-61"))),
+                second,
+                mixed(("findings", add("C4", "x.c:1")), ("findings", add("C4", "src/a.c:3")),
+                      ("findings", add("C5", f"{head[:7]}:src/a.c:8")),
+                      ("findings", {"action": "show"}))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            sent = up.requests[count:]
+            assert len(sent) == 6, sent
+            later = sh("rev-parse", "HEAD").strip()
+            shown = results(sent[1])
+            assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {head}: "
+                                       "lines 1 to 10 of 300.]\n1\tint x0;\n"), shown
+            # The turn that reads the lines has not seen them yet.
+            assert shown[1:] == [missing("verified", "src/a.c lines 3-4 are", "src/a.c", 3,
+                                         False)], shown
+            assert results(sent[2])[1:] == [
+                f"Added finding 1: verified, src/a.c:3-4 at {head[:12]}.",
+                missing("disproved", "src/a.c line 50 is", "src/a.c", 50)], sent[2]
+            # When the log has only some of the lines of the location, the
+            # refusal names the line after the logged lines, and their commit.
+            assert results(sent[3]) == [
+                f"Added finding 2: disproved, src/a.c:50 at {head[:12]}.",
+                "verified needs the lines of its location in your read log, and src/a.c "
+                f"lines 60-61 are not all in it: it has line 60 of them, read at {head[:12]}. "
+                "Read the rest with the git tool's read command, with \"revisions\": "
+                f"[\"{head[:12]}:src/a.c\"] and \"line\": 61, in as many calls as it takes." +
+                later_turn], sent[3]
+            # The latest read that showed a location's lines gives its
+            # commit, and a commit's prefix picks the reads at that commit.
+            assert results(sent[4])[3:] == [f"Added finding 3: verified, src/a.c:3 at "
+                                            f"{head[:12]}."], results(sent[4])
+            assert results(sent[5]) == [
+                "x.c matches src/x.c and tests/x.c in your read log; give \"location\" with "
+                "the whole path.",
+                f"Added finding 4: verified, src/a.c:3 at {later[:12]}.",
+                f"Added finding 5: verified, src/a.c:8 at {head[:12]}.",
+                REVIEW + findings_head +
+                f"1. verified, src/a.c:3-4 at {head[:12]}\n   claim: C1\n   evidence: EC1\n"
+                f"3. verified, src/a.c:3 at {head[:12]}\n   claim: C4\n   evidence: EC4\n"
+                f"4. verified, src/a.c:3 at {later[:12]}\n   claim: C4\n   evidence: EC4\n"
+                f"5. verified, src/a.c:8 at {head[:12]}\n   claim: C5\n   evidence: EC5\n"
+                f"2. disproved, src/a.c:50 at {head[:12]}: C2\n"
+                f"[askai: what you read with git read in this call:]\nproj {head}\n"
+                f"  src/a.c  lines 1-10, 45-60: 26 of 300 lines\nproj {later}\n"
+                "  src/a.c  lines 1-5: 5 of 301 lines\n  src/x.c  lines 1-2: all 2 lines\n"
+                "  tests/x.c  lines 1-2: all 2 lines"], results(sent[5])
+
+            # Lines 3-4 keep the commit `later`, whose read showed them last,
+            # although the read after it, at `head`, adds lines 11-12 next to
+            # lines 1-10 at `head`. A location past the end of the file, as
+            # the log knows it, is refused. A HEAD: prefix means no commit
+            # prefix.
+            script[:] = [
+                mixed(("git", read("src/a.c", 1, 10, revisions=[f"{head}:src/a.c"]))),
+                mixed(("git", read("src/a.c", 3, 2, revisions=[f"{later}:src/a.c"]))),
+                mixed(("git", read("src/a.c", 11, 2, revisions=[f"{head}:src/a.c"]))),
+                mixed(("findings", add("C9", "src/a.c:3")),
+                      ("findings", add("C9", "src/a.c:300-305")),
+                      ("findings", add("C9", "HEAD:src/a.c:4")))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            assert results(up.requests[count + 4]) == [
+                f"Added finding 1: verified, src/a.c:3 at {later[:12]}.",
+                f"src/a.c has 301 lines at {later[:12]}, so line 305 is past its end; give a "
+                "location within lines 1 to 301.",
+                f"Added finding 2: verified, src/a.c:4 at {later[:12]}."], \
+                results(up.requests[count + 4])
+
+            # A short path that becomes ambiguous after it was recorded stays
+            # as it is in an update without a location, unless the new state
+            # needs the lines; that update is refused.
+            script[:] = [mixed(("findings", {"action": "add", "claim": "C10",
+                                             "location": "x.c:1"})),
+                         mixed(("git", read("src/x.c", 1)), ("git", read("tests/x.c", 1))),
+                         mixed(("findings", {"action": "update", "id": 1, "state": "verified",
+                                             "evidence": "E"}),
+                               ("findings", {"action": "update", "id": 1, "state": "retracted",
+                                             "evidence": "R"}))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            assert results(up.requests[count + 3]) == [
+                "x.c matches src/x.c and tests/x.c in your read log; give \"location\" with "
+                "the whole path.",
+                "Finding 1 is now retracted, x.c:1, not read; it was candidate."], \
+                results(up.requests[count + 3])
+
+            # A compaction removes a read's result before the upstream sees
+            # it, so the log does not take its lines.
+            script[:] = [mixed(("git", read("src/a.c", 1, 10)), ("compact", {"summary": "S"})),
+                         mixed(("findings", add("C8", "src/a.c:3")))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            sent = up.requests[count:]
+            assert prompt(sent[1]) == compacted("S", "\n\n" + REVIEW_EMPTY), prompt(sent[1])
+            assert results(sent[2]) == [missing("verified", "src/a.c line 3 is", "src/a.c", 3,
+                                                False)], sent[2]
+            # So does the compaction that askai makes when the context fills
+            # up.
+            full = {"error": {"code": 400, "type": "exceed_context_size_error",
+                              "message": "request (9000 tokens) exceeds the available "
+                              "context size (8192 tokens), try increasing it"}}
+            script[:] = [mixed(("git", read("src/a.c", 1, 10))), lambda r: (400, full),
+                         mixed(("findings", add("C8", "src/a.c:3")))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            sent = up.requests[count:]
+            assert prompt(sent[2]) == (
+                "Q\n\n[askai: your context filled up, so the conversation since the task is "
+                "gone, your turns and the tools' results with it.]\n\n" + REVIEW_EMPTY +
+                "\n\n[askai: go on with the task.]"), prompt(sent[2])
+            assert results(sent[3]) == [missing("verified", "src/a.c line 3 is", "src/a.c", 3,
+                                                False)], sent[3]
+
+            # A job's read counts once jobs gives its result.
+            job = {"tool": "git", "arguments": read("src/a.c", 100, 5)}
+            script[:] = [mixed(("background", job)),
+                         mixed(("wait", {"seconds": 10, "jobs": [1]}),
+                               ("findings", add("C6", "src/a.c:101"))),
+                         mixed(("jobs", {"action": "result", "job": 1})),
+                         mixed(("findings", add("C6", "src/a.c:101")))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            sent = up.requests[count:]
+            assert results(sent[2])[1] == missing("verified", "src/a.c line 101 is",
+                                                  "src/a.c", 101, False), sent[2]
+            shown = results(sent[3])
+            assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {later}: "
+                                       "lines 100 to 104 of 301.]\n100\tint x99;\n"), shown
+            assert results(sent[4]) == [f"Added finding 1: verified, src/a.c:101 at "
+                                        f"{later[:12]}."], sent[4]
+            # The 4 MiB cut ends line 4195 of src/cut.c, which the log leaves
+            # out, and the file's lines are not known.
+            script[:] = [mixed(("git", read("src/cut.c", 4190))),
+                         mixed(("findings", add("C7", "src/cut.c:4195")),
+                               ("findings", add("C7", "src/cut.c:4194")),
+                               ("findings", {"action": "show"}))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            [read_cut] = results(up.requests[count + 1])
+            assert read_cut.startswith(f"[Repository proj, file src/cut.c at commit {later}: "
+                                       "lines 4190 to 4195 of at least 4195.]\n") and \
+                read_cut.endswith("\n\n[Line 4195 goes on past the 4 MiB that the git "
+                                  "tool reads.]"), read_cut[-300:]
+            shown = results(up.requests[count + 2])
+            assert shown == [
+                missing("verified", "src/cut.c line 4195 is", "src/cut.c", 4195),
+                f"Added finding 1: verified, src/cut.c:4194 at {later[:12]}.",
+                REVIEW + findings_head + f"1. verified, src/cut.c:4194 at {later[:12]}\n"
+                "   claim: C7\n   evidence: EC7\n[askai: what you read with git read in "
+                f"this call:]\nproj {later}\n  src/cut.c  lines 4190-4194: 5 of an unknown "
+                "number of lines"], shown
+            # A client's read is unchanged.
+            status, _, body = ai.rpc("tools/call", {"name": "git",
+                                                    "arguments": read("src/a.c", 300)})
+            assert status == 200 and text_of(body["result"]) == (
+                f"[Repository proj, file src/a.c at commit {later}: lines 300 to 301 of "
+                "301.]\n300\tint x299;\n301\tint y;\n\n[Line 301 is the end of the file.]"), \
+                body
+
         # A context of 8000 tokens has windows of 4000 bytes. The record of
         # 40 findings is longer, so a compaction shows the lines of it that
         # fit, and show with the offset that it names gives the rest.
@@ -12226,6 +12450,45 @@ def check_review(binary, up):
             size = len(record)
             assert results(sent[5]) == [record[keep:] + f"\n\n[Bytes {keep} to {size} of "
                                         f"{size}: its end.]"], results(sent[5])
+
+            # A read gives the lines that fit in the window, and the log has
+            # all of them. From an offset, the log has the lines that the
+            # window shows whole, without the one that the offset cuts.
+            def logged(*calls):
+                """The text of a read of src/a.c that a turn of a new ask
+                call makes with each of @p calls' arguments, and the line of
+                the read log that a show after them gives."""
+                script[:] = [mixed(*(("git", c) for c in calls)), turn({"action": "show"})]
+                count = len(up.requests)
+                assert ai.ask("Q")["content"][0]["text"] == "A"
+                sent = up.requests[count:]
+                shown = results(sent[2])[0].split("\n")
+                assert shown[-3:-1] == [
+                    "[askai: what you read with git read in this call:]",
+                    f"proj {later}"], shown
+                return results(sent[1])[0], shown[-1]
+
+            text, line = logged(read("src/a.c", 1))
+            out = text[:text.rindex("\n\n[To read on")]
+            numbered = re.findall(r"^(\d+)\tint x\d+;$", out, re.M)
+            last = int(numbered[-1])
+            assert numbered == [str(k) for k in range(1, last + 1)] and len(text) <= 4000
+            assert line == f"  src/a.c  lines 1-{last}: {last} of 301 lines", line
+            skip = out.index("\n20\t") + 3
+            text, line = logged(read("src/a.c", 1, offset=skip))
+            assert text.startswith(out[skip:] + "\n\n[To read on"), text
+            numbered = re.findall(r"^(\d+)\tint x\d+;$", out[skip:].split("\n", 1)[1], re.M)
+            assert numbered[0] == "21" and line == \
+                f"  src/a.c  lines 21-{last}: {last - 20} of 301 lines", (numbered, line)
+            # A line longer than the window is not logged, nor scanned whole
+            # in one step.
+            work(ai)
+            script[:] = [mixed(("git", read("src/long.c", 1))), turn({"action": "show"})]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            units, _ = work(ai)
+            assert all(most <= bound for most, bound in units.values()), units
+            assert results(up.requests[count + 2]) == [REVIEW_EMPTY]
 
         # Without findings, the turns cannot call it, and a compaction adds
         # no record.

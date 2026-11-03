@@ -358,9 +358,14 @@ lasts as long as the `ask_ai` call, through all of its compactions. A new
   history of the finding keeps each change with its turn, its evidence and
   the old claim or location.
 - A log of the lines of committed files that the command `read` of the
-  tool `git` showed the turns whole, by repository, commit and path. Only
-  `read` counts: the output of `show`, `cat-file`, `grep` and `blame` does
-  not.
+  tool `git` showed the turns whole, by repository, commit and path. The
+  lines of a read in a background job count once `jobs` gives its result.
+  A line that the 4 MiB limit of `git` cuts does not count. Only `read`
+  counts: the output of `show`, `cat-file`, `grep` and `blame` does not.
+  The log takes the lines of a result once the upstream has answered the
+  request with the result, so the lines that a turn reads count from the
+  next turn on. The lines of a result that a compaction removes before
+  that do not count.
 
 `show` gives the whole record, a window at a time from `offset`, or with
 `id` the history of one finding.
