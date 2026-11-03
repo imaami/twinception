@@ -52,7 +52,9 @@ enum loop_unit {
 	                    sending */
 	LOOP_BODY,     /**< bytes of a request body that were read and
 	                    pre-scanned */
-	LOOP_PARSE,    /**< bytes of JSON parsed, or bytes of SSE lines read */
+	LOOP_PARSE,    /**< bytes of JSON parsed, or bytes of text split into
+	                    lines, such as an SSE stream or a file that the
+	                    read command of the git tool numbers */
 	LOOP_VALUES,   /**< JSON values parsed or freed */
 	LOOP_ESCAPE,   /**< bytes escaped into JSON */
 	LOOP_COPY,     /**< bytes copied in one piece, for example a string

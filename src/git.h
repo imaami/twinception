@@ -2,19 +2,21 @@
  *
  * The git tool (S8): committed repository contents only.
  *
- * A call names a configured repository and an allowed command: log, show,
- * diff, grep, blame, ls-tree, cat-file or rev-parse. help:true describes its
- * options and limits without running git. Values belong in the same option
- * string as their flag. Paths follow "--", relative to the repository top,
- * with no ".." component or long-form pathspec magic.
+ * A call names a configured repository and an allowed command: read
+ * (numbered lines of a committed file), log, show, diff, grep, blame,
+ * ls-tree, cat-file or rev-parse. help:true describes its options and limits
+ * without running git. Values belong in the same option string as their
+ * flag. Paths follow "--", relative to the repository top, with no ".."
+ * component or long-form pathspec magic.
  *
  * Revision roots are references or hashes with ^/~ ancestry or ^{commit}. Each
  * root is resolved to an immutable ID and checked for reachability from HEAD,
- * branches, tags or remote-tracking refs before a show/cat-file :path suffix is
- * applied. Raw blobs, index selectors, reflogs, private stash objects and revision
- * expansions are unavailable. Log accepts A..B/A...B ranges; diff requires
- * exactly two roots, separately or as one explicit range. Other commands
- * default to HEAD. Blame's --ignore-rev roots undergo the same checks.
+ * branches, tags or remote-tracking refs before a read/show/cat-file :path
+ * suffix is applied. Raw blobs, index selectors, reflogs, private stash
+ * objects and revision expansions are unavailable. Log accepts A..B/A...B
+ * ranges; diff requires exactly two roots, separately or as one explicit
+ * range. Other commands default to HEAD. Blame's --ignore-rev roots undergo
+ * the same checks.
  *
  * Each call creates a private bare view with a snapshot of the approved refs
  * and shared object storage, preserving validated shallow boundaries. It imports
@@ -26,10 +28,11 @@
  * Repository discovery cannot ascend above a configured repository. The
  * source's metadata and object storage remain trusted; this is not an OS sandbox.
  * No command reads the index or uncommitted files as its source. Internal
- * validation failures are generic. Failed show/cat-file diagnostics
+ * validation failures are generic. Failed read/show/cat-file diagnostics
  * are replaced so they cannot disclose whether a local path exists. Output
- * is cut at 4 MiB; one deadline spans discovery, authorization and execution,
- * sending SIGTERM, then SIGKILL a second later. Grep's
+ * is cut at 4 MiB. read numbers the lines before the cut and does not
+ * capture git's stderr. One deadline spans discovery, authorization and
+ * execution, sending SIGTERM, then SIGKILL a second later. Grep's
  * exit status 1 means no matches; other nonzero exits are errors.
  *
  * Calls run as children (child.h) on their client loop. Their output is made

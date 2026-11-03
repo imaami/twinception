@@ -636,8 +636,8 @@ by the last component of its path as given, less a `.git` suffix:
 `/srv/git/proj.git` is `proj`.  A name is 1 to 64 letters, digits and `_.-`,
 not beginning with a dot; a path without one, or two of one name, are refused
 as `askai` starts.  A call names its
-`repo` and its `command`, one of `log`, `show`, `diff`, `grep`, `blame`,
-`ls-tree`, `cat-file` and `rev-parse`, and gives its `options`, its
+`repo` and its `command`, one of `read`, `log`, `show`, `diff`, `grep`,
+`blame`, `ls-tree`, `cat-file` and `rev-parse`, and gives its `options`, its
 `revisions` and its `paths` apart, and for `grep` its `pattern`:
 
 ```json
@@ -649,22 +649,40 @@ Only committed content is visible. The default revision is `HEAD`, including
 for `grep`, `blame` and `ls-tree`; a staged deletion does not hide its committed
 file, and staged additions or edits, working-tree edits, untracked and ignored
 files are absent. Use `ls-tree -r --name-only` to list committed paths. `grep`
-gives each match as `commit:path:line:text`, with the full commit ID. Read a
-file with `show` and `"revisions": ["HEAD:src/main.c"]`. A commit ID can replace
-`HEAD` for repeatable reads. `diff` requires two commit revisions or one explicit
-range such as `main..topic` or `main...topic`.
+gives each match as `commit:path:line:text`, with the full commit ID. A commit
+ID can replace `HEAD` for repeatable reads. `diff` requires two commit revisions
+or one explicit range such as `main..topic` or `main...topic`.
+
+`read` gives numbered lines of a committed file, which the one revision names
+as `commit:path`, from `line` (default 1), `count` of them at most (default as
+many as the caller's window holds):
+
+```json
+{ "repo": "proj", "command": "read", "revisions": ["HEAD:src/main.c"],
+  "line": 120, "count": 40 }
+```
+
+The first line of the output names the repository, the file, the full commit
+ID and the lines given:
+`[Repository proj, file src/main.c at commit ID: lines 120 to 159 of 900.]`.
+Each line follows as its number, a tab and its text. The last line gives the
+revision, with the commit ID, and the `line` to read on from, or says that the
+file ends there. The `commit:path` of a `grep` match is a revision of `read`,
+and its number the `line`. `show` with the same revision gives the file as it
+is.
 
 Use `"help": true` with a command to list its options, source selection and
 argument limits, and the bytes of output that one result of the caller takes
 (`window_bytes`: a turn's window, or 16 MiB for a client). Each option must be
 on that command's allowlist, with its value attached (`--max-count=20`, not
 `-n 20`). Revisions name commits, optionally with
-`^` or `~` ancestry; `log` and `diff` also accept explicit ranges. `show` and
-`cat-file` accept `commit:path`. Index selectors such as `:path`, raw blob or
-tree IDs, stash and reflog selectors, and revision-list expansion syntax are
-rejected. `status`, `ls-files`, index and worktree options, and `log --all` are
-unavailable. Every resolved commit, including `blame --ignore-rev` values,
-must be reachable from `HEAD`, a branch, a tag or a remote-tracking ref.
+`^` or `~` ancestry; `log` and `diff` also accept explicit ranges. `read`,
+`show` and `cat-file` accept `commit:path`. Index selectors such as `:path`,
+raw blob or tree IDs, stash and reflog selectors, and revision-list expansion
+syntax are rejected. `status`, `ls-files`, index and worktree options, and
+`log --all` are unavailable. Every resolved commit, including
+`blame --ignore-rev` values, must be reachable from `HEAD`, a branch, a tag or
+a remote-tracking ref.
 Knowing a stash or dangling commit's hash does not grant access. A commit
 deliberately added to ordinary history becomes available through that history.
 Paths are relative to the repository's top, with no `..` component
@@ -695,8 +713,12 @@ not an operating-system sandbox.
 The reply is `git`'s output, made UTF-8 text and cut at 4 MiB with a note saying
 so, from the byte an optional `offset` names. History validation failures return
 a generic error. Failed `show` and `cat-file` calls
-return a generic committed-object error, hiding Git's hints about local files;
-other Git errors are preserved. Nonzero exits are tool errors, except that
+return a generic committed-object error, and a failed `read` says only that
+the commit has no file at that path, hiding Git's hints about local files;
+other Git errors are preserved. `read` runs `git cat-file blob` with its errors
+discarded, numbers the lines within the 4 MiB that `git` reads, and refuses a
+file with a NUL byte in its first 8000 bytes as binary. Nonzero exits are tool
+errors, except that
 `grep` finding no matches succeeds with `[No matches.]`. At the
 deadline, `--git-timeout` (30 s for validation and execution together), `git` gets SIGTERM, and SIGKILL a second
 later, and the call is a tool error; a call that goes, or `askai` stopping,
@@ -742,7 +764,9 @@ context to be counted by the request's bytes.
 
 A tool's output goes to a turn in a window of an eighth of the context, at
 most 64 KiB, cut at a line's end, with a note that names the bytes shown and
-the `offset` that reads on.  The context is what `--context` says, or else
+the `offset` that reads on. A `git` `read` gives the whole lines that fit the
+window, and names the `line` to read on from instead; only a line longer than
+the window is cut by bytes. The context is what `--context` says, or else
 what `llama-server`'s `GET /props` says (`n_ctx`), which `askai` asks for even
 with `--slots`, or, with Gemini's APIs and a model, what `GET
 /v1beta/models/MODEL` at the root of Gemini's API in the URL says

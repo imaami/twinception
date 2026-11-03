@@ -8200,7 +8200,7 @@ for a; do
 done
 rev=${rev%\^\{commit\}}
 case $rev in
-echo|1111111111111111111111111111111111111111)
+echo|1111111111111111111111111111111111111111|1111111111111111111111111111111111111111:*)
     rev=echo; oid=1111111111111111111111111111111111111111 ;;
 stubborn|2222222222222222222222222222222222222222)
     rev=stubborn; oid=2222222222222222222222222222222222222222 ;;
@@ -8336,10 +8336,11 @@ def check_git(binary, up):
             schema = tools[1]["inputSchema"]
             assert schema["properties"]["repo"]["enum"] == ["proj", "other"] and \
                 schema["required"] == ["repo", "command"], schema
-            # The description has an example call that reads a file with show
+            # The description has an example call that reads a file with read
             # and HEAD:path, so that a model tries that first.
             assert '"revisions": ["HEAD:src/main.c"]' in tools[1]["description"] and \
                 "HEAD:path" in schema["properties"]["revisions"]["description"], tools[1]
+            assert {"line", "count"} <= set(schema["properties"]), schema
             assert text_of(call(ai, repo="proj", command="show",
                                 revisions=["HEAD:a.txt"])).startswith("alpha\n"), "show"
             for command in schema["properties"]["command"]["enum"]:
@@ -8349,11 +8350,17 @@ def check_git(binary, up):
                 assert help_text["command"] == command and help_text["description"], result
                 assert help_text["limits"]["options"] == 16 and \
                     help_text["limits"]["argument_bytes"] == 1024, result
+                # The read command pages by line number. Only a line longer
+                # than the window pages by byte offset.
                 assert help_text["limits"]["capture_bytes"] == 4 << 20 and \
-                    "exact next offset" in help_text["pagination"], result
+                    ("line to read on" if command == "read" else "exact next offset") in \
+                    help_text["pagination"], result
                 # A client's call takes the whole output in one result.
                 assert help_text["limits"]["window_bytes"] == 16 << 20, result
                 assert help_text["pattern_required"] == (command == "grep"), result
+            help_text = json.loads(text_of(call(ai, repo="proj", command="read", help=True)))
+            assert help_text["options"] == [] and help_text["limits"]["revisions"] == 1 and \
+                help_text["limits"]["paths"] == 0, help_text
             help_text = json.loads(text_of(call(ai, repo="proj", command="grep", help=True)))
             assert {"-F", "-E", "-C#"} <= set(help_text["options"]) and not \
                 {"--cached", "--untracked"} & set(help_text["options"]), help_text
@@ -8442,7 +8449,34 @@ def check_git(binary, up):
                      "git grep needs a pattern argument: a string of 1 to 1024 "
                      "bytes."),
                     ({"repo": "proj", "command": "log", "pattern": "a"},
-                     "Only git grep takes a pattern.")):
+                     "Only git grep takes a pattern."),
+                    ({"repo": "proj", "command": "read"},
+                     "git read needs the file as its revision, such as "
+                     "\"revisions\": [\"HEAD:src/main.c\"]."),
+                    ({"repo": "proj", "command": "read", "revisions": ["HEAD"]},
+                     "git read needs the file as its revision, such as "
+                     "\"revisions\": [\"HEAD:src/main.c\"]."),
+                    ({"repo": "proj", "command": "read", "paths": ["a.txt"]},
+                     "git read takes no paths. To name a file, give the revision "
+                     "HEAD:path."),
+                    ({"repo": "proj", "command": "read",
+                      "revisions": ["HEAD:a.txt", "HEAD:a.txt"]},
+                     "git read takes at most one revision."),
+                    ({"repo": "proj", "command": "read", "revisions": ["HEAD:a.txt"],
+                      "options": ["-p"]}, bad_option("read", "-p")),
+                    ({"repo": "proj", "command": "read", "revisions": ["HEAD:a.txt"],
+                      "line": 0}, "The line argument must be a whole number from 1."),
+                    ({"repo": "proj", "command": "read", "revisions": ["HEAD:a.txt"],
+                      "line": "3"}, "The line argument must be a whole number from 1."),
+                    ({"repo": "proj", "command": "read", "revisions": ["HEAD:a.txt"],
+                      "count": -1}, "The count argument must be a whole number from 1."),
+                    ({"repo": "proj", "command": "read", "help": True, "line": 2},
+                     "With help:true, give only repo, command, help and optional offset."),
+                    ({"repo": "proj", "command": "show", "revisions": ["HEAD:a.txt"],
+                      "line": 2}, "Only git read takes line and count."),
+                    ({"repo": "proj", "command": "log", "revisions": ["HEAD:a.txt"]},
+                     "revisions[0]: only read, show and cat-file take commit:path, "
+                     "with a nonempty relative path.")):
                 result = call(ai, **arguments) if isinstance(arguments, dict) else \
                     ai.rpc("tools/call", {"name": "git", "arguments": arguments})[2][
                         "result"]
@@ -8522,6 +8556,13 @@ def check_git(binary, up):
             assert sid == pid, lines
             assert lines[4:6] == ["SigBlk:\t0000000000000000",
                                   "SigIgn:\t0000000000000000"], lines
+            # A read runs cat-file blob, and git's errors are not its output.
+            out = text_of(call(ai, repo="proj", command="read", revisions=["echo:a.txt"]))
+            numbered = re.findall(r"^\d+\t(.*)$", out, re.M)
+            argv = numbered[:numbered.index("---")]
+            assert argv[argv.index("--git-dir=.") + 1:] == [
+                "cat-file", "blob", "--end-of-options", "1" * 40 + ":a.txt"], argv
+            assert "2>&1" not in numbered, numbered
 
             # The real git: output, errors, mending, the cut, and grep's none.
             head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], text=True,
@@ -8543,6 +8584,11 @@ def check_git(binary, up):
                           revisions=["HEAD:big.txt"])
             assert not result.get("isError") and text_of(result) == "x" * (4 << 20) + \
                 "\n\n[The output goes on past the 4 MiB shown.]", len(text_of(result))
+            result = call(ai, repo="proj", command="read", revisions=["HEAD:big.txt"])
+            assert not result.get("isError") and text_of(result) == \
+                f"[Repository proj, file big.txt at commit {head}: lines 1 to 1 of at " \
+                "least 1.]\n1\t" + "x" * (4 << 20) + "\n\n[Line 1 goes on past the 4 MiB " \
+                "that the git tool reads.]", len(text_of(result))
             result = call(ai, repo="other", command="log")
             assert result.get("isError"), result
             assert text_of(call(ai, repo="proj", command="ls-tree",
@@ -8623,6 +8669,7 @@ def check_git(binary, up):
                     ("show", {}),
                     ("show", {"revisions": ["HEAD:a.txt"]}),
                     ("cat-file", {"options": ["-p"], "revisions": ["HEAD:a.txt"]}),
+                    ("read", {"revisions": ["HEAD:a.txt"]}),
                     ("blame", {"paths": ["a.txt"]}),
                     ("ls-tree", {"options": ["-r", "--name-only"]}),
                     ("rev-parse", {"revisions": ["HEAD"]})):
@@ -8630,7 +8677,7 @@ def check_git(binary, up):
                 text = text_of(result)
                 assert not result.get("isError") and not any(secret in text for secret in
                     ("PRIVATE_", "staged-only.txt", "loose.txt", "hidden.ignore")), result
-                if command in ("show", "cat-file", "blame"):
+                if command in ("show", "cat-file", "read", "blame"):
                     assert "alpha" in text, result
                 if command == "blame":
                     assert "Not Committed Yet" not in text, result
@@ -8639,7 +8686,7 @@ def check_git(binary, up):
 
             # Missing committed paths must not disclose whether a local copy
             # exists on disk or in the index through Git's error diagnostics.
-            for command in ("show", "cat-file"):
+            for command in ("show", "cat-file", "read"):
                 arguments = {"options": ["-p"]} if command == "cat-file" else {}
                 errors = []
                 for name in ("staged-only.txt", "loose.txt", "hidden.ignore", "absent.txt"):
@@ -8660,7 +8707,7 @@ def check_git(binary, up):
                     (bad_option(command, option) if option == "--all" else
                      source_option(option, pair=command == "diff")), result
             for revision in (":a.txt", ":0:a.txt", ":staged-only.txt", staged, staged[:12]):
-                for command in ("show", "cat-file"):
+                for command in ("show", "cat-file", "read"):
                     arguments = {"options": ["-p"]} if command == "cat-file" else {}
                     result = call(ai, repo="proj", command=command,
                                   revisions=[revision], **arguments)
@@ -8684,9 +8731,10 @@ def check_git(binary, up):
             for revision in ("HEAD^!", "HEAD^@", "HEAD^-", "HEAD@{0}", "@{0}",
                              "HEAD^{tree}:a.txt", "HEAD^{blob}:a.txt", "HEAD:../a.txt",
                              "stash", "refs/stash", ":/first"):
-                result = call(ai, repo="proj", command="show", revisions=[revision])
-                assert result.get("isError") and "PRIVATE_" not in text_of(result), \
-                    (revision, result)
+                for command in ("show", "read"):
+                    result = call(ai, repo="proj", command=command, revisions=[revision])
+                    assert result.get("isError") and "PRIVATE_" not in text_of(result), \
+                        (command, revision, result)
             with open(f"{repo}/.git/index", "rb") as f:
                 assert f.read() == index_before, "git tool changed the index"
 
@@ -8854,9 +8902,10 @@ def check_git_scope(binary, up):
             assert len(long_revision) == 1024
             sh(repo, "switch", "-q", "-c", "r")
             os.makedirs(os.path.dirname(f"{repo}/{long_path}"))
-            write(f"{repo}/{long_path}", "complete long path\n")
+            write(f"{repo}/{long_path}", "complete long path\nits second line\n")
             sh(repo, "add", long_path)
             sh(repo, "commit", "-q", "-m", "long path history")
+            long_commit = sh(repo, "rev-parse", "HEAD").stdout.strip()
             sh(repo, "switch", "-q", "main")
             tagged, remote, detached = [sh(
                 repo, "commit-tree", base + "^{tree}", "-p", base, "-m", message
@@ -8890,7 +8939,14 @@ def check_git_scope(binary, up):
                 for command, arguments in (("show", {}),
                                            ("cat-file", {"options": ["-p"]})):
                     assert ok(ai, "scope", command, revisions=[long_revision],
-                              **arguments) == "complete long path\n", command
+                              **arguments) == "complete long path\nits second line\n", \
+                        command
+                # A read's header and footer have the whole path and commit.
+                assert ok(ai, "scope", "read", revisions=[long_revision], count=1) == \
+                    f"[Repository scope, file {long_path} at commit {long_commit}: lines " \
+                    "1 to 1 of 2.]\n1\tcomplete long path\n\n[To read on, call again " \
+                    f"with \"revisions\": [\"{long_commit}:{long_path}\"] and \"line\": " \
+                    "2.]"
                 for revision, oid in (("HEAD", base), (base[:12], base),
                                       ("topic", topic), ("release", tagged),
                                       ("origin/topic", remote), ("topic^", base),
@@ -8924,6 +8980,8 @@ def check_git_scope(binary, up):
                                                ("cat-file", {"options": ["-p"]})):
                         result = call(ai, "scope", command, revisions=[revision], **arguments)
                         assert result.get("isError"), (command, revision, result)
+                    result = call(ai, "scope", "read", revisions=[revision + ":a.txt"])
+                    assert result.get("isError"), (revision, result)
                 for revision in (saved, saved[:12], "MERGE_AUTOSTASH", "refs/private/saved"):
                     result = call(ai, "scope", "blame", paths=["a.txt"],
                                   options=["--ignore-rev=" + revision])
@@ -9003,6 +9061,164 @@ def check_git_scope(binary, up):
     print("git scope: committed mailmaps, saved-work exclusion, immutable history "
           "roots, ignored revisions, local config, full-length paths, SHA-1/SHA-256 "
           "bare, linked and shallow repositories: PASS")
+
+
+def check_git_read(binary, up):
+    """The read command of the git tool gives numbered lines from line, at
+    most count of them, between a header that names the commit and a footer
+    that says where to read on. The check also covers empty, binary, missing
+    and cut files, lines past the end, a grep match used as the revision,
+    the commit pinned across pages, git's warnings kept out of the lines,
+    and the work budget of each step."""
+    git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+    with tempfile.TemporaryDirectory() as d:
+        repo = f"{d}/proj"
+        os.mkdir(repo)
+
+        def sh(*args):
+            return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c",
+                                   "user.email=t@t", *args], check=True,
+                                  env=os.environ | git, capture_output=True,
+                                  text=True).stdout
+        files = {"lines.txt": "".join(f"line {i}\n" for i in range(1, 101)).encode(),
+                 "nonl.txt": b"one\ntwo", "empty.txt": b"", "bin.dat": b"a\0b\n",
+                 "mend.txt": b"ok\n\xff\xfe\n", "dir/x": b"x\n", "ä.txt": b"alpha\n",
+                 "cut.txt": (b"z" * 1023 + b"\n") * 5000,
+                 "utf.txt": ("ä" * 600 + "\n").encode() * 2000,
+                 "blank.txt": b"\n" * (1 << 20)}
+        for name, data in files.items():
+            os.makedirs(os.path.dirname(f"{repo}/{name}"), exist_ok=True)
+            with open(f"{repo}/{name}", "wb") as f:
+                f.write(data)
+        sh("init", "-q", "-b", "main")
+        sh("add", *files)
+        sh("commit", "-q", "-m", "first")
+        head = sh("rev-parse", "HEAD").strip()
+
+        def call(ai, **arguments):
+            status, _, body = ai.rpc("tools/call", {"name": "git", "arguments": {
+                "repo": "proj", **arguments}})
+            assert status == 200, (status, body)
+            return body["result"]
+
+        def read(ai, revision, error=False, **arguments):
+            result = call(ai, command="read", revisions=[revision], **arguments)
+            assert bool(result.get("isError")) == error, (revision, arguments, result)
+            return text_of(result)
+
+        def lines(start, end, of=100):
+            return (f"[Repository proj, file lines.txt at commit {head}: lines {start} "
+                    f"to {end} of {of}.]\n" +
+                    "".join(f"{k}\tline {k}\n" for k in range(start, end + 1)) + "\n")
+
+        with Askai(binary, "-u", up.url(), "--git", repo) as ai:
+            assert read(ai, "HEAD:lines.txt", line=10, count=3) == lines(10, 12) + \
+                f'[To read on, call again with "revisions": ["{head}:lines.txt"] and ' \
+                '"line": 13.]'
+            end = "[Line 100 is the end of the file.]"
+            assert read(ai, "HEAD:lines.txt") == lines(1, 100) + end
+            assert read(ai, "HEAD:lines.txt", line=100, count=5) == lines(100, 100) + end
+            assert read(ai, "HEAD:lines.txt", True, line=101) == \
+                "Line 101 is past the end of the file: it has 100 lines. Give a line " \
+                "from 1 to 100."
+            assert read(ai, "HEAD:empty.txt", True, line=2) == \
+                "Line 2 is past the end of the file: the file is empty."
+            assert read(ai, "HEAD:empty.txt") == \
+                f"[Repository proj, file empty.txt at commit {head}: the file is empty.]"
+            assert read(ai, "HEAD:nonl.txt") == \
+                f"[Repository proj, file nonl.txt at commit {head}: lines 1 to 2 of 2.]\n" \
+                "1\tone\n2\ttwo\n\n[Line 2 is the end of the file, which has no newline " \
+                "after it.]"
+            assert read(ai, "HEAD:bin.dat", True) == "The file has a NUL byte, so it is " \
+                "binary, and read gives text only. cat-file with -s gives its size."
+            missing = f"[No file at that path in commit {head}. ls-tree lists the files there."
+            for name in ("dir", "absent.txt"):
+                assert read(ai, "HEAD:" + name, True) == missing + "]", name
+            # A path that still has a grep match's :N or :N:text gets a hint.
+            for name in ("lines.txt:42", "lines.txt:42:line 42"):
+                assert read(ai, "HEAD:" + name, True) == missing + " If :N after the " \
+                    "file name is a line number, give the file alone as the revision " \
+                    "and \"line\": N.]", name
+            assert read(ai, "HEAD:mend.txt").split("\n")[1:3] == ["1\tok", "2\t??"]
+
+            # A grep match is commit:path:line:text. Its commit:path works as
+            # the revision of a read, also for a non-ASCII file name.
+            match = text_of(call(ai, command="grep", pattern="line 42", options=["-F"]))
+            assert match == f"{head}:lines.txt:42:line 42\n", match
+            commit, path, number, _ = match.split(":", 3)
+            assert read(ai, f"{commit}:{path}", line=int(number), count=1) == \
+                lines(42, 42) + f'[To read on, call again with "revisions": ' \
+                f'["{head}:lines.txt"] and "line": 43.]'
+            assert text_of(call(ai, command="ls-tree", options=["-r", "--name-only"])) == \
+                "bin.dat\nblank.txt\ncut.txt\ndir/x\nempty.txt\nlines.txt\nmend.txt\n" \
+                "nonl.txt\nutf.txt\nä.txt\n"
+            match = text_of(call(ai, command="grep", pattern="alpha", options=["-F"]))
+            assert match == f"{head}:ä.txt:1:alpha\n", match
+            commit, path, number, _ = match.split(":", 3)
+            assert read(ai, f"{commit}:{path}", line=int(number)) == \
+                f"[Repository proj, file ä.txt at commit {head}: lines 1 to 1 of 1.]\n" \
+                "1\talpha\n\n[Line 1 is the end of the file.]"
+
+            # The 4 MiB cut falls after line 4096 of 1024 bytes.
+            cut = "\n[The file goes on after line 4096, past the 4 MiB that the git " \
+                "tool reads.]"
+            assert read(ai, "HEAD:cut.txt", line=4096, count=1) == \
+                f"[Repository proj, file cut.txt at commit {head}: lines 4096 to 4096 " \
+                "of at least 4096.]\n4096\t" + "z" * 1023 + "\n" + cut
+            assert read(ai, "HEAD:cut.txt", True, line=4097) == "Line 4097 is past the " \
+                "first 4 MiB of the file, which is as far as the git tool reads."
+            # A whole read takes many steps, and a line can go on from one
+            # step to the next. No step goes over its work budget.
+            work(ai)
+            text = read(ai, "HEAD:cut.txt")
+            units, _ = work(ai)
+            assert text == f"[Repository proj, file cut.txt at commit {head}: lines 1 to " \
+                "4096 of at least 4096.]\n" + "".join(f"{k}\t" + "z" * 1023 + "\n"
+                                                      for k in range(1, 4097)) + cut, \
+                len(text)
+            assert all(units[u][0] <= units[u][1]
+                       for u in ("copy", "escape", "parse", "recv")), units
+            # The scan counts the bytes of the file as parsing, so a step of
+            # the scan of 1 MiB of empty lines reads 16 KiB of it.
+            blank = f"[Repository proj, file blank.txt at commit {head}: lines "
+            end = "\n\n[Line 1048576 is the end of the file.]"
+            work(ai)
+            assert read(ai, "HEAD:blank.txt", line=1 << 20) == \
+                blank + "1048576 to 1048576 of 1048576.]\n1048576\t" + end
+            units, _ = work(ai)
+            assert units["parse"][0] == units["parse"][1] == 16 << 10, units
+            # The writing counts 32 bytes for each line in addition to its
+            # bytes, and stays within its share.
+            text = read(ai, "HEAD:blank.txt")
+            units, _ = work(ai)
+            assert text == blank + "1 to 1048576 of 1048576.]\n" + "".join(
+                f"{k}\t\n" for k in range(1, 1 << 20)) + "1048576\t" + end, len(text)
+            assert all(units[u][0] <= units[u][1] for u in ("copy", "parse")), units
+            assert read(ai, "HEAD:utf.txt") == f"[Repository proj, file utf.txt at commit " \
+                f"{head}: lines 1 to 2000 of 2000.]\n" + "".join(
+                    f"{k}\t" + "ä" * 600 + "\n" for k in range(1, 2001)) + \
+                "\n[Line 2000 is the end of the file.]"
+
+            # The footer's revision reads the same commit after HEAD moves on.
+            pinned = re.search(r'"revisions": \["(.*)"\]', read(ai, "HEAD:lines.txt",
+                                                                 count=1))[1]
+            assert pinned == f"{head}:lines.txt", pinned
+            with open(f"{repo}/lines.txt", "w") as f:
+                f.write("changed\n" * 3)
+            sh("commit", "-q", "-am", "second")
+            assert read(ai, pinned, line=2, count=1).split("\n")[1] == "2\tline 2"
+            assert read(ai, "HEAD:lines.txt", line=2, count=1).split("\n")[1] == \
+                "2\tchanged"
+
+            # A branch named like the commit ID has git warn that the name is
+            # ambiguous; the warning is not a line of the file.
+            now = sh("rev-parse", "HEAD").strip()
+            sh("branch", now, now)
+            assert read(ai, "HEAD:lines.txt", count=1).startswith(
+                f"[Repository proj, file lines.txt at commit {now}: lines 1 to 1 of 3.]\n"
+                "1\tchanged\n"), now
+    print("git read: numbered lines, header, footer, paging, empty, binary, missing "
+          "and cut files, grep matches, pinned commits, no warnings, work: PASS")
 
 
 def turn_stream(calls=(), text="", reasoning="", used=None, order=(),
@@ -10864,6 +11080,18 @@ def check_turns(binary, up):
                     ("git", "notes", "man", "compact", "unknown")] == [8, 7, 0, 0, 1], \
                 values
 
+            # A read of the whole file, numbered, fits the window.
+            read = {"repo": "proj", "command": "read", "revisions": ["HEAD:big.txt"]}
+            script[:] = [lambda r: (200, turn_stream([("r", "git", json.dumps(read))]))]
+            count = len(up.requests)
+            ai.ask("Q")
+            text = turns(up.requests[count + 1])[1]["content"]
+            commit = sh("rev-parse", "HEAD").strip()
+            assert text == f"[Repository proj, file big.txt at commit {commit}: lines 1 " \
+                "to 4000 of 4000.]\n" + "".join(f"{k}\tline {k - 1:05}\n"
+                                                for k in range(1, 4001)) + \
+                "\n[Line 4000 is the end of the file.]", text[-200:]
+
             # A long newest note goes into the prompt cut to the window of a
             # tool's output, with the offset to read on from.
             size = 100 << 10
@@ -11432,6 +11660,37 @@ def check_turns(binary, up):
             results = turns(up.requests[count + 1])
             assert "[Bytes 0 to 2992 of 44000:" in results[1]["content"], results
             assert '"window_bytes":3000' in results[2]["content"], results
+
+            # A read gives the whole lines that fit in the turn's window. Its
+            # footer gives the line that the next turn reads on from.
+            on = r'\n\[To read on, call again with "revisions": (\[".*"\]) and ' \
+                r'"line": (\d+)\.\]'
+
+            def again(request):
+                footer = re.search(on, turns(request)[-1]["content"])
+                return (200, turn_stream([("r2", "git", json.dumps(
+                    read | {"revisions": json.loads(footer[1]),
+                            "line": int(footer[2])}))]))
+            script[:] = [lambda r: (200, turn_stream([("r1", "git", json.dumps(read))])),
+                         again]
+            count = len(up.requests)
+            ai.ask("Q")
+            pages = [m["content"] for m in turns(up.requests[count + 2])
+                     if m["role"] == "tool"]
+            start = 1
+            for page in pages:
+                footer = re.search(on, page)
+                assert footer and "[Bytes" not in page, page[-300:]
+                page = page[:footer.end()]
+                assert len(page.encode()) <= 3000, len(page.encode())
+                last = int(footer[2]) - 1
+                assert page == f"[Repository proj, file big.txt at commit {commit}: " \
+                    f"lines {start} to {last} of 4000.]\n" + "".join(
+                        f"{k}\tline {k - 1:05}\n" for k in range(start, last + 1)) + \
+                    footer[0], page
+                assert json.loads(footer[1]) == [f"{commit}:big.txt"], footer[0]
+                start = last + 1
+            assert len(pages) == 2 and start > 100, pages
 
             # The list action returns each current note once. The read
             # action returns a window of a long note, and a read with an offset
@@ -13853,7 +14112,8 @@ def main():
                       check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_man, check_git, check_git_scope, check_turns, check_notes, check_shared_notes,
+                      check_man, check_git, check_git_scope, check_git_read, check_turns,
+                      check_notes, check_shared_notes,
                       check_notes_history, check_notes_cancel, check_turn_apis,
                       check_attach,
                       check_tasks,

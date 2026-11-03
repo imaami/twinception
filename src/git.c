@@ -28,7 +28,12 @@ enum {
 	GIT_MAX   = 4 << 20,  /**< output bytes, at most */
 	GIT_ARGV  = 128,      /**< a command's argv, its nullptr included */
 	GIT_WHY   = 256,      /**< bytes of what is wrong with a call */
-	GIT_NOTE  = 96,       /**< bytes ending the output, at most: a blank line, a note */
+	GIT_NOTE  = 256,      /**< the most bytes of the note at the end of the
+	                           output, with the blank line before it */
+	BINARY    = 8000,     /**< read refuses a file with a NUL in its first
+	                           BINARY bytes, as git's binary test does */
+	LINE_COST = 32,       /**< LOOP_COPY work that read counts for each line
+	                           it writes, in addition to its bytes */
 	OPTIONS   = 16,       /**< a call's options, at most */
 	REVISIONS = 4,        /**< its revisions */
 	PATHS     = 32,       /**< its paths */
@@ -77,6 +82,7 @@ enum git_phase : uint64_t {
 	GIT_RESOLVE,
 	GIT_CHECK,
 	GIT_RUN,
+	GIT_NUMBER,  /* read has scanned the file and writes the numbered lines */
 };
 
 /** A root is resolved in place before any caller-visible command runs. */
@@ -90,6 +96,26 @@ struct git_revision {
 	size_t      root;
 	size_t      dots;
 	char        text[REV_WORD];
+};
+
+/* The lines that a read asks for, and how far the scan and then the
+ * writing have come. Offsets are into git's output, call->child->out.
+ */
+struct git_read {
+	size_t line;    /* the number of the first line to give, from 1 */
+	size_t count;   /* the maximum number of lines to give */
+	size_t room;    /* the bytes of the window left for numbered lines */
+	size_t at;      /* the offset of the next byte to scan, then to write */
+	size_t start;   /* the offset where the line that contains at starts */
+	size_t lines;   /* the number of lines before start */
+	size_t total;   /* the number of lines in the file, set when the scan ends */
+	size_t from;    /* the offset of the first line to give */
+	size_t to;      /* the offset after the last line to give */
+	size_t last;    /* the number of the last line to give */
+	size_t oid_len; /* the length of the commit ID at the start of rev */
+	size_t rev_len; /* the length of rev, or 0 until the scan begins */
+	char   rev[6 * REV_WORD]; /* the revision as commit:path, escaped for a
+	                             JSON string */
 };
 
 /** One deadline and one immutable history view span every subprocess. */
@@ -106,6 +132,7 @@ struct git_call {
 	size_t                 n_revisions;
 	struct git_revision    revisions[REVISIONS];
 	struct git_root        roots[ROOTS];
+	struct git_read        read;
 	enum git_phase         phase;
 };
 
@@ -173,6 +200,7 @@ static struct cstr_view const cat_file_options[] = {
 static struct cstr_view const rev_parse_options[] = {
 	O("--short"), O("--short="), O("--verify"), O("-q"), O("--quiet"), {}
 };
+static struct cstr_view const read_options[] = { {} };
 /* Rejected source selectors get a policy explanation, not syntax advice. */
 static struct cstr_view const source_options[] = {
 	O("--cached"), O("--staged"), O("--untracked"), O("--no-index"), {}
@@ -188,6 +216,8 @@ enum {
 	RANGE   = 1 << 4,  /* a pair of commits separated by .. or ... */
 	PAIR    = 1 << 5,  /* exactly two commits, separately or as a range */
 	SINGLE  = 1 << 6,  /* at most one revision */
+	LINES   = 1 << 7,  /* the line and count arguments, and numbered lines
+	                      of one committed file that cat-file reads */
 };
 
 static struct {
@@ -197,6 +227,12 @@ static struct {
 	char const             *description;
 	uint64_t                takes;
 } const commands[] = {
+	{ "read",      read_options,      { "blob" },
+	  "Numbered lines of a committed file. Give the file as the one revision, "
+	  "commit:path such as HEAD:src/main.c, the first line as line (default 1) "
+	  "and the most lines as count (default: as many as the window holds). The "
+	  "output's first line names the commit; its last line says where to read "
+	  "on.", END | OBJECT | SINGLE | LINES },
 	{ "log",       log_options,       { "--no-ext-diff", "--no-textconv" },
 	  "Committed history; defaults to HEAD. Paths restrict the history.",
 	  FILES | END | RANGE },
@@ -208,8 +244,8 @@ static struct {
 	  "range. Paths restrict the comparison.", FILES | END | RANGE | PAIR },
 	{ "grep",      grep_options,      { "--no-textconv", "-n" },
 	  "Search committed trees; defaults to HEAD. Each match is "
-	  "commit:path:line:text. Use -F for literal search, -E for extended "
-	  "regex, -C3 for context.",
+	  "commit:path:line:text; read takes commit:path as its revision and that "
+	  "line. Use -F for literal search, -E for extended regex, -C3 for context.",
 	  FILES | END | PATTERN },
 	{ "blame",     blame_options,     { "--no-textconv" },
 	  "Annotate a committed file; defaults to HEAD. Give one path; -L10,30 "
@@ -423,9 +459,12 @@ git_definition (void const *service)
 			"reachable from HEAD, branches, tags or remote-tracking refs. "
 			"Commands default to "
 			"HEAD, except diff, which needs two commits or an explicit range. "
-			"To read a file as of the last commit, use "
-			"show with the whole HEAD:path as the revision and no paths, for "
-			"example \"revisions\": [\"HEAD:src/main.c\"]. Any other commit "
+			"To read a file, use read with the file as the revision: "
+			"{\"command\": \"read\", \"revisions\": [\"HEAD:src/main.c\"], "
+			"\"line\": 120, \"count\": 40} gives lines 120 to 159 with their "
+			"numbers and names the commit. A grep match "
+			"<commit>:<path>:<line>:<text> reads as \"revisions\": "
+			"[\"<commit>:<path>\"] and \"line\": <line>. Any other commit "
 			"can replace HEAD. Give each option with its value attached "
 			"(--max-count=20, not -n 20). Only the usual read-only options are "
 			"allowed."),
@@ -450,9 +489,9 @@ git_definition (void const *service)
 				                       "--max-count=20. Use help:true to list "
 				                       "the command's exact allowed options.", OPTIONS),
 				"revisions", git_strings("Revisions, such as HEAD~3, main..topic "
-				                         "or the hash of a commit. For show, "
-				                         "HEAD:path names the contents of a file "
-				                         "as of that commit. References and hashes "
+				                         "or the hash of a commit. For read, show "
+				                         "and cat-file, HEAD:path names a file as "
+				                         "of that commit. References and hashes "
 				                         "may use ^/~ ancestry and ^{commit}. Reflogs, "
 				                         "stash, index and raw blob/tree IDs are "
 				                         "excluded. The resolved commit must belong "
@@ -474,6 +513,20 @@ git_definition (void const *service)
 					"description", json_object_new_string(
 						"The byte of the output to start from, to read on "
 						"past where it was cut."),
+					nullptr),
+				"line", jb_object(
+					"type", json_object_new_string("integer"),
+					"minimum", json_object_new_int(1),
+					"description", json_object_new_string(
+						"For read: the number of the first line to give, "
+						"from 1. The default is 1."),
+					nullptr),
+				"count", jb_object(
+					"type", json_object_new_string("integer"),
+					"minimum", json_object_new_int(1),
+					"description", json_object_new_string(
+						"For read: the most lines to give. The default is "
+						"as many as the response window holds."),
 					nullptr),
 				nullptr),
 			"required", git_append(git_append(json_object_new_array(), "repo"),
@@ -679,7 +732,8 @@ static bool
 git_known (char const *key)
 {
 	static char const *const keys[] = {
-		"repo", "command", "help", "options", "revisions", "paths", "pattern", "offset"
+		"repo", "command", "help", "options", "revisions", "paths", "pattern", "offset",
+		"line", "count"
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(keys); ++i)
 		if (!strcmp(key, keys[i]))
@@ -777,10 +831,29 @@ git_call_command (struct git_call   *call,
 	} else if (pattern) {
 		return git_wrong(why, "Only git grep takes a pattern.");
 	}
+	static char const *const numbers[2] = { "line", "count" };
+	size_t *const values[2] = { &call->read.line, &call->read.count };
+	call->read.line = 1;
+	call->read.count = SIZE_MAX;
+	for (size_t i = 0; i < 2; ++i) {
+		struct json_object *val;
+		if (!json_object_object_get_ex(args, numbers[i], &val))
+			continue;
+		if (!(takes & LINES))
+			return git_wrong(why, "Only git read takes line and count.");
+		int64_t v = jb_int(val, 0);
+		if (v < 1)
+			return git_wrong(why, "The %s argument must be a whole number from 1.",
+			                 numbers[i]);
+		/* Where size_t is narrower than 64 bits, a larger value becomes
+		 * SIZE_MAX. That line is past the end of any file, and that count
+		 * sets no limit. */
+		*values[i] = (uint64_t)v < SIZE_MAX ? (size_t)v : SIZE_MAX;
+	}
 
 	size_t k = 0;
 	char const **argv = call->argv;
-	argv[k++] = cmd;
+	argv[k++] = takes & LINES ? "cat-file" : cmd;
 	for (size_t i = 0; i < ARRAY_SIZE(commands[c].forced) && commands[c].forced[i];
 	     ++i)
 		argv[k++] = commands[c].forced[i];
@@ -817,8 +890,8 @@ git_call_command (struct git_call   *call,
 		char const *path = strchr(s, ':');
 		size_t root = path ? (size_t)(path - s) : len;
 		if (path && (!(takes & OBJECT) || !path[1] || !git_inside(path + 1)))
-			return git_wrong(why, "revisions[%zu]: only show and cat-file take "
-			                 "commit:path, with a nonempty relative path.", i);
+			return git_wrong(why, "revisions[%zu]: only read, show and cat-file "
+			                 "take commit:path, with a nonempty relative path.", i);
 		char const *range = strstr(s, "..");
 		if (range && range >= s + root)
 			range = nullptr;
@@ -842,6 +915,9 @@ git_call_command (struct git_call   *call,
 			                 "selectors and revision expansions are unavailable.", i);
 		argv[k++] = rev->text;
 	}
+	if ((takes & LINES) && !*call->revisions[0].path)
+		return git_wrong(why, "git read needs the file as its revision, such as "
+		                 "\"revisions\": [\"HEAD:src/main.c\"].");
 	if ((takes & PAIR) && endpoints != 2)
 		return git_wrong(why, "git diff needs two commits, or one explicit "
 		                 "A..B or A...B range.");
@@ -875,10 +951,15 @@ git_help (struct mcp_slot *slot,
 			"Each option is one array entry. Append a value after a trailing =; "
 			"replace trailing # with digits or * with a value. For example: "
 			"--max-count=20, -n20, -C3. Do not split an option and its value."),
-		"pagination", json_object_new_string(
-			"The capture limit is 4 MiB. The response window is window_bytes; "
-			"a longer output ends with a footer that gives the exact next "
-			"offset for the same arguments."),
+		"pagination", json_object_new_string(takes & LINES
+			? "The capture limit is 4 MiB. read gives whole lines, each after "
+			  "its number and a tab, as many as count asks and window_bytes "
+			  "holds. The last line of the output gives the revision and line "
+			  "to read on from. Only a line longer than the window is cut, and "
+			  "then its footer gives the next offset."
+			: "The capture limit is 4 MiB. The response window is window_bytes; "
+			  "a longer output ends with a footer that gives the exact next "
+			  "offset for the same arguments."),
 		"limits", jb_object(
 			"options", json_object_new_int(OPTIONS),
 			"revisions", json_object_new_int(takes & SINGLE ? 1 :
@@ -926,6 +1007,17 @@ git_call_destroy (struct git_call **p_call)
 	json_object_put((*p_call)->args);
 	free(*p_call);
 	*p_call = nullptr;
+}
+
+/* Destroy the git call of @p slot and clear its own word. This kills git
+ * if it still runs.
+ */
+static void
+git_drop (struct mcp_slot *slot)
+{
+	struct git_call *call = *mcp_slot_own(slot);
+	git_call_destroy(&call);
+	*mcp_slot_own(slot) = nullptr;
 }
 
 static struct git_call *
@@ -1010,7 +1102,11 @@ git_call_run (struct git_call *call,
 		.max = GIT_MAX,
 		.deadline = call->deadline,
 		.grace = GIT_GRACE_NS,
-		.flags = call->phase == GIT_RUN ? CHILD_STDERR : 0,
+		/* Git can warn on stderr, for example when a branch has the same
+		 * name as a commit ID. A read discards stderr so that a warning
+		 * does not become a line of the file. */
+		.flags = call->phase == GIT_RUN && !(commands[call->command].takes & LINES)
+		         ? CHILD_STDERR : 0,
 	};
 	int e = 0;
 	call->child = child_create(gl->loop, &gl->children, &cmd, git_back, slot, &e);
@@ -1080,6 +1176,7 @@ git_call_advance (struct git_call *call,
 			e = buf_peek(&c->out).len ? EACCES : 0;
 			break;
 		case GIT_RUN:
+		case GIT_NUMBER:
 			break;
 		}
 	}
@@ -1099,6 +1196,20 @@ git_call_advance (struct git_call *call,
 	                         : TOOL_TEXT("Cannot read the requested committed history. "
 	                                     "Use commits reachable from HEAD, branches, "
 	                                     "tags or remote-tracking refs."), TOOL_FAILED);
+}
+
+/* Return whether @p path has a ':' and digits that end the path or are
+ * followed by another ':', as in a grep match with its line number.
+ */
+static bool
+git_line_hint (char const *path)
+{
+	for (char const *p = strchr(path, ':'); p; p = strchr(p + 1, ':')) {
+		size_t n = strspn(p + 1, "0123456789");
+		if (n && (!p[1 + n] || p[1 + n] == ':'))
+			return true;
+	}
+	return false;
 }
 
 /* The text that util_format() writes into the array @p a. */
@@ -1131,6 +1242,17 @@ git_ended (struct mcp_slot *slot,
 	} else if (c->status == 1 && (commands[call->command].takes & PATTERN)) {
 		note = TOOL_TEXT("[No matches.]");
 		failed = false;
+	} else if (c->status && (commands[call->command].takes & LINES)) {
+		static char const fmt[] = "[No file at that path in commit %s. ls-tree "
+		                          "lists the files there.%s]";
+		static char const hint[] = " If :N after the file name is a line number, "
+		                           "give the file alone as the revision and "
+		                           "\"line\": N.";
+		static_assert(sizeof fmt - 4 + 64 + sizeof hint - 1 <= sizeof buf,
+		              "the note fits");
+		struct git_revision const *rev = &call->revisions[0];
+		note = FORMAT(buf, fmt, call->roots[rev->root].name,
+		              git_line_hint(rev->path + 1) ? hint : "");
 	} else if (c->status) {
 		char const *fmt = commands[call->command].takes & OBJECT
 			? "[The committed object could not be read (git exited with status %d).]"
@@ -1157,26 +1279,353 @@ git_ended (struct mcp_slot *slot,
 	}
 	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
 }
+
+/* Write @p n in decimal into the bytes before @p end. Return the text from
+ * the first digit to @p end, and @p tail bytes more.
+ */
+static struct tool_text
+git_digits (char   *end,
+            size_t  n,
+            size_t  tail)
+{
+	char *p = end;
+	do
+		*--p = (char)('0' + n % 10);
+	while (n /= 10);
+	return (struct tool_text){ p, (size_t)(end - p) + tail };
+}
+
+/* Write the @p n texts at @p p to the output of @p slot if the step has
+ * LOOP_COPY room for all of them. Return 0, EAGAIN if the room is too
+ * small, or the error of mcp_slot_write().
+ */
+static int
+git_write (struct mcp_slot        *slot,
+           struct tool_text const *p,
+           size_t                  n)
+{
+	size_t len = 0;
+	for (size_t i = 0; i < n; ++i)
+		len += p[i].len;
+	if (loop_room(mcp_slot_loop(slot), LOOP_COPY) < len)
+		return EAGAIN;
+	int e = 0;
+	size_t taken;
+	for (size_t i = 0; i < n && !e; ++i)
+		e = mcp_slot_write(slot, p[i], 0, &taken);
+	return e;
+}
+
+/* Begin @p read of @p rev, which is commit:path with a commit ID of
+ * @p oid_len bytes, in the repository @p repo. The numbered lines get what
+ * is left of the @p window bytes after the longest header and footer.
+ */
+static void
+git_read_begin (struct git_read *read,
+                char const      *rev,
+                size_t           oid_len,
+                char const      *repo,
+                size_t           window)
+{
+	read->oid_len = oid_len;
+	read->rev_len = jb_escape(read->rev, rev, strlen(rev));
+	/* The header has the repository name, the commit ID and path from
+	 * read->rev, and three numbers. The longest footer has read->rev and
+	 * one number. A number has at most 20 digits. */
+	size_t reserve = sizeof "[Repository , file  at commit : lines  to  of at least .]\n" +
+	                 sizeof "\n\n[To read on, call again with \"revisions\": "
+	                        "[\"\"] and \"line\": .]" +
+	                 strlen(repo) + 2 * read->rev_len + 4 * 20;
+	read->room = window > reserve ? window - reserve : 0;
+	read->last = read->line - 1;
+}
+
+/* Count the line of the file that ends at @p end, with a newline if
+ * @p newline is true. Take the line if it is asked for, if it follows the
+ * last line taken, and if its number, a tab, its bytes and a newline fit
+ * in read->room. The first line asked for is always taken.
+ */
+static void
+git_read_line (struct git_read *read,
+               size_t           end,
+               bool             newline)
+{
+	size_t n = ++read->lines;
+	if (n == read->line)
+		read->from = read->start;
+	char digits[20];
+	size_t size = n == read->last + 1 && n - read->line < read->count
+	              ? git_digits(digits + sizeof digits, n, 1).len + end - read->start +
+	                !newline
+	              : SIZE_MAX;
+	if (n == read->line || size <= read->room) {
+		read->room -= size < read->room ? size : read->room;
+		read->to = end;
+		read->last = n;
+	}
+	read->start = end;
+}
+
+/* Count the lines of the file @p blob from read->at on, as far as the
+ * LOOP_PARSE room of the step on @p loop goes.
+ */
+static void
+git_read_scan (struct git_read *read,
+               struct span      blob,
+               struct loop     *loop)
+{
+	size_t room = loop_room(loop, LOOP_PARSE);
+	size_t end = blob.len - read->at < room ? blob.len : read->at + room;
+	loop_work(loop, LOOP_PARSE, end - read->at);
+	while (read->at < end) {
+		unsigned char const *nl = memchr(blob.ptr + read->at, '\n', end - read->at);
+		read->at = nl ? (size_t)(nl - blob.ptr) + 1 : end;
+		if (nl)
+			git_read_line(read, read->at, true);
+	}
+	/* Count a last line without a newline too, also when the cut ends it. */
+	if (read->at == blob.len && read->start < blob.len)
+		git_read_line(read, blob.len, false);
+}
+
+/* Write into @p why, a buffer of GIT_WHY bytes, the refusal of a read whose
+ * first line is past the end of the file, or past the end of the capture if
+ * @p cut is true.
+ */
+static void
+git_read_past (struct git_read const *read,
+               bool                   cut,
+               char                  *why)
+{
+	if (!read->total)
+		git_wrong(why, "Line %zu is past the end of the file: the file is empty.",
+		          read->line);
+	else if (cut)
+		git_wrong(why, "Line %zu is past the first 4 MiB of the file, which is as "
+		          "far as the git tool reads.", read->line);
+	else
+		git_wrong(why, "Line %zu is past the end of the file: it has %zu line%s. "
+		          "Give a line from 1 to %zu.", read->line, read->total,
+		          read->total == 1 ? "" : "s", read->total);
+}
+
+/* Write the header line to @p slot if the step has LOOP_COPY room for it.
+ * If @p cut is true, the line total is a lower bound ("at least"). Return
+ * 0, EAGAIN or the error of mcp_slot_write().
+ */
+static int
+git_read_head (struct git_read const *read,
+               struct mcp_slot       *slot,
+               char const            *repo,
+               bool                   cut)
+{
+	char lines[sizeof ": lines  to  of at least .]\n" + 3 * 20];
+	struct tool_text const p[] = {
+		TOOL_TEXT("[Repository "), { repo, strlen(repo) }, TOOL_TEXT(", file "),
+		{ read->rev + read->oid_len + 1, read->rev_len - read->oid_len - 1 },
+		TOOL_TEXT(" at commit "), { read->rev, read->oid_len },
+		read->total ? FORMAT(lines, ": lines %zu to %zu of %s%zu.]\n", read->line,
+		                     read->last, cut ? "at least " : "", read->total)
+		            : TOOL_TEXT(": the file is empty.]"),
+	};
+	return git_write(slot, p, ARRAY_SIZE(p));
+}
 #undef FORMAT
 
-/* Take a share of the output of @p slot's git into the call's output, made
- * UTF-8 text, a character cut at the share's end left to the next; once all
- * is in, end, in the next step if the share has no room left for the
- * note.
+/* Write the lines of the file @p blob from read->at on to @p slot, each
+ * after its number and a tab, as far as the LOOP_COPY room of the step
+ * goes. Each line counts LINE_COST in addition to its bytes, so that a
+ * step writes a bounded number of lines. Return 0 once all lines are
+ * written, EAGAIN, or the error of mcp_slot_write().
+ */
+static int
+git_read_lines (struct git_read *read,
+                struct mcp_slot *slot,
+                struct span      blob)
+{
+	struct loop *loop = mcp_slot_loop(slot);
+	char digits[21];
+	digits[20] = '\t';
+	while (read->at < read->to) {
+		size_t room = loop_room(loop, LOOP_COPY);
+		struct tool_text num = read->at == read->start
+		                       ? git_digits(digits + 20, read->lines + 1, 1)
+		                       : TOOL_TEXT("");
+		/* Write a piece only if the step has room for the number, LINE_COST
+		 * and 4 bytes. The piece then has at least 4 bytes of the line, or
+		 * all of a shorter line. TOOL_MORE holds back at most 3 bytes of an
+		 * incomplete character, so at least one byte is taken, and the next
+		 * step goes on inside the line without writing the number again.
+		 * LINE_COST is counted when the line ends. */
+		size_t fixed = num.len + LINE_COST;
+		if (room < fixed + 4)
+			return EAGAIN;
+		size_t left = read->to - read->at;
+		size_t n = left < room - fixed ? left : room - fixed;
+		unsigned char const *nl = memchr(blob.ptr + read->at, '\n', n);
+		if (nl)
+			n = (size_t)(nl - blob.ptr) + 1 - read->at;
+		bool ends = nl || n == left;
+		size_t taken;
+		int e = mcp_slot_write(slot, num, 0, &taken);
+		if (!e)
+			e = mcp_slot_write(slot, (struct tool_text){ (char const *)blob.ptr +
+			                                             read->at, n },
+			                   ends ? 0 : TOOL_MORE, &taken);
+		if (e)
+			return e;
+		read->at += taken;
+		if (!ends)
+			return EAGAIN;
+		loop_work(loop, LOOP_COPY, LINE_COST);
+		read->start = read->at;
+		++read->lines;
+	}
+	return 0;
+}
+
+/* Write the footer to @p slot if the step has LOOP_COPY room for it: a
+ * newline that ends the last line if it has none, a blank line, and a
+ * note. The note gives the revision and the line to read on from, or says
+ * that the file ends at the last line. If @p cut is true, it says instead
+ * that the 4 MiB capture ends after or inside that line. An empty file
+ * has no footer. Return 0, EAGAIN or the error of mcp_slot_write().
+ */
+static int
+git_read_foot (struct git_read const *read,
+               struct mcp_slot       *slot,
+               struct span            blob,
+               bool                   cut)
+{
+	if (!read->total)
+		return 0;
+	struct tool_text const says[][2] = {
+		{ TOOL_TEXT("\"] and \"line\": "), TOOL_TEXT(".]") },
+		{ TOOL_TEXT("[Line "), TOOL_TEXT(" is the end of the file.]") },
+		{ TOOL_TEXT("[Line "),
+		  TOOL_TEXT(" is the end of the file, which has no newline after it.]") },
+		{ TOOL_TEXT("[The file goes on after line "),
+		  TOOL_TEXT(", past the 4 MiB that the git tool reads.]") },
+		{ TOOL_TEXT("[Line "), TOOL_TEXT(" goes on past the 4 MiB that the git tool "
+		                                 "reads.]") },
+	};
+	bool newline = blob.ptr[read->to - 1] == '\n';
+	size_t kind = read->last < read->total ? 0 : 1 + 2 * cut + !newline;
+	char n[20];
+	struct tool_text const p[] = {
+		newline ? TOOL_TEXT("\n") : TOOL_TEXT("\n\n"),
+		kind ? TOOL_TEXT("") : TOOL_TEXT("[To read on, call again with \"revisions\": [\""),
+		kind ? TOOL_TEXT("") : (struct tool_text){ read->rev, read->rev_len },
+		says[kind][0],
+		git_digits(n + sizeof n, read->last + !kind, 0),
+		says[kind][1],
+	};
+	return git_write(slot, p, ARRAY_SIZE(p));
+}
+
+/* Scan the file of the read in @p call, as far as the room of the step
+ * goes, after a check that its first BINARY bytes have no NUL. When the
+ * scan ends, number the lines in the next step, or refuse the read if the
+ * first line asked for is not in the file.
+ */
+static void
+git_scan (struct mcp_slot *slot,
+          struct git_call *call)
+{
+	struct git_read *read = &call->read;
+	struct child *c = call->child;
+	struct span blob = buf_peek(&c->out);
+	if (!read->rev_len) {
+		size_t head = blob.len < BINARY ? blob.len : BINARY;
+		if (head && memchr(blob.ptr, '\0', head)) {
+			git_drop(slot);
+			mcp_slot_tell(slot, TOOL_TEXT("The file has a NUL byte, so it is "
+			                              "binary, and read gives text only. "
+			                              "cat-file with -s gives its size."),
+			              TOOL_FAILED);
+			return;
+		}
+		struct git_revision const *rev = &call->revisions[0];
+		git_read_begin(read, rev->text, strlen(call->roots[rev->root].name),
+		               call->repo->name, mcp_slot_window_max(slot));
+	}
+	git_read_scan(read, blob, c->loop);
+	if (read->start < blob.len) {
+		mcp_slot_ready(slot);
+		return;
+	}
+	read->total = read->lines;
+	if (read->line > (read->total ? read->total : 1)) {
+		char why[GIT_WHY];
+		git_read_past(read, c->cut, why);
+		git_drop(slot);
+		mcp_slot_tell(slot, (struct tool_text){ why, strlen(why) }, TOOL_FAILED);
+		return;
+	}
+	read->at = read->start = read->from;
+	read->lines = read->line - 1;
+	call->phase = GIT_NUMBER;
+	mcp_slot_ready(slot);
+}
+
+/* Write the header, the lines and the footer of the read in @p call, as
+ * far as the room of each step goes. Then finish the call.
+ */
+static void
+git_number (struct mcp_slot *slot,
+            struct git_call *call)
+{
+	struct git_read *read = &call->read;
+	struct child *c = call->child;
+	struct span blob = buf_peek(&c->out);
+	int e = mcp_slot_answer(slot).len ? 0
+	      : git_read_head(read, slot, call->repo->name, c->cut);
+	if (!e)
+		e = git_read_lines(read, slot, blob);
+	if (!e)
+		e = git_read_foot(read, slot, blob, c->cut);
+	if (e == EAGAIN) {
+		mcp_slot_ready(slot);
+		return;
+	}
+	if (e) {
+		mcp_slot_fail(slot, e);
+		return;
+	}
+	git_drop(slot);
+	mcp_slot_finish(slot, 0);
+}
+
+/* Copy the output of git to the output of the call in @p slot, as far as
+ * the LOOP_COPY room of the step goes, and make it UTF-8 text. A character
+ * that the end of the room cuts is left to the next step. When all of the
+ * output is copied, end the call, in the next step if the room left is too
+ * small for the note. A read numbers the lines of its file instead.
  */
 static void
 git_step (struct mcp_slot *slot)
 {
 	struct git_call *call = *mcp_slot_own(slot);
-	if (call->phase != GIT_RUN) {
+	if (call->phase < GIT_RUN) {
 		git_call_advance(call, slot);
 		return;
 	}
 	struct child *c = call->child;
+	uint64_t takes = commands[call->command].takes;
 	/* Git's failed object lookup may disclose whether a path exists on disk. */
-	if ((commands[call->command].takes & OBJECT) &&
-	    c->code == CLD_EXITED && c->status) {
+	if ((takes & OBJECT) && c->code == CLD_EXITED && c->status) {
 		git_ended(slot, call);
+		return;
+	}
+	/* When the output goes past 4 MiB, git is killed. A read then gives
+	 * the lines before the cut. */
+	if (takes & LINES) {
+		if (c->late || (!c->cut && c->code != CLD_EXITED))
+			git_ended(slot, call);
+		else if (call->phase == GIT_RUN)
+			git_scan(slot, call);
+		else
+			git_number(slot, call);
 		return;
 	}
 	struct span left = buf_peek(&c->out);
@@ -1242,15 +1691,6 @@ git_start (struct mcp_slot    *slot,
 	}
 	*mcp_slot_own(slot) = call;
 	mcp_slot_park(slot);
-}
-
-/* Let go of a git call's git, which kills it if it runs. */
-static void
-git_drop (struct mcp_slot *slot)
-{
-	struct git_call *call = *mcp_slot_own(slot);
-	git_call_destroy(&call);
-	*mcp_slot_own(slot) = nullptr;
 }
 
 /* Creates the git tool's part of @p loop for @p service, a struct git.  The

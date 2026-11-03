@@ -1290,6 +1290,7 @@ separate `git` tool call's arguments:
 {"repo":"proj","command":"grep","help":true}
 {"repo":"proj","command":"ls-tree","options":["-r","--name-only"]}
 {"repo":"proj","command":"grep","options":["-F","-C3"],"pattern":"journal_write","paths":["src/"]}
+{"repo":"proj","command":"read","revisions":["HEAD:src/journal.c"],"line":120,"count":40}
 ```
 
 The default revision is `HEAD`, including for `grep`, `blame` and `ls-tree`.
@@ -1302,7 +1303,13 @@ with both endpoints, such as `main..topic` or `main...topic`.
 `-F` means literal search, `-E` extended regex, and `-C3` three lines of context.
 Every match is numbered: `commit:path:line:text`, with the full commit ID.
 Option values stay attached in one array entry. To read a committed file, use
-`command: "show"` with `"revisions":["HEAD:src/journal.c"]`. An immutable commit
+`command: "read"` with `"revisions":["HEAD:src/journal.c"]`, and optionally
+`line`, the first line (default 1), and `count`, the most lines (default as
+many as the window holds). Each line comes after its number and a tab. The
+first line of the output names the full commit ID, and the last line gives the
+revision and the `line` to read on from. The `commit:path` of a `grep` match
+reads as the revision, and its number as the `line`. `show` with the same
+revision gives the file as it is. An immutable commit
 ID can replace `HEAD` for repeatable reads. Index selectors such as
 `":src/journal.c"`, raw blob or tree IDs, stash and reflog selectors, and
 revision-list expansion syntax are rejected. Paths must be relative, without
@@ -1321,10 +1328,12 @@ object storage remain trusted; this is not an operating-system sandbox.
 
 Git output is captured up to 4 MiB.  An agent's response window may be
 smaller; `help: true` gives it as `window_bytes`, and the footer of a longer
-output gives the exact next `offset` to use with the same arguments. A
+output gives the exact next `offset` to use with the same arguments. `read`
+gives the whole lines that fit the window and pages by `line` instead; only a
+line longer than the window is cut by bytes. A
 successful search with no matches says `[No matches.]`;
 other nonzero Git exits are reported as errors. History validation failures are
-generic. Failed `show` and `cat-file`
+generic. Failed `read`, `show` and `cat-file`
 calls return a generic committed-object error so Git's local-file existence
 hints cannot reveal uncommitted paths.
 
