@@ -780,6 +780,13 @@ def saved(message, commit="[0-9a-f]{40}|[0-9a-f]{64}"):
     return f"Saved in commit (?:{commit}): " + re.escape(f"{message}.{kept}")
 
 
+def unchanged_result(name, size, commit):
+    """The result of a note write that leaves the note @p name, quoted as in
+    a commit message, with its @p size bytes, at the commit @p commit."""
+    these = "this 1 byte" if size == 1 else f"these {size} bytes"
+    return f"Unchanged: {name} already has {these}, at commit {commit}. No commit was made."
+
+
 def grouped(members):
     """The configuration file's object for @p members, the options and the
     other members in one object: each option goes into its group's object,
@@ -9711,16 +9718,33 @@ def check_notes(binary, up):
             assert call({"action": "replace", "file": "plan.md", "text": ""}).startswith(
                 "!The text argument")
             assert git("rev-parse", own) == before
+            # A replace with the bytes that the note has makes no commit. One
+            # with other bytes of the same size does.
+            def kept(said, name, size):
+                tip = git("rev-parse", own).decode().strip()
+                return said == unchanged_result(name, size, tip) and \
+                    git("rev-list", "--count", own) == count
+            count = git("rev-list", "--count", own)
+            said = call({"action": "replace", "file": "plan.md", "text": "step 2\nready"})
+            assert kept(said, '"plan.md"', 12) and git("rev-parse", own) == before, said
+            said = call({"action": "replace", "file": "plan.md", "text": "step 3\nready"})
+            assert wrote(said, 'Replace "plan.md" (12 to 12 bytes)'), said
             replacement = b"\0\xffnew"
-            said = call({"action": "replace", "file": "legacy.c", "content":
-                         "data:;base64," + base64.b64encode(replacement).decode()})
+            uri = "data:;base64," + base64.b64encode(replacement).decode()
+            said = call({"action": "replace", "file": "legacy.c", "content": uri})
             assert wrote(said, 'Replace "legacy.c" (36 to 5 bytes)'), said
             assert git("show", f"{own}^:legacy.c") == latin
             assert git("show", f"{own}:legacy.c") == replacement
             assert call({"action": "read", "file": "legacy.c"}) == note_view(replacement)
+            count = git("rev-list", "--count", own)
+            said = call({"action": "replace", "file": "legacy.c", "content": uri})
+            assert kept(said, '"legacy.c"', 5), said
             said = call({"action": "replace", "file": "legacy.c", "content": "data:,"})
             assert wrote(said, 'Replace "legacy.c" (5 to 0 bytes)'), said
             assert git("show", f"{own}:legacy.c") == b""
+            count = git("rev-list", "--count", own)
+            said = call({"action": "replace", "file": "legacy.c", "content": "data:,"})
+            assert kept(said, '"legacy.c"', 0), said
             # Each commit message is one line: the action, the name as the
             # fast-import file part quotes it, and the sizes.
             subjects = git("log", "--reverse", "--format=%s", own).decode().splitlines()
@@ -9732,8 +9756,9 @@ def check_notes(binary, up):
                 f'Copy "copies/f.md" {source} (6 bytes)',
                 f'Copy "img/raw.bin" {source} (768 bytes)', 'Add "legacy.c" (36 bytes)',
                 'Add "in/blob.bin" (16388 bytes)', 'Add "in/text.md" (4 bytes)',
-                'Replace "plan.md" (6 to 12 bytes)', 'Replace "legacy.c" (36 to 5 bytes)',
-                'Replace "legacy.c" (5 to 0 bytes)'], subjects
+                'Replace "plan.md" (6 to 12 bytes)', 'Replace "plan.md" (12 to 12 bytes)',
+                'Replace "legacy.c" (36 to 5 bytes)', 'Replace "legacy.c" (5 to 0 bytes)'], \
+                subjects
             assert git("cat-file", "commit", own).endswith(
                 b'\n\nReplace "legacy.c" (5 to 0 bytes)\n')
         # When two adds to one thread run at once, one of them fails, and its
@@ -10048,6 +10073,9 @@ def check_notes_history(binary, up):
                     said = call(alice, file="missing.md", **arguments)
                     assert said.startswith("!"), (arguments, said)
                 assert tip() == third
+                # A restore of the bytes that the note has makes no commit.
+                said = call(alice, action="restore", file="plan.md", revision="current")
+                assert said == unchanged_result('"plan.md"', 9, third) and tip() == third, said
 
                 # A restore appends a commit and leaves unrelated notes alone.
                 restored = call(alice, action="restore", file="plan.md", revision=first)
@@ -10059,6 +10087,14 @@ def check_notes_history(binary, up):
                 assert git("show", f"{own}:unrelated.md") == b"keep me"
                 assert git("log", "-1", "--format=%s", own).decode() == \
                     f'Restore "plan.md" from {first} (9 to 9 bytes)\n'
+                current = tip()
+                for arguments, name, size in (
+                        ({"action": "restore", "file": "plan.md", "revision": first},
+                         '"plan.md"', 9),
+                        ({"action": "replace", "file": "unrelated.md", "text": "keep me"},
+                         '"unrelated.md"', 7)):
+                    said = call(alice, **arguments)
+                    assert said == unchanged_result(name, size, current) and tip() == current, said
                 history = call(alice, action="history", file="plan.md")
                 assert all(oid in history for oid in (first, second, tip())), history
 

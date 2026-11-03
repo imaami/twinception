@@ -5,8 +5,10 @@
  * own refs/heads/notes/PARTICIPANT/WHO/SIDE branches. WHO is the client principal
  * or anonymous; SIDE is client or upstream. All notebooks can be read, but a
  * tool call's write branch is chosen by the server. Threads identify ask chains
- * and do not partition the notes. Each write adds a commit whose message
- * says what the write did; earlier contents remain in the notebook's history.
+ * and do not partition the notes. Each write that changes a note adds a
+ * commit whose message says what the write did; earlier contents remain in
+ * the notebook's history. A write that leaves a note's bytes as they are
+ * adds no commit.
  * Existing repositories can have worktrees; Git resolves their packed refs.
  * Concurrent changes to one branch fail rather than overwrite another writer.
  */
@@ -296,6 +298,17 @@ extern int
 notes_checked (struct span        out,
                char               tip[NOTES_TIP + 1],
                struct notes_file *note);
+
+/**
+ * Sets @p *same to whether @p data are the bytes of the blob whose id and
+ * size @p file has. It hashes the bytes only if their number is the size.
+ * Returns 0, EINVAL for a null argument or an id that is not 40 or 64
+ * hexadecimal digits, or EIO if the digest fails.
+ */
+extern int
+notes_file_same (struct notes_file const *file,
+                 struct span              data,
+                 bool                    *same);
 
 /**
  * Writes to @p in the head of the file part of the input of the command

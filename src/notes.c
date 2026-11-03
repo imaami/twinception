@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <openssl/evp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -847,6 +848,40 @@ notes_checked (struct span        out,
 		.bytes = bytes,
 	};
 	return EEXIST;
+}
+
+int
+notes_file_same (struct notes_file const *file,
+                 struct span              data,
+                 bool                    *same)
+{
+	if (!file || !same || !util_is_oid((char const *)file->id.ptr, file->id.len))
+		return EINVAL;
+	*same = false;
+	if (data.len != file->bytes)
+		return 0;
+	/* The id of a blob is the digest of "blob SIZE", a NUL and the bytes:
+	 * SHA-1 for 40 digits, SHA-256 for 64. */
+	char head[sizeof "blob 18446744073709551615"];
+	int h = snprintf(head, sizeof head, "blob %zu", data.len);
+	if (h < 0 || h >= (int)sizeof head)
+		return EINVAL;
+	unsigned char digest[EVP_MAX_MD_SIZE];
+	unsigned n = 0;
+	EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+	bool ok = ctx &&
+	          EVP_DigestInit_ex(ctx, file->id.len == 40 ? EVP_sha1() : EVP_sha256(),
+	                            nullptr) == 1 &&
+	          EVP_DigestUpdate(ctx, head, (size_t)h + 1) == 1 &&
+	          EVP_DigestUpdate(ctx, data.ptr, data.len) == 1 &&
+	          EVP_DigestFinal_ex(ctx, digest, &n) == 1 && 2 * n == file->id.len;
+	EVP_MD_CTX_free(ctx);
+	if (!ok)
+		return EIO;
+	char hex[2 * EVP_MAX_MD_SIZE];
+	util_hex(hex, digest, n);
+	*same = !memcmp(hex, file->id.ptr, file->id.len);
+	return 0;
 }
 
 int

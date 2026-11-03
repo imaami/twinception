@@ -825,12 +825,15 @@ A note is a file.  The model chooses its name, such as `plan.md` or
 `findings/locks.md`, and writes its text, at most 4 MiB.  The extension of
 the name shows the format of the text, which `askai` does not check.
 The tool `notes` creates a file with `add` or updates an existing file with
-`replace`.  Each write adds a commit to the caller's branch with
-`git fast-import`. Its message says what the write did, the note's name
-and its size before and after, such as
+`replace`. Each write that changes a note adds a commit to the caller's
+branch with `git fast-import`. Its message says what the write did, the
+note's name and its size before and after, such as
 `Replace "plan.md" (1234 to 1302 bytes)`; previous versions remain in
-history. The result names the new commit and repeats its message.
-`add` refuses an existing name, and `replace` refuses a missing one.
+history. The result names the new commit and repeats its message. A
+`replace` or `restore` that would leave the note's bytes as they are
+makes no commit; its result says `Unchanged` and names the current
+commit. `add` refuses an existing name, and `replace` refuses a missing
+one.
 Concurrent branch updates fail rather than overwrite another writer's
 changes.
 Names cannot contain control characters or empty parts.  No part can be
@@ -875,9 +878,10 @@ several files added by one commit.  `list` reflects the current tree;
   refused.
 - `restore` requires `file` and `revision`. It copies that version's exact
   bytes into a new commit in the caller's notebook, recreating a deleted
-  note if necessary. It preserves intervening history and other files,
-  and refuses concurrent notebook changes. To recover only part of an old
-  note, use `read` with `revision`, then `replace` with the combined text.
+  note if necessary, and makes no commit if the note already has those
+  bytes. It preserves intervening history and other files, and refuses
+  concurrent notebook changes. To recover only part of an old note, use
+  `read` with `revision`, then `replace` with the combined text.
 - `copy` puts a note of the selected notebook into the caller's own,
   byte for byte, under the same name or the name that `as` gives.  The
   text of the note does not pass through the model, so a file that is

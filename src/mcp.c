@@ -6920,9 +6920,43 @@ mcp_slot_notes_created (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, mcp_slot_notes_unadded(slot), true);
 }
 
+/* Answers the replace or restore in @p slot without a commit and returns
+ * true if @p note, the note that NOTES_CHECK found, already has the bytes
+ * of the file part in req->body. The answer names @p tip, the newest
+ * commit of the branch. If the bytes cannot be compared, it logs a warning
+ * and returns false, so the write goes on.
+ */
+static bool
+mcp_slot_notes_unchanged (struct mcp_slot         *slot,
+                          struct notes_file const *note,
+                          char const              *tip)
+{
+	struct mcp_req *req = slot->req;
+	struct notes_part part;
+	bool same = false;
+	int e = notes_part_init(&part, buf_peek(&req->body));
+	e = e ? e : notes_file_same(note, part.data, &same);
+	if (e)
+		LOG(LOG_WARN, "notes: cannot compare a note with its new bytes: %s", strerror(e));
+	else if (part.data.len == note->bytes)
+		loop_work(req->mcp->loop, LOOP_COPY, part.data.len);
+	if (!same)
+		return false;
+	req->branch = true;
+	char const *name = (char const *)part.name.ptr;
+	uint64_t n = note->bytes;
+	e = dstr_printf(&slot->answer, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
+	                "commit %s. No commit was made.", (int)jb_utf8(name, part.name.len), name,
+	                n == 1 ? "this" : "these", n, n == 1 ? "" : "s", tip) ? 0 : ENOMEM;
+	buf_fini(&req->body);
+	mcp_slot_notes_end(slot, e, false);
+	return true;
+}
+
 /* Handles the output of the check of the name of a new note.  The function
  * adds the note if no note and no directory of notes has the name, and if
- * no directory in the name is a note.
+ * no directory in the name is a note. A replace or a restore that leaves
+ * the note's bytes as they are makes no commit.
  */
 static void
 mcp_slot_notes_checked (struct mcp_slot *slot)
@@ -6947,8 +6981,11 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 		}
 	}
 	if (!r) {
-		child_destroy(&slot->child);
-		mcp_slot_notes_write(slot, tip, before);
+		/* note borrows the output of git until child_destroy(). */
+		if (before == NO_NOTE || !mcp_slot_notes_unchanged(slot, &note, tip)) {
+			child_destroy(&slot->child);
+			mcp_slot_notes_write(slot, tip, before);
+		}
 		return;
 	}
 	buf_fini(&slot->req->body);
@@ -9545,7 +9582,8 @@ mcp_notes_schema (enum notes_side          side,
 				"add a note, replace an existing own note, list current files "
 				"with their byte sizes and blob ids, show history oldest first "
 				"with commit IDs (line counts are lines added by each change), read a note, "
-				"diff two versions, or restore an old version in a new own commit. "
+				"diff two versions, or restore an old version in a new own commit "
+				"unless the note already has its bytes. "
 				"To recover lost text: history with file, diff with file and from, then "
 				"read with revision for selected text or restore with revision for the whole file. "
 				"Use copy to import a note into yours, or discover all session notebooks with "
@@ -9564,7 +9602,8 @@ mcp_notes_schema (enum notes_side          side,
 			"For read: full commit ID from the selected notebook's history, "
 			"or current (default). Required for restore, which copies the exact "
 			"historical bytes into your own notebook in a new commit, preserving "
-			"all intervening history. No Git revision expressions."),
+			"all intervening history; if the note already has those bytes, it "
+			"makes no commit. No Git revision expressions."),
 		"from", mcp_property("string",
 			"Required for diff: the older full commit ID from this notebook's history, "
 			"or current. The diff compares that file at from against to."),
