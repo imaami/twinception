@@ -37,9 +37,17 @@ TAKES_TASKS = {"io.modelcontextprotocol/protocolVersion": MODERN,
 KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
             "DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN", "OPENROUTER_API_KEY")
-# The tools that turns lent git are given, in order: git, then compact,
-# then those that run git in the background, wait and set timers.
-TURN_TOOLS = ["git", "compact", "background", "jobs", "wait", "timer"]
+# The tools, in order, that the turns get when they are lent git.
+TURN_TOOLS = ["git", "compact", "findings", "background", "jobs", "wait", "timer"]
+# The review record that askai adds after a compaction, with no findings and
+# no reads (src/review.c).
+REVIEW = ("[askai: your review record, which askai keeps through every compaction "
+          "of this ask call. askai also keeps your task word for word: the system "
+          "text, the earlier messages and the prompt, which is all that comes "
+          "before askai's first [askai: ...] line. You need not copy the task into "
+          "notes or a summary.]\n")
+REVIEW_EMPTY = REVIEW + ("[askai: you have recorded no findings; the findings tool "
+                         "records them.]")
 # The API that each answer format of the fake upstream is in.
 API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
        "gemini": "generate", "interactions": "interactions"}
@@ -1385,6 +1393,10 @@ def check_client_jobs(binary, up):
                     ({"tools": ["wait"]}, (), 'role r: askai offers no tool "wait"'),
                     ({"tools": ["compact"]}, ("--client-jobs", "--upstream-tools"),
                      'role r: askai offers no tool "compact"'),
+                    ({"tools": ["findings"]}, ("--client-jobs", "--upstream-tools"),
+                     'role r: askai offers no tool "findings"'),
+                    ({"upstream": ["findings"]}, ("--client-jobs", "--upstream-tools"),
+                     'role r: askai offers no tool "findings" to the upstream'),
                     ({"upstream": ["timer"]}, ("--client-jobs", "--upstream-tools"),
                      'role r: askai offers no tool "timer" to the upstream')):
                 write({"roles": {"r": role}})
@@ -1474,7 +1486,7 @@ def check_client_jobs(binary, up):
                 wait_for(lambda: len(up.requests) >= count + 2)
                 lent = up.requests[count]["body"]["tools"]
                 assert [t["function"]["name"] for t in lent] == \
-                    ["git", "background", "jobs", "wait", "timer", "compact"], lent
+                    ["git", "background", "jobs", "wait", "timer", "compact", "findings"], lent
                 assert lent[2]["function"]["parameters"]["properties"]["job"]["type"] == \
                     "integer", lent[2]
                 assert re.fullmatch(f"job {jid}: ask_ai: running for [0-9] s\n",
@@ -4578,7 +4590,7 @@ def check_configuration(binary, up, godbolt):
             assert [item.split()[-1] for item in ai.listed("role user:")] == \
                 ["ask_ai", "man", "notes", "man", "git", "notes", "background", "jobs",
                  "wait", "timer", "godbolt_catalog", "godbolt_targets", "compact",
-                 "no"], ai.log
+                 "findings", "no"], ai.log
 
     # The list of the repositories has room for all of tools.git's, with a
     # short command line.
@@ -4919,16 +4931,19 @@ def check_allow(binary, up):
         jobs = ["background", "jobs", "wait", "timer"]
         for tools, clients, turns in (
                 (True, ["ask_ai", "man", "notes", *jobs],
-                 ["man", "notes", *jobs, "compact"]),
+                 ["man", "notes", *jobs, "compact", "findings"]),
                 (False, ["ask_ai"], []),
                 (["man"], ["ask_ai", "man"], ["man"]),
                 ({"allow": ["man", "compact"]}, ["ask_ai", "man"], ["man", "compact"]),
+                ({"allow": ["man", "findings"]}, ["ask_ai", "man"], ["man", "findings"]),
                 ({"deny": ["man", "compact"]}, ["ask_ai", "notes", *jobs],
-                 ["notes", "wait", "timer"]),
-                ({}, ["ask_ai", "man", "notes", *jobs],
+                 ["notes", "wait", "timer", "findings"]),
+                ({"deny": ["findings"]}, ["ask_ai", "man", "notes", *jobs],
                  ["man", "notes", *jobs, "compact"]),
+                ({}, ["ask_ai", "man", "notes", *jobs],
+                 ["man", "notes", *jobs, "compact", "findings"]),
                 ({"client": {"allow": ["notes"]}, "upstream": {"deny": ["notes"]}},
-                 ["ask_ai", "notes"], ["man", *jobs, "compact"]),
+                 ["ask_ai", "notes"], ["man", *jobs, "compact", "findings"]),
                 ({"upstream": False}, ["ask_ai", "man", "notes", *jobs], [])):
             whole = isinstance(tools, dict)
             with open(path, "w") as f:
@@ -4968,7 +4983,7 @@ def check_allow(binary, up):
         with Askai(binary, "-c", path) as ai:
             listed = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in listed] == ["ask_ai", "notes"], listed
-            assert lent(ai) == ["man", "notes", *jobs, "compact"]
+            assert lent(ai) == ["man", "notes", *jobs, "compact", "findings"]
             assert [item.split()[-1] for item in ai.listed("role r:")][:2] == \
                 ["ask_ai", "notes"], ai.log
             assert not any("no role lists" in line for line in ai.log), ai.log
@@ -5370,8 +5385,9 @@ def check_logs(binary, up):
                 "clients with the token  all tools and metrics",
                 "other clients           refused",
                 "upstream tools          man"] + [
-                f"{'':22}  {name}" for name in ("git", "notes", "compact", "background",
-                                                 "jobs", "wait", "timer")], told(ai)
+                f"{'':22}  {name}" for name in ("git", "notes", "compact", "findings",
+                                                 "background", "jobs", "wait",
+                                                 "timer")], told(ai)
             assert ai.rpc("tools/call", {"name": "bro", "arguments": {"prompt": "Q"}},
                           headers={"Authorization": "Bearer tok-31415"})[0] == 200
             ai.wait_log(r"^tool call bro from identity ASKAI_TOKEN answered ")
@@ -5412,8 +5428,8 @@ def check_logs(binary, up):
             assert ai.listed("role admin:") == [
                 "tools           ask_ai", "                git",
                 "upstream tools  git"] + [
-                f"{'':14}  {name}" for name in ("compact", "background", "jobs", "wait",
-                                                 "timer")] + [
+                f"{'':14}  {name}" for name in ("compact", "findings", "background", "jobs",
+                                                 "wait", "timer")] + [
                 "metrics         yes"], told(ai)
             assert ai.listed("role user:") == [
                 "tools           ask_ai", "upstream tools  none", "metrics         no"
@@ -5473,8 +5489,8 @@ def check_logs(binary, up):
             ai.wait_list("role admin:", [
                 "tools           ask_ai", "                man",
                 "upstream tools  man"] + [
-                f"{'':14}  {name}" for name in ("compact", "background", "jobs", "wait",
-                                                 "timer")] + [
+                f"{'':14}  {name}" for name in ("compact", "findings", "background", "jobs",
+                                                 "wait", "timer")] + [
                 "metrics         no"])
             ai.wait_list("warning: no role lists these tools:", ["git"])
             slow.join(5)
@@ -5488,8 +5504,8 @@ def check_logs(binary, up):
         with Askai(binary, "-c", path) as ai:
             assert ai.listed("role user:") == [
                 "tools           ask_ai", "upstream tools  man"] + [
-                f"{'':14}  {name}" for name in ("notes", "compact", "background", "jobs",
-                                                 "wait", "timer")] + [
+                f"{'':14}  {name}" for name in ("notes", "compact", "findings", "background",
+                                                 "jobs", "wait", "timer")] + [
                 "metrics         no"], told(ai)
             assert ai.listed("warning: no role lists these tools:") == ["git"], told(ai)
 
@@ -11051,7 +11067,10 @@ def check_turns(binary, up):
             assert "thread" in tools["ask_ai"]["inputSchema"]["properties"], tools
             assert "offset" in tools["git"]["inputSchema"]["properties"], tools
             assert "thread" in tools["notes"]["inputSchema"]["properties"], tools
-            assert "compact" not in tools, tools
+            assert "compact" not in tools and "findings" not in tools, tools
+            body = ai.rpc("tools/call", {"name": "findings", "arguments": {
+                "action": "show"}})[2]
+            assert body["error"]["message"] == "Unknown tool: findings", body
 
             # Two calls, one of git and one of notes, then a list of the notes,
             # then the answer.  The turns carry the text, the thinking and the
@@ -11069,8 +11088,8 @@ def check_turns(binary, up):
             first, second, third = up.requests[count:]
             body = first["body"]
             assert [t["function"]["name"] for t in body["tools"]] == \
-                ["git", "notes", "compact", "background", "jobs", "wait", "timer"], \
-                body["tools"]
+                ["git", "notes", "compact", "findings", "background", "jobs", "wait",
+                 "timer"], body["tools"]
             # The upstream's notes use the thread of the ask call.
             assert "thread" not in body["tools"][1]["function"]["parameters"][
                 "properties"], body["tools"][1]
@@ -11432,8 +11451,8 @@ def check_turns(binary, up):
             again = up.requests[count + 3]
             assert turns(again) == [] and prompt(again) == (
                 "Q\n\n[askai: your context filled up, so the conversation since the "
-                "task is gone, your turns and the tools' results with it.]" + identity + "\n\n"
-                "[askai: go on with the task.]"), again
+                "task is gone, your turns and the tools' results with it.]" + identity +
+                "\n\n" + REVIEW_EMPTY + "\n\n[askai: go on with the task.]"), again
             # Explicit compaction also keeps identity before the first note.
             script[:] = [lambda r: (200, turn_stream([("c", "compact", json.dumps(
                 {"summary": "S"}))]))]
@@ -11443,7 +11462,8 @@ def check_turns(binary, up):
             assert turns(again) == [] and prompt(again) == (
                 "Q\n\n[askai: you compacted the context: the conversation since the "
                 "task is gone, your turns and the tools' results with it. Your "
-                "summary of it:]\n\nS" + identity + "\n\n[askai: go on with the task.]"), again
+                "summary of it:]\n\nS" + identity + "\n\n" + REVIEW_EMPTY +
+                "\n\n[askai: go on with the task.]"), again
 
         # The reminders to write notes: one at a quarter of the context and
         # one at half, each only once.  From two thirds on, each turn's last
@@ -11502,7 +11522,7 @@ def check_turns(binary, up):
                 "Q\n\n\\[askai: you compacted the context: the conversation since "
                 "the task is gone, your turns and the tools' results with it\\. "
                 "Your summary of it:\\]\n\nS" + re.escape(identity) +
-                "\n\n\\[askai: your note history, oldest "
+                "\n\n" + re.escape(REVIEW_EMPTY) + "\n\n\\[askai: your note history, oldest "
                 f"first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  \\(1 line\\)\n\n"
                 "\\[askai: the current text of your most recently written note, "
                 "n1\\.md:\\]\n\nn1\n\n\\[askai: go on with the task\\.\\]",
@@ -11525,7 +11545,7 @@ def check_turns(binary, up):
             assert turns(again) == [] and re.fullmatch(
                 "Q\n\n\\[askai: your context filled up, so the conversation since "
                 "the task is gone, your turns and the tools' results with it\\.\\]" +
-                re.escape(identity) +
+                re.escape(identity) + "\n\n" + re.escape(REVIEW_EMPTY) +
                 f"\n\n\\[askai: your note history, oldest first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  "
                 f"\\(1 line\\)\n2\\. {when}  n2\\.md  "
                 "\\(1 line\\)\n\n\\[askai: the current text of your most recently written note, n2\\.md:\\]\n\nn2\n\n"
@@ -11961,16 +11981,18 @@ def check_turns(binary, up):
             count = len(up.requests)
             assert text_of(ai.ask("Q")) == "A"
             assert [t["function"]["name"] for t in up.requests[count]["body"]["tools"]] \
-                == ["notes", "compact", "wait", "timer"], up.requests[count]["body"]
+                == ["notes", "compact", "findings", "wait", "timer"], \
+                up.requests[count]["body"]
 
         # The member "upstream" of a role lists the tools that the upstream
         # may call.  This list is separate from the list of tools that the
         # role's clients may call.
         for role, listed, lent in (
                 ({"tools": ["ask_ai"], "upstream": ["git"]}, ["ask_ai"],
-                 ["git", "notes", "compact", "background", "jobs", "wait", "timer"]),
+                 ["git", "notes", "compact", "findings", "background", "jobs", "wait",
+                  "timer"]),
                 ({"tools": ["ask_ai", "git"], "upstream": []}, ["ask_ai", "git"],
-                 ["notes", "compact", "wait", "timer"])):
+                 ["notes", "compact", "findings", "wait", "timer"])):
             with open(path, "w") as f:
                 json.dump({"roles": {"asker": role},
                            "anonymous": {"loopback": "asker"}}, f)
@@ -11992,6 +12014,261 @@ def check_turns(binary, up):
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("turns: tools lent to the upstream, notes, threads, windows, compaction, "
           "limits: PASS")
+
+
+def check_review(binary, up):
+    """With --upstream-tools, the turns get findings beside any tool that
+    they are lent. It keeps the review record of the ask call. add
+    records a finding, update changes one and keeps its history, and show
+    pages the record or the history of one finding. verified and disproved
+    need the lines of the location read with git read. Trailing askai
+    notices are dropped from a claim or evidence. After each compaction the
+    record is shown again, up to the window of a tool, and show gives the
+    rest. With tools.upstream.deny, the turns get no findings and
+    compaction is unchanged. Without the git tool, findings refuses
+    verified and disproved and suggests no git read."""
+    findings_head = ("[askai: your findings; findings action show with an id gives "
+                     "one's history:]\n")
+    with tempfile.TemporaryDirectory() as d:
+        git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+        repo = f"{d}/proj"
+        os.makedirs(f"{repo}/src")
+
+        def sh(*args):
+            return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c",
+                                   "user.email=t@t", *args], check=True,
+                                  env=os.environ | git, capture_output=True,
+                                  text=True).stdout
+        sh("init", "-q", "-b", "main")
+        with open(f"{repo}/src/a.c", "w") as f:
+            f.write("".join(f"int x{i};\n" for i in range(300)))
+        sh("add", "src/a.c")
+        sh("commit", "-q", "-m", "first")
+        script = []
+        up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
+
+        def results(request):
+            """The results of the calls of the last turn in @p request."""
+            messages = request["body"]["messages"]
+            last = max(k for k, m in enumerate(messages) if m["role"] == "assistant")
+            return [m["content"] for m in messages[last + 1:]]
+
+        def prompt(request):
+            return request["body"]["messages"][0]["content"]
+
+        def turn(*calls, name="findings"):
+            """A turn that calls @p name with each of the arguments @p calls."""
+            return lambda r: (200, turn_stream([(f"f{k}", name, json.dumps(c))
+                                                for k, c in enumerate(calls)]))
+
+        def compacted(summary, record):
+            return ("Q\n\n[askai: you compacted the context: the conversation since the "
+                    "task is gone, your turns and the tools' results with it. Your "
+                    f"summary of it:]\n\n{summary}{record}\n\n[askai: go on with the "
+                    "task.]")
+
+        args = ("-u", up.url(), "--upstream-tools", "--git", repo)
+        with Askai(binary, *args) as ai:
+            # The definition's enums are the names that the record takes, and
+            # compact says that the record is shown again.
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            lent = {t["function"]["name"]: t["function"]
+                    for t in up.requests[count]["body"]["tools"]}
+            schema = lent["findings"]["parameters"]
+            assert sorted(schema["properties"]) == ["action", "claim", "evidence", "id",
+                                                    "location", "offset", "state"], schema
+            assert schema["properties"]["action"]["enum"] == ["add", "update", "show"]
+            assert schema["properties"]["state"]["enum"] == [
+                "candidate", "verified", "disproved", "retracted"], schema
+            assert schema["required"] == ["action"], schema
+            assert schema["additionalProperties"] is False, schema
+            assert "askai keeps your task as the user gave it through every " \
+                "compaction, so you need not copy it." in lent["findings"]["description"]
+            assert "your notes and askai's review record are shown again; the task " \
+                "stays as the user gave it." in lent["compact"]["description"], lent
+
+            # One ask call: findings calls in two turns, a compaction, a call
+            # after it, and a second compaction.
+            last = "[askai: your next turn is your last: answer then, without calling tools.]"
+            script[:] = [
+                turn({"action": "add", "claim": "C1", "location": "src/a.c:3-4"},
+                     {"action": "add", "claim": "C2", "state": "verified",
+                      "evidence": "E", "location": "src/a.c:5"},
+                     {"action": "add", "claim": "C3", "evidence": f"E\n\n{last}"},
+                     {"action": "update", "id": 1},
+                     {"action": "remove"},
+                     {"action": "add", "claim": "C", "id": 1},
+                     {"action": "show"}),
+                turn({"action": "update", "id": 2, "state": "retracted", "evidence": "R",
+                      "claim": "C3b"},
+                     {"action": "show", "id": 2},
+                     {"action": "show", "offset": len(REVIEW)},
+                     {"action": "show", "id": 9}),
+                turn({"summary": "S"}, name="compact"),
+                turn({"action": "add", "claim": "C4"}),
+                turn({"summary": "T"}, name="compact"),
+            ]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            sent = up.requests[count:]
+            assert len(sent) == 6 and result["content"][0]["text"] == "A", sent
+            first = (findings_head + "1. candidate, src/a.c:3-4, not read\n   claim: C1\n"
+                     "2. candidate\n   claim: C3\n   evidence: E")
+            assert results(sent[1]) == [
+                "Added finding 1: candidate, src/a.c:3-4, not read. Read its lines with "
+                "git read before you verify it.",
+                "verified needs the lines of its location in your read log, and src/a.c "
+                "line 5 is not in it. Read them with the git tool's read command, with "
+                "\"revisions\": [\"HEAD:src/a.c\"] and \"line\": 5, where the path is the "
+                "file's whole path from the top of the repository. The log takes the lines "
+                "of a read once you have seen them, so call again in a later turn.",
+                "Added finding 2: candidate. askai left out the [askai: ...] lines at "
+                "the end of the evidence. askai adds those lines to tool results, and "
+                "they are not part of the finding.",
+                "update needs state and evidence: what shows the new state, or why you "
+                "retract the finding.",
+                "The action argument must be add, update or show.",
+                "add takes claim, location, state and evidence, not id.",
+                REVIEW + first], results(sent[1])
+            record = (REVIEW + findings_head + "1. candidate, src/a.c:3-4, not read\n"
+                      "   claim: C1\n2. retracted: C3b")
+            paged = record
+            size = len(record.encode())
+            assert results(sent[2]) == [
+                "Finding 2 is now retracted; it was candidate. Its old claim is in its "
+                "history.",
+                "Finding 2: retracted\nclaim: C3b\nturn 1: candidate\n  evidence: E\n"
+                "turn 2: retracted\n  evidence: R\n  the claim was: C3",
+                record[len(REVIEW):] + f"\n\n[Bytes {len(REVIEW)} to {size} of {size}: "
+                "its end.]",
+                "There is no finding 9; the record has findings 1 to 2."], results(sent[2])
+            # Each compaction puts the whole record into the prompt, and the
+            # calls after the first compaction add to it.
+            assert sent[3]["body"]["messages"][1:] == [], sent[3]
+            assert prompt(sent[3]) == compacted("S", "\n\n" + record), prompt(sent[3])
+            assert results(sent[4]) == ["Added finding 3: candidate."], results(sent[4])
+            record = (REVIEW + findings_head + "1. candidate, src/a.c:3-4, not read\n"
+                      "   claim: C1\n3. candidate\n   claim: C4\n2. retracted: C3b")
+            assert prompt(sent[5]) == compacted("T", "\n\n" + record), prompt(sent[5])
+            # The trace names each call's action, and the bytes of its whole
+            # output or its failure.
+            said = results(sent[1]) + results(sent[2]) + [None] + results(sent[4]) + [None]
+            said[9] = paged
+            done = [("add", 1), ("add", 0), ("add", 1), ("update", 0), ("remove", 0),
+                    ("add", 0), ("show", 1), ("update", 1), ("show", 1), ("show", 1),
+                    ("show", 0), ("", 1), ("add", 1), ("", 1)]
+            assert result["content"][1]["text"] == "The other AI made 14 tool calls in 6 " \
+                "turns:\n" + "".join(
+                    "- compact: 1 bytes\n" if text is None else
+                    f"- findings {action}: {len(text.encode())} bytes\n" if ok else
+                    f"- findings {action}: failed\n"
+                    for text, (action, ok) in zip(said, done)), result
+            values = ai.metrics()
+            assert total(values, "askai_turn_tool_calls_total", tool="findings") == 12, \
+                values
+
+            # A claim larger than the LOOP_COPY share of a step is copied whole
+            # in a step of its own. Only that step goes over the share.
+            work(ai)
+            whole = 3 << 19
+            script[:] = [turn({"action": "add", "claim": "y" * whole})]
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            units, _ = work(ai)
+            assert whole < units["copy"][0] < whole + 4096, units
+            assert all(most <= bound for name, (most, bound) in units.items()
+                       if name != "copy"), units
+
+            # A claim larger than half the LOOP_COPY share of a step waits for
+            # a step of its own. A show of a record longer than the share
+            # takes several steps, and each step uses its whole share.
+            work(ai)
+            script[:] = [turn({"action": "add", "claim": f"{k} " + "x" * (600 << 10)})
+                         for k in range(3)] + [turn({"action": "show"})]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            units, _ = work(ai)
+            assert all(most <= bound for most, bound in units.values()), units
+            assert units["copy"][0] == units["copy"][1], units
+            text = REVIEW + findings_head + "\n".join(
+                f"{k + 1}. candidate\n   claim: {k} " + "x" * (600 << 10) for k in range(3))
+            shown = results(up.requests[count + 4])[0]
+            found = re.fullmatch(r"(.*)\n\n\[Bytes 0 to (\d+) of (\d+): for the rest, call "
+                                 r"again with \"offset\": \2\.\]", shown, re.S)
+            assert found and int(found[3]) == len(text) and found[1] == text[:int(found[2])], \
+                shown[-200:]
+
+        # A context of 8000 tokens has windows of 4000 bytes. The record of
+        # 40 findings is longer, so a compaction shows the lines of it that
+        # fit, and show with the offset that it names gives the rest.
+        with Askai(binary, *args, "--context", "8000") as ai:
+            claims = [f"claim {k:02} " + "x" * 80 for k in range(40)]
+            adds = [{"action": "add", "claim": c} for c in claims]
+            script[:] = [turn(*adds[:16]), turn(*adds[16:32]), turn(*adds[32:]),
+                         turn({"summary": "S"}, name="compact")]
+            record = REVIEW + findings_head + "".join(
+                f"{k + 1}. candidate\n   claim: {c}\n" for k, c in enumerate(claims))
+            record = record[:-1]
+            keep = record.rindex("\n", 0, 4000) + 1
+            cut = (f"[askai: the record goes on past these {keep} bytes: call findings "
+                   f"with action show and \"offset\": {keep} for the rest.]")
+
+            def show(request):
+                found = re.search(r'"offset": (\d+) for the rest', prompt(request))
+                return turn({"action": "show", "offset": int(found[1])})(request)
+            script.append(show)
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            sent = up.requests[count:]
+            assert len(sent) == 6, sent
+            assert prompt(sent[4]) == compacted("S", "\n\n" + record[:keep] + cut), \
+                prompt(sent[4])[-600:]
+            size = len(record)
+            assert results(sent[5]) == [record[keep:] + f"\n\n[Bytes {keep} to {size} of "
+                                        f"{size}: its end.]"], results(sent[5])
+
+        # Without findings, the turns cannot call it, and a compaction adds
+        # no record.
+        path = f"{d}/askai.json"
+        with open(path, "w") as f:
+            json.dump(grouped({"url": up.url(), "upstream-tools": True,
+                               "tools": {"upstream": {"deny": ["findings"]}}}), f)
+        os.chmod(path, 0o600)
+        with Askai(binary, "-c", path, "--git", repo) as ai:
+            script[:] = [turn({"action": "show"}), turn({"summary": "S"}, name="compact")]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            sent = up.requests[count:]
+            lent = {t["function"]["name"]: t["function"] for t in sent[0]["body"]["tools"]}
+            assert "findings" not in lent, lent
+            assert "review record" not in lent["compact"]["description"], lent["compact"]
+            assert "the task stays as the user gave it" in lent["compact"]["description"]
+            assert results(sent[1]) == ["No tool of that name is yours to call."], sent[1]
+            assert prompt(sent[2]) == compacted("S", ""), prompt(sent[2])
+
+        # Without the git tool, the turns get findings beside man, but the
+        # read log stays empty: verified and disproved are refused, and no
+        # refusal suggests a git read.
+        with open(path, "w") as f:
+            json.dump(grouped({"url": up.url(), "upstream-tools": True,
+                               "tools": {"upstream": {"deny": ["git"]}}}), f)
+        with Askai(binary, "-c", path, "--git", repo, "--man") as ai:
+            script[:] = [turn({"action": "add", "claim": "C1", "state": "verified",
+                               "evidence": "E", "location": "src/a.c:3"},
+                              {"action": "add", "claim": "C2", "location": "src/a.c:3"},
+                              {"action": "update", "id": 1, "state": "disproved",
+                               "evidence": "E"})]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            sent = up.requests[count:]
+            lent = {t["function"]["name"] for t in sent[0]["body"]["tools"]}
+            assert "findings" in lent and "git" not in lent, lent
+            no_git = ("This ask call has no git tool, so a finding cannot be verified or "
+                      "disproved here; keep it a candidate, or retract it.")
+            assert results(sent[1]) == [no_git, "Added finding 1: candidate, src/a.c:3, not "
+                                        "read.", no_git], results(sent[1])
+    up.reply = lambda request: (200, ANSWERS["openai"])
+    print("review: findings, the review record, its render after compaction: PASS")
 
 
 def check_tasks(binary, up):
@@ -12378,13 +12655,13 @@ def check_plugin(binary, up, plugin):
             assert ai.listed("policy: built in, without ASKAI_TOKEN")[3:] == [
                 "upstream tools  man"] + [
                 f"{'':14}  {name}" for name in ("test_echo", "test_state", "test_misuse",
-                                                 "compact", "background", "jobs", "wait",
-                                                 "timer")], ai.log
+                                                 "compact", "findings", "background",
+                                                 "jobs", "wait", "timer")], ai.log
             count = len(up.requests)
             answer, trace = [c["text"] for c in ai.ask("Q")["content"]]
             first, second = up.requests[count:]
             assert [t["function"]["name"] for t in first["body"]["tools"]] == \
-                ["man", "test_echo", "test_state", "test_misuse", "compact",
+                ["man", "test_echo", "test_state", "test_misuse", "compact", "findings",
                  "background", "jobs", "wait", "timer"], first
             assert [m["content"] for m in second["body"]["messages"][2:]] == \
                 ["The seconds argument must be a whole number from 1 to 3600.",
@@ -12404,10 +12681,11 @@ def check_plugin(binary, up, plugin):
               anonymous={"loopback": "e"}, **{"upstream-tools": True})
         with Askai(binary, "-c", path) as ai:
             assert ai.listed("role e:")[1:-1] == ["upstream tools  test_echo"] + [
-                f"{'':14}  {name}" for name in ("compact", "wait", "timer")], ai.log
-            assert ai.listed("role s:")[1:-1] == ["upstream tools  test_state"] + [
-                f"{'':14}  {name}" for name in ("compact", "background", "jobs", "wait",
+                f"{'':14}  {name}" for name in ("compact", "findings", "wait",
                                                  "timer")], ai.log
+            assert ai.listed("role s:")[1:-1] == ["upstream tools  test_state"] + [
+                f"{'':14}  {name}" for name in ("compact", "findings", "background", "jobs",
+                                                 "wait", "timer")], ai.log
             assert ai.listed("role n:")[1:-1] == ["upstream tools  none"], ai.log
             assert ai.listed("warning: no role lists these tools:") == [
                 "man", "test_fetch", "test_config"], ai.log
@@ -14323,6 +14601,7 @@ def main():
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_git_scope, check_git_read, check_turns,
+                      check_review,
                       check_notes, check_shared_notes,
                       check_notes_history, check_notes_cancel, check_turn_apis,
                       check_attach,

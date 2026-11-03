@@ -9,6 +9,7 @@ override SRC_askai := \
   cstr_view.c         \
   datauri.c           \
   dstr.c              \
+  findings.c          \
   git.c               \
   git_view.c          \
   home.c              \
@@ -28,6 +29,7 @@ override SRC_askai := \
   plugin.c            \
   policy.c            \
   registry.c          \
+  review.c            \
   roster.c            \
   task.c              \
   tls.c               \

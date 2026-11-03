@@ -26,6 +26,7 @@ struct metrics_mcp;
 struct metrics_src;
 struct notes;
 struct registry;
+struct review;
 struct stream_app;
 struct task_pool;
 struct web;
@@ -352,6 +353,19 @@ mcp_slot_lend (struct mcp_slot  *slot,
  */
 extern size_t
 mcp_slot_window_max (struct mcp_slot const *slot);
+
+/** Returns the review record of the call's ask call, or nullptr if the
+ *  turns of the ask call are not lent findings. This function is not
+ *  exported.
+ */
+extern struct review *
+mcp_slot_review (struct mcp_slot const *slot);
+
+/** Returns the current turn number of the ask call that the call belongs
+ *  to. This function is not exported.
+ */
+extern uint32_t
+mcp_slot_turn (struct mcp_slot const *slot);
 
 /** Makes the call wait.  start() calls it last, if the call goes on after
  *  start() returns.  askai can free the call's arguments in this function.

@@ -199,13 +199,13 @@ only with `"upstream-tools": true`, and only in the turns of an `ask_ai`
 call (section [Tools for the upstream model, in
 `upstream`](#tools-for-the-upstream-model-in-upstream)).
 They are `man`, `git`, `notes` and the plugin tools whose kind has the flag
-`TOOL_LENT` (`src/tool.h`), and `compact`, `background`, `jobs`, `wait` and
-`timer`.  `compact` never appears in `tools/list`, and a role cannot name
-it.  `background`, `jobs`, `wait` and `timer` appear in `tools/list` only
-with `client-jobs`, as tools of the clients.  A role can then name
-them in `tools`, but never in `upstream`.  The turns of an `ask_ai` call
-get these four tools with a definition of their own, and their jobs and
-timers are not those of the client.
+`TOOL_LENT` (`src/tool.h`), and `compact`, `findings`, `background`, `jobs`,
+`wait` and `timer`. `compact` and `findings` never appear in `tools/list`,
+and a role cannot name them. `background`, `jobs`, `wait` and `timer`
+appear in `tools/list` only with `client-jobs`, as tools of the clients. A
+role can then name them in `tools`, but never in `upstream`. The turns of
+an `ask_ai` call get these four tools with a definition of their own, and
+their jobs and timers are not those of the client.
 
 Without any of these options, `askai` offers only `ask_ai`.  In a file, the
 objects of the built-in tools in the member `tools` turn tools on as their
@@ -297,8 +297,9 @@ context.  The upstream must accept tools in the request.  With
 `llama-server`, its chat template must accept tools, as with `--jinja`.
 
 The model calls `compact` with a summary of at most 4 MiB.  `askai` then
-removes the conversation after the prompt, and adds the summary, the list of
-the notes and the newest note to the prompt.  A newest note longer than a
+removes the conversation after the prompt, and adds the summary, the review
+record (section [The review record](#the-review-record)), the list of the
+notes and the newest note to the prompt. A newest note longer than a
 tool result in a turn (section [`context`](#context)) is cut there, with the
 offset from which the model reads on with `notes`.
 
@@ -341,6 +342,79 @@ After a compaction, `askai` adds the reminders at a quarter and at a half
 again.  If the context size is unknown, `askai` adds no notice, but the
 model can still call `compact`.
 
+### The review record
+
+The turns of an `ask_ai` call keep a review record with the tool
+`findings`. The turns get `findings` under the same conditions as
+`compact`, and the member `tools` can deny it to the upstream. The record
+lasts as long as the `ask_ai` call, through all of its compactions. A new
+`ask_ai` call starts with an empty record. The record holds these things:
+
+- The findings of the model. `add` records a finding: a claim, an optional
+  location such as `src/mcp.c:120-140`, and a state. A finding is a
+  `candidate` until the model checks it. `update` changes the state to
+  `verified`, `disproved`, `retracted` or `candidate`, with evidence, and
+  can also change the claim or the location if they were wrong. The
+  history of the finding keeps each change with its turn, its evidence and
+  the old claim or location.
+- A log of the lines of committed files that the command `read` of the
+  tool `git` showed the turns whole, by repository, commit and path. Only
+  `read` counts: the output of `show`, `cat-file`, `grep` and `blame` does
+  not.
+
+`show` gives the whole record, a window at a time from `offset`, or with
+`id` the history of one finding.
+
+A finding can be `verified` or `disproved` only if the lines of its
+location are in the read log. Otherwise `askai` refuses the call, and the
+answer names the `read` call that shows the lines, or the rest of them if
+the log has the first of them. If the location goes past the end of the
+file at each commit that the log has the file at, the answer gives the
+number of lines of the file instead. If it goes past the end only at the
+commit of the lines that the log has, the answer names a read at a commit
+where the file may have them. If the record is too full to log the read,
+the answer names no read. The lines of a read take the place of what the
+log has of them, so the record takes the commit of a finding from the
+latest read that showed its lines. The model does not give the commit. A
+location can start with a commit ID of 7 to 64 hexadecimal digits and a
+colon, as `git grep` prints it, and then only reads at that commit count;
+`HEAD:` is as no commit. The path of a location can be short, such as
+`mcp.c`, if exactly one path in the read log ends with `/mcp.c`. A
+finding that got a short path before such a read gets the whole path in
+its next `update`. If two paths of the log end with it by then, an
+`update` to `verified` or `disproved` needs a `location` with the whole
+path. Without the tool `git`, nothing fills the read log, so `askai`
+refuses `verified` and `disproved`, and a finding stays a `candidate`
+until the model retracts it. `askai` leaves its own notices out of the
+end of a claim or of evidence, as it does for the text of a note.
+
+After each compaction, `askai` adds the record to the prompt, after the
+summary and before the notes. The open findings come first, each with its
+claim and its latest evidence, then the closed findings, a line each, and
+then the read log. There the record takes at most the window of a tool
+result in a turn (section [`context`](#context)). If it is longer, its
+last line names the `offset` from which `findings` `show` gives the rest.
+The header of the record says that `askai` keeps the task word for word
+through every compaction: the system text, the messages of the client and
+the prompt. So the model need not copy the task into its notes. The
+description of `compact` says this too.
+
+The record holds at most 4 MiB. `askai` counts the bytes of its texts, 64
+bytes for each file and range of lines, and the size of its own structure
+for each finding and change. `askai` refuses a call that would take the
+record past 4 MiB, and the answer names the bytes of claim and evidence
+that still fit, or says that the record has no room for the change. A
+read that does not fit is not logged, and the record says from which turn
+on its log can be incomplete. The
+series `askai_turn_tool_calls_total{tool="findings"}` counts the calls of
+`findings`. To turn the record off, deny `findings` to the upstream:
+
+```json
+{
+  "tools": { "upstream": { "deny": ["findings"] } }
+}
+```
+
 ### What the role member upstream means
 
 The member `upstream` of a role lists the tools that the upstream model may
@@ -360,7 +434,7 @@ With `upstream-tools`, the member has these meanings:
   never offers `ask_ai` and `test_task` to the upstream.
 - If `upstream` is `[]`, the upstream may call none of `man`, `git` and the
   plugin tools.  With `notes`, the turns still get `notes`, `compact`,
-  `wait` and `timer`.  Without `notes`, the turns get no tool, and an
+  `findings`, `wait` and `timer`. Without `notes`, the turns get no tool, and an
   `ask_ai` call is one upstream request, as without `upstream-tools`.
 - If `upstream` lists tools, the upstream may call these tools.  Each name
   must be `man`, `git`, `notes` or a plugin tool whose kind has the flag
@@ -373,15 +447,15 @@ With `upstream-tools`, the member has these meanings:
 In each case with `upstream-tools`, the turns also get these tools:
 
 - `notes` in every call when `notes` is set, whatever the role lists;
-- `compact`, `wait` and `timer` when the turns get any tool;
+- `compact`, `findings`, `wait` and `timer` when the turns get any tool;
 - `background` and `jobs` when the turns get a tool that can run in the
   background: `man`, `git`, or a plugin tool whose kind has the flag
   `TOOL_DETACH` (`src/tool.h`).
 
 The member `tools` applies before these rules: a tool that `tools` denies
 to the upstream does not count in them.  So the turns get `compact`,
-`wait` and `timer` only beside another tool that `tools` allows, and
-`background` and `jobs` only beside such a tool that can run in the
+`findings`, `wait` and `timer` only beside another tool that `tools` allows,
+and `background` and `jobs` only beside such a tool that can run in the
 background.  The turns never get a tool that `tools` denies, whatever
 `upstream` lists (section [Tools](#tools)).
 
@@ -693,6 +767,7 @@ tools:
 | ---- | ------------ | --------------------- |
 | `notes` | writes, lists and reads shared session notebooks | in every call with `notes` |
 | `compact` | replaces the conversation after the prompt with a summary | with any other tool |
+| `findings` | keeps the call's review record of findings and of the lines read with `git` `read` | with any other tool |
 | `background` | runs a call of a tool as a job, and returns the number of the job at once | with a tool that can run in the background |
 | `jobs` | lists the jobs, returns the output of a finished job, or cancels a job | with a tool that can run in the background |
 | `wait` | waits up to 10 minutes for a job or a timer | with any other tool |
@@ -1155,8 +1230,9 @@ gets every tool but `godbolt_compile`:
 
 A name in a list must be a tool that `askai` offers in this run, other
 than the ask tool: `man`, `git`, `notes`, `test_task`, `background`,
-`jobs`, `wait`, `timer`, `compact` or a tool of a plugin, each only when
-`askai` offers it.  `compact` exists with `upstream-tools`, and
+`jobs`, `wait`, `timer`, `compact`, `findings` or a tool of a plugin, each
+only when `askai` offers it. `compact` and `findings` exist with
+`upstream-tools`, and
 `background`, `jobs`, `wait` and `timer` exist with `client-jobs` or
 `upstream-tools`.  Otherwise `askai` stops with exit status 2.  The message
 begins with the path of the file and `tools:`, or `tools: client:` or
@@ -1190,14 +1266,14 @@ For the upstream model, `tools` has these effects:
 
 - The turns of an `ask_ai` call get only the tools that `tools` allows the
   upstream.  This applies to every tool that the turns can get, also to
-  `notes`, `compact`, `background`, `jobs`, `wait` and `timer`.  So
-  with `"upstream": ["man"]`, the turns get `man` and no other tool: no
-  compaction, no jobs and no timers.
+  `notes`, `compact`, `findings`, `background`, `jobs`, `wait` and
+  `timer`. So with `"upstream": ["man"]`, the turns get `man` and no other
+  tool: no compaction, no review record, no jobs and no timers.
 - A denied tool does not count in the rules of section [What the role
   member upstream means](#what-the-role-member-upstream-means).  With
   `{"deny": ["man"]}` and no other tool to lend, the turns get no
-  `compact`, `wait` or `timer`, and an `ask_ai` call is one upstream
-  request.
+  `compact`, `findings`, `wait` or `timer`, and an `ask_ai` call is one
+  upstream request.
 - Without `notes` in the turns, an `ask_ai` call refuses the argument
   `thread`, and the ask tool does not list it.  From two thirds of the
   context on, the notice to call `compact` comes only when the turns have
@@ -1440,8 +1516,8 @@ optional.  There is no default.
   `test_task`, `background`, `jobs`, `wait`, `timer` or a tool of a
   plugin.  With any other name, `askai` stops with exit status 2, for
   example with `man` without `"enabled": true` in `tools.man`, or with
-  `compact`.  A role may name a tool that the member `tools` denies to
-  clients, but its clients do not get that tool.
+  `compact` or `findings`. A role may name a tool that the member `tools`
+  denies to clients, but its clients do not get that tool.
 - `upstream` is an array of the tools that the upstream model may call in
   the turns of the `ask_ai` calls of these clients.  Section [What the role
   member upstream means](#what-the-role-member-upstream-means) describes
@@ -1671,13 +1747,13 @@ may call `ask_ai`, under `askai`'s own policy.
 
 Every client may call `ask_ai`, `man`, `git` and `notes`, under `askai`'s
 own policy.  The turns of each `ask_ai` call get `man`, `git`, `notes`,
-`compact`, `background`, `jobs`, `wait` and `timer`.  `askai` stores the
-notes that the model adds with the tool `notes` in the shared git repository at
-`/var/lib/askai/notes`.  With a context of 131072 tokens, `askai` adds a
-reminder to write notes at 32768 and at 65536 tokens, and a request to call
-`compact` from 87382 tokens on.  A tool result in a turn is a window of
-64 KiB.  The chat template of `llama-server` must accept tools, as with
-`--jinja`.
+`compact`, `findings`, `background`, `jobs`, `wait` and `timer`. `askai`
+stores the notes that the model adds with the tool `notes` in the shared git
+repository at `/var/lib/askai/notes`. With a context of 131072 tokens,
+`askai` adds a reminder to write notes at 32768 and at 65536 tokens, and a
+request to call `compact` from 87382 tokens on. A tool result in a turn is
+a window of 64 KiB. The chat template of `llama-server` must accept tools,
+as with `--jinja`.
 
 ### A policy
 
@@ -1718,7 +1794,7 @@ the policy have these effects.
   read `GET /metrics`.  The role has no `upstream`, so in the turns of their
   `ask_ai` calls the upstream may call `man`, the one tool in the role's
   `tools` that `askai` can offer to the upstream.  With `man`, the turns also get
-  `compact`, `background`, `jobs`, `wait` and `timer`.
+  `compact`, `findings`, `background`, `jobs`, `wait` and `timer`.
 - The role `user` allows its clients to call only `ask_ai`.  The upstream
   may call `man` for them.
 - The role `guest` allows its clients to call only `ask_ai`.  The upstream

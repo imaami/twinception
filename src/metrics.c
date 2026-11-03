@@ -153,6 +153,7 @@ static struct metrics_entry const table[] = {
 	LENT(nullptr, "git", LENT_GIT),
 	LENT(nullptr, "notes", LENT_NOTES),
 	LENT(nullptr, "compact", LENT_COMPACT),
+	LENT(nullptr, "findings", LENT_FINDINGS),
 	LENT(nullptr, "background", LENT_BACKGROUND),
 	LENT(nullptr, "jobs", LENT_JOBS),
 	LENT(nullptr, "wait", LENT_WAIT),

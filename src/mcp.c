@@ -88,6 +88,7 @@
 #include "config.h"
 #include "datauri.h"
 #include "dstr.h"
+#include "findings.h"
 #include "git.h"
 #include "home.h"
 #include "instance.h"
@@ -106,6 +107,7 @@
 #include "plugin.h"
 #include "policy.h"
 #include "registry.h"
+#include "review.h"
 #include "roster.h"
 #include "shelf.h"
 #include "stream.h"
@@ -319,8 +321,8 @@ static char const *const field_names[F_N] = {
 
 /* The kinds of tool that askai may offer, each its row of mcp_rows.  A role
  * can grant the kinds up to KIND_NOTES, which clients list and call.  askai
- * offers KIND_COMPACT only to the turns of ask calls.  It offers the four
- * kinds after KIND_COMPACT to the turns, with --upstream-tools, and with
+ * offers the kinds in KINDS_TURNS only to the turns of ask calls. It offers
+ * the kinds in KINDS_AGENDA to the turns, with --upstream-tools, and with
  * --client-jobs also to clients, as a role grants them.  A kind's tool has
  * one id for both, and the start() of such a kind checks the role of its
  * slot: ROLE_OWN is a client's call.  KIND_NONE is the kind of a tool that
@@ -333,6 +335,7 @@ enum mcp_kind : uint32_t {
 	KIND_GIT,
 	KIND_NOTES,
 	KIND_COMPACT,
+	KIND_FINDINGS,
 	KIND_BACKGROUND,
 	KIND_JOBS,
 	KIND_WAIT,
@@ -410,13 +413,15 @@ struct mcp_offer {
 /* The tools that askai lends the turns: by[LEND_GRANTED] as a role grants
  * them, by[LEND_ALWAYS] whenever the turns are lent anything, by[LEND_WITH]
  * beside those, and by[LEND_DETACH] beside one of the tools in detach,
- * which may run in the background.  compact is the bit of the tool compact
- * among them, if any.
+ * which may run in the background. The members compact, findings and git
+ * hold the bit of the tool of that name, or 0 if askai does not lend it.
  */
 struct mcp_lending {
 	tool_mask by[LEND_DETACH + 1];
 	tool_mask detach;
 	tool_mask compact;
+	tool_mask findings;
+	tool_mask git;
 };
 
 /* Returns the tools that @p l lends the turns of an ask call of a client
@@ -639,6 +644,8 @@ struct mcp_req {
 	                                    its first turn with calls to its end */
 	struct mcp_agenda   *agenda;     /* its turns' jobs and timers, from the
 	                                    first to its end */
+	struct review       *review;     /* the review record if the turns are
+	                                    lent findings (mcp_req_review_make()) */
 	struct ledger_task  *task;       /* the record of the task or the job
 	                                    that the call runs as, once it is
 	                                    one */
@@ -1632,6 +1639,7 @@ mcp_req_finish (struct mcp_req *req)
 	 * call reaches it while its end is written. */
 	mcp_req_drop(req);
 	mcp_agenda_destroy(&req->agenda);
+	review_destroy(&req->review);
 	/* Neither a drain nor a notifications/cancelled reaches the call while
 	 * its end is written.  A cancel may supersede a pending state, intent
 	 * or result write: FIFO writes keep that evidence, followed by the
@@ -3496,6 +3504,18 @@ mcp_slot_window_max (struct mcp_slot const *slot)
 	return slot->role == ROLE_OWN ? TOOL_OUTPUT_MAX : mcp_req_lend_max(slot->req);
 }
 
+struct review *
+mcp_slot_review (struct mcp_slot const *slot)
+{
+	return slot->req->review;
+}
+
+uint32_t
+mcp_slot_turn (struct mcp_slot const *slot)
+{
+	return slot->req->turn;
+}
+
 /* Its request parks, if the slot is its own; a turn's call keeps it among
  * the calls a drain ends.
  */
@@ -3812,6 +3832,19 @@ mcp_req_notes_identity (struct mcp_req *req)
 	     ? 0 : ENOMEM;
 }
 
+/* Create req->review if the turns of @p req are lent findings. The record
+ * gets REVIEW_READS if they are also lent git. Returns 0 or ENOMEM.
+ */
+static int
+mcp_req_review_make (struct mcp_req *req)
+{
+	struct mcp_lending const *l = &req->mcp->st->lending;
+	int e = 0;
+	if (req->lent & l->findings)
+		req->review = review_create(req->lent & l->git ? REVIEW_READS : 0, &e);
+	return e;
+}
+
 /* Start a call that asks the upstream, with the arguments @p args, of the
  * class the request asks for, lending the turns the tools req->lent says,
  * if any: build its upstream request, then submit its job.  The notes the turns keep, if askai keeps
@@ -3873,6 +3906,8 @@ mcp_req_ask (struct mcp_req     *req,
 	int e = mcp_req_draft(req, prompt, system, history);
 	if (!e)
 		e = mcp_req_notes_identity(req);
+	if (!e)
+		e = mcp_req_review_make(req);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -8099,13 +8134,19 @@ mcp_slot_step (struct loop      *loop,
 }
 
 /* Compaction has left the summary, if any, in what askai adds to the
- * prompt: the notes go after it, read for @p fetch, if the thread has any.
+ * prompt. The review record, if any, follows it, cut to
+ * mcp_req_lend_max() bytes, and then the notes, read for @p fetch, if the
+ * thread has any.
  */
 static void
 mcp_req_compact_notes (struct mcp_req *req,
                        enum mcp_fetch  fetch)
 {
 	int e = mcp_req_notes_identity(req);
+	if (!e && req->review)
+		e = CAT(&req->self.answer, "\n\n")
+		    ? review_render(req->review, &req->self.answer, mcp_req_lend_max(req))
+		    : ENOMEM;
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -9741,21 +9782,25 @@ mcp_notes_upstream_definition (void const *service)
 	return mcp_notes_schema(NOTES_UPSTREAM, service);
 }
 
-/* The compact tool's definition, which only turns are given. */
+/* Returns the definition of the compact tool. Only turns get this tool.
+ * @p service is the mcp_static. Its lending member says whether the turns
+ * also get findings.
+ */
 static struct json_object *
 mcp_compact_definition (void const *service)
 {
-	(void)service;
+	struct mcp_static const *st = service;
 	static_assert(SUMMARY_MAX == 4 << 20, "the description says");
 	return jb_object(
 		"name", json_object_new_string("compact"),
-		"description", json_object_new_string(
+		"description", mcp_text3(
 			"Free your context: the conversation since the task, your turns and "
 			"the tools' results, is replaced by your summary of it, and your "
-			"notes are shown again. Note first what you must keep. Call it when "
-			"askai says that the context fills up, or once you are done with a "
-			"part of the work whose details you no longer need. Calls after it "
-			"in the same turn do not run."),
+			"notes", st->lending.findings ? " and askai's review record are" : " are",
+			" shown again; the task stays as the user gave it. Note first what "
+			"you must keep. Call it when askai says that the context fills up, "
+			"or once you are done with a part of the work whose details you no "
+			"longer need. Calls after it in the same turn do not run."),
 		"inputSchema", mcp_schema(
 			jb_object(
 				"summary", mcp_property("string",
@@ -10096,26 +10141,33 @@ mcp_static_tails (struct mcp_static  *st,
 	                   CACHE_TTL_MS, dstr_get(&st->modern_tail)) ? 0 : ENOMEM;
 }
 
-/* What each kind of tool is: what its calls do, or the plugin whose one
- * tool it is; its definition as the turns get it, if that is not the
- * definition as clients list it; its name, but the ask tool's, which the
- * configuration names; the argument whose value is logged as its size; the
- * option that turns it on, for the log, or nullptr for compact and the test
- * aid, which the log leaves out while they are off; how the turns are lent it, but a
- * plugin's, which follows its kind's flags; its row in the turns' metrics;
- * and what the trace shows of its calls.
- */
+/* The row of a kind of tool in mcp_rows. */
 struct mcp_row {
-	struct tool_kind        kind;
-	struct plugin const    *plugin;
-	tool_definition_fn     *upstream;
-	char const             *ptr;
-	char const             *sized;
-	char const             *option;
-	uint32_t                len;
-	uint8_t                 lend;    /* enum mcp_lend */
-	uint8_t                 metric;  /* enum metrics_lent */
-	uint8_t                 trace;   /* enum mcp_trace */
+	struct tool_kind        kind;      /* the functions of a tool of askai's
+	                                      own */
+	struct plugin const    *plugin;    /* the built-in plugin whose only tool
+	                                      this is, or nullptr */
+	tool_definition_fn     *upstream;  /* the definition that the turns get,
+	                                      if it differs from the one that
+	                                      clients list */
+	char const             *ptr;       /* the name, or nullptr for the ask
+	                                      tool, whose name comes from the
+	                                      configuration */
+	char const             *sized;     /* the argument whose size the log
+	                                      shows instead of its value */
+	char const             *option;    /* the option that turns the tool on,
+	                                      for the log. It is nullptr for the
+	                                      kinds in KINDS_TURNS and the test
+	                                      aid, which the log leaves out while
+	                                      they are off. */
+	uint32_t                len;       /* the length of ptr */
+	uint8_t                 lend;      /* enum mcp_lend: how the tool is lent
+	                                      to the turns. A plugin's tool
+	                                      follows the flags of its kind. */
+	uint8_t                 metric;    /* enum metrics_lent: the row of the
+	                                      tool in the turns' metrics */
+	uint8_t                 trace;     /* enum mcp_trace: what the trace
+	                                      shows of the calls */
 };
 
 /* mcp_host_plugin is the plugin of askai's own kinds.  It has no instances
@@ -10149,6 +10201,11 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                        .flags = KF_SERIAL },
 	                      N("compact"), LEND_WITH, LENT_COMPACT, TRACE_NAME,
 	                      .sized = "summary" },
+	[KIND_FINDINGS]   = { { .definition = findings_definition, .start = findings_start,
+	                        .step = findings_step, .drop = findings_drop,
+	                        .flags = KF_SERIAL | TOOL_PAGED },
+	                      N("findings"), LEND_WITH, LENT_FINDINGS, TRACE_ACTION,
+	                      .sized = "claim" },
 	/* With --client-jobs, clients list the next four kinds with a
 	 * definition of their own. */
 	[KIND_BACKGROUND] = { { .definition = mcp_background_client_definition,
@@ -10256,6 +10313,8 @@ mcp_lending (struct config const *cfg)
 		l.by[mcp_lend_of(t)] |= bit;
 		l.detach |= t->kind->flags & TOOL_DETACH ? bit : 0;
 		l.compact |= t->kind == &mcp_rows[KIND_COMPACT].kind ? bit : 0;
+		l.findings |= t->kind == &mcp_rows[KIND_FINDINGS].kind ? bit : 0;
+		l.git |= t->kind == git_plugin.tools ? bit : 0;
 	}
 	return l;
 }
@@ -10263,6 +10322,9 @@ mcp_lending (struct config const *cfg)
 /* The kinds background, jobs, wait and timer, as bits. */
 static constexpr uint32_t KINDS_AGENDA = 1u << KIND_BACKGROUND | 1u << KIND_JOBS |
                                          1u << KIND_WAIT | 1u << KIND_TIMER;
+
+/* The kinds compact and findings, which only the turns get, as bits. */
+static constexpr uint32_t KINDS_TURNS = 1u << KIND_COMPACT | 1u << KIND_FINDINGS;
 
 /* The kinds of askai's own tools that @p cfg offers to clients, as bits. */
 static uint32_t
@@ -10280,7 +10342,7 @@ mcp_offered_clients (struct config const *cfg)
 static uint32_t
 mcp_offered (struct config const *cfg)
 {
-	uint32_t turns = 1u << KIND_COMPACT | KINDS_AGENDA;
+	uint32_t turns = KINDS_TURNS | KINDS_AGENDA;
 	return mcp_offered_clients(cfg) | (cfg->flags & CFG_UPSTREAM_TOOLS ? turns : 0);
 }
 
@@ -10290,8 +10352,8 @@ mcp_register (struct registry     *reg,
 {
 	uint32_t offered = mcp_offered(cfg);
 	uint32_t granted = mcp_offered_clients(cfg);
-	/* registry_add() inserts each tool that a role can grant before
-	 * compact, which only the turns get. */
+	/* registry_add() inserts each tool that a role can grant before the
+	 * kinds in KINDS_TURNS. */
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
 		if (!(offered >> k & 1))
 			continue;
@@ -10351,8 +10413,8 @@ mcp_allowed (struct registry const *reg,
 /* Logs askai's own tools for the clients of @p cfg, each on or off, and for
  * a tool that is off, the option that turns it on, or "tools" if the
  * configuration file's member tools denies it to clients.  A tool without
- * such an option is not logged while it is off: compact, which only the
- * turns get, and the test aid.
+ * such an option is not logged while it is off: the kinds in KINDS_TURNS
+ * and the test aid.
  */
 static void
 mcp_report_own (struct registry const *reg,

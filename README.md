@@ -734,15 +734,15 @@ With `--upstream-tools`, an `ask_ai` call offers the other model tools of its
 own, in any of the APIs (`llama-server`'s chat template must take tools, as
 with `--jinja`): those of `man` and `git` that the caller's role lets the
 upstream call (`ask_ai` itself is never offered), `notes` with `--notes`, and
-with any of those `compact`.  A plugin's tool is offered in the same way if
-its kind allows it (see Plugins below).
+with any of those `compact` and `findings`. A plugin's tool is offered in the
+same way if its kind allows it (see Plugins below).
 Offered none, the call asks once, as without the option.  Else it runs a
 loop of turns: each turn is an upstream call, whose answer may call tools;
-`askai` runs them at once (a `notes` or `compact` call keeps to itself, after
-the calls before it and before those after it), writes the turn and their
-results, in the calls' order, into the conversation, and asks again, until
-an answer calls none, which is the call's answer.  A turn goes back as it
-came where the API asks for that: a call's `extra_content` in chat
+`askai` runs them at once (a `notes`, `compact` or `findings` call keeps to
+itself, after the calls before it and before those after it), writes the turn
+and their results, in the calls' order, into the conversation, and asks
+again, until an answer calls none, which is the call's answer. A turn goes
+back as it came where the API asks for that: a call's `extra_content` in chat
 completions, in which Gemini's give their thought signature; the output
 items of the Responses API, its reasoning among them; the thinking blocks of
 Anthropic's Messages, with their signatures, in their places among the text
@@ -751,7 +751,7 @@ of Gemini's Interactions, thoughts and calls with their signatures among
 them.  Each turn waits for an upstream slot like any call, so the
 scheduler's fairness holds
 turn by turn.  The caller gets the answer, and a second text that lists the calls the turns made, with their arguments (but
-those of `notes` and `compact`, which are the model's own) and the bytes of
+those of `notes`, `compact` and `findings`, which are the model's own) and the bytes of
 each output.  With a `progressToken`, its notifications say the turn and the
 tool being called.  `--max-turns` (32) bounds the turns: the turn before the
 last is told so, and a last answer that still calls tools ends the call, as an
@@ -800,13 +800,29 @@ or in the last turn, ends the call, and its jobs and timers with it.
 
 `compact` takes a summary: the conversation after the prompt, its turns and
 the tools' results, goes, and `askai` adds to the prompt, in brackets, the
-summary, the note history and the current text of the most recently written
-note; calls after `compact` in the same turn do not run.
+summary, the review record, the note history and the current text of the most
+recently written note; calls after `compact` in the same turn do not run.
 Should the context fill up all the same, as the upstream says (llama-server's
 "exceeds the available context size", or a "context length" or "context
 window" error) or as the usage counts, `askai` does likewise without a
 summary, once until a turn goes through again; the next overflow is the
 call's error.
+
+`findings` keeps the call's review record, which lasts through all of its
+compactions. `add` records a finding: a claim, a location such as
+`src/mcp.c:120-140`, and a state, `candidate` until the model checks it.
+`update` changes the state to `verified`, `disproved`, `retracted` or
+`candidate` again, with evidence, and also the claim or the location if they
+were wrong; the finding's history keeps each change and the old text.
+`show` gives the record, a window at a time, or with `id` one finding's
+history. A finding becomes `verified` or `disproved` only if the lines of
+its location are in the record's log of what `git` `read` showed the turns,
+and the record, not the model, names the commit that they were read at.
+After a compaction, the record follows the summary, within a tool's window;
+past that, its last line names the `offset` that `show` reads on from. Its
+header says that the system text, the client's messages and the prompt stay
+word for word, so the model need not copy the task into notes. The record
+holds at most 4 MiB, and a new call starts with an empty one.
 
 With `--notes PATH`, the repository at `PATH` is the shared session.
 `askai` creates a bare Git repository there if absent, and also accepts an
@@ -1206,12 +1222,13 @@ Four more members define who may connect, and what each client may do:
   tools that the role's `tools` lists.  `upstream` can name `man`, `git`, `notes` and
   the plugin tools that may be lent.  Without `--upstream-tools`, `upstream`
   must be empty or left out.  The turns also get `notes` whenever `--notes`
-  is given, `compact`, `wait` and `timer` whenever they get any tool, and
-  `background` and `jobs` beside a tool that can run in the background
-  (`man`, `git`, or a plugin tool that allows it).  `upstream` cannot name
-  `compact`, `background`, `jobs`, `wait` or `timer`, and `tools` cannot
-  name `compact`.  With `--client-jobs`, `tools` can name `background`,
-  `jobs`, `wait` and `timer`, which are then the client's own tools (see
+  is given, `compact`, `findings`, `wait` and `timer` whenever they get any
+  tool, and `background` and `jobs` beside a tool that can run in the
+  background (`man`, `git`, or a plugin tool that allows it). `upstream`
+  cannot name `compact`, `findings`, `background`, `jobs`, `wait` or
+  `timer`, and `tools` cannot name `compact` or `findings`. With
+  `--client-jobs`, `tools` can name `background`, `jobs`, `wait` and
+  `timer`, which are then the client's own tools (see
   Background jobs and timers for clients above).
 - An **identity** has a name, with the same rule as a role name, a `role`,
   and `tokens`, which must not be empty.  A client proves an identity with a
@@ -1293,7 +1310,8 @@ itself, not of `client` or `upstream`.  An object without `allow`, `deny`,
 With this file, `askai` offers `man`, `git` and `notes`.  No client gets
 `git`, whatever its role grants, and a role may name `git` without an
 error.  The turns of an `ask_ai` call get at most `man`, `notes` and
-`compact`, and never `git`, `background`, `jobs`, `wait` or `timer`.  A
+`compact`, and never `git`, `findings`, `background`, `jobs`, `wait` or
+`timer`. A
 name in `tools` must be a tool that `askai` offers in this run.  The
 startup log shows a tool that `tools` denies to clients as `off (tools)`.
 A change of `tools` needs a restart, also a change of an object of a
@@ -1773,6 +1791,7 @@ role admin:
                   git
                   notes
                   compact
+                  findings
                   background
                   jobs
                   wait
@@ -1787,6 +1806,7 @@ role user:
                   git
                   notes
                   compact
+                  findings
                   background
                   jobs
                   wait
@@ -1951,12 +1971,12 @@ Upstream AI ("upstream"):
                             man, git and the plugin tools that allow it,
                             as the role of the client allows, and notes
                             with --notes; with any of those also
-                            compact, wait and timer, and beside a tool
-                            that can run in the background also
-                            background and jobs; an ask call runs the
-                            tool calls of each turn and sends the next
-                            upstream request until an answer ends the
-                            call
+                            compact, findings, wait and timer, and
+                            beside a tool that can run in the
+                            background also background and jobs; an
+                            ask call runs the tool calls of each turn
+                            and sends the next upstream request until
+                            an answer ends the call
       --max-turns N         upstream calls that an ask call makes at
                             most, with --upstream-tools (default 32)
       --context TOKENS      context size of the upstream, used with
