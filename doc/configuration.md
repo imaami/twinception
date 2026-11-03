@@ -1379,7 +1379,11 @@ as `Replace "plan.md" (1234 to 1302 bytes)`. The result names the new
 commit and repeats its message. A `replace` or `restore` that would leave
 the note's bytes as they are makes no commit; its result says `Unchanged`
 and names the current commit. Concurrent writes that race to update the
-same branch fail rather than discard another writer's changes.
+same branch fail rather than discard another writer's changes. When a
+turn writes text whose last lines are askai's own notices from tool
+results, such as `[askai: notebook ...]` or the context notices, askai
+leaves those lines out and says so in the result. Notices inside the
+text, and text from clients, stay as they are.
 `list` shows each current file once, with its byte count and blob identity;
 `history` shows changes oldest first, with the lines added by each change.
 `copy` adds a byte-for-byte copy to the caller's own notebook.  Agents must

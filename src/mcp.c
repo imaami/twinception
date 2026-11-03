@@ -102,6 +102,7 @@
 #include "mcp.h"
 #include "metrics.h"
 #include "notes.h"
+#include "notice.h"
 #include "plugin.h"
 #include "policy.h"
 #include "registry.h"
@@ -198,7 +199,13 @@ enum mcp_fetch : uint16_t {
 	FETCH_REVISION = 1024, /* pin and authorize historical note revisions */
 	FETCH_DIFF = 2048,    /* compare two authorized revisions */
 	FETCH_RESTORE = 4096, /* restore historical bytes in a new own commit */
+	FETCH_STRIPPED = 8192, /* the write's text lost askai's notices at its end */
+	FETCH_KEEP = FETCH_COPY | FETCH_REPLACE | FETCH_RESTORE | FETCH_STRIPPED,
+	                      /* the flags that a write keeps from its check to its
+	                         result */
 };
+
+static_assert(!(FETCH_KEEP & FETCH_FORMAT), "FETCH_FORMAT has none of the kept flags");
 
 /* The command of git for each enum mcp_fetch.  FETCH_NEWEST reads a note
  * with NOTES_READ.
@@ -218,7 +225,7 @@ static enum notes_cmd const mcp_fetch_cmds[] = {
 static enum notes_cmd
 mcp_fetch_cmd (uint16_t fetch)
 {
-	return (fetch & ~FETCH_COPY) == FETCH_FORMAT ? NOTES_FORMAT
+	return (fetch & ~FETCH_KEEP) == FETCH_FORMAT ? NOTES_FORMAT
 	     : fetch & FETCH_BOOKS ? NOTES_BOOKS
 	     : fetch & FETCH_FILES ? NOTES_FILES
 	     : fetch & FETCH_NEWEST ? NOTES_READ
@@ -4681,8 +4688,7 @@ mcp_agenda_wake (struct mcp_agenda *a)
 	          dstr_cat_n(&a->said, dstr_get(&a->told), dstr_len(&a->told)) &&
 	          CAT(&a->said, "\n") &&
 	          (req->turn + 1u < req->mcp->st->turns ||
-	           CAT(&a->told, "[askai: your next turn is your last: answer then, "
-	                         "without calling tools.]\n"));
+	           CAT(&a->told, NOTICE_LAST "\n"));
 	dstr_clear(&a->notices);
 	if (!ok) {
 		mcp_req_fail(req, ENOMEM);
@@ -5924,8 +5930,7 @@ mcp_slot_done (struct mcp_slot *slot,
 	if (notebook)
 		slot->note_len += (uint16_t)util_format(slot->note + slot->note_len,
 		                                        sizeof slot->note - slot->note_len,
-		                                        "\n\n[askai: notebook %s]",
-		                                        notebook);
+		                                        "\n\n" NOTICE_NOTEBOOK, notebook);
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
@@ -5957,17 +5962,10 @@ mcp_req_context_note (struct mcp_req *req,
 	    "notice, %" PRIu64 " %% full, %" PRIu64 " of %" PRIu64 " tokens: %s",
 	    req->mcp->loop->id, req->asked, req->turn, tokens * 100 / context, tokens,
 	    context, full ? "a request to call compact" : "a reminder to write notes");
-	if (full)
-		return util_format(buf, size, "\n\n[askai: your context is %" PRIu64 "%% full, "
-		                   "%" PRIu64 " of %" PRIu64 " tokens. Note what you need to "
-		                   "keep, then call compact.]", tokens * 100 / context, tokens,
-		                   context);
-	req->reminded = quarters;
-	return util_format(buf, size, "\n\n[askai: your context is %" PRIu64 "%% full, "
-	                   "%" PRIu64 " of %" PRIu64 " tokens. Now is a good time to write "
-	                   "notes of what you have learned. Compaction removes the "
-	                   "conversation, but not the notes.]", tokens * 100 / context,
-	                   tokens, context);
+	if (!full)
+		req->reminded = quarters;
+	return util_format(buf, size, full ? "\n\n" NOTICE_COMPACT : "\n\n" NOTICE_REMIND,
+	                   tokens * 100 / context, tokens, context);
 }
 
 /* Write the result of the turn's call in @p slot, the next in order.  After
@@ -5992,8 +5990,7 @@ mcp_req_result_begin (struct mcp_req  *req,
 		uint64_t tokens = mcp_req_tokens(req) + (slot->window + n) / 4;
 		n += mcp_req_context_note(req, slot->note + n, size - n, tokens);
 		if (req->turn + 1u == req->mcp->st->turns)
-			n += util_format(slot->note + n, size - n, "\n\n[askai: your next turn "
-			                 "is your last: answer then, without calling tools.]");
+			n += util_format(slot->note + n, size - n, "\n\n" NOTICE_LAST);
 	}
 	slot->note_len = (uint16_t)n;
 	req->next = 0;
@@ -6859,7 +6856,7 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 {
 	struct mcp_req *req = slot->req;
 	if (!*tip) {
-		mcp_slot_notes_run(slot, FETCH_FORMAT | (slot->fetch & FETCH_COPY), nullptr);
+		mcp_slot_notes_run(slot, FETCH_FORMAT | (slot->fetch & FETCH_KEEP), nullptr);
 		return;
 	}
 	struct span file = buf_peek(&req->body);
@@ -6878,8 +6875,7 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_notes_run(slot, FETCH_ADD | (slot->fetch & (FETCH_COPY | FETCH_REPLACE | FETCH_RESTORE)),
-	                   &in);
+	mcp_slot_notes_run(slot, FETCH_ADD | (slot->fetch & FETCH_KEEP), &in);
 }
 
 /* An explicit zero parent makes the first commit a root even if another
@@ -6920,6 +6916,11 @@ mcp_slot_notes_created (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, mcp_slot_notes_unadded(slot), true);
 }
 
+/* What the result of a write adds with FETCH_STRIPPED. */
+static char const left_out[] = " askai left out the [askai: ...] lines at the end of "
+                               "the text. askai adds those lines to tool results, and "
+                               "they are not part of the note.";
+
 /* Answers the replace or restore in @p slot without a commit and returns
  * true if @p note, the note that NOTES_CHECK found, already has the bytes
  * of the file part in req->body. The answer names @p tip, the newest
@@ -6946,8 +6947,9 @@ mcp_slot_notes_unchanged (struct mcp_slot         *slot,
 	char const *name = (char const *)part.name.ptr;
 	uint64_t n = note->bytes;
 	e = dstr_printf(&slot->answer, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
-	                "commit %s. No commit was made.", (int)jb_utf8(name, part.name.len), name,
-	                n == 1 ? "this" : "these", n, n == 1 ? "" : "s", tip) ? 0 : ENOMEM;
+	                "commit %s. No commit was made.%s", (int)jb_utf8(name, part.name.len),
+	                name, n == 1 ? "this" : "these", n, n == 1 ? "" : "s", tip,
+	                slot->fetch & FETCH_STRIPPED ? left_out : "") ? 0 : ENOMEM;
 	buf_fini(&req->body);
 	mcp_slot_notes_end(slot, e, false);
 	return true;
@@ -7022,6 +7024,7 @@ mcp_slot_notes_saved (struct mcp_slot *slot)
 		ESC(m, jb_utf8(m, msg.len)),
 		slot->fetch & (FETCH_REPLACE | FETCH_RESTORE)
 		? TEXT(". Previous versions remain in history.") : TEXT("."),
+		slot->fetch & FETCH_STRIPPED ? TEXT(left_out) : TEXT(""),
 	};
 	return mcp_slot_say(slot, p, ARRAY_SIZE(p));
 }
@@ -7750,7 +7753,7 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 	 : (slot->fetch & FETCH_REVISION) && !notes_revision_ready(slot->own)
 	 ? mcp_slot_notes_revision_step
 	 : slot->fetch & FETCH_DIFF ? mcp_slot_notes_got_diff
-	 : (slot->fetch & ~FETCH_COPY) == FETCH_FORMAT ? mcp_slot_notes_format
+	 : (slot->fetch & ~FETCH_KEEP) == FETCH_FORMAT ? mcp_slot_notes_format
 	 : slot->fetch & FETCH_BOOKS ? mcp_slot_notes_got_books
 	 : slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest
 	 : steps[slot->fetch & FETCH_KIND])(slot);
@@ -7785,7 +7788,8 @@ mcp_notes_add_data (struct buf           *in,
 }
 
 /** Writes a versioned note on the caller's branch, initializing the shared
- * repository if needed.
+ * repository if needed. A turn's text is cut before its trailing notices
+ * (notice_kept()), because only the results of a turn's calls carry them.
  */
 static void
 mcp_slot_notes_add (struct mcp_slot    *slot,
@@ -7806,6 +7810,7 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	char const *name = jb_str(jb_get(args, "file"), &name_len);
 	char const *uri = jb_str(content, &uri_len);
 	struct datauri data = {};
+	size_t kept = text && slot->role == ROLE_TURN ? notice_kept(text, len) : len;
 	struct mcp_piece problem =
 		!name || notes_name(name, name_len, &skip) ? TEXT(bad_name)
 		: content && slot->role != ROLE_OWN
@@ -7820,11 +7825,17 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 		                       most))
 		: !content && (!text || !len || len > NOTES_TEXT || memchr(text, '\0', len))
 		? TEXT("The text argument must be a string of 1 byte to 4 MiB, and no NUL.")
+		: !content && !kept
+		? TEXT("The text has only askai's [askai: ...] lines, which askai adds to tool "
+		       "results. Give the text of the note itself.")
 		: (struct mcp_piece){};
 	if (problem.ptr) {
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
+	if (kept < len)
+		flags |= FETCH_STRIPPED;
+	len = kept;
 	if (!initialized && (flags & FETCH_REPLACE)) {
 		mcp_slot_result(slot, TEXT("No note has that name. Use action add to create it."),
 		                true);

@@ -833,9 +833,11 @@ history. The result names the new commit and repeats its message. A
 `replace` or `restore` that would leave the note's bytes as they are
 makes no commit; its result says `Unchanged` and names the current
 commit. `add` refuses an existing name, and `replace` refuses a missing
-one.
-Concurrent branch updates fail rather than overwrite another writer's
-changes.
+one. Concurrent branch updates fail rather than overwrite another
+writer's changes. When a turn writes text whose last lines are askai's
+own notices from tool results, such as `[askai: notebook ...]` or the
+context notices, askai leaves those lines out and says so in the result.
+Notices inside the text, and text from clients, stay as they are.
 Names cannot contain control characters or empty parts.  No part can be
 `.`, `..`, `.git` or `git~1`, in any case and also with spaces or dots after
 it, because git refuses such names.  Slashes at the start are left out.

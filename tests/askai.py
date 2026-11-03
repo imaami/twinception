@@ -771,20 +771,29 @@ def note_files(selector, contents, algorithm="sha1"):
     return "".join(rows)
 
 
-def saved(message, commit="[0-9a-f]{40}|[0-9a-f]{64}"):
+# What the result of a turn's note write adds if askai left its notices out
+# of the end of the text.
+LEFT_OUT = (" askai left out the [askai: ...] lines at the end of the text. askai "
+            "adds those lines to tool results, and they are not part of the note.")
+
+
+def saved(message, commit="[0-9a-f]{40}|[0-9a-f]{64}", stripped=False):
     """A regular expression for the result of a note write whose commit has
     the message @p message. @p commit is a regular expression for the ID of
-    the commit, such as the ID itself."""
+    the commit, such as the ID itself. @p stripped is true if askai left
+    notices out of the text."""
     kept = " Previous versions remain in history." if message.startswith(
         ("Replace ", "Restore ")) else ""
-    return f"Saved in commit (?:{commit}): " + re.escape(f"{message}.{kept}")
+    return f"Saved in commit (?:{commit}): " + re.escape(
+        f"{message}.{kept}" + (LEFT_OUT if stripped else ""))
 
 
-def unchanged_result(name, size, commit):
+def unchanged_result(name, size, commit, stripped=False):
     """The result of a note write that leaves the note @p name, quoted as in
     a commit message, with its @p size bytes, at the commit @p commit."""
     these = "this 1 byte" if size == 1 else f"these {size} bytes"
-    return f"Unchanged: {name} already has {these}, at commit {commit}. No commit was made."
+    return (f"Unchanged: {name} already has {these}, at commit {commit}. No commit was "
+            "made." + (LEFT_OUT if stripped else ""))
 
 
 def grouped(members):
@@ -11197,6 +11206,38 @@ def check_turns(binary, up):
                                                 for k in range(1, 4001)) + \
                 "\n[Line 4000 is the end of the file.]", text[-200:]
 
+            # askai leaves its notices out of the end of a turn's text, each on
+            # its own line, and says so. Notices within the text, or not on a
+            # line of their own, or not of askai's forms, stay. The notes
+            # calls of a turn run in order.
+            reminder = ("\n\n[askai: your context is 26% full, 2100 of 8000 tokens. Now is "
+                        "a good time to write notes of what you have learned. Compaction "
+                        "removes the conversation, but not the notes.]")
+            texts = {"strip/a.md": ("a" + provenance, "a\n"),
+                     "strip/f.md": ("f" + provenance + "\n" + provenance + "\n", "f\n"),
+                     "strip/g.md": ("g" + reminder, "g\n"),
+                     "strip/b.md": ("b " + provenance[2:], None),
+                     "strip/c.md": ("c" + provenance + "\n\nmore", None),
+                     "strip/d.md": ("d\n\n[askai: notebook nobody]", None)}
+            calls = [(f"s{k}", "notes", json.dumps({"action": "add", "file": name,
+                                                    "text": text}))
+                     for k, (name, (text, _)) in enumerate(texts.items())]
+            calls.append(("s9", "notes", json.dumps({"action": "add", "file": "strip/e.md",
+                                                     "text": provenance + "\n"})))
+            script[:] = [lambda r: (200, turn_stream(calls))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
+            for k, (name, (text, stored)) in enumerate(texts.items()):
+                data = stored or text
+                made = tip(f"{branch}~{len(texts) - 1 - k}")
+                assert re.fullmatch(saved(f'Add "{name}" ({len(data)} bytes)', made,
+                                          stored is not None), outputs[k]), (name, outputs)
+                assert sh("--git-dir", notes, "show", f"{branch}:{name}", cwd=d) == data, name
+            assert outputs[len(texts):] == [
+                "The text has only askai's [askai: ...] lines, which askai adds to tool "
+                "results. Give the text of the note itself."], outputs
+
             # A long newest note goes into the prompt cut to the window of a
             # tool's output, with the offset to read on from.
             size = 100 << 10
@@ -11259,6 +11300,13 @@ def check_turns(binary, up):
             assert f"ask-chain thread is {mine}." in result["content"][1]["text"], result
             assert "seen.md" in client_notes({"action": "list", "thread": mine,
                                               "notebook": "other"})
+            # A client's text keeps a notice at its end.
+            text = "aim2" + provenance
+            said = client_notes({"action": "add", "file": "aim2.md", "text": text})
+            assert re.fullmatch(saved(f'Add "aim2.md" ({len(text)} bytes)',
+                                      tip(f"refs/heads/notes/{client}")), said), said
+            assert sh("--git-dir", notes, "show", f"refs/heads/notes/{client}:aim2.md",
+                      cwd=d) == text
             count = len(up.requests)
             ai.ask("Again", thread=mine)
             assert prompt(up.requests[count]).startswith(
@@ -11299,6 +11347,42 @@ def check_turns(binary, up):
             n = int(cut.group(1))
             assert n <= 64 << 10 and int(cut.group(2)) == len(whole) and \
                 int(cut.group(3)) == n and shown[head:head + n] == whole[:n], cut
+
+        # A turn that writes a result back into its note leaves out the
+        # notices that askai gave the result: the notebook of a read, a
+        # notice about the context, and the notice of the last turn.
+        with Askai(binary, *isolated("--context", "8000", "--max-turns", "3")) as ai:
+            book = f"{notes}-{sessions}"
+            last = re.escape("\n\n[askai: your next turn is your last: answer then, "
+                             "without calling tools.]")
+            for used, notice in ((5400, r"Note what you need to keep, then call compact\."),
+                                 (2100, r"Now is a good time to write notes of what you "
+                                        r"have learned\. Compaction removes the "
+                                        r"conversation, but not the notes\.")):
+                name = f"f{used}.md"
+                script[:] = [
+                    lambda r, name=name: (200, turn_stream([("a", "notes", json.dumps(
+                        {"action": "add", "file": name, "text": "kept\n"}))], used=(100, 10))),
+                    lambda r, name=name, used=used: (200, turn_stream([("b", "notes", json.dumps(
+                        {"action": "read", "file": name}))], used=(used, 10)))]
+                count = len(up.requests)
+                assert ai.ask("Q")["content"][0]["text"] == "A"
+                seen = turns(up.requests[count + 2])[-1]["content"]
+                assert re.fullmatch("kept\n" + re.escape(provenance) + r"\n\n\[askai: your "
+                                    r"context is \d+% full, \d+ of 8000 tokens\. " + notice +
+                                    r"\]" + last, seen), seen
+                before = tip(book=book)
+                script[:] = [lambda r, name=name, seen=seen: (200, turn_stream([(
+                    "c", "notes", json.dumps({"action": "replace", "file": name,
+                                              "text": seen}))]))]
+                count = len(up.requests)
+                assert ai.ask("Q")["content"][0]["text"] == "A"
+                # This result can have a notice about the context of its own.
+                said = turns(up.requests[count + 1])[-1]["content"]
+                assert said.split("\n\n")[0] == unchanged_result(f'"{name}"', 5, before,
+                                                                 True), said
+                assert tip(book=book) == before and sh(
+                    "--git-dir", book, "show", f"{branch}:{name}", cwd=d) == "kept\n"
 
         # A small context: windows of an eighth of it, a reminder to write
         # notes past half, a warning past two thirds, and once full, the
