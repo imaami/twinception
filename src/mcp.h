@@ -345,6 +345,14 @@ extern void
 mcp_slot_lend (struct mcp_slot  *slot,
                struct tool_text  text);
 
+/** Returns the maximum number of bytes of the call's output that its caller
+ *  reads in one result. For a call made by a turn or a job, that is the
+ *  turn's window. For a client's call, it is TOOL_OUTPUT_MAX. This function
+ *  is not exported yet.
+ */
+extern size_t
+mcp_slot_window_max (struct mcp_slot const *slot);
+
 /** Makes the call wait.  start() calls it last, if the call goes on after
  *  start() returns.  askai can free the call's arguments in this function.
  *  For a kind with TOOL_STREAM, the reply becomes an event stream if the

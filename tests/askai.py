@@ -8351,6 +8351,8 @@ def check_git(binary, up):
                     help_text["limits"]["argument_bytes"] == 1024, result
                 assert help_text["limits"]["capture_bytes"] == 4 << 20 and \
                     "exact next offset" in help_text["pagination"], result
+                # A client's call takes the whole output in one result.
+                assert help_text["limits"]["window_bytes"] == 16 << 20, result
                 assert help_text["pattern_required"] == (command == "grep"), result
             help_text = json.loads(text_of(call(ai, repo="proj", command="grep", help=True)))
             assert {"-F", "-E", "-C#"} <= set(help_text["options"]) and not \
@@ -11421,11 +11423,15 @@ def check_turns(binary, up):
             description = ai.rpc("tools/list")[2]["result"]["tools"][0]["description"]
             assert "It may use some of this server's tools itself" in description and \
                 "It keeps notes in the shared session repository" in description, description
-            script[:] = [lambda r: (200, turn_stream([("a", "git", json.dumps(show))]))]
+            # help names the window that the turn takes.
+            script[:] = [lambda r: (200, turn_stream([
+                ("a", "git", json.dumps(show)),
+                ("h", "git", '{"repo":"proj","command":"log","help":true}')]))]
             count = len(up.requests)
             ai.ask("Q")
-            assert "[Bytes 0 to 2992 of 44000:" in turns(up.requests[count + 1])[1][
-                "content"], up.requests[count + 1]
+            results = turns(up.requests[count + 1])
+            assert "[Bytes 0 to 2992 of 44000:" in results[1]["content"], results
+            assert '"window_bytes":3000' in results[2]["content"], results
 
             # The list action returns each current note once. The read
             # action returns a window of a long note, and a read with an offset

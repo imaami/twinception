@@ -3462,6 +3462,28 @@ mcp_slot_lend (struct mcp_slot  *slot,
 	slot->lent = (struct span){ (unsigned char *)(uintptr_t)text.ptr, text.len };
 }
 
+/* Return the maximum number of bytes of a tool's output that a turn reads
+ * in one result. That is an eighth of the context in bytes, at about 4
+ * bytes per token, kept between 2048 and LEND_MAX. It is LEND_MAX if the
+ * context size is not known.
+ */
+static size_t
+mcp_req_lend_max (struct mcp_req const *req)
+{
+	size_t eighth = (size_t)req->context / 2;
+	return !req->context ? LEND_MAX : eighth < 2048 ? 2048
+	       : eighth < LEND_MAX ? eighth : LEND_MAX;
+}
+
+/* A job gets a turn's window, because a turn of the same request reads the
+ * job's output with the jobs tool.
+ */
+size_t
+mcp_slot_window_max (struct mcp_slot const *slot)
+{
+	return slot->role == ROLE_OWN ? TOOL_OUTPUT_MAX : mcp_req_lend_max(slot->req);
+}
+
 /* Its request parks, if the slot is its own; a turn's call keeps it among
  * the calls a drain ends.
  */
@@ -4058,17 +4080,6 @@ static tool_mask
 mcp_req_lent (struct mcp_req const *req)
 {
 	return mcp_lending_lent(&req->mcp->st->lending, req->s->upstream);
-}
-
-/* The bytes of a tool's output that a turn takes, at most: an eighth of the
- * context, if known, as text takes some 4 bytes a token.
- */
-static size_t
-mcp_req_lend_max (struct mcp_req const *req)
-{
-	size_t eighth = (size_t)req->context / 2;
-	return !req->context ? LEND_MAX : eighth < 2048 ? 2048
-	       : eighth < LEND_MAX ? eighth : LEND_MAX;
 }
 
 /* The tokens that the upload, as written so far, takes: the last turn's

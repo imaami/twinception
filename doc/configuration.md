@@ -1320,8 +1320,9 @@ attributes and mailmaps use the view's fixed `HEAD`. Repository metadata and
 object storage remain trusted; this is not an operating-system sandbox.
 
 Git output is captured up to 4 MiB.  An agent's response window may be
-smaller; its footer gives the exact next `offset` to use with the same
-arguments.  A successful search with no matches says `[No matches.]`;
+smaller; `help: true` gives it as `window_bytes`, and the footer of a longer
+output gives the exact next `offset` to use with the same arguments. A
+successful search with no matches says `[No matches.]`;
 other nonzero Git exits are reported as errors. History validation failures are
 generic. Failed `show` and `cat-file`
 calls return a generic committed-object error so Git's local-file existence

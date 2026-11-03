@@ -876,8 +876,9 @@ git_help (struct mcp_slot *slot,
 			"replace trailing # with digits or * with a value. For example: "
 			"--max-count=20, -n20, -C3. Do not split an option and its value."),
 		"pagination", json_object_new_string(
-			"The capture limit is 4 MiB. A response window may be smaller; "
-			"its footer gives the exact next offset for the same arguments."),
+			"The capture limit is 4 MiB. The response window is window_bytes; "
+			"a longer output ends with a footer that gives the exact next "
+			"offset for the same arguments."),
 		"limits", jb_object(
 			"options", json_object_new_int(OPTIONS),
 			"revisions", json_object_new_int(takes & SINGLE ? 1 :
@@ -885,6 +886,7 @@ git_help (struct mcp_slot *slot,
 			"paths", json_object_new_int(takes & FILES ? PATHS : 0),
 			"argument_bytes", json_object_new_int(WORD),
 			"capture_bytes", json_object_new_int(GIT_MAX),
+			"window_bytes", json_object_new_int64((int64_t)mcp_slot_window_max(slot)),
 			nullptr),
 		"pattern_required", json_object_new_boolean(takes & PATTERN),
 		nullptr);
