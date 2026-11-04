@@ -31,6 +31,7 @@ override SRC_askai := \
   registry.c          \
   review.c            \
   roster.c            \
+  schema.c            \
   task.c              \
   tls.c               \
   uploads.c           \

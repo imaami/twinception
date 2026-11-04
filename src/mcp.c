@@ -109,6 +109,7 @@
 #include "registry.h"
 #include "review.h"
 #include "roster.h"
+#include "schema.h"
 #include "shelf.h"
 #include "stream.h"
 #include "task.h"
@@ -9511,53 +9512,6 @@ mcp_drain (struct mcp *mcp)
 	loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 
-/* A JSON string of the texts @p a, @p b and @p c, one after another, or
- * nullptr if askai runs out of memory.
- */
-static struct json_object *
-mcp_text3 (char const *a,
-           char const *b,
-           char const *c)
-{
-	dstr_auto d = DSTR_INIT;
-	if (!dstr_cat(&d, a) || !dstr_cat(&d, b) || !dstr_cat(&d, c))
-		return nullptr;
-	return json_object_new_string_len(dstr_get(&d), (int)dstr_len(&d));
-}
-
-/* A property of @p type, as JSON Schema has one, that @p about describes. */
-static struct json_object *
-mcp_property (char const *type,
-              char const *about)
-{
-	return jb_object("type", json_object_new_string(type),
-	                 "description", json_object_new_string(about), nullptr);
-}
-
-/* The schema of an object of the @p properties, those @p required. */
-static struct json_object *
-mcp_schema (struct json_object *properties,
-            struct json_object *required)
-{
-	return jb_object("type", json_object_new_string("object"),
-	                 "properties", properties,
-	                 "required", required,
-	                 "additionalProperties", json_object_new_boolean(0),
-	                 nullptr);
-}
-
-/* A JSON array of the strings @p words, which end in nullptr; nullptr if
- * out of memory.
- */
-static struct json_object *
-mcp_words (char const *const words[])
-{
-	struct json_object *arr = json_object_new_array();
-	for (size_t i = 0; arr && words[i]; ++i)
-		arr = jb_push_or_free(arr, json_object_new_string(words[i]));
-	return arr;
-}
-
 /* Returns the definition of the ask tool. @p service is the mcp_static,
  * which has the tool's configured name and description. The definition has
  * the argument "thread" if the turns get the notes tool, which is the only
@@ -9568,11 +9522,13 @@ static struct json_object *
 mcp_tool_definition (void const *service)
 {
 	struct mcp_static const *st = service;
+	struct tool_text const roles[] = { TOOL_TEXT("user"), TOOL_TEXT("assistant") };
+	struct tool_text const keys[] = { TOOL_TEXT("role"), TOOL_TEXT("content") };
 	struct json_object *props = jb_object(
-		"prompt", mcp_property("string",
+		"prompt", schema_property("string",
 			"The new question or task. Include the context it needs, or supply "
 			"earlier user and assistant turns in messages for a continuing chat."),
-		"system", mcp_property("string",
+		"system", schema_property("string",
 			"Optional system instructions for the other AI, such as a role "
 			"or an answer format."),
 		"messages", jb_object(
@@ -9582,36 +9538,31 @@ mcp_tool_definition (void const *service)
 				"Earlier visible chat messages, in order, before the new prompt. "
 				"Each has role user or assistant and plain string content. The "
 				"client retains this history; thread does not retain messages."),
-			"items", jb_object(
-				"type", json_object_new_string("object"),
-				"properties", jb_object(
-					"role", jb_object("type", json_object_new_string("string"),
-					                  "enum", mcp_words((char const *[]){
-					                          "user", "assistant", nullptr }),
-					                  nullptr),
-					"content", jb_object("type", json_object_new_string("string"), nullptr),
-					nullptr),
-				"required", mcp_words((char const *[]){ "role", "content", nullptr }),
-				"additionalProperties", json_object_new_boolean(0),
-				nullptr),
+			"items", schema_object(
+				jb_object("role", schema_enum(schema_names(roles, ARRAY_SIZE(roles)),
+				                              nullptr),
+				          "content", schema_property("string", nullptr),
+				          nullptr),
+				schema_names(keys, ARRAY_SIZE(keys))),
 			nullptr),
-		"background", mcp_property("boolean",
+		"background", schema_property("boolean",
 			"False waits for the answer on this connection. True requires server "
 			"background mode and returns a job id. Omission follows the server "
 			"setting, unless live streaming is requested."),
 		nullptr);
 	if (st->lending.by[LEND_ALWAYS])
-		props = jb_set_or_free(props, "thread", mcp_property("string",
+		props = jb_set_or_free(props, "thread", schema_property("string",
 			"Optional ask-chain id from an earlier answer: 32 hexadecimal "
 			"digits. Notes are shared by repository path and loaded at the "
 			"start of every ask, independently of this argument."));
 	if (st->ep->background) {
-		props = jb_set_or_free(props, "job", mcp_property("string",
+		struct tool_text const actions[] = { TOOL_TEXT("result"), TOOL_TEXT("cancel") };
+		props = jb_set_or_free(props, "job", schema_property("string",
 			"The job id returned by this tool. Give job instead of prompt, "
 			"system or thread to check its status or read its completed result."));
 		props = jb_set_or_free(props, "action", jb_object(
 			"type", json_object_new_string("string"),
-			"enum", mcp_words((char const *[]){ "result", "cancel", nullptr }),
+			"enum", schema_names(actions, ARRAY_SIZE(actions)),
 			"default", json_object_new_string("result"),
 			"description", json_object_new_string(
 				"With job: result checks its status or returns its completed "
@@ -9621,7 +9572,7 @@ mcp_tool_definition (void const *service)
 	return jb_object(
 		"name", json_object_new_string(st->tool->name),
 		"title", json_object_new_string("Ask AI"),
-		"description", mcp_text3(st->tool->description, st->ep->background
+		"description", schema_text3(st->tool->description, st->ep->background
 			? "\n\nWith prompt, start a job and return its id immediately. The job "
 			  "keeps running after this connection closes. Later call this same "
 			  "tool with job and no prompt to check its status or read its result; "
@@ -9629,9 +9580,9 @@ mcp_tool_definition (void const *service)
 			  "completion. Set background false to wait for the answer on this "
 			  "connection."
 			: "", ""),
-		"inputSchema", mcp_schema(props, st->ep->background
-		                                 ? json_object_new_array()
-		                                 : jb_list(json_object_new_string("prompt"))),
+		"inputSchema", schema_object(props, st->ep->background
+		                                    ? json_object_new_array()
+		                                    : jb_list(json_object_new_string("prompt"))),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(!st->ep->background),
 			"openWorldHint", json_object_new_boolean(1),
@@ -9657,14 +9608,9 @@ mcp_task_definition (void const *service)
 		"inputSchema", jb_object(
 			"type", json_object_new_string("object"),
 			"properties", jb_object(
-				"slices", jb_object(
-					"type", json_object_new_string("integer"),
-					"minimum", json_object_new_int(1),
-					"maximum", json_object_new_int(SPIN_MAX),
-					nullptr),
-				"prompt", jb_object(
-					"type", json_object_new_string("string"),
-					nullptr),
+				"slices", jb_set_or_free(schema_count(1, nullptr), "maximum",
+				                         json_object_new_int(SPIN_MAX)),
+				"prompt", schema_property("string", nullptr),
 				nullptr),
 			"additionalProperties", json_object_new_boolean(0),
 			nullptr),
@@ -9715,7 +9661,7 @@ mcp_notes_schema (enum notes_side          side,
 		"action", jb_object(
 			"type", json_object_new_string("string"),
 			"enum", actions,
-			"description", mcp_text3(
+			"description", schema_text3(
 				"add a note, replace an existing own note, list current files "
 				"with their byte sizes and blob ids, show history oldest first "
 				"with commit IDs and messages (line counts are lines added by each change), "
@@ -9729,41 +9675,37 @@ mcp_notes_schema (enum notes_side          side,
 			nullptr),
 		"file", jb_object(
 			"type", json_object_new_string("string"),
-			"description", mcp_text3(
+			"description", schema_text3(
 				"For add, replace, restore, read, diff", files ? ", copy and attach" : " and copy",
 				": the file name of the note, at most 255 bytes. It can have "
 				"directories, such as findings/locks.md. Its extension, such "
 				"as .md or .txt, shows the format of the text. Optional for history "
 				"to show only changes to that exact file name."),
 			nullptr),
-		"revision", mcp_property("string",
+		"revision", schema_property("string",
 			"For read: full commit ID from the selected notebook's history, "
 			"or current (default). Required for restore, which copies the exact "
 			"historical bytes into your own notebook in a new commit, preserving "
 			"all intervening history; if the note already has those bytes, it "
 			"makes no commit. No Git revision expressions."),
-		"from", mcp_property("string",
+		"from", schema_property("string",
 			"Required for diff: the older full commit ID from this notebook's history, "
 			"or current. The diff compares that file at from against to."),
-		"to", mcp_property("string",
+		"to", schema_property("string",
 			"For diff: full commit ID from the same notebook, or current (default). "
 			"Both revisions are resolved against one notebook snapshot. Output names "
 			"the resolved IDs; reuse them when continuing with offset."),
-		"as", mcp_property("string",
+		"as", schema_property("string",
 			"For copy: the file name of the copy in your notebook. The "
 			"default is the name of the note."),
-		"text", mcp_property("string",
+		"text", schema_property("string",
 			"For add and replace: the text of the note, at most 4 MiB."),
-		"offset", jb_object(
-			"type", json_object_new_string("integer"),
-			"minimum", json_object_new_int(0),
-			"description", json_object_new_string(
-				"For list, history, notebooks, read and diff: the byte of the output to start from, to "
-				"read on past where it was cut."),
-			nullptr),
+		"offset", schema_count(0,
+			"For list, history, notebooks, read and diff: the byte of the output "
+			"to start from, to read on past where it was cut."),
 		"notebook", jb_object(
 			"type", json_object_new_string("string"),
-			"description", mcp_text3(
+			"description", schema_text3(
 				"For list, history, read, diff and copy", files ? ", and attach" : "",
 				": own (default), or a participant/principal/side selector "
 				"from action notebooks. That action identifies your writable "
@@ -9783,7 +9725,7 @@ mcp_notes_schema (enum notes_side          side,
 			"x-mcp-file", jb_object("maxSize", json_object_new_int64((int64_t)most),
 			                        nullptr),
 			nullptr));
-		props = jb_set_or_free(props, "thread", mcp_property("string",
+		props = jb_set_or_free(props, "thread", schema_property("string",
 			"Optional legacy ask-chain id (32 hexadecimal digits). Notes belong "
 			"to the configured shared repository, independent of this value."));
 	}
@@ -9807,7 +9749,7 @@ mcp_notes_schema (enum notes_side          side,
 		"name", json_object_new_string("notes"),
 		"description", json_object_new_string_len(dstr_get(&description),
 		                                          (int)dstr_len(&description)),
-		"inputSchema", mcp_schema(props, jb_list(json_object_new_string("action"))),
+		"inputSchema", schema_object(props, jb_list(json_object_new_string("action"))),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(0),
 			"destructiveHint", json_object_new_boolean(0),
@@ -9866,7 +9808,7 @@ mcp_compact_definition (void const *service)
 	static_assert(SUMMARY_MAX == 4 << 20, "the description says");
 	return jb_object(
 		"name", json_object_new_string("compact"),
-		"description", mcp_text3(
+		"description", schema_text3(
 			"Free your context: the conversation since the task, your turns and "
 			"the tools' results, is replaced by your summary of it, and your "
 			"notes", st->lending.findings ? " and askai's review record are" : " are",
@@ -9874,9 +9816,9 @@ mcp_compact_definition (void const *service)
 			"you must keep. Call it when askai says that the context fills up, "
 			"or once you are done with a part of the work whose details you no "
 			"longer need. Calls after it in the same turn do not run."),
-		"inputSchema", mcp_schema(
+		"inputSchema", schema_object(
 			jb_object(
-				"summary", mcp_property("string",
+				"summary", schema_property("string",
 					"Where the task stands: what is done, what you found, "
 					"and what you will do next; at most 4 MiB."),
 				nullptr),
@@ -9901,24 +9843,26 @@ mcp_background_definition (void const *service)
 			"message after your answer. Then read its output with jobs. Use it "
 			"for calls that take long, while you do other work; at most 8 jobs "
 			"a task."),
-		"inputSchema", mcp_schema(
+		"inputSchema", schema_object(
 			jb_object(
-				"tool", mcp_property("string", "The name of the tool to call, "
-				                     "such as git or man."),
-				"arguments", mcp_property("object",
+				"tool", schema_property("string", "The name of the tool to call, "
+				                        "such as git or man."),
+				"arguments", schema_property("object",
 					"Its arguments, as you would give them to it."),
 				nullptr),
 			jb_list(json_object_new_string("tool"))),
 		nullptr);
 }
 
-/* The values of the argument action of jobs, an array; nullptr if out of
- * memory.
+/* Returns the actions of the jobs tool as a JSON array, or nullptr if out
+ * of memory.
  */
 static struct json_object *
 mcp_jobs_actions (void)
 {
-	return mcp_words((char const *[]){ "list", "result", "cancel", nullptr });
+	struct tool_text const names[] = { TOOL_TEXT("list"), TOOL_TEXT("result"),
+	                                   TOOL_TEXT("cancel") };
+	return schema_names(names, ARRAY_SIZE(names));
 }
 
 /* The definition of jobs as the turns get it, likewise. */
@@ -9932,18 +9876,14 @@ mcp_jobs_definition (void const *service)
 			"The jobs you started with background: list them, read the output "
 			"of one that has finished, a window at a time, or cancel one that "
 			"runs."),
-		"inputSchema", mcp_schema(
+		"inputSchema", schema_object(
 			jb_object(
-				"action", jb_object(
-					"type", json_object_new_string("string"),
-					"enum", mcp_jobs_actions(),
-					"description", json_object_new_string(
-						"list the jobs, read a job's result, or cancel it."),
-					nullptr),
-				"job", mcp_property("integer", "For result and cancel: the "
-				                    "job's number."),
-				"offset", mcp_property("integer", "For result: the byte of the "
-				                       "output to start from, to read on."),
+				"action", schema_enum(mcp_jobs_actions(),
+					"list the jobs, read a job's result, or cancel it."),
+				"job", schema_property("integer", "For result and cancel: the "
+				                       "job's number."),
+				"offset", schema_property("integer", "For result: the byte of the "
+				                          "output to start from, to read on."),
 				nullptr),
 			jb_list(json_object_new_string("action"))),
 		nullptr);
@@ -9961,14 +9901,13 @@ mcp_wait_definition (void const *service)
 			"Wait until a job finishes, of those you name or any, or a timer "
 			"fires, or the seconds are up, whichever comes first; askai then "
 			"says what happened. Call it rather than jobs again and again."),
-		"inputSchema", mcp_schema(
+		"inputSchema", schema_object(
 			jb_object(
-				"seconds", mcp_property("integer", "The longest to wait: 1 to "
-				                        "600."),
+				"seconds", schema_property("integer", "The longest to wait: 1 to "
+				                           "600."),
 				"jobs", jb_object(
 					"type", json_object_new_string("array"),
-					"items", jb_object("type", json_object_new_string("integer"),
-					                   nullptr),
+					"items", schema_property("integer", nullptr),
 					"description", json_object_new_string(
 						"The jobs to wait for; any if none."),
 					nullptr),
@@ -9989,12 +9928,12 @@ mcp_timer_definition (void const *service)
 			"Set a timer, and go on at once: when it fires, askai tells you, "
 			"with a later tool result, by ending a wait, or in a message after "
 			"your answer."),
-		"inputSchema", mcp_schema(
+		"inputSchema", schema_object(
 			jb_object(
-				"seconds", mcp_property("integer", "When it fires: in 1 to 3600 "
-				                        "seconds."),
-				"note", mcp_property("string", "What it is for, which askai "
-				                     "says as it fires; at most 200 bytes."),
+				"seconds", schema_property("integer", "When it fires: in 1 to 3600 "
+				                           "seconds."),
+				"note", schema_property("string", "What it is for, which askai "
+				                        "says as it fires; at most 200 bytes."),
 				nullptr),
 			jb_list(json_object_new_string("seconds"))),
 		nullptr);
@@ -10023,11 +9962,11 @@ mcp_background_client_definition (void const *service)
 	return jb_object(
 		"name", json_object_new_string("background"),
 		"description", json_object_new_string(about),
-		"inputSchema", mcp_schema(
+		"inputSchema", schema_object(
 			jb_object(
-				"tool", mcp_property("string", tool),
-				"arguments", mcp_property("object", "The arguments for the tool, "
-				                          "the same as in a direct call."),
+				"tool", schema_property("string", tool),
+				"arguments", schema_property("object", "The arguments for the tool, "
+				                             "the same as in a direct call."),
 				nullptr),
 			jb_list(json_object_new_string("tool"))),
 		nullptr);
@@ -10046,19 +9985,15 @@ mcp_jobs_client_definition (void const *service)
 			"List your jobs, which background started, and your timers; return "
 			"the result of a job that has ended; or cancel a job that runs or a "
 			"timer that has not fired."),
-		"inputSchema", mcp_schema(
+		"inputSchema", schema_object(
 			jb_object(
-				"action", jb_object(
-					"type", json_object_new_string("string"),
-					"enum", mcp_jobs_actions(),
-					"description", json_object_new_string(
-						"list lists your jobs and timers, result returns the "
-						"result of a job, and cancel cancels a job or a timer."),
-					nullptr),
-				"job", mcp_property("string", "The id of the job for result and "
-				                    "cancel, from the result of background."),
-				"timer", mcp_property("integer", "The number of the timer for "
-				                      "cancel, from the result of timer."),
+				"action", schema_enum(mcp_jobs_actions(),
+					"list lists your jobs and timers, result returns the "
+					"result of a job, and cancel cancels a job or a timer."),
+				"job", schema_property("string", "The id of the job for result and "
+				                       "cancel, from the result of background."),
+				"timer", schema_property("integer", "The number of the timer for "
+				                         "cancel, from the result of timer."),
 				nullptr),
 			jb_list(json_object_new_string("action"))),
 		nullptr);
@@ -10081,14 +10016,13 @@ mcp_wait_client_definition (void const *service)
 			"slot: call it instead of calling jobs again and again. If your "
 			"client has a timeout for requests, wait for fewer seconds than "
 			"that."),
-		"inputSchema", mcp_schema(
+		"inputSchema", schema_object(
 			jb_object(
-				"seconds", mcp_property("integer", "The longest time to wait, "
-				                        "from 1 to 600 seconds."),
+				"seconds", schema_property("integer", "The longest time to wait, "
+				                           "from 1 to 600 seconds."),
 				"jobs", jb_object(
 					"type", json_object_new_string("array"),
-					"items", jb_object("type", json_object_new_string("string"),
-					                   nullptr),
+					"items", schema_property("string", nullptr),
 					"description", json_object_new_string(
 						"The ids of the jobs to wait for, at most 16; without "
 						"ids, any job."),
@@ -10112,13 +10046,13 @@ mcp_timer_client_definition (void const *service)
 			"Set a timer, and continue at once: the result contains the number of "
 			"the timer. When the timer fires, a call of wait ends, and its result "
 			"contains the number and the note of the timer."),
-		"inputSchema", mcp_schema(
+		"inputSchema", schema_object(
 			jb_object(
-				"seconds", mcp_property("integer", "The seconds until the timer "
-				                        "fires, from 1 to 3600."),
-				"note", mcp_property("string", "What the timer is for, at most 200 "
-				                     "bytes; the result of a wait contains it when "
-				                     "the timer fires."),
+				"seconds", schema_property("integer", "The seconds until the timer "
+				                           "fires, from 1 to 3600."),
+				"note", schema_property("string", "What the timer is for, at most "
+				                        "200 bytes; the result of a wait contains it "
+				                        "when the timer fires."),
 				nullptr),
 			jb_list(json_object_new_string("seconds"))),
 		nullptr);
