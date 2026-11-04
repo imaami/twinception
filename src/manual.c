@@ -19,6 +19,7 @@
 #include "manual.h"
 #include "mcp.h"
 #include "plugin.h"
+#include "schema.h"
 #include "util.h"
 
 enum {
@@ -875,34 +876,21 @@ manual_definition (void const *service)
 			"past the cut. Use it to check the exact interface of a system "
 			"call, library function, command, file format or convention. Pages "
 			"are kept once rendered, so reading one again is cheap."),
-		"inputSchema", jb_object(
-			"type", json_object_new_string("object"),
-			"properties", jb_object(
-				"name", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"The page's name, such as printf, pthread_create, epoll "
-						"or bash."),
-					nullptr),
-				"section", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"Optional section: 1 commands, 2 system calls, 3 library "
-						"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
-						"overviews and conventions, 8 administration. Without "
-						"it, the first page man finds in its usual order."),
-					nullptr),
-				"offset", jb_object(
-					"type", json_object_new_string("integer"),
-					"minimum", json_object_new_int(0),
-					"description", json_object_new_string(
-						"The byte of the page to start from, to read on past "
-						"where it was cut."),
-					nullptr),
+		"inputSchema", schema_object(
+			jb_object(
+				"name", schema_property("string",
+					"The page's name, such as printf, pthread_create, epoll "
+					"or bash."),
+				"section", schema_property("string",
+					"Optional section: 1 commands, 2 system calls, 3 library "
+					"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
+					"overviews and conventions, 8 administration. Without "
+					"it, the first page man finds in its usual order."),
+				"offset", schema_count(0,
+					"The byte of the page to start from, to read on past "
+					"where it was cut."),
 				nullptr),
-			"required", jb_list(json_object_new_string("name")),
-			"additionalProperties", json_object_new_boolean(0),
-			nullptr),
+			jb_list(json_object_new_string("name"))),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(1),
 			"openWorldHint", json_object_new_boolean(0),

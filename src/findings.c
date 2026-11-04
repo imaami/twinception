@@ -12,24 +12,13 @@
 #include "mcp.h"
 #include "notice.h"
 #include "review.h"
+#include "schema.h"
 
 /* The own word of a findings call. */
 struct findings_call {
 	struct json_object *args;  /* a reference to the arguments */
 	struct dstr         out;   /* what review_call() wrote */
 };
-
-/* A JSON array of the @p n names at @p names; nullptr if out of memory. */
-static struct json_object *
-findings_names (struct tool_text const *names,
-                size_t                  n)
-{
-	struct json_object *arr = json_object_new_array();
-	for (size_t i = 0; arr && i < n; ++i)
-		arr = jb_push_or_free(arr, json_object_new_string_len(names[i].ptr,
-		                                                      (int)names[i].len));
-	return arr;
-}
 
 struct json_object *
 findings_definition (void const *service)
@@ -54,63 +43,37 @@ findings_definition (void const *service)
 			"tool, and askai records the commit that the lines were read at. show "
 			"gives the record, or with id one finding's history. The record "
 			"holds at most 4 MiB."),
-		"inputSchema", jb_object(
-			"type", json_object_new_string("object"),
-			"properties", jb_object(
-				"action", jb_object(
-					"type", json_object_new_string("string"),
-					"enum", findings_names(review_action_names, REVIEW_ACTIONS),
-					"description", json_object_new_string(
-						"add a finding, update one, or show the record."),
-					nullptr),
-				"claim", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"Required for add, and for update if the claim was "
-						"wrong: what you found."),
-					nullptr),
-				"location", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"For add, and for update if the location was wrong: "
-						"the lines that the claim is about, as path:line or "
-						"path:first-last, such as src/mcp.c:120-140. A commit "
-						"and a colon may come first, as git grep prints them; "
-						"HEAD and a colon are as no commit."),
-					nullptr),
-				"state", jb_object(
-					"type", json_object_new_string("string"),
-					"enum", findings_names(review_state_names, REVIEW_STATES),
-					"description", json_object_new_string(
-						"For add: candidate (the default), verified or "
-						"disproved. Required for update: the new state, or "
-						"the same."),
-					nullptr),
-				"evidence", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"Required for update, and for add with verified or "
-						"disproved: what you read that shows the state, or "
-						"why you retract the finding."),
-					nullptr),
-				"id", jb_object(
-					"type", json_object_new_string("integer"),
-					"minimum", json_object_new_int(1),
-					"description", json_object_new_string(
-						"Required for update, and for show to give one "
-						"finding's history: the number of the finding."),
-					nullptr),
-				"offset", jb_object(
-					"type", json_object_new_string("integer"),
-					"minimum", json_object_new_int(0),
-					"description", json_object_new_string(
-						"For show: the byte of the output to start from, to "
-						"read on past where it was cut."),
-					nullptr),
+		"inputSchema", schema_object(
+			jb_object(
+				"action", schema_enum(
+					schema_names(review_action_names, REVIEW_ACTIONS),
+					"add a finding, update one, or show the record."),
+				"claim", schema_property("string",
+					"Required for add, and for update if the claim was "
+					"wrong: what you found."),
+				"location", schema_property("string",
+					"For add, and for update if the location was wrong: "
+					"the lines that the claim is about, as path:line or "
+					"path:first-last, such as src/mcp.c:120-140. A commit "
+					"and a colon may come first, as git grep prints them; "
+					"HEAD and a colon are as no commit."),
+				"state", schema_enum(
+					schema_names(review_state_names, REVIEW_STATES),
+					"For add: candidate (the default), verified or "
+					"disproved. Required for update: the new state, or "
+					"the same."),
+				"evidence", schema_property("string",
+					"Required for update, and for add with verified or "
+					"disproved: what you read that shows the state, or "
+					"why you retract the finding."),
+				"id", schema_count(1,
+					"Required for update, and for show to give one "
+					"finding's history: the number of the finding."),
+				"offset", schema_count(0,
+					"For show: the byte of the output to start from, to "
+					"read on past where it was cut."),
 				nullptr),
-			"required", jb_list(json_object_new_string("action")),
-			"additionalProperties", json_object_new_boolean(0),
-			nullptr),
+			jb_list(json_object_new_string("action"))),
 		nullptr);
 }
 

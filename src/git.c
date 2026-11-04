@@ -20,6 +20,7 @@
 #include "mcp.h"
 #include "plugin.h"
 #include "review.h"
+#include "schema.h"
 #include "util.h"
 
 static char const git_commit_suffix[] = "^{commit}";
@@ -421,7 +422,7 @@ git_strings (char const *description,
 {
 	return jb_object(
 		"type", json_object_new_string("array"),
-		"items", jb_object("type", json_object_new_string("string"), nullptr),
+		"items", schema_property("string", nullptr),
 		"maxItems", json_object_new_int((int32_t)max),
 		"description", json_object_new_string(description),
 		nullptr);
@@ -443,6 +444,7 @@ git_definition (void const *service)
 	struct json_object *cmds = json_object_new_array();
 	for (size_t i = 0; cmds && i < ARRAY_SIZE(commands); ++i)
 		cmds = jb_push_or_free(cmds, json_object_new_string(commands[i].name));
+	struct tool_text const required[] = { TOOL_TEXT("repo"), TOOL_TEXT("command") };
 	return jb_object(
 		"name", json_object_new_string("git"),
 		"title", json_object_new_string("Git"),
@@ -465,23 +467,13 @@ git_definition (void const *service)
 			"can replace HEAD. Give each option with its value attached "
 			"(--max-count=20, not -n 20). Only the usual read-only options are "
 			"allowed."),
-		"inputSchema", jb_object(
-			"type", json_object_new_string("object"),
-			"properties", jb_object(
-				"repo", jb_object(
-					"type", json_object_new_string("string"),
-					"enum", repos,
-					nullptr),
-				"command", jb_object(
-					"type", json_object_new_string("string"),
-					"enum", cmds,
-					nullptr),
-				"help", jb_object(
-					"type", json_object_new_string("boolean"),
-					"description", json_object_new_string(
-						"Describe this command without running it. "
-						"Give repo, command, help:true and optional offset."),
-					nullptr),
+		"inputSchema", schema_object(
+			jb_object(
+				"repo", schema_enum(repos, nullptr),
+				"command", schema_enum(cmds, nullptr),
+				"help", schema_property("boolean",
+					"Describe this command without running it. "
+					"Give repo, command, help:true and optional offset."),
 				"options", git_strings("Options, such as --oneline or "
 				                       "--max-count=20. Use help:true to list "
 				                       "the command's exact allowed options.", OPTIONS),
@@ -498,38 +490,19 @@ git_definition (void const *service)
 				                     "top. They limit the output of a command "
 				                     "such as log or diff to those paths. They "
 				                     "do not read a file.", PATHS),
-				"pattern", jb_object(
-					"type", json_object_new_string("string"),
-					"description", json_object_new_string(
-						"The pattern for grep. Only grep takes a "
-						"pattern."),
-					nullptr),
-				"offset", jb_object(
-					"type", json_object_new_string("integer"),
-					"minimum", json_object_new_int(0),
-					"description", json_object_new_string(
-						"The byte of the output to start from, to read on "
-						"past where it was cut."),
-					nullptr),
-				"line", jb_object(
-					"type", json_object_new_string("integer"),
-					"minimum", json_object_new_int(1),
-					"description", json_object_new_string(
-						"For read: the number of the first line to give, "
-						"from 1. The default is 1."),
-					nullptr),
-				"count", jb_object(
-					"type", json_object_new_string("integer"),
-					"minimum", json_object_new_int(1),
-					"description", json_object_new_string(
-						"For read: the most lines to give. The default is "
-						"as many as the response window holds."),
-					nullptr),
+				"pattern", schema_property("string",
+					"The pattern for grep. Only grep takes a pattern."),
+				"offset", schema_count(0,
+					"The byte of the output to start from, to read on "
+					"past where it was cut."),
+				"line", schema_count(1,
+					"For read: the number of the first line to give, "
+					"from 1. The default is 1."),
+				"count", schema_count(1,
+					"For read: the most lines to give. The default is "
+					"as many as the response window holds."),
 				nullptr),
-			"required", jb_push_or_free(jb_list(json_object_new_string("repo")),
-			                            json_object_new_string("command")),
-			"additionalProperties", json_object_new_boolean(0),
-			nullptr),
+			schema_names(required, ARRAY_SIZE(required))),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(1),
 			"openWorldHint", json_object_new_boolean(0),
