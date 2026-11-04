@@ -2678,6 +2678,94 @@ def check_recovery_notes(binary, up):
           "without rereading the changed notebook: PASS")
 
 
+def check_recovery_compact(binary, up):
+    """A job whose turns wrote a note is resumed by an askai without
+    --notes. Its checkpoint says that the thread has notes. The resumed
+    turn calls compact. The compaction runs without the notes."""
+    held = up.reply, up.retrieve
+    release = threading.Event()
+
+    class Held(Stream):
+        def pieces(self):
+            yield self.wire
+            assert release.wait(30), "the held turn was not released"
+
+    def item(name, arguments):
+        return {"type": "function_call", "id": f"fc_{name}", "call_id": name, "name": name,
+                "arguments": json.dumps(arguments), "status": "completed"}
+
+    created = sse_wire([(None, {"type": "response.created", "sequence_number": 0,
+                                "response": {"id": "after_note", "status": "in_progress"}})])
+    compact = sse_wire([
+        (None, {"type": "response.output_item.done", "sequence_number": 1, "output_index": 0,
+                "item": item("compact", {"summary": "SUMMARY"})}),
+        (None, {"type": "response.completed", "sequence_number": 2,
+                "response": {"status": "completed",
+                             "usage": {"input_tokens": 100, "output_tokens": 20}}})])
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            repo, archive = f"{d}/proj", f"{d}/transcripts.git"
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            creates, resumes = [], []
+            def reply(request):
+                creates.append(request)
+                if len(creates) == 1:
+                    return 200, responses_turn([item("notes", {
+                        "action": "add", "file": "n.md", "text": "kept"})],
+                        response_id="note_turn")
+                if len(creates) == 2:
+                    return 200, Held(wire=created)
+                return 200, responses_turn([], text="compacted", response_id="after_compact")
+            def retrieve(request):
+                if request["path"] == "/props":
+                    return 404, {}
+                resumes.append(request)
+                return 200, Stream(wire=created + compact)
+            up.reply, up.retrieve = reply, retrieve
+            args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
+                    "--upstream-tools", "--git", repo, "--context", "8000",
+                    "--participant", "compact-recovery", "--transcripts", archive)
+            ai = Askai(binary, *args, "--notes", f"{d}/notes")
+            try:
+                result = ai.ask("Write a note, then compact.")
+                jid = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result)).group(1)
+                checkpoint = f"{archive}/askai-journal/compact-recovery/jobs/{jid}"
+                def captured():
+                    try:
+                        with open(checkpoint, "rb") as f:
+                            return b"after_note" in f.read()
+                    except FileNotFoundError:
+                        return False
+                wait_for(captured, seconds=10)
+                with open(checkpoint, "rb") as f:
+                    assert b'"branch":true' in f.read(), "the checkpoint has no notes"
+                ai.proc.kill()
+                assert ai.proc.wait(timeout=5) == -signal.SIGKILL
+                ai.state.cleanup()
+            finally:
+                release.set()
+                if ai.proc.poll() is None:
+                    ai.proc.kill()
+                    ai.proc.wait(timeout=5)
+            with Askai(binary, *args) as restarted:
+                results = []
+                def ended():
+                    results.append(ask_result(restarted, {"job": jid}))
+                    result = results[-1]
+                    return result.get("isError") or result["content"][0]["text"] == "compacted"
+                wait_for(ended, seconds=15)
+                assert not results[-1].get("isError"), results[-1]
+                assert len(creates) == 3 and len(resumes) == 1, (creates, resumes)
+                given = json.dumps(creates[2]["body"]["input"])
+                assert "you compacted the context" in given and "SUMMARY" in given, given
+                assert "[askai: participant" not in given, given
+    finally:
+        release.set()
+        up.reply, up.retrieve = held
+    print("compact recovery: a job with notes compacts without them after a restart "
+          "without --notes: PASS")
+
+
 def check_recovery_review(binary, up):
     """A resumed job gets its review record back from its checkpoint. The
     checkpoint holds the pending lines of the results in its request, and
@@ -15039,7 +15127,8 @@ def main():
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
                       check_modern, check_mcp_tasks, check_client_jobs, check_background, check_recovery, check_recovery_tools,
-                      check_recovery_notes, check_recovery_review, check_durable_cancel,
+                      check_recovery_notes, check_recovery_compact, check_recovery_review,
+                      check_durable_cancel,
                       check_withdrawn_end, check_archive_failure, check_journal_repair,
                       check_shared_transcripts, check_http,
                       check_large_bodies,

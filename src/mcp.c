@@ -8227,7 +8227,7 @@ mcp_slot_step (struct loop      *loop,
  * prompt. review_compacted() drops the pending lines of the review record
  * (see src/review.h). The record, if any, follows the summary, cut to
  * mcp_req_lend_max() bytes, and then the notes, read for @p fetch, if the
- * thread has any.
+ * thread has any. The notes are left out for a job resumed without --notes.
  */
 static void
 mcp_req_compact_notes (struct mcp_req *req,
@@ -8243,7 +8243,7 @@ mcp_req_compact_notes (struct mcp_req *req,
 		mcp_req_fail(req, e);
 		return;
 	}
-	if (req->branch) {
+	if (req->branch && req->mcp->st->notes) {
 		mcp_slot_notes_run(&req->self, fetch, nullptr);
 		return;
 	}
