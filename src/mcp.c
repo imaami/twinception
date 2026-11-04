@@ -417,18 +417,15 @@ struct mcp_offer {
 	uint8_t                 trace;   /* enum mcp_trace */
 };
 
-/* The tools that askai lends the turns: by[LEND_GRANTED] as a role grants
- * them, by[LEND_ALWAYS] whenever the turns are lent anything, by[LEND_WITH]
- * beside those, and by[LEND_DETACH] beside one of the tools in detach,
- * which may run in the background. The members compact, findings and git
- * hold the bit of the tool of that name, or 0 if askai does not lend it.
+/* The tools that askai lends the turns. Each member is a mask of tool ids.
+ * by[l] holds the tools with lending rule l (enum mcp_lend). of[k] holds the
+ * tool of kind k (enum mcp_kind) if askai lends it. detach holds the tools
+ * that can run in the background (TOOL_DETACH).
  */
 struct mcp_lending {
 	tool_mask by[LEND_DETACH + 1];
+	tool_mask of[KINDS];
 	tool_mask detach;
-	tool_mask compact;
-	tool_mask findings;
-	tool_mask git;
 };
 
 /* Returns the tools that @p l lends the turns of an ask call of a client
@@ -3874,8 +3871,8 @@ mcp_req_review_make (struct mcp_req *req,
 {
 	struct mcp_lending const *l = &req->mcp->st->lending;
 	int e = 0;
-	if (lent & l->findings)
-		req->review = review_create(lent & l->git ? REVIEW_READS : 0, &e);
+	if (lent & l->of[KIND_FINDINGS])
+		req->review = review_create(lent & l->of[KIND_GIT] ? REVIEW_READS : 0, &e);
 	return e;
 }
 
@@ -3890,8 +3887,8 @@ mcp_req_ask (struct mcp_req     *req,
              bool                background)
 {
 	struct mcp_static const *st = req->mcp->st;
-	struct notes const *notes = req->lent & st->lending.by[LEND_ALWAYS] ? st->notes
-	                                                                     : nullptr;
+	struct notes const *notes = req->lent & st->lending.of[KIND_NOTES] ? st->notes
+	                                                                    : nullptr;
 	/* Argument problems go back to the model so it can correct itself. */
 	struct json_object *prompt = jb_get(args, "prompt");
 	struct json_object *system = jb_get(args, "system");
@@ -6043,8 +6040,8 @@ mcp_req_context_note (struct mcp_req *req,
 	struct mcp_lending const *l = &req->mcp->st->lending;
 	bool full = tokens * 3 >= context * 2;
 	uint8_t quarters = tokens * 2 >= context ? 2 : tokens * 4 >= context;
-	if (full ? !(req->lent & l->compact)
-	         : quarters <= req->reminded || !(req->lent & l->by[LEND_ALWAYS]))
+	if (full ? !(req->lent & l->of[KIND_COMPACT])
+	         : quarters <= req->reminded || !(req->lent & l->of[KIND_NOTES]))
 		return 0;
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": context "
 	    "notice, %" PRIu64 " %% full, %" PRIu64 " of %" PRIu64 " tokens: %s",
@@ -9514,9 +9511,8 @@ mcp_drain (struct mcp *mcp)
 
 /* Returns the definition of the ask tool. @p service is the mcp_static,
  * which has the tool's configured name and description. The definition has
- * the argument "thread" if the turns get the notes tool, which is the only
- * tool in st->lending.by[LEND_ALWAYS]. They get it with --notes and
- * --upstream-tools.
+ * the argument "thread" if the turns get the notes tool. They get it with
+ * --notes and --upstream-tools.
  */
 static struct json_object *
 mcp_tool_definition (void const *service)
@@ -9550,7 +9546,7 @@ mcp_tool_definition (void const *service)
 			"background mode and returns a job id. Omission follows the server "
 			"setting, unless live streaming is requested."),
 		nullptr);
-	if (st->lending.by[LEND_ALWAYS])
+	if (st->lending.of[KIND_NOTES])
 		props = jb_set_or_free(props, "thread", schema_property("string",
 			"Optional ask-chain id from an earlier answer: 32 hexadecimal "
 			"digits. Notes are shared by repository path and loaded at the "
@@ -9810,8 +9806,8 @@ mcp_compact_definition (void const *service)
 		"name", json_object_new_string("compact"),
 		"description", schema_text3(
 			"Free your context: the conversation since the task, your turns and "
-			"the tools' results, is replaced by your summary of it, and your "
-			"notes", st->lending.findings ? " and askai's review record are" : " are",
+			"the tools' results, is replaced by your summary of it, and your notes",
+			st->lending.of[KIND_FINDINGS] ? " and askai's review record are" : " are",
 			" shown again; the task stays as the user gave it. Note first what "
 			"you must keep. Call it when askai says that the context fills up, "
 			"or once you are done with a part of the work whose details you no "
@@ -10315,9 +10311,8 @@ mcp_lending (struct config const *cfg)
 		tool_mask bit = (tool_mask)1 << id & cfg->tools_upstream;
 		l.by[mcp_lend_of(t)] |= bit;
 		l.detach |= t->kind->flags & TOOL_DETACH ? bit : 0;
-		l.compact |= t->kind == &mcp_rows[KIND_COMPACT].kind ? bit : 0;
-		l.findings |= t->kind == &mcp_rows[KIND_FINDINGS].kind ? bit : 0;
-		l.git |= t->kind == git_plugin.tools ? bit : 0;
+		if (t->data)
+			l.of[(struct mcp_row const *)t->data - mcp_rows] |= bit;
 	}
 	return l;
 }
