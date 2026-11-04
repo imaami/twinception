@@ -1188,8 +1188,7 @@ git_call_advance (struct git_call *call,
 		mcp_slot_park(slot);
 		return;
 	}
-	*mcp_slot_own(slot) = nullptr;
-	git_call_destroy(&call);
+	git_drop(slot);
 	mcp_slot_tell(slot, late ? TOOL_TEXT("Git history validation timed out.")
 	                         : TOOL_TEXT("Cannot read the requested committed history. "
 	                                     "Use commits reachable from HEAD, branches, "
@@ -1213,10 +1212,10 @@ git_line_hint (char const *path)
 /* The text that util_format() writes into the array @p a. */
 #define FORMAT(a, ...) ((struct tool_text){ a, util_format(a, sizeof a, __VA_ARGS__) })
 
-/* @p call's git has ended, its output all taken: let go
- * of it; after the output, a blank line between, say how git ended if it
- * failed, that the output was cut, or that there was none; then finish. An
- * exit status of 1 from grep means it found no matches.
+/* Destroy @p call after git has ended and its output is copied. Then
+ * write the note, if any, after the output and finish the call. The note
+ * says how git failed, that the output was cut or that there was no
+ * output. Exit status 1 from grep means no matches.
  */
 static void
 git_ended (struct mcp_slot *slot,
@@ -1260,8 +1259,7 @@ git_ended (struct mcp_slot *slot,
 		note = out.len ? (struct tool_text){} : TOOL_TEXT("[No output.]");
 		failed = false;
 	}
-	*mcp_slot_own(slot) = nullptr;
-	git_call_destroy(&call);
+	git_drop(slot);
 	struct tool_text const p[] = {
 		!out.len ? TOOL_TEXT("") : out.ptr[out.len - 1] == '\n' ? TOOL_TEXT("\n")
 		                                                        : TOOL_TEXT("\n\n"),
