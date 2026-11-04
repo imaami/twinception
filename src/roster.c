@@ -11,7 +11,7 @@
 #include "loop.h"
 #include "roster.h"
 
-/* The number of buckets of the table.  It is a power of two, because
+/* The number of buckets of the table. It is a power of two, because
  * BUCKETS - 1 is the mask that selects a bucket.
  */
 enum { BUCKETS = 1024 };
@@ -115,7 +115,7 @@ roster_cancel (struct roster *roster,
 	}
 	pthread_mutex_unlock(&roster->lock);
 	/* The loop of a record can free the record as soon as the message is
-	 * posted, so the function reads hit before it posts.  A message that
+	 * posted, so the function reads hit before it posts. A message that
 	 * loop_post() refuses never runs, so the function drops the reference
 	 * of that message itself. */
 	while (hits) {

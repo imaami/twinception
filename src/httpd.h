@@ -22,7 +22,7 @@ struct ssl_ctx_st;
 struct stream_app;
 
 /**
- * Limits and deadlines on what clients send and hold.  The response to a
+ * Limits and deadlines on what clients send and hold. The response to a
  * breach is given in parentheses; zero turns off the ones marked so.
  */
 struct httpd_limits {
@@ -46,7 +46,7 @@ struct httpd_limits {
 	uint32_t write_time;     /**< seconds output may stall (close); zero: off */
 };
 
-/** The defaults (doc/configuration.md, Limits on clients).  A message may
+/** The defaults (doc/configuration.md, Limits on clients). A message may
  *  have 8 MiB, room for a text of 4 MiB with its JSON.
  */
 static inline struct httpd_limits
@@ -86,28 +86,28 @@ struct httpd_cfg {
  */
 struct httpd_listen_addr {
 	char const *path;       /**< The path of a Unix socket, or nullptr for a
-	                             TCP address.  It points into the parsed
+	                             TCP address. It points into the parsed
 	                             text. */
 	char const *port;       /**< The TCP port in decimal digits, or nullptr
-	                             for a Unix socket.  It points into the
+	                             for a Unix socket. It points into the
 	                             parsed text. */
 	size_t      path_len;   /**< The length of path in bytes. */
 	uint64_t    tls;        /**< 1 if the text begins with "tls:", else 0 */
-	char        host[256];  /**< The TCP host.  It is "127.0.0.1" for a port
+	char        host[256];  /**< The TCP host. It is "127.0.0.1" for a port
 	                             with no host and no colon, such as "8090"
-	                             or "tls:8090".  An empty host, as in
+	                             or "tls:8090". An empty host, as in
 	                             ":8090", means the wildcard address. */
 };
 
 /**
- * Parse the listen address @p text.  The address must have the form
- * [host:]port, unix:PATH or tls:[host:]port.  The port must be decimal
- * digits with a value of 0 to 65535.  A host in brackets, and a host with a
+ * Parse the listen address @p text. The address must have the form
+ * [host:]port, unix:PATH or tls:[host:]port. The port must be decimal
+ * digits with a value of 0 to 65535. A host in brackets, and a host with a
  * colon, must be an IPv6 address that inet_pton() parses, and may have a
- * zone after a '%'.  PATH must not be empty, and it must be shorter than
- * sun_path.  The function does not resolve the host name.
+ * zone after a '%'. PATH must not be empty, and it must be shorter than
+ * sun_path. The function does not resolve the host name.
  *
- * Returns the parts of the address.  On success, @p *e is 0.  If the address
+ * Returns the parts of the address. On success, @p *e is 0. If the address
  * is malformed, @p *e is EPROTONOSUPPORT for tls:unix:, ENAMETOOLONG for a
  * PATH that is too long, ERANGE for a port above 65535, or EINVAL otherwise.
  */
@@ -135,8 +135,8 @@ httpd_hub_metrics (struct httpd_hub const *hub,
 /**
  * Home's door on home's @p loop: listen on cfg->listen, and from
  * httpd_home_open() on, accept clients and place each on a client loop of
- * @p hub.  Descriptors are budgeted for the connections and for @p calls,
- * the jobs in flight, which each may need one upstream.  nullptr, with the
+ * @p hub. Descriptors are budgeted for the connections and for @p calls,
+ * the jobs in flight, which each may need one upstream. nullptr, with the
  * error in @p *e, if it cannot be made.
  */
 extern struct httpd_home *
@@ -156,9 +156,9 @@ extern void
 httpd_home_open (struct httpd_home *home);
 
 /** Have every client loop's server take @p policy, a reference each, for
- *  the requests that begin from then on, and let go of its last.  Home
+ *  the requests that begin from then on, and let go of its last. Home
  *  also takes a reference, and from then on checks the uid of each new
- *  client on a Unix socket with it (policy_admit_uid()).  Returns 0, or
+ *  client on a Unix socket with it (policy_admit_uid()). Returns 0, or
  *  EAGAIN unless the door is open, as before every client loop runs and
  *  once draining.
  */
@@ -168,7 +168,7 @@ httpd_home_policy (struct httpd_home *home,
 
 /** Have the TLS listeners' clients from now on shake hands by @p ctx, a
  *  reference home takes, and let go of the last; with no TLS listener, do
- *  nothing.  Those who shook hands before go on as they are.
+ *  nothing. Those who shook hands before go on as they are.
  */
 extern void
 httpd_home_tls (struct httpd_home *home,
@@ -219,7 +219,7 @@ httpd_destroy (struct httpd **p_httpd);
 /**
  * Close the idle connections and end the others once their response is
  * sent, or at @p deadline (CLOCK_MONOTONIC ns), a share a step, and have the
- * loop exit once none is left.  A connection home places from now on closes
+ * loop exit once none is left. A connection home places from now on closes
  * at once.
  */
 extern void

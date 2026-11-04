@@ -20,7 +20,7 @@ struct loop_slot;
 struct loop_stats;
 
 /**
- * Reports @p events on a watched descriptor.  A callback should only note
+ * Reports @p events on a watched descriptor. A callback should only note
  * what happened and queue a step: the turn's budget bounds steps, and work
  * done in callbacks escapes it.
  */
@@ -40,26 +40,26 @@ struct loop_ref {
 };
 
 /**
- * This structure is an entry on a ready list of the loop.  A turn of the
+ * This structure is an entry on a ready list of the loop. A turn of the
  * loop calls the function fn of the entry to run one step, which is a
- * bounded piece of work.  A turn first runs the callbacks of events,
- * messages and timers.  Then it starts interactive steps, at most one for
+ * bounded piece of work. A turn first runs the callbacks of events,
+ * messages and timers. Then it starts interactive steps, at most one for
  * each queued interactive entry, until 500 µs have passed since the turn
- * began.  If an interactive entry is queued, at least one interactive step
- * runs, even when the callbacks ran for 500 µs or more.  Then, if bulk
+ * began. If an interactive entry is queued, at least one interactive step
+ * runs, even when the callbacks ran for 500 µs or more. Then, if bulk
  * entries are queued, it runs at least one bulk step, and it starts more
  * bulk steps while they can end within 1 ms.
  *
  * loop_ready() appends an entry to the fresh list when a callback calls it,
  * and to the ongoing list when a step calls it, for example when a step
- * queues itself again.  While both lists have entries, the steps alternate
- * between the two lists.  A turn begins with the list after the list of the
- * last step in the previous turn, unless that list is empty.  So the
+ * queues itself again. While both lists have entries, the steps alternate
+ * between the two lists. A turn begins with the list after the list of the
+ * last step in the previous turn, unless that list is empty. So the
  * alternation continues from one turn to the next, even when a turn has
  * time for only one interactive step.
  *
  * Entries that a turn does not run are at the head of their lists in the
- * next turn.  An interactive entry that a step queues runs in the next turn
+ * next turn. An interactive entry that a step queues runs in the next turn
  * at the earliest.
  */
 struct loop_step {
@@ -69,7 +69,7 @@ struct loop_step {
 };
 
 /** What a loop has done since it began: its one writer is the loop, and any
- *  thread may read it (src/hist.h).  Times are in ns.
+ *  thread may read it (src/hist.h). Times are in ns.
  */
 struct loop_metrics {
 	struct hist      turn;
@@ -80,7 +80,7 @@ struct loop_metrics {
 };
 
 /**
- * An event loop.  Only its own thread touches it, but for loop_post(), which
+ * An event loop. Only its own thread touches it, but for loop_post(), which
  * any thread may call, and the fields marked as read elsewhere.
  */
 struct loop {
@@ -144,7 +144,7 @@ loop_place (struct loop *loop);
 /**
  * Start @p loop, whose atomic members are valid: it was declared from loop(),
  * laid with loop_place(), is of static or thread storage duration, or
- * loop_fini() ended it.  It resets them by atomic stores.  On failure,
+ * loop_fini() ended it. It resets them by atomic stores. On failure,
  * loop_fini() releases what it has.
  */
 extern int
@@ -159,10 +159,10 @@ extern void
 loop_fini (struct loop *loop);
 
 /**
- * Stores in @p *h a handle that names @p obj for other threads.  The handle
- * names a slot of the loop's table, which also stores @p kind.  The kind is
+ * Stores in @p *h a handle that names @p obj for other threads. The handle
+ * names a slot of the loop's table, which also stores @p kind. The kind is
  * a number that the caller chooses for each type of object that it names,
- * and loop_lookup() returns the object only for the same kind.  The
+ * and loop_lookup() returns the object only for the same kind. The
  * function takes the slot that was freed last, if there is one, so the
  * table grows only past the largest number of objects named at once.
  * Returns 0, or ENOMEM if the table cannot grow, which it never does past
@@ -175,7 +175,7 @@ loop_handle (struct loop   *loop,
              struct handle *h);
 
 /** Returns the object that @p h names on @p loop if loop_handle() stored
- *  it with @p kind.  Returns nullptr if the slot of @p h has been freed
+ *  it with @p kind. Returns nullptr if the slot of @p h has been freed
  *  since the handle was made, if the handle is another loop's, or if the
  *  object has another kind.
  */
@@ -210,7 +210,7 @@ loop_unwatch (struct loop     *loop,
 
 /**
  * Unwatch @p ref and call @p release on it once the current batch of events
- * has been dispatched.  Events already fetched for @p ref are skipped, so its
+ * has been dispatched. Events already fetched for @p ref are skipped, so its
  * owner may be freed by @p release without racing the dispatcher.
  */
 extern void
@@ -246,7 +246,7 @@ loop_clock (void);
  * Log a line each for the turn times, the interactive and bulk step times
  * and the timers' lateness since the previous call, then one of the work
  * done: the most events, timers and steps in a turn, and the most of each
- * unit in a step against its bound, as "name=most/bound".  Each line starts
+ * unit in a step against its bound, as "name=most/bound". Each line starts
  * with "stats " and @p label; counting then starts afresh.
  */
 extern void
@@ -254,7 +254,7 @@ loop_log_stats (struct loop *loop,
                 char const  *label);
 
 /**
- * Run turns until loop_exit().  Returns the error that stopped it, which only
+ * Run turns until loop_exit(). Returns the error that stopped it, which only
  * epoll_pwait2() can cause, or else the first that epoll_ctl() reported.
  */
 extern int

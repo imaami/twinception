@@ -9,7 +9,7 @@
 
 #include "uploads.h"
 
-/* A file of the table.  Its expires is 0 while the place is free. */
+/* A file of the table. Its expires is 0 while the place is free. */
 struct uploads_file {
 	int64_t  expires;
 	uint64_t owner;

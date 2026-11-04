@@ -17,8 +17,8 @@ registry_fini (struct registry *reg)
 	*reg = (struct registry){};
 }
 
-/* Returns the index of plugin in reg->plugins.  A plugin that is not there
- * yet is appended.  The caller has checked that the registry has room for
+/* Returns the index of plugin in reg->plugins. A plugin that is not there
+ * yet is appended. The caller has checked that the registry has room for
  * one more tool, and every plugin in it has at least one tool, so it has
  * room for one more plugin.
  */
@@ -47,7 +47,7 @@ registry_add (struct registry            *reg,
 		if (t->len == tool->len && !memcmp(t->name, tool->name, tool->len))
 			return EEXIST;
 	}
-	/* The tools that no role can grant have the ids from n_granted on.  A
+	/* The tools that no role can grant have the ids from n_granted on. A
 	 * tool that a role can grant is inserted before them. */
 	uint32_t id = reg->n_tools;
 	if (flags & REGISTRY_GRANTED) {

@@ -3,14 +3,14 @@
  * The tool registry: the tools that askai offers, and the plugins
  * that have them.
  *
- * A tool's id is its index in the registry.  The tools that a role can
+ * A tool's id is its index in the registry. The tools that a role can
  * grant (src/policy.h) come first, so their ids are also the bits of a
- * role's tool mask.  The tools that only the turns of an ask call use
- * (src/mcp.h) follow them.  No two tools have the same name.
+ * role's tool mask. The tools that only the turns of an ask call use
+ * (src/mcp.h) follow them. No two tools have the same name.
  *
- * A zeroed registry is empty.  Tools are added while askai reads its
- * configuration, on one thread.  After that the registry does not change,
- * so any thread may read it.  registry_fini() frees what the registry
+ * A zeroed registry is empty. Tools are added while askai reads its
+ * configuration, on one thread. After that the registry does not change,
+ * so any thread may read it. registry_fini() frees what the registry
  * allocated.
  */
 #ifndef TWINCEPTION_SRC_REGISTRY_H_
@@ -27,7 +27,7 @@ struct plugin_loaded;
 
 /** A tool in the registry. */
 struct registry_tool {
-	char const             *name;  /**< NUL-terminated.  The caller of
+	char const             *name;  /**< NUL-terminated. The caller of
 	                                    registry_add() provides storage that
 	                                    outlives the registry. */
 	struct tool_kind const *kind;  /**< what a call of the tool does */
@@ -61,7 +61,7 @@ struct registry {
 	uint32_t              n_loaded;
 };
 
-/** Frees the loaded plugins' records and leaves @p reg empty.  The shared
+/** Frees the loaded plugins' records and leaves @p reg empty. The shared
  *  objects stay loaded (src/plugin.h).
  */
 extern void
@@ -71,9 +71,9 @@ registry_fini (struct registry *reg);
  * Adds the tool @p tool, which the plugin @p plugin has.
  *
  * With REGISTRY_GRANTED in @p flags the tool gets the id that follows the
- * ids of the tools that a role can grant.  The id of each tool that no role
- * can grant then increases by one.  Without the flag the tool gets the id
- * that follows the ids of all the tools in the registry.  The id of a tool
+ * ids of the tools that a role can grant. The id of each tool that no role
+ * can grant then increases by one. Without the flag the tool gets the id
+ * that follows the ids of all the tools in the registry. The id of a tool
  * that no role can grant is therefore final only when every tool that a
  * role can grant has been added.
  *
@@ -93,7 +93,7 @@ registry_add (struct registry            *reg,
  * tools that a role can grant.
  *
  * Returns 0; ENOMEM; or EINVAL with the reason in the @p len bytes at
- * @p why.  The reason is worded to follow the path and a colon.
+ * @p why. The reason is worded to follow the path and a colon.
  */
 extern int
 registry_load (struct registry    *reg,

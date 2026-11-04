@@ -247,12 +247,12 @@ class Stream:
 
 
 class Upstream:
-    """Fake AI endpoint; reply(request) gives (status, payload[, delay]).  A
+    """Fake AI endpoint; reply(request) gives (status, payload[, delay]). A
     request that asks for a stream, as askai's do, gets a 200's JSON payload
     as the events of the same answer, unless plain is set, and a Stream as
-    it says; other answers carry the fields in headers.  A GET, such as
+    it says; other answers carry the fields in headers. A GET, such as
     /props, gives props, if set, else a 404, two seconds late if props is
-    "hang", and counts in gets, its path in got.  A POST to a path with
+    "hang", and counts in gets, its path in got. A POST to a path with
     /upload/ in it is a file's upload to Gemini's Files API, which goes into
     uploads, with its body in raw and the values of its Content-Type in
     types, and gets what upload(request) gives, by default a file named
@@ -433,7 +433,7 @@ class Upstream:
 class Askai:
     """An askai process on an ephemeral port; stop() expects a clean exit.
     It serves clients on that many loops, or with loops=None as many as it
-    has CPUs.  With nofile, it starts with that descriptor limit, soft and
+    has CPUs. With nofile, it starts with that descriptor limit, soft and
     hard; with preload, with that library preloaded; with ignore, with those
     signals ignored; with default, with those signals at their default
     action; with data, with that data segment limit."""
@@ -1057,7 +1057,7 @@ def check_upstream_errors(binary, up):
 def check_modern(binary, up):
     # With --max-body 1M, a file that a client hands in inline has at most
     # (1 MiB - 64 KiB) / 4 * 3 bytes, as the discovery and the schema say,
-    # and a larger one, whose request still fits, is refused.  A budget
+    # and a larger one, whose request still fits, is refused. A budget
     # below the default --max-body lowers it, and askai starts.
     most = ((1 << 20) - (64 << 10)) // 4 * 3
     with tempfile.TemporaryDirectory() as notes, \
@@ -1137,7 +1137,7 @@ def check_mcp_tasks(binary, up):
     tasks becomes one once it has run a second, and its client polls it
     with tasks/get until the result is in, or ends it with tasks/cancel.
     Only the owner of a task can read it: the client's identity, or the
-    address of an anonymous client.  A call that answers sooner, and one of
+    address of an anonymous client. A call that answers sooner, and one of
     a client that does not take tasks, answer as ever."""
     def digest(token):
         return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
@@ -1269,9 +1269,9 @@ def check_mcp_tasks(binary, up):
                 assert total(values, "askai_request_seconds_count", method="tasks/get") >= 4
 
                 # The task of an anonymous client belongs to the client's
-                # address.  A client at another address cannot read it, and an
-                # identity at the same address cannot either.  The anonymous
-                # client cannot read alice's task.  A new connection from the
+                # address. A client at another address cannot read it, and an
+                # identity at the same address cannot either. The anonymous
+                # client cannot read alice's task. A new connection from the
                 # same address reads the task until its result is in.
                 def from_address(source, method, task_id, headers=None):
                     conn = http.client.HTTPConnection(ai.host, ai.port, timeout=10,
@@ -1309,14 +1309,14 @@ def check_mcp_tasks(binary, up):
 
 def check_client_jobs(binary, up):
     """With --client-jobs, askai offers clients background, jobs, wait and
-    timer, as their role grants them.  background runs a call of another of
+    timer, as their role grants them. background runs a call of another of
     the client's tools as a job: it answers with the job's id at once, and
-    the job runs without the request and its connection.  jobs lists the
+    the job runs without the request and its connection. jobs lists the
     owner's jobs, tasks and timers, answers with a job's result as a direct
-    call answers, and cancels a job or a timer.  wait ends when a job ends,
-    a timer fires or its seconds pass, and timer sets a timer.  The owner is
+    call answers, and cancels a job or a timer. wait ends when a job ends,
+    a timer fires or its seconds pass, and timer sets a timer. The owner is
     the client's identity, or the address of an anonymous client, on any
-    connection and any loop.  A job is a task of MCP's tasks extension too.
+    connection and any loop. A job is a task of MCP's tasks extension too.
     Without the option, askai offers none of the four."""
     def digest(token):
         return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
@@ -1381,7 +1381,7 @@ def check_client_jobs(binary, up):
                     json.dump(grouped({"url": up.url()} | members), f)
                 os.chmod(path, 0o600)
 
-            # Without the option, askai offers none of the four.  With it, a
+            # Without the option, askai offers none of the four. With it, a
             # role may name them, but never compact, and its "upstream" may
             # name none of them.
             with Askai(binary, "-u", up.url()) as ai:
@@ -1405,7 +1405,7 @@ def check_client_jobs(binary, up):
                 assert run.returncode == 2 and message in run.stderr, (role, run.stderr)
 
             # A role that grants the four, and identities: only the owner of
-            # a job can read it, from any address, also after a reload.  A
+            # a job can read it, from any address, also after a reload. A
             # role that grants background but not ask_ai cannot start an
             # ask call as a job.
             write({"roles": {"r": {"tools": ["ask_ai", "background", "jobs", "wait",
@@ -1442,7 +1442,7 @@ def check_client_jobs(binary, up):
 
             # A job that one loop runs ends a wait on another: the job's
             # connection stays open, so the next connections go to the other
-            # loop first.  Each of the three waits names the job, and so
+            # loop first. Each of the three waits names the job, and so
             # each of them gets it, as the job ends and not at the end of
             # the wait's seconds.
             with Askai(binary, "-u", up.url(), "--client-jobs", loops=2) as ai:
@@ -1464,7 +1464,7 @@ def check_client_jobs(binary, up):
                     all(took < 3 for _, took in said), said
 
             # With --upstream-tools too, the turns get the four with their own
-            # definitions, compact last.  The timers of the turns of a
+            # definitions, compact last. The timers of the turns of a
             # client's ask job are not timers of the client.
             repo = f"{d}/proj"
             subprocess.run(["git", "init", "-q", repo], check=True)
@@ -1511,9 +1511,9 @@ def check_client_jobs(binary, up):
                     props["jobs"]["timer"]["type"] == "integer", props
 
                 # A background ask answers at once, and runs as a job, which
-                # the list shows and a wait waits for.  The job's result is
-                # the result of a direct call, in either era.  The wait
-                # reported the job, so the list shows it as read.  Each call
+                # the list shows and a wait waits for. The job's result is
+                # the result of a direct call, in either era. The wait
+                # reported the job, so the list shows it as read. Each call
                 # here has a connection of its own, which closes after it.
                 up.reply = lambda r: (200, ANSWERS["openai"], 2)
                 jid = start(ai, prompt="SECRET")
@@ -1562,7 +1562,7 @@ def check_client_jobs(binary, up):
                         "; askai stores a job for an hour after it ends.", seconds=1,
                         jobs=[jid, '\u00e9\\"' + "x" * 40])
 
-                # An owner runs 8 jobs and tasks at most.  A wait for any job
+                # An owner runs 8 jobs and tasks at most. A wait for any job
                 # ends as soon as a job ends that no one has read.
                 up.reply = lambda r: (200, ANSWERS["openai"], 1.5)
                 ids = [start(ai, "127.0.0.2") for _ in range(8)]
@@ -1588,7 +1588,7 @@ def check_client_jobs(binary, up):
                     assert ("result" in body) == found and \
                         (not found or body["result"]["status"] == "completed"), body
 
-                # A cancel of a job that runs cancels its upstream call.  The
+                # A cancel of a job that runs cancels its upstream call. The
                 # upstream call is in the background class.
                 up.cancelled.clear()
                 up.reply = lambda r: (200, ANSWERS["openai"], 30)
@@ -1718,7 +1718,7 @@ def check_client_jobs(binary, up):
                     f"the action result and job {task['taskId']} for its result.]\n"
 
                 # The metrics count the jobs and the refusals, the timers set,
-                # and the waits that wait now.  Only two lines of --verbose
+                # and the waits that wait now. Only two lines of --verbose
                 # have the prompt: the start of the ask call and the end of
                 # the job.
                 values = ai.metrics()
@@ -1736,7 +1736,7 @@ def check_client_jobs(binary, up):
                     '{"prompt":"SECRET"}\n'], ai.log
 
                 # A job that has ended is unread in the list until jobs
-                # returns its result.  A wait for any job then does not
+                # returns its result. A wait for any job then does not
                 # report it.
                 src = "127.0.1.1"
                 up.reply = lambda r: (200, ANSWERS["openai"], 0.3)
@@ -1791,8 +1791,8 @@ def check_client_jobs(binary, up):
                     numbers[1:], listed
 
                 # A timer that has fired is unread in the list until a wait
-                # reports it.  It cannot be cancelled, and the answer says
-                # so.  A wait then reports the timer at once, and the owner
+                # reports it. It cannot be cancelled, and the answer says
+                # so. A wait then reports the timer at once, and the owner
                 # has nothing left.
                 src = "127.0.1.6"
                 n = re.fullmatch(r"Timer (\d+) will fire in 1 s\.",
@@ -1820,7 +1820,7 @@ def check_client_jobs(binary, up):
                 assert ai.proc.wait(timeout=5) == 0, "".join(ai.log)
 
             # Anonymous addresses have room for 512 owners, half of the
-            # table of owners.  A timer of the next address gets the answer
+            # table of owners. A timer of the next address gets the answer
             # that askai has no room.
             with Askai(binary, "-u", up.url(), "--client-jobs") as ai:
                 for k in range(512):
@@ -1856,7 +1856,7 @@ def check_client_jobs(binary, up):
 
 def check_background(binary, up):
     """An ordinary ask can detach immediately, keeping its upstream stream
-    alive after the client leaves.  The same tool polls and cancels its
+    alive after the client leaves. The same tool polls and cancels its
     owner's jobs; supported providers also get native background mode."""
     pending = ("That job is still running. Call this same tool with the same "
                "job id in one second for its result.")
@@ -1864,7 +1864,7 @@ def check_background(binary, up):
     gates = []
 
     class Gated(Stream):
-        """Hold the provider's events until the test releases them.  Prefix
+        """Hold the provider's events until the test releases them. Prefix
         events allow a test to observe a native id before cancelling it."""
         def __init__(self, payload, prefix=()):
             super().__init__(payload)
@@ -1920,7 +1920,7 @@ def check_background(binary, up):
     hold_retrieve = up.retrieve
     try:
         # With the default, the tool still requires a prompt and returns
-        # the answer itself.  No provider gets the new field implicitly.
+        # the answer itself. No provider gets the new field implicitly.
         up.reply = lambda r: (200, ANSWERS["responses"])
         with Askai(binary, "-u", up.url(), "--api", "responses") as ai:
             tool = ai.rpc("tools/list")[2]["result"]["tools"][0]
@@ -1929,7 +1929,7 @@ def check_background(binary, up):
             assert text_of(ai.ask()) == "A"
             assert "background" not in up.last()["body"], up.last()
 
-        # Gemini requires storage for a background interaction.  Preserve
+        # Gemini requires storage for a background interaction. Preserve
         # explicit --extra overrides, even those the provider will reject;
         # null removes the key and lets Gemini's true default apply.
         storage_error = "store=true is required for background interactions."
@@ -1961,7 +1961,7 @@ def check_background(binary, up):
                     assert body["store"] is extra.get("store", background), body
 
         # Each call closes its connection before any provider delta is
-        # released.  Both jobs must reach the provider while both gates are
+        # released. Both jobs must reach the provider while both gates are
         # closed, then finish independently, including out of order.
         for fmt in ("responses", "interactions", "openai"):
             streams = [Gated(json.loads(json.dumps(ANSWERS[fmt]).replace(
@@ -2047,7 +2047,7 @@ def check_background(binary, up):
                 assert result.get("isError") and "background failure" in text_of(result), result
 
         # An existing client background job still belongs to its original
-        # tool.  A native upstream job must not be preempted and submitted
+        # tool. A native upstream job must not be preempted and submitted
         # a second time when an interactive job needs its only slot.
         streams = [Gated(ANSWERS["responses"]) for _ in range(2)]
         streams[1].release.set()
@@ -2077,7 +2077,7 @@ def check_background(binary, up):
             assert ai.metrics()["askai_jobs_preempted_total"] == 0
             assert len(up.requests) == count + 2 and up.hangups == hangups
 
-        # Native cancellation needs the creation id.  The parsed-event
+        # Native cancellation needs the creation id. The parsed-event
         # metric is the barrier, so cancellation cannot race its arrival.
         for fmt, provider, key in (("responses", "openai", "response"),
                                     ("interactions", "google", "interaction")):
@@ -2409,7 +2409,7 @@ def check_recovery(binary, up):
                             migrated = file.read()
                         assert b"LEGACY_RAW_MESSAGE_SENTINEL" not in migrated
                         assert b"response.reasoning_text.delta" not in migrated
-                # The completed local result is also durable.  This poll
+                # The completed local result is also durable. This poll
                 # must neither retrieve the stream nor create a generation.
                 with Askai(binary, *args, env=env) as completed:
                     result = poll(completed, jid)
@@ -2430,7 +2430,7 @@ def check_recovery(binary, up):
 
 
 def check_recovery_tools(binary, up):
-    """A completed tool's output survives into the next resumed turn.  A
+    """A completed tool's output survives into the next resumed turn. A
     committed intent whose result is unknown must never execute again, and
     one of a background tool or timer (here wait) stops the job with its own
     message."""
@@ -3560,10 +3560,10 @@ def check_connections(binary, up):
         assert ai.rpc("ping")[0] == 200
 
     # Clients may hold all but 64 descriptors and the client loop's two, 128
-    # here, a tool call counting one more for its upstream connection.  New
+    # here, a tool call counting one more for its upstream connection. New
     # clients and calls beyond that make room by closing the least recently
     # active idle connection, so idle clients cannot leave tool calls without
-    # a descriptor.  Each call is a session's, as one principal may have but
+    # a descriptor. Each call is a session's, as one principal may have but
     # eight queued.
     up.reply = lambda request: (200, ANSWERS["openai"], 0.5)
     with Askai(binary, "-u", up.url(), "--slots", "64", nofile=194, loops=1) as ai:
@@ -3629,7 +3629,7 @@ def check_cancellation(binary, up):
                 "another session must not cancel the call"
             assert not up.cancelled.is_set()
 
-        # A legacy client may cancel by notification.  On an event stream
+        # A legacy client may cancel by notification. On an event stream
         # the stream then ends without an event; a JSON POST gets a 202.
         for accept, expected in (("application/json, text/event-stream", 200),
                                  ("application/json", 202)):
@@ -3718,7 +3718,7 @@ def check_cancellation(binary, up):
         assert not up.arrived.is_set() or up.cancelled.wait(2)
         assert ai.rpc("ping")[0] == 200
 
-    # A notification cancels only its caller's own calls.  The caller is the
+    # A notification cancels only its caller's own calls. The caller is the
     # identity, from any address, or for an anonymous client its address.
     # alice may call ask_ai, bob may call no tool, and an anonymous client
     # on loopback may call ask_ai.
@@ -3744,7 +3744,7 @@ def check_cancellation(binary, up):
 
             def attempt(rpc_id, caller, canceller, modern=False):
                 """Starts an ask call of caller with rpc_id, and cancels it
-                from canceller.  Each is (headers, source address).  Returns
+                from canceller. Each is (headers, source address). Returns
                 the call's reply and whether its upstream request was
                 cancelled."""
                 up.arrived.clear()
@@ -3785,7 +3785,7 @@ def check_cancellation(binary, up):
             assert survived(attempt(5, ({}, local), ({}, other)))
             assert ended(attempt(6, ({}, local), ({}, local)))
 
-            # A call that has become a task is no longer in the roster.  A
+            # A call that has become a task is no longer in the roster. A
             # notification for its request id leaves the task working, and
             # tasks/cancel ends it.
             up.reply = lambda request: (200, ANSWERS["openai"], 3)
@@ -3805,9 +3805,9 @@ def check_cancellation(binary, up):
             wait_for(lambda: ai.modern("tasks/get", {"taskId": task}, meta=TAKES_TASKS,
                                        headers=alice)[2]["result"]["status"] == "cancelled")
 
-    # Between the turns of an ask call no job of the call is in home.  A
+    # Between the turns of an ask call no job of the call is in home. A
     # notification then ends the call at once, and the call makes no more
-    # upstream requests.  Seventeen calls doze on a timer at the same time.
+    # upstream requests. Seventeen calls doze on a timer at the same time.
     turns = {}
 
     def dozing(request):
@@ -3833,7 +3833,7 @@ def check_cancellation(binary, up):
                 assert ai.rpc("notifications/cancelled", {"requestId": 100 + i},
                               rpc_id=None)[0] == 202
             # Each event stream ends with its last chunk, and without an
-            # event, within a second of the cancels.  The first timer is due
+            # event, within a second of the cancels. The first timer is due
             # 3 s after the first call began, so a call that ends only when
             # its timer fires fails this.
             cancelled = time.monotonic()
@@ -3954,7 +3954,7 @@ def check_limits(binary, up):
         assert status_of(b"POST /mcp HTTP/1.1\r\nContent-Type: application/json\r\n"
                          b"Transfer-Encoding: chunked\r\n\r\n" +
                          b"200\r\n" + b" " * 512 + b"\r\n1f5\r\n") == 413
-        # A body over the limit is refused.  The connection lingers, so a
+        # A body over the limit is refused. The connection lingers, so a
         # client that sends the body all the same is not reset.
         with connect(ai) as sock:
             sock.sendall(post(b"", 200_000))
@@ -4037,7 +4037,7 @@ def check_limits(binary, up):
         assert ai.post(members(2001))[0] == 400
 
     # The default value limit does not grow with the body limit, as parsing
-    # and freeing values costs the loop more than bytes do.  Ids are short.
+    # and freeing values costs the loop more than bytes do. Ids are short.
     with Askai(binary, "-u", up.url(), "--max-body", "16M") as ai:
         assert ai.post(ping_with([{}] * 1013))[0] == 200
         status, _, body = ai.post(ping_with([{}] * 1014))
@@ -4074,7 +4074,7 @@ def check_limits(binary, up):
                     pass
             assert ai.rpc("ping")[0] == 200
 
-    # A reply that is larger than the output pause is sent in full.  With
+    # A reply that is larger than the output pause is sent in full. With
     # --output-pause 1, half of the pause is 0 bytes, so the stream resumes
     # when no output is pending.
     text = "x" * (600 << 10)
@@ -4331,7 +4331,7 @@ def check_large_bodies(binary, up):
 def check_sse(binary, up):
     """Tool calls answer on an event stream when the client accepts one and
     its era has them: one id-less data: event, after ':' keep-alives while the
-    upstream works.  Other requests, other clients and 2024-11-05 get JSON."""
+    upstream works. Other requests, other clients and 2024-11-05 get JSON."""
     up.reply = lambda request: (200, ANSWERS["openai"], 2.5)
     with Askai(binary, "-u", up.url(), "--sse-keepalive", "1") as ai:
         call = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
@@ -4417,10 +4417,10 @@ def check_answers(binary, up):
     """An upstream answer is parsed a slice at a time, however many values it
     holds, and its reply goes out a piece at a time as the client reads it,
     however large: a response on its own may take the pending output past
-    --max-output.  A plain answer is parsed on the client loop, and reading
+    --max-output. A plain answer is parsed on the client loop, and reading
     its text copies it whole, which the work line shows once that passes a
     step's bound; home reads a streamed one's events a slice at a time into
-    its text, which the client loop only escapes.  Home takes an answer in as
+    its text, which the client loop only escapes. Home takes an answer in as
     much a step as it may receive, holding the rest back in libcurl, up to
     16 MiB."""
     call = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
@@ -4652,7 +4652,7 @@ SHIMS = []
 
 def shim(name):
     """The LD_PRELOAD library built from tests/NAME.c, such as epfail or
-    peers.  It is built once, into a directory removed as the tests end."""
+    peers. It is built once, into a directory removed as the tests end."""
     if not SHIMS:
         SHIMS.append(tempfile.TemporaryDirectory(prefix="askai-shims-"))
     library = os.path.join(SHIMS[0].name, name + ".so")
@@ -4749,7 +4749,7 @@ def check_configuration(binary, up, godbolt):
 
     # doc/configuration.md documents under a heading "#### `NAME`" each long
     # option of --help but config and help, and each member of the file that
-    # is not an option, and nothing else.  Its JSON examples are strict JSON.
+    # is not an option, and nothing else. Its JSON examples are strict JSON.
     doc = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc")
     with open(os.path.join(doc, "configuration.md")) as f:
         reference = f.read()
@@ -4766,13 +4766,13 @@ def check_configuration(binary, up, godbolt):
     assert len(documented) == len(set(documented)), documented
     assert set(documented) == options | others, set(documented) ^ (options | others)
 
-    # doc/askai.example.json is strict JSON in the format of jq.  Its objects
+    # doc/askai.example.json is strict JSON in the format of jq. Its objects
     # upstream, service, testing and debugging have every option but those
     # of the built-in tools, which the objects of the tools in its member
-    # tools have, and it has the other members too.  askai starts with it,
+    # tools have, and it has the other members too. askai starts with it,
     # once the paths in it are those of files that exist, and its key
     # variable is set; the listen addresses and the URL come from the command
-    # line.  The godbolt plugin is the one built beside askai.
+    # line. The godbolt plugin is the one built beside askai.
     with open(os.path.join(doc, "askai.example.json")) as f:
         example = f.read()
     members = json.loads(example, parse_constant=constant)
@@ -4840,7 +4840,7 @@ def check_configuration(binary, up, godbolt):
     fails("-t", "warm", message="invalid temperature")
     fails("-t", "-1", message="invalid temperature")
     # json-c parses NaN and Infinity, and it parses 1e400 as an infinite
-    # double.  JSON has no number that is NaN or infinite.
+    # double. JSON has no number that is NaN or infinite.
     for temperature in ("NaN", "Infinity", "1e400"):
         fails("-t", temperature, message="invalid temperature: " + temperature)
     fails("-n", "0", message="invalid --max-tokens")
@@ -4874,7 +4874,7 @@ def check_configuration(binary, up, godbolt):
         fails("--loops", loops, message="invalid --loops")
 
     # A malformed listen address makes askai exit with status 2 before it
-    # listens anywhere.  With a host name that does not resolve, askai fails
+    # listens anywhere. With a host name that does not resolve, askai fails
     # later, when it opens the listener, and exits with status 1.
     for addr, error in (("127.0.0.1:99999", errno.ERANGE),
                         ("127.0.0.1:65536", errno.ERANGE),
@@ -4913,7 +4913,7 @@ def check_configuration(binary, up, godbolt):
         assert run.returncode == 1 and f"cannot listen on {addr}" in run.stderr, \
             (addr, run.stderr)
 
-    # A Unix socket path of 107 bytes fits in sun_path.  askai accepts a port
+    # A Unix socket path of 107 bytes fits in sun_path. askai accepts a port
     # with leading zeros and a port without a host.
     with tempfile.TemporaryDirectory() as d:
         assert len(d) < 100, d
@@ -4925,7 +4925,7 @@ def check_configuration(binary, up, godbolt):
                      if re.search(r"MCP endpoint http://127\.0\.0\.1:\d+/mcp$", line)]
             assert len(ports) == 2 and os.path.exists(sock), ai.log
 
-    # Google's API is Interactions by default.  The context is given, so
+    # Google's API is Interactions by default. The context is given, so
     # that askai does not ask Google's API about the model.
     with Askai(binary, "-p", "google", "-m", "m", "--context", "1000",
                env={"GOOGLE_API_KEY": "fallback-key"}) as ai:
@@ -4987,7 +4987,7 @@ def check_configuration(binary, up, godbolt):
     up.reply = lambda request: (200, ANSWERS["openai"])
 
     # json-c also parses numbers that JSON does not allow, such as "1.",
-    # "-.5" and "01.5".  askai sends each of them as a JSON number.
+    # "-.5" and "01.5". askai sends each of them as a JSON number.
     with Askai(binary, "-u", up.url(), "-t", "1.",
                "-x", '{"top_p": 1., "a": [1.e1, -.5, {"b": 01.5}]}') as ai:
         assert text_of(ai.ask()) == "A"
@@ -5188,7 +5188,7 @@ def check_allow(binary, up):
 
         # A role may name a tool that the member denies clients: no client
         # gets it, and the warning about the tools that no role lists leaves
-        # it out.  The role's tools still lend it to the upstream.
+        # it out. The role's tools still lend it to the upstream.
         with open(path, "w") as f:
             json.dump(grouped(on | {"tools": {"client": {"deny": ["man"]}},
                                     "roles": {"r": {"tools": ["ask_ai", "man", "notes"]}},
@@ -5209,8 +5209,8 @@ def check_allow(binary, up):
 def check_identities(binary, up):
     """Who a client is, by the bearer token it shows or else by how it
     connects, and its role's view and no more: the tools it lists and may
-    call, and the metrics.  A token no identity has, or none where no role is
-    named for how the client connects, is refused on the head.  An
+    call, and the metrics. A token no identity has, or none where no role is
+    named for how the client connects, is refused on the head. An
     identity's calls share one principal, whichever of its tokens they show.
     The configuration's mistakes are named."""
     def digest(token):
@@ -5373,7 +5373,7 @@ def check_reload(binary, up):
     """SIGHUP, with a configuration file, reloads who may connect and what
     they may do, for the requests that begin from then on, while others go
     on: a wrong file leaves the last policy, and other options changed take
-    a restart, as the log says.  Without a file, SIGHUP still stops askai."""
+    a restart, as the log says. Without a file, SIGHUP still stops askai."""
     def digest(token):
         return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
 
@@ -5502,14 +5502,14 @@ def check_logs(binary, up):
     line: the upstream, each built-in tool and whether it is on, the git
     repositories, the plugins and the policy, with the tools that each role
     lends to the upstream and a warning with the tools that no role lists;
-    a reload logs the policy again.  The lines have no rate limit.  A role that names a tool that
+    a reload logs the policy again. The lines have no rate limit. A role that names a tool that
     askai does not offer stops askai with the list of the tools that it
-    offers.  A client's tool call that fails or is refused is logged with
-    its error.  With --verbose, askai logs each tool call of a client with
+    offers. A client's tool call that fails or is refused is logged with
+    its error. With --verbose, askai logs each tool call of a client with
     its arguments, the job that a call of background starts, the start of
     each ask call, each upstream turn, each tool call of a turn with the
     error of a failure, each compaction and each notice about the context;
-    of a note's text and of compact's summary only the size.  No line has a token, an API key, a password or the query of
+    of a note's text and of compact's summary only the size. No line has a token, an API key, a password or the query of
     the URL."""
     def told(ai):
         return [line.rstrip("\n") for line in ai.log]
@@ -5535,7 +5535,7 @@ def check_logs(binary, up):
         subprocess.run(["git", "init", "-q", repo], check=True)
 
         # The built-in tools but the ask tool are off, and so are the tools
-        # of the upstream.  askai's own policy applies, without ASKAI_TOKEN.
+        # of the upstream. askai's own policy applies, without ASKAI_TOKEN.
         # test_task, a test aid, is left out while it is off.
         with Askai(binary, "-u", up.url()) as ai:
             assert ai.listed("upstream:") == [
@@ -5578,8 +5578,8 @@ def check_logs(binary, up):
                 told(ai)
             assert "SECRETKEY" not in "".join(ai.log), ai.log
 
-        # The built-in tools are on, each line with its details.  The log
-        # has no user, password or query of the URL, and no token.  The
+        # The built-in tools are on, each line with its details. The log
+        # has no user, password or query of the URL, and no token. The
         # call of a client with ASKAI_TOKEN names that identity.
         url = up.url().replace("http://", "http://user:PASSWORD@") + "?key=SECRET"
         with Askai(binary, "-u", url, "-m", "M", "--context", "8000", "--tool-name",
@@ -5608,7 +5608,7 @@ def check_logs(binary, up):
             log = "".join(ai.log)
             assert not any(word in log for word in ("PASSWORD", "SECRET", "tok-31415")), log
             # askai is not dumpable, so another process of its user cannot
-            # read the token from its environment.  root can.
+            # read the token from its environment. root can.
             if os.geteuid():
                 try:
                     with open(f"/proc/{ai.proc.pid}/environ", "rb") as f:
@@ -5747,7 +5747,7 @@ def check_logs(binary, up):
                 (members, proc.stderr)
 
         # With --verbose, the line of a client's call of notes has only the
-        # size of the text.  An ask call logs its start, its turns, the calls
+        # size of the text. An ask call logs its start, its turns, the calls
         # of its turns, the notices about its context, its compactions, and
         # its end with its arguments cut to 200 bytes.
         with Askai(binary, "-u", up.url(), "--verbose", "--upstream-tools", "--notes",
@@ -5864,7 +5864,7 @@ def check_logs(binary, up):
             ai.wait_log(rf'^ask call \d+\.\d+ from anonymous: prompt 1 byte, thread '
                         rf'{thread} \(resumed\), "Q"$')
 
-        # Without notes an ask call has no thread.  A call that the turns
+        # Without notes an ask call has no thread. A call that the turns
         # stop at --max-turns fails without a text, so its line has no
         # error.
         with Askai(binary, "-u", up.url(), "--verbose", "--man", "--upstream-tools",
@@ -5877,7 +5877,7 @@ def check_logs(binary, up):
                         r'\(0 bytes\); ask call \d+\.\d+, 2 turns, 1 tool call, stopped at '
                         r'--max-turns; arguments \{"prompt":"Q"\}$')
 
-        # With --client-jobs, the four tools of jobs are on.  A call of
+        # With --client-jobs, the four tools of jobs are on. A call of
         # background logs the job that it starts, and the line of the job's
         # end names the job and has the arguments of the job's call.
         with Askai(binary, "-u", up.url(), "--verbose", "--client-jobs") as ai:
@@ -5912,10 +5912,10 @@ def uds_rpc(path, method="tools/list", params=None, headers=None):
 def check_unix(binary, up):
     """A Unix socket beside TCP (--listen unix:PATH): its clients are who the
     kernel says (SO_PEERCRED, SO_PEERGROUPS), a user of a group the policy
-    names, and askai's own policy lets them do everything.  No Unix user is
-    an identity.  A bearer token is refused there, but for ASKAI_TOKEN under
-    askai's own policy, which keeps the calls those of the Unix user.  The
-    log names such a client by its uid.  A socket file left by a
+    names, and askai's own policy lets them do everything. No Unix user is
+    an identity. A bearer token is refused there, but for ASKAI_TOKEN under
+    askai's own policy, which keeps the calls those of the Unix user. The
+    log names such a client by its uid. A socket file left by a
     server gone is taken over, one a server listens on is not, and askai
     removes its own as it stops."""
     me = pwd.getpwuid(os.getuid()).pw_name
@@ -5945,7 +5945,7 @@ def check_unix(binary, up):
             assert names(uds_rpc(sock)) == ["ask_ai", "man"]
             assert ai.rpc("ping")[0] == 200
             assert any(f"unix:{sock}" in line for line in ai.log), ai.log
-            # A Unix socket's client without an identity is its Unix user.  A
+            # A Unix socket's client without an identity is its Unix user. A
             # notifications/cancelled from an anonymous TCP client does not
             # end the user's call, and one from another connection of the
             # same user over the socket does.
@@ -5986,7 +5986,7 @@ def check_unix(binary, up):
             with Askai(binary, "-c", path, "-l", f"unix:{sock}") as ai:
                 assert names(uds_rpc(sock)) == tools, (policy, uds_rpc(sock))
         # A bearer token on the socket gets 400, a valid one too: the client
-        # is its Unix user.  Without a token, its group counts.  This holds
+        # is its Unix user. Without a token, its group counts. This holds
         # for a file policy with tokens or without, and for askai's own
         # policy without ASKAI_TOKEN.
         def bearer(token):
@@ -6013,8 +6013,8 @@ def check_unix(binary, up):
             assert names(uds_rpc(sock)) == ["ask_ai", "man"]
 
         # Under askai's own policy with ASKAI_TOKEN, a client on the socket
-        # must send the token.  Its calls stay those of its Unix user: its
-        # notebook is the one it has without ASKAI_TOKEN.  Over TCP, the
+        # must send the token. Its calls stay those of its Unix user: its
+        # notebook is the one it has without ASKAI_TOKEN. Over TCP, the
         # token's calls are those of the identity ASKAI_TOKEN.
         uid = os.getuid()
         notes = f"{d}/notes"
@@ -6041,7 +6041,7 @@ def check_unix(binary, up):
                         "answered ")
 
         # The log names the client of a call over the socket by its uid, with
-        # the role of its group or its anonymous role.  Under askai's own
+        # the role of its group or its anonymous role. Under askai's own
         # policy, it names the uid alone.
         for policy, who, end in (
                 ({"unix-groups": {group: "g"}}, rf"uid {uid} \(role g\)",
@@ -6102,8 +6102,8 @@ def check_peers(binary, up):
     """askai refuses a client on a Unix socket whose uid a user namespace
     can give to another user, with a 403 as it accepts the connection: a
     subordinate uid of /etc/subuid, uid 4294967295 and the kernel's overflow
-    uid.  unix-groups may not name a subordinate gid of /etc/subgid or the
-    overflow gid.  A reload reads the files again.  tests/peers.c makes up
+    uid. unix-groups may not name a subordinate gid of /etc/subgid or the
+    overflow gid. A reload reads the files again. tests/peers.c makes up
     the credentials of the clients and the contents of the files."""
     peers = shim("peers")
     unmapped = ("Forbidden: the uid cannot be mapped (no credentials, or the kernel's "
@@ -6171,7 +6171,7 @@ def check_peers(binary, up):
                 "unmapped uid     2 (last uid 70000)",
                 "subordinate uid  3 (last uid 300009)"], timeout=10)
 
-        # Without /etc/subuid no uid is subordinate.  If the overflow uid
+        # Without /etc/subuid no uid is subordinate. If the overflow uid
         # cannot be read, it is 65534.
         missing = files | {"PEERS_SUBUID": f"{d}/none", "PEERS_OVERFLOWUID": f"{d}/none"}
         with Askai(binary, "-u", up.url(), "-l", f"unix:{sock}", preload=peers,
@@ -6187,7 +6187,7 @@ def check_peers(binary, up):
             assert uds_rpc(sock)[0] == 200
 
         # newuidmap reads START and COUNT with base 0, and so does askai:
-        # 0x186a0 is 100000, and 0100000 is 32768 in octal.  A range that
+        # 0x186a0 is 100000, and 0100000 is 32768 in octal. A range that
         # would end above uid 4294967295 ends there.
         based = files | {"PEERS_SUBUID": f"{d}/subuid-based",
                          "PEERS_SUBGID": f"{d}/subgid-based"}
@@ -6208,7 +6208,7 @@ def check_peers(binary, up):
                 peer(uid)
                 assert uds_rpc(sock)[0] == 200, uid
 
-        # A gid above INT32_MAX gives a role.  A reload reads /etc/subuid
+        # A gid above INT32_MAX gives a role. A reload reads /etc/subuid
         # again.
         put(path, json.dumps(grouped({
             "url": up.url(), "man": True, "roles": {"g": {"tools": ["man"]}},
@@ -6259,11 +6259,11 @@ def check_peers(binary, up):
 
 def check_principals(binary, up):
     """Principals are HMAC-SHA-256 values keyed with askai-journal/
-    principal.key of the transcripts repository.  Bit 62 is set for an
-    identity and clear for a Unix user, and bit 63 is never set.  A Unix
+    principal.key of the transcripts repository. Bit 62 is set for an
+    identity and clear for a Unix user, and bit 63 is never set. A Unix
     user keeps its principal across a restart and in every participant
     that shares the notes directory, but not with another notes directory.
-    An identity keeps its principal across a reload.  The notebook
+    An identity keeps its principal across a reload. The notebook
     selectors show the principals."""
     notebooks = {"name": "notes", "arguments": {"action": "notebooks"}}
 
@@ -6311,7 +6311,7 @@ def check_principals(binary, up):
         with start("alice", directory=f"{d}/other"):
             assert principal(uds_rpc(sock, "tools/call", notebooks)) != uid
 
-        # ASKAI_TOKEN is an identity over TCP.  On the socket, the calls
+        # ASKAI_TOKEN is an identity over TCP. On the socket, the calls
         # stay those of the Unix user.
         with start("alice", env={"ASKAI_TOKEN": "s3cret"}) as ai:
             status, _, body = ai.rpc("tools/call", notebooks, headers=bearer("s3cret"))
@@ -6340,7 +6340,7 @@ def check_principals(binary, up):
 
         # A key file of the wrong size, with only zero bytes or with a mode
         # that lets other users read it stops askai, and so does such an
-        # owner.seed.  The message names the file and the problem.
+        # owner.seed. The message names the file and the problem.
         seed = f"{notes}.transcripts.git/askai-journal/alice/owner.seed"
         kept = {name: open(name, "rb").read() for name in (key, seed)}
         for name, data, mode, problem in (
@@ -6546,7 +6546,7 @@ def check_tls(binary, up):
                 assert Replies(first).next()[1]["id"] == 3
 
         # SIGHUP reloads the certificate and key, without a configuration
-        # file; those who shook hands go on.  A key that is not the
+        # file; those who shook hands go on. A key that is not the
         # certificate's leaves the last.
         with Askai(binary, "-u", up.url(), *tls) as ai:
             port = tls_port(ai)
@@ -6706,12 +6706,12 @@ def check_metrics(binary, up):
 def check_memory(binary, up):
     """Buffers' storage goes back to the loop's stash and is taken from there
     again, so steady requests make no allocator calls for it, and nothing goes
-    back to the system without memory pressure.  Under it, a relief at a time
+    back to the system without memory pressure. Under it, a relief at a time
     gives back, in bounded steps, what the level says: at high pressure what
     went unused for a window (10 s), at critical all the stash keeps; then the
-    allocator is trimmed.  While pressure is critical, storage given up goes
+    allocator is trimmed. While pressure is critical, storage given up goes
     back at once, and connections that wait shrink their buffers to their
-    bytes, which requests read on correctly.  The pressure comes from resident
+    bytes, which requests read on correctly. The pressure comes from resident
     memory against --memory-high, from the system's and the cgroup's memory,
     or from the test aid's file."""
     loop = '{loop="1"}'
@@ -6931,7 +6931,7 @@ def check_memory(binary, up):
 
     # Under a data segment limit glibc's heaps keep their own top pad, which
     # leaves room for the work: one as large as a heap would make each
-    # thread's heap count whole.  The sanitizers' shadow memory counts too,
+    # thread's heap count whole. The sanitizers' shadow memory counts too,
     # and so does each client loop, about 2.3 MiB: its stack, its histograms
     # and its log ring.
     with open(binary, "rb") as f:
@@ -7061,7 +7061,7 @@ def check_shutdown(binary, up):
 
     # Clients that come as the drain begins, some of them on their way from
     # home to a client loop then, are each served or closed, none lost or
-    # left open: askai is stopped while they connect and ask.  A head part way
+    # left open: askai is stopped while they connect and ask. A head part way
     # on every loop holds the drain open until its deadline, so each client
     # must have been closed by askai, not by its exit.
     ai = Askai(binary, "-u", up.url())
@@ -7102,9 +7102,9 @@ def check_shutdown(binary, up):
             ai.proc.kill()
             ai.proc.wait()
 
-    # Ctrl-C does the same.  askai keeps a signal ignored that it starts
+    # Ctrl-C does the same. askai keeps a signal ignored that it starts
     # with, and the tests may run with SIGINT ignored, as a shell sets it for
-    # a job in the background.  So askai starts with SIGINT at its default
+    # a job in the background. So askai starts with SIGINT at its default
     # action, and a failed check does not leave askai running.
     ai = Askai(binary, "-u", up.url(), default=(signal.SIGINT,))
     try:
@@ -7130,12 +7130,12 @@ def check_streaming(binary, up):
     """Every protocol asks for a streamed answer, and home reads its events
     into the answer's text, however the bytes are cut up on the way, with CRLF
     line ends or JSON over several data lines, and without a line break at the
-    end; a plain answer to a streamed request is read as before.  An error
+    end; a plain answer to a streamed request is read as before. An error
     event ends the call with its message, and the upstream sees the hang-up;
     so does an answer that is not UTF-8 text, an event that is not JSON text,
-    or a pause longer than --chunk-timeout once the answer has begun.  One
-    that ends before it says the answer has is cut off.  A stop reason is the
-    same, streamed or not, and the text is the first completion's.  The
+    or a pause longer than --chunk-timeout once the answer has begun. One
+    that ends before it says the answer has is cut off. A stop reason is the
+    same, streamed or not, and the text is the first completion's. The
     deadline counts from the start upstream."""
     text = 'Hé, € \U0001f600 "quoted"\n\\ ' * 40
     answers = {
@@ -7287,9 +7287,9 @@ def check_scheduler(binary, up):
     One principal may have eight queued beyond the slots free, and the next
     is refused at once as busy; a flooder's queued calls then delay another
     session's call by one service time at most, where one queue, first in
-    first out, would hold it behind them all.  A call that goes while queued
+    first out, would hold it behind them all. A call that goes while queued
     never reaches the upstream, whether its client hangs up or withdraws it;
-    one that goes while its answer streams is cancelled upstream.  --timeout
+    one that goes while its answer streams is cancelled upstream. --timeout
     bounds a call's wait in its queue, and then its upstream call apart."""
     service = 0.3
 
@@ -7448,7 +7448,7 @@ def check_breaker(binary, up):
     refused at once, saying when to try again, and those queued end so too;
     after a backoff of a second, doubling to a minute, one probe goes, alone,
     whose failure opens it again and whose success, as soon as its answer
-    begins, closes it.  An answer's Retry-After opens it at once, for as
+    begins, closes it. An answer's Retry-After opens it at once, for as
     long."""
     def failing(delay=0):
         return lambda request: (503, {"error": {"message": "down"}}, delay)
@@ -7505,7 +7505,7 @@ def check_breaker(binary, up):
             ["Upstream error (HTTP 503): down"] * 5, texts
 
     # Half-open, exactly one probe goes; the calls queued meanwhile, eight a
-    # session though slots are free, wait for it.  Its failure ends them;
+    # session though slots are free, wait for it. Its failure ends them;
     # its streamed answer, once begun, starts them, however long it goes on.
     chunk = sse_wire([(None, {"choices": [{"index": 0, "delta": {"content": "x"}}]})])
     probe = Stream(wire=chunk * 30 + sse_wire([(None, "[DONE]")]),
@@ -7569,7 +7569,7 @@ def check_slots(binary, up):
     """Home asks llama-server's /props for its slots, the upstream calls it
     makes at once, in any protocol llama-server speaks; --slots says so
     instead, and without an answer, in time or at all, or for Gemini's
-    protocol, it makes four.  Gemini's API is asked for the context of the
+    protocol, it makes four. Gemini's API is asked for the context of the
     model, if the model is named."""
     up.props = {"total_slots": 2, "chat_template": "{{x}}" * 4000,
                 "default_generation_settings": {"n_ctx": 4096}}
@@ -7665,7 +7665,7 @@ def check_progress(binary, up):
     """A call whose request has a progressToken gets notifications/progress on
     its event stream, at most one every 100 ms, their progress growing: its
     place in its session's queue, then the tokens of its answer, "thinking"
-    while the latest is the model's thinking, in every protocol.  None comes
+    while the latest is the model's thinking, in every protocol. None comes
     after the result, or once the call is cancelled, nor to a call without a
     token, nor in a JSON reply."""
     chunk = sse_wire([(None, {"choices": [{"index": 0, "delta": {"content": "x"}}]})])
@@ -7785,15 +7785,15 @@ def check_progress(binary, up):
 
 
 def check_jobs(binary, up):
-    """Home runs the upstream calls as jobs (design section 4).  A call past
+    """Home runs the upstream calls as jobs (design section 4). A call past
     --max-calls is answered at once as busy, a tool error that says to try
-    again.  A call whose client goes while it waits cancels its job and frees
+    again. A call whose client goes while it waits cancels its job and frees
     its handle, so the job's completion, however it races the hang-up, finds
     no call and is dropped, and a call that takes the slot next gets its own
-    answer.  Every job ends once: submitted = completed + cancelled +
+    answer. Every job ends once: submitted = completed + cancelled +
     rejected, with none left in flight, and the completion of every call
-    cancelled while it waited is dropped.  /metrics shows home's loop and
-    stash, and the jobs.  Shutting down cancels the jobs in flight."""
+    cancelled while it waited is dropped. /metrics shows home's loop and
+    stash, and the jobs. Shutting down cancels the jobs in flight."""
     call = {"name": "ask_ai", "arguments": {"prompt": "Q"}}
     def ended(values, end):
         return values[f'askai_jobs_ended_total{{end="{end}"}}']
@@ -7934,7 +7934,7 @@ def check_jobs(binary, up):
 
     # Shutting down with jobs in flight: each call ends with the error, in
     # either kind of reply, each job running is cancelled upstream and none
-    # queued starts, and home's count says so.  The calls are sessions' of
+    # queued starts, and home's count says so. The calls are sessions' of
     # their own, half of them with a slot each.
     hangups = up.hangups
     count = len(up.requests)
@@ -8091,10 +8091,10 @@ def check_stalled_stderr(binary, up):
     print("stalled stderr: lines dropped and counted, clients served: PASS")
 
 
-# A stand-in for man(1).  With -w it finds a page's file in its directory's
+# A stand-in for man(1). With -w it finds a page's file in its directory's
 # "pages", making it if need be, and notes its arguments in "finds"; else it
 # renders the page that file names, noting its arguments in "renders", and
-# the name says what it does.  It notes the processes that wait in
+# the name says what it does. It notes the processes that wait in
 # "waiting".
 # For the page wait0, the fake man exits at once, and its sleep still has
 # the output pipe open.
@@ -8163,7 +8163,7 @@ def check_man(binary, up):
     a page's file, then to render it, with an environment, signals, a session
     and descriptors of its own; the page cut at 4 MiB and mended into UTF-8
     text, or why there is none, which a turn's call is given whole, whatever
-    its offset.  Each page is rendered once and kept by its file, for every
+    its offset. Each page is rendered once and kept by its file, for every
     name it is found by, eight at most, and given while its file is
     unchanged; a name is found anew, in the background, once the
     recheck has passed; the asks for a page under way wait for its one fetch.
@@ -8333,7 +8333,7 @@ def check_man(binary, up):
             # One call waits out its deadline, and fifteen more go: sixteen
             # children at most, which go on until their deadline.
             # The man of wait0 exits at once, but its sleep has the output
-            # pipe open.  So that man counts toward the limit of sixteen
+            # pipe open. So that man counts toward the limit of sixteen
             # children until askai kills its group at the deadline.
             late = []
             start = time.monotonic()
@@ -9061,7 +9061,7 @@ def check_git(binary, up):
                 result = call(ai, repo="snapshot", command=command, **arguments)
                 assert not result.get("isError") and text_of(result) == expected, result
 
-        # A process can start askai with SIGCHLD ignored.  askai sets SIGCHLD
+        # A process can start askai with SIGCHLD ignored. askai sets SIGCHLD
         # to its default action, so waitid() still returns the exit status
         # of git.
         with Askai(binary, "-u", up.url(), "--git", repo, env=env,
@@ -9480,14 +9480,14 @@ def turn_stream(calls=(), text="", reasoning="", used=None, order=(),
                 index=True, reason=None, extras=None):
     """Return a streamed chat completion that contains the reasoning
     @p reasoning, then the text @p text, and then the tool calls in
-    @p calls.  Each call is a tuple (id, name, JSON text of the
-    arguments), and the arguments come in pieces of 7 bytes.  @p used is a
-    tuple (prompt tokens, answer tokens) for the usage.  @p order is a
-    list of call numbers.  For each number in @p order, the stream
-    contains the next piece of that call.  Then the remaining pieces of
-    each call follow, call by call.  With @p index false, the pieces have
-    no index.  @p reason is the stop reason.  @p extras is a list with one
-    item for each call: its extra_content, or None.  With @p extras, each
+    @p calls. Each call is a tuple (id, name, JSON text of the
+    arguments), and the arguments come in pieces of 7 bytes. @p used is a
+    tuple (prompt tokens, answer tokens) for the usage. @p order is a
+    list of call numbers. For each number in @p order, the stream
+    contains the next piece of that call. Then the remaining pieces of
+    each call follow, call by call. With @p index false, the pieces have
+    no index. @p reason is the stop reason. @p extras is a list with one
+    item for each call: its extra_content, or None. With @p extras, each
     call comes whole in one piece without an index, as Gemini sends
     calls."""
     ev = [(None, {"choices": [{"index": 0, "delta": {"role": "assistant",
@@ -9530,7 +9530,7 @@ def messages_turn(blocks, stop="tool_use", stray=False, usage=None):
     ("tool", id, name, arguments' JSON text) or ("whole", id, name,
     arguments' JSON text), whose arguments come with its start, the texts
     and arguments in pieces of 5 bytes, that stops for @p stop; with
-    @p stray, a text delta with no index after each block's start.  If
+    @p stray, a text delta with no index after each block's start. If
     @p usage is given, the message_start event contains it as the usage."""
     ev = [("message_start", {"type": "message_start", "message": {
         "id": "msg", "type": "message", "role": "assistant", "content": [],
@@ -9612,7 +9612,7 @@ def interactions_turn(steps, status=None, usage=None, after=()):
     texts in deltas in pieces of 5 bytes and the arguments in pieces of 7.
     A "call" or "whole" step may have a fifth element, the signature in its
     start.
-    A dict in @p steps is the data of an event that is sent as it is.  The
+    A dict in @p steps is the data of an event that is sent as it is. The
     end has @p status, by default requires_action if a step is a call, else
     completed, and @p usage; the events of the dicts in @p after follow it."""
     def event(data):
@@ -9809,7 +9809,7 @@ def check_notes(binary, up):
             assert call({"action": "list", "thread": "xyz"}).startswith(
                 "!The optional thread must be 32 hexadecimal digits.")
             assert call({"action": "remove"}).startswith("!The action must")
-            # The opposite side's branch is a convenience alias.  Its
+            # The opposite side's branch is a convenience alias. Its
             # files share the repository, but an add still writes only to
             # the caller's own branch.
             shared = "1" * 32
@@ -10005,7 +10005,7 @@ def check_notes(binary, up):
             assert git("cat-file", "commit", own).endswith(
                 b'\n\nReplace "legacy.c" (5 to 0 bytes)\n')
         # When two adds to one thread run at once, one of them fails, and its
-        # answer asks to add the note again.  A git that sleeps before
+        # answer asks to add the note again. A git that sleeps before
         # fast-import makes both adds check the same newest note.
         os.mkdir(f"{d}/bin")
         with open(f"{d}/bin/git", "w") as f:
@@ -10054,7 +10054,7 @@ def check_notes(binary, up):
             time.sleep(1)
             assert "dropped.md" in call({"action": "list", "thread": thread})
             # An old lock can still belong to another process using this
-            # shared repository.  Age alone must not authorize deleting it,
+            # shared repository. Age alone must not authorize deleting it,
             # but the answer says how long the notebook has been locked.
             book = notes
             for lock in ("HEAD.lock", f"{own}.lock"):
@@ -10077,7 +10077,7 @@ def check_notes(binary, up):
             assert not os.path.exists(f"{book}/{own}.lock")
             assert os.path.exists(f"{book}/HEAD.lock")
             os.unlink(f"{book}/HEAD.lock")
-        # A process can start askai with SIGCHLD ignored.  askai sets SIGCHLD
+        # A process can start askai with SIGCHLD ignored. askai sets SIGCHLD
         # to its default action, so waitid() still returns the exit status
         # of git, and the note is added.
         with Askai(binary, "-c", path, ignore=(signal.SIGCHLD,)) as ai:
@@ -10452,7 +10452,7 @@ def check_notes_history(binary, up):
 
 def check_notes_cancel(binary, up):
     """A notes call that the client cancels stops its git at once when that
-    git only reads.  The notebooks action, which lists the session's
+    git only reads. The notebooks action, which lists the session's
     notebooks, is such a call."""
     with tempfile.TemporaryDirectory() as d:
         notes, path = f"{d}/notes", f"{d}/askai.json"
@@ -10507,10 +10507,10 @@ def check_turn_apis(binary, up):
     are offered as each has them, a turn goes back as it came, its items in
     their order, its thinking and its signatures whole, and its calls'
     results as each takes them; an answer that the turns doze after goes
-    back as it came, then the message that wakes them, as the user's.  The
+    back as it came, then the message that wakes them, as the user's. The
     replay of Interactions stays valid JSON when the events come in broken
     orders, and the token counts of its usage are checked against
-    --context.  In chat completions, in Messages and in Interactions, askai
+    --context. In chat completions, in Messages and in Interactions, askai
     treats token counts whose sum overflows int64_t as not known."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
@@ -10682,12 +10682,12 @@ def check_turn_apis(binary, up):
                                     {"role": "user", "parts": [{"text": woke}]}], contents
 
         # In Gemini's Interactions, the model's steps go back in their order,
-        # each in the form of the non-streamed answer.  A thought has its
+        # each in the form of the non-streamed answer. A thought has its
         # summary items and its signature, and no empty signature; a thought
-        # with neither is left out, as the API refuses it.  A model output
+        # with neither is left out, as the API refuses it. A model output
         # has the text of its start and of its deltas, and a step of blank
-        # text is left out.  A call has the arguments of its deltas or of its
-        # start, and the signature of its start.  Each result is a step after
+        # text is left out. A call has the arguments of its deltas or of its
+        # start, and the signature of its start. Each result is a step after
         # the model's steps, with the name and the id of its call, as the API
         # refuses a result without the name.
         def text(t):
@@ -10716,7 +10716,7 @@ def check_turn_apis(binary, up):
                       ("call", "c1", "git", json.dumps(log), "c2ln/+1="),
                       ("call", "c2", "git", broken),
                       ("whole", "c3", "git", json.dumps(log))]
-        # The events of the second turn come in broken orders.  They have a
+        # The events of the second turn come in broken orders. They have a
         # second signature in a delta after one in the start, deltas of an
         # index that is not open or of a type that does not fit the step, a
         # summary item after the signature, a thought that is open until the
@@ -10844,9 +10844,9 @@ def check_turn_apis(binary, up):
                                  {"type": "user_input", "content": [text(woke)]}], given
 
         # The tokens used are total_input_tokens plus total_output_tokens,
-        # which leave out the thinking.  If that sum is not known, the tokens
-        # used are total_tokens.  An input count that is not a JSON integer,
-        # such as NaN, which json-c parses, is not known.  When the tokens
+        # which leave out the thinking. If that sum is not known, the tokens
+        # used are total_tokens. An input count that is not a JSON integer,
+        # such as NaN, which json-c parses, is not known. When the tokens
         # used fill the context, askai starts the conversation again in the
         # next request.
         for usage, full in (({"total_input_tokens": 7990, "total_output_tokens": 10,
@@ -10875,7 +10875,7 @@ def check_turn_apis(binary, up):
 
         # askai treats token counts whose sum overflows int64_t as not known.
         # A count that is not known does not fill the context, so the second
-        # request continues the conversation.  Without the overflow check,
+        # request continues the conversation. Without the overflow check,
         # these sums wrap to a count near UINT32_MAX, and the second request
         # starts the conversation again.
         big = 2**63 - 1
@@ -10910,18 +10910,18 @@ def check_attach(binary, up):
     """In Gemini's generateContent and Interactions, a turn's notes call with
     the action attach uploads a note of either notebook to the Files API at
     the origin of the upstream's URL, with the upstream's header lines: the
-    note as it is if it is UTF-8 text, else its view.  The next request has
+    note as it is if it is UTF-8 text, else its view. The next request has
     the file after the turn's results: a fileData part in their message, or
-    a user_input step with a document.  A later attach of the same note uses
+    a user_input step with a document. A later attach of the same note uses
     the same file while it lasts more than 6 hours, and none whose expiry
-    the answer does not say.  A failed upload fails the call, the turns go
-    on, and nothing is attached.  A turn that the upstream refuses as too
+    the answer does not say. A failed upload fails the call, the turns go
+    on, and nothing is attached. A turn that the upstream refuses as too
     large makes askai forget the files of the caller and begin again from
-    the prompt.  A file that does not fit the context is refused, a URI
+    the prompt. A file that does not fit the context is refused, a URI
     that is not printable ASCII fails the upload, and the log has no user
-    name or password of the URL.  The uploads go to the root of the API
+    name or password of the URL. The uploads go to the root of the API
     under the path of the URL, with the key of its query, and a URL without
-    /v1beta/ and the other APIs do not offer attach.  A client cannot call
+    /v1beta/ and the other APIs do not offer attach. A client cannot call
     it."""
     script = []
     up.reply = lambda request: script.pop(0)(request)
@@ -11195,9 +11195,9 @@ def check_turns(binary, up):
     completions: it runs the tools each turn calls, a tool's output cut to a
     window that offset moves, writes the turn and the results into the
     conversation, and asks on until an answer calls none, --max-turns turns
-    at most; the client gets the answer and the calls' trace.  Notes are
+    at most; the client gets the answer and the calls' trace. Notes are
     files on the participant branch of the shared repository, listed and
-    read back; their list and the newest note go with every ask prompt.  compact has the conversation start again from the prompt, the
+    read back; their list and the newest note go with every ask prompt. compact has the conversation start again from the prompt, the
     summary and the notes, and a context that is full, as the upstream
     reports or as askai counts, has it start again from the prompt and the
     notes."""
@@ -11287,7 +11287,7 @@ def check_turns(binary, up):
             assert body["error"]["message"] == "Unknown tool: findings", body
 
             # Two calls, one of git and one of notes, then a list of the notes,
-            # then the answer.  The turns carry the text, the thinking and the
+            # then the answer. The turns carry the text, the thinking and the
             # calls.
             log = json.dumps({"repo": "proj", "command": "log",
                               "options": ["--oneline"]})
@@ -11358,7 +11358,7 @@ def check_turns(binary, up):
                 "found \"first\"\n", prompt(up.requests[count])), up.requests[count]
             assert f"ask-chain thread is {thread}." in result["content"][1]["text"], result
 
-            # Hooks in the repository of a thread do not run.  A note of a
+            # Hooks in the repository of a thread do not run. A note of a
             # name that a note has is refused.
             os.makedirs(f"{book}/hooks")
             with open(f"{book}/hooks/reference-transaction", "w") as f:
@@ -11680,9 +11680,9 @@ def check_turns(binary, up):
                 "\n\n[askai: go on with the task.]"), again
 
         # The reminders to write notes: one at a quarter of the context and
-        # one at half, each only once.  From two thirds on, each turn's last
-        # result asks for compact.  After a compaction, the reminders start
-        # again.  Without the notes tool, there are no reminders.
+        # one at half, each only once. From two thirds on, each turn's last
+        # result asks for compact. After a compaction, the reminders start
+        # again. Without the notes tool, there are no reminders.
         remind = (r"\n\n\[askai: your context is 2\d% full, \d+ of 8000 tokens\. "
                   r"Now is a good time to write notes of what you have learned\. "
                   r"Compaction removes the conversation, but not the notes\.\]")
@@ -11800,12 +11800,12 @@ def check_turns(binary, up):
             assert result["content"][0]["text"] == \
                 "Waiting.\n\n[askai: timer 1 fired.]\n\nA", result
 
-            # The pieces of parallel calls can come in any order.  The next
-            # request lists the calls in the order in which they began.  In
+            # The pieces of parallel calls can come in any order. The next
+            # request lists the calls in the order in which they began. In
             # the first stream, the pieces of the two calls alternate until
-            # the pieces of call a end.  In the second stream, both calls
+            # the pieces of call a end. In the second stream, both calls
             # begin, then all arguments of call b come, and then all
-            # arguments of call a.  In the third stream, call b begins before
+            # arguments of call a. In the third stream, call b begins before
             # call a.
             other = json.dumps({"repo": "proj", "command": "log",
                                 "options": ["-1", "--format=%s"]})
@@ -11970,7 +11970,7 @@ def check_turns(binary, up):
             assert said(2, "w1").startswith("[askai: job 1, git, finished: call jobs") and \
                 "timer" not in said(2, "w1"), said(2, "w1")
             # The list shows the job's arguments exactly as the turn sent
-            # them.  The job has its own copy, which stays valid after askai
+            # them. The job has its own copy, which stays valid after askai
             # frees the arguments of the turn's call of background.
             wire = json.dumps(json.loads(slow), separators=(",", ":"))
             assert re.fullmatch(r"job 1: git " + re.escape(wire) + r": finished, \d+ bytes\n",
@@ -11988,7 +11988,7 @@ def check_turns(binary, up):
             assert all(f"- {t} " in trace for t in ("background", "timer", "wait", "jobs")), \
                 trace
             # With --verbose, askai logs each call of a turn and each job that
-            # answers or fails.  The line contains the ask call and the turn,
+            # answers or fails. The line contains the ask call and the turn,
             # the name of the tool, whether the call failed, the time, the
             # size of the output, the arguments as compact JSON and the text
             # of a failure.
@@ -12008,7 +12008,7 @@ def check_turns(binary, up):
 
             # The output token limit can cut the arguments of a call short.
             # askai does not run such a call, and the time in the log line of
-            # the call is under one second.  The line says why the arguments
+            # the call is under one second. The line says why the arguments
             # are no object.
             script[:] = [lambda r: (200, turn_stream([("z", "git", slow[:-9])],
                                                      reason="length"))]
@@ -12021,7 +12021,7 @@ def check_turns(binary, up):
             # An answer while a timer is set, or a job runs, leaves the call
             # open: the turns doze until it fires, or ends, which a message of
             # the user's after the answer says; one that ended as they
-            # answered wakes them at once.  The reply gives each answer and
+            # answered wakes them at once. The reply gives each answer and
             # what woke the turns after it.
             script[:] = [
                 lambda r: (200, turn_stream([tool_call("t1", "timer", seconds=1,
@@ -12199,7 +12199,7 @@ def check_turns(binary, up):
                 up.requests[count]["body"]
 
         # The member "upstream" of a role lists the tools that the upstream
-        # may call.  This list is separate from the list of tools that the
+        # may call. This list is separate from the list of tools that the
         # role's clients may call.
         for role, listed, lent in (
                 ({"tools": ["ask_ai"], "upstream": ["git"]}, ["ask_ai"],
@@ -12862,11 +12862,11 @@ def check_tasks(binary, up):
 def check_plugin(binary, up, plugin):
     """askai loads the plugins that the configuration file lists.
 
-    The test plugin (src/test_plugin.c) has five tools.  The check lists
+    The test plugin (src/test_plugin.c) has five tools. The check lists
     and calls test_echo, runs a call of test_state that fails as a client's
     job, grants test_echo to a role by name, reloads the configuration,
     calls it from a turn of an ask call, and then starts askai with files
-    that askai must refuse.  Then it gives the plugin
+    that askai must refuse. Then it gives the plugin
     options, which test_config shows, and starts askai with options that
     askai must refuse.
     """
@@ -12908,7 +12908,7 @@ def check_plugin(binary, up, plugin):
         raise AssertionError(f"no dynamic entry with tag {tag:#x}")
 
     def address(name):
-        """Returns the address of the dynamic symbol name.  The section
+        """Returns the address of the dynamic symbol name. The section
         header of type SHT_DYNSYM (11) gives the symbols, and its sh_link
         names the section of their names."""
         first, size, count = number(40, 8), number(58, 2), number(60, 2)
@@ -12930,7 +12930,7 @@ def check_plugin(binary, up, plugin):
         return address
 
     def offset(at):
-        """Returns the file offset of the address at.  A PT_LOAD program
+        """Returns the file offset of the address at. A PT_LOAD program
         header (1) maps the address to its file offset."""
         first, size, count = number(32, 8), number(54, 2), number(56, 2)
         for header in range(first, first + size * count, size):
@@ -12945,8 +12945,8 @@ def check_plugin(binary, up, plugin):
 
     # askai that is built with -fsanitize=address, -fsanitize=thread or
     # -fsanitize=undefined refuses no plugin file for thread-local storage,
-    # constructors or writable data (src/plugin.c).  The check recognizes
-    # such a binary by the names of the sanitizer's functions.  A binary
+    # constructors or writable data (src/plugin.c). The check recognizes
+    # such a binary by the names of the sanitizer's functions. A binary
     # that is built with -fsanitize-trap=undefined has none of these names,
     # so the check does not work with that build.
     with open(binary, "rb") as f:
@@ -12985,8 +12985,8 @@ def check_plugin(binary, up, plugin):
 
         def patched(name, index, value):
             """Writes a copy of the plugin in which the 4-byte word at index
-            is value, and returns its path.  Index 0 is the first word of
-            the manifest.  Index -3 is the type of the note."""
+            is value, and returns its path. Index 0 is the first word of
+            the manifest. Index -3 is the type of the note."""
             copy = bytearray(image)
             copy[at + 4 * index:at + 4 * index + 4] = \
                 value.to_bytes(4, sys.byteorder)
@@ -13004,8 +13004,8 @@ def check_plugin(binary, up, plugin):
             'are ask_ai, man, test_echo, test_state, test_misuse, test_fetch, ' \
             'test_config\n' in run.stderr, run.stderr
 
-        # Without roles every client may call the plugin's tool.  Its id
-        # follows those of askai's own tools.  As askai starts, before its
+        # Without roles every client may call the plugin's tool. Its id
+        # follows those of askai's own tools. As askai starts, before its
         # endpoint, it logs the built-in tools, and the plugin with its path
         # and its tools.
         write([plugin])
@@ -13035,7 +13035,7 @@ def check_plugin(binary, up, plugin):
             assert call(ai, "test_none", {})["error"]["message"] == \
                 "Unknown tool: test_none"
             # A call of askai's own man tool returns a result while the plugin
-            # is loaded.  The text depends on the installed man and its pages.
+            # is loaded. The text depends on the installed man and its pages.
             assert "result" in call(ai, "man", {"name": "ls"})
             # A notification of the same client ends a plugin's call that
             # waits, at once.
@@ -13053,7 +13053,7 @@ def check_plugin(binary, up, plugin):
             assert time.monotonic() - start < 1.5, "the call waited on"
 
         # With --client-jobs, background starts a call of a plugin's tool as
-        # a job.  A call that fails with an error makes a failed job: a wait
+        # a job. A call that fails with an error makes a failed job: a wait
         # and the list say so, and jobs answers with the error of a direct
         # call, in either era.
         with Askai(binary, "-c", path, "--client-jobs") as ai:
@@ -13078,7 +13078,7 @@ def check_plugin(binary, up, plugin):
                 assert "error" in direct and stored["error"] == direct["error"], \
                     (stored, direct)
 
-        # A role grants the tool by its name.  A reload reads the names
+        # A role grants the tool by its name. A reload reads the names
         # from the registry that askai started with.
         only = {"roles": {"echo": {"tools": ["test_echo"]}},
                 "anonymous": {"loopback": "echo"}}
@@ -13114,11 +13114,11 @@ def check_plugin(binary, up, plugin):
             assert names(ai) == ["test_echo"]
 
         # With "upstream-tools" the registry also has the tools that only
-        # the turns of an ask call use.  registry_add() inserts test_echo
-        # before them, which increases each of their ids by one.  The kind
+        # the turns of an ask call use. registry_add() inserts test_echo
+        # before them, which increases each of their ids by one. The kind
         # of test_echo has TOOL_LENT, so askai sends its definition to the
-        # upstream with those tools.  The first turn calls timer, whose id
-        # changed, and test_echo.  askai counts the call of test_echo in
+        # upstream with those tools. The first turn calls timer, whose id
+        # changed, and test_echo. askai counts the call of test_echo in
         # askai_turn_tool_calls_total{tool="plugin"}.
         write([plugin], **{"upstream-tools": True})
         up.reply = lambda request: (200, turn_stream(
@@ -13192,7 +13192,7 @@ def check_plugin(binary, up, plugin):
         fails([f"{d}/import.so"], f"{d}/import.so: cannot load it: ",
               "undefined symbol: mcp_slot_tel1")
         # A copy in which kind 0 of askai_plugin has the flag 1 << 32, which
-        # src/tool.h does not define for plugins.  The manifest's ABI value
+        # src/tool.h does not define for plugins. The manifest's ABI value
         # 6 is the offset of the member flags in struct tool_kind.
         flags = symbol(b"askai_plugin") + word(7)
         copy = bytearray(image)
@@ -13208,7 +13208,7 @@ def check_plugin(binary, up, plugin):
         fails([f"{d}/name.so"], f"{d}/name.so: the definition of its tool "
               "test_echo has another name")
         # Only root and askai's user may change a plugin file and the
-        # directories above it.  The path of a plugin is the file's real
+        # directories above it. The path of a plugin is the file's real
         # path.
         shutil.copy(plugin, f"{d}/open.so")
         os.chmod(f"{d}/open.so", 0o666)
@@ -13225,9 +13225,9 @@ def check_plugin(binary, up, plugin):
                   f"is {os.path.realpath(listed)}")
         fails([f"{d}/none.so"], f"{d}/none.so: cannot open it: No such "
               "file or directory")
-        # A plugin's state is in its instances.  askai refuses a file with
+        # A plugin's state is in its instances. askai refuses a file with
         # thread-local storage, with a constructor, or with writable data
-        # that the dynamic linker does not make read-only.  Each copy has
+        # that the dynamic linker does not make read-only. Each copy has
         # one changed word: the type of the PT_GNU_RELRO program header
         # (0x6474e552) becomes PT_TLS (7) or PT_NULL (0), and the tag
         # DT_FLAGS_1 (0x6ffffffb) of the dynamic section becomes DT_INIT
@@ -13250,9 +13250,9 @@ def check_plugin(binary, up, plugin):
         fails([5], f"{path}: plugins: not an absolute path: 5")
         fails(plugin, f"{path}: plugins: not an array")
         # An element of "plugins" can be an object with the members path
-        # and options.  configure() of the plugin checks the options, and
-        # test_config shows the greeting that it stored.  A plugin without
-        # options has the default greeting.  A reload changes no option.
+        # and options. configure() of the plugin checks the options, and
+        # test_config shows the greeting that it stored. A plugin without
+        # options has the default greeting. A reload changes no option.
         # definition() gets the configuration, so the description of
         # test_config in tools/list ends with the same greeting.
         def greeting(ai):
@@ -13301,10 +13301,10 @@ def check_plugin(binary, up, plugin):
             fails(plugins, message)
 
         # A copy whose config_size is 0 has configure() without room for a
-        # configuration.  In another copy, the dynamic relocation that sets
+        # configuration. In another copy, the dynamic relocation that sets
         # the pointer configure sets the member step of kind 7 instead,
         # which no tool has, and the pointer configure and config_size are
-        # 0.  That plugin has no options.  The manifest's ABI value 0 is the
+        # 0. That plugin has no options. The manifest's ABI value 0 is the
         # size of a pointer, its value 5 the size of struct tool_kind, whose
         # member step follows two pointers, its value 7 the size of struct
         # plugin, whose last member is config_size, and its value 16 the
@@ -13364,9 +13364,9 @@ def check_instances(binary, up, plugin):
     The tool test_state of the test plugin (src/test_plugin.c) answers with
     the principal of the call's user, the address of the call's instance,
     the number of calls that the instance has had, and the text that the
-    instance stores.  A call without "wait_ms" stores its "text" argument in
-    the instance after it has answered.  A call with "wait_ms" stores it
-    when it starts, and the drop() of such a call stores "dropped".  The
+    instance stores. A call without "wait_ms" stores its "text" argument in
+    the instance after it has answered. A call with "wait_ms" stores it
+    when it starts, and the drop() of such a call stores "dropped". The
     check uses these values to show that two users never get the same
     instance, on one loop and on four, that a turn of a user's ask call gets
     the user's instance, and when askai destroys an instance.
@@ -13380,8 +13380,8 @@ def check_instances(binary, up, plugin):
         return {"Authorization": f"Bearer {token}"} if token else {}
 
     def state(ai, token, conn=None, **arguments):
-        """Calls test_state as the identity that has the token.  Returns
-        the four values of the answer.  They are the principal, the address
+        """Calls test_state as the identity that has the token. Returns
+        the four values of the answer. They are the principal, the address
         of the instance, the number of calls of the instance, and the text
         that was in the instance when the call ended."""
         status, _, body = ai.rpc(
@@ -13394,18 +13394,18 @@ def check_instances(binary, up, plugin):
         return found[1], found[2], int(found[3]), found[4]
 
     def parked(ai, token, ms):
-        """Starts a call of test_state that waits ms milliseconds.  The
-        call runs in a new thread.  The function returns when askai has
-        started the call.  It returns the thread, the list that the thread
+        """Starts a call of test_state that waits ms milliseconds. The
+        call runs in a new thread. The function returns when askai has
+        started the call. It returns the thread, the list that the thread
         appends the call's answer to, and the number of calls that the
-        user's instance has had by then.  askai must run with one loop."""
+        user's instance has had by then. askai must run with one loop."""
         answer = []
         thread = threading.Thread(target=lambda: answer.append(
             state(ai, token, text="held", wait_ms=ms)))
         calls = state(ai, token, text="poll")[2]
         thread.start()
         # The waiting call adds 1 to the instance's number of calls when
-        # it starts.  Each call of this loop adds 1 too.  So the waiting
+        # it starts. Each call of this loop adds 1 too. So the waiting
         # call has started when the number has grown by 2 between two
         # calls of this loop.
         end = time.monotonic() + 5
@@ -13430,7 +13430,7 @@ def check_instances(binary, up, plugin):
             os.chmod(f"{path}.new", 0o600)
             os.rename(f"{path}.new", path)
 
-        # One loop.  Each user has an instance of its own, and gets the
+        # One loop. Each user has an instance of its own, and gets the
         # same instance again from a new connection.
         write(roles=roles, identities=users, **{"upstream-tools": True})
         with Askai(binary, "-c", path, loops=1) as ai:
@@ -13448,7 +13448,7 @@ def check_instances(binary, up, plugin):
             assert state(ai, "bob", conn=conn) == (bob, his, 3, "")
             conn.close()
 
-            # A turn of alice's ask call calls the tool.  The call gets
+            # A turn of alice's ask call calls the tool. The call gets
             # alice's instance, not a separate one.
             up.reply = lambda request: (200, turn_stream(
                 [("a", "test_state", '{"text":"turn"}')]
@@ -13465,8 +13465,8 @@ def check_instances(binary, up, plugin):
             assert state(ai, "alice") == (alice, hers, 5, "turn")
             assert state(ai, "bob") == (bob, his, 4, "")
 
-            # A reload.  The call that waits started before the reload.
-            # It has the old instance until it ends.  A call that starts
+            # A reload. The call that waits started before the reload.
+            # It has the old instance until it ends. A call that starts
             # after the reload gets a new instance, and later calls get
             # that new instance too.
             waiter, held, calls = parked(ai, "alice", 1500)
@@ -13486,9 +13486,9 @@ def check_instances(binary, up, plugin):
             assert state(ai, "carol")[2:] == (1, "")
 
             # An ask call of alice starts before a reload, and its turn
-            # calls test_state after the reload.  The request of the ask
+            # calls test_state after the reload. The request of the ask
             # call began before the reload, so the turn's call gets a new
-            # instance that no other call gets.  It does not get the
+            # instance that no other call gets. It does not get the
             # instance that alice's requests get after the reload.
             go = threading.Event()
 
@@ -13524,7 +13524,7 @@ def check_instances(binary, up, plugin):
             assert state(ai, "alice")[1:] == (mine[1], 2, "mine")
 
         # The policy has no identities, so every TCP client is anonymous.
-        # Each call of an anonymous client gets a new instance.  A call
+        # Each call of an anonymous client gets a new instance. A call
         # adds 1 to the number of calls of its instance when it starts, so
         # the number is 1 in every answer only if no two of the calls that
         # wait got the same instance.
@@ -13545,7 +13545,7 @@ def check_instances(binary, up, plugin):
             assert len(waited) == 100 and all(w[2] == 1 for w in waited), waited
 
         # More users than a loop's table has room for (INSTANCE_MAX is 256,
-        # src/instance.h).  The table destroys the instance that has been
+        # src/instance.h). The table destroys the instance that has been
         # unused for the longest time, so the last 256 users get their
         # instances again and the users before them get new ones.
         many = {f"u{k}": {"role": "all", "tokens": [digest(f"u{k}")]}
@@ -13560,9 +13560,9 @@ def check_instances(binary, up, plugin):
             assert state(ai, "u0")[2:] == (1, "")
 
             # Each of 256 users has a call that waits, so calls use all 256
-            # instances of the table and the table cannot destroy one.  The
+            # instances of the table and the table cannot destroy one. The
             # call of another user then ends as failed, and the client can
-            # repeat it.  When the 256 clients close their connections,
+            # repeat it. When the 256 clients close their connections,
             # askai drops their calls, and the call of the other user
             # succeeds.
             held = []
@@ -13586,7 +13586,7 @@ def check_instances(binary, up, plugin):
                 sock.close()
             wait_for(lambda: not refused())
 
-        # Four loops, two connections at a time for each user.  A user has
+        # Four loops, two connections at a time for each user. A user has
         # at most one instance on each loop, and every answer has only that
         # user's own text.
         write(roles=roles, identities=users)
@@ -13612,8 +13612,8 @@ def check_instances(binary, up, plugin):
                            for s in seen[name]), name
                 assert not instances & {s[1] for s in seen[other]}, name
 
-        # Memory pressure.  At the critical level askai destroys every
-        # instance that no call uses.  The call that waits uses alice's
+        # Memory pressure. At the critical level askai destroys every
+        # instance that no call uses. The call that waits uses alice's
         # instance, so that instance stays, and the call ends with it.
         level = tempfile.NamedTemporaryFile("w", prefix="askai-pressure-")
         set_pressure(level, 0)
@@ -13628,7 +13628,7 @@ def check_instances(binary, up, plugin):
             waiter.join()
             assert held == [(alice, hers, calls, "poll")], held
             # The drop() of the call that waited stored "dropped" in alice's
-            # instance.  This shows that mcp_slot_instance() returned the
+            # instance. This shows that mcp_slot_instance() returned the
             # instance inside drop().
             assert state(ai, "alice") == (alice, hers, calls + 1, "dropped")
     print("instances: one for each user on a loop, also from a turn; a new "
@@ -13643,10 +13643,10 @@ def check_misuse(binary, up, plugin):
     another.
 
     The kind of the tool test_misuse of the test plugin (src/test_plugin.c)
-    has no step() and no drop().  Its case "ready" asks for a step, its case
+    has no step() and no drop(). Its case "ready" asks for a step, its case
     "own" sets the mcp_slot_own() pointer, and its case "after" ends the
     call and then calls each function of the call API that ends or changes
-    a call.  The drop() of test_state tries to end its call.  A background
+    a call. The drop() of test_state tries to end its call. A background
     job of test_state with "fail" ends with mcp_slot_fail() while the reply
     of its ask call is being sent.
     """
@@ -13700,7 +13700,7 @@ def check_misuse(binary, up, plugin):
             assert found and found[1] == found[2] and int(found[2]) >= 39, found
             assert text_of(call("test_echo", {"text": "x"})) == "x"
             # A handle of the loop's table gives a call slot only if it was
-            # made for one.  The call's own request also has handles there.
+            # made for one. The call's own request also has handles there.
             assert text_of(call("test_misuse", {"case": "handles"})) == \
                 "foreign 0 own 1"
             # After the end of the call, each function that would end or
@@ -13722,7 +13722,7 @@ def check_misuse(binary, up, plugin):
                 said.startswith(text) for said, (text, _) in zip(told, expected.values())), told
 
             # The client of a call that waits closes its connection, so askai
-            # drops the call.  The drop() of test_state tries to end the
+            # drops the call. The drop() of test_state tries to end the
             # call, and askai ignores that.
             calls = state()[0]
             with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
@@ -13730,7 +13730,7 @@ def check_misuse(binary, up, plugin):
                     1, {"name": "test_state", "arguments": {"wait_ms": 60000}},
                     "tools/call", headers=auth))
                 # Each call of state() adds 1 to the number of calls, and the
-                # call that waits adds 1 when it starts.  So it has started
+                # call that waits adds 1 when it starts. So it has started
                 # when the number grows by 2 between two calls of state().
                 end = time.monotonic() + 5
                 while (now := state()[0]) != calls + 2:
@@ -13740,10 +13740,10 @@ def check_misuse(binary, up, plugin):
             assert text_of(call("test_echo", {"text": "y"})) == "y"
 
             # A background job of a turn fails with mcp_slot_fail() while
-            # the reply of its ask call is being sent.  The reply is larger
+            # the reply of its ask call is being sent. The reply is larger
             # than the buffers of the connection, and the client reads only
             # the head of the reply before the job fails, so askai is still
-            # sending the reply then.  The job's failure must not change
+            # sending the reply then. The job's failure must not change
             # the reply.
             big = "B" * (6 << 20)
             job = {"tool": "test_state", "arguments": {"wait_ms": 2000, "fail": True}}
@@ -13783,9 +13783,9 @@ def check_web(binary, up, plugin):
 
     The tool test_fetch of the test plugin (src/test_plugin.c) sends the
     request that its arguments give with mcp_slot_fetch(), and writes what
-    mcp_slot_fetched() stores.  A local server answers the requests.  It
+    mcp_slot_fetched() stores. A local server answers the requests. It
     counts them by path and query, and it records the headers and the body
-    of the last request of each.  The path selects the response: /slow
+    of the last request of each. The path selects the response: /slow
     waits 0.5 s, /sleep waits 3 s, /hang answers only after 5 s and notes
     when the client closes the connection, /fail is a 500 error with
     Retry-After, /big has 1000 bytes, /echo echoes the body, /gzip has 100000
@@ -13918,7 +13918,7 @@ def check_web(binary, up, plugin):
                 assert headers["Content-Type"] == "application/json" and \
                     sent == b'{"a":1}', (dict(headers), sent)
 
-                # With keep, an equal request gets the stored response.  A
+                # With keep, an equal request gets the stored response. A
                 # request with another Accept, max or body is sent.
                 for _ in range(2):
                     fields, text = fetch(ai, url=f"{base}/text?keep", keep=60)
@@ -13943,7 +13943,7 @@ def check_web(binary, up, plugin):
                 assert count("/slow?both") == 1
 
                 # An equal request with another timeout does not wait for the
-                # request under way.  It is sent.
+                # request under way. It is sent.
                 out = []
                 threads = [threading.Thread(target=lambda t=t: out.append(fetch(
                     ai, url=f"{base}/slow?timeouts", keep=60, timeout=t)))
@@ -13956,7 +13956,7 @@ def check_web(binary, up, plugin):
                 assert [text for _, text in out] == ["hello", "hello"], out
                 assert count("/slow?timeouts") == 2
 
-                # askai asks for a compressed body and decodes it.  max is the
+                # askai asks for a compressed body and decodes it. max is the
                 # length of the decoded body.
                 fields, text = fetch(ai, url=f"{base}/gzip?all", max=100000)
                 headers, _ = last["/gzip?all"]
@@ -13976,7 +13976,7 @@ def check_web(binary, up, plugin):
 
                 # Under high memory pressure, askai frees the stored responses
                 # whose keep has passed, and under critical pressure all of
-                # them.  A request with a longer keep could use them before.
+                # them. A request with a longer keep could use them before.
                 fetch(ai, url=f"{base}/text?old", keep=1)
                 fetch(ai, url=f"{base}/text?new", keep=60)
                 time.sleep(1.1)
@@ -13996,7 +13996,7 @@ def check_web(binary, up, plugin):
                         fields["e"] == "0" and text == "no", (fields, text)
                 assert count("/fail?keep") == 2
 
-                # A body longer than max fails with EFBIG.  A body of max
+                # A body longer than max fails with EFBIG. A body of max
                 # bytes comes whole.
                 fields, text = fetch(ai, url=f"{base}/big?999", max=999)
                 assert fields["e"] == str(errno.EFBIG) and text == "" and \
@@ -14084,7 +14084,7 @@ def ce_compiler(cid, name, kind, families, version, isa, track="stable"):
 
 
 # The ids of compilers of the mock Compiler Explorer that answer in a way of
-# their own (MockCE.compile).  Each of them has the compilerType of GCC.
+# their own (MockCE.compile). Each of them has the compilerType of GCC.
 CE_SPECIAL = ("gone", "boom", "busy", "later", "slow", "trunc", "big")
 
 CE_LANGUAGES = [{"id": "c", "name": "C", "extensions": [".c"], "monaco": "nc"},
@@ -14139,24 +14139,24 @@ class MockCE:
     """A local Compiler Explorer for check_godbolt, on an ephemeral port.
 
     It records each request as (method, path, query, headers, body), with
-    the path percent-decoded.  GET /api/languages and GET /api/compilers/LANG
-    answer with CE_LANGUAGES and CE_COMPILERS.  POST /api/compiler/ID/compile
+    the path percent-decoded. GET /api/languages and GET /api/compilers/LANG
+    answer with CE_LANGUAGES and CE_COMPILERS. POST /api/compiler/ID/compile
     answers by the id: gone is 404, boom is 500 with a JSON message, busy is
     429 with Retry-After 1 for its first request, later is 429 with
     Retry-After 120, slow waits 3 s, trunc has cut assembly, big has more
     than 4 MiB of assembly, and euro has 3.9 MB of assembly in one string of
-    the 3-byte character U+20AC.  longline has a message line of 3 MB,
+    the 3-byte character U+20AC. longline has a message line of 3 MB,
     labels has 200,000 label definitions, and array answers a JSON array.
     Any other id compiles: each line of the source becomes a line of
     assembly, -Wall adds a warning, and -DFAIL adds an error and the exit
-    code 1.  With producePp, the text of the preprocessor is the source
-    after a line marker, or a macro with -dM.  With /EP or /clang:-dM,
-    stdout has the source or a macro.  The probe of godbolt_targets gets
+    code 1. With producePp, the text of the preprocessor is the source
+    after a line marker, or a macro with -dM. With /EP or /clang:-dM,
+    stdout has the source or a macro. The probe of godbolt_targets gets
     the block of CE_PROBE_GNU, of CE_PROBE_MSVC for cvc19, of CE_PROBE_GNU
     with a value of 257 bytes for longvalue, or a block without its end for
-    cti.  POST /api/shortener answers a JSON object with sessions with a
+    cti. POST /api/shortener answers a JSON object with sessions with a
     link whose id is a hash of the body, and answers 500 if the body is not
-    such an object or has the word NOSHORT.  Any other request gets 404.
+    such an object or has the word NOSHORT. Any other request gets 404.
     """
 
     def __init__(self):
@@ -14335,16 +14335,16 @@ def check_godbolt(binary, up, godbolt):
     Explorer (MockCE).
 
     The check lists the plugin's tools, and calls godbolt_catalog with each
-    action and its filters.  It reads the output of a call from an offset,
+    action and its filters. It reads the output of a call from an offset,
     checks that askai sends each list once, and checks lists with malformed
-    and oversized elements.  Then it compiles with
+    and oversized elements. Then it compiles with
     several compilers and argument strings, and it checks the bodies of the
     requests, the records of failed requests, a retry after 429, cut and
     oversized responses, the end of the output at 14 MiB, a long line,
     large and odd responses, the stored responses of a call with offset,
-    refused arguments and a cancelled call.  It preprocesses, outputs the
+    refused arguments and a cancelled call. It preprocesses, outputs the
     predefined macros and probes the targets with compilers of each kind of
-    driver.  It makes links with each value of the option share.  Last, it
+    driver. It makes links with each value of the option share. Last, it
     starts askai with options that the plugin refuses.
     """
     godbolt = os.path.realpath(godbolt)
@@ -14432,7 +14432,7 @@ def check_godbolt(binary, up, godbolt):
                 assert headers["User-Agent"] == "askai (plugin godbolt)" and \
                     headers["Accept"] == "application/json", dict(headers)
 
-                # The compilers of a language, with filters.  The list has
+                # The compilers of a language, with filters. The list has
                 # one element without an id, which the footer counts.
                 fields = "id,name,compilerType,compilerCategories,semver," \
                     "instructionSet,releaseTrack"
@@ -14497,7 +14497,7 @@ def check_godbolt(binary, up, godbolt):
                 assert ok(ai, "godbolt_catalog", action="compilers", limit=2,
                           offset=half) == full.encode()[half:].decode()
 
-                # askai stores the lists, so each list was sent once.  Another
+                # askai stores the lists, so each list was sent once. Another
                 # language is another list.
                 assert gets("/api/languages") == 1 and gets("/api/compilers/c") == 1, \
                     ce.seen("GET")
@@ -14505,7 +14505,7 @@ def check_godbolt(binary, up, godbolt):
                 assert gets("/api/compilers/c++") == 1
 
                 # A list with an error status fails the call, and so does a
-                # list that is not a JSON array.  The list of a language
+                # list that is not a JSON array. The list of a language
                 # without compilers is empty.
                 assert refused(ai, "godbolt_catalog", action="compilers",
                                language="broken") == "askai could not get the list of " \
@@ -14519,7 +14519,7 @@ def check_godbolt(binary, up, godbolt):
 
                 # An element with more than 64 family tags, or with a kind of
                 # more than 128 bytes, is left out, and a tag that repeats
-                # counts once.  An element larger than 4 KiB fails the call,
+                # counts once. An element larger than 4 KiB fails the call,
                 # and so do more than 256 different kinds.
                 assert ok(ai, "godbolt_catalog", action="families", language="tags") == \
                     "family\tcompilers\na\t1\nb\t1\n" + left(2) + "\nListed 2 of the 2 " \
@@ -14533,8 +14533,8 @@ def check_godbolt(binary, up, godbolt):
                     "than 256 different kinds."
 
                 # Compilations in the order of the compilers, and then of the
-                # argument strings.  The bodies have the 11 filters of the
-                # site.  No list of compilers is sent.
+                # argument strings. The bodies have the 11 filters of the
+                # site. No list of compilers is sent.
                 listed = len(ce.seen("GET"))
                 text = ok(ai, "godbolt_compile", compilers=["cg142", "cclang19"],
                           args=["-O2", "-O2 -Wall"], source=source)
@@ -14558,7 +14558,7 @@ def check_godbolt(binary, up, godbolt):
                 assert ce.bodies()[-1]["options"]["userArguments"] == ""
 
                 # A failed request is a record, and the call fails only if
-                # no compilation has a result.  An exit code is a result.
+                # no compilation has a result. An exit code is a result.
                 records, last = ce_records(ok(ai, "godbolt_compile", source=source,
                                               compilers=["gone", "boom", "cg142"]))
                 assert [r[2] for r in records] == [
@@ -14584,7 +14584,7 @@ def check_godbolt(binary, up, godbolt):
                     "--- stderr ---\n<source>:1:1: error: FAIL is defined\n" in \
                     records[0][3] and last == summary(1, 0, 1, 0, 0), records
 
-                # 429 with Retry-After 1 is sent again after 1 s.  With
+                # 429 with Retry-After 1 is sent again after 1 s. With
                 # Retry-After 120 it is a failed request at once.
                 start = time.monotonic()
                 records, _ = ce_records(ok(ai, "godbolt_compile", compilers=["busy"],
@@ -14600,7 +14600,7 @@ def check_godbolt(binary, up, godbolt):
                     len(ce.bodies("later")) == 1 and took < 2, (records, took)
 
                 # Cut output has a note, and a response larger than 4 MiB is a
-                # failed request.  The next compilation still has its record.
+                # failed request. The next compilation still has its record.
                 records, _ = ce_records(ok(ai, "godbolt_compile", source=source,
                                            compilers=["trunc", "big", "cg142"]))
                 assert records[0][2:] == ("exit code 0", "--- asm ---\nmov eax, 1\n"
@@ -14610,7 +14610,7 @@ def check_godbolt(binary, up, godbolt):
                     records[2][2:] == ("exit code 0", f"--- asm ---\n{asm}"), records
 
                 # The output ends at 14 MiB, also where the room left ends
-                # inside a UTF-8 character.  The lengths of the argument strings
+                # inside a UTF-8 character. The lengths of the argument strings
                 # move the end to each byte of a character.
                 for k in range(3):
                     text = ok(ai, "godbolt_compile", compilers=["euro"],
@@ -14622,7 +14622,7 @@ def check_godbolt(binary, up, godbolt):
                         last == summary(4, 4, 0, 0, 0), (k, text[-300:])
 
                 # A line of 3 MB is written in slices, so that no step copies
-                # more than 1 MiB.  A response with many label definitions is
+                # more than 1 MiB. A response with many label definitions is
                 # freed in slices, and a response that is not a JSON object is
                 # a failed request.
                 records, last = ce_records(ok(ai, "godbolt_compile", source=source,
@@ -14636,7 +14636,7 @@ def check_godbolt(binary, up, godbolt):
                         if k.startswith("askai_loop_step_work_max{") and 'unit="copy"' in k]
                 assert copy and max(copy) <= 1 << 20, copy
 
-                # A call without offset sends its compilations again.  A call
+                # A call without offset sends its compilations again. A call
                 # with offset gets the stored responses, and its output is the
                 # rest of the same output.
                 arguments = {"compilers": ["cg142", "cclang19"], "args": ["-O3"],
@@ -14653,8 +14653,8 @@ def check_godbolt(binary, up, godbolt):
                 assert len(ce.bodies()) == sent + 4
 
                 # godbolt_preprocess reads the kinds of its compilers from the
-                # stored list.  MSVC and clang-cl get /TC or /TP and /EP, and
-                # stdout has their text.  The other kinds, also those that
+                # stored list. MSVC and clang-cl get /TC or /TP and /EP, and
+                # stdout has their text. The other kinds, also those that
                 # godbolt-c did not know, get -E and the preprocessed view.
                 listed = len(ce.seen("GET"))
                 sent = len(ce.bodies())
@@ -14707,7 +14707,7 @@ def check_godbolt(binary, up, godbolt):
                     [("-E -dM", "\n"), ("/TC /E /clang:-dM", "\n")], bodies
 
                 # godbolt_targets preprocesses the probe, and the record has the
-                # facts that the macros show.  With headers, the source makes
+                # facts that the macros show. With headers, the source makes
                 # the compiler include the target headers first.
                 def facts(macros, **values):
                     lines = [f"{name}: {values.get(name, 'unknown')}"
@@ -14760,7 +14760,7 @@ def check_godbolt(binary, up, godbolt):
                     "of a record has more than 256 bytes", records
 
                 # With share, the first line is a short link to the state of the
-                # call, which Compiler Explorer stores.  A call with offset sends
+                # call, which Compiler Explorer stores. A call with offset sends
                 # no request, and a call without offset sends the compilations
                 # again, but the same state gets the stored link.
                 shared = {"compilers": ["cg142"], "args": ["-O2"], "source": source,
@@ -14789,7 +14789,7 @@ def check_godbolt(binary, up, godbolt):
                     len(ce.seen("POST", "/api/shortener")) == 1
 
                 # The state of godbolt_macros has the flags of the recipes, and
-                # no compiler that the call does not send.  A link that fails
+                # no compiler that the call does not send. A link that fails
                 # is a line with the reason, and the compilations go on.
                 text = ok(ai, "godbolt_macros", compilers=["cg142", "cvc19"], share=True)
                 assert text.startswith(f"Link: {ce.url()}/z/"), text
@@ -14899,8 +14899,8 @@ def check_godbolt(binary, up, godbolt):
                 assert ai.rpc("ping")[0] == 200
 
             # The option share state makes links that have the state in
-            # base64.  Compiler Explorer stores nothing, so the tools are
-            # read-only.  A link longer than 8192 bytes is none.
+            # base64. Compiler Explorer stores nothing, so the tools are
+            # read-only. A link longer than 8192 bytes is none.
             write({"url": ce.url(), "share": "state"})
             with Askai(binary, "-c", path) as ai:
                 tools = ai.rpc("tools/list")[2]["result"]["tools"]
@@ -14977,7 +14977,7 @@ def check_godbolt(binary, up, godbolt):
 
 def check_classes(binary, up):
     """The LLM scheduler's classes (S8): test_task's prompt asks as
-    background work, which interactive calls go before.  With two slots or
+    background work, which interactive calls go before. With two slots or
     more, background jobs hold all but one, which stays free for interactive
     ones; with one, an interactive job that has to wait preempts a
     background one, whose upstream call is cut and which starts again

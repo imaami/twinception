@@ -13,7 +13,7 @@ static unsigned failures;
                                              __FILE__, __LINE__, #cond)))
 
 /* The number of values that were not JSON integers and that ai.c passed to
- * json_object_get_int64().  json-c parses NaN as a double, and converting
+ * json_object_get_int64(). json-c parses NaN as a double, and converting
  * NaN to int64_t is undefined behavior.
  */
 static unsigned converted;
@@ -40,7 +40,7 @@ ignore_text (void       *user,
 }
 
 /* Whether ai_event() reads the event @p json of @p api without converting a
- * value that is not a JSON integer.  The event is parsed as home parses
+ * value that is not a JSON integer. The event is parsed as home parses
  * events, by a tokener that is not strict.
  */
 static bool

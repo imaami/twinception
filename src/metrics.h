@@ -4,7 +4,7 @@
  *
  * Every histogram and gauge has one writer thread, as do most counters; those
  * of log lines and of blocker jobs, which several threads count into, are
- * atomic sums of rare events.  All are read with relaxed atomics, so
+ * atomic sums of rare events. All are read with relaxed atomics, so
  * rendering takes no lock and stops no one: per loop, each client loop's and
  * home's, histograms of turn and step times, timer lateness and inbox delay,
  * the most work a step did, and the storage its stash keeps and what it gave
@@ -17,7 +17,7 @@
  * tasks (src/task.h), those each client loop holds, its slices and moves,
  * and how they ended;
  * log lines dropped; watchdog reports; the brainstem's resource gauges, and
- * memory pressure and its inputs.  Histograms have fixed buckets, from 1 µs
+ * memory pressure and its inputs. Histograms have fixed buckets, from 1 µs
  * to 300 s.
  */
 #ifndef TWINCEPTION_SRC_METRICS_H_
@@ -97,7 +97,7 @@ struct metrics_calls {
 	                                     tools called */
 };
 
-/** What a client loop's MCP counts: the loop writes, any thread reads.  It
+/** What a client loop's MCP counts: the loop writes, any thread reads. It
  *  lasts until every loop has finished, as any loop may render it.
  */
 struct metrics_mcp {
@@ -137,7 +137,7 @@ struct metrics_conns {
 	struct hist      flights;   /**< TLS handshakes' flights' times */
 };
 
-/** A loop's metrics, labelled with its name; those it lacks are nullptr.  Each
+/** A loop's metrics, labelled with its name; those it lacks are nullptr. Each
  *  loop sets its own as it starts, before home opens its door to clients.
  */
 struct metrics_loop {

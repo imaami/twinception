@@ -61,11 +61,11 @@ enum notes_side : uint8_t {
 /** The commands of git that write and read the notes. */
 enum notes_cmd : uint8_t {
 	NOTES_CREATE,  /**< initializes the shared repository */
-	NOTES_CHECK,   /**< checks the name of a new note.  notes_check_input()
+	NOTES_CHECK,   /**< checks the name of a new note. notes_check_input()
 	                    writes its input. */
-	NOTES_ADD,     /**< writes a note.  notes_add_input() writes its input. */
+	NOTES_ADD,     /**< writes a note. notes_add_input() writes its input. */
 	NOTES_LIST,    /**< writes the note history, the newest first */
-	NOTES_READ,    /**< writes a note.  notes_read_input() writes its
+	NOTES_READ,    /**< writes a note. notes_read_input() writes its
 	                    input. */
 	NOTES_BOOKS,   /**< lists all participant notebook selectors */
 	NOTES_FORMAT,  /**< writes the Git object format for an unborn branch */
@@ -142,7 +142,7 @@ extern char const *
 notes_writer (struct notes const *notes);
 
 /** Writes the id of a new thread, 128 random bits as hexadecimal digits,
- *  to @p id, with a NUL after it.  Returns 0, or the error number if the
+ *  to @p id, with a NUL after it. Returns 0, or the error number if the
  *  kernel gave no random bits.
  */
 extern int
@@ -175,12 +175,12 @@ extern char const *
 notes_selector (char const *repo);
 
 /** Writes to @p *age how many seconds ago the lock file of the notebook
- *  branch @p repo was last changed, or 0 if it has none.  A lock file last
+ *  branch @p repo was last changed, or 0 if it has none. A lock file last
  *  changed more than NOTES_STALE before the system booted belongs to no
  *  running process, as a crash can leave it, and is removed instead; the
  *  margin keeps a step of the clock from making a live lock look older than
- *  the boot.  Any other lock file stays, as its writer may be outside
- *  askai.  Returns 0 or an error number.
+ *  the boot. Any other lock file stays, as its writer may be outside
+ *  askai. Returns 0 or an error number.
  */
 extern int
 notes_lock (struct notes const *notes,
@@ -194,7 +194,7 @@ extern bool
 notes_exists (struct notes const *notes);
 
 /** Writes the argv of the command @p cmd for the notebook branch @p repo to
- *  @p argv.  @p repo must outlive @p argv.
+ *  @p argv. @p repo must outlive @p argv.
  */
 extern void
 notes_argv (struct notes const *notes,
@@ -263,13 +263,13 @@ extern char const *
 notes_revision_tip (struct notes_revision const *revision);
 
 /**
- * Checks the name of a note, the @p len bytes at @p name.  Slashes at the
+ * Checks the name of a note, the @p len bytes at @p name. Slashes at the
  * start do not belong to the name, and the function stores their number in
- * @p *skip.  The rest is a valid name if it has 1 to NOTES_NAME bytes and
+ * @p *skip. The rest is a valid name if it has 1 to NOTES_NAME bytes and
  * no control characters, and if none of its parts between slashes is
- * empty, ".", "..", or a name that NTFS would read as ".git".  git refuses
+ * empty, ".", "..", or a name that NTFS would read as ".git". git refuses
  * those names: ".git" or "git~1" in any case, followed only by spaces and
- * dots, also before a colon or a backslash.  Returns 0 for a valid name,
+ * dots, also before a colon or a backslash. Returns 0 for a valid name,
  * else EINVAL.
  */
 extern int
@@ -278,7 +278,7 @@ notes_name (char const *name,
             size_t     *skip);
 
 /** Writes the input of the command NOTES_CHECK for the valid name of
- *  @p len bytes at @p name to @p in.  Returns 0 or ENOMEM.
+ *  @p len bytes at @p name to @p in. Returns 0 or ENOMEM.
  */
 extern int
 notes_check_input (struct buf *in,
@@ -316,7 +316,7 @@ notes_file_same (struct notes_file const *file,
  * Writes to @p in the head of the file part of the input of the command
  * NOTES_ADD, for a note of the @p name_len bytes at @p name whose text has
  * @p len bytes, and reserves room for the text: the caller appends the
- * text and then a line feed, as notes_add_file() does.  Returns 0, EINVAL
+ * text and then a line feed, as notes_add_file() does. Returns 0, EINVAL
  * for a null argument or a name longer than NOTES_NAME, or ENOMEM.
  */
 extern int
@@ -326,10 +326,10 @@ notes_add_head (struct buf *in,
                 size_t      len);
 
 /**
- * Writes to @p in the file part of the input of the command NOTES_ADD.  The
+ * Writes to @p in the file part of the input of the command NOTES_ADD. The
  * valid name of the note is the @p name_len bytes at @p name, and its text
- * is the @p len bytes at @p text.  notes_add_input() puts the commit before
- * the file part.  Returns 0, EINVAL for a name longer than NOTES_NAME, or
+ * is the @p len bytes at @p text. notes_add_input() puts the commit before
+ * the file part. Returns 0, EINVAL for a name longer than NOTES_NAME, or
  * ENOMEM.
  */
 extern int
@@ -349,7 +349,7 @@ notes_part_init (struct notes_part *part,
                  struct span        file);
 
 /**
- * Writes to @p in the input of the command NOTES_ADD.  The input is a
+ * Writes to @p in the input of the command NOTES_ADD. The input is a
  * commit with the message @p message, one line without its line feed, and
  * with @p file, the part that notes_add_file() wrote. A file replaces any
  * existing note with the same name. The parent is @p tip, or a zero object
@@ -376,7 +376,7 @@ notes_add_out (struct span out,
                char        commit[NOTES_TIP + 1]);
 
 /** Writes the input of the command NOTES_READ for the valid name of @p len
- *  bytes at @p name to @p in.  Returns 0 or ENOMEM.
+ *  bytes at @p name to @p in. Returns 0 or ENOMEM.
  */
 extern int
 notes_read_input (struct buf *in,
@@ -387,7 +387,7 @@ notes_read_input (struct buf *in,
 /**
  * Reads @p out, the output of the command NOTES_READ, and stores the text
  * of the note in @p text, and its object id, in hexadecimal, in @p id
- * unless @p id is nullptr.  Returns 0, ENOENT if no note has the name,
+ * unless @p id is nullptr. Returns 0, ENOENT if no note has the name,
  * EISDIR if the name is a directory of notes, and EIO if the output is not
  * what the command writes.
  */

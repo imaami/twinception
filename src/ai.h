@@ -95,7 +95,7 @@ ai_props (struct ai_endpoint const *ep)
 /**
  * Build the request body asking @p prompt, with @p system instructions unless
  * that is nullptr, and offering the model @p tools, an array as the API
- * has them, unless that is nullptr; nullptr if out of memory.  Its messages
+ * has them, unless that is nullptr; nullptr if out of memory. Its messages
  * are its last member, so that the turns of a conversation (ai_format())
  * may follow them. @p history, unless nullptr, is an array of validated
  * user/assistant objects with string role and content, before the new prompt.
@@ -150,7 +150,7 @@ struct ai_call {
 /** Where the pieces of a streamed answer go: its text, and, unless nullptr,
  *  its thinking's text, its tool calls and its replay: the JSON text of
  *  what its turn gives back as it came (struct ai_format), in pieces, each
- *  of its items after a comma.  Each returns 0, or an error, which ends the
+ *  of its items after a comma. Each returns 0, or an error, which ends the
  *  reading of the event.
  */
 struct ai_sink {
@@ -208,8 +208,8 @@ struct ai_reader {
  * Read an event of a streamed answer, its data parsed as @p ev, as
  * @p reader says the events before it left the reading: hand each piece of
  * it to @p sink, and say what else it says in @p out, zeroed to begin,
- * which then points into @p ev.  Returns the first nonzero that the sink
- * returned, else 0, or ENOMEM.  An answer whose stream ends before an
+ * which then points into @p ev. Returns the first nonzero that the sink
+ * returned, else 0, or ENOMEM. An answer whose stream ends before an
  * event says it has ended, or chat completions' [DONE], is cut off.
  */
 extern int
@@ -238,12 +238,12 @@ enum ai_format_flag {
  * A model's turn is turn, which opens the list of its items, or, empty,
  * leaves them in the conversation's; then text and its text, if the API
  * has text, thought and its thinking's text if it has any, and calls, which
- * opens a list of their own if it is not empty.  Then the replay, its items
+ * opens a list of their own if it is not empty. Then the replay, its items
  * before each call, the call, and the items after the last: each call is
  * call, or call_next after an item in the list, its id, name, its name,
  * args, its arguments (AI_ARGS_RAW), args_end, extra and its extra's JSON
  * text if it has one (struct ai_call), and call_end, unless call is empty,
- * as the calls are in the replay.  Then turn_end.  An answer, a turn that
+ * as the calls are in the replay. Then turn_end. An answer, a turn that
  * calls no tool, is the same but for calls, and ends with answer_end.
  *
  * The tools that a turn may call are an array as the API has them, which
@@ -257,7 +257,7 @@ enum ai_format_flag {
  * (ai_upload()); then results_end.
  *
  * prompt_end ends the prompt's text, after which end ends the conversation
- * and the body: what askai adds to the prompt goes before it.  A message
+ * and the body: what askai adds to the prompt goes before it. A message
  * that askai adds to the conversation as the user's is user, its text, and
  * prompt_end.
  */
@@ -335,7 +335,7 @@ ai_upload (enum ai_api api);
  * The URL of @p path and then @p tail, unless it is nullptr, at the root of
  * Gemini's API that @p url, an upstream's URL, has: the part of @p url
  * before "/v1beta/", which may have a path of a gateway, and the parameter
- * key of the query of @p url, if it has one.  Returns a string for free(),
+ * key of the query of @p url, if it has one. Returns a string for free(),
  * or nullptr if @p url has no "/v1beta/" or askai runs out of memory.
  */
 extern char *
@@ -361,7 +361,7 @@ ai_model_url (struct ai_endpoint const *ep);
  * Read the answer of HTTP @p status to an upload (ai_upload()), the @p len
  * bytes at @p body: the URI of the file, printable ASCII, in @p uri, and
  * the time at which the file expires, in seconds since the epoch, in
- * @p *expires, or 0 if the answer does not say.  Returns 0, EIO with what
+ * @p *expires, or 0 if the answer does not say. Returns 0, EIO with what
  * went wrong in @p why, ENOMEM, or EINVAL if an argument is not valid.
  */
 extern int
@@ -383,7 +383,7 @@ ai_no_answer (char       *buf,
 
 /**
  * Turn an upstream HTTP response, the @p len bytes at @p body, into tool
- * output in @p text, which must start empty.  @p root is the body parsed as
+ * output in @p text, which must start empty. @p root is the body parsed as
  * UTF-8 JSON, or nullptr if it is not that; it stays the caller's.
  * @p *failed is set when @p text explains an error instead of carrying an
  * answer.

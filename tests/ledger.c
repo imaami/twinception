@@ -1,8 +1,8 @@
 /** @file Unit tests of the ledger (src/ledger.c): the owners of records, the
  *  limits of one owner, the removal of records, and the timers and waits of
- *  owners.  The test includes src/loop.c and src/ledger.c, so that it can
+ *  owners. The test includes src/loop.c and src/ledger.c, so that it can
  *  read the ledger's own structures, and replaces clock_gettime() in them
- *  with a fake clock, as tests/turn.c does.  The ledger's source is named by
+ *  with a fake clock, as tests/turn.c does. The ledger's source is named by
  *  its path, because "ledger.c" alone would name this file. */
 #include <errno.h>
 #include <pthread.h>
@@ -50,7 +50,7 @@ static struct loop *other_loop;  /* the loop of the calls of the records
 static uint64_t     cancels;     /* cancel messages handled */
 static uint64_t     wakes;       /* messages of waits handled */
 
-/* The handler of a record's cancel.  It drops the reference that
+/* The handler of a record's cancel. It drops the reference that
  * ledger_task_cancel() took for the message. */
 static void
 test_cancel (struct loop *loop,
@@ -61,7 +61,7 @@ test_cancel (struct loop *loop,
 	ledger_task_put(container_of(msg, struct ledger_task, cancel));
 }
 
-/* The handler of a wait's message.  It calls ledger_wait_heard() and drops
+/* The handler of a wait's message. It calls ledger_wait_heard() and drops
  * the reference that the message came with. */
 static void
 test_wake (struct loop *loop,
@@ -156,7 +156,7 @@ test_sweep (struct ledger *l)
 	CHECK(!test_found(l, A, id));
 }
 
-/* Invalid arguments.  ledger_open() fails with EINVAL, and the other
+/* Invalid arguments. ledger_open() fails with EINVAL, and the other
  * functions do nothing. */
 static void
 test_invalid (struct ledger *l)
@@ -396,8 +396,8 @@ test_remove (void)
 }
 
 /* The limit of LEDGER_RUNNING records whose calls run applies to the jobs
- * of one owner.  A task of the owner is opened past it, and so is a job of
- * another owner.  A ledger full of records whose calls run refuses every
+ * of one owner. A task of the owner is opened past it, and so is a job of
+ * another owner. A ledger full of records whose calls run refuses every
  * record. */
 static void
 test_caps (struct ledger *l)
@@ -419,8 +419,8 @@ test_caps (struct ledger *l)
 	CHECK(t[n - 1] && !e);
 	CHECK(ledger_owner_find(l, A)->running == LEDGER_RUNNING + 1);
 
-	/* The task counts toward the limit too.  A job of A opens once fewer
-	 * than LEDGER_RUNNING of A's calls run.  A second end of a call changes
+	/* The task counts toward the limit too. A job of A opens once fewer
+	 * than LEDGER_RUNNING of A's calls run. A second end of a call changes
 	 * nothing. */
 	ledger_end(l, t[0], LEDGER_COMPLETED);
 	ledger_end(l, t[0], LEDGER_FAILED);
@@ -434,7 +434,7 @@ test_caps (struct ledger *l)
 	CHECK(t[n - 1] && !e);
 	CHECK(atomic_load(&m->jobs) == LEDGER_RUNNING + 2 && atomic_load(&m->opened) == 1);
 
-	/* Tasks of C fill the ledger.  To make room, the ledger removes the two
+	/* Tasks of C fill the ledger. To make room, the ledger removes the two
 	 * records whose calls have ended, the oldest first. */
 	while (n < ARRAY_SIZE(t) && (t[n] = test_open(l, C, LEDGER_TASK, &e)))
 		++n;
@@ -451,7 +451,7 @@ test_caps (struct ledger *l)
 }
 
 /* When an owner with LEDGER_MINE records opens another, the ledger removes
- * the owner's oldest ended record and no record of another owner.  The
+ * the owner's oldest ended record and no record of another owner. The
  * ledger never removes a record whose call runs. */
 static void
 test_mine (struct ledger *l)
@@ -473,7 +473,7 @@ test_mine (struct ledger *l)
 	      test_found(l, B, b->id) && atomic_load(&m->gone) == gone + 1);
 
 	/* Each new record of A replaces its oldest ended record, until the
-	 * calls of all its records run.  The owner can then have more than
+	 * calls of all its records run. The owner can then have more than
 	 * LEDGER_MINE records. */
 	ledger_task_put(t[0]);
 	for (size_t k = 1; k < LEDGER_MINE; ++k) {
@@ -486,7 +486,7 @@ test_mine (struct ledger *l)
 	      atomic_load(&m->gone) == gone + LEDGER_MINE);
 
 	/* A list returns the newest LEDGER_MINE records of A, the newest
-	 * first: t[0], then t[LEDGER_MINE - 1] to t[1].  The oldest record,
+	 * first: t[0], then t[LEDGER_MINE - 1] to t[1]. The oldest record,
 	 * t[LEDGER_MINE], is the one record that it leaves out. */
 	struct ledger_look look;
 	CHECK(!ledger_list(l, A, &look) && look.n_tasks == LEDGER_MINE && look.more == 1 &&
@@ -526,7 +526,7 @@ test_fair (struct ledger *l)
 	CHECK(!l->n && !test_owners(l));
 }
 
-/* ledger_find() returns a record only to its owner.  The ledger removes
+/* ledger_find() returns a record only to its owner. The ledger removes
  * an ended record LEDGER_KEEP seconds after its call ends, and frees an
  * owner without records. */
 static void
@@ -551,10 +551,10 @@ test_keep (struct ledger *l)
 	CHECK(!l->n && !test_owners(l));
 }
 
-/* An owner has at most LEDGER_TIMERS timers.  One counter numbers the
- * timers of all owners.  A list returns them by number, with the time of
+/* An owner has at most LEDGER_TIMERS timers. One counter numbers the
+ * timers of all owners. A list returns them by number, with the time of
  * the first that has not fired.
- * A cancel removes a timer that has not fired, once.  A fired timer stays
+ * A cancel removes a timer that has not fired, once. A fired timer stays
  * until LEDGER_KEEP seconds after it fired, and the ledger removes the
  * owner with the last of its timers. */
 static void
@@ -563,7 +563,7 @@ test_timers (struct ledger *l)
 	struct ledger_metrics const *m = ledger_metrics(l);
 	int e = 0;
 	/* Timer base + k fires in 10 - k seconds, so timer base + 8 fires
-	 * first.  The timers of B get the next numbers, also after the ledger
+	 * first. The timers of B get the next numbers, also after the ledger
 	 * has freed B and made it again. */
 	uint64_t start = clock_ns;
 	uint32_t base = l->n_timers;
@@ -591,7 +591,7 @@ test_timers (struct ledger *l)
 	CHECK(look.timers[1].len == 3 && !memcmp(look.timers[1].note, "two", 3) &&
 	      !look.timers[0].len);
 
-	/* Timer base + 8 fires.  A cancel cannot remove it and returns
+	/* Timer base + 8 fires. A cancel cannot remove it and returns
 	 * EALREADY, and a list still returns it, but not as the first that has
 	 * not fired. */
 	clock_ns = start + 2 * NS;
@@ -609,7 +609,7 @@ test_timers (struct ledger *l)
 		CHECK(look.timers[k - 1].id < look.timers[k].id);
 
 	/* LEDGER_KEEP seconds after timer base + 1 fired, every timer has
-	 * expired.  A new timer of A removes them, and once it is cancelled,
+	 * expired. A new timer of A removes them, and once it is cancelled,
 	 * the owner has nothing left. */
 	clock_ns = start + (9 + LEDGER_KEEP) * NS;
 	CHECK(test_timer(l, A, 1, nullptr, &e) == base + LEDGER_TIMERS + 4 && !e &&
@@ -621,8 +621,8 @@ test_timers (struct ledger *l)
 /* A wait gets its message when a record of its owner ends or its owner
  * sets a timer, once until the handler calls ledger_wait_heard().
  * ledger_tell() returns each ended record that no one has read, and each
- * fired timer, to one wait only.  A wait that names records gets those
- * that have ended, read or not.  A wait that leaves with its message
+ * fired timer, to one wait only. A wait that names records gets those
+ * that have ended, read or not. A wait that leaves with its message
  * posted is freed when the handler drops the message's reference. */
 static void
 test_waits (struct ledger *l)
@@ -679,7 +679,7 @@ test_waits (struct ledger *l)
 	ledger_look_put(&look);
 	test_deliver();
 
-	/* A timer set posts the owner's waits.  A fired timer goes to one wait,
+	/* A timer set posts the owner's waits. A fired timer goes to one wait,
 	 * also to a wait that names records, and the ledger removes it. */
 	seen = wakes;
 	uint32_t first = l->n_timers + 1;
@@ -700,7 +700,7 @@ test_waits (struct ledger *l)
 	CHECK(ledger_timer_cancel(l, A, one) == ENOENT && !ledger_timer_cancel(l, A, two));
 
 	/* A wait leaves with its message posted, and the handler's drop frees
-	 * it.  A wait out of the ledger gets nothing. */
+	 * it. A wait out of the ledger gets nothing. */
 	seen = wakes;
 	ledger_end(l, t[4], LEDGER_COMPLETED);
 	CHECK(atomic_load(&w[0]->refs) == 2);
@@ -719,7 +719,7 @@ test_waits (struct ledger *l)
 		ledger_task_put(t[k]);
 }
 
-/* An owner stays while it has a record, a timer or a wait.  The ledger has
+/* An owner stays while it has a record, a timer or a wait. The ledger has
  * at most LEDGER_OWNERS owners, and an owner that has only timers counts.
  * A full table refuses a new owner with ENOSPC, until the removal of
  * expired timers leaves owners with nothing. */
@@ -762,7 +762,7 @@ test_owners_table (struct ledger *l)
 	CHECK(test_timer(l, 100, 5, nullptr, &e) == base + LEDGER_OWNERS + 1 && !e);
 
 	/* LEDGER_KEEP seconds after the first timers fired, a new owner makes
-	 * the ledger remove them.  Owner 100 has a timer that has not expired. */
+	 * the ledger remove them. Owner 100 has a timer that has not expired. */
 	clock_ns += (LEDGER_KEEP + 1) * NS;
 	CHECK(test_timer(l, A, 1, nullptr, &e) == base + LEDGER_OWNERS + 2 && !e &&
 	      l->n_owners == 2 && ledger_owner_find(l, 100) && !ledger_owner_find(l, 101));
@@ -773,7 +773,7 @@ test_owners_table (struct ledger *l)
 }
 
 /* Owners whose keys have the bit LEDGER_ANONYMOUS fill at most half of the
- * table of owners, and another owner still gets a place.  The removal of
+ * table of owners, and another owner still gets a place. The removal of
  * expired timers makes room for them again. */
 static void
 test_anonymous (struct ledger *l)
@@ -826,8 +826,8 @@ test_race_ender (void *arg)
 }
 
 /* Ends of records on another thread reach a wait whose loop is the main
- * thread.  The calls of the records are on another loop, so a message that
- * goes to the loop of a record's call does not reach the wait.  The main
+ * thread. The calls of the records are on another loop, so a message that
+ * goes to the loop of a record's call does not reach the wait. The main
  * thread calls ledger_tell() only after a message of the wait, as a waiting
  * call does, so a lost message stops the records from reaching the wait. */
 static void

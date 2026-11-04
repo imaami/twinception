@@ -4,7 +4,7 @@
  * grant (src/policy.h) and requests carry (src/stream.h); and the kinds of
  * tool they are, what their calls do, with the call API of src/mcp.h.
  * start() ends or parks a call; step() does a share of its work; drop()
- * lets go of its own word.  All run on the call's loop, and never block.
+ * lets go of its own word. All run on the call's loop, and never block.
  */
 #ifndef TWINCEPTION_SRC_TOOL_H_
 #define TWINCEPTION_SRC_TOOL_H_
@@ -53,13 +53,13 @@ enum tool_out : uint32_t {
 	TOOL_MORE   = 1U << 1U,  /**< write: more output follows */
 };
 
-/** Returns the definition of the tool as tools/list shows it.  The result
- *  is a new reference, or nullptr if out of memory.  askai calls the
- *  function when it starts.  For a plugin that askai loads from a file, it
+/** Returns the definition of the tool as tools/list shows it. The result
+ *  is a new reference, or nullptr if out of memory. askai calls the
+ *  function when it starts. For a plugin that askai loads from a file, it
  *  also calls the function once as it loads the plugin, to check that the
  *  definition's member "name" is the tool's name in the manifest.
  *  @p service is the service of a built-in plugin, which is the object that
- *  every loop shares.  For a plugin that askai loaded from a file, it is the
+ *  every loop shares. For a plugin that askai loaded from a file, it is the
  *  plugin's configuration (src/plugin.h), or nullptr if the plugin has no
  *  configure().
  */
@@ -72,9 +72,9 @@ typedef void tool_start_fn (struct mcp_slot    *slot,
 typedef void tool_step_fn (struct mcp_slot *slot);
 
 /** Frees what the call's own word (mcp_slot_own()) points to, and stops
- *  what would end the call later, such as a timer.  askai calls it only if
- *  the own word is not nullptr.  It can run inside the function that ends
- *  the call, before that function returns (src/mcp.h).  The call has ended
+ *  what would end the call later, such as a timer. askai calls it only if
+ *  the own word is not nullptr. It can run inside the function that ends
+ *  the call, before that function returns (src/mcp.h). The call has ended
  *  before drop() runs, so drop() cannot end it.
  */
 typedef void tool_drop_fn (struct mcp_slot *slot);

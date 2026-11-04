@@ -157,7 +157,7 @@ journal_test_legacy (struct journal *j)
 }
 
 /* Run "sh -c @p script" with child_run(), with a deadline @p after_ms from
- * now, or none if 0, and a grace of @p grace_ms.  Returns its result, its
+ * now, or none if 0, and a grace of @p grace_ms. Returns its result, its
  * exit status in @p *status, and how long it ran in @p *ms.
  */
 static int

@@ -9,10 +9,10 @@
  *
  * gcc_at_least_version(major, minor, patch) is 1 if the compiler is gcc of
  * that version or later, and gcc_older_than_version() is 1 if it is gcc of
- * an earlier version.  The clang tests are the same for clang.  The minor
- * and the patch number are optional and 0 by default.  Each test is 0 with
+ * an earlier version. The clang tests are the same for clang. The minor
+ * and the patch number are optional and 0 by default. Each test is 0 with
  * another compiler, also the gcc tests with clang, which defines __GNUC__
- * too.  A test of a range is the conjunction of two tests.
+ * too. A test of a range is the conjunction of two tests.
  *
  * @{
  */

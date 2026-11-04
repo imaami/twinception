@@ -12,7 +12,7 @@
 #include "list.h"
 
 /** Finished objects kept for reuse, the last kept last, and the fewest kept
- *  through windows of reuse: those went unused.  Zeroed and its list
+ *  through windows of reuse: those went unused. Zeroed and its list
  *  initialized, it is empty.
  */
 struct shelf {

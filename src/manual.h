@@ -5,20 +5,20 @@
  *
  * A page is asked for by its name and, optionally, its section; man finds
  * the file for those (man -w), and the manual keeps the page by that file,
- * so that every name man finds it by shares the one rendering (man -l).  A
+ * so that every name man finds it by shares the one rendering (man -l). A
  * page is given as long as a stat() of its file, on each ask, finds it
- * unchanged.  Once man's finding for a name is older than the recheck, the
+ * unchanged. Once man's finding for a name is older than the recheck, the
  * next ask has man find it again in the background, the page given
  * meanwhile, so that a page installed since, which man would now find first,
- * takes over.  The asks for a page that man is under way with wait for that
+ * takes over. The asks for a page that man is under way with wait for that
  * one fetch, on whichever loop began it, and it goes on, its page kept, when
- * the calls that waited for it go.  The manual keeps what it renders for
+ * the calls that waited for it go. The manual keeps what it renders for
  * good: all of a system's pages take some 100 to 200 MiB.
  *
  * The man tool is the manual's kind of tool (src/tool.h), its part of a
- * client loop the fetches there.  A man call takes its page at once if the
+ * client loop the fetches there. A man call takes its page at once if the
  * manual has it, else once man has, which the call waits for, named
- * (src/mcp.h).  It replies with the page, or with why there is none.  A
+ * (src/mcp.h). It replies with the page, or with why there is none. A
  * call that goes leaves the page to the manual.
  */
 #ifndef TWINCEPTION_SRC_MANUAL_H_
@@ -45,7 +45,7 @@ struct manual_metrics {
 /**
  * A manual, empty, for man to fill with askai's PATH and MANPATH, its pages
  * 80 columns of UTF-8 text, neither hyphenated nor justified; man's finding
- * for a name holds @p recheck seconds.  nullptr, with the error in @p *e,
+ * for a name holds @p recheck seconds. nullptr, with the error in @p *e,
  * if it cannot be made.
  */
 extern struct manual *
@@ -59,18 +59,18 @@ manual_destroy (struct manual **p_manual);
 extern struct manual_metrics const *
 manual_metrics (struct manual const *manual);
 
-/** The plugin of the man tool.  It is built into askai (src/plugin.h), and
+/** The plugin of the man tool. It is built into askai (src/plugin.h), and
  *  its service is a struct manual.
  */
 extern struct plugin const manual_plugin;
 
-/** Creates the man tool's part of a client loop (src/mcp.h).  The service
- *  argument points to the struct manual.  The only error number is
+/** Creates the man tool's part of a client loop (src/mcp.h). The service
+ *  argument points to the struct manual. The only error number is
  *  ENOMEM.
  */
 extern mcp_part_create_fn manual_loop_create;
 
-/** Ends the fetches that the loop runs.  Then it frees the part and sets
+/** Ends the fetches that the loop runs. Then it frees the part and sets
  *  the caller's pointer to nullptr.
  */
 extern mcp_part_destroy_fn manual_loop_destroy;

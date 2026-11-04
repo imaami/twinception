@@ -13,17 +13,17 @@
 /**
  * Binary byte buffer for sockets, TLS and pipes; [head, tail) is readable.
  *
- * A zeroed buffer is empty and owns no storage.  Writers reserve free space
+ * A zeroed buffer is empty and owns no storage. Writers reserve free space
  * at the tail, fill it (recv() straight into it, say) and commit what they
  * wrote; readers peek at the readable bytes and consume them from the head.
- * Consuming the last readable byte rewinds the buffer.  Below the maximum,
+ * Consuming the last readable byte rewinds the buffer. Below the maximum,
  * the readable bytes move down only when a reservation finds too little room
  * at the tail while at least half the storage lies consumed before the head,
- * so each consumed byte pays for at most one moved byte: amortized O(1).  At
+ * so each consumed byte pays for at most one moved byte: amortized O(1). At
  * the maximum, where the storage cannot grow, they move whenever the tail is
  * short, however few bytes were consumed, so that a reservation fails only
  * for want of room, and a parser holding part of a frame of up to max - min
- * bytes can always read the rest.  Each such move costs up to max - min bytes
+ * bytes can always read the rest. Each such move costs up to max - min bytes
  * and frees at least min, so a buffer that runs full wants a generous min.
  * Storage is a block of a size class, taken from the thread's stash when it
  * has one (struct buf_stash), and given back there.
@@ -43,7 +43,7 @@ struct span {
 };
 
 /** Size classes of storage: powers of two from 4 KiB to 32 MiB, glibc's
- *  largest mmap threshold.  Larger storage is allocated and freed as is.
+ *  largest mmap threshold. Larger storage is allocated and freed as is.
  */
 enum {
 	BUF_CLASS_MIN = 12,  /**< log2 of the smallest class */
@@ -53,7 +53,7 @@ enum {
 };
 
 /**
- * Memory pressure levels (design section 5).  Without pressure, storage
+ * Memory pressure levels (design section 5). Without pressure, storage
  * stays in the stashes for reuse; under it, the threads give back first what
  * went unused, then all they can.
  */
@@ -82,12 +82,12 @@ struct buf_stash_metrics {
 
 /**
  * A thread's store of buffer storage, for reuse without allocator calls
- * (design section 5).  Storage a buffer gives up goes to the stash of the
+ * (design section 5). Storage a buffer gives up goes to the stash of the
  * thread that gives it up, and storage a buffer needs comes from there first:
- * a thread keeps its working space.  Each class is a LIFO list threaded
- * through its blocks.  What it keeps and its buffers hold stays within twice
+ * a thread keeps its working space. Each class is a LIFO list threaded
+ * through its blocks. What it keeps and its buffers hold stays within twice
  * the most they held at once: a miss gives back its largest blocks first
- * where it would not.  Otherwise storage goes back to the allocator only
+ * where it would not. Otherwise storage goes back to the allocator only
  * under memory pressure: at once while it is critical, and as the thread
  * calls buf_stash_release().
  */
@@ -107,14 +107,14 @@ struct buf_stash {
 
 /**
  * Make at least @p min bytes free at the tail, doubling up to @p max, and
- * give them in @p room.  Returns 0; ENOBUFS, the backpressure signal, when
+ * give them in @p room. Returns 0; ENOBUFS, the backpressure signal, when
  * the readable bytes and @p min together exceed @p max; or ENOMEM.
  *
  * @p room covers the free bytes at the tail, which can be more than @p min,
- * but never more than would take the readable bytes past @p max.  On an
- * error it is empty, and the buffer unchanged.  A reservation may move the
+ * but never more than would take the readable bytes past @p max. On an
+ * error it is empty, and the buffer unchanged. A reservation may move the
  * readable bytes: pointers into them do not survive it, offsets from the
- * head do.  Storage grows to the class that holds the double, or what is
+ * head do. Storage grows to the class that holds the double, or what is
  * needed, but not past the class that holds @p max.
  */
 extern int
@@ -185,7 +185,7 @@ buf_trim (struct buf *buf);
 
 /**
  * Zero all storage, consumed bytes included, and empty the buffer: for secrets
- * only.  Copies that growth left in freed memory are beyond its reach, so
+ * only. Copies that growth left in freed memory are beyond its reach, so
  * reserve a secret's full size before writing it.
  */
 extern void
@@ -239,7 +239,7 @@ buf_units (size_t bytes)
  * Give the stash's blocks back to the allocator, the largest first, up to
  * @p max units of release work (buf_units()), or one block if that is more:
  * at BUF_HIGH those unused since the last window began, at BUF_CRITICAL all
- * of them.  Returns the units; 0 once none are left to give back.
+ * of them. Returns the units; 0 once none are left to give back.
  */
 extern size_t
 buf_stash_release (struct buf_stash  *stash,

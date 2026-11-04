@@ -1,8 +1,8 @@
 /** @file home.h
  *
- * Home is a thread with its own loop.  It runs the jobs (src/job.h), which
+ * Home is a thread with its own loop. It runs the jobs (src/job.h), which
  * are the upstream calls that the client loops hand over to it, and it
- * serves no client itself (design sections 1 and 4).  Home's door
+ * serves no client itself (design sections 1 and 4). Home's door
  * (src/httpd.h) accepts the clients and places each on a client loop.
  *
  * Home owns the curl bridge (src/http.h) and the scheduler of the jobs.
@@ -10,40 +10,40 @@
  *
  * Home ends a new job at once as BUSY if --max-calls jobs are in flight,
  * or if JOB_QUEUED jobs of the same class are already queued for the job's
- * principal.  The principal is the client's identity, else the call's
- * session, else the client's address.  A job that arrives while an
+ * principal. The principal is the client's identity, else the call's
+ * session, else the client's address. A job that arrives while an
  * upstream slot is free for it, and while no job that would start before
- * it waits, starts without queueing.  The other jobs wait in their
- * principal's queue.  Home gives the free slots in turn to the principals
+ * it waits, starts without queueing. The other jobs wait in their
+ * principal's queue. Home gives the free slots in turn to the principals
  * that have jobs queued, one job each.
  *
  * Home sends a job's request upstream, and ends the job at its deadline if
- * the job has not ended by then.  It parses the events of a streamed answer
+ * the job has not ended by then. It parses the events of a streamed answer
  * into the job's text, tool calls and thinking, or collects a plain answer
- * without parsing it.  While the job waits, home publishes its place in its
+ * without parsing it. While the job waits, home publishes its place in its
  * principal's queue, and while the job runs, how far its answer has come
- * (src/job.h).  Then home completes the job.
+ * (src/job.h). Then home completes the job.
  *
  * A circuit breaker opens after several upstream failures in a row, or
- * when the answer to a failed request says when to retry.  While the
+ * when the answer to a failed request says when to retry. While the
  * breaker is open, home refuses new jobs and ends the jobs that wait.
  * After the time that the answer gave, or else after a backoff that
  * doubles each time the breaker opens, home lets one job through as a
- * probe.  If the probe succeeds, the breaker closes.
+ * probe. If the probe succeeds, the breaker closes.
  *
  * The messages from the client loops admit or refuse new jobs, cancel jobs
- * that wait, and move running jobs to the lists of the bulk steps.  Bulk
+ * that wait, and move running jobs to the lists of the bulk steps. Bulk
  * steps of home's loop start the jobs, read their answers and cancel them,
  * with a limited amount of work in each step, because each call into
- * libcurl takes some tens of microseconds.  An admitted job may need a
- * descriptor for its upstream connection.  If the client connections and
+ * libcurl takes some tens of microseconds. An admitted job may need a
+ * descriptor for its upstream connection. If the client connections and
  * the jobs in flight already hold as many descriptors as they may, the
  * door has the client loop with the least recently active idle connection
  * close that connection, if any connection is idle.
  *
  * When home drains, it cancels the jobs in flight and refuses new jobs.
  * It does not cancel durable background work at its provider, so that
- * askai can recover the work later.  Once all client loops have exited, no
+ * askai can recover the work later. Once all client loops have exited, no
  * job is in flight, and no provider cancellation or journal callback is
  * pending, home makes its loop exit.
  */
@@ -66,10 +66,10 @@ struct loop;
 struct job;
 struct journal_record;
 
-/** Prepare @p job to resume a provider turn after a restart.  The function
+/** Prepare @p job to resume a provider turn after a restart. The function
  *  reads the provider's job id from the "meta" records in @p records.
  *  home_start() then reconnects to the provider's stream of that job, and
- *  does not send the request again.  Returns 0, EBUSY if @p job already
+ *  does not send the request again. Returns 0, EBUSY if @p job already
  *  has recovery state, EPROTO if a "meta" record cannot be parsed, or
  *  ENOMEM if the recovery state cannot be allocated.
  */
@@ -116,9 +116,9 @@ struct home_metrics {
  * Home on @p loop, asking @p ep through a curl bridge that looks host names
  * up on @p blockers, with at most @p cfg's calls jobs in flight, each of
  * which @p door makes room for, and with CFG_TEST_FIFO, as a test aid, in
- * one queue for all, first in first out.  It counts into @p metrics and
+ * one queue for all, first in first out. It counts into @p metrics and
  * @p http, whose atomic members are valid, and which outlive every loop that
- * renders them.  nullptr, with the error in @p *e, if it cannot be made.
+ * renders them. nullptr, with the error in @p *e, if it cannot be made.
  */
 extern struct home *
 home_create (struct loop              *loop,

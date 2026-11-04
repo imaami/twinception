@@ -40,7 +40,7 @@ util_hex (char *restrict       dst,
 }
 
 /** Fill the @p n bytes at @p dst, at most 256, with random bytes from the
- *  kernel.  Returns 0, or the error number.
+ *  kernel. Returns 0, or the error number.
  */
 static inline int
 util_random (void   *dst,
@@ -58,7 +58,7 @@ util_random (void   *dst,
 }
 
 /** Write @p n random bytes, at most 256, from the kernel to @p dst as 2 @p n
- *  lowercase hexadecimal digits, without a NUL.  Returns 0, or the error
+ *  lowercase hexadecimal digits, without a NUL. Returns 0, or the error
  *  number.
  */
 static inline int
@@ -127,7 +127,7 @@ util_word (char const *s,
 }
 
 /** The entry "NAME=value" of the process's environment whose "NAME=" is
- *  the @p len bytes at @p name, or nullptr if it has none.  Nothing in
+ *  the @p len bytes at @p name, or nullptr if it has none. Nothing in
  *  askai changes its environment, so the entry lasts.
  */
 static inline char *
@@ -153,7 +153,7 @@ util_env_path (void)
 }
 
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a
- *  partial write.  Returns 0, or the error number, EIO if no byte could be
+ *  partial write. Returns 0, or the error number, EIO if no byte could be
  *  written.
  */
 static inline int
@@ -177,7 +177,7 @@ util_write_all (int         fd,
 /** Read up to @p len bytes from @p fd into @p buf, from the offset @p at
  *  with pread(), or from where the file stands with read() if @p at is
  *  negative, again after a signal or a partial read, until the end of the
- *  file; their count goes to @p *got.  Returns 0, or the error number.
+ *  file; their count goes to @p *got. Returns 0, or the error number.
  */
 static inline int
 util_read_all (int     fd,
@@ -216,7 +216,7 @@ util_hash (uint64_t    seed,
 	return h ^ h >> 33;
 }
 
-/** Returns a seed for util_hash().  The seed is 8 random bytes from the
+/** Returns a seed for util_hash(). The seed is 8 random bytes from the
  *  kernel, or the wall clock if the kernel has no random bytes yet.
  */
 static inline uint64_t
@@ -246,7 +246,7 @@ util_concat (char const *a,
 }
 
 /** The part of @p url that a log shows after its scheme: the rest of the
- *  URL after its user name and password, if it has them.  Stores the length
+ *  URL after its user name and password, if it has them. Stores the length
  *  of the scheme and its "://" in @p *scheme.
  */
 static inline char const *

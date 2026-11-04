@@ -134,7 +134,7 @@ struct cli_console_span {
 };
 
 /** Write the spans, each in its style, as cli_console_write() does, in one
- * output request; the display ends in the reset style.  A span with a style
+ * output request; the display ends in the reset style. A span with a style
  * past the last of enum cli_style is EINVAL, and nothing is written.
  */
 extern int

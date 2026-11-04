@@ -1,6 +1,6 @@
 /** @file These unit tests check the order in which a turn of the event
- *  loop (src/loop.c) runs the steps on its ready lists.  The test includes
- *  src/loop.c and replaces clock_gettime() with a fake clock.  Only the
+ *  loop (src/loop.c) runs the steps on its ready lists. The test includes
+ *  src/loop.c and replaces clock_gettime() with a fake clock. Only the
  *  handlers and steps of the test advance the fake clock, so the results do
  *  not depend on the speed or the load of the machine. */
 #include <inttypes.h>
@@ -10,12 +10,12 @@
 
 #include "compat.h"
 
-/* clock_ns is the time of the fake clock in nanoseconds.  While
+/* clock_ns is the time of the fake clock in nanoseconds. While
  * clock_fails is set, the fake clock fails. */
 static uint64_t clock_ns;
 static bool     clock_fails;
 
-/* This function replaces clock_gettime() in src/loop.c.  It ignores @p id
+/* This function replaces clock_gettime() in src/loop.c. It ignores @p id
  * and stores the time clock_ns in @p ts, or returns -1 and leaves @p ts as
  * it was while clock_fails is set. */
 static int
@@ -44,13 +44,13 @@ static unsigned failures;
                                              __FILE__, __LINE__, #cond)))
 
 /*
- * The variable t stores the state of one run.  In each turn, the handler of
+ * The variable t stores the state of one run. In each turn, the handler of
  * the message mail advances the clock by mail_ns, queues the entry fresh and
- * posts the message again.  The handler runs outside of the steps, so
- * loop_ready() appends the entry fresh to the fresh list.  The step of the
+ * posts the message again. The handler runs outside of the steps, so
+ * loop_ready() appends the entry fresh to the fresh list. The step of the
  * entry ongoing advances the clock by ongoing_ns and queues the entry again.
  * A step calls loop_ready() there, so loop_ready() appends the entry to the
- * ongoing list.  The step of the entry bulk counts the turns and ends the
+ * ongoing list. The step of the entry bulk counts the turns and ends the
  * loop after the last turn.
  */
 static struct {
@@ -76,7 +76,7 @@ turn_mail (struct loop *loop,
            struct msg  *msg)
 {
 	/* loop_fini() sets the exit flag and then calls this handler for the
-	 * message that is still posted.  In that case the handler must not post
+	 * message that is still posted. In that case the handler must not post
 	 * the message again. */
 	if (loop->exit)
 		return;
@@ -115,7 +115,7 @@ turn_bulk (struct loop      *loop,
 		loop_ready_bulk(loop, step);
 }
 
-/* Run the loop for @p turns turns.  @p mail, @p fresh and @p ongoing are
+/* Run the loop for @p turns turns. @p mail, @p fresh and @p ongoing are
  * the times in µs that the handler of mail and the steps of fresh and
  * ongoing add to the clock. */
 static void
@@ -161,7 +161,7 @@ test_room (void)
 	CHECK(t.fresh_steps == 100 && t.ongoing_steps == 100);
 }
 
-/* After the handler, each turn has time to start one interactive step.  The
+/* After the handler, each turn has time to start one interactive step. The
  * fresh entry and the ongoing entry must run in alternate turns. */
 static void
 test_one_step (void)
@@ -171,7 +171,7 @@ test_one_step (void)
 }
 
 /* The handler advances the clock by 600 µs, past the 500 µs that a turn has
- * for interactive steps.  Each turn must still run one interactive step.
+ * for interactive steps. Each turn must still run one interactive step.
  * The fresh entry and the ongoing entry must run in alternate turns. */
 static void
 test_no_room (void)

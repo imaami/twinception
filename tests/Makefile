@@ -139,7 +139,7 @@ $Otests/src/cli_state.c.o $Otests/src/cli_console.c.o $Otests/src/jb.c.o: CPPFLA
 $Otests/src/cli_console.c.o: CPPFLAGS += $(CLI_INCLUDES)
 $Otests/src/cli_render.c.o: CPPFLAGS += $(UTF8_INCLUDES)
 
-# Unit tests of the upstream event parser, src/ai.c.  The test wraps
+# Unit tests of the upstream event parser, src/ai.c. The test wraps
 # json_object_get_int64() to find values that are not JSON integers.
 check-ai: $Otests/ai
 	$<
@@ -149,7 +149,7 @@ $Otests/ai: $Otests/ai.c.o $Otests/src/ai.c.o $Otests/src/jb.c.o $Otests/src/dst
 
 $Otests/ai.c.o $Otests/src/ai.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
-# Unit tests of the JSON helpers, src/jb.c.  The test wraps json-c's
+# Unit tests of the JSON helpers, src/jb.c. The test wraps json-c's
 # tokener constructors to make them fail.
 check-jb: $Otests/jb
 	$<
@@ -184,17 +184,17 @@ check-handle: $Otests/handle
 	$<
 
 # check-turn runs unit tests of the order in which a turn of the event loop
-# runs its steps.  The test includes src/loop.c and replaces clock_gettime()
+# runs its steps. The test includes src/loop.c and replaces clock_gettime()
 # in it with a fake clock.
 check-turn: $Otests/turn
 	$<
 
-# Unit tests of the table of plugin instances.  The test includes
+# Unit tests of the table of plugin instances. The test includes
 # src/loop.c and src/instance.c, so that it can call their static functions.
 check-instance: $Otests/instance
 	$<
 
-# Unit tests of the ledger of tasks and jobs.  The test includes src/loop.c
+# Unit tests of the ledger of tasks and jobs. The test includes src/loop.c
 # and src/ledger.c, so that it can read the ledger's static structures, and
 # replaces clock_gettime() in them with a fake clock.
 check-ledger: $Otests/ledger
@@ -209,7 +209,7 @@ $Otests/journal: $Otests/journal.c.o $Otests/src/loop.c.o $Otests/src/log.c.o \
                  $Otests/src/child.c.o $Otests/src/buf.c.o
 $Otests/journal:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lcrypto -lm
 
-# The unit tests.  Each test links the object of its own source and the
+# The unit tests. Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.
 override UNIT := buf datauri handle instance ledger turn
 
@@ -220,10 +220,10 @@ $Otests/handle $Otests/instance $Otests/ledger $Otests/turn: $Otests/src/log.c.o
 $(UNIT:%=$Otests/%): $Otests/%: $Otests/%.c.o
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
 
-# Each source is compiled on its own, as in mk/common.mk.  -MMD writes a
-# rule to a .d file beside the object.  The rule lists every file that the
+# Each source is compiled on its own, as in mk/common.mk. -MMD writes a
+# rule to a .d file beside the object. The rule lists every file that the
 # source includes, directly or through other files, as a prerequisite of
-# the object.  The .d files are included at the end of this makefile, so a
+# the object. The .d files are included at the end of this makefile, so a
 # change of an included file rebuilds only the objects that include it.
 $Otests/%.c.o: $(TEST_DIR)%.c | $Otests
 	$(CC) $(TEST_FLAGS) -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) -MMD -c -o "$@" "$<"

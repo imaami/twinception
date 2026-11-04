@@ -23,7 +23,7 @@ enum {
 };
 
 /**
- * What a plugin says of itself.  A name is 1 to 31 of [-0-9_a-z], then
+ * What a plugin says of itself. A name is 1 to 31 of [-0-9_a-z], then
  * NULs; an entry of needs or tools is a name or all NULs, the names
  * first, each once, and none of needs the plugin's own.
  */

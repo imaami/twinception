@@ -4,9 +4,9 @@
  *
  * Each thread that logs formats its lines whole into its own ring, a single-
  * producer single-consumer byte ring, and one logger thread writes the rings
- * to stderr.  The logger alone writes stderr, so it alone may block on it: a
+ * to stderr. The logger alone writes stderr, so it alone may block on it: a
  * reader of stderr that stalls fills the rings, after which lines are dropped
- * and counted, and nobody else waits.  The logger sleeps while the rings are
+ * and counted, and nobody else waits. The logger sleeps while the rings are
  * empty and is woken through an eventfd, which a producer writes only when
  * the logger has said it sleeps.
  *

@@ -5,11 +5,11 @@
  * 2, and 5).
  *
  * A loop submits a job to a bounded queue, a mutex and a condition variable
- * over a list, which a full queue refuses.  One of the blockers runs the
+ * over a list, which a full queue refuses. One of the blockers runs the
  * job's work, then posts the job's message back to the loop's inbox, whose
- * handler takes the job back.  Every job submitted comes back exactly once;
+ * handler takes the job back. Every job submitted comes back exactly once;
  * once the blockers are told to stop, the jobs still queued come back with
- * error ECANCELED, their work not done.  The threads are detached: each counts
+ * error ECANCELED, their work not done. The threads are detached: each counts
  * itself out as it exits, so one stuck in a call can be left to the process's
  * exit.
  */
@@ -50,7 +50,7 @@ extern struct blocker *
 blocker_create (int  notify_fd,
                 int *e);
 
-/** Start the blocker threads.  Returns 0, or why one could not start: those
+/** Start the blocker threads. Returns 0, or why one could not start: those
  *  started run on, for blocker_stop() to end.
  */
 extern int

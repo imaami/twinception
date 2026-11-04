@@ -2,32 +2,32 @@
  *
  * Log-linear latency histogram with HdrHistogram-style bucketing.
  *
- * Values are nanoseconds.  The first @ref HIST_SUB values are counted exactly;
+ * Values are nanoseconds. The first @ref HIST_SUB values are counted exactly;
  * above that each power-of-two octave is split into @ref HIST_SUB linear
  * sub-buckets, so the relative error is at most one part in @ref HIST_SUB.
  * This keeps percentiles cheap and bounded in memory while a run records
  * millions of samples spanning sub-microsecond to multi-second latencies.
  *
- * A histogram has one writer, and any thread may read it.  The fields are
+ * A histogram has one writer, and any thread may read it. The fields are
  * atomic, and the writer updates them with relaxed loads and stores, which
  * cost what plain ones do: a reader sees each field whole, though not all of
  * them as of one instant.
  *
- * Atomic objects need care to be valid (C23, N3220 7.17.2).  Those of static
+ * Atomic objects need care to be valid (C23, N3220 7.17.2). Those of static
  * or thread storage duration are, as are those declared with an initializer,
- * a struct value such as loop()'s included.  Allocated ones, uninitialized
+ * a struct value such as loop()'s included. Allocated ones, uninitialized
  * automatic ones, and any whose bytes a non-atomic store such as memset()
- * reached have an indeterminate representation until atomic_init().  The
+ * reached have an indeterminate representation until atomic_init(). The
  * standard leaves two cases open, which the program steers clear of:
- * - atomic_init() on an object initialized before.  7.17.2.1 sets no limit,
+ * - atomic_init() on an object initialized before. 7.17.2.1 sets no limit,
  *   and 7.17.2 has memset() leave an object as indeterminate as fresh storage,
  *   which atomic_init() is for, but it does not say that initializing again
- *   is sound.  Here an atomic object is initialized once, as its storage is
+ *   is sound. Here an atomic object is initialized once, as its storage is
  *   declared or allocated, and later reset by atomic stores; wipes skip it.
- * - Assigning a struct over an atomic member.  That is a non-atomic store, and
+ * - Assigning a struct over an atomic member. That is a non-atomic store, and
  *   producing a non-value representation through an lvalue other than of
  *   character type is undefined (6.2.6.1p5), though storing a value is never
- *   to generate one (6.2.6.1p8).  Here no struct with atomic members is
+ *   to generate one (6.2.6.1p8). Here no struct with atomic members is
  *   assigned: it is declared from a value, or allocated and its atomic
  *   members initialized one by one.
  */
@@ -96,8 +96,8 @@ hist_get (_Atomic uint64_t const *p)
 	return atomic_load_explicit(p, memory_order_relaxed);
 }
 
-/** Add @p n to @p p, which only the calling thread writes.  With one
- *  writer, a relaxed load and a relaxed store are enough.  On 64-bit
+/** Add @p n to @p p, which only the calling thread writes. With one
+ *  writer, a relaxed load and a relaxed store are enough. On 64-bit
  *  targets they compile to ordinary load and store instructions, which cost
  *  less than the atomic read-modify-write of atomic_fetch_add().
  */

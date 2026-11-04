@@ -70,7 +70,7 @@ enum {
 enum { CLOSED, OPEN, HALF };
 
 /* Whom jobs of a class are for: an identity, a session, or a client's
- * address.  An entry exists while the principal has jobs of the class
+ * address. An entry exists while the principal has jobs of the class
  * queued, which tell who it is, and is kept for reuse after.
  */
 struct home_principal {
@@ -100,7 +100,7 @@ struct home_delivery_error {
 };
 
 /* Archive writes gate parsing, not reception; the wire and each event
- * remain bounded.  A restored job restarts its provider stream from the
+ * remain bounded. A restored job restarts its provider stream from the
  * beginning, which home_start() reattaches to.
  */
 struct home_recovery {
@@ -120,19 +120,19 @@ struct home_recovery {
 /*
  * Every job in flight is on the timeline, in the order of its deadline: the
  * front's, from its submission, while it waits, and from its start upstream
- * once it runs, which moves it to the end.  A job waiting is on its
+ * once it runs, which moves it to the end. A job waiting is on its
  * principal's queue, and the principals with jobs queued are on the ring of
  * their jobs' class, the next to start one first: each starts one, then
  * goes to the back; or, if a slot was free for it as it came and nobody
- * waited, it is ready, to start before them.  Interactive jobs start before
+ * waited, it is ready, to start before them. Interactive jobs start before
  * background ones, which hold all slots but one at most, so that one stays
  * free for interactive work; with one slot, an interactive job that has to
  * wait preempts a background one running, which starts again later, ready,
- * before the other background jobs.  A running background job is among
+ * before the other background jobs. A running background job is among
  * those of its class, unless its front let go of it: then it is among
- * those dropped, to cancel.  Messages only admit, refuse or move jobs, and bulk
+ * those dropped, to cancel. Messages only admit, refuse or move jobs, and bulk
  * steps start, read and cancel them, a share at a time, as each call into
- * libcurl costs some tens of µs.  A seeded hash of a principal selects the
+ * libcurl costs some tens of µs. A seeded hash of a principal selects the
  * bucket of the principal, and each bucket is a chained list.
  */
 struct home {
@@ -408,7 +408,7 @@ home_job_reset (struct job *job,
 	job->reason[0] = '\0';
 }
 
-/* @p job has ended as @p status: its completion goes to its front.  The
+/* @p job has ended as @p status: its completion goes to its front. The
  * result of a job cancelled, which its front does not read, goes back to the
  * stash at once, and so does that of one its front let go of as it ran,
  * which home lets go of too.
@@ -466,7 +466,7 @@ home_unstream (struct home *home,
 }
 
 /* Takes @p job, which is in flight, off the timeline, off its principal's
- * queue and off its list of jobs.  If the job runs upstream, the function
+ * queue and off its list of jobs. If the job runs upstream, the function
  * frees its upstream slot, so that the next job can start.
  */
 static void
@@ -620,7 +620,7 @@ home_cleanup_event (struct loop       *loop,
 }
 
 /* End @p job as @p status, counted in @p count, leaving the jobs in flight
- * if it is one (home_job_end()).  Alone, home has its loop exit once no job
+ * if it is one (home_job_end()). Alone, home has its loop exit once no job
  * is in flight.
  */
 static void
@@ -801,7 +801,7 @@ home_breaker_probed (struct home *home,
 
 /* Count how @p job went upstream: a failure in a row of FAILURES, or of the
  * probe, opens the breaker, as does one whose answer said when to retry; the
- * probe's success, which its answer's beginning tells, closes it.  Other
+ * probe's success, which its answer's beginning tells, closes it. Other
  * jobs' outcomes count only while it is closed, and a job cancelled counts
  * not at all.
  */
@@ -957,7 +957,7 @@ home_feed (struct home *home,
 }
 
 /* @p job's answer begins: note its status, and whether it is an event
- * stream.  The upstream answers: the other jobs need not wait for the
+ * stream. The upstream answers: the other jobs need not wait for the
  * probe's end, which may be minutes away.
  */
 static void
@@ -1009,8 +1009,8 @@ home_receive (struct home *home,
 }
 
 /* Gather the upstream's answer, a stream into the wire and a plain one into
- * the result (home_receive()).  A stream is held back too while a step's
- * share of it waits to be read.  Each write counts as the answer's sign of
+ * the result (home_receive()). A stream is held back too while a step's
+ * share of it waits to be read. Each write counts as the answer's sign of
  * life.
  */
 static size_t
@@ -1042,7 +1042,7 @@ home_job_write (char const *data,
 	return n;
 }
 
-/* The upstream call has ended.  A stream's end, once all of it is read; any
+/* The upstream call has ended. A stream's end, once all of it is read; any
  * other answer, or none, at once.
  */
 static void
@@ -1421,7 +1421,7 @@ home_cancel (struct home *home,
 }
 
 /* End @p job, past its deadline: one running times out, one waiting for a
- * slot does too, refused, and one dropped is cancelled.  libcurl short of
+ * slot does too, refused, and one dropped is cancelled. libcurl short of
  * memory may lose a transfer's own timeout.
  */
 static void
@@ -1668,16 +1668,16 @@ home_put_replay (void       *user,
 
 /* Add the piece @p call of a tool call to the calls of the job @p user.
  * Call k is stored in job->calls[k], and the calls are numbered in the
- * order in which they begin.  A piece with an index that no stored call has
- * begins a new call.  A piece without an index begins a new call if there
+ * order in which they begin. A piece with an index that no stored call has
+ * begins a new call. A piece without an index begins a new call if there
  * is no call yet or if its id differs from the id of the last call.
- * Otherwise the piece belongs to the last call.  The pieces of different
- * calls may come in any order.  In each call, the id comes before the name,
- * and the name comes before the extra.  The extra comes once and before the
- * arguments.  The arguments may come in several pieces.  The function
+ * Otherwise the piece belongs to the last call. The pieces of different
+ * calls may come in any order. In each call, the id comes before the name,
+ * and the name comes before the extra. The extra comes once and before the
+ * arguments. The arguments may come in several pieces. The function
  * ignores an id, a name or an extra that repeats the stored bytes, because
- * some servers send them again.  The function returns EPROTO if a call
- * breaks this order or if there are more than JOB_CALLS calls.  It returns
+ * some servers send them again. The function returns EPROTO if a call
+ * breaks this order or if there are more than JOB_CALLS calls. It returns
  * ENOBUFS if the calls together would have more than MAX_RESPONSE bytes,
  * and EILSEQ if a piece is not UTF-8.
  */
@@ -1710,8 +1710,8 @@ home_put_call (void                 *user,
 	size_t args = call->args_len;
 	uint32_t index = call->index;
 	/* A piece without an index continues the last call if there is a
-	 * call and the piece has no id or the same id as the last call.  Then
-	 * its id is not stored again.  Otherwise the piece begins call n.  No
+	 * call and the piece has no id or the same id as the last call. Then
+	 * its id is not stored again. Otherwise the piece begins call n. No
 	 * stored call has the index AI_CALL_NEXT, so k is still JOB_CALLS for
 	 * such a piece. */
 	if (index == AI_CALL_NEXT) {
@@ -1950,9 +1950,9 @@ home_native_event (struct home        *home,
 
 /* Take what @p root, an event of @p job's stream, says (ai_event()): its
  * text, and with JOB_TOOLS its thinking and tool calls; its usage, its end,
- * and its stop reason, which may be the output token limit.  Each event is
- * a chunk, and one with text or thinking a token.  An error it says, or one
- * that taking it meets of the answer, goes in the result.  Returns the
+ * and its stop reason, which may be the output token limit. Each event is
+ * a chunk, and one with text or thinking a token. An error it says, or one
+ * that taking it meets of the answer, goes in the result. Returns the
  * error that taking it met: one past MAX_RESPONSE is an overflow.
  */
 static int
@@ -2021,7 +2021,7 @@ home_take (struct home        *home,
 
 /* Take the event parsed in @p job's parser (home_take()), and free its
  * value, the reap step what the step's share does not allow; returns the
- * error that taking it met: ENOMEM if parsing it ran out of memory.  An
+ * error that taking it met: ENOMEM if parsing it ran out of memory. An
  * event that is not JSON text errs.
  */
 static int
@@ -2054,10 +2054,10 @@ home_event (struct home *home,
 }
 
 /* Parse the event whole in @p job's wire, a slice a step, take what it says,
- * and free it; then go on past it.  0 once it has, EAGAIN if the step's
- * share ran out first, ECANCELED if the event ended the job.  An event that
- * is not JSON text ends it, as a whole answer that is not would.  The data
- * [DONE], which is not JSON text, is not parsed.  It ends the answer,
+ * and free it; then go on past it. 0 once it has, EAGAIN if the step's
+ * share ran out first, ECANCELED if the event ended the job. An event that
+ * is not JSON text ends it, as a whole answer that is not would. The data
+ * [DONE], which is not JSON text, is not parsed. It ends the answer,
  * except in Gemini's Interactions, where it is skipped, because only
  * interaction.completed ends the answer there.
  */
@@ -2128,7 +2128,7 @@ home_job_line (struct job *job,
 }
 
 /* Look for the line break that ends the line of @p job's stream read, as far
- * as the step's share of parsing allows, and take in the line it ends.  0
+ * as the step's share of parsing allows, and take in the line it ends. 0
  * once it has looked, EAGAIN if the share has run out, ENODATA if all of the
  * wire has been looked at already.
  */
@@ -2157,9 +2157,9 @@ home_scan (struct home *home,
 	return 0;
 }
 
-/* All of @p job's wire has been looked at.  A stream that libcurl has not
+/* All of @p job's wire has been looked at. A stream that libcurl has not
  * delivered whole has nothing more to read for now (ENODATA): it is off the
- * list of streams to read, and goes on if it was held back for reading.  One
+ * list of streams to read, and goes on if it was held back for reading. One
  * delivered ends with its last event read, the last line and the last event
  * needing no line breaks (0 until then): cut off, as a transfer cut short,
  * unless an event said the answer had ended (ECANCELED).
@@ -2272,7 +2272,7 @@ home_shed_step (struct loop      *loop,
 
 /* Cut the upstream call of @p job, a background job that an interactive one
  * preempts, and have it wait again, ready, first of the background jobs, its
- * deadline as it was.  A preemption is no outcome of the upstream's, which
+ * deadline as it was. A preemption is no outcome of the upstream's, which
  * the breaker counts.
  */
 static void
@@ -2452,7 +2452,7 @@ home_props_done (CURLcode    result,
 
 /* Let /props's answer on, once the step has the share for it, or parse it a
  * slice a step, and take the slots its total_slots says, unless told, and
- * the context its slots' n_ctx says, likewise.  The answer of Gemini's
+ * the context its slots' n_ctx says, likewise. The answer of Gemini's
  * model says the context in inputTokenLimit, and no slots.
  */
 static void
@@ -2501,7 +2501,7 @@ home_props_step (struct loop      *loop,
 }
 
 /* Ask for /props at the server of @p u, the upstream's URL; the answer may
- * take PROPS_MS, or the calls' timeout if shorter.  0 once asked, else the
+ * take PROPS_MS, or the calls' timeout if shorter. 0 once asked, else the
  * error that kept it from asking.
  */
 static int
@@ -2525,7 +2525,7 @@ home_props_get (struct home *home,
 
 /* Ask Gemini's API what the context of the model holds, unless it is told:
  * GET models/MODEL at the root of the API of the upstream's URL, whose
- * answer the props step reads.  0 once asked, ENOTSUP if the upstream has
+ * answer the props step reads. 0 once asked, ENOTSUP if the upstream has
  * no model or no such URL, else the error that kept it from asking.
  */
 static int
@@ -2572,7 +2572,7 @@ home_drop (struct home *home,
 	loop_ready_bulk(home->loop, &home->stop);
 }
 
-/* Puts @p job on the timeline.  The job is then in flight. */
+/* Puts @p job on the timeline. The job is then in flight. */
 static void
 home_register (struct home *home,
                struct job  *job)
@@ -2598,7 +2598,7 @@ home_vacant (struct home const *home,
 
 /* Admit @p job of class @p c to the queue of its principal, whose entry
  * @p slot holds, or else a new one, kept or allocated, at the back of its
- * class's ring; ENOMEM if out of memory.  An interactive job that waits with
+ * class's ring; ENOMEM if out of memory. An interactive job that waits with
  * one slot preempts a background one.
  */
 static int
@@ -2672,7 +2672,7 @@ home_admit (struct home *home,
 }
 
 /* @p job comes, with @p bits: a job may come back for another run, and what
- * home noted of the last goes before any end.  Home admits it, or ends it
+ * home noted of the last goes before any end. Home admits it, or ends it
  * cancelled if its front has let go of it already, and lets go too.
  */
 static void
@@ -2707,7 +2707,7 @@ home_delta_release (struct job *job)
 }
 
 /* @p job's front lets go of it: home cancels it if it is in flight, and lets
- * go too, the result's storage back to the stash it came from.  Cancelling
+ * go too, the result's storage back to the stash it came from. Cancelling
  * one running takes a step, which then lets go of it.
  */
 static void

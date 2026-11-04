@@ -5,11 +5,11 @@
  * depend on the members of struct loop.
  *
  * Each exported function checks its inputs before it uses them, because a
- * plugin calls it across the boundary of a shared object.  A function that
+ * plugin calls it across the boundary of a shared object. A function that
  * returns an error number returns EFAULT for a pointer that is nullptr,
  * also for a message or a timer without a function, and EINVAL for a value
  * out of range, also for a timer whose member slot is not its place in the
- * loop's heap.  loop_now() and loop_room() return 0 for such inputs.
+ * loop's heap. loop_now() and loop_room() return 0 for such inputs.
  */
 #ifndef TWINCEPTION_SRC_LOOP_EXPORT_H_
 #define TWINCEPTION_SRC_LOOP_EXPORT_H_
@@ -22,12 +22,12 @@
 struct loop;
 
 /**
- * A handle is the name that another thread uses for an object of a loop.  A
+ * A handle is the name that another thread uses for an object of a loop. A
  * thread never passes a pointer or a file descriptor of a loop's object to
- * another thread (design section 1, R2).  A handle names a slot of the
- * loop's handle table.  The slot has a generation number, which increases
- * each time the slot is freed.  A handle from before that no longer names
- * an object.  The value 0 is not a handle.
+ * another thread (design section 1, R2). A handle names a slot of the
+ * loop's handle table. The slot has a generation number, which increases
+ * each time the slot is freed. A handle from before that no longer names
+ * an object. The value 0 is not a handle.
  */
 struct handle {
 	uint64_t bits;  /**< from the highest bit: 8 bits for the loop, 24 bits
@@ -35,11 +35,11 @@ struct handle {
 };
 
 /**
- * The units in which a step counts its work.  Each unit has a bound per
- * step (design section 1).  The bounds make a turn short on a slow machine
- * too.  A step counts its work with loop_work().  It can call loop_room()
+ * The units in which a step counts its work. Each unit has a bound per
+ * step (design section 1). The bounds make a turn short on a slow machine
+ * too. A step counts its work with loop_work(). It can call loop_room()
  * to learn how much of a unit it may still do, and it leaves the rest of
- * its work to a later step.  Work that cannot be split, for example a copy
+ * its work to a later step. Work that cannot be split, for example a copy
  * that a library makes, is counted in full in the step where it happens.
  * The loop's statistics record the largest count of each unit in one step.
  * That count must be within the unit's bound.
@@ -62,7 +62,7 @@ enum loop_unit {
 	LOOP_ACCEPTS,  /**< connections accepted */
 	LOOP_CLOSES,   /**< connections closed */
 	LOOP_RELEASE,  /**< blocks or objects that were allocated for reuse and
-	                    are freed under memory pressure.  A block counts one
+	                    are freed under memory pressure. A block counts one
 	                    unit for each 128 KiB (buf_stash_release()). */
 	LOOP_TASKS,    /**< task slices (task.h) */
 	LOOP_FLIGHTS,  /**< TLS handshake flights (tls.h) */
@@ -87,11 +87,11 @@ enum {
 };
 
 /**
- * A message that another thread posts to a loop (design section 2).  The
+ * A message that another thread posts to a loop (design section 2). The
  * loop calls the message's function fn in a later turn, on the loop's
- * thread.  From the post until that call, the poster must not read or
- * write the message, and must not post it again.  From that call on, the
- * message belongs to fn.  A message that can be posted repeatedly has a
+ * thread. From the post until that call, the poster must not read or
+ * write the message, and must not post it again. From that call on, the
+ * message belongs to fn. A message that can be posted repeatedly has a
  * word of pending bits, and it is posted only when that word changes from
  * zero to non-zero.
  */
@@ -103,28 +103,28 @@ struct msg {
 	                          was posted */
 };
 
-/** A deadline in the loop's timer heap.  An object has one timer and sets
- *  it again for each of its deadlines.  It does not have one timer for
+/** A deadline in the loop's timer heap. An object has one timer and sets
+ *  it again for each of its deadlines. It does not have one timer for
  *  each event.
  */
 struct loop_timer {
-	uint64_t due;   /**< the deadline in nanoseconds of CLOCK_MONOTONIC.  A
+	uint64_t due;   /**< the deadline in nanoseconds of CLOCK_MONOTONIC. A
 	                     timer that is due at UINT64_MAX never fires. */
 	void   (*fn) (struct loop       *loop,
 	              struct loop_timer *timer);
-	size_t   slot;  /**< the timer's index in the heap plus 1.  It is 0
+	size_t   slot;  /**< the timer's index in the heap plus 1. It is 0
 	                     while the timer is not in the heap. */
 };
 
 /**
- * Posts @p msg to @p loop.  Any thread can call it.  It pushes the message
+ * Posts @p msg to @p loop. Any thread can call it. It pushes the message
  * onto the loop's list of posted messages with an atomic operation, and it
- * writes to the loop's eventfd only if the loop is asleep.  Returns 0, or
- * EFAULT if @p loop or @p msg is nullptr or @p msg has no function.  It
+ * writes to the loop's eventfd only if the loop is asleep. Returns 0, or
+ * EFAULT if @p loop or @p msg is nullptr or @p msg has no function. It
  * returns EALREADY if @p msg is the newest message in the loop's list,
- * which means that it is posted already.  The function does not detect a
+ * which means that it is posted already. The function does not detect a
  * message that is further down the list, or that the loop has taken from
- * the list and not yet handled.  So a poster still must not post a message
+ * the list and not yet handled. So a poster still must not post a message
  * again before the loop has called the message's function.
  */
 EXPORT
@@ -133,10 +133,10 @@ loop_post (struct loop *loop,
            struct msg  *msg);
 
 /**
- * Sets @p timer to fire at @p due.  If the timer is already set, the call
- * changes its deadline.  A timer stays in the heap until loop_timer_stop().
+ * Sets @p timer to fire at @p due. If the timer is already set, the call
+ * changes its deadline. A timer stays in the heap until loop_timer_stop().
  * After it has fired, it is due at UINT64_MAX, which means never, until it
- * is set again.  Returns 0.  Returns EFAULT if @p loop or @p timer is
+ * is set again. Returns 0. Returns EFAULT if @p loop or @p timer is
  * nullptr or @p timer has no function, EINVAL if the member slot of
  * @p timer is not 0 and is not the timer's place in the heap, and ENOMEM if
  * the timer is not in the heap and the heap cannot grow.
@@ -147,8 +147,8 @@ loop_timer_set (struct loop       *loop,
                 struct loop_timer *timer,
                 uint64_t           due);
 
-/** Removes @p timer from the heap of @p loop.  It does nothing if the timer
- *  is not in the heap.  Returns 0, EFAULT if @p loop or @p timer is
+/** Removes @p timer from the heap of @p loop. It does nothing if the timer
+ *  is not in the heap. Returns 0, EFAULT if @p loop or @p timer is
  *  nullptr, or EINVAL if the member slot of @p timer is not 0 and is not the
  *  timer's place in the heap.
  */
@@ -158,7 +158,7 @@ loop_timer_stop (struct loop       *loop,
                  struct loop_timer *timer);
 
 /** Returns the time at which the current turn of @p loop began, in
- *  nanoseconds of CLOCK_MONOTONIC.  loop_timer_set() uses the same clock.
+ *  nanoseconds of CLOCK_MONOTONIC. loop_timer_set() uses the same clock.
  *  Returns 0 if @p loop is nullptr.
  */
 EXPORT
@@ -176,7 +176,7 @@ loop_work (struct loop    *loop,
            uint64_t        n);
 
 /** Returns the number of units of the work @p u that the step that is
- *  running may still do.  Returns 0 if @p loop is nullptr or @p u is out of
+ *  running may still do. Returns 0 if @p loop is nullptr or @p u is out of
  *  range.
  */
 EXPORT

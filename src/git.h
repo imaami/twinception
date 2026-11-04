@@ -50,9 +50,9 @@ struct git;
 struct plugin;
 
 /** The environment entries after PATH of every git process that askai
- *  starts for the git tool, the notes and the journal.  They set LC_ALL to
+ *  starts for the git tool, the notes and the journal. They set LC_ALL to
  *  C.UTF-8, and turn off the home, system and global configuration, the
- *  terminal prompt, the pager, lazy fetching and every remote protocol.  A
+ *  terminal prompt, the pager, lazy fetching and every remote protocol. A
  *  repository's configuration cannot override GIT_ALLOW_PROTOCOL.
  */
 #define GIT_ENV_FIXED \
@@ -62,9 +62,9 @@ struct plugin;
 
 /** The options before the command of every git process that askai starts.
  *  They turn off the pager, replacement objects, every remote protocol,
- *  automatic gc and maintenance.  They also keep git from running a
+ *  automatic gc and maintenance. They also keep git from running a
  *  program that a repository's configuration names for the fsmonitor, for
- *  gpg or for hooks.  The format of a log can make git run gpg.
+ *  gpg or for hooks. The format of a log can make git run gpg.
  */
 #define GIT_OPTIONS_FIXED \
         "--no-pager", "--no-replace-objects", \
@@ -101,17 +101,17 @@ git_create (char const *const paths[],
 extern void
 git_destroy (struct git **p_git);
 
-/** The plugin of the git tool.  It is built into askai (src/plugin.h), and
+/** The plugin of the git tool. It is built into askai (src/plugin.h), and
  *  its service is a struct git.
  */
 extern struct plugin const git_plugin;
 
-/** Creates the git tool's part of a client loop (src/mcp.h).  The service
- *  argument points to the struct git.  The only error number is ENOMEM.
+/** Creates the git tool's part of a client loop (src/mcp.h). The service
+ *  argument points to the struct git. The only error number is ENOMEM.
  */
 extern mcp_part_create_fn git_loop_create;
 
-/** Kills the children that the git calls on the loop run.  Then it frees
+/** Kills the children that the git calls on the loop run. Then it frees
  *  the part and sets the caller's pointer to nullptr.
  */
 extern mcp_part_destroy_fn git_loop_destroy;

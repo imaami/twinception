@@ -119,7 +119,7 @@ cli_loop_test_event (struct cli_loop     *loop,
 	watch = nullptr;
 }
 
-/* An empty counter reads as 0, and a counter reads as its value.  A read
+/* An empty counter reads as 0, and a counter reads as its value. A read
  * error becomes the loop error, and a later error or 0 does not replace
  * it.
  */

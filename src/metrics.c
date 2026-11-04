@@ -466,7 +466,7 @@ metrics_put_series (struct buf                 *out,
 }
 
 /* Loop @p loop's series of entry @p m, if it has them: labelled with its
- * name, and @p m's labels, if any.  A loop's family starts with the first
+ * name, and @p m's labels, if any. A loop's family starts with the first
  * loop, which has them all.
  */
 static int
@@ -489,7 +489,7 @@ metrics_put_loop (struct buf                 *out,
 }
 
 /* The metrics are series, from @p *pos on: an entry's for each loop in turn,
- * which only a loop's have more than one of.  A loop that lacks an entry's
+ * which only a loop's have more than one of. A loop that lacks an entry's
  * series, which only home does, is passed over.
  */
 int

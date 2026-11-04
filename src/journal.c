@@ -263,7 +263,7 @@ journal_open_path (struct journal *j,
 }
 
 /* Returns the reason why the file that @p st describes is not a private
- * file of askai's user, or nullptr if it is one.  A private file is a
+ * file of askai's user, or nullptr if it is one. A private file is a
  * regular file with one link that askai's user owns and that no other user
  * may access.
  */
@@ -304,8 +304,8 @@ journal_file (int         dir,
 	return journal_file_open(dir, name, O_RDWR | O_CREAT, fd);
 }
 
-/** Fixed argv and environment.  Input/output are anonymous files, so a
- * child's output can never deadlock its input pipe.  Only the writer and
+/** Fixed argv and environment. Input/output are anonymous files, so a
+ * child's output can never deadlock its input pipe. Only the writer and
  * startup call this function.
  */
 static int
@@ -334,7 +334,7 @@ journal_git (struct journal    *j,
 	int out = memfd_create("askai-journal-git", MFD_CLOEXEC);
 	if (out < 0)
 		return errno;
-	/* A Git child can outlive an abruptly killed AskAI.  It keeps the same
+	/* A Git child can outlive an abruptly killed AskAI. It keeps the same
 	 * flock open through exec, so restart cannot race that child. */
 	struct child_cmd const cmd = {
 		.file     = "git",
@@ -393,7 +393,7 @@ static int
 journal_unlock (struct journal *j)
 {
 	/* Our participant lock excludes both other writers and their surviving
-	 * Git children.  Only this participant's loose-ref lock is ours. */
+	 * Git children. Only this participant's loose-ref lock is ours. */
 	char const *participant = j->ref + sizeof REF - 1;
 	static char const *const dirs[] = { "refs", "heads", "reasoning" };
 	int fd = fcntl(j->repo_fd, F_DUPFD_CLOEXEC, 3);
@@ -891,7 +891,7 @@ journal_thought_file (struct journal            *j,
 	int n = snprintf(name, sizeof name, "%" PRIu32 ".txt", item->turn);
 	if (!e && (n < 0 || n >= (int)sizeof name))
 		e = EOVERFLOW;
-	/* Every write appends, wherever a commit left the offset.  Only a new
+	/* Every write appends, wherever a commit left the offset. Only a new
 	 * file's name needs its directory synchronized. */
 	if (!e)
 		e = journal_file_open(directory, name, O_RDWR | O_APPEND | (append ? O_CREAT : 0),
@@ -1161,7 +1161,7 @@ journal_enqueue (struct journal      *j,
 {
 	int e = 0;
 	/* One small cancellation per ledger job must fit even when ordinary
-	 * transcript traffic saturates its queue.  These extra bounds remain
+	 * transcript traffic saturates its queue. These extra bounds remain
 	 * finite and cannot be used by streams, loads, or oversized records. */
 	bool control = item->record && item->record->len <= JOURNAL_CONTROL_RECORD &&
 	               !strcmp(item->record->kind, "cancel");
@@ -1318,13 +1318,13 @@ journal_zero (unsigned char const *buf,
 }
 
 /* Read the secret of @p len bytes, at most 256, in the file @p name of the
- * directory @p dir into @p secret.  If the file is empty or new, fill
+ * directory @p dir into @p secret. If the file is empty or new, fill
  * @p secret with random bytes that are not all zero, and write them to the
- * file first.  The file has mode 0600.  The caller holds a lock that keeps
- * other processes from making the same file at the same time.  Returns 0,
+ * file first. The file has mode 0600. The caller holds a lock that keeps
+ * other processes from making the same file at the same time. Returns 0,
  * EILSEQ if the file does not have exactly @p len bytes or has only zero
  * bytes, EACCES if it is not a private file of askai's user
- * (journal_file_problem()), or another error number.  On failure, the
+ * (journal_file_problem()), or another error number. On failure, the
  * function writes to the @p why_len bytes at @p why the path of the file,
  * @p shown and @p name, and what is wrong with it.
  */
@@ -1471,7 +1471,7 @@ journal_create (char const *path,
 		*e = EINVAL;
 		return nullptr;
 	}
-	/* journal_setup() writes a message of its own for some errors.  For
+	/* journal_setup() writes a message of its own for some errors. For
 	 * the others, the message is the text of the error number. */
 	*why = '\0';
 	if (!journal_word(participant, UTIL_WORD_MAX)) {
@@ -1504,7 +1504,7 @@ journal_create (char const *path,
 		*e = journal_setup(j, path, participant, why, why_len);
 	if (!*e) {
 		/* Creation precedes brainstem_run(), which routes asynchronous
-		 * signals through signalfd.  Inherit its worker mask at creation,
+		 * signals through signalfd. Inherit its worker mask at creation,
 		 * never leaving a window for SIGTERM to choose this thread. */
 		static int const faults[] = {
 			SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP

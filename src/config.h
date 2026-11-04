@@ -43,7 +43,7 @@ enum config_flag {
 
 /**
  * askai's configuration, which config() returns by value: nothing in it
- * points into it.  Strings point into argv, the file's object or memory of
+ * points into it. Strings point into argv, the file's object or memory of
  * its own, which config_fini() frees.
  */
 struct config {
@@ -57,7 +57,7 @@ struct config {
 	struct mcp_limits     mcp;
 	struct httpd_cfg      http;
 	struct brainstem_cfg  brainstem;    /**< all but its apps */
-	struct registry       registry;     /**< the tools that askai offers.  A
+	struct registry       registry;     /**< the tools that askai offers. A
 	                                         reload's configuration has only
 	                                         askai's own tools here, and its
 	                                         policy is made from the registry
@@ -124,7 +124,7 @@ struct config {
  * askai's configuration from its command line, @p argc and @p argv, and the
  * configuration file it names, saying on stderr what is wrong, with
  * @p *status -1 to serve, else the exit status: 0 after --help, 1 if out of
- * memory, 2 for an invalid option or environment.  Whatever the status,
+ * memory, 2 for an invalid option or environment. Whatever the status,
  * config_fini() frees what it holds.
  */
 extern struct config
@@ -137,7 +137,7 @@ config (int   argc,
  * the TLS certificate and key, again, into @p cfg, as config() does, but on
  * any thread and saying what is wrong in the log: for a reload, of which
  * only the policy (src/policy.h) and the TLS context count, the restart flag
- * saying whether the rest differs from @p from's.  Returns the status
+ * saying whether the rest differs from @p from's. Returns the status
  * config() gives.
  */
 extern int
@@ -148,7 +148,7 @@ config_reload (struct config       *cfg,
  * Logs at LOG_INFO, as lists with one item a line, what @p cfg runs: the
  * upstream's provider, API, model, background mode, context size, and URL
  * without its user, password and query; the tools and the plugins
- * (mcp_report()); and the policy (config_log_policy()).  The lines have no
+ * (mcp_report()); and the policy (config_log_policy()). The lines have no
  * rate limit.
  */
 extern void

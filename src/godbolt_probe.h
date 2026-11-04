@@ -2,12 +2,12 @@
  *
  * The probe of godbolt_targets (src/godbolt.c), and the parser of its output.
  *
- * The probe is C source that a compiler only preprocesses.  The output has a
- * block from a line GBPROBE_BEGIN_1 to a line GBPROBE_END_1.  The block has
+ * The probe is C source that a compiler only preprocesses. The output has a
+ * block from a line GBPROBE_BEGIN_1 to a line GBPROBE_END_1. The block has
  * a line GBPROBE_MACRO("NAME", "VALUE") for each macro of a fixed list that
  * the compiler predefines, and a line GBPROBE_HEADER("NAME", "STATUS") for
- * each of a few target headers.  godbolt_probe_init() parses the block, and
- * it derives facts about the target from the macros.  The module uses only
+ * each of a few target headers. godbolt_probe_init() parses the block, and
+ * it derives facts about the target from the macros. The module uses only
  * libc.
  */
 #ifndef TWINCEPTION_SRC_GODBOLT_PROBE_H_
@@ -39,7 +39,7 @@ enum {
 	                                    name or the value of a record */
 };
 
-/** A record of the block.  The name and the value are NUL-terminated, in the
+/** A record of the block. The name and the value are NUL-terminated, in the
  *  memory of the probe.
  */
 struct godbolt_probe_record {
@@ -73,7 +73,7 @@ struct godbolt_probe {
 };
 
 /** Returns the source of the probe, NUL-terminated, and stores its length
- *  in @p *len.  A line "#define GODBOLT_PROBE_HEADERS 1" before the source
+ *  in @p *len. A line "#define GODBOLT_PROBE_HEADERS 1" before the source
  *  makes the compiler include the headers of the header records.
  */
 extern char const *
@@ -81,17 +81,17 @@ godbolt_probe_source (size_t *len);
 
 /**
  * Parses the @p len bytes at @p text, the output of the probe, into
- * @p dest.  The output must have exactly one complete block, and each line
+ * @p dest. The output must have exactly one complete block, and each line
  * of the block must be a record, empty, or a line that begins with '#'.
  * The name and the value of a record have at most GODBOLT_PROBE_TEXT_MAX
- * bytes each.  Then the function derives the facts from the macros.  If
+ * bytes each. Then the function derives the facts from the macros. If
  * the macros are evidence of different values of a fact, the fact has
  * conflict 1.
  *
  * Returns 0, or an error number with a constant reason in dest->why:
  * EOVERFLOW if a line is "[Truncated]", EPROTO if the block is missing or
  * not valid, EINVAL if @p text is nullptr and @p len is not 0, or ENOMEM.
- * It returns EINVAL without a reason if @p dest is nullptr.  After an
+ * It returns EINVAL without a reason if @p dest is nullptr. After an
  * error, @p dest has no memory to free.
  */
 extern int

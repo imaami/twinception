@@ -33,7 +33,7 @@ enum {
 };
 
 /** A page as man rendered it, UTF-8 text, a page cut short ending in a note
- *  that says so; no one changes it.  The manual holds a reference while it
+ *  that says so; no one changes it. The manual holds a reference while it
  *  keeps the page, and each reader one.
  */
 struct manual_page {
@@ -83,8 +83,8 @@ struct manual_fetch;
 /*
  * An entry of the manual's table: a page's file, keyed by its path, or an
  * alias, a name and section a page is asked by, keyed by "NAME\0SECTION",
- * which no path holds.  Files stay until the manual is destroyed; an alias
- * goes as man fails for it.  The manual's lock guards all but the key.
+ * which no path holds. Files stay until the manual is destroyed; an alias
+ * goes as man fails for it. The manual's lock guards all but the key.
  */
 struct manual_entry {
 	struct manual_entry *next;                   /* in its bucket */
@@ -291,7 +291,7 @@ manual_fetch_fail (struct manual_fetch *f,
 
 /*
  * The fetch is over with @p page, whose reference it takes: one it
- * rendered, which is f->page, the manual keeps by its file.  The alias
+ * rendered, which is f->page, the manual keeps by its file. The alias
  * names the file, if the file has room for one more name, and else goes.
  * Each waiter is posted the page.
  */
@@ -342,7 +342,7 @@ manual_fetch_done (struct manual_fetch *f,
 }
 
 /* Run man with @p argv, its output up to @p max bytes, then @p done; else
- * fail the fetch with why not.  Counts the run in @p runs.
+ * fail the fetch with why not. Counts the run in @p runs.
  */
 static void
 manual_fetch_run (struct manual_fetch *f,
@@ -529,7 +529,7 @@ manual_fetch_found (struct child *c)
 
 /* Have @p w, if not nullptr, wait for the page of the alias @p key: join
  * the fetch under way, or begin one; without a waiter, begin one only if
- * none is under way.  Returns 0 or ENOMEM.
+ * none is under way. Returns 0 or ENOMEM.
  */
 static int
 manual_loop_ask (struct manual_loop *ml,
@@ -595,7 +595,7 @@ manual_give (struct mcp_slot    *slot,
 }
 
 /* The page a man call waited for is in, or man failed: reply with the
- * page, or why there is none, unless the call has gone.  Once the loop has
+ * page, or why there is none, unless the call has gone. Once the loop has
  * stopped, MCP is gone, and the post is only freed.
  */
 static void
@@ -624,9 +624,9 @@ manual_back (struct loop *loop,
 /*
  * The page @p name, of @p name_len bytes, of the section @p section, of
  * @p section_len bytes, 0 for none: in @p *p_page, a reference, if the
- * manual has it as its file is.  Else @p *p_page is nullptr, and the call
- * @p who names on the loop waits for manual_back().  Returns 0; EINVAL if
- * either is too long; or ENOMEM.  They are man's to take as a name and a
+ * manual has it as its file is. Else @p *p_page is nullptr, and the call
+ * @p who names on the loop waits for manual_back(). Returns 0; EINVAL if
+ * either is too long; or ENOMEM. They are man's to take as a name and a
  * section, never as an option: the caller checks them.
  */
 static int
@@ -688,7 +688,7 @@ manual_find (struct manual_loop  *ml,
 
 /* Creates the man tool's part of @p loop for @p service, a struct manual.
  * The part has the list of the fetches that the loop runs and the list of
- * their children.  Returns the part, or nullptr with ENOMEM in @p *e.
+ * their children. Returns the part, or nullptr with ENOMEM in @p *e.
  */
 void *
 manual_loop_create (void        *service,
@@ -708,7 +708,7 @@ manual_loop_create (void        *service,
 }
 
 /* End the fetches the loop runs, as it stops: their waiters learn that the
- * server is shutting down, and their children are killed.  Then free
+ * server is shutting down, and their children are killed. Then free
  * @p *p_part, the man tool's part of the loop, and set it to nullptr.
  */
 void

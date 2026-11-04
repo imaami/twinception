@@ -32,7 +32,7 @@ tls_no_passphrase (char *buf,
 }
 
 /* HTTP/1.1, among the protocols the client offers; or else the handshake
- * fails, as RFC 7301 says.  A client that offers none speaks it too.  The
+ * fails, as RFC 7301 says. A client that offers none speaks it too. The
  * list is scanned by hand: SSL_select_next_proto() points at a protocol of
  * the client's even when none matches.
  */
@@ -156,7 +156,7 @@ tls_ctx_key_type (SSL_CTX             *ctx,
 }
 
 /* Say in the @p len bytes at @p why that @p what failed, and OpenSSL's
- * reason, its last error, which the queue then lacks.  Returns ENOMEM if
+ * reason, its last error, which the queue then lacks. Returns ENOMEM if
  * OpenSSL ran out of memory, or reports no error, else EINVAL.
  */
 static int

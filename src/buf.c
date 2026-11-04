@@ -13,11 +13,11 @@
 
 _Atomic uint32_t buf_pressure;
 
-/* The calling thread's stash, which buf_stash_attach() sets.  The buffer
- * functions have no stash parameter.  They take blocks from the calling
+/* The calling thread's stash, which buf_stash_attach() sets. The buffer
+ * functions have no stash parameter. They take blocks from the calling
  * thread's stash, and put the blocks that buffers stop using into it,
- * including blocks that came from another thread's stash.  Only the
- * calling thread changes its stash, so the stash needs no lock.  In a
+ * including blocks that came from another thread's stash. Only the
+ * calling thread changes its stash, so the stash needs no lock. In a
  * thread without a stash, the buffer functions call malloc() and free()
  * directly.
  */
@@ -58,7 +58,7 @@ buf_stash_drop (struct buf_stash *stash,
 }
 
 /* Storage for @p size bytes, from @p stash if it has a block; *cap gets the
- * storage's size.  A miss first gives back the stash's largest blocks that
+ * storage's size. A miss first gives back the stash's largest blocks that
  * would keep, with what buffers hold, more than twice their peak.
  */
 static unsigned char *

@@ -254,11 +254,11 @@ stashed (struct buf_stash const *stash)
 }
 
 /*
- * Random operations against a plain array model.  Besides the contents, it
+ * Random operations against a plain array model. Besides the contents, it
  * checks the growth rules: every reservation within the maximum succeeds, the
  * capacity never exceeds the maximum, and below it a move without growth only
  * happens with half the storage consumed, so the bytes moved there never
- * exceed the bytes consumed.  At the maximum, moves are counted apart.  The
+ * exceed the bytes consumed. At the maximum, moves are counted apart. The
  * storage comes from a stash, which another buffer takes from and fills too,
  * and which gives storage back now and then: none may be in two places.
  */

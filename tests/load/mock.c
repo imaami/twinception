@@ -3,14 +3,14 @@
  * Serves POST /v1/chat/completions with a configurable number of slots, a
  * per-request delay, a streaming token rate and an answer size, in JSON or in
  * SSE (when the request body carries stream:true): paced, a token an event,
- * or in a burst, up to BURST tokens an event.  GET /props gives the slots as
- * llama-server does, total_slots, when they are limited.  It counts requests,
+ * or in a burst, up to BURST tokens an event. GET /props gives the slots as
+ * llama-server does, total_slots, when they are limited. It counts requests,
  * the concurrency peak, completed replies and cancellations (clients that
  * hang up before their reply is sent, whether queued for a slot or holding
  * one, a request that comes with its hang-up included), of them those of
  * streams under way, reporting them on exit and at GET /stats; requests =
- * served + cancelled + active + queued at all times.  All I/O is non-blocking
- * on one epoll loop, so a disconnect is noticed at once.  With -c it closes
+ * served + cancelled + active + queued at all times. All I/O is non-blocking
+ * on one epoll loop, so a disconnect is noticed at once. With -c it closes
  * each connection after its reply, saying so, so that a client keeps none
  * idle.
  */

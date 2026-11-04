@@ -2,34 +2,34 @@
  *
  * HTTP requests of tool calls, and the stored responses.
  *
- * A request that home sends is a run.  The client loop of the call that
+ * A request that home sends is a run. The client loop of the call that
  * asks for a request makes the run, which has a copy of the request, its
- * key and a list of waits.  The loop posts the run to home with a message
- * that has a word of pending bits, as a job does (src/job.h).  Home starts
+ * key and a list of waits. The loop posts the run to home with a message
+ * that has a word of pending bits, as a job does (src/job.h). Home starts
  * the transfer on its bridge, and it receives the body in bulk steps, as
- * much in a step as the step's share of receiving allows.  It ends the run
- * when the transfer ends or when the run's deadline passes.  At the end,
- * home makes the reply, which has a reference count.  No thread changes the
- * reply after that.  With the mutex locked, home moves the waits from the
+ * much in a step as the step's share of receiving allows. It ends the run
+ * when the transfer ends or when the run's deadline passes. At the end,
+ * home makes the reply, which has a reference count. No thread changes the
+ * reply after that. With the mutex locked, home moves the waits from the
  * run's list to a list of its own, and it puts the reply into the table if
- * the request asked for that and the reply is a whole 2xx response.  Then
+ * the request asked for that and the reply is a whole 2xx response. Then
  * it posts each wait to the wait's loop with a reference to the reply.
  *
- * A run has a reference count.  Home has one reference from the run's
+ * A run has a reference count. Home has one reference from the run's
  * creation to its end, and the run's message has one while it is posted.
- * A wait has no reference to its run.  While a wait is on the run's list,
+ * A wait has no reference to its run. While a wait is on the run's list,
  * which is accessed only with the mutex locked, the run has not ended, and
- * the wait's pointer to the run is valid.  Home sets that pointer to
- * nullptr for each wait that it moves.  When a call releases its wait, the
- * wait is removed from the list with the mutex locked.  If the list is
+ * the wait's pointer to the run is valid. Home sets that pointer to
+ * nullptr for each wait that it moves. When a call releases its wait, the
+ * wait is removed from the list with the mutex locked. If the list is
  * then empty and the run's keep is 0, the call posts CANCEL to home, and
- * home cancels the transfer.  A run whose keep is not 0 goes on to its
+ * home cancels the transfer. A run whose keep is not 0 goes on to its
  * end, so that its response is stored.
  *
- * The table has a fixed number of buckets.  The stored responses are also
- * on a list in the order of the times at which their keep passes.  To make
+ * The table has a fixed number of buckets. The stored responses are also
+ * on a list in the order of the times at which their keep passes. To make
  * room, and under memory pressure, askai frees responses from the front of
- * that list.  So it frees the responses whose keep has passed first, and
+ * that list. So it frees the responses whose keep has passed first, and
  * then those whose keep passes next.
  */
 #include <errno.h>
@@ -63,11 +63,11 @@ enum {
 /* The error text of a run that askai ends as it stops. */
 static char const stopping[] = "askai is stopping.";
 
-/* The key of a request.  Two requests are equal if their keys are equal.
- * The bytes of the key follow the struct that has the key.  They are the
- * URL, a NUL, the Accept, a NUL, the header lines, a NUL and the body.  The
+/* The key of a request. Two requests are equal if their keys are equal.
+ * The bytes of the key follow the struct that has the key. They are the
+ * URL, a NUL, the Accept, a NUL, the header lines, a NUL and the body. The
  * header lines are the line of User-Agent and the lines of struct
- * web_ask, each of those after a NUL.  The URL, the Accept and the lines
+ * web_ask, each of those after a NUL. The URL, the Accept and the lines
  * have no NUL, and the key has the lengths, so the bytes have one reading.
  * The line of User-Agent has the name of the plugin, so the plugins do not
  * share responses.
@@ -82,8 +82,8 @@ struct web_key {
 	uint16_t post;    /* bool, widened over the padding: a POST */
 };
 
-/* A response, or the reason why none came.  No thread changes it after
- * home has made it.  Each wait that has it, and the table, have a reference
+/* A response, or the reason why none came. No thread changes it after
+ * home has made it. Each wait that has it, and the table, have a reference
  * to it.
  */
 struct web_reply {
@@ -100,7 +100,7 @@ struct web_reply {
 	char             text[];    /* the type, a NUL, the error, a NUL */
 };
 
-/* A stored response in the table.  It is accessed only with the mutex
+/* A stored response in the table. It is accessed only with the mutex
  * locked.
  */
 struct web_entry {
@@ -142,9 +142,9 @@ struct web_run {
 	_Atomic uint32_t     refs;      /* one for home, one for the message
 	                                   while it is posted */
 	uint32_t             keep;      /* the keep of the request that made
-	                                   the run.  It does not change. */
+	                                   the run. It does not change. */
 	uint32_t             most;      /* the largest keep of the requests
-	                                   that wait for the run.  The mutex is
+	                                   that wait for the run. The mutex is
 	                                   locked for each access. */
 	uint32_t             timeout;   /* seconds */
 	int                  fault;     /* EFBIG, ENOMEM or ETIMEDOUT once the
@@ -156,19 +156,19 @@ struct web_run {
 /* A call's wait for a reply. */
 struct web_wait {
 	struct msg        msg;    /* home posts it to loop with the reply */
-	struct list       hook;   /* on the list of waits of its run.  The
+	struct list       hook;   /* on the list of waits of its run. The
 	                             mutex is locked for each access. */
 	struct web       *web;
 	struct web_run   *run;    /* the run while the wait is on the run's
-	                             list, else nullptr.  The mutex is locked
+	                             list, else nullptr. The mutex is locked
 	                             for each access. */
-	struct web_reply *reply;  /* a reference, once done is true.  It is
+	struct web_reply *reply;  /* a reference, once done is true. It is
 	                             nullptr if home ran out of memory. */
 	struct loop      *loop;
 	web_back_fn      *back;
 	struct handle     who;
 	uint64_t          done;   /* bool, widened over the padding: the wait
-	                             has its reply.  Only the thread of loop
+	                             has its reply. Only the thread of loop
 	                             uses it. */
 };
 
@@ -281,7 +281,7 @@ web_entries_free (struct web_entry *gone)
 }
 
 /* Returns the entry whose key is equal to @p key, whose bytes are at
- * @p data, or nullptr if the table has none.  The caller has locked the
+ * @p data, or nullptr if the table has none. The caller has locked the
  * mutex.
  */
 static struct web_entry *
@@ -297,7 +297,7 @@ web_find (struct web const     *web,
 
 /* Returns the run under way whose key is equal to @p key, whose bytes are
  * at @p data, whose timeout is @p timeout seconds and whose keep is not 0,
- * or nullptr if there is none.  The caller has locked the mutex.
+ * or nullptr if there is none. The caller has locked the mutex.
  */
 static struct web_run *
 web_find_run (struct web const     *web,
@@ -331,12 +331,12 @@ web_unlink (struct web       *web,
 }
 
 /*
- * Puts @p entry into the table, in place of an entry with an equal key.  It
+ * Puts @p entry into the table, in place of an entry with an equal key. It
  * puts the entry on the list of stored responses in the order of expires.
  * While the stored responses would count more than WEB_CACHE_MAX bytes, it
- * removes the entry at the front of the list.  Returns the entries that it
+ * removes the entry at the front of the list. Returns the entries that it
  * removed, which the member next links, for the caller to free after it
- * has unlocked the mutex.  The caller has locked the mutex.
+ * has unlocked the mutex. The caller has locked the mutex.
  */
 static struct web_entry *
 web_keep (struct web       *web,
@@ -367,9 +367,9 @@ web_keep (struct web       *web,
 	return gone;
 }
 
-/* Makes the reply of @p run from @p end.  If the run did not fail, the body
- * that the run received moves to the reply.  Otherwise the body is freed.
- * Returns the reply with one reference.  On failure it returns nullptr and
+/* Makes the reply of @p run from @p end. If the run did not fail, the body
+ * that the run received moves to the reply. Otherwise the body is freed.
+ * Returns the reply with one reference. On failure it returns nullptr and
  * stores ENOMEM in @p *e.
  */
 static struct web_reply *
@@ -394,7 +394,7 @@ web_reply_create (struct web_run       *run,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	/* The block of the body has room to grow.  realloc() can move the body
+	/* The block of the body has room to grow. realloc() can move the body
 	 * to a smaller block. */
 	char *fit = body ? realloc(body, len) : nullptr;
 	reply->body = fit ? fit : body;
@@ -425,7 +425,7 @@ web_entry_bytes (struct web_run const   *run,
 }
 
 /* Makes the entry of the table for @p reply, the response to @p run, with
- * a reference to the reply.  Returns the entry.  On failure it returns
+ * a reference to the reply. Returns the entry. On failure it returns
  * nullptr and stores ENOMEM in @p *e.
  */
 static struct web_entry *
@@ -450,14 +450,14 @@ web_entry_create (struct web_run const *run,
 }
 
 /*
- * Ends @p run with the result @p end.  It makes the reply, and it puts the
+ * Ends @p run with the result @p end. It makes the reply, and it puts the
  * reply into the table if the run's keep is not 0, the reply is a whole 2xx
  * response, and its entry would count at most a quarter of WEB_CACHE_MAX.
  * A reply or an entry that cannot be made for lack of memory is left out:
- * the waits get no reply, or the reply is not stored.  With the mutex
+ * the waits get no reply, or the reply is not stored. With the mutex
  * locked, it moves the run's waits to a list
- * of its own.  Then it posts the reply to each of them, and releases
- * home's reference to the run.  Home calls it, also inside loop_fini()
+ * of its own. Then it posts the reply to each of them, and releases
+ * home's reference to the run. Home calls it, also inside loop_fini()
  * after home's loop has stopped.
  */
 static void
@@ -528,7 +528,7 @@ web_run_finish (struct web           *web,
 }
 
 /* Copies the @p len bytes at @p data to the body of the response to
- * @p user, a run.  If the step's share of receiving has no room for them,
+ * @p user, a run. If the step's share of receiving has no room for them,
  * the function pauses the transfer, and the resume step resumes it later.
  * A body that grows past the request's max fails the run with EFBIG.
  * Returns what a write callback of curl returns.
@@ -720,7 +720,7 @@ web_run_start (struct web     *web,
 	(void)loop_timer_set(web->loop, &run->timer, run->since + run->timeout * NS);
 }
 
-/* Handles @p msg, the message of a run, on home's loop.  After home's loop
+/* Handles @p msg, the message of a run, on home's loop. After home's loop
  * has stopped, home's part of the service is gone, and a new run ends with
  * ESHUTDOWN.
  */
@@ -985,7 +985,7 @@ web_wait_create (struct web           *web,
 			join = web_find_run(web, &run->key, run->data, r->timeout);
 	}
 	/* Only home changes a wait that is on a run's list, until home posts
-	 * it.  So the function changes only a wait that has a stored
+	 * it. So the function changes only a wait that has a stored
 	 * response. */
 	if (hit) {
 		wait->reply = hit;
@@ -1071,7 +1071,7 @@ web_wait_leave (struct web_wait **p_wait)
 	struct web_run *run = wait->run;
 	if (run) {
 		list_del(&wait->hook);
-		/* A run whose keep is 0 has one wait.  The call posts the message
+		/* A run whose keep is 0 has one wait. The call posts the message
 		 * with a reference if CANCEL makes the word of bits non-zero, so
 		 * the run is not freed before home has handled the message. */
 		cancel = !run->keep && !atomic_fetch_or(&run->bits, RUN_CANCEL);

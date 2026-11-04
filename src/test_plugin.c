@@ -1,35 +1,35 @@
 /** @file test_plugin.c
  *
- * A plugin for the tests (tests/askai.py).  It has five tools.
+ * A plugin for the tests (tests/askai.py). It has five tools.
  *
  * The output of a test_echo call is the value of the call's string argument
  * "text".
  *
  * The output of a test_state call has four values of the call's instance,
- * as they are when the call ends.  The values are the principal of the
+ * as they are when the call ends. The values are the principal of the
  * instance's user, the address of the instance, the number of test_state
  * calls that have started with the instance, and the text that the instance
- * stores.  A call without "wait_ms" ends first and then stores its "text"
+ * stores. A call without "wait_ms" ends first and then stores its "text"
  * argument in the instance, so its output has the text that an earlier call
- * stored.  A call with "wait_ms" stores its "text" argument when it starts,
- * and it ends that many milliseconds later.  With "fail" true as well, the
- * call then ends with mcp_slot_fail() instead.  The drop() of a call with
+ * stored. A call with "wait_ms" stores its "text" argument when it starts,
+ * and it ends that many milliseconds later. With "fail" true as well, the
+ * call then ends with mcp_slot_fail() instead. The drop() of a call with
  * "wait_ms" stores the text "dropped" in the instance.
  *
  * test_misuse calls the call API in ways that tool.h and mcp.h do not
  * allow, and passes the exported functions inputs that they must refuse.
  * askai must go on working after them, and nothing of one call may reach
- * another call.  check_misuse (tests/askai.py) runs it.
+ * another call. check_misuse (tests/askai.py) runs it.
  *
- * test_fetch sends an HTTP request with mcp_slot_fetch() and parks.  Its
+ * test_fetch sends an HTTP request with mcp_slot_fetch() and parks. Its
  * step() writes the response's status, type, age, retry, error number and
- * error text, one to a line, then an empty line and the body.  check_web
+ * error text, one to a line, then an empty line and the body. check_web
  * (tests/askai.py) runs it.
  *
  * The plugin has one option, "greeting", a string of at most 63 bytes,
- * whose default is "hello".  The output of a test_config call is
+ * whose default is "hello". The output of a test_config call is
  * "greeting=" and the greeting of the plugin's configuration, or "none" if
- * the call gets no configuration.  check_plugin runs it.
+ * the call gets no configuration. check_plugin runs it.
  *
  * Each function that askai calls checks the pointers that it gets once, at
  * its start, and the plugin checks what the getters of the call API
@@ -64,7 +64,7 @@ struct test_plugin_instance {
 	                       call stored last, or "dropped" */
 };
 
-/* The memory of a test_state call that waits.  The pointer that
+/* The memory of a test_state call that waits. The pointer that
  * mcp_slot_own() returns for the call points to it.
  */
 struct test_plugin_wait {
@@ -74,8 +74,8 @@ struct test_plugin_wait {
 	                             mcp_slot_fail() */
 };
 
-/* The plugin's instance_init().  It stores the user of the instance and
- * sets the number of calls to 0.  Returns 0, or EINVAL if askai passed no
+/* The plugin's instance_init(). It stores the user of the instance and
+ * sets the number of calls to 0. Returns 0, or EINVAL if askai passed no
  * instance or no loop.
  */
 static int
@@ -106,8 +106,8 @@ test_plugin_echo_definition (void const *service)
 		"\"additionalProperties\":false}}");
 }
 
-/* Ends the call before it returns.  The output is the value of the string
- * argument "text".  The call fails if "text" is missing or is not a
+/* Ends the call before it returns. The output is the value of the string
+ * argument "text". The call fails if "text" is missing or is not a
  * string.
  */
 static void
@@ -154,7 +154,7 @@ test_plugin_state_definition (void const *service)
 		"\"additionalProperties\":false}}");
 }
 
-/* Ends the call.  The output is the state of the call's instance. */
+/* Ends the call. The output is the state of the call's instance. */
 static void
 test_plugin_state_tell (struct mcp_slot *slot)
 {
@@ -173,8 +173,8 @@ test_plugin_state_tell (struct mcp_slot *slot)
 		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
 }
 
-/* The timer function of a call that waits.  It runs when the wait is over,
- * and it ends the call.  If the call has "fail" true, it ends the call with
+/* The timer function of a call that waits. It runs when the wait is over,
+ * and it ends the call. If the call has "fail" true, it ends the call with
  * mcp_slot_fail() and EIO.
  */
 static void
@@ -191,15 +191,15 @@ test_plugin_wait_fired (struct loop       *loop,
 		test_plugin_state_tell(w->slot);
 }
 
-/* Starts a test_state call.  It adds 1 to the number of calls of the call's
+/* Starts a test_state call. It adds 1 to the number of calls of the call's
  * instance.
  *
  * Without "wait_ms", it ends the call with the state of the instance and
- * then stores "text" in the instance.  The instance is still valid after
+ * then stores "text" in the instance. The instance is still valid after
  * the end of the call, but args is not, so the function copies the text
  * before it ends the call.
  *
- * With "wait_ms", it stores "text" in the instance and parks the call.  The
+ * With "wait_ms", it stores "text" in the instance and parks the call. The
  * call's timer ends the call later.
  */
 static void
@@ -257,15 +257,15 @@ test_plugin_state_start (struct mcp_slot    *slot,
 		mcp_slot_park(slot);
 }
 
-/* This function is the drop() of test_state.  askai calls drop() only for
+/* This function is the drop() of test_state. askai calls drop() only for
  * a call whose mcp_slot_own() pointer is set, and test_state sets the
- * pointer only for a call with "wait_ms".  The function stops the call's
- * timer and frees the call's memory.  Then it stores the text "dropped" in
- * the call's instance.  check_instances (tests/askai.py) reads that text.
+ * pointer only for a call with "wait_ms". The function stops the call's
+ * timer and frees the call's memory. Then it stores the text "dropped" in
+ * the call's instance. check_instances (tests/askai.py) reads that text.
  * The text shows that mcp_slot_instance() returns the instance inside
- * drop().  Last, the function tries to end the call, which drop() must not
- * do.  askai has ended the call before it calls drop(), so it ignores the
- * attempt.  check_misuse drops such calls.
+ * drop(). Last, the function tries to end the call, which drop() must not
+ * do. askai has ended the call before it calls drop(), so it ignores the
+ * attempt. check_misuse drops such calls.
  */
 static void
 test_plugin_state_drop (struct mcp_slot *slot)
@@ -307,7 +307,7 @@ test_plugin_misuse_definition (void const *service)
 }
 
 /* The timer function of the timers that test_plugin_misuse_invalid()
- * passes.  askai must never call it.
+ * passes. askai must never call it.
  */
 static void
 test_plugin_never (struct loop       *loop,
@@ -318,7 +318,7 @@ test_plugin_never (struct loop       *loop,
 	abort();
 }
 
-/* The function of the message that test_plugin_misuse_invalid() posts.  It
+/* The function of the message that test_plugin_misuse_invalid() posts. It
  * frees the message.
  */
 static void
@@ -335,7 +335,7 @@ test_plugin_msg_free (struct loop *loop,
  * greater than the number of timers in the loop's heap, a timer whose slot
  * is the place of another timer in the heap, a message without
  * a function, a message that is posted already, and a unit of work out of
- * range.  Then it ends the call with
+ * range. Then it ends the call with
  * the text "refused R of N", where N is the number of these inputs and R is
  * the number of them that the functions refused as their documentation
  * says.
@@ -380,7 +380,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(loop_post(loop, nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_post(loop, &bare_msg) == EFAULT);
 	/* The message's function frees the message, so askai must call it
-	 * once.  The second post must therefore be refused. */
+	 * once. The second post must therefore be refused. */
 	struct msg *twice = malloc(sizeof *twice);
 	if (twice)
 		*twice = (struct msg){ .fn = test_plugin_msg_free };
@@ -394,7 +394,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(loop_timer_stop(loop, nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(loop_timer_stop(loop, &stray) == EINVAL);
 	/* A copy of a timer in the heap has the slot of that timer, but it is
-	 * not that timer.  The heap must keep the timer, which the function
+	 * not that timer. The heap must keep the timer, which the function
 	 * then stops, because the timer is on the stack. */
 	struct loop_timer real = { .due = UINT64_MAX, .fn = test_plugin_never };
 	int const armed = loop_timer_set(loop, &real, UINT64_MAX);
@@ -440,9 +440,9 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 
 /* Names the call with mcp_slot_name(), and then makes handles of the slots
  * of the loop's table near the call's own, with the generations from 1 to
- * 256 more than its own.  mcp_slot_named() must return nullptr or the call's
- * own slot for each of them.  The table also names requests, and a handle
- * of a request must not give a slot.  The call ends with the text "foreign
+ * 256 more than its own. mcp_slot_named() must return nullptr or the call's
+ * own slot for each of them. The table also names requests, and a handle
+ * of a request must not give a slot. The call ends with the text "foreign
  * F own O", where F is the number of handles that gave another object and O
  * is the number of handles that gave the call's own slot.
  */
@@ -477,18 +477,18 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
 		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
 }
 
-/* Starts a test_misuse call.  The kind of test_misuse has no step() and no
- * drop().  The argument "case" selects what the call does:
- * - "ready": the call calls mcp_slot_ready().  The kind has no step(), so
+/* Starts a test_misuse call. The kind of test_misuse has no step() and no
+ * drop(). The argument "case" selects what the call does:
+ * - "ready": the call calls mcp_slot_ready(). The kind has no step(), so
  *   askai ends the call as failed.
  * - "own": the call sets the mcp_slot_own() pointer, and then it ends with
- *   the text "own".  The kind has no drop(), so askai calls none.
- * - "after": the call ends with the text "first".  Then it calls each
+ *   the text "own". The kind has no drop(), so askai calls none.
+ * - "after": the call ends with the text "first". Then it calls each
  *   function of the call API that ends or changes a call, and
- *   mcp_slot_fetched().  Each of them must refuse with EINVAL.  The
+ *   mcp_slot_fetched(). Each of them must refuse with EINVAL. The
  *   function stores the text "refused R of N" in the call's instance, where
  *   N is the number of these calls and R is the number of them that
- *   returned EINVAL.  The next test_state call of the user shows that
+ *   returned EINVAL. The next test_state call of the user shows that
  *   text.
  * - "invalid": test_plugin_misuse_invalid() runs.
  * - "handles": test_plugin_misuse_handles() runs.
@@ -585,7 +585,7 @@ test_plugin_fetch_definition (void const *service)
 }
 
 /* Returns the string member @p name of @p args, and stores its length in
- * @p *len.  Returns nullptr if @p args has no such string.
+ * @p *len. Returns nullptr if @p args has no such string.
  */
 static char const *
 test_plugin_string (struct json_object *args,
@@ -614,13 +614,13 @@ test_plugin_integer (struct json_object *args,
 	                                                 : otherwise;
 }
 
-/* Starts a test_fetch call.  It sends the request that the arguments
- * describe.  "url" is required.  "body" makes the request a POST.  "accept"
- * is the value of Accept.  "max" is 65536 bytes, "timeout" 10 seconds and
- * "keep" 0 unless the arguments have them.  askai checks the values, so the
- * function passes them as they are, cast to the types of web_request.  If
+/* Starts a test_fetch call. It sends the request that the arguments
+ * describe. "url" is required. "body" makes the request a POST. "accept"
+ * is the value of Accept. "max" is 65536 bytes, "timeout" 10 seconds and
+ * "keep" 0 unless the arguments have them. askai checks the values, so the
+ * function passes them as they are, cast to the types of web_request. If
  * mcp_slot_fetch() fails, the call fails with the text "fetch: E", where E
- * is the error number.  With "twice" true, the function calls
+ * is the error number. With "twice" true, the function calls
  * mcp_slot_fetch() a second time after the first has succeeded, and the
  * call ends with the text "twice: E", where E is the error number of the
  * second call.
@@ -660,8 +660,8 @@ test_plugin_fetch_start (struct mcp_slot    *slot,
 		              twice ? 0 : TOOL_FAILED);
 }
 
-/* The step() of test_fetch.  It writes the result of the call's request
- * and ends the call.  The kind has no drop(), because askai frees the
+/* The step() of test_fetch. It writes the result of the call's request
+ * and ends the call. The kind has no drop(), because askai frees the
  * response.
  */
 static void
@@ -695,7 +695,7 @@ test_plugin_fetch_step (struct mcp_slot *slot)
 }
 
 /* Stores the reason of a refusal of the options in the @p len bytes at
- * @p why, formatted from @p fmt and its arguments.  Returns EINVAL.
+ * @p why, formatted from @p fmt and its arguments. Returns EINVAL.
  */
 [[gnu::format(printf, 3, 4)]]
 static int
@@ -713,8 +713,8 @@ test_plugin_refuse (char       *why,
 	return EINVAL;
 }
 
-/* The plugin's configure().  It stores the default greeting, and then the
- * option "greeting" if @p options has it.  It refuses another member, and a
+/* The plugin's configure(). It stores the default greeting, and then the
+ * option "greeting" if @p options has it. It refuses another member, and a
  * greeting that is not a string of at most 63 bytes.
  */
 static int
@@ -747,8 +747,8 @@ test_plugin_configure (void               *config,
 }
 
 /* Returns the definition of test_config as a new reference, or nullptr if
- * json-c cannot allocate memory.  @p service is the configuration, or
- * nullptr if the plugin has none.  The description ends with the greeting
+ * json-c cannot allocate memory. @p service is the configuration, or
+ * nullptr if the plugin has none. The description ends with the greeting
  * in parentheses, or with "(none)".
  */
 static struct json_object *

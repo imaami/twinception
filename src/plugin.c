@@ -18,16 +18,16 @@
 #include "plugin.h"
 #include "util.h"
 
-/* The ELF header of askai itself.  The linker defines the symbol. */
+/* The ELF header of askai itself. The linker defines the symbol. */
 [[gnu::visibility("hidden")]] extern ElfW(Ehdr) const __ehdr_start;
 
 /* The address and thread sanitizers add constructors to the objects that
- * they instrument.  The undefined-behavior sanitizer adds writable data,
- * unless it is built with -fsanitize-trap.  A plugin that is built with one
- * of these sanitizers therefore has state outside its instances.  askai
+ * they instrument. The undefined-behavior sanitizer adds writable data,
+ * unless it is built with -fsanitize-trap. A plugin that is built with one
+ * of these sanitizers therefore has state outside its instances. askai
  * that is built with -fsanitize=address, -fsanitize=thread or
  * -fsanitize=undefined refuses no plugin file for such state, so that a
- * plugin can be built with the same sanitizer.  It then also loads a file
+ * plugin can be built with the same sanitizer. It then also loads a file
  * that has thread-local storage.
  */
 #if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
@@ -46,7 +46,7 @@ struct plugin_file {
 	uint64_t         write_from;  /* the lowest address of the writable
 	                                 PT_LOAD segments */
 	uint64_t         write_to;    /* the address after the last byte of the
-	                                 writable PT_LOAD segments.  It is 0 if
+	                                 writable PT_LOAD segments. It is 0 if
 	                                 the file has no such segment. */
 	uint64_t         relro_from;  /* the first address of the PT_GNU_RELRO
 	                                 segment */
@@ -57,7 +57,7 @@ struct plugin_file {
 	                                 this buffer */
 	char const      *state;       /* a description of what the file has that
 	                                 is state of the plugin outside its
-	                                 instances.  It is nullptr if the file
+	                                 instances. It is nullptr if the file
 	                                 has nothing of that sort. */
 	size_t           len;         /* the size of why in bytes */
 	uint32_t         found;       /* the number of askai manifests read so
@@ -65,7 +65,7 @@ struct plugin_file {
 	int              fd;
 };
 
-/* Writes the reason for a refusal into the len bytes at why.  Returns
+/* Writes the reason for a refusal into the len bytes at why. Returns
  * EINVAL.
  */
 [[gnu::format(printf, 3, 4)]]
@@ -82,7 +82,7 @@ plugin_refuse (char       *why,
 	return EINVAL;
 }
 
-/* Reads the n bytes at offset off of the file into buf.  The bytes must
+/* Reads the n bytes at offset off of the file into buf. The bytes must
  * end at or before offset end, and end must not be greater than f->size.
  * Returns 0, or EINVAL with the reason in f->why.
  */
@@ -105,10 +105,10 @@ plugin_file_read (struct plugin_file const *f,
 }
 
 /* Reads the notes of one PT_NOTE segment: the bytes of the file from offset
- * off to offset end.  In each note, the header and the name together are
- * padded to a multiple of pad + 1 bytes.  The desc is padded to a multiple
- * of pad + 1 bytes too.  Copies the desc of an askai manifest to f->dest
- * and counts it in f->found.  Returns 0, or EINVAL with the reason in
+ * off to offset end. In each note, the header and the name together are
+ * padded to a multiple of pad + 1 bytes. The desc is padded to a multiple
+ * of pad + 1 bytes too. Copies the desc of an askai manifest to f->dest
+ * and counts it in f->found. Returns 0, or EINVAL with the reason in
  * f->why.
  */
 static int
@@ -123,7 +123,7 @@ plugin_file_notes (struct plugin_file *f,
 		if (e)
 			return e;
 		/* The read succeeded, so off + sizeof nh <= end, and end is at
-		 * most the greatest off_t.  n_namesz and n_descsz are 32 bits
+		 * most the greatest off_t. n_namesz and n_descsz are 32 bits
 		 * wide, so the sums below do not overflow 64 bits. */
 		uint64_t name = off + sizeof nh;
 		uint64_t desc = off + ((nh.n_namesz + pad + sizeof nh) & ~pad);
@@ -159,8 +159,8 @@ plugin_file_state (struct plugin_file *f,
 }
 
 /* Reads the entries of the PT_DYNAMIC segment: the bytes of the file from
- * offset off to offset end.  Records in f->state an entry for a constructor
- * or a destructor.  Returns 0, or EINVAL with the reason in f->why.
+ * offset off to offset end. Records in f->state an entry for a constructor
+ * or a destructor. Returns 0, or EINVAL with the reason in f->why.
  */
 static int
 plugin_file_dynamic (struct plugin_file *f,
@@ -189,10 +189,10 @@ plugin_file_dynamic (struct plugin_file *f,
 	return 0;
 }
 
-/* Looks at one program header of the file.  It reads the notes of a
- * PT_NOTE segment and the entries of the PT_DYNAMIC segment.  It records in
+/* Looks at one program header of the file. It reads the notes of a
+ * PT_NOTE segment and the entries of the PT_DYNAMIC segment. It records in
  * *f the addresses of the writable PT_LOAD segments and of the PT_GNU_RELRO
- * segment, and a PT_TLS segment in f->state.  Returns 0, or EINVAL with the
+ * segment, and a PT_TLS segment in f->state. Returns 0, or EINVAL with the
  * reason in f->why.
  */
 static int
@@ -228,11 +228,11 @@ plugin_file_segment (struct plugin_file *f,
 }
 
 /* Reads the manifest of the plugin whose file is open at fd into *dest.
- * The file must be a regular file.  Its contents must be a shared object
+ * The file must be a regular file. Its contents must be a shared object
  * for the machine that askai runs on, and its PT_NOTE segments must contain
  * exactly one note with the owner "askai" and the type MANIFEST_TYPE.
  *
- * A plugin has its state in instances (plugin.h).  So the file must have no
+ * A plugin has its state in instances (plugin.h). So the file must have no
  * thread-local storage, no constructor or destructor, and no writable data
  * that is still writable when the plugin's code runs.
  *
@@ -257,7 +257,7 @@ plugin_manifest_read (struct manifest *dest,
 		.len        = len,
 		.fd         = fd,
 	};
-	/* A file that is shorter than an ELF header is not read.  The header
+	/* A file that is shorter than an ELF header is not read. The header
 	 * stays zero, and the comparison below refuses it. */
 	ElfW(Ehdr) eh = {};
 	if (f.size >= sizeof eh) {
@@ -287,7 +287,7 @@ plugin_manifest_read (struct manifest *dest,
 	if (!f.found)
 		return plugin_refuse(why, len, "has no askai manifest");
 	/* Before any code of the plugin runs, the dynamic linker makes the
-	 * PT_GNU_RELRO segment read-only.  It rounds both ends of the segment
+	 * PT_GNU_RELRO segment read-only. It rounds both ends of the segment
 	 * down to a page, so a writable byte outside that range stays
 	 * writable. */
 	long page = sysconf(_SC_PAGESIZE);
@@ -303,7 +303,7 @@ plugin_manifest_read (struct manifest *dest,
 	return 0;
 }
 
-/* A name is 1 to 31 characters of [-0-9_a-z] followed by a NUL.  Returns
+/* A name is 1 to 31 characters of [-0-9_a-z] followed by a NUL. Returns
  * the length of the name in the MANIFEST_NAME bytes at name, or 0 if those
  * bytes are not a name.
  */
@@ -316,11 +316,11 @@ plugin_name_len (char const *name)
 	     ? (uint8_t)n : 0;
 }
 
-/* Checks the manifest *m, which was read from a plugin's file.  The epoch
- * and the ABI values must equal askai's own.  The plugin's name and the
+/* Checks the manifest *m, which was read from a plugin's file. The epoch
+ * and the ABI values must equal askai's own. The plugin's name and the
  * tool names must be valid, and the tool names must be the leading entries
- * of m->tools.  Stores the number of tool names in *n_tools and the length
- * of m->tools[i] in lens[i].  Returns 0, or EINVAL with the reason in the
+ * of m->tools. Stores the number of tool names in *n_tools and the length
+ * of m->tools[i] in lens[i]. Returns 0, or EINVAL with the reason in the
  * len bytes at why.
  */
 static int
@@ -384,10 +384,10 @@ plugin_loaded_definition (struct plugin_loaded const *loaded,
 }
 
 /* Loads the shared object at path and stores its askai_plugin in
- * dest->plugin.  dest->n_tools is the number of tools that its manifest
+ * dest->plugin. dest->n_tools is the number of tools that its manifest
  * names: those kinds of the plugin must have definition() and start(), and
- * the kinds after them must have neither.  The flags of every kind must be
- * among TOOL_FLAGS.  Returns 0, ENOMEM, or EINVAL with the reason in the
+ * the kinds after them must have neither. The flags of every kind must be
+ * among TOOL_FLAGS. Returns 0, ENOMEM, or EINVAL with the reason in the
  * len bytes at why.
  */
 static int
@@ -432,10 +432,10 @@ plugin_loaded_load (struct plugin_loaded *dest,
 
 /* Checks configure and config_size of dest->plugin, and stores the
  * plugin's configuration in dest->config: config_size zeroed bytes that
- * configure() fills from options.  options is the member "options" of the
- * plugin's element of "plugins", or nullptr.  A plugin without configure()
- * gets no configuration, and it is refused if options is not nullptr.  The
- * reason of configure() follows "options: " in why.  Returns 0, ENOMEM, or
+ * configure() fills from options. options is the member "options" of the
+ * plugin's element of "plugins", or nullptr. A plugin without configure()
+ * gets no configuration, and it is refused if options is not nullptr. The
+ * reason of configure() follows "options: " in why. Returns 0, ENOMEM, or
  * EINVAL with the reason in the len bytes at why.
  */
 static int
@@ -461,7 +461,7 @@ plugin_loaded_configure (struct plugin_loaded *dest,
 	 * alone. */
 	if (len <= sizeof prefix)
 		return plugin_refuse(why, len, "%s", prefix);
-	/* The reason of configure() follows the prefix.  The text is cut at the
+	/* The reason of configure() follows the prefix. The text is cut at the
 	 * end of the buffer, also if configure() stored no NUL. */
 	char *reason = why + sizeof prefix - 1;
 	size_t room = len - (sizeof prefix - 1);
@@ -483,7 +483,7 @@ plugin_loaded_configure (struct plugin_loaded *dest,
 /* Fills *dest for the plugin in the file at path: reads and checks the
  * manifest, then loads the shared object, then stores the plugin's
  * configuration from options, and then checks that the definition of each
- * named tool has the tool's name.  definition() gets the configuration.  No
+ * named tool has the tool's name. definition() gets the configuration. No
  * code of the plugin runs before its manifest has passed the checks.
  * Returns 0, ENOMEM, or EINVAL with the reason in the len bytes at why.
  */

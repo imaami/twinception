@@ -3,13 +3,13 @@
  * libcurl multi-socket integration for the event loop.
  *
  * Socket events and curl's timer, which lives on the loop's heap, only queue
- * bulk steps, and the steps drive curl.  An error fails at most the transfer
- * it belongs to, never the loop or the other transfers.  A done callback may
+ * bulk steps, and the steps drive curl. An error fails at most the transfer
+ * it belongs to, never the loop or the other transfers. A done callback may
  * ask what Retry-After its answer said.
  *
  * With a resolver set, host names are looked up on a blocker thread rather
  * than by libcurl, whose resolver would start a thread of its own for each
- * lookup.  A request to a host waits for its addresses, while one lookup per
+ * lookup. A request to a host waits for its addresses, while one lookup per
  * host is under way; the addresses are kept for LOOKUP_TTL_NS, and a lookup
  * that fails leaves those it had in use.
  */
@@ -108,9 +108,9 @@ struct http_lookup {
 	char                key[];    /* the host's, copied */
 };
 
-/* Take @p request out of curl and free it, then report @p result.  The
+/* Take @p request out of curl and free it, then report @p result. The
  * transfer's handle stays until the done callback returns, so that
- * http_type() can read the answer's Content-Type from it.  A done callback
+ * http_type() can read the answer's Content-Type from it. A done callback
  * can end another request, so the handle of the outer callback is restored
  * after the callback.
  */
@@ -159,7 +159,7 @@ http_check_done (struct http *http)
 	}
 }
 
-/* Have the request of @p easy fail with @p e on a later step.  The socket
+/* Have the request of @p easy fail with @p e on a later step. The socket
  * callback cannot remove it, and an error returned there would fail every
  * transfer.
  */
@@ -388,8 +388,8 @@ http_request_pin (struct http_request *request,
 
 /* Append the address of @p ai, if it is one, to the @p len bytes of
  * @p l's entry, as libcurl takes it: IPv6 in brackets, after a comma but for
- * the first, which follows the ':' that ends "name:port:".  There is room
- * for INET6_ADDRSTRLEN + 3 bytes.  Returns the new length.
+ * the first, which follows the ':' that ends "name:port:". There is room
+ * for INET6_ADDRSTRLEN + 3 bytes. Returns the new length.
  */
 static size_t
 http_lookup_put (struct http_lookup    *l,
@@ -498,7 +498,7 @@ http_host_resume (struct http_host    *host,
 }
 
 /* @p host's lookup @p l has come back: keep the addresses it found, and
- * start the requests that waited for them, or fail them.  A lookup that
+ * start the requests that waited for them, or fail them. A lookup that
  * fails leaves the addresses the host had.
  */
 static void
@@ -841,7 +841,7 @@ http_typed (char const *const *headers)
 
 /* Give @p request its header lines: a body's Content-Type, application/json
  * unless @p headers has one, and @p headers, nullptr-terminated, unless
- * nullptr.  Appending keeps the list's head, the request's.  0 or ENOMEM.
+ * nullptr. Appending keeps the list's head, the request's. 0 or ENOMEM.
  */
 static int
 http_request_headers (struct http_request *request,

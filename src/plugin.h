@@ -1,54 +1,54 @@
 /** @file plugin.h
  *
- * Plugins. A plugin provides kinds of tool (src/tool.h).  The calls
+ * Plugins. A plugin provides kinds of tool (src/tool.h). The calls
  * of its tools use the call API of src/mcp.h. The man tool and the git
  * tool are plugins that are built into askai.
  *
  * Every other plugin is a shared object that askai's make rules build
- * (src/NAME.so.mk).  The configuration file lists the plugins in its member
- * "plugins" (README.md).  askai loads them when it starts, after it has
- * read the manifest that PLUGIN_MANIFEST() puts into each of them.  It
+ * (src/NAME.so.mk). The configuration file lists the plugins in its member
+ * "plugins" (README.md). askai loads them when it starts, after it has
+ * read the manifest that PLUGIN_MANIFEST() puts into each of them. It
  * never unloads a plugin.
  *
- * A plugin exports only askai_plugin.  It calls only json-c, libc and the
- * functions that askai exports (src/export.h).  It has no constructor, no
- * mutable static variable and no thread-local variable.  It starts no
+ * A plugin exports only askai_plugin. It calls only json-c, libc and the
+ * functions that askai exports (src/export.h). It has no constructor, no
+ * mutable static variable and no thread-local variable. It starts no
  * thread and no process, installs no signal handler, changes no setting of
- * the process, loads no other object, and never blocks or exits.  A call
+ * the process, loads no other object, and never blocks or exits. A call
  * of its tools sends an HTTP request through askai with mcp_slot_fetch()
- * (src/web.h).  Each of its functions that askai calls checks the pointers
+ * (src/web.h). Each of its functions that askai calls checks the pointers
  * that it gets once, at its start, and the plugin checks what a getter of
  * the call API returns before it uses that.
  *
- * A plugin has state in two places only.  The first is the pointer that
- * mcp_slot_own() returns for a call.  The second is an instance.  An
+ * A plugin has state in two places only. The first is the pointer that
+ * mcp_slot_own() returns for a call. The second is an instance. An
  * instance is instance_size bytes that askai allocates and that the plugin
- * initializes with instance_init().  If instance_size is not 0, each call
+ * initializes with instance_init(). If instance_size is not 0, each call
  * of the plugin's tools uses one instance, and mcp_slot_instance() returns
  * it.
  *
  * Three things are always true of an instance:
- * - All calls that use it have the same user.  mcp_slot_principal()
+ * - All calls that use it have the same user. mcp_slot_principal()
  *   returns the principal of a call's user.
  * - askai passes it only to functions that run on the thread of one client
  *   loop, so it needs no lock.
  * - askai calls instance_fini() for it only when no call uses it and no
  *   function of the plugin is running.
  *
- * Two calls of one user do not always get the same instance.  A user whose
+ * Two calls of one user do not always get the same instance. A user whose
  * connections are on several loops has an instance on each of these loops,
- * and the instances share nothing.  askai destroys instances that no call
+ * and the instances share nothing. askai destroys instances that no call
  * uses, for example under memory pressure and after a reload of the
- * configuration.  A user can have more than one instance on one loop at
- * the same time.  Each call of an anonymous client, whose principal is 0,
- * gets a new instance.  A plugin must therefore work when a call gets a
+ * configuration. A user can have more than one instance on one loop at
+ * the same time. Each call of an anonymous client, whose principal is 0,
+ * gets a new instance. A plugin must therefore work when a call gets a
  * new instance, which has none of the data that an earlier call of the
- * same user stored.  src/instance.h has the exact rules.
+ * same user stored. src/instance.h has the exact rules.
  *
- * A plugin can have options in the configuration file.  Its configure()
+ * A plugin can have options in the configuration file. Its configure()
  * checks them and stores the plugin's configuration when askai loads the
- * plugin.  All calls and loops share the configuration, and askai does not
- * change it after that.  mcp_slot_config() returns it, and askai passes it
+ * plugin. All calls and loops share the configuration, and askai does not
+ * change it after that. mcp_slot_config() returns it, and askai passes it
  * to definition() of each of the plugin's kinds.
  */
 #ifndef TWINCEPTION_SRC_PLUGIN_H_
@@ -65,8 +65,8 @@
 #include "tool.h"
 #include "web.h"
 
-/** The version of the plugin interface.  Increase it whenever the
- *  interface changes and no PLUGIN_ABI() value changes.  An example is a
+/** The version of the plugin interface. Increase it whenever the
+ *  interface changes and no PLUGIN_ABI() value changes. An example is a
  *  function whose behavior changes while its declaration stays the same.
  *  PLUGIN_MANIFEST() stores it in the manifest so that askai does not load
  *  a plugin that was built with a different value.
@@ -80,17 +80,17 @@ static constexpr size_t PLUGIN_INSTANCE_MAX = 64 << 10;
 static constexpr size_t PLUGIN_CONFIG_MAX = 4 << 10;
 
 /**
- * Initializes an instance.  @p instance points to instance_size bytes that
- * askai allocated.  The bytes are aligned for any type, and their content
- * is not defined.  @p principal is the user of the instance.  It is 0 for
- * an anonymous client.  @p loop is the loop of the instance.
+ * Initializes an instance. @p instance points to instance_size bytes that
+ * askai allocated. The bytes are aligned for any type, and their content
+ * is not defined. @p principal is the user of the instance. It is 0 for
+ * an anonymous client. @p loop is the loop of the instance.
  *
  * askai calls the function on the thread of @p loop, when a call of the
- * user starts there and needs a new instance.  It calls it before start()
- * of the call's kind.  The function must not block.
+ * user starts there and needs a new instance. It calls it before start()
+ * of the call's kind. The function must not block.
  *
- * Returns 0, or an error number.  After an error, askai frees the bytes and
- * does not call instance_fini().  Before the function returns an error, it
+ * Returns 0, or an error number. After an error, askai frees the bytes and
+ * does not call instance_fini(). Before the function returns an error, it
  * must therefore free what it allocated and stop the timers that it set.
  * askai then ends the request of the call in the way that mcp_slot_fail()
  * does.
@@ -99,17 +99,17 @@ typedef int plugin_instance_init_fn (void        *instance,
                                      uint64_t     principal,
                                      struct loop *loop);
 
-/** Finalizes an instance.  It frees what the members of the instance point
- *  to, and it stops the instance's timers.  askai frees the bytes of the
- *  instance itself.  askai calls the function on the thread of the
+/** Finalizes an instance. It frees what the members of the instance point
+ *  to, and it stops the instance's timers. askai frees the bytes of the
+ *  instance itself. askai calls the function on the thread of the
  *  instance's loop, when no call uses the instance and no function of the
  *  plugin is running.
  */
 typedef void plugin_instance_fini_fn (void *instance);
 
 /** Frees memory that @p instance has allocated only for reuse, at most
- *  @p max LOOP_RELEASE units.  askai calls it under memory pressure of the
- *  level @p level.  Returns the number of units freed.  It returns 0 when
+ *  @p max LOOP_RELEASE units. askai calls it under memory pressure of the
+ *  level @p level. Returns the number of units freed. It returns 0 when
  *  the instance has no such memory left.
  */
 typedef size_t plugin_relieve_fn (void              *instance,
@@ -119,19 +119,19 @@ typedef size_t plugin_relieve_fn (void              *instance,
 /**
  * Checks @p options and stores the plugin's configuration in @p config.
  * @p options is the member "options" of the plugin's element of "plugins"
- * in the configuration file, or nullptr if the element has none.  @p config
- * points to config_size bytes that askai allocated.  The bytes are zero,
+ * in the configuration file, or nullptr if the element has none. @p config
+ * points to config_size bytes that askai allocated. The bytes are zero,
  * and they are aligned for any type.
  *
- * The configuration is plain data.  askai frees its bytes when it exits,
- * and it calls no function to finalize them.  So the configuration must not
- * point to memory that the function allocates, or to @p options.  askai
+ * The configuration is plain data. askai frees its bytes when it exits,
+ * and it calls no function to finalize them. So the configuration must not
+ * point to memory that the function allocates, or to @p options. askai
  * calls the function once, when it loads the plugin, before it calls
  * definition() of the plugin's kinds and before the loops start.
  *
- * Returns 0, ENOMEM, or EINVAL.  Before it returns EINVAL, the function
+ * Returns 0, ENOMEM, or EINVAL. Before it returns EINVAL, the function
  * stores the reason as NUL-terminated text in the @p len bytes at @p why.
- * The reason is worded to follow "options: ".  askai refuses the plugin if
+ * The reason is worded to follow "options: ". askai refuses the plugin if
  * the function returns an error number.
  */
 typedef int plugin_configure_fn (void               *config,
@@ -139,40 +139,40 @@ typedef int plugin_configure_fn (void               *config,
                                  char               *why,
                                  size_t              len);
 
-/** The largest number of kinds that a plugin has.  It equals the number of
+/** The largest number of kinds that a plugin has. It equals the number of
  *  tool names that a manifest has room for.
  */
 static constexpr unsigned PLUGIN_TOOLS = MANIFEST_TOOLS;
 
 struct plugin {
-	/** The plugin's kinds.  tools[i] is the kind of the tool that the
-	 *  manifest names at index i.  An entry is a kind if its start is set.
+	/** The plugin's kinds. tools[i] is the kind of the tool that the
+	 *  manifest names at index i. An entry is a kind if its start is set.
 	 *  The kinds are the first entries, and every entry after them is all
 	 *  zero. */
 	struct tool_kind         tools[PLUGIN_TOOLS];
-	/** Initializes an instance.  It is set if instance_size is not 0, and
+	/** Initializes an instance. It is set if instance_size is not 0, and
 	 *  it is nullptr if instance_size is 0. */
 	plugin_instance_init_fn *instance_init;
-	/** Finalizes an instance.  It is nullptr if an instance has nothing to
-	 *  free.  It can be set only if instance_init is set. */
+	/** Finalizes an instance. It is nullptr if an instance has nothing to
+	 *  free. It can be set only if instance_init is set. */
 	plugin_instance_fini_fn *instance_fini;
-	/** Frees memory that an instance has allocated only for reuse.  It is
-	 *  nullptr if an instance has no such memory.  It can be set only if
+	/** Frees memory that an instance has allocated only for reuse. It is
+	 *  nullptr if an instance has no such memory. It can be set only if
 	 *  instance_init is set. */
 	plugin_relieve_fn       *relieve;
-	/** Checks the plugin's options and stores its configuration.  It is
+	/** Checks the plugin's options and stores its configuration. It is
 	 *  nullptr if the plugin has no options. */
 	plugin_configure_fn     *configure;
 	/** The size of an instance in bytes, from 1 to PLUGIN_INSTANCE_MAX.
 	 *  It is 0 if the plugin has no instances. */
 	size_t                   instance_size;
 	/** The size of the configuration in bytes, from 1 to
-	 *  PLUGIN_CONFIG_MAX.  It is 0 if configure is nullptr. */
+	 *  PLUGIN_CONFIG_MAX. It is 0 if configure is nullptr. */
 	size_t                   config_size;
 };
 
 /** Sizes, alignments and offsets that must be the same in askai and in a
- *  plugin.  They can differ if askai and the plugin are built with
+ *  plugin. They can differ if askai and the plugin are built with
  *  different compilers or with different compiler options.
  *  PLUGIN_MANIFEST() stores the plugin's values in the manifest so that
  *  askai can compare them with its own.
@@ -193,14 +193,14 @@ static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
 
 /**
  * Defines the plugin's manifest and declares askai_plugin, which the plugin
- * must then define.  The arguments are designated initializers for members
+ * must then define. The arguments are designated initializers for members
  * of struct manifest:
  *
  *     PLUGIN_MANIFEST(.name = "test", .tools = { "test_echo" });
  *
- * Do not pass .epoch or .abi.  The macro sets them.  Use the macro once
- * per plugin.  Each use defines plugin_manifest.  A second use in the same
- * source file is a compile error.  A second use in another source file of
+ * Do not pass .epoch or .abi. The macro sets them. Use the macro once
+ * per plugin. Each use defines plugin_manifest. A second use in the same
+ * source file is a compile error. A second use in another source file of
  * the plugin is a link error.
  */
 #define PLUGIN_MANIFEST(...)                                         \
@@ -218,7 +218,7 @@ static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
         };                                                           \
         EXPORT extern struct plugin const askai_plugin
 
-/* The rest of this file is askai's side.  A plugin does not use it. */
+/* The rest of this file is askai's side. A plugin does not use it. */
 
 /** A plugin that askai loaded from a file. */
 struct plugin_loaded {
@@ -241,35 +241,35 @@ struct plugin_loaded {
 /**
  * Loads the plugin in the file at @p path.
  *
- * It reads the manifest from the file first.  The epoch and the
- * PLUGIN_ABI() values in the manifest must equal askai's own.  The plugin's
- * name and each tool name must be 1 to 31 characters of [-0-9_a-z].  The
+ * It reads the manifest from the file first. The epoch and the
+ * PLUGIN_ABI() values in the manifest must equal askai's own. The plugin's
+ * name and each tool name must be 1 to 31 characters of [-0-9_a-z]. The
  * file must have no thread-local storage, no constructor or destructor,
  * and no data that is still writable when the plugin's code runs, because
- * a plugin has its state in instances.  The link flags -nostartfiles and
- * -Wl,-z,relro,-z,now give such a file (src/test_plugin.so.mk).  askai
+ * a plugin has its state in instances. The link flags -nostartfiles and
+ * -Wl,-z,relro,-z,now give such a file (src/test_plugin.so.mk). askai
  * that is built with -fsanitize=address, -fsanitize=thread or
- * -fsanitize=undefined does not check this.  It loads the shared object
- * after these checks, with dlopen() and RTLD_NOW.  RTLD_NOW makes dlopen()
+ * -fsanitize=undefined does not check this. It loads the shared object
+ * after these checks, with dlopen() and RTLD_NOW. RTLD_NOW makes dlopen()
  * fail if the plugin calls a function of askai that askai does not export.
  * For each tool that the manifest names, the kind at the same index in
- * askai_plugin must have definition() and start().  The other kinds must
- * have neither.  A kind's flags must be among TOOL_FLAGS (src/tool.h).  The
+ * askai_plugin must have definition() and start(). The other kinds must
+ * have neither. A kind's flags must be among TOOL_FLAGS (src/tool.h). The
  * shared object stays loaded until askai exits.
  *
  * configure and config_size of askai_plugin must both be set or both be 0,
- * and config_size must be at most PLUGIN_CONFIG_MAX.  If the plugin has
+ * and config_size must be at most PLUGIN_CONFIG_MAX. If the plugin has
  * configure(), the function allocates config_size zeroed bytes, and it
- * calls configure() with them and @p options.  @p options is the member
- * "options" of the plugin's element of "plugins", or nullptr.  A plugin
- * without configure() is refused if @p options is not nullptr.  After that,
- * the definition of each named tool must have the tool's name.  The
+ * calls configure() with them and @p options. @p options is the member
+ * "options" of the plugin's element of "plugins", or nullptr. A plugin
+ * without configure() is refused if @p options is not nullptr. After that,
+ * the definition of each named tool must have the tool's name. The
  * function calls definition() with the configuration to check that.
  *
- * Returns the loaded plugin, which has a copy of @p path.  On failure it
+ * Returns the loaded plugin, which has a copy of @p path. On failure it
  * returns nullptr and stores the error number in @p *e, unless @p e is
  * nullptr: EFAULT if @p path or @p why is nullptr or @p len is 0, ENOMEM,
- * or EINVAL with the reason in the @p len bytes at @p why.  The reason is
+ * or EINVAL with the reason in the @p len bytes at @p why. The reason is
  * worded to follow the path and a colon.
  */
 extern struct plugin_loaded *
@@ -280,7 +280,7 @@ plugin_loaded_create (char const         *path,
                       int                *e);
 
 /** Frees the loaded plugin *@p p_loaded and its configuration, and sets
- *  *@p p_loaded to nullptr.  The shared object stays loaded.
+ *  *@p p_loaded to nullptr. The shared object stays loaded.
  */
 extern void
 plugin_loaded_destroy (struct plugin_loaded **p_loaded);

@@ -3,7 +3,7 @@
  * MCP's Streamable HTTP transport and JSON-RPC semantics, over request
  * streams (src/stream.h).
  *
- * Two protocol eras are served side by side.  Legacy clients (revisions up to
+ * Two protocol eras are served side by side. Legacy clients (revisions up to
  * 2025-11-25, which includes llama.cpp) open with an initialize handshake;
  * modern clients (2026-07-28) are stateless and declare their version in each
  * request's _meta, mirrored into HTTP headers that must match the body.
@@ -11,30 +11,30 @@
  * A request's body is copied and pre-scanned for its JSON's nesting, values,
  * object members and number lengths as it arrives, then parsed within the
  * step's share of work (loop.h), a slice a bulk step once it exceeds that, by
- * tokeners the loop reuses.  A large message is freed the same way, by its own
+ * tokeners the loop reuses. A large message is freed the same way, by its own
  * request after the reply has gone out; the request's stream ends only then,
  * so its client's next request waits for that, and memory for messages is
- * bounded by the requests under way.  An upstream answer is parsed and freed
- * in slices too.  Replies are built from fragments, the unchanging ones
+ * bounded by the requests under way. An upstream answer is parsed and freed
+ * in slices too. Replies are built from fragments, the unchanging ones
  * serialized once in the shared, immutable mcp_static, so no json-c value is
  * shared between replies or loops, and go out a piece a step, each piece once
- * the transport has room for it.  A finished request is kept for reuse, its
+ * the transport has room for it. A finished request is kept for reuse, its
  * buffers' storage given back to the loop's stash (src/buf.h) and that of its
  * answer and pre-scan kept, until memory pressure has it freed; the one that
- * ended last is reused first, so steady requests reuse the same few.  So are
+ * ended last is reused first, so steady requests reuse the same few. So are
  * jobs.
  *
  * A tool call's upstream request is a job that home runs (src/job.h): the
  * request writes the upstream body, then hands it to a job, names itself by a
- * handle (src/loop.h) and submits the job.  The job's completion looks the
+ * handle (src/loop.h) and submits the job. The job's completion looks the
  * request up by that handle, and is dropped if the request has gone; else the
  * request parses the answer as before, on this loop, and then lets go of the
- * job.  A request that goes while it waits cancels its job, freeing its
+ * job. A request that goes while it waits cancels its job, freeing its
  * handle.
  *
  * A tool call answers on an event stream (SSE) when the client accepts one
  * and its era has them (all but 2024-11-05): id-less data: events, and a ':'
- * comment every keepalive seconds while the upstream works.  A call whose
+ * comment every keepalive seconds while the upstream works. A call whose
  * params._meta has a progressToken gets notifications/progress on its event
  * stream while it waits, at most one each PROGRESS_NS, as home's PROGRESS
  * messages say how far it is: its place in its principal's queue, then the
@@ -45,7 +45,7 @@
  * Home waits for its acknowledgment. The transcript writer stores decoded
  * reasoning independently of these transport notifications. Closing the
  * stream, which in HTTP/1.1 means closing the connection or its sending side,
- * cancels the call in every era.  The caller of a call can also cancel it
+ * cancels the call in every era. The caller of a call can also cancel it
  * with notifications/cancelled, on any connection of any loop.
  * mcp_req_cancel() looks the call up in the roster (src/roster.h) by the
  * caller, the session and the request id.
@@ -60,13 +60,13 @@
  * cancels the task.
  *
  * With --client-jobs, a client's call of background runs a call of another
- * tool as a job.  The request answers the client with the job's id, and
+ * tool as a job. The request answers the client with the job's id, and
  * then runs the call with a stand-in stream, which writes the reply into
  * the job's record in the ledger (src/ledger.h), as a call that becomes a
- * task does.  A client's timers and waits are in the ledger too.
+ * task does. A client's timers and waits are in the ledger too.
  *
  * GET /metrics answers a trusted client (src/stream.h) with the metrics,
- * rendered a share a step (src/metrics.h).  Draining, tool calls that wait
+ * rendered a share a step (src/metrics.h). Draining, tool calls that wait
  * for the upstream, and those yet to start, end with an error, which on an
  * event stream is its last event.
  */
@@ -165,7 +165,7 @@ enum {
 
 /* The upstream requests of a client's jobs are in home's background class,
  * and home queues at most JOB_QUEUED requests of one principal in one
- * class.  The principal of a job's requests is the owner of the job's
+ * class. The principal of a job's requests is the owner of the job's
  * record, so home can queue a request of each job of an owner that runs.
  */
 static_assert((int)LEDGER_RUNNING <= (int)JOB_QUEUED, "home queues the jobs that run");
@@ -209,7 +209,7 @@ enum mcp_fetch : uint16_t {
 
 static_assert(!(FETCH_KEEP & FETCH_FORMAT), "FETCH_FORMAT has none of the kept flags");
 
-/* The command of git for each enum mcp_fetch.  FETCH_NEWEST reads a note
+/* The command of git for each enum mcp_fetch. FETCH_NEWEST reads a note
  * with NOTES_READ.
  */
 static enum notes_cmd const mcp_fetch_cmds[] = {
@@ -319,13 +319,13 @@ static char const *const field_names[F_N] = {
 	[F_SESSION] = "mcp-session-id",
 };
 
-/* The kinds of tool that askai may offer, each its row of mcp_rows.  A role
- * can grant the kinds up to KIND_NOTES, which clients list and call.  askai
+/* The kinds of tool that askai may offer, each its row of mcp_rows. A role
+ * can grant the kinds up to KIND_NOTES, which clients list and call. askai
  * offers the kinds in KINDS_TURNS only to the turns of ask calls. It offers
  * the kinds in KINDS_AGENDA to the turns, with --upstream-tools, and with
- * --client-jobs also to clients, as a role grants them.  A kind's tool has
+ * --client-jobs also to clients, as a role grants them. A kind's tool has
  * one id for both, and the start() of such a kind checks the role of its
- * slot: ROLE_OWN is a client's call.  KIND_NONE is the kind of a tool that
+ * slot: ROLE_OWN is a client's call. KIND_NONE is the kind of a tool that
  * askai does not offer.
  */
 enum mcp_kind : uint32_t {
@@ -345,7 +345,7 @@ enum mcp_kind : uint32_t {
 };
 
 /* The kinds of object that the handles of a client loop name
- * (loop_handle()).  loop_lookup() returns an object only for the kind that
+ * (loop_handle()). loop_lookup() returns an object only for the kind that
  * its handle was made with, so a handle of a request never gives a call
  * slot, and the reverse.
  */
@@ -383,7 +383,7 @@ enum mcp_trace : uint8_t {
 static constexpr uint64_t KF_SERIAL = 1ull << 32;
 
 /* A flag of askai's own kinds, past TOOL_FLAGS: the kinds of background,
- * jobs, wait and timer.  A client's call of background cannot start a call
+ * jobs, wait and timer. A client's call of background cannot start a call
  * of such a kind, and a client's call of such a kind never becomes a task.
  */
 static constexpr uint64_t KF_AGENDA = 1ull << 33;
@@ -432,7 +432,7 @@ struct mcp_lending {
 
 /* Returns the tools that @p l lends the turns of an ask call of a client
  * whose role lets the upstream call @p upstream: those of them that are in
- * by[LEND_GRANTED], and those in by[LEND_ALWAYS].  If there are any, the
+ * by[LEND_GRANTED], and those in by[LEND_ALWAYS]. If there are any, the
  * result also has the tools in by[LEND_WITH], and if one of them can run in
  * the background, the tools in by[LEND_DETACH].
  */
@@ -445,7 +445,7 @@ mcp_lending_lent (struct mcp_lending const *l,
 	return lent ? lent | l->by[LEND_WITH] | more : 0;
 }
 
-/* A plugin whose tools askai offers.  A built-in plugin can have a service,
+/* A plugin whose tools askai offers. A built-in plugin can have a service,
  * the object that every loop shares, and a part of it on each client loop.
  * A plugin that askai loaded from a file has neither, and has its record
  * of the loading instead.
@@ -465,8 +465,8 @@ struct mcp_static {
 	struct mcp_offer          offers[TOOL_MAX + 1];  /**< by id; TOOL_MAX's,
 	                                                      that of a tool askai
 	                                                      does not offer */
-	/** The plugins that have a tool, indexed by part.  There is at most
-	 *  one plugin for each offer.  Entry 0 is the plugin of askai's own
+	/** The plugins that have a tool, indexed by part. There is at most
+	 *  one plugin for each offer. Entry 0 is the plugin of askai's own
 	 *  kinds, and its service is this mcp_static. */
 	struct mcp_plugin         plugins[TOOL_MAX];
 	uint32_t                  n_offers;
@@ -595,11 +595,11 @@ struct mcp_slot {
 	uint8_t             tool;      /* its call's tool, by its offer's id;
 	                                  TOOL_MAX: none */
 	uint8_t             role;      /* enum mcp_role */
-	bool                done;      /* true once the call has ended.  A
+	bool                done;      /* true once the call has ended. A
 	                                  call ends when it has its output,
 	                                  when it fails, when it is
 	                                  cancelled, and when askai calls
-	                                  its kind's drop().  The functions
+	                                  its kind's drop(). The functions
 	                                  of the call API that would end or
 	                                  change a call do nothing for an
 	                                  ended call. */
@@ -721,7 +721,7 @@ struct mcp_req {
 	uint64_t             base;       /* what the progress was as the turn
 	                                    began */
 	uint64_t             principal;  /* The principal of the request's
-	                                    client.  mcp_begin() copies it from
+	                                    client. mcp_begin() copies it from
 	                                    the stream, because s can be nullptr
 	                                    when a call is dropped. */
 	uint64_t             generation; /* The value that
@@ -862,7 +862,7 @@ static char const busy[] = "Too many tool calls are under way; try again in a "
                            "few seconds.";
 
 /* A run of bytes: a piece of JSON text, or words for a client or the
- * model.  mcp_slot_say() and mcp_slot_result() take words as text,
+ * model. mcp_slot_say() and mcp_slot_result() take words as text,
  * whatever their flag.
  */
 struct mcp_piece {
@@ -1086,7 +1086,7 @@ mcp_req_end (struct mcp_req *req)
 }
 
 /* A request to begin, the spare one that ended last if there is one;
- * nullptr if out of memory.  Its answer, pre-scan and reaper are empty, their
+ * nullptr if out of memory. Its answer, pre-scan and reaper are empty, their
  * storage kept.
  */
 static struct mcp_req *
@@ -1230,7 +1230,7 @@ mcp_bytes (size_t n)
 }
 
 /* Write the @p len bytes at @p text into the @p size bytes at @p buf as a
- * JSON string, which is one line, followed by "..." if cut.  The string has
+ * JSON string, which is one line, followed by "..." if cut. The string has
  * the longest prefix of whole characters whose escapes take at most @p max
  * bytes and fit in @p size bytes with the quotes, the mark and the NUL.
  */
@@ -1293,7 +1293,7 @@ mcp_shown_put (struct mcp_shown *w,
 }
 
 /* Append @p v to @p w as compact JSON, as JB_WIRE writes it, until
- * TRACE_ARGS bytes are written.  The string value of the member @p sized
+ * TRACE_ARGS bytes are written. The string value of the member @p sized
  * of an object, if not nullptr, is replaced by its size.
  */
 static void
@@ -1364,7 +1364,7 @@ mcp_shown_value (struct mcp_shown   *w,
  * at @p buf for the log: compact JSON on one line, cut to TRACE_ARGS bytes
  * with "...", with the value of the argument that the offer names, a
  * note's text or compact's summary, replaced by its size; the text @p none
- * without arguments.  Only the bytes that are shown are written, however
+ * without arguments. Only the bytes that are shown are written, however
  * large the arguments are.
  */
 static void
@@ -1396,7 +1396,7 @@ mcp_req_client (struct mcp_req const *req)
  * names: the tool, the client, the time and the size of the output @p out;
  * the task or the job that the call runs as, if any; for an ask call its
  * turns and their tool calls; with --verbose its arguments; and if the call
- * @p failed, the text of @p out, if any.  A
+ * @p failed, the text of @p out, if any. A
  * failure is logged at LOG_WARN, and else the line is one of --verbose.
  * Each level has its own rate limit, so that the lines of --verbose do not
  * hold back the failures.
@@ -1436,12 +1436,12 @@ mcp_req_log_call (struct mcp_req *req,
 	        text);
 }
 
-/* Drops the call in @p slot.  If the call's own word is set, the call
+/* Drops the call in @p slot. If the call's own word is set, the call
  * counts as ended first, so the call API ignores an attempt of the kind's
- * drop() to end the call.  Then the function calls the kind's drop(), or it
- * logs a warning if the kind has no drop().  A request drops its own slot
+ * drop() to end the call. Then the function calls the kind's drop(), or it
+ * logs a warning if the kind has no drop(). A request drops its own slot
  * between two turns too, and its own slot has no own word, so that slot
- * does not count as ended then.  Last, the function releases the call's
+ * does not count as ended then. Last, the function releases the call's
  * HTTP request and its reply, puts the call's instance back
  * (instance_table_put()), clears the lent output, frees the lines that the
  * output shows, destroys the child of the call's notes, removes the call's
@@ -1480,7 +1480,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 
 /* Let go of the request's job, if it has one: cancel it while the request
  * waits for it, freeing the request's handle, so that its completion finds
- * no request; else tell home the result has been read.  Its calls let go
+ * no request; else tell home the result has been read. Its calls let go
  * of what they hold, as their kinds do, and of their handles likewise.
  */
 static void
@@ -1622,7 +1622,7 @@ mcp_req_task_end (struct mcp_req *req)
 }
 
 /* Takes the request's tool call out of the roster, if it is in the roster,
- * and frees the handle of the request that the record has.  After this, a
+ * and frees the handle of the request that the record has. After this, a
  * notifications/cancelled does not reach the call.
  */
 static void
@@ -1651,7 +1651,7 @@ mcp_req_finish (struct mcp_req *req)
 	mcp_agenda_destroy(&req->agenda);
 	review_destroy(&req->review);
 	/* Neither a drain nor a notifications/cancelled reaches the call while
-	 * its end is written.  A cancel may supersede a pending state, intent
+	 * its end is written. A cancel may supersede a pending state, intent
 	 * or result write: FIFO writes keep that evidence, followed by the
 	 * end, and the obsolete callback must not launch any more work. */
 	mcp_req_leave(req);
@@ -1812,8 +1812,8 @@ mcp_req_put (struct mcp_req         *req,
 
 /* Begin the reply: on an event stream, an event; then
  * '{"jsonrpc":"2.0","id":ID,', without the id if the request has none, and
- * @p key, '"result":' or '"error":'.  An empty key begins a reply whose key
- * and value are those that a record of the ledger has.  The reply of a
+ * @p key, '"result":' or '"error":'. An empty key begins a reply whose key
+ * and value are those that a record of the ledger has. The reply of a
  * task's call begins with only @p key, and the record of the task has the
  * reply (mcp_req_show()).
  */
@@ -1848,7 +1848,7 @@ mcp_req_open (struct mcp_req   *req,
 }
 
 /* The call is answered: take it off the calls under way, which a drain
- * ends, and let go of what it waits for.  Send the reply, as JSON with
+ * ends, and let go of what it waits for. Send the reply, as JSON with
  * @p status and the header @p fields or as the stream's last event, then
  * finish the request; if making the reply failed with @p e, end the stream
  * with that instead.
@@ -1935,7 +1935,7 @@ static void
 mcp_req_fail (struct mcp_req *req,
               int             e)
 {
-	/* The reply is being sent, or the request is being freed.  A job of the
+	/* The reply is being sent, or the request is being freed. A job of the
 	 * turns that fails now does not change the reply. */
 	if (req->phase >= PHASE_SEND)
 		return;
@@ -1997,7 +1997,7 @@ mcp_req_trace_tail (struct mcp_req const *req,
 
 /* Close the result's text; then, for an ask call whose turns called tools,
  * or kept notes, what they called and where the notes are, as a text of its
- * own.  A call without turns that get tools has no trace.  A client's call
+ * own. A call without turns that get tools has no trace. A client's call
  * of the notes tool has no turns, and its thread does not belong to an ask
  * call.
  */
@@ -2025,7 +2025,7 @@ mcp_req_trace_put (struct mcp_req *req)
 	return mcp_req_put(req, p, ARRAY_SIZE(p));
 }
 
-/* End a tool result, its trace after its text, and send it.  The result of
+/* End a tool result, its trace after its text, and send it. The result of
  * a task's call ends without the modern tail, which mcp_req_show() adds for
  * a modern reader of the record.
  */
@@ -2102,7 +2102,7 @@ mcp_req_output (struct mcp_req const *req)
 }
 
 /* Escape as much of the output into the reply as the step has the share
- * for; the rest goes on in bulk steps.  Then close the result, which lets
+ * for; the rest goes on in bulk steps. Then close the result, which lets
  * go of the job, or the page, if the output was its.
  */
 static void
@@ -2168,7 +2168,7 @@ mcp_slot_respond (struct mcp_slot *slot,
 }
 
 /* Write a notification of progress @p value, saying the @p len bytes of
- * @p text, which need no escaping, into the reply.  A tool notification
+ * @p text, which need no escaping, into the reply. A tool notification
  * identifies a call; other progress reports its current status.
  */
 static int
@@ -2293,7 +2293,7 @@ mcp_req_delta (struct mcp_req *req)
 /* Notify the client how far the call has come, as its job's progress says:
  * its place in its principal's queue, then the tokens of its answer, thinking
  * or text, as a progress that grows with each notification, and with each
- * turn.  Held back by output the client has yet to read, it goes in a later
+ * turn. Held back by output the client has yet to read, it goes in a later
  * step.
  */
 static void
@@ -2362,7 +2362,7 @@ static void mcp_req_promote (struct mcp_req *req, struct ledger_task *task);
 /* While a call waits: its becoming a task, if that is due; else a
  * keep-alive, if one is due, and a notification of its progress, if that
  * moved on, the last went PROGRESS_NS ago and the client has read what it
- * was sent; then the timer for the next of them.  A call that cannot
+ * was sent; then the timer for the next of them. A call that cannot
  * become a task goes on as it is.
  */
 static void
@@ -2468,9 +2468,9 @@ mcp_req_refit (struct mcp_req const *req,
 }
 
 /* Logs, with --verbose, how the turn of @p req's ask call that @p job ran
- * ended: how, its HTTP status, its time and the size of its result.  The
+ * ended: how, its HTTP status, its time and the size of its result. The
  * line of a streamed answer also has the tokens that the turn used of the
- * context, its stop reason and its tool calls.  An answer that is not
+ * context, its stop reason and its tool calls. An answer that is not
  * streamed, such as the body of an HTTP error, has none of these.
  */
 static void
@@ -2529,8 +2529,8 @@ mcp_req_log_turn (struct mcp_req const *req,
 
 /* The job the request waits for has ended, home done with its upstream
  * request and its key: parse the answer, a slice a step, or reply with what
- * home says of it.  A request whose turns go on keeps the upstream request,
- * its conversation.  A streamed answer ends a turn, and with it the call if
+ * home says of it. A request whose turns go on keeps the upstream request,
+ * its conversation. A streamed answer ends a turn, and with it the call if
  * it calls no tool, as no answer to a call that lends none does; one that
  * did not fit the context starts the turns again from the prompt,
  * compacted.
@@ -2591,10 +2591,10 @@ mcp_req_job_done (struct mcp_req *req)
 }
 
 /*
- * A job's completion, or the job itself, handed back by home.  A completion
+ * A job's completion, or the job itself, handed back by home. A completion
  * goes to the request that waits for it, which parses the answer a slice a
  * step, or replies with why there is none, and lets go of the job; one whose
- * request has gone is dropped, the request having let go as it went.  Once
+ * request has gone is dropped, the request having let go as it went. Once
  * the loop has stopped, MCP is gone, and jobs are freed.
  */
 static void
@@ -2682,8 +2682,8 @@ mcp_req_copy (struct mcp_req *req,
 }
 
 /* Writes the call's session field and a line break into @p job's key, if
- * the request has a session field.  A field cannot contain a line break.
- * Home uses the key to tell principals apart.  Returns 0, or the error
+ * the request has a session field. A field cannot contain a line break.
+ * Home uses the key to tell principals apart. Returns 0, or the error
  * number of buf_reserve().
  */
 static int
@@ -2704,14 +2704,14 @@ mcp_key (struct job  *job,
 	return 0;
 }
 
-/* Writes into @p key the key of a call in the roster.  @p id is the request
+/* Writes into @p key the key of a call in the roster. @p id is the request
  * id: the id of @p req for its own call, or the id that a
- * notifications/cancelled in @p req names.  The key begins with the
- * principal of the client of @p req.  If the principal is 0, the client's
- * address follows it.  Then come the session field and a line break, if the
- * request has a session field, and last the JSON text of @p id.  Stores the
- * hash of the key in @p *hash.  The hash is seeded, so that no client can
- * choose keys that fill one bucket of the roster.  Returns 0, or ENOMEM.
+ * notifications/cancelled in @p req names. The key begins with the
+ * principal of the client of @p req. If the principal is 0, the client's
+ * address follows it. Then come the session field and a line break, if the
+ * request has a session field, and last the JSON text of @p id. Stores the
+ * hash of the key in @p *hash. The hash is seeded, so that no client can
+ * choose keys that fill one bucket of the roster. Returns 0, or ENOMEM.
  */
 static int
 mcp_req_key (struct mcp_req const *req,
@@ -2746,8 +2746,8 @@ mcp_req_key (struct mcp_req const *req,
 
 /* The owner of the records in the ledger that @p req opens and reads: the
  * principal of its client, which never has the bit LEDGER_ANONYMOUS
- * (src/policy.h).  The principal of an anonymous client is 0, and its owner
- * is then a hash of its address with the bit LEDGER_ANONYMOUS set.  The hash
+ * (src/policy.h). The principal of an anonymous client is 0, and its owner
+ * is then a hash of its address with the bit LEDGER_ANONYMOUS set. The hash
  * is the one that mcp_req_submit() uses as the principal of an upstream job
  * of an anonymous client without a session field.
  */
@@ -2906,7 +2906,7 @@ mcp_req_name (struct mcp_req *req,
 /* Hand the upstream request to a job, which the request names itself to for
  * the job's completion, with the call's key and principal: its client's
  * identity, else its session, else its client's address; and submit the
- * job to home.  An identity's jobs are one principal's, whatever their
+ * job to home. An identity's jobs are one principal's, whatever their
  * sessions and addresses: home tells them by their hash and a peer no
  * client has (UINT64_MAX twice; a Unix socket's user's is UINT64_MAX and
  * its uid).
@@ -3042,7 +3042,7 @@ mcp_req_build (struct mcp_req *req)
 }
 
 /* Open the reply as an event stream, which keep-alives keep open while the
- * upstream works.  The timer, for those and the notifications of progress,
+ * upstream works. The timer, for those and the notifications of progress,
  * is in the heap from now on, so setting it cannot fail.
  */
 static void
@@ -3148,8 +3148,8 @@ mcp_on_task_cancel (struct loop *loop,
 }
 
 /* This is the function of the message that roster_cancel() posts when a
- * client cancels a tool call with notifications/cancelled.  @p msg is the
- * member cancel of the call's record.  If the call still runs on @p loop
+ * client cancels a tool call with notifications/cancelled. @p msg is the
+ * member cancel of the call's record. If the call still runs on @p loop
  * and its reply has not begun, the function ends the call with
  * mcp_req_finish(), as a hang-up does, and its end record says cancelled.
  * Before that, it answers a JSON request with the status 202 and no body.
@@ -3201,7 +3201,7 @@ static_assert(TOOL_MAX <= UINT16_MAX, "a record's tool is an id");
 
 /* Opens a record of @p kind in the ledger for the call of the tool @p tool
  * that @p req runs, for any loop to find, and names the request by a new
- * handle for the record's cancel.  On failure, returns nullptr with the
+ * handle for the record's cancel. On failure, returns nullptr with the
  * error in @p *e: that of ledger_open(), or ENOMEM if the request cannot
  * be named.
  */
@@ -3225,9 +3225,9 @@ mcp_req_record (struct mcp_req   *req,
 }
 
 /* Answers the call's client with the result that the @p n pieces at @p p
- * make, which close the result and the reply.  From then on, the call runs
+ * make, which close the result and the reply. From then on, the call runs
  * as the task or the job of the record @p task: its stream is the stand-in,
- * which writes the call's reply into the record.  If the answer cannot go,
+ * which writes the call's reply into the record. If the answer cannot go,
  * the function ends the record and the call, and returns the error.
  */
 static int
@@ -3251,8 +3251,8 @@ mcp_req_detach (struct mcp_req         *req,
 		mcp_req_abort(req, e);
 		return e;
 	}
-	/* The request has its answer.  From now on a client can cancel the
-	 * call only with tasks/cancel or a client's jobs.  The call opens no
+	/* The request has its answer. From now on a client can cancel the
+	 * call only with tasks/cancel or a client's jobs. The call opens no
 	 * event stream and becomes no task. */
 	mcp_req_leave(req);
 	req->stand_in = *s;
@@ -3360,8 +3360,8 @@ mcp_slot_own (struct mcp_slot *slot)
 }
 
 /* @p slot's call waits no more: let go of its name, if it has one, and of
- * its step, if queued.  The function also releases the call's HTTP
- * request if the request is under way.  A reply that has come stays until
+ * its step, if queued. The function also releases the call's HTTP
+ * request if the request is under way. A reply that has come stays until
  * mcp_slot_drop(), so that drop() can still use it.
  */
 static void
@@ -3458,7 +3458,7 @@ mcp_slot_write (struct mcp_slot  *slot,
 		return EFBIG;
 	/* What is UTF-8 goes at once; from the first byte that breaks it, a
 	 * chunk at a time, mended by jb_mend(), which with TOOL_MORE leaves a
-	 * character the end cuts short to the next write.  All or nothing. */
+	 * character the end cuts short to the next write. All or nothing. */
 	size_t i = jb_utf8(text.ptr, text.len);
 	bool ok = dstr_cat_n(answer, text.ptr, i);
 	for (bool last = i == text.len; ok && !last; ) {
@@ -3610,7 +3610,7 @@ mcp_slot_named (struct loop const *loop,
 }
 
 /* The reply to @p wait, the HTTP request of the call that @p who names, has
- * come.  The step of the call is queued, unless the call has ended.  If the
+ * come. The step of the call is queued, unless the call has ended. If the
  * call is gone, or the loop has stopped, the wait is freed.
  */
 static void
@@ -3665,8 +3665,8 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 	size_t url_len = strnlen(url, WEB_URL_MAX + 1);
 	size_t accept_len = accept ? strnlen(accept, WEB_ACCEPT_MAX + 1) : 0;
 	size_t scheme = !strncmp(url, "http://", 7) ? 7 : !strncmp(url, "https://", 8) ? 8 : 0;
-	/* The authority ends at the first '/', '?' or '#'.  A user name or a
-	 * password in it ends in '@'.  For a URL that is too long, authority
+	/* The authority ends at the first '/', '?' or '#'. A user name or a
+	 * password in it ends in '@'. For a URL that is too long, authority
 	 * is 0, and the URL is refused. */
 	size_t authority = scheme && url_len <= WEB_URL_MAX
 	                 ? strcspn(url + scheme, "/?#") : 0;
@@ -3748,7 +3748,7 @@ mcp_lent_text (struct json_object *obj,
 }
 
 /* Draft the upstream request with @p prompt and @p system, and write it up
- * to the first of them.  The client's strings, which may be long, are left
+ * to the first of them. The client's strings, which may be long, are left
  * out of the draft, and mcp_req_build() escapes them in; a default system
  * prompt is ours, and goes in with the draft, as do the tools the turns may
  * call, serialized once for every loop.
@@ -3880,7 +3880,7 @@ mcp_req_review_make (struct mcp_req *req,
 
 /* Start a call that asks the upstream, with the arguments @p args, of the
  * class the request asks for, lending the turns the tools req->lent says,
- * if any: build its upstream request, then submit its job.  The notes the turns keep, if askai keeps
+ * if any: build its upstream request, then submit its job. The notes the turns keep, if askai keeps
  * them, go in the thread the call goes on with, else in a new one.
  */
 static void
@@ -3992,7 +3992,7 @@ mcp_spin_slice (struct task *task,
 }
 
 /* A test_task call's task is back: reply with what it did, unless the call
- * has gone.  Once the loop has stopped, MCP is gone, and the task is only
+ * has gone. Once the loop has stopped, MCP is gone, and the task is only
  * let go of.
  */
 static void
@@ -4121,7 +4121,7 @@ mcp_req_upload_piece (struct mcp_req         *req,
 }
 
 /* Write the @p n pieces at @p p into the upload, from piece req->next and
- * its byte req->off on, as far as the step's shares allow.  Returns 0 once
+ * its byte req->off on, as far as the step's shares allow. Returns 0 once
  * all are written; EAGAIN if the step ran out first; ENOMEM; or ENOBUFS if
  * the upload would pass UPLOAD_MAX, its context full.
  */
@@ -4592,7 +4592,7 @@ mcp_req_trace_end (struct mcp_req *req,
 }
 
 /* The id of the tool of @p name, of @p len bytes, that askai offers,
- * compared byte for byte; TOOL_MAX if none, as for nullptr and 0.  The
+ * compared byte for byte; TOOL_MAX if none, as for nullptr and 0. The
  * tools that a role can grant have the ids below st->n_granted.
  */
 static uint32_t
@@ -4633,7 +4633,7 @@ mcp_req_no_args (struct mcp_req const *req)
 
 /* Logs, with --verbose, a turn's call of the tool @p name, which the turns
  * of @p req may not call, with its arguments @p args: askai offers the
- * tool, but not to this ask call, or askai offers no such tool.  The name
+ * tool, but not to this ask call, or askai offers no such tool. The name
  * comes from the upstream, so the line has it as a JSON string.
  */
 static void
@@ -4868,12 +4868,12 @@ mcp_agenda_alarm (struct loop       *loop,
 /* Starts the call of @p slot with the arguments @p args, and stores the
  * time of the start in the slot.
  *
- * A client can send any JSON value as the arguments.  If @p args is neither
- * nullptr nor an object, the call ends with an error text.  Otherwise the
+ * A client can send any JSON value as the arguments. If @p args is neither
+ * nullptr nor an object, the call ends with an error text. Otherwise the
  * function gets the instance of the tool's plugin for the user of the
  * request, if the plugin has instances, and then calls start() of the
- * tool's kind.  If instance_table_get() returns EBUSY, the call ends as
- * failed.  Any other error of instance_table_get() ends the whole request.
+ * tool's kind. If instance_table_get() returns EBUSY, the call ends as
+ * failed. Any other error of instance_table_get() ends the whole request.
  *
  * No function of a plugin is running when this function is called.
  */
@@ -4920,7 +4920,7 @@ static char const no_room[] = "askai has no room for more jobs, timers or waits 
                               "now; try again later.";
 
 /* Answers a client's call in @p slot that the ledger refused with @p e:
- * with @p busy for EBUSY, and with no_room for ENOSPC.  Any other error
+ * with @p busy for EBUSY, and with no_room for ENOSPC. Any other error
  * fails the call.
  */
 static void
@@ -4997,7 +4997,7 @@ mcp_req_background (struct mcp_req *req,
 
 /* A client's call of background in @p slot, the request's own: start a
  * call of the tool that @p args names, with the arguments in @p args, as a
- * job.  The request answers the client with the id of the job at once, and
+ * job. The request answers the client with the id of the job at once, and
  * then runs the call as the job.
  */
 static void
@@ -5037,8 +5037,8 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 }
 
 /* Start the call that @p args asks for as a job in the background, in a
- * slot of the agenda's: of a tool the turns may call that may run so.  The
- * call in @p slot says the job's number at once.  A client's call is
+ * slot of the agenda's: of a tool the turns may call that may run so. The
+ * call in @p slot says the job's number at once. A client's call is
  * mcp_slot_client_background()'s.
  */
 static void
@@ -5077,7 +5077,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 		return;
 	}
 	struct mcp_slot *job = &a->jobs[a->n_jobs];
-	/* job->args is a deep copy of the arguments.  mcp_req_args_free()
+	/* job->args is a deep copy of the arguments. mcp_req_args_free()
 	 * frees the arguments of the call of background once its result is
 	 * written, and the job usually runs longer than that. */
 	int bad = call ? json_object_deep_copy(call, &job->args, nullptr)
@@ -5159,7 +5159,7 @@ mcp_slot_jobs_cancel (struct mcp_slot *slot,
 }
 
 /* Returns a reference to the record that the argument job of @p args
- * names, for a client's call of jobs in @p slot.  If the owner of the call
+ * names, for a client's call of jobs in @p slot. If the owner of the call
  * has no such record, returns nullptr, and the call answers why.
  */
 static struct ledger_task *
@@ -5192,7 +5192,7 @@ mcp_slot_client_find (struct mcp_slot    *slot,
 
 /* Writes the records and the timers of the owner of a client's call of
  * jobs into the answer of the call's @p slot: the records, the newest
- * first, then the timers.  Returns 0, or ENOMEM.
+ * first, then the timers. Returns 0, or ENOMEM.
  */
 static int
 mcp_slot_client_list (struct mcp_slot *slot)
@@ -5359,7 +5359,7 @@ mcp_slot_client_jobs (struct mcp_slot    *slot,
 }
 
 /* The jobs tool's call in @p slot: list the jobs, or give the output of
- * the one @p args names, or cancel it.  A client's call is
+ * the one @p args names, or cancel it. A client's call is
  * mcp_slot_client_jobs()'s.
  */
 static void
@@ -5420,7 +5420,7 @@ struct mcp_wait {
 
 /* Writes the events in @p look, of the client's wait @p w, into the answer
  * of the wait's call: each job that ended and each timer that fired, or
- * else that nothing happened.  Returns 0, or ENOMEM.
+ * else that nothing happened. Returns 0, or ENOMEM.
  */
 static int
 mcp_wait_report (struct mcp_wait const    *w,
@@ -5449,10 +5449,10 @@ mcp_wait_report (struct mcp_wait const    *w,
 	return ok ? 0 : ENOMEM;
 }
 
-/* Checks the client's wait @p w.  If ledger_tell() returns jobs that ended
+/* Checks the client's wait @p w. If ledger_tell() returns jobs that ended
  * or timers that fired, or the wait's time is up, the wait's call answers
- * with what happened.  Else the wait goes on: its alarm is set for its end,
- * or for the time of the owner's first timer, if that is sooner.  On the
+ * with what happened. Else the wait goes on: its alarm is set for its end,
+ * or for the time of the owner's first timer, if that is sooner. On the
  * first check, @p first, the call then parks.
  */
 static void
@@ -5492,7 +5492,7 @@ mcp_wait_alarm (struct loop       *loop,
 }
 
 /* The message of a client's wait, @p msg, which the ledger posts when a
- * record of the wait's owner ends or the owner sets a timer.  If the wait's
+ * record of the wait's owner ends or the owner sets a timer. If the wait's
  * call still runs on @p loop, its step checks the wait again.
  */
 static void
@@ -5509,7 +5509,7 @@ mcp_on_wake (struct loop *loop,
 
 /* A client's call of wait in @p slot, the request's own, for @p secs
  * seconds: until a job of the call's owner ends, of those that @p args
- * names or any, or a timer of the owner fires.  A job named that has ended,
+ * names or any, or a timer of the owner fires. A job named that has ended,
  * an ended job that no one has read, or a timer that fired before the call,
  * ends the call at once.
  */
@@ -5601,8 +5601,8 @@ mcp_slot_wait_drop (struct mcp_slot *slot)
 }
 
 /* The wait tool's call in @p slot: until a job of those @p args names, or
- * any, finishes, a timer fires, or its seconds are up.  What happened and
- * no result said yet ends it at once.  A client's call is
+ * any, finishes, a timer fires, or its seconds are up. What happened and
+ * no result said yet ends it at once. A client's call is
  * mcp_slot_client_wait()'s.
  */
 static void
@@ -5760,9 +5760,9 @@ mcp_req_intent_saved (struct mcp_req *req,
 
 /* Launch the turn's next tool call, in its slot, unless it must wait: a
  * call that keeps to itself until those before it are written, and those
- * after it until it is.  A call goes to the tool of its name that the turns
+ * after it until it is. A call goes to the tool of its name that the turns
  * may call, whose kind starts it, writes its output into the slot's answer,
- * or lends it, and calls mcp_slot_done().  The step comes again after
+ * or lends it, and calls mcp_slot_done(). The step comes again after
  * it, as the call may end the request.
  */
 static void
@@ -5838,7 +5838,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		mcp_req_log_refused(req, c.name, args);
 	if (!args) {
 		/* mcp_slot_start() does not run for this call, so this line sets
-		 * slot->start.  mcp_slot_done() logs the time since slot->start. */
+		 * slot->start. mcp_slot_done() logs the time since slot->start. */
 		slot->start = loop_clock();
 		mcp_slot_result(slot, req->cut
 		                ? TEXT("Your answer reached the output token limit, which "
@@ -5932,23 +5932,23 @@ mcp_slot_note_window (struct mcp_slot *slot,
 static void mcp_agenda_job_done (struct mcp_slot *slot);
 
 /* Handles the end of the call in @p slot, which is a call of a turn or a
- * job.  The call has produced its output or has failed.  For a call of a
+ * job. The call has produced its output or has failed. For a call of a
  * turn, the function sets slot->skip and slot->window to the part of the
  * output that the next upstream request contains, and writes the note about
- * that part into slot->note.  Then it queues the step of the request.  The
+ * that part into slot->note. Then it queues the step of the request. The
  * step writes the results of the calls into the upstream request in the
- * order of the calls.  For a job, the function calls mcp_agenda_job_done(),
+ * order of the calls. For a job, the function calls mcp_agenda_job_done(),
  * which adds a notice about the job to the agenda.
  *
  * With --verbose, the function logs one line with the ask call, the turn,
  * the name of the tool, whether the call failed, the time that the call
  * took, the size of the output in bytes, the arguments, as mcp_args_shown()
- * writes them, without the text of a note, and the text of a failure.  The
+ * writes them, without the text of a note, and the text of a failure. The
  * line never contains the output of a call that succeeds, which can be the
- * text of the upstream's notes.  A failed call is logged at the verbose
+ * text of the upstream's notes. A failed call is logged at the verbose
  * level, because a model that calls a tool with wrong arguments is not an
- * error of askai.  A call of a tool that the turns may not call is logged
- * by mcp_req_call_launch() instead.  A call that ends in another way, such
+ * error of askai. A call of a tool that the turns may not call is logged
+ * by mcp_req_call_launch() instead. A call that ends in another way, such
  * as a job that a jobs call cancels or a call that ends with its request,
  * ends in mcp_slot_drop() and has no line.
  */
@@ -5956,7 +5956,7 @@ static void
 mcp_slot_done (struct mcp_slot *slot,
                bool             failed)
 {
-	/* The words of the log line for a call of a turn and for a job.  This
+	/* The words of the log line for a call of a turn and for a job. This
 	 * function is not called for ROLE_OWN. */
 	static char const *const label[] = {
 		[ROLE_TURN] = "tool call",
@@ -6026,13 +6026,13 @@ mcp_slot_done (struct mcp_slot *slot,
 }
 
 /* Writes a notice about the context of @p req into the @p size bytes at
- * @p buf, and returns its length.  @p tokens is the number of tokens in the
- * context after the turn's results.  From two thirds of the context on, the
+ * @p buf, and returns its length. @p tokens is the number of tokens in the
+ * context after the turn's results. From two thirds of the context on, the
  * notice asks the turns to call compact, after each turn, if they have it.
  * Below two thirds,
  * if the turns have the notes tool, the notice reminds them to write notes,
  * once when the context is a quarter full and once when it is half full.
- * Otherwise there is no notice.  With --verbose, a notice is logged.
+ * Otherwise there is no notice. With --verbose, a notice is logged.
  */
 static size_t
 mcp_req_context_note (struct mcp_req *req,
@@ -6059,7 +6059,7 @@ mcp_req_context_note (struct mcp_req *req,
 	                   tokens * 100 / context, tokens, context);
 }
 
-/* Write the result of the turn's call in @p slot, the next in order.  After
+/* Write the result of the turn's call in @p slot, the next in order. After
  * the turn's last result, askai adds the notice about the context, if any,
  * and a notice that the next turn is the last one, if it is.
  */
@@ -6687,7 +6687,7 @@ mcp_req_go_on (struct mcp_req   *req,
 	mcp_req_add_start(req);
 }
 
-/* git has exited and askai has read all of its output.  The function
+/* git has exited and askai has read all of its output. The function
  * queues the step of the slot, which handles the output.
  */
 static void
@@ -6697,8 +6697,8 @@ mcp_on_notes (struct child *c)
 }
 
 /* Continues the ask call after the notes for the prompt are in the
- * request's answer.  If @p fetch has FETCH_RESUME, the call goes on with a
- * thread and builds its upstream request.  After a compaction, the function
+ * request's answer. If @p fetch has FETCH_RESUME, the call goes on with a
+ * thread and builds its upstream request. After a compaction, the function
  * adds the line that tells the upstream to go on with the task.
  */
 static void
@@ -6711,9 +6711,9 @@ mcp_req_notes_then (struct mcp_req *req,
 		mcp_req_go_on(req, TEXT("\n"));
 }
 
-/* Handles the error @p e of spawning git for slot->fetch.  A compaction
+/* Handles the error @p e of spawning git for slot->fetch. A compaction
  * goes on without the notes, and an ask call goes on without the newest
- * note.  A call of the notes tool, and an ask call that goes on with a
+ * note. A call of the notes tool, and an ask call that goes on with a
  * thread, end with the error.
  */
 static void
@@ -6787,7 +6787,7 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	char const *repo = fetch & FETCH_OTHER ? mcp_slot_notebook(slot) : req->repo;
 	enum notes_cmd cmd = mcp_fetch_cmd(fetch);
 	/* Git removes its own lock files on SIGTERM, and notes_lock() removes
-	 * one that a crash left.  The lock file of a live writer, which may be
+	 * one that a crash left. The lock file of a live writer, which may be
 	 * outside askai, stays. */
 	bool writes = mcp_notes_writes(cmd);
 	if (cmd == NOTES_ADD) {
@@ -6845,7 +6845,7 @@ mcp_notes_ok (struct child const *c)
 	return !c->cut && !c->late && c->code == CLD_EXITED && !c->status;
 }
 
-/* Returns true if git wrote a list of the notes.  A list that askai cut
+/* Returns true if git wrote a list of the notes. A list that askai cut
  * has the newest notes.
  */
 static bool
@@ -6854,7 +6854,7 @@ mcp_notes_listed (struct child const *c)
 	return c->cut || mcp_notes_ok(c);
 }
 
-/* Returns true if git exited with status 128.  It does so if the
+/* Returns true if git exited with status 128. It does so if the
  * repository or the branch of the notes does not exist.
  */
 static bool
@@ -6863,8 +6863,8 @@ mcp_notes_none (struct child const *c)
 	return !c->late && c->code == CLD_EXITED && c->status == 128;
 }
 
-/* Destroys the child of @p slot and ends the call of the notes tool.  If
- * @p e is not 0, the request fails with @p e.  Else the call ends with its
+/* Destroys the child of @p slot and ends the call of the notes tool. If
+ * @p e is not 0, the request fails with @p e. Else the call ends with its
  * answer, as a failed call if @p failed is true.
  */
 static void
@@ -6884,7 +6884,7 @@ mcp_slot_notes_end (struct mcp_slot *slot,
 	mcp_slot_respond(slot, failed);
 }
 
-/* Appends to the answer of @p slot why git read no notes.  Exit status 128
+/* Appends to the answer of @p slot why git read no notes. Exit status 128
  * means that the notebook does not exist: the other side keeps no notes in
  * the thread, or the caller has added none to it, or there is no such
  * thread.
@@ -6981,7 +6981,7 @@ mcp_slot_notes_message (struct mcp_slot const   *slot,
 	return n < 0 || n >= NOTES_MESSAGE ? 0 : (size_t)n;
 }
 
-/* Runs git to add the note whose file part is in the request's body.  The
+/* Runs git to add the note whose file part is in the request's body. The
  * new commit has the parent @p tip, or no parent if @p tip is empty. The
  * note had @p before bytes, or there was none if @p before is NO_NOTE.
  */
@@ -7036,7 +7036,7 @@ mcp_slot_notes_format (struct mcp_slot *slot)
 	mcp_slot_notes_write(slot, zero, NO_NOTE);
 }
 
-/* Handles the end of git init for an add.  The function adds the note, or
+/* Handles the end of git init for an add. The function adds the note, or
  * ends the call if git failed.
  */
 static void
@@ -7091,7 +7091,7 @@ mcp_slot_notes_unchanged (struct mcp_slot         *slot,
 	return true;
 }
 
-/* Handles the output of the check of the name of a new note.  The function
+/* Handles the output of the check of the name of a new note. The function
  * adds the note if no note and no directory of notes has the name, and if
  * no directory in the name is a note. A replace or a restore that leaves
  * the note's bytes as they are makes no commit.
@@ -7179,8 +7179,8 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 
 /* Appends the list of the notes in @p out, the output of git for
  * NOTES_LIST, to the answer of @p slot, the oldest note first, and stores
- * the name of the newest note in @p *newest.  @p cut is true if askai cut
- * the output of git, which leaves the oldest notes out.  Returns 0 or ENOMEM.
+ * the name of the newest note in @p *newest. @p cut is true if askai cut
+ * the output of git, which leaves the oldest notes out. Returns 0 or ENOMEM.
  */
 static int
 mcp_slot_notes_listed (struct mcp_slot *slot,
@@ -7330,7 +7330,7 @@ mcp_notes_text (char const *s,
 
 /* Appends the @p n bytes at @p p of a view to @p d while the @p *size bytes
  * of the view before them are fewer than @p max, and counts them in
- * @p *size.  Returns 0 or ENOMEM.
+ * @p *size. Returns 0 or ENOMEM.
  */
 static int
 mcp_notes_put (struct dstr *d,
@@ -7348,10 +7348,10 @@ mcp_notes_put (struct dstr *d,
  * UTF-8 text, or that has a NUL byte: a line that says how to read the
  * view, then the bytes as UTF-8 where they are valid UTF-8, each other byte
  * and each NUL as ⟦XX⟧, its value in hexadecimal, and each ⟦ of the text as
- * ⟦⟦.  The view tells every byte of the note, which stays as it is.  Only
+ * ⟦⟦. The view tells every byte of the note, which stays as it is. Only
  * the start of the view goes into @p d, up to the first piece that ends at
  * or past @p max bytes, and the length of the whole view goes into
- * @p *size, unless @p size is nullptr.  Returns 0 or ENOMEM.
+ * @p *size, unless @p size is nullptr. Returns 0 or ENOMEM.
  */
 static int
 mcp_notes_view (struct dstr *d,
@@ -7500,7 +7500,7 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 
 /* Adds the file whose URI is the @p len bytes at @p uri, of @p bytes bytes,
  * to the files that the turn attached, as its API's fragments have them
- * (ai_format()).  The URI is printable ASCII (ai_uploaded()).  Returns 0 or
+ * (ai_format()). The URI is printable ASCII (ai_uploaded()). Returns 0 or
  * ENOMEM.
  */
 static int
@@ -7566,7 +7566,7 @@ mcp_slot_post_file (struct mcp_slot *slot,
 
 /* Fails the attach action of @p slot, and returns EFBIG, if the context of
  * its ask call has no room for a file of @p bytes bytes, about a quarter as
- * many tokens; else returns 0.  An unknown context is not checked.
+ * many tokens; else returns 0. An unknown context is not checked.
  */
 static int
 mcp_slot_notes_fits (struct mcp_slot *slot,
@@ -7610,7 +7610,7 @@ mcp_slot_notes_attached (struct mcp_slot *slot,
 /* Attaches @p text, the note whose object id is @p id, to the turn: the
  * file that askai uploaded for the note and its owner, if it lasts, or else
  * a new upload of the note, or of its view if it is not UTF-8 text, if the
- * context has room for it.  The length of the upload, the note's and the
+ * context has room for it. The length of the upload, the note's and the
  * object id stay in req->body until the upload's answer comes.
  */
 static void
@@ -7735,8 +7735,8 @@ mcp_slot_notes_uploaded (struct mcp_slot *slot)
 }
 
 /* Appends @p head and the list of the notes in the output of git to the
- * request's answer, which askai adds to the prompt.  Then the function
- * runs git to read the newest note.  If there are no notes, the ask call
+ * request's answer, which askai adds to the prompt. Then the function
+ * runs git to read the newest note. If there are no notes, the ask call
  * continues.
  */
 static void
@@ -7779,9 +7779,9 @@ mcp_slot_notes_prompt (struct mcp_slot  *slot,
 }
 
 /* Appends the newest note, which git read for the prompt, to the request's
- * answer, or else a line with the text that the note could not be read.  A
+ * answer, or else a line with the text that the note could not be read. A
  * note longer than a tool's output in a turn (mcp_req_lend_max()) is cut
- * there, with a line that says how to read on.  Then the ask call
+ * there, with a line that says how to read on. Then the ask call
  * continues.
  */
 static void
@@ -7827,7 +7827,7 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 }
 
 /* Handles the list of the notes of the thread that the ask call goes on
- * with.  The list goes into the prompt.  If git failed, the call ends with
+ * with. The list goes into the prompt. If git failed, the call ends with
  * an error.
  */
 static void
@@ -7852,7 +7852,7 @@ mcp_slot_notes_resumed (struct mcp_slot *slot)
 	                                 "to discover the other participants:]\n\n"));
 }
 
-/* Handles the list of the notes for a compaction.  The list goes into the
+/* Handles the list of the notes for a compaction. The list goes into the
  * prompt, or else a line with the text that the notes could not be read.
  */
 static void
@@ -7984,7 +7984,7 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	name += skip;
 	name_len -= skip;
 	/* The file part of the note stays in the request's body while git
-	 * checks the name or makes the repository.  A call that ended early
+	 * checks the name or makes the repository. A call that ended early
 	 * can have left a file part there, so the body is cleared first. */
 	buf_fini(&req->body);
 	struct buf in = {};
@@ -8043,7 +8043,7 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
  * fetch of read, of attach, or of copy, after which
  * mcp_slot_notes_got_copy() adds the note byte for byte to the caller's own
  * notebook, under the name that the as argument gives, or else under the
- * same name.  The text of a copied note does not pass through the caller.
+ * same name. The text of a copied note does not pass through the caller.
  */
 static void
 mcp_slot_notes_read (struct mcp_slot    *slot,
@@ -8070,7 +8070,7 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 			return;
 		}
 		/* The name of the copy waits in the request's body while git reads
-		 * the note.  A call that ended early can have left a file part
+		 * the note. A call that ended early can have left a file part
 		 * there. */
 		buf_fini(&req->body);
 		e = mcp_piece_write(&RAW(to + to_skip, to_len - to_skip), 0, to_len - to_skip,
@@ -8263,7 +8263,7 @@ mcp_req_compact_notes (struct mcp_req *req,
 
 /* Compact the context, as the turn's compact call in @p slot asks with
  * @p args: what follows the prompt goes, and askai adds the summary and the
- * notes to it.  The turn's calls after this one do not run.
+ * notes to it. The turn's calls after this one do not run.
  */
 static void
 mcp_slot_compact (struct mcp_slot    *slot,
@@ -8508,11 +8508,11 @@ mcp_req_initialize (struct mcp_req     *req,
 	mcp_req_result(req, p, ARRAY_SIZE(p), f);
 }
 
-/* Handles the notifications/cancelled in @p req.  The notification cancels
+/* Handles the notifications/cancelled in @p req. The notification cancels
  * the calls of the same caller that have the request id in @p params, and
- * these calls can run on any loop.  roster_cancel() posts the message of
+ * these calls can run on any loop. roster_cancel() posts the message of
  * each such record to its call's loop, and mcp_on_withdraw() ends the call
- * there.  An id that no request can have names no call.  If memory runs
+ * there. An id that no request can have names no call. If memory runs
  * out, nothing is cancelled.
  */
 static void
@@ -8558,11 +8558,11 @@ mcp_req_tools_list (struct mcp_req *req)
 }
 
 /* Copy the result of the task that tasks/get shows into the reply, a slice
- * a step; then close it.  The record has the reply of the task's call:
+ * a step; then close it. The record has the reply of the task's call:
  * '"result":{...}' or '"error":{...}', and a '}' that closes the object
- * around it.  A result in the record has no modern tail.  For a modern
+ * around it. A result in the record has no modern tail. For a modern
  * reader of a result, the copy leaves out the record's last two bytes, and
- * the modern tail and a '}' follow the copy.  The reply of tasks/get ends
+ * the modern tail and a '}' follow the copy. The reply of tasks/get ends
  * with one more '}'.
  */
 static void
@@ -8666,7 +8666,7 @@ mcp_req_task_show (struct mcp_req     *req,
 
 /* tasks/get, tasks/update or tasks/cancel, of the task that @p params'
  * taskId names, which only its owner can look up; for a client that
- * takes tasks, as @p tasks says its request declares.  askai asks for no
+ * takes tasks, as @p tasks says its request declares. askai asks for no
  * input, so tasks/update has none to take.
  */
 static void
@@ -8914,7 +8914,7 @@ mcp_req_dispatch (struct mcp_req *req)
 }
 
 /* Parse as much of @p json as the step has the share for, with a tokener from
- * @p pool.  Returns EAGAIN while bytes remain.  Once the parse is over, its
+ * @p pool. Returns EAGAIN while bytes remain. Once the parse is over, its
  * value is in req->msg, and the function returns 0, or ENOMEM or EINVAL with
  * req->msg nullptr (jb_parser_step()).
  */
@@ -9203,7 +9203,7 @@ mcp_begin (struct mcp           *mcp,
 		.method = method
 	};
 	/* The client's name is in the policy, which a reload can free after
-	 * the head, so it is copied.  The log names a client on a Unix socket
+	 * the head, so it is copied. The log names a client on a Unix socket
 	 * by its uid, which is in peer[1] (src/stream.h), with the name from
 	 * the policy after it in parentheses. */
 	if (s->peer[0] != UINT64_MAX) {
@@ -9316,9 +9316,9 @@ mcp_on_cancel (struct stream *s)
 	mcp_req_abort(req, ECANCELED);
 }
 
-/* The on_policy() function of the stream application.  The loop of @p ctx,
- * a struct mcp, has replaced its policy after a reload.  The instances that
- * exist were made for users as the old policy identified them.  After
+/* The on_policy() function of the stream application. The loop of @p ctx,
+ * a struct mcp, has replaced its policy after a reload. The instances that
+ * exist were made for users as the old policy identified them. After
  * instance_table_flush(), no call of a later request gets one of them.
  */
 static void
@@ -9419,7 +9419,7 @@ mcp_create (struct loop              *loop,
 	for (uint32_t i = 0; i < st->n_plugins; ++i) {
 		struct mcp_plugin const *p = &st->plugins[i];
 		/* For a plugin without part_create(), the part is the plugin's
-		 * service.  A plugin that askai loaded from a file has neither, so
+		 * service. A plugin that askai loaded from a file has neither, so
 		 * its part is nullptr. */
 		mcp->parts[i] = p->service;
 		if (!p->part_create)
@@ -9449,10 +9449,10 @@ mcp_destroy (struct mcp **p_mcp)
 
 	/* The transport has cancelled every stream by now, but for the
 	 * stand-ins of the calls that are tasks, which end here, their tasks
-	 * failed.  The calls whose end record is still being written end here
-	 * too, as no journal callback reaches them now.  Then only requests
+	 * failed. The calls whose end record is still being written end here
+	 * too, as no journal callback reaches them now. Then only requests
 	 * still freeing their message are left, and what the parts do, such as
-	 * the man fetches.  The parts go once what they keep is given back. */
+	 * the man fetches. The parts go once what they keep is given back. */
 	while (!list_is_empty(&mcp->tasks))
 		mcp_req_abort(container_of(mcp->tasks.next, struct mcp_req, task_hook),
 		              ESHUTDOWN);
@@ -9570,10 +9570,10 @@ mcp_words (char const *const words[])
 	return arr;
 }
 
-/* Returns the definition of the ask tool.  @p service is the mcp_static,
- * which has the tool's configured name and description.  The definition has
+/* Returns the definition of the ask tool. @p service is the mcp_static,
+ * which has the tool's configured name and description. The definition has
  * the argument "thread" if the turns get the notes tool, which is the only
- * tool in st->lending.by[LEND_ALWAYS].  They get it with --notes and
+ * tool in st->lending.by[LEND_ALWAYS]. They get it with --notes and
  * --upstream-tools.
  */
 static struct json_object *
@@ -9693,7 +9693,7 @@ mcp_task_definition (void const *service)
 		nullptr);
 }
 
-/* Returns the definition of the notes tool for the side @p side.  The
+/* Returns the definition of the notes tool for the side @p side. The
  * definition for the upstream has no thread argument, because a call of a
  * turn uses the thread of its ask call, and it has the action attach if
  * the upstream takes files, which @p st says (mcp_static_uploads()).
@@ -10031,8 +10031,8 @@ mcp_timer_definition (void const *service)
 }
 
 /* Returns the definition of background as clients list it, with
- * --client-jobs.  @p service is the mcp_static, which has the name of the
- * ask tool.  Returns nullptr if out of memory.
+ * --client-jobs. @p service is the mcp_static, which has the name of the
+ * ask tool. Returns nullptr if out of memory.
  */
 static struct json_object *
 mcp_background_client_definition (void const *service)
@@ -10273,9 +10273,9 @@ struct mcp_row {
 	                                      shows of the calls */
 };
 
-/* mcp_host_plugin is the plugin of askai's own kinds.  It has no instances
- * and no part_create().  Its service is the mcp_static, and mcp_create()
- * uses the service as the plugin's part on every loop.  It is the plugin
+/* mcp_host_plugin is the plugin of askai's own kinds. It has no instances
+ * and no part_create(). Its service is the mcp_static, and mcp_create()
+ * uses the service as the plugin's part on every loop. It is the plugin
  * at index 0 of mcp_static.plugins.
  */
 static struct plugin const mcp_host_plugin = {};
@@ -10369,9 +10369,9 @@ mcp_static_build (struct mcp_static  *st,
 	return mcp_static_tails(st, info, list);
 }
 
-/* The attributes of a tool of a plugin that askai loaded from a file.  The
- * flags of its kind decide whether the turns are lent it.  The turns'
- * metrics count the calls of all such tools in one row.  The trace shows
+/* The attributes of a tool of a plugin that askai loaded from a file. The
+ * flags of its kind decide whether the turns are lent it. The turns'
+ * metrics count the calls of all such tools in one row. The trace shows
  * the arguments of its calls.
  */
 static struct mcp_row const mcp_loaded_row = { .metric = LENT_PLUGIN };
@@ -10515,7 +10515,7 @@ mcp_allowed (struct registry const *reg,
 
 /* Logs askai's own tools for the clients of @p cfg, each on or off, and for
  * a tool that is off, the option that turns it on, or "tools" if the
- * configuration file's member tools denies it to clients.  A tool without
+ * configuration file's member tools denies it to clients. A tool without
  * such an option is not logged while it is off: the kinds in KINDS_TURNS
  * and the test aid.
  */
@@ -10610,10 +10610,10 @@ mcp_lent (void const *cfg,
 }
 
 /* Returns the record of @p plugin for @p st: the plugin, its service and
- * its two part functions.  The service of askai's own kinds is @p st.  The
+ * its two part functions. The service of askai's own kinds is @p st. The
  * service of the man tool's plugin is @p manual, and the service of the git
- * tool's plugin is @p git.  Both of these have a part on every client loop.
- * A plugin that askai loaded from a file has no service and no part.  Its
+ * tool's plugin is @p git. Both of these have a part on every client loop.
+ * A plugin that askai loaded from a file has no service and no part. Its
  * record has the record of the loading from @p reg instead.
  */
 static struct mcp_plugin
@@ -10641,7 +10641,7 @@ mcp_static_plugin (struct mcp_static     *st,
  * (ai_upload_url()) and the turns keep notes: the URL of the uploads, on
  * the host of the upstream's URL, so that the key goes to no other host,
  * their header lines, the upstream's and those of its API, and the table of
- * the files.  Returns 0, ENOMEM, or the error of uploads_create().
+ * the files. Returns 0, ENOMEM, or the error of uploads_create().
  */
 static int
 mcp_static_uploads (struct mcp_static *st)

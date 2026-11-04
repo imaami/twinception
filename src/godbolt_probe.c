@@ -1,7 +1,7 @@
 /*
  * The probe of godbolt_targets and the parser of its output
- * (src/godbolt_probe.h).  This file ports src/probe.c of godbolt-c from
- * Jansson to fixed arrays.  The rules that derive the facts are the same.
+ * (src/godbolt_probe.h). This file ports src/probe.c of godbolt-c from
+ * Jansson to fixed arrays. The rules that derive the facts are the same.
  *
  * Copyright (c) 2026 godbolt-c contributors
  *
@@ -67,8 +67,8 @@ godbolt_probe_hex (char c)
 }
 
 /* Stores in @p *result the value of the integer expansion @p text of a
- * macro.  The expansion can have parentheses around the number and C
- * suffixes after it.  Returns whether @p text is such a number.
+ * macro. The expansion can have parentheses around the number and C
+ * suffixes after it. Returns whether @p text is such a number.
  */
 static bool
 godbolt_probe_number (char const *text,
@@ -166,7 +166,7 @@ godbolt_probe_add_claim (struct godbolt_probe    *p,
 }
 
 /* Records @p value for the fact @p fact, with each macro of @p names that is
- * on as evidence.  The list @p names ends with nullptr.  Returns whether a
+ * on as evidence. The list @p names ends with nullptr. Returns whether a
  * macro of @p names is on.
  */
 static bool
@@ -189,7 +189,7 @@ godbolt_probe_any (struct godbolt_probe    *p,
         godbolt_probe_any(p, GODBOLT_PROBE_##fact, value,                   \
                           (char const *const[]){ __VA_ARGS__, nullptr })
 
-/* Derives the architecture.  The function checks the macros of a wider
+/* Derives the architecture. The function checks the macros of a wider
  * variant of an instruction set before the macros of its family.
  */
 static void
@@ -253,7 +253,7 @@ godbolt_probe_os (struct godbolt_probe *p,
 	godbolt_probe_add_claim(p, GODBOLT_PROBE_OS_FAMILY, family, name);
 }
 
-/* Derives the operating system of an Apple target.  TARGET_OS_IPHONE is
+/* Derives the operating system of an Apple target. TARGET_OS_IPHONE is
  * also on for several more specific platforms, so it counts only if none
  * of them is on.
  */
@@ -334,7 +334,7 @@ godbolt_probe_system (struct godbolt_probe *p)
 }
 
 /* Records the width @p bits of a pointer, with the macro @p name as
- * evidence.  The function ignores a width out of range, and a second width
+ * evidence. The function ignores a width out of range, and a second width
  * that differs is a conflict.
  */
 static void
@@ -389,7 +389,7 @@ godbolt_probe_sizes (struct godbolt_probe *p,
 }
 
 /* Checks the data model against the width of a pointer and the sizes of
- * int and long.  A difference is a conflict of the data model.
+ * int and long. A difference is a conflict of the data model.
  */
 static void
 godbolt_probe_check_model (struct godbolt_probe *p,
@@ -451,7 +451,7 @@ godbolt_probe_layout (struct godbolt_probe *p)
 	godbolt_probe_check_model(p, byte);
 }
 
-/* Derives the byte order.  Only macros that define the byte order count. */
+/* Derives the byte order. Only macros that define the byte order count. */
 static void
 godbolt_probe_endianness (struct godbolt_probe *p)
 {
@@ -478,7 +478,7 @@ godbolt_probe_endianness (struct godbolt_probe *p)
 	                  "__MIPSEB__");
 }
 
-/* Derives the C library.  Only libraries that define a macro of their own
+/* Derives the C library. Only libraries that define a macro of their own
  * count.
  */
 static void
@@ -503,7 +503,7 @@ godbolt_probe_skip (char const **c,
 }
 
 /* Decodes the hexadecimal digits of a universal character name at *@p c
- * into UTF-8 at *@p out, and advances both.  @p digits is 4 or 8.  Returns
+ * into UTF-8 at *@p out, and advances both. @p digits is 4 or 8. Returns
  * 0, or EPROTO if the digits are missing or name no character.
  */
 static int
@@ -532,7 +532,7 @@ godbolt_probe_ucn (char const **c,
 }
 
 /* Decodes the escape sequence at *@p c, after its backslash, into *@p out,
- * and advances both.  Returns 0, or EPROTO if the sequence is not valid or
+ * and advances both. Returns 0, or EPROTO if the sequence is not valid or
  * decodes to a NUL byte.
  */
 static int
@@ -571,7 +571,7 @@ godbolt_probe_escape (char const **c,
 }
 
 /* Decodes the C string literal at *@p c, after its opening quote, into
- * *@p out, and advances both past it.  Returns 0, or EPROTO if the literal
+ * *@p out, and advances both past it. Returns 0, or EPROTO if the literal
  * has no closing quote, a NUL byte or an escape sequence that is not
  * valid.
  */
@@ -598,7 +598,7 @@ godbolt_probe_string (char const **c,
 }
 
 /* Decodes one or more adjacent C string literals at *@p c into *@p out, with
- * a NUL after them, and advances both.  Returns the decoded text, or
+ * a NUL after them, and advances both. Returns the decoded text, or
  * nullptr if *@p c is not at such literals.
  */
 static char const *
@@ -689,9 +689,9 @@ godbolt_probe_begins (char const *line,
 #define GODBOLT_PROBE_BEGINS(word) godbolt_probe_begins(line, n, word, sizeof word - 1)
 
 /* Parses the line of @p n bytes at @p line, without white space at its
- * ends.  *@p state is 0 before the block, 1 in it and 2 after it.  The line
+ * ends. *@p state is 0 before the block, 1 in it and 2 after it. The line
  * GBPROBE_BEGIN_1 is valid only before the block, and every other line of
- * the block only in it.  Returns 0, or an error number with the reason in
+ * the block only in it. Returns 0, or an error number with the reason in
  * p->why.
  */
 static int
@@ -732,7 +732,7 @@ godbolt_probe_line (struct godbolt_probe  *p,
 #undef GODBOLT_PROBE_BEGINS
 #undef GODBOLT_PROBE_IS
 
-/* Parses the @p len bytes at @p text line by line.  Returns 0, or an error
+/* Parses the @p len bytes at @p text line by line. Returns 0, or an error
  * number with the reason in p->why.
  */
 static int

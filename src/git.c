@@ -439,8 +439,8 @@ git_strings (char const *description,
 		nullptr);
 }
 
-/* Returns the definition of the git tool.  @p service is the struct git,
- * and the definition lists the names of its repositories.  Returns nullptr
+/* Returns the definition of the git tool. @p service is the struct git,
+ * and the definition lists the names of its repositories. Returns nullptr
  * if out of memory.
  */
 static struct json_object *
@@ -1227,7 +1227,7 @@ git_line_hint (char const *path)
 
 /* @p call's git has ended, its output all taken: let go
  * of it; after the output, a blank line between, say how git ended if it
- * failed, that the output was cut, or that there was none; then finish.  An
+ * failed, that the output was cut, or that there was none; then finish. An
  * exit status of 1 from grep means it found no matches.
  */
 static void
@@ -1743,7 +1743,7 @@ git_start (struct mcp_slot    *slot,
 	mcp_slot_park(slot);
 }
 
-/* Creates the git tool's part of @p loop for @p service, a struct git.  The
+/* Creates the git tool's part of @p loop for @p service, a struct git. The
  * part has the list of the children that the git calls on the loop run.
  * Returns the part, or nullptr with ENOMEM in @p *e.
  */

@@ -8,7 +8,7 @@
 /** @name Pragmas
  *
  * pragma_gcc(x) is _Pragma("GCC x") with gcc and pragma_clang(x) is
- * _Pragma("clang x") with clang.  Each is empty with another compiler.
+ * _Pragma("clang x") with clang. Each is empty with another compiler.
  * diag_gcc(x) and diag_clang(x) are the same for "diagnostic x", and
  * diag(x) is both, for a warning that both compilers have.
  *

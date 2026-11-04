@@ -14,7 +14,7 @@
 #define JB_WIRE (JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE)
 
 /**
- * Object from key, value pairs ending with a nullptr key.  The values are
+ * Object from key, value pairs ending with a nullptr key. The values are
  * consumed; a nullptr value (a failed allocation) fails the whole object.
  */
 extern struct json_object *
@@ -67,7 +67,7 @@ jb_is (struct json_object *val,
        char const         *str);
 
 /**
- * Parse exactly one JSON value spanning @p len bytes; nullptr on error.  At
+ * Parse exactly one JSON value spanning @p len bytes; nullptr on error. At
  * most @p depth containers may be open at once; 0 leaves json-c's default.
  */
 extern struct json_object *
@@ -95,11 +95,11 @@ struct jb_scan {
 
 /**
  * Scan up to @p len more bytes of a JSON text, which may arrive in any pieces,
- * for what parsing it would cost.  Stops before a byte that would open more
+ * for what parsing it would cost. Stops before a byte that would open more
  * than @p depth containers at once, begin more than @p values values, give an
  * object more than @p members members, or take a number or literal past
  * @p scalar bytes (UINT32_MAX: no limit), and returns how many bytes it
- * scanned: @p len unless it stopped.  It does not validate.
+ * scanned: @p len unless it stopped. It does not validate.
  */
 extern size_t
 jb_scan (struct jb_scan *scan,
@@ -130,7 +130,7 @@ struct jb_reaper {
 
 /**
  * Hand @p val to @p reaper to free; nothing else may hold a container within
- * it.  Should memory run out, it is freed at once.
+ * it. Should memory run out, it is freed at once.
  */
 extern void
 jb_reaper_take (struct jb_reaper   *reaper,
@@ -146,7 +146,7 @@ extern void
 jb_reaper_fini (struct jb_reaper *reaper);
 
 /**
- * Tokeners to reuse, all with the same limits; zeroed but for those.  A
+ * Tokeners to reuse, all with the same limits; zeroed but for those. A
  * tokener keeps the buffer of the longest string it has parsed, which
  * jb_pool_release() frees.
  */
@@ -168,7 +168,7 @@ extern size_t
 jb_pool_release (struct jb_pool *pool,
                  size_t          keep);
 
-/** @p val as an integer if it is a JSON integer, else @p otherwise.  json-c
+/** @p val as an integer if it is a JSON integer, else @p otherwise. json-c
  *  parses NaN too, which json_object_get_int64() and the like cannot convert
  *  to an integer without undefined behavior.
  */
@@ -207,9 +207,9 @@ struct jb_parser {
 /**
  * Parse the next slice of the @p len bytes at @p data, as jb_parse() would,
  * with a tokener from @p pool and within its limits: at most @p bytes bytes,
- * 4 at least, and @p values values.  Returns EAGAIN while bytes remain to be
- * parsed.  Once the parse is over, returns 0, and jb_parser_take() gives the
- * value, or the error that parser->error also keeps.  A slice never ends
+ * 4 at least, and @p values values. Returns EAGAIN while bytes remain to be
+ * parsed. Once the parse is over, returns 0, and jb_parser_take() gives the
+ * value, or the error that parser->error also keeps. A slice never ends
  * within a character, whose bytes it leaves to the next.
  */
 extern int

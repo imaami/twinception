@@ -58,7 +58,7 @@ static int top_pad = 128 << 10;
 static _Atomic(void *) tops;
 
 /* Free @p block under a low threshold and pad (glibc), which gives back the
- * top of the arena it came from, as only such a free does.  The settings are
+ * top of the arena it came from, as only such a free does. The settings are
  * the process's, lowered for this free alone, and only one thread at a time
  * does it (brainstem_relieved()).
  */
@@ -128,7 +128,7 @@ static struct {
  * a blocker reads the command line, the file and the TLS certificate and key
  * again, then home hands the client loops the new policy (src/policy.h),
  * and its door the new TLS context; the other options take a restart, which
- * askai says.  One at a time, a SIGHUP meanwhile having another follow.
+ * askai says. One at a time, a SIGHUP meanwhile having another follow.
  */
 struct askai_reload {
 	struct blocker_job job;
@@ -237,7 +237,7 @@ askai_keep_relieved (struct askai_keep *keep,
  * storage, as much of each a step as its share of release work allows and
  * as much in all as the level says; then leave a block for the trim, which
  * the last loop of all to end its share runs, in a step of its own, as that
- * one call cannot be split.  The share ends early if the pressure clears.
+ * one call cannot be split. The share ends early if the pressure clears.
  */
 static void
 askai_keep_relief (struct loop      *loop,
@@ -325,7 +325,7 @@ askai_keep_walk (struct askai_keep *keep,
 
 /* The last loop of a relief trims the allocator for every loop: a bulk step
  * for each loop's block, which gives back that arena's top, then the walk of
- * them all on a blocker, or here if none takes it.  The pressure cleared,
+ * them all on a blocker, or here if none takes it. The pressure cleared,
  * the blocks are only freed.
  */
 static void
@@ -520,7 +520,7 @@ askai_home_reload (void        *ctx,
 }
 
 /* Hand the client loops the reloaded policy, and the door its TLS context,
- * unless the configuration is wrong, as the log says then.  A context made
+ * unless the configuration is wrong, as the log says then. A context made
  * only as the file now names a TLS listener serves none until a restart.
  */
 static void
@@ -651,14 +651,14 @@ askai_client_stop (void        *ctx,
 }
 
 /* Keep what is freed for reuse, and give memory back to the system only
- * under memory pressure (design section 5).  glibc would otherwise map and
+ * under memory pressure (design section 5). glibc would otherwise map and
  * unmap each block over 128 KiB of its own, give back the top of a heap as
  * it is freed and a thread's heap once all of it is, and grow a thread's
- * heap a page and an mprotect() at a time.  Blocks of up to 32 MiB, the most
- * the threshold takes and the largest stash class, come from the heaps.  A
+ * heap a page and an mprotect() at a time. Blocks of up to 32 MiB, the most
+ * the threshold takes and the largest stash class, come from the heaps. A
  * top pad as large as a heap keeps a thread's heaps, and makes each writable
  * whole as glibc creates it; as that counts against RLIMIT_DATA, RLIMIT_AS
- * and a strict commit limit, under any of those the pad stays glibc's.  Only
+ * and a strict commit limit, under any of those the pad stays glibc's. Only
  * descriptors limit the connections: take all the hard limit allows.
  */
 static void
@@ -751,7 +751,7 @@ askai_separate_repos (char const *notes,
 
 /* What every loop shares, for @p n client loops, made before any starts:
  * the immutable, and what home's door shares with the client loops'
- * servers.  On an error, stderr says what.
+ * servers. On an error, stderr says what.
  */
 static int
 askai_shared_init (struct askai_shared *s,
@@ -788,9 +788,9 @@ askai_shared_init (struct askai_shared *s,
 	}
 	/* journal_key() copies the key that journal_create() read from
 	 * askai-journal/principal.key, so the principals stay the same across
-	 * restarts.  Notes always come with a journal.  Without a journal,
+	 * restarts. Notes always come with a journal. Without a journal,
 	 * askai stores nothing that outlives the process, and random bytes
-	 * are enough for the key.  No other reference to the policy exists
+	 * are enough for the key. No other reference to the policy exists
 	 * yet, which policy_key() requires. */
 	unsigned char *key = s->home.key;
 	e = s->journal ? journal_key(s->journal, key) : util_random(key, sizeof s->home.key);
@@ -859,7 +859,7 @@ askai_tasks_report (struct task_pool const *tasks,
 }
 
 /* Run the loops on @p s, as @p cfg says, until shut down; returns the exit
- * status.  Each loop sets its metrics as it starts, and home opens its door
+ * status. Each loop sets its metrics as it starts, and home opens its door
  * only once all have, so that no request renders them before.
  */
 static int
@@ -923,7 +923,7 @@ askai_run (struct askai_shared *s,
 	return status;
 }
 
-/* Serve until shut down, as @p cfg says; returns the exit status.  What the
+/* Serve until shut down, as @p cfg says; returns the exit status. What the
  * loops share is static: a blocker still busy at shutdown is left to the
  * process's exit, as is what it writes to.
  */
@@ -932,7 +932,7 @@ askai_serve (struct config const *cfg)
 {
 	static struct askai_shared s;
 	/* A process can start askai with SIGCHLD ignored, and exec does not
-	 * reset that.  With SIGCHLD ignored, the kernel reaps each child at its
+	 * reset that. With SIGCHLD ignored, the kernel reaps each child at its
 	 * exit, and then waitid() and waitpid() in child.c fail. */
 	signal(SIGCHLD, SIG_DFL);
 	askai_tune();
@@ -946,10 +946,10 @@ main (int   argc,
       char *argv[])
 {
 	/* askai reads tokens, API keys and the TLS key from its environment
-	 * and from files.  A process that is not dumpable writes no core dump,
+	 * and from files. A process that is not dumpable writes no core dump,
 	 * and other processes of the same user cannot read its memory or its
-	 * environment in /proc or attach to it with ptrace.  Set this before
-	 * any secret is read.  A child becomes dumpable again when it calls
+	 * environment in /proc or attach to it with ptrace. Set this before
+	 * any secret is read. A child becomes dumpable again when it calls
 	 * execve(). */
 	if (prctl(PR_SET_DUMPABLE, 0UL, 0UL, 0UL, 0UL)) {
 		LOG(LOG_ERROR, "cannot make the process non-dumpable: %s", strerror(errno));

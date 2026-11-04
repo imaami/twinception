@@ -85,7 +85,7 @@ enum notes_kind {
 };
 
 /* Makes the directory @p path if it does not exist, and stores its real
- * path in notes->dir.  Returns 0, or the error number with a message in
+ * path in notes->dir. Returns 0, or the error number with a message in
  * @p why, of @p len bytes.
  */
 static int
@@ -624,8 +624,8 @@ notes_revision_tip (struct notes_revision const *revision)
 
 /* Returns true if the part of a name of @p n bytes at @p part is a name
  * that NTFS would read as .git: ".git" or "git~1" in any case, followed
- * only by spaces and dots up to the end, a backslash or a colon.  The check
- * looks at the part and at each piece of it after a backslash.  git refuses
+ * only by spaces and dots up to the end, a backslash or a colon. The check
+ * looks at the part and at each piece of it after a backslash. git refuses
  * such names on every system (core.protectNTFS), so askai refuses them
  * before git runs.
  */
@@ -772,7 +772,7 @@ notes_number (char const *s,
 
 /* Returns the kind of the object of the line of @p len bytes at @p line,
  * without its newline, in the output of git cat-file: "OID TYPE SIZE", or
- * "NAME missing".  Stores the length of OID in @p *oid.
+ * "NAME missing". Stores the length of OID in @p *oid.
  */
 static enum notes_kind
 notes_kind (char const *line,
@@ -1051,7 +1051,7 @@ notes_read_decode (struct span  out,
 		return EISDIR;
 	if (kind != KIND_BLOB || !util_is_oid(line, oid))
 		return EIO;
-	/* The size of the text is the last word of the line.  The loop stops
+	/* The size of the text is the last word of the line. The loop stops
 	 * growing the size once it is past NOTES_MAX, and the end of the output
 	 * limits the text. */
 	uint64_t size = 0;

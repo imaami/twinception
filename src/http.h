@@ -50,7 +50,7 @@ http_destroy (struct http **p_http);
  * Look up upstream host names on @p blockers rather than in libcurl, which
  * then starts no resolver thread: a request to a host by name waits for the
  * addresses, which are kept for a minute and handed to libcurl through
- * CURLOPT_RESOLVE.  A proxy that libcurl takes from the environment it still
+ * CURLOPT_RESOLVE. A proxy that libcurl takes from the environment it still
  * looks up itself.
  */
 extern void
@@ -59,10 +59,10 @@ http_resolver (struct http    *http,
 
 /**
  * Start an asynchronous POST of the @p len bytes at @p body, on a later
- * step, or a GET if @p body is nullptr.  @p headers is an optional
+ * step, or a GET if @p body is nullptr. @p headers is an optional
  * nullptr-terminated list of complete header lines; a POST has the
  * Content-Type application/json unless one of them is a Content-Type.
- * @p timeout_ms <= 0 means no total timeout.  The headers are copied, and
+ * @p timeout_ms <= 0 means no total timeout. The headers are copied, and
  * so is the body if @p copy; otherwise it must stay as it is until
  * @p done_cb runs or the request is cancelled.
  */
@@ -81,8 +81,8 @@ http_post_json (struct http          *http,
 
 /** Sends the header Accept-Encoding with every encoding that libcurl can
  *  decode, and decodes the answer to @p request before the write callback
- *  gets it.  Call it before the step that starts the request, so right
- *  after http_post_json().  Returns 0, EFAULT if @p request is nullptr, or
+ *  gets it. Call it before the step that starts the request, so right
+ *  after http_post_json(). Returns 0, EFAULT if @p request is nullptr, or
  *  EIO if libcurl refuses the option.
  */
 extern int
@@ -118,7 +118,7 @@ extern long
 http_retry_after (struct http const *http);
 
 /** Returns the Content-Type of the answer, or nullptr if the answer has
- *  none.  Only a done callback calls it, and the text stays valid until the
+ *  none. Only a done callback calls it, and the text stays valid until the
  *  callback returns.
  */
 extern char const *
@@ -142,7 +142,7 @@ http_end (struct http          *http,
 /**
  * Let @p request go on after its write callback returned
  * CURL_WRITEFUNC_PAUSE: the callback may take what curl held back before
- * this returns, and hold it back again.  An error leaves the request to the
+ * this returns, and hold it back again. An error leaves the request to the
  * caller to end, as with http_end().
  */
 extern CURLcode

@@ -10,13 +10,13 @@
  * the event loops' threads, home, the sidekick that runs the jobs and accepts
  * the clients, and then the client loops, each of which reports back within a
  * time limit, and once all run has home open its door; watches their turns
- * and the process's resources; and shuts down.  It never takes a lock a loop
+ * and the process's resources; and shuts down. It never takes a lock a loop
  * holds nor waits for a loop, so it stays responsive when everything else is
  * stuck.
  *
  * Memory pressure (design section 5) is a level, enum buf_pressure, that the
  * brainstem works out each second from its inputs, each with hysteresis, and
- * publishes in buf_pressure.  When it rises, and every 10 s while it
+ * publishes in buf_pressure. When it rises, and every 10 s while it
  * lasts, the brainstem has every loop relieve it; each gives back what it
  * keeps, the last of them trims the allocator once for all, and the brainstem
  * itself frees nothing of theirs.
@@ -24,10 +24,10 @@
  * Shutdown: the first SIGINT, SIGTERM or SIGHUP has the loops drain within
  * the grace period, as does a loop that exits on its own or fails to start.
  * Once the client loops have exited, home is told it is alone, and exits once
- * its jobs have ended.  A second signal, the grace period running out, or a
+ * its jobs have ended. A second signal, the grace period running out, or a
  * loop stuck in one turn while it should drain, ends the process at once,
  * after the logger has had a moment to write what it holds, with
- * BRAINSTEM_FORCED.  Of those signals, any the process started with ignored,
+ * BRAINSTEM_FORCED. Of those signals, any the process started with ignored,
  * as under nohup, stays ignored.
  */
 #ifndef TWINCEPTION_SRC_BRAINSTEM_H_
@@ -152,7 +152,7 @@ brainstem_cpus (void);
  * On a loop, as it ends the relief of memory pressure it was ordered, having
  * given back @p bytes of buffers: true for the last of the loops ordered,
  * which then trims the allocator, once for all, and calls
- * brainstem_trimmed().  A relief begins only once the last has ended, so one
+ * brainstem_trimmed(). A relief begins only once the last has ended, so one
  * trim at most is under way, and nobody waits for it.
  */
 extern bool

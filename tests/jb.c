@@ -35,7 +35,7 @@ __wrap_json_tokener_new_ex (int depth)
 }
 
 /* The result of parsing @p text with jb_parser_step(), @p bytes at most a
- * step.  @p steps gets the number of steps.
+ * step. @p steps gets the number of steps.
  */
 static int
 parse (char const *text,

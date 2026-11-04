@@ -21,13 +21,13 @@
 
 enum { DIGEST = SHA256_DIGEST_LENGTH };
 
-/* The bit of a principal that marks an identity.  A Unix user's principal
+/* The bit of a principal that marks an identity. A Unix user's principal
  * has it clear, and no principal has bit 63 set, so the principals of the
  * two kinds differ, and none has the bit LEDGER_ANONYMOUS (src/ledger.h).
  */
 static constexpr uint64_t POLICY_IDENTITY = UINT64_C(1) << 62;
 
-/* The members of "anonymous", by the kind of client.  TOOL_TEXT() is a
+/* The members of "anonymous", by the kind of client. TOOL_TEXT() is a
  * compound literal, which a static initializer may not have.
  */
 #define KIND(s) { "" s, sizeof s - 1 }
@@ -109,7 +109,7 @@ struct policy {
 	                                                  askai's own policy */
 	unsigned char        key[POLICY_KEY];          /* The key that the
 	                                                  principals are
-	                                                  computed with.  It is
+	                                                  computed with. It is
 	                                                  all zero until
 	                                                  policy_key() sets
 	                                                  it. */
@@ -124,12 +124,12 @@ struct policy {
 	                                                  the overflow uid and
 	                                                  gid from being read,
 	                                                  or 0 for an id that
-	                                                  was read.  An id that
+	                                                  was read. An id that
 	                                                  was not read is
 	                                                  65534. */
 	uint64_t             unix_token;               /* Nonzero if a client
 	                                                  on a Unix socket may
-	                                                  send ASKAI_TOKEN.  It
+	                                                  send ASKAI_TOKEN. It
 	                                                  is a bool, widened to
 	                                                  fill the padding at
 	                                                  the end of the
@@ -191,7 +191,7 @@ policy_name_len (char const *name)
 }
 
 /* Compute in @p *principal the principal of the anchor @p text of @p len
- * bytes, "uid:N" or "identity:NAME", with the key of @p policy.  It is the
+ * bytes, "uid:N" or "identity:NAME", with the key of @p policy. It is the
  * first 8 bytes of HMAC-SHA-256 as a big-endian number, with bits 63 and 62
  * cleared and @p tag added, and 1 in place of 0, which means anonymous.
  * Returns 0, or EIO if HMAC() fails.
@@ -217,7 +217,7 @@ policy_principal_of (struct policy const *policy,
 }
 
 /* Compute in @p *principal the principal of the identity that @p who,
- * "identity NAME", names, with the key of @p policy.  Returns 0, EINVAL if
+ * "identity NAME", names, with the key of @p policy. Returns 0, EINVAL if
  * @p who has another form, or EIO if HMAC() fails.
  */
 static int
@@ -237,7 +237,7 @@ policy_principal_identity (struct policy const *policy,
 }
 
 /* Compute the principal of each token of @p policy from the name of its
- * identity, with the key of @p policy.  Returns 0, or the error of
+ * identity, with the key of @p policy. Returns 0, or the error of
  * policy_principal_identity().
  */
 static int
@@ -339,9 +339,9 @@ policy_number (char const *name,
 }
 
 /* Read the number at @p s, a field of /etc/subuid or /etc/subgid, into
- * @p *n.  newuidmap and newgidmap read the fields with strtoul() and base
+ * @p *n. newuidmap and newgidmap read the fields with strtoul() and base
  * 0, so this function reads them with strtoull() and base 0 too: decimal,
- * hexadecimal after "0x", or octal after "0".  Returns the end of the
+ * hexadecimal after "0x", or octal after "0". Returns the end of the
  * number, or nullptr if there is no number, if it has a minus sign, or if
  * it does not fit in 64 bits.
  */
@@ -360,11 +360,11 @@ policy_range_number (char const *s,
 }
 
 /* Parse @p line of /etc/subuid or /etc/subgid, "OWNER:START:COUNT", into
- * @p *r.  A range that would end above UINT32_MAX ends at UINT32_MAX,
- * because some versions of newuidmap accept a COUNT that large.  Returns
+ * @p *r. A range that would end above UINT32_MAX ends at UINT32_MAX,
+ * because some versions of newuidmap accept a COUNT that large. Returns
  * false for a line without that form, with a START above UINT32_MAX, or
- * with a COUNT of 0.  The parser accepts text after COUNT, which newuidmap
- * refuses.  For such a line askai refuses uids that newuidmap does not
+ * with a COUNT of 0. The parser accepts text after COUNT, which newuidmap
+ * refuses. For such a line askai refuses uids that newuidmap does not
  * map, so askai can refuse more clients than needed, but never fewer.
  */
 static bool
@@ -377,7 +377,7 @@ policy_range_parse (char const          *line,
 	if (!s || !(s = policy_range_number(s + 1, &start)) || *s != ':' ||
 	    !policy_range_number(s + 1, &count) || !count || start > UINT32_MAX)
 		return false;
-	/* The number of ids above START, up to UINT32_MAX.  Neither this
+	/* The number of ids above START, up to UINT32_MAX. Neither this
 	 * subtraction nor the addition below can wrap around. */
 	uint64_t room = UINT32_MAX - start;
 	*r = (struct policy_range){
@@ -388,7 +388,7 @@ policy_range_parse (char const          *line,
 }
 
 /* Write to b->why that the file @p path cannot be read because of @p e,
- * unless @p e is ENOMEM.  Returns @p e.
+ * unless @p e is ENOMEM. Returns @p e.
  */
 static int
 policy_build_unreadable (struct policy_build *b,
@@ -402,8 +402,8 @@ policy_build_unreadable (struct policy_build *b,
 
 /* Read the ranges of subordinate ids in @p path, /etc/subuid or
  * /etc/subgid, into @p *p_ranges and @p *p_n, sorted by their first id and
- * merged where they overlap or touch.  Lines that policy_range_parse()
- * refuses are skipped.  A missing file has no ranges.  Returns 0, ENOMEM,
+ * merged where they overlap or touch. Lines that policy_range_parse()
+ * refuses are skipped. A missing file has no ranges. Returns 0, ENOMEM,
  * or the error that kept the file from being read, with the reason in
  * b->why.
  */
@@ -483,8 +483,8 @@ policy_ranges_have (struct policy_range const *ranges,
 }
 
 /* Read the decimal id in @p path, /proc/sys/kernel/overflowuid or
- * overflowgid, into @p *id.  If the file cannot be read, @p *id is 65534,
- * the kernel's default.  Returns 0, or the error that kept the file from
+ * overflowgid, into @p *id. If the file cannot be read, @p *id is 65534,
+ * the kernel's default. Returns 0, or the error that kept the file from
  * being read, EILSEQ if it holds no id.
  */
 static int
@@ -504,17 +504,17 @@ policy_read_overflow (char const *path,
 	return policy_number(text, id) ? 0 : EILSEQ;
 }
 
-/* Bytes of the buffer for one group entry from NSS, at most.  A group
+/* Bytes of the buffer for one group entry from NSS, at most. A group
  * entry lists the names of its members, so the entry of a large directory
  * group can take megabytes.
  */
 static constexpr size_t POLICY_ENTRY_MAX = 64 << 20;
 
 /* Look up the Unix group @p name of unix-groups, a gid in decimal or a
- * group name that NSS resolves, and store its gid in @p *gid.  The lookup
+ * group name that NSS resolves, and store its gid in @p *gid. The lookup
  * buffer starts at 1 KiB and doubles while getgrnam_r() reports ERANGE, up
- * to POLICY_ENTRY_MAX bytes.  The message says "no group" only if the
- * lookup succeeded and found no such group.  Returns 0, ENOMEM, or EINVAL
+ * to POLICY_ENTRY_MAX bytes. The message says "no group" only if the
+ * lookup succeeded and found no such group. Returns 0, ENOMEM, or EINVAL
  * with the reason in b->why.
  */
 static int
@@ -613,8 +613,8 @@ policy_build_all (struct policy_build const *b)
 }
 
 /* Write the reason why role @p name may not name @p v: askai offers no such
- * tool, or with @p up lends no such tool to the upstream.  The reason lists
- * the tools that askai offers or lends.  Returns EINVAL.
+ * tool, or with @p up lends no such tool to the upstream. The reason lists
+ * the tools that askai offers or lends. Returns EINVAL.
  */
 static int
 policy_build_no_tool (struct policy_build *b,
@@ -635,8 +635,8 @@ policy_build_no_tool (struct policy_build *b,
 	                         names);
 }
 
-/* Reads the list of tool names @p list of role @p name into @p r.  @p key
- * is the name of the list's member, "tools" or "upstream".  The member
+/* Reads the list of tool names @p list of role @p name into @p r. @p key
+ * is the name of the list's member, "tools" or "upstream". The member
  * "upstream" may name only the tools that askai can offer to the upstream.
  */
 static int
@@ -896,8 +896,8 @@ policy_build_file (struct policy_build *b,
 	return policy_build_anonymous(b, anonymous);
 }
 
-/* Build askai's own policy.  With ASKAI_TOKEN, @p token, every client must
- * send the token, also on a Unix socket, and may do everything.  Without
+/* Build askai's own policy. With ASKAI_TOKEN, @p token, every client must
+ * send the token, also on a Unix socket, and may do everything. Without
  * it, clients on loopback and on a Unix socket may do everything, and other
  * clients may call the tools.
  */
@@ -1041,7 +1041,7 @@ policy_create (struct json_object *file,
 	free(b.subgids);
 	b.subgids = nullptr;
 	/* The tokens get the principals of a key of zero bytes, until
-	 * policy_key() sets the real key.  A failure is reported as EIO, so
+	 * policy_key() sets the real key. A failure is reported as EIO, so
 	 * that EINVAL always means that the file is wrong. */
 	if (!*e && policy_principals(p)) {
 		*e = EIO;
@@ -1051,7 +1051,7 @@ policy_create (struct json_object *file,
 		policy_put(p);
 		return nullptr;
 	}
-	/* Clients get only the allowed tools.  A role without the member
+	/* Clients get only the allowed tools. A role without the member
 	 * "upstream" lends the upstream its tools as the file lists them. */
 	p->allowed = allowed;
 	for (size_t i = 0; i < n_roles; ++i)
@@ -1185,7 +1185,7 @@ policy_log_groups (struct policy const *policy,
 
 /* Log askai's own policy @p policy, and if @p lent is not nullptr, the
  * tools of the names @p tools of @p n_tools that the upstream may call,
- * which @p lent returns with @p ctx.  The keys are padded to the width of
+ * which @p lent returns with @p ctx. The keys are padded to the width of
  * the longest.
  */
 static void
@@ -1212,7 +1212,7 @@ policy_log_own (struct policy const *policy,
 }
 
 /* Write the label of the uids of @p r into the @p size bytes at @p buf:
- * "uid N" for one uid, else "uids FIRST-LAST".  Returns its length.
+ * "uid N" for one uid, else "uids FIRST-LAST". Returns its length.
  */
 static size_t
 policy_range_label (char                *buf,
@@ -1226,7 +1226,7 @@ policy_range_label (char                *buf,
 
 /* Log the uids of the clients on a Unix socket that policy_admit_uid()
  * refuses, each with the reason, after a warning for each overflow id that
- * could not be read.  The first column is as wide as the longest label.
+ * could not be read. The first column is as wide as the longest label.
  */
 static void
 policy_log_peers (struct policy const *policy)

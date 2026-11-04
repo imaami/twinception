@@ -4,19 +4,19 @@
  * (design section 4).
  *
  * A job is shared by the loop that asks for it, its front, and home, which
- * runs it: the one mutable object two threads share (R4).  Each field has one
+ * runs it: the one mutable object two threads share (R4). Each field has one
  * writer, named beside it, and each direction has a message embedded in the
- * job with a word of pending bits.  A poster sets its bit with fetch_or(),
+ * job with a word of pending bits. A poster sets its bit with fetch_or(),
  * and only if the word was 0 takes a reference and posts the message; the
- * handler exchanges the word to 0 and acts on every bit it took.  So a burst
- * is one message, and posting never fails.  The references count the front,
+ * handler exchanges the word to 0 and acts on every bit it took. So a burst
+ * is one message, and posting never fails. The references count the front,
  * home and each message queued.
  *
- * The front writes the request and posts SUBMIT.  Home admits the job, or
+ * The front writes the request and posts SUBMIT. Home admits the job, or
  * ends it at once (BUSY when too many are in flight or queued for its
  * principal), queues it for an upstream slot, runs it until its deadline at
  * most, writes the result and its status, and posts DONE: every job ends in
- * exactly one completion.  Meanwhile home publishes the job's progress, its
+ * exactly one completion. Meanwhile home publishes the job's progress, its
  * place in its principal's queue and then the tokens of its answer, thinking
  * or text, and posts PROGRESS for a front that asked for it, a burst being
  * one message. With JOB_STREAM, home publishes one immutable event mailbox
@@ -25,21 +25,21 @@
  * any archive callbacks, which hold their own references until they return.
  * The front posts CANCEL exactly once: before DONE it cancels the job, which
  * home then stops and ends as CANCELLED, and after DONE it lets go of the
- * job, having read the result.  Home keeps its reference until then, and
+ * job, having read the result. Home keeps its reference until then, and
  * gives the result's storage back to its own stash, so that each buffer's
- * storage is taken and given back by one thread.  Whoever drops the last
+ * storage is taken and given back by one thread. Whoever drops the last
  * reference returns the job to its front, which keeps it for reuse: home does
  * so through the front's inbox (RETURN).
  *
  * The front names the call that waits for the job by a handle (loop.h), which
  * it frees as it cancels: a completion that finds the handle stale is dropped.
  *
- * A job also carries its principal.  The principal is the client's
+ * A job also carries its principal. The principal is the client's
  * identity, else the call's session, which is the job's key, else the
- * client's address.  The front computes the principal's hash, so that the
+ * client's address. The front computes the principal's hash, so that the
  * time that home takes for a message does not depend on the length of the
- * key.  A notifications/cancelled reaches a call through the roster
- * (src/roster.h), not through home.  The call's front then cancels the
+ * key. A notifications/cancelled reaches a call through the roster
+ * (src/roster.h), not through home. The call's front then cancels the
  * call's job with CANCEL.
  */
 #ifndef TWINCEPTION_SRC_JOB_H_
@@ -98,8 +98,8 @@ enum job_ask {
 	JOB_STREAM     = 1 << 4,  /**< publish text and thinking through the mailbox */
 };
 
-/** The header of a tool call in a streamed answer.  Each call is stored in
- *  its own buffer of job->calls.  The buffer contains this header and then
+/** The header of a tool call in a streamed answer. Each call is stored in
+ *  its own buffer of job->calls. The buffer contains this header and then
  *  the bytes of the id, the name, the extra and the JSON text of the
  *  arguments of the call.
  */
@@ -161,8 +161,8 @@ struct job {
 	struct buf             delta;       /**< home writes until JOB_DELTA; immutable
 	                                         until the front posts JOB_DRAIN or CANCEL */
 	/** Home writes these buffers before DONE, and the front reads them
-	 *  until CANCEL.  With JOB_TOOLS, buffer k contains call k of a
-	 *  streamed answer (struct job_call).  The calls are numbered in the
+	 *  until CANCEL. With JOB_TOOLS, buffer k contains call k of a
+	 *  streamed answer (struct job_call). The calls are numbered in the
 	 *  order in which they begin, and the buffers after the last call are
 	 *  empty. */
 	struct buf             calls[JOB_CALLS];
@@ -172,7 +172,7 @@ struct job {
 	                                         turn gives back as it came (struct
 	                                         ai_sink) */
 	struct buf             key;         /**< The front writes it before SUBMIT,
-	                                         and home reads it until DONE.  It
+	                                         and home reads it until DONE. It
 	                                         is the call's session field and a
 	                                         line break, or empty if the
 	                                         request has no session field. */

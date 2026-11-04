@@ -1,5 +1,5 @@
 /**
- * @file LD_PRELOAD shim for tests/askai.py.  It lets askai see users, groups
+ * @file LD_PRELOAD shim for tests/askai.py. It lets askai see users, groups
  * and Unix socket peers that the test machine does not have, and lets a
  * test keep askai dumpable.
  *
@@ -11,10 +11,10 @@
  * - "peers-gone" fails with ENOENT.
  *
  * With PEERS_CRED set, it names a file that holds a uid, a gid and any
- * number of further gids, in decimal and separated by spaces.  The shim
+ * number of further gids, in decimal and separated by spaces. The shim
  * reads the file at each call of getsockopt() with SO_PEERCRED, which then
  * reports the uid and the gid, and with SO_PEERGROUPS, which then reports
- * the further gids.  A test can change the file between connections.
+ * the further gids. A test can change the file between connections.
  *
  * With PEERS_SUBUID, PEERS_SUBGID, PEERS_OVERFLOWUID or PEERS_OVERFLOWGID
  * set, fopen() of /etc/subuid, /etc/subgid, /proc/sys/kernel/overflowuid or
@@ -109,7 +109,7 @@ prctl (int option,
 }
 
 /* Read the ids in the file that PEERS_CRED names into @p ids, at most
- * @p max of them.  Returns how many there are, or -1 if the file cannot be
+ * @p max of them. Returns how many there are, or -1 if the file cannot be
  * read.
  */
 static long

@@ -8,13 +8,13 @@
  * exchange X25519MLKEM768 first, one ticket a connection and no session
  * cache, a certificate chain whose key is ECDSA on a curve TLS 1.3 signs
  * with or Ed25519, or RSA only if askai's configuration allows it
- * (CFG_TLS_RSA).  Once made it is never changed, only shared by reference
+ * (CFG_TLS_RSA). Once made it is never changed, only shared by reference
  * (R5): every connection's SSL takes one of its own.
  *
  * A connection's SSL reads and writes the client's socket itself, a record
  * a call, never ahead: the client's bytes wait in the socket, which epoll
  * reports, but for the rest of a record a read had no room for, or part of
- * one (tls_pending()).  Each function here clears the thread's OpenSSL
+ * one (tls_pending()). Each function here clears the thread's OpenSSL
  * error queue before it calls OpenSSL and after a failure, as every
  * connection of a loop shares that queue; after tls_close(), the
  * tls_destroy() that follows it does.
@@ -46,7 +46,7 @@ enum tls_shake {
  * certificate and then any it needs to be trusted by, and @p key, @p key_len
  * bytes of PEM text, its unencrypted private key, as @p cfg allows; nullptr,
  * with ENOMEM in @p *e if out of memory, or EINVAL with what is wrong in
- * @p why, of @p len bytes.  Neither text is kept.
+ * @p why, of @p len bytes. Neither text is kept.
  */
 extern struct ssl_ctx_st *
 tls_ctx_create (struct config const *cfg,
@@ -89,7 +89,7 @@ tls_recv (struct ssl_st *ssl,
           size_t         len);
 
 /** As send() of @p buf, a record of it: -EAGAIN if it waits for room,
- *  else -EPROTO.  Once it has waited, it must be called again with
+ *  else -EPROTO. Once it has waited, it must be called again with
  *  the same bytes, which may have moved, and at least as many, as a call
  *  that waited may have sent a record before, which the next one counts;
  *  so calls of TLS_RECORD bytes at most never send part of one unseen.

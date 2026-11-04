@@ -69,7 +69,7 @@ enum { HIGH_FDS = 1, HIGH_PSI = 2 };
 /* Where cgroup v2 is mounted. */
 static char const cgroup_root[] = "/sys/fs/cgroup";
 
-/* The memory files of a cgroup that brainstem_cgroup() reads.  It writes
+/* The memory files of a cgroup that brainstem_cgroup() reads. It writes
  * each name after a directory's path in bs->cgroup, which has room for the
  * longest of them.
  */
@@ -149,7 +149,7 @@ struct brainstem {
 struct brainstem_metrics brainstem_metrics;
 
 /* The loops of the relief under way that have yet to end theirs, plus one
- * for its trim; 0 while none is under way.  And the bytes they gave back.
+ * for its trim; 0 while none is under way. And the bytes they gave back.
  */
 static _Atomic uint32_t relieving;
 static _Atomic uint64_t relieved;
@@ -235,7 +235,7 @@ brainstem_order_all (struct brainstem *bs,
 
 /* Have every running loop relieve memory pressure, unless the last relief
  * is still under way; EAGAIN if it is, or no loop runs, or one starts, as it
- * might run by the time the orders go out, ordered but not counted.  A loop
+ * might run by the time the orders go out, ordered but not counted. A loop
  * that exits before it ends its share holds up the reliefs after, which only
  * shutdown does.
  */
@@ -331,8 +331,8 @@ brainstem_nap (struct brainstem *bs,
 	return fds[1].revents;
 }
 
-/* End the process now, once the logger has had a moment.  No signal matters
- * any more, and one left unread would end every wait at once.  A loop thread
+/* End the process now, once the logger has had a moment. No signal matters
+ * any more, and one left unread would end every wait at once. A loop thread
  * not joined is let go, to end with the process.
  */
 [[noreturn]] static void
@@ -460,9 +460,9 @@ brainstem_thread_watch (struct brainstem_thread *t,
 /*
  * Every half threshold: report a turn that has gone on longer than the
  * threshold, once, and while draining end the process once one has gone on
- * for STUCK_MS.  Woken more than a threshold (two periods) past its time, the
+ * for STUCK_MS. Woken more than a threshold (two periods) past its time, the
  * brainstem was held up itself, likely with the rest of the process or the
- * machine, so it vouches for no turn's time before then.  With no threshold,
+ * machine, so it vouches for no turn's time before then. With no threshold,
  * it looks every IDLE_MS, for stuck turns only.
  */
 static void
@@ -919,7 +919,7 @@ brainstem_cpus (void)
 	long online = sysconf(_SC_NPROCESSORS_ONLN);
 	size_t n = !sched_getaffinity(0, sizeof set, &set) ? (size_t)CPU_COUNT(&set)
 	         : online > 0 ? (size_t)online : 1;
-	/* A quota and its period, or "max": no quota.  A fraction of a CPU
+	/* A quota and its period, or "max": no quota. A fraction of a CPU
 	 * still needs one. */
 	static char const max_file[] = "/cpu.max";
 	size_t len;
@@ -954,7 +954,7 @@ brainstem_thread_join (struct brainstem_thread *t)
 }
 
 /* Lay @p t, storage just allocated, as the thread of @p bs that runs @p app
- * with the context @p ctx; its place in bs->threads numbers its loop.  Its
+ * with the context @p ctx; its place in bs->threads numbers its loop. Its
  * atomics are initialized in place, once, as loop_place() does its loop's.
  */
 static void
@@ -1015,9 +1015,9 @@ brainstem_block (void)
 }
 
 /*
- * The signals the signalfd takes for @p cfg.  Shutdown signals the process
+ * The signals the signalfd takes for @p cfg. Shutdown signals the process
  * started with ignored, as nohup and shells leave them to spare a job, stay
- * so; SIGHUP is taken all the same where it reloads.  The signalfd would take
+ * so; SIGHUP is taken all the same where it reloads. The signalfd would take
  * them all: Linux keeps a blocked signal, whatever its action.
  */
 static sigset_t
@@ -1098,9 +1098,9 @@ brainstem_start_all (struct brainstem *bs,
 /*
  * Start home's thread, then the client loops', unless a signal comes
  * meanwhile; until all run, the brainstem keeps every signal blocked, as they
- * inherit its mask, and takes its own through the signalfd.  A loop that
+ * inherit its mask, and takes its own through the signalfd. A loop that
  * could not start shuts the others down; once every one runs, home opens its
- * door to clients.  Returns 0 or the error that kept a thread from starting.
+ * door to clients. Returns 0 or the error that kept a thread from starting.
  */
 static int
 brainstem_start (struct brainstem *bs)
@@ -1146,7 +1146,7 @@ brainstem_clients_run (struct brainstem *bs)
 }
 
 /* The client loops exit first, in any order; then home, told it is alone,
- * once its jobs end.  Returns the first error a loop ended with, 0 if none.
+ * once its jobs end. Returns the first error a loop ended with, 0 if none.
  */
 static int
 brainstem_wait (struct brainstem *bs)
@@ -1165,10 +1165,10 @@ brainstem_wait (struct brainstem *bs)
 
 /*
  * Stop the blockers, and once they are done, within JOIN_MS, free them and
- * the loops; returns whether they were done.  The blockers may still post to
+ * the loops; returns whether they were done. The blockers may still post to
  * home, whose loop stays until they are done, as do the client loops, which
  * home's may post to; a blocker stuck in a call is left to the process's
- * exit.  Home's loop goes first: what its inbox still holds posts to the
+ * exit. Home's loop goes first: what its inbox still holds posts to the
  * client loops, whose own handlers post to nobody.
  */
 static bool

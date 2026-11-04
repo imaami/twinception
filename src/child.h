@@ -1,8 +1,8 @@
 /** @file child.h
  *
- * Child processes (design section 4).  Each child is spawned with a
- * pidfd, in a session of its own.  The steps of the loop that spawned it
- * read its standard output from a pipe into a capped buffer.  The pidfd
+ * Child processes (design section 4). Each child is spawned with a
+ * pidfd, in a session of its own. The steps of the loop that spawned it
+ * read its standard output from a pipe into a capped buffer. The pidfd
  * becomes readable when the child exits, so askai does not use SIGCHLD.
  * The child is reaped by its pid after its output has also ended.
  * child_run() instead runs a child on the calling thread, its output in a
@@ -31,17 +31,17 @@ enum child_flag {
 
 /**
  * A child process, from its spawn until it is reaped and its owner has let
- * go of it.  Its session's process group is killed, with SIGKILL, once its
+ * go of it. Its session's process group is killed, with SIGKILL, once its
  * output goes past the cap, at its deadline, or as its owner lets go of it
- * before it has ended.  A child with a grace gets SIGTERM instead, which
+ * before it has ended. A child with a grace gets SIGTERM instead, which
  * lets it clean up, and at its deadline SIGKILL once the grace has passed
- * too.  No signal goes to the group once the child is reaped, as its id
+ * too. No signal goes to the group once the child is reaped, as its id
  * may name another group then.
  *
  * The child is reaped only after it has exited and its output has ended.
- * Between the exit and the reap, the child is a zombie.  The kernel does
+ * Between the exit and the reap, the child is a zombie. The kernel does
  * not reuse the id of a zombie, and the id of the child is also the id of
- * its process group.  So a kill also reaches a process of the group that
+ * its process group. So a kill also reaches a process of the group that
  * has the output pipe open after the child has exited.
  */
 struct child {
@@ -112,12 +112,12 @@ child_fds (void)
 /**
  * Spawn @p cmd: its standard error /dev/null, but with CHILD_STDERR its
  * output too; its output a pipe, its signal mask empty and every signal's
- * action the default, and it inherits no other descriptor.  The steps of
+ * action the default, and it inherits no other descriptor. The steps of
  * @p loop read its output into out, up to cmd->max bytes, and kill it past
- * those, or at its deadline.  Once it is reaped and its output is all in, a
- * step calls @p done with it, which may destroy it.  It goes on @p list
- * until destroyed.  The child counts toward CHILD_MAX until it is reaped.
- * Returns the child, or nullptr with the error in @p *e.  The error is
+ * those, or at its deadline. Once it is reaped and its output is all in, a
+ * step calls @p done with it, which may destroy it. It goes on @p list
+ * until destroyed. The child counts toward CHILD_MAX until it is reaped.
+ * Returns the child, or nullptr with the error in @p *e. The error is
  * EBUSY if there are already CHILD_MAX children that are not reaped, or
  * else the error that stopped the spawn.
  * Spawning blocks the caller until the child has executed its file, about
@@ -134,10 +134,10 @@ child_create (struct loop            *loop,
 /**
  * Run @p cmd to its end on the calling thread, which no loop needs: spawned
  * as child_create() spawns it, but with the descriptors @p fds, its output
- * into a file such as a memfd, uncapped and unread.  If cmd->deadline, a
+ * into a file such as a memfd, uncapped and unread. If cmd->deadline, a
  * time of loop_clock(), is set, at that time it gets SIGTERM, and SIGKILL
  * once its grace has passed too, or SIGKILL at once without a grace, and the
- * run fails with ETIMEDOUT.  It does not count toward CHILD_MAX.  Returns 0
+ * run fails with ETIMEDOUT. It does not count toward CHILD_MAX. Returns 0
  * and its exit status in @p *status, EIO if a signal killed it, or the error
  * that stopped the spawn or the wait.
  */
@@ -152,7 +152,7 @@ child_run (struct child_cmd const *cmd,
 extern void
 child_destroy (struct child **p_c);
 
-/** Lets go of @p *p_c, which becomes nullptr, without killing it.  The
+/** Lets go of @p *p_c, which becomes nullptr, without killing it. The
  *  child runs until it ends, its output reaches the cap, or its deadline
  *  comes, and its loop frees it then.
  */
@@ -167,10 +167,10 @@ child_destroy_all (struct list *list);
 
 /** Open /dev/null on each of the descriptors 0 to 2 that is closed, for the
  *  other direction than its use, so that a read of 0 or a write of 1 or 2
- *  still fails.  A program that starts children calls this first: the file
+ *  still fails. A program that starts children calls this first: the file
  *  actions of a child replace its descriptors 0 to 2 before they copy the
  *  ones it gets, so one of those with such a number would be lost or
- *  swapped.  Returns 0 or an error number.
+ *  swapped. Returns 0 or an error number.
  */
 extern int
 child_std_open (void);

@@ -56,7 +56,7 @@ struct loop_slot {
  */
 enum { TIME_TURN, TIME_STEP, TIME_BULK, TIME_LATE, TIMINGS };
 
-/* The statistics since the last report.  The histograms come first and the
+/* The statistics since the last report. The histograms come first and the
  * plain counts after them, so that a new window wipes the counts with one
  * memset() and clears the histograms by atomic stores (loop_stats_empty()).
  */
@@ -279,7 +279,7 @@ loop_post (struct loop *loop,
 	uint64_t const posted = loop_clock();
 	struct msg *head = atomic_load_explicit(&loop->inbox, memory_order_relaxed);
 	do {
-		/* The newest message of the inbox is posted already.  Posting it
+		/* The newest message of the inbox is posted already. Posting it
 		 * again would make it its own next message, and the inbox a
 		 * cycle. */
 		if (head == msg)
@@ -635,14 +635,14 @@ loop_fire (struct loop *loop)
 
 /*
  * Run one step of each entry that is queued on the @p n lists in the array
- * @p lists.  While more than one list has entries, the steps alternate
- * between the lists.  The first step is from the list at index @p *cursor,
- * unless that list is empty.  If an entry is queued, at least one step
+ * @p lists. While more than one list has entries, the steps alternate
+ * between the lists. The first step is from the list at index @p *cursor,
+ * unless that list is empty. If an entry is queued, at least one step
  * runs, and the function starts more steps only while the clock is before
- * @p until.  @p bulk selects the histogram in which the function records
- * the times of the steps.  The function puts the entries that did not run
+ * @p until. @p bulk selects the histogram in which the function records
+ * the times of the steps. The function puts the entries that did not run
  * back at the head of their lists, before the entries that were queued
- * during the call.  On return, @p *cursor is the index of the list after
+ * during the call. On return, @p *cursor is the index of the list after
  * the list of the last step, so the next call continues the alternation.
  * Returns the number of steps that ran.
  */

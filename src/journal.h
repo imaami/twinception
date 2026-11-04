@@ -47,15 +47,15 @@ journal_load_cb (struct loop           *loop,
                  int                    error,
                  struct journal_record *records);
 
-/** Opens or creates a bare repository and starts its writer.  Called at
- * startup, off the loops.  Participant is 1..64 ASCII letters, digits,
- * underscores or hyphens.  Missing path components are made with 0700;
- * symbolic links and parent-directory components are refused.  On failure
+/** Opens or creates a bare repository and starts its writer. Called at
+ * startup, off the loops. Participant is 1..64 ASCII letters, digits,
+ * underscores or hyphens. Missing path components are made with 0700;
+ * symbolic links and parent-directory components are refused. On failure
  * the function returns nullptr, stores the error number in @p *e, and
- * writes a message of at most @p why_len bytes to @p why.  A problem with
+ * writes a message of at most @p why_len bytes to @p why. A problem with
  * askai-journal/principal.key or with the owner.seed of the participant
  * is named in the message, such as "askai-journal/principal.key: the file
- * has 31 bytes, not 32".  The error number is EINVAL if @p why is nullptr
+ * has 31 bytes, not 32". The error number is EINVAL if @p why is nullptr
  * or @p why_len is 0.
  */
 extern struct journal *
@@ -65,25 +65,25 @@ journal_create (char const *path,
                 size_t      why_len,
                 int        *e);
 
-/** Stops accepting writes, drains the queue, and joins the writer.  Call
+/** Stops accepting writes, drains the queue, and joins the writer. Call
  * after producers stop and before any destination loop is finalized.
  * The operation is idempotent; queued callbacks remain for loop_fini().
  */
 extern void
 journal_stop (struct journal *journal);
 
-/** Drains accepted writes and joins the writer.  Loops receiving callbacks
+/** Drains accepted writes and joins the writer. Loops receiving callbacks
  * must remain allocated until this returns, then drain their inboxes.
  */
 extern void
 journal_destroy (struct journal **p_journal);
 
 /** Copies and queues one record, or returns an errno without accepting it.
- * EAGAIN means the queue is full.  A callback, if supplied, runs on loop
- * after the private recovery snapshot is durable.  After a record of a job
+ * EAGAIN means the queue is full. A callback, if supplied, runs on loop
+ * after the private recovery snapshot is durable. After a record of a job
  * is lost, later records of that job fail with the same error until a
  * "state" snapshot or a terminal record ("result" or "cancel") replaces
- * them all; other jobs are not affected.  Other kinds than "state",
+ * them all; other jobs are not affected. Other kinds than "state",
  * "meta", "tool-intent", "tool-result", "result", "cancel" and "legacy"
  * fail with EINVAL.
  * Records of kind "cancel" with at most 1024 payload bytes can use a
@@ -155,11 +155,11 @@ extern uint64_t
 journal_seed (struct journal const *journal);
 
 /**
- * Copies the principal key of the repository of @p journal to @p key.  The
+ * Copies the principal key of the repository of @p journal to @p key. The
  * key is the file askai-journal/principal.key of the repository: 32 random
  * bytes with mode 0600, which journal_create() makes if the file is empty.
  * Every participant and every daemon that uses the repository reads the
- * same key.  Returns 0, or EINVAL if an argument is nullptr.
+ * same key. Returns 0, or EINVAL if an argument is nullptr.
  */
 extern int
 journal_key (struct journal const *journal,

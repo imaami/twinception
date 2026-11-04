@@ -162,7 +162,7 @@ jb_scan_open (struct jb_scan *scan,
 
 /* Skip @p data, within a string, to its next quote, or to a backslash before
  * it, counting the bytes; @p *quote is the next quote once looked for, else
- * @p end.  Returns where it stopped, @p end if the string goes on past it.
+ * @p end. Returns where it stopped, @p end if the string goes on past it.
  */
 static char const *
 jb_scan_string (struct jb_scan  *scan,
@@ -460,7 +460,7 @@ jb_parser_step (struct jb_parser *parser,
 /*
  * json-c keeps a parse's unfinished containers on its stack, each holding the
  * values finished inside it, and json_tokener_reset() frees them all at once:
- * take them first.  This reads fields json-c documents as its own; they have
+ * take them first. This reads fields json-c documents as its own; they have
  * been stable since 0.12, and with them gone this would not compile.
  */
 void
@@ -532,7 +532,7 @@ jb_mend (char   *p,
 }
 
 /* The letter of the two-byte escape of each byte that has one; the other
- * bytes below a space are escaped as \u00XX.  The table ends at '\\', the
+ * bytes below a space are escaped as \u00XX. The table ends at '\\', the
  * last byte that JSON escapes.
  */
 static char const jb_letters['\\' + 1] = {

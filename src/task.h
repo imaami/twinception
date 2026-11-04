@@ -6,7 +6,7 @@
  * Its owner, on a client loop, submits a task, which goes to the lighter of
  * two client loops, chosen at random: the one holding fewer tasks, each loop
  * counting the tasks placed on it as they are placed, so that placements in
- * a burst spread rather than herd.  A loop that holds more than TASK_BACKLOG
+ * a burst spread rather than herd. A loop that holds more than TASK_BACKLOG
  * tasks, more than 2 ms of slices waiting, moves a task at the end of its
  * slice to the lighter of two other loops, if that holds two fewer at least.
  * Once its slices are done, or it is cancelled, the task goes back to its
@@ -14,10 +14,10 @@
  *
  * A task is plain memory, the first member of a malloc()ed object, that one
  * thread holds at a time: its owner, or the loop that runs it, between which
- * it moves by message (R1, R3).  Two words in it are shared (R4): the owner
+ * it moves by message (R1, R3). Two words in it are shared (R4): the owner
  * sets cancel, which the loop that runs it reads at each slice; and its
  * references, the owner's and the runner's, either of which may let go first
- * as askai stops, the last freeing it.  A loop's count of the tasks placed
+ * as askai stops, the last freeing it. A loop's count of the tasks placed
  * on it is shared too: placers add, the loop takes away.
  */
 #ifndef TWINCEPTION_SRC_TASK_H_

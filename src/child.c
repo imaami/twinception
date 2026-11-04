@@ -68,10 +68,10 @@ child_kill (struct child *c)
 	child_signal(c, c->grace ? SIGTERM : SIGKILL);
 }
 
-/* Reap the child if it has exited, and set its pid to 0.  After the reap,
+/* Reap the child if it has exited, and set its pid to 0. After the reap,
  * the kernel can reuse the id, so no signal goes to the group of the child
- * after this call.  A child that has not exited yet stays unreaped until
- * askai exits.  Apart from child_exited() and the error paths of
+ * after this call. A child that has not exited yet stays unreaped until
+ * askai exits. Apart from child_exited() and the error paths of
  * child_create(), only this function decrements alive.
  */
 static void
@@ -116,7 +116,7 @@ child_pipe_read (int     fd,
 
 /* Read as much of the child's output as the step has the share for, the rest
  * in its next step, up to the cap and a byte more, which says the output
- * goes on past it.  Its end, or that byte, ends the reading.
+ * goes on past it. Its end, or that byte, ends the reading.
  */
 static void
 child_read (struct child *c)
@@ -158,12 +158,12 @@ child_read (struct child *c)
 }
 
 /* If the child has exited, store how it ended, and close its pidfd, which
- * stays readable after the exit.  With WNOWAIT, waitid() does not reap the
- * child.  The kernel does not reuse the id of a zombie, and the id of the
- * child is also the id of its group.  So until child_reap(), a kill still
+ * stays readable after the exit. With WNOWAIT, waitid() does not reap the
+ * child. The kernel does not reuse the id of a zombie, and the id of the
+ * child is also the id of its group. So until child_reap(), a kill still
  * reaches a process of the group that has the output pipe open after the
- * child has exited.  If waitid() fails, the child was reaped elsewhere, and
- * the kernel can already have reused its id for another process.  So this
+ * child has exited. If waitid() fails, the child was reaped elsewhere, and
+ * the kernel can already have reused its id for another process. So this
  * function then sets the pid to 0 without a call of waitpid().
  */
 static void
@@ -454,7 +454,7 @@ child_start (struct child           *c,
 
 /* Wait for @p pidfd's process, which runs @p cmd, to exit: at its deadline,
  * SIGTERM, and SIGKILL once its grace has passed too, or at once without
- * one.  Returns 0, ETIMEDOUT if the deadline came, or why the wait failed,
+ * one. Returns 0, ETIMEDOUT if the deadline came, or why the wait failed,
  * which kills the process.
  */
 static int
@@ -608,7 +608,7 @@ child_std_open (void)
 	for (int fd = STDIN_FILENO; fd <= STDERR_FILENO; ++fd) {
 		if (fcntl(fd, F_GETFD) >= 0)
 			continue;
-		/* The lowest free number is fd, as those below it are open.  It is
+		/* The lowest free number is fd, as those below it are open. It is
 		 * open for the other direction than its use, so that a read of 0
 		 * or a write of 1 or 2 still fails with EBADF, as if closed. */
 		int got = open("/dev/null", fd == STDIN_FILENO ? O_WRONLY : O_RDONLY);

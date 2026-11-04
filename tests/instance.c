@@ -1,6 +1,6 @@
-/** @file Unit tests for the table of plugin instances (src/instance.c).  The
+/** @file Unit tests for the table of plugin instances (src/instance.c). The
  *  test includes the sources of the loop and of the table to reach their
- *  static functions.  The table's source is named by its path, because
+ *  static functions. The table's source is named by its path, because
  *  "instance.c" alone would name this file. */
 #include <stdint.h>
 #include <stdio.h>
@@ -94,7 +94,7 @@ settle (struct instance_table *t)
 {
 	while (!list_is_empty(&t->gone)) {
 		/* The list gone is not empty, so the table must have queued its
-		 * step as a bulk step of the loop.  The test queues no other
+		 * step as a bulk step of the loop. The test queues no other
 		 * step. */
 		CHECK(!list_is_empty(&t->loop->ready[BULK]));
 		memset(t->loop->work, 0, sizeof t->loop->work);
@@ -134,7 +134,7 @@ main (void)
 	instance_table_put(&t, &a);
 
 	/* Two calls of one user get the same instance of one plugin, both at
-	 * the same time and one after the other.  A call of another plugin or
+	 * the same time and one after the other. A call of another plugin or
 	 * of another user gets another instance. */
 	CHECK(!instance_table_get(&t, &with, 5, g, &a) && a);
 	CHECK(!instance_table_get(&t, &with, 5, g, &b) && b == a);
@@ -157,9 +157,9 @@ main (void)
 	CHECK(count(&t.idle) == 3 && list_is_empty(&t.busy));
 
 	/* If instance_init() fails, instance_table_get() returns its error
-	 * number, and the table has no new instance.  instance_table_get()
+	 * number, and the table has no new instance. instance_table_get()
 	 * returns EBUSY only for a full table, so it returns EIO if
-	 * instance_init() returns EBUSY.  It also returns EIO for a number that
+	 * instance_init() returns EBUSY. It also returns EIO for a number that
 	 * is not positive, because that is no error number. */
 	fail_with = EACCES;
 	CHECK(instance_table_get(&t, &with, 7, g, &a) == EACCES && !a);
@@ -171,9 +171,9 @@ main (void)
 	fail_with = 0;
 	CHECK(t.listed == 3 && list_is_empty(&t.busy) && list_is_empty(&t.gone));
 
-	/* The instance of an anonymous client is for one call only.  The same
-	 * is true of a request with an older generation.  instance_table_get()
-	 * and instance_table_put() destroy nothing.  The table's step destroys
+	/* The instance of an anonymous client is for one call only. The same
+	 * is true of a request with an older generation. instance_table_get()
+	 * and instance_table_put() destroy nothing. The table's step destroys
 	 * the instance. */
 	CHECK(!instance_table_get(&t, &with, 0, g, &a) && !instance_table_get(&t, &with, 0, g, &b));
 	CHECK(a != b && t.listed == 3);
@@ -192,7 +192,7 @@ main (void)
 	CHECK(destroyed == 3 && made == 6);
 
 	/* Many users call one after the other, and the table's step does not
-	 * run in between.  The buckets never have more than INSTANCE_MAX
+	 * run in between. The buckets never have more than INSTANCE_MAX
 	 * instances, no call is refused, and nothing is destroyed before the
 	 * step runs. */
 	uint64_t before = destroyed;
@@ -205,7 +205,7 @@ main (void)
 	CHECK(count(&t.idle) == INSTANCE_MAX && t.listed == INSTANCE_MAX);
 	settle(&t);
 	CHECK(destroyed - before == 3 * INSTANCE_MAX + 3);
-	/* The user of the last call gets the same instance again.  The user
+	/* The user of the last call gets the same instance again. The user
 	 * of the first call gets a new instance. */
 	uint64_t m = made;
 	CHECK(!instance_table_get(&t, &with, 100 + 4 * INSTANCE_MAX - 1, g, &a) && made == m);
@@ -215,7 +215,7 @@ main (void)
 	settle(&t);
 
 	/* instance_table_get() returns EBUSY only when calls use all
-	 * INSTANCE_MAX instances in the buckets.  An anonymous call still gets
+	 * INSTANCE_MAX instances in the buckets. An anonymous call still gets
 	 * an instance then. */
 	static void *busy[INSTANCE_MAX];
 	size_t n = 0;
@@ -229,7 +229,7 @@ main (void)
 	settle(&t);
 
 	/* After a flush, no call of a later request gets an instance that
-	 * existed before the flush.  An instance that a call uses stays until
+	 * existed before the flush. An instance that a call uses stays until
 	 * the call is dropped. */
 	for (size_t i = 0; i < INSTANCE_MAX / 2; ++i)
 		instance_table_put(&t, &busy[i]);
@@ -255,8 +255,8 @@ main (void)
 	CHECK(instance_table_relieve(&t, BUF_CRITICAL, 100) == 1 && made == destroyed);
 
 	/* A relief at BUF_HIGH destroys the instances that have been unused for
-	 * two relief periods.  A relief at BUF_CRITICAL destroys every unused
-	 * instance.  Both call relieve() for the instances that are left. */
+	 * two relief periods. A relief at BUF_CRITICAL destroys every unused
+	 * instance. Both call relieve() for the instances that are left. */
 	l.now = 1;
 	CHECK(!instance_table_get(&t, &with, 1, g, &a));
 	CHECK(!instance_table_get(&t, &with, 2, g, &b));

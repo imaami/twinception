@@ -3,22 +3,22 @@
  * Request streams: all an application such as MCP sees of HTTP.
  *
  * A transport, HTTP/1.1 now and HTTP/2 later, turns each request into a
- * stream.  It tells the application about the stream upward (struct
+ * stream. It tells the application about the stream upward (struct
  * stream_app), and the application answers downward (struct stream_ops), so
  * that it never sees how the transport frames messages.
  *
  * The application gets a stream with on_head(), then its body, decoded, as it
- * arrives, through on_body(), the last piece marked.  It answers with head(),
+ * arrives, through on_body(), the last piece marked. It answers with head(),
  * any data() and one end(), after which the stream is the transport's again.
  * Should the transport lose the stream first, as when the client goes away
  * or the body breaks a limit, on_cancel() takes it back instead; it never
- * follows end().  The transport makes no upcall from within a downcall, so
+ * follows end(). The transport makes no upcall from within a downcall, so
  * the application may answer from any upcall or from a step of its own.
  *
  * Once the application waits for something outside its loop to answer, such
  * as an upstream call, it says so with waiting(): from then on a client that
  * only shuts down its sending side, which HTTP/1.1 cannot tell from one going
- * away, cancels the stream too.  Until then that client is still answered.
+ * away, cancels the stream too. Until then that client is still answered.
  */
 #ifndef TWINCEPTION_SRC_STREAM_H_
 #define TWINCEPTION_SRC_STREAM_H_
@@ -40,9 +40,9 @@ struct stream;
 /** Downward: the application's answer. */
 struct stream_ops {
 	/**
-	 * Begin the response.  @p fields are whole header lines, each ending in
+	 * Begin the response. @p fields are whole header lines, each ending in
 	 * CRLF, and @p length is the body's length in bytes, or STREAM_OPEN for
-	 * a body that only end() ends, such as an event stream.  Returns 0, or
+	 * a body that only end() ends, such as an event stream. Returns 0, or
 	 * EPIPE once the stream can carry no response.
 	 */
 	int         (*head)    (struct stream *s,
@@ -50,21 +50,21 @@ struct stream_ops {
 	                        struct span    fields,
 	                        size_t         length);
 	/**
-	 * Queue body bytes.  EAGAIN, with the bytes queued, asks to wait for
-	 * on_writable().  EPIPE as above, or when the bytes would take the
+	 * Queue body bytes. EAGAIN, with the bytes queued, asks to wait for
+	 * on_writable(). EPIPE as above, or when the bytes would take the
 	 * output past the transport's limit, which a response may pass only
 	 * while it is all the output and has not been asked to wait.
 	 */
 	int         (*data)    (struct stream *s,
 	                        struct span    bytes);
-	/** End the response; with an @p error, abort it.  Ends the stream too. */
+	/** End the response; with an @p error, abort it. Ends the stream too. */
 	void        (*end)     (struct stream *s,
 	                        int            error);
 	/** The response waits for something outside the loop: a client that
 	 *  shuts down its sending side cancels the stream from now on. */
 	void        (*waiting) (struct stream *s);
 	/** The value of request header field @p i of the application's list,
-	 *  empty if absent.  Valid during the callback or step that asks: the
+	 *  empty if absent. Valid during the callback or step that asks: the
 	 *  transport may move its input between steps. */
 	struct span (*field)   (struct stream const *s,
 	                        size_t               i);
@@ -73,7 +73,7 @@ struct stream_ops {
 /** Upward: what a transport tells its application. */
 struct stream_app {
 	/** Header field names the application reads with field(), in lower
-	 *  case; each may appear at most once in a request, but a list.  One
+	 *  case; each may appear at most once in a request, but a list. One
 	 *  the transport reads itself, such as host or content-length, is
 	 *  never the application's: field() gives it empty. */
 	char const *const *fields;
@@ -83,7 +83,7 @@ struct stream_app {
 	uint64_t           lists;
 	void              *ctx;
 	/** A request: its method and target, and its body's length or
-	 *  STREAM_OPEN.  @p method and @p target are valid during the call. */
+	 *  STREAM_OPEN. @p method and @p target are valid during the call. */
 	void (*on_head)     (void          *ctx,
 	                     struct stream *s,
 	                     struct span    method,
@@ -98,8 +98,8 @@ struct stream_app {
 	/** The stream is gone before its end(). */
 	void (*on_cancel)   (struct stream *s);
 	/** Called when the loop has replaced its policy (src/policy.h) after
-	 *  a reload.  A stream that begins after this call has the principal
-	 *  and the tools that the new policy grants.  Every application must
+	 *  a reload. A stream that begins after this call has the principal
+	 *  and the tools that the new policy grants. Every application must
 	 *  set this member. */
 	void (*on_policy)   (void *ctx);
 };
@@ -120,9 +120,9 @@ struct stream {
 	                                          that has the text. */
 	uint64_t                 principal;  /**< The principal of the client's
 	                                          identity or Unix user
-	                                          (src/policy.h).  Bit 63 is
+	                                          (src/policy.h). Bit 63 is
 	                                          never set, and bit 62 is set
-	                                          for an identity.  It is 0 for
+	                                          for an identity. It is 0 for
 	                                          an anonymous client over
 	                                          TCP. */
 	uint64_t                 peer[2];    /**< the client's address, as the

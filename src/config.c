@@ -613,7 +613,7 @@ static struct {
 enum { FILE_MAX = 1 << 20 };
 
 /* Say what is wrong, as of the configuration file @p where unless that is
- * nullptr: on stderr, or in the log on a reload.  Returns 2, the exit status
+ * nullptr: on stderr, or in the log on a reload. Returns 2, the exit status
  * for an invalid option or environment.
  */
 [[gnu::format(printf, 3, 4)]]
@@ -699,8 +699,8 @@ config_find (char const *const *names,
 
 /* Check a number in the object of --extra, as a json_c_visit() callback.
  * The function returns JSON_C_VISIT_RETURN_ERROR for a double that is NaN
- * or infinite.  For a finite double, it resets the serializer to the
- * default serializer of json-c, which prints the value of the double.  The
+ * or infinite. For a finite double, it resets the serializer to the
+ * default serializer of json-c, which prints the value of the double. The
  * parser of json-c sets for each double a serializer that prints the text
  * of the number as the parser read it, and json-c reads some numbers that
  * JSON does not allow, such as "1.".
@@ -747,7 +747,7 @@ config_apply_temperature (struct config *cfg,
 }
 
 /* Set the object that is merged into each request body to @p arg, a JSON
- * object whose numbers are finite.  @p where is the path of the
+ * object whose numbers are finite. @p where is the path of the
  * configuration file that contains @p arg, or nullptr if @p arg is from the
  * command line.
  */
@@ -1118,7 +1118,7 @@ config_slurp_fd (struct config const *cfg,
  * length into @p *p_len: a regular file of FILE_MAX bytes at most that only
  * root and askai's user may change, nor replace, and that has none of the
  * permission bits @p hide, such as S_IROTH for a secret, which is wiped
- * from memory freed here.  Returns 0, or the exit status, having said why.
+ * from memory freed here. Returns 0, or the exit status, having said why.
  */
 static int
 config_slurp (struct config const *cfg,
@@ -1157,9 +1157,9 @@ config_json_fail (struct config const *cfg,
 }
 
 /* Parses the @p len bytes at @p text, the configuration file, into
- * cfg->file.  The file must be one JSON object in strict JSON, so that tools
- * such as jq can read it.  With JSON_TOKENER_STRICT, json-c reports comments
- * and trailing commas as errors.  Only blanks may follow the object.  Returns
+ * cfg->file. The file must be one JSON object in strict JSON, so that tools
+ * such as jq can read it. With JSON_TOKENER_STRICT, json-c reports comments
+ * and trailing commas as errors. Only blanks may follow the object. Returns
  * 0, or the exit status after a message about the error.
  */
 static int
@@ -1259,7 +1259,7 @@ config_values (struct json_object *obj)
  * lists: each has room for every argument, every value of an option in
  * the configuration file, in its four objects of options and in the
  * objects of the tools in its member tools, and the three headers askai
- * adds, and ends in nullptr.  Returns 0, or 1 if out of memory, having said
+ * adds, and ends in nullptr. Returns 0, or 1 if out of memory, having said
  * so.
  */
 static int
@@ -1415,7 +1415,7 @@ config_apply_group (struct config      *cfg,
 }
 
 /* Apply the options in the configuration file's objects upstream, service,
- * testing and debugging.  The policy's members, "plugins" and "tools" are
+ * testing and debugging. The policy's members, "plugins" and "tools" are
  * not options: policy_create(), config_registry(), config_apply_tools()
  * and config_allow() read them.
  */
@@ -1462,7 +1462,7 @@ config_file (struct config *cfg)
 	return status ? status : config_apply_tools(cfg);
 }
 
-/* Check the limits on clients against each other.  A body limit that
+/* Check the limits on clients against each other. A body limit that
  * --max-body did not give is lowered to the budgets for the bodies, so that
  * a configuration that lowers a budget does not stop askai.
  */
@@ -1596,7 +1596,7 @@ config_check_notes_parent (struct config const *cfg)
 	return status;
 }
 
-/* Checks the directory of the notes, if --notes names one.  Only root and
+/* Checks the directory of the notes, if --notes names one. Only root and
  * askai's user may be able to change it, or to make it if it does not
  * exist.
  */
@@ -1621,8 +1621,8 @@ config_check_notes (struct config const *cfg)
 }
 
 /* A repository is the session; a participant keeps the same writer identity
- * across restarts.  Resolve the transcript location once, before any service
- * opens it.  The journal validates and creates its parent directories.
+ * across restarts. Resolve the transcript location once, before any service
+ * opens it. The journal validates and creates its parent directories.
  */
 static int
 config_session (struct config *cfg)
@@ -1698,7 +1698,7 @@ config_key_env (struct config const *cfg,
  * The API key, in @p *p_key, unless a header gives one, as @p has_auth says:
  * from the first of the usual variables that is set, the provider's at its
  * own URL, which llama-server may do without, else ASKAI_API_KEY, which a
- * URL that --url gives may do without.  A provider's variables are only read
+ * URL that --url gives may do without. A provider's variables are only read
  * for its own URL, so pointing --url elsewhere never leaks its key.
  */
 static int
@@ -1873,8 +1873,8 @@ config_tls (struct config *cfg)
 	return status;
 }
 
-/* Add the listen address 127.0.0.1:8090 if cfg->listens is empty.  Refuse a
- * listen address that httpd_listen_addr() cannot parse.  If an address begins with
+/* Add the listen address 127.0.0.1:8090 if cfg->listens is empty. Refuse a
+ * listen address that httpd_listen_addr() cannot parse. If an address begins with
  * "tls:", make the TLS context.
  */
 static int
@@ -1913,9 +1913,9 @@ config_note_token (struct config const *cfg)
 		}
 }
 
-/* Checks the plugin file at @p path.  Only root and askai's user may change
- * the file and the directories above it.  The path must be the file's real
- * path, so it has no symbolic link.  Then nobody else can replace the file
+/* Checks the plugin file at @p path. Only root and askai's user may change
+ * the file and the directories above it. The path must be the file's real
+ * path, so it has no symbolic link. Then nobody else can replace the file
  * between this check and the dlopen() in plugin.c.
  */
 static int
@@ -1942,10 +1942,10 @@ config_check_plugin (struct config const *cfg,
 }
 
 /* Loads the plugin of @p v, an element of the configuration file's
- * "plugins", and adds its tools to the registry.  The element is the
- * absolute path of the plugin, or an object.  The object's member "path" is
+ * "plugins", and adds its tools to the registry. The element is the
+ * absolute path of the plugin, or an object. The object's member "path" is
  * that path, and its member "options", if it has one, is an object of the
- * plugin's options.  The object has no other member.
+ * plugin's options. The object has no other member.
  */
 static int
 config_plugin (struct config      *cfg,
@@ -1994,8 +1994,8 @@ config_plugin (struct config      *cfg,
 
 /* Fills the registry with the tools that askai offers: its own, then those
  * of the plugins that the configuration file lists in "plugins", loaded in
- * the order of the array.  A reload adds only askai's own
- * tools, so that it refuses the same --tool-name as a start does.  A reload
+ * the order of the array. A reload adds only askai's own
+ * tools, so that it refuses the same --tool-name as a start does. A reload
  * loads no plugin, and config_policy() reads the registry of cfg->running.
  */
 static int
@@ -2022,7 +2022,7 @@ config_registry (struct config *cfg)
 }
 
 /* The configuration whose tools the roles of @p cfg name: the running one
- * on a reload, else @p cfg.  The names of all its tools go into @p tools,
+ * on a reload, else @p cfg. The names of all its tools go into @p tools,
  * by id, and the mask of the tools that a role can grant and askai can lend
  * to the upstream goes into @p *upstream.
  */
@@ -2048,7 +2048,7 @@ config_tools (struct config const *cfg,
 
 /* Say that @p v, in the member tools of the configuration file, is no
  * name of a tool of the @p n tools @p tools that it may name: all but the
- * ask tool, the first.  Returns 2.
+ * ask tool, the first. Returns 2.
  */
 static int
 config_allow_none (struct config const *cfg,
@@ -2099,7 +2099,7 @@ config_allow_names (struct config const *cfg,
 
 /* The mask, in @p *mask, of the tools that @p spec allows: all for true,
  * none for false, those of a list, those of the member allow, or all but
- * those of the member deny.  The ask tool is not counted.  With @p top,
+ * those of the member deny. The ask tool is not counted. With @p top,
  * @p spec is the member tools itself, whose objects of the built-in tools
  * are skipped (config_apply_tools()).
  */
@@ -2185,8 +2185,8 @@ config_allow_parts (struct config const *cfg,
 }
 
 /* The tools that the member tools of the configuration file allows clients
- * and the upstream, of the tools that config_tools() names.  Without the
- * member, it allows all.  It is one form of config_allow_spec() for both,
+ * and the upstream, of the tools that config_tools() names. Without the
+ * member, it allows all. It is one form of config_allow_spec() for both,
  * or an object with the members client and upstream, either of which may be
  * missing, each one of those forms for its own.
  */
@@ -2278,9 +2278,9 @@ config_policy (struct config *cfg)
 	                            run->tools_clients, upstream, why, sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
-	/* EINVAL means that the configuration file is wrong.  Another error
+	/* EINVAL means that the configuration file is wrong. Another error
 	 * comes from a file that the policy reads, such as /etc/subuid, or is
-	 * EIO from HMAC-SHA-256.  The message says which, so it does not
+	 * EIO from HMAC-SHA-256. The message says which, so it does not
 	 * begin with the path of the configuration file. */
 	if (e)
 		return config_complain(cfg, e == EINVAL ? cfg->path : nullptr, "%s", why);
@@ -2403,7 +2403,7 @@ static int
 config_parse (struct config *cfg)
 {
 	/* The configuration file goes first, so that the command line overrides
-	 * it; help goes before either.  Each pass begins getopt afresh. */
+	 * it; help goes before either. Each pass begins getopt afresh. */
 	opterr = 0;
 	optind = 0;
 	for (int opt; (opt = getopt_long(cfg->argc, cfg->argv, shorts, options,

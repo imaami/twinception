@@ -3,12 +3,12 @@
  * The probe is an open-loop Poisson arrival process of cheap requests in both
  * protocol eras askai speaks (legacy ping, tools/list and initialize; the
  * 2026-07-28 server/discover and tools/list), plus a ping on a fresh connection
- * that sees accept starvation.  Each arrival's latency is measured from its
+ * that sees accept starvation. Each arrival's latency is measured from its
  * *scheduled* send time, never from when a busy generator got around to it, so
  * a server stall cannot be hidden by coordinated omission: an arrival that
  * cannot be sent on time still accrues latency against its schedule, and one
- * that is never answered is recorded as a timeout at its age.  Every arrival is
- * accounted for (sched = ok + err + timeout + lost).  A dispatch-timed control
+ * that is never answered is recorded as a timeout at its age. Every arrival is
+ * accounted for (sched = ok + err + timeout + lost). A dispatch-timed control
  * histogram of the same probes shows what an omission-prone probe would report.
  *
  * The probe's keep-alive connections take the arrivals of the cheap kinds in
@@ -22,14 +22,14 @@
  * cancels, a flooder's many tool calls in one session, interactive
  * sessions' one at a time, and test_task calls of CPU work done as tasks,
  * from S8) run alongside to stress the server while the
- * probe measures the damage.  The
+ * probe measures the damage. The
  * pipeline and the malformed, hostile and dense modes time each batch or body
  * they send; with --solo, they run one after another, alone and without the
  * probe, a few rounds each, for a baseline of those times (SOLO lines).
  *
  * Besides the latencies, it reports how evenly the damage fell (FAIR lines):
  * the spread of the probe connections' p90 and p99, and of the probe kinds',
- * against their medians, and the tool-call connections' completions.  SIGINT
+ * against their medians, and the tool-call connections' completions. SIGINT
  * ends the run early, as if its duration were up.
  *
  * All socket access goes through @ref transport: from S9 a TLS one serves
@@ -71,7 +71,7 @@ struct transport {
 	char const *port;
 	int     (*dial)  (struct transport *t); /**< start a non-blocking connect */
 	/** Once connected, shake hands a step further: 0 once done, EPOLLIN or
-	 *  EPOLLOUT for what it waits for, -1 if it failed; nullptr: none.  Only
+	 *  EPOLLOUT for what it waits for, -1 if it failed; nullptr: none. Only
 	 *  fresh slots use such a transport. */
 	int     (*shake) (struct transport *t, int fd);
 	ssize_t (*recv)  (int fd, void *buf, size_t len);
@@ -533,7 +533,7 @@ ring_push (struct ring *r,
 	return true;
 }
 
-/* Count an arrival's fate.  An answer or a timeout is also a latency sample,
+/* Count an arrival's fate. An answer or a timeout is also a latency sample,
  * timed from the schedule and, if it was sent, from the dispatch; one sent on
  * a keep-alive slot @p pc counts for that slot too. */
 static void
@@ -568,7 +568,7 @@ pc_arm (struct probe *p,
 static void pc_connect (struct probe *p, struct pconn *pc);
 
 /* Drop the connection, settling its in-flight probe as @p fate, and counting
- * a handshake under way as failed.  A keep-alive slot redials at once, or
+ * a handshake under way as failed. A keep-alive slot redials at once, or
  * after REDIAL_NS if it never got connected. */
 static void
 pc_drop (struct probe *p,
@@ -881,7 +881,7 @@ probe_fini (struct probe *p)
 }
 
 /* Establish the keep-alive pool and hold it, before any background load
- * competes for the server's connection slots.  Returns how many are ready. */
+ * competes for the server's connection slots. Returns how many are ready. */
 static int
 probe_warmup (struct probe *p)
 {
@@ -1102,8 +1102,8 @@ out:
 }
 
 /*
- * Hostile JSON bodies.  Those of the first three kinds exceed askai's default
- * limits: deep nesting, many values, a huge string.  The others keep to them,
+ * Hostile JSON bodies. Those of the first three kinds exceed askai's default
+ * limits: deep nesting, many values, a huge string. The others keep to them,
  * so askai parses them in full: 1024 values (empty objects, or 507 keys), a
  * 1 MiB string, and a 1 MiB tool call prompt full of escapes.
  */
@@ -1181,7 +1181,7 @@ hostile_body (int     kind,
 
 /*
  * Dense JSON bodies of 1 MiB, each a ping with many small values: 524 k
- * zeros, 349 k empty objects, or 237 k members in objects of 512.  askai
+ * zeros, 349 k empty objects, or 237 k members in objects of 512. askai
  * admits them only with --max-values raised, and must parse and free them a
  * few at a time.
  */
@@ -1240,7 +1240,7 @@ burst_send (struct bg  *b,
 }
 
 /* Back-to-back connections, each carrying one malformed request, or one
- * hostile or dense JSON body (rotating through the kinds).  A hostile tool
+ * hostile or dense JSON body (rotating through the kinds). A hostile tool
  * call hangs up once its event stream opens, which cancels it. */
 static void *
 burst_thread (void *arg)
@@ -1273,7 +1273,7 @@ burst_thread (void *arg)
 		          : burst_send(b, fd, host[m], hlen[m]);
 		b->n[BURST_SENT] += sent;
 		/* A reply's first bytes, which for a tool call open its event
-		 * stream: hanging up then cancels the call.  A body over a limit
+		 * stream: hanging up then cancels the call. A body over a limit
 		 * may be answered before it is all sent; one the stop cut short
 		 * counts neither way. */
 		struct pollfd pfd = { .fd = fd, .events = POLLIN };
@@ -1388,20 +1388,20 @@ out:
 /*
  * Tool-call jobs: b->count concurrent connections, each looping tools/call,
  * alternately in the legacy and the 2026-07-28 era; askai answers them on
- * event streams, which a job reads to their last chunk.  Each connection
+ * event streams, which a job reads to their last chunk. Each connection
  * comes from an address of its own, so that each is a principal of its own
- * to askai's scheduler.  In hang-up mode (b->mode JOBS_HANGUP) a job instead
+ * to askai's scheduler. In hang-up mode (b->mode JOBS_HANGUP) a job instead
  * waits for its event stream to open, then hangs up about HANGUP_MS later,
  * from a half to one and a half times that, which askai must pass upstream
  * as a cancellation unless the answer came first: against an upstream that
- * takes about as long, hang-ups race answers.  In cancel mode (JOBS_CANCEL)
+ * takes about as long, hang-ups race answers. In cancel mode (JOBS_CANCEL)
  * a job's legacy call carries a session of its connection's own, and as long
  * after its stream opens, a notifications/cancelled for it goes on a new
  * connection, which askai may well serve on another loop; the call's stream
- * then ends without an event, withdrawn, unless the answer came first.  In
+ * then ends without an event, withdrawn, unless the answer came first. In
  * flood mode (JOBS_FLOOD) every connection's legacy call is in one session,
  * one principal's, which askai refuses as busy past what it queues for one,
- * whereupon the connection calls again BUSY_MS later.  In interactive mode
+ * whereupon the connection calls again BUSY_MS later. In interactive mode
  * (JOBS_INTERACTIVE) each connection is a session of its own, which calls
  * again once answered, and each call's time from its sending to its answer
  * counts in the mode's latencies.
@@ -1532,7 +1532,7 @@ job_head (struct job_conn const *c)
 }
 
 /* Whether the buffer holds a whole response, with a Content-Length or in
- * chunks up to the last, and if so in @p *ok whether it carries a result.  Of
+ * chunks up to the last, and if so in @p *ok whether it carries a result. Of
  * a long one it holds the start and the end: a result begins near the one,
  * and an error flag comes at the other. */
 static bool
@@ -1756,7 +1756,7 @@ hist_print (char const        *name,
 	}
 }
 
-/* Print the upstream mock's counters as of now, labelled @p when.  With no
+/* Print the upstream mock's counters as of now, labelled @p when. With no
  * label, print them only if no call is active or queued; returns whether it
  * printed. */
 static bool
@@ -2130,8 +2130,8 @@ main (int   argc,
 	}
 
 	/* How evenly the damage fell: each probe connection's p90 and p99, and
-	 * each probe kind's, against the median one's.  Each connection had its
-	 * share of the arrivals, so none is left out.  And each job connection's
+	 * each probe kind's, against the median one's. Each connection had its
+	 * share of the arrivals, so none is left out. And each job connection's
 	 * calls. */
 	double v[PK_N + 1024];
 	size_t nv;

@@ -28,7 +28,7 @@ static char const *const limits[] = {
 
 /* The type of the open step, in Gemini's Interactions, or the end of the
  * answer, after which no event changes the replay (struct ai_reader's
- * kind).  An open thought is not in the replay until it has a summary item
+ * kind). An open thought is not in the replay until it has a summary item
  * or a signature.
  */
 enum { INTERACTIONS_THOUGHT, INTERACTIONS_OUTPUT, INTERACTIONS_ENDED };
@@ -103,7 +103,7 @@ ai_conversation (enum ai_api        api,
 }
 
 /* A copy of @p val, which the configuration holds: every loop reads it, so no
- * request may take a reference, whose count is not atomic.  nullptr if out of
+ * request may take a reference, whose count is not atomic. nullptr if out of
  * memory.
  */
 static struct json_object *
@@ -135,9 +135,9 @@ ai_merge (struct json_object *dst,
 }
 
 /* Write the token limit under @p max_key, unless @p max_tokens is not
- * positive, and the temperature into @p root.  If @p config is not nullptr,
+ * positive, and the temperature into @p root. If @p config is not nullptr,
  * write them into a new object, @p root's member @p config, which is added
- * only if one of them is set.  Then merge --extra into @p root.
+ * only if one of them is set. Then merge --extra into @p root.
  */
 static int
 ai_request_common (struct ai_endpoint const *ep,
@@ -230,7 +230,7 @@ ai_request (struct ai_endpoint const *ep,
 	    jb_set(root, "model", json_object_new_string(ep->model)))
 		goto fail;
 	/* Chat completions has the system prompt as a message in the
-	 * conversation.  The other APIs have it in the member b->system. */
+	 * conversation. The other APIs have it in the member b->system. */
 	if (b->system) {
 		if (system && jb_set(root, b->system, b->flags & BODY_PARTS
 		                                      ? ai_generate_content(nullptr, system)
@@ -418,8 +418,8 @@ ai_index (struct json_object *val)
 }
 
 /* Return the sum of @p prompt, the token count of a request, and @p answer,
- * the token count of its answer.  Return UINT32_MAX if the sum is larger
- * than UINT32_MAX.  Return 0, which means that the count is not known, if
+ * the token count of its answer. Return UINT32_MAX if the sum is larger
+ * than UINT32_MAX. Return 0, which means that the count is not known, if
  * @p prompt is not positive, if @p answer is negative, or if the sum
  * overflows int64_t.
  */
@@ -433,8 +433,8 @@ ai_used (int64_t prompt,
 	return n < UINT32_MAX ? (uint32_t)n : UINT32_MAX;
 }
 
-/* Return @p val as a token count if it is a JSON integer, else 0.  json-c
- * also parses NaN, which json_object_get_int64() cannot convert.  ai_used()
+/* Return @p val as a token count if it is a JSON integer, else 0. json-c
+ * also parses NaN, which json_object_get_int64() cannot convert. ai_used()
  * treats a request count of 0 as not known and an answer count of 0 as 0.
  */
 static int64_t
@@ -671,7 +671,7 @@ ai_responses_event (struct ai_sink const *sink,
 /* Hand the start of tool call @p at, @p item, to @p sink: its id and name,
  * its arguments, @p item's member @p key, if they are a JSON object that
  * is not empty, and the JSON text of @p extra as its extra, unless
- * @p extra is nullptr.  A server that sends the arguments whole sends them
+ * @p extra is nullptr. A server that sends the arguments whole sends them
  * in the start.
  */
 static int
@@ -734,7 +734,7 @@ ai_messages_start (struct ai_sink const *sink,
  * @p sink: its text, its thinking's and its signature, which go on in the
  * replay with the block's item that @p reader has open, or a text block's
  * first text that is not white space, which opens its item, as a turn may
- * have no blank one; or a piece of a tool call's arguments.  Says in @p out
+ * have no blank one; or a piece of a tool call's arguments. Says in @p out
  * whether it carries thinking.
  */
 static int
@@ -790,7 +790,7 @@ ai_messages_delta (struct ai_sink const *sink,
 
 /* Hand the pieces of Anthropic's event @p ev to @p sink, as @p reader keeps
  * the reading, saying in @p out whether it carries thinking, the tokens
- * used as the answer ends, and the end of the message.  An event of a
+ * used as the answer ends, and the end of the message. An event of a
  * content block with no index may carry text only.
  */
 static int
@@ -933,7 +933,7 @@ ai_generate_part (struct ai_sink const *sink,
 }
 
 /* Whether the open thought of @p reader is in the replay: once it has a
- * summary item or a signature.  The API refuses a thought with neither.
+ * summary item or a signature. The API refuses a thought with neither.
  */
 static bool
 ai_interactions_written (struct ai_reader const *reader)
@@ -953,7 +953,7 @@ ai_interactions_head (struct ai_sink const   *sink,
 
 /* Close the open item in @p sink's replay, if there is one (@p reader).
  * For a thought, close its summary array if it is open, then the thought,
- * if it is in the replay.  For a model output, close its text and the
+ * if it is in the replay. For a model output, close its text and the
  * step.
  */
 static int
@@ -971,10 +971,10 @@ ai_interactions_close (struct ai_sink const *sink,
 }
 
 /* Pass @p text, a piece of text of step @p at of Gemini's Interactions, to
- * @p sink's text and to its replay.  The text goes into the open item if
- * that item is the model output of step @p at.  If no item is open, text
+ * @p sink's text and to its replay. The text goes into the open item if
+ * that item is the model output of step @p at. If no item is open, text
  * that is not only white space starts a new model output item for step
- * @p at.  Otherwise the replay does not get the text.
+ * @p at. Otherwise the replay does not get the text.
  */
 static int
 ai_interactions_text (struct ai_sink const *sink,
@@ -999,7 +999,7 @@ ai_interactions_text (struct ai_sink const *sink,
 
 /* Write @p item, a summary item of the open thought, whole to @p sink's
  * replay: after the earlier items, or in a new summary array, after the
- * start of the thought if it is not in the replay yet.  Skip an item that
+ * start of the thought if it is not in the replay yet. Skip an item that
  * is not a JSON object, and an item that comes after the array is
  * closed.
  */
@@ -1019,8 +1019,8 @@ ai_interactions_summary (struct ai_sink const *sink,
 }
 
 /* Write @p signature into the open thought in @p sink's replay, after the
- * start of the thought if it is not in the replay yet.  Close the summary
- * array first if it is open.  Skip a signature that is not a string, that
+ * start of the thought if it is not in the replay yet. Close the summary
+ * array first if it is open. Skip a signature that is not a string, that
  * is empty, or that comes after the thought already has a signature.
  */
 static int
@@ -1043,8 +1043,8 @@ ai_interactions_sign (struct ai_sink const *sink,
 
 /* Mark @p step, thought step @p at of Gemini's Interactions, open in
  * @p reader, and write the signature and the summary items that its start
- * contains into @p sink's replay.  The thought enters the replay with its
- * first summary item or its signature.  Set out->thought if a summary item
+ * contains into @p sink's replay. The thought enters the replay with its
+ * first summary item or its signature. Set out->thought if a summary item
  * has text.
  */
 static int
@@ -1073,7 +1073,7 @@ ai_interactions_thought (struct ai_sink const *sink,
 /* Process @p step, the start of step @p at of Gemini's Interactions.
  * Ignore a step of a type other than thought, model_output and
  * function_call, such as the step of a server tool; the open item stays
- * open.  For those three types, close the open item in the replay first.
+ * open. For those three types, close the open item in the replay first.
  * Then open a thought (ai_interactions_thought()), pass the text of a model
  * output (ai_interactions_text()), or mark the function call as the last
  * that started in @p reader and pass it to @p sink.
@@ -1120,11 +1120,11 @@ ai_interactions_start (struct ai_sink const *sink,
 	return 0;
 }
 
-/* Process @p delta, a delta of step @p at of Gemini's Interactions.  Pass
- * the text of a model output (ai_interactions_text()).  Write a summary
+/* Process @p delta, a delta of step @p at of Gemini's Interactions. Pass
+ * the text of a model output (ai_interactions_text()). Write a summary
  * item or a signature into the thought of step @p at if that thought is
- * open, and set out->thought if the summary item has text.  Pass a piece of
- * the arguments of a function call to @p sink.  If step @p at is not the
+ * open, and set out->thought if the summary item has text. Pass a piece of
+ * the arguments of a function call to @p sink. If step @p at is not the
  * function call that started last (@p reader), close the open item in the
  * replay first, because a piece that starts a new call places the call at
  * the current end of the replay, and mark step @p at as that call.
@@ -1171,9 +1171,9 @@ ai_interactions_delta (struct ai_sink const *sink,
 }
 
 /* Process @p ev, an event of Gemini's Interactions of type @p type, with
- * the state of the reading in @p reader.  interaction.completed closes the
+ * the state of the reading in @p reader. interaction.completed closes the
  * open item in the replay, sets out->end and the tokens used, and makes
- * the reading ignore the events after it.  A step event without an index
+ * the reading ignore the events after it. A step event without an index
  * can pass only text to @p sink.
  */
 static int
@@ -1212,7 +1212,7 @@ ai_interactions_event (struct ai_sink const *sink,
 	case DONE: {
 		/* The thinking is not sent back in the next request, so the tokens
 		 * used are total_input_tokens plus total_output_tokens, which leave
-		 * out the thinking.  If that sum is not known, the tokens used are
+		 * out the thinking. If that sum is not known, the tokens used are
 		 * total_tokens, which include the thinking. */
 		struct json_object *usage = jb_get(jb_get(ev, "interaction"), "usage");
 		out->end = 1;
@@ -1361,7 +1361,7 @@ ai_format (enum ai_api api)
 			.flags        = AI_ARGS_RAW,
 		},
 		/* Its turn's parts are the replay's, its calls among them, with
-		 * their thought signatures.  A file goes after the results, in
+		 * their thought signatures. A file goes after the results, in
 		 * their message, as the model does not see a text file in a
 		 * result. */
 		[AI_GENERATE] = {
@@ -1387,8 +1387,8 @@ ai_format (enum ai_api api)
 			.flags        = AI_RESULT_NAMED,
 		},
 		/* A turn is the replay's steps and the calls, in the input list,
-		 * a call with its signature.  Each result is a step after them,
-		 * which the API refuses without the call's name.  A file is a
+		 * a call with its signature. Each result is a step after them,
+		 * which the API refuses without the call's name. A file is a
 		 * user_input step after the results, as a result takes no
 		 * document. */
 		[AI_INTERACTIONS] = {
@@ -1456,7 +1456,7 @@ ai_tool (enum ai_api               api,
 
 /* The data of the first event of the event stream at @p body, of @p len
  * bytes, parsed, if it is JSON text on a data line that ends in the first
- * 4 KiB; else nullptr.  Gemini's Interactions sends the error of a streamed
+ * 4 KiB; else nullptr. Gemini's Interactions sends the error of a streamed
  * request as such an event, with a status that is not 2xx, so askai gathers
  * the body whole and cannot parse it as JSON text.
  */
@@ -1525,7 +1525,7 @@ ai_describe_error (struct dstr        *text,
 struct ai_upload const *
 ai_upload (enum ai_api api)
 {
-	/* Gemini's Files API, which keeps a file for 48 hours.  It takes the
+	/* Gemini's Files API, which keeps a file for 48 hours. It takes the
 	 * file as the whole body with the protocol raw. */
 	static char const *const gemini_lines[] = {
 		"X-Goog-Upload-Protocol: raw", "Content-Type: text/plain", nullptr

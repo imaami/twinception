@@ -1,12 +1,12 @@
 /**
  * @file LD_PRELOAD shim for tests/askai.py: epoll_ctl(EPOLL_CTL_ADD) fails with
  * ENOMEM for every TCP socket bound to a port other than that of the first one
- * watched, which is askai's listener.  So askai cannot watch the connections
- * it makes upstream, while it can watch those of its clients.  With
+ * watched, which is askai's listener. So askai cannot watch the connections
+ * it makes upstream, while it can watch those of its clients. With
  * EPFAIL_ACCEPT set, every other accept4() fails with EPROTO, as when Linux
- * passes on a pending connection's network error.  With EPFAIL_CLEANUP_MS
+ * passes on a pending connection's network error. With EPFAIL_CLEANUP_MS
  * set, curl_multi_cleanup() takes that many milliseconds longer, as a
- * teardown may on a busy machine.  With EPFAIL_EPOLL set to N, the Nth
+ * teardown may on a busy machine. With EPFAIL_EPOLL set to N, the Nth
  * epoll_create1() fails with EMFILE, as when an event loop cannot start.
  * With EPFAIL_TOKENER set, json-c cannot make a tokener, as when memory
  * runs out.
@@ -106,7 +106,7 @@ curl_multi_cleanup (void *multi)
 	return real(multi);
 }
 
-/* Wrappers of json-c's tokener constructors.  struct json_tokener is
+/* Wrappers of json-c's tokener constructors. struct json_tokener is
  * declared but not defined here, because the wrappers only pass pointers
  * to it.
  */

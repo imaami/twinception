@@ -14,7 +14,7 @@
 static_assert(!(INSTANCE_MAX & (INSTANCE_MAX - 1)),
               "INSTANCE_MAX - 1 is the mask that selects a bucket");
 
-/* The table's record of one instance.  The plugin's bytes follow the record
+/* The table's record of one instance. The plugin's bytes follow the record
  * in the same allocation.
  */
 struct instance {
@@ -35,7 +35,7 @@ struct instance {
 
 /* Returns true if an instance for principal, made for a request of
  * generation, goes into the buckets, so that later calls of the user get
- * the same instance.  It returns false for an anonymous client and for a
+ * the same instance. It returns false for an anonymous client and for a
  * request that began before the last flush.
  */
 static bool
@@ -47,7 +47,7 @@ instance_table_lists (struct instance_table const *t,
 }
 
 /* Returns the address of the pointer that links the instance of plugin for
- * principal into its bucket.  If the bucket has no such instance, it
+ * principal into its bucket. If the bucket has no such instance, it
  * returns the address of the null pointer at the end of the bucket's
  * chain.
  */
@@ -65,7 +65,7 @@ instance_table_find (struct instance_table *t,
 }
 
 /* Removes inst from its bucket and moves it from the list idle to the list
- * gone.  The table's step destroys it later.
+ * gone. The table's step destroys it later.
  */
 static void
 instance_table_retire (struct instance_table *t,
@@ -78,7 +78,7 @@ instance_table_retire (struct instance_table *t,
 	loop_ready_bulk(t->loop, &t->reap);
 }
 
-/* Destroys instances on the list gone, at most max.  Returns the number of
+/* Destroys instances on the list gone, at most max. Returns the number of
  * instances destroyed.
  */
 static size_t
@@ -96,8 +96,8 @@ instance_table_reap (struct instance_table *t,
 	return n;
 }
 
-/* The table's step.  It destroys instances on the list gone, as many as
- * the step may still do of LOOP_RELEASE work.  If instances are left on the
+/* The table's step. It destroys instances on the list gone, as many as
+ * the step may still do of LOOP_RELEASE work. If instances are left on the
  * list, it queues itself again.
  */
 static void
@@ -130,11 +130,11 @@ instance_table_fini (struct instance_table *t)
 }
 
 /* Allocates an instance of plugin for principal and calls the plugin's
- * instance_init() for its bytes.  The new instance has one call and is on
- * the list busy.  Stores the instance in *p_inst.  Returns 0, ENOMEM, or
- * the error number of instance_init().  It returns EIO if instance_init()
+ * instance_init() for its bytes. The new instance has one call and is on
+ * the list busy. Stores the instance in *p_inst. Returns 0, ENOMEM, or
+ * the error number of instance_init(). It returns EIO if instance_init()
  * returned EBUSY, because instance_table_get() returns EBUSY only for a
- * full table.  It also returns EIO if instance_init() returned a number
+ * full table. It also returns EIO if instance_init() returned a number
  * that is not positive, because such a number is no error number.
  */
 static int
@@ -189,7 +189,7 @@ instance_table_get (struct instance_table  *t,
 		return 0;
 	}
 	/* If the buckets are full, the first instance on the list idle moves
-	 * to the list gone.  It has been unused for the longest time.  The
+	 * to the list gone. It has been unused for the longest time. The
 	 * table's step destroys it later, because instance_fini() must not run
 	 * inside this function. */
 	if (t->listed == INSTANCE_MAX) {
@@ -240,7 +240,7 @@ instance_table_flush (struct instance_table *t)
 }
 
 /* Calls relieve() of the plugin for each instance on list, until max units
- * are freed.  Returns the number of units freed.
+ * are freed. Returns the number of units freed.
  */
 static size_t
 instance_list_relieve (struct list const *list,
@@ -252,7 +252,7 @@ instance_list_relieve (struct list const *list,
 		struct instance *inst = container_of(pos, struct instance, hook);
 		if (!inst->plugin->relieve)
 			continue;
-		/* A plugin's relieve() can return more than max - done.  The count
+		/* A plugin's relieve() can return more than max - done. The count
 		 * is cut at max - done, so done never passes max. */
 		size_t n = inst->plugin->relieve(inst->bytes, level, max - done);
 		done += n < max - done ? n : max - done;
@@ -282,7 +282,7 @@ instance_table_relieve (struct instance_table *t,
 	}
 	size_t done = instance_table_reap(t, max);
 	/* instance_list_relieve() returns at most max - done, so done never
-	 * passes max.  The comparisons skip a list when no unit of max is
+	 * passes max. The comparisons skip a list when no unit of max is
 	 * left. */
 	if (done < max)
 		done += instance_list_relieve(&t->busy, level, max - done);
