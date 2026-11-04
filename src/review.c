@@ -374,20 +374,6 @@ review_int (uint64_t n)
 	return json_object_new_int64((int64_t)n);
 }
 
-/* Set the member @p key of @p obj to @p val. Returns @p obj, or nullptr
- * after freeing @p obj if that fails.
- */
-static struct json_object *
-review_also (struct json_object *obj,
-             char const         *key,
-             struct json_object *val)
-{
-	if (!jb_set(obj, key, val))
-		return obj;
-	json_object_put(obj);
-	return nullptr;
-}
-
 struct json_object *
 review_read_json (struct review_read const *read,
                   int                      *e)
@@ -1714,11 +1700,9 @@ review_file_json (struct review_file const *f)
 	struct json_object *lines = json_object_new_array();
 	for (size_t i = 0; lines && i < f->n; ++i) {
 		struct review_range const *g = &f->ranges[i];
-		if (jb_push(lines, review_int(g->first)) || jb_push(lines, review_int(g->last)) ||
-		    jb_push(lines, review_int(g->turn))) {
-			json_object_put(lines);
-			lines = nullptr;
-		}
+		lines = jb_push_or_free(lines, review_int(g->first));
+		lines = jb_push_or_free(lines, review_int(g->last));
+		lines = jb_push_or_free(lines, review_int(g->turn));
 	}
 	return jb_object("repo", review_string(&f->repo),
 	                 "commit", json_object_new_string(f->commit),
@@ -1733,12 +1717,8 @@ static struct json_object *
 review_files_json (struct review_files const *list)
 {
 	struct json_object *files = json_object_new_array();
-	for (size_t i = 0; files && i < list->n; ++i) {
-		if (jb_push(files, review_file_json(&list->files[i]))) {
-			json_object_put(files);
-			files = nullptr;
-		}
-	}
+	for (size_t i = 0; files && i < list->n; ++i)
+		files = jb_push_or_free(files, review_file_json(&list->files[i]));
 	return files;
 }
 
@@ -1752,10 +1732,10 @@ review_change_json (struct review_change const *c)
 		"commit", json_object_new_string(c->commit),
 		"evidence", review_string(&c->evidence),
 		nullptr);
-	if (obj && c->claim.ptr)
-		obj = review_also(obj, "claim", review_string(&c->claim));
-	if (obj && c->location.ptr)
-		obj = review_also(obj, "location", review_string(&c->location));
+	if (c->claim.ptr)
+		obj = jb_set_or_free(obj, "claim", review_string(&c->claim));
+	if (c->location.ptr)
+		obj = jb_set_or_free(obj, "location", review_string(&c->location));
 	return obj;
 }
 
@@ -1764,19 +1744,15 @@ static struct json_object *
 review_finding_json (struct review_finding const *f)
 {
 	struct json_object *history = json_object_new_array();
-	for (size_t i = 0; history && i < f->n; ++i) {
-		if (jb_push(history, review_change_json(&f->changes[i]))) {
-			json_object_put(history);
-			history = nullptr;
-		}
-	}
+	for (size_t i = 0; history && i < f->n; ++i)
+		history = jb_push_or_free(history, review_change_json(&f->changes[i]));
 	struct json_object *obj = jb_object(
 		"claim", review_string(&f->claim),
 		"first", review_int(f->first),
 		"last", review_int(f->last),
 		"history", history,
 		nullptr);
-	return obj && f->path.ptr ? review_also(obj, "path", review_string(&f->path)) : obj;
+	return f->path.ptr ? jb_set_or_free(obj, "path", review_string(&f->path)) : obj;
 }
 
 struct json_object *
@@ -1790,12 +1766,8 @@ review_json (struct review const *r,
 		return nullptr;
 	}
 	struct json_object *findings = json_object_new_array();
-	for (size_t i = 0; findings && i < r->n_findings; ++i) {
-		if (jb_push(findings, review_finding_json(&r->findings[i]))) {
-			json_object_put(findings);
-			findings = nullptr;
-		}
-	}
+	for (size_t i = 0; findings && i < r->n_findings; ++i)
+		findings = jb_push_or_free(findings, review_finding_json(&r->findings[i]));
 	struct json_object *obj = jb_object("reads", review_files_json(&r->log),
 	                                    "pending", review_files_json(&r->pending),
 	                                    "full", review_int(r->full),
@@ -1818,8 +1790,7 @@ review_file_restore (struct review            *r,
 	struct tool_text path;
 	uint64_t total;
 	struct json_object const *lines = jb_get(obj, "lines");
-	size_t n = json_object_is_type(lines, json_type_array)
-	           ? json_object_array_length(lines) : 0;
+	size_t n = jb_len(lines);
 	if (!review_get_text(obj, "repo", &repo) || !review_word(repo) ||
 	    !review_get_text(obj, "commit", &commit) || !util_is_oid(commit.ptr, commit.len) ||
 	    !review_get_text(obj, "path", &path) || !review_word(path) ||
@@ -2002,8 +1973,7 @@ review_finding_restore (struct review            *r,
 	uint64_t first;
 	uint64_t last;
 	struct json_object const *history = jb_get(obj, "history");
-	size_t n = json_object_is_type(history, json_type_array)
-	           ? json_object_array_length(history) : 0;
+	size_t n = jb_len(history);
 	bool located = jb_get(obj, "path");
 	if ((located && (!review_get_text(obj, "path", &path) || !review_word(path))) ||
 	    !review_get_number(obj, "first", UINT32_MAX, &first) ||
@@ -2053,8 +2023,7 @@ review_restore (struct review            *r,
 	for (size_t k = 0; !e && k < sizeof keys / sizeof *keys; ++k) {
 		struct json_object const *a = jb_get(obj, keys[k]);
 		e = json_object_is_type(a, json_type_array) ? 0 : EINVAL;
-		for (size_t i = 0, n = e ? 0 : json_object_array_length(a);
-		     !e && got.size <= REVIEW_MAX && i < n; ++i)
+		for (size_t i = 0, n = jb_len(a); !e && got.size <= REVIEW_MAX && i < n; ++i)
 			e = lists[k] ? review_file_restore(&got, lists[k], jb_at(a, i))
 			             : review_finding_restore(&got, jb_at(a, i));
 	}

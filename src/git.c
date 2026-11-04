@@ -414,18 +414,6 @@ git_destroy (struct git **p_git)
 	free(git);
 }
 
-/* Append @p str to the array @p arr, which is let go of if that fails. */
-static struct json_object *
-git_append (struct json_object *arr,
-            char const         *str)
-{
-	if (arr && jb_push(arr, json_object_new_string(str))) {
-		json_object_put(arr);
-		arr = nullptr;
-	}
-	return arr;
-}
-
 /* The schema of an argument that is at most @p max strings. */
 static struct json_object *
 git_strings (char const *description,
@@ -450,11 +438,11 @@ git_definition (void const *service)
 	static_assert(OPTIONS == 16 && REVISIONS == 4 && PATHS == 32 &&
 	              GIT_MAX == 4 << 20, "the description says");
 	struct json_object *repos = json_object_new_array();
-	for (size_t i = 0; i < git->n; ++i)
-		repos = git_append(repos, git->repo[i].name);
+	for (size_t i = 0; repos && i < git->n; ++i)
+		repos = jb_push_or_free(repos, json_object_new_string(git->repo[i].name));
 	struct json_object *cmds = json_object_new_array();
-	for (size_t i = 0; i < ARRAY_SIZE(commands); ++i)
-		cmds = git_append(cmds, commands[i].name);
+	for (size_t i = 0; cmds && i < ARRAY_SIZE(commands); ++i)
+		cmds = jb_push_or_free(cmds, json_object_new_string(commands[i].name));
 	return jb_object(
 		"name", json_object_new_string("git"),
 		"title", json_object_new_string("Git"),
@@ -538,8 +526,8 @@ git_definition (void const *service)
 						"as many as the response window holds."),
 					nullptr),
 				nullptr),
-			"required", git_append(git_append(json_object_new_array(), "repo"),
-			                       "command"),
+			"required", jb_push_or_free(jb_list(json_object_new_string("repo")),
+			                            json_object_new_string("command")),
 			"additionalProperties", json_object_new_boolean(0),
 			nullptr),
 		"annotations", jb_object(
@@ -950,8 +938,8 @@ git_help (struct mcp_slot *slot,
           size_t           command)
 {
 	struct json_object *options = json_object_new_array();
-	for (struct cstr_view const *o = commands[command].options; o->data; ++o)
-		options = git_append(options, o->data);
+	for (struct cstr_view const *o = commands[command].options; options && o->data; ++o)
+		options = jb_push_or_free(options, json_object_new_string(o->data));
 	uint64_t takes = commands[command].takes;
 	struct json_object *help = jb_object(
 		"command", json_object_new_string(commands[command].name),

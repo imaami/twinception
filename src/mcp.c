@@ -3760,7 +3760,7 @@ mcp_req_draft (struct mcp_req     *req,
                struct json_object *history)
 {
 	struct mcp_static const *st = req->mcp->st;
-	size_t n = history ? json_object_array_length(history) : 0;
+	size_t n = jb_len(history);
 	req->splice_max = (uint16_t)(n + ARRAY_SIZE(req->splice));
 	if (n) {
 		req->history_splices = malloc(req->splice_max * sizeof *req->history_splices);
@@ -5999,14 +5999,10 @@ mcp_slot_done (struct mcp_slot *slot,
 			"attached", json_object_new_string_len(files.len ? (char const *)files.ptr : "", (int)files.len),
 			"text", json_object_new_string_len(out.len ? (char const *)out.ptr : "", (int)out.len),
 			nullptr);
-		if (notebook && jb_set(result, "notebook", json_object_new_string(notebook))) {
-			json_object_put(result);
-			result = nullptr;
-		}
-		if (slot->read && jb_set(result, "source", review_read_json(slot->read, &(int){}))) {
-			json_object_put(result);
-			result = nullptr;
-		}
+		if (notebook)
+			result = jb_set_or_free(result, "notebook", json_object_new_string(notebook));
+		if (slot->read)
+			result = jb_set_or_free(result, "source", review_read_json(slot->read, &(int){}));
 		int e = mcp_req_archive(req, "tool-result", result, nullptr);
 		if (e)
 			req->archive_error = e;
@@ -6246,11 +6242,8 @@ mcp_req_checkpoint (struct mcp_req *req)
 		return e;
 	struct json_object *lent = json_object_new_array();
 	for (uint32_t i = 0; lent && i < st->n_offers; ++i)
-		if ((req->lent >> i & 1) &&
-		    jb_push(lent, json_object_new_string(st->offers[i].name))) {
-			json_object_put(lent);
-			lent = nullptr;
-		}
+		if (req->lent >> i & 1)
+			lent = jb_push_or_free(lent, json_object_new_string(st->offers[i].name));
 	struct span upload = buf_peek(&req->upload);
 	uint64_t now = clk_realtime_ns();
 	req->archive_deadline = st->ep->timeout_ms > 0
@@ -6282,10 +6275,8 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"lent", lent, nullptr);
 	/* Only a task's checkpoint can be resumed, so only it keeps the review
 	 * record. */
-	if (task && req->review && jb_set(state, "review", review_json(req->review, &(int){}))) {
-		json_object_put(state);
-		state = nullptr;
-	}
+	if (task && req->review)
+		state = jb_set_or_free(state, "review", review_json(req->review, &(int){}));
 	req->intents = 0;
 	for (size_t k = 0; k < JOB_CALLS; ++k) {
 		json_object_put(req->saved_tools[k]);
@@ -9563,10 +9554,7 @@ mcp_words (char const *const words[])
 {
 	struct json_object *arr = json_object_new_array();
 	for (size_t i = 0; arr && words[i]; ++i)
-		if (jb_push(arr, json_object_new_string(words[i]))) {
-			json_object_put(arr);
-			arr = nullptr;
-		}
+		arr = jb_push_or_free(arr, json_object_new_string(words[i]));
 	return arr;
 }
 
@@ -9612,18 +9600,16 @@ mcp_tool_definition (void const *service)
 			"background mode and returns a job id. Omission follows the server "
 			"setting, unless live streaming is requested."),
 		nullptr);
-	if (st->lending.by[LEND_ALWAYS] && jb_set(props, "thread", mcp_property("string",
-		    "Optional ask-chain id from an earlier answer: 32 hexadecimal "
-		    "digits. Notes are shared by repository path and loaded at the "
-		    "start of every ask, independently of this argument."))) {
-		json_object_put(props);
-		props = nullptr;
-	}
+	if (st->lending.by[LEND_ALWAYS])
+		props = jb_set_or_free(props, "thread", mcp_property("string",
+			"Optional ask-chain id from an earlier answer: 32 hexadecimal "
+			"digits. Notes are shared by repository path and loaded at the "
+			"start of every ask, independently of this argument."));
 	if (st->ep->background) {
-		int e = jb_set(props, "job", mcp_property("string",
+		props = jb_set_or_free(props, "job", mcp_property("string",
 			"The job id returned by this tool. Give job instead of prompt, "
 			"system or thread to check its status or read its completed result."));
-		e |= jb_set(props, "action", jb_object(
+		props = jb_set_or_free(props, "action", jb_object(
 			"type", json_object_new_string("string"),
 			"enum", mcp_words((char const *[]){ "result", "cancel", nullptr }),
 			"default", json_object_new_string("result"),
@@ -9631,10 +9617,6 @@ mcp_tool_definition (void const *service)
 				"With job: result checks its status or returns its completed "
 				"answer; cancel stops the job. Omit action to use result."),
 			nullptr));
-		if (e) {
-			json_object_put(props);
-			props = nullptr;
-		}
 	}
 	return jb_object(
 		"name", json_object_new_string(st->tool->name),
@@ -9725,14 +9707,10 @@ mcp_notes_schema (enum notes_side          side,
 	bool files = side == NOTES_UPSTREAM && st && st->uploads;
 	size_t most = st ? st->files_inline : FILES_INLINE;
 	struct json_object *actions = json_object_new_array();
-	for (size_t i = 0; actions && i < ARRAY_SIZE(mcp_notes_actions); ++i) {
-		if (!files && (mcp_notes_actions[i].flags & NOTE_UPLOAD))
-			continue;
-		if (jb_push(actions, json_object_new_string(mcp_notes_actions[i].name))) {
-			json_object_put(actions);
-			actions = nullptr;
-		}
-	}
+	for (size_t i = 0; actions && i < ARRAY_SIZE(mcp_notes_actions); ++i)
+		if (files || !(mcp_notes_actions[i].flags & NOTE_UPLOAD))
+			actions = jb_push_or_free(actions,
+			                          json_object_new_string(mcp_notes_actions[i].name));
 	struct json_object *props = jb_object(
 		"action", jb_object(
 			"type", json_object_new_string("string"),
@@ -9793,25 +9771,21 @@ mcp_notes_schema (enum notes_side          side,
 				"select the source. add, replace and restore write only your own notebook."),
 			nullptr),
 		nullptr);
-	/* The client's program, not its model, fills content in with a file
-	 * (the extension io.modelcontextprotocol/files). */
-	if (side == NOTES_CLIENT && jb_set(props, "content", jb_object(
-		    "type", json_object_new_string("string"),
-		    "format", json_object_new_string("uri"),
-		    "description", json_object_new_string(
-			    "For add and replace, instead of text: a file that the user gave, which "
-			    "your client attaches as it is. Do not write it yourself."),
-		    "x-mcp-file", jb_object("maxSize", json_object_new_int64((int64_t)most),
-		                            nullptr),
-		    nullptr))) {
-		json_object_put(props);
-		props = nullptr;
-	}
-	if (side == NOTES_CLIENT && jb_set(props, "thread", mcp_property("string",
-		    "Optional legacy ask-chain id (32 hexadecimal digits). Notes belong "
-		    "to the configured shared repository, independent of this value."))) {
-		json_object_put(props);
-		props = nullptr;
+	if (side == NOTES_CLIENT) {
+		/* The client program, not the model, fills in content with a
+		 * file (the extension io.modelcontextprotocol/files). */
+		props = jb_set_or_free(props, "content", jb_object(
+			"type", json_object_new_string("string"),
+			"format", json_object_new_string("uri"),
+			"description", json_object_new_string(
+				"For add and replace, instead of text: a file that the user gave, "
+				"which your client attaches as it is. Do not write it yourself."),
+			"x-mcp-file", jb_object("maxSize", json_object_new_int64((int64_t)most),
+			                        nullptr),
+			nullptr));
+		props = jb_set_or_free(props, "thread", mcp_property("string",
+			"Optional legacy ask-chain id (32 hexadecimal digits). Notes belong "
+			"to the configured shared repository, independent of this value."));
 	}
 	dstr_auto description = DSTR_INIT;
 	if (!dstr_printf(&description, "Participant: %s. %s "
@@ -9865,17 +9839,13 @@ mcp_notes_definition (void const *service)
 	session[sizeof session - 1] = '\0';
 	/* Clients discover stored participants through notebooks. A new writer
 	 * has no branch yet, so publish its identity with the authorized tool. */
-	if (jb_set(def, "_meta", jb_object(
-		    "askai", jb_object(
-			    "session", json_object_new_string_len(session, sizeof session - 1),
-			    "participant", json_object_new_string(notes_writer(st->notes)),
-			    "notebooks", json_object_new_boolean(1),
-			    nullptr),
-		    nullptr))) {
-		json_object_put(def);
-		def = nullptr;
-	}
-	return def;
+	return jb_set_or_free(def, "_meta", jb_object(
+		"askai", jb_object(
+			"session", json_object_new_string_len(session, sizeof session - 1),
+			"participant", json_object_new_string(notes_writer(st->notes)),
+			"notebooks", json_object_new_boolean(1),
+			nullptr),
+		nullptr));
 }
 
 /* Returns the definition of the notes tool for the upstream. */
@@ -10185,15 +10155,11 @@ static struct json_object *
 mcp_modern_list (struct json_object *result,
                  struct json_object *info)
 {
-	if (jb_set(result, "ttlMs", json_object_new_int(CACHE_TTL_MS)) ||
-	    jb_set(result, "cacheScope", json_object_new_string("public")) ||
-	    jb_set(result, "resultType", json_object_new_string("complete")) ||
-	    jb_set(result, "_meta", jb_object(meta_server, json_object_get(info),
-	                                      nullptr))) {
-		json_object_put(result);
-		return nullptr;
-	}
-	return result;
+	result = jb_set_or_free(result, "ttlMs", json_object_new_int(CACHE_TTL_MS));
+	result = jb_set_or_free(result, "cacheScope", json_object_new_string("public"));
+	result = jb_set_or_free(result, "resultType", json_object_new_string("complete"));
+	return jb_set_or_free(result, "_meta", jb_object(meta_server, json_object_get(info),
+	                                                 nullptr));
 }
 
 /* Serialize the supported versions, pushed onto @p list, and with what

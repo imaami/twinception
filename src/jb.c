@@ -20,15 +20,8 @@ jb_object (char const *key,
 	struct json_object *obj = json_object_new_object();
 	va_list ap;
 	va_start(ap, key);
-	for (; key; key = va_arg(ap, char const *)) {
-		struct json_object *val = va_arg(ap, struct json_object *);
-		if (!obj) {
-			json_object_put(val);
-		} else if (jb_set(obj, key, val)) {
-			json_object_put(obj);
-			obj = nullptr;
-		}
-	}
+	for (; key; key = va_arg(ap, char const *))
+		obj = jb_set_or_free(obj, key, va_arg(ap, struct json_object *));
 	va_end(ap);
 	return obj;
 }
@@ -36,16 +29,7 @@ jb_object (char const *key,
 struct json_object *
 jb_list (struct json_object *val)
 {
-	struct json_object *arr = json_object_new_array();
-	if (!arr) {
-		json_object_put(val);
-		return nullptr;
-	}
-	if (jb_push(arr, val)) {
-		json_object_put(arr);
-		return nullptr;
-	}
-	return arr;
+	return jb_push_or_free(json_object_new_array(), val);
 }
 
 int
@@ -81,9 +65,7 @@ struct json_object *
 jb_at (struct json_object const *arr,
        size_t                    idx)
 {
-	return json_object_is_type(arr, json_type_array) &&
-	       idx < json_object_array_length(arr)
-		? json_object_array_get_idx(arr, idx) : nullptr;
+	return idx < jb_len(arr) ? json_object_array_get_idx(arr, idx) : nullptr;
 }
 
 char const *

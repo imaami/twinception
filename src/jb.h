@@ -40,6 +40,37 @@ extern int
 jb_push (struct json_object *arr,
          struct json_object *val);
 
+/**
+ * Set the member @p key of @p obj to @p val, and return @p obj. The call
+ * consumes @p val. If the set fails, the call frees @p obj and returns
+ * nullptr. A nullptr @p obj fails the set, so a chain of calls needs only
+ * one check at its end.
+ */
+static inline struct json_object *
+jb_set_or_free (struct json_object *obj,
+                char const         *key,
+                struct json_object *val)
+{
+	if (!jb_set(obj, key, val))
+		return obj;
+	json_object_put(obj);
+	return nullptr;
+}
+
+/**
+ * Append @p val to the array @p arr, and return @p arr. The call consumes
+ * @p val. If the push fails, the call frees @p arr and returns nullptr.
+ */
+static inline struct json_object *
+jb_push_or_free (struct json_object *arr,
+                 struct json_object *val)
+{
+	if (!jb_push(arr, val))
+		return arr;
+	json_object_put(arr);
+	return nullptr;
+}
+
 /** Member @p key, or nullptr if absent, null, or @p obj is no object. */
 extern struct json_object *
 jb_get (struct json_object const *obj,
@@ -49,6 +80,14 @@ jb_get (struct json_object const *obj,
 extern struct json_object *
 jb_at (struct json_object const *arr,
        size_t                    idx);
+
+/** Returns the length of the array @p val, or 0 if @p val is not an array. */
+static inline size_t
+jb_len (struct json_object const *val)
+{
+	return json_object_is_type(val, json_type_array) ? json_object_array_length(val)
+	                                                 : 0;
+}
 
 /** String value, or nullptr if @p val is no string. */
 extern char const *

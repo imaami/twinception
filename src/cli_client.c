@@ -267,11 +267,7 @@ static struct json_object *cli_client_packet(char const *method, struct json_obj
 	struct json_object *message = jb_object("jsonrpc", json_object_new_string("2.0"),
 	                                        "method", json_object_new_string(method),
 	                                        "params", params, nullptr);
-	if (id && jb_set(message, "id", json_object_new_int64(id))) {
-		json_object_put(message);
-		message = nullptr;
-	}
-	return message;
+	return id ? jb_set_or_free(message, "id", json_object_new_int64(id)) : message;
 }
 
 static int cli_client_notification(struct cli_client *client, char const *method,
@@ -755,9 +751,7 @@ static bool
 cli_client_has_action (struct json_object *actions,
                        char const         *name)
 {
-	if (!json_object_is_type(actions, json_type_array))
-		return false;
-	for (size_t i = 0, count = json_object_array_length(actions); i < count; ++i)
+	for (size_t i = 0, count = jb_len(actions); i < count; ++i)
 		if (cli_client_is(jb_at(actions, i), name))
 			return true;
 	return false;

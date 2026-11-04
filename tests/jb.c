@@ -91,6 +91,26 @@ main (void)
 	CHECK(integer("{}", -7, 7));
 	CHECK(jb_int(nullptr, -7) == -7 && jb_uint(nullptr, 7) == 7);
 
+	/* A nullptr value fails the set or the push. The failure frees the
+	 * container. With a nullptr container, the call returns nullptr and
+	 * frees the value. */
+	struct json_object *obj = jb_set_or_free(json_object_new_object(), "a",
+	                                         json_object_new_int(1));
+	CHECK(jb_int(jb_get(obj, "a"), 0) == 1);
+	CHECK(!jb_set_or_free(obj, "b", nullptr));
+	CHECK(!jb_set_or_free(nullptr, "a", json_object_new_int(1)));
+	struct json_object *arr = jb_push_or_free(jb_list(json_object_new_int(1)),
+	                                          json_object_new_int(2));
+	CHECK(jb_len(arr) == 2 && jb_int(jb_at(arr, 1), 0) == 2 && !jb_at(arr, 2));
+	CHECK(!jb_push_or_free(arr, nullptr));
+	CHECK(!jb_push_or_free(nullptr, json_object_new_int(1)));
+	CHECK(!jb_list(nullptr));
+
+	/* jb_len() returns 0 for a value that is not an array. */
+	struct json_object *text = json_object_new_string("abc");
+	CHECK(jb_len(text) == 0 && jb_len(nullptr) == 0);
+	json_object_put(text);
+
 	/* One JSON value, whole or a slice at a time. */
 	CHECK(parse("{\"a\": [1, 2, \"three\"]}", SIZE_MAX, &steps) == 0 && steps == 1);
 	CHECK(parse("{\"a\": [1, 2, \"three\"]}", 4, &steps) == 0 && steps > 1);

@@ -26,10 +26,8 @@ findings_names (struct tool_text const *names,
 {
 	struct json_object *arr = json_object_new_array();
 	for (size_t i = 0; arr && i < n; ++i)
-		if (jb_push(arr, json_object_new_string_len(names[i].ptr, (int)names[i].len))) {
-			json_object_put(arr);
-			arr = nullptr;
-		}
+		arr = jb_push_or_free(arr, json_object_new_string_len(names[i].ptr,
+		                                                      (int)names[i].len));
 	return arr;
 }
 

@@ -86,20 +86,15 @@ ai_conversation (enum ai_api        api,
                  struct json_object *prompt)
 {
 	struct json_object *messages = json_object_new_array();
-	if (!messages)
-		return nullptr;
-	int e = system ? jb_push(messages, ai_message("system", system)) : 0;
-	size_t n = history ? json_object_array_length(history) : 0;
-	for (size_t k = 0; !e && k < n; ++k) {
+	if (system)
+		messages = jb_push_or_free(messages, ai_message("system", system));
+	size_t n = jb_len(history);
+	for (size_t k = 0; messages && k < n; ++k) {
 		struct json_object *message = jb_at(history, k);
-		e = jb_push(messages, ai_input(api, jb_text(jb_get(message, "role")),
-		                              jb_get(message, "content")));
+		messages = jb_push_or_free(messages, ai_input(api, jb_text(jb_get(message, "role")),
+		                                              jb_get(message, "content")));
 	}
-	if (e || jb_push(messages, ai_input(api, "user", prompt))) {
-		json_object_put(messages);
-		return nullptr;
-	}
-	return messages;
+	return jb_push_or_free(messages, ai_input(api, "user", prompt));
 }
 
 /* A copy of @p val, which the configuration holds: every loop reads it, so no
@@ -1442,11 +1437,7 @@ ai_tool (enum ai_api               api,
 		                 "function", tool, nullptr);
 	case AI_RESPONSES:
 	case AI_INTERACTIONS:
-		if (tool && jb_set(tool, "type", json_object_new_string("function"))) {
-			json_object_put(tool);
-			return nullptr;
-		}
-		return tool;
+		return jb_set_or_free(tool, "type", json_object_new_string("function"));
 	case AI_MESSAGES:
 	case AI_GENERATE:
 		break;

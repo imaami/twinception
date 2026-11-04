@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "jb.h"
 #include "log.h"
 #include "policy.h"
 #include "util.h"
@@ -756,7 +757,7 @@ policy_build_identity (struct policy_build *b,
 		                         role ? json_object_to_json_string(role) : "named");
 	if (tokens && !json_object_is_type(tokens, json_type_array))
 		return policy_build_fail(b, "identity %s: tokens must be an array", who);
-	size_t n = tokens ? json_object_array_length(tokens) : 0;
+	size_t n = jb_len(tokens);
 	if (!n)
 		return policy_build_fail(b, "identity %s needs tokens", who);
 	struct tool_text name = policy_build_who(b, 2, (struct tool_text const[]){
@@ -929,16 +930,6 @@ policy_members (struct json_object *obj)
 	     ? (size_t)json_object_object_length(obj) : 0;
 }
 
-/* The elements of the member @p key of @p obj, if an object's array. */
-static size_t
-policy_elements (struct json_object *obj,
-                 char const         *key)
-{
-	struct json_object *v;
-	return json_object_object_get_ex(obj, key, &v) &&
-	       json_object_is_type(v, json_type_array) ? json_object_array_length(v) : 0;
-}
-
 /* The members of the configuration file's object @p file that make the
  * policy, each left as it is if absent; whether @p file has any of them,
  * which turns askai's own policy off.
@@ -994,7 +985,7 @@ policy_create (struct json_object *file,
 	struct json_object_iter it;
 	if (policy_members(ids))
 		json_object_object_foreachC(ids, it)
-			n_tokens += policy_elements(it.val, "tokens");
+			n_tokens += jb_len(jb_get(it.val, "tokens"));
 	/* The subordinate uids go into the policy's block, and the
 	 * subordinate gids are needed only to check unix-groups. */
 	struct policy_range *subuids;

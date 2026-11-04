@@ -1310,13 +1310,12 @@ autocomplete_entry_validate (struct autocomplete_entry const *entry,
                              struct autocomplete_error       *diagnostic)
 {
 	struct json_object *required = jb_get(entry->root, "required");
-	if (json_object_is_type(required, json_type_array))
-		for (size_t i = 0, count = json_object_array_length(required); i < count; ++i) {
-			struct cstr_view key = autocomplete_json_text(json_object_array_get_idx(required, i));
-			struct json_object *unused = nullptr;
-			if (!json_object_object_get_ex(arguments, key.data, &unused))
-				return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Missing required tool argument: "), key);
-		}
+	for (size_t i = 0, count = jb_len(required); i < count; ++i) {
+		struct cstr_view key = autocomplete_json_text(json_object_array_get_idx(required, i));
+		struct json_object *unused = nullptr;
+		if (!json_object_object_get_ex(arguments, key.data, &unused))
+			return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Missing required tool argument: "), key);
+	}
 	return 0;
 }
 
