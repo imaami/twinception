@@ -15,6 +15,7 @@
 #include "compat.h"
 #include "dstr.h"
 #include "jb.h"
+#include "util.h"
 
 enum { AUTOCOMPLETE_BYTES = 16 * 1024 * 1024 };
 
@@ -171,27 +172,6 @@ autocomplete_diagnose (struct autocomplete_error *error,
 	return number;
 }
 
-static void *
-autocomplete_grow (void   *memory,
-                   size_t *capacity,
-                   size_t  needed,
-                   size_t  width)
-{
-	if (needed <= *capacity)
-		return memory;
-	if (needed > SIZE_MAX / width)
-		return nullptr;
-	size_t next = *capacity ? *capacity : 16;
-	while (next < needed && next <= SIZE_MAX / 2)
-		next *= 2;
-	if (next < needed || next > SIZE_MAX / width)
-		next = needed;
-	void *grown = realloc(memory, next * width);
-	if (grown)
-		*capacity = next;
-	return grown;
-}
-
 /** Reserve a whole operation while retaining geometric headroom. */
 static int
 autocomplete_buffer_reserve (struct dstr *buffer,
@@ -336,8 +316,8 @@ autocomplete_tokenize (struct autocomplete       *ac,
 		}
 		if (strict && (mark || escape || dstr_len(&ac->nesting)))
 			return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Unterminated quote, escape or JSON value in tool arguments"), CSTR_VIEW(""));
-		struct autocomplete_token *tokens = autocomplete_grow(ac->tokens, &ac->token_capacity,
-		                                                      ac->token_count + 1, sizeof *tokens);
+		struct autocomplete_token *tokens = util_room(ac->tokens, &ac->token_capacity,
+		                                              ac->token_count + 1, sizeof *tokens);
 		if (!tokens)
 			return ENOMEM;
 		ac->tokens = tokens;
@@ -724,8 +704,8 @@ autocomplete_add_tool (struct autocomplete *ac,
 		}
 	}
 	if (!replace) {
-		struct autocomplete_entry *entries = autocomplete_grow(ac->entries, &ac->capacity,
-		                                                       ac->count + 1, sizeof *entries);
+		struct autocomplete_entry *entries = util_room(ac->entries, &ac->capacity,
+		                                               ac->count + 1, sizeof *entries);
 		if (!entries) {
 			error = ENOMEM;
 			goto fail;
@@ -781,7 +761,7 @@ autocomplete_names_set (struct autocomplete_names *names,
 		return EINVAL;
 	if (count > names->capacity) {
 		size_t previous = names->capacity;
-		struct dstr *grown = autocomplete_grow(names->values, &names->capacity, count, sizeof *grown);
+		struct dstr *grown = util_room(names->values, &names->capacity, count, sizeof *grown);
 		if (!grown)
 			return ENOMEM;
 		names->values = grown;
@@ -867,8 +847,8 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 		return E2BIG;
 	if (!replace) {
 		size_t previous = ac->notes_capacity;
-		struct autocomplete_notebook *notes = autocomplete_grow(ac->notes, &ac->notes_capacity,
-		                                                         index + 1, sizeof *notes);
+		struct autocomplete_notebook *notes = util_room(ac->notes, &ac->notes_capacity,
+		                                                index + 1, sizeof *notes);
 		if (!notes)
 			return ENOMEM;
 		ac->notes = notes;

@@ -171,26 +171,6 @@ review_text_fini (struct review_text *t)
 	*t = (struct review_text){};
 }
 
-/* Grow @p items, an array with room for @p *cap items of @p size bytes,
- * until it has room for @p n items, and update @p *cap. Returns the array,
- * which may have moved, or nullptr if out of memory, with @p items intact.
- */
-static void *
-review_room (void   *items,
-             size_t *cap,
-             size_t  n,
-             size_t  size)
-{
-	if (n <= *cap)
-		return items;
-	size_t more = *cap ? 2 * *cap : 4;
-	more = more < n ? n : more;
-	void *p = reallocarray(items, more, size);
-	if (p)
-		*cap = more;
-	return p;
-}
-
 /* Whether @p t is 1 to REVIEW_WORD bytes of UTF-8 text without NUL, as a
  * repository name or a path must be.
  */
@@ -498,8 +478,7 @@ review_files_insert (struct review_files      *list,
                      struct review_file const *f,
                      size_t                    at)
 {
-	struct review_file *files = review_room(list->files, &list->cap, list->n + 1,
-	                                        sizeof *files);
+	struct review_file *files = util_room(list->files, &list->cap, list->n + 1, sizeof *files);
 	if (!files)
 		return ENOMEM;
 	list->files = files;
@@ -560,7 +539,7 @@ review_log (struct review            *r,
 		r->full = r->full ? r->full : lines.turn;
 		return 0;
 	}
-	p = review_room(f->ranges, &f->cap, n, sizeof *p);
+	p = util_room(f->ranges, &f->cap, n, sizeof *p);
 	if (!p)
 		return ENOMEM;
 	f->ranges = p;
@@ -1436,8 +1415,8 @@ review_add (struct review      *r,
 		              review_state_names[state].ptr,
 		              state == REVIEW_DISPROVED ? " false" : "");
 	struct review_finding f = { .first = a.place.first, .last = a.place.last };
-	struct review_finding *all = review_room(r->findings, &r->cap_findings, r->n_findings + 1,
-	                                         sizeof *all);
+	struct review_finding *all = util_room(r->findings, &r->cap_findings, r->n_findings + 1,
+	                                       sizeof *all);
 	if (all)
 		r->findings = all;
 	/* Allocate one change. review_update() grows the array. */
@@ -1542,7 +1521,7 @@ review_update (struct review      *r,
 	struct review_text claim = {};
 	struct review_text path = {};
 	struct review_change *changes = w.failed ? nullptr
-	                              : review_room(f->changes, &f->cap, f->n + 1, sizeof *changes);
+	                              : util_room(f->changes, &f->cap, f->n + 1, sizeof *changes);
 	if (changes)
 		f->changes = changes;
 	e = changes ? 0 : ENOMEM;
@@ -1960,8 +1939,8 @@ review_finding_restore (struct review            *r,
 	    n > (REVIEW_MAX - r->size) / sizeof(struct review_change))
 		return EINVAL;
 	struct review_finding f = { .cap = n, .first = (uint32_t)first, .last = (uint32_t)last };
-	struct review_finding *all = review_room(r->findings, &r->cap_findings, r->n_findings + 1,
-	                                         sizeof *all);
+	struct review_finding *all = util_room(r->findings, &r->cap_findings, r->n_findings + 1,
+	                                       sizeof *all);
 	if (all)
 		r->findings = all;
 	f.changes = all ? calloc(n, sizeof *f.changes) : nullptr;

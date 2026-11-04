@@ -263,6 +263,27 @@ util_seed (void)
 	return clk_realtime_ns();
 }
 
+/** Grow @p items, an array with room for @p *cap items of @p size bytes,
+ *  so that it has room for @p n items, and update @p *cap. Returns the
+ *  array, which may have moved. If out of memory, returns nullptr and
+ *  changes neither @p items nor @p *cap.
+ */
+static inline void *
+util_room (void   *items,
+           size_t *cap,
+           size_t  n,
+           size_t  size)
+{
+	if (n <= *cap)
+		return items;
+	size_t more = *cap ? 2 * *cap : 4;
+	more = more < n || more > SIZE_MAX / size ? n : more;
+	void *p = n <= SIZE_MAX / size ? realloc(items, more * size) : nullptr;
+	if (p)
+		*cap = more;
+	return p;
+}
+
 /** The @p a_len bytes at @p a, then the string @p b, in memory of their
  *  own; nullptr if out of memory.
  */
