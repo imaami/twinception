@@ -730,18 +730,34 @@ web_run_mail (struct loop *loop,
 {
 	struct web_run *run = container_of(msg, struct web_run, to_home);
 	struct web *web = run->web;
+	struct web_end const ends[] = {
+		{ .why = stopping, .e = ESHUTDOWN },
+		{ .why = "",       .e = ECANCELED },
+	};
+	struct web_end const *end = &ends[!loop->exit];
 	uint32_t bits = atomic_exchange(&run->bits, 0);
-	if (bits & RUN_SUBMIT) {
-		if (loop->exit)
-			web_run_end(web, run, &(struct web_end){ .why = stopping, .e = ESHUTDOWN });
-		else if (bits & RUN_CANCEL)
-			web_run_end(web, run, &(struct web_end){ .why = "", .e = ECANCELED });
-		else
+
+	switch (bits & (RUN_SUBMIT | RUN_CANCEL)) {
+	case RUN_SUBMIT:
+		if (!loop->exit) {
 			web_run_start(web, run);
-	} else if (bits & RUN_CANCEL && !list_is_empty(&run->live)) {
-		http_cancel(web->http, &run->transfer);
-		web_run_finish(web, run, &(struct web_end){ .why = "cancelled", .e = ECANCELED });
+			break;
+		}
+
+	case RUN_SUBMIT | RUN_CANCEL:
+		web_run_end(web, run, end);
+		break;
+
+	case RUN_CANCEL:
+		if (!list_is_empty(&run->live)) {
+			http_cancel(web->http, &run->transfer);
+			web_run_finish(web, run, &(struct web_end){
+				.why = "cancelled",
+				.e = ECANCELED
+			});
+		}
 	}
+
 	web_run_put(run, 1);
 }
 

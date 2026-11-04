@@ -17,10 +17,10 @@
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "child.h"
+#include "clk.h"
 #include "git.h"
 #include "journal.h"
 #include "loop.h"
@@ -817,7 +817,7 @@ journal_checkpoint_write (struct journal        *j,
 		if (job) {
 			j->recovery_bytes = j->recovery_bytes - job->bytes + bytes;
 			job->bytes = bytes;
-			uint64_t now = util_realtime();
+			uint64_t now = clk_realtime_ns();
 			if (now)
 				job->touched = now;
 			job->legacy = legacy;

@@ -12,9 +12,9 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
+#include "clk.h"
 #include "git.h"
 #include "notes.h"
 #include "util.h"
@@ -655,10 +655,15 @@ notes_lock (struct notes const *notes,
             int64_t            *age)
 {
 	*age = 0;
-	struct timespec now;
-	struct timespec up;
-	if (clock_gettime(CLOCK_REALTIME, &now) || clock_gettime(CLOCK_BOOTTIME, &up))
-		return errno;
+
+	struct timespec now = clk_now_or_1969(CLOCK_REALTIME);
+	if (now.tv_sec < 0)
+		return clk_errno(now);
+
+	struct timespec up = clk_now_or_1969(CLOCK_BOOTTIME);
+	if (up.tv_sec < 0)
+		return clk_errno(up);
+
 	char *path = nullptr;
 	if (asprintf(&path, "%s/%s.lock", notes->directory, repo) < 0)
 		return ENOMEM;

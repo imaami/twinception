@@ -80,11 +80,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <time.h>
 
 #include "ai.h"
 #include "buf.h"
 #include "child.h"
+#include "clk.h"
 #include "config.h"
 #include "datauri.h"
 #include "dstr.h"
@@ -2841,7 +2841,7 @@ mcp_req_archive_end (struct mcp_req *req)
 	size_t len = !task || status == LEDGER_CANCELLED || task->len != task->size ? 0 : task->len;
 	struct json_object *obj = jb_object(
 		"status", json_object_new_int(status),
-		"ended", json_object_new_uint64(util_realtime()),
+		"ended", json_object_new_uint64(clk_realtime_ns()),
 		"result", json_object_new_string_len(task && task->result ? task->result : "",
 		                                     (int)len), nullptr);
 	int e = mcp_req_archive(req, status == LEDGER_CANCELLED ? "cancel" : "result",
@@ -2911,7 +2911,7 @@ mcp_req_submit (struct mcp_req *req)
 	req->upload = (struct buf){};
 	job->call = req->call;
 	job->deadline = ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
-	uint64_t wall = req->archive_deadline ? util_realtime() : 0;
+	uint64_t wall = req->archive_deadline ? clk_realtime_ns() : 0;
 	if (wall)
 		job->deadline = loop->now + (req->archive_deadline > wall
 		                             ? req->archive_deadline - wall : 1);
@@ -5106,7 +5106,7 @@ mcp_slot_client_list (struct mcp_slot *slot)
 	int e = ledger_list(st->ledger, mcp_req_owner(req), &look);
 	if (e)
 		return e;
-	uint64_t day = util_realtime();
+	uint64_t day = clk_realtime_ns();
 	uint64_t now = loop_clock();
 	bool ok = true;
 	for (uint32_t i = 0; ok && i < look.n_tasks; ++i) {
@@ -6122,7 +6122,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 			lent = nullptr;
 		}
 	struct span upload = buf_peek(&req->upload);
-	uint64_t now = util_realtime();
+	uint64_t now = clk_realtime_ns();
 	req->archive_deadline = st->ep->timeout_ms > 0
 	                      ? now + (uint64_t)st->ep->timeout_ms * 1'000'000 : 0;
 	struct json_object *state = jb_object(
@@ -7367,7 +7367,7 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 	char uri[UPLOADS_URI];
 	size_t len = 0;
 	size_t n = uploads_find(st->uploads, mcp_req_owner(req), (char const *)id.ptr,
-	                        id.len, (int64_t)(util_realtime() / NS), uri, &len);
+	                        id.len, clk_realtime().tv_sec, uri, &len);
 	if (n) {
 		if (mcp_slot_notes_fits(slot, len))
 			return;
@@ -7460,7 +7460,7 @@ mcp_slot_notes_uploaded (struct mcp_slot *slot)
 		if (!e && expires)
 			(void)uploads_keep(st->uploads, mcp_req_owner(req), (char const *)id.ptr,
 			                   id.len, dstr_get(&uri), dstr_len(&uri), sizes[0],
-			                   expires, (int64_t)(util_realtime() / NS));
+			                   expires, clk_realtime().tv_sec);
 		/* A view is longer than its note, by its first line at least. */
 		e = e ? e : mcp_slot_notes_attached(slot, sizes[1], sizes[0],
 		                                    sizes[0] != sizes[1]);

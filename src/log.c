@@ -15,9 +15,9 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/uio.h>
-#include <time.h>
 #include <unistd.h>
 
+#include "clk.h"
 #include "compat.h"
 #include "log.h"
 
@@ -89,8 +89,7 @@ static bool
 log_site_allow (struct log_site *site,
                 uint32_t        *missed)
 {
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+	struct timespec ts = clk_monotonic_coarse();
 	uint64_t now = (uint64_t)ts.tv_sec;
 	uint64_t second = atomic_load_explicit(&site->second, memory_order_relaxed);
 	if (second != now &&

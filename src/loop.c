@@ -14,6 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "clk.h"
 #include "hist.h"
 #include "log.h"
 #include "loop.h"
@@ -180,10 +181,7 @@ loop_room (struct loop const *loop,
 uint64_t
 loop_clock (void)
 {
-	struct timespec ts;
-	if (clock_gettime(CLOCK_MONOTONIC, &ts))
-		return 0;
-	return (uint64_t)ts.tv_sec * 1'000'000'000 + (uint64_t)ts.tv_nsec;
+	return clk_monotonic_ns();
 }
 
 void

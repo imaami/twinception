@@ -13,27 +13,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
-#include <time.h>
 #include <unistd.h>
 
+#include "clk.h"
 #include "compat.h"
 
 #define ARRAY_SIZE(a) (sizeof (a) / sizeof *(a))
 
 /** Nanoseconds in a second. */
 static constexpr uint64_t NS = 1'000'000'000;
-
-/** The wall clock, CLOCK_REALTIME, in nanoseconds since the epoch, or 0 if
- *  it cannot be read or is before the epoch.
- */
-static inline uint64_t
-util_realtime (void)
-{
-	struct timespec ts;
-	if (clock_gettime(CLOCK_REALTIME, &ts) || ts.tv_sec < 0)
-		return 0;
-	return (uint64_t)ts.tv_sec * NS + (uint64_t)ts.tv_nsec;
-}
 
 /** Write the @p n bytes at @p src to @p dst as 2 @p n lowercase hexadecimal
  *  digits, without a NUL.
@@ -237,7 +225,7 @@ util_seed (void)
 	uint64_t seed;
 	if (getrandom(&seed, sizeof seed, GRND_NONBLOCK) == (ssize_t)sizeof seed)
 		return seed;
-	return util_realtime();
+	return clk_realtime_ns();
 }
 
 /** The @p a_len bytes at @p a, then the string @p b, in memory of their

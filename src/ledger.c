@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "clk.h"
 #include "ledger.h"
 #include "list.h"
 #include "loop.h"
@@ -557,7 +558,7 @@ ledger_open (struct ledger    *ledger,
 	if ((*e = util_random_hex((char *)id, BITS)))
 		return nullptr;
 	return ledger_restore(ledger, owner, kind, tool, (struct span){ id, sizeof id },
-	                      util_realtime(), 0, LEDGER_WORKING, (struct span){}, loop, who,
+	                      clk_realtime_ns(), 0, LEDGER_WORKING, (struct span){}, loop, who,
 	                      fn, e);
 }
 
@@ -612,7 +613,7 @@ ledger_restore (struct ledger     *ledger,
 		memcpy(t->result, result.ptr, result.len);
 	}
 	t->created = created;
-	t->ended = working ? 0 : ended ? ended : util_realtime();
+	t->ended = working ? 0 : ended ? ended : clk_realtime_ns();
 	t->due = working ? 0 : loop_clock() + LEDGER_KEEP * NS;
 	t->who = who;
 	atomic_init(&t->status, status);
@@ -700,7 +701,7 @@ ledger_end (struct ledger      *ledger,
 		task->result = nullptr;
 		task->len = task->size = 0;
 	}
-	task->ended = util_realtime();
+	task->ended = clk_realtime_ns();
 	task->due = loop_clock() + LEDGER_KEEP * NS;
 	pthread_mutex_lock(&ledger->lock);
 	atomic_store_explicit(&task->status, status, memory_order_release);
