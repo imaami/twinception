@@ -355,16 +355,16 @@ enum mcp_handle : uint32_t {
 	HANDLE_SLOT,     /* a struct mcp_slot */
 };
 
-/* How a kind of tool is lent to the turns: never; as the client's role
- * grants it; whenever the turns are lent anything; beside another; or
- * beside one that may run in the background.
+/* The rule by which askai lends a kind of tool to the turns.
+ * mcp_lending_lent() applies the rules.
  */
 enum mcp_lend : uint8_t {
-	LEND_NEVER,
-	LEND_GRANTED,
-	LEND_ALWAYS,
-	LEND_WITH,
-	LEND_DETACH,
+	LEND_NEVER,    /* never */
+	LEND_GRANTED,  /* if the client's role lets the upstream call it */
+	LEND_ALWAYS,   /* always */
+	LEND_WITH,     /* if the turns get a LEND_GRANTED or LEND_ALWAYS tool */
+	LEND_DETACH,   /* if the turns get a LEND_GRANTED or LEND_ALWAYS tool
+	                  with TOOL_DETACH */
 };
 
 /* What the trace tells of a call besides its tool's name: its arguments'
@@ -377,15 +377,15 @@ enum mcp_trace : uint8_t {
 	TRACE_NAME,
 };
 
-/* A flag of askai's own kinds, past TOOL_FLAGS: a turn's call of it keeps
- * to itself, running after the calls before it are written, and those after
- * it after it is.
+/* Kind flag (bit 32, above TOOL_FLAGS) for tools whose calls run alone. A
+ * turn's call of such a tool starts after the results of all earlier calls
+ * are written. Later calls start after its result is written.
  */
 static constexpr uint64_t KF_SERIAL = 1ull << 32;
 
-/* A flag of askai's own kinds, past TOOL_FLAGS: the kinds of background,
- * jobs, wait and timer. A client's call of background cannot start a call
- * of such a kind, and a client's call of such a kind never becomes a task.
+/* Kind flag (bit 33, above TOOL_FLAGS) for the kinds in KINDS_AGENDA. A
+ * client's background call cannot start them. A client's call of them never
+ * becomes a task. askai does not resume an interrupted turn that called one.
  */
 static constexpr uint64_t KF_AGENDA = 1ull << 33;
 
@@ -428,11 +428,9 @@ struct mcp_lending {
 	tool_mask detach;
 };
 
-/* Returns the tools that @p l lends the turns of an ask call of a client
- * whose role lets the upstream call @p upstream: those of them that are in
- * by[LEND_GRANTED], and those in by[LEND_ALWAYS]. If there are any, the
- * result also has the tools in by[LEND_WITH], and if one of them can run in
- * the background, the tools in by[LEND_DETACH].
+/* Returns the tools that @p l lends the turns of an ask call, by the rules
+ * of enum mcp_lend. @p upstream holds the tools that the client's role lets
+ * the upstream call.
  */
 static tool_mask
 mcp_lending_lent (struct mcp_lending const *l,
@@ -550,19 +548,17 @@ enum mcp_role : uint8_t {
 	ROLE_JOB,   /* a job a turn started in the background */
 };
 
-/* A call of a tool that a request runs: the client's, or one of a turn's.
- * The request's own also holds its answer, and the notes' git that the
- * request reads for itself.
+/* A tool call that a request runs. It is the client's call or a call of a
+ * turn. req->self also holds the answer of an ask call. The notes git
+ * commands that an ask call runs for itself also use req->self.
  */
 struct mcp_slot {
-	struct loop_step    step;      /* its work, its kind's step() */
-	struct dstr         answer;    /* the tool's output; its storage stays
-	                                  for reuse */
-	struct mcp_req     *req;       /* whose */
-	void               *own;       /* its kind's word for the call, which
-	                                  its drop() lets go of: a man call's
-	                                  page, a test_task call's task, a git
-	                                  call's git */
+	struct loop_step    step;      /* the step that runs kind->step() */
+	struct dstr         answer;    /* the output of the call. Its storage
+	                                  is kept for reuse. */
+	struct mcp_req     *req;       /* the request that runs the call */
+	void               *own;       /* the call's own word (mcp_slot_own()).
+	                                  The kind's drop() releases it. */
 	void               *inst;      /* The instance of the tool's plugin for
 	                                  the user of the request, or nullptr
 	                                  if the plugin has no instances.
@@ -570,28 +566,27 @@ struct mcp_slot {
 	                                  instance_table_get(), and
 	                                  mcp_slot_drop() clears it with
 	                                  instance_table_put(). */
-	struct span         lent;      /* its output, if own keeps it: a man
-	                                  call's page's text */
-	struct child       *child;     /* its notes' git, until its output is
-	                                  taken */
-	struct web_wait    *web;       /* its kind's last HTTP request, under
-	                                  way or with its reply, until the
-	                                  next request or mcp_slot_drop() */
-	size_t              skip;      /* the byte of the output that its window,
-	                                  given to a turn, starts at */
-	size_t              window;    /* and the bytes of that */
-	uint64_t            start;     /* loop_clock() as the call began */
-	struct handle       call;      /* names it to the post that completes
-	                                  it, as mcp_slot_name() makes it */
-	struct json_object *args;      /* a job's arguments, shown by jobs */
+	struct span         lent;      /* the output text if own holds it, such
+	                                  as the page text of a man call */
+	struct child       *child;     /* the notes git child process, until
+	                                  its output is read */
+	struct web_wait    *web;       /* the last HTTP request of the call, in
+	                                  progress or answered, until the next
+	                                  request or mcp_slot_drop() */
+	size_t              skip;      /* the output offset at which the window
+	                                  given to a turn starts */
+	size_t              window;    /* the length of that window in bytes */
+	uint64_t            start;     /* loop_clock() when the call began */
+	struct handle       call;      /* the handle that mcp_slot_name() makes
+	                                  for the post that completes the call */
+	struct json_object *args;      /* the arguments of a job, for the jobs tool */
 	struct mcp_slot    *of;        /* the job whose output it gives, if any */
 	struct review_read *read;      /* the lines of a file that its output
 	                                  shows, for the review record
 	                                  (mcp_slot_source()), if any */
-	uint16_t            note_len;  /* bytes of note */
-	uint16_t            fetch;     /* enum mcp_fetch: what its notes' git is for */
-	uint8_t             tool;      /* its call's tool, by its offer's id;
-	                                  TOOL_MAX: none */
+	uint16_t            note_len;  /* the length of note in bytes */
+	uint16_t            fetch;     /* enum mcp_fetch */
+	uint8_t             tool;      /* the offer id of the tool, or TOOL_MAX */
 	uint8_t             role;      /* enum mcp_role */
 	bool                done;      /* true once the call has ended. A
 	                                  call ends when it has its output,
@@ -602,10 +597,11 @@ struct mcp_slot {
 	                                  change a call do nothing for an
 	                                  ended call. */
 	bool                failed;    /* the call failed */
-	bool                cancelled; /* a job's call, cancelled */
-	char                notebook[NOTES_REPO]; /* selected read branch; empty: own */
-	char                note[511]; /* text appended to the tool output; fills
-	                                  the slot's trailing alignment */
+	bool                cancelled; /* the job was cancelled */
+	char                notebook[NOTES_REPO]; /* the selected notebook, or
+	                                             empty for req->repo */
+	char                note[511]; /* text appended to the tool output. Its
+	                                  size fills the trailing padding. */
 };
 
 static_assert(TOOL_MAX <= UINT8_MAX, "a slot's tool holds TOOL_MAX");
@@ -647,15 +643,16 @@ struct mcp_req {
 	struct buf           attached;   /* the files that a turn's calls
 	                                    attached, as its API's fragments
 	                                    have them, until its last result */
-	struct mcp_slot     *slots;      /* those calls', JOB_CALLS of them, from
-	                                    its first turn with calls to its end */
-	struct mcp_agenda   *agenda;     /* its turns' jobs and timers, from the
-	                                    first to its end */
+	struct mcp_slot     *slots;      /* JOB_CALLS slots for the tool calls
+	                                    of a turn, from the first turn with
+	                                    calls until mcp_req_finish() */
+	struct mcp_agenda   *agenda;     /* the jobs and timers of the turns,
+	                                    from the first background, wait or
+	                                    timer call until mcp_req_finish() */
 	struct review       *review;     /* the review record if the turns are
 	                                    lent findings (mcp_req_review_make()) */
-	struct ledger_task  *task;       /* the record of the task or the job
-	                                    that the call runs as, once it is
-	                                    one */
+	struct ledger_task  *task;       /* the ledger record of the call once it
+	                                    becomes a task or a job */
 	struct ledger_task  *admitted;   /* durable admission, before its reply */
 	struct journal_record *recovered; /* current turn's records, until submit */
 	struct json_object  *saved_tools[JOB_CALLS]; /* completed calls to replay */
@@ -10272,8 +10269,8 @@ mcp_static_build (struct mcp_static  *st,
  */
 static struct mcp_row const mcp_loaded_row = { .metric = LENT_PLUGIN };
 
-/* The row of the tool @p t of a registry: askai's own tool's, or that of
- * the tools of the plugins askai loaded.
+/* Returns the row of the registry tool @p t, or mcp_loaded_row for a tool
+ * of a plugin that askai loaded from a file.
  */
 static struct mcp_row const *
 mcp_row_of (struct registry_tool const *t)
@@ -10282,9 +10279,9 @@ mcp_row_of (struct registry_tool const *t)
 	return t->data ? t->data : &mcp_loaded_row;
 }
 
-/* How the turns are lent the tool @p t of a registry, with
- * --upstream-tools: by its row, or for the kind of a plugin, built in or
- * loaded, which is not in a row, by its flags.
+/* Returns the lending rule of the registry tool @p t. A tool of askai's own
+ * kinds has the rule of its row. A plugin's tool, built in or loaded, has
+ * LEND_GRANTED if its kind has TOOL_LENT, and LEND_NEVER otherwise.
  */
 static enum mcp_lend
 mcp_lend_of (struct registry_tool const *t)
@@ -10295,9 +10292,9 @@ mcp_lend_of (struct registry_tool const *t)
 	return t->kind->flags & TOOL_LENT ? LEND_GRANTED : LEND_NEVER;
 }
 
-/* The tools of the registry of @p cfg that askai lends the turns, by how it
- * lends them: none without --upstream-tools, and only those that the
- * configuration file's member tools allows the upstream.
+/* Returns the masks of the tools in the registry of @p cfg that askai lends
+ * the turns. All masks are empty without --upstream-tools. A mask holds only
+ * tools in cfg->tools_upstream.
  */
 static struct mcp_lending
 mcp_lending (struct config const *cfg)
