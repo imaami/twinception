@@ -721,10 +721,7 @@ review_out_number (struct review_out *o,
                    uint64_t           n)
 {
 	char digits[20];
-	char *p = digits + sizeof digits;
-	do
-		*--p = (char)('0' + n % 10);
-	while (n /= 10);
+	char *p = util_decimal(digits + sizeof digits, n);
 	review_out_put(o, p, (size_t)(digits + sizeof digits - p));
 }
 
@@ -1001,24 +998,6 @@ struct review_place {
 	uint32_t         last;
 };
 
-/* Parse the decimal number at @p *s, before @p end, and advance @p *s past
- * it. Returns the number, or 0 without advancing if there are no digits
- * or the number is over UINT32_MAX.
- */
-static uint32_t
-review_line (char const **s,
-             char const  *end)
-{
-	char const *p = *s;
-	uint64_t n = 0;
-	while (p < end && *p >= '0' && *p <= '9' && n <= UINT32_MAX)
-		n = n * 10 + (uint64_t)(*p++ - '0');
-	if (p == *s || n > UINT32_MAX)
-		return 0;
-	*s = p;
-	return (uint32_t)n;
-}
-
 /* Parse @p t, of the form [commit:]path:first[-last], into @p p. A commit
  * is 7 to 64 lowercase hexadecimal digits, as git grep prints it. A
  * leading "HEAD:" means no commit. Returns false for another form.
@@ -1033,12 +1012,11 @@ review_place_parse (struct review_place *p,
 	if (!colon)
 		return false;
 	char const *q = colon + 1;
-	uint32_t first = review_line(&q, end);
-	uint32_t last = first;
-	if (first && q < end && *q == '-') {
-		++q;
-		last = review_line(&q, end);
-	}
+	uint64_t first;
+	q += util_digits(q, (size_t)(end - q), UINT32_MAX, &first);
+	uint64_t last = first;
+	if (first && q < end && *q == '-')
+		q += 1 + util_digits(q + 1, (size_t)(end - q - 1), UINT32_MAX, &last);
 	if (!first || last < first || q != end)
 		return false;
 	size_t before = (size_t)(colon - t.ptr);
@@ -1056,8 +1034,8 @@ review_place_parse (struct review_place *p,
 	*p = (struct review_place){
 		.prefix = { t.ptr, prefixed ? hex : 0 },
 		.path   = path,
-		.first  = first,
-		.last   = last,
+		.first  = (uint32_t)first,
+		.last   = (uint32_t)last,
 	};
 	return true;
 }

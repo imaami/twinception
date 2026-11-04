@@ -756,18 +756,7 @@ notes_number (char const *s,
               size_t      len,
               uint64_t   *value)
 {
-	*value = 0;
-	if (!len)
-		return false;
-	for (size_t i = 0; i < len; ++i) {
-		if (s[i] < '0' || s[i] > '9')
-			return false;
-		unsigned digit = (unsigned)(s[i] - '0');
-		if (*value > (UINT64_MAX - digit) / 10)
-			return false;
-		*value = *value * 10 + digit;
-	}
-	return true;
+	return len && util_digits(s, len, UINT64_MAX, value) == len;
 }
 
 /* Returns the kind of the object of the line of @p len bytes at @p line,
@@ -1051,19 +1040,12 @@ notes_read_decode (struct span  out,
 		return EISDIR;
 	if (kind != KIND_BLOB || !util_is_oid(line, oid))
 		return EIO;
-	/* The size of the text is the last word of the line. The loop stops
-	 * growing the size once it is past NOTES_MAX, and the end of the output
-	 * limits the text. */
-	uint64_t size = 0;
+	/* The size of the text is the last word of the line. The end of the
+	 * output limits the text. */
 	char const *digits = (char const *)memrchr(line, ' ', n) + 1;
-	if (digits == nl)
+	uint64_t size;
+	if (!notes_number(digits, (size_t)(nl - digits), &size))
 		return EIO;
-	for (char const *d = digits; d < nl; ++d) {
-		if (*d < '0' || *d > '9')
-			return EIO;
-		if (size <= NOTES_MAX)
-			size = size * 10 + (uint64_t)(*d - '0');
-	}
 	size_t room = out.len - n - 1;
 	if (full && (!room || size != room - 1 || out.ptr[out.len - 1] != '\n'))
 		return EIO;

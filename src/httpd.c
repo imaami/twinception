@@ -363,16 +363,6 @@ struct httpd_home {
 /* Home's door, for the connections given back. */
 static thread_local struct httpd_home *door;
 
-/* Decimal @p n written backwards from @p end; returns its first digit. */
-static char *
-httpd_decimal (char   *end,
-               size_t  n)
-{
-	do *--end = (char)('0' + n % 10);
-	while (n /= 10);
-	return end;
-}
-
 /* Hexadecimal @p n written backwards from @p end; returns its first digit. */
 static char *
 httpd_hex (char   *end,
@@ -1122,7 +1112,7 @@ httpd_conn_head (struct httpd_conn      *conn,
 	if (length != STREAM_OPEN) {
 		/* A 204 has no body to give the length of. */
 		if (status != 204) {
-			char const *len = httpd_decimal(digits + sizeof digits, length);
+			char const *len = util_decimal(digits + sizeof digits, length);
 			framing[0] = CSTR_VIEW("Content-Length: ");
 			framing[1] = (struct cstr_view){ len, (size_t)(digits + sizeof digits - len) };
 			framing[2] = CSTR_VIEW("\r\n");
@@ -1139,7 +1129,7 @@ httpd_conn_head (struct httpd_conn      *conn,
 
 	char code[8];
 	code[7] = ' ';
-	char const *c = httpd_decimal(code + 7, status);
+	char const *c = util_decimal(code + 7, status);
 	struct cstr_view const origin = httpd_conn_field(conn, req->origin);
 	struct cstr_view f[12 + 9];
 	size_t n = 0;
@@ -3056,13 +3046,10 @@ httpd_listen_addr (char const *text,
 		if (*e)
 			return a;
 	}
-	/* The loop stops once the value exceeds 65535, so the value cannot
-	 * overflow. */
 	size_t digits = strspn(a.port, "0123456789");
-	uint32_t value = 0;
-	for (size_t i = 0; i < digits && value <= 65535; ++i)
-		value = value * 10 + (uint32_t)(a.port[i] - '0');
-	*e = !digits || a.port[digits] ? EINVAL : value > 65535 ? ERANGE : 0;
+	uint64_t value;
+	*e = !digits || a.port[digits] ? EINVAL
+	   : util_digits(a.port, digits, 65535, &value) ? 0 : ERANGE;
 	return a;
 }
 

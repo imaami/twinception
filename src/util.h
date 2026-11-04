@@ -106,6 +106,41 @@ util_hex_digit (unsigned char c)
 	     : lower >= 'a' && lower <= 'f' ? lower - 'a' + 10 : 16;
 }
 
+/** Write @p n in decimal into the bytes before @p end, at most 20 of them.
+ *  Returns a pointer to the first digit.
+ */
+static inline char *
+util_decimal (char     *end,
+              uint64_t  n)
+{
+	do *--end = (char)('0' + n % 10);
+	while (n /= 10);
+	return end;
+}
+
+/** Parse the decimal number at the start of the @p len bytes at @p s into
+ *  @p *value. Returns the number of digits. If there are no digits or the
+ *  number is greater than @p max, returns 0 and sets @p *value to 0.
+ */
+static inline size_t
+util_digits (char const *s,
+             size_t      len,
+             uint64_t    max,
+             uint64_t   *value)
+{
+	*value = 0;
+	size_t i = 0;
+	for (; i < len && s[i] >= '0' && s[i] <= '9'; ++i) {
+		unsigned digit = (unsigned)(s[i] - '0');
+		if (digit > max || *value > (max - digit) / 10) {
+			*value = 0;
+			return 0;
+		}
+		*value = *value * 10 + digit;
+	}
+	return i;
+}
+
 /** The most bytes of a word in askai's Git refs, such as a participant. */
 enum { UTIL_WORD_MAX = 64 };
 

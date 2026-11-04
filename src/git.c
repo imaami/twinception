@@ -1286,10 +1286,7 @@ git_digits (char   *end,
             size_t  n,
             size_t  tail)
 {
-	char *p = end;
-	do
-		*--p = (char)('0' + n % 10);
-	while (n /= 10);
+	char *p = util_decimal(end, n);
 	return (struct tool_text){ p, (size_t)(end - p) + tail };
 }
 
