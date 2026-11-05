@@ -492,8 +492,8 @@ loop_unwatch (struct loop     *loop,
 		return;
 
 	if (epoll_ctl(loop->epfd, EPOLL_CTL_DEL, ref->fd, nullptr) &&
-	    errno != ENOENT && errno != EBADF && !loop->error)
-		loop->error = errno;
+	    errno != ENOENT && errno != EBADF)
+		loop_fail(loop, errno);
 
 	if (ref->hook.next && ref->hook.prev)
 		list_del(&ref->hook);
@@ -697,19 +697,22 @@ loop_run (struct loop *loop,
 }
 
 /* Do not sleep while steps or messages are queued; otherwise until the next
- * timer.
+ * timer or @p deadline, whichever comes first.
  */
 static struct timespec *
 loop_timeout (struct loop const *loop,
+              uint64_t           deadline,
               struct timespec   *ts)
 {
 	uint64_t ns = 0;
 	if (list_is_empty(&loop->ready[FRESH]) && list_is_empty(&loop->ready[ONGOING]) &&
 	    list_is_empty(&loop->ready[BULK]) && !loop->mail) {
-		if (!loop->timers || loop->heap[0]->due == UINT64_MAX)
+		uint64_t due = loop->timers && loop->heap[0]->due < deadline ? loop->heap[0]->due
+		                                                             : deadline;
+		if (due == UINT64_MAX)
 			return nullptr;
 		uint64_t now = loop_clock();
-		ns = loop->heap[0]->due > now ? loop->heap[0]->due - now : 0;
+		ns = due > now ? due - now : 0;
 	}
 	*ts = (struct timespec){
 		.tv_sec = (time_t)(ns / 1'000'000'000),
@@ -751,67 +754,79 @@ loop_log_stats (struct loop *loop,
 }
 
 int
+loop_turn (struct loop *loop,
+           uint64_t     deadline)
+{
+	struct epoll_event events[EVENTS];
+	struct timespec ts;
+	struct timespec *timeout = loop_timeout(loop, deadline, &ts);
+	/* About to sleep: say so, then look at the inbox once more (design
+	 * section 2). */
+	if (!timeout || ts.tv_sec || ts.tv_nsec) {
+		atomic_store(&loop->asleep, 1);
+		if (atomic_load(&loop->inbox)) {
+			ts = (struct timespec){};
+			timeout = &ts;
+		}
+	}
+	atomic_store_explicit(&loop->turn, 0, memory_order_relaxed);
+	int n = epoll_pwait2(loop->epfd, events, EVENTS, timeout, nullptr);
+	/* A poster that still sees it asleep writes the eventfd for nothing,
+	 * which costs a turn. */
+	atomic_store_explicit(&loop->asleep, 0, memory_order_relaxed);
+	if (n < 0)
+		return errno == EINTR ? 0 : errno;
+
+	uint64_t start = loop->now = loop_clock();
+	atomic_store_explicit(&loop->turn, start, memory_order_relaxed);
+	for (int i = 0; i < n && !loop->exit; ++i) {
+		struct loop_ref *ref = events[i].data.ptr;
+		if (ref && ref->cb)
+			ref->cb(loop, ref, events[i].events);
+	}
+	loop_collect(loop);
+	for (unsigned i = 0; i < MAIL && loop->mail && !loop->exit; ++i) {
+		uint64_t posted = loop->mail->posted;
+		uint64_t now = loop_clock();
+		hist_record(&loop->metrics->inbox, now > posted ? now - posted : 0);
+		loop_deliver(loop);
+	}
+	struct loop_stats *s = loop->stats;
+	loop_most(&s->events, (uint64_t)n);
+	loop_most(&s->timers, loop_fire(loop));
+
+	loop->stepping = true;
+	uint64_t steps = loop_run(loop, &loop->ready[FRESH], 2, &loop->cursor,
+	                          start + INTERACTIVE_NS, false);
+	steps += loop_run(loop, &loop->ready[BULK], 1, &(size_t){}, start + BULK_NS, true);
+	loop->stepping = false;
+	loop_most(&s->steps, steps);
+	loop_reap(loop);
+	loop_stats_time(s, TIME_TURN, &loop->metrics->turn, loop_clock() - start);
+	return 0;
+}
+
+int
 loop_exec (struct loop *loop)
 {
 	/* Wake on time: the default 50 µs of timer slack would be latency. */
 	(void)prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
-
 	while (!loop->exit) {
-		struct epoll_event events[EVENTS];
-		struct timespec ts;
-		struct timespec *timeout = loop_timeout(loop, &ts);
-		/* About to sleep: say so, then look at the inbox once more
-		 * (design section 2). */
-		if (!timeout || ts.tv_sec || ts.tv_nsec) {
-			atomic_store(&loop->asleep, 1);
-			if (atomic_load(&loop->inbox)) {
-				ts = (struct timespec){};
-				timeout = &ts;
-			}
-		}
-		atomic_store_explicit(&loop->turn, 0, memory_order_relaxed);
-		int n = epoll_pwait2(loop->epfd, events, EVENTS, timeout, nullptr);
-		/* A poster that still sees it asleep writes the eventfd for
-		 * nothing, which costs a turn. */
-		atomic_store_explicit(&loop->asleep, 0, memory_order_relaxed);
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			return errno;
-		}
-
-		uint64_t start = loop->now = loop_clock();
-		atomic_store_explicit(&loop->turn, start, memory_order_relaxed);
-		for (int i = 0; i < n && !loop->exit; ++i) {
-			struct loop_ref *ref = events[i].data.ptr;
-			if (ref && ref->cb)
-				ref->cb(loop, ref, events[i].events);
-		}
-		loop_collect(loop);
-		for (unsigned i = 0; i < MAIL && loop->mail && !loop->exit; ++i) {
-			uint64_t posted = loop->mail->posted;
-			uint64_t now = loop_clock();
-			hist_record(&loop->metrics->inbox, now > posted ? now - posted : 0);
-			loop_deliver(loop);
-		}
-		struct loop_stats *s = loop->stats;
-		loop_most(&s->events, (uint64_t)n);
-		loop_most(&s->timers, loop_fire(loop));
-
-		loop->stepping = true;
-		uint64_t steps = loop_run(loop, &loop->ready[FRESH], 2, &loop->cursor,
-		                          start + INTERACTIVE_NS, false);
-		steps += loop_run(loop, &loop->ready[BULK], 1, &(size_t){},
-		                  start + BULK_NS, true);
-		loop->stepping = false;
-		loop_most(&s->steps, steps);
-		loop_reap(loop);
-		loop_stats_time(s, TIME_TURN, &loop->metrics->turn, loop_clock() - start);
+		int e = loop_turn(loop, UINT64_MAX);
+		if (e)
+			return e;
 	}
-
 	/* What follows the last turn is no turn to a watchdog. */
 	atomic_store_explicit(&loop->turn, 0, memory_order_relaxed);
 	return loop->error;
+}
+
+void
+loop_fail (struct loop *loop,
+           int          e)
+{
+	if (e && !loop->error)
+		loop->error = e;
 }
 
 void
