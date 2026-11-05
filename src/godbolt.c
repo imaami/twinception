@@ -1314,7 +1314,7 @@ godbolt_language_row (struct godbolt     *call,
 	}
 	++call->total;
 	struct cstr_view const f[] = { id, godbolt_member(element, "name") };
-	if (!godbolt_matches(call, f, 2) || ++call->matching > call->args.limit)
+	if (!godbolt_matches(call, f, array_size(f)) || ++call->matching > call->args.limit)
 		return 0;
 	++call->listed;
 	godbolt_put_field(call, f[0]);
@@ -1323,18 +1323,18 @@ godbolt_language_row (struct godbolt     *call,
 	return godbolt_put(call, CSTR_VIEW("\n"));
 }
 
-/* Adds 1 to the count of @p key in the counts of the catalog. @p key is
- * NUL-terminated. If the counts have GODBOLT_KEYS keys and @p key is not
- * one of them, the function sets call->list to GODBOLT_LIST_BAD, which
- * ends the parse of the list, and stores the reason in call->why.
- * Returns 0, or call->e, which is ENOMEM if json-c runs out of memory.
+/* Adds 1 to the count of the string @p key in the counts of the catalog.
+ * If the counts contain GODBOLT_KEYS keys and @p key is not one of them,
+ * the function sets call->list to GODBOLT_LIST_BAD, which ends the parse
+ * of the list, and stores the reason in call->why. Returns 0, or call->e,
+ * which is ENOMEM if json-c runs out of memory.
  */
 static int
-godbolt_count (struct godbolt   *call,
-               struct cstr_view  key)
+godbolt_count (struct godbolt *call,
+               char const     *key)
 {
 	struct json_object *n = nullptr;
-	if (json_object_object_get_ex(call->doc, key.data, &n)) {
+	if (json_object_object_get_ex(call->doc, key, &n)) {
 		json_object_int_inc(n, 1);
 		return call->e;
 	}
@@ -1345,7 +1345,7 @@ godbolt_count (struct godbolt   *call,
 		return call->e;
 	}
 	struct json_object *one = json_object_new_int(1);
-	if (!one || json_object_object_add(call->doc, key.data, one)) {
+	if (!one || json_object_object_add(call->doc, key, one)) {
 		json_object_put(one);
 		call->e = call->e ? call->e : ENOMEM;
 	}
@@ -1365,9 +1365,9 @@ godbolt_count_families (struct godbolt         *call,
 		while (k < i && !cstr_view_equal(tags[i], tags[k]))
 			++k;
 		if (k == i)
-			godbolt_count(call, tags[i]);
+			godbolt_count(call, tags[i].data);
 	}
-	return n ? call->e : godbolt_count(call, CSTR_VIEW("unknown"));
+	return n ? call->e : godbolt_count(call, "unknown");
 }
 
 /* The columns of a row of the catalog before the family tags. */
@@ -1418,9 +1418,9 @@ godbolt_compiler_row (struct godbolt     *call,
 	++call->matching;
 	switch (call->args.action) {
 	case GODBOLT_KINDS:
-		return godbolt_count(call, f[2]);
+		return godbolt_count(call, f[2].data);
 	case GODBOLT_ARCHITECTURES:
-		return godbolt_count(call, f[4]);
+		return godbolt_count(call, f[4].data);
 	case GODBOLT_FAMILIES:
 		return godbolt_count_families(call, t, n - GODBOLT_COLUMNS);
 	}
@@ -1452,18 +1452,20 @@ godbolt_tally_cmp (void const *a,
 	              ((struct godbolt_tally const *)b)->key);
 }
 
-/* Writes the counts of the catalog in the byte order of their keys, as
- * many as the limit allows, and stores the number of rows in call->listed.
- * The counts have at most GODBOLT_KEYS keys of at most GODBOLT_VALUE_MAX
- * bytes, so one step writes them. Returns 0, or call->e, which is ENOMEM
- * if memory runs out.
+/* Writes the @p n counts of the catalog in the byte order of their keys,
+ * as many as the limit allows, and stores the number of rows in
+ * call->listed. @p n is from 1 to GODBOLT_KEYS, and a key is at most
+ * GODBOLT_VALUE_MAX bytes long, so one step writes them. Returns 0, or
+ * call->e, which is ENOMEM if memory runs out.
  */
 static int
-godbolt_tallies (struct godbolt *call)
+godbolt_tallies (struct godbolt *call,
+                 size_t          n)
 {
-	size_t const n = (size_t)json_object_object_length(call->doc);
-	struct godbolt_tally *t = n ? malloc(n * sizeof *t) : nullptr;
-	if (n && !t) {
+	size_t const rows = n < call->args.limit ? n : call->args.limit;
+	call->listed = (uint32_t)rows;
+	struct godbolt_tally *t = malloc(n * sizeof *t);
+	if (!t) {
 		call->e = call->e ? call->e : ENOMEM;
 		return call->e;
 	}
@@ -1471,15 +1473,13 @@ godbolt_tallies (struct godbolt *call)
 	struct json_object_iter it;
 	json_object_object_foreachC(call->doc, it)
 		t[i++] = (struct godbolt_tally){ it.key, json_object_get_int64(it.val) };
-	if (n)
-		qsort(t, n, sizeof *t, godbolt_tally_cmp);
-	for (i = 0; i < n && i < call->args.limit; ++i) {
-		godbolt_put_field(call, (struct cstr_view){ t[i].key, strlen(t[i].key) });
-		godbolt_putf(call, "\t%" PRId64 "\n", t[i].count);
+	qsort(t, n, sizeof *t, godbolt_tally_cmp);
+	for (size_t k = 0; k < rows; ++k) {
+		godbolt_put_field(call, cstr_view(t[k].key));
+		godbolt_putf(call, "\t%" PRId64 "\n", t[k].count);
 	}
 	free(t);
 	t = nullptr;
-	call->listed = (uint32_t)i;
 	return call->e;
 }
 
@@ -1504,8 +1504,8 @@ godbolt_absent (struct godbolt const *call,
 /* Ends a call of godbolt_catalog after the end of the list. If an id of
  * the argument ids is not in the list, the call fails. Otherwise the
  * function writes the counts of an action that counts, a line on the
- * elements that the plugin left out, and the last line of the output, which
- * has the numbers of the items. Returns GODBOLT_ENDED.
+ * elements that the plugin left out, and the last line of the output with
+ * the numbers of the items. Returns GODBOLT_ENDED.
  */
 static enum godbolt_go
 godbolt_catalog_end (struct godbolt *call)
@@ -1518,33 +1518,35 @@ godbolt_catalog_end (struct godbolt *call)
 		                      "action \"%s\" and without ids or other filters.", absent,
 		                      languages ? "languages" : "compilers");
 	}
-	uint32_t const keys = call->doc ? (uint32_t)json_object_object_length(call->doc) : 0;
-	if (call->args.action > GODBOLT_COMPILERS)
-		godbolt_tallies(call);
+	bool const counts = call->args.action > GODBOLT_COMPILERS;
+	uint32_t const keys = counts ? (uint32_t)json_object_object_length(call->doc) : 0;
+	if (keys)
+		godbolt_tallies(call, keys);
 	if (call->malformed)
 		godbolt_putf(call, "The plugin left out %" PRIu32 " element%s of the list. An "
 		             "element must have a string member id%s.\n", call->malformed,
 		             godbolt_s(call->malformed), languages ? "" : ", at most 64 family "
 		             "tags, and at most 128 bytes in its kind, its architecture and each "
 		             "family tag");
-	if (languages)
-		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching language%s. "
-		             "Compiler Explorer has %" PRIu32 " language%s.\n", call->listed,
-		             call->matching, godbolt_s(call->matching), call->total,
-		             godbolt_s(call->total));
-	else if (call->args.action == GODBOLT_COMPILERS)
-		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching compiler%s. The "
-		             "list of language %.*s has %" PRIu32 " compiler%s.\n", call->listed,
-		             call->matching, godbolt_s(call->matching), (int)call->args.language.len,
-		             call->args.language.data, call->total, godbolt_s(call->total));
-	else
+	/* The first sentence of the last line counts the listed items, and the
+	 * second sentence counts all items of the list. */
+	typeof(godbolt_actions[0]) *const act = &godbolt_actions[call->args.action];
+	if (counts)
 		godbolt_putf(call, "Listed %" PRIu32 " of the %" PRIu32 " %s of the %" PRIu32
-		             " matching compiler%s. The list of language %.*s has %" PRIu32
-		             " compiler%s.\n", call->listed, keys, keys == 1
-		             ? godbolt_actions[call->args.action].singular
-		             : godbolt_actions[call->args.action].name.data,
-		             call->matching, godbolt_s(call->matching), (int)call->args.language.len,
-		             call->args.language.data, call->total, godbolt_s(call->total));
+		             " matching compiler%s. ", call->listed, keys,
+		             keys == 1 ? act->singular : act->name.data, call->matching,
+		             godbolt_s(call->matching));
+	else
+		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching %s%s. ",
+		             call->listed, call->matching, act->singular,
+		             godbolt_s(call->matching));
+	if (languages)
+		godbolt_putf(call, "Compiler Explorer has %" PRIu32 " language%s.\n", call->total,
+		             godbolt_s(call->total));
+	else
+		godbolt_putf(call, "The list of language %.*s has %" PRIu32 " compiler%s.\n",
+		             (int)call->args.language.len, call->args.language.data, call->total,
+		             godbolt_s(call->total));
 	if (call->e)
 		return godbolt_fail(call);
 	mcp_slot_finish(call->slot, 0);
@@ -2318,20 +2320,22 @@ godbolt_puts (struct godbolt *call,
 
 /* Writes the facts about the target that follow from the output of the
  * probe, one to a line, and the versions of the compiler. With the
- * argument headers, it also writes which target headers the compiler has.
- * Returns 0, or call->e.
+ * argument headers, it also writes which target headers the compiler can
+ * include. Returns 0, or call->e.
  */
 static int
 godbolt_facts (struct godbolt *call)
 {
-	struct cstr_view const names[GODBOLT_PROBE_FACTS] = {
-		CSTR_VIEW("architecture: "), CSTR_VIEW("os: "), CSTR_VIEW("os_family: "),
-		CSTR_VIEW("data_model: "), CSTR_VIEW("pointer_bits: "), CSTR_VIEW("endianness: "),
-		CSTR_VIEW("libc: ")
+	static struct cstr_view const names[GODBOLT_PROBE_FACTS] = {
+		CSTR_VIEW_INIT("architecture: "), CSTR_VIEW_INIT("os: "),
+		CSTR_VIEW_INIT("os_family: "), CSTR_VIEW_INIT("data_model: "),
+		CSTR_VIEW_INIT("pointer_bits: "), CSTR_VIEW_INIT("endianness: "),
+		CSTR_VIEW_INIT("libc: ")
 	};
-	struct cstr_view const versions[] = {
-		CSTR_VIEW("__clang_major__"), CSTR_VIEW("__GNUC__"), CSTR_VIEW("__GNUC_MINOR__"),
-		CSTR_VIEW("_MSC_VER"), CSTR_VIEW("__STDC_VERSION__"), CSTR_VIEW("__cplusplus")
+	static struct cstr_view const versions[] = {
+		CSTR_VIEW_INIT("__clang_major__"), CSTR_VIEW_INIT("__GNUC__"),
+		CSTR_VIEW_INIT("__GNUC_MINOR__"), CSTR_VIEW_INIT("_MSC_VER"),
+		CSTR_VIEW_INIT("__STDC_VERSION__"), CSTR_VIEW_INIT("__cplusplus")
 	};
 	struct godbolt_probe const *p = &call->probe;
 	for (size_t i = 0; i < GODBOLT_PROBE_FACTS; ++i) {
@@ -2367,11 +2371,9 @@ godbolt_facts (struct godbolt *call)
 		return call->e;
 	for (uint32_t k = 0; k < p->n_headers; ++k) {
 		godbolt_put(call, k ? CSTR_VIEW(", ") : CSTR_VIEW("headers: "));
-		godbolt_put_field(call, (struct cstr_view){ p->headers[k].name,
-		                                            strlen(p->headers[k].name) });
+		godbolt_put_field(call, cstr_view(p->headers[k].name));
 		godbolt_put(call, CSTR_VIEW(" "));
-		godbolt_put_field(call, (struct cstr_view){ p->headers[k].value,
-		                                            strlen(p->headers[k].value) });
+		godbolt_put_field(call, cstr_view(p->headers[k].value));
 	}
 	return godbolt_put(call, p->n_headers ? CSTR_VIEW("\n") : CSTR_VIEW("headers: unknown\n"));
 }
