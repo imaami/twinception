@@ -4144,9 +4144,7 @@ mcp_agenda_pending (struct mcp_agenda const *a)
 	bool any = dstr_len(&a->notices) || dstr_len(&a->told);
 	for (uint32_t k = 0; !any && k < a->n_jobs; ++k)
 		any = !a->jobs[k].done;
-	for (size_t i = 0; !any && i < TIMERS_MAX; ++i)
-		any = a->timers[i].due;
-	return any;
+	return any || ledger_timer_any(a->timers);
 }
 
 /* Whether the turns, which answered, doze until what their agenda has under
@@ -5582,16 +5580,9 @@ mcp_agenda_timer (struct mcp_req *req,
 	struct mcp_agenda *a = mcp_req_agenda(req, &e);
 	if (!a)
 		return e;
-	size_t i = 0;
-	while (i < TIMERS_MAX && a->timers[i].due)
-		++i;
-	if (i == TIMERS_MAX)
+	if (!ledger_timer_add(a->timers, due, a->n_timers + 1, note, len))
 		return EBUSY;
-	struct ledger_timer *t = &a->timers[i];
-	t->due = due;
-	t->id = *id = ++a->n_timers;
-	t->len = (uint32_t)len;
-	memcpy(t->note, note ? note : "", len);
+	*id = ++a->n_timers;
 	return mcp_agenda_arm(a);
 }
 

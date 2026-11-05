@@ -352,6 +352,22 @@ ledger_timer_set (struct ledger *ledger,
                   size_t         len,
                   uint32_t      *id);
 
+/** Sets the first timer of @p timers whose due is 0 to @p due, the number
+ *  @p id and the note of @p len bytes at @p note, and returns it. Returns
+ *  nullptr if every timer is set or fired. @p len is at most LEDGER_NOTE,
+ *  and @p note may be nullptr only if @p len is 0.
+ */
+extern struct ledger_timer *
+ledger_timer_add (struct ledger_timer  timers[static LEDGER_TIMERS],
+                  uint64_t             due,
+                  uint32_t             id,
+                  char const          *note,
+                  size_t               len);
+
+/** Returns whether a timer of @p timers is set or fired. */
+extern bool
+ledger_timer_any (struct ledger_timer const timers[static LEDGER_TIMERS]);
+
 /** Remove the timer of the owner @p owner whose number is @p id, if it has
  *  not fired. Returns 0, ENOENT if the owner has no such timer, EALREADY
  *  if the timer has fired and no ledger_tell() has returned it yet, or

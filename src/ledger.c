@@ -83,16 +83,6 @@ ledger_owner_find (struct ledger *l,
 	return o;
 }
 
-/* Whether @p o has a timer, set or fired. */
-static bool
-ledger_owner_timed (struct ledger_owner const *o)
-{
-	for (size_t i = 0; i < LEDGER_TIMERS; ++i)
-		if (o->timers[i].due)
-			return true;
-	return false;
-}
-
 /* Free @p o, the lock held, if it has no records, no waits and no
  * timers.
  */
@@ -100,7 +90,7 @@ static void
 ledger_owner_gc (struct ledger       *l,
                  struct ledger_owner *o)
 {
-	if (o->n || o->n_waits || ledger_owner_timed(o))
+	if (o->n || o->n_waits || ledger_timer_any(o->timers))
 		return;
 	struct ledger_owner **p = &l->owners[o->key & (OWNER_BUCKETS - 1)];
 	while (*p != o)
@@ -194,21 +184,6 @@ ledger_owner_timer (struct ledger_owner *o,
 {
 	for (size_t i = 0; i < LEDGER_TIMERS; ++i)
 		if (o->timers[i].due && o->timers[i].id == id)
-			return &o->timers[i];
-	return nullptr;
-}
-
-/* A timer of @p o that is not in use, after the removal of the timers that
- * have expired by @p now, the lock held; nullptr if @p o has LEDGER_TIMERS
- * timers.
- */
-static struct ledger_timer *
-ledger_owner_spare (struct ledger_owner *o,
-                    uint64_t             now)
-{
-	ledger_owner_expire(o, now);
-	for (size_t i = 0; i < LEDGER_TIMERS; ++i)
-		if (!o->timers[i].due)
 			return &o->timers[i];
 	return nullptr;
 }
@@ -782,6 +757,33 @@ ledger_task_put (struct ledger_task *task)
 	free(task);
 }
 
+struct ledger_timer *
+ledger_timer_add (struct ledger_timer  timers[static LEDGER_TIMERS],
+                  uint64_t             due,
+                  uint32_t             id,
+                  char const          *note,
+                  size_t               len)
+{
+	size_t i = 0;
+	while (i < LEDGER_TIMERS && timers[i].due)
+		++i;
+	if (i == LEDGER_TIMERS)
+		return nullptr;
+	timers[i] = (struct ledger_timer){ .due = due, .id = id, .len = (uint32_t)len };
+	if (len)
+		memcpy(timers[i].note, note, len);
+	return &timers[i];
+}
+
+bool
+ledger_timer_any (struct ledger_timer const timers[static LEDGER_TIMERS])
+{
+	for (size_t i = 0; i < LEDGER_TIMERS; ++i)
+		if (timers[i].due)
+			return true;
+	return false;
+}
+
 int
 ledger_timer_set (struct ledger *ledger,
                   uint64_t       owner,
@@ -797,18 +799,16 @@ ledger_timer_set (struct ledger *ledger,
 	int e;
 	pthread_mutex_lock(&ledger->lock);
 	struct ledger_owner *o = ledger_owner_get(ledger, owner, &e);
-	struct ledger_timer *t = o ? ledger_owner_spare(o, now) : nullptr;
+	/* One counter numbers the timers of all owners, from 1 to UINT32_MAX
+	 * and then from 1 again, so that a number does not name a second timer
+	 * of an owner that the ledger has freed and made again. */
+	uint32_t const next = ledger->n_timers % UINT32_MAX + 1;
+	if (o)
+		ledger_owner_expire(o, now);
+	struct ledger_timer *t = o ? ledger_timer_add(o->timers, due, next, note, len) : nullptr;
 	if (t) {
-		/* One counter numbers the timers of all owners, from 1 to
-		 * UINT32_MAX and then from 1 again, so that a number does not name
-		 * a second timer of an owner that the ledger has freed and made
-		 * again. */
-		ledger->n_timers = ledger->n_timers % UINT32_MAX + 1;
-		*t = (struct ledger_timer){ .due = due, .id = ledger->n_timers,
-		                            .len = (uint32_t)len };
-		if (len)
-			memcpy(t->note, note, len);
-		*id = t->id;
+		ledger->n_timers = next;
+		*id = next;
 		hits = ledger_owner_wake(o);
 	} else if (!e) {
 		e = EBUSY;
