@@ -628,32 +628,31 @@ manual_back (struct loop *loop,
 }
 
 /*
- * The page @p name, of @p name_len bytes, of the section @p section, of
- * @p section_len bytes, 0 for none: in @p *p_page, a reference, if the
- * manual has it as its file is. Else @p *p_page is nullptr, and the call
- * @p who names on the loop waits for manual_back(). Returns 0; EINVAL if
- * either is too long; or ENOMEM. They are man's to take as a name and a
- * section, never as an option: the caller checks them.
+ * Looks up the page @p name in the section @p section, which is empty for
+ * no section. If the manual stores the page and the file of the page has
+ * not changed, the function stores a reference to the page in @p *p_page.
+ * Otherwise it sets @p *p_page to nullptr, and the call with the handle
+ * @p who waits for manual_back(). Returns 0, EINVAL if the name or the
+ * section is too long, or ENOMEM. The caller checks that man cannot read
+ * the name or the section as an option.
  */
 static int
 manual_find (struct manual_loop  *ml,
-             char const          *name,
-             size_t               name_len,
-             char const          *section,
-             size_t               section_len,
+             struct cstr_view     name,
+             struct cstr_view     section,
              struct handle        who,
              struct manual_page **p_page)
 {
 	struct manual *m = ml->manual;
 	*p_page = nullptr;
-	if (name_len > MANUAL_NAME || section_len > MANUAL_SECTION)
+	if (name.len > MANUAL_NAME || section.len > MANUAL_SECTION)
 		return EINVAL;
 	char key[MANUAL_NAME + 1 + MANUAL_SECTION];
-	size_t len = name_len + 1 + section_len;
-	memcpy(key, name, name_len);
-	key[name_len] = '\0';
-	if (section_len)
-		memcpy(key + name_len + 1, section, section_len);
+	size_t len = name.len + 1 + section.len;
+	memcpy(key, name.data, name.len);
+	key[name.len] = '\0';
+	if (section.len)
+		memcpy(key + name.len + 1, section.data, section.len);
 	uint64_t hash = util_hash(m->seed, key, len);
 
 	pthread_mutex_lock(&m->lock);
@@ -667,8 +666,9 @@ manual_find (struct manual_loop  *ml,
 	if (page && !stat(file->key, &st) && manual_page_same(page, &st)) {
 		manual_count(&m->metrics.hits, 1);
 		*p_page = page;
-		/* Man may find another file for it by now: the page goes out
-		 * meanwhile. */
+		/* man may now find another file for the page. The call receives
+		 * the stored page, and manual_loop_ask() starts a new fetch
+		 * unless one is under way. */
 		if (recheck)
 			(void)manual_loop_ask(ml, key, len, hash, nullptr);
 		return 0;
@@ -797,16 +797,16 @@ manual_metrics (struct manual const *manual)
 	return &manual->metrics;
 }
 
-/* Whether @p s, of @p len bytes, is 1 to @p max of the characters of @p set,
- * the first not '-', which man would take for an option.
+/* Returns true if @p s, which ends in a NUL, is 1 to @p max of the
+ * characters of @p set, and its first character is not the '-' that man
+ * would read as the start of an option.
  */
 static bool
-manual_word (char const *s,
-             size_t      len,
-             size_t      max,
-             char const *set)
+manual_word (struct cstr_view  s,
+             size_t            max,
+             char const       *set)
 {
-	return s && len && len <= max && *s != '-' && strspn(s, set) == len;
+	return s.len && s.len <= max && *s.data != '-' && strspn(s.data, set) == s.len;
 }
 
 /* Starts a man call in @p slot for the page in the name argument of
@@ -820,24 +820,20 @@ manual_start (struct mcp_slot    *slot,
 {
 #define ALNUM "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 	struct json_object *section = jb_get(args, "section");
-	size_t page_len = 0;
-	char const *page = jb_str(jb_get(args, "name"), &page_len);
-	size_t len = 0;
-	char const *sect = jb_str(section, &len);
+	struct cstr_view const page = jb_view(jb_get(args, "name"));
+	struct cstr_view sect = jb_view(section);
 	/* A small model may give a section as a number. */
-	int64_t number = json_object_is_type(section, json_type_int)
-	               ? json_object_get_int64(section) : -1;
+	int64_t number = jb_int(section, -1);
 	char digit[2] = "";
 	if (number >= 0 && number <= 9) {
 		digit[0] = (char)('0' + number);
-		sect = digit;
-		len = 1;
+		sect = (struct cstr_view){ digit, 1 };
 	}
-	struct cstr_view problem =
-		!manual_word(page, page_len, MANUAL_NAME, ALNUM "_.:+@-")
+	struct cstr_view const problem =
+		!manual_word(page, MANUAL_NAME, ALNUM "_.:+@-")
 		? CSTR_VIEW("The name argument must name a manual page: 1 to 128 letters, "
 		            "digits and _.:+@- characters, the first not -.")
-		: section && !(sect && (!len || manual_word(sect, len, MANUAL_SECTION, ALNUM)))
+		: section && !(sect.data && (!sect.len || manual_word(sect, MANUAL_SECTION, ALNUM)))
 		? CSTR_VIEW("The section argument must name a section, such as 1, 3 or 3p: "
 		            "1 to 16 letters and digits.")
 		: (struct cstr_view){};
@@ -852,7 +848,7 @@ manual_start (struct mcp_slot    *slot,
 	struct handle who;
 	struct manual_page *found = nullptr;
 	int e = mcp_slot_name(slot, &who);
-	e = e ? e : manual_find(mcp_slot_part(slot), page, page_len, sect, len, who, &found);
+	e = e ? e : manual_find(mcp_slot_part(slot), page, sect, who, &found);
 	if (e)
 		mcp_slot_fail(slot, e);
 	else if (found)
