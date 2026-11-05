@@ -4489,33 +4489,36 @@ mcp_req_trace_end (struct mcp_req *req,
 	return dstr_printf(&req->trace, ": %zu bytes\n", bytes) ? 0 : ENOMEM;
 }
 
-/* The id of the tool of @p name, of @p len bytes, that askai offers,
- * compared byte for byte; TOOL_MAX if none, as for nullptr and 0. The
- * tools that a role can grant have the ids below st->n_granted.
+/** Returns the id of the tool that askai offers with the name @p name, or
+ *  TOOL_MAX. No tool name is empty. The ids of the tools that a role can
+ *  grant are below st->n_granted.
  */
 static uint32_t
 mcp_static_tool_of (struct mcp_static const *st,
-                    char const              *name,
-                    size_t                   len)
+                    struct cstr_view         name)
 {
-	for (uint32_t id = 0; id < st->n_offers; ++id) {
-		struct mcp_offer const *o = &st->offers[id];
-		if (o->tool.name.len == len && !memcmp(o->tool.name.data, name, len))
-			return id;
-	}
-	return TOOL_MAX;
+	uint32_t id = 0;
+	while (id < st->n_offers && !cstr_view_equal(st->offers[id].tool.name, name))
+		++id;
+	return id < st->n_offers ? id : TOOL_MAX;
 }
 
-/* The id of the tool of @p name, of @p len bytes, that the turns may
- * call; TOOL_MAX if none.
+/** Returns @p id if the turns of @p req may call the tool @p id, or
+ *  TOOL_MAX.
  */
 static uint32_t
-mcp_req_tool_of (struct mcp_req const *req,
-                 char const           *name,
-                 size_t                len)
+mcp_req_lent_tool (struct mcp_req const *req,
+                   uint32_t              id)
 {
-	uint32_t id = mcp_static_tool_of(req->mcp->st, name, len);
 	return id < TOOL_MAX && req->lent >> id & 1 ? id : TOOL_MAX;
+}
+
+/** Returns true if the role of the client of @p req grants the tool @p id. */
+static bool
+mcp_req_granted (struct mcp_req const *req,
+                 uint32_t              id)
+{
+	return id < req->mcp->st->n_granted && req->s->grant.tools >> id & 1;
 }
 
 /* The words of the log for the arguments of a turn's tool call of @p req
@@ -4529,24 +4532,23 @@ mcp_req_no_args (struct mcp_req const *req)
 	                : CSTR_VIEW("not a JSON object");
 }
 
-/* Logs, with --verbose, a turn's call of the tool @p name, which the turns
- * of @p req may not call, with its arguments @p args: askai offers the
- * tool, but not to this ask call, or askai offers no such tool. The name
- * comes from the upstream, so the line has it as a JSON string.
+/** Logs, with --verbose, a turn's call of the tool @p name, which the
+ *  turns of @p req may not call, with its arguments @p args. @p known is
+ *  the id of the tool, or TOOL_MAX if askai offers no such tool. The line
+ *  quotes the name, which comes from the upstream.
  */
 static void
 mcp_req_log_refused (struct mcp_req const *req,
                      struct cstr_view      name,
+                     uint32_t              known,
                      struct json_object   *args)
 {
 	if (log_threshold < LOG_VERBOSE)
 		return;
-	struct mcp_static const *st = req->mcp->st;
-	uint32_t known = mcp_static_tool_of(st, name.data, name.len);
 	char quoted[NAME_LOG + 8];
 	mcp_quote(quoted, sizeof quoted, name.data, name.len, NAME_LOG);
 	char shown[SHOWN];
-	mcp_args_shown(&st->offers[known], args, mcp_req_no_args(req), shown);
+	mcp_args_shown(&req->mcp->st->offers[known], args, mcp_req_no_args(req), shown);
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": tool call %s "
 	    "refused: %s; arguments %s", req->mcp->loop->id, req->asked, req->turn, quoted,
 	    known < TOOL_MAX ? "not lent to this ask call" : "askai offers no such tool",
@@ -4892,10 +4894,9 @@ mcp_req_background (struct mcp_req *req,
 	return mcp_req_detach(req, task, p, ARRAY_SIZE(p));
 }
 
-/* A client's call of background in @p slot, the request's own: start a
- * call of the tool that @p args names, with the arguments in @p args, as a
- * job. The request answers the client with the id of the job at once, and
- * then runs the call as the job.
+/** Starts the client's call of background in @p slot, which is req->self,
+ *  with the members tool and arguments of @p args. The request answers
+ *  with the id of the job at once and then runs the call as the job.
  */
 static void
 mcp_slot_client_background (struct mcp_slot    *slot,
@@ -4903,13 +4904,11 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 {
 	struct mcp_req *req = slot->req;
 	struct mcp_static const *st = req->mcp->st;
-	size_t len = 0;
-	char const *name = jb_str(jb_get(args, "tool"), &len);
-	uint32_t id = mcp_static_tool_of(st, name, len);
+	uint32_t id = mcp_static_tool_of(st, jb_view(jb_get(args, "tool")));
+	struct mcp_offer const *offer = &st->offers[id];
 	struct json_object *call = jb_get(args, "arguments");
 	struct mcp_piece problem =
-		id >= st->n_granted || !(req->s->grant.tools >> id & 1) ||
-		st->offers[id].tool.kind->flags & KF_AGENDA
+		!mcp_req_granted(req, id) || offer->tool.kind->flags & KF_AGENDA
 		? TEXT("The tool argument must name a tool of yours other than background, "
 		       "jobs, wait and timer.")
 		: call && !json_object_is_type(call, json_type_object)
@@ -4926,17 +4925,17 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	/* The log line of the call's end shows the arguments of the job's
 	 * call, by the rules of its tool. */
 	if (log_threshold >= LOG_VERBOSE)
-		mcp_args_shown(&st->offers[id], call, CSTR_VIEW("none"), req->call_args);
+		mcp_args_shown(offer, call, CSTR_VIEW("none"), req->call_args);
 	LOG(LOG_VERBOSE, "tool call background from %s became job %.*s, a call of %s",
-	    mcp_req_client(req), LEDGER_ID, req->task->id, st->offers[id].tool.name.data);
+	    mcp_req_client(req), LEDGER_ID, req->task->id, offer->tool.name.data);
 	/* Last, as the start of the job's call may end the request. */
 	mcp_slot_start(slot, call);
 }
 
-/* Start the call that @p args asks for as a job in the background, in a
- * slot of the agenda's: of a tool the turns may call that may run so. The
- * call in @p slot says the job's number at once. A client's call is
- * mcp_slot_client_background()'s.
+/** Starts the call that @p args describes as a job in the background, in a
+ *  slot of the agenda. The turns must be lent the tool, and the flags of
+ *  its kind must contain TOOL_DETACH. The call in @p slot returns the
+ *  number of the job. mcp_slot_client_background() handles a client's call.
  */
 static void
 mcp_slot_background (struct mcp_slot    *slot,
@@ -4947,12 +4946,11 @@ mcp_slot_background (struct mcp_slot    *slot,
 		return;
 	}
 	struct mcp_req *req = slot->req;
-	size_t len = 0;
-	char const *name = jb_str(jb_get(args, "tool"), &len);
+	struct mcp_static const *st = req->mcp->st;
 	struct json_object *call = jb_get(args, "arguments");
-	uint32_t id = name ? mcp_req_tool_of(req, name, len) : TOOL_MAX;
+	uint32_t id = mcp_req_lent_tool(req, mcp_static_tool_of(st, jb_view(jb_get(args, "tool"))));
 	struct mcp_piece problem =
-		!(req->mcp->st->offers[id].tool.kind->flags & TOOL_DETACH)
+		!(st->offers[id].tool.kind->flags & TOOL_DETACH)
 		? TEXT("The tool argument must name a tool of yours that may run in the "
 		       "background, such as git or man.")
 		: call && !json_object_is_type(call, json_type_object)
@@ -5648,12 +5646,11 @@ mcp_req_intent_saved (struct mcp_req *req,
 	mcp_req_enter(req, PHASE_CALLS);
 }
 
-/* Launch the turn's next tool call, in its slot, unless it must wait: a
- * call that keeps to itself until those before it are written, and those
- * after it until it is. A call goes to the tool of its name that the turns
- * may call, whose kind starts it, writes its output into the slot's answer,
- * or lends it, and calls mcp_slot_done(). The step comes again after
- * it, as the call may end the request.
+/** Launches the next tool call of the turn of @p req in its slot. A call
+ *  of a tool with KF_SERIAL and the call after it wait until the results
+ *  before them are written. The call goes to the lent tool of its name, or
+ *  to KIND_NONE. With a journal, the intent of the call becomes durable
+ *  first, and a result that the journal recorded ends the call.
  */
 static void
 mcp_req_call_launch (struct mcp_req *req)
@@ -5664,23 +5661,27 @@ mcp_req_call_launch (struct mcp_req *req)
 		return;
 	struct job_call h;
 	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls).ptr + req->launch_at);
-	uint32_t id = mcp_req_tool_of(req, c.name.data, c.name.len);
+	uint32_t known = mcp_static_tool_of(mcp->st, c.name);
+	uint32_t id = mcp_req_lent_tool(req, known);
 	struct registry_tool const *tool = &mcp->st->offers[id].tool;
+	uint64_t const flags = tool->kind->flags;
 	if (k > req->part &&
-	    (tool->kind->flags | mcp_slot_offer(&req->slots[k - 1])->tool.kind->flags) & KF_SERIAL)
+	    (flags | mcp_slot_offer(&req->slots[k - 1])->tool.kind->flags) & KF_SERIAL)
 		return;
 	if (mcp->draining) {
 		mcp_req_fail(req, ESHUTDOWN);
 		return;
 	}
-	if (*req->archive && !(tool->kind->flags & KF_RERUN) && !(req->intents >> k & 1) &&
-	    !req->saved_tools[k]) {
+	/* mcp_req_args_free() frees the arguments after the result is written. */
+	struct json_object *args = req->args[k];
+	struct json_object *saved = req->saved_tools[k];
+	if (*req->archive && !(flags & KF_RERUN) && !(req->intents >> k & 1) && !saved) {
 		struct json_object *intent = jb_object(
 			"index", json_object_new_int64(k),
-			"agenda", json_object_new_boolean((tool->kind->flags & KF_AGENDA) != 0),
+			"agenda", json_object_new_boolean((flags & KF_AGENDA) != 0),
 			"name", json_object_new_string_len(c.name.data, (int)c.name.len),
-			"arguments", req->args[k] ? json_object_get(req->args[k])
-			                          : json_object_new_object(), nullptr);
+			"arguments", args ? json_object_get(args) : json_object_new_object(),
+			nullptr);
 		int e = mcp_req_archive(req, "tool-intent", intent, mcp_req_intent_saved);
 		if (e) {
 			mcp_req_fail(req, e);
@@ -5690,8 +5691,6 @@ mcp_req_call_launch (struct mcp_req *req)
 		req->phase = PHASE_JOURNAL;
 		return;
 	}
-	/* Its arguments go once its result is written, or the request ends. */
-	struct json_object *args = req->args[k];
 	struct mcp_slot *slot = &req->slots[k];
 	slot->tool = (uint8_t)id;
 	req->launch_at += job_call_size(&h);
@@ -5699,18 +5698,15 @@ mcp_req_call_launch (struct mcp_req *req)
 	hist_add(&mcp->counts->calls.lent[mcp_row_of(tool)->metric], 1);
 	mcp_req_notify_tool(req, tool->name.data);
 	loop_ready_bulk(mcp->loop, &req->step);
-	if (req->saved_tools[k]) {
-		struct json_object *saved = req->saved_tools[k];
+	if (saved) {
 		size_t len = 0;
 		char const *notebook = jb_str(jb_get(saved, "notebook"), &len);
-		if (notebook) {
-			char repo[NOTES_REPO];
-			if (notes_select(notebook, len, repo)) {
-				mcp_req_fail(req, EILSEQ);
-				return;
-			}
-			slot->shows = notebook;
+		char repo[NOTES_REPO];
+		if (notebook && notes_select(notebook, len, repo)) {
+			mcp_req_fail(req, EILSEQ);
+			return;
 		}
+		slot->shows = notebook;
 		char const *text = jb_str(jb_get(saved, "text"), &len);
 		struct json_object *source = jb_get(saved, "source");
 		if (source && req->review) {
@@ -5727,7 +5723,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		return;
 	}
 	if (id == TOOL_MAX)
-		mcp_req_log_refused(req, c.name, args);
+		mcp_req_log_refused(req, c.name, known, args);
 	if (!args) {
 		/* mcp_slot_start() does not run for this call, so this line sets
 		 * slot->start. mcp_slot_done() logs the time since slot->start. */
@@ -6191,24 +6187,20 @@ struct mcp_recover_wait {
 	typeof(mcp_slot_client_result) *handler;
 };
 
-/* Restored jobs use today's permissions and identities; the saved mask is
- * expressed by tool names, because registry indices change with config.
+/** Returns the tools in the array of names @p names that mcp_req_lent()
+ *  returns for the client of @p req now. The checkpoint of a job stores
+ *  names, because the ids of the tools change with the configuration.
  */
 static tool_mask
-mcp_archive_lent (struct mcp_req *req,
-                  struct json_object *state)
+mcp_archive_lent (struct mcp_req     *req,
+                  struct json_object *names)
 {
-	struct json_object *names = jb_get(state, "lent");
-	tool_mask allowed = mcp_req_lent(req), saved = 0;
-	size_t n = json_object_array_length(names);
-	for (size_t k = 0; k < n; ++k) {
-		size_t len = 0;
-		char const *name = jb_str(json_object_array_get_idx(names, k), &len);
-		uint32_t id = mcp_static_tool_of(req->mcp->st, name, len);
-		if (id < TOOL_MAX)
-			saved |= (tool_mask)1 << id;
+	tool_mask saved = 0;
+	for (size_t k = 0, n = jb_len(names); k < n; ++k) {
+		uint32_t id = mcp_static_tool_of(req->mcp->st, jb_view(jb_at(names, k)));
+		saved |= id < TOOL_MAX ? (tool_mask)1 << id : 0;
 	}
-	return allowed & saved;
+	return mcp_req_lent(req) & saved;
 }
 
 static struct json_object *
@@ -6358,7 +6350,7 @@ mcp_recover_back (struct loop           *loop,
 	 * that fails here answers with the problem alone, without the turns'
 	 * trace (mcp_req_trace_put()). */
 	struct json_object const *review = jb_get(state, "review");
-	tool_mask lent = mcp_archive_lent(req, state);
+	tool_mask lent = mcp_archive_lent(req, names);
 	int e = mcp_req_review_make(req, lent);
 	if (!e && req->review && review)
 		e = review_restore(req->review, review);
@@ -6921,11 +6913,42 @@ mcp_slot_ask (struct mcp_slot    *slot,
 	mcp_req_ask(req, args, background);
 }
 
-/* Start a tool call: of the tool that the name in @p params names, compared
- * over its length, as the Mcp-Name header is, among those that a role may
- * grant, with the arguments and the progress token that @p params gives;
- * for a client that takes tasks, as @p tasks says, one that becomes a task
- * if it runs TASK_NS, unless its kind has KF_AGENDA.
+/** Refuses the client's call of the tool @p name in @p req, which the role
+ *  of the client does not grant. @p known is true if a role can grant the
+ *  tool. The log quotes an unknown name, which comes from the client.
+ */
+static void
+mcp_req_tools_refuse (struct mcp_req   *req,
+                      struct cstr_view  name,
+                      bool              known)
+{
+	static struct {
+		char const       *why;
+		struct cstr_view  head;
+	} const refusals[] = {
+		{ "the call names no tool",     CSTR_VIEW_INIT("Unknown tool: ") },
+		{ "askai offers no such tool",  CSTR_VIEW_INIT("Unknown tool: ") },
+		{ "the role does not grant it", CSTR_VIEW_INIT("Tool not available: ") },
+	};
+	size_t r = known ? 2 : name.data != nullptr;
+	struct cstr_view what = r ? name : CSTR_VIEW("(none)");
+	struct cstr_view head = refusals[r].head;
+	char quoted[NAME_LOG + 8];
+	mcp_quote(quoted, sizeof quoted, what.data, what.len, NAME_LOG);
+	LOG(LOG_WARN, "tool call %s from %s refused: %s", r == 1 ? quoted : what.data,
+	    mcp_req_client(req), refusals[r].why);
+	char msg[32 + 6 * 100];
+	memcpy(msg, head.data, head.len);
+	size_t n = head.len + jb_escape(msg + head.len, what.data,
+	                                util_clip(what.data, what.len, 100));
+	mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, n), nullptr, 0);
+}
+
+/** Starts the client's tool call in @p req with the members name,
+ *  arguments and _meta.progressToken of @p params. The role of the client
+ *  must grant the tool, whose name is compared over its full length, as
+ *  the Mcp-Name header is. If @p tasks is true, the call becomes a task
+ *  after TASK_NS, unless the flags of its kind contain KF_AGENDA.
  */
 static void
 mcp_req_tools_call (struct mcp_req     *req,
@@ -6937,60 +6960,42 @@ mcp_req_tools_call (struct mcp_req     *req,
 		mcp_req_fail(req, ESHUTDOWN);
 		return;
 	}
-	size_t len = 0;
-	char const *str = jb_str(jb_get(params, "name"), &len);
-	uint32_t id = mcp_static_tool_of(st, str, len);
-	/* One that the client's role may not call is not unknown, but not
-	 * available to it. */
-	if (id >= st->n_granted || !(req->s->grant.tools >> id & 1)) {
-		bool known = id < st->n_granted;
-		/* An unknown name is the client's, so the log has it as a JSON
-		 * string. */
-		char quoted[NAME_LOG + 8] = "(none)";
-		if (str && !known)
-			mcp_quote(quoted, sizeof quoted, str, len, NAME_LOG);
-		LOG(LOG_WARN, "tool call %s from %s refused: %s",
-		    known ? st->offers[id].tool.name.data : quoted, mcp_req_client(req),
-		    known ? "the role does not grant it" : str ? "askai offers no such tool"
-		                                               : "the call names no tool");
-		struct mcp_piece head = known ? FRAG("Tool not available: ")
-		                              : FRAG("Unknown tool: ");
-		struct mcp_piece what = str ? ESC(str, util_clip(str, len, 100))
-		                            : TEXT("(none)");
-		char msg[32 + 6 * 100];
-		memcpy(msg, head.bytes.data, head.bytes.len);
-		size_t n = jb_escape(msg + head.bytes.len, what.bytes.data, what.bytes.len);
-		mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, head.bytes.len + n), nullptr, 0);
+	struct cstr_view name = jb_view(jb_get(params, "name"));
+	uint32_t id = mcp_static_tool_of(st, name);
+	if (!mcp_req_granted(req, id)) {
+		mcp_req_tools_refuse(req, name, id < st->n_granted);
 		return;
 	}
+	struct mcp_offer const *offer = &st->offers[id];
+	struct json_object *meta = jb_get(params, "_meta");
 	struct json_object *stream = nullptr;
-	bool has_stream = json_object_object_get_ex(jb_get(jb_get(params, "_meta"), "askai"),
-	                                            "stream", &stream);
+	bool has_stream = json_object_object_get_ex(jb_get(meta, "askai"), "stream", &stream);
+	bool streamed = has_stream && json_object_get_boolean(stream);
+	bool ask = offer->tool.kind->start == mcp_slot_ask;
 	if (has_stream && (!json_object_is_type(stream, json_type_boolean) ||
-	                   (json_object_get_boolean(stream) &&
-	                    (!req->sse_ok || st->offers[id].tool.kind->start != mcp_slot_ask)))) {
+	                   (streamed && (!req->sse_ok || !ask)))) {
 		mcp_req_error(req, 200, INVALID_PARAMS,
 		              FRAG("askai.stream must be boolean; true requires the ask tool "
 		                   "and an SSE-capable client"), nullptr, 0);
 		return;
 	}
-	if (has_stream && json_object_get_boolean(stream))
+	if (streamed)
 		req->asks |= JOB_STREAM;
 	int e = mcp_req_enrol(req);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
 	}
-	struct json_object *token = jb_get(jb_get(params, "_meta"), "progressToken");
+	struct json_object *token = jb_get(meta, "progressToken");
 	req->token = mcp_id_valid(token) ? json_object_get(token) : nullptr;
-	if (tasks && !(req->asks & JOB_STREAM) && !(st->offers[id].tool.kind->flags & KF_AGENDA)) {
+	if (tasks && !streamed && !(offer->tool.kind->flags & KF_AGENDA)) {
 		req->promote_at = req->mcp->loop->now + TASK_NS;
 		mcp_req_arm(req);
 	}
 	req->self.tool = (uint8_t)id;
 	struct json_object *args = jb_get(params, "arguments");
 	if (log_threshold >= LOG_VERBOSE)
-		mcp_args_shown(&st->offers[id], args, CSTR_VIEW("none"), req->call_args);
+		mcp_args_shown(offer, args, CSTR_VIEW("none"), req->call_args);
 	mcp_slot_start(&req->self, args);
 }
 
@@ -8683,45 +8688,46 @@ mcp_register (struct registry     *reg,
 	return 0;
 }
 
-/* Whether the configuration file's member tools of @p cfg allows clients
- * the tool @p name of @p reg.
+/** Returns true if the member tools of the configuration file of @p cfg
+ *  allows clients the tool of @p reg with the name @p name, or if @p name
+ *  is not the name of a tool that a role can grant.
  */
 static bool
 mcp_allowed (struct registry const *reg,
              struct config const   *cfg,
-             char const            *name)
+             struct cstr_view       name)
 {
 	for (uint32_t id = 0; id < reg->n_granted; ++id)
-		if (!strcmp(reg->tools[id].name.data, name))
+		if (cstr_view_equal(reg->tools[id].name, name))
 			return cfg->tools_clients >> id & 1;
 	return true;
 }
 
-/* Logs askai's own tools for the clients of @p cfg, each on or off, and for
- * a tool that is off, the option that turns it on, or "tools" if the
- * configuration file's member tools denies it to clients. A tool without
- * such an option is not logged while it is off: the kinds in KINDS_TURNS
- * and the test aid.
+/** Logs askai's own tools for the clients of @p cfg, each on or off, with
+ *  the option that turns an off tool on, or "tools" if the member tools of
+ *  the configuration file denies it. A tool without such an option, such
+ *  as test_task, is not logged while it is off.
  */
 static void
 mcp_report_own (struct registry const *reg,
                 struct config const   *cfg)
 {
 	uint32_t on = mcp_offered_clients(cfg);
+	struct cstr_view const ask = cstr_view(cfg->tool.name);
+	struct cstr_view names[KIND_NONE];
 	int width = 0;
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
-		size_t len = mcp_rows[k].name.data ? mcp_rows[k].name.len : strlen(cfg->tool.name);
-		width = (int)len > width ? (int)len : width;
+		names[k] = mcp_rows[k].name.data ? mcp_rows[k].name : ask;
+		width = (int)names[k].len > width ? (int)names[k].len : width;
 	}
 	LOG_ALL(LOG_INFO, "built-in tools for clients:");
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
-		struct mcp_row const *row = &mcp_rows[k];
-		char const *name = row->name.data ? row->name.data : cfg->tool.name;
+		char const *option = mcp_rows[k].option;
 		if (on >> k & 1)
-			LOG_ALL(LOG_INFO, "  %-*s  %s", width, name,
-			        mcp_allowed(reg, cfg, name) ? "on" : "off (tools)");
-		else if (row->option)
-			LOG_ALL(LOG_INFO, "  %-*s  off (%s)", width, name, row->option);
+			LOG_ALL(LOG_INFO, "  %-*s  %s", width, names[k].data,
+			        mcp_allowed(reg, cfg, names[k]) ? "on" : "off (tools)");
+		else if (option)
+			LOG_ALL(LOG_INFO, "  %-*s  off (%s)", width, names[k].data, option);
 	}
 }
 
@@ -8743,9 +8749,9 @@ mcp_report_gits (struct config const *cfg)
 	}
 }
 
-/* Logs the plugin @p p of @p reg: its file, whether it got options, and its
- * tools, each that the configuration file's member tools of @p cfg denies
- * clients with "off (tools)".
+/** Logs the plugin @p p of @p reg with its file, whether options were
+ *  given to it, and its tools. A tool that the member tools of the
+ *  configuration file of @p cfg denies to clients is marked "off (tools)".
  */
 static void
 mcp_report_plugin (struct registry const      *reg,
@@ -8758,7 +8764,7 @@ mcp_report_plugin (struct registry const      *reg,
 	for (uint32_t k = 0; k < p->n_tools; ++k) {
 		char const *name = p->manifest.tools[k];
 		LOG_ALL(LOG_INFO, "  %-7s  %s%s", k ? "" : "tools", name,
-		        mcp_allowed(reg, cfg, name) ? "" : "  off (tools)");
+		        mcp_allowed(reg, cfg, cstr_view(name)) ? "" : "  off (tools)");
 	}
 }
 
