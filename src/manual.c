@@ -12,6 +12,7 @@
 
 #include "buf.h"
 #include "child.h"
+#include "cstr_view.h"
 #include "jb.h"
 #include "list.h"
 #include "log.h"
@@ -47,18 +48,21 @@ struct manual_page {
 	char             text[];
 };
 
-/** A call that waits for a page: posted to its loop, msg.fn its handler,
- *  once the page is in or man has failed; the handler frees it.
+/** A call that waits for a page. When the page is ready or man has
+ *  failed, the waiter is posted to its loop, and the handler msg.fn frees
+ *  it.
  */
 struct manual_wait {
 	struct msg           msg;
 	struct manual_wait  *next;
 	struct loop         *loop;
-	struct manual_page  *page;   /**< the page, a reference the handler
-	                                  may take; else nullptr, and why */
-	uint64_t             since;  /**< loop_clock() as the call began to
-	                                  wait */
-	struct handle        who;    /**< names the call on its loop */
+	struct manual_page  *page;     /**< a reference to the page, which the
+	                                    handler moves to the call, or
+	                                    nullptr with the reason in why */
+	uint64_t             since;    /**< loop_clock() when the call began to
+	                                    wait */
+	struct handle        who;      /**< the handle of the call on its loop */
+	size_t               why_len;  /**< the length of the text in why */
 	char                 why[MANUAL_WHY];
 };
 
@@ -269,8 +273,8 @@ manual_fetch_destroy (struct manual_fetch **p_f)
 	free(f);
 }
 
-/* The fetch failed, as @p why says: the alias goes, and each waiter is
- * posted why.
+/* Ends the failed fetch @p f. The function removes the alias of the fetch
+ * and posts the reason @p why to each waiter.
  */
 static void
 manual_fetch_fail (struct manual_fetch *f,
@@ -284,7 +288,7 @@ manual_fetch_fail (struct manual_fetch *f,
 	pthread_mutex_unlock(&m->lock);
 	for (struct manual_wait *next; w; w = next) {
 		next = w->next;
-		util_format(w->why, sizeof w->why, "%s", why);
+		w->why_len = util_format(w->why, sizeof w->why, "%s", why);
 		loop_post(w->loop, &w->msg);
 	}
 	manual_fetch_destroy(&f);
@@ -583,21 +587,22 @@ manual_loop_ask (struct manual_loop *ml,
 	return 0;
 }
 
-/* End @p slot's call with @p page, a reference, which the call keeps as
- * its own until it drops.
+/* Ends the call in @p slot with the text of @p page. The call owns the
+ * reference @p page until manual_drop() releases it.
  */
 static void
-manual_give (struct mcp_slot    *slot,
-             struct manual_page *page)
+manual_answer (struct mcp_slot    *slot,
+               struct manual_page *page)
 {
 	*mcp_slot_own(slot) = page;
 	mcp_slot_lend(slot, (struct cstr_view){ page->text, page->len });
 	mcp_slot_finish(slot, 0);
 }
 
-/* The page a man call waited for is in, or man failed: reply with the
- * page, or why there is none, unless the call has gone. Once the loop has
- * stopped, MCP is gone, and the post is only freed.
+/* Handles the end of the fetch that a man call waited for. The function
+ * ends the call with the page, or with the reason why there is no page,
+ * unless the call has ended. After the loop has stopped, MCP no longer
+ * exists, and the function only frees the waiter.
  */
 static void
 manual_back (struct loop *loop,
@@ -609,15 +614,15 @@ manual_back (struct loop *loop,
 		manual_wait_destroy(&w);
 		return;
 	}
-	/* The call takes the waiter's reference. */
+	/* The reference moves from the waiter to the call. */
 	struct manual_page *page = w->page;
 	w->page = nullptr;
 	if (page) {
-		manual_give(slot, page);
+		manual_answer(slot, page);
 	} else {
 		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s",
 		    (double)(loop_clock() - w->since) / 1e9, w->why);
-		mcp_slot_tell(slot, cstr_view(w->why), TOOL_FAILED);
+		mcp_slot_tell(slot, (struct cstr_view){ w->why, w->why_len }, TOOL_FAILED);
 	}
 	manual_wait_destroy(&w);
 }
@@ -804,9 +809,10 @@ manual_word (char const *s,
 	return s && len && len <= max && *s != '-' && strspn(s, set) == len;
 }
 
-/* Start a man call in @p slot for the page that @p args names, of the
- * section it names if any: reply with it if the manual, the man tool's
- * part of the loop, has it, else wait for it, named.
+/* Starts a man call in @p slot for the page in the name argument of
+ * @p args, in the section of the section argument if it is given. If the
+ * manual stores the page, the function ends the call with it. Otherwise
+ * the call waits for manual_back() under its handle.
  */
 static void
 manual_start (struct mcp_slot    *slot,
@@ -850,7 +856,7 @@ manual_start (struct mcp_slot    *slot,
 	if (e)
 		mcp_slot_fail(slot, e);
 	else if (found)
-		manual_give(slot, found);
+		manual_answer(slot, found);
 	else
 		mcp_slot_park(slot);
 }
