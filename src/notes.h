@@ -82,11 +82,14 @@ struct notes_file {
 	uint64_t    bytes;
 };
 
-/** The file part of the input of NOTES_ADD. Views borrow the part. */
+/** Where notes_add_head() wrote the name and the text of a note, as
+ *  offsets from the head of its buffer. The name keeps its quotes.
+ */
 struct notes_part {
-	struct span name; /**< the name as the file part quotes it, quotes
-	                       included */
-	struct span data; /**< the bytes of the note */
+	size_t name_at;
+	size_t name_len;
+	size_t data_at;
+	size_t data_len;
 };
 
 /** A change to a note in the output of NOTES_LIST. */
@@ -316,37 +319,31 @@ notes_file_same (struct notes_file const *file,
  * Writes to @p in the head of the file part of the input of the command
  * NOTES_ADD, for a note of the @p name_len bytes at @p name whose text has
  * @p len bytes, and reserves room for the text: the caller appends the
- * text and then a line feed, as notes_add_file() does. Returns 0, EINVAL
- * for a null argument or a name longer than NOTES_NAME, or ENOMEM.
+ * text and then a line feed, as notes_add_file() does. It stores the
+ * offsets of the name and the text in @p *part. Returns 0, EINVAL for a
+ * null argument or a name longer than NOTES_NAME, or ENOMEM.
  */
 extern int
-notes_add_head (struct buf *in,
-                char const *name,
-                size_t      name_len,
-                size_t      len);
+notes_add_head (struct buf        *in,
+                char const        *name,
+                size_t             name_len,
+                size_t             len,
+                struct notes_part *part);
 
 /**
  * Writes to @p in the file part of the input of the command NOTES_ADD. The
  * valid name of the note is the @p name_len bytes at @p name, and its text
  * is the @p len bytes at @p text. notes_add_input() puts the commit before
- * the file part. Returns 0, EINVAL for a name longer than NOTES_NAME, or
- * ENOMEM.
+ * the file part. It fills @p *part as notes_add_head() does. Returns 0,
+ * EINVAL for a name longer than NOTES_NAME, or ENOMEM.
  */
 extern int
-notes_add_file (struct buf *in,
-                char const *name,
-                size_t      name_len,
-                char const *text,
-                size_t      len);
-
-/**
- * Reads @p file, a file part that notes_add_file() wrote, or that
- * notes_add_head() and its caller wrote, into @p part. Returns 0, or
- * EINVAL for a null @p part or a @p file that is not such a file part.
- */
-extern int
-notes_part_init (struct notes_part *part,
-                 struct span        file);
+notes_add_file (struct buf        *in,
+                char const        *name,
+                size_t             name_len,
+                char const        *text,
+                size_t             len,
+                struct notes_part *part);
 
 /**
  * Writes to @p in the input of the command NOTES_ADD. The input is a

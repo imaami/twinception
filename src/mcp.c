@@ -6642,6 +6642,7 @@ mcp_req_go_on (struct mcp_req   *req,
 struct mcp_notes_call {
 	struct buf             file;      /* a write's file part, until git has
 	                                     its input */
+	struct notes_part      part;      /* the name and the text in file */
 	struct child          *child;     /* the call's git, until a step has
 	                                     read its output */
 	struct notes_revision *revision;  /* the revisions of a read, diff,
@@ -6983,14 +6984,13 @@ mcp_slot_notes_unadded (struct mcp_slot *slot)
 static constexpr uint64_t NO_NOTE = UINT64_MAX;
 
 /* Writes the commit message of the note write in @p slot to @p msg and
- * returns its length, or 0 if it does not fit. @p part is the file part
- * of the write, and @p before is the size of the note before it, or NO_NOTE.
+ * returns its length, or 0 if it does not fit. @p before is the size of
+ * the note before the write, or NO_NOTE.
  */
 static size_t
-mcp_slot_notes_message (struct mcp_slot const   *slot,
-                        struct notes_part const *part,
-                        uint64_t                 before,
-                        char                     msg[NOTES_MESSAGE])
+mcp_slot_notes_message (struct mcp_slot const *slot,
+                        uint64_t               before,
+                        char                   msg[NOTES_MESSAGE])
 {
 	static_assert(sizeof "Restore  from  (18446744073709551615 to 18446744073709551615 "
 	                     "bytes)" + 2 * NOTES_NAME + 2 + NOTES_REPO <= NOTES_MESSAGE);
@@ -7000,9 +7000,9 @@ mcp_slot_notes_message (struct mcp_slot const   *slot,
 	char const *from = fetch & FETCH_RESTORE ? notes_revision_from(call->revision)
 	                 : fetch & FETCH_COPY ? notes_selector(mcp_slot_notebook(slot)) : "";
 	char const *sep = *from ? " from " : "";
-	int len = (int)part->name.len;
-	char const *name = (char const *)part->name.ptr;
-	uint64_t after = part->data.len;
+	int len = (int)call->part.name_len;
+	char const *name = (char const *)buf_peek(&call->file).ptr + call->part.name_at;
+	uint64_t after = call->part.data_len;
 	int n = before == NO_NOTE
 	      ? snprintf(msg, NOTES_MESSAGE, "%s %.*s%s%s (%" PRIu64 " byte%s)", verb, len,
 	                 name, sep, from, after, after == 1 ? "" : "s")
@@ -7027,12 +7027,10 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 		return;
 	}
 	struct span file = buf_peek(&call->file);
-	struct notes_part part;
 	struct buf in = {};
-	int e = notes_part_init(&part, file);
-	call->len = e ? 0 : mcp_slot_notes_message(slot, &part, before, call->message);
+	call->len = mcp_slot_notes_message(slot, before, call->message);
 	struct span msg = { (unsigned char *)call->message, call->len };
-	e = e ? e : !msg.len ? EINVAL : notes_add_input(&in, req->repo, tip, msg, file);
+	int e = !msg.len ? EINVAL : notes_add_input(&in, req->repo, tip, msg, file);
 	buf_fini(&call->file);
 	if (e) {
 		buf_fini(&in);
@@ -7113,20 +7111,20 @@ mcp_slot_notes_unchanged (struct mcp_slot         *slot,
 {
 	struct mcp_req *req = slot->req;
 	struct mcp_notes_call const *call = slot->own;
-	struct notes_part part;
+	struct span file = buf_peek(&call->file);
+	struct span data = { file.ptr + call->part.data_at, call->part.data_len };
 	bool same = false;
-	int e = notes_part_init(&part, buf_peek(&call->file));
-	e = e ? e : notes_file_same(note, part.data, &same);
+	int e = notes_file_same(note, data, &same);
 	if (e)
 		LOG(LOG_WARN, "notes: cannot compare a note with its new bytes: %s", strerror(e));
-	else if (part.data.len == note->bytes)
-		loop_work(req->mcp->loop, LOOP_COPY, part.data.len);
+	else if (data.len == note->bytes)
+		loop_work(req->mcp->loop, LOOP_COPY, data.len);
 	if (!same)
 		return false;
-	char const *name = (char const *)part.name.ptr;
+	char const *name = (char const *)file.ptr + call->part.name_at;
 	uint64_t n = note->bytes;
 	e = dstr_printf(&slot->answer, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
-	                "commit %s. No commit was made.", (int)jb_utf8(name, part.name.len),
+	                "commit %s. No commit was made.", (int)jb_utf8(name, call->part.name_len),
 	                name, n == 1 ? "this" : "these", n, n == 1 ? "" : "s", tip) ? 0 : ENOMEM;
 	mcp_slot_notes_wrote(slot, e);
 	return true;
@@ -7935,15 +7933,17 @@ static char const bad_name[] = "The file argument must be a file name of 1 to 25
                                "case and also with spaces or dots after it.";
 
 /* Writes to @p in the file part of a note of the @p name_len bytes at
- * @p name whose text is the data of @p d, decoded.
+ * @p name whose text is the data of @p d, decoded. It fills @p *part as
+ * notes_add_head() does.
  */
 static int
 mcp_notes_add_data (struct buf           *in,
                     char const           *name,
                     size_t                name_len,
-                    struct datauri const *d)
+                    struct datauri const *d,
+                    struct notes_part    *part)
 {
-	int e = notes_add_head(in, name, name_len, d->size);
+	int e = notes_add_head(in, name, name_len, d->size, part);
 	struct span s;
 	if (!e)
 		e = buf_reserve(in, d->size + 1, SIZE_MAX, &s);
@@ -8011,8 +8011,8 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	name += skip;
 	name_len -= skip;
 	struct buf in = {};
-	int e = content ? mcp_notes_add_data(&call->file, name, name_len, &data)
-	                : notes_add_file(&call->file, name, name_len, text, len);
+	int e = content ? mcp_notes_add_data(&call->file, name, name_len, &data, &call->part)
+	                : notes_add_file(&call->file, name, name_len, text, len, &call->part);
 	if (content)
 		loop_work(req->mcp->loop, LOOP_COPY, data.size);
 	if (!e && initialized)
@@ -8038,7 +8038,8 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 	struct cstr_view to = call->fetch & FETCH_RESTORE ? notes_revision_file(call->revision)
 	                    : (struct cstr_view){ call->name, call->len };
 	struct buf in = {};
-	int e = notes_add_file(&call->file, to.data, to.len, (char const *)text.ptr, text.len);
+	int e = notes_add_file(&call->file, to.data, to.len, (char const *)text.ptr, text.len,
+	                       &call->part);
 	if (!e && initialized)
 		e = notes_check_input(&in, req->repo, to.data, to.len);
 	loop_work(req->mcp->loop, LOOP_COPY, text.len);

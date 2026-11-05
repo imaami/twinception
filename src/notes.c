@@ -874,14 +874,15 @@ notes_file_same (struct notes_file const *file,
 }
 
 int
-notes_add_head (struct buf *in,
-                char const *name,
-                size_t      name_len,
-                size_t      len)
+notes_add_head (struct buf        *in,
+                char const        *name,
+                size_t             name_len,
+                size_t             len,
+                struct notes_part *part)
 {
 	static char const m[] = "M 100644 inline \"";
 	char head[sizeof m + 2 * NOTES_NAME + sizeof "\"\ndata 18446744073709551615\n"];
-	if (!in || !name || name_len > NOTES_NAME)
+	if (!in || !name || name_len > NOTES_NAME || !part)
 		return EINVAL;
 	/* The name is quoted as a C string. */
 	char *p = mempcpy(head, m, sizeof m - 1);
@@ -899,18 +900,27 @@ notes_add_head (struct buf *in,
 	if (e)
 		return e;
 	memcpy(s.ptr, head, h);
+	/* The name runs from the last byte of m to the quote at p. */
+	size_t at = buf_peek(in).len;
+	*part = (struct notes_part){
+		.name_at = at + sizeof m - 2,
+		.name_len = (size_t)(p - head) - (sizeof m - 2) + 1,
+		.data_at = at + h,
+		.data_len = len,
+	};
 	buf_commit(in, h);
 	return 0;
 }
 
 int
-notes_add_file (struct buf *in,
-                char const *name,
-                size_t      name_len,
-                char const *text,
-                size_t      len)
+notes_add_file (struct buf        *in,
+                char const        *name,
+                size_t             name_len,
+                char const        *text,
+                size_t             len,
+                struct notes_part *part)
 {
-	int e = notes_add_head(in, name, name_len, len);
+	int e = notes_add_head(in, name, name_len, len, part);
 	struct span s;
 	if (!e)
 		e = buf_reserve(in, len + 1, SIZE_MAX, &s);
@@ -919,37 +929,6 @@ notes_add_file (struct buf *in,
 	memcpy(s.ptr, text, len);
 	s.ptr[len] = '\n';
 	buf_commit(in, len + 1);
-	return 0;
-}
-
-int
-notes_part_init (struct notes_part *part,
-                 struct span        file)
-{
-	static char const m[] = "M 100644 inline ";
-	static char const data[] = "data ";
-	if (!part)
-		return EINVAL;
-	*part = (struct notes_part){};
-	/* The part is "M 100644 inline NAME\ndata N\n", the N bytes and a line
-	 * feed. A name has no control characters (notes_name()). */
-	char const *s = (char const *)file.ptr;
-	char const *nl = file.len > sizeof m - 1 && !memcmp(s, m, sizeof m - 1)
-	               ? memchr(s, '\n', file.len) : nullptr;
-	/* The offset of N. */
-	size_t at = nl ? (size_t)(nl - s) + sizeof data : 0;
-	char const *end = nl && file.len > at && !memcmp(nl + 1, data, sizeof data - 1)
-	                ? memchr(s + at, '\n', file.len - at) : nullptr;
-	uint64_t len;
-	if (!end || !notes_number(s + at, (size_t)(end - s) - at, &len))
-		return EINVAL;
-	size_t start = (size_t)(end - s) + 1;
-	if (start == file.len || len != file.len - start - 1 || s[file.len - 1] != '\n')
-		return EINVAL;
-	*part = (struct notes_part){
-		.name = { file.ptr + sizeof m - 1, (size_t)(nl - s) - (sizeof m - 1) },
-		.data = { file.ptr + start, (size_t)len },
-	};
 	return 0;
 }
 
