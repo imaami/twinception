@@ -228,15 +228,16 @@ policy_log (struct policy const *policy,
  * @p token, or none if token.data is nullptr, and connects as @p kind. On
  * a Unix socket, @p peer is its user.
  *
- * Over TCP, a token counts if the policy has any token, and otherwise the
- * role of @p kind in "anonymous" applies. On a Unix socket, a client
- * without a token gets the role of its first group in "unix-groups", or
- * else the role of "unix" in "anonymous". A token on a Unix socket is
+ * Over TCP, a token counts if the policy contains a token, and otherwise
+ * the role of @p kind in "anonymous" applies. On a Unix socket, a client
+ * without a token receives the role of its first group in "unix-groups",
+ * or else the role of "unix" in "anonymous". A token on a Unix socket is
  * accepted only under askai's own policy with ASKAI_TOKEN. It then grants
  * the role of ASKAI_TOKEN, and the principal stays that of the Unix user.
  *
- * Returns POLICY_GRANTED with the grant in @p *grant, or why the client
- * may not connect.
+ * Returns POLICY_GRANTED with the grant in @p *grant, or the reason why
+ * the client may not connect. Returns POLICY_REFUSED if @p policy or
+ * @p grant is nullptr or if @p kind is not a valid kind.
  */
 extern enum policy_verdict
 policy_grant (struct policy const      *policy,

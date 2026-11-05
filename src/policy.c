@@ -68,7 +68,7 @@ static char const POLICY_SUBGID[] = "/etc/subgid";
 static char const POLICY_OVERFLOWUID[] = "/proc/sys/kernel/overflowuid";
 static char const POLICY_OVERFLOWGID[] = "/proc/sys/kernel/overflowgid";
 
-/* One block has a policy and, after it, its tokens, roles, groups,
+/* One block contains a policy followed by its roles, tokens, groups,
  * subordinate uids and the names of its clients for the log, in that
  * order, so that each is aligned.
  */
@@ -78,9 +78,11 @@ struct policy {
 	_Atomic uint64_t     refs;
 	struct policy_token *tokens;                   /* by digest */
 	struct policy_grant *roles;                    /* each with principal 0 */
-	struct policy_gid   *groups;                   /* in the configuration's
-	                                                  order, which the first
-	                                                  that a user is in wins */
+	struct policy_gid   *groups;                   /* in the order of the
+	                                                  configuration. A user
+	                                                  receives the role of
+	                                                  the first group that
+	                                                  contains the user. */
 	struct policy_range *subuids;                  /* the ranges of
 	                                                  /etc/subuid, sorted and
 	                                                  merged */
@@ -107,12 +109,11 @@ struct policy {
 	uint32_t             overflow_gid;             /* the kernel's overflow
 	                                                  gid, which unix-groups
 	                                                  may not name */
-	int                  overflow_errors[2];       /* The errors that kept
+	int                  overflow_errors[2];       /* The errors of reading
 	                                                  the overflow uid and
-	                                                  gid from being read,
-	                                                  or 0 for an id that
-	                                                  was read. An id that
-	                                                  was not read is
+	                                                  gid, or 0 for an id
+	                                                  that was read. An id
+	                                                  that was not read is
 	                                                  65534. */
 	uint64_t             unix_token;               /* Nonzero if a client
 	                                                  on a Unix socket may
@@ -129,7 +130,7 @@ static_assert(alignof (struct policy_grant) <= alignof (struct policy) &&
               alignof (struct policy_gid) <= alignof (struct policy_token) &&
               alignof (struct policy_range) <= alignof (struct policy_gid));
 
-/* What policy_create() works from, and where it says what is wrong. */
+/* The input of policy_create() and the buffer for its error message. */
 struct policy_build {
 	tool_mask            upstream;  /* the tools that askai can offer to
 	                                   the upstream */
@@ -391,9 +392,8 @@ policy_build_unreadable (struct policy_build *b,
 /* Read the ranges of subordinate ids in @p path, /etc/subuid or
  * /etc/subgid, into @p *p_ranges and @p *p_n, sorted by their first id and
  * merged where they overlap or touch. Lines that policy_range_parse()
- * refuses are skipped. A missing file has no ranges. Returns 0, ENOMEM,
- * or the error that kept the file from being read, with the reason in
- * b->why.
+ * refuses are skipped. If the file does not exist, @p *p_n is 0. Returns
+ * 0, ENOMEM, or the error of reading the file, with the reason in b->why.
  */
 static int
 policy_build_ranges (struct policy_build  *b,
@@ -1321,8 +1321,9 @@ policy_principal_uid (struct policy const *policy,
 	return principal;
 }
 
-/* Grant @p role, if it is one, to the client of @p principal, which the
- * log names as @p who, or else as its role.
+/* Grant @p role to the client of @p principal, or refuse the client if
+ * @p role is negative. The log shows the client as @p who, or as its role
+ * if @p who is empty.
  */
 static enum policy_verdict
 policy_grant_role (struct policy const *policy,
@@ -1357,9 +1358,10 @@ policy_grant_token (struct policy const *policy,
 	return policy_grant_role(policy, (int64_t)t->role, t->principal, t->who, g);
 }
 
-/* Grant Unix user @p peer, who shows no token, the role of its first group
- * that the policy names, or else the anonymous role over a Unix socket.
- * The log names the client by its role, and mcp.c adds the uid.
+/* Grant Unix user @p peer, who shows no token, the role of the first group
+ * of the policy that contains the user, or else the anonymous role over a
+ * Unix socket. The log shows the client by its role, and mcp.c adds the
+ * uid.
  */
 static enum policy_verdict
 policy_grant_unix (struct policy const      *policy,
@@ -1385,6 +1387,8 @@ policy_grant (struct policy const      *policy,
               struct policy_peer const *peer,
               struct policy_grant      *g)
 {
+	if (!policy || !g || kind >= POLICY_KINDS)
+		return POLICY_REFUSED;
 	if (kind != POLICY_UNIX || !peer) {
 		if (token.data && policy->n_tokens)
 			return policy_grant_token(policy, token, g);
