@@ -33,20 +33,6 @@ enum {
 /* The children spawned and not yet reaped, of every loop. */
 static _Atomic uint32_t alive;
 
-/* Stop watching @p ref, which is the pidfd or the output pipe of the child,
- * and close its descriptor.
- */
-static void
-child_close (struct child    *c,
-             struct loop_ref *ref)
-{
-	int fd = ref->fd;
-	if (fd < 0)
-		return;
-	loop_unwatch(c->loop, ref);
-	close(fd);
-}
-
 /* Signal the child's group with @p sig, unless the child is reaped, and
  * stop reading its output.
  */
@@ -56,7 +42,7 @@ child_signal (struct child *c,
 {
 	if (c->pid > 0)
 		(void)kill(-c->pid, sig);
-	child_close(c, &c->pipe);
+	loop_close(c->loop, &c->pipe);
 }
 
 /* Stop the child: a child with a grace with SIGTERM, which lets it clean
@@ -91,7 +77,7 @@ child_dispose (struct child *c)
 	loop_unready(&c->step);
 	loop_timer_stop(c->loop, &c->timer);
 	child_kill(c);
-	child_close(c, &c->proc);
+	loop_close(c->loop, &c->proc);
 	child_reap(c);
 	buf_fini(&c->out);
 	free(c);
@@ -143,7 +129,7 @@ child_read (struct child *c)
 		if (n == -EAGAIN)
 			return;
 		if (n <= 0) {
-			child_close(c, &c->pipe);
+			loop_close(c->loop, &c->pipe);
 			return;
 		}
 		buf_commit(&c->out, (size_t)n);
@@ -178,7 +164,7 @@ child_exited (struct child *c)
 	}
 	c->code = info.si_code;
 	c->status = info.si_status;
-	child_close(c, &c->proc);
+	loop_close(c->loop, &c->proc);
 }
 
 /* Its deadline has come: SIGTERM, and SIGKILL once its grace has passed too,
