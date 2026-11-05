@@ -86,7 +86,6 @@ struct cli_network {
 	struct loop                 loop;
 	struct loop_timer           timer;
 	struct loop_step            timeout;
-	struct loop_step            delivery;
 	struct msg                  progress;
 	struct msg                  cancel;
 	struct msg                  stop;
@@ -162,7 +161,7 @@ cli_network_request_done (struct cli_mailbox     *mailbox,
 	(void)mailbox;
 	struct cli_network_request *request = container_of(message, struct cli_network_request, done);
 	request->call.flags |= CLI_NETWORK_FINISHED;
-	loop_ready(&request->network->ui->loop, &request->network->delivery);
+	cli_loop_wake(request->network->ui);
 }
 
 static void
@@ -302,7 +301,7 @@ cli_network_chunk_received (struct cli_mailbox     *mailbox,
 	(void)mailbox;
 	struct cli_network_chunk *chunk = container_of(message, struct cli_network_chunk, mail);
 	list_append(&chunk->call->received, &chunk->mail.hook);
-	loop_ready(&chunk->network->ui->loop, &chunk->network->delivery);
+	cli_loop_wake(chunk->network->ui);
 }
 
 static size_t
@@ -534,15 +533,6 @@ cli_network_kick (struct cli_network *network)
 		(void)loop_post(&network->loop, &network->progress);
 }
 
-static void
-cli_network_delivery (struct loop      *loop,
-                      struct loop_step *step)
-{
-	(void)loop;
-	(void)step;
-	/* Keep a turn runnable; only after_turn may enter protocol callbacks. */
-}
-
 void
 cli_network_service (struct cli_network *network)
 {
@@ -557,7 +547,7 @@ cli_network_service (struct cli_network *network)
 		if ((!list_is_empty(&call->received) &&
 		     (call->error || !network->ready || network->ready(network->ready_context))) ||
 		    ((call->flags & CLI_NETWORK_FINISHED) && list_is_empty(&call->received))) {
-			loop_ready(&network->ui->loop, &network->delivery);
+			cli_loop_wake(network->ui);
 			break;
 		}
 	}
@@ -593,7 +583,7 @@ cli_network_call_cancel (struct cli_network      *network,
 	atomic_store(&request->cancelled, true);
 	if (!network->joined && !atomic_exchange(&network->cancel_pending, true))
 		(void)loop_post(&network->loop, &network->cancel);
-	loop_ready(&network->ui->loop, &network->delivery);
+	cli_loop_wake(network->ui);
 }
 
 void
@@ -722,7 +712,6 @@ cli_network_create (struct cli_loop    *ui,
 	network->mailbox = mailbox;
 	network->timer = (struct loop_timer){.due = UINT64_MAX, .fn = cli_network_timer_fired};
 	network->timeout.fn = cli_network_timeout_step;
-	network->delivery.fn = cli_network_delivery;
 	network->progress.fn = cli_network_progress_message;
 	network->cancel.fn = cli_network_cancel_message;
 	network->stop.fn = cli_network_stop_message;
@@ -783,7 +772,6 @@ cli_network_destroy (struct cli_network **ptr)
 	cli_network_cancel(network, true);
 	while (!list_is_empty(&network->calls))
 		cli_network_service(network);
-	loop_unready(&network->delivery);
 	free(network);
 	*ptr = nullptr;
 }

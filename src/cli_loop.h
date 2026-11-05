@@ -1,7 +1,8 @@
 /** @file cli_loop.h
  *
- * The loop of the UI thread of askai-cli: a struct loop (src/loop.h) that
- * the UI runs one turn at a time, each with a deadline of its own.
+ * The loop of the UI thread of askai-cli. It is a struct loop (src/loop.h)
+ * that the UI thread runs one turn at a time, each turn with its own
+ * deadline.
  */
 #ifndef TWINCEPTION_SRC_CLI_LOOP_H_
 #define TWINCEPTION_SRC_CLI_LOOP_H_
@@ -14,11 +15,13 @@ struct cli_loop;
 
 typedef void cli_loop_turn_cb (struct cli_loop *loop);
 
-/** One thread owns a loop. Descriptor callbacks must not enter Readline;
- * after_turn runs after the events, messages and steps of a turn.
+/** The loop of the UI thread. Only the UI thread may access it. The
+ *  callbacks of watched descriptors must not call Readline. after_turn runs
+ *  after the events, messages and steps of each turn.
  */
 struct cli_loop {
 	struct loop       loop;
+	struct loop_step  wake;         /**< the step that cli_loop_wake() queues */
 	cli_loop_turn_cb *after_turn;
 	uint64_t          until;        /**< the latest deadline of a turn */
 	uint64_t          dispatching;  /**< bool: a turn is under way */
@@ -39,11 +42,21 @@ cli_loop_init (struct cli_loop *loop);
 extern void
 cli_loop_fini (struct cli_loop *loop);
 
-/** Wait for events, pending work, or an absolute CLOCK_MONOTONIC deadline
- * in nanoseconds. UINT64_MAX means no deadline. No periodic tick is used.
- * Calling from dispatch returns EBUSY; after_turn may start another turn.
- * Returns the error of epoll_pwait2() or the error that loop_fail() stored
- * in loop->loop.
+/** Queues a step that does nothing on @p loop. The next turn then does not
+ *  wait for events, and after_turn runs at its end. A module calls it after
+ *  it queues work for after_turn, because only after_turn may call Readline
+ *  or the callbacks of the protocol.
+ */
+extern void
+cli_loop_wake (struct cli_loop *loop);
+
+/** Runs one turn of loop->loop, and then after_turn unless an error is
+ *  stored in loop->loop. The turn waits for events, messages, timers or
+ *  ready steps, but not past @p deadline or until, which are absolute
+ *  CLOCK_MONOTONIC times in nanoseconds. UINT64_MAX means no deadline. A
+ *  call during a turn returns EBUSY, but after_turn may start another
+ *  turn. Returns the error of epoll_pwait2(), or the error that
+ *  loop_fail() stored in loop->loop.
  */
 extern int
 cli_loop_turn (struct cli_loop *loop,

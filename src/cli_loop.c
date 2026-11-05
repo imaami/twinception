@@ -6,13 +6,29 @@
 
 #include "cli_loop.h"
 
+/* The step that cli_loop_wake() queues. It does nothing. */
+static void
+cli_loop_nop (struct loop      *loop,
+              struct loop_step *step)
+{
+	(void)loop;
+	(void)step;
+}
+
 int
 cli_loop_init (struct cli_loop *loop)
 {
+	loop->wake = (struct loop_step){.fn = cli_loop_nop};
 	loop->after_turn = nullptr;
 	loop->until = UINT64_MAX;
 	loop->dispatching = 0;
 	return loop_init(&loop->loop);
+}
+
+void
+cli_loop_wake (struct cli_loop *loop)
+{
+	loop_ready(&loop->loop, &loop->wake);
 }
 
 int

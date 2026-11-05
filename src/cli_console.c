@@ -129,7 +129,6 @@ struct cli_console {
 	FILE                            *terminal;
 	locale_t                         locale;
 	locale_t                         previous_locale;
-	struct loop_step                 input_step;
 	struct cli_console_stream        in;
 	struct cli_console_stream        out;
 	struct cli_console_pane          panes[CLI_CONSOLE_PANES];
@@ -288,14 +287,6 @@ cli_console_input_ready (struct loop     *loop,
 	console->input_eof = !count;
 	console->input_offset = 0;
 	console->input_size = (size_t)count;
-}
-
-static void
-cli_console_input_continue (struct loop      *loop,
-                            struct loop_step *step)
-{
-	(void)loop;
-	(void)step;
 }
 
 static int
@@ -505,7 +496,7 @@ cli_console_accept (char *line)
 	if (immediate) {
 		console->immediate_line = line;
 		console->immediate_length = length;
-		loop_ready(&console->loop->loop, &console->input_step);
+		cli_loop_wake(console->loop);
 	} else {
 		int e;
 		struct cli_console_line *input = cli_console_line_create(line, length, &e);
@@ -975,7 +966,7 @@ cli_console_editor_start (struct cli_console *console)
 	--console->frame;
 	if (!e)
 		e = cli_console_input_arm(console);
-	loop_ready(&console->loop->loop, &console->input_step);
+	cli_loop_wake(console->loop);
 	return e;
 }
 
@@ -1011,7 +1002,6 @@ cli_console_create (bool             simple,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	console->input_step.fn = cli_console_input_continue;
 	list_init(&console->lines);
 	console->in.ref.fd = -1;
 	console->out.ref.fd = -1;
@@ -1198,7 +1188,7 @@ cli_console_resume (struct cli_console *console)
 	if (e)
 		return e;
 	console->suspended = false;
-	loop_ready(&console->loop->loop, &console->input_step);
+	cli_loop_wake(console->loop);
 	console->resize_pending = true;
 	console->dirty = CLI_CONSOLE_PAINT_ALL;
 	if (console->terminal_saved && tcsetattr(STDIN_FILENO, TCSANOW, &console->resume_state) < 0)
@@ -1220,7 +1210,6 @@ cli_console_destroy (struct cli_console **ptr)
 		rl_callback_sigcleanup();
 	}
 	cli_console_remove_callback(console);
-	loop_unready(&console->input_step);
 	(void)cli_console_suspend(console);
 	while (!list_is_empty(&console->lines))
 		cli_console_drop_line(console);
@@ -1646,7 +1635,7 @@ cli_console_service (struct cli_console *console)
 				return e;
 			if (console->input_offset < console->input_size || rl_pending_input ||
 			    RL_ISSTATE(RL_STATE_MACROINPUT))
-				loop_ready(&console->loop->loop, &console->input_step);
+				cli_loop_wake(console->loop);
 		}
 	}
 	e = cli_console_render(console);
@@ -1754,7 +1743,7 @@ cli_console_read (struct cli_console *console,
 	}
 	if (console->callback_active) {
 		cli_console_resume_keys(console);
-		loop_ready(&console->loop->loop, &console->input_step);
+		cli_loop_wake(console->loop);
 	}
 	if (!console->callback_active) {
 		dstr_clear(&console->draft);
@@ -1843,7 +1832,7 @@ cli_console_write_pane (struct cli_console      *console,
 	console->dirty |= 1u << target;
 	if (pane->scrollback.offset)
 		console->dirty |= CLI_CONSOLE_PAINT_FRAME;
-	loop_ready(&console->loop->loop, &console->input_step);
+	cli_loop_wake(console->loop);
 	return e;
 }
 
@@ -1940,7 +1929,7 @@ cli_console_yield (struct cli_console *console)
 {
 	if (!console->simple) {
 		console->input_state |= CLI_CONSOLE_INPUT_YIELD;
-		loop_ready(&console->loop->loop, &console->input_step);
+		cli_loop_wake(console->loop);
 	}
 }
 
@@ -2008,7 +1997,7 @@ cli_console_take_immediate (struct cli_console *console,
 	console->immediate_line = nullptr;
 	console->immediate_length = 0;
 	cli_console_resume_keys(console);
-	loop_ready(&console->loop->loop, &console->input_step);
+	cli_loop_wake(console->loop);
 	*ready = true;
 	return 0;
 }
