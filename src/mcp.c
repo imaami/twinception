@@ -828,8 +828,7 @@ static char const busy[] = "Too many tool calls are under way; try again in a "
                            "few seconds.";
 
 /* A run of bytes: a piece of JSON text, or words for a client or the
- * model. mcp_slot_say() and mcp_slot_result() take words as text,
- * whatever their flag.
+ * model. mcp_slot_result() takes words as text, whatever their flag.
  */
 struct mcp_piece {
 	char const *ptr;
@@ -3299,6 +3298,12 @@ mcp_slot_principal (struct mcp_slot const *slot)
 	return slot ? slot->req->principal : 0;
 }
 
+bool
+mcp_slot_from_client (struct mcp_slot const *slot)
+{
+	return slot && slot->role == ROLE_OWN;
+}
+
 void **
 mcp_slot_own (struct mcp_slot *slot)
 {
@@ -4018,18 +4023,6 @@ static void
 mcp_slot_task_drop (struct mcp_slot *slot)
 {
 	task_drop(*mcp_slot_own(slot));
-}
-
-/* Append the @p n pieces at @p p to @p slot's answer: 0, or ENOMEM. */
-static int
-mcp_slot_say (struct mcp_slot        *slot,
-              struct mcp_piece const *p,
-              size_t                  n)
-{
-	for (size_t i = 0; i < n; ++i)
-		if (!dstr_cat_n(&slot->answer, p[i].ptr, p[i].len))
-			return ENOMEM;
-	return 0;
 }
 
 static void mcp_req_calls_next (struct mcp_req *req);
@@ -6613,10 +6606,9 @@ static void
 mcp_req_go_on (struct mcp_req   *req,
                struct mcp_piece  text)
 {
-	struct mcp_piece const p[] = { text, TEXT("[askai: go on with the task.]") };
-	int e = mcp_slot_say(&req->self, p, ARRAY_SIZE(p));
-	if (e) {
-		mcp_req_fail(req, e);
+	struct dstr *d = &req->self.answer;
+	if (!dstr_cat_n(d, text.ptr, text.len) || !CAT(d, "[askai: go on with the task.]")) {
+		mcp_req_fail(req, ENOMEM);
 		return;
 	}
 	mcp_req_add_start(req);
@@ -6629,16 +6621,23 @@ mcp_req_go_on (struct mcp_req   *req,
 struct mcp_notes_call {
 	struct buf             file;      /* a write's file part, until git has
 	                                     its input */
+	struct dstr            out;       /* the output of a tool call.
+	                                     mcp_slot_notes_end() lends it to
+	                                     the slot. */
 	struct notes_part      part;      /* the name and the text in file */
 	struct child          *child;     /* the call's git, until a step has
 	                                     read its output */
 	struct notes_revision *revision;  /* the revisions of a read, diff,
 	                                     restore or history, or nullptr */
+	struct dstr           *text;      /* &out for a tool call. The prompt
+	                                     notes write to the text that askai
+	                                     adds to the prompt. */
 	size_t                 upload;    /* attach: bytes of the uploaded file */
 	size_t                 note;      /* attach: bytes of the note */
 	uint16_t               fetch;     /* enum mcp_fetch: what git runs for */
 	uint16_t               len;       /* bytes in the union */
 	uint8_t                action;    /* the row of mcp_notes_actions[] */
+	uint8_t                side;      /* enum notes_side of the caller */
 	bool                   stripped;  /* askai cut its notices off the text */
 	char                   notebook[NOTES_REPO];  /* the notebook that the
 	                                                 call selected, or ""
@@ -6653,12 +6652,18 @@ struct mcp_notes_call {
 	};
 };
 
-/* Allocates a notes call. Returns it, or nullptr with ENOMEM in @p *e. */
+/* Allocates a notes call that writes to @p text, or to its own output if
+ * @p text is nullptr. Returns the call, or nullptr with ENOMEM in @p *e.
+ */
 static struct mcp_notes_call *
-mcp_notes_call_create (int *e)
+mcp_notes_call_create (struct dstr *text,
+                       int         *e)
 {
-	struct mcp_notes_call *call = calloc(1, sizeof *call);
+	struct mcp_notes_call *call = malloc(sizeof *call);
 	*e = call ? 0 : ENOMEM;
+	if (call)
+		*call = (struct mcp_notes_call){ .out = DSTR_INIT,
+		                                 .text = text ? text : &call->out };
 	return call;
 }
 
@@ -6678,8 +6683,21 @@ mcp_notes_call_destroy (struct mcp_notes_call **p_call)
 		child_destroy(&call->child);
 	notes_revision_destroy(&call->revision);
 	buf_fini(&call->file);
+	dstr_cleanup(&call->out);
 	free(call);
 	*p_call = nullptr;
+}
+
+/* Appends the @p n texts at @p p to call->text. Returns 0 or ENOMEM. */
+static int
+mcp_notes_call_say (struct mcp_notes_call const *call,
+                    struct tool_text const      *p,
+                    size_t                       n)
+{
+	for (size_t i = 0; i < n; ++i)
+		if (!dstr_cat_n(call->text, p[i].ptr, p[i].len))
+			return ENOMEM;
+	return 0;
 }
 
 /* Frees the call in @p slot. This is the drop() of the notes kind and of
@@ -6703,9 +6721,10 @@ mcp_on_notes (struct child *c)
 }
 
 /* Frees the call in @p slot, req->self, when git has read the notes for
- * the prompt. If @p e is not 0, the request fails with @p e.
- * After FETCH_RESUME, the ask call builds its upstream request. After
- * FETCH_COMPACT, mcp_req_go_on() adds the words to go on with the task.
+ * the prompt. If @p e is not 0, mcp_slot_fail() ends the ask call with
+ * @p e. After FETCH_RESUME, the ask call builds its upstream request.
+ * After FETCH_COMPACT, mcp_req_go_on() adds the words to go on with the
+ * task.
  */
 static void
 mcp_slot_notes_then (struct mcp_slot *slot,
@@ -6716,7 +6735,7 @@ mcp_slot_notes_then (struct mcp_slot *slot,
 	bool resume = (call->fetch & FETCH_KIND) == FETCH_RESUME;
 	mcp_slot_notes_drop(slot);
 	if (e)
-		mcp_req_fail(req, e);
+		mcp_slot_fail(slot, e);
 	else if (resume)
 		mcp_req_enter(req, PHASE_BUILD);
 	else
@@ -6743,32 +6762,14 @@ mcp_slot_notes_failed (struct mcp_slot *slot,
 	if ((call->fetch & FETCH_KIND) == FETCH_RESUME)
 		mcp_slot_notes_drop(slot);
 	if (e == EBUSY) {
-		mcp_slot_result(slot, TEXT("Too many commands are running; try again in "
-		                           "a few seconds."), true);
+		mcp_slot_tell(slot, TOOL_TEXT("Too many commands are running; try again in "
+		                              "a few seconds."), TOOL_FAILED);
 		return;
 	}
 	char why[96];
-	mcp_slot_result(slot, ESC(why, util_format(why, sizeof why, "The notes cannot "
-	                                           "be used now: %s.", strerror(e))), true);
-}
-
-/* The side of the notebook that the call in @p slot adds notes to: the
- * client's for a client's call, else the upstream's.
- */
-static enum notes_side
-mcp_slot_side (struct mcp_slot const *slot)
-{
-	return slot->role == ROLE_OWN ? NOTES_CLIENT : NOTES_UPSTREAM;
-}
-
-/* Writes the opposite side's branch of this participant and principal. */
-static void
-mcp_slot_other (struct mcp_slot const *slot,
-                char                   repo[NOTES_REPO])
-{
-	enum notes_side side = mcp_slot_side(slot) == NOTES_CLIENT ? NOTES_UPSTREAM
-	                                                          : NOTES_CLIENT;
-	notes_repo(slot->req->mcp->st->notes, slot->req->principal, side, repo);
+	size_t n = util_format(why, sizeof why, "The notes cannot be used now: %s.",
+	                       strerror(e));
+	mcp_slot_tell(slot, (struct tool_text){ why, n }, TOOL_FAILED);
 }
 
 /* A read's explicitly selected notebook, or the server-selected own branch. */
@@ -6843,9 +6844,9 @@ mcp_req_notes_read (struct mcp_req *req,
                     uint16_t        fetch)
 {
 	int e = 0;
-	req->self.own = mcp_notes_call_create(&e);
+	req->self.own = mcp_notes_call_create(&req->self.answer, &e);
 	if (!req->self.own) {
-		mcp_req_fail(req, e);
+		mcp_slot_fail(&req->self, e);
 		return;
 	}
 	mcp_slot_notes_run(&req->self, fetch, nullptr);
@@ -6879,9 +6880,9 @@ mcp_notes_none (struct child const *c)
 }
 
 /* Ends the call of the notes tool in @p slot. The function destroys the
- * child and frees the file part of the call. If @p e is not 0, the request
- * fails with @p e. Else the call ends with its answer, as a failed call if
- * @p failed is true.
+ * child and frees the file part of the call. If @p e is not 0,
+ * mcp_slot_fail() ends the call and its request with @p e. Else the call
+ * ends with its output, as a failed call if @p failed is true.
  */
 static void
 mcp_slot_notes_end (struct mcp_slot *slot,
@@ -6892,17 +6893,18 @@ mcp_slot_notes_end (struct mcp_slot *slot,
 	child_destroy(&call->child);
 	buf_fini(&call->file);
 	if (e) {
-		mcp_req_fail(slot->req, e);
+		mcp_slot_fail(slot, e);
 		return;
 	}
-	/* The offset of a list or a read does not apply to the answer of a
+	mcp_slot_lend(slot, (struct tool_text){ dstr_get(&call->out), dstr_len(&call->out) });
+	/* The offset of a list or a read does not apply to the output of a
 	 * failed call. */
 	if (failed)
-		slot->skip = 0;
-	mcp_slot_respond(slot, failed);
+		(void)mcp_slot_offset(slot, nullptr);
+	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
 }
 
-/* Appends to the answer of @p slot why git read no notes. Exit status 128
+/* Appends to the output of @p slot why git read no notes. Exit status 128
  * means that the notebook does not exist: the other side keeps no notes in
  * the thread, or the caller has added none to it, or there is no such
  * thread.
@@ -6912,8 +6914,8 @@ mcp_slot_notes_unread (struct mcp_slot *slot)
 {
 	struct mcp_notes_call const *call = slot->own;
 	if (!mcp_notes_none(call->child))
-		return mcp_slot_say(slot, &TEXT("The notes could not be read."), 1);
-	return mcp_slot_say(slot, &TEXT("This notebook has no notes yet."), 1);
+		return mcp_notes_call_say(call, &TOOL_TEXT("The notes could not be read."), 1);
+	return mcp_notes_call_say(call, &TOOL_TEXT("This notebook has no notes yet."), 1);
 }
 
 /* Both ref updates and the first git init can contend across instances. */
@@ -6931,7 +6933,7 @@ mcp_notes_raced (struct child const *child)
 	return false;
 }
 
-/* Appends to the answer of @p slot why git did not write the note: git took
+/* Appends to the output of @p slot why git did not write the note: git took
  * too long, a writer that died or hangs left the notebook locked, which the
  * function logs, another call changed the notebook at the same time, or
  * another error, which the function logs too.
@@ -6942,29 +6944,31 @@ mcp_slot_notes_unadded (struct mcp_slot *slot)
 	struct mcp_notes_call const *call = slot->own;
 	struct child const *c = call->child;
 	if (c->late)
-		return mcp_slot_say(slot, &TEXT("Could not write the note: it took too "
-		                                "long."), 1);
+		return mcp_notes_call_say(call, &TOOL_TEXT("Could not write the note: it took "
+		                                           "too long."), 1);
 	if (mcp_notes_raced(c)) {
 		struct notes const *notes = slot->req->mcp->st->notes;
 		char const *repo = slot->req->repo;
 		int64_t age = 0;
 		if (notes_lock(notes, repo, &age) || age <= NOTES_STALE)
-			return mcp_slot_say(slot, &TEXT("Could not write the note, because "
-			                                "another call changed this notebook at "
-			                                "the same time. Read its current state "
-			                                "and retry."), 1);
+			return mcp_notes_call_say(call, &TOOL_TEXT("Could not write the note, "
+			                                           "because another call changed "
+			                                           "this notebook at the same "
+			                                           "time. Read its current state "
+			                                           "and retry."), 1);
 		LOG(LOG_WARN, "notes: %s/%s.lock is %" PRId64 " s old; remove it if no "
 		    "git process uses the repository", notes_directory(notes), repo, age);
 		char said[128];
-		return mcp_slot_say(slot, &ESC(said, util_format(said, sizeof said,
-		                    "Could not write the note: its notebook has been "
-		                    "locked for %" PRId64 " s.", age)), 1);
+		struct tool_text const text = { said, util_format(said, sizeof said, "Could not "
+		                                "write the note: its notebook has been locked "
+		                                "for %" PRId64 " s.", age) };
+		return mcp_notes_call_say(call, &text, 1);
 	}
 	struct span out = buf_peek(&c->out);
 	char const *why = (char const *)out.ptr;
 	LOG(LOG_WARN, "notes: git could not write a note: %.*s",
 	    (int)util_clip(why, out.len, 300), why);
-	return mcp_slot_say(slot, &TEXT("Could not write the note."), 1);
+	return mcp_notes_call_say(call, &TOOL_TEXT("Could not write the note."), 1);
 }
 
 /* The size before a write that adds a note. */
@@ -7038,8 +7042,9 @@ mcp_slot_notes_format (struct mcp_slot *slot)
 	size_t size = out.len == 5 && !memcmp(out.ptr, "sha1\n", 5) ? 40
 	            : out.len == 7 && !memcmp(out.ptr, "sha256\n", 7) ? 64 : 0;
 	if (!mcp_notes_ok(call->child) || !size) {
-		mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("Cannot determine the "
-		                                                "repository object format."), 1), true);
+		int e = mcp_notes_call_say(call, &TOOL_TEXT("Cannot determine the repository "
+		                                            "object format."), 1);
+		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
 	char zero[NOTES_TIP + 1];
@@ -7065,11 +7070,6 @@ mcp_slot_notes_created (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, mcp_slot_notes_unadded(slot), true);
 }
 
-/* The words that a write's result adds if call->stripped is true. */
-static char const left_out[] = " askai left out the [askai: ...] lines at the end of "
-                               "the text. askai adds those lines to tool results, and "
-                               "they are not part of the note.";
-
 /* Ends the write in @p slot after it saved the note or left it as it was.
  * The caller's own notebook exists then, so req->branch is set. If @p e is
  * not 0, the request fails with @p e.
@@ -7081,7 +7081,10 @@ mcp_slot_notes_wrote (struct mcp_slot *slot,
 	struct mcp_notes_call const *call = slot->own;
 	slot->req->branch = true;
 	if (!e && call->stripped)
-		e = mcp_slot_say(slot, &TEXT(left_out), 1);
+		e = mcp_notes_call_say(call, &TOOL_TEXT(" askai left out the [askai: ...] "
+		                                        "lines at the end of the text. askai "
+		                                        "adds those lines to tool results, and "
+		                                        "they are not part of the note."), 1);
 	mcp_slot_notes_end(slot, e, false);
 }
 
@@ -7110,7 +7113,7 @@ mcp_slot_notes_unchanged (struct mcp_slot         *slot,
 		return false;
 	char const *name = (char const *)file.ptr + call->part.name_at;
 	uint64_t n = note->bytes;
-	e = dstr_printf(&slot->answer, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
+	e = dstr_printf(call->text, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
 	                "commit %s. No commit was made.", (int)jb_utf8(name, call->part.name_len),
 	                name, n == 1 ? "this" : "these", n, n == 1 ? "" : "s", tip) ? 0 : ENOMEM;
 	mcp_slot_notes_wrote(slot, e);
@@ -7138,9 +7141,10 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 		if (r == EEXIST)
 			r = 0;
 		if (!r && strcmp(tip, notes_revision_tip(call->revision))) {
-			mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("The notebook changed during "
-			                                                "restore. Read its current state "
-			                                                "and retry."), 1), true);
+			int e = mcp_notes_call_say(call, &TOOL_TEXT("The notebook changed during "
+			                                            "restore. Read its current "
+			                                            "state and retry."), 1);
+			mcp_slot_notes_end(slot, e, true);
 			return;
 		}
 	}
@@ -7152,19 +7156,17 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 		}
 		return;
 	}
-	int e = r == EEXIST ? mcp_slot_say(slot, &TEXT("A note of that name exists. Use "
-	                                               "action replace to update it, or "
-	                                               "add under another name."), 1)
-	      : r == ENOENT ? mcp_slot_say(slot, &TEXT("No note has that name. Use action "
-	                                                "add to create it."), 1)
-	      : r == EISDIR ? mcp_slot_say(slot, &TEXT("That name is a directory of "
-	                                               "notes. Add the note under "
-	                                               "another name."), 1)
-	      : r == ENOTDIR ? mcp_slot_say(slot, &TEXT("A directory in that name is a "
-	                                                "note. Add the note under "
-	                                                "another name."), 1)
-	      : mcp_slot_notes_unread(slot);
-	mcp_slot_notes_end(slot, e, true);
+	struct tool_text const said =
+		r == EEXIST ? TOOL_TEXT("A note of that name exists. Use action replace to "
+		                        "update it, or add under another name.")
+		: r == ENOENT ? TOOL_TEXT("No note has that name. Use action add to create it.")
+		: r == EISDIR ? TOOL_TEXT("That name is a directory of notes. Add the note "
+		                          "under another name.")
+		: r == ENOTDIR ? TOOL_TEXT("A directory in that name is a note. Add the note "
+		                           "under another name.")
+		: (struct tool_text){};
+	mcp_slot_notes_end(slot, said.ptr ? mcp_notes_call_say(call, &said, 1)
+	                                  : mcp_slot_notes_unread(slot), true);
 }
 
 /* Answers the end of git fast-import. The answer has the id of the new
@@ -7181,19 +7183,19 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 	char commit[NOTES_TIP + 1];
 	if (notes_add_out(buf_peek(&call->child->out), commit))
 		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
-	struct mcp_piece const p[] = {
-		*commit ? TEXT("Saved in commit ") : TEXT("Saved"),
-		RAW(commit, strlen(commit)),
-		TEXT(": "),
-		ESC(call->message, jb_utf8(call->message, call->len)),
+	struct tool_text const p[] = {
+		*commit ? TOOL_TEXT("Saved in commit ") : TOOL_TEXT("Saved"),
+		{ commit, strlen(commit) },
+		TOOL_TEXT(": "),
+		{ call->message, jb_utf8(call->message, call->len) },
 		mcp_notes_actions[call->action].fetch & (FETCH_REPLACE | FETCH_RESTORE)
-		? TEXT(". Previous versions remain in history.") : TEXT("."),
+		? TOOL_TEXT(". Previous versions remain in history.") : TOOL_TEXT("."),
 	};
-	mcp_slot_notes_wrote(slot, mcp_slot_say(slot, p, ARRAY_SIZE(p)));
+	mcp_slot_notes_wrote(slot, mcp_notes_call_say(call, p, ARRAY_SIZE(p)));
 }
 
 /* Appends the list of the notes in @p out, the output of git for
- * NOTES_LIST, to the answer of @p slot, the oldest note first, and stores
+ * NOTES_LIST, to the output of @p slot, the oldest note first, and stores
  * the name of the newest note in @p *newest. @p cut is true if askai cut
  * the output of git, which leaves the oldest notes out. Returns 0 or ENOMEM.
  */
@@ -7203,13 +7205,13 @@ mcp_slot_notes_listed (struct mcp_slot *slot,
                        bool             cut,
                        struct span     *newest)
 {
-	struct dstr *d = &slot->answer;
+	struct mcp_notes_call const *call = slot->own;
+	struct dstr *d = call->text;
 	*newest = (struct span){};
 	if (cut && !CAT(d, "[The oldest notes are not in this list.]\n"))
 		return ENOMEM;
 	struct notes_cursor cursor = { .end = out.len };
 	struct notes_entry entry;
-	struct mcp_notes_call const *call = slot->own;
 	bool history = (call->fetch & FETCH_KIND) == FETCH_LIST;
 	struct cstr_view filter = history && call->revision ? notes_revision_file(call->revision)
 	                                                    : (struct cstr_view){};
@@ -7253,7 +7255,7 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 		return;
 	}
 	bool files = call->fetch & FETCH_FILES;
-	struct dstr *d = &slot->answer;
+	struct dstr *d = call->text;
 	int e = dstr_printf(d, "Notebook %s — %s:\n\n",
 	                    notes_selector(mcp_slot_notebook(slot)),
 	                    files ? "current files (bytes, blob)"
@@ -7269,7 +7271,8 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 			int r = notes_file_next(&out, &file);
 			if (r) {
 				if (!c->cut)
-					e = mcp_slot_say(slot, &TEXT("Cannot decode the notebook file list."), 1);
+					e = mcp_notes_call_say(call, &TOOL_TEXT("Cannot decode the "
+					                                        "notebook file list."), 1);
 				ok = c->cut;
 				break;
 			}
@@ -7280,8 +7283,9 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 				e = ENOMEM;
 		}
 		if (!e && c->cut)
-			e = mcp_slot_say(slot, &TEXT("[The file list exceeded the capture limit "
-			                             "and is incomplete.]\n"), 1);
+			e = mcp_notes_call_say(call, &TOOL_TEXT("[The file list exceeded the "
+			                                        "capture limit and is "
+			                                        "incomplete.]\n"), 1);
 		loop_work(slot->req->mcp->loop, LOOP_COPY, buf_peek(&c->out).len);
 	}
 	mcp_slot_notes_end(slot, e, !ok);
@@ -7291,7 +7295,8 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 static int
 mcp_slot_notes_identity (struct mcp_slot *slot)
 {
-	return dstr_printf(&slot->answer, "Self (writable): %s\n",
+	struct mcp_notes_call const *call = slot->own;
+	return dstr_printf(call->text, "Self (writable): %s\n",
 	                   notes_selector(slot->req->repo)) ? 0 : ENOMEM;
 }
 
@@ -7306,7 +7311,8 @@ mcp_slot_notes_got_books (struct mcp_slot *slot)
 		return;
 	}
 	struct span out = buf_peek(&c->out);
-	int e = mcp_slot_say(slot, &TEXT("Session notebooks (use a selector as notebook):\n"), 1);
+	int e = mcp_notes_call_say(call, &TOOL_TEXT("Session notebooks (use a selector as "
+	                                            "notebook):\n"), 1);
 	if (!e)
 		e = mcp_slot_notes_identity(slot);
 	char const *own = notes_selector(slot->req->repo);
@@ -7320,15 +7326,14 @@ mcp_slot_notes_got_books (struct mcp_slot *slot)
 		char repo[NOTES_REPO];
 		if ((len != own_len || memcmp(out.ptr, own, len)) &&
 		    !notes_select(name, len, repo))
-			e = dstr_printf(&slot->answer, "%.*s (read-only)\n",
-			                (int)len, name)
+			e = dstr_printf(call->text, "%.*s (read-only)\n", (int)len, name)
 			  ? 0 : ENOMEM;
 		size_t n = len + 1;
 		out.ptr += n;
 		out.len -= n;
 	}
 	if (!e && c->cut)
-		e = mcp_slot_say(slot, &TEXT("[The notebook list is incomplete.]\n"), 1);
+		e = mcp_notes_call_say(call, &TOOL_TEXT("[The notebook list is incomplete.]\n"), 1);
 	mcp_slot_notes_end(slot, e, false);
 }
 
@@ -7427,10 +7432,12 @@ mcp_slot_notes_revision_step (struct mcp_slot *slot)
 	struct mcp_notes_call *call = slot->own;
 	if (!mcp_notes_ok(call->child) ||
 	    notes_revision_next(call->revision, buf_peek(&call->child->out))) {
-		mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("Cannot use that revision in this "
-		                                                "notebook. Use a full commit ID from "
-		                                                "its history; the notebook must exist "
-		                                                "and the revision must belong to it."), 1), true);
+		int e = mcp_notes_call_say(call, &TOOL_TEXT("Cannot use that revision in this "
+		                                            "notebook. Use a full commit ID "
+		                                            "from its history; the notebook "
+		                                            "must exist and the revision must "
+		                                            "belong to it."), 1);
+		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
 	child_destroy(&call->child);
@@ -7442,7 +7449,7 @@ mcp_slot_notes_revision_step (struct mcp_slot *slot)
 	}
 	if (e) {
 		buf_fini(&in);
-		mcp_req_fail(slot->req, e);
+		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
 	mcp_slot_notes_run(slot, call->fetch, &in);
@@ -7459,7 +7466,7 @@ mcp_slot_notes_got_diff (struct mcp_slot *slot)
 	}
 	struct cstr_view file = notes_revision_file(call->revision);
 	struct span out = buf_peek(&c->out);
-	struct dstr *d = &slot->answer;
+	struct dstr *d = call->text;
 	slot->shows = notes_selector(mcp_slot_notebook(slot));
 	int e = dstr_printf(d, "Notebook %s — %.*s\nfrom %s\nto %s\n\n",
 	                    slot->shows, (int)file.len, file.data,
@@ -7467,11 +7474,13 @@ mcp_slot_notes_got_diff (struct mcp_slot *slot)
 	      ? 0 : ENOMEM;
 	char const *text = (char const *)out.ptr;
 	if (!e)
-		e = !out.len ? mcp_slot_say(slot, &TEXT("No differences.\n"), 1)
-		  : mcp_notes_text(text, out.len) ? mcp_slot_say(slot, &ESC(text, out.len), 1)
+		e = !out.len ? mcp_notes_call_say(call, &TOOL_TEXT("No differences.\n"), 1)
+		  : mcp_notes_text(text, out.len)
+		  ? mcp_notes_call_say(call, &(struct tool_text){ text, out.len }, 1)
 		  : mcp_notes_view(d, text, out.len, SIZE_MAX, nullptr);
 	if (!e && c->cut)
-		e = mcp_slot_say(slot, &TEXT("\n[The diff exceeded the capture limit and is incomplete.]\n"), 1);
+		e = mcp_notes_call_say(call, &TOOL_TEXT("\n[The diff exceeded the capture limit "
+		                                        "and is incomplete.]\n"), 1);
 	loop_work(slot->req->mcp->loop, LOOP_COPY, out.len);
 	mcp_slot_notes_end(slot, e, false);
 }
@@ -7490,8 +7499,10 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 	      : call->fetch & FETCH_RESTORE ? notes_read_full_out(buf_peek(&c->out), &text, &id)
 	      : notes_read_out(buf_peek(&c->out), &text, &id);
 	if (!r && (call->fetch & FETCH_RESTORE) && text.len > NOTES_TEXT) {
-		mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("That revision exceeds the 4 MiB "
-		                                                "note size limit; it was not restored."), 1), true);
+		int e = mcp_notes_call_say(call, &TOOL_TEXT("That revision exceeds the 4 MiB "
+		                                            "note size limit; it was not "
+		                                            "restored."), 1);
+		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
 	if (!r && call->fetch & (FETCH_COPY | FETCH_RESTORE)) {
@@ -7507,17 +7518,17 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 	slot->shows = notes_selector(mcp_slot_notebook(slot));
 	if (!r && (call->fetch & FETCH_REVISION)) {
 		struct cstr_view file = notes_revision_file(call->revision);
-		e = dstr_printf(&slot->answer, "Notebook %s — %.*s at %s:\n\n",
-		                 slot->shows, (int)file.len, file.data,
-		                 notes_revision_from(call->revision)) ? 0 : ENOMEM;
+		e = dstr_printf(call->text, "Notebook %s — %.*s at %s:\n\n",
+		                slot->shows, (int)file.len, file.data,
+		                notes_revision_from(call->revision)) ? 0 : ENOMEM;
 	}
 	e = e ? e : !r && !mcp_notes_text(s, text.len)
-	      ? mcp_notes_view(&slot->answer, s, text.len, SIZE_MAX, nullptr)
-	      : !r ? mcp_slot_say(slot, &ESC(s, text.len), 1)
-	      : r == ENOENT ? mcp_slot_say(slot, &TEXT("No note has that name."), 1)
-	      : r == EISDIR ? mcp_slot_say(slot, &TEXT("That name is a directory of "
-	                                               "notes. list shows the notes in "
-	                                               "it."), 1)
+	      ? mcp_notes_view(call->text, s, text.len, SIZE_MAX, nullptr)
+	      : !r ? mcp_notes_call_say(call, &(struct tool_text){ s, text.len }, 1)
+	      : r == ENOENT ? mcp_notes_call_say(call, &TOOL_TEXT("No note has that name."), 1)
+	      : r == EISDIR ? mcp_notes_call_say(call, &TOOL_TEXT("That name is a directory "
+	                                                          "of notes. list shows the "
+	                                                          "notes in it."), 1)
 	      : mcp_slot_notes_unread(slot);
 	mcp_slot_notes_end(slot, e, r);
 }
@@ -7597,11 +7608,11 @@ mcp_slot_notes_fits (struct mcp_slot *slot,
                      size_t           bytes)
 {
 	struct mcp_req *req = slot->req;
+	struct mcp_notes_call const *call = slot->own;
 	size_t used = mcp_req_tokens(req);
 	if (!req->context || used + bytes / 4 < req->context)
 		return 0;
-	dstr_clear(&slot->answer);
-	bool said = dstr_printf(&slot->answer, "The note is too large to attach: its "
+	bool said = dstr_printf(call->text, "The note is too large to attach: its "
 	                        "file of %zu bytes, about %zu tokens, does not fit the "
 	                        "context of %" PRIu32 " tokens, of which about %zu are "
 	                        "used. read shows it in parts.", bytes, bytes / 4,
@@ -7610,7 +7621,7 @@ mcp_slot_notes_fits (struct mcp_slot *slot,
 	return EFBIG;
 }
 
-/* Says in the answer of @p slot that the note of @p len bytes follows the
+/* Says in the output of @p slot that the note of @p len bytes follows the
  * results as a file of @p bytes bytes, its view if @p view: 0 or ENOMEM.
  */
 static int
@@ -7619,13 +7630,13 @@ mcp_slot_notes_attached (struct mcp_slot *slot,
                          size_t           bytes,
                          bool             view)
 {
-	dstr_clear(&slot->answer);
-	bool said = view ? dstr_printf(&slot->answer, "The note, %zu bytes, is not UTF-8 "
+	struct mcp_notes_call const *call = slot->own;
+	bool said = view ? dstr_printf(call->text, "The note, %zu bytes, is not UTF-8 "
 	                               "text, so its view, %zu bytes, about %zu tokens, "
 	                               "in which each other byte is %sXX%s, follows the "
 	                               "results of this turn as a file.", len, bytes,
 	                               bytes / 4, view_open, view_close)
-	                 : dstr_printf(&slot->answer, "The note, %zu bytes, about %zu "
+	                 : dstr_printf(call->text, "The note, %zu bytes, about %zu "
 	                               "tokens, follows the results of this turn as a "
 	                               "file.", len, bytes / 4);
 	return said ? 0 : ENOMEM;
@@ -7668,8 +7679,7 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 		e = mcp_notes_view(&shown, s, text.len, SIZE_MAX, nullptr);
 	char const *body = view ? dstr_get(&shown) : s;
 	if (!e && len > NOTES_MAX) {
-		dstr_clear(&slot->answer);
-		e = dstr_printf(&slot->answer, "The note is too large to attach: its file "
+		e = dstr_printf(call->text, "The note is too large to attach: its file "
 		                "would have %zu bytes, and askai uploads %d MiB at most.",
 		                len, NOTES_MAX >> 20) ? 0 : ENOMEM;
 		mcp_slot_notes_end(slot, e, true);
@@ -7684,8 +7694,7 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 	memcpy(call->id, id.ptr, call->len);
 	e = e ? e : mcp_slot_post_file(slot, body, len);
 	if (e == EAGAIN) {
-		dstr_clear(&slot->answer);
-		e = CAT(&slot->answer, "askai sends too many requests at once to upload the "
+		e = CAT(call->text, "askai sends too many requests at once to upload the "
 		        "note now. Try again later.") ? 0 : ENOMEM;
 		mcp_slot_notes_end(slot, e, true);
 		return;
@@ -7736,47 +7745,46 @@ mcp_slot_notes_uploaded (struct mcp_slot *slot)
 		                                    call->upload != call->note);
 	}
 	if (e == EIO) {
-		dstr_clear(&slot->answer);
-		e = CAT(&slot->answer, "The upload of the note as a file failed: ") &&
-		    dstr_cat_n(&slot->answer, dstr_get(&why), dstr_len(&why)) ? 0 : ENOMEM;
+		e = CAT(call->text, "The upload of the note as a file failed: ") &&
+		    dstr_cat_n(call->text, dstr_get(&why), dstr_len(&why)) ? 0 : ENOMEM;
 		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
 	mcp_slot_notes_end(slot, e, false);
 }
 
-/* Appends @p head and the list of the notes in the output of git to the
- * request's answer, which askai adds to the prompt. Then the function
+/* Appends @p head and the list of the notes in the output of git to
+ * call->text, the text that askai adds to the prompt. Then the function
  * runs git to read the newest note. If there are no notes, the ask call
  * continues.
  */
 static void
 mcp_slot_notes_prompt (struct mcp_slot  *slot,
-                       struct mcp_piece  head)
+                       struct tool_text  head)
 {
 	struct mcp_req *req = slot->req;
 	struct mcp_notes_call *call = slot->own;
 	struct child const *c = call->child;
 	struct span newest = {};
 	struct buf in = {};
-	int e = mcp_slot_say(slot, &head, 1);
+	int e = mcp_notes_call_say(call, &head, 1);
 	if (!e)
 		e = mcp_slot_notes_listed(slot, buf_peek(&c->out), c->cut, &newest);
 	char const *name = (char const *)newest.ptr;
-	struct mcp_piece const p[] = {
-		TEXT("\n[askai: the current text of your most recently written note, "),
-		ESC(name, newest.len ? jb_utf8(name, newest.len) : 0),
-		TEXT(":]\n\n"),
+	struct tool_text const p[] = {
+		TOOL_TEXT("\n[askai: the current text of your most recently written note, "),
+		{ name, newest.len ? jb_utf8(name, newest.len) : 0 },
+		TOOL_TEXT(":]\n\n"),
 	};
 	/* The name comes from git, and git reads the note only if the name is
 	 * one that an add would take. */
 	size_t skip = 0;
 	bool named = newest.len && !notes_name(name, newest.len, &skip) && !skip;
-	if (!e && named && !(e = mcp_slot_say(slot, p, ARRAY_SIZE(p))))
+	if (!e && named && !(e = mcp_notes_call_say(call, p, ARRAY_SIZE(p))))
 		e = notes_read_input(&in, req->repo, name, newest.len);
 	if (!e && newest.len && !named)
-		e = mcp_slot_say(slot, &TEXT("\n[askai: the newest note could not be "
-		                             "read.]\n"), 1);
+		e = mcp_notes_call_say(call, &TOOL_TEXT("\n[askai: the newest note could not "
+		                                        "be read.]\n"), 1);
 	child_destroy(&call->child);
 	if (e || !named) {
 		buf_fini(&in);
@@ -7786,8 +7794,8 @@ mcp_slot_notes_prompt (struct mcp_slot  *slot,
 	mcp_slot_notes_run(slot, call->fetch | FETCH_NEWEST, &in);
 }
 
-/* Appends the newest note, which git read for the prompt, to the request's
- * answer, or else a line with the text that the note could not be read. A
+/* Appends the newest note, which git read for the prompt, to call->text,
+ * or else a line with the text that the note could not be read. A
  * note longer than a tool's output in a turn (mcp_req_lend_max()) is cut
  * there, with a line that says how to read on. Then the ask call
  * continues.
@@ -7819,12 +7827,12 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 	size_t m = n < len ? util_format(more, sizeof more, "\n[askai: bytes 0 to %zu of "
 	                                 "%zu; read the note with \"offset\": %zu for the "
 	                                 "rest.]", n, len, n) : 0;
-	struct mcp_piece const p[] = {
-		r ? TEXT("[askai: the note could not be read.]") : ESC(s, n),
-		ESC(more, m),
-		TEXT("\n"),
+	struct tool_text const p[] = {
+		r ? TOOL_TEXT("[askai: the note could not be read.]") : (struct tool_text){ s, n },
+		{ more, m },
+		TOOL_TEXT("\n"),
 	};
-	mcp_slot_notes_then(slot, mcp_slot_say(slot, p, n && s[n - 1] == '\n' && !m ? 1 : 3));
+	mcp_slot_notes_then(slot, mcp_notes_call_say(call, p, n && s[n - 1] == '\n' && !m ? 1 : 3));
 }
 
 /* Handles the list of the notes of the thread that the ask call goes on
@@ -7842,14 +7850,15 @@ mcp_slot_notes_resumed (struct mcp_slot *slot)
 			return;
 		}
 		mcp_slot_notes_drop(slot);
-		mcp_slot_result(slot, TEXT("Cannot read the session notes."), true);
+		mcp_slot_tell(slot, TOOL_TEXT("Cannot read the session notes."), TOOL_FAILED);
 		return;
 	}
 	slot->req->branch = true;
-	mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: your session note history, "
-	                                 "oldest first; repeated names are updates. "
-	                                 "Use notes action list for current files and notebooks "
-	                                 "to discover the other participants:]\n\n"));
+	mcp_slot_notes_prompt(slot, TOOL_TEXT("\n\n[askai: your session note history, "
+	                                      "oldest first; repeated names are updates. "
+	                                      "Use notes action list for current files and "
+	                                      "notebooks to discover the other "
+	                                      "participants:]\n\n"));
 }
 
 /* Handles the list of the notes for a compaction. The list goes into the
@@ -7860,12 +7869,13 @@ mcp_slot_notes_compacted (struct mcp_slot *slot)
 {
 	struct mcp_notes_call const *call = slot->own;
 	if (mcp_notes_listed(call->child)) {
-		mcp_slot_notes_prompt(slot, TEXT("\n\n[askai: your note history, oldest first; "
-		                                 "repeated names are updates:]\n\n"));
+		mcp_slot_notes_prompt(slot, TOOL_TEXT("\n\n[askai: your note history, oldest "
+		                                      "first; repeated names are updates:]\n\n"));
 		return;
 	}
-	mcp_slot_notes_then(slot, mcp_slot_say(slot, &TEXT("\n\n[askai: your notes could not "
-	                                                   "be read.]\n"), 1));
+	mcp_slot_notes_then(slot, mcp_notes_call_say(call, &TOOL_TEXT("\n\n[askai: your "
+	                                                              "notes could not be "
+	                                                              "read.]\n"), 1));
 }
 
 /* These rows of mcp_fetch_steps[] follow the rows of the kinds. */
@@ -7913,11 +7923,13 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 }
 
 /* The message for a file argument that is not a valid name. */
-static char const bad_name[] = "The file argument must be a file name of 1 to 255 "
-                               "bytes, such as plan.md or findings/locks.md. It "
-                               "cannot have control characters or empty parts, "
-                               "and no part can be ., .., .git or git~1, in any "
-                               "case and also with spaces or dots after it.";
+static char const bad_name_text[] = "The file argument must be a file name of 1 to "
+                                    "255 bytes, such as plan.md or findings/locks.md. "
+                                    "It cannot have control characters or empty "
+                                    "parts, and no part can be ., .., .git or git~1, "
+                                    "in any case and also with spaces or dots after "
+                                    "it.";
+static struct tool_text const bad_name = { bad_name_text, sizeof bad_name_text - 1 };
 
 /* Writes to @p in the file part of a note of the @p name_len bytes at
  * @p name whose text is the data of @p d, decoded. It fills @p *part as
@@ -7965,34 +7977,34 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	char const *name = jb_str(jb_get(args, "file"), &name_len);
 	char const *uri = jb_str(content, &uri_len);
 	struct datauri data = {};
-	size_t kept = text && slot->role == ROLE_TURN ? notice_kept(text, len) : len;
-	struct mcp_piece problem =
-		!name || notes_name(name, name_len, &skip) ? TEXT(bad_name)
-		: content && slot->role != ROLE_OWN
-		? TEXT("Only a client hands askai a file as content.")
-		: content && text ? TEXT("Give the text or the content of a note, not both.")
+	bool turn = call->side == NOTES_UPSTREAM;
+	size_t kept = text && turn ? notice_kept(text, len) : len;
+	struct tool_text problem =
+		!name || notes_name(name, name_len, &skip) ? bad_name
+		: content && turn ? TOOL_TEXT("Only a client hands askai a file as content.")
+		: content && text ? TOOL_TEXT("Give the text or the content of a note, not both.")
 		: content && (!uri || datauri_parse(uri, uri_len, &data))
-		? TEXT("The content argument must be a data: URI, which the client fills "
-		       "in with a file that the user gave it.")
+		? TOOL_TEXT("The content argument must be a data: URI, which the client fills "
+		            "in with a file that the user gave it.")
 		: content && data.size > most
-		? ESC(big, util_format(big, sizeof big, "The file has more than %zu bytes, "
-		                       "which this server takes at most in one request.",
-		                       most))
+		? (struct tool_text){ big, util_format(big, sizeof big, "The file has more "
+		                                       "than %zu bytes, which this server "
+		                                       "takes at most in one request.", most) }
 		: !content && (!text || !len || len > NOTES_TEXT || memchr(text, '\0', len))
-		? TEXT("The text argument must be a string of 1 byte to 4 MiB, and no NUL.")
+		? TOOL_TEXT("The text argument must be a string of 1 byte to 4 MiB, and no NUL.")
 		: !content && !kept
-		? TEXT("The text has only askai's [askai: ...] lines, which askai adds to tool "
-		       "results. Give the text of the note itself.")
-		: (struct mcp_piece){};
+		? TOOL_TEXT("The text has only askai's [askai: ...] lines, which askai adds to "
+		            "tool results. Give the text of the note itself.")
+		: (struct tool_text){};
 	if (problem.ptr) {
-		mcp_slot_result(slot, problem, true);
+		mcp_slot_tell(slot, problem, TOOL_FAILED);
 		return;
 	}
 	call->stripped = kept < len;
 	len = kept;
 	if (!initialized && (mcp_notes_actions[call->action].fetch & FETCH_REPLACE)) {
-		mcp_slot_result(slot, TEXT("No note has that name. Use action add to create it."),
-		                true);
+		mcp_slot_tell(slot, TOOL_TEXT("No note has that name. Use action add to "
+		                              "create it."), TOOL_FAILED);
 		return;
 	}
 	name += skip;
@@ -8055,7 +8067,7 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 	size_t skip = 0;
 	char const *name = jb_str(jb_get(args, "file"), &len);
 	if (!name || notes_name(name, len, &skip)) {
-		mcp_slot_result(slot, TEXT(bad_name), true);
+		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		return;
 	}
 	if (fetch & FETCH_COPY) {
@@ -8064,8 +8076,8 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 		size_t to_skip = skip;
 		char const *to = as ? jb_str(as, &to_len) : name;
 		if (!to || notes_name(to, to_len, &to_skip)) {
-			mcp_slot_result(slot, TEXT("The as argument must be a file name, as the "
-			                           "file argument is."), true);
+			mcp_slot_tell(slot, TOOL_TEXT("The as argument must be a file name, as the "
+			                              "file argument is."), TOOL_FAILED);
 			return;
 		}
 		call->len = to_len - to_skip;
@@ -8096,8 +8108,9 @@ mcp_slot_notes_revision (struct mcp_slot    *slot,
 		if ((i == 0 && !arg && (fetch & (FETCH_DIFF | FETCH_RESTORE))) ||
 		    (arg && !util_is_oid(revisions[i].data, revisions[i].len) &&
 		     !cstr_view_equal(revisions[i], CSTR_VIEW("current")))) {
-			mcp_slot_result(slot, TEXT("Use a full commit ID from action history, or current. "
-			                           "diff requires from; restore requires revision."), true);
+			mcp_slot_tell(slot, TOOL_TEXT("Use a full commit ID from action history, or "
+			                              "current. diff requires from; restore requires "
+			                              "revision."), TOOL_FAILED);
 			return;
 		}
 	}
@@ -8108,9 +8121,9 @@ mcp_slot_notes_revision (struct mcp_slot    *slot,
 	call->revision = notes_revision_create(file, revisions[0], revisions[1], &e);
 	if (!call->revision) {
 		if (e == EINVAL)
-			mcp_slot_result(slot, TEXT(bad_name), true);
+			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		else
-			mcp_req_fail(slot->req, e);
+			mcp_slot_fail(slot, e);
 		return;
 	}
 	if ((fetch & FETCH_KIND) != FETCH_LIST)
@@ -8125,14 +8138,15 @@ mcp_slot_notes (struct mcp_slot    *slot,
 {
 	struct mcp_req *req = slot->req;
 	int e = 0;
-	struct mcp_notes_call *call = mcp_notes_call_create(&e);
+	struct mcp_notes_call *call = mcp_notes_call_create(nullptr, &e);
 	slot->own = call;
 	if (!call) {
-		mcp_req_fail(req, e);
+		mcp_slot_fail(slot, e);
 		return;
 	}
+	call->side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
 	struct notes const *notes = req->mcp->st->notes;
-	bool uploads = slot->role != ROLE_OWN && req->mcp->st->uploads;
+	bool uploads = call->side == NOTES_UPSTREAM && req->mcp->st->uploads;
 	size_t len = 0;
 	char const *action = jb_str(jb_get(args, "action"), &len);
 	size_t which = 0;
@@ -8148,9 +8162,10 @@ mcp_slot_notes (struct mcp_slot    *slot,
 			if (uploads || !(mcp_notes_actions[i].flags & NOTE_UPLOAD))
 				ok = dstr_printf(&why, " %s", mcp_notes_actions[i].name);
 		if (!ok || !CAT(&why, "."))
-			mcp_req_fail(req, ENOMEM);
+			mcp_slot_fail(slot, ENOMEM);
 		else
-			mcp_slot_result(slot, DSTR(&why), true);
+			mcp_slot_tell(slot, (struct tool_text){ dstr_get(&why), dstr_len(&why) },
+			              TOOL_FAILED);
 		return;
 	}
 	call->action = which;
@@ -8159,16 +8174,18 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	struct json_object *revision = jb_get(args, "revision");
 	if ((revision && !(flags & NOTE_REVISION)) ||
 	    ((jb_get(args, "from") || jb_get(args, "to")) && !(fetch & FETCH_DIFF))) {
-		mcp_slot_result(slot, TEXT("revision applies to read and restore; from and to apply "
-		                           "to diff. Use history to find commit IDs."), true);
+		mcp_slot_tell(slot, TOOL_TEXT("revision applies to read and restore; from and to "
+		                              "apply to diff. Use history to find commit IDs."),
+		              TOOL_FAILED);
 		return;
 	}
-	if (slot->role == ROLE_OWN) {
+	if (call->side == NOTES_CLIENT) {
 		struct json_object *thread = jb_get(args, "thread");
 		char const *id = jb_str(thread, &len);
 		if (thread && (!id || !notes_is_id(id, len))) {
-			mcp_slot_result(slot, TEXT("The optional thread must be 32 hexadecimal "
-			                           "digits. It does not select the notes session."), true);
+			mcp_slot_tell(slot, TOOL_TEXT("The optional thread must be 32 hexadecimal "
+			                              "digits. It does not select the notes "
+			                              "session."), TOOL_FAILED);
 			return;
 		}
 		if (id)
@@ -8178,22 +8195,25 @@ mcp_slot_notes (struct mcp_slot    *slot,
 	struct json_object *notebook = jb_get(args, "notebook");
 	char const *selected = jb_str(notebook, &len);
 	if (jb_is(notebook, "other") ||
-	    (!notebook && (fetch & FETCH_COPY) && slot->role == ROLE_OWN)) {
-		mcp_slot_other(slot, call->notebook);
+	    (!notebook && (fetch & FETCH_COPY) && call->side == NOTES_CLIENT)) {
+		enum notes_side other = call->side == NOTES_CLIENT ? NOTES_UPSTREAM : NOTES_CLIENT;
+		notes_repo(notes, req->principal, other, call->notebook);
 	} else if (notebook && !jb_is(notebook, "own")) {
 		if (notes_select(selected, len, call->notebook)) {
-			mcp_slot_result(slot, TEXT("The notebook must be own or a selector returned "
-			                           "by action notebooks (participant/principal/side)."), true);
+			mcp_slot_tell(slot, TOOL_TEXT("The notebook must be own or a selector returned "
+			                              "by action notebooks "
+			                              "(participant/principal/side)."), TOOL_FAILED);
 			return;
 		}
 	}
-	if ((fetch & FETCH_COPY) && !notebook && slot->role != ROLE_OWN) {
-		mcp_slot_result(slot, TEXT("For copy, give the source notebook selector from "
-		                           "action notebooks."), true);
+	if ((fetch & FETCH_COPY) && !notebook && call->side == NOTES_UPSTREAM) {
+		mcp_slot_tell(slot, TOOL_TEXT("For copy, give the source notebook selector from "
+		                              "action notebooks."), TOOL_FAILED);
 		return;
 	}
 	if ((flags & NOTE_WRITE) && *call->notebook && strcmp(call->notebook, req->repo)) {
-		mcp_slot_result(slot, TEXT("You can write notes only to your own notebook."), true);
+		mcp_slot_tell(slot, TOOL_TEXT("You can write notes only to your own notebook."),
+		              TOOL_FAILED);
 		return;
 	}
 	if ((flags & NOTE_OFFSET) && mcp_slot_offset(slot, args))
@@ -8208,15 +8228,16 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		return;
 	}
 	if (!notes_exists(notes)) {
-		if (fetch == FETCH_BOOKS) {
-			e = mcp_slot_notes_identity(slot);
-			if (e)
-				mcp_req_fail(req, e);
-			else
-				mcp_slot_respond(slot, false);
-		} else {
-			mcp_slot_result(slot, TEXT("No notes have been added to this session yet."), false);
-		}
+		/* This answer does not fail the call. A turn's offset applies to it,
+		 * and a client's offset does not. */
+		struct tool_text const none = TOOL_TEXT("No notes have been added to this "
+		                                        "session yet.");
+		if (fetch == FETCH_BOOKS)
+			mcp_slot_notes_end(slot, mcp_slot_notes_identity(slot), false);
+		else if (call->side == NOTES_CLIENT)
+			mcp_slot_tell(slot, none, 0);
+		else
+			mcp_slot_notes_end(slot, mcp_notes_call_say(call, &none, 1), false);
 		return;
 	}
 	if (flags & NOTE_FILE)
@@ -8288,14 +8309,11 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	    "the upstream's compact call, summary %zu %s", req->mcp->loop->id, req->asked,
 	    req->turn, len, mcp_bytes(len));
 	req->reminded = 0;
-	dstr_clear(&req->self.answer);
-	struct mcp_piece const p[] = {
-		TEXT("\n\n[askai: you compacted the context: the conversation since the "
-		     "task is gone, your turns and the tools' results with it. Your "
-		     "summary of it:]\n\n"),
-		ESC(summary, jb_utf8(summary, len)),
-	};
-	int e = mcp_slot_say(&req->self, p, ARRAY_SIZE(p));
+	struct dstr *d = &req->self.answer;
+	dstr_clear(d);
+	int e = CAT(d, "\n\n[askai: you compacted the context: the conversation since the "
+	            "task is gone, your turns and the tools' results with it. Your summary "
+	            "of it:]\n\n") && dstr_cat_n(d, summary, jb_utf8(summary, len)) ? 0 : ENOMEM;
 	mcp_req_args_free(req, req->part, ARRAY_SIZE(req->args));
 	mcp_req_slots_drop(req);
 	buf_fini(&req->calls);
@@ -8334,9 +8352,9 @@ mcp_req_compact_full (struct mcp_req *req)
 	mcp_req_args_free(req, 0, ARRAY_SIZE(req->args));
 	buf_fini(&req->calls);
 	dstr_clear(&req->self.answer);
-	int e = mcp_slot_say(&req->self, &TEXT("\n\n[askai: your context filled up, so the "
-	                               "conversation since the task is gone, your turns "
-	                               "and the tools' results with it.]"), 1);
+	int e = CAT(&req->self.answer, "\n\n[askai: your context filled up, so the "
+	            "conversation since the task is gone, your turns and the tools' results "
+	            "with it.]") ? 0 : ENOMEM;
 	if (e) {
 		mcp_req_fail(req, e);
 		return;

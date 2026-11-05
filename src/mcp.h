@@ -295,6 +295,13 @@ EXPORT
 extern uint64_t
 mcp_slot_principal (struct mcp_slot const *slot);
 
+/** Returns true if a client made the call, and false if a turn made it or
+ *  @p slot is nullptr. A call that a client's background call runs as a
+ *  job is the client's call. This function is not exported.
+ */
+extern bool
+mcp_slot_from_client (struct mcp_slot const *slot);
+
 /** Returns the address of the call's own word, a pointer that the kind can
  *  set. The word is nullptr when the call starts. If the kind sets it,
  *  askai calls the kind's drop() when it drops the call. A kind without
