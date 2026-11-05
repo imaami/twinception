@@ -202,24 +202,24 @@ policy_principal_of (struct policy const *policy,
 	return 0;
 }
 
-/* Compute in @p *principal the principal of the identity that @p who,
- * "identity NAME", names, with the key of @p policy. Returns 0, EINVAL if
- * @p who has another form, or EIO if HMAC() fails.
+/* Compute in @p *principal the principal of the identity in @p who,
+ * "identity NAME", with the key of @p policy. The anchor is @p who with a
+ * colon in place of the space. Returns 0, EINVAL if @p who is in another
+ * form or NAME is longer than POLICY_NAME, or EIO if HMAC() fails.
  */
 static int
 policy_principal_identity (struct policy const *policy,
                            struct cstr_view     who,
                            uint64_t            *principal)
 {
-	struct cstr_view const prefix = CSTR_VIEW("identity ");
-	if (!cstr_view_starts(who, prefix))
+	static char const prefix[] = "identity ";
+	char anchor[sizeof prefix - 1 + POLICY_NAME];
+	if (!cstr_view_starts(who, (struct cstr_view){ prefix, sizeof prefix - 1 }) ||
+	    who.len > sizeof anchor)
 		return EINVAL;
-	struct cstr_view const name = cstr_view_slice(who, prefix.len, SIZE_MAX);
-	char anchor[sizeof "identity:" + POLICY_NAME];
-	int n = snprintf(anchor, sizeof anchor, "identity:%.*s", (int)name.len, name.data);
-	if (n < 0 || n >= (int)sizeof anchor)
-		return EINVAL;
-	return policy_principal_of(policy, POLICY_IDENTITY, anchor, (size_t)n, principal);
+	memcpy(anchor, who.data, who.len);
+	anchor[sizeof prefix - 2] = ':';
+	return policy_principal_of(policy, POLICY_IDENTITY, anchor, who.len, principal);
 }
 
 /* Compute the principal of each token of @p policy from the name of its
@@ -238,8 +238,8 @@ policy_principals (struct policy *policy)
 	return 0;
 }
 
-/* Copy the @p n texts @p parts, one after another, into the policy's
- * block, and return the copy, which names a client in the log.
+/* Copy the @p n texts @p parts, one after another, into the block of the
+ * policy, and return the copy, which is the name of a client in the log.
  */
 static struct cstr_view
 policy_build_who (struct policy_build    *b,
@@ -247,11 +247,13 @@ policy_build_who (struct policy_build    *b,
                   struct cstr_view const  parts[static n])
 {
 	char *who = b->names;
+	size_t len = 0;
 	for (size_t i = 0; i < n; ++i) {
-		memcpy(b->names, parts[i].data, parts[i].len);
-		b->names += parts[i].len;
+		memcpy(who + len, parts[i].data, parts[i].len);
+		len += parts[i].len;
 	}
-	return (struct cstr_view){ who, (size_t)(b->names - who) };
+	b->names += len;
+	return (struct cstr_view){ who, len };
 }
 
 /* The index of the role that @p name, a string, names; -1 if none does. */
@@ -495,10 +497,10 @@ static constexpr size_t POLICY_ENTRY_MAX = 64 << 20;
 
 /* Look up the Unix group @p name of unix-groups, a gid in decimal or a
  * group name that NSS resolves, and store its gid in @p *gid. The lookup
- * buffer starts at 1 KiB and doubles while getgrnam_r() reports ERANGE, up
- * to POLICY_ENTRY_MAX bytes. The message says "no group" only if the
- * lookup succeeded and found no such group. Returns 0, ENOMEM, or EINVAL
- * with the reason in b->why.
+ * storage is b->nss. It starts at the smallest size class of buf.h and
+ * doubles while getgrnam_r() reports ERANGE, up to POLICY_ENTRY_MAX bytes.
+ * The message is "no group" only if the lookup succeeded and found no
+ * such group. Returns 0, ENOMEM, or EINVAL with the reason in b->why.
  */
 static int
 policy_build_gid (struct policy_build *b,
@@ -509,17 +511,14 @@ policy_build_gid (struct policy_build *b,
 		return 0;
 	struct group gr;
 	struct group *r = nullptr;
-	int e = 0;
-	struct span room = {};
-	while (!room.ptr || (e = getgrnam_r(name, &gr, (char *)room.ptr, room.len, &r)) == ERANGE) {
-		int g = buf_reserve(&b->nss, room.len + 1, POLICY_ENTRY_MAX, &room);
-		if (g == ENOBUFS)
-			return policy_build_fail(b, "unix-groups: the entry of group %s is "
-			                         "larger than %zu MiB; give its gid instead",
-			                         name, POLICY_ENTRY_MAX >> 20);
-		if (g)
-			return g;
-	}
+	struct span room;
+	int e = buf_reserve(&b->nss, 1, POLICY_ENTRY_MAX, &room);
+	while (!e && (e = getgrnam_r(name, &gr, (char *)room.ptr, room.len, &r)) == ERANGE)
+		e = buf_reserve(&b->nss, room.len + 1, POLICY_ENTRY_MAX, &room);
+	if (e == ENOBUFS)
+		return policy_build_fail(b, "unix-groups: the entry of group %s is larger "
+		                         "than %zu MiB; give its gid instead", name,
+		                         POLICY_ENTRY_MAX >> 20);
 	if (e == ENOMEM)
 		return e;
 	if (e)
@@ -616,22 +615,24 @@ policy_build_no_tool (struct policy_build *b,
 	                         names);
 }
 
-/* Reads the list of tool names @p list of role @p name into @p r. @p key
- * is the name of the list's member, "tools" or "upstream". The member
- * "upstream" may name only the tools that askai can offer to the upstream.
+/* Read the list of tool names @p list of role @p name into @p r. @p key is
+ * the name of the member of the list, "tools" or "upstream", and @p up is
+ * true for "upstream". The member "upstream" may list only the tools that
+ * askai can offer to the upstream.
  */
 static int
 policy_build_tools (struct policy_build *b,
                     struct policy_grant *r,
                     char const          *name,
                     char const          *key,
-                    struct json_object  *list)
+                    struct json_object  *list,
+                    bool                 up)
 {
 	if (!json_object_is_type(list, json_type_array))
 		return policy_build_fail(b, "role %s: %s must be an array of names",
 		                         name, key);
-	bool up = *key == 'u';
 	tool_mask *mask = up ? &r->upstream : &r->tools;
+	tool_mask offered = up ? b->upstream : ~(tool_mask)0;
 	size_t len = json_object_array_length(list);
 	for (size_t i = 0; i < len; ++i) {
 		struct json_object *v = json_object_array_get_idx(list, i);
@@ -640,14 +641,14 @@ policy_build_tools (struct policy_build *b,
 		size_t k = 0;
 		while (k < b->n_tools && !(b->tools[k] && !strcmp(b->tools[k], tool)))
 			++k;
-		if (k == b->n_tools || (up && !(b->upstream >> k & 1)))
+		if (k == b->n_tools || !(offered >> k & 1))
 			return policy_build_no_tool(b, name, v, up);
 		*mask |= (tool_mask)1 << k;
 	}
 	return 0;
 }
 
-/* Member @p key, @p val, of role @p name, into @p r. */
+/* Read the member @p key with the value @p val of role @p name into @p r. */
 static int
 policy_build_member (struct policy_build *b,
                      struct policy_grant *r,
@@ -655,8 +656,9 @@ policy_build_member (struct policy_build *b,
                      char const          *key,
                      struct json_object  *val)
 {
-	if (!strcmp(key, "tools") || !strcmp(key, "upstream"))
-		return policy_build_tools(b, r, name, key, val);
+	bool up = !strcmp(key, "upstream");
+	if (up || !strcmp(key, "tools"))
+		return policy_build_tools(b, r, name, key, val, up);
 	if (strcmp(key, "metrics"))
 		return policy_build_fail(b, "role %s: unknown member %s", name, key);
 	if (!json_object_is_type(val, json_type_boolean))
@@ -665,7 +667,7 @@ policy_build_member (struct policy_build *b,
 	return 0;
 }
 
-/* Role @p name, its members @p members, into @p r. */
+/* Read role @p name with the members @p members into @p r. */
 static int
 policy_build_role_one (struct policy_build *b,
                        struct policy_grant *r,
@@ -677,8 +679,8 @@ policy_build_role_one (struct policy_build *b,
 		return policy_build_fail(b, "invalid role name: %s", name);
 	if (!json_object_is_type(members, json_type_object))
 		return policy_build_fail(b, "role %s must be an object", name);
-	r->who = policy_build_who(b, 2, (struct cstr_view const[]){
-		CSTR_VIEW("role "), { name, len } });
+	struct cstr_view const parts[] = { CSTR_VIEW("role "), { name, len } };
+	r->who = policy_build_who(b, ARRAY_SIZE(parts), parts);
 	struct json_object_iter m;
 	json_object_object_foreachC(members, m) {
 		int e = policy_build_member(b, r, name, m.key, m.val);
@@ -709,7 +711,7 @@ policy_build_roles (struct policy_build *b)
 	return 0;
 }
 
-/* The members of identity @p who, @p id: its role and its tokens. */
+/* Read the role and the tokens of identity @p who from @p id. */
 static int
 policy_build_identity (struct policy_build *b,
                        char const          *who,
@@ -740,8 +742,8 @@ policy_build_identity (struct policy_build *b,
 	size_t n = jb_len(tokens);
 	if (!n)
 		return policy_build_fail(b, "identity %s needs tokens", who);
-	struct cstr_view name = policy_build_who(b, 2, (struct cstr_view const[]){
-		CSTR_VIEW("identity "), { who, len } });
+	struct cstr_view const parts[] = { CSTR_VIEW("identity "), { who, len } };
+	struct cstr_view name = policy_build_who(b, ARRAY_SIZE(parts), parts);
 	for (size_t i = 0; i < n; ++i) {
 		struct json_object *spec = json_object_array_get_idx(tokens, i);
 		unsigned char digest[DIGEST];
@@ -841,21 +843,23 @@ policy_build_anonymous (struct policy_build *b,
 		return 0;
 	if (!json_object_is_type(anonymous, json_type_object))
 		return policy_build_fail(b, "anonymous must be an object");
+	struct policy *p = b->p;
 	struct json_object_iter it;
 	json_object_object_foreachC(anonymous, it) {
-		size_t k = 0;
-		while (k < POLICY_KINDS && strcmp(policy_kinds[k].data, it.key))
-			++k;
+		size_t k = cstr_view_index(policy_kinds, POLICY_KINDS, cstr_view(it.key));
 		if (k == POLICY_KINDS)
 			return policy_build_fail(b, "anonymous: unknown member %s", it.key);
-		struct policy *p = b->p;
 		int e = policy_build_kind(b, it.key, it.val, &p->anonymous[k]);
 		if (e)
 			return e;
-		if (p->anonymous[k] >= 0)
-			p->strangers[k] = policy_build_who(b, 5, (struct cstr_view const[]){
-				CSTR_VIEW("anonymous "), policy_kinds[k], CSTR_VIEW(" ("),
-				p->roles[p->anonymous[k]].who, CSTR_VIEW(")") });
+		int64_t role = p->anonymous[k];
+		if (role < 0)
+			continue;
+		struct cstr_view const parts[] = {
+			CSTR_VIEW("anonymous "), policy_kinds[k], CSTR_VIEW(" ("),
+			p->roles[role].who, CSTR_VIEW(")")
+		};
+		p->strangers[k] = policy_build_who(b, ARRAY_SIZE(parts), parts);
 	}
 	return 0;
 }
@@ -948,22 +952,30 @@ policy_create (struct json_object *file,
 	struct json_object *ids = nullptr;
 	struct json_object *groups = nullptr;
 	struct json_object *anon = nullptr;
-	bool mine = policy_file(file, &b.roles, &ids, &groups, &anon);
-	char const *token = mine ? nullptr : getenv("ASKAI_TOKEN");
-	token = token && *token ? token : nullptr;
-
-	/* Room for as many of each as the file names, or askai's own policy. */
-	size_t n_tokens = token != nullptr;
-	size_t n_roles = mine ? policy_members(b.roles) : 2;
+	bool from_file = policy_file(file, &b.roles, &ids, &groups, &anon);
 	size_t n_groups = policy_members(groups);
-	/* Room for the longest name of each role, identity and kind of
-	 * anonymous client. */
-	size_t n_names = mine ? n_roles * (sizeof "role " - 1 + POLICY_NAME) +
-	                        policy_members(ids) * (sizeof "identity " - 1 + POLICY_NAME) +
-	                        POLICY_KINDS * (POLICY_WHO - 1)
-	                      : 0;
+	size_t n_ids = policy_members(ids);
+	/* The sizes below are the room in the block of the policy for the
+	 * policy of the file. askai's own policy uses two roles, no names, and
+	 * the token of ASKAI_TOKEN if that is set. */
+	char const *token = nullptr;
+	size_t n_tokens = 0;
+	size_t n_roles = 2;
+	size_t n_names = 0;
+	if (from_file) {
+		n_roles = policy_members(b.roles);
+		/* Room for the longest name of each role, identity and kind of
+		 * anonymous client. */
+		n_names = n_roles * (sizeof "role " - 1 + POLICY_NAME) +
+		          n_ids * (sizeof "identity " - 1 + POLICY_NAME) +
+		          POLICY_KINDS * (POLICY_WHO - 1);
+	} else {
+		char const *env = getenv("ASKAI_TOKEN");
+		token = env && *env ? env : nullptr;
+		n_tokens = token != nullptr;
+	}
 	struct json_object_iter it;
-	if (policy_members(ids))
+	if (n_ids)
 		json_object_object_foreachC(ids, it)
 			n_tokens += jb_len(jb_get(it.val, "tokens"));
 	/* The subordinate uids go into the policy's block, and the
@@ -1003,7 +1015,7 @@ policy_create (struct json_object *file,
 	for (size_t k = 0; k < POLICY_KINDS; ++k)
 		p->anonymous[k] = -1;
 	b.p = p;
-	if (mine)
+	if (from_file)
 		*e = policy_build_file(&b, ids, groups, anon);
 	else
 		policy_build_own(&b, token);
@@ -1066,10 +1078,10 @@ policy_log_tools (char const        *key,
 		LOG_ALL(LOG_INFO, "  %-*s  none", width, key);
 }
 
-/* Log each role of the file's policy @p policy with the names @p tools of
- * the @p n_tools tools, and with the tools that the upstream may call,
- * which @p lent returns with @p ctx, if @p lent is not nullptr; returns
- * the tools that the roles grant or lend.
+/* Log each role of @p policy, the policy of the file, with the names
+ * @p tools of the @p n_tools tools. If @p lent is not nullptr, also log
+ * the tools that the upstream may call, which lent() returns with @p ctx.
+ * Return the tools that the roles grant or lend.
  */
 static tool_mask
 policy_log_roles (struct policy const *policy,
@@ -1085,11 +1097,13 @@ policy_log_roles (struct policy const *policy,
 	tool_mask listed = 0;
 	for (size_t i = 0; i < policy->n_roles; ++i) {
 		struct policy_grant const *r = &policy->roles[i];
-		tool_mask up = lent ? lent(ctx, r->tools, r->upstream) : 0;
 		LOG_ALL(LOG_INFO, "%.*s:", (int)r->who.len, r->who.data);
 		policy_log_tools("tools", 14, tools, n_tools, r->tools);
-		if (lent)
+		tool_mask up = 0;
+		if (lent) {
+			up = lent(ctx, r->tools, r->upstream);
 			policy_log_tools("upstream tools", 14, tools, n_tools, up);
+		}
 		LOG_ALL(LOG_INFO, "  metrics         %s", r->metrics ? "yes" : "no");
 		listed |= r->tools | up;
 	}
