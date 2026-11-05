@@ -2,10 +2,10 @@
  *
  * Builders of the JSON Schema parts of tool definitions.
  */
+#include "cstr_view.h"
 #include "dstr.h"
 #include "jb.h"
 #include "schema.h"
-#include "tool.h"
 
 struct json_object *
 schema_text3 (char const *a,
