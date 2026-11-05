@@ -163,6 +163,28 @@ test_plugin_state_definition (void const *service)
 		"\"additionalProperties\":false}}");
 }
 
+/* Ends the call with @p flags and the text that @p fmt and its arguments
+ * format. If the text is longer than 159 bytes, the call fails with
+ * ENOMEM.
+ */
+[[gnu::format(printf, 3, 4)]]
+static void
+test_plugin_tellf (struct mcp_slot *slot,
+                   uint32_t         flags,
+                   char const      *fmt,
+                   ...)
+{
+	char text[160];
+	va_list ap;
+	va_start(ap, fmt);
+	int const n = vsnprintf(text, sizeof text, fmt, ap);
+	va_end(ap);
+	if (n < 0 || n >= (int)sizeof text)
+		mcp_slot_fail(slot, ENOMEM);
+	else
+		mcp_slot_tell(slot, (struct cstr_view){ text, (size_t)n }, flags);
+}
+
 /* Ends the call. The output is the state of the call's instance. */
 static void
 test_plugin_state_tell (struct mcp_slot *slot)
@@ -172,14 +194,9 @@ test_plugin_state_tell (struct mcp_slot *slot)
 		mcp_slot_tell(slot, CSTR_VIEW("The call has no instance."), TOOL_FAILED);
 		return;
 	}
-	char out[160];
-	int n = snprintf(out, sizeof out, "principal=%016" PRIx64 " instance=%p "
-	                 "calls=%" PRIu64 " last=%.*s", inst->principal,
-	                 (void const *)inst, inst->calls, (int)inst->len, inst->last);
-	if (n < 0 || n >= (int)sizeof out)
-		mcp_slot_fail(slot, ENOMEM);
-	else
-		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n }, 0);
+	test_plugin_tellf(slot, 0, "principal=%016" PRIx64 " instance=%p calls=%" PRIu64
+	                  " last=%.*s", inst->principal, (void const *)inst, inst->calls,
+	                  (int)inst->len, inst->last);
 }
 
 /* The timer function of a call that waits. It runs when the wait is over,
@@ -436,12 +453,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(mcp_slot_fetched(slot, nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_fetched(slot, &response) == ENOENT);
 #undef TEST_PLUGIN_REFUSED
-	char out[48];
-	int n = snprintf(out, sizeof out, "refused %u of %u", refused, checks);
-	if (n < 0 || n >= (int)sizeof out)
-		mcp_slot_fail(slot, ENOMEM);
-	else
-		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n }, 0);
+	test_plugin_tellf(slot, 0, "refused %u of %u", refused, checks);
 }
 
 /* Names the call with mcp_slot_name(), and then makes handles of the slots
@@ -475,12 +487,7 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
 			foreign += named && named != slot;
 			found += named == slot;
 		}
-	char out[48];
-	int n = snprintf(out, sizeof out, "foreign %u own %u", foreign, found);
-	if (n < 0 || n >= (int)sizeof out)
-		mcp_slot_fail(slot, ENOMEM);
-	else
-		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n }, 0);
+	test_plugin_tellf(slot, 0, "foreign %u own %u", foreign, found);
 }
 
 /* Starts a test_misuse call. The kind of test_misuse has no step() and no
@@ -628,23 +635,17 @@ test_plugin_fetch_start (struct mcp_slot    *slot,
 		.timeout = (uint32_t)test_plugin_integer(args, "timeout", 10),
 		.keep = (uint32_t)test_plugin_integer(args, "keep", 0)
 	};
-	struct json_object *arg = nullptr;
-	(void)json_object_object_get_ex(args, "twice", &arg);
-	int e = mcp_slot_fetch(slot, &request);
-	bool twice = !e && json_object_get_boolean(arg);
-	if (!e && !twice) {
-		mcp_slot_park(slot);
+	int const e = mcp_slot_fetch(slot, &request);
+	if (e) {
+		test_plugin_tellf(slot, TOOL_FAILED, "fetch: %d", e);
 		return;
 	}
-	if (twice)
-		e = mcp_slot_fetch(slot, &request);
-	char out[32];
-	int n = snprintf(out, sizeof out, "%s: %d", twice ? "twice" : "fetch", e);
-	if (n < 0 || n >= (int)sizeof out)
-		mcp_slot_fail(slot, ENOMEM);
+	struct json_object *twice = nullptr;
+	(void)json_object_object_get_ex(args, "twice", &twice);
+	if (json_object_get_boolean(twice))
+		test_plugin_tellf(slot, 0, "twice: %d", mcp_slot_fetch(slot, &request));
 	else
-		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n },
-		              twice ? 0 : TOOL_FAILED);
+		mcp_slot_park(slot);
 }
 
 /* The step() of test_fetch. It writes the result of the call's request
@@ -658,17 +659,16 @@ test_plugin_fetch_step (struct mcp_slot *slot)
 		return;
 	struct web_response r;
 	int e = mcp_slot_fetched(slot, &r);
-	char head[640];
-	int n = e ? snprintf(head, sizeof head, "fetched: %d", e)
-	          : snprintf(head, sizeof head, "status %" PRIu32 "\ntype %.256s\nage %"
-	                     PRIu32 "\nretry %" PRIu32 "\ne %d\nerror %.256s\n\n",
-	                     r.status, r.type, r.age, r.retry, r.e, r.error);
-	if (n < 0 || n >= (int)sizeof head) {
-		mcp_slot_fail(slot, ENOMEM);
+	if (e) {
+		test_plugin_tellf(slot, TOOL_FAILED, "fetched: %d", e);
 		return;
 	}
-	if (e) {
-		mcp_slot_tell(slot, (struct cstr_view){ head, (size_t)n }, TOOL_FAILED);
+	char head[640];
+	int const n = snprintf(head, sizeof head, "status %" PRIu32 "\ntype %.256s\nage %" PRIu32
+	                       "\nretry %" PRIu32 "\ne %d\nerror %.256s\n\n",
+	                       r.status, r.type, r.age, r.retry, r.e, r.error);
+	if (n < 0 || n >= (int)sizeof head) {
+		mcp_slot_fail(slot, ENOMEM);
 		return;
 	}
 	size_t taken;
@@ -777,12 +777,7 @@ test_plugin_config_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, CSTR_VIEW("none"), 0);
 		return;
 	}
-	char out[sizeof "greeting=" + sizeof c->greeting];
-	int n = snprintf(out, sizeof out, "greeting=%s", c->greeting);
-	if (n < 0 || n >= (int)sizeof out)
-		mcp_slot_fail(slot, ENOMEM);
-	else
-		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n }, 0);
+	test_plugin_tellf(slot, 0, "greeting=%s", c->greeting);
 }
 
 struct plugin const askai_plugin = {
