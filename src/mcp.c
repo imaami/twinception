@@ -171,38 +171,40 @@ enum {
  */
 static_assert((int)LEDGER_RUNNING <= (int)JOB_QUEUED, "home queues the jobs that run");
 
-/* What git runs for in the notes (src/notes.h). */
+/* A fetch value says why git runs on the notes (src/notes.h). The values
+ * below FETCH_KIND are kinds, and FETCH_KIND masks them. The bits above
+ * FETCH_KIND are flags.
+ */
 enum mcp_fetch : uint16_t {
-	FETCH_CREATE,      /* the notes tool's add: make the repository of a new
-	                      thread */
-	FETCH_CHECK,       /* the notes tool's add: check the name of the note */
-	FETCH_ADD,         /* the notes tool's add */
-	FETCH_LIST,        /* the notes tool's list */
-	FETCH_READ,        /* the notes tool's read */
-	FETCH_RESUME,      /* list the notes of the thread that an ask call goes
-	                      on with */
+	FETCH_CREATE,      /* create the shared repository for a write */
+	FETCH_CHECK,       /* check the note name before a write */
+	FETCH_ADD,         /* commit the note of a write */
+	FETCH_LIST,        /* list the notes for list and history */
+	FETCH_READ,        /* read a note */
+	FETCH_RESUME,      /* list the notes for the prompt of an ask call */
 	FETCH_COMPACT,     /* list the notes for a compaction */
-	FETCH_KIND = 7,    /* the mask of the values above */
+	FETCH_KIND = 7,    /* the mask of the kinds */
 	FETCH_NEWEST = 8,  /* read the newest note, after FETCH_RESUME or
 	                      FETCH_COMPACT */
-	FETCH_OTHER = 16,  /* a flag that is set with FETCH_LIST or FETCH_READ:
-	                      the other side's notebook of the thread */
-	FETCH_COPY = 32,   /* set with FETCH_READ for a copy of a note from the
-	                      other side's notebook into the caller's */
-	FETCH_BOOKS = 128, /* lists the session's notebooks */
-	FETCH_FORMAT = FETCH_BOOKS | FETCH_CHECK, /* object format for an unborn branch */
-	FETCH_ATTACH = 64, /* a flag that is set with FETCH_READ: the attach
-	                      action, which uploads the note as a file for the
-	                      turn */
-	FETCH_REPLACE = 256, /* replace an existing own note, retaining its history */
-	FETCH_FILES = 512,   /* list the current tree, rather than its history */
-	FETCH_REVISION = 1024, /* pin and authorize historical note revisions */
-	FETCH_DIFF = 2048,    /* compare two authorized revisions */
-	FETCH_RESTORE = 4096, /* restore historical bytes in a new own commit */
+	FETCH_OTHER = 16,  /* set with FETCH_LIST or FETCH_READ. git reads the
+	                      notebook that the call selected. */
+	FETCH_COPY = 32,   /* set with FETCH_READ for copy. The note goes to the
+	                      caller's own notebook. */
+	FETCH_BOOKS = 128, /* list the notebooks of the session */
+	FETCH_FORMAT = FETCH_BOOKS | FETCH_CHECK, /* read the object format for
+	                                             a notebook without commits */
+	FETCH_ATTACH = 64, /* set with FETCH_READ for attach. askai uploads the
+	                      note as a file for the turn. */
+	FETCH_REPLACE = 256, /* set for replace. The note must exist. */
+	FETCH_FILES = 512,   /* set with FETCH_LIST for list. git lists the
+	                        current files, not the history. */
+	FETCH_REVISION = 1024, /* check the revisions before git reads a note */
+	FETCH_DIFF = 2048,    /* compare two revisions of a note */
+	FETCH_RESTORE = 4096, /* write an old revision of a note in a new commit */
 };
 
-/* Each row of mcp_fetch_steps[] has the command of git that runs for a
- * fetch value and the step that reads its output.
+/* A row of mcp_fetch_steps[]. cmd is the git command for a fetch value,
+ * and out is the step that reads the output of git.
  */
 struct mcp_fetch_step {
 	enum notes_cmd  cmd;
@@ -211,22 +213,25 @@ struct mcp_fetch_step {
 
 static struct mcp_fetch_step const *mcp_fetch_step (uint16_t fetch);
 
-/* Whether git writes to the notes when it runs @p cmd. */
+/* Returns true if git writes to the notes when it runs @p cmd. */
 static bool
 mcp_notes_writes (enum notes_cmd cmd)
 {
 	return cmd == NOTES_CREATE || cmd == NOTES_ADD;
 }
 
+/* The flags of an action in mcp_notes_actions[]. */
 enum {
-	NOTE_WRITE  = 1 << 0,
-	NOTE_FILE   = 1 << 1,
-	NOTE_OFFSET = 1 << 2,
-	NOTE_UPLOAD = 1 << 3,
-	NOTE_REVISION = 1 << 4,
+	NOTE_WRITE  = 1 << 0,    /* writes to the caller's own notebook */
+	NOTE_FILE   = 1 << 1,    /* takes the file argument */
+	NOTE_OFFSET = 1 << 2,    /* takes the offset argument */
+	NOTE_UPLOAD = 1 << 3,    /* offered only if the upstream takes files */
+	NOTE_REVISION = 1 << 4,  /* takes the revision argument */
 };
 
-/** The notes actions, shared by dispatch and the published tool schema. */
+/* The actions of the notes tool. mcp_slot_notes() looks up the action of a
+ * call here, and mcp_notes_schema() lists the names.
+ */
 static struct {
 	char const    *name;
 	char const    *verb;  /* begins the commit message of a write */
@@ -354,9 +359,11 @@ enum mcp_trace : uint8_t {
 	TRACE_NAME,
 };
 
-/* Kind flag (bit 32, above TOOL_FLAGS) for tools whose calls run alone. A
- * turn's call of such a tool starts after the results of all earlier calls
- * are written. Later calls start after its result is written.
+/** Kind flag (bit 32, above TOOL_FLAGS) for tools whose calls run alone. A
+ *  turn's call of such a tool starts after the results of all earlier calls
+ *  are written. Later calls start after its result is written. Only the
+ *  kinds built into askai can set it. plugin.c refuses a loaded plugin
+ *  whose kind has a flag outside TOOL_FLAGS.
  */
 static constexpr uint64_t KF_SERIAL = 1ull << 32;
 
@@ -432,15 +439,16 @@ struct mcp_plugin {
 	                                        plugin */
 };
 
-/* The service of the notes tool. All loops share it. mcp_static_create()
- * fills it before mcp_static_build() reads it.
+/** The service of the notes tool. All loops share it. mcp_static_create()
+ *  fills it before mcp_static_build() reads it.
  */
 struct mcp_notes {
-	struct notes const *notes;         /* nullptr without --notes */
-	size_t              files_inline;  /* bytes of a file that a client hands
-	                                      askai inline, at most */
-	uint64_t            attach;        /* bool, widened over the padding: the
-	                                      upstream takes files (ai_upload()) */
+	struct notes const *notes;         /**< nullptr without --notes */
+	size_t              files_inline;  /**< the most bytes of a file that a
+	                                        client hands askai inline */
+	uint64_t            attach;        /**< nonzero if the upstream takes
+	                                        files (ai_upload()). It is wider
+	                                        than a bool to fill the padding. */
 };
 
 struct mcp_static {
@@ -3711,10 +3719,10 @@ mcp_slot_fetched (struct mcp_slot const *slot,
 	return 0;
 }
 
-/* What mcp_notes_loop_prompt() reads the notes for. */
+/** The reason why mcp_notes_loop_prompt() reads the notes. */
 enum mcp_notes_prompt : uint8_t {
-	NOTES_TOOL_RESUME,   /* an ask call that goes on with its thread */
-	NOTES_TOOL_COMPACT,  /* a compaction, by compact or by a full context */
+	NOTES_TOOL_RESUME,   /**< the start of an ask call */
+	NOTES_TOOL_COMPACT,  /**< a compaction, by compact or by a full context */
 };
 
 static void mcp_notes_loop_prompt (struct mcp_notes_loop *loop, struct mcp_slot *slot,
@@ -3881,8 +3889,8 @@ mcp_req_review_make (struct mcp_req *req,
 	return e;
 }
 
-/* Goes on with the ask call in @p slot, req->self, once the notes of its
- * thread are in the prompt. The ask call builds its upstream request.
+/* Goes on with the ask call in @p slot, req->self, once the notes of the
+ * caller are in the prompt. The ask call builds its upstream request.
  */
 static void
 mcp_slot_resumed (struct mcp_slot *slot)
@@ -6836,13 +6844,13 @@ mcp_slot_attached (struct mcp_slot  *slot,
 
 /* The part of the notes tool on one loop. */
 struct mcp_notes_loop {
-	struct list              children;  /* the gits of the notes calls on the
-	                                       loop */
+	struct list              children;  /* the git children of the notes
+	                                       calls on the loop */
 	struct mcp_notes const  *tool;      /* the service */
 };
 
-/* Creates the part of the notes tool for @p service, a struct mcp_notes.
- * Returns the part, or nullptr with ENOMEM in @p *e.
+/** Creates the part of the notes tool for @p service, a struct mcp_notes.
+ *  Returns the part, or nullptr with ENOMEM in @p *e.
  */
 static void *
 mcp_notes_loop_create (void        *service,
@@ -6859,9 +6867,9 @@ mcp_notes_loop_create (void        *service,
 	return nl;
 }
 
-/* Frees the children of the notes calls on the loop as it stops, and kills
- * any that are still alive. Then frees the part at @p *p_part and sets
- * @p *p_part to nullptr.
+/** Frees the children of the notes calls on the loop as it stops, and
+ *  kills any that are still alive. Then frees the part at @p *p_part and
+ *  sets @p *p_part to nullptr.
  */
 static void
 mcp_notes_loop_destroy (void **p_part)
@@ -6884,22 +6892,25 @@ struct mcp_notes_call {
 	struct dstr            out;       /* the output of a tool call.
 	                                     mcp_slot_notes_end() lends it to
 	                                     the slot. */
-	struct notes_part      part;      /* the name and the text in file */
+	struct notes_part      part;      /* the offsets of the name and the
+	                                     text in file */
 	struct child          *child;     /* the call's git, until a step has
 	                                     read its output */
 	struct notes_revision *revision;  /* the revisions of a read, diff,
 	                                     restore or history, or nullptr */
 	struct mcp_notes_loop *loop;      /* the part of the call's loop */
-	struct dstr           *text;      /* &out for a tool call. The prompt
-	                                     notes write to the text that askai
-	                                     adds to the prompt. */
+	struct dstr           *text;      /* &out for a tool call. For the
+	                                     prompt notes, it is the text that
+	                                     askai adds to the prompt. */
 	tool_step_fn          *then;      /* the step that goes on with the ask
 	                                     call after the prompt notes */
-	size_t                 upload;    /* attach: bytes of the uploaded file */
-	size_t                 note;      /* attach: bytes of the note */
+	size_t                 upload;    /* bytes of the file that attach
+	                                     uploads */
+	size_t                 note;      /* bytes of the note that attach
+	                                     uploads */
 	size_t                 most;      /* the most bytes of the newest note
 	                                     that the prompt shows */
-	uint16_t               fetch;     /* enum mcp_fetch: what git runs for */
+	uint16_t               fetch;     /* why git runs (enum mcp_fetch) */
 	uint16_t               len;       /* bytes in the union */
 	uint8_t                action;    /* the row of mcp_notes_actions[] */
 	uint8_t                side;      /* enum notes_side of the caller */
@@ -6969,8 +6980,8 @@ mcp_notes_call_say (struct mcp_notes_call const *call,
 	return 0;
 }
 
-/* Frees the call in @p slot. This is the drop() of the notes kind and of
- * the ask kind.
+/** Frees the call in @p slot. This is the drop() of the notes kind and of
+ *  the ask kind.
  */
 static void
 mcp_slot_notes_drop (struct mcp_slot *slot)
@@ -6980,8 +6991,8 @@ mcp_slot_notes_drop (struct mcp_slot *slot)
 	*mcp_slot_own(slot) = nullptr;
 }
 
-/* git has exited and askai has read all of its output. The function
- * queues the step of the slot, which handles the output.
+/* Queues the step of the slot of @p c. child.c calls this function after
+ * git has exited and askai has read all of its output.
  */
 static void
 mcp_notes_back (struct child *c)
@@ -6991,7 +7002,8 @@ mcp_notes_back (struct child *c)
 
 /* Frees the call in @p slot, the ask call's own slot, when git has read
  * the notes for the prompt. If @p e is not 0, mcp_slot_fail() ends the ask
- * call with @p e. Else call->then goes on with the ask call.
+ * call with @p e. Otherwise the function calls call->then, which goes on
+ * with the ask call.
  */
 static void
 mcp_slot_notes_then (struct mcp_slot *slot,
@@ -7009,7 +7021,7 @@ mcp_slot_notes_then (struct mcp_slot *slot,
 /* Handles the error @p e of spawning git for the call in @p slot. For a
  * compaction and for the newest note, the step runs with no child, as if
  * git had failed. The ask call then goes on without those notes. A call of
- * the notes tool, and an ask call that goes on with a thread, end with the
+ * the notes tool, and the list for the start of an ask call, end with the
  * error.
  */
 static void
@@ -7036,16 +7048,16 @@ mcp_slot_notes_failed (struct mcp_slot *slot,
 	mcp_slot_tell(slot, (struct tool_text){ why, n }, TOOL_FAILED);
 }
 
-/* A read's explicitly selected notebook, or the server-selected own branch. */
+/* Returns the notebook that @p call selected, or else call->repo. */
 static char const *
 mcp_notes_call_notebook (struct mcp_notes_call const *call)
 {
 	return *call->notebook ? call->notebook : call->repo;
 }
 
-/* Spawns git in the shared repository and frees its input. With
- * FETCH_OTHER, git reads the notebook that the call selected. Writes always
- * go to call->repo.
+/* Spawns git for @p fetch in the shared repository and frees @p in, the
+ * input of git. With FETCH_OTHER, git reads the notebook that the call
+ * selected. Writes always go to call->repo.
  */
 static void
 mcp_slot_notes_run (struct mcp_slot *slot,
@@ -7057,9 +7069,9 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	struct loop *loop = mcp_slot_loop(slot);
 	char const *repo = fetch & FETCH_OTHER ? mcp_notes_call_notebook(call) : call->repo;
 	enum notes_cmd cmd = mcp_fetch_step(fetch)->cmd;
-	/* Git removes its own lock files on SIGTERM, and notes_lock() removes
-	 * one that a crash left. The lock file of a live writer, which may be
-	 * outside askai, stays. */
+	/* git removes its own lock files on SIGTERM. notes_lock() removes a
+	 * lock file that is older than the last boot. Any other lock file
+	 * stays, because its writer can run outside askai. */
 	bool writes = mcp_notes_writes(cmd);
 	if (cmd == NOTES_ADD) {
 		int64_t age;
@@ -7099,14 +7111,15 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	mcp_slot_park(slot);
 }
 
-/* Reads the notes for the prompt of the ask call in @p slot, the ask
- * call's own slot. git runs on the loop of the part @p loop. The list of
- * the notes and the newest note go into @p prompt, the text that askai
- * adds to the prompt. The prompt shows at most @p most bytes of the newest
- * note. @p what says whether the ask call goes on with its thread or
- * compacts its context. Once the notes are in @p prompt, @p then goes on
- * with the ask call. If the ask call goes on with its thread and git
- * cannot list the notes, the ask call ends as failed.
+/**
+ * Reads the notes of the caller for the prompt of the ask call in @p slot,
+ * the ask call's own slot. git runs on the loop of the part @p loop. The
+ * list of the notes and the newest note go into @p prompt, the text that
+ * askai adds to the prompt. The prompt shows at most @p most bytes of the
+ * newest note. @p what says whether the ask call starts or compacts its
+ * context. Once the notes are in @p prompt, the function calls @p then,
+ * which goes on with the ask call. If git cannot list the notes for
+ * NOTES_TOOL_RESUME, the ask call ends as failed.
  */
 static void
 mcp_notes_loop_prompt (struct mcp_notes_loop *loop,
@@ -7159,8 +7172,8 @@ mcp_notes_none (struct child const *c)
 
 /* Ends the call of the notes tool in @p slot. The function destroys the
  * child and frees the file part of the call. If @p e is not 0,
- * mcp_slot_fail() ends the call and its request with @p e. Else the call
- * ends with its output, as a failed call if @p failed is true.
+ * mcp_slot_fail() ends the call and its request with @p e. Otherwise the
+ * call ends with its output, as a failed call if @p failed is true.
  */
 static void
 mcp_slot_notes_end (struct mcp_slot *slot,
@@ -7182,10 +7195,8 @@ mcp_slot_notes_end (struct mcp_slot *slot,
 	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
 }
 
-/* Appends to the output of @p call why git read no notes. Exit status 128
- * means that the notebook does not exist: the other side keeps no notes in
- * the thread, or the caller has added none to it, or there is no such
- * thread.
+/* Appends to call->text why git read no notes. Exit status 128 means that
+ * the notebook does not exist yet.
  */
 static int
 mcp_notes_call_unread (struct mcp_notes_call const *call)
@@ -7195,7 +7206,10 @@ mcp_notes_call_unread (struct mcp_notes_call const *call)
 	return mcp_notes_call_say(call, &TOOL_TEXT("This notebook has no notes yet."), 1);
 }
 
-/* Both ref updates and the first git init can contend across instances. */
+/* Returns true if the output of git shows that another writer changed the
+ * branch, or created the repository, at the same time. Other instances of
+ * askai can share the repository.
+ */
 static bool
 mcp_notes_raced (struct child const *child)
 {
@@ -7210,10 +7224,9 @@ mcp_notes_raced (struct child const *child)
 	return false;
 }
 
-/* Appends to the output of @p call why git did not write the note: git took
- * too long, a writer that died or hangs left the notebook locked, which the
- * function logs, another call changed the notebook at the same time, or
- * another error, which the function logs too.
+/* Appends to call->text why git did not write the note. The reasons are a
+ * timeout, a race with another writer, a lock file that a dead or hung
+ * writer left, and other errors of git. The function logs the last two.
  */
 static int
 mcp_notes_call_unadded (struct mcp_notes_call const *call)
@@ -7247,12 +7260,12 @@ mcp_notes_call_unadded (struct mcp_notes_call const *call)
 	return mcp_notes_call_say(call, &TOOL_TEXT("Could not write the note."), 1);
 }
 
-/* The size before a write that adds a note. */
+/* The size of a note before a write that creates the note. */
 static constexpr uint64_t NO_NOTE = UINT64_MAX;
 
-/* Writes to @p msg the commit message for the note that @p call writes,
- * and returns its length, or 0 if it does not fit. @p before is the size
- * of the note before the write, or NO_NOTE.
+/* Writes to @p msg the commit message for the note that @p call writes.
+ * Returns the length of the message, or 0 if it does not fit. @p before is
+ * the size of the note before the write, or NO_NOTE.
  */
 static size_t
 mcp_notes_call_message (struct mcp_notes_call const *call,
@@ -7277,9 +7290,10 @@ mcp_notes_call_message (struct mcp_notes_call const *call,
 	return n < 0 || n >= NOTES_MESSAGE ? 0 : (size_t)n;
 }
 
-/* Runs git to add the note in call->file of @p slot. The new commit has
- * the parent @p tip, or no parent if @p tip is empty. The note had
- * @p before bytes, or there was none if @p before is NO_NOTE.
+/* Runs git to commit the note in call->file of @p slot. The new commit has
+ * the parent @p tip. If @p tip is empty, the notebook has no commits, and
+ * git first reads the object format for mcp_slot_notes_format(). The note
+ * had @p before bytes, or there was none if @p before is NO_NOTE.
  */
 static void
 mcp_slot_notes_write (struct mcp_slot *slot,
@@ -7305,8 +7319,10 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 	mcp_slot_notes_run(slot, FETCH_ADD, &in);
 }
 
-/* An explicit zero parent makes the first commit a root even if another
- * writer creates the branch between our name check and fast-import.
+/* Reads the object format of the repository from the output of git. Then
+ * the function writes the first commit of the notebook with a parent of
+ * zeros. That parent makes the commit a root commit even if another writer
+ * creates the branch after the name check.
  */
 static void
 mcp_slot_notes_format (struct mcp_slot *slot)
@@ -7328,8 +7344,8 @@ mcp_slot_notes_format (struct mcp_slot *slot)
 	mcp_slot_notes_write(slot, zero, NO_NOTE);
 }
 
-/* Handles the end of git init for an add. The function adds the note, or
- * ends the call if git failed.
+/* Handles the end of git init for a write. The function writes the note,
+ * or ends the call if git failed.
  */
 static void
 mcp_slot_notes_created (struct mcp_slot *slot)
@@ -7344,9 +7360,10 @@ mcp_slot_notes_created (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, mcp_notes_call_unadded(call), true);
 }
 
-/* Ends the write in @p slot after it saved the note or left it as it was.
- * The caller's own notebook exists then, which mcp_slot_noted() records.
- * If @p e is not 0, the call fails with @p e (mcp_slot_notes_end()).
+/* Ends the write in @p slot after it saved the note or left the note
+ * unchanged. The caller's own notebook exists then, and mcp_slot_noted()
+ * records that. If @p e is not 0, the call fails with @p e
+ * (mcp_slot_notes_end()).
  */
 static void
 mcp_slot_notes_wrote (struct mcp_slot *slot,
@@ -7362,11 +7379,11 @@ mcp_slot_notes_wrote (struct mcp_slot *slot,
 	mcp_slot_notes_end(slot, e, false);
 }
 
-/* Answers the replace or restore in @p slot without a commit and returns
- * true if @p note, the note that NOTES_CHECK found, already has the bytes
- * of the call's file part. The answer names @p tip, the newest commit of
- * the branch. If the bytes cannot be compared, it logs a warning and
- * returns false, so the write goes on.
+/* Returns true if @p note, the note that NOTES_CHECK found, already has
+ * the bytes of call->file. The function then answers the replace or
+ * restore in @p slot without a commit. The answer names @p tip, the newest
+ * commit of the branch. If the bytes cannot be compared, the function logs
+ * a warning and returns false, and the write goes on.
  */
 static bool
 mcp_slot_notes_unchanged (struct mcp_slot         *slot,
@@ -7393,10 +7410,10 @@ mcp_slot_notes_unchanged (struct mcp_slot         *slot,
 	return true;
 }
 
-/* Handles the output of the check of the name of a new note. The function
- * adds the note if no note and no directory of notes has the name, and if
- * no directory in the name is a note. A replace or a restore that leaves
- * the note's bytes as they are makes no commit.
+/* Handles the output of NOTES_CHECK for a write. add and copy need a name
+ * that no note and no directory of notes has. No directory in the name can
+ * be a note. replace needs an existing note. A replace or a restore that
+ * leaves the bytes of the note unchanged makes no commit.
  */
 static void
 mcp_slot_notes_checked (struct mcp_slot *slot)
@@ -7442,7 +7459,7 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 	                                  : mcp_notes_call_unread(call), true);
 }
 
-/* Answers the end of git fast-import. The answer has the id of the new
+/* Handles the end of git fast-import. The result has the id of the new
  * commit and the commit message, or why git did not save the note.
  */
 static void
@@ -7467,10 +7484,10 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 	mcp_slot_notes_wrote(slot, mcp_notes_call_say(call, p, ARRAY_SIZE(p)));
 }
 
-/* Appends the list of the notes in @p out, the output of git for
- * NOTES_LIST, to the output of @p slot, the oldest note first, and stores
- * the name of the newest note in @p *newest. @p cut is true if askai cut
- * the output of git, which leaves the oldest notes out. Returns 0 or ENOMEM.
+/* Appends the history in @p out, the output of git for NOTES_LIST, to
+ * call->text, the oldest change first. Stores the name of the newest note
+ * in @p *newest. @p cut is true if askai cut the output of git. A cut
+ * output lacks the oldest changes. Returns 0 or ENOMEM.
  */
 static int
 mcp_slot_notes_listed (struct mcp_slot *slot,
@@ -7516,7 +7533,7 @@ mcp_slot_notes_listed (struct mcp_slot *slot,
 	return 0;
 }
 
-/** Shows the selected notebook's current files or its change history. */
+/* Handles the output of git for list and history. */
 static void
 mcp_slot_notes_got_list (struct mcp_slot *slot)
 {
@@ -7564,7 +7581,9 @@ mcp_slot_notes_got_list (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, e, !ok);
 }
 
-/** Identifies the server-selected writer, including an unborn notebook. */
+/* Appends the selector of the caller's own notebook to call->text. The
+ * notebook does not need to have commits.
+ */
 static int
 mcp_notes_call_identity (struct mcp_notes_call const *call)
 {
@@ -7572,7 +7591,9 @@ mcp_notes_call_identity (struct mcp_notes_call const *call)
 	                   notes_selector(call->repo)) ? 0 : ENOMEM;
 }
 
-/* Lists discoverable branch selectors. Git resolves both loose and packed refs. */
+/* Handles the output of git for notebooks. The result lists the selector
+ * of each notebook in the session. git lists loose and packed refs.
+ */
 static void
 mcp_slot_notes_got_books (struct mcp_slot *slot)
 {
@@ -7609,12 +7630,13 @@ mcp_slot_notes_got_books (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, e, false);
 }
 
-/* The marker of a byte that is not shown as text in a note's view. */
+/* The brackets around a byte that the view of a note shows in hexadecimal. */
 static char const view_open[] = "\xe2\x9f\xa6";   /* U+27E6 */
 static char const view_close[] = "\xe2\x9f\xa7";  /* U+27E7 */
 
-/* Whether the @p len bytes at @p s are UTF-8 text without a NUL, which a
- * note shows as it is, and not as its view (mcp_notes_view()).
+/* Returns true if the @p len bytes at @p s are UTF-8 text without a NUL.
+ * Such a note is shown as it is. Any other note is shown as its view
+ * (mcp_notes_view()).
  */
 static bool
 mcp_notes_text (char const *s,
@@ -7623,9 +7645,9 @@ mcp_notes_text (char const *s,
 	return !len || (jb_utf8(s, len) == len && !memchr(s, '\0', len));
 }
 
-/* Appends the @p n bytes at @p p of a view to @p d while the @p *size bytes
- * of the view before them are fewer than @p max, and counts them in
- * @p *size. Returns 0 or ENOMEM.
+/* Appends the @p n bytes at @p p to @p d if @p *size, the length of the
+ * view before them, is less than @p max. Adds @p n to @p *size in either
+ * case. Returns 0 or ENOMEM.
  */
 static int
 mcp_notes_put (struct dstr *d,
@@ -7639,14 +7661,14 @@ mcp_notes_put (struct dstr *d,
 	return put && !dstr_cat_n(d, p, n) ? ENOMEM : 0;
 }
 
-/* Appends to @p d the view of a note of the @p len bytes at @p s that is not
- * UTF-8 text, or that has a NUL byte: a line that says how to read the
- * view, then the bytes as UTF-8 where they are valid UTF-8, each other byte
- * and each NUL as ⟦XX⟧, its value in hexadecimal, and each ⟦ of the text as
- * ⟦⟦. The view tells every byte of the note, which stays as it is. Only
- * the start of the view goes into @p d, up to the first piece that ends at
- * or past @p max bytes, and the length of the whole view goes into
- * @p *size, unless @p size is nullptr. Returns 0 or ENOMEM.
+/* Appends to @p d the view of a note of the @p len bytes at @p s. A note
+ * gets a view if it is not UTF-8 text or if it has a NUL byte. The view
+ * starts with a line that explains it. Valid UTF-8 text stays as it is,
+ * and each ⟦ in it becomes ⟦⟦. Each other byte, and each NUL, becomes ⟦XX⟧
+ * with its value in hexadecimal. So the view shows every byte of the note.
+ * Only the start of the view goes into @p d, up to the first piece that
+ * ends at or past @p max bytes. The length of the whole view goes into
+ * @p *size if @p size is not nullptr. Returns 0 or ENOMEM.
  */
 static int
 mcp_notes_view (struct dstr *d,
@@ -7671,7 +7693,7 @@ mcp_notes_view (struct dstr *d,
 		char const *nul = memchr(s + i, '\0', run);
 		if (nul)
 			run = (size_t)(nul - s) - i;
-		/* The valid text, with each ⟦ in it doubled. */
+		/* Copy the valid text and double each ⟦ in it. */
 		for (size_t at = i; !e && at < i + run; ) {
 			char const *m = memmem(s + at, i + run - at, view_open, open);
 			size_t n = m ? (size_t)(m - s) - at + open : i + run - at;
@@ -7697,7 +7719,10 @@ static void mcp_slot_notes_got_copy (struct mcp_slot *slot, struct span text);
 static void mcp_slot_notes_got_attach (struct mcp_slot *slot, struct span text,
                                        struct span id);
 
-/* Resolve and authorize every revision before reading any of its contents. */
+/* Handles the output of git for one stage of notes_revision_next(). git
+ * reads no note before every revision is resolved and checked against the
+ * notebook. Then git reads the note at the revision, or writes the diff.
+ */
 static void
 mcp_slot_notes_revision_step (struct mcp_slot *slot)
 {
@@ -7727,6 +7752,7 @@ mcp_slot_notes_revision_step (struct mcp_slot *slot)
 	mcp_slot_notes_run(slot, call->fetch, &in);
 }
 
+/* Handles the output of git for diff. */
 static void
 mcp_slot_notes_got_diff (struct mcp_slot *slot)
 {
@@ -7758,8 +7784,8 @@ mcp_slot_notes_got_diff (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, e, false);
 }
 
-/* Answers the read action with the output of git cat-file, or goes on with
- * the copy action or the attach action.
+/* Handles the output of git cat-file. The function answers read, or goes
+ * on with copy, restore or attach.
  */
 static void
 mcp_slot_notes_got_note (struct mcp_slot *slot)
@@ -7807,8 +7833,9 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, e, r);
 }
 
-/* Says in the output of @p call that the note of @p len bytes follows the
- * results as a file of @p bytes bytes, its view if @p view: 0 or ENOMEM.
+/* Appends to call->text that the note of @p len bytes follows the results
+ * of the turn as a file of @p bytes bytes. If @p view is true, the file is
+ * the view of the note. Returns 0 or ENOMEM.
  */
 static int
 mcp_notes_call_attached (struct mcp_notes_call const *call,
@@ -7827,10 +7854,11 @@ mcp_notes_call_attached (struct mcp_notes_call const *call,
 	return said ? 0 : ENOMEM;
 }
 
-/* Attaches @p text, the note whose object id is @p id, to the turn: the
- * file that askai uploaded for the note and its owner, if it lasts, or else
- * a new upload of the note, or of its view if it is not UTF-8 text, if the
- * context has room for it.
+/* Attaches @p text, the note with the object id @p id, to the turn. If the
+ * upstream still keeps the file that askai uploaded for this note and
+ * owner, the turn gets that file. Otherwise askai uploads the note, or its
+ * view if the note is not UTF-8 text. The context must have room for the
+ * file.
  */
 static void
 mcp_slot_notes_got_attach (struct mcp_slot *slot,
@@ -7850,8 +7878,8 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 		mcp_slot_notes_end(slot, e == EFBIG ? 0 : e, e == EFBIG);
 		return;
 	}
-	/* The length of a view is counted before any of it is made, so that
-	 * a view longer than askai uploads is not made. */
+	/* Measure the view before making it, so that askai makes no view that
+	 * is longer than NOTES_MAX. */
 	dstr_auto shown = DSTR_INIT;
 	size_t len = text.len;
 	e = view ? mcp_notes_view(&shown, s, text.len, 0, &len) : 0;
@@ -7867,7 +7895,8 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 	}
 	call->upload = len;
 	call->note = text.len;
-	/* The table keeps no id that is too long, so none is kept then. */
+	/* The uploads table keeps no id longer than UPLOADS_ID. The call keeps
+	 * an empty id instead. */
 	call->len = id.len <= UPLOADS_ID ? id.len : 0;
 	memcpy(call->id, id.ptr, call->len);
 	e = e ? e : mcp_slot_attach(slot, oid, (struct tool_text){ body, len }, &kept, call->text);
@@ -7879,7 +7908,7 @@ mcp_slot_notes_got_attach (struct mcp_slot *slot,
 	mcp_slot_notes_end(slot, e == EFBIG || e == EAGAIN ? 0 : e, true);
 }
 
-/* Takes the answer to the upload of the attach action. The function
+/* Handles the answer to the upload that attach sent. The function
  * attaches the file to the turn, or says why the upload failed.
  */
 static void
@@ -7892,7 +7921,7 @@ mcp_slot_notes_uploaded (struct mcp_slot *slot)
 		mcp_slot_park(slot);
 		return;
 	}
-	/* A view is longer than its note, by its first line at least. */
+	/* A view is longer than its note, so the sizes differ only for a view. */
 	if (!e)
 		e = mcp_notes_call_attached(call, call->note, call->upload,
 		                            call->upload != call->note);
@@ -7921,8 +7950,8 @@ mcp_slot_notes_prompt (struct mcp_slot  *slot,
 		{ name, newest.len ? jb_utf8(name, newest.len) : 0 },
 		TOOL_TEXT(":]\n\n"),
 	};
-	/* The name comes from git, and git reads the note only if the name is
-	 * one that an add would take. */
+	/* The name comes from git. git reads the note only if add would take
+	 * the name. */
 	size_t skip = 0;
 	bool named = newest.len && !notes_name(name, newest.len, &skip) && !skip;
 	if (!e && named && !(e = mcp_notes_call_say(call, p, ARRAY_SIZE(p))))
@@ -7939,10 +7968,10 @@ mcp_slot_notes_prompt (struct mcp_slot  *slot,
 	mcp_slot_notes_run(slot, call->fetch | FETCH_NEWEST, &in);
 }
 
-/* Appends the newest note, which git read for the prompt, to call->text,
- * or else a line with the text that the note could not be read. A note
- * longer than call->most bytes is cut there, with a line that says how to
- * read on. Then the ask call continues.
+/* Appends the newest note, which git read for the prompt, to call->text.
+ * If git could not read the note, a line says so. A note longer than
+ * call->most bytes is cut there, and a line says how to read the rest.
+ * Then the ask call continues.
  */
 static void
 mcp_slot_notes_newest (struct mcp_slot *slot)
@@ -7953,8 +7982,8 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 	int r = mcp_notes_ok(c) ? notes_read_out(buf_peek(&c->out), &text, nullptr) : EIO;
 	char const *s = (char const *)text.ptr;
 	size_t len = text.len;
-	/* A note that is not UTF-8 text goes in as its view, of which only the
-	 * start that the prompt takes is made. */
+	/* A note that is not UTF-8 text goes in as its view. Only the start of
+	 * the view that the prompt takes is made. */
 	size_t shown = len;
 	dstr_auto view = DSTR_INIT;
 	if (!r && !mcp_notes_text(s, text.len)) {
@@ -7978,9 +8007,9 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 	mcp_slot_notes_then(slot, mcp_notes_call_say(call, p, n && s[n - 1] == '\n' && !m ? 1 : 3));
 }
 
-/* Handles the list of the notes of the thread that the ask call goes on
- * with. The list goes into the prompt. If git failed, the call ends with
- * an error.
+/* Handles the list of the notes for the start of an ask call. The list
+ * goes into the prompt. If the notebook does not exist, the ask call goes
+ * on without notes. If git failed otherwise, the ask call ends as failed.
  */
 static void
 mcp_slot_notes_resumed (struct mcp_slot *slot)
@@ -8005,7 +8034,8 @@ mcp_slot_notes_resumed (struct mcp_slot *slot)
 }
 
 /* Handles the list of the notes for a compaction. The list goes into the
- * prompt, or else a line with the text that the notes could not be read.
+ * prompt. If git failed, a line in the prompt says that the notes could
+ * not be read.
  */
 static void
 mcp_slot_notes_compacted (struct mcp_slot *slot)
@@ -8051,13 +8081,16 @@ mcp_fetch_step (uint16_t fetch)
 	                        : fetch & FETCH_KIND];
 }
 
-/* Handles git's output for the call in @p slot. */
+/** Handles the output of git for the call in @p slot. For attach, it also
+ *  handles the answer to the upload. This is the step() of the notes kind.
+ *  mcp_slot_ask_step() calls it for the prompt notes.
+ */
 static void
 mcp_slot_notes_out (struct mcp_slot *slot)
 {
 	struct mcp_notes_call const *call = *mcp_slot_own(slot);
-	/* The attach action's upload, which follows its read, has answered.
-	 * The call has no git then. */
+	/* Only attach reaches this step without a child. The step then handles
+	 * the answer to the upload. */
 	(!call->child ? mcp_slot_notes_uploaded
 	 : (call->fetch & FETCH_REVISION) && !notes_revision_ready(call->revision)
 	 ? mcp_slot_notes_revision_step
@@ -8074,9 +8107,10 @@ static char const bad_name_text[] = "The file argument must be a file name of 1 
                                     "it.";
 static struct tool_text const bad_name = { bad_name_text, sizeof bad_name_text - 1 };
 
-/* Writes to @p in the file part of a note of the @p name_len bytes at
- * @p name whose text is the data of @p d, decoded. It fills @p *part as
- * notes_add_head() does.
+/* Writes to @p in the file part of a note. The name is the @p name_len
+ * bytes at @p name, and the text is the decoded data of @p d. The function
+ * fills @p *part as notes_add_head() does. Returns 0 or an error number of
+ * notes_add_head() or buf_reserve().
  */
 static int
 mcp_notes_add_data (struct buf           *in,
@@ -8097,9 +8131,11 @@ mcp_notes_add_data (struct buf           *in,
 	return 0;
 }
 
-/** Writes a versioned note on the caller's branch, initializing the shared
- * repository if needed. A turn's text is cut before its trailing notices
- * (notice_kept()), because only the results of a turn's calls carry them.
+/* Starts add or replace with the arguments @p args. The note goes to the
+ * caller's own notebook. git creates the shared repository first if it
+ * does not exist. A turn's text is cut before its trailing notices
+ * (notice_kept()), because only the results of a turn's calls carry those
+ * notices.
  */
 static void
 mcp_slot_notes_add (struct mcp_slot    *slot,
@@ -8166,8 +8202,8 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, initialized ? FETCH_CHECK : FETCH_CREATE, &in);
 }
 
-/* Writes @p text as a new note in the caller's own notebook. A copy uses
- * the name in call->name. A restore uses the file name of its revision.
+/* Writes @p text to a note in the caller's own notebook. A copy uses the
+ * name in call->name. A restore uses the file name of its revision.
  */
 static void
 mcp_slot_notes_got_copy (struct mcp_slot *slot,
@@ -8192,10 +8228,10 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 	mcp_slot_notes_run(slot, initialized ? FETCH_CHECK : FETCH_CREATE, &in);
 }
 
-/* Starts the read action for the file name in @p args, with @p fetch: the
- * fetch of read, of attach, or of copy, after which
- * mcp_slot_notes_got_copy() adds the note byte for byte to the caller's own
- * notebook, under the name that the as argument gives, or else under the
+/* Runs git to read the note that the file argument in @p args names.
+ * @p fetch is the fetch of read, attach or copy. For copy,
+ * mcp_slot_notes_got_copy() then writes the note byte for byte to the
+ * caller's own notebook. The copy has the name in the as argument, or the
  * same name. The text of a copied note does not pass through the caller.
  */
 static void
@@ -8234,7 +8270,7 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, fetch, &in);
 }
 
-/** Starts a revision-aware read, diff or restore, or a filtered history. */
+/* Starts diff, restore, read with a revision, or history with a file. */
 static void
 mcp_slot_notes_revision (struct mcp_slot    *slot,
                          struct json_object *args,
@@ -8272,7 +8308,11 @@ mcp_slot_notes_revision (struct mcp_slot    *slot,
 	mcp_slot_notes_run(slot, fetch | (*call->notebook ? FETCH_OTHER : 0), nullptr);
 }
 
-/** Notes are shared by repository path; the server chooses every write branch. */
+/* Starts a call of the notes tool in @p slot with the arguments @p args.
+ * This is the start() of the notes kind. All instances of askai that use
+ * the same repository share the notes. askai chooses the branch of every
+ * write (call->repo).
+ */
 static void
 mcp_slot_notes (struct mcp_slot    *slot,
                 struct json_object *args)
@@ -9800,10 +9840,10 @@ mcp_task_definition (void const *service)
 		nullptr);
 }
 
-/* Returns the definition of the notes tool for the side @p side. The
- * definition for the upstream has no thread argument, because a call of a
- * turn uses the thread of its ask call. It has the action attach if the
- * upstream takes files, which @p tool says.
+/* Returns the definition of the notes tool for the side @p side. Only the
+ * definition for clients has the content and thread arguments. The
+ * definition for the upstream has the action attach if tool->attach says
+ * that the upstream takes files.
  */
 static struct json_object *
 mcp_notes_schema (enum notes_side          side,
@@ -9946,9 +9986,10 @@ mcp_notes_definition (void const *service)
 {
 	struct mcp_notes const *tool = service;
 	struct json_object *def = mcp_notes_schema(NOTES_CLIENT, tool);
-	/* The canonical common directory names the session, including attached
-	 * worktrees. Cache its fingerprint with the tool instead of exposing the
-	 * local path; it remains stable across instance and client restarts. */
+	/* The canonical common directory of the repository names the session,
+	 * also for attached worktrees. The definition has a hash of the path
+	 * instead of the path. The hash stays the same when askai or the client
+	 * restarts. */
 	char const *directory = notes_directory(tool->notes);
 	unsigned char digest[SHA256_DIGEST_LENGTH];
 	if (!SHA256((unsigned char const *)directory, strlen(directory), digest)) {
@@ -9958,8 +9999,9 @@ mcp_notes_definition (void const *service)
 	char session[2 * sizeof digest + 1];
 	util_hex(session, digest, sizeof digest);
 	session[sizeof session - 1] = '\0';
-	/* Clients discover stored participants through notebooks. A new writer
-	 * has no branch yet, so publish its identity with the authorized tool. */
+	/* Clients use the notebooks action to find the participants that have
+	 * notes. A new writer has no branch yet, so the definition names the
+	 * participant. */
 	return jb_set_or_free(def, "_meta", jb_object(
 		"askai", jb_object(
 			"session", json_object_new_string_len(session, sizeof session - 1),
@@ -9969,8 +10011,8 @@ mcp_notes_definition (void const *service)
 		nullptr));
 }
 
-/* Returns the definition of the notes tool for the upstream. @p service is
- * the struct mcp_notes.
+/** Returns the definition of the notes tool for the upstream. @p service
+ *  is the struct mcp_notes.
  */
 static struct json_object *
 mcp_notes_upstream_definition (void const *service)
@@ -9978,9 +10020,10 @@ mcp_notes_upstream_definition (void const *service)
 	return mcp_notes_schema(NOTES_UPSTREAM, service);
 }
 
-/* The notes tool as a built-in plugin. Its part on each loop is a struct
- * mcp_notes_loop. The flag TOOL_LENT lets a role's "upstream" name the
- * notes tool. The turns always get the tool.
+/** The plugin of the notes tool, which is built into askai. Its part on
+ *  each loop is a struct mcp_notes_loop. The flag TOOL_LENT lets the
+ *  "upstream" member of a role name the notes tool. The turns always get
+ *  the tool.
  */
 static struct plugin const mcp_notes_plugin = {
 	.tools = {{
