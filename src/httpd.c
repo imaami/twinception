@@ -161,7 +161,7 @@ struct httpd_req {
 struct httpd_client {
 	struct list          spare;    /* on home's shelf, once unused */
 	struct httpd_client *next;     /* in its hash chain */
-	uint64_t             addr[2];
+	struct stream_peer   addr;
 	size_t               conns;
 	_Atomic size_t       held;     /* body bytes counted in hub->bodies; 0 once
 	                                  unused */
@@ -771,7 +771,7 @@ httpd_conn_field (struct httpd_conn const *conn,
  */
 static void
 httpd_addr_key (struct sockaddr_storage const *ss,
-                uint64_t                       key[2])
+                struct stream_peer            *key)
 {
 	unsigned char a[16] = {};
 	if (ss->ss_family == AF_INET) {
@@ -782,19 +782,20 @@ httpd_addr_key (struct sockaddr_storage const *ss,
 		struct sockaddr_in6 const *in6 = (void const *)ss;
 		memcpy(a, &in6->sin6_addr, IN6_IS_ADDR_V4MAPPED(&in6->sin6_addr) ? 16 : 8);
 	}
-	memcpy(key, a, sizeof a);
+	static_assert(sizeof a == sizeof key->key);
+	memcpy(key->key, a, sizeof a);
 }
 
 /* The link that holds client @p key in home's table, or where it would be
  * appended.
  */
 static struct httpd_client **
-httpd_home_client_slot (struct httpd_home *home,
-                        uint64_t const     key[2])
+httpd_home_client_slot (struct httpd_home  *home,
+                        struct stream_peer  key)
 {
-	uint64_t h = util_hash(home->seed, key, 2 * sizeof *key);
+	uint64_t h = util_hash(home->seed, key.key, sizeof key.key);
 	struct httpd_client **p = &home->clients[h & (CLIENT_SLOTS - 1)];
-	while (*p && ((*p)->addr[0] != key[0] || (*p)->addr[1] != key[1]))
+	while (*p && !stream_peer_equal((*p)->addr, key))
 		p = &(*p)->next;
 	return p;
 }
@@ -803,8 +804,8 @@ httpd_home_client_slot (struct httpd_home *home,
  * there is one; nullptr if out of memory.
  */
 static struct httpd_client *
-httpd_home_client_get (struct httpd_home *home,
-                       uint64_t const     key[2])
+httpd_home_client_get (struct httpd_home  *home,
+                       struct stream_peer  key)
 {
 	struct httpd_client **p = httpd_home_client_slot(home, key);
 	struct httpd_client *client = *p;
@@ -822,8 +823,7 @@ httpd_home_client_get (struct httpd_home *home,
 		atomic_init(&client->held, 0);
 	}
 	client->next = nullptr;
-	client->addr[0] = key[0];
-	client->addr[1] = key[1];
+	client->addr = key;
 	client->conns = 1;
 	*p = client;
 	return client;
@@ -2286,7 +2286,7 @@ httpd_conn_setup (struct httpd_conn *conn,
 		.timer.fn = httpd_conn_timer,
 		.stream = {
 			.ops = &httpd_stream_ops,
-			.peer = { client->addr[0], client->addr[1] }
+			.peer = client->addr
 		},
 		.srv = srv,
 		.lane = lane,
@@ -2631,7 +2631,7 @@ httpd_home_conn (struct httpd_home *home)
 static void
 httpd_home_place (struct httpd_home  *home,
                   int                 fd,
-                  uint64_t const      addr[2],
+                  struct stream_peer  addr,
                   bool                local,
                   struct ucred const *cred,
                   struct ssl_ctx_st  *ctx)
@@ -2716,13 +2716,13 @@ httpd_home_take (struct httpd_home             *home,
 	static_assert(_Generic((uid_t)0, uint32_t: true, default: false));
 	/* A Unix socket's client is on this machine, and counts as its user,
 	 * against the cap. */
-	uint64_t addr[2] = { UINT64_MAX };
+	struct stream_peer addr = { { UINT64_MAX } };
 	struct ucred cred;
 	struct ucred const *user = nullptr;
 	bool local = true;
 	socklen_t len = sizeof cred;
 	if (ss->ss_family != AF_UNIX) {
-		httpd_addr_key(ss, addr);
+		httpd_addr_key(ss, &addr);
 		local = httpd_addr_loopback(ss);
 	} else if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len)) {
 		close(fd);
@@ -2738,7 +2738,7 @@ httpd_home_take (struct httpd_home             *home,
 			home->last[admit] = cred.uid;
 			return;
 		}
-		addr[1] = cred.uid;
+		addr.key[1] = cred.uid;
 		user = &cred;
 	}
 	struct httpd_client const *client = *httpd_home_client_slot(home, addr);

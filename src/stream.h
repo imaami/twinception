@@ -104,6 +104,23 @@ struct stream_app {
 	void (*on_policy)   (void *ctx);
 };
 
+/**
+ * The key of the address of a client, for the limits per address: an IPv4
+ * address, a mapped address or an IPv6 /64 prefix. For a client on a Unix
+ * socket it is {UINT64_MAX, uid}, which is not the key of a TCP address.
+ */
+struct stream_peer {
+	uint64_t key[2];
+};
+
+/** Returns true if @p a and @p b are the same key. */
+static inline bool
+stream_peer_equal (struct stream_peer a,
+                   struct stream_peer b)
+{
+	return a.key[0] == b.key[0] && a.key[1] == b.key[1];
+}
+
 struct stream {
 	struct stream_ops const *ops;
 	void                    *user;     /**< a pointer for the application */
@@ -112,13 +129,7 @@ struct stream {
 	                                        on_head() returns, because a
 	                                        reload can free the policy
 	                                        that contains the text. */
-	uint64_t                 peer[2];  /**< the key of the client's
-	                                        address for the limits per
-	                                        address: an IPv4 address, a
-	                                        mapped address or an IPv6 /64
-	                                        prefix. For a client on a Unix
-	                                        socket it is {UINT64_MAX, uid},
-	                                        which no TCP address has. */
+	struct stream_peer       peer;     /**< the address of the client */
 };
 
 #endif /* TWINCEPTION_SRC_STREAM_H_ */

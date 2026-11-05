@@ -54,6 +54,7 @@
 #include "jb.h"
 #include "list.h"
 #include "loop.h"
+#include "stream.h"
 
 struct home_principal;
 struct home_delivery_error;
@@ -220,10 +221,10 @@ struct job {
 	uint64_t               provider_done; /**< home's: bool, native job is terminal */
 	uint64_t               principal;   /**< the front's, with the key: the hash,
 	                                         seeded, of whom the call is for */
-	uint64_t               peer[2];     /**< the front's: the client's address,
-	                                         which is the principal without a
-	                                         session; UINT64_MAX twice for an
-	                                         identity's */
+	struct stream_peer     peer;        /**< the front's: the address of the
+	                                         client, which is the principal
+	                                         without a session; UINT64_MAX
+	                                         twice for a job of an identity */
 	_Atomic uint64_t       progress;    /**< home writes, the front reads: the
 	                                         answer's tokens << 32 | the place in
 	                                         its principal's queue, from 1, or,
@@ -303,7 +304,7 @@ job_init (struct job  *job,
 	job->journal = nullptr;
 	job->call = (struct handle){};
 	job->deadline = job->since = job->active = job->principal = 0;
-	job->peer[0] = job->peer[1] = 0;
+	job->peer = (struct stream_peer){};
 	job->session = job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
 	job->used = job->context = 0;
 	job->archive_turn = 0;

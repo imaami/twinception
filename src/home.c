@@ -300,8 +300,7 @@ home_principal_is (struct home_principal const *p,
 	       first->session == job->session &&
 	       (job->session ? !memcmp(buf_peek(&first->key).ptr,
 	                               buf_peek(&job->key).ptr, job->session)
-	                     : first->peer[0] == job->peer[0] &&
-	                       first->peer[1] == job->peer[1]);
+	                     : stream_peer_equal(first->peer, job->peer));
 }
 
 /* The link that holds the principal @p job is for, or where it would be

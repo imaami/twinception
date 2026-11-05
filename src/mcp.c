@@ -2603,7 +2603,7 @@ mcp_req_key (struct mcp_req const *req,
 	struct stream const *s = req->s;
 	uint64_t who[3] = { req->principal };
 	if (!who[0])
-		memcpy(who + 1, s->peer, sizeof s->peer);
+		memcpy(who + 1, s->peer.key, sizeof s->peer.key);
 	struct span session = s->ops->field(s, F_SESSION);
 	size_t len = 0;
 	char const *json = json_object_to_json_string_length(id, JB_WIRE, &len);
@@ -2638,7 +2638,7 @@ mcp_req_owner (struct mcp_req const *req)
 	if (req->principal)
 		return req->principal;
 	struct stream const *s = req->s;
-	return util_hash(~req->mcp->st->seed, s->peer, sizeof s->peer) | LEDGER_ANONYMOUS;
+	return util_hash(~req->mcp->st->seed, s->peer.key, sizeof s->peer.key) | LEDGER_ANONYMOUS;
 }
 
 /* A journal callback names a request rather than keeping its address: a
@@ -2829,13 +2829,13 @@ mcp_req_submit (struct mcp_req *req)
 	if (req->principal) {
 		job->principal = req->principal;
 		job->session = 0;
-		job->peer[0] = job->peer[1] = UINT64_MAX;
+		job->peer = (struct stream_peer){ { UINT64_MAX, UINT64_MAX } };
 	} else {
-		memcpy(job->peer, req->s->peer, sizeof job->peer);
+		job->peer = req->s->peer;
 		uint64_t seed = mcp->st->seed;
 		job->principal = job->session
 		               ? util_hash(seed, buf_peek(&job->key).ptr, job->session)
-		               : util_hash(~seed, job->peer, sizeof job->peer);
+		               : util_hash(~seed, job->peer.key, sizeof job->peer.key);
 	}
 	uint8_t asks = req->asks | (req->token && req->sse ? JOB_NOTIFY : 0);
 	if (req->task && *req->archive)
@@ -7737,16 +7737,16 @@ mcp_begin (struct mcp           *mcp,
 	};
 	/* The client's name is in the policy, which a reload can free after
 	 * the head, so it is copied. The log names a client on a Unix socket
-	 * by its uid, which is in peer[1] (src/stream.h), with the name from
+	 * by its uid, which is in peer.key[1] (src/stream.h), with the name from
 	 * the policy after it in parentheses. */
 	struct cstr_view const who = s->grant.who;
-	if (s->peer[0] != UINT64_MAX) {
+	if (s->peer.key[0] != UINT64_MAX) {
 		if (who.len)
 			memcpy(req->client, who.data, who.len < sizeof req->client
 			                              ? who.len : sizeof req->client - 1);
 	} else {
 		size_t n = util_format(req->client, sizeof req->client, "uid %" PRIu64,
-		                       s->peer[1]);
+		                       s->peer.key[1]);
 		if (who.len)
 			(void)util_format(req->client + n, sizeof req->client - n, " (%.*s)",
 			                  (int)who.len, who.data);
