@@ -33,10 +33,6 @@ struct cstr_view const review_action_names[REVIEW_ACTIONS] = {
  */
 enum { REVIEW_SHORT = 12, REVIEW_OID = 64 + 1 };
 
-// Note to agents: stop using poetry language and non-technical terms. An array
-// doesn't "hold" things because it has no hands. "Owning" is an established
-// term so it's fine, but do NOT anthropomorphize the comments or identifiers!
-
 /* Lines first to last of a file, from 1. */
 struct review_range {
 	uint32_t first;
@@ -81,8 +77,6 @@ struct review_change {
 	bool        moved;
 	char        commit[REVIEW_OID];
 };
-
-// A finding doesn't "have" anything because it's not a person.
 
 /* A finding consists of a claim, its changes, and the location
  * path:first-last if path is not empty. The state of the finding is the
@@ -480,13 +474,13 @@ review_files_find (struct review_files const *list,
                    size_t                    *at)
 {
 	*at = list->n;
-	for (size_t i = 0; i < list->n; ++i) {
+	struct cstr_view path = cstr_view_dstr(&key->path);
+	for (size_t i = 0; i < list->n; *at = ++i) {
 		struct review_file const *f = &list->files[i];
 		if (!review_file_with(f, key))
 			continue;
-		if (cstr_view_equal(cstr_view_dstr(&f->path), cstr_view_dstr(&key->path)))
+		if (cstr_view_equal(cstr_view_dstr(&f->path), path))
 			return i;
-		*at = i + 1;
 	}
 	return list->n;
 }
