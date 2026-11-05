@@ -1221,8 +1221,9 @@ cli_console_destroy (struct cli_console **ptr)
 	if (console->callback_active) {
 		rl_free_line_state();
 		rl_callback_sigcleanup();
+		rl_callback_handler_remove();
+		console->callback_active = false;
 	}
-	cli_console_remove_callback(console);
 	(void)cli_console_suspend(console);
 	while (!list_is_empty(&console->lines))
 		cli_console_drop_line(console);
@@ -1589,6 +1590,101 @@ cli_console_busy (struct cli_console *console,
 	return 0;
 }
 
+/* Pass the next key of the input to Readline. Then restore a draft that a
+ * full input queue rejected, and report the full queue. Returns 0 or an
+ * error number.
+ */
+static int
+cli_console_read_key (struct cli_console *console)
+{
+	++console->frame;
+	rl_callback_read_char();
+	--console->frame;
+	if (console->restored_line) {
+		/* Readline's own accept-line ended the line and set up a new
+		 * one. Stop the keyboard macro only now, and put back the line
+		 * that cli_console_accept() did not queue. */
+		rl_free_line_state();
+		console->input_state &= ~CLI_CONSOLE_INPUT_MACRO;
+		console->pending_input = 0;
+		rl_replace_line(console->restored_line, 0);
+		rl_point = console->restored_point < rl_end ? console->restored_point : rl_end;
+		free(console->restored_line);
+		console->restored_line = nullptr;
+		rl_redisplay_function();
+	}
+	if (console->input_state & CLI_CONSOLE_INPUT_NOTICE) {
+		console->input_state &= ~CLI_CONSOLE_INPUT_NOTICE;
+		int e = cli_console_error(console, CSTR_VIEW("Input queue full; draft kept.\n"));
+		if (e)
+			return e;
+	}
+	cli_console_resume_keys(console);
+	if (rl_end >= CLI_CONSOLE_INPUT_LIMIT)
+		console->in.error = EFBIG;
+	return 0;
+}
+
+/* Returns true if the editor may read keys. That is the case while the
+ * callback of Readline is installed, no input error occurred, and no
+ * immediate command is pending.
+ */
+static bool
+cli_console_editing (struct cli_console const *console)
+{
+	return console->callback_active && !console->in.error && !console->immediate_line;
+}
+
+/* Apply the pending resize and interrupt, and pass up to 64 keys to
+ * Readline. If more input is ready, wake the loop for another turn. Returns
+ * 0 or an error number.
+ */
+static int
+cli_console_edit (struct cli_console *console)
+{
+	int e = 0;
+	if (console->resize_pending) {
+		console->resize_pending = false;
+		rl_resize_terminal();
+		if (console->fullscreen)
+			e = cli_console_dimensions(console);
+		else if (console->callback_active)
+			rl_redisplay();
+	}
+	if (e)
+		return e;
+	if (console->interrupt_pending && console->callback_active) {
+		console->interrupt_pending = false;
+		/* Clear the draft. rl_delete_text() records the deletion in the
+		 * undo list, so Ctrl-_ restores the draft. */
+		rl_begin_undo_group();
+		rl_delete_text(0, rl_end);
+		rl_end_undo_group();
+		rl_point = 0;
+		rl_redisplay_function();
+	}
+	for (unsigned count = 0; count < 64 && cli_console_editing(console); ++count) {
+		e = cli_console_input_arm(console);
+		if (e)
+			return e;
+		if (console->input_offset == console->input_size && !console->input_eof &&
+		    !rl_pending_input && !RL_ISSTATE(RL_STATE_MACROINPUT))
+			break;
+		e = cli_console_read_key(console);
+		if (e)
+			return e;
+	}
+	if (!cli_console_editing(console))
+		return 0;
+	e = cli_console_input_arm(console);
+	if (e)
+		return e;
+	if (console->input_offset < console->input_size || rl_pending_input ||
+	    RL_ISSTATE(RL_STATE_MACROINPUT))
+		cli_loop_wake(console->loop);
+	return 0;
+}
+
 int
 cli_console_service (struct cli_console *console)
 {
@@ -1597,73 +1693,10 @@ cli_console_service (struct cli_console *console)
 	if (console->loop->dispatching)
 		return EBUSY;
 	int e = cli_console_output_drain(console);
-	if (e)
-		return e;
-	if (!console->frame && !console->simple) {
-		if (console->resize_pending) {
-			console->resize_pending = false;
-			rl_resize_terminal();
-			if (console->fullscreen) {
-				e = cli_console_dimensions(console);
-				if (e)
-					return e;
-			} else if (console->callback_active) {
-				rl_redisplay();
-			}
-		}
-		if (console->interrupt_pending && console->callback_active) {
-			console->interrupt_pending = false;
-			/* rl_delete_text records the entire deletion in Readline's undo
-			 * list before mutating it. Ctrl-_ restores the draft. */
-			rl_begin_undo_group();
-			rl_delete_text(0, rl_end);
-			rl_end_undo_group();
-			rl_point = 0;
-			rl_redisplay_function();
-		}
-		for (unsigned count = 0; count < 64 && console->callback_active && !console->in.error &&
-		                         !console->immediate_line; ++count) {
-			e = cli_console_input_arm(console);
-			if (e)
-				return e;
-			if (console->input_offset == console->input_size && !console->input_eof &&
-			    !rl_pending_input && !RL_ISSTATE(RL_STATE_MACROINPUT))
-				break;
-			++console->frame;
-			rl_callback_read_char();
-			--console->frame;
-			if (console->restored_line) {
-				/* Native accept-line has already finished the old editor.
-				 * Cancel its macro only after the new editor is prepared. */
-				rl_free_line_state();
-				console->input_state &= ~CLI_CONSOLE_INPUT_MACRO;
-				console->pending_input = 0;
-				rl_replace_line(console->restored_line, 0);
-				rl_point = console->restored_point < rl_end ? console->restored_point : rl_end;
-				free(console->restored_line);
-				console->restored_line = nullptr;
-				rl_redisplay_function();
-			}
-			if (console->input_state & CLI_CONSOLE_INPUT_NOTICE) {
-				console->input_state &= ~CLI_CONSOLE_INPUT_NOTICE;
-				e = cli_console_error(console, CSTR_VIEW("Input queue full; draft kept.\n"));
-				if (e)
-					return e;
-			}
-			cli_console_resume_keys(console);
-			if (rl_end >= CLI_CONSOLE_INPUT_LIMIT)
-				console->in.error = EFBIG;
-		}
-		if (console->callback_active && !console->in.error && !console->immediate_line) {
-			e = cli_console_input_arm(console);
-			if (e)
-				return e;
-			if (console->input_offset < console->input_size || rl_pending_input ||
-			    RL_ISSTATE(RL_STATE_MACROINPUT))
-				cli_loop_wake(console->loop);
-		}
-	}
-	e = cli_console_render(console);
+	if (!e && !console->frame && !console->simple)
+		e = cli_console_edit(console);
+	if (!e)
+		e = cli_console_render(console);
 	return e ? e : console->in.error;
 }
 
@@ -1709,6 +1742,58 @@ cli_console_readline (struct cli_console *console,
 	return console->in.error;
 }
 
+/* Read a line of the simple mode into text. Returns 0 or an error number. */
+static int
+cli_console_read_text_simple (struct cli_console *console,
+                              struct dstr        *text,
+                              bool                multiline,
+                              char const         *prompt)
+{
+	struct buf bytes = {};
+	int e = cli_console_read_simple(console, &bytes, multiline, prompt);
+	struct cstr_view line = {(char const *)bytes.data, bytes.tail};
+	if (!e && line.len && (memchr(line.data, 0, line.len) || jb_utf8(line.data, line.len) != line.len))
+		e = EILSEQ;
+	if (!e && !dstr_cat_n(text, line.data, line.len))
+		e = ENOMEM;
+	buf_fini(&bytes);
+	return e;
+}
+
+/* Wait until Readline accepts a line, and copy the line and a newline into
+ * text. In the full-screen mode, echo it in the conversation. Then drop the
+ * line from the queue, unless an error occurred. Returns 0 or an error
+ * number.
+ */
+static int
+cli_console_read_text_readline (struct cli_console *console,
+                                struct dstr        *text,
+                                char const         *prompt)
+{
+	int e = cli_console_readline(console, prompt);
+	if (!console->line_count) {
+		if (!e)
+			console->input_eof = true;
+		return e;
+	}
+	if (e)
+		return e;
+	struct cli_console_line *accepted = container_of(console->lines.next, struct cli_console_line, hook);
+	if (!dstr_cat_n(text, accepted->text, accepted->length) || !dstr_cat(text, "\n"))
+		return ENOMEM;
+	if (console->fullscreen) {
+		struct cli_console_span const echo[] = {
+			{cstr_view_dstr(&console->prompt), CLI_STYLE_PROMPT},
+			{cstr_view_dstr(text), CLI_STYLE_USER_INPUT},
+		};
+		e = cli_console_print(console, echo, array_size(echo));
+		if (e)
+			return e;
+	}
+	cli_console_drop_line(console);
+	return 0;
+}
+
 int
 cli_console_read (struct cli_console *console,
                   struct dstr        *text,
@@ -1726,41 +1811,9 @@ cli_console_read (struct cli_console *console,
 		console->in.error = 0;
 	console->multiline = multiline;
 	int e = cli_console_set_display(console, CLI_STYLE_USER_INPUT);
-	struct buf bytes = {};
-	struct cstr_view line = {};
-	struct cli_console_line *accepted = nullptr;
-	if (!e && console->simple) {
-		e = cli_console_read_simple(console, &bytes, multiline, prompt);
-		line = (struct cstr_view){(char const *)bytes.data, bytes.tail};
-	} else if (!e) {
-		e = cli_console_readline(console, prompt);
-		if (console->line_count) {
-			accepted = container_of(console->lines.next, struct cli_console_line, hook);
-			line = (struct cstr_view){accepted->text, accepted->length};
-		} else if (!e) {
-			console->input_eof = true;
-		}
-	}
-	if (!e && line.len) {
-		if (console->simple && (memchr(line.data, 0, line.len) || jb_utf8(line.data, line.len) != line.len))
-			e = EILSEQ;
-		else if (!dstr_cat_n(text, line.data, line.len))
-			e = ENOMEM;
-	}
-	if (!e && accepted) {
-		if (!dstr_cat(text, "\n"))
-			e = ENOMEM;
-		if (!e && console->fullscreen) {
-			struct cli_console_span const echo[] = {
-				{cstr_view_dstr(&console->prompt), CLI_STYLE_PROMPT},
-				{cstr_view_dstr(text), CLI_STYLE_USER_INPUT},
-			};
-			e = cli_console_print(console, echo, array_size(echo));
-		}
-	}
-	buf_fini(&bytes);
-	if (!e && accepted)
-		cli_console_drop_line(console);
+	if (!e)
+		e = console->simple ? cli_console_read_text_simple(console, text, multiline, prompt)
+		                    : cli_console_read_text_readline(console, text, prompt);
 	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
 	if (console->eof_pending && !console->line_count) {
 		console->input_eof = true;
@@ -1769,8 +1822,7 @@ cli_console_read (struct cli_console *console,
 	if (console->callback_active) {
 		cli_console_resume_keys(console);
 		cli_loop_wake(console->loop);
-	}
-	if (!console->callback_active) {
+	} else {
 		dstr_clear(&console->draft);
 		console->draft_point = 0;
 		console->dirty |= CLI_CONSOLE_PAINT_INPUT;
