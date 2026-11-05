@@ -55,12 +55,6 @@ same (char const *file,
 #define FINDINGS "[askai: your findings; findings action show with an id gives one's history:]\n"
 #define READS "[askai: what you read with git read in this call:]\n"
 
-static struct cstr_view
-text (char const *s)
-{
-	return (struct cstr_view){ s, strlen(s) };
-}
-
 /* The text of @p ds, for SAME(). */
 static char const *
 got (struct dstr const *ds)
@@ -185,8 +179,8 @@ output (struct dstr          *out,
 		CHECK(dstr_printf(out, "%u\tline %u%s", n, n, n == last && bare ? "" : "\n"));
 	size_t len = dstr_len(out) - at;
 	CHECK(dstr_printf(out, "\n[f]"));
-	*src = (struct review_source){ text(repo), text(commit), text(path), at, len, first,
-	                               last, total };
+	*src = (struct review_source){ cstr_view(repo), cstr_view(commit), cstr_view(path),
+	                               at, len, first, last, total };
 }
 
 /* Build a git read output of lines @p first to @p last, and pass
@@ -410,9 +404,9 @@ test_seen (void)
 	bad[0].last = 4;                       /* a line more than the text */
 	bad[1].first = 2;                      /* a line fewer */
 	bad[2].first = 0;
-	bad[3].commit = text(A "0");           /* 41 digits */
-	bad[4].commit = text("55ACA1E8682351E4C39A92B040721DEF3F005402");
-	bad[5].repo = text("");
+	bad[3].commit = cstr_view(A "0");           /* 41 digits */
+	bad[4].commit = cstr_view("55ACA1E8682351E4C39A92B040721DEF3F005402");
+	bad[5].repo = cstr_view("");
 	bad[6].path = (struct cstr_view){ "a\0b", 3 };
 	bad[7].total = 2;                      /* fewer lines than the last */
 	bad[8].len = 0;
@@ -425,9 +419,9 @@ test_seen (void)
 		CHECK(!review_read_create(&bad[i], o, &e) && e == EINVAL);
 	}
 	/* Bytes after the last newline are a line more than the read says. */
-	struct review_source trail = { text("p"), text(A), text("src/a.c"), 0, 5, 1, 1, 0 };
+	struct review_source trail = { cstr_view("p"), cstr_view(A), cstr_view("src/a.c"), 0, 5, 1, 1, 0 };
 	e = 0;
-	CHECK(!review_read_create(&trail, text("1\ta\n2"), &e) && e == EINVAL);
+	CHECK(!review_read_create(&trail, cstr_view("1\ta\n2"), &e) && e == EINVAL);
 	/* The numbered lines may end without the last newline. */
 	src.len -= 1;
 	read = review_read_create(&src, o, &e);
@@ -435,10 +429,10 @@ test_seen (void)
 	review_read_destroy(&read);
 	char path[REVIEW_WORD + 2] = {};
 	memset(path, 'a', REVIEW_WORD + 1);
-	src.path = text(path);
+	src.path = cstr_view(path);
 	CHECK(!review_read_create(&src, o, &e) && e == EINVAL);
 	path[REVIEW_WORD] = '\0';
-	src.path = text(path);
+	src.path = cstr_view(path);
 	read = review_read_create(&src, o, &e);
 	CHECK(read && !e);
 	review_read_destroy(&read);
@@ -1563,7 +1557,7 @@ test_nullptr (void)
 	review_read_destroy(&no_read);
 	struct cstr_view out = { "x\n", 2 };
 	CHECK(!review_read_create(nullptr, out, &e) && e == EFAULT);
-	struct review_source src = { text("p"), text(A), text("a"), 0, 2, 1, 1, 0 };
+	struct review_source src = { cstr_view("p"), cstr_view(A), cstr_view("a"), 0, 2, 1, 1, 0 };
 	CHECK(!review_read_create(&src, out, nullptr));
 	e = 0;
 	CHECK(!review_read_create(&src, (struct cstr_view){ nullptr, 2 }, &e) && e == EFAULT);

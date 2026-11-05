@@ -617,7 +617,7 @@ manual_back (struct loop *loop,
 	} else {
 		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s",
 		    (double)(loop_clock() - w->since) / 1e9, w->why);
-		mcp_slot_tell(slot, (struct cstr_view){ w->why, strlen(w->why) }, TOOL_FAILED);
+		mcp_slot_tell(slot, cstr_view(w->why), TOOL_FAILED);
 	}
 	manual_wait_destroy(&w);
 }

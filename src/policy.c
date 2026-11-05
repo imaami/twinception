@@ -28,16 +28,12 @@ enum { DIGEST = SHA256_DIGEST_LENGTH };
  */
 static constexpr uint64_t POLICY_IDENTITY = UINT64_C(1) << 62;
 
-/* The members of "anonymous", by the kind of client. CSTR_VIEW() is a
- * compound literal, which a static initializer may not have.
- */
-#define KIND(s) { "" s, sizeof s - 1 }
+/* The members of "anonymous", by the kind of client. */
 static struct cstr_view const policy_kinds[POLICY_KINDS] = {
-	[POLICY_LOOPBACK] = KIND("loopback"),
-	[POLICY_REMOTE]   = KIND("remote"),
-	[POLICY_UNIX]     = KIND("unix"),
+	[POLICY_LOOPBACK] = CSTR_VIEW_INIT("loopback"),
+	[POLICY_REMOTE]   = CSTR_VIEW_INIT("remote"),
+	[POLICY_UNIX]     = CSTR_VIEW_INIT("unix"),
 };
-#undef KIND
 
 /* What the clients a role is given may see and do. */
 struct policy_role {
@@ -226,12 +222,12 @@ policy_principal_identity (struct policy const *policy,
                            struct cstr_view     who,
                            uint64_t            *principal)
 {
-	static char const prefix[] = "identity ";
-	if (who.len < sizeof prefix - 1 || memcmp(who.data, prefix, sizeof prefix - 1))
+	struct cstr_view const prefix = CSTR_VIEW("identity ");
+	if (!cstr_view_starts(who, prefix))
 		return EINVAL;
+	struct cstr_view const name = cstr_view_slice(who, prefix.len, SIZE_MAX);
 	char anchor[sizeof "identity:" + POLICY_NAME];
-	int n = snprintf(anchor, sizeof anchor, "identity:%.*s",
-	                 (int)(who.len - (sizeof prefix - 1)), who.data + sizeof prefix - 1);
+	int n = snprintf(anchor, sizeof anchor, "identity:%.*s", (int)name.len, name.data);
 	if (n < 0 || n >= (int)sizeof anchor)
 		return EINVAL;
 	return policy_principal_of(policy, POLICY_IDENTITY, anchor, (size_t)n, principal);

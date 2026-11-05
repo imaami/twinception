@@ -3358,7 +3358,7 @@ mcp_slot_write (struct mcp_slot  *slot,
 struct cstr_view
 mcp_slot_answer (struct mcp_slot const *slot)
 {
-	return (struct cstr_view){ dstr_get(&slot->answer), dstr_len(&slot->answer) };
+	return cstr_view_dstr(&slot->answer);
 }
 
 void

@@ -463,7 +463,7 @@ notes_tool_end (struct mcp_slot *slot,
 		mcp_slot_fail(slot, e);
 		return;
 	}
-	mcp_slot_lend(slot, (struct cstr_view){ dstr_get(&call->out), dstr_len(&call->out) });
+	mcp_slot_lend(slot, cstr_view_dstr(&call->out));
 	/* The offset of a list or a read does not apply to the output of a
 	 * failed call. */
 	if (failed)
@@ -1621,8 +1621,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		if (!ok || !dstr_cat_n(&why, ".", 1))
 			mcp_slot_fail(slot, ENOMEM);
 		else
-			mcp_slot_tell(slot, (struct cstr_view){ dstr_get(&why), dstr_len(&why) },
-			              TOOL_FAILED);
+			mcp_slot_tell(slot, cstr_view_dstr(&why), TOOL_FAILED);
 		return;
 	}
 	call->action = which;

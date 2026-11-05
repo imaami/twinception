@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "compat.h"
+#include "cstr_view.h"
 #include "godbolt_probe.h"
 
 #pragma GCC diagnostic push
@@ -665,47 +666,22 @@ godbolt_probe_parse_record (struct godbolt_probe         *p,
 
 static_assert(GODBOLT_PROBE_TEXT_MAX == 256, "the reason says 256 bytes");
 
-/* Returns whether the @p n bytes at @p line are @p word. */
-static bool
-godbolt_probe_is (char const *line,
-                  size_t      n,
-                  char const *word,
-                  size_t      len)
-{
-	return n == len && !memcmp(line, word, n);
-}
-
-/* Returns whether the @p n bytes at @p line begin with @p word. */
-static bool
-godbolt_probe_begins (char const *line,
-                      size_t      n,
-                      char const *word,
-                      size_t      len)
-{
-	return n >= len && !memcmp(line, word, len);
-}
-
-#define GODBOLT_PROBE_IS(word) godbolt_probe_is(line, n, word, sizeof word - 1)
-#define GODBOLT_PROBE_BEGINS(word) godbolt_probe_begins(line, n, word, sizeof word - 1)
-
-/* Parses the line of @p n bytes at @p line, without white space at its
- * ends. *@p state is 0 before the block, 1 in it and 2 after it. The line
- * GBPROBE_BEGIN_1 is valid only before the block, and every other line of
- * the block only in it. Returns 0, or an error number with the reason in
- * p->why.
+/* Parses @p line, which does not begin or end with white space. *@p state
+ * is 0 before the block, 1 in it and 2 after it. The line GBPROBE_BEGIN_1
+ * is valid only before the block, and every other line of the block only in
+ * it. Returns 0, or an error number with the reason in p->why.
  */
 static int
 godbolt_probe_line (struct godbolt_probe  *p,
-                    char const            *line,
-                    size_t                 n,
+                    struct cstr_view       line,
                     unsigned              *state,
                     char                 **out)
 {
-	unsigned const mark = GODBOLT_PROBE_IS("GBPROBE_BEGIN_1") ? 1
-	                    : GODBOLT_PROBE_IS("GBPROBE_END_1") ? 2 : 0;
-	bool const macro = GODBOLT_PROBE_BEGINS("GBPROBE_MACRO");
-	bool const header = GODBOLT_PROBE_BEGINS("GBPROBE_HEADER");
-	if (GODBOLT_PROBE_IS("[Truncated]")) {
+	unsigned const mark = cstr_view_equal(line, CSTR_VIEW("GBPROBE_BEGIN_1")) ? 1
+	                    : cstr_view_equal(line, CSTR_VIEW("GBPROBE_END_1")) ? 2 : 0;
+	bool const macro = cstr_view_starts(line, CSTR_VIEW("GBPROBE_MACRO"));
+	bool const header = cstr_view_starts(line, CSTR_VIEW("GBPROBE_HEADER"));
+	if (cstr_view_equal(line, CSTR_VIEW("[Truncated]"))) {
 		p->why = "Compiler Explorer cut the output";
 		return EOVERFLOW;
 	}
@@ -717,20 +693,19 @@ godbolt_probe_line (struct godbolt_probe  *p,
 		*state = mark;
 	if (macro)
 		return godbolt_probe_parse_record(p, p->macros, &p->n_macros, GODBOLT_PROBE_MACROS,
-		                                  line + sizeof "GBPROBE_MACRO" - 1, line + n, out);
+		                                  line.data + sizeof "GBPROBE_MACRO" - 1,
+		                                  line.data + line.len, out);
 	if (header)
 		return godbolt_probe_parse_record(p, p->headers, &p->n_headers,
 		                                  GODBOLT_PROBE_HEADERS,
-		                                  line + sizeof "GBPROBE_HEADER" - 1, line + n, out);
-	if (!mark && *state == 1 && n && *line != '#') {
+		                                  line.data + sizeof "GBPROBE_HEADER" - 1,
+		                                  line.data + line.len, out);
+	if (!mark && *state == 1 && line.len && *line.data != '#') {
 		p->why = "the block has a line that is not a record";
 		return EPROTO;
 	}
 	return 0;
 }
-
-#undef GODBOLT_PROBE_BEGINS
-#undef GODBOLT_PROBE_IS
 
 /* Parses the @p len bytes at @p text line by line. Returns 0, or an error
  * number with the reason in p->why.
@@ -750,7 +725,8 @@ godbolt_probe_parse (struct godbolt_probe *p,
 		godbolt_probe_skip(&line, end);
 		while (end > line && godbolt_probe_space(end[-1]))
 			--end;
-		int const e = godbolt_probe_line(p, line, (size_t)(end - line), &state, &out);
+		struct cstr_view const trimmed = { line, (size_t)(end - line) };
+		int const e = godbolt_probe_line(p, trimmed, &state, &out);
 		if (e)
 			return e;
 		line = next;

@@ -113,7 +113,7 @@ findings_step (struct mcp_slot *slot)
 	int e = review_call(mcp_slot_review(slot), call->args, mcp_slot_turn(slot), notice_kept,
 	                    had, loop_room(loop, LOOP_COPY), &call->out);
 	loop_work(loop, LOOP_COPY, dstr_len(&call->out) - had);
-	struct cstr_view out = { dstr_get(&call->out), dstr_len(&call->out) };
+	struct cstr_view out = cstr_view_dstr(&call->out);
 	if (e == EAGAIN) {
 		mcp_slot_ready(slot);
 	} else if (e && e != EINVAL) {

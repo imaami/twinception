@@ -1558,7 +1558,7 @@ git_scan (struct mcp_slot *slot,
 		char why[GIT_WHY];
 		git_read_past(read, c->cut, why);
 		git_drop(slot);
-		mcp_slot_tell(slot, (struct cstr_view){ why, strlen(why) }, TOOL_FAILED);
+		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
 		return;
 	}
 	read->at = read->start = read->from;
@@ -1669,7 +1669,7 @@ git_start (struct mcp_slot    *slot,
 	char why[GIT_WHY];
 	if (git_call_command(call, gl->git, why)) {
 		git_call_destroy(&call);
-		mcp_slot_tell(slot, (struct cstr_view){ why, strlen(why) }, TOOL_FAILED);
+		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
 		return;
 	}
 	if (mcp_slot_offset(slot, args)) {

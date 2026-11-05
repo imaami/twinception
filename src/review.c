@@ -15,19 +15,17 @@
 #include "review.h"
 #include "util.h"
 
-#define NAME(s) { "" s, sizeof s - 1 }
-
 struct cstr_view const review_state_names[REVIEW_STATES] = {
-	[REVIEW_CANDIDATE] = NAME("candidate"),
-	[REVIEW_VERIFIED]  = NAME("verified"),
-	[REVIEW_DISPROVED] = NAME("disproved"),
-	[REVIEW_RETRACTED] = NAME("retracted"),
+	[REVIEW_CANDIDATE] = CSTR_VIEW_INIT("candidate"),
+	[REVIEW_VERIFIED]  = CSTR_VIEW_INIT("verified"),
+	[REVIEW_DISPROVED] = CSTR_VIEW_INIT("disproved"),
+	[REVIEW_RETRACTED] = CSTR_VIEW_INIT("retracted"),
 };
 
 struct cstr_view const review_action_names[REVIEW_ACTIONS] = {
-	[REVIEW_ADD]    = NAME("add"),
-	[REVIEW_UPDATE] = NAME("update"),
-	[REVIEW_SHOW]   = NAME("show"),
+	[REVIEW_ADD]    = CSTR_VIEW_INIT("add"),
+	[REVIEW_UPDATE] = CSTR_VIEW_INIT("update"),
+	[REVIEW_SHOW]   = CSTR_VIEW_INIT("show"),
 };
 
 /* REVIEW_SHORT is the number of commit ID digits that a render shows.
@@ -132,7 +130,7 @@ struct review {
 #define REFUSE(out, ...) (dstr_printf(out, __VA_ARGS__) ? EINVAL : ENOMEM)
 
 /**
- * Find a JSON string's index in a @ref cstr_view array.
+ * Find the index of a JSON string in an array of names.
  *
  * @param v     The JSON string to find
  * @param names The array of strings to search
@@ -145,18 +143,14 @@ review_name_of (struct json_object     *v,
                 struct cstr_view const *names,
                 size_t                  n)
 {
-	char const *s = v ? jb_text(v) : nullptr;
-	if (s) {
-		size_t const len = strlen(s);
-		size_t const num = n;
-		n = 0;
-		do {
-			if (len == names[n].len &&
-			    (!len || !memcmp(names[n].data, s, len)))
-				break;
-		} while (++n < num);
-	}
-	return n;
+	struct cstr_view key = {};
+	key.data = jb_str(v, &key.len);
+	if (!key.data)
+		return n;
+	size_t i = 0;
+	while (i < n && !cstr_view_equal(names[i], key))
+		++i;
+	return i;
 }
 
 /* Whether @p a and the @p len bytes at @p b are the same text. */
@@ -1393,9 +1387,9 @@ review_out_tail (struct review_out           *o,
                  uint8_t                      cut)
 {
 	static struct cstr_view const texts[] = {
-		[CUT_CLAIM]                = NAME("the claim"),
-		[CUT_EVIDENCE]             = NAME("the evidence"),
-		[CUT_CLAIM | CUT_EVIDENCE] = NAME("the claim and the evidence"),
+		[CUT_CLAIM]                = CSTR_VIEW_INIT("the claim"),
+		[CUT_EVIDENCE]             = CSTR_VIEW_INIT("the evidence"),
+		[CUT_CLAIM | CUT_EVIDENCE] = CSTR_VIEW_INIT("the claim and the evidence"),
 	};
 	struct review_change const *c = &f->changes[f->n - 1];
 	if (c->state == REVIEW_CANDIDATE && f->path.ptr && !*c->commit && r->flags & REVIEW_READS)
@@ -1407,8 +1401,6 @@ review_out_tail (struct review_out           *o,
 	PUT(o, ". askai adds those lines to tool results, and they are not part of the "
 	       "finding.");
 }
-
-#undef NAME
 
 /* Add the finding that @p args describe to @p r, in turn @p turn. */
 static int
