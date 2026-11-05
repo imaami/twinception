@@ -1728,16 +1728,12 @@ home_put_call (void                 *user,
 	if (k < n) {
 		/* Ignore an id, a name or an extra that repeats the stored
 		 * bytes. */
-		unsigned char const *had = buf_peek(&job->calls[k]).ptr;
-		memcpy(&c, had, sizeof c);
-		had += sizeof c;
-		if (id && id == c.id && !memcmp(had, call->id.data, id))
+		struct ai_call const had = job_call_parts(&c, buf_peek(&job->calls[k]).ptr);
+		if (id && cstr_view_equal(had.id, call->id))
 			id = 0;
-		had += c.id;
-		if (name && name == c.name && !memcmp(had, call->name.data, name))
+		if (name && cstr_view_equal(had.name, call->name))
 			name = 0;
-		had += c.name;
-		if (extra && extra == c.extra && !memcmp(had, call->extra.data, extra))
+		if (extra && cstr_view_equal(had.extra, call->extra))
 			extra = 0;
 	} else if (n == JOB_CALLS) {
 		return EPROTO;

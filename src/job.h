@@ -47,6 +47,7 @@
 
 #include <stdatomic.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "ai.h"
 #include "buf.h"
@@ -112,6 +113,25 @@ struct job_call {
 	uint32_t extra;   /**< of the JSON text it carries back (struct ai_call) */
 	uint32_t args;    /**< of its arguments */
 };
+
+/** Copies the header of the stored call at @p p into @p *call and returns
+ *  the parts of the call, which follow the header.
+ */
+static inline struct ai_call
+job_call_parts (struct job_call     *call,
+                unsigned char const *p)
+{
+	memcpy(call, p, sizeof *call);
+	char const *id = (char const *)p + sizeof *call;
+	char const *extra = id + call->id + call->name;
+	return (struct ai_call){
+		.id    = { id, call->id },
+		.name  = { id + call->id, call->name },
+		.extra = { extra, call->extra },
+		.args  = { extra + call->extra, call->args },
+		.index = call->index,
+	};
+}
 
 /** The bytes of the call @p c in a job's calls: it and its parts. */
 static inline size_t

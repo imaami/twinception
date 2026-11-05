@@ -3983,7 +3983,7 @@ mcp_slot_task_drop (struct mcp_slot *slot)
 
 static void mcp_req_calls_next (struct mcp_req *req);
 static int mcp_req_slice (struct mcp_req *req, struct jb_pool *pool,
-                          struct span json);
+                          struct cstr_view json);
 static void mcp_req_turn_submit (struct mcp_req *req);
 static void mcp_req_add_start (struct mcp_req *req);
 
@@ -4068,48 +4068,18 @@ mcp_req_tokens (struct mcp_req const *req)
 	                 : (len + req->filed) / 4;
 }
 
-/* A turn's tool call, as its job's calls, and then req->calls, hold it: a
- * struct job_call, then its id, name, extra and arguments.
- */
-struct mcp_call {
-	struct span id;
-	struct span name;
-	struct span extra;
-	struct span args;
-	size_t      size;    /* bytes of all that */
-	size_t      replay;  /* bytes of the job's replay before it */
-};
-
-/* The call at @p p. */
-static struct mcp_call
-mcp_call_at (unsigned char const *p)
-{
-	struct job_call c;
-	memcpy(&c, p, sizeof c);
-	unsigned char *id = (unsigned char *)(uintptr_t)(p + sizeof c);
-	unsigned char *extra = id + c.id + c.name;
-	return (struct mcp_call){
-		.id = { id, c.id },
-		.name = { id + c.id, c.name },
-		.extra = { extra, c.extra },
-		.args = { extra + c.extra, c.args },
-		.size = job_call_size(&c),
-		.replay = c.replay,
-	};
-}
-
 /* The id of the turn's call @p k, @p c, in @p *id: its own, or, lacking
  * one, one made up in @p made, of CALL_ID bytes.
  */
 static int
 mcp_req_call_id (struct mcp_req const  *req,
-                 struct mcp_call const *c,
+                 struct ai_call const  *c,
                  uint32_t               k,
                  char                  *made,
                  struct mcp_piece      *id)
 {
 	if (c->id.len) {
-		*id = ESC(c->id.ptr, c->id.len);
+		*id = ESC(c->id.data, c->id.len);
 		return 0;
 	}
 	int n = snprintf(made, CALL_ID, "call_%" PRIu32 "_%" PRIu32, req->turn, k);
@@ -4214,8 +4184,8 @@ mcp_req_turn_done (struct mcp_req *req)
  * parse goes on, or ENOMEM.
  */
 static int
-mcp_req_turn_arg (struct mcp_req *req,
-                  struct span     args)
+mcp_req_turn_arg (struct mcp_req   *req,
+                  struct cstr_view  args)
 {
 	if (!args.len) {
 		req->args[req->part] = json_object_new_object();
@@ -4241,7 +4211,8 @@ static void
 mcp_req_turn_args (struct mcp_req *req)
 {
 	for (; req->part < req->n_calls; ++req->part) {
-		struct mcp_call c = mcp_call_at(buf_peek(&req->job->calls[req->part]).ptr);
+		struct job_call h;
+		struct ai_call c = job_call_parts(&h, buf_peek(&req->job->calls[req->part]).ptr);
 		int e = mcp_req_turn_arg(req, c.args);
 		if (e == EAGAIN) {
 			loop_ready_bulk(req->mcp->loop, &req->step);
@@ -4283,13 +4254,13 @@ mcp_req_items (struct mcp_req const *req,
 static int
 mcp_req_call_args (struct mcp_req const   *req,
                    struct ai_format const *f,
-                   struct mcp_call const  *c,
+                   struct ai_call const   *c,
                    uint32_t                k,
                    struct mcp_piece       *p)
 {
 	struct json_object *v = req->args[k];
 	if (!(f->flags & AI_ARGS_RAW)) {
-		*p = v && c->args.len ? ESC(c->args.ptr, c->args.len) : TEXT("{}");
+		*p = v && c->args.len ? ESC(c->args.data, c->args.len) : TEXT("{}");
 		return 0;
 	}
 	size_t len = 0;
@@ -4305,7 +4276,7 @@ mcp_req_call_args (struct mcp_req const   *req,
 static int
 mcp_req_call_put (struct mcp_req         *req,
                   struct ai_format const *f,
-                  struct mcp_call const  *c,
+                  struct ai_call const   *c,
                   struct mcp_piece        items)
 {
 	uint32_t k = req->part - 1u;
@@ -4320,12 +4291,12 @@ mcp_req_call_put (struct mcp_req         *req,
 		BYTES(req->listed || items.len ? f->call_next : f->call),
 		id,
 		BYTES(f->name),
-		ESC(c->name.ptr, c->name.len),
+		ESC(c->name.data, c->name.len),
 		BYTES(f->args),
 		args,
 		BYTES(f->args_end),
 		c->extra.len ? BYTES(f->extra) : (struct mcp_piece){},
-		RAW(c->extra.ptr, c->extra.len),
+		RAW(c->extra.data, c->extra.len),
 		BYTES(f->call_end),
 	};
 	e = mcp_req_upload(req, p, ARRAY_SIZE(p));
@@ -4341,14 +4312,15 @@ static int
 mcp_req_turn_call (struct mcp_req         *req,
                    struct ai_format const *f)
 {
-	struct mcp_call c = mcp_call_at(buf_peek(&req->job->calls[req->part - 1u]).ptr);
-	struct mcp_piece items = mcp_req_items(req, c.replay);
+	struct job_call h;
+	struct ai_call c = job_call_parts(&h, buf_peek(&req->job->calls[req->part - 1u]).ptr);
+	struct mcp_piece items = mcp_req_items(req, h.replay);
 	int e = f->call.len ? mcp_req_call_put(req, f, &c, items)
 	                    : mcp_req_upload(req, &items, 1);
 	if (e)
 		return e;
 	req->listed = req->listed || items.len;
-	req->replayed = c.replay;
+	req->replayed = h.replay;
 	return 0;
 }
 
@@ -4441,13 +4413,13 @@ mcp_req_turn_write (struct mcp_req *req)
  */
 static int
 mcp_req_trace (struct mcp_req        *req,
-               struct mcp_call const *c,
+               struct ai_call const  *c,
                struct json_object    *args,
                enum mcp_trace         trace)
 {
 	if (req->traced++ >= TRACE_MAX)
 		return 0;
-	char const *name = (char const *)c->name.ptr;
+	char const *name = c->name.data;
 	if (!CAT(&req->trace, "- ") ||
 	    !dstr_cat_n(&req->trace, name, jb_utf8(name, util_clip(name, c->name.len, 64))))
 		return ENOMEM;
@@ -4461,7 +4433,7 @@ mcp_req_trace (struct mcp_req        *req,
 		                   dstr_cat_n(&req->trace, action, util_clip(action, len, 16)))
 		       ? 0 : ENOMEM;
 	default:
-		char const *json = (char const *)c->args.ptr;
+		char const *json = c->args.data;
 		size_t n = jb_utf8(json, util_clip(json, c->args.len, TRACE_ARGS));
 		if (n && !(CAT(&req->trace, " ") && dstr_cat_n(&req->trace, json, n)))
 			return ENOMEM;
@@ -4531,16 +4503,15 @@ mcp_req_no_args (struct mcp_req const *req)
  */
 static void
 mcp_req_log_refused (struct mcp_req const *req,
-                     struct span           name,
+                     struct cstr_view      name,
                      struct json_object   *args)
 {
 	if (log_threshold < LOG_VERBOSE)
 		return;
 	struct mcp_static const *st = req->mcp->st;
-	char const *str = (char const *)name.ptr;
-	uint32_t known = mcp_static_tool_of(st, str, name.len);
+	uint32_t known = mcp_static_tool_of(st, name.data, name.len);
 	char quoted[NAME_LOG + 8];
-	mcp_quote(quoted, sizeof quoted, str, name.len, NAME_LOG);
+	mcp_quote(quoted, sizeof quoted, name.data, name.len, NAME_LOG);
 	char shown[SHOWN];
 	mcp_args_shown(&st->offers[known], args, mcp_req_no_args(req), shown);
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": tool call %s "
@@ -5665,8 +5636,9 @@ mcp_req_call_launch (struct mcp_req *req)
 	uint32_t k = req->launched;
 	if (k == req->n_calls)
 		return;
-	struct mcp_call c = mcp_call_at(buf_peek(&req->calls).ptr + req->launch_at);
-	uint32_t id = mcp_req_tool_of(req, (char const *)c.name.ptr, c.name.len);
+	struct job_call h;
+	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls).ptr + req->launch_at);
+	uint32_t id = mcp_req_tool_of(req, c.name.data, c.name.len);
 	struct mcp_offer const *tool = &mcp->st->offers[id];
 	if (k > req->part &&
 	    (tool->kind->flags | mcp_slot_offer(&req->slots[k - 1])->kind->flags) & KF_SERIAL)
@@ -5680,7 +5652,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		struct json_object *intent = jb_object(
 			"index", json_object_new_int64(k),
 			"agenda", json_object_new_boolean((tool->kind->flags & KF_AGENDA) != 0),
-			"name", json_object_new_string_len((char const *)c.name.ptr, (int)c.name.len),
+			"name", json_object_new_string_len(c.name.data, (int)c.name.len),
 			"arguments", req->args[k] ? json_object_get(req->args[k])
 			                          : json_object_new_object(), nullptr);
 		int e = mcp_req_archive(req, "tool-intent", intent, mcp_req_intent_saved);
@@ -5696,7 +5668,7 @@ mcp_req_call_launch (struct mcp_req *req)
 	struct json_object *args = req->args[k];
 	struct mcp_slot *slot = &req->slots[k];
 	slot->tool = (uint8_t)id;
-	req->launch_at += c.size;
+	req->launch_at += job_call_size(&h);
 	req->launched = k + 1;
 	hist_add(&mcp->counts->calls.lent[tool->metric], 1);
 	mcp_req_notify_tool(req, tool->name);
@@ -5984,7 +5956,7 @@ mcp_req_result_begin (struct mcp_req  *req,
  */
 static int
 mcp_req_result_put (struct mcp_req        *req,
-                    struct mcp_call const *c)
+                    struct ai_call const  *c)
 {
 	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
 	struct mcp_slot const *slot = &req->slots[req->part];
@@ -6003,7 +5975,7 @@ mcp_req_result_put (struct mcp_req        *req,
 	struct mcp_piece by = {};
 	struct mcp_piece also = {};
 	if (f->flags & AI_RESULT_NAMED) {
-		key = ESC(c->name.ptr, c->name.len);
+		key = ESC(c->name.data, c->name.len);
 		if (c->id.len || f->call.len) {
 			by = BYTES(f->result_id);
 			also = id;
@@ -6057,7 +6029,8 @@ mcp_req_shown (struct mcp_req        *req,
 static void
 mcp_req_result_write (struct mcp_req *req)
 {
-	struct mcp_call c = mcp_call_at(buf_peek(&req->calls).ptr + req->at);
+	struct job_call h;
+	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls).ptr + req->at);
 	int e = mcp_req_result_put(req, &c);
 	if (e == EAGAIN) {
 		loop_ready_bulk(req->mcp->loop, &req->step);
@@ -6082,7 +6055,7 @@ mcp_req_result_write (struct mcp_req *req)
 	slot->skip = slot->window = 0;
 	if (req->agenda)
 		dstr_clear(&req->agenda->told);
-	req->at += c.size;
+	req->at += job_call_size(&h);
 	mcp_req_args_free(req, req->part, req->part + 1u);
 	++req->part;
 	mcp_req_calls_next(req);
@@ -6783,7 +6756,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	}
 	/* The trace names the call by its tool, the name it called. */
 	struct mcp_offer const *o = mcp_slot_offer(slot);
-	struct mcp_call const c = { .name = { (unsigned char *)(uintptr_t)o->name, o->len } };
+	struct ai_call const c = { .name = { o->name, o->len } };
 	(void)mcp_req_trace(req, &c, args, o->trace);
 	(void)mcp_req_trace_end(req, false, len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
@@ -7431,9 +7404,9 @@ mcp_req_dispatch (struct mcp_req *req)
  * req->msg nullptr (jb_parser_step()).
  */
 static int
-mcp_req_slice (struct mcp_req *req,
-               struct jb_pool *pool,
-               struct span     json)
+mcp_req_slice (struct mcp_req   *req,
+               struct jb_pool   *pool,
+               struct cstr_view  json)
 {
 	struct loop *loop = req->mcp->loop;
 	struct jb_parser *parser = &req->parser;
@@ -7444,8 +7417,7 @@ mcp_req_slice (struct mcp_req *req,
 	size_t off = parser->off;
 	uint32_t seen = parser->cut.values;
 	size_t copied = parser->cut.copied;
-	int e = jb_parser_step(parser, pool, (char const *)json.ptr, json.len, bytes,
-	                       (uint32_t)values);
+	int e = jb_parser_step(parser, pool, json.data, json.len, bytes, (uint32_t)values);
 	loop_work(loop, LOOP_PARSE, parser->off - off);
 	loop_work(loop, LOOP_VALUES, parser->cut.values - seen);
 	loop_work(loop, LOOP_COPY, parser->cut.copied - copied);
@@ -7466,7 +7438,9 @@ mcp_req_parse (struct mcp_req *req)
 {
 	struct loop *loop = req->mcp->loop;
 	bool whole = !req->parser.off;
-	int e = mcp_req_slice(req, &req->mcp->pool, buf_peek(&req->body));
+	struct span body = buf_peek(&req->body);
+	int e = mcp_req_slice(req, &req->mcp->pool,
+	                      (struct cstr_view){ (char const *)body.ptr, body.len });
 	if (e == EAGAIN) {
 		loop_ready_bulk(loop, &req->step);
 		return;
@@ -7550,8 +7524,7 @@ mcp_req_answer (struct mcp_req *req)
 	struct span json = buf_peek(&req->job->result);
 	char const *text = json.len ? (char const *)json.ptr : "";
 	size_t off = req->parser.off;
-	int e = mcp_req_slice(req, &req->mcp->answers, (struct span){
-		(unsigned char *)(uintptr_t)text, json.len });
+	int e = mcp_req_slice(req, &req->mcp->answers, (struct cstr_view){ text, json.len });
 	if (e == ENOMEM) {
 		mcp_req_fail(req, e);
 		return;

@@ -129,10 +129,10 @@ struct ai_event {
  */
 static constexpr uint32_t AI_CALL_NEXT = UINT32_MAX;
 
-/** The parts of a tool call that the model makes. A streamed event
- *  contains some of them; a part that the event does not contain is an
- *  empty view with data nullptr. index is the number of the call in the
- *  answer, or AI_CALL_NEXT.
+/** The parts of a tool call that the model makes, as one streamed event
+ *  contains them or as a job stored them (job_call_parts()). A part that
+ *  an event does not contain is an empty view with data nullptr. index is
+ *  the number of the call in the answer, or AI_CALL_NEXT.
  */
 struct ai_call {
 	struct cstr_view id;
