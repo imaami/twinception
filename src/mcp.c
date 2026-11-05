@@ -329,10 +329,10 @@ struct mcp_offer {
 	struct registry_tool tool;
 };
 
-/* The tools that askai lends the turns. Each member is a mask of tool ids.
- * by[l] contains the tools with lending rule l (enum mcp_lend). of[k]
- * contains the tool of kind k (enum mcp_kind) if askai lends it. detach
- * contains the tools that can run in the background (TOOL_DETACH).
+/* Each member is a mask of the ids of tools in cfg->tools_upstream. by[l]
+ * contains the tools with the lending rule l (enum mcp_lend), of[k] the
+ * tool of kind k (enum mcp_kind), and detach the tools that can run in the
+ * background (TOOL_DETACH). mcp_lending_lent() selects the lent tools.
  */
 struct mcp_lending {
 	tool_mask by[LEND_DETACH + 1];
@@ -340,9 +340,9 @@ struct mcp_lending {
 	tool_mask detach;
 };
 
-/* Returns the tools that @p l lends the turns of an ask call, by the rules
- * of enum mcp_lend. @p upstream holds the tools that the client's role lets
- * the upstream call.
+/* Returns the tools of @p l that the turns of an ask call may call, by the
+ * rules of enum mcp_lend. @p upstream is the mask of the tools that the
+ * role of the client grants to the upstream.
  */
 static tool_mask
 mcp_lending_lent (struct mcp_lending const *l,
@@ -537,10 +537,9 @@ struct mcp_req {
 	struct buf           reply;      /* our response body, until sent */
 	struct jb_parser     parser;     /* of the body, then of the answer */
 	struct jb_reaper     reaper;     /* what is freed a slice a step */
-	struct mcp_splice   *splice;     /* the strings of the draft that
-	                                    mcp_req_build() escapes in, in
-	                                    draft order; the request keeps the
-	                                    array for reuse */
+	struct mcp_splice   *splice;     /* the places of the strings of the
+	                                    client in the draft, in draft order.
+	                                    A spare request reuses the array. */
 	struct mcp_slot      self;       /* its own call: its answer, the tool
 	                                    that a client calls, and the notes'
 	                                    git it reads */
@@ -755,8 +754,8 @@ struct mcp {
 	struct instance_table     instances;  /* the instances of the plugins
 	                                         for the users whose calls run
 	                                         on this loop */
-	uint64_t                  asked;      /* ask calls begun, which the log
-	                                         numbers */
+	uint64_t                  asked;      /* the number of ask calls begun
+	                                         on this loop, for the log */
 	uint64_t                  draining;   /* bool, widened over the padding */
 	void                     *parts[];    /* the parts of the plugins, in
 	                                         the order of st->plugins[] */
@@ -932,7 +931,7 @@ mcp_req_enter (struct mcp_req *req,
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
-/* The bytes a finished request keeps for reuse. */
+/** Returns the bytes of memory of the spare request @p req and its buffers. */
 static uint64_t
 mcp_req_kept (struct mcp_req const *req)
 {
@@ -965,8 +964,8 @@ mcp_req_end (struct mcp_req *req)
 
 /* Returns a request to begin: the spare request that ended last, or a new
  * request if there is none. Returns nullptr if out of memory. The answer,
- * the pre-scan, the reaper and the splice array of a spare request are
- * empty, and their storage is not freed.
+ * the pre-scan and the reaper of a spare request are empty, but their
+ * storage and the storage of the splice array are not freed.
  */
 static struct mcp_req *
 mcp_spare_take (struct mcp *mcp)
@@ -1109,8 +1108,8 @@ mcp_slot_offer (struct mcp_slot const *slot)
  */
 static struct mcp_row const mcp_loaded_row = { .metric = LENT_PLUGIN };
 
-/* Returns the row of the registry tool @p t, or mcp_loaded_row for a tool
- * of a plugin that askai loaded from a file.
+/** Returns the row of the registry tool @p t, or mcp_loaded_row for a
+ *  tool of a plugin that askai loaded from a file.
  */
 static struct mcp_row const *
 mcp_row_of (struct registry_tool const *t)
@@ -6764,9 +6763,9 @@ mcp_req_compact_notes (struct mcp_req *req)
 	mcp_req_go_on(req, CSTR_VIEW("\n\n"));
 }
 
-/* Compact the context, as the turn's compact call in @p slot asks with
- * @p args: what follows the prompt goes, and askai adds the summary and the
- * notes to it. The turn's calls after this one do not run.
+/** Handles the compact call of a turn in @p slot with the summary in
+ *  @p args. askai replaces the conversation after the prompt with the
+ *  summary and the notes. Later calls of the turn do not run.
  */
 static void
 mcp_slot_compact (struct mcp_slot    *slot,
@@ -6781,7 +6780,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 		                           "byte to 4 MiB."), true);
 		return;
 	}
-	/* The trace names the call by its tool, the name it called. */
+	/* The trace line shows the name of the tool that the turn called. */
 	struct registry_tool const *t = &mcp_slot_offer(slot)->tool;
 	struct ai_call const c = { .name = t->name };
 	(void)mcp_req_trace(req, &c, args, mcp_row_of(t)->trace);

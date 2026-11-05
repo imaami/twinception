@@ -103,28 +103,30 @@ mcp_lent (void const *cfg,
           tool_mask   upstream);
 
 /**
- * What every loop's MCP shares, and nobody changes once it is made: the
- * configuration @p cfg, and the replies that never change, serialized.
- * With @p manual, it offers the tool man beside the ask tool: a page of the
- * manual (src/manual.h); with @p tasks, the test aid test_task, CPU work
- * done as a task (src/task.h); with @p git, the tool git (src/git.h). With
- * CFG_UPSTREAM_TOOLS, the ask tool lends the upstream man and git, as the
- * client may call them, and with @p notes the tool notes (src/notes_tool.h),
- * and the tool compact: its call then runs a loop of turns, each an upstream
- * call, and the tools each turn calls, until an answer calls none. The
- * tools and their ids are those of @p cfg's registry (src/registry.h), which
- * also has the tools of the plugins that askai loaded. A tool
- * call of a modern client that takes tasks becomes one, in @p ledger
- * (src/ledger.h), once it has run a second. With CFG_CLIENT_JOBS, a
- * client's call of background starts a call as a job, which also has a
- * record in @p ledger, and a client's timers and waits are in @p ledger
- * too. A tool call is in @p roster
- * (src/roster.h) from its start until it ends or becomes a task, so that a
- * notifications/cancelled of its caller reaches it. The calls of the
- * plugins' tools send their HTTP requests through @p web (src/web.h).
- * @p cfg, @p manual, @p tasks, @p git, @p notes, @p ledger, @p roster and
- * @p web must outlive the object.
- * nullptr, with the error in @p *e, if it cannot be made.
+ * Creates the state that the MCP applications of all loops share and that
+ * does not change after this function returns: the configuration @p cfg
+ * and the serialized replies that never change. The tools and their ids
+ * are the tools of the registry of @p cfg (src/registry.h), which also
+ * contains the tools of the plugins that askai loaded. @p manual is the
+ * service of the man tool (src/manual.h), @p tasks runs the calls of the
+ * test aid test_task (src/task.h), @p git is the service of the git tool
+ * (src/git.h), and @p notes contains the notes of the notes tool
+ * (src/notes_tool.h). With CFG_UPSTREAM_TOOLS, an ask call runs turns,
+ * each an upstream call, and the tool calls of each turn, until an answer
+ * calls no tool.
+ *
+ * A tool call of a modern client that accepts tasks becomes a task in
+ * @p ledger (src/ledger.h) after it runs a second. With CFG_CLIENT_JOBS,
+ * a client's call of background starts a call as a job, and the jobs,
+ * timers and waits of clients are in @p ledger too. A tool call is in
+ * @p roster (src/roster.h) from its start until it ends or becomes a task,
+ * so that a notifications/cancelled from its caller can cancel it. The
+ * calls of the tools of plugins send their HTTP requests through @p web
+ * (src/web.h). @p journal stores the reasoning and the recovery state of
+ * jobs. These objects must outlive the new object.
+ *
+ * Returns the new object. On failure it returns nullptr and stores the
+ * error number in @p *e.
  */
 extern struct mcp_static *
 mcp_static_create (struct config const *cfg,
@@ -350,14 +352,16 @@ mcp_slot_write (struct mcp_slot  *slot,
                 uint32_t          flags,
                 size_t           *taken);
 
-/** Not exported yet: the output written, which mcp_slot_write() and
- *  mcp_slot_tell() must not be given: they append to it.
+/** Returns a view of the output that mcp_slot_write() wrote. The view is
+ *  valid until the output changes, so it must not be passed to
+ *  mcp_slot_write() or mcp_slot_tell(). This function is not exported yet.
  */
 extern struct cstr_view
 mcp_slot_answer (struct mcp_slot const *slot);
 
-/** Not exported yet: lent output, which own keeps, that mcp_slot_finish()
- *  gives instead of what is written.
+/** Sets the output of the call to @p text, whose bytes must stay valid
+ *  until the drop() of the kind. mcp_slot_finish() then ends the call with
+ *  @p text. This function is not exported yet.
  */
 extern void
 mcp_slot_lend (struct mcp_slot  *slot,
@@ -418,16 +422,16 @@ mcp_slot_noted (struct mcp_slot *slot);
 
 /**
  * Attaches a file to the turn of the call, for the attach action of the
- * notes tool. @p id is the object id of the note, which names the file in
+ * notes tool. @p id is the object id of the note, the key of the file in
  * the table of uploads (src/uploads.h).
  *
- * If file.ptr is nullptr, the function attaches the file that askai
+ * If file.data is nullptr, the function attaches the file that askai
  * uploaded for @p id and the owner of the ask call, if the upstream still
- * keeps it. It stores the size of the file in @p *bytes and returns 0, or
- * returns ENOENT if no such file is kept. Otherwise it sends @p file to the
- * upstream's file store as the HTTP request of the call and returns
- * EINPROGRESS. The kind then parks the call, and its step() takes the
- * answer with mcp_slot_attached().
+ * stores it. It stores the size of the file in @p *bytes and returns 0, or
+ * returns ENOENT if the table contains no such file. Otherwise it sends
+ * @p file to the file store of the upstream as the HTTP request of the
+ * call and returns EINPROGRESS. The kind then parks the call, and its
+ * step() reads the answer with mcp_slot_attached().
  *
  * If the context of the ask call has no room for the file, the function
  * appends why to @p out and returns EFBIG. If askai sends too many HTTP
@@ -512,7 +516,7 @@ mcp_slot_ready (struct mcp_slot *slot);
  * Returns 0, and the new request then replaces the response to the call's
  * previous request. On failure the function returns an error number:
  * - EFAULT if @p slot, @p request or request->url is nullptr, or if
- *   request->body is nullptr and request->len is not 0.
+ *   request->body.data is nullptr and request->body.len is not 0.
  * - EINVAL if the call has ended, if a member of @p request is out of its
  *   range (src/web.h), or if the kind has no step(). If the kind has no
  *   step(), the function also ends the call as failed, as mcp_slot_ready()
