@@ -26,18 +26,18 @@ cli_signals_read (struct loop     *loop,
 			signals->fn(signals, info.ssi_signo);
 			continue;
 		}
-		if (n < 0 && errno == EINTR)
+		int e = n < 0 ? errno : EIO;
+		if (e == EINTR)
 			continue;
-		if (n < 0 && errno == EAGAIN)
-			return;
-		loop_fail(loop, n < 0 ? errno : EIO);
+		if (e != EAGAIN)
+			loop_fail(loop, e);
 		return;
 	}
 }
 
 int
 cli_signals_init (struct cli_signals *signals,
-                  struct cli_loop    *loop,
+                  struct loop        *loop,
                   cli_signals_cb     *fn)
 {
 	*signals = (struct cli_signals){.ref.fd = -1, .loop = loop, .fn = fn};
@@ -45,7 +45,7 @@ cli_signals_init (struct cli_signals *signals,
 	if (sigemptyset(&mask))
 		return errno;
 	int const numbers[] = {SIGINT, SIGTERM, SIGHUP, SIGWINCH, SIGTSTP, SIGCONT};
-	for (size_t i = 0; i < sizeof numbers / sizeof *numbers; ++i)
+	for (size_t i = 0; i < array_size(numbers); ++i)
 		if (sigaddset(&mask, numbers[i]))
 			return errno;
 	int e = pthread_sigmask(SIG_BLOCK, &mask, &signals->previous);
@@ -59,7 +59,7 @@ cli_signals_init (struct cli_signals *signals,
 	int fd = signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
 	if (fd < 0)
 		return errno;
-	e = loop_watch(&loop->loop, &signals->ref, fd, EPOLLIN, cli_signals_read, nullptr);
+	e = loop_watch(loop, &signals->ref, fd, EPOLLIN, cli_signals_read, nullptr);
 	if (e)
 		(void)close(fd);
 	return e;
@@ -69,7 +69,7 @@ void
 cli_signals_fini (struct cli_signals *signals)
 {
 	if (signals->loop)
-		cli_loop_close(signals->loop, &signals->ref);
+		loop_close(signals->loop, &signals->ref);
 	if (signals->ignored)
 		(void)sigaction(SIGPIPE, &signals->pipe, nullptr);
 	if (signals->masked)

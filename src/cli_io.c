@@ -14,14 +14,14 @@
 enum { CLI_IO_JOBS = 32 };
 
 struct cli_io {
-	struct blocker  *blocker;
-	struct cli_loop *ui;
-	struct loop_ref  notify;   /**< the eventfd that each blocker thread
-	                                writes 1 to as it exits */
-	size_t           pending;
-	uint64_t         stopped;
-	uint32_t         exited;
-	uint32_t         started;
+	struct blocker *blocker;
+	struct loop    *ui;
+	struct loop_ref notify;   /**< the eventfd that each blocker thread
+	                               writes 1 to as it exits */
+	size_t          pending;
+	uint64_t        stopped;
+	uint32_t        exited;
+	uint32_t        started;
 };
 
 static void
@@ -32,7 +32,7 @@ cli_io_notify (struct loop     *loop,
 	(void)events;
 	struct cli_io *io = container_of(ref, struct cli_io, notify);
 	uint64_t count;
-	loop_fail(loop, cli_loop_ref_counter(ref, &count));
+	loop_fail(loop, loop_ref_counter(ref, &count));
 	io->exited += (uint32_t)count;
 }
 
@@ -56,8 +56,8 @@ cli_io_work (struct blocker_job *blocker)
 }
 
 struct cli_io *
-cli_io_create (struct cli_loop *ui,
-               int             *e)
+cli_io_create (struct loop *ui,
+               int         *e)
 {
 	struct cli_io *io = calloc(1, sizeof *io);
 	if (!io) {
@@ -67,9 +67,7 @@ cli_io_create (struct cli_loop *ui,
 	io->ui = ui;
 	io->notify.fd = -1;
 	int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-	*e = fd < 0 ? errno : 0;
-	if (!*e)
-		*e = loop_watch(&ui->loop, &io->notify, fd, EPOLLIN, cli_io_notify, nullptr);
+	*e = fd < 0 ? errno : loop_watch(ui, &io->notify, fd, EPOLLIN, cli_io_notify, nullptr);
 	if (*e) {
 		if (fd >= 0)
 			(void)close(fd);
@@ -84,7 +82,6 @@ cli_io_create (struct cli_loop *ui,
 		cli_io_stop(io);
 	else
 		io->started = BLOCKER_THREADS;
-	/* Even a partial start owns threads; the caller must drain them. */
 	return io;
 }
 
@@ -100,7 +97,7 @@ cli_io_submit (struct cli_io     *io,
 		return EAGAIN;
 	job->io = io;
 	job->blocker = (struct blocker_job){
-		.done = {.fn = cli_io_complete}, .work = cli_io_work, .loop = &io->ui->loop
+		.done = {.fn = cli_io_complete}, .work = cli_io_work, .loop = io->ui
 	};
 	int e = blocker_submit(io->blocker, &job->blocker);
 	if (!e)
@@ -131,14 +128,18 @@ cli_io_destroy (struct cli_io **p_io)
 	struct cli_io *io = *p_io;
 	bool notify_unused = !io->blocker;
 	blocker_destroy(&io->blocker);
-	/* blocker_done() precedes each worker's final write. A normal start
-	 * accounts for both writes above. After a partial start the opaque
-	 * blocker does not expose how many workers exist: retain that fd
-	 * until process exit, as blocker_create() requires. */
+	/* Each blocker thread increments the exit count that blocker_done()
+	 * reads, and then writes the eventfd once. After a normal start,
+	 * io->exited counts the writes of all threads, so the eventfd can be
+	 * closed. Without a blocker, no thread exists, and the eventfd can be
+	 * closed too. After a partial start, io->started is 0, because the
+	 * blocker does not report how many threads started. A thread may still
+	 * write the eventfd, so it stays open until the process exits, as
+	 * blocker_create() requires. */
 	if (io->started || notify_unused)
-		cli_loop_close(io->ui, &io->notify);
+		loop_close(io->ui, &io->notify);
 	else
-		loop_unwatch(&io->ui->loop, &io->notify);
+		loop_unwatch(io->ui, &io->notify);
 	free(io);
 	*p_io = nullptr;
 }

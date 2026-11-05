@@ -40,7 +40,7 @@ cli_io_test_run (void)
 	struct cli_loop ui = {};
 	assert(!cli_loop_init(&ui));
 	int e;
-	struct cli_io *io = cli_io_create(&ui, &e);
+	struct cli_io *io = cli_io_create(&ui.loop, &e);
 	assert(io && !e);
 	size_t completed = 0;
 	struct cli_io_test_job jobs[33];

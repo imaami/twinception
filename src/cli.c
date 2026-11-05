@@ -1182,20 +1182,20 @@ cli_run (struct cli_options const *options,
 	loop_place(&cli->reactor.loop);
 	int e = cli_loop_init(&cli->reactor);
 	if (!e)
-		e = cli_signals_init(&cli->signals, &cli->reactor, cli_signal);
+		e = cli_signals_init(&cli->signals, &cli->reactor.loop, cli_signal);
 	bool curl_ready = false;
 	if (!e) {
 		e = curl_global_init(CURL_GLOBAL_DEFAULT) ? EIO : 0;
 		curl_ready = !e;
 	}
 	if (!e)
-		e = cli_mailbox_init(&cli->mailbox, &cli->reactor, (struct cli_mailbox_limits){
+		e = cli_mailbox_init(&cli->mailbox, &cli->reactor.loop, (struct cli_mailbox_limits){
 			.messages = 256, .bytes = 1 << 20, .control_messages = 64, .control_bytes = 64 << 10
 		});
 	if (!e)
 		cli->network = cli_network_create(&cli->reactor, &cli->mailbox, &e);
 	if (!e)
-		cli->io = cli_io_create(&cli->reactor, &e);
+		cli->io = cli_io_create(&cli->reactor.loop, &e);
 	if (!e)
 		cli->client = cli_client(options->socket, options->tool, cli->network, &e);
 	bool color = !strcmp(options->color, "on") || (!strcmp(options->color, "auto") && cli->tty && !getenv("NO_COLOR"));

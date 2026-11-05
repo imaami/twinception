@@ -18,7 +18,7 @@ cli_mailbox_wake (struct loop     *loop,
 	(void)events;
 	struct cli_mailbox *mailbox = container_of(ref, struct cli_mailbox, wake);
 	uint64_t count;
-	loop_fail(loop, cli_loop_ref_counter(ref, &count));
+	loop_fail(loop, loop_ref_counter(ref, &count));
 	loop_ready(loop, &mailbox->drain);
 }
 
@@ -47,7 +47,7 @@ cli_mailbox_dispatch (struct cli_mailbox *mailbox,
 	bool pending = !list_is_empty(&mailbox->mail);
 	pthread_mutex_unlock(&mailbox->mutex);
 	if (pending)
-		loop_ready(&mailbox->loop->loop, &mailbox->drain);
+		loop_ready(mailbox->loop, &mailbox->drain);
 	return 0;
 }
 
@@ -61,8 +61,8 @@ cli_mailbox_drain (struct loop      *loop,
 
 int
 cli_mailbox_init (struct cli_mailbox       *mailbox,
-                   struct cli_loop          *loop,
-                   struct cli_mailbox_limits limits)
+                  struct loop              *loop,
+                  struct cli_mailbox_limits limits)
 {
 	*mailbox = (struct cli_mailbox){
 		.wake.fd = -1,
@@ -81,7 +81,7 @@ cli_mailbox_init (struct cli_mailbox       *mailbox,
 		cli_mailbox_fini(mailbox);
 		return e;
 	}
-	e = loop_watch(&loop->loop, &mailbox->wake, fd, EPOLLIN, cli_mailbox_wake, nullptr);
+	e = loop_watch(loop, &mailbox->wake, fd, EPOLLIN, cli_mailbox_wake, nullptr);
 	if (e) {
 		close(fd);
 		cli_mailbox_fini(mailbox);
@@ -151,11 +151,11 @@ cli_mailbox_fini (struct cli_mailbox *mailbox)
 {
 	if (!mailbox->mutex_ready)
 		return;
-	struct loop *loop = &mailbox->loop->loop;
+	struct loop *loop = mailbox->loop;
 	loop_fail(loop, cli_mailbox_close(mailbox));
 	loop_fail(loop, cli_mailbox_dispatch(mailbox, SIZE_MAX));
 	loop_unready(&mailbox->drain);
-	cli_loop_close(mailbox->loop, &mailbox->wake);
+	loop_close(loop, &mailbox->wake);
 	loop_fail(loop, pthread_mutex_destroy(&mailbox->mutex));
 	mailbox->mutex_ready = 0;
 }

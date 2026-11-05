@@ -7,14 +7,14 @@
 
 #include <signal.h>
 
-#include "cli_loop.h"
+#include "loop.h"
 
 struct cli_signals;
 typedef void cli_signals_cb (struct cli_signals *signals, unsigned number);
 
 struct cli_signals {
 	struct loop_ref   ref;
-	struct cli_loop  *loop;
+	struct loop      *loop;
 	cli_signals_cb   *fn;
 	sigset_t          previous;
 	struct sigaction  pipe;
@@ -25,7 +25,7 @@ struct cli_signals {
 /** Call before creating threads or initializing libraries that create them. */
 extern int
 cli_signals_init (struct cli_signals *signals,
-                  struct cli_loop    *loop,
+                  struct loop        *loop,
                   cli_signals_cb     *fn);
 
 /** Call after every managed thread has stopped. */

@@ -7,7 +7,7 @@
 #define TWINCEPTION_SRC_CLI_IO_H_
 
 #include "blocker.h"
-#include "cli_loop.h"
+#include "loop.h"
 
 struct cli_io;
 
@@ -24,10 +24,16 @@ struct cli_io_job {
 	void             (*done) (struct cli_io_job *job);
 };
 
-/** Starts the blocker threads, which post the jobs back to @p ui. */
+/** Starts the blocker threads, which post the jobs back to @p ui. Returns
+ *  nullptr, with the error in @p *e, if the eventfd for the threads cannot
+ *  be made or watched. If the blocker cannot be made or not all threads
+ *  start, it stops the threads that started and returns the object with the
+ *  error in @p *e. The caller then waits until cli_io_done() returns true,
+ *  as after a normal start.
+ */
 extern struct cli_io *
-cli_io_create (struct cli_loop *ui,
-               int             *e);
+cli_io_create (struct loop *ui,
+               int         *e);
 
 /** UI thread only. A refused submission leaves ownership with its caller. */
 extern int

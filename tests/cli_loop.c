@@ -113,8 +113,8 @@ cli_loop_test_event (struct loop     *loop,
 	assert(events & EPOLLIN);
 	struct cli_loop_test_ref *watch = container_of(ref, struct cli_loop_test_ref, ref);
 	uint64_t count = 0;
-	assert(!cli_loop_ref_counter(ref, &count) && count == 1);
-	cli_loop_close(&watch->test->loop, ref);
+	assert(!loop_ref_counter(ref, &count) && count == 1);
+	loop_close(loop, ref);
 	assert(ref->fd < 0 && !loop->error);
 	++watch->test->released;
 	free(watch);
@@ -131,12 +131,12 @@ cli_loop_test_errors (struct cli_loop_test *test)
 	struct loop_ref ref = { .fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC) };
 	assert(ref.fd >= 0);
 	uint64_t count = 1;
-	assert(!cli_loop_ref_counter(&ref, &count) && !count);
+	assert(!loop_ref_counter(&ref, &count) && !count);
 	assert(!eventfd_write(ref.fd, 3));
-	assert(!cli_loop_ref_counter(&ref, &count) && count == 3);
+	assert(!loop_ref_counter(&ref, &count) && count == 3);
 	assert(!close(ref.fd));
 	count = 1;
-	assert(cli_loop_ref_counter(&ref, &count) == EBADF && !count);
+	assert(loop_ref_counter(&ref, &count) == EBADF && !count);
 	ref.fd = -1;
 	assert(!test->loop.loop.error);
 	loop_fail(&test->loop.loop, 0);
@@ -187,7 +187,7 @@ cli_loop_test_limits (struct cli_loop_test *test)
 		.control_messages = 1,
 		.control_bytes = sizeof(struct cli_loop_test_msg),
 	};
-	assert(!cli_mailbox_init(&test->mailbox, &test->loop, limits));
+	assert(!cli_mailbox_init(&test->mailbox, &test->loop.loop, limits));
 	struct cli_loop_test_msg *first = cli_loop_test_message(0, 0);
 	struct cli_loop_test_msg *next = cli_loop_test_message(0, 1);
 	assert(!cli_mailbox_post(&test->mailbox, &first->msg, false));
@@ -213,7 +213,7 @@ cli_loop_test_threads (struct cli_loop_test *test)
 		.control_messages = 1,
 		.control_bytes = sizeof(struct cli_loop_test_msg),
 	};
-	assert(!cli_mailbox_init(&test->mailbox, &test->loop, limits));
+	assert(!cli_mailbox_init(&test->mailbox, &test->loop.loop, limits));
 	pthread_t threads[4];
 	struct cli_loop_test_producer producers[4];
 	for (size_t i = 0; i < array_size(threads); ++i) {

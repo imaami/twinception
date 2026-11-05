@@ -39,21 +39,6 @@ cli_loop_init (struct cli_loop *loop);
 extern void
 cli_loop_fini (struct cli_loop *loop);
 
-/** Unwatch the descriptor of ref, if it has one, and close it. */
-extern void
-cli_loop_close (struct cli_loop *loop,
-                struct loop_ref *ref);
-
-/** Read the 8-byte counter of the eventfd or timerfd of @p ref into
- * @p *count, and return 0. For an empty counter, read() fails with
- * EAGAIN, and the function stores 0 and returns 0. After any other
- * error, it stores 0 and returns the error number of read(), or EIO for a
- * short read.
- */
-extern int
-cli_loop_ref_counter (struct loop_ref const *ref,
-                      uint64_t              *count);
-
 /** Wait for events, pending work, or an absolute CLOCK_MONOTONIC deadline
  * in nanoseconds. UINT64_MAX means no deadline. No periodic tick is used.
  * Calling from dispatch returns EBUSY; after_turn may start another turn.

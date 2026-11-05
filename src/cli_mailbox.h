@@ -9,8 +9,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "cli_loop.h"
 #include "list.h"
+#include "loop.h"
 
 struct cli_mailbox;
 struct cli_mailbox_msg;
@@ -43,8 +43,8 @@ struct cli_mailbox {
 	struct list               mail;
 	struct loop_ref           wake;
 	struct loop_step          drain;
-	struct cli_loop          *loop;
-	struct cli_mailbox_limits  limits;
+	struct loop              *loop;
+	struct cli_mailbox_limits limits;
 	size_t                    messages[2];
 	size_t                    bytes[2];
 	uint32_t                  closed;
@@ -53,8 +53,8 @@ struct cli_mailbox {
 
 extern int
 cli_mailbox_init (struct cli_mailbox       *mailbox,
-                   struct cli_loop          *loop,
-                   struct cli_mailbox_limits limits);
+                  struct loop              *loop,
+                  struct cli_mailbox_limits limits);
 
 /** Thread-safe. Success transfers ownership until fn receives the message.
  * EAGAIN means full; ESHUTDOWN means closed. On every error the caller keeps
