@@ -31,8 +31,8 @@ struct blocker_job {
 	/** Runs on a blocker. */
 	void       (*work) (struct blocker_job *job);
 	struct loop *loop;
-	int          error;  /**< ECANCELED if work did not run; work may
-	                          store its own error here */
+	int          error;  /**< ECANCELED if work did not run, otherwise
+	                          the value that work stored */
 };
 
 /** Counts the blockers keep, for any thread to read. */
