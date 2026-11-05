@@ -100,33 +100,20 @@ jb_parse (char const *data,
 	return root;
 }
 
-/* Room for one more container's count of members. */
-static int
-jb_scan_grow (struct jb_scan *scan)
-{
-	if (scan->depth < scan->cap)
-		return 0;
-	uint32_t cap = scan->cap ? 2 * scan->cap : 32;
-	uint32_t *m = realloc(scan->members, cap * sizeof *m);
-	if (!m)
-		return ENOMEM;
-	scan->members = m;
-	scan->cap = cap;
-	return 0;
-}
-
-/* Open a container, counting its members if @p members limits them; 0 or
- * ENOMEM.
+/* Opens a container, and counts its members if @p members limits them.
+ * Returns 0 or ENOMEM.
  */
 static int
 jb_scan_open (struct jb_scan *scan,
               uint32_t        members)
 {
 	if (members != UINT32_MAX) {
-		int e = jb_scan_grow(scan);
-		if (e)
-			return e;
-		scan->members[scan->depth] = 0;
+		uint32_t *m = util_room(scan->members, &scan->cap, (size_t)scan->depth + 1,
+		                        sizeof *m);
+		if (!m)
+			return ENOMEM;
+		scan->members = m;
+		m[scan->depth] = 0;
 	}
 	++scan->depth;
 	++scan->values;
@@ -251,19 +238,17 @@ void
 jb_reaper_take (struct jb_reaper   *reaper,
                 struct json_object *val)
 {
-	if (!json_object_is_type(val, json_type_array) &&
-	    !json_object_is_type(val, json_type_object)) {
-		json_object_put(val);
-		return;
-	}
-	struct json_object **stack = util_room(reaper->stack, &reaper->cap, reaper->n + 1,
-	                                       sizeof *stack);
+	bool container = json_object_is_type(val, json_type_array) ||
+	                 json_object_is_type(val, json_type_object);
+	struct json_object **stack = container ? util_room(reaper->stack, &reaper->cap,
+	                                                   reaper->n + 1, sizeof *stack)
+	                                       : nullptr;
 	if (!stack) {
 		json_object_put(val);
 		return;
 	}
 	reaper->stack = stack;
-	reaper->stack[reaper->n++] = val;
+	stack[reaper->n++] = val;
 }
 
 /* Take a value out of the container @p top, in @p *val, a reference of its

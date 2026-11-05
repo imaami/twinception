@@ -151,7 +151,7 @@ struct jb_scan {
 	size_t    copied;   /**< bytes of the strings ended, keys included: json-c
 	                         copies each whole as it ends */
 	size_t    run;      /**< bytes of the string or scalar under way */
-	uint32_t  cap;      /**< of members */
+	size_t    cap;      /**< the number of counts that fit in members */
 	uint32_t  values;   /**< values begun, object keys included */
 	uint32_t  depth;    /**< containers open */
 	enum {
@@ -198,8 +198,10 @@ struct jb_reaper {
 };
 
 /**
- * Hand @p val to @p reaper to free; nothing else may hold a container within
- * it. Should memory run out, it is freed at once.
+ * Passes @p val to @p reaper, which frees it a few values at a time in
+ * jb_reaper_step(). No other reference to a container within @p val may
+ * exist. The function frees @p val at once if @p val is not a container,
+ * or if memory runs out.
  */
 extern void
 jb_reaper_take (struct jb_reaper   *reaper,
