@@ -136,7 +136,30 @@ enum godbolt_share : uint32_t {
 	GODBOLT_SHARES
 };
 
-static char const *const godbolt_shares[] = { "short", "state", "off" };
+/* Each entry is the name of a value of the option share. */
+static struct cstr_view const godbolt_shares[GODBOLT_SHARES] = {
+	[GODBOLT_SHARE_SHORT] = CSTR_VIEW_INIT("short"),
+	[GODBOLT_SHARE_STATE] = CSTR_VIEW_INIT("state"),
+	[GODBOLT_SHARE_OFF]   = CSTR_VIEW_INIT("off"),
+};
+
+/* Each entry is the sentence on links that ends the description of a tool
+ * with the argument share, for a value of the option share. With share
+ * off, the tools do not accept the argument share, and the sentence is
+ * empty.
+ */
+static struct cstr_view const godbolt_share_notes[GODBOLT_SHARES] = {
+	[GODBOLT_SHARE_SHORT] = CSTR_VIEW_INIT(
+		" With share true, the first line of the output is a link to the same "
+		"source, compilers and arguments on Compiler Explorer. For the link, "
+		"Compiler Explorer stores the source permanently, and anyone with the "
+		"link can read it. Set share only if the user asks for a link."),
+	[GODBOLT_SHARE_STATE] = CSTR_VIEW_INIT(
+		" With share true, the first line of the output is a link to the same "
+		"source, compilers and arguments on Compiler Explorer. The link contains "
+		"the source, and Compiler Explorer stores nothing. Set share only if the "
+		"user asks for a link."),
+};
 
 /* The configuration without options. definition() uses it if askai passes
  * no configuration.
@@ -685,15 +708,21 @@ godbolt_or (struct cstr_view t,
 	return t.len ? t : otherwise;
 }
 
-/* Returns 7 if @p t is http:// and more, 8 if it is https:// and more, or
- * 0, also if it has a byte that is not printable ASCII or is a space.
+/* Returns the length of the scheme of the URL @p t with its "://", which
+ * is 7 for http and 8 for https. Returns 0 for another scheme, for a URL
+ * that ends after its scheme, and for a URL with a byte that is not
+ * printable ASCII or is a space.
  */
 static size_t
 godbolt_scheme (struct cstr_view t)
 {
-	size_t const scheme = t.len > 7 && !memcmp(t.data, "http://", 7) ? 7
-	                    : t.len > 8 && !memcmp(t.data, "https://", 8) ? 8 : 0;
-	for (size_t i = 0; scheme && i < t.len; ++i)
+	struct cstr_view const http = CSTR_VIEW("http://");
+	struct cstr_view const https = CSTR_VIEW("https://");
+	size_t const scheme = cstr_view_starts(t, http) ? http.len
+	                    : cstr_view_starts(t, https) ? https.len : 0;
+	if (!scheme || scheme == t.len)
+		return 0;
+	for (size_t i = 0; i < t.len; ++i)
 		if (t.data[i] <= ' ' || t.data[i] > '~')
 			return 0;
 	return scheme;
@@ -2970,13 +2999,11 @@ static int
 godbolt_config_share (struct godbolt_config *c,
                       struct json_object    *v)
 {
-	struct cstr_view const t = godbolt_text(v, 1, sizeof "short", nullptr);
-	if (!t.data)
+	size_t const share = cstr_view_index(godbolt_shares, GODBOLT_SHARES, jb_view(v));
+	if (share == GODBOLT_SHARES)
 		return EINVAL;
-	for (c->share = 0; c->share < GODBOLT_SHARES; ++c->share)
-		if (!strcmp(t.data, godbolt_shares[c->share]))
-			return 0;
-	return EINVAL;
+	c->share = (uint32_t)share;
+	return 0;
 }
 
 /* The plugin's configure(). It stores the defaults, and then the options
@@ -3019,9 +3046,27 @@ godbolt_configure (void               *config,
 	return 0;
 }
 
+/* Adds @p val as the member @p key of @p obj, which is a part of the
+ * definition @p def, and returns @p def. If @p obj or @p val is nullptr,
+ * or if json-c cannot add the member, the function frees @p val and @p def
+ * and returns nullptr.
+ */
+static struct json_object *
+godbolt_definition_add (struct json_object *def,
+                        struct json_object *obj,
+                        char const         *key,
+                        struct json_object *val)
+{
+	if (obj && val && !json_object_object_add(obj, key, val))
+		return def;
+	json_object_put(val);
+	json_object_put(def);
+	return nullptr;
+}
+
 /* Returns the definition of the tool @p tool in the JSON text @p json as a
  * new reference. Its description is @p head, the base URL of the
- * configuration @p service, and @p tail. If the tool has the argument
+ * configuration @p service, and @p tail. If the tool accepts the argument
  * share and the configuration does not turn links off, the function adds
  * the property share and a sentence on links to the definition. With
  * short links, readOnlyHint is false, because Compiler Explorer stores the
@@ -3036,52 +3081,28 @@ godbolt_definition (void const        *service,
                     struct cstr_view   tail)
 {
 	struct godbolt_config const *cfg = service ? service : &godbolt_defaults;
-	bool const shares = godbolt_params[tool].args >> GODBOLT_ARG_SHARE & 1 &&
-	                    cfg->share != GODBOLT_SHARE_OFF;
-	struct cstr_view const link = !shares ? (struct cstr_view){}
-		: cfg->share == GODBOLT_SHARE_SHORT
-		? CSTR_VIEW(" With share true, the first line of the output is a link to the "
-		            "same source, compilers and arguments on Compiler Explorer. For the "
-		            "link, Compiler Explorer stores the source permanently, and anyone "
-		            "with the link can read it. Set share only if the user asks for a "
-		            "link.")
-		: CSTR_VIEW(" With share true, the first line of the output is a link to the "
-		            "same source, compilers and arguments on Compiler Explorer. The link "
-		            "contains the source, and Compiler Explorer stores nothing. Set share "
-		            "only if the user asks for a link.");
-	char text[2048];
-	if (cfg->len > GODBOLT_URL_MAX || cfg->share >= GODBOLT_SHARES ||
-	    head.len + cfg->len + tail.len + link.len > sizeof text)
+	if (cfg->len > GODBOLT_URL_MAX || cfg->share >= GODBOLT_SHARES)
 		return nullptr;
-	char *end = godbolt_cat(godbolt_cat(text, head), (struct cstr_view){ cfg->url, cfg->len });
+	struct cstr_view const url = { cfg->url, cfg->len };
+	struct cstr_view const link = godbolt_params[tool].args >> GODBOLT_ARG_SHARE & 1
+	                              ? godbolt_share_notes[cfg->share] : (struct cstr_view){};
+	char text[2048];
+	if (head.len + url.len + tail.len + link.len > sizeof text)
+		return nullptr;
+	char *end = godbolt_cat(godbolt_cat(text, head), url);
 	end = godbolt_cat(godbolt_cat(end, tail), link);
 	struct json_object *def = json_tokener_parse(json);
-	struct json_object *desc = json_object_new_string_len(text, (int)(end - text));
-	if (!def || !desc || json_object_object_add(def, "description", desc)) {
-		json_object_put(desc);
-		json_object_put(def);
-		return nullptr;
-	}
-	if (!shares)
+	def = godbolt_definition_add(def, def, "description",
+	                             json_object_new_string_len(text, (int)(end - text)));
+	if (!link.len)
 		return def;
 	struct json_object *props = godbolt_get(godbolt_get(def, "inputSchema"), "properties");
-	struct json_object *hints = godbolt_get(def, "annotations");
-	struct json_object *share = props && hints ? json_tokener_parse(
+	def = godbolt_definition_add(def, props, "share", json_tokener_parse(
 		"{\"type\":\"boolean\",\"default\":false,\"description\":\"true to begin "
 		"the output with a link to the same source, compilers and arguments on "
-		"Compiler Explorer.\"}") : nullptr;
-	if (!share || json_object_object_add(props, "share", share)) {
-		json_object_put(share);
-		json_object_put(def);
-		return nullptr;
-	}
-	struct json_object *hint = json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT);
-	if (!hint || json_object_object_add(hints, "readOnlyHint", hint)) {
-		json_object_put(hint);
-		json_object_put(def);
-		return nullptr;
-	}
-	return def;
+		"Compiler Explorer.\"}"));
+	return godbolt_definition_add(def, godbolt_get(def, "annotations"), "readOnlyHint",
+	                              json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT));
 }
 
 /* The parts of the definitions that several tools share. */
