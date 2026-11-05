@@ -53,6 +53,7 @@
 
 #include "buf.h"
 #include "cstr_view.h"
+#include "dstr.h"
 #include "list.h"
 #include "loop.h"
 
@@ -180,12 +181,11 @@ struct ledger_task {
 	                                      lock; nullptr once the record is
 	                                      out of the ledger */
 	struct loop         *loop;       /**< the call's */
-	char                *result;     /**< the call's reply, once whole:
-	                                      '"result":' or '"error":', its
-	                                      value, and a '}' (src/mcp.c);
-	                                      nullptr if none */
-	size_t               len;        /**< bytes of it written */
-	size_t               size;       /**< and to come */
+	struct dstr          result;     /**< the reply of the call: '"result":'
+	                                      or '"error":', its value, and a '}'
+	                                      (src/mcp.c) */
+	size_t               size;       /**< the bytes of the whole reply, or 0
+	                                      if there is no reply */
 	uint64_t             hash;       /**< of its id */
 	uint64_t             created;    /**< CLOCK_REALTIME ns */
 	uint64_t             ended;      /**< likewise, once its call has */
@@ -274,15 +274,16 @@ ledger_restore (struct ledger     *ledger,
                                         struct msg  *msg),
                 int               *e);
 
-/** The task's call: room for its result, of @p len bytes, to come; 0, or
- *  ENOMEM.
+/** Makes room for the result of the call of @p task, of @p len bytes.
+ *  Returns 0, or ENOMEM.
  */
 extern int
 ledger_task_reserve (struct ledger_task *task,
                      size_t              len);
 
-/** The task's call: the next @p bytes of its result; 0, or EPIPE past the
- *  room made.
+/** Appends @p bytes to the result of the call of @p task. Returns 0, or
+ *  EPIPE if the result would exceed the room that ledger_task_reserve()
+ *  made.
  */
 extern int
 ledger_task_write (struct ledger_task *task,

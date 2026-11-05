@@ -217,6 +217,7 @@ override UNIT := buf datauri handle instance ledger turn
 $Otests/buf: $Otests/src/buf.c.o
 $Otests/datauri: $Otests/src/datauri.c.o
 $Otests/handle $Otests/instance $Otests/ledger $Otests/turn: $Otests/src/log.c.o
+$Otests/ledger: $Otests/src/dstr.c.o
 
 $(UNIT:%=$Otests/%): $Otests/%: $Otests/%.c.o
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^

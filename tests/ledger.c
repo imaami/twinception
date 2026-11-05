@@ -240,8 +240,8 @@ test_restore (void)
 	}
 	CHECK(done->created == 10 && done->ended == 20 && done->tool == 7 &&
 	      done->kind == LEDGER_JOB && atomic_load(&done->status) == LEDGER_COMPLETED &&
-	      done->len == body.len && !memcmp(done->result, body.ptr, body.len) &&
-	      done->result != (char *)result && test_found(l, A, done->id) &&
+	      dstr_len(&done->result) == body.len && done->size == body.len &&
+	      !memcmp(dstr_get(&done->result), body.ptr, body.len) && test_found(l, A, done->id) &&
 	      !test_found(l, B, done->id) && !ledger_owner_find(l, A)->running);
 	CHECK(w && atomic_load(&w->posted));
 	test_deliver();
@@ -387,7 +387,8 @@ test_remove (void)
 	      ledger_remove(l, A, id) == ENOENT && !test_found(l, A, old->id) &&
 	      !old->owner && atomic_load(&old->refs) == 2 &&
 	      atomic_load(&old->status) == LEDGER_FAILED &&
-	      old->len == body.len && !memcmp(old->result, body.ptr, body.len) &&
+	      dstr_len(&old->result) == body.len && old->size == body.len &&
+	      !memcmp(dstr_get(&old->result), body.ptr, body.len) &&
 	      !l->n && !l->n_owners && !l->bytes);
 	struct ledger_task *next = ledger_restore(l, A, LEDGER_JOB, 5, id, old->created, 0,
 	                                         LEDGER_WORKING, (struct span){}, test_loop,

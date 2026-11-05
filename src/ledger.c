@@ -326,10 +326,10 @@ ledger_drop (struct ledger      *l,
 	t->owner = nullptr;
 	--o->n;
 	ledger_owner_gc(l, o);
-	l->bytes -= t->len;
+	l->bytes -= t->size;
 	--l->n;
 	hist_count(&l->metrics.kept, -(uint64_t)1);
-	hist_count(&l->metrics.bytes, -(uint64_t)t->len);
+	hist_count(&l->metrics.bytes, -(uint64_t)t->size);
 	hist_count(&l->metrics.gone, 1);
 }
 
@@ -562,17 +562,13 @@ ledger_restore (struct ledger     *ledger,
 	list_init(&t->mine);
 	t->owner = nullptr;
 	t->loop = loop;
-	t->result = nullptr;
-	t->len = t->size = result.len;
-	if (result.len) {
-		t->result = malloc(result.len);
-		if (!t->result) {
-			free(t);
-			t = nullptr;
-			*e = ENOMEM;
-			return nullptr;
-		}
-		memcpy(t->result, result.ptr, result.len);
+	t->result = (struct dstr)DSTR_INIT;
+	t->size = result.len;
+	if (result.len && !dstr_cat_n(&t->result, (char const *)result.ptr, result.len)) {
+		free(t);
+		t = nullptr;
+		*e = ENOMEM;
+		return nullptr;
 	}
 	t->created = created;
 	t->ended = working ? 0 : ended ? ended : clk_realtime_ns();
@@ -605,9 +601,9 @@ ledger_restore (struct ledger     *ledger,
 		hist_count(&m->kept, 1);
 		if (!working) {
 			list_append(&ledger->ended, &t->hook);
-			ledger->bytes += t->len;
+			ledger->bytes += t->size;
 			hist_count(&m->ended[status], 1);
-			hist_count(&m->bytes, t->len);
+			hist_count(&m->bytes, t->size);
 			hits = ledger_owner_wake(t->owner);
 			excess = ledger_sweep(ledger, t, false);
 		}
@@ -619,8 +615,7 @@ ledger_restore (struct ledger     *ledger,
 	if (*e) {
 		if (*e == EBUSY || *e == ENOSPC)
 			hist_count(*e == EBUSY ? &m->refused : &m->full, 1);
-		free(t->result);
-		t->result = nullptr;
+		dstr_cleanup(&t->result);
 		free(t);
 		t = nullptr;
 		return nullptr;
@@ -632,25 +627,20 @@ int
 ledger_task_reserve (struct ledger_task *task,
                      size_t              len)
 {
-	free(task->result);
-	task->result = malloc(len ? len : 1);
-	task->len = 0;
-	if (!task->result) {
-		task->size = 0;
-		return ENOMEM;
-	}
-	task->size = len;
-	return 0;
+	dstr_clear(&task->result);
+	task->size = dstr_reserve(&task->result, len) ? len : 0;
+	return task->size == len ? 0 : ENOMEM;
 }
 
 int
 ledger_task_write (struct ledger_task *task,
                    struct span         bytes)
 {
-	if (bytes.len > task->size - task->len)
+	if (bytes.len > task->size - dstr_len(&task->result))
 		return EPIPE;
-	memcpy(task->result + task->len, bytes.ptr, bytes.len);
-	task->len += bytes.len;
+	/* ledger_task_reserve() made the room, so the append does not
+	 * allocate. */
+	(void)dstr_cat_n(&task->result, (char const *)bytes.ptr, bytes.len);
 	return 0;
 }
 
@@ -662,10 +652,11 @@ ledger_end (struct ledger      *ledger,
 	if (!ledger || !task || status == LEDGER_WORKING || status >= LEDGER_STATUSES ||
 	    atomic_load_explicit(&task->status, memory_order_relaxed) != LEDGER_WORKING)
 		return;
-	if (!task->result || task->len != task->size || status == LEDGER_CANCELLED) {
-		free(task->result);
-		task->result = nullptr;
-		task->len = task->size = 0;
+	/* Only a whole reply is kept, so task->size is the bytes of the kept
+	 * reply. */
+	if (dstr_len(&task->result) != task->size || status == LEDGER_CANCELLED) {
+		dstr_cleanup(&task->result);
+		task->size = 0;
 	}
 	task->ended = clk_realtime_ns();
 	task->due = loop_clock() + LEDGER_KEEP * NS;
@@ -674,11 +665,11 @@ ledger_end (struct ledger      *ledger,
 	list_append(&ledger->ended, &task->hook);
 	--task->owner->running;
 	struct ledger_wait *hits = ledger_owner_wake(task->owner);
-	ledger->bytes += task->len;
+	ledger->bytes += task->size;
 	struct ledger_task *gone = ledger_sweep(ledger, task, false);
 	pthread_mutex_unlock(&ledger->lock);
 	hist_count(&ledger->metrics.ended[status], 1);
-	hist_count(&ledger->metrics.bytes, task->len);
+	hist_count(&ledger->metrics.bytes, task->size);
 	ledger_wake(hits);
 	ledger_put_all(gone);
 }
@@ -744,7 +735,7 @@ ledger_task_put (struct ledger_task *task)
 {
 	if (!task || atomic_fetch_sub_explicit(&task->refs, 1, memory_order_acq_rel) != 1)
 		return;
-	free(task->result);
+	dstr_cleanup(&task->result);
 	free(task);
 }
 

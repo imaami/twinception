@@ -1486,11 +1486,10 @@ static uint64_t mcp_req_owner (struct mcp_req const *req);
 static enum ledger_status
 mcp_req_status (struct mcp_req const *req)
 {
-	static char const erred[] = "\"error\":";
-	size_t n = sizeof erred - 1;
 	struct ledger_task const *task = req->task;
-	bool failed = task && (!task->result || task->len != task->size ||
-	                      (task->len >= n && !memcmp(task->result, erred, n)));
+	struct cstr_view const reply = task ? cstr_view_dstr(&task->result) : (struct cstr_view){};
+	bool failed = task && (!task->size || reply.len != task->size ||
+	                      cstr_view_starts(reply, CSTR_VIEW("\"error\":")));
 	return req->error == ECANCELED || req->withdrawn ? LEDGER_CANCELLED
 	     : req->error || failed ? LEDGER_FAILED : LEDGER_COMPLETED;
 }
@@ -2748,12 +2747,13 @@ mcp_req_archive_end (struct mcp_req *req)
 	req->archived_end = true;
 	struct ledger_task const *task = req->task;
 	enum ledger_status status = mcp_req_status(req);
-	size_t len = !task || status == LEDGER_CANCELLED || task->len != task->size ? 0 : task->len;
+	struct cstr_view const reply = task && status != LEDGER_CANCELLED &&
+	                               dstr_len(&task->result) == task->size
+	                             ? cstr_view_dstr(&task->result) : CSTR_VIEW("");
 	struct json_object *obj = jb_object(
 		"status", json_object_new_int(status),
 		"ended", json_object_new_uint64(clk_realtime_ns()),
-		"result", json_object_new_string_len(task && task->result ? task->result : "",
-		                                     (int)len), nullptr);
+		"result", jb_string(reply), nullptr);
 	int e = mcp_req_archive(req, status == LEDGER_CANCELLED ? "cancel" : "result",
 	                        obj, draining ? nullptr : mcp_req_archive_finished);
 	if (e) {
@@ -5144,7 +5144,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 	struct mcp_piece problem =
 		status == LEDGER_WORKING ? TEXT("That job still runs: wait for it.")
 		: status == LEDGER_CANCELLED ? TEXT("That job was cancelled.")
-		: !task->result ? TEXT("That job failed, and askai stored no result of it.")
+		: !task->size ? TEXT("That job failed, and askai stored no result of it.")
 		: (struct mcp_piece){};
 	if (problem.bytes.data) {
 		ledger_task_put(task);
@@ -7095,12 +7095,13 @@ mcp_req_show (struct mcp_req *req)
 	struct mcp_static const *st = req->mcp->st;
 	struct loop *loop = req->mcp->loop;
 	struct ledger_task *task = req->shown;
-	bool tail = req->modern && task->len > sizeof key &&
-	            !memcmp(task->result, key, sizeof key - 1);
-	size_t left = (tail ? task->len - 2 : task->len) - req->off;
+	struct cstr_view const reply = cstr_view_dstr(&task->result);
+	bool tail = req->modern && reply.len > sizeof key &&
+	            cstr_view_starts(reply, (struct cstr_view){ key, sizeof key - 1 });
+	size_t left = (tail ? reply.len - 2 : reply.len) - req->off;
 	size_t room = loop_room(loop, LOOP_COPY);
 	size_t n = left < room ? left : room;
-	int e = mcp_req_put(req, &RAW(task->result + req->off, n), 1);
+	int e = mcp_req_put(req, &RAW(reply.data + req->off, n), 1);
 	loop_work(loop, LOOP_COPY, n);
 	req->off += n;
 	if (!e && n < left) {
@@ -7151,7 +7152,7 @@ mcp_req_task_show (struct mcp_req     *req,
 	 * the run time of the call plus the time that the record stays. */
 	if (status != LEDGER_WORKING) {
 		atomic_store_explicit(&task->told, 1, memory_order_relaxed);
-		whole = task->result != nullptr;
+		whole = task->size != 0;
 		updated_at = task->ended;
 		uint64_t ran = task->ended > task->created ? task->ended - task->created : 0;
 		n_ttl = util_format(ttl, sizeof ttl, "%" PRIu64,
