@@ -224,8 +224,9 @@ $(UNIT:%=$Otests/%): $Otests/%: $Otests/%.c.o
 # Each source is compiled on its own, as in mk/common.mk. -MMD writes a
 # rule to a .d file beside the object. The rule lists every file that the
 # source includes, directly or through other files, as a prerequisite of
-# the object. The .d files are included at the end of this makefile, so a
-# change of an included file rebuilds only the objects that include it.
+# the object. Every .d file in $Otests is included at the end of this
+# makefile, so a change of an included file rebuilds only the objects that
+# include it.
 $Otests/%.c.o: $(TEST_DIR)%.c | $Otests
 	$(CC) $(TEST_FLAGS) -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) -MMD -c -o "$@" "$<"
 
@@ -266,18 +267,6 @@ check-load: | load-build askai
 load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
--include $(UNIT:%=$Otests/%.c.d) $Otests/journal.c.d $Otests/src/buf.c.d $Otests/src/datauri.c.d \
-         $Otests/src/log.c.d $Otests/cli_input.c.d $Otests/cli_ui.c.d $Otests/autocomplete.c.d \
-         $Otests/cli_state.c.d $Otests/src/cli_state.c.d \
-         $Otests/cli_loop.c.d $Otests/cli_io.c.d $Otests/cli_scrollback.c.d \
-         $Otests/src/cli_loop.c.d $Otests/src/cli_io.c.d $Otests/src/cli_mailbox.c.d \
-         $Otests/src/cli_render.c.d $Otests/src/cli_scrollback.c.d $Otests/src/cli_style.c.d $Otests/src/blocker.c.d $Otests/src/loop.c.d \
-         $Otests/autocomplete_fixture.c.d $Otests/src/cli_console.c.d \
-         $Otests/src/autocomplete.c.d $Otests/src/autocomplete_file.c.d $Otests/src/cli_command.c.d \
-         $Otests/src/dstr.c.d $Otests/src/child.c.d \
-         $Otests/src/cli_ui.c.d $Otests/src/jb.c.d \
-         $Otests/cstr_view.c.d $Otests/src/cstr_view.c.d \
-         $Otests/review.c.d $Otests/src/review.c.d \
-         $(LOAD)/gen.d $(LOAD)/mock.d
+-include $(wildcard $Otests/*.c.d $Otests/src/*.c.d) $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif
