@@ -575,8 +575,7 @@ struct mcp_req {
 	struct json_object  *args[JOB_CALLS];  /* a turn's tool calls' arguments,
 	                                          each until its call; nullptr
 	                                          if they are no object */
-	char const          *text;       /* the draft serialized */
-	size_t               len;
+	struct cstr_view     text;       /* the serialized draft */
 	size_t               off;        /* bytes of the next splice written, of
 	                                    the answer escaped, or metrics done */
 	size_t               values;     /* of msg */
@@ -743,22 +742,22 @@ static char const busy[] = "Too many tool calls are under way; try again in a "
                            "few seconds.";
 
 /* A run of bytes: a piece of JSON text, or words for a client or the
- * model. mcp_slot_result() takes words as text, whatever their flag.
+ * model. mcp_slot_result() writes words as text, whatever their flag.
  */
 struct mcp_piece {
-	char const *ptr;
-	size_t      len;
-	uint64_t    text;  /* bool, widened over the padding: as mcp_req_put()
-	                      and mcp_req_upload() write the piece, text, which
-	                      they escape into a JSON string, else JSON as it is */
+	struct cstr_view bytes;
+	uint64_t         text;  /* bool, widened over the padding. If it is
+	                           set, mcp_req_put() and mcp_req_upload()
+	                           escape the bytes into a JSON string, else
+	                           they write the bytes as JSON text */
 };
 
-#define FRAG(s) ((struct mcp_piece){ s, sizeof s - 1, false })
-#define TEXT(s) ((struct mcp_piece){ s, sizeof s - 1, true })
-#define DSTR(d) ((struct mcp_piece){ dstr_get(d), dstr_len(d), false })
-#define BYTES(b) ((struct mcp_piece){ (b).data, (b).len, false })
-#define ESC(p, n) ((struct mcp_piece){ (char const *)(p), (n), true })
-#define RAW(p, n) ((struct mcp_piece){ (char const *)(p), (n), false })
+#define FRAG(s) ((struct mcp_piece){ { s, sizeof s - 1 }, false })
+#define TEXT(s) ((struct mcp_piece){ { s, sizeof s - 1 }, true })
+#define DSTR(d) ((struct mcp_piece){ cstr_view_dstr(d), false })
+#define BYTES(b) ((struct mcp_piece){ (b), false })
+#define ESC(p, n) ((struct mcp_piece){ { (char const *)(p), (n) }, true })
+#define RAW(p, n) ((struct mcp_piece){ { (char const *)(p), (n) }, false })
 #define SPAN(s) ((struct span){ (unsigned char *)(uintptr_t)(s), sizeof s - 1 })
 
 /* Whether @p s, a field present, is the @p len bytes at @p str. */
@@ -816,21 +815,19 @@ static uint8_t
 mcp_method_index (char const *method,
                   size_t      len)
 {
-#define M(s) { s, sizeof s - 1, false }
-	static struct mcp_piece const names[METHOD_N] = {
-		[METHOD_INITIALIZE] = M("initialize"),
-		[METHOD_PING]       = M("ping"),
-		[METHOD_TOOLS_LIST] = M("tools/list"),
-		[METHOD_TOOLS_CALL] = M("tools/call"),
-		[METHOD_DISCOVER]   = M("server/discover"),
-		[METHOD_TASKS_GET]    = M("tasks/get"),
-		[METHOD_TASKS_UPDATE] = M("tasks/update"),
-		[METHOD_TASKS_CANCEL] = M("tasks/cancel"),
+	static struct cstr_view const names[METHOD_N] = {
+		[METHOD_INITIALIZE]   = CSTR_VIEW_INIT("initialize"),
+		[METHOD_PING]         = CSTR_VIEW_INIT("ping"),
+		[METHOD_TOOLS_LIST]   = CSTR_VIEW_INIT("tools/list"),
+		[METHOD_TOOLS_CALL]   = CSTR_VIEW_INIT("tools/call"),
+		[METHOD_DISCOVER]     = CSTR_VIEW_INIT("server/discover"),
+		[METHOD_TASKS_GET]    = CSTR_VIEW_INIT("tasks/get"),
+		[METHOD_TASKS_UPDATE] = CSTR_VIEW_INIT("tasks/update"),
+		[METHOD_TASKS_CANCEL] = CSTR_VIEW_INIT("tasks/cancel"),
 	};
-#undef M
+	struct cstr_view const key = { method, len };
 	uint8_t i = METHOD_N;
-	while (--i && (!names[i].len || names[i].len != len ||
-	               memcmp(method, names[i].ptr, len)))
+	while (--i && (!names[i].len || !cstr_view_equal(names[i], key)))
 		;
 	return i;
 }
@@ -881,13 +878,13 @@ mcp_piece_write (struct mcp_piece const *p,
 		int e = buf_reserve(buf, 6 * len, max, &s);
 		if (e)
 			return e;
-		buf_commit(buf, jb_escape((char *)s.ptr, p->ptr + off, len));
+		buf_commit(buf, jb_escape((char *)s.ptr, p->bytes.data + off, len));
 		return 0;
 	}
 	int e = buf_reserve(buf, len, max, &s);
 	if (e)
 		return e;
-	memcpy(s.ptr, p->ptr + off, len);
+	memcpy(s.ptr, p->bytes.data + off, len);
 	buf_commit(buf, len);
 	return 0;
 }
@@ -1269,10 +1266,10 @@ mcp_req_client (struct mcp_req const *req)
  * hold back the failures.
  */
 static void
-mcp_req_log_call (struct mcp_req *req,
-                  char const     *how,
-                  struct span     out,
-                  bool            failed)
+mcp_req_log_call (struct mcp_req   *req,
+                  char const       *how,
+                  struct cstr_view  out,
+                  bool              failed)
 {
 	static struct log_site sites[2];
 	enum log_level level = failed ? LOG_WARN : LOG_VERBOSE;
@@ -1295,7 +1292,7 @@ mcp_req_log_call (struct mcp_req *req,
 		            req->task->id);
 	char text[ERROR_LOG + 8] = "";
 	if (failed && out.len)
-		mcp_quote(text, sizeof text, (char const *)out.ptr, out.len, ERROR_LOG);
+		mcp_quote(text, sizeof text, out.data, out.len, ERROR_LOG);
 	log_put(&sites[failed], "tool call %s from %s %s after %.1f s (%zu %s)%s%s%s%s%s%s",
 	        mcp_slot_offer(&req->self)->name, mcp_req_client(req), how,
 	        mcp_elapsed(req->self.start), out.len, mcp_bytes(out.len), record, ask,
@@ -1661,9 +1658,9 @@ mcp_req_put (struct mcp_req         *req,
              size_t                  n)
 {
 	for (size_t i = 0; i < n; ++i) {
-		if (!p[i].len)
+		if (!p[i].bytes.len)
 			continue;
-		int e = mcp_piece_write(&p[i], 0, p[i].len, &req->reply, SIZE_MAX);
+		int e = mcp_piece_write(&p[i], 0, p[i].bytes.len, &req->reply, SIZE_MAX);
 		if (e)
 			return e;
 	}
@@ -1779,9 +1776,7 @@ mcp_req_error (struct mcp_req         *req,
                struct mcp_piece const *data,
                size_t                  n_data)
 {
-	mcp_req_log_call(req, "failed",
-	                 (struct span){ (unsigned char *)(uintptr_t)message.ptr, message.len },
-	                 true);
+	mcp_req_log_call(req, "failed", message.bytes, true);
 	mcp_req_close(req, status, SPAN(JSON_FIELD),
 	              mcp_req_error_put(req, code, message, data, n_data));
 }
@@ -1827,7 +1822,7 @@ mcp_req_tool_open (struct mcp_req   *req,
 {
 	struct mcp_piece const p[] = {
 		FRAG("{\"content\":[{\"type\":\"text\",\"text\":\""),
-		ESC(text.ptr, text.len),
+		ESC(text.bytes.data, text.bytes.len),
 	};
 	int e = mcp_req_open(req, FRAG("\"result\":"));
 	return e ? e : mcp_req_put(req, p, ARRAY_SIZE(p));
@@ -1921,7 +1916,7 @@ mcp_slot_result (struct mcp_slot  *slot,
 		if (failed)
 			slot->skip = 0;
 		dstr_clear(&slot->answer);
-		if (!dstr_cat_n(&slot->answer, text.ptr, text.len)) {
+		if (!dstr_cat_n(&slot->answer, text.bytes.data, text.bytes.len)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
 		}
@@ -1929,8 +1924,7 @@ mcp_slot_result (struct mcp_slot  *slot,
 		return;
 	}
 	req->failed = failed;
-	mcp_req_log_call(req, failed ? "failed" : "answered",
-	                 (struct span){ (unsigned char *)(uintptr_t)text.ptr, text.len }, failed);
+	mcp_req_log_call(req, failed ? "failed" : "answered", text.bytes, failed);
 	int e = mcp_req_tool_open(req, text);
 	if (e) {
 		mcp_req_abort(req, e);
@@ -2012,7 +2006,8 @@ mcp_slot_respond (struct mcp_slot *slot,
 		mcp_slot_result(slot, ESC(why, n), true);
 		return;
 	}
-	mcp_req_log_call(req, failed ? "failed" : "answered", text, failed);
+	mcp_req_log_call(req, failed ? "failed" : "answered",
+	                 (struct cstr_view){ (char const *)text.ptr, text.len }, failed);
 	while (off < text.len && (text.ptr[off] & 0xc0) == 0x80)
 		++off;
 	req->failed = failed;
@@ -2291,14 +2286,11 @@ static bool
 mcp_overflow_what (char const *rest,
                    size_t      len)
 {
-#define W(s) { s, sizeof s - 1 }
-	static struct {
-		char const *s;
-		size_t      n;
-	} const what[] = { W("size"), W("length"), W("window") };
-#undef W
+	static struct cstr_view const what[] = {
+		CSTR_VIEW_INIT("size"), CSTR_VIEW_INIT("length"), CSTR_VIEW_INIT("window"),
+	};
 	for (size_t k = 0; k < ARRAY_SIZE(what); ++k)
-		if (len >= what[k].n && !strncasecmp(rest, what[k].s, what[k].n))
+		if (len >= what[k].len && !strncasecmp(rest, what[k].data, what[k].len))
 			return true;
 	return false;
 }
@@ -2544,10 +2536,10 @@ mcp_req_copy (struct mcp_req *req,
 	struct mcp_splice const *splices = req->history_splices ? req->history_splices
 	                                                     : req->splice;
 	size_t from = k ? splices[k - 1].at : 0;
-	size_t len = (k < req->splices ? splices[k].at : req->len) - from;
+	size_t len = (k < req->splices ? splices[k].at : req->text.len) - from;
 	if (!len)
 		return 0;
-	return mcp_piece_write(&RAW(req->text, req->len), from, len, &req->upload,
+	return mcp_piece_write(&BYTES(req->text), from, len, &req->upload,
 	                       SIZE_MAX);
 }
 
@@ -3013,7 +3005,7 @@ mcp_on_task_cancel (struct loop *loop,
 	ledger_task_put(task);
 	if (!req)
 		return;
-	mcp_req_log_call(req, "cancelled by its client", (struct span){}, false);
+	mcp_req_log_call(req, "cancelled by its client", (struct cstr_view){}, false);
 	mcp_req_abort(req, ECANCELED);
 }
 
@@ -3036,7 +3028,7 @@ mcp_on_withdraw (struct loop *loop,
 		return;
 	if (!req->sse)
 		(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
-	mcp_req_log_call(req, "cancelled by notifications/cancelled", (struct span){},
+	mcp_req_log_call(req, "cancelled by notifications/cancelled", (struct cstr_view){},
 	                 false);
 	req->withdrawn = true;
 	mcp_req_finish(req);
@@ -3692,8 +3684,8 @@ mcp_req_draft (struct mcp_req     *req,
 	req->prompt = prompt;
 	if (!req->draft)
 		return ENOMEM;
-	req->text = json_object_to_json_string_length(req->draft, JB_WIRE, &req->len);
-	return req->text ? mcp_req_copy(req, 0) : ENOMEM;
+	req->text.data = json_object_to_json_string_length(req->draft, JB_WIRE, &req->text.len);
+	return req->text.data ? mcp_req_copy(req, 0) : ENOMEM;
 }
 
 /* Logs, with --verbose, the start of the ask call of @p req, whose prompt
@@ -3818,7 +3810,7 @@ mcp_req_ask (struct mcp_req     *req,
 		? TEXT("The thread argument must be a thread's id, as an earlier answer "
 		       "gave it: 32 hexadecimal digits.")
 		: (struct mcp_piece){};
-	if (problem.ptr) {
+	if (problem.bytes.data) {
 		mcp_slot_result(&req->self, problem, true);
 		return;
 	}
@@ -3999,8 +3991,8 @@ mcp_req_upload_piece (struct mcp_req         *req,
 {
 	struct loop *loop = req->mcp->loop;
 	enum loop_unit kind = q->text ? LOOP_ESCAPE : LOOP_COPY;
-	while (req->off < q->len) {
-		size_t left = q->len - req->off;
+	while (req->off < q->bytes.len) {
+		size_t left = q->bytes.len - req->off;
 		size_t room = loop_room(loop, kind);
 		size_t k = left < room ? left : room;
 		int e = k ? mcp_piece_write(q, req->off, k, &req->upload, UPLOAD_MAX)
@@ -4288,7 +4280,7 @@ mcp_req_call_put (struct mcp_req         *req,
 		return e;
 	struct mcp_piece const p[] = {
 		items,
-		BYTES(req->listed || items.len ? f->call_next : f->call),
+		BYTES(req->listed || items.bytes.len ? f->call_next : f->call),
 		id,
 		BYTES(f->name),
 		ESC(c->name.data, c->name.len),
@@ -4319,7 +4311,7 @@ mcp_req_turn_call (struct mcp_req         *req,
 	                    : mcp_req_upload(req, &items, 1);
 	if (e)
 		return e;
-	req->listed = req->listed || items.len;
+	req->listed = req->listed || items.bytes.len;
 	req->replayed = h.replay;
 	return 0;
 }
@@ -4882,7 +4874,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 		: call && !json_object_is_type(call, json_type_object)
 		? TEXT("The arguments argument must be an object.")
 		: (struct mcp_piece){};
-	if (problem.ptr) {
+	if (problem.bytes.data) {
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
@@ -4925,7 +4917,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 		: call && !json_object_is_type(call, json_type_object)
 		? TEXT("The arguments argument must be an object.")
 		: (struct mcp_piece){};
-	if (problem.ptr) {
+	if (problem.bytes.data) {
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
@@ -5125,7 +5117,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 		: status == LEDGER_CANCELLED ? TEXT("That job was cancelled.")
 		: !task->result ? TEXT("That job failed, and askai stored no result of it.")
 		: (struct mcp_piece){};
-	if (problem.ptr) {
+	if (problem.bytes.data) {
 		ledger_task_put(task);
 		mcp_slot_result(slot, problem, true);
 		return;
@@ -5255,7 +5247,7 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		: !job ? TEXT("The job argument must be the number of a job you started.")
 		: job->cancelled ? TEXT("That job was cancelled.")
 		: (struct mcp_piece){};
-	if (problem.ptr) {
+	if (problem.bytes.data) {
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
@@ -5403,7 +5395,7 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 	}
 	char why[160];
 	struct mcp_piece problem = {};
-	for (size_t i = 0; !problem.ptr && i < n; ++i) {
+	for (size_t i = 0; !problem.bytes.data && i < n; ++i) {
 		size_t len = 0;
 		char const *id = jb_str(jb_at(list, i), &len);
 		struct ledger_task *task = id && len == LEDGER_ID
@@ -5418,7 +5410,7 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 		                               "askai stores a job for an hour after it ends.",
 		                               (int)util_clip(id, len, LEDGER_ID), id));
 	}
-	if (problem.ptr) {
+	if (problem.bytes.data) {
 		free(w);
 		mcp_slot_result(slot, problem, true);
 		return;
@@ -5578,7 +5570,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 		: o && (!note || len > TIMER_NOTE || jb_utf8(note, len) < len)
 		? TEXT("The note argument must be a string of at most 200 bytes.")
 		: (struct mcp_piece){};
-	if (problem.ptr) {
+	if (problem.bytes.data) {
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
@@ -6536,7 +6528,8 @@ mcp_req_go_on (struct mcp_req   *req,
                struct mcp_piece  text)
 {
 	struct dstr *d = &req->self.answer;
-	if (!dstr_cat_n(d, text.ptr, text.len) || !CAT(d, "[askai: go on with the task.]")) {
+	if (!dstr_cat_n(d, text.bytes.data, text.bytes.len) ||
+	    !CAT(d, "[askai: go on with the task.]")) {
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
@@ -6867,7 +6860,7 @@ mcp_slot_ask (struct mcp_slot    *slot,
 			: has_action && !jb_is(action, "result") && !jb_is(action, "cancel")
 			? TEXT("The action argument must be result or cancel.")
 			: (struct mcp_piece){};
-		if (problem.ptr) {
+		if (problem.bytes.data) {
 			mcp_slot_result(slot, problem, true);
 			return;
 		}
@@ -6927,9 +6920,9 @@ mcp_req_tools_call (struct mcp_req     *req,
 		struct mcp_piece what = str ? ESC(str, util_clip(str, len, 100))
 		                            : TEXT("(none)");
 		char msg[32 + 6 * 100];
-		memcpy(msg, head.ptr, head.len);
-		size_t n = jb_escape(msg + head.len, what.ptr, what.len);
-		mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, head.len + n), nullptr, 0);
+		memcpy(msg, head.bytes.data, head.bytes.len);
+		size_t n = jb_escape(msg + head.bytes.len, what.bytes.data, what.bytes.len);
+		mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, head.bytes.len + n), nullptr, 0);
 		return;
 	}
 	struct json_object *stream = nullptr;
@@ -7086,7 +7079,7 @@ mcp_req_task_show (struct mcp_req     *req,
                    struct ledger_task *task)
 {
 	static_assert(POLL_MS == 1000, "the reply says");
-#define S(s) { s, sizeof s - 1, false }
+#define S(s) { CSTR_VIEW_INIT(s), false }
 	static struct mcp_piece const statuses[LEDGER_STATUSES] = {
 		[LEDGER_WORKING]   = S("working"),
 		[LEDGER_COMPLETED] = S("completed"),
@@ -7797,7 +7790,7 @@ mcp_on_cancel (struct stream *s)
 		return;
 	/* A reply that has gone whole ends as it did (mcp_req_abort()). */
 	if (req->phase != PHASE_END)
-		mcp_req_log_call(req, "cancelled by a closed connection", (struct span){}, false);
+		mcp_req_log_call(req, "cancelled by a closed connection", (struct cstr_view){}, false);
 	mcp_req_abort(req, ECANCELED);
 }
 
