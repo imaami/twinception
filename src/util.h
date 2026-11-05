@@ -141,6 +141,21 @@ util_digits (char const *s,
 	return i;
 }
 
+/** Returns how many of the @p len bytes at @p s fit in @p max bytes
+ *  without ending within a UTF-8 character.
+ */
+static inline size_t
+util_clip (char const *s,
+           size_t      len,
+           size_t      max)
+{
+	if (len <= max)
+		return len;
+	while (max && ((unsigned char)s[max] & 0xc0) == 0x80)
+		--max;
+	return max;
+}
+
 /** The most bytes of a word in askai's Git refs, such as a participant. */
 enum { UTIL_WORD_MAX = 64 };
 

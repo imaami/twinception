@@ -952,19 +952,6 @@ mcp_elapsed (uint64_t start)
 	return (double)(loop_clock() - start) / 1e9;
 }
 
-/* The first @p max bytes of @p len at most, never ending within a character. */
-static size_t
-mcp_clip (char const *s,
-          size_t      len,
-          size_t      max)
-{
-	if (len <= max)
-		return len;
-	while (max && ((unsigned char)s[max] & 0xc0) == 0x80)
-		--max;
-	return max;
-}
-
 /* Write @p len bytes of @p p, from its byte @p off, into @p buf, as they
  * are or escaped, within @p max bytes of it.
  */
@@ -1252,7 +1239,7 @@ mcp_shown_put (struct mcp_shown *w,
 		n = jb_escape(escaped, s, k);
 		s = escaped;
 	}
-	size_t k = mcp_clip(s, n, room);
+	size_t k = util_clip(s, n, room);
 	w->cut |= k < n;
 	memcpy(w->buf + w->len, s, k);
 	w->len += k;
@@ -2208,7 +2195,7 @@ mcp_req_delta (struct mcp_req *req)
 		size_t overhead = 6 * MAX_ID + 256;
 		send = send > overhead ? (send - overhead) / 6 : 0;
 		room = room < send ? room : send;
-		size_t n = mcp_clip(text + req->delta_read, header.len - req->delta_read,
+		size_t n = util_clip(text + req->delta_read, header.len - req->delta_read,
 		                    room < 8192 ? room : 8192);
 		if (!n) {
 			loop_ready_bulk(loop, &req->step);
@@ -4513,7 +4500,7 @@ mcp_req_trace (struct mcp_req        *req,
 		return 0;
 	char const *name = (char const *)c->name.ptr;
 	if (!CAT(&req->trace, "- ") ||
-	    !dstr_cat_n(&req->trace, name, jb_utf8(name, mcp_clip(name, c->name.len, 64))))
+	    !dstr_cat_n(&req->trace, name, jb_utf8(name, util_clip(name, c->name.len, 64))))
 		return ENOMEM;
 	switch (trace) {
 	case TRACE_NAME:
@@ -4522,11 +4509,11 @@ mcp_req_trace (struct mcp_req        *req,
 		size_t len = 0;
 		char const *action = jb_str(jb_get(args, "action"), &len);
 		return !action || (CAT(&req->trace, " ") &&
-		                   dstr_cat_n(&req->trace, action, mcp_clip(action, len, 16)))
+		                   dstr_cat_n(&req->trace, action, util_clip(action, len, 16)))
 		       ? 0 : ENOMEM;
 	default:
 		char const *json = (char const *)c->args.ptr;
-		size_t n = jb_utf8(json, mcp_clip(json, c->args.len, TRACE_ARGS));
+		size_t n = jb_utf8(json, util_clip(json, c->args.len, TRACE_ARGS));
 		if (n && !(CAT(&req->trace, " ") && dstr_cat_n(&req->trace, json, n)))
 			return ENOMEM;
 		return n < c->args.len && !CAT(&req->trace, "...") ? ENOMEM : 0;
@@ -5076,7 +5063,7 @@ mcp_slot_jobs_list (struct mcp_slot *slot)
 			            job->failed ? "failed" : "finished", mcp_slot_output(job).len);
 		if (!args || !dstr_printf(&slot->answer, "job %" PRIu32 ": %s %.*s%s: %s\n",
 		                          k + 1, mcp_slot_offer(job)->name,
-		                          (int)mcp_clip(args, len, 100), args,
+		                          (int)util_clip(args, len, 100), args,
 		                          len > 100 ? "..." : "", state))
 			return ENOMEM;
 	}
@@ -5509,7 +5496,7 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 		problem = !id ? TEXT(bad_list)
 		        : ESC(why, util_format(why, sizeof why, "No job of yours has the id %.*s; "
 		                               "askai stores a job for an hour after it ends.",
-		                               (int)mcp_clip(id, len, LEDGER_ID), id));
+		                               (int)util_clip(id, len, LEDGER_ID), id));
 	}
 	if (problem.ptr) {
 		free(w);
@@ -5850,7 +5837,7 @@ mcp_slot_window (struct mcp_slot *slot,
 	size_t len = out.len - skip;
 	size_t window = len;
 	if (len > cap) {
-		window = mcp_clip((char const *)out.ptr + skip, len, cap);
+		window = util_clip((char const *)out.ptr + skip, len, cap);
 		size_t from = window - window / 4;
 		unsigned char const *nl = memrchr(out.ptr + skip + from, '\n', window - from);
 		if (nl)
@@ -6976,7 +6963,7 @@ mcp_slot_notes_unadded (struct mcp_slot *slot)
 	struct span out = buf_peek(&c->out);
 	char const *why = (char const *)out.ptr;
 	LOG(LOG_WARN, "notes: git could not write a note: %.*s",
-	    (int)mcp_clip(why, out.len, 300), why);
+	    (int)util_clip(why, out.len, 300), why);
 	return mcp_slot_say(slot, &TEXT("Could not write the note."), 1);
 }
 
@@ -7827,7 +7814,7 @@ mcp_slot_notes_newest (struct mcp_slot *slot)
 		s = dstr_get(&view);
 		shown = dstr_len(&view);
 	}
-	size_t n = mcp_clip(s, shown, most);
+	size_t n = util_clip(s, shown, most);
 	char more[128];
 	size_t m = n < len ? util_format(more, sizeof more, "\n[askai: bytes 0 to %zu of "
 	                                 "%zu; read the note with \"offset\": %zu for the "
@@ -8452,7 +8439,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 		                                               : "the call names no tool");
 		struct mcp_piece head = known ? FRAG("Tool not available: ")
 		                              : FRAG("Unknown tool: ");
-		struct mcp_piece what = str ? ESC(str, mcp_clip(str, len, 100))
+		struct mcp_piece what = str ? ESC(str, util_clip(str, len, 100))
 		                            : TEXT("(none)");
 		char msg[32 + 6 * 100];
 		memcpy(msg, head.ptr, head.len);
@@ -8804,7 +8791,7 @@ mcp_req_modern (struct mcp_req     *req,
 			FRAG("{\"supported\":"),
 			DSTR(&req->mcp->st->versions),
 			FRAG(",\"requested\":\""),
-			ESC(version, mcp_clip(version, len, MAX_ECHO)),
+			ESC(version, util_clip(version, len, MAX_ECHO)),
 			FRAG("\"}"),
 		};
 		mcp_req_error(req, 400, UNSUPPORTED_VERSION,
