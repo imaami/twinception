@@ -83,8 +83,8 @@ ledger_owner_find (struct ledger *l,
 	return o;
 }
 
-/* Free @p o, the lock held, if it has no records, no waits and no
- * timers.
+/* Free @p o, with the lock held, if it contains no records, no waits and
+ * no timers.
  */
 static void
 ledger_owner_gc (struct ledger       *l,
@@ -648,8 +648,12 @@ ledger_task_reserve (struct ledger_task *task,
 	free(task->result);
 	task->result = malloc(len ? len : 1);
 	task->len = 0;
-	task->size = task->result ? len : 0;
-	return task->result ? 0 : ENOMEM;
+	if (!task->result) {
+		task->size = 0;
+		return ENOMEM;
+	}
+	task->size = len;
+	return 0;
 }
 
 int
@@ -799,24 +803,24 @@ ledger_timer_set (struct ledger *ledger,
 	int e;
 	pthread_mutex_lock(&ledger->lock);
 	struct ledger_owner *o = ledger_owner_get(ledger, owner, &e);
-	/* One counter numbers the timers of all owners, from 1 to UINT32_MAX
-	 * and then from 1 again, so that a number does not name a second timer
-	 * of an owner that the ledger has freed and made again. */
-	uint32_t const next = ledger->n_timers % UINT32_MAX + 1;
-	if (o)
+	if (o) {
 		ledger_owner_expire(o, now);
-	struct ledger_timer *t = o ? ledger_timer_add(o->timers, due, next, note, len) : nullptr;
-	if (t) {
-		ledger->n_timers = next;
-		*id = next;
-		hits = ledger_owner_wake(o);
-	} else if (!e) {
-		e = EBUSY;
+		/* One counter numbers the timers of all owners, from 1 to
+		 * UINT32_MAX and then from 1 again, so that one number never
+		 * refers to a second timer of an owner that the ledger freed
+		 * and created again. */
+		uint32_t const next = ledger->n_timers % UINT32_MAX + 1;
+		if (ledger_timer_add(o->timers, due, next, note, len)) {
+			ledger->n_timers = next;
+			*id = next;
+			hits = ledger_owner_wake(o);
+			ledger_add(&ledger->metrics.timers, 1);
+		} else {
+			e = EBUSY;
+		}
 	}
 	pthread_mutex_unlock(&ledger->lock);
 	ledger_wake(hits);
-	if (!e)
-		ledger_add(&ledger->metrics.timers, 1);
 	return e;
 }
 
