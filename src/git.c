@@ -97,7 +97,7 @@ struct git_root {
 };
 
 struct git_revision {
-	struct cstr_view path;  /* ":path" in the revision argument, or empty */
+	struct cstr_view path;  /* ":path" in the revision argument, or empty, before a NUL */
 	size_t           root;
 	size_t           dots;
 	size_t           len;   /* the length of text */
@@ -1174,18 +1174,16 @@ git_call_advance (struct git_call *call,
 	                                     "tags or remote-tracking refs."), TOOL_FAILED);
 }
 
-/* Returns true if @p path contains a ':' and digits after it that end the
- * path or are followed by another ':', as in a grep match with its line
- * number.
+/* Returns true if the string @p path contains a ':' and digits after it
+ * that end the path or are followed by another ':', as in a grep match
+ * with its line number.
  */
 static bool
-git_line_hint (struct cstr_view path)
+git_line_hint (char const *path)
 {
-	char const *end = path.data + path.len;
-	for (char const *p = path.data; (p = memchr(p, ':', (size_t)(end - p))); ++p) {
-		uint64_t line;
-		size_t n = util_digits(p + 1, (size_t)(end - p - 1), UINT64_MAX, &line);
-		if (n && (p + 1 + n == end || p[1 + n] == ':'))
+	for (char const *p = strchr(path, ':'); p; p = strchr(p + 1, ':')) {
+		size_t n = strspn(p + 1, "0123456789");
+		if (n && (!p[1 + n] || p[1 + n] == ':'))
 			return true;
 	}
 	return false;
@@ -1233,8 +1231,7 @@ git_ended (struct mcp_slot *slot,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
 		note = util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].name,
-		                        git_line_hint(cstr_view_slice(rev->path, 1, SIZE_MAX))
-		                        ? hint : "");
+		                        git_line_hint(rev->path.data + 1) ? hint : "");
 	} else {
 		note = util_format_view(buf, sizeof buf, takes & OBJECT
 		                        ? "[The committed object could not be read (git "
