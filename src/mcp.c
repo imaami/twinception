@@ -3445,7 +3445,7 @@ mcp_slot_source (struct mcp_slot            *slot,
 	review_read_destroy(&slot->read);
 	/* A turn's window is at most mcp_slot_window_max() bytes of the output,
 	 * so no window shows a longer single line whole. Keep no such line, so
-	 * that review_shown() does not scan it. */
+	 * that review_pending_add() does not scan it. */
 	if (!slot->req->review ||
 	    (src->first == src->last && src->len > mcp_slot_window_max(slot)))
 		return 0;
@@ -3794,8 +3794,9 @@ mcp_req_notes_identity (struct mcp_req *req)
 	                   notes_selector(req->repo)) ? 0 : ENOMEM;
 }
 
-/* Create req->review if the tool mask @p lent has findings. The record
- * gets REVIEW_READS if @p lent also has git. Returns 0 or ENOMEM.
+/* Create req->review if the tool mask @p lent contains findings. The record
+ * is created with REVIEW_READ_LOG if @p lent also contains git. Returns 0 or
+ * ENOMEM.
  */
 static int
 mcp_req_review_make (struct mcp_req *req,
@@ -3804,7 +3805,7 @@ mcp_req_review_make (struct mcp_req *req,
 	struct mcp_lending const *l = &req->mcp->st->lending;
 	int e = 0;
 	if (lent & l->of[KIND_FINDINGS])
-		req->review = review_create(lent & l->of[KIND_GIT] ? REVIEW_READS : 0, &e);
+		req->review = review_create(lent & l->of[KIND_GIT] ? REVIEW_READ_LOG : 0, &e);
 	return e;
 }
 
@@ -4158,7 +4159,7 @@ mcp_req_dozes (struct mcp_req const *req)
 }
 
 /* Handle the end of a turn, once the answer of its job has arrived. First,
- * review_answered() moves the pending lines of the review record into its
+ * review_pending_log() moves the pending lines of the review record into its
  * read log (src/review.h). An answer that calls no tool is the answer of
  * the ask call, unless the turns doze after it. The answer of the last turn
  * is the answer of the ask call too. Otherwise parse the arguments of the
@@ -4177,7 +4178,7 @@ mcp_req_turn_done (struct mcp_req *req)
 	req->context = told > 0 ? (uint32_t)told : job->context;
 	req->cut = ai_cut(mcp->st->ep->api, job->reason);
 	req->forced = 0;
-	int e = req->review ? review_answered(req->review) : 0;
+	int e = req->review ? review_pending_log(req->review) : 0;
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -5714,7 +5715,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		struct json_object *source = jb_get(saved, "source");
 		if (source && req->review) {
 			int e = 0;
-			slot->read = review_read_restore(source, (struct cstr_view){ text, len }, &e);
+			slot->read = review_read_create_json(source, (struct cstr_view){ text, len }, &e);
 			if (e) {
 				mcp_req_fail(req, e == EINVAL ? EILSEQ : e);
 				return;
@@ -6027,24 +6028,24 @@ mcp_req_result_put (struct mcp_req        *req,
 	return mcp_req_upload(req, p, last ? ARRAY_SIZE(p) : ARRAY_SIZE(p) - 3);
 }
 
-/* Pass review_shown() the lines of a committed file that the result in
+/* Pass review_pending_add() the lines of a committed file that the result in
  * @p slot shows whole. The lines of a jobs call are those of its job
  * (slot->of). Returns 0 if the result shows no such lines, or the error
- * of review_shown().
+ * of review_pending_add().
  */
 static int
 mcp_req_shown (struct mcp_req        *req,
                struct mcp_slot const *slot)
 {
-	struct review_read const *read = (slot->of ? slot->of : slot)->read;
+	struct review_read *read = (slot->of ? slot->of : slot)->read;
 	if (!read)
 		return 0;
-	/* review_shown() scans the output from the numbered lines to the end
+	/* review_pending_add() scans the output from the numbered lines to the end
 	 * of the window. */
 	loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
 	struct span out = mcp_slot_output(slot);
 	struct cstr_view text = { (char const *)out.ptr, out.len };
-	return review_shown(req->review, read, text, slot->skip, slot->window, req->turn);
+	return review_pending_add(req->review, read, text, slot->skip, slot->window, req->turn);
 }
 
 /* Write the result of the turn's call req->part into the upload, one slice
@@ -6737,18 +6738,22 @@ mcp_slot_step (struct loop      *loop,
 }
 
 /* Compaction has left the summary, if any, in what askai adds to the
- * prompt. review_compacted() drops the pending lines of the review record
- * (see src/review.h). The record, if any, follows the summary, cut to
- * mcp_req_lend_max() bytes. The caller's notes follow if req->branch is
- * set. They are left out for a job resumed without --notes.
+ * prompt. review_pending_drop() drops the pending lines of the review record
+ * (see src/review.h). If there is a record, a notice about the task of the
+ * ask call and the record follow the summary, cut to mcp_req_lend_max()
+ * bytes. The caller's notes follow if req->branch is set. They are left out
+ * for a job resumed without --notes.
  */
 static void
 mcp_req_compact_notes (struct mcp_req *req)
 {
-	review_compacted(req->review);
+	review_pending_drop(req->review);
 	int e = mcp_req_notes_identity(req);
 	if (!e && req->review)
-		e = CAT(&req->self.answer, "\n\n")
+		e = CAT(&req->self.answer, "\n\n[askai: askai keeps your task word for word "
+		        "through every compaction of this ask call: the system text, the earlier "
+		        "messages and the prompt, which is all that comes before askai's first "
+		        "[askai: ...] line. You need not copy the task into notes or a summary.]\n")
 		    ? review_render(req->review, &req->self.answer, mcp_req_lend_max(req))
 		    : ENOMEM;
 	if (e) {

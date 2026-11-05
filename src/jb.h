@@ -5,6 +5,7 @@
 #ifndef TWINCEPTION_SRC_JB_H_
 #define TWINCEPTION_SRC_JB_H_
 
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -112,6 +113,15 @@ jb_view (struct json_object *val)
 		return (struct cstr_view){};
 	return (struct cstr_view){ json_object_get_string(val),
 	                           (size_t)json_object_get_string_len(val) };
+}
+
+/** Returns a new JSON string with the bytes of @p t, or nullptr if out of
+ *  memory.
+ */
+static inline struct json_object *
+jb_string (struct cstr_view t)
+{
+	return json_object_new_string_len(t.data, (int)t.len);
 }
 
 /** Returns true if @p val is a string equal to @p str. All bytes of the
@@ -246,6 +256,23 @@ jb_uint (struct json_object const *val,
 {
 	return json_object_is_type(val, json_type_int) ? json_object_get_uint64(val)
 	                                               : otherwise;
+}
+
+/** Stores the JSON integer @p val in @p *n and returns 0 if it is from 0 to
+ *  @p max. Otherwise returns EINVAL and leaves @p *n unchanged.
+ */
+static inline int
+jb_uint_checked (struct json_object const *val,
+                 uint64_t                  max,
+                 uint64_t                 *n)
+{
+	if (!json_object_is_type(val, json_type_int) || json_object_get_int64(val) < 0)
+		return EINVAL;
+	uint64_t const v = json_object_get_uint64(val);
+	if (v > max)
+		return EINVAL;
+	*n = v;
+	return 0;
 }
 
 /** A parse a slice at a time; zeroed to begin. */

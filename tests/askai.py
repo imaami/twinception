@@ -39,13 +39,15 @@ KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
             "DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN", "OPENROUTER_API_KEY")
 # The tools, in order, that the turns get when they are lent git.
 TURN_TOOLS = ["git", "compact", "findings", "background", "jobs", "wait", "timer"]
-# The review record that askai adds after a compaction, with no findings and
-# no reads (src/review.c).
+# The first line of the text of a review record (src/review.c).
 REVIEW = ("[askai: your review record, which askai keeps through every compaction "
-          "of this ask call. askai also keeps your task word for word: the system "
-          "text, the earlier messages and the prompt, which is all that comes "
-          "before askai's first [askai: ...] line. You need not copy the task into "
-          "notes or a summary.]\n")
+          "of this ask call.]\n")
+# The notice about the task that askai writes before the review record after
+# a compaction (mcp_req_compact_notes()).
+TASK = ("[askai: askai keeps your task word for word through every compaction of "
+        "this ask call: the system text, the earlier messages and the prompt, which "
+        "is all that comes before askai's first [askai: ...] line. You need not copy "
+        "the task into notes or a summary.]\n")
 REVIEW_EMPTY = REVIEW + ("[askai: you have recorded no findings; the findings tool "
                          "records them.]")
 # The API that each answer format of the fake upstream is in.
@@ -11828,7 +11830,7 @@ def check_turns(binary, up):
             assert turns(again) == [] and prompt(again) == (
                 "Q\n\n[askai: your context filled up, so the conversation since the "
                 "task is gone, your turns and the tools' results with it.]" + identity +
-                "\n\n" + REVIEW_EMPTY + "\n\n[askai: go on with the task.]"), again
+                "\n\n" + TASK + REVIEW_EMPTY + "\n\n[askai: go on with the task.]"), again
             # Explicit compaction also keeps identity before the first note.
             script[:] = [lambda r: (200, turn_stream([("c", "compact", json.dumps(
                 {"summary": "S"}))]))]
@@ -11838,7 +11840,7 @@ def check_turns(binary, up):
             assert turns(again) == [] and prompt(again) == (
                 "Q\n\n[askai: you compacted the context: the conversation since the "
                 "task is gone, your turns and the tools' results with it. Your "
-                "summary of it:]\n\nS" + identity + "\n\n" + REVIEW_EMPTY +
+                "summary of it:]\n\nS" + identity + "\n\n" + TASK + REVIEW_EMPTY +
                 "\n\n[askai: go on with the task.]"), again
 
         # The reminders to write notes: one at a quarter of the context and
@@ -11898,7 +11900,7 @@ def check_turns(binary, up):
                 "Q\n\n\\[askai: you compacted the context: the conversation since "
                 "the task is gone, your turns and the tools' results with it\\. "
                 "Your summary of it:\\]\n\nS" + re.escape(identity) +
-                "\n\n" + re.escape(REVIEW_EMPTY) + "\n\n\\[askai: your note history, oldest "
+                "\n\n" + re.escape(TASK + REVIEW_EMPTY) + "\n\n\\[askai: your note history, oldest "
                 f"first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  \\(1 line\\)\n\n"
                 "\\[askai: the current text of your most recently written note, "
                 "n1\\.md:\\]\n\nn1\n\n\\[askai: go on with the task\\.\\]",
@@ -11921,7 +11923,7 @@ def check_turns(binary, up):
             assert turns(again) == [] and re.fullmatch(
                 "Q\n\n\\[askai: your context filled up, so the conversation since "
                 "the task is gone, your turns and the tools' results with it\\.\\]" +
-                re.escape(identity) + "\n\n" + re.escape(REVIEW_EMPTY) +
+                re.escape(identity) + "\n\n" + re.escape(TASK + REVIEW_EMPTY) +
                 f"\n\n\\[askai: your note history, oldest first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  "
                 f"\\(1 line\\)\n2\\. {when}  n2\\.md  "
                 "\\(1 line\\)\n\n\\[askai: the current text of your most recently written note, n2\\.md:\\]\n\nn2\n\n"
@@ -12529,11 +12531,11 @@ def check_review(binary, up):
             # Each compaction puts the whole record into the prompt, and the
             # calls after the first compaction add to it.
             assert sent[3]["body"]["messages"][1:] == [], sent[3]
-            assert prompt(sent[3]) == compacted("S", "\n\n" + record), prompt(sent[3])
+            assert prompt(sent[3]) == compacted("S", "\n\n" + TASK + record), prompt(sent[3])
             assert results(sent[4]) == ["Added finding 3: candidate."], results(sent[4])
             record = (REVIEW + findings_head + "1. candidate, src/a.c:3-4, not read\n"
                       "   claim: C1\n3. candidate\n   claim: C4\n2. retracted: C3b")
-            assert prompt(sent[5]) == compacted("T", "\n\n" + record), prompt(sent[5])
+            assert prompt(sent[5]) == compacted("T", "\n\n" + TASK + record), prompt(sent[5])
             # The trace names each call's action, and the bytes of its whole
             # output or its failure.
             said = results(sent[1]) + results(sent[2]) + [None] + results(sent[4]) + [None]
@@ -12732,7 +12734,7 @@ def check_review(binary, up):
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"
             sent = up.requests[count:]
-            assert prompt(sent[1]) == compacted("S", "\n\n" + REVIEW_EMPTY), prompt(sent[1])
+            assert prompt(sent[1]) == compacted("S", "\n\n" + TASK + REVIEW_EMPTY), prompt(sent[1])
             assert results(sent[2]) == [missing("verified", "src/a.c line 3 is", "src/a.c", 3,
                                                 False)], sent[2]
             # So does the compaction that askai makes when the context fills
@@ -12747,7 +12749,7 @@ def check_review(binary, up):
             sent = up.requests[count:]
             assert prompt(sent[2]) == (
                 "Q\n\n[askai: your context filled up, so the conversation since the task is "
-                "gone, your turns and the tools' results with it.]\n\n" + REVIEW_EMPTY +
+                "gone, your turns and the tools' results with it.]\n\n" + TASK + REVIEW_EMPTY +
                 "\n\n[askai: go on with the task.]"), prompt(sent[2])
             assert results(sent[3]) == [missing("verified", "src/a.c line 3 is", "src/a.c", 3,
                                                 False)], sent[3]
@@ -12821,7 +12823,7 @@ def check_review(binary, up):
             assert ai.ask("Q")["content"][0]["text"] == "A"
             sent = up.requests[count:]
             assert len(sent) == 6, sent
-            assert prompt(sent[4]) == compacted("S", "\n\n" + record[:keep] + cut), \
+            assert prompt(sent[4]) == compacted("S", "\n\n" + TASK + record[:keep] + cut), \
                 prompt(sent[4])[-600:]
             size = len(record)
             assert results(sent[5]) == [record[keep:] + f"\n\n[Bytes {keep} to {size} of "

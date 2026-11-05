@@ -14,17 +14,18 @@
 #include "review.h"
 #include "schema.h"
 
-/* The own word of a findings call. */
+/* The state of a findings call, which mcp_slot_own() stores in the slot. */
 struct findings_call {
-	struct json_object *args;  /* a reference to the arguments */
-	struct dstr         out;   /* what review_call() wrote */
+	struct json_object   *args;    /* a reference to the arguments */
+	struct dstr           out;     /* what review_call() wrote */
+	struct review_cursor  cursor;  /* the position of a show in its text */
 };
 
 struct json_object *
 findings_definition (void const *service)
 {
 	(void)service;
-	static_assert(REVIEW_MAX == 4 << 20, "the description says");
+	static_assert(REVIEW_MAX == 4 << 20, "the description states the size of REVIEW_MAX");
 	return jb_object(
 		"name", json_object_new_string("findings"),
 		"description", json_object_new_string(
@@ -80,11 +81,12 @@ findings_definition (void const *service)
 void
 findings_drop (struct mcp_slot *slot)
 {
-	struct findings_call *call = *mcp_slot_own(slot);
+	void **own = mcp_slot_own(slot);
+	struct findings_call *call = *own;
 	json_object_put(call->args);
 	dstr_cleanup(&call->out);
-	free(call);
-	*mcp_slot_own(slot) = nullptr;
+	free(*own);
+	*own = nullptr;
 }
 
 void
@@ -92,40 +94,40 @@ findings_step (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct loop *loop = mcp_slot_loop(slot);
-	size_t had = dstr_len(&call->out);
 	/* review_call() copies the claim and the evidence of an add or an
 	 * update. If less LOOP_COPY room is left in this step than they need,
-	 * and the step has used part of its share, wait for the next step. */
-	if (!had) {
-		size_t claim = 0;
-		size_t evidence = 0;
-		(void)jb_str(jb_get(call->args, "claim"), &claim);
-		(void)jb_str(jb_get(call->args, "evidence"), &evidence);
-		uint64_t room = loop_room(loop, LOOP_COPY);
-		if (room < claim + evidence && room < LOOP_STEP_COPY) {
-			mcp_slot_ready(slot);
-			return;
-		}
-		loop_work(loop, LOOP_COPY, claim + evidence);
-	}
-	/* A show writes as much as the room allows and goes on in later steps
-	 * (EAGAIN). */
-	int e = review_call(mcp_slot_review(slot), call->args, mcp_slot_turn(slot), notice_kept,
-	                    had, loop_room(loop, LOOP_COPY), &call->out);
-	loop_work(loop, LOOP_COPY, dstr_len(&call->out) - had);
-	struct cstr_view out = cstr_view_dstr(&call->out);
-	if (e == EAGAIN) {
+	 * and the step has used part of its share, the call runs in the next
+	 * step. A show writes at most the room of the step, and the rest of its
+	 * text in later steps (EAGAIN). */
+	size_t const texts = jb_view(jb_get(call->args, "claim")).len +
+	                     jb_view(jb_get(call->args, "evidence")).len;
+	uint64_t const room = loop_room(loop, LOOP_COPY);
+	if (room < texts && room < LOOP_STEP_COPY) {
 		mcp_slot_ready(slot);
-	} else if (e && e != EINVAL) {
-		mcp_slot_fail(slot, e);
-	} else {
-		/* A refusal (EINVAL) has no offset. mcp_slot_offset() without
-		 * args sets the offset to 0. */
-		if (e)
-			(void)mcp_slot_offset(slot, nullptr);
-		mcp_slot_lend(slot, out);
-		mcp_slot_finish(slot, e ? TOOL_FAILED : 0);
+		return;
 	}
+	size_t const had = dstr_len(&call->out);
+	int e = review_call(mcp_slot_review(slot), call->args, mcp_slot_turn(slot), notice_kept,
+	                    &call->cursor, room, &call->out);
+	struct cstr_view const out = cstr_view_dstr(&call->out);
+	loop_work(loop, LOOP_COPY, texts + out.len - had);
+	switch (e) {
+	case 0:
+		break;
+	case EAGAIN:
+		mcp_slot_ready(slot);
+		return;
+	case EINVAL:
+		/* mcp_slot_offset() without arguments sets the offset of a refusal
+		 * to 0. */
+		(void)mcp_slot_offset(slot, nullptr);
+		break;
+	default:
+		mcp_slot_fail(slot, e);
+		return;
+	}
+	mcp_slot_lend(slot, out);
+	mcp_slot_finish(slot, e ? TOOL_FAILED : 0);
 }
 
 void

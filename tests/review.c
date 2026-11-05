@@ -40,10 +40,10 @@ same (char const *file,
 
 #define HEADER \
         "[askai: your review record, which askai keeps through every compaction " \
-        "of this ask call. askai also keeps your task word for word: the system " \
-        "text, the earlier messages and the prompt, which is all that comes " \
-        "before askai's first [askai: ...] line. You need not copy the task into " \
-        "notes or a summary.]\n"
+        "of this ask call.]\n"
+
+/* The most bytes of the claim of a closed finding in the record text. */
+#define CLOSED 200
 #define NONE "[askai: you have recorded no findings; the findings tool records them.]"
 #define LATER " The log takes the lines of a read once you have seen them, so call again in " \
               "a later turn."
@@ -88,7 +88,7 @@ call (struct review *r,
 	struct json_object *args = json_tokener_parse(json);
 	CHECK(args || !strcmp(json, "null"));
 	dstr_clear(out);
-	int e = review_call(r, args, turn, kept, 0, SIZE_MAX, out);
+	int e = review_call(r, args, turn, kept, &(struct review_cursor){}, SIZE_MAX, out);
 	json_object_put(args);
 	return e;
 }
@@ -113,7 +113,7 @@ call_long (struct review *r,
 	free(s);
 	s = nullptr;
 	dstr_clear(out);
-	int e = review_call(r, args, 1, nullptr, 0, SIZE_MAX, out);
+	int e = review_call(r, args, 1, nullptr, &(struct review_cursor){}, SIZE_MAX, out);
 	json_object_put(args);
 	return e;
 }
@@ -184,7 +184,7 @@ output (struct dstr          *out,
 }
 
 /* Build a git read output of lines @p first to @p last, and pass
- * review_shown() its window of @p window bytes from @p skip, in turn
+ * review_pending_add() its window of @p window bytes from @p skip, in turn
  * @p turn. Returns the error number.
  */
 static int
@@ -206,14 +206,14 @@ shown_in (struct review *r,
 	int e;
 	struct review_read *read = review_read_create(&src, o, &e);
 	if (!e)
-		e = review_shown(r, read, o, skip, window, turn);
+		e = review_pending_add(r, read, o, skip, window, turn);
 	review_read_destroy(&read);
 	CHECK(!read);
 	dstr_cleanup(&out);
 	return e;
 }
 
-/* Call shown_in(), then review_answered(). */
+/* Call shown_in(), then review_pending_log(). */
 static int
 seen_in (struct review *r,
          char const    *repo,
@@ -227,7 +227,7 @@ seen_in (struct review *r,
          uint32_t       turn)
 {
 	int e = shown_in(r, repo, commit, path, first, last, total, skip, window, turn);
-	return e ? e : review_answered(r);
+	return e ? e : review_pending_log(r);
 }
 
 static int
@@ -256,7 +256,7 @@ static struct review *
 fresh (void)
 {
 	int e;
-	struct review *r = review_create(REVIEW_READS, &e);
+	struct review *r = review_create(REVIEW_READ_LOG, &e);
 	CHECK(r && !e);
 	return r;
 }
@@ -332,7 +332,7 @@ lines_of (struct review const *r,
 	dstr_cleanup(&out);
 }
 
-/* review_shown() adds only the lines that the window holds whole. */
+/* review_pending_add() adds only the lines that the window shows whole. */
 static void
 test_seen (void)
 {
@@ -357,6 +357,35 @@ test_seen (void)
 		lines_of(r, cases[i].want, __LINE__);
 		review_destroy(&r);
 	}
+	/* A read paged forward and then back to its start. A window counts its
+	 * lines from the mark of the window before it, or from the start of the
+	 * read if that mark is after the window. */
+	{
+		struct dstr paged = DSTR_INIT;
+		struct review_source from;
+		output(&paged, &from, "p", A, "src/a.c", 1, 9, 9, false);
+		struct cstr_view const o = cstr_view_dstr(&paged);
+		int e;
+		struct review_read *read = review_read_create(&from, o, &e);
+		CHECK(read && !e);
+		struct review *r = fresh();
+		CHECK(!review_pending_add(r, read, o, 4 + 9 * 4, 9 * 2, 1));
+		CHECK(!review_pending_add(r, read, o, 4 + 9 * 6, 9 * 2, 1));
+		CHECK(!review_pending_add(r, read, o, 4, 9 * 2, 1));
+		CHECK(!review_pending_log(r));
+		lines_of(r, "lines 1-2, 5-8: 6 of 9 lines", __LINE__);
+		review_read_destroy(&read);
+		review_destroy(&r);
+		dstr_cleanup(&paged);
+	}
+	/* Hexadecimal digits before the last colon are a path, not a commit. */
+	{
+		struct review *r = fresh();
+		EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"deadbee:12\"}", 1, 0,
+		       "Added finding 1: candidate, deadbee:12, not read. Read its lines with git "
+		       "read before you verify it.");
+		review_destroy(&r);
+	}
 	/* Windows that hold no whole line. */
 	size_t const none[][2] = {
 		{ 0, 3 }, { 0, 4 + 8 }, { 4 + 9 * 9, SIZE_MAX }, { 4 + 9 * 2 + 3, 9 },
@@ -378,18 +407,18 @@ test_seen (void)
 	struct review_read *read = review_read_create(&src, o, &e);
 	CHECK(read && !e);
 	struct review *r = fresh();
-	CHECK(!review_shown(r, read, o, 0, src.at + src.len - 1, 1) && !review_answered(r));
+	CHECK(!review_pending_add(r, read, o, 0, src.at + src.len - 1, 1) && !review_pending_log(r));
 	lines_of(r, "lines 1-2: 2 of 3 lines", __LINE__);
-	CHECK(!review_shown(r, read, o, 0, src.at + src.len, 1) && !review_answered(r));
+	CHECK(!review_pending_add(r, read, o, 0, src.at + src.len, 1) && !review_pending_log(r));
 	lines_of(r, "lines 1-3: all 3 lines", __LINE__);
 	/* An output too short for the read, and one with too many lines. */
-	CHECK(review_shown(r, read, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0,
+	CHECK(review_pending_add(r, read, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0,
 	                   SIZE_MAX, 1) == EINVAL);
 	struct dstr more = DSTR_INIT;
 	CHECK(dstr_printf(&more, "[h]\n"));
 	for (int i = 0; i < 13; ++i)
 		CHECK(dstr_printf(&more, "a\n"));
-	CHECK(review_shown(r, read, (struct cstr_view){ dstr_get(&more), dstr_len(&more) }, 0,
+	CHECK(review_pending_add(r, read, (struct cstr_view){ dstr_get(&more), dstr_len(&more) }, 0,
 	                   SIZE_MAX, 1) == EINVAL);
 	dstr_cleanup(&more);
 	review_read_destroy(&read);
@@ -427,11 +456,11 @@ test_seen (void)
 	read = review_read_create(&src, o, &e);
 	CHECK(read && !e);
 	review_read_destroy(&read);
-	char path[REVIEW_WORD + 2] = {};
-	memset(path, 'a', REVIEW_WORD + 1);
+	char path[REVIEW_NAME_MAX + 2] = {};
+	memset(path, 'a', REVIEW_NAME_MAX + 1);
 	src.path = cstr_view(path);
 	CHECK(!review_read_create(&src, o, &e) && e == EINVAL);
-	path[REVIEW_WORD] = '\0';
+	path[REVIEW_NAME_MAX] = '\0';
 	src.path = cstr_view(path);
 	read = review_read_create(&src, o, &e);
 	CHECK(read && !e);
@@ -456,7 +485,7 @@ test_refusals (void)
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"id\":1}",
 		  "add takes claim, location, state and evidence, not id." },
 		{ "{\"action\":\"update\",\"id\":1,\"offset\":0}",
-		  "update takes id, state, evidence, claim and location, not offset." },
+		  "update takes id, claim, location, state and evidence, not offset." },
 		{ "{\"action\":\"show\",\"claim\":\"x\"}", "show takes id and offset, not claim." },
 		{ "{\"action\":\"add\"}", "add needs a claim: what you found." },
 		{ "{\"action\":\"add\",\"claim\":\"\"}",
@@ -557,7 +586,8 @@ test_refusals (void)
 		json_object_object_add(args, "claim", json_object_new_string("c"));
 		json_object_object_add(args, keys[i], json_object_new_string_len("a\xff", 2));
 		dstr_clear(&out);
-		CHECK(review_call(r, args, 2, nullptr, 0, SIZE_MAX, &out) == EINVAL);
+		CHECK(review_call(r, args, 2, nullptr, &(struct review_cursor){}, SIZE_MAX, &out) ==
+		      EINVAL);
 		char want[96];
 		snprintf(want, sizeof want, "The %s must be a string of UTF-8 text, not empty.",
 		         keys[i]);
@@ -872,7 +902,7 @@ test_gate (void)
 }
 
 /* The pending lines that review.h describes. They count against
- * REVIEW_MAX from review_shown() on.
+ * REVIEW_MAX from review_pending_add() on.
  */
 static void
 test_pending (void)
@@ -887,20 +917,20 @@ test_pending (void)
 	CHECK(!shown_in(r, "proj", A, "src/a.c", 1, 10, 300, 0, SIZE_MAX, 1));
 	EXPECT(r, verify, 1, EINVAL, unread);
 	RENDER(r, HEADER NONE);
-	review_compacted(r);
-	CHECK(!review_answered(r));
+	review_pending_drop(r);
+	CHECK(!review_pending_log(r));
 	EXPECT(r, verify, 2, EINVAL, unread);
 	RENDER(r, HEADER NONE);
 	CHECK(!shown_in(r, "proj", A, "src/a.c", 1, 10, 300, 0, SIZE_MAX, 2));
 	CHECK(!shown_in(r, "proj", A, "src/a.c", 11, 12, 300, 0, SIZE_MAX, 2));
-	CHECK(!review_answered(r));
+	CHECK(!review_pending_log(r));
 	EXPECT(r, verify, 3, 0, "Added finding 1: verified, src/a.c:3 at " A12 ".");
 	RENDER(r, HEADER FINDINGS "1. verified, src/a.c:3 at " A12 "\n   claim: c\n   evidence: e\n"
 	          READS "proj " A "\n  src/a.c  lines 1-12: 12 of 300 lines");
 	review_destroy(&r);
 
 	/* Leave room for exactly one pending file with one range. A pending
-	 * file is charged as much as a logged one, and review_compacted() frees
+	 * file is charged as much as a logged one, and review_pending_drop() frees
 	 * its room. That room also fits an update with 1 byte of evidence, so
 	 * while the file is pending, the refusal is NO_ROOM, not NO_MORE. */
 	size_t file = 2 * REVIEW_ITEM + 1 + 7;
@@ -916,10 +946,10 @@ test_pending (void)
 		CHECK(!shown_in(r, "p", A, "src/a.c", 1, 3, 3, 0, SIZE_MAX, 1));
 		EXPECT(r, more, 1, EINVAL, NO_ROOM);
 		if (answered) {
-			CHECK(!review_answered(r));
+			CHECK(!review_pending_log(r));
 			EXPECT(r, more, 2, EINVAL, NO_MORE);
 		} else {
-			review_compacted(r);
+			review_pending_drop(r);
 			EXPECT(r, more, 2, 0,
 			       "Finding 1 stays candidate; the new evidence is in its history.");
 		}
@@ -1012,11 +1042,11 @@ test_render (void)
 	       "Added finding 2: candidate.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":2,\"state\":\"retracted\",\"evidence\":\"R\"}",
 	       3, 0, "Finding 2 is now retracted; it was candidate.");
-	char long_claim[REVIEW_CLOSED + 50];
+	char long_claim[CLOSED + 50];
 	memset(long_claim, 'x', sizeof long_claim - 1);
 	long_claim[sizeof long_claim - 1] = '\0';
-	/* Put "ä" across the REVIEW_CLOSED limit. */
-	memcpy(long_claim + REVIEW_CLOSED - 1, "\xc3\xa4", 2);
+	/* Put "ä" across the CLOSED limit. */
+	memcpy(long_claim + CLOSED - 1, "\xc3\xa4", 2);
 	char json[512];
 	snprintf(json, sizeof json, "{\"action\":\"add\",\"claim\":\"%s\",\"state\":"
 	         "\"disproved\",\"evidence\":\"E3\",\"location\":\"src/a.c:9\"}", long_claim);
@@ -1031,11 +1061,11 @@ test_render (void)
 	         "2. retracted: first line...\n"
 	         "3. disproved, src/a.c:9 at " A12 ": %.*s...\n"
 	         READS "proj " A "\n  src/a.c  lines 1-9: 9 of 300 lines",
-	         REVIEW_CLOSED - 1, long_claim);
+	         CLOSED - 1, long_claim);
 	RENDER(r, want);
 	EXPECT(r, "{\"action\":\"show\"}", 4, 0, want);
 	EXPECT(r, "{\"action\":\"show\",\"offset\":5}", 4, 0, want);
-	/* A show returns its text in parts of any size. Each part but the last
+	/* A show writes its text in parts of any size. Each part but the last
 	 * has the full size. */
 	struct dstr history = DSTR_INIT;
 	CHECK(call(r, "{\"action\":\"show\",\"id\":1}", 4, &history) == 0);
@@ -1044,14 +1074,14 @@ test_render (void)
 	for (size_t k = 0; k < 2; ++k) {
 		struct json_object *args = json_tokener_parse(shows[k]);
 		size_t len = strlen(texts[k]);
-		for (size_t most = 1; most <= len + 1; ++most) {
+		for (size_t room = 1; room <= len + 1; ++room) {
 			struct dstr out = DSTR_INIT;
+			struct review_cursor cursor = {};
 			int e = EAGAIN;
-			for (size_t from = 0; e == EAGAIN; from += most) {
-				e = review_call(r, args, 4, nullptr, from, most, &out);
-				CHECK(dstr_len(&out) == (e == EAGAIN ? from + most : len));
+			for (size_t parts = 1; e == EAGAIN; ++parts) {
+				e = review_call(r, args, 4, nullptr, &cursor, room, &out);
+				CHECK(e == EAGAIN ? dstr_len(&out) == parts * room : !e);
 			}
-			CHECK(!e);
 			SAME(got(&out), texts[k]);
 			dstr_cleanup(&out);
 		}
@@ -1195,8 +1225,8 @@ test_full (void)
 	}
 
 	/* An update charges a change, its evidence and each new text: the old
-	 * claim, the old location as text, or the full path of a short one. A
-	 * restore charges the same. */
+	 * claim, the path of the old location, or the full path of a short one.
+	 * A restore charges the same. */
 	r = fresh();
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\"}", 1, 0, "Added finding 1: candidate.");
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"a.c:3\"}", 1, 0,
@@ -1212,7 +1242,7 @@ test_full (void)
 		  "Finding 2 stays candidate, src/a.c:3 at " A12 "; the new evidence is in its "
 		  "history." },
 		{ "{\"action\":\"update\",\"id\":2,\"state\":\"candidate\",\"evidence\":\"e\","
-		  "\"location\":\"src/a.c:5\"}", 9,
+		  "\"location\":\"src/a.c:5\"}", 7,
 		  "Finding 2 stays candidate, src/a.c:5 at " A12 "; the new evidence is in its "
 		  "history. Its old location is in its history." },
 		{ "{\"action\":\"update\",\"id\":2,\"state\":\"candidate\",\"evidence\":\"e\","
@@ -1239,7 +1269,7 @@ test_full (void)
 	dstr_cleanup(&out);
 }
 
-/* Without REVIEW_READS the read log stays empty, verified and disproved
+/* Without REVIEW_READ_LOG the read log stays empty, verified and disproved
  * are refused, and no result suggests a git read, also after a restore.
  */
 static void
@@ -1267,7 +1297,8 @@ test_no_git (void)
 	EXPECT(back, "{\"action\":\"update\",\"id\":1,\"state\":\"retracted\",\"evidence\":"
 	             "\"e\"}", 2, 0, "Finding 1 is now retracted, src/a.c:3, not read; it was "
 	                          "candidate.");
-	/* review_restore() keeps the REVIEW_READS flag of the target. */
+	/* review_restore() does not change the REVIEW_READ_LOG flag of the
+	 * target. */
 	struct review *reads = fresh();
 	CHECK(!review_restore(reads, obj));
 	EXPECT(reads, verify, 2, EINVAL,
@@ -1276,6 +1307,31 @@ test_no_git (void)
 	       "[\"HEAD:src/a.c\"] and \"line\": 3" WHOLE "." LATER);
 	json_object_put(obj);
 	review_destroy(&reads);
+	review_destroy(&back);
+	review_destroy(&r);
+
+	/* A record without REVIEW_READ_LOG restores the findings of a saved
+	 * record but not its read log and pending lines. */
+	r = fresh();
+	CHECK(!seen(r, "proj", A, "src/a.c", 1, 9, 300, 1));
+	CHECK(!shown_in(r, "proj", A, "src/b.c", 1, 2, 2, 0, SIZE_MAX, 2));
+	EXPECT(r, verify, 2, 0, "Added finding 1: verified, src/a.c:3 at " A12 ".");
+	obj = review_json(r, &e);
+	CHECK(obj && !e);
+	back = review_create(0, &e);
+	CHECK(back && !e && !review_restore(back, obj));
+	struct dstr text = DSTR_INIT;
+	CHECK(!review_render(back, &text, SIZE_MAX));
+	SAME(got(&text), HEADER FINDINGS "1. verified, src/a.c:3 at " A12 "\n   claim: c\n"
+	                 "   evidence: e");
+	dstr_cleanup(&text);
+	CHECK(!review_pending_log(back));
+	json_object_put(obj);
+	obj = review_json(back, &e);
+	CHECK(obj && !e);
+	SAME(json_object_to_json_string_ext(json_object_object_get(obj, "reads"),
+	                                    JSON_C_TO_STRING_PLAIN), "[]");
+	json_object_put(obj);
 	review_destroy(&back);
 	review_destroy(&r);
 }
@@ -1325,13 +1381,13 @@ test_json (void)
 	CHECK(again && !e);
 	SAME(json_object_to_json_string_ext(again, JSON_C_TO_STRING_PLAIN), json);
 	json_object_put(again);
-	/* The restored record takes further updates, and review_answered() logs
+	/* The restored record accepts further updates, and review_pending_log() logs
 	 * its restored pending lines. */
 	EXPECT(back, "{\"action\":\"update\",\"id\":2,\"state\":\"verified\",\"evidence\":\"E\","
 	             "\"location\":\"a.c:25\"}", 5, 0,
 	       "Finding 2 is now verified, src/a.c:25 at " A12 "; it was candidate. Its old "
 	       "location is in its history.");
-	CHECK(!review_answered(back));
+	CHECK(!review_pending_log(back));
 	lines_of(back, "lines 1-12, 20-29, 40-41: 24 of 300 lines\n"
 	               "other " B "\n  b.c  line 2: 1 of an unknown number of lines", __LINE__);
 
@@ -1383,6 +1439,12 @@ test_json (void)
 		{ "\"history\":[{\"turn\":2,\"state\":\"candidate\",\"commit\":\"\",\"evidence\":\"\"}]",
 		  "\"history\":[]" },
 		{ "\"reads\":[", "\"reads\":0,\"r\":[" },
+		/* An old location that is not path:first-last. */
+		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":\"src\\/a.c:x\"" },
+		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":\"src\\/a.c\"" },
+		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":\":3-4\"" },
+		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":\"src\\/a.c:4-3\"" },
+		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":5" },
 	};
 	struct dstr before = DSTR_INIT;
 	CHECK(!review_render(back, &before, SIZE_MAX));
@@ -1433,11 +1495,8 @@ test_json (void)
 		json_object_array_get_idx(reads, 0)));
 	json_object_object_add(c, "path", json_object_new_string("src/c.c"));
 	json_object_array_add(reads, c);
-	CHECK(review_restore(back, apart) == EINVAL);
-	/* The same file is accepted next to the other file of its commit. */
-	struct json_object *other = json_object_get(json_object_array_get_idx(reads, 1));
-	json_object_array_put_idx(reads, 1, json_object_get(c));
-	json_object_array_put_idx(reads, 2, other);
+	/* A file after the files of another commit is restored next to the other
+	 * file of its commit. */
 	struct review *grouped = fresh();
 	CHECK(!review_restore(grouped, apart));
 	lines_of(grouped, "lines 1-12, 20-29: 22 of 300 lines\n  src/c.c  lines 1-12, 20-29: 22 of "
@@ -1494,22 +1553,22 @@ test_json (void)
 	SAME(json_object_to_json_string_ext(rj, JSON_C_TO_STRING_PLAIN),
 	     "{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src\\/a.c\",\"at\":4,"
 	     "\"len\":27,\"first\":3,\"last\":5,\"total\":9}");
-	struct review_read *copy = review_read_restore(rj, o, &e);
+	struct review_read *copy = review_read_create_json(rj, o, &e);
 	CHECK(copy && !e);
 	r = fresh();
-	CHECK(!review_shown(r, copy, o, 0, SIZE_MAX, 1) && !review_answered(r));
+	CHECK(!review_pending_add(r, copy, o, 0, SIZE_MAX, 1) && !review_pending_log(r));
 	lines_of(r, "lines 3-5: 3 of 9 lines", __LINE__);
 	review_destroy(&r);
 	review_read_destroy(&copy);
 	/* The output must still hold the lines, and each member must be there. */
-	CHECK(!review_read_restore(rj, (struct cstr_view){ o.data, 20 }, &e) && e == EINVAL);
+	CHECK(!review_read_create_json(rj, (struct cstr_view){ o.data, 20 }, &e) && e == EINVAL);
 	char const *const members[] = { "repo", "commit", "path", "at", "len", "first", "last",
 	                                "total" };
 	for (size_t i = 0; i < sizeof members / sizeof *members; ++i) {
 		struct json_object *less = json_tokener_parse(
 			json_object_to_json_string_ext(rj, JSON_C_TO_STRING_PLAIN));
 		json_object_object_del(less, members[i]);
-		CHECK(!review_read_restore(less, o, &e) && e == EINVAL);
+		CHECK(!review_read_create_json(less, o, &e) && e == EINVAL);
 		json_object_put(less);
 	}
 	json_object_put(rj);
@@ -1548,7 +1607,7 @@ static void
 test_nullptr (void)
 {
 	int e = 0;
-	CHECK(!review_create(REVIEW_READS, nullptr));
+	CHECK(!review_create(REVIEW_READ_LOG, nullptr));
 	review_destroy(nullptr);
 	struct review *none = nullptr;
 	review_destroy(&none);
@@ -1564,15 +1623,16 @@ test_nullptr (void)
 	struct review_read *read = review_read_create(&src, out, &e);
 	CHECK(read && !e);
 	struct review *r = fresh();
-	CHECK(review_shown(nullptr, read, out, 0, SIZE_MAX, 1) == EFAULT);
-	CHECK(review_shown(r, nullptr, out, 0, SIZE_MAX, 1) == EFAULT);
-	CHECK(review_shown(r, read, (struct cstr_view){ nullptr, 2 }, 0, SIZE_MAX, 1) == EFAULT);
-	CHECK(review_answered(nullptr) == EFAULT);
-	review_compacted(nullptr);
+	CHECK(review_pending_add(nullptr, read, out, 0, SIZE_MAX, 1) == EFAULT);
+	CHECK(review_pending_add(r, nullptr, out, 0, SIZE_MAX, 1) == EFAULT);
+	CHECK(review_pending_add(r, read, (struct cstr_view){ nullptr, 2 }, 0, SIZE_MAX, 1) == EFAULT);
+	CHECK(review_pending_log(nullptr) == EFAULT);
+	review_pending_drop(nullptr);
 	struct dstr d = DSTR_INIT;
 	struct json_object *args = json_tokener_parse("{\"action\":\"show\"}");
-	CHECK(review_call(nullptr, args, 1, nullptr, 0, SIZE_MAX, &d) == EFAULT);
-	CHECK(review_call(r, args, 1, nullptr, 0, SIZE_MAX, nullptr) == EFAULT);
+	CHECK(review_call(nullptr, args, 1, nullptr, &(struct review_cursor){}, 1, &d) == EFAULT);
+	CHECK(review_call(r, args, 1, nullptr, nullptr, 1, &d) == EFAULT);
+	CHECK(review_call(r, args, 1, nullptr, &(struct review_cursor){}, 1, nullptr) == EFAULT);
 	CHECK(review_render(r, nullptr, SIZE_MAX) == EFAULT);
 	CHECK(!review_json(r, nullptr));
 	CHECK(!review_json(nullptr, &e) && e == EFAULT);
@@ -1580,8 +1640,8 @@ test_nullptr (void)
 	CHECK(review_restore(r, nullptr) == EFAULT);
 	CHECK(!review_read_json(nullptr, &e) && e == EFAULT);
 	CHECK(!review_read_json(read, nullptr));
-	CHECK(!review_read_restore(nullptr, out, &e) && e == EFAULT);
-	CHECK(!review_read_restore(args, out, nullptr));
+	CHECK(!review_read_create_json(nullptr, out, &e) && e == EFAULT);
+	CHECK(!review_read_create_json(args, out, nullptr));
 	CHECK(!dstr_len(&d));
 	json_object_put(args);
 	review_read_destroy(&read);
