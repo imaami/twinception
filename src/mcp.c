@@ -289,45 +289,45 @@ static constexpr uint64_t KF_RERUN = 1ull << 34;
 
 /* The row of a kind of tool in mcp_rows. */
 struct mcp_row {
-	struct tool_kind        kind;      /* the functions of the tool, if askai
-	                                      implements the tool itself */
-	struct plugin const    *plugin;    /* the built-in plugin whose only tool
-	                                      this is, or nullptr */
-	tool_definition_fn     *upstream;  /* the definition for the turns, if it
-	                                      differs from the one that clients
-	                                      list */
-	char const             *sized;     /* the argument whose size the log
-	                                      shows instead of its value */
-	char const             *option;    /* the option that turns the tool on,
-	                                      for the log. It is nullptr for the
-	                                      kinds in KINDS_TURNS and the test
-	                                      aid, which the log leaves out while
-	                                      they are off. */
-	struct cstr_view        name;      /* the name; name.data is nullptr for
-	                                      the ask tool, whose name comes from
-	                                      the configuration */
-	uint8_t                 lend;      /* enum mcp_lend: how the tool is lent
-	                                      to the turns. For a tool of a
-	                                      plugin with LEND_NEVER here, the
-	                                      flags of its kind decide. */
-	uint8_t                 metric;    /* enum metrics_lent: the row of the
-	                                      tool in the turns' metrics */
-	uint8_t                 trace;     /* enum mcp_trace: what the trace
-	                                      shows of the calls */
+	struct tool_kind     kind;      /* the functions of the tool, if askai
+	                                   implements the tool itself */
+	struct plugin const *plugin;    /* the built-in plugin whose only tool
+	                                   this is, or nullptr */
+	tool_definition_fn  *upstream;  /* the definition for the turns, if it
+	                                   differs from the one that clients
+	                                   list */
+	char const          *sized;     /* the argument whose size the log
+	                                   shows instead of its value */
+	char const          *option;    /* the option that turns the tool on,
+	                                   for the log. It is nullptr for the
+	                                   kinds in KINDS_TURNS and the test
+	                                   aid, which the log leaves out while
+	                                   they are off. */
+	struct cstr_view     name;      /* the name; name.data is nullptr for
+	                                   the ask tool, whose name comes from
+	                                   the configuration */
+	uint8_t              lend;      /* enum mcp_lend: how the tool is lent
+	                                   to the turns. For a tool of a plugin
+	                                   with LEND_NEVER here, mcp_lend_of()
+	                                   uses the flags of its kind. */
+	uint8_t              metric;    /* enum metrics_lent: the row of the
+	                                   tool in the metrics of the turns */
+	uint32_t             trace;     /* enum mcp_trace: what the trace shows
+	                                   of the calls, widened over the
+	                                   padding */
 };
 
 /* A tool that askai offers. listed is its definition as tools/list lists
  * it, if a role may grant it, and lent is its definition in the API of the
- * upstream, if the turns are lent the tool. Each begins with a comma. tool
- * is the entry of the tool in the registry, and lend is the rule by which
- * the turns are lent the tool. mcp_row_of(&tool) returns the row with the
- * other attributes of the tool.
+ * upstream, if a mask of st->lending other than by[LEND_NEVER] contains
+ * the tool. Each definition begins with a comma. tool is the entry of the
+ * tool in the registry. mcp_row_of(&tool) returns the row with the other
+ * attributes of the tool.
  */
 struct mcp_offer {
 	struct dstr          listed;
 	struct dstr          lent;
 	struct registry_tool tool;
-	uint8_t              lend;  /* enum mcp_lend */
 };
 
 /* The tools that askai lends the turns. Each member is a mask of tool ids.
@@ -354,18 +354,17 @@ mcp_lending_lent (struct mcp_lending const *l,
 	return lent ? lent | l->by[LEND_WITH] | more : 0;
 }
 
-/* A plugin whose tools askai offers. A built-in plugin can have a service,
- * the object that every loop shares, and a part of it on each client loop.
- * A plugin that askai loaded from a file has neither, and has its record
- * of the loading instead.
+/* A plugin whose tools askai offers. entry is the entry of the plugin in
+ * the registry, whose member loaded is nullptr for a built-in plugin. A
+ * built-in plugin can provide a service, the object that every loop
+ * shares, and a part of the service on each client loop. A plugin that
+ * askai loaded from a file provides neither.
  */
 struct mcp_plugin {
-	struct plugin const        *plugin;
-	void                       *service;
-	mcp_part_create_fn         *part_create;
-	mcp_part_destroy_fn        *part_destroy;
-	struct plugin_loaded const *loaded;  /* nullptr for a built-in
-	                                        plugin */
+	struct registry_plugin  entry;
+	void                   *service;
+	mcp_part_create_fn     *part_create;
+	mcp_part_destroy_fn    *part_destroy;
 };
 
 struct mcp_static {
@@ -3229,13 +3228,13 @@ mcp_slot_instance (struct mcp_slot const *slot)
 	return slot ? slot->inst : nullptr;
 }
 
-/* Returns the record of the loading of the plugin of @p slot's tool, or
- * nullptr if the plugin is built into askai.
+/** Returns the record of the loading of the plugin of the tool of the call
+ *  in @p slot, or nullptr if the plugin is built into askai.
  */
 static struct plugin_loaded const *
 mcp_slot_loaded (struct mcp_slot const *slot)
 {
-	return slot->req->mcp->st->plugins[mcp_slot_offer(slot)->tool.part].loaded;
+	return slot->req->mcp->st->plugins[mcp_slot_offer(slot)->tool.part].entry.loaded;
 }
 
 void const *
@@ -4776,15 +4775,17 @@ mcp_agenda_alarm (struct loop       *loop,
 		mcp_agenda_wake(a);
 }
 
-/* Starts the call of @p slot with the arguments @p args, and stores the
+/**
+ * Starts the call of @p slot with the arguments @p args, and stores the
  * time of the start in the slot.
  *
  * A client can send any JSON value as the arguments. If @p args is neither
  * nullptr nor an object, the call ends with an error text. Otherwise the
- * function gets the instance of the tool's plugin for the user of the
- * request, if the plugin has instances, and then calls start() of the
- * tool's kind. If instance_table_get() returns EBUSY, the call ends as
- * failed. Any other error of instance_table_get() ends the whole request.
+ * function looks up the instance of the plugin of the tool for the user of
+ * the request with instance_table_get(), and then calls start() of the
+ * kind of the tool. If instance_table_get() returns EBUSY, the call ends
+ * as failed. Any other error of instance_table_get() ends the whole
+ * request.
  *
  * No function of a plugin is running when this function is called.
  */
@@ -4800,7 +4801,7 @@ mcp_slot_start (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	struct mcp *mcp = req->mcp;
 	struct mcp_offer const *offer = mcp_slot_offer(slot);
-	int e = instance_table_get(&mcp->instances, mcp->st->plugins[offer->tool.part].plugin,
+	int e = instance_table_get(&mcp->instances, mcp->st->plugins[offer->tool.part].entry.plugin,
 	                           req->principal, req->generation, &slot->inst);
 	if (e == EBUSY)
 		mcp_slot_result(slot, TEXT(busy), true);
@@ -7960,25 +7961,21 @@ mcp_create (struct loop              *loop,
 	}
 	for (uint32_t i = 0; i < st->n_plugins; ++i) {
 		struct mcp_plugin const *p = &st->plugins[i];
-		/* For a plugin without part_create(), the part is the plugin's
-		 * service. A plugin that askai loaded from a file has neither, so
-		 * its part is nullptr. */
-		mcp->parts[i] = p->service;
-		if (!p->part_create)
-			continue;
+		/* For a plugin without part_create(), the part is the service of
+		 * the plugin. A plugin that askai loaded from a file provides
+		 * neither, so its part is nullptr. */
 		int pe = 0;
-		mcp->parts[i] = p->part_create(p->service, loop, &pe);
-		if (mcp->parts[i])
-			continue;
-		*e = pe ? pe : ENOMEM;
-		mcp_destroy_parts(mcp, i);
-		instance_table_fini(&mcp->instances);
-		free(mcp);
-		return nullptr;
-	}
-	for (uint32_t i = 0; i < st->n_plugins; ++i)
-		if (st->plugins[i].plugin == &notes_tool_plugin)
+		mcp->parts[i] = p->service;
+		if (p->part_create && !(mcp->parts[i] = p->part_create(p->service, loop, &pe))) {
+			*e = pe ? pe : ENOMEM;
+			mcp_destroy_parts(mcp, i);
+			instance_table_fini(&mcp->instances);
+			free(mcp);
+			return nullptr;
+		}
+		if (p->entry.plugin == &notes_tool_plugin)
 			mcp->notes = mcp->parts[i];
+	}
 	self = mcp;
 	return mcp;
 }
@@ -8578,33 +8575,36 @@ static struct mcp_row const mcp_rows[KINDS] = {
 #undef N
 };
 
-/* Serialize the replies that never change, of @p info, what tells of
- * askai, and @p list, an array for the supported versions: each tool's
- * definition, as tools/list lists it if a role may grant it, and as the
- * upstream's API has it if it is lent, the row's upstream definition if
- * the row has one; then mcp_static_tails()'s.
+/** Serializes the replies that never change. @p info describes askai, and
+ *  @p list is the array of the supported versions. The function serializes
+ *  the definition for tools/list of each tool that a role can grant, and
+ *  the definition in the API of the upstream of each tool that can be lent,
+ *  from the upstream function of its row if the row defines one.
  */
 static int
 mcp_static_build (struct mcp_static  *st,
                   struct json_object *info,
                   struct json_object *list)
 {
+	struct mcp_lending const *l = &st->lending;
+	tool_mask lendable = l->by[LEND_GRANTED] | l->by[LEND_ALWAYS] | l->by[LEND_WITH] |
+	                     l->by[LEND_DETACH];
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_offer *o = &st->offers[id];
-		/* definition() of a plugin that askai loaded from a file gets the
-		 * plugin's configuration. */
+		/* definition() of a plugin that askai loaded from a file receives
+		 * the configuration of the plugin. */
 		struct mcp_plugin const *p = &st->plugins[o->tool.part];
-		void const *service = p->loaded ? p->loaded->config : p->service;
+		void const *service = p->entry.loaded ? p->entry.loaded->config : p->service;
 		struct json_object *def = o->tool.kind->definition(service);
 		int e = !def ? ENOMEM : id < st->n_granted
 		      ? mcp_static_item(&o->listed, json_object_get(def)) : 0;
-		tool_definition_fn *upstream = mcp_row_of(&o->tool)->upstream;
-		struct json_object *lent = o->lend == LEND_NEVER ? nullptr
-		                         : upstream ? upstream(service)
-		                         : json_object_get(def);
-		if (!e && o->lend != LEND_NEVER)
+		if (!e && lendable >> id & 1) {
+			tool_definition_fn *upstream = mcp_row_of(&o->tool)->upstream;
+			struct json_object *lent = upstream ? upstream(service)
+			                                    : json_object_get(def);
 			e = lent ? mcp_static_item(&o->lent, ai_tool(st->ep->api, lent)) : ENOMEM;
-		json_object_put(lent);
+			json_object_put(lent);
+		}
 		json_object_put(def);
 		if (e)
 			return e;
@@ -8824,34 +8824,33 @@ mcp_lent (void const *cfg,
 	return mcp_lending_lent(&l, upstream);
 }
 
-/* Returns the record of the plugin @p part for @p st: the plugin, its
- * service and its two part functions. The service of askai's own kinds is
- * @p st. The service of the plugin of the man tool is @p manual, the
- * service of the plugin of the git tool is @p git, and the service of the
- * plugin of the notes tool is st->notes_tool. Each of these three plugins
- * creates a part on every client loop. The record of a plugin that askai
- * loaded from a file contains part->loaded and no service or part
- * functions.
+/** Returns the record of the plugin of the registry entry @p entry for
+ *  @p st. The record of a built-in plugin also contains its service and
+ *  its two part functions. The service of askai's own kinds is @p st, the
+ *  service of the plugin of the man tool is @p manual, the service of the
+ *  plugin of the git tool is @p git, and the service of the plugin of the
+ *  notes tool is st->notes_tool. Each of these three plugins creates a part
+ *  on every client loop.
  */
 static struct mcp_plugin
 mcp_static_plugin (struct mcp_static            *st,
-                   struct registry_plugin const *part,
+                   struct registry_plugin const *entry,
                    struct manual                *manual,
                    struct git                   *git)
 {
 	struct mcp_plugin const own[] = {
-		{ .plugin = &mcp_host_plugin, .service = st },
-		{ .plugin = &manual_plugin, .service = manual,
+		{ .entry.plugin = &mcp_host_plugin, .service = st },
+		{ .entry.plugin = &manual_plugin, .service = manual,
 		  .part_create = manual_loop_create, .part_destroy = manual_loop_destroy },
-		{ .plugin = &git_plugin, .service = git,
+		{ .entry.plugin = &git_plugin, .service = git,
 		  .part_create = git_loop_create, .part_destroy = git_loop_destroy },
-		{ .plugin = &notes_tool_plugin, .service = &st->notes_tool,
+		{ .entry.plugin = &notes_tool_plugin, .service = &st->notes_tool,
 		  .part_create = notes_tool_loop_create, .part_destroy = notes_tool_loop_destroy },
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(own); ++i)
-		if (own[i].plugin == part->plugin)
+		if (own[i].entry.plugin == entry->plugin)
 			return own[i];
-	return (struct mcp_plugin){ .plugin = part->plugin, .loaded = part->loaded };
+	return (struct mcp_plugin){ .entry = *entry };
 }
 
 /** Prepares the attach action of the notes tool if the upstream of @p st
@@ -8910,7 +8909,6 @@ mcp_static_create (struct config const *cfg,
                    struct journal      *journal,
                    int                 *e)
 {
-	bool lends = cfg->flags & CFG_UPSTREAM_TOOLS;
 	struct registry const *reg = &cfg->registry;
 	struct mcp_static *st = malloc(sizeof *st);
 	if (!st) {
@@ -8940,27 +8938,18 @@ mcp_static_create (struct config const *cfg,
 		.roster = roster,
 		.web = web,
 		.files_inline = mcp_files_inline(cfg->http.limits.body),
-		.seed = loop_clock(),
+		.seed = journal ? journal_seed(journal) : util_seed(),
+		.lending = mcp_lending(cfg),
 		.lim = cfg->mcp,
 		.turns = cfg->turns
 	};
 	for (uint32_t i = 0; i < reg->n_plugins; ++i)
 		st->plugins[i] = mcp_static_plugin(st, &reg->plugins[i], manual, git);
-	/* A zeroed dstr is no empty string (dstr.h). */
-	for (uint32_t id = 0; id < reg->n_tools; ++id) {
-		struct registry_tool const *t = &reg->tools[id];
-		struct mcp_offer *o = &st->offers[id];
-		/* The turns are lent tools with --upstream-tools. */
-		*o = (struct mcp_offer){
-			.listed = DSTR_INIT,
-			.lent = DSTR_INIT,
-			.tool = *t,
-			.lend = lends ? mcp_lend_of(t) : LEND_NEVER
-		};
-	}
-	st->lending = mcp_lending(cfg);
-	st->seed = journal ? journal_seed(journal) : util_seed();
-	if (lends && notes && (*e = mcp_static_uploads(st))) {
+	/* A zeroed dstr is not an empty string (dstr.h). */
+	for (uint32_t id = 0; id < reg->n_tools; ++id)
+		st->offers[id] = (struct mcp_offer){ .listed = DSTR_INIT, .lent = DSTR_INIT,
+		                                     .tool = reg->tools[id] };
+	if (cfg->flags & CFG_UPSTREAM_TOOLS && notes && (*e = mcp_static_uploads(st))) {
 		mcp_static_destroy(&st);
 		return nullptr;
 	}
