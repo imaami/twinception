@@ -7498,7 +7498,8 @@ mcp_slot_notes_listed (struct mcp_slot *slot,
 	struct mcp_notes_call const *call = *mcp_slot_own(slot);
 	struct dstr *d = call->text;
 	*newest = (struct span){};
-	if (cut && !CAT(d, "[The oldest notes are not in this list.]\n"))
+	if (cut && mcp_notes_call_say(call, &TOOL_TEXT("[The oldest notes are not in "
+	                                               "this list.]\n"), 1))
 		return ENOMEM;
 	struct notes_cursor cursor = { .end = out.len };
 	struct notes_entry entry;
@@ -7518,14 +7519,16 @@ mcp_slot_notes_listed (struct mcp_slot *slot,
 		                                        &tm) : 0;
 		char const *subject = (char const *)entry.subject.ptr;
 		size_t said = history ? jb_utf8(subject, entry.subject.len) : 0;
+		struct tool_text const binary = TOOL_TEXT("  (binary)");
 		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", ++k, (int)w, when) ||
 		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
-		    !(entry.lines == NOTES_BINARY ? CAT(d, "  (binary)")
+		    !(entry.lines == NOTES_BINARY ? dstr_cat_n(d, binary.ptr, binary.len)
 		      : dstr_printf(d, "  (%" PRIu64 " line%s)", entry.lines,
 		                    entry.lines == 1 ? "" : "s")) ||
 		    (history && !dstr_printf(d, "  commit %.*s%s%.*s", (int)entry.commit.len,
 		                            (char const *)entry.commit.ptr, said ? "  " : "",
-		                            (int)said, said ? subject : "")) || !CAT(d, "\n"))
+		                            (int)said, said ? subject : "")) ||
+		    !dstr_cat_n(d, "\n", 1))
 			return ENOMEM;
 		*newest = entry.name;
 	}
@@ -8337,12 +8340,13 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		++which;
 	if (which == ARRAY_SIZE(mcp_notes_actions) ||
 	    ((mcp_notes_actions[which].flags & NOTE_UPLOAD) && !uploads)) {
+		struct tool_text const head = TOOL_TEXT("The action must be one of:");
 		dstr_auto why = DSTR_INIT;
-		bool ok = CAT(&why, "The action must be one of:");
+		bool ok = dstr_cat_n(&why, head.ptr, head.len);
 		for (size_t i = 0; ok && i < ARRAY_SIZE(mcp_notes_actions); ++i)
 			if (uploads || !(mcp_notes_actions[i].flags & NOTE_UPLOAD))
 				ok = dstr_printf(&why, " %s", mcp_notes_actions[i].name);
-		if (!ok || !CAT(&why, "."))
+		if (!ok || !dstr_cat_n(&why, ".", 1))
 			mcp_slot_fail(slot, ENOMEM);
 		else
 			mcp_slot_tell(slot, (struct tool_text){ dstr_get(&why), dstr_len(&why) },
@@ -9846,8 +9850,8 @@ mcp_task_definition (void const *service)
  * that the upstream takes files.
  */
 static struct json_object *
-mcp_notes_schema (enum notes_side          side,
-                  struct mcp_notes const  *tool)
+mcp_notes_schema (struct mcp_notes const *tool,
+                  enum notes_side         side)
 {
 	static_assert(NOTES_TEXT == 4 << 20 && NOTES_NAME == 255, "the descriptions say");
 	static char const *const descriptions[] = {
@@ -9985,7 +9989,7 @@ static struct json_object *
 mcp_notes_definition (void const *service)
 {
 	struct mcp_notes const *tool = service;
-	struct json_object *def = mcp_notes_schema(NOTES_CLIENT, tool);
+	struct json_object *def = mcp_notes_schema(tool, NOTES_CLIENT);
 	/* The canonical common directory of the repository names the session,
 	 * also for attached worktrees. The definition has a hash of the path
 	 * instead of the path. The hash stays the same when askai or the client
@@ -10017,7 +10021,7 @@ mcp_notes_definition (void const *service)
 static struct json_object *
 mcp_notes_upstream_definition (void const *service)
 {
-	return mcp_notes_schema(NOTES_UPSTREAM, service);
+	return mcp_notes_schema(service, NOTES_UPSTREAM);
 }
 
 /** The plugin of the notes tool, which is built into askai. Its part on
