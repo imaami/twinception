@@ -143,6 +143,15 @@ extern bool
 autocomplete_safe (struct cstr_view text,
                    bool             identifier);
 
+/** Points the lines of the @p count matches at @p matches into @p lines,
+ *  where the lines follow one another in the order of the matches, each
+ *  followed by a NUL. The length of each line is already set.
+ */
+extern void
+autocomplete_match_place (struct autocomplete_match *matches,
+                          size_t                     count,
+                          char const                *lines);
+
 /** Sort matches in place, without allocating, by their lines from begin,
  * then by cursor.
  */

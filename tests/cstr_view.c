@@ -41,6 +41,12 @@ main (void)
 	slice = cstr_view_slice(text, 1, 0);
 	assert(slice.data == counted + 1 && !slice.len);
 
+	assert(cstr_view_equal(cstr_view_trim(CSTR_VIEW(" \t a b \r\n")), CSTR_VIEW("a b")));
+	assert(cstr_view_equal(cstr_view_trim(CSTR_VIEW("\na\t")), CSTR_VIEW("\na")));
+	assert(cstr_view_equal(cstr_view_trim(CSTR_VIEW("a\0")), CSTR_VIEW("a\0")));
+	assert(!cstr_view_trim(CSTR_VIEW(" \r\n\t")).len);
+	assert(!cstr_view_trim(empty).len);
+
 	struct dstr owned = DSTR_INIT;
 	assert(dstr_cat_n(&owned, counted, sizeof counted));
 	struct cstr_view borrowed = cstr_view_dstr(&owned);
@@ -52,5 +58,5 @@ main (void)
 	assert(!cstr_view_store(text, &owned));
 	assert(cstr_view_equal(cstr_view_dstr(&owned), text));
 	dstr_cleanup(&owned);
-	puts("cstr views: empty values, counted NULs, byte order, bounded slices and stores: PASS");
+	puts("cstr views: empty values, counted NULs, byte order, bounded slices, trims and stores: PASS");
 }

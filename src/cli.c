@@ -36,16 +36,6 @@
 #include "list.h"
 #include "loop.h"
 
-static struct cstr_view
-cli_trim (struct cstr_view text)
-{
-	while (text.len && strchr("\r\n \t", text.data[text.len - 1]) && text.data[text.len - 1])
-		--text.len;
-	while (text.len && (*text.data == ' ' || *text.data == '\t'))
-		text = cstr_view_slice(text, 1, SIZE_MAX);
-	return text;
-}
-
 static int
 cli_read_file (struct dstr      *text,
                struct cstr_view  path,
@@ -853,11 +843,11 @@ static struct cli_command const *
 cli_command_parse (struct cstr_view  line,
                    struct cstr_view *rest)
 {
-	line = cli_trim(line);
+	line = cstr_view_trim(line);
 	size_t split = 0;
 	while (split < line.len && !strchr(" \t\r\n", line.data[split]))
 		++split;
-	*rest = cli_trim(cstr_view_slice(line, split, SIZE_MAX));
+	*rest = cstr_view_trim(cstr_view_slice(line, split, SIZE_MAX));
 	struct cli_command const *command = cli_command_find(cstr_view_slice(line, 0, split));
 	return command && (command->args != CLI_COMMAND_ARGS_NONE || !rest->len) ? command : nullptr;
 }
@@ -900,7 +890,7 @@ cli_command_run (struct cli               *cli,
 	case CLI_COMMAND_TOOL:
 		if (cli->options->single)
 			*action = CLI_ACTION_EXIT;
-		return cli_manual_call(cli, cli_trim(cstr_view_dstr(prompt)), error);
+		return cli_manual_call(cli, cstr_view_trim(cstr_view_dstr(prompt)), error);
 	case CLI_COMMAND_HISTORY:
 		return cli_history_show(cli);
 	case CLI_COMMAND_CLEAR: {
@@ -1036,7 +1026,7 @@ cli_turn (struct cli       *cli,
 	if (atomic_load(&cli->cancel_io))
 		return EINTR;
 	struct cstr_view text = cstr_view_dstr(prompt);
-	if (!cli_trim(text).len) {
+	if (!cstr_view_trim(text).len) {
 		*action = CLI_ACTION_CONTINUE;
 		return cli->options->single ? cli_error_set(error, EINVAL, "The prompt is empty") : 0;
 	}

@@ -21,9 +21,8 @@ struct loop;
 /** Runs on the UI thread. Bytes are borrowed until the callback returns.
  * Returns 0, or an error number that fails and cancels the call.
  */
-typedef int cli_network_receive_fn (char const *bytes,
-                                    size_t      length,
-                                    void       *context);
+typedef int cli_network_receive_fn (struct cstr_view  bytes,
+                                    void             *context);
 
 typedef bool cli_network_ready_fn (void *context);
 

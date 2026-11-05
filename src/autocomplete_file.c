@@ -194,11 +194,7 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	if (e)
 		return e;
 
-	char const *data = dstr_get(&file->lines);
-	for (size_t i = 0; i < used; ++i) {
-		file->matches[i].line.data = data;
-		data += file->matches[i].line.len + 1;
-	}
+	autocomplete_match_place(file->matches, used, dstr_get(&file->lines));
 	autocomplete_match_sort(file->matches, used, command.len + directory.len);
 	*matches = file->matches;
 	*count = used;

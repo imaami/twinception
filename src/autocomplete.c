@@ -100,7 +100,6 @@ struct autocomplete {
 	struct dstr                   json;
 	struct dstr                   lines;
 	struct autocomplete_match     matches[256];
-	size_t                        offsets[256];
 	size_t                        match_count;
 	size_t                        match_begin;
 };
@@ -892,8 +891,7 @@ autocomplete_replacement (struct autocomplete    *ac,
 	if (value.len > SIZE_MAX - line.len - 2)
 		return ENOMEM;
 	size_t length = begin + value.len + separate + line.len - end;
-	size_t offset = dstr_len(&ac->lines);
-	if (length >= AUTOCOMPLETE_BYTES - offset)
+	if (length >= AUTOCOMPLETE_BYTES - dstr_len(&ac->lines))
 		return 0;
 	if (autocomplete_buffer_reserve(&ac->lines, length + 1))
 		return ENOMEM;
@@ -906,7 +904,6 @@ autocomplete_replacement (struct autocomplete    *ac,
 	size_t index = ac->match_count++;
 	if (!index || begin < ac->match_begin)
 		ac->match_begin = begin;
-	ac->offsets[index] = offset;
 	ac->matches[index] = (struct autocomplete_match){
 		.line = {nullptr, length},
 		.cursor = begin + value.len + separate,
@@ -1205,6 +1202,17 @@ autocomplete_match_sink (struct autocomplete_match *matches,
 }
 
 void
+autocomplete_match_place (struct autocomplete_match *matches,
+                          size_t                     count,
+                          char const                *lines)
+{
+	for (size_t i = 0; i < count; ++i) {
+		matches[i].line.data = lines;
+		lines += matches[i].line.len + 1;
+	}
+}
+
+void
 autocomplete_match_sort (struct autocomplete_match *matches,
                          size_t                     count,
                          size_t                     begin)
@@ -1260,8 +1268,7 @@ autocomplete_complete (struct autocomplete              *ac,
 		error = autocomplete_mentions(ac, line, cursor);
 	if (error)
 		return error;
-	for (size_t i = 0; i < ac->match_count; ++i)
-		ac->matches[i].line.data = dstr_get(&ac->lines) + ac->offsets[i];
+	autocomplete_match_place(ac->matches, ac->match_count, dstr_get(&ac->lines));
 	autocomplete_match_sort(ac->matches, ac->match_count, ac->match_begin);
 	size_t used = 0;
 	for (size_t i = 0; i < ac->match_count; ++i) {

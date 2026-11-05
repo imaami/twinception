@@ -96,4 +96,21 @@ cstr_view_slice (struct cstr_view text,
 	return text;
 }
 
+/**
+ * Drop spaces and tabs from the start of @p text, and spaces, tabs,
+ * carriage returns and line feeds from its end, as from a line of input or
+ * the value of an HTTP header.
+ */
+static inline struct cstr_view
+cstr_view_trim (struct cstr_view text)
+{
+	while (text.len && memchr(" \t\r\n", text.data[text.len - 1], 4))
+		--text.len;
+	while (text.len && (*text.data == ' ' || *text.data == '\t')) {
+		++text.data;
+		--text.len;
+	}
+	return text;
+}
+
 #endif /* TWINCEPTION_SRC_CSTR_VIEW_H_ */

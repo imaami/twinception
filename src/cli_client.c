@@ -168,22 +168,20 @@ static int cli_client_response_line(struct cli_client_response *response)
 	return e;
 }
 
-static int cli_client_response_receive(char const *ptr, size_t bytes, void *context)
+static int cli_client_response_receive(struct cstr_view bytes, void *context)
 {
 	struct cli_client_response *response = context;
 	if (!response->sse) {
-		response->failure = cli_client_response_append(&response->body, (struct cstr_view){ptr, bytes});
+		response->failure = cli_client_response_append(&response->body, bytes);
 	} else {
-		size_t offset = 0;
-		while (offset < bytes && !response->failure) {
-			char const *newline = memchr(ptr + offset, '\n', bytes - offset);
-			size_t length = newline ? (size_t)(newline - ptr) - offset : bytes - offset;
-			response->failure = cli_client_response_append(&response->line, (struct cstr_view){ptr + offset, length});
-			offset += length;
-			if (newline && !response->failure) {
-				++offset;
+		while (bytes.len && !response->failure) {
+			char const *newline = memchr(bytes.data, '\n', bytes.len);
+			size_t length = newline ? (size_t)(newline - bytes.data) : bytes.len;
+			response->failure = cli_client_response_append(&response->line,
+			                                               cstr_view_slice(bytes, 0, length));
+			bytes = cstr_view_slice(bytes, length + (newline != nullptr), SIZE_MAX);
+			if (newline && !response->failure)
 				response->failure = cli_client_response_line(response);
-			}
 		}
 	}
 	if (response->failure == EFBIG)
@@ -197,26 +195,18 @@ static bool cli_client_equal_case(struct cstr_view a, struct cstr_view b)
 	return a.len == b.len && !strncasecmp(a.data, b.data, a.len);
 }
 
-static int cli_client_response_header(char const *ptr, size_t bytes, void *context)
+static int cli_client_response_header(struct cstr_view line, void *context)
 {
 	struct cli_client_response *response = context;
-	struct cstr_view line = {ptr, bytes};
 	if (cstr_view_starts(line, CSTR_VIEW("HTTP/"))) {
 		response->sse = false;
 		dstr_clear(&response->session);
 	}
-	char const *colon = memchr(ptr, ':', bytes);
+	char const *colon = memchr(line.data, ':', line.len);
 	if (!colon)
 		return 0;
-	struct cstr_view key = {ptr, (size_t)(colon - ptr)};
-	struct cstr_view value = cstr_view_slice(line, key.len + 1, SIZE_MAX);
-	while (value.len && (value.data[value.len - 1] == '\r' || value.data[value.len - 1] == '\n' ||
-	                     value.data[value.len - 1] == ' ' || value.data[value.len - 1] == '\t'))
-		--value.len;
-	while (value.len && (*value.data == ' ' || *value.data == '\t')) {
-		++value.data;
-		--value.len;
-	}
+	struct cstr_view key = cstr_view_slice(line, 0, (size_t)(colon - line.data));
+	struct cstr_view value = cstr_view_trim(cstr_view_slice(line, key.len + 1, SIZE_MAX));
 	if (cli_client_equal_case(key, CSTR_VIEW("Content-Type"))) {
 		char const *semi = memchr(value.data, ';', value.len);
 		if (semi)

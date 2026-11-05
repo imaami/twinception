@@ -264,7 +264,8 @@ cli_network_deliver (struct cli_network *network)
 				if (bytes >= 64 * 1024 || (network->ready && !network->ready(network->ready_context)))
 					break;
 				cli_network_receive_fn *receive = chunk->header ? call->header : call->body;
-				int e = receive ? receive(chunk->bytes, chunk->length, call->context) : 0;
+				struct cstr_view const bytes = { chunk->bytes, chunk->length };
+				int e = receive ? receive(bytes, call->context) : 0;
 				if (e) {
 					call->error = e;
 					cli_network_cancel_call(network, call->id, true);
