@@ -2214,13 +2214,14 @@ godbolt_parse (struct godbolt *call)
 	return godbolt_record(call, GODBOLT_FAILED);
 }
 
-/* Ends the record at the limit of the output, with a note. Later
- * compilations are not sent. Returns 0, or call->e.
+/* Ends the record at the limit of the output, with a note on the cut.
+ * Later compilations are not sent. Returns 0, or call->e.
  */
 static int
 godbolt_full (struct godbolt *call)
 {
 	call->full = 1;
+	call->rec.cut = 1;
 	return godbolt_put(call, CSTR_VIEW("\n[The output is cut here, because it has "
 	                                   "reached 14 MiB.]\n"));
 }
@@ -2346,16 +2347,6 @@ godbolt_section (struct godbolt *call)
 	return text.data ? godbolt_section_text(call, text) : godbolt_section_lines(call, v, n);
 }
 
-/* Writes @p s, a NUL-terminated text of the probe, to the call's output.
- * Returns 0, or call->e.
- */
-static int
-godbolt_puts (struct godbolt *call,
-              char const     *s)
-{
-	return godbolt_put(call, cstr_view(s));
-}
-
 /* Writes the facts about the target that follow from the output of the
  * probe, one to a line, and the versions of the compiler. With the
  * argument headers, it also writes which target headers the compiler can
@@ -2384,12 +2375,12 @@ godbolt_facts (struct godbolt *call)
 		else if (i == GODBOLT_PROBE_POINTER_BITS && p->pointer_bits)
 			godbolt_putf(call, "%" PRIu64, p->pointer_bits);
 		else if (c->value)
-			godbolt_puts(call, c->value);
+			godbolt_put(call, cstr_view(c->value));
 		else
 			godbolt_put(call, CSTR_VIEW("unknown"));
 		for (uint32_t k = 0; k < c->n; ++k) {
 			godbolt_put(call, k ? CSTR_VIEW(", ") : CSTR_VIEW(" (from "));
-			godbolt_puts(call, c->evidence[k]);
+			godbolt_put(call, cstr_view(c->evidence[k]));
 		}
 		godbolt_put(call, c->n ? CSTR_VIEW(")\n") : CSTR_VIEW("\n"));
 	}
@@ -2430,14 +2421,18 @@ godbolt_write (struct godbolt *call)
 		if (call->rec.probed)
 			godbolt_facts(call);
 	}
-	while (call->rec.sec < call->rec.n_sec && !call->full) {
+	/* A record begins only while the output is not full, and a step that
+	 * fills the output ends the loop. */
+	while (call->rec.sec < call->rec.n_sec) {
 		uint8_t const sec = call->rec.sec;
 		if (godbolt_section(call))
 			return godbolt_fail(call);
-		if (call->rec.sec == sec && !call->full)
+		if (call->full)
+			break;
+		if (call->rec.sec == sec)
 			return GODBOLT_GO;
 	}
-	if (call->rec.truncated && !call->rec.cut && !call->full)
+	if (call->rec.truncated && !call->rec.cut)
 		godbolt_put(call, CSTR_VIEW("[Compiler Explorer cut this output.]\n"));
 	if (call->e)
 		return godbolt_fail(call);
