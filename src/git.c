@@ -606,34 +606,32 @@ git_commit (char       *dest,
 	return 0;
 }
 
-/* Say in @p why, of GIT_WHY bytes, what is wrong with a call's arguments;
- * returns EINVAL.
+/* A message about what is wrong with a call, and its length. The message
+ * starts empty, and git_wrong() appends to it.
+ */
+struct git_why {
+	size_t len;
+	char   text[GIT_WHY];
+};
+
+/* Appends to @p why a part of the message about what is wrong with the
+ * arguments of a call. After util_vformat() has cut the message short and
+ * ended it with "...", the function appends nothing more. Returns EINVAL.
  */
 [[gnu::format(printf, 2, 3)]]
 static int
-git_wrong (char       *why,
-           char const *fmt,
+git_wrong (struct git_why *why,
+           char const     *fmt,
            ...)
 {
+	size_t room = sizeof why->text - why->len;
+	if (room < 2)
+		return EINVAL;
 	va_list ap;
 	va_start(ap, fmt);
-	util_vformat(why, GIT_WHY, fmt, ap);
+	why->len += util_vformat(why->text + why->len, room, fmt, ap);
 	va_end(ap);
 	return EINVAL;
-}
-
-/* Say that @p str, cut at @p max bytes but never inside a character, is
- * wrong, after @p head and before @p tail; returns EINVAL.
- */
-static int
-git_wrong_word (char       *why,
-                char const *head,
-                char const *str,
-                size_t      max,
-                char const *tail)
-{
-	return git_wrong(why, "%s%.*s%s", head, (int)jb_utf8(str, strnlen(str, max)),
-	                 str, tail);
 }
 
 /** Validates the option @p opt of the command @p command, the option at
@@ -644,7 +642,7 @@ static int
 git_option_check (struct cstr_view  opt,
                   size_t            command,
                   size_t            index,
-                  char             *why)
+                  struct git_why   *why)
 {
 	struct cstr_view match;
 	int e = git_option_find(commands[command].options, opt, &match);
@@ -689,21 +687,18 @@ git_find (struct git const *git,
 	return nullptr;
 }
 
-/* Say which repositories a call may name; returns EINVAL. */
+/* Writes to @p why the names of the repositories that a call can select.
+ * Returns EINVAL.
+ */
 static int
 git_repos_wrong (struct git const *git,
-                 char             *why)
+                 struct git_why   *why)
 {
-	size_t n = util_format(why, GIT_WHY, "The repo argument must name one of the "
-	                       "repositories:");
-	/* After util_format() cuts the text short and ends it with "...", the
-	 * loop appends nothing more. */
-	for (size_t i = 0; i < git->n && n < GIT_WHY - 1; ++i)
-		n += util_format(why + n, GIT_WHY - n, "%s %.*s", i ? "," : "",
-		                 (int)git->repo[i].name.len, git->repo[i].name.data);
-	if (n < GIT_WHY - 1)
-		util_format(why + n, GIT_WHY - n, ".");
-	return EINVAL;
+	git_wrong(why, "The repo argument must name one of the repositories:");
+	for (size_t i = 0; i < git->n; ++i)
+		git_wrong(why, "%s %.*s", i ? "," : "", (int)git->repo[i].name.len,
+		          git->repo[i].name.data);
+	return git_wrong(why, ".");
 }
 
 /* Whether @p key is an argument the tool takes. */
@@ -721,13 +716,14 @@ git_known (char const *key)
 }
 
 /*
- * Validate the call and retain its arguments and revision roots. Returns 0; or
- * EINVAL, @p why, of GIT_WHY bytes, saying what is wrong with the arguments.
+ * Validate the call and retain its arguments and revision roots. Returns 0,
+ * or EINVAL with a message about what is wrong with the arguments in
+ * @p why.
  */
 static int
-git_call_command (struct git_call   *call,
+git_call_command (struct git_call  *call,
                   struct git const *git,
-                  char             *why)
+                  struct git_why   *why)
 {
 	static_assert(WORD == 1024, "the problems say");
 	struct json_object *args = call->args;
@@ -736,7 +732,8 @@ git_call_command (struct git_call   *call,
 	struct json_object_iter it;
 	json_object_object_foreachC(args, it)
 		if (!git_known(it.key))
-			return git_wrong_word(why, "Unknown argument: ", it.key, 64, ".");
+			return git_wrong(why, "Unknown argument: %.*s.",
+			                 (int)jb_utf8(it.key, strnlen(it.key, 64)), it.key);
 
 	struct git_repo const *repo = git_find(git, git_word(jb_get(args, "repo")));
 	if (!repo)
@@ -754,13 +751,11 @@ git_call_command (struct git_call   *call,
 			                 "options [\"-r\", \"--name-only\"] to list committed "
 			                 "files; revisions defaults to HEAD.",
 			                 (int)cmd.len, cmd.data);
-		size_t n = util_format(why, GIT_WHY, "The command argument must be one of:");
-		for (size_t i = 0; i < ARRAY_SIZE(commands) && n < GIT_WHY - 1; ++i)
-			n += util_format(why + n, GIT_WHY - n, "%s %.*s", i ? "," : "",
-			                 (int)commands[i].name.len, commands[i].name.data);
-		if (n < GIT_WHY - 1)
-			util_format(why + n, GIT_WHY - n, ". Use help:true for its options.");
-		return EINVAL;
+		git_wrong(why, "The command argument must be one of:");
+		for (size_t i = 0; i < ARRAY_SIZE(commands); ++i)
+			git_wrong(why, "%s %.*s", i ? "," : "", (int)commands[i].name.len,
+			          commands[i].name.data);
+		return git_wrong(why, ". Use help:true for its options.");
 	}
 	call->command = c;
 	uint64_t takes = commands[c].takes;
@@ -1370,14 +1365,13 @@ git_read_scan (struct git_read *read,
 		git_read_line(read, blob.len, false);
 }
 
-/* Write into @p why, a buffer of GIT_WHY bytes, the refusal of a read whose
- * first line is past the end of the file, or past the end of the capture if
- * @p cut is true.
+/* Writes to @p why the refusal of a read whose first line is past the end
+ * of the file, or past the end of the capture if @p cut is true.
  */
 static void
 git_read_past (struct git_read const *read,
                bool                   cut,
-               char                  *why)
+               struct git_why        *why)
 {
 	if (!read->total)
 		git_wrong(why, "Line %zu is past the end of the file: the file is empty.",
@@ -1577,10 +1571,10 @@ git_scan (struct mcp_slot *slot,
 	}
 	read->total = read->lines;
 	if (read->line > (read->total ? read->total : 1)) {
-		char why[GIT_WHY];
-		git_read_past(read, c->cut, why);
+		struct git_why why = {};
+		git_read_past(read, c->cut, &why);
 		git_drop(slot);
-		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
+		mcp_slot_tell(slot, (struct cstr_view){ why.text, why.len }, TOOL_FAILED);
 		return;
 	}
 	read->at = read->start = read->from;
@@ -1688,10 +1682,10 @@ git_start (struct mcp_slot    *slot,
 		mcp_slot_fail(slot, e);
 		return;
 	}
-	char why[GIT_WHY];
-	if (git_call_command(call, gl->git, why)) {
+	struct git_why why = {};
+	if (git_call_command(call, gl->git, &why)) {
 		git_call_destroy(&call);
-		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
+		mcp_slot_tell(slot, (struct cstr_view){ why.text, why.len }, TOOL_FAILED);
 		return;
 	}
 	if (mcp_slot_offset(slot, args)) {
@@ -1715,10 +1709,9 @@ git_start (struct mcp_slot    *slot,
 		                              "few seconds."), TOOL_FAILED);
 		return;
 	}
-	struct cstr_view const text =
-		util_format_view(why, sizeof why, "Cannot run git: %s.", strerror(e));
-	LOG(LOG_WARN, "%s", why);
-	mcp_slot_tell(slot, text, TOOL_FAILED);
+	git_wrong(&why, "Cannot run git: %s.", strerror(e));
+	LOG(LOG_WARN, "%s", why.text);
+	mcp_slot_tell(slot, (struct cstr_view){ why.text, why.len }, TOOL_FAILED);
 }
 
 /* Creates the git tool's part of @p loop for @p service, a struct git. The
