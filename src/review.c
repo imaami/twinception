@@ -35,6 +35,10 @@ struct tool_text const review_action_names[REVIEW_ACTIONS] = {
  */
 enum { REVIEW_SHORT = 12, REVIEW_OID = 64 + 1 };
 
+// Note to agents: stop using poetry language and non-technical terms. An array
+// doesn't "hold" things because it has no hands. "Owning" is an established
+// term so it's fine, but do NOT anthropomorphize the comments or identifiers!
+
 /* An owned text. ptr is nullptr for no text; otherwise it holds len bytes
  * and a NUL.
  */
@@ -87,6 +91,8 @@ struct review_change {
 	char               commit[REVIEW_OID];
 };
 
+// A finding doesn't "have" anything because it's not a person.
+
 /* A finding has a claim, its changes, and a location path:first-last if
  * path.ptr is not nullptr. The last change holds the state.
  */
@@ -125,18 +131,32 @@ struct review {
  */
 #define REFUSE(out, ...) (dstr_printf(out, __VA_ARGS__) ? EINVAL : ENOMEM)
 
-/* Returns the index of the string @p v in the @p n names at @p names, or
- * @p n if @p v is not one of them.
+/**
+ * Find a JSON string's index in a @ref tool_text array.
+ *
+ * @param v     The JSON string to find
+ * @param names The array of strings to search
+ * @param n     The number of strings in the array
+ *
+ * @return The array index of `v`, or `n` if not found
  */
 static size_t
 review_name_of (struct json_object     *v,
                 struct tool_text const *names,
                 size_t                  n)
 {
-	size_t i = 0;
-	while (i < n && !jb_is(v, names[i].ptr))
-		++i;
-	return i;
+	char const *s = v ? jb_text(v) : nullptr;
+	if (s) {
+		size_t const len = strlen(s);
+		size_t const num = n;
+		n = 0;
+		do {
+			if (len == names[n].len &&
+			    (!len || !memcmp(names[n].ptr, s, len)))
+				break;
+		} while (++n < num);
+	}
+	return n;
 }
 
 /* Whether @p a and the @p len bytes at @p b are the same text. */
@@ -187,8 +207,10 @@ review_newlines (char const *p,
                  size_t      n)
 {
 	size_t k = 0;
-	for (char const *end = p + n; n && (p = memchr(p, '\n', (size_t)(end - p))); ++p)
-		++k;
+	if (n) {
+		for (char const *end = p + n; (p = memchr(p, '\n', (size_t)(end - p))); ++p)
+			++k;
+	}
 	return k;
 }
 
