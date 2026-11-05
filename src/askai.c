@@ -600,9 +600,7 @@ askai_client_start (void           *ctx,
 	util_format(mine->name, sizeof mine->name, "%" PRIu64, loop->id);
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
-	mine->kept = &app->counts.kept;
-	mine->calls = &app->counts.calls;
-	mine->methods = app->counts.methods;
+	mine->mcp = &app->counts;
 	mine->conns = httpd_hub_metrics(s->hub, loop->id - 1);
 	if (s->tasks) {
 		task_pool_attach(s->tasks, loop);

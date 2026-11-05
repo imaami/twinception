@@ -730,30 +730,35 @@ struct mcp_agenda {
 };
 
 struct mcp {
-	struct list              calls;     /* requests with a tool call under way */
-	struct list              tasks;     /* requests whose call is a task */
-	struct list              freeing;   /* requests freeing their message */
-	struct list              ending;    /* requests writing their end record */
-	struct shelf             spare;     /* finished requests */
-	struct shelf             jobs;      /* jobs let go of */
-	struct loop_step         drain;     /* ends the calls, draining */
-	struct stream_app        app;
-	struct jb_pool           pool;      /* for request bodies */
-	struct jb_pool           answers;   /* for upstream answers */
-	struct metrics_src       metrics;   /* every loop's */
-	struct metrics_mcp      *counts;
-	struct loop             *loop;
-	struct loop             *home;      /* where jobs run */
-	struct mcp_static const *st;
-	struct notes_tool_loop  *notes;     /* the notes tool's part, or nullptr
-	                                       without --notes */
-	struct instance_table    instances; /* The instances of the plugins for
-	                                       the users whose calls run on this
-	                                       loop. */
-	uint64_t                 asked;     /* ask calls begun, which the log
-	                                       numbers */
-	uint64_t                 draining;  /* bool, widened over the padding */
-	void                    *parts[];   /* the plugins', as st->plugins[] */
+	struct list               calls;      /* requests with a tool call under
+	                                         way */
+	struct list               tasks;      /* requests whose call is a task */
+	struct list               freeing;    /* requests that free their
+	                                         message */
+	struct list               ending;     /* requests that write their end
+	                                         record */
+	struct shelf              spare;      /* finished requests */
+	struct shelf              jobs;       /* jobs that requests released */
+	struct loop_step          drain;      /* ends the calls when the loop
+	                                         drains */
+	struct stream_app         app;
+	struct jb_pool            pool;       /* for request bodies */
+	struct jb_pool            answers;    /* for upstream answers */
+	struct metrics_src const *metrics;    /* the metrics of every loop */
+	struct metrics_mcp       *counts;
+	struct loop              *loop;
+	struct loop              *home;       /* the loop where jobs run */
+	struct mcp_static const  *st;
+	struct notes_tool_loop   *notes;      /* the part of the notes tool, or
+	                                         nullptr without --notes */
+	struct instance_table     instances;  /* the instances of the plugins
+	                                         for the users whose calls run
+	                                         on this loop */
+	uint64_t                  asked;      /* ask calls begun, which the log
+	                                         numbers */
+	uint64_t                  draining;   /* bool, widened over the padding */
+	void                     *parts[];    /* the parts of the plugins, in
+	                                         the order of st->plugins[] */
 };
 
 /* The thread's MCP: the handler of jobs' completions finds it here. */
@@ -7621,7 +7626,7 @@ mcp_req_metrics (struct mcp_req *req)
 {
 	static char const fields[] = "Content-Type: text/plain; version=0.0.4; "
 	                             "charset=utf-8\r\n";
-	int e = metrics_render(&req->mcp->metrics, &req->off, &req->reply);
+	int e = metrics_render(req->mcp->metrics, &req->off, &req->reply);
 	if (e == EAGAIN) {
 		loop_ready_bulk(req->mcp->loop, &req->step);
 		return;
@@ -7917,7 +7922,7 @@ mcp_create (struct loop              *loop,
 			.scalar = MAX_SCALAR,
 			.flags = JSON_TOKENER_VALIDATE_UTF8
 		},
-		.metrics = *metrics,
+		.metrics = metrics,
 		.loop = loop,
 		.home = home,
 		.st = st,

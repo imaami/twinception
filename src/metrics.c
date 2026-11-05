@@ -28,7 +28,7 @@ enum { BUDGET = 32 };
  * every loop that has them, labelled with its name.
  */
 enum source {
-	LOOP, STASH, KEPT, CALLS, METHODS, CONNS, TASKS, PER_LOOP,
+	LOOP, STASH, MCP, CONNS, TASKS, PER_LOOP,
 	HTTP = PER_LOOP, BLOCKERS, JOBS, MAN, TASKS_ALL, LEDGER, BRAINSTEM, LOGGER, PSI,
 	CGROUP,
 	SOURCES
@@ -76,18 +76,18 @@ static struct {
           offsetof(struct loop_metrics, work[u]), LOOP, GAUGE, ONE }
 #define METHOD(help, method, m) \
         { "askai_request_seconds", help, "method=\"" method "\"", \
-          (m) * sizeof (struct hist), METHODS, HISTOGRAM, NANO }
+          offsetof(struct metrics_mcp, methods[m]), MCP, HISTOGRAM, NANO }
 #define VALUE(name, help, labels, type, field, source, kind, scale) \
         { name, help, labels, offsetof(type, field), source, kind, scale }
 #define STASHED(name, help, labels, field, kind, scale) \
         VALUE(name, help, labels, struct buf_stash_metrics, field, STASH, kind, scale)
 #define KEPT(name, help, labels, field) \
-        VALUE(name, help, labels, struct metrics_kept, field, KEPT, GAUGE, ONE)
+        VALUE(name, help, labels, struct metrics_mcp, kept.field, MCP, GAUGE, ONE)
 #define CALLS(name, help, field) \
-        VALUE(name, help, "", struct metrics_calls, field, CALLS, COUNTER, ONE)
+        VALUE(name, help, "", struct metrics_mcp, calls.field, MCP, COUNTER, ONE)
 #define LENT(help, tool, i) \
         VALUE("askai_turn_tool_calls_total", help, "tool=\"" tool "\"", \
-              struct metrics_calls, lent[i], CALLS, COUNTER, ONE)
+              struct metrics_mcp, calls.lent[i], MCP, COUNTER, ONE)
 #define CONNS(name, help, field, kind) \
         VALUE(name, help, "", struct metrics_conns, field, CONNS, kind, ONE)
 #define JOBS(name, help, labels, field, kind) \
@@ -162,10 +162,10 @@ static struct metrics_entry const table[] = {
 	LENT(nullptr, "unknown", LENT_NONE),
 	VALUE("askai_compactions_total", "Contexts of ask calls' turns compacted: "
 	      "by the upstream's compact call, or by askai, the context full.",
-	      "by=\"upstream\"", struct metrics_calls, compacted[0], CALLS, COUNTER,
+	      "by=\"upstream\"", struct metrics_mcp, calls.compacted[0], MCP, COUNTER,
 	      ONE),
-	VALUE("askai_compactions_total", nullptr, "by=\"askai\"", struct metrics_calls,
-	      compacted[1], CALLS, COUNTER, ONE),
+	VALUE("askai_compactions_total", nullptr, "by=\"askai\"", struct metrics_mcp,
+	      calls.compacted[1], MCP, COUNTER, ONE),
 	CALLS("askai_turns_stopped_total", "Ask calls stopped as their turns ran out "
 	      "(--max-turns), tools still called.", stopped),
 	CONNS("askai_connections", "Connections a client loop serves.", open, GAUGE),
@@ -431,9 +431,7 @@ metrics_loop_source (struct metrics_loop const *l,
 	void const *const at[PER_LOOP] = {
 		[LOOP] = l->loop,
 		[STASH] = l->stash,
-		[KEPT] = l->kept,
-		[CALLS] = l->calls,
-		[METHODS] = l->methods,
+		[MCP] = l->mcp,
 		[CONNS] = l->conns,
 		[TASKS] = l->tasks,
 	};

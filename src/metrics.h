@@ -144,10 +144,7 @@ struct metrics_loop {
 	char                            name[8];
 	struct loop_metrics const      *loop;
 	struct buf_stash_metrics const *stash;
-	struct metrics_kept const      *kept;
-	struct metrics_calls const     *calls;
-	struct hist const              *methods;  /**< METHOD_N, by enum
-	                                               metrics_method */
+	struct metrics_mcp const       *mcp;
 	struct metrics_conns const     *conns;
 	struct task_metrics const      *tasks;    /**< if askai offers test_task */
 };
