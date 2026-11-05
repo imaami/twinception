@@ -145,9 +145,9 @@ mcp_static_destroy (struct mcp_static **p_static);
  * function on the thread of @p loop. @p home is the loop of home, which
  * runs the upstream calls of the client loops as jobs (src/job.h). The
  * function creates the part of each built-in plugin that has parts, in the
- * order of the plugins. These plugins are man and git. The new object
- * records its statistics in @p counts, whose atomic members must be valid.
- * It answers GET /metrics from @p metrics.
+ * order of the plugins. These plugins are man, git and notes. The new
+ * object records its statistics in @p counts, whose atomic members must be
+ * valid. It answers GET /metrics from @p metrics.
  *
  * Returns the new object. On failure it returns nullptr and stores the
  * error number in @p *e. The error number is ENOMEM, or the error number

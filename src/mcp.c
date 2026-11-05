@@ -50,9 +50,9 @@
  * mcp_req_cancel() looks the call up in the roster (src/roster.h) by the
  * caller, the session and the request id.
  *
- * The man and git tools are the manual's (src/manual.h) and git's
- * (src/git.h), plugins built in (src/plugin.h), whose calls go through the
- * call API (src/mcp.h).
+ * The man, git and notes tools are built-in plugins (src/plugin.h). Their
+ * calls go through the call API (src/mcp.h). The man and git tools are in
+ * src/manual.h and src/git.h.
  *
  * A test_task call, when askai offers the test aid, runs CPU work of the
  * slices it asks for as a task (src/task.h), which may run on any client
@@ -432,6 +432,17 @@ struct mcp_plugin {
 	                                        plugin */
 };
 
+/* The service of the notes tool. All loops share it. mcp_static_create()
+ * fills it before mcp_static_build() reads it.
+ */
+struct mcp_notes {
+	struct notes const *notes;         /* nullptr without --notes */
+	size_t              files_inline;  /* bytes of a file that a client hands
+	                                      askai inline, at most */
+	uint64_t            attach;        /* bool, widened over the padding: the
+	                                      upstream takes files (ai_upload()) */
+};
+
 struct mcp_static {
 	struct ai_endpoint const *ep;
 	struct mcp_tool const    *tool;   /**< the ask tool's, as configured */
@@ -457,7 +468,7 @@ struct mcp_static {
 	struct dstr               versions;     /**< the supported versions, an array */
 	struct task_pool         *tasks;        /**< test_task's, if askai offers
 	                                             it */
-	struct notes             *notes;        /**< the notes', with --notes */
+	struct mcp_notes          notes_tool;   /**< the notes tool's service */
 	struct journal           *journal;      /**< reasoning and recovery state */
 	struct ledger            *ledger;       /**< the tasks' */
 	struct roster            *roster;       /**< the tool calls that run and
@@ -799,7 +810,6 @@ struct mcp {
 	struct list              tasks;     /* requests whose call is a task */
 	struct list              freeing;   /* requests freeing their message */
 	struct list              ending;    /* requests writing their end record */
-	struct list              children;  /* the notes' gits */
 	struct shelf             spare;     /* finished requests */
 	struct shelf             jobs;      /* jobs let go of */
 	struct loop_step         drain;     /* ends the calls, draining */
@@ -811,6 +821,8 @@ struct mcp {
 	struct loop             *loop;
 	struct loop             *home;      /* where jobs run */
 	struct mcp_static const *st;
+	struct mcp_notes_loop   *notes;     /* the notes tool's part, or nullptr
+	                                       without --notes */
 	struct instance_table    instances; /* The instances of the plugins for
 	                                       the users whose calls run on this
 	                                       loop. */
@@ -3810,8 +3822,8 @@ mcp_req_notes_identity (struct mcp_req *req)
 	                   "\n\n[askai: participant %s. Your writable notebook "
 	                   "is %s. Use notes action notebooks to discover "
 	                   "peers; selectors identify their authors.]\n",
-	                   notes_writer(req->mcp->st->notes), notes_selector(req->repo))
-	     ? 0 : ENOMEM;
+	                   notes_writer(req->mcp->st->notes_tool.notes),
+	                   notes_selector(req->repo)) ? 0 : ENOMEM;
 }
 
 /* Create req->review if the tool mask @p lent has findings. The record
@@ -3839,8 +3851,8 @@ mcp_req_ask (struct mcp_req     *req,
              bool                background)
 {
 	struct mcp_static const *st = req->mcp->st;
-	struct notes const *notes = req->lent & st->lending.of[KIND_NOTES] ? st->notes
-	                                                                    : nullptr;
+	struct notes const *notes = req->lent & st->lending.of[KIND_NOTES]
+	                          ? st->notes_tool.notes : nullptr;
 	/* Argument problems go back to the model so it can correct itself. */
 	struct json_object *prompt = jb_get(args, "prompt");
 	struct json_object *system = jb_get(args, "system");
@@ -6446,8 +6458,8 @@ mcp_recover_back (struct loop           *loop,
 	char const *thread = jb_str(jb_get(state, "thread"), &len);
 	if (thread && notes_is_id(thread, len))
 		memcpy(req->thread, thread, NOTES_ID);
-	if (st->notes)
-		notes_repo(st->notes, req->principal, NOTES_UPSTREAM, req->repo);
+	if (st->notes_tool.notes)
+		notes_repo(st->notes_tool.notes, req->principal, NOTES_UPSTREAM, req->repo);
 	req->intents = intents;
 	req->recovering = true;
 	req->asked = ++req->mcp->asked;
@@ -6614,6 +6626,46 @@ mcp_req_go_on (struct mcp_req   *req,
 	mcp_req_add_start(req);
 }
 
+/* The part of the notes tool on one loop. */
+struct mcp_notes_loop {
+	struct list              children;  /* the gits of the notes calls on the
+	                                       loop */
+	struct mcp_notes const  *tool;      /* the service */
+};
+
+/* Creates the part of the notes tool for @p service, a struct mcp_notes.
+ * Returns the part, or nullptr with ENOMEM in @p *e.
+ */
+static void *
+mcp_notes_loop_create (void        *service,
+                       struct loop *loop,
+                       int         *e)
+{
+	(void)loop;
+	struct mcp_notes_loop *nl = malloc(sizeof *nl);
+	*e = nl ? 0 : ENOMEM;
+	if (!nl)
+		return nullptr;
+	*nl = (struct mcp_notes_loop){ .tool = service };
+	list_init(&nl->children);
+	return nl;
+}
+
+/* Frees the children of the notes calls on the loop as it stops, and kills
+ * any that are still alive. Then frees the part at @p *p_part and sets
+ * @p *p_part to nullptr.
+ */
+static void
+mcp_notes_loop_destroy (void **p_part)
+{
+	struct mcp_notes_loop *nl = *p_part;
+	if (!nl)
+		return;
+	*p_part = nullptr;
+	child_destroy_all(&nl->children);
+	free(nl);
+}
+
 /* The state of one notes call. It is the own word of the call's slot. An
  * ask call has one in req->self only while git reads the notes for its
  * prompt.
@@ -6629,6 +6681,7 @@ struct mcp_notes_call {
 	                                     read its output */
 	struct notes_revision *revision;  /* the revisions of a read, diff,
 	                                     restore or history, or nullptr */
+	struct mcp_notes_loop *loop;      /* the part of the call's loop */
 	struct dstr           *text;      /* &out for a tool call. The prompt
 	                                     notes write to the text that askai
 	                                     adds to the prompt. */
@@ -6652,17 +6705,19 @@ struct mcp_notes_call {
 	};
 };
 
-/* Allocates a notes call that writes to @p text, or to its own output if
- * @p text is nullptr. Returns the call, or nullptr with ENOMEM in @p *e.
+/* Allocates a notes call that uses the part @p loop and writes to @p text,
+ * or to its own output if @p text is nullptr. Returns the call, or nullptr
+ * with ENOMEM in @p *e.
  */
 static struct mcp_notes_call *
-mcp_notes_call_create (struct dstr *text,
-                       int         *e)
+mcp_notes_call_create (struct mcp_notes_loop *loop,
+                       struct dstr           *text,
+                       int                   *e)
 {
 	struct mcp_notes_call *call = malloc(sizeof *call);
 	*e = call ? 0 : ENOMEM;
 	if (call)
-		*call = (struct mcp_notes_call){ .out = DSTR_INIT,
+		*call = (struct mcp_notes_call){ .out = DSTR_INIT, .loop = loop,
 		                                 .text = text ? text : &call->out };
 	return call;
 }
@@ -6790,8 +6845,8 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 {
 	struct mcp_req *req = slot->req;
 	struct mcp_notes_call *call = slot->own;
-	struct mcp *mcp = req->mcp;
-	struct loop *loop = mcp->loop;
+	struct notes const *notes = call->loop->tool->notes;
+	struct loop *loop = mcp_slot_loop(slot);
 	char const *repo = fetch & FETCH_OTHER ? mcp_slot_notebook(slot) : req->repo;
 	enum notes_cmd cmd = mcp_fetch_step(fetch)->cmd;
 	/* Git removes its own lock files on SIGTERM, and notes_lock() removes
@@ -6800,23 +6855,23 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	bool writes = mcp_notes_writes(cmd);
 	if (cmd == NOTES_ADD) {
 		int64_t age;
-		int e = notes_lock(mcp->st->notes, req->repo, &age);
+		int e = notes_lock(notes, req->repo, &age);
 		if (e)
 			LOG(LOG_WARN, "notes: cannot check the lock of %s: %s",
 			    notes_selector(req->repo), strerror(e));
 	}
 	char const *argv[NOTES_ARGV];
 	if (fetch & FETCH_REVISION)
-		notes_revision_argv(call->revision, mcp->st->notes, mcp_slot_notebook(slot),
+		notes_revision_argv(call->revision, notes, mcp_slot_notebook(slot),
 		                    fetch & FETCH_DIFF, argv);
 	else if (cmd == NOTES_LIST && call->revision)
-		notes_revision_history_argv(call->revision, mcp->st->notes, repo, argv);
+		notes_revision_history_argv(call->revision, notes, repo, argv);
 	else
-		notes_argv(mcp->st->notes, repo, cmd, argv);
+		notes_argv(notes, repo, cmd, argv);
 	struct child_cmd const c = {
 		.file = "git",
 		.argv = argv,
-		.envp = notes_env(mcp->st->notes),
+		.envp = notes_env(notes),
 		.in = in ? buf_peek(in) : (struct span){},
 		.max = NOTES_MAX,
 		.deadline = loop->now + NOTES_NS,
@@ -6826,7 +6881,7 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	};
 	call->fetch = fetch;
 	int e = 0;
-	call->child = child_create(loop, &mcp->children, &c, mcp_on_notes, slot, &e);
+	call->child = child_create(loop, &call->loop->children, &c, mcp_on_notes, slot, &e);
 	if (in)
 		buf_fini(in);
 	if (!call->child) {
@@ -6844,7 +6899,7 @@ mcp_req_notes_read (struct mcp_req *req,
                     uint16_t        fetch)
 {
 	int e = 0;
-	req->self.own = mcp_notes_call_create(&req->self.answer, &e);
+	req->self.own = mcp_notes_call_create(req->mcp->notes, &req->self.answer, &e);
 	if (!req->self.own) {
 		mcp_slot_fail(&req->self, e);
 		return;
@@ -6947,7 +7002,7 @@ mcp_slot_notes_unadded (struct mcp_slot *slot)
 		return mcp_notes_call_say(call, &TOOL_TEXT("Could not write the note: it took "
 		                                           "too long."), 1);
 	if (mcp_notes_raced(c)) {
-		struct notes const *notes = slot->req->mcp->st->notes;
+		struct notes const *notes = call->loop->tool->notes;
 		char const *repo = slot->req->repo;
 		int64_t age = 0;
 		if (notes_lock(notes, repo, &age) || age <= NOTES_STALE)
@@ -7062,7 +7117,7 @@ mcp_slot_notes_created (struct mcp_slot *slot)
 {
 	struct mcp_notes_call *call = slot->own;
 	if (mcp_notes_ok(call->child) ||
-	    (mcp_notes_raced(call->child) && notes_exists(slot->req->mcp->st->notes))) {
+	    (mcp_notes_raced(call->child) && notes_exists(call->loop->tool->notes))) {
 		child_destroy(&call->child);
 		mcp_slot_notes_write(slot, "", NO_NOTE);
 		return;
@@ -7913,7 +7968,6 @@ static void
 mcp_slot_notes_out (struct mcp_slot *slot)
 {
 	struct mcp_notes_call const *call = slot->own;
-	mcp_slot_unwait(slot);
 	/* The attach action's upload, which follows its read, has answered. */
 	(slot->web ? mcp_slot_notes_uploaded
 	 : (call->fetch & FETCH_REVISION) && !notes_revision_ready(call->revision)
@@ -7965,8 +8019,8 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
 	struct mcp_req *req = slot->req;
 	struct mcp_notes_call *call = slot->own;
-	bool initialized = notes_exists(req->mcp->st->notes);
-	size_t most = req->mcp->st->files_inline;
+	bool initialized = notes_exists(call->loop->tool->notes);
+	size_t most = call->loop->tool->files_inline;
 	char big[96];
 	size_t len = 0;
 	size_t name_len = 0;
@@ -8033,7 +8087,7 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 {
 	struct mcp_req *req = slot->req;
 	struct mcp_notes_call *call = slot->own;
-	bool initialized = notes_exists(req->mcp->st->notes);
+	bool initialized = notes_exists(call->loop->tool->notes);
 	struct cstr_view to = call->fetch & FETCH_RESTORE ? notes_revision_file(call->revision)
 	                    : (struct cstr_view){ call->name, call->len };
 	struct buf in = {};
@@ -8138,15 +8192,15 @@ mcp_slot_notes (struct mcp_slot    *slot,
 {
 	struct mcp_req *req = slot->req;
 	int e = 0;
-	struct mcp_notes_call *call = mcp_notes_call_create(nullptr, &e);
+	struct mcp_notes_call *call = mcp_notes_call_create(mcp_slot_part(slot), nullptr, &e);
 	slot->own = call;
 	if (!call) {
 		mcp_slot_fail(slot, e);
 		return;
 	}
 	call->side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
-	struct notes const *notes = req->mcp->st->notes;
-	bool uploads = call->side == NOTES_UPSTREAM && req->mcp->st->uploads;
+	struct notes const *notes = call->loop->tool->notes;
+	bool uploads = call->side == NOTES_UPSTREAM && call->loop->tool->attach;
 	size_t len = 0;
 	char const *action = jb_str(jb_get(args, "action"), &len);
 	size_t which = 0;
@@ -8275,7 +8329,7 @@ mcp_req_compact_notes (struct mcp_req *req)
 		mcp_req_fail(req, e);
 		return;
 	}
-	if (req->branch && req->mcp->st->notes) {
+	if (req->branch && req->mcp->notes) {
 		mcp_req_notes_read(req, FETCH_COMPACT);
 		return;
 	}
@@ -8363,6 +8417,18 @@ mcp_req_compact_full (struct mcp_req *req)
 }
 
 #undef CAT
+
+/* Handles the output of the git that reads the notes for the prompt of the
+ * ask call in @p slot, req->self. The read parked the request among the
+ * calls under way. The request does not wait once git has ended, so the
+ * step takes it off that list first.
+ */
+static void
+mcp_slot_ask_step (struct mcp_slot *slot)
+{
+	mcp_slot_unwait(slot);
+	mcp_slot_notes_out(slot);
+}
 
 /* Start an ask call in @p slot, the request's own, its turns lent the tools
  * that the client's role grants.
@@ -9369,6 +9435,8 @@ mcp_drain_step (struct loop      *loop,
 	}
 }
 
+static struct plugin const mcp_notes_plugin;
+
 /* Destroy the first @p n of @p mcp's parts, last first. */
 static void
 mcp_destroy_parts (struct mcp *mcp,
@@ -9426,7 +9494,6 @@ mcp_create (struct loop              *loop,
 	list_init(&mcp->tasks);
 	list_init(&mcp->freeing);
 	list_init(&mcp->ending);
-	list_init(&mcp->children);
 	list_init(&mcp->spare.list);
 	list_init(&mcp->jobs.list);
 	*e = instance_table_init(&mcp->instances, loop);
@@ -9452,6 +9519,9 @@ mcp_create (struct loop              *loop,
 		free(mcp);
 		return nullptr;
 	}
+	for (uint32_t i = 0; i < st->n_plugins; ++i)
+		if (st->plugins[i].plugin == &mcp_notes_plugin)
+			mcp->notes = mcp->parts[i];
 	self = mcp;
 	return mcp;
 }
@@ -9482,7 +9552,6 @@ mcp_destroy (struct mcp **p_mcp)
 		;
 	instance_table_fini(&mcp->instances);
 	mcp_destroy_parts(mcp, mcp->st->n_plugins);
-	child_destroy_all(&mcp->children);
 	loop_unready(&mcp->drain);
 	self = nullptr;
 	free(mcp);
@@ -9648,12 +9717,12 @@ mcp_task_definition (void const *service)
 
 /* Returns the definition of the notes tool for the side @p side. The
  * definition for the upstream has no thread argument, because a call of a
- * turn uses the thread of its ask call, and it has the action attach if
- * the upstream takes files, which @p st says (mcp_static_uploads()).
+ * turn uses the thread of its ask call. It has the action attach if the
+ * upstream takes files, which @p tool says.
  */
 static struct json_object *
 mcp_notes_schema (enum notes_side          side,
-                  struct mcp_static const *st)
+                  struct mcp_notes const  *tool)
 {
 	static_assert(NOTES_TEXT == 4 << 20 && NOTES_NAME == 255, "the descriptions say");
 	static char const *const descriptions[] = {
@@ -9675,8 +9744,8 @@ mcp_notes_schema (enum notes_side          side,
 			"Non-UTF-8 bytes are displayed as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
 	};
 	/* A turn attaches a note if its upstream takes files. */
-	bool files = side == NOTES_UPSTREAM && st && st->uploads;
-	size_t most = st ? st->files_inline : FILES_INLINE;
+	bool files = side == NOTES_UPSTREAM && tool->attach;
+	size_t most = tool->files_inline;
 	struct json_object *actions = json_object_new_array();
 	for (size_t i = 0; actions && i < ARRAY_SIZE(mcp_notes_actions); ++i)
 		if (files || !(mcp_notes_actions[i].flags & NOTE_UPLOAD))
@@ -9763,7 +9832,7 @@ mcp_notes_schema (enum notes_side          side,
 	                 "new versioned filename, keep the previous file, and identify the "
 	                 "predecessor and what changed in the new document. Preserve existing "
 	                 "structure and useful detail across session resumes and model changes.%s",
-	                 st && st->notes ? notes_writer(st->notes) : "unconfigured",
+	                 notes_writer(tool->notes),
 	                 descriptions[side], files
 	                 ? " attach gives you a whole note as a file after the results "
 	                   "of the turn, where read shows a large note in parts." : "")) {
@@ -9784,18 +9853,18 @@ mcp_notes_schema (enum notes_side          side,
 		nullptr);
 }
 
-/* Returns the definition of the notes tool for clients. */
+/* Returns the definition of the notes tool for clients. @p service is the
+ * struct mcp_notes.
+ */
 static struct json_object *
 mcp_notes_definition (void const *service)
 {
-	struct mcp_static const *st = service;
-	struct json_object *def = mcp_notes_schema(NOTES_CLIENT, st);
-	if (!st || !st->notes)
-		return def;
+	struct mcp_notes const *tool = service;
+	struct json_object *def = mcp_notes_schema(NOTES_CLIENT, tool);
 	/* The canonical common directory names the session, including attached
 	 * worktrees. Cache its fingerprint with the tool instead of exposing the
 	 * local path; it remains stable across instance and client restarts. */
-	char const *directory = notes_directory(st->notes);
+	char const *directory = notes_directory(tool->notes);
 	unsigned char digest[SHA256_DIGEST_LENGTH];
 	if (!SHA256((unsigned char const *)directory, strlen(directory), digest)) {
 		json_object_put(def);
@@ -9809,18 +9878,34 @@ mcp_notes_definition (void const *service)
 	return jb_set_or_free(def, "_meta", jb_object(
 		"askai", jb_object(
 			"session", json_object_new_string_len(session, sizeof session - 1),
-			"participant", json_object_new_string(notes_writer(st->notes)),
+			"participant", json_object_new_string(notes_writer(tool->notes)),
 			"notebooks", json_object_new_boolean(1),
 			nullptr),
 		nullptr));
 }
 
-/* Returns the definition of the notes tool for the upstream. */
+/* Returns the definition of the notes tool for the upstream. @p service is
+ * the struct mcp_notes.
+ */
 static struct json_object *
 mcp_notes_upstream_definition (void const *service)
 {
 	return mcp_notes_schema(NOTES_UPSTREAM, service);
 }
+
+/* The notes tool as a built-in plugin. Its part on each loop is a struct
+ * mcp_notes_loop. The flag TOOL_LENT lets a role's "upstream" name the
+ * notes tool. The turns always get the tool.
+ */
+static struct plugin const mcp_notes_plugin = {
+	.tools = {{
+		.definition = mcp_notes_definition,
+		.start = mcp_slot_notes,
+		.step = mcp_slot_notes_out,
+		.drop = mcp_slot_notes_drop,
+		.flags = KF_SERIAL | TOOL_LENT | TOOL_PAGED
+	}}
+};
 
 /* Returns the definition of the compact tool. Only turns get this tool.
  * @p service is the mcp_static. Its lending member says whether the turns
@@ -10190,8 +10275,9 @@ struct mcp_row {
 	                                      they are off. */
 	uint32_t                len;       /* the length of ptr */
 	uint8_t                 lend;      /* enum mcp_lend: how the tool is lent
-	                                      to the turns. A plugin's tool
-	                                      follows the flags of its kind. */
+	                                      to the turns. A plugin's tool with
+	                                      LEND_NEVER here follows the flags
+	                                      of its kind. */
 	uint8_t                 metric;    /* enum metrics_lent: the row of the
 	                                      tool in the turns' metrics */
 	uint8_t                 trace;     /* enum mcp_trace: what the trace
@@ -10208,7 +10294,7 @@ static struct plugin const mcp_host_plugin = {};
 static struct mcp_row const mcp_rows[KINDS] = {
 #define N(s) .ptr = s, .len = sizeof s - 1
 	[KIND_ASK]        = { { .definition = mcp_tool_definition, .start = mcp_slot_ask,
-	                        .step = mcp_slot_notes_out, .drop = mcp_slot_notes_drop },
+	                        .step = mcp_slot_ask_step, .drop = mcp_slot_notes_drop },
 	                      .metric = LENT_NONE },
 	[KIND_MAN]        = { .plugin = &manual_plugin, N("man"), .metric = LENT_MAN,
 	                      .option = "--man" },
@@ -10217,11 +10303,7 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                      N("test_task"), LEND_NEVER, LENT_NONE },
 	[KIND_GIT]        = { .plugin = &git_plugin, N("git"), .metric = LENT_GIT,
 	                      .option = "--git PATH" },
-	/* The flag TOOL_LENT lets a role's "upstream" name the notes tool, which
-	 * the turns always get. */
-	[KIND_NOTES]      = { { .definition = mcp_notes_definition, .start = mcp_slot_notes,
-	                        .step = mcp_slot_notes_out, .drop = mcp_slot_notes_drop,
-	                        .flags = KF_SERIAL | TOOL_LENT | TOOL_PAGED },
+	[KIND_NOTES]      = { .plugin = &mcp_notes_plugin,
 	                      .upstream = mcp_notes_upstream_definition,
 	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION,
 	                      .sized = "text", .option = "--notes DIR" },
@@ -10312,14 +10394,16 @@ mcp_row_of (struct registry_tool const *t)
 }
 
 /* Returns the lending rule of the registry tool @p t. A tool of askai's own
- * kinds has the rule of its row. A plugin's tool, built in or loaded, has
- * LEND_GRANTED if its kind has TOOL_LENT, and LEND_NEVER otherwise.
+ * kinds has the rule of its row, and so does a tool whose row has a rule
+ * other than LEND_NEVER, such as notes. Any other tool of a plugin, built
+ * in or loaded, has LEND_GRANTED if its kind has TOOL_LENT, and LEND_NEVER
+ * otherwise.
  */
 static enum mcp_lend
 mcp_lend_of (struct registry_tool const *t)
 {
 	struct mcp_row const *row = mcp_row_of(t);
-	if (t->kind == &row->kind)
+	if (t->kind == &row->kind || row->lend != LEND_NEVER)
 		return row->lend;
 	return t->kind->flags & TOOL_LENT ? LEND_GRANTED : LEND_NEVER;
 }
@@ -10397,7 +10481,7 @@ mcp_register (struct registry     *reg,
 			tool.name = cfg->tool.name;
 			tool.len = (uint32_t)strlen(tool.name);
 		}
-		/* The man tool and the git tool are kinds of plugins built in. */
+		/* The man, git and notes tools are kinds of built-in plugins. */
 		if (row->plugin) {
 			plugin = row->plugin;
 			tool.kind = plugin->tools;
@@ -10535,10 +10619,11 @@ mcp_lent (void const *cfg,
 
 /* Returns the record of @p plugin for @p st: the plugin, its service and
  * its two part functions. The service of askai's own kinds is @p st. The
- * service of the man tool's plugin is @p manual, and the service of the git
- * tool's plugin is @p git. Both of these have a part on every client loop.
- * A plugin that askai loaded from a file has no service and no part. Its
- * record has the record of the loading from @p reg instead.
+ * service of the man tool's plugin is @p manual, the service of the git
+ * tool's plugin is @p git, and the service of the notes tool's plugin is
+ * st->notes_tool. These three have a part on every client loop. A plugin
+ * that askai loaded from a file has no service and no part. Its record has
+ * the record of the loading from @p reg instead.
  */
 static struct mcp_plugin
 mcp_static_plugin (struct mcp_static     *st,
@@ -10553,6 +10638,8 @@ mcp_static_plugin (struct mcp_static     *st,
 		  .part_create = manual_loop_create, .part_destroy = manual_loop_destroy },
 		{ .plugin = &git_plugin, .service = git,
 		  .part_create = git_loop_create, .part_destroy = git_loop_destroy },
+		{ .plugin = &mcp_notes_plugin, .service = &st->notes_tool,
+		  .part_create = mcp_notes_loop_create, .part_destroy = mcp_notes_loop_destroy },
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(own); ++i)
 		if (own[i].plugin == plugin)
@@ -10560,19 +10647,20 @@ mcp_static_plugin (struct mcp_static     *st,
 	return (struct mcp_plugin){ .plugin = plugin, .loaded = mcp_loaded_of(reg, plugin) };
 }
 
-/* Prepares the attach action of the notes tool, which the caller makes
- * only for turns that are lent tools, if @p st's upstream takes files
- * (ai_upload_url()) and the turns keep notes: the URL of the uploads, on
- * the host of the upstream's URL, so that the key goes to no other host,
- * their header lines, the upstream's and those of its API, and the table of
- * the files. Returns 0, ENOMEM, or the error of uploads_create().
+/* Prepares the attach action of the notes tool if the upstream of @p st
+ * takes files (ai_upload_url()). The caller calls this function only with
+ * --upstream-tools and --notes. The function makes the URL of the uploads
+ * on the host of the upstream's URL, so that the key goes to no other
+ * host. The header lines of the uploads are those of the upstream and of
+ * its upload API. The function also makes the table of the files. Returns
+ * 0, ENOMEM, or the error of uploads_create().
  */
 static int
 mcp_static_uploads (struct mcp_static *st)
 {
 	struct ai_endpoint const *ep = st->ep;
 	struct ai_upload const *up = ai_upload(ep->api);
-	if (!up || !st->notes || !(st->files_url = ai_upload_url(ep)))
+	if (!up || !(st->files_url = ai_upload_url(ep)))
 		return 0;
 	size_t n = 0;
 	size_t m = 0;
@@ -10640,7 +10728,6 @@ mcp_static_create (struct config const *cfg,
 		.server_meta = DSTR_INIT,
 		.versions = DSTR_INIT,
 		.tasks = tasks,
-		.notes = notes,
 		.journal = journal,
 		.ledger = ledger,
 		.roster = roster,
@@ -10674,10 +10761,12 @@ mcp_static_create (struct config const *cfg,
 	}
 	st->lending = mcp_lending(cfg);
 	st->seed = journal ? journal_seed(journal) : util_seed();
-	if (lends && (*e = mcp_static_uploads(st))) {
+	if (lends && notes && (*e = mcp_static_uploads(st))) {
 		mcp_static_destroy(&st);
 		return nullptr;
 	}
+	st->notes_tool = (struct mcp_notes){ .notes = notes, .files_inline = st->files_inline,
+	                                     .attach = st->uploads != nullptr };
 
 	/* Built with json-c, which escapes as replies need, then kept as text. */
 	struct json_object *info = jb_object("name", json_object_new_string("askai"),
