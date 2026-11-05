@@ -164,7 +164,8 @@ $Otests/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
 check-review: $Otests/review
 	$<
 
-$Otests/review: $Otests/review.c.o $Otests/src/review.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o
+$Otests/review: $Otests/review.c.o $Otests/src/review.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o \
+                $Otests/src/cstr_view.c.o
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
 
 $Otests/review.c.o $Otests/src/review.c.o: CPPFLAGS += $(JSON_INCLUDES)

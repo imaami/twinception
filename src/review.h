@@ -17,8 +17,8 @@
  * turn on.
  *
  * A record holds at most REVIEW_MAX charged bytes, pending lines included:
- * REVIEW_ITEM for each file and each line range, the struct size for each
- * finding and each change, and the bytes of their texts. Nothing depends
+ * REVIEW_ITEM for each file, line range, finding and change, and the bytes
+ * of their texts. Nothing depends
  * on the wall clock, so a findings call repeated with the same record,
  * arguments and turn gives the same result. Each function that has an
  * argument @p e returns nullptr if @p e is nullptr.
@@ -36,8 +36,8 @@ struct json_object;
 
 enum {
 	REVIEW_MAX    = 4 << 20,  /**< maximum charged bytes of a record */
-	REVIEW_ITEM   = 64,       /**< bytes charged for each file and each line
-	                               range */
+	REVIEW_ITEM   = 64,       /**< bytes charged for each file, line range,
+	                               finding and change */
 	REVIEW_CLOSED = 200,      /**< maximum bytes of the claim of a closed
 	                               finding in a render */
 	REVIEW_WORD   = 1024,     /**< maximum bytes of a repository name or a

@@ -1107,10 +1107,10 @@ test_full (void)
 	CHECK(4 * finding == REVIEW_MAX - 3 * big - left);
 	CHECK(call_long(r, update, "evidence", big, &out) == EINVAL);
 	size_t change = REVIEW_MAX - 3 * (big + finding) - left_in(got(&out));
-	/* A change charges at least its three texts and its commit, and a
-	 * finding at least its two texts and its first change. */
-	CHECK(change >= 3 * (sizeof(char *) + sizeof(size_t)) + 64 + 1);
-	CHECK(finding >= change + 2 * (sizeof(char *) + sizeof(size_t)));
+	/* A change charges REVIEW_ITEM and its texts, and a finding
+	 * REVIEW_ITEM, its texts and its first change. */
+	CHECK(change == REVIEW_ITEM);
+	CHECK(finding == change + REVIEW_ITEM);
 	/* The bytes that the refusal names fit, and a byte more does not. */
 	CHECK(call_long(r, add, "claim", left + 1, &out) == EINVAL);
 	CHECK(left_in(got(&out)) == left);
