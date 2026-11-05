@@ -116,7 +116,7 @@ datauri_decode (struct datauri const *d,
 			v = 0;
 		}
 	}
-	/* The last group of two or three digits gives one or two bytes. */
+	/* The last group of two or three digits decodes to one or two bytes. */
 	size_t rest = len % 4;
 	if (rest == 2) {
 		*out = (unsigned char)(v >> 4);

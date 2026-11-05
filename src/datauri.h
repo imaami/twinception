@@ -17,8 +17,10 @@
 struct datauri {
 	struct cstr_view encoded;  /**< the encoded data, after the comma */
 	size_t           size;     /**< the bytes of the data once decoded */
-	uint64_t         base64;   /**< bool: base64, else percent-encoded;
-	                                widened over the padding */
+	uint64_t         base64;   /**< The member is nonzero for base64 data
+	                                and zero for percent-encoded data. Its
+	                                type is uint64_t so that it fills the
+	                                padding. */
 };
 
 /** Checks @p uri as a data: URI and initializes @p d with its parts.
