@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "cstr_view.h"
 #include "export.h"
 #include "loop_export.h"
 #include "tool.h"

@@ -12,8 +12,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "cstr_view.h"
-
 struct json_object;
 struct mcp_slot;
 

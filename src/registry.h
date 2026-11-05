@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cstr_view.h"
 #include "tool.h"
 
 struct json_object;
