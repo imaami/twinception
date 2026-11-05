@@ -122,13 +122,13 @@ struct home_metrics {
  * Returns home, or nullptr with the error in @p *e.
  */
 extern struct home *
-home_create (struct loop              *loop,
-             struct blocker           *blockers,
-             struct httpd_home        *door,
-             struct config const      *cfg,
-             struct home_metrics      *metrics,
-             struct http_metrics      *http,
-             int                      *e);
+home_create (struct loop         *loop,
+             struct blocker      *blockers,
+             struct httpd_home   *door,
+             struct config const *cfg,
+             struct home_metrics *metrics,
+             struct http_metrics *http,
+             int                 *e);
 
 /** Stop the jobs in flight, which complete, then free home. */
 extern void

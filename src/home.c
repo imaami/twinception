@@ -2850,13 +2850,13 @@ home_fini (struct home *home)
 }
 
 struct home *
-home_create (struct loop              *loop,
-             struct blocker           *blockers,
-             struct httpd_home        *door,
-             struct config const      *cfg,
-             struct home_metrics      *metrics,
-             struct http_metrics      *http,
-             int                      *e)
+home_create (struct loop         *loop,
+             struct blocker      *blockers,
+             struct httpd_home   *door,
+             struct config const *cfg,
+             struct home_metrics *metrics,
+             struct http_metrics *http,
+             int                 *e)
 {
 	struct ai_endpoint const *ep = &cfg->ep;
 	struct home *home = malloc(sizeof *home);
@@ -2897,8 +2897,9 @@ home_create (struct loop              *loop,
 		.silence = ep->chunk_ms > 0 ? (uint64_t)ep->chunk_ms * 1'000'000 : 0,
 		.backoff = BACKOFF_MIN,
 		.max = max,
-		/* The context, which compacting takes, unless told, as /props
-		 * says if asked. */
+		/* The context size for compacting is the value of --context.
+		 * Without --context, it is 0 until home_props_step() sets it
+		 * from the answer of /props or of the model URL. */
 		.context = ep->context > 0 ? (uint32_t)ep->context : 0,
 		.fifo = (cfg->flags & CFG_TEST_FIFO) != 0
 	};
@@ -2923,12 +2924,18 @@ home_create (struct loop              *loop,
 	}
 	http_resolver(home->http, blockers);
 	self = home;
-	/* Until /props answers, if asked, the default, said once it has. */
+	/* Without --slots, use the default number of slots until the request
+	 * to /props, or to the model URL for the Gemini APIs, ends. If the
+	 * request cannot start, log the default now. Otherwise
+	 * home_props_end() logs the number of slots. */
 	if (!ep->slots) {
 		home_slots(home, SLOTS, home_props_ask(home) ? "the default" : nullptr);
 		return home;
 	}
-	/* Told the slots, /props takes no call's connection. */
+	/* With --slots, request /props or the model URL only for the context
+	 * size, if CFG_UPSTREAM_TOOLS is set and the context size is not
+	 * known. The connection limit is then the number of slots plus 1, so
+	 * that this request does not use a connection of the calls. */
 	bool asked = cfg->flags & CFG_UPSTREAM_TOOLS && !home->context &&
 	             !home_props_ask(home);
 	home_slots(home, ep->slots, "--slots");
