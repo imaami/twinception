@@ -175,16 +175,17 @@ static constexpr uint64_t TASK_NS = 1'000'000'000;  /* a call's run before it
                                                        becomes a task, for a
                                                        client that takes them */
 
-/** Newest first; the first MODERN revisions carry their version in _meta.
- *  The last, PRE_STREAMS, is the revision before Streamable HTTP, whose
- *  clients take no event stream.
+/** The protocol revisions that askai supports, newest first. The clients
+ *  of the first MODERN revisions send their version in _meta. The last,
+ *  PRE_STREAMS, is the revision before Streamable HTTP, whose clients do
+ *  not accept event streams.
  */
-static char const versions[][sizeof "2026-07-28"] = {
-	"2026-07-28",
-	"2025-11-25",
-	"2025-06-18",
-	"2025-03-26",
-	"2024-11-05",
+static struct cstr_view const versions[] = {
+	CSTR_VIEW_INIT("2026-07-28"),
+	CSTR_VIEW_INIT("2025-11-25"),
+	CSTR_VIEW_INIT("2025-06-18"),
+	CSTR_VIEW_INIT("2025-03-26"),
+	CSTR_VIEW_INIT("2024-11-05"),
 };
 enum { MODERN = 1, PRE_STREAMS = ARRAY_SIZE(versions) - 1 };
 
@@ -790,33 +791,19 @@ struct mcp_piece {
 #define RAW(p, n) ((struct mcp_piece){ { (char const *)(p), (n) }, false })
 #define SPAN(s) ((struct span){ (unsigned char *)(uintptr_t)(s), sizeof s - 1 })
 
-/* Whether @p s, a field present, is the @p len bytes at @p str. */
+/** Returns true if the field @p s is present and its bytes equal @p str. */
 static bool
-mcp_span_is (struct span  s,
-             char const  *str,
-             size_t       len)
+mcp_span_is (struct span      s,
+             struct cstr_view str)
 {
-	return s.ptr && s.len == len && !memcmp(s.ptr, str, len);
+	return s.ptr && s.len == str.len && !memcmp(s.ptr, str.data, str.len);
 }
 
-/* Index into versions[], ARRAY_SIZE(versions) if @p v is unknown or absent. */
-static size_t
-mcp_version_index (char const *v,
-                   size_t      len)
-{
-	if (len != sizeof *versions - 1)
-		return ARRAY_SIZE(versions);
-	size_t i = 0;
-	while (i < ARRAY_SIZE(versions) && memcmp(versions[i], v, len))
-		++i;
-	return i;
-}
-
+/** Returns true if @p v is a supported revision older than the modern ones. */
 static bool
-mcp_is_legacy (char const *v,
-               size_t      len)
+mcp_is_legacy (struct cstr_view v)
 {
-	size_t i = mcp_version_index(v, len);
+	size_t i = cstr_view_index(versions, ARRAY_SIZE(versions), v);
 	return i >= MODERN && i < ARRAY_SIZE(versions);
 }
 
@@ -840,12 +827,11 @@ mcp_is_metrics (struct span target)
 	       (target.len == n || target.ptr[n] == '?');
 }
 
-/* Returns the enum metrics_method of @p method, of @p len bytes. An empty
- * method matches the empty name of METHOD_OTHER.
+/** Returns the enum metrics_method of @p method. An empty method matches
+ *  the empty name of METHOD_OTHER.
  */
 static uint8_t
-mcp_method_index (char const *method,
-                  size_t      len)
+mcp_method_index (struct cstr_view method)
 {
 	static struct cstr_view const names[METHOD_N] = {
 		[METHOD_INITIALIZE]   = CSTR_VIEW_INIT("initialize"),
@@ -857,7 +843,7 @@ mcp_method_index (char const *method,
 		[METHOD_TASKS_UPDATE] = CSTR_VIEW_INIT("tasks/update"),
 		[METHOD_TASKS_CANCEL] = CSTR_VIEW_INIT("tasks/cancel"),
 	};
-	size_t i = cstr_view_index(names, METHOD_N, (struct cstr_view){ method, len });
+	size_t i = cstr_view_index(names, METHOD_N, method);
 	return i < METHOD_N ? (uint8_t)i : METHOD_OTHER;
 }
 
@@ -2321,65 +2307,56 @@ mcp_req_progressed (struct mcp_req *req)
 static void mcp_req_turn_done (struct mcp_req *req);
 static void mcp_req_compact_full (struct mcp_req *req);
 
-/* Removes the uploads of the owner of @p req from the table if its turns
- * attached files. The files of a conversation that failed may be gone from
- * the upstream's store, so their notes are uploaded again.
- */
-static void
-mcp_req_unfile (struct mcp_req *req)
-{
-	if (req->filing)
-		uploads_forget(req->mcp->st->uploads, mcp_req_owner(req));
-}
-
-/* Whether the @p len bytes at @p rest begin with what of the context
- * overflowed: its size, length or window.
+/** Returns true if @p rest begins, in any case, with the part of the
+ *  context that overflowed: its size, length or window.
  */
 static bool
-mcp_overflow_what (char const *rest,
-                   size_t      len)
+mcp_overflow_what (struct cstr_view rest)
 {
 	static struct cstr_view const what[] = {
 		CSTR_VIEW_INIT("size"), CSTR_VIEW_INIT("length"), CSTR_VIEW_INIT("window"),
 	};
 	for (size_t k = 0; k < ARRAY_SIZE(what); ++k)
-		if (len >= what[k].len && !strncasecmp(rest, what[k].data, what[k].len))
+		if (rest.len >= what[k].len && !strncasecmp(rest.data, what[k].data, what[k].len))
 			return true;
 	return false;
 }
 
-/* Whether @p why, a failed turn's reason, says that the request did not
- * fit the upstream's context: llama-server's "exceeds the available
- * context size", OpenAI's "maximum context length", others' "context
- * window", and Gemini's "exceeds the maximum number of tokens allowed".
+/** Returns true if the reason @p why of a failed turn reports that the
+ *  request did not fit the context of the upstream: "exceeds the available
+ *  context size" of llama-server, "maximum context length" of OpenAI,
+ *  "context window" of others, and "exceeds the maximum number of tokens
+ *  allowed" of Gemini.
  */
 static bool
-mcp_overflowed (char const *why,
-                size_t      len)
+mcp_overflowed (struct cstr_view why)
 {
 	static char const word[] = "context ";
 	static char const gemini[] = "exceeds the maximum number of tokens";
 	size_t n = sizeof word - 1;
-	if (memmem(why, len, gemini, sizeof gemini - 1))
+	if (memmem(why.data, why.len, gemini, sizeof gemini - 1))
 		return true;
-	for (size_t i = 0; i + n <= len; ++i)
-		if (!strncasecmp(why + i, word, n) &&
-		    mcp_overflow_what(why + i + n, len - i - n))
+	for (size_t i = 0; i + n <= why.len; ++i)
+		if (!strncasecmp(why.data + i, word, n) &&
+		    mcp_overflow_what(cstr_view_slice(why, i + n, SIZE_MAX)))
 			return true;
 	return false;
 }
 
-/* Whether a turn that failed for @p why, @p len bytes, should start the
- * conversation again from the prompt: it did not fit the context, which
- * askai has not compacted since a turn went through, and turns went
- * before it.
+/** Handles a turn of @p req that failed for @p why. If the turns attached
+ *  files, their uploads are removed from the table, because the files of a
+ *  failed conversation can be gone from the store of the upstream. Returns
+ *  true if the turns start again from the prompt: the request did not fit
+ *  the context, askai did not compact it since a turn went through, and
+ *  turns went before this turn.
  */
 static bool
-mcp_req_refit (struct mcp_req const *req,
-               char const           *why,
-               size_t                len)
+mcp_req_refit (struct mcp_req   *req,
+               struct cstr_view  why)
 {
-	return req->turn > 1 && !req->forced && mcp_overflowed(why, len);
+	if (req->filing)
+		uploads_forget(req->mcp->st->uploads, mcp_req_owner(req));
+	return req->turn > 1 && !req->forced && mcp_overflowed(why);
 }
 
 /** Logs, with --verbose, how the turn of @p req that @p job ran ended, the
@@ -2438,13 +2415,12 @@ mcp_req_log_turn (struct mcp_req const *req,
 	    tokens, reason, calls, calls == 1 ? "" : "s", len, mcp_bytes(len));
 }
 
-/* The job the request waits for has ended, home done with its upstream
- * request and its key: parse the answer, a slice a step, or reply with what
- * home says of it. A request whose turns go on keeps the upstream request,
- * its conversation. A streamed answer ends a turn, and with it the call if
- * it calls no tool, as no answer to a call that lends none does; one that
- * did not fit the context starts the turns again from the prompt,
- * compacted.
+/** Handles the end of the job that @p req waits for. An answer that is not
+ *  streamed is parsed in PHASE_ANSWER, and a streamed answer ends a turn.
+ *  Otherwise the reason in the result of the job becomes the failed output,
+ *  unless the turn did not fit the context and the turns start again from
+ *  the compacted prompt. With lent tools, the request moves the upstream
+ *  request, which contains the conversation, out of the job.
  */
 static void
 mcp_req_job_done (struct mcp_req *req)
@@ -2453,7 +2429,8 @@ mcp_req_job_done (struct mcp_req *req)
 	struct span why = buf_peek(&job->result);
 	mcp_req_log_turn(req, job);
 	buf_fini(&job->key);
-	/* The message's reference; the request keeps the front's. */
+	/* job_put() drops the reference of the message. The request still owns
+	 * the reference of the front. */
 	(void)job_put(job, 1);
 	mcp_req_wake(req);
 	if (req->lent) {
@@ -2478,20 +2455,20 @@ mcp_req_job_done (struct mcp_req *req)
 		why = SPAN(busy);
 		break;
 	default:
-		/* A failed call's result says why, unless it never started. */
+		/* The result of a failed call contains the reason, unless the call
+		 * never started. */
 		if (!why.len) {
 			mcp_req_error(req, 500, INTERNAL_ERROR,
 			              FRAG("Cannot start the upstream request"), nullptr, 0);
 			return;
 		}
-		mcp_req_unfile(req);
-		if (mcp_req_refit(req, (char const *)why.ptr, why.len)) {
+		if (mcp_req_refit(req, (struct cstr_view){ (char const *)why.ptr, why.len })) {
 			mcp_req_drop(req);
 			mcp_req_compact_full(req);
 			return;
 		}
 	}
-	/* Why the call failed is its output, which the job holds till dropped. */
+	/* The reason is copied before mcp_req_drop() releases the result. */
 	bool ok = dstr_cat_n(&req->self.answer, (char const *)why.ptr, why.len);
 	mcp_req_drop(req);
 	if (!ok) {
@@ -3759,26 +3736,26 @@ mcp_req_log_ask (struct mcp_req const *req,
 
 static int mcp_req_background (struct mcp_req *req, uint32_t tool, bool own_tool);
 
+/* The roles of the messages of a chat history. */
+static struct cstr_view const roles[] = { CSTR_VIEW_INIT("user"), CSTR_VIEW_INIT("assistant") };
+
 /* Only visible user and assistant text can be supplied as chat history.
  * Tool calls, tool results and system messages remain server controlled.
  */
 static bool
 mcp_history_valid (struct json_object *history)
 {
-	if (!json_object_is_type(history, json_type_array))
-		return false;
-	size_t n = json_object_array_length(history);
+	size_t n = json_object_is_type(history, json_type_array)
+	         ? json_object_array_length(history) : SIZE_MAX;
 	if (n > CHAT_HISTORY)
 		return false;
 	for (size_t k = 0; k < n; ++k) {
-		struct json_object *message = jb_at(history, k);
+		struct json_object *message = json_object_array_get_idx(history, k);
+		struct cstr_view role = jb_view(jb_get(message, "role"));
 		if (!json_object_is_type(message, json_type_object) ||
-		    json_object_object_length(message) != 2 || !jb_text(jb_get(message, "content")))
-			return false;
-		size_t len = 0;
-		char const *role = jb_str(jb_get(message, "role"), &len);
-		if (!role || !((len == 4 && !memcmp(role, "user", 4)) ||
-		               (len == 9 && !memcmp(role, "assistant", 9))))
+		    json_object_object_length(message) != 2 ||
+		    !jb_text(jb_get(message, "content")) ||
+		    cstr_view_index(roles, ARRAY_SIZE(roles), role) == ARRAY_SIZE(roles))
 			return false;
 	}
 	return true;
@@ -7023,14 +7000,12 @@ mcp_req_initialize (struct mcp_req     *req,
                     struct json_object *params)
 {
 	static char const head[] = JSON_FIELD "Mcp-Session-Id: ";
-	size_t len = 0;
-	char const *version = jb_str(jb_get(params, "protocolVersion"), &len);
-	if (!mcp_is_legacy(version, len)) {
+	struct cstr_view version = jb_view(jb_get(params, "protocolVersion"));
+	if (!mcp_is_legacy(version))
 		version = versions[MODERN];
-		len = sizeof versions[MODERN] - 1;
-	}
 
-	/* Never stored: the ID only scopes the request IDs a client cancels. */
+	/* askai does not store the session ID. The ID only scopes the request
+	 * IDs that a client cancels. */
 	char fields[sizeof head - 1 + 32 + 2];
 	struct span f = SPAN(JSON_FIELD);
 	if (!util_random_hex(fields + sizeof head - 1, 16)) {
@@ -7041,7 +7016,7 @@ mcp_req_initialize (struct mcp_req     *req,
 
 	struct mcp_piece const p[] = {
 		FRAG("{\"protocolVersion\":\""),
-		RAW(version, len),
+		BYTES(version),
 		DSTR(&req->mcp->st->init_tail),
 		FRAG("}"),
 	};
@@ -7301,56 +7276,55 @@ mcp_req_route (struct mcp_req     *req,
 	}
 }
 
-/* Validate the per-request metadata of a modern request, @p method of
- * @p method_len bytes, then answer it.
+/** Validates the metadata of the modern request of @p req with the method
+ *  @p method, then answers it. @p meta is the member _meta of @p params,
+ *  and @p version is the protocol version in @p meta.
  */
 static void
 mcp_req_modern (struct mcp_req     *req,
                 struct json_object *params,
-                char const         *method,
-                size_t              method_len)
+                struct json_object *meta,
+                struct cstr_view    version,
+                struct cstr_view    method)
 {
 	struct stream *s = req->s;
-	struct json_object *m = jb_get(params, "_meta");
-	struct json_object *caps = jb_get(m, meta_caps);
-	size_t len = 0;
-	char const *version = jb_str(jb_get(m, meta_version), &len);
-	if (!version || !json_object_is_type(caps, json_type_object)) {
+	struct json_object *caps = jb_get(meta, meta_caps);
+	if (!version.data || !json_object_is_type(caps, json_type_object)) {
 		mcp_req_error(req, 400, INVALID_PARAMS,
 		              FRAG("Request _meta must carry protocolVersion and "
 		                   "clientCapabilities"), nullptr, 0);
 		return;
 	}
-	if (!mcp_span_is(s->ops->field(s, F_VERSION), version, len)) {
+	if (!mcp_span_is(s->ops->field(s, F_VERSION), version)) {
 		mcp_req_error(req, 400, HEADER_MISMATCH,
 		              FRAG("MCP-Protocol-Version header does not match the "
 		                   "request _meta"), nullptr, 0);
 		return;
 	}
-	if (mcp_version_index(version, len) >= MODERN) {
+	if (cstr_view_index(versions, ARRAY_SIZE(versions), version) >= MODERN) {
 		struct mcp_piece const data[] = {
 			FRAG("{\"supported\":"),
 			DSTR(&req->mcp->st->versions),
 			FRAG(",\"requested\":\""),
-			ESC(version, util_clip(version, len, MAX_ECHO)),
+			ESC(version.data, util_clip(version.data, version.len, MAX_ECHO)),
 			FRAG("\"}"),
 		};
 		mcp_req_error(req, 400, UNSUPPORTED_VERSION,
 		              FRAG("Unsupported protocol version"), data, ARRAY_SIZE(data));
 		return;
 	}
-	if (!mcp_span_is(s->ops->field(s, F_METHOD), method, method_len)) {
+	if (!mcp_span_is(s->ops->field(s, F_METHOD), method)) {
 		mcp_req_error(req, 400, HEADER_MISMATCH,
 		              FRAG("Mcp-Method header does not match the request method"),
 		              nullptr, 0);
 		return;
 	}
-	/* Mcp-Name mirrors a tool call's tool, and a task method's task. */
+	/* Mcp-Name mirrors the tool of a tool call and the task of a task
+	 * method. */
 	bool call = req->method == METHOD_TOOLS_CALL;
 	bool task = req->method >= METHOD_TASKS_GET && req->method <= METHOD_TASKS_CANCEL;
-	size_t name_len = 0;
-	char const *name = jb_str(jb_get(params, call ? "name" : "taskId"), &name_len);
-	if ((call || task) && name && !mcp_span_is(s->ops->field(s, F_NAME), name, name_len)) {
+	struct cstr_view name = jb_view(jb_get(params, call ? "name" : "taskId"));
+	if ((call || task) && name.data && !mcp_span_is(s->ops->field(s, F_NAME), name)) {
 		mcp_req_error(req, 400, HEADER_MISMATCH,
 		              call ? FRAG("Mcp-Name header does not match the tool name")
 		                   : FRAG("Mcp-Name header does not match the task id"),
@@ -7362,16 +7336,17 @@ mcp_req_modern (struct mcp_req     *req,
 	mcp_req_route(req, params, json_object_is_type(ext, json_type_object));
 }
 
-/* A request, of @p method, @p len bytes, and @p id: answer it in its era. */
+/** Answers the request of @p req with the method @p method and the id
+ *  @p id in the protocol era of the client.
+ */
 static void
 mcp_req_request (struct mcp_req     *req,
-                 char const         *method,
-                 size_t              len,
+                 struct cstr_view    method,
                  struct json_object *id)
 {
 	struct stream *s = req->s;
 	struct json_object *params = jb_get(req->msg, "params");
-	req->method = mcp_method_index(method, len);
+	req->method = mcp_method_index(method);
 	if (!mcp_id_valid(id)) {
 		mcp_req_error(req, 400, INVALID_REQUEST, FRAG("Invalid request id"), nullptr, 0);
 		return;
@@ -7382,20 +7357,20 @@ mcp_req_request (struct mcp_req     *req,
 		              nullptr, 0);
 		return;
 	}
-	size_t version_len = 0;
-	char const *version = jb_str(jb_get(jb_get(params, "_meta"), meta_version),
-	                             &version_len);
+	struct json_object *meta = jb_get(params, "_meta");
+	struct cstr_view version = jb_view(jb_get(meta, meta_version));
 	struct span header = s->ops->field(s, F_VERSION);
-	req->modern = (version && !mcp_is_legacy(version, version_len)) ||
-	              (header.ptr && !mcp_is_legacy((char const *)header.ptr, header.len));
+	struct cstr_view field = { (char const *)header.ptr, header.len };
+	req->modern = (version.data && !mcp_is_legacy(version)) ||
+	              (field.data && !mcp_is_legacy(field));
 	if (req->modern) {
-		mcp_req_modern(req, params, method, len);
+		mcp_req_modern(req, params, meta, version, method);
 		return;
 	}
-	/* Without the header a legacy client speaks 2025-03-26, which has
-	 * event streams; 2024-11-05 has none. */
+	/* A legacy client without the header uses the revision 2025-03-26,
+	 * which supports event streams. The revision 2024-11-05 does not. */
 	req->sse_ok = mcp_accepts_sse(s->ops->field(s, F_ACCEPT)) &&
-	              !mcp_span_is(header, versions[PRE_STREAMS], sizeof versions[0] - 1);
+	              !mcp_span_is(header, versions[PRE_STREAMS]);
 	mcp_req_route(req, params, false);
 }
 
@@ -7408,25 +7383,24 @@ mcp_req_accept (struct mcp_req *req)
 	mcp_req_finish(req);
 }
 
-/* Answer the message, or start the tool call it asks for; a tool call frees
- * what it does not keep of the message as it starts to wait.
+/** Answers the message of @p req, or starts the tool call of the message.
+ *  A tool call frees the parts of the message that it does not use when
+ *  it starts to wait.
  */
 static void
 mcp_req_message (struct mcp_req *req)
 {
-	static char const cancelled[] = "notifications/cancelled";
 	struct json_object *msg = req->msg;
-	size_t len = 0;
-	char const *method = jb_str(jb_get(msg, "method"), &len);
+	struct cstr_view method = jb_view(jb_get(msg, "method"));
 	struct json_object *id;
 	bool has_id = json_object_object_get_ex(msg, "id", &id);
 	if (!jb_is(jb_get(msg, "jsonrpc"), "2.0")) {
 		mcp_req_error(req, 400, INVALID_REQUEST, FRAG("Invalid Request"), nullptr, 0);
 		return;
 	}
-	if (!method) {
-		/* A response, as we send no requests, has an id, and a result or
-		 * an error. */
+	if (!method.data) {
+		/* askai sends no requests, so a message without a method is a
+		 * response, which contains an id and a result or an error. */
 		if (has_id && (jb_get(msg, "result") || jb_get(msg, "error")))
 			mcp_req_accept(req);
 		else
@@ -7435,12 +7409,12 @@ mcp_req_message (struct mcp_req *req)
 		return;
 	}
 	if (!has_id) {
-		if (len == sizeof cancelled - 1 && !memcmp(method, cancelled, len))
+		if (cstr_view_equal(method, CSTR_VIEW("notifications/cancelled")))
 			mcp_req_cancel(req, jb_get(msg, "params"));
 		mcp_req_accept(req);
 		return;
 	}
-	mcp_req_request(req, method, len, id);
+	mcp_req_request(req, method, id);
 }
 
 /* Hand the parsed message on. */
@@ -7605,15 +7579,16 @@ mcp_req_answer (struct mcp_req *req)
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
-/* Read the tool's output from the answer, then let go of that, and of the
- * job; a streamed answer's text, home read already.
+/** Reads the output of the tool from the answer of the job of @p req,
+ *  then frees the answer and releases the job. home already read the text
+ *  of a streamed answer into the result of the job.
  */
 static void
 mcp_req_text (struct mcp_req *req)
 {
 	struct job *job = req->job;
 	struct span body = buf_peek(&job->result);
-	/* Stopped with no text, its turns gave no answer. */
+	/* A streamed answer without text after req->stopped is set is a failure. */
 	if (job->status == JOB_TEXT) {
 		mcp_slot_respond(&req->self, req->stopped && !body.len);
 		return;
@@ -7629,9 +7604,7 @@ mcp_req_text (struct mcp_req *req)
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
-	if (failed)
-		mcp_req_unfile(req);
-	if (failed && mcp_req_refit(req, dstr_get(&req->self.answer), dstr_len(&req->self.answer))) {
+	if (failed && mcp_req_refit(req, cstr_view_dstr(&req->self.answer))) {
 		mcp_req_compact_full(req);
 		return;
 	}
@@ -7773,14 +7746,14 @@ mcp_on_head (void          *ctx,
              size_t         length)
 {
 	struct mcp *mcp = ctx;
-	if (mcp_span_is(method, "GET", sizeof "GET" - 1) && mcp_is_metrics(target)) {
+	if (mcp_span_is(method, CSTR_VIEW("GET")) && mcp_is_metrics(target)) {
 		if (s->grant.metrics)
 			(void)mcp_begin(mcp, s, PHASE_METRICS, METHOD_METRICS);
 		else
 			mcp_http_error(s, 403, "Forbidden", SPAN(JSON_FIELD));
 		return;
 	}
-	if (!mcp_span_is(method, "POST", sizeof "POST" - 1)) {
+	if (!mcp_span_is(method, CSTR_VIEW("POST"))) {
 		/* No standalone event stream (GET) and no sessions to DELETE. */
 		mcp_http_error(s, 405, "Method Not Allowed",
 		               SPAN(JSON_FIELD "Allow: POST, OPTIONS\r\n"));
@@ -8061,16 +8034,15 @@ mcp_drain (struct mcp *mcp)
 	loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 
-/* Returns the definition of the ask tool. @p service is the mcp_static,
- * which has the tool's configured name and description. The definition has
- * the argument "thread" if the turns get the notes tool. They get it with
- * --notes and --upstream-tools.
+/** Returns the definition of the ask tool. @p service is the mcp_static,
+ *  which contains the configured name and description of the tool. The
+ *  definition contains the argument thread if the turns can be lent the
+ *  notes tool, which requires --notes and --upstream-tools.
  */
 static struct json_object *
 mcp_tool_definition (void const *service)
 {
 	struct mcp_static const *st = service;
-	struct cstr_view const roles[] = { CSTR_VIEW("user"), CSTR_VIEW("assistant") };
 	struct cstr_view const keys[] = { CSTR_VIEW("role"), CSTR_VIEW("content") };
 	struct json_object *props = jb_object(
 		"prompt", schema_property("string",
@@ -8468,9 +8440,11 @@ mcp_modern_list (struct json_object *result,
 	                                                 nullptr));
 }
 
-/* Serialize the supported versions, pushed onto @p list, and with what
- * tells of askai, @p info, the server/discover result and the tails of
- * initialize's and modern results.
+/** Pushes the supported versions onto the array @p list and serializes
+ *  it. Then the function serializes the server/discover result and the
+ *  tails of the result of initialize and of the modern results, with
+ *  @p info, which describes askai. Returns 0, or the error of jb_push()
+ *  or mcp_serialize(), or ENOMEM.
  */
 static int
 mcp_static_tails (struct mcp_static  *st,
@@ -8478,7 +8452,7 @@ mcp_static_tails (struct mcp_static  *st,
                   struct json_object *list)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(versions); ++i) {
-		int e = jb_push(list, json_object_new_string(versions[i]));
+		int e = jb_push(list, jb_string(versions[i]));
 		if (e)
 			return e;
 	}
@@ -8510,8 +8484,8 @@ mcp_static_tails (struct mcp_static  *st,
 	    !dstr_printf(&st->modern_tail, ",\"resultType\":\"complete\",%s}",
 	                 dstr_get(&st->server_meta)))
 		return ENOMEM;
-	/* tools/list lists the tools that the caller's role grants, so no cache
-	 * may give one caller's list to another caller. */
+	/* tools/list lists the tools that the role of the caller grants, so a
+	 * cache must not serve the list of one caller to another caller. */
 	return dstr_printf(&st->list_tail, "],\"ttlMs\":%d,\"cacheScope\":\"private\"%s",
 	                   CACHE_TTL_MS, dstr_get(&st->modern_tail)) ? 0 : ENOMEM;
 }
