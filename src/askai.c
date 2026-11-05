@@ -144,14 +144,9 @@ struct askai_reload {
 struct askai_home {
 	/* keep remains first: askai_keep_relieve receives this object. */
 	struct askai_keep         keep;
-	struct journal          *journal;
 	struct askai_reload       reload;
 	struct http_metrics       http;  /* here, as the client loops render it */
 	struct home_metrics       jobs;  /* likewise */
-	struct ai_endpoint const *ep;
-	struct httpd_cfg const   *hcfg;
-	struct httpd_hub         *hub;
-	struct metrics_src       *metrics;
 	struct config const      *cfg;
 	struct loop              *loop;  /* home's: the client loops' jobs go there */
 	unsigned char             key[POLICY_KEY];  /* The key of the
@@ -164,15 +159,11 @@ static_assert(POLICY_KEY == JOURNAL_KEY);
 
 /* What runs on a client loop: MCP over HTTP. */
 struct askai_client {
-	struct askai_keep        keep;
-	struct metrics_mcp       counts;  /* MCP's, which any loop renders */
-	struct askai_home const *home;
-	struct mcp_static const *st;
-	struct httpd_cfg const  *hcfg;
-	struct httpd_hub        *hub;
-	struct metrics_src      *metrics;
-	struct httpd            *httpd;
-	struct task_pool        *tasks;   /* if askai offers test_task */
+	struct askai_keep          keep;
+	struct metrics_mcp         counts;  /* the MCP counters of this loop,
+	                                       which any loop renders */
+	struct askai_shared const *shared;
+	struct httpd              *httpd;
 };
 
 /* What every loop shares, made before any starts, and home and the metrics,
@@ -423,15 +414,16 @@ askai_home_parts (struct askai_home *app,
                   struct loop       *loop,
                   struct blocker    *blockers)
 {
+	struct askai_shared *s = container_of(app, struct askai_shared, home);
 	int e = askai_keep_start(&app->keep, loop, blockers);
 	if (e)
 		return e;
-	app->keep.door = httpd_home_create(loop, app->hub, app->hcfg, &app->jobs.in_flight,
+	app->keep.door = httpd_home_create(loop, s->hub, &app->cfg->http, &app->jobs.in_flight,
 	                                   &e);
 	if (e)
 		return e;
-	app->keep.home = home_create(loop, blockers, app->keep.door, app->ep, app->cfg,
-	                             &app->jobs, &app->http, &e);
+	app->keep.home = home_create(loop, blockers, app->keep.door, app->cfg, &app->jobs,
+	                             &app->http, &e);
 	return e ? e : web_home_start(app->keep.web, loop, blockers);
 }
 
@@ -442,7 +434,7 @@ askai_home_start (void           *ctx,
 {
 	static char const name[] = "home";
 	struct askai_home *app = ctx;
-	struct metrics_src *metrics = app->metrics;
+	struct metrics_src *metrics = &container_of(app, struct askai_shared, home)->metrics;
 	struct metrics_loop *mine = &metrics->loops[metrics->n_loops - 1];
 	static_assert(sizeof name <= sizeof mine->name);
 	app->loop = loop;
@@ -531,17 +523,17 @@ askai_reload_apply (struct askai_home         *app,
 		LOG(LOG_ERROR, "configuration not reloaded");
 		return;
 	}
-	int e = policy_key(r->cfg.policy, app->key);
+	int e = policy_key(r->cfg.http.policy, app->key);
 	if (!e)
-		e = httpd_home_policy(app->keep.door, r->cfg.policy);
+		e = httpd_home_policy(app->keep.door, r->cfg.http.policy);
 	if (e) {
 		LOG(LOG_ERROR, "configuration not reloaded: %s",
 		    e == EAGAIN ? "the server is not open" : strerror(e));
 		return;
 	}
 	char const *cert = "";
-	if (r->cfg.tls && app->cfg->tls) {
-		httpd_home_tls(app->keep.door, r->cfg.tls);
+	if (r->cfg.http.tls && app->cfg->http.tls) {
+		httpd_home_tls(app->keep.door, r->cfg.http.tls);
 		cert = " and TLS certificate";
 	}
 	LOG(LOG_INFO, "configuration reloaded: policy%s", cert);
@@ -578,7 +570,7 @@ askai_home_stop (void        *ctx,
 {
 	struct askai_home *app = ctx;
 	home_destroy(&app->keep.home);
-	journal_stop(app->journal);
+	journal_stop(container_of(app, struct askai_shared, home)->journal);
 	web_home_stop(app->keep.web);
 	httpd_home_destroy(&app->keep.door);
 	askai_keep_stop(&app->keep, loop);
@@ -592,8 +584,8 @@ askai_client_parts (struct askai_client *app,
 {
 	int e = askai_keep_start(&app->keep, loop, blockers);
 	if (!e)
-		app->keep.mcp = mcp_create(loop, app->home->loop, app->st, app->metrics,
-		                           &app->counts, &e);
+		app->keep.mcp = mcp_create(loop, app->shared->home.loop, app->shared->st,
+		                           &app->shared->metrics, &app->counts, &e);
 	return e;
 }
 
@@ -603,17 +595,18 @@ askai_client_start (void           *ctx,
                     struct blocker *blockers)
 {
 	struct askai_client *app = ctx;
-	struct metrics_loop *mine = &app->metrics->loops[loop->id - 1];
+	struct askai_shared const *s = app->shared;
+	struct metrics_loop *mine = &s->metrics.loops[loop->id - 1];
 	util_format(mine->name, sizeof mine->name, "%" PRIu64, loop->id);
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
 	mine->kept = &app->counts.kept;
 	mine->calls = &app->counts.calls;
 	mine->methods = app->counts.methods;
-	mine->conns = httpd_hub_metrics(app->hub, loop->id - 1);
-	if (app->tasks) {
-		task_pool_attach(app->tasks, loop);
-		mine->tasks = task_pool_loop_metrics(app->tasks, loop->id - 1);
+	mine->conns = httpd_hub_metrics(s->hub, loop->id - 1);
+	if (s->tasks) {
+		task_pool_attach(s->tasks, loop);
+		mine->tasks = task_pool_loop_metrics(s->tasks, loop->id - 1);
 	}
 	int e = askai_client_parts(app, loop, blockers);
 	if (e) {
@@ -622,8 +615,8 @@ askai_client_start (void           *ctx,
 		return e;
 	}
 	/* The server says itself why it cannot start. */
-	app->httpd = httpd_create(loop, app->hub, loop->id - 1, mcp_app(app->keep.mcp),
-	                          app->hcfg, &e);
+	app->httpd = httpd_create(loop, s->hub, loop->id - 1, mcp_app(app->keep.mcp),
+	                          &s->home.cfg->http, &e);
 	return e;
 }
 
@@ -643,8 +636,8 @@ askai_client_stop (void        *ctx,
                    struct loop *loop)
 {
 	struct askai_client *app = ctx;
-	if (app->tasks)
-		task_pool_detach(app->tasks, loop);
+	if (app->shared->tasks)
+		task_pool_detach(app->shared->tasks, loop);
 	httpd_destroy(&app->httpd);
 	mcp_destroy(&app->keep.mcp);
 	askai_keep_stop(&app->keep, loop);
@@ -880,23 +873,13 @@ askai_run (struct askai_shared *s,
 	};
 	/* Its atomic members are valid as its storage is static: no struct
 	 * value is assigned over them. */
-	home->ep = &cfg->ep;
-	home->journal = s->journal;
-	home->hcfg = &cfg->http;
-	home->hub = s->hub;
-	home->metrics = &s->metrics;
 	home->cfg = cfg;
 	home->keep.web = s->web;
 	for (size_t i = 0; i < n; ++i) {
 		struct askai_client *app = &s->clients[i];
 		buf_stash_init(&app->keep.stash);
 		metrics_mcp_init(&app->counts);
-		app->home = home;
-		app->st = s->st;
-		app->hcfg = &cfg->http;
-		app->hub = s->hub;
-		app->metrics = &s->metrics;
-		app->tasks = s->tasks;
+		app->shared = s;
 	}
 	bcfg.home = (struct brainstem_app){
 		.ctx = home,
@@ -905,7 +888,7 @@ askai_run (struct askai_shared *s,
 		.drain = askai_home_drain,
 		.relieve = askai_keep_relieve,
 		.alone = askai_home_alone,
-		.reload = cfg->path || cfg->tls ? askai_home_reload : nullptr,
+		.reload = cfg->path || cfg->http.tls ? askai_home_reload : nullptr,
 		.stop = askai_home_stop
 	};
 	bcfg.client = (struct brainstem_app){

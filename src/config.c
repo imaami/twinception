@@ -1842,14 +1842,13 @@ config_tls_key (struct config *cfg,
 		return status;
 	char why[256];
 	int e;
-	cfg->tls = tls_ctx_create(cfg, chain, chain_len, key, len, why, sizeof why, &e);
+	cfg->http.tls = tls_ctx_create(cfg, chain, chain_len, key, len, why, sizeof why, &e);
 	explicit_bzero(key, len);
 	free(key);
 	if (e == ENOMEM)
 		return config_oom(cfg);
 	if (e)
 		return config_complain(cfg, nullptr, "TLS: %s", why);
-	cfg->http.tls = cfg->tls;
 	return 0;
 }
 
@@ -2274,8 +2273,8 @@ config_policy (struct config *cfg)
 	struct config const *run = config_tools(cfg, tools, &upstream);
 	char why[1024];
 	int e;
-	cfg->policy = policy_create(cfg->file, tools, run->registry.n_granted,
-	                            run->tools_clients, upstream, why, sizeof why, &e);
+	cfg->http.policy = policy_create(cfg->file, tools, run->registry.n_granted,
+	                                 run->tools_clients, upstream, why, sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
 	/* EINVAL means that the configuration file is wrong. Another error
@@ -2284,7 +2283,6 @@ config_policy (struct config *cfg)
 	 * begin with the path of the configuration file. */
 	if (e)
 		return config_complain(cfg, e == EINVAL ? cfg->path : nullptr, "%s", why);
-	cfg->http.policy = cfg->policy;
 	config_note_token(cfg);
 	return 0;
 }
@@ -2522,7 +2520,7 @@ config_log_policy (struct config const *cfg)
 	char const *tools[TOOL_MAX];
 	tool_mask upstream;
 	struct config const *run = config_tools(cfg, tools, &upstream);
-	policy_log(cfg->policy, cfg->file, tools, run->registry.n_tools,
+	policy_log(cfg->http.policy, cfg->file, tools, run->registry.n_tools,
 	           run->registry.n_granted, run->flags & CFG_UPSTREAM_TOOLS ? mcp_lent : nullptr,
 	           run);
 }
@@ -2533,8 +2531,8 @@ config_fini (struct config *cfg)
 	json_object_put(cfg->ep.extra);
 	json_object_put(cfg->ep.temperature);
 	json_object_put(cfg->file);
-	policy_put(cfg->policy);
-	tls_ctx_put(cfg->tls);
+	policy_put(cfg->http.policy);
+	tls_ctx_put(cfg->http.tls);
 	registry_fini(&cfg->registry);
 	free(cfg->url);
 	free(cfg->auth);

@@ -66,9 +66,6 @@ struct config {
 	                                         deadline */
 	struct json_object   *file;         /**< the configuration file's object,
 	                                         which strings point into */
-	struct policy        *policy;       /**< http.policy */
-	struct ssl_ctx_st    *tls;          /**< http.tls: made from tls_cert and
-	                                         tls_key if a listener is TLS's */
 	char                **argv;         /**< the command line, as reloads
 	                                         read it again */
 	char const          **headers;      /**< ep.headers, at the start of the

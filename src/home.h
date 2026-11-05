@@ -113,18 +113,18 @@ struct home_metrics {
 };
 
 /**
- * Home on @p loop, asking @p ep through a curl bridge that looks host names
- * up on @p blockers, with at most @p cfg's calls jobs in flight, each of
- * which @p door makes room for, and with CFG_TEST_FIFO, as a test aid, in
- * one queue for all, first in first out. It counts into @p metrics and
- * @p http, whose atomic members are valid, and which outlive every loop that
- * renders them. nullptr, with the error in @p *e, if it cannot be made.
+ * Creates home on @p loop. Home sends the upstream calls to the endpoint
+ * cfg->ep with curl, which looks up host names on @p blockers. At most
+ * cfg->calls jobs are in flight, and @p door makes room for each of them.
+ * With CFG_TEST_FIFO, a test aid, all jobs wait in one queue, first in
+ * first out. Home counts into @p metrics and @p http. Their atomic members
+ * must be valid, and they must outlive every loop that renders them.
+ * Returns home, or nullptr with the error in @p *e.
  */
 extern struct home *
 home_create (struct loop              *loop,
              struct blocker           *blockers,
              struct httpd_home        *door,
-             struct ai_endpoint const *ep,
              struct config const      *cfg,
              struct home_metrics      *metrics,
              struct http_metrics      *http,

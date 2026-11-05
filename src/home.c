@@ -2836,12 +2836,12 @@ struct home *
 home_create (struct loop              *loop,
              struct blocker           *blockers,
              struct httpd_home        *door,
-             struct ai_endpoint const *ep,
              struct config const      *cfg,
              struct home_metrics      *metrics,
              struct http_metrics      *http,
              int                      *e)
 {
+	struct ai_endpoint const *ep = &cfg->ep;
 	struct home *home = malloc(sizeof *home);
 	if (!home) {
 		*e = ENOMEM;
