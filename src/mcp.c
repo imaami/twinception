@@ -515,7 +515,7 @@ struct mcp_slot {
 	                                  size fills the trailing padding. */
 };
 
-static_assert(TOOL_MAX <= UINT8_MAX, "a slot's tool holds TOOL_MAX");
+static_assert(TOOL_MAX <= UINT8_MAX, "TOOL_MAX must fit in slot->tool");
 
 struct mcp_agenda;
 
@@ -3154,7 +3154,7 @@ static void
 mcp_req_promote (struct mcp_req     *req,
                  struct ledger_task *task)
 {
-	static_assert(POLL_MS == 1000, "the reply says");
+	static_assert(POLL_MS == 1000, "update the reply");
 	char at[ISO_TIME];
 	size_t n = mcp_iso_time(at, task->created);
 	struct mcp_piece const p[] = {
@@ -3945,7 +3945,7 @@ static void
 mcp_slot_spin (struct mcp_slot    *slot,
                struct json_object *slices)
 {
-	static_assert(SPIN_MAX == 100'000, "the problem says");
+	static_assert(SPIN_MAX == 100'000, "update the problem text");
 	struct mcp *mcp = slot->req->mcp;
 	struct loop *loop = mcp->loop;
 	int64_t n = json_object_is_type(slices, json_type_int)
@@ -4176,7 +4176,7 @@ mcp_req_turn_done (struct mcp_req *req)
 		bytes += len;
 		n += len != 0;
 	}
-	static_assert(CALLS_MAX == 16 << 20, "the result says");
+	static_assert(CALLS_MAX == 16 << 20, "update the result text");
 	if (bytes > CALLS_MAX) {
 		mcp_slot_result(&req->self, TEXT("The other AI's tool calls in one turn took "
 		                              "more than 16 MiB, so none was run."), true);
@@ -4855,7 +4855,7 @@ mcp_req_background (struct mcp_req *req,
                     uint32_t        tool,
                     bool            own_tool)
 {
-	static_assert(LEDGER_RUNNING == 8, "the problem says");
+	static_assert(LEDGER_RUNNING == 8, "update the problem text");
 	struct mcp_static const *st = req->mcp->st;
 	int e;
 	struct ledger_task *task = req->admitted;
@@ -5405,7 +5405,7 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
                       struct json_object *args,
                       int64_t             secs)
 {
-	static_assert(WAIT_IDS == 16 && LEDGER_WAITS == 4, "the problems say");
+	static_assert(WAIT_IDS == 16 && LEDGER_WAITS == 4, "update the problem texts");
 	static char const bad_list[] = "The jobs argument must list at most 16 ids of "
 	                               "jobs of yours.";
 	struct mcp_req *req = slot->req;
@@ -5496,7 +5496,7 @@ static void
 mcp_slot_wait (struct mcp_slot    *slot,
                struct json_object *args)
 {
-	static_assert(WAIT_MAX == 600 && JOBS_MAX <= 32, "the problem says");
+	static_assert(WAIT_MAX == 600 && JOBS_MAX <= 32, "update the problem text");
 	struct mcp_req *req = slot->req;
 	int64_t secs = mcp_seconds(args, WAIT_MAX);
 	if (!secs) {
@@ -5585,7 +5585,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
                 struct json_object *args)
 {
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200 && LEDGER_TIMERS == 8,
-	              "the problems say");
+	              "update the problem texts");
 	struct mcp_req *req = slot->req;
 	int64_t secs = mcp_seconds(args, TIMER_MAX);
 	struct json_object *o = jb_get(args, "note");
@@ -6784,7 +6784,7 @@ static void
 mcp_slot_compact (struct mcp_slot    *slot,
                   struct json_object *args)
 {
-	static_assert(SUMMARY_MAX == 4 << 20, "the problem says");
+	static_assert(SUMMARY_MAX == 4 << 20, "update the problem text");
 	struct mcp_req *req = slot->req;
 	size_t len = 0;
 	char const *summary = jb_str(jb_get(args, "summary"), &len);
@@ -7128,7 +7128,7 @@ static void
 mcp_req_task_show (struct mcp_req     *req,
                    struct ledger_task *task)
 {
-	static_assert(POLL_MS == 1000, "the reply says");
+	static_assert(POLL_MS == 1000, "update the reply");
 #define S(s) { CSTR_VIEW_INIT(s), false }
 	static struct mcp_piece const statuses[LEDGER_STATUSES] = {
 		[LEDGER_WORKING]   = S("working"),
@@ -8129,8 +8129,7 @@ static struct json_object *
 mcp_task_definition (void const *service)
 {
 	(void)service;
-	static_assert(SPIN_MAX == 100'000 && TASK_SLICE_NS == 250'000,
-	              "the description says");
+	static_assert(SPIN_MAX == 100'000 && TASK_SLICE_NS == 250'000, "update the description");
 	return jb_object(
 		"name", json_object_new_string("test_task"),
 		"title", json_object_new_string("Test task"),
@@ -8164,7 +8163,7 @@ static struct json_object *
 mcp_compact_definition (void const *service)
 {
 	struct mcp_static const *st = service;
-	static_assert(SUMMARY_MAX == 4 << 20, "the description says");
+	static_assert(SUMMARY_MAX == 4 << 20, "update the description");
 	return jb_object(
 		"name", json_object_new_string("compact"),
 		"description", schema_text3(
@@ -8208,7 +8207,7 @@ static struct json_object *
 mcp_background_definition (void const *service)
 {
 	(void)service;
-	static_assert(JOBS_MAX == 8, "the description says");
+	static_assert(JOBS_MAX == 8, "update the description");
 	return mcp_definition("background",
 		"Start a call of another tool as a job in the background, and go on "
 		"at once: askai answers with the job's number, and tells you when it "
@@ -8261,7 +8260,7 @@ static struct json_object *
 mcp_wait_definition (void const *service)
 {
 	(void)service;
-	static_assert(WAIT_MAX == 600, "the description says");
+	static_assert(WAIT_MAX == 600, "update the description");
 	return mcp_definition("wait",
 		"Wait until a job finishes, of those you name or any, or a timer "
 		"fires, or the seconds are up, whichever comes first; askai then "
@@ -8284,7 +8283,7 @@ static struct json_object *
 mcp_timer_definition (void const *service)
 {
 	(void)service;
-	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "the description says");
+	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "update the description");
 	return mcp_definition("timer",
 		"Set a timer, and go on at once: when it fires, askai tells you, "
 		"with a later tool result, by ending a wait, or in a message after "
@@ -8305,7 +8304,7 @@ mcp_timer_definition (void const *service)
 static struct json_object *
 mcp_background_client_definition (void const *service)
 {
-	static_assert(LEDGER_RUNNING == 8 && LEDGER_KEEP == 3600, "the description says");
+	static_assert(LEDGER_RUNNING == 8 && LEDGER_KEEP == 3600, "update the description");
 	struct mcp_static const *st = service;
 	char about[1024];
 	util_format(about, sizeof about, "Start a call of another of your tools, such as %s, "
@@ -8353,7 +8352,7 @@ static struct json_object *
 mcp_wait_client_definition (void const *service)
 {
 	(void)service;
-	static_assert(WAIT_MAX == 600 && WAIT_IDS == 16, "the description says");
+	static_assert(WAIT_MAX == 600 && WAIT_IDS == 16, "update the description");
 	return mcp_definition("wait",
 		"Wait until one of your jobs ends, of those that you name or any, or "
 		"one of your timers fires, or the seconds pass, whichever comes "
@@ -8380,7 +8379,7 @@ static struct json_object *
 mcp_timer_client_definition (void const *service)
 {
 	(void)service;
-	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "the description says");
+	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "update the description");
 	return mcp_definition("timer",
 		"Set a timer, and continue at once: the result contains the number of "
 		"the timer. When the timer fires, a call of wait ends, and its result "
