@@ -204,8 +204,8 @@ struct jb_reaper {
  * or if memory runs out.
  */
 extern void
-jb_reaper_take (struct jb_reaper   *reaper,
-                struct json_object *val);
+jb_reaper_add (struct jb_reaper   *reaper,
+               struct json_object *val);
 
 /** Free up to @p values values; returns how many it freed. */
 extern size_t

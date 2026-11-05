@@ -235,8 +235,8 @@ jb_scan_fini (struct jb_scan *scan)
 }
 
 void
-jb_reaper_take (struct jb_reaper   *reaper,
-                struct json_object *val)
+jb_reaper_add (struct jb_reaper   *reaper,
+               struct json_object *val)
 {
 	bool container = json_object_is_type(val, json_type_array) ||
 	                 json_object_is_type(val, json_type_object);
@@ -293,7 +293,7 @@ jb_reaper_step (struct jb_reaper *reaper,
 			++freed;
 		} else if (json_object_is_type(val, json_type_array) ||
 		           json_object_is_type(val, json_type_object)) {
-			jb_reaper_take(reaper, val);
+			jb_reaper_add(reaper, val);
 		} else {
 			json_object_put(val);
 			++freed;
@@ -428,9 +428,9 @@ jb_parser_fini (struct jb_parser *parser,
 	if (reaper) {
 		for (int i = 0; tok && i <= tok->depth; ++i)
 			if (tok->stack[i].current)
-				jb_reaper_take(reaper, json_object_get(tok->stack[i].current));
+				jb_reaper_add(reaper, json_object_get(tok->stack[i].current));
 		if (parser->root)
-			jb_reaper_take(reaper, parser->root);
+			jb_reaper_add(reaper, parser->root);
 	} else {
 		json_object_put(parser->root);
 	}

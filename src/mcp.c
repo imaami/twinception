@@ -917,7 +917,7 @@ mcp_req_dispose (struct mcp_req *req)
 		json_object_put(msg);
 		loop_work(loop, LOOP_VALUES, req->values);
 	} else {
-		jb_reaper_take(&req->reaper, msg);
+		jb_reaper_add(&req->reaper, msg);
 		loop_ready_bulk(loop, &req->step);
 	}
 }
@@ -1471,7 +1471,7 @@ mcp_req_args_free (struct mcp_req *req,
 {
 	for (; k < end; ++k)
 		if (req->args[k]) {
-			jb_reaper_take(&req->reaper, req->args[k]);
+			jb_reaper_add(&req->reaper, req->args[k]);
 			req->args[k] = nullptr;
 		}
 	if (req->reaper.n)
@@ -4214,7 +4214,7 @@ mcp_req_turn_arg (struct mcp_req   *req,
 	struct json_object *v = req->msg;
 	req->msg = nullptr;
 	if (v && !json_object_is_type(v, json_type_object)) {
-		jb_reaper_take(&req->reaper, v);
+		jb_reaper_add(&req->reaper, v);
 		v = nullptr;
 	}
 	req->args[req->part] = v;

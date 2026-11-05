@@ -2059,7 +2059,7 @@ home_event (struct home *home,
 		json_object_put(root);
 		loop_work(loop, LOOP_VALUES, n);
 	} else {
-		jb_reaper_take(&home->reaper, root);
+		jb_reaper_add(&home->reaper, root);
 	}
 	home_reap(home);
 	return e;
@@ -2496,7 +2496,7 @@ home_props_step (struct loop      *loop,
 	          ? json_object_get_int64(total) : 0;
 	int64_t tokens = json_object_is_type(ctx, json_type_int)
 	               ? json_object_get_int64(ctx) : 0;
-	jb_reaper_take(&home->reaper, root);
+	jb_reaper_add(&home->reaper, root);
 	home_reap(home);
 	if (tokens > 0 && !home->context) {
 		home->context = tokens < INT32_MAX ? (uint32_t)tokens : INT32_MAX;
