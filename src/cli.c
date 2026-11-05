@@ -1189,9 +1189,9 @@ cli_run (struct cli_options const *options,
 		curl_ready = !e;
 	}
 	if (!e)
-		e = cli_mailbox_init(&cli->mailbox, &cli->reactor.loop, (struct cli_mailbox_limits){
-			.messages = 256, .bytes = 1 << 20, .control_messages = 64, .control_bytes = 64 << 10
-		});
+		e = cli_mailbox_init(&cli->mailbox, &cli->reactor.loop, (struct cli_mailbox_limits){{
+			{.messages = 256, .bytes = 1 << 20}, {.messages = 64, .bytes = 64 << 10}
+		}});
 	if (!e)
 		cli->network = cli_network_create(&cli->reactor, &cli->mailbox, &e);
 	if (!e)

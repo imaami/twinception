@@ -35,9 +35,10 @@ cli_mailbox_dispatch (struct cli_mailbox *mailbox,
 			return 0;
 		}
 		struct cli_mailbox_msg *msg = container_of(mailbox->mail.next, struct cli_mailbox_msg, hook);
+		struct cli_mailbox_budget *used = &mailbox->used[msg->control];
 		list_del(&msg->hook);
-		--mailbox->messages[msg->control];
-		mailbox->bytes[msg->control] -= msg->bytes;
+		--used->messages;
+		used->bytes -= msg->bytes;
 		pthread_mutex_unlock(&mailbox->mutex);
 		msg->fn(mailbox, msg);
 	}
@@ -91,43 +92,27 @@ cli_mailbox_init (struct cli_mailbox       *mailbox,
 
 int
 cli_mailbox_post (struct cli_mailbox     *mailbox,
-                   struct cli_mailbox_msg *msg,
-                   bool                    control)
+                  struct cli_mailbox_msg *msg,
+                  bool                    control)
 {
 	if (!msg || !msg->fn)
 		return EINVAL;
 	int e = pthread_mutex_lock(&mailbox->mutex);
 	if (e)
 		return e;
-	size_t count_limit = control ? mailbox->limits.control_messages : mailbox->limits.messages;
-	size_t bytes_limit = control ? mailbox->limits.control_bytes : mailbox->limits.bytes;
+	struct cli_mailbox_budget const *limit = &mailbox->limits.budget[control];
+	struct cli_mailbox_budget *used = &mailbox->used[control];
 	if (mailbox->closed)
 		e = ESHUTDOWN;
-	else if (mailbox->messages[control] >= count_limit ||
-	         msg->bytes > bytes_limit - mailbox->bytes[control])
+	else if (used->messages >= limit->messages || msg->bytes > limit->bytes - used->bytes)
 		e = EAGAIN;
-	else {
-		bool empty = list_is_empty(&mailbox->mail);
+	else if (list_is_empty(&mailbox->mail) && eventfd_write(mailbox->wake.fd, 1) && errno != EAGAIN)
+		e = errno;
+	if (!e) {
 		msg->control = control;
 		list_append(&mailbox->mail, &msg->hook);
-		++mailbox->messages[control];
-		mailbox->bytes[control] += msg->bytes;
-		if (empty) {
-			uint64_t value = 1;
-			ssize_t n;
-			do {
-				n = write(mailbox->wake.fd, &value, sizeof(value));
-			} while (n < 0 && errno == EINTR);
-			if (n < 0 && errno != EAGAIN)
-				e = errno;
-			else if (n >= 0 && n != (ssize_t)sizeof(value))
-				e = EIO;
-			if (e) {
-				list_del(&msg->hook);
-				--mailbox->messages[control];
-				mailbox->bytes[control] -= msg->bytes;
-			}
-		}
+		++used->messages;
+		used->bytes += msg->bytes;
 	}
 	pthread_mutex_unlock(&mailbox->mutex);
 	return e;

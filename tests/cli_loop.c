@@ -181,12 +181,10 @@ cli_loop_test_turns (struct cli_loop_test *test)
 static void
 cli_loop_test_limits (struct cli_loop_test *test)
 {
-	struct cli_mailbox_limits limits = {
-		.messages = 1,
-		.bytes = sizeof(struct cli_loop_test_msg),
-		.control_messages = 1,
-		.control_bytes = sizeof(struct cli_loop_test_msg),
-	};
+	struct cli_mailbox_limits limits = {{
+		{.messages = 1, .bytes = sizeof(struct cli_loop_test_msg)},
+		{.messages = 1, .bytes = sizeof(struct cli_loop_test_msg)},
+	}};
 	assert(!cli_mailbox_init(&test->mailbox, &test->loop.loop, limits));
 	struct cli_loop_test_msg *first = cli_loop_test_message(0, 0);
 	struct cli_loop_test_msg *next = cli_loop_test_message(0, 1);
@@ -207,12 +205,10 @@ cli_loop_test_limits (struct cli_loop_test *test)
 static void
 cli_loop_test_threads (struct cli_loop_test *test)
 {
-	struct cli_mailbox_limits limits = {
-		.messages = 64,
-		.bytes = 64 * sizeof(struct cli_loop_test_msg),
-		.control_messages = 1,
-		.control_bytes = sizeof(struct cli_loop_test_msg),
-	};
+	struct cli_mailbox_limits limits = {{
+		{.messages = 64, .bytes = 64 * sizeof(struct cli_loop_test_msg)},
+		{.messages = 1, .bytes = sizeof(struct cli_loop_test_msg)},
+	}};
 	assert(!cli_mailbox_init(&test->mailbox, &test->loop.loop, limits));
 	pthread_t threads[4];
 	struct cli_loop_test_producer producers[4];
