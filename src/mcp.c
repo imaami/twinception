@@ -181,12 +181,10 @@ enum mcp_fetch : uint16_t {
 	FETCH_READ,        /* the notes tool's read */
 	FETCH_RESUME,      /* list the notes of the thread that an ask call goes
 	                      on with */
-	FETCH_COMPACT,     /* list the notes for compact */
-	FETCH_FULL,        /* list the notes for a compaction of a context that
-	                      filled up */
+	FETCH_COMPACT,     /* list the notes for a compaction */
 	FETCH_KIND = 7,    /* the mask of the values above */
-	FETCH_NEWEST = 8,  /* a flag that is set with one of the last three
-	                      values: read the newest note */
+	FETCH_NEWEST = 8,  /* read the newest note, after FETCH_RESUME or
+	                      FETCH_COMPACT */
 	FETCH_OTHER = 16,  /* a flag that is set with FETCH_LIST or FETCH_READ:
 	                      the other side's notebook of the thread */
 	FETCH_COPY = 32,   /* a flag that is set with FETCH_READ, then with the
@@ -221,7 +219,6 @@ static enum notes_cmd const mcp_fetch_cmds[] = {
 	[FETCH_READ]    = NOTES_READ,
 	[FETCH_RESUME]  = NOTES_LIST,
 	[FETCH_COMPACT] = NOTES_LIST,
-	[FETCH_FULL]    = NOTES_LIST,
 };
 
 /* The command of git that runs for @p fetch. */
@@ -6717,8 +6714,7 @@ mcp_slot_notes_failed (struct mcp_slot *slot,
 			mcp_req_notes_then(req, slot->fetch);
 		return;
 	}
-	if ((slot->fetch & FETCH_KIND) == FETCH_COMPACT ||
-	    (slot->fetch & FETCH_KIND) == FETCH_FULL) {
+	if ((slot->fetch & FETCH_KIND) == FETCH_COMPACT) {
 		mcp_req_go_on(req, TEXT("\n\n[askai: your notes could not be read.]\n\n"));
 		return;
 	}
@@ -7866,7 +7862,6 @@ mcp_slot_notes_out (struct mcp_slot *slot)
 		[FETCH_READ]    = mcp_slot_notes_got_note,
 		[FETCH_RESUME]  = mcp_slot_notes_resumed,
 		[FETCH_COMPACT] = mcp_slot_notes_compacted,
-		[FETCH_FULL]    = mcp_slot_notes_compacted,
 	};
 	mcp_slot_unwait(slot);
 	/* The attach action's upload, which follows its read, has answered. */
@@ -8215,12 +8210,11 @@ mcp_slot_step (struct loop      *loop,
 /* Compaction has left the summary, if any, in what askai adds to the
  * prompt. review_compacted() drops the pending lines of the review record
  * (see src/review.h). The record, if any, follows the summary, cut to
- * mcp_req_lend_max() bytes, and then the notes, read for @p fetch, if the
- * thread has any. The notes are left out for a job resumed without --notes.
+ * mcp_req_lend_max() bytes. The caller's notes follow if req->branch is
+ * set. They are left out for a job resumed without --notes.
  */
 static void
-mcp_req_compact_notes (struct mcp_req *req,
-                       enum mcp_fetch  fetch)
+mcp_req_compact_notes (struct mcp_req *req)
 {
 	review_compacted(req->review);
 	int e = mcp_req_notes_identity(req);
@@ -8233,7 +8227,7 @@ mcp_req_compact_notes (struct mcp_req *req,
 		return;
 	}
 	if (req->branch && req->mcp->st->notes) {
-		mcp_slot_notes_run(&req->self, fetch, nullptr);
+		mcp_slot_notes_run(&req->self, FETCH_COMPACT, nullptr);
 		return;
 	}
 	mcp_req_go_on(req, TEXT("\n\n"));
@@ -8285,7 +8279,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 		mcp_req_fail(req, ESHUTDOWN);
 		return;
 	}
-	mcp_req_compact_notes(req, FETCH_COMPACT);
+	mcp_req_compact_notes(req);
 }
 
 /* The context is full, as the upstream said or as askai reckons: what
@@ -8319,7 +8313,7 @@ mcp_req_compact_full (struct mcp_req *req)
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_req_compact_notes(req, FETCH_FULL);
+	mcp_req_compact_notes(req);
 }
 
 #undef CAT
