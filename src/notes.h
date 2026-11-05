@@ -82,8 +82,9 @@ struct notes_file {
 	uint64_t    bytes;
 };
 
-/** Where notes_add_head() wrote the name and the text of a note, as
- *  offsets from the head of its buffer. The name keeps its quotes.
+/** The offsets of the name and the text of a note in the buffer that
+ *  notes_add_head() writes to, from the head of the buffer. The name
+ *  includes its quotes.
  */
 struct notes_part {
 	size_t name_at;
@@ -314,10 +315,12 @@ notes_file_same (struct notes_file const *file,
 /**
  * Writes to @p in the head of the file part of the input of the command
  * NOTES_ADD, for a note with the name @p name whose text is @p len bytes
- * long, and reserves room for the text: the caller appends the text and then
- * a line feed, as notes_add_file() does. It stores the offsets of the name
- * and the text in @p *part. Returns 0, EINVAL for a null argument or a name
- * longer than NOTES_NAME, or ENOMEM.
+ * long. After the head, the function adds @p len bytes for the text, which
+ * it leaves unwritten, and a line feed. It stores the offsets of the name
+ * and the text in @p *part. The caller then writes the text at the offset
+ * part->data_at from the head of @p in, as notes_add_file() does. Returns
+ * 0, EINVAL for a null argument or a name longer than NOTES_NAME, or
+ * ENOMEM.
  */
 extern int
 notes_add_head (struct buf        *in,

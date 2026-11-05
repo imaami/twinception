@@ -897,6 +897,7 @@ notes_add_head (struct buf        *in,
 	if (e)
 		return e;
 	memcpy(s.ptr, head, h);
+	s.ptr[h + len] = '\n';
 	/* The name runs from the last byte of m to the quote at p. */
 	size_t at = buf_peek(in).len;
 	*part = (struct notes_part){
@@ -905,7 +906,7 @@ notes_add_head (struct buf        *in,
 		.data_at = at + h,
 		.data_len = len,
 	};
-	buf_commit(in, h);
+	buf_commit(in, h + len + 1);
 	return 0;
 }
 
@@ -916,15 +917,9 @@ notes_add_file (struct buf        *in,
                 struct notes_part *part)
 {
 	int e = notes_add_head(in, name, text.len, part);
-	struct span s;
 	if (!e)
-		e = buf_reserve(in, text.len + 1, SIZE_MAX, &s);
-	if (e)
-		return e;
-	memcpy(s.ptr, text.data, text.len);
-	s.ptr[text.len] = '\n';
-	buf_commit(in, text.len + 1);
-	return 0;
+		memcpy(buf_peek(in).ptr + part->data_at, text.data, text.len);
+	return e;
 }
 
 int

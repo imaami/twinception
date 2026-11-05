@@ -1381,10 +1381,9 @@ static char const bad_name_text[] = "The file argument must be a file name of 1 
                                     "it.";
 static struct cstr_view const bad_name = { bad_name_text, sizeof bad_name_text - 1 };
 
-/* Writes to @p in the file part of a note. The name is the @p name_len
- * bytes at @p name, and the text is the decoded data of @p d. The function
- * fills @p *part as notes_add_head() does. Returns 0 or an error number of
- * notes_add_head() or buf_reserve().
+/* Writes to @p in the file part of the note @p name, whose text is the
+ * decoded data of @p d. The function fills @p *part as notes_add_head()
+ * does. Returns 0 or the error of notes_add_head().
  */
 static int
 notes_tool_add_data (struct buf           *in,
@@ -1393,15 +1392,9 @@ notes_tool_add_data (struct buf           *in,
                      struct notes_part    *part)
 {
 	int e = notes_add_head(in, name, d->size, part);
-	struct span s;
 	if (!e)
-		e = buf_reserve(in, d->size + 1, SIZE_MAX, &s);
-	if (e)
-		return e;
-	datauri_decode(d, s.ptr);
-	s.ptr[d->size] = '\n';
-	buf_commit(in, d->size + 1);
-	return 0;
+		datauri_decode(d, buf_peek(in).ptr + part->data_at);
+	return e;
 }
 
 /* Starts add or replace with the arguments @p args. The note goes to the
