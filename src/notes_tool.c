@@ -1817,8 +1817,7 @@ notes_tool_schema (struct notes_tool const *tool,
 	}
 	return jb_object(
 		"name", json_object_new_string("notes"),
-		"description", json_object_new_string_len(dstr_get(&description),
-		                                          (int)dstr_len(&description)),
+		"description", jb_string(cstr_view_dstr(&description)),
 		"inputSchema", schema_object(props, jb_list(json_object_new_string("action"))),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(0),

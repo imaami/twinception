@@ -15,7 +15,7 @@ schema_text3 (char const *a,
 	dstr_auto d = DSTR_INIT;
 	if (!dstr_cat(&d, a) || !dstr_cat(&d, b) || !dstr_cat(&d, c))
 		return nullptr;
-	return json_object_new_string_len(dstr_get(&d), (int)dstr_len(&d));
+	return jb_string(cstr_view_dstr(&d));
 }
 
 struct json_object *
@@ -24,8 +24,7 @@ schema_names (struct cstr_view const *names,
 {
 	struct json_object *arr = json_object_new_array();
 	for (size_t i = 0; arr && i < n; ++i)
-		arr = jb_push_or_free(arr, json_object_new_string_len(names[i].data,
-		                                                      (int)names[i].len));
+		arr = jb_push_or_free(arr, jb_string(names[i]));
 	return arr;
 }
 
