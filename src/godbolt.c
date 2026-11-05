@@ -548,8 +548,9 @@ static struct godbolt_recipe const godbolt_recipes[GODBOLT_TOOLS][GODBOLT_DRIVER
 #undef GODBOLT_SKIP_ASM
 #undef GODBOLT_PP
 
-/* The arguments of a call after the checks. The texts point into the
- * call's JSON arguments.
+/* struct godbolt_args contains the arguments of a call after the checks.
+ * godbolt_args_read() stores views into the JSON arguments of the call,
+ * and godbolt_create() copies the texts to the blob of struct godbolt.
  */
 struct godbolt_args {
 	struct cstr_view ids[GODBOLT_IDS];
@@ -559,7 +560,7 @@ struct godbolt_args {
 	struct cstr_view source;
 	struct cstr_view values[3]; /* the arguments kind, family and
 	                               architecture, in this order */
-	uint32_t         limit;
+	uint64_t         limit;
 	uint8_t          n_ids;
 	uint8_t          n_strings;
 	uint8_t          n_words;
@@ -567,7 +568,7 @@ struct godbolt_args {
 	uint8_t          filters;   /* bits of godbolt_filters[] */
 	uint8_t          headers;   /* the argument headers */
 	uint8_t          share;     /* the argument share */
-	uint8_t          paged;     /* the argument offset is more than 0 */
+	uint8_t          paged;     /* 1 if the argument offset is above 0 */
 };
 
 /* The state of the record of the compilation that the call writes.
@@ -623,23 +624,22 @@ struct godbolt {
 	                                           blob, with the words in lower
 	                                           case */
 	struct cstr_view             resp;      /* the body of the last response,
-	                                           valid until the next request;
-	                                           never nullptr once
-	                                           godbolt_result() stored it */
+	                                           valid until the next request.
+	                                           resp.data is not nullptr after
+	                                           godbolt_result() stores it. */
 	size_t                       head;      /* bytes of body before the part
 	                                           that differs for the state and
 	                                           for each compilation */
-	size_t                       len;       /* bytes of body that the state
-	                                           or the compilation has */
+	size_t                       len;       /* bytes of the state or of the
+	                                           compilation in body */
 	size_t                       off;       /* bytes of the source escaped,
 	                                           or of the response parsed */
 	size_t                       start;     /* the offset in the list of the
 	                                           element being parsed */
 	size_t                       written;   /* bytes of output */
 	struct cstr_view             escaped;   /* the escaped argument string
-	                                           in body that
-	                                           godbolt_cat_arguments()
-	                                           wrote last */
+	                                           that godbolt_cat_arguments()
+	                                           wrote last to body */
 	uint32_t                     total;     /* elements of the list with an
 	                                           id */
 	uint32_t                     matching;  /* elements that the filters
@@ -654,11 +654,11 @@ struct godbolt {
 	                                           failure of the output, after
 	                                           which the call writes
 	                                           nothing */
-	uint16_t                     found;     /* bit i is set if ids[i] is in
-	                                           the list */
+	uint16_t                     found;     /* bit i is set if args.ids[i]
+	                                           is in the list */
 	uint8_t                      drivers[GODBOLT_IDS];  /* enum
 	                                                       godbolt_driver of
-	                                                       ids[i] */
+	                                                       args.ids[i] */
 	uint8_t                      tool;      /* enum godbolt_tool */
 	uint8_t                      phase;     /* enum godbolt_phase */
 	uint8_t                      wait;      /* enum godbolt_wait */
@@ -668,9 +668,9 @@ struct godbolt {
 	                                           args.n_ids times
 	                                           args.n_strings */
 	uint8_t                      job;       /* the compilation, or in the
-	                                           phase GODBOLT_STATE the
-	                                           compilation that the state
-	                                           gets next */
+	                                           phase GODBOLT_STATE the next
+	                                           compilation to add to the
+	                                           state */
 	uint8_t                      full;      /* 1 after the output reached
 	                                           GODBOLT_FULL bytes */
 	char                         why[GODBOLT_REASON_MAX + 120];
@@ -984,11 +984,11 @@ godbolt_fail (struct godbolt *call)
 
 /* Sets the call's request to a request of the kind @p kind, with the body
  * @p body. The function writes the URL of the rule of @p kind, with
- * @p segment after the path, to call->url. A compilation of a call without
- * offset has the keep 1, so that askai does not answer it with a response
- * that it received more than a second earlier. A compilation of a call with
- * offset has the keep 300, so that askai answers it with the stored
- * response of the same call without offset.
+ * @p segment after the path, to call->url. The keep of a compilation is 1
+ * for a call without offset, so that askai does not answer it with a
+ * response older than a second, and 300 for a call with offset, so that
+ * askai answers it with the stored response of the same call without
+ * offset.
  */
 static void
 godbolt_request (struct godbolt   *call,
@@ -2587,9 +2587,10 @@ godbolt_drop (struct mcp_slot *slot)
 	*own = nullptr;
 }
 
-/* Returns the string @p v if it has @p min to @p max bytes and no NUL
- * byte, and if each of its bytes is in @p set, unless @p set is nullptr.
- * Otherwise it returns an empty text whose ptr is nullptr.
+/* Returns the string @p v if it is @p min to @p max bytes long, if it
+ * contains no NUL byte, and if each of its bytes is in @p set, unless
+ * @p set is nullptr. Otherwise it returns an empty view whose data is
+ * nullptr.
  */
 static struct cstr_view
 godbolt_text (struct json_object *v,
@@ -2722,12 +2723,8 @@ godbolt_args_set (struct godbolt_args *a,
 		*value = godbolt_text(v, 1, GODBOLT_VALUE_MAX, nullptr);
 		return value->data ? 0 : EINVAL;
 	}
-	case GODBOLT_ARG_LIMIT: {
-		int64_t const n = json_object_is_type(v, json_type_int) ? json_object_get_int64(v)
-		                                                        : 0;
-		a->limit = (uint32_t)n;
-		return n >= 1 && n <= GODBOLT_LIMIT_MAX ? 0 : EINVAL;
-	}
+	case GODBOLT_ARG_LIMIT:
+		return jb_uint_checked(v, GODBOLT_LIMIT_MAX, &a->limit) || !a->limit ? EINVAL : 0;
 	case GODBOLT_ARG_OFFSET:
 		/* mcp_slot_offset() checks the offset. */
 		a->paged = json_object_get_int64(v) > 0;
