@@ -671,8 +671,8 @@ struct godbolt {
 	                                           phase GODBOLT_STATE the next
 	                                           compilation to add to the
 	                                           state */
-	uint8_t                      full;      /* 1 after the output reached
-	                                           GODBOLT_FULL bytes */
+	uint8_t                      full;      /* 1 after godbolt_full() cut
+	                                           the output */
 	char                         why[GODBOLT_REASON_MAX + 120];
 	char                         url[1024];
 	char                         blob[];
@@ -1083,9 +1083,9 @@ godbolt_fired (struct loop       *loop,
 
 /* Stores in call->why the reason of the response in call->resp, whose
  * status @p status is an error. The reason is the member message of a
- * JSON object, or else the first line of the body, and it has at most
- * GODBOLT_REASON_MAX bytes. A compilation with an unknown compiler id gets
- * 404, and its reason names godbolt_catalog.
+ * JSON object, or else the first line of the body, and it is at most
+ * GODBOLT_REASON_MAX bytes long. For a 404 to a compilation, the reason is
+ * a hint to call godbolt_catalog.
  */
 static void
 godbolt_reason (struct godbolt *call,
@@ -1214,8 +1214,8 @@ godbolt_parsed (struct godbolt const *call,
  *
  * Returns 0, or the error number of fn. After the end of the array,
  * call->list is GODBOLT_LIST_END. If the text is not a JSON array, or if
- * an element has more than GODBOLT_ELEMENT_MAX bytes, call->list is
- * GODBOLT_LIST_BAD and call->why has the reason.
+ * an element is longer than GODBOLT_ELEMENT_MAX bytes, call->list is
+ * GODBOLT_LIST_BAD and call->why is the reason.
  */
 static int
 godbolt_list_parse (struct godbolt *call,
@@ -1338,8 +1338,8 @@ godbolt_put_field (struct godbolt   *call,
 }
 
 /* Counts an element of the list of languages, and writes it as a row if the
- * filters select it and the output has fewer rows than the limit. Returns
- * 0, or call->e.
+ * filters select it and the limit allows another row. Returns 0, or
+ * call->e.
  */
 static int
 godbolt_language_row (struct godbolt     *call,
@@ -1805,10 +1805,10 @@ godbolt_job_body (struct godbolt              *call,
 	call->len = (size_t)(d - call->body);
 }
 
-/* Writes the link to the state of the call, which has the state in base64,
- * on the first line of the output. If the link would be longer than
- * GODBOLT_LINK_MAX bytes, the line has the reason instead. Returns 0, or
- * call->e.
+/* Writes the link to the state of the call, with the state in base64, on
+ * the first line of the output. If the link would be longer than
+ * GODBOLT_LINK_MAX bytes, the line contains the reason instead. Returns 0,
+ * or call->e.
  */
 static int
 godbolt_state_link (struct godbolt *call)
@@ -2112,10 +2112,10 @@ godbolt_join (struct godbolt     *call,
 
 /* Parses the output of the probe of a call of godbolt_targets, which is the
  * main text of the record: a string, or the lines of stdout. If the output
- * has a valid block, the record has the facts and the messages of the
- * compiler. Otherwise the status of the record has the reason, and the
- * record has the output. The function parses the whole output in one
- * step. Returns 0, or ENOMEM.
+ * contains a valid block, the record contains the facts and the messages
+ * of the compiler. Otherwise it contains the output, and its status is the
+ * reason. The function parses the whole output in one step. Returns 0, or
+ * ENOMEM.
  */
 static int
 godbolt_targets_parse (struct godbolt *call)
@@ -2765,9 +2765,9 @@ godbolt_invalid (char       *why,
 }
 
 /* Checks the arguments @p args of a call of the tool @p tool, and reads
- * them into @p a. If the configuration @p cfg turns links off, the tool
- * has no argument share. Returns 0, or EINVAL with the reason of the
- * refusal in the @p len bytes at @p why and its length in @p *n.
+ * them into @p a. If @p cfg turns links off, the function refuses the
+ * argument share. Returns 0, or EINVAL with the reason of the refusal in
+ * the @p len bytes at @p why and its length in @p *n.
  */
 static int
 godbolt_args_read (struct godbolt_args         *a,
