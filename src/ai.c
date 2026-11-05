@@ -379,26 +379,13 @@ ai_no_answer (char       *buf,
  * nullptr.
  */
 static int
-ai_put_text (int               (*put) (void       *user,
-                                       char const *text,
-                                       size_t      len),
+ai_put_text (ai_text_fn         *put,
              void               *user,
              struct json_object *val)
 {
-	char const *str = put ? jb_text(val) : nullptr;
-	return str ? put(user, str, (size_t)json_object_get_string_len(val)) : 0;
-}
-
-/* @p val's text and its length in @p *len, if it is a string; else
- * nullptr.
- */
-static char const *
-ai_text_of (struct json_object *val,
-            size_t             *len)
-{
-	char const *str = jb_text(val);
-	*len = str ? (size_t)json_object_get_string_len(val) : 0;
-	return str;
+	size_t len = 0;
+	char const *str = put ? jb_str(val, &len) : nullptr;
+	return str ? put(user, str, len) : 0;
 }
 
 /* @p val as a call's index, or a content block's: AI_CALL_NEXT if it is
@@ -518,13 +505,13 @@ ai_chat_calls (struct ai_sink const *sink,
 		struct ai_call call = { .index = ai_index(jb_get(c, "index")) };
 		/* Gemini's thought signature, which a turn gives back. */
 		struct json_object *extra = jb_get(c, "extra_content");
-		call.id = ai_text_of(jb_get(c, "id"), &call.id_len);
-		call.name = ai_text_of(jb_get(fn, "name"), &call.name_len);
-		call.extra = extra ? json_object_to_json_string_length(extra, JB_WIRE,
-		                                                       &call.extra_len)
-		                   : nullptr;
-		call.args = ai_text_of(jb_get(fn, "arguments"), &call.args_len);
-		e = extra && !call.extra ? ENOMEM : sink->call(sink->user, &call);
+		call.id.data = jb_str(jb_get(c, "id"), &call.id.len);
+		call.name.data = jb_str(jb_get(fn, "name"), &call.name.len);
+		call.extra.data = extra ? json_object_to_json_string_length(extra, JB_WIRE,
+		                                                            &call.extra.len)
+		                        : nullptr;
+		call.args.data = jb_str(jb_get(fn, "arguments"), &call.args.len);
+		e = extra && !call.extra.data ? ENOMEM : sink->call(sink->user, &call);
 	}
 	return e;
 }
@@ -609,9 +596,9 @@ ai_responses_item (struct ai_sink const *sink,
 	int e = 0;
 	if (!kind && sink->call) {
 		struct ai_call call = { .index = ai_index(at) };
-		call.id = ai_text_of(jb_get(item, "call_id"), &call.id_len);
-		call.name = ai_text_of(jb_get(item, "name"), &call.name_len);
-		call.args = ai_text_of(jb_get(item, "arguments"), &call.args_len);
+		call.id.data = jb_str(jb_get(item, "call_id"), &call.id.len);
+		call.name.data = jb_str(jb_get(item, "name"), &call.name.len);
+		call.args.data = jb_str(jb_get(item, "arguments"), &call.args.len);
 		e = sink->call(sink->user, &call);
 	}
 	return e ? e : ai_replay_item(sink, item);
@@ -682,15 +669,15 @@ ai_call_start (struct ai_sink const *sink,
 	bool whole = json_object_is_type(args, json_type_object) &&
 	             json_object_object_length(args);
 	struct ai_call call = { .index = at };
-	call.id = ai_text_of(jb_get(item, "id"), &call.id_len);
-	call.name = ai_text_of(jb_get(item, "name"), &call.name_len);
-	call.extra = extra ? json_object_to_json_string_length(extra, JB_WIRE,
-	                                                       &call.extra_len)
-	                   : nullptr;
-	call.args = whole ? json_object_to_json_string_length(args, JB_WIRE,
-	                                                      &call.args_len)
-	                  : nullptr;
-	if ((whole && !call.args) || (extra && !call.extra))
+	call.id.data = jb_str(jb_get(item, "id"), &call.id.len);
+	call.name.data = jb_str(jb_get(item, "name"), &call.name.len);
+	call.extra.data = extra ? json_object_to_json_string_length(extra, JB_WIRE,
+	                                                            &call.extra.len)
+	                        : nullptr;
+	call.args.data = whole ? json_object_to_json_string_length(args, JB_WIRE,
+	                                                           &call.args.len)
+	                       : nullptr;
+	if ((whole && !call.args.data) || (extra && !call.extra.data))
 		return ENOMEM;
 	return sink->call(sink->user, &call);
 }
@@ -776,7 +763,7 @@ ai_messages_delta (struct ai_sink const *sink,
 		if (!sink->call)
 			return 0;
 		struct ai_call call = { .index = at };
-		call.args = ai_text_of(jb_get(delta, "partial_json"), &call.args_len);
+		call.args.data = jb_str(jb_get(delta, "partial_json"), &call.args.len);
 		return sink->call(sink->user, &call);
 	}
 	}
@@ -869,12 +856,12 @@ ai_generate_call (struct ai_sink const *sink,
 		return 0;
 	struct json_object *args = jb_get(fc, "args");
 	struct ai_call call = { .index = reader->calls++ };
-	call.id = ai_text_of(jb_get(fc, "id"), &call.id_len);
-	call.name = ai_text_of(jb_get(fc, "name"), &call.name_len);
-	call.args = args ? json_object_to_json_string_length(args, JB_WIRE,
-	                                                     &call.args_len)
-	                 : nullptr;
-	return args && !call.args ? ENOMEM : sink->call(sink->user, &call);
+	call.id.data = jb_str(jb_get(fc, "id"), &call.id.len);
+	call.name.data = jb_str(jb_get(fc, "name"), &call.name.len);
+	call.args.data = args ? json_object_to_json_string_length(args, JB_WIRE,
+	                                                          &call.args.len)
+	                      : nullptr;
+	return args && !call.args.data ? ENOMEM : sink->call(sink->user, &call);
 }
 
 /* End the text part that @p reader has open, then give @p sink's replay
@@ -978,7 +965,7 @@ ai_interactions_text (struct ai_sink const *sink,
                       struct json_object   *text)
 {
 	size_t len;
-	char const *str = ai_text_of(text, &len);
+	char const *str = jb_str(text, &len);
 	int e = str && sink->text ? sink->text(sink->user, str, len) : 0;
 	if (e || !str)
 		return e;
@@ -1154,8 +1141,8 @@ ai_interactions_delta (struct ai_sink const *sink,
 		               : 0;
 	case ARGUMENTS: {
 		struct ai_call call = { .index = at };
-		call.args = ai_text_of(jb_get(delta, "arguments"), &call.args_len);
-		if (!sink->call || !call.args)
+		call.args.data = jb_str(jb_get(delta, "arguments"), &call.args.len);
+		if (!sink->call || !call.args.data)
 			return 0;
 		int e = reader->calls == at + 1 ? 0 : ai_interactions_close(sink, reader);
 		reader->calls = at + 1;
@@ -1291,7 +1278,7 @@ ai_event (enum ai_api            api,
 struct ai_format const *
 ai_format (enum ai_api api)
 {
-#define B(s) { s, sizeof s - 1 }
+#define B(s) CSTR_VIEW_INIT(s)
 	static struct ai_format const formats[] = {
 		[AI_CHAT] = {
 			.tools        = B("["),

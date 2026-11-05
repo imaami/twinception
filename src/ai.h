@@ -8,6 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cstr_view.h"
+
 struct dstr;
 struct json_object;
 
@@ -127,45 +129,43 @@ struct ai_event {
  */
 static constexpr uint32_t AI_CALL_NEXT = UINT32_MAX;
 
-/** What an event says of a tool call that the model makes: of call @p index
- *  of its answer, or AI_CALL_NEXT, the parts it gives, each nullptr if it
- *  gives none.
+/** The parts of a tool call that the model makes. A streamed event
+ *  contains some of them; a part that the event does not contain is an
+ *  empty view with data nullptr. index is the number of the call in the
+ *  answer, or AI_CALL_NEXT.
  */
 struct ai_call {
-	char const *id;
-	char const *name;
-	char const *extra;      /**< JSON text that the call carries back as it
-	                             came, which the API's turns place (struct
-	                             ai_format): Gemini's thought signature, in
-	                             chat completions its extra_content, in
-	                             Gemini's Interactions its signature */
-	char const *args;       /**< a piece of its arguments' JSON text */
-	size_t      id_len;
-	size_t      name_len;
-	size_t      extra_len;
-	size_t      args_len;
-	uint32_t    index;
+	struct cstr_view id;
+	struct cstr_view name;
+	struct cstr_view extra;  /**< JSON text that askai sends back unchanged
+	                              in the next turn (struct ai_format):
+	                              Gemini's thought signature, extra_content
+	                              in chat completions, the signature in
+	                              Gemini's Interactions */
+	struct cstr_view args;   /**< a piece of the JSON text of the arguments */
+	uint32_t         index;
 };
 
-/** Where the pieces of a streamed answer go: its text, and, unless nullptr,
- *  its thinking's text, its tool calls and its replay: the JSON text of
- *  what its turn gives back as it came (struct ai_format), in pieces, each
- *  of its items after a comma. Each returns 0, or an error, which ends the
- *  reading of the event.
+/** Receives a piece of a streamed answer, @p len bytes at @p text. */
+typedef int ai_text_fn (void       *user,
+                        char const *text,
+                        size_t      len);
+
+/** The callbacks that receive the pieces of a streamed answer. text
+ *  receives the text of the answer. thought, call and replay may be
+ *  nullptr. thought receives the text of the model's thinking, and call
+ *  receives the parts of its tool calls. replay receives the JSON text
+ *  that askai sends back unchanged with the turn (struct ai_format), in
+ *  pieces, with a comma before each item. Each callback returns 0, or an
+ *  error number, which ends the reading of the event.
  */
 struct ai_sink {
-	int  (*text)    (void       *user,
-	                 char const *text,
-	                 size_t      len);
-	int  (*thought) (void       *user,
-	                 char const *text,
-	                 size_t      len);
-	int  (*call)    (void                 *user,
-	                 struct ai_call const *call);
-	int  (*replay)  (void       *user,
-	                 char const *json,
-	                 size_t      len);
-	void  *user;
+	ai_text_fn *text;
+	ai_text_fn *thought;
+	int       (*call) (void                 *user,
+	                   struct ai_call const *call);
+	ai_text_fn *replay;
+	void       *user;
 };
 
 /** What the reading of a streamed answer keeps from one event to the next:
@@ -262,38 +262,36 @@ enum ai_format_flag {
  * prompt_end.
  */
 struct ai_format {
-	struct ai_bytes {
-		char const *ptr;
-		size_t      len;
-	}               tools,
-	                tools_end,
-	                turn,
-	                text,
-	                thought,
-	                calls,
-	                call,
-	                call_next,
-	                name,
-	                args,
-	                args_end,
-	                extra,
-	                call_end,
-	                turn_end,
-	                answer_end,
-	                results,
-	                result_sep,
-	                result,
-	                result_id,
-	                output,
-	                result_end,
-	                results_end,
-	                file,
-	                file_end,
-	                user,
-	                prompt_end,
-	                end;
-	char const     *conversation;  /**< the body's member it is in */
-	uint64_t        flags;         /**< enum ai_format_flag */
+	struct cstr_view tools,
+	                 tools_end,
+	                 turn,
+	                 text,
+	                 thought,
+	                 calls,
+	                 call,
+	                 call_next,
+	                 name,
+	                 args,
+	                 args_end,
+	                 extra,
+	                 call_end,
+	                 turn_end,
+	                 answer_end,
+	                 results,
+	                 result_sep,
+	                 result,
+	                 result_id,
+	                 output,
+	                 result_end,
+	                 results_end,
+	                 file,
+	                 file_end,
+	                 user,
+	                 prompt_end,
+	                 end;
+	char const      *conversation;  /**< the name of the body member that
+	                                     contains the conversation */
+	uint64_t         flags;         /**< enum ai_format_flag */
 };
 
 /**

@@ -1704,10 +1704,10 @@ home_put_call (void                 *user,
 		k = c.index == call->index ? n : k;
 		bytes += s.len;
 	}
-	size_t id = call->id_len;
-	size_t name = call->name_len;
-	size_t extra = call->extra_len;
-	size_t args = call->args_len;
+	size_t id = call->id.len;
+	size_t name = call->name.len;
+	size_t extra = call->extra.len;
+	size_t args = call->args.len;
 	uint32_t index = call->index;
 	/* A piece without an index continues the last call if there is a
 	 * call and the piece has no id or the same id as the last call. Then
@@ -1717,7 +1717,7 @@ home_put_call (void                 *user,
 	if (index == AI_CALL_NEXT) {
 		bool same = n && !(id && (id != c.id ||
 		                          memcmp(buf_peek(&job->calls[n - 1]).ptr + sizeof c,
-		                                 call->id, id)));
+		                                 call->id.data, id)));
 		index = n;
 		if (same) {
 			k = n - 1;
@@ -1731,13 +1731,13 @@ home_put_call (void                 *user,
 		unsigned char const *had = buf_peek(&job->calls[k]).ptr;
 		memcpy(&c, had, sizeof c);
 		had += sizeof c;
-		if (id && id == c.id && !memcmp(had, call->id, id))
+		if (id && id == c.id && !memcmp(had, call->id.data, id))
 			id = 0;
 		had += c.id;
-		if (name && name == c.name && !memcmp(had, call->name, name))
+		if (name && name == c.name && !memcmp(had, call->name.data, name))
 			name = 0;
 		had += c.name;
-		if (extra && extra == c.extra && !memcmp(had, call->extra, extra))
+		if (extra && extra == c.extra && !memcmp(had, call->extra.data, extra))
 			extra = 0;
 	} else if (n == JOB_CALLS) {
 		return EPROTO;
@@ -1752,8 +1752,8 @@ home_put_call (void                 *user,
 	bool later = c.extra || c.args;
 	if ((id && (c.name || later)) || ((name || extra) && later))
 		return EPROTO;
-	if (jb_utf8(call->id, id) < id || jb_utf8(call->name, name) < name ||
-	    jb_utf8(call->extra, extra) < extra || jb_utf8(call->args, args) < args)
+	if (jb_utf8(call->id.data, id) < id || jb_utf8(call->name.data, name) < name ||
+	    jb_utf8(call->extra.data, extra) < extra || jb_utf8(call->args.data, args) < args)
 		return EILSEQ;
 	size_t len = head + id + name + extra + args;
 	if (!len)
@@ -1770,13 +1770,13 @@ home_put_call (void                 *user,
 	 * end of the buffer. */
 	unsigned char *p = s.ptr + head;
 	if (id)
-		memcpy(p, call->id, id);
+		memcpy(p, call->id.data, id);
 	if (name)
-		memcpy(p + id, call->name, name);
+		memcpy(p + id, call->name.data, name);
 	if (extra)
-		memcpy(p + id + name, call->extra, extra);
+		memcpy(p + id + name, call->extra.data, extra);
 	if (args)
-		memcpy(p + id + name + extra, call->args, args);
+		memcpy(p + id + name + extra, call->args.data, args);
 	c.id += (uint32_t)id;
 	c.name += (uint32_t)name;
 	c.extra += (uint32_t)extra;

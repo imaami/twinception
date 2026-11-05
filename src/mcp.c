@@ -756,7 +756,7 @@ struct mcp_piece {
 #define FRAG(s) ((struct mcp_piece){ s, sizeof s - 1, false })
 #define TEXT(s) ((struct mcp_piece){ s, sizeof s - 1, true })
 #define DSTR(d) ((struct mcp_piece){ dstr_get(d), dstr_len(d), false })
-#define BYTES(b) ((struct mcp_piece){ (b).ptr, (b).len, false })
+#define BYTES(b) ((struct mcp_piece){ (b).data, (b).len, false })
 #define ESC(p, n) ((struct mcp_piece){ (char const *)(p), (n), true })
 #define RAW(p, n) ((struct mcp_piece){ (char const *)(p), (n), false })
 #define SPAN(s) ((struct span){ (unsigned char *)(uintptr_t)(s), sizeof s - 1 })
@@ -3629,7 +3629,7 @@ mcp_lent_text (struct json_object *obj,
 	struct mcp_req const *req = json_object_get_userdata(obj);
 	struct mcp_static const *st = req->mcp->st;
 	struct ai_format const *f = ai_format(st->ep->api);
-	int e = printbuf_memappend(pb, f->tools.ptr, (int)f->tools.len);
+	int e = printbuf_memappend(pb, f->tools.data, (int)f->tools.len);
 	size_t skip = 1;
 	for (uint32_t id = 0; e >= 0 && id < st->n_offers; ++id) {
 		struct dstr const *def = &st->offers[id].lent;
@@ -3639,7 +3639,7 @@ mcp_lent_text (struct json_object *obj,
 		skip = 0;
 	}
 	if (e >= 0)
-		e = printbuf_memappend(pb, f->tools_end.ptr, (int)f->tools_end.len);
+		e = printbuf_memappend(pb, f->tools_end.data, (int)f->tools_end.len);
 	return e < 0 ? -1 : 0;
 }
 
@@ -4253,7 +4253,7 @@ mcp_req_turn_args (struct mcp_req *req)
 		}
 	}
 	/* The turn goes after the request's messages, which it ends no more. */
-	struct ai_bytes end = ai_format(req->mcp->st->ep->api)->end;
+	struct cstr_view end = ai_format(req->mcp->st->ep->api)->end;
 	buf_cut(&req->upload, buf_peek(&req->upload).len - end.len, end.len);
 	req->part = 0;
 	req->replayed = 0;
@@ -6597,9 +6597,9 @@ mcp_req_attach (struct mcp_req *req,
 	if (e)
 		return ENOMEM;
 	char *p = (char *)to.ptr;
-	memcpy(p, f->file.ptr, f->file.len);
+	memcpy(p, f->file.data, f->file.len);
 	size_t n = f->file.len + jb_escape(p + f->file.len, uri, len);
-	memcpy(p + n, f->file_end.ptr, f->file_end.len);
+	memcpy(p + n, f->file_end.data, f->file_end.len);
 	buf_commit(&req->attached, n + f->file_end.len);
 	req->filed += bytes;
 	req->filing = true;
