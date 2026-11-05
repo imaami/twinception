@@ -42,19 +42,20 @@ extern void
 uploads_destroy (struct uploads **p_uploads);
 
 /**
- * Copies into @p uri the URI of the file of @p owner for the note whose
- * object id is @p id, and the size of the file in bytes into @p *bytes, if
- * the table contains that file and the file expires more than
- * UPLOADS_MARGIN seconds after @p now, in seconds since the epoch. Returns
- * the length of the URI, or 0 if there is no such file or an argument is
- * not valid.
+ * Copies the URI of the file of @p owner for the note whose object id is
+ * @p id to @p uri, stores its length in @p *len, and stores the size of
+ * the file in bytes in @p *bytes. The file must expire more than
+ * UPLOADS_MARGIN seconds after @p now, in seconds since the epoch.
+ * Returns 0, ENOENT if the table does not contain such a file, or EINVAL
+ * if a pointer is nullptr or id.data is nullptr while id.len is not 0.
  */
-extern size_t
+extern int
 uploads_find (struct uploads   *uploads,
               uint64_t          owner,
               struct cstr_view  id,
               int64_t           now,
               char              uri[UPLOADS_URI],
+              size_t           *len,
               size_t           *bytes);
 
 /**

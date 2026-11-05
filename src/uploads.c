@@ -67,26 +67,30 @@ uploads_lookup (struct uploads   *u,
 	return nullptr;
 }
 
-size_t
+int
 uploads_find (struct uploads   *uploads,
               uint64_t          owner,
               struct cstr_view  id,
               int64_t           now,
               char              uri[UPLOADS_URI],
+              size_t           *len,
               size_t           *bytes)
 {
-	if (!uploads || !id.data || !id.len || id.len > UPLOADS_ID || !uri || !bytes)
-		return 0;
-	size_t len = 0;
+	if (!uploads || (!id.data && id.len) || !uri || !len || !bytes)
+		return EINVAL;
+	if (!id.len || id.len > UPLOADS_ID)
+		return ENOENT;
+	int e = ENOENT;
 	pthread_mutex_lock(&uploads->lock);
 	struct uploads_file const *f = uploads_lookup(uploads, owner, id);
 	if (f && f->expires - UPLOADS_MARGIN > now) {
-		len = f->uri_len;
-		memcpy(uri, f->uri, len);
+		memcpy(uri, f->uri, f->uri_len);
+		*len = f->uri_len;
 		*bytes = f->bytes;
+		e = 0;
 	}
 	pthread_mutex_unlock(&uploads->lock);
-	return len;
+	return e;
 }
 
 int

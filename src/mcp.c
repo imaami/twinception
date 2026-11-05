@@ -6675,10 +6675,12 @@ mcp_slot_attach (struct mcp_slot  *slot,
 		return e ? e : EINPROGRESS;
 	}
 	char uri[UPLOADS_URI];
+	size_t uri_len = 0;
 	size_t file_bytes = 0;
-	size_t uri_len = uploads_find(st->uploads, mcp_req_owner(req), id, clk_realtime().tv_sec,
-	                              uri, &file_bytes);
-	int e = uri_len ? mcp_req_fits(req, file_bytes, out) : ENOENT;
+	int e = uploads_find(st->uploads, mcp_req_owner(req), id, clk_realtime().tv_sec, uri,
+	                     &uri_len, &file_bytes);
+	if (!e)
+		e = mcp_req_fits(req, file_bytes, out);
 	if (e)
 		return e;
 	LOG(LOG_VERBOSE, "upstream file %.*s attached again", (int)uri_len, uri);
