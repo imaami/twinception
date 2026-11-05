@@ -575,14 +575,11 @@ static int cli_client_names_add(struct cli_client_names *names, struct cstr_view
 {
 	if (names->count == 65536)
 		return E2BIG;
-	if (names->count == names->capacity) {
-		size_t capacity = names->capacity ? names->capacity * 2 : 256;
-		void *data = realloc(names->data, capacity * sizeof *names->data);
-		if (!data)
-			return ENOMEM;
-		names->data = data;
-		names->capacity = capacity;
-	}
+	struct cstr_view *data = util_room(names->data, &names->capacity, names->count + 1,
+	                                   sizeof *data);
+	if (!data)
+		return ENOMEM;
+	names->data = data;
 	names->data[names->count++] = text;
 	return 0;
 }

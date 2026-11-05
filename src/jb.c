@@ -264,16 +264,13 @@ jb_reaper_take (struct jb_reaper   *reaper,
 		json_object_put(val);
 		return;
 	}
-	if (reaper->n == reaper->cap) {
-		size_t cap = reaper->cap ? 2 * reaper->cap : 16;
-		struct json_object **stack = realloc(reaper->stack, cap * sizeof *stack);
-		if (!stack) {
-			json_object_put(val);
-			return;
-		}
-		reaper->stack = stack;
-		reaper->cap = cap;
+	struct json_object **stack = util_room(reaper->stack, &reaper->cap, reaper->n + 1,
+	                                       sizeof *stack);
+	if (!stack) {
+		json_object_put(val);
+		return;
 	}
+	reaper->stack = stack;
 	reaper->stack[reaper->n++] = val;
 }
 

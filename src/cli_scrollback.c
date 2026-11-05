@@ -9,6 +9,7 @@
 #include "cli_render.h"
 #include "cli_scrollback.h"
 #include "compat.h"
+#include "util.h"
 
 enum {
 	CLI_SCROLLBACK_BYTES      = 16 * 1024 * 1024,
@@ -203,13 +204,12 @@ cli_scrollback_append_style (struct cli_scrollback *scrollback,
 		}
 		enum cli_style previous = line->style_count ? line->styles[line->style_count - 1].id : CLI_STYLE_RESET;
 		bool change = length && style != previous;
-		if (change && line->style_count == line->style_capacity) {
-			size_t capacity = line->style_capacity ? line->style_capacity * 2 : 4;
-			struct cli_scrollback_style *styles = realloc(line->styles, capacity * sizeof *styles);
+		if (change) {
+			struct cli_scrollback_style *styles = util_room(line->styles, &line->style_capacity,
+			                                                line->style_count + 1, sizeof *styles);
 			if (!styles)
 				return ENOMEM;
 			line->styles = styles;
-			line->style_capacity = capacity;
 		}
 		if (!dstr_cat_n(&line->text, text.data, length))
 			return ENOMEM;
@@ -283,14 +283,11 @@ cli_scrollback_line_rows (struct cli_scrollback_line *line,
 		if (wrap) {
 			if (!(line->rows % CLI_SCROLLBACK_CHECKPOINT)) {
 				size_t checkpoint = line->rows / CLI_SCROLLBACK_CHECKPOINT - 1;
-				if (checkpoint == line->capacity) {
-					size_t capacity = line->capacity ? line->capacity * 2 : 16;
-					size_t *checkpoints = realloc(line->checkpoints, capacity * sizeof *checkpoints);
-					if (!checkpoints)
-						return ENOMEM;
-					line->checkpoints = checkpoints;
-					line->capacity = capacity;
-				}
+				size_t *checkpoints = util_room(line->checkpoints, &line->capacity,
+				                                checkpoint + 1, sizeof *checkpoints);
+				if (!checkpoints)
+					return ENOMEM;
+				line->checkpoints = checkpoints;
 				line->checkpoints[checkpoint] = line->scanned;
 			}
 			++line->rows;
