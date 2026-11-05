@@ -28,6 +28,7 @@
 #include "notice.h"
 #include "plugin.h"
 #include "schema.h"
+#include "shelf.h"
 #include "uploads.h"
 #include "util.h"
 
@@ -117,34 +118,11 @@ static struct {
 struct notes_tool_loop {
 	struct list              children;  /* the git children of the notes
 	                                       calls on the loop */
+	struct shelf             spare;     /* finished calls, kept for reuse
+	                                       with the storage of their
+	                                       output */
 	struct notes_tool const *tool;      /* the service */
 };
-
-void *
-notes_tool_loop_create (void        *service,
-                        struct loop *loop,
-                        int         *e)
-{
-	(void)loop;
-	struct notes_tool_loop *nl = malloc(sizeof *nl);
-	*e = nl ? 0 : ENOMEM;
-	if (!nl)
-		return nullptr;
-	*nl = (struct notes_tool_loop){ .tool = service };
-	list_init(&nl->children);
-	return nl;
-}
-
-void
-notes_tool_loop_destroy (void **p_part)
-{
-	struct notes_tool_loop *nl = *p_part;
-	if (!nl)
-		return;
-	*p_part = nullptr;
-	child_destroy_all(&nl->children);
-	free(nl);
-}
 
 /* The state of one notes call. It is the own word of the call's slot. An
  * ask call has one in its own slot only while git reads the notes for its
@@ -158,6 +136,7 @@ struct notes_tool_call {
 	                                      the slot. */
 	struct notes_part       part;      /* the offsets of the name and the
 	                                      text in file */
+	struct list             spare;     /* the call's node on loop->spare */
 	struct child           *child;     /* the call's git, until a step has
 	                                      read its output */
 	struct notes_revision  *revision;  /* the revisions of a read, diff,
@@ -196,41 +175,84 @@ struct notes_tool_call {
 	};
 };
 
-/* Allocates a notes call that uses the part @p loop and writes to @p text,
- * or to its own output if @p text is nullptr. Returns the call, or nullptr
- * with ENOMEM in @p *e.
+void *
+notes_tool_loop_create (void        *service,
+                        struct loop *loop,
+                        int         *e)
+{
+	(void)loop;
+	struct notes_tool_loop *nl = malloc(sizeof *nl);
+	*e = nl ? 0 : ENOMEM;
+	if (!nl)
+		return nullptr;
+	*nl = (struct notes_tool_loop){ .tool = service };
+	list_init(&nl->children);
+	list_init(&nl->spare.list);
+	return nl;
+}
+
+void
+notes_tool_loop_destroy (void **p_part)
+{
+	struct notes_tool_loop *nl = *p_part;
+	if (!nl)
+		return;
+	*p_part = nullptr;
+	child_destroy_all(&nl->children);
+	for (struct list *spare; (spare = shelf_take(&nl->spare)); ) {
+		struct notes_tool_call *call = container_of(spare, struct notes_tool_call, spare);
+		dstr_cleanup(&call->out);
+		free(call);
+	}
+	free(nl);
+}
+
+/* Returns a notes call that uses the part @p loop and writes to @p text,
+ * or to its own output if @p text is nullptr. The call is the last one
+ * put on loop->spare, or a new one. Returns nullptr with ENOMEM in @p *e
+ * if a new call does not fit in memory.
  */
 static struct notes_tool_call *
-notes_tool_call_create (struct notes_tool_loop *loop,
-                        struct dstr            *text,
-                        int                    *e)
+notes_tool_loop_take (struct notes_tool_loop *loop,
+                      struct dstr            *text,
+                      int                    *e)
 {
-	struct notes_tool_call *call = malloc(sizeof *call);
+	struct list *spare = shelf_take(&loop->spare);
+	struct notes_tool_call *call = spare ? container_of(spare, struct notes_tool_call, spare)
+	                                     : malloc(sizeof *call);
 	*e = call ? 0 : ENOMEM;
 	if (call)
-		*call = (struct notes_tool_call){ .out = DSTR_INIT, .loop = loop,
+		*call = (struct notes_tool_call){ .out = dstr_move(spare ? &call->out : nullptr),
+		                                  .loop = loop,
 		                                  .text = text ? text : &call->out };
 	return call;
 }
 
-/* Frees the notes call at @p *p_call and sets @p *p_call to nullptr. A git
- * that writes notes runs to its end, because a kill could leave a lock
- * file behind. Any other git is killed.
+/* Ends the notes call at @p *p_call, which @p loop gave out, and sets
+ * @p *p_call to nullptr. A git that writes notes runs to its end, because
+ * a kill could leave a lock file behind. Any other git is killed. Without
+ * memory pressure, the function then puts the call on loop->spare for
+ * reuse. dstr_clear() keeps the storage of the output. Under memory
+ * pressure, the function frees the call and the output.
  */
 static void
-notes_tool_call_destroy (struct notes_tool_call **p_call)
+notes_tool_loop_put (struct notes_tool_loop  *loop,
+                     struct notes_tool_call **p_call)
 {
 	struct notes_tool_call *call = *p_call;
-	if (!call)
-		return;
 	if (notes_tool_writes(notes_tool_fetch_step(call->fetch)->cmd))
 		child_release(&call->child);
 	else
 		child_destroy(&call->child);
 	notes_revision_destroy(&call->revision);
 	buf_fini(&call->file);
-	dstr_cleanup(&call->out);
-	free(call);
+	if (atomic_load_explicit(&buf_pressure, memory_order_relaxed) == BUF_EASY) {
+		(void)dstr_clear(&call->out);
+		shelf_put(&loop->spare, &call->spare);
+	} else {
+		dstr_cleanup(&call->out);
+		free(call);
+	}
 	*p_call = nullptr;
 }
 
@@ -250,7 +272,8 @@ void
 notes_tool_drop (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	notes_tool_call_destroy(&call);
+	if (call)
+		notes_tool_loop_put(call->loop, &call);
 	*mcp_slot_own(slot) = nullptr;
 }
 
@@ -263,10 +286,10 @@ notes_tool_back (struct child *c)
 	mcp_slot_ready(c->owner);
 }
 
-/* Frees the call in @p slot, the ask call's own slot, when git has read
- * the notes for the prompt. If @p e is not 0, mcp_slot_fail() ends the ask
- * call with @p e. Otherwise the function calls call->then, which goes on
- * with the ask call.
+/* Releases the notes call in @p slot, the ask call's own slot, after git
+ * has read the notes for the prompt. If @p e is not 0, mcp_slot_fail()
+ * ends the ask call with @p e. Otherwise the function calls call->then,
+ * which goes on with the ask call.
  */
 static void
 notes_tool_then (struct mcp_slot *slot,
@@ -383,7 +406,7 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
                         tool_step_fn           *then)
 {
 	int e = 0;
-	struct notes_tool_call *call = notes_tool_call_create(loop, prompt, &e);
+	struct notes_tool_call *call = notes_tool_loop_take(loop, prompt, &e);
 	*mcp_slot_own(slot) = call;
 	if (!call) {
 		mcp_slot_fail(slot, e);
@@ -1570,7 +1593,7 @@ notes_tool_start (struct mcp_slot    *slot,
                   struct json_object *args)
 {
 	int e = 0;
-	struct notes_tool_call *call = notes_tool_call_create(mcp_slot_part(slot), nullptr, &e);
+	struct notes_tool_call *call = notes_tool_loop_take(mcp_slot_part(slot), nullptr, &e);
 	*mcp_slot_own(slot) = call;
 	if (!call) {
 		mcp_slot_fail(slot, e);

@@ -49,8 +49,8 @@ extern struct plugin const notes_tool_plugin;
 extern mcp_part_create_fn notes_tool_loop_create;
 
 /** Frees the children of the notes calls on the loop as it stops, and
- *  kills any that are still alive. Then frees the part at @p *p_part and
- *  sets @p *p_part to nullptr.
+ *  kills any that are still alive. Then frees the spare calls and the part
+ *  at @p *p_part, and sets @p *p_part to nullptr.
  */
 extern mcp_part_destroy_fn notes_tool_loop_destroy;
 
@@ -65,8 +65,9 @@ extern tool_definition_fn notes_tool_upstream_definition;
  */
 extern tool_step_fn notes_tool_step;
 
-/** Frees the call in @p slot. This is the drop() of the notes kind and of
- *  the ask kind.
+/** Releases the notes call in @p slot. Without memory pressure, the call
+ *  object stays on its loop for reuse. This is the drop() of the notes
+ *  kind and of the ask kind.
  */
 extern tool_drop_fn notes_tool_drop;
 
