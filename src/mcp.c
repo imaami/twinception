@@ -3831,7 +3831,7 @@ mcp_req_ask (struct mcp_req     *req,
 		: !thread ? (struct mcp_piece){}
 		: !notes ? TEXT("No notes are kept for you here, so there is no thread to "
 		                "go on with.")
-		: !id || !notes_is_id(id, len)
+		: !notes_is_id((struct cstr_view){ id, len })
 		? TEXT("The thread argument must be a thread's id, as an earlier answer "
 		       "gave it: 32 hexadecimal digits.")
 		: (struct mcp_piece){};
@@ -6406,7 +6406,7 @@ mcp_recover_back (struct loop           *loop,
 	req->filed = jb_uint(jb_get(local, "filed"), 0);
 	req->replay_filed = last_tool_result ? req->filed : 0;
 	struct cstr_view thread = jb_view(jb_get(state, "thread"));
-	if (thread.data && notes_is_id(thread.data, thread.len))
+	if (notes_is_id(thread))
 		memcpy(req->thread, thread.data, NOTES_ID);
 	if (st->notes_tool.notes)
 		notes_repo(st->notes_tool.notes, req->principal, NOTES_UPSTREAM, req->repo);
@@ -6450,7 +6450,7 @@ mcp_req_recover (struct mcp_req                 *req,
 		return false;
 	size_t len = 0;
 	char const *id = jb_str(jb_get(args, "job"), &len);
-	if (!id || !notes_is_id(id, len))
+	if (!notes_is_id((struct cstr_view){ id, len }))
 		return false;
 	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req), id, len);
 	if (task) {

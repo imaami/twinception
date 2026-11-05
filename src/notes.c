@@ -321,10 +321,9 @@ notes_id (char id[NOTES_ID + 1])
 }
 
 bool
-notes_is_id (char const *s,
-             size_t      len)
+notes_is_id (struct cstr_view id)
 {
-	return len == NOTES_ID && util_is_hex(s, len);
+	return id.len == NOTES_ID && util_is_hex(id.data, id.len);
 }
 
 void

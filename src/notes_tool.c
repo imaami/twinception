@@ -1623,8 +1623,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	}
 	if (call->side == NOTES_CLIENT) {
 		struct json_object *thread = jb_get(args, "thread");
-		struct cstr_view const id = jb_view(thread);
-		if (thread && !notes_is_id(id.data, id.len)) {
+		if (thread && !notes_is_id(jb_view(thread))) {
 			mcp_slot_tell(slot, CSTR_VIEW("The optional thread must be 32 hexadecimal "
 			                              "digits. It does not select the notes "
 			                              "session."), TOOL_FAILED);

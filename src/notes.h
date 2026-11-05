@@ -152,10 +152,9 @@ notes_writer (struct notes const *notes);
 extern int
 notes_id (char id[NOTES_ID + 1]);
 
-/** Returns true if the @p len bytes at @p s are the id of a thread. */
+/** Returns true if @p id is the id of a thread. */
 extern bool
-notes_is_id (char const *s,
-             size_t      len);
+notes_is_id (struct cstr_view id);
 
 /** Writes the caller's server-selected branch ref to @p repo. */
 extern void
