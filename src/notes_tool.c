@@ -329,9 +329,8 @@ notes_tool_failed (struct mcp_slot *slot,
 		return;
 	}
 	char why[96];
-	size_t n = util_format(why, sizeof why, "The notes cannot be used now: %s.",
-	                       strerror(e));
-	mcp_slot_tell(slot, (struct cstr_view){ why, n }, TOOL_FAILED);
+	mcp_slot_tell(slot, util_format_view(why, sizeof why, "The notes cannot be used now: %s.",
+	                                     strerror(e)), TOOL_FAILED);
 }
 
 /* Returns the notebook that @p call selected, or else call->repo. */
@@ -523,10 +522,10 @@ notes_tool_call_unadded (struct notes_tool_call const *call)
 			                                            "and retry."), 1);
 		LOG(LOG_WARN, "notes: %s/%s.lock is %" PRId64 " s old; remove it if no "
 		    "git process uses the repository", notes_directory(notes), repo, age);
-		char said[128];
-		struct cstr_view const text = { said, util_format(said, sizeof said, "Could not "
-		                                "write the note: its notebook has been locked "
-		                                "for %" PRId64 " s.", age) };
+		char message[128];
+		struct cstr_view const text = util_format_view(message, sizeof message, "Could not "
+		                                               "write the note: its notebook has "
+		                                               "been locked for %" PRId64 " s.", age);
 		return notes_tool_call_say(call, &text, 1);
 	}
 	struct span out = buf_peek(&c->out);
@@ -1437,9 +1436,8 @@ notes_tool_add (struct mcp_slot    *slot,
 		? CSTR_VIEW("The content argument must be a data: URI, which the client fills "
 		            "in with a file that the user gave it.")
 		: content && data.size > most
-		? (struct cstr_view){ big, util_format(big, sizeof big, "The file has more "
-		                                       "than %zu bytes, which this server "
-		                                       "takes at most in one request.", most) }
+		? util_format_view(big, sizeof big, "The file has more than %zu bytes, which "
+		                   "this server takes at most in one request.", most)
 		: !content && (!text || !len || len > NOTES_TEXT || memchr(text, '\0', len))
 		? CSTR_VIEW("The text argument must be a string of 1 byte to 4 MiB, and no NUL.")
 		: !content && !kept

@@ -17,6 +17,7 @@
 
 #include "clk.h"
 #include "compat.h"
+#include "cstr_view.h"
 
 #define ARRAY_SIZE(a) (sizeof (a) / sizeof *(a))
 
@@ -404,6 +405,23 @@ util_format (char       *buf,
 	size_t len = util_vformat(buf, size, fmt, ap);
 	va_end(ap);
 	return len;
+}
+
+/** Formats text into the @p size bytes at @p buf as util_format() does.
+ *  Returns a view of the text in @p buf.
+ */
+[[gnu::format(printf, 3, 4)]]
+static inline struct cstr_view
+util_format_view (char       *buf,
+                  size_t      size,
+                  char const *fmt,
+                  ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	size_t len = util_vformat(buf, size, fmt, ap);
+	va_end(ap);
+	return (struct cstr_view){ buf, len };
 }
 
 #endif /* TWINCEPTION_SRC_UTIL_H_ */

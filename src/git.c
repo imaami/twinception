@@ -1180,9 +1180,6 @@ git_line_hint (char const *path)
 	return false;
 }
 
-/* The text that util_format() writes into the array @p a. */
-#define FORMAT(a, ...) ((struct cstr_view){ a, util_format(a, sizeof a, __VA_ARGS__) })
-
 /* Destroy @p call after git has ended and its output is copied. Then
  * write the note, if any, after the output and finish the call. The note
  * says how git failed, that the output was cut or that there was no
@@ -1200,13 +1197,13 @@ git_ended (struct mcp_slot *slot,
 	bool failed = true;
 	if (c->late) {
 		struct git_loop const *gl = mcp_slot_part(slot);
-		note = FORMAT(buf, "[git took longer than %.0f s, and was stopped.]",
-		              (double)gl->git->timeout / 1e9);
+		note = util_format_view(buf, sizeof buf, "[git took longer than %.0f s, and was "
+		                        "stopped.]", (double)gl->git->timeout / 1e9);
 	} else if (c->cut) {
 		note = CSTR_VIEW("[The output goes on past the 4 MiB shown.]");
 		failed = c->code == CLD_EXITED && c->status;
 	} else if (c->code != CLD_EXITED) {
-		note = FORMAT(buf, "[git was killed by signal %d.]", c->status);
+		note = util_format_view(buf, sizeof buf, "[git was killed by signal %d.]", c->status);
 	} else if (c->status == 1 && (commands[call->command].takes & PATTERN)) {
 		note = CSTR_VIEW("[No matches.]");
 		failed = false;
@@ -1219,13 +1216,13 @@ git_ended (struct mcp_slot *slot,
 		static_assert(sizeof fmt - 4 + 64 + sizeof hint - 1 <= sizeof buf,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
-		note = FORMAT(buf, fmt, call->roots[rev->root].name,
-		              git_line_hint(rev->path.data + 1) ? hint : "");
+		note = util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].name,
+		                        git_line_hint(rev->path.data + 1) ? hint : "");
 	} else if (c->status) {
 		char const *fmt = commands[call->command].takes & OBJECT
 			? "[The committed object could not be read (git exited with status %d).]"
 			: "[git exited with status %d.]";
-		note = FORMAT(buf, fmt, c->status);
+		note = util_format_view(buf, sizeof buf, fmt, c->status);
 	} else {
 		note = out.len ? (struct cstr_view){} : CSTR_VIEW("[No output.]");
 		failed = false;
@@ -1388,13 +1385,13 @@ git_read_head (struct git_read const *read,
 		CSTR_VIEW("[Repository "), repo->name, CSTR_VIEW(", file "),
 		{ read->rev + read->oid_len + 1, read->rev_len - read->oid_len - 1 },
 		CSTR_VIEW(" at commit "), { read->rev, read->oid_len },
-		read->total ? FORMAT(lines, ": lines %zu to %zu of %s%zu.]\n", read->line,
-		                     read->last, cut ? "at least " : "", read->total)
+		read->total ? util_format_view(lines, sizeof lines, ": lines %zu to %zu of %s%zu.]\n",
+		                               read->line, read->last, cut ? "at least " : "",
+		                               read->total)
 		            : CSTR_VIEW(": the file is empty.]"),
 	};
 	return git_write(slot, p, ARRAY_SIZE(p));
 }
-#undef FORMAT
 
 /* Write the lines of the file @p blob from read->at on to @p slot, each
  * after its number and a tab, as far as the LOOP_COPY room of the step
@@ -1688,9 +1685,10 @@ git_start (struct mcp_slot    *slot,
 		return;
 	}
 	if (e) {
-		size_t n = util_format(why, sizeof why, "Cannot run git: %s.", strerror(e));
+		struct cstr_view const text =
+			util_format_view(why, sizeof why, "Cannot run git: %s.", strerror(e));
 		LOG(LOG_WARN, "%s", why);
-		mcp_slot_tell(slot, (struct cstr_view){ why, n }, TOOL_FAILED);
+		mcp_slot_tell(slot, text, TOOL_FAILED);
 		return;
 	}
 	*mcp_slot_own(slot) = call;
