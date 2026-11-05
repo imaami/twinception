@@ -1167,26 +1167,27 @@ godbolt_list_parse (struct godbolt *call,
                     int           (*fn) (struct godbolt     *call,
                                          struct json_object *element))
 {
-	char const *const body = call->resp.data;
-	size_t const len = call->resp.len;
+	struct cstr_view const body = call->resp;
 	uint64_t const room = godbolt_parse_room(call);
 	uint64_t used = 0;
 	int e = 0;
-	while (!e && call->list < GODBOLT_LIST_END && used < room && call->off < len) {
+	while (!e && call->list < GODBOLT_LIST_END && used < room && call->off < body.len) {
 		if (call->list != GODBOLT_LIST_VALUE) {
-			call->list = godbolt_array_next(call->list, body[call->off]);
+			call->list = godbolt_array_next(call->list, body.data[call->off]);
 			call->start = call->off;
-			call->off += call->list != GODBOLT_LIST_VALUE;
-			used += call->list != GODBOLT_LIST_VALUE;
+			/* A byte that begins an element is parsed with the element. */
+			size_t const consumed = call->list != GODBOLT_LIST_VALUE;
+			call->off += consumed;
+			used += consumed;
 			if (call->list == GODBOLT_LIST_BAD)
 				godbolt_why(call, "the text is not a JSON array");
 			continue;
 		}
-		size_t n = len - call->off;
-		n = n < room - used ? n : (size_t)(room - used);
-		struct json_object *v = json_tokener_parse_ex(call->tok, body + call->off, (int)n);
+		struct cstr_view const part = cstr_view_slice(body, call->off, room - used);
+		struct json_object *v = json_tokener_parse_ex(call->tok, part.data, (int)part.len);
 		enum json_tokener_error const err = json_tokener_get_error(call->tok);
-		size_t const took = err == json_tokener_success ? json_tokener_get_parse_end(call->tok) : n;
+		size_t const took = err == json_tokener_success ? json_tokener_get_parse_end(call->tok)
+		                                                : part.len;
 		call->off += took;
 		used += took;
 		if (err != json_tokener_success && err != json_tokener_continue) {
@@ -1207,7 +1208,7 @@ godbolt_list_parse (struct godbolt *call,
 		json_object_put(v);
 	}
 	godbolt_parsed(call, used);
-	if (!e && call->list < GODBOLT_LIST_END && call->off == len) {
+	if (!e && call->list < GODBOLT_LIST_END && call->off == body.len) {
 		godbolt_why(call, "the text ends before the end of the JSON array");
 		call->list = GODBOLT_LIST_BAD;
 	}
@@ -2138,27 +2139,26 @@ static enum godbolt_go
 godbolt_parse (struct godbolt *call)
 {
 	struct cstr_view const body = call->resp;
-	uint64_t const room = godbolt_parse_room(call);
-	size_t n = body.len - call->off;
-	n = n < room ? n : (size_t)room;
-	if (!n && call->off < body.len)
+	struct cstr_view const part = cstr_view_slice(body, call->off, godbolt_parse_room(call));
+	if (!part.len && call->off < body.len)
 		return GODBOLT_GO;
-	struct json_object *doc = n ? json_tokener_parse_ex(call->tok, body.data + call->off, (int)n)
-	                            : nullptr;
-	enum json_tokener_error const err = n ? json_tokener_get_error(call->tok)
-	                                      : json_tokener_continue;
-	godbolt_parsed(call, n);
-	call->off += n;
-	if (err == json_tokener_continue && call->off < body.len)
-		return GODBOLT_GO;
-	if (err == json_tokener_continue)
-		godbolt_why(call, "the response is not valid: the JSON text ends early");
-	else if (err != json_tokener_success)
+	/* The part is empty here only if the body is empty. json-c reports
+	 * json_tokener_continue for an empty part. */
+	struct json_object *doc = json_tokener_parse_ex(call->tok, part.data, (int)part.len);
+	enum json_tokener_error const err = json_tokener_get_error(call->tok);
+	godbolt_parsed(call, part.len);
+	call->off += part.len;
+	if (err == json_tokener_success) {
+		call->doc = doc;
+		return godbolt_classify(call);
+	}
+	if (err != json_tokener_continue)
 		godbolt_why(call, "the response is not valid: %s", json_tokener_error_desc(err));
-	if (err != json_tokener_success)
-		return godbolt_record(call, GODBOLT_FAILED);
-	call->doc = doc;
-	return godbolt_classify(call);
+	else if (call->off < body.len)
+		return GODBOLT_GO;
+	else
+		godbolt_why(call, "the response is not valid: the JSON text ends early");
+	return godbolt_record(call, GODBOLT_FAILED);
 }
 
 /* Ends the record at the limit of the output, with a note. Later
