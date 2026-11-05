@@ -253,14 +253,13 @@ fail:
 	return nullptr;
 }
 
-/* Append @p val's text to @p text, if it is a string. */
+/* Append the text of @p val to @p text if @p val is a string. */
 static int
 ai_append (struct dstr        *text,
            struct json_object *val)
 {
-	char const *str = jb_text(val);
-	return str && !dstr_cat_n(text, str, (size_t)json_object_get_string_len(val))
-	       ? ENOMEM : 0;
+	struct cstr_view str = jb_view(val);
+	return str.data && !dstr_cat_n(text, str.data, str.len) ? ENOMEM : 0;
 }
 
 /* The text of chat completions' answer @p root, into @p text, and its stop
@@ -292,13 +291,15 @@ ai_responses_answer (struct json_object  *root,
                      char const         **reason)
 {
 	*reason = jb_text(jb_get(jb_get(root, "incomplete_details"), "reason"));
+	struct json_object *output = jb_get(root, "output");
 	int e = 0;
 	struct json_object *item;
-	for (size_t i = 0; !e && (item = jb_at(jb_get(root, "output"), i)); ++i) {
+	for (size_t i = 0; !e && (item = jb_at(output, i)); ++i) {
 		if (!jb_is(jb_get(item, "type"), "message"))
 			continue;
+		struct json_object *content = jb_get(item, "content");
 		struct json_object *part;
-		for (size_t j = 0; !e && (part = jb_at(jb_get(item, "content"), j)); ++j) {
+		for (size_t j = 0; !e && (part = jb_at(content, j)); ++j) {
 			bool refusal = jb_is(jb_get(part, "type"), "refusal");
 			e = ai_append(text, jb_get(part, refusal ? "refusal" : "text"));
 		}
@@ -312,9 +313,10 @@ ai_messages_answer (struct json_object  *root,
                     char const         **reason)
 {
 	*reason = jb_text(jb_get(root, "stop_reason"));
+	struct json_object *content = jb_get(root, "content");
 	int e = 0;
 	struct json_object *block;
-	for (size_t i = 0; !e && (block = jb_at(jb_get(root, "content"), i)); ++i)
+	for (size_t i = 0; !e && (block = jb_at(content, i)); ++i)
 		if (jb_is(jb_get(block, "type"), "text"))
 			e = ai_append(text, jb_get(block, "text"));
 	return e;
@@ -1658,19 +1660,17 @@ ai_uploaded (enum ai_api  api,
 	struct json_object *root = len ? jb_parse(body, len, JSON_TOKENER_STRICT, 8)
 	                               : nullptr;
 	struct json_object *file = jb_get(root, "file");
-	struct json_object *named = jb_get(file, "uri");
-	char const *at = jb_text(named);
-	size_t n = at ? (size_t)json_object_get_string_len(named) : 0;
+	struct cstr_view at = jb_view(jb_get(file, "uri"));
 	int e = 0;
-	if (status < 200 || status > 299 || !at) {
+	if (status < 200 || status > 299 || !at.data) {
 		e = ai_describe_error(why, status, root, body, len);
 		e = e ? e : EIO;
-	} else if (!n || n > strspn(at, ai_uri_bytes)) {
+	} else if (!at.len || at.len > strspn(at.data, ai_uri_bytes)) {
 		e = dstr_cat(why, "The upstream named the file with a URI that is not "
 		             "printable ASCII.") ? EIO : ENOMEM;
 	} else {
 		*expires = ai_time(jb_text(jb_get(file, "expirationTime")));
-		e = dstr_cat_n(uri, at, n) ? 0 : ENOMEM;
+		e = dstr_cat_n(uri, at.data, at.len) ? 0 : ENOMEM;
 	}
 	json_object_put(root);
 	return e;
