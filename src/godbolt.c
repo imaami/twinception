@@ -837,8 +837,28 @@ godbolt_put (struct godbolt   *call,
 	return call->e;
 }
 
+/* Formats @p fmt and @p ap into the @p size bytes at @p buf, cut at
+ * size - 1 bytes and terminated with a NUL. Returns a view of the text, or
+ * an empty view whose data is nullptr, with an empty text in @p buf, if
+ * vsnprintf() fails.
+ */
+[[gnu::format(printf, 3, 0)]]
+static struct cstr_view
+godbolt_vformat (char       *buf,
+                 size_t      size,
+                 char const *fmt,
+                 va_list     ap)
+{
+	int const n = vsnprintf(buf, size, fmt, ap);
+	if (n < 0) {
+		*buf = '\0';
+		return (struct cstr_view){};
+	}
+	return (struct cstr_view){ buf, (size_t)n < size ? (size_t)n : size - 1 };
+}
+
 /* Appends the text that @p fmt and its arguments format to the call's
- * output. The text has at most 511 bytes. Returns 0, or call->e.
+ * output. The text is cut at 511 bytes. Returns 0, or call->e.
  */
 [[gnu::format(printf, 2, 3)]]
 static int
@@ -849,17 +869,17 @@ godbolt_putf (struct godbolt *call,
 	char text[512];
 	va_list ap;
 	va_start(ap, fmt);
-	int n = vsnprintf(text, sizeof text, fmt, ap);
+	struct cstr_view const t = godbolt_vformat(text, sizeof text, fmt, ap);
 	va_end(ap);
-	if (n >= 0)
-		return godbolt_put(call, (struct cstr_view){
-			text, n < (int)sizeof text ? (size_t)n : sizeof text - 1 });
+	if (t.data)
+		return godbolt_put(call, t);
 	call->e = call->e ? call->e : EINVAL;
 	return call->e;
 }
 
 /* Stores the text that @p fmt and its arguments format in call->why. Each
- * control byte of the text becomes a space.
+ * control byte of the text becomes a space. If the text cannot be
+ * formatted, call->why is empty.
  */
 [[gnu::format(printf, 2, 3)]]
 static void
@@ -869,10 +889,8 @@ godbolt_why (struct godbolt *call,
 {
 	va_list ap;
 	va_start(ap, fmt);
-	int n = vsnprintf(call->why, sizeof call->why, fmt, ap);
+	call->why_len = (uint32_t)godbolt_vformat(call->why, sizeof call->why, fmt, ap).len;
 	va_end(ap);
-	call->why_len = n < 0 ? 0 : n < (int)sizeof call->why ? (uint32_t)n
-	                                                       : sizeof call->why - 1;
 	for (uint32_t i = 0; i < call->why_len; ++i)
 		if ((unsigned char)call->why[i] < 0x20 || call->why[i] == 0x7f)
 			call->why[i] = ' ';
@@ -901,14 +919,10 @@ godbolt_refuse (struct mcp_slot *slot,
 	char text[TOOL_TELL_MAX];
 	va_list ap;
 	va_start(ap, fmt);
-	int n = vsnprintf(text, sizeof text, fmt, ap);
+	struct cstr_view const t = godbolt_vformat(text, sizeof text, fmt, ap);
 	va_end(ap);
-	if (n < 0)
-		mcp_slot_tell(slot, CSTR_VIEW("The plugin could not format the reason of the "
-		                              "failure."), TOOL_FAILED);
-	else
-		mcp_slot_tell(slot, (struct cstr_view){
-			text, n < (int)sizeof text ? (size_t)n : sizeof text - 1 }, TOOL_FAILED);
+	mcp_slot_tell(slot, t.data ? t : CSTR_VIEW("The plugin could not format the reason of "
+	                                           "the failure."), TOOL_FAILED);
 	return GODBOLT_ENDED;
 }
 
@@ -2706,12 +2720,10 @@ godbolt_invalid (char       *why,
 {
 	va_list ap;
 	va_start(ap, fmt);
-	int k = vsnprintf(why, len, fmt, ap);
+	size_t const k = godbolt_vformat(why, len, fmt, ap).len;
 	va_end(ap);
-	if (k < 0)
-		*why = '\0';
 	if (n)
-		*n = k < 0 ? 0 : (size_t)k < len ? (size_t)k : len - 1;
+		*n = k;
 	return EINVAL;
 }
 
