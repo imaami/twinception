@@ -684,10 +684,11 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 	return true;
 }
 
-/* Handles the output of NOTES_CHECK for a write. add and copy need a name
- * that no note and no directory of notes has. No directory in the name can
- * be a note. replace needs an existing note. A replace or a restore that
- * leaves the bytes of the note unchanged makes no commit.
+/* Handles the output of NOTES_CHECK for a write. add and copy accept only
+ * a name that is neither a note nor a directory of notes. No directory in
+ * the name can be a note. replace accepts only the name of an existing
+ * note. A replace or a restore that leaves the bytes of the note unchanged
+ * makes no commit.
  */
 static void
 notes_tool_checked (struct mcp_slot *slot)
@@ -720,7 +721,7 @@ notes_tool_checked (struct mcp_slot *slot)
 		}
 		return;
 	}
-	struct cstr_view const said =
+	struct cstr_view const message =
 		r == EEXIST ? CSTR_VIEW("A note of that name exists. Use action replace to "
 		                        "update it, or add under another name.")
 		: r == ENOENT ? CSTR_VIEW("No note has that name. Use action add to create it.")
@@ -729,12 +730,13 @@ notes_tool_checked (struct mcp_slot *slot)
 		: r == ENOTDIR ? CSTR_VIEW("A directory in that name is a note. Add the note "
 		                           "under another name.")
 		: (struct cstr_view){};
-	notes_tool_end(slot, said.data ? notes_tool_call_say(call, &said, 1)
-	                               : notes_tool_call_unread(call), true);
+	notes_tool_end(slot, message.data ? notes_tool_call_say(call, &message, 1)
+	                                  : notes_tool_call_unread(call), true);
 }
 
-/* Handles the end of git fast-import. The result has the id of the new
- * commit and the commit message, or why git did not save the note.
+/* Handles the end of git fast-import. The result contains the id of the
+ * new commit and the commit message, or the reason why git did not save
+ * the note.
  */
 static void
 notes_tool_added (struct mcp_slot *slot)
@@ -749,7 +751,7 @@ notes_tool_added (struct mcp_slot *slot)
 		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
 	struct cstr_view const p[] = {
 		*commit ? CSTR_VIEW("Saved in commit ") : CSTR_VIEW("Saved"),
-		{ commit, strlen(commit) },
+		cstr_view(commit),
 		CSTR_VIEW(": "),
 		{ call->message, jb_utf8(call->message, call->len) },
 		notes_tool_actions[call->action].fetch & (FETCH_REPLACE | FETCH_RESTORE)
@@ -792,16 +794,15 @@ notes_tool_history (struct mcp_slot *slot,
 		size_t w = gmtime_r(&t, &tm) ? strftime(when, sizeof when, "%Y-%m-%d %H:%M UTC",
 		                                        &tm) : 0;
 		char const *subject = (char const *)entry.subject.ptr;
-		size_t said = history ? jb_utf8(subject, entry.subject.len) : 0;
-		struct cstr_view const binary = CSTR_VIEW("  (binary)");
+		size_t subject_len = history ? jb_utf8(subject, entry.subject.len) : 0;
 		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", ++k, (int)w, when) ||
 		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
-		    !(entry.lines == NOTES_BINARY ? dstr_cat_n(d, binary.data, binary.len)
+		    !(entry.lines == NOTES_BINARY ? dstr_cat(d, "  (binary)")
 		      : dstr_printf(d, "  (%" PRIu64 " line%s)", entry.lines,
 		                    entry.lines == 1 ? "" : "s")) ||
 		    (history && !dstr_printf(d, "  commit %.*s%s%.*s", (int)entry.commit.len,
-		                            (char const *)entry.commit.ptr, said ? "  " : "",
-		                            (int)said, said ? subject : "")) ||
+		                            (char const *)entry.commit.ptr, subject_len ? "  " : "",
+		                            (int)subject_len, subject_len ? subject : "")) ||
 		    !dstr_cat_n(d, "\n", 1))
 			return ENOMEM;
 		*newest = entry.name;
@@ -885,20 +886,17 @@ notes_tool_got_books (struct mcp_slot *slot)
 	                                             "notebook):\n"), 1);
 	if (!e)
 		e = notes_tool_call_identity(call);
-	char const *own = notes_selector(call->repo);
-	size_t own_len = strlen(own);
+	struct cstr_view const own = cstr_view(notes_selector(call->repo));
 	while (!e && out.len) {
 		unsigned char const *end = memchr(out.ptr, '\n', out.len);
 		if (!end)
 			break;
-		size_t len = (size_t)(end - out.ptr);
-		char const *name = (char const *)out.ptr;
+		struct cstr_view const name = { (char const *)out.ptr, (size_t)(end - out.ptr) };
 		char repo[NOTES_REPO];
-		if ((len != own_len || memcmp(out.ptr, own, len)) &&
-		    !notes_select(name, len, repo))
-			e = dstr_printf(call->text, "%.*s (read-only)\n", (int)len, name)
+		if (!cstr_view_equal(name, own) && !notes_select(name.data, name.len, repo))
+			e = dstr_printf(call->text, "%.*s (read-only)\n", (int)name.len, name.data)
 			  ? 0 : ENOMEM;
-		size_t n = len + 1;
+		size_t n = name.len + 1;
 		out.ptr += n;
 		out.len -= n;
 	}
@@ -911,15 +909,14 @@ notes_tool_got_books (struct mcp_slot *slot)
 static char const view_open[] = "\xe2\x9f\xa6";   /* U+27E6 */
 static char const view_close[] = "\xe2\x9f\xa7";  /* U+27E7 */
 
-/* Returns true if the @p len bytes at @p s are UTF-8 text without a NUL.
- * Such a note is shown as it is. Any other note is shown as its view
- * (notes_tool_view()).
+/* Returns true if @p note is UTF-8 text without a NUL. Such a note is
+ * shown as it is. Any other note is shown as its view (notes_tool_view()).
  */
 static bool
-notes_tool_text (char const *s,
-                 size_t      len)
+notes_tool_text (struct cstr_view note)
 {
-	return !len || (jb_utf8(s, len) == len && !memchr(s, '\0', len));
+	return !note.len || (jb_utf8(note.data, note.len) == note.len &&
+	                     !memchr(note.data, '\0', note.len));
 }
 
 /* Appends the @p n bytes at @p p to @p d if @p *size, the length of the
@@ -938,21 +935,21 @@ notes_tool_put (struct dstr *d,
 	return put && !dstr_cat_n(d, p, n) ? ENOMEM : 0;
 }
 
-/* Appends to @p d the view of a note of the @p len bytes at @p s. A note
- * gets a view if it is not UTF-8 text or if it has a NUL byte. The view
- * starts with a line that explains it. Valid UTF-8 text stays as it is,
- * and each ⟦ in it becomes ⟦⟦. Each other byte, and each NUL, becomes ⟦XX⟧
- * with its value in hexadecimal. So the view shows every byte of the note.
- * Only the start of the view goes into @p d, up to the first piece that
- * ends at or past @p max bytes. The length of the whole view goes into
- * @p *size if @p size is not nullptr. Returns 0 or ENOMEM.
+/* Appends to @p d the view of @p note. askai shows a note as its view if
+ * the note is not UTF-8 text or contains a NUL byte. The view starts with
+ * a line that explains it. Valid UTF-8 text stays as it is, and each ⟦ in
+ * it becomes ⟦⟦. Each other byte, and each NUL, becomes ⟦XX⟧ with its
+ * value in hexadecimal. So the view shows every byte of the note. Only the
+ * start of the view goes into @p d, up to the first piece that ends at or
+ * past @p max bytes. The length of the whole view goes into @p *size if
+ * @p size is not nullptr. Returns 0 or ENOMEM. With @p max 0, the function
+ * appends nothing and returns 0.
  */
 static int
-notes_tool_view (struct dstr *d,
-                 char const  *s,
-                 size_t       len,
-                 size_t       max,
-                 size_t      *size)
+notes_tool_view (struct dstr      *d,
+                 struct cstr_view  note,
+                 size_t            max,
+                 size_t           *size)
 {
 	static char const hex[] = "0123456789ABCDEF";
 	size_t const open = sizeof view_open - 1;
@@ -963,25 +960,25 @@ notes_tool_view (struct dstr *d,
 	        "[askai: the note is not UTF-8 text: %zu bytes.  Each byte that is not "
 	        "part of UTF-8 text, and each NUL, is shown as %sXX%s, its value in "
 	        "hexadecimal, and a %s of the text as %s%s.  The note itself is not "
-	        "changed.]\n\n", len, view_open, view_close, view_open, view_open,
+	        "changed.]\n\n", note.len, view_open, view_close, view_open, view_open,
 	        view_open));
-	for (size_t i = 0; !e && i < len; ) {
-		size_t run = jb_utf8(s + i, len - i);
-		char const *nul = memchr(s + i, '\0', run);
+	for (size_t i = 0; !e && i < note.len; ) {
+		size_t run = jb_utf8(note.data + i, note.len - i);
+		char const *nul = memchr(note.data + i, '\0', run);
 		if (nul)
-			run = (size_t)(nul - s) - i;
+			run = (size_t)(nul - note.data) - i;
 		/* Copy the valid text and double each ⟦ in it. */
 		for (size_t at = i; !e && at < i + run; ) {
-			char const *m = memmem(s + at, i + run - at, view_open, open);
-			size_t n = m ? (size_t)(m - s) - at + open : i + run - at;
-			e = notes_tool_put(d, &w, max, s + at, n);
+			char const *m = memmem(note.data + at, i + run - at, view_open, open);
+			size_t n = m ? (size_t)(m - note.data) - at + open : i + run - at;
+			e = notes_tool_put(d, &w, max, note.data + at, n);
 			e = e || !m ? e : notes_tool_put(d, &w, max, view_open, open);
 			at += n;
 		}
 		i += run;
-		if (e || i == len)
+		if (e || i == note.len)
 			break;
-		unsigned char b = (unsigned char)s[i++];
+		unsigned char b = (unsigned char)note.data[i++];
 		char x[] = { hex[b >> 4], hex[b & 15] };
 		e = notes_tool_put(d, &w, max, view_open, open);
 		e = e ? e : notes_tool_put(d, &w, max, x, 2);
@@ -1042,18 +1039,17 @@ notes_tool_got_diff (struct mcp_slot *slot)
 	struct cstr_view file = notes_revision_file(call->revision);
 	struct span out = buf_peek(&c->out);
 	struct dstr *d = call->text;
-	char const *shows = notes_selector(notes_tool_call_notebook(call));
-	(void)mcp_slot_shows(slot, shows);
+	char const *selector = notes_selector(notes_tool_call_notebook(call));
+	(void)mcp_slot_shows(slot, selector);
 	int e = dstr_printf(d, "Notebook %s — %.*s\nfrom %s\nto %s\n\n",
-	                    shows, (int)file.len, file.data,
+	                    selector, (int)file.len, file.data,
 	                    notes_revision_from(call->revision), notes_revision_to(call->revision))
 	      ? 0 : ENOMEM;
-	char const *text = (char const *)out.ptr;
+	struct cstr_view const diff = { (char const *)out.ptr, out.len };
 	if (!e)
-		e = !out.len ? notes_tool_call_say(call, &CSTR_VIEW("No differences.\n"), 1)
-		  : notes_tool_text(text, out.len)
-		  ? notes_tool_call_say(call, &(struct cstr_view){ text, out.len }, 1)
-		  : notes_tool_view(d, text, out.len, SIZE_MAX, nullptr);
+		e = !diff.len ? notes_tool_call_say(call, &CSTR_VIEW("No differences.\n"), 1)
+		  : notes_tool_text(diff) ? notes_tool_call_say(call, &diff, 1)
+		  : notes_tool_view(d, diff, SIZE_MAX, nullptr);
 	if (!e && c->cut)
 		e = notes_tool_call_say(call, &CSTR_VIEW("\n[The diff exceeded the capture limit "
 		                                         "and is incomplete.]\n"), 1);
@@ -1074,40 +1070,38 @@ notes_tool_got_note (struct mcp_slot *slot)
 	int r = !notes_tool_ok(c) ? EIO
 	      : call->fetch & FETCH_RESTORE ? notes_read_full_out(buf_peek(&c->out), &text, &id)
 	      : notes_read_out(buf_peek(&c->out), &text, &id);
-	if (!r && (call->fetch & FETCH_RESTORE) && text.len > NOTES_TEXT) {
-		int e = notes_tool_call_say(call, &CSTR_VIEW("That revision exceeds the 4 MiB "
-		                                             "note size limit; it was not "
-		                                             "restored."), 1);
+	if (r) {
+		int e = r == ENOENT ? notes_tool_call_say(call, &CSTR_VIEW("No note has that "
+		                                                           "name."), 1)
+		      : r == EISDIR ? notes_tool_call_say(call, &CSTR_VIEW("That name is a "
+		                                                           "directory of notes. "
+		                                                           "list shows the notes "
+		                                                           "in it."), 1)
+		      : notes_tool_call_unread(call);
 		notes_tool_end(slot, e, true);
 		return;
 	}
-	if (!r && call->fetch & (FETCH_COPY | FETCH_RESTORE)) {
+	if (call->fetch & (FETCH_COPY | FETCH_RESTORE)) {
 		notes_tool_got_copy(slot, text);
 		return;
 	}
-	if (!r && call->fetch & FETCH_ATTACH) {
+	if (call->fetch & FETCH_ATTACH) {
 		notes_tool_got_attach(slot, text, id);
 		return;
 	}
-	char const *s = (char const *)text.ptr;
-	char const *shows = notes_selector(notes_tool_call_notebook(call));
-	(void)mcp_slot_shows(slot, shows);
+	struct cstr_view const body = { (char const *)text.ptr, text.len };
+	char const *selector = notes_selector(notes_tool_call_notebook(call));
+	(void)mcp_slot_shows(slot, selector);
 	int e = 0;
-	if (!r && (call->fetch & FETCH_REVISION)) {
+	if (call->fetch & FETCH_REVISION) {
 		struct cstr_view file = notes_revision_file(call->revision);
 		e = dstr_printf(call->text, "Notebook %s — %.*s at %s:\n\n",
-		                shows, (int)file.len, file.data,
+		                selector, (int)file.len, file.data,
 		                notes_revision_from(call->revision)) ? 0 : ENOMEM;
 	}
-	e = e ? e : !r && !notes_tool_text(s, text.len)
-	      ? notes_tool_view(call->text, s, text.len, SIZE_MAX, nullptr)
-	      : !r ? notes_tool_call_say(call, &(struct cstr_view){ s, text.len }, 1)
-	      : r == ENOENT ? notes_tool_call_say(call, &CSTR_VIEW("No note has that name."), 1)
-	      : r == EISDIR ? notes_tool_call_say(call, &CSTR_VIEW("That name is a directory "
-	                                                           "of notes. list shows the "
-	                                                           "notes in it."), 1)
-	      : notes_tool_call_unread(call);
-	notes_tool_end(slot, e, r);
+	e = e ? e : notes_tool_text(body) ? notes_tool_call_say(call, &body, 1)
+	      : notes_tool_view(call->text, body, SIZE_MAX, nullptr);
+	notes_tool_end(slot, e, false);
 }
 
 /* Appends to call->text that the note of @p len bytes follows the results
@@ -1120,20 +1114,19 @@ notes_tool_call_attached (struct notes_tool_call const *call,
                           size_t                        bytes,
                           bool                          view)
 {
-	bool said = view ? dstr_printf(call->text, "The note, %zu bytes, is not UTF-8 "
-	                               "text, so its view, %zu bytes, about %zu tokens, "
-	                               "in which each other byte is %sXX%s, follows the "
-	                               "results of this turn as a file.", len, bytes,
-	                               bytes / 4, view_open, view_close)
-	                 : dstr_printf(call->text, "The note, %zu bytes, about %zu "
-	                               "tokens, follows the results of this turn as a "
-	                               "file.", len, bytes / 4);
-	return said ? 0 : ENOMEM;
+	bool ok = view ? dstr_printf(call->text, "The note, %zu bytes, is not UTF-8 text, so "
+	                             "its view, %zu bytes, about %zu tokens, in which each "
+	                             "other byte is %sXX%s, follows the results of this turn "
+	                             "as a file.", len, bytes, bytes / 4, view_open, view_close)
+	               : dstr_printf(call->text, "The note, %zu bytes, about %zu tokens, "
+	                             "follows the results of this turn as a file.", len,
+	                             bytes / 4);
+	return ok ? 0 : ENOMEM;
 }
 
 /* Attaches @p text, the note with the object id @p id, to the turn. If the
- * upstream still keeps the file that askai uploaded for this note and
- * owner, the turn gets that file. Otherwise askai uploads the note, or its
+ * upstream still stores the file that askai uploaded for this note and
+ * owner, askai attaches that file. Otherwise askai uploads the note, or its
  * view if the note is not UTF-8 text. The context must have room for the
  * file.
  */
@@ -1143,40 +1136,44 @@ notes_tool_got_attach (struct mcp_slot *slot,
                        struct span      id)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	char const *s = (char const *)text.ptr;
-	bool view = !notes_tool_text(s, text.len);
+	struct cstr_view body = { (char const *)text.ptr, text.len };
+	bool binary = !notes_tool_text(body);
 	struct cstr_view const oid = { (char const *)id.ptr, id.len };
 	size_t kept = 0;
 	int e = mcp_slot_attach(slot, oid, (struct cstr_view){}, &kept, call->text);
 	if (e != ENOENT) {
-		/* The upstream still has the file that askai uploaded for the note. */
+		/* The upstream still stores the file of the note. */
 		if (!e)
-			e = notes_tool_call_attached(call, text.len, kept, view);
+			e = notes_tool_call_attached(call, text.len, kept, binary);
 		notes_tool_end(slot, e == EFBIG ? 0 : e, e == EFBIG);
 		return;
 	}
-	/* Measure the view before making it, so that askai makes no view that
-	 * is longer than NOTES_MAX. */
-	dstr_auto shown = DSTR_INIT;
-	size_t len = text.len;
-	e = view ? notes_tool_view(&shown, s, text.len, 0, &len) : 0;
-	if (!e && view && len <= NOTES_MAX)
-		e = notes_tool_view(&shown, s, text.len, SIZE_MAX, nullptr);
-	char const *body = view ? dstr_get(&shown) : s;
-	if (!e && len > NOTES_MAX) {
-		e = dstr_printf(call->text, "The note is too large to attach: its file "
-		                "would have %zu bytes, and askai uploads %d MiB at most.",
-		                len, NOTES_MAX >> 20) ? 0 : ENOMEM;
-		notes_tool_end(slot, e, true);
-		return;
+	dstr_auto view = DSTR_INIT;
+	if (binary) {
+		/* Measure the view before making it, so that askai makes no view
+		 * that is longer than NOTES_MAX. */
+		size_t len = 0;
+		(void)notes_tool_view(&view, body, 0, &len);
+		if (len > NOTES_MAX) {
+			e = dstr_printf(call->text, "The note is too large to attach: its file "
+			                "would have %zu bytes, and askai uploads %d MiB at most.",
+			                len, NOTES_MAX >> 20) ? 0 : ENOMEM;
+			notes_tool_end(slot, e, true);
+			return;
+		}
+		if (notes_tool_view(&view, body, SIZE_MAX, nullptr)) {
+			notes_tool_end(slot, ENOMEM, true);
+			return;
+		}
+		body = cstr_view_dstr(&view);
 	}
-	call->upload = len;
+	call->upload = body.len;
 	call->note = text.len;
-	/* The uploads table keeps no id longer than UPLOADS_ID. The call keeps
-	 * an empty id instead. */
+	/* The upload table stores no id longer than UPLOADS_ID. For a longer
+	 * id, the call stores an empty id. */
 	call->len = id.len <= UPLOADS_ID ? id.len : 0;
 	memcpy(call->id, id.ptr, call->len);
-	e = e ? e : mcp_slot_attach(slot, oid, (struct cstr_view){ body, len }, &kept, call->text);
+	e = mcp_slot_attach(slot, oid, body, &kept, call->text);
 	if (e == EINPROGRESS) {
 		child_destroy(&call->child);
 		mcp_slot_park(slot);
@@ -1186,7 +1183,8 @@ notes_tool_got_attach (struct mcp_slot *slot,
 }
 
 /* Handles the answer to the upload that attach sent. The function
- * attaches the file to the turn, or says why the upload failed.
+ * attaches the file to the turn, or appends the reason why the upload
+ * failed to call->text.
  */
 static void
 notes_tool_uploaded (struct mcp_slot *slot)
@@ -1222,20 +1220,22 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 	if (!e)
 		e = notes_tool_history(slot, buf_peek(&c->out), c->cut, &newest);
 	struct cstr_view const name = { (char const *)newest.ptr, newest.len };
-	struct cstr_view const p[] = {
-		CSTR_VIEW("\n[askai: the current text of your most recently written note, "),
-		{ name.data, name.len ? jb_utf8(name.data, name.len) : 0 },
-		CSTR_VIEW(":]\n\n"),
-	};
 	/* The name comes from git. git reads the note only if add would accept
 	 * the name as it is. */
 	struct cstr_view checked = name;
-	bool named = name.len && !notes_name(&checked) && checked.len == name.len;
-	if (!e && named && !(e = notes_tool_call_say(call, p, ARRAY_SIZE(p))))
-		e = notes_read_input(&in, call->repo, name);
-	if (!e && newest.len && !named)
+	bool named = !notes_name(&checked) && checked.len == name.len;
+	if (!e && named) {
+		struct cstr_view const p[] = {
+			CSTR_VIEW("\n[askai: the current text of your most recently written note, "),
+			{ name.data, jb_utf8(name.data, name.len) },
+			CSTR_VIEW(":]\n\n"),
+		};
+		e = notes_tool_call_say(call, p, ARRAY_SIZE(p));
+		e = e ? e : notes_read_input(&in, call->repo, name);
+	} else if (!e && name.len) {
 		e = notes_tool_call_say(call, &CSTR_VIEW("\n[askai: the newest note could not "
 		                                         "be read.]\n"), 1);
+	}
 	child_destroy(&call->child);
 	if (e || !named) {
 		buf_fini(&in);
@@ -1246,9 +1246,10 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 }
 
 /* Appends the newest note, which git read for the prompt, to call->text.
- * If git could not read the note, a line says so. A note longer than
- * call->most bytes is cut there, and a line says how to read the rest.
- * Then the ask call continues.
+ * If git could not read the note, the function appends the line "[askai:
+ * the note could not be read.]" instead. A note longer than call->most
+ * bytes is cut there, and the function appends a line with the offset of
+ * the rest. Then the ask call continues.
  */
 static void
 notes_tool_newest (struct mcp_slot *slot)
@@ -1257,31 +1258,32 @@ notes_tool_newest (struct mcp_slot *slot)
 	struct child const *c = call->child;
 	struct span text = {};
 	int r = notes_tool_ok(c) ? notes_read_out(buf_peek(&c->out), &text, nullptr) : EIO;
-	char const *s = (char const *)text.ptr;
+	struct cstr_view body = { (char const *)text.ptr, text.len };
 	size_t len = text.len;
-	/* A note that is not UTF-8 text goes in as its view. Only the start of
-	 * the view that the prompt takes is made. */
-	size_t shown = len;
+	/* A note that is not UTF-8 text goes into the prompt as its view. The
+	 * function makes only the start of the view, a little more than the
+	 * call->most bytes that the prompt shows. */
 	dstr_auto view = DSTR_INIT;
-	if (!r && !notes_tool_text(s, text.len)) {
-		if (notes_tool_view(&view, s, text.len, call->most + 1, &len)) {
+	if (!r && !notes_tool_text(body)) {
+		if (notes_tool_view(&view, body, call->most + 1, &len)) {
 			notes_tool_then(slot, ENOMEM);
 			return;
 		}
-		s = dstr_get(&view);
-		shown = dstr_len(&view);
+		body = cstr_view_dstr(&view);
 	}
-	size_t n = util_clip(s, shown, call->most);
-	char more[128];
-	size_t m = n < len ? util_format(more, sizeof more, "\n[askai: bytes 0 to %zu of "
-	                                 "%zu; read the note with \"offset\": %zu for the "
-	                                 "rest.]", n, len, n) : 0;
+	body = cstr_view_slice(body, 0, util_clip(body.data, body.len, call->most));
+	char buf[128];
+	struct cstr_view const more = body.len < len ? util_format_view(buf, sizeof buf,
+	                              "\n[askai: bytes 0 to %zu of %zu; read the note with "
+	                              "\"offset\": %zu for the rest.]", body.len, len, body.len)
+	                            : (struct cstr_view){};
 	struct cstr_view const p[] = {
-		r ? CSTR_VIEW("[askai: the note could not be read.]") : (struct cstr_view){ s, n },
-		{ more, m },
+		r ? CSTR_VIEW("[askai: the note could not be read.]") : body,
+		more,
 		CSTR_VIEW("\n"),
 	};
-	notes_tool_then(slot, notes_tool_call_say(call, p, n && s[n - 1] == '\n' && !m ? 1 : 3));
+	bool newline = body.len && body.data[body.len - 1] == '\n';
+	notes_tool_then(slot, notes_tool_call_say(call, p, newline && !more.len ? 1 : ARRAY_SIZE(p)));
 }
 
 /* Handles the list of the notes for the start of an ask call. The list
@@ -1465,15 +1467,25 @@ notes_tool_add (struct mcp_slot    *slot,
 }
 
 /* Writes @p text to a note in the caller's own notebook. A copy uses the
- * name in call->name. A restore uses the file name of its revision.
+ * name in call->name. A restore uses the file name of its revision, and
+ * fails if @p text is longer than NOTES_TEXT bytes.
  */
 static void
 notes_tool_got_copy (struct mcp_slot *slot,
                      struct span      text)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct cstr_view to = call->fetch & FETCH_RESTORE ? notes_revision_file(call->revision)
-	                    : (struct cstr_view){ call->name, call->len };
+	struct cstr_view to = { call->name, call->len };
+	if (call->fetch & FETCH_RESTORE) {
+		if (text.len > NOTES_TEXT) {
+			int e = notes_tool_call_say(call, &CSTR_VIEW("That revision exceeds the 4 MiB "
+			                                             "note size limit; it was not "
+			                                             "restored."), 1);
+			notes_tool_end(slot, e, true);
+			return;
+		}
+		to = notes_revision_file(call->revision);
+	}
 	struct cstr_view const bytes = { (char const *)text.ptr, text.len };
 	int e = notes_add_file(&call->file, to, bytes, &call->part);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
