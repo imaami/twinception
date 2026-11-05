@@ -16,7 +16,6 @@
 struct cli_loop;
 struct cli_mailbox;
 struct cli_network;
-struct loop;
 
 /** Runs on the UI thread. Bytes are borrowed until the callback returns.
  * Returns 0, or an error number that fails and cancels the call.
@@ -61,9 +60,9 @@ cli_network_active (struct cli_network const *network);
 
 /** UI-thread output backpressure predicate; nullptr always accepts data. */
 extern void
-cli_network_set_ready (struct cli_network  *network,
+cli_network_set_ready (struct cli_network   *network,
                        cli_network_ready_fn *ready,
-                       void                *context);
+                       void                 *context);
 
 /** Deliver bounded response work after a complete UI turn, including turns
  * serviced from Readline input hooks. Never call from event dispatch.
@@ -105,15 +104,15 @@ cli_network_submit (struct cli_network      *network,
  * EINTR.
  */
 extern int
-cli_network_perform (struct cli_network       *network,
-                     struct cstr_view          socket,
-                     struct cstr_view          session,
-                     struct cstr_view          wire,
-                     long                      timeout,
-                     bool                      interruptible,
-                     cli_network_receive_fn   *header,
-                     cli_network_receive_fn   *body,
-                     void                     *context,
+cli_network_perform (struct cli_network        *network,
+                     struct cstr_view           socket,
+                     struct cstr_view           session,
+                     struct cstr_view           wire,
+                     long                       timeout,
+                     bool                       interruptible,
+                     cli_network_receive_fn    *header,
+                     cli_network_receive_fn    *body,
+                     void                      *context,
                      struct cli_network_result *result);
 
 #endif /* TWINCEPTION_SRC_CLI_NETWORK_H_ */
