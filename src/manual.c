@@ -81,9 +81,6 @@ struct manual_loop {
 static char const cut[] = "\n\n[The page goes on past the 4 MiB shown.]\n";
 static_assert(MANUAL_MAX == 4 << 20, "the note says 4 MiB");
 
-static char const busy[] = "Too many pages are being rendered; try again in a "
-                           "few seconds.";
-
 struct manual_fetch;
 
 /*
@@ -271,7 +268,7 @@ manual_fetch_destroy (struct manual_fetch **p_f)
  */
 static void
 manual_fetch_fail (struct manual_fetch *f,
-                   char const          *why)
+                   struct cstr_view     why)
 {
 	struct manual *m = f->ml->manual;
 	pthread_mutex_lock(&m->lock);
@@ -279,9 +276,12 @@ manual_fetch_fail (struct manual_fetch *f,
 	manual_del(m, f->alias);
 	struct manual_wait *w = f->waiters;
 	pthread_mutex_unlock(&m->lock);
+	size_t const len = util_clip(why.data, why.len, sizeof w->why - 1);
 	for (struct manual_wait *next; w; w = next) {
 		next = w->next;
-		w->why_len = util_format(w->why, sizeof w->why, "%s", why);
+		memcpy(w->why, why.data, len);
+		w->why[len] = '\0';
+		w->why_len = len;
 		loop_post(w->loop, &w->msg);
 	}
 	manual_fetch_destroy(&f);
@@ -365,58 +365,54 @@ manual_fetch_run (struct manual_fetch *f,
 		return;
 	}
 	if (e == EBUSY) {
-		manual_fetch_fail(f, busy);
+		manual_fetch_fail(f, CSTR_VIEW("Too many pages are being rendered; try again in "
+		                               "a few seconds."));
 		return;
 	}
-	char why[MANUAL_WHY];
-	util_format(why, sizeof why, "Cannot run man: %s.", strerror(e));
-	LOG(LOG_WARN, "%s", why);
+	char buf[MANUAL_WHY];
+	struct cstr_view const why = util_format_view(buf, sizeof buf, "Cannot run man: %s.",
+	                                              strerror(e));
+	LOG(LOG_WARN, "%s", buf);
 	manual_fetch_fail(f, why);
 }
 
-/* Say in @p why that the manual has no entry for alias @p a. */
-static void
+/* Writes the refusal of the alias @p a, which is not in the manual, to
+ * @p why. Returns a view of the text.
+ */
+static struct cstr_view
 manual_entry_none (struct manual_entry const *a,
                    char                      *why)
 {
 	char const *name = a->key;
 	char const *section = name + strlen(name) + 1;
-	if (*section)
-		util_format(why, MANUAL_WHY, "No manual entry for %s in section %s.", name,
-		            section);
-	else
-		util_format(why, MANUAL_WHY, "No manual entry for %s.", name);
+	return *section ? util_format_view(why, MANUAL_WHY, "No manual entry for %s in "
+	                                   "section %s.", name, section)
+	                : util_format_view(why, MANUAL_WHY, "No manual entry for %s.", name);
 }
 
-/* Whether man, @p c, ended well, or its output was cut short; else @p why
- * says what went wrong.
+/* Returns a view with data nullptr if man, @p c, ended well or its output
+ * was cut short. Otherwise returns the reason, which may be text in @p why.
  */
-static bool
+static struct cstr_view
 manual_fetch_ended (struct manual_fetch const *f,
                     struct child const        *c,
                     char                      *why)
 {
 	if (c->cut)
-		return true;
-	if (c->late) {
-		util_format(why, MANUAL_WHY, "man took longer than %d s.", MANUAL_SECONDS);
-		return false;
-	}
+		return (struct cstr_view){};
+	if (c->late)
+		return util_format_view(why, MANUAL_WHY, "man took longer than %d s.",
+		                        MANUAL_SECONDS);
 	switch (c->code) {
 	case CLD_EXITED:
-		if (!c->status)
-			return true;
-		if (c->status == 16)
-			manual_entry_none(f->alias, why);
-		else
-			util_format(why, MANUAL_WHY, "man failed, with exit status %d.", c->status);
-		return false;
+		return !c->status ? (struct cstr_view){}
+		     : c->status == 16 ? manual_entry_none(f->alias, why)
+		     : util_format_view(why, MANUAL_WHY, "man failed, with exit status %d.",
+		                        c->status);
 	case 0:
-		util_format(why, MANUAL_WHY, "man ended, and why is unknown.");
-		return false;
+		return CSTR_VIEW("man ended, and why is unknown.");
 	default:
-		util_format(why, MANUAL_WHY, "man was killed by signal %d.", c->status);
-		return false;
+		return util_format_view(why, MANUAL_WHY, "man was killed by signal %d.", c->status);
 	}
 }
 
@@ -453,8 +449,9 @@ static void
 manual_fetch_rendered (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
-	char why[MANUAL_WHY];
-	if (!manual_fetch_ended(f, c, why)) {
+	char buf[MANUAL_WHY];
+	struct cstr_view const why = manual_fetch_ended(f, c, buf);
+	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
 	}
@@ -462,7 +459,7 @@ manual_fetch_rendered (struct child *c)
 	size_t note = c->cut ? sizeof cut - 1 : 0;
 	struct manual_page *page = malloc(sizeof *page + len + note);
 	if (!page) {
-		manual_fetch_fail(f, "Out of memory.");
+		manual_fetch_fail(f, CSTR_VIEW("Out of memory."));
 		return;
 	}
 	page->ctime = f->st.st_ctim;
@@ -484,8 +481,9 @@ manual_fetch_found (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
 	struct manual *m = f->ml->manual;
-	char why[MANUAL_WHY];
-	if (!manual_fetch_ended(f, c, why)) {
+	char buf[MANUAL_WHY];
+	struct cstr_view const why = manual_fetch_ended(f, c, buf);
+	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
 	}
@@ -493,7 +491,7 @@ manual_fetch_found (struct child *c)
 	unsigned char const *end = out.len ? memchr(out.ptr, '\n', out.len) : nullptr;
 	size_t len = end ? (size_t)(end - out.ptr) : 0;
 	if (!len || *out.ptr != '/' || memchr(out.ptr, '\0', len)) {
-		manual_fetch_fail(f, "man named no file for the page.");
+		manual_fetch_fail(f, CSTR_VIEW("man named no file for the page."));
 		return;
 	}
 	uint64_t hash = util_hash(m->seed, out.ptr, len);
@@ -507,13 +505,14 @@ manual_fetch_found (struct child *c)
 	child_destroy(&f->child);
 	f->file = file;
 	if (!file) {
-		manual_fetch_fail(f, "Out of memory.");
+		manual_fetch_fail(f, CSTR_VIEW("Out of memory."));
 		return;
 	}
 	if (stat(file->key, &f->st)) {
-		util_format(why, sizeof why, "Cannot read the page's file: %s.", strerror(errno));
+		struct cstr_view const text = util_format_view(buf, sizeof buf, "Cannot read the "
+		                                               "page's file: %s.", strerror(errno));
 		manual_page_put(page);
-		manual_fetch_fail(f, why);
+		manual_fetch_fail(f, text);
 		return;
 	}
 	if (page && manual_page_same(page, &f->st)) {
@@ -719,7 +718,7 @@ manual_loop_destroy (void **p_part)
 	*p_part = nullptr;
 	while (!list_is_empty(&ml->fetches))
 		manual_fetch_fail(container_of(ml->fetches.next, struct manual_fetch, hook),
-		                  "Server is shutting down.");
+		                  CSTR_VIEW("Server is shutting down."));
 	child_destroy_all(&ml->children);
 	free(ml);
 }
