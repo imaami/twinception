@@ -1685,18 +1685,18 @@ home_put_replay (void             *user,
 
 /* Add the piece @p call of a tool call to the calls of the job @p user.
  * Call k is stored in job->calls[k], and the calls are numbered in the
- * order in which they begin. A piece with an index that no stored call has
- * begins a new call. A piece without an index begins a new call if there
- * is no call yet or if its id differs from the id of the last call.
- * Otherwise the piece belongs to the last call. The pieces of different
- * calls may come in any order. In each call, the id comes before the name,
- * and the name comes before the extra. The extra comes once and before the
- * arguments. The arguments may come in several pieces. The function
- * ignores an id, a name or an extra that repeats the stored bytes, because
- * some servers send them again. The function returns EPROTO if a call
- * breaks this order or if there are more than JOB_CALLS calls. It returns
- * ENOBUFS if the calls together would have more than MAX_RESPONSE bytes,
- * and EILSEQ if a piece is not UTF-8.
+ * order in which they begin. A piece with an index that differs from the
+ * index of every stored call begins a new call. A piece without an index
+ * begins a new call if there is no call yet or if its id differs from the
+ * id of the last call. Otherwise the piece belongs to the last call. The
+ * pieces of different calls may come in any order. In each call, the id
+ * comes before the name, and the name comes before the extra. The extra
+ * comes once and before the arguments. The arguments may come in several
+ * pieces. The function ignores an id, a name or an extra that repeats the
+ * stored bytes, because some servers send them again. The function
+ * returns EPROTO if a call breaks this order or if there are more than
+ * JOB_CALLS calls. It returns ENOBUFS if the calls together would exceed
+ * MAX_RESPONSE bytes, and EILSEQ if a piece is not UTF-8.
  */
 static int
 home_put_call (void                 *user,
@@ -1707,9 +1707,11 @@ home_put_call (void                 *user,
 	if (end || !(job->asks & JOB_TOOLS))
 		return end;
 	/* This loop counts the calls in n and the bytes of all calls in bytes.
-	 * It sets k to the number of the call that has the index of the
-	 * piece, and c to the header of the last call. */
+	 * It sets k to the number of the call with the index of the piece, c
+	 * to the header of the last call, and last to the parts of the last
+	 * call. */
 	struct job_call c = {};
+	struct ai_call last = {};
 	uint32_t n = 0;
 	uint32_t k = JOB_CALLS;
 	size_t bytes = 0;
@@ -1717,7 +1719,7 @@ home_put_call (void                 *user,
 		struct span s = buf_peek(&job->calls[n]);
 		if (!s.len)
 			break;
-		memcpy(&c, s.ptr, sizeof c);
+		last = job_call_parts(&c, s.ptr);
 		k = c.index == call->index ? n : k;
 		bytes += s.len;
 	}
@@ -1727,16 +1729,13 @@ home_put_call (void                 *user,
 	size_t args = call->args.len;
 	uint32_t index = call->index;
 	/* A piece without an index continues the last call if there is a
-	 * call and the piece has no id or the same id as the last call. Then
-	 * its id is not stored again. Otherwise the piece begins call n. No
-	 * stored call has the index AI_CALL_NEXT, so k is still JOB_CALLS for
-	 * such a piece. */
+	 * call and the id of the piece is empty or equal to the id of the last
+	 * call. Then its id is not stored again. Otherwise the piece begins
+	 * call n. The index of a stored call is never AI_CALL_NEXT, so k is
+	 * still JOB_CALLS for such a piece. */
 	if (index == AI_CALL_NEXT) {
-		bool same = n && !(id && (id != c.id ||
-		                          memcmp(buf_peek(&job->calls[n - 1]).ptr + sizeof c,
-		                                 call->id.data, id)));
 		index = n;
-		if (same) {
+		if (n && (!id || cstr_view_equal(last.id, call->id))) {
 			k = n - 1;
 			id = 0;
 		}
@@ -1745,12 +1744,13 @@ home_put_call (void                 *user,
 	if (k < n) {
 		/* Ignore an id, a name or an extra that repeats the stored
 		 * bytes. */
-		struct ai_call const had = job_call_parts(&c, buf_peek(&job->calls[k]).ptr);
-		if (id && cstr_view_equal(had.id, call->id))
+		struct ai_call const stored = k + 1 == n ? last
+		                            : job_call_parts(&c, buf_peek(&job->calls[k]).ptr);
+		if (cstr_view_equal(stored.id, call->id))
 			id = 0;
-		if (name && cstr_view_equal(had.name, call->name))
+		if (cstr_view_equal(stored.name, call->name))
 			name = 0;
-		if (extra && cstr_view_equal(had.extra, call->extra))
+		if (cstr_view_equal(stored.extra, call->extra))
 			extra = 0;
 	} else if (n == JOB_CALLS) {
 		return EPROTO;
