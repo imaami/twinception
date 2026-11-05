@@ -55,10 +55,6 @@ cli_network_stop (struct cli_network *network);
 extern bool
 cli_network_done (struct cli_network const *network);
 
-/** Worker completions may post here while the network is alive. */
-extern struct loop *
-cli_network_loop (struct cli_network *network);
-
 /** UI-thread query, including transfer completion still waiting in its inbox. */
 extern bool
 cli_network_active (struct cli_network const *network);

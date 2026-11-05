@@ -788,12 +788,6 @@ cli_network_destroy (struct cli_network **ptr)
 	*ptr = nullptr;
 }
 
-struct loop *
-cli_network_loop (struct cli_network *network)
-{
-	return &network->loop;
-}
-
 bool
 cli_network_active (struct cli_network const *network)
 {

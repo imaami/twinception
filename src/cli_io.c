@@ -3,7 +3,6 @@
  * Bounded blocking work using the existing blocker pool.
  */
 #include <errno.h>
-#include <pthread.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -15,21 +14,15 @@
 enum { CLI_IO_JOBS = 32 };
 
 struct cli_io {
-	pthread_mutex_t     mutex;
-	struct list         completed;
-	struct blocker     *blocker;
-	struct loop        *network;
-	struct cli_mailbox *mailbox;
-	struct loop_ref     notify;
-	size_t              pending;
-	uint64_t            stopped;
-	uint32_t            exited;
-	uint32_t            started;
+	struct blocker  *blocker;
+	struct cli_loop *ui;
+	struct loop_ref  notify;   /**< the eventfd that each blocker thread
+	                                writes 1 to as it exits */
+	size_t           pending;
+	uint64_t         stopped;
+	uint32_t         exited;
+	uint32_t         started;
 };
-
-static void
-cli_io_result (struct cli_mailbox     *mailbox,
-               struct cli_mailbox_msg *message);
 
 static void
 cli_io_notify (struct loop     *loop,
@@ -41,28 +34,9 @@ cli_io_notify (struct loop     *loop,
 	uint64_t count;
 	loop_fail(loop, cli_loop_ref_counter(ref, &count));
 	io->exited += (uint32_t)count;
-	struct list completed;
-	list_init(&completed);
-	pthread_mutex_lock(&io->mutex);
-	list_transplant(&completed, &io->completed);
-	pthread_mutex_unlock(&io->mutex);
-	while (!list_is_empty(&completed)) {
-		struct cli_mailbox_msg *message = container_of(completed.next, struct cli_mailbox_msg, hook);
-		list_del(&message->hook);
-		cli_io_result(io->mailbox, message);
-	}
 }
 
-static void
-cli_io_result (struct cli_mailbox     *mailbox,
-               struct cli_mailbox_msg *message)
-{
-	(void)mailbox;
-	struct cli_io_job *job = container_of(message, struct cli_io_job, result);
-	--job->io->pending;
-	job->done(job);
-}
-
+/* Runs on the UI loop, to which the blocker posts the job when it is done. */
 static void
 cli_io_complete (struct loop *loop,
                  struct msg  *message)
@@ -70,22 +44,8 @@ cli_io_complete (struct loop *loop,
 	(void)loop;
 	struct blocker_job *blocker = container_of(message, struct blocker_job, done);
 	struct cli_io_job *job = container_of(blocker, struct cli_io_job, blocker);
-	int e = cli_mailbox_post(job->io->mailbox, &job->result, true);
-	if (!e)
-		return;
-	/* Admission already bounds this fallback queue to CLI_IO_JOBS. Even
-	 * a full or closed shared mailbox must return every accepted job. */
-	struct cli_io *io = job->io;
-	pthread_mutex_lock(&io->mutex);
-	list_append(&io->completed, &job->result.hook);
-	/* Blockers write one on exit. Completion wakes occupy the high word,
-	 * so the receiver can distinguish them without another descriptor. */
-	do {
-		e = eventfd_write(io->notify.fd, UINT64_C(1) << 32) ? errno : 0;
-	} while (e == EINTR);
-	/* EAGAIN means the descriptor is already readable. Other failures
-	 * leave the job owned by completed for shutdown, never abandoned. */
-	pthread_mutex_unlock(&io->mutex);
+	--job->io->pending;
+	job->done(job);
 }
 
 static void
@@ -96,34 +56,23 @@ cli_io_work (struct blocker_job *blocker)
 }
 
 struct cli_io *
-cli_io_create (struct loop        *network,
-               struct cli_mailbox *mailbox,
-               int                *e)
+cli_io_create (struct cli_loop *ui,
+               int             *e)
 {
 	struct cli_io *io = calloc(1, sizeof *io);
 	if (!io) {
 		*e = ENOMEM;
 		return nullptr;
 	}
-	io->network = network;
-	io->mailbox = mailbox;
+	io->ui = ui;
 	io->notify.fd = -1;
-	list_init(&io->completed);
-	*e = pthread_mutex_init(&io->mutex, nullptr);
-	if (*e) {
-		free(io);
-		io = nullptr;
-		return nullptr;
-	}
 	int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	*e = fd < 0 ? errno : 0;
 	if (!*e)
-		*e = loop_watch(&mailbox->loop->loop, &io->notify, fd, EPOLLIN, cli_io_notify,
-		                nullptr);
+		*e = loop_watch(&ui->loop, &io->notify, fd, EPOLLIN, cli_io_notify, nullptr);
 	if (*e) {
 		if (fd >= 0)
 			(void)close(fd);
-		pthread_mutex_destroy(&io->mutex);
 		free(io);
 		io = nullptr;
 		return nullptr;
@@ -141,8 +90,7 @@ cli_io_create (struct loop        *network,
 
 int
 cli_io_submit (struct cli_io     *io,
-               struct cli_io_job *job,
-               size_t             bytes)
+               struct cli_io_job *job)
 {
 	if (!io || !job || !job->work || !job->done)
 		return EINVAL;
@@ -152,9 +100,8 @@ cli_io_submit (struct cli_io     *io,
 		return EAGAIN;
 	job->io = io;
 	job->blocker = (struct blocker_job){
-		.done = {.fn = cli_io_complete}, .work = cli_io_work, .loop = io->network
+		.done = {.fn = cli_io_complete}, .work = cli_io_work, .loop = &io->ui->loop
 	};
-	job->result = (struct cli_mailbox_msg){.fn = cli_io_result, .bytes = bytes};
 	int e = blocker_submit(io->blocker, &job->blocker);
 	if (!e)
 		++io->pending;
@@ -189,10 +136,9 @@ cli_io_destroy (struct cli_io **p_io)
 	 * blocker does not expose how many workers exist: retain that fd
 	 * until process exit, as blocker_create() requires. */
 	if (io->started || notify_unused)
-		cli_loop_close(io->mailbox->loop, &io->notify);
+		cli_loop_close(io->ui, &io->notify);
 	else
-		loop_unwatch(&io->mailbox->loop->loop, &io->notify);
-	pthread_mutex_destroy(&io->mutex);
+		loop_unwatch(&io->ui->loop, &io->notify);
 	free(io);
 	*p_io = nullptr;
 }

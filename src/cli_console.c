@@ -311,8 +311,7 @@ cli_console_input_arm (struct cli_console *console)
 		console->input_job.job.work = cli_console_input_work;
 		console->input_job.job.done = cli_console_input_done;
 		console->input_job.fd = STDIN_FILENO;
-		int e = cli_io_submit(console->io, &console->input_job.job,
-		                      sizeof console->input_job);
+		int e = cli_io_submit(console->io, &console->input_job.job);
 		if (!e)
 			console->input_working = true;
 		return e;
@@ -813,8 +812,7 @@ cli_console_output_drain (struct cli_console *console)
 		console->output_job.fd = STDOUT_FILENO;
 		console->output_job.job.work = cli_console_output_work;
 		console->output_job.job.done = cli_console_output_done;
-		int e = cli_io_submit(console->io, &console->output_job.job,
-		                      sizeof console->output_job);
+		int e = cli_io_submit(console->io, &console->output_job.job);
 		if (!e)
 			console->output_working = true;
 		return e;

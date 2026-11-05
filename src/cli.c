@@ -429,7 +429,7 @@ cli_work_wait (struct cli *cli,
 		return EINTR;
 	struct cli_work work = {.job = {.work = cli_work_run, .done = cli_work_done},
 	                        .fn = fn, .data = data};
-	int e = cli_io_submit(cli->io, &work.job, sizeof work);
+	int e = cli_io_submit(cli->io, &work.job);
 	if (e)
 		return e;
 	bool busy = cli->busy;
@@ -1195,7 +1195,7 @@ cli_run (struct cli_options const *options,
 	if (!e)
 		cli->network = cli_network_create(&cli->reactor, &cli->mailbox, &e);
 	if (!e)
-		cli->io = cli_io_create(cli_network_loop(cli->network), &cli->mailbox, &e);
+		cli->io = cli_io_create(&cli->reactor, &e);
 	if (!e)
 		cli->client = cli_client(options->socket, options->tool, cli->network, &e);
 	bool color = !strcmp(options->color, "on") || (!strcmp(options->color, "auto") && cli->tty && !getenv("NO_COLOR"));
