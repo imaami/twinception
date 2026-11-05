@@ -439,6 +439,21 @@ ai_kind (struct json_object *type,
 	return i;
 }
 
+/* Set @p *json to the JSON text of @p val, or to an empty view if @p val is
+ * nullptr. Return 0, or ENOMEM if json-c cannot allocate the text.
+ */
+static int
+ai_json_text (struct json_object *val,
+              struct cstr_view   *json)
+{
+	if (!val) {
+		*json = (struct cstr_view){};
+		return 0;
+	}
+	json->data = json_object_to_json_string_length(val, JB_WIRE, &json->len);
+	return json->data ? 0 : ENOMEM;
+}
+
 /* Give @p sink's replay, if it keeps one, the @p len bytes of JSON text at
  * @p json.
  */
@@ -459,9 +474,9 @@ ai_replay_text (struct ai_sink const *sink,
 {
 	if (!sink->replay || !json_object_is_type(val, json_type_string))
 		return 0;
-	size_t len = 0;
-	char const *json = json_object_to_json_string_length(val, JB_WIRE, &len);
-	return json ? sink->replay(sink->user, json + 1, len - 2) : ENOMEM;
+	struct cstr_view json;
+	int e = ai_json_text(val, &json);
+	return e ? e : sink->replay(sink->user, json.data + 1, json.len - 2);
 }
 
 /* Pass @p val, an item of the answer, whole, to @p sink's replay, if it has
@@ -475,12 +490,10 @@ ai_replay_after (struct ai_sink const *sink,
 {
 	if (!sink->replay)
 		return 0;
-	size_t n = 0;
-	char const *json = json_object_to_json_string_length(val, JB_WIRE, &n);
-	if (!json)
-		return ENOMEM;
-	int e = sink->replay(sink->user, head, len);
-	return e ? e : sink->replay(sink->user, json, n);
+	struct cstr_view json;
+	int e = ai_json_text(val, &json);
+	e = e ? e : sink->replay(sink->user, head, len);
+	return e ? e : sink->replay(sink->user, json.data, json.len);
 }
 
 /* Give it @p val, an item of the answer, whole, after a comma. */
@@ -491,7 +504,9 @@ ai_replay_item (struct ai_sink const *sink,
 	return ai_replay_after(sink, ",", 1, val);
 }
 
-/* Hand the pieces of chat completions' tool calls, @p calls, to @p sink. */
+/* Pass the parts of the tool calls of chat completions, @p calls, to
+ * sink->call.
+ */
 static int
 ai_chat_calls (struct ai_sink const *sink,
                struct json_object   *calls)
@@ -502,16 +517,16 @@ ai_chat_calls (struct ai_sink const *sink,
 	struct json_object *c;
 	for (size_t i = 0; !e && (c = jb_at(calls, i)); ++i) {
 		struct json_object *fn = jb_get(c, "function");
-		struct ai_call call = { .index = ai_index(jb_get(c, "index")) };
-		/* Gemini's thought signature, which a turn gives back. */
-		struct json_object *extra = jb_get(c, "extra_content");
-		call.id = jb_view(jb_get(c, "id"));
-		call.name = jb_view(jb_get(fn, "name"));
-		call.extra.data = extra ? json_object_to_json_string_length(extra, JB_WIRE,
-		                                                            &call.extra.len)
-		                        : nullptr;
-		call.args = jb_view(jb_get(fn, "arguments"));
-		e = extra && !call.extra.data ? ENOMEM : sink->call(sink->user, &call);
+		struct ai_call call = {
+			.id    = jb_view(jb_get(c, "id")),
+			.name  = jb_view(jb_get(fn, "name")),
+			.args  = jb_view(jb_get(fn, "arguments")),
+			.index = ai_index(jb_get(c, "index")),
+		};
+		/* extra_content contains the thought signature of Gemini, which
+		 * askai sends back unchanged in the next turn. */
+		e = ai_json_text(jb_get(c, "extra_content"), &call.extra);
+		e = e ? e : sink->call(sink->user, &call);
 	}
 	return e;
 }
@@ -650,11 +665,11 @@ ai_responses_event (struct ai_sink const *sink,
 
 #define REPLAY(s) ai_replay(sink, s, sizeof s - 1)
 
-/* Hand the start of tool call @p at, @p item, to @p sink: its id and name,
- * its arguments, @p item's member @p key, if they are a JSON object that
- * is not empty, and the JSON text of @p extra as its extra, unless
- * @p extra is nullptr. A server that sends the arguments whole sends them
- * in the start.
+/* Pass the start of tool call @p at, @p item, to sink->call. The parts are
+ * the id and the name of @p item, the arguments in the member @p key of
+ * @p item if they are a JSON object that is not empty, and the JSON text
+ * of @p extra if @p extra is not nullptr. A server that sends the
+ * arguments whole sends them in the start.
  */
 static int
 ai_call_start (struct ai_sink const *sink,
@@ -668,18 +683,14 @@ ai_call_start (struct ai_sink const *sink,
 	struct json_object *args = jb_get(item, key);
 	bool whole = json_object_is_type(args, json_type_object) &&
 	             json_object_object_length(args);
-	struct ai_call call = { .index = at };
-	call.id = jb_view(jb_get(item, "id"));
-	call.name = jb_view(jb_get(item, "name"));
-	call.extra.data = extra ? json_object_to_json_string_length(extra, JB_WIRE,
-	                                                            &call.extra.len)
-	                        : nullptr;
-	call.args.data = whole ? json_object_to_json_string_length(args, JB_WIRE,
-	                                                           &call.args.len)
-	                       : nullptr;
-	if ((whole && !call.args.data) || (extra && !call.extra.data))
-		return ENOMEM;
-	return sink->call(sink->user, &call);
+	struct ai_call call = {
+		.id    = jb_view(jb_get(item, "id")),
+		.name  = jb_view(jb_get(item, "name")),
+		.index = at,
+	};
+	int e = ai_json_text(whole ? args : nullptr, &call.args);
+	e = e ? e : ai_json_text(extra, &call.extra);
+	return e ? e : sink->call(sink->user, &call);
 }
 
 /* Hand what Anthropic's content block @p block, @p at in the content,
@@ -844,8 +855,8 @@ ai_generate_close (struct ai_sink const *sink,
 	return REPLAY("\"}");
 }
 
-/* Hand Gemini's function call @p fc to @p sink, numbered as @p reader
- * counts the calls.
+/* Pass the function call @p fc of Gemini to sink->call with the index
+ * reader->calls, and increment reader->calls.
  */
 static int
 ai_generate_call (struct ai_sink const *sink,
@@ -854,14 +865,13 @@ ai_generate_call (struct ai_sink const *sink,
 {
 	if (!sink->call)
 		return 0;
-	struct json_object *args = jb_get(fc, "args");
-	struct ai_call call = { .index = reader->calls++ };
-	call.id = jb_view(jb_get(fc, "id"));
-	call.name = jb_view(jb_get(fc, "name"));
-	call.args.data = args ? json_object_to_json_string_length(args, JB_WIRE,
-	                                                          &call.args.len)
-	                      : nullptr;
-	return args && !call.args.data ? ENOMEM : sink->call(sink->user, &call);
+	struct ai_call call = {
+		.id    = jb_view(jb_get(fc, "id")),
+		.name  = jb_view(jb_get(fc, "name")),
+		.index = reader->calls++,
+	};
+	int e = ai_json_text(jb_get(fc, "args"), &call.args);
+	return e ? e : sink->call(sink->user, &call);
 }
 
 /* End the text part that @p reader has open, then give @p sink's replay
