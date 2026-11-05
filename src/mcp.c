@@ -6686,8 +6686,8 @@ mcp_slot_attach (struct mcp_slot  *slot,
 	}
 	char uri[UPLOADS_URI];
 	size_t len = 0;
-	size_t n = uploads_find(st->uploads, mcp_req_owner(req), id.data, id.len,
-	                        clk_realtime().tv_sec, uri, &len);
+	size_t n = uploads_find(st->uploads, mcp_req_owner(req), id, clk_realtime().tv_sec, uri,
+	                        &len);
 	int e = n ? mcp_req_fits(req, len, out) : ENOENT;
 	if (e)
 		return e;
@@ -6728,9 +6728,8 @@ mcp_slot_attached (struct mcp_slot  *slot,
 	LOG(LOG_VERBOSE, "upstream file %s uploaded: %zu bytes", dstr_get(&uri), bytes);
 	e = mcp_req_attach(req, dstr_get(&uri), dstr_len(&uri), bytes);
 	if (!e && expires)
-		(void)uploads_keep(st->uploads, mcp_req_owner(req), id.data, id.len,
-		                   dstr_get(&uri), dstr_len(&uri), bytes, expires,
-		                   clk_realtime().tv_sec);
+		(void)uploads_keep(st->uploads, mcp_req_owner(req), id, cstr_view_dstr(&uri),
+		                   bytes, expires, clk_realtime().tv_sec);
 	return e;
 }
 

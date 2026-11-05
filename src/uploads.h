@@ -17,6 +17,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cstr_view.h"
+
 enum {
 	UPLOADS_MAX    = 128,       /**< files in the table */
 	UPLOADS_ID     = 64,        /**< bytes of an object id, at most */
@@ -41,41 +43,36 @@ uploads_destroy (struct uploads **p_uploads);
 
 /**
  * Copies into @p uri the URI of the file of @p owner for the note whose
- * object id is the @p id_len bytes at @p id, and its length in bytes into
- * @p *bytes, if the table has that file and it lasts more than
- * UPLOADS_MARGIN seconds past @p now, in seconds since the epoch. Returns
- * the length of the URI, or 0 if there is no such file or an argument is
- * not valid.
+ * object id is @p id, and its length in bytes into @p *bytes, if the table
+ * contains that file and the file expires more than UPLOADS_MARGIN seconds
+ * after @p now, in seconds since the epoch. Returns the length of the URI,
+ * or 0 if there is no such file or an argument is not valid.
  */
 extern size_t
-uploads_find (struct uploads *uploads,
-              uint64_t        owner,
-              char const     *id,
-              size_t          id_len,
-              int64_t         now,
-              char            uri[UPLOADS_URI],
-              size_t         *bytes);
+uploads_find (struct uploads   *uploads,
+              uint64_t          owner,
+              struct cstr_view  id,
+              int64_t           now,
+              char              uri[UPLOADS_URI],
+              size_t           *bytes);
 
 /**
  * Puts into the table the file of @p owner, of @p bytes bytes, whose URI is
- * the @p uri_len bytes at @p uri, for the note whose object id is the
- * @p id_len bytes at @p id, and which expires at @p expires, in seconds
- * since the epoch. It replaces the file of the same owner and id, else the
- * file that expires first: a free place, a file that has expired, or the
- * file that expires soonest. Returns 0, or EINVAL if an argument is not
- * valid: an id or a URI that is empty or too long, or an expiry that is
- * not past @p now, in seconds since the epoch.
+ * @p uri, for the note whose object id is @p id, and which expires at
+ * @p expires, in seconds since the epoch. It replaces the file of the same
+ * owner and id, else the file that expires first: a free place, a file that
+ * has expired, or the file that expires soonest. Returns 0, or EINVAL if an
+ * argument is not valid: an id or a URI that is empty or too long, or an
+ * expiry that is not past @p now, in seconds since the epoch.
  */
 extern int
-uploads_keep (struct uploads *uploads,
-              uint64_t        owner,
-              char const     *id,
-              size_t          id_len,
-              char const     *uri,
-              size_t          uri_len,
-              size_t          bytes,
-              int64_t         expires,
-              int64_t         now);
+uploads_keep (struct uploads   *uploads,
+              uint64_t          owner,
+              struct cstr_view  id,
+              struct cstr_view  uri,
+              size_t            bytes,
+              int64_t           expires,
+              int64_t           now);
 
 /** Removes the files of @p owner from the table, so that their notes are
  *  uploaded again: a turn that had one of them failed, perhaps because the

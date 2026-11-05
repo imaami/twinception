@@ -1021,7 +1021,7 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	int e = 0;
 	if (notes_revision_ready(call->revision) && !(call->fetch & FETCH_DIFF)) {
 		struct cstr_view file = notes_revision_file(call->revision);
-		e = notes_read_input(&in, notes_revision_from(call->revision), file.data, file.len);
+		e = notes_read_input(&in, notes_revision_from(call->revision), file);
 	}
 	if (e) {
 		buf_fini(&in);
@@ -1223,18 +1223,18 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 	int e = notes_tool_call_say(call, &head, 1);
 	if (!e)
 		e = notes_tool_history(slot, buf_peek(&c->out), c->cut, &newest);
-	char const *name = (char const *)newest.ptr;
+	struct cstr_view const name = { (char const *)newest.ptr, newest.len };
 	struct cstr_view const p[] = {
 		CSTR_VIEW("\n[askai: the current text of your most recently written note, "),
-		{ name, newest.len ? jb_utf8(name, newest.len) : 0 },
+		{ name.data, name.len ? jb_utf8(name.data, name.len) : 0 },
 		CSTR_VIEW(":]\n\n"),
 	};
-	/* The name comes from git. git reads the note only if add would take
-	 * the name. */
-	size_t skip = 0;
-	bool named = newest.len && !notes_name(name, newest.len, &skip) && !skip;
+	/* The name comes from git. git reads the note only if add would accept
+	 * the name as it is. */
+	struct cstr_view checked = name;
+	bool named = name.len && !notes_name(&checked) && checked.len == name.len;
 	if (!e && named && !(e = notes_tool_call_say(call, p, ARRAY_SIZE(p))))
-		e = notes_read_input(&in, call->repo, name, newest.len);
+		e = notes_read_input(&in, call->repo, name);
 	if (!e && newest.len && !named)
 		e = notes_tool_call_say(call, &CSTR_VIEW("\n[askai: the newest note could not "
 		                                         "be read.]\n"), 1);
@@ -1389,12 +1389,11 @@ static struct cstr_view const bad_name = { bad_name_text, sizeof bad_name_text -
  */
 static int
 notes_tool_add_data (struct buf           *in,
-                     char const           *name,
-                     size_t                name_len,
+                     struct cstr_view      name,
                      struct datauri const *d,
                      struct notes_part    *part)
 {
-	int e = notes_add_head(in, name, name_len, d->size, part);
+	int e = notes_add_head(in, name, d->size, part);
 	struct span s;
 	if (!e)
 		e = buf_reserve(in, d->size + 1, SIZE_MAX, &s);
@@ -1422,21 +1421,20 @@ notes_tool_add (struct mcp_slot    *slot,
 	size_t most = call->loop->tool->files_inline;
 	char big[96];
 	size_t len = 0;
-	size_t name_len = 0;
-	size_t skip = 0;
 	size_t uri_len = 0;
 	struct json_object *content = jb_get(args, "content");
 	char const *text = jb_str(jb_get(args, "text"), &len);
-	char const *name = jb_str(jb_get(args, "file"), &name_len);
+	struct cstr_view name = {};
+	name.data = jb_str(jb_get(args, "file"), &name.len);
 	char const *uri = jb_str(content, &uri_len);
 	struct datauri data = {};
 	bool turn = call->side == NOTES_UPSTREAM;
 	size_t kept = text && turn ? notice_kept(text, len) : len;
 	struct cstr_view problem =
-		!name || notes_name(name, name_len, &skip) ? bad_name
+		!name.data || notes_name(&name) ? bad_name
 		: content && turn ? CSTR_VIEW("Only a client hands askai a file as content.")
 		: content && text ? CSTR_VIEW("Give the text or the content of a note, not both.")
-		: content && (!uri || datauri_parse(uri, uri_len, &data))
+		: content && (!uri || datauri_init(&data, (struct cstr_view){ uri, uri_len }))
 		? CSTR_VIEW("The content argument must be a data: URI, which the client fills "
 		            "in with a file that the user gave it.")
 		: content && data.size > most
@@ -1460,15 +1458,14 @@ notes_tool_add (struct mcp_slot    *slot,
 		                              "create it."), TOOL_FAILED);
 		return;
 	}
-	name += skip;
-	name_len -= skip;
 	struct buf in = {};
-	int e = content ? notes_tool_add_data(&call->file, name, name_len, &data, &call->part)
-	                : notes_add_file(&call->file, name, name_len, text, len, &call->part);
+	int e = content ? notes_tool_add_data(&call->file, name, &data, &call->part)
+	                : notes_add_file(&call->file, name, (struct cstr_view){ text, len },
+	                                 &call->part);
 	if (content)
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, data.size);
 	if (!e && initialized)
-		e = notes_check_input(&in, call->repo, name, name_len);
+		e = notes_check_input(&in, call->repo, name);
 	if (e) {
 		buf_fini(&in);
 		notes_tool_end(slot, e, true);
@@ -1489,10 +1486,10 @@ notes_tool_got_copy (struct mcp_slot *slot,
 	struct cstr_view to = call->fetch & FETCH_RESTORE ? notes_revision_file(call->revision)
 	                    : (struct cstr_view){ call->name, call->len };
 	struct buf in = {};
-	int e = notes_add_file(&call->file, to.data, to.len, (char const *)text.ptr, text.len,
-	                       &call->part);
+	struct cstr_view const bytes = { (char const *)text.ptr, text.len };
+	int e = notes_add_file(&call->file, to, bytes, &call->part);
 	if (!e && initialized)
-		e = notes_check_input(&in, call->repo, to.data, to.len);
+		e = notes_check_input(&in, call->repo, to);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
 	child_destroy(&call->child);
 	if (e) {
@@ -1515,28 +1512,27 @@ notes_tool_read (struct mcp_slot    *slot,
                  uint16_t            fetch)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	size_t len = 0;
-	size_t skip = 0;
-	char const *name = jb_str(jb_get(args, "file"), &len);
-	if (!name || notes_name(name, len, &skip)) {
+	struct cstr_view name = {};
+	name.data = jb_str(jb_get(args, "file"), &name.len);
+	if (!name.data || notes_name(&name)) {
 		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		return;
 	}
 	if (fetch & FETCH_COPY) {
 		struct json_object *as = jb_get(args, "as");
-		size_t to_len = len;
-		size_t to_skip = skip;
-		char const *to = as ? jb_str(as, &to_len) : name;
-		if (!to || notes_name(to, to_len, &to_skip)) {
+		struct cstr_view to = name;
+		if (as)
+			to.data = jb_str(as, &to.len);
+		if (!to.data || notes_name(&to)) {
 			mcp_slot_tell(slot, CSTR_VIEW("The as argument must be a file name, as the "
 			                              "file argument is."), TOOL_FAILED);
 			return;
 		}
-		call->len = to_len - to_skip;
-		memcpy(call->name, to + to_skip, call->len);
+		call->len = to.len;
+		memcpy(call->name, to.data, to.len);
 	}
 	struct buf in = {};
-	int e = notes_read_input(&in, notes_tool_call_notebook(call), name + skip, len - skip);
+	int e = notes_read_input(&in, notes_tool_call_notebook(call), name);
 	if (e) {
 		buf_fini(&in);
 		notes_tool_end(slot, e, true);

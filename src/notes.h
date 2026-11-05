@@ -266,28 +266,24 @@ extern char const *
 notes_revision_tip (struct notes_revision const *revision);
 
 /**
- * Checks the name of a note, the @p len bytes at @p name. Slashes at the
- * start do not belong to the name, and the function stores their number in
- * @p *skip. The rest is a valid name if it has 1 to NOTES_NAME bytes and
- * no control characters, and if none of its parts between slashes is
- * empty, ".", "..", or a name that NTFS would read as ".git". git refuses
- * those names: ".git" or "git~1" in any case, followed only by spaces and
- * dots, also before a colon or a backslash. Returns 0 for a valid name,
- * else EINVAL.
+ * Checks @p *name as the name of a note. Slashes at the start do not belong
+ * to the name, and the function drops them from @p *name. The rest is a
+ * valid name if it is 1 to NOTES_NAME bytes long, contains no control
+ * characters, and if none of its parts between slashes is empty, ".", "..",
+ * or a name that NTFS would read as ".git". git refuses those names: ".git"
+ * or "git~1" in any case, followed only by spaces and dots, also before a
+ * colon or a backslash. Returns 0 for a valid name, else EINVAL.
  */
 extern int
-notes_name (char const *name,
-            size_t      len,
-            size_t     *skip);
+notes_name (struct cstr_view *name);
 
-/** Writes the input of the command NOTES_CHECK for the valid name of
- *  @p len bytes at @p name to @p in. Returns 0 or ENOMEM.
+/** Writes the input of the command NOTES_CHECK for the valid name @p name
+ *  to @p in. Returns 0 or ENOMEM.
  */
 extern int
-notes_check_input (struct buf *in,
-                   char const *repo,
-                   char const *name,
-                   size_t      len);
+notes_check_input (struct buf       *in,
+                   char const       *repo,
+                   struct cstr_view  name);
 
 /**
  * Reads @p out, the output of the command NOTES_CHECK. If the branch has
@@ -317,32 +313,29 @@ notes_file_same (struct notes_file const *file,
 
 /**
  * Writes to @p in the head of the file part of the input of the command
- * NOTES_ADD, for a note of the @p name_len bytes at @p name whose text has
- * @p len bytes, and reserves room for the text: the caller appends the
- * text and then a line feed, as notes_add_file() does. It stores the
- * offsets of the name and the text in @p *part. Returns 0, EINVAL for a
- * null argument or a name longer than NOTES_NAME, or ENOMEM.
+ * NOTES_ADD, for a note with the name @p name whose text is @p len bytes
+ * long, and reserves room for the text: the caller appends the text and then
+ * a line feed, as notes_add_file() does. It stores the offsets of the name
+ * and the text in @p *part. Returns 0, EINVAL for a null argument or a name
+ * longer than NOTES_NAME, or ENOMEM.
  */
 extern int
 notes_add_head (struct buf        *in,
-                char const        *name,
-                size_t             name_len,
+                struct cstr_view   name,
                 size_t             len,
                 struct notes_part *part);
 
 /**
  * Writes to @p in the file part of the input of the command NOTES_ADD. The
- * valid name of the note is the @p name_len bytes at @p name, and its text
- * is the @p len bytes at @p text. notes_add_input() puts the commit before
- * the file part. It fills @p *part as notes_add_head() does. Returns 0,
- * EINVAL for a name longer than NOTES_NAME, or ENOMEM.
+ * valid name of the note is @p name, and its text is @p text.
+ * notes_add_input() puts the commit before the file part. The function
+ * fills @p *part as notes_add_head() does. Returns 0, EINVAL for a name
+ * longer than NOTES_NAME, or ENOMEM.
  */
 extern int
 notes_add_file (struct buf        *in,
-                char const        *name,
-                size_t             name_len,
-                char const        *text,
-                size_t             len,
+                struct cstr_view   name,
+                struct cstr_view   text,
                 struct notes_part *part);
 
 /**
@@ -372,14 +365,13 @@ extern int
 notes_add_out (struct span out,
                char        commit[NOTES_TIP + 1]);
 
-/** Writes the input of the command NOTES_READ for the valid name of @p len
- *  bytes at @p name to @p in. Returns 0 or ENOMEM.
+/** Writes the input of the command NOTES_READ for the valid name @p name
+ *  to @p in. Returns 0 or ENOMEM.
  */
 extern int
-notes_read_input (struct buf *in,
-                  char const *repo,
-                  char const *name,
-                  size_t      len);
+notes_read_input (struct buf       *in,
+                  char const       *repo,
+                  struct cstr_view  name);
 
 /**
  * Reads @p out, the output of the command NOTES_READ, and stores the text

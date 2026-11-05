@@ -53,14 +53,14 @@ static constexpr uint64_t GIT_GRACE_NS = 1'000'000'000;
 
 static_assert(GIT_MAX == 4 << 20 && GIT_GRACE_NS == 1'000'000'000, "git.h says");
 
-/* A configured repository. name, path and safe share one allocation: the
- * name, the real path, and the safe.directory setting for git.
+/* A configured repository. path, safe and name share one allocation, which
+ * begins at path: the real path, the safe.directory setting for git, and
+ * the name. Each of the three ends in a NUL.
  */
 struct git_repo {
-	char   *name;
-	char   *path;
-	char   *safe;
-	size_t  name_len;
+	struct cstr_view name;
+	char            *path;
+	char            *safe;
 };
 
 struct git {
@@ -95,11 +95,10 @@ struct git_root {
 };
 
 struct git_revision {
-	char const *path;
-	size_t      path_len;
-	size_t      root;
-	size_t      dots;
-	char        text[REV_WORD];
+	struct cstr_view path;  /* ":path", or empty; it ends in a NUL */
+	size_t           root;
+	size_t           dots;
+	char             text[REV_WORD];
 };
 
 /* The lines that a read asks for, and how far the scan and then the
@@ -316,19 +315,19 @@ git_repo_init (struct git_repo *r,
 	if (!real)
 		return errno;
 	size_t real_len = strlen(real);
-	char *s = malloc(len + 1 + 2 * (real_len + 1) + sizeof safe - 1);
+	char *s = malloc(2 * (real_len + 1) + sizeof safe - 1 + len + 1);
 	if (!s) {
 		free(real);
 		return ENOMEM;
 	}
-	r->name = memcpy(s, name, len);
-	r->name[len] = '\0';
-	r->name_len = len;
-	r->path = memcpy(s + len + 1, real, real_len + 1);
+	r->path = memcpy(s, real, real_len + 1);
 	r->safe = r->path + real_len + 1;
 	memcpy(r->safe, safe, sizeof safe - 1);
-	memcpy(r->safe + sizeof safe - 1, real, real_len + 1);
+	char *end = memcpy(r->safe + sizeof safe - 1, real, real_len + 1);
 	free(real);
+	char *copy = memcpy(end + real_len + 1, name, len);
+	copy[len] = '\0';
+	r->name = (struct cstr_view){ copy, len };
 	return 0;
 }
 
@@ -410,7 +409,7 @@ git_destroy (struct git **p_git)
 	struct git *git = *p_git;
 	*p_git = nullptr;
 	for (size_t i = 0; i < git->n; ++i)
-		free(git->repo[i].name);
+		free(git->repo[i].path);
 	free(git->env[CEILINGS]);
 	free(git);
 }
@@ -440,7 +439,7 @@ git_definition (void const *service)
 	              GIT_MAX == 4 << 20, "the description says");
 	struct json_object *repos = json_object_new_array();
 	for (size_t i = 0; repos && i < git->n; ++i)
-		repos = jb_push_or_free(repos, json_object_new_string(git->repo[i].name));
+		repos = jb_push_or_free(repos, json_object_new_string(git->repo[i].name.data));
 	struct json_object *cmds = json_object_new_array();
 	for (size_t i = 0; cmds && i < ARRAY_SIZE(commands); ++i)
 		cmds = jb_push_or_free(cmds, json_object_new_string(commands[i].name));
@@ -676,7 +675,7 @@ git_find (struct git const *git,
           char const       *name)
 {
 	for (size_t i = 0; name && i < git->n; ++i)
-		if (!strcmp(name, git->repo[i].name))
+		if (!strcmp(name, git->repo[i].name.data))
 			return &git->repo[i];
 	return nullptr;
 }
@@ -691,7 +690,7 @@ git_repos_wrong (struct git const *git,
 	/* Once cut short, with "...", the list says no more. */
 	for (size_t i = 0; i < git->n && n < GIT_WHY - 1; ++i)
 		n += util_format(why + n, GIT_WHY - n, "%s %s", i ? "," : "",
-		                 git->repo[i].name);
+		                 git->repo[i].name.data);
 	if (n < GIT_WHY - 1)
 		util_format(why + n, GIT_WHY - n, ".");
 	return EINVAL;
@@ -871,8 +870,7 @@ git_call_command (struct git_call   *call,
 		size_t left = range ? (size_t)(range - s) : root;
 		struct git_revision *rev = &call->revisions[i];
 		rev->root = call->n_roots;
-		rev->path = path ? path : "";
-		rev->path_len = len - root;
+		rev->path = (struct cstr_view){ path ? path : "", len - root };
 		int e = git_commit(call->roots[call->n_roots++].name, s, left);
 		if (!e && range) {
 			++endpoints;
@@ -886,7 +884,7 @@ git_call_command (struct git_call   *call,
 			                 "selectors and revision expansions are unavailable.", i);
 		argv[k++] = rev->text;
 	}
-	if ((takes & LINES) && !*call->revisions[0].path)
+	if ((takes & LINES) && !call->revisions[0].path.len)
 		return git_wrong(why, "git read needs the file as its revision, such as "
 		                 "\"revisions\": [\"HEAD:src/main.c\"].");
 	if ((takes & PAIR) && endpoints != 2)
@@ -1116,7 +1114,7 @@ git_call_resolve (struct git_call *call)
 			util_format(rev->text, sizeof rev->text, "%s%.*s%s", first,
 			            (int)rev->dots, "...", call->roots[rev->root + 1].name);
 		else
-			util_format(rev->text, sizeof rev->text, "%s%s", first, rev->path);
+			util_format(rev->text, sizeof rev->text, "%s%s", first, rev->path.data);
 	}
 	return 0;
 }
@@ -1222,7 +1220,7 @@ git_ended (struct mcp_slot *slot,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
 		note = FORMAT(buf, fmt, call->roots[rev->root].name,
-		              git_line_hint(rev->path + 1) ? hint : "");
+		              git_line_hint(rev->path.data + 1) ? hint : "");
 	} else if (c->status) {
 		char const *fmt = commands[call->command].takes & OBJECT
 			? "[The committed object could not be read (git exited with status %d).]"
@@ -1301,7 +1299,7 @@ git_read_begin (struct git_read       *read,
 	size_t reserve = sizeof "[Repository , file  at commit : lines  to  of at least .]\n" +
 	                 sizeof "\n\n[To read on, call again with \"revisions\": "
 	                        "[\"\"] and \"line\": .]" +
-	                 repo->name_len + 2 * read->rev_len + 4 * 20;
+	                 repo->name.len + 2 * read->rev_len + 4 * 20;
 	read->room = window > reserve ? window - reserve : 0;
 	read->last = read->line - 1;
 }
@@ -1387,7 +1385,7 @@ git_read_head (struct git_read const *read,
 {
 	char lines[sizeof ": lines  to  of at least .]\n" + 3 * 20];
 	struct cstr_view const p[] = {
-		CSTR_VIEW("[Repository "), { repo->name, repo->name_len }, CSTR_VIEW(", file "),
+		CSTR_VIEW("[Repository "), repo->name, CSTR_VIEW(", file "),
 		{ read->rev + read->oid_len + 1, read->rev_len - read->oid_len - 1 },
 		CSTR_VIEW(" at commit "), { read->rev, read->oid_len },
 		read->total ? FORMAT(lines, ": lines %zu to %zu of %s%zu.]\n", read->line,
@@ -1510,9 +1508,9 @@ git_read_shown (struct git_read const *read,
 		return 0;
 	struct git_revision const *rev = &call->revisions[0];
 	struct review_source const src = {
-		.repo   = { call->repo->name, call->repo->name_len },
+		.repo   = call->repo->name,
 		.commit = { call->roots[rev->root].name, read->oid_len },
-		.path   = { rev->path + 1, rev->path_len - 1 },
+		.path   = cstr_view_slice(rev->path, 1, SIZE_MAX),
 		.at     = read->head,
 		.len    = (part ? read->mark : end) - read->head,
 		.first  = read->line,

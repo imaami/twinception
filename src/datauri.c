@@ -25,18 +25,19 @@ datauri_digit (unsigned char c)
 static int
 datauri_parse_base64 (struct datauri *d)
 {
-	size_t n = d->len;
+	char const *s = d->encoded.data;
+	size_t n = d->encoded.len;
 	size_t pad = 0;
-	while (n && d->data[n - 1] == '=' && pad < 2) {
+	while (n && s[n - 1] == '=' && pad < 2) {
 		--n;
 		++pad;
 	}
 	if (n % 4 == 1 || (pad && (n + pad) % 4))
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i)
-		if (datauri_digit((unsigned char)d->data[i]) < 0)
+		if (datauri_digit((unsigned char)s[i]) < 0)
 			return EINVAL;
-	d->len = n;
+	d->encoded.len = n;
 	d->size = n / 4 * 3 + (n % 4 ? n % 4 - 1 : 0);
 	return 0;
 }
@@ -45,16 +46,18 @@ datauri_parse_base64 (struct datauri *d)
 static int
 datauri_parse_percent (struct datauri *d)
 {
+	char const *s = d->encoded.data;
+	size_t const len = d->encoded.len;
 	size_t size = 0;
-	for (size_t i = 0; i < d->len; ++size) {
-		if (d->data[i] != '%') {
+	for (size_t i = 0; i < len; ++size) {
+		if (s[i] != '%') {
 			++i;
 			continue;
 		}
-		if (d->len - i < 3)
+		if (len - i < 3)
 			return EINVAL;
-		if (util_hex_digit((unsigned char)d->data[i + 1]) > 15 ||
-		    util_hex_digit((unsigned char)d->data[i + 2]) > 15)
+		if (util_hex_digit((unsigned char)s[i + 1]) > 15 ||
+		    util_hex_digit((unsigned char)s[i + 2]) > 15)
 			return EINVAL;
 		i += 3;
 	}
@@ -63,23 +66,21 @@ datauri_parse_percent (struct datauri *d)
 }
 
 int
-datauri_parse (char const     *uri,
-               size_t          len,
-               struct datauri *d)
+datauri_init (struct datauri   *d,
+              struct cstr_view  uri)
 {
 	static char const scheme[] = "data:";
 	static char const base64[] = ";base64";
 	size_t s = sizeof scheme - 1;
 	size_t b = sizeof base64 - 1;
-	if (!uri || !d || len < s || strncasecmp(uri, scheme, s))
+	if (!uri.data || !d || uri.len < s || strncasecmp(uri.data, scheme, s))
 		return EINVAL;
-	char const *comma = memchr(uri + s, ',', len - s);
+	char const *comma = memchr(uri.data + s, ',', uri.len - s);
 	if (!comma)
 		return EINVAL;
-	size_t head = (size_t)(comma - uri);
+	size_t head = (size_t)(comma - uri.data);
 	*d = (struct datauri){
-		.data = comma + 1,
-		.len = len - head - 1,
+		.encoded = cstr_view_slice(uri, head + 1, SIZE_MAX),
 		.base64 = head - s >= b && !strncasecmp(comma - b, base64, b),
 	};
 	return d->base64 ? datauri_parse_base64(d) : datauri_parse_percent(d);
@@ -91,21 +92,23 @@ datauri_decode (struct datauri const *d,
 {
 	if (!d || !out)
 		return;
+	char const *s = d->encoded.data;
+	size_t const len = d->encoded.len;
 	if (!d->base64) {
-		for (size_t i = 0; i < d->len; ) {
-			if (d->data[i] == '%') {
-				*out++ = (unsigned char)(util_hex_digit((unsigned char)d->data[i + 1]) << 4 |
-				                         util_hex_digit((unsigned char)d->data[i + 2]));
+		for (size_t i = 0; i < len; ) {
+			if (s[i] == '%') {
+				*out++ = (unsigned char)(util_hex_digit((unsigned char)s[i + 1]) << 4 |
+				                         util_hex_digit((unsigned char)s[i + 2]));
 				i += 3;
 			} else {
-				*out++ = (unsigned char)d->data[i++];
+				*out++ = (unsigned char)s[i++];
 			}
 		}
 		return;
 	}
 	uint32_t v = 0;
-	for (size_t i = 0; i < d->len; ++i) {
-		v = v << 6 | (uint32_t)datauri_digit((unsigned char)d->data[i]);
+	for (size_t i = 0; i < len; ++i) {
+		v = v << 6 | (uint32_t)datauri_digit((unsigned char)s[i]);
 		if (i % 4 == 3) {
 			*out++ = (unsigned char)(v >> 16);
 			*out++ = (unsigned char)(v >> 8);
@@ -114,7 +117,7 @@ datauri_decode (struct datauri const *d,
 		}
 	}
 	/* The last group of two or three digits gives one or two bytes. */
-	size_t rest = d->len % 4;
+	size_t rest = len % 4;
 	if (rest == 2) {
 		*out = (unsigned char)(v >> 4);
 	} else if (rest == 3) {

@@ -50,38 +50,36 @@ uploads_destroy (struct uploads **p_uploads)
 	free(u);
 }
 
-/* The file of @p owner for the @p len bytes at @p id in @p u, or nullptr.
- * The caller holds the lock.
+/* Returns the file of @p owner for the note id @p id in @p u, or nullptr.
+ * The caller must have locked u->lock.
  */
 static struct uploads_file *
-uploads_of (struct uploads *u,
-            uint64_t        owner,
-            char const     *id,
-            size_t          len)
+uploads_of (struct uploads   *u,
+            uint64_t          owner,
+            struct cstr_view  id)
 {
 	for (size_t i = 0; i < UPLOADS_MAX; ++i) {
 		struct uploads_file *f = &u->files[i];
-		if (f->expires && f->owner == owner && f->id_len == len &&
-		    !memcmp(f->id, id, len))
+		if (f->expires && f->owner == owner &&
+		    cstr_view_equal((struct cstr_view){ f->id, f->id_len }, id))
 			return f;
 	}
 	return nullptr;
 }
 
 size_t
-uploads_find (struct uploads *uploads,
-              uint64_t        owner,
-              char const     *id,
-              size_t          id_len,
-              int64_t         now,
-              char            uri[UPLOADS_URI],
-              size_t         *bytes)
+uploads_find (struct uploads   *uploads,
+              uint64_t          owner,
+              struct cstr_view  id,
+              int64_t           now,
+              char              uri[UPLOADS_URI],
+              size_t           *bytes)
 {
-	if (!uploads || !id || !id_len || id_len > UPLOADS_ID || !uri || !bytes)
+	if (!uploads || !id.data || !id.len || id.len > UPLOADS_ID || !uri || !bytes)
 		return 0;
 	size_t len = 0;
 	pthread_mutex_lock(&uploads->lock);
-	struct uploads_file const *f = uploads_of(uploads, owner, id, id_len);
+	struct uploads_file const *f = uploads_of(uploads, owner, id);
 	if (f && f->expires - UPLOADS_MARGIN > now) {
 		len = f->uri_len;
 		memcpy(uri, f->uri, len);
@@ -92,21 +90,19 @@ uploads_find (struct uploads *uploads,
 }
 
 int
-uploads_keep (struct uploads *uploads,
-              uint64_t        owner,
-              char const     *id,
-              size_t          id_len,
-              char const     *uri,
-              size_t          uri_len,
-              size_t          bytes,
-              int64_t         expires,
-              int64_t         now)
+uploads_keep (struct uploads   *uploads,
+              uint64_t          owner,
+              struct cstr_view  id,
+              struct cstr_view  uri,
+              size_t            bytes,
+              int64_t           expires,
+              int64_t           now)
 {
-	if (!uploads || !id || !id_len || id_len > UPLOADS_ID || !uri || !uri_len ||
-	    uri_len > UPLOADS_URI || expires <= now)
+	if (!uploads || !id.data || !id.len || id.len > UPLOADS_ID || !uri.data || !uri.len ||
+	    uri.len > UPLOADS_URI || expires <= now)
 		return EINVAL;
 	pthread_mutex_lock(&uploads->lock);
-	struct uploads_file *to = uploads_of(uploads, owner, id, id_len);
+	struct uploads_file *to = uploads_of(uploads, owner, id);
 	if (!to) {
 		/* A free place, whose expires is 0, or a file that has expired
 		 * expires before every file that has not. */
@@ -118,10 +114,10 @@ uploads_keep (struct uploads *uploads,
 	to->expires = expires;
 	to->owner = owner;
 	to->bytes = bytes;
-	to->id_len = (uint16_t)id_len;
-	to->uri_len = (uint16_t)uri_len;
-	memcpy(to->id, id, id_len);
-	memcpy(to->uri, uri, uri_len);
+	to->id_len = (uint16_t)id.len;
+	to->uri_len = (uint16_t)uri.len;
+	memcpy(to->id, id.data, id.len);
+	memcpy(to->uri, uri.data, uri.len);
 	pthread_mutex_unlock(&uploads->lock);
 	return 0;
 }

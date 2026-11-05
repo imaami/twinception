@@ -495,8 +495,7 @@ notes_revision_create (struct cstr_view file,
                        int             *e)
 {
 	static_assert(NOTES_NAME <= UINT8_MAX);
-	size_t skip;
-	*e = notes_name(file.data, file.len, &skip);
+	*e = notes_name(&file);
 	if (*e)
 		return nullptr;
 	struct notes_revision *revision = calloc(1, sizeof *revision);
@@ -511,8 +510,8 @@ notes_revision_create (struct cstr_view file,
 		notes_revision_destroy(&revision);
 		return nullptr;
 	}
-	revision->file_len = (uint8_t)(file.len - skip);
-	memcpy(revision->file, file.data + skip, revision->file_len);
+	revision->file_len = (uint8_t)file.len;
+	memcpy(revision->file, file.data, file.len);
 	return revision;
 }
 
@@ -694,22 +693,22 @@ notes_exists (struct notes const *notes)
 }
 
 int
-notes_name (char const *name,
-            size_t      len,
-            size_t     *skip)
+notes_name (struct cstr_view *name)
 {
 	size_t k = 0;
-	while (k < len && name[k] == '/')
+	while (k < name->len && name->data[k] == '/')
 		++k;
-	*skip = k;
-	if (k == len || len - k > NOTES_NAME)
+	*name = cstr_view_slice(*name, k, SIZE_MAX);
+	char const *s = name->data;
+	size_t const len = name->len;
+	if (!len || len > NOTES_NAME)
 		return EINVAL;
-	for (size_t i = k; i < len; ++i)
-		if ((unsigned char)name[i] < 0x20 || name[i] == 0x7f)
+	for (size_t i = 0; i < len; ++i)
+		if ((unsigned char)s[i] < 0x20 || s[i] == 0x7f)
 			return EINVAL;
 	/* A name that ends with a slash has an empty last part. */
-	for (size_t at = k; at <= len; ) {
-		char const *part = name + at;
+	for (size_t at = 0; at <= len; ) {
+		char const *part = s + at;
 		char const *slash = memchr(part, '/', len - at);
 		size_t n = slash ? (size_t)(slash - part) : len - at;
 		if (!n || (n == 1 && part[0] == '.') ||
@@ -721,29 +720,28 @@ notes_name (char const *name,
 }
 
 int
-notes_check_input (struct buf *in,
-                   char const *repo,
-                   char const *name,
-                   size_t      len)
+notes_check_input (struct buf       *in,
+                   char const       *repo,
+                   struct cstr_view  name)
 {
 	size_t branch = strlen(repo);
 	/* The input has a line for the branch, a line for each directory in the
 	 * name, and a line for the name. */
 	size_t lines = 1;
-	for (size_t i = 0; i < len; ++i)
-		lines += name[i] == '/';
+	for (size_t i = 0; i < name.len; ++i)
+		lines += name.data[i] == '/';
 	struct span s;
-	int e = buf_reserve(in, branch + 1 + lines * (branch + 2 + len), SIZE_MAX, &s);
+	int e = buf_reserve(in, branch + 1 + lines * (branch + 2 + name.len), SIZE_MAX, &s);
 	if (e)
 		return e;
 	char *p = mempcpy(s.ptr, repo, branch);
 	*p++ = '\n';
-	for (size_t i = 0; i <= len; ++i) {
-		if (i < len && name[i] != '/')
+	for (size_t i = 0; i <= name.len; ++i) {
+		if (i < name.len && name.data[i] != '/')
 			continue;
 		p = mempcpy(p, repo, branch);
 		*p++ = ':';
-		p = mempcpy(p, name, i);
+		p = mempcpy(p, name.data, i);
 		*p++ = '\n';
 	}
 	buf_commit(in, (size_t)(p - (char *)s.ptr));
@@ -875,21 +873,20 @@ notes_file_same (struct notes_file const *file,
 
 int
 notes_add_head (struct buf        *in,
-                char const        *name,
-                size_t             name_len,
+                struct cstr_view   name,
                 size_t             len,
                 struct notes_part *part)
 {
 	static char const m[] = "M 100644 inline \"";
 	char head[sizeof m + 2 * NOTES_NAME + sizeof "\"\ndata 18446744073709551615\n"];
-	if (!in || !name || name_len > NOTES_NAME || !part)
+	if (!in || !name.data || name.len > NOTES_NAME || !part)
 		return EINVAL;
 	/* The name is quoted as a C string. */
 	char *p = mempcpy(head, m, sizeof m - 1);
-	for (size_t i = 0; i < name_len; ++i) {
-		if (name[i] == '"' || name[i] == '\\')
+	for (size_t i = 0; i < name.len; ++i) {
+		if (name.data[i] == '"' || name.data[i] == '\\')
 			*p++ = '\\';
-		*p++ = name[i];
+		*p++ = name.data[i];
 	}
 	int n = snprintf(p, (size_t)(head + sizeof head - p), "\"\ndata %zu\n", len);
 	if (n < 0 || n >= head + sizeof head - p)
@@ -914,21 +911,19 @@ notes_add_head (struct buf        *in,
 
 int
 notes_add_file (struct buf        *in,
-                char const        *name,
-                size_t             name_len,
-                char const        *text,
-                size_t             len,
+                struct cstr_view   name,
+                struct cstr_view   text,
                 struct notes_part *part)
 {
-	int e = notes_add_head(in, name, name_len, len, part);
+	int e = notes_add_head(in, name, text.len, part);
 	struct span s;
 	if (!e)
-		e = buf_reserve(in, len + 1, SIZE_MAX, &s);
+		e = buf_reserve(in, text.len + 1, SIZE_MAX, &s);
 	if (e)
 		return e;
-	memcpy(s.ptr, text, len);
-	s.ptr[len] = '\n';
-	buf_commit(in, len + 1);
+	memcpy(s.ptr, text.data, text.len);
+	s.ptr[text.len] = '\n';
+	buf_commit(in, text.len + 1);
 	return 0;
 }
 
@@ -979,21 +974,20 @@ notes_add_out (struct span out,
 }
 
 int
-notes_read_input (struct buf *in,
-                  char const *repo,
-                  char const *name,
-                  size_t      len)
+notes_read_input (struct buf       *in,
+                  char const       *repo,
+                  struct cstr_view  name)
 {
 	size_t branch = strlen(repo);
 	struct span s;
-	int e = buf_reserve(in, branch + len + 2, SIZE_MAX, &s);
+	int e = buf_reserve(in, branch + name.len + 2, SIZE_MAX, &s);
 	if (e)
 		return e;
 	char *p = mempcpy(s.ptr, repo, branch);
 	*p++ = ':';
-	p = mempcpy(p, name, len);
+	p = mempcpy(p, name.data, name.len);
 	*p = '\n';
-	buf_commit(in, branch + len + 2);
+	buf_commit(in, branch + name.len + 2);
 	return 0;
 }
 

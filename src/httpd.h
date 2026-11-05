@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "cstr_view.h"
 
 struct httpd;
 struct httpd_home;
@@ -85,18 +86,20 @@ struct httpd_cfg {
  *  struct.
  */
 struct httpd_listen_addr {
-	char const *path;       /**< The path of a Unix socket, or nullptr for a
-	                             TCP address. It points into the parsed
-	                             text. */
-	char const *port;       /**< The TCP port in decimal digits, or nullptr
-	                             for a Unix socket. It points into the
-	                             parsed text. */
-	size_t      path_len;   /**< The length of path in bytes. */
-	uint64_t    tls;        /**< 1 if the text begins with "tls:", else 0 */
-	char        host[256];  /**< The TCP host. It is "127.0.0.1" for a port
-	                             with no host and no colon, such as "8090"
-	                             or "tls:8090". An empty host, as in
-	                             ":8090", means the wildcard address. */
+	struct cstr_view path;       /**< The path of a Unix socket, which ends
+	                                  in a NUL. path.data is nullptr for a
+	                                  TCP address. It points into the parsed
+	                                  text. */
+	char const      *port;       /**< The TCP port in decimal digits, or
+	                                  nullptr for a Unix socket. It points
+	                                  into the parsed text. */
+	uint64_t         tls;        /**< 1 if the text begins with "tls:", else
+	                                  0 */
+	char             host[256];  /**< The TCP host. It is "127.0.0.1" for a
+	                                  port with no host and no colon, such
+	                                  as "8090" or "tls:8090". An empty host,
+	                                  as in ":8090", means the wildcard
+	                                  address. */
 };
 
 /**

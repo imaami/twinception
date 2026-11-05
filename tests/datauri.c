@@ -20,7 +20,7 @@ decodes (char const *uri,
 {
 	struct datauri d;
 	unsigned char out[64];
-	if (datauri_parse(uri, strlen(uri), &d) || d.size != len || len > sizeof out)
+	if (datauri_init(&d, cstr_view(uri)) || d.size != len || len > sizeof out)
 		return false;
 	memset(out, 0xa5, sizeof out);
 	datauri_decode(&d, out);
@@ -32,7 +32,7 @@ static bool
 refused (char const *uri)
 {
 	struct datauri d;
-	return datauri_parse(uri, strlen(uri), &d) == EINVAL;
+	return datauri_init(&d, cstr_view(uri)) == EINVAL;
 }
 
 int
@@ -70,8 +70,8 @@ main (void)
 	CHECK(refused("data:,abc%"));
 
 	struct datauri d;
-	CHECK(datauri_parse(nullptr, 0, &d) == EINVAL);
-	CHECK(datauri_parse("data:,", 6, nullptr) == EINVAL);
+	CHECK(datauri_init(&d, (struct cstr_view){}) == EINVAL);
+	CHECK(datauri_init(nullptr, CSTR_VIEW("data:,")) == EINVAL);
 
 	if (failures)
 		fprintf(stderr, "datauri: %u checks failed\n", failures);

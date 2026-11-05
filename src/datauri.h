@@ -11,24 +11,25 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/** A data: URI that datauri_parse() checked. */
+#include "cstr_view.h"
+
+/** A data: URI that datauri_init() checked. */
 struct datauri {
-	char const *data;    /**< the encoded data, after the comma */
-	size_t      len;     /**< its bytes */
-	size_t      size;    /**< its bytes once decoded */
-	uint64_t    base64;  /**< bool: base64, else percent-encoded; widened
-	                          over the padding */
+	struct cstr_view encoded;  /**< the encoded data, after the comma */
+	size_t           size;     /**< the bytes of the data once decoded */
+	uint64_t         base64;   /**< bool: base64, else percent-encoded;
+	                                widened over the padding */
 };
 
-/** Checks the @p len bytes at @p uri as a data: URI, into @p d: 0, or
- *  EINVAL if it is none or its data is not valid in its encoding.
+/** Checks @p uri as a data: URI and initializes @p d with its parts.
+ *  Returns 0, or EINVAL if @p uri is no data: URI or its data is not valid
+ *  in its encoding.
  */
 extern int
-datauri_parse (char const     *uri,
-               size_t          len,
-               struct datauri *d);
+datauri_init (struct datauri   *d,
+              struct cstr_view  uri);
 
-/** Decodes the data of @p d, which datauri_parse() checked, into the
+/** Decodes the data of @p d, which datauri_init() checked, into the
  *  d->size bytes at @p out.
  */
 extern void

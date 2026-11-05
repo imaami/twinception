@@ -2935,24 +2935,23 @@ httpd_listener_bind_uds (struct httpd_listener    *l,
 	return listen(l->fd, SOMAXCONN) ? errno : 0;
 }
 
-/* Make @p l listen on the Unix socket at @p path, which is @p len bytes
- * long. httpd_listen_addr() has checked that the path fits in sun_path. When
+/* Make @p l listen on the Unix socket at @p path, which ends in a NUL.
+ * httpd_listen_addr() has checked that the path fits in sun_path. When
  * httpd_home_drain() closes the listener, it removes the socket file.
  */
 static int
 httpd_listener_uds (struct httpd_listener *l,
-                    char const            *path,
-                    size_t                 len)
+                    struct cstr_view       path)
 {
 	struct sockaddr_un sa = { .sun_family = AF_UNIX };
-	memcpy(sa.sun_path, path, len);
+	memcpy(sa.sun_path, path.data, path.len);
 	l->fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 	int e = l->fd < 0 ? errno : httpd_listener_bind_uds(l, &sa);
 	if (e) {
-		LOG(LOG_ERROR, "cannot listen on unix:%s: %s", path, strerror(e));
+		LOG(LOG_ERROR, "cannot listen on unix:%s: %s", path.data, strerror(e));
 		return e;
 	}
-	l->path = path;
+	l->path = path.data;
 	return 0;
 }
 
@@ -3020,11 +3019,10 @@ httpd_listen_addr (char const *text,
 	};
 	char const *at = text + a.tls * (sizeof tls - 1);
 	if (!strncmp(at, uds, sizeof uds - 1)) {
-		a.path = at + sizeof uds - 1;
-		a.path_len = strlen(a.path);
+		a.path = cstr_view(at + sizeof uds - 1);
 		*e = a.tls ? EPROTONOSUPPORT
-		   : !a.path_len ? EINVAL
-		   : a.path_len >= sizeof (struct sockaddr_un){}.sun_path ? ENAMETOOLONG
+		   : !a.path.len ? EINVAL
+		   : a.path.len >= sizeof (struct sockaddr_un){}.sun_path ? ENAMETOOLONG
 		   : 0;
 		return a;
 	}
@@ -3060,8 +3058,8 @@ httpd_listener_open (struct httpd_listener *l,
 		return e;
 	}
 	l->tls = a.tls;
-	if (a.path)
-		return httpd_listener_uds(l, a.path, a.path_len);
+	if (a.path.data)
+		return httpd_listener_uds(l, a.path);
 
 	struct addrinfo const hints = {
 		.ai_flags = AI_PASSIVE | AI_NUMERICSERV,
