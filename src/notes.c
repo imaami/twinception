@@ -706,7 +706,7 @@ notes_name (struct cstr_view *name)
 	for (size_t i = 0; i < len; ++i)
 		if ((unsigned char)s[i] < 0x20 || s[i] == 0x7f)
 			return EINVAL;
-	/* A name that ends with a slash has an empty last part. */
+	/* The last part of a name that ends with a slash is empty. */
 	for (size_t at = 0; at <= len; ) {
 		char const *part = s + at;
 		char const *slash = memchr(part, '/', len - at);
@@ -724,9 +724,11 @@ notes_check_input (struct buf       *in,
                    char const       *repo,
                    struct cstr_view  name)
 {
+	if (!in || !repo || !name.data)
+		return EINVAL;
 	size_t branch = strlen(repo);
-	/* The input has a line for the branch, a line for each directory in the
-	 * name, and a line for the name. */
+	/* The input consists of a line for the branch, a line for each
+	 * directory in the name, and a line for the name. */
 	size_t lines = 1;
 	for (size_t i = 0; i < name.len; ++i)
 		lines += name.data[i] == '/';
@@ -973,16 +975,19 @@ notes_read_input (struct buf       *in,
                   char const       *repo,
                   struct cstr_view  name)
 {
+	if (!in || !repo || !name.data)
+		return EINVAL;
 	size_t branch = strlen(repo);
+	size_t len = branch + name.len + 2;
 	struct span s;
-	int e = buf_reserve(in, branch + name.len + 2, SIZE_MAX, &s);
+	int e = buf_reserve(in, len, SIZE_MAX, &s);
 	if (e)
 		return e;
 	char *p = mempcpy(s.ptr, repo, branch);
 	*p++ = ':';
 	p = mempcpy(p, name.data, name.len);
 	*p = '\n';
-	buf_commit(in, branch + name.len + 2);
+	buf_commit(in, len);
 	return 0;
 }
 
