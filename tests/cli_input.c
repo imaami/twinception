@@ -21,15 +21,15 @@
 
 struct cli_input_driver {
 	struct cli_loop loop;
-	struct cli_loop_ref signals;
+	struct loop_ref signals;
 	struct cli_console *console;
 	int stop;
 };
 
-static void cli_input_signal(struct cli_loop *loop, struct cli_loop_ref *ref, uint32_t events)
+static void cli_input_signal(struct loop *loop, struct loop_ref *ref, uint32_t events)
 {
 	(void)events;
-	struct cli_input_driver *driver = container_of(loop, struct cli_input_driver, loop);
+	struct cli_input_driver *driver = container_of(loop, struct cli_input_driver, loop.loop);
 	struct signalfd_siginfo signal;
 	while (read(ref->fd, &signal, sizeof signal) == sizeof signal) {
 		if (signal.ssi_signo == SIGWINCH)
@@ -150,7 +150,8 @@ int main(int argc, char **argv)
 	if (!e)
 		driver.console = cli_console_create(simple, false, &driver.loop, nullptr, &e);
 	if (!e)
-		e = cli_loop_watch(&driver.loop, &driver.signals, signal_fd, EPOLLIN, cli_input_signal);
+		e = loop_watch(&driver.loop.loop, &driver.signals, signal_fd, EPOLLIN, cli_input_signal,
+		               nullptr);
 	driver.loop.after_turn = cli_input_service;
 	if (!e)
 		input.catalog = autocomplete_create(&e);

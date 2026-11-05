@@ -52,7 +52,7 @@ static void
 cli_io_test_run (struct loop *network,
                  bool         closed)
 {
-	struct cli_loop ui;
+	struct cli_loop ui = {};
 	assert(!cli_loop_init(&ui));
 	struct cli_mailbox mailbox;
 	/* No control capacity forces completion delivery through the IO
@@ -95,7 +95,7 @@ cli_io_test_run (struct loop *network,
 static void
 cli_io_test_charge (struct loop *network)
 {
-	struct cli_loop ui;
+	struct cli_loop ui = {};
 	assert(!cli_loop_init(&ui));
 	struct cli_mailbox mailbox;
 	assert(!cli_mailbox_init(&mailbox, &ui, (struct cli_mailbox_limits){

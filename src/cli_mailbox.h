@@ -41,8 +41,8 @@ struct cli_mailbox_limits {
 struct cli_mailbox {
 	pthread_mutex_t           mutex;
 	struct list               mail;
-	struct cli_loop_ref       wake;
-	struct cli_loop_step      drain;
+	struct loop_ref           wake;
+	struct loop_step          drain;
 	struct cli_loop          *loop;
 	struct cli_mailbox_limits  limits;
 	size_t                    messages[2];

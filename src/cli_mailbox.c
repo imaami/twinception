@@ -11,15 +11,15 @@
 #include "compat.h"
 
 static void
-cli_mailbox_wake (struct cli_loop     *loop,
-                   struct cli_loop_ref *ref,
-                   uint32_t             events)
+cli_mailbox_wake (struct loop     *loop,
+                  struct loop_ref *ref,
+                  uint32_t         events)
 {
 	(void)events;
 	struct cli_mailbox *mailbox = container_of(ref, struct cli_mailbox, wake);
 	uint64_t count;
-	cli_loop_fail(loop, cli_loop_ref_counter(ref, &count));
-	cli_loop_ready(loop, &mailbox->drain);
+	loop_fail(loop, cli_loop_ref_counter(ref, &count));
+	loop_ready(loop, &mailbox->drain);
 }
 
 int
@@ -47,16 +47,16 @@ cli_mailbox_dispatch (struct cli_mailbox *mailbox,
 	bool pending = !list_is_empty(&mailbox->mail);
 	pthread_mutex_unlock(&mailbox->mutex);
 	if (pending)
-		cli_loop_ready(mailbox->loop, &mailbox->drain);
+		loop_ready(&mailbox->loop->loop, &mailbox->drain);
 	return 0;
 }
 
 static void
-cli_mailbox_drain (struct cli_loop      *loop,
-                    struct cli_loop_step *step)
+cli_mailbox_drain (struct loop      *loop,
+                   struct loop_step *step)
 {
 	struct cli_mailbox *mailbox = container_of(step, struct cli_mailbox, drain);
-	cli_loop_fail(loop, cli_mailbox_dispatch(mailbox, 32));
+	loop_fail(loop, cli_mailbox_dispatch(mailbox, 32));
 }
 
 int
@@ -81,7 +81,7 @@ cli_mailbox_init (struct cli_mailbox       *mailbox,
 		cli_mailbox_fini(mailbox);
 		return e;
 	}
-	e = cli_loop_watch(loop, &mailbox->wake, fd, EPOLLIN, cli_mailbox_wake);
+	e = loop_watch(&loop->loop, &mailbox->wake, fd, EPOLLIN, cli_mailbox_wake, nullptr);
 	if (e) {
 		close(fd);
 		cli_mailbox_fini(mailbox);
@@ -151,10 +151,11 @@ cli_mailbox_fini (struct cli_mailbox *mailbox)
 {
 	if (!mailbox->mutex_ready)
 		return;
-	cli_loop_fail(mailbox->loop, cli_mailbox_close(mailbox));
-	cli_loop_fail(mailbox->loop, cli_mailbox_dispatch(mailbox, SIZE_MAX));
-	cli_loop_unready(&mailbox->drain);
+	struct loop *loop = &mailbox->loop->loop;
+	loop_fail(loop, cli_mailbox_close(mailbox));
+	loop_fail(loop, cli_mailbox_dispatch(mailbox, SIZE_MAX));
+	loop_unready(&mailbox->drain);
 	cli_loop_close(mailbox->loop, &mailbox->wake);
-	cli_loop_fail(mailbox->loop, pthread_mutex_destroy(&mailbox->mutex));
+	loop_fail(loop, pthread_mutex_destroy(&mailbox->mutex));
 	mailbox->mutex_ready = 0;
 }

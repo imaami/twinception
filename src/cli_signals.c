@@ -13,9 +13,9 @@
 #include "compat.h"
 
 static void
-cli_signals_read (struct cli_loop     *loop,
-                  struct cli_loop_ref *ref,
-                  uint32_t             events)
+cli_signals_read (struct loop     *loop,
+                  struct loop_ref *ref,
+                  uint32_t         events)
 {
 	(void)events;
 	struct cli_signals *signals = container_of(ref, struct cli_signals, ref);
@@ -30,7 +30,7 @@ cli_signals_read (struct cli_loop     *loop,
 			continue;
 		if (n < 0 && errno == EAGAIN)
 			return;
-		cli_loop_fail(loop, n < 0 ? errno : EIO);
+		loop_fail(loop, n < 0 ? errno : EIO);
 		return;
 	}
 }
@@ -59,7 +59,7 @@ cli_signals_init (struct cli_signals *signals,
 	int fd = signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
 	if (fd < 0)
 		return errno;
-	e = cli_loop_watch(loop, &signals->ref, fd, EPOLLIN, cli_signals_read);
+	e = loop_watch(&loop->loop, &signals->ref, fd, EPOLLIN, cli_signals_read, nullptr);
 	if (e)
 		(void)close(fd);
 	return e;

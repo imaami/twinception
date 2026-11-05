@@ -33,7 +33,7 @@ cli_ui_test_colors (void)
 	int saved = dup(STDOUT_FILENO);
 	assert(saved >= 0);
 	assert(dup2(slave, STDOUT_FILENO) >= 0);
-	struct cli_loop loop;
+	struct cli_loop loop = {};
 	assert(!cli_loop_init(&loop));
 	int e;
 	struct cli_console *console = cli_console_create(true, true, &loop, nullptr, &e);
@@ -99,7 +99,7 @@ int main(void)
 	assert(!fflush(stdout));
 	assert(dup2(fileno(capture), STDOUT_FILENO) >= 0);
 	int e = 0;
-	struct cli_loop loop;
+	struct cli_loop loop = {};
 	assert(!cli_loop_init(&loop));
 	struct cli_console *console = cli_console_create(true, false, &loop, nullptr, &e);
 	assert(console && !e);

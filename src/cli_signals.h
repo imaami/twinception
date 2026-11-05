@@ -13,13 +13,13 @@ struct cli_signals;
 typedef void cli_signals_cb (struct cli_signals *signals, unsigned number);
 
 struct cli_signals {
-	struct cli_loop_ref ref;
-	struct cli_loop    *loop;
-	cli_signals_cb     *fn;
-	sigset_t           previous;
-	struct sigaction   pipe;
-	uint32_t           masked;
-	uint32_t           ignored;
+	struct loop_ref   ref;
+	struct cli_loop  *loop;
+	cli_signals_cb   *fn;
+	sigset_t          previous;
+	struct sigaction  pipe;
+	uint32_t          masked;
+	uint32_t          ignored;
 };
 
 /** Call before creating threads or initializing libraries that create them. */

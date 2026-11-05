@@ -86,7 +86,7 @@ struct cli_network {
 	struct loop                 loop;
 	struct loop_timer           timer;
 	struct loop_step            timeout;
-	struct cli_loop_step        delivery;
+	struct loop_step            delivery;
 	struct msg                  progress;
 	struct msg                  cancel;
 	struct msg                  stop;
@@ -162,7 +162,7 @@ cli_network_request_done (struct cli_mailbox     *mailbox,
 	(void)mailbox;
 	struct cli_network_request *request = container_of(message, struct cli_network_request, done);
 	request->call.flags |= CLI_NETWORK_FINISHED;
-	cli_loop_ready(request->network->ui, &request->network->delivery);
+	loop_ready(&request->network->ui->loop, &request->network->delivery);
 }
 
 static void
@@ -302,7 +302,7 @@ cli_network_chunk_received (struct cli_mailbox     *mailbox,
 	(void)mailbox;
 	struct cli_network_chunk *chunk = container_of(message, struct cli_network_chunk, mail);
 	list_append(&chunk->call->received, &chunk->mail.hook);
-	cli_loop_ready(chunk->network->ui, &chunk->network->delivery);
+	loop_ready(&chunk->network->ui->loop, &chunk->network->delivery);
 }
 
 static size_t
@@ -535,8 +535,8 @@ cli_network_kick (struct cli_network *network)
 }
 
 static void
-cli_network_delivery (struct cli_loop      *loop,
-                      struct cli_loop_step *step)
+cli_network_delivery (struct loop      *loop,
+                      struct loop_step *step)
 {
 	(void)loop;
 	(void)step;
@@ -557,7 +557,7 @@ cli_network_service (struct cli_network *network)
 		if ((!list_is_empty(&call->received) &&
 		     (call->error || !network->ready || network->ready(network->ready_context))) ||
 		    ((call->flags & CLI_NETWORK_FINISHED) && list_is_empty(&call->received))) {
-			cli_loop_ready(network->ui, &network->delivery);
+			loop_ready(&network->ui->loop, &network->delivery);
 			break;
 		}
 	}
@@ -593,7 +593,7 @@ cli_network_call_cancel (struct cli_network      *network,
 	atomic_store(&request->cancelled, true);
 	if (!network->joined && !atomic_exchange(&network->cancel_pending, true))
 		(void)loop_post(&network->loop, &network->cancel);
-	cli_loop_ready(network->ui, &network->delivery);
+	loop_ready(&network->ui->loop, &network->delivery);
 }
 
 void
@@ -671,7 +671,7 @@ cli_network_ended (struct cli_mailbox     *mailbox,
 	struct cli_network *network = container_of(message, struct cli_network, ended);
 	int e = atomic_load(&network->failure);
 	if (e != ESHUTDOWN)
-		cli_loop_fail(network->ui, e);
+		loop_fail(&network->ui->loop, e);
 }
 
 void
@@ -783,7 +783,7 @@ cli_network_destroy (struct cli_network **ptr)
 	cli_network_cancel(network, true);
 	while (!list_is_empty(&network->calls))
 		cli_network_service(network);
-	cli_loop_unready(&network->delivery);
+	loop_unready(&network->delivery);
 	free(network);
 	*ptr = nullptr;
 }

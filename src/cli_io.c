@@ -20,7 +20,7 @@ struct cli_io {
 	struct blocker     *blocker;
 	struct loop        *network;
 	struct cli_mailbox *mailbox;
-	struct cli_loop_ref notify;
+	struct loop_ref     notify;
 	size_t              pending;
 	uint64_t            stopped;
 	uint32_t            exited;
@@ -32,14 +32,14 @@ cli_io_result (struct cli_mailbox     *mailbox,
                struct cli_mailbox_msg *message);
 
 static void
-cli_io_notify (struct cli_loop     *loop,
-               struct cli_loop_ref *ref,
-               uint32_t             events)
+cli_io_notify (struct loop     *loop,
+               struct loop_ref *ref,
+               uint32_t         events)
 {
 	(void)events;
 	struct cli_io *io = container_of(ref, struct cli_io, notify);
 	uint64_t count;
-	cli_loop_fail(loop, cli_loop_ref_counter(ref, &count));
+	loop_fail(loop, cli_loop_ref_counter(ref, &count));
 	io->exited += (uint32_t)count;
 	struct list completed;
 	list_init(&completed);
@@ -118,7 +118,8 @@ cli_io_create (struct loop        *network,
 	int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	*e = fd < 0 ? errno : 0;
 	if (!*e)
-		*e = cli_loop_watch(mailbox->loop, &io->notify, fd, EPOLLIN, cli_io_notify);
+		*e = loop_watch(&mailbox->loop->loop, &io->notify, fd, EPOLLIN, cli_io_notify,
+		                nullptr);
 	if (*e) {
 		if (fd >= 0)
 			(void)close(fd);
@@ -190,7 +191,7 @@ cli_io_destroy (struct cli_io **p_io)
 	if (io->started || notify_unused)
 		cli_loop_close(io->mailbox->loop, &io->notify);
 	else
-		cli_loop_unwatch(io->mailbox->loop, &io->notify);
+		loop_unwatch(&io->mailbox->loop->loop, &io->notify);
 	pthread_mutex_destroy(&io->mutex);
 	free(io);
 	*p_io = nullptr;

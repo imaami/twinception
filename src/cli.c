@@ -1179,6 +1179,7 @@ cli_run (struct cli_options const *options,
 	cli->tty = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 	cli->signals.ref.fd = -1;
 	cli->mailbox.wake.fd = -1;
+	loop_place(&cli->reactor.loop);
 	int e = cli_loop_init(&cli->reactor);
 	if (!e)
 		e = cli_signals_init(&cli->signals, &cli->reactor, cli_signal);

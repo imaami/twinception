@@ -1,4 +1,6 @@
-/** @file CLI reactor and mailbox ownership, ordering and wakeup tests. */
+/** @file The UI loop of askai-cli and the mailbox: ownership, ordering and
+ *  wakeup tests.
+ */
 #include <assert.h>
 #include <errno.h>
 #include <pthread.h>
@@ -17,7 +19,7 @@
 struct cli_loop_test {
 	struct cli_loop loop;
 	struct cli_mailbox mailbox;
-	struct cli_loop_step step;
+	struct loop_step step;
 	size_t received[4];
 	size_t turns;
 	size_t steps;
@@ -36,7 +38,7 @@ struct cli_loop_test_producer {
 };
 
 struct cli_loop_test_ref {
-	struct cli_loop_ref ref;
+	struct loop_ref ref;
 	struct cli_loop_test *test;
 };
 
@@ -84,13 +86,13 @@ cli_loop_test_produce (void *arg)
 }
 
 static void
-cli_loop_test_step (struct cli_loop      *loop,
-                    struct cli_loop_step *step)
+cli_loop_test_step (struct loop      *loop,
+                    struct loop_step *step)
 {
 	struct cli_loop_test *test = container_of(step, struct cli_loop_test, step);
-	assert(cli_loop_turn(loop, 0) == EBUSY);
+	assert(cli_loop_turn(&test->loop, 0) == EBUSY);
 	if (++test->steps < 3)
-		cli_loop_ready(loop, step);
+		loop_ready(loop, step);
 }
 
 static void
@@ -104,15 +106,15 @@ cli_loop_test_after (struct cli_loop *loop)
 }
 
 static void
-cli_loop_test_event (struct cli_loop     *loop,
-                     struct cli_loop_ref *ref,
-                     uint32_t             events)
+cli_loop_test_event (struct loop     *loop,
+                     struct loop_ref *ref,
+                     uint32_t         events)
 {
 	assert(events & EPOLLIN);
 	struct cli_loop_test_ref *watch = container_of(ref, struct cli_loop_test_ref, ref);
 	uint64_t count = 0;
 	assert(!cli_loop_ref_counter(ref, &count) && count == 1);
-	cli_loop_close(loop, ref);
+	cli_loop_close(&watch->test->loop, ref);
 	assert(ref->fd < 0 && !loop->error);
 	++watch->test->released;
 	free(watch);
@@ -126,7 +128,7 @@ cli_loop_test_event (struct cli_loop     *loop,
 static void
 cli_loop_test_errors (struct cli_loop_test *test)
 {
-	struct cli_loop_ref ref = { .fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC) };
+	struct loop_ref ref = { .fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC) };
 	assert(ref.fd >= 0);
 	uint64_t count = 1;
 	assert(!cli_loop_ref_counter(&ref, &count) && !count);
@@ -136,15 +138,15 @@ cli_loop_test_errors (struct cli_loop_test *test)
 	count = 1;
 	assert(cli_loop_ref_counter(&ref, &count) == EBADF && !count);
 	ref.fd = -1;
-	assert(!test->loop.error);
-	cli_loop_fail(&test->loop, 0);
-	assert(!test->loop.error);
-	cli_loop_fail(&test->loop, EBADF);
-	cli_loop_fail(&test->loop, EIO);
-	cli_loop_fail(&test->loop, 0);
-	assert(test->loop.error == EBADF);
+	assert(!test->loop.loop.error);
+	loop_fail(&test->loop.loop, 0);
+	assert(!test->loop.loop.error);
+	loop_fail(&test->loop.loop, EBADF);
+	loop_fail(&test->loop.loop, EIO);
+	loop_fail(&test->loop.loop, 0);
+	assert(test->loop.loop.error == EBADF);
 	assert(cli_loop_turn(&test->loop, 0) == EBADF);
-	test->loop.error = 0;
+	test->loop.loop.error = 0;
 }
 
 static void
@@ -152,7 +154,7 @@ cli_loop_test_turns (struct cli_loop_test *test)
 {
 	test->step.fn = cli_loop_test_step;
 	test->loop.after_turn = cli_loop_test_after;
-	cli_loop_ready(&test->loop, &test->step);
+	loop_ready(&test->loop.loop, &test->step);
 	assert(!cli_loop_turn(&test->loop, UINT64_MAX));
 	assert(test->turns == 2 && test->steps == 2);
 	assert(!cli_loop_turn(&test->loop, UINT64_MAX));
@@ -169,7 +171,8 @@ cli_loop_test_turns (struct cli_loop_test *test)
 		*watch = (struct cli_loop_test_ref){ .ref.fd = -1, .test = test };
 		int fd = eventfd(1, EFD_NONBLOCK | EFD_CLOEXEC);
 		assert(fd >= 0);
-		assert(!cli_loop_watch(&test->loop, &watch->ref, fd, EPOLLIN, cli_loop_test_event));
+		assert(!loop_watch(&test->loop.loop, &watch->ref, fd, EPOLLIN, cli_loop_test_event,
+		                   nullptr));
 	}
 	assert(!cli_loop_turn(&test->loop, loop_clock() + 1000000000));
 	assert(test->released == 4);
