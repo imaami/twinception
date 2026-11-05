@@ -8182,32 +8182,44 @@ mcp_compact_definition (void const *service)
 		nullptr);
 }
 
-/* The definition of background as the turns get it; nullptr if out of
- * memory.
+/** Returns the definition of the tool @p name with the description
+ *  @p about and the arguments @p properties, of which the argument
+ *  @p required is required, or nullptr if out of memory. The function
+ *  consumes @p properties.
  */
+static struct json_object *
+mcp_definition (char const         *name,
+                char const         *about,
+                struct json_object *properties,
+                char const         *required)
+{
+	return jb_object("name", json_object_new_string(name),
+	                 "description", json_object_new_string(about),
+	                 "inputSchema", schema_object(properties,
+	                                              jb_list(json_object_new_string(required))),
+	                 nullptr);
+}
+
+/* Returns the definition of background for the turns. */
 static struct json_object *
 mcp_background_definition (void const *service)
 {
 	(void)service;
 	static_assert(JOBS_MAX == 8, "the description says");
-	return jb_object(
-		"name", json_object_new_string("background"),
-		"description", json_object_new_string(
-			"Start a call of another tool as a job in the background, and go on "
-			"at once: askai answers with the job's number, and tells you when it "
-			"finishes: with a later tool result, by ending a wait, or in a "
-			"message after your answer. Then read its output with jobs. Use it "
-			"for calls that take long, while you do other work; at most 8 jobs "
-			"a task."),
-		"inputSchema", schema_object(
-			jb_object(
-				"tool", schema_property("string", "The name of the tool to call, "
-				                        "such as git or man."),
-				"arguments", schema_property("object",
-					"Its arguments, as you would give them to it."),
-				nullptr),
-			jb_list(json_object_new_string("tool"))),
-		nullptr);
+	return mcp_definition("background",
+		"Start a call of another tool as a job in the background, and go on "
+		"at once: askai answers with the job's number, and tells you when it "
+		"finishes: with a later tool result, by ending a wait, or in a "
+		"message after your answer. Then read its output with jobs. Use it "
+		"for calls that take long, while you do other work; at most 8 jobs "
+		"a task.",
+		jb_object(
+			"tool", schema_property("string", "The name of the tool to call, "
+			                        "such as git or man."),
+			"arguments", schema_property("object",
+				"Its arguments, as you would give them to it."),
+			nullptr),
+		"tool");
 }
 
 /* Returns the actions of the jobs tool as a JSON array, or nullptr if out
@@ -8221,85 +8233,71 @@ mcp_jobs_actions (void)
 	return schema_names(names, ARRAY_SIZE(names));
 }
 
-/* The definition of jobs as the turns get it, likewise. */
+/* Returns the definition of jobs for the turns. */
 static struct json_object *
 mcp_jobs_definition (void const *service)
 {
 	(void)service;
-	return jb_object(
-		"name", json_object_new_string("jobs"),
-		"description", json_object_new_string(
-			"The jobs you started with background: list them, read the output "
-			"of one that has finished, a window at a time, or cancel one that "
-			"runs."),
-		"inputSchema", schema_object(
-			jb_object(
-				"action", schema_enum(mcp_jobs_actions(),
-					"list the jobs, read a job's result, or cancel it."),
-				"job", schema_property("integer", "For result and cancel: the "
-				                       "job's number."),
-				"offset", schema_property("integer", "For result: the byte of the "
-				                          "output to start from, to read on."),
-				nullptr),
-			jb_list(json_object_new_string("action"))),
-		nullptr);
+	return mcp_definition("jobs",
+		"The jobs you started with background: list them, read the output "
+		"of one that has finished, a window at a time, or cancel one that "
+		"runs.",
+		jb_object(
+			"action", schema_enum(mcp_jobs_actions(),
+				"list the jobs, read a job's result, or cancel it."),
+			"job", schema_property("integer", "For result and cancel: the "
+			                       "job's number."),
+			"offset", schema_property("integer", "For result: the byte of the "
+			                          "output to start from, to read on."),
+			nullptr),
+		"action");
 }
 
-/* The definition of wait as the turns get it, likewise. */
+/* Returns the definition of wait for the turns. */
 static struct json_object *
 mcp_wait_definition (void const *service)
 {
 	(void)service;
 	static_assert(WAIT_MAX == 600, "the description says");
-	return jb_object(
-		"name", json_object_new_string("wait"),
-		"description", json_object_new_string(
-			"Wait until a job finishes, of those you name or any, or a timer "
-			"fires, or the seconds are up, whichever comes first; askai then "
-			"says what happened. Call it rather than jobs again and again."),
-		"inputSchema", schema_object(
-			jb_object(
-				"seconds", schema_property("integer", "The longest to wait: 1 to "
-				                           "600."),
-				"jobs", jb_object(
-					"type", json_object_new_string("array"),
-					"items", schema_property("integer", nullptr),
-					"description", json_object_new_string(
-						"The jobs to wait for; any if none."),
-					nullptr),
+	return mcp_definition("wait",
+		"Wait until a job finishes, of those you name or any, or a timer "
+		"fires, or the seconds are up, whichever comes first; askai then "
+		"says what happened. Call it rather than jobs again and again.",
+		jb_object(
+			"seconds", schema_property("integer", "The longest to wait: 1 to "
+			                           "600."),
+			"jobs", jb_object(
+				"type", json_object_new_string("array"),
+				"items", schema_property("integer", nullptr),
+				"description", json_object_new_string(
+					"The jobs to wait for; any if none."),
 				nullptr),
-			jb_list(json_object_new_string("seconds"))),
-		nullptr);
+			nullptr),
+		"seconds");
 }
 
-/* Returns the definition of timer for the turns, or nullptr if out of
- * memory.
- */
+/* Returns the definition of timer for the turns. */
 static struct json_object *
 mcp_timer_definition (void const *service)
 {
 	(void)service;
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "the description says");
-	return jb_object(
-		"name", json_object_new_string("timer"),
-		"description", json_object_new_string(
-			"Set a timer, and go on at once: when it fires, askai tells you, "
-			"with a later tool result, by ending a wait, or in a message after "
-			"your answer."),
-		"inputSchema", schema_object(
-			jb_object(
-				"seconds", schema_property("integer", "When it fires: in 1 to 3600 "
-				                           "seconds."),
-				"note", schema_property("string", "What it is for, which askai "
-				                        "says as it fires; at most 200 bytes."),
-				nullptr),
-			jb_list(json_object_new_string("seconds"))),
-		nullptr);
+	return mcp_definition("timer",
+		"Set a timer, and go on at once: when it fires, askai tells you, "
+		"with a later tool result, by ending a wait, or in a message after "
+		"your answer.",
+		jb_object(
+			"seconds", schema_property("integer", "When it fires: in 1 to 3600 "
+			                           "seconds."),
+			"note", schema_property("string", "What it is for, which askai "
+			                        "says as it fires; at most 200 bytes."),
+			nullptr),
+		"seconds");
 }
 
-/* Returns the definition of background as clients list it, with
- * --client-jobs. @p service is the mcp_static, which has the name of the
- * ask tool. Returns nullptr if out of memory.
+/** Returns the definition of background that clients list with
+ *  --client-jobs. @p service is the mcp_static, which contains the name of
+ *  the ask tool.
  */
 static struct json_object *
 mcp_background_client_definition (void const *service)
@@ -8317,103 +8315,81 @@ mcp_background_client_definition (void const *service)
 	char tool[256];
 	util_format(tool, sizeof tool, "The name of the tool to call, such as %s; not "
 	            "background, jobs, wait or timer.", st->tool->name);
-	return jb_object(
-		"name", json_object_new_string("background"),
-		"description", json_object_new_string(about),
-		"inputSchema", schema_object(
-			jb_object(
-				"tool", schema_property("string", tool),
-				"arguments", schema_property("object", "The arguments for the tool, "
-				                             "the same as in a direct call."),
-				nullptr),
-			jb_list(json_object_new_string("tool"))),
-		nullptr);
+	return mcp_definition("background", about,
+		jb_object(
+			"tool", schema_property("string", tool),
+			"arguments", schema_property("object", "The arguments for the tool, "
+			                             "the same as in a direct call."),
+			nullptr),
+		"tool");
 }
 
-/* Returns the definition of jobs as clients list it, with --client-jobs;
- * nullptr if out of memory.
- */
+/* Returns the definition of jobs that clients list with --client-jobs. */
 static struct json_object *
 mcp_jobs_client_definition (void const *service)
 {
 	(void)service;
-	return jb_object(
-		"name", json_object_new_string("jobs"),
-		"description", json_object_new_string(
-			"List your jobs, which background started, and your timers; return "
-			"the result of a job that has ended; or cancel a job that runs or a "
-			"timer that has not fired."),
-		"inputSchema", schema_object(
-			jb_object(
-				"action", schema_enum(mcp_jobs_actions(),
-					"list lists your jobs and timers, result returns the "
-					"result of a job, and cancel cancels a job or a timer."),
-				"job", schema_property("string", "The id of the job for result and "
-				                       "cancel, from the result of background."),
-				"timer", schema_property("integer", "The number of the timer for "
-				                         "cancel, from the result of timer."),
-				nullptr),
-			jb_list(json_object_new_string("action"))),
-		nullptr);
+	return mcp_definition("jobs",
+		"List your jobs, which background started, and your timers; return "
+		"the result of a job that has ended; or cancel a job that runs or a "
+		"timer that has not fired.",
+		jb_object(
+			"action", schema_enum(mcp_jobs_actions(),
+				"list lists your jobs and timers, result returns the "
+				"result of a job, and cancel cancels a job or a timer."),
+			"job", schema_property("string", "The id of the job for result and "
+			                       "cancel, from the result of background."),
+			"timer", schema_property("integer", "The number of the timer for "
+			                         "cancel, from the result of timer."),
+			nullptr),
+		"action");
 }
 
-/* Returns the definition of wait as clients list it, with --client-jobs;
- * nullptr if out of memory.
- */
+/* Returns the definition of wait that clients list with --client-jobs. */
 static struct json_object *
 mcp_wait_client_definition (void const *service)
 {
 	(void)service;
 	static_assert(WAIT_MAX == 600 && WAIT_IDS == 16, "the description says");
-	return jb_object(
-		"name", json_object_new_string("wait"),
-		"description", json_object_new_string(
-			"Wait until one of your jobs ends, of those that you name or any, or "
-			"one of your timers fires, or the seconds pass, whichever comes "
-			"first. The result then lists what happened. A wait uses no upstream "
-			"slot: call it instead of calling jobs again and again. If your "
-			"client has a timeout for requests, wait for fewer seconds than "
-			"that."),
-		"inputSchema", schema_object(
-			jb_object(
-				"seconds", schema_property("integer", "The longest time to wait, "
-				                           "from 1 to 600 seconds."),
-				"jobs", jb_object(
-					"type", json_object_new_string("array"),
-					"items", schema_property("string", nullptr),
-					"description", json_object_new_string(
-						"The ids of the jobs to wait for, at most 16; without "
-						"ids, any job."),
-					nullptr),
+	return mcp_definition("wait",
+		"Wait until one of your jobs ends, of those that you name or any, or "
+		"one of your timers fires, or the seconds pass, whichever comes "
+		"first. The result then lists what happened. A wait uses no upstream "
+		"slot: call it instead of calling jobs again and again. If your "
+		"client has a timeout for requests, wait for fewer seconds than "
+		"that.",
+		jb_object(
+			"seconds", schema_property("integer", "The longest time to wait, "
+			                           "from 1 to 600 seconds."),
+			"jobs", jb_object(
+				"type", json_object_new_string("array"),
+				"items", schema_property("string", nullptr),
+				"description", json_object_new_string(
+					"The ids of the jobs to wait for, at most 16; without "
+					"ids, any job."),
 				nullptr),
-			jb_list(json_object_new_string("seconds"))),
-		nullptr);
+			nullptr),
+		"seconds");
 }
 
-/* Returns the definition of timer that clients list with --client-jobs, or
- * nullptr if out of memory.
- */
+/* Returns the definition of timer that clients list with --client-jobs. */
 static struct json_object *
 mcp_timer_client_definition (void const *service)
 {
 	(void)service;
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "the description says");
-	return jb_object(
-		"name", json_object_new_string("timer"),
-		"description", json_object_new_string(
-			"Set a timer, and continue at once: the result contains the number of "
-			"the timer. When the timer fires, a call of wait ends, and its result "
-			"contains the number and the note of the timer."),
-		"inputSchema", schema_object(
-			jb_object(
-				"seconds", schema_property("integer", "The seconds until the timer "
-				                           "fires, from 1 to 3600."),
-				"note", schema_property("string", "What the timer is for, at most "
-				                        "200 bytes; the result of a wait contains it "
-				                        "when the timer fires."),
-				nullptr),
-			jb_list(json_object_new_string("seconds"))),
-		nullptr);
+	return mcp_definition("timer",
+		"Set a timer, and continue at once: the result contains the number of "
+		"the timer. When the timer fires, a call of wait ends, and its result "
+		"contains the number and the note of the timer.",
+		jb_object(
+			"seconds", schema_property("integer", "The seconds until the timer "
+			                           "fires, from 1 to 3600."),
+			"note", schema_property("string", "What the timer is for, at most "
+			                        "200 bytes; the result of a wait contains it "
+			                        "when the timer fires."),
+			nullptr),
+		"seconds");
 }
 
 /* Serialize @p val into @p text, then free it. */
