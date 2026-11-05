@@ -140,11 +140,9 @@ enum {
 	                             at most */
 	SUMMARY_MAX  = 4 << 20,   /* bytes of compact's summary */
 	JOBS_MAX     = 8,         /* jobs that an ask call's turns may start */
-	TIMERS_MAX   = LEDGER_TIMERS,  /* timers they may have set at once */
 	WAIT_MAX     = 600,       /* seconds that a wait may take */
 	WAIT_IDS     = 16,        /* jobs that a client's wait may name */
 	TIMER_MAX    = 3600,      /* seconds that a timer may be set to */
-	TIMER_NOTE   = LEDGER_NOTE,    /* bytes of a timer's note */
 	TRACE_MAX    = 48,        /* tool calls the trace tells of */
 	TRACE_ARGS   = 200,       /* bytes of a call's arguments in the trace
 	                             and in the log */
@@ -713,8 +711,8 @@ static_assert((int)LEDGER_ID == (int)NOTES_ID && (int)LEDGER_ID == (int)JOURNAL_
  * the answers they gave before what happened woke them.
  */
 struct mcp_agenda {
-	struct mcp_slot     jobs[JOBS_MAX];      /* by number - 1 */
-	struct ledger_timer timers[TIMERS_MAX];  /* due 0: none set */
+	struct mcp_slot     jobs[JOBS_MAX];         /* by number - 1 */
+	struct ledger_timer timers[LEDGER_TIMERS];  /* due 0: none set */
 	struct loop_timer   alarm;     /* the first due: a timer, or the wait's
 	                                  end */
 	struct dstr         notices;   /* what happened, which none said yet */
@@ -2430,7 +2428,7 @@ mcp_req_job_done (struct mcp_req *req)
 	mcp_req_log_turn(req, job);
 	buf_fini(&job->key);
 	/* job_put() drops the reference of the message. The request still owns
-	 * the reference of the front. */
+	 * the reference of this loop. */
 	(void)job_put(job, 1);
 	mcp_req_wake(req);
 	if (req->lent) {
@@ -2589,14 +2587,12 @@ mcp_key (struct job  *job,
 	return 0;
 }
 
-/* Writes into @p key the key of a call in the roster. @p id is the request
- * id: the id of @p req for its own call, or the id that a
- * notifications/cancelled in @p req names. The key begins with the
- * principal of the client of @p req. If the principal is 0, the client's
- * address follows it. Then come the session field and a line break, if the
- * request has a session field, and last the JSON text of @p id. Stores the
- * hash of the key in @p *hash. The hash is seeded, so that no client can
- * choose keys that fill one bucket of the roster. Returns 0, or ENOMEM.
+/** Writes into @p key the key of a call in the roster and stores its seeded
+ *  hash in @p *hash, so that no client can choose keys that fill one bucket
+ *  of the roster. The key contains the principal of the client of @p req,
+ *  the address of the client if the principal is 0, the session field and
+ *  a line break if the request contains one, and the JSON text of the
+ *  request id @p id. Returns 0 or ENOMEM.
  */
 static int
 mcp_req_key (struct mcp_req const *req,
@@ -2605,18 +2601,18 @@ mcp_req_key (struct mcp_req const *req,
              uint64_t             *hash)
 {
 	struct stream const *s = req->s;
-	uint64_t const principal = s->grant.principal;
-	uint64_t const who[3] = {
-		principal, principal ? 0 : s->peer[0], principal ? 0 : s->peer[1]
-	};
+	uint64_t who[3] = { req->principal };
+	if (!who[0])
+		memcpy(who + 1, s->peer, sizeof s->peer);
 	struct span session = s->ops->field(s, F_SESSION);
 	size_t len = 0;
 	char const *json = json_object_to_json_string_length(id, JB_WIRE, &len);
 	if (!json)
 		return ENOMEM;
 	size_t head = sizeof who + (session.ptr ? session.len + 1 : 0);
+	size_t total = head + len;
 	struct span k;
-	int e = buf_reserve(key, head + len, SIZE_MAX, &k);
+	int e = buf_reserve(key, total, SIZE_MAX, &k);
 	if (e)
 		return e;
 	memcpy(k.ptr, who, sizeof who);
@@ -2625,24 +2621,23 @@ mcp_req_key (struct mcp_req const *req,
 		k.ptr[head - 1] = '\n';
 	}
 	memcpy(k.ptr + head, json, len);
-	buf_commit(key, head + len);
-	*hash = util_hash(req->mcp->st->seed, k.ptr, head + len);
+	buf_commit(key, total);
+	*hash = util_hash(req->mcp->st->seed, k.ptr, total);
 	return 0;
 }
 
-/* The owner of the records in the ledger that @p req opens and reads: the
- * principal of its client, which never has the bit LEDGER_ANONYMOUS
- * (src/policy.h). The principal of an anonymous client is 0, and its owner
- * is then a hash of its address with the bit LEDGER_ANONYMOUS set. The hash
- * is the one that mcp_req_submit() uses as the principal of an upstream job
- * of an anonymous client without a session field.
+/** Returns the owner of the records in the ledger that @p req opens and
+ *  reads: the principal of the client, or for an anonymous client, whose
+ *  principal is 0, a hash of its address with the bit LEDGER_ANONYMOUS set,
+ *  which is never set in a principal (src/policy.h). mcp_req_submit() uses
+ *  the same hash for the jobs of an anonymous client without a session.
  */
 static uint64_t
 mcp_req_owner (struct mcp_req const *req)
 {
+	if (req->principal)
+		return req->principal;
 	struct stream const *s = req->s;
-	if (s->grant.principal)
-		return s->grant.principal;
 	return util_hash(~req->mcp->st->seed, s->peer, sizeof s->peer) | LEDGER_ANONYMOUS;
 }
 
@@ -2789,13 +2784,11 @@ mcp_req_name (struct mcp_req *req,
 	return e ? e : loop_handle(req->mcp->loop, req, HANDLE_REQ, &req->call);
 }
 
-/* Hand the upstream request to a job, which the request names itself to for
- * the job's completion, with the call's key and principal: its client's
- * identity, else its session, else its client's address; and submit the
- * job to home. An identity's jobs are one principal's, whatever their
- * sessions and addresses: home tells them by their hash and a peer no
- * client has (UINT64_MAX twice; a Unix socket's user's is UINT64_MAX and
- * its uid).
+/** Hands the upstream request of @p req to a job and submits the job to
+ *  home. The principal of the job is the principal of the client, with the
+ *  peer UINT64_MAX twice, the peer of no client. For an anonymous client,
+ *  it is a hash of the session field or of the address. So all jobs of an
+ *  identity share one principal. Returns 0 or an error number.
  */
 static int
 mcp_req_submit (struct mcp_req *req)
@@ -2826,19 +2819,18 @@ mcp_req_submit (struct mcp_req *req)
 	job->request = req->upload;
 	req->upload = (struct buf){};
 	job->call = req->call;
-	job->deadline = ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
+	/* A resumed job ends at the realtime deadline of its checkpoint, at
+	 * least 1 ns from now, and another job after the timeout, if set. */
 	uint64_t wall = req->archive_deadline ? clk_realtime_ns() : 0;
-	if (wall)
-		job->deadline = loop->now + (req->archive_deadline > wall
-		                             ? req->archive_deadline - wall : 1);
-	struct stream const *s = req->s;
-	if (s->grant.principal) {
-		job->principal = s->grant.principal;
+	job->deadline = wall ? loop->now + (req->archive_deadline > wall
+	                                    ? req->archive_deadline - wall : 1)
+	              : ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
+	if (req->principal) {
+		job->principal = req->principal;
 		job->session = 0;
 		job->peer[0] = job->peer[1] = UINT64_MAX;
 	} else {
-		job->peer[0] = s->peer[0];
-		job->peer[1] = s->peer[1];
+		memcpy(job->peer, req->s->peer, sizeof job->peer);
 		uint64_t seed = mcp->st->seed;
 		job->principal = job->session
 		               ? util_hash(seed, buf_peek(&job->key).ptr, job->session)
@@ -2857,7 +2849,8 @@ mcp_req_submit (struct mcp_req *req)
 	req->place = 0;
 	req->turn_at = loop_clock();
 	++req->turn;
-	/* The front's and home's, and the post adds the message's. */
+	/* Two references, one for this loop and one for home. job_post() adds
+	 * the reference of the message. */
 	atomic_store_explicit(&job->refs, 2, memory_order_relaxed);
 	req->job = job;
 	req->phase = PHASE_CALL;
@@ -3344,15 +3337,17 @@ mcp_slot_write (struct mcp_slot  *slot,
 	size_t had = dstr_len(answer);
 	if (text.len > TOOL_OUTPUT_MAX - had)
 		return EFBIG;
-	/* What is UTF-8 goes at once; from the first byte that breaks it, a
-	 * chunk at a time, mended by jb_mend(), which with TOOL_MORE leaves a
-	 * character the end cuts short to the next write. All or nothing. */
+	/* Valid UTF-8 at the start of the text is copied at once, and the rest
+	 * a chunk at a time, mended by jb_mend(). With TOOL_MORE, an incomplete
+	 * character at the end is left for the next write. On failure, nothing
+	 * is appended. */
 	size_t i = jb_utf8(text.data, text.len);
 	bool ok = dstr_cat_n(answer, text.data, i);
 	for (bool last = i == text.len; ok && !last; ) {
 		char chunk[4 << 10];
-		size_t n = text.len - i < sizeof chunk ? text.len - i : sizeof chunk;
-		last = i + n == text.len;
+		size_t left = text.len - i;
+		size_t n = left < sizeof chunk ? left : sizeof chunk;
+		last = n == left;
 		memcpy(chunk, text.data + i, n);
 		n = jb_mend(chunk, n, last && !(flags & TOOL_MORE));
 		ok = dstr_cat_n(answer, chunk, n);
@@ -3571,29 +3566,32 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 		return EFAULT;
 	if (slot->done)
 		return EINVAL;
-	char const *url = request->url;
+	struct cstr_view url = { request->url, strnlen(request->url, WEB_URL_MAX + 1) };
 	char const *accept = request->accept;
-	size_t url_len = strnlen(url, WEB_URL_MAX + 1);
-	size_t accept_len = accept ? strnlen(accept, WEB_ACCEPT_MAX + 1) : 0;
-	size_t scheme = !strncmp(url, "http://", 7) ? 7 : !strncmp(url, "https://", 8) ? 8 : 0;
+	size_t accept_len = 0;
+	if (accept) {
+		accept_len = strnlen(accept, WEB_ACCEPT_MAX + 1);
+		if (accept_len - 1 >= WEB_ACCEPT_MAX)
+			return EINVAL;
+	}
+	size_t scheme = cstr_view_starts(url, CSTR_VIEW("http://")) ? sizeof "http://" - 1
+	              : cstr_view_starts(url, CSTR_VIEW("https://")) ? sizeof "https://" - 1 : 0;
 	/* The authority ends at the first '/', '?' or '#'. A user name or a
 	 * password in it ends in '@'. For a URL that is too long, authority
 	 * is 0, and the URL is refused. */
-	size_t authority = scheme && url_len <= WEB_URL_MAX
-	                 ? strcspn(url + scheme, "/?#") : 0;
-	if (!authority || memchr(url + scheme, '@', authority) ||
-	    (accept && (!accept_len || accept_len > WEB_ACCEPT_MAX)) ||
+	size_t authority = scheme && url.len <= WEB_URL_MAX
+	                 ? strcspn(url.data + scheme, "/?#") : 0;
+	if (!authority || memchr(url.data + scheme, '@', authority) ||
 	    request->body.len > WEB_SEND_MAX || request->max - 1 >= WEB_BODY_MAX ||
 	    request->timeout - 1 >= WEB_TIMEOUT_MAX || request->keep > WEB_KEEP_MAX)
 		return EINVAL;
-	for (size_t i = 0; i < url_len; ++i)
-		if ((unsigned char)url[i] <= ' ' || (unsigned char)url[i] > '~')
+	for (size_t i = 0; i < url.len; ++i)
+		if ((unsigned char)url.data[i] <= ' ' || (unsigned char)url.data[i] > '~')
 			return EINVAL;
 	for (size_t i = 0; i < accept_len; ++i)
 		if ((unsigned char)accept[i] < ' ' || (unsigned char)accept[i] > '~')
 			return EINVAL;
-	struct mcp_offer const *offer = mcp_slot_offer(slot);
-	if (!offer->tool.kind->step)
+	if (!mcp_slot_offer(slot)->tool.kind->step)
 		return mcp_slot_ready(slot);
 	if (slot->web && !web_wait_done(slot->web))
 		return EBUSY;
@@ -3601,7 +3599,7 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 	struct web_ask ask = {
 		.request = request,
 		.plugin = loaded ? loaded->manifest.name : nullptr,
-		.url = url_len,
+		.url = url.len,
 		.accept = accept_len
 	};
 	return mcp_slot_send(slot, &ask);
@@ -3655,11 +3653,11 @@ mcp_lent_text (struct json_object *obj,
 	return e < 0 ? -1 : 0;
 }
 
-/* Draft the upstream request with @p prompt and @p system, and write it up
- * to the first of them. The client's strings, which may be long, are left
- * out of the draft, and mcp_req_build() escapes them in; a default system
- * prompt is ours, and goes in with the draft, as do the tools the turns may
- * call, serialized once for every loop.
+/** Drafts the upstream request of @p req with @p prompt, @p system and the
+ *  chat history @p history, and writes the draft up to the first string of
+ *  the client. mcp_req_build() escapes the strings of the client, which
+ *  can be long, into the upload. The default system prompt and the lent
+ *  tools are part of the draft. Returns 0 or an error number.
  */
 static int
 mcp_req_draft (struct mcp_req     *req,
@@ -3669,13 +3667,15 @@ mcp_req_draft (struct mcp_req     *req,
 {
 	struct mcp_static const *st = req->mcp->st;
 	size_t n = jb_len(history);
-	/* The history, the prompt and the system prompt each need a splice. */
-	if (n + 2 > req->splice_max) {
-		struct mcp_splice *splice = realloc(req->splice, (n + 2) * sizeof *splice);
+	/* The draft contains a splice for each message of the history, one for
+	 * the prompt and one for the system prompt. */
+	size_t const need = n + 2;
+	if (need > req->splice_max) {
+		struct mcp_splice *splice = realloc(req->splice, need * sizeof *splice);
 		if (!splice)
 			return ENOMEM;
 		req->splice = splice;
-		req->splice_max = (uint16_t)(n + 2);
+		req->splice_max = (uint16_t)need;
 	}
 	for (size_t k = 0; k < n; ++k)
 		json_object_set_serializer(jb_get(jb_at(history, k), "content"),
@@ -4601,15 +4601,15 @@ mcp_req_agenda (struct mcp_req *req,
 	return req->agenda;
 }
 
-/* Set @p a's alarm to the first that is due, a timer or the wait's end, if
- * any: 0, or ENOMEM.
+/** Sets the alarm of @p a to the first time that is due, the due of a
+ *  timer or the end of the wait, if any. Returns 0 or ENOMEM.
  */
 static int
 mcp_agenda_arm (struct mcp_agenda *a)
 {
 	struct loop *loop = a->req->mcp->loop;
 	uint64_t due = a->wait ? a->wait_end : UINT64_MAX;
-	for (size_t i = 0; i < TIMERS_MAX; ++i)
+	for (size_t i = 0; i < ARRAY_SIZE(a->timers); ++i)
 		if (a->timers[i].due && a->timers[i].due < due)
 			due = a->timers[i].due;
 	if (due == UINT64_MAX) {
@@ -4720,9 +4720,10 @@ mcp_notice_timer (struct dstr               *d,
 	                   t->len ? ": " : "", (int)t->len, t->note);
 }
 
-/* @p timer's agenda's alarm: the timers due fire, which the next result
- * says, and a wait ends if one did, or if its time is up; one that fires
- * wakes the turns, if they doze.
+/** Handles the alarm @p timer of an agenda. The timers that are due fire,
+ *  and the function adds a notice of each to the agenda
+ *  (mcp_notice_timer()). A wait ends if a timer fired or if its time is
+ *  up. Otherwise a timer that fired wakes the turns if they doze.
  */
 static void
 mcp_agenda_alarm (struct loop       *loop,
@@ -4730,7 +4731,7 @@ mcp_agenda_alarm (struct loop       *loop,
 {
 	struct mcp_agenda *a = container_of(timer, struct mcp_agenda, alarm);
 	bool fired = false;
-	for (size_t i = 0; i < TIMERS_MAX; ++i) {
+	for (size_t i = 0; i < ARRAY_SIZE(a->timers); ++i) {
 		struct ledger_timer *t = &a->timers[i];
 		if (!t->due || t->due > loop->now)
 			continue;
@@ -5551,45 +5552,46 @@ mcp_slot_wait (struct mcp_slot    *slot,
 	mcp_slot_park(slot);
 }
 
-/* Sets a timer of the turns of @p req that fires at @p due, with the
- * @p len bytes at @p note as its note, and stores its number in @p *id.
- * Returns 0, EBUSY while the turns have TIMERS_MAX timers, or ENOMEM.
+/** Sets a timer of the turns of @p req that fires at @p due with the note
+ *  @p note, and stores the number of the timer in @p *id. Returns 0,
+ *  EBUSY while all LEDGER_TIMERS timers of the turns are set, or ENOMEM.
  */
 static int
-mcp_agenda_timer (struct mcp_req *req,
-                  uint64_t        due,
-                  char const     *note,
-                  size_t          len,
-                  uint32_t       *id)
+mcp_agenda_timer (struct mcp_req   *req,
+                  uint64_t          due,
+                  struct cstr_view  note,
+                  uint32_t         *id)
 {
 	int e;
 	struct mcp_agenda *a = mcp_req_agenda(req, &e);
 	if (!a)
 		return e;
-	if (!ledger_timer_add(a->timers, due, a->n_timers + 1, note, len))
+	uint32_t const next = a->n_timers + 1;
+	if (!ledger_timer_add(a->timers, due, next, note.data, note.len))
 		return EBUSY;
-	*id = ++a->n_timers;
+	*id = a->n_timers = next;
 	return mcp_agenda_arm(a);
 }
 
-/* The timer tool's call in @p slot: set a timer to fire in the seconds in
- * @p args, with its note: a timer of the turns, or for a client's call, a
- * timer of the call's owner in the ledger.
+/** Starts the call of the timer tool in @p slot, which sets a timer to fire
+ *  after the seconds in @p args, with the note in @p args. For a call of a
+ *  turn, the timer is a timer of the turns. For a client's call, the timer
+ *  is a timer of the owner of the call in the ledger.
  */
 static void
 mcp_slot_timer (struct mcp_slot    *slot,
                 struct json_object *args)
 {
-	static_assert(TIMER_MAX == 3600 && TIMER_NOTE == 200 && TIMERS_MAX == 8,
+	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200 && LEDGER_TIMERS == 8,
 	              "the problems say");
 	struct mcp_req *req = slot->req;
 	int64_t secs = mcp_seconds(args, TIMER_MAX);
-	size_t len = 0;
 	struct json_object *o = jb_get(args, "note");
-	char const *note = jb_str(o, &len);
+	struct cstr_view note = jb_view(o);
 	struct mcp_piece problem =
 		!secs ? TEXT("The seconds argument must be a whole number from 1 to 3600.")
-		: o && (!note || len > TIMER_NOTE || jb_utf8(note, len) < len)
+		: o && (!note.data || note.len > LEDGER_NOTE ||
+		        jb_utf8(note.data, note.len) < note.len)
 		? TEXT("The note argument must be a string of at most 200 bytes.")
 		: (struct mcp_piece){};
 	if (problem.bytes.data) {
@@ -5599,8 +5601,9 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	uint64_t due = req->mcp->loop->now + (uint64_t)secs * NS;
 	uint32_t id;
 	int e = slot->role == ROLE_OWN
-	      ? ledger_timer_set(req->mcp->st->ledger, mcp_req_owner(req), due, note, len, &id)
-	      : mcp_agenda_timer(req, due, note, len, &id);
+	      ? ledger_timer_set(req->mcp->st->ledger, mcp_req_owner(req), due, note.data,
+	                         note.len, &id)
+	      : mcp_agenda_timer(req, due, note, &id);
 	if (e) {
 		mcp_slot_refused(slot, e, TEXT("You have 8 timers set, the most at once."));
 		return;
@@ -6225,9 +6228,10 @@ mcp_recover_back (struct loop           *loop,
 	if (!req)
 		goto out;
 	struct mcp_static const *st = req->mcp->st;
+	uint64_t const owner = mcp_req_owner(req);
 	size_t id_len = 0;
 	char const *id = jb_str(jb_get(args, "job"), &id_len);
-	struct ledger_task *found = ledger_find(st->ledger, mcp_req_owner(req), id, id_len);
+	struct ledger_task *found = ledger_find(st->ledger, owner, id, id_len);
 	if (found) {
 		ledger_task_put(found);
 		handler(&req->self, args, true);
@@ -6243,15 +6247,16 @@ mcp_recover_back (struct loop           *loop,
 		}
 	}
 	struct json_object *state = mcp_archive_json(checkpoint);
-	char const *tool = jb_text(jb_get(state, "tool"));
-	char const *problem = error ? "Cannot read the durable job journal."
-	                     : !state || jb_int(jb_get(state, "version"), 0) != 1
-	                     ? "No recoverable job of yours has that id."
-	                     : jb_uint(jb_get(state, "owner"), 0) != mcp_req_owner(req) ||
-	                       !tool || strcmp(tool, st->offers[req->self.tool].tool.name.data)
-	                     ? "No job of yours from this tool has that id."
-	                     : nullptr;
-	if (problem)
+	struct cstr_view tool = jb_view(jb_get(state, "tool"));
+	struct mcp_piece problem =
+		error ? TEXT("Cannot read the durable job journal.")
+		: !state || jb_int(jb_get(state, "version"), 0) != 1
+		? TEXT("No recoverable job of yours has that id.")
+		: jb_uint(jb_get(state, "owner"), 0) != owner ||
+		  !cstr_view_equal(tool, st->offers[req->self.tool].tool.name)
+		? TEXT("No job of yours from this tool has that id.")
+		: (struct mcp_piece){};
+	if (problem.bytes.data)
 		goto failed;
 	uint64_t created = jb_uint(jb_get(state, "created"), 0);
 	if (end) {
@@ -6262,7 +6267,7 @@ mcp_recover_back (struct loop           *loop,
 		struct ledger_task *task = nullptr;
 		int e = EINVAL;
 		if (text && status >= LEDGER_COMPLETED && status <= LEDGER_CANCELLED)
-			task = ledger_restore(st->ledger, mcp_req_owner(req), LEDGER_JOB, req->self.tool,
+			task = ledger_restore(st->ledger, owner, LEDGER_JOB, req->self.tool,
 			                       (struct span){ (unsigned char *)(uintptr_t)id, id_len },
 			                       created, jb_uint(jb_get(result, "ended"), 0),
 			                       (enum ledger_status)status,
@@ -6270,7 +6275,7 @@ mcp_recover_back (struct loop           *loop,
 			                       nullptr, (struct handle){}, nullptr, &e);
 		json_object_put(result);
 		if (!task && e != EEXIST) {
-			problem = "Cannot restore this job's saved result.";
+			problem = TEXT("Cannot restore this job's saved result.");
 			goto failed;
 		}
 		ledger_task_put(task);
@@ -6281,11 +6286,12 @@ mcp_recover_back (struct loop           *loop,
 	if (jb_int(jb_get(state, "api"), 0) != st->ep->api ||
 	    jb_int(jb_get(state, "provider"), 0) != st->ep->provider ||
 	    jb_uint(jb_get(state, "endpoint"), 0) != mcp_archive_endpoint(st)) {
-		problem = "This job belongs to a different upstream endpoint, model or API.";
+		problem = TEXT("This job belongs to a different upstream endpoint, model or API.");
 		goto failed;
 	}
 	if (json_object_get_boolean(jb_get(state, "agenda"))) {
-		problem = "This interrupted job had background tools or timers. Their outcomes must be reconciled before continuing.";
+		problem = TEXT("This interrupted job had background tools or timers. Their "
+		               "outcomes must be reconciled before continuing.");
 		goto failed;
 	}
 	uint32_t intents = 0, results = 0;
@@ -6296,48 +6302,48 @@ mcp_recover_back (struct loop           *loop,
 			continue;
 		struct json_object *obj = mcp_archive_json(r);
 		int64_t k = jb_int(jb_get(obj, "index"), 0);
-		if (!obj || k < 0 || k >= JOB_CALLS ||
-		    (!intent && !jb_text(jb_get(obj, "text")))) {
+		problem = !obj || k < 0 || k >= JOB_CALLS ||
+		          (!intent && !jb_text(jb_get(obj, "text")))
+		        ? TEXT("This job's tool journal is invalid; no calls were repeated.")
+		        : intent && json_object_get_boolean(jb_get(obj, "agenda"))
+		        ? TEXT("This interrupted turn started or used background tools or "
+		               "timers. Reconcile their outcomes before continuing.")
+		        : (struct mcp_piece){};
+		if (problem.bytes.data) {
 			json_object_put(obj);
-			problem = "This job's tool journal is invalid; no calls were repeated.";
 			goto failed;
 		}
 		if (intent) {
-			if (json_object_get_boolean(jb_get(obj, "agenda"))) {
-				json_object_put(obj);
-				problem = "This interrupted turn started or used background tools or timers. Reconcile their outcomes before continuing.";
-				goto failed;
-			}
 			intents |= UINT32_C(1) << k;
 			json_object_put(obj);
-		} else {
-			results |= UINT32_C(1) << k;
-			json_object_put(req->saved_tools[k]);
-			req->saved_tools[k] = obj;
-			last_tool_result = obj;
+			continue;
 		}
+		results |= UINT32_C(1) << k;
+		json_object_put(req->saved_tools[k]);
+		req->saved_tools[k] = obj;
+		last_tool_result = obj;
 	}
 	if (intents & ~results) {
-		problem = "A tool call was interrupted with an unknown outcome; reconcile its effects before continuing. AskAI has not repeated it.";
+		problem = TEXT("A tool call was interrupted with an unknown outcome; reconcile its "
+		               "effects before continuing. AskAI has not repeated it.");
 		goto failed;
 	}
 	/* Before the job is admitted again, a failure here leaves its
 	 * checkpoint as it was, with no end record. */
 	struct json_object *local = last_tool_result ? last_tool_result : state;
-	size_t len = 0;
-	char const *attached = jb_str(jb_get(local, "attached"), &len);
-	if (attached && len &&
-	    mcp_piece_write(&RAW(attached, len), 0, len, &req->attached, SIZE_MAX)) {
-		problem = "Cannot restore this turn's saved attachments.";
+	struct cstr_view attached = jb_view(jb_get(local, "attached"));
+	if (attached.len &&
+	    mcp_piece_write(&BYTES(attached), 0, attached.len, &req->attached, SIZE_MAX)) {
+		problem = TEXT("Cannot restore this turn's saved attachments.");
 		goto failed;
 	}
-	char const *request = jb_str(jb_get(state, "request"), &len);
+	struct cstr_view request = jb_view(jb_get(state, "request"));
 	int64_t turn = jb_int(jb_get(state, "turn"), 0);
 	uint64_t prompt_at = jb_uint(jb_get(state, "prompt_at"), 0);
 	struct json_object *names = jb_get(state, "lent");
-	if (!request || !len || turn < 1 || turn > UINT32_MAX || prompt_at > len ||
+	if (!request.len || turn < 1 || turn > UINT32_MAX || prompt_at > request.len ||
 	    !json_object_is_type(names, json_type_array)) {
-		problem = "This job's saved request is invalid; no provider request was sent.";
+		problem = TEXT("This job's saved request is invalid; no provider request was sent.");
 		goto failed;
 	}
 	/* req->lent is set only after the job is admitted (below), so a poll
@@ -6349,26 +6355,28 @@ mcp_recover_back (struct loop           *loop,
 	if (!e && req->review && review)
 		e = review_restore(req->review, review);
 	if (e) {
-		problem = e == ENOMEM ? "Cannot restore this job's saved review record now."
-		        : "This job's saved review record is invalid; no provider request was sent.";
+		problem = e == ENOMEM ? TEXT("Cannot restore this job's saved review record now.")
+		        : TEXT("This job's saved review record is invalid; no provider request "
+		               "was sent.");
 		goto failed;
 	}
-	e = mcp_piece_write(&RAW(request, len), 0, len, &req->upload, SIZE_MAX);
-	char const *trace = jb_str(jb_get(state, "trace"), &len);
-	if (!e && trace && !dstr_cat_n(&req->trace, trace, len))
+	e = mcp_piece_write(&BYTES(request), 0, request.len, &req->upload, SIZE_MAX);
+	struct cstr_view trace = jb_view(jb_get(state, "trace"));
+	if (!e && trace.len && !dstr_cat_n(&req->trace, trace.data, trace.len))
 		e = ENOMEM;
 	struct handle who = {};
 	if (!e)
 		e = loop_handle(loop, req, HANDLE_REQ, &who);
 	struct ledger_task *task = !e
-		? ledger_restore(st->ledger, mcp_req_owner(req), LEDGER_JOB, req->self.tool,
+		? ledger_restore(st->ledger, owner, LEDGER_JOB, req->self.tool,
 		                 (struct span){ (unsigned char *)(uintptr_t)id, id_len },
 		                 created, 0, LEDGER_WORKING, (struct span){}, loop, who,
 		                 mcp_on_task_cancel, &e) : nullptr;
 	if (!task) {
 		if (who.bits)
 			loop_forget(loop, who);
-		problem = "Cannot resume this job now; it may already be resuming on another request.";
+		problem = TEXT("Cannot resume this job now; it may already be resuming on another "
+		               "request.");
 		goto failed;
 	}
 	req->admitted = task;
@@ -6387,9 +6395,9 @@ mcp_recover_back (struct loop           *loop,
 	req->filing = json_object_get_boolean(jb_get(local, "filing"));
 	req->filed = jb_uint(jb_get(local, "filed"), 0);
 	req->replay_filed = last_tool_result ? req->filed : 0;
-	char const *thread = jb_str(jb_get(state, "thread"), &len);
-	if (thread && notes_is_id(thread, len))
-		memcpy(req->thread, thread, NOTES_ID);
+	struct cstr_view thread = jb_view(jb_get(state, "thread"));
+	if (thread.data && notes_is_id(thread.data, thread.len))
+		memcpy(req->thread, thread.data, NOTES_ID);
 	if (st->notes_tool.notes)
 		notes_repo(st->notes_tool.notes, req->principal, NOTES_UPSTREAM, req->repo);
 	req->intents = intents;
@@ -6411,7 +6419,7 @@ mcp_recover_back (struct loop           *loop,
 	goto out;
 failed:
 	json_object_put(state);
-	mcp_slot_result(&req->self, ESC(problem, strlen(problem)), true);
+	mcp_slot_result(&req->self, problem, true);
 out:
 	json_object_put(args);
 	journal_records_destroy(&records);
@@ -7109,8 +7117,10 @@ mcp_req_show (struct mcp_req *req)
 	mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, p, ARRAY_SIZE(p)));
 }
 
-/* Answer tasks/get with where @p task, a reference, stands: once its call
- * has ended, with its result or error, which mcp_req_show() copies.
+/** Answers the tasks/get of @p req with the status of @p task. After the
+ *  call of the task ends, the answer also contains the result or the error
+ *  of the call, which mcp_req_show() copies. @p task is a reference, which
+ *  this function or mcp_req_show() releases.
  */
 static void
 mcp_req_task_show (struct mcp_req     *req,
@@ -7133,20 +7143,23 @@ mcp_req_task_show (struct mcp_req     *req,
 #undef S
 	struct mcp_static const *st = req->mcp->st;
 	enum ledger_status status = atomic_load_explicit(&task->status, memory_order_acquire);
-	bool ended = status != LEDGER_WORKING;
-	bool whole = ended && task->result;
-	/* A tasks/get of a record whose call has ended marks the record read. */
-	if (ended)
+	bool whole = false;
+	uint64_t updated_at = task->created;
+	char ttl[24] = "null";
+	size_t n_ttl = sizeof "null" - 1;
+	/* A tasks/get of a record whose call ended marks the record read.
+	 * The reply then contains the end of the call, and the time to live is
+	 * the run time of the call plus the time that the record stays. */
+	if (status != LEDGER_WORKING) {
 		atomic_store_explicit(&task->told, 1, memory_order_relaxed);
+		whole = task->result != nullptr;
+		updated_at = task->ended;
+		uint64_t ran = task->ended > task->created ? task->ended - task->created : 0;
+		n_ttl = util_format(ttl, sizeof ttl, "%" PRIu64,
+		                    ran / 1'000'000 + LEDGER_KEEP * 1000);
+	}
 	char created[ISO_TIME];
 	char updated[ISO_TIME];
-	char ttl[24];
-	/* Its end, and the time it stays after, once there is one to read. */
-	uint64_t ran = ended && task->ended > task->created ? task->ended - task->created
-	                                                    : 0;
-	size_t n_ttl = ended ? util_format(ttl, sizeof ttl, "%" PRIu64,
-	                                   ran / 1'000'000 + LEDGER_KEEP * 1000)
-	                     : util_format(ttl, sizeof ttl, "null");
 	struct mcp_piece const p[] = {
 		FRAG("{\"resultType\":\"complete\","),
 		DSTR(&st->server_meta),
@@ -7157,7 +7170,7 @@ mcp_req_task_show (struct mcp_req     *req,
 		FRAG("\",\"createdAt\":\""),
 		RAW(created, mcp_iso_time(created, task->created)),
 		FRAG("\",\"lastUpdatedAt\":\""),
-		RAW(updated, mcp_iso_time(updated, ended ? task->ended : task->created)),
+		RAW(updated, mcp_iso_time(updated, updated_at)),
 		FRAG("\",\"ttlMs\":"),
 		RAW(ttl, n_ttl),
 		FRAG(",\"pollIntervalMs\":1000"),
@@ -8260,12 +8273,14 @@ mcp_wait_definition (void const *service)
 		nullptr);
 }
 
-/* The definition of timer as the turns get it, likewise. */
+/* Returns the definition of timer for the turns, or nullptr if out of
+ * memory.
+ */
 static struct json_object *
 mcp_timer_definition (void const *service)
 {
 	(void)service;
-	static_assert(TIMER_MAX == 3600 && TIMER_NOTE == 200, "the description says");
+	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "the description says");
 	return jb_object(
 		"name", json_object_new_string("timer"),
 		"description", json_object_new_string(
@@ -8376,14 +8391,14 @@ mcp_wait_client_definition (void const *service)
 		nullptr);
 }
 
-/* Returns the definition of timer as clients list it, with --client-jobs;
+/* Returns the definition of timer that clients list with --client-jobs, or
  * nullptr if out of memory.
  */
 static struct json_object *
 mcp_timer_client_definition (void const *service)
 {
 	(void)service;
-	static_assert(TIMER_MAX == 3600 && TIMER_NOTE == 200, "the description says");
+	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "the description says");
 	return jb_object(
 		"name", json_object_new_string("timer"),
 		"description", json_object_new_string(
