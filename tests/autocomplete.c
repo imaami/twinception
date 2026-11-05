@@ -140,11 +140,10 @@ static struct json_object *autocomplete_parse (struct autocomplete *catalog,
 	struct autocomplete_tool const *tool = nullptr;
 	struct json_object *arguments = nullptr;
 	char buffer[256];
-	struct autocomplete_error diagnostic = {buffer, sizeof buffer, 0};
-	int error = autocomplete_parse_call(catalog, input, &tool, &arguments, &diagnostic);
+	int error = autocomplete_parse_call(catalog, input, &tool, &arguments, buffer,
+	                                    sizeof buffer);
 	if (error)
-		fprintf(stderr, "parse failed: [%.*s]: %.*s\n", (int)input.len, input.data,
-		        (int)diagnostic.len, diagnostic.data);
+		fprintf(stderr, "parse failed: [%.*s]: %s\n", (int)input.len, input.data, buffer);
 	assert(!error && tool);
 	assert(tool->name.len == expected_name.len);
 	assert(!memcmp(tool->name.data, expected_name.data, expected_name.len));
@@ -157,10 +156,10 @@ static void autocomplete_bad (struct autocomplete *catalog, struct cstr_view inp
 	struct autocomplete_tool const *tool = nullptr;
 	struct json_object *arguments = nullptr;
 	char buffer[13];
-	struct autocomplete_error diagnostic = {buffer, sizeof buffer, 0};
-	assert(autocomplete_parse_call(catalog, input, &tool, &arguments, &diagnostic));
+	assert(autocomplete_parse_call(catalog, input, &tool, &arguments, buffer, sizeof buffer));
 	assert(!tool && !arguments);
-	assert(diagnostic.len && diagnostic.len < sizeof buffer && !buffer[diagnostic.len]);
+	size_t const len = strnlen(buffer, sizeof buffer);
+	assert(len && len < sizeof buffer);
 }
 
 static void autocomplete_string (struct json_object *object, char const *key,
@@ -337,13 +336,13 @@ static void autocomplete_limits (struct autocomplete *catalog)
 	assert(!matches && !count);
 	struct autocomplete_tool const *tool = nullptr;
 	struct json_object *arguments = nullptr;
-	assert(autocomplete_parse_call(catalog, oversized, &tool, &arguments, nullptr) == E2BIG);
+	assert(autocomplete_parse_call(catalog, oversized, &tool, &arguments, nullptr, 0) == E2BIG);
 	assert(!tool && !arguments);
 	struct cstr_view invalid = CSTR_VIEW("@ali trailing\xff");
 	assert(autocomplete_complete(catalog, invalid, sizeof("@ali") - 1, &matches, &count) == EINVAL);
 	assert(!matches && !count);
 	invalid = CSTR_VIEW("/tool git message=invalid\xff");
-	assert(autocomplete_parse_call(catalog, invalid, &tool, &arguments, nullptr) == EINVAL);
+	assert(autocomplete_parse_call(catalog, invalid, &tool, &arguments, nullptr, 0) == EINVAL);
 	assert(!tool && !arguments);
 
 	size_t const length = 5U * 1024U * 1024U;

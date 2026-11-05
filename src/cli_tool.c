@@ -43,8 +43,8 @@ cli_tool_create (struct cli_client  *client,
 {
 	struct autocomplete_tool const *entry = nullptr;
 	cli_json_auto arguments = nullptr;
-	struct autocomplete_error diagnostic = {error->message, sizeof error->message, 0};
-	*e = autocomplete_parse_call(client->catalog, command, &entry, &arguments, &diagnostic);
+	*e = autocomplete_parse_call(client->catalog, command, &entry, &arguments,
+	                             error->message, sizeof error->message);
 	if (*e)
 		return nullptr;
 	uint64_t flags = 0;

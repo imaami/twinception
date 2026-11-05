@@ -150,25 +150,14 @@ autocomplete_safe (struct cstr_view value,
 }
 
 static int
-autocomplete_diagnose (struct autocomplete_error *error,
-                       int                        number,
-                       struct cstr_view           message,
-                       struct cstr_view           detail)
+autocomplete_diagnose (char             *why,
+                       size_t            size,
+                       int               number,
+                       struct cstr_view  message,
+                       struct cstr_view  detail)
 {
-	if (!error)
-		return number;
-	error->len = 0;
-	if (!error->data || !error->capacity)
-		return number;
-	size_t count = message.len < error->capacity - 1 ? message.len : error->capacity - 1;
-	if (count)
-		memcpy(error->data, message.data, count);
-	error->len = count;
-	count = detail.len < error->capacity - 1 - error->len ? detail.len : error->capacity - 1 - error->len;
-	if (count)
-		memcpy(error->data + error->len, detail.data, count);
-	error->len += count;
-	error->data[error->len] = '\0';
+	(void)util_format(why, size, "%.*s%.*s", (int)message.len, message.data,
+	                  (int)detail.len, detail.data);
 	return number;
 }
 
@@ -265,10 +254,11 @@ autocomplete_quote (struct dstr     *output,
 }
 
 static int
-autocomplete_tokenize (struct autocomplete       *ac,
-                       struct cstr_view           line,
-                       bool                       strict,
-                       struct autocomplete_error *diagnostic)
+autocomplete_tokenize (struct autocomplete *ac,
+                       struct cstr_view     line,
+                       bool                 strict,
+                       char                *why,
+                       size_t               size)
 {
 	ac->token_count = 0;
 	for (size_t i = 0; i < line.len;) {
@@ -310,12 +300,12 @@ autocomplete_tokenize (struct autocomplete       *ac,
 				if (depth && dstr_get(&ac->nesting)[depth - 1] == (byte == ']' ? '[' : '{'))
 					(void)dstr_erase(&ac->nesting, depth - 1, 1);
 				else if (strict)
-					return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Unmatched bracket in tool arguments"), CSTR_VIEW(""));
+					return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Unmatched bracket in tool arguments"), CSTR_VIEW(""));
 			} else if (autocomplete_space((unsigned char)byte) && !dstr_len(&ac->nesting))
 				break;
 		}
 		if (strict && (mark || escape || dstr_len(&ac->nesting)))
-			return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Unterminated quote, escape or JSON value in tool arguments"), CSTR_VIEW(""));
+			return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Unterminated quote, escape or JSON value in tool arguments"), CSTR_VIEW(""));
 		struct autocomplete_token *tokens = util_room(ac->tokens, &ac->token_capacity,
 		                                              ac->token_count + 1, sizeof *tokens);
 		if (!tokens)
@@ -1249,7 +1239,7 @@ autocomplete_complete (struct autocomplete              *ac,
 	(void)dstr_clear(&ac->lines);
 	int error;
 	if (line.len && line.data[0] == '/') {
-		error = autocomplete_tokenize(ac, line, false, nullptr);
+		error = autocomplete_tokenize(ac, line, false, nullptr, 0);
 		if (error)
 			return error;
 		struct autocomplete_token current = {cursor, cursor, SIZE_MAX};
@@ -1287,14 +1277,15 @@ autocomplete_complete (struct autocomplete              *ac,
 static int
 autocomplete_entry_validate (struct autocomplete_entry const *entry,
                              struct json_object              *arguments,
-                             struct autocomplete_error       *diagnostic)
+                             char                            *why,
+                             size_t                           size)
 {
 	struct json_object *required = jb_get(entry->root, "required");
 	for (size_t i = 0, count = jb_len(required); i < count; ++i) {
 		struct cstr_view key = autocomplete_json_text(json_object_array_get_idx(required, i));
 		struct json_object *unused = nullptr;
 		if (!json_object_object_get_ex(arguments, key.data, &unused))
-			return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Missing required tool argument: "), key);
+			return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Missing required tool argument: "), key);
 	}
 	return 0;
 }
@@ -1342,18 +1333,19 @@ autocomplete_parse_call (struct autocomplete             *ac,
                          struct cstr_view                 line,
                          struct autocomplete_tool const **tool,
                          struct json_object             **arguments,
-                         struct autocomplete_error       *diagnostic)
+                         char                            *why,
+                         size_t                           size)
 {
 	*tool = nullptr;
 	*arguments = nullptr;
-	(void)autocomplete_diagnose(diagnostic, 0, CSTR_VIEW(""), CSTR_VIEW(""));
+	(void)autocomplete_diagnose(why, size, 0, CSTR_VIEW(""), CSTR_VIEW(""));
 	if (line.len > AUTOCOMPLETE_BYTES)
-		return autocomplete_diagnose(diagnostic, E2BIG, CSTR_VIEW("Tool command is too long"), CSTR_VIEW(""));
+		return autocomplete_diagnose(why, size, E2BIG, CSTR_VIEW("Tool command is too long"), CSTR_VIEW(""));
 	if (!autocomplete_line(line))
-		return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Invalid tool command bytes"), CSTR_VIEW(""));
+		return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Invalid tool command bytes"), CSTR_VIEW(""));
 	if (!line.data)
 		line.data = "";
-	int error = autocomplete_tokenize(ac, line, true, diagnostic);
+	int error = autocomplete_tokenize(ac, line, true, why, size);
 	if (error)
 		return error;
 	struct cli_command const *command = nullptr;
@@ -1362,19 +1354,19 @@ autocomplete_parse_call (struct autocomplete             *ac,
 		command = cli_command_find(cstr_view_slice(line, token.begin, token.end - token.begin));
 	}
 	if (ac->token_count < 2 || !command || command->id != CLI_COMMAND_TOOL)
-		return autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Usage: "), cli_command_at(CLI_COMMAND_TOOL)->usage);
+		return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Usage: "), cli_command_at(CLI_COMMAND_TOOL)->usage);
 	struct autocomplete_token name_token = ac->tokens[1];
 	struct cstr_view name = cstr_view_slice(line, name_token.begin, name_token.end - name_token.begin);
 	struct autocomplete_entry const *entry = autocomplete_entry_find(ac, name, nullptr);
 	if (!entry)
-		return autocomplete_diagnose(diagnostic, ENOENT, CSTR_VIEW("Unknown or inaccessible tool: "), name);
+		return autocomplete_diagnose(why, size, ENOENT, CSTR_VIEW("Unknown or inaccessible tool: "), name);
 	struct json_object *result = nullptr;
 	if (ac->token_count > 2 && line.data[ac->tokens[2].begin] == '{') {
 		error = autocomplete_json_parse(ac, cstr_view_slice(line, ac->tokens[2].begin, line.len - ac->tokens[2].begin), &result);
 		if (error)
-			return autocomplete_diagnose(diagnostic, error, CSTR_VIEW("Invalid JSON tool argument"), CSTR_VIEW(""));
+			return autocomplete_diagnose(why, size, error, CSTR_VIEW("Invalid JSON tool argument"), CSTR_VIEW(""));
 		if (!json_object_is_type(result, json_type_object)) {
-			error = autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Tool arguments must be a JSON object"), CSTR_VIEW(""));
+			error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Tool arguments must be a JSON object"), CSTR_VIEW(""));
 			goto fail;
 		}
 	} else {
@@ -1385,7 +1377,7 @@ autocomplete_parse_call (struct autocomplete             *ac,
 		for (size_t i = 2; i < ac->token_count; ++i) {
 			struct autocomplete_token token = ac->tokens[i];
 			if (token.equals == SIZE_MAX || !autocomplete_safe(cstr_view_slice(line, token.begin, token.equals - token.begin), true)) {
-				error = autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Expected a tool argument as name=value"), CSTR_VIEW(""));
+				error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Expected a tool argument as name=value"), CSTR_VIEW(""));
 				goto fail;
 			}
 			struct cstr_view key = cstr_view_slice(line, token.begin, token.equals - token.begin);
@@ -1394,25 +1386,25 @@ autocomplete_parse_call (struct autocomplete             *ac,
 				goto fail;
 			struct json_object *existing = nullptr;
 			if (json_object_object_get_ex(result, dstr_get(&ac->key), &existing)) {
-				error = autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Duplicate tool argument: "), key);
+				error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Duplicate tool argument: "), key);
 				goto fail;
 			}
 			struct autocomplete_property const *property = autocomplete_entry_property(entry, key);
 			if (!property && json_object_is_type(additional, json_type_boolean) && !json_object_get_boolean(additional)) {
-				error = autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Unknown tool argument: "), key);
+				error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Unknown tool argument: "), key);
 				goto fail;
 			}
 			uint64_t flags = property ? property->flags : 0;
 			struct json_object *converted = nullptr;
 			error = autocomplete_convert(ac, cstr_view_slice(line, token.equals + 1, token.end - token.equals - 1), flags, &converted);
 			if (error) {
-				error = autocomplete_diagnose(diagnostic, error, CSTR_VIEW("Invalid value for tool argument: "), key);
+				error = autocomplete_diagnose(why, size, error, CSTR_VIEW("Invalid value for tool argument: "), key);
 				goto fail;
 			}
 			if (property && !autocomplete_accepted_type(flags, converted)) {
 				json_object_put(converted);
 				converted = nullptr;
-				error = autocomplete_diagnose(diagnostic, EINVAL, CSTR_VIEW("Wrong type for tool argument: "), key);
+				error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Wrong type for tool argument: "), key);
 				goto fail;
 			}
 			if (json_object_object_add(result, dstr_get(&ac->key), converted)) {
@@ -1422,7 +1414,7 @@ autocomplete_parse_call (struct autocomplete             *ac,
 				goto fail;
 			}
 		}
-		error = autocomplete_entry_validate(entry, result, diagnostic);
+		error = autocomplete_entry_validate(entry, result, why, size);
 		if (error)
 			goto fail;
 	}

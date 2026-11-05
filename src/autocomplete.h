@@ -43,15 +43,6 @@ struct autocomplete_match {
 	enum autocomplete_kind kind;
 };
 
-/** Optional caller-owned diagnostic buffer. len is the number of bytes
- * written, excluding NUL; messages are truncated to capacity - 1.
- */
-struct autocomplete_error {
-	char   *data;
-	size_t  capacity;
-	size_t  len;
-};
-
 /** Single-thread owned. Keeps scratch storage until destruction. */
 extern struct autocomplete *
 autocomplete_create (int *e);
@@ -164,13 +155,16 @@ autocomplete_match_sort (struct autocomplete_match *matches,
  * caller owns args and borrows tool from the catalog. On failure both
  * are null. Shorthand checks basic types; full JSON is validated by the
  * server. Input is limited to 16 MiB (E2BIG otherwise). Returns 0 or an
- * error number and optionally a diagnostic.
+ * error number. If @p why is not nullptr, it receives the diagnostic as
+ * text of at most @p size bytes with its NUL, which util_format() cuts
+ * with "...".
  */
 extern int
 autocomplete_parse_call (struct autocomplete             *ac,
                          struct cstr_view                 line,
                          struct autocomplete_tool const **tool,
                          struct json_object             **args,
-                         struct autocomplete_error       *diagnostic);
+                         char                            *why,
+                         size_t                           size);
 
 #endif /* TWINCEPTION_SRC_AUTOCOMPLETE_H_ */
