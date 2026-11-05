@@ -12,6 +12,7 @@
 #include <sys/eventfd.h>
 
 #include "blocker.h"
+#include "hist.h"
 #include "log.h"
 #include "util.h"
 
@@ -66,7 +67,7 @@ blocker_thread (void *arg)
 			job->error = ECANCELED;
 		} else {
 			job->work(job);
-			atomic_fetch_add_explicit(&b->metrics.done, 1, memory_order_relaxed);
+			hist_count(&b->metrics.done, 1);
 		}
 		loop_post(job->loop, &job->done);
 		pthread_mutex_lock(&b->lock);
@@ -127,7 +128,7 @@ blocker_submit (struct blocker     *blocker,
 	pthread_mutex_lock(&blocker->lock);
 	if (blocker->stop || blocker->queued >= QUEUE) {
 		pthread_mutex_unlock(&blocker->lock);
-		atomic_fetch_add_explicit(&blocker->metrics.refused, 1, memory_order_relaxed);
+		hist_count(&blocker->metrics.refused, 1);
 		return EAGAIN;
 	}
 	list_append(&blocker->queue, &job->hook);

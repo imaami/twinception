@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "clk.h"
+#include "hist.h"
 #include "ledger.h"
 #include "list.h"
 #include "loop.h"
@@ -55,20 +56,6 @@ struct ledger {
 	struct ledger_task    *buckets[BUCKETS];
 	struct ledger_owner   *owners[OWNER_BUCKETS];
 };
-
-static void
-ledger_add (_Atomic uint64_t *p,
-            uint64_t          n)
-{
-	atomic_fetch_add_explicit(p, n, memory_order_relaxed);
-}
-
-static void
-ledger_sub (_Atomic uint64_t *p,
-            uint64_t          n)
-{
-	atomic_fetch_sub_explicit(p, n, memory_order_relaxed);
-}
 
 /* The owner whose key is @p key, the lock held; nullptr if the ledger has
  * no such owner.
@@ -341,9 +328,9 @@ ledger_drop (struct ledger      *l,
 	ledger_owner_gc(l, o);
 	l->bytes -= t->len;
 	--l->n;
-	ledger_sub(&l->metrics.kept, 1);
-	ledger_sub(&l->metrics.bytes, t->len);
-	ledger_add(&l->metrics.gone, 1);
+	hist_count(&l->metrics.kept, -(uint64_t)1);
+	hist_count(&l->metrics.bytes, -(uint64_t)t->len);
+	hist_count(&l->metrics.gone, 1);
 }
 
 /* The owner with the most records whose calls have ended, the lock held;
@@ -614,13 +601,13 @@ ledger_restore (struct ledger     *ledger,
 		*e = ledger_insert(ledger, t, owner, &gone);
 	}
 	if (!*e) {
-		ledger_add(kind == LEDGER_JOB ? &m->jobs : &m->opened, 1);
-		ledger_add(&m->kept, 1);
+		hist_count(kind == LEDGER_JOB ? &m->jobs : &m->opened, 1);
+		hist_count(&m->kept, 1);
 		if (!working) {
 			list_append(&ledger->ended, &t->hook);
 			ledger->bytes += t->len;
-			ledger_add(&m->ended[status], 1);
-			ledger_add(&m->bytes, t->len);
+			hist_count(&m->ended[status], 1);
+			hist_count(&m->bytes, t->len);
 			hits = ledger_owner_wake(t->owner);
 			excess = ledger_sweep(ledger, t, false);
 		}
@@ -631,7 +618,7 @@ ledger_restore (struct ledger     *ledger,
 	ledger_put_all(excess);
 	if (*e) {
 		if (*e == EBUSY || *e == ENOSPC)
-			ledger_add(*e == EBUSY ? &m->refused : &m->full, 1);
+			hist_count(*e == EBUSY ? &m->refused : &m->full, 1);
 		free(t->result);
 		t->result = nullptr;
 		free(t);
@@ -690,8 +677,8 @@ ledger_end (struct ledger      *ledger,
 	ledger->bytes += task->len;
 	struct ledger_task *gone = ledger_sweep(ledger, task, false);
 	pthread_mutex_unlock(&ledger->lock);
-	ledger_add(&ledger->metrics.ended[status], 1);
-	ledger_add(&ledger->metrics.bytes, task->len);
+	hist_count(&ledger->metrics.ended[status], 1);
+	hist_count(&ledger->metrics.bytes, task->len);
 	ledger_wake(hits);
 	ledger_put_all(gone);
 }
@@ -815,7 +802,7 @@ ledger_timer_set (struct ledger    *ledger,
 			ledger->n_timers = next;
 			*id = next;
 			hits = ledger_owner_wake(o);
-			ledger_add(&ledger->metrics.timers, 1);
+			hist_count(&ledger->metrics.timers, 1);
 		}
 	}
 	pthread_mutex_unlock(&ledger->lock);
@@ -888,7 +875,7 @@ ledger_wait_enter (struct ledger  *ledger,
 		free(w);
 		return nullptr;
 	}
-	ledger_add(&ledger->metrics.waits, 1);
+	hist_count(&ledger->metrics.waits, 1);
 	return w;
 }
 
@@ -917,7 +904,7 @@ ledger_wait_leave (struct ledger       *ledger,
 	}
 	pthread_mutex_unlock(&ledger->lock);
 	if (o)
-		ledger_sub(&ledger->metrics.waits, 1);
+		hist_count(&ledger->metrics.waits, -(uint64_t)1);
 	ledger_wait_put(w);
 }
 

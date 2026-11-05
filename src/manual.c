@@ -13,6 +13,7 @@
 #include "buf.h"
 #include "child.h"
 #include "cstr_view.h"
+#include "hist.h"
 #include "jb.h"
 #include "list.h"
 #include "log.h"
@@ -136,14 +137,6 @@ struct manual {
 	uint64_t              seed;     /* of the keys' hash */
 	uint64_t              recheck;  /* ns a finding holds */
 };
-
-/* Add @p n to @p p, which any thread may write. */
-static void
-manual_count (_Atomic uint64_t *p,
-              uint64_t          n)
-{
-	atomic_fetch_add_explicit(p, n, memory_order_relaxed);
-}
 
 static struct manual_page *
 manual_page_get (struct manual_page *page)
@@ -314,8 +307,8 @@ manual_fetch_done (struct manual_fetch *f,
 	if (rendered) {
 		old = file->page;
 		file->page = manual_page_get(page);
-		manual_count(&m->metrics.pages, !old);
-		manual_count(&m->metrics.bytes, page->len - (old ? old->len : 0));
+		hist_count(&m->metrics.pages, !old);
+		hist_count(&m->metrics.bytes, page->len - (old ? old->len : 0));
 	}
 	if (a->file != file) {
 		if (a->file)
@@ -368,7 +361,7 @@ manual_fetch_run (struct manual_fetch *f,
 	int e = 0;
 	f->child = child_create(loop, &ml->children, &cmd, done, f, &e);
 	if (f->child) {
-		manual_count(runs, 1);
+		hist_count(runs, 1);
 		return;
 	}
 	if (e == EBUSY) {
@@ -664,7 +657,7 @@ manual_find (struct manual_loop  *ml,
 	pthread_mutex_unlock(&m->lock);
 	struct stat st;
 	if (page && !stat(file->key, &st) && manual_page_same(page, &st)) {
-		manual_count(&m->metrics.hits, 1);
+		hist_count(&m->metrics.hits, 1);
 		*p_page = page;
 		/* man may now find another file for the page. The call receives
 		 * the stored page, and manual_loop_ask() starts a new fetch
@@ -688,7 +681,7 @@ manual_find (struct manual_loop  *ml,
 	if (e)
 		free(w);
 	else
-		manual_count(&m->metrics.waits, 1);
+		hist_count(&m->metrics.waits, 1);
 	return e;
 }
 

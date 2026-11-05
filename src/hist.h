@@ -108,6 +108,16 @@ hist_add (_Atomic uint64_t *p,
 	atomic_store_explicit(p, hist_get(p) + n, memory_order_relaxed);
 }
 
+/** Add @p n to @p p, which several threads write, with a relaxed atomic
+ *  read-modify-write. A subtraction adds the negated value.
+ */
+static inline void
+hist_count (_Atomic uint64_t *p,
+            uint64_t          n)
+{
+	atomic_fetch_add_explicit(p, n, memory_order_relaxed);
+}
+
 #define clz64(x) (unsigned)(_Generic(*(typeof(x) *)0,               \
         long: __builtin_clzl, unsigned long long: __builtin_clzll,  \
         unsigned long: __builtin_clzl, long long: __builtin_clzll)) \
