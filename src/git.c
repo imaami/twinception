@@ -229,43 +229,43 @@ enum {
 };
 
 static struct {
-	char const             *name;
+	struct cstr_view        name;
 	struct cstr_view const *options;
 	char const             *forced[3];  /* options askai gives it */
 	char const             *description;
 	uint64_t                takes;
 } const commands[] = {
-	{ "read",      read_options,      { "blob" },
+	{ CSTR_VIEW_INIT("read"),      read_options,      { "blob" },
 	  "Numbered lines of a committed file. Give the file as the one revision, "
 	  "commit:path such as HEAD:src/main.c, the first line as line (default 1) "
 	  "and the most lines as count (default: as many as the window holds). The "
 	  "output's first line names the commit; its last line says where to read "
 	  "on.", END | OBJECT | SINGLE | LINES },
-	{ "log",       log_options,       { "--no-ext-diff", "--no-textconv" },
+	{ CSTR_VIEW_INIT("log"),       log_options,       { "--no-ext-diff", "--no-textconv" },
 	  "Committed history; defaults to HEAD. Paths restrict the history.",
 	  FILES | END | RANGE },
-	{ "show",      show_options,      { "--no-ext-diff", "--no-textconv" },
+	{ CSTR_VIEW_INIT("show"),      show_options,      { "--no-ext-diff", "--no-textconv" },
 	  "Committed contents; defaults to HEAD. HEAD:path reads a committed file.",
 	  FILES | END | OBJECT },
-	{ "diff",      diff_options,      { "--no-ext-diff", "--no-textconv" },
+	{ CSTR_VIEW_INIT("diff"),      diff_options,      { "--no-ext-diff", "--no-textconv" },
 	  "Compare two commits: give two revisions, or one explicit A..B or A...B "
 	  "range. Paths restrict the comparison.", FILES | END | RANGE | PAIR },
-	{ "grep",      grep_options,      { "--no-textconv", "-n" },
+	{ CSTR_VIEW_INIT("grep"),      grep_options,      { "--no-textconv", "-n" },
 	  "Search committed trees; defaults to HEAD. Each match is "
 	  "commit:path:line:text; read takes commit:path as its revision and that "
 	  "line. Use -F for literal search, -E for extended regex, -C3 for context.",
 	  FILES | END | PATTERN },
-	{ "blame",     blame_options,     { "--no-textconv" },
+	{ CSTR_VIEW_INIT("blame"),     blame_options,     { "--no-textconv" },
 	  "Annotate a committed file; defaults to HEAD. Give one path; -L10,30 "
 	  "limits the line range.", FILES | SINGLE },
-	{ "ls-tree",   ls_tree_options,   {},
+	{ CSTR_VIEW_INIT("ls-tree"),   ls_tree_options,   {},
 	  "Paths in a committed tree; defaults to HEAD. -r recurses.",
 	  FILES | SINGLE },
-	{ "cat-file",  cat_file_options,  {},
+	{ CSTR_VIEW_INIT("cat-file"),  cat_file_options,  {},
 	  "Inspect committed contents: -p for contents, -t for type, -s for bytes, "
 	  "-e for existence. Defaults to HEAD; revision:path names a committed file.",
 	  END | OBJECT | SINGLE },
-	{ "rev-parse", rev_parse_options, { "--revs-only" },
+	{ CSTR_VIEW_INIT("rev-parse"), rev_parse_options, { "--revs-only" },
 	  "Resolve commit references to immutable commit IDs; defaults to HEAD. "
 	  "--verify requires one valid revision.", 0 },
 };
@@ -439,10 +439,10 @@ git_definition (void const *service)
 	              GIT_MAX == 4 << 20, "the description says");
 	struct json_object *repos = json_object_new_array();
 	for (size_t i = 0; repos && i < git->n; ++i)
-		repos = jb_push_or_free(repos, json_object_new_string(git->repo[i].name.data));
+		repos = jb_push_or_free(repos, jb_string(git->repo[i].name));
 	struct json_object *cmds = json_object_new_array();
 	for (size_t i = 0; cmds && i < ARRAY_SIZE(commands); ++i)
-		cmds = jb_push_or_free(cmds, json_object_new_string(commands[i].name));
+		cmds = jb_push_or_free(cmds, jb_string(commands[i].name));
 	struct cstr_view const required[] = { CSTR_VIEW("repo"), CSTR_VIEW("command") };
 	return jb_object(
 		"name", json_object_new_string("git"),
@@ -509,49 +509,49 @@ git_definition (void const *service)
 		nullptr);
 }
 
-/* @p val's string, of 1 to WORD bytes and no NUL, and its length in @p *len;
- * nullptr if it is not one.
+/* Returns a view of the string @p val if it is 1 to WORD bytes long and
+ * contains no NUL, or else an empty view with data nullptr. The bytes of
+ * the view are followed by the NUL that json-c stores after each string.
  */
-static char const *
-git_word (struct json_object *val,
-          size_t             *len)
+static struct cstr_view
+git_word (struct json_object *val)
 {
-	char const *s = jb_text(val);
-	*len = s ? (size_t)json_object_get_string_len(val) : 0;
-	return s && *len && *len <= WORD && !memchr(s, '\0', *len) ? s : nullptr;
+	struct cstr_view const s = jb_view(val);
+	return s.len && s.len <= WORD && !memchr(s.data, '\0', s.len) ? s : (struct cstr_view){};
 }
 
-/** Match the same spellings that help lists. ENODATA means a missing value,
- * EINVAL nondecimal digits, ENOENT no matching spelling. An accepted spelling
- * wins over a malformed alternative, such as --abbrev beside --abbrev=.
+/** Looks up the option @p opt, a word of git_word(), in @p allowed, the
+ * spellings that help lists. Stores the spelling that matches in @p *match
+ * and returns 0, ENODATA for a missing value, EINVAL for nondecimal
+ * digits, or ENOENT if no spelling matches. A spelling that accepts @p opt
+ * is preferred over one whose value is malformed, such as --abbrev beside
+ * --abbrev=.
  */
 static int
 git_option_find (struct cstr_view const *allowed,
-                 char const             *opt,
-                 size_t                  len,
+                 struct cstr_view        opt,
                  struct cstr_view       *match)
 {
 	*match = (struct cstr_view){};
 	int e = ENOENT;
 	for (; allowed->data; ++allowed) {
-		char const *a = allowed->data;
 		size_t n = allowed->len;
-		char last = a[n - 1];
+		char last = allowed->data[n - 1];
 		if (last != '=' && last != '#' && last != '*') {
-			if (len == n && !memcmp(opt, a, n)) {
+			if (cstr_view_equal(opt, *allowed)) {
 				*match = *allowed;
 				return 0;
 			}
 			continue;
 		}
-		if (len < n - 1 || memcmp(opt, a, n - 1) ||
-		    (last == '=' && len >= n && opt[n - 1] != '='))
+		if (!cstr_view_starts(opt, cstr_view_slice(*allowed, 0, n - 1)) ||
+		    (last == '=' && opt.len >= n && opt.data[n - 1] != '='))
 			continue;
 		size_t at = last == '=' ? n : n - 1;
 		*match = *allowed;
-		if (len <= at)
+		if (opt.len <= at)
 			e = ENODATA;
-		else if (last == '#' && strspn(opt + at, "0123456789") != len - at)
+		else if (last == '#' && strspn(opt.data + at, "0123456789") != opt.len - at)
 			e = EINVAL;
 		else
 			return 0;
@@ -632,50 +632,55 @@ git_wrong_word (char       *why,
 	                 str, tail);
 }
 
-/** Validate one option, explaining only the repair its failure needs. */
+/** Validates the option @p opt of the command @p command, the option at
+ * @p index in the options argument. Returns 0, or EINVAL with a message in
+ * @p why that explains only how to repair the option.
+ */
 static int
-git_option_check (char const *opt,
-                  size_t      len,
-                  size_t      command,
-                  size_t      index,
-                  char       *why)
+git_option_check (struct cstr_view  opt,
+                  size_t            command,
+                  size_t            index,
+                  char             *why)
 {
 	struct cstr_view match;
-	int e = git_option_find(commands[command].options, opt, len, &match);
+	int e = git_option_find(commands[command].options, opt, &match);
 	if (!e)
 		return 0;
-	int shown = (int)jb_utf8(opt, len < 80 ? len : 80);
+	int quoted = (int)jb_utf8(opt.data, opt.len < 80 ? opt.len : 80);
 	if (match.data) {
 		char last = match.data[match.len - 1];
 		size_t at = match.len - (last != '=');
 		char const *value = last == '#' ? "NUMBER" : "VALUE";
 		char const *digits = last == '#' ? " containing decimal digits" : "";
 		return git_wrong(why, "options[%zu]: '%.*s' %s. Use '%.*s%s' as one "
-		                 "options entry%s.", index, shown, opt,
+		                 "options entry%s.", index, quoted, opt.data,
 		                 e == ENODATA ? "needs an attached value"
 		                              : "has a nonnumeric attached value",
 		                 (int)at, match.data, value, digits);
 	}
-	if (!git_option_find(source_options, opt, len, &match)) {
+	if (!git_option_find(source_options, opt, &match)) {
 		char const *source = commands[command].takes & PAIR
 			? "supply two commits or one A..B/A...B range in revisions."
 			: "select a commit with revisions (default HEAD).";
 		return git_wrong(why, "options[%zu]: '%.*s' requests an unavailable data "
 		                 "source. Index and working-tree reads are disabled. "
-		                 "Omit this option and %s", index, shown, opt, source);
+		                 "Omit this option and %s", index, quoted, opt.data, source);
 	}
-	return git_wrong(why, "options[%zu]: '%.*s' is not available for git %s in "
+	return git_wrong(why, "options[%zu]: '%.*s' is not available for git %.*s in "
 	                 "this tool. Omit it; use help:true for this command's options.",
-	                 index, shown, opt, commands[command].name);
+	                 index, quoted, opt.data, (int)commands[command].name.len,
+	                 commands[command].name.data);
 }
 
-/* The repository named @p name, if one is listed so; else nullptr. */
+/* Returns the repository whose name is @p name, or nullptr if there is
+ * none.
+ */
 static struct git_repo const *
 git_find (struct git const *git,
-          char const       *name)
+          struct cstr_view  name)
 {
-	for (size_t i = 0; name && i < git->n; ++i)
-		if (!strcmp(name, git->repo[i].name.data))
+	for (size_t i = 0; i < git->n; ++i)
+		if (cstr_view_equal(name, git->repo[i].name))
 			return &git->repo[i];
 	return nullptr;
 }
@@ -687,10 +692,11 @@ git_repos_wrong (struct git const *git,
 {
 	size_t n = util_format(why, GIT_WHY, "The repo argument must name one of the "
 	                       "repositories:");
-	/* Once cut short, with "...", the list says no more. */
+	/* After util_format() cuts the text short and ends it with "...", the
+	 * loop appends nothing more. */
 	for (size_t i = 0; i < git->n && n < GIT_WHY - 1; ++i)
-		n += util_format(why + n, GIT_WHY - n, "%s %s", i ? "," : "",
-		                 git->repo[i].name.data);
+		n += util_format(why + n, GIT_WHY - n, "%s %.*s", i ? "," : "",
+		                 (int)git->repo[i].name.len, git->repo[i].name.data);
 	if (n < GIT_WHY - 1)
 		util_format(why + n, GIT_WHY - n, ".");
 	return EINVAL;
@@ -728,25 +734,26 @@ git_call_command (struct git_call   *call,
 		if (!git_known(it.key))
 			return git_wrong_word(why, "Unknown argument: ", it.key, 64, ".");
 
-	size_t len;
-	struct git_repo const *repo = git_find(git, git_word(jb_get(args, "repo"), &len));
+	struct git_repo const *repo = git_find(git, git_word(jb_get(args, "repo")));
 	if (!repo)
 		return git_repos_wrong(git, why);
 	call->repo = repo;
-	char const *cmd = git_word(jb_get(args, "command"), &len);
+	struct cstr_view const cmd = git_word(jb_get(args, "command"));
 	size_t c = 0;
-	while (cmd && c < ARRAY_SIZE(commands) && strcmp(cmd, commands[c].name))
+	while (c < ARRAY_SIZE(commands) && !cstr_view_equal(cmd, commands[c].name))
 		++c;
-	if (!cmd || c == ARRAY_SIZE(commands)) {
-		if (cmd && (!strcmp(cmd, "status") || !strcmp(cmd, "ls-files")))
-			return git_wrong(why, "git %s is unavailable: index and working-tree "
+	if (c == ARRAY_SIZE(commands)) {
+		if (cstr_view_equal(cmd, CSTR_VIEW("status")) ||
+		    cstr_view_equal(cmd, CSTR_VIEW("ls-files")))
+			return git_wrong(why, "git %.*s is unavailable: index and working-tree "
 			                 "reads are disabled. Use git ls-tree with "
 			                 "options [\"-r\", \"--name-only\"] to list committed "
-			                 "files; revisions defaults to HEAD.", cmd);
+			                 "files; revisions defaults to HEAD.",
+			                 (int)cmd.len, cmd.data);
 		size_t n = util_format(why, GIT_WHY, "The command argument must be one of:");
 		for (size_t i = 0; i < ARRAY_SIZE(commands) && n < GIT_WHY - 1; ++i)
-			n += util_format(why + n, GIT_WHY - n, "%s %s", i ? "," : "",
-			                 commands[i].name);
+			n += util_format(why + n, GIT_WHY - n, "%s %.*s", i ? "," : "",
+			                 (int)commands[i].name.len, commands[i].name.data);
 		if (n < GIT_WHY - 1)
 			util_format(why + n, GIT_WHY - n, ". Use help:true for its options.");
 		return EINVAL;
@@ -782,19 +789,20 @@ git_call_command (struct git_call   *call,
 			return git_wrong(why, "The %s argument has %zu entries; its limit is "
 			                 "%zu.", names[l], lens[l], most[l]);
 		for (size_t i = 0; i < lens[l]; ++i)
-			if (!git_word(json_object_array_get_idx(lists[l], i), &len))
+			if (!git_word(json_object_array_get_idx(lists[l], i)).data)
 				return git_wrong(why, "%s[%zu] must be a string of 1 to %d "
 				                 "bytes with no NUL.", names[l], i, WORD);
 	}
 	if ((takes & SINGLE) && lens[1] > 1)
-		return git_wrong(why, "git %s takes at most one revision.", cmd);
+		return git_wrong(why, "git %.*s takes at most one revision.", (int)cmd.len,
+		                 cmd.data);
 	if (lens[2] && !(takes & FILES))
-		return git_wrong(why, "git %s takes no paths. To name a file, give the "
-		                 "revision HEAD:path.", cmd);
+		return git_wrong(why, "git %.*s takes no paths. To name a file, give the "
+		                 "revision HEAD:path.", (int)cmd.len, cmd.data);
 	struct json_object *pattern = jb_get(args, "pattern");
-	char const *pat = git_word(pattern, &len);
+	struct cstr_view const pat = git_word(pattern);
 	if (takes & PATTERN) {
-		if (!pat)
+		if (!pat.data)
 			return git_wrong(why, "git grep needs a pattern argument: a string of "
 			                 "1 to 1024 bytes.");
 	} else if (pattern) {
@@ -822,56 +830,55 @@ git_call_command (struct git_call   *call,
 
 	size_t k = 0;
 	char const **argv = call->argv;
-	argv[k++] = takes & LINES ? "cat-file" : cmd;
+	argv[k++] = takes & LINES ? "cat-file" : cmd.data;
 	for (size_t i = 0; i < ARRAY_SIZE(commands[c].forced) && commands[c].forced[i];
 	     ++i)
 		argv[k++] = commands[c].forced[i];
 	/* The options, then the pattern, the revisions and the paths, each
 	 * checked as it goes in. */
 	for (size_t i = 0; i < lens[0]; ++i) {
-		char const *s = jb_str(json_object_array_get_idx(lists[0], i), &len);
-		int e = git_option_check(s, len, c, i, why);
+		struct cstr_view const opt = jb_view(json_object_array_get_idx(lists[0], i));
+		int e = git_option_check(opt, c, i, why);
 		if (e)
 			return e;
-		if (!strncmp(s, git_ignore_rev, sizeof git_ignore_rev - 1)) {
-			struct git_root *root = &call->roots[call->n_roots++];
-			if (git_commit(root->name, s + sizeof git_ignore_rev - 1,
-			               len - (sizeof git_ignore_rev - 1)))
-				return git_wrong(why, "--ignore-rev needs a commit reference or hash.");
-			root->option[0] = '-';
-			s = root->option;
+		if (strncmp(opt.data, git_ignore_rev, sizeof git_ignore_rev - 1)) {
+			argv[k++] = opt.data;
+			continue;
 		}
-		argv[k++] = s;
+		struct git_root *root = &call->roots[call->n_roots++];
+		if (git_commit(root->name, opt.data + sizeof git_ignore_rev - 1,
+		               opt.len - (sizeof git_ignore_rev - 1)))
+			return git_wrong(why, "--ignore-rev needs a commit reference or hash.");
+		root->option[0] = '-';
+		argv[k++] = root->option;
 	}
-	if (pat) {
+	if (pat.data) {
 		argv[k++] = "-e";
-		argv[k++] = pat;
+		argv[k++] = pat.data;
 	}
 	if (takes & END)
 		argv[k++] = "--end-of-options";
 	size_t endpoints = lens[1];
 	call->n_revisions = lens[1] ? lens[1] : 1;
 	for (size_t i = 0; i < call->n_revisions; ++i) {
-		char const *s = "HEAD";
-		len = sizeof "HEAD" - 1;
-		if (lens[1])
-			s = jb_str(json_object_array_get_idx(lists[1], i), &len);
-		char const *path = strchr(s, ':');
-		size_t root = path ? (size_t)(path - s) : len;
+		struct cstr_view const s = lens[1] ? jb_view(json_object_array_get_idx(lists[1], i))
+		                                   : CSTR_VIEW("HEAD");
+		char const *path = strchr(s.data, ':');
+		size_t root = path ? (size_t)(path - s.data) : s.len;
 		if (path && (!(takes & OBJECT) || !path[1] || !git_inside(path + 1)))
 			return git_wrong(why, "revisions[%zu]: only read, show and cat-file "
 			                 "take commit:path, with a nonempty relative path.", i);
-		char const *range = strstr(s, "..");
-		if (range && range >= s + root)
+		char const *range = strstr(s.data, "..");
+		if (range && range >= s.data + root)
 			range = nullptr;
 		if (range && (!(takes & RANGE) || ((takes & PAIR) && lens[1] != 1)))
 			return git_wrong(why, "revisions[%zu]: ranges are allowed only by "
 			                 "log, or as diff's single A..B or A...B argument.", i);
-		size_t left = range ? (size_t)(range - s) : root;
+		size_t left = range ? (size_t)(range - s.data) : root;
 		struct git_revision *rev = &call->revisions[i];
 		rev->root = call->n_roots;
-		rev->path = (struct cstr_view){ path ? path : "", len - root };
-		int e = git_commit(call->roots[call->n_roots++].name, s, left);
+		rev->path = cstr_view_slice(s, root, SIZE_MAX);
+		int e = git_commit(call->roots[call->n_roots++].name, s.data, left);
 		if (!e && range) {
 			++endpoints;
 			rev->dots = 2 + (range[2] == '.');
@@ -910,10 +917,10 @@ git_help (struct mcp_slot *slot,
 {
 	struct json_object *options = json_object_new_array();
 	for (struct cstr_view const *o = commands[command].options; options && o->data; ++o)
-		options = jb_push_or_free(options, json_object_new_string(o->data));
+		options = jb_push_or_free(options, jb_string(*o));
 	uint64_t takes = commands[command].takes;
 	struct json_object *help = jb_object(
-		"command", json_object_new_string(commands[command].name),
+		"command", jb_string(commands[command].name),
 		"description", json_object_new_string(commands[command].description),
 		"options", options,
 		"option_values", json_object_new_string(
@@ -1203,7 +1210,8 @@ git_ended (struct mcp_slot *slot,
 		note = CSTR_VIEW("[The output goes on past the 4 MiB shown.]");
 		failed = c->code == CLD_EXITED && c->status;
 	} else if (c->code != CLD_EXITED) {
-		note = util_format_view(buf, sizeof buf, "[git was killed by signal %d.]", c->status);
+		note = util_format_view(buf, sizeof buf, "[git was killed by signal %d.]",
+		                        c->status);
 	} else if (c->status == 1 && (commands[call->command].takes & PATTERN)) {
 		note = CSTR_VIEW("[No matches.]");
 		failed = false;
@@ -1385,9 +1393,9 @@ git_read_head (struct git_read const *read,
 		CSTR_VIEW("[Repository "), repo->name, CSTR_VIEW(", file "),
 		{ read->rev + read->oid_len + 1, read->rev_len - read->oid_len - 1 },
 		CSTR_VIEW(" at commit "), { read->rev, read->oid_len },
-		read->total ? util_format_view(lines, sizeof lines, ": lines %zu to %zu of %s%zu.]\n",
-		                               read->line, read->last, cut ? "at least " : "",
-		                               read->total)
+		read->total ? util_format_view(lines, sizeof lines, ": lines %zu to %zu of "
+		                               "%s%zu.]\n", read->line, read->last,
+		                               cut ? "at least " : "", read->total)
 		            : CSTR_VIEW(": the file is empty.]"),
 	};
 	return git_write(slot, p, ARRAY_SIZE(p));
