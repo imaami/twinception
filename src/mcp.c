@@ -6849,9 +6849,10 @@ mcp_notes_none (struct child const *c)
 	return !c->late && c->code == CLD_EXITED && c->status == 128;
 }
 
-/* Destroys the child of @p slot and ends the call of the notes tool. If
- * @p e is not 0, the request fails with @p e. Else the call ends with its
- * answer, as a failed call if @p failed is true.
+/* Ends the call of the notes tool in @p slot. The function destroys the
+ * child and frees req->body, the scratch buffer of the call. If @p e is
+ * not 0, the request fails with @p e. Else the call ends with its answer,
+ * as a failed call if @p failed is true.
  */
 static void
 mcp_slot_notes_end (struct mcp_slot *slot,
@@ -6859,6 +6860,7 @@ mcp_slot_notes_end (struct mcp_slot *slot,
                     bool             failed)
 {
 	child_destroy(&slot->child);
+	buf_fini(&slot->req->body);
 	if (e) {
 		mcp_req_fail(slot->req, e);
 		return;
@@ -6994,7 +6996,7 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 	e = e ? e : mcp_piece_write(&RAW(msg, n), 0, n, &req->body, NOTES_MESSAGE);
 	if (e) {
 		buf_fini(&in);
-		mcp_req_fail(req, e);
+		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
 	mcp_slot_notes_run(slot, FETCH_ADD | (slot->fetch & FETCH_KEEP), &in);
@@ -7010,7 +7012,6 @@ mcp_slot_notes_format (struct mcp_slot *slot)
 	size_t size = out.len == 5 && !memcmp(out.ptr, "sha1\n", 5) ? 40
 	            : out.len == 7 && !memcmp(out.ptr, "sha256\n", 7) ? 64 : 0;
 	if (!mcp_notes_ok(slot->child) || !size) {
-		buf_fini(&slot->req->body);
 		mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("Cannot determine the "
 		                                                "repository object format."), 1), true);
 		return;
@@ -7034,7 +7035,6 @@ mcp_slot_notes_created (struct mcp_slot *slot)
 		mcp_slot_notes_write(slot, "", NO_NOTE);
 		return;
 	}
-	buf_fini(&slot->req->body);
 	mcp_slot_notes_end(slot, mcp_slot_notes_unadded(slot), true);
 }
 
@@ -7072,7 +7072,6 @@ mcp_slot_notes_unchanged (struct mcp_slot         *slot,
 	                "commit %s. No commit was made.%s", (int)jb_utf8(name, part.name.len),
 	                name, n == 1 ? "this" : "these", n, n == 1 ? "" : "s", tip,
 	                slot->fetch & FETCH_STRIPPED ? left_out : "") ? 0 : ENOMEM;
-	buf_fini(&req->body);
 	mcp_slot_notes_end(slot, e, false);
 	return true;
 }
@@ -7097,7 +7096,6 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 		if (r == EEXIST)
 			r = 0;
 		if (!r && strcmp(tip, notes_revision_tip(slot->own))) {
-			buf_fini(&slot->req->body);
 			mcp_slot_notes_end(slot, mcp_slot_say(slot, &TEXT("The notebook changed during "
 			                                                "restore. Read its current state "
 			                                                "and retry."), 1), true);
@@ -7112,7 +7110,6 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 		}
 		return;
 	}
-	buf_fini(&slot->req->body);
 	int e = r == EEXIST ? mcp_slot_say(slot, &TEXT("A note of that name exists. Use "
 	                                               "action replace to update it, or "
 	                                               "add under another name."), 1)
@@ -7159,7 +7156,6 @@ mcp_slot_notes_added (struct mcp_slot *slot)
 	bool ok = mcp_notes_ok(slot->child);
 	req->branch |= ok;
 	int e = ok ? mcp_slot_notes_saved(slot) : mcp_slot_notes_unadded(slot);
-	buf_fini(&req->body);
 	mcp_slot_notes_end(slot, e, !ok);
 }
 
@@ -7709,7 +7705,6 @@ mcp_slot_notes_uploaded (struct mcp_slot *slot)
 		e = e ? e : mcp_slot_notes_attached(slot, sizes[1], sizes[0],
 		                                    sizes[0] != sizes[1]);
 	}
-	buf_fini(&req->body);
 	if (e == EIO) {
 		dstr_clear(&slot->answer);
 		e = CAT(&slot->answer, "The upload of the note as a file failed: ") &&
@@ -7982,8 +7977,7 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 		e = notes_check_input(&in, req->repo, name, name_len);
 	if (e) {
 		buf_fini(&in);
-		buf_fini(&req->body);
-		mcp_req_fail(req, e);
+		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
 	mcp_slot_notes_run(slot, (initialized ? FETCH_CHECK : FETCH_CREATE) | flags, &in);
@@ -8016,8 +8010,7 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 	child_destroy(&slot->child);
 	if (e) {
 		buf_fini(&in);
-		buf_fini(&req->body);
-		mcp_req_fail(req, e);
+		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
 	mcp_slot_notes_run(slot, (initialized ? FETCH_CHECK : FETCH_CREATE) |
@@ -8067,8 +8060,7 @@ mcp_slot_notes_read (struct mcp_slot    *slot,
 		e = notes_read_input(&in, mcp_slot_notebook(slot), name + skip, len - skip);
 	if (e) {
 		buf_fini(&in);
-		buf_fini(&req->body);
-		mcp_req_fail(req, e);
+		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
 	mcp_slot_notes_run(slot, fetch, &in);
