@@ -28,7 +28,6 @@
 
 #include "buf.h"
 #include "policy.h"
-#include "tool.h"
 
 /** The body length of a request or response not known up front. */
 static constexpr size_t STREAM_OPEN = SIZE_MAX;

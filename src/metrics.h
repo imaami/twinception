@@ -146,7 +146,7 @@ struct metrics_loop {
 	struct buf_stash_metrics const *stash;
 	struct metrics_mcp const       *mcp;
 	struct metrics_conns const     *conns;
-	struct task_metrics const      *tasks;    /**< if askai offers test_task */
+	struct task_metrics const      *tasks;  /**< if askai offers test_task */
 };
 
 /** Where the metrics are; the brainstem's and the logger's are global. */

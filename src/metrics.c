@@ -423,7 +423,9 @@ metrics_put_value (struct buf             *out,
 	}
 }
 
-/* Where loop @p l's series of @p source are, if it has them. */
+/* Return the address of the series of @p source of loop @p l, or nullptr
+ * if the loop does not count them.
+ */
 static void const *
 metrics_loop_source (struct metrics_loop const *l,
                      unsigned                   source)

@@ -1826,9 +1826,9 @@ config_upstream (struct config *cfg)
 	return config_headers(cfg, has_auth ? nullptr : key);
 }
 
-/* Make TLS's context of the certificate chain of @p chain_len bytes at
- * @p chain and the key that --tls-key's file holds, which none but its owner
- * and its group may read, wiped once read.
+/* Make the TLS context from the certificate chain, the @p chain_len bytes
+ * at @p chain, and from the key in the file of --tls-key, which only its
+ * owner and its group may read. The key is wiped once read.
  */
 static int
 config_tls_key (struct config *cfg,
@@ -2261,9 +2261,10 @@ config_description (struct config *cfg)
 	return 0;
 }
 
-/* Make the policy, who may connect and what they may do, of the tools from
- * config_tools() that a role can grant, and that the member tools of the
- * running configuration allows clients.
+/* Make the policy of who may connect and what they may do. A role can
+ * grant the first run->registry.n_granted tools of config_tools(), and
+ * clients receive only the tools that the member "tools" of the running
+ * configuration allows.
  */
 static int
 config_policy (struct config *cfg)
@@ -2279,8 +2280,9 @@ config_policy (struct config *cfg)
 		return config_oom(cfg);
 	/* EINVAL means that the configuration file is wrong. Another error
 	 * comes from a file that the policy reads, such as /etc/subuid, or is
-	 * EIO from HMAC-SHA-256. The message says which, so it does not
-	 * begin with the path of the configuration file. */
+	 * EIO from HMAC-SHA-256. The message contains the name of that file
+	 * or the cause, so it does not begin with the path of the
+	 * configuration file. */
 	if (e)
 		return config_complain(cfg, e == EINVAL ? cfg->path : nullptr, "%s", why);
 	config_note_token(cfg);
