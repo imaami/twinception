@@ -1510,9 +1510,8 @@ config_check_git (struct config const *cfg,
                   size_t               i)
 {
 	char const *path = cfg->gits[i];
-	size_t len;
-	char const *name = git_name(path, &len);
-	if (!name)
+	struct cstr_view const name = git_name(path);
+	if (!name.len)
 		return config_complain(cfg, nullptr, "--git: %s names no repository: "
 		                       "its last component, less a .git suffix, must "
 		                       "be 1 to 64 of [A-Za-z0-9_.-], not beginning "
@@ -1520,13 +1519,10 @@ config_check_git (struct config const *cfg,
 	if (!config_git_repo(path))
 		return config_complain(cfg, nullptr, "--git: not a git repository: %s",
 		                       path);
-	for (size_t j = 0; j < i; ++j) {
-		size_t other;
-		char const *o = git_name(cfg->gits[j], &other);
-		if (other == len && !memcmp(o, name, len))
+	for (size_t j = 0; j < i; ++j)
+		if (cstr_view_equal(git_name(cfg->gits[j]), name))
 			return config_complain(cfg, nullptr, "--git: two repositories "
-			                       "named %.*s", (int)len, name);
-	}
+			                       "named %.*s", (int)name.len, name.data);
 	return 0;
 }
 

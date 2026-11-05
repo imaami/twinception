@@ -278,28 +278,25 @@ static_assert(1 + ARRAY_SIZE(fixed) + 5 + 3 + OPTIONS + 2 + 1 + REVISIONS + 1 +
 static_assert(1 + ARRAY_SIZE(fixed) + 5 + 10 + ROOTS + 1 <= GIT_ARGV,
               "history validation fits argv");
 
-char const *
-git_name (char const *path,
-          size_t     *len)
+struct cstr_view
+git_name (char const *path)
 {
-	static char const suffix[] = ".git";
+	struct cstr_view const suffix = CSTR_VIEW(".git");
 	size_t end = strlen(path);
 	while (end > 1 && path[end - 1] == '/')
 		--end;
 	size_t start = end;
 	while (start && path[start - 1] != '/')
 		--start;
-	size_t n = end - start;
-	if (n > sizeof suffix - 1 &&
-	    !memcmp(path + end - (sizeof suffix - 1), suffix, sizeof suffix - 1))
-		n -= sizeof suffix - 1;
-	*len = 0;
-	if (!n || n > 64 || path[start] == '.' ||
-	    strspn(path + start, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	                         "0123456789_.-") < n)
-		return nullptr;
-	*len = n;
-	return path + start;
+	struct cstr_view name = { path + start, end - start };
+	if (name.len > suffix.len &&
+	    cstr_view_equal(cstr_view_slice(name, name.len - suffix.len, suffix.len), suffix))
+		name.len -= suffix.len;
+	if (!name.len || name.len > 64 || *name.data == '.' ||
+	    strspn(name.data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	                      "0123456789_.-") < name.len)
+		return (struct cstr_view){};
+	return name;
 }
 
 /* Sets up @p r for the repository at @p path. The function stores the
@@ -311,15 +308,14 @@ git_repo_init (struct git_repo *r,
                char const      *path)
 {
 	static char const safe[] = "safe.directory=";
-	size_t len = 0;
-	char const *name = git_name(path, &len);
-	if (!name)
+	struct cstr_view const name = git_name(path);
+	if (!name.len)
 		return EINVAL;
 	char *real = realpath(path, nullptr);
 	if (!real)
 		return errno;
 	size_t size = strlen(real) + 1;
-	char *s = malloc(2 * size + sizeof safe - 1 + len + 1);
+	char *s = malloc(2 * size + sizeof safe - 1 + name.len + 1);
 	if (!s) {
 		free(real);
 		real = nullptr;
@@ -330,8 +326,8 @@ git_repo_init (struct git_repo *r,
 	char *copy = mempcpy(mempcpy(r->safe, safe, sizeof safe - 1), real, size);
 	free(real);
 	real = nullptr;
-	*(char *)mempcpy(copy, name, len) = '\0';
-	r->name = (struct cstr_view){ copy, len };
+	*(char *)mempcpy(copy, name.data, name.len) = '\0';
+	r->name = (struct cstr_view){ copy, name.len };
 	return 0;
 }
 

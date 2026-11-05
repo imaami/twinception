@@ -78,13 +78,13 @@ struct plugin;
         "-c", "maintenance.auto=false"
 
 /**
- * The name of the repository listed as @p path: the last component of the
- * path as given, less a .git suffix, of @p *len bytes, 1 to 64 of
- * [A-Za-z0-9_.-] not beginning with '.'; nullptr if it has none such.
+ * Returns the name of the repository at @p path: the last component of the
+ * path, without a .git suffix. A valid name is 1 to 64 of [A-Za-z0-9_.-]
+ * and does not start with a dot. Returns an empty view for a path without
+ * a valid name.
  */
-extern char const *
-git_name (char const *path,
-          size_t     *len);
+extern struct cstr_view
+git_name (char const *path);
 
 /**
  * The git tool for the @p n repositories at @p paths, whose names are apart,
