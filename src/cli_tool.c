@@ -40,28 +40,29 @@ cli_tool_create (struct cli_client  *client,
                  struct cli_error   *error,
                  int                *e)
 {
+	static struct cstr_view const writes[] = {
+		CSTR_VIEW_INIT("add"), CSTR_VIEW_INIT("copy"), CSTR_VIEW_INIT("replace"), CSTR_VIEW_INIT("restore")
+	};
 	struct autocomplete_tool const *entry = nullptr;
 	cli_json_auto arguments = nullptr;
 	*e = autocomplete_parse_call(client->catalog, command, &entry, &arguments,
 	                             error->message, sizeof error->message);
 	if (*e)
 		return nullptr;
-	uint64_t flags = 0;
-	if (cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool))) {
-		struct json_object *action = jb_get(arguments, "action");
-		if (jb_is(action, "add") || jb_is(action, "copy") ||
-		    jb_is(action, "replace") || jb_is(action, "restore"))
-			flags |= CLI_TOOL_WRITES_NOTES;
-	}
-	struct cstr_view token = CSTR_VIEW("tool");
+	uint64_t flags = cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool)) &&
+	                 cstr_view_index(writes, array_size(writes),
+	                                 jb_view(jb_get(arguments, "action"))) < array_size(writes)
+	                 ? CLI_TOOL_WRITES_NOTES : 0;
+	struct cstr_view const token = CSTR_VIEW("tool");
 	cli_json_auto params = jb_object("name", cli_client_string(entry->name),
 	                                 "arguments", json_object_get(arguments),
 	                                 "_meta", jb_object("progressToken",
 	                                                    cli_client_string(token), nullptr), nullptr);
 	struct cli_tool *tool = params ? malloc(sizeof *tool) : nullptr;
-	*e = tool ? 0 : ENOMEM;
-	if (!tool)
+	if (!tool) {
+		*e = ENOMEM;
 		return nullptr;
+	}
 	*tool = (struct cli_tool){.client = client,
 	                          .name = json_object_get(jb_get(params, "name")),
 	                          .params = json_object_get(params), .flags = flags};
