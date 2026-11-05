@@ -27,23 +27,16 @@
 #include "util.h"
 
 enum {
-	CLI_STATE_INPUTS = 256,
-	CLI_STATE_INPUT_BYTES = 1 << 20,
 	CLI_STATE_TURNS = 512,
 	CLI_STATE_TURN_BYTES = 16 << 20,
 	CLI_STATE_ID_BYTES = 64 << 10,
 };
 
-struct cli_state_pair {
-	struct dstr prompt;
-	struct dstr answer;
-};
-
 struct cli_state {
 	_Atomic bool const     *cancel;
 	struct dstr             inputs[CLI_STATE_INPUTS];
-	struct cli_state_pair   turns[CLI_STATE_TURNS];
-	struct cli_state_pair   pending;
+	struct cli_state_turn   turns[CLI_STATE_TURNS];
+	struct cli_state_turn   pending;
 	struct dstr             identity;
 	struct dstr             path;
 	struct dstr             name;
@@ -525,7 +518,7 @@ cli_state_read_turns (struct cli_state *state,
 	size_t budget = CLI_STATE_TURN_BYTES;
 
 	for (size_t i = 0; i < count; ++i) {
-		struct cli_state_pair *t = &state->turns[i];
+		struct cli_state_turn *t = &state->turns[i];
 		int e = cli_state_read_text(fd, &t->prompt, &budget);
 		if (e || (e = cli_state_read_text(fd, &t->answer, &budget)))
 			return e;
@@ -609,6 +602,79 @@ cli_state_load (struct cli_state *state,
 	return e;
 }
 
+/* Returns 0 if the repository directory contains no entries but ".", ".."
+ * and cli-init.lock, EEXIST if it contains another entry, or another error
+ * number.
+ */
+static int
+cli_state_directory_check_empty (struct cli_state *state)
+{
+	static struct cstr_view const allowed[] = {
+		CSTR_VIEW_INIT("."), CSTR_VIEW_INIT(".."), CSTR_VIEW_INIT("cli-init.lock")
+	};
+	int directory_fd = dup(state->directory);
+	if (directory_fd < 0)
+		return errno;
+	DIR *directory = fdopendir(directory_fd);
+	if (!directory) {
+		int e = errno;
+		(void)close(directory_fd);
+		directory_fd = -1;
+		return e;
+	}
+	directory_fd = -1;
+	int e = 0;
+	for (;;) {
+		/* readdir() returns nullptr at the end and after an error, and
+		 * only an error sets errno. */
+		errno = 0;
+		struct dirent *entry = readdir(directory);
+		if (!entry) {
+			e = errno;
+			break;
+		}
+		if (cstr_view_index(allowed, array_size(allowed), cstr_view(entry->d_name)) == array_size(allowed)) {
+			e = EEXIST;
+			break;
+		}
+	}
+	if (closedir(directory) && !e)
+		e = errno;
+	return e;
+}
+
+/* Check the version of the history repository if its config file exists.
+ * Otherwise create the repository, if the directory is empty. Returns 0 or
+ * an error number.
+ */
+static int
+cli_state_repository_open (struct cli_state *state)
+{
+	struct stat status;
+	if (!fstatat(state->directory, "config", &status, AT_SYMLINK_NOFOLLOW)) {
+		if (!S_ISREG(status.st_mode))
+			return EACCES;
+		int e = cli_state_git_ok(state, (char const *[]){ "config", "--local", "--get", "askai.cliHistoryVersion", nullptr },
+		                         (struct cstr_view){});
+		if (!e && !cstr_view_equal(cstr_view_dstr(&state->output), CSTR_VIEW("1\n")))
+			e = EINVAL;
+		return e;
+	}
+	if (errno != ENOENT)
+		return errno;
+	int e = cli_state_directory_check_empty(state);
+	if (!e)
+		e = cli_state_git_ok(state, (char const *[]){ "init", "--bare", "--quiet", ".", nullptr },
+		                     (struct cstr_view){});
+	if (!e)
+		e = cli_state_git_ok(state, (char const *[]){ "config", "--local", "askai.cliHistoryVersion", "1", nullptr },
+		                     (struct cstr_view){});
+	return e;
+}
+
+/* Open or create the history repository while cli-init.lock is locked.
+ * Returns 0 or an error number.
+ */
 static int
 cli_state_repository_init (struct cli_state *state)
 {
@@ -618,51 +684,8 @@ cli_state_repository_init (struct cli_state *state)
 	int e = cli_state_private(fd);
 	if (!e)
 		e = cli_state_lock(state, fd);
-	struct stat status;
-	bool exists = false;
-	if (!e) {
-		exists = !fstatat(state->directory, "config", &status, AT_SYMLINK_NOFOLLOW);
-		if (!exists && errno != ENOENT)
-			e = errno;
-		else if (exists && !S_ISREG(status.st_mode))
-			e = EACCES;
-	}
-	if (!e && exists) {
-		e = cli_state_git_ok(state, (char const *[]){ "config", "--local", "--get", "askai.cliHistoryVersion", nullptr },
-		                     (struct cstr_view){});
-		if (!e && (dstr_len(&state->output) != 2 || memcmp(dstr_get(&state->output), "1\n", 2)))
-			e = EINVAL;
-	} else if (!e) {
-		int directory_fd = dup(state->directory);
-		DIR *directory = directory_fd < 0 ? nullptr : fdopendir(directory_fd);
-		if (!directory) {
-			e = errno;
-			if (directory_fd >= 0)
-				(void)close(directory_fd);
-		} else {
-			for (;;) {
-				errno = 0;
-				struct dirent *entry = readdir(directory);
-				if (!entry) {
-					e = errno;
-					break;
-				}
-				if ((entry->d_name[0] != '.' || entry->d_name[1 + (entry->d_name[1] == '.')])
-				    && strncmp(entry->d_name, "cli-init.lock", sizeof entry->d_name) != 0) {
-					e = EEXIST;
-					break;
-				}
-			}
-			if (closedir(directory) && !e)
-				e = errno;
-		}
-		if (!e)
-			e = cli_state_git_ok(state, (char const *[]){ "init", "--bare", "--quiet", ".", nullptr },
-			                     (struct cstr_view){});
-		if (!e)
-			e = cli_state_git_ok(state, (char const *[]){ "config", "--local", "askai.cliHistoryVersion", "1", nullptr },
-			                     (struct cstr_view){});
-	}
+	if (!e)
+		e = cli_state_repository_open(state);
 	if (close(fd) && !e)
 		e = errno;
 	fd = -1;
@@ -743,8 +766,8 @@ cli_state_create (struct cstr_view    path,
 	for (size_t i = 0; i < array_size(state->inputs); ++i)
 		state->inputs[i] = dstr("");
 	for (size_t i = 0; i < array_size(state->turns); ++i)
-		state->turns[i] = (struct cli_state_pair){ dstr(""), dstr("") };
-	state->pending = (struct cli_state_pair){ dstr(""), dstr("") };
+		state->turns[i] = (struct cli_state_turn){ dstr(""), dstr("") };
+	state->pending = (struct cli_state_turn){ dstr(""), dstr("") };
 	state->identity = state->path = state->name = state->temporary = state->scratch = dstr("");
 	state->branch = state->latest = state->parent = state->output = state->tree = state->metadata = dstr("");
 	*e = cstr_view_store(identity, &state->identity);
@@ -864,14 +887,11 @@ cli_state_turn_count (struct cli_state const *state)
 	return state ? state->turn_count : 0;
 }
 
-struct cli_state_turn
+struct cli_state_turn const *
 cli_state_turn_at (struct cli_state const *state,
                    size_t                  index)
 {
-	return state && index < state->turn_count
-	       ? (struct cli_state_turn){ cstr_view_dstr(&state->turns[index].prompt),
-	                                  cstr_view_dstr(&state->turns[index].answer) }
-	       : (struct cli_state_turn){};
+	return state && index < state->turn_count ? &state->turns[index] : nullptr;
 }
 
 int
@@ -918,7 +938,7 @@ cli_state_add_turn (struct cli_state *state,
 		e = cstr_view_store(answer, &state->pending.answer);
 	if (e)
 		return e;
-	struct cli_state_pair previous = state->turns[index];
+	struct cli_state_turn previous = state->turns[index];
 	state->turns[index] = state->pending;
 	state->pending = previous;
 	state->turn_count = index + 1;

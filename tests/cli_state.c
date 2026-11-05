@@ -42,7 +42,7 @@ main (int argc, char **argv)
 	assert(second && !e);
 	check_text(cli_state_input_at(second, 0), CSTR_VIEW("one\ntwo"));
 	assert(cli_state_turn_count(second) == 1);
-	check_text(cli_state_turn_at(second, 0).answer, CSTR_VIEW("answer"));
+	check_text(cstr_view_dstr(&cli_state_turn_at(second, 0)->answer), CSTR_VIEW("answer"));
 	assert(!cli_state_add_input(first, CSTR_VIEW("first writer")));
 	assert(!cli_state_add_input(second, CSTR_VIEW("second writer")));
 	assert(!cli_state_add_input(second, CSTR_VIEW("A")));
@@ -53,7 +53,7 @@ main (int argc, char **argv)
 	cli_state_destroy(&second);
 	first = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), nullptr, &e);
 	assert(first && !e);
-	check_text(cli_state_turn_at(first, 0).answer, CSTR_VIEW("replacement"));
+	check_text(cstr_view_dstr(&cli_state_turn_at(first, 0)->answer), CSTR_VIEW("replacement"));
 	check_text(cli_state_input_at(first, cli_state_input_count(first) - 1), CSTR_VIEW("A"));
 	assert(has_input(first, CSTR_VIEW("one\ntwo")));
 	assert(has_input(first, CSTR_VIEW("first writer")));

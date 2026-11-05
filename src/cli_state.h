@@ -7,12 +7,24 @@
 #include <stdatomic.h>
 
 #include "cstr_view.h"
+#include "dstr.h"
+
+/** CLI_STATE_INPUTS is the maximum number of inputs that a state stores, and
+ *  CLI_STATE_INPUT_BYTES is the maximum total size of their text. The input
+ *  history of the console is bounded by the same values, so every restored
+ *  input fits in it.
+ */
+enum {
+	CLI_STATE_INPUTS      = 256,
+	CLI_STATE_INPUT_BYTES = 1 << 20,
+};
 
 struct cli_state;
 
+/** A completed turn of the conversation. */
 struct cli_state_turn {
-	struct cstr_view prompt;
-	struct cstr_view answer;
+	struct dstr prompt;
+	struct dstr answer;
 };
 
 /** An empty path selects $XDG_STATE_HOME/askai/cli.git (or the HOME
@@ -50,14 +62,18 @@ cli_state_input_at (struct cli_state const *state,
 extern size_t
 cli_state_turn_count (struct cli_state const *state);
 
-extern struct cli_state_turn
+/** Returns the completed turn at @p index, or nullptr if @p index is out of
+ *  range. The turn stays valid until the next mutation.
+ */
+extern struct cli_state_turn const *
 cli_state_turn_at (struct cli_state const *state,
                    size_t                  index);
 
 /** Each mutation commits a snapshot and readable records before returning.
  * A write failure leaves the in-memory update available for a retry.
- * Inputs retain their newlines, up to 256 entries and 1 MiB of text.
- * Oversized individual inputs return EFBIG rather than silently vanish.
+ * Inputs are stored with their newlines, at most CLI_STATE_INPUTS of them
+ * with at most CLI_STATE_INPUT_BYTES bytes of text. For a longer input,
+ * the function returns EFBIG and stores nothing.
  */
 extern int
 cli_state_add_input (struct cli_state *state,

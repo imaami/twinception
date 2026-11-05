@@ -617,9 +617,10 @@ cli_history_open (struct cli       *cli,
 	if (options->no_history || (!cli->tty && (!options->history_repo || !*options->history_repo)))
 		return 0;
 	dstr_auto identity = dstr(nullptr);
-	if (options->session_id || dstr_len(&cli->client.session_key)) {
-		char const *key = options->session_id ? options->session_id : dstr_get(&cli->client.session_key);
-		if (!dstr_cat(&identity, "session=") || !dstr_cat(&identity, key))
+	struct cstr_view key = options->session_id ? cstr_view(options->session_id)
+	                                           : cstr_view_dstr(&cli->client.session_key);
+	if (key.len) {
+		if (!dstr_cat(&identity, "session=") || !dstr_cat_n(&identity, key.data, key.len))
 			return ENOMEM;
 	} else {
 		struct cli_path_work work = {.path = options->socket, .identity = &identity};
@@ -627,39 +628,35 @@ cli_history_open (struct cli       *cli,
 		if (e)
 			return cli_error_set(error, e, "Cannot identify history connection: %s", strerror(e));
 	}
-	struct cstr_view parts[] = {
+	struct cstr_view const parts[] = {
 		CSTR_VIEW("\0participant="), cstr_view_dstr(&cli->client.participant),
 		CSTR_VIEW("\0tool="), cstr_view_dstr(&cli->client.tool),
 		CSTR_VIEW("\0system-policy="), options->system ? CSTR_VIEW("override") : CSTR_VIEW("default"),
 		CSTR_VIEW("\0system="), cstr_view(options->system)
 	};
-	for (size_t i = 0; i < sizeof parts / sizeof *parts; ++i)
+	for (size_t i = 0; i < array_size(parts); ++i)
 		if (!dstr_cat_n(&identity, parts[i].data, parts[i].len))
 			return ENOMEM;
-	int e = 0;
 	struct cli_history_work work = {.operation = CLI_HISTORY_OPEN, .cancel = &cli->cancel_io,
 	                                .path = cstr_view(options->history_repo), .text = cstr_view_dstr(&identity)};
-	e = cli_work_wait(cli, cli_history_work, &work);
+	int e = cli_work_wait(cli, cli_history_work, &work);
 	cli->saved = work.state;
 	if (e)
 		return cli_error_set(error, e, "Cannot open client history repository: %s", strerror(e));
-	for (size_t i = 0, n = cli_state_input_count(cli->saved); !e && i < n; ++i) {
-		struct cstr_view input = cli_state_input_at(cli->saved, i);
-		e = cli_console_remember(cli->console, input);
-	}
+	for (size_t i = 0, n = cli_state_input_count(cli->saved); !e && i < n; ++i)
+		e = cli_console_remember(cli->console, cli_state_input_at(cli->saved, i));
 	for (size_t i = 0, n = cli_state_turn_count(cli->saved); !e && i < n; ++i) {
-		struct cli_state_turn turn = cli_state_turn_at(cli->saved, i);
-		e = jb_push(cli->history, jb_object("prompt", cli_client_string(turn.prompt),
-		                                   "answer", cli_client_string(turn.answer), nullptr));
+		struct cli_state_turn const *turn = cli_state_turn_at(cli->saved, i);
+		e = jb_push(cli->history, jb_object("prompt", cli_client_string(cstr_view_dstr(&turn->prompt)),
+		                                   "answer", cli_client_string(cstr_view_dstr(&turn->answer)), nullptr));
 	}
-	if (!e && cli->tty && json_object_array_length(cli->history)) {
-		dstr_auto message = dstr(nullptr);
-		if (!dstr_printf(&message, "Restored %zu completed turns. /history displays them; /clear starts over.",
-		                 json_object_array_length(cli->history)))
-			return ENOMEM;
-		e = cli_ui_info(cli->console, cstr_view_dstr(&message));
-	}
-	return e;
+	size_t turns = json_object_array_length(cli->history);
+	if (e || !cli->tty || !turns)
+		return e;
+	dstr_auto message = dstr(nullptr);
+	if (!dstr_printf(&message, "Restored %zu completed turns. /history displays them; /clear starts over.", turns))
+		return ENOMEM;
+	return cli_ui_info(cli->console, cstr_view_dstr(&message));
 }
 
 static int

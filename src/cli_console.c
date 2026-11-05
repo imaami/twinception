@@ -26,6 +26,7 @@
 #include "cli_loop.h"
 #include "cli_render.h"
 #include "cli_scrollback.h"
+#include "cli_state.h"
 #include "compat.h"
 #include "dstr.h"
 #include "jb.h"
@@ -35,8 +36,8 @@
 enum {
 	CLI_CONSOLE_INPUT_LIMIT   = 1024 * 1024 * 16,
 	CLI_CONSOLE_INPUT_COUNT   = 32,
-	CLI_CONSOLE_HISTORY_LIMIT = 1024 * 1024,
-	CLI_CONSOLE_HISTORY_COUNT =  256,
+	CLI_CONSOLE_HISTORY_LIMIT = CLI_STATE_INPUT_BYTES,
+	CLI_CONSOLE_HISTORY_COUNT = CLI_STATE_INPUTS,
 	CLI_CONSOLE_OUTPUT_LIMIT  = 32 * 1024 * 1024,
 	CLI_CONSOLE_TAB_INTERVAL  = 400 * 1000 * 1000,
 	CLI_CONSOLE_COMPLETIONS   = 256,
@@ -1076,7 +1077,7 @@ cli_console_setup_readline (struct cli_console *console)
 	rl_completer_word_break_characters = "";
 	rl_completer_quote_characters = "";
 	using_history();
-	stifle_history(CLI_CONSOLE_HISTORY_COUNT);
+	stifle_history(array_size(console->history_sizes));
 	if (!console->fullscreen)
 		return 0;
 	rl_completion_display_matches_hook = cli_console_matches;
@@ -1297,20 +1298,22 @@ int cli_console_remember(struct cli_console *console, struct cstr_view text)
 	dstr_auto copy = dstr(nullptr);
 	if (!dstr_cat_n(&copy, text.data, text.len))
 		return ENOMEM;
-	/* Count submitted entries. Readline's mutable snapshots of recalled
-	 * entries have no public length API. */
+	/* The console counts the bytes of the submitted entries itself, because
+	 * Readline changes recalled entries in place and offers no function for
+	 * their length. */
+	size_t const count = array_size(console->history_sizes);
 	while (console->history_count &&
-	       (console->history_count == CLI_CONSOLE_HISTORY_COUNT ||
+	       (console->history_count == count ||
 	        console->history_bytes + text.len > CLI_CONSOLE_HISTORY_LIMIT)) {
 		free_history_entry(remove_history(0));
 		console->history_bytes -= console->history_sizes[console->history_first];
-		console->history_first = (console->history_first + 1) % CLI_CONSOLE_HISTORY_COUNT;
+		console->history_first = (console->history_first + 1) % count;
 		--console->history_count;
 	}
 	dstr_cleanup(&console->history_last);
 	console->history_last = dstr_move(&copy);
 	add_history(dstr_get(&console->history_last));
-	console->history_sizes[(console->history_first + console->history_count) % CLI_CONSOLE_HISTORY_COUNT] = text.len;
+	console->history_sizes[(console->history_first + console->history_count) % count] = text.len;
 	console->history_bytes += text.len;
 	++console->history_count;
 	return 0;
