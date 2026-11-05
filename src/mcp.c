@@ -187,9 +187,8 @@ enum mcp_fetch : uint16_t {
 	                      FETCH_COMPACT */
 	FETCH_OTHER = 16,  /* a flag that is set with FETCH_LIST or FETCH_READ:
 	                      the other side's notebook of the thread */
-	FETCH_COPY = 32,   /* a flag that is set with FETCH_READ, then with the
-	                      values of an add: a copy of a note of the other
-	                      side's notebook into the caller's */
+	FETCH_COPY = 32,   /* set with FETCH_READ for a copy of a note from the
+	                      other side's notebook into the caller's */
 	FETCH_BOOKS = 128, /* lists the session's notebooks */
 	FETCH_FORMAT = FETCH_BOOKS | FETCH_CHECK, /* object format for an unborn branch */
 	FETCH_ATTACH = 64, /* a flag that is set with FETCH_READ: the attach
@@ -200,13 +199,7 @@ enum mcp_fetch : uint16_t {
 	FETCH_REVISION = 1024, /* pin and authorize historical note revisions */
 	FETCH_DIFF = 2048,    /* compare two authorized revisions */
 	FETCH_RESTORE = 4096, /* restore historical bytes in a new own commit */
-	FETCH_STRIPPED = 8192, /* the write's text lost askai's notices at its end */
-	FETCH_KEEP = FETCH_COPY | FETCH_REPLACE | FETCH_RESTORE | FETCH_STRIPPED,
-	                      /* the flags that a write keeps from its check to its
-	                         result */
 };
-
-static_assert(!(FETCH_KEEP & FETCH_FORMAT), "FETCH_FORMAT has none of the kept flags");
 
 /* Each row of mcp_fetch_steps[] has the command of git that runs for a
  * fetch value and the step that reads its output.
@@ -236,21 +229,22 @@ enum {
 /** The notes actions, shared by dispatch and the published tool schema. */
 static struct {
 	char const    *name;
+	char const    *verb;  /* begins the commit message of a write */
 	uint32_t       flags;
 	enum mcp_fetch fetch;
 	uint16_t       len;
 } const mcp_notes_actions[] = {
-#define NOTE(name, flags, fetch) { name, flags, fetch, sizeof name - 1 }
-	NOTE("add",       NOTE_WRITE | NOTE_FILE, 0),
-	NOTE("replace",   NOTE_WRITE | NOTE_FILE, FETCH_REPLACE),
-	NOTE("restore",   NOTE_WRITE | NOTE_FILE | NOTE_REVISION, FETCH_READ | FETCH_RESTORE),
-	NOTE("notebooks", NOTE_OFFSET,            FETCH_BOOKS),
-	NOTE("list",      NOTE_OFFSET,            FETCH_LIST | FETCH_FILES),
-	NOTE("history",   NOTE_OFFSET,            FETCH_LIST),
-	NOTE("read",      NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ),
-	NOTE("diff",      NOTE_FILE | NOTE_OFFSET, FETCH_READ | FETCH_DIFF),
-	NOTE("copy",      NOTE_FILE,              FETCH_READ | FETCH_OTHER | FETCH_COPY),
-	NOTE("attach",    NOTE_FILE | NOTE_UPLOAD, FETCH_READ | FETCH_ATTACH),
+#define NOTE(name, verb, flags, fetch) { name, verb, flags, fetch, sizeof name - 1 }
+	NOTE("add",       "Add",     NOTE_WRITE | NOTE_FILE, 0),
+	NOTE("replace",   "Replace", NOTE_WRITE | NOTE_FILE, FETCH_REPLACE),
+	NOTE("restore",   "Restore", NOTE_WRITE | NOTE_FILE | NOTE_REVISION, FETCH_READ | FETCH_RESTORE),
+	NOTE("notebooks", nullptr,   NOTE_OFFSET,            FETCH_BOOKS),
+	NOTE("list",      nullptr,   NOTE_OFFSET,            FETCH_LIST | FETCH_FILES),
+	NOTE("history",   nullptr,   NOTE_OFFSET,            FETCH_LIST),
+	NOTE("read",      nullptr,   NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ),
+	NOTE("diff",      nullptr,   NOTE_FILE | NOTE_OFFSET, FETCH_READ | FETCH_DIFF),
+	NOTE("copy",      "Copy",    NOTE_FILE,              FETCH_READ | FETCH_OTHER | FETCH_COPY),
+	NOTE("attach",    nullptr,   NOTE_FILE | NOTE_UPLOAD, FETCH_READ | FETCH_ATTACH),
 #undef NOTE
 };
 
@@ -6656,6 +6650,8 @@ struct mcp_notes_call {
 	size_t                 note;      /* attach: bytes of the note */
 	uint16_t               fetch;     /* enum mcp_fetch: what git runs for */
 	uint16_t               len;       /* bytes in the union */
+	uint8_t                action;    /* the row of mcp_notes_actions[] */
+	bool                   stripped;  /* askai cut its notices off the text */
 	char                   notebook[NOTES_REPO];  /* the notebook that the
 	                                                 call selected, or ""
 	                                                 for req->repo */
@@ -6999,9 +6995,8 @@ mcp_slot_notes_message (struct mcp_slot const   *slot,
 	static_assert(sizeof "Restore  from  (18446744073709551615 to 18446744073709551615 "
 	                     "bytes)" + 2 * NOTES_NAME + 2 + NOTES_REPO <= NOTES_MESSAGE);
 	struct mcp_notes_call const *call = slot->own;
-	uint16_t fetch = call->fetch;
-	char const *verb = fetch & FETCH_RESTORE ? "Restore" : fetch & FETCH_COPY ? "Copy"
-	                 : fetch & FETCH_REPLACE ? "Replace" : "Add";
+	uint16_t fetch = mcp_notes_actions[call->action].fetch;
+	char const *verb = mcp_notes_actions[call->action].verb;
 	char const *from = fetch & FETCH_RESTORE ? notes_revision_from(call->revision)
 	                 : fetch & FETCH_COPY ? notes_selector(mcp_slot_notebook(slot)) : "";
 	char const *sep = *from ? " from " : "";
@@ -7028,7 +7023,7 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 	struct mcp_req *req = slot->req;
 	struct mcp_notes_call *call = slot->own;
 	if (!*tip) {
-		mcp_slot_notes_run(slot, FETCH_FORMAT | (call->fetch & FETCH_KEEP), nullptr);
+		mcp_slot_notes_run(slot, FETCH_FORMAT, nullptr);
 		return;
 	}
 	struct span file = buf_peek(&call->file);
@@ -7044,7 +7039,7 @@ mcp_slot_notes_write (struct mcp_slot *slot,
 		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
-	mcp_slot_notes_run(slot, FETCH_ADD | (call->fetch & FETCH_KEEP), &in);
+	mcp_slot_notes_run(slot, FETCH_ADD, &in);
 }
 
 /* An explicit zero parent makes the first commit a root even if another
@@ -7085,10 +7080,25 @@ mcp_slot_notes_created (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, mcp_slot_notes_unadded(slot), true);
 }
 
-/* What the result of a write adds with FETCH_STRIPPED. */
+/* The words that a write's result adds if call->stripped is true. */
 static char const left_out[] = " askai left out the [askai: ...] lines at the end of "
                                "the text. askai adds those lines to tool results, and "
                                "they are not part of the note.";
+
+/* Ends the write in @p slot after it saved the note or left it as it was.
+ * The caller's own notebook exists then, so req->branch is set. If @p e is
+ * not 0, the request fails with @p e.
+ */
+static void
+mcp_slot_notes_wrote (struct mcp_slot *slot,
+                      int              e)
+{
+	struct mcp_notes_call const *call = slot->own;
+	slot->req->branch = true;
+	if (!e && call->stripped)
+		e = mcp_slot_say(slot, &TEXT(left_out), 1);
+	mcp_slot_notes_end(slot, e, false);
+}
 
 /* Answers the replace or restore in @p slot without a commit and returns
  * true if @p note, the note that NOTES_CHECK found, already has the bytes
@@ -7113,14 +7123,12 @@ mcp_slot_notes_unchanged (struct mcp_slot         *slot,
 		loop_work(req->mcp->loop, LOOP_COPY, part.data.len);
 	if (!same)
 		return false;
-	req->branch = true;
 	char const *name = (char const *)part.name.ptr;
 	uint64_t n = note->bytes;
 	e = dstr_printf(&slot->answer, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
-	                "commit %s. No commit was made.%s", (int)jb_utf8(name, part.name.len),
-	                name, n == 1 ? "this" : "these", n, n == 1 ? "" : "s", tip,
-	                call->fetch & FETCH_STRIPPED ? left_out : "") ? 0 : ENOMEM;
-	mcp_slot_notes_end(slot, e, false);
+	                "commit %s. No commit was made.", (int)jb_utf8(name, part.name.len),
+	                name, n == 1 ? "this" : "these", n, n == 1 ? "" : "s", tip) ? 0 : ENOMEM;
+	mcp_slot_notes_wrote(slot, e);
 	return true;
 }
 
@@ -7138,10 +7146,10 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 	struct notes_file note = {};
 	int r = mcp_notes_ok(c) ? notes_checked(buf_peek(&c->out), tip, &note) : EIO;
 	uint64_t before = r == EEXIST ? note.bytes : NO_NOTE;
-	bool replace = call->fetch & FETCH_REPLACE;
-	if (replace)
+	uint16_t fetch = mcp_notes_actions[call->action].fetch;
+	if (fetch & FETCH_REPLACE)
 		r = r == EEXIST ? 0 : r ? r : ENOENT;
-	if (call->fetch & FETCH_RESTORE) {
+	if (fetch & FETCH_RESTORE) {
 		if (r == EEXIST)
 			r = 0;
 		if (!r && strcmp(tip, notes_revision_tip(call->revision))) {
@@ -7174,13 +7182,17 @@ mcp_slot_notes_checked (struct mcp_slot *slot)
 	mcp_slot_notes_end(slot, e, true);
 }
 
-/* Appends to the answer of @p slot that git fast-import saved the note,
- * with the id of the new commit and the commit message.
+/* Answers the end of git fast-import. The answer has the id of the new
+ * commit and the commit message, or why git did not save the note.
  */
-static int
-mcp_slot_notes_saved (struct mcp_slot *slot)
+static void
+mcp_slot_notes_added (struct mcp_slot *slot)
 {
 	struct mcp_notes_call const *call = slot->own;
+	if (!mcp_notes_ok(call->child)) {
+		mcp_slot_notes_end(slot, mcp_slot_notes_unadded(slot), true);
+		return;
+	}
 	char commit[NOTES_TIP + 1];
 	if (notes_add_out(buf_peek(&call->child->out), commit))
 		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
@@ -7189,22 +7201,10 @@ mcp_slot_notes_saved (struct mcp_slot *slot)
 		RAW(commit, strlen(commit)),
 		TEXT(": "),
 		ESC(call->message, jb_utf8(call->message, call->len)),
-		call->fetch & (FETCH_REPLACE | FETCH_RESTORE)
+		mcp_notes_actions[call->action].fetch & (FETCH_REPLACE | FETCH_RESTORE)
 		? TEXT(". Previous versions remain in history.") : TEXT("."),
-		call->fetch & FETCH_STRIPPED ? TEXT(left_out) : TEXT(""),
 	};
-	return mcp_slot_say(slot, p, ARRAY_SIZE(p));
-}
-
-/* Reports the end of git fast-import and records that the own branch exists. */
-static void
-mcp_slot_notes_added (struct mcp_slot *slot)
-{
-	struct mcp_notes_call const *call = slot->own;
-	bool ok = mcp_notes_ok(call->child);
-	slot->req->branch |= ok;
-	int e = ok ? mcp_slot_notes_saved(slot) : mcp_slot_notes_unadded(slot);
-	mcp_slot_notes_end(slot, e, !ok);
+	mcp_slot_notes_wrote(slot, mcp_slot_say(slot, p, ARRAY_SIZE(p)));
 }
 
 /* Appends the list of the notes in @p out, the output of git for
@@ -7906,7 +7906,7 @@ static struct mcp_fetch_step const mcp_fetch_steps[] = {
 static struct mcp_fetch_step const *
 mcp_fetch_step (uint16_t fetch)
 {
-	return &mcp_fetch_steps[(fetch & ~FETCH_KEEP) == FETCH_FORMAT ? STEP_FORMAT
+	return &mcp_fetch_steps[fetch == FETCH_FORMAT ? STEP_FORMAT
 	                        : fetch & FETCH_BOOKS ? STEP_BOOKS
 	                        : fetch & FETCH_FILES ? STEP_FILES
 	                        : fetch & FETCH_NEWEST ? STEP_NEWEST
@@ -7961,11 +7961,11 @@ mcp_notes_add_data (struct buf           *in,
  */
 static void
 mcp_slot_notes_add (struct mcp_slot    *slot,
-                    struct json_object *args,
-                    uint16_t            flags)
+                    struct json_object *args)
 {
 	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
 	struct mcp_req *req = slot->req;
+	struct mcp_notes_call *call = slot->own;
 	bool initialized = notes_exists(req->mcp->st->notes);
 	size_t most = req->mcp->st->files_inline;
 	char big[96];
@@ -8001,17 +8001,15 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	if (kept < len)
-		flags |= FETCH_STRIPPED;
+	call->stripped = kept < len;
 	len = kept;
-	if (!initialized && (flags & FETCH_REPLACE)) {
+	if (!initialized && (mcp_notes_actions[call->action].fetch & FETCH_REPLACE)) {
 		mcp_slot_result(slot, TEXT("No note has that name. Use action add to create it."),
 		                true);
 		return;
 	}
 	name += skip;
 	name_len -= skip;
-	struct mcp_notes_call *call = slot->own;
 	struct buf in = {};
 	int e = content ? mcp_notes_add_data(&call->file, name, name_len, &data)
 	                : notes_add_file(&call->file, name, name_len, text, len);
@@ -8024,7 +8022,7 @@ mcp_slot_notes_add (struct mcp_slot    *slot,
 		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
-	mcp_slot_notes_run(slot, (initialized ? FETCH_CHECK : FETCH_CREATE) | flags, &in);
+	mcp_slot_notes_run(slot, initialized ? FETCH_CHECK : FETCH_CREATE, &in);
 }
 
 /* Writes @p text as a new note in the caller's own notebook. A copy uses
@@ -8037,9 +8035,8 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 	struct mcp_req *req = slot->req;
 	struct mcp_notes_call *call = slot->own;
 	bool initialized = notes_exists(req->mcp->st->notes);
-	bool restore = call->fetch & FETCH_RESTORE;
-	struct cstr_view to = restore ? notes_revision_file(call->revision)
-	                              : (struct cstr_view){ call->name, call->len };
+	struct cstr_view to = call->fetch & FETCH_RESTORE ? notes_revision_file(call->revision)
+	                    : (struct cstr_view){ call->name, call->len };
 	struct buf in = {};
 	int e = notes_add_file(&call->file, to.data, to.len, (char const *)text.ptr, text.len);
 	if (!e && initialized)
@@ -8051,9 +8048,7 @@ mcp_slot_notes_got_copy (struct mcp_slot *slot,
 		mcp_slot_notes_end(slot, e, true);
 		return;
 	}
-	mcp_slot_notes_run(slot, (initialized ? FETCH_CHECK : FETCH_CREATE) |
-	                         (restore ? FETCH_RESTORE : FETCH_COPY),
-	                   &in);
+	mcp_slot_notes_run(slot, initialized ? FETCH_CHECK : FETCH_CREATE, &in);
 }
 
 /* Starts the read action for the file name in @p args, with @p fetch: the
@@ -8170,6 +8165,7 @@ mcp_slot_notes (struct mcp_slot    *slot,
 			mcp_slot_result(slot, DSTR(&why), true);
 		return;
 	}
+	call->action = which;
 	uint32_t flags = mcp_notes_actions[which].flags;
 	uint16_t fetch = mcp_notes_actions[which].fetch;
 	struct json_object *revision = jb_get(args, "revision");
@@ -8220,7 +8216,7 @@ mcp_slot_notes (struct mcp_slot    *slot,
 		return;
 	}
 	if (flags & NOTE_WRITE) {
-		mcp_slot_notes_add(slot, args, fetch);
+		mcp_slot_notes_add(slot, args);
 		return;
 	}
 	if (!notes_exists(notes)) {
