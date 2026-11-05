@@ -8684,19 +8684,6 @@ mcp_register (struct registry     *reg,
 	return 0;
 }
 
-/* The plugin of @p reg that askai loaded as @p plugin; nullptr for a
- * plugin built into askai.
- */
-static struct plugin_loaded const *
-mcp_loaded_of (struct registry const *reg,
-               struct plugin const   *plugin)
-{
-	for (uint32_t i = 0; i < reg->n_loaded; ++i)
-		if (reg->loaded[i]->plugin == plugin)
-			return reg->loaded[i];
-	return nullptr;
-}
-
 /* Whether the configuration file's member tools of @p cfg allows clients
  * the tool @p name of @p reg.
  */
@@ -8787,10 +8774,16 @@ mcp_report (struct registry const *reg,
 		mcp_report_gits(cfg);
 	if (cfg->notes)
 		LOG_ALL(LOG_INFO, "notes directory: %s", cfg->notes);
-	if (!reg->n_loaded)
+	uint32_t loaded = 0;
+	for (uint32_t i = 0; i < reg->n_plugins; ++i) {
+		struct plugin_loaded const *p = reg->plugins[i].loaded;
+		if (!p)
+			continue;
+		mcp_report_plugin(reg, cfg, p);
+		++loaded;
+	}
+	if (!loaded)
 		LOG_ALL(LOG_INFO, "plugins: none");
-	for (uint32_t i = 0; i < reg->n_loaded; ++i)
-		mcp_report_plugin(reg, cfg, reg->loaded[i]);
 	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
 		LOG_ALL(LOG_INFO, "upstream tools: off (--upstream-tools)");
 }
@@ -8807,20 +8800,20 @@ mcp_lent (void const *cfg,
 	return mcp_lending_lent(&l, upstream);
 }
 
-/* Returns the record of @p plugin for @p st: the plugin, its service and
- * its two part functions. The service of askai's own kinds is @p st. The
- * service of the man tool's plugin is @p manual, the service of the git
- * tool's plugin is @p git, and the service of the notes tool's plugin is
- * st->notes_tool. These three have a part on every client loop. A plugin
- * that askai loaded from a file has no service and no part. Its record has
- * the record of the loading from @p reg instead.
+/* Returns the record of the plugin @p part for @p st: the plugin, its
+ * service and its two part functions. The service of askai's own kinds is
+ * @p st. The service of the plugin of the man tool is @p manual, the
+ * service of the plugin of the git tool is @p git, and the service of the
+ * plugin of the notes tool is st->notes_tool. Each of these three plugins
+ * creates a part on every client loop. The record of a plugin that askai
+ * loaded from a file contains part->loaded and no service or part
+ * functions.
  */
 static struct mcp_plugin
-mcp_static_plugin (struct mcp_static     *st,
-                   struct registry const *reg,
-                   struct plugin const   *plugin,
-                   struct manual         *manual,
-                   struct git            *git)
+mcp_static_plugin (struct mcp_static            *st,
+                   struct registry_plugin const *part,
+                   struct manual                *manual,
+                   struct git                   *git)
 {
 	struct mcp_plugin const own[] = {
 		{ .plugin = &mcp_host_plugin, .service = st },
@@ -8832,9 +8825,9 @@ mcp_static_plugin (struct mcp_static     *st,
 		  .part_create = notes_tool_loop_create, .part_destroy = notes_tool_loop_destroy },
 	};
 	for (size_t i = 0; i < ARRAY_SIZE(own); ++i)
-		if (own[i].plugin == plugin)
+		if (own[i].plugin == part->plugin)
 			return own[i];
-	return (struct mcp_plugin){ .plugin = plugin, .loaded = mcp_loaded_of(reg, plugin) };
+	return (struct mcp_plugin){ .plugin = part->plugin, .loaded = part->loaded };
 }
 
 /* Prepares the attach action of the notes tool if the upstream of @p st
@@ -8927,7 +8920,7 @@ mcp_static_create (struct config const *cfg,
 		.turns = cfg->turns
 	};
 	for (uint32_t i = 0; i < reg->n_plugins; ++i)
-		st->plugins[i] = mcp_static_plugin(st, reg, reg->plugins[i], manual, git);
+		st->plugins[i] = mcp_static_plugin(st, &reg->plugins[i], manual, git);
 	/* A zeroed dstr is no empty string (dstr.h). */
 	for (uint32_t id = 0; id < reg->n_tools; ++id) {
 		struct registry_tool const *t = &reg->tools[id];

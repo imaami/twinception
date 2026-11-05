@@ -44,21 +44,26 @@ enum registry_flag : uint32_t {
 	REGISTRY_GRANTED = 1u << 0,  /**< a role can grant the tool */
 };
 
+/** A plugin in the registry. */
+struct registry_plugin {
+	struct plugin const  *plugin;
+	struct plugin_loaded *loaded;  /**< the plugin as registry_load() loaded
+	                                    it, which the registry frees, or
+	                                    nullptr for a plugin built into
+	                                    askai */
+};
+
 struct registry {
-	struct registry_tool  tools[TOOL_MAX];    /**< by id */
-	struct plugin const  *plugins[TOOL_MAX];  /**< each plugin that has a
-	                                               tool, in the order in
-	                                               which the plugins' first
-	                                               tools were added */
-	struct plugin_loaded *loaded[TOOL_MAX];   /**< the plugins that
-	                                               registry_load() loaded;
-	                                               the registry frees them */
-	uint32_t              n_tools;
-	uint32_t              n_granted;  /**< the tools with the ids 0 to
-	                                       n_granted - 1 are those that a
-	                                       role can grant */
-	uint32_t              n_plugins;
-	uint32_t              n_loaded;
+	struct registry_tool   tools[TOOL_MAX];    /**< by id */
+	struct registry_plugin plugins[TOOL_MAX];  /**< in the order in which
+	                                                they were loaded or
+	                                                their first tools were
+	                                                added */
+	uint32_t               n_tools;
+	uint32_t               n_granted;  /**< the tools with the ids 0 to
+	                                        n_granted - 1 are those that a
+	                                        role can grant */
+	uint32_t               n_plugins;
 };
 
 /** Frees the loaded plugins' records and leaves @p reg empty. The shared

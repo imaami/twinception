@@ -12,25 +12,26 @@
 void
 registry_fini (struct registry *reg)
 {
-	while (reg->n_loaded)
-		plugin_loaded_destroy(&reg->loaded[--reg->n_loaded]);
+	for (uint32_t i = 0; i < reg->n_plugins; ++i)
+		plugin_loaded_destroy(&reg->plugins[i].loaded);
 	*reg = (struct registry){};
 }
 
 /* Returns the index of plugin in reg->plugins. A plugin that is not there
- * yet is appended. The caller has checked that the registry has room for
- * one more tool, and every plugin in it has at least one tool, so it has
- * room for one more plugin.
+ * yet is appended. The caller has checked that n_tools is less than
+ * TOOL_MAX. Each plugin in reg->plugins is the plugin of at least one
+ * tool, or registry_load() is adding its tools, so n_plugins is less than
+ * TOOL_MAX too.
  */
 static uint32_t
 registry_part (struct registry     *reg,
                struct plugin const *plugin)
 {
 	uint32_t i = 0;
-	while (i < reg->n_plugins && reg->plugins[i] != plugin)
+	while (i < reg->n_plugins && reg->plugins[i].plugin != plugin)
 		++i;
 	if (i == reg->n_plugins)
-		reg->plugins[reg->n_plugins++] = plugin;
+		reg->plugins[reg->n_plugins++] = (struct registry_plugin){ .plugin = plugin };
 	return i;
 }
 
@@ -67,9 +68,9 @@ registry_load (struct registry    *reg,
                char               *why,
                size_t              len)
 {
-	if (reg->n_loaded == ARRAY_SIZE(reg->loaded)) {
+	if (reg->n_plugins == ARRAY_SIZE(reg->plugins)) {
 		util_format(why, len, "askai cannot load more than %zu plugins",
-		            ARRAY_SIZE(reg->loaded));
+		            ARRAY_SIZE(reg->plugins));
 		return EINVAL;
 	}
 	int e = 0;
@@ -78,9 +79,9 @@ registry_load (struct registry    *reg,
 	if (!loaded)
 		return e;
 	/* The loop adds tools whose names are pointers into loaded->manifest.
-	 * Therefore loaded is stored in reg->loaded first, and registry_fini()
-	 * frees it even if registry_add() fails. */
-	reg->loaded[reg->n_loaded++] = loaded;
+	 * Therefore the plugin is appended to reg->plugins first, and
+	 * registry_fini() frees it even if registry_add() fails. */
+	reg->plugins[reg->n_plugins++] = (struct registry_plugin){ loaded->plugin, loaded };
 	for (uint32_t i = 0; i < loaded->n_tools; ++i) {
 		char const *name = loaded->manifest.tools[i];
 		struct registry_tool const tool = {
