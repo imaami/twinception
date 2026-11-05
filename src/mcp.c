@@ -409,6 +409,7 @@ struct mcp_static {
 	char                     *files_url;    /**< the URL of their uploads */
 	char const              **files_lines;  /**< the header lines of their
 	                                             uploads, nullptr-terminated */
+	size_t                    files_url_len;
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	struct mcp_limits         lim;
 	uint32_t                  turns;        /**< upstream calls an ask call
@@ -785,6 +786,7 @@ struct mcp_piece {
 #define TEXT(s) ((struct mcp_piece){ { s, sizeof s - 1 }, true })
 #define DSTR(d) ((struct mcp_piece){ cstr_view_dstr(d), false })
 #define BYTES(b) ((struct mcp_piece){ (b), false })
+#define ESC_VIEW(v) ((struct mcp_piece){ (v), true })
 #define ESC(p, n) ((struct mcp_piece){ { (char const *)(p), (n) }, true })
 #define RAW(p, n) ((struct mcp_piece){ { (char const *)(p), (n) }, false })
 #define SPAN(s) ((struct span){ (unsigned char *)(uintptr_t)(s), sizeof s - 1 })
@@ -1863,14 +1865,16 @@ mcp_req_result (struct mcp_req         *req,
 	mcp_req_close(req, 200, fields, e ? e : mcp_req_put(req, result, n));
 }
 
-/* Begin a tool result with @p text; more of it may follow. */
+/** Begins the reply of @p req with a tool result whose text begins with
+ *  @p text. More of the text can follow.
+ */
 static int
 mcp_req_tool_open (struct mcp_req   *req,
-                   struct mcp_piece  text)
+                   struct cstr_view  text)
 {
 	struct mcp_piece const p[] = {
 		FRAG("{\"content\":[{\"type\":\"text\",\"text\":\""),
-		ESC(text.bytes.data, text.bytes.len),
+		ESC_VIEW(text),
 	};
 	int e = mcp_req_open(req, FRAG("\"result\":"));
 	return e ? e : mcp_req_put(req, p, ARRAY_SIZE(p));
@@ -1921,7 +1925,7 @@ mcp_req_trace_put (struct mcp_req *req)
 	struct mcp_piece const p[] = {
 		FRAG("\"},{\"type\":\"text\",\"text\":\""),
 		intro,
-		ESC(dstr_get(&req->trace), dstr_len(&req->trace)),
+		ESC_VIEW(cstr_view_dstr(&req->trace)),
 		ESC(tail, mcp_req_trace_tail(req, tail, sizeof tail)),
 		FRAG("\"}"),
 	};
@@ -1949,8 +1953,10 @@ mcp_req_tool_close (struct mcp_req *req)
 
 static void mcp_slot_done (struct mcp_slot *slot, bool failed);
 
-/* A tool result of @p text, short and ours, for @p slot's call; for a
- * turn's tool call, its output, which goes to the turn.
+/** Ends the call in @p slot with the short text @p text, failed if
+ *  @p failed is true. For a call of a turn or a job, the text becomes the
+ *  answer of the slot for mcp_slot_done(). A client's call is logged and
+ *  answered with the text. The text flag of @p text is ignored.
  */
 static void
 mcp_slot_result (struct mcp_slot  *slot,
@@ -1963,8 +1969,7 @@ mcp_slot_result (struct mcp_slot  *slot,
 		/* An offset does not apply to the answer of a failed call. */
 		if (failed)
 			slot->skip = 0;
-		dstr_clear(&slot->answer);
-		if (!dstr_cat_n(&slot->answer, text.bytes.data, text.bytes.len)) {
+		if (cstr_view_store(text.bytes, &slot->answer)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
 		}
@@ -1973,7 +1978,7 @@ mcp_slot_result (struct mcp_slot  *slot,
 	}
 	req->failed = failed;
 	mcp_req_log_call(req, failed ? "failed" : "answered", text.bytes, failed);
-	int e = mcp_req_tool_open(req, text);
+	int e = mcp_req_tool_open(req, text.bytes);
 	if (e) {
 		mcp_req_abort(req, e);
 		return;
@@ -2029,10 +2034,11 @@ mcp_req_reply (struct mcp_req *req)
 	mcp_req_tool_close(req);
 }
 
-/* The output of @p slot's call is in: for a turn's tool call, the turn
- * takes it; else reply with it, a slice at a time, from the offset that a
- * man or git call asked for, a character's start, or an ask call's whole,
- * after the answers that its turns dozed after.
+/** Ends the call in @p slot with its output, failed if @p failed is true.
+ *  mcp_slot_done() handles the call of a turn or a job. The reply to a
+ *  client's call is written a slice in each step. It begins with
+ *  agenda->said and continues with the output from the first character
+ *  at or after slot->skip, or from 0 for an ask call with lent tools.
  */
 static void
 mcp_slot_respond (struct mcp_slot *slot,
@@ -2061,8 +2067,8 @@ mcp_slot_respond (struct mcp_slot *slot,
 	req->failed = failed;
 	req->phase = PHASE_REPLY;
 	req->off = off;
-	int e = mcp_req_tool_open(req, req->agenda ? DSTR(&req->agenda->said)
-	                                           : (struct mcp_piece){});
+	int e = mcp_req_tool_open(req, req->agenda ? cstr_view_dstr(&req->agenda->said)
+	                                           : (struct cstr_view){});
 	if (e) {
 		mcp_req_abort(req, e);
 		return;
@@ -4102,18 +4108,20 @@ mcp_req_tokens (struct mcp_req const *req)
 	                 : (len + req->filed) / 4;
 }
 
-/* The id of the turn's call @p k, @p c, in @p *id: its own, or, lacking
- * one, one made up in @p made, of CALL_ID bytes.
+/** Stores the id of the call @p c, the call @p k of the turn of @p req, in
+ *  @p *id. For a call without an id, the function makes up an id in the
+ *  CALL_ID bytes at @p made. Returns 0, or EOVERFLOW if the made-up id
+ *  does not fit.
  */
 static int
-mcp_req_call_id (struct mcp_req const  *req,
-                 struct ai_call const  *c,
-                 uint32_t               k,
-                 char                  *made,
-                 struct mcp_piece      *id)
+mcp_req_call_id (struct mcp_req const *req,
+                 struct ai_call const *c,
+                 uint32_t              k,
+                 char                 *made,
+                 struct mcp_piece     *id)
 {
 	if (c->id.len) {
-		*id = ESC(c->id.data, c->id.len);
+		*id = ESC_VIEW(c->id);
 		return 0;
 	}
 	int n = snprintf(made, CALL_ID, "call_%" PRIu32 "_%" PRIu32, req->turn, k);
@@ -4280,8 +4288,10 @@ mcp_req_items (struct mcp_req const *req,
 	return RAW(buf_peek(&req->job->replay).ptr + from, to - from);
 }
 
-/* The arguments of the call @p c, @p k in the turn, as @p f writes them,
- * into @p *p: "{}" if they were no object, as the upstream may parse them.
+/** Stores the arguments of the call @p c, the call @p k of the turn of
+ *  @p req, in @p *p in the form of the API @p f. If the arguments are not
+ *  an object, the piece is "{}", so that the upstream can parse it.
+ *  Returns 0, or ENOMEM if json-c cannot serialize the arguments.
  */
 static int
 mcp_req_call_args (struct mcp_req const   *req,
@@ -4292,7 +4302,7 @@ mcp_req_call_args (struct mcp_req const   *req,
 {
 	struct json_object *v = req->args[k];
 	if (!(f->flags & AI_ARGS_RAW)) {
-		*p = v && c->args.len ? ESC(c->args.data, c->args.len) : TEXT("{}");
+		*p = v && c->args.len ? ESC_VIEW(c->args) : TEXT("{}");
 		return 0;
 	}
 	size_t len = 0;
@@ -4302,8 +4312,10 @@ mcp_req_call_args (struct mcp_req const   *req,
 	return v && !json ? ENOMEM : 0;
 }
 
-/* Write the call @p c, req->part - 1 in the turn, after @p items, those of
- * the replay before it.
+/** Writes the call @p c, the call req->part - 1 of the turn, into the
+ *  upload of @p req in the form of the API @p f, after @p items, the items
+ *  of the replay before the call. Returns 0, or the error of
+ *  mcp_req_call_id(), mcp_req_call_args() or mcp_req_upload().
  */
 static int
 mcp_req_call_put (struct mcp_req         *req,
@@ -4323,12 +4335,12 @@ mcp_req_call_put (struct mcp_req         *req,
 		BYTES(req->listed || items.bytes.len ? f->call_next : f->call),
 		id,
 		BYTES(f->name),
-		ESC(c->name.data, c->name.len),
+		ESC_VIEW(c->name),
 		BYTES(f->args),
 		args,
 		BYTES(f->args_end),
 		c->extra.len ? BYTES(f->extra) : (struct mcp_piece){},
-		RAW(c->extra.data, c->extra.len),
+		BYTES(c->extra),
 		BYTES(f->call_end),
 	};
 	e = mcp_req_upload(req, p, ARRAY_SIZE(p));
@@ -4439,15 +4451,16 @@ mcp_req_turn_write (struct mcp_req *req)
 	mcp_req_calls_next(req);
 }
 
-/* Add a line for the tool call @p c, with the arguments @p args, to the
- * trace: its name and, as @p trace says, the first TRACE_ARGS bytes of its
- * arguments' JSON text, or its action; the outcome follows.
+/** Adds a line for the tool call @p c with the arguments @p args to the
+ *  trace of @p req: the name of the tool and, as @p trace selects, the
+ *  first TRACE_ARGS bytes of the arguments or the action. The line ends in
+ *  mcp_req_trace_end(). Returns 0 or ENOMEM.
  */
 static int
-mcp_req_trace (struct mcp_req        *req,
-               struct ai_call const  *c,
-               struct json_object    *args,
-               enum mcp_trace         trace)
+mcp_req_trace (struct mcp_req       *req,
+               struct ai_call const *c,
+               struct json_object   *args,
+               enum mcp_trace        trace)
 {
 	if (req->traced++ >= TRACE_MAX)
 		return 0;
@@ -4459,10 +4472,10 @@ mcp_req_trace (struct mcp_req        *req,
 	case TRACE_NAME:
 		return 0;
 	case TRACE_ACTION:
-		size_t len = 0;
-		char const *action = jb_str(jb_get(args, "action"), &len);
-		return !action || (CAT(&req->trace, " ") &&
-		                   dstr_cat_n(&req->trace, action, util_clip(action, len, 16)))
+		struct cstr_view action = jb_view(jb_get(args, "action"));
+		return !action.data || (CAT(&req->trace, " ") &&
+		                        dstr_cat_n(&req->trace, action.data,
+		                                   util_clip(action.data, action.len, 16)))
 		       ? 0 : ENOMEM;
 	default:
 		char const *json = c->args.data;
@@ -5975,32 +5988,33 @@ mcp_req_result_begin (struct mcp_req  *req,
 	mcp_req_enter(req, PHASE_RESULT);
 }
 
-/* Write the result of the call @p c, the one under way, into the upload,
- * and after the turn's last one the files that the turn's calls attached
- * and the end of the messages.
+/** Writes the result of the call @p c, the call under way, into the upload
+ *  of @p req, and after the last result of the turn the attached files
+ *  and the end of the messages. Returns 0 or an error number.
  */
 static int
-mcp_req_result_put (struct mcp_req        *req,
-                    struct ai_call const  *c)
+mcp_req_result_put (struct mcp_req       *req,
+                    struct ai_call const *c)
 {
 	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
 	struct mcp_slot const *slot = &req->slots[req->part];
 	struct span out = mcp_slot_output(slot);
 	struct span attached = buf_peek(&req->attached);
-	struct dstr const *told = req->agenda ? &req->agenda->told : nullptr;
-	size_t told_len = told ? dstr_len(told) : 0;
+	struct cstr_view told = req->agenda ? cstr_view_dstr(&req->agenda->told)
+	                                    : (struct cstr_view){};
 	char made[CALL_ID];
 	struct mcp_piece id;
 	int e = mcp_req_call_id(req, c, req->part, made, &id);
 	if (e)
 		return e;
-	/* A result that names its call gives the id of a call that had one,
-	 * or of one that the turn wrote with an id made up. */
+	/* With AI_RESULT_NAMED, the key of a result is the name of the tool,
+	 * and the id is appended if the call came with an id or askai made one
+	 * up. */
 	struct mcp_piece key = id;
 	struct mcp_piece by = {};
 	struct mcp_piece also = {};
 	if (f->flags & AI_RESULT_NAMED) {
-		key = ESC(c->name.data, c->name.len);
+		key = ESC_VIEW(c->name);
 		if (c->id.len || f->call.len) {
 			by = BYTES(f->result_id);
 			also = id;
@@ -6015,8 +6029,8 @@ mcp_req_result_put (struct mcp_req        *req,
 		BYTES(f->output),
 		ESC(out.len ? out.ptr + slot->skip : nullptr, slot->window),
 		ESC(slot->note, slot->note_len),
-		ESC("\n\n", told_len ? 2 : 0),
-		ESC(told_len ? dstr_get(told) : nullptr, told_len),
+		ESC("\n\n", told.len ? 2 : 0),
+		ESC_VIEW(told),
 		BYTES(f->result_end),
 		RAW(attached.ptr, attached.len),
 		BYTES(f->results_end),
@@ -6516,9 +6530,10 @@ mcp_req_add_start (struct mcp_req *req)
 	mcp_req_enter(req, PHASE_ADD);
 }
 
-/* Write what askai adds to the prompt, in the request's answer, or the
- * message that wakes the turns, what the agenda tells, a slice a step, and
- * end the prompt or the message and the messages; then submit the turn.
+/** Writes the text that askai adds to the prompt, from the answer of
+ *  @p req, or in PHASE_WAKE the message that wakes the turns, from the told
+ *  member of the agenda, into the upload, a slice in each step. Then it
+ *  ends the prompt or the message and the messages and submits the turn.
  */
 static void
 mcp_req_add_write (struct mcp_req *req)
@@ -6528,7 +6543,7 @@ mcp_req_add_write (struct mcp_req *req)
 	struct dstr *text = wake ? &req->agenda->told : &req->self.answer;
 	struct mcp_piece const p[] = {
 		wake ? BYTES(f->user) : (struct mcp_piece){},
-		ESC(dstr_get(text), dstr_len(text)),
+		ESC_VIEW(cstr_view_dstr(text)),
 		BYTES(f->prompt_end),
 		BYTES(f->end),
 	};
@@ -6551,15 +6566,16 @@ mcp_req_add_write (struct mcp_req *req)
 	mcp_req_turn_submit(req);
 }
 
-/* Append @p text to what askai adds to the prompt, then word to go on with
- * the task, and write it.
+/** Appends @p text and "[askai: go on with the task.]" to the text that
+ *  askai adds to the prompt of @p req, and writes that text into the
+ *  upload.
  */
 static void
 mcp_req_go_on (struct mcp_req   *req,
-               struct mcp_piece  text)
+               struct cstr_view  text)
 {
 	struct dstr *d = &req->self.answer;
-	if (!dstr_cat_n(d, text.bytes.data, text.bytes.len) ||
+	if (!dstr_cat_n(d, text.data, text.len) ||
 	    !CAT(d, "[askai: go on with the task.]")) {
 		mcp_req_fail(req, ENOMEM);
 		return;
@@ -6567,35 +6583,34 @@ mcp_req_go_on (struct mcp_req   *req,
 	mcp_req_add_start(req);
 }
 
-/* Goes on with the ask call in @p slot, req->self, once a compaction has
- * put the notes in the prompt.
+/** Goes on with the ask call in @p slot, req->self, after a compaction put
+ *  the notes into the prompt.
  */
 static void
 mcp_slot_compacted (struct mcp_slot *slot)
 {
-	mcp_req_go_on(slot->req, TEXT("\n"));
+	mcp_req_go_on(slot->req, CSTR_VIEW("\n"));
 }
 
-/* Adds the file of @p bytes bytes whose URI is the @p len bytes at @p uri
- * to req->attached, in the form of the upstream's API (ai_format()). The
- * URI is printable ASCII (ai_uploaded()). Returns 0 or ENOMEM.
+/** Adds the file of @p bytes bytes with the URI @p uri to req->attached, in
+ *  the form of the API of the upstream (ai_format()). The URI is printable
+ *  ASCII (ai_uploaded()). Returns 0 or ENOMEM.
  */
 static int
-mcp_req_attach (struct mcp_req *req,
-                char const     *uri,
-                size_t          len,
-                size_t          bytes)
+mcp_req_attach (struct mcp_req   *req,
+                struct cstr_view  uri,
+                size_t            bytes)
 {
 	struct ai_format const *f = ai_format(req->mcp->st->ep->api);
-	/* A turn has JOB_CALLS calls, so a few KiB of files at most. */
+	/* A turn makes at most JOB_CALLS calls, so the files add a few KiB. */
 	struct span to;
-	int e = buf_reserve(&req->attached, f->file.len + 6 * len + f->file_end.len,
+	int e = buf_reserve(&req->attached, f->file.len + 6 * uri.len + f->file_end.len,
 	                    SIZE_MAX, &to);
 	if (e)
-		return ENOMEM;
+		return e;
 	char *p = (char *)to.ptr;
 	memcpy(p, f->file.data, f->file.len);
-	size_t n = f->file.len + jb_escape(p + f->file.len, uri, len);
+	size_t n = f->file.len + jb_escape(p + f->file.len, uri.data, uri.len);
 	memcpy(p + n, f->file_end.data, f->file_end.len);
 	buf_commit(&req->attached, n + f->file_end.len);
 	req->filed += bytes;
@@ -6603,9 +6618,9 @@ mcp_req_attach (struct mcp_req *req,
 	return 0;
 }
 
-/* Sends @p body to the upstream's file store as the HTTP request of the
- * call in @p slot. Returns 0, or the error of mcp_slot_send(), such as
- * EAGAIN if askai sends too many requests at once.
+/** Sends @p body to the file store of the upstream as the HTTP request of
+ *  the call in @p slot. Returns 0, or the error of mcp_slot_send(), such
+ *  as EAGAIN if askai sends too many requests at once.
  */
 static int
 mcp_slot_post_file (struct mcp_slot  *slot,
@@ -6622,7 +6637,7 @@ mcp_slot_post_file (struct mcp_slot  *slot,
 	};
 	struct web_ask ask = {
 		.request = &request,
-		.url = strlen(st->files_url),
+		.url = st->files_url_len,
 		.accept = sizeof accept - 1,
 		.lines = st->files_lines
 	};
@@ -6673,15 +6688,15 @@ mcp_slot_attach (struct mcp_slot  *slot,
 		return e ? e : EINPROGRESS;
 	}
 	char uri[UPLOADS_URI];
-	size_t len = 0;
-	size_t n = uploads_find(st->uploads, mcp_req_owner(req), id, clk_realtime().tv_sec, uri,
-	                        &len);
-	int e = n ? mcp_req_fits(req, len, out) : ENOENT;
+	size_t file_bytes = 0;
+	size_t uri_len = uploads_find(st->uploads, mcp_req_owner(req), id, clk_realtime().tv_sec,
+	                              uri, &file_bytes);
+	int e = uri_len ? mcp_req_fits(req, file_bytes, out) : ENOENT;
 	if (e)
 		return e;
-	LOG(LOG_VERBOSE, "upstream file %.*s attached again", (int)n, uri);
-	*bytes = len;
-	return mcp_req_attach(req, uri, n, len);
+	LOG(LOG_VERBOSE, "upstream file %.*s attached again", (int)uri_len, uri);
+	*bytes = file_bytes;
+	return mcp_req_attach(req, (struct cstr_view){ uri, uri_len }, file_bytes);
 }
 
 int
@@ -6705,7 +6720,8 @@ mcp_slot_attached (struct mcp_slot  *slot,
 	int64_t expires = 0;
 	e = r.e ? (dstr_cat(&why, r.error) ? EIO : ENOMEM)
 	    : ai_uploaded(st->ep->api, r.status, r.body.data, r.body.len, &uri, &expires, &why);
-	if (!e && dstr_len(&uri) > UPLOADS_URI)
+	struct cstr_view const u = cstr_view_dstr(&uri);
+	if (!e && u.len > UPLOADS_URI)
 		e = dstr_printf(&why, "The upstream named the file with a URI of more "
 		                "than %d bytes.", UPLOADS_URI) ? EIO : ENOMEM;
 	if (e == EIO)
@@ -6713,11 +6729,11 @@ mcp_slot_attached (struct mcp_slot  *slot,
 		       dstr_cat_n(out, dstr_get(&why), dstr_len(&why)) ? EIO : ENOMEM;
 	if (e)
 		return e;
-	LOG(LOG_VERBOSE, "upstream file %s uploaded: %zu bytes", dstr_get(&uri), bytes);
-	e = mcp_req_attach(req, dstr_get(&uri), dstr_len(&uri), bytes);
+	LOG(LOG_VERBOSE, "upstream file %s uploaded: %zu bytes", u.data, bytes);
+	e = mcp_req_attach(req, u, bytes);
 	if (!e && expires)
-		(void)uploads_keep(st->uploads, mcp_req_owner(req), id, cstr_view_dstr(&uri),
-		                   bytes, expires, clk_realtime().tv_sec);
+		(void)uploads_keep(st->uploads, mcp_req_owner(req), id, u, bytes, expires,
+		                   clk_realtime().tv_sec);
 	return e;
 }
 
@@ -6759,7 +6775,7 @@ mcp_req_compact_notes (struct mcp_req *req)
 		                       NOTES_TOOL_COMPACT, mcp_req_lend_max(req), mcp_slot_compacted);
 		return;
 	}
-	mcp_req_go_on(req, TEXT("\n\n"));
+	mcp_req_go_on(req, CSTR_VIEW("\n\n"));
 }
 
 /* Compact the context, as the turn's compact call in @p slot asks with
@@ -7059,8 +7075,9 @@ mcp_req_result_of (struct mcp_req    *req,
 	mcp_req_result(req, p, ARRAY_SIZE(p), SPAN(JSON_FIELD));
 }
 
-/* List the tools that the client's role may call: the definitions, each
- * after a comma, of those it is granted, the first's comma left out.
+/** Replies to the tools/list of @p req with the definitions of the tools
+ *  that the role of the client grants. Each definition begins with a
+ *  comma, and the comma of the first definition in the list is left out.
  */
 static void
 mcp_req_tools_list (struct mcp_req *req)
@@ -7070,10 +7087,10 @@ mcp_req_tools_list (struct mcp_req *req)
 	struct mcp_piece p[TOOL_MAX + 3] = { FRAG("{\"tools\":[") };
 	size_t n = 1;
 	for (uint32_t id = 0; id < st->n_granted; ++id) {
-		struct dstr const *def = &st->offers[id].listed;
-		bool first = n == 1;
+		struct cstr_view def = cstr_view_dstr(&st->offers[id].listed);
+		size_t skip = n == 1;
 		if (req->s->grant.tools >> id & 1)
-			p[n++] = RAW(dstr_get(def) + first, dstr_len(def) - first);
+			p[n++] = BYTES(cstr_view_slice(def, skip, SIZE_MAX));
 	}
 	p[n++] = req->modern ? DSTR(&st->list_tail) : FRAG("]}");
 	p[n++] = FRAG("}");
@@ -8837,13 +8854,13 @@ mcp_static_plugin (struct mcp_static            *st,
 	return (struct mcp_plugin){ .plugin = part->plugin, .loaded = part->loaded };
 }
 
-/* Prepares the attach action of the notes tool if the upstream of @p st
- * takes files (ai_upload_url()). The caller calls this function only with
- * --upstream-tools and --notes. The function makes the URL of the uploads
- * on the host of the upstream's URL, so that the key goes to no other
- * host. The header lines of the uploads are those of the upstream and of
- * its upload API. The function also makes the table of the files. Returns
- * 0, ENOMEM, or the error of uploads_create().
+/** Prepares the attach action of the notes tool if the upstream of @p st
+ *  accepts files (ai_upload_url()). The caller calls this function only
+ *  with --upstream-tools and --notes. The URL of the uploads is on the host
+ *  of the URL of the upstream, so that the key goes to no other host. The
+ *  header lines of the uploads are the lines of the upstream and of its
+ *  upload API. The function also creates the table of the files. Returns
+ *  0, ENOMEM, or the error of uploads_create().
  */
 static int
 mcp_static_uploads (struct mcp_static *st)
@@ -8852,19 +8869,20 @@ mcp_static_uploads (struct mcp_static *st)
 	struct ai_upload const *up = ai_upload(ep->api);
 	if (!up || !(st->files_url = ai_upload_url(ep)))
 		return 0;
+	st->files_url_len = strlen(st->files_url);
+	static char const *const none[] = { nullptr };
+	char const *const *headers = ep->headers ? ep->headers : none;
 	size_t n = 0;
 	size_t m = 0;
-	while (ep->headers && ep->headers[n])
+	while (headers[n])
 		++n;
 	while (up->lines[m])
 		++m;
 	st->files_lines = malloc((n + m + 1) * sizeof *st->files_lines);
 	if (!st->files_lines)
 		return ENOMEM;
-	for (size_t i = 0; i < n; ++i)
-		st->files_lines[i] = ep->headers[i];
-	for (size_t i = 0; i <= m; ++i)
-		st->files_lines[n + i] = up->lines[i];
+	memcpy(st->files_lines, headers, n * sizeof *st->files_lines);
+	memcpy(st->files_lines + n, up->lines, (m + 1) * sizeof *st->files_lines);
 	int e = 0;
 	st->uploads = uploads_create(&e);
 	return e;
