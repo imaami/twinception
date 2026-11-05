@@ -720,17 +720,19 @@ godbolt_member (struct json_object *obj,
 	return jb_view(godbolt_get(obj, name));
 }
 
-/* Returns @p n, or less if the first @p n of the @p len bytes at @p s would
- * end inside a UTF-8 character, so that a cut after the returned length
- * does not split a character. The cut moves back by at most 3 bytes.
+/* Returns @p max, or t.len if @p t is shorter. The function returns less if
+ * the first @p max bytes of @p t would end inside a UTF-8 character, so
+ * that a cut after the returned length does not split a character. The
+ * cut moves back by at most 3 bytes.
  */
 static size_t
-godbolt_cut (char const *s,
-             size_t      len,
-             size_t      n)
+godbolt_cut (struct cstr_view t,
+             size_t           max)
 {
-	n = n < len ? n : len;
-	for (size_t k = 0; k < 3 && n && n < len && ((unsigned char)s[n] & 0xc0) == 0x80; ++k)
+	if (max >= t.len)
+		return t.len;
+	size_t n = max;
+	for (size_t k = 0; k < 3 && n && ((unsigned char)t.data[n] & 0xc0) == 0x80; ++k)
 		--n;
 	return n;
 }
@@ -1064,8 +1066,8 @@ godbolt_reason (struct godbolt *call,
 		text = godbolt_or(godbolt_member(doc, "message"), text);
 	}
 	char const *nl = memchr(text.data, '\n', text.len);
-	size_t n = nl ? (size_t)(nl - text.data) : text.len;
-	n = godbolt_cut(text.data, text.len, n < GODBOLT_REASON_MAX ? n : GODBOLT_REASON_MAX);
+	size_t const line = nl ? (size_t)(nl - text.data) : text.len;
+	size_t const n = godbolt_cut(cstr_view_slice(text, 0, line), GODBOLT_REASON_MAX);
 	godbolt_why(call, "HTTP %" PRIu32 "%s%.*s", status, n ? ": " : "", (int)n, text.data);
 	json_object_put(doc);
 }
@@ -1113,13 +1115,14 @@ godbolt_result (struct godbolt *call)
 		return godbolt_later(call, r.retry > wait ? r.retry : wait);
 	}
 	call->resp = r.body.data ? r.body : CSTR_VIEW("");
-	size_t const max = call->req.max;
+	/* The largest body of each rule is a whole number of KiB or MiB. */
+	bool const mib = call->req.max >= 1 << 20;
 	if (r.e == EFBIG)
 		godbolt_why(call, "the response is larger than %zu %s",
-		            max >= 1 << 20 ? max >> 20 : max >> 10, max >= 1 << 20 ? "MiB" : "KiB");
+		            call->req.max >> (mib ? 20 : 10), mib ? "MiB" : "KiB");
 	else if (r.e)
 		godbolt_why(call, "the request failed: %.*s",
-		            (int)godbolt_cut(r.error, strnlen(r.error, 201), 200), r.error);
+		            (int)godbolt_cut(cstr_view(r.error), GODBOLT_REASON_MAX), r.error);
 	else if (r.status < 200 || r.status > 299)
 		godbolt_reason(call, r.status);
 	else
@@ -2769,7 +2772,7 @@ godbolt_args_read (struct godbolt_args         *a,
 			return godbolt_invalid(why, len, n, "Links are turned off on this server, so "
 			                       "the tool has no argument share.");
 		return godbolt_invalid(why, len, n, "The tool has no argument %.*s.",
-		                       (int)godbolt_cut(it.key, strnlen(it.key, 49), 48), it.key);
+		                       (int)godbolt_cut(cstr_view(it.key), 48), it.key);
 	}
 	uint32_t const missing = t->needs & ~seen;
 	uint32_t i = 0;
@@ -3007,9 +3010,8 @@ godbolt_configure (void               *config,
 				return godbolt_invalid(why, len, nullptr, "share must be short, state "
 				                       "or off");
 		} else {
-			int const n = (int)godbolt_cut(it.key, strnlen(it.key, 65), 64);
 			return godbolt_invalid(why, len, nullptr, "the member %.*s is not an "
-			                       "option", n, it.key);
+			                       "option", (int)godbolt_cut(cstr_view(it.key), 64), it.key);
 		}
 	}
 	return 0;
