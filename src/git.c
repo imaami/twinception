@@ -87,6 +87,7 @@ enum git_phase : uint64_t {
 	GIT_CHECK,
 	GIT_RUN,
 	GIT_NUMBER,  /* read has scanned the file and writes the numbered lines */
+	GIT_HELP,    /* the call describes its command with help:true and runs no git */
 };
 
 /** A root is resolved in place before any caller-visible command runs. */
@@ -773,6 +774,7 @@ git_call_command (struct git_call   *call,
 				    strcmp(it.key, "help") && strcmp(it.key, "offset"))
 					return git_wrong(why, "With help:true, give only repo, "
 					                 "command, help and optional offset.");
+			call->phase = GIT_HELP;
 			return 0;
 		}
 	}
@@ -1130,7 +1132,10 @@ git_call_resolve (struct git_call *call)
 	return 0;
 }
 
-/** Internal discovery and authorization output must never reach the caller. */
+/** Handles the output of an internal phase of @p call and starts the next
+ *  phase. The output of the discovery and authorization phases never goes
+ *  to the caller.
+ */
 static void
 git_call_advance (struct git_call *call,
                   struct mcp_slot *slot)
@@ -1157,6 +1162,7 @@ git_call_advance (struct git_call *call,
 			break;
 		case GIT_RUN:
 		case GIT_NUMBER:
+		case GIT_HELP:
 			break;
 		}
 	}
@@ -1194,19 +1200,20 @@ git_line_hint (struct cstr_view path)
 	return false;
 }
 
-/* Destroy @p call after git has ended and its output is copied. Then
- * write the note, if any, after the output and finish the call. The note
- * says how git failed, that the output was cut or that there was no
- * output. Exit status 1 from grep means no matches.
+/* Destroys @p call after git has ended and its output is copied. If git
+ * failed, if the output was cut, or if there was no output, the function
+ * then writes a note about it after the output. Then it finishes the call.
+ * Exit status 1 from grep means no matches.
  */
 static void
 git_ended (struct mcp_slot *slot,
            struct git_call *call)
 {
 	static_assert(GIT_MAX == 4 << 20, "the note says 4 MiB");
+	uint64_t const takes = commands[call->command].takes;
 	struct child *c = call->child;
 	struct cstr_view out = mcp_slot_answer(slot);
-	char buf[GIT_NOTE - 2];  /* the blank line takes 2 bytes at most */
+	char buf[GIT_NOTE - 2];  /* the blank line before the note is 2 bytes at most */
 	struct cstr_view note;
 	bool failed = true;
 	if (c->late) {
@@ -1219,10 +1226,13 @@ git_ended (struct mcp_slot *slot,
 	} else if (c->code != CLD_EXITED) {
 		note = util_format_view(buf, sizeof buf, "[git was killed by signal %d.]",
 		                        c->status);
-	} else if (c->status == 1 && (commands[call->command].takes & PATTERN)) {
+	} else if (!c->status) {
+		note = out.len ? (struct cstr_view){} : CSTR_VIEW("[No output.]");
+		failed = false;
+	} else if (c->status == 1 && (takes & PATTERN)) {
 		note = CSTR_VIEW("[No matches.]");
 		failed = false;
-	} else if (c->status && (commands[call->command].takes & LINES)) {
+	} else if (takes & LINES) {
 		static char const fmt[] = "[No file at that path in commit %s. ls-tree "
 		                          "lists the files there.%s]";
 		static char const hint[] = " If :N after the file name is a line number, "
@@ -1234,14 +1244,11 @@ git_ended (struct mcp_slot *slot,
 		note = util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].name,
 		                        git_line_hint(cstr_view_slice(rev->path, 1, SIZE_MAX))
 		                        ? hint : "");
-	} else if (c->status) {
-		char const *fmt = commands[call->command].takes & OBJECT
-			? "[The committed object could not be read (git exited with status %d).]"
-			: "[git exited with status %d.]";
-		note = util_format_view(buf, sizeof buf, fmt, c->status);
 	} else {
-		note = out.len ? (struct cstr_view){} : CSTR_VIEW("[No output.]");
-		failed = false;
+		note = util_format_view(buf, sizeof buf, takes & OBJECT
+		                        ? "[The committed object could not be read (git "
+		                          "exited with status %d).]"
+		                        : "[git exited with status %d.]", c->status);
 	}
 	git_drop(slot);
 	struct cstr_view const p[] = {
@@ -1384,9 +1391,9 @@ git_read_past (struct git_read const *read,
 		          read->total == 1 ? "" : "s", read->total);
 }
 
-/* Write the header line to @p slot if the step has LOOP_COPY room for it.
- * If @p cut is true, the line total is a lower bound ("at least"). Return
- * 0, EAGAIN or the error of mcp_slot_write().
+/* Writes the header line to @p slot if it fits in the LOOP_COPY room of the
+ * step. If @p cut is true, the line total is a lower bound ("at least").
+ * Returns 0, EAGAIN or the error of mcp_slot_write().
  */
 static int
 git_read_head (struct git_read const *read,
@@ -1463,12 +1470,14 @@ git_read_lines (struct git_read *read,
 	return 0;
 }
 
-/* Write the footer to @p slot if the step has LOOP_COPY room for it: a
- * newline that ends the last line if it has none, a blank line, and a
- * note. The note gives the revision and the line to read on from, or says
- * that the file ends at the last line. If @p cut is true, it says instead
- * that the 4 MiB capture ends after or inside that line. An empty file
- * has no footer. Return 0, EAGAIN or the error of mcp_slot_write().
+/* Writes the footer to @p slot if it fits in the LOOP_COPY room of the
+ * step. The footer consists of a newline that ends the last line if the
+ * line does not end in one, a blank line, and a note. The note contains
+ * the revision and the line to read on from, or the number of the last
+ * line of the file. If @p cut is true, the note instead contains the
+ * number of the line after or inside which the 4 MiB capture ends. The
+ * function writes no footer for an empty file. Returns 0, EAGAIN or the
+ * error of mcp_slot_write().
  */
 static int
 git_read_foot (struct git_read const *read,
@@ -1478,26 +1487,28 @@ git_read_foot (struct git_read const *read,
 {
 	if (!read->total)
 		return 0;
-	struct cstr_view const says[][2] = {
-		{ CSTR_VIEW("\"] and \"line\": "), CSTR_VIEW(".]") },
-		{ CSTR_VIEW("[Line "), CSTR_VIEW(" is the end of the file.]") },
-		{ CSTR_VIEW("[Line "),
+	/* Each note is the text before the revision, the revision, the text
+	 * before the line number, and the text after it. */
+	struct cstr_view const notes[][4] = {
+		{ CSTR_VIEW("[To read on, call again with \"revisions\": [\""),
+		  { read->rev, read->rev_len }, CSTR_VIEW("\"] and \"line\": "), CSTR_VIEW(".]") },
+		{ CSTR_VIEW("[Line "), {}, {}, CSTR_VIEW(" is the end of the file.]") },
+		{ CSTR_VIEW("[Line "), {}, {},
 		  CSTR_VIEW(" is the end of the file, which has no newline after it.]") },
-		{ CSTR_VIEW("[The file goes on after line "),
+		{ CSTR_VIEW("[The file goes on after line "), {}, {},
 		  CSTR_VIEW(", past the 4 MiB that the git tool reads.]") },
-		{ CSTR_VIEW("[Line "), CSTR_VIEW(" goes on past the 4 MiB that the git tool "
-		                                 "reads.]") },
+		{ CSTR_VIEW("[Line "), {}, {},
+		  CSTR_VIEW(" goes on past the 4 MiB that the git tool reads.]") },
 	};
 	bool newline = blob.ptr[read->to - 1] == '\n';
 	size_t kind = read->last < read->total ? 0 : 1 + 2 * cut + !newline;
+	struct cstr_view const *note = notes[kind];
 	char n[20];
 	struct cstr_view const p[] = {
 		newline ? CSTR_VIEW("\n") : CSTR_VIEW("\n\n"),
-		kind ? CSTR_VIEW("") : CSTR_VIEW("[To read on, call again with \"revisions\": [\""),
-		kind ? CSTR_VIEW("") : (struct cstr_view){ read->rev, read->rev_len },
-		says[kind][0],
+		note[0], note[1], note[2],
 		git_digits(n + sizeof n, read->last + !kind, 0),
-		says[kind][1],
+		note[3],
 	};
 	return git_write(slot, p, ARRAY_SIZE(p));
 }
@@ -1634,7 +1645,7 @@ git_step (struct mcp_slot *slot)
 		git_ended(slot, call);
 		return;
 	}
-	/* When the output goes past 4 MiB, git is killed. A read then gives
+	/* When the output goes past 4 MiB, git is killed. A read then writes
 	 * the lines before the cut. */
 	if (takes & LINES) {
 		if (c->late || (!c->cut && c->code != CLD_EXITED))
@@ -1662,8 +1673,8 @@ git_step (struct mcp_slot *slot)
 	git_ended(slot, call);
 }
 
-/* Start a git call in @p slot: the command @p args asks for, in the
- * repository it names, run as the call's own child on the loop of the
+/* Starts a git call in @p slot. The call runs the command in @p args, in
+ * the repository of the repo argument, as a child on the loop of the
  * tool's part.
  */
 static void
@@ -1687,28 +1698,27 @@ git_start (struct mcp_slot    *slot,
 		git_call_destroy(&call);
 		return;
 	}
-	if (json_object_get_boolean(jb_get(args, "help"))) {
+	if (call->phase == GIT_HELP) {
 		git_help(slot, call->command);
 		git_call_destroy(&call);
 		return;
 	}
 	e = git_call_run(call, gl, slot);
-	if (e)
-		git_call_destroy(&call);
+	if (!e) {
+		*mcp_slot_own(slot) = call;
+		mcp_slot_park(slot);
+		return;
+	}
+	git_call_destroy(&call);
 	if (e == EBUSY) {
 		mcp_slot_tell(slot, CSTR_VIEW("Too many commands are running; try again in a "
 		                              "few seconds."), TOOL_FAILED);
 		return;
 	}
-	if (e) {
-		struct cstr_view const text =
-			util_format_view(why, sizeof why, "Cannot run git: %s.", strerror(e));
-		LOG(LOG_WARN, "%s", why);
-		mcp_slot_tell(slot, text, TOOL_FAILED);
-		return;
-	}
-	*mcp_slot_own(slot) = call;
-	mcp_slot_park(slot);
+	struct cstr_view const text =
+		util_format_view(why, sizeof why, "Cannot run git: %s.", strerror(e));
+	LOG(LOG_WARN, "%s", why);
+	mcp_slot_tell(slot, text, TOOL_FAILED);
 }
 
 /* Creates the git tool's part of @p loop for @p service, a struct git. The
