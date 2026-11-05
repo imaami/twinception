@@ -24,15 +24,17 @@ struct cli_loop {
 	uint64_t          dispatching;  /**< bool: a turn is under way */
 };
 
-/** Initializes @p loop. The atomic members of loop->loop must be valid: the
- *  object is declared with an initializer, or loop_place() initialized
- *  them. Returns 0 or an error number.
+/** Initializes @p loop and calls loop_init() on loop->loop, so the atomic
+ *  members of loop->loop must be valid as loop_init() requires. Returns 0
+ *  or an error number. After a failure too, the caller must call
+ *  cli_loop_fini() to free what loop_init() allocated.
  */
 extern int
 cli_loop_init (struct cli_loop *loop);
 
-/** Unwatch borrowed descriptors. Call only outside a turn, after owners
- * have stopped using the loop.
+/** Calls loop_fini() on loop->loop. Call it exactly once after each
+ *  cli_loop_init(), also after a failure. Call it outside a turn, after the
+ *  other modules make their last call on loop->loop.
  */
 extern void
 cli_loop_fini (struct cli_loop *loop);

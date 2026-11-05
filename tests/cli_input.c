@@ -136,16 +136,15 @@ int main(int argc, char **argv)
 		else
 			return 2;
 	}
-	struct cli_input_driver driver = {.signals.fd = -1};
 	sigset_t mask;
-	int e = sigemptyset(&mask) || sigaddset(&mask, SIGINT) ||
-	        sigaddset(&mask, SIGTERM) || sigaddset(&mask, SIGWINCH) ||
-	        sigprocmask(SIG_BLOCK, &mask, nullptr) ? errno : 0;
-	int signal_fd = e ? -1 : signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
-	if (signal_fd < 0 && !e)
-		e = errno;
-	if (!e)
-		e = cli_loop_init(&driver.loop);
+	if (sigemptyset(&mask) || sigaddset(&mask, SIGINT) || sigaddset(&mask, SIGTERM) ||
+	    sigaddset(&mask, SIGWINCH) || sigprocmask(SIG_BLOCK, &mask, nullptr))
+		return 1;
+	int signal_fd = signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
+	if (signal_fd < 0)
+		return 1;
+	struct cli_input_driver driver = {.signals.fd = -1};
+	int e = cli_loop_init(&driver.loop);
 	struct cli_input input = {};
 	if (!e)
 		driver.console = cli_console_create(simple, false, &driver.loop, nullptr, &e);
@@ -167,8 +166,7 @@ int main(int argc, char **argv)
 	cli_loop_fini(&driver.loop);
 	autocomplete_file_destroy(&input.files);
 	autocomplete_destroy(&input.catalog);
-	if (signal_fd >= 0)
-		(void)close(signal_fd);
+	(void)close(signal_fd);
 	signal_fd = -1;
 	(void)close(records);
 	records = -1;

@@ -31,10 +31,7 @@ cli_loop_init (struct cli_loop *loop)
 	loop->after_turn = nullptr;
 	loop->until = UINT64_MAX;
 	loop->dispatching = 0;
-	int e = loop_init(&loop->loop);
-	if (e)
-		loop_fini(&loop->loop);
-	return e;
+	return loop_init(&loop->loop);
 }
 
 void
