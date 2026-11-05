@@ -208,29 +208,15 @@ enum mcp_fetch : uint16_t {
 
 static_assert(!(FETCH_KEEP & FETCH_FORMAT), "FETCH_FORMAT has none of the kept flags");
 
-/* The command of git for each enum mcp_fetch. FETCH_NEWEST reads a note
- * with NOTES_READ.
+/* Each row of mcp_fetch_steps[] has the command of git that runs for a
+ * fetch value and the step that reads its output.
  */
-static enum notes_cmd const mcp_fetch_cmds[] = {
-	[FETCH_CREATE]  = NOTES_CREATE,
-	[FETCH_CHECK]   = NOTES_CHECK,
-	[FETCH_ADD]     = NOTES_ADD,
-	[FETCH_LIST]    = NOTES_LIST,
-	[FETCH_READ]    = NOTES_READ,
-	[FETCH_RESUME]  = NOTES_LIST,
-	[FETCH_COMPACT] = NOTES_LIST,
+struct mcp_fetch_step {
+	enum notes_cmd  cmd;
+	tool_step_fn   *out;
 };
 
-/* The command of git that runs for @p fetch. */
-static enum notes_cmd
-mcp_fetch_cmd (uint16_t fetch)
-{
-	return (fetch & ~FETCH_KEEP) == FETCH_FORMAT ? NOTES_FORMAT
-	     : fetch & FETCH_BOOKS ? NOTES_BOOKS
-	     : fetch & FETCH_FILES ? NOTES_FILES
-	     : fetch & FETCH_NEWEST ? NOTES_READ
-	     : mcp_fetch_cmds[fetch & FETCH_KIND];
-}
+static struct mcp_fetch_step const *mcp_fetch_step (uint16_t fetch);
 
 /* Whether git writes to the notes when it runs @p cmd. */
 static bool
@@ -1458,7 +1444,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	review_read_destroy(&slot->read);
 	/* A git that writes notes runs to its end, because a kill could leave
 	 * a lock file behind. */
-	if (mcp_notes_writes(mcp_fetch_cmd(slot->fetch)))
+	if (mcp_notes_writes(mcp_fetch_step(slot->fetch)->cmd))
 		child_release(&slot->child);
 	else
 		child_destroy(&slot->child);
@@ -6767,7 +6753,7 @@ mcp_slot_notes_run (struct mcp_slot *slot,
 	struct mcp *mcp = req->mcp;
 	struct loop *loop = mcp->loop;
 	char const *repo = fetch & FETCH_OTHER ? mcp_slot_notebook(slot) : req->repo;
-	enum notes_cmd cmd = mcp_fetch_cmd(fetch);
+	enum notes_cmd cmd = mcp_fetch_step(fetch)->cmd;
 	/* Git removes its own lock files on SIGTERM, and notes_lock() removes
 	 * one that a crash left. The lock file of a live writer, which may be
 	 * outside askai, stays. */
@@ -7850,29 +7836,47 @@ mcp_slot_notes_compacted (struct mcp_slot *slot)
 	mcp_req_go_on(req, TEXT("\n"));
 }
 
+/* These rows of mcp_fetch_steps[] follow the rows of the kinds. */
+enum { STEP_FORMAT = FETCH_COMPACT + 1, STEP_BOOKS, STEP_FILES, STEP_NEWEST };
+
+static struct mcp_fetch_step const mcp_fetch_steps[] = {
+	[FETCH_CREATE]  = { NOTES_CREATE, mcp_slot_notes_created },
+	[FETCH_CHECK]   = { NOTES_CHECK,  mcp_slot_notes_checked },
+	[FETCH_ADD]     = { NOTES_ADD,    mcp_slot_notes_added },
+	[FETCH_LIST]    = { NOTES_LIST,   mcp_slot_notes_got_list },
+	[FETCH_READ]    = { NOTES_READ,   mcp_slot_notes_got_note },
+	[FETCH_RESUME]  = { NOTES_LIST,   mcp_slot_notes_resumed },
+	[FETCH_COMPACT] = { NOTES_LIST,   mcp_slot_notes_compacted },
+	[STEP_FORMAT]   = { NOTES_FORMAT, mcp_slot_notes_format },
+	[STEP_BOOKS]    = { NOTES_BOOKS,  mcp_slot_notes_got_books },
+	[STEP_FILES]    = { NOTES_FILES,  mcp_slot_notes_got_list },
+	[STEP_NEWEST]   = { NOTES_READ,   mcp_slot_notes_newest },
+};
+
+/* Returns the row of mcp_fetch_steps[] for @p fetch. The flags of the last
+ * four rows take precedence over the kind.
+ */
+static struct mcp_fetch_step const *
+mcp_fetch_step (uint16_t fetch)
+{
+	return &mcp_fetch_steps[(fetch & ~FETCH_KEEP) == FETCH_FORMAT ? STEP_FORMAT
+	                        : fetch & FETCH_BOOKS ? STEP_BOOKS
+	                        : fetch & FETCH_FILES ? STEP_FILES
+	                        : fetch & FETCH_NEWEST ? STEP_NEWEST
+	                        : fetch & FETCH_KIND];
+}
+
 /* Handles the output of git for the command in slot->fetch. */
 static void
 mcp_slot_notes_out (struct mcp_slot *slot)
 {
-	static void (*const steps[]) (struct mcp_slot *slot) = {
-		[FETCH_CREATE]  = mcp_slot_notes_created,
-		[FETCH_CHECK]   = mcp_slot_notes_checked,
-		[FETCH_ADD]     = mcp_slot_notes_added,
-		[FETCH_LIST]    = mcp_slot_notes_got_list,
-		[FETCH_READ]    = mcp_slot_notes_got_note,
-		[FETCH_RESUME]  = mcp_slot_notes_resumed,
-		[FETCH_COMPACT] = mcp_slot_notes_compacted,
-	};
 	mcp_slot_unwait(slot);
 	/* The attach action's upload, which follows its read, has answered. */
 	(slot->web ? mcp_slot_notes_uploaded
 	 : (slot->fetch & FETCH_REVISION) && !notes_revision_ready(slot->own)
 	 ? mcp_slot_notes_revision_step
 	 : slot->fetch & FETCH_DIFF ? mcp_slot_notes_got_diff
-	 : (slot->fetch & ~FETCH_KEEP) == FETCH_FORMAT ? mcp_slot_notes_format
-	 : slot->fetch & FETCH_BOOKS ? mcp_slot_notes_got_books
-	 : slot->fetch & FETCH_NEWEST ? mcp_slot_notes_newest
-	 : steps[slot->fetch & FETCH_KIND])(slot);
+	 : mcp_fetch_step(slot->fetch)->out)(slot);
 }
 
 /* The message for a file argument that is not a valid name. */
