@@ -716,6 +716,14 @@ def text_of(result):
     return result["content"][0]["text"]
 
 
+def ask_result(ai, arguments):
+    """Return the result of an ask_ai call with @p arguments. The reply must
+    have HTTP status 200 and a result."""
+    status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": arguments})
+    assert status == 200 and "result" in body, (status, body)
+    return body["result"]
+
+
 def total(values, name, **labels):
     """The sum of the series @p name with @p labels, over its other labels,
     such as each loop's."""
@@ -2181,16 +2189,10 @@ def check_recovery(binary, up):
             self.sent.set()
             assert self.release.wait(30), "recovery provider was not released"
 
-    def call(ai, arguments):
-        status, _, body = ai.rpc("tools/call", {"name": "ask_ai",
-                                               "arguments": arguments})
-        assert status == 200 and "result" in body, (status, body)
-        return body["result"]
-
     def poll(ai, jid):
         end = time.monotonic() + 15
         while time.monotonic() < end:
-            result = call(ai, {"job": jid})
+            result = ask_result(ai, {"job": jid})
             if text_of(result) == "before after" or result.get("isError"):
                 return result
             assert pending in text_of(result) or "recover" in text_of(result).lower() or \
@@ -2320,7 +2322,7 @@ def check_recovery(binary, up):
                 env = {"RECOVERY_API_KEY": "RECOVERY_SECRET_NOT_IN_ARCHIVE"}
                 ai = Askai(binary, *args, env=env)
                 try:
-                    result = call(ai, {"prompt": "durable prompt"})
+                    result = ask_result(ai, {"prompt": "durable prompt"})
                     match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
                     assert match and not result.get("isError"), result
                     jid = match.group(1)
@@ -2446,11 +2448,6 @@ def check_recovery_tools(binary, up):
             yield self.wire
             assert self.release.wait(30), "tool recovery stream was not released"
 
-    def call(ai, arguments):
-        status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": arguments})
-        assert status == 200 and "result" in body, (status, body)
-        return body["result"]
-
     try:
         for mode in ("done", "ambiguous", "agenda"):
             ambiguous = mode != "done"
@@ -2500,7 +2497,7 @@ def check_recovery_tools(binary, up):
                 env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
                 ai = Askai(binary, *args, env=env)
                 try:
-                    result = call(ai, {"prompt": "Use git once, then answer."})
+                    result = ask_result(ai, {"prompt": "Use git once, then answer."})
                     match = re.search(r"Started job ([0-9a-f]{32})\.", result["content"][0]["text"])
                     assert match and not result.get("isError"), result
                     jid = match.group(1)
@@ -2515,7 +2512,8 @@ def check_recovery_tools(binary, up):
                         wait_for(intended if agenda else lambda: os.path.exists(marker),
                                  seconds=10)
                     except AssertionError:
-                        raise AssertionError((call(ai, {"job": jid}), "".join(ai.log), creates))
+                        raise AssertionError((ask_result(ai, {"job": jid}), "".join(ai.log),
+                                              creates))
                     if not ambiguous:
                         wait_for(lambda: len(creates) == 2, seconds=10)
                         given = creates[1]["body"]["input"]
@@ -2540,7 +2538,7 @@ def check_recovery_tools(binary, up):
                 with Askai(binary, *args, env=env) as restarted:
                     results = []
                     def ended():
-                        result = call(restarted, {"job": jid})
+                        result = ask_result(restarted, {"job": jid})
                         results.append(result)
                         return result.get("isError") or result["content"][0]["text"] == "continued answer"
                     wait_for(ended, seconds=15)
@@ -2655,10 +2653,7 @@ def check_recovery_notes(binary, up):
                     ai.state.cleanup()
             with Askai(binary, *args, env=env) as restarted:
                 def ended():
-                    status, _, body = restarted.rpc("tools/call", {
-                        "name": "ask_ai", "arguments": {"job": jid}})
-                    assert status == 200 and "result" in body, (status, body)
-                    result = body["result"]
+                    result = ask_result(restarted, {"job": jid})
                     assert not result.get("isError"), result
                     return result["content"][0]["text"] == "recovered"
                 wait_for(ended, seconds=15)
@@ -2846,10 +2841,7 @@ def check_recovery_review(binary, up):
                 up.reply = reply
 
                 def ended():
-                    status, _, body = restarted.rpc("tools/call", {
-                        "name": "ask_ai", "arguments": {"job": jid}})
-                    assert status == 200 and "result" in body, (status, body)
-                    result = body["result"]
+                    result = ask_result(restarted, {"job": jid})
                     assert not result.get("isError"), result
                     return result["content"][0]["text"] == "recovered"
                 wait_for(ended, seconds=15)
@@ -2914,12 +2906,8 @@ def check_durable_cancel(binary, up):
             assert self.advance.wait(15), "cancel stream did not advance"
             yield self.second
             assert self.release.wait(15), "cancel stream was not released"
-    def call(ai, args):
-        status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": args})
-        assert status == 200 and "result" in body, (status, body)
-        return body["result"]
     def cancelled(ai, jid):
-        result = call(ai, {"job": jid})
+        result = ask_result(ai, {"job": jid})
         if result.get("isError"):
             assert text_of(result) == "That job was cancelled.", result
             return True
@@ -2962,7 +2950,7 @@ def check_durable_cancel(binary, up):
                 if fmt == "openai":
                     args += ("-p", "llama")
                 with Askai(binary, *args) as ai:
-                    result = call(ai, {"prompt": "cancel while committing"})
+                    result = ask_result(ai, {"prompt": "cancel while committing"})
                     match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
                     assert match, result
                     jid = match.group(1)
@@ -2977,7 +2965,7 @@ def check_durable_cancel(binary, up):
                                         return True
                         return False
                     wait_for(preserved)
-                    result = call(ai, {"job": jid, "action": "cancel"})
+                    result = ask_result(ai, {"job": jid, "action": "cancel"})
                     assert not result.get("isError") and "cancelling job " + jid in text_of(result), result
                     stream.release.set()
                     wait_for(lambda: cancelled(ai, jid), seconds=10)
@@ -3080,18 +3068,15 @@ def check_archive_failure(binary, up):
                 with open(flag, "w"):
                     pass
                 before = len(up.requests)
-                status, _, body = ai.rpc("tools/call", {"name": "ask_ai",
-                                                       "arguments": {"prompt": "save thoughts"}})
-                assert status == 200 and "result" in body, (status, body)
-                match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(body["result"]))
-                assert match, body
+                result = ask_result(ai, {"prompt": "save thoughts"})
+                match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
+                assert match, result
                 jid = match.group(1)
                 failures = []
                 def failed():
-                    status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": {"job": jid}})
-                    assert status == 200 and "result" in body, (status, body)
-                    if body["result"].get("isError"):
-                        failures.append(text_of(body["result"]))
+                    result = ask_result(ai, {"job": jid})
+                    if result.get("isError"):
+                        failures.append(text_of(result))
                         return True
                     return False
                 wait_for(failed, seconds=10)
@@ -3144,17 +3129,13 @@ def check_journal_repair(binary, up):
             ref = "refs/heads/reasoning/integrity"
             args = ("-u", up.url(), "--background", "--slots", "2", "--participant", "integrity",
                     "--transcripts", repo)
-            def call(ai, arguments):
-                status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": arguments})
-                assert status == 200 and "result" in body, (status, body)
-                return body["result"]
             def completed(ai, jid):
-                result = call(ai, {"job": jid})
+                result = ask_result(ai, {"job": jid})
                 assert not result.get("isError"), result
                 return text_of(result) == "A"
             creates = len(up.requests)
             with Askai(binary, *args) as ai:
-                result = call(ai, {"prompt": "integrity prompt"})
+                result = ask_result(ai, {"prompt": "integrity prompt"})
                 match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
                 assert match, result
                 jid = match.group(1)
@@ -3200,10 +3181,6 @@ def check_shared_transcripts(binary, up):
                                            "reasoning_content": f"reasoning for {who}"},
                                "finish_reason": "stop"}]}
         return 200, Stream(answer, sizes=(47, 83, 67, 101), gap=0.01)
-    def call(ai, args):
-        status, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": args})
-        assert status == 200 and "result" in body, (status, body)
-        return body["result"]
     up.reply = reply
     try:
         with tempfile.TemporaryDirectory() as d:
@@ -3223,12 +3200,12 @@ def check_shared_transcripts(binary, up):
                 def ask(name, ai):
                     try:
                         barrier.wait(timeout=5)
-                        result = call(ai, {"prompt": f"question {name}"})
+                        result = ask_result(ai, {"prompt": f"question {name}"})
                         match = re.search(r"Started job ([0-9a-f]{32})\.", text_of(result))
                         assert match and not result.get("isError"), result
                         jid = match.group(1)
                         def done():
-                            result = call(ai, {"job": jid})
+                            result = ask_result(ai, {"job": jid})
                             assert not result.get("isError"), result
                             results[name] = result
                             return text_of(result) == f"answer for {name}"
