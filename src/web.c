@@ -358,10 +358,9 @@ web_keep (struct web       *web,
 	return gone;
 }
 
-/* Makes the reply of @p run from @p end. end->body is not read, and
- * end->type is nullptr if the response had no Content-Type. If the run did
- * not fail, the body that the run received moves to the reply. Otherwise
- * the body is freed.
+/* Makes the reply of @p run from @p end. end->type may be nullptr, and
+ * end->body and end->age are not read. If the run did not fail, the body
+ * that the run received moves to the reply. Otherwise the body is freed.
  * Returns the reply with one reference. On failure it returns nullptr and
  * stores ENOMEM in @p *e.
  */
@@ -370,7 +369,8 @@ web_reply_create (struct web_run            *run,
                   struct web_response const *end,
                   int                       *e)
 {
-	size_t type = end->type ? strlen(end->type) : 0;
+	char const *t = end->type ? end->type : "";
+	size_t type = strlen(t);
 	size_t why = strlen(end->error);
 	size_t size = sizeof (struct web_reply) + type + 1 + why + 1;
 	struct web_reply *reply = malloc(size);
@@ -378,14 +378,16 @@ web_reply_create (struct web_run            *run,
 	size_t len = run->len;
 	run->body = nullptr;
 	run->len = run->cap = 0;
-	if (!reply || end->e || !len) {
+	if (!reply) {
+		free(body);
+		body = nullptr;
+		*e = ENOMEM;
+		return nullptr;
+	}
+	if (end->e || !len) {
 		free(body);
 		body = nullptr;
 		len = 0;
-	}
-	if (!reply) {
-		*e = ENOMEM;
-		return nullptr;
 	}
 	/* The block of the body has room to grow. realloc() can move the body
 	 * to a smaller block. */
@@ -393,9 +395,7 @@ web_reply_create (struct web_run            *run,
 	reply->body = fit ? fit : body;
 	reply->len = len;
 	reply->size = size + len;
-	if (type)
-		memcpy(reply->text, end->type, type);
-	reply->text[type] = '\0';
+	memcpy(reply->text, t, type + 1);
 	memcpy(reply->text + type + 1, end->error, why + 1);
 	reply->type = reply->text;
 	reply->error = reply->text + type + 1;
@@ -672,39 +672,37 @@ web_run_start (struct web     *web,
 	char const *accept = url + run->key.url + 1;
 	char const *lines = accept + run->key.accept + 1;
 	char const *body = lines + run->key.lines + 1;
-	char line[sizeof name + WEB_ACCEPT_MAX];
 	/* The header lines, the line of Accept if any, and a nullptr. */
 	size_t n = 2;
 	for (char const *l = lines; l < body; l += strlen(l) + 1)
 		++n;
 	char const *few[3];
 	char const **headers = n <= ARRAY_SIZE(few) ? few : malloc(n * sizeof *headers);
-	size_t k = 0;
-	for (char const *l = lines; headers && l < body; l += strlen(l) + 1)
-		headers[k++] = l;
-	if (headers && run->key.accept) {
-		memcpy(line, name, sizeof name - 1);
-		memcpy(line + sizeof name - 1, accept, run->key.accept + 1);
-		headers[k++] = line;
-	}
 	run->since = loop_clock();
 	list_append(&web->live, &run->live);
 	int e = ENOMEM;
 	if (headers) {
+		size_t k = 0;
+		for (char const *l = lines; l < body; l += strlen(l) + 1)
+			headers[k++] = l;
+		char line[sizeof name + WEB_ACCEPT_MAX];
+		if (run->key.accept) {
+			memcpy(line, name, sizeof name - 1);
+			memcpy(line + sizeof name - 1, accept, run->key.accept + 1);
+			headers[k++] = line;
+		}
 		headers[k] = nullptr;
 		e = http_post_json(web->http, url, run->key.post ? body : nullptr,
 		                   run->key.body, false, headers, run->timeout * 1000L,
 		                   web_run_write, web_run_done, run, &run->transfer);
+		if (headers != few)
+			free(headers);
 	}
-	if (headers != few)
-		free(headers);
 	if (e) {
 		char why[96];
 		util_format(why, sizeof why, "askai cannot send the request: %s", strerror(e));
-		web_run_finish(web, run, &(struct web_response){
-			.error = why,
-			.e = e == ENOMEM ? ENOMEM : EIO
-		});
+		web_run_finish(web, run, &(struct web_response){ .error = why,
+		                                                 .e = e == ENOMEM ? ENOMEM : EIO });
 		return;
 	}
 	/* Without the encodings, the response comes uncompressed. */
@@ -723,7 +721,7 @@ web_run_mail (struct loop *loop,
 {
 	struct web_run *run = container_of(msg, struct web_run, to_home);
 	struct web *web = run->web;
-	struct web_response const ends[] = {
+	static struct web_response const ends[] = {
 		{ .error = stopping, .e = ESHUTDOWN },
 		{ .error = "",       .e = ECANCELED },
 	};
@@ -745,10 +743,8 @@ web_run_mail (struct loop *loop,
 	case RUN_CANCEL:
 		if (!list_is_empty(&run->live)) {
 			http_cancel(web->http, &run->transfer);
-			web_run_finish(web, run, &(struct web_response){
-				.error = "cancelled",
-				.e = ECANCELED
-			});
+			web_run_finish(web, run, &(struct web_response){ .error = "cancelled",
+			                                                 .e = ECANCELED });
 		}
 	}
 
@@ -883,11 +879,14 @@ web_wait_create (struct web           *web,
 {
 	static char const agent[] = "User-Agent: askai";
 	static char const of[] = " (plugin ";
+	static char const *const none[] = { nullptr };
 	struct web_request const *r = ask->request;
+	char const *const *lines = ask->lines ? ask->lines : none;
 	size_t name = ask->plugin ? strlen(ask->plugin) : 0;
-	size_t body = r->body.data ? r->body.len : 0;
+	bool post = r->body.data != nullptr;
+	size_t body = post ? r->body.len : 0;
 	size_t line = sizeof agent - 1 + (name ? sizeof of - 1 + name + 1 : 0);
-	for (char const *const *l = ask->lines; l && *l; ++l)
+	for (char const *const *l = lines; *l; ++l)
 		line += web_line_kept(*l) ? 1 + strlen(*l) : 0;
 	if (line > UINT16_MAX) {
 		*e = EINVAL;
@@ -918,13 +917,13 @@ web_wait_create (struct web           *web,
 		p += name;
 		*p++ = ')';
 	}
-	for (char const *const *l = ask->lines; l && *l; ++l) {
+	/* stpcpy() returns the address of the NUL that it writes, which the
+	 * next '\0' overwrites. */
+	for (char const *const *l = lines; *l; ++l) {
 		if (!web_line_kept(*l))
 			continue;
-		size_t n = strlen(*l);
 		*p++ = '\0';
-		memcpy(p, *l, n);
-		p += n;
+		p = stpcpy(p, *l);
 	}
 	*p++ = '\0';
 	if (body)
@@ -949,7 +948,7 @@ web_wait_create (struct web           *web,
 		.accept = (uint32_t)ask->accept,
 		.body = (uint32_t)body,
 		.lines = (uint16_t)line,
-		.post = r->body.data != nullptr
+		.post = post
 	};
 	run->key.hash = web_key_hash(web->seed, &run->key, run->data);
 	/* One reference for home, and one for the message. */
