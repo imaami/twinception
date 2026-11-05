@@ -109,8 +109,8 @@ mcp_lent (void const *cfg,
  * manual (src/manual.h); with @p tasks, the test aid test_task, CPU work
  * done as a task (src/task.h); with @p git, the tool git (src/git.h). With
  * CFG_UPSTREAM_TOOLS, the ask tool lends the upstream man and git, as the
- * client may call them, and with @p notes the tool notes (src/notes.h), and
- * the tool compact: its call then runs a loop of turns, each an upstream
+ * client may call them, and with @p notes the tool notes (src/notes_tool.h),
+ * and the tool compact: its call then runs a loop of turns, each an upstream
  * call, and the tools each turn calls, until an answer calls none. The
  * tools and their ids are those of @p cfg's registry (src/registry.h), which
  * also has the tools of the plugins that askai loaded. A tool
@@ -250,6 +250,14 @@ typedef void *mcp_part_create_fn (void        *service,
  *  created if it cannot create the part of a later plugin.
  */
 typedef void mcp_part_destroy_fn (void **p_part);
+
+/** Kind flag (bit 32, above TOOL_FLAGS) for tools whose calls run alone. A
+ *  turn's call of such a tool starts after the results of all earlier calls
+ *  are written. Later calls start after its result is written. Only the
+ *  kinds built into askai can set it. plugin.c refuses a loaded plugin
+ *  whose kind has a flag outside TOOL_FLAGS.
+ */
+static constexpr uint64_t KF_SERIAL = 1ull << 32;
 
 /** Returns the part of the call's plugin on the call's loop. Only the
  *  built-in plugins have parts, so askai does not export this function.

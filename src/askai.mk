@@ -25,6 +25,7 @@ override SRC_askai := \
   mcp.c               \
   metrics.c           \
   notes.c             \
+  notes_tool.c        \
   notice.c            \
   plugin.c            \
   policy.c            \
