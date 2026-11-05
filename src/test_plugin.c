@@ -248,19 +248,21 @@ test_plugin_state_start (struct mcp_slot    *slot,
 	struct json_object *wait = nullptr;
 	struct json_object *fail = nullptr;
 	(void)json_object_object_get_ex(args, "fail", &fail);
-	bool waits = json_object_object_get_ex(args, "wait_ms", &wait);
-	uint64_t ms = (uint64_t)json_object_get_int64(wait);
+	bool const waits = json_object_object_get_ex(args, "wait_ms", &wait);
+	uint64_t const ms = (uint64_t)json_object_get_int64(wait);
 	struct cstr_view const text = test_plugin_string(args, "text");
 	char now[sizeof inst->last];
 	size_t const len = text.len < sizeof now ? text.len : sizeof now;
 	if (len)
 		memcpy(now, text.data, len);
-	if (!waits)
+	if (!waits) {
 		test_plugin_state_tell(slot);
+		memcpy(inst->last, now, len);
+		inst->len = len;
+		return;
+	}
 	memcpy(inst->last, now, len);
 	inst->len = len;
-	if (!waits)
-		return;
 	struct loop *loop = mcp_slot_loop(slot);
 	void **own = mcp_slot_own(slot);
 	struct test_plugin_wait *w = loop && own ? malloc(sizeof *w) : nullptr;
@@ -304,13 +306,13 @@ test_plugin_state_drop (struct mcp_slot *slot)
 		return;
 	free(w);
 	*own = nullptr;
-	static char const dropped[] = "dropped";
+	struct cstr_view const dropped = CSTR_VIEW("dropped");
 	struct test_plugin_instance *inst = mcp_slot_instance(slot);
 	if (inst) {
-		inst->len = sizeof dropped - 1;
-		memcpy(inst->last, dropped, inst->len);
+		inst->len = dropped.len;
+		memcpy(inst->last, dropped.data, dropped.len);
 	}
-	mcp_slot_tell(slot, CSTR_VIEW("dropped"), 0);
+	mcp_slot_tell(slot, dropped, 0);
 }
 
 /* Returns the definition of test_misuse as a new reference, or nullptr if
