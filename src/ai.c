@@ -1448,42 +1448,40 @@ ai_tool (enum ai_api               api,
 	return tool;
 }
 
-/* The data of the first event of the event stream at @p body, of @p len
- * bytes, parsed, if it is JSON text on a data line that ends in the first
+/* The data of the first event of the event stream @p body, parsed, if it
+ * is JSON text on a data line that ends in the first
  * 4 KiB; else nullptr. Gemini's Interactions sends the error of a streamed
  * request as such an event, with a status that is not 2xx, so askai gathers
  * the body whole and cannot parse it as JSON text.
  */
 static struct json_object *
-ai_error_event (char const *body,
-                size_t      len)
+ai_error_event (struct cstr_view body)
 {
 	static char const field[] = "data:";
-	size_t n = len < 4096 ? len : 4096;
+	size_t n = body.len < 4096 ? body.len : 4096;
 	for (size_t at = 0, end; at < n; at = end + 1) {
-		char const *nl = memchr(body + at, '\n', n - at);
+		char const *nl = memchr(body.data + at, '\n', n - at);
 		if (!nl)
 			break;
-		end = (size_t)(nl - body);
-		if (end - at < sizeof field - 1 || memcmp(body + at, field, sizeof field - 1))
+		end = (size_t)(nl - body.data);
+		if (end - at < sizeof field - 1 || memcmp(body.data + at, field, sizeof field - 1))
 			continue;
 		size_t from = at + sizeof field - 1;
-		end -= end > from && body[end - 1] == '\r';
-		return jb_parse(body + from, end - from, JSON_TOKENER_STRICT, 8);
+		end -= end > from && body.data[end - 1] == '\r';
+		return jb_parse(body.data + from, end - from, JSON_TOKENER_STRICT, 8);
 	}
 	return nullptr;
 }
 
-/* Say in @p text what the upstream's error answer, of HTTP @p status, says:
- * its message, or that of its first event, or the start of the @p len bytes
- * at @p body.
+/* Appends the error in the answer @p body of HTTP @p status to @p text.
+ * @p root is the parsed body. The error is the message of the answer, or
+ * the message of its first event, or the start of @p body.
  */
 static int
 ai_describe_error (struct dstr        *text,
                    long                status,
                    struct json_object *root,
-                   char const         *body,
-                   size_t              len)
+                   struct cstr_view    body)
 {
 	struct json_object *error = jb_get(root, "error");
 	struct json_object *const words[] = {
@@ -1497,7 +1495,7 @@ ai_describe_error (struct dstr        *text,
 		if (msg)
 			return dstr_cat(text, msg) ? 0 : ENOMEM;
 	}
-	struct json_object *event = root ? nullptr : ai_error_event(body, len);
+	struct json_object *event = root ? nullptr : ai_error_event(body);
 	char const *said = ai_event_error(event);
 	if (said) {
 		bool ok = dstr_cat(text, said);
@@ -1507,10 +1505,10 @@ ai_describe_error (struct dstr        *text,
 	json_object_put(event);
 
 	/* Quote the start of an unparsable body, as far as it is UTF-8 text. */
-	size_t cut = jb_utf8(body, len < 512 ? len : 512);
+	size_t cut = jb_utf8(body.data, body.len < 512 ? body.len : 512);
 #define QUOTE(s) dstr_cat_n(text, s, sizeof s - 1)
-	bool ok = cut ? dstr_cat_n(text, body, cut)
-	        : len ? QUOTE("a response that is not text")
+	bool ok = cut ? dstr_cat_n(text, body.data, cut)
+	        : body.len ? QUOTE("a response that is not text")
 	              : QUOTE("empty response");
 #undef QUOTE
 	return ok ? 0 : ENOMEM;
@@ -1613,26 +1611,25 @@ static char const ai_uri_bytes[] =
 	"abcdefghijklmnopqrstuvwxyz{|}~";
 
 int
-ai_uploaded (enum ai_api  api,
-             long         status,
-             char const  *body,
-             size_t       len,
-             struct dstr *uri,
-             int64_t     *expires,
-             struct dstr *why)
+ai_uploaded (enum ai_api       api,
+             long              status,
+             struct cstr_view  body,
+             struct dstr      *uri,
+             int64_t          *expires,
+             struct dstr      *why)
 {
-	if (!uri || !expires || !why || (!body && len))
+	if (!uri || !expires || !why || (!body.data && body.len))
 		return EINVAL;
 	*expires = 0;
 	if (!ai_upload(api))
 		return dstr_cat(why, "The upstream takes no files.") ? EIO : ENOMEM;
-	struct json_object *root = len ? jb_parse(body, len, JSON_TOKENER_STRICT, 8)
-	                               : nullptr;
+	struct json_object *root = body.len ? jb_parse(body.data, body.len, JSON_TOKENER_STRICT, 8)
+	                                    : nullptr;
 	struct json_object *file = jb_get(root, "file");
 	struct cstr_view at = jb_view(jb_get(file, "uri"));
 	int e = 0;
 	if (status < 200 || status > 299 || !at.data) {
-		e = ai_describe_error(why, status, root, body, len);
+		e = ai_describe_error(why, status, root, body);
 		e = e ? e : EIO;
 	} else if (!at.len || at.len > strspn(at.data, ai_uri_bytes)) {
 		e = dstr_cat(why, "The upstream named the file with a URI that is not "
@@ -1649,14 +1646,13 @@ int
 ai_answer (enum ai_api         api,
            long                status,
            struct json_object *root,
-           char const         *body,
-           size_t              len,
+           struct cstr_view    body,
            struct dstr        *text,
            bool               *failed)
 {
 	*failed = status < 200 || status > 299 || !root || jb_get(root, "error");
 	if (*failed)
-		return ai_describe_error(text, status, root, body, len);
+		return ai_describe_error(text, status, root, body);
 
 	static int (*const answers[]) (struct json_object *root, struct dstr *text,
 	                               char const **reason) = {

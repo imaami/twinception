@@ -6704,7 +6704,7 @@ mcp_slot_attached (struct mcp_slot  *slot,
 	dstr_auto why = DSTR_INIT;
 	int64_t expires = 0;
 	e = r.e ? (dstr_cat(&why, r.error) ? EIO : ENOMEM)
-	    : ai_uploaded(st->ep->api, r.status, r.body.data, r.body.len, &uri, &expires, &why);
+	    : ai_uploaded(st->ep->api, r.status, r.body, &uri, &expires, &why);
 	struct cstr_view const u = cstr_view_dstr(&uri);
 	if (!e && u.len > UPLOADS_URI)
 		e = dstr_printf(&why, "The upstream named the file with a URI of more "
@@ -7606,8 +7606,8 @@ mcp_req_text (struct mcp_req *req)
 		return;
 	}
 	bool failed = true;
-	int e = ai_answer(req->mcp->st->ep->api, job->http, req->msg,
-	                  body.len ? (char const *)body.ptr : "", body.len, &req->self.answer,
+	struct cstr_view const text = { body.len ? (char const *)body.ptr : "", body.len };
+	int e = ai_answer(req->mcp->st->ep->api, job->http, req->msg, text, &req->self.answer,
 	                  &failed);
 	loop_work(req->mcp->loop, LOOP_COPY, dstr_len(&req->self.answer));
 	mcp_req_dispose(req);

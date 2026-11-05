@@ -357,20 +357,20 @@ extern char *
 ai_model_url (struct ai_endpoint const *ep);
 
 /**
- * Read the answer of HTTP @p status to an upload (ai_upload()), the @p len
- * bytes at @p body: the URI of the file, printable ASCII, in @p uri, and
- * the time at which the file expires, in seconds since the epoch, in
- * @p *expires, or 0 if the answer does not say. Returns 0, EIO with what
- * went wrong in @p why, ENOMEM, or EINVAL if an argument is not valid.
+ * Read the answer @p body of HTTP @p status to an upload (ai_upload()).
+ * Appends the URI of the file, which is printable ASCII, to @p uri, and
+ * stores the time at which the file expires, in seconds since the epoch,
+ * in @p *expires, or 0 if the answer does not contain it. Returns 0, EIO
+ * with the error appended to @p why, ENOMEM, or EINVAL if an argument is
+ * not valid.
  */
 extern int
-ai_uploaded (enum ai_api  api,
-             long         status,
-             char const  *body,
-             size_t       len,
-             struct dstr *uri,
-             int64_t     *expires,
-             struct dstr *why);
+ai_uploaded (enum ai_api       api,
+             long              status,
+             struct cstr_view  body,
+             struct dstr      *uri,
+             int64_t          *expires,
+             struct dstr      *why);
 
 /** Say in the @p size bytes at @p buf that the model gave no answer, and
  *  why, if its stop @p reason is not nullptr; returns the length written.
@@ -381,18 +381,16 @@ ai_no_answer (char       *buf,
               char const *reason);
 
 /**
- * Turn an upstream HTTP response, the @p len bytes at @p body, into tool
- * output in @p text, which must start empty. @p root is the body parsed as
- * UTF-8 JSON, or nullptr if it is not that; it stays the caller's.
- * @p *failed is set when @p text explains an error instead of carrying an
- * answer.
+ * Turn the upstream HTTP response @p body into tool output in @p text,
+ * which must start empty. @p root is the body parsed as UTF-8 JSON, or
+ * nullptr if it is not JSON. The caller owns it. @p *failed is set when
+ * @p text describes an error instead of containing an answer.
  */
 extern int
 ai_answer (enum ai_api         api,
            long                status,
            struct json_object *root,
-           char const         *body,
-           size_t              len,
+           struct cstr_view    body,
            struct dstr        *text,
            bool               *failed);
 
