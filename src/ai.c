@@ -400,14 +400,13 @@ ai_put_thought (struct ai_sink const *sink,
 	return text.data && sink->thought ? sink->thought(sink->user, text) : 0;
 }
 
-/* @p val as a call's index, or a content block's: AI_CALL_NEXT if it is
- * none.
+/* Return @p val, the index of a call or of a content block, or
+ * AI_CALL_NEXT if @p val is not such an index.
  */
 static uint32_t
 ai_index (struct json_object *val)
 {
-	int64_t at = json_object_is_type(val, json_type_int) ? json_object_get_int64(val)
-	                                                     : -1;
+	int64_t at = jb_int(val, -1);
 	return at >= 0 && at < AI_CALL_NEXT ? (uint32_t)at : AI_CALL_NEXT;
 }
 
@@ -415,7 +414,8 @@ ai_index (struct json_object *val)
  * the token count of its answer. Return UINT32_MAX if the sum is larger
  * than UINT32_MAX. Return 0, which means that the count is not known, if
  * @p prompt is not positive, if @p answer is negative, or if the sum
- * overflows int64_t.
+ * overflows int64_t. The callers read a count that is not a JSON integer
+ * as 0 with jb_int().
  */
 static uint32_t
 ai_used (int64_t prompt,
@@ -425,30 +425,6 @@ ai_used (int64_t prompt,
 	if (prompt <= 0 || answer < 0 || ckd_add(&n, prompt, answer))
 		return 0;
 	return n < UINT32_MAX ? (uint32_t)n : UINT32_MAX;
-}
-
-/* Return @p val as a token count if it is a JSON integer, else 0. json-c
- * also parses NaN, which json_object_get_int64() cannot convert. ai_used()
- * treats a request count of 0 as not known and an answer count of 0 as 0.
- */
-static int64_t
-ai_count (struct json_object *val)
-{
-	return json_object_is_type(val, json_type_int) ? json_object_get_int64(val) : 0;
-}
-
-/* The place of @p type, an event's or an item's, among the @p n @p names; @p n
- * if it is none of them.
- */
-static size_t
-ai_kind (struct json_object *type,
-         char const *const  *names,
-         size_t              n)
-{
-	size_t i = 0;
-	while (i < n && !jb_is(type, names[i]))
-		++i;
-	return i;
 }
 
 /* Set @p *json to the JSON text of @p val, or to an empty view if @p val is
@@ -555,13 +531,6 @@ ai_chat_calls (struct ai_sink const *sink,
 	return e;
 }
 
-/* Return true if @p val is a string that is not empty. */
-static bool
-ai_some_text (struct json_object *val)
-{
-	return jb_view(val).len;
-}
-
 /* The message of an error event, or of one that carries an error. */
 static char const *
 ai_event_error (struct json_object *ev)
@@ -602,10 +571,10 @@ ai_chat_delta (struct ai_sink const *sink,
 	/* llama-server and DeepSeek use reasoning_content, and OpenRouter uses
 	 * the alias reasoning. Thinking precedes visible text when a provider
 	 * includes both in one delta. */
-	struct json_object *thinking = jb_get(delta, "reasoning_content");
-	if (!ai_some_text(thinking))
-		thinking = jb_get(delta, "reasoning");
-	int e = ai_put_thought(sink, jb_view(thinking), out);
+	struct cstr_view thinking = jb_view(jb_get(delta, "reasoning_content"));
+	if (!thinking.len)
+		thinking = jb_view(jb_get(delta, "reasoning"));
+	int e = ai_put_thought(sink, thinking, out);
 	if (e)
 		return e;
 	struct json_object *content = jb_get(delta, "content");
@@ -630,12 +599,12 @@ ai_responses_item (struct ai_sink const *sink,
                    struct ai_event      *out)
 {
 	enum { CALL, REASONING, MESSAGE, KINDS };
-	static char const *const kinds[KINDS] = {
-		[CALL]      = "function_call",
-		[REASONING] = "reasoning",
-		[MESSAGE]   = "message",
+	static struct cstr_view const kinds[KINDS] = {
+		[CALL]      = CSTR_VIEW_INIT("function_call"),
+		[REASONING] = CSTR_VIEW_INIT("reasoning"),
+		[MESSAGE]   = CSTR_VIEW_INIT("message"),
 	};
-	size_t kind = ai_kind(jb_get(item, "type"), kinds, KINDS);
+	size_t kind = cstr_view_index(kinds, KINDS, jb_view(jb_get(item, "type")));
 	if (kind == KINDS)
 		return 0;
 	out->thought_end = kind == REASONING;
@@ -662,17 +631,17 @@ ai_responses_event (struct ai_sink const *sink,
                     struct ai_event      *out)
 {
 	enum { TEXT, REFUSAL, REASONING, SUMMARY, ITEM, DONE, CUT, KINDS };
-	static char const *const kinds[KINDS] = {
-		[TEXT]      = "response.output_text.delta",
-		[REFUSAL]   = "response.refusal.delta",
-		[REASONING] = "response.reasoning_text.delta",
-		[SUMMARY]   = "response.reasoning_summary_text.delta",
-		[ITEM]      = "response.output_item.done",
-		[DONE]      = "response.completed",
-		[CUT]       = "response.incomplete",
+	static struct cstr_view const kinds[KINDS] = {
+		[TEXT]      = CSTR_VIEW_INIT("response.output_text.delta"),
+		[REFUSAL]   = CSTR_VIEW_INIT("response.refusal.delta"),
+		[REASONING] = CSTR_VIEW_INIT("response.reasoning_text.delta"),
+		[SUMMARY]   = CSTR_VIEW_INIT("response.reasoning_summary_text.delta"),
+		[ITEM]      = CSTR_VIEW_INIT("response.output_item.done"),
+		[DONE]      = CSTR_VIEW_INIT("response.completed"),
+		[CUT]       = CSTR_VIEW_INIT("response.incomplete"),
 	};
 	struct json_object *delta = jb_get(ev, "delta");
-	switch (ai_kind(jb_get(ev, "type"), kinds, KINDS)) {
+	switch (cstr_view_index(kinds, KINDS, jb_view(jb_get(ev, "type")))) {
 	case TEXT:
 	case REFUSAL:
 		return ai_put_text(sink, jb_view(delta));
@@ -686,8 +655,8 @@ ai_responses_event (struct ai_sink const *sink,
 	case CUT: {
 		struct json_object *usage = jb_get(jb_get(ev, "response"), "usage");
 		out->end = 1;
-		out->used = ai_used(ai_count(jb_get(usage, "input_tokens")),
-		                    ai_count(jb_get(usage, "output_tokens")));
+		out->used = ai_used(jb_int(jb_get(usage, "input_tokens"), 0),
+		                    jb_int(jb_get(usage, "output_tokens"), 0));
 		return 0;
 	}
 	}
@@ -735,12 +704,12 @@ ai_messages_start (struct ai_sink const *sink,
                    struct json_object   *block)
 {
 	enum { TOOL, THINKING, REDACTED, KINDS };
-	static char const *const kinds[KINDS] = {
-		[TOOL]     = "tool_use",
-		[THINKING] = "thinking",
-		[REDACTED] = "redacted_thinking",
+	static struct cstr_view const kinds[KINDS] = {
+		[TOOL]     = CSTR_VIEW_INIT("tool_use"),
+		[THINKING] = CSTR_VIEW_INIT("thinking"),
+		[REDACTED] = CSTR_VIEW_INIT("redacted_thinking"),
 	};
-	switch (ai_kind(jb_get(block, "type"), kinds, KINDS)) {
+	switch (cstr_view_index(kinds, KINDS, jb_view(jb_get(block, "type")))) {
 	case TOOL:
 		return ai_call_start(sink, at, block, "input", nullptr);
 	case THINKING:
@@ -770,14 +739,14 @@ ai_messages_delta (struct ai_sink const *sink,
                    struct ai_event      *out)
 {
 	enum { TEXT, THINKING, SIGNATURE, INPUT, KINDS };
-	static char const *const kinds[KINDS] = {
-		[TEXT]      = "text_delta",
-		[THINKING]  = "thinking_delta",
-		[SIGNATURE] = "signature_delta",
-		[INPUT]     = "input_json_delta",
+	static struct cstr_view const kinds[KINDS] = {
+		[TEXT]      = CSTR_VIEW_INIT("text_delta"),
+		[THINKING]  = CSTR_VIEW_INIT("thinking_delta"),
+		[SIGNATURE] = CSTR_VIEW_INIT("signature_delta"),
+		[INPUT]     = CSTR_VIEW_INIT("input_json_delta"),
 	};
 	bool open = reader->open == at + 1;
-	switch (ai_kind(jb_get(delta, "type"), kinds, KINDS)) {
+	switch (cstr_view_index(kinds, KINDS, jb_view(jb_get(delta, "type")))) {
 	case TEXT: {
 		struct json_object *text = jb_get(delta, "text");
 		struct cstr_view piece = jb_view(text);
@@ -827,16 +796,16 @@ ai_messages_event (struct ai_sink const *sink,
 {
 	/* The content blocks' events first. */
 	enum { DELTA, START, STOP, MESSAGE, MESSAGE_DELTA, MESSAGE_STOP, KINDS };
-	static char const *const kinds[KINDS] = {
-		[DELTA]         = "content_block_delta",
-		[START]         = "content_block_start",
-		[STOP]          = "content_block_stop",
-		[MESSAGE]       = "message_start",
-		[MESSAGE_DELTA] = "message_delta",
-		[MESSAGE_STOP]  = "message_stop",
+	static struct cstr_view const kinds[KINDS] = {
+		[DELTA]         = CSTR_VIEW_INIT("content_block_delta"),
+		[START]         = CSTR_VIEW_INIT("content_block_start"),
+		[STOP]          = CSTR_VIEW_INIT("content_block_stop"),
+		[MESSAGE]       = CSTR_VIEW_INIT("message_start"),
+		[MESSAGE_DELTA] = CSTR_VIEW_INIT("message_delta"),
+		[MESSAGE_STOP]  = CSTR_VIEW_INIT("message_stop"),
 	};
 	uint32_t at = ai_index(jb_get(ev, "index"));
-	size_t kind = ai_kind(jb_get(ev, "type"), kinds, KINDS);
+	size_t kind = cstr_view_index(kinds, KINDS, jb_view(jb_get(ev, "type")));
 	struct json_object *delta = jb_get(ev, "delta");
 	if (kind < MESSAGE && at == AI_CALL_NEXT)
 		return kind == DELTA ? ai_put_text(sink, jb_view(jb_get(delta, "text"))) : 0;
@@ -856,17 +825,17 @@ ai_messages_event (struct ai_sink const *sink,
 		struct json_object *usage = jb_get(jb_get(ev, "message"), "usage");
 		struct json_object *written = jb_get(usage, "cache_creation_input_tokens");
 		struct json_object *cached = jb_get(usage, "cache_read_input_tokens");
-		int64_t n = ai_count(jb_get(usage, "input_tokens"));
+		int64_t n = jb_int(jb_get(usage, "input_tokens"), 0);
 		/* A sum that overflows int64_t is not a token count. */
-		bool over = ckd_add(&n, n, ai_count(written)) ||
-		            ckd_add(&n, n, ai_count(cached));
+		bool over = ckd_add(&n, n, jb_int(written, 0)) ||
+		            ckd_add(&n, n, jb_int(cached, 0));
 		reader->input = over ? 0 : ai_used(n, 0);
 		return 0;
 	}
 	case MESSAGE_DELTA: {
 		struct json_object *usage = jb_get(ev, "usage");
 		out->used = ai_used(reader->input,
-		                    ai_count(jb_get(usage, "output_tokens")));
+		                    jb_int(jb_get(usage, "output_tokens"), 0));
 		return 0;
 	}
 	case MESSAGE_STOP:
@@ -1059,7 +1028,7 @@ ai_interactions_sign (struct ai_sink const *sink,
                       struct ai_reader     *reader,
                       struct json_object   *signature)
 {
-	if (reader->sign || !ai_some_text(signature))
+	if (reader->sign || !jb_view(signature).len)
 		return 0;
 	int e = ai_interactions_head(sink, reader);
 	reader->sign = 1;
@@ -1114,12 +1083,12 @@ ai_interactions_start (struct ai_sink const *sink,
                        struct ai_event      *out)
 {
 	enum { THOUGHT, OUTPUT, CALL, KINDS };
-	static char const *const kinds[KINDS] = {
-		[THOUGHT] = "thought",
-		[OUTPUT]  = "model_output",
-		[CALL]    = "function_call",
+	static struct cstr_view const kinds[KINDS] = {
+		[THOUGHT] = CSTR_VIEW_INIT("thought"),
+		[OUTPUT]  = CSTR_VIEW_INIT("model_output"),
+		[CALL]    = CSTR_VIEW_INIT("function_call"),
 	};
-	size_t kind = ai_kind(jb_get(step, "type"), kinds, KINDS);
+	size_t kind = cstr_view_index(kinds, KINDS, jb_view(jb_get(step, "type")));
 	if (kind == KINDS)
 		return 0;
 	int e = ai_interactions_close(sink, reader);
@@ -1142,7 +1111,7 @@ ai_interactions_start (struct ai_sink const *sink,
 		struct json_object *signature = jb_get(step, "signature");
 		reader->calls = at + 1;
 		return ai_call_start(sink, at, step, "arguments",
-		                     ai_some_text(signature) ? signature : nullptr);
+		                     jb_view(signature).len ? signature : nullptr);
 	}
 	}
 	return 0;
@@ -1166,14 +1135,14 @@ ai_interactions_delta (struct ai_sink const *sink,
                        struct ai_event      *out)
 {
 	enum { TEXT, SUMMARY, SIGNATURE, ARGUMENTS, KINDS };
-	static char const *const kinds[KINDS] = {
-		[TEXT]      = "text",
-		[SUMMARY]   = "thought_summary",
-		[SIGNATURE] = "thought_signature",
-		[ARGUMENTS] = "arguments_delta",
+	static struct cstr_view const kinds[KINDS] = {
+		[TEXT]      = CSTR_VIEW_INIT("text"),
+		[SUMMARY]   = CSTR_VIEW_INIT("thought_summary"),
+		[SIGNATURE] = CSTR_VIEW_INIT("thought_signature"),
+		[ARGUMENTS] = CSTR_VIEW_INIT("arguments_delta"),
 	};
 	bool thought = reader->open == at + 1 && reader->kind == INTERACTIONS_THOUGHT;
-	switch (ai_kind(jb_get(delta, "type"), kinds, KINDS)) {
+	switch (cstr_view_index(kinds, KINDS, jb_view(jb_get(delta, "type")))) {
 	case TEXT:
 		return ai_interactions_text(sink, reader, at, jb_get(delta, "text"));
 	case SUMMARY: {
@@ -1215,16 +1184,16 @@ ai_interactions_event (struct ai_sink const *sink,
                        struct ai_event      *out)
 {
 	enum { DELTA, START, STOP, DONE, KINDS };
-	static char const *const kinds[KINDS] = {
-		[DELTA] = "step.delta",
-		[START] = "step.start",
-		[STOP]  = "step.stop",
-		[DONE]  = "interaction.completed",
+	static struct cstr_view const kinds[KINDS] = {
+		[DELTA] = CSTR_VIEW_INIT("step.delta"),
+		[START] = CSTR_VIEW_INIT("step.start"),
+		[STOP]  = CSTR_VIEW_INIT("step.stop"),
+		[DONE]  = CSTR_VIEW_INIT("interaction.completed"),
 	};
 	if (reader->kind == INTERACTIONS_ENDED)
 		return 0;
 	uint32_t at = ai_index(jb_get(ev, "index"));
-	size_t kind = ai_kind(type, kinds, KINDS);
+	size_t kind = cstr_view_index(kinds, KINDS, jb_view(type));
 	struct json_object *delta = jb_get(ev, "delta");
 	if (kind < DONE && at == AI_CALL_NEXT)
 		return kind == DELTA ? ai_put_text(sink, jb_view(jb_get(delta, "text"))) : 0;
@@ -1245,10 +1214,10 @@ ai_interactions_event (struct ai_sink const *sink,
 		 * total_tokens, which include the thinking. */
 		struct json_object *usage = jb_get(jb_get(ev, "interaction"), "usage");
 		out->end = 1;
-		out->used = ai_used(ai_count(jb_get(usage, "total_input_tokens")),
-		                    ai_count(jb_get(usage, "total_output_tokens")));
+		out->used = ai_used(jb_int(jb_get(usage, "total_input_tokens"), 0),
+		                    jb_int(jb_get(usage, "total_output_tokens"), 0));
 		if (!out->used)
-			out->used = ai_used(ai_count(jb_get(usage, "total_tokens")), 0);
+			out->used = ai_used(jb_int(jb_get(usage, "total_tokens"), 0), 0);
 		int e = ai_interactions_close(sink, reader);
 		reader->kind = INTERACTIONS_ENDED;
 		return e;
@@ -1276,12 +1245,12 @@ ai_event (enum ai_api            api,
 		struct json_object *choices = jb_get(ev, "choices");
 		struct json_object *choice;
 		for (size_t i = 0; (choice = jb_at(choices, i)) &&
-		                   ai_count(jb_get(choice, "index")); ++i)
+		                   jb_int(jb_get(choice, "index"), 0); ++i)
 			;
 		/* With include_usage, a last event of its own, with no choices. */
 		struct json_object *usage = jb_get(ev, "usage");
-		out->used = ai_used(ai_count(jb_get(usage, "prompt_tokens")),
-		                    ai_count(jb_get(usage, "completion_tokens")));
+		out->used = ai_used(jb_int(jb_get(usage, "prompt_tokens"), 0),
+		                    jb_int(jb_get(usage, "completion_tokens"), 0));
 		reason = jb_get(choice, "finish_reason");
 		e = ai_chat_delta(sink, jb_get(choice, "delta"), out);
 		break;
@@ -1306,7 +1275,7 @@ ai_event (enum ai_api            api,
 		if (!e && reason)
 			e = ai_generate_close(sink, reader);
 		struct json_object *usage = jb_get(ev, "usageMetadata");
-		out->used = ai_used(ai_count(jb_get(usage, "totalTokenCount")), 0);
+		out->used = ai_used(jb_int(jb_get(usage, "totalTokenCount"), 0), 0);
 		break;
 	}
 	case AI_INTERACTIONS:
@@ -1689,25 +1658,18 @@ ai_answer (enum ai_api         api,
 	if (*failed)
 		return ai_describe_error(text, status, root, body, len);
 
+	static int (*const answers[]) (struct json_object *root, struct dstr *text,
+	                               char const **reason) = {
+		[AI_CHAT]         = ai_chat_answer,
+		[AI_RESPONSES]    = ai_responses_answer,
+		[AI_MESSAGES]     = ai_messages_answer,
+		[AI_GENERATE]     = ai_generate_answer,
+		[AI_INTERACTIONS] = ai_interactions_answer,
+	};
+	if (!api || api >= ARRAY_SIZE(answers))
+		return EINVAL;
 	char const *reason = nullptr;
-	int e = 0;
-	switch (api) {
-	case AI_CHAT:
-		e = ai_chat_answer(root, text, &reason);
-		break;
-	case AI_RESPONSES:
-		e = ai_responses_answer(root, text, &reason);
-		break;
-	case AI_MESSAGES:
-		e = ai_messages_answer(root, text, &reason);
-		break;
-	case AI_GENERATE:
-		e = ai_generate_answer(root, text, &reason);
-		break;
-	case AI_INTERACTIONS:
-		e = ai_interactions_answer(root, text, &reason);
-		break;
-	}
+	int e = answers[api](root, text, &reason);
 	if (e)
 		return e;
 	if (!dstr_len(text)) {
@@ -1743,10 +1705,10 @@ ai_thoughts (enum ai_api         api,
 	case AI_CHAT: {
 		struct json_object *choice = jb_at(jb_get(root, "choices"), 0);
 		struct json_object *message = jb_get(choice, "message");
-		struct json_object *thought = jb_get(message, "reasoning_content");
-		if (!ai_some_text(thought))
-			thought = jb_get(message, "reasoning");
-		return ai_append(text, thought);
+		struct cstr_view thought = jb_view(jb_get(message, "reasoning_content"));
+		if (!thought.len)
+			thought = jb_view(jb_get(message, "reasoning"));
+		return thought.data && !dstr_cat_n(text, thought.data, thought.len) ? ENOMEM : 0;
 	}
 	case AI_RESPONSES:
 		items = jb_get(root, "output");

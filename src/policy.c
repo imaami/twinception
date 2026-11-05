@@ -257,13 +257,14 @@ policy_build_who (struct policy_build    *b,
 	return (struct cstr_view){ who, len };
 }
 
-/* The index of the role that @p name, a string, names; -1 if none does. */
+/* Return the index of the role whose name is the string @p name, or -1 if
+ * there is no such role.
+ */
 static int64_t
 policy_build_role (struct policy_build const *b,
                    struct json_object        *name)
 {
-	char const *s = json_object_is_type(name, json_type_string)
-	              ? json_object_get_string(name) : nullptr;
+	char const *s = jb_text(name);
 	if (!s || !b->roles)
 		return -1;
 	int64_t i = 0;
@@ -1216,7 +1217,7 @@ static void
 policy_log_peers (struct policy const *policy)
 {
 	static char const *const files[] = { POLICY_OVERFLOWUID, POLICY_OVERFLOWGID };
-	for (size_t i = 0; i < sizeof files / sizeof *files; ++i)
+	for (size_t i = 0; i < ARRAY_SIZE(files); ++i)
 		if (policy->overflow_errors[i])
 			LOG_ALL(LOG_WARN, "warning: cannot read %s: %s", files[i],
 			        strerror(policy->overflow_errors[i]));
