@@ -102,21 +102,24 @@ cli_read_file (struct dstr      *text,
 	return e;
 }
 
+enum cli_color : uint8_t { CLI_COLOR_AUTO, CLI_COLOR_ON, CLI_COLOR_OFF };
+
 struct cli_options {
-	char const  *socket;
-	char const  *file;
-	char const  *tool;
-	char const  *system;
-	char const  *history_repo;
-	char const  *session_id;
-	char const  *color;
-	char const  *prompt;
-	bool         single;
-	bool         simple;
-	bool         multiline;
-	bool         reasoning;
-	bool         no_history;
-	bool         done;
+	char const     *socket;
+	char const     *file;
+	char const     *tool;
+	char const     *system;
+	char const     *history_repo;
+	char const     *session_id;
+	char const     *prompt;
+	enum cli_color  color;
+	bool            single;
+	bool            simple;
+	bool            multiline;
+	bool            reasoning;
+	bool            no_history;
+	uint16_t        done;  /**< Nonzero after --help or --version. It is a
+	                            uint16_t to fill the tail padding. */
 };
 
 static int
@@ -193,47 +196,50 @@ cli_args (struct cli_options  *out,
 		{"version", no_argument, nullptr, 'v'},
 		{}
 	};
+	static struct cstr_view const colors[] = {
+		[CLI_COLOR_AUTO] = CSTR_VIEW_INIT("auto"),
+		[CLI_COLOR_ON] = CSTR_VIEW_INIT("on"),
+		[CLI_COLOR_OFF] = CSTR_VIEW_INIT("off"),
+	};
+	size_t color = CLI_COLOR_AUTO;
+	size_t prompts = 0;
 	int c;
 	while ((c = getopt_long(argc, argv, "hp:f:", options, nullptr)) != -1) {
 		switch (c) {
 		case 's': out->socket = optarg; break;
 		case 't': out->tool = optarg; break;
-		case 'p': case 'f':
-			if (out->prompt || out->file)
-				return cli_error_set(error, EINVAL, "Use only one --prompt or --file");
-			if (c == 'p')
-				out->prompt = optarg;
-			else
-				out->file = optarg;
-			break;
+		case 'p': out->prompt = optarg; ++prompts; break;
+		case 'f': out->file = optarg; ++prompts; break;
 		case 'S': out->system = optarg; break;
 		case '1': out->single = true; break;
 		case 'i': out->simple = true; break;
 		case 'm': out->multiline = true; break;
-		case 'c': out->color = optarg; break;
+		case 'c': color = cstr_view_index(colors, array_size(colors), cstr_view(optarg)); break;
 		case 'r': out->reasoning = false; break;
 		case 'H': out->history_repo = optarg; break;
-		case 'I':
-			out->session_id = optarg;
-			if (!*optarg)
-				return cli_error_set(error, EINVAL, "--session-id requires a nonempty identity");
-			break;
+		case 'I': out->session_id = optarg; break;
 		case 'N': out->no_history = true; break;
 		case 'h': out->done = true; return cli_help();
 		case 'v': out->done = true; return puts("askai-cli 1") < 0 ? EIO : 0;
 		default: return cli_error_set(error, EINVAL, "Invalid option; see --help");
 		}
 	}
+	struct cstr_view const scheme = CSTR_VIEW("unix:");
+	if (cstr_view_starts(cstr_view(out->socket), scheme))
+		out->socket += scheme.len;
 	if (optind != argc)
 		return cli_error_set(error, EINVAL, "Unexpected positional argument; see --help");
-	if (out->socket && !strncmp(out->socket, "unix:", 5))
-		out->socket += 5;
+	if (prompts > 1)
+		return cli_error_set(error, EINVAL, "Use only one --prompt or --file");
+	if (out->session_id && !*out->session_id)
+		return cli_error_set(error, EINVAL, "--session-id requires a nonempty identity");
 	if (!out->socket || !*out->socket)
 		return cli_error_set(error, EINVAL, "Specify --socket PATH or ASKAI_SOCKET");
 	if (out->no_history && out->history_repo && *out->history_repo)
 		return cli_error_set(error, EINVAL, "--history-repo and --no-history are mutually exclusive");
-	if (strcmp(out->color, "auto") && strcmp(out->color, "on") && strcmp(out->color, "off"))
+	if (color == array_size(colors))
 		return cli_error_set(error, EINVAL, "--color must be auto, on or off");
+	out->color = color;
 	return 0;
 }
 
@@ -401,9 +407,10 @@ cli_report (struct cli_client *client,
 
 struct cli_work {
 	struct cli_io_job job;
-	int            (*fn) (void *data);
-	void            *data;
-	uint64_t         done;
+	int             (*fn) (void *data);
+	void             *data;
+	uint64_t          done;  /**< Nonzero after cli_work_done() runs. It is
+	                              a uint64_t to fill the tail padding. */
 };
 
 static int
@@ -437,9 +444,11 @@ cli_work_wait (struct cli *cli,
 	while (!work.done)
 		cli_wait(cli, cli->exit_due ? cli->exit_due : UINT64_MAX);
 	cli->busy = busy;
-	if (!busy && !cli->exit_signal && !cli->quitting)
+	if (cli->exit_signal || cli->quitting)
+		return EINTR;
+	if (!busy)
 		atomic_store(&cli->cancel_io, false);
-	return cli->exit_signal || cli->quitting ? EINTR : work.job.blocker.error;
+	return work.job.blocker.error;
 }
 
 enum cli_history_operation { CLI_HISTORY_OPEN, CLI_HISTORY_INPUT, CLI_HISTORY_TURN, CLI_HISTORY_CLEAR };
@@ -843,9 +852,10 @@ static struct cli_command const *
 cli_command_parse (struct cstr_view  line,
                    struct cstr_view *rest)
 {
+	static char const space[] = " \t\r\n";
 	line = cstr_view_trim(line);
 	size_t split = 0;
-	while (split < line.len && !strchr(" \t\r\n", line.data[split]))
+	while (split < line.len && !memchr(space, line.data[split], sizeof space - 1))
 		++split;
 	*rest = cstr_view_trim(cstr_view_slice(line, split, SIZE_MAX));
 	struct cli_command const *command = cli_command_find(cstr_view_slice(line, 0, split));
@@ -890,7 +900,8 @@ cli_command_run (struct cli               *cli,
 	case CLI_COMMAND_TOOL:
 		if (cli->options->single)
 			*action = CLI_ACTION_EXIT;
-		return cli_manual_call(cli, cstr_view_trim(cstr_view_dstr(prompt)), error);
+		/* autocomplete_parse_call() skips the white space around the words. */
+		return cli_manual_call(cli, cstr_view_dstr(prompt), error);
 	case CLI_COMMAND_HISTORY:
 		return cli_history_show(cli);
 	case CLI_COMMAND_CLEAR: {
@@ -960,6 +971,36 @@ cli_input_destroy (struct cli_input **ptr)
 	*ptr = nullptr;
 }
 
+/* Move the text of the first queued input into text, and destroy the input.
+ * Returns true if a command already handled the input during a turn.
+ */
+static bool
+cli_input_pop (struct cli  *cli,
+               struct dstr *text)
+{
+	struct cli_input *input = container_of(cli->inputs.next, struct cli_input, hook);
+	cli->input_bytes -= sizeof *input + dstr_len(&input->text);
+	*text = dstr_move(&input->text);
+	bool handled = input->flags & CLI_INPUT_HANDLED;
+	cli_input_destroy(&input);
+	return handled;
+}
+
+/* Save a handled input in the history. If a cancel interrupted the save,
+ * queue the input again. Returns 0 or an error number.
+ */
+static int
+cli_input_save (struct cli       *cli,
+                struct dstr      *text,
+                struct cli_error *error)
+{
+	int e = cli_history_input(cli, cstr_view_dstr(text), true, error);
+	if (e != EINTR || cli->exit_signal || cli->quitting)
+		return e;
+	atomic_store(&cli->cancel_io, false);
+	return cli_input_append(cli, text, CLI_INPUT_HANDLED);
+}
+
 static int
 cli_immediate (struct cli *cli)
 {
@@ -1002,8 +1043,9 @@ cli_turn (struct cli       *cli,
           enum cli_action  *action,
           struct cli_error *error)
 {
+	struct cstr_view text = cstr_view_dstr(prompt);
 	struct cstr_view rest = {};
-	struct cli_command const *command = interpret ? cli_command_parse(cstr_view_dstr(prompt), &rest) : nullptr;
+	struct cli_command const *command = interpret ? cli_command_parse(text, &rest) : nullptr;
 	if (command && (command->policy == CLI_COMMAND_LOCAL ||
 	                (command->policy == CLI_COMMAND_CONCURRENT && cli->tty &&
 	                 !cli->options->simple && !cli->options->single))) {
@@ -1013,19 +1055,20 @@ cli_turn (struct cli       *cli,
 		return e;
 	}
 	if (cli->saved) {
-		int e = cli_history_input(cli, cstr_view_dstr(prompt), interpret, error);
+		int e = cli_history_input(cli, text, interpret, error);
 		if (e)
 			return e;
 	}
 	*action = CLI_ACTION_PROMPT;
-	if (interpret) {
+	if (command) {
 		int e = cli_command_run(cli, prompt, command, rest, action, error);
 		if (e || *action == CLI_ACTION_CONTINUE || *action == CLI_ACTION_EXIT)
 			return e;
+		/* /regen and /read replace the text of the prompt. */
+		text = cstr_view_dstr(prompt);
 	}
 	if (atomic_load(&cli->cancel_io))
 		return EINTR;
-	struct cstr_view text = cstr_view_dstr(prompt);
 	if (!cstr_view_trim(text).len) {
 		*action = CLI_ACTION_CONTINUE;
 		return cli->options->single ? cli_error_set(error, EINVAL, "The prompt is empty") : 0;
@@ -1053,11 +1096,68 @@ cli_turn (struct cli       *cli,
 	return e;
 }
 
+/* Refresh the completion metadata or the note filenames if one of them is
+ * out of date and no input or tool call is queued. Report a failed refresh
+ * in the console. Returns 0, or the error number that ends the chat.
+ */
+static int
+cli_chat_refresh (struct cli       *cli,
+                  struct cli_error *error)
+{
+	bool catalog = cli->client.catalog_dirty;
+	if (cli_console_queued(cli->console) || !list_is_empty(&cli->tools) ||
+	    !(catalog || cli->client.notes_dirty))
+		return 0;
+	int e = cli_busy(cli, true);
+	if (!e)
+		e = catalog ? cli_client_refresh(&cli->client, error)
+		            : cli_client_refresh_notes(&cli->client, error);
+	int display = cli_busy(cli, false);
+	if (!e)
+		e = display;
+	if (cli->quitting)
+		return e;
+	if (e == EINTR && !cli->exit_signal && !cli->options->single) {
+		atomic_store(&cli->cancel_io, false);
+		return 0;
+	}
+	if (!e || e == EINTR || e == ENOMEM || cli->client.identity_changed)
+		return e;
+	e = cli_ui_error(cli->console, catalog ? CSTR_VIEW("Cannot refresh completion metadata")
+	                                       : CSTR_VIEW("Cannot refresh note filenames"),
+	                 cli_error_text(error, e));
+	if (!e)
+		error->message[0] = '\0';
+	return e;
+}
+
+/* Report the error e of a turn in the console, unless it ends the chat.
+ * Report EINTR with the message "Cancelled." Returns 0, or the error number
+ * that ends the chat.
+ */
+static int
+cli_chat_error (struct cli       *cli,
+                int               e,
+                struct cli_error *error)
+{
+	struct cli_options const *options = cli->options;
+	if (e != EINTR) {
+		if (options->single || !cli->tty || e == ENOMEM || ferror(stdout))
+			return e;
+		return cli_ui_error(cli->console, cli_error_text(error, e), (struct cstr_view){});
+	}
+	if (options->single || cli->exit_signal)
+		return e;
+	atomic_store(&cli->cancel_io, false);
+	return cli_ui_info(cli->console, CSTR_VIEW("Cancelled."));
+}
+
 static int
 cli_chat (struct cli       *cli,
           struct cli_error *error)
 {
-	bool initial = cli->options->prompt || cli->options->file;
+	struct cli_options const *options = cli->options;
+	bool initial = options->prompt || options->file;
 	for (;;) {
 		if (cli->quitting)
 			return 0;
@@ -1067,66 +1167,28 @@ cli_chat (struct cli       *cli,
 		dstr_auto prompt = dstr(nullptr);
 		bool supplied = !list_is_empty(&cli->inputs);
 		bool interpret = supplied || !initial;
-		if (supplied) {
-			struct cli_input *input = container_of(cli->inputs.next, struct cli_input, hook);
-			cli->input_bytes -= sizeof *input + dstr_len(&input->text);
-			prompt = dstr_move(&input->text);
-			bool handled = input->flags & CLI_INPUT_HANDLED;
-			cli_input_destroy(&input);
-			if (handled) {
-				int e = cli_history_input(cli, cstr_view_dstr(&prompt), true, error);
-				if (e == EINTR && !cli->exit_signal && !cli->quitting) {
-					atomic_store(&cli->cancel_io, false);
-					e = cli_input_append(cli, &prompt, CLI_INPUT_HANDLED);
-				}
-				if (e)
-					return cli->quitting ? 0 : e;
-				continue;
-			}
+		if (supplied && cli_input_pop(cli, &prompt)) {
+			int e = cli_input_save(cli, &prompt, error);
+			if (e)
+				return cli->quitting ? 0 : e;
+			continue;
 		}
-		bool catalog = cli->client.catalog_dirty;
-		bool refresh = !supplied && !cli_console_queued(cli->console) &&
-		               list_is_empty(&cli->tools) && (catalog || cli->client.notes_dirty);
-		int e = 0;
-		if (refresh) {
-			e = cli_busy(cli, true);
-			if (!e)
-				e = catalog ? cli_client_refresh(&cli->client, error)
-				            : cli_client_refresh_notes(&cli->client, error);
-			int display = cli_busy(cli, false);
-			if (!e)
-				e = display;
-		}
+		int e = supplied ? 0 : cli_chat_refresh(cli, error);
 		if (cli->quitting)
 			return 0;
-		if (e == EINTR && !cli->exit_signal && !cli->options->single) {
-			atomic_store(&cli->cancel_io, false);
-			e = 0;
-		}
-		if (e == EINTR || e == ENOMEM || cli->client.identity_changed)
+		if (e || cli->client.identity_changed)
 			return e;
-		if (e) {
-			e = cli_ui_error(cli->console, catalog ? CSTR_VIEW("Cannot refresh completion metadata") : CSTR_VIEW("Cannot refresh note filenames"),
-			                 cli_error_text(error, e));
-			if (e)
-				return e;
-			error->message[0] = '\0';
-		}
 		if (!supplied && !list_is_empty(&cli->inputs))
 			continue;
 		if (!supplied && initial) {
-			struct cstr_view text = cstr_view(cli->options->prompt);
-			if (cli->options->file) {
-				e = cli_file_read(cli, &prompt, cstr_view(cli->options->file), error);
-				if (e)
-					return e;
-			} else if (!dstr_cat_n(&prompt, text.data, text.len)) {
-				return ENOMEM;
-			}
+			e = options->file ? cli_file_read(cli, &prompt, cstr_view(options->file), error)
+			  : dstr_cat(&prompt, options->prompt) ? 0 : ENOMEM;
+			if (e)
+				return e;
 			initial = false;
 		} else if (!supplied) {
 			bool eof;
-			e = cli_console_read(cli->console, &prompt, cli->options->multiline, &eof, cli->tty ? "\n> " : "");
+			e = cli_console_read(cli->console, &prompt, options->multiline, &eof, cli->tty ? "\n> " : "");
 			if (e == EAGAIN)
 				continue;
 			if (e || eof)
@@ -1143,25 +1205,28 @@ cli_chat (struct cli       *cli,
 			return 0;
 		if (cli->client.identity_changed)
 			return e;
-		if (e == EINTR) {
-			if (cli->options->single || cli->exit_signal)
-				return e;
-			atomic_store(&cli->cancel_io, false);
-			e = cli_ui_info(cli->console, CSTR_VIEW("Cancelled."));
-			if (e)
-				return e;
-			continue;
-		}
-		if (e) {
-			if (cli->options->single || !cli->tty || e == ENOMEM || ferror(stdout))
-				return e;
-			e = cli_ui_error(cli->console, cli_error_text(error, e), (struct cstr_view){});
-			if (e)
-				return e;
-		} else if (action == CLI_ACTION_EXIT) {
+		if (!e && action == CLI_ACTION_EXIT)
 			return 0;
-		}
+		e = e ? cli_chat_error(cli, e, error) : 0;
+		if (e)
+			return e;
 	}
+}
+
+/* Write the output that the console queued, and run turns until it is
+ * written, a signal arrives or an error occurs. Returns 0 or an error
+ * number.
+ */
+static int
+cli_drain (struct cli *cli)
+{
+	int e = cli_console_flush(cli->console);
+	while (!e && cli_console_pending(cli->console) && !cli->exit_signal) {
+		e = cli_loop_turn(&cli->reactor, UINT64_MAX);
+		if (!e)
+			e = cli->ui_error;
+	}
+	return e;
 }
 
 static int
@@ -1198,7 +1263,7 @@ cli_run (struct cli_options const *options,
 		cli->io = cli_io_create(&cli->reactor.loop, &e);
 	if (!e)
 		cli->client = cli_client(options->socket, options->tool, cli->network, &e);
-	bool color = !strcmp(options->color, "on") || (!strcmp(options->color, "auto") && cli->tty && !getenv("NO_COLOR"));
+	bool color = options->color == CLI_COLOR_ON || (options->color == CLI_COLOR_AUTO && cli->tty && !getenv("NO_COLOR"));
 	if (!e)
 		cli->console = cli_console_create(options->simple || !cli->tty, color, &cli->reactor, cli->io, &e);
 	if (!e) {
@@ -1239,14 +1304,8 @@ cli_run (struct cli_options const *options,
 		e = cli->ui_error;
 	if (cli->exit_signal)
 		e = EINTR;
-	if (!e && cli->console) {
-		e = cli_console_flush(cli->console);
-		while (!e && cli_console_pending(cli->console) && !cli->exit_signal) {
-			e = cli_loop_turn(&cli->reactor, UINT64_MAX);
-			if (!e)
-				e = cli->ui_error;
-		}
-	}
+	if (!e && cli->console)
+		e = cli_drain(cli);
 	/* End editor activity before stopping I/O, retaining console storage
 	 * until any outstanding regular-file operation has returned. */
 	if (cli->console)
@@ -1288,7 +1347,7 @@ int
 main (int    argc,
       char **argv)
 {
-	struct cli_options options = {.color = "auto", .reasoning = true};
+	struct cli_options options = {.reasoning = true};
 	struct cli_error error = {};
 	unsigned exit_signal = 0;
 	/* Before askai-cli opens any file, so that none takes such a number. */
