@@ -10566,6 +10566,103 @@ def check_notes_cancel(binary, up):
     print("notes: a cancelled notebooks listing stops its git at once: PASS")
 
 
+def check_notes_texts(binary, up):
+    """Compare the notes results that the other checks do not compare. A
+    list before the first note is not a failed call. A client's offset
+    does not apply to that result, and a turn's offset does. The
+    notebooks action lists only the caller's own notebook before the
+    first note. The check also compares the texts for an empty notebook,
+    an unusable revision and a diff without differences. It compares the
+    notebook notice after a turn's diff and the last line of the trace
+    when the turns of an ask call kept notes."""
+    held = up.reply
+    script = []
+    up.reply = lambda request: script.pop(0)(request)
+    none = "No notes have been added to this session yet."
+    client, upstream = "p/anonymous/client", "p/anonymous/upstream"
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            notes = f"{d}/notes"
+
+            def git(*args):
+                return subprocess.run(["git", "--git-dir", notes, *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            with Askai(binary, "-u", up.url(), "--notes", notes, "--participant", "p",
+                       "--upstream-tools") as ai:
+                def call(**arguments):
+                    status, _, body = ai.rpc("tools/call", {"name": "notes",
+                                                            "arguments": arguments})
+                    assert status == 200 and "result" in body, (status, body)
+                    result = body["result"]
+                    return ("!" if result.get("isError") else "") + text_of(result)
+
+                def results(calls, **arguments):
+                    """Return the results of one turn that makes the notes
+                    calls @p calls, and the trace of its ask call."""
+                    script[:] = [lambda r: (200, turn_stream(
+                                     [(f"c{i}", "notes", json.dumps(a))
+                                      for i, a in enumerate(calls)])),
+                                 lambda r: (200, turn_stream(text="A"))]
+                    count = len(up.requests)
+                    result = ai.ask("Q", **arguments)
+                    messages = up.requests[count + 1]["body"]["messages"]
+                    return [m["content"] for m in messages if m["role"] == "tool"], \
+                        result["content"][1]["text"]
+
+                assert call(action="list", offset=100) == none
+                assert call(action="notebooks") == f"Self (writable): {client}\n"
+                said, trace = results([{"action": "list"}, {"action": "list", "offset": 100},
+                                       {"action": "notebooks"}])
+                assert said == [none, f"[The output has {len(none)} bytes, fewer than "
+                                "the offset.]", f"Self (writable): {upstream}\n"], said
+                assert trace == "The other AI made 3 tool calls in 2 turns:\n" \
+                    f"- notes list: {len(none)} bytes\n- notes list: {len(none)} bytes\n" \
+                    f"- notes notebooks: {len(upstream) + 18} bytes\n", trace
+
+                assert re.fullmatch(saved('Add "a.md" (6 bytes)'),
+                                    call(action="add", file="a.md", text="alpha\n"))
+                first = git("rev-parse", f"refs/heads/notes/{client}")
+                assert call(action="history", notebook="other") == \
+                    "!This notebook has no notes yet."
+                assert call(action="read", file="a.md", revision="0" * 40) == \
+                    "!Cannot use that revision in this notebook. Use a full commit ID " \
+                    "from its history; the notebook must exist and the revision must " \
+                    "belong to it."
+                assert call(action="diff", file="a.md", **{"from": first, "to": first}) == \
+                    f"Notebook {client} — a.md\nfrom {first}\nto {first}\n\nNo differences.\n"
+                assert re.fullmatch(saved('Replace "a.md" (6 to 8 bytes)'),
+                                    call(action="replace", file="a.md", text="alpha 2\n"))
+                tip = git("rev-parse", f"refs/heads/notes/{client}")
+                old, new = (git("rev-parse", "--short", f"{c}:a.md") for c in (first, tip))
+                said, trace = results([
+                    {"action": "notebooks"}, {"action": "list"},
+                    {"action": "diff", "file": "a.md", "notebook": client, "from": first}])
+                assert said == [
+                    "Session notebooks (use a selector as notebook):\n"
+                    f"Self (writable): {upstream}\n{client} (read-only)\n",
+                    "This notebook has no notes yet.",
+                    f"Notebook {client} — a.md\nfrom {first}\nto {tip}\n\n"
+                    f"diff --git a/a.md b/a.md\nindex {old}..{new} 100644\n--- a/a.md\n"
+                    "+++ b/a.md\n@@ -1 +1 @@\n-alpha\n+alpha 2\n\n\n"
+                    f"[askai: notebook {client}]"], said
+                assert "Its notes are saved" not in trace, trace
+
+                thread = "1" * 32
+                said, trace = results([{"action": "add", "file": "b.md", "text": "b"}],
+                                      thread=thread)
+                assert re.fullmatch(saved('Add "b.md" (1 byte)'), said[0]), said
+                assert trace == "The other AI made 1 tool call in 2 turns:\n" \
+                    f"- notes add: {len(said[0])} bytes\nIts notes are saved in the " \
+                    f"shared session repository. The ask-chain thread is {thread}.", trace
+    finally:
+        up.reply = held
+    print("notes texts: the result before the first note and its offset, the "
+          "notebooks before and after it, an empty notebook, an unusable revision, "
+          "a diff without differences, the notice after a turn's diff and the end "
+          "of the trace: PASS")
+
+
 def check_turn_apis(binary, up):
     """With --upstream-tools, the turns of the Responses API, Anthropic's
     Messages, Gemini's generateContent and Gemini's Interactions: the tools
@@ -15146,7 +15243,8 @@ def main():
                       check_man, check_git, check_git_scope, check_git_read, check_turns,
                       check_review,
                       check_notes, check_shared_notes,
-                      check_notes_history, check_notes_cancel, check_turn_apis,
+                      check_notes_history, check_notes_cancel, check_notes_texts,
+                      check_turn_apis,
                       check_attach,
                       check_tasks,
                       lambda binary, up: check_plugin(binary, up, plugin),
