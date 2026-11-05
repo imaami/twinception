@@ -168,9 +168,8 @@ notes_repo (struct notes const *notes,
  * full branch ref to @p repo. Returns 0 or EINVAL.
  */
 extern int
-notes_select (char const *name,
-              size_t      len,
-              char        repo[NOTES_REPO]);
+notes_select (struct cstr_view name,
+              char             repo[NOTES_REPO]);
 
 /** Returns the public selector within a ref made by notes_repo() or
  * notes_select(). The view borrows @p repo.

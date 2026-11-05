@@ -892,7 +892,7 @@ notes_tool_got_books (struct mcp_slot *slot)
 			break;
 		struct cstr_view const name = { (char const *)out.ptr, (size_t)(end - out.ptr) };
 		char repo[NOTES_REPO];
-		if (!cstr_view_equal(name, own) && !notes_select(name.data, name.len, repo))
+		if (!cstr_view_equal(name, own) && !notes_select(name, repo))
 			e = dstr_printf(call->text, "%.*s (read-only)\n", (int)name.len, name.data)
 			  ? 0 : ENOMEM;
 		size_t n = name.len + 1;
@@ -1649,7 +1649,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		enum notes_side side = call->side == NOTES_CLIENT ? NOTES_UPSTREAM : NOTES_CLIENT;
 		notes_repo(notes, mcp_slot_principal(slot), side, call->notebook);
 	} else if (notebook && !cstr_view_equal(selected, CSTR_VIEW("own")) &&
-	           notes_select(selected.data, selected.len, call->notebook)) {
+	           notes_select(selected, call->notebook)) {
 		mcp_slot_tell(slot, CSTR_VIEW("The notebook must be own or a selector returned by "
 		                              "action notebooks (participant/principal/side)."),
 		              TOOL_FAILED);

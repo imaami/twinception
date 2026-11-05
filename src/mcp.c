@@ -5640,6 +5640,33 @@ mcp_req_intent_saved (struct mcp_req *req,
 	mcp_req_enter(req, PHASE_CALLS);
 }
 
+/* Ends the call in @p slot with the result @p saved that a resumed job
+ * stored: the output, whether the call failed, the notebook that the output
+ * shows and the numbered lines of a git read. Returns 0, EILSEQ if @p saved
+ * is not valid, or ENOMEM.
+ */
+static int
+mcp_slot_replay (struct mcp_slot    *slot,
+                 struct json_object *saved)
+{
+	struct cstr_view const notebook = jb_view(jb_get(saved, "notebook"));
+	struct cstr_view const text = jb_view(jb_get(saved, "text"));
+	struct json_object *source = jb_get(saved, "source");
+	char repo[NOTES_REPO];
+	if (notebook.data && notes_select(notebook, repo))
+		return EILSEQ;
+	slot->shows = notebook.data;
+	int e = 0;
+	if (source && slot->req->review)
+		slot->read = review_read_create_json(source, text, &e);
+	if (e)
+		return e == EINVAL ? EILSEQ : e;
+	slot->start = loop_clock();
+	slot->skip = jb_uint(jb_get(saved, "skip"), 0);
+	mcp_slot_result(slot, ESC_VIEW(text), json_object_get_boolean(jb_get(saved, "failed")));
+	return 0;
+}
+
 /** Launches the next tool call of the turn of @p req in its slot. A call
  *  of a tool with KF_SERIAL and the call after it wait until the results
  *  before them are written. The call goes to the lent tool of its name, or
@@ -5693,27 +5720,9 @@ mcp_req_call_launch (struct mcp_req *req)
 	mcp_req_notify_tool(req, tool->name.data);
 	loop_ready_bulk(mcp->loop, &req->step);
 	if (saved) {
-		size_t len = 0;
-		char const *notebook = jb_str(jb_get(saved, "notebook"), &len);
-		char repo[NOTES_REPO];
-		if (notebook && notes_select(notebook, len, repo)) {
-			mcp_req_fail(req, EILSEQ);
-			return;
-		}
-		slot->shows = notebook;
-		char const *text = jb_str(jb_get(saved, "text"), &len);
-		struct json_object *source = jb_get(saved, "source");
-		if (source && req->review) {
-			int e = 0;
-			slot->read = review_read_create_json(source, (struct cstr_view){ text, len }, &e);
-			if (e) {
-				mcp_req_fail(req, e == EINVAL ? EILSEQ : e);
-				return;
-			}
-		}
-		slot->start = loop_clock();
-		slot->skip = jb_uint(jb_get(saved, "skip"), 0);
-		mcp_slot_result(slot, ESC(text, len), json_object_get_boolean(jb_get(saved, "failed")));
+		int e = mcp_slot_replay(slot, saved);
+		if (e)
+			mcp_req_fail(req, e);
 		return;
 	}
 	if (id == TOOL_MAX)

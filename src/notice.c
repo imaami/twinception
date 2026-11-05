@@ -26,7 +26,8 @@ notice_arg (char        conv,
 	char repo[NOTES_REPO];
 	char const *end = conv == 's' ? memchr(s, ']', len) : nullptr;
 	if (end)
-		return notes_select(s, (size_t)(end - s), repo) ? 0 : (size_t)(end - s);
+		return notes_select((struct cstr_view){ s, (size_t)(end - s) }, repo) ? 0
+		                                                                      : (size_t)(end - s);
 	size_t n = 0;
 	while (conv == 'u' && n < len && s[n] >= '0' && s[n] <= '9')
 		++n;

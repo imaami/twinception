@@ -342,29 +342,31 @@ notes_repo (struct notes const *notes,
 }
 
 int
-notes_select (char const *name,
-              size_t      len,
-              char        repo[NOTES_REPO])
+notes_select (struct cstr_view name,
+              char             repo[NOTES_REPO])
 {
-	if (!name || !len || sizeof BRANCH + len > NOTES_REPO)
+	if (!name.data || !name.len || sizeof BRANCH + name.len > NOTES_REPO)
 		return EINVAL;
-	char const *slash = memchr(name, '/', len);
-	size_t participant = slash ? (size_t)(slash - name) : 0;
-	if (!util_word(name, participant, UTIL_WORD_MAX))
+	char const *slash = memchr(name.data, '/', name.len);
+	size_t const participant = slash ? (size_t)(slash - name.data) : 0;
+	if (!util_word(name.data, participant, UTIL_WORD_MAX))
 		return EINVAL;
-	char const *who = slash + 1;
-	size_t rest = len - participant - 1;
-	slash = memchr(who, '/', rest);
-	size_t n = slash ? (size_t)(slash - who) : 0;
-	if (!((n == 9 && !memcmp(who, "anonymous", 9)) || (n == 16 && util_is_hex(who, n))))
+	struct cstr_view const rest = cstr_view_slice(name, participant + 1, SIZE_MAX);
+	slash = memchr(rest.data, '/', rest.len);
+	if (!slash)
 		return EINVAL;
-	size_t side = rest - n - 1;
-	if (!((side == 6 && !memcmp(slash + 1, "client", 6)) ||
-	      (side == 8 && !memcmp(slash + 1, "upstream", 8))))
+	/* who is "anonymous" or the 16 hexadecimal digits of a principal, as
+	 * notes_repo() writes it. */
+	struct cstr_view const who = { rest.data, (size_t)(slash - rest.data) };
+	struct cstr_view const side = cstr_view_slice(rest, who.len + 1, SIZE_MAX);
+	if ((!cstr_view_equal(who, CSTR_VIEW("anonymous")) &&
+	     (who.len != 16 || !util_is_hex(who.data, who.len))) ||
+	    (!cstr_view_equal(side, CSTR_VIEW("client")) &&
+	     !cstr_view_equal(side, CSTR_VIEW("upstream"))))
 		return EINVAL;
 	memcpy(repo, BRANCH, sizeof BRANCH - 1);
-	memcpy(repo + sizeof BRANCH - 1, name, len);
-	repo[sizeof BRANCH - 1 + len] = '\0';
+	memcpy(repo + sizeof BRANCH - 1, name.data, name.len);
+	repo[sizeof BRANCH - 1 + name.len] = '\0';
 	return 0;
 }
 
