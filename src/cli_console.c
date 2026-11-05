@@ -181,7 +181,6 @@ struct cli_console {
 	bool                             callback_active;
 	bool                             eof_pending;
 	uint8_t                          completion_flags;
-	unsigned char                    input_buffer[4096];
 };
 
 /* Only Readline's callbacks use this bridge. All owned state lives in the
@@ -247,13 +246,12 @@ cli_console_input_done (struct cli_io_job *job)
 {
 	struct cli_console *console = container_of(job, struct cli_console, input_job.job);
 	console->input_working = false;
-	console->input_error = console->terminated ? EINTR : job->error;
-	if (!job->error) {
+	console->input_error = console->terminated ? EINTR : job->blocker.error;
+	if (!job->blocker.error) {
 		ssize_t count = console->input_job.count;
 		console->input_eof = !count;
 		console->input_offset = 0;
 		console->input_size = (size_t)count;
-		memcpy(console->input_buffer, console->input_job.bytes, (size_t)count);
 	}
 }
 
@@ -274,7 +272,7 @@ cli_console_input_ready (struct cli_loop     *loop,
 {
 	(void)events;
 	struct cli_console *console = container_of(ref, struct cli_console, input_ref);
-	ssize_t count = read(ref->fd, console->input_buffer, sizeof console->input_buffer);
+	ssize_t count = read(ref->fd, console->input_job.bytes, sizeof console->input_job.bytes);
 	if (count < 0 && (errno == EAGAIN || errno == EINTR))
 		return;
 	cli_loop_unwatch(loop, ref);
@@ -321,7 +319,7 @@ cli_console_input_arm (struct cli_console *console)
 	}
 	/* Console-only tests may omit a worker for a regular file. */
 	console->input_job.fd = STDIN_FILENO;
-	console->input_job.job.error = cli_console_input_work(&console->input_job.job);
+	console->input_job.job.blocker.error = cli_console_input_work(&console->input_job.job);
 	cli_console_input_done(&console->input_job.job);
 	return console->input_error;
 }
@@ -361,7 +359,7 @@ cli_console_byte (struct cli_console *console)
 		if (console->input_error || console->input_eof)
 			return EOF;
 	}
-	return console->input_buffer[console->input_offset++];
+	return console->input_job.bytes[console->input_offset++];
 }
 
 static int
@@ -769,8 +767,8 @@ cli_console_output_done (struct cli_io_job *job)
 {
 	struct cli_console *console = container_of(job, struct cli_console, output_job.job);
 	console->output_working = false;
-	console->output_error = job->error;
-	if (!job->error)
+	console->output_error = job->blocker.error;
+	if (!job->blocker.error)
 		buf_consume(&console->output_queue, (size_t)console->output_job.count);
 }
 

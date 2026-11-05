@@ -12,7 +12,9 @@ struct cli_io;
 
 /** Embed in the object containing a job's arguments and result. Only work
  * runs on a blocker; done runs on the UI. From successful submission until
- * done, the caller must not access the job or its mutable arguments.
+ * done, the caller must not access the job or its mutable arguments. When
+ * done runs, blocker.error is the value that work returned, or ECANCELED
+ * if work did not run.
  */
 struct cli_io_job {
 	struct blocker_job     blocker;
@@ -20,7 +22,6 @@ struct cli_io_job {
 	struct cli_io         *io;
 	int                 (*work) (struct cli_io_job *job);
 	void                (*done) (struct cli_io_job *job);
-	int                   error;
 };
 
 extern struct cli_io *

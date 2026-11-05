@@ -19,7 +19,6 @@ struct cli_tool {
 	struct cli_stream   stream;
 	struct list         hook;
 	struct cli_client  *client;
-	struct cli_console *console;
 	struct json_object *name;
 	struct json_object *params;
 	cli_tool_done_fn   *done;
@@ -63,7 +62,7 @@ cli_tool_create (struct cli_client  *client,
 	*e = tool ? 0 : ENOMEM;
 	if (!tool)
 		return nullptr;
-	*tool = (struct cli_tool){.client = client, .console = console,
+	*tool = (struct cli_tool){.client = client,
 	                          .name = json_object_get(jb_get(params, "name")),
 	                          .params = json_object_get(params), .flags = flags};
 	list_init(&tool->hook);
@@ -116,12 +115,12 @@ cli_tool_content (struct cli_tool    *tool,
 				struct cstr_view text = cli_client_text(jb_get(block, "text"));
 				if (!text.data)
 					return cli_error_set(error, EPROTO, "Malformed tool content");
-				e = cli_ui_message(tool->console, text);
+				e = cli_ui_message(tool->stream.ui.console, text);
 			} else {
 				dstr_auto label = dstr("[");
 				if (!dstr_cat_n(&label, kind.data, kind.len) || !dstr_cat(&label, " content]"))
 					return ENOMEM;
-				e = cli_ui_message(tool->console, cstr_view_dstr(&label));
+				e = cli_ui_message(tool->stream.ui.console, cstr_view_dstr(&label));
 			}
 			if (e)
 				return e;
@@ -133,7 +132,7 @@ cli_tool_content (struct cli_tool    *tool,
 		return cli_error_set(error, EPROTO, "AskAI returned no tool content");
 	struct cstr_view wire;
 	int e = cli_client_wire(structured, JSON_C_TO_STRING_PRETTY, &wire, error);
-	return e ? e : cli_ui_message(tool->console, wire);
+	return e ? e : cli_ui_message(tool->stream.ui.console, wire);
 }
 
 static int
@@ -157,7 +156,7 @@ cli_tool_finish (struct cli_tool        *tool,
 	struct cli_error detail = *error;
 	if (!e)
 		e = cli_tool_result(tool, result, &detail);
-	return e ? cli_ui_error(tool->console, cli_tool_name(tool), cli_error_text(&detail, e)) : 0;
+	return e ? cli_ui_error(tool->stream.ui.console, cli_tool_name(tool), cli_error_text(&detail, e)) : 0;
 }
 
 int

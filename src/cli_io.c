@@ -70,8 +70,6 @@ cli_io_complete (struct loop *loop,
 	(void)loop;
 	struct blocker_job *blocker = container_of(message, struct blocker_job, done);
 	struct cli_io_job *job = container_of(blocker, struct cli_io_job, blocker);
-	if (blocker->error)
-		job->error = blocker->error;
 	int e = cli_mailbox_post(job->io->mailbox, &job->result, true);
 	if (!e)
 		return;
@@ -94,7 +92,7 @@ static void
 cli_io_work (struct blocker_job *blocker)
 {
 	struct cli_io_job *job = container_of(blocker, struct cli_io_job, blocker);
-	job->error = job->work(job);
+	blocker->error = job->work(job);
 }
 
 struct cli_io *
@@ -152,7 +150,6 @@ cli_io_submit (struct cli_io     *io,
 	if (io->pending == CLI_IO_JOBS)
 		return EAGAIN;
 	job->io = io;
-	job->error = 0;
 	job->blocker = (struct blocker_job){
 		.done = {.fn = cli_io_complete}, .work = cli_io_work, .loop = io->network
 	};

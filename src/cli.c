@@ -120,9 +120,7 @@ struct cli_options {
 	char const  *history_repo;
 	char const  *session_id;
 	char const  *color;
-	struct dstr  prompt;
-	bool         has_prompt;
-	bool         has_system;
+	char const  *prompt;
 	bool         single;
 	bool         simple;
 	bool         multiline;
@@ -210,18 +208,15 @@ cli_args (struct cli_options  *out,
 		switch (c) {
 		case 's': out->socket = optarg; break;
 		case 't': out->tool = optarg; break;
-		case 'p': case 'f': {
-			if (out->has_prompt)
+		case 'p': case 'f':
+			if (out->prompt || out->file)
 				return cli_error_set(error, EINVAL, "Use only one --prompt or --file");
-			int e = c == 'p' && !dstr_cat(&out->prompt, optarg) ? ENOMEM : 0;
-			if (c == 'f')
+			if (c == 'p')
+				out->prompt = optarg;
+			else
 				out->file = optarg;
-			if (e)
-				return e;
-			out->has_prompt = true;
 			break;
-		}
-		case 'S': out->system = optarg; out->has_system = true; break;
+		case 'S': out->system = optarg; break;
 		case '1': out->single = true; break;
 		case 'i': out->simple = true; break;
 		case 'm': out->multiline = true; break;
@@ -454,7 +449,7 @@ cli_work_wait (struct cli *cli,
 	cli->busy = busy;
 	if (!busy && !cli->exit_signal && !cli->quitting)
 		atomic_store(&cli->cancel_io, false);
-	return cli->exit_signal || cli->quitting ? EINTR : work.job.error;
+	return cli->exit_signal || cli->quitting ? EINTR : work.job.blocker.error;
 }
 
 enum cli_history_operation { CLI_HISTORY_OPEN, CLI_HISTORY_INPUT, CLI_HISTORY_TURN, CLI_HISTORY_CLEAR };
@@ -636,7 +631,7 @@ cli_history_open (struct cli       *cli,
 	struct cstr_view parts[] = {
 		CSTR_VIEW("\0participant="), cstr_view_dstr(&cli->client.participant),
 		CSTR_VIEW("\0tool="), cstr_view_dstr(&cli->client.tool),
-		CSTR_VIEW("\0system-policy="), options->has_system ? CSTR_VIEW("override") : CSTR_VIEW("default"),
+		CSTR_VIEW("\0system-policy="), options->system ? CSTR_VIEW("override") : CSTR_VIEW("default"),
 		CSTR_VIEW("\0system="), cstr_view(options->system)
 	};
 	for (size_t i = 0; i < sizeof parts / sizeof *parts; ++i)
@@ -706,7 +701,7 @@ cli_ask (struct cli          *cli,
 	                               "messages", json_object_get(messages), nullptr);
 	if (!args)
 		return ENOMEM;
-	if (cli->options->has_system && jb_set(args, "system", cli_client_string(cstr_view(cli->options->system))))
+	if (cli->options->system && jb_set(args, "system", cli_client_string(cstr_view(cli->options->system))))
 		return ENOMEM;
 	cli_json_auto params = jb_object("name", cli_client_string(cstr_view_dstr(&cli->client.tool)),
 	                                 "arguments", json_object_get(args),
@@ -1072,7 +1067,7 @@ static int
 cli_chat (struct cli       *cli,
           struct cli_error *error)
 {
-	bool initial = cli->options->has_prompt;
+	bool initial = cli->options->prompt || cli->options->file;
 	for (;;) {
 		if (cli->quitting)
 			return 0;
@@ -1130,7 +1125,7 @@ cli_chat (struct cli       *cli,
 		if (!supplied && !list_is_empty(&cli->inputs))
 			continue;
 		if (!supplied && initial) {
-			struct cstr_view text = cstr_view_dstr(&cli->options->prompt);
+			struct cstr_view text = cstr_view(cli->options->prompt);
 			if (cli->options->file) {
 				e = cli_file_read(cli, &prompt, cstr_view(cli->options->file), error);
 				if (e)
@@ -1302,7 +1297,7 @@ int
 main (int    argc,
       char **argv)
 {
-	struct cli_options options = {.prompt = DSTR_INIT, .color = "auto", .reasoning = true};
+	struct cli_options options = {.color = "auto", .reasoning = true};
 	struct cli_error error = {};
 	unsigned exit_signal = 0;
 	/* Before askai-cli opens any file, so that none takes such a number. */
@@ -1313,7 +1308,6 @@ main (int    argc,
 		e = cli_args(&options, argc, argv, &error);
 	if (!e && !options.done)
 		e = cli_run(&options, &error, &exit_signal);
-	dstr_cleanup(&options.prompt);
 	if (e == EINTR && exit_signal)
 		return 128 + (int)exit_signal;
 	if (e) {

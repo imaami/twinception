@@ -28,7 +28,7 @@ static void
 cli_io_test_done (struct cli_io_job *job)
 {
 	struct cli_io_test_job *work = container_of(job, struct cli_io_test_job, job);
-	assert(!job->error);
+	assert(!job->blocker.error);
 	assert(work->value == 123);
 	++*work->completed;
 }

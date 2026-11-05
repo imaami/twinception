@@ -79,7 +79,6 @@ struct cli_network_socket {
 	struct list      hook;
 	struct loop_ref  ref;
 	struct loop_step step;
-	curl_socket_t    fd;
 	int              events;
 };
 
@@ -388,7 +387,7 @@ cli_network_socket_step (struct loop      *loop,
 	struct cli_network_socket *socket = container_of(step, struct cli_network_socket, step);
 	int events = socket->events;
 	socket->events = 0;
-	cli_network_action(container_of(loop, struct cli_network, loop), socket->fd, events);
+	cli_network_action(container_of(loop, struct cli_network, loop), socket->ref.fd, events);
 }
 
 static void
@@ -443,7 +442,6 @@ cli_network_socket (CURL          *easy,
 	socket = calloc(1, sizeof *socket);
 	if (!socket)
 		return -1;
-	socket->fd = fd;
 	socket->ref.fd = -1;
 	socket->step.fn = cli_network_socket_step;
 	int e = loop_watch(&network->loop, &socket->ref, fd, events,
