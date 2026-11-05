@@ -839,7 +839,9 @@ mcp_is_metrics (struct span target)
 	       (target.len == n || target.ptr[n] == '?');
 }
 
-/* The enum metrics_method of @p method, of @p len bytes. */
+/* Returns the enum metrics_method of @p method, of @p len bytes. An empty
+ * method matches the empty name of METHOD_OTHER.
+ */
 static uint8_t
 mcp_method_index (char const *method,
                   size_t      len)
@@ -854,11 +856,8 @@ mcp_method_index (char const *method,
 		[METHOD_TASKS_UPDATE] = CSTR_VIEW_INIT("tasks/update"),
 		[METHOD_TASKS_CANCEL] = CSTR_VIEW_INIT("tasks/cancel"),
 	};
-	struct cstr_view const key = { method, len };
-	uint8_t i = METHOD_N;
-	while (--i && (!names[i].len || !cstr_view_equal(names[i], key)))
-		;
-	return i;
+	size_t i = cstr_view_index(names, METHOD_N, (struct cstr_view){ method, len });
+	return i < METHOD_N ? (uint8_t)i : METHOD_OTHER;
 }
 
 /* Whether an Accept field lists text/event-stream. */

@@ -96,6 +96,32 @@ cstr_view_slice (struct cstr_view text,
 	return text;
 }
 
+/** Returns the index of the first of the @p n views at @p names that equals
+ *  @p key, or @p n if none does.
+ */
+static inline size_t
+cstr_view_index (struct cstr_view const *names,
+                 size_t                  n,
+                 struct cstr_view        key)
+{
+	size_t i = 0;
+	while (i < n && !cstr_view_equal(names[i], key))
+		++i;
+	return i;
+}
+
+/** Drop spaces, tabs, carriage returns and line feeds from the end of
+ *  @p text.
+ */
+static inline struct cstr_view
+cstr_view_trim_end (struct cstr_view text)
+{
+	static char const space[] = " \t\r\n";
+	while (text.len && memchr(space, text.data[text.len - 1], sizeof space - 1))
+		--text.len;
+	return text;
+}
+
 /**
  * Drop spaces and tabs from the start of @p text, and spaces, tabs,
  * carriage returns and line feeds from its end, as from a line of input or
@@ -104,8 +130,7 @@ cstr_view_slice (struct cstr_view text,
 static inline struct cstr_view
 cstr_view_trim (struct cstr_view text)
 {
-	while (text.len && memchr(" \t\r\n", text.data[text.len - 1], 4))
-		--text.len;
+	text = cstr_view_trim_end(text);
 	while (text.len && (*text.data == ' ' || *text.data == '\t')) {
 		++text.data;
 		--text.len;

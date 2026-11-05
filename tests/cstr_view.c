@@ -46,6 +46,18 @@ main (void)
 	assert(cstr_view_equal(cstr_view_trim(CSTR_VIEW("a\0")), CSTR_VIEW("a\0")));
 	assert(!cstr_view_trim(CSTR_VIEW(" \r\n\t")).len);
 	assert(!cstr_view_trim(empty).len);
+	assert(cstr_view_equal(cstr_view_trim_end(CSTR_VIEW(" a \t\r\n")), CSTR_VIEW(" a")));
+	assert(cstr_view_equal(cstr_view_trim_end(CSTR_VIEW("a\0")), CSTR_VIEW("a\0")));
+	assert(!cstr_view_trim_end(empty).len);
+
+	static struct cstr_view const names[] = {
+		CSTR_VIEW_INIT("one"), CSTR_VIEW_INIT("two"), CSTR_VIEW_INIT("t\0o"),
+	};
+	assert(cstr_view_index(names, 3, CSTR_VIEW("two")) == 1);
+	assert(cstr_view_index(names, 3, CSTR_VIEW("t\0o")) == 2);
+	assert(cstr_view_index(names, 3, CSTR_VIEW("t")) == 3);
+	assert(cstr_view_index(names, 3, empty) == 3);
+	assert(cstr_view_index(names, 0, CSTR_VIEW("one")) == 0);
 
 	struct dstr owned = DSTR_INIT;
 	assert(dstr_cat_n(&owned, counted, sizeof counted));
@@ -58,5 +70,5 @@ main (void)
 	assert(!cstr_view_store(text, &owned));
 	assert(cstr_view_equal(cstr_view_dstr(&owned), text));
 	dstr_cleanup(&owned);
-	puts("cstr views: empty values, counted NULs, byte order, bounded slices, trims and stores: PASS");
+	puts("cstr views: empty values, counted NULs, byte order, bounded slices, trims, lookups and stores: PASS");
 }
