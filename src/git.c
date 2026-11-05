@@ -49,6 +49,9 @@ enum {
 	                           set when a call has a HEAD */
 };
 
+static_assert((int)WORD <= (int)REVIEW_NAME_MAX, "a path that git reads fits a location of "
+              "the review record");
+
 /** From SIGTERM to SIGKILL at a git call's deadline. */
 static constexpr uint64_t GIT_GRACE_NS = 1'000'000'000;
 
@@ -721,7 +724,6 @@ git_call_command (struct git_call  *call,
                   struct git const *git,
                   struct git_why   *why)
 {
-	static_assert(WORD == 1024, "the problems say");
 	struct json_object *args = call->args;
 	if (!args)
 		return git_wrong(why, "Tool arguments must be an object.");
@@ -800,7 +802,7 @@ git_call_command (struct git_call  *call,
 	if (takes & PATTERN) {
 		if (!pat.data)
 			return git_wrong(why, "git grep needs a pattern argument: a string of "
-			                 "1 to 1024 bytes.");
+			                 "1 to %d bytes.", WORD);
 	} else if (pattern) {
 		return git_wrong(why, "Only git grep takes a pattern.");
 	}
