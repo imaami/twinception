@@ -5,6 +5,7 @@
 #define TWINCEPTION_SRC_CSTR_VIEW_H_
 
 #include <stddef.h>
+#include <string.h>
 
 struct dstr;
 
@@ -27,9 +28,14 @@ struct cstr_view {
 /** A string literal's bytes, excluding its final NUL. Rejects pointers. */
 #define CSTR_VIEW(s) ((struct cstr_view)CSTR_VIEW_INIT(s))
 
-/** Measure a NUL-terminated string once. A null pointer gives an empty view. */
-extern struct cstr_view
-cstr_view (char const *text);
+/** Measure a NUL-terminated string once. Returns an empty view for a null
+ *  pointer.
+ */
+static inline struct cstr_view
+cstr_view (char const *text)
+{
+	return (struct cstr_view){ text, text ? strlen(text) : 0 };
+}
 
 /** View a dstr's full contents, including embedded NULs, until it changes. */
 extern struct cstr_view
@@ -43,28 +49,51 @@ cstr_view_store (struct cstr_view  text,
                  struct dstr      *dest);
 
 /** Compare all bytes, including embedded NULs. Empty views compare equal. */
-extern bool
+static inline bool
 cstr_view_equal (struct cstr_view left,
-                 struct cstr_view right);
+                 struct cstr_view right)
+{
+	return left.len == right.len &&
+	       (!left.len || !memcmp(left.data, right.data, left.len));
+}
 
 /** Lexicographic byte order: negative, zero or positive, like strcmp(). */
-extern int
+static inline int
 cstr_view_compare (struct cstr_view left,
-                   struct cstr_view right);
+                   struct cstr_view right)
+{
+	size_t common = left.len < right.len ? left.len : right.len;
+	int difference = common ? memcmp(left.data, right.data, common) : 0;
+	return difference ? difference : (left.len > right.len) - (left.len < right.len);
+}
 
 /** Whether text begins with prefix. The empty prefix matches every view. */
-extern bool
+static inline bool
 cstr_view_starts (struct cstr_view text,
-                  struct cstr_view prefix);
+                  struct cstr_view prefix)
+{
+	return text.len >= prefix.len &&
+	       (!prefix.len || !memcmp(text.data, prefix.data, prefix.len));
+}
 
 /**
  * Take up to length bytes starting at offset, clamping both to the view.
  * SIZE_MAX as length takes the remaining bytes. The result references the
  * original storage; slicing does not allocate or seek character boundaries.
  */
-extern struct cstr_view
+static inline struct cstr_view
 cstr_view_slice (struct cstr_view text,
                  size_t           offset,
-                 size_t           length);
+                 size_t           length)
+{
+	if (offset > text.len)
+		offset = text.len;
+	text.len -= offset;
+	if (text.data)
+		text.data += offset;
+	if (text.len > length)
+		text.len = length;
+	return text;
+}
 
 #endif /* TWINCEPTION_SRC_CSTR_VIEW_H_ */
