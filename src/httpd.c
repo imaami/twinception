@@ -1634,7 +1634,9 @@ httpd_conn_body (struct httpd_conn *conn)
 	return NEXT_INPUT;
 }
 
-/* Begin a request: CORS preflights are ours, the rest the application's. */
+/* Begin a request. httpd answers a CORS preflight itself and passes every
+ * other request to the application.
+ */
 static void
 httpd_conn_begin (struct httpd_conn *conn)
 {
@@ -2975,26 +2977,24 @@ httpd_listener_bind (struct httpd_listener *l,
 	return 0;
 }
 
-/* Copy the host of @p len bytes at @p host, the part of a listen address
- * before its last colon, to a->host, without brackets. A host in brackets,
- * and a host with a colon, must be an IPv6 address, which may have a zone
- * after a '%'. Returns 0 or EINVAL.
+/* Copy @p host, the part of a listen address before its last colon, to
+ * a->host without brackets. A host in brackets and a host with a colon
+ * must be an IPv6 address, which may contain a zone after a '%'. Returns 0
+ * or EINVAL.
  */
 static int
 httpd_listen_host (struct httpd_listen_addr *a,
-                   char const               *host,
-                   size_t                    len)
+                   struct cstr_view          host)
 {
-	bool bracket = len && *host == '[';
-	if (bracket && (len < 2 || host[len - 1] != ']'))
+	bool bracket = host.len && *host.data == '[';
+	if (bracket && (host.len < 2 || host.data[host.len - 1] != ']'))
 		return EINVAL;
-	host += bracket;
-	len -= 2 * bracket;
-	if (len >= sizeof a->host)
+	host = cstr_view_slice(host, bracket, host.len - 2 * bracket);
+	if (host.len >= sizeof a->host)
 		return EINVAL;
-	memcpy(a->host, host, len);
-	a->host[len] = '\0';
-	if (!bracket && !memchr(a->host, ':', len))
+	memcpy(a->host, host.data, host.len);
+	a->host[host.len] = '\0';
+	if (!bracket && !memchr(a->host, ':', host.len))
 		return 0;
 	/* inet_pton() does not parse a zone, so the check ends at the '%'. A
 	 * zone must not be empty. getaddrinfo() reads the zone later. */
@@ -3033,7 +3033,7 @@ httpd_listen_addr (char const *text,
 	a.port = at;
 	if (colon) {
 		a.port = colon + 1;
-		*e = httpd_listen_host(&a, at, (size_t)(colon - at));
+		*e = httpd_listen_host(&a, (struct cstr_view){ at, (size_t)(colon - at) });
 		if (*e)
 			return a;
 	}
