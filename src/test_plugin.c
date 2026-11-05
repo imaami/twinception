@@ -44,6 +44,7 @@
 
 #include <json-c/json.h>
 
+#include "compat.h"
 #include "jb.h"
 #include "plugin.h"
 
@@ -490,6 +491,25 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
 	test_plugin_tellf(slot, 0, "foreign %u own %u", foreign, found);
 }
 
+/* The cases of test_misuse, which the argument "case" selects. */
+enum test_plugin_case : uint8_t {
+	TEST_PLUGIN_READY,
+	TEST_PLUGIN_OWN,
+	TEST_PLUGIN_AFTER,
+	TEST_PLUGIN_INVALID,
+	TEST_PLUGIN_HANDLES,
+	TEST_PLUGIN_CASES
+};
+
+/* Each entry is the value of the argument "case" that selects a case. */
+static struct cstr_view const test_plugin_cases[TEST_PLUGIN_CASES] = {
+	[TEST_PLUGIN_READY]   = CSTR_VIEW_INIT("ready"),
+	[TEST_PLUGIN_OWN]     = CSTR_VIEW_INIT("own"),
+	[TEST_PLUGIN_AFTER]   = CSTR_VIEW_INIT("after"),
+	[TEST_PLUGIN_INVALID] = CSTR_VIEW_INIT("invalid"),
+	[TEST_PLUGIN_HANDLES] = CSTR_VIEW_INIT("handles"),
+};
+
 /* Starts a test_misuse call. The kind of test_misuse has no step() and no
  * drop(). The argument "case" selects what the call does:
  * - "ready": the call calls mcp_slot_ready(). The kind has no step(), so
@@ -513,12 +533,9 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 {
 	if (!slot)
 		return;
-	struct json_object *arg = nullptr;
-	(void)json_object_object_get_ex(args, "case", &arg);
-	char const *what = json_object_get_string(arg);
-	if (!what)
-		what = "";
-	if (!strcmp(what, "ready")) {
+	size_t const what = cstr_view_index(test_plugin_cases, TEST_PLUGIN_CASES,
+	                                    test_plugin_string(args, "case"));
+	if (what == TEST_PLUGIN_READY) {
 		mcp_slot_ready(slot);
 		return;
 	}
@@ -529,20 +546,20 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, CSTR_VIEW("The call has no instance."), TOOL_FAILED);
 		return;
 	}
-	if (!strcmp(what, "own")) {
+	switch (what) {
+	case TEST_PLUGIN_OWN:
 		*own = inst;
 		mcp_slot_tell(slot, CSTR_VIEW("own"), 0);
 		return;
-	}
-	if (!strcmp(what, "invalid")) {
+	case TEST_PLUGIN_INVALID:
 		test_plugin_misuse_invalid(slot, loop);
 		return;
-	}
-	if (!strcmp(what, "handles")) {
+	case TEST_PLUGIN_HANDLES:
 		test_plugin_misuse_handles(slot, loop);
 		return;
-	}
-	if (strcmp(what, "after")) {
+	case TEST_PLUGIN_AFTER:
+		break;
+	default:
 		mcp_slot_tell(slot, CSTR_VIEW("The case argument is not known."), TOOL_FAILED);
 		return;
 	}
@@ -568,10 +585,10 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 		mcp_slot_fetched(slot, &response),
 	};
 	unsigned refused = 0;
-	for (size_t k = 0; k < sizeof codes / sizeof *codes; ++k)
+	for (size_t k = 0; k < array_size(codes); ++k)
 		refused += codes[k] == EINVAL;
-	int n = snprintf(inst->last, sizeof inst->last, "refused %u of %zu", refused,
-	                 sizeof codes / sizeof *codes);
+	int const n = snprintf(inst->last, sizeof inst->last, "refused %u of %zu", refused,
+	                       array_size(codes));
 	inst->len = n > 0 && n < (int)sizeof inst->last ? (size_t)n : 0;
 }
 
