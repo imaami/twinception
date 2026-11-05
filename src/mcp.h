@@ -15,6 +15,7 @@
 #include "tool.h"
 
 struct config;
+struct dstr;
 struct git;
 struct ledger;
 struct journal;
@@ -386,6 +387,69 @@ mcp_slot_turn (struct mcp_slot const *slot);
 extern int
 mcp_slot_source (struct mcp_slot            *slot,
                  struct review_source const *src);
+
+/** Sets the selector of the notebook that the call's output shows to
+ *  @p selector, which must stay valid until the kind's drop(). After the
+ *  result of a turn's call that does not fail, askai adds a notice that
+ *  names the notebook, and the journal records the selector. Returns 0,
+ *  EFAULT for nullptr, or EINVAL if the call has ended. This function is
+ *  not exported.
+ */
+extern int
+mcp_slot_shows (struct mcp_slot *slot,
+                char const      *selector);
+
+/** Records that the caller's own notebook has notes. The trace of the ask
+ *  call then says where the notes are. The journal and the checkpoint keep
+ *  the fact. A compaction reads the notes again. Returns 0, EFAULT if
+ *  @p slot is nullptr, or EINVAL if the call has ended. This function is
+ *  not exported.
+ */
+extern int
+mcp_slot_noted (struct mcp_slot *slot);
+
+/**
+ * Attaches a file to the turn of the call, for the attach action of the
+ * notes tool. @p id is the object id of the note, which names the file in
+ * the table of uploads (src/uploads.h).
+ *
+ * If file.ptr is nullptr, the function attaches the file that askai
+ * uploaded for @p id and the owner of the ask call, if the upstream still
+ * keeps it. It stores the size of the file in @p *bytes and returns 0, or
+ * returns ENOENT if no such file is kept. Otherwise it sends @p file to the
+ * upstream's file store as the HTTP request of the call and returns
+ * EINPROGRESS. The kind then parks the call, and its step() takes the
+ * answer with mcp_slot_attached().
+ *
+ * If the context of the ask call has no room for the file, the function
+ * appends why to @p out and returns EFBIG. If askai sends too many HTTP
+ * requests at once, it appends why to @p out and returns EAGAIN. It
+ * returns EFAULT for nullptr, EINVAL if the call has ended, ENOTSUP if the
+ * upstream takes no files, and ENOMEM or the error of the request if those
+ * fail. This function is not exported.
+ */
+extern int
+mcp_slot_attach (struct mcp_slot  *slot,
+                 struct tool_text  id,
+                 struct tool_text  file,
+                 size_t           *bytes,
+                 struct dstr      *out);
+
+/**
+ * Takes the answer to the upload that mcp_slot_attach() sent for the call.
+ * The function attaches the uploaded file of @p bytes bytes to the turn of
+ * the call, keeps it in the table of uploads under the object id @p id if
+ * the upstream says when it expires, and returns 0. With --verbose, it logs
+ * the upload. It returns EINPROGRESS while the answer has not come. If the
+ * upload failed, it appends why to @p out and returns EIO. It returns
+ * EFAULT for nullptr, EINVAL if the call has ended, the error of
+ * mcp_slot_fetched(), or ENOMEM. This function is not exported.
+ */
+extern int
+mcp_slot_attached (struct mcp_slot  *slot,
+                   struct tool_text  id,
+                   size_t            bytes,
+                   struct dstr      *out);
 
 /** Makes the call wait. start() calls it last, if the call goes on after
  *  start() returns. askai can free the call's arguments in this function.
