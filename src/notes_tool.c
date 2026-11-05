@@ -1127,8 +1127,7 @@ notes_tool_call_attached (struct notes_tool_call const *call,
 /* Attaches @p text, the note with the object id @p id, to the turn. If the
  * upstream still stores the file that askai uploaded for this note and
  * owner, askai attaches that file. Otherwise askai uploads the note, or its
- * view if the note is not UTF-8 text. The context must have room for the
- * file.
+ * view if the note is not UTF-8 text. The file must fit in the context.
  */
 static void
 notes_tool_got_attach (struct mcp_slot *slot,
@@ -1313,8 +1312,8 @@ notes_tool_resumed (struct mcp_slot *slot)
 }
 
 /* Handles the list of the notes for a compaction. The list goes into the
- * prompt. If git failed, a line in the prompt says that the notes could
- * not be read.
+ * prompt. If git failed, the function appends the line "[askai: your
+ * notes could not be read.]" instead.
  */
 static void
 notes_tool_compacted (struct mcp_slot *slot)
@@ -1696,9 +1695,9 @@ notes_tool_start (struct mcp_slot    *slot,
 }
 
 /* Returns the definition of the notes tool for the side @p side. Only the
- * definition for clients has the content and thread arguments. The
- * definition for the upstream has the action attach if tool->attach says
- * that the upstream takes files.
+ * definition for clients contains the content and thread arguments. The
+ * definition for the upstream contains the action attach if tool->attach
+ * is set, which means that the upstream accepts files.
  */
 static struct json_object *
 notes_tool_schema (struct notes_tool const *tool,
@@ -1723,7 +1722,7 @@ notes_tool_schema (struct notes_tool const *tool,
 			"content keeps an attached user file. Threads do not partition notes. "
 			"Non-UTF-8 bytes are displayed as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
 	};
-	/* A turn attaches a note if its upstream takes files. */
+	/* A turn can attach a note only if its upstream accepts files. */
 	bool files = side == NOTES_UPSTREAM && tool->attach;
 	size_t most = tool->files_inline;
 	struct json_object *actions = json_object_new_array();
