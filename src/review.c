@@ -475,12 +475,13 @@ review_files_find (struct review_files const *list,
 {
 	*at = list->n;
 	struct cstr_view path = cstr_view_dstr(&key->path);
-	for (size_t i = 0; i < list->n; *at = ++i) {
+	for (size_t i = 0; i < list->n; ++i) {
 		struct review_file const *f = &list->files[i];
 		if (!review_file_with(f, key))
 			continue;
 		if (cstr_view_equal(cstr_view_dstr(&f->path), path))
 			return i;
+		*at = i + 1;
 	}
 	return list->n;
 }
