@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cstr_view.h"
+
 struct json_object;
 struct mcp_slot;
 
@@ -25,15 +27,6 @@ enum {
 	TOOL_TELL_MAX   =  4U << 10U,  /**< bytes mcp_slot_tell() takes */
 	TOOL_OUTPUT_MAX = 16U << 20U,  /**< bytes a call may write */
 };
-
-/** UTF-8 text, its giver's. */
-struct tool_text {
-	char const *ptr;
-	size_t      len;
-};
-
-/** A string literal's text; a pointer does not compile. */
-#define TOOL_TEXT(s) ((struct tool_text){ "" s, sizeof s - 1 })
 
 enum tool_flag : uint64_t {
 	TOOL_LENT   = 1U << 0U,  /**< turns may call it, as the role grants */

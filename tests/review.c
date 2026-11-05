@@ -55,10 +55,10 @@ same (char const *file,
 #define FINDINGS "[askai: your findings; findings action show with an id gives one's history:]\n"
 #define READS "[askai: what you read with git read in this call:]\n"
 
-static struct tool_text
+static struct cstr_view
 text (char const *s)
 {
-	return (struct tool_text){ s, strlen(s) };
+	return (struct cstr_view){ s, strlen(s) };
 }
 
 /* The text of @p ds, for SAME(). */
@@ -208,7 +208,7 @@ shown_in (struct review *r,
 	struct dstr out = DSTR_INIT;
 	struct review_source src;
 	output(&out, &src, repo, commit, path, first, last, total, false);
-	struct tool_text o = { dstr_get(&out), dstr_len(&out) };
+	struct cstr_view o = { dstr_get(&out), dstr_len(&out) };
 	int e;
 	struct review_read *read = review_read_create(&src, o, &e);
 	if (!e)
@@ -379,7 +379,7 @@ test_seen (void)
 	struct dstr out = DSTR_INIT;
 	struct review_source src;
 	output(&out, &src, "p", A, "src/a.c", 1, 3, 3, true);
-	struct tool_text o = { dstr_get(&out), dstr_len(&out) };
+	struct cstr_view o = { dstr_get(&out), dstr_len(&out) };
 	int e;
 	struct review_read *read = review_read_create(&src, o, &e);
 	CHECK(read && !e);
@@ -389,13 +389,13 @@ test_seen (void)
 	CHECK(!review_shown(r, read, o, 0, src.at + src.len, 1) && !review_answered(r));
 	lines_of(r, "lines 1-3: all 3 lines", __LINE__);
 	/* An output too short for the read, and one with too many lines. */
-	CHECK(review_shown(r, read, (struct tool_text){ o.ptr, src.at + src.len - 1 }, 0,
+	CHECK(review_shown(r, read, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0,
 	                   SIZE_MAX, 1) == EINVAL);
 	struct dstr more = DSTR_INIT;
 	CHECK(dstr_printf(&more, "[h]\n"));
 	for (int i = 0; i < 13; ++i)
 		CHECK(dstr_printf(&more, "a\n"));
-	CHECK(review_shown(r, read, (struct tool_text){ dstr_get(&more), dstr_len(&more) }, 0,
+	CHECK(review_shown(r, read, (struct cstr_view){ dstr_get(&more), dstr_len(&more) }, 0,
 	                   SIZE_MAX, 1) == EINVAL);
 	dstr_cleanup(&more);
 	review_read_destroy(&read);
@@ -403,7 +403,7 @@ test_seen (void)
 
 	/* Sources that do not match their output or are not valid. */
 	output(&out, &src, "p", A, "src/a.c", 1, 3, 3, false);
-	o = (struct tool_text){ dstr_get(&out), dstr_len(&out) };
+	o = (struct cstr_view){ dstr_get(&out), dstr_len(&out) };
 	struct review_source bad[] = {
 		src, src, src, src, src, src, src, src, src, src, src, src, src,
 	};
@@ -413,11 +413,11 @@ test_seen (void)
 	bad[3].commit = text(A "0");           /* 41 digits */
 	bad[4].commit = text("55ACA1E8682351E4C39A92B040721DEF3F005402");
 	bad[5].repo = text("");
-	bad[6].path = (struct tool_text){ "a\0b", 3 };
+	bad[6].path = (struct cstr_view){ "a\0b", 3 };
 	bad[7].total = 2;                      /* fewer lines than the last */
 	bad[8].len = 0;
 	bad[9].at = o.len;                     /* past the output */
-	bad[10].path = (struct tool_text){ "\xff", 1 };
+	bad[10].path = (struct cstr_view){ "\xff", 1 };
 	bad[11].last = 0;
 	bad[12].at = SIZE_MAX;
 	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
@@ -1492,7 +1492,7 @@ test_json (void)
 	struct dstr out = DSTR_INIT;
 	struct review_source src;
 	output(&out, &src, "proj", A, "src/a.c", 3, 5, 9, false);
-	struct tool_text o = { dstr_get(&out), dstr_len(&out) };
+	struct cstr_view o = { dstr_get(&out), dstr_len(&out) };
 	struct review_read *read = review_read_create(&src, o, &e);
 	CHECK(read && !e);
 	struct json_object *rj = review_read_json(read, &e);
@@ -1508,7 +1508,7 @@ test_json (void)
 	review_destroy(&r);
 	review_read_destroy(&copy);
 	/* The output must still hold the lines, and each member must be there. */
-	CHECK(!review_read_restore(rj, (struct tool_text){ o.ptr, 20 }, &e) && e == EINVAL);
+	CHECK(!review_read_restore(rj, (struct cstr_view){ o.data, 20 }, &e) && e == EINVAL);
 	char const *const members[] = { "repo", "commit", "path", "at", "len", "first", "last",
 	                                "total" };
 	for (size_t i = 0; i < sizeof members / sizeof *members; ++i) {
@@ -1561,18 +1561,18 @@ test_nullptr (void)
 	struct review_read *no_read = nullptr;
 	review_read_destroy(nullptr);
 	review_read_destroy(&no_read);
-	struct tool_text out = { "x\n", 2 };
+	struct cstr_view out = { "x\n", 2 };
 	CHECK(!review_read_create(nullptr, out, &e) && e == EFAULT);
 	struct review_source src = { text("p"), text(A), text("a"), 0, 2, 1, 1, 0 };
 	CHECK(!review_read_create(&src, out, nullptr));
 	e = 0;
-	CHECK(!review_read_create(&src, (struct tool_text){ nullptr, 2 }, &e) && e == EFAULT);
+	CHECK(!review_read_create(&src, (struct cstr_view){ nullptr, 2 }, &e) && e == EFAULT);
 	struct review_read *read = review_read_create(&src, out, &e);
 	CHECK(read && !e);
 	struct review *r = fresh();
 	CHECK(review_shown(nullptr, read, out, 0, SIZE_MAX, 1) == EFAULT);
 	CHECK(review_shown(r, nullptr, out, 0, SIZE_MAX, 1) == EFAULT);
-	CHECK(review_shown(r, read, (struct tool_text){ nullptr, 2 }, 0, SIZE_MAX, 1) == EFAULT);
+	CHECK(review_shown(r, read, (struct cstr_view){ nullptr, 2 }, 0, SIZE_MAX, 1) == EFAULT);
 	CHECK(review_answered(nullptr) == EFAULT);
 	review_compacted(nullptr);
 	struct dstr d = DSTR_INIT;

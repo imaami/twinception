@@ -112,7 +112,7 @@ struct stream {
 	tool_mask                upstream;   /**< the tools that the upstream may
 	                                          call in the turns of its ask
 	                                          calls */
-	struct tool_text         who;        /**< the client for the log, as
+	struct cstr_view         who;        /**< the client for the log, as
 	                                          struct policy_grant names it.
 	                                          httpd clears the member after
 	                                          on_head() returns, because a

@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 struct json_object;
-struct tool_text;
+struct cstr_view;
 
 /** Returns a JSON string that joins the texts @p a, @p b and @p c. */
 extern struct json_object *
@@ -21,7 +21,7 @@ schema_text3 (char const *a,
 
 /** Returns a JSON array of the @p n texts at @p names. */
 extern struct json_object *
-schema_names (struct tool_text const *names,
+schema_names (struct cstr_view const *names,
               size_t                  n);
 
 /**

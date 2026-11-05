@@ -17,14 +17,14 @@
 
 #define NAME(s) { "" s, sizeof s - 1 }
 
-struct tool_text const review_state_names[REVIEW_STATES] = {
+struct cstr_view const review_state_names[REVIEW_STATES] = {
 	[REVIEW_CANDIDATE] = NAME("candidate"),
 	[REVIEW_VERIFIED]  = NAME("verified"),
 	[REVIEW_DISPROVED] = NAME("disproved"),
 	[REVIEW_RETRACTED] = NAME("retracted"),
 };
 
-struct tool_text const review_action_names[REVIEW_ACTIONS] = {
+struct cstr_view const review_action_names[REVIEW_ACTIONS] = {
 	[REVIEW_ADD]    = NAME("add"),
 	[REVIEW_UPDATE] = NAME("update"),
 	[REVIEW_SHOW]   = NAME("show"),
@@ -132,7 +132,7 @@ struct review {
 #define REFUSE(out, ...) (dstr_printf(out, __VA_ARGS__) ? EINVAL : ENOMEM)
 
 /**
- * Find a JSON string's index in a @ref tool_text array.
+ * Find a JSON string's index in a @ref cstr_view array.
  *
  * @param v     The JSON string to find
  * @param names The array of strings to search
@@ -142,7 +142,7 @@ struct review {
  */
 static size_t
 review_name_of (struct json_object     *v,
-                struct tool_text const *names,
+                struct cstr_view const *names,
                 size_t                  n)
 {
 	char const *s = v ? jb_text(v) : nullptr;
@@ -152,7 +152,7 @@ review_name_of (struct json_object     *v,
 		n = 0;
 		do {
 			if (len == names[n].len &&
-			    (!len || !memcmp(names[n].ptr, s, len)))
+			    (!len || !memcmp(names[n].data, s, len)))
 				break;
 		} while (++n < num);
 	}
@@ -195,10 +195,10 @@ review_text_fini (struct review_text *t)
  * repository name or a path must be.
  */
 static bool
-review_word (struct tool_text t)
+review_word (struct cstr_view t)
 {
-	return t.ptr && t.len && t.len <= REVIEW_WORD && jb_utf8(t.ptr, t.len) == t.len &&
-	       !memchr(t.ptr, '\0', t.len);
+	return t.data && t.len && t.len <= REVIEW_WORD && jb_utf8(t.data, t.len) == t.len &&
+	       !memchr(t.data, '\0', t.len);
 }
 
 /* Returns the number of newlines in the @p n bytes at @p p. */
@@ -315,35 +315,35 @@ review_destroy (struct review **p_review)
 
 struct review_read *
 review_read_create (struct review_source const *src,
-                    struct tool_text            out,
+                    struct cstr_view            out,
                     int                        *e)
 {
 	if (!e)
 		return nullptr;
-	if (!src || (!out.ptr && out.len)) {
+	if (!src || (!out.data && out.len)) {
 		*e = EFAULT;
 		return nullptr;
 	}
 	bool within = src->len && src->len <= out.len && src->at <= out.len - src->len;
-	size_t lines = within ? review_newlines(out.ptr + src->at, src->len) : 0;
+	size_t lines = within ? review_newlines(out.data + src->at, src->len) : 0;
 	/* A newline ends each line, but the last may have none. */
 	size_t want = (size_t)(src->last - src->first) + 1;
-	if (!src->commit.ptr || !util_is_oid(src->commit.ptr, src->commit.len) ||
+	if (!src->commit.data || !util_is_oid(src->commit.data, src->commit.len) ||
 	    !review_word(src->repo) || !review_word(src->path) || !src->first ||
 	    src->last < src->first || (src->total && src->total < src->last) || !within ||
-	    lines + (out.ptr[src->at + src->len - 1] != '\n') != want) {
+	    lines + (out.data[src->at + src->len - 1] != '\n') != want) {
 		*e = EINVAL;
 		return nullptr;
 	}
 	struct review_read *read = calloc(1, sizeof *read);
-	*e = !read ? ENOMEM : review_text_set(&read->file.repo, src->repo.ptr, src->repo.len);
+	*e = !read ? ENOMEM : review_text_set(&read->file.repo, src->repo.data, src->repo.len);
 	if (!*e)
-		*e = review_text_set(&read->file.path, src->path.ptr, src->path.len);
+		*e = review_text_set(&read->file.path, src->path.data, src->path.len);
 	if (*e) {
 		review_read_destroy(&read);
 		return nullptr;
 	}
-	memcpy(read->file.commit, src->commit.ptr, src->commit.len);
+	memcpy(read->file.commit, src->commit.data, src->commit.len);
 	read->file.total = src->total;
 	read->at = src->at;
 	read->len = src->len;
@@ -406,11 +406,11 @@ review_read_json (struct review_read const *read,
 static bool
 review_get_text (struct json_object const *obj,
                  char const               *key,
-                 struct tool_text         *t)
+                 struct cstr_view         *t)
 {
 	size_t len = 0;
 	char const *s = jb_str(jb_get(obj, key), &len);
-	*t = (struct tool_text){ s, len };
+	*t = (struct cstr_view){ s, len };
 	return s;
 }
 
@@ -430,7 +430,7 @@ review_get_number (struct json_object const *obj,
 
 struct review_read *
 review_read_restore (struct json_object const *obj,
-                     struct tool_text          out,
+                     struct cstr_view          out,
                      int                      *e)
 {
 	if (!e)
@@ -591,12 +591,12 @@ review_log (struct review            *r,
 int
 review_shown (struct review            *r,
               struct review_read const *read,
-              struct tool_text          out,
+              struct cstr_view          out,
               size_t                    skip,
               size_t                    window,
               uint32_t                  turn)
 {
-	if (!r || !read || (!out.ptr && out.len))
+	if (!r || !read || (!out.data && out.len))
 		return EFAULT;
 	if (read->len > out.len || read->at > out.len - read->len)
 		return EINVAL;
@@ -607,7 +607,7 @@ review_shown (struct review            *r,
 	size_t hi = window < end - skip ? skip + window : end;
 	if (lo >= hi)
 		return 0;
-	char const *p = out.ptr;
+	char const *p = out.data;
 	uint64_t line = read->first + (uint64_t)review_newlines(p + read->at, lo - read->at);
 	/* Skip a line that the start of the window cuts. */
 	if (lo > read->at && p[lo - 1] != '\n') {
@@ -713,7 +713,7 @@ static void
 review_out_state (struct review_out *o,
                   uint8_t            state)
 {
-	review_out_put(o, review_state_names[state].ptr, review_state_names[state].len);
+	review_out_put(o, review_state_names[state].data, review_state_names[state].len);
 }
 
 /* Write @p n in decimal to @p o. */
@@ -993,8 +993,8 @@ review_out_history (struct review_out   *o,
  * empty. path and first to last are the file and its lines.
  */
 struct review_place {
-	struct tool_text prefix;
-	struct tool_text path;   /* ptr is nullptr if there is no location */
+	struct cstr_view prefix;
+	struct cstr_view path;   /* ptr is nullptr if there is no location */
 	uint32_t         first;
 	uint32_t         last;
 };
@@ -1005,11 +1005,11 @@ struct review_place {
  */
 static bool
 review_place_parse (struct review_place *p,
-                    struct tool_text     t)
+                    struct cstr_view     t)
 {
 	static char const head[] = "HEAD:";
-	char const *end = t.ptr + t.len;
-	char const *colon = memrchr(t.ptr, ':', t.len);
+	char const *end = t.data + t.len;
+	char const *colon = memrchr(t.data, ':', t.len);
 	if (!colon)
 		return false;
 	char const *q = colon + 1;
@@ -1020,20 +1020,20 @@ review_place_parse (struct review_place *p,
 		q += 1 + util_digits(q + 1, (size_t)(end - q - 1), UINT32_MAX, &last);
 	if (!first || last < first || q != end)
 		return false;
-	size_t before = (size_t)(colon - t.ptr);
+	size_t before = (size_t)(colon - t.data);
 	size_t hex = 0;
-	while (hex < before && hex <= 64 && util_is_hex(t.ptr + hex, 1))
+	while (hex < before && hex <= 64 && util_is_hex(t.data + hex, 1))
 		++hex;
 	/* 7 to 64 hexadecimal digits and a ':' before the path are a commit. */
-	bool prefixed = hex >= 7 && hex <= 64 && hex < before && t.ptr[hex] == ':';
+	bool prefixed = hex >= 7 && hex <= 64 && hex < before && t.data[hex] == ':';
 	size_t skip = prefixed ? hex + 1 : 0;
-	if (before > sizeof head - 1 && !memcmp(t.ptr, head, sizeof head - 1))
+	if (before > sizeof head - 1 && !memcmp(t.data, head, sizeof head - 1))
 		skip = sizeof head - 1;
-	struct tool_text path = { t.ptr + skip, before - skip };
+	struct cstr_view path = { t.data + skip, before - skip };
 	if (!review_word(path))
 		return false;
 	*p = (struct review_place){
-		.prefix = { t.ptr, prefixed ? hex : 0 },
+		.prefix = { t.data, prefixed ? hex : 0 },
 		.path   = path,
 		.first  = (uint32_t)first,
 		.last   = (uint32_t)last,
@@ -1044,9 +1044,9 @@ review_place_parse (struct review_place *p,
 /* Whether the file @p f was read at a commit that starts with @p prefix. */
 static bool
 review_file_at (struct review_file const *f,
-                struct tool_text          prefix)
+                struct cstr_view          prefix)
 {
-	return !prefix.len || !memcmp(f->commit, prefix.ptr, prefix.len);
+	return !prefix.len || !memcmp(f->commit, prefix.data, prefix.len);
 }
 
 /* Find the range of @p f that holds line @p a, and follow the adjoining
@@ -1104,7 +1104,7 @@ review_covering (struct review const       *r,
 	*most = nullptr;
 	for (size_t i = 0; i < r->log.n; ++i) {
 		struct review_file const *f = &r->log.files[i];
-		if (!review_text_is(&f->path, p->path.ptr, p->path.len) ||
+		if (!review_text_is(&f->path, p->path.data, p->path.len) ||
 		    !review_file_at(f, p->prefix))
 			continue;
 		if (!*most || ((*most)->total && (!f->total || f->total > (*most)->total)))
@@ -1133,7 +1133,7 @@ review_covering (struct review const       *r,
 static size_t
 review_resolve (struct review const       *r,
                 struct review_place const *p,
-                struct tool_text           found[4])
+                struct cstr_view           found[4])
 {
 	size_t n = 0;
 	size_t tail = p->path.len;
@@ -1141,27 +1141,27 @@ review_resolve (struct review const       *r,
 		struct review_file const *f = &r->log.files[i];
 		if (!review_file_at(f, p->prefix))
 			continue;
-		if (review_text_is(&f->path, p->path.ptr, tail)) {
+		if (review_text_is(&f->path, p->path.data, tail)) {
 			found[0] = p->path;
 			return 1;
 		}
 		if (f->path.len <= tail || f->path.ptr[f->path.len - tail - 1] != '/' ||
-		    memcmp(f->path.ptr + f->path.len - tail, p->path.ptr, tail))
+		    memcmp(f->path.ptr + f->path.len - tail, p->path.data, tail))
 			continue;
 		size_t k = 0;
 		while (k < n && (found[k].len != f->path.len ||
-		                 memcmp(found[k].ptr, f->path.ptr, f->path.len)))
+		                 memcmp(found[k].data, f->path.ptr, f->path.len)))
 			++k;
 		if (k == n && n < 4)
-			found[n++] = (struct tool_text){ f->path.ptr, f->path.len };
+			found[n++] = (struct cstr_view){ f->path.ptr, f->path.len };
 	}
 	return n;
 }
 
 /* The arguments of an add or update call. */
 struct review_args {
-	struct tool_text    claim;     /* ptr is nullptr if there is none */
-	struct tool_text    evidence;  /* likewise */
+	struct cstr_view    claim;     /* ptr is nullptr if there is none */
+	struct cstr_view    evidence;  /* likewise */
 	struct review_place place;     /* place.path.ptr is nullptr if
 	                                  there is none */
 	uint8_t             state;     /* REVIEW_STATES if there is none */
@@ -1181,11 +1181,11 @@ static int
 review_args_text (struct json_object *args,
                   char const         *key,
                   review_kept_fn     *kept,
-                  struct tool_text   *t,
+                  struct cstr_view   *t,
                   bool               *cut,
                   struct dstr        *out)
 {
-	*t = (struct tool_text){};
+	*t = (struct cstr_view){};
 	struct json_object *v = jb_get(args, key);
 	if (!v)
 		return 0;
@@ -1202,7 +1202,7 @@ review_args_text (struct json_object *args,
 		return REFUSE(out, "The %s has only askai's [askai: ...] lines, which askai "
 		              "adds to tool results. Give the %s itself.", key, key);
 	*cut = n < len;
-	*t = (struct tool_text){ s, n };
+	*t = (struct cstr_view){ s, n };
 	return 0;
 }
 
@@ -1218,11 +1218,11 @@ review_args_get (struct review_args *a,
 	static_assert(REVIEW_STATES == 4, "the problem names the states");
 	*a = (struct review_args){ .state = REVIEW_STATES };
 	bool cut[2] = {};
-	struct tool_text location;
+	struct cstr_view location;
 	int e = review_args_text(args, "claim", kept, &a->claim, &cut[0], out);
 	if (!e)
 		e = review_args_text(args, "location", nullptr, &location, &(bool){}, out);
-	if (!e && location.ptr && !review_place_parse(&a->place, location))
+	if (!e && location.data && !review_place_parse(&a->place, location))
 		e = REFUSE(out, "The location must be path:line or path:first-last, such as "
 		           "src/mcp.c:120-140.");
 	struct json_object *state = jb_get(args, "state");
@@ -1264,26 +1264,26 @@ review_check_place (struct review const       *r,
                     struct dstr               *out)
 {
 	*read = nullptr;
-	char const *name = review_state_names[state].ptr;
+	char const *name = review_state_names[state].data;
 	if (review_gated(state) && !(r->flags & REVIEW_READS))
 		return REFUSE(out, "This ask call has no git tool, so a finding cannot be verified "
 		              "or disproved here; keep it a candidate, or retract it.");
-	if (!p->path.ptr)
+	if (!p->path.data)
 		return !review_gated(state) ? 0
 		     : REFUSE(out, "%s needs a location: the lines that show it, such as "
 		              "src/mcp.c:120-140, which you read with git read.", name);
-	struct tool_text found[4];
+	struct cstr_view found[4];
 	size_t n = review_resolve(r, p, found);
 	if (n == 1)
 		p->path = found[0];
 	if (n > 1 && (given || review_gated(state))) {
 		/* Name up to three paths, then "and others". */
 		size_t shown = n < 3 ? n : 3;
-		bool ok = dstr_printf(out, "%.*s matches %.*s", (int)p->path.len, p->path.ptr,
-		                      (int)found[0].len, found[0].ptr);
+		bool ok = dstr_printf(out, "%.*s matches %.*s", (int)p->path.len, p->path.data,
+		                      (int)found[0].len, found[0].data);
 		for (size_t i = 1; ok && i < shown; ++i)
 			ok = dstr_printf(out, "%s%.*s", i + 1 == shown && n == shown ? " and " : ", ",
-			                 (int)found[i].len, found[i].ptr);
+			                 (int)found[i].len, found[i].data);
 		if (ok && n > shown)
 			ok = dstr_printf(out, " and others");
 		return ok && dstr_printf(out, " in your read log; give \"location\" with the whole "
@@ -1300,7 +1300,7 @@ review_check_place (struct review const       *r,
 	if (most && most->total && most->total < p->last)
 		return REFUSE(out, "%.*s has %" PRIu32 " line%s at %.*s, so line %" PRIu32
 		              " is past its end; give a location within lines 1 to %" PRIu32 ".",
-		              len, p->path.ptr, most->total, most->total == 1 ? "" : "s",
+		              len, p->path.data, most->total, most->total == 1 ? "" : "s",
 		              REVIEW_SHORT, most->commit, p->last, most->total);
 	/* Choose the read to suggest. If f, the best covering file, can have
 	 * line p->last, the read goes on at line reach + 1 at the commit of f.
@@ -1310,10 +1310,10 @@ review_check_place (struct review const       *r,
 	bool shorter = f && f->total && f->total < p->last;
 	struct review_file const *to = shorter ? most : f;
 	bool one = p->first == p->last;
-	struct tool_text rev = p->prefix.len ? p->prefix : TOOL_TEXT("HEAD");
+	struct cstr_view rev = p->prefix.len ? p->prefix : CSTR_VIEW("HEAD");
 	bool ok = dstr_printf(out, "%s needs the lines of its location in your read log, and "
-	                      "%.*s%s%.*s line%s %" PRIu32, name, len, p->path.ptr,
-	                      p->prefix.len ? " at " : "", (int)p->prefix.len, rev.ptr,
+	                      "%.*s%s%.*s line%s %" PRIu32, name, len, p->path.data,
+	                      p->prefix.len ? " at " : "", (int)p->prefix.len, rev.data,
 	                      one ? "" : "s", p->first) &&
 	          (one || dstr_printf(out, "-%" PRIu32, p->last));
 	if (ok && !f)
@@ -1338,15 +1338,15 @@ review_check_place (struct review const       *r,
 		                   "that the log has, or keep the finding a candidate.")
 		       ? EINVAL : ENOMEM;
 	if (to)
-		rev = (struct tool_text){ to->commit, REVIEW_SHORT };
+		rev = (struct cstr_view){ to->commit, REVIEW_SHORT };
 	bool rest = to && !shorter;
 	char path[6 * REVIEW_WORD];
-	size_t escaped = jb_escape(path, p->path.ptr, p->path.len);
+	size_t escaped = jb_escape(path, p->path.data, p->path.len);
 	return ok && dstr_printf(out, " Read %s with the git tool's read command, with "
 	                         "\"revisions\": [\"%.*s:%.*s\"] and \"line\": %" PRIu32 "%s. "
 	                         "The log takes the lines of a read once you have seen them, so "
 	                         "call again in a later turn.", rest ? "the rest" : "them",
-	                         (int)rev.len, rev.ptr, (int)escaped, path,
+	                         (int)rev.len, rev.data, (int)escaped, path,
 	                         rest ? reach + 1 : p->first,
 	                         to ? ", in as many calls as it takes"
 	                         : n ? "" : ", where the path is the file's whole path from the top "
@@ -1392,7 +1392,7 @@ review_out_tail (struct review_out           *o,
                  struct review_finding const *f,
                  uint8_t                      cut)
 {
-	static struct tool_text const texts[] = {
+	static struct cstr_view const texts[] = {
 		[CUT_CLAIM]                = NAME("the claim"),
 		[CUT_EVIDENCE]             = NAME("the evidence"),
 		[CUT_CLAIM | CUT_EVIDENCE] = NAME("the claim and the evidence"),
@@ -1403,7 +1403,7 @@ review_out_tail (struct review_out           *o,
 	if (!cut)
 		return;
 	PUT(o, " askai left out the [askai: ...] lines at the end of ");
-	review_out_put(o, texts[cut].ptr, texts[cut].len);
+	review_out_put(o, texts[cut].data, texts[cut].len);
 	PUT(o, ". askai adds those lines to tool results, and they are not part of the "
 	       "finding.");
 }
@@ -1432,9 +1432,9 @@ review_add (struct review      *r,
 	e = review_check_place(r, &a.place, state, true, &read, out);
 	if (e)
 		return e;
-	if (review_gated(state) && !a.evidence.ptr)
+	if (review_gated(state) && !a.evidence.data)
 		return REFUSE(out, "%s needs evidence: what you read that shows it%s.",
-		              review_state_names[state].ptr,
+		              review_state_names[state].data,
 		              state == REVIEW_DISPROVED ? " false" : "");
 	struct review_finding f = { .first = a.place.first, .last = a.place.last };
 	struct review_finding *all = util_room(r->findings, &r->cap_findings, r->n_findings + 1,
@@ -1448,12 +1448,12 @@ review_add (struct review      *r,
 	if (!e) {
 		f.changes[0] = (struct review_change){ .turn = turn, .state = state };
 		f.n = 1;
-		e = review_text_set(&f.claim, a.claim.ptr, a.claim.len);
+		e = review_text_set(&f.claim, a.claim.data, a.claim.len);
 	}
-	if (!e && a.place.path.ptr)
-		e = review_text_set(&f.path, a.place.path.ptr, a.place.path.len);
-	if (!e && a.evidence.ptr)
-		e = review_text_set(&f.changes[0].evidence, a.evidence.ptr, a.evidence.len);
+	if (!e && a.place.path.data)
+		e = review_text_set(&f.path, a.place.path.data, a.place.path.len);
+	if (!e && a.evidence.data)
+		e = review_text_set(&f.changes[0].evidence, a.evidence.data, a.evidence.len);
 	size_t size = r->size + review_finding_charge(&f);
 	if (!e)
 		e = review_fits(r, size, size - a.claim.len - a.evidence.len, out);
@@ -1517,7 +1517,7 @@ review_update (struct review      *r,
 	if (e)
 		return e;
 	struct review_finding *f = &r->findings[id - 1];
-	bool given = a.place.path.ptr;
+	bool given = a.place.path.data;
 	struct review_place p = given ? a.place : (struct review_place){
 		.path = { f->path.ptr, f->path.len }, .first = f->first, .last = f->last,
 	};
@@ -1527,9 +1527,9 @@ review_update (struct review      *r,
 		return e;
 	/* If a short path now resolves, repath stores the full path. That is a
 	 * new location (moved) only if the call gave a location. */
-	bool repath = p.path.ptr && !review_text_is(&f->path, p.path.ptr, p.path.len);
+	bool repath = p.path.data && !review_text_is(&f->path, p.path.data, p.path.len);
 	bool moved = given && (repath || f->first != p.first || f->last != p.last);
-	bool renamed = a.claim.ptr && !review_text_is(&f->claim, a.claim.ptr, a.claim.len);
+	bool renamed = a.claim.data && !review_text_is(&f->claim, a.claim.data, a.claim.len);
 	/* If the location moves, keep the old one as path:lines text, which is
 	 * empty if the finding had none. */
 	struct dstr was = DSTR_INIT;
@@ -1548,13 +1548,13 @@ review_update (struct review      *r,
 		f->changes = changes;
 	e = changes ? 0 : ENOMEM;
 	if (!e)
-		e = review_text_set(&c.evidence, a.evidence.ptr, a.evidence.len);
+		e = review_text_set(&c.evidence, a.evidence.data, a.evidence.len);
 	if (!e && renamed)
-		e = review_text_set(&claim, a.claim.ptr, a.claim.len);
+		e = review_text_set(&claim, a.claim.data, a.claim.len);
 	if (!e && moved)
 		e = review_text_set(&c.location, dstr_get(&was), dstr_len(&was));
 	if (!e && repath)
-		e = review_text_set(&path, p.path.ptr, p.path.len);
+		e = review_text_set(&path, p.path.data, p.path.len);
 	dstr_cleanup(&was);
 	/* c takes the old claim, and the finding takes the new claim and path.
 	 * The older changes are charged already, so the size grows by the
@@ -1707,7 +1707,7 @@ review_change_json (struct review_change const *c)
 {
 	struct json_object *obj = jb_object(
 		"turn", review_int(c->turn),
-		"state", json_object_new_string(review_state_names[c->state].ptr),
+		"state", json_object_new_string(review_state_names[c->state].data),
 		"commit", json_object_new_string(c->commit),
 		"evidence", review_string(&c->evidence),
 		nullptr);
@@ -1764,24 +1764,24 @@ review_file_restore (struct review            *r,
                      struct review_files      *list,
                      struct json_object const *obj)
 {
-	struct tool_text repo;
-	struct tool_text commit;
-	struct tool_text path;
+	struct cstr_view repo;
+	struct cstr_view commit;
+	struct cstr_view path;
 	uint64_t total;
 	struct json_object const *lines = jb_get(obj, "lines");
 	size_t n = jb_len(lines);
 	if (!review_get_text(obj, "repo", &repo) || !review_word(repo) ||
-	    !review_get_text(obj, "commit", &commit) || !util_is_oid(commit.ptr, commit.len) ||
+	    !review_get_text(obj, "commit", &commit) || !util_is_oid(commit.data, commit.len) ||
 	    !review_get_text(obj, "path", &path) || !review_word(path) ||
 	    !review_get_number(obj, "total", UINT32_MAX, &total) || !n || n % 3 ||
 	    n / 3 > (REVIEW_MAX - r->size) / REVIEW_ITEM)
 		return EINVAL;
 	struct review_file f = { .cap = n / 3, .total = (uint32_t)total };
-	memcpy(f.commit, commit.ptr, commit.len);
+	memcpy(f.commit, commit.data, commit.len);
 	f.ranges = calloc(f.cap, sizeof *f.ranges);
-	int e = !f.ranges ? ENOMEM : review_text_set(&f.repo, repo.ptr, repo.len);
+	int e = !f.ranges ? ENOMEM : review_text_set(&f.repo, repo.data, repo.len);
 	if (!e)
-		e = review_text_set(&f.path, path.ptr, path.len);
+		e = review_text_set(&f.path, path.data, path.len);
 	/* Each range is first, last and turn. The ranges must be sorted, not
 	 * overlap and lie within the file, and adjoining ranges must have
 	 * different turns. */
@@ -1908,13 +1908,13 @@ review_text_restore (struct review_text       *t,
                      char const               *key,
                      bool                      empty)
 {
-	struct tool_text s;
+	struct cstr_view s;
 	if (!jb_get(obj, key))
 		return 0;
 	if (!review_get_text(obj, key, &s) || (!empty && !s.len) ||
-	    jb_utf8(s.ptr, s.len) != s.len)
+	    jb_utf8(s.data, s.len) != s.len)
 		return EINVAL;
-	return review_text_set(t, s.ptr, s.len);
+	return review_text_set(t, s.data, s.len);
 }
 
 /* Restore the change in @p obj into @p c. Returns 0, EINVAL or ENOMEM. */
@@ -1922,16 +1922,16 @@ static int
 review_change_restore (struct review_change     *c,
                        struct json_object const *obj)
 {
-	struct tool_text commit;
+	struct cstr_view commit;
 	uint64_t turn;
 	size_t state = review_name_of(jb_get(obj, "state"), review_state_names, REVIEW_STATES);
 	if (!review_get_number(obj, "turn", UINT32_MAX, &turn) || state == REVIEW_STATES ||
 	    !review_get_text(obj, "commit", &commit) ||
-	    (commit.len && !util_is_oid(commit.ptr, commit.len)) ||
+	    (commit.len && !util_is_oid(commit.data, commit.len)) ||
 	    !jb_str(jb_get(obj, "evidence"), &(size_t){}))
 		return EINVAL;
 	*c = (struct review_change){ .turn = (uint32_t)turn, .state = (uint8_t)state };
-	memcpy(c->commit, commit.ptr, commit.len);
+	memcpy(c->commit, commit.data, commit.len);
 	int e = review_text_restore(&c->evidence, obj, "evidence", true);
 	if (!e)
 		e = review_text_restore(&c->claim, obj, "claim", false);
@@ -1948,7 +1948,7 @@ static int
 review_finding_restore (struct review            *r,
                         struct json_object const *obj)
 {
-	struct tool_text path = {};
+	struct cstr_view path = {};
 	uint64_t first;
 	uint64_t last;
 	struct json_object const *history = jb_get(obj, "history");
@@ -1970,7 +1970,7 @@ review_finding_restore (struct review            *r,
 	if (!e && !f.claim.ptr)
 		e = EINVAL;
 	if (!e && located)
-		e = review_text_set(&f.path, path.ptr, path.len);
+		e = review_text_set(&f.path, path.data, path.len);
 	/* A finding never loses its location, so one without a location was
 	 * never verified or disproved. */
 	for (; !e && f.n < n; ++f.n) {

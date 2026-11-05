@@ -1237,14 +1237,14 @@ mcp_shown_value (struct mcp_shown   *w,
 static void
 mcp_args_shown (struct mcp_offer const *offer,
                 struct json_object     *args,
-                struct tool_text        none,
+                struct cstr_view        none,
                 char                    buf[static SHOWN])
 {
 	struct mcp_shown w = { .buf = buf };
 	if (args)
 		mcp_shown_value(&w, args, offer->sized);
 	else
-		mcp_shown_put(&w, none.ptr, none.len, false);
+		mcp_shown_put(&w, none.data, none.len, false);
 	if (w.cut) {
 		memcpy(buf + w.len, "...", sizeof "..." - 1);
 		w.len += sizeof "..." - 1;
@@ -3254,19 +3254,19 @@ mcp_slot_wake (struct mcp_slot *slot)
 
 int
 mcp_slot_tell (struct mcp_slot  *slot,
-               struct tool_text  text,
+               struct cstr_view  text,
                uint32_t          flags)
 {
-	if (!slot || (!text.ptr && text.len))
+	if (!slot || (!text.data && text.len))
 		return EFAULT;
 	if (slot->done || flags & ~(uint32_t)TOOL_FAILED)
 		return EINVAL;
-	size_t len = jb_utf8(text.ptr, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
+	size_t len = jb_utf8(text.data, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
 	mcp_slot_wake(slot);
 	/* The output is the text whole, not lent, nor from an offset. */
 	slot->skip = 0;
 	slot->lent = (struct span){};
-	mcp_slot_result(slot, ESC(text.ptr, len), flags & TOOL_FAILED);
+	mcp_slot_result(slot, ESC(text.data, len), flags & TOOL_FAILED);
 	return 0;
 }
 
@@ -3310,21 +3310,21 @@ mcp_slot_offset (struct mcp_slot    *slot,
 	slot->skip = n > 0 ? (size_t)n : 0;
 	if (n >= 0)
 		return 0;
-	mcp_slot_tell(slot, TOOL_TEXT("The offset argument must be a whole number of bytes, "
+	mcp_slot_tell(slot, CSTR_VIEW("The offset argument must be a whole number of bytes, "
 	                              "from 0."), TOOL_FAILED);
 	return EINVAL;
 }
 
 int
 mcp_slot_write (struct mcp_slot  *slot,
-                struct tool_text  text,
+                struct cstr_view  text,
                 uint32_t          flags,
                 size_t           *taken)
 {
 	if (!taken)
 		return EFAULT;
 	*taken = 0;
-	if (!slot || (!text.ptr && text.len))
+	if (!slot || (!text.data && text.len))
 		return EFAULT;
 	if (slot->done || flags & ~(uint32_t)TOOL_MORE)
 		return EINVAL;
@@ -3335,13 +3335,13 @@ mcp_slot_write (struct mcp_slot  *slot,
 	/* What is UTF-8 goes at once; from the first byte that breaks it, a
 	 * chunk at a time, mended by jb_mend(), which with TOOL_MORE leaves a
 	 * character the end cuts short to the next write. All or nothing. */
-	size_t i = jb_utf8(text.ptr, text.len);
-	bool ok = dstr_cat_n(answer, text.ptr, i);
+	size_t i = jb_utf8(text.data, text.len);
+	bool ok = dstr_cat_n(answer, text.data, i);
 	for (bool last = i == text.len; ok && !last; ) {
 		char chunk[4 << 10];
 		size_t n = text.len - i < sizeof chunk ? text.len - i : sizeof chunk;
 		last = i + n == text.len;
-		memcpy(chunk, text.ptr + i, n);
+		memcpy(chunk, text.data + i, n);
 		n = jb_mend(chunk, n, last && !(flags & TOOL_MORE));
 		ok = dstr_cat_n(answer, chunk, n);
 		i += n;
@@ -3355,17 +3355,17 @@ mcp_slot_write (struct mcp_slot  *slot,
 	return 0;
 }
 
-struct tool_text
+struct cstr_view
 mcp_slot_answer (struct mcp_slot const *slot)
 {
-	return (struct tool_text){ dstr_get(&slot->answer), dstr_len(&slot->answer) };
+	return (struct cstr_view){ dstr_get(&slot->answer), dstr_len(&slot->answer) };
 }
 
 void
 mcp_slot_lend (struct mcp_slot  *slot,
-               struct tool_text  text)
+               struct cstr_view  text)
 {
-	slot->lent = (struct span){ (unsigned char *)(uintptr_t)text.ptr, text.len };
+	slot->lent = (struct span){ (unsigned char *)(uintptr_t)text.data, text.len };
 }
 
 /* Return the maximum number of bytes of a tool's output that a turn reads
@@ -3475,7 +3475,7 @@ mcp_slot_ready (struct mcp_slot *slot)
 	if (slot->done)
 		return EINVAL;
 	if (!mcp_slot_offer(slot)->kind->step) {
-		(void)mcp_slot_tell(slot, TOOL_TEXT("The tool's kind has no step(), so the "
+		(void)mcp_slot_tell(slot, CSTR_VIEW("The tool's kind has no step(), so the "
 		                                    "call cannot go on."), TOOL_FAILED);
 		return EINVAL;
 	}
@@ -3917,7 +3917,7 @@ mcp_spin_back (struct loop *loop,
 	                       "%" PRIu64 " times between loops.", s->slices,
 	                       task->moves);
 	task_put(task, 2);
-	mcp_slot_tell(slot, (struct tool_text){ text, n }, 0);
+	mcp_slot_tell(slot, (struct cstr_view){ text, n }, 0);
 }
 
 /* Run the @p slices a test_task call in @p slot asks for as a task, which
@@ -3933,7 +3933,7 @@ mcp_slot_spin (struct mcp_slot    *slot,
 	int64_t n = json_object_is_type(slices, json_type_int)
 	          ? json_object_get_int64(slices) : 0;
 	if (n < 1 || n > SPIN_MAX) {
-		mcp_slot_tell(slot, TOOL_TEXT("The slices argument must be a whole number "
+		mcp_slot_tell(slot, CSTR_VIEW("The slices argument must be a whole number "
 		                              "from 1 to 100000."), TOOL_FAILED);
 		return;
 	}
@@ -3967,7 +3967,7 @@ mcp_slot_task (struct mcp_slot    *slot,
 		return;
 	}
 	if (slices) {
-		mcp_slot_tell(slot, TOOL_TEXT("Give slices or a prompt, not both."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("Give slices or a prompt, not both."), TOOL_FAILED);
 		return;
 	}
 	slot->req->asks = JOB_BACKGROUND;
@@ -4517,11 +4517,11 @@ mcp_req_tool_of (struct mcp_req const *req,
  * that are not a JSON object, so that the call was not run: the output
  * token limit cut them short, or the model wrote another value.
  */
-static struct tool_text
+static struct cstr_view
 mcp_req_no_args (struct mcp_req const *req)
 {
-	return req->cut ? TOOL_TEXT("cut short by the output token limit")
-	                : TOOL_TEXT("not a JSON object");
+	return req->cut ? CSTR_VIEW("cut short by the output token limit")
+	                : CSTR_VIEW("not a JSON object");
 }
 
 /* Logs, with --verbose, a turn's call of the tool @p name, which the turns
@@ -4776,7 +4776,7 @@ mcp_slot_start (struct mcp_slot    *slot,
 {
 	slot->start = loop_clock();
 	if (args && !json_object_is_type(args, json_type_object)) {
-		mcp_slot_tell(slot, TOOL_TEXT("Tool arguments must be an object."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("Tool arguments must be an object."), TOOL_FAILED);
 		return;
 	}
 	struct mcp_req *req = slot->req;
@@ -4922,7 +4922,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	/* The log line of the call's end shows the arguments of the job's
 	 * call, by the rules of its tool. */
 	if (log_threshold >= LOG_VERBOSE)
-		mcp_args_shown(&st->offers[id], call, TOOL_TEXT("none"), req->call_args);
+		mcp_args_shown(&st->offers[id], call, CSTR_VIEW("none"), req->call_args);
 	LOG(LOG_VERBOSE, "tool call background from %s became job %.*s, a call of %s",
 	    mcp_req_client(req), LEDGER_ID, req->task->id, st->offers[id].name);
 	/* Last, as the start of the job's call may end the request. */
@@ -5717,7 +5717,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		struct json_object *source = jb_get(saved, "source");
 		if (source && req->review) {
 			int e = 0;
-			slot->read = review_read_restore(source, (struct tool_text){ text, len }, &e);
+			slot->read = review_read_restore(source, (struct cstr_view){ text, len }, &e);
 			if (e) {
 				mcp_req_fail(req, e == EINVAL ? EILSEQ : e);
 				return;
@@ -5866,7 +5866,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		 * turn. */
 		char shown[SHOWN];
 		mcp_args_shown(offer, job ? slot->args : req->args[slot - req->slots],
-		               job ? TOOL_TEXT("none") : mcp_req_no_args(req), shown);
+		               job ? CSTR_VIEW("none") : mcp_req_no_args(req), shown);
 		char text[ERROR_LOG + 8] = "";
 		if (failed && out.len)
 			mcp_quote(text, sizeof text, (char const *)out.ptr, out.len, ERROR_LOG);
@@ -6045,7 +6045,7 @@ mcp_req_shown (struct mcp_req        *req,
 	 * of the window. */
 	loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
 	struct span out = mcp_slot_output(slot);
-	struct tool_text text = { (char const *)out.ptr, out.len };
+	struct cstr_view text = { (char const *)out.ptr, out.len };
 	return review_shown(req->review, read, text, slot->skip, slot->window, req->turn);
 }
 
@@ -6655,12 +6655,12 @@ mcp_req_fits (struct mcp_req const *req,
 
 int
 mcp_slot_attach (struct mcp_slot  *slot,
-                 struct tool_text  id,
-                 struct tool_text  file,
+                 struct cstr_view  id,
+                 struct cstr_view  file,
                  size_t           *bytes,
                  struct dstr      *out)
 {
-	if (!slot || !bytes || !out || (!id.ptr && id.len) || (!file.ptr && file.len))
+	if (!slot || !bytes || !out || (!id.data && id.len) || (!file.data && file.len))
 		return EFAULT;
 	*bytes = 0;
 	if (slot->done)
@@ -6669,9 +6669,9 @@ mcp_slot_attach (struct mcp_slot  *slot,
 	struct mcp_static const *st = req->mcp->st;
 	if (!st->uploads)
 		return ENOTSUP;
-	if (file.ptr) {
+	if (file.data) {
 		int e = mcp_req_fits(req, file.len, out);
-		e = e ? e : mcp_slot_post_file(slot, file.ptr, file.len);
+		e = e ? e : mcp_slot_post_file(slot, file.data, file.len);
 		if (e == EAGAIN)
 			return CAT(out, "askai sends too many requests at once to upload the "
 			           "note now. Try again later.") ? EAGAIN : ENOMEM;
@@ -6679,7 +6679,7 @@ mcp_slot_attach (struct mcp_slot  *slot,
 	}
 	char uri[UPLOADS_URI];
 	size_t len = 0;
-	size_t n = uploads_find(st->uploads, mcp_req_owner(req), id.ptr, id.len,
+	size_t n = uploads_find(st->uploads, mcp_req_owner(req), id.data, id.len,
 	                        clk_realtime().tv_sec, uri, &len);
 	int e = n ? mcp_req_fits(req, len, out) : ENOENT;
 	if (e)
@@ -6691,11 +6691,11 @@ mcp_slot_attach (struct mcp_slot  *slot,
 
 int
 mcp_slot_attached (struct mcp_slot  *slot,
-                   struct tool_text  id,
+                   struct cstr_view  id,
                    size_t            bytes,
                    struct dstr      *out)
 {
-	if (!slot || !out || (!id.ptr && id.len))
+	if (!slot || !out || (!id.data && id.len))
 		return EFAULT;
 	if (slot->done)
 		return EINVAL;
@@ -6721,7 +6721,7 @@ mcp_slot_attached (struct mcp_slot  *slot,
 	LOG(LOG_VERBOSE, "upstream file %s uploaded: %zu bytes", dstr_get(&uri), bytes);
 	e = mcp_req_attach(req, dstr_get(&uri), dstr_len(&uri), bytes);
 	if (!e && expires)
-		(void)uploads_keep(st->uploads, mcp_req_owner(req), id.ptr, id.len,
+		(void)uploads_keep(st->uploads, mcp_req_owner(req), id.data, id.len,
 		                   dstr_get(&uri), dstr_len(&uri), bytes, expires,
 		                   clk_realtime().tv_sec);
 	return e;
@@ -6986,7 +6986,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 	req->self.tool = (uint8_t)id;
 	struct json_object *args = jb_get(params, "arguments");
 	if (log_threshold >= LOG_VERBOSE)
-		mcp_args_shown(&st->offers[id], args, TOOL_TEXT("none"), req->call_args);
+		mcp_args_shown(&st->offers[id], args, CSTR_VIEW("none"), req->call_args);
 	mcp_slot_start(&req->self, args);
 }
 
@@ -7720,14 +7720,14 @@ mcp_begin (struct mcp           *mcp,
 	 * the policy after it in parentheses. */
 	if (s->peer[0] != UINT64_MAX) {
 		if (s->who.len)
-			memcpy(req->client, s->who.ptr, s->who.len < sizeof req->client
-			                                ? s->who.len : sizeof req->client - 1);
+			memcpy(req->client, s->who.data, s->who.len < sizeof req->client
+			                                 ? s->who.len : sizeof req->client - 1);
 	} else {
 		size_t n = util_format(req->client, sizeof req->client, "uid %" PRIu64,
 		                       s->peer[1]);
 		if (s->who.len)
 			(void)util_format(req->client + n, sizeof req->client - n, " (%.*s)",
-			                  (int)s->who.len, s->who.ptr);
+			                  (int)s->who.len, s->who.data);
 	}
 	s->user = req;
 	return req;
@@ -8042,8 +8042,8 @@ static struct json_object *
 mcp_tool_definition (void const *service)
 {
 	struct mcp_static const *st = service;
-	struct tool_text const roles[] = { TOOL_TEXT("user"), TOOL_TEXT("assistant") };
-	struct tool_text const keys[] = { TOOL_TEXT("role"), TOOL_TEXT("content") };
+	struct cstr_view const roles[] = { CSTR_VIEW("user"), CSTR_VIEW("assistant") };
+	struct cstr_view const keys[] = { CSTR_VIEW("role"), CSTR_VIEW("content") };
 	struct json_object *props = jb_object(
 		"prompt", schema_property("string",
 			"The new question or task. Include the context it needs, or supply "
@@ -8076,7 +8076,7 @@ mcp_tool_definition (void const *service)
 			"digits. Notes are shared by repository path and loaded at the "
 			"start of every ask, independently of this argument."));
 	if (st->ep->background) {
-		struct tool_text const actions[] = { TOOL_TEXT("result"), TOOL_TEXT("cancel") };
+		struct cstr_view const actions[] = { CSTR_VIEW("result"), CSTR_VIEW("cancel") };
 		props = jb_set_or_free(props, "job", schema_property("string",
 			"The job id returned by this tool. Give job instead of prompt, "
 			"system or thread to check its status or read its completed result."));
@@ -8204,8 +8204,8 @@ mcp_background_definition (void const *service)
 static struct json_object *
 mcp_jobs_actions (void)
 {
-	struct tool_text const names[] = { TOOL_TEXT("list"), TOOL_TEXT("result"),
-	                                   TOOL_TEXT("cancel") };
+	struct cstr_view const names[] = { CSTR_VIEW("list"), CSTR_VIEW("result"),
+	                                   CSTR_VIEW("cancel") };
 	return schema_names(names, ARRAY_SIZE(names));
 }
 

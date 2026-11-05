@@ -130,7 +130,7 @@ struct policy_grant {
 	tool_mask        tools;      /**< the tools it may list and call */
 	tool_mask        upstream;   /**< the tools that the upstream may call in
 	                                  the turns of its ask calls */
-	struct tool_text who;        /**< the client for the log, at most
+	struct cstr_view who;        /**< the client for the log, at most
 	                                  POLICY_WHO - 1 bytes: "identity NAME"
 	                                  for a client that sent a token, "role
 	                                  NAME" for another client on a Unix

@@ -19,12 +19,12 @@ schema_text3 (char const *a,
 }
 
 struct json_object *
-schema_names (struct tool_text const *names,
+schema_names (struct cstr_view const *names,
               size_t                  n)
 {
 	struct json_object *arr = json_object_new_array();
 	for (size_t i = 0; arr && i < n; ++i)
-		arr = jb_push_or_free(arr, json_object_new_string_len(names[i].ptr,
+		arr = jb_push_or_free(arr, json_object_new_string_len(names[i].data,
 		                                                      (int)names[i].len));
 	return arr;
 }

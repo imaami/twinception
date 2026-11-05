@@ -346,14 +346,14 @@ mcp_slot_offset (struct mcp_slot    *slot,
 EXPORT
 extern int
 mcp_slot_write (struct mcp_slot  *slot,
-                struct tool_text  text,
+                struct cstr_view  text,
                 uint32_t          flags,
                 size_t           *taken);
 
 /** Not exported yet: the output written, which mcp_slot_write() and
  *  mcp_slot_tell() must not be given: they append to it.
  */
-extern struct tool_text
+extern struct cstr_view
 mcp_slot_answer (struct mcp_slot const *slot);
 
 /** Not exported yet: lent output, which own keeps, that mcp_slot_finish()
@@ -361,7 +361,7 @@ mcp_slot_answer (struct mcp_slot const *slot);
  */
 extern void
 mcp_slot_lend (struct mcp_slot  *slot,
-               struct tool_text  text);
+               struct cstr_view  text);
 
 /** Returns the maximum number of bytes of the call's output that its caller
  *  reads in one result. For a call made by a turn or a job, that is the
@@ -438,8 +438,8 @@ mcp_slot_noted (struct mcp_slot *slot);
  */
 extern int
 mcp_slot_attach (struct mcp_slot  *slot,
-                 struct tool_text  id,
-                 struct tool_text  file,
+                 struct cstr_view  id,
+                 struct cstr_view  file,
                  size_t           *bytes,
                  struct dstr      *out);
 
@@ -455,7 +455,7 @@ mcp_slot_attach (struct mcp_slot  *slot,
  */
 extern int
 mcp_slot_attached (struct mcp_slot  *slot,
-                   struct tool_text  id,
+                   struct cstr_view  id,
                    size_t            bytes,
                    struct dstr      *out);
 
@@ -574,7 +574,7 @@ mcp_slot_named (struct loop const *loop,
 EXPORT
 extern int
 mcp_slot_tell (struct mcp_slot  *slot,
-               struct tool_text  text,
+               struct cstr_view  text,
                uint32_t          flags);
 
 /** Ends the call with the output that mcp_slot_write() wrote. A client's

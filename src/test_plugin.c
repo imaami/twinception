@@ -119,13 +119,13 @@ test_plugin_echo_start (struct mcp_slot    *slot,
 	struct json_object *text;
 	if (!json_object_object_get_ex(args, "text", &text) ||
 	    !json_object_is_type(text, json_type_string)) {
-		mcp_slot_tell(slot, TOOL_TEXT("The text argument must be a string."),
+		mcp_slot_tell(slot, CSTR_VIEW("The text argument must be a string."),
 		              TOOL_FAILED);
 		return;
 	}
 	/* mcp_slot_write() copies the bytes, so nothing reads args after the
 	 * call has ended. */
-	struct tool_text const out = {
+	struct cstr_view const out = {
 		json_object_get_string(text),
 		(size_t)json_object_get_string_len(text)
 	};
@@ -160,7 +160,7 @@ test_plugin_state_tell (struct mcp_slot *slot)
 {
 	struct test_plugin_instance const *inst = mcp_slot_instance(slot);
 	if (!inst) {
-		mcp_slot_tell(slot, TOOL_TEXT("The call has no instance."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The call has no instance."), TOOL_FAILED);
 		return;
 	}
 	char out[160];
@@ -170,7 +170,7 @@ test_plugin_state_tell (struct mcp_slot *slot)
 	if (n < 0 || n >= (int)sizeof out)
 		mcp_slot_fail(slot, ENOMEM);
 	else
-		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
+		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n }, 0);
 }
 
 /* The timer function of a call that waits. It runs when the wait is over,
@@ -210,12 +210,12 @@ test_plugin_state_start (struct mcp_slot    *slot,
 		return;
 	struct test_plugin_instance *inst = mcp_slot_instance(slot);
 	if (!inst) {
-		mcp_slot_tell(slot, TOOL_TEXT("The call has no instance."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The call has no instance."), TOOL_FAILED);
 		return;
 	}
 	++inst->calls;
 	if (inst->principal != mcp_slot_principal(slot)) {
-		mcp_slot_tell(slot, TOOL_TEXT("The instance is another user's."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The instance is another user's."), TOOL_FAILED);
 		return;
 	}
 	struct json_object *text = nullptr;
@@ -286,7 +286,7 @@ test_plugin_state_drop (struct mcp_slot *slot)
 		inst->len = sizeof dropped - 1;
 		memcpy(inst->last, dropped, inst->len);
 	}
-	mcp_slot_tell(slot, TOOL_TEXT("dropped"), 0);
+	mcp_slot_tell(slot, CSTR_VIEW("dropped"), 0);
 }
 
 /* Returns the definition of test_misuse as a new reference, or nullptr if
@@ -344,7 +344,7 @@ static void
 test_plugin_misuse_invalid (struct mcp_slot *slot,
                             struct loop     *loop)
 {
-	struct tool_text const none = { nullptr, 5 };
+	struct cstr_view const none = { nullptr, 5 };
 	struct loop_timer bare = { .due = UINT64_MAX };
 	struct loop_timer stray = { .due = UINT64_MAX, .fn = test_plugin_never, .slot = 1000 };
 	struct msg bare_msg = {};
@@ -361,18 +361,18 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(!mcp_slot_own(nullptr));
 	TEST_PLUGIN_REFUSED(!mcp_slot_config(nullptr));
 	TEST_PLUGIN_REFUSED(mcp_slot_offset(nullptr, nullptr) == EFAULT);
-	TEST_PLUGIN_REFUSED(mcp_slot_write(nullptr, TOOL_TEXT("x"), 0, &taken) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(nullptr, CSTR_VIEW("x"), 0, &taken) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, none, 0, &taken) == EFAULT);
-	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, TOOL_TEXT("x"), 0, nullptr) == EFAULT);
-	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, TOOL_TEXT("x"), unknown, &taken) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, CSTR_VIEW("x"), 0, nullptr) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_write(slot, CSTR_VIEW("x"), unknown, &taken) == EINVAL);
 	TEST_PLUGIN_REFUSED(mcp_slot_name(nullptr, &who) == EFAULT && !who.bits);
 	TEST_PLUGIN_REFUSED(mcp_slot_name(slot, nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(!mcp_slot_named(nullptr, who));
 	TEST_PLUGIN_REFUSED(mcp_slot_park(nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_ready(nullptr) == EFAULT);
-	TEST_PLUGIN_REFUSED(mcp_slot_tell(nullptr, TOOL_TEXT("x"), 0) == EFAULT);
+	TEST_PLUGIN_REFUSED(mcp_slot_tell(nullptr, CSTR_VIEW("x"), 0) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_tell(slot, none, 0) == EFAULT);
-	TEST_PLUGIN_REFUSED(mcp_slot_tell(slot, TOOL_TEXT("x"), unknown) == EINVAL);
+	TEST_PLUGIN_REFUSED(mcp_slot_tell(slot, CSTR_VIEW("x"), unknown) == EINVAL);
 	TEST_PLUGIN_REFUSED(mcp_slot_finish(nullptr, 0) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_finish(slot, unknown) == EINVAL);
 	TEST_PLUGIN_REFUSED(mcp_slot_fail(nullptr, EIO) == EFAULT);
@@ -435,7 +435,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	if (n < 0 || n >= (int)sizeof out)
 		mcp_slot_fail(slot, ENOMEM);
 	else
-		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
+		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n }, 0);
 }
 
 /* Names the call with mcp_slot_name(), and then makes handles of the slots
@@ -452,7 +452,7 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
 {
 	struct handle own;
 	if (mcp_slot_name(slot, &own)) {
-		mcp_slot_tell(slot, TOOL_TEXT("The call has no handle."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The call has no handle."), TOOL_FAILED);
 		return;
 	}
 	/* From the highest bit, a handle has 8 bits for the loop, 24 bits for
@@ -474,7 +474,7 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
 	if (n < 0 || n >= (int)sizeof out)
 		mcp_slot_fail(slot, ENOMEM);
 	else
-		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
+		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n }, 0);
 }
 
 /* Starts a test_misuse call. The kind of test_misuse has no step() and no
@@ -513,12 +513,12 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	struct loop *loop = mcp_slot_loop(slot);
 	void **own = mcp_slot_own(slot);
 	if (!inst || !loop || !own) {
-		mcp_slot_tell(slot, TOOL_TEXT("The call has no instance."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The call has no instance."), TOOL_FAILED);
 		return;
 	}
 	if (!strcmp(what, "own")) {
 		*own = inst;
-		mcp_slot_tell(slot, TOOL_TEXT("own"), 0);
+		mcp_slot_tell(slot, CSTR_VIEW("own"), 0);
 		return;
 	}
 	if (!strcmp(what, "invalid")) {
@@ -530,10 +530,10 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 		return;
 	}
 	if (strcmp(what, "after")) {
-		mcp_slot_tell(slot, TOOL_TEXT("The case argument is not known."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The case argument is not known."), TOOL_FAILED);
 		return;
 	}
-	mcp_slot_tell(slot, TOOL_TEXT("first"), 0);
+	mcp_slot_tell(slot, CSTR_VIEW("first"), 0);
 	size_t taken = 0;
 	struct handle who;
 	struct web_request const get = {
@@ -543,10 +543,10 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	/* args is not valid after the end of the call, so the function passes
 	 * nullptr to mcp_slot_offset(). */
 	int const codes[] = {
-		mcp_slot_write(slot, TOOL_TEXT("late"), 0, &taken),
+		mcp_slot_write(slot, CSTR_VIEW("late"), 0, &taken),
 		mcp_slot_name(slot, &who),
 		mcp_slot_offset(slot, nullptr),
-		mcp_slot_tell(slot, TOOL_TEXT("second"), 0),
+		mcp_slot_tell(slot, CSTR_VIEW("second"), 0),
 		mcp_slot_finish(slot, 0),
 		mcp_slot_fail(slot, EIO),
 		mcp_slot_ready(slot),
@@ -656,7 +656,7 @@ test_plugin_fetch_start (struct mcp_slot    *slot,
 	if (n < 0 || n >= (int)sizeof out)
 		mcp_slot_fail(slot, ENOMEM);
 	else
-		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n },
+		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n },
 		              twice ? 0 : TOOL_FAILED);
 }
 
@@ -681,13 +681,13 @@ test_plugin_fetch_step (struct mcp_slot *slot)
 		return;
 	}
 	if (e) {
-		mcp_slot_tell(slot, (struct tool_text){ head, (size_t)n }, TOOL_FAILED);
+		mcp_slot_tell(slot, (struct cstr_view){ head, (size_t)n }, TOOL_FAILED);
 		return;
 	}
 	size_t taken;
-	e = mcp_slot_write(slot, (struct tool_text){ head, (size_t)n }, 0, &taken);
+	e = mcp_slot_write(slot, (struct cstr_view){ head, (size_t)n }, 0, &taken);
 	if (!e)
-		e = mcp_slot_write(slot, (struct tool_text){ r.body, r.len }, 0, &taken);
+		e = mcp_slot_write(slot, (struct cstr_view){ r.body, r.len }, 0, &taken);
 	if (e)
 		mcp_slot_fail(slot, e);
 	else
@@ -787,7 +787,7 @@ test_plugin_config_start (struct mcp_slot    *slot,
 		return;
 	struct test_plugin_config const *c = mcp_slot_config(slot);
 	if (!c) {
-		mcp_slot_tell(slot, TOOL_TEXT("none"), 0);
+		mcp_slot_tell(slot, CSTR_VIEW("none"), 0);
 		return;
 	}
 	char out[sizeof "greeting=" + sizeof c->greeting];
@@ -795,7 +795,7 @@ test_plugin_config_start (struct mcp_slot    *slot,
 	if (n < 0 || n >= (int)sizeof out)
 		mcp_slot_fail(slot, ENOMEM);
 	else
-		mcp_slot_tell(slot, (struct tool_text){ out, (size_t)n }, 0);
+		mcp_slot_tell(slot, (struct cstr_view){ out, (size_t)n }, 0);
 }
 
 struct plugin const askai_plugin = {

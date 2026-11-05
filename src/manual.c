@@ -591,7 +591,7 @@ manual_give (struct mcp_slot    *slot,
              struct manual_page *page)
 {
 	*mcp_slot_own(slot) = page;
-	mcp_slot_lend(slot, (struct tool_text){ page->text, page->len });
+	mcp_slot_lend(slot, (struct cstr_view){ page->text, page->len });
 	mcp_slot_finish(slot, 0);
 }
 
@@ -617,7 +617,7 @@ manual_back (struct loop *loop,
 	} else {
 		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s",
 		    (double)(loop_clock() - w->since) / 1e9, w->why);
-		mcp_slot_tell(slot, (struct tool_text){ w->why, strlen(w->why) }, TOOL_FAILED);
+		mcp_slot_tell(slot, (struct cstr_view){ w->why, strlen(w->why) }, TOOL_FAILED);
 	}
 	manual_wait_destroy(&w);
 }
@@ -827,17 +827,17 @@ manual_start (struct mcp_slot    *slot,
 		sect = digit;
 		len = 1;
 	}
-	struct tool_text problem =
+	struct cstr_view problem =
 		!manual_word(page, page_len, MANUAL_NAME, ALNUM "_.:+@-")
-		? TOOL_TEXT("The name argument must name a manual page: 1 to 128 letters, "
+		? CSTR_VIEW("The name argument must name a manual page: 1 to 128 letters, "
 		            "digits and _.:+@- characters, the first not -.")
 		: section && !(sect && (!len || manual_word(sect, len, MANUAL_SECTION, ALNUM)))
-		? TOOL_TEXT("The section argument must name a section, such as 1, 3 or 3p: "
+		? CSTR_VIEW("The section argument must name a section, such as 1, 3 or 3p: "
 		            "1 to 16 letters and digits.")
-		: (struct tool_text){};
+		: (struct cstr_view){};
 #undef ALNUM
 	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16, "the problems say");
-	if (problem.ptr) {
+	if (problem.data) {
 		mcp_slot_tell(slot, problem, TOOL_FAILED);
 		return;
 	}

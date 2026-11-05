@@ -28,11 +28,11 @@ enum { DIGEST = SHA256_DIGEST_LENGTH };
  */
 static constexpr uint64_t POLICY_IDENTITY = UINT64_C(1) << 62;
 
-/* The members of "anonymous", by the kind of client. TOOL_TEXT() is a
+/* The members of "anonymous", by the kind of client. CSTR_VIEW() is a
  * compound literal, which a static initializer may not have.
  */
 #define KIND(s) { "" s, sizeof s - 1 }
-static struct tool_text const policy_kinds[POLICY_KINDS] = {
+static struct cstr_view const policy_kinds[POLICY_KINDS] = {
 	[POLICY_LOOPBACK] = KIND("loopback"),
 	[POLICY_REMOTE]   = KIND("remote"),
 	[POLICY_UNIX]     = KIND("unix"),
@@ -44,7 +44,7 @@ struct policy_role {
 	tool_mask        tools;
 	tool_mask        upstream;  /* the tools that the upstream may call in
 	                               the turns of the clients' ask calls */
-	struct tool_text who;       /* "role NAME", for the log; empty in
+	struct cstr_view who;       /* "role NAME", for the log; empty in
 	                               askai's own policy */
 	uint64_t         metrics;   /* a bool value in a uint64_t that fills
 	                               the padding */
@@ -53,7 +53,7 @@ struct policy_role {
 /* A token, by its digest, and the identity it proves. */
 struct policy_token {
 	unsigned char    digest[DIGEST];
-	struct tool_text who;        /* "identity NAME", for the log */
+	struct cstr_view who;        /* "identity NAME", for the log */
 	uint64_t         principal;
 	uint64_t         role;
 };
@@ -103,7 +103,7 @@ struct policy {
 	size_t               n_groups;
 	size_t               n_subuids;
 	int64_t              anonymous[POLICY_KINDS];  /* a role; -1: none */
-	struct tool_text     strangers[POLICY_KINDS];  /* the names of anonymous
+	struct cstr_view     strangers[POLICY_KINDS];  /* the names of anonymous
 	                                                  TCP clients for the
 	                                                  log, "anonymous KIND
 	                                                  (role NAME)"; empty in
@@ -223,15 +223,15 @@ policy_principal_of (struct policy const *policy,
  */
 static int
 policy_principal_identity (struct policy const *policy,
-                           struct tool_text     who,
+                           struct cstr_view     who,
                            uint64_t            *principal)
 {
 	static char const prefix[] = "identity ";
-	if (who.len < sizeof prefix - 1 || memcmp(who.ptr, prefix, sizeof prefix - 1))
+	if (who.len < sizeof prefix - 1 || memcmp(who.data, prefix, sizeof prefix - 1))
 		return EINVAL;
 	char anchor[sizeof "identity:" + POLICY_NAME];
 	int n = snprintf(anchor, sizeof anchor, "identity:%.*s",
-	                 (int)(who.len - (sizeof prefix - 1)), who.ptr + sizeof prefix - 1);
+	                 (int)(who.len - (sizeof prefix - 1)), who.data + sizeof prefix - 1);
 	if (n < 0 || n >= (int)sizeof anchor)
 		return EINVAL;
 	return policy_principal_of(policy, POLICY_IDENTITY, anchor, (size_t)n, principal);
@@ -256,17 +256,17 @@ policy_principals (struct policy *policy)
 /* Copy the @p n texts @p parts, one after another, into the policy's
  * block, and return the copy, which names a client in the log.
  */
-static struct tool_text
+static struct cstr_view
 policy_build_who (struct policy_build    *b,
                   size_t                  n,
-                  struct tool_text const  parts[static n])
+                  struct cstr_view const  parts[static n])
 {
 	char *who = b->names;
 	for (size_t i = 0; i < n; ++i) {
-		memcpy(b->names, parts[i].ptr, parts[i].len);
+		memcpy(b->names, parts[i].data, parts[i].len);
 		b->names += parts[i].len;
 	}
-	return (struct tool_text){ who, (size_t)(b->names - who) };
+	return (struct cstr_view){ who, (size_t)(b->names - who) };
 }
 
 /* The index of the role that @p name, a string, names; -1 if none does. */
@@ -294,7 +294,7 @@ policy_build_role (struct policy_build const *b,
 static void
 policy_token_add (struct policy       *p,
                   unsigned char const *digest,
-                  struct tool_text     who,
+                  struct cstr_view     who,
                   uint64_t             role)
 {
 	struct policy_token *t = &p->tokens[p->n_tokens++];
@@ -697,8 +697,8 @@ policy_build_role_one (struct policy_build *b,
 		return policy_build_fail(b, "invalid role name: %s", name);
 	if (!json_object_is_type(members, json_type_object))
 		return policy_build_fail(b, "role %s must be an object", name);
-	r->who = policy_build_who(b, 2, (struct tool_text const[]){
-		TOOL_TEXT("role "), { name, len } });
+	r->who = policy_build_who(b, 2, (struct cstr_view const[]){
+		CSTR_VIEW("role "), { name, len } });
 	struct json_object_iter m;
 	json_object_object_foreachC(members, m) {
 		int e = policy_build_member(b, r, name, m.key, m.val);
@@ -760,8 +760,8 @@ policy_build_identity (struct policy_build *b,
 	size_t n = jb_len(tokens);
 	if (!n)
 		return policy_build_fail(b, "identity %s needs tokens", who);
-	struct tool_text name = policy_build_who(b, 2, (struct tool_text const[]){
-		TOOL_TEXT("identity "), { who, len } });
+	struct cstr_view name = policy_build_who(b, 2, (struct cstr_view const[]){
+		CSTR_VIEW("identity "), { who, len } });
 	for (size_t i = 0; i < n; ++i) {
 		struct json_object *spec = json_object_array_get_idx(tokens, i);
 		unsigned char digest[DIGEST];
@@ -864,7 +864,7 @@ policy_build_anonymous (struct policy_build *b,
 	struct json_object_iter it;
 	json_object_object_foreachC(anonymous, it) {
 		size_t k = 0;
-		while (k < POLICY_KINDS && strcmp(policy_kinds[k].ptr, it.key))
+		while (k < POLICY_KINDS && strcmp(policy_kinds[k].data, it.key))
 			++k;
 		if (k == POLICY_KINDS)
 			return policy_build_fail(b, "anonymous: unknown member %s", it.key);
@@ -873,9 +873,9 @@ policy_build_anonymous (struct policy_build *b,
 		if (e)
 			return e;
 		if (p->anonymous[k] >= 0)
-			p->strangers[k] = policy_build_who(b, 5, (struct tool_text const[]){
-				TOOL_TEXT("anonymous "), policy_kinds[k], TOOL_TEXT(" ("),
-				p->roles[p->anonymous[k]].who, TOOL_TEXT(")") });
+			p->strangers[k] = policy_build_who(b, 5, (struct cstr_view const[]){
+				CSTR_VIEW("anonymous "), policy_kinds[k], CSTR_VIEW(" ("),
+				p->roles[p->anonymous[k]].who, CSTR_VIEW(")") });
 	}
 	return 0;
 }
@@ -918,7 +918,7 @@ policy_build_own (struct policy_build *b,
 	}
 	unsigned char digest[DIGEST];
 	SHA256((unsigned char const *)token, strlen(token), digest);
-	policy_token_add(p, digest, TOOL_TEXT("identity ASKAI_TOKEN"), 0);
+	policy_token_add(p, digest, CSTR_VIEW("identity ASKAI_TOKEN"), 0);
 	p->unix_token = true;
 }
 
@@ -1107,7 +1107,7 @@ policy_log_roles (struct policy const *policy,
 	for (size_t i = 0; i < policy->n_roles; ++i) {
 		struct policy_role const *r = &policy->roles[i];
 		tool_mask up = lent ? lent(ctx, r->tools, r->upstream) : 0;
-		LOG_ALL(LOG_INFO, "%.*s:", (int)r->who.len, r->who.ptr);
+		LOG_ALL(LOG_INFO, "%.*s:", (int)r->who.len, r->who.data);
 		policy_log_tools("tools", 14, tools, n_tools, r->tools);
 		if (lent)
 			policy_log_tools("upstream tools", 14, tools, n_tools, up);
@@ -1169,8 +1169,8 @@ policy_log_groups (struct policy const *policy,
 	json_object_object_foreachC(groups, it) {
 		if (g == policy->groups + policy->n_groups)
 			return;
-		struct tool_text who = policy->roles[g++->role].who;
-		LOG_ALL(LOG_INFO, "  %-*s  %.*s", width, it.key, (int)who.len, who.ptr);
+		struct cstr_view who = policy->roles[g++->role].who;
+		LOG_ALL(LOG_INFO, "  %-*s  %.*s", width, it.key, (int)who.len, who.data);
 	}
 }
 
@@ -1272,8 +1272,8 @@ policy_log (struct policy const *policy,
 	LOG_ALL(LOG_INFO, "anonymous clients:");
 	for (size_t k = 0; k < POLICY_KINDS; ++k) {
 		int64_t role = policy->anonymous[k];
-		struct tool_text who = role < 0 ? TOOL_TEXT("refused") : policy->roles[role].who;
-		LOG_ALL(LOG_INFO, "  %-8s  %.*s", policy_kinds[k].ptr, (int)who.len, who.ptr);
+		struct cstr_view who = role < 0 ? CSTR_VIEW("refused") : policy->roles[role].who;
+		LOG_ALL(LOG_INFO, "  %-8s  %.*s", policy_kinds[k].data, (int)who.len, who.data);
 	}
 	tool_mask unlisted = 0;
 	for (size_t i = 0; i < n_granted; ++i)
@@ -1335,7 +1335,7 @@ static enum policy_verdict
 policy_grant_role (struct policy const *policy,
                    int64_t              role,
                    uint64_t             principal,
-                   struct tool_text     who,
+                   struct cstr_view     who,
                    struct policy_grant *g)
 {
 	if (role < 0)
@@ -1387,7 +1387,7 @@ policy_grant_unix (struct policy const      *policy,
 		}
 	}
 	return policy_grant_role(policy, role, peer->principal,
-	                         (struct tool_text){}, g);
+	                         (struct cstr_view){}, g);
 }
 
 enum policy_verdict

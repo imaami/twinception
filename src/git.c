@@ -444,7 +444,7 @@ git_definition (void const *service)
 	struct json_object *cmds = json_object_new_array();
 	for (size_t i = 0; cmds && i < ARRAY_SIZE(commands); ++i)
 		cmds = jb_push_or_free(cmds, json_object_new_string(commands[i].name));
-	struct tool_text const required[] = { TOOL_TEXT("repo"), TOOL_TEXT("command") };
+	struct cstr_view const required[] = { CSTR_VIEW("repo"), CSTR_VIEW("command") };
 	return jb_object(
 		"name", json_object_new_string("git"),
 		"title", json_object_new_string("Git"),
@@ -949,7 +949,7 @@ git_help (struct mcp_slot *slot,
 	size_t len;
 	char const *text = json_object_to_json_string_length(help, JB_WIRE, &len);
 	size_t taken;
-	int e = text ? mcp_slot_write(slot, (struct tool_text){ text, len }, 0, &taken)
+	int e = text ? mcp_slot_write(slot, (struct cstr_view){ text, len }, 0, &taken)
 	             : ENOMEM;
 	json_object_put(help);
 	if (e)
@@ -1162,8 +1162,8 @@ git_call_advance (struct git_call *call,
 		return;
 	}
 	git_drop(slot);
-	mcp_slot_tell(slot, late ? TOOL_TEXT("Git history validation timed out.")
-	                         : TOOL_TEXT("Cannot read the requested committed history. "
+	mcp_slot_tell(slot, late ? CSTR_VIEW("Git history validation timed out.")
+	                         : CSTR_VIEW("Cannot read the requested committed history. "
 	                                     "Use commits reachable from HEAD, branches, "
 	                                     "tags or remote-tracking refs."), TOOL_FAILED);
 }
@@ -1183,7 +1183,7 @@ git_line_hint (char const *path)
 }
 
 /* The text that util_format() writes into the array @p a. */
-#define FORMAT(a, ...) ((struct tool_text){ a, util_format(a, sizeof a, __VA_ARGS__) })
+#define FORMAT(a, ...) ((struct cstr_view){ a, util_format(a, sizeof a, __VA_ARGS__) })
 
 /* Destroy @p call after git has ended and its output is copied. Then
  * write the note, if any, after the output and finish the call. The note
@@ -1196,21 +1196,21 @@ git_ended (struct mcp_slot *slot,
 {
 	static_assert(GIT_MAX == 4 << 20, "the note says 4 MiB");
 	struct child *c = call->child;
-	struct tool_text out = mcp_slot_answer(slot);
+	struct cstr_view out = mcp_slot_answer(slot);
 	char buf[GIT_NOTE - 2];  /* the blank line takes 2 bytes at most */
-	struct tool_text note;
+	struct cstr_view note;
 	bool failed = true;
 	if (c->late) {
 		struct git_loop const *gl = mcp_slot_part(slot);
 		note = FORMAT(buf, "[git took longer than %.0f s, and was stopped.]",
 		              (double)gl->git->timeout / 1e9);
 	} else if (c->cut) {
-		note = TOOL_TEXT("[The output goes on past the 4 MiB shown.]");
+		note = CSTR_VIEW("[The output goes on past the 4 MiB shown.]");
 		failed = c->code == CLD_EXITED && c->status;
 	} else if (c->code != CLD_EXITED) {
 		note = FORMAT(buf, "[git was killed by signal %d.]", c->status);
 	} else if (c->status == 1 && (commands[call->command].takes & PATTERN)) {
-		note = TOOL_TEXT("[No matches.]");
+		note = CSTR_VIEW("[No matches.]");
 		failed = false;
 	} else if (c->status && (commands[call->command].takes & LINES)) {
 		static char const fmt[] = "[No file at that path in commit %s. ls-tree "
@@ -1229,18 +1229,18 @@ git_ended (struct mcp_slot *slot,
 			: "[git exited with status %d.]";
 		note = FORMAT(buf, fmt, c->status);
 	} else {
-		note = out.len ? (struct tool_text){} : TOOL_TEXT("[No output.]");
+		note = out.len ? (struct cstr_view){} : CSTR_VIEW("[No output.]");
 		failed = false;
 	}
 	git_drop(slot);
-	struct tool_text const p[] = {
-		!out.len ? TOOL_TEXT("") : out.ptr[out.len - 1] == '\n' ? TOOL_TEXT("\n")
-		                                                        : TOOL_TEXT("\n\n"),
+	struct cstr_view const p[] = {
+		!out.len ? CSTR_VIEW("") : out.data[out.len - 1] == '\n' ? CSTR_VIEW("\n")
+		                                                         : CSTR_VIEW("\n\n"),
 		note,
 	};
 	int e = 0;
 	size_t taken;
-	for (size_t i = note.ptr ? 0 : ARRAY_SIZE(p); i < ARRAY_SIZE(p) && !e; ++i)
+	for (size_t i = note.data ? 0 : ARRAY_SIZE(p); i < ARRAY_SIZE(p) && !e; ++i)
 		e = mcp_slot_write(slot, p[i], 0, &taken);
 	if (e) {
 		mcp_slot_fail(slot, e);
@@ -1252,13 +1252,13 @@ git_ended (struct mcp_slot *slot,
 /* Write @p n in decimal into the bytes before @p end. Return the text from
  * the first digit to @p end, and @p tail bytes more.
  */
-static struct tool_text
+static struct cstr_view
 git_digits (char   *end,
             size_t  n,
             size_t  tail)
 {
 	char *p = util_decimal(end, n);
-	return (struct tool_text){ p, (size_t)(end - p) + tail };
+	return (struct cstr_view){ p, (size_t)(end - p) + tail };
 }
 
 /* Write the @p n texts at @p p to the output of @p slot if the step has
@@ -1267,7 +1267,7 @@ git_digits (char   *end,
  */
 static int
 git_write (struct mcp_slot        *slot,
-           struct tool_text const *p,
+           struct cstr_view const *p,
            size_t                  n)
 {
 	size_t len = 0;
@@ -1386,13 +1386,13 @@ git_read_head (struct git_read const *read,
                bool                   cut)
 {
 	char lines[sizeof ": lines  to  of at least .]\n" + 3 * 20];
-	struct tool_text const p[] = {
-		TOOL_TEXT("[Repository "), { repo->name, repo->name_len }, TOOL_TEXT(", file "),
+	struct cstr_view const p[] = {
+		CSTR_VIEW("[Repository "), { repo->name, repo->name_len }, CSTR_VIEW(", file "),
 		{ read->rev + read->oid_len + 1, read->rev_len - read->oid_len - 1 },
-		TOOL_TEXT(" at commit "), { read->rev, read->oid_len },
+		CSTR_VIEW(" at commit "), { read->rev, read->oid_len },
 		read->total ? FORMAT(lines, ": lines %zu to %zu of %s%zu.]\n", read->line,
 		                     read->last, cut ? "at least " : "", read->total)
-		            : TOOL_TEXT(": the file is empty.]"),
+		            : CSTR_VIEW(": the file is empty.]"),
 	};
 	return git_write(slot, p, ARRAY_SIZE(p));
 }
@@ -1414,9 +1414,9 @@ git_read_lines (struct git_read *read,
 	digits[20] = '\t';
 	while (read->at < read->to) {
 		size_t room = loop_room(loop, LOOP_COPY);
-		struct tool_text num = read->at == read->start
+		struct cstr_view num = read->at == read->start
 		                       ? git_digits(digits + 20, read->lines + 1, 1)
-		                       : TOOL_TEXT("");
+		                       : CSTR_VIEW("");
 		/* Write a piece only if the step has room for the number, LINE_COST
 		 * and 4 bytes. The piece then has at least 4 bytes of the line, or
 		 * all of a shorter line. TOOL_MORE holds back at most 3 bytes of an
@@ -1437,7 +1437,7 @@ git_read_lines (struct git_read *read,
 		size_t taken;
 		int e = mcp_slot_write(slot, num, 0, &taken);
 		if (!e)
-			e = mcp_slot_write(slot, (struct tool_text){ (char const *)blob.ptr +
+			e = mcp_slot_write(slot, (struct cstr_view){ (char const *)blob.ptr +
 			                                             read->at, n },
 			                   ends ? 0 : TOOL_MORE, &taken);
 		if (e)
@@ -1467,23 +1467,23 @@ git_read_foot (struct git_read const *read,
 {
 	if (!read->total)
 		return 0;
-	struct tool_text const says[][2] = {
-		{ TOOL_TEXT("\"] and \"line\": "), TOOL_TEXT(".]") },
-		{ TOOL_TEXT("[Line "), TOOL_TEXT(" is the end of the file.]") },
-		{ TOOL_TEXT("[Line "),
-		  TOOL_TEXT(" is the end of the file, which has no newline after it.]") },
-		{ TOOL_TEXT("[The file goes on after line "),
-		  TOOL_TEXT(", past the 4 MiB that the git tool reads.]") },
-		{ TOOL_TEXT("[Line "), TOOL_TEXT(" goes on past the 4 MiB that the git tool "
+	struct cstr_view const says[][2] = {
+		{ CSTR_VIEW("\"] and \"line\": "), CSTR_VIEW(".]") },
+		{ CSTR_VIEW("[Line "), CSTR_VIEW(" is the end of the file.]") },
+		{ CSTR_VIEW("[Line "),
+		  CSTR_VIEW(" is the end of the file, which has no newline after it.]") },
+		{ CSTR_VIEW("[The file goes on after line "),
+		  CSTR_VIEW(", past the 4 MiB that the git tool reads.]") },
+		{ CSTR_VIEW("[Line "), CSTR_VIEW(" goes on past the 4 MiB that the git tool "
 		                                 "reads.]") },
 	};
 	bool newline = blob.ptr[read->to - 1] == '\n';
 	size_t kind = read->last < read->total ? 0 : 1 + 2 * cut + !newline;
 	char n[20];
-	struct tool_text const p[] = {
-		newline ? TOOL_TEXT("\n") : TOOL_TEXT("\n\n"),
-		kind ? TOOL_TEXT("") : TOOL_TEXT("[To read on, call again with \"revisions\": [\""),
-		kind ? TOOL_TEXT("") : (struct tool_text){ read->rev, read->rev_len },
+	struct cstr_view const p[] = {
+		newline ? CSTR_VIEW("\n") : CSTR_VIEW("\n\n"),
+		kind ? CSTR_VIEW("") : CSTR_VIEW("[To read on, call again with \"revisions\": [\""),
+		kind ? CSTR_VIEW("") : (struct cstr_view){ read->rev, read->rev_len },
 		says[kind][0],
 		git_digits(n + sizeof n, read->last + !kind, 0),
 		says[kind][1],
@@ -1538,7 +1538,7 @@ git_scan (struct mcp_slot *slot,
 		size_t head = blob.len < BINARY ? blob.len : BINARY;
 		if (head && memchr(blob.ptr, '\0', head)) {
 			git_drop(slot);
-			mcp_slot_tell(slot, TOOL_TEXT("The file has a NUL byte, so it is "
+			mcp_slot_tell(slot, CSTR_VIEW("The file has a NUL byte, so it is "
 			                              "binary, and read gives text only. "
 			                              "cat-file with -s gives its size."),
 			              TOOL_FAILED);
@@ -1558,7 +1558,7 @@ git_scan (struct mcp_slot *slot,
 		char why[GIT_WHY];
 		git_read_past(read, c->cut, why);
 		git_drop(slot);
-		mcp_slot_tell(slot, (struct tool_text){ why, strlen(why) }, TOOL_FAILED);
+		mcp_slot_tell(slot, (struct cstr_view){ why, strlen(why) }, TOOL_FAILED);
 		return;
 	}
 	read->at = read->start = read->from;
@@ -1637,7 +1637,7 @@ git_step (struct mcp_slot *slot)
 	struct span left = buf_peek(&c->out);
 	size_t room = loop_room(c->loop, LOOP_COPY);
 	size_t n = left.len < room ? left.len : room;
-	int e = mcp_slot_write(slot, (struct tool_text){ (char const *)left.ptr, n },
+	int e = mcp_slot_write(slot, (struct cstr_view){ (char const *)left.ptr, n },
 	                       n < left.len ? TOOL_MORE : 0, &n);
 	if (e) {
 		mcp_slot_fail(slot, e);
@@ -1669,7 +1669,7 @@ git_start (struct mcp_slot    *slot,
 	char why[GIT_WHY];
 	if (git_call_command(call, gl->git, why)) {
 		git_call_destroy(&call);
-		mcp_slot_tell(slot, (struct tool_text){ why, strlen(why) }, TOOL_FAILED);
+		mcp_slot_tell(slot, (struct cstr_view){ why, strlen(why) }, TOOL_FAILED);
 		return;
 	}
 	if (mcp_slot_offset(slot, args)) {
@@ -1685,14 +1685,14 @@ git_start (struct mcp_slot    *slot,
 	if (e)
 		git_call_destroy(&call);
 	if (e == EBUSY) {
-		mcp_slot_tell(slot, TOOL_TEXT("Too many commands are running; try again in a "
+		mcp_slot_tell(slot, CSTR_VIEW("Too many commands are running; try again in a "
 		                              "few seconds."), TOOL_FAILED);
 		return;
 	}
 	if (e) {
 		size_t n = util_format(why, sizeof why, "Cannot run git: %s.", strerror(e));
 		LOG(LOG_WARN, "%s", why);
-		mcp_slot_tell(slot, (struct tool_text){ why, n }, TOOL_FAILED);
+		mcp_slot_tell(slot, (struct cstr_view){ why, n }, TOOL_FAILED);
 		return;
 	}
 	*mcp_slot_own(slot) = call;

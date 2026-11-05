@@ -70,18 +70,18 @@ enum review_action : uint8_t {
 };
 
 /** The state names that the findings tool takes. Each is NUL-terminated. */
-extern struct tool_text const review_state_names[REVIEW_STATES];
+extern struct cstr_view const review_state_names[REVIEW_STATES];
 
 /** The action names that the findings tool takes. Each is NUL-terminated. */
-extern struct tool_text const review_action_names[REVIEW_ACTIONS];
+extern struct cstr_view const review_action_names[REVIEW_ACTIONS];
 
 /** The numbered lines of a committed file in the output of a git read. The
  *  texts are borrowed.
  */
 struct review_source {
-	struct tool_text repo;    /**< repository name */
-	struct tool_text commit;  /**< full commit ID */
-	struct tool_text path;    /**< path of the file in the commit */
+	struct cstr_view repo;    /**< repository name */
+	struct cstr_view commit;  /**< full commit ID */
+	struct cstr_view path;    /**< path of the file in the commit */
 	size_t           at;      /**< offset of the numbered lines in the
 	                               output */
 	size_t           len;     /**< bytes of the numbered lines: one output
@@ -131,7 +131,7 @@ review_destroy (struct review **p_review);
  */
 extern struct review_read *
 review_read_create (struct review_source const *src,
-                    struct tool_text            out,
+                    struct cstr_view            out,
                     int                        *e);
 
 /** Frees @p *p_read and sets it to nullptr. */
@@ -151,7 +151,7 @@ review_read_json (struct review_read const *read,
  */
 extern struct review_read *
 review_read_restore (struct json_object const *obj,
-                     struct tool_text          out,
+                     struct cstr_view          out,
                      int                      *e);
 
 /**
@@ -166,7 +166,7 @@ review_read_restore (struct json_object const *obj,
 extern int
 review_shown (struct review            *r,
               struct review_read const *read,
-              struct tool_text          out,
+              struct cstr_view          out,
               size_t                    skip,
               size_t                    window,
               uint32_t                  turn);

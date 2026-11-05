@@ -179,7 +179,7 @@ struct plugin {
  */
 #define PLUGIN_ABI(X)                                                      \
         X(sizeof (void *)) X(sizeof (long)) X(alignof (max_align_t))       \
-        X(sizeof (enum buf_pressure)) X(sizeof (struct tool_text))         \
+        X(sizeof (enum buf_pressure)) X(sizeof (struct cstr_view))         \
         X(sizeof (struct tool_kind)) X(offsetof (struct tool_kind, flags)) \
         X(sizeof (struct plugin)) X(offsetof (struct plugin, instance_init)) \
         X(sizeof (struct handle)) X(sizeof (struct msg))                   \
