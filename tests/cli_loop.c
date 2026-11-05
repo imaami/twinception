@@ -112,8 +112,8 @@ cli_loop_test_event (struct loop     *loop,
 {
 	assert(events & EPOLLIN);
 	struct cli_loop_test_ref *watch = container_of(ref, struct cli_loop_test_ref, ref);
-	uint64_t count = 0;
-	assert(!loop_ref_counter(ref, &count) && count == 1);
+	eventfd_t count = 0;
+	assert(!eventfd_read(ref->fd, &count) && count == 1);
 	loop_close(loop, ref);
 	assert(ref->fd < 0 && !loop->error);
 	++watch->test->released;
@@ -121,23 +121,12 @@ cli_loop_test_event (struct loop     *loop,
 	watch = nullptr;
 }
 
-/* An empty counter reads as 0, and a counter reads as its value. A read
- * error becomes the loop error, and a later error or 0 does not replace
- * it.
+/* loop_fail() stores the first error number in loop->error and ignores 0
+ * and later errors.
  */
 static void
 cli_loop_test_errors (struct cli_loop_test *test)
 {
-	struct loop_ref ref = { .fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC) };
-	assert(ref.fd >= 0);
-	uint64_t count = 1;
-	assert(!loop_ref_counter(&ref, &count) && !count);
-	assert(!eventfd_write(ref.fd, 3));
-	assert(!loop_ref_counter(&ref, &count) && count == 3);
-	assert(!close(ref.fd));
-	count = 1;
-	assert(loop_ref_counter(&ref, &count) == EBADF && !count);
-	ref.fd = -1;
 	assert(!test->loop.loop.error);
 	loop_fail(&test->loop.loop, 0);
 	assert(!test->loop.loop.error);

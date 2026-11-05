@@ -511,24 +511,6 @@ loop_close (struct loop     *loop,
 	(void)close(fd);
 }
 
-int
-loop_ref_counter (struct loop_ref const *ref,
-                  uint64_t              *count)
-{
-	*count = 0;
-	uint64_t value;
-	ssize_t n;
-	do {
-		n = read(ref->fd, &value, sizeof value);
-	} while (n < 0 && errno == EINTR);
-	if (n < 0)
-		return errno == EAGAIN ? 0 : errno;
-	if (n != (ssize_t)sizeof value)
-		return EIO;
-	*count = value;
-	return 0;
-}
-
 void
 loop_release (struct loop     *loop,
               struct loop_ref *ref,

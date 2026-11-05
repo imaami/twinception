@@ -17,8 +17,9 @@ cli_mailbox_wake (struct loop     *loop,
 {
 	(void)events;
 	struct cli_mailbox *mailbox = container_of(ref, struct cli_mailbox, wake);
-	uint64_t count;
-	loop_fail(loop, loop_ref_counter(ref, &count));
+	eventfd_t count;
+	if (eventfd_read(ref->fd, &count) && errno != EAGAIN)
+		loop_fail(loop, errno);
 	loop_ready(loop, &mailbox->drain);
 }
 

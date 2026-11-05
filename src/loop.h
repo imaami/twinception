@@ -213,15 +213,6 @@ extern void
 loop_close (struct loop     *loop,
             struct loop_ref *ref);
 
-/** Read the counter of the eventfd of @p ref into @p *count and return 0.
- *  If the counter is 0, read() fails with EAGAIN, and the function stores 0
- *  and returns 0. After another error, it stores 0 and returns the error
- *  number of read(), or EIO for a short read.
- */
-extern int
-loop_ref_counter (struct loop_ref const *ref,
-                  uint64_t              *count);
-
 /**
  * Unwatch @p ref and call @p release on it once the current batch of events
  * has been dispatched. Events already fetched for @p ref are skipped, so its

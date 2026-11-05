@@ -31,8 +31,9 @@ cli_io_notify (struct loop     *loop,
 {
 	(void)events;
 	struct cli_io *io = container_of(ref, struct cli_io, notify);
-	uint64_t count;
-	loop_fail(loop, loop_ref_counter(ref, &count));
+	eventfd_t count = 0;
+	if (eventfd_read(ref->fd, &count) && errno != EAGAIN)
+		loop_fail(loop, errno);
 	io->exited += (uint32_t)count;
 }
 
