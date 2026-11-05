@@ -567,6 +567,10 @@ struct mcp_slot {
 	struct review_read *read;      /* the lines of a file that its output
 	                                  shows, for the review record
 	                                  (mcp_slot_source()), if any */
+	char const         *shows;     /* the selector of the notebook that a
+	                                  notes read or diff shows, or nullptr.
+	                                  mcp_slot_done() puts it in the notice
+	                                  and the journal and then clears it. */
 	uint16_t            note_len;  /* the length of note in bytes */
 	uint16_t            fetch;     /* enum mcp_fetch */
 	uint8_t             tool;      /* the offer id of the tool, or TOOL_MAX */
@@ -1449,6 +1453,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	else
 		child_destroy(&slot->child);
 	slot->fetch = 0;
+	slot->shows = nullptr;
 	slot->notebook[0] = '\0';
 	loop_unready(&slot->step);
 	if (slot->call.bits)
@@ -3694,7 +3699,6 @@ mcp_slot_fetched (struct mcp_slot const *slot,
 }
 
 static void mcp_slot_notes_run (struct mcp_slot *slot, uint16_t fetch, struct buf *in);
-static char const *mcp_slot_notebook (struct mcp_slot const *slot);
 
 /* Serialize the tools that the turns of @p obj's userdata, a request, may
  * call: their definitions as the upstream's API has them, each after a
@@ -5795,7 +5799,7 @@ mcp_req_call_launch (struct mcp_req *req)
 				mcp_req_fail(req, EILSEQ);
 				return;
 			}
-			slot->fetch = FETCH_READ;
+			slot->shows = notebook;
 		}
 		char const *text = jb_str(jb_get(saved, "text"), &len);
 		struct json_object *source = jb_get(saved, "source");
@@ -5961,9 +5965,8 @@ mcp_slot_done (struct mcp_slot *slot,
 		    *text ? "; error " : "", text);
 	}
 	slot->failed = failed;
-	char const *notebook = !failed &&
-	                      (slot->fetch & (FETCH_KIND | FETCH_COPY | FETCH_ATTACH)) == FETCH_READ
-	                    ? notes_selector(mcp_slot_notebook(slot)) : nullptr;
+	char const *notebook = !failed ? slot->shows : nullptr;
+	slot->shows = nullptr;
 	if (*req->archive && slot->role == ROLE_TURN &&
 	    !(mcp_slot_offer(slot)->kind->flags & KF_RERUN) && !req->saved_tools[slot - req->slots]) {
 		struct span files = buf_peek(&req->attached);
@@ -7404,8 +7407,9 @@ mcp_slot_notes_got_diff (struct mcp_slot *slot)
 	struct cstr_view file = notes_revision_file(slot->own);
 	struct span out = buf_peek(&c->out);
 	struct dstr *d = &slot->answer;
+	slot->shows = notes_selector(mcp_slot_notebook(slot));
 	int e = dstr_printf(d, "Notebook %s — %.*s\nfrom %s\nto %s\n\n",
-	                    notes_selector(mcp_slot_notebook(slot)), (int)file.len, file.data,
+	                    slot->shows, (int)file.len, file.data,
 	                    notes_revision_from(slot->own), notes_revision_to(slot->own)) ? 0 : ENOMEM;
 	char const *text = (char const *)out.ptr;
 	if (!e)
@@ -7445,10 +7449,11 @@ mcp_slot_notes_got_note (struct mcp_slot *slot)
 	}
 	char const *s = (char const *)text.ptr;
 	int e = 0;
+	slot->shows = notes_selector(mcp_slot_notebook(slot));
 	if (!r && (slot->fetch & FETCH_REVISION)) {
 		struct cstr_view file = notes_revision_file(slot->own);
 		e = dstr_printf(&slot->answer, "Notebook %s — %.*s at %s:\n\n",
-		                 notes_selector(mcp_slot_notebook(slot)), (int)file.len, file.data,
+		                 slot->shows, (int)file.len, file.data,
 		                 notes_revision_from(slot->own)) ? 0 : ENOMEM;
 	}
 	e = e ? e : !r && !mcp_notes_text(s, text.len)
