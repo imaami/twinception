@@ -959,20 +959,19 @@ godbolt_fail (struct godbolt *call)
 	return GODBOLT_ENDED;
 }
 
-/* Sets the call's request to a request of the kind @p kind, with the @p len
- * bytes of the body at @p body. The function writes the URL of the rule
- * of @p kind, with @p segment after the path, to call->url. A compilation
- * of a call without offset has the keep 1, so that it gets no response
- * that askai received more than a second earlier. A compilation of a call
- * with offset has the keep 300, so that it gets the response that the same
- * call without offset received, while askai still stores it.
+/* Sets the call's request to a request of the kind @p kind, with the body
+ * @p body. The function writes the URL of the rule of @p kind, with
+ * @p segment after the path, to call->url. A compilation of a call without
+ * offset has the keep 1, so that askai does not answer it with a response
+ * that it received more than a second earlier. A compilation of a call with
+ * offset has the keep 300, so that askai answers it with the stored
+ * response of the same call without offset.
  */
 static void
 godbolt_request (struct godbolt   *call,
                  enum godbolt_req  kind,
                  struct cstr_view  segment,
-                 char const       *body,
-                 size_t            len)
+                 struct cstr_view  body)
 {
 	struct godbolt_rule const *rule = &godbolt_rules[kind];
 	char *u = godbolt_cat(call->url, (struct cstr_view){ call->cfg->url, call->cfg->len });
@@ -981,7 +980,6 @@ godbolt_request (struct godbolt   *call,
 	call->req = (struct web_request){
 		.url = call->url,
 		.body = body,
-		.len = len,
 		.accept = "application/json",
 		.max = rule->max,
 		.timeout = rule->timeout,
@@ -1109,7 +1107,7 @@ godbolt_result (struct godbolt *call)
 	if (e == EINPROGRESS)
 		return GODBOLT_WAIT;
 	call->wait = GODBOLT_IDLE;
-	if (e || (!r.body && r.len) || !r.error) {
+	if (e || (!r.body.data && r.body.len) || !r.error) {
 		godbolt_why(call, "askai has no response to the request");
 		return GODBOLT_BAD;
 	}
@@ -1131,7 +1129,7 @@ godbolt_result (struct godbolt *call)
 		uint32_t const wait = 1u << (call->attempt - 1);
 		return godbolt_later(call, r.retry > wait ? r.retry : wait);
 	}
-	call->resp = (struct cstr_view){ r.body ? r.body : "", r.len };
+	call->resp = r.body.data ? r.body : CSTR_VIEW("");
 	size_t const max = call->req.max;
 	if (r.e == EFBIG)
 		godbolt_why(call, "the response is larger than %zu %s",
@@ -1621,9 +1619,9 @@ static enum godbolt_go
 godbolt_list_send (struct godbolt *call)
 {
 	if (call->action == GODBOLT_LANGUAGES)
-		godbolt_request(call, GODBOLT_GET_LANGUAGES, (struct cstr_view){}, nullptr, 0);
+		godbolt_request(call, GODBOLT_GET_LANGUAGES, (struct cstr_view){}, (struct cstr_view){});
 	else
-		godbolt_request(call, GODBOLT_GET_COMPILERS, call->language, nullptr, 0);
+		godbolt_request(call, GODBOLT_GET_COMPILERS, call->language, (struct cstr_view){});
 	call->phase = GODBOLT_LIST;
 	return godbolt_send(call);
 }
@@ -1873,7 +1871,8 @@ godbolt_state (struct godbolt *call)
 	call->phase = GODBOLT_JOB;
 	if (call->cfg->share == GODBOLT_SHARE_STATE)
 		return godbolt_state_link(call) ? godbolt_fail(call) : GODBOLT_GO;
-	godbolt_request(call, GODBOLT_POST_SHORTEN, (struct cstr_view){}, call->body, call->len);
+	godbolt_request(call, GODBOLT_POST_SHORTEN, (struct cstr_view){},
+	                (struct cstr_view){ call->body, call->len });
 	call->phase = GODBOLT_LINK;
 	return godbolt_send(call);
 }
@@ -2003,7 +2002,7 @@ godbolt_job (struct godbolt *call)
 		return godbolt_record(call, GODBOLT_UNSENT);
 	}
 	godbolt_request(call, GODBOLT_POST_COMPILE, call->ids[call->job / call->n_args],
-	                call->body + GODBOLT_SKIP, call->len - GODBOLT_SKIP);
+	                (struct cstr_view){ call->body + GODBOLT_SKIP, call->len - GODBOLT_SKIP });
 	call->phase = GODBOLT_ANSWER;
 	return godbolt_send(call);
 }

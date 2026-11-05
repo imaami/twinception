@@ -25,6 +25,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "cstr_view.h"
 #include "loop_export.h"
 
 enum {
@@ -44,53 +45,49 @@ struct web_request {
 	/** The URL, NUL-terminated. It begins with http:// or https://, and
 	 *  it has at most WEB_URL_MAX bytes. Each byte is printable ASCII and
 	 *  not a space. The URL has no user name and no password. */
-	char const *url;
+	char const      *url;
 	/** The body of a POST, which askai sends with the Content-Type
-	 *  application/json, or nullptr for a GET. askai does not check that
-	 *  the body is JSON. */
-	char const *body;
-	/** The length of the body in bytes, at most WEB_SEND_MAX. It is 0
-	 *  for a GET. */
-	size_t      len;
+	 *  application/json. body.data is nullptr for a GET. body.len is at
+	 *  most WEB_SEND_MAX. askai does not check that the body is JSON. */
+	struct cstr_view body;
 	/** The value of the header Accept, NUL-terminated: 1 to WEB_ACCEPT_MAX
 	 *  bytes, each of them printable ASCII or a space. If it is nullptr,
 	 *  askai sends the Accept of libcurl, which accepts any type. */
-	char const *accept;
+	char const      *accept;
 	/** The largest length of the response body in bytes, from 1 to
 	 *  WEB_BODY_MAX. A longer body fails the request with EFBIG. askai
 	 *  asks for a compressed body, and max is the length after askai has
 	 *  decoded it. */
-	size_t      max;
+	size_t           max;
 	/** The seconds that the whole request may take, from 1 to
 	 *  WEB_TIMEOUT_MAX. A request that takes longer fails with ETIMEDOUT.
 	 *  So does a request whose connection to the server is not set up
 	 *  within 10 seconds. */
-	uint32_t    timeout;
+	uint32_t         timeout;
 	/** 0, or at most WEB_KEEP_MAX seconds. If it is not 0, askai stores
 	 *  the response, and it can answer the request with a stored response
 	 *  that is younger than keep. See mcp_slot_fetch(). */
-	uint32_t    keep;
+	uint32_t         keep;
 };
 
 /** The result of a call's request (mcp_slot_fetched()). */
 struct web_response {
 	/** The response body. It can have any bytes, and it does not end in
 	 *  a NUL. It is empty if e is not 0. */
-	char const *body;
-	size_t      len;     /**< the length of the body in bytes */
+	struct cstr_view body;
 	/** The value of Content-Type, NUL-terminated. It is "" if the
 	 *  response has no Content-Type. */
-	char const *type;
+	char const      *type;
 	/** The reason for the failure, NUL-terminated text. It is "" if e is
 	 *  0. */
-	char const *error;
+	char const      *error;
 	/** The HTTP status, or 0 if no status line came. */
-	uint32_t    status;
+	uint32_t         status;
 	/** The seconds since askai received the response. */
-	uint32_t    age;
+	uint32_t         age;
 	/** The seconds of the header Retry-After, or 0 if the response has
 	 *  none. */
-	uint32_t    retry;
+	uint32_t         retry;
 	/**
 	 * 0 if the whole response came. Otherwise it is one of these error
 	 * numbers:
@@ -101,7 +98,7 @@ struct web_response {
 	 * - ENOMEM: askai ran out of memory.
 	 * - EIO: any other failure, which error describes.
 	 */
-	int         e;
+	int              e;
 };
 
 /* The rest of this file is askai's side. A plugin does not use it. */

@@ -195,15 +195,6 @@ struct web {
 	struct loop       *loop;
 };
 
-/* How a run ended. */
-struct web_end {
-	char const *type;    /* the Content-Type, or nullptr if none */
-	char const *why;     /* the error text, "" if e is 0 */
-	uint32_t    status;
-	uint32_t    retry;
-	int         e;
-};
-
 /* Returns the length of the bytes of @p key. */
 static size_t
 web_key_size (struct web_key const *key)
@@ -367,18 +358,20 @@ web_keep (struct web       *web,
 	return gone;
 }
 
-/* Makes the reply of @p run from @p end. If the run did not fail, the body
- * that the run received moves to the reply. Otherwise the body is freed.
+/* Makes the reply of @p run from @p end. end->body is not read, and
+ * end->type is nullptr if the response had no Content-Type. If the run did
+ * not fail, the body that the run received moves to the reply. Otherwise
+ * the body is freed.
  * Returns the reply with one reference. On failure it returns nullptr and
  * stores ENOMEM in @p *e.
  */
 static struct web_reply *
-web_reply_create (struct web_run       *run,
-                  struct web_end const *end,
-                  int                  *e)
+web_reply_create (struct web_run            *run,
+                  struct web_response const *end,
+                  int                       *e)
 {
 	size_t type = end->type ? strlen(end->type) : 0;
-	size_t why = strlen(end->why);
+	size_t why = strlen(end->error);
 	size_t size = sizeof (struct web_reply) + type + 1 + why + 1;
 	struct web_reply *reply = malloc(size);
 	char *body = run->body;
@@ -403,7 +396,7 @@ web_reply_create (struct web_run       *run,
 	if (type)
 		memcpy(reply->text, end->type, type);
 	reply->text[type] = '\0';
-	memcpy(reply->text + type + 1, end->why, why + 1);
+	memcpy(reply->text + type + 1, end->error, why + 1);
 	reply->type = reply->text;
 	reply->error = reply->text + type + 1;
 	reply->received = loop_clock();
@@ -461,9 +454,9 @@ web_entry_create (struct web_run const *run,
  * after home's loop has stopped.
  */
 static void
-web_run_end (struct web           *web,
-             struct web_run       *run,
-             struct web_end const *end)
+web_run_end (struct web                *web,
+             struct web_run            *run,
+             struct web_response const *end)
 {
 	int e = 0;
 	struct web_reply *reply = web_reply_create(run, end, &e);
@@ -503,9 +496,9 @@ web_run_end (struct web           *web,
  * with --verbose.
  */
 static void
-web_run_finish (struct web           *web,
-                struct web_run       *run,
-                struct web_end const *end)
+web_run_finish (struct web                *web,
+                struct web_run            *run,
+                struct web_response const *end)
 {
 	loop_timer_stop(web->loop, &run->timer);
 	list_del(&run->live);
@@ -519,7 +512,7 @@ web_run_finish (struct web           *web,
 	char const *host = util_url_shown(url, &scheme);
 	if (end->e)
 		LOG(LOG_VERBOSE, "web request %s %.*s%s failed after %" PRIu64 " ms: %s",
-		    method, scheme, url, host, ms, end->why);
+		    method, scheme, url, host, ms, end->error);
 	else
 		LOG(LOG_VERBOSE, "web request %s %.*s%s answered with status %" PRIu32
 		    " after %" PRIu64 " ms (%zu bytes)", method, scheme, url, host,
@@ -603,9 +596,9 @@ web_run_done (CURLcode    result,
 		util_format(why, sizeof why, "%s", *error ? error : curl_easy_strerror(result));
 	}
 	long retry = http_retry_after(web->http);
-	web_run_finish(web, run, &(struct web_end){
+	web_run_finish(web, run, &(struct web_response){
 		.type = http_type(web->http),
-		.why = why,
+		.error = why,
 		.status = status > 0 && status < 1000 ? (uint32_t)status : 0,
 		.retry = retry > 0 && retry <= UINT32_MAX ? (uint32_t)retry : 0,
 		.e = e
@@ -708,8 +701,8 @@ web_run_start (struct web     *web,
 	if (e) {
 		char why[96];
 		util_format(why, sizeof why, "askai cannot send the request: %s", strerror(e));
-		web_run_finish(web, run, &(struct web_end){
-			.why = why,
+		web_run_finish(web, run, &(struct web_response){
+			.error = why,
 			.e = e == ENOMEM ? ENOMEM : EIO
 		});
 		return;
@@ -730,11 +723,11 @@ web_run_mail (struct loop *loop,
 {
 	struct web_run *run = container_of(msg, struct web_run, to_home);
 	struct web *web = run->web;
-	struct web_end const ends[] = {
-		{ .why = stopping, .e = ESHUTDOWN },
-		{ .why = "",       .e = ECANCELED },
+	struct web_response const ends[] = {
+		{ .error = stopping, .e = ESHUTDOWN },
+		{ .error = "",       .e = ECANCELED },
 	};
-	struct web_end const *end = &ends[!loop->exit];
+	struct web_response const *end = &ends[!loop->exit];
 	uint32_t bits = atomic_exchange(&run->bits, 0);
 
 	switch (bits & (RUN_SUBMIT | RUN_CANCEL)) {
@@ -743,6 +736,7 @@ web_run_mail (struct loop *loop,
 			web_run_start(web, run);
 			break;
 		}
+		[[fallthrough]];
 
 	case RUN_SUBMIT | RUN_CANCEL:
 		web_run_end(web, run, end);
@@ -751,8 +745,8 @@ web_run_mail (struct loop *loop,
 	case RUN_CANCEL:
 		if (!list_is_empty(&run->live)) {
 			http_cancel(web->http, &run->transfer);
-			web_run_finish(web, run, &(struct web_end){
-				.why = "cancelled",
+			web_run_finish(web, run, &(struct web_response){
+				.error = "cancelled",
 				.e = ECANCELED
 			});
 		}
@@ -841,7 +835,7 @@ web_home_stop (struct web *web)
 	while (!list_is_empty(&web->live)) {
 		struct web_run *run = container_of(web->live.next, struct web_run, live);
 		http_cancel(web->http, &run->transfer);
-		web_run_finish(web, run, &(struct web_end){ .why = stopping, .e = ESHUTDOWN });
+		web_run_finish(web, run, &(struct web_response){ .error = stopping, .e = ESHUTDOWN });
 	}
 	loop_unready(&web->resume);
 	loop_unready(&web->overdue);
@@ -891,7 +885,7 @@ web_wait_create (struct web           *web,
 	static char const of[] = " (plugin ";
 	struct web_request const *r = ask->request;
 	size_t name = ask->plugin ? strlen(ask->plugin) : 0;
-	size_t body = r->body ? r->len : 0;
+	size_t body = r->body.data ? r->body.len : 0;
 	size_t line = sizeof agent - 1 + (name ? sizeof of - 1 + name + 1 : 0);
 	for (char const *const *l = ask->lines; l && *l; ++l)
 		line += web_line_kept(*l) ? 1 + strlen(*l) : 0;
@@ -934,7 +928,7 @@ web_wait_create (struct web           *web,
 	}
 	*p++ = '\0';
 	if (body)
-		memcpy(p, r->body, body);
+		memcpy(p, r->body.data, body);
 	loop_work(ask->loop, LOOP_COPY, key);
 
 	run->to_home = (struct msg){ .fn = web_run_mail };
@@ -955,7 +949,7 @@ web_wait_create (struct web           *web,
 		.accept = (uint32_t)ask->accept,
 		.body = (uint32_t)body,
 		.lines = (uint16_t)line,
-		.post = r->body != nullptr
+		.post = r->body.data != nullptr
 	};
 	run->key.hash = web_key_hash(web->seed, &run->key, run->data);
 	/* One reference for home, and one for the message. */
@@ -1034,7 +1028,7 @@ web_wait_response (struct web_wait const *wait,
 	struct web_reply const *reply = wait->reply;
 	if (!reply) {
 		*response = (struct web_response){
-			.body = "",
+			.body = { "", 0 },
 			.type = "",
 			.error = "askai ran out of memory.",
 			.e = ENOMEM
@@ -1042,8 +1036,7 @@ web_wait_response (struct web_wait const *wait,
 		return;
 	}
 	*response = (struct web_response){
-		.body = reply->body ? reply->body : "",
-		.len = reply->len,
+		.body = { reply->body ? reply->body : "", reply->len },
 		.type = reply->type,
 		.error = reply->error,
 		.status = reply->status,

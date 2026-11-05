@@ -3547,7 +3547,7 @@ int
 mcp_slot_fetch (struct mcp_slot          *slot,
                 struct web_request const *request)
 {
-	if (!slot || !request || !request->url || (!request->body && request->len))
+	if (!slot || !request || !request->url || (!request->body.data && request->body.len))
 		return EFAULT;
 	if (slot->done)
 		return EINVAL;
@@ -3563,7 +3563,7 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 	                 ? strcspn(url + scheme, "/?#") : 0;
 	if (!authority || memchr(url + scheme, '@', authority) ||
 	    (accept && (!accept_len || accept_len > WEB_ACCEPT_MAX)) ||
-	    request->len > WEB_SEND_MAX || request->max - 1 >= WEB_BODY_MAX ||
+	    request->body.len > WEB_SEND_MAX || request->max - 1 >= WEB_BODY_MAX ||
 	    request->timeout - 1 >= WEB_TIMEOUT_MAX || request->keep > WEB_KEEP_MAX)
 		return EINVAL;
 	for (size_t i = 0; i < url_len; ++i)
@@ -6572,21 +6572,19 @@ mcp_req_attach (struct mcp_req *req,
 	return 0;
 }
 
-/* Sends the @p len bytes at @p body to the upstream's file store as the
- * HTTP request of the call in @p slot. Returns 0, or the error of
- * mcp_slot_send(), such as EAGAIN if askai sends too many requests at once.
+/* Sends @p body to the upstream's file store as the HTTP request of the
+ * call in @p slot. Returns 0, or the error of mcp_slot_send(), such as
+ * EAGAIN if askai sends too many requests at once.
  */
 static int
-mcp_slot_post_file (struct mcp_slot *slot,
-                    char const      *body,
-                    size_t           len)
+mcp_slot_post_file (struct mcp_slot  *slot,
+                    struct cstr_view  body)
 {
 	static char const accept[] = "application/json";
 	struct mcp_static const *st = slot->req->mcp->st;
 	struct web_request const request = {
 		.url = st->files_url,
 		.body = body,
-		.len = len,
 		.accept = accept,
 		.max = 64 << 10,
 		.timeout = WEB_TIMEOUT_MAX
@@ -6637,7 +6635,7 @@ mcp_slot_attach (struct mcp_slot  *slot,
 		return ENOTSUP;
 	if (file.data) {
 		int e = mcp_req_fits(req, file.len, out);
-		e = e ? e : mcp_slot_post_file(slot, file.data, file.len);
+		e = e ? e : mcp_slot_post_file(slot, file);
 		if (e == EAGAIN)
 			return CAT(out, "askai sends too many requests at once to upload the "
 			           "note now. Try again later.") ? EAGAIN : ENOMEM;
@@ -6675,7 +6673,7 @@ mcp_slot_attached (struct mcp_slot  *slot,
 	dstr_auto why = DSTR_INIT;
 	int64_t expires = 0;
 	e = r.e ? (dstr_cat(&why, r.error) ? EIO : ENOMEM)
-	    : ai_uploaded(st->ep->api, r.status, r.body, r.len, &uri, &expires, &why);
+	    : ai_uploaded(st->ep->api, r.status, r.body.data, r.body.len, &uri, &expires, &why);
 	if (!e && dstr_len(&uri) > UPLOADS_URI)
 		e = dstr_printf(&why, "The upstream named the file with a URI of more "
 		                "than %d bytes.", UPLOADS_URI) ? EIO : ENOMEM;

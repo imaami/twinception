@@ -414,7 +414,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	};
 	struct web_request const no_url = { .max = 1, .timeout = 1 };
 	struct web_request const no_body = {
-		.url = "http://127.0.0.1/", .len = 1, .max = 1, .timeout = 1
+		.url = "http://127.0.0.1/", .body = { nullptr, 1 }, .max = 1, .timeout = 1
 	};
 	struct web_request const ftp = {
 		.url = "ftp://127.0.0.1/", .max = 1, .timeout = 1
@@ -426,7 +426,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(mcp_slot_fetch(slot, &no_body) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_fetch(slot, &ftp) == EINVAL);
 	TEST_PLUGIN_REFUSED(mcp_slot_fetched(nullptr, &response) == EFAULT &&
-	                    !response.body);
+	                    !response.body.data);
 	TEST_PLUGIN_REFUSED(mcp_slot_fetched(slot, nullptr) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_fetched(slot, &response) == ENOENT);
 #undef TEST_PLUGIN_REFUSED
@@ -640,7 +640,7 @@ test_plugin_fetch_start (struct mcp_slot    *slot,
 		.timeout = (uint32_t)test_plugin_integer(args, "timeout", 10),
 		.keep = (uint32_t)test_plugin_integer(args, "keep", 0)
 	};
-	request.body = test_plugin_string(args, "body", &request.len);
+	request.body.data = test_plugin_string(args, "body", &request.body.len);
 	struct json_object *arg = nullptr;
 	(void)json_object_object_get_ex(args, "twice", &arg);
 	int e = mcp_slot_fetch(slot, &request);
@@ -687,7 +687,7 @@ test_plugin_fetch_step (struct mcp_slot *slot)
 	size_t taken;
 	e = mcp_slot_write(slot, (struct cstr_view){ head, (size_t)n }, 0, &taken);
 	if (!e)
-		e = mcp_slot_write(slot, (struct cstr_view){ r.body, r.len }, 0, &taken);
+		e = mcp_slot_write(slot, r.body, 0, &taken);
 	if (e)
 		mcp_slot_fail(slot, e);
 	else
