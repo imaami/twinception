@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "buf.h"
 #include "jb.h"
 #include "log.h"
 #include "policy.h"
@@ -137,8 +138,6 @@ struct policy_build {
 	                                   nullptr */
 	char const *const   *tools;
 	char                *why;
-	char                *buf;       /* the buffer for group lookups, which
-	                                   policy_create() frees at the end */
 	char                *names;     /* the place in the policy's block
 	                                   where the next name for the log is
 	                                   written */
@@ -147,8 +146,9 @@ struct policy_build {
 	                                   frees at the end */
 	size_t               n_tools;
 	size_t               len;
-	size_t               size;      /* the size of buf */
 	size_t               n_subgids;
+	struct buf           nss;       /* the storage of group lookups, which
+	                                   policy_create() frees at the end */
 };
 
 /* Say what is wrong; returns EINVAL. */
@@ -513,17 +513,15 @@ policy_build_gid (struct policy_build *b,
 	struct group gr;
 	struct group *r = nullptr;
 	int e = 0;
-	while (!b->buf || (e = getgrnam_r(name, &gr, b->buf, b->size, &r)) == ERANGE) {
-		size_t size = b->size ? 2 * b->size : 1 << 10;
-		if (size > POLICY_ENTRY_MAX)
+	struct span room = {};
+	while (!room.ptr || (e = getgrnam_r(name, &gr, (char *)room.ptr, room.len, &r)) == ERANGE) {
+		int g = buf_reserve(&b->nss, room.len + 1, POLICY_ENTRY_MAX, &room);
+		if (g == ENOBUFS)
 			return policy_build_fail(b, "unix-groups: the entry of group %s is "
 			                         "larger than %zu MiB; give its gid instead",
 			                         name, POLICY_ENTRY_MAX >> 20);
-		char *buf = realloc(b->buf, size);
-		if (!buf)
-			return ENOMEM;
-		b->buf = buf;
-		b->size = size;
+		if (g)
+			return g;
 	}
 	if (e == ENOMEM)
 		return e;
@@ -1012,8 +1010,7 @@ policy_create (struct json_object *file,
 		*e = policy_build_file(&b, ids, groups, anon);
 	else
 		policy_build_own(&b, token);
-	free(b.buf);
-	b.buf = nullptr;
+	buf_fini(&b.nss);
 	free(b.subgids);
 	b.subgids = nullptr;
 	/* The tokens get the principals of a key of zero bytes, until
