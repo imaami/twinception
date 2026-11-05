@@ -1,12 +1,12 @@
 /** @file registry.h
  *
- * The tool registry: the tools that askai offers, and the plugins
- * that have them.
+ * The tool registry contains the tools that askai offers and the plugins
+ * that provide them.
  *
  * A tool's id is its index in the registry. The tools that a role can
  * grant (src/policy.h) come first, so their ids are also the bits of a
  * role's tool mask. The tools that only the turns of an ask call use
- * (src/mcp.h) follow them. No two tools have the same name.
+ * (src/mcp.h) come after them. The names of the tools are unique.
  *
  * A zeroed registry is empty. Tools are added while askai reads its
  * configuration, on one thread. After that the registry does not change,
@@ -35,8 +35,10 @@ struct registry_tool {
 	void const             *data;  /**< the pointer that the caller of
 	                                    registry_add() gave for its own use,
 	                                    or nullptr */
-	uint32_t                part;  /**< the index of the tool's plugin in
-	                                    plugins; registry_add() sets it */
+	uint64_t                part;  /**< the index of the plugin of the
+	                                    tool in plugins, which
+	                                    registry_add() sets. It is widened
+	                                    over the padding. */
 };
 
 /** How registry_add() adds a tool. */
@@ -73,17 +75,17 @@ extern void
 registry_fini (struct registry *reg);
 
 /**
- * Adds the tool @p tool, which the plugin @p plugin has.
+ * Adds the tool @p tool of the plugin @p plugin.
  *
- * With REGISTRY_GRANTED in @p flags the tool gets the id that follows the
- * ids of the tools that a role can grant. The id of each tool that no role
- * can grant then increases by one. Without the flag the tool gets the id
- * that follows the ids of all the tools in the registry. The id of a tool
- * that no role can grant is therefore final only when every tool that a
- * role can grant has been added.
+ * With REGISTRY_GRANTED in @p flags the tool receives the id after the ids
+ * of the tools that a role can grant. The id of each tool that no role can
+ * grant then increases by one. Without the flag the tool receives the id
+ * after the ids of all the tools in the registry. The id of a tool that no
+ * role can grant is therefore final only when every tool that a role can
+ * grant has been added.
  *
- * Returns 0; EEXIST if the registry has a tool of the same name; or ENOSPC
- * if the registry has TOOL_MAX tools.
+ * Returns 0, EEXIST if the registry contains a tool of the same name, or
+ * ENOSPC if the registry contains TOOL_MAX tools.
  */
 extern int
 registry_add (struct registry            *reg,
@@ -94,7 +96,7 @@ registry_add (struct registry            *reg,
 /**
  * Loads the plugin in the file at @p path with plugin_loaded_create()
  * (src/plugin.h), which passes @p options to the plugin's configure(), and
- * adds the tools that its manifest names, in the order of the manifest, as
+ * adds the tools listed in its manifest, in the order of the manifest, as
  * tools that a role can grant.
  *
  * Returns 0; ENOMEM; or EINVAL with the reason in the @p len bytes at
