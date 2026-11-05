@@ -2,6 +2,7 @@
  *
  * The git tool.
  */
+#define _GNU_SOURCE /* mempcpy() */
 #include <errno.h>
 #include <json-c/json.h>
 #include <signal.h>
@@ -299,8 +300,9 @@ git_name (char const *path,
 	return path + start;
 }
 
-/* Set @p r up for the repository listed as @p path: its name, its real
- * path, and its safe.directory setting, in one allocation.
+/* Sets up @p r for the repository at @p path. The function stores the
+ * name, the real path and the safe.directory setting of the repository in
+ * one allocation.
  */
 static int
 git_repo_init (struct git_repo *r,
@@ -314,19 +316,19 @@ git_repo_init (struct git_repo *r,
 	char *real = realpath(path, nullptr);
 	if (!real)
 		return errno;
-	size_t real_len = strlen(real);
-	char *s = malloc(2 * (real_len + 1) + sizeof safe - 1 + len + 1);
+	size_t size = strlen(real) + 1;
+	char *s = malloc(2 * size + sizeof safe - 1 + len + 1);
 	if (!s) {
 		free(real);
+		real = nullptr;
 		return ENOMEM;
 	}
-	r->path = memcpy(s, real, real_len + 1);
-	r->safe = r->path + real_len + 1;
-	memcpy(r->safe, safe, sizeof safe - 1);
-	char *end = memcpy(r->safe + sizeof safe - 1, real, real_len + 1);
+	r->path = s;
+	r->safe = mempcpy(s, real, size);
+	char *copy = mempcpy(mempcpy(r->safe, safe, sizeof safe - 1), real, size);
 	free(real);
-	char *copy = memcpy(end + real_len + 1, name, len);
-	copy[len] = '\0';
+	real = nullptr;
+	*(char *)mempcpy(copy, name, len) = '\0';
 	r->name = (struct cstr_view){ copy, len };
 	return 0;
 }
