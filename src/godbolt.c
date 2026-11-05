@@ -45,6 +45,7 @@
 
 #include "compat.h"
 #include "godbolt_probe.h"
+#include "jb.h"
 #include "plugin.h"
 
 /* The tools: the name after godbolt_, the constant of enum godbolt_tool,
@@ -564,13 +565,9 @@ struct godbolt {
 	                                           of a compilation */
 	struct json_object          *secs[GODBOLT_SECTIONS];  /* the texts of
 	                                                         the sections */
-	struct cstr_view             ids[GODBOLT_IDS];
-	struct cstr_view             args[GODBOLT_ARGS];
-	struct cstr_view             words[GODBOLT_WORDS];   /* in lower case */
-	struct cstr_view             language;
-	struct cstr_view             source;
-	struct cstr_view             values[3]; /* kind, family and
-	                                           architecture */
+	struct godbolt_args          args;      /* the arguments, copied to
+	                                           blob, with the words in lower
+	                                           case */
 	struct cstr_view             resp;      /* the body of the last response,
 	                                           valid until the next request;
 	                                           never nullptr once
@@ -585,16 +582,14 @@ struct godbolt {
 	size_t                       start;     /* the offset in the list of the
 	                                           element being parsed */
 	size_t                       written;   /* bytes of output */
-	size_t                       arg_at;    /* the offset in body of the
-	                                           escaped argument string that
+	struct cstr_view             escaped;   /* the escaped argument string
+	                                           in body that
 	                                           godbolt_cat_arguments()
 	                                           wrote last */
-	size_t                       arg_len;   /* its length */
 	size_t                       byte;      /* bytes of the text of the
 	                                           section written */
 	size_t                       item;      /* lines of the section
 	                                           written */
-	uint32_t                     limit;     /* the argument limit */
 	uint32_t                     total;     /* elements of the list with an
 	                                           id */
 	uint32_t                     matching;  /* elements that the filters
@@ -619,22 +614,16 @@ struct godbolt {
 	                                                           secs[i] */
 	uint8_t                      n_sec;     /* the sections of the record */
 	uint8_t                      tool;      /* enum godbolt_tool */
-	uint8_t                      action;    /* enum godbolt_action */
 	uint8_t                      phase;     /* enum godbolt_phase */
 	uint8_t                      wait;      /* enum godbolt_wait */
 	uint8_t                      kind_of;   /* enum godbolt_req */
 	uint8_t                      list;      /* enum godbolt_array */
-	uint8_t                      n_ids;
-	uint8_t                      n_args;
-	uint8_t                      n_words;
 	uint8_t                      jobs;      /* compilations of the call,
 	                                           n_ids times n_args */
 	uint8_t                      job;       /* the compilation, or in the
 	                                           phase GODBOLT_STATE the
 	                                           compilation that the state
 	                                           gets next */
-	uint8_t                      filters;   /* bits of godbolt_filters[] */
-	uint8_t                      paged;     /* the call has an offset */
 	uint8_t                      sec;       /* the section being written */
 	uint8_t                      opened;    /* the section has its first
 	                                           line */
@@ -648,8 +637,6 @@ struct godbolt {
 	                                           true */
 	uint8_t                      full;      /* the output has GODBOLT_FULL
 	                                           bytes */
-	uint8_t                      headers;   /* the argument headers */
-	uint8_t                      share;     /* the argument share */
 	uint8_t                      probed;    /* probe has the facts of the
 	                                           record */
 	uint8_t                      no_pp;     /* the response has no text of
@@ -741,13 +728,6 @@ godbolt_member (struct json_object *obj,
                 char const         *name)
 {
 	return godbolt_string(godbolt_get(obj, name));
-}
-
-/* Returns the number of elements of @p v, or 0 if @p v is not an array. */
-static size_t
-godbolt_array_len (struct json_object *v)
-{
-	return json_object_is_type(v, json_type_array) ? json_object_array_length(v) : 0;
 }
 
 /* Returns @p n, or less if the first @p n of the @p len bytes at @p s would
@@ -917,7 +897,7 @@ godbolt_catalog_hint (struct godbolt *call,
 	godbolt_why(call, "%sCall godbolt_catalog with {\"action\":\"compilers\","
 	            "\"language\":\"%.*s\"}. Optional match searches names, versions and "
 	            "family tags. Use exact returned ids.", reason,
-	            (int)call->language.len, call->language.data);
+	            (int)call->args.language.len, call->args.language.data);
 }
 
 /* Ends the call in @p slot as failed with the text that @p fmt and its
@@ -983,7 +963,7 @@ godbolt_request (struct godbolt   *call,
 		.accept = "application/json",
 		.max = rule->max,
 		.timeout = rule->timeout,
-		.keep = kind == GODBOLT_POST_COMPILE && !call->paged ? 1 : rule->keep
+		.keep = kind == GODBOLT_POST_COMPILE && !call->args.paged ? 1 : rule->keep
 	};
 	call->kind_of = kind;
 	call->attempt = 0;
@@ -1271,17 +1251,17 @@ godbolt_matches (struct godbolt         *call,
                  struct cstr_view const *f,
                  size_t                  n)
 {
-	for (uint8_t w = 0; w < call->n_words; ++w) {
+	for (uint8_t w = 0; w < call->args.n_words; ++w) {
 		bool hit = false;
 		for (size_t i = 0; !hit && i < n; ++i)
-			hit = godbolt_has(f[i], call->words[w]);
+			hit = godbolt_has(f[i], call->args.words[w]);
 		if (!hit)
 			return false;
 	}
-	if (!call->n_ids)
+	if (!call->args.n_ids)
 		return true;
-	for (uint8_t i = 0; i < call->n_ids; ++i) {
-		if (cstr_view_equal(f[0], call->ids[i])) {
+	for (uint8_t i = 0; i < call->args.n_ids; ++i) {
+		if (cstr_view_equal(f[0], call->args.ids[i])) {
 			call->found |= (uint16_t)(1u << i);
 			return true;
 		}
@@ -1327,7 +1307,7 @@ godbolt_language_row (struct godbolt     *call,
 	}
 	++call->total;
 	struct cstr_view const f[] = { id, godbolt_member(element, "name") };
-	if (!godbolt_matches(call, f, 2) || ++call->matching > call->limit)
+	if (!godbolt_matches(call, f, 2) || ++call->matching > call->args.limit)
 		return 0;
 	++call->listed;
 	godbolt_put_field(call, f[0]);
@@ -1353,7 +1333,7 @@ godbolt_count (struct godbolt   *call,
 	}
 	if (json_object_object_length(call->doc) == GODBOLT_KEYS) {
 		godbolt_why(call, "the list has more than 256 different %s",
-		            godbolt_actions[call->action].name.data);
+		            godbolt_actions[call->args.action].name.data);
 		call->list = GODBOLT_LIST_BAD;
 		return call->e;
 	}
@@ -1398,7 +1378,7 @@ godbolt_compiler_row (struct godbolt     *call,
                       struct json_object *element)
 {
 	struct json_object *tags = godbolt_get(element, "compilerCategories");
-	size_t const n_tags = godbolt_array_len(tags);
+	size_t const n_tags = jb_len(tags);
 	/* The columns, and then the family tags that are not empty. */
 	struct cstr_view f[GODBOLT_COLUMNS + GODBOLT_TAGS] = {
 		godbolt_member(element, "id"),
@@ -1422,14 +1402,14 @@ godbolt_compiler_row (struct godbolt     *call,
 	}
 	++call->total;
 	struct cstr_view const *const t = f + GODBOLT_COLUMNS;
-	struct cstr_view const *const v = call->values;
+	struct cstr_view const *const v = call->args.values;
 	if ((v[0].len && !cstr_view_equal(f[2], v[0])) ||
 	    (v[1].len && !godbolt_tagged(t, n - GODBOLT_COLUMNS, v[1])) ||
 	    (v[2].len && !cstr_view_equal(f[4], v[2])) ||
 	    !godbolt_matches(call, f, n))
 		return 0;
 	++call->matching;
-	switch (call->action) {
+	switch (call->args.action) {
 	case GODBOLT_KINDS:
 		return godbolt_count(call, f[2]);
 	case GODBOLT_ARCHITECTURES:
@@ -1437,7 +1417,7 @@ godbolt_compiler_row (struct godbolt     *call,
 	case GODBOLT_FAMILIES:
 		return godbolt_count_families(call, t, n - GODBOLT_COLUMNS);
 	}
-	if (call->listed == call->limit)
+	if (call->listed == call->args.limit)
 		return 0;
 	++call->listed;
 	for (size_t i = 0; i < n; ++i) {
@@ -1486,7 +1466,7 @@ godbolt_tallies (struct godbolt *call)
 		t[i++] = (struct godbolt_tally){ it.key, json_object_get_int64(it.val) };
 	if (n)
 		qsort(t, n, sizeof *t, godbolt_tally_cmp);
-	for (i = 0; i < n && i < call->limit; ++i) {
+	for (i = 0; i < n && i < call->args.limit; ++i) {
 		godbolt_put_field(call, (struct cstr_view){ t[i].key, strlen(t[i].key) });
 		godbolt_putf(call, "\t%" PRId64 "\n", t[i].count);
 	}
@@ -1505,11 +1485,11 @@ godbolt_absent (struct godbolt const *call,
                 char                 *d)
 {
 	char *p = d;
-	for (uint8_t i = 0; i < call->n_ids; ++i) {
+	for (uint8_t i = 0; i < call->args.n_ids; ++i) {
 		if (call->found >> i & 1)
 			continue;
 		p = godbolt_cat(p, p == d ? (struct cstr_view){} : CSTR_VIEW(", "));
-		p = godbolt_cat(p, call->ids[i]);
+		p = godbolt_cat(p, call->args.ids[i]);
 	}
 	*p = '\0';
 }
@@ -1523,8 +1503,8 @@ godbolt_absent (struct godbolt const *call,
 static enum godbolt_go
 godbolt_catalog_end (struct godbolt *call)
 {
-	bool const languages = call->action == GODBOLT_LANGUAGES;
-	if (call->found != (1u << call->n_ids) - 1) {
+	bool const languages = call->args.action == GODBOLT_LANGUAGES;
+	if (call->found != (1u << call->args.n_ids) - 1) {
 		char absent[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
 		godbolt_absent(call, absent);
 		return godbolt_refuse(call->slot, "These ids were not selected: %s. Retry with "
@@ -1532,7 +1512,7 @@ godbolt_catalog_end (struct godbolt *call)
 		                      languages ? "languages" : "compilers");
 	}
 	uint32_t const keys = call->doc ? (uint32_t)json_object_object_length(call->doc) : 0;
-	if (call->action > GODBOLT_COMPILERS)
+	if (call->args.action > GODBOLT_COMPILERS)
 		godbolt_tallies(call);
 	if (call->malformed)
 		godbolt_putf(call, "The plugin left out %" PRIu32 " element%s of the list. An "
@@ -1545,19 +1525,19 @@ godbolt_catalog_end (struct godbolt *call)
 		             "Compiler Explorer has %" PRIu32 " language%s.\n", call->listed,
 		             call->matching, godbolt_s(call->matching), call->total,
 		             godbolt_s(call->total));
-	else if (call->action == GODBOLT_COMPILERS)
+	else if (call->args.action == GODBOLT_COMPILERS)
 		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching compiler%s. The "
 		             "list of language %.*s has %" PRIu32 " compiler%s.\n", call->listed,
-		             call->matching, godbolt_s(call->matching), (int)call->language.len,
-		             call->language.data, call->total, godbolt_s(call->total));
+		             call->matching, godbolt_s(call->matching), (int)call->args.language.len,
+		             call->args.language.data, call->total, godbolt_s(call->total));
 	else
 		godbolt_putf(call, "Listed %" PRIu32 " of the %" PRIu32 " %s of the %" PRIu32
 		             " matching compiler%s. The list of language %.*s has %" PRIu32
 		             " compiler%s.\n", call->listed, keys, keys == 1
-		             ? godbolt_actions[call->action].singular
-		             : godbolt_actions[call->action].name.data,
-		             call->matching, godbolt_s(call->matching), (int)call->language.len,
-		             call->language.data, call->total, godbolt_s(call->total));
+		             ? godbolt_actions[call->args.action].singular
+		             : godbolt_actions[call->args.action].name.data,
+		             call->matching, godbolt_s(call->matching), (int)call->args.language.len,
+		             call->args.language.data, call->total, godbolt_s(call->total));
 	if (call->e)
 		return godbolt_fail(call);
 	mcp_slot_finish(call->slot, 0);
@@ -1578,15 +1558,15 @@ godbolt_driver_row (struct godbolt     *call,
 {
 	struct cstr_view const id = godbolt_member(element, "id");
 	struct cstr_view const kind = godbolt_member(element, "compilerType");
-	for (uint8_t i = 0; i < call->n_ids; ++i) {
-		if (call->found >> i & 1 || !cstr_view_equal(id, call->ids[i]))
+	for (uint8_t i = 0; i < call->args.n_ids; ++i) {
+		if (call->found >> i & 1 || !cstr_view_equal(id, call->args.ids[i]))
 			continue;
 		call->found |= (uint16_t)(1u << i);
 		call->drivers[i] = cstr_view_equal(kind, CSTR_VIEW("win32-vc")) ? GODBOLT_MSVC
 		                 : cstr_view_equal(kind, CSTR_VIEW("clang-cl")) ? GODBOLT_CLANG_CL
 		                 : GODBOLT_GNU;
 	}
-	if (call->found == (1u << call->n_ids) - 1)
+	if (call->found == (1u << call->args.n_ids) - 1)
 		call->list = GODBOLT_LIST_END;
 	return 0;
 }
@@ -1599,15 +1579,15 @@ godbolt_driver_row (struct godbolt     *call,
 static enum godbolt_go
 godbolt_drivers_end (struct godbolt *call)
 {
-	if (call->found != (1u << call->n_ids) - 1) {
+	if (call->found != (1u << call->args.n_ids) - 1) {
 		char absent[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
 		godbolt_absent(call, absent);
 		godbolt_catalog_hint(call, "");
 		return godbolt_refuse(call->slot, "These compiler ids are not in the list of "
-		                      "language %.*s: %s. %s", (int)call->language.len,
-		                      call->language.data, absent, call->why);
+		                      "language %.*s: %s. %s", (int)call->args.language.len,
+		                      call->args.language.data, absent, call->why);
 	}
-	call->phase = call->share ? GODBOLT_SHARE : GODBOLT_JOB;
+	call->phase = call->args.share ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
 }
 
@@ -1618,10 +1598,10 @@ godbolt_drivers_end (struct godbolt *call)
 static enum godbolt_go
 godbolt_list_send (struct godbolt *call)
 {
-	if (call->action == GODBOLT_LANGUAGES)
+	if (call->args.action == GODBOLT_LANGUAGES)
 		godbolt_request(call, GODBOLT_GET_LANGUAGES, (struct cstr_view){}, (struct cstr_view){});
 	else
-		godbolt_request(call, GODBOLT_GET_COMPILERS, call->language, (struct cstr_view){});
+		godbolt_request(call, GODBOLT_GET_COMPILERS, call->args.language, (struct cstr_view){});
 	call->phase = GODBOLT_LIST;
 	return godbolt_send(call);
 }
@@ -1635,7 +1615,7 @@ godbolt_list (struct godbolt *call)
 	enum godbolt_go const got = godbolt_result(call);
 	if (got == GODBOLT_BAD)
 		return godbolt_refuse(call->slot, "askai could not get the list of %s from "
-		                      "Compiler Explorer (%s).", call->action == GODBOLT_LANGUAGES
+		                      "Compiler Explorer (%s).", call->args.action == GODBOLT_LANGUAGES
 		                      ? "languages" : "compilers", call->why);
 	if (got != GODBOLT_GO)
 		return got;
@@ -1645,12 +1625,12 @@ godbolt_list (struct godbolt *call)
 	call->phase = GODBOLT_ROWS;
 	if (call->tool != GODBOLT_CATALOG)
 		return GODBOLT_GO;
-	if (call->action > GODBOLT_COMPILERS && !(call->doc = json_object_new_object())) {
+	if (call->args.action > GODBOLT_COMPILERS && !(call->doc = json_object_new_object())) {
 		mcp_slot_fail(call->slot, ENOMEM);
 		return GODBOLT_ENDED;
 	}
-	return godbolt_put(call, godbolt_actions[call->action].header) ? godbolt_fail(call)
-	                                                                : GODBOLT_GO;
+	return godbolt_put(call, godbolt_actions[call->args.action].header) ? godbolt_fail(call)
+	                                                                    : GODBOLT_GO;
 }
 
 /* The phase GODBOLT_ROWS. It parses the next elements of the list. After
@@ -1662,7 +1642,7 @@ godbolt_rows (struct godbolt *call)
 {
 	bool const catalog = call->tool == GODBOLT_CATALOG;
 	if (godbolt_list_parse(call, !catalog ? godbolt_driver_row
-	                             : call->action == GODBOLT_LANGUAGES ? godbolt_language_row
+	                             : call->args.action == GODBOLT_LANGUAGES ? godbolt_language_row
 	                             : godbolt_compiler_row))
 		return godbolt_fail(call);
 	if (call->list == GODBOLT_LIST_BAD)
@@ -1681,7 +1661,7 @@ godbolt_state_size (struct godbolt const *call)
 {
 	size_t need = 0;
 	for (uint32_t j = 0; j < call->jobs; ++j)
-		need += 6 * call->args[j % call->n_args].len + GODBOLT_ID_MAX + 512;
+		need += 6 * call->args.args[j % call->args.n_args].len + GODBOLT_ID_MAX + 512;
 	return need;
 }
 
@@ -1697,8 +1677,8 @@ godbolt_escape_source (struct godbolt *call)
 {
 	struct cstr_view const prefix = CSTR_VIEW("{\"sessions\":[{\"source\":\"");
 	if (!call->body) {
-		size_t const cap = prefix.len + 6 * call->source.len + GODBOLT_TAIL_MAX +
-		                   (call->share ? godbolt_state_size(call) : 0);
+		size_t const cap = prefix.len + 6 * call->args.source.len + GODBOLT_TAIL_MAX +
+		                   (call->args.share ? godbolt_state_size(call) : 0);
 		call->body = malloc(cap);
 		if (!call->body) {
 			mcp_slot_fail(call->slot, ENOMEM);
@@ -1707,13 +1687,13 @@ godbolt_escape_source (struct godbolt *call)
 		call->head = (size_t)(godbolt_cat(call->body, prefix) - call->body);
 	}
 	uint64_t const room = loop_room(call->loop, LOOP_ESCAPE);
-	size_t n = call->source.len - call->off;
+	size_t n = call->args.source.len - call->off;
 	n = n < room ? n : (size_t)room;
-	char *end = godbolt_escape(call->body + call->head, call->source.data + call->off, n);
+	char *end = godbolt_escape(call->body + call->head, call->args.source.data + call->off, n);
 	call->head = (size_t)(end - call->body);
 	call->off += n;
 	loop_work(call->loop, LOOP_ESCAPE, n);
-	if (call->off < call->source.len)
+	if (call->off < call->args.source.len)
 		return GODBOLT_GO;
 	if (call->head - GODBOLT_SKIP > WEB_SEND_MAX - GODBOLT_TAIL_MAX)
 		return godbolt_refuse(call->slot, "The body of a request would be longer than "
@@ -1721,7 +1701,7 @@ godbolt_escape_source (struct godbolt *call)
 		                      call->head - prefix.len);
 	if (call->tool != GODBOLT_COMPILE)
 		return godbolt_list_send(call);
-	call->phase = call->share ? GODBOLT_SHARE : GODBOLT_JOB;
+	call->phase = call->args.share ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
 }
 
@@ -1732,31 +1712,30 @@ static struct godbolt_recipe const *
 godbolt_job_recipe (struct godbolt const *call,
                     uint32_t              job)
 {
-	return &godbolt_recipes[call->tool][call->drivers[job / call->n_args]];
+	return &godbolt_recipes[call->tool][call->drivers[job / call->args.n_args]];
 }
 
 /* Writes the arguments of the compilation call->job to @p d, which is in
  * the body, as the inside of a JSON string. The arguments are the flags
- * of the recipe and the argument string, separated by spaces. Stores in
- * call->arg_at and call->arg_len where the escaped argument string is in
- * the body. Returns the end of the text in @p d.
+ * of the recipe and the argument string, separated by spaces. Stores the
+ * escaped argument string in call->escaped. Returns the end of the text in
+ * @p d.
  */
 static char *
 godbolt_cat_arguments (struct godbolt *call,
                        char           *d)
 {
 	struct godbolt_recipe const *r = godbolt_job_recipe(call, call->job);
-	struct cstr_view const a = call->args[call->job % call->n_args];
+	struct cstr_view const a = call->args.args[call->job % call->args.n_args];
 	char const *const flags = d;
 	if (r->windows)
-		d = godbolt_cat(d, cstr_view_equal(call->language, CSTR_VIEW("c")) ? CSTR_VIEW("/TC")
-		                                                                : CSTR_VIEW("/TP"));
+		d = godbolt_cat(d, cstr_view_equal(call->args.language, CSTR_VIEW("c")) ? CSTR_VIEW("/TC")
+		                                                                        : CSTR_VIEW("/TP"));
 	d = godbolt_cat(d, d > flags && r->flags.len ? CSTR_VIEW(" ") : (struct cstr_view){});
 	d = godbolt_cat(d, r->flags);
 	d = godbolt_cat(d, d > flags && a.len ? CSTR_VIEW(" ") : (struct cstr_view){});
 	char *const end = godbolt_escape(d, a.data, a.len);
-	call->arg_at = (size_t)(d - call->body);
-	call->arg_len = (size_t)(end - d);
+	call->escaped = (struct cstr_view){ d, (size_t)(end - d) };
 	loop_work(call->loop, LOOP_ESCAPE, a.len);
 	return end;
 }
@@ -1769,11 +1748,11 @@ static void
 godbolt_job_body (struct godbolt *call)
 {
 	char *d = godbolt_cat(call->body + call->head, CSTR_VIEW("\",\"lang\":\""));
-	d = godbolt_cat(d, call->language);
+	d = godbolt_cat(d, call->args.language);
 	d = godbolt_cat(d, CSTR_VIEW("\",\"options\":{\"userArguments\":\""));
 	d = godbolt_cat_arguments(call, d);
 	d = godbolt_cat(d, CSTR_VIEW("\",\"filters\":"));
-	d = godbolt_cat_filters(d, call->filters);
+	d = godbolt_cat_filters(d, call->args.filters);
 	d = godbolt_cat(d, CSTR_VIEW(",\"compilerOptions\":"));
 	d = godbolt_cat(d, godbolt_job_recipe(call, call->job)->options);
 	d = godbolt_cat(d, CSTR_VIEW("}}"));
@@ -1831,7 +1810,7 @@ godbolt_state_begin (struct godbolt *call)
 		return godbolt_put(call, CSTR_VIEW("Link: none. The call sends no compilation.\n"))
 		       ? godbolt_fail(call) : GODBOLT_GO;
 	char *d = godbolt_cat(call->body + call->head, CSTR_VIEW("\",\"id\":1,\"language\":\""));
-	d = godbolt_cat(d, call->language);
+	d = godbolt_cat(d, call->args.language);
 	d = godbolt_cat(d, CSTR_VIEW("\",\"compilers\":["));
 	call->len = (size_t)(d - call->body);
 	call->phase = GODBOLT_STATE;
@@ -1853,14 +1832,14 @@ godbolt_state (struct godbolt *call)
 	for (; call->job < call->jobs; ++call->job) {
 		if (godbolt_job_recipe(call, call->job)->from == GODBOLT_FROM_NONE)
 			continue;
-		if (loop_room(call->loop, LOOP_ESCAPE) < call->args[call->job % call->n_args].len)
+		if (loop_room(call->loop, LOOP_ESCAPE) < call->args.args[call->job % call->args.n_args].len)
 			break;
 		d = godbolt_cat(d, d[-1] == '[' ? CSTR_VIEW("{\"id\":\"") : CSTR_VIEW(",{\"id\":\""));
-		d = godbolt_cat(d, call->ids[call->job / call->n_args]);
+		d = godbolt_cat(d, call->args.ids[call->job / call->args.n_args]);
 		d = godbolt_cat(d, CSTR_VIEW("\",\"options\":\""));
 		d = godbolt_cat_arguments(call, d);
 		d = godbolt_cat(d, CSTR_VIEW("\",\"filters\":"));
-		d = godbolt_cat_filters(d, call->filters);
+		d = godbolt_cat_filters(d, call->args.filters);
 		d = godbolt_cat(d, CSTR_VIEW(",\"libs\":[]}"));
 	}
 	call->len = (size_t)(d - call->body);
@@ -1917,9 +1896,9 @@ static int
 godbolt_header (struct godbolt *call)
 {
 	godbolt_put(call, CSTR_VIEW("=== "));
-	godbolt_put(call, call->ids[call->job / call->n_args]);
+	godbolt_put(call, call->args.ids[call->job / call->args.n_args]);
 	godbolt_put(call, CSTR_VIEW(" \""));
-	godbolt_put(call, (struct cstr_view){ call->body + call->arg_at, call->arg_len });
+	godbolt_put(call, call->escaped);
 	godbolt_put(call, CSTR_VIEW("\": "));
 	godbolt_put(call, (struct cstr_view){ call->why, call->why_len });
 	call->headed = 1;
@@ -2001,7 +1980,7 @@ godbolt_job (struct godbolt *call)
 		godbolt_why(call, "not sent, because MSVC cannot output its predefined macros");
 		return godbolt_record(call, GODBOLT_UNSENT);
 	}
-	godbolt_request(call, GODBOLT_POST_COMPILE, call->ids[call->job / call->n_args],
+	godbolt_request(call, GODBOLT_POST_COMPILE, call->args.ids[call->job / call->args.n_args],
 	                (struct cstr_view){ call->body + GODBOLT_SKIP, call->len - GODBOLT_SKIP });
 	call->phase = GODBOLT_ANSWER;
 	return godbolt_send(call);
@@ -2298,7 +2277,7 @@ godbolt_section (struct godbolt *call)
 {
 	struct json_object *v = call->secs[call->sec];
 	bool const text = json_object_is_type(v, json_type_string);
-	size_t const n = text ? (size_t)json_object_get_string_len(v) : godbolt_array_len(v);
+	size_t const n = text ? (size_t)json_object_get_string_len(v) : jb_len(v);
 	if (n && !call->opened)
 		godbolt_put(call, godbolt_sections[call->sec_of[call->sec]]);
 	call->opened = 1;
@@ -2374,7 +2353,7 @@ godbolt_facts (struct godbolt *call)
 		any = true;
 	}
 	godbolt_put(call, any ? CSTR_VIEW("\n") : CSTR_VIEW("versions: unknown\n"));
-	if (!call->headers)
+	if (!call->args.headers)
 		return call->e;
 	for (uint32_t k = 0; k < p->n_headers; ++k) {
 		godbolt_put(call, k ? CSTR_VIEW(", ") : CSTR_VIEW("headers: "));
@@ -2423,7 +2402,7 @@ static size_t
 godbolt_json_size (struct json_object *v)
 {
 	return json_object_is_type(v, json_type_object) ? (size_t)json_object_object_length(v)
-	                                                : godbolt_array_len(v);
+	                                                : jb_len(v);
 }
 
 /* Returns the child of @p v that godbolt_json_cut() removes: the last
@@ -2580,7 +2559,7 @@ static int
 godbolt_args_ids (struct godbolt_args *a,
                   struct json_object  *v)
 {
-	size_t const n = godbolt_array_len(v);
+	size_t const n = jb_len(v);
 	if (!n || n > GODBOLT_IDS)
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i) {
@@ -2604,7 +2583,7 @@ static int
 godbolt_args_strings (struct godbolt_args *a,
                       struct json_object  *v)
 {
-	size_t const n = godbolt_array_len(v);
+	size_t const n = jb_len(v);
 	if (!n || n > GODBOLT_ARGS)
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i) {
@@ -2859,35 +2838,28 @@ godbolt_create (struct godbolt_args const *a,
 	}
 	*call = (struct godbolt){
 		.timer = { .due = UINT64_MAX, .fn = godbolt_fired },
+		.args = *a,
 		.tok = tok,
 		.loop = loop,
-		.limit = a->limit,
-		.n_ids = a->n_ids,
-		.n_args = a->n_args,
-		.n_words = a->n_words,
 		.jobs = (uint8_t)(a->n_ids * a->n_args),
-		.tool = tool,
-		.action = tool == GODBOLT_CATALOG ? a->action : GODBOLT_COMPILERS,
-		.filters = a->filters,
-		.headers = a->headers,
-		.share = a->share,
-		.paged = a->paged
+		.tool = tool
 	};
+	call->args.action = tool == GODBOLT_CATALOG ? a->action : GODBOLT_COMPILERS;
 	char *p = call->blob;
 	for (uint8_t i = 0; i < a->n_ids; ++i)
-		call->ids[i] = godbolt_copy(&p, a->ids[i]);
+		call->args.ids[i] = godbolt_copy(&p, a->ids[i]);
 	for (uint8_t i = 0; i < a->n_args; ++i)
-		call->args[i] = godbolt_copy(&p, a->args[i]);
+		call->args.args[i] = godbolt_copy(&p, a->args[i]);
 	for (uint8_t i = 0; i < a->n_words; ++i) {
-		call->words[i] = (struct cstr_view){ p, a->words[i].len };
+		call->args.words[i] = (struct cstr_view){ p, a->words[i].len };
 		for (size_t k = 0; k < a->words[i].len; ++k)
 			*p++ = godbolt_lower(a->words[i].data[k]);
 	}
-	call->language = godbolt_copy(&p, a->language);
-	call->source = (struct cstr_view){ p, head.len + source.len };
+	call->args.language = godbolt_copy(&p, a->language);
+	call->args.source = (struct cstr_view){ p, head.len + source.len };
 	p = godbolt_cat(godbolt_cat(p, head), source);
 	for (size_t i = 0; i < array_size(a->values); ++i)
-		call->values[i] = godbolt_copy(&p, a->values[i]);
+		call->args.values[i] = godbolt_copy(&p, a->values[i]);
 	loop_work(loop, LOOP_COPY, bytes);
 	*e = 0;
 	return call;
