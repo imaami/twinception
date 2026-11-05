@@ -41,12 +41,10 @@ static char const godbolt_probe_text[] =
 ;
 #pragma GCC diagnostic pop
 
-char const *
-godbolt_probe_source (size_t *len)
+struct cstr_view
+godbolt_probe_source (void)
 {
-	if (len)
-		*len = sizeof godbolt_probe_text - 1;
-	return godbolt_probe_text;
+	return (struct cstr_view){ godbolt_probe_text, sizeof godbolt_probe_text - 1 };
 }
 
 /* Returns whether @p c is ASCII white space. */
@@ -621,26 +619,37 @@ godbolt_probe_literal (char const **c,
 	return text;
 }
 
-/* Parses the rest of a record line, ("NAME", "VALUE"), from @p c to @p end,
- * into a record of @p list, which has *@p n records and room for @p max.
- * Returns 0, or EPROTO with the reason in p->why.
+/* The reason for a mark or a record outside of the block. */
+static char const godbolt_probe_misplaced[] =
+	"the output has a line of the block outside of one block";
+
+/* Parses @p rest, the text ("NAME", "VALUE") after the tag of a record
+ * line, into the next record of @p list. @p list is an array of @p max
+ * records, and its first *@p n records are in use. A record is valid only
+ * in the block, when @p state is 1. Returns 0, or EPROTO with the reason
+ * in p->why.
  */
 static int
 godbolt_probe_parse_record (struct godbolt_probe         *p,
                             struct godbolt_probe_record  *list,
                             uint32_t                     *n,
                             uint32_t                      max,
-                            char const                   *c,
-                            char const                   *end,
+                            unsigned                      state,
+                            struct cstr_view              rest,
                             char                        **out)
 {
+	if (state != 1) {
+		p->why = godbolt_probe_misplaced;
+		return EPROTO;
+	}
+	char const *c = rest.data;
+	char const *const end = rest.data + rest.len;
 	godbolt_probe_skip(&c, end);
 	char const *name = c < end && *c++ == '(' ? godbolt_probe_literal(&c, end, out) : nullptr;
 	char const *value = name && *name && c < end && *c++ == ','
 	                  ? godbolt_probe_literal(&c, end, out) : nullptr;
 	bool const closed = value && c < end && *c++ == ')';
-	if (closed)
-		godbolt_probe_skip(&c, end);
+	godbolt_probe_skip(&c, end);
 	if (!closed || c != end) {
 		p->why = "a record of the block is not valid";
 		return EPROTO;
@@ -677,59 +686,58 @@ godbolt_probe_line (struct godbolt_probe  *p,
                     unsigned              *state,
                     char                 **out)
 {
-	unsigned const mark = cstr_view_equal(line, CSTR_VIEW("GBPROBE_BEGIN_1")) ? 1
-	                    : cstr_view_equal(line, CSTR_VIEW("GBPROBE_END_1")) ? 2 : 0;
-	bool const macro = cstr_view_starts(line, CSTR_VIEW("GBPROBE_MACRO"));
-	bool const header = cstr_view_starts(line, CSTR_VIEW("GBPROBE_HEADER"));
+	struct cstr_view const macro = CSTR_VIEW("GBPROBE_MACRO");
+	struct cstr_view const header = CSTR_VIEW("GBPROBE_HEADER");
 	if (cstr_view_equal(line, CSTR_VIEW("[Truncated]"))) {
 		p->why = "Compiler Explorer cut the output";
 		return EOVERFLOW;
 	}
-	if ((mark && mark != *state + 1) || ((macro || header) && *state != 1)) {
-		p->why = "the output has a line of the block outside of one block";
-		return EPROTO;
-	}
-	if (mark)
+	unsigned const mark = cstr_view_equal(line, CSTR_VIEW("GBPROBE_BEGIN_1")) ? 1
+	                    : cstr_view_equal(line, CSTR_VIEW("GBPROBE_END_1")) ? 2 : 0;
+	if (mark) {
+		if (mark != *state + 1) {
+			p->why = godbolt_probe_misplaced;
+			return EPROTO;
+		}
 		*state = mark;
-	if (macro)
-		return godbolt_probe_parse_record(p, p->macros, &p->n_macros, GODBOLT_PROBE_MACROS,
-		                                  line.data + sizeof "GBPROBE_MACRO" - 1,
-		                                  line.data + line.len, out);
-	if (header)
+		return 0;
+	}
+	if (cstr_view_starts(line, macro))
+		return godbolt_probe_parse_record(p, p->macros, &p->n_macros,
+		                                  GODBOLT_PROBE_MACROS, *state,
+		                                  cstr_view_slice(line, macro.len, SIZE_MAX), out);
+	if (cstr_view_starts(line, header))
 		return godbolt_probe_parse_record(p, p->headers, &p->n_headers,
-		                                  GODBOLT_PROBE_HEADERS,
-		                                  line.data + sizeof "GBPROBE_HEADER" - 1,
-		                                  line.data + line.len, out);
-	if (!mark && *state == 1 && line.len && *line.data != '#') {
+		                                  GODBOLT_PROBE_HEADERS, *state,
+		                                  cstr_view_slice(line, header.len, SIZE_MAX), out);
+	if (*state == 1 && line.len && *line.data != '#') {
 		p->why = "the block has a line that is not a record";
 		return EPROTO;
 	}
 	return 0;
 }
 
-/* Parses the @p len bytes at @p text line by line. Returns 0, or an error
- * number with the reason in p->why.
+/* Parses @p text line by line. Returns 0, or an error number with the
+ * reason in p->why.
  */
 static int
 godbolt_probe_parse (struct godbolt_probe *p,
-                     char const           *text,
-                     size_t                len)
+                     struct cstr_view      text)
 {
 	char *out = p->store;
 	unsigned state = 0;
-	char const *const finish = text + len;
-	for (char const *line = text; line < finish; ) {
-		char const *nl = memchr(line, '\n', (size_t)(finish - line));
-		char const *end = nl ? nl : finish;
-		char const *const next = nl ? nl + 1 : finish;
-		godbolt_probe_skip(&line, end);
-		while (end > line && godbolt_probe_space(end[-1]))
-			--end;
-		struct cstr_view const trimmed = { line, (size_t)(end - line) };
-		int const e = godbolt_probe_line(p, trimmed, &state, &out);
+	while (text.len) {
+		char const *nl = memchr(text.data, '\n', text.len);
+		size_t const end = nl ? (size_t)(nl - text.data) : text.len;
+		struct cstr_view line = cstr_view_slice(text, 0, end);
+		text = cstr_view_slice(text, end + 1, SIZE_MAX);
+		while (line.len && godbolt_probe_space(*line.data))
+			line = cstr_view_slice(line, 1, SIZE_MAX);
+		while (line.len && godbolt_probe_space(line.data[line.len - 1]))
+			--line.len;
+		int const e = godbolt_probe_line(p, line, &state, &out);
 		if (e)
 			return e;
-		line = next;
 	}
 	if (state == 2)
 		return 0;
@@ -739,22 +747,21 @@ godbolt_probe_parse (struct godbolt_probe *p,
 
 int
 godbolt_probe_init (struct godbolt_probe *dest,
-                    char const           *text,
-                    size_t                len)
+                    struct cstr_view      text)
 {
 	if (!dest)
 		return EINVAL;
 	*dest = (struct godbolt_probe){};
-	if (!text && len) {
+	if (!text.data && text.len) {
 		dest->why = "the output is missing";
 		return EINVAL;
 	}
-	dest->store = malloc(len + 1);
+	dest->store = malloc(text.len + 1);
 	if (!dest->store) {
 		dest->why = "the parser ran out of memory";
 		return ENOMEM;
 	}
-	int const e = godbolt_probe_parse(dest, text ? text : "", len);
+	int const e = godbolt_probe_parse(dest, text);
 	if (e) {
 		godbolt_probe_fini(dest);
 		return e;

@@ -2079,7 +2079,7 @@ godbolt_targets_parse (struct godbolt *call)
 			return e;
 		text.data = joined;
 	}
-	int const e = godbolt_probe_init(&call->probe, text.data, text.len);
+	int const e = godbolt_probe_init(&call->probe, text);
 	free(joined);
 	joined = nullptr;
 	loop_work(call->loop, LOOP_PARSE, text.len);
@@ -2804,12 +2804,10 @@ godbolt_create (struct godbolt_args const *a,
                 struct loop               *loop,
                 int                       *e)
 {
-	bool const targets = tool == GODBOLT_TARGETS;
-	struct cstr_view const head = targets && a->headers ? CSTR_VIEW(GODBOLT_HEADERS_LINE)
-	                                                    : (struct cstr_view){};
-	struct cstr_view source = a->source.len ? a->source : CSTR_VIEW("\n");
-	if (targets)
-		source.data = godbolt_probe_source(&source.len);
+	struct cstr_view const head = a->headers ? CSTR_VIEW(GODBOLT_HEADERS_LINE)
+	                                         : (struct cstr_view){};
+	struct cstr_view const source = tool == GODBOLT_TARGETS ? godbolt_probe_source()
+	                              : a->source.len ? a->source : CSTR_VIEW("\n");
 	size_t bytes = a->language.len + head.len + source.len + a->values[0].len +
 	               a->values[1].len + a->values[2].len;
 	for (uint8_t i = 0; i < a->n_ids; ++i)

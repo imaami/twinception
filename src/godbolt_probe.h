@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cstr_view.h"
+
 /** The facts about a target. */
 enum godbolt_probe_fact : uint8_t {
 	GODBOLT_PROBE_ARCHITECTURE,
@@ -72,32 +74,30 @@ struct godbolt_probe {
 	uint32_t                    n_headers;
 };
 
-/** Returns the source of the probe, NUL-terminated, and stores its length
- *  in @p *len. A line "#define GODBOLT_PROBE_HEADERS 1" before the source
- *  makes the compiler include the headers of the header records.
+/** Returns the source of the probe. A line "#define GODBOLT_PROBE_HEADERS 1"
+ *  before the source makes the compiler include the headers of the header
+ *  records.
  */
-extern char const *
-godbolt_probe_source (size_t *len);
+extern struct cstr_view
+godbolt_probe_source (void);
 
 /**
- * Parses the @p len bytes at @p text, the output of the probe, into
- * @p dest. The output must have exactly one complete block, and each line
- * of the block must be a record, empty, or a line that begins with '#'.
- * The name and the value of a record have at most GODBOLT_PROBE_TEXT_MAX
- * bytes each. Then the function derives the facts from the macros. If
- * the macros are evidence of different values of a fact, the fact has
- * conflict 1.
+ * Parses @p text, the output of the probe, into @p dest. The output must
+ * contain exactly one complete block, and each line of the block must be a
+ * record, empty, or a line that begins with '#'. The name and the value of
+ * a record are at most GODBOLT_PROBE_TEXT_MAX bytes long each. Then the
+ * function derives the facts from the macros. If the macros are evidence
+ * of different values of a fact, the member conflict of the fact is 1.
  *
  * Returns 0, or an error number with a constant reason in dest->why:
  * EOVERFLOW if a line is "[Truncated]", EPROTO if the block is missing or
- * not valid, EINVAL if @p text is nullptr and @p len is not 0, or ENOMEM.
- * It returns EINVAL without a reason if @p dest is nullptr. After an
- * error, @p dest has no memory to free.
+ * not valid, EINVAL if text.data is nullptr and text.len is not 0, or
+ * ENOMEM. It returns EINVAL without a reason if @p dest is nullptr. After
+ * an error, @p dest owns no memory.
  */
 extern int
 godbolt_probe_init (struct godbolt_probe *dest,
-                    char const           *text,
-                    size_t                len);
+                    struct cstr_view      text);
 
 /** Frees the memory of @p probe. */
 extern void
