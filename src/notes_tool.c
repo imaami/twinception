@@ -314,22 +314,21 @@ notes_tool_failed (struct mcp_slot *slot,
                    int              e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	if (e != EBUSY)
+	bool busy = e == EBUSY;
+	if (!busy)
 		LOG(LOG_WARN, "notes: cannot run git: %s", strerror(e));
-	if (call->fetch & FETCH_NEWEST || (call->fetch & FETCH_KIND) == FETCH_COMPACT) {
+	uint16_t kind = call->fetch & FETCH_KIND;
+	if (call->fetch & FETCH_NEWEST || kind == FETCH_COMPACT) {
 		notes_tool_fetch_step(call->fetch)->out(slot);
 		return;
 	}
-	if ((call->fetch & FETCH_KIND) == FETCH_RESUME)
+	if (kind == FETCH_RESUME)
 		notes_tool_drop(slot);
-	if (e == EBUSY) {
-		mcp_slot_tell(slot, CSTR_VIEW("Too many commands are running; try again in "
-		                              "a few seconds."), TOOL_FAILED);
-		return;
-	}
 	char why[96];
-	mcp_slot_tell(slot, util_format_view(why, sizeof why, "The notes cannot be used now: %s.",
-	                                     strerror(e)), TOOL_FAILED);
+	mcp_slot_tell(slot, busy ? CSTR_VIEW("Too many commands are running; try again in a few "
+	                                     "seconds.")
+	                         : util_format_view(why, sizeof why, "The notes cannot be used "
+	                                            "now: %s.", strerror(e)), TOOL_FAILED);
 }
 
 /* Returns the notebook that @p call selected, or else call->repo. */
