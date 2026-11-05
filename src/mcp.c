@@ -1127,11 +1127,12 @@ mcp_bytes (size_t n)
 }
 
 /** Writes @p text into the @p size bytes at @p buf as a JSON string on one
- *  line, followed by "..." if the string is cut. The string contains the
- *  longest prefix of whole characters whose escapes fit in @p max bytes,
- *  and in @p size bytes with the quotes, the "..." and the NUL.
+ *  line, followed by "..." if the string is cut, and returns @p buf. The
+ *  string contains the longest prefix of whole characters whose escapes
+ *  fit in @p max bytes, and in @p size bytes with the quotes, the "..." and
+ *  the NUL.
  */
-static void
+static char *
 mcp_quote (char             *buf,
            size_t            size,
            struct cstr_view  text,
@@ -1141,7 +1142,7 @@ mcp_quote (char             *buf,
 	if (size < frame) {
 		if (size)
 			buf[0] = '\0';
-		return;
+		return buf;
 	}
 	size_t n = jb_escape_fit(text.data, text.len, max < size - frame ? max : size - frame);
 	buf[0] = '"';
@@ -1152,6 +1153,7 @@ mcp_quote (char             *buf,
 		end += sizeof "..." - 1;
 	}
 	buf[end] = '\0';
+	return buf;
 }
 
 /* The arguments of a call as the log shows them, written so far. */
@@ -3725,14 +3727,13 @@ mcp_req_log_ask (struct mcp_req const *req,
 		return;
 	struct cstr_view text = jb_view(prompt);
 	char quoted[PROMPT_LOG + 8];
-	mcp_quote(quoted, sizeof quoted, text, PROMPT_LOG);
 	char thread[NOTES_ID + 32] = "no thread";
 	if (*req->thread)
 		util_format(thread, sizeof thread, "thread %s (%s)", req->thread,
 		            resume ? "resumed" : "new");
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " from %s: prompt %zu %s, %s, %s",
 	    req->mcp->loop->id, req->asked, mcp_req_client(req), text.len, mcp_bytes(text.len),
-	    thread, quoted);
+	    thread, mcp_quote(quoted, sizeof quoted, text, PROMPT_LOG));
 }
 
 static int mcp_req_background (struct mcp_req *req, uint32_t tool, bool own_tool);
@@ -4535,13 +4536,12 @@ mcp_req_log_refused (struct mcp_req const *req,
 	if (log_threshold < LOG_VERBOSE)
 		return;
 	char quoted[NAME_LOG + 8];
-	mcp_quote(quoted, sizeof quoted, name, NAME_LOG);
 	char shown[SHOWN];
 	mcp_args_shown(&req->mcp->st->offers[known], args, mcp_req_no_args(req), shown);
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": tool call %s "
-	    "refused: %s; arguments %s", req->mcp->loop->id, req->asked, req->turn, quoted,
-	    known < TOOL_MAX ? "not lent to this ask call" : "askai offers no such tool",
-	    shown);
+	    "refused: %s; arguments %s", req->mcp->loop->id, req->asked, req->turn,
+	    mcp_quote(quoted, sizeof quoted, name, NAME_LOG),
+	    known < TOOL_MAX ? "not lent to this ask call" : "askai offers no such tool", shown);
 }
 
 static void mcp_agenda_alarm (struct loop *loop, struct loop_timer *timer);
@@ -6929,37 +6929,6 @@ mcp_slot_ask (struct mcp_slot    *slot,
 	mcp_req_ask(req, args, background);
 }
 
-/** Refuses the client's call of the tool @p name in @p req, which the role
- *  of the client does not grant. @p known is true if a role can grant the
- *  tool. The log quotes an unknown name, which comes from the client.
- */
-static void
-mcp_req_tools_refuse (struct mcp_req   *req,
-                      struct cstr_view  name,
-                      bool              known)
-{
-	static struct {
-		char const       *why;
-		struct cstr_view  head;
-	} const refusals[] = {
-		{ "the call names no tool",     CSTR_VIEW_INIT("Unknown tool: ") },
-		{ "askai offers no such tool",  CSTR_VIEW_INIT("Unknown tool: ") },
-		{ "the role does not grant it", CSTR_VIEW_INIT("Tool not available: ") },
-	};
-	size_t r = known ? 2 : name.data != nullptr;
-	struct cstr_view what = r ? name : CSTR_VIEW("(none)");
-	struct cstr_view head = refusals[r].head;
-	char quoted[NAME_LOG + 8];
-	mcp_quote(quoted, sizeof quoted, what, NAME_LOG);
-	LOG(LOG_WARN, "tool call %s from %s refused: %s", r == 1 ? quoted : what.data,
-	    mcp_req_client(req), refusals[r].why);
-	char msg[32 + 6 * 100];
-	memcpy(msg, head.data, head.len);
-	size_t n = head.len + jb_escape(msg + head.len, what.data,
-	                                util_clip(what.data, what.len, 100));
-	mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, n), nullptr, 0);
-}
-
 /** Starts the client's tool call in @p req with the members name,
  *  arguments and _meta.progressToken of @p params. The role of the client
  *  must grant the tool, whose name is compared over its full length, as
@@ -6979,7 +6948,27 @@ mcp_req_tools_call (struct mcp_req     *req,
 	struct cstr_view name = jb_view(jb_get(params, "name"));
 	uint32_t id = mcp_static_tool_of(st, name);
 	if (!mcp_req_granted(req, id)) {
-		mcp_req_tools_refuse(req, name, id < st->n_granted);
+		/* The log quotes an unknown name, which comes from the client. */
+		static struct {
+			char const       *why;
+			struct cstr_view  head;
+		} const refusals[] = {
+			{ "the call names no tool",     CSTR_VIEW_INIT("Unknown tool: ") },
+			{ "askai offers no such tool",  CSTR_VIEW_INIT("Unknown tool: ") },
+			{ "the role does not grant it", CSTR_VIEW_INIT("Tool not available: ") },
+		};
+		size_t r = id < st->n_granted ? 2 : name.data != nullptr;
+		struct cstr_view what = r ? name : CSTR_VIEW("(none)");
+		struct cstr_view head = refusals[r].head;
+		char quoted[NAME_LOG + 8];
+		LOG(LOG_WARN, "tool call %s from %s refused: %s",
+		    r == 1 ? mcp_quote(quoted, sizeof quoted, name, NAME_LOG) : what.data,
+		    mcp_req_client(req), refusals[r].why);
+		char msg[32 + 6 * 100];
+		memcpy(msg, head.data, head.len);
+		size_t n = head.len + jb_escape(msg + head.len, what.data,
+		                                util_clip(what.data, what.len, 100));
+		mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, n), nullptr, 0);
 		return;
 	}
 	struct mcp_offer const *offer = &st->offers[id];
