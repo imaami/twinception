@@ -43,8 +43,7 @@ registry_add (struct registry            *reg,
 	if (reg->n_tools == TOOL_MAX)
 		return ENOSPC;
 	for (uint32_t id = 0; id < reg->n_tools; ++id) {
-		struct registry_tool const *t = &reg->tools[id];
-		if (t->len == tool->len && !memcmp(t->name, tool->name, tool->len))
+		if (cstr_view_equal(reg->tools[id].name, tool->name))
 			return EEXIST;
 	}
 	/* The tools that no role can grant have the ids from n_granted on. A
@@ -85,9 +84,8 @@ registry_load (struct registry    *reg,
 	for (uint32_t i = 0; i < loaded->n_tools; ++i) {
 		char const *name = loaded->manifest.tools[i];
 		struct registry_tool const tool = {
-			.name = name,
+			.name = { name, loaded->lens[i] },
 			.kind = &loaded->plugin->tools[i],
-			.len  = loaded->lens[i],
 		};
 		e = registry_add(reg, loaded->plugin, &tool, REGISTRY_GRANTED);
 		if (!e)

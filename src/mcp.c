@@ -287,32 +287,53 @@ static constexpr uint64_t KF_AGENDA = 1ull << 33;
  */
 static constexpr uint64_t KF_RERUN = 1ull << 34;
 
-/* A tool that askai offers: its definition as tools/list lists it, if a
- * role may grant it, and as the upstream's API has it, if it is lent, each
- * after a comma; its kind; its name; the argument whose value is logged as
- * its size; the function of its definition as the turns get it, if its kind
- * has one of its own for them; its plugin's part; how the turns are lent it;
- * its row in the turns' metrics; and what the trace shows of its calls.
+/* The row of a kind of tool in mcp_rows. */
+struct mcp_row {
+	struct tool_kind        kind;      /* the functions of the tool, if askai
+	                                      implements the tool itself */
+	struct plugin const    *plugin;    /* the built-in plugin whose only tool
+	                                      this is, or nullptr */
+	tool_definition_fn     *upstream;  /* the definition for the turns, if it
+	                                      differs from the one that clients
+	                                      list */
+	char const             *sized;     /* the argument whose size the log
+	                                      shows instead of its value */
+	char const             *option;    /* the option that turns the tool on,
+	                                      for the log. It is nullptr for the
+	                                      kinds in KINDS_TURNS and the test
+	                                      aid, which the log leaves out while
+	                                      they are off. */
+	struct cstr_view        name;      /* the name; name.data is nullptr for
+	                                      the ask tool, whose name comes from
+	                                      the configuration */
+	uint8_t                 lend;      /* enum mcp_lend: how the tool is lent
+	                                      to the turns. For a tool of a
+	                                      plugin with LEND_NEVER here, the
+	                                      flags of its kind decide. */
+	uint8_t                 metric;    /* enum metrics_lent: the row of the
+	                                      tool in the turns' metrics */
+	uint8_t                 trace;     /* enum mcp_trace: what the trace
+	                                      shows of the calls */
+};
+
+/* A tool that askai offers. listed is its definition as tools/list lists
+ * it, if a role may grant it, and lent is its definition in the API of the
+ * upstream, if the turns are lent the tool. Each begins with a comma. tool
+ * is the entry of the tool in the registry, and lend is the rule by which
+ * the turns are lent the tool. mcp_row_of(&tool) returns the row with the
+ * other attributes of the tool.
  */
 struct mcp_offer {
-	struct dstr             listed;
-	struct dstr             lent;
-	struct tool_kind const *kind;
-	char const             *name;
-	char const             *sized;   /* or nullptr */
-	tool_definition_fn     *upstream;
-	uint32_t                len;
-	uint8_t                 part;    /* its plugin's, in plugins[] and a
-	                                    loop's parts[] */
-	uint8_t                 lend;    /* enum mcp_lend */
-	uint8_t                 metric;  /* enum metrics_lent */
-	uint8_t                 trace;   /* enum mcp_trace */
+	struct dstr          listed;
+	struct dstr          lent;
+	struct registry_tool tool;
+	uint8_t              lend;  /* enum mcp_lend */
 };
 
 /* The tools that askai lends the turns. Each member is a mask of tool ids.
- * by[l] holds the tools with lending rule l (enum mcp_lend). of[k] holds the
- * tool of kind k (enum mcp_kind) if askai lends it. detach holds the tools
- * that can run in the background (TOOL_DETACH).
+ * by[l] contains the tools with lending rule l (enum mcp_lend). of[k]
+ * contains the tool of kind k (enum mcp_kind) if askai lends it. detach
+ * contains the tools that can run in the background (TOOL_DETACH).
  */
 struct mcp_lending {
 	tool_mask by[LEND_DETACH + 1];
@@ -1087,6 +1108,23 @@ mcp_slot_offer (struct mcp_slot const *slot)
 	return &slot->req->mcp->st->offers[slot->tool];
 }
 
+/* The attributes of a tool of a plugin that askai loaded from a file. The
+ * flags of its kind decide whether the turns are lent it. The turns'
+ * metrics count the calls of all such tools in one row. The trace shows
+ * the arguments of its calls.
+ */
+static struct mcp_row const mcp_loaded_row = { .metric = LENT_PLUGIN };
+
+/* Returns the row of the registry tool @p t, or mcp_loaded_row for a tool
+ * of a plugin that askai loaded from a file.
+ */
+static struct mcp_row const *
+mcp_row_of (struct registry_tool const *t)
+{
+	/* mcp_register() stored the row of each tool of askai in data. */
+	return t->data ? t->data : &mcp_loaded_row;
+}
+
 /* "byte" or "bytes", for a count of @p n bytes in the log. */
 static char const *
 mcp_bytes (size_t n)
@@ -1240,7 +1278,7 @@ mcp_args_shown (struct mcp_offer const *offer,
 {
 	struct mcp_shown w = { .buf = buf };
 	if (args)
-		mcp_shown_value(&w, args, offer->sized);
+		mcp_shown_value(&w, args, mcp_row_of(&offer->tool)->sized);
 	else
 		mcp_shown_put(&w, none.data, none.len, false);
 	if (w.cut) {
@@ -1295,7 +1333,7 @@ mcp_req_log_call (struct mcp_req   *req,
 	if (failed && out.len)
 		mcp_quote(text, sizeof text, out.data, out.len, ERROR_LOG);
 	log_put(&sites[failed], "tool call %s from %s %s after %.1f s (%zu %s)%s%s%s%s%s%s",
-	        mcp_slot_offer(&req->self)->name, mcp_req_client(req), how,
+	        mcp_slot_offer(&req->self)->tool.name.data, mcp_req_client(req), how,
 	        mcp_elapsed(req->self.start), out.len, mcp_bytes(out.len), record, ask,
 	        *req->call_args ? "; arguments " : "", req->call_args, *text ? "; error " : "",
 	        text);
@@ -1318,11 +1356,11 @@ mcp_slot_drop (struct mcp_slot *slot)
 	if (slot->own) {
 		slot->done = true;
 		struct mcp_offer const *offer = mcp_slot_offer(slot);
-		if (offer->kind->drop)
-			offer->kind->drop(slot);
+		if (offer->tool.kind->drop)
+			offer->tool.kind->drop(slot);
 		else
 			LOG(LOG_WARN, "a call of %s set its own word, but its kind has no "
-			    "drop()", offer->name);
+			    "drop()", offer->tool.name.data);
 	}
 	slot->own = nullptr;
 	web_wait_leave(&slot->web);
@@ -3156,7 +3194,7 @@ mcp_req_promote (struct mcp_req     *req,
 	};
 	if (!mcp_req_detach(req, task, p, ARRAY_SIZE(p)))
 		LOG(LOG_VERBOSE, "tool call %s from %s became task %.*s after %.1f s",
-		    mcp_slot_offer(&req->self)->name, mcp_req_client(req), LEDGER_ID,
+		    mcp_slot_offer(&req->self)->tool.name.data, mcp_req_client(req), LEDGER_ID,
 		    task->id, mcp_elapsed(req->head));
 }
 
@@ -3178,7 +3216,7 @@ mcp_id_valid (struct json_object const *id)
 void *
 mcp_slot_part (struct mcp_slot const *slot)
 {
-	return slot->req->mcp->parts[mcp_slot_offer(slot)->part];
+	return slot->req->mcp->parts[mcp_slot_offer(slot)->tool.part];
 }
 
 void *
@@ -3193,7 +3231,7 @@ mcp_slot_instance (struct mcp_slot const *slot)
 static struct plugin_loaded const *
 mcp_slot_loaded (struct mcp_slot const *slot)
 {
-	return slot->req->mcp->st->plugins[mcp_slot_offer(slot)->part].loaded;
+	return slot->req->mcp->st->plugins[mcp_slot_offer(slot)->tool.part].loaded;
 }
 
 void const *
@@ -3452,7 +3490,7 @@ mcp_slot_park (struct mcp_slot *slot)
 	if (slot->done)
 		return EINVAL;
 	struct mcp_req *req = slot->req;
-	if (mcp_slot_offer(slot)->kind->flags & TOOL_STREAM && req->sse_ok && !req->sse)
+	if (mcp_slot_offer(slot)->tool.kind->flags & TOOL_STREAM && req->sse_ok && !req->sse)
 		mcp_req_stream(req);
 	if (slot == &req->self)
 		mcp_req_park(req);
@@ -3468,7 +3506,7 @@ mcp_slot_ready (struct mcp_slot *slot)
 		return EFAULT;
 	if (slot->done)
 		return EINVAL;
-	if (!mcp_slot_offer(slot)->kind->step) {
+	if (!mcp_slot_offer(slot)->tool.kind->step) {
 		(void)mcp_slot_tell(slot, CSTR_VIEW("The tool's kind has no step(), so the "
 		                                    "call cannot go on."), TOOL_FAILED);
 		return EINVAL;
@@ -3575,7 +3613,7 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 		if ((unsigned char)accept[i] < ' ' || (unsigned char)accept[i] > '~')
 			return EINVAL;
 	struct mcp_offer const *offer = mcp_slot_offer(slot);
-	if (!offer->kind->step)
+	if (!offer->tool.kind->step)
 		return mcp_slot_ready(slot);
 	if (slot->web && !web_wait_done(slot->web))
 		return EBUSY;
@@ -4461,7 +4499,7 @@ mcp_static_tool_of (struct mcp_static const *st,
 {
 	for (uint32_t id = 0; id < st->n_offers; ++id) {
 		struct mcp_offer const *o = &st->offers[id];
-		if (o->len == len && !memcmp(o->name, name, len))
+		if (o->tool.name.len == len && !memcmp(o->tool.name.data, name, len))
 			return id;
 	}
 	return TOOL_MAX;
@@ -4669,8 +4707,8 @@ mcp_agenda_job_done (struct mcp_slot *slot)
 	uint32_t n = (uint32_t)(slot - a->jobs) + 1;
 	if (!dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, %s: call jobs with the "
 	                 "action result and job %" PRIu32 " for its output.]\n", n,
-	                 mcp_slot_offer(slot)->name, slot->failed ? "failed" : "finished",
-	                 n)) {
+	                 mcp_slot_offer(slot)->tool.name.data,
+	                 slot->failed ? "failed" : "finished", n)) {
 		mcp_req_fail(slot->req, ENOMEM);
 		return;
 	}
@@ -4747,14 +4785,14 @@ mcp_slot_start (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	struct mcp *mcp = req->mcp;
 	struct mcp_offer const *offer = mcp_slot_offer(slot);
-	int e = instance_table_get(&mcp->instances, mcp->st->plugins[offer->part].plugin,
+	int e = instance_table_get(&mcp->instances, mcp->st->plugins[offer->tool.part].plugin,
 	                           req->principal, req->generation, &slot->inst);
 	if (e == EBUSY)
 		mcp_slot_result(slot, TEXT(busy), true);
 	else if (e)
 		mcp_req_fail(req, e);
 	else
-		offer->kind->start(slot, args);
+		offer->tool.kind->start(slot, args);
 }
 
 /* The words for the kinds and the statuses of the records of the ledger,
@@ -4839,7 +4877,7 @@ mcp_req_background (struct mcp_req *req,
 	         ? util_format(text, sizeof text, "Started job %.*s. Call %s with "
 	                       "{\"job\":\"%.*s\"} in one second for its status or result; add "
 	                       "\"action\":\"cancel\" to cancel it.", LEDGER_ID, task->id,
-	                       st->offers[tool].name, LEDGER_ID, task->id)
+	                       st->offers[tool].tool.name.data, LEDGER_ID, task->id)
 	         : util_format(text, sizeof text, "Started job %.*s. Call wait to wait for "
 	                       "it, then jobs with the action result and this id.",
 	                       LEDGER_ID, task->id);
@@ -4870,7 +4908,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	struct json_object *call = jb_get(args, "arguments");
 	struct mcp_piece problem =
 		id >= st->n_granted || !(req->s->grant.tools >> id & 1) ||
-		st->offers[id].kind->flags & KF_AGENDA
+		st->offers[id].tool.kind->flags & KF_AGENDA
 		? TEXT("The tool argument must name a tool of yours other than background, "
 		       "jobs, wait and timer.")
 		: call && !json_object_is_type(call, json_type_object)
@@ -4889,7 +4927,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	if (log_threshold >= LOG_VERBOSE)
 		mcp_args_shown(&st->offers[id], call, CSTR_VIEW("none"), req->call_args);
 	LOG(LOG_VERBOSE, "tool call background from %s became job %.*s, a call of %s",
-	    mcp_req_client(req), LEDGER_ID, req->task->id, st->offers[id].name);
+	    mcp_req_client(req), LEDGER_ID, req->task->id, st->offers[id].tool.name.data);
 	/* Last, as the start of the job's call may end the request. */
 	mcp_slot_start(slot, call);
 }
@@ -4913,7 +4951,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 	struct json_object *call = jb_get(args, "arguments");
 	uint32_t id = name ? mcp_req_tool_of(req, name, len) : TOOL_MAX;
 	struct mcp_piece problem =
-		!(req->mcp->st->offers[id].kind->flags & TOOL_DETACH)
+		!(req->mcp->st->offers[id].tool.kind->flags & TOOL_DETACH)
 		? TEXT("The tool argument must name a tool of yours that may run in the "
 		       "background, such as git or man.")
 		: call && !json_object_is_type(call, json_type_object)
@@ -4976,7 +5014,7 @@ mcp_slot_jobs_list (struct mcp_slot *slot)
 			util_format(state, sizeof state, "%s, %zu bytes",
 			            job->failed ? "failed" : "finished", mcp_slot_output(job).len);
 		if (!args || !dstr_printf(&slot->answer, "job %" PRIu32 ": %s %.*s%s: %s\n",
-		                          k + 1, mcp_slot_offer(job)->name,
+		                          k + 1, mcp_slot_offer(job)->tool.name.data,
 		                          (int)util_clip(args, len, 100), args,
 		                          len > 100 ? "..." : "", state))
 			return ENOMEM;
@@ -5071,7 +5109,7 @@ mcp_slot_client_list (struct mcp_slot *slot)
 		                                                 memory_order_acquire);
 		bool told = atomic_load_explicit(&t->told, memory_order_relaxed);
 		ok = dstr_printf(d, "%s %.*s: %s: ", record_kinds[t->kind], LEDGER_ID, t->id,
-		                 st->offers[t->tool].name) &&
+		                 st->offers[t->tool].tool.name.data) &&
 		     (status == LEDGER_WORKING
 		      ? dstr_printf(d, "running for %" PRIu64 " s\n",
 		                    mcp_seconds_since(t->created, day))
@@ -5292,7 +5330,7 @@ mcp_wait_report (struct mcp_wait const    *w,
 		enum ledger_status status = atomic_load_explicit(&t->status,
 		                                                 memory_order_acquire);
 		char const *kind = record_kinds[t->kind];
-		char const *tool = st->offers[t->tool].name;
+		char const *tool = st->offers[t->tool].tool.name.data;
 		ok = status == LEDGER_CANCELLED
 		   ? dstr_printf(d, "[askai: %s %.*s, %s, cancelled.]\n", kind, LEDGER_ID, t->id,
 		                 tool)
@@ -5633,9 +5671,9 @@ mcp_req_call_launch (struct mcp_req *req)
 	struct job_call h;
 	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls).ptr + req->launch_at);
 	uint32_t id = mcp_req_tool_of(req, c.name.data, c.name.len);
-	struct mcp_offer const *tool = &mcp->st->offers[id];
+	struct registry_tool const *tool = &mcp->st->offers[id].tool;
 	if (k > req->part &&
-	    (tool->kind->flags | mcp_slot_offer(&req->slots[k - 1])->kind->flags) & KF_SERIAL)
+	    (tool->kind->flags | mcp_slot_offer(&req->slots[k - 1])->tool.kind->flags) & KF_SERIAL)
 		return;
 	if (mcp->draining) {
 		mcp_req_fail(req, ESHUTDOWN);
@@ -5664,8 +5702,8 @@ mcp_req_call_launch (struct mcp_req *req)
 	slot->tool = (uint8_t)id;
 	req->launch_at += job_call_size(&h);
 	req->launched = k + 1;
-	hist_add(&mcp->counts->calls.lent[tool->metric], 1);
-	mcp_req_notify_tool(req, tool->name);
+	hist_add(&mcp->counts->calls.lent[mcp_row_of(tool)->metric], 1);
+	mcp_req_notify_tool(req, tool->name.data);
 	loop_ready_bulk(mcp->loop, &req->step);
 	if (req->saved_tools[k]) {
 		struct json_object *saved = req->saved_tools[k];
@@ -5773,7 +5811,7 @@ mcp_slot_note_window (struct mcp_slot *slot,
 {
 	size_t end = slot->skip + slot->window;
 	if (end < len) {
-		if (mcp_slot_offer(slot)->kind->flags & TOOL_PAGED)
+		if (mcp_slot_offer(slot)->tool.kind->flags & TOOL_PAGED)
 			return util_format(slot->note, sizeof slot->note, "\n\n[Bytes %zu to %zu "
 			                   "of %zu: for the rest, call again with \"offset\": "
 			                   "%zu.]", slot->skip, end, len, end);
@@ -5838,15 +5876,16 @@ mcp_slot_done (struct mcp_slot *slot,
 			mcp_quote(text, sizeof text, (char const *)out.ptr, out.len, ERROR_LOG);
 		LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": %s %s %s "
 		    "after %.1f s (%zu %s); arguments %s%s%s", req->mcp->loop->id, req->asked,
-		    req->turn, label[slot->role], offer->name, failed ? "failed" : "answered",
-		    mcp_elapsed(slot->start), out.len, mcp_bytes(out.len), shown,
-		    *text ? "; error " : "", text);
+		    req->turn, label[slot->role], offer->tool.name.data,
+		    failed ? "failed" : "answered", mcp_elapsed(slot->start), out.len,
+		    mcp_bytes(out.len), shown, *text ? "; error " : "", text);
 	}
 	slot->failed = failed;
 	char const *notebook = !failed ? slot->shows : nullptr;
 	slot->shows = nullptr;
 	if (*req->archive && slot->role == ROLE_TURN &&
-	    !(mcp_slot_offer(slot)->kind->flags & KF_RERUN) && !req->saved_tools[slot - req->slots]) {
+	    !(mcp_slot_offer(slot)->tool.kind->flags & KF_RERUN) &&
+	    !req->saved_tools[slot - req->slots]) {
 		struct span files = buf_peek(&req->attached);
 		struct json_object *result = jb_object(
 			"index", json_object_new_int64(slot - req->slots),
@@ -6035,7 +6074,8 @@ mcp_req_result_write (struct mcp_req *req)
 		return;
 	}
 	struct mcp_slot *slot = &req->slots[req->part];
-	(void)mcp_req_trace(req, &c, req->args[req->part], mcp_slot_offer(slot)->trace);
+	(void)mcp_req_trace(req, &c, req->args[req->part],
+	                    mcp_row_of(&mcp_slot_offer(slot)->tool)->trace);
 	(void)mcp_req_trace_end(req, slot->failed, mcp_slot_output(slot).len);
 	e = mcp_req_shown(req, slot);
 	if (e) {
@@ -6103,7 +6143,8 @@ mcp_req_checkpoint (struct mcp_req *req)
 	struct json_object *lent = json_object_new_array();
 	for (uint32_t i = 0; lent && i < st->n_offers; ++i)
 		if (req->lent >> i & 1)
-			lent = jb_push_or_free(lent, json_object_new_string(st->offers[i].name));
+			lent = jb_push_or_free(lent,
+			                       json_object_new_string(st->offers[i].tool.name.data));
 	struct span upload = buf_peek(&req->upload);
 	uint64_t now = clk_realtime_ns();
 	req->archive_deadline = st->ep->timeout_ms > 0
@@ -6112,7 +6153,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"version", json_object_new_int(1),
 		"owner", json_object_new_uint64(mcp_req_owner(req)),
 		"created", json_object_new_uint64(task ? task->created : now),
-		"tool", json_object_new_string(st->offers[req->self.tool].name),
+		"tool", json_object_new_string(st->offers[req->self.tool].tool.name.data),
 		"api", json_object_new_int(st->ep->api),
 		"provider", json_object_new_int(st->ep->provider),
 		"endpoint", json_object_new_uint64(mcp_archive_endpoint(st)),
@@ -6227,7 +6268,7 @@ mcp_recover_back (struct loop           *loop,
 	                     : !state || jb_int(jb_get(state, "version"), 0) != 1
 	                     ? "No recoverable job of yours has that id."
 	                     : jb_uint(jb_get(state, "owner"), 0) != mcp_req_owner(req) ||
-	                       !tool || strcmp(tool, st->offers[req->self.tool].name)
+	                       !tool || strcmp(tool, st->offers[req->self.tool].tool.name.data)
 	                     ? "No job of yours from this tool has that id."
 	                     : nullptr;
 	if (problem)
@@ -6700,7 +6741,7 @@ mcp_slot_step (struct loop      *loop,
 {
 	(void)loop;
 	struct mcp_slot *slot = container_of(step, struct mcp_slot, step);
-	mcp_slot_offer(slot)->kind->step(slot);
+	mcp_slot_offer(slot)->tool.kind->step(slot);
 }
 
 /* Compaction has left the summary, if any, in what askai adds to the
@@ -6748,9 +6789,9 @@ mcp_slot_compact (struct mcp_slot    *slot,
 		return;
 	}
 	/* The trace names the call by its tool, the name it called. */
-	struct mcp_offer const *o = mcp_slot_offer(slot);
-	struct ai_call const c = { .name = { o->name, o->len } };
-	(void)mcp_req_trace(req, &c, args, o->trace);
+	struct registry_tool const *t = &mcp_slot_offer(slot)->tool;
+	struct ai_call const c = { .name = t->name };
+	(void)mcp_req_trace(req, &c, args, mcp_row_of(t)->trace);
 	(void)mcp_req_trace_end(req, false, len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": compacted by "
@@ -6912,7 +6953,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 		if (str && !known)
 			mcp_quote(quoted, sizeof quoted, str, len, NAME_LOG);
 		LOG(LOG_WARN, "tool call %s from %s refused: %s",
-		    known ? st->offers[id].name : quoted, mcp_req_client(req),
+		    known ? st->offers[id].tool.name.data : quoted, mcp_req_client(req),
 		    known ? "the role does not grant it" : str ? "askai offers no such tool"
 		                                               : "the call names no tool");
 		struct mcp_piece head = known ? FRAG("Tool not available: ")
@@ -6930,7 +6971,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 	                                            "stream", &stream);
 	if (has_stream && (!json_object_is_type(stream, json_type_boolean) ||
 	                   (json_object_get_boolean(stream) &&
-	                    (!req->sse_ok || st->offers[id].kind->start != mcp_slot_ask)))) {
+	                    (!req->sse_ok || st->offers[id].tool.kind->start != mcp_slot_ask)))) {
 		mcp_req_error(req, 200, INVALID_PARAMS,
 		              FRAG("askai.stream must be boolean; true requires the ask tool "
 		                   "and an SSE-capable client"), nullptr, 0);
@@ -6945,7 +6986,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 	}
 	struct json_object *token = jb_get(jb_get(params, "_meta"), "progressToken");
 	req->token = mcp_id_valid(token) ? json_object_get(token) : nullptr;
-	if (tasks && !(req->asks & JOB_STREAM) && !(st->offers[id].kind->flags & KF_AGENDA)) {
+	if (tasks && !(req->asks & JOB_STREAM) && !(st->offers[id].tool.kind->flags & KF_AGENDA)) {
 		req->promote_at = req->mcp->loop->now + TASK_NS;
 		mcp_req_arm(req);
 	}
@@ -8455,36 +8496,6 @@ mcp_static_tails (struct mcp_static  *st,
 	                   CACHE_TTL_MS, dstr_get(&st->modern_tail)) ? 0 : ENOMEM;
 }
 
-/* The row of a kind of tool in mcp_rows. */
-struct mcp_row {
-	struct tool_kind        kind;      /* the functions of a tool of askai's
-	                                      own */
-	struct plugin const    *plugin;    /* the built-in plugin whose only tool
-	                                      this is, or nullptr */
-	tool_definition_fn     *upstream;  /* the definition that the turns get,
-	                                      if it differs from the one that
-	                                      clients list */
-	char const             *ptr;       /* the name, or nullptr for the ask
-	                                      tool, whose name comes from the
-	                                      configuration */
-	char const             *sized;     /* the argument whose size the log
-	                                      shows instead of its value */
-	char const             *option;    /* the option that turns the tool on,
-	                                      for the log. It is nullptr for the
-	                                      kinds in KINDS_TURNS and the test
-	                                      aid, which the log leaves out while
-	                                      they are off. */
-	uint32_t                len;       /* the length of ptr */
-	uint8_t                 lend;      /* enum mcp_lend: how the tool is lent
-	                                      to the turns. A plugin's tool with
-	                                      LEND_NEVER here follows the flags
-	                                      of its kind. */
-	uint8_t                 metric;    /* enum metrics_lent: the row of the
-	                                      tool in the turns' metrics */
-	uint8_t                 trace;     /* enum mcp_trace: what the trace
-	                                      shows of the calls */
-};
-
 /* mcp_host_plugin is the plugin of askai's own kinds. It has no instances
  * and no part_create(). Its service is the mcp_static, and mcp_create()
  * uses the service as the plugin's part on every loop. It is the plugin
@@ -8493,7 +8504,7 @@ struct mcp_row {
 static struct plugin const mcp_host_plugin = {};
 
 static struct mcp_row const mcp_rows[KINDS] = {
-#define N(s) .ptr = s, .len = sizeof s - 1
+#define N(s) .name = CSTR_VIEW_INIT(s)
 	[KIND_ASK]        = { { .definition = mcp_tool_definition, .start = mcp_slot_ask,
 	                        .step = mcp_slot_ask_step, .drop = notes_tool_drop },
 	                      .metric = LENT_NONE },
@@ -8559,13 +8570,14 @@ mcp_static_build (struct mcp_static  *st,
 		struct mcp_offer *o = &st->offers[id];
 		/* definition() of a plugin that askai loaded from a file gets the
 		 * plugin's configuration. */
-		struct mcp_plugin const *p = &st->plugins[o->part];
+		struct mcp_plugin const *p = &st->plugins[o->tool.part];
 		void const *service = p->loaded ? p->loaded->config : p->service;
-		struct json_object *def = o->kind->definition(service);
+		struct json_object *def = o->tool.kind->definition(service);
 		int e = !def ? ENOMEM : id < st->n_granted
 		      ? mcp_static_item(&o->listed, json_object_get(def)) : 0;
+		tool_definition_fn *upstream = mcp_row_of(&o->tool)->upstream;
 		struct json_object *lent = o->lend == LEND_NEVER ? nullptr
-		                         : o->upstream ? o->upstream(service)
+		                         : upstream ? upstream(service)
 		                         : json_object_get(def);
 		if (!e && o->lend != LEND_NEVER)
 			e = lent ? mcp_static_item(&o->lent, ai_tool(st->ep->api, lent)) : ENOMEM;
@@ -8575,23 +8587,6 @@ mcp_static_build (struct mcp_static  *st,
 			return e;
 	}
 	return mcp_static_tails(st, info, list);
-}
-
-/* The attributes of a tool of a plugin that askai loaded from a file. The
- * flags of its kind decide whether the turns are lent it. The turns'
- * metrics count the calls of all such tools in one row. The trace shows
- * the arguments of its calls.
- */
-static struct mcp_row const mcp_loaded_row = { .metric = LENT_PLUGIN };
-
-/* Returns the row of the registry tool @p t, or mcp_loaded_row for a tool
- * of a plugin that askai loaded from a file.
- */
-static struct mcp_row const *
-mcp_row_of (struct registry_tool const *t)
-{
-	/* mcp_register() gave each of askai's own tools its row. */
-	return t->data ? t->data : &mcp_loaded_row;
 }
 
 /* Returns the lending rule of the registry tool @p t. A tool of askai's own
@@ -8672,16 +8667,10 @@ mcp_register (struct registry     *reg,
 		struct mcp_row const *row = &mcp_rows[k];
 		struct plugin const *plugin = &mcp_host_plugin;
 		struct registry_tool tool = {
-			.name = row->ptr,
+			.name = row->name.data ? row->name : cstr_view(cfg->tool.name),
 			.kind = &row->kind,
 			.data = row,
-			.len  = row->len,
 		};
-		/* The configuration names the ask tool. */
-		if (!tool.name) {
-			tool.name = cfg->tool.name;
-			tool.len = (uint32_t)strlen(tool.name);
-		}
 		/* The man, git and notes tools are kinds of built-in plugins. */
 		if (row->plugin) {
 			plugin = row->plugin;
@@ -8717,7 +8706,7 @@ mcp_allowed (struct registry const *reg,
              char const            *name)
 {
 	for (uint32_t id = 0; id < reg->n_granted; ++id)
-		if (!strcmp(reg->tools[id].name, name))
+		if (!strcmp(reg->tools[id].name.data, name))
 			return cfg->tools_clients >> id & 1;
 	return true;
 }
@@ -8735,13 +8724,13 @@ mcp_report_own (struct registry const *reg,
 	uint32_t on = mcp_offered_clients(cfg);
 	int width = 0;
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
-		size_t len = mcp_rows[k].ptr ? mcp_rows[k].len : strlen(cfg->tool.name);
+		size_t len = mcp_rows[k].name.data ? mcp_rows[k].name.len : strlen(cfg->tool.name);
 		width = (int)len > width ? (int)len : width;
 	}
 	LOG_ALL(LOG_INFO, "built-in tools for clients:");
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
 		struct mcp_row const *row = &mcp_rows[k];
-		char const *name = row->ptr ? row->ptr : cfg->tool.name;
+		char const *name = row->name.data ? row->name.data : cfg->tool.name;
 		if (on >> k & 1)
 			LOG_ALL(LOG_INFO, "  %-*s  %s", width, name,
 			        mcp_allowed(reg, cfg, name) ? "on" : "off (tools)");
@@ -8913,11 +8902,10 @@ mcp_static_create (struct config const *cfg,
 	*st = (struct mcp_static){
 		.ep = &cfg->ep,
 		.tool = &cfg->tool,
-		.offers[TOOL_MAX] = {
+		.offers[TOOL_MAX].tool = {
+			.name = mcp_rows[KIND_NONE].name,
 			.kind = &mcp_rows[KIND_NONE].kind,
-			.name = mcp_rows[KIND_NONE].ptr,
-			.len = mcp_rows[KIND_NONE].len,
-			.metric = mcp_rows[KIND_NONE].metric
+			.data = &mcp_rows[KIND_NONE]
 		},
 		.n_offers = reg->n_tools,
 		.n_granted = reg->n_granted,
@@ -8943,21 +8931,13 @@ mcp_static_create (struct config const *cfg,
 	/* A zeroed dstr is no empty string (dstr.h). */
 	for (uint32_t id = 0; id < reg->n_tools; ++id) {
 		struct registry_tool const *t = &reg->tools[id];
-		struct mcp_row const *row = mcp_row_of(t);
 		struct mcp_offer *o = &st->offers[id];
 		/* The turns are lent tools with --upstream-tools. */
 		*o = (struct mcp_offer){
 			.listed = DSTR_INIT,
 			.lent = DSTR_INIT,
-			.kind = t->kind,
-			.name = t->name,
-			.sized = row->sized,
-			.upstream = row->upstream,
-			.len = t->len,
-			.part = (uint8_t)t->part,
-			.lend = lends ? mcp_lend_of(t) : LEND_NEVER,
-			.metric = row->metric,
-			.trace = row->trace
+			.tool = *t,
+			.lend = lends ? mcp_lend_of(t) : LEND_NEVER
 		};
 	}
 	st->lending = mcp_lending(cfg);

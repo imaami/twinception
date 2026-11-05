@@ -2038,7 +2038,7 @@ config_tools (struct config const *cfg,
 	bool lends = run->flags & CFG_UPSTREAM_TOOLS;
 	*upstream = 0;
 	for (uint32_t id = 0; id < reg->n_tools; ++id) {
-		tools[id] = reg->tools[id].name;
+		tools[id] = reg->tools[id].name.data;
 		if (lends && id < reg->n_granted && reg->tools[id].kind->flags & TOOL_LENT)
 			*upstream |= (tool_mask)1 << id;
 	}

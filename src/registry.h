@@ -27,14 +27,14 @@ struct plugin_loaded;
 
 /** A tool in the registry. */
 struct registry_tool {
-	char const             *name;  /**< NUL-terminated. The caller of
-	                                    registry_add() provides storage that
-	                                    outlives the registry. */
+	struct cstr_view        name;  /**< NUL-terminated after name.len
+	                                    bytes. The caller of registry_add()
+	                                    provides storage that outlives the
+	                                    registry. */
 	struct tool_kind const *kind;  /**< what a call of the tool does */
 	void const             *data;  /**< the pointer that the caller of
 	                                    registry_add() gave for its own use,
 	                                    or nullptr */
-	uint32_t                len;   /**< the length of name in bytes */
 	uint32_t                part;  /**< the index of the tool's plugin in
 	                                    plugins; registry_add() sets it */
 };
