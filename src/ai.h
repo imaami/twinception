@@ -146,10 +146,9 @@ struct ai_call {
 	uint32_t         index;
 };
 
-/** Receives a piece of a streamed answer, @p len bytes at @p text. */
-typedef int ai_text_fn (void       *user,
-                        char const *text,
-                        size_t      len);
+/** Receives @p text, a piece of a streamed answer. */
+typedef int ai_text_fn (void             *user,
+                        struct cstr_view  text);
 
 /** The callbacks that receive the pieces of a streamed answer. text
  *  receives the text of the answer. thought, call and replay may be
@@ -205,12 +204,14 @@ struct ai_reader {
 #define AI_CUT_NOTE "\n\n[The answer was cut short by the output token limit.]"
 
 /**
- * Read an event of a streamed answer, its data parsed as @p ev, as
- * @p reader says the events before it left the reading: hand each piece of
- * it to @p sink, and say what else it says in @p out, zeroed to begin,
- * which then points into @p ev. Returns the first nonzero that the sink
- * returned, else 0, or ENOMEM. An answer whose stream ends before an
- * event says it has ended, or chat completions' [DONE], is cut off.
+ * Reads an event of a streamed answer, whose data is parsed as @p ev.
+ * @p reader contains the state that the events before it left. The
+ * function passes each piece of text in the event to @p sink and stores
+ * the rest of the event in @p out, which must be zeroed before the first
+ * event and then points into @p ev. Returns the first nonzero result of
+ * the sink, 0, ENOMEM, or EINVAL if @p reader, @p sink, sink->text or
+ * @p out is nullptr. An answer whose stream ends before the event that
+ * ends it, or before the [DONE] of chat completions, is cut off.
  */
 extern int
 ai_event (enum ai_api            api,

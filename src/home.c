@@ -1529,52 +1529,55 @@ home_resume_step (struct loop      *loop,
 	}
 }
 
-/* Add the @p len bytes of text at @p text to @p to, a job's answer, its
- * thinking or its replay, if they are UTF-8 (json-c lets overlong forms through), and the
- * buffer stays within MAX_RESPONSE; it is copied whole.
+/* Append @p text to @p to, the answer, the thinking or the replay of a
+ * job, if @p text is UTF-8 and the buffer stays within MAX_RESPONSE.
+ * json-c lets overlong forms through, so this function checks the
+ * encoding again. The text is appended whole or not at all.
  */
 static int
-home_append_text (struct home *home,
-                  struct buf  *to,
-                  char const  *text,
-                  size_t       len)
+home_append_text (struct home      *home,
+                  struct buf       *to,
+                  struct cstr_view  text)
 {
-	if (jb_utf8(text, len) < len)
+	if (jb_utf8(text.data, text.len) < text.len)
 		return EILSEQ;
-	if (!len)
+	if (!text.len)
 		return 0;
 	struct span s;
-	int e = buf_reserve(to, len, MAX_RESPONSE, &s);
+	int e = buf_reserve(to, text.len, MAX_RESPONSE, &s);
 	if (e)
 		return e;
-	memcpy(s.ptr, text, len);
-	buf_commit(to, len);
-	loop_work(home->loop, LOOP_COPY, len);
+	memcpy(s.ptr, text.data, text.len);
+	buf_commit(to, text.len);
+	loop_work(home->loop, LOOP_COPY, text.len);
 	return 0;
 }
 
-/* Build one event's immutable mailbox. Parsing stops after publication, so a
- * slow front holds at most one event; the provider's wire is bounded too.
+/* Append @p text after a struct job_delta header to job->delta, the
+ * mailbox from which the client loop streams the answer, if job->asks
+ * contains JOB_STREAM. Parsing stops after the mailbox is published, so
+ * the mailbox contains the pieces of at most one event while the client
+ * loop is slow. The size of an event from the upstream is limited too.
  */
 static int
-home_put_delta (struct job *job,
-                char const *text,
-                size_t      len,
-                bool        thought)
+home_put_delta (struct job       *job,
+                struct cstr_view  text,
+                bool              thought)
 {
-	if (!(job->asks & JOB_STREAM) || job->flags & DROPPED || !len)
+	if (!(job->asks & JOB_STREAM) || job->flags & DROPPED || !text.len)
 		return 0;
-	if (len > MAX_RESPONSE)
+	if (text.len > MAX_RESPONSE)
 		return ENOBUFS;
-	struct job_delta header = { .len = (uint32_t)len, .thought = thought };
+	struct job_delta header = { .len = (uint32_t)text.len, .thought = thought };
+	size_t len = sizeof header + text.len;
 	struct span s;
-	int e = buf_reserve(&job->delta, sizeof header + len, 2 * MAX_RESPONSE, &s);
+	int e = buf_reserve(&job->delta, len, 2 * MAX_RESPONSE, &s);
 	if (e)
 		return e;
 	memcpy(s.ptr, &header, sizeof header);
-	memcpy(s.ptr + sizeof header, text, len);
-	buf_commit(&job->delta, sizeof header + len);
-	loop_work(self->loop, LOOP_COPY, sizeof header + len);
+	memcpy(s.ptr + sizeof header, text.data, text.len);
+	buf_commit(&job->delta, len);
+	loop_work(self->loop, LOOP_COPY, len);
 	return 0;
 }
 
@@ -1612,58 +1615,72 @@ home_thought_end (struct home *home,
 	return 0;
 }
 
-/* The answer of the job @p user gains the @p len bytes of text at @p text
- * (home_append_text()), then the immutable mailbox receives its copy.
+/* Append @p text, a piece of the text of the answer, to the result of the
+ * job @p user, and then to the mailbox of the job (home_put_delta()). Text
+ * that is not empty first ends the open thought in the journal.
  */
 static int
-home_put_text (void       *user,
-               char const *text,
-               size_t      len)
+home_put_text (void             *user,
+               struct cstr_view  text)
 {
 	struct job *job = user;
-	int e = len ? home_thought_end(self, job, false) : 0;
-	if (!e)
-		e = home_append_text(self, &job->result, text, len);
-	return e ? e : home_put_delta(job, text, len, false);
+	int e = text.len ? home_thought_end(self, job, false) : 0;
+	e = e ? e : home_append_text(self, &job->result, text);
+	return e ? e : home_put_delta(job, text, false);
 }
 
-/* Its thinking, likewise. Chat tool turns need a separate copy; the other
- * APIs keep their reasoning in the replay, independently of the mailbox.
+/* Write @p text, a piece of the thinking of @p job, to the journal of the
+ * job after the thinking that is already written.
  */
 static int
-home_put_thought (void       *user,
-                  char const *text,
-                  size_t      len)
+home_journal_thought (struct home      *home,
+                      struct job       *job,
+                      struct cstr_view  text)
+{
+	struct home_recovery *r = job->recovery;
+	int e = text.len > UINT64_MAX - r->thought_offset ? EOVERFLOW :
+	        journal_thought(job->journal, job->archive, job->archive_turn,
+	                        r->thought_offset, text.data, text.len, home->loop,
+	                        home_journal_done, job);
+	if (e) {
+		r->error = e;
+		return e;
+	}
+	r->thought_offset += text.len;
+	r->thought_open = true;
+	home_archive_pending(home, job);
+	return 0;
+}
+
+/* Pass @p text, a piece of the thinking of the model, to the job @p user.
+ * For a tool job of chat completions, the text is appended to
+ * job->thought, because askai sends the thinking back to chat completions
+ * in the member reasoning_content, and to the other APIs in the replay.
+ * The text also goes to the journal of the job, if job->journal is not
+ * nullptr, and to the mailbox of the job.
+ */
+static int
+home_put_thought (void             *user,
+                  struct cstr_view  text)
 {
 	struct job *job = user;
 	int e = job->asks & JOB_TOOLS && self->ep->api == AI_CHAT
-	      ? home_append_text(self, &job->thought, text, len)
-	      : jb_utf8(text, len) < len ? EILSEQ : 0;
-	if (!e && len && job->journal) {
-		struct home_recovery *r = job->recovery;
-		e = len > UINT64_MAX - r->thought_offset ? EOVERFLOW :
-		    journal_thought(job->journal, job->archive, job->archive_turn,
-		                    r->thought_offset, text, len, self->loop,
-		                    home_journal_done, job);
-		if (e)
-			r->error = e;
-		else {
-			r->thought_offset += len;
-			r->thought_open = true;
-			home_archive_pending(self, job);
-		}
-	}
-	return e ? e : home_put_delta(job, text, len, true);
+	      ? home_append_text(self, &job->thought, text)
+	      : jb_utf8(text.data, text.len) < text.len ? EILSEQ : 0;
+	if (!e && text.len && job->journal)
+		e = home_journal_thought(self, job, text);
+	return e ? e : home_put_delta(job, text, true);
 }
 
-/* Its replay, likewise: JSON text. */
+/* Append @p json, a piece of the JSON text that askai sends back with the
+ * turn, to the replay of the job @p user.
+ */
 static int
-home_put_replay (void       *user,
-                 char const *json,
-                 size_t      len)
+home_put_replay (void             *user,
+                 struct cstr_view  json)
 {
 	struct job *job = user;
-	return home_append_text(self, &job->replay, json, len);
+	return home_append_text(self, &job->replay, json);
 }
 
 /* Add the piece @p call of a tool call to the calls of the job @p user.

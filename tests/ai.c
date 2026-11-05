@@ -29,13 +29,11 @@ __wrap_json_object_get_int64 (struct json_object const *obj)
 }
 
 static int
-ignore_text (void       *user,
-             char const *text,
-             size_t      len)
+ignore_text (void             *user,
+             struct cstr_view  text)
 {
 	(void)user;
 	(void)text;
-	(void)len;
 	return 0;
 }
 
