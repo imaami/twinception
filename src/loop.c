@@ -374,19 +374,19 @@ loop_slot_of (struct loop const *loop,
 	return slot->gen == (uint32_t)h.bits && slot->obj ? slot : nullptr;
 }
 
-/* Room in the table of handles for a slot never used; 0 or ENOMEM. */
+/* Make room in the table of handles for a slot that was never used.
+ * Returns 0 or ENOMEM.
+ */
 static int
 loop_slots_grow (struct loop *loop)
 {
-	if (loop->used < loop->slots_cap)
-		return 0;
-	size_t cap = loop->slots_cap ? 2 * loop->slots_cap : SLOTS_MIN;
-	struct loop_slot *slots = cap > SLOTS_MAX ? nullptr
-	                        : realloc(loop->slots, cap * sizeof *slots);
+	if (loop->used >= SLOTS_MAX)
+		return ENOMEM;
+	size_t n = loop->used < SLOTS_MIN ? SLOTS_MIN : loop->used + 1;
+	struct loop_slot *slots = util_room(loop->slots, &loop->slots_cap, n, sizeof *slots);
 	if (!slots)
 		return ENOMEM;
 	loop->slots = slots;
-	loop->slots_cap = cap;
 	return 0;
 }
 
@@ -602,20 +602,19 @@ loop_timer_set (struct loop       *loop,
 {
 	if (!loop || !timer || !timer->fn)
 		return EFAULT;
-	/* A timer with a stale slot would take another timer's place. */
-	if (timer->slot > loop->timers ||
-	    (timer->slot && loop->heap[timer->slot - 1] != timer))
+	if (timer->slot > loop->timers)
 		return EINVAL;
 	if (!timer->slot) {
-		if (loop->timers == loop->heap_cap) {
-			size_t cap = loop->heap_cap ? 2 * loop->heap_cap : HEAP_MIN;
-			struct loop_timer **heap = realloc(loop->heap, cap * sizeof *heap);
-			if (!heap)
-				return ENOMEM;
-			loop->heap = heap;
-			loop->heap_cap = cap;
-		}
+		size_t n = loop->timers < HEAP_MIN ? HEAP_MIN : loop->timers + 1;
+		struct loop_timer **heap = util_room(loop->heap, &loop->heap_cap, n, sizeof *heap);
+		if (!heap)
+			return ENOMEM;
+		loop->heap = heap;
 		loop_heap_put(loop, timer, loop->timers++);
+	} else if (loop->heap[timer->slot - 1] != timer) {
+		/* timer->slot does not index this timer in the heap, so
+		 * loop_heap_fix() would overwrite the entry of another timer. */
+		return EINVAL;
 	}
 	timer->due = due;
 	loop_heap_fix(loop, timer);
@@ -725,8 +724,9 @@ loop_run (struct loop *loop,
 	return steps;
 }
 
-/* Do not sleep while steps or messages are queued; otherwise until the next
- * timer or @p deadline, whichever comes first.
+/* Returns ts with the time to wait for events, or nullptr for a wait without
+ * a time limit. The time is 0 while steps or messages are queued. Otherwise
+ * it ends when the next timer is due or at deadline, whichever comes first.
  */
 static struct timespec *
 loop_timeout (struct loop const *loop,
@@ -789,7 +789,8 @@ loop_turn (struct loop *loop,
 	struct epoll_event events[EVENTS];
 	struct timespec ts;
 	struct timespec *timeout = loop_timeout(loop, deadline, &ts);
-	/* About to sleep: say so, then look at the inbox once more (design
+	/* Before a wait that can sleep, set asleep and check the inbox again. A
+	 * post made before asleep was set did not write the eventfd (design
 	 * section 2). */
 	if (!timeout || ts.tv_sec || ts.tv_nsec) {
 		atomic_store(&loop->asleep, 1);
@@ -800,8 +801,8 @@ loop_turn (struct loop *loop,
 	}
 	atomic_store_explicit(&loop->turn, 0, memory_order_relaxed);
 	int n = epoll_pwait2(loop->epfd, events, EVENTS, timeout, nullptr);
-	/* A poster that still sees it asleep writes the eventfd for nothing,
-	 * which costs a turn. */
+	/* A post between the end of the wait and this store still writes the
+	 * eventfd, and the next wait then returns at once. */
 	atomic_store_explicit(&loop->asleep, 0, memory_order_relaxed);
 	if (n < 0)
 		return errno == EINTR ? 0 : errno;
@@ -838,14 +839,16 @@ loop_turn (struct loop *loop,
 int
 loop_exec (struct loop *loop)
 {
-	/* Wake on time: the default 50 µs of timer slack would be latency. */
+	/* Set the timer slack of the thread to 1 ns. The default slack of 50 µs
+	 * delays each timed wake-up. */
 	(void)prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
 	while (!loop->exit) {
 		int e = loop_turn(loop, UINT64_MAX);
 		if (e)
 			return e;
 	}
-	/* What follows the last turn is no turn to a watchdog. */
+	/* Clear turn, so that a watchdog does not count the time after the last
+	 * turn as a turn. */
 	atomic_store_explicit(&loop->turn, 0, memory_order_relaxed);
 	return loop->error;
 }

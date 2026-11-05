@@ -268,18 +268,21 @@ loop_log_stats (struct loop *loop,
                 char const  *label);
 
 /**
- * Run one turn: wait for events, messages, timers or ready steps, but not
- * past @p deadline, an absolute loop_clock() time in nanoseconds, and then
- * handle them. UINT64_MAX means no deadline. Returns 0, or the error of
- * epoll_pwait2(). An interrupted wait is a turn without events.
+ * Run one turn. The turn waits for events, messages, timers or ready steps,
+ * but not past @p deadline, an absolute loop_clock() time in nanoseconds,
+ * and then handles them. UINT64_MAX means no deadline. Returns 0, or the
+ * error of epoll_pwait2(). If a signal interrupts the wait, the function
+ * returns 0 at once and handles nothing.
  */
 extern int
 loop_turn (struct loop *loop,
            uint64_t     deadline);
 
 /**
- * Run turns until loop_exit(). Returns the error that stopped it, which only
- * epoll_pwait2() can cause, or else the first that epoll_ctl() reported.
+ * Run turns until loop_exit() is called or a wait fails. Returns the error
+ * of epoll_pwait2() if a wait failed. Otherwise returns the first error that
+ * loop_fail() stored, for example the error of epoll_ctl() in
+ * loop_unwatch(), or 0.
  */
 extern int
 loop_exec (struct loop *loop);
