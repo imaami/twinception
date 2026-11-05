@@ -119,36 +119,35 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	if (cursor < command.len || !cstr_view_starts(line, command))
 		return 0;
 
-	struct cstr_view const prefix = { line.data + command.len, cursor - command.len };
+	struct cstr_view const prefix = cstr_view_slice(line, command.len, cursor - command.len);
 	char const *const slash = memchr(line.data + cursor, '/', line.len - cursor);
-	struct cstr_view const suffix = slash
-		? (struct cstr_view){ slash + 1, line.len - (size_t)(slash + 1 - line.data) }
-		: (struct cstr_view){};
+	struct cstr_view const suffix = slash ? cstr_view_slice(line, (size_t)(slash - line.data) + 1, SIZE_MAX)
+	                                      : (struct cstr_view){};
 	size_t directory_len = prefix.len;
 	while (directory_len && prefix.data[directory_len - 1] != '/')
 		--directory_len;
-	struct cstr_view const directory = { prefix.data, directory_len };
-	struct cstr_view const basename = { prefix.data + directory_len, prefix.len - directory_len };
+	struct cstr_view const directory = cstr_view_slice(prefix, 0, directory_len);
+	struct cstr_view const basename = cstr_view_slice(prefix, directory_len, SIZE_MAX);
 	(void)dstr_clear(&file->lines);
-	if (prefix.len == 1 && prefix.data[0] == '~') {
+	if (cstr_view_equal(prefix, CSTR_VIEW("~"))) {
 		int const e = autocomplete_file_add(file, 0, command, (struct cstr_view){},
 		                                    prefix, true, suffix);
 		if (!e) {
-			file->matches[0].line.data = dstr_get(&file->lines);
+			autocomplete_match_place(file->matches, 1, dstr_get(&file->lines));
 			*matches = file->matches;
 			*count = 1;
 		}
 		return e;
 	}
 	(void)dstr_clear(&file->directory);
+	struct cstr_view const home = cstr_view_dstr(&file->home);
 
 	if (!directory_len) {
 		if (!dstr_cat_n(&file->directory, ".", 1))
 			return ENOMEM;
 
-	} else if (directory_len >= 2 && prefix.data[0] == '~' &&
-	           prefix.data[1] == '/' && dstr_len(&file->home)) {
-		if (!dstr_cat_n(&file->directory, dstr_get(&file->home), dstr_len(&file->home)) ||
+	} else if (home.len && cstr_view_starts(directory, CSTR_VIEW("~/"))) {
+		if (!dstr_cat_n(&file->directory, home.data, home.len) ||
 		    !dstr_cat_n(&file->directory, directory.data + 1, directory.len - 1))
 			return ENOMEM;
 

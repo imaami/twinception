@@ -104,12 +104,14 @@ struct autocomplete {
 	size_t                        match_begin;
 };
 
+/* Returns a view of the string value, or a view of "" if value is not a
+ * string, so that data is always a C string.
+ */
 static struct cstr_view
 autocomplete_json_text (struct json_object *value)
 {
-	return json_object_is_type(value, json_type_string)
-	       ? (struct cstr_view){json_object_get_string(value), (size_t)json_object_get_string_len(value)}
-	       : CSTR_VIEW("");
+	struct cstr_view text = jb_view(value);
+	return text.data ? text : CSTR_VIEW("");
 }
 
 static bool
@@ -890,7 +892,8 @@ autocomplete_replacement (struct autocomplete    *ac,
 		++end;
 	if (value.len > SIZE_MAX - line.len - 2)
 		return ENOMEM;
-	size_t length = begin + value.len + separate + line.len - end;
+	size_t cursor = begin + value.len + separate;
+	size_t length = cursor + line.len - end;
 	if (length >= AUTOCOMPLETE_BYTES - dstr_len(&ac->lines))
 		return 0;
 	if (autocomplete_buffer_reserve(&ac->lines, length + 1))
@@ -906,7 +909,7 @@ autocomplete_replacement (struct autocomplete    *ac,
 		ac->match_begin = begin;
 	ac->matches[index] = (struct autocomplete_match){
 		.line = {nullptr, length},
-		.cursor = begin + value.len + separate,
+		.cursor = cursor,
 		.label_begin = (uint32_t)begin,
 		.kind = kind,
 	};
@@ -1250,19 +1253,15 @@ autocomplete_complete (struct autocomplete              *ac,
 		error = autocomplete_tokenize(ac, line, false, nullptr, 0);
 		if (error)
 			return error;
-		struct autocomplete_token current = {cursor, cursor, SIZE_MAX};
+		/* index is the index of the first token that does not end before
+		 * the cursor. current is that token if it contains the cursor, and
+		 * otherwise an empty token at the cursor. */
 		size_t index = 0;
-		for (size_t i = 0; i < ac->token_count; ++i) {
-			struct autocomplete_token token = ac->tokens[i];
-			index = i;
-			if (cursor < token.begin)
-				break;
-			if (cursor <= token.end) {
-				current = token;
-				break;
-			}
-			index = i + 1;
-		}
+		while (index < ac->token_count && cursor > ac->tokens[index].end)
+			++index;
+		struct autocomplete_token current = {cursor, cursor, SIZE_MAX};
+		if (index < ac->token_count && cursor >= ac->tokens[index].begin)
+			current = ac->tokens[index];
 		error = autocomplete_commands(ac, line, current, cursor, index);
 	} else
 		error = autocomplete_mentions(ac, line, cursor);
@@ -1335,6 +1334,53 @@ autocomplete_convert (struct autocomplete *autocomplete,
 	return *converted ? 0 : ENOMEM;
 }
 
+/* Add the name=value arguments in the tokens from the third on to result,
+ * converted by the schema of entry, and check the required arguments.
+ * Returns 0 or an error number, with the diagnostic in why.
+ */
+static int
+autocomplete_parse_pairs (struct autocomplete             *ac,
+                          struct autocomplete_entry const *entry,
+                          struct cstr_view                 line,
+                          struct json_object              *result,
+                          char                            *why,
+                          size_t                           size)
+{
+	struct json_object *additional = jb_get(entry->root, "additionalProperties");
+	bool closed = json_object_is_type(additional, json_type_boolean) && !json_object_get_boolean(additional);
+	for (size_t i = 2; i < ac->token_count; ++i) {
+		struct autocomplete_token token = ac->tokens[i];
+		struct cstr_view key = cstr_view_slice(line, token.begin, token.equals - token.begin);
+		if (token.equals == SIZE_MAX || !autocomplete_safe(key, true))
+			return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Expected a tool argument as name=value"), CSTR_VIEW(""));
+		int error = cstr_view_store(key, &ac->key);
+		if (error)
+			return error;
+		char const *name = dstr_get(&ac->key);
+		if (json_object_object_get_ex(result, name, nullptr))
+			return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Duplicate tool argument: "), key);
+		struct autocomplete_property const *property = autocomplete_entry_property(entry, key);
+		if (!property && closed)
+			return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Unknown tool argument: "), key);
+		/* Without a property, flags is 0, and every type is valid. */
+		uint64_t flags = property ? property->flags : 0;
+		struct json_object *converted = nullptr;
+		error = autocomplete_convert(ac, cstr_view_slice(line, token.equals + 1, token.end - token.equals - 1),
+		                             flags, &converted);
+		if (error)
+			return autocomplete_diagnose(why, size, error, CSTR_VIEW("Invalid value for tool argument: "), key);
+		if (!autocomplete_accepted_type(flags, converted))
+			error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Wrong type for tool argument: "), key);
+		else if (json_object_object_add(result, name, converted))
+			error = ENOMEM;
+		if (error) {
+			json_object_put(converted);
+			return error;
+		}
+	}
+	return autocomplete_entry_validate(entry, result, why, size);
+}
+
 int
 autocomplete_parse_call (struct autocomplete             *ac,
                          struct cstr_view                 line,
@@ -1355,81 +1401,36 @@ autocomplete_parse_call (struct autocomplete             *ac,
 	int error = autocomplete_tokenize(ac, line, true, why, size);
 	if (error)
 		return error;
-	struct cli_command const *command = nullptr;
-	if (ac->token_count) {
-		struct autocomplete_token token = ac->tokens[0];
-		command = cli_command_find(cstr_view_slice(line, token.begin, token.end - token.begin));
-	}
-	if (ac->token_count < 2 || !command || command->id != CLI_COMMAND_TOOL)
+	struct autocomplete_token const *tokens = ac->tokens;
+	struct cli_command const *command = ac->token_count < 2 ? nullptr
+	                                  : cli_command_find(cstr_view_slice(line, tokens[0].begin,
+	                                                                     tokens[0].end - tokens[0].begin));
+	if (!command || command->id != CLI_COMMAND_TOOL)
 		return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Usage: "), cli_command_at(CLI_COMMAND_TOOL)->usage);
-	struct autocomplete_token name_token = ac->tokens[1];
-	struct cstr_view name = cstr_view_slice(line, name_token.begin, name_token.end - name_token.begin);
+	struct cstr_view name = cstr_view_slice(line, tokens[1].begin, tokens[1].end - tokens[1].begin);
 	struct autocomplete_entry const *entry = autocomplete_entry_find(ac, name, nullptr);
 	if (!entry)
 		return autocomplete_diagnose(why, size, ENOENT, CSTR_VIEW("Unknown or inaccessible tool: "), name);
+	struct cstr_view rest = ac->token_count > 2 ? cstr_view_slice(line, tokens[2].begin, SIZE_MAX)
+	                                            : (struct cstr_view){};
 	struct json_object *result = nullptr;
-	if (ac->token_count > 2 && line.data[ac->tokens[2].begin] == '{') {
-		error = autocomplete_json_parse(ac, cstr_view_slice(line, ac->tokens[2].begin, line.len - ac->tokens[2].begin), &result);
+	if (rest.len && rest.data[0] == '{') {
+		error = autocomplete_json_parse(ac, rest, &result);
 		if (error)
 			return autocomplete_diagnose(why, size, error, CSTR_VIEW("Invalid JSON tool argument"), CSTR_VIEW(""));
-		if (!json_object_is_type(result, json_type_object)) {
+		if (!json_object_is_type(result, json_type_object))
 			error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Tool arguments must be a JSON object"), CSTR_VIEW(""));
-			goto fail;
-		}
 	} else {
 		result = json_object_new_object();
 		if (!result)
 			return ENOMEM;
-		struct json_object *additional = jb_get(entry->root, "additionalProperties");
-		for (size_t i = 2; i < ac->token_count; ++i) {
-			struct autocomplete_token token = ac->tokens[i];
-			if (token.equals == SIZE_MAX || !autocomplete_safe(cstr_view_slice(line, token.begin, token.equals - token.begin), true)) {
-				error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Expected a tool argument as name=value"), CSTR_VIEW(""));
-				goto fail;
-			}
-			struct cstr_view key = cstr_view_slice(line, token.begin, token.equals - token.begin);
-			error = cstr_view_store(key, &ac->key);
-			if (error)
-				goto fail;
-			struct json_object *existing = nullptr;
-			if (json_object_object_get_ex(result, dstr_get(&ac->key), &existing)) {
-				error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Duplicate tool argument: "), key);
-				goto fail;
-			}
-			struct autocomplete_property const *property = autocomplete_entry_property(entry, key);
-			if (!property && json_object_is_type(additional, json_type_boolean) && !json_object_get_boolean(additional)) {
-				error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Unknown tool argument: "), key);
-				goto fail;
-			}
-			uint64_t flags = property ? property->flags : 0;
-			struct json_object *converted = nullptr;
-			error = autocomplete_convert(ac, cstr_view_slice(line, token.equals + 1, token.end - token.equals - 1), flags, &converted);
-			if (error) {
-				error = autocomplete_diagnose(why, size, error, CSTR_VIEW("Invalid value for tool argument: "), key);
-				goto fail;
-			}
-			if (property && !autocomplete_accepted_type(flags, converted)) {
-				json_object_put(converted);
-				converted = nullptr;
-				error = autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Wrong type for tool argument: "), key);
-				goto fail;
-			}
-			if (json_object_object_add(result, dstr_get(&ac->key), converted)) {
-				json_object_put(converted);
-				converted = nullptr;
-				error = ENOMEM;
-				goto fail;
-			}
-		}
-		error = autocomplete_entry_validate(entry, result, why, size);
-		if (error)
-			goto fail;
+		error = autocomplete_parse_pairs(ac, entry, line, result, why, size);
+	}
+	if (error) {
+		json_object_put(result);
+		return error;
 	}
 	*tool = &entry->tool;
 	*arguments = result;
 	return 0;
-fail:
-	json_object_put(result);
-	result = nullptr;
-	return error;
 }

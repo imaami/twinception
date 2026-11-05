@@ -143,9 +143,9 @@ extern bool
 autocomplete_safe (struct cstr_view text,
                    bool             identifier);
 
-/** Points the lines of the @p count matches at @p matches into @p lines,
- *  where the lines follow one another in the order of the matches, each
- *  followed by a NUL. The length of each line is already set.
+/** Sets line.data of each of the @p count elements of @p matches. The lines
+ *  are stored at @p lines in the same order, each followed by a NUL. The
+ *  line.len of each match must be set already.
  */
 extern void
 autocomplete_match_place (struct autocomplete_match *matches,
