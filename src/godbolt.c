@@ -710,24 +710,14 @@ godbolt_get (struct json_object *obj,
 	return json_object_object_get_ex(obj, name, &v) ? v : nullptr;
 }
 
-/* Returns the string @p v, or an empty text whose ptr is nullptr if @p v is
- * not a string. The text is NUL-terminated.
+/* Returns the string member @p name of @p obj, as jb_view() does. The
+ * text is NUL-terminated.
  */
-static struct cstr_view
-godbolt_string (struct json_object *v)
-{
-	if (!json_object_is_type(v, json_type_string))
-		return (struct cstr_view){};
-	return (struct cstr_view){ json_object_get_string(v),
-	                           (size_t)json_object_get_string_len(v) };
-}
-
-/* Returns the string member @p name of @p obj, as godbolt_string() does. */
 static struct cstr_view
 godbolt_member (struct json_object *obj,
                 char const         *name)
 {
-	return godbolt_string(godbolt_get(obj, name));
+	return jb_view(godbolt_get(obj, name));
 }
 
 /* Returns @p n, or less if the first @p n of the @p len bytes at @p s would
@@ -1392,7 +1382,7 @@ godbolt_compiler_row (struct godbolt     *call,
 	bool valid = f[0].len && n_tags <= GODBOLT_TAGS && f[2].len <= GODBOLT_VALUE_MAX &&
 	             f[4].len <= GODBOLT_VALUE_MAX;
 	for (size_t i = 0; valid && i < n_tags; ++i) {
-		f[n] = godbolt_string(json_object_array_get_idx(tags, i));
+		f[n] = jb_view(json_object_array_get_idx(tags, i));
 		valid = f[n].len <= GODBOLT_VALUE_MAX;
 		n += f[n].len != 0;
 	}
@@ -2080,7 +2070,7 @@ static int
 godbolt_targets_parse (struct godbolt *call)
 {
 	struct json_object *v = call->secs[0];
-	struct cstr_view text = godbolt_string(v);
+	struct cstr_view text = jb_view(v);
 	char *joined = nullptr;
 	if (json_object_is_type(v, json_type_array)) {
 		int e;
@@ -2547,7 +2537,7 @@ godbolt_text (struct json_object *v,
               size_t              max,
               char const         *set)
 {
-	struct cstr_view const t = godbolt_string(v);
+	struct cstr_view const t = jb_view(v);
 	if (!t.data || t.len < min || t.len > max ||
 	    (set ? strspn(t.data, set) : strlen(t.data)) != t.len)
 		return (struct cstr_view){};

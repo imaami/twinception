@@ -30,7 +30,7 @@ struct cli_tool {
 static struct cstr_view
 cli_tool_name (struct cli_tool const *tool)
 {
-	return cli_client_text(tool->name);
+	return jb_view(tool->name);
 }
 
 struct cli_tool *
@@ -49,8 +49,8 @@ cli_tool_create (struct cli_client  *client,
 	uint64_t flags = 0;
 	if (cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool))) {
 		struct json_object *action = jb_get(arguments, "action");
-		if (cli_client_is(action, "add") || cli_client_is(action, "copy") ||
-		    cli_client_is(action, "replace") || cli_client_is(action, "restore"))
+		if (jb_is(action, "add") || jb_is(action, "copy") ||
+		    jb_is(action, "replace") || jb_is(action, "restore"))
 			flags |= CLI_TOOL_WRITES_NOTES;
 	}
 	struct cstr_view token = CSTR_VIEW("tool");
@@ -107,12 +107,12 @@ cli_tool_content (struct cli_tool    *tool,
 	if (json_object_is_type(content, json_type_array)) {
 		for (size_t i = 0, count = json_object_array_length(content); i < count; ++i) {
 			struct json_object *block = jb_at(content, i);
-			struct cstr_view kind = cli_client_text(jb_get(block, "type"));
+			struct cstr_view kind = jb_view(jb_get(block, "type"));
 			if (!kind.data)
 				return cli_error_set(error, EPROTO, "Malformed tool content");
 			int e;
 			if (cstr_view_equal(kind, CSTR_VIEW("text"))) {
-				struct cstr_view text = cli_client_text(jb_get(block, "text"));
+				struct cstr_view text = jb_view(jb_get(block, "text"));
 				if (!text.data)
 					return cli_error_set(error, EPROTO, "Malformed tool content");
 				e = cli_ui_message(tool->stream.ui.console, text);

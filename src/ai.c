@@ -505,12 +505,12 @@ ai_chat_calls (struct ai_sink const *sink,
 		struct ai_call call = { .index = ai_index(jb_get(c, "index")) };
 		/* Gemini's thought signature, which a turn gives back. */
 		struct json_object *extra = jb_get(c, "extra_content");
-		call.id.data = jb_str(jb_get(c, "id"), &call.id.len);
-		call.name.data = jb_str(jb_get(fn, "name"), &call.name.len);
+		call.id = jb_view(jb_get(c, "id"));
+		call.name = jb_view(jb_get(fn, "name"));
 		call.extra.data = extra ? json_object_to_json_string_length(extra, JB_WIRE,
 		                                                            &call.extra.len)
 		                        : nullptr;
-		call.args.data = jb_str(jb_get(fn, "arguments"), &call.args.len);
+		call.args = jb_view(jb_get(fn, "arguments"));
 		e = extra && !call.extra.data ? ENOMEM : sink->call(sink->user, &call);
 	}
 	return e;
@@ -596,9 +596,9 @@ ai_responses_item (struct ai_sink const *sink,
 	int e = 0;
 	if (!kind && sink->call) {
 		struct ai_call call = { .index = ai_index(at) };
-		call.id.data = jb_str(jb_get(item, "call_id"), &call.id.len);
-		call.name.data = jb_str(jb_get(item, "name"), &call.name.len);
-		call.args.data = jb_str(jb_get(item, "arguments"), &call.args.len);
+		call.id = jb_view(jb_get(item, "call_id"));
+		call.name = jb_view(jb_get(item, "name"));
+		call.args = jb_view(jb_get(item, "arguments"));
 		e = sink->call(sink->user, &call);
 	}
 	return e ? e : ai_replay_item(sink, item);
@@ -669,8 +669,8 @@ ai_call_start (struct ai_sink const *sink,
 	bool whole = json_object_is_type(args, json_type_object) &&
 	             json_object_object_length(args);
 	struct ai_call call = { .index = at };
-	call.id.data = jb_str(jb_get(item, "id"), &call.id.len);
-	call.name.data = jb_str(jb_get(item, "name"), &call.name.len);
+	call.id = jb_view(jb_get(item, "id"));
+	call.name = jb_view(jb_get(item, "name"));
 	call.extra.data = extra ? json_object_to_json_string_length(extra, JB_WIRE,
 	                                                            &call.extra.len)
 	                        : nullptr;
@@ -763,7 +763,7 @@ ai_messages_delta (struct ai_sink const *sink,
 		if (!sink->call)
 			return 0;
 		struct ai_call call = { .index = at };
-		call.args.data = jb_str(jb_get(delta, "partial_json"), &call.args.len);
+		call.args = jb_view(jb_get(delta, "partial_json"));
 		return sink->call(sink->user, &call);
 	}
 	}
@@ -856,8 +856,8 @@ ai_generate_call (struct ai_sink const *sink,
 		return 0;
 	struct json_object *args = jb_get(fc, "args");
 	struct ai_call call = { .index = reader->calls++ };
-	call.id.data = jb_str(jb_get(fc, "id"), &call.id.len);
-	call.name.data = jb_str(jb_get(fc, "name"), &call.name.len);
+	call.id = jb_view(jb_get(fc, "id"));
+	call.name = jb_view(jb_get(fc, "name"));
 	call.args.data = args ? json_object_to_json_string_length(args, JB_WIRE,
 	                                                          &call.args.len)
 	                      : nullptr;
@@ -1141,7 +1141,7 @@ ai_interactions_delta (struct ai_sink const *sink,
 		               : 0;
 	case ARGUMENTS: {
 		struct ai_call call = { .index = at };
-		call.args.data = jb_str(jb_get(delta, "arguments"), &call.args.len);
+		call.args = jb_view(jb_get(delta, "arguments"));
 		if (!sink->call || !call.args.data)
 			return 0;
 		int e = reader->calls == at + 1 ? 0 : ai_interactions_close(sink, reader);

@@ -31,13 +31,6 @@ struct cstr_view cli_error_text(struct cli_error const *error, int e)
 	return cstr_view(error->message[0] ? error->message : strerror(e));
 }
 
-struct cstr_view cli_client_text(struct json_object *value)
-{
-	struct cstr_view text = {};
-	text.data = jb_str(value, &text.len);
-	return text;
-}
-
 struct json_object *cli_client_string(struct cstr_view text)
 {
 	return text.len <= CLI_LIMIT ? json_object_new_string_len(text.data ? text.data : "", (int)text.len) : nullptr;
@@ -131,7 +124,7 @@ static int cli_client_response_event(struct cli_client_response *response, struc
 		response->result = json_object_get(event);
 		return 0;
 	}
-	if (cli_client_is(jb_get(event, "method"), "notifications/tools/list_changed"))
+	if (jb_is(jb_get(event, "method"), "notifications/tools/list_changed"))
 		response->client->catalog_dirty = true;
 	return response->notify ? response->notify(response->context, event, response->id, response->error) : 0;
 }
@@ -291,7 +284,7 @@ cli_client_response_result (struct cli_client_response *response,
 	struct json_object *failure = jb_get(response->result, "error");
 	struct json_object *value = jb_get(response->result, "result");
 	if (failure) {
-		struct cstr_view text = cli_client_text(jb_get(failure, "message"));
+		struct cstr_view text = jb_view(jb_get(failure, "message"));
 		return cli_error_set(response->error, EPROTO, "AskAI: %.*s", (int)text.len,
 		                      text.data ? text.data : "Invalid error response");
 	}
@@ -481,7 +474,7 @@ int cli_client_connect(struct cli_client *client, struct cli_error *error)
 	                                                               "version", json_object_new_string("1"), nullptr), nullptr);
 	cli_json_auto initialized = nullptr;
 	int e = cli_client_rpc(client, "initialize", params, nullptr, nullptr, &initialized, error);
-	if (!e && (!cli_client_is(jb_get(initialized, "protocolVersion"), CLI_VERSION) || !dstr_len(&client->session)))
+	if (!e && (!jb_is(jb_get(initialized, "protocolVersion"), CLI_VERSION) || !dstr_len(&client->session)))
 		e = cli_error_set(error, EPROTO, "AskAI did not negotiate the supported MCP session");
 	if (!e)
 		e = cli_client_notification(client, "notifications/initialized", json_object_new_object(), true, 30, error);
@@ -636,8 +629,8 @@ static int
 cli_client_name_compare (void const *a,
                          void const *b)
 {
-	struct cstr_view x = cli_client_text(*(struct json_object *const *)a);
-	struct cstr_view y = cli_client_text(*(struct json_object *const *)b);
+	struct cstr_view x = jb_view(*(struct json_object *const *)a);
+	struct cstr_view y = jb_view(*(struct json_object *const *)b);
 	return cstr_view_compare(x, y);
 }
 
@@ -646,7 +639,7 @@ cli_client_unique (struct json_object *names)
 {
 	json_object_array_sort(names, cli_client_name_compare);
 	for (size_t i = json_object_array_length(names); i > 1; --i)
-		if (cstr_view_equal(cli_client_text(jb_at(names, i - 1)), cli_client_text(jb_at(names, i - 2))))
+		if (cstr_view_equal(jb_view(jb_at(names, i - 1)), jb_view(jb_at(names, i - 2))))
 			(void)json_object_array_del_idx(names, i - 1, 1);
 }
 
@@ -674,9 +667,9 @@ cli_client_notes (struct cli_client  *client,
 		return cli_error_set(error, EPROTO, "Invalid %s discovery result", what);
 	for (size_t i = 0, n = json_object_array_length(content); !e && i < n; ++i) {
 		struct json_object *block = jb_at(content, i);
-		if (!cli_client_is(jb_get(block, "type"), "text"))
+		if (!jb_is(jb_get(block, "type"), "text"))
 			continue;
-		struct cstr_view text = cli_client_text(jb_get(block, "text"));
+		struct cstr_view text = jb_view(jb_get(block, "text"));
 		e = text.data ? parse(text, context) : EPROTO;
 	}
 	return e;
@@ -696,7 +689,7 @@ cli_client_discover_files (struct cli_client   *client,
 	struct cli_client_names files = {};
 	int e = 0;
 	for (size_t i = 0; !e && i < count; ++i) {
-		struct cstr_view notebook = cli_client_text(jb_at(notebooks, i));
+		struct cstr_view notebook = jb_view(jb_at(notebooks, i));
 		struct json_object *params = jb_object("name", cli_client_string(tool),
 		                                      "arguments", jb_object("action", json_object_new_string("list"),
 		                                                             "notebook", cli_client_string(notebook), nullptr), nullptr);
@@ -739,7 +732,7 @@ cli_client_has_action (struct json_object *actions,
                        char const         *name)
 {
 	for (size_t i = 0, count = jb_len(actions); i < count; ++i)
-		if (cli_client_is(jb_at(actions, i), name))
+		if (jb_is(jb_at(actions, i), name))
 			return true;
 	return false;
 }
@@ -753,7 +746,7 @@ cli_client_catalog_names (struct autocomplete    *catalog,
 	struct cli_client_names views = {};
 	int e = 0;
 	for (size_t i = 0, count = json_object_array_length(names); !e && i < count; ++i)
-		e = cli_client_names_add(&views, cli_client_text(jb_at(names, i)));
+		e = cli_client_names_add(&views, jb_view(jb_at(names, i)));
 	if (!e)
 		e = autocomplete_set_names(catalog, list, views.data, views.count);
 	cli_client_names_fini(&views);
@@ -813,7 +806,7 @@ cli_client_refresh (struct cli_client *client,
 		for (size_t i = 0, count = json_object_array_length(tools); !e && i < count; ++i) {
 			struct json_object *entry = jb_at(tools, i);
 			e = autocomplete_add_tool(catalog, entry);
-			struct cstr_view name = cli_client_text(jb_get(entry, "name"));
+			struct cstr_view name = jb_view(jb_get(entry, "name"));
 			if (e || !name.data) {
 				if (!e)
 					e = EPROTO;
@@ -832,15 +825,15 @@ cli_client_refresh (struct cli_client *client,
 				if (!e && json_object_is_type(self, json_type_string)) {
 					e = jb_push(names, json_object_get(self));
 					if (!e)
-						e = cstr_view_store(cli_client_text(self), &participant);
+						e = cstr_view_store(jb_view(self), &participant);
 				}
 				struct json_object *identity = jb_get(meta, "session");
 				if (!e && json_object_is_type(identity, json_type_string))
-					e = cstr_view_store(cli_client_text(identity), &session);
+					e = cstr_view_store(jb_view(identity), &session);
 				files = jb_get(props, "file") && jb_get(props, "notebook") && cli_client_has_action(actions, "list");
 			}
 			bool candidate = dstr_len(&client->tool) ? cstr_view_equal(name, cstr_view_dstr(&client->tool))
-			                                       : cli_client_is(jb_get(entry, "title"), "Ask AI");
+			                                       : jb_is(jb_get(entry, "title"), "Ask AI");
 			if (e || !candidate)
 				continue;
 			if (!jb_get(props, "prompt") || !jb_get(props, "messages") || !jb_get(props, "background"))
@@ -857,7 +850,7 @@ cli_client_refresh (struct cli_client *client,
 			complete = true;
 			break;
 		}
-		struct cstr_view after = cli_client_text(next);
+		struct cstr_view after = jb_view(next);
 		if (!after.len || cstr_view_equal(after, cstr_view_dstr(&cursor)))
 			e = cli_error_set(error, EPROTO, "Invalid tool-list cursor");
 		else

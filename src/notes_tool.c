@@ -1424,8 +1424,7 @@ notes_tool_add (struct mcp_slot    *slot,
 	size_t uri_len = 0;
 	struct json_object *content = jb_get(args, "content");
 	char const *text = jb_str(jb_get(args, "text"), &len);
-	struct cstr_view name = {};
-	name.data = jb_str(jb_get(args, "file"), &name.len);
+	struct cstr_view name = jb_view(jb_get(args, "file"));
 	char const *uri = jb_str(content, &uri_len);
 	struct datauri data = {};
 	bool turn = call->side == NOTES_UPSTREAM;
@@ -1512,17 +1511,14 @@ notes_tool_read (struct mcp_slot    *slot,
                  uint16_t            fetch)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct cstr_view name = {};
-	name.data = jb_str(jb_get(args, "file"), &name.len);
+	struct cstr_view name = jb_view(jb_get(args, "file"));
 	if (!name.data || notes_name(&name)) {
 		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		return;
 	}
 	if (fetch & FETCH_COPY) {
 		struct json_object *as = jb_get(args, "as");
-		struct cstr_view to = name;
-		if (as)
-			to.data = jb_str(as, &to.len);
+		struct cstr_view to = as ? jb_view(as) : name;
 		if (!to.data || notes_name(&to)) {
 			mcp_slot_tell(slot, CSTR_VIEW("The as argument must be a file name, as the "
 			                              "file argument is."), TOOL_FAILED);
@@ -1552,7 +1548,7 @@ notes_tool_revision (struct mcp_slot    *slot,
 	struct cstr_view revisions[2] = {};
 	for (size_t i = 0; i < (diff ? 2 : 1); ++i) {
 		struct json_object *arg = jb_get(args, keys[diff][i]);
-		revisions[i].data = jb_str(arg, &revisions[i].len);
+		revisions[i] = jb_view(arg);
 		if ((i == 0 && !arg && (fetch & (FETCH_DIFF | FETCH_RESTORE))) ||
 		    (arg && !util_is_oid(revisions[i].data, revisions[i].len) &&
 		     !cstr_view_equal(revisions[i], CSTR_VIEW("current")))) {
@@ -1562,8 +1558,7 @@ notes_tool_revision (struct mcp_slot    *slot,
 			return;
 		}
 	}
-	struct cstr_view file = {};
-	file.data = jb_str(jb_get(args, "file"), &file.len);
+	struct cstr_view file = jb_view(jb_get(args, "file"));
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	int e = 0;
 	call->revision = notes_revision_create(file, revisions[0], revisions[1], &e);

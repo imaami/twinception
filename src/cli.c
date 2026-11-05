@@ -676,7 +676,7 @@ cli_ask (struct cli          *cli,
 		struct json_object *turn = jb_at(cli->history, i);
 		for (size_t j = 0; j < 2; ++j) {
 			struct json_object *value = jb_get(turn, keys[j]);
-			struct cstr_view text = cli_client_text(value);
+			struct cstr_view text = jb_view(value);
 			if (text.len > CLI_LIMIT - bytes)
 				return cli_error_set(error, EFBIG, "Conversation exceeds the client limit; use /clear");
 			bytes += text.len;
@@ -809,11 +809,11 @@ cli_history_show (struct cli *cli)
 		struct json_object *turn = jb_at(cli->history, i);
 		int e = cli_ui_info(cli->console, CSTR_VIEW("you:"));
 		if (!e)
-			e = cli_ui_message(cli->console, cli_client_text(jb_get(turn, "prompt")));
+			e = cli_ui_message(cli->console, jb_view(jb_get(turn, "prompt")));
 		if (!e)
 			e = cli_ui_info(cli->console, cstr_view_dstr(&label));
 		if (!e)
-			e = cli_ui_message(cli->console, cli_client_text(jb_get(turn, "answer")));
+			e = cli_ui_message(cli->console, jb_view(jb_get(turn, "answer")));
 		if (e)
 			return e;
 	}
@@ -904,7 +904,7 @@ cli_command_run (struct cli               *cli,
 		size_t count = json_object_array_length(cli->history);
 		if (!count)
 			return cli_error_set(error, EINVAL, "There is no previous answer to regenerate");
-		struct cstr_view previous = cli_client_text(jb_get(jb_at(cli->history, count - 1), "prompt"));
+		struct cstr_view previous = jb_view(jb_get(jb_at(cli->history, count - 1), "prompt"));
 		*action = CLI_ACTION_REGENERATE;
 		return cstr_view_store(previous, prompt);
 	}
@@ -1047,7 +1047,7 @@ cli_turn (struct cli       *cli,
 		return ENOMEM;
 	}
 	if (cli->saved)
-		e = cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_TURN, text, cli_client_text(answer), regenerate), error);
+		e = cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_TURN, text, jb_view(answer), regenerate), error);
 	if (cli->options->single)
 		*action = CLI_ACTION_EXIT;
 	return e;

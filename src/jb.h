@@ -10,6 +10,8 @@
 
 #include <json-c/json.h>
 
+#include "cstr_view.h"
+
 /** Serialization flags for everything sent over the wire. */
 #define JB_WIRE (JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE)
 
@@ -100,10 +102,28 @@ extern char const *
 jb_str (struct json_object *val,
         size_t             *len);
 
-/** Whether @p val is the string @p str. */
-extern bool
+/** Returns a view of the string @p val, or an empty view with data nullptr
+ *  if @p val is not a string. It calls only json-c, so plugins can use it.
+ */
+static inline struct cstr_view
+jb_view (struct json_object *val)
+{
+	if (!json_object_is_type(val, json_type_string))
+		return (struct cstr_view){};
+	return (struct cstr_view){ json_object_get_string(val),
+	                           (size_t)json_object_get_string_len(val) };
+}
+
+/** Returns true if @p val is a string equal to @p str. All bytes of the
+ *  string count, so a string with a NUL inside does not equal its start.
+ */
+static inline bool
 jb_is (struct json_object *val,
-       char const         *str);
+       char const         *str)
+{
+	return cstr_view_equal(jb_view(val), cstr_view(str));
+}
+
 
 /**
  * Parse exactly one JSON value spanning @p len bytes; nullptr on error. At

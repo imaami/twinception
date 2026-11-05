@@ -30,16 +30,16 @@ static int
 cli_stream_progress (struct cli_stream  *stream,
                      struct json_object *event)
 {
-	if (!cli_client_is(jb_get(event, "method"), "notifications/progress"))
+	if (!jb_is(jb_get(event, "method"), "notifications/progress"))
 		return 0;
 	struct json_object *params = jb_get(event, "params");
-	struct cstr_view token = cli_client_text(jb_get(params, "progressToken"));
-	struct cstr_view message = cli_client_text(jb_get(params, "message"));
+	struct cstr_view token = jb_view(jb_get(params, "progressToken"));
+	struct cstr_view message = jb_view(jb_get(params, "message"));
 	if (!token.data || !message.data || !cstr_view_equal(token, stream->token))
 		return 0;
 	struct json_object *meta = jb_get(jb_get(params, "_meta"), "askai");
-	return cli_client_is(jb_get(meta, "kind"), "tool") ? cli_ui_action(&stream->ui, stream->actor, message)
-	                                                   : cli_ui_progress(&stream->ui, stream->actor, message);
+	return jb_is(jb_get(meta, "kind"), "tool") ? cli_ui_action(&stream->ui, stream->actor, message)
+	                                           : cli_ui_progress(&stream->ui, stream->actor, message);
 }
 
 int
@@ -51,14 +51,14 @@ cli_stream_notify (void               *context,
 	struct cli_stream *stream = context;
 	int e = cli_stream_progress(stream, event);
 	if (e || !(stream->flags & CLI_STREAM_DELTAS) ||
-	    !cli_client_is(jb_get(event, "method"), "notifications/askai/delta"))
+	    !jb_is(jb_get(event, "method"), "notifications/askai/delta"))
 		return e;
 	struct json_object *params = jb_get(event, "params");
 	struct json_object *request = jb_get(params, "requestId");
 	if (!json_object_is_type(request, json_type_int) || json_object_get_int64(request) != request_id)
 		return cli_error_set(error, EPROTO, "Unexpected streaming request id");
-	struct cstr_view text = cli_client_text(jb_get(params, "text"));
-	struct cstr_view kind = cli_client_text(jb_get(params, "kind"));
+	struct cstr_view text = jb_view(jb_get(params, "text"));
+	struct cstr_view kind = jb_view(jb_get(params, "kind"));
 	if (!text.data || !kind.data)
 		return cli_error_set(error, EPROTO, "Expected a JSON string from AskAI");
 	int64_t current = json_object_get_int64(jb_get(params, "turn"));
@@ -91,11 +91,11 @@ cli_stream_result (struct cli_stream   *stream,
 	*answer = nullptr;
 	struct json_object *first = jb_at(jb_get(result, "content"), 0);
 	struct json_object *value = jb_get(first, "text");
-	struct cstr_view text = cli_client_text(value);
+	struct cstr_view text = jb_view(value);
 	int e = 0;
 	if (!first)
 		e = cli_error_set(error, EPROTO, "AskAI returned no assistant text");
-	else if (!cli_client_is(jb_get(first, "type"), "text") || !text.data)
+	else if (!jb_is(jb_get(first, "type"), "text") || !text.data)
 		e = cli_error_set(error, EPROTO, "AskAI returned unsupported assistant content");
 	else if (json_object_get_boolean(jb_get(result, "isError")))
 		e = cli_error_set(error, EIO, "%.*s", (int)text.len, text.data);

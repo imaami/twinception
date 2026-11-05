@@ -79,17 +79,9 @@ char const *
 jb_str (struct json_object *val,
         size_t             *len)
 {
-	char const *str = jb_text(val);
-	*len = str ? (size_t)json_object_get_string_len(val) : 0;
-	return str;
-}
-
-bool
-jb_is (struct json_object *val,
-       char const         *str)
-{
-	char const *text = jb_text(val);
-	return text && !strcmp(text, str);
+	struct cstr_view const v = jb_view(val);
+	*len = v.len;
+	return v.data;
 }
 
 struct json_object *

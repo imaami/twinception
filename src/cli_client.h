@@ -120,21 +120,6 @@ extern void
 cli_client_cancel_request (struct cli_client *client,
                            uint64_t           request);
 
-/**
- * Invalid/non-string values yield an
- * empty view with a null data pointer.
- */
-extern struct cstr_view
-cli_client_text (struct json_object *value);
-
-/** Protocol strings are counted: an embedded NUL must not hide a suffix. */
-static inline bool
-cli_client_is (struct json_object *value,
-               char const         *text)
-{
-	return cstr_view_equal(cli_client_text(value), cstr_view(text));
-}
-
 extern struct json_object *
 cli_client_string (struct cstr_view text);
 
