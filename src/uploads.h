@@ -43,10 +43,11 @@ uploads_destroy (struct uploads **p_uploads);
 
 /**
  * Copies into @p uri the URI of the file of @p owner for the note whose
- * object id is @p id, and its length in bytes into @p *bytes, if the table
- * contains that file and the file expires more than UPLOADS_MARGIN seconds
- * after @p now, in seconds since the epoch. Returns the length of the URI,
- * or 0 if there is no such file or an argument is not valid.
+ * object id is @p id, and the size of the file in bytes into @p *bytes, if
+ * the table contains that file and the file expires more than
+ * UPLOADS_MARGIN seconds after @p now, in seconds since the epoch. Returns
+ * the length of the URI, or 0 if there is no such file or an argument is
+ * not valid.
  */
 extern size_t
 uploads_find (struct uploads   *uploads,

@@ -54,9 +54,9 @@ uploads_destroy (struct uploads **p_uploads)
  * The caller must have locked u->lock.
  */
 static struct uploads_file *
-uploads_of (struct uploads   *u,
-            uint64_t          owner,
-            struct cstr_view  id)
+uploads_lookup (struct uploads   *u,
+                uint64_t          owner,
+                struct cstr_view  id)
 {
 	for (size_t i = 0; i < UPLOADS_MAX; ++i) {
 		struct uploads_file *f = &u->files[i];
@@ -79,7 +79,7 @@ uploads_find (struct uploads   *uploads,
 		return 0;
 	size_t len = 0;
 	pthread_mutex_lock(&uploads->lock);
-	struct uploads_file const *f = uploads_of(uploads, owner, id);
+	struct uploads_file const *f = uploads_lookup(uploads, owner, id);
 	if (f && f->expires - UPLOADS_MARGIN > now) {
 		len = f->uri_len;
 		memcpy(uri, f->uri, len);
@@ -102,7 +102,7 @@ uploads_keep (struct uploads   *uploads,
 	    uri.len > UPLOADS_URI || expires <= now)
 		return EINVAL;
 	pthread_mutex_lock(&uploads->lock);
-	struct uploads_file *to = uploads_of(uploads, owner, id);
+	struct uploads_file *to = uploads_lookup(uploads, owner, id);
 	if (!to) {
 		/* A free place, whose expires is 0, or a file that has expired
 		 * expires before every file that has not. */
