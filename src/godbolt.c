@@ -36,6 +36,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include <stdbit.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -368,9 +369,12 @@ enum godbolt_arg : uint8_t {
 	GODBOLT_ARG_COUNT
 };
 
-static char const *const godbolt_arg_names[] = {
-	"action", "language", "ids", "match", "kind", "family", "architecture",
-	"limit", "offset", "compilers", "args", "source", "filters", "headers", "share"
+static struct cstr_view const godbolt_arg_names[] = {
+	CSTR_VIEW_INIT("action"), CSTR_VIEW_INIT("language"), CSTR_VIEW_INIT("ids"),
+	CSTR_VIEW_INIT("match"), CSTR_VIEW_INIT("kind"), CSTR_VIEW_INIT("family"),
+	CSTR_VIEW_INIT("architecture"), CSTR_VIEW_INIT("limit"), CSTR_VIEW_INIT("offset"),
+	CSTR_VIEW_INIT("compilers"), CSTR_VIEW_INIT("args"), CSTR_VIEW_INIT("source"),
+	CSTR_VIEW_INIT("filters"), CSTR_VIEW_INIT("headers"), CSTR_VIEW_INIT("share")
 };
 
 static_assert(array_size(godbolt_arg_names) == GODBOLT_ARG_COUNT);
@@ -2647,14 +2651,14 @@ godbolt_args_words (struct godbolt_args *a,
 	struct cstr_view const t = godbolt_text(v, 0, GODBOLT_MATCH_MAX, nullptr);
 	if (!t.data)
 		return EINVAL;
+	static char const space[] = " \t\n\v\f\r";
 	a->n_words = 0;
-	for (size_t i = 0; i < t.len; ) {
-		size_t k = i + strcspn(t.data + i, " \t\n\v\f\r");
-		if (k > i && a->n_words == GODBOLT_WORDS)
+	for (size_t i = strspn(t.data, space); i < t.len; i += strspn(t.data + i, space)) {
+		if (a->n_words == GODBOLT_WORDS)
 			return EINVAL;
-		if (k > i)
-			a->words[a->n_words++] = (struct cstr_view){ t.data + i, k - i };
-		i = k + 1;
+		size_t const k = strcspn(t.data + i, space);
+		a->words[a->n_words++] = (struct cstr_view){ t.data + i, k };
+		i += k;
 	}
 	return 0;
 }
@@ -2708,9 +2712,11 @@ godbolt_args_set (struct godbolt_args *a,
 		return godbolt_args_words(a, v);
 	case GODBOLT_ARG_KIND:
 	case GODBOLT_ARG_FAMILY:
-	case GODBOLT_ARG_ARCHITECTURE:
-		a->values[arg - GODBOLT_ARG_KIND] = godbolt_text(v, 1, GODBOLT_VALUE_MAX, nullptr);
-		return a->values[arg - GODBOLT_ARG_KIND].data ? 0 : EINVAL;
+	case GODBOLT_ARG_ARCHITECTURE: {
+		struct cstr_view *const value = &a->values[arg - GODBOLT_ARG_KIND];
+		*value = godbolt_text(v, 1, GODBOLT_VALUE_MAX, nullptr);
+		return value->data ? 0 : EINVAL;
+	}
 	case GODBOLT_ARG_LIMIT: {
 		int64_t const n = json_object_is_type(v, json_type_int) ? json_object_get_int64(v)
 		                                                        : 0;
@@ -2777,11 +2783,14 @@ godbolt_args_read (struct godbolt_args         *a,
 {
 	struct godbolt_params const *t = &godbolt_params[tool];
 	uint32_t const off = cfg->share == GODBOLT_SHARE_OFF ? 1u << GODBOLT_ARG_SHARE : 0;
+	/* godbolt_catalog requires the argument action, and the other tools
+	 * read the list of compilers. */
 	*a = (struct godbolt_args){
 		.args = { CSTR_VIEW("") },
 		.language = CSTR_VIEW("c"),
 		.limit = GODBOLT_LIMIT,
 		.n_args = 1,
+		.action = GODBOLT_COMPILERS,
 		.filters = tool == GODBOLT_COMPILE ? GODBOLT_SITE_FILTERS : 0
 	};
 	if (args && !json_object_is_type(args, json_type_object))
@@ -2789,9 +2798,8 @@ godbolt_args_read (struct godbolt_args         *a,
 	uint32_t seen = 0;
 	struct json_object_iter it;
 	if (args) json_object_object_foreachC(args, it) {
-		uint32_t i = 0;
-		while (i < GODBOLT_ARG_COUNT && strcmp(it.key, godbolt_arg_names[i]))
-			++i;
+		size_t const i = cstr_view_index(godbolt_arg_names, GODBOLT_ARG_COUNT,
+		                                 cstr_view(it.key));
 		uint32_t const bit = i < GODBOLT_ARG_COUNT ? 1u << i : 0;
 		if (t->args & ~off & bit) {
 			seen |= bit;
@@ -2806,14 +2814,11 @@ godbolt_args_read (struct godbolt_args         *a,
 		                       (int)godbolt_cut(cstr_view(it.key), 48), it.key);
 	}
 	uint32_t const missing = t->needs & ~seen;
-	uint32_t i = 0;
-	while (i < GODBOLT_ARG_COUNT && !(missing >> i & 1))
-		++i;
-	if (i < GODBOLT_ARG_COUNT)
+	if (missing)
 		return godbolt_invalid(why, len, n, "The argument %s is required.",
-		                       godbolt_arg_names[i]);
-	if (a->action == GODBOLT_LANGUAGES && tool == GODBOLT_CATALOG &&
-	    (a->values[0].len || a->values[1].len || a->values[2].len))
+		                       godbolt_arg_names[stdc_trailing_zeros(missing)].data);
+	/* The bits of kind, family and architecture are adjacent. */
+	if (a->action == GODBOLT_LANGUAGES && seen >> GODBOLT_ARG_KIND & 7)
 		return godbolt_invalid(why, len, n, "kind, family and architecture are not valid "
 		                       "with the action languages.");
 	if ((uint32_t)a->n_ids * a->n_args > GODBOLT_JOBS)
@@ -2857,8 +2862,9 @@ godbolt_create (struct godbolt_args const *a,
 	                                         : (struct cstr_view){};
 	struct cstr_view const source = tool == GODBOLT_TARGETS ? godbolt_probe_source()
 	                              : a->source.len ? a->source : CSTR_VIEW("\n");
-	size_t bytes = a->language.len + head.len + source.len + a->values[0].len +
-	               a->values[1].len + a->values[2].len;
+	size_t bytes = a->language.len + head.len + source.len;
+	for (size_t i = 0; i < array_size(a->values); ++i)
+		bytes += a->values[i].len;
 	for (uint8_t i = 0; i < a->n_ids; ++i)
 		bytes += a->ids[i].len;
 	for (uint8_t i = 0; i < a->n_args; ++i)
@@ -2881,7 +2887,6 @@ godbolt_create (struct godbolt_args const *a,
 		.jobs = (uint8_t)(a->n_ids * a->n_args),
 		.tool = tool
 	};
-	call->args.action = tool == GODBOLT_CATALOG ? a->action : GODBOLT_COMPILERS;
 	char *p = call->blob;
 	for (uint8_t i = 0; i < a->n_ids; ++i)
 		call->args.ids[i] = godbolt_copy(&p, a->ids[i]);
