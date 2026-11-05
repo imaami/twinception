@@ -142,17 +142,19 @@ struct askai_reload {
  * clients and places them on the client loops (src/httpd.h).
  */
 struct askai_home {
-	/* keep remains first: askai_keep_relieve receives this object. */
-	struct askai_keep         keep;
-	struct askai_reload       reload;
-	struct http_metrics       http;  /* here, as the client loops render it */
-	struct home_metrics       jobs;  /* likewise */
-	struct config const      *cfg;
-	struct loop              *loop;  /* home's: the client loops' jobs go there */
-	unsigned char             key[POLICY_KEY];  /* The key of the
-	                                               principals, which
-	                                               askai_shared_init()
-	                                               sets. */
+	/* keep must be the first member, because askai_keep_relieve()
+	 * receives a pointer to this object as a pointer to keep. */
+	struct askai_keep    keep;
+	struct askai_reload  reload;
+	/* The client loops render http and jobs, so these counters are stored
+	 * here and not in home. */
+	struct http_metrics  http;
+	struct home_metrics  jobs;
+	struct config const *cfg;
+	/* The loop of home, to which the client loops send their jobs. */
+	struct loop         *loop;
+	/* The key of the principals, which askai_shared_init() sets. */
+	unsigned char        key[POLICY_KEY];
 };
 
 static_assert(POLICY_KEY == JOURNAL_KEY);
@@ -406,20 +408,19 @@ askai_keep_stop (struct askai_keep *keep,
 	buf_stash_attach(nullptr);
 }
 
-/* Home's keep, door and scheduler, and home's part of the service of HTTP
- * requests (src/web.h).
+/* Start the keep, the door and the scheduler of home, and the part of home
+ * in the service of HTTP requests (src/web.h).
  */
 static int
 askai_home_parts (struct askai_home *app,
+                  struct httpd_hub  *hub,
                   struct loop       *loop,
                   struct blocker    *blockers)
 {
-	struct askai_shared *s = container_of(app, struct askai_shared, home);
 	int e = askai_keep_start(&app->keep, loop, blockers);
 	if (e)
 		return e;
-	app->keep.door = httpd_home_create(loop, s->hub, &app->cfg->http, &app->jobs.in_flight,
-	                                   &e);
+	app->keep.door = httpd_home_create(loop, hub, &app->cfg->http, &app->jobs.in_flight, &e);
 	if (e)
 		return e;
 	app->keep.home = home_create(loop, blockers, app->keep.door, app->cfg, &app->jobs,
@@ -434,15 +435,15 @@ askai_home_start (void           *ctx,
 {
 	static char const name[] = "home";
 	struct askai_home *app = ctx;
-	struct metrics_src *metrics = &container_of(app, struct askai_shared, home)->metrics;
-	struct metrics_loop *mine = &metrics->loops[metrics->n_loops - 1];
+	struct askai_shared *s = container_of(app, struct askai_shared, home);
+	struct metrics_loop *mine = &s->metrics.loops[s->metrics.n_loops - 1];
 	static_assert(sizeof name <= sizeof mine->name);
 	app->loop = loop;
 	memcpy(mine->name, name, sizeof name);
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
-	metrics->blockers = blocker_metrics(blockers);
-	int e = askai_home_parts(app, loop, blockers);
+	s->metrics.blockers = blocker_metrics(blockers);
+	int e = askai_home_parts(app, s->hub, loop, blockers);
 	if (e)
 		LOG(LOG_ERROR, "cannot start home: %s", strerror(e));
 	return e;
@@ -511,9 +512,10 @@ askai_home_reload (void        *ctx,
 		LOG(LOG_WARN, "configuration not reloaded: the blockers are busy");
 }
 
-/* Hand the client loops the reloaded policy, and the door its TLS context,
- * unless the configuration is wrong, as the log says then. A context made
- * only as the file now names a TLS listener serves none until a restart.
+/* Pass the reloaded policy to the client loops and the reloaded TLS
+ * context to the door, unless the configuration is wrong. The log then
+ * shows the reason. A TLS context that exists only because the reloaded
+ * file adds a TLS listener is not used until a restart.
  */
 static void
 askai_reload_apply (struct askai_home         *app,
@@ -576,16 +578,17 @@ askai_home_stop (void        *ctx,
 	askai_keep_stop(&app->keep, loop);
 }
 
-/* A client loop's keep and MCP. */
+/* Start the keep and the MCP of a client loop. */
 static int
 askai_client_parts (struct askai_client *app,
                     struct loop         *loop,
                     struct blocker      *blockers)
 {
+	struct askai_shared const *s = app->shared;
 	int e = askai_keep_start(&app->keep, loop, blockers);
 	if (!e)
-		app->keep.mcp = mcp_create(loop, app->shared->home.loop, app->shared->st,
-		                           &app->shared->metrics, &app->counts, &e);
+		app->keep.mcp = mcp_create(loop, s->home.loop, s->st, &s->metrics,
+		                           &app->counts, &e);
 	return e;
 }
 
@@ -596,15 +599,16 @@ askai_client_start (void           *ctx,
 {
 	struct askai_client *app = ctx;
 	struct askai_shared const *s = app->shared;
-	struct metrics_loop *mine = &s->metrics.loops[loop->id - 1];
+	size_t const i = loop->id - 1;
+	struct metrics_loop *mine = &s->metrics.loops[i];
 	util_format(mine->name, sizeof mine->name, "%" PRIu64, loop->id);
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
 	mine->mcp = &app->counts;
-	mine->conns = httpd_hub_metrics(s->hub, loop->id - 1);
+	mine->conns = httpd_hub_metrics(s->hub, i);
 	if (s->tasks) {
 		task_pool_attach(s->tasks, loop);
-		mine->tasks = task_pool_loop_metrics(s->tasks, loop->id - 1);
+		mine->tasks = task_pool_loop_metrics(s->tasks, i);
 	}
 	int e = askai_client_parts(app, loop, blockers);
 	if (e) {
@@ -612,8 +616,8 @@ askai_client_start (void           *ctx,
 		    strerror(e));
 		return e;
 	}
-	/* The server says itself why it cannot start. */
-	app->httpd = httpd_create(loop, s->hub, loop->id - 1, mcp_app(app->keep.mcp),
+	/* httpd_create() logs the reason if it cannot allocate the server. */
+	app->httpd = httpd_create(loop, s->hub, i, mcp_app(app->keep.mcp),
 	                          &s->home.cfg->http, &e);
 	return e;
 }
