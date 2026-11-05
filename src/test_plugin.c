@@ -44,6 +44,7 @@
 
 #include <json-c/json.h>
 
+#include "jb.h"
 #include "plugin.h"
 
 PLUGIN_MANIFEST(.name = "test",
@@ -90,6 +91,19 @@ test_plugin_instance_init (void        *instance,
 	return 0;
 }
 
+/* Returns the string member @p name of @p args as a view. If @p args
+ * contains no string member @p name, the view is empty and its data is
+ * nullptr.
+ */
+static struct cstr_view
+test_plugin_string (struct json_object *args,
+                    char const         *name)
+{
+	struct json_object *v = nullptr;
+	(void)json_object_object_get_ex(args, name, &v);
+	return jb_view(v);
+}
+
 /* Returns the definition of test_echo as a new reference, or nullptr if
  * json-c cannot allocate memory.
  */
@@ -116,19 +130,14 @@ test_plugin_echo_start (struct mcp_slot    *slot,
 {
 	if (!slot)
 		return;
-	struct json_object *text;
-	if (!json_object_object_get_ex(args, "text", &text) ||
-	    !json_object_is_type(text, json_type_string)) {
+	/* mcp_slot_write() copies the bytes, so nothing reads args after the
+	 * end of the call. */
+	struct cstr_view const out = test_plugin_string(args, "text");
+	if (!out.data) {
 		mcp_slot_tell(slot, CSTR_VIEW("The text argument must be a string."),
 		              TOOL_FAILED);
 		return;
 	}
-	/* mcp_slot_write() copies the bytes, so nothing reads args after the
-	 * call has ended. */
-	struct cstr_view const out = {
-		json_object_get_string(text),
-		(size_t)json_object_get_string_len(text)
-	};
 	size_t taken;
 	int e = mcp_slot_write(slot, out, 0, &taken);
 	if (e)
@@ -218,19 +227,16 @@ test_plugin_state_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, CSTR_VIEW("The instance is another user's."), TOOL_FAILED);
 		return;
 	}
-	struct json_object *text = nullptr;
 	struct json_object *wait = nullptr;
 	struct json_object *fail = nullptr;
-	(void)json_object_object_get_ex(args, "text", &text);
 	(void)json_object_object_get_ex(args, "fail", &fail);
 	bool waits = json_object_object_get_ex(args, "wait_ms", &wait);
 	uint64_t ms = (uint64_t)json_object_get_int64(wait);
+	struct cstr_view const text = test_plugin_string(args, "text");
 	char now[sizeof inst->last];
-	size_t len = text ? (size_t)json_object_get_string_len(text) : 0;
-	if (len > sizeof now)
-		len = sizeof now;
+	size_t const len = text.len < sizeof now ? text.len : sizeof now;
 	if (len)
-		memcpy(now, json_object_get_string(text), len);
+		memcpy(now, text.data, len);
 	if (!waits)
 		test_plugin_state_tell(slot);
 	memcpy(inst->last, now, len);
@@ -584,23 +590,6 @@ test_plugin_fetch_definition (void const *service)
 		"\"additionalProperties\":false}}");
 }
 
-/* Returns the string member @p name of @p args, and stores its length in
- * @p *len. Returns nullptr if @p args has no such string.
- */
-static char const *
-test_plugin_string (struct json_object *args,
-                    char const         *name,
-                    size_t             *len)
-{
-	struct json_object *v = nullptr;
-	*len = 0;
-	if (!json_object_object_get_ex(args, name, &v) ||
-	    !json_object_is_type(v, json_type_string))
-		return nullptr;
-	*len = (size_t)json_object_get_string_len(v);
-	return json_object_get_string(v);
-}
-
 /* Returns the integer member @p name of @p args, or @p otherwise if
  * @p args has no such member.
  */
@@ -631,16 +620,14 @@ test_plugin_fetch_start (struct mcp_slot    *slot,
 {
 	if (!slot)
 		return;
-	size_t url_len;
-	size_t accept_len;
-	struct web_request request = {
-		.url = test_plugin_string(args, "url", &url_len),
-		.accept = test_plugin_string(args, "accept", &accept_len),
+	struct web_request const request = {
+		.url = test_plugin_string(args, "url").data,
+		.body = test_plugin_string(args, "body"),
+		.accept = test_plugin_string(args, "accept").data,
 		.max = (size_t)test_plugin_integer(args, "max", 65536),
 		.timeout = (uint32_t)test_plugin_integer(args, "timeout", 10),
 		.keep = (uint32_t)test_plugin_integer(args, "keep", 0)
 	};
-	request.body.data = test_plugin_string(args, "body", &request.body.len);
 	struct json_object *arg = nullptr;
 	(void)json_object_object_get_ex(args, "twice", &arg);
 	int e = mcp_slot_fetch(slot, &request);
