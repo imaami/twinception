@@ -96,9 +96,10 @@ struct git_root {
 };
 
 struct git_revision {
-	struct cstr_view path;  /* ":path", or empty; it ends in a NUL */
+	struct cstr_view path;  /* ":path" in the revision argument, or empty */
 	size_t           root;
 	size_t           dots;
+	size_t           len;   /* the length of text */
 	char             text[REV_WORD];
 };
 
@@ -1116,14 +1117,15 @@ git_call_resolve (struct git_call *call)
 	}
 	if (out.len)
 		return EINVAL;
+	call->read.oid_len = width;
 	for (size_t i = 0; i < call->n_revisions; ++i) {
 		struct git_revision *rev = &call->revisions[i];
 		char const *first = call->roots[rev->root].name;
-		if (rev->dots)
-			util_format(rev->text, sizeof rev->text, "%s%.*s%s", first,
-			            (int)rev->dots, "...", call->roots[rev->root + 1].name);
-		else
-			util_format(rev->text, sizeof rev->text, "%s%s", first, rev->path.data);
+		rev->len = rev->dots
+		         ? util_format(rev->text, sizeof rev->text, "%s%.*s%s", first,
+		                       (int)rev->dots, "...", call->roots[rev->root + 1].name)
+		         : util_format(rev->text, sizeof rev->text, "%s%.*s", first,
+		                       (int)rev->path.len, rev->path.data);
 	}
 	return 0;
 }
@@ -1175,15 +1177,18 @@ git_call_advance (struct git_call *call,
 	                                     "tags or remote-tracking refs."), TOOL_FAILED);
 }
 
-/* Return whether @p path has a ':' and digits that end the path or are
- * followed by another ':', as in a grep match with its line number.
+/* Returns true if @p path contains a ':' and digits after it that end the
+ * path or are followed by another ':', as in a grep match with its line
+ * number.
  */
 static bool
-git_line_hint (char const *path)
+git_line_hint (struct cstr_view path)
 {
-	for (char const *p = strchr(path, ':'); p; p = strchr(p + 1, ':')) {
-		size_t n = strspn(p + 1, "0123456789");
-		if (n && (!p[1 + n] || p[1 + n] == ':'))
+	char const *end = path.data + path.len;
+	for (char const *p = path.data; (p = memchr(p, ':', (size_t)(end - p))); ++p) {
+		uint64_t line;
+		size_t n = util_digits(p + 1, (size_t)(end - p - 1), UINT64_MAX, &line);
+		if (n && (p + 1 + n == end || p[1 + n] == ':'))
 			return true;
 	}
 	return false;
@@ -1227,7 +1232,8 @@ git_ended (struct mcp_slot *slot,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
 		note = util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].name,
-		                        git_line_hint(rev->path.data + 1) ? hint : "");
+		                        git_line_hint(cstr_view_slice(rev->path, 1, SIZE_MAX))
+		                        ? hint : "");
 	} else if (c->status) {
 		char const *fmt = commands[call->command].takes & OBJECT
 			? "[The committed object could not be read (git exited with status %d).]"
@@ -1287,22 +1293,20 @@ git_write (struct mcp_slot        *slot,
 	return e;
 }
 
-/* Begin @p read of @p rev, which is commit:path with a commit ID of
- * @p oid_len bytes, in the repository @p repo. The numbered lines get what
- * is left of the @p window bytes after the longest header and footer.
+/* Begins @p read of @p rev, which is commit:path with a commit ID of
+ * read->oid_len bytes, in the repository @p repo. read->room is the rest
+ * of the @p window bytes after the longest header and footer.
  */
 static void
 git_read_begin (struct git_read       *read,
-                char const            *rev,
-                size_t                 oid_len,
+                struct cstr_view       rev,
                 struct git_repo const *repo,
                 size_t                 window)
 {
-	read->oid_len = oid_len;
-	read->rev_len = jb_escape(read->rev, rev, strlen(rev));
-	/* The header has the repository name, the commit ID and path from
-	 * read->rev, and three numbers. The longest footer has read->rev and
-	 * one number. A number has at most 20 digits. */
+	read->rev_len = jb_escape(read->rev, rev.data, rev.len);
+	/* The header contains the repository name, the commit ID and path from
+	 * read->rev, and three numbers. The longest footer contains read->rev
+	 * and one number. A number is at most 20 digits long. */
 	size_t reserve = sizeof "[Repository , file  at commit : lines  to  of at least .]\n" +
 	                 sizeof "\n\n[To read on, call again with \"revisions\": "
 	                        "[\"\"] and \"line\": .]" +
@@ -1416,18 +1420,20 @@ git_read_lines (struct git_read *read,
 {
 	struct loop *loop = mcp_slot_loop(slot);
 	char digits[21];
-	digits[20] = '\t';
+	char *tab = digits + sizeof digits - 1;
+	*tab = '\t';
 	while (read->at < read->to) {
 		size_t room = loop_room(loop, LOOP_COPY);
 		struct cstr_view num = read->at == read->start
-		                       ? git_digits(digits + 20, read->lines + 1, 1)
+		                       ? git_digits(tab, read->lines + 1, 1)
 		                       : CSTR_VIEW("");
-		/* Write a piece only if the step has room for the number, LINE_COST
-		 * and 4 bytes. The piece then has at least 4 bytes of the line, or
-		 * all of a shorter line. TOOL_MORE holds back at most 3 bytes of an
-		 * incomplete character, so at least one byte is taken, and the next
-		 * step goes on inside the line without writing the number again.
-		 * LINE_COST is counted when the line ends. */
+		/* Write a piece only if the number, LINE_COST and 4 bytes fit in
+		 * the room of the step. The piece then contains at least 4 bytes of
+		 * the line, or all of a shorter line. With TOOL_MORE,
+		 * mcp_slot_write() leaves out at most 3 bytes of an incomplete
+		 * character, so it writes at least one byte, and the next step goes
+		 * on inside the line without writing the number again. LINE_COST
+		 * is counted when the line ends. */
 		size_t fixed = num.len + LINE_COST;
 		if (room < fixed + 4)
 			return EAGAIN;
@@ -1527,10 +1533,10 @@ git_read_shown (struct git_read const *read,
 	return mcp_slot_source(slot, &src);
 }
 
-/* Scan the file of the read in @p call, as far as the room of the step
- * goes, after a check that its first BINARY bytes have no NUL. When the
- * scan ends, number the lines in the next step, or refuse the read if the
- * first line asked for is not in the file.
+/* Scans the file of the read in @p call, as far as the room of the step
+ * goes, after a check that its first BINARY bytes contain no NUL. When the
+ * scan ends, the function numbers the lines in the next step, or refuses
+ * the read if the first line asked for is not in the file.
  */
 static void
 git_scan (struct mcp_slot *slot,
@@ -1550,7 +1556,7 @@ git_scan (struct mcp_slot *slot,
 			return;
 		}
 		struct git_revision const *rev = &call->revisions[0];
-		git_read_begin(read, rev->text, strlen(call->roots[rev->root].name), call->repo,
+		git_read_begin(read, (struct cstr_view){ rev->text, rev->len }, call->repo,
 		               mcp_slot_window_max(slot));
 	}
 	git_read_scan(read, blob, c->loop);
