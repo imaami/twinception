@@ -101,8 +101,7 @@ test_timer (struct ledger *l,
             int           *e)
 {
 	uint32_t id = 0;
-	*e = ledger_timer_set(l, owner, clock_ns + secs * NS, note, note ? strlen(note) : 0,
-	                      &id);
+	*e = ledger_timer_set(l, owner, clock_ns + secs * NS, cstr_view(note), &id);
 	return id;
 }
 
@@ -179,11 +178,20 @@ test_invalid (struct ledger *l)
 
 	char note[LEDGER_NOTE + 1] = {};
 	uint32_t id = 0;
-	CHECK(ledger_timer_set(nullptr, A, 1, nullptr, 0, &id) == EINVAL &&
-	      ledger_timer_set(l, A, 0, nullptr, 0, &id) == EINVAL &&
-	      ledger_timer_set(l, A, 1, nullptr, 1, &id) == EINVAL &&
-	      ledger_timer_set(l, A, 1, note, sizeof note, &id) == EINVAL &&
-	      ledger_timer_set(l, A, 1, nullptr, 0, nullptr) == EINVAL && !id);
+	struct cstr_view const none = {};
+	CHECK(ledger_timer_set(nullptr, A, 1, none, &id) == EINVAL &&
+	      ledger_timer_set(l, A, 0, none, &id) == EINVAL &&
+	      ledger_timer_set(l, A, 1, (struct cstr_view){ nullptr, 1 }, &id) == EINVAL &&
+	      ledger_timer_set(l, A, 1, (struct cstr_view){ note, sizeof note }, &id) == EINVAL &&
+	      ledger_timer_set(l, A, 1, none, nullptr) == EINVAL && !id);
+	/* ledger_timer_add() fills the free timers of an array, then refuses. */
+	struct ledger_timer timers[LEDGER_TIMERS] = {};
+	CHECK(ledger_timer_add(timers, 0, 1, none) == EINVAL &&
+	      ledger_timer_add(timers, 1, 1, (struct cstr_view){ note, sizeof note }) == EINVAL);
+	for (uint32_t i = 0; i < LEDGER_TIMERS; ++i)
+		CHECK(!ledger_timer_add(timers, 1, i + 1, CSTR_VIEW("n")) && timers[i].id == i + 1 &&
+		      timers[i].len == 1 && timers[i].note[0] == 'n');
+	CHECK(ledger_timer_add(timers, 1, 9, none) == EBUSY && ledger_timer_any(timers));
 	CHECK(ledger_timer_cancel(nullptr, A, 1) == EINVAL &&
 	      ledger_timer_cancel(l, A, 1) == ENOENT);
 	CHECK(!ledger_wait_enter(nullptr, A, test_loop, (struct handle){}, test_wake, &e) &&

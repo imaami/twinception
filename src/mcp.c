@@ -5566,8 +5566,9 @@ mcp_agenda_timer (struct mcp_req   *req,
 	if (!a)
 		return e;
 	uint32_t const next = a->n_timers + 1;
-	if (!ledger_timer_add(a->timers, due, next, note.data, note.len))
-		return EBUSY;
+	e = ledger_timer_add(a->timers, due, next, note);
+	if (e)
+		return e;
 	*id = a->n_timers = next;
 	return mcp_agenda_arm(a);
 }
@@ -5600,8 +5601,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	uint64_t due = req->mcp->loop->now + (uint64_t)secs * NS;
 	uint32_t id;
 	int e = slot->role == ROLE_OWN
-	      ? ledger_timer_set(req->mcp->st->ledger, mcp_req_owner(req), due, note.data,
-	                         note.len, &id)
+	      ? ledger_timer_set(req->mcp->st->ledger, mcp_req_owner(req), due, note, &id)
 	      : mcp_agenda_timer(req, due, note, &id);
 	if (e) {
 		mcp_slot_refused(slot, e, TEXT("You have 8 timers set, the most at once."));

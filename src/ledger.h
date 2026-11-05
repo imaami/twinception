@@ -52,6 +52,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "cstr_view.h"
 #include "list.h"
 #include "loop.h"
 
@@ -345,24 +346,22 @@ ledger_task_put (struct ledger_task *task);
  * - ENOMEM.
  */
 extern int
-ledger_timer_set (struct ledger *ledger,
-                  uint64_t       owner,
-                  uint64_t       due,
-                  char const    *note,
-                  size_t         len,
-                  uint32_t      *id);
+ledger_timer_set (struct ledger    *ledger,
+                  uint64_t          owner,
+                  uint64_t          due,
+                  struct cstr_view  note,
+                  uint32_t         *id);
 
 /** Sets the first timer of @p timers whose due is 0 to @p due, the number
- *  @p id and the note of @p len bytes at @p note, and returns it. Returns
- *  nullptr if every timer is set or fired. @p len is at most LEDGER_NOTE,
- *  and @p note may be nullptr only if @p len is 0.
+ *  @p id and the note @p note. Returns 0, EBUSY if every timer is set or
+ *  fired, or EINVAL for a @p due of 0 or a note longer than LEDGER_NOTE
+ *  bytes.
  */
-extern struct ledger_timer *
-ledger_timer_add (struct ledger_timer  timers[static LEDGER_TIMERS],
-                  uint64_t             due,
-                  uint32_t             id,
-                  char const          *note,
-                  size_t               len);
+extern int
+ledger_timer_add (struct ledger_timer timers[static LEDGER_TIMERS],
+                  uint64_t            due,
+                  uint32_t            id,
+                  struct cstr_view    note);
 
 /** Returns whether a timer of @p timers is set or fired. */
 extern bool

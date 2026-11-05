@@ -761,22 +761,23 @@ ledger_task_put (struct ledger_task *task)
 	free(task);
 }
 
-struct ledger_timer *
-ledger_timer_add (struct ledger_timer  timers[static LEDGER_TIMERS],
-                  uint64_t             due,
-                  uint32_t             id,
-                  char const          *note,
-                  size_t               len)
+int
+ledger_timer_add (struct ledger_timer timers[static LEDGER_TIMERS],
+                  uint64_t            due,
+                  uint32_t            id,
+                  struct cstr_view    note)
 {
+	if (!due || note.len > LEDGER_NOTE || (note.len && !note.data))
+		return EINVAL;
 	size_t i = 0;
 	while (i < LEDGER_TIMERS && timers[i].due)
 		++i;
 	if (i == LEDGER_TIMERS)
-		return nullptr;
-	timers[i] = (struct ledger_timer){ .due = due, .id = id, .len = (uint32_t)len };
-	if (len)
-		memcpy(timers[i].note, note, len);
-	return &timers[i];
+		return EBUSY;
+	timers[i] = (struct ledger_timer){ .due = due, .id = id, .len = (uint32_t)note.len };
+	if (note.len)
+		memcpy(timers[i].note, note.data, note.len);
+	return 0;
 }
 
 bool
@@ -789,14 +790,13 @@ ledger_timer_any (struct ledger_timer const timers[static LEDGER_TIMERS])
 }
 
 int
-ledger_timer_set (struct ledger *ledger,
-                  uint64_t       owner,
-                  uint64_t       due,
-                  char const    *note,
-                  size_t         len,
-                  uint32_t      *id)
+ledger_timer_set (struct ledger    *ledger,
+                  uint64_t          owner,
+                  uint64_t          due,
+                  struct cstr_view  note,
+                  uint32_t         *id)
 {
-	if (!ledger || !due || (len && !note) || len > LEDGER_NOTE || !id)
+	if (!ledger || !due || (note.len && !note.data) || note.len > LEDGER_NOTE || !id)
 		return EINVAL;
 	uint64_t now = loop_clock();
 	struct ledger_wait *hits = nullptr;
@@ -810,13 +810,12 @@ ledger_timer_set (struct ledger *ledger,
 		 * refers to a second timer of an owner that the ledger freed
 		 * and created again. */
 		uint32_t const next = ledger->n_timers % UINT32_MAX + 1;
-		if (ledger_timer_add(o->timers, due, next, note, len)) {
+		e = ledger_timer_add(o->timers, due, next, note);
+		if (!e) {
 			ledger->n_timers = next;
 			*id = next;
 			hits = ledger_owner_wake(o);
 			ledger_add(&ledger->metrics.timers, 1);
-		} else {
-			e = EBUSY;
 		}
 	}
 	pthread_mutex_unlock(&ledger->lock);
