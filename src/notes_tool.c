@@ -94,13 +94,12 @@ enum {
  * call here, and notes_tool_schema() lists the names.
  */
 static struct {
-	char const           *name;
+	struct cstr_view      name;
 	char const           *verb;  /* begins the commit message of a write */
 	uint32_t              flags;
 	enum notes_tool_fetch fetch;
-	uint16_t              len;
 } const notes_tool_actions[] = {
-#define NOTE(name, verb, flags, fetch) { name, verb, flags, fetch, sizeof name - 1 }
+#define NOTE(name, verb, flags, fetch) { CSTR_VIEW_INIT(name), verb, flags, fetch }
 	NOTE("add",       "Add",     NOTE_WRITE | NOTE_FILE, 0),
 	NOTE("replace",   "Replace", NOTE_WRITE | NOTE_FILE, FETCH_REPLACE),
 	NOTE("restore",   "Restore", NOTE_WRITE | NOTE_FILE | NOTE_REVISION, FETCH_READ | FETCH_RESTORE),
@@ -1373,95 +1372,96 @@ notes_tool_step (struct mcp_slot *slot)
 }
 
 /* The message for a file argument that is not a valid name. */
-static char const bad_name_text[] = "The file argument must be a file name of 1 to "
-                                    "255 bytes, such as plan.md or findings/locks.md. "
-                                    "It cannot have control characters or empty "
-                                    "parts, and no part can be ., .., .git or git~1, "
-                                    "in any case and also with spaces or dots after "
-                                    "it.";
-static struct cstr_view const bad_name = { bad_name_text, sizeof bad_name_text - 1 };
+static struct cstr_view const bad_name =
+	CSTR_VIEW_INIT("The file argument must be a file name of 1 to 255 bytes, such as "
+	               "plan.md or findings/locks.md. It cannot have control characters or "
+	               "empty parts, and no part can be ., .., .git or git~1, in any case "
+	               "and also with spaces or dots after it.");
 
-/* Writes to @p in the file part of the note @p name, whose text is the
- * decoded data of @p d. The function fills @p *part as notes_add_head()
- * does. Returns 0 or the error of notes_add_head().
- */
-static int
-notes_tool_add_data (struct buf           *in,
-                     struct cstr_view      name,
-                     struct datauri const *d,
-                     struct notes_part    *part)
-{
-	int e = notes_add_head(in, name, d->size, part);
-	if (!e)
-		datauri_decode(d, buf_peek(in).ptr + part->data_at);
-	return e;
-}
-
-/* Starts add or replace with the arguments @p args. The note goes to the
- * caller's own notebook. git creates the shared repository first if it
- * does not exist. A turn's text is cut before its trailing notices
- * (notice_kept()), because only the results of a turn's calls carry those
- * notices.
+/* Runs git to check the name @p name of the note in call->file before the
+ * write, or to create the shared repository if @p initialized is false. If
+ * @p e is not 0, the function ends the call with @p e instead.
  */
 static void
-notes_tool_add (struct mcp_slot    *slot,
-                struct json_object *args)
+notes_tool_check (struct mcp_slot  *slot,
+                  struct cstr_view  name,
+                  bool              initialized,
+                  int               e)
 {
-	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
-	struct notes_tool_call *call = *mcp_slot_own(slot);
-	bool initialized = notes_exists(call->loop->tool->notes);
-	size_t most = call->loop->tool->files_inline;
-	char big[96];
-	size_t len = 0;
-	size_t uri_len = 0;
-	struct json_object *content = jb_get(args, "content");
-	char const *text = jb_str(jb_get(args, "text"), &len);
-	struct cstr_view name = jb_view(jb_get(args, "file"));
-	char const *uri = jb_str(content, &uri_len);
-	struct datauri data = {};
-	bool turn = call->side == NOTES_UPSTREAM;
-	size_t kept = text && turn ? notice_kept(text, len) : len;
-	struct cstr_view problem =
-		!name.data || notes_name(&name) ? bad_name
-		: content && turn ? CSTR_VIEW("Only a client hands askai a file as content.")
-		: content && text ? CSTR_VIEW("Give the text or the content of a note, not both.")
-		: content && (!uri || datauri_init(&data, (struct cstr_view){ uri, uri_len }))
-		? CSTR_VIEW("The content argument must be a data: URI, which the client fills "
-		            "in with a file that the user gave it.")
-		: content && data.size > most
-		? util_format_view(big, sizeof big, "The file has more than %zu bytes, which "
-		                   "this server takes at most in one request.", most)
-		: !content && (!text || !len || len > NOTES_TEXT || memchr(text, '\0', len))
-		? CSTR_VIEW("The text argument must be a string of 1 byte to 4 MiB, and no NUL.")
-		: !content && !kept
-		? CSTR_VIEW("The text has only askai's [askai: ...] lines, which askai adds to "
-		            "tool results. Give the text of the note itself.")
-		: (struct cstr_view){};
-	if (problem.data) {
-		mcp_slot_tell(slot, problem, TOOL_FAILED);
-		return;
-	}
-	call->stripped = kept < len;
-	len = kept;
-	if (!initialized && (notes_tool_actions[call->action].fetch & FETCH_REPLACE)) {
-		mcp_slot_tell(slot, CSTR_VIEW("No note has that name. Use action add to "
-		                              "create it."), TOOL_FAILED);
-		return;
-	}
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct buf in = {};
-	int e = content ? notes_tool_add_data(&call->file, name, &data, &call->part)
-	                : notes_add_file(&call->file, name, (struct cstr_view){ text, len },
-	                                 &call->part);
-	if (content)
-		loop_work(mcp_slot_loop(slot), LOOP_COPY, data.size);
-	if (!e && initialized)
+	uint16_t fetch = FETCH_CREATE;
+	if (!e && initialized) {
+		fetch = FETCH_CHECK;
 		e = notes_check_input(&in, call->repo, name);
+	}
 	if (e) {
 		buf_fini(&in);
 		notes_tool_end(slot, e, true);
 		return;
 	}
-	notes_tool_run(slot, initialized ? FETCH_CHECK : FETCH_CREATE, &in);
+	notes_tool_run(slot, fetch, &in);
+}
+
+/* Starts add or replace of the note @p name with the arguments @p args.
+ * The note goes to the caller's own notebook. git creates the shared
+ * repository first if it does not exist. A turn's text is cut before its
+ * trailing notices (notice_kept()), because askai adds those notices only
+ * to the results of a turn's calls.
+ */
+static void
+notes_tool_add (struct mcp_slot    *slot,
+                struct cstr_view    name,
+                struct json_object *args)
+{
+	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	bool initialized = notes_exists(call->loop->tool->notes);
+	bool turn = call->side == NOTES_UPSTREAM;
+	size_t most = call->loop->tool->files_inline;
+	struct json_object *content = jb_get(args, "content");
+	struct cstr_view const text = jb_view(jb_get(args, "text"));
+	size_t kept = turn ? notice_kept(text.data, text.len) : text.len;
+	struct datauri data = {};
+	char big[96];
+	struct cstr_view const problem =
+		notes_name(&name) ? bad_name
+		: !content ? (!text.len || text.len > NOTES_TEXT || memchr(text.data, '\0', text.len)
+		              ? CSTR_VIEW("The text argument must be a string of 1 byte to 4 MiB, "
+		                          "and no NUL.")
+		              : !kept ? CSTR_VIEW("The text has only askai's [askai: ...] lines, "
+		                                  "which askai adds to tool results. Give the text "
+		                                  "of the note itself.")
+		              : (struct cstr_view){})
+		: turn ? CSTR_VIEW("Only a client hands askai a file as content.")
+		: text.data ? CSTR_VIEW("Give the text or the content of a note, not both.")
+		: datauri_init(&data, jb_view(content))
+		? CSTR_VIEW("The content argument must be a data: URI, which the client fills "
+		            "in with a file that the user gave it.")
+		: data.size > most
+		? util_format_view(big, sizeof big, "The file has more than %zu bytes, which "
+		                   "this server takes at most in one request.", most)
+		: (struct cstr_view){};
+	if (problem.data) {
+		mcp_slot_tell(slot, problem, TOOL_FAILED);
+		return;
+	}
+	if (!initialized && (notes_tool_actions[call->action].fetch & FETCH_REPLACE)) {
+		mcp_slot_tell(slot, CSTR_VIEW("No note has that name. Use action add to "
+		                              "create it."), TOOL_FAILED);
+		return;
+	}
+	int e;
+	if (content) {
+		e = notes_add_head(&call->file, name, data.size, &call->part);
+		if (!e)
+			datauri_decode(&data, buf_peek(&call->file).ptr + call->part.data_at);
+		loop_work(mcp_slot_loop(slot), LOOP_COPY, data.size);
+	} else {
+		call->stripped = kept < text.len;
+		e = notes_add_file(&call->file, name, cstr_view_slice(text, 0, kept), &call->part);
+	}
+	notes_tool_check(slot, name, initialized, e);
 }
 
 /* Writes @p text to a note in the caller's own notebook. A copy uses the
@@ -1472,45 +1472,38 @@ notes_tool_got_copy (struct mcp_slot *slot,
                      struct span      text)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	bool initialized = notes_exists(call->loop->tool->notes);
 	struct cstr_view to = call->fetch & FETCH_RESTORE ? notes_revision_file(call->revision)
 	                    : (struct cstr_view){ call->name, call->len };
-	struct buf in = {};
 	struct cstr_view const bytes = { (char const *)text.ptr, text.len };
 	int e = notes_add_file(&call->file, to, bytes, &call->part);
-	if (!e && initialized)
-		e = notes_check_input(&in, call->repo, to);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
 	child_destroy(&call->child);
-	if (e) {
-		buf_fini(&in);
-		notes_tool_end(slot, e, true);
-		return;
-	}
-	notes_tool_run(slot, initialized ? FETCH_CHECK : FETCH_CREATE, &in);
+	notes_tool_check(slot, to, notes_exists(call->loop->tool->notes), e);
 }
 
-/* Runs git to read the note that the file argument in @p args names.
- * @p fetch is the fetch of read, attach or copy. For copy,
- * notes_tool_got_copy() then writes the note byte for byte to the
- * caller's own notebook. The copy has the name in the as argument, or the
- * same name. The text of a copied note does not pass through the caller.
+/* Runs git to read the note @p name. @p fetch is the fetch of read,
+ * attach or copy. For copy, notes_tool_got_copy() then writes the note
+ * byte for byte to the caller's own notebook. The name of the copy is the
+ * as argument in @p args, or else @p name. The text of a copied note does
+ * not pass through the caller.
  */
 static void
 notes_tool_read (struct mcp_slot    *slot,
+                 struct cstr_view    name,
                  struct json_object *args,
                  uint16_t            fetch)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct cstr_view name = jb_view(jb_get(args, "file"));
-	if (!name.data || notes_name(&name)) {
+	if (notes_name(&name)) {
 		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		return;
 	}
 	if (fetch & FETCH_COPY) {
 		struct json_object *as = jb_get(args, "as");
-		struct cstr_view to = as ? jb_view(as) : name;
-		if (!to.data || notes_name(&to)) {
+		struct cstr_view to = jb_view(as);
+		if (!as) {
+			to = name;
+		} else if (notes_name(&to)) {
 			mcp_slot_tell(slot, CSTR_VIEW("The as argument must be a file name, as the "
 			                              "file argument is."), TOOL_FAILED);
 			return;
@@ -1528,31 +1521,32 @@ notes_tool_read (struct mcp_slot    *slot,
 	notes_tool_run(slot, fetch, &in);
 }
 
-/* Starts diff, restore, read with a revision, or history with a file. */
+/* Starts diff, restore, read with a revision, or history with a file. The
+ * note is @p file. @p revisions are the values of the arguments from and
+ * to for diff, or of the argument revision and nullptr otherwise.
+ */
 static void
-notes_tool_revision (struct mcp_slot    *slot,
-                     struct json_object *args,
-                     uint16_t            fetch)
+notes_tool_revision (struct mcp_slot          *slot,
+                     struct cstr_view          file,
+                     struct json_object *const revisions[2],
+                     uint16_t                  fetch)
 {
-	static char const *const keys[][2] = { { "revision" }, { "from", "to" } };
-	bool diff = fetch & FETCH_DIFF;
-	struct cstr_view revisions[2] = {};
-	for (size_t i = 0; i < (diff ? 2 : 1); ++i) {
-		struct json_object *arg = jb_get(args, keys[diff][i]);
-		revisions[i] = jb_view(arg);
-		if ((i == 0 && !arg && (fetch & (FETCH_DIFF | FETCH_RESTORE))) ||
-		    (arg && !util_is_oid(revisions[i].data, revisions[i].len) &&
-		     !cstr_view_equal(revisions[i], CSTR_VIEW("current")))) {
-			mcp_slot_tell(slot, CSTR_VIEW("Use a full commit ID from action history, or "
-			                              "current. diff requires from; restore requires "
-			                              "revision."), TOOL_FAILED);
-			return;
-		}
+	struct cstr_view ids[2] = {};
+	bool bad = !revisions[0] && (fetch & (FETCH_DIFF | FETCH_RESTORE));
+	for (size_t i = 0; !bad && i < ARRAY_SIZE(ids); ++i) {
+		ids[i] = jb_view(revisions[i]);
+		bad = revisions[i] && !util_is_oid(ids[i].data, ids[i].len) &&
+		      !cstr_view_equal(ids[i], CSTR_VIEW("current"));
 	}
-	struct cstr_view file = jb_view(jb_get(args, "file"));
+	if (bad) {
+		mcp_slot_tell(slot, CSTR_VIEW("Use a full commit ID from action history, or "
+		                              "current. diff requires from; restore requires "
+		                              "revision."), TOOL_FAILED);
+		return;
+	}
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	int e = 0;
-	call->revision = notes_revision_create(file, revisions[0], revisions[1], &e);
+	call->revision = notes_revision_create(file, ids[0], ids[1], &e);
 	if (!call->revision) {
 		if (e == EINVAL)
 			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
@@ -1562,13 +1556,13 @@ notes_tool_revision (struct mcp_slot    *slot,
 	}
 	if ((fetch & FETCH_KIND) != FETCH_LIST)
 		fetch |= FETCH_REVISION;
-	notes_tool_run(slot, fetch | (*call->notebook ? FETCH_OTHER : 0), nullptr);
+	notes_tool_run(slot, fetch, nullptr);
 }
 
 /* Starts a call of the notes tool in @p slot with the arguments @p args.
  * This is the start() of the notes kind. All instances of askai that use
- * the same repository share the notes. askai chooses the branch of every
- * write (call->repo).
+ * the same repository share the notes. Every write goes to call->repo,
+ * the branch that notes_repo() makes for the caller.
  */
 static void
 notes_tool_start (struct mcp_slot    *slot,
@@ -1585,21 +1579,19 @@ notes_tool_start (struct mcp_slot    *slot,
 	struct notes const *notes = call->loop->tool->notes;
 	notes_repo(notes, mcp_slot_principal(slot), call->side, call->repo);
 	bool uploads = call->side == NOTES_UPSTREAM && call->loop->tool->attach;
-	size_t len = 0;
-	char const *action = jb_str(jb_get(args, "action"), &len);
+	struct cstr_view const action = jb_view(jb_get(args, "action"));
 	size_t which = 0;
 	while (which < ARRAY_SIZE(notes_tool_actions) &&
-	       (!action || len != notes_tool_actions[which].len ||
-	        memcmp(action, notes_tool_actions[which].name, len)))
+	       !cstr_view_equal(action, notes_tool_actions[which].name))
 		++which;
 	if (which == ARRAY_SIZE(notes_tool_actions) ||
 	    ((notes_tool_actions[which].flags & NOTE_UPLOAD) && !uploads)) {
-		struct cstr_view const head = CSTR_VIEW("The action must be one of:");
 		dstr_auto why = DSTR_INIT;
-		bool ok = dstr_cat_n(&why, head.data, head.len);
+		bool ok = dstr_cat(&why, "The action must be one of:");
 		for (size_t i = 0; ok && i < ARRAY_SIZE(notes_tool_actions); ++i)
 			if (uploads || !(notes_tool_actions[i].flags & NOTE_UPLOAD))
-				ok = dstr_printf(&why, " %s", notes_tool_actions[i].name);
+				ok = dstr_printf(&why, " %.*s", (int)notes_tool_actions[i].name.len,
+				                 notes_tool_actions[i].name.data);
 		if (!ok || !dstr_cat_n(&why, ".", 1))
 			mcp_slot_fail(slot, ENOMEM);
 		else
@@ -1609,9 +1601,11 @@ notes_tool_start (struct mcp_slot    *slot,
 	call->action = which;
 	uint32_t flags = notes_tool_actions[which].flags;
 	uint16_t fetch = notes_tool_actions[which].fetch;
+	bool diff = fetch & FETCH_DIFF;
 	struct json_object *revision = jb_get(args, "revision");
-	if ((revision && !(flags & NOTE_REVISION)) ||
-	    ((jb_get(args, "from") || jb_get(args, "to")) && !(fetch & FETCH_DIFF))) {
+	struct json_object *from = jb_get(args, "from");
+	struct json_object *to = jb_get(args, "to");
+	if ((revision && !(flags & NOTE_REVISION)) || ((from || to) && !diff)) {
 		mcp_slot_tell(slot, CSTR_VIEW("revision applies to read and restore; from and to "
 		                              "apply to diff. Use history to find commit IDs."),
 		              TOOL_FAILED);
@@ -1619,31 +1613,36 @@ notes_tool_start (struct mcp_slot    *slot,
 	}
 	if (call->side == NOTES_CLIENT) {
 		struct json_object *thread = jb_get(args, "thread");
-		char const *id = jb_str(thread, &len);
-		if (thread && (!id || !notes_is_id(id, len))) {
+		struct cstr_view const id = jb_view(thread);
+		if (thread && !notes_is_id(id.data, id.len)) {
 			mcp_slot_tell(slot, CSTR_VIEW("The optional thread must be 32 hexadecimal "
 			                              "digits. It does not select the notes "
 			                              "session."), TOOL_FAILED);
 			return;
 		}
 	}
+	/* A copy without a notebook argument reads the notebook of the other
+	 * side if the caller is a client. A turn must give the notebook
+	 * argument for a copy. */
 	struct json_object *notebook = jb_get(args, "notebook");
-	char const *selected = jb_str(notebook, &len);
-	if (jb_is(notebook, "other") ||
-	    (!notebook && (fetch & FETCH_COPY) && call->side == NOTES_CLIENT)) {
-		enum notes_side other = call->side == NOTES_CLIENT ? NOTES_UPSTREAM : NOTES_CLIENT;
-		notes_repo(notes, mcp_slot_principal(slot), other, call->notebook);
-	} else if (notebook && !jb_is(notebook, "own")) {
-		if (notes_select(selected, len, call->notebook)) {
-			mcp_slot_tell(slot, CSTR_VIEW("The notebook must be own or a selector returned "
-			                              "by action notebooks "
-			                              "(participant/principal/side)."), TOOL_FAILED);
+	struct cstr_view const selected = jb_view(notebook);
+	bool other = cstr_view_equal(selected, CSTR_VIEW("other"));
+	if (!notebook && (fetch & FETCH_COPY)) {
+		if (call->side == NOTES_UPSTREAM) {
+			mcp_slot_tell(slot, CSTR_VIEW("For copy, give the source notebook selector "
+			                              "from action notebooks."), TOOL_FAILED);
 			return;
 		}
+		other = true;
 	}
-	if ((fetch & FETCH_COPY) && !notebook && call->side == NOTES_UPSTREAM) {
-		mcp_slot_tell(slot, CSTR_VIEW("For copy, give the source notebook selector from "
-		                              "action notebooks."), TOOL_FAILED);
+	if (other) {
+		enum notes_side side = call->side == NOTES_CLIENT ? NOTES_UPSTREAM : NOTES_CLIENT;
+		notes_repo(notes, mcp_slot_principal(slot), side, call->notebook);
+	} else if (notebook && !cstr_view_equal(selected, CSTR_VIEW("own")) &&
+	           notes_select(selected.data, selected.len, call->notebook)) {
+		mcp_slot_tell(slot, CSTR_VIEW("The notebook must be own or a selector returned by "
+		                              "action notebooks (participant/principal/side)."),
+		              TOOL_FAILED);
 		return;
 	}
 	if ((flags & NOTE_WRITE) && *call->notebook && strcmp(call->notebook, call->repo)) {
@@ -1653,13 +1652,16 @@ notes_tool_start (struct mcp_slot    *slot,
 	}
 	if ((flags & NOTE_OFFSET) && mcp_slot_offset(slot, args))
 		return;
-	if (revision || (fetch & (FETCH_DIFF | FETCH_RESTORE)) ||
-	    (fetch == FETCH_LIST && jb_get(args, "file"))) {
-		notes_tool_revision(slot, args, fetch);
+	struct json_object *file = jb_get(args, "file");
+	struct cstr_view const name = jb_view(file);
+	uint16_t const selection = *call->notebook ? FETCH_OTHER : 0;
+	if (revision || (fetch & (FETCH_DIFF | FETCH_RESTORE)) || (fetch == FETCH_LIST && file)) {
+		struct json_object *const revisions[] = { diff ? from : revision, to };
+		notes_tool_revision(slot, name, revisions, fetch | selection);
 		return;
 	}
 	if (flags & NOTE_WRITE) {
-		notes_tool_add(slot, args);
+		notes_tool_add(slot, name, args);
 		return;
 	}
 	if (!notes_exists(notes)) {
@@ -1676,9 +1678,9 @@ notes_tool_start (struct mcp_slot    *slot,
 		return;
 	}
 	if (flags & NOTE_FILE)
-		notes_tool_read(slot, args, fetch | (*call->notebook ? FETCH_OTHER : 0));
+		notes_tool_read(slot, name, args, fetch | selection);
 	else
-		notes_tool_run(slot, fetch | (*call->notebook ? FETCH_OTHER : 0), nullptr);
+		notes_tool_run(slot, fetch | selection, nullptr);
 }
 
 /* Returns the definition of the notes tool for the side @p side. Only the
@@ -1715,8 +1717,7 @@ notes_tool_schema (struct notes_tool const *tool,
 	struct json_object *actions = json_object_new_array();
 	for (size_t i = 0; actions && i < ARRAY_SIZE(notes_tool_actions); ++i)
 		if (files || !(notes_tool_actions[i].flags & NOTE_UPLOAD))
-			actions = jb_push_or_free(actions,
-			                          json_object_new_string(notes_tool_actions[i].name));
+			actions = jb_push_or_free(actions, jb_string(notes_tool_actions[i].name));
 	struct json_object *props = jb_object(
 		"action", jb_object(
 			"type", json_object_new_string("string"),
