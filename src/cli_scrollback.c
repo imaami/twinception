@@ -27,17 +27,17 @@ static_assert(CLI_SCROLLBACK_BYTES <= UINT32_MAX);
 static_assert(sizeof(struct cli_scrollback_style) == 8);
 
 struct cli_scrollback_line {
-	struct list                 hook;
-	struct dstr                 text;
+	struct list                  hook;
+	struct dstr                  text;
 	struct cli_scrollback_style *styles;
-	size_t                     *checkpoints;
-	size_t                      capacity;
-	size_t                      scanned;
-	size_t                      column;
-	size_t                      columns;
-	size_t                      rows;
-	size_t                      style_count;
-	size_t                      style_capacity;
+	size_t                      *checkpoints;
+	size_t                       capacity;
+	size_t                       scanned;
+	size_t                       column;
+	size_t                       columns;
+	size_t                       rows;
+	size_t                       style_count;
+	size_t                       style_capacity;
 };
 
 void
@@ -162,6 +162,64 @@ cli_scrollback_append (struct cli_scrollback *scrollback,
 	return cli_scrollback_append_style(scrollback, text, CLI_STYLE_RESET);
 }
 
+/* Append part, which contains no newline, to the last line in style.
+ * Returns 0 or an error number.
+ */
+static int
+cli_scrollback_append_part (struct cli_scrollback *scrollback,
+                            struct cstr_view       part,
+                            enum cli_style         style)
+{
+	if (list_is_empty(&scrollback->lines)) {
+		int e = cli_scrollback_add_line(scrollback);
+		if (e)
+			return e;
+	}
+	struct cli_scrollback_line *line = container_of(scrollback->lines.prev,
+	                                                  struct cli_scrollback_line, hook);
+	/* A single unterminated line must not bypass the transcript bound.
+	 * Drop its oldest prefix, retaining complete UTF-8 code points. */
+	if (part.len > CLI_SCROLLBACK_BYTES) {
+		size_t skip = part.len - CLI_SCROLLBACK_BYTES;
+		while (skip < part.len && ((unsigned char)part.data[skip] & 0xc0) == 0x80)
+			++skip;
+		part = cstr_view_slice(part, skip, SIZE_MAX);
+	}
+	if (part.len && line->style_count == CLI_SCROLLBACK_STYLES &&
+	    style != line->styles[line->style_count - 1].id) {
+		int e = cli_scrollback_line_trim(scrollback, line,
+		                                 line->styles[line->style_count / 2].offset);
+		if (e)
+			return e;
+	}
+	size_t old = dstr_len(&line->text);
+	if (old + part.len > CLI_SCROLLBACK_BYTES) {
+		int e = cli_scrollback_line_trim(scrollback, line, old + part.len - CLI_SCROLLBACK_BYTES);
+		if (e)
+			return e;
+		old = dstr_len(&line->text);
+	}
+	enum cli_style previous = line->style_count ? line->styles[line->style_count - 1].id : CLI_STYLE_RESET;
+	bool change = part.len && style != previous;
+	if (change) {
+		struct cli_scrollback_style *styles = util_room(line->styles, &line->style_capacity,
+		                                                line->style_count + 1, sizeof *styles);
+		if (!styles)
+			return ENOMEM;
+		line->styles = styles;
+		/* The new entry is counted only after the text is appended. */
+		styles[line->style_count] = (struct cli_scrollback_style){(uint32_t)old, style};
+	}
+	if (!dstr_cat_n(&line->text, part.data, part.len))
+		return ENOMEM;
+	line->style_count += change;
+	scrollback->styles += change;
+	scrollback->bytes += part.len;
+	if (scrollback->offset && !scrollback->unread)
+		scrollback->unread = 1;
+	return 0;
+}
+
 int
 cli_scrollback_append_style (struct cli_scrollback *scrollback,
                              struct cstr_view       text,
@@ -169,68 +227,25 @@ cli_scrollback_append_style (struct cli_scrollback *scrollback,
 {
 	if (style >= CLI_STYLE_COUNT)
 		return EINVAL;
-	while (text.len) {
-		if (list_is_empty(&scrollback->lines)) {
-			int e = cli_scrollback_add_line(scrollback);
-			if (e)
-				return e;
-		}
-		struct cli_scrollback_line *line = container_of(scrollback->lines.prev,
-		                                                  struct cli_scrollback_line, hook);
-		char const *newline = memchr(text.data, '\n', text.len);
-		size_t length = newline ? (size_t)(newline - text.data) : text.len;
-		/* A single unterminated line must not bypass the transcript bound.
-		 * Drop its oldest prefix, retaining complete UTF-8 code points. */
-		if (length > CLI_SCROLLBACK_BYTES) {
-			size_t skip = length - CLI_SCROLLBACK_BYTES;
-			while (skip < length && ((unsigned char)text.data[skip] & 0xc0) == 0x80)
-				++skip;
-			text = cstr_view_slice(text, skip, SIZE_MAX);
-			length -= skip;
-		}
-		if (length && line->style_count == CLI_SCROLLBACK_STYLES &&
-		    style != line->styles[line->style_count - 1].id) {
-			int e = cli_scrollback_line_trim(scrollback, line,
-			                                 line->styles[line->style_count / 2].offset);
-			if (e)
-				return e;
-		}
-		size_t old = dstr_len(&line->text);
-		if (old + length > CLI_SCROLLBACK_BYTES) {
-			int e = cli_scrollback_line_trim(scrollback, line, old + length - CLI_SCROLLBACK_BYTES);
-			if (e)
-				return e;
-			old = dstr_len(&line->text);
-		}
-		enum cli_style previous = line->style_count ? line->styles[line->style_count - 1].id : CLI_STYLE_RESET;
-		bool change = length && style != previous;
-		if (change) {
-			struct cli_scrollback_style *styles = util_room(line->styles, &line->style_capacity,
-			                                                line->style_count + 1, sizeof *styles);
-			if (!styles)
-				return ENOMEM;
-			line->styles = styles;
-		}
-		if (!dstr_cat_n(&line->text, text.data, length))
-			return ENOMEM;
-		if (change) {
-			line->styles[line->style_count++] = (struct cli_scrollback_style){(uint32_t)old, style};
-			++scrollback->styles;
-		}
-		scrollback->bytes += length;
-		if (scrollback->offset && !scrollback->unread)
-			scrollback->unread = 1;
-		if (newline) {
-			int e = cli_scrollback_add_line(scrollback);
-			if (e)
-				return e;
-			if (scrollback->offset)
-				++scrollback->unread;
-		}
-		text = cstr_view_slice(text, length + (newline != nullptr), SIZE_MAX);
+	char const *newline;
+	while (text.len && (newline = memchr(text.data, '\n', text.len))) {
+		size_t length = (size_t)(newline - text.data);
+		int e = cli_scrollback_append_part(scrollback, cstr_view_slice(text, 0, length), style);
+		if (!e)
+			e = cli_scrollback_add_line(scrollback);
+		if (e)
+			return e;
+		if (scrollback->offset)
+			++scrollback->unread;
+		text = cstr_view_slice(text, length + 1, SIZE_MAX);
 		cli_scrollback_trim(scrollback);
 	}
-	return 0;
+	if (!text.len)
+		return 0;
+	int e = cli_scrollback_append_part(scrollback, text, style);
+	if (!e)
+		cli_scrollback_trim(scrollback);
+	return e;
 }
 
 /** Measure the character at the start of text, at column of a row of
@@ -440,8 +455,8 @@ cli_scrollback_line_write (struct cli_scrollback_line const *line,
 }
 
 static int
-cli_scrollback_line_render (struct cli_scrollback_line *line,
-                            size_t                     *skip,
+cli_scrollback_line_render (struct cli_scrollback_line  *line,
+                            size_t                      *skip,
                             struct cli_scrollback_frame *frame)
 {
 	size_t checkpoint = *skip / CLI_SCROLLBACK_CHECKPOINT;
