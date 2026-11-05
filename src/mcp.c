@@ -1081,7 +1081,8 @@ mcp_req_slots_drop (struct mcp_req *req)
 {
 	if (req->agenda)
 		req->agenda->wait = nullptr;
-	for (uint32_t k = 0; req->slots && k < req->launched; ++k) {
+	uint32_t const launched = req->slots ? req->launched : 0;
+	for (uint32_t k = 0; k < launched; ++k) {
 		struct mcp_slot *slot = &req->slots[k];
 		slot->of = nullptr;
 		mcp_slot_drop(slot);
@@ -1583,7 +1584,8 @@ mcp_req_finish (struct mcp_req *req)
 	buf_fini(&req->attached);
 	dstr_clear(&req->self.answer);
 	dstr_clear(&req->trace);
-	for (size_t k = 0; req->slots && k < JOB_CALLS; ++k)
+	size_t const slots = req->slots ? JOB_CALLS : 0;
+	for (size_t k = 0; k < slots; ++k)
 		dstr_cleanup(&req->slots[k].answer);
 	free(req->slots);
 	req->slots = nullptr;
