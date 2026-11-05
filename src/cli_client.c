@@ -19,10 +19,8 @@ cli_error_set (struct cli_error *error,
 {
 	va_list args;
 	va_start(args, format);
-	int n = vsnprintf(error->message, sizeof error->message, format, args);
+	(void)util_vformat(error->message, sizeof error->message, format, args);
 	va_end(args);
-	if (n < 0)
-		error->message[0] = '\0';
 	return e;
 }
 
@@ -142,43 +140,55 @@ static int cli_client_response_append(struct buf *buffer, struct cstr_view bytes
 	return e == ENOBUFS ? EFBIG : e;
 }
 
-static int cli_client_response_line(struct cli_client_response *response)
+/* Append end, the rest of a line of an SSE stream without its newline, to
+ * response->line, and handle the line. An empty line ends an event, and a
+ * data line adds its value to the data of the event. Returns 0 or an error
+ * number.
+ */
+static int cli_client_response_line(struct cli_client_response *response, struct cstr_view end)
 {
 	struct buf *line = &response->line, *data = &response->data;
-	if (line->tail && line->data[line->tail - 1] == '\r')
-		--line->tail;
-	int e = 0;
-	if (!line->tail && data->tail) {
+	int e = cli_client_response_append(line, end);
+	struct cstr_view text = {(char const *)line->data, line->tail};
+	line->tail = 0;
+	if (e)
+		return e;
+	if (text.len && text.data[text.len - 1] == '\r')
+		--text.len;
+	if (!text.len && data->tail) {
 		e = cli_client_response_event(response, (struct cstr_view){(char const *)data->data, data->tail - 1});
 		data->tail = 0;
-	} else if (line->tail >= 5 && !memcmp(line->data, "data:", 5)) {
-		size_t offset = line->tail > 5 && line->data[5] == ' ' ? 6 : 5;
-		e = cli_client_response_append(data, (struct cstr_view){(char const *)line->data + offset, line->tail - offset});
-		if (!e)
-			e = cli_client_response_append(data, CSTR_VIEW("\n"));
+		return e;
 	}
-	line->tail = 0;
-	return e;
+	struct cstr_view const field = CSTR_VIEW("data:");
+	if (!cstr_view_starts(text, field))
+		return 0;
+	struct cstr_view value = cstr_view_slice(text, field.len, SIZE_MAX);
+	if (value.len && value.data[0] == ' ')
+		value = cstr_view_slice(value, 1, SIZE_MAX);
+	e = cli_client_response_append(data, value);
+	return e ? e : cli_client_response_append(data, CSTR_VIEW("\n"));
 }
 
 static int cli_client_response_receive(struct cstr_view bytes, void *context)
 {
 	struct cli_client_response *response = context;
-	if (!response->sse) {
-		response->failure = cli_client_response_append(&response->body, bytes);
-	} else {
-		while (bytes.len && !response->failure) {
-			char const *newline = memchr(bytes.data, '\n', bytes.len);
-			size_t length = newline ? (size_t)(newline - bytes.data) : bytes.len;
-			response->failure = cli_client_response_append(&response->line,
-			                                               cstr_view_slice(bytes, 0, length));
-			bytes = cstr_view_slice(bytes, length + (newline != nullptr), SIZE_MAX);
-			if (newline && !response->failure)
-				response->failure = cli_client_response_line(response);
-		}
+	struct buf *rest = &response->body;
+	char const *newline = nullptr;
+	if (response->sse) {
+		rest = &response->line;
+		newline = bytes.len ? memchr(bytes.data, '\n', bytes.len) : nullptr;
 	}
+	while (newline && !response->failure) {
+		size_t length = (size_t)(newline - bytes.data);
+		response->failure = cli_client_response_line(response, cstr_view_slice(bytes, 0, length));
+		bytes = cstr_view_slice(bytes, length + 1, SIZE_MAX);
+		newline = memchr(bytes.data, '\n', bytes.len);
+	}
+	if (!response->failure)
+		response->failure = cli_client_response_append(rest, bytes);
 	if (response->failure == EFBIG)
-		cli_error_set(response->error, EFBIG, "AskAI response exceeds the 16 MiB client limit");
+		(void)cli_error_set(response->error, EFBIG, "AskAI response exceeds the 16 MiB client limit");
 	return response->failure;
 }
 
