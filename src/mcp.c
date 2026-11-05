@@ -538,8 +538,10 @@ struct mcp_req {
 	struct buf           reply;      /* our response body, until sent */
 	struct jb_parser     parser;     /* of the body, then of the answer */
 	struct jb_reaper     reaper;     /* what is freed a slice a step */
-	struct mcp_splice    splice[2];  /* prompt and system, in draft order */
-	struct mcp_splice   *history_splices; /* larger draft when chat history is given */
+	struct mcp_splice   *splice;     /* the strings of the draft that
+	                                    mcp_req_build() escapes in, in
+	                                    draft order; the request keeps the
+	                                    array for reuse */
 	struct mcp_slot      self;       /* its own call: its answer, the tool
 	                                    that a client calls, and the notes'
 	                                    git it reads */
@@ -650,8 +652,8 @@ struct mcp_req {
 	                                    0: unknown */
 	uint32_t             traced;     /* tool calls the turns made */
 	uint32_t             launched;   /* the turn's calls launched */
-	uint16_t             splices;
-	uint16_t             splice_max; /* capacity of the draft's splice array */
+	uint16_t             splices;    /* the entries of splice in use */
+	uint16_t             splice_max; /* the entries of splice */
 	uint16_t             next;       /* the splice to write next, or piece */
 	uint16_t             part;       /* the part of the turn being written,
 	                                    or its call under way */
@@ -953,7 +955,8 @@ mcp_req_kept (struct mcp_req const *req)
 	return sizeof *req + dstr_get_block_count(&req->self.answer) * DSTR_BLK_SIZE +
 	       dstr_get_block_count(&req->trace) * DSTR_BLK_SIZE +
 	       req->scan.cap * sizeof *req->scan.members +
-	       req->reaper.cap * sizeof *req->reaper.stack;
+	       req->reaper.cap * sizeof *req->reaper.stack +
+	       req->splice_max * sizeof *req->splice;
 }
 
 /* End the stream, if the request still has it, and keep the request for
@@ -976,9 +979,10 @@ mcp_req_end (struct mcp_req *req)
 	                      mcp->pool.bytes + mcp->answers.bytes, memory_order_relaxed);
 }
 
-/* A request to begin, the spare one that ended last if there is one;
- * nullptr if out of memory. Its answer, pre-scan and reaper are empty, their
- * storage kept.
+/* Returns a request to begin: the spare request that ended last, or a new
+ * request if there is none. Returns nullptr if out of memory. The answer,
+ * the pre-scan, the reaper and the splice array of a spare request are
+ * empty, and their storage is not freed.
  */
 static struct mcp_req *
 mcp_spare_take (struct mcp *mcp)
@@ -1010,6 +1014,7 @@ mcp_spare_drop (struct mcp *mcp)
 	jb_scan_fini(&req->scan);
 	dstr_cleanup(&req->self.answer);
 	dstr_cleanup(&req->trace);
+	free(req->splice);
 	free(req);
 }
 
@@ -1586,8 +1591,6 @@ mcp_req_finish (struct mcp_req *req)
 	json_object_put(req->id);
 	json_object_put(req->token);
 	req->draft = req->id = req->token = req->prompt = nullptr;
-	free(req->history_splices);
-	req->history_splices = nullptr;
 	jb_scan_reset(&req->scan);
 	buf_fini(&req->body);
 	buf_fini(&req->upload);
@@ -2565,8 +2568,7 @@ mcp_splice_mark (struct json_object *str,
 	if (req->splices == req->splice_max ||
 	    printbuf_strappend(pb, "\"\"") < 0)
 		return -1;
-	struct mcp_splice *splices = req->history_splices ? req->history_splices : req->splice;
-	splices[req->splices++] = (struct mcp_splice){ str, (size_t)pb->bpos - 1 };
+	req->splice[req->splices++] = (struct mcp_splice){ str, (size_t)pb->bpos - 1 };
 	return 0;
 }
 
@@ -2577,10 +2579,8 @@ static int
 mcp_req_copy (struct mcp_req *req,
               size_t          k)
 {
-	struct mcp_splice const *splices = req->history_splices ? req->history_splices
-	                                                     : req->splice;
-	size_t from = k ? splices[k - 1].at : 0;
-	size_t len = (k < req->splices ? splices[k].at : req->text.len) - from;
+	size_t from = k ? req->splice[k - 1].at : 0;
+	size_t len = (k < req->splices ? req->splice[k].at : req->text.len) - from;
 	if (!len)
 		return 0;
 	return mcp_piece_write(&BYTES(req->text), from, len, &req->upload,
@@ -2898,9 +2898,7 @@ mcp_req_build_slice (struct mcp_req *req)
 	struct loop *loop = req->mcp->loop;
 	if (req->next == req->splices)
 		return 0;
-	struct mcp_splice const *splices = req->history_splices ? req->history_splices
-	                                                     : req->splice;
-	struct json_object *str = splices[req->next].str;
+	struct json_object *str = req->splice[req->next].str;
 	size_t all = (size_t)json_object_get_string_len(str);
 	size_t len = all - req->off;
 	size_t room = loop_room(loop, LOOP_ESCAPE);
@@ -2942,8 +2940,6 @@ mcp_req_build (struct mcp_req *req)
 	}
 	json_object_put(req->draft);
 	req->draft = req->prompt = nullptr;
-	free(req->history_splices);
-	req->history_splices = nullptr;
 	req->next = 0;
 	mcp_req_turn_ready(req);
 }
@@ -3694,15 +3690,17 @@ mcp_req_draft (struct mcp_req     *req,
 {
 	struct mcp_static const *st = req->mcp->st;
 	size_t n = jb_len(history);
-	req->splice_max = (uint16_t)(n + ARRAY_SIZE(req->splice));
-	if (n) {
-		req->history_splices = malloc(req->splice_max * sizeof *req->history_splices);
-		if (!req->history_splices)
+	/* The history, the prompt and the system prompt each need a splice. */
+	if (n + 2 > req->splice_max) {
+		struct mcp_splice *splice = realloc(req->splice, (n + 2) * sizeof *splice);
+		if (!splice)
 			return ENOMEM;
-		for (size_t k = 0; k < n; ++k)
-			json_object_set_serializer(jb_get(jb_at(history, k), "content"),
-			                           mcp_splice_mark, req, nullptr);
+		req->splice = splice;
+		req->splice_max = (uint16_t)(n + 2);
 	}
+	for (size_t k = 0; k < n; ++k)
+		json_object_set_serializer(jb_get(jb_at(history, k), "content"),
+		                           mcp_splice_mark, req, nullptr);
 	char const *sys = st->ep->system;
 	struct json_object *instructions = nullptr;
 	if (system) {
@@ -7706,6 +7704,8 @@ mcp_begin (struct mcp           *mcp,
 		.self = { .step.fn = mcp_slot_step, .answer = req->self.answer, .req = req,
 		          .tool = TOOL_MAX },
 		.trace = req->trace,
+		.splice = req->splice,
+		.splice_max = req->splice_max,
 		.s = s,
 		.mcp = mcp,
 		.head = loop_clock(),
