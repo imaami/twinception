@@ -35,17 +35,6 @@ static struct cstr_view const policy_kinds[POLICY_KINDS] = {
 	[POLICY_UNIX]     = CSTR_VIEW_INIT("unix"),
 };
 
-/* What the clients a role is given may see and do. */
-struct policy_role {
-	tool_mask        tools;
-	tool_mask        upstream;  /* the tools that the upstream may call in
-	                               the turns of the clients' ask calls */
-	struct cstr_view who;       /* "role NAME", for the log; empty in
-	                               askai's own policy */
-	uint64_t         metrics;   /* a bool value in a uint64_t that fills
-	                               the padding */
-};
-
 /* A token, by its digest, and the identity it proves. */
 struct policy_token {
 	unsigned char    digest[DIGEST];
@@ -87,7 +76,7 @@ struct policy {
 	                                                  roles may grant */
 	_Atomic uint64_t     refs;
 	struct policy_token *tokens;                   /* by digest */
-	struct policy_role  *roles;
+	struct policy_grant *roles;                    /* each with principal 0 */
 	struct policy_gid   *groups;                   /* in the configuration's
 	                                                  order, which the first
 	                                                  that a user is in wins */
@@ -134,9 +123,9 @@ struct policy {
 };
 
 static_assert(sizeof "anonymous loopback (role )" + POLICY_NAME <= POLICY_WHO);
-static_assert(alignof (struct policy_token) <= alignof (struct policy) &&
-              alignof (struct policy_role) <= alignof (struct policy_token) &&
-              alignof (struct policy_gid) <= alignof (struct policy_role) &&
+static_assert(alignof (struct policy_grant) <= alignof (struct policy) &&
+              alignof (struct policy_token) <= alignof (struct policy_grant) &&
+              alignof (struct policy_gid) <= alignof (struct policy_token) &&
               alignof (struct policy_range) <= alignof (struct policy_gid));
 
 /* What policy_create() works from, and where it says what is wrong. */
@@ -638,7 +627,7 @@ policy_build_no_tool (struct policy_build *b,
  */
 static int
 policy_build_tools (struct policy_build *b,
-                    struct policy_role  *r,
+                    struct policy_grant *r,
                     char const          *name,
                     char const          *key,
                     struct json_object  *list)
@@ -666,7 +655,7 @@ policy_build_tools (struct policy_build *b,
 /* Member @p key, @p val, of role @p name, into @p r. */
 static int
 policy_build_member (struct policy_build *b,
-                     struct policy_role  *r,
+                     struct policy_grant *r,
                      char const          *name,
                      char const          *key,
                      struct json_object  *val)
@@ -684,7 +673,7 @@ policy_build_member (struct policy_build *b,
 /* Role @p name, its members @p members, into @p r. */
 static int
 policy_build_role_one (struct policy_build *b,
-                       struct policy_role  *r,
+                       struct policy_grant *r,
                        char const          *name,
                        struct json_object  *members)
 {
@@ -715,7 +704,7 @@ policy_build_roles (struct policy_build *b)
 		return 0;
 	if (!json_object_is_type(b->roles, json_type_object))
 		return policy_build_fail(b, "roles must be an object");
-	struct policy_role *r = b->p->roles;
+	struct policy_grant *r = b->p->roles;
 	struct json_object_iter it;
 	json_object_object_foreachC(b->roles, it) {
 		int e = policy_build_role_one(b, r++, it.key, it.val);
@@ -904,8 +893,8 @@ policy_build_own (struct policy_build *b,
 {
 	struct policy *p = b->p;
 	tool_mask all = policy_build_all(b);
-	p->roles[0] = (struct policy_role){ .tools = all, .upstream = all, .metrics = true };
-	p->roles[1] = (struct policy_role){ .tools = all, .upstream = all };
+	p->roles[0] = (struct policy_grant){ .tools = all, .upstream = all, .metrics = true };
+	p->roles[1] = (struct policy_grant){ .tools = all, .upstream = all };
 	if (!token) {
 		p->anonymous[POLICY_LOOPBACK] = 0;
 		p->anonymous[POLICY_REMOTE] = 1;
@@ -1003,9 +992,9 @@ policy_create (struct json_object *file,
 		return nullptr;
 	}
 	atomic_init(&p->refs, 1);
-	p->tokens = (struct policy_token *)(p + 1);
-	p->roles = (struct policy_role *)(p->tokens + n_tokens);
-	p->groups = (struct policy_gid *)(p->roles + n_roles);
+	p->roles = (struct policy_grant *)(p + 1);
+	p->tokens = (struct policy_token *)(p->roles + n_roles);
+	p->groups = (struct policy_gid *)(p->tokens + n_tokens);
 	p->subuids = (struct policy_range *)(p->groups + n_groups);
 	p->n_roles = n_roles;
 	p->n_subuids = n_subuids;
@@ -1101,7 +1090,7 @@ policy_log_roles (struct policy const *policy,
 	}
 	tool_mask listed = 0;
 	for (size_t i = 0; i < policy->n_roles; ++i) {
-		struct policy_role const *r = &policy->roles[i];
+		struct policy_grant const *r = &policy->roles[i];
 		tool_mask up = lent ? lent(ctx, r->tools, r->upstream) : 0;
 		LOG_ALL(LOG_INFO, "%.*s:", (int)r->who.len, r->who.data);
 		policy_log_tools("tools", 14, tools, n_tools, r->tools);
@@ -1192,7 +1181,7 @@ policy_log_own (struct policy const *policy,
 		LOG_ALL(LOG_INFO, "  remote          all tools");
 		LOG_ALL(LOG_INFO, "  unix            all tools and metrics");
 	}
-	struct policy_role const *r = &policy->roles[0];
+	struct policy_grant const *r = &policy->roles[0];
 	if (lent)
 		policy_log_tools("upstream tools", policy->n_tokens ? 22 : 14, tools, n_tools,
 		                 lent(ctx, r->tools, r->upstream));
@@ -1336,28 +1325,23 @@ policy_grant_role (struct policy const *policy,
 {
 	if (role < 0)
 		return POLICY_REFUSED;
-	struct policy_role const *r = &policy->roles[role];
-	*g = (struct policy_grant){
-		.principal = principal,
-		.tools = r->tools,
-		.upstream = r->upstream,
-		.who = who.len ? who : r->who,
-		.metrics = r->metrics
-	};
+	*g = policy->roles[role];
+	g->principal = principal;
+	if (who.len)
+		g->who = who;
 	return POLICY_GRANTED;
 }
 
-/* Grant the client that shows the token of @p len bytes at @p token the
- * role of the identity it proves, if any.
+/* Grant the client that shows @p token the role of the identity that the
+ * token proves, if any.
  */
 static enum policy_verdict
 policy_grant_token (struct policy const *policy,
-                    char const          *token,
-                    size_t               len,
+                    struct cstr_view     token,
                     struct policy_grant *g)
 {
 	unsigned char digest[DIGEST];
-	SHA256((unsigned char const *)token, len, digest);
+	SHA256((unsigned char const *)token.data, token.len, digest);
 	struct policy_token const *t = bsearch(digest, policy->tokens, policy->n_tokens,
 	                                       sizeof *policy->tokens, policy_by_digest);
 	if (!t)
@@ -1388,25 +1372,24 @@ policy_grant_unix (struct policy const      *policy,
 
 enum policy_verdict
 policy_grant (struct policy const      *policy,
-              char const               *token,
-              size_t                    len,
+              struct cstr_view          token,
               enum policy_kind          kind,
               struct policy_peer const *peer,
               struct policy_grant      *g)
 {
 	if (kind != POLICY_UNIX || !peer) {
-		if (token && policy->n_tokens)
-			return policy_grant_token(policy, token, len, g);
+		if (token.data && policy->n_tokens)
+			return policy_grant_token(policy, token, g);
 		return policy_grant_role(policy, policy->anonymous[kind], 0,
 		                         policy->strangers[kind], g);
 	}
-	if (!token)
+	if (!token.data)
 		return policy_grant_unix(policy, peer, g);
 	if (!policy->unix_token)
 		return POLICY_UNIX_TOKEN;
 	/* ASKAI_TOKEN under askai's own policy grants its role, and the calls
 	 * remain those of the Unix user. */
-	if (policy_grant_token(policy, token, len, g) != POLICY_GRANTED)
+	if (policy_grant_token(policy, token, g) != POLICY_GRANTED)
 		return POLICY_REFUSED;
 	g->principal = peer->principal;
 	return POLICY_GRANTED;

@@ -1374,15 +1374,8 @@ httpd_conn_grant (struct httpd_conn *conn)
 		.principal = conn->principal,
 		.n_groups = conn->n_groups
 	};
-	struct policy_grant g = {};
-	enum policy_verdict v = policy_grant(conn->srv->policy, token.data, token.len,
-	                                     kind, &peer, &g);
-	conn->stream.principal = g.principal;
-	conn->stream.tools = g.tools;
-	conn->stream.upstream = g.upstream;
-	conn->stream.who = g.who;
-	conn->stream.trusted = g.metrics;
-	return v;
+	conn->stream.grant = (struct policy_grant){};
+	return policy_grant(conn->srv->policy, token, kind, &peer, &conn->stream.grant);
 }
 
 /* Parse the head of @p len bytes at @p data, the input's start, and check it
@@ -1663,7 +1656,7 @@ httpd_conn_begin (struct httpd_conn *conn)
 	             (struct span){ head, (size_t)req->target.off - 1 },
 	             (struct span){ head + req->target.off, req->target.len }, length);
 	/* The text is in the policy, which a reload can free (stream.h). */
-	conn->stream.who = (struct cstr_view){};
+	conn->stream.grant.who = (struct cstr_view){};
 	if (conn->open && conn->body_in)
 		app->on_body(&conn->stream, (struct span){}, true);
 }
@@ -3235,8 +3228,8 @@ httpd_home_create (struct loop            *loop,
 		.spare_fd = -1
 	};
 	struct policy_grant g;
-	home->anyone = policy_grant(cfg->policy, nullptr, 0, POLICY_REMOTE, nullptr, &g) ==
-	               POLICY_GRANTED && g.tools;
+	home->anyone = policy_grant(cfg->policy, (struct cstr_view){}, POLICY_REMOTE, nullptr,
+	                            &g) == POLICY_GRANTED && g.tools;
 	list_init(&home->spare.list);
 	list_init(&home->gone.list);
 	httpd_home_budget(home);

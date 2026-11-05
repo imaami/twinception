@@ -141,7 +141,9 @@ struct policy_grant {
 	                                  text is in the policy's memory. */
 	uint64_t         principal;  /**< the principal of its identity or of
 	                                  its Unix user, never 0, or 0 for an
-	                                  anonymous client over TCP */
+	                                  anonymous client over TCP. Bit 63 is
+	                                  never set, and bit 62 is set for an
+	                                  identity. */
 	uint64_t         metrics;    /**< bool: it may read the metrics; widened
 	                                  over the padding */
 };
@@ -222,9 +224,9 @@ policy_log (struct policy const *policy,
             void const          *ctx);
 
 /**
- * Decides what a client may do. The client sends the bearer token of
- * @p len bytes at @p token, or none if @p token is nullptr, and connects
- * as @p kind. On a Unix socket, @p peer is its user.
+ * Decides what a client may do. The client sends the bearer token
+ * @p token, or none if token.data is nullptr, and connects as @p kind. On
+ * a Unix socket, @p peer is its user.
  *
  * Over TCP, a token counts if the policy has any token, and otherwise the
  * role of @p kind in "anonymous" applies. On a Unix socket, a client
@@ -238,8 +240,7 @@ policy_log (struct policy const *policy,
  */
 extern enum policy_verdict
 policy_grant (struct policy const      *policy,
-              char const               *token,
-              size_t                    len,
+              struct cstr_view          token,
               enum policy_kind          kind,
               struct policy_peer const *peer,
               struct policy_grant      *grant);

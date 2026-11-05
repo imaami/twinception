@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "policy.h"
 #include "tool.h"
 
 /** The body length of a request or response not known up front. */
@@ -106,34 +107,19 @@ struct stream_app {
 
 struct stream {
 	struct stream_ops const *ops;
-	void                    *user;       /**< the application's own */
-	tool_mask                tools;      /**< the tools its role may list and
-	                                          call */
-	tool_mask                upstream;   /**< the tools that the upstream may
-	                                          call in the turns of its ask
-	                                          calls */
-	struct cstr_view         who;        /**< the client for the log, as
-	                                          struct policy_grant names it.
-	                                          httpd clears the member after
-	                                          on_head() returns, because a
-	                                          reload can free the policy
-	                                          that has the text. */
-	uint64_t                 principal;  /**< The principal of the client's
-	                                          identity or Unix user
-	                                          (src/policy.h). Bit 63 is
-	                                          never set, and bit 62 is set
-	                                          for an identity. It is 0 for
-	                                          an anonymous client over
-	                                          TCP. */
-	uint64_t                 peer[2];    /**< the client's address, as the
-	                                          limits per address key it:
-	                                          IPv4, mapped, or an IPv6 /64.
-	                                          For a client on a Unix socket
-	                                          it is {UINT64_MAX, uid}, which
-	                                          no TCP address has. */
-	uint64_t                 trusted;    /**< bool: its role may see
-	                                          diagnostics; widened over the
-	                                          padding */
+	void                    *user;     /**< a pointer for the application */
+	struct policy_grant      grant;    /**< what the client may do.
+	                                        httpd clears grant.who after
+	                                        on_head() returns, because a
+	                                        reload can free the policy
+	                                        that contains the text. */
+	uint64_t                 peer[2];  /**< the key of the client's
+	                                        address for the limits per
+	                                        address: an IPv4 address, a
+	                                        mapped address or an IPv6 /64
+	                                        prefix. For a client on a Unix
+	                                        socket it is {UINT64_MAX, uid},
+	                                        which no TCP address has. */
 };
 
 #endif /* TWINCEPTION_SRC_STREAM_H_ */

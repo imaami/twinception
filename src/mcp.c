@@ -65,10 +65,11 @@
  * the job's record in the ledger (src/ledger.h), as a call that becomes a
  * task does. A client's timers and waits are in the ledger too.
  *
- * GET /metrics answers a trusted client (src/stream.h) with the metrics,
- * rendered a share a step (src/metrics.h). Draining, tool calls that wait
- * for the upstream, and those yet to start, end with an error, which on an
- * event stream is its last event.
+ * askai answers GET /metrics with the metrics if the grant of the client
+ * permits it (src/policy.h), and renders a share of them in each step
+ * (src/metrics.h). Draining, tool calls that wait for the upstream, and
+ * those yet to start, end with an error, which on an event stream is its
+ * last event.
  */
 #define _GNU_SOURCE /* memrchr() */
 #include <errno.h>
@@ -2582,8 +2583,9 @@ mcp_req_key (struct mcp_req const *req,
              uint64_t             *hash)
 {
 	struct stream const *s = req->s;
+	uint64_t const principal = s->grant.principal;
 	uint64_t const who[3] = {
-		s->principal, s->principal ? 0 : s->peer[0], s->principal ? 0 : s->peer[1]
+		principal, principal ? 0 : s->peer[0], principal ? 0 : s->peer[1]
 	};
 	struct span session = s->ops->field(s, F_SESSION);
 	size_t len = 0;
@@ -2617,8 +2619,8 @@ static uint64_t
 mcp_req_owner (struct mcp_req const *req)
 {
 	struct stream const *s = req->s;
-	if (s->principal)
-		return s->principal;
+	if (s->grant.principal)
+		return s->grant.principal;
 	return util_hash(~req->mcp->st->seed, s->peer, sizeof s->peer) | LEDGER_ANONYMOUS;
 }
 
@@ -2808,8 +2810,8 @@ mcp_req_submit (struct mcp_req *req)
 		job->deadline = loop->now + (req->archive_deadline > wall
 		                             ? req->archive_deadline - wall : 1);
 	struct stream const *s = req->s;
-	if (s->principal) {
-		job->principal = s->principal;
+	if (s->grant.principal) {
+		job->principal = s->grant.principal;
 		job->session = 0;
 		job->peer[0] = job->peer[1] = UINT64_MAX;
 	} else {
@@ -4044,7 +4046,7 @@ mcp_req_upload_failed (struct mcp_req *req,
 static tool_mask
 mcp_req_lent (struct mcp_req const *req)
 {
-	return mcp_lending_lent(&req->mcp->st->lending, req->s->upstream);
+	return mcp_lending_lent(&req->mcp->st->lending, req->s->grant.upstream);
 }
 
 /* The tokens that the upload, as written so far, takes: the last turn's
@@ -4867,7 +4869,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	uint32_t id = mcp_static_tool_of(st, name, len);
 	struct json_object *call = jb_get(args, "arguments");
 	struct mcp_piece problem =
-		id >= st->n_granted || !(req->s->tools >> id & 1) ||
+		id >= st->n_granted || !(req->s->grant.tools >> id & 1) ||
 		st->offers[id].kind->flags & KF_AGENDA
 		? TEXT("The tool argument must name a tool of yours other than background, "
 		       "jobs, wait and timer.")
@@ -6902,7 +6904,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 	uint32_t id = mcp_static_tool_of(st, str, len);
 	/* One that the client's role may not call is not unknown, but not
 	 * available to it. */
-	if (id >= st->n_granted || !(req->s->tools >> id & 1)) {
+	if (id >= st->n_granted || !(req->s->grant.tools >> id & 1)) {
 		bool known = id < st->n_granted;
 		/* An unknown name is the client's, so the log has it as a JSON
 		 * string. */
@@ -7025,7 +7027,7 @@ mcp_req_tools_list (struct mcp_req *req)
 	for (uint32_t id = 0; id < st->n_granted; ++id) {
 		struct dstr const *def = &st->offers[id].listed;
 		bool first = n == 1;
-		if (req->s->tools >> id & 1)
+		if (req->s->grant.tools >> id & 1)
 			p[n++] = RAW(dstr_get(def) + first, dstr_len(def) - first);
 	}
 	p[n++] = req->modern ? DSTR(&st->list_tail) : FRAG("]}");
@@ -7671,7 +7673,7 @@ mcp_begin (struct mcp           *mcp,
 		.s = s,
 		.mcp = mcp,
 		.head = loop_clock(),
-		.principal = s->principal,
+		.principal = s->grant.principal,
 		.generation = instance_table_generation(&mcp->instances),
 		.ping_at = UINT64_MAX,
 		.promote_at = UINT64_MAX,
@@ -7682,16 +7684,17 @@ mcp_begin (struct mcp           *mcp,
 	 * the head, so it is copied. The log names a client on a Unix socket
 	 * by its uid, which is in peer[1] (src/stream.h), with the name from
 	 * the policy after it in parentheses. */
+	struct cstr_view const who = s->grant.who;
 	if (s->peer[0] != UINT64_MAX) {
-		if (s->who.len)
-			memcpy(req->client, s->who.data, s->who.len < sizeof req->client
-			                                 ? s->who.len : sizeof req->client - 1);
+		if (who.len)
+			memcpy(req->client, who.data, who.len < sizeof req->client
+			                              ? who.len : sizeof req->client - 1);
 	} else {
 		size_t n = util_format(req->client, sizeof req->client, "uid %" PRIu64,
 		                       s->peer[1]);
-		if (s->who.len)
+		if (who.len)
 			(void)util_format(req->client + n, sizeof req->client - n, " (%.*s)",
-			                  (int)s->who.len, s->who.data);
+			                  (int)who.len, who.data);
 	}
 	s->user = req;
 	return req;
@@ -7706,7 +7709,7 @@ mcp_on_head (void          *ctx,
 {
 	struct mcp *mcp = ctx;
 	if (mcp_span_is(method, "GET", sizeof "GET" - 1) && mcp_is_metrics(target)) {
-		if (s->trusted)
+		if (s->grant.metrics)
 			(void)mcp_begin(mcp, s, PHASE_METRICS, METHOD_METRICS);
 		else
 			mcp_http_error(s, 403, "Forbidden", SPAN(JSON_FIELD));
