@@ -1,0 +1,72 @@
+/** @file hexid.h
+ *
+ * Random ids of 128 bits, as lowercase hexadecimal digits: the ids of
+ * ledger records, jobs, journals, threads of notes and MCP sessions.
+ */
+#ifndef TWINCEPTION_SRC_HEXID_H_
+#define TWINCEPTION_SRC_HEXID_H_
+
+#include <errno.h>
+#include <string.h>
+
+#include "compat.h"
+#include "cstr_view.h"
+#include "util.h"
+
+/** The digits of an id. */
+enum { HEXID_DIGITS = 32 };
+
+/** An id: HEXID_DIGITS lowercase hexadecimal digits and a NUL. The empty
+ *  string is no id.
+ */
+struct hexid {
+	char hex[HEXID_DIGITS + 1];
+};
+
+/** Returns true if @p hex is HEXID_DIGITS lowercase hexadecimal digits. */
+static inline bool
+hexid_valid (struct cstr_view hex)
+{
+	return hex.len == HEXID_DIGITS && util_is_hex(hex.data, hex.len);
+}
+
+/** Makes a new random id in @p id. Returns 0, or the error number of
+ *  util_random() with no id in @p id.
+ */
+static inline int
+hexid_make (struct hexid *id)
+{
+	*id = (struct hexid){};
+	return util_random_hex(id->hex, HEXID_DIGITS / 2);
+}
+
+/** Copies the id @p hex into @p id. Returns 0, or EINVAL with no id in
+ *  @p id if hexid_valid() rejects @p hex.
+ */
+static inline int
+hexid_init (struct hexid     *id,
+            struct cstr_view  hex)
+{
+	*id = (struct hexid){};
+	if (!hexid_valid(hex))
+		return EINVAL;
+	memcpy(id->hex, hex.data, hex.len);
+	return 0;
+}
+
+/** Returns a view of the digits of @p id, which is empty for no id. */
+static inline struct cstr_view
+hexid_view (struct hexid const *id)
+{
+	return (struct cstr_view){ id->hex, *id->hex ? HEXID_DIGITS : 0 };
+}
+
+/** Returns true if @p a and @p b are the same id, or both no id. */
+static inline bool
+hexid_equal (struct hexid const *a,
+             struct hexid const *b)
+{
+	return !strcmp(a->hex, b->hex);
+}
+
+#endif /* TWINCEPTION_SRC_HEXID_H_ */
