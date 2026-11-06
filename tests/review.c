@@ -7,15 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "check.h"
 #include "dstr.h"
 #include "review.h"
-
-static unsigned failures;
-
-#define CHECK(cond) \
-        ((cond) ? (void)0 \
-                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-                                             __FILE__, __LINE__, #cond)))
 
 /* Check that the text @p got is @p want. */
 #define SAME(got, want) same(__FILE__, __LINE__, got, want)
@@ -1665,9 +1659,5 @@ main (void)
 	test_json();
 	test_many();
 	test_nullptr();
-	if (failures)
-		fprintf(stderr, "review: %u checks failed\n", failures);
-	else
-		puts("review: all checks passed");
-	return failures != 0;
+	return check_report("review");
 }

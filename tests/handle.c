@@ -3,14 +3,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "check.h"
 #include "loop.c"
-
-static unsigned failures;
-
-#define CHECK(cond) \
-        ((cond) ? (void)0 \
-                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-                                             __FILE__, __LINE__, #cond)))
 
 /* The slot @p h names, whatever its generation. */
 static uint32_t
@@ -129,10 +123,5 @@ main (void)
 	test_wrap(&l);
 	test_grow(&l);
 	loop_fini(&l);
-	if (failures) {
-		fprintf(stderr, "handle: %u checks failed\n", failures);
-		return 1;
-	}
-	printf("handle: all checks passed\n");
-	return 0;
+	return check_report("handle");
 }

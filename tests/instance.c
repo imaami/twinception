@@ -6,15 +6,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "check.h"
+
 #include "loop.c"
 #include "../src/instance.c"
-
-static unsigned failures;
-
-#define CHECK(cond) \
-        ((cond) ? (void)0 \
-                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-                                             __FILE__, __LINE__, #cond)))
 
 static uint64_t made;
 static uint64_t destroyed;
@@ -296,7 +291,5 @@ main (void)
 	CHECK(made == destroyed);
 
 	loop_fini(&l);
-	printf("instance: %s (%u failures; %llu made)\n", failures ? "FAIL" : "PASS",
-	       failures, (unsigned long long)made);
-	return !!failures;
+	return check_report("instance");
 }

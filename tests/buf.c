@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "buf.h"
+#include "check.h"
 #include "hist.h"
 #include "util.h"
 
@@ -17,13 +18,6 @@ __asan_default_options (void)
 {
 	return "allocator_may_return_null=1";
 }
-
-static unsigned failures;
-
-#define CHECK(cond) \
-        ((cond) ? (void)0 \
-                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-                                             __FILE__, __LINE__, #cond)))
 
 /* Append @p len bytes of @p src through a reservation of exactly @p len. */
 static bool
@@ -467,10 +461,5 @@ main (void)
 	test_wipe();
 	test_stash();
 	test_model();
-	if (failures) {
-		fprintf(stderr, "buf: %u checks failed\n", failures);
-		return 1;
-	}
-	puts("buf: PASS");
-	return 0;
+	return check_report("buf");
 }

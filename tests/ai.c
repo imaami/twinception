@@ -1,16 +1,9 @@
 /** @file Unit tests for the upstream event parser (src/ai.c). */
 #include <json-c/json.h>
-#include <stdio.h>
 #include <string.h>
 
 #include "ai.h"
-
-static unsigned failures;
-
-#define CHECK(cond) \
-        ((cond) ? (void)0 \
-                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-                                             __FILE__, __LINE__, #cond)))
+#include "check.h"
 
 /* The number of values that were not JSON integers and that ai.c passed to
  * json_object_get_int64(). json-c parses NaN as a double, and converting
@@ -86,9 +79,5 @@ main (void)
 	      "{\"status\":\"completed\",\"usage\":{\"total_input_tokens\":NaN,"
 	      "\"total_output_tokens\":1,\"total_tokens\":50}}}"));
 
-	if (failures)
-		fprintf(stderr, "ai: %u checks failed\n", failures);
-	else
-		puts("ai: all checks passed");
-	return failures != 0;
+	return check_report("ai");
 }

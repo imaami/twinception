@@ -34,12 +34,7 @@ fake_clock_gettime (clockid_t        id,
 #include "loop.c"
 #undef clock_gettime
 
-static unsigned failures;
-
-#define CHECK(cond) \
-        ((cond) ? (void)0 \
-                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-                                             __FILE__, __LINE__, #cond)))
+#include "check.h"
 
 enum { A = 1, B = 2, C = 3 };  /* owners */
 
@@ -924,10 +919,5 @@ main (void)
 	ledger_destroy(&l);
 	CHECK(!l);
 	loop_fini(other_loop);
-	if (failures) {
-		fprintf(stderr, "ledger: %u checks failed\n", failures);
-		return 1;
-	}
-	printf("ledger: all checks passed\n");
-	return 0;
+	return check_report("ledger");
 }

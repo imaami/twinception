@@ -1,17 +1,10 @@
 /** @file Unit tests for the JSON helpers (src/jb.c). */
 #include <errno.h>
 #include <json-c/json.h>
-#include <stdio.h>
 #include <string.h>
 
+#include "check.h"
 #include "jb.h"
-
-static unsigned failures;
-
-#define CHECK(cond) \
-        ((cond) ? (void)0 \
-                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-                                             __FILE__, __LINE__, #cond)))
 
 /* Whether json-c's tokener constructors fail, as when memory runs out. */
 static bool no_tokener;
@@ -175,9 +168,5 @@ main (void)
 	CHECK(parse("{}", SIZE_MAX, &steps) == ENOMEM && steps == 1);
 	no_tokener = false;
 
-	if (failures)
-		fprintf(stderr, "jb: %u checks failed\n", failures);
-	else
-		puts("jb: all checks passed");
-	return failures != 0;
+	return check_report("jb");
 }

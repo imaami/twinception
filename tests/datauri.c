@@ -1,16 +1,9 @@
 /** @file Unit tests for data: URIs (src/datauri.c). */
 #include <errno.h>
-#include <stdio.h>
 #include <string.h>
 
+#include "check.h"
 #include "datauri.h"
-
-static unsigned failures;
-
-#define CHECK(cond) \
-        ((cond) ? (void)0 \
-                : (void)(++failures, fprintf(stderr, "%s:%d: CHECK(%s) failed\n", \
-                                             __FILE__, __LINE__, #cond)))
 
 /* Whether @p uri decodes to the @p len bytes at @p want. */
 static bool
@@ -73,9 +66,5 @@ main (void)
 	CHECK(datauri_init(&d, (struct cstr_view){}) == EINVAL);
 	CHECK(datauri_init(nullptr, CSTR_VIEW("data:,")) == EINVAL);
 
-	if (failures)
-		fprintf(stderr, "datauri: %u checks failed\n", failures);
-	else
-		puts("datauri: all checks passed");
-	return failures != 0;
+	return check_report("datauri");
 }
