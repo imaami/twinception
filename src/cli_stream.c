@@ -26,13 +26,13 @@ cli_stream_fini (struct cli_stream *stream)
 	dstr_cleanup(&stream->text);
 }
 
+/* Show the progress of params, the parameters of a progress notification,
+ * if it is for the token of the stream.
+ */
 static int
 cli_stream_progress (struct cli_stream  *stream,
-                     struct json_object *event)
+                     struct json_object *params)
 {
-	if (!jb_is(jb_get(event, "method"), "notifications/progress"))
-		return 0;
-	struct json_object *params = jb_get(event, "params");
 	struct cstr_view token = jb_view(jb_get(params, "progressToken"));
 	struct cstr_view message = jb_view(jb_get(params, "message"));
 	if (!token.data || !message.data || !cstr_view_equal(token, stream->token))
@@ -49,11 +49,12 @@ cli_stream_notify (void               *context,
                    struct cli_error   *error)
 {
 	struct cli_stream *stream = context;
-	int e = cli_stream_progress(stream, event);
-	if (e || !(stream->flags & CLI_STREAM_DELTAS) ||
-	    !jb_is(jb_get(event, "method"), "notifications/askai/delta"))
-		return e;
+	struct cstr_view method = jb_view(jb_get(event, "method"));
 	struct json_object *params = jb_get(event, "params");
+	if (cstr_view_equal(method, CSTR_VIEW("notifications/progress")))
+		return cli_stream_progress(stream, params);
+	if (!(stream->flags & CLI_STREAM_DELTAS) || !cstr_view_equal(method, CSTR_VIEW("notifications/askai/delta")))
+		return 0;
 	struct json_object *request = jb_get(params, "requestId");
 	if (!json_object_is_type(request, json_type_int) || json_object_get_int64(request) != request_id)
 		return cli_error_set(error, EPROTO, "Unexpected streaming request id");
@@ -62,6 +63,7 @@ cli_stream_notify (void               *context,
 	if (!text.data || !kind.data)
 		return cli_error_set(error, EPROTO, "Expected a JSON string from AskAI");
 	int64_t current = json_object_get_int64(jb_get(params, "turn"));
+	int e = 0;
 	if (current != stream->turn) {
 		if (dstr_len(&stream->text))
 			e = cli_ui_push(&stream->ui, false, CSTR_VIEW("\n"));
@@ -82,6 +84,25 @@ cli_stream_notify (void               *context,
 	return cli_error_set(error, EPROTO, "Unknown AskAI delta kind");
 }
 
+/* Show the part of text, the final text of the turn, that the deltas did
+ * not show. If the deltas showed the start of text, show the rest of it.
+ * If text ends with the deltas, show nothing, because agenda wakeups may
+ * include earlier turns that were shown already. Otherwise show all of
+ * text on a new line after the deltas, which are not empty then.
+ */
+static int
+cli_stream_rest (struct cli_stream *stream,
+                 struct cstr_view   text)
+{
+	struct cstr_view streamed = cstr_view_dstr(&stream->text);
+	if (cstr_view_starts(text, streamed))
+		return cli_ui_push(&stream->ui, false, cstr_view_slice(text, streamed.len, SIZE_MAX));
+	if (cstr_view_ends(text, streamed))
+		return 0;
+	int e = cli_ui_push(&stream->ui, false, CSTR_VIEW("\n"));
+	return e ? e : cli_ui_push(&stream->ui, false, text);
+}
+
 int
 cli_stream_result (struct cli_stream   *stream,
                    struct json_object  *result,
@@ -99,19 +120,8 @@ cli_stream_result (struct cli_stream   *stream,
 		e = cli_error_set(error, EPROTO, "AskAI returned unsupported assistant content");
 	else if (json_object_get_boolean(jb_get(result, "isError")))
 		e = cli_error_set(error, EIO, "%.*s", (int)text.len, text.data);
-	if (!e) {
-		struct cstr_view streamed = cstr_view_dstr(&stream->text);
-		if (cstr_view_starts(text, streamed))
-			e = cli_ui_push(&stream->ui, false, cstr_view_slice(text, streamed.len, SIZE_MAX));
-		else if (streamed.len && cstr_view_ends(text, streamed)) {
-			/* Agenda wakeups may include already displayed earlier turns. */
-		} else {
-			if (streamed.len)
-				e = cli_ui_push(&stream->ui, false, CSTR_VIEW("\n"));
-			if (!e)
-				e = cli_ui_push(&stream->ui, false, text);
-		}
-	}
+	if (!e)
+		e = cli_stream_rest(stream, text);
 	int finish = cli_ui_finish(&stream->ui);
 	if (!e)
 		e = finish;
