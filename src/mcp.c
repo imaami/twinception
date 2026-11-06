@@ -5105,11 +5105,12 @@ mcp_slot_background (struct mcp_slot    *slot,
 	mcp_slot_start(job, job->args);
 }
 
-/* List the jobs into @p slot's answer: each with its tool, its arguments,
- * and where it stands.
+/* Writes the jobs of the turns into the answer of the jobs call in
+ * @p slot: each with its tool, its arguments and where it stands. Returns
+ * 0, or ENOMEM.
  */
 static int
-mcp_slot_jobs_list (struct mcp_slot *slot)
+mcp_slot_turn_list (struct mcp_slot *slot)
 {
 	static char const *const states[] = {
 		[0]                          = "running",
@@ -5141,14 +5142,37 @@ mcp_slot_jobs_list (struct mcp_slot *slot)
 	return 0;
 }
 
-/* Give @p job's output, as the jobs tool's call in @p slot asks with
- * @p args: from its offset, once it has finished.
+/* Returns the job of the turns that the argument job of @p args names, for
+ * the jobs call in @p slot. If there is no such job, or it was cancelled,
+ * returns nullptr, and the call answers why.
+ */
+static struct mcp_slot *
+mcp_slot_turn_job (struct mcp_slot    *slot,
+                   struct json_object *args)
+{
+	struct mcp_agenda *a = slot->req->agenda;
+	uint64_t const n = jb_count(jb_get(args, "job"), a ? a->n_jobs : 0);
+	struct mcp_slot *job = n ? &a->jobs[n - 1] : nullptr;
+	struct cstr_view const problem =
+		!job ? CSTR_VIEW("The job argument must be the number of a job you started.")
+		: job->flags & SLOT_CANCELLED ? was_cancelled
+		: (struct cstr_view){};
+	if (!problem.data)
+		return job;
+	mcp_slot_result(slot, problem, true);
+	return nullptr;
+}
+
+/* Gives the output of the job of the turns that @p args names, for the
+ * jobs call in @p slot: from its offset, once the job has ended.
  */
 static void
-mcp_slot_jobs_result (struct mcp_slot    *slot,
-                      struct mcp_slot    *job,
+mcp_slot_turn_result (struct mcp_slot    *slot,
                       struct json_object *args)
 {
+	struct mcp_slot *job = mcp_slot_turn_job(slot, args);
+	if (!job)
+		return;
 	if (!(job->flags & SLOT_DONE)) {
 		mcp_slot_result(slot, still_runs, true);
 		return;
@@ -5159,11 +5183,16 @@ mcp_slot_jobs_result (struct mcp_slot    *slot,
 	mcp_slot_respond(slot, job->flags & SLOT_FAILED);
 }
 
-/* Cancel @p job, as the jobs tool's call in @p slot asks, if it runs. */
+/* Cancels the job of the turns that @p args names, for the jobs call in
+ * @p slot, if the job runs.
+ */
 static void
-mcp_slot_jobs_cancel (struct mcp_slot *slot,
-                      struct mcp_slot *job)
+mcp_slot_turn_cancel (struct mcp_slot    *slot,
+                      struct json_object *args)
 {
+	struct mcp_slot *job = mcp_slot_turn_job(slot, args);
+	if (!job)
+		return;
 	if (job->flags & SLOT_DONE) {
 		mcp_slot_result(slot, runs_no_more, true);
 		return;
@@ -5292,43 +5321,20 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 	mcp_req_enter(req, PHASE_SHOW);
 }
 
-/* Cancels the job or the timer that @p args names, for a client's call of
- * jobs in @p slot.
+/* Cancels the job of the call's owner that @p args names, for a client's
+ * call of jobs in @p slot, or of the ask tool, which cancels only its own
+ * jobs, if the job runs.
  */
 static void
 mcp_slot_client_cancel (struct mcp_slot    *slot,
                         struct json_object *args)
 {
-	struct mcp_req *req = slot->req;
-	struct json_object *timer = jb_get(args, "timer");
-	if (!jb_get(args, "job") == !timer) {
-		mcp_slot_result(slot, CSTR_VIEW("The job argument or the timer argument must name "
-		                                "what to cancel."), true);
-		return;
-	}
-	char text[192];
-	if (timer) {
-		uint32_t const n = (uint32_t)jb_count(timer, UINT32_MAX);
-		if (!n) {
-			mcp_slot_result(slot, CSTR_VIEW("The timer argument must be the number of "
-			                                "a timer of yours."), true);
-			return;
-		}
-		int e = ledger_timer_cancel(req->mcp->st->ledger, req->owner, n);
-		mcp_slot_result(slot, !e ? util_format_view(text, sizeof text, "Cancelled timer %"
-		                                            PRIu32 ".", n)
-		                : e == EALREADY ? util_format_view(text, sizeof text, "Timer %" PRIu32
-		                                                   " has fired, and a call of wait "
-		                                                   "reports it.", n)
-		                : util_format_view(text, sizeof text, "You have no timer %" PRIu32
-		                                   " set.", n), e != 0);
-		return;
-	}
 	struct ledger_task *task = mcp_slot_client_find(slot, args);
 	if (!task)
 		return;
 	bool const runs = ledger_task_status(task) == LEDGER_WORKING;
 	struct cstr_view said = runs_no_more;
+	char text[192];
 	if (runs) {
 		ledger_task_cancel(task);
 		said = util_format_view(text, sizeof text, "askai is cancelling %s %s. %s",
@@ -5341,73 +5347,65 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 	mcp_slot_result(slot, said, !runs);
 }
 
-/* A client's call of jobs in @p slot, the request's own: by the argument
- * action of @p args, list the records and the timers of the call's owner,
- * answer with the result of a job, or cancel a job or a timer.
+/* Cancels the job or the timer of the call's owner that @p args names,
+ * for a client's call of jobs in @p slot.
  */
 static void
-mcp_slot_client_jobs (struct mcp_slot    *slot,
+mcp_slot_jobs_cancel (struct mcp_slot    *slot,
                       struct json_object *args)
 {
-	switch (cstr_view_index(actions, ACTIONS, jb_view(jb_get(args, "action")))) {
-	case ACTION_LIST:
-		break;
-	case ACTION_RESULT:
-		mcp_slot_client_result(slot, args);
+	struct json_object *timer = jb_get(args, "timer");
+	if (!jb_get(args, "job") == !timer) {
+		mcp_slot_result(slot, CSTR_VIEW("The job argument or the timer argument must name "
+		                                "what to cancel."), true);
 		return;
-	case ACTION_CANCEL:
+	}
+	if (!timer) {
 		mcp_slot_client_cancel(slot, args);
 		return;
-	default:
-		mcp_slot_result(slot, bad_action, true);
-		return;
 	}
-	int e = mcp_slot_client_list(slot);
-	if (e) {
-		mcp_slot_fail(slot, e);
-		return;
-	}
-	mcp_slot_respond(slot, false);
+	struct mcp_req *req = slot->req;
+	uint32_t const n = (uint32_t)jb_count(timer, UINT32_MAX);
+	int const e = n ? ledger_timer_cancel(req->mcp->st->ledger, req->owner, n) : EINVAL;
+	char text[96];
+	struct cstr_view const said =
+		e == EINVAL ? CSTR_VIEW("The timer argument must be the number of a timer of yours.")
+		: !e ? util_format_view(text, sizeof text, "Cancelled timer %" PRIu32 ".", n)
+		: e == EALREADY ? util_format_view(text, sizeof text, "Timer %" PRIu32 " has fired, "
+		                                   "and a call of wait reports it.", n)
+		: util_format_view(text, sizeof text, "You have no timer %" PRIu32 " set.", n);
+	mcp_slot_result(slot, said, e != 0);
 }
 
-/* The jobs tool's call in @p slot: list the jobs, or give the output of
- * the one @p args names, or cancel it. A client's call is
- * mcp_slot_client_jobs()'s.
+/* The jobs tool's call in @p slot: by the argument action of @p args, list
+ * the jobs and the timers, give the result of a job, or cancel a job or a
+ * timer. A turn's call reads the jobs of the turns, and a client's call
+ * the records and the timers of the call's owner in the ledger.
  */
 static void
 mcp_slot_jobs (struct mcp_slot    *slot,
                struct json_object *args)
 {
-	if (slot->role == ROLE_OWN) {
-		mcp_slot_client_jobs(slot, args);
+	bool const own = slot->role == ROLE_OWN;
+	int e = 0;
+	switch (cstr_view_index(actions, ACTIONS, jb_view(jb_get(args, "action")))) {
+	case ACTION_LIST:
+		e = own ? mcp_slot_client_list(slot) : mcp_slot_turn_list(slot);
+		break;
+	case ACTION_RESULT:
+		(own ? mcp_slot_client_result : mcp_slot_turn_result)(slot, args);
+		return;
+	case ACTION_CANCEL:
+		(own ? mcp_slot_jobs_cancel : mcp_slot_turn_cancel)(slot, args);
+		return;
+	default:
+		mcp_slot_result(slot, bad_action, true);
 		return;
 	}
-	struct mcp_agenda *a = slot->req->agenda;
-	size_t const act = cstr_view_index(actions, ACTIONS, jb_view(jb_get(args, "action")));
-	if (act == ACTION_LIST) {
-		int e = mcp_slot_jobs_list(slot);
-		if (e) {
-			mcp_req_fail(slot->req, e);
-			return;
-		}
-		mcp_slot_respond(slot, false);
-		return;
-	}
-	uint64_t const n = jb_count(jb_get(args, "job"), a ? a->n_jobs : 0);
-	struct mcp_slot *job = n ? &a->jobs[n - 1] : nullptr;
-	struct cstr_view problem =
-		act == ACTIONS ? bad_action
-		: !job ? CSTR_VIEW("The job argument must be the number of a job you started.")
-		: job->flags & SLOT_CANCELLED ? was_cancelled
-		: (struct cstr_view){};
-	if (problem.data) {
-		mcp_slot_result(slot, problem, true);
-		return;
-	}
-	if (act == ACTION_RESULT)
-		mcp_slot_jobs_result(slot, job, args);
+	if (e)
+		mcp_slot_fail(slot, e);
 	else
-		mcp_slot_jobs_cancel(slot, job);
+		mcp_slot_respond(slot, false);
 }
 
 /* A client's wait: the own word of the slot of its call of wait. */
