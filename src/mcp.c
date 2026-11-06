@@ -2689,8 +2689,7 @@ struct mcp_journal_wait {
 	void               (*done) (struct mcp_req *req,
 	                            int             error);
 	void               (*handler) (struct mcp_slot    *slot,
-	                               struct json_object *args,
-	                               bool                own_tool);
+	                               struct json_object *args);
 };
 
 /* The request that @p who names on @p loop, or nullptr if the request has
@@ -3857,7 +3856,7 @@ mcp_req_log_ask (struct mcp_req const *req,
 	    thread, mcp_quote(quoted, sizeof quoted, text, PROMPT_LOG));
 }
 
-static int mcp_req_background (struct mcp_req *req, uint32_t tool, bool own_tool);
+static int mcp_req_background (struct mcp_req *req, uint32_t tool);
 
 /* The roles of the messages of a chat history. */
 static struct cstr_view const roles[] = { CSTR_VIEW_INIT("user"), CSTR_VIEW_INIT("assistant") };
@@ -3964,7 +3963,7 @@ mcp_req_ask (struct mcp_req     *req,
 	if (background && !req->task) {
 		if (st->journal)
 			req->flags |= REQ_DETACH_PENDING;
-		else if (mcp_req_background(req, req->self.tool, true))
+		else if (mcp_req_background(req, req->self.tool))
 			return;
 	}
 	/* A thread's id comes with notes only (the problems above). */
@@ -4937,13 +4936,12 @@ mcp_seconds_since (uint64_t from,
 	return to > from ? (to - from) / NS : 0;
 }
 
-/* Detach a client call into the ledger, with its result read through the
- * same tool when @p own_tool, else through jobs.
+/* Detach a client call of @p tool into the ledger, with its result read
+ * through the same tool when it is the request's own, else through jobs.
  */
 static int
 mcp_req_background (struct mcp_req *req,
-                    uint32_t        tool,
-                    bool            own_tool)
+                    uint32_t        tool)
 {
 	static_assert(LEDGER_RUNNING == 8, "update the problem text");
 	struct mcp_static const *st = req->mcp->st;
@@ -4958,7 +4956,7 @@ mcp_req_background (struct mcp_req *req,
 		return e;
 	}
 	char text[512];
-	size_t n = own_tool
+	size_t n = tool == req->self.tool
 	         ? util_format(text, sizeof text, "Started job %s. Call %s with "
 	                       "{\"job\":\"%s\"} in one second for its status or result; add "
 	                       "\"action\":\"cancel\" to cancel it.", task->id.hex,
@@ -5001,7 +4999,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	if (mcp_req_background(req, id, false))
+	if (mcp_req_background(req, id))
 		return;
 	req->asks |= JOB_BACKGROUND;
 	slot->tool = (uint8_t)id;
@@ -5143,15 +5141,16 @@ mcp_slot_jobs_cancel (struct mcp_slot *slot,
 }
 
 /* Returns a reference to the record that the argument job of @p args
- * names, for a client's call of jobs in @p slot. If the owner of the call
- * has no such record, returns nullptr, and the call answers why.
+ * names, for a client's call of jobs in @p slot, or of the ask tool, whose
+ * calls read only the ask tool's own jobs. If the owner of the call has no
+ * such record, returns nullptr, and the call answers why.
  */
 static struct ledger_task *
 mcp_slot_client_find (struct mcp_slot    *slot,
-                      struct json_object *args,
-                      bool                own_tool)
+                      struct json_object *args)
 {
 	struct mcp_req *req = slot->req;
+	bool const own_tool = !(mcp_slot_tool(slot)->kind->flags & KF_AGENDA);
 	struct hexid id;
 	if (hexid_init(&id, jb_view(jb_get(args, "job")))) {
 		mcp_slot_result(slot, CSTR_VIEW("The job argument must be the id of a job of "
@@ -5224,15 +5223,14 @@ mcp_slot_client_list (struct mcp_slot *slot)
  */
 static void
 mcp_slot_client_result (struct mcp_slot    *slot,
-                        struct json_object *args,
-                        bool                own_tool)
+                        struct json_object *args)
 {
 	struct mcp_req *req = slot->req;
-	struct ledger_task *task = mcp_slot_client_find(slot, args, own_tool);
+	struct ledger_task *task = mcp_slot_client_find(slot, args);
 	if (!task)
 		return;
 	enum ledger_status status = atomic_load_explicit(&task->status, memory_order_acquire);
-	if (own_tool && status == LEDGER_WORKING) {
+	if (!(mcp_slot_tool(slot)->kind->flags & KF_AGENDA) && status == LEDGER_WORKING) {
 		ledger_task_put(task);
 		mcp_slot_result(slot, CSTR_VIEW("That job is still running. Call this same tool "
 		                                "with the same job id in one second for its "
@@ -5266,8 +5264,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
  */
 static void
 mcp_slot_client_cancel (struct mcp_slot    *slot,
-                        struct json_object *args,
-                        bool                own_tool)
+                        struct json_object *args)
 {
 	struct mcp_req *req = slot->req;
 	struct json_object *timer = jb_get(args, "timer");
@@ -5292,7 +5289,7 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 		mcp_slot_result(slot, (struct cstr_view){ text, len }, e != 0);
 		return;
 	}
-	struct ledger_task *task = mcp_slot_client_find(slot, args, own_tool);
+	struct ledger_task *task = mcp_slot_client_find(slot, args);
 	if (!task)
 		return;
 	bool runs = atomic_load_explicit(&task->status, memory_order_acquire) ==
@@ -5301,7 +5298,8 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 	if (runs) {
 		ledger_task_cancel(task);
 		len = util_format(text, sizeof text, "askai is cancelling %s %s. %s",
-		                  record_kinds[task->kind], task->id.hex, own_tool
+		                  record_kinds[task->kind], task->id.hex,
+		                  !(mcp_slot_tool(slot)->kind->flags & KF_AGENDA)
 		                  ? "Call this same tool with the job id to check its status."
 		                  : "Call wait to wait for its end.");
 	}
@@ -5319,11 +5317,11 @@ mcp_slot_client_jobs (struct mcp_slot    *slot,
 {
 	struct json_object *action = jb_get(args, "action");
 	if (jb_is(action, "result")) {
-		mcp_slot_client_result(slot, args, false);
+		mcp_slot_client_result(slot, args);
 		return;
 	}
 	if (jb_is(action, "cancel")) {
-		mcp_slot_client_cancel(slot, args, false);
+		mcp_slot_client_cancel(slot, args);
 		return;
 	}
 	if (!jb_is(action, "list")) {
@@ -6191,7 +6189,7 @@ mcp_req_archive_submitted (struct mcp_req *req,
 	}
 	if (req->flags & REQ_DETACH_PENDING) {
 		req->flags &= ~REQ_DETACH_PENDING;
-		if (mcp_req_background(req, req->self.tool, true))
+		if (mcp_req_background(req, req->self.tool))
 			return;
 	}
 	int e = mcp_req_submit(req);
@@ -6308,7 +6306,7 @@ mcp_recover_back (struct loop           *loop,
 	                          : ledger_find(st->ledger, owner, &id);
 	if (found) {
 		ledger_task_put(found);
-		w.handler(&req->self, args, true);
+		w.handler(&req->self, args);
 		goto out;
 	}
 	struct journal_record *checkpoint = nullptr, *end = nullptr;
@@ -6353,7 +6351,7 @@ mcp_recover_back (struct loop           *loop,
 		}
 		ledger_task_put(task);
 		json_object_put(state);
-		w.handler(&req->self, args, true);
+		w.handler(&req->self, args);
 		goto out;
 	}
 	if (jb_int(jb_get(state, "api"), 0) != st->ep->api ||
@@ -6484,7 +6482,7 @@ mcp_recover_back (struct loop           *loop,
 	/* As an ask does: the turns parse their answers into req->msg. */
 	mcp_req_dispose(req);
 	mcp_req_wait(req);
-	if (mcp_req_background(req, req->self.tool, true))
+	if (mcp_req_background(req, req->self.tool))
 		goto out;
 	if (w.handler == mcp_slot_client_cancel)
 		ledger_task_cancel(req->task);
@@ -6975,7 +6973,7 @@ mcp_slot_ask (struct mcp_slot    *slot,
 				has_action && jb_is(action, "cancel") ? mcp_slot_client_cancel
 				                                      : mcp_slot_client_result;
 			if (!mcp_req_recover(req, args, handler))
-				handler(slot, args, true);
+				handler(slot, args);
 			return;
 		}
 	}
