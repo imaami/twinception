@@ -93,25 +93,25 @@ enum {
 };
 
 /* The actions of the notes tool. notes_tool_start() looks up the action of a
- * call here, and notes_tool_schema() lists the names.
+ * call here, and notes_tool_schema() lists the names. The commit message of
+ * a write begins with the name, in upper case at the first letter.
  */
 static struct {
 	struct cstr_view      name;
-	char const           *verb;  /* begins the commit message of a write */
 	uint32_t              flags;
 	enum notes_tool_fetch fetch;
 } const notes_tool_actions[] = {
-#define NOTE(name, verb, flags, fetch) { CSTR_VIEW_INIT(name), verb, flags, fetch }
-	NOTE("add",       "Add",     NOTE_WRITE | NOTE_FILE, 0),
-	NOTE("replace",   "Replace", NOTE_WRITE | NOTE_FILE, FETCH_REPLACE),
-	NOTE("restore",   "Restore", NOTE_WRITE | NOTE_FILE | NOTE_REVISION, FETCH_READ | FETCH_RESTORE),
-	NOTE("notebooks", nullptr,   NOTE_OFFSET,            FETCH_BOOKS),
-	NOTE("list",      nullptr,   NOTE_OFFSET,            FETCH_FILES),
-	NOTE("history",   nullptr,   NOTE_OFFSET,            FETCH_LIST),
-	NOTE("read",      nullptr,   NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ),
-	NOTE("diff",      nullptr,   NOTE_FILE | NOTE_OFFSET, FETCH_DIFF),
-	NOTE("copy",      "Copy",    NOTE_FILE,              FETCH_READ | FETCH_OTHER | FETCH_COPY),
-	NOTE("attach",    nullptr,   NOTE_FILE | NOTE_UPLOAD, FETCH_READ | FETCH_ATTACH),
+#define NOTE(name, flags, fetch) { CSTR_VIEW_INIT(name), flags, fetch }
+	NOTE("add",       NOTE_WRITE | NOTE_FILE,                  0),
+	NOTE("replace",   NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE),
+	NOTE("restore",   NOTE_WRITE | NOTE_FILE | NOTE_REVISION,  FETCH_READ | FETCH_RESTORE),
+	NOTE("notebooks", NOTE_OFFSET,                             FETCH_BOOKS),
+	NOTE("list",      NOTE_OFFSET,                             FETCH_FILES),
+	NOTE("history",   NOTE_OFFSET,                             FETCH_LIST),
+	NOTE("read",      NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ),
+	NOTE("diff",      NOTE_FILE | NOTE_OFFSET,                 FETCH_DIFF),
+	NOTE("copy",      NOTE_FILE,                               FETCH_READ | FETCH_OTHER | FETCH_COPY),
+	NOTE("attach",    NOTE_FILE | NOTE_UPLOAD,                 FETCH_READ | FETCH_ATTACH),
 #undef NOTE
 };
 
@@ -541,7 +541,8 @@ notes_tool_call_message (struct notes_tool_call const *call,
 	static_assert(sizeof "Restore  from  ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
 	              NOTES_REPO <= NOTES_MESSAGE);
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
-	char const *verb = notes_tool_actions[call->action].verb;
+	struct cstr_view const verb = notes_tool_actions[call->action].name;
+	char const up = (char)(verb.data[0] - 'a' + 'A');
 	char const *from = fetch & FETCH_RESTORE ? call->revision.from.hex
 	                 : fetch & FETCH_COPY ? notes_selector(notes_tool_call_notebook(call)) : "";
 	char const *sep = *from ? " from " : "";
@@ -549,10 +550,12 @@ notes_tool_call_message (struct notes_tool_call const *call,
 	char const *name = (char const *)buf_peek(&call->file).ptr + call->part.name_at;
 	uint64_t after = call->part.data_len;
 	int n = before == NO_NOTE
-	      ? snprintf(msg, NOTES_MESSAGE, "%s %.*s%s%s (%" PRIu64 " byte%s)", verb, len,
-	                 name, sep, from, after, util_s(after))
-	      : snprintf(msg, NOTES_MESSAGE, "%s %.*s%s%s (%" PRIu64 " to %" PRIu64 " bytes)",
-	                 verb, len, name, sep, from, before, after);
+	      ? snprintf(msg, NOTES_MESSAGE, "%c%.*s %.*s%s%s (%" PRIu64 " byte%s)", up,
+	                 (int)verb.len - 1, verb.data + 1, len, name, sep, from, after,
+	                 util_s(after))
+	      : snprintf(msg, NOTES_MESSAGE, "%c%.*s %.*s%s%s (%" PRIu64 " to %" PRIu64 " bytes)",
+	                 up, (int)verb.len - 1, verb.data + 1, len, name, sep, from, before,
+	                 after);
 	return n < 0 || n >= NOTES_MESSAGE ? 0 : (size_t)n;
 }
 
