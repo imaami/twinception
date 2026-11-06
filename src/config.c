@@ -1367,14 +1367,15 @@ static int
 config_apply_tools (struct config *cfg)
 {
 	struct json_object *tools = json_object_object_get(cfg->file, "tools");
+	if (!json_object_is_type(tools, json_type_object))
+		return 0;
 	struct json_object_iter it;
-	if (json_object_is_type(tools, json_type_object))
-		json_object_object_foreachC(tools, it) {
-			int status = config_tool_option(it.key, nullptr)
-			           ? config_apply_tool(cfg, it.key, it.val) : 0;
-			if (status)
-				return status;
-		}
+	json_object_object_foreachC(tools, it) {
+		int status = config_tool_option(it.key, nullptr)
+		           ? config_apply_tool(cfg, it.key, it.val) : 0;
+		if (status)
+			return status;
+	}
 	return 0;
 }
 
@@ -1630,21 +1631,19 @@ config_session (struct config *cfg)
 		cfg->transcripts_owned = config_aprintf("%.*s.transcripts.git", (int)n,
 		                                        cfg->notes);
 	} else if (cfg->ep.background) {
+		/* In $XDG_STATE_HOME, or else in $HOME/.local/state. */
 		char const *state = getenv("XDG_STATE_HOME");
-		if (state && *state) {
-			if (*state != '/')
-				return config_complain(cfg, nullptr, "XDG_STATE_HOME must be "
-				                       "absolute, or set --transcripts explicitly");
-			cfg->transcripts_owned = config_aprintf("%s/askai/%s/transcripts.git",
-			                                        state, cfg->participant);
-		} else {
-			char const *home = getenv("HOME");
-			if (!home || *home != '/')
-				return config_complain(cfg, nullptr, "--background needs "
-				                       "--transcripts, XDG_STATE_HOME or an absolute HOME");
-			cfg->transcripts_owned = config_aprintf("%s/.local/state/askai/%s/transcripts.git",
-			                                        home, cfg->participant);
-		}
+		bool const xdg = state && *state;
+		char const *base = xdg ? state : getenv("HOME");
+		if (!base || *base != '/')
+			return config_complain(cfg, nullptr, "%s", xdg
+			                       ? "XDG_STATE_HOME must be absolute, or set "
+			                         "--transcripts explicitly"
+			                       : "--background needs --transcripts, "
+			                         "XDG_STATE_HOME or an absolute HOME");
+		cfg->transcripts_owned = config_aprintf("%s%s/askai/%s/transcripts.git", base,
+		                                        xdg ? "" : "/.local/state",
+		                                        cfg->participant);
 	} else {
 		return 0;
 	}
@@ -1934,27 +1933,23 @@ config_plugin (struct config      *cfg,
 	struct json_object *file = v;
 	struct json_object *options = nullptr;
 	if (json_object_is_type(v, json_type_object)) {
-		struct json_object_iter it;
-		bool has_path = false;
-		bool has_options = false;
-		json_object_object_foreachC(v, it) {
-			if (!strcmp(it.key, "path")) {
-				file = it.val;
-				has_path = true;
-			} else if (!strcmp(it.key, "options")) {
-				options = it.val;
-				has_options = true;
-			} else {
-				return config_complain(cfg, cfg->path, "plugins: unknown "
-				                       "member of a plugin: %s", it.key);
-			}
-		}
-		if (!has_path)
+		static struct cstr_view const names[] = {
+			CSTR_VIEW_INIT("path"), CSTR_VIEW_INIT("options")
+		};
+		struct json_object *of[array_size(names)] = {};
+		uint64_t seen;
+		struct cstr_view other;
+		if (jb_args(v, names, array_size(names), UINT64_MAX, of, &seen, &other))
+			return config_complain(cfg, cfg->path, "plugins: unknown member of a "
+			                       "plugin: %.*s", (int)other.len, other.data);
+		if (!(seen & 1))
 			return config_complain(cfg, cfg->path, "plugins: a plugin has no "
 			                       "member path");
-		if (has_options && !json_object_is_type(options, json_type_object))
+		if (seen & 2 && !json_object_is_type(of[1], json_type_object))
 			return config_complain(cfg, cfg->path, "plugins: the member "
 			                       "options of a plugin is not an object");
+		file = of[0];
+		options = of[1];
 	}
 	char const *path = json_object_get_string(file);
 	if (!json_object_is_type(file, json_type_string) || *path != '/')
