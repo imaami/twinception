@@ -229,7 +229,8 @@ struct plugin_loaded {
 	                                     manifest names */
 	/** lens[i] is the length in bytes of manifest.tools[i]. */
 	uint8_t              lens[MANIFEST_TOOLS];
-	bool                 options;   /**< configure() got options */
+	uint64_t             options;   /**< bool: configure() got options;
+	                                     widened over the padding */
 	char                 path[];    /**< the path of the file, as
 	                                     plugin_loaded_create() got it */
 };
