@@ -50,6 +50,8 @@ TASK = ("[askai: askai keeps your task word for word through every compaction of
         "the task into notes or a summary.]\n")
 REVIEW_EMPTY = REVIEW + ("[askai: you have recorded no findings; the findings tool "
                          "records them.]")
+# The line before the closed findings of a review record (src/review.c).
+CLOSING = "[askai: disproved and retracted findings:]\n"
 
 
 def findings_head(counts):
@@ -12654,7 +12656,8 @@ def check_review(binary, up):
                 "add takes claim, location, state and evidence, not id.",
                 REVIEW + first], results(sent[1])
             record = (REVIEW + findings_head("2 findings: 1 candidate, 1 retracted") +
-                      "1. candidate, src/a.c:3-4, not read\n   claim: C1\n2. retracted: C3b")
+                      "1. candidate, src/a.c:3-4, not read\n   claim: C1\n" + CLOSING +
+                      "2. retracted: C3b")
             paged = record
             size = len(record.encode())
             assert results(sent[2]) == [
@@ -12672,7 +12675,7 @@ def check_review(binary, up):
             assert results(sent[4]) == ["Added finding 3: candidate."], results(sent[4])
             record = (REVIEW + findings_head("3 findings: 2 candidate, 1 retracted") +
                       "1. candidate, src/a.c:3-4, not read\n   claim: C1\n3. candidate\n"
-                      "   claim: C4\n2. retracted: C3b")
+                      "   claim: C4\n" + CLOSING + "2. retracted: C3b")
             assert prompt(sent[5]) == compacted("T", "\n\n" + TASK + record), prompt(sent[5])
             # The trace names each call's action, and the bytes of its whole
             # output or its failure.
@@ -12820,8 +12823,8 @@ def check_review(binary, up):
                 f"1. verified, src/a.c:3-4 at {head[:12]}\n   claim: C1\n   evidence: EC1\n"
                 f"3. verified, src/a.c:3 at {head[:12]}\n   claim: C4\n   evidence: EC4\n"
                 f"4. verified, src/a.c:3 at {later[:12]}\n   claim: C4\n   evidence: EC4\n"
-                f"5. verified, src/a.c:8 at {head[:12]}\n   claim: C5\n   evidence: EC5\n"
-                f"2. disproved, src/a.c:50 at {head[:12]}: C2\n"
+                f"5. verified, src/a.c:8 at {head[:12]}\n   claim: C5\n   evidence: EC5\n" +
+                CLOSING + f"2. disproved, src/a.c:50 at {head[:12]}: C2\n"
                 f"[askai: what you read with git read in this call:]\nproj {head}\n"
                 f"  src/a.c  lines 1-10, 45-60: 26 of 300 lines\nproj {later}\n"
                 "  src/a.c  lines 1-5: 5 of 301 lines\n  src/x.c  lines 1-2: all 2 lines\n"

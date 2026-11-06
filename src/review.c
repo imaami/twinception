@@ -859,7 +859,8 @@ enum review_section : uint8_t {
 /**
  * Appends the next finding of the section at @p cursor of the text of the
  * record @p r to @p out: an open finding with its claim and latest
- * evidence, or a closed finding on one line. Moves @p cursor past the
+ * evidence, or a closed finding on one line. A line that names the closed
+ * states comes before the first closed finding. Moves @p cursor past the
  * finding, or to the next section if no finding of the section is left.
  */
 static int
@@ -877,11 +878,12 @@ review_put_finding (struct dstr         *out,
 		};
 		return 0;
 	}
-	cursor->item = k + 1;
 	struct review_finding const *f = &r->findings[k];
 	struct cstr_view const claim = cstr_view_dstr(&f->claim);
-	if (!dstr_printf(out, "%zu. ", k + 1) || review_put_status(out, f))
+	if ((closed && !cursor->item && PUT(out, "[askai: disproved and retracted findings:]\n")) ||
+	    !dstr_printf(out, "%zu. ", k + 1) || review_put_status(out, f))
 		return ENOMEM;
+	cursor->item = k + 1;
 	if (closed) {
 		/* The first line of the claim, cut to REVIEW_CLOSED_CLAIM bytes. */
 		struct cstr_view head = cstr_view_slice(claim, 0, REVIEW_CLOSED_CLAIM);

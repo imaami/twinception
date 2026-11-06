@@ -52,6 +52,7 @@ same (char const *file,
 #define FINDINGS(n) "[askai: your " n ". Call findings with action show and id for " \
                     "the history of one finding:]\n"
 #define READS "[askai: what you read with git read in this call:]\n"
+#define CLOSING "[askai: disproved and retracted findings:]\n"
 
 /* A review_kept_fn that drops "[askai: x]", a stand-in for the notices of
  * askai, from the end of @p s.
@@ -1027,9 +1028,9 @@ test_history (void)
 }
 
 /* The render contains the header with the number of findings in each
- * state, the open findings with their claims and latest evidence, then
- * the closed ones, a line each, then the read log. A render that goes
- * past its size is cut.
+ * state, the open findings with their claims and latest evidence, then a
+ * line that names the closed states, then the closed findings, a line
+ * each, then the read log. A render that goes past its size is cut.
  */
 static void
 test_render (void)
@@ -1060,7 +1061,7 @@ test_render (void)
 	         HEADER FINDINGS("4 findings: 1 candidate, 1 verified, 1 disproved, 1 retracted")
 	         "1. verified, src/a.c:3-4 at " A12 "\n   claim: C1\n   evidence: E1\n"
 	         "4. candidate, src/z.c:2-3, not read\n   claim: C4\n"
-	         "2. retracted: first line...\n"
+	         CLOSING "2. retracted: first line...\n"
 	         "3. disproved, src/a.c:9 at " A12 ": %.*s...\n"
 	         READS "proj " A "\n  src/a.c  lines 1-9: 9 of 300 lines",
 	         CLOSED - 1, long_claim);
