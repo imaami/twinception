@@ -492,16 +492,16 @@ test_refusals (void)
 		{ "{\"action\":\"show\",\"claim\":\"x\"}", "show takes id and offset, not claim." },
 		{ "{\"action\":\"add\"}", "add needs a claim: what you found." },
 		{ "{\"action\":\"add\",\"claim\":\"\"}",
-		  "The claim must be a string of UTF-8 text, not empty." },
+		  "The claim argument must be a string of UTF-8 text, not empty." },
 		{ "{\"action\":\"add\",\"claim\":5}",
-		  "The claim must be a string of UTF-8 text, not empty." },
+		  "The claim argument must be a string of UTF-8 text, not empty." },
 		{ "{\"action\":\"add\",\"claim\":\"[askai: x]\"}",
 		  "The claim has only askai's [askai: ...] lines, which askai adds to tool "
 		  "results. Give the claim itself." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"\"}",
-		  "The location must be a string of UTF-8 text, not empty." },
+		  "The location argument must be a string of UTF-8 text, not empty." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"evidence\":[]}",
-		  "The evidence must be a string of UTF-8 text, not empty." },
+		  "The evidence argument must be a string of UTF-8 text, not empty." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"evidence\":\"\\n\\n[askai: x]\"}",
 		  "The evidence has only askai's [askai: ...] lines, which askai adds to tool "
 		  "results. Give the evidence itself." },
@@ -570,14 +570,15 @@ test_refusals (void)
 	char const *const places[] = {
 		"src/a.c", "src/a.c:0", "src/a.c:5-3", "src/a.c:3-", "src/a.c:-3", ":3",
 		"src/a.c:4294967296", "src/a.c:3:", "src/a.c:3 ", A ":src/a.c:3:int x;",
-		"1111111::3", "src/a.c:3-4-5", "src/a.c:+3",
+		"1111111::3", "src/a.c:3-4-5", "src/a.c:+3", "the git tool", "environment",
 	};
 	for (size_t i = 0; i < array_size(places); ++i) {
 		char json[256];
 		snprintf(json, sizeof json, "{\"action\":\"add\",\"claim\":\"c\",\"location\":"
 		         "\"%s\"}", places[i]);
-		EXPECT(r, json, 2, EINVAL, "The location must be path:line or path:first-last, "
-		                           "such as src/mcp.c:120-140.");
+		EXPECT(r, json, 2, EINVAL, "The location argument must be path:line or "
+		                           "path:first-last, such as src/mcp.c:120-140. Leave it "
+		                           "out if no file's lines show the claim.");
 	}
 
 	/* Texts that are not UTF-8. */
@@ -590,8 +591,8 @@ test_refusals (void)
 		json_object_object_add(args, keys[i], json_object_new_string_len("a\xff", 2));
 		CHECK(run(r, args, 2, nullptr, &out) == EINVAL);
 		char want[96];
-		snprintf(want, sizeof want, "The %s must be a string of UTF-8 text, not empty.",
-		         keys[i]);
+		snprintf(want, sizeof want, "The %s argument must be a string of UTF-8 text, "
+		         "not empty.", keys[i]);
 		SAME(dstr_get(&out), want);
 	}
 
@@ -622,7 +623,7 @@ test_refusals (void)
 	               "src/mcp.c:120-140, which you read with git read.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\",\"evidence\":\"e\","
 	          "\"claim\":\"\"}", 2,
-	       EINVAL, "The claim must be a string of UTF-8 text, not empty.");
+	       EINVAL, "The claim argument must be a string of UTF-8 text, not empty.");
 	dstr_cleanup(&out);
 	review_destroy(&r);
 }

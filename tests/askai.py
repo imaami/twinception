@@ -12608,6 +12608,8 @@ def check_review(binary, up):
             assert schema["required"] == ["action"], schema
             assert schema["additionalProperties"] is False, schema
             assert "need not copy" not in lent["findings"]["description"], lent["findings"]
+            where = schema["properties"]["location"]["description"]
+            assert where.endswith("Leave it out if no file's lines show the claim."), where
             assert "After it you see the task as the user gave it, then your summary, then " \
                 "askai's review record. " in lent["compact"]["description"], lent
 

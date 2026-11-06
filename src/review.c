@@ -1260,8 +1260,8 @@ review_args_text (struct review_args *a,
 	struct cstr_view const s = jb_view(v);
 	int const len = (int)name.len;
 	if (!s.len || jb_utf8(s.data, s.len) != s.len)
-		return REFUSE(out, "The %.*s must be a string of UTF-8 text, not empty.", len,
-		              name.data);
+		return REFUSE(out, "The %.*s argument must be a string of UTF-8 text, not "
+		              "empty.", len, name.data);
 	size_t const n = kept ? kept(s.data, s.len) : s.len;
 	*t = s;
 	if (n >= s.len)
@@ -1344,8 +1344,9 @@ review_args_parse (struct review_args  *a,
 	e = review_args_text(a, location, review_arg_names[REVIEW_ARG_LOCATION], nullptr, 0,
 	                     &text, out);
 	if (!e && review_args_location(&a->location, text))
-		e = REFUSE(out, "The location must be path:line or path:first-last, such as "
-		           "src/mcp.c:120-140.");
+		e = REFUSE(out, "The location argument must be path:line or path:first-last, "
+		           "such as src/mcp.c:120-140. Leave it out if no file's lines show the "
+		           "claim.");
 	return e;
 }
 

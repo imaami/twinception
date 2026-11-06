@@ -611,8 +611,8 @@ call's error.
 
 `findings` records findings in the call's review record, which lasts
 through all of its compactions. `add` records a finding: a claim, a
-location such as `src/mcp.c:120-140`, and a state, `candidate` until the
-model checks it.
+location such as `src/mcp.c:120-140` unless no lines of a committed file
+show the claim, and a state, `candidate` until the model checks it.
 `update` changes the state to `verified`, `disproved`, `retracted` or
 `candidate` again, with evidence, and also the claim or the location if they
 were wrong; `askai` stores each change and the old text in the finding's

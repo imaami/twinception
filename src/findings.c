@@ -50,10 +50,11 @@ findings_definition (void const *service)
 				"wrong: what you found."),
 			"location", schema_property("string",
 				"For add, and for update if the location was wrong: "
-				"the lines that the claim is about, as path:line or "
-				"path:first-last, such as src/mcp.c:120-140. A commit "
-				"and a colon may come first, as git grep prints them; "
-				"HEAD and a colon are as no commit."),
+				"the lines of a committed file that the claim is about, "
+				"as path:line or path:first-last, such as "
+				"src/mcp.c:120-140. A commit and a colon may come first, "
+				"as git grep prints them. HEAD: is the same as no commit. "
+				"Leave it out if no file's lines show the claim."),
 			"state", schema_enum(
 				schema_names(review_state_names, REVIEW_STATES),
 				"For add: candidate (the default), verified or "
