@@ -78,6 +78,16 @@ enum : uint32_t {
 /* The breaker's states, as /metrics gives them. */
 enum { CLOSED, OPEN, HALF };
 
+/* The bits of home->flags. */
+enum : uint16_t {
+	HOME_DRAINING = 1u << 0,  /* home cancels the jobs in flight and
+	                             refuses new ones */
+	HOME_ALONE    = 1u << 1,  /* the client loops have exited */
+	HOME_PROBING  = 1u << 2,  /* the breaker's probe is under way */
+	HOME_PAUSED   = 1u << 3,  /* /props's answer is held back */
+	HOME_FIFO     = 1u << 4,  /* all jobs of a class wait in one queue */
+};
+
 /* Whom jobs of a class are for: an identity, a session, or a client's
  * address. An entry exists while the principal has jobs of the class
  * queued, which tell who it is, and is kept for reuse after.
@@ -201,13 +211,8 @@ struct home {
 	uint32_t                  running_bg;  /* background jobs running */
 	uint32_t                  cancelling;  /* native cancellation requests */
 	uint32_t                  persisting;  /* journal callbacks still using home */
-	uint32_t                  draining;    /* bool, widened over the padding */
-	uint32_t                  alone;       /* bool, widened over the padding:
-	                                          the client loops have exited */
-	uint8_t                   state;       /* the breaker's */
-	uint8_t                   probing;     /* bool: a probe is under way */
-	uint8_t                   paused;      /* bool: /props is held back */
-	uint8_t                   fifo;        /* bool: one queue for all */
+	uint16_t                  flags;       /* HOME_* */
+	uint16_t                  state;       /* the breaker's */
 };
 
 /* The thread's home: the handler of jobs' messages finds it here. */
@@ -311,7 +316,7 @@ home_find_whom (struct home const *home,
                 struct job const  *job)
 {
 	struct home_principal **p = home->whom;
-	if (home->fifo) {
+	if (home->flags & HOME_FIFO) {
 		uint32_t c = home_job_class(job);
 		while (*p && (*p)->class != c)
 			p = &(*p)->chain;
@@ -349,7 +354,7 @@ home_unqueue (struct home *home,
 	hist_add(&home->metrics->queued, -1ULL);
 	if (!--p->queued) {
 		struct home_principal **link = home->whom;
-		link += home->fifo ? 0 : p->hash & home->mask;
+		link += home->flags & HOME_FIFO ? 0 : p->hash & home->mask;
 		while (*link != p)
 			link = &(*link)->chain;
 		*link = p->chain;
@@ -358,7 +363,7 @@ home_unqueue (struct home *home,
 		hist_add(&home->metrics->principals, -1ULL);
 		return;
 	}
-	if (home->fifo)
+	if (home->flags & HOME_FIFO)
 		return;
 	for (; node != &p->jobs; node = node->next) {
 		struct job *next = container_of(node, struct job, queue);
@@ -480,7 +485,8 @@ home_retire (struct home *home,
 			hist_add(&m->background, -1ULL);
 			--home->running_bg;
 		}
-		home->probing &= !(job->flags & PROBE);
+		if (job->flags & PROBE)
+			home->flags &= ~HOME_PROBING;
 		loop_ready_bulk(home->loop, &home->start);
 	}
 	home_unstream(home, job);
@@ -490,7 +496,7 @@ home_retire (struct home *home,
 static void
 home_maybe_exit (struct home *home)
 {
-	if (home->alone && !hist_get(&home->metrics->in_flight) && !home->cancelling &&
+	if (home->flags & HOME_ALONE && !hist_get(&home->metrics->in_flight) && !home->cancelling &&
 	    !home->persisting)
 		loop_exit(home->loop);
 }
@@ -677,7 +683,7 @@ home_refuse (struct home *home,
 
 static void
 home_breaker_set (struct home *home,
-                  uint8_t      state)
+                  uint16_t     state)
 {
 	home->state = state;
 	atomic_store_explicit(&home->metrics->breaker, state, memory_order_relaxed);
@@ -776,7 +782,7 @@ home_breaker_probed (struct home *home,
                      long         retry)
 {
 	job->flags &= ~PROBE;
-	home->probing = false;
+	home->flags &= ~HOME_PROBING;
 	if (failure) {
 		home_breaker_open(home, retry);
 		return;
@@ -1274,7 +1280,7 @@ home_start (struct home *home,
 	struct loop *loop = home->loop;
 	if (home->state == HALF) {
 		job->flags |= PROBE;
-		home->probing = true;
+		home->flags |= HOME_PROBING;
 		hist_add(&m->probes, 1);
 	}
 	job->flags |= RUNNING;
@@ -1353,7 +1359,7 @@ home_start_step (struct loop      *loop,
                  struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, start);
-	while (!home->draining && home->state != OPEN && !home->probing &&
+	while (!(home->flags & (HOME_DRAINING | HOME_PROBING)) && home->state != OPEN &&
 	       hist_get(&home->metrics->running) < home->slots) {
 		struct job *job = home_next(home, true);
 		if (!job)
@@ -2354,7 +2360,7 @@ home_props_write (char const *data,
 	if (!len)
 		return 0;
 	if (loop_room(home->loop, LOOP_RECV) < len) {
-		home->paused = true;
+		home->flags |= HOME_PAUSED;
 		loop_ready_bulk(home->loop, &home->props);
 		return CURL_WRITEFUNC_PAUSE;
 	}
@@ -2406,7 +2412,7 @@ home_props_done (CURLcode    result,
 {
 	struct home *home = user;
 	home->ask = nullptr;
-	home->paused = false;
+	home->flags &= ~HOME_PAUSED;
 	if (result)
 		home_props_fail(home, "%s",
 		                *error ? error : curl_easy_strerror(result));
@@ -2426,8 +2432,8 @@ home_props_step (struct loop      *loop,
                  struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, props);
-	if (home->paused) {
-		home->paused = false;
+	if (home->flags & HOME_PAUSED) {
+		home->flags &= ~HOME_PAUSED;
 		CURLcode result = http_resume(home->ask);
 		if (result)
 			http_end(home->http, &home->ask, result);
@@ -2608,7 +2614,7 @@ home_admit (struct home *home,
             struct job  *job)
 {
 	struct home_metrics *m = home->metrics;
-	if (home->draining) {
+	if (home->flags & HOME_DRAINING) {
 		home_end(home, job, JOB_CANCELLED, &m->rejected);
 		return;
 	}
@@ -2618,7 +2624,7 @@ home_admit (struct home *home,
 	}
 	struct home_principal **slot = home_find_whom(home, job);
 	if (hist_get(&m->in_flight) >= home->max ||
-	    (*slot && !home->fifo && (*slot)->queued >= JOB_QUEUED)) {
+	    (*slot && !(home->flags & HOME_FIFO) && (*slot)->queued >= JOB_QUEUED)) {
 		home_end(home, job, JOB_BUSY, &m->rejected);
 		return;
 	}
@@ -2847,7 +2853,7 @@ home_create (struct loop         *loop,
 		 * Without --context, it is 0 until home_props_step() sets it
 		 * from the answer of /props or of the model URL. */
 		.context = ep->context > 0 ? (uint32_t)ep->context : 0,
-		.fifo = (cfg->flags & CFG_TEST_FIFO) != 0
+		.flags = cfg->flags & CFG_TEST_FIFO ? HOME_FIFO : 0
 	};
 	for (size_t c = 0; c < 2; ++c) {
 		list_init(&home->ring[c]);
@@ -2921,14 +2927,14 @@ home_destroy (struct home **p_home)
 void
 home_drain (struct home *home)
 {
-	home->draining = true;
+	home->flags |= HOME_DRAINING;
 	loop_ready_bulk(home->loop, &home->drain);
 }
 
 void
 home_alone (struct home *home)
 {
-	home->alone = true;
+	home->flags |= HOME_ALONE;
 	home_drain(home);
 	home_maybe_exit(home);
 }
