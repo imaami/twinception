@@ -798,47 +798,54 @@ notes_tool_history (struct mcp_slot *slot,
 	return 0;
 }
 
+/* Appends the current files in @p out, the output of git for NOTES_FILES,
+ * to call->text. @p cut is true if askai cut the output, which then ends
+ * within a record. Returns 0, ENOMEM, or EIO if a record of an output that
+ * askai did not cut cannot be decoded.
+ */
+static int
+notes_tool_files (struct mcp_slot *slot,
+                  struct span      out,
+                  bool             cut)
+{
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
+	struct notes_file file;
+	int r = 0;
+	while (out.len && !(r = notes_file_next(&out, &file))) {
+		char const *name = (char const *)file.name.ptr;
+		if (!dstr_printf(call->text, "%.*s  (%" PRIu64 " bytes, %s)\n",
+		                 (int)jb_utf8(name, file.name.len), name, file.bytes, file.id.hex))
+			return ENOMEM;
+	}
+	if (!cut)
+		return r ? EIO : 0;
+	return cstr_view_cat(CSTR_VIEW("[The file list exceeded the capture limit and is "
+	                               "incomplete.]\n"), call->text);
+}
+
 /* Handles the output of git for list and history. */
 static void
 notes_tool_got_list (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	bool ok = true;
-	bool files = (call->fetch & FETCH_KIND) == FETCH_FILES;
-	struct dstr *d = call->text;
-	int e = dstr_printf(d, "Notebook %s — %s:\n\n",
+	bool const files = (call->fetch & FETCH_KIND) == FETCH_FILES;
+	bool const cut = c->flags & CHILD_CUT;
+	struct span const out = buf_peek(&c->out);
+	struct span newest;
+	int e = dstr_printf(call->text, "Notebook %s — %s:\n\n",
 	                    notes_selector(notes_tool_call_notebook(call)),
 	                    files ? "current files (bytes, blob)"
 	                          : "history, oldest first (lines added, commit, message)")
 	      ? 0 : ENOMEM;
-	struct span out = buf_peek(&c->out);
-	if (!files) {
-		struct span newest;
-		e = e ? e : notes_tool_history(slot, out, c->flags & CHILD_CUT, &newest);
-	} else {
-		while (!e && out.len) {
-			struct notes_file file;
-			int r = notes_file_next(&out, &file);
-			if (r) {
-				if (!(c->flags & CHILD_CUT))
-					e = cstr_view_cat(CSTR_VIEW("Cannot decode the notebook "
-					                            "file list."), call->text);
-				ok = c->flags & CHILD_CUT;
-				break;
-			}
-			char const *name = (char const *)file.name.ptr;
-			if (!dstr_printf(d, "%.*s  (%" PRIu64 " bytes, %s)\n",
-			                 (int)jb_utf8(name, file.name.len), name, file.bytes,
-			                 file.id.hex))
-				e = ENOMEM;
-		}
-		if (!e && c->flags & CHILD_CUT)
-			e = cstr_view_cat(CSTR_VIEW("[The file list exceeded the capture limit and "
-			                            "is incomplete.]\n"), call->text);
-		loop_work(mcp_slot_loop(slot), LOOP_COPY, buf_peek(&c->out).len);
-	}
-	notes_tool_end(slot, e, !ok);
+	if (!e)
+		e = files ? notes_tool_files(slot, out, cut)
+		          : notes_tool_history(slot, out, cut, &newest);
+	bool const bad = e == EIO;
+	if (bad)
+		e = cstr_view_cat(CSTR_VIEW("Cannot decode the notebook file list."), call->text);
+	notes_tool_end(slot, e, bad);
 }
 
 /* Appends the selector of the caller's own notebook to call->text. The
