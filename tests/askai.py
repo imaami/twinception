@@ -8260,6 +8260,12 @@ esac
 """
 
 
+# The description of the man tool.
+MAN_ABOUT = ("Read one of the server's Unix manual pages, as `man [section] name` shows "
+             "it, in plain text, to check the exact interface of a system call, library "
+             "function, command, file format or convention.")
+
+
 def man_call(ai, **arguments):
     status, _, body = ai.rpc("tools/call", {"name": "man", "arguments": arguments})
     assert status == 200, (status, body)
@@ -8330,7 +8336,7 @@ def check_man(binary, up):
             assert [t["name"] for t in tools] == ["ask_ai", "man"], tools
             assert tools[1]["inputSchema"]["required"] == ["name"], tools[1]
             assert tools[1]["inputSchema"]["properties"]["offset"]["description"] == \
-                OFFSET_ABOUT and PAGED not in tools[1]["description"], tools[1]
+                OFFSET_ABOUT and tools[1]["description"] == MAN_ABOUT, tools[1]
 
             # Its arguments, environment, descriptors, signals and session.
             page = text_of(man_call(ai, name="echo", section="3p"))
@@ -8409,7 +8415,8 @@ def check_man(binary, up):
             assert runs("slow") == (1, 1), runs("slow")
 
             # Arguments a model gets back to correct.
-            name = "The name argument must name a manual page"
+            name = "The name argument must name a manual page, such as printf or " \
+                "git-grep: 1 to 128 letters, digits and _.:+@- characters, the first not -."
             section = "The section argument must name a section"
             for arguments, problem in (({"name": "-l"}, name), ({"name": "a/b"}, name),
                                        ({"name": ""}, name), ({"name": "x" * 129}, name),
@@ -8516,7 +8523,7 @@ def check_man(binary, up):
             [lent] = [t["function"] for t in up.requests[count]["body"]["tools"]
                       if t["function"]["name"] == "man"]
             assert lent["parameters"]["properties"]["offset"]["description"] == \
-                OFFSET_ABOUT and lent["description"].endswith(PAGED), lent
+                OFFSET_ABOUT and lent["description"] == MAN_ABOUT + PAGED, lent
         up.reply = lambda request: (200, ANSWERS["openai"])
 
         # A name is found anew once the recheck has passed, its page given

@@ -789,8 +789,9 @@ manual_start (struct mcp_slot    *slot,
 	}
 	struct cstr_view const problem =
 		!manual_word(page, MANUAL_NAME, UTIL_ALNUM "_.:+@-")
-		? CSTR_VIEW("The name argument must name a manual page: 1 to 128 letters, "
-		            "digits and _.:+@- characters, the first not -.")
+		? CSTR_VIEW("The name argument must name a manual page, such as printf or "
+		            "git-grep: 1 to 128 letters, digits and _.:+@- characters, the "
+		            "first not -.")
 		: section && !(sect.data && (!sect.len || manual_word(sect, MANUAL_SECTION, UTIL_ALNUM)))
 		? CSTR_VIEW("The section argument must name a section, such as 1, 3 or 3p: "
 		            "1 to 16 letters and digits.")
@@ -832,15 +833,13 @@ manual_definition (void const *service)
 		"title", json_object_new_string("Manual page"),
 		"description", json_object_new_string(
 			"Read one of the server's Unix manual pages, as `man [section] name` "
-			"shows it, in plain text; a long page is cut, and offset reads on "
-			"past the cut. Use it to check the exact interface of a system "
-			"call, library function, command, file format or convention. Pages "
-			"are kept once rendered, so reading one again is cheap."),
+			"shows it, in plain text, to check the exact interface of a system "
+			"call, library function, command, file format or convention."),
 		"inputSchema", schema_object(
 			jb_object(
 				"name", schema_property("string",
 					"The page's name, such as printf, pthread_create, epoll "
-					"or bash."),
+					"or git-grep."),
 				"section", schema_property("string",
 					"Optional section: 1 commands, 2 system calls, 3 library "
 					"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
