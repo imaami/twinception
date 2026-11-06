@@ -433,28 +433,38 @@ int
 notes_revision_next (struct notes_revision *revision,
                      struct span            out)
 {
-	if (revision->phase == REVISION_DATA)
-		return EINVAL;
-	if (revision->phase == REVISION_HEAD) {
+	struct oid const *const tip = &revision->tip;
+	switch (revision->phase) {
+	case REVISION_HEAD:
 		if (oid_init_line(&revision->tip,
 		                  (struct cstr_view){ (char const *)out.ptr, out.len }))
 			return EIO;
 		if (!oid_len(&revision->from))
-			revision->from = revision->tip;
+			revision->from = *tip;
 		if (!oid_len(&revision->to))
-			revision->to = revision->tip;
-		if (oid_len(&revision->from) != oid_len(&revision->tip) ||
-		    oid_len(&revision->to) != oid_len(&revision->tip))
+			revision->to = *tip;
+		if (oid_len(&revision->from) != oid_len(tip) || oid_len(&revision->to) != oid_len(tip))
 			return EINVAL;
-		if (!oid_equal(&revision->from, &revision->tip)) {
+		if (!oid_equal(&revision->from, tip)) {
 			revision->phase = REVISION_FROM;
 			return 0;
 		}
-	} else if (out.len)
-		return EIO;
-	revision->phase = revision->phase != REVISION_TO &&
-	                  !oid_equal(&revision->to, &revision->tip) &&
-	                  !oid_equal(&revision->to, &revision->from) ? REVISION_TO : REVISION_DATA;
+		break;
+	case REVISION_FROM:
+		/* git merge-base --is-ancestor writes nothing. */
+		if (out.len)
+			return EIO;
+		break;
+	case REVISION_TO:
+		if (out.len)
+			return EIO;
+		revision->phase = REVISION_DATA;
+		return 0;
+	case REVISION_DATA:
+		return EINVAL;
+	}
+	revision->phase = oid_equal(&revision->to, tip) || oid_equal(&revision->to, &revision->from)
+	                ? REVISION_DATA : REVISION_TO;
 	return 0;
 }
 
