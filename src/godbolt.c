@@ -346,37 +346,32 @@ enum godbolt_outcome : uint8_t {
 	GODBOLT_COUNTS
 };
 
-/* The arguments of the tools. Bit i of a mask of struct godbolt_params
- * stands for the argument godbolt_arg_names[i].
+/* The arguments of the tools: the constant of enum godbolt_arg and the
+ * name. Bit i of a mask of struct godbolt_params stands for the argument
+ * godbolt_arg_names[i].
  */
+#define GODBOLT_ARGS_X(X)                                                      \
+        X(ACTION, action) X(LANGUAGE, language) X(IDS, ids) X(MATCH, match)    \
+        X(KIND, kind) X(FAMILY, family) X(ARCHITECTURE, architecture)          \
+        X(LIMIT, limit) X(OFFSET, offset) X(COMPILERS, compilers)              \
+        X(ARGS, args) X(SOURCE, source) X(FILTERS, filters)                    \
+        X(HEADERS, headers) X(SHARE, share)
+
 enum godbolt_arg : uint8_t {
-	GODBOLT_ARG_ACTION,
-	GODBOLT_ARG_LANGUAGE,
-	GODBOLT_ARG_IDS,
-	GODBOLT_ARG_MATCH,
-	GODBOLT_ARG_KIND,
-	GODBOLT_ARG_FAMILY,
-	GODBOLT_ARG_ARCHITECTURE,
-	GODBOLT_ARG_LIMIT,
-	GODBOLT_ARG_OFFSET,
-	GODBOLT_ARG_COMPILERS,
-	GODBOLT_ARG_ARGS,
-	GODBOLT_ARG_SOURCE,
-	GODBOLT_ARG_FILTERS,
-	GODBOLT_ARG_HEADERS,
-	GODBOLT_ARG_SHARE,
+#define GODBOLT_ARG(NAME, name) GODBOLT_ARG_##NAME,
+	GODBOLT_ARGS_X(GODBOLT_ARG)
+#undef GODBOLT_ARG
 	GODBOLT_ARG_COUNT
 };
 
 static struct cstr_view const godbolt_arg_names[] = {
-	CSTR_VIEW_INIT("action"), CSTR_VIEW_INIT("language"), CSTR_VIEW_INIT("ids"),
-	CSTR_VIEW_INIT("match"), CSTR_VIEW_INIT("kind"), CSTR_VIEW_INIT("family"),
-	CSTR_VIEW_INIT("architecture"), CSTR_VIEW_INIT("limit"), CSTR_VIEW_INIT("offset"),
-	CSTR_VIEW_INIT("compilers"), CSTR_VIEW_INIT("args"), CSTR_VIEW_INIT("source"),
-	CSTR_VIEW_INIT("filters"), CSTR_VIEW_INIT("headers"), CSTR_VIEW_INIT("share")
+#define GODBOLT_ARG(NAME, name) CSTR_VIEW_INIT(#name),
+	GODBOLT_ARGS_X(GODBOLT_ARG)
+#undef GODBOLT_ARG
 };
 
-static_assert(array_size(godbolt_arg_names) == GODBOLT_ARG_COUNT);
+#undef GODBOLT_ARGS_X
+
 static_assert(GODBOLT_ARG_FAMILY == GODBOLT_ARG_KIND + 1 &&
               GODBOLT_ARG_ARCHITECTURE == GODBOLT_ARG_KIND + 2, "the order of values[]");
 
@@ -2251,10 +2246,13 @@ static int
 godbolt_facts (struct godbolt *call)
 {
 	static struct cstr_view const names[GODBOLT_PROBE_FACTS] = {
-		CSTR_VIEW_INIT("architecture: "), CSTR_VIEW_INIT("os: "),
-		CSTR_VIEW_INIT("os_family: "), CSTR_VIEW_INIT("data_model: "),
-		CSTR_VIEW_INIT("pointer_bits: "), CSTR_VIEW_INIT("endianness: "),
-		CSTR_VIEW_INIT("libc: ")
+		[GODBOLT_PROBE_ARCHITECTURE] = CSTR_VIEW_INIT("architecture: "),
+		[GODBOLT_PROBE_OS]           = CSTR_VIEW_INIT("os: "),
+		[GODBOLT_PROBE_OS_FAMILY]    = CSTR_VIEW_INIT("os_family: "),
+		[GODBOLT_PROBE_DATA_MODEL]   = CSTR_VIEW_INIT("data_model: "),
+		[GODBOLT_PROBE_POINTER_BITS] = CSTR_VIEW_INIT("pointer_bits: "),
+		[GODBOLT_PROBE_ENDIANNESS]   = CSTR_VIEW_INIT("endianness: "),
+		[GODBOLT_PROBE_LIBC]         = CSTR_VIEW_INIT("libc: "),
 	};
 	static struct cstr_view const versions[] = {
 		CSTR_VIEW_INIT("__clang_major__"), CSTR_VIEW_INIT("__GNUC__"),
@@ -2262,7 +2260,7 @@ godbolt_facts (struct godbolt *call)
 		CSTR_VIEW_INIT("__STDC_VERSION__"), CSTR_VIEW_INIT("__cplusplus")
 	};
 	struct godbolt_probe const *p = &call->probe;
-	for (size_t i = 0; i < GODBOLT_PROBE_FACTS; ++i) {
+	for (size_t i = 0; i < array_size(names); ++i) {
 		struct godbolt_probe_claim const *c = &p->facts[i];
 		godbolt_put(call, names[i]);
 		if (c->conflict)
@@ -2664,11 +2662,11 @@ godbolt_args_read (struct godbolt_args         *a,
 	};
 	if (args && !json_object_is_type(args, json_type_object))
 		return util_refuse(why, len, "The arguments must be a JSON object.");
-	struct json_object *of[GODBOLT_ARG_COUNT] = {};
+	struct json_object *of[array_size(godbolt_arg_names)] = {};
 	uint64_t seen;
 	struct cstr_view other;
-	if (jb_args(args, godbolt_arg_names, GODBOLT_ARG_COUNT, t->args & ~off, of, &seen,
-	            &other))
+	if (jb_args(args, godbolt_arg_names, array_size(godbolt_arg_names), t->args & ~off, of,
+	            &seen, &other))
 		return t->args & off && cstr_view_equal(other, godbolt_arg_names[GODBOLT_ARG_SHARE])
 		       ? util_refuse(why, len, "Links are turned off on this server, so the tool "
 		                     "has no argument share.")
