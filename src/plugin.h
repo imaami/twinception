@@ -140,17 +140,12 @@ typedef int plugin_configure_fn (void               *config,
                                  char               *why,
                                  size_t              len);
 
-/** The largest number of kinds that a plugin has. It equals the number of
- *  tool names that a manifest has room for.
- */
-static constexpr unsigned PLUGIN_TOOLS = MANIFEST_TOOLS;
-
 struct plugin {
-	/** The plugin's kinds. tools[i] is the kind of the tool that the
-	 *  manifest names at index i. An entry is a kind if its start is set.
-	 *  The kinds are the first entries, and every entry after them is all
-	 *  zero. */
-	struct tool_kind         tools[PLUGIN_TOOLS];
+	/** The plugin's kinds, as many as a manifest has room for names.
+	 *  tools[i] is the kind of the tool that the manifest names at index i.
+	 *  An entry is a kind if its start is set. The kinds are the first
+	 *  entries, and every entry after them is all zero. */
+	struct tool_kind         tools[MANIFEST_TOOLS];
 	/** Initializes an instance. It is set if instance_size is not 0, and
 	 *  it is nullptr if instance_size is 0. */
 	plugin_instance_init_fn *instance_init;

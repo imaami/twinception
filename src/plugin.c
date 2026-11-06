@@ -316,7 +316,7 @@ plugin_manifest_check (struct manifest const *m,
 	if (m->epoch != PLUGIN_EPOCH)
 		return util_refuse(why, len, "its plugin epoch is %" PRIu32
 		                   ", askai's is %" PRIu32, m->epoch, PLUGIN_EPOCH);
-	for (size_t i = 0; i < MANIFEST_ABI; ++i)
+	for (size_t i = 0; i < array_size(abi); ++i)
 		if (m->abi[i] != abi[i])
 			return util_refuse(why, len, "its ABI value %zu is %" PRIu32
 			                   ", askai's is %" PRIu32, i, m->abi[i], abi[i]);
@@ -324,14 +324,14 @@ plugin_manifest_check (struct manifest const *m,
 		return util_refuse(why, len, "the name in its manifest is not 1 to "
 		                   "31 characters of [-0-9_a-z]");
 	uint32_t n = 0;
-	for (; n < MANIFEST_TOOLS && m->tools[n][0]; ++n) {
+	for (; n < array_size(m->tools) && m->tools[n][0]; ++n) {
 		lens[n] = plugin_name_len(m->tools[n]);
 		if (!lens[n])
 			return util_refuse(why, len, "tool name %" PRIu32 " in its "
 			                   "manifest is not 1 to 31 characters of "
 			                   "[-0-9_a-z]", n);
 	}
-	for (uint32_t i = n + 1; i < MANIFEST_TOOLS; ++i)
+	for (uint32_t i = n + 1; i < array_size(m->tools); ++i)
 		if (m->tools[i][0])
 			return util_refuse(why, len, "its manifest has a tool name "
 			                   "after an empty entry");
@@ -394,8 +394,8 @@ plugin_loaded_load (struct plugin_loaded *dest,
 		                   "do not agree: instance_init() goes with an "
 		                   "instance_size of 1 to %zu, and instance_fini() and "
 		                   "relieve() need instance_init()", PLUGIN_INSTANCE_MAX);
-	for (uint32_t i = 0; i < PLUGIN_TOOLS; ++i) {
-		struct tool_kind const *kind = &dest->plugin->tools[i];
+	for (uint32_t i = 0; i < array_size(p->tools); ++i) {
+		struct tool_kind const *kind = &p->tools[i];
 		bool named = i < dest->n_tools;
 		if (named != !!kind->definition || named != !!kind->start)
 			return util_refuse(why, len, "kind %" PRIu32 " of its "
