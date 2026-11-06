@@ -11,12 +11,15 @@
 #include "autocomplete.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "util.h"
 
 enum { CLI_LIMIT = 16 * 1024 * 1024 };
 
-/** Optional detail accompanying an error number; no allocation on failure. */
+/** Optional detail accompanying an error number; no allocation on failure.
+ *  With its length, it is 2 KiB.
+ */
 struct cli_error {
-	char message[2048];
+	UTIL_TEXT(2044);
 };
 
 __attribute__((format(printf, 3, 4)))

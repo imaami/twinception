@@ -4,6 +4,7 @@
  */
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "cli_client.h"
 #include "cli_stream.h"
@@ -46,9 +47,11 @@ cli_tool_create (struct cli_client  *client,
 	struct autocomplete_tool const *entry = nullptr;
 	cli_json_auto arguments = nullptr;
 	*e = autocomplete_parse_call(client->catalog, command, &entry, &arguments,
-	                             error->message, sizeof error->message);
-	if (*e)
+	                             error->data, sizeof error->data);
+	if (*e) {
+		error->len = (uint32_t)strlen(error->data);
 		return nullptr;
+	}
 	uint64_t flags = cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool)) &&
 	                 cstr_view_index(writes, array_size(writes),
 	                                 jb_view(jb_get(arguments, "action"))) < array_size(writes)

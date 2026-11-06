@@ -1116,7 +1116,7 @@ cli_chat_refresh (struct cli       *cli,
 	                                       : CSTR_VIEW("Cannot refresh note filenames"),
 	                 cli_error_text(error, e));
 	if (!e)
-		error->message[0] = '\0';
+		util_text_clear(error);
 	return e;
 }
 
@@ -1152,7 +1152,7 @@ cli_chat (struct cli       *cli,
 			return 0;
 		if (cli->exit_signal || cli->ui_error)
 			return cli->ui_error ? cli->ui_error : EINTR;
-		error->message[0] = '\0';
+		util_text_clear(error);
 		dstr_auto prompt = dstr(nullptr);
 		bool supplied = !list_is_empty(&cli->inputs);
 		bool interpret = supplied || !initial;

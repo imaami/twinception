@@ -20,14 +20,14 @@ cli_error_set (struct cli_error *error,
 {
 	va_list args;
 	va_start(args, format);
-	(void)util_vformat(error->message, sizeof error->message, format, args);
+	error->len = (uint32_t)util_vformat(error->data, sizeof error->data, format, args);
 	va_end(args);
 	return e;
 }
 
 struct cstr_view cli_error_text(struct cli_error const *error, int e)
 {
-	return cstr_view(error->message[0] ? error->message : strerror(e));
+	return error->len ? util_text_view(error) : cstr_view(strerror(e));
 }
 
 struct json_object *cli_client_string(struct cstr_view text)
@@ -717,7 +717,7 @@ cli_client_report_optional (struct cli_client *client,
 		return e;
 	if (client->report)
 		(void)client->report(client, title, cli_error_text(error, e));
-	error->message[0] = '\0';
+	util_text_clear(error);
 	return 0;
 }
 
