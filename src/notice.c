@@ -23,15 +23,24 @@ notice_arg (char        conv,
             char const *s,
             size_t      len)
 {
-	char repo[NOTES_REPO];
-	char const *end = conv == 's' ? memchr(s, ']', len) : nullptr;
-	if (end)
-		return notes_select((struct cstr_view){ s, (size_t)(end - s) }, repo) ? 0
-		                                                                      : (size_t)(end - s);
-	size_t n = 0;
-	while (conv == 'u' && n < len && s[n] >= '0' && s[n] <= '9')
-		++n;
-	return n;
+	switch (conv) {
+	case 's': {
+		char const *end = memchr(s, ']', len);
+		if (!end)
+			return 0;
+		char repo[NOTES_REPO];
+		size_t const n = (size_t)(end - s);
+		return notes_select((struct cstr_view){ s, n }, repo) ? 0 : n;
+	}
+	case 'u': {
+		size_t n = 0;
+		while (n < len && s[n] >= '0' && s[n] <= '9')
+			++n;
+		return n;
+	}
+	default:
+		return 0;
+	}
 }
 
 /* Returns true if the @p len bytes at @p s are a notice of the printf
