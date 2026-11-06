@@ -10,7 +10,6 @@
 #include <poll.h>
 #include <pthread.h>
 #include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
@@ -140,26 +139,6 @@ log_emit (char const *line,
 		(void)eventfd_write(lg.wake_fd, 1);
 }
 
-/* Returns the length @p len of a line plus @p n, the return value of a
- * vsnprintf() or snprintf() that appended to the line, but at most @p max.
- * A negative @p n adds nothing, and a sum that overflows gives @p max. The
- * call was given a buffer of @p max - @p len bytes, so the result is @p max
- * only if the text did not fit.
- */
-static const_inline size_t
-log_grown (size_t       len,
-           size_t const max,
-           int const    n)
-{
-	if (n > 0) {
-		size_t old = len;
-		len += (size_t)n;
-		if (len < old)
-			len = SIZE_MAX;
-	}
-	return len < max ? len : max;
-}
-
 void
 log_put (struct log_site *site,
          char const      *fmt,
@@ -169,25 +148,15 @@ log_put (struct log_site *site,
 	if (site && !log_site_allow(site, &missed))
 		return;
 
-	/* The last byte is kept for the line break. */
+	/* The line break takes the place of the text's NUL. */
 	char line[LINE];
-
 	va_list ap;
 	va_start(ap, fmt);
-	size_t len = log_grown(0, sizeof line - 1U,
-	                       vsnprintf(line, sizeof line - 1U, fmt, ap));
+	size_t len = util_vformat(line, sizeof line, fmt, ap);
 	va_end(ap);
-
 	if (missed)
-		len = log_grown(len, sizeof line - 1U,
-		                snprintf(line + len, sizeof line - 1U - len,
-		                         " (%" PRIu32 " skipped)", missed));
-	if (len == sizeof line - 1U) {
-		line[sizeof line - 4U] = '.';
-		line[sizeof line - 3U] = '.';
-		line[sizeof line - 2U] = '.';
-	}
-
+		len += util_format(line + len, sizeof line - len, " (%" PRIu32 " skipped)",
+		                   missed);
 	line[len++] = '\n';
 	log_emit(line, len);
 }
@@ -245,10 +214,10 @@ log_thread (void *arg)
 		uint64_t dropped = atomic_load_explicit(&log_metrics.dropped,
 		                                        memory_order_relaxed);
 		if (dropped != reported) {
-			int n = snprintf(note, sizeof note, "log: %" PRIu64
-			                 " lines dropped so far\n", dropped);
-			if (n > 0 && (size_t)n < sizeof note)
-				iov[k++] = (struct iovec){ note, (size_t)n };
+			size_t n = util_format(note, sizeof note, "log: %" PRIu64
+			                       " lines dropped so far\n", dropped);
+			if (n)
+				iov[k++] = (struct iovec){ note, n };
 			reported = dropped;
 		}
 		for (size_t i = 0; i < lg.n; ++i) {
