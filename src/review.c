@@ -1060,23 +1060,13 @@ review_put_text (struct dstr         *out,
                  size_t               room)
 {
 	size_t const start = dstr_len(out);
-	dstr_auto item = DSTR_INIT;
 	while (cursor->section != REVIEW_SECTION_END) {
 		struct tool_cursor const at = *cursor;
 		size_t const before = dstr_len(out);
-		/* An item that an earlier part cut is written again into item, and
-		 * only its rest is appended. */
-		bool ok;
-		if (at.byte) {
-			dstr_clear(&item);
-			ok = review_put_item(&item, r, id, cursor) &&
-			     !cstr_view_cat(cstr_view_slice(cstr_view_dstr(&item), at.byte, SIZE_MAX),
-			                    out);
-		} else {
-			ok = review_put_item(out, r, id, cursor);
-		}
-		if (!ok)
+		if (!review_put_item(out, r, id, cursor))
 			return ENOMEM;
+		/* Drop the bytes of an item that an earlier part cut and wrote. */
+		dstr_erase(out, before, at.byte);
 		if (dstr_len(out) - start > room) {
 			dstr_erase(out, start + room, SIZE_MAX);
 			*cursor = at;
