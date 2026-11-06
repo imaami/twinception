@@ -32,6 +32,7 @@
 #include "jb.h"
 #include "list.h"
 #include "loop.h"
+#include "util.h"
 
 enum {
 	CLI_CONSOLE_INPUT_LIMIT   = AUTOCOMPLETE_BYTES,
@@ -561,13 +562,9 @@ cli_console_candidate (char const *text,
 	if (state < 0 || (size_t)state >= console->candidate_count)
 		return nullptr;
 	struct autocomplete_match const *candidate = &console->candidates[state];
-	char *copy = malloc(candidate->cursor + 1);
-	if (!copy) {
+	char *copy = strndup(candidate->line.data, candidate->cursor);
+	if (!copy)
 		console->in.error = ENOMEM;
-		return nullptr;
-	}
-	memcpy(copy, candidate->line.data, candidate->cursor);
-	copy[candidate->cursor] = '\0';
 	return copy;
 }
 
@@ -1280,8 +1277,7 @@ int cli_console_remember(struct cli_console *console, struct cstr_view text)
 	if ((console->flags & CLI_CONSOLE_SIMPLE) || !text.len ||
 	    cstr_view_equal(text, cstr_view_dstr(&console->history_last)))
 		return 0;
-	dstr_auto copy = dstr(nullptr);
-	if (cstr_view_cat(text, &copy))
+	if (cstr_view_store(text, &console->history_last))
 		return ENOMEM;
 	/* The console counts the bytes of the submitted entries itself, because
 	 * Readline changes recalled entries in place and offers no function for
@@ -1290,8 +1286,6 @@ int cli_console_remember(struct cli_console *console, struct cstr_view text)
 		free_history_entry(remove_history(0));
 		cli_state_ring_drop(&console->history, console->history_sizes[console->history.first]);
 	}
-	dstr_cleanup(&console->history_last);
-	console->history_last = dstr_move(&copy);
 	add_history(dstr_get(&console->history_last));
 	console->history_sizes[cli_state_ring_add(&console->history, text.len)] = text.len;
 	return 0;
@@ -1404,19 +1398,17 @@ cli_console_frame (struct cli_console *console,
 	for (unsigned pane = 0; pane < CLI_CONSOLE_PANES; ++pane) {
 		struct cli_scrollback const *scrollback = &console->panes[pane].scrollback;
 		bool focused = console->focused == pane;
-		char caption[64];
-		int length = edge
-			? snprintf(caption, sizeof caption, " %s | %zu unread ",
-			           scrollback->offset ? "scrolling" : "live", scrollback->unread)
-			: snprintf(caption, sizeof caption, " %c %s ", focused ? '*' : ' ', names[pane]);
-		if (length < 0 || length >= (int)sizeof caption)
-			return EOVERFLOW;
+		char buffer[64];
+		struct cstr_view caption = edge
+			? util_format_view(buffer, sizeof buffer, " %s | %zu unread ",
+			                   scrollback->offset ? "scrolling" : "live", scrollback->unread)
+			: util_format_view(buffer, sizeof buffer, " %c %s ", focused ? '*' : ' ', names[pane]);
 		unsigned width = cli_console_pane_width(console, pane);
-		if ((unsigned)length > width)
-			length = (int)width;
+		if (caption.len > width)
+			caption.len = width;
 		char const *title_style = cli_console_style(console, focused ? CLI_STYLE_TITLE : CLI_STYLE_TITLE_INACTIVE);
 		if (!dstr_printf(output, "%s%s%s%.*s%s%.*s", frame_style, border[pane], title_style,
-		                 length, caption, frame_style, (int)(width - (unsigned)length) * 3, rule))
+		                 (int)caption.len, caption.data, frame_style, (int)(width - caption.len) * 3, rule))
 			return ENOMEM;
 	}
 	return dstr_cat(output, border[CLI_CONSOLE_PANES]) ? 0 : ENOMEM;
@@ -1455,16 +1447,13 @@ cli_console_status (struct cli_console *console,
                     struct dstr        *output)
 {
 	static char const hint[] = " | Alt-Left/Right pane  Alt-Up/Down scroll  Ctrl-End follow";
-	char status[128];
-	int length = console->queue.count
-	           ? snprintf(status, sizeof status, " askai | %zu queued%s", console->queue.count, hint)
-	           : snprintf(status, sizeof status, " askai | %s%s",
-	                      console->flags & CLI_CONSOLE_BUSY ? "working" : "ready", hint);
-	if (length < 0)
-		return EIO;
-	/* The longest status, with a count of 20 digits, has 95 bytes. */
+	char buffer[128];
+	struct cstr_view status = console->queue.count
+		? util_format_view(buffer, sizeof buffer, " askai | %zu queued%s", console->queue.count, hint)
+		: util_format_view(buffer, sizeof buffer, " askai | %s%s",
+		                   console->flags & CLI_CONSOLE_BUSY ? "working" : "ready", hint);
 	return dstr_printf(output, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS),
-	                   (int)console->columns, (int)console->columns, status) ? 0 : ENOMEM;
+	                   (int)console->columns, (int)console->columns, status.data) ? 0 : ENOMEM;
 }
 
 /* Clear the stored rows and decorations of the screen, and mark all parts
@@ -1677,10 +1666,7 @@ cli_console_readline (struct cli_console *console,
 {
 	struct cstr_view prefix = cstr_view(prompt);
 	if (!cstr_view_equal(prefix, cstr_view_dstr(&console->prompt))) {
-		if (!dstr_reserve(&console->prompt, prefix.len))
-			return ENOMEM;
-		dstr_clear(&console->prompt);
-		if (cstr_view_cat(prefix, &console->prompt))
+		if (cstr_view_store(prefix, &console->prompt))
 			return ENOMEM;
 		if ((console->flags & CLI_CONSOLE_CALLBACK_ACTIVE) && rl_set_prompt(dstr_get(&console->prompt)))
 			return EIO;
