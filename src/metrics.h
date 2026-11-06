@@ -37,21 +37,34 @@ struct manual_metrics;
 struct task_metrics;
 struct task_pool_metrics;
 
+/**
+ * The MCP methods whose request times are kept apart, as X(ID, name, eras):
+ * METHOD_ID in enum metrics_method, the name, also the label of the times
+ * in the metrics, and the eras in which the method exists, bit 0 legacy and
+ * bit 1 modern. OTHER is a method not listed, or no valid message. The
+ * JSON-RPC methods come before NOTIFY, which is the notifications and the
+ * responses. METRICS is GET /metrics.
+ */
+#define METRICS_METHODS(X)                    \
+        X(OTHER,        "other",           0) \
+        X(INITIALIZE,   "initialize",      1) \
+        X(PING,         "ping",            1) \
+        X(TOOLS_LIST,   "tools/list",      3) \
+        X(TOOLS_CALL,   "tools/call",      3) \
+        X(DISCOVER,     "server/discover", 2) \
+        X(TASKS_GET,    "tasks/get",       2) \
+        X(TASKS_UPDATE, "tasks/update",    2) \
+        X(TASKS_CANCEL, "tasks/cancel",    2) \
+        X(NOTIFY,       "notification",    0) \
+        X(METRICS,      "metrics",         0)
+
 /** MCP methods, whose request times are kept apart. */
+#define METRICS_METHOD(id, name, eras) METHOD_##id,
 enum metrics_method {
-	METHOD_OTHER,       /**< not one below, or no valid message */
-	METHOD_INITIALIZE,
-	METHOD_PING,
-	METHOD_TOOLS_LIST,
-	METHOD_TOOLS_CALL,
-	METHOD_DISCOVER,
-	METHOD_TASKS_GET,
-	METHOD_TASKS_UPDATE,
-	METHOD_TASKS_CANCEL,
-	METHOD_NOTIFY,      /**< notifications, and responses */
-	METHOD_METRICS,     /**< GET /metrics */
+	METRICS_METHODS(METRICS_METHOD)
 	METHOD_N
 };
+#undef METRICS_METHOD
 
 /** What a loop keeps for reuse besides its stash's storage: the loop
  *  writes, any thread reads (hist.h).
@@ -64,22 +77,30 @@ struct metrics_kept {
 };
 
 /** The tools that an ask call's turns may call (src/mcp.h), as a call's
- *  tool, which the metrics count by.
+ *  tool, which the metrics count by, as X(ID, label): LENT_ID in enum
+ *  metrics_lent, and the label of its count in the metrics. NONE is a tool
+ *  not lent, or of no tool's name, and PLUGIN a tool of a plugin that
+ *  askai loaded from a file.
  */
+#define METRICS_LENT(X)             \
+        X(NONE,       "unknown")    \
+        X(MAN,        "man")        \
+        X(GIT,        "git")        \
+        X(NOTES,      "notes")      \
+        X(COMPACT,    "compact")    \
+        X(FINDINGS,   "findings")   \
+        X(BACKGROUND, "background") \
+        X(JOBS,       "jobs")       \
+        X(WAIT,       "wait")       \
+        X(TIMER,      "timer")      \
+        X(PLUGIN,     "plugin")
+
+#define METRICS_LENT_ID(id, label) LENT_##id,
 enum metrics_lent {
-	LENT_NONE,     /**< one not lent, or of no tool's name */
-	LENT_MAN,
-	LENT_GIT,
-	LENT_NOTES,
-	LENT_COMPACT,
-	LENT_FINDINGS,
-	LENT_BACKGROUND,
-	LENT_JOBS,
-	LENT_WAIT,
-	LENT_TIMER,
-	LENT_PLUGIN,   /**< a tool of a plugin that askai loaded from a file */
+	METRICS_LENT(METRICS_LENT_ID)
 	LENT_N
 };
+#undef METRICS_LENT_ID
 
 /** What a client loop counts of its tool calls' jobs, and of the turns of
  *  the ask calls that lend the upstream tools: the loop writes, any thread

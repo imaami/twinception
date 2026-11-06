@@ -818,24 +818,18 @@ mcp_is_metrics (struct span target)
 	       (target.len == n || target.ptr[n] == '?');
 }
 
-/** Returns the enum metrics_method of @p method. An empty method matches
- *  the empty name of METHOD_OTHER.
+/** Returns the enum metrics_method of the JSON-RPC method @p method, which
+ *  is METHOD_OTHER for a method not listed.
  */
 static uint8_t
 mcp_method_index (struct cstr_view method)
 {
-	static struct cstr_view const names[METHOD_N] = {
-		[METHOD_INITIALIZE]   = CSTR_VIEW_INIT("initialize"),
-		[METHOD_PING]         = CSTR_VIEW_INIT("ping"),
-		[METHOD_TOOLS_LIST]   = CSTR_VIEW_INIT("tools/list"),
-		[METHOD_TOOLS_CALL]   = CSTR_VIEW_INIT("tools/call"),
-		[METHOD_DISCOVER]     = CSTR_VIEW_INIT("server/discover"),
-		[METHOD_TASKS_GET]    = CSTR_VIEW_INIT("tasks/get"),
-		[METHOD_TASKS_UPDATE] = CSTR_VIEW_INIT("tasks/update"),
-		[METHOD_TASKS_CANCEL] = CSTR_VIEW_INIT("tasks/cancel"),
-	};
-	size_t i = cstr_view_index(names, METHOD_N, method);
-	return i < METHOD_N ? (uint8_t)i : METHOD_OTHER;
+	#define MCP_METHOD(id, name, eras) [METHOD_##id] = CSTR_VIEW_INIT(name),
+	static struct cstr_view const names[METHOD_N] = { METRICS_METHODS(MCP_METHOD) };
+	#undef MCP_METHOD
+	/* The JSON-RPC methods come before METHOD_NOTIFY. */
+	size_t i = cstr_view_index(names, METHOD_NOTIFY, method);
+	return i < METHOD_NOTIFY ? (uint8_t)i : METHOD_OTHER;
 }
 
 /* Whether an Accept field lists text/event-stream. */
@@ -7174,17 +7168,9 @@ mcp_req_route (struct mcp_req     *req,
                struct json_object *params,
                bool                tasks)
 {
-	/* The eras that have each method, bit 0 legacy, bit 1 modern. */
-	static uint8_t const eras[METHOD_N] = {
-		[METHOD_INITIALIZE]   = 1,
-		[METHOD_PING]         = 1,
-		[METHOD_TOOLS_LIST]   = 3,
-		[METHOD_TOOLS_CALL]   = 3,
-		[METHOD_DISCOVER]     = 2,
-		[METHOD_TASKS_GET]    = 2,
-		[METHOD_TASKS_UPDATE] = 2,
-		[METHOD_TASKS_CANCEL] = 2,
-	};
+	#define MCP_ERAS(id, name, eras) [METHOD_##id] = eras,
+	static uint8_t const eras[METHOD_N] = { METRICS_METHODS(MCP_ERAS) };
+	#undef MCP_ERAS
 	struct mcp_static const *st = req->mcp->st;
 	if (!(eras[req->method] >> req->modern & 1)) {
 		/* Legacy clients take a 404 for an expired session, so keep 200. */

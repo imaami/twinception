@@ -71,14 +71,17 @@ static struct {
 
 #define LOOP_HIST(name, help, labels, field) \
         { name, help, labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NANO }
-/* The help of the family is on its first row, that of the unit 0. */
+/* WORK, METHOD and LENT expand a list into the rows of a family, whose
+ * help is on the row of the value 0, the first.
+ */
 #define WORK(id, unit, bound) \
         { "askai_loop_step_work_max", LOOP_##id ? nullptr : "The most of a unit of " \
           "work one step did (design section 1).", "unit=\"" unit "\"", \
           offsetof(struct loop_metrics, work[LOOP_##id]), LOOP, GAUGE, ONE },
-#define METHOD(help, method, m) \
-        { "askai_request_seconds", help, "method=\"" method "\"", \
-          offsetof(struct metrics_mcp, methods[m]), MCP, HISTOGRAM, NANO }
+#define METHOD(id, method, eras) \
+        { "askai_request_seconds", METHOD_##id ? nullptr : "Time from a request's head " \
+          "to its end, by MCP method.", "method=\"" method "\"", \
+          offsetof(struct metrics_mcp, methods[METHOD_##id]), MCP, HISTOGRAM, NANO },
 #define VALUE(name, help, labels, type, field, source, kind, scale) \
         { name, help, labels, offsetof(type, field), source, kind, scale }
 #define STASHED(name, help, labels, field, kind, scale) \
@@ -87,9 +90,11 @@ static struct {
         VALUE(name, help, labels, struct metrics_mcp, kept.field, MCP, GAUGE, ONE)
 #define CALLS(name, help, field) \
         VALUE(name, help, "", struct metrics_mcp, calls.field, MCP, COUNTER, ONE)
-#define LENT(help, tool, i) \
-        VALUE("askai_turn_tool_calls_total", help, "tool=\"" tool "\"", \
-              struct metrics_mcp, calls.lent[i], MCP, COUNTER, ONE)
+#define LENT(id, tool) \
+        VALUE("askai_turn_tool_calls_total", LENT_##id ? nullptr : "Tool calls the turns " \
+              "made, by tool; unknown: one not lent, or of no tool's name.", \
+              "tool=\"" tool "\"", struct metrics_mcp, calls.lent[LENT_##id], MCP, \
+              COUNTER, ONE),
 #define CONNS(name, help, field, kind) \
         VALUE(name, help, "", struct metrics_conns, field, CONNS, kind, ONE)
 #define JOBS(name, help, labels, field, kind) \
@@ -118,18 +123,7 @@ static struct metrics_entry const table[] = {
 	LOOP_HIST("askai_loop_inbox_delay_seconds",
 	          "Time from a message's post to its handler.", "", inbox),
 	LOOP_UNIT_LIST(WORK)
-	METHOD("Time from a request's head to its end, by MCP method.", "initialize",
-	       METHOD_INITIALIZE),
-	METHOD(nullptr, "ping", METHOD_PING),
-	METHOD(nullptr, "tools/list", METHOD_TOOLS_LIST),
-	METHOD(nullptr, "tools/call", METHOD_TOOLS_CALL),
-	METHOD(nullptr, "server/discover", METHOD_DISCOVER),
-	METHOD(nullptr, "tasks/get", METHOD_TASKS_GET),
-	METHOD(nullptr, "tasks/update", METHOD_TASKS_UPDATE),
-	METHOD(nullptr, "tasks/cancel", METHOD_TASKS_CANCEL),
-	METHOD(nullptr, "notification", METHOD_NOTIFY),
-	METHOD(nullptr, "metrics", METHOD_METRICS),
-	METHOD(nullptr, "other", METHOD_OTHER),
+	METRICS_METHODS(METHOD)
 	CALLS("askai_calls_cancelled_total", "Tool calls that a loop cancelled while "
 	      "their job ran, for a hang-up, a closed stream, a drain or a "
 	      "notifications/cancelled.", cancelled),
@@ -137,18 +131,7 @@ static struct metrics_entry const table[] = {
 	      "call gone (a stale handle).", dropped),
 	CALLS("askai_turns_total", "Upstream calls made as turns of ask calls that "
 	      "lend the upstream tools (--upstream-tools).", turns),
-	LENT("Tool calls the turns made, by tool; unknown: one not lent, or of no "
-	     "tool's name.", "man", LENT_MAN),
-	LENT(nullptr, "git", LENT_GIT),
-	LENT(nullptr, "notes", LENT_NOTES),
-	LENT(nullptr, "compact", LENT_COMPACT),
-	LENT(nullptr, "findings", LENT_FINDINGS),
-	LENT(nullptr, "background", LENT_BACKGROUND),
-	LENT(nullptr, "jobs", LENT_JOBS),
-	LENT(nullptr, "wait", LENT_WAIT),
-	LENT(nullptr, "timer", LENT_TIMER),
-	LENT(nullptr, "plugin", LENT_PLUGIN),
-	LENT(nullptr, "unknown", LENT_NONE),
+	METRICS_LENT(LENT)
 	VALUE("askai_compactions_total", "Contexts of ask calls' turns compacted: "
 	      "by the upstream's compact call, or by askai, the context full.",
 	      "by=\"upstream\"", struct metrics_mcp, calls.compacted[0], MCP, COUNTER,
