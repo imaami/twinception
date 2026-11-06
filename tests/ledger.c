@@ -185,6 +185,13 @@ test_invalid (struct ledger *l)
 		CHECK(!ledger_timer_add(timers, 1, i + 1, CSTR_VIEW("n")) && timers[i].id == i + 1 &&
 		      timers[i].len == 1 && timers[i].note[0] == 'n');
 	CHECK(ledger_timer_add(timers, 1, 9, none) == EBUSY && ledger_timer_any(timers));
+	/* ledger_timer_drop() removes a timer that has not fired, once, and
+	 * leaves a fired one. */
+	CHECK(!ledger_timer_drop(timers, 2, 0) && !timers[1].due &&
+	      ledger_timer_drop(timers, 2, 0) == ENOENT &&
+	      ledger_timer_drop(timers, 3, 1) == EALREADY && timers[2].due &&
+	      ledger_timer_drop(timers, 0, 0) == ENOENT);
+	CHECK(!ledger_timer_add(timers, 1, 9, none) && timers[1].id == 9);
 	CHECK(ledger_timer_cancel(nullptr, A, 1) == EINVAL &&
 	      ledger_timer_cancel(l, A, 1) == ENOENT);
 	CHECK(!ledger_wait_enter(nullptr, A, test_loop, (struct handle){}, test_wake, &e) &&

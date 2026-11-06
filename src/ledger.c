@@ -157,17 +157,6 @@ ledger_owner_get (struct ledger *l,
 	return o;
 }
 
-/* The timer of @p o whose number is @p id, the lock held; nullptr if none. */
-static struct ledger_timer *
-ledger_owner_timer (struct ledger_owner *o,
-                    uint32_t             id)
-{
-	for (size_t i = 0; i < array_size(o->timers); ++i)
-		if (o->timers[i].due && o->timers[i].id == id)
-			return &o->timers[i];
-	return nullptr;
-}
-
 /* Put each wait of @p o whose message is not posted on a chain by its
  * member hit, with a reference for the message, the lock held. Returns
  * the chain, for ledger_wake() once the lock is not held.
@@ -766,6 +755,23 @@ ledger_timer_any (struct ledger_timer const timers[static LEDGER_TIMERS])
 }
 
 int
+ledger_timer_drop (struct ledger_timer timers[static LEDGER_TIMERS],
+                   uint32_t            id,
+                   uint64_t            now)
+{
+	for (size_t i = 0; i < LEDGER_TIMERS; ++i) {
+		struct ledger_timer *t = &timers[i];
+		if (!t->due || t->id != id)
+			continue;
+		if (t->due <= now)
+			return EALREADY;
+		t->due = 0;
+		return 0;
+	}
+	return ENOENT;
+}
+
+int
 ledger_timer_set (struct ledger    *ledger,
                   uint64_t          owner,
                   uint64_t          due,
@@ -812,10 +818,7 @@ ledger_timer_cancel (struct ledger *ledger,
 	struct ledger_owner *o = ledger_owner_find(ledger, owner);
 	if (o) {
 		ledger_owner_expire(o, now);
-		struct ledger_timer *t = ledger_owner_timer(o, id);
-		e = !t ? ENOENT : t->due <= now ? EALREADY : 0;
-		if (!e)
-			t->due = 0;
+		e = ledger_timer_drop(o->timers, id, now);
 		ledger_owner_gc(ledger, o);
 	}
 	pthread_mutex_unlock(&ledger->lock);

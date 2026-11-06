@@ -388,6 +388,15 @@ ledger_timer_add (struct ledger_timer timers[static LEDGER_TIMERS],
 extern bool
 ledger_timer_any (struct ledger_timer const timers[static LEDGER_TIMERS]);
 
+/** Removes the timer of @p timers whose number is @p id, if it has not
+ *  fired by @p now. Returns 0, EALREADY if it has fired, or ENOENT if no
+ *  timer of @p timers with that number is set or fired.
+ */
+extern int
+ledger_timer_drop (struct ledger_timer timers[static LEDGER_TIMERS],
+                   uint32_t            id,
+                   uint64_t            now);
+
 /** Remove the timer of the owner @p owner whose number is @p id, if it has
  *  not fired. Returns 0, ENOENT if the owner has no such timer, EALREADY
  *  if the timer has fired and no ledger_tell() has returned it yet, or
