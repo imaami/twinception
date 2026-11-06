@@ -1,6 +1,6 @@
 /** @file schema.h
  *
- * Builders of the JSON Schema parts of tool definitions. Each builder
+ * Builders of tool definitions and of their JSON Schema parts. Each builder
  * returns a new json-c value, or nullptr if memory runs out. A builder
  * consumes the json-c values passed to it, also when it fails.
  */
@@ -10,8 +10,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cstr_view.h"
+
 struct json_object;
-struct cstr_view;
 
 /** Returns a JSON string that joins the texts @p a, @p b and @p c. */
 extern struct json_object *
@@ -68,5 +69,16 @@ extern struct json_object *
 schema_object (struct json_object     *properties,
                struct cstr_view const *required,
                size_t                  n);
+
+/**
+ * Returns the definition of the tool @p name with the description @p about
+ * and the arguments @p properties, of which the argument @p required is
+ * required. @p name and @p about must not be nullptr.
+ */
+extern struct json_object *
+schema_tool (char const         *name,
+             char const         *about,
+             struct json_object *properties,
+             struct cstr_view    required);
 
 #endif /* TWINCEPTION_SRC_SCHEMA_H_ */

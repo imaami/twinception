@@ -26,56 +26,52 @@ findings_definition (void const *service)
 {
 	(void)service;
 	static_assert(TOOL_TEXT_MAX == 4U << 20, "update the description");
-	return jb_object(
-		"name", json_object_new_string("findings"),
-		"description", json_object_new_string(
-			"Keep your findings in askai's review record. askai shows the record "
-			"again after every compaction, with its log of the lines that you "
-			"read in this call with the read command of the git tool, if you have "
-			"it, so you need not copy them into notes or your summary. askai "
-			"keeps your task as the user gave it through every compaction, so you "
-			"need not copy it. add records a claim, a candidate until you check "
-			"it. update changes its state: verified when source that you read "
-			"shows it true, disproved when it shows it false, retracted when you "
-			"withdraw it, or candidate again. Each update needs evidence, and can "
-			"also change the claim or the location if they were wrong; the "
-			"finding's history keeps the old text. verified and disproved need "
-			"the lines of the location in the read log, so they need the git "
-			"tool, and askai records the commit that the lines were read at. show "
-			"gives the record, or with id one finding's history. The record "
-			"holds at most 4 MiB."),
-		"inputSchema", schema_object(
-			jb_object(
-				"action", schema_enum(
-					schema_names(review_action_names, REVIEW_ACTIONS),
-					"add a finding, update one, or show the record."),
-				"claim", schema_property("string",
-					"Required for add, and for update if the claim was "
-					"wrong: what you found."),
-				"location", schema_property("string",
-					"For add, and for update if the location was wrong: "
-					"the lines that the claim is about, as path:line or "
-					"path:first-last, such as src/mcp.c:120-140. A commit "
-					"and a colon may come first, as git grep prints them; "
-					"HEAD and a colon are as no commit."),
-				"state", schema_enum(
-					schema_names(review_state_names, REVIEW_STATES),
-					"For add: candidate (the default), verified or "
-					"disproved. Required for update: the new state, or "
-					"the same."),
-				"evidence", schema_property("string",
-					"Required for update, and for add with verified or "
-					"disproved: what you read that shows the state, or "
-					"why you retract the finding."),
-				"id", schema_count(1,
-					"Required for update, and for show to give one "
-					"finding's history: the number of the finding."),
-				"offset", schema_count(0,
-					"For show: the byte of the output to start from, to "
-					"read on past where it was cut."),
-				nullptr),
-			&CSTR_VIEW("action"), 1),
-		nullptr);
+	return schema_tool("findings",
+		"Keep your findings in askai's review record. askai shows the record "
+		"again after every compaction, with its log of the lines that you "
+		"read in this call with the read command of the git tool, if you have "
+		"it, so you need not copy them into notes or your summary. askai "
+		"keeps your task as the user gave it through every compaction, so you "
+		"need not copy it. add records a claim, a candidate until you check "
+		"it. update changes its state: verified when source that you read "
+		"shows it true, disproved when it shows it false, retracted when you "
+		"withdraw it, or candidate again. Each update needs evidence, and can "
+		"also change the claim or the location if they were wrong; the "
+		"finding's history keeps the old text. verified and disproved need "
+		"the lines of the location in the read log, so they need the git "
+		"tool, and askai records the commit that the lines were read at. show "
+		"gives the record, or with id one finding's history. The record "
+		"holds at most 4 MiB.",
+		jb_object(
+			"action", schema_enum(
+				schema_names(review_action_names, REVIEW_ACTIONS),
+				"add a finding, update one, or show the record."),
+			"claim", schema_property("string",
+				"Required for add, and for update if the claim was "
+				"wrong: what you found."),
+			"location", schema_property("string",
+				"For add, and for update if the location was wrong: "
+				"the lines that the claim is about, as path:line or "
+				"path:first-last, such as src/mcp.c:120-140. A commit "
+				"and a colon may come first, as git grep prints them; "
+				"HEAD and a colon are as no commit."),
+			"state", schema_enum(
+				schema_names(review_state_names, REVIEW_STATES),
+				"For add: candidate (the default), verified or "
+				"disproved. Required for update: the new state, or "
+				"the same."),
+			"evidence", schema_property("string",
+				"Required for update, and for add with verified or "
+				"disproved: what you read that shows the state, or "
+				"why you retract the finding."),
+			"id", schema_count(1,
+				"Required for update, and for show to give one "
+				"finding's history: the number of the finding."),
+			"offset", schema_count(0,
+				"For show: the byte of the output to start from, to "
+				"read on past where it was cut."),
+			nullptr),
+		CSTR_VIEW("action"));
 }
 
 void

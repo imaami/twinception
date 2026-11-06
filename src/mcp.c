@@ -8111,30 +8111,13 @@ mcp_compact_definition (void const *service)
 		nullptr);
 }
 
-/** Returns the definition of the tool @p name with the description
- *  @p about and the arguments @p properties, of which the argument
- *  @p required is required, or nullptr if out of memory. The function
- *  consumes @p properties.
- */
-static struct json_object *
-mcp_definition (char const         *name,
-                char const         *about,
-                struct json_object *properties,
-                struct cstr_view    required)
-{
-	return jb_object("name", json_object_new_string(name),
-	                 "description", json_object_new_string(about),
-	                 "inputSchema", schema_object(properties, &required, 1),
-	                 nullptr);
-}
-
 /* Returns the definition of background for the turns. */
 static struct json_object *
 mcp_background_definition (void const *service)
 {
 	(void)service;
 	static_assert(JOBS_MAX == 8, "update the description");
-	return mcp_definition("background",
+	return schema_tool("background",
 		"Start a call of another tool as a job in the background, and go on "
 		"at once: askai answers with the job's number, and tells you when it "
 		"finishes: with a later tool result, by ending a wait, or in a "
@@ -8166,7 +8149,7 @@ static struct json_object *
 mcp_jobs_definition (void const *service)
 {
 	(void)service;
-	return mcp_definition("jobs",
+	return schema_tool("jobs",
 		"The jobs you started with background: list them, read the output "
 		"of one that has finished, a window at a time, or cancel one that "
 		"runs.",
@@ -8187,7 +8170,7 @@ mcp_wait_definition (void const *service)
 {
 	(void)service;
 	static_assert(WAIT_MAX == 600, "update the description");
-	return mcp_definition("wait",
+	return schema_tool("wait",
 		"Wait until a job finishes, of those you name or any, or a timer "
 		"fires, or the seconds are up, whichever comes first; askai then "
 		"says what happened. Call it rather than jobs again and again.",
@@ -8206,7 +8189,7 @@ mcp_timer_definition (void const *service)
 {
 	(void)service;
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "update the description");
-	return mcp_definition("timer",
+	return schema_tool("timer",
 		"Set a timer, and go on at once: when it fires, askai tells you, "
 		"with a later tool result, by ending a wait, or in a message after "
 		"your answer.",
@@ -8239,7 +8222,7 @@ mcp_background_client_definition (void const *service)
 	char tool[256];
 	util_format(tool, sizeof tool, "The name of the tool to call, such as %s; not "
 	            "background, jobs, wait or timer.", st->tool->name);
-	return mcp_definition("background", about,
+	return schema_tool("background", about,
 		jb_object(
 			"tool", schema_property("string", tool),
 			"arguments", schema_property("object", "The arguments for the tool, "
@@ -8253,7 +8236,7 @@ static struct json_object *
 mcp_jobs_client_definition (void const *service)
 {
 	(void)service;
-	return mcp_definition("jobs",
+	return schema_tool("jobs",
 		"List your jobs, which background started, and your timers; return "
 		"the result of a job that has ended; or cancel a job that runs or a "
 		"timer that has not fired.",
@@ -8275,7 +8258,7 @@ mcp_wait_client_definition (void const *service)
 {
 	(void)service;
 	static_assert(WAIT_MAX == 600 && WAIT_IDS == 16, "update the description");
-	return mcp_definition("wait",
+	return schema_tool("wait",
 		"Wait until one of your jobs ends, of those that you name or any, or "
 		"one of your timers fires, or the seconds pass, whichever comes "
 		"first. The result then lists what happened. A wait uses no upstream "
@@ -8298,7 +8281,7 @@ mcp_timer_client_definition (void const *service)
 {
 	(void)service;
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "update the description");
-	return mcp_definition("timer",
+	return schema_tool("timer",
 		"Set a timer, and continue at once: the result contains the number of "
 		"the timer. When the timer fires, a call of wait ends, and its result "
 		"contains the number and the note of the timer.",

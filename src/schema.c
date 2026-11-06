@@ -1,6 +1,6 @@
 /** @file schema.c
  *
- * Builders of the JSON Schema parts of tool definitions.
+ * Builders of tool definitions and of their JSON Schema parts.
  */
 #include "cstr_view.h"
 #include "dstr.h"
@@ -84,4 +84,16 @@ schema_object (struct json_object     *properties,
 	if (required)
 		obj = jb_set_or_free(obj, "required", schema_names(required, n));
 	return jb_set_or_free(obj, "additionalProperties", json_object_new_boolean(0));
+}
+
+struct json_object *
+schema_tool (char const         *name,
+             char const         *about,
+             struct json_object *properties,
+             struct cstr_view    required)
+{
+	return jb_object("name", json_object_new_string(name),
+	                 "description", json_object_new_string(about),
+	                 "inputSchema", schema_object(properties, &required, 1),
+	                 nullptr);
 }
