@@ -213,7 +213,7 @@ enum godbolt_sec : uint8_t {
 
 /* The kinds of request that the plugin sends. */
 enum godbolt_req : uint8_t {
-	GODBOLT_GET_LANGUAGES,  /* GET /api/languages */
+	GODBOLT_GET_LANGUAGES,  /* GET /api/languages?fields=... */
 	GODBOLT_GET_COMPILERS,  /* GET /api/compilers/LANGUAGE?fields=... */
 	GODBOLT_POST_COMPILE,   /* POST /api/compiler/ID/compile */
 	GODBOLT_POST_SHORTEN,   /* POST /api/shortener */
@@ -250,7 +250,8 @@ struct godbolt_rule {
  * Explorer returns the same link for the same state.
  */
 static struct godbolt_rule const godbolt_rules[] = {
-	[GODBOLT_GET_LANGUAGES] = { CSTR_VIEW_INIT("/api/languages"), CSTR_VIEW_INIT(""),
+	[GODBOLT_GET_LANGUAGES] = { CSTR_VIEW_INIT("/api/languages"),
+	                            CSTR_VIEW_INIT("?fields=id,name,defaultCompiler"),
 	                            1 << 20, 30, 86400, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO |
 	                                                GODBOLT_AGAIN_TIMEDOUT },
 	[GODBOLT_GET_COMPILERS] = { CSTR_VIEW_INIT("/api/compilers/"),
@@ -315,7 +316,7 @@ enum godbolt_array : uint8_t {
  * name, the singular of the noun, and the first line of the output.
  */
 #define GODBOLT_ACTIONS_X(X)                                          \
-        X(LANGUAGES, "languages", "language", "id\tname\n")           \
+        X(LANGUAGES, "languages", "language", "id\tname\tdefault\n")  \
         X(COMPILERS, "compilers", "compiler",                         \
           "id\tname\tkind\tversion\tarchitecture\ttrack\tfamilies\n") \
         X(KINDS, "kinds", "kind", "kind\tcompilers\n")                \
@@ -1249,6 +1250,9 @@ godbolt_language_row (struct godbolt     *call,
 	godbolt_put_field(call, f[0]);
 	godbolt_put(call, CSTR_VIEW("\t"));
 	godbolt_put_field(call, f[1]);
+	godbolt_put(call, CSTR_VIEW("\t"));
+	godbolt_put_field(call, godbolt_or(jb_view(jb_get(element, "defaultCompiler")),
+	                                   CSTR_VIEW("none")));
 	return godbolt_put(call, CSTR_VIEW("\n"));
 }
 
@@ -2937,11 +2941,12 @@ static struct {
 		"\"required\":[\"action\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
 		CSTR_VIEW_INIT("Lists the languages of Compiler Explorer at "),
-		CSTR_VIEW_INIT(", the compilers of one language, or the numbers of compilers of "
-		               "each kind, family or architecture. The other godbolt tools accept "
-		               "only the exact compiler ids of this list. Each line of the output "
-		               "is one item with tab-separated columns, and the first line "
-		               "contains the column names. All filters apply together."),
+		CSTR_VIEW_INIT(" with their default compilers, the compilers of one language, or "
+		               "the numbers of compilers of each kind, family or architecture. The "
+		               "other godbolt tools accept only the exact compiler ids of this "
+		               "list. Each line of the output is one item with tab-separated "
+		               "columns, and the first line contains the column names. All "
+		               "filters apply together."),
 	},
 	[GODBOLT_COMPILE] = {
 		"{\"name\":\"godbolt_compile\",\"title\":\"Compile on Compiler Explorer\","

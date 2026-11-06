@@ -14699,9 +14699,14 @@ def ce_compiler(cid, name, kind, families, version, isa, track="stable"):
 CE_SPECIAL = ("gone", "boom", "busy", "later", "slow", "trunc", "big", "euro",
               "longline", "labels", "array")
 
-CE_LANGUAGES = [{"id": "c", "name": "C", "extensions": [".c"], "monaco": "nc"},
+CE_LANGUAGES = [{"id": "c", "name": "C", "extensions": [".c"], "monaco": "nc",
+                 "defaultCompiler": "cg142"},
                 {"id": "c++", "name": "C++", "extensions": [".cpp"],
-                 "monaco": "cppp"}]
+                 "monaco": "cppp", "defaultCompiler": "cppg142"},
+                {"id": "none", "name": "No compilers", "extensions": [],
+                 "monaco": "none"},
+                {"id": "bad", "name": "Bad default", "extensions": [],
+                 "monaco": "none", "defaultCompiler": "a/b"}]
 
 CE_COMPILERS = {
     "c": [ce_compiler("cg142", "x86-64 gcc 14.2", "", ["gcc"], "14.2", "amd64"),
@@ -15048,14 +15053,18 @@ def check_godbolt(binary, up, godbolt):
                 assert "godbolt_targets is shorter" in tools[4]["description"] and \
                     "call godbolt_preprocess with their names" in tools[4]["description"]
 
-                # The languages, with the User-Agent of askai and the Accept
-                # that Compiler Explorer needs for JSON.
+                # The languages and their default compilers, with the
+                # User-Agent of askai and the Accept that Compiler Explorer
+                # needs for JSON.
                 assert ok(ai, "godbolt_catalog", action="languages") == \
-                    "id\tname\nc\tC\nc++\tC++\nListed 2 of 2 matching languages. " \
-                    "Compiler Explorer has 2 languages.\n"
-                (_, _, _, headers, _), = ce.seen("GET", "/api/languages")
-                assert headers["User-Agent"] == "askai (plugin godbolt)" and \
-                    headers["Accept"] == "application/json", dict(headers)
+                    "id\tname\tdefault\nc\tC\tcg142\nc++\tC++\tcppg142\nnone\tNo " \
+                    "compilers\tnone\nbad\tBad default\ta/b\nListed 4 of 4 matching " \
+                    "languages. Compiler Explorer has 4 languages.\n"
+                (_, _, query, headers, _), = ce.seen("GET", "/api/languages")
+                assert query == "fields=id,name,defaultCompiler" and \
+                    headers["User-Agent"] == "askai (plugin godbolt)" and \
+                    headers["Accept"] == "application/json", (query, dict(headers))
+                assert "with their default compilers" in tools[1]["description"]
 
                 # The compilers of a language, with filters. The list has
                 # one element without an id, which the footer counts.

@@ -1329,11 +1329,11 @@ and `src/test_plugin.c` is the smallest example.
 https://godbolt.org or another installation of it. `make godbolt.so` builds
 it. It has these tools:
 
-- `godbolt_catalog` lists the languages of the service, the compilers of one
-  language, or the numbers of compilers of each kind, family or
-  architecture. Its filters select compilers by id, kind, family tag,
-  architecture, and words in their ids, names, kinds, versions,
-  architectures, release tracks and family tags.
+- `godbolt_catalog` lists the languages of the service with the default
+  compiler of each, the compilers of one language, or the numbers of
+  compilers of each kind, family or architecture. Its filters select
+  compilers by id, kind, family tag, architecture, and words in their ids,
+  names, kinds, versions, architectures, release tracks and family tags.
 - `godbolt_compile` compiles source code once with each of up to 16
   compilers and each of up to 8 argument strings, and at most 32 times in
   all. The output has a record for each compilation, with the exit code,
