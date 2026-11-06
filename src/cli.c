@@ -72,7 +72,7 @@ cli_read_file (struct dstr      *text,
 	/* A file read can end inside a UTF-8 character. Assemble bytes first. */
 	while ((count = fread(chunk, 1, sizeof chunk, file))) {
 		if (count > CLI_LIMIT - bytes.tail) {
-			e = cli_error_set(error, EFBIG, "Prompt file exceeds the 16 MiB client limit");
+			e = cli_error_set(error, EFBIG, "Prompt file exceeds the %d MiB client limit", CLI_LIMIT >> 20);
 			break;
 		}
 		e = buf_put(&bytes, chunk, count, CLI_LIMIT);
@@ -685,8 +685,8 @@ cli_ask (struct cli          *cli,
 {
 	*answer = nullptr;
 	cli->client.flags |= dstr_len(&cli->client.notes_tool) ? CLI_CLIENT_NOTES_DIRTY : 0;
-	if (turns >= 512)
-		return cli_error_set(error, E2BIG, "Conversation has 512 turns; use /clear");
+	if (turns >= CLI_STATE_TURNS)
+		return cli_error_set(error, E2BIG, "Conversation has %d turns; use /clear", CLI_STATE_TURNS);
 	if (prompt.len > CLI_LIMIT)
 		return cli_error_set(error, EFBIG, "Conversation exceeds the client limit; use /clear");
 	size_t bytes = prompt.len;

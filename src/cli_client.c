@@ -48,7 +48,8 @@ cli_client_wire (struct json_object *value,
 	if (!wire->data)
 		return ENOMEM;
 	if (wire->len > CLI_LIMIT)
-		return cli_error_set(error, EFBIG, "Conversation exceeds the 16 MiB client limit; use /clear");
+		return cli_error_set(error, EFBIG, "Conversation exceeds the %d MiB client limit; use /clear",
+		                     CLI_LIMIT >> 20);
 	return 0;
 }
 
@@ -150,7 +151,8 @@ static int cli_client_response_receive(struct cstr_view bytes, void *context)
 	else
 		response->failure = sse_feed(stream, bytes.data, bytes.len);
 	if (response->failure == ENOBUFS)
-		response->failure = cli_error_set(response->error, EFBIG, "AskAI response exceeds the 16 MiB client limit");
+		response->failure = cli_error_set(response->error, EFBIG, "AskAI response exceeds the %d MiB client limit",
+		                                  CLI_LIMIT >> 20);
 	return response->failure;
 }
 

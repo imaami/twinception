@@ -29,7 +29,6 @@
 #include "util.h"
 
 enum {
-	CLI_STATE_TURNS = 512,
 	CLI_STATE_TURN_BYTES = 16 << 20,
 	CLI_STATE_ID_BYTES = 64 << 10,
 };

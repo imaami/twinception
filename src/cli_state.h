@@ -12,11 +12,14 @@
 /** CLI_STATE_INPUTS is the maximum number of inputs that a state stores, and
  *  CLI_STATE_INPUT_BYTES is the maximum total size of their text. The input
  *  history of the console is bounded by the same values, so every restored
- *  input fits in it.
+ *  input fits in it. CLI_STATE_TURNS is the maximum number of completed
+ *  turns that a state stores, and cli_ask() refuses to send a conversation
+ *  of that many turns.
  */
 enum {
 	CLI_STATE_INPUTS      = 256,
 	CLI_STATE_INPUT_BYTES = 1 << 20,
+	CLI_STATE_TURNS       = 512,
 };
 
 struct cli_state;
@@ -79,8 +82,9 @@ extern int
 cli_state_add_input (struct cli_state *state,
                      struct cstr_view  text);
 
-/** Retains at most 512 completed turns and 16 MiB of text. Nonzero replace
- * replaces the last completed turn; incomplete turns never enter state.
+/** Retains at most CLI_STATE_TURNS completed turns and 16 MiB of text.
+ * Nonzero replace replaces the last completed turn; incomplete turns
+ * never enter state.
  */
 extern int
 cli_state_add_turn (struct cli_state *state,
