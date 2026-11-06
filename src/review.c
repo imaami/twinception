@@ -12,6 +12,7 @@
 
 #include "dstr.h"
 #include "jb.h"
+#include "oid.h"
 #include "review.h"
 #include "util.h"
 
@@ -29,7 +30,6 @@ struct cstr_view const review_action_names[REVIEW_ACTIONS] = {
 };
 
 enum {
-	REVIEW_OID_MAX       = 64,   /* digits of a SHA-256 commit ID */
 	REVIEW_OID_MIN       = 7,    /* the fewest digits of a commit prefix in a
 	                                location */
 	REVIEW_SHORT_OID     = 12,   /* digits of a commit ID in results and
@@ -57,31 +57,6 @@ review_state_logged (enum review_state state)
 	return REVIEW_LOGGED_STATES >> state & 1U;
 }
 
-/** A full commit ID of 40 or 64 hexadecimal digits, or no commit ID. */
-struct review_oid {
-	char    hex[REVIEW_OID_MAX];
-	uint8_t len;  /**< 0, 40 or 64 */
-};
-
-/** Returns the commit ID @p hex, which must be empty or a valid argument
- *  of util_is_oid().
- */
-static struct review_oid
-review_oid (struct cstr_view hex)
-{
-	struct review_oid oid = { .len = (uint8_t)hex.len };
-	if (hex.len)
-		memcpy(oid.hex, hex.data, hex.len);
-	return oid;
-}
-
-/** Returns a view of the digits of @p oid. */
-static struct cstr_view
-review_oid_view (struct review_oid const *oid)
-{
-	return (struct cstr_view){ oid->hex, oid->len };
-}
-
 /** Lines first to last of a file, numbered from 1. */
 struct review_range {
 	uint32_t first;
@@ -102,7 +77,7 @@ struct review_file {
 	size_t               cap;
 	uint32_t             total;   /**< line count of the file, or 0 if
 	                                   unknown */
-	struct review_oid    commit;
+	struct oid           commit;
 };
 
 /** The initializers of the texts of a struct review_file. */
@@ -156,7 +131,7 @@ struct review_change {
 	uint32_t               turn;
 	enum review_state      state;
 	bool                   moved;
-	struct review_oid      commit;
+	struct oid             commit;
 };
 
 /** A finding. Its state is the state of its last change. */
@@ -363,7 +338,7 @@ review_read_create (struct review_source const *src,
 		return nullptr;
 	}
 	*e = EINVAL;
-	if (!src->commit.data || !util_is_oid(src->commit.data, src->commit.len) ||
+	if (!oid_valid(src->commit) ||
 	    !review_name_valid(src->repo) || !review_name_valid(src->path) || !src->first ||
 	    src->last < src->first || (src->total && src->total < src->last) ||
 	    !review_source_within(src, out))
@@ -468,7 +443,7 @@ review_file_source (struct review_file const *f)
 {
 	return (struct review_source){
 		.repo   = cstr_view_dstr(&f->repo),
-		.commit = review_oid_view(&f->commit),
+		.commit = oid_view(&f->commit),
 		.path   = cstr_view_dstr(&f->path),
 		.total  = f->total,
 	};
@@ -482,7 +457,7 @@ review_file_commit_equal (struct review_file const *f,
                           struct cstr_view          repo,
                           struct cstr_view          commit)
 {
-	return cstr_view_equal(review_oid_view(&f->commit), commit) &&
+	return cstr_view_equal(oid_view(&f->commit), commit) &&
 	       cstr_view_equal(cstr_view_dstr(&f->repo), repo);
 }
 
@@ -526,15 +501,16 @@ review_files_insert (struct review_files      *list,
 }
 
 /** Copies the repository name, commit ID, path and total of @p key into the
- *  empty file @p f. Returns 0 or ENOMEM.
+ *  empty file @p f. Returns 0, EINVAL if the commit ID is not valid, or
+ *  ENOMEM.
  */
 static int
 review_file_set (struct review_file         *f,
                  struct review_source const *key)
 {
-	f->commit = review_oid(key->commit);
 	f->total = key->total;
-	int e = cstr_view_store(key->repo, &f->repo);
+	int e = oid_init(&f->commit, key->commit);
+	e = e ? e : cstr_view_store(key->repo, &f->repo);
 	return e ? e : cstr_view_store(key->path, &f->path);
 }
 
@@ -804,8 +780,8 @@ review_put_location (struct dstr      *out,
  *  @p out.
  */
 static bool
-review_put_oid (struct dstr             *out,
-                struct review_oid const *oid)
+review_put_oid (struct dstr      *out,
+                struct oid const *oid)
 {
 	return PUT(out, " at ") &&
 	       !cstr_view_cat((struct cstr_view){ oid->hex, REVIEW_SHORT_OID }, out);
@@ -827,7 +803,7 @@ review_put_status (struct dstr                 *out,
 	if (!path.len)
 		return true;
 	return PUT(out, ", ") && review_put_location(out, path, f->location.first, f->location.last) &&
-	       (c->commit.len ? review_put_oid(out, &c->commit) : PUT(out, ", not read"));
+	       (oid_len(&c->commit) ? review_put_oid(out, &c->commit) : PUT(out, ", not read"));
 }
 
 /** Returns true if the finding @p f is closed. */
@@ -947,10 +923,10 @@ review_put_logged (struct dstr         *out,
 {
 	struct review_file const *f = &r->log.files[i];
 	bool const group = !i || !review_file_commit_equal(f, cstr_view_dstr(&f[-1].repo),
-	                                                    review_oid_view(&f[-1].commit));
+	                                                    oid_view(&f[-1].commit));
 	return (i || PUT(out, "[askai: what you read with git read in this call:]\n")) &&
 	       (!group || (!cstr_view_cat(cstr_view_dstr(&f->repo), out) && PUT(out, " ") &&
-	                   !cstr_view_cat(review_oid_view(&f->commit), out) && PUT(out, "\n"))) &&
+	                   !cstr_view_cat(oid_view(&f->commit), out) && PUT(out, "\n"))) &&
 	       review_put_file(out, f);
 }
 
@@ -967,7 +943,7 @@ review_put_change (struct dstr                *out,
 	struct cstr_view const path = cstr_view_dstr(&c->old_location.path);
 	return dstr_printf(out, "turn %" PRIu32 ": ", c->turn) &&
 	       !cstr_view_cat(review_state_names[c->state], out) &&
-	       (!c->commit.len || review_put_oid(out, &c->commit)) && PUT(out, "\n") &&
+	       (!oid_len(&c->commit) || review_put_oid(out, &c->commit)) && PUT(out, "\n") &&
 	       (!evidence.len || (PUT(out, "  evidence: ") && !cstr_view_cat(evidence, out) &&
 	                          PUT(out, "\n"))) &&
 	       (!claim.len || (PUT(out, "  the claim was: ") && !cstr_view_cat(claim, out) &&
@@ -1217,7 +1193,7 @@ review_location_parse (struct review_location_view *loc,
 /**
  * Parses the location argument @p t, of the form [commit:]path:first[-last],
  * into a->location and a->prefix. A commit is REVIEW_OID_MIN to
- * REVIEW_OID_MAX hexadecimal digits, as git grep prints it. A leading
+ * OID_SHA256 hexadecimal digits, as git grep prints it. A leading
  * "HEAD:" means no commit. Returns 0 or EINVAL.
  */
 static int
@@ -1229,10 +1205,10 @@ review_args_location (struct review_args *a,
 		return EINVAL;
 	struct cstr_view const path = loc->path;
 	size_t hex = 0;
-	while (hex < path.len && hex <= REVIEW_OID_MAX && util_is_hex(path.data + hex, 1))
+	while (hex < path.len && hex <= OID_SHA256 && util_is_hex(path.data + hex, 1))
 		++hex;
 	size_t skip = 0;
-	if (hex >= REVIEW_OID_MIN && hex <= REVIEW_OID_MAX && hex < path.len &&
+	if (hex >= REVIEW_OID_MIN && hex <= OID_SHA256 && hex < path.len &&
 	    path.data[hex] == ':') {
 		a->prefix = (struct cstr_view){ path.data, hex };
 		skip = hex + 1;
@@ -1422,7 +1398,7 @@ review_log_cover (struct review const               *r,
 	for (size_t i = 0; i < r->log.n; ++i) {
 		struct review_file const *f = &r->log.files[i];
 		if (!cstr_view_equal(cstr_view_dstr(&f->path), loc->path) ||
-		    !cstr_view_starts(review_oid_view(&f->commit), prefix))
+		    !oid_starts(&f->commit, prefix))
 			continue;
 		if (!c.largest || (c.largest->total && (!f->total || f->total > c.largest->total)))
 			c.largest = f;
@@ -1460,7 +1436,7 @@ review_log_resolve (struct review const               *r,
 	size_t const tail = loc->path.len;
 	for (size_t i = 0; i < r->log.n; ++i) {
 		struct review_file const *f = &r->log.files[i];
-		if (!cstr_view_starts(review_oid_view(&f->commit), prefix))
+		if (!oid_starts(&f->commit, prefix))
 			continue;
 		struct cstr_view const path = cstr_view_dstr(&f->path);
 		if (cstr_view_equal(path, loc->path)) {
@@ -1662,7 +1638,7 @@ review_put_tail (struct dstr                 *out,
 	};
 	struct review_change const *c = &f->changes[f->n - 1];
 	bool const unread = c->state == REVIEW_CANDIDATE && dstr_len(&f->location.path) &&
-	                    !c->commit.len && (r->flags & REVIEW_READ_LOG);
+	                    !oid_len(&c->commit) && (r->flags & REVIEW_READ_LOG);
 	return (!unread || PUT(out, " Read its lines with git read before you verify it.")) &&
 	       (!trimmed ||
 	        (PUT(out, " askai left out the [askai: ...] lines at the end of ") &&
@@ -1715,7 +1691,7 @@ review_add (struct review            *r,
 		.old_location = review_location(0, 0),
 		.turn   = turn,
 		.state  = state,
-		.commit = logged ? logged->commit : (struct review_oid){},
+		.commit = logged ? logged->commit : (struct oid){},
 	};
 	e = cstr_view_store(a->claim, &f.claim);
 	if (!e)
@@ -1781,7 +1757,7 @@ review_update (struct review            *r,
 		.turn   = turn,
 		.state  = a->state,
 		.moved  = moved,
-		.commit = logged ? logged->commit : (struct review_oid){},
+		.commit = logged ? logged->commit : (struct oid){},
 	};
 	struct dstr claim = DSTR_INIT;
 	struct dstr path = DSTR_INIT;
@@ -1871,7 +1847,7 @@ review_file_json (struct review_file const *f)
 		lines = jb_push_or_free(lines, json_object_new_uint64(g->turn));
 	}
 	return jb_object("repo", jb_string(cstr_view_dstr(&f->repo)),
-	                 "commit", jb_string(review_oid_view(&f->commit)),
+	                 "commit", jb_string(oid_view(&f->commit)),
 	                 "path", jb_string(cstr_view_dstr(&f->path)),
 	                 "total", json_object_new_uint64(f->total),
 	                 "lines", lines,
@@ -1910,7 +1886,7 @@ review_change_json (struct review_change const *c)
 	struct cstr_view const claim = cstr_view_dstr(&c->old_claim);
 	struct json_object *obj = jb_object("turn", json_object_new_uint64(c->turn),
 	                                    "state", jb_string(review_state_names[c->state]),
-	                                    "commit", jb_string(review_oid_view(&c->commit)),
+	                                    "commit", jb_string(oid_view(&c->commit)),
 	                                    "evidence", jb_string(cstr_view_dstr(&c->evidence)),
 	                                    nullptr);
 	if (claim.len)
@@ -1979,8 +1955,7 @@ review_files_add_json (struct review            *r,
 	size_t const numbers = jb_len(lines);
 	size_t const n = numbers / REVIEW_RANGE_NUMBERS;
 	size_t at;
-	if (!review_name_valid(key.repo) || !key.commit.data ||
-	    !util_is_oid(key.commit.data, key.commit.len) || !review_name_valid(key.path) ||
+	if (!review_name_valid(key.repo) || !review_name_valid(key.path) ||
 	    jb_uint_checked(jb_get(obj, "total"), UINT32_MAX, &total) || !n ||
 	    numbers % REVIEW_RANGE_NUMBERS || n > (TOOL_TEXT_MAX - r->size) / REVIEW_ITEM ||
 	    review_files_find(list, &key, &at) < list->n)
@@ -2108,7 +2083,7 @@ review_change_init_json (struct review_change     *c,
 	                                     jb_view(jb_get(obj, "state")));
 	uint64_t turn;
 	if (jb_uint_checked(jb_get(obj, "turn"), UINT32_MAX, &turn) || state == REVIEW_STATES ||
-	    !commit.data || (commit.len && !util_is_oid(commit.data, commit.len)) ||
+	    !commit.data || (commit.len && oid_init(&c->commit, commit)) ||
 	    (location && !where.data) ||
 	    (where.len && (review_location_parse(&loc, where) || !review_name_valid(loc.path))) ||
 	    (review_state_logged(state) && (!located || !evidence.len || !commit.len)))
@@ -2116,7 +2091,6 @@ review_change_init_json (struct review_change     *c,
 	c->turn = (uint32_t)turn;
 	c->state = (enum review_state)state;
 	c->moved = location;
-	c->commit = review_oid(commit);
 	c->old_location.first = loc.first;
 	c->old_location.last = loc.last;
 	int e = review_text_json(&c->evidence, evidence, true);
