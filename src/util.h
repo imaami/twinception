@@ -525,4 +525,68 @@ util_refuse (char       *why,
 	return EINVAL;
 }
 
+/** A bounded text: @p n bytes of storage, at most n - 1 bytes of text and
+ *  a NUL, and the length of the text. A zeroed one is empty. The util_text
+ *  macros take a pointer to one.
+ */
+#define UTIL_TEXT(n) struct { uint32_t len; char data[n]; }
+
+/** A view of the text of @p t. */
+#define util_text_view(t) ((struct cstr_view){ (t)->data, (t)->len })
+
+/** Empty the text of @p t. */
+#define util_text_clear(t) ((t)->data[0] = '\0', (void)((t)->len = 0))
+
+/** Replace the text of @p t with @p view, cut at a character boundary if it
+ *  does not fit. Evaluates to 0, or to EINVAL if it cut @p view.
+ */
+#define util_text_store(t, view) \
+        util_text_store_(&(t)->len, (t)->data, sizeof (t)->data, (view))
+
+/** Append the text that @p fmt formats to the text of @p t, as
+ *  util_format() does, cut with "..." if it does not fit. Once the text
+ *  fills its storage, nothing more is appended. Evaluates to 0, or to
+ *  EINVAL if the text fills its storage.
+ */
+#define util_text_printf(t, ...) \
+        util_text_printf_(&(t)->len, (t)->data, sizeof (t)->data, __VA_ARGS__)
+
+/** util_text_store() on the text of @p *len bytes in the @p size bytes at
+ *  @p data.
+ */
+static inline int
+util_text_store_ (uint32_t         *len,
+                  char             *data,
+                  size_t            size,
+                  struct cstr_view  view)
+{
+	size_t const n = util_clip(view.data, view.len, size - 1);
+	if (n)
+		memcpy(data, view.data, n);
+	data[n] = '\0';
+	*len = (uint32_t)n;
+	return n < view.len ? EINVAL : 0;
+}
+
+/** util_text_printf() on the text of @p *len bytes in the @p size bytes at
+ *  @p data.
+ */
+[[gnu::format(printf, 4, 5)]]
+static inline int
+util_text_printf_ (uint32_t   *len,
+                   char       *data,
+                   size_t      size,
+                   char const *fmt,
+                   ...)
+{
+	size_t const room = size - *len;
+	if (room < 2)
+		return EINVAL;
+	va_list ap;
+	va_start(ap, fmt);
+	*len += (uint32_t)util_vformat(data + *len, room, fmt, ap);
+	va_end(ap);
+	return *len < size - 1 ? 0 : EINVAL;
+}
+
 #endif /* TWINCEPTION_SRC_UTIL_H_ */

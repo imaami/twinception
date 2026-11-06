@@ -6,7 +6,6 @@
 #include <errno.h>
 #include <json-c/json.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -604,33 +603,17 @@ git_commit (char       *dest,
 	return 0;
 }
 
-/* A message about what is wrong with a call, and its length. The message
- * starts empty, and git_wrong() appends to it.
+/* A message about what is wrong with a call. The message starts empty,
+ * and git_wrong() appends to it.
  */
 struct git_why {
-	size_t len;
-	char   text[GIT_WHY];
+	UTIL_TEXT(GIT_WHY);
 };
 
 /* Appends to @p why a part of the message about what is wrong with the
- * arguments of a call. After util_vformat() has cut the message short and
- * ended it with "...", the function appends nothing more. Returns EINVAL.
+ * arguments of a call, as util_text_printf() does. Returns EINVAL.
  */
-[[gnu::format(printf, 2, 3)]]
-static int
-git_wrong (struct git_why *why,
-           char const     *fmt,
-           ...)
-{
-	size_t room = sizeof why->text - why->len;
-	if (room < 2)
-		return EINVAL;
-	va_list ap;
-	va_start(ap, fmt);
-	why->len += util_vformat(why->text + why->len, room, fmt, ap);
-	va_end(ap);
-	return EINVAL;
-}
+#define git_wrong(why, ...) (util_text_printf((why), __VA_ARGS__), EINVAL)
 
 /** Validates the option @p opt of the command @p command, the option at
  * @p index in the options argument. Returns 0, or EINVAL with a message in
@@ -692,10 +675,10 @@ static int
 git_repos_wrong (struct git const *git,
                  struct git_why   *why)
 {
-	git_wrong(why, "The repo argument must name one of the repositories:");
+	util_text_printf(why, "The repo argument must name one of the repositories:");
 	for (size_t i = 0; i < git->n; ++i)
-		git_wrong(why, "%s %.*s", i ? "," : "", (int)git->repo[i].name.len,
-		          git->repo[i].name.data);
+		util_text_printf(why, "%s %.*s", i ? "," : "", (int)git->repo[i].name.len,
+		                 git->repo[i].name.data);
 	return git_wrong(why, ".");
 }
 
@@ -748,10 +731,10 @@ git_call_command (struct git_call  *call,
 			                 "options [\"-r\", \"--name-only\"] to list committed "
 			                 "files; revisions defaults to HEAD.",
 			                 (int)cmd.len, cmd.data);
-		git_wrong(why, "The command argument must be one of:");
+		util_text_printf(why, "The command argument must be one of:");
 		for (size_t i = 0; i < array_size(commands); ++i)
-			git_wrong(why, "%s %.*s", i ? "," : "", (int)commands[i].name.len,
-			          commands[i].name.data);
+			util_text_printf(why, "%s %.*s", i ? "," : "", (int)commands[i].name.len,
+			                 commands[i].name.data);
 		return git_wrong(why, ". Use help:true for its options.");
 	}
 	call->command = c;
@@ -906,6 +889,8 @@ git_call_command (struct git_call  *call,
 	argv[k] = nullptr;
 	return 0;
 }
+
+#undef git_wrong
 
 /** Describe exactly the command and options that validation accepts. */
 static void
@@ -1368,15 +1353,15 @@ git_read_past (struct git_read const *read,
                struct git_why        *why)
 {
 	if (!read->total)
-		git_wrong(why, "Line %zu is past the end of the file: the file is empty.",
-		          read->line);
+		util_text_printf(why, "Line %zu is past the end of the file: the file is empty.",
+		                 read->line);
 	else if (cut)
-		git_wrong(why, "Line %zu is past the first 4 MiB of the file, which is as "
-		          "far as the git tool reads.", read->line);
+		util_text_printf(why, "Line %zu is past the first 4 MiB of the file, which is as "
+		                 "far as the git tool reads.", read->line);
 	else
-		git_wrong(why, "Line %zu is past the end of the file: it has %zu line%s. "
-		          "Give a line from 1 to %zu.", read->line, read->total,
-		          util_s(read->total), read->total);
+		util_text_printf(why, "Line %zu is past the end of the file: it has %zu line%s. "
+		                 "Give a line from 1 to %zu.", read->line, read->total,
+		                 util_s(read->total), read->total);
 }
 
 /* Writes the header line to @p slot if it fits in the LOOP_COPY room of the
@@ -1568,7 +1553,7 @@ git_scan (struct mcp_slot *slot,
 		struct git_why why = {};
 		git_read_past(read, c->cut, &why);
 		git_drop(slot);
-		mcp_slot_tell(slot, (struct cstr_view){ why.text, why.len }, TOOL_FAILED);
+		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
 		return;
 	}
 	read->at = read->start = read->from;
@@ -1679,7 +1664,7 @@ git_start (struct mcp_slot    *slot,
 	struct git_why why = {};
 	if (git_call_command(call, gl->git, &why)) {
 		git_call_destroy(&call);
-		mcp_slot_tell(slot, (struct cstr_view){ why.text, why.len }, TOOL_FAILED);
+		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
 		return;
 	}
 	if (mcp_slot_offset(slot, args)) {
@@ -1703,9 +1688,9 @@ git_start (struct mcp_slot    *slot,
 		                              "few seconds."), TOOL_FAILED);
 		return;
 	}
-	git_wrong(&why, "Cannot run git: %s.", strerror(e));
-	LOG(LOG_WARN, "%s", why.text);
-	mcp_slot_tell(slot, (struct cstr_view){ why.text, why.len }, TOOL_FAILED);
+	util_text_printf(&why, "Cannot run git: %s.", strerror(e));
+	LOG(LOG_WARN, "%s", why.data);
+	mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
 }
 
 /* Creates the git tool's part of @p loop for @p service, a struct git. The
