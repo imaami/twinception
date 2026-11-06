@@ -815,6 +815,22 @@ static struct cstr_view const runs_no_more = CSTR_VIEW_INIT("That job runs no mo
 static struct cstr_view const bad_action = CSTR_VIEW_INIT("The action argument must be list, "
                                                           "result or cancel.");
 
+/* The actions of the jobs tool. An ask call that names a job in background
+ * mode takes the last two.
+ */
+enum mcp_action : uint8_t {
+	ACTION_LIST,
+	ACTION_RESULT,
+	ACTION_CANCEL,
+	ACTIONS
+};
+
+static struct cstr_view const actions[ACTIONS] = {
+	[ACTION_LIST]   = CSTR_VIEW_INIT("list"),
+	[ACTION_RESULT] = CSTR_VIEW_INIT("result"),
+	[ACTION_CANCEL] = CSTR_VIEW_INIT("cancel"),
+};
+
 /* The words for the kinds and the statuses of the records of the ledger,
  * which the log, the answers of a client's jobs and wait, and tasks/get
  * use.
@@ -5315,18 +5331,17 @@ static void
 mcp_slot_client_jobs (struct mcp_slot    *slot,
                       struct json_object *args)
 {
-	struct json_object *action = jb_get(args, "action");
-	if (jb_is(action, "result")) {
+	switch (cstr_view_index(actions, ACTIONS, jb_view(jb_get(args, "action")))) {
+	case ACTION_LIST:
+		break;
+	case ACTION_RESULT:
 		mcp_slot_client_result(slot, args);
 		return;
-	}
-	if (jb_is(action, "cancel")) {
+	case ACTION_CANCEL:
 		mcp_slot_client_cancel(slot, args);
 		return;
-	}
-	if (!jb_is(action, "list")) {
-		mcp_slot_result(slot, bad_action,
-		                true);
+	default:
+		mcp_slot_result(slot, bad_action, true);
 		return;
 	}
 	int e = mcp_slot_client_list(slot);
@@ -5350,8 +5365,8 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		return;
 	}
 	struct mcp_agenda *a = slot->req->agenda;
-	struct json_object *action = jb_get(args, "action");
-	if (jb_is(action, "list")) {
+	size_t const act = cstr_view_index(actions, ACTIONS, jb_view(jb_get(args, "action")));
+	if (act == ACTION_LIST) {
 		int e = mcp_slot_jobs_list(slot);
 		if (e) {
 			mcp_req_fail(slot->req, e);
@@ -5360,12 +5375,10 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		mcp_slot_respond(slot, false);
 		return;
 	}
-	bool result = jb_is(action, "result");
 	uint64_t const n = jb_count(jb_get(args, "job"), a ? a->n_jobs : 0);
 	struct mcp_slot *job = n ? &a->jobs[n - 1] : nullptr;
 	struct cstr_view problem =
-		!result && !jb_is(action, "cancel")
-		? bad_action
+		act == ACTIONS ? bad_action
 		: !job ? CSTR_VIEW("The job argument must be the number of a job you started.")
 		: job->flags & SLOT_CANCELLED ? was_cancelled
 		: (struct cstr_view){};
@@ -5373,7 +5386,7 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	if (result)
+	if (act == ACTION_RESULT)
 		mcp_slot_jobs_result(slot, job, args);
 	else
 		mcp_slot_jobs_cancel(slot, job);
@@ -6933,56 +6946,50 @@ mcp_slot_ask (struct mcp_slot    *slot,
               struct json_object *args)
 {
 	struct mcp_req *req = slot->req;
-	bool background = req->mcp->st->ep->background;
+	bool const background = req->mcp->st->ep->background;
+	bool const stream = req->asks & JOB_STREAM;
 	struct json_object *override = nullptr;
-	bool has_override = json_object_object_get_ex(args, "background", &override);
-	if (has_override && (!json_object_is_type(override, json_type_boolean) ||
-	                     (json_object_get_boolean(override) &&
-	                      (!background || (req->asks & JOB_STREAM))))) {
-		mcp_slot_result(slot, CSTR_VIEW("The background argument must be false, or true "
-		                                "when server background mode is enabled and live "
-		                                "streaming is not requested."), true);
+	struct json_object *action = nullptr;
+	bool const has_override = json_object_object_get_ex(args, "background", &override);
+	bool const want = has_override ? json_object_get_boolean(override) : background && !stream;
+	/* In background mode, a call names a job to read or cancel it. */
+	bool const job = background && json_object_object_get_ex(args, "job", nullptr);
+	bool const has_action = background && json_object_object_get_ex(args, "action", &action);
+	size_t const act = ACTION_RESULT + cstr_view_index(actions + ACTION_RESULT,
+	                                                   ACTIONS - ACTION_RESULT, jb_view(action));
+	struct cstr_view const problem =
+		has_override && (!json_object_is_type(override, json_type_boolean) ||
+		                 (want && (!background || stream)))
+		? CSTR_VIEW("The background argument must be false, or true when server "
+		            "background mode is enabled and live streaming is not requested.")
+		: job && (json_object_object_get_ex(args, "prompt", nullptr) ||
+		          json_object_object_get_ex(args, "system", nullptr) ||
+		          json_object_object_get_ex(args, "messages", nullptr) ||
+		          has_override || stream ||
+		          json_object_object_get_ex(args, "thread", nullptr) ||
+		          json_object_object_get_ex(args, "timer", nullptr))
+		? CSTR_VIEW("Give a job id to check or cancel, or a prompt to start a job, "
+		            "not both.")
+		: has_action && !job
+		? CSTR_VIEW("The action argument requires a job id.")
+		: has_action && act == ACTIONS
+		? CSTR_VIEW("The action argument must be result or cancel.")
+		: (struct cstr_view){};
+	if (problem.data) {
+		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	if (background && args) {
-		bool job = json_object_object_get_ex(args, "job", nullptr);
-		struct json_object *action;
-		bool has_action = json_object_object_get_ex(args, "action", &action);
-		struct cstr_view problem =
-			job && (json_object_object_get_ex(args, "prompt", nullptr) ||
-			        json_object_object_get_ex(args, "system", nullptr) ||
-			        json_object_object_get_ex(args, "messages", nullptr) ||
-			        has_override || (req->asks & JOB_STREAM) ||
-			        json_object_object_get_ex(args, "thread", nullptr) ||
-			        json_object_object_get_ex(args, "timer", nullptr))
-			? CSTR_VIEW("Give a job id to check or cancel, or a prompt to start a job, "
-			            "not both.")
-			: has_action && !job
-			? CSTR_VIEW("The action argument requires a job id.")
-			: has_action && !jb_is(action, "result") && !jb_is(action, "cancel")
-			? CSTR_VIEW("The action argument must be result or cancel.")
-			: (struct cstr_view){};
-		if (problem.data) {
-			mcp_slot_result(slot, problem, true);
-			return;
-		}
-		if (job) {
-			req->promote_at = UINT64_MAX;
-			mcp_req_arm(req);
-			typeof(mcp_slot_client_result) *handler =
-				has_action && jb_is(action, "cancel") ? mcp_slot_client_cancel
-				                                      : mcp_slot_client_result;
-			if (!mcp_req_recover(req, args, handler))
-				handler(slot, args);
-			return;
-		}
+	if (!job) {
+		req->lent = mcp_req_lent(req);
+		mcp_req_ask(req, args, want);
+		return;
 	}
-	if (has_override)
-		background = json_object_get_boolean(override);
-	else if (req->asks & JOB_STREAM)
-		background = false;
-	req->lent = mcp_req_lent(req);
-	mcp_req_ask(req, args, background);
+	typeof(mcp_slot_client_result) *handler = act == ACTION_CANCEL ? mcp_slot_client_cancel
+	                                                               : mcp_slot_client_result;
+	req->promote_at = UINT64_MAX;
+	mcp_req_arm(req);
+	if (!mcp_req_recover(req, args, handler))
+		handler(slot, args);
 }
 
 /** Starts the client's tool call in @p req with the members name,
@@ -8108,12 +8115,11 @@ mcp_tool_definition (void const *service)
 			"digits. Notes are shared by repository path and loaded at the "
 			"start of every ask, independently of this argument."));
 	if (st->ep->background) {
-		struct cstr_view const actions[] = { CSTR_VIEW("result"), CSTR_VIEW("cancel") };
 		props = jb_set_or_free(props, "job", schema_property("string",
 			"The job id returned by this tool. Give job instead of prompt, "
 			"system or thread to check its status or read its completed result."));
 		props = jb_set_or_free(props, "action", jb_set_or_free(schema_enum(
-			schema_names(actions, array_size(actions)),
+			schema_names(actions + ACTION_RESULT, ACTIONS - ACTION_RESULT),
 			"With job: result checks its status or returns its completed "
 			"answer; cancel stops the job. Omit action to use result."),
 			"default", json_object_new_string("result")));
@@ -8216,17 +8222,6 @@ mcp_background_definition (void const *service)
 		CSTR_VIEW("tool"));
 }
 
-/* Returns the actions of the jobs tool as a JSON array, or nullptr if out
- * of memory.
- */
-static struct json_object *
-mcp_jobs_actions (void)
-{
-	struct cstr_view const names[] = { CSTR_VIEW("list"), CSTR_VIEW("result"),
-	                                   CSTR_VIEW("cancel") };
-	return schema_names(names, array_size(names));
-}
-
 /* Returns the definition of jobs for the turns. */
 static struct json_object *
 mcp_jobs_definition (void const *service)
@@ -8237,7 +8232,7 @@ mcp_jobs_definition (void const *service)
 		"of one that has finished, a window at a time, or cancel one that "
 		"runs.",
 		jb_object(
-			"action", schema_enum(mcp_jobs_actions(),
+			"action", schema_enum(schema_names(actions, ACTIONS),
 				"list the jobs, read a job's result, or cancel it."),
 			"job", schema_property("integer", "For result and cancel: the "
 			                       "job's number."),
@@ -8324,7 +8319,7 @@ mcp_jobs_client_definition (void const *service)
 		"the result of a job that has ended; or cancel a job that runs or a "
 		"timer that has not fired.",
 		jb_object(
-			"action", schema_enum(mcp_jobs_actions(),
+			"action", schema_enum(schema_names(actions, ACTIONS),
 				"list lists your jobs and timers, result returns the "
 				"result of a job, and cancel cancels a job or a timer."),
 			"job", schema_property("string", "The id of the job for result and "
