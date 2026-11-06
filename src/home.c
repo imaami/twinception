@@ -1947,20 +1947,22 @@ home_take (struct home        *home,
 	size_t had = buf_peek(&job->result).len;
 	struct ai_event ev = {};
 	e = ai_event(home->ep->api, &job->reader, root, &sink, &ev);
-	if (!e && (ev.thought_end || ev.end))
-		e = home_thought_end(home, job, ev.end != 0);
+	if (!e && ev.flags & (AI_EV_THOUGHT_END | AI_EV_END))
+		e = home_thought_end(home, job, ev.flags & AI_EV_END);
 	hist_add(&home->metrics->chunks, 1);
 	if (buf_peek(&job->result).len > had)
 		home_job_progress(job, (uint64_t)++job->chunks << 32);
-	else if (ev.thought)
+	else if (ev.flags & AI_EV_THOUGHT)
 		home_job_progress(job, (uint64_t)++job->chunks << 32 | JOB_THINKING);
 	job->used = ev.used ? ev.used : job->used;
-	job->flags |= (ev.end ? ENDED | PROVIDER_DONE : 0) | (e == ENOBUFS ? OVERFLOW : 0);
+	job->flags |= (ev.flags & AI_EV_END ? ENDED | PROVIDER_DONE : 0) |
+	              (e == ENOBUFS ? OVERFLOW : 0);
 	if (ev.reason) {
 		size_t len = jb_utf8(ev.reason, strnlen(ev.reason, sizeof job->reason - 1));
 		memcpy(job->reason, ev.reason, len);
 		job->reason[len] = '\0';
-		job->flags = ev.truncated ? job->flags | TRUNCATED : job->flags & ~TRUNCATED;
+		job->flags = ev.flags & AI_EV_TRUNCATED ? job->flags | TRUNCATED
+		                                         : job->flags & ~TRUNCATED;
 	}
 	if (ev.error) {
 		size_t len = strnlen(ev.error, MAX_ERROR);

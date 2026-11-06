@@ -111,17 +111,25 @@ ai_request (struct ai_endpoint const *ep,
             struct json_object       *history,
             struct json_object       *tools);
 
+/** What an event of a streamed answer says in struct ai_event's flags. */
+enum ai_event_flag : uint32_t {
+	AI_EV_THOUGHT     = 1u << 0,  /**< the event carries the model's
+	                                   thinking */
+	AI_EV_THOUGHT_END = 1u << 1,  /**< a whole reasoning item, block or step
+	                                   explicitly ended, after this event's
+	                                   pieces */
+	AI_EV_TRUNCATED   = 1u << 2,  /**< the reason is the output token
+	                                   limit */
+	AI_EV_END         = 1u << 3,  /**< the answer says it has ended */
+};
+
 /** What an event of a streamed answer says besides its text. */
 struct ai_event {
-	char const *error;      /**< the upstream's error message, or nullptr */
-	char const *reason;     /**< the answer's stop reason, or nullptr */
-	uint32_t    used;       /**< the tokens of the request and the answer, if
-	                             it says; else 0 */
-	uint8_t     thought;    /**< bool: the event carries the model's thinking */
-	uint8_t     thought_end; /**< bool: a whole reasoning item, block or step
-	                              explicitly ended, after this event's pieces */
-	uint8_t     truncated;  /**< bool: the reason is the output token limit */
-	uint8_t     end;        /**< bool: the answer says it has ended */
+	char const *error;   /**< the upstream's error message, or nullptr */
+	char const *reason;  /**< the answer's stop reason, or nullptr */
+	uint32_t    used;    /**< the tokens of the request and the answer, if
+	                          it says; else 0 */
+	uint32_t    flags;   /**< enum ai_event_flag */
 };
 
 /** A tool call's index that an event does not give: the call it says
@@ -185,18 +193,13 @@ struct ai_reader {
 		uint32_t input;  /**< the request's tokens, in Anthropic's
 		                      Messages, which says them first and the
 		                      answer's last */
-		struct {
-			uint16_t kind;     /**< the type of the step whose item is
-			                        open, in Gemini's Interactions:
-			                        thought or model output; or the end
-			                        of the answer, after which the
-			                        events are ignored */
-			uint8_t  summary;  /**< the state of the summary array of
-			                        the open thought: not written, open
-			                        or closed */
-			uint8_t  sign;     /**< bool: the open thought has a
-			                        signature */
-		};
+		uint32_t state;  /**< in Gemini's Interactions: the type of the
+		                      step whose item is open, thought or model
+		                      output, or the end of the answer, after
+		                      which the events are ignored; whether the
+		                      summary array of the open thought is open
+		                      or closed; and whether the thought has a
+		                      signature */
 	};
 };
 
