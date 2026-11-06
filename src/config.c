@@ -1740,10 +1740,10 @@ config_url_alt (char const *query)
 static int
 config_url_generate (struct config *cfg)
 {
-	static char const method[] = ":generateContent";
-	size_t m = sizeof method - 1;
 	if (cfg->ep.api != AI_GENERATE)
 		return 0;
+	static char const method[] = ":generateContent";
+	size_t const m = sizeof method - 1;
 	char const *url = cfg->ep.url;
 	char const *query = url + strcspn(url, "?");
 	/* The path, less its method if that is the one that does not stream. */
@@ -2158,21 +2158,21 @@ config_allow (struct config *cfg)
 	struct registry const *reg = &config_run(cfg)->registry;
 	struct json_object *client;
 	struct json_object *upstream;
-	bool clients = json_object_object_get_ex(v, "client", &client);
-	bool lends = json_object_object_get_ex(v, "upstream", &upstream);
-	int status = 0;
-	if (!clients && !lends) {
-		status = config_allow_spec(cfg, "tools", reg, v, true, &cfg->tools_clients);
-		cfg->tools_upstream = cfg->tools_clients;
-	} else {
-		status = config_allow_parts(cfg, v);
-		if (!status && clients)
-			status = config_allow_spec(cfg, "tools: client", reg, client, false,
-			                           &cfg->tools_clients);
-		if (!status && lends)
-			status = config_allow_spec(cfg, "tools: upstream", reg, upstream, false,
-			                           &cfg->tools_upstream);
-	}
+	bool const clients = json_object_object_get_ex(v, "client", &client);
+	bool const lends = json_object_object_get_ex(v, "upstream", &upstream);
+	int status = clients || lends
+	           ? config_allow_parts(cfg, v)
+	           : config_allow_spec(cfg, "tools", reg, v, true, &cfg->tools_clients);
+	/* With one form, the upstream gets the clients' tools. With the member
+	 * client or upstream, it gets all tools unless the member upstream is
+	 * given, because the clients' tools are still all tools here. */
+	cfg->tools_upstream = cfg->tools_clients;
+	if (!status && clients)
+		status = config_allow_spec(cfg, "tools: client", reg, client, false,
+		                           &cfg->tools_clients);
+	if (!status && lends)
+		status = config_allow_spec(cfg, "tools: upstream", reg, upstream, false,
+		                           &cfg->tools_upstream);
 	/* mcp_register() adds the ask tool first, with the id 0. */
 	cfg->tools_clients |= 1;
 	return status;
@@ -2426,11 +2426,12 @@ config_log (struct config const *cfg)
 	/* Home asks /props of a server that may be llama-server, and Gemini's
 	 * API about its model, but not when told the slots and lending the
 	 * upstream no tools (home_create()). */
-	char *model = ai_props(ep) ? nullptr : ai_model_url(ep);
+	bool const props = ai_props(ep);
+	char *model = props ? nullptr : ai_model_url(ep);
 	bool asked = !ep->slots || cfg->flags & CFG_UPSTREAM_TOOLS;
 	if (ep->context > 0)
 		LOG_ALL(LOG_INFO, "  context   %ld tokens", ep->context);
-	else if (ai_props(ep) && asked)
+	else if (props && asked)
 		LOG_ALL(LOG_INFO, "  context   from llama-server");
 	else if (model && asked)
 		LOG_ALL(LOG_INFO, "  context   from the model");
