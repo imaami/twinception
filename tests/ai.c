@@ -1,6 +1,5 @@
 /** @file Unit tests for the upstream event parser (src/ai.c). */
 #include <json-c/json.h>
-#include <string.h>
 
 #include "ai.h"
 #include "check.h"
@@ -38,11 +37,7 @@ static bool
 integers_only (enum ai_api  api,
                char const *json)
 {
-	struct json_tokener *tok = json_tokener_new();
-	if (!tok)
-		return false;
-	struct json_object *ev = json_tokener_parse_ex(tok, json, (int)strlen(json));
-	json_tokener_free(tok);
+	struct json_object *ev = json_tokener_parse(json);
 	if (!ev)
 		return false;
 	struct ai_sink const sink = { .text = ignore_text };
