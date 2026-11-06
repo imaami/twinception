@@ -413,39 +413,6 @@ config_usage (struct config const *cfg,
 	        BRAINSTEM_FORCED);
 }
 
-/* @p str, a count from @p min to @p max in decimal digits, in @p *value; for
- * a count of @p bytes, the digits may end in K, M or G for KiB, MiB or GiB.
- * EINVAL if it is not one.
- */
-static int
-config_parse_count (char const *str,
-                    uint64_t    min,
-                    uint64_t    max,
-                    bool        bytes,
-                    uint64_t   *value)
-{
-	static char const units[] = "KMG";
-	if (*str < '0' || *str > '9')
-		return EINVAL;
-	char *end;
-	/* strtoull() leaves errno as it was on success. */
-	errno = 0;
-	unsigned long long n = strtoull(str, &end, 10);
-	if (errno)
-		return EINVAL;
-	unsigned shift = 0;
-	if (*end) {
-		char const *unit = bytes ? strchr(units, *end) : nullptr;
-		if (!unit || end[1])
-			return EINVAL;
-		shift = 10 * (unsigned)(unit - units + 1);
-	}
-	if (n > max >> shift || n << shift < min)
-		return EINVAL;
-	*value = (uint64_t)n << shift;
-	return 0;
-}
-
 /* Whether a line of cfg->headers begins, in any case, with @p prefix up to
  * its colon.
  */
@@ -765,29 +732,37 @@ config_apply_extra (struct config *cfg,
 	return 0;
 }
 
+/* How a numeric option takes its count. */
+enum config_take : uint8_t {
+	TAKE_BYTES    = 1u << 0,  /* the digits may end in K, M or G for KiB,
+	                             MiB or GiB */
+	TAKE_POSITIVE = 1u << 1,  /* the count is at least 1 */
+};
+
 /* How each numeric option is taken: the member of struct config at @p at,
- * of @p width bytes, takes a count from @p min to @p max, in bytes if
- * @p bytes, times @p scale; the option also sets the CFG_ flags @p flag.
+ * of @p width bytes, takes a count up to @p max, as @p take says, times
+ * @p scale; the option also sets the CFG_ flags @p flag.
  */
 static struct config_number {
-	uint64_t min;
 	uint64_t max;
-	uint64_t scale;
+	uint32_t scale;
 	uint32_t flag;
 	int      opt;
 	uint16_t at;
 	uint8_t  width;
-	bool     bytes;
+	uint8_t  take;   /* enum config_take */
 } const numbers[] = {
-#define TAKE(opt, member, min, max, scale, bytes, flag)                     \
-        { min, max, scale, flag, opt, offsetof(struct config, member),          \
-          sizeof ((struct config *)nullptr)->member, bytes }
-#define N(opt, member, min, max) TAKE(opt, member, min, max, 1, false, 0)
-#define B(opt, member, min, max) TAKE(opt, member, min, max, 1, true, 0)
+#define TAKE(opt, member, take, max, scale, flag)                               \
+        { max, scale, flag, opt, offsetof(struct config, member),               \
+          sizeof ((struct config *)nullptr)->member, take }
+/* N and B take a count from min, 0 or 1, to max; B's is in bytes. */
+#define N(opt, member, min, max) TAKE(opt, member, (min) ? TAKE_POSITIVE : 0, max, 1, 0)
+#define B(opt, member, min, max) \
+        TAKE(opt, member, TAKE_BYTES | ((min) ? TAKE_POSITIVE : 0), max, 1, 0)
 	B(OPT_MAX_HEAD,          http.limits.head,          1, UINT16_MAX),
 	N(OPT_MAX_FIELDS,        http.limits.fields,        0, UINT32_MAX),
 	N(OPT_HEAD_TIMEOUT,      http.limits.head_time,     0, UINT32_MAX),
-	TAKE(OPT_MAX_BODY,       http.limits.body,          0, SIZE_MAX / 2, 1, true,
+	TAKE(OPT_MAX_BODY,       http.limits.body,          TAKE_BYTES, SIZE_MAX / 2, 1,
 	     CFG_BODY_GIVEN),
 	B(OPT_MIN_BODY_RATE,     http.limits.body_rate,     0, UINT32_MAX),
 	N(OPT_BODY_GRACE,        http.limits.body_grace,    0, UINT32_MAX),
@@ -802,25 +777,51 @@ static struct config_number {
 	N(OPT_MAX_VALUES,        mcp.values,                1, UINT32_MAX),
 	N(OPT_MAX_MEMBERS,       mcp.members,               1, UINT32_MAX - 1),
 	N(OPT_SSE_KEEPALIVE,     mcp.keepalive,             0, UINT32_MAX / 2),
-	TAKE(OPT_GRACE,          brainstem.grace_ms,        1, 3600, 1000, false, 0),
+	TAKE(OPT_GRACE,          brainstem.grace_ms,        TAKE_POSITIVE, 3600, 1000, 0),
 	N(OPT_WATCHDOG,          brainstem.watchdog_ms,     0, 60'000),
 	N(OPT_TEST_STALL,        brainstem.stall_ms,        1, 3'600'000),
 	B(OPT_MEMORY_HIGH,       brainstem.memory_high,     1, SIZE_MAX / 2),
 	N(OPT_MAX_CALLS,         calls,                     1, 1'000'000),
 	N(OPT_TEST_MAN_RECHECK,  man_recheck,               0, 86'400),
-	TAKE(OPT_GIT_TIMEOUT,    git_timeout,               1, 3600, NS, false, 0),
+	TAKE(OPT_GIT_TIMEOUT,    git_timeout,               TAKE_POSITIVE, 3600, NS, 0),
 	N(OPT_MAX_TURNS,         turns,                     1, 1000),
 	/* As many as a handle's loop field names, home being 0. */
 	N(OPT_LOOPS,             loops,                     0, 255),
 	N(OPT_SLOTS,             ep.slots,                  1, UINT16_MAX),
 	N('n',                   ep.max_tokens,             1, INT32_MAX),
-	TAKE('T',                ep.timeout_ms,             0, INT32_MAX / 1000, 1000, false, 0),
-	TAKE(OPT_CHUNK_TIMEOUT,  ep.chunk_ms,               0, INT32_MAX / 1000, 1000, false, 0),
+	TAKE('T',                ep.timeout_ms,             0, INT32_MAX / 1000, 1000, 0),
+	TAKE(OPT_CHUNK_TIMEOUT,  ep.chunk_ms,               0, INT32_MAX / 1000, 1000, 0),
 	N(OPT_CONTEXT,           ep.context,                0, INT32_MAX),
 #undef B
 #undef N
 #undef TAKE
 };
+
+/* @p str, a count as @p n takes it, in decimal digits, in @p *value. EINVAL
+ * if it is not one.
+ */
+static int
+config_parse_count (char const                 *str,
+                    struct config_number const *n,
+                    uint64_t                   *value)
+{
+	static char const units[] = "KMG";
+	uint64_t count;
+	size_t const d = util_digits(str, strlen(str), UINT64_MAX, &count);
+	if (!d)
+		return EINVAL;
+	unsigned shift = 0;
+	if (str[d]) {
+		char const *unit = n->take & TAKE_BYTES ? strchr(units, str[d]) : nullptr;
+		if (!unit || str[d + 1])
+			return EINVAL;
+		shift = 10 * (unsigned)(unit - units + 1);
+	}
+	if (count > n->max >> shift || (!count && n->take & TAKE_POSITIVE))
+		return EINVAL;
+	*value = count << shift;
+	return 0;
+}
 
 /* Apply the numeric option @p opt with @p arg, given in the configuration
  * file @p where, or on the command line if that is nullptr; returns 0, or 2,
@@ -838,7 +839,7 @@ config_apply_number (struct config *cfg,
 	if (n == numbers + array_size(numbers))
 		return 2;
 	uint64_t value;
-	if (config_parse_count(arg, n->min, n->max, n->bytes, &value))
+	if (config_parse_count(arg, n, &value))
 		return config_complain(cfg, where, "invalid --%s: %s",
 		                       config_option(opt)->name, arg);
 	/* Every member is an unsigned or a nonnegative count of 32 or 64 bits. */
