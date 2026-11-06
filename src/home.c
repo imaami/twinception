@@ -371,12 +371,7 @@ home_unqueue (struct home *home,
 static void
 home_job_drop_answer (struct job *job)
 {
-	buf_fini(&job->result);
-	for (size_t k = 0; k < JOB_CALLS; ++k)
-		buf_fini(&job->calls[k]);
-	buf_fini(&job->thought);
-	buf_fini(&job->replay);
-	buf_fini(&job->delta);
+	job_drop_answer(job);
 	job->delta_pending = job->delta_ended = false;
 }
 
@@ -2278,11 +2273,7 @@ home_preempt (struct home *home,
 	struct home_metrics *m = home->metrics;
 	home_abort(home, job);
 	home_unstream(home, job);
-	buf_clear(&job->result);
-	for (size_t k = 0; k < JOB_CALLS; ++k)
-		buf_clear(&job->calls[k]);
-	buf_clear(&job->thought);
-	buf_clear(&job->replay);
+	home_job_drop_answer(job);
 	home_job_reset(job, PREEMPTED | READY);
 	hist_add(&m->running, -1ULL);
 	hist_add(&m->background, -1ULL);

@@ -299,19 +299,28 @@ job_init (struct job  *job,
 	atomic_init(&job->refs, 0);
 }
 
-/** Free @p job's buffers, which job_init() leaves empty, so that a job
- *  kept for reuse holds no storage.
+/** Free the buffers of @p job's answer: the result, the tool calls, the
+ *  thinking, the replay and the delta mailbox.
+ */
+static inline void
+job_drop_answer (struct job *job)
+{
+	buf_fini(&job->result);
+	for (size_t k = 0; k < array_size(job->calls); ++k)
+		buf_fini(&job->calls[k]);
+	buf_fini(&job->thought);
+	buf_fini(&job->replay);
+	buf_fini(&job->delta);
+}
+
+/** Free @p job's buffers, which job_init() leaves empty, so that the
+ *  buffers of a job kept for reuse are empty.
  */
 static inline void
 job_fini (struct job *job)
 {
 	buf_fini(&job->request);
-	buf_fini(&job->result);
-	buf_fini(&job->delta);
-	for (size_t k = 0; k < JOB_CALLS; ++k)
-		buf_fini(&job->calls[k]);
-	buf_fini(&job->thought);
-	buf_fini(&job->replay);
+	job_drop_answer(job);
 	buf_fini(&job->key);
 	buf_fini(&job->wire);
 }
