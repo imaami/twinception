@@ -448,6 +448,11 @@ enum mcp_phase {
 	PHASE_METRICS,   /* rendering the metrics, a share a step */
 };
 
+/* The arguments of a call as the log shows them (mcp_args_shown()). */
+struct mcp_shown {
+	UTIL_TEXT(SHOWN);
+};
+
 /* Where a client's string goes in the upstream request. */
 struct mcp_splice {
 	struct json_object *str;
@@ -687,10 +692,10 @@ struct mcp_req {
 	                                    0: unknown */
 	uint32_t             traced;     /* tool calls the turns made */
 	uint32_t             launched;   /* the turn's calls launched */
-	uint16_t             next;       /* the splice to write next, or piece */
-	uint16_t             part;       /* the part of the turn being written,
+	uint32_t             part;       /* the part of the turn being written,
 	                                    or its call under way */
-	uint16_t             n_calls;    /* the turn's tool calls */
+	uint32_t             n_calls;    /* the turn's tool calls */
+	uint16_t             next;       /* the splice to write next, or piece */
 	uint8_t              phase;      /* enum mcp_phase */
 	uint8_t              method;     /* enum metrics_method */
 	uint8_t              asks;       /* enum job_ask: JOB_BACKGROUND for
@@ -710,9 +715,8 @@ struct mcp_req {
 	                                             which mcp_begin() writes
 	                                             from its stream; "": an
 	                                             anonymous TCP client */
-	char                 call_args[SHOWN];  /* with --verbose, the arguments
-	                                           of its tool call for the
-	                                           log */
+	struct mcp_shown     call_args;  /* with --verbose, the arguments of
+	                                    its tool call for the log */
 };
 
 /* What an ask call's turns have under way besides themselves: the jobs
@@ -1127,6 +1131,11 @@ mcp_row_of (struct registry_tool const *t)
 	return t->data ? t->data : &mcp_loaded_row;
 }
 
+/* The bytes of a buffer for mcp_quote() with @p n bytes of escapes: with
+ * the quotes, the "..." and the NUL.
+ */
+#define QUOTED(n) ((n) + sizeof "\"\"...")
+
 /** Writes @p text into the @p size bytes at @p buf as a JSON string on one
  *  line, followed by "..." if the string is cut, and returns @p buf. The
  *  string contains the longest prefix of whole characters whose escapes
@@ -1139,7 +1148,7 @@ mcp_quote (char             *buf,
            struct cstr_view  text,
            size_t            max)
 {
-	static constexpr size_t frame = sizeof "\"\"...";
+	static constexpr size_t frame = QUOTED(0);
 	if (size < frame) {
 		if (size)
 			buf[0] = '\0';
@@ -1157,74 +1166,60 @@ mcp_quote (char             *buf,
 	return buf;
 }
 
-/* The arguments of a call as the log shows them, written so far. */
-struct mcp_shown {
-	char     *buf;  /* SHOWN bytes */
-	size_t    len;
-	uint64_t  cut;  /* bool: cut at TRACE_ARGS bytes; widened over the
-	                   padding */
-};
-
 /** Appends @p s to @p w, up to TRACE_ARGS bytes in all, in whole
- *  characters and whole escapes. @p s is JSON text, or the inside of a
- *  JSON string if @p text is true, and then the function escapes it.
+ *  characters and whole escapes, and a NUL. @p s is JSON text, or the
+ *  inside of a JSON string if @p text is true, and then the function
+ *  escapes it into @p w. Returns false if @p s was cut.
  */
-static void
+static bool
 mcp_shown_put (struct mcp_shown *w,
                struct cstr_view  s,
                bool              text)
 {
-	if (w->cut || !s.len)
-		return;
-	size_t room = TRACE_ARGS - w->len;
-	char escaped[TRACE_ARGS];
+	size_t const room = TRACE_ARGS - w->len;
+	char *at = w->data + w->len;
+	size_t k;
 	if (text) {
-		size_t k = jb_escape_fit(s.data, s.len, room);
-		w->cut = k < s.len;
-		s = (struct cstr_view){ escaped, jb_escape(escaped, s.data, k) };
+		k = jb_escape_fit(s.data, s.len, room);
+		at += jb_escape(at, s.data, k);
+	} else {
+		k = util_clip(s.data, s.len, room);
+		at = mempcpy(at, s.data, k);
 	}
-	size_t k = util_clip(s.data, s.len, room);
-	w->cut |= k < s.len;
-	memcpy(w->buf + w->len, s.data, k);
-	w->len += k;
+	*at = '\0';
+	w->len = (uint32_t)(at - w->data);
+	return k == s.len;
 }
 
-static void mcp_shown_object (struct mcp_shown *w, struct json_object *v, char const *sized);
+static bool mcp_shown_object (struct mcp_shown *w, struct json_object *v, char const *sized);
 
 /** Appends @p v to @p w as compact JSON, as JB_WIRE writes it, until
  *  TRACE_ARGS bytes are written. If @p v is an object, mcp_shown_object()
- *  writes it with @p sized.
+ *  writes it with @p sized. Returns false once @p v is cut.
  */
-static void
+static bool
 mcp_shown_value (struct mcp_shown   *w,
                  struct json_object *v,
                  char const         *sized)
 {
 	switch (json_object_get_type(v)) {
 	case json_type_object:
-		mcp_shown_object(w, v, sized);
-		return;
+		return mcp_shown_object(w, v, sized);
 	case json_type_array: {
-		size_t n = json_object_array_length(v);
-		mcp_shown_put(w, CSTR_VIEW("["), false);
-		for (size_t i = 0; i < n && !w->cut; ++i) {
-			mcp_shown_put(w, (struct cstr_view){ ",", i != 0 }, false);
-			mcp_shown_value(w, json_object_array_get_idx(v, i), nullptr);
-		}
-		mcp_shown_put(w, CSTR_VIEW("]"), false);
-		return;
+		bool fits = mcp_shown_put(w, CSTR_VIEW("["), false);
+		for (size_t i = 0, n = json_object_array_length(v); fits && i < n; ++i)
+			fits = mcp_shown_put(w, (struct cstr_view){ ",", i != 0 }, false) &&
+			       mcp_shown_value(w, json_object_array_get_idx(v, i), nullptr);
+		return fits && mcp_shown_put(w, CSTR_VIEW("]"), false);
 	}
 	case json_type_string:
-		mcp_shown_put(w, CSTR_VIEW("\""), false);
-		mcp_shown_put(w, jb_view(v), true);
-		mcp_shown_put(w, CSTR_VIEW("\""), false);
-		return;
+		return mcp_shown_put(w, CSTR_VIEW("\""), false) &&
+		       mcp_shown_put(w, jb_view(v), true) &&
+		       mcp_shown_put(w, CSTR_VIEW("\""), false);
 	default: {
 		/* The JSON text of a scalar is short. */
 		struct cstr_view const json = v ? jb_wire(v) : CSTR_VIEW("null");
-		if (json.data)
-			mcp_shown_put(w, json, false);
-		return;
+		return !json.data || mcp_shown_put(w, json, false);
 	}
 	}
 }
@@ -1233,57 +1228,52 @@ mcp_shown_value (struct mcp_shown   *w,
  *  is replaced by its size if it is the value of the member @p sized, or
  *  if it is a data: URI, which is a file.
  */
-static void
+static bool
 mcp_shown_object (struct mcp_shown   *w,
                   struct json_object *v,
                   char const         *sized)
 {
 	struct cstr_view sep = CSTR_VIEW("\"");
 	struct json_object_iter it;
-	mcp_shown_put(w, CSTR_VIEW("{"), false);
+	if (!mcp_shown_put(w, CSTR_VIEW("{"), false))
+		return false;
 	json_object_object_foreachC(v, it) {
-		if (w->cut)
-			return;
-		mcp_shown_put(w, sep, false);
-		sep = CSTR_VIEW(",\"");
-		mcp_shown_put(w, cstr_view(it.key), true);
-		mcp_shown_put(w, CSTR_VIEW("\":"), false);
-		struct cstr_view s = jb_view(it.val);
-		if (!s.data || !((sized && !strcmp(it.key, sized)) ||
-		                 cstr_view_starts_case(s, CSTR_VIEW("data:")))) {
-			mcp_shown_value(w, it.val, nullptr);
-			continue;
-		}
+		struct cstr_view const s = jb_view(it.val);
+		bool const size = s.data && ((sized && !strcmp(it.key, sized)) ||
+		                             cstr_view_starts_case(s, CSTR_VIEW("data:")));
 		char text[40];
-		int n = snprintf(text, sizeof text, "\"(%zu byte%s)\"", s.len, util_s(s.len));
-		if (n > 0 && n < (int)sizeof text)
-			mcp_shown_put(w, (struct cstr_view){ text, (size_t)n }, false);
+		int const n = size ? snprintf(text, sizeof text, "\"(%zu byte%s)\"", s.len,
+		                              util_s(s.len)) : 0;
+		bool const fits = mcp_shown_put(w, sep, false) &&
+		                  mcp_shown_put(w, cstr_view(it.key), true) &&
+		                  mcp_shown_put(w, CSTR_VIEW("\":"), false) &&
+		                  (!size ? mcp_shown_value(w, it.val, nullptr)
+		                   : n < 0 || n >= (int)sizeof text ||
+		                     mcp_shown_put(w, (struct cstr_view){ text, (size_t)n }, false));
+		if (!fits)
+			return false;
+		sep = CSTR_VIEW(",\"");
 	}
-	mcp_shown_put(w, CSTR_VIEW("}"), false);
+	return mcp_shown_put(w, CSTR_VIEW("}"), false);
 }
 
 /** Writes @p args, the arguments of a call of @p tool, or @p none without
- *  arguments, into the SHOWN bytes at @p buf as compact JSON on one line,
- *  cut to TRACE_ARGS bytes with "...". The value of the argument that the
- *  member sized of the row of the tool specifies, such as the text of a
- *  note, is replaced by its size. Only the shown bytes are written.
+ *  arguments, into @p w as compact JSON on one line, cut to TRACE_ARGS
+ *  bytes with "...". The value of the argument that the member sized of
+ *  the row of the tool specifies, such as the text of a note, is replaced
+ *  by its size.
  */
 static void
 mcp_args_shown (struct registry_tool const *tool,
                 struct json_object         *args,
                 struct cstr_view            none,
-                char                        buf[static SHOWN])
+                struct mcp_shown           *w)
 {
-	struct mcp_shown w = { .buf = buf };
-	if (args)
-		mcp_shown_value(&w, args, mcp_row_of(tool)->sized);
-	else
-		mcp_shown_put(&w, none, false);
-	if (w.cut) {
-		memcpy(buf + w.len, "...", sizeof "..." - 1);
-		w.len += sizeof "..." - 1;
-	}
-	buf[w.len] = '\0';
+	util_text_clear(w);
+	bool const fits = args ? mcp_shown_value(w, args, mcp_row_of(tool)->sized)
+	                       : mcp_shown_put(w, none, false);
+	if (!fits)
+		(void)util_text_printf(w, "...");
 }
 
 /* The client of @p req as the log names it. */
@@ -1325,13 +1315,13 @@ mcp_req_log_call (struct mcp_req   *req,
 	if (req->task)
 		util_format(record, sizeof record, "; %s %s",
 		            req->task->kind == LEDGER_JOB ? "job" : "task", req->task->id.hex);
-	char text[ERROR_LOG + 8] = "";
+	char text[QUOTED(ERROR_LOG)] = "";
 	if (failed && out.len)
 		mcp_quote(text, sizeof text, out, ERROR_LOG);
 	log_put(&sites[failed], "tool call %s from %s %s after %.1f s (%zu byte%s)%s%s%s%s%s%s",
 	        mcp_slot_tool(&req->self)->name.data, mcp_req_client(req), how,
 	        mcp_elapsed(req->self.start), out.len, util_s(out.len), record, ask,
-	        *req->call_args ? "; arguments " : "", req->call_args, *text ? "; error " : "",
+	        req->call_args.len ? "; arguments " : "", req->call_args.data, *text ? "; error " : "",
 	        text);
 }
 
@@ -1859,31 +1849,10 @@ mcp_req_tool_open (struct mcp_req   *req,
 	return e ? e : mcp_req_put(req, p, array_size(p));
 }
 
-/* Write into @p tail, of @p size bytes, how the turns ended, after what they
- * called: the calls left untold, whether they were stopped, and where the
- * notes are; returns its length.
- */
-static size_t
-mcp_req_trace_tail (struct mcp_req const *req,
-                    char                 *tail,
-                    size_t                size)
-{
-	size_t n = 0;
-	if (req->traced > TRACE_MAX)
-		n = util_format(tail, size, "- and %" PRIu32 " more\n",
-		                req->traced - TRACE_MAX);
-	if (req->flags & REQ_STOPPED)
-		n += util_format(tail + n, size - n, "It was stopped after %" PRIu32
-		                 " turns, still calling tools.\n", req->turn);
-	if (req->flags & REQ_BRANCH)
-		n += util_format(tail + n, size - n, "Its notes are saved in the shared session repository. "
-		                 "The ask-chain thread is %s.", req->thread.hex);
-	return n;
-}
-
 /* Close the result's text; then, for an ask call whose turns called tools,
- * or kept notes, what they called and where the notes are, as a text of its
- * own. A call without turns that get tools has no trace. A client's call
+ * or kept notes, what they called and how they ended, as a text of its own:
+ * the calls left untold, whether they were stopped, and where the notes
+ * are. A call without turns that get tools has no trace. A client's call
  * of the notes tool has no turns, and its thread does not belong to an ask
  * call.
  */
@@ -1893,8 +1862,16 @@ mcp_req_trace_put (struct mcp_req *req)
 	static char const none[] = "The other AI called no tools.\n";
 	if (!req->lent || (!dstr_len(&req->trace) && !(req->flags & (REQ_BRANCH | REQ_STOPPED))))
 		return mcp_req_put(req, &FRAG("\"}"), 1);
+	UTIL_TEXT(256) tail = {};
+	if (req->traced > TRACE_MAX)
+		(void)util_text_printf(&tail, "- and %" PRIu32 " more\n", req->traced - TRACE_MAX);
+	if (req->flags & REQ_STOPPED)
+		(void)util_text_printf(&tail, "It was stopped after %" PRIu32 " turns, still "
+		                       "calling tools.\n", req->turn);
+	if (req->flags & REQ_BRANCH)
+		(void)util_text_printf(&tail, "Its notes are saved in the shared session "
+		                       "repository. The ask-chain thread is %s.", req->thread.hex);
 	char head[160];
-	char tail[256];
 	struct mcp_piece intro = TEXT(none);
 	if (req->traced)
 		intro = ESC(head, util_format(head, sizeof head, "The other AI made %" PRIu32
@@ -1905,7 +1882,7 @@ mcp_req_trace_put (struct mcp_req *req)
 		FRAG("\"},{\"type\":\"text\",\"text\":\""),
 		intro,
 		ESC_VIEW(cstr_view_dstr(&req->trace)),
-		ESC(tail, mcp_req_trace_tail(req, tail, sizeof tail)),
+		ESC_VIEW(util_text_view(&tail)),
 		FRAG("\"}"),
 	};
 	return mcp_req_put(req, p, array_size(p));
@@ -2053,16 +2030,15 @@ mcp_slot_respond (struct mcp_slot *slot,
 	mcp_req_reply(req);
 }
 
-/* Write a notification of progress @p value, saying the @p len bytes of
- * @p text, which need no escaping, into the reply. A tool notification
- * identifies a call; other progress reports its current status.
+/* Write a notification of progress @p value, saying @p text, which needs
+ * no escaping, into the reply. A tool notification identifies a call;
+ * other progress reports its current status.
  */
 static int
-mcp_req_notify_put (struct mcp_req *req,
-                    uint64_t        value,
-                    char const     *text,
-                    size_t          len,
-                    bool            tool)
+mcp_req_notify_put (struct mcp_req   *req,
+                    uint64_t          value,
+                    struct cstr_view  text,
+                    bool              tool)
 {
 	char num[24];
 	int n = snprintf(num, sizeof num, "%" PRIu64, value);
@@ -2078,7 +2054,7 @@ mcp_req_notify_put (struct mcp_req *req,
 		FRAG(",\"progress\":"),
 		RAW(num, (size_t)n),
 		FRAG(",\"message\":\""),
-		RAW(text, len),
+		BYTES(text),
 		FRAG("\",\"_meta\":{\"askai\":{\"kind\":\""),
 		tool ? FRAG("tool") : FRAG("status"),
 		FRAG("\"}}}}\n\n"),
@@ -2086,17 +2062,16 @@ mcp_req_notify_put (struct mcp_req *req,
 	return mcp_req_put(req, p, array_size(p));
 }
 
-/* Send a notification of progress @p value, saying the @p len bytes of
- * @p text, on the call's event stream.
+/* Send a notification of progress @p value, saying @p text, on the call's
+ * event stream.
  */
 static void
-mcp_req_notify (struct mcp_req *req,
-                uint64_t        value,
-                char const     *text,
-                size_t          len,
-                bool            tool)
+mcp_req_notify (struct mcp_req   *req,
+                uint64_t          value,
+                struct cstr_view  text,
+                bool              tool)
 {
-	if (!mcp_req_notify_put(req, value, text, len, tool))
+	if (!mcp_req_notify_put(req, value, text, tool))
 		(void)mcp_req_write(req, buf_peek(&req->reply));
 	buf_clear(&req->reply);
 	req->noted = req->mcp->loop->now;
@@ -2193,18 +2168,15 @@ mcp_req_progress (struct mcp_req *req)
 	uint64_t value = req->base + (req->place - place) + tokens;
 	if (value < req->next_note)
 		return;
-	char text[64];
-	size_t n = req->lent ? util_format(text, sizeof text, "turn %" PRIu32 ", ",
-	                                   req->turn)
-	                     : 0;
+	UTIL_TEXT(64) text = {};
+	if (req->lent)
+		(void)util_text_printf(&text, "turn %" PRIu32 ", ", req->turn);
 	if (place)
-		n += util_format(text + n, sizeof text - n, "queued, position %" PRIu32,
-		                 place);
+		(void)util_text_printf(&text, "queued, position %" PRIu32, place);
 	else
-		n += util_format(text + n, sizeof text - n, "%s, %" PRIu32 " tokens",
-		                 progress & JOB_THINKING ? "thinking" : "generating",
-		                 tokens);
-	mcp_req_notify(req, value, text, n, false);
+		(void)util_text_printf(&text, "%s, %" PRIu32 " tokens",
+		                       progress & JOB_THINKING ? "thinking" : "generating", tokens);
+	mcp_req_notify(req, value, util_text_view(&text), false);
 }
 
 /* Notify the client that a turn calls @p tool, a tool askai names, unless
@@ -2218,9 +2190,9 @@ mcp_req_notify_tool (struct mcp_req *req,
 	if (!req->token || (req->flags & (REQ_SSE | REQ_BLOCKED)) != REQ_SSE)
 		return;
 	char text[64];
-	size_t n = util_format(text, sizeof text, "turn %" PRIu32 ", calling %s",
-	                       req->turn, tool);
-	mcp_req_notify(req, req->next_note, text, n, true);
+	mcp_req_notify(req, req->next_note, util_format_view(text, sizeof text, "turn %" PRIu32
+	                                                     ", calling %s", req->turn, tool),
+	               true);
 }
 
 /* Set the request's timer for the first due of a keep-alive, a notification
@@ -2403,7 +2375,7 @@ mcp_req_log_turn (struct mcp_req const *req,
 	else if (used)
 		util_format(tokens, sizeof tokens, "%" PRIu64 " tokens of a context of "
 		            "unknown size", used);
-	char reason[sizeof job->reason + 8] = "none";
+	char reason[QUOTED(sizeof job->reason)] = "none";
 	if (*job->reason)
 		mcp_quote(reason, sizeof reason, cstr_view(job->reason), sizeof job->reason);
 	uint32_t calls = 0;
@@ -3744,7 +3716,7 @@ mcp_req_log_ask (struct mcp_req const *req,
 	if (log_threshold < LOG_VERBOSE)
 		return;
 	struct cstr_view text = jb_view(prompt);
-	char quoted[PROMPT_LOG + 8];
+	char quoted[QUOTED(PROMPT_LOG)];
 	char thread[sizeof "thread  (resumed)" + HEXID_DIGITS] = "no thread";
 	if (*req->thread.hex)
 		util_format(thread, sizeof thread, "thread %s (%s)", req->thread.hex,
@@ -4531,13 +4503,14 @@ mcp_req_log_refused (struct mcp_req const *req,
 {
 	if (log_threshold < LOG_VERBOSE)
 		return;
-	char quoted[NAME_LOG + 8];
-	char shown[SHOWN];
-	mcp_args_shown(mcp_static_tool(req->mcp->st, known), args, mcp_req_no_args(req), shown);
+	char quoted[QUOTED(NAME_LOG)];
+	struct mcp_shown shown;
+	mcp_args_shown(mcp_static_tool(req->mcp->st, known), args, mcp_req_no_args(req), &shown);
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": tool call %s "
 	    "refused: %s; arguments %s", req->mcp->loop->id, req->asked, req->turn,
 	    mcp_quote(quoted, sizeof quoted, name, NAME_LOG),
-	    known < TOOL_MAX ? "not lent to this ask call" : "askai offers no such tool", shown);
+	    known < TOOL_MAX ? "not lent to this ask call" : "askai offers no such tool",
+	    shown.data);
 }
 
 static void mcp_agenda_alarm (struct loop *loop, struct loop_timer *timer);
@@ -4902,7 +4875,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	/* The log line of the call's end shows the arguments of the job's
 	 * call, by the rules of its tool. */
 	if (log_threshold >= LOG_VERBOSE)
-		mcp_args_shown(tool, call, CSTR_VIEW("none"), req->call_args);
+		mcp_args_shown(tool, call, CSTR_VIEW("none"), &req->call_args);
 	LOG(LOG_VERBOSE, "tool call background from %s became job %s, a call of %s",
 	    mcp_req_client(req), req->task->id.hex, tool->name.data);
 	/* Last, as the start of the job's call may end the request. */
@@ -5844,10 +5817,10 @@ mcp_slot_done (struct mcp_slot *slot,
 		/* A turn's call whose arguments are not a JSON object ends at once
 		 * in mcp_req_call_launch(), so REQ_CUT is still the value of its
 		 * turn. */
-		char shown[SHOWN];
+		struct mcp_shown shown;
 		mcp_args_shown(tool, job ? slot->args : req->args[k],
-		               job ? CSTR_VIEW("none") : mcp_req_no_args(req), shown);
-		char text[ERROR_LOG + 8] = "";
+		               job ? CSTR_VIEW("none") : mcp_req_no_args(req), &shown);
+		char text[QUOTED(ERROR_LOG)] = "";
 		if (failed && out.len)
 			mcp_quote(text, sizeof text,
 			          (struct cstr_view){ (char const *)out.ptr, out.len }, ERROR_LOG);
@@ -5855,7 +5828,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		    "after %.1f s (%zu byte%s); arguments %s%s%s", req->mcp->loop->id, req->asked,
 		    req->turn, label[slot->role], tool->name.data,
 		    failed ? "failed" : "answered", mcp_elapsed(slot->start), out.len,
-		    util_s(out.len), shown, *text ? "; error " : "", text);
+		    util_s(out.len), shown.data, *text ? "; error " : "", text);
 	}
 	slot->flags |= failed ? SLOT_FAILED : 0;
 	char const *notebook = !failed ? slot->shows : nullptr;
@@ -6912,7 +6885,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 		size_t r = id < st->reg->n_granted ? 2 : name.data != nullptr;
 		struct cstr_view what = r ? name : CSTR_VIEW("(none)");
 		struct cstr_view head = refusals[r].head;
-		char quoted[NAME_LOG + 8];
+		char quoted[QUOTED(NAME_LOG)];
 		LOG(LOG_WARN, "tool call %s from %s refused: %s",
 		    r == 1 ? mcp_quote(quoted, sizeof quoted, name, NAME_LOG) : what.data,
 		    mcp_req_client(req), refusals[r].why);
@@ -6952,9 +6925,11 @@ mcp_req_tools_call (struct mcp_req     *req,
 	req->self.tool = (uint8_t)id;
 	struct json_object *args = jb_get(params, "arguments");
 	if (log_threshold >= LOG_VERBOSE)
-		mcp_args_shown(tool, args, CSTR_VIEW("none"), req->call_args);
+		mcp_args_shown(tool, args, CSTR_VIEW("none"), &req->call_args);
 	mcp_slot_start(&req->self, args);
 }
+
+#undef QUOTED
 
 static void
 mcp_req_initialize (struct mcp_req     *req,
