@@ -677,9 +677,10 @@ A note is a file. The model chooses its name, such as `plan.md` or
 `design/locks.md`, and writes its text, at most 4 MiB. The extension of
 the name shows the format of the text, which `askai` does not check.
 The tool `notes` creates a file with `add` or updates an existing file with
-`replace`. Each write that changes a note adds a commit to the caller's
-branch with `git fast-import`. Its message says what the write did, the
-note's name and its size before and after, such as
+`replace`, or with `append`, which adds text at its end, on a new line if
+the file does not end with a line feed. Each write that changes a note adds
+a commit to the caller's branch with `git fast-import`. Its message says
+what the write did, the note's name and its size before and after, such as
 `Replace "plan.md" (1234 to 1302 bytes)`; previous versions remain in
 history. The result names the new commit and repeats its message. If the
 write changed a note, the result also names the commit of the previous
@@ -687,7 +688,7 @@ version, after the lines that a `replace` or `restore` removed and added,
 such as `1 line removed, 2 added.`, unless Git sees the note as binary. A
 `replace` or `restore` that would leave the note's bytes as they are
 makes no commit; its result says `Unchanged` and names the notebook's
-newest commit. `add` refuses an existing name, and `replace` refuses a
+newest commit. `add` refuses an existing name, and `replace` and `append` a
 missing one. Concurrent branch updates fail rather than overwrite another
 writer's changes. When a turn writes text whose last lines are askai's
 own notices from tool results, such as `[askai: notebook ...]` or the
@@ -723,9 +724,9 @@ several files added by one commit. `list` reflects the current tree;
 - `notebook` selects a notebook for `list`, `history`, `read`, `diff`, `copy` or
   `attach`; `own` is the default. A participant's name selects that
   participant's notebook of the caller's identity and side, and a selector
-  any notebook. `add`, `replace` and `restore` write only to the
-  caller's own branch. Clients retain `other` as an alias for the opposite
-  side of the same participant and caller identity.
+  any notebook. Writes go only to the caller's own branch. Clients retain
+  `other` as an alias for the opposite side of the same participant and
+  caller identity.
 - `list` shows each current file once, with its byte count and blob ID.
   `history` lists changes oldest first, with full commit IDs, times, the
   lines added and removed, such as `(+3 -1)`, or `(binary)` for a change
@@ -801,9 +802,9 @@ transcripts go to a separate repository, by default
 that location.
 
 A client keeps a file that the user gave it, such as an attachment, with an
-`add` that has `content` instead of `text`. The client's program, not its
-model, fills `content` in with the file, by the extension
-`io.modelcontextprotocol/files` of MCP, an experimental draft:
+`add`, `append` or `replace` that has `content` instead of `text`. The
+client's program, not its model, fills `content` in with the file, by the
+extension `io.modelcontextprotocol/files` of MCP, an experimental draft:
 
 - `askai` marks the argument `content` of the client's `notes` with
   `x-mcp-file`, and advertises the extension in `server/discover` with

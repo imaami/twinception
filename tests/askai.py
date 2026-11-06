@@ -10296,8 +10296,8 @@ def check_notes(binary, up):
                     ({"file": "found.md", "as": "copies/f.md"},
                      f'Copy "copies/f.md" {source}:found.md (6 bytes)'),
                     ({"file": "img/raw.bin"}, f'Copy "img/raw.bin" {source} (768 bytes)'),
-                    ({"file": "found.md"}, "!A note of that name exists. Use action "
-                     "replace to update it, or add under another name."),
+                    ({"file": "found.md"}, "!A note of that name exists. Use replace or "
+                     "append to change it, or give another name."),
                     ({"file": "none.md"}, "!" + NO_NOTE),
                     ({"file": "found.md", "as": "a//b"}, "!A note's name must be"),
                     ({"file": "../x"}, "!A note's name must be")):
@@ -10329,9 +10329,9 @@ def check_notes(binary, up):
             notes_tool = next(t for t in ai.rpc("tools/list", headers=auth(
                 "alice-1"))[2]["result"]["tools"] if t["name"] == "notes")
             assert notes_tool["inputSchema"]["properties"]["content"] == {
-                "type": "string", "format": "uri", "description": "For add and replace, instead "
-                "of text: a file that the user gave, which your client attaches as "
-                "it is. Do not write it yourself.",
+                "type": "string", "format": "uri", "description": "For add, append and "
+                "replace, instead of text: a file that the user gave, which your client "
+                "attaches as it is. Do not write it yourself.",
                 "x-mcp-file": {"maxSize": 4 << 20}}, notes_tool
             blob = bytes(range(256)) * 64 + b"\0end"
             for name, uri, size in (("in/blob.bin", "data:application/octet-stream;base64,"
@@ -10409,6 +10409,20 @@ def check_notes(binary, up):
             assert kept(said, '"plan.md"', 12) and git("rev-parse", own) == before, said
             said = call({"action": "replace", "file": "plan.md", "text": "step 3\nready"})
             assert wrote(said, 'Replace "plan.md" (12 to 12 bytes)'), said
+            # append adds text at the end of a note, on a new line.
+            before = git("rev-parse", own).decode().strip()
+            said = call({"action": "append", "file": "plan.md", "text": "step 4"})
+            assert wrote(said, 'Append "plan.md" (12 to 19 bytes)') and said.endswith(
+                f"bytes). The previous version is in commit {before}."), said
+            assert call({"action": "read", "file": "plan.md"}) == "step 3\nready\nstep 4"
+            for arguments, why in (
+                    ({"file": "missing.md", "text": "x"}, NO_NOTE),
+                    ({"file": "plan.md", "text": ""}, "The text argument"),
+                    ({"file": "plan.md", "content": "data:,"}, "The file to append must "
+                     "have at least 1 byte."),
+                    ({"file": "plan.md", "text": "x" * (4 << 20)}, "The note would have more "
+                     "than 4 MiB, so the text was not appended.")):
+                assert call({"action": "append"} | arguments).startswith("!" + why), why
             replacement = b"\0\xffnew"
             uri = "data:;base64," + base64.b64encode(replacement).decode()
             said = call({"action": "replace", "file": "legacy.c", "content": uri})
@@ -10438,6 +10452,7 @@ def check_notes(binary, up):
                 f'Copy "img/raw.bin" {source} (768 bytes)', 'Add "legacy.c" (36 bytes)',
                 'Add "in/blob.bin" (16388 bytes)', 'Add "in/text.md" (4 bytes)',
                 'Replace "plan.md" (6 to 12 bytes)', 'Replace "plan.md" (12 to 12 bytes)',
+                'Append "plan.md" (12 to 19 bytes)',
                 'Replace "legacy.c" (36 to 5 bytes)', 'Replace "legacy.c" (5 to 0 bytes)'], \
                 subjects
             assert git("cat-file", "commit", own).endswith(
@@ -10477,7 +10492,7 @@ def check_notes(binary, up):
                 writer.join(10)
             text = call({"action": "read", "file": "plan.md"})
             assert text in ("first contender", "second contender"), text
-            won = [r for r in said if wrote(r, f'Replace "plan.md" (12 to {len(text)} bytes)')]
+            won = [r for r in said if wrote(r, f'Replace "plan.md" (19 to {len(text)} bytes)')]
             assert len(said) == 2 and len(won) == 1, said
             assert any("retry" in result for result in said), said
             assert git("rev-parse", f"{own}^").decode().strip() == before
@@ -11053,16 +11068,17 @@ def check_notes_texts(binary, up):
                     described = {name: p["description"] for name, p in
                                  definition[schema]["properties"].items()}
                     assert described == {
-                        "action": "add creates a note (file) with text. replace replaces the "
-                        "whole text of a note. restore writes a note's version at the commit "
-                        "revision in a new commit, under as if given. copy copies a note (file) "
-                        "from another notebook (notebook) into yours, under as if given. list "
-                        "lists the current notes. history lists the changes, oldest first, to "
-                        "all notes or to one (file). read reads a note, or its version at the "
-                        "commit revision. diff shows the changes to a note between the commits "
-                        "from and to. notebooks lists the session's notebooks. The actions that "
-                        "read take notebook. To recover lost text: history with file, then "
-                        "diff, then read or restore with revision.",
+                        "action": "add creates a note (file) with text. append adds text to the "
+                        "end of a note, on a new line. replace replaces the whole text of a "
+                        "note. restore writes a note's version at the commit revision in a new "
+                        "commit, under as if given. copy copies a note (file) from another "
+                        "notebook (notebook) into yours, under as if given. list lists the "
+                        "current notes. history lists the changes, oldest first, to all notes "
+                        "or to one (file). read reads a note, or its version at the commit "
+                        "revision. diff shows the changes to a note between the commits from "
+                        "and to. notebooks lists the session's notebooks. The actions that read "
+                        "take notebook. To recover lost text: history with file, then diff, "
+                        "then read or restore with revision.",
                         "file": "A note's file name, at most 255 bytes, such as plan.md or "
                         "design/locks.md. Its extension shows the format of the text. With "
                         "history, only that file's changes.",
@@ -11075,9 +11091,9 @@ def check_notes_texts(binary, up):
                         "The output names both commits; give those IDs with offset.",
                         "as": "The name to write the note under, instead of file.",
                         "notebook": notebook, "offset": OFFSET_ABOUT} | ({
-                            "content": "For add and replace, instead of text: a file that "
-                            "the user gave, which your client attaches as it is. Do not "
-                            "write it yourself.",
+                            "content": "For add, append and replace, instead of text: a "
+                            "file that the user gave, which your client attaches as it is. "
+                            "Do not write it yourself.",
                             "thread": "Optional legacy ask-chain id (32 hexadecimal "
                             "digits). Notes belong to the configured shared repository, "
                             "independent of this value."} if not tail else {}), described
@@ -11126,6 +11142,9 @@ def check_notes_texts(binary, up):
                 said, _ = results([{"action": "replace", "file": "b.md", "text": "b"}])
                 assert said == [unchanged_result('"b.md"', 2, git(
                     "rev-parse", f"refs/heads/notes/{upstream}"))], said
+                said, _ = results([{"action": "append", "file": "b.md", "text": "c"}])
+                assert re.fullmatch(saved('Append "b.md" (2 to 4 bytes)'), said[0]) and \
+                    git("show", f"refs/heads/notes/{upstream}:b.md") == "b\nc", said
     finally:
         up.reply = held
     print("notes texts: the result before the first note and its offset, the "
@@ -11609,7 +11628,7 @@ def check_attach(binary, up):
                              lambda r: (200, answer("A"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
                 assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
-                    == "!The action argument must be one of: add, replace, restore, " \
+                    == "!The action argument must be one of: add, append, replace, restore, " \
                     "notebooks, list, history, read, diff, copy."
 
                 count = len(up.requests)
@@ -11619,8 +11638,9 @@ def check_attach(binary, up):
                 first, second = up.requests[count:]
                 [notes_tool] = [t for t in tools(first["body"]) if t["name"] == "notes"]
                 action = notes_tool[schema]["properties"]["action"]
-                assert action["enum"] == ["add", "replace", "restore", "notebooks", "list",
-                                           "history", "read", "diff", "copy", "attach"], action
+                assert action["enum"] == ["add", "append", "replace", "restore", "notebooks",
+                                           "list", "history", "read", "diff", "copy",
+                                           "attach"], action
                 properties = notes_tool[schema]["properties"]
                 assert all(properties[name]["type"] == "string"
                            for name in ("revision", "from", "to")), properties
@@ -12024,8 +12044,8 @@ def check_turns(binary, up):
             ai.ask("Q", thread=thread)
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
             assert re.fullmatch(saved('Add "next.md" (2 bytes)', tip()), outputs[0]), outputs
-            assert outputs[1:] == ["A note of that name exists. Use action replace to "
-                                   "update it, or add under another name.", "n\n" + provenance], \
+            assert outputs[1:] == ["A note of that name exists. Use replace or append to "
+                                   "change it, or give another name.", "n\n" + provenance], \
                 outputs
             assert not os.path.exists(f"{d}/hooked")
             assert ai.ask("Q", thread="0" * 32)["content"][0]["text"] == "A"

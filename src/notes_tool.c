@@ -54,11 +54,13 @@ enum notes_tool_fetch : uint32_t {
 	FETCH_DIFF,            /* compare two revisions of a note */
 	FETCH_STAT,            /* count the lines that a write changed */
 	FETCH_KIND = 15,       /* the mask of the kinds */
+	FETCH_APPEND = 16,     /* set for append, also with FETCH_READ to read
+	                          the note to append to */
 	FETCH_COPY = 32,       /* set with FETCH_READ for copy. The note goes to
 	                          the caller's own notebook. */
 	FETCH_ATTACH = 64,     /* set with FETCH_READ for attach. askai uploads
 	                          the note as a file for the turn. */
-	FETCH_REPLACE = 128,   /* set for replace. The note must exist. */
+	FETCH_REPLACE = 128,   /* set for a write that needs an existing note */
 	FETCH_REVISION = 256,  /* check the revisions before git reads a note */
 	FETCH_RESTORE = 512,   /* write an old revision of a note in a new
 	                          commit */
@@ -103,6 +105,7 @@ static struct {
 } const notes_tool_actions[] = {
 #define NOTE(name, flags, fetch) { CSTR_VIEW_INIT(name), flags, fetch }
 	NOTE("add",       NOTE_WRITE | NOTE_FILE,                  0),
+	NOTE("append",    NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE | FETCH_APPEND),
 	NOTE("replace",   NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE),
 	NOTE("restore",   NOTE_WRITE | NOTE_FILE | NOTE_REVISION,  FETCH_READ | FETCH_RESTORE),
 	NOTE("notebooks", NOTE_OFFSET,                             FETCH_BOOKS),
@@ -178,10 +181,10 @@ struct notes_tool_call {
 	size_t                  most;      /* the most bytes of the newest note
 	                                      that the prompt shows */
 	struct notes_revision   revision;  /* the revisions of a read, diff or
-	                                      restore, or the file of a history;
-	                                      zeroed for the other calls. tip
-	                                      is the parent of a write that
-	                                      changes a note. */
+	                                      restore, or the file of a history
+	                                      or of a write; zeroed for the
+	                                      other calls. tip is the parent of
+	                                      a write that changes a note. */
 	union {
 		UTIL_TEXT(NOTES_MESSAGE)  message;  /* the commit message of a
 		                                       write, for its result */
@@ -718,12 +721,13 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 	return true;
 }
 
-/* Handles the output of NOTES_CHECK for a write. add and copy accept only
- * a name that is neither a note nor a directory of notes. No directory in
- * the name can be a note. replace accepts only the name of an existing
- * note. A replace or a restore that leaves the bytes of the note unchanged
- * makes no commit. For a write that changes an existing note, the function
- * stores the newest commit, the parent of the write, in call->revision.tip.
+/* Handles the output of NOTES_CHECK for a write. add and copy accept only a
+ * name that is neither a note nor a directory of notes. No directory in the
+ * name can be a note. replace and append accept only the name of an
+ * existing note, and git reads the note for append. A replace or a restore
+ * that leaves the bytes of the note unchanged makes no commit. For a write
+ * that changes an existing note, the function stores the newest commit, the
+ * parent of the write, in call->revision.tip.
  */
 static void
 notes_tool_checked (struct mcp_slot *slot)
@@ -748,15 +752,21 @@ notes_tool_checked (struct mcp_slot *slot)
 	}
 	if (!r) {
 		call->revision.tip = before == NO_NOTE ? (struct oid){} : tip;
-		if (before == NO_NOTE || !notes_tool_unchanged(slot, &note, &tip)) {
+		if (fetch & FETCH_APPEND) {
+			/* git reads the note at the tip that the write builds on. */
+			struct buf in = {};
+			int e = notes_read_input(&in, tip.hex, util_text_view(&call->revision.file));
+			child_destroy(&call->child);
+			notes_tool_run(slot, FETCH_READ | FETCH_APPEND, &in, e);
+		} else if (before == NO_NOTE || !notes_tool_unchanged(slot, &note, &tip)) {
 			child_destroy(&call->child);
 			notes_tool_write(slot, &tip, before);
 		}
 		return;
 	}
 	mcp_slot_tell(slot,
-	              r == EEXIST ? CSTR_VIEW("A note of that name exists. Use action replace "
-	                                      "to update it, or add under another name.")
+	              r == EEXIST ? CSTR_VIEW("A note of that name exists. Use replace or append "
+	                                      "to change it, or give another name.")
 	              : r == ENOENT ? no_note
 	              : r == EISDIR ? CSTR_VIEW("That name is a directory of notes. Add the "
 	                                        "note under another name.")
@@ -828,7 +838,8 @@ notes_tool_added (struct mcp_slot *slot)
 	};
 	int e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
 	                       call->text);
-	if (e || !oid_len(&commit) || !oid_len(&call->revision.tip)) {
+	if (e || !oid_len(&commit) || !oid_len(&call->revision.tip) ||
+	    notes_tool_actions[call->action].fetch & FETCH_APPEND) {
 		notes_tool_saved(slot, e);
 		return;
 	}
@@ -1057,6 +1068,7 @@ notes_tool_show (struct dstr      *d,
 }
 
 static void notes_tool_got_copy (struct mcp_slot *slot, struct span text);
+static void notes_tool_got_append (struct mcp_slot *slot, struct span old);
 static void notes_tool_got_attach (struct mcp_slot *slot, struct span text,
                                    struct oid const *id);
 
@@ -1110,7 +1122,7 @@ notes_tool_got_diff (struct mcp_slot *slot)
 }
 
 /* Handles the output of git cat-file. The function answers read, or goes
- * on with copy, restore or attach.
+ * on with copy, restore, append or attach.
  */
 static void
 notes_tool_got_note (struct mcp_slot *slot)
@@ -1129,6 +1141,10 @@ notes_tool_got_note (struct mcp_slot *slot)
 	}
 	if (call->fetch & (FETCH_COPY | FETCH_RESTORE)) {
 		notes_tool_got_copy(slot, text);
+		return;
+	}
+	if (call->fetch & FETCH_APPEND) {
+		notes_tool_got_append(slot, text);
 		return;
 	}
 	if (call->fetch & FETCH_ATTACH) {
@@ -1436,9 +1452,10 @@ notes_tool_check (struct mcp_slot  *slot,
 	notes_tool_run(slot, fetch, &in, e);
 }
 
-/* Starts add or replace of the note @p name with the arguments @p args.
- * The note goes to the caller's own notebook. git creates the shared
- * repository first if it does not exist. A turn's text is cut before its
+/* Starts add, append or replace of the note @p name with the arguments
+ * @p args. For append, the file part contains the text to append. The note
+ * goes to the caller's own notebook. git creates the shared repository
+ * first if it does not exist. A turn's text is cut before its
  * trailing notices (notice_kept()), because askai adds those notices only
  * to the results of a turn's calls.
  */
@@ -1473,11 +1490,14 @@ notes_tool_add (struct mcp_slot    *slot,
 		: data.size > most
 		? util_format_view(big, sizeof big, "The file has more than %zu bytes, which "
 		                   "this server takes at most in one request.", most)
+		: !data.size && notes_tool_actions[call->action].fetch & FETCH_APPEND
+		? CSTR_VIEW("The file to append must have at least 1 byte.")
 		: (struct cstr_view){};
 	if (problem.data) {
 		mcp_slot_tell(slot, problem, TOOL_FAILED);
 		return;
 	}
+	(void)util_text_store(&call->revision.file, name);
 	if (!initialized && (notes_tool_actions[call->action].fetch & FETCH_REPLACE)) {
 		mcp_slot_tell(slot, no_note, TOOL_FAILED);
 		return;
@@ -1522,6 +1542,44 @@ notes_tool_got_copy (struct mcp_slot *slot,
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
 	child_destroy(&call->child);
 	notes_tool_check(slot, to, notes_exists(call->loop->tool->notes), e);
+}
+
+/* Writes the note @p old, which git read at call->revision.tip, and the
+ * text in call->file after it, on a new line, as the note
+ * call->revision.file in a new commit with that parent.
+ */
+static void
+notes_tool_got_append (struct mcp_slot *slot,
+                       struct span      old)
+{
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	struct span const add = { buf_peek(&call->file).ptr + call->part.data_at,
+	                          call->part.data_len };
+	size_t const lf = old.len && old.ptr[old.len - 1] != '\n';
+	if (old.len + lf + add.len > TOOL_TEXT_MAX) {
+		mcp_slot_tell(slot, CSTR_VIEW("The note would have more than 4 MiB, so the text "
+		                              "was not appended."), TOOL_FAILED);
+		return;
+	}
+	struct buf file = {};
+	struct notes_part part;
+	int e = notes_add_head(&file, util_text_view(&call->revision.file), old.len + lf + add.len,
+	                       &part);
+	if (e) {
+		buf_fini(&file);
+		notes_tool_end(slot, e, true);
+		return;
+	}
+	unsigned char *p = mempcpy(buf_peek(&file).ptr + part.data_at, old.ptr, old.len);
+	if (lf)
+		*p++ = '\n';
+	memcpy(p, add.ptr, add.len);
+	loop_work(mcp_slot_loop(slot), LOOP_COPY, old.len + add.len);
+	child_destroy(&call->child);
+	buf_fini(&call->file);
+	call->file = file;
+	call->part = part;
+	notes_tool_write(slot, &call->revision.tip, old.len);
 }
 
 /* Runs git to read the note @p name. @p fetch is the fetch of read or
@@ -1759,14 +1817,14 @@ notes_tool_schema (struct notes_tool const *tool,
 			actions = jb_push_or_free(actions, jb_string(notes_tool_actions[i].name));
 	struct json_object *props = jb_object(
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
-			"add creates a note (file) with text. replace replaces the whole text of a "
-			"note. restore writes a note's version at the commit revision in a new "
-			"commit, under as if given. copy copies a note (file) from another notebook "
-			"(notebook) into yours, under as if given. list lists the current notes. "
-			"history lists the changes, oldest first, to all notes or to one (file). "
-			"read reads a note, or its version at the commit revision. diff shows the "
-			"changes to a note between the commits from and to. notebooks lists the "
-			"session's notebooks.",
+			"add creates a note (file) with text. append adds text to the end of a "
+			"note, on a new line. replace replaces the whole text of a note. restore "
+			"writes a note's version at the commit revision in a new commit, under as "
+			"if given. copy copies a note (file) from another notebook (notebook) into "
+			"yours, under as if given. list lists the current notes. history lists the "
+			"changes, oldest first, to all notes or to one (file). read reads a note, "
+			"or its version at the commit revision. diff shows the changes to a note "
+			"between the commits from and to. notebooks lists the session's notebooks.",
 			files ? " attach gives you a whole note (file) as a file after the turn's "
 			        "results." : "",
 			" The actions that read take notebook. To recover lost text: history with "
@@ -1795,8 +1853,9 @@ notes_tool_schema (struct notes_tool const *tool,
 			"type", json_object_new_string("string"),
 			"format", json_object_new_string("uri"),
 			"description", json_object_new_string(
-				"For add and replace, instead of text: a file that the user gave, "
-				"which your client attaches as it is. Do not write it yourself."),
+				"For add, append and replace, instead of text: a file that the user "
+				"gave, which your client attaches as it is. Do not write it "
+				"yourself."),
 			"x-mcp-file", jb_object("maxSize", json_object_new_int64((int64_t)most),
 			                        nullptr),
 			nullptr));

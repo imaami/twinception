@@ -1469,7 +1469,8 @@ the opposite side of the same participant and identity.
 
 `add` creates a new file and refuses an existing name. `replace` updates
 an existing file in the caller's own notebook, adding a Git commit that
-preserves its previous contents. The message of each write's commit says
+preserves its previous contents, and `append` adds text at the end of an
+existing file, on a new line. The message of each write's commit says
 what the write did, the note's name and its size before and after, such
 as `Replace "plan.md" (1234 to 1302 bytes)`. The result names the new
 commit and repeats its message. If the write changed a note, the result also
@@ -1493,9 +1494,9 @@ source. With the APIs `generate`
 and `interactions`, the model also gets the action `attach`, which uploads a
 note to Gemini's Files API at the root of the API in the upstream's URL,
 the part before `/v1beta/`, and gives it to the model as a file. A client
-adds or replaces a file that its program attaches, of at most 4 MiB, or
-less with a small `max-body`, with the argument `content`, by the MCP extension
-`io.modelcontextprotocol/files` (section [Lending tools to the
+adds, appends or replaces a file that its program attaches, of at most
+4 MiB, or less with a small `max-body`, with the argument `content`, by the
+MCP extension `io.modelcontextprotocol/files` (section [Lending tools to the
 upstream](../README.md#lending-tools-to-the-upstream) of `README.md`). The
 directory and the directories above it must pass the rules of section
 [Permissions](#permissions).
