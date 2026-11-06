@@ -678,10 +678,10 @@ A note is a file. The model chooses its name, such as `plan.md` or
 the name shows the format of the text, which `askai` does not check.
 The tool `notes` creates a file with `add` or updates an existing file with
 `replace`, or with `append`, which adds text at its end, on a new line if
-the file does not end with a line feed. `delete` removes a file;
-`restore` with the commit before the deletion brings it back.
-Each write that changes a note adds a commit to the caller's
-branch with `git fast-import`. Its message says what the write
+the file does not end with a line feed. `delete` removes a file; `restore`
+with the commit before the deletion brings it back. Each write that changes
+a note adds a commit to the caller's branch with `git fast-import`, with
+the notebook's selector as the committer. Its message says what the write
 did, the note's name and its size before and after, such as
 `Replace "plan.md" (1234 to 1302 bytes)`; previous versions remain in
 history. The result names the new commit and repeats its message. If the

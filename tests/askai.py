@@ -10497,6 +10497,8 @@ def check_notes(binary, up):
                 subjects
             assert git("cat-file", "commit", own).endswith(
                 b'\n\nReplace "legacy.c" (5 to 0 bytes)\n')
+            # The committer is the notebook's selector.
+            assert git("log", "-1", "--format=%cn <%ce>", own) == f"{selector} <askai>\n".encode()
         # When two adds to one thread run at once, one of them fails, and its
         # answer asks to add the note again. A git that sleeps before
         # fast-import makes both adds check the same newest note.

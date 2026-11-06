@@ -364,7 +364,8 @@ notes_delete_file (struct buf        *in,
 /**
  * Writes to @p in the input of the command NOTES_ADD. The input is a
  * commit with the message @p message, one line without its line feed, and
- * with @p file, the part that notes_add_file() wrote. A file replaces any
+ * with @p file, the part that notes_add_file() wrote. The committer's name
+ * is the selector of the notebook branch @p repo. A file replaces any
  * existing note with the same name. The parent is @p tip, or a zero object
  * id of the repository format for a root commit (oid_zero()).
  * notes_add_out() reads the new commit's id from the output. Returns 0,

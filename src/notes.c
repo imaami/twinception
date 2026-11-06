@@ -836,9 +836,9 @@ notes_add_input (struct buf       *in,
 		return EINVAL;
 	/* The count of the data includes the line feed after the message.
 	 * get-mark ends the commit, and git writes the commit's id. */
-	int e = buf_printf(in, "commit %s\nmark :1\ncommitter askai <askai> now\ndata %zu\n%.*s\n"
-	                   "from %s\n", repo, message.len + 1, (int)message.len,
-	                   (char const *)message.ptr, tip->hex);
+	int e = buf_printf(in, "commit %s\nmark :1\ncommitter %s <askai> now\ndata %zu\n%.*s\n"
+	                   "from %s\n", repo, notes_selector(repo), message.len + 1,
+	                   (int)message.len, (char const *)message.ptr, tip->hex);
 	e = e ? e : buf_put(in, file.ptr, file.len, SIZE_MAX);
 	return e ? e : buf_put(in, mark, sizeof mark - 1, SIZE_MAX);
 }
