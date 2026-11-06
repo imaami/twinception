@@ -448,6 +448,25 @@ util_url_scheme (struct cstr_view url)
 	return scheme;
 }
 
+/** Returns the length of the origin of @p url, an http or https URL as
+ *  util_url_scheme() takes it: its scheme, "://" and authority, which ends
+ *  at the first '/', '?' or '#'. Returns 0 if @p url is no such URL, if
+ *  the authority is empty, or if the authority has a user name or a
+ *  password, which end in '@'.
+ */
+static inline size_t
+util_url_origin (struct cstr_view url)
+{
+	static char const stops[] = "/?#@";
+	size_t const scheme = util_url_scheme(url);
+	if (!scheme)
+		return 0;
+	size_t end = scheme;
+	while (end < url.len && !memchr(stops, url.data[end], sizeof stops - 1))
+		++end;
+	return end > scheme && (end == url.len || url.data[end] != '@') ? end : 0;
+}
+
 /** The part of @p url that a log shows after its scheme: the rest of the
  *  URL after its user name and password, if it has them. Stores the length
  *  of the scheme and its "://" in @p *scheme.

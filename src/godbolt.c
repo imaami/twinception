@@ -2839,15 +2839,12 @@ godbolt_config_url (struct godbolt_config *c,
                     struct json_object    *v)
 {
 	struct cstr_view const t = godbolt_text(v, 1, GODBOLT_URL_MAX, nullptr);
-	size_t const scheme = util_url_scheme(t);
-	if (!scheme)
+	size_t const origin = util_url_origin(t);
+	if (!origin || strpbrk(t.data, "?#"))
 		return EINVAL;
 	size_t n = t.len;
-	while (n > scheme && t.data[n - 1] == '/')
+	while (n > origin && t.data[n - 1] == '/')
 		--n;
-	size_t const host = strcspn(t.data + scheme, "/");
-	if (n == scheme || !host || memchr(t.data + scheme, '@', host) || strpbrk(t.data, "?#"))
-		return EINVAL;
 	return util_text_store(&c->url, cstr_view_slice(t, 0, n));
 }
 
