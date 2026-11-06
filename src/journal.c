@@ -53,13 +53,15 @@ struct journal_item {
 	struct journal_item   *next;
 	struct journal_record *record;
 	struct loop           *loop;
-	journal_done_cb       *done;
-	journal_load_cb       *loaded;
+	union {
+		journal_done_cb   *done;    /* of a write */
+		journal_load_cb   *loaded;  /* of a JOURNAL_LOAD */
+	};
 	void                  *arg;
 	size_t                 bytes;
-	int                    error;
 	uint64_t               offset;
 	uint32_t               turn;
+	int                    error;
 	uint8_t                operation;
 	struct hexid           id;
 };
@@ -75,6 +77,7 @@ enum {
 	JOURNAL_THOUGHT_PUT,
 	JOURNAL_THOUGHT_END,
 	JOURNAL_THOUGHT_FINISH,
+	JOURNAL_LOAD,
 };
 
 /* The names of the kinds of records, by enum journal_kind. */
@@ -912,11 +915,14 @@ journal_thought_put (struct journal            *j,
 	return e;
 }
 
+/* Commit the reasoning of the turn of @p item, whose job is @p job, or
+ * nullptr for an item without a job.
+ */
 static int
 journal_thought_commit (struct journal            *j,
-                        struct journal_item const *item)
+                        struct journal_item const *item,
+                        struct journal_job        *job)
 {
-	struct journal_job *job = journal_job_find(j, &item->id);
 	if (job && job->thought_turn == item->turn && job->thought_error)
 		return job->thought_error;
 	struct journal_file *file = nullptr;
@@ -1000,6 +1006,20 @@ journal_thought_commit (struct journal            *j,
 	return e;
 }
 
+/* Commit the reasoning of the turn of @p item, after which a final item
+ * ends its job, unless a checkpoint of the job exists.
+ */
+static int
+journal_thought_close (struct journal            *j,
+                       struct journal_item const *item)
+{
+	struct journal_job *job = journal_job_find(j, &item->id);
+	int e = journal_thought_commit(j, item, job);
+	if (!e && job && !job->bytes && item->operation == JOURNAL_THOUGHT_FINISH)
+		job->flags |= JOB_TERMINAL;
+	return e;
+}
+
 static void
 journal_item_destroy (struct journal_item **p_item)
 {
@@ -1015,11 +1035,11 @@ journal_complete (struct loop *loop,
                   struct msg  *msg)
 {
 	struct journal_item *item = container_of(msg, struct journal_item, msg);
-	if (item->loaded) {
+	if (item->operation == JOURNAL_LOAD) {
 		struct journal_record *records = item->record;
 		item->record = nullptr;
 		item->loaded(loop, item->arg, item->error, records);
-	} else if (item->done) {
+	} else {
 		item->done(loop, item->arg, item->error);
 	}
 	journal_item_destroy(&item);
@@ -1067,17 +1087,18 @@ journal_thread (void *arg)
 		/* An error concerns only its own job, and a reasoning error
 		 * only its own turn's reasoning. */
 		int e;
-		if (item->loaded)
-			e = journal_load_records(j, item);
-		else if (item->operation == JOURNAL_CONTROL_PUT)
+		switch (item->operation) {
+		case JOURNAL_CONTROL_PUT:
 			e = journal_checkpoint_write(j, item->record);
-		else if (item->operation == JOURNAL_THOUGHT_PUT)
+			break;
+		case JOURNAL_THOUGHT_PUT:
 			e = journal_thought_put(j, item);
-		else if (!(e = journal_thought_commit(j, item)) &&
-		         item->operation == JOURNAL_THOUGHT_FINISH) {
-			struct journal_job *job = journal_job_find(j, &item->id);
-			if (job && !job->bytes)
-				job->flags |= JOB_TERMINAL;
+			break;
+		case JOURNAL_LOAD:
+			e = journal_load_records(j, item);
+			break;
+		default:
+			e = journal_thought_close(j, item);
 		}
 		journal_finish(item, e);
 	}
@@ -1229,6 +1250,7 @@ journal_load_current (struct journal     *j,
 	item->loaded = done;
 	item->arg = arg;
 	item->bytes = sizeof *item;
+	item->operation = JOURNAL_LOAD;
 	item->id = *id;
 	int e = journal_enqueue(j, item);
 	if (e)
