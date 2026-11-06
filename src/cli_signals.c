@@ -11,6 +11,7 @@
 
 #include "cli_signals.h"
 #include "compat.h"
+#include "util.h"
 
 static void
 cli_signals_read (struct loop     *loop,
@@ -51,17 +52,17 @@ cli_signals_init (struct cli_signals *signals,
 	int e = pthread_sigmask(SIG_BLOCK, &mask, &signals->previous);
 	if (e)
 		return e;
-	signals->masked = true;
+	signals->flags |= CLI_SIGNALS_MASKED;
 	struct sigaction ignore = {.sa_handler = SIG_IGN};
 	if (sigemptyset(&ignore.sa_mask) || sigaction(SIGPIPE, &ignore, &signals->pipe))
 		return errno;
-	signals->ignored = true;
+	signals->flags |= CLI_SIGNALS_IGNORED;
 	int fd = signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
 	if (fd < 0)
 		return errno;
 	e = loop_watch(loop, &signals->ref, fd, EPOLLIN, cli_signals_read, nullptr);
 	if (e)
-		(void)close(fd);
+		util_close(&fd);
 	return e;
 }
 
@@ -70,10 +71,9 @@ cli_signals_fini (struct cli_signals *signals)
 {
 	if (signals->loop)
 		loop_close(signals->loop, &signals->ref);
-	if (signals->ignored)
+	if (signals->flags & CLI_SIGNALS_IGNORED)
 		(void)sigaction(SIGPIPE, &signals->pipe, nullptr);
-	if (signals->masked)
+	if (signals->flags & CLI_SIGNALS_MASKED)
 		(void)pthread_sigmask(SIG_SETMASK, &signals->previous, nullptr);
-	signals->ignored = false;
-	signals->masked = false;
+	signals->flags = 0;
 }

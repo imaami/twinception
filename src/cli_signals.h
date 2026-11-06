@@ -12,14 +12,21 @@
 struct cli_signals;
 typedef void cli_signals_cb (struct cli_signals *signals, unsigned number);
 
+/** The flags of struct cli_signals. cli_signals_fini() restores the state
+ *  of each flag that is set.
+ */
+enum {
+	CLI_SIGNALS_MASKED  = 1u << 0,  /**< the signal mask, from previous */
+	CLI_SIGNALS_IGNORED = 1u << 1,  /**< the action of SIGPIPE, from pipe */
+};
+
 struct cli_signals {
 	struct loop_ref   ref;
 	struct loop      *loop;
 	cli_signals_cb   *fn;
 	sigset_t          previous;
 	struct sigaction  pipe;
-	uint32_t          masked;
-	uint32_t          ignored;
+	uint64_t          flags;
 };
 
 /** Call before creating threads or initializing libraries that create them. */
