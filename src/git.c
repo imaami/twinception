@@ -1168,16 +1168,17 @@ git_line_hint (char const *path)
 	return false;
 }
 
-/* Destroys @p call after git has ended and its output is copied. If git
- * failed, if the output was cut, or if there was no output, the function
- * then writes a note about it after the output. Then it finishes the call.
- * Exit status 1 from grep means no matches.
+/* Destroys @p call after git has ended and its output is copied. @p takes
+ * is the takes bits of its command. If git failed, if the output was cut,
+ * or if there was no output, the function then writes a note about it
+ * after the output. Then it finishes the call. Exit status 1 from grep
+ * means no matches.
  */
 static void
 git_ended (struct mcp_slot *slot,
-           struct git_call *call)
+           struct git_call *call,
+           uint64_t         takes)
 {
-	uint64_t const takes = commands[call->command].takes;
 	struct child *c = call->child;
 	struct git const *git = mcp_slot_part(slot);
 	struct cstr_view out = mcp_slot_answer(slot);
@@ -1451,15 +1452,16 @@ git_read_lines (struct git_read *read,
  * line does not end in one, a blank line, and a note. The note contains
  * the revision and the line to read on from, or the number of the last
  * line of the file. If @p cut is true, the note instead contains the
- * number of the line after or inside which the 4 MiB capture ends. The
- * function writes no footer for an empty file. Returns 0, EAGAIN or the
- * error of mcp_slot_write().
+ * number of the line after or inside which the 4 MiB capture ends.
+ * @p newline is true if the last line ends in a newline. The function
+ * writes no footer for an empty file. Returns 0, EAGAIN or the error of
+ * mcp_slot_write().
  */
 static int
 git_read_foot (struct git_call const *call,
                struct mcp_slot       *slot,
-               struct span            blob,
-               bool                   cut)
+               bool                   cut,
+               bool                   newline)
 {
 	struct git_read const *read = &call->read;
 	if (!read->total)
@@ -1478,7 +1480,6 @@ git_read_foot (struct git_call const *call,
 		{ CSTR_VIEW("[Line "), {}, {},
 		  CSTR_VIEW(" goes on past the 4 MiB that the git tool reads.]") },
 	};
-	bool newline = blob.ptr[read->to - 1] == '\n';
 	size_t kind = read->last < read->total ? 0 : 1 + 2 * cut + !newline;
 	struct cstr_view const *note = notes[kind];
 	char n[UTIL_DECIMAL];
@@ -1493,19 +1494,19 @@ git_read_foot (struct git_call const *call,
 
 /* Pass mcp_slot_source() the numbered lines of the read in @p call, from
  * read->head to @p end in the output, for the review record. If the 4 MiB
- * cut ends inside the last line, that line is left out. total is 0
- * (unknown) when the output was cut. Return 0 or the error of
- * mcp_slot_source().
+ * cut (@p cut) ends inside the last line, which then does not end in a
+ * newline (@p newline), that line is left out. total is 0 (unknown) when
+ * the output was cut. Return 0 or the error of mcp_slot_source().
  */
 static int
-git_read_shown (struct git_read const *read,
+git_read_shown (struct git_call const *call,
                 struct mcp_slot       *slot,
-                struct git_call const *call,
-                size_t                 end)
+                size_t                 end,
+                bool                   cut,
+                bool                   newline)
 {
-	struct child const *c = call->child;
-	bool part = read->last >= read->line && c->flags & CHILD_CUT &&
-	            buf_peek(&c->out).ptr[read->to - 1] != '\n';
+	struct git_read const *read = &call->read;
+	bool const part = read->last >= read->line && cut && !newline;
 	if (read->last - part < read->line)
 		return 0;
 	struct git_revision const *rev = &call->revisions[0];
@@ -1517,7 +1518,7 @@ git_read_shown (struct git_read const *read,
 		.len    = (part ? read->mark : end) - read->head,
 		.first  = read->line,
 		.last   = read->last - part,
-		.total  = c->flags & CHILD_CUT ? 0 : read->total,
+		.total  = cut ? 0 : read->total,
 	};
 	return mcp_slot_source(slot, &src);
 }
@@ -1580,18 +1581,20 @@ git_number (struct mcp_slot *slot,
 	struct git_read *read = &call->read;
 	struct child *c = call->child;
 	struct span blob = buf_peek(&c->out);
+	bool const cut = c->flags & CHILD_CUT;
+	bool const newline = read->to && blob.ptr[read->to - 1] == '\n';
 	int e = 0;
 	if (!read->head) {
-		e = git_read_head(call, slot, c->flags & CHILD_CUT);
+		e = git_read_head(call, slot, cut);
 		read->head = mcp_slot_answer(slot).len;
 	}
 	if (!e)
 		e = git_read_lines(read, slot, blob);
 	size_t end = mcp_slot_answer(slot).len;
 	if (!e)
-		e = git_read_foot(call, slot, blob, c->flags & CHILD_CUT);
+		e = git_read_foot(call, slot, cut, newline);
 	if (!e)
-		e = git_read_shown(read, slot, call, end);
+		e = git_read_shown(call, slot, end, cut, newline);
 	if (e == EAGAIN) {
 		mcp_slot_ready(slot);
 		return;
@@ -1619,17 +1622,17 @@ git_step (struct mcp_slot *slot)
 		return;
 	}
 	struct child *c = call->child;
-	uint64_t takes = commands[call->command].takes;
+	uint64_t const takes = commands[call->command].takes;
 	/* Git's failed object lookup may disclose whether a path exists on disk. */
 	if ((takes & OBJECT) && c->code == CLD_EXITED && c->status) {
-		git_ended(slot, call);
+		git_ended(slot, call, takes);
 		return;
 	}
 	/* When the output goes past 4 MiB, git is killed. A read then writes
 	 * the lines before the cut. */
 	if (takes & LINES) {
 		if (c->flags & CHILD_LATE || (!(c->flags & CHILD_CUT) && c->code != CLD_EXITED))
-			git_ended(slot, call);
+			git_ended(slot, call, takes);
 		else if (call->phase == GIT_RUN)
 			git_scan(slot, call);
 		else
@@ -1650,7 +1653,7 @@ git_step (struct mcp_slot *slot)
 		mcp_slot_ready(slot);
 		return;
 	}
-	git_ended(slot, call);
+	git_ended(slot, call, takes);
 }
 
 /* Starts a git call in @p slot. The call runs the command in @p args, in
