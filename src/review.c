@@ -1113,28 +1113,6 @@ review_render (struct review const *r,
 	       ? 0 : ENOMEM;
 }
 
-/** Appends the names @p names[i] whose bit i is set in @p mask to @p out,
- *  separated by ", ", with @p last before the final name: "a, b or c".
- */
-static bool
-review_put_names (struct dstr            *out,
-                  struct cstr_view const *names,
-                  size_t                  n,
-                  uint32_t                mask,
-                  struct cstr_view        last)
-{
-	bool ok = true;
-	mask &= (1U << n) - 1;
-	for (size_t i = 0; ok && i < n; ++i) {
-		if (!(mask >> i & 1U))
-			continue;
-		mask &= ~(1U << i);
-		ok = !cstr_view_cat(names[i], out) &&
-		     (!mask || !cstr_view_cat(mask & (mask - 1) ? CSTR_VIEW(", ") : last, out));
-	}
-	return ok;
-}
-
 /* Appends a refusal to @p out with dstr_printf(). Evaluates to EINVAL, or
  * to ENOMEM if the append fails.
  */
@@ -1149,10 +1127,11 @@ review_refuse_names (struct dstr            *out,
                      struct cstr_view        head,
                      struct cstr_view const *names,
                      size_t                  n,
-                     uint32_t                mask,
+                     uint64_t                mask,
                      struct cstr_view        tail)
 {
-	return cstr_view_cat(head, out) || !review_put_names(out, names, n, mask, CSTR_VIEW(" or ")) ||
+	return cstr_view_cat(head, out) ||
+	       cstr_view_join(names, n, mask, CSTR_VIEW(", "), CSTR_VIEW(" or "), out) ||
 	       cstr_view_cat(tail, out) ? ENOMEM : EINVAL;
 }
 
@@ -1341,8 +1320,8 @@ review_args_parse (struct review_args  *a,
 	}
 	if (other.data)
 		return !cstr_view_cat(review_action_names[a->action], out) && PUT(out, " takes ") &&
-		       review_put_names(out, review_arg_names + 1, REVIEW_ARGS - 1, accepted >> 1,
-		                        CSTR_VIEW(" and ")) &&
+		       !cstr_view_join(review_arg_names + 1, REVIEW_ARGS - 1, accepted >> 1,
+		                       CSTR_VIEW(", "), CSTR_VIEW(" and "), out) &&
 		       dstr_printf(out, ", not %.*s.", (int)other.len, other.data) ? EINVAL : ENOMEM;
 	struct json_object *id = of[REVIEW_ARG_ID];
 	uint64_t n = 0;
@@ -1633,11 +1612,9 @@ review_check_location (struct review const          *r,
 	if (n > 1 && (in_args || requires_log)) {
 		/* List up to three paths, then "and others". */
 		size_t const shown = n < array_size(found) ? n : array_size(found) - 1;
-		bool ok = dstr_printf(out, "%.*s matches ", (int)loc->path.len, loc->path.data);
-		for (size_t i = 0; ok && i < shown; ++i)
-			ok = (!i || !cstr_view_cat(i + 1 < n ? CSTR_VIEW(", ")
-			                                     : CSTR_VIEW(" and "), out)) &&
-			     !cstr_view_cat(found[i], out);
+		bool ok = dstr_printf(out, "%.*s matches ", (int)loc->path.len, loc->path.data) &&
+		          !cstr_view_join(found, shown, UINT64_MAX, CSTR_VIEW(", "),
+		                          n == shown ? CSTR_VIEW(" and ") : CSTR_VIEW(", "), out);
 		return ok && (n == shown || PUT(out, " and others")) &&
 		       PUT(out, " in your read log; give \"location\" with the whole path.")
 		       ? EINVAL : ENOMEM;

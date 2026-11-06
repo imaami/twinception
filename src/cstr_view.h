@@ -5,6 +5,7 @@
 #define TWINCEPTION_SRC_CSTR_VIEW_H_
 
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 struct dstr;
@@ -54,6 +55,19 @@ cstr_view_cat (struct cstr_view  text,
 extern int
 cstr_view_store (struct cstr_view  text,
                  struct dstr      *dest);
+
+/**
+ * Append to @p dest the views @p names[i] whose bit i is set in @p mask, of
+ * the first @p n, with @p sep between two and @p last before the final one:
+ * "a, b or c". Returns 0, or ENOMEM with a part of the list appended.
+ */
+extern int
+cstr_view_join (struct cstr_view const *names,
+                size_t                  n,
+                uint64_t                mask,
+                struct cstr_view        sep,
+                struct cstr_view        last,
+                struct dstr            *dest);
 
 /** Compare all bytes, including embedded NULs. Empty views compare equal. */
 static inline bool

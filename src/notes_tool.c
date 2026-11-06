@@ -743,10 +743,8 @@ notes_tool_added (struct mcp_slot *slot)
 		notes_tool_actions[call->action].fetch & (FETCH_REPLACE | FETCH_RESTORE)
 		? CSTR_VIEW(". Previous versions remain in history.") : CSTR_VIEW("."),
 	};
-	int e = 0;
-	for (size_t i = 0; !e && i < array_size(p); ++i)
-		e = cstr_view_cat(p[i], call->text);
-	notes_tool_wrote(slot, e);
+	notes_tool_wrote(slot, cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""),
+	                                      CSTR_VIEW(""), call->text));
 }
 
 /* Appends the history in @p out, the output of git for NOTES_LIST, to
@@ -1215,8 +1213,8 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 			{ name.data, jb_utf8(name.data, name.len) },
 			CSTR_VIEW(":]\n\n"),
 		};
-		for (size_t i = 0; !e && i < array_size(p); ++i)
-			e = cstr_view_cat(p[i], call->text);
+		e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
+		                   call->text);
 		e = e ? e : notes_read_input(&in, call->repo, name);
 	} else if (!e && name.len) {
 		e = cstr_view_cat(CSTR_VIEW("\n[askai: the newest note could not "
@@ -1269,11 +1267,8 @@ notes_tool_newest (struct mcp_slot *slot)
 		CSTR_VIEW("\n"),
 	};
 	bool newline = body.len && body.data[body.len - 1] == '\n';
-	size_t const n = newline && !more.len ? 1 : array_size(p);
-	int e = 0;
-	for (size_t i = 0; !e && i < n; ++i)
-		e = cstr_view_cat(p[i], call->text);
-	notes_tool_then(slot, e);
+	notes_tool_then(slot, cstr_view_join(p, newline && !more.len ? 1 : array_size(p),
+	                                     UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""), call->text));
 }
 
 /* Handles the list of the notes for the start of an ask call. The list

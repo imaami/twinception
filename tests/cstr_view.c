@@ -115,7 +115,26 @@ main (void)
 	assert(!cstr_view_cat(empty, &owned) && !cstr_view_cat(CSTR_VIEW("!"), &owned));
 	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("a\0b!")));
 	assert(cstr_view_cat(text, nullptr) == ENOMEM);
+	struct cstr_view const sep = CSTR_VIEW(", "), last = CSTR_VIEW(" or ");
+	dstr_clear(&owned);
+	assert(!cstr_view_join(names, 3, UINT64_MAX, sep, last, &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("one, two or t\0o")));
+	dstr_clear(&owned);
+	assert(!cstr_view_join(names, 3, 5, sep, last, &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("one or t\0o")));
+	dstr_clear(&owned);
+	assert(!cstr_view_join(names, 2, 6, sep, last, &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("two")));
+	assert(!cstr_view_join(names, 3, 0, sep, last, &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("two")));
+	struct cstr_view many[64];
+	for (size_t i = 0; i < 64; ++i)
+		many[i] = CSTR_VIEW("x");
+	dstr_clear(&owned);
+	assert(!cstr_view_join(many, 64, UINT64_C(1) << 63 | 1, sep, last, &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("x or x")));
+	assert(cstr_view_join(names, 3, 1, sep, last, nullptr) == ENOMEM);
 	dstr_cleanup(&owned);
 	puts("cstr views: empty values, counted NULs, byte order, cases, bounded slices, trims, "
-	     "cuts, lists, lookups, stores and appends: PASS");
+	     "cuts, lists, lookups, stores, appends and joins: PASS");
 }
