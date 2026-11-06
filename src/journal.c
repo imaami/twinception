@@ -108,11 +108,10 @@ struct journal_job {
 struct journal_file {
 	uint64_t     touched;
 	uint64_t     size;
-	uint64_t     committed_size;
+	uint64_t     committed_size;  /* the size committed; 0: none */
 	uint32_t     turn;
 	int          fd;
 	struct hexid id;
-	bool         committed;
 };
 
 struct journal {
@@ -852,7 +851,6 @@ journal_thought_file (struct journal            *j,
 		return e;
 	}
 	oldest->size = (uint64_t)st.st_size;
-	oldest->committed = false;
 	oldest->committed_size = 0;
 	oldest->turn = item->turn;
 	oldest->touched = ++j->clock;
@@ -927,7 +925,7 @@ journal_thought_commit (struct journal            *j,
 	uint64_t seen = job && job->thought_turn == item->turn ? job->thought_seen : 0;
 	if (seen < file->size)
 		return item->operation == JOURNAL_THOUGHT_FINISH ? EILSEQ : 0;
-	if (file->committed && file->committed_size == file->size)
+	if (file->committed_size == file->size)
 		return 0;
 	if (fdatasync(file->fd) || lseek(file->fd, 0, SEEK_SET) < 0)
 		return errno;
@@ -953,7 +951,6 @@ journal_thought_commit (struct journal            *j,
 			e = journal_git(j, find, -1, &out, &status);
 		struct oid old;
 		if (!e && !status && !oid_init_line(&old, out) && oid_equal(&old, &blob)) {
-			file->committed = true;
 			file->committed_size = file->size;
 			return 0;
 		}
@@ -997,7 +994,6 @@ journal_thought_commit (struct journal            *j,
 		(void)journal_unlock(j);
 	int tip = journal_tip(j);
 	if (!e && !(e = tip)) {
-		file->committed = true;
 		file->committed_size = file->size;
 	}
 	return e;
