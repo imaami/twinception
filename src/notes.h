@@ -19,6 +19,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "clk.h"
 #include "cstr_view.h"
 
 struct notes;
@@ -39,18 +40,18 @@ enum {
 };
 
 /** The time from the start of git to its deadline, in nanoseconds. */
-static constexpr uint64_t NOTES_NS = 10'000'000'000;
+static constexpr uint64_t NOTES_NS = 10 * NS;
 
 /** The time from SIGTERM to SIGKILL at the deadline of a git that writes,
  *  in nanoseconds.
  */
-static constexpr uint64_t NOTES_GRACE = 1'000'000'000;
+static constexpr uint64_t NOTES_GRACE = NS;
 
 /** The age in seconds past which a lock file of a notebook has outlived
  *  every write of askai, so that its writer has died or hangs.
  */
 static constexpr int64_t NOTES_STALE = 60;
-static_assert(NOTES_NS + NOTES_GRACE < (uint64_t)NOTES_STALE * 1'000'000'000);
+static_assert(NOTES_NS + NOTES_GRACE < (uint64_t)NOTES_STALE * NS);
 
 /** The two authors within a participant and principal. */
 enum notes_side : uint8_t {

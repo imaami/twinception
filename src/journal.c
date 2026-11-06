@@ -606,9 +606,7 @@ journal_jobs_scan (struct journal *j)
 			struct journal_job *job = &j->jobs[j->n_jobs++];
 			memcpy(job->id, entry->d_name, sizeof job->id);
 			job->bytes = (uint64_t)st.st_size;
-			job->touched = st.st_mtim.tv_sec < 0 ? 0 :
-			               (uint64_t)st.st_mtim.tv_sec * 1'000'000'000 +
-			               (uint64_t)st.st_mtim.tv_nsec;
+			job->touched = st.st_mtim.tv_sec < 0 ? 0 : clk_ns(st.st_mtim);
 			for (struct journal_record *r = records; r; r = r->next) {
 				job->terminal |= journal_terminal(r->kind);
 				job->legacy |= !strcmp(r->kind, "legacy");

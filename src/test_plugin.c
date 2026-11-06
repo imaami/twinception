@@ -277,7 +277,7 @@ test_plugin_state_start (struct mcp_slot    *slot,
 		.fail = json_object_get_boolean(fail),
 	};
 	*own = w;
-	int e = loop_timer_set(loop, &w->timer, loop_now(loop) + ms * 1'000'000);
+	int e = loop_timer_set(loop, &w->timer, loop_now(loop) + ms * MS);
 	if (e)
 		mcp_slot_fail(slot, e);
 	else

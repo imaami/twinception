@@ -265,7 +265,7 @@ main (void)
 	relieved = 0;
 	CHECK(instance_table_relieve(&t, BUF_HIGH, 100) == 6 && destroyed == before);
 	CHECK(relieved == 6 && instance_table_relieve(&t, BUF_HIGH, 100) == 0);
-	l.now += 2 * BRAINSTEM_RELIEF_MS * 1'000'000ULL - 1;
+	l.now += 2 * BRAINSTEM_RELIEF_MS * MS - 1;
 	CHECK(instance_table_relieve(&t, BUF_HIGH, 100) == 0);
 	l.now += 1;
 	CHECK(instance_table_relieve(&t, BUF_HIGH, 100) == 1 && destroyed == before + 1);

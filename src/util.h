@@ -19,9 +19,6 @@
 #include "compat.h"
 #include "cstr_view.h"
 
-/** Nanoseconds in a second. */
-static constexpr uint64_t NS = 1'000'000'000;
-
 /** Write the @p n bytes at @p src to @p dst as 2 @p n lowercase hexadecimal
  *  digits, without a NUL.
  */

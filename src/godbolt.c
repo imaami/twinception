@@ -1004,7 +1004,7 @@ godbolt_later (struct godbolt *call,
                uint32_t        seconds)
 {
 	int const e = loop_timer_set(call->loop, &call->timer,
-	                             loop_now(call->loop) + seconds * UINT64_C(1'000'000'000));
+	                             loop_now(call->loop) + seconds * NS);
 	if (e == ENOMEM) {
 		mcp_slot_fail(call->slot, ENOMEM);
 		return GODBOLT_ENDED;

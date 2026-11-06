@@ -452,7 +452,7 @@ child_await (struct child_cmd const *cmd,
 		int timeout = -1;
 		if (deadline) {
 			uint64_t now = loop_clock();
-			uint64_t ms = now < deadline ? (deadline - now + 999'999) / 1'000'000 : 0;
+			uint64_t ms = now < deadline ? (deadline - now + MS - 1) / MS : 0;
 			timeout = ms < INT_MAX ? (int)ms : INT_MAX;
 		}
 		int ready = poll(&watch, 1, timeout);

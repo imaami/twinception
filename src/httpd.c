@@ -106,9 +106,9 @@ enum {
 	CHUNK_LINE     = 1 << 10,   /* longest chunk-size line, extensions included */
 	STEP_NS        = 100'000,   /* requests and accepts stop starting after
 	                               this, within the step's units of work */
-	SAMPLE_NS      = 1'000'000'000,  /* the least time over which home works
-	                                    out a client loop's utilisation: a
-	                                    request's millisecond is no load */
+	SAMPLE_NS      = NS,        /* the least time over which home works
+	                               out a client loop's utilisation: a
+	                               request's millisecond is no load */
 	FD_RESERVE     = 64,        /* descriptors kept from clients */
 	TICK_S         = 5,         /* home's door's housekeeping */
 	LINGER_S       = 2,         /* to wait for a client to close too */

@@ -282,7 +282,7 @@ askai_keep_trimmed (struct askai_keep *keep)
 	hist_add(&m->trim_ns, keep->trim_ns);
 	uint64_t bytes = brainstem_trimmed();
 	/* A relief that found little to do is routine while pressure lasts. */
-	LOG(bytes || keep->trim_ns >= 1'000'000 ? LOG_INFO : LOG_VERBOSE, "memory "
+	LOG(bytes || keep->trim_ns >= MS ? LOG_INFO : LOG_VERBOSE, "memory "
 	    "pressure relieved: %.1f MiB of buffers released, then a trim of %.1f ms",
 	    (double)bytes / (1 << 20), (double)keep->trim_ns / 1e6);
 }
@@ -357,7 +357,7 @@ askai_keep_age (struct loop       *loop,
 		httpd_home_age(keep->door);
 	if (keep->home)
 		home_age(keep->home);
-	(void)loop_timer_set(loop, timer, loop->now + BRAINSTEM_RELIEF_MS * 1'000'000ULL);
+	(void)loop_timer_set(loop, timer, loop->now + BRAINSTEM_RELIEF_MS * MS);
 }
 
 /* The loop's app, whose keep comes first. */
@@ -387,7 +387,7 @@ askai_keep_start (struct askai_keep *keep,
 	keep->phase = RELIEVED;
 	buf_stash_attach(&keep->stash);
 	return loop_timer_set(loop, &keep->age,
-	                      loop->now + BRAINSTEM_RELIEF_MS * 1'000'000ULL);
+	                      loop->now + BRAINSTEM_RELIEF_MS * MS);
 }
 
 /* Give back all that @p keep's stash keeps, and the blocks of a trim cut

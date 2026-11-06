@@ -30,6 +30,7 @@
 #include "cli_stream.h"
 #include "cli_tool.h"
 #include "cli_ui.h"
+#include "clk.h"
 #include "compat.h"
 #include "dstr.h"
 #include "jb.h"
@@ -292,7 +293,7 @@ static void
 cli_shutdown (struct cli *cli)
 {
 	if (!cli->exit_due)
-		cli->exit_due = loop_clock() + 2'000'000'000;
+		cli->exit_due = loop_clock() + 2 * NS;
 	cli->reactor.until = cli->exit_due;
 	atomic_store(&cli->cancel_io, true);
 	cli_network_cancel(cli->network, true);
@@ -1308,7 +1309,7 @@ cli_run (struct cli_options const *options,
 	if (cli->console)
 		(void)cli_console_suspend(cli->console);
 	cli_io_stop(cli->io);
-	uint64_t due = cli->exit_due ? cli->exit_due : loop_clock() + 2'000'000'000;
+	uint64_t due = cli->exit_due ? cli->exit_due : loop_clock() + 2 * NS;
 	while (!cli_io_done(cli->io))
 		cli_wait(cli, due);
 	cli_network_stop(cli->network);

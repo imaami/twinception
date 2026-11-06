@@ -52,9 +52,9 @@ static_assert((int)WORD <= (int)REVIEW_NAME_MAX, "a path that git reads fits a l
               "the review record");
 
 /** From SIGTERM to SIGKILL at a git call's deadline. */
-static constexpr uint64_t GIT_GRACE_NS = 1'000'000'000;
+static constexpr uint64_t GIT_GRACE_NS = NS;
 
-static_assert(GIT_MAX == 4 << 20 && GIT_GRACE_NS == 1'000'000'000, "git.h says");
+static_assert(GIT_MAX == 4 << 20 && GIT_GRACE_NS == NS, "git.h says");
 
 /* A configured repository. path, safe and name share one allocation, which
  * begins at path: the real path, the safe.directory setting for git, and

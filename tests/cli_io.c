@@ -5,6 +5,7 @@
 
 #include "cli_io.h"
 #include "cli_loop.h"
+#include "clk.h"
 #include "compat.h"
 #include "loop.h"
 
@@ -53,7 +54,7 @@ cli_io_test_run (void)
 		e = cli_io_submit(io, &jobs[i].job);
 		assert(e == (i == 32 ? EAGAIN : 0));
 	}
-	uint64_t deadline = loop_clock() + 5000000000;
+	uint64_t deadline = loop_clock() + 5 * NS;
 	while (completed != 32) {
 		assert(loop_clock() < deadline);
 		assert(!cli_loop_turn(&ui, deadline));

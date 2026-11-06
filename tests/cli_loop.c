@@ -13,6 +13,7 @@
 
 #include "cli_loop.h"
 #include "cli_mailbox.h"
+#include "clk.h"
 #include "compat.h"
 #include "loop.h"
 
@@ -149,7 +150,7 @@ cli_loop_test_turns (struct cli_loop_test *test)
 	assert(!cli_loop_turn(&test->loop, UINT64_MAX));
 	assert(test->turns == 3 && test->steps == 3);
 	test->loop.after_turn = nullptr;
-	uint64_t due = loop_clock() + 10000000;
+	uint64_t due = loop_clock() + 10 * MS;
 	test->loop.until = due;
 	assert(!cli_loop_turn(&test->loop, UINT64_MAX));
 	assert(loop_clock() >= due);
@@ -163,7 +164,7 @@ cli_loop_test_turns (struct cli_loop_test *test)
 		assert(!loop_watch(&test->loop.loop, &watch->ref, fd, EPOLLIN, cli_loop_test_event,
 		                   nullptr));
 	}
-	assert(!cli_loop_turn(&test->loop, loop_clock() + 1000000000));
+	assert(!cli_loop_turn(&test->loop, loop_clock() + NS));
 	assert(test->released == 4);
 }
 
@@ -205,7 +206,7 @@ cli_loop_test_threads (struct cli_loop_test *test)
 		producers[i] = (struct cli_loop_test_producer){ &test->mailbox, i };
 		assert(!pthread_create(&threads[i], nullptr, cli_loop_test_produce, &producers[i]));
 	}
-	uint64_t deadline = loop_clock() + 10000000000;
+	uint64_t deadline = loop_clock() + 10 * NS;
 	for (;;) {
 		size_t received = 0;
 		for (size_t i = 0; i < array_size(test->received); ++i)

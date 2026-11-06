@@ -504,7 +504,7 @@ web_run_finish (struct web                *web,
 	list_del(&run->live);
 	list_del(&run->held);
 	char const *method = run->key.post ? "POST" : "GET";
-	uint64_t ms = (loop_clock() - run->since) / 1'000'000;
+	uint64_t ms = (loop_clock() - run->since) / MS;
 	/* The URL without a user name and a password, which askai's own
 	 * requests can have (struct web_ask). */
 	char const *url = run->data;

@@ -167,11 +167,11 @@ enum {
  */
 static_assert((int)LEDGER_RUNNING <= (int)JOB_QUEUED, "home queues the jobs that run");
 
-static constexpr uint64_t PROGRESS_NS = 100'000'000;  /* between a call's
-                                                         notifications */
-static constexpr uint64_t TASK_NS = 1'000'000'000;  /* a call's run before it
-                                                       becomes a task, for a
-                                                       client that takes them */
+static constexpr uint64_t PROGRESS_NS = 100 * MS;  /* between a call's
+                                                      notifications */
+static constexpr uint64_t TASK_NS = NS;  /* a call's run before it becomes
+                                            a task, for a client that takes
+                                            them */
 
 /** The protocol revisions that askai supports, newest first. The clients
  *  of the first MODERN revisions send their version in _meta. The last,
@@ -2817,7 +2817,7 @@ mcp_req_submit (struct mcp_req *req)
 	uint64_t wall = req->archive_deadline ? clk_realtime_ns() : 0;
 	job->deadline = wall ? loop->now + (req->archive_deadline > wall
 	                                    ? req->archive_deadline - wall : 1)
-	              : ms > 0 ? loop->now + (uint64_t)ms * 1'000'000 : 0;
+	              : ms > 0 ? loop->now + (uint64_t)ms * MS : 0;
 	if (req->principal) {
 		job->principal = req->principal;
 		job->session = 0;
@@ -2941,7 +2941,7 @@ mcp_iso_time (char     out[static ISO_TIME],
 		return 0;
 	return util_format(out, ISO_TIME, "%04d-%02d-%02dT%02d:%02d:%02d.%03" PRIu64 "Z",
 	                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
-	                   tm.tm_min, tm.tm_sec, ns % NS / 1'000'000);
+	                   tm.tm_min, tm.tm_sec, ns % NS / MS);
 }
 
 /* The stand-in stream of a task's call takes its reply, of @p length bytes,
@@ -6130,7 +6130,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 	struct span upload = buf_peek(&req->upload);
 	uint64_t now = clk_realtime_ns();
 	req->archive_deadline = st->ep->timeout_ms > 0
-	                      ? now + (uint64_t)st->ep->timeout_ms * 1'000'000 : 0;
+	                      ? now + (uint64_t)st->ep->timeout_ms * MS : 0;
 	struct json_object *state = jb_object(
 		"version", json_object_new_int(1),
 		"owner", json_object_new_uint64(mcp_req_owner(req)),
@@ -7143,7 +7143,7 @@ mcp_req_task_show (struct mcp_req     *req,
 		updated_at = task->ended;
 		uint64_t ran = task->ended > task->created ? task->ended - task->created : 0;
 		n_ttl = util_format(ttl, sizeof ttl, "%" PRIu64,
-		                    ran / 1'000'000 + LEDGER_KEEP * 1000);
+		                    ran / MS + LEDGER_KEEP * 1000);
 	}
 	char created[ISO_TIME];
 	char updated[ISO_TIME];

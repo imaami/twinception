@@ -269,7 +269,7 @@ instance_table_relieve (struct instance_table *t,
 	 * have been unused before a relief at that level destroys it. */
 	static uint64_t const keep[] = {
 		[BUF_EASY]     = UINT64_MAX,
-		[BUF_HIGH]     = 2 * BRAINSTEM_RELIEF_MS * 1'000'000ULL,
+		[BUF_HIGH]     = 2 * BRAINSTEM_RELIEF_MS * MS,
 		[BUF_CRITICAL] = 0,
 	};
 	/* The first instance on the list idle has been unused for the longest

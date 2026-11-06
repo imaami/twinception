@@ -34,8 +34,6 @@
 #include "loop.h"
 #include "util.h"
 
-static constexpr uint64_t MS = 1'000'000;
-
 /* The loops' threads start in the order of their loops' numbers: home
  * first, as the client loops post jobs and connections to it.
  */
@@ -197,8 +195,7 @@ brainstem_thread_obey (struct loop *loop,
 	}
 	if (orders & STALL) {
 		/* The test aid: hold the loop in this turn. */
-		uint64_t ms = t->bs->cfg->stall_ms;
-		struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1'000'000 };
+		struct timespec ts = clk_timespec(t->bs->cfg->stall_ms * MS);
 		while (nanosleep(&ts, &ts) && errno == EINTR)
 			;
 	}
@@ -313,10 +310,7 @@ brainstem_nap (struct brainstem *bs,
 {
 	uint64_t now = loop_clock();
 	uint64_t ns = until > now ? until - now : 0;
-	struct timespec ts = {
-		(time_t)(ns / 1'000'000'000),
-		(long)(ns % 1'000'000'000)
-	};
+	struct timespec ts = clk_timespec(ns);
 	struct pollfd fds[] = {
 		{ .fd = bs->wake_fd, .events = POLLIN },
 		{ .fd = bs->sig_fd, .events = POLLIN },

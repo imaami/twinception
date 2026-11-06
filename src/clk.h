@@ -12,10 +12,30 @@
 
 #include "compat.h"
 
+/** Nanoseconds in a second. */
+static constexpr uint64_t NS = 1'000'000'000;
+
+/** Nanoseconds in a millisecond. */
+static constexpr uint64_t MS = 1'000'000;
+
+/** The time @p ns, in nanoseconds, as a struct timespec. */
+static const_inline struct timespec
+clk_timespec (uint64_t ns)
+{
+	return (struct timespec){ (time_t)(ns / NS), (long)(ns % NS) };
+}
+
+/** The time @p t, which clk_timespec_ok() accepts, in nanoseconds. */
+static const_inline uint64_t
+clk_ns (struct timespec t)
+{
+	return NS * (uint64_t)t.tv_sec + (uint64_t)t.tv_nsec;
+}
+
 static const_inline bool
 clk_timespec_ok (struct timespec const t)
 {
-	return t.tv_sec >= 0 && t.tv_nsec >= 0 && t.tv_nsec <= 999999999;
+	return t.tv_sec >= 0 && t.tv_nsec >= 0 && t.tv_nsec < (long)NS;
 }
 
 /**
@@ -120,8 +140,7 @@ clk_now_or_1970 (clockid_t const id)
 static force_inline uint64_t
 clk_now_or_1970_ns (clockid_t const id)
 {
-	struct timespec t = clk_now_or_1970(id);
-	return 1000000000 * (uint64_t)t.tv_sec + (uint64_t)t.tv_nsec;
+	return clk_ns(clk_now_or_1970(id));
 }
 
 /** Boot clock time now, or 0 on error. */

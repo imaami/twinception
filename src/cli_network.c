@@ -501,9 +501,9 @@ cli_network_timer (CURLM *multi,
 	uint64_t due = UINT64_MAX;
 	if (milliseconds >= 0) {
 		uint64_t now = loop_clock();
-		uint64_t limit = (UINT64_MAX - now) / 1'000'000;
+		uint64_t limit = (UINT64_MAX - now) / MS;
 		if ((unsigned long)milliseconds < limit)
-			due = now + (uint64_t)milliseconds * 1'000'000;
+			due = now + (uint64_t)milliseconds * MS;
 	}
 	return loop_timer_set(&network->loop, &network->timer, due) ? -1 : 0;
 }

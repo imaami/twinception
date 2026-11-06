@@ -174,12 +174,12 @@ journal_test_run (char const *script,
 		.file = "sh",
 		.argv = argv,
 		.envp = envp,
-		.deadline = after_ms ? start + after_ms * 1'000'000 : 0,
-		.grace = grace_ms * 1'000'000,
+		.deadline = after_ms ? start + after_ms * MS : 0,
+		.grace = grace_ms * MS,
 	};
 	*status = -1;
 	int e = child_run(&cmd, child_fds(), status);
-	*ms = (loop_clock() - start) / 1'000'000;
+	*ms = (loop_clock() - start) / MS;
 	return e;
 }
 

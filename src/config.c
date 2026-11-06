@@ -2380,7 +2380,7 @@ config_defaults (int   argc,
 		.calls = 256,
 		.man_recheck = 600,
 		.turns = 32,
-		.git_timeout = 30'000'000'000
+		.git_timeout = 30 * NS
 	};
 }
 

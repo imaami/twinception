@@ -169,7 +169,7 @@ cli_state_lock (struct cli_state *state,
 			continue;
 		if (errno != EWOULDBLOCK)
 			return errno;
-		struct timespec delay = {.tv_nsec = 20'000'000};
+		struct timespec delay = clk_timespec(20 * MS);
 		int e = clock_nanosleep(CLOCK_MONOTONIC, 0, &delay, nullptr);
 		if (e && e != EINTR)
 			return e;

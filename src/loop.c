@@ -113,7 +113,7 @@ loop_stats_time (struct loop_stats *s,
                  uint64_t           ns)
 {
 	hist_record(&s->time[t], ns);
-	s->over[t] += ns > 1'000'000;
+	s->over[t] += ns > MS;
 	hist_record(metric, ns);
 }
 
@@ -717,10 +717,7 @@ loop_timeout (struct loop const *loop,
 		uint64_t now = loop_clock();
 		ns = due > now ? due - now : 0;
 	}
-	*ts = (struct timespec){
-		.tv_sec = (time_t)(ns / 1'000'000'000),
-		.tv_nsec = (long)(ns % 1'000'000'000)
-	};
+	*ts = clk_timespec(ns);
 	return ts;
 }
 

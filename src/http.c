@@ -47,7 +47,7 @@ struct http_socket {
 enum { START_BATCH = 2 };
 
 /* How long looked-up addresses serve new requests. */
-static constexpr uint64_t LOOKUP_TTL_NS = 60'000'000'000;
+static constexpr uint64_t LOOKUP_TTL_NS = 60 * NS;
 
 struct http_request {
 	struct list        hook;     /* on a host's waiting list, then on
@@ -359,7 +359,7 @@ http_timer_cb (CURLM *multi,
 	(void)multi;
 	struct http *http = user;
 	(void)loop_timer_set(http->loop, &http->timer, timeout_ms < 0 ? UINT64_MAX
-	                     : loop_clock() + (uint64_t)timeout_ms * 1'000'000);
+	                     : loop_clock() + (uint64_t)timeout_ms * MS);
 	return 0;
 }
 

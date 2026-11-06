@@ -571,7 +571,7 @@ home_native_cancel (struct home *home,
 		LOG(LOG_WARN, "native background cancellation unavailable: out of memory");
 		return;
 	}
-	cancel->deadline = home->loop->now + (uint64_t)CANCEL_MS * 1'000'000;
+	cancel->deadline = home->loop->now + CANCEL_MS * MS;
 	int e = http_post_json(home->http, job->cancel_url, "", 0, false,
 	                       home->ep->headers, CANCEL_MS, home_cancel_write,
 	                       home_cancel_done, cancel, &cancel->transfer);
@@ -2892,8 +2892,8 @@ home_create (struct loop         *loop,
 		.ep = ep,
 		.whom = calloc(buckets, sizeof *home->whom),
 		.mask = buckets - 1,
-		.timeout = ep->timeout_ms > 0 ? (uint64_t)ep->timeout_ms * 1'000'000 : 0,
-		.silence = ep->chunk_ms > 0 ? (uint64_t)ep->chunk_ms * 1'000'000 : 0,
+		.timeout = ep->timeout_ms > 0 ? (uint64_t)ep->timeout_ms * MS : 0,
+		.silence = ep->chunk_ms > 0 ? (uint64_t)ep->chunk_ms * MS : 0,
 		.backoff = BACKOFF_MIN,
 		.max = max,
 		/* The context size for compacting is the value of --context.
