@@ -8,14 +8,17 @@
 #include "datauri.h"
 #include "util.h"
 
-/* The value of base64 digit @p c of the standard alphabet, or -1. */
-static int
+/* The value of base64 digit @p c of the standard alphabet, or 64 if @p c
+ * is not one.
+ */
+static unsigned
 datauri_digit (unsigned char c)
 {
-	return c >= 'A' && c <= 'Z' ? c - 'A'
-	     : c >= 'a' && c <= 'z' ? c - 'a' + 26
-	     : c >= '0' && c <= '9' ? c - '0' + 52
-	     : c == '+' ? 62 : c == '/' ? 63 : -1;
+	unsigned const u = c;
+	return u - 'A' < 26 ? u - 'A'
+	     : u - 'a' < 26 ? u - 'a' + 26
+	     : u - '0' < 10 ? u - '0' + 52
+	     : u == '+' ? 62 : u == '/' ? 63 : 64;
 }
 
 /* Checks base64 data in @p d and counts its bytes: digits, then at most
@@ -34,7 +37,7 @@ datauri_parse_base64 (struct datauri *d)
 	if (n % 4 == 1 || (pad && (n + pad) % 4))
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i)
-		if (datauri_digit((unsigned char)s[i]) < 0)
+		if (datauri_digit((unsigned char)s[i]) > 63)
 			return EINVAL;
 	d->encoded.len = n;
 	d->size = n / 4 * 3 + (n % 4 ? n % 4 - 1 : 0);
@@ -82,29 +85,35 @@ datauri_init (struct datauri   *d,
 	return d->base64 ? datauri_parse_base64(d) : datauri_parse_percent(d);
 }
 
-void
-datauri_decode (struct datauri const *d,
-                unsigned char        *out)
+/* Decodes the percent-encoded data of @p d into the d->size bytes at
+ * @p out.
+ */
+static void
+datauri_decode_percent (struct datauri const *d,
+                        unsigned char        *out)
 {
-	if (!d || !out)
-		return;
+	char const *s = d->encoded.data;
+	for (size_t i = 0, len = d->encoded.len; i < len; ++out) {
+		if (s[i] != '%') {
+			*out = (unsigned char)s[i++];
+			continue;
+		}
+		*out = (unsigned char)(util_hex_digit((unsigned char)s[i + 1]) << 4 |
+		                       util_hex_digit((unsigned char)s[i + 2]));
+		i += 3;
+	}
+}
+
+/* Decodes the base64 data of @p d into the d->size bytes at @p out. */
+static void
+datauri_decode_base64 (struct datauri const *d,
+                       unsigned char        *out)
+{
 	char const *s = d->encoded.data;
 	size_t const len = d->encoded.len;
-	if (!d->base64) {
-		for (size_t i = 0; i < len; ) {
-			if (s[i] == '%') {
-				*out++ = (unsigned char)(util_hex_digit((unsigned char)s[i + 1]) << 4 |
-				                         util_hex_digit((unsigned char)s[i + 2]));
-				i += 3;
-			} else {
-				*out++ = (unsigned char)s[i++];
-			}
-		}
-		return;
-	}
 	uint32_t v = 0;
 	for (size_t i = 0; i < len; ++i) {
-		v = v << 6 | (uint32_t)datauri_digit((unsigned char)s[i]);
+		v = v << 6 | datauri_digit((unsigned char)s[i]);
 		if (i % 4 == 3) {
 			*out++ = (unsigned char)(v >> 16);
 			*out++ = (unsigned char)(v >> 8);
@@ -120,4 +129,12 @@ datauri_decode (struct datauri const *d,
 		*out++ = (unsigned char)(v >> 10);
 		*out = (unsigned char)(v >> 2);
 	}
+}
+
+void
+datauri_decode (struct datauri const *d,
+                unsigned char        *out)
+{
+	if (d && out)
+		(d->base64 ? datauri_decode_base64 : datauri_decode_percent)(d, out);
 }
