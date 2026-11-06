@@ -65,10 +65,7 @@ cli_ui_test_colors (void)
 	slave = -1;
 	assert(!close(master));
 	master = -1;
-	struct {
-		struct cstr_view text;
-		enum cli_style  style;
-	} const expected[] = {
+	struct cli_console_span const expected[] = {
 		{CSTR_VIEW("[Start thinking]\n\nfirst thought\n"), CLI_STYLE_REASONING},
 		{CSTR_VIEW("local command output\n"), CLI_STYLE_RESET},
 		{CSTR_VIEW("continued thought\n"), CLI_STYLE_REASONING},

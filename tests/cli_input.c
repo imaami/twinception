@@ -24,7 +24,7 @@ struct cli_input_driver {
 	struct cli_loop loop;
 	struct loop_ref signals;
 	struct cli_console *console;
-	int stop;
+	long stop;
 };
 
 static void cli_input_signal(struct loop *loop, struct loop_ref *ref, uint32_t events)
@@ -36,7 +36,7 @@ static void cli_input_signal(struct loop *loop, struct loop_ref *ref, uint32_t e
 		if (signal.ssi_signo == SIGWINCH)
 			cli_console_resize(driver->console);
 		else {
-			driver->stop = (int)signal.ssi_signo;
+			driver->stop = signal.ssi_signo;
 			cli_console_interrupt(driver->console, true);
 		}
 	}
@@ -104,7 +104,7 @@ static int cli_input_run(struct cli_input_driver *driver, int records, bool mult
 		int e = cli_console_read(driver->console, &text, multiline, &eof, CSTR_VIEW("test> "));
 		if (e == EINTR) {
 			dstr_auto signum = dstr(nullptr);
-			if (!dstr_printf(&signum, "%d", driver->stop))
+			if (!dstr_printf(&signum, "%ld", driver->stop))
 				return ENOMEM;
 			return cli_input_record(records, "STOP ", cstr_view_dstr(&signum));
 		}
