@@ -101,9 +101,10 @@ struct git_read {
 	size_t line;    /* the number of the first line to give, from 1 */
 	size_t count;   /* the maximum number of lines to give */
 	size_t room;    /* the bytes of the window left for numbered lines */
-	size_t at;      /* the offset of the next byte to scan, then to write */
-	size_t start;   /* the offset where the line that contains at starts */
-	size_t lines;   /* the number of lines before start */
+	/* scan.at is the offset of the next byte to scan, then to write, and
+	 * scan.start the offset where the line that contains scan.at starts. */
+	struct loop_lines scan;
+	size_t lines;   /* the number of lines before scan.start */
 	size_t total;   /* the number of lines in the file, set when the scan ends */
 	size_t from;    /* the offset of the first line to give */
 	size_t to;      /* the offset after the last line to give */
@@ -1292,52 +1293,43 @@ git_read_begin (struct git_call *call,
 	return e;
 }
 
-/* Count the line of the file that ends at @p end, with a newline if
- * @p newline is true. Take the line if it is asked for, if it follows the
- * last line taken, and if its number, a tab, its bytes and a newline fit
- * in read->room. The first line asked for is always taken.
+/* Count the line of the file that begins at @p start, has @p len bytes
+ * without its newline, and ends at read->scan.start, after its newline if
+ * it has one. Take the line if it is asked for, if it follows the last
+ * line taken, and if its number, a tab, its bytes and a newline fit in
+ * read->room. The first line asked for is always taken.
  */
 static void
 git_read_line (struct git_read *read,
-               size_t           end,
-               bool             newline)
+               size_t           start,
+               size_t           len)
 {
 	size_t n = ++read->lines;
 	if (n == read->line)
-		read->from = read->start;
+		read->from = start;
 	char digits[UTIL_DECIMAL];
 	size_t size = n == read->last + 1 && n - read->line < read->count
-	              ? git_digits(digits + sizeof digits, n, 1).len + end - read->start +
-	                !newline
+	              ? git_digits(digits + sizeof digits, n, 1).len + len + 1
 	              : SIZE_MAX;
 	if (n == read->line || size <= read->room) {
 		read->room -= size < read->room ? size : read->room;
-		read->to = end;
+		read->to = read->scan.start;
 		read->last = n;
 	}
-	read->start = end;
 }
 
-/* Count the lines of the file @p blob from read->at on, as far as the
- * LOOP_PARSE room of the step on @p loop goes.
+/* Count the lines of the file @p blob from read->scan.at on, as far as
+ * the LOOP_PARSE room of the step on @p loop goes, a last line without a
+ * newline too, also when the cut ends it.
  */
 static void
 git_read_scan (struct git_read *read,
                struct span      blob,
                struct loop     *loop)
 {
-	size_t room = loop_room(loop, LOOP_PARSE);
-	size_t end = blob.len - read->at < room ? blob.len : read->at + room;
-	loop_work(loop, LOOP_PARSE, end - read->at);
-	while (read->at < end) {
-		unsigned char const *nl = memchr(blob.ptr + read->at, '\n', end - read->at);
-		read->at = nl ? (size_t)(nl - blob.ptr) + 1 : end;
-		if (nl)
-			git_read_line(read, read->at, true);
-	}
-	/* Count a last line without a newline too, also when the cut ends it. */
-	if (read->at == blob.len && read->start < blob.len)
-		git_read_line(read, blob.len, false);
+	struct cstr_view const text = { (char const *)blob.ptr, blob.len };
+	for (struct cstr_view line; loop_lines_next(&read->scan, loop, text, &line); )
+		git_read_line(read, (size_t)(line.data - text.data), line.len);
 }
 
 /* Writes to @p why the refusal of a read whose first line is past the end
@@ -1386,10 +1378,10 @@ git_read_head (struct git_call const *call,
 	return git_write(slot, p, array_size(p));
 }
 
-/* Write the lines of the file @p blob from read->at on to @p slot, each
- * after its number and a tab, as far as the LOOP_COPY room of the step
- * goes. Each line counts LINE_COST in addition to its bytes, so that a
- * step writes a bounded number of lines. Return 0 once all lines are
+/* Write the lines of the file @p blob from read->scan.at on to @p slot,
+ * each after its number and a tab, as far as the LOOP_COPY room of the
+ * step goes. Each line counts LINE_COST in addition to its bytes, so that
+ * a step writes a bounded number of lines. Return 0 once all lines are
  * written, EAGAIN, or the error of mcp_slot_write().
  */
 static int
@@ -1401,9 +1393,9 @@ git_read_lines (struct git_read *read,
 	char digits[UTIL_DECIMAL + 1];
 	char *tab = digits + sizeof digits - 1;
 	*tab = '\t';
-	while (read->at < read->to) {
+	while (read->scan.at < read->to) {
 		size_t room = loop_room(loop, LOOP_COPY);
-		struct cstr_view num = read->at == read->start
+		struct cstr_view num = read->scan.at == read->scan.start
 		                       ? git_digits(tab, read->lines + 1, 1)
 		                       : CSTR_VIEW("");
 		/* Write a piece only if the number, LINE_COST and 4 bytes fit in
@@ -1418,25 +1410,25 @@ git_read_lines (struct git_read *read,
 			return EAGAIN;
 		if (num.len)
 			read->mark = mcp_slot_answer(slot).len;
-		size_t left = read->to - read->at;
+		size_t left = read->to - read->scan.at;
 		size_t n = left < room - fixed ? left : room - fixed;
-		unsigned char const *nl = memchr(blob.ptr + read->at, '\n', n);
+		unsigned char const *nl = memchr(blob.ptr + read->scan.at, '\n', n);
 		if (nl)
-			n = (size_t)(nl - blob.ptr) + 1 - read->at;
+			n = (size_t)(nl - blob.ptr) + 1 - read->scan.at;
 		bool ends = nl || n == left;
 		size_t taken;
 		int e = mcp_slot_write(slot, num, 0, &taken);
 		if (!e)
 			e = mcp_slot_write(slot, (struct cstr_view){ (char const *)blob.ptr +
-			                                             read->at, n },
+			                                             read->scan.at, n },
 			                   ends ? 0 : TOOL_MORE, &taken);
 		if (e)
 			return e;
-		read->at += taken;
+		read->scan.at += taken;
 		if (!ends)
 			return EAGAIN;
 		loop_work(loop, LOOP_COPY, LINE_COST);
-		read->start = read->at;
+		read->scan.start = read->scan.at;
 		++read->lines;
 	}
 	return 0;
@@ -1547,7 +1539,7 @@ git_scan (struct mcp_slot *slot,
 		}
 	}
 	git_read_scan(read, blob, c->loop);
-	if (read->start < blob.len) {
+	if (read->scan.start < blob.len) {
 		mcp_slot_ready(slot);
 		return;
 	}
@@ -1559,7 +1551,7 @@ git_scan (struct mcp_slot *slot,
 		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
 		return;
 	}
-	read->at = read->start = read->from;
+	read->scan = (struct loop_lines){ read->from, read->from };
 	read->lines = read->line - 1;
 	call->phase = GIT_NUMBER;
 	mcp_slot_ready(slot);

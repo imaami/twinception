@@ -1,5 +1,6 @@
 /** @file These unit tests check the order in which a turn of the event
- *  loop (src/loop.c) runs the steps on its ready lists. The test includes
+ *  loop (src/loop.c) runs the steps on its ready lists, and the split of a
+ *  text into lines within the work bound of a step. The test includes
  *  src/loop.c and replaces clock_gettime() with a fake clock. Only the
  *  handlers and steps of the test advance the fake clock, so the results do
  *  not depend on the speed or the load of the machine. */
@@ -187,9 +188,39 @@ test_clock_fails (void)
 	clock_fails = false;
 }
 
+/* loop_lines_next() gives the lines of a text as far as the LOOP_PARSE
+ * room of a step goes, a line only when the room reaches its end, and
+ * counts each byte that it looks at once. */
+static void
+test_lines (void)
+{
+	struct loop l = loop();
+	struct cstr_view const text = CSTR_VIEW("ab\ncd\n\nlast");
+	struct loop_lines lines = {};
+	struct cstr_view line;
+	l.work[LOOP_PARSE] = loop_bound[LOOP_PARSE] - 4;
+	CHECK(loop_lines_next(&lines, &l, text, &line) && cstr_view_equal(line, CSTR_VIEW("ab")));
+	CHECK(!loop_lines_next(&lines, &l, text, &line) && lines.at == 4 && lines.start == 3);
+	CHECK(!loop_room(&l, LOOP_PARSE));
+	l.work[LOOP_PARSE] = 0;
+	CHECK(loop_lines_next(&lines, &l, text, &line) && cstr_view_equal(line, CSTR_VIEW("cd")));
+	CHECK(loop_lines_next(&lines, &l, text, &line) && !line.len);
+	CHECK(loop_lines_next(&lines, &l, text, &line) && cstr_view_equal(line, CSTR_VIEW("last")));
+	CHECK(!loop_lines_next(&lines, &l, text, &line) && lines.start == text.len);
+	CHECK(l.work[LOOP_PARSE] == text.len - 4);
+	/* A final line feed ends the last line, and an empty text has none. */
+	lines = (struct loop_lines){};
+	CHECK(loop_lines_next(&lines, &l, CSTR_VIEW("x\n"), &line) &&
+	      cstr_view_equal(line, CSTR_VIEW("x")));
+	CHECK(!loop_lines_next(&lines, &l, CSTR_VIEW("x\n"), &line) && lines.start == 2);
+	lines = (struct loop_lines){};
+	CHECK(!loop_lines_next(&lines, &l, (struct cstr_view){}, &line) && !lines.start);
+}
+
 int
 main (void)
 {
+	test_lines();
 	test_clock_fails();
 	test_room();
 	test_one_step();

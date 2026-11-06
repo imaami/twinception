@@ -182,8 +182,9 @@ check-handle: $Otests/handle
 	$<
 
 # check-turn runs unit tests of the order in which a turn of the event loop
-# runs its steps. The test includes src/loop.c and replaces clock_gettime()
-# in it with a fake clock.
+# runs its steps, and of the split of a text into lines within a step's
+# bound. The test includes src/loop.c and replaces clock_gettime() in it with
+# a fake clock.
 check-turn: $Otests/turn
 	$<
 

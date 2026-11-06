@@ -152,6 +152,26 @@ loop_room (struct loop const *loop,
 	return loop->work[u] < loop_bound[u] ? loop_bound[u] - loop->work[u] : 0;
 }
 
+bool
+loop_lines_next (struct loop_lines *l,
+                 struct loop       *loop,
+                 struct cstr_view   text,
+                 struct cstr_view  *line)
+{
+	uint64_t const room = loop_room(loop, LOOP_PARSE);
+	size_t const n = text.len - l->at < room ? text.len - l->at : (size_t)room;
+	char const *nl = n ? memchr(text.data + l->at, '\n', n) : nullptr;
+	size_t const end = nl ? (size_t)(nl - text.data) : l->at + n;
+	size_t const next = end + (nl != nullptr);
+	loop_work(loop, LOOP_PARSE, next - l->at);
+	l->at = next;
+	if (!nl && (end < text.len || l->start == end))
+		return false;
+	*line = (struct cstr_view){ text.data + l->start, end - l->start };
+	l->start = next;
+	return true;
+}
+
 uint64_t
 loop_clock (void)
 {

@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cstr_view.h"
 #include "hist.h"
 #include "list.h"
 #include "loop_export.h"
@@ -276,6 +277,28 @@ loop_fits (struct loop const *loop,
 	uint64_t const room = loop_room(loop, u);
 	return room >= n || ((size_t)u < array_size(loop_bound) && room == loop_bound[u]);
 }
+
+/** Where loop_lines_next() is in a text that it splits into lines, the
+ *  same text in each step. A zeroed one is at the start of the text.
+ */
+struct loop_lines {
+	size_t at;     /**< the bytes of the text looked at */
+	size_t start;  /**< where the next line begins */
+};
+
+/**
+ * Stores in @p *line the next line of @p text, without its line feed, if
+ * the LOOP_PARSE room of the step on @p loop reaches the end of the line,
+ * and counts the bytes looked at as LOOP_PARSE work. A last line without a
+ * line feed ends at the end of @p text. Returns true for a line, and false
+ * once the room or the lines have run out; all of @p text is split once
+ * l->start is text.len.
+ */
+extern bool
+loop_lines_next (struct loop_lines *l,
+                 struct loop       *loop,
+                 struct cstr_view   text,
+                 struct cstr_view  *line);
 
 /** Take @p step off its list, if it is on one. */
 extern void
