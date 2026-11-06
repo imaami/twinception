@@ -675,8 +675,8 @@ struct godbolt {
 	                                           failure of the output, after
 	                                           which the call writes
 	                                           nothing */
-	uint16_t                     found;     /* bit i is set if args.ids[i]
-	                                           is in the list */
+	uint32_t                     missing;   /* bit i is set while args.ids[i]
+	                                           is not in the list */
 	uint8_t                      drivers[GODBOLT_IDS];  /* enum
 	                                                       godbolt_driver of
 	                                                       args.ids[i] */
@@ -1180,7 +1180,7 @@ godbolt_tagged (struct cstr_view const *tags,
 /* Returns whether an element of a list matches the words of the argument
  * match and the argument ids. Each word must be in one of the @p n texts
  * of @p f. @p f[0] is the id of the element. If the call has ids, the
- * function sets the bit of the id in call->found.
+ * function clears the bit of the id in call->missing.
  */
 static bool
 godbolt_matches (struct godbolt         *call,
@@ -1196,13 +1196,11 @@ godbolt_matches (struct godbolt         *call,
 	}
 	if (!call->args.n_ids)
 		return true;
-	for (uint8_t i = 0; i < call->args.n_ids; ++i) {
-		if (cstr_view_equal(f[0], call->args.ids[i])) {
-			call->found |= (uint16_t)(1u << i);
-			return true;
-		}
-	}
-	return false;
+	size_t const i = cstr_view_index(call->args.ids, call->args.n_ids, f[0]);
+	if (i == call->args.n_ids)
+		return false;
+	call->missing &= ~(1u << i);
+	return true;
 }
 
 /* Writes @p t as a column of a row of the catalog. A tab, a newline, a
@@ -1409,22 +1407,23 @@ godbolt_tallies (struct godbolt *call,
 	return call->e;
 }
 
-/* Writes the ids of the call that are not in the list to @p d, separated by
- * ", ", and a NUL. @p d has room for GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1
- * bytes.
- */
-static void
-godbolt_absent (struct godbolt const *call,
-                char                 *d)
+/* The ids of a call that are not in the list, separated by ", ". */
+struct godbolt_absent {
+	char ids[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
+};
+
+/* Returns the ids of @p call that are not in the list. */
+static struct godbolt_absent
+godbolt_absent (struct godbolt const *call)
 {
-	char *p = d;
-	for (uint8_t i = 0; i < call->args.n_ids; ++i) {
-		if (call->found >> i & 1)
-			continue;
-		p = godbolt_cat(p, p == d ? (struct cstr_view){} : CSTR_VIEW(", "));
-		p = godbolt_cat(p, call->args.ids[i]);
+	struct godbolt_absent a;
+	char *p = a.ids;
+	for (uint32_t m = call->missing; m; m &= m - 1) {
+		p = godbolt_cat(p, p == a.ids ? (struct cstr_view){} : CSTR_VIEW(", "));
+		p = godbolt_cat(p, call->args.ids[stdc_trailing_zeros(m)]);
 	}
 	*p = '\0';
+	return a;
 }
 
 /* Ends a call of godbolt_catalog after the end of the list. If an id of
@@ -1437,13 +1436,10 @@ static enum godbolt_go
 godbolt_catalog_end (struct godbolt *call)
 {
 	bool const languages = call->args.action == GODBOLT_LANGUAGES;
-	if (call->found != (1u << call->args.n_ids) - 1) {
-		char absent[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
-		godbolt_absent(call, absent);
+	if (call->missing)
 		return godbolt_refuse(call->slot, "These ids were not selected: %s. Retry with "
-		                      "action \"%s\" and without ids or other filters.", absent,
-		                      languages ? "languages" : "compilers");
-	}
+		                      "action \"%s\" and without ids or other filters.",
+		                      godbolt_absent(call).ids, languages ? "languages" : "compilers");
 	bool const counts = call->args.action > GODBOLT_COMPILERS;
 	uint32_t const keys = counts ? (uint32_t)json_object_object_length(call->doc) : 0;
 	if (keys)
@@ -1491,17 +1487,16 @@ static int
 godbolt_driver_row (struct godbolt     *call,
                     struct json_object *element)
 {
-	struct cstr_view const id = jb_view(jb_get(element, "id"));
-	struct cstr_view const kind = jb_view(jb_get(element, "compilerType"));
-	for (uint8_t i = 0; i < call->args.n_ids; ++i) {
-		if (call->found >> i & 1 || !cstr_view_equal(id, call->args.ids[i]))
-			continue;
-		call->found |= (uint16_t)(1u << i);
+	size_t const i = cstr_view_index(call->args.ids, call->args.n_ids,
+	                                 jb_view(jb_get(element, "id")));
+	if (i < call->args.n_ids && call->missing >> i & 1) {
+		struct cstr_view const kind = jb_view(jb_get(element, "compilerType"));
+		call->missing &= ~(1u << i);
 		call->drivers[i] = cstr_view_equal(kind, CSTR_VIEW("win32-vc")) ? GODBOLT_MSVC
 		                 : cstr_view_equal(kind, CSTR_VIEW("clang-cl")) ? GODBOLT_CLANG_CL
 		                 : GODBOLT_GNU;
 	}
-	if (call->found == (1u << call->args.n_ids) - 1)
+	if (!call->missing)
 		call->list = GODBOLT_LIST_END;
 	return 0;
 }
@@ -1514,13 +1509,12 @@ godbolt_driver_row (struct godbolt     *call,
 static enum godbolt_go
 godbolt_drivers_end (struct godbolt *call)
 {
-	if (call->found != (1u << call->args.n_ids) - 1) {
-		char absent[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
-		godbolt_absent(call, absent);
+	if (call->missing) {
 		godbolt_catalog_hint(call, "");
 		return godbolt_refuse(call->slot, "These compiler ids are not in the list of "
 		                      "language %.*s: %s. %s", (int)call->args.language.len,
-		                      call->args.language.data, absent, call->why.data);
+		                      call->args.language.data, godbolt_absent(call).ids,
+		                      call->why.data);
 	}
 	call->phase = call->args.flags & GODBOLT_WITH_SHARE ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
@@ -2748,6 +2742,7 @@ godbolt_create (struct godbolt_args const *a,
 		.args = *a,
 		.tok = tok,
 		.loop = loop,
+		.missing = (1u << a->n_ids) - 1,
 		.jobs = (uint8_t)(a->n_ids * a->n_strings),
 		.tool = tool
 	};
