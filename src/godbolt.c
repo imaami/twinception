@@ -64,6 +64,11 @@
 PLUGIN_MANIFEST(.name = "godbolt", .tools = { GODBOLT_TOOLS_X(GODBOLT_NAME) });
 #undef GODBOLT_NAME
 
+/* The beginning of the state of a call, which the body of a compilation
+ * leaves out.
+ */
+#define GODBOLT_SESSIONS "{\"sessions\":["
+
 enum {
 	GODBOLT_URL_MAX      = 255,       /* bytes of the option url */
 	GODBOLT_IDS          = 16,        /* compiler ids of a call */
@@ -97,10 +102,9 @@ enum {
 	                                     is the longest URL that the CDN of
 	                                     godbolt.org passes on */
 	GODBOLT_SHORT_MAX    = 512,       /* bytes of a short link */
-	GODBOLT_SKIP         = sizeof "{\"sessions\":[" - 1,  /* bytes of the
-	                                                         body before the
-	                                                         body of a
-	                                                         compilation */
+	GODBOLT_SKIP         = sizeof GODBOLT_SESSIONS - 1,  /* bytes of the body
+	                                                      before the body of
+	                                                      a compilation */
 };
 
 /* The fields of the list of compilers that the plugin requests. Each call
@@ -516,6 +520,10 @@ static struct cstr_view const godbolt_sections[] = {
 	[GODBOLT_SEC_PP]     = CSTR_VIEW_INIT("--- pp ---\n"),
 	[GODBOLT_SEC_MACROS] = CSTR_VIEW_INIT("--- macros ---\n"),
 };
+
+/* The note after a text that Compiler Explorer cut. */
+static struct cstr_view const godbolt_cut_note =
+	CSTR_VIEW_INIT("[Compiler Explorer cut this output.]\n");
 
 /* The largest number of sections of a record. */
 enum { GODBOLT_SECTIONS = 3 };
@@ -1606,7 +1614,7 @@ godbolt_state_size (struct godbolt const *call)
 static enum godbolt_go
 godbolt_escape_source (struct godbolt *call)
 {
-	struct cstr_view const prefix = CSTR_VIEW("{\"sessions\":[{\"source\":\"");
+	struct cstr_view const prefix = CSTR_VIEW(GODBOLT_SESSIONS "{\"source\":\"");
 	if (!call->body) {
 		size_t const cap = prefix.len + 6 * call->args.source.len + GODBOLT_TAIL_MAX +
 		                   (call->args.flags & GODBOLT_WITH_SHARE ? godbolt_state_size(call)
@@ -1636,6 +1644,7 @@ godbolt_escape_source (struct godbolt *call)
 }
 
 #undef godbolt_refuse
+#undef GODBOLT_SESSIONS
 
 static_assert(TOOL_TEXT_MAX == 4U << 20, "the reason says 4 MiB");
 
@@ -2151,7 +2160,7 @@ static int
 godbolt_section_end (struct godbolt *call)
 {
 	if (call->rec.marks & GODBOLT_REC_MARKED) {
-		godbolt_put(call, CSTR_VIEW("[Compiler Explorer cut this output.]\n"));
+		godbolt_put(call, godbolt_cut_note);
 		call->rec.marks |= GODBOLT_REC_CUT;
 	}
 	call->rec.marks &= ~(GODBOLT_REC_MARKED | GODBOLT_REC_OPENED);
@@ -2319,7 +2328,7 @@ godbolt_write (struct godbolt *call)
 			return GODBOLT_GO;
 	}
 	if ((call->rec.marks & (GODBOLT_REC_TRUNCATED | GODBOLT_REC_CUT)) == GODBOLT_REC_TRUNCATED)
-		godbolt_put(call, CSTR_VIEW("[Compiler Explorer cut this output.]\n"));
+		godbolt_put(call, godbolt_cut_note);
 	if (call->e)
 		return godbolt_fail(call);
 	call->phase = GODBOLT_FREE;
