@@ -131,11 +131,10 @@ static struct cstr_view const bad_name =
 	               "and no part can be ., .., .git or git~1, in any case and also with "
 	               "spaces or dots after it.");
 
-/* The message for a write that must replace a note, if no note of the
- * name exists.
- */
+/* The message for a call that names a note that does not exist. */
 static struct cstr_view const no_note =
-	CSTR_VIEW_INIT("No note has that name. Use action add to create it.");
+	CSTR_VIEW_INIT("No note has that name. list shows the current notes, and add creates "
+	               "a note.");
 
 /* The part of the notes tool on one loop. */
 struct notes_tool_loop {
@@ -1058,7 +1057,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 	struct oid id;
 	int r = child_ok(c) ? notes_read_out(buf_peek(&c->out), &text, &id) : EIO;
 	if (r) {
-		mcp_slot_tell(slot, r == ENOENT ? CSTR_VIEW("No note has that name.")
+		mcp_slot_tell(slot, r == ENOENT ? no_note
 		                  : r == EISDIR ? CSTR_VIEW("That name is a directory of notes. "
 		                                            "list shows the notes in it.")
 		                  : notes_tool_call_unread(call), TOOL_FAILED);

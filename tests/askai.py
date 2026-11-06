@@ -806,6 +806,9 @@ def note_files(selector, contents, algorithm="sha1"):
     return "".join(rows)
 
 
+# The answer to a call that names a note that does not exist.
+NO_NOTE = "No note has that name. list shows the current notes, and add creates a note."
+
 # What the result of a turn's note write adds if askai left its notices out
 # of the end of the text.
 LEFT_OUT = (" askai left out the [askai: ...] lines at the end of the text. askai "
@@ -10153,7 +10156,7 @@ def check_notes(binary, up):
                                     said)
             assert not os.path.exists(f"{notes}/HEAD"), notebooks
             assert call({"action": "replace", "file": "missing.md", "text": "x"}) == \
-                "!No note has that name. Use action add to create it."
+                "!" + NO_NOTE
             assert not os.path.exists(f"{notes}/HEAD")
             said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
             assert wrote(said, 'Add "plan.md" (6 bytes)'), said
@@ -10218,8 +10221,7 @@ def check_notes(binary, up):
                          "offset": 7990}) == long[7990:]
             assert call({"action": "read", "file": "a", "thread": thread}) == \
                 "!That name is a directory of notes. list shows the notes in it."
-            assert call({"action": "read", "file": "b", "thread": thread}) == \
-                "!No note has that name."
+            assert call({"action": "read", "file": "b", "thread": thread}) == "!" + NO_NOTE
             assert call({"action": "read", "file": "b", "thread": thread,
                          "offset": -1}).startswith("!The offset argument")
             # Only list and read take an offset, and the answer of a call
@@ -10227,7 +10229,7 @@ def check_notes(binary, up):
             said = call({"action": "add", "file": "o.md", "text": "o", "offset": 500})
             assert wrote(said, 'Add "o.md" (1 byte)'), said
             assert call({"action": "read", "file": "b", "thread": thread,
-                         "offset": 5}) == "!No note has that name."
+                         "offset": 5}) == "!" + NO_NOTE
 
             assert "plan.md" in call({"action": "list"})
             assert call({"action": "read", "file": "plan.md"}) == "step 1"
@@ -10290,7 +10292,7 @@ def check_notes(binary, up):
                     ({"file": "img/raw.bin"}, f'Copy "img/raw.bin" {source} (768 bytes)'),
                     ({"file": "found.md"}, "!A note of that name exists. Use action "
                      "replace to update it, or add under another name."),
-                    ({"file": "none.md"}, "!No note has that name."),
+                    ({"file": "none.md"}, "!" + NO_NOTE),
                     ({"file": "found.md", "as": "a//b"}, "!A note's name must be"),
                     ({"file": "../x"}, "!A note's name must be")):
                 got = call({"action": "copy", "thread": shared} | arguments)
@@ -10380,7 +10382,7 @@ def check_notes(binary, up):
             history = call({"action": "history"})
             assert history.count("  plan.md  (") == 2, history
             before = git("rev-parse", own)
-            for name, why in (("missing.md", "No note has that name. Use action add"),
+            for name, why in (("missing.md", NO_NOTE),
                               ("a", "That name is a directory of notes"),
                               ("plan.md/x", "A directory in that name is a note")):
                 assert call({"action": "replace", "file": name, "text": "x"}).startswith(
@@ -12810,7 +12812,7 @@ def check_turns(binary, up):
             # is full.
             assert reads[3] == "That name is a directory of notes. list shows the " \
                 "notes in it." and re.fullmatch(
-                    r"No note has that name\.\n\n\[askai: your context is \d+% full, "
+                    re.escape(NO_NOTE) + r"\n\n\[askai: your context is \d+% full, "
                     r"\d+ of 6000 tokens\. Note what you need to keep, then call "
                     r"compact\.\]", reads[4]), reads[3:]
 
