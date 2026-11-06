@@ -779,44 +779,45 @@ review_pending_drop (struct review *r)
 	review_files_clear(&r->pending);
 }
 
-/** Appends the string literal @p s to @p out. Evaluates to false if out of
- *  memory.
+/** Appends the string literal @p s to @p out. Evaluates to 0, or to ENOMEM
+ *  if out of memory, as the review_put functions return.
  */
-#define PUT(out, s) (!cstr_view_cat(CSTR_VIEW(s), out))
+#define PUT(out, s) cstr_view_cat(CSTR_VIEW(s), out)
 
 /** Appends the line numbers @p first to @p last to @p out, as "first" or
  *  "first-last".
  */
-static bool
+static int
 review_put_lines (struct dstr *out,
                   uint32_t     first,
                   uint32_t     last)
 {
-	return dstr_printf(out, "%" PRIu32, first) &&
-	       (first == last || dstr_printf(out, "-%" PRIu32, last));
+	return (first == last ? dstr_printf(out, "%" PRIu32, first)
+	                      : dstr_printf(out, "%" PRIu32 "-%" PRIu32, first, last)) ? 0 : ENOMEM;
 }
 
 /** Appends the location @p path, @p first and @p last to @p out, as
  *  "path:first" or "path:first-last".
  */
-static bool
+static int
 review_put_location (struct dstr      *out,
                      struct cstr_view  path,
                      uint32_t          first,
                      uint32_t          last)
 {
-	return !cstr_view_cat(path, out) && PUT(out, ":") && review_put_lines(out, first, last);
+	return cstr_view_cat(path, out) || PUT(out, ":") || review_put_lines(out, first, last)
+	       ? ENOMEM : 0;
 }
 
 /** Appends " at " and the first REVIEW_SHORT_OID digits of @p oid to
  *  @p out.
  */
-static bool
+static int
 review_put_oid (struct dstr      *out,
                 struct oid const *oid)
 {
-	return PUT(out, " at ") &&
-	       !cstr_view_cat((struct cstr_view){ oid->hex, REVIEW_SHORT_OID }, out);
+	struct cstr_view const digits = { oid->hex, REVIEW_SHORT_OID };
+	return PUT(out, " at ") || cstr_view_cat(digits, out) ? ENOMEM : 0;
 }
 
 /**
@@ -824,18 +825,19 @@ review_put_oid (struct dstr      *out,
  * location if there is one. The location is followed by the commit at
  * which its lines were read, or by "not read".
  */
-static bool
+static int
 review_put_status (struct dstr                 *out,
                    struct review_finding const *f)
 {
 	struct review_change const *c = &f->changes[f->n - 1];
 	struct cstr_view const path = cstr_view_dstr(&f->location.path);
 	if (cstr_view_cat(review_state_names[c->state], out))
-		return false;
+		return ENOMEM;
 	if (!path.len)
-		return true;
-	return PUT(out, ", ") && review_put_location(out, path, f->location.first, f->location.last) &&
-	       (oid_len(&c->commit) ? review_put_oid(out, &c->commit) : PUT(out, ", not read"));
+		return 0;
+	return PUT(out, ", ") || review_put_location(out, path, f->location.first, f->location.last) ||
+	       (oid_len(&c->commit) ? review_put_oid(out, &c->commit) : PUT(out, ", not read"))
+	       ? ENOMEM : 0;
 }
 
 /** Returns true if the finding @p f is closed. */
@@ -864,7 +866,7 @@ enum review_section : uint8_t {
  * evidence, or a closed finding on one line. Moves @p cursor past the
  * finding, or to the next section if no finding of the section is left.
  */
-static bool
+static int
 review_put_finding (struct dstr         *out,
                     struct review const *r,
                     struct tool_cursor  *cursor)
@@ -877,45 +879,45 @@ review_put_finding (struct dstr         *out,
 		*cursor = (struct tool_cursor){
 			.section = closed ? REVIEW_SECTION_LOG : REVIEW_SECTION_CLOSED,
 		};
-		return true;
+		return 0;
 	}
 	cursor->item = k + 1;
 	struct review_finding const *f = &r->findings[k];
 	struct cstr_view const claim = cstr_view_dstr(&f->claim);
-	if (!dstr_printf(out, "%zu. ", k + 1) || !review_put_status(out, f))
-		return false;
+	if (!dstr_printf(out, "%zu. ", k + 1) || review_put_status(out, f))
+		return ENOMEM;
 	if (closed) {
 		/* The first line of the claim, cut to REVIEW_CLOSED_CLAIM bytes. */
 		struct cstr_view head = cstr_view_slice(claim, 0, REVIEW_CLOSED_CLAIM);
 		if (!cstr_view_cut(&head, '\n', &head))
 			head.len = util_clip(claim.data, claim.len, REVIEW_CLOSED_CLAIM);
-		return PUT(out, ": ") && !cstr_view_cat(head, out) &&
-		       (head.len == claim.len || PUT(out, "...")) && PUT(out, "\n");
+		return PUT(out, ": ") || cstr_view_cat(head, out) ||
+		       (head.len < claim.len && PUT(out, "...")) || PUT(out, "\n") ? ENOMEM : 0;
 	}
 	struct cstr_view evidence = {};
 	for (size_t i = f->n; i && !evidence.len; --i)
 		evidence = cstr_view_dstr(&f->changes[i - 1].evidence);
-	return PUT(out, "\n   claim: ") && !cstr_view_cat(claim, out) &&
-	       (!evidence.len || (PUT(out, "\n   evidence: ") && !cstr_view_cat(evidence, out))) &&
-	       PUT(out, "\n");
+	return PUT(out, "\n   claim: ") || cstr_view_cat(claim, out) ||
+	       (evidence.len && (PUT(out, "\n   evidence: ") || cstr_view_cat(evidence, out))) ||
+	       PUT(out, "\n") ? ENOMEM : 0;
 }
 
 /** Appends the ranges of the file @p f to @p out, separated by ", ".
  *  Adjoining ranges are written as one.
  */
-static bool
+static int
 review_put_ranges (struct dstr              *out,
                    struct review_file const *f)
 {
-	bool ok = true;
-	for (size_t k = 0; ok && k < f->n;) {
+	int e = 0;
+	for (size_t k = 0; !e && k < f->n;) {
 		uint32_t const first = f->ranges[k].first;
 		uint32_t last = f->ranges[k].last;
 		while (++k < f->n && f->ranges[k].first == (uint64_t)last + 1)
 			last = f->ranges[k].last;
-		ok = review_put_lines(out, first, last) && (k == f->n || PUT(out, ", "));
+		e = review_put_lines(out, first, last) || (k < f->n && PUT(out, ", ")) ? ENOMEM : 0;
 	}
-	return ok;
+	return e;
 }
 
 /**
@@ -923,7 +925,7 @@ review_put_ranges (struct dstr              *out,
  * ranges, and the number of lines that they cover with the line count of
  * the file.
  */
-static bool
+static int
 review_put_file (struct dstr              *out,
                  struct review_file const *f)
 {
@@ -931,16 +933,17 @@ review_put_file (struct dstr              *out,
 	for (size_t k = 0; k < f->n; ++k)
 		lines += (uint64_t)(f->ranges[k].last - f->ranges[k].first) + 1;
 	char const *const word = lines == 1 ? "line" : "lines";
-	if (!PUT(out, "  ") || cstr_view_cat(cstr_view_dstr(&f->path), out) ||
-	    !dstr_printf(out, "  %s ", word) || !review_put_ranges(out, f))
-		return false;
+	if (PUT(out, "  ") || cstr_view_cat(cstr_view_dstr(&f->path), out) ||
+	    !dstr_printf(out, "  %s ", word) || review_put_ranges(out, f))
+		return ENOMEM;
 	/* The ranges are within the file and do not overlap, so they cover
 	 * the whole file if lines is f->total. */
 	if (lines == f->total)
-		return dstr_printf(out, ": all %" PRIu64 " %s\n", lines, word);
+		return dstr_printf(out, ": all %" PRIu64 " %s\n", lines, word) ? 0 : ENOMEM;
 	if (f->total)
-		return dstr_printf(out, ": %" PRIu64 " of %" PRIu32 " lines\n", lines, f->total);
-	return dstr_printf(out, ": %" PRIu64 " of an unknown number of lines\n", lines);
+		return dstr_printf(out, ": %" PRIu64 " of %" PRIu32 " lines\n", lines, f->total)
+		       ? 0 : ENOMEM;
+	return dstr_printf(out, ": %" PRIu64 " of an unknown number of lines\n", lines) ? 0 : ENOMEM;
 }
 
 /**
@@ -948,7 +951,7 @@ review_put_file (struct dstr              *out,
  * header of the log comes before the first file, and a line with the
  * repository and the commit comes before the first file of each commit.
  */
-static bool
+static int
 review_put_logged (struct dstr         *out,
                    struct review const *r,
                    size_t               i)
@@ -956,35 +959,35 @@ review_put_logged (struct dstr         *out,
 	struct review_file const *f = &r->log.files[i];
 	bool const group = !i || !review_file_commit_equal(f, cstr_view_dstr(&f[-1].repo),
 	                                                    oid_view(&f[-1].commit));
-	return (i || PUT(out, "[askai: what you read with git read in this call:]\n")) &&
-	       (!group || (!cstr_view_cat(cstr_view_dstr(&f->repo), out) && PUT(out, " ") &&
-	                   !cstr_view_cat(oid_view(&f->commit), out) && PUT(out, "\n"))) &&
-	       review_put_file(out, f);
+	return (!i && PUT(out, "[askai: what you read with git read in this call:]\n")) ||
+	       (group && (cstr_view_cat(cstr_view_dstr(&f->repo), out) || PUT(out, " ") ||
+	                  cstr_view_cat(oid_view(&f->commit), out) || PUT(out, "\n"))) ||
+	       review_put_file(out, f) ? ENOMEM : 0;
 }
 
 /** Appends the lines of the change @p c of a history to @p out: the turn,
  *  the state and the commit, then the evidence, the old claim and the old
  *  location.
  */
-static bool
+static int
 review_put_change (struct dstr                *out,
                    struct review_change const *c)
 {
 	struct cstr_view const evidence = cstr_view_dstr(&c->evidence);
 	struct cstr_view const claim = cstr_view_dstr(&c->old_claim);
 	struct cstr_view const path = cstr_view_dstr(&c->old_location.path);
-	return dstr_printf(out, "turn %" PRIu32 ": ", c->turn) &&
-	       !cstr_view_cat(review_state_names[c->state], out) &&
-	       (!oid_len(&c->commit) || review_put_oid(out, &c->commit)) && PUT(out, "\n") &&
-	       (!evidence.len || (PUT(out, "  evidence: ") && !cstr_view_cat(evidence, out) &&
-	                          PUT(out, "\n"))) &&
-	       (!claim.len || (PUT(out, "  the claim was: ") && !cstr_view_cat(claim, out) &&
-	                       PUT(out, "\n"))) &&
-	       (!c->moved || (PUT(out, "  the location was: ") &&
-	                      (path.len ? review_put_location(out, path, c->old_location.first,
-	                                                      c->old_location.last)
-	                                : PUT(out, "none")) &&
-	                      PUT(out, "\n")));
+	return !dstr_printf(out, "turn %" PRIu32 ": ", c->turn) ||
+	       cstr_view_cat(review_state_names[c->state], out) ||
+	       (oid_len(&c->commit) && review_put_oid(out, &c->commit)) || PUT(out, "\n") ||
+	       (evidence.len && (PUT(out, "  evidence: ") || cstr_view_cat(evidence, out) ||
+	                         PUT(out, "\n"))) ||
+	       (claim.len && (PUT(out, "  the claim was: ") || cstr_view_cat(claim, out) ||
+	                      PUT(out, "\n"))) ||
+	       (c->moved && (PUT(out, "  the location was: ") ||
+	                     (path.len ? review_put_location(out, path, c->old_location.first,
+	                                                     c->old_location.last)
+	                               : PUT(out, "none")) ||
+	                     PUT(out, "\n"))) ? ENOMEM : 0;
 }
 
 /**
@@ -994,7 +997,7 @@ review_put_change (struct dstr                *out,
  * of @p r if @p id is not 0. A section without items is passed without
  * writing anything.
  */
-static bool
+static int
 review_put_item (struct dstr         *out,
                  struct review const *r,
                  size_t               id,
@@ -1013,15 +1016,15 @@ review_put_item (struct dstr         *out,
 	case REVIEW_SECTION_HEAD:
 		if (f) {
 			*cursor = (struct tool_cursor){ .section = REVIEW_SECTION_CHANGES };
-			return dstr_printf(out, "Finding %zu: ", id) && review_put_status(out, f) &&
-			       PUT(out, "\nclaim: ") &&
-			       !cstr_view_cat(cstr_view_dstr(&f->claim), out) && PUT(out, "\n");
+			return !dstr_printf(out, "Finding %zu: ", id) || review_put_status(out, f) ||
+			       PUT(out, "\nclaim: ") || cstr_view_cat(cstr_view_dstr(&f->claim), out) ||
+			       PUT(out, "\n") ? ENOMEM : 0;
 		}
 		bool const any = r && r->n_findings;
 		*cursor = (struct tool_cursor){
 			.section = any ? REVIEW_SECTION_OPEN : REVIEW_SECTION_LOG,
 		};
-		return !cstr_view_cat(heads[any], out);
+		return cstr_view_cat(heads[any], out);
 	case REVIEW_SECTION_OPEN:
 	case REVIEW_SECTION_CLOSED:
 		return review_put_finding(out, r, cursor);
@@ -1029,19 +1032,20 @@ review_put_item (struct dstr         *out,
 		if (r && cursor->item < r->log.n)
 			return review_put_logged(out, r, cursor->item++);
 		*cursor = (struct tool_cursor){ .section = REVIEW_SECTION_DROPPED };
-		return true;
+		return 0;
 	case REVIEW_SECTION_DROPPED:
 		cursor->section = REVIEW_SECTION_END;
-		return !r || !r->dropped_turn ||
-		       dstr_printf(out, "[askai: the read log is full, so what you read from turn %"
-		                   PRIu32 " on may be missing from it.]\n", r->dropped_turn);
+		return r && r->dropped_turn &&
+		       !dstr_printf(out, "[askai: the read log is full, so what you read from turn %"
+		                    PRIu32 " on may be missing from it.]\n", r->dropped_turn)
+		       ? ENOMEM : 0;
 	case REVIEW_SECTION_CHANGES:
 		if (cursor->item < f->n)
 			return review_put_change(out, &f->changes[cursor->item++]);
 		cursor->section = REVIEW_SECTION_END;
-		return true;
+		return 0;
 	default:
-		return true;
+		return 0;
 	}
 }
 
@@ -1064,7 +1068,7 @@ review_put_text (struct dstr         *out,
 	while (cursor->section != REVIEW_SECTION_END) {
 		struct tool_cursor const at = *cursor;
 		size_t const before = dstr_len(out);
-		if (!review_put_item(out, r, id, cursor))
+		if (review_put_item(out, r, id, cursor))
 			return ENOMEM;
 		/* Drop the bytes of an item that an earlier part cut and wrote. */
 		dstr_erase(out, before, at.byte);
@@ -1281,10 +1285,10 @@ review_args_parse (struct review_args  *a,
 	uint64_t seen;
 	struct cstr_view other;
 	if (jb_args(args, review_arg_names, REVIEW_ARGS, accepted, of, &seen, &other))
-		return !cstr_view_cat(review_action_names[a->action], out) && PUT(out, " takes ") &&
-		       !cstr_view_join(review_arg_names + 1, REVIEW_ARGS - 1, accepted >> 1,
-		                       CSTR_VIEW(", "), CSTR_VIEW(" and "), out) &&
-		       dstr_printf(out, ", not %.*s.", (int)other.len, other.data) ? EINVAL : ENOMEM;
+		return cstr_view_cat(review_action_names[a->action], out) || PUT(out, " takes ") ||
+		       cstr_view_join(review_arg_names + 1, REVIEW_ARGS - 1, accepted >> 1,
+		                      CSTR_VIEW(", "), CSTR_VIEW(" and "), out) ||
+		       !dstr_printf(out, ", not %.*s.", (int)other.len, other.data) ? ENOMEM : EINVAL;
 	struct json_object *id = of[REVIEW_ARG_ID];
 	uint64_t const n = jb_count(id, SIZE_MAX);
 	if (id ? !n : a->action == REVIEW_UPDATE)
@@ -1488,34 +1492,35 @@ review_refuse_unread (struct review const               *r,
 	struct cstr_view const rev = to ? (struct cstr_view){ to->commit.hex, REVIEW_SHORT_OID }
 	                           : prefix.len ? prefix : CSTR_VIEW("HEAD");
 	bool const one = loc->first == loc->last;
-	bool ok = dstr_printf(out, "%s needs the lines of its location in your read log, and %.*s",
-	                      name, len, path) &&
-	          (!prefix.len || dstr_printf(out, " at %.*s", (int)prefix.len, prefix.data)) &&
-	          dstr_printf(out, " line%s ", one ? "" : "s") &&
-	          review_put_lines(out, loc->first, loc->last);
+	bool failed = !dstr_printf(out, "%s needs the lines of its location in your read log, and "
+	                           "%.*s", name, len, path) ||
+	              (prefix.len && !dstr_printf(out, " at %.*s", (int)prefix.len, prefix.data)) ||
+	              !dstr_printf(out, " line%s ", one ? "" : "s") ||
+	              review_put_lines(out, loc->first, loc->last);
 	if (!c->best)
-		ok = ok && dstr_printf(out, " %s not in it.", one ? "is" : "are");
+		failed = failed || !dstr_printf(out, " %s not in it.", one ? "is" : "are");
 	else
-		ok = ok && dstr_printf(out, " are not all in it: it has line%s ",
-		                       c->end > loc->first ? "s" : "") &&
-		     review_put_lines(out, loc->first, c->end) &&
-		     dstr_printf(out, " of them, read at %.*s", REVIEW_SHORT_OID,
-		                 c->best->commit.hex) &&
-		     (!shorter || dstr_printf(out, ", where the file has %" PRIu32 " line%s",
-		                              c->best->total, util_s(c->best->total))) &&
-		     PUT(out, ".");
+		failed = failed || !dstr_printf(out, " are not all in it: it has line%s ",
+		                                c->end > loc->first ? "s" : "") ||
+		         review_put_lines(out, loc->first, c->end) ||
+		         !dstr_printf(out, " of them, read at %.*s", REVIEW_SHORT_OID,
+		                      c->best->commit.hex) ||
+		         (shorter && !dstr_printf(out, ", where the file has %" PRIu32 " line%s",
+		                                  c->best->total, util_s(c->best->total))) ||
+		         PUT(out, ".");
 	/* The read is logged as a new pending file after a later turn. Its
 	 * charge is estimated from the file to read, or from a file with this
 	 * path and a 1-byte repository name. */
 	size_t const charge = to ? review_file_charge(to, 1) : review_charge(2, 1 + loc->path.len);
 	if (r->size + charge > TOOL_TEXT_MAX) {
 		if (r->dropped_turn)
-			ok = ok && dstr_printf(out, " The read log has been full since turn %"
-			                       PRIu32 ",", r->dropped_turn);
+			failed = failed || !dstr_printf(out, " The read log has been full since turn %"
+			                                PRIu32 ",", r->dropped_turn);
 		else
-			ok = ok && PUT(out, " The record is full,");
-		return ok && PUT(out, " so a read of them would not be logged: cite lines that the "
-		                      "log has, or keep the finding a candidate.") ? EINVAL : ENOMEM;
+			failed = failed || PUT(out, " The record is full,");
+		return failed || PUT(out, " so a read of them would not be logged: cite lines that "
+		                          "the log has, or keep the finding a candidate.")
+		       ? ENOMEM : EINVAL;
 	}
 	static char const *const hints[] = {
 		", where the path is the file's whole path from the top of the repository", "",
@@ -1523,24 +1528,24 @@ review_refuse_unread (struct review const               *r,
 	};
 	char escaped[6 * REVIEW_NAME_MAX];
 	size_t const escaped_len = jb_escape(escaped, path, loc->path.len);
-	return ok && dstr_printf(out, " Read %s with the git tool's read command, with "
-	                         "\"revisions\": [\"%.*s:%.*s\"] and \"line\": %" PRIu32 "%s. "
-	                         "The log takes the lines of a read once you have seen them, so "
-	                         "call again in a later turn.", rest ? "the rest" : "them",
-	                         (int)rev.len, rev.data, (int)escaped_len, escaped,
-	                         rest ? c->end + 1 : loc->first,
-	                         hints[to ? 2 : resolved != 0]) ? EINVAL : ENOMEM;
+	return failed || !dstr_printf(out, " Read %s with the git tool's read command, with "
+	                              "\"revisions\": [\"%.*s:%.*s\"] and \"line\": %" PRIu32 "%s. "
+	                              "The log takes the lines of a read once you have seen them, "
+	                              "so call again in a later turn.", rest ? "the rest" : "them",
+	                              (int)rev.len, rev.data, (int)escaped_len, escaped,
+	                              rest ? c->end + 1 : loc->first,
+	                              hints[to ? 2 : resolved != 0]) ? ENOMEM : EINVAL;
 }
 
 /**
  * Checks the location @p loc of a finding in the state @p state against
  * the read log of @p r, and stores in @p *commit the commit of the logged
- * file that contains all lines of @p loc, or an empty one. A short path that resolves to
- * one logged path (review_log_resolve()) is replaced by that path. A
- * state that requires logged lines is refused for a record without
- * REVIEW_READ_LOG, without a location, or for lines that the log does not
- * contain. A short path that resolves to several logged paths is refused
- * if the arguments contain the location (@p in_args) or the state
+ * file that contains all lines of @p loc, or an empty one. A short path
+ * that resolves to one logged path (review_log_resolve()) is replaced by
+ * that path. A state that requires logged lines is refused for a record
+ * without REVIEW_READ_LOG, without a location, or for lines that the log
+ * does not contain. A short path that resolves to several logged paths is
+ * refused if the arguments contain the location (@p in_args) or the state
  * requires logged lines. Returns 0, or EINVAL with a refusal appended to
  * @p out, or ENOMEM if the append fails.
  */
@@ -1571,12 +1576,12 @@ review_check_location (struct review const          *r,
 	if (n > 1 && (in_args || requires_log)) {
 		/* List up to three paths, then "and others". */
 		size_t const shown = n < array_size(found) ? n : array_size(found) - 1;
-		bool ok = dstr_printf(out, "%.*s matches ", (int)loc->path.len, loc->path.data) &&
-		          !cstr_view_join(found, shown, UINT64_MAX, CSTR_VIEW(", "),
-		                          n == shown ? CSTR_VIEW(" and ") : CSTR_VIEW(", "), out);
-		return ok && (n == shown || PUT(out, " and others")) &&
+		return !dstr_printf(out, "%.*s matches ", (int)loc->path.len, loc->path.data) ||
+		       cstr_view_join(found, shown, UINT64_MAX, CSTR_VIEW(", "),
+		                      n == shown ? CSTR_VIEW(" and ") : CSTR_VIEW(", "), out) ||
+		       (n > shown && PUT(out, " and others")) ||
 		       PUT(out, " in your read log; give \"location\" with the whole path.")
-		       ? EINVAL : ENOMEM;
+		       ? ENOMEM : EINVAL;
 	}
 	struct review_cover const c = review_log_cover(r, loc);
 	if (c.best && c.end >= loc->last) {
@@ -1622,7 +1627,7 @@ review_check_size (struct review const *r,
  * @p trimmed is not 0, the end lists the texts whose trailing notices were
  * removed.
  */
-static bool
+static int
 review_put_tail (struct dstr                 *out,
                  struct review const         *r,
                  struct review_finding const *f,
@@ -1637,12 +1642,12 @@ review_put_tail (struct dstr                 *out,
 	struct review_change const *c = &f->changes[f->n - 1];
 	bool const unread = c->state == REVIEW_CANDIDATE && dstr_len(&f->location.path) &&
 	                    !oid_len(&c->commit) && (r->flags & REVIEW_READ_LOG);
-	return (!unread || PUT(out, " Read its lines with git read before you verify it.")) &&
-	       (!trimmed ||
-	        (PUT(out, " askai left out the [askai: ...] lines at the end of ") &&
-	         !cstr_view_cat(texts[trimmed], out) &&
+	return (unread && PUT(out, " Read its lines with git read before you verify it.")) ||
+	       (trimmed &&
+	        (PUT(out, " askai left out the [askai: ...] lines at the end of ") ||
+	         cstr_view_cat(texts[trimmed], out) ||
 	         PUT(out, ". askai adds those lines to tool results, and they are not part of the "
-	                  "finding.")));
+	                  "finding."))) ? ENOMEM : 0;
 }
 
 /** Runs the action add with the arguments @p a in turn @p turn. */
@@ -1691,9 +1696,9 @@ review_add (struct review            *r,
 	}
 	r->findings[r->n_findings++] = f;
 	r->size = size;
-	return dstr_printf(out, "Added finding %zu: ", r->n_findings) &&
-	       review_put_status(out, &f) && PUT(out, ".") &&
-	       review_put_tail(out, r, &f, a->trimmed) ? 0 : ENOMEM;
+	return !dstr_printf(out, "Added finding %zu: ", r->n_findings) ||
+	       review_put_status(out, &f) || PUT(out, ".") ||
+	       review_put_tail(out, r, &f, a->trimmed) ? ENOMEM : 0;
 }
 
 /** Runs the action update with the arguments @p a in turn @p turn. */
@@ -1774,14 +1779,12 @@ review_update (struct review            *r,
 		" Its old claim and location are in its history.",
 	};
 	bool const same = old == a->state;
-	bool ok = dstr_printf(out, "Finding %zu %s ", a->id, verbs[same]) &&
-	          review_put_status(out, f);
-	if (same)
-		ok = ok && PUT(out, "; the new evidence is in its history.");
-	else
-		ok = ok && dstr_printf(out, "; it was %s.", review_state_names[old].data);
-	return ok && dstr_printf(out, "%s", history[new_claim | moved << 1]) &&
-	       review_put_tail(out, r, f, a->trimmed) ? 0 : ENOMEM;
+	return !dstr_printf(out, "Finding %zu %s ", a->id, verbs[same]) ||
+	       review_put_status(out, f) ||
+	       (same ? PUT(out, "; the new evidence is in its history.")
+	             : !dstr_printf(out, "; it was %s.", review_state_names[old].data)) ||
+	       !dstr_printf(out, "%s", history[new_claim | moved << 1]) ||
+	       review_put_tail(out, r, f, a->trimmed) ? ENOMEM : 0;
 }
 
 #undef PUT
