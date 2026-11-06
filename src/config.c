@@ -460,7 +460,7 @@ static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
 
 /* The objects of the configuration file that contain the options, and
  * TOOLS for the options that an object of a built-in tool in the member
- * tools contains (tool_members[]).
+ * tools contains.
  */
 enum config_group : uint8_t {
 	GROUP_NONE, GROUP_UPSTREAM, GROUP_SERVICE, GROUP_TESTING, GROUP_DEBUGGING,
@@ -474,101 +474,108 @@ static char const *const group_names[] = {
 	[GROUP_DEBUGGING] = "debugging",
 };
 
-/* Each option: the object of the configuration file that contains it, NONE
- * for the two that the file cannot set; its long name; whether it takes an
- * argument; and its short form or OPT_ value.
+/* How an option takes its argument: the has_arg of getopt_long() in the
+ * bits ARG_HAS, and the bits above them.
  */
-#define CONFIG_OPTIONS(X)                                                         \
-        X(ROOT,      "participant",      required_argument, OPT_PARTICIPANT)      \
-        X(ROOT,      "transcripts",      required_argument, OPT_TRANSCRIPTS)      \
-        X(UPSTREAM,  "provider",         required_argument, 'p')                  \
-        X(UPSTREAM,  "api",              required_argument, OPT_API)              \
-        X(UPSTREAM,  "url",              required_argument, 'u')                  \
-        X(UPSTREAM,  "model",            required_argument, 'm')                  \
-        X(UPSTREAM,  "key-env",          required_argument, 'k')                  \
-        X(UPSTREAM,  "header",           required_argument, 'H')                  \
-        X(UPSTREAM,  "system",           required_argument, 's')                  \
-        X(UPSTREAM,  "temperature",      required_argument, 't')                  \
-        X(UPSTREAM,  "max-tokens",       required_argument, 'n')                  \
-        X(UPSTREAM,  "extra",            required_argument, 'x')                  \
-        X(UPSTREAM,  "background",       no_argument,       OPT_BACKGROUND)       \
-        X(UPSTREAM,  "timeout",          required_argument, 'T')                  \
-        X(UPSTREAM,  "chunk-timeout",    required_argument, OPT_CHUNK_TIMEOUT)    \
-        X(UPSTREAM,  "slots",            required_argument, OPT_SLOTS)            \
-        X(UPSTREAM,  "max-calls",        required_argument, OPT_MAX_CALLS)        \
-        X(UPSTREAM,  "upstream-tools",   no_argument,       OPT_UPSTREAM_TOOLS)   \
-        X(TOOLS,     "notes",            required_argument, OPT_NOTES)            \
-        X(UPSTREAM,  "max-turns",        required_argument, OPT_MAX_TURNS)        \
-        X(UPSTREAM,  "context",          required_argument, OPT_CONTEXT)          \
-        X(UPSTREAM,  "tool-name",        required_argument, OPT_TOOL_NAME)        \
-        X(UPSTREAM,  "tool-description", required_argument, OPT_TOOL_DESCRIPTION) \
-        X(SERVICE,   "listen",           required_argument, 'l')                  \
-        X(SERVICE,   "tls-cert",         required_argument, OPT_TLS_CERT)         \
-        X(SERVICE,   "tls-key",          required_argument, OPT_TLS_KEY)          \
-        X(SERVICE,   "tls-allow-rsa",    no_argument,       OPT_TLS_ALLOW_RSA)    \
-        X(SERVICE,   "allow-origin",     required_argument, 'o')                  \
-        X(TOOLS,     "man",              no_argument,       OPT_MAN)              \
-        X(TOOLS,     "git",              required_argument, OPT_GIT)              \
-        X(TOOLS,     "git-timeout",      required_argument, OPT_GIT_TIMEOUT)      \
-        X(TOOLS,     "client-jobs",      no_argument,       OPT_CLIENT_JOBS)      \
-        X(SERVICE,   "loops",            required_argument, OPT_LOOPS)            \
-        X(SERVICE,   "grace",            required_argument, OPT_GRACE)            \
-        X(SERVICE,   "memory-high",      required_argument, OPT_MEMORY_HIGH)      \
-        X(SERVICE,   "max-head",         required_argument, OPT_MAX_HEAD)         \
-        X(SERVICE,   "max-fields",       required_argument, OPT_MAX_FIELDS)       \
-        X(SERVICE,   "head-timeout",     required_argument, OPT_HEAD_TIMEOUT)     \
-        X(SERVICE,   "max-body",         required_argument, OPT_MAX_BODY)         \
-        X(SERVICE,   "min-body-rate",    required_argument, OPT_MIN_BODY_RATE)    \
-        X(SERVICE,   "body-grace",       required_argument, OPT_BODY_GRACE)       \
-        X(SERVICE,   "body-budget",      required_argument, OPT_BODY_BUDGET)      \
-        X(SERVICE,   "client-budget",    required_argument, OPT_CLIENT_BUDGET)    \
-        X(SERVICE,   "max-depth",        required_argument, OPT_MAX_DEPTH)        \
-        X(SERVICE,   "max-values",       required_argument, OPT_MAX_VALUES)       \
-        X(SERVICE,   "max-members",      required_argument, OPT_MAX_MEMBERS)      \
-        X(SERVICE,   "sse-keepalive",    required_argument, OPT_SSE_KEEPALIVE)    \
-        X(SERVICE,   "max-client-conns", required_argument, OPT_MAX_CLIENT_CONNS) \
-        X(SERVICE,   "idle-timeout",     required_argument, OPT_IDLE_TIMEOUT)     \
-        X(SERVICE,   "output-pause",     required_argument, OPT_OUTPUT_PAUSE)     \
-        X(SERVICE,   "max-output",       required_argument, OPT_MAX_OUTPUT)       \
-        X(SERVICE,   "send-timeout",     required_argument, OPT_SEND_TIMEOUT)     \
-        X(TESTING,   "test-man-recheck", required_argument, OPT_TEST_MAN_RECHECK) \
-        X(TESTING,   "test-stall",       required_argument, OPT_TEST_STALL)       \
-        X(TESTING,   "test-pressure",    required_argument, OPT_TEST_PRESSURE)    \
-        X(TESTING,   "test-fifo",        no_argument,       OPT_TEST_FIFO)        \
-        X(TESTING,   "test-task",        no_argument,       OPT_TEST_TASK)        \
-        X(DEBUGGING, "verbose",          no_argument,       'v')                  \
-        X(DEBUGGING, "watchdog",         required_argument, OPT_WATCHDOG)         \
-        X(NONE,      "config",           required_argument, 'c')                  \
-        X(NONE,      "help",             no_argument,       'h')
+enum config_arg : uint8_t {
+	ARG_NONE        = no_argument,
+	ARG_ONE         = required_argument,
+	ARG_HAS         = 3,
+	ARG_LIST        = 1u << 2,  /* a member of the configuration file can
+	                               list the values in an array */
+	ARG_RELOAD      = 1u << 3,  /* the option takes effect on a reload */
+	ARG_MANY        = ARG_ONE | ARG_LIST,
+	ARG_ONE_RELOAD  = ARG_ONE | ARG_RELOAD,
+	ARG_NONE_RELOAD = ARG_NONE | ARG_RELOAD,
+};
 
-#define CONFIG_OPTION(group, name, arg, val) { name, arg, nullptr, val },
+/* Each option: the object of the configuration file that contains it, NONE
+ * for the two that the file cannot set; its long name; how it takes its
+ * argument, ARG_ of enum config_arg; its short form or OPT_ value; and, in
+ * the group TOOLS, its member "TOOL.NAME" of the member tools.
+ */
+#define CONFIG_OPTIONS(X)                                                                       \
+        X(ROOT,      "participant",      ONE,         OPT_PARTICIPANT,      nullptr)            \
+        X(ROOT,      "transcripts",      ONE,         OPT_TRANSCRIPTS,      nullptr)            \
+        X(UPSTREAM,  "provider",         ONE,         'p',                  nullptr)            \
+        X(UPSTREAM,  "api",              ONE,         OPT_API,              nullptr)            \
+        X(UPSTREAM,  "url",              ONE,         'u',                  nullptr)            \
+        X(UPSTREAM,  "model",            ONE,         'm',                  nullptr)            \
+        X(UPSTREAM,  "key-env",          ONE,         'k',                  nullptr)            \
+        X(UPSTREAM,  "header",           MANY,        'H',                  nullptr)            \
+        X(UPSTREAM,  "system",           ONE,         's',                  nullptr)            \
+        X(UPSTREAM,  "temperature",      ONE,         't',                  nullptr)            \
+        X(UPSTREAM,  "max-tokens",       ONE,         'n',                  nullptr)            \
+        X(UPSTREAM,  "extra",            ONE,         'x',                  nullptr)            \
+        X(UPSTREAM,  "background",       NONE,        OPT_BACKGROUND,       nullptr)            \
+        X(UPSTREAM,  "timeout",          ONE,         'T',                  nullptr)            \
+        X(UPSTREAM,  "chunk-timeout",    ONE,         OPT_CHUNK_TIMEOUT,    nullptr)            \
+        X(UPSTREAM,  "slots",            ONE,         OPT_SLOTS,            nullptr)            \
+        X(UPSTREAM,  "max-calls",        ONE,         OPT_MAX_CALLS,        nullptr)            \
+        X(UPSTREAM,  "upstream-tools",   NONE,        OPT_UPSTREAM_TOOLS,   nullptr)            \
+        X(TOOLS,     "notes",            ONE,         OPT_NOTES,            "notes.directory")  \
+        X(UPSTREAM,  "max-turns",        ONE,         OPT_MAX_TURNS,        nullptr)            \
+        X(UPSTREAM,  "context",          ONE,         OPT_CONTEXT,          nullptr)            \
+        X(UPSTREAM,  "tool-name",        ONE,         OPT_TOOL_NAME,        nullptr)            \
+        X(UPSTREAM,  "tool-description", ONE,         OPT_TOOL_DESCRIPTION, nullptr)            \
+        X(SERVICE,   "listen",           MANY,        'l',                  nullptr)            \
+        X(SERVICE,   "tls-cert",         ONE_RELOAD,  OPT_TLS_CERT,         nullptr)            \
+        X(SERVICE,   "tls-key",          ONE_RELOAD,  OPT_TLS_KEY,          nullptr)            \
+        X(SERVICE,   "tls-allow-rsa",    NONE_RELOAD, OPT_TLS_ALLOW_RSA,    nullptr)            \
+        X(SERVICE,   "allow-origin",     MANY,        'o',                  nullptr)            \
+        X(TOOLS,     "man",              NONE,        OPT_MAN,              "man.enabled")      \
+        X(TOOLS,     "git",              MANY,        OPT_GIT,              "git.repositories") \
+        X(TOOLS,     "git-timeout",      ONE,         OPT_GIT_TIMEOUT,      "git.timeout")      \
+        X(TOOLS,     "client-jobs",      NONE,        OPT_CLIENT_JOBS,      "jobs.clients")     \
+        X(SERVICE,   "loops",            ONE,         OPT_LOOPS,            nullptr)            \
+        X(SERVICE,   "grace",            ONE,         OPT_GRACE,            nullptr)            \
+        X(SERVICE,   "memory-high",      ONE,         OPT_MEMORY_HIGH,      nullptr)            \
+        X(SERVICE,   "max-head",         ONE,         OPT_MAX_HEAD,         nullptr)            \
+        X(SERVICE,   "max-fields",       ONE,         OPT_MAX_FIELDS,       nullptr)            \
+        X(SERVICE,   "head-timeout",     ONE,         OPT_HEAD_TIMEOUT,     nullptr)            \
+        X(SERVICE,   "max-body",         ONE,         OPT_MAX_BODY,         nullptr)            \
+        X(SERVICE,   "min-body-rate",    ONE,         OPT_MIN_BODY_RATE,    nullptr)            \
+        X(SERVICE,   "body-grace",       ONE,         OPT_BODY_GRACE,       nullptr)            \
+        X(SERVICE,   "body-budget",      ONE,         OPT_BODY_BUDGET,      nullptr)            \
+        X(SERVICE,   "client-budget",    ONE,         OPT_CLIENT_BUDGET,    nullptr)            \
+        X(SERVICE,   "max-depth",        ONE,         OPT_MAX_DEPTH,        nullptr)            \
+        X(SERVICE,   "max-values",       ONE,         OPT_MAX_VALUES,       nullptr)            \
+        X(SERVICE,   "max-members",      ONE,         OPT_MAX_MEMBERS,      nullptr)            \
+        X(SERVICE,   "sse-keepalive",    ONE,         OPT_SSE_KEEPALIVE,    nullptr)            \
+        X(SERVICE,   "max-client-conns", ONE,         OPT_MAX_CLIENT_CONNS, nullptr)            \
+        X(SERVICE,   "idle-timeout",     ONE,         OPT_IDLE_TIMEOUT,     nullptr)            \
+        X(SERVICE,   "output-pause",     ONE,         OPT_OUTPUT_PAUSE,     nullptr)            \
+        X(SERVICE,   "max-output",       ONE,         OPT_MAX_OUTPUT,       nullptr)            \
+        X(SERVICE,   "send-timeout",     ONE,         OPT_SEND_TIMEOUT,     nullptr)            \
+        X(TESTING,   "test-man-recheck", ONE,         OPT_TEST_MAN_RECHECK, nullptr)            \
+        X(TESTING,   "test-stall",       ONE,         OPT_TEST_STALL,       nullptr)            \
+        X(TESTING,   "test-pressure",    ONE,         OPT_TEST_PRESSURE,    nullptr)            \
+        X(TESTING,   "test-fifo",        NONE,        OPT_TEST_FIFO,        nullptr)            \
+        X(TESTING,   "test-task",        NONE,        OPT_TEST_TASK,        nullptr)            \
+        X(DEBUGGING, "verbose",          NONE,        'v',                  nullptr)            \
+        X(DEBUGGING, "watchdog",         ONE,         OPT_WATCHDOG,         nullptr)            \
+        X(NONE,      "config",           ONE,         'c',                  nullptr)            \
+        X(NONE,      "help",             NONE,        'h',                  nullptr)
+
+#define CONFIG_OPTION(group, name, arg, val, member) { name, ARG_##arg & ARG_HAS, nullptr, val },
 static struct option const options[] = {
 	CONFIG_OPTIONS(CONFIG_OPTION)
 	{ nullptr, 0, nullptr, 0 }
 };
 #undef CONFIG_OPTION
 
-/* The object that contains each option of options[]. */
-#define CONFIG_GROUP(group, name, arg, val) GROUP_##group,
-static enum config_group const groups[] = { CONFIG_OPTIONS(CONFIG_GROUP) };
-#undef CONFIG_GROUP
-#undef CONFIG_OPTIONS
-
-/* The member of the configuration file that sets each option of the group
- * TOOLS: the object of its built-in tool in the member tools, and its name
- * in that object.
+/* The place in the configuration file of each option of options[], and
+ * how the option takes its argument.
  */
+#define CONFIG_PLACE(group, name, arg, val, member) { member, GROUP_##group, ARG_##arg },
 static struct {
-	char const *tool;
-	char const *name;
-	int         val;
-} const tool_members[] = {
-	{ "man",   "enabled",      OPT_MAN },
-	{ "git",   "repositories", OPT_GIT },
-	{ "git",   "timeout",      OPT_GIT_TIMEOUT },
-	{ "notes", "directory",    OPT_NOTES },
-	{ "jobs",  "clients",      OPT_CLIENT_JOBS },
-};
+	char const *member;  /* "TOOL.NAME" of the member tools, in the group
+	                        TOOLS */
+	uint32_t    group;   /* enum config_group */
+	uint32_t    arg;     /* enum config_arg */
+} const places[] = { CONFIG_OPTIONS(CONFIG_PLACE) };
+#undef CONFIG_PLACE
+#undef CONFIG_OPTIONS
 
 /* Bytes of a configuration file, at most. */
 enum { FILE_MAX = 1 << 20 };
@@ -1020,9 +1027,7 @@ config_apply_member (struct config       *cfg,
                      struct option const *o,
                      struct json_object  *val)
 {
-	bool many = o->val == 'H' || o->val == 'o' || o->val == 'l' ||
-	            o->val == OPT_GIT;
-	if (!many || !json_object_is_type(val, json_type_array))
+	if (!(places[o - options].arg & ARG_LIST) || !json_object_is_type(val, json_type_array))
 		return config_apply_value(cfg, o, val);
 	size_t n = json_object_array_length(val);
 	for (size_t i = 0; i < n; ++i) {
@@ -1181,15 +1186,6 @@ config_json (struct config *cfg,
 	return 0;
 }
 
-/* Whether option @p name takes effect on a reload: TLS's certificate, key
- * and key types.
- */
-static bool
-config_reloadable (char const *name)
-{
-	return !strncmp(name, "tls-", sizeof "tls-" - 1);
-}
-
 /* The value of option @p o, which the file can set, in @p cfg's
  * configuration file, if it has one; nullptr if none.
  */
@@ -1197,7 +1193,7 @@ static struct json_object *
 config_file_value (struct config const *cfg,
                    struct option const *o)
 {
-	enum config_group g = groups[o - options];
+	enum config_group const g = places[o - options].group;
 	struct json_object *group = g == GROUP_ROOT ? cfg->file
 	                           : json_object_object_get(cfg->file, group_names[g]);
 	return json_object_object_get(group, o->name);
@@ -1213,10 +1209,11 @@ config_same_options (struct config const *cfg,
 {
 	/* The options of the group TOOLS are in the member tools, which is
 	 * compared whole. */
-	for (struct option const *o = options; o->name; ++o)
-		if (groups[o - options] && groups[o - options] != GROUP_TOOLS &&
-		    !config_reloadable(o->name) &&
-		    !json_object_equal(config_file_value(cfg, o), config_file_value(from, o)))
+	for (size_t i = 0; i < array_size(places); ++i)
+		if (places[i].group && places[i].group != GROUP_TOOLS &&
+		    !(places[i].arg & ARG_RELOAD) &&
+		    !json_object_equal(config_file_value(cfg, &options[i]),
+		                       config_file_value(from, &options[i])))
 			return false;
 	return json_object_equal(json_object_object_get(cfg->file, "plugins"),
 	                         json_object_object_get(from->file, "plugins")) &&
@@ -1279,21 +1276,9 @@ static struct option const *
 config_named (char const *name)
 {
 	for (struct option const *o = options; o->name; ++o)
-		if (groups[o - options] && !strcmp(o->name, name))
+		if (places[o - options].group && !strcmp(o->name, name))
 			return o;
 	return nullptr;
-}
-
-/* The member of the configuration file's member tools that sets option
- * @p o of the group TOOLS.
- */
-static size_t
-config_tool_member (struct option const *o)
-{
-	size_t i = 0;
-	while (i + 1 < array_size(tool_members) && tool_members[i].val != o->val)
-		++i;
-	return i;
 }
 
 /* Say that the configuration file has option @p o outside the object that
@@ -1303,32 +1288,41 @@ static int
 config_misplaced (struct config const *cfg,
                   struct option const *o)
 {
-	if (groups[o - options] == GROUP_ROOT)
+	enum config_group const g = places[o - options].group;
+	switch (g) {
+	case GROUP_ROOT:
 		return config_complain(cfg, cfg->path, "%s must be at the top level", o->name);
-	if (groups[o - options] == GROUP_TOOLS) {
-		size_t i = config_tool_member(o);
-		return config_complain(cfg, cfg->path, "%s must be tools.%s.%s", o->name,
-		                       tool_members[i].tool, tool_members[i].name);
+	case GROUP_TOOLS:
+		return config_complain(cfg, cfg->path, "%s must be tools.%s", o->name,
+		                       places[o - options].member);
+	default:
+		return config_complain(cfg, cfg->path, "%s must be in %s", o->name,
+		                       group_names[g]);
 	}
-	return config_complain(cfg, cfg->path, "%s must be in %s", o->name,
-	                       group_names[groups[o - options]]);
 }
 
-/* Whether @p name names the object of a built-in tool in the member tools
- * of the configuration file.
+/* The option whose member of the configuration file's member tools is
+ * @p key in the object of the built-in tool @p tool, or for a nullptr
+ * @p key the first option of the tool; nullptr if there is none, and so
+ * for a @p tool that is no built-in tool.
  */
-static bool
-config_is_tool (char const *name)
+static struct option const *
+config_tool_option (char const *tool,
+                    char const *key)
 {
-	for (size_t i = 0; i < array_size(tool_members); ++i)
-		if (!strcmp(name, tool_members[i].tool))
-			return true;
-	return false;
+	size_t const len = strlen(tool);
+	for (size_t i = 0; i < array_size(places); ++i) {
+		char const *m = places[i].member;
+		if (m && !strncmp(m, tool, len) && m[len] == '.' &&
+		    (!key || !strcmp(m + len + 1, key)))
+			return &options[i];
+	}
+	return nullptr;
 }
 
 /* Apply the members of @p obj, the object of the built-in tool @p tool in
- * the configuration file's member tools, as the options that
- * tool_members[] names.
+ * the configuration file's member tools, as the options of the group TOOLS
+ * that they are.
  */
 static int
 config_apply_tool (struct config      *cfg,
@@ -1339,17 +1333,10 @@ config_apply_tool (struct config      *cfg,
 		return config_complain(cfg, cfg->path, "tools.%s must be an object", tool);
 	struct json_object_iter it;
 	json_object_object_foreachC(obj, it) {
-		size_t i = 0;
-		while (i < array_size(tool_members) && (strcmp(tool_members[i].tool, tool) ||
-		                                        strcmp(tool_members[i].name, it.key)))
-			++i;
-		if (i == array_size(tool_members))
-			return config_complain(cfg, cfg->path, "tools.%s: unknown member %s",
-			                       tool, it.key);
-		struct option const *o = options;
-		while (o->val != tool_members[i].val)
-			++o;
-		int status = config_apply_member(cfg, o, it.val);
+		struct option const *o = config_tool_option(tool, it.key);
+		int status = o ? config_apply_member(cfg, o, it.val)
+		               : config_complain(cfg, cfg->path, "tools.%s: unknown member %s",
+		                                 tool, it.key);
 		if (status)
 			return status;
 	}
@@ -1366,7 +1353,7 @@ config_apply_tools (struct config *cfg)
 	struct json_object_iter it;
 	if (json_object_is_type(tools, json_type_object))
 		json_object_object_foreachC(tools, it) {
-			int status = config_is_tool(it.key)
+			int status = config_tool_option(it.key, nullptr)
 			           ? config_apply_tool(cfg, it.key, it.val) : 0;
 			if (status)
 				return status;
@@ -1391,8 +1378,8 @@ config_apply_group (struct config      *cfg,
 		if (!o)
 			return config_complain(cfg, cfg->path, "%s: unknown member %s",
 			                       group_names[g], it.key);
-		int status = groups[o - options] != g ? config_misplaced(cfg, o)
-		                                      : config_apply_member(cfg, o, it.val);
+		int status = places[o - options].group != g ? config_misplaced(cfg, o)
+		                                            : config_apply_member(cfg, o, it.val);
 		if (status)
 			return status;
 	}
@@ -1415,7 +1402,7 @@ config_apply_file (struct config *cfg)
 		size_t g = config_find(group_names, array_size(group_names), it.key);
 		struct option const *o = config_named(it.key);
 		int status = g ? config_apply_group(cfg, (enum config_group)g, it.val)
-		           : o && groups[o - options] == GROUP_ROOT
+		           : o && places[o - options].group == GROUP_ROOT
 		             ? config_apply_member(cfg, o, it.val)
 		           : o ? config_misplaced(cfg, o)
 		               : config_complain(cfg, cfg->path, "unknown member %s", it.key);
@@ -2089,7 +2076,7 @@ config_allow_form (struct config const   *cfg,
 	struct json_object_iter it;
 	json_object_object_foreachC(spec, it)
 		if (strcmp(it.key, "allow") && strcmp(it.key, "deny") &&
-		    !(top && config_is_tool(it.key)))
+		    !(top && config_tool_option(it.key, nullptr)))
 			return config_complain(cfg, cfg->path, "%s: unknown member %s",
 			                       where, it.key);
 	struct json_object *allow;
@@ -2138,7 +2125,7 @@ config_allow_parts (struct config const *cfg,
 	struct json_object_iter it;
 	json_object_object_foreachC(v, it) {
 		if (!strcmp(it.key, "client") || !strcmp(it.key, "upstream") ||
-		    config_is_tool(it.key))
+		    config_tool_option(it.key, nullptr))
 			continue;
 		if (!strcmp(it.key, "allow") || !strcmp(it.key, "deny"))
 			return config_complain(cfg, cfg->path, "tools: allow and deny go "
