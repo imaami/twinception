@@ -5,12 +5,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 
 #include "cli_loop.h"
 #include "cli_mailbox.h"
 #include "cli_network.h"
 #include "compat.h"
+#include "curl_loop.h"
 #include "dstr.h"
 #include "loop.h"
 #include "util.h"
@@ -76,22 +76,13 @@ struct cli_network_chunk {
 	char                      bytes[];
 };
 
-struct cli_network_socket {
-	struct list      hook;
-	struct loop_ref  ref;
-	struct loop_step step;
-	int              events;
-};
-
 struct cli_network {
 	struct loop                 loop;
-	struct loop_timer           timer;
-	struct loop_step            timeout;
+	struct curl_loop            curl;
 	struct msg                  progress;
 	struct msg                  cancel;
 	struct msg                  stop;
 	struct cli_mailbox_msg      ended;
-	struct list                 sockets;
 	struct list                 requests;
 	struct list                 completions;
 	struct list                 calls; /* UI thread only. */
@@ -100,7 +91,6 @@ struct cli_network {
 	struct cli_network_call    *waiting; /* UI thread only. */
 	cli_network_ready_fn       *ready;
 	void                       *ready_context;
-	CURLM                      *multi;
 	pthread_t                   thread;
 	uint64_t                    sequence; /* UI thread only. */
 	size_t                      request_bytes; /* UI thread only. */
@@ -194,7 +184,7 @@ cli_network_finish (struct cli_network_request *request,
 	                                     &request->result.status) != CURLE_OK && !request->error)
 		request->error = EIO;
 	if (request->flags & CLI_NETWORK_ATTACHED) {
-		(void)curl_multi_remove_handle(network->multi, request->easy);
+		(void)curl_multi_remove_handle(network->curl.multi, request->easy);
 		request->flags &= ~CLI_NETWORK_ATTACHED;
 	}
 	cli_network_request_release(request);
@@ -203,37 +193,43 @@ cli_network_finish (struct cli_network_request *request,
 	cli_network_publish(network);
 }
 
+/* curl ended @p transfer, a request, with @p result. */
 static void
-cli_network_check (struct cli_network *network)
+cli_network_curl_done (struct curl_loop *curl,
+                       void             *transfer,
+                       CURLcode          result)
 {
-	int left;
-	CURLMsg *message;
-	while ((message = curl_multi_info_read(network->multi, &left))) {
-		if (message->msg != CURLMSG_DONE)
-			continue;
-		struct cli_network_request *request = nullptr;
-		if (curl_easy_getinfo(message->easy_handle, CURLINFO_PRIVATE, &request) == CURLE_OK && request) {
-			CURLcode result = message->data.result;
-			cli_network_finish(request, result == CURLE_OK ? 0 : EIO,
-			                    result == CURLE_OK ? nullptr : curl_easy_strerror(result));
-		}
-	}
+	(void)curl;
+	if (result)
+		cli_network_finish(transfer, EIO, curl_easy_strerror(result));
+	else
+		cli_network_finish(transfer, 0, nullptr);
 }
 
+/* Fail @p transfer, a request whose socket cannot be watched, with @p e
+ * through the cancel message, as curl's socket callback cannot remove it.
+ * Without a transfer, curl could not act on an event, and every request
+ * fails now with @p e and curl's text of it, @p why.
+ */
 static void
-cli_network_action (struct cli_network *network,
-                    curl_socket_t       fd,
-                    int                 events)
+cli_network_curl_fail (struct curl_loop *curl,
+                       void             *transfer,
+                       int               e,
+                       char const       *why)
 {
-	int running;
-	CURLMcode code = curl_multi_socket_action(network->multi, fd, events, &running);
-	if (code != CURLM_OK) {
+	struct cli_network *network = container_of(curl, struct cli_network, curl);
+	struct cli_network_request *request = transfer;
+	if (!request) {
 		while (!list_is_empty(&network->requests))
 			cli_network_finish(container_of(network->requests.next, struct cli_network_request, hook),
-			                    EIO, curl_multi_strerror(code));
-	} else {
-		cli_network_check(network);
+			                    e, why);
+		return;
 	}
+	if (!request->error)
+		request->error = e;
+	atomic_store(&request->cancelled, true);
+	if (!atomic_exchange(&network->cancel_pending, true))
+		(void)loop_post(&network->loop, &network->cancel);
 }
 
 static void
@@ -397,118 +393,6 @@ cli_network_header (char   *bytes,
 }
 
 static void
-cli_network_socket_step (struct loop      *loop,
-                         struct loop_step *step)
-{
-	struct cli_network_socket *socket = container_of(step, struct cli_network_socket, step);
-	int events = socket->events;
-	socket->events = 0;
-	cli_network_action(container_of(loop, struct cli_network, loop), socket->ref.fd, events);
-}
-
-static void
-cli_network_socket_event (struct loop     *loop,
-                          struct loop_ref *ref,
-                          uint32_t         events)
-{
-	struct cli_network_socket *socket = container_of(ref, struct cli_network_socket, ref);
-	if (events & EPOLLIN)
-		socket->events |= CURL_CSELECT_IN;
-	if (events & EPOLLOUT)
-		socket->events |= CURL_CSELECT_OUT;
-	if (events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
-		socket->events |= CURL_CSELECT_ERR;
-	loop_ready_bulk(loop, &socket->step);
-}
-
-static void
-cli_network_socket_release (struct loop_ref *ref)
-{
-	struct cli_network_socket *socket = container_of(ref, struct cli_network_socket, ref);
-	free(socket);
-	socket = nullptr;
-}
-
-static int
-cli_network_socket (CURL          *easy,
-                    curl_socket_t  fd,
-                    int            action,
-                    void          *context,
-                    void          *assigned)
-{
-	(void)easy;
-	struct cli_network *network = context;
-	struct cli_network_socket *socket = assigned;
-	if (action == CURL_POLL_REMOVE) {
-		if (socket) {
-			(void)curl_multi_assign(network->multi, fd, nullptr);
-			list_del(&socket->hook);
-			loop_unready(&socket->step);
-			loop_release(&network->loop, &socket->ref, cli_network_socket_release);
-		}
-		return 0;
-	}
-	uint32_t events = EPOLLRDHUP;
-	if (action == CURL_POLL_IN || action == CURL_POLL_INOUT)
-		events |= EPOLLIN;
-	if (action == CURL_POLL_OUT || action == CURL_POLL_INOUT)
-		events |= EPOLLOUT;
-	if (socket)
-		return loop_modify(&network->loop, &socket->ref, events) ? -1 : 0;
-	socket = calloc(1, sizeof *socket);
-	if (!socket)
-		return -1;
-	socket->ref.fd = -1;
-	socket->step.fn = cli_network_socket_step;
-	int e = loop_watch(&network->loop, &socket->ref, fd, events,
-	                   cli_network_socket_event, nullptr);
-	if (e) {
-		free(socket);
-		socket = nullptr;
-		return -1;
-	}
-	list_append(&network->sockets, &socket->hook);
-	if (curl_multi_assign(network->multi, fd, socket) == CURLM_OK)
-		return 0;
-	list_del(&socket->hook);
-	loop_release(&network->loop, &socket->ref, cli_network_socket_release);
-	return -1;
-}
-
-static void
-cli_network_timeout_step (struct loop      *loop,
-                          struct loop_step *step)
-{
-	(void)step;
-	cli_network_action(container_of(loop, struct cli_network, loop), CURL_SOCKET_TIMEOUT, 0);
-}
-
-static void
-cli_network_timer_fired (struct loop       *loop,
-                         struct loop_timer *timer)
-{
-	struct cli_network *network = container_of(timer, struct cli_network, timer);
-	loop_ready_bulk(loop, &network->timeout);
-}
-
-static int
-cli_network_timer (CURLM *multi,
-                   long   milliseconds,
-                   void  *context)
-{
-	(void)multi;
-	struct cli_network *network = context;
-	uint64_t due = UINT64_MAX;
-	if (milliseconds >= 0) {
-		uint64_t now = loop_clock();
-		uint64_t limit = (UINT64_MAX - now) / MS;
-		if ((unsigned long)milliseconds < limit)
-			due = now + (uint64_t)milliseconds * MS;
-	}
-	return loop_timer_set(&network->loop, &network->timer, due) ? -1 : 0;
-}
-
-static void
 cli_network_progress (struct cli_network *network)
 {
 	cli_network_publish(network);
@@ -529,7 +413,7 @@ cli_network_progress (struct cli_network *network)
 	}
 	list_transplant(&pending, &network->requests);
 	list_transplant(&network->requests, &pending);
-	cli_network_check(network);
+	curl_loop_action(&network->curl, CURL_SOCKET_TIMEOUT, 0);
 }
 
 static void
@@ -590,8 +474,8 @@ cli_network_call_cancel (struct cli_network      *network,
                          struct cli_network_call *call,
                          bool                     force)
 {
-	if ((call->flags & CLI_NETWORK_DONE) ||
-	    (!force && !(call->flags & CLI_NETWORK_INTERRUPTIBLE)))
+	uint32_t need = force ? 0 : CLI_NETWORK_INTERRUPTIBLE;
+	if ((call->flags & (CLI_NETWORK_DONE | need)) != need)
 		return;
 	if (!call->error)
 		call->error = EINTR;
@@ -652,18 +536,7 @@ cli_network_run (void *context)
 	while (!list_is_empty(&network->requests))
 		cli_network_finish(container_of(network->requests.next, struct cli_network_request, hook),
 		                    e ? e : ECANCELED, nullptr);
-	(void)curl_multi_cleanup(network->multi);
-	network->multi = nullptr;
-	struct list *node, *next;
-	list_foreach_safe (node, next, &network->sockets) {
-		struct cli_network_socket *socket = container_of(node, struct cli_network_socket, hook);
-		list_del(&socket->hook);
-		loop_unready(&socket->step);
-		loop_release(&network->loop, &socket->ref, cli_network_socket_release);
-	}
-	(void)loop_timer_stop(&network->loop, &network->timer);
-	loop_unready(&network->timeout);
-	loop_reap(&network->loop);
+	curl_loop_fini(&network->curl);
 	atomic_store(&network->exited, true);
 	(void)cli_mailbox_post(network->mailbox, &network->ended, true);
 	return nullptr;
@@ -720,14 +593,11 @@ cli_network_create (struct cli_loop    *ui,
 	atomic_init(&network->cancel_pending, false);
 	atomic_init(&network->failure, 0);
 	atomic_init(&network->exited, false);
-	list_init(&network->sockets);
 	list_init(&network->requests);
 	list_init(&network->completions);
 	list_init(&network->calls);
 	network->ui = ui;
 	network->mailbox = mailbox;
-	network->timer = (struct loop_timer){.due = UINT64_MAX, .fn = cli_network_timer_fired};
-	network->timeout.fn = cli_network_timeout_step;
 	network->progress.fn = cli_network_progress_message;
 	network->cancel.fn = cli_network_cancel_message;
 	network->stop.fn = cli_network_stop_message;
@@ -735,28 +605,15 @@ cli_network_create (struct cli_loop    *ui,
 	*e = loop_init(&network->loop);
 	if (*e)
 		goto fail;
-	*e = loop_timer_set(&network->loop, &network->timer, UINT64_MAX);
+	*e = curl_loop_init(&network->curl, &network->loop, cli_network_curl_done, cli_network_curl_fail);
 	if (*e)
 		goto fail;
-	network->multi = curl_multi_init();
-	if (!network->multi) {
-		*e = ENOMEM;
+	if (curl_multi_setopt(network->curl.multi, CURLMOPT_MAX_TOTAL_CONNECTIONS,
+	                      (long)(CLI_NETWORK_CALLS + CLI_NETWORK_CONTROL_CALLS)) != CURLM_OK ||
+	    curl_multi_setopt(network->curl.multi, CURLMOPT_MAXCONNECTS, 4L) != CURLM_OK) {
+		*e = EIO;
 		goto fail;
 	}
-#define CLI_NETWORK_MULTI(option, value) \
-        do { \
-                if (curl_multi_setopt(network->multi, option, value) != CURLM_OK) { \
-                        *e = EIO; \
-                        goto fail; \
-                } \
-        } while (0)
-	CLI_NETWORK_MULTI(CURLMOPT_SOCKETFUNCTION, cli_network_socket);
-	CLI_NETWORK_MULTI(CURLMOPT_SOCKETDATA, network);
-	CLI_NETWORK_MULTI(CURLMOPT_TIMERFUNCTION, cli_network_timer);
-	CLI_NETWORK_MULTI(CURLMOPT_TIMERDATA, network);
-	CLI_NETWORK_MULTI(CURLMOPT_MAX_TOTAL_CONNECTIONS, (long)(CLI_NETWORK_CALLS + CLI_NETWORK_CONTROL_CALLS));
-	CLI_NETWORK_MULTI(CURLMOPT_MAXCONNECTS, 4L);
-#undef CLI_NETWORK_MULTI
 	*e = pthread_create(&network->thread, nullptr, cli_network_run, network);
 	if (*e)
 		goto fail;
@@ -774,9 +631,7 @@ cli_network_destroy (struct cli_network **ptr)
 	if (!network)
 		return;
 	cli_network_join(network);
-	if (network->multi)
-		(void)curl_multi_cleanup(network->multi);
-	network->multi = nullptr;
+	curl_loop_fini(&network->curl);
 	loop_fini(&network->loop);
 	(void)cli_mailbox_dispatch(network->mailbox, SIZE_MAX);
 	while (!list_is_empty(&network->completions)) {
@@ -829,13 +684,13 @@ cli_network_start (struct loop *loop,
 		cli_network_finish(request, ECANCELED, nullptr);
 		return;
 	}
-	CURLMcode code = curl_multi_add_handle(network->multi, request->easy);
+	CURLMcode code = curl_multi_add_handle(network->curl.multi, request->easy);
 	if (code != CURLM_OK) {
 		cli_network_finish(request, EIO, curl_multi_strerror(code));
 		return;
 	}
 	request->flags |= CLI_NETWORK_ATTACHED;
-	cli_network_action(network, CURL_SOCKET_TIMEOUT, 0);
+	curl_loop_action(&network->curl, CURL_SOCKET_TIMEOUT, 0);
 }
 
 static void

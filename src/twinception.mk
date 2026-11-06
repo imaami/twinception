@@ -1,6 +1,7 @@
 override SRC_twinception := \
   app.c                     \
   blocker.c                 \
+  curl_loop.c               \
   dstr.c                    \
   http.c                    \
   log.c                     \

@@ -7,6 +7,7 @@ override SRC_askai := \
   child.c             \
   config.c            \
   cstr_view.c         \
+  curl_loop.c         \
   datauri.c           \
   dstr.c              \
   findings.c          \

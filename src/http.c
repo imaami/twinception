@@ -1,11 +1,9 @@
 /**
  * @file http.c
- * libcurl multi-socket integration for the event loop.
+ * HTTP requests over libcurl on the event loop (src/curl_loop.h).
  *
- * Socket events and curl's timer, which lives on the loop's heap, only queue
- * bulk steps, and the steps drive curl. An error fails at most the transfer
- * it belongs to, never the loop or the other transfers. A done callback may
- * ask what Retry-After its answer said.
+ * An error fails at most the transfer it belongs to, never the loop or the
+ * other transfers. A done callback may ask what Retry-After its answer said.
  *
  * With a resolver set, host names are looked up on a blocker thread rather
  * than by libcurl, whose resolver would start a thread of its own for each
@@ -22,23 +20,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 
 #include "blocker.h"
+#include "curl_loop.h"
 #include "http.h"
 #include "list.h"
 #include "log.h"
 #include "util.h"
-
-struct http_socket {
-	struct list      hook;
-	struct loop_ref  ref;
-	struct loop_step step;   /* reports @p what to curl */
-	struct http     *http;
-	curl_socket_t    socket;
-	int              what;   /* CURL_CSELECT_* bits seen since the step */
-};
 
 /* Requests handed to curl per step: each one connects, so a burst of them
  * would make one long step.
@@ -65,18 +54,14 @@ struct http_request {
 };
 
 struct http {
-	struct loop_timer    timer;
-	struct loop_step     timeout;   /* tells curl its timer expired */
+	struct curl_loop     curl;
 	struct loop_step     start;     /* hands queued requests to curl */
 	struct loop_step     fail;      /* fails requests that curl cannot run */
 	struct list          queued;    /* requests not yet handed to curl */
 	struct list          requests;
-	struct list          sockets;
 	struct list          hosts;     /* looked up, or being looked up */
-	struct loop         *loop;
 	struct blocker      *blockers;  /* that look host names up, or nullptr */
 	struct http_metrics *metrics;
-	CURLM               *multi;
 	CURL                *ended;     /* the transfer whose done callback
 	                                   runs, or nullptr */
 	long                 retry;     /* the Retry-After of the request that
@@ -107,24 +92,26 @@ struct http_lookup {
 	char                key[];    /* the host's, copied */
 };
 
-/* Take @p request out of curl and free it, then report @p result. The
- * transfer's handle stays until the done callback returns, so that
- * http_type() can read the answer's Content-Type from it. A done callback
- * can end another request, so the handle of the outer callback is restored
- * after the callback.
+/* Take @p transfer, a request, out of curl and free it, then report
+ * @p result. The transfer's handle stays until the done callback returns, so
+ * that http_type() can read the answer's Content-Type from it. A done
+ * callback can end another request, so the handle of the outer callback is
+ * restored after the callback.
  */
 static void
-http_finish (struct http         *http,
-             struct http_request *request,
-             CURLcode             result)
+http_finish (struct curl_loop *curl,
+             void             *transfer,
+             CURLcode          result)
 {
+	struct http *http = container_of(curl, struct http, curl);
+	struct http_request *request = transfer;
 	CURL *easy = request->easy;
 	long status = 0;
 	curl_off_t retry = 0;
 	curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
 	curl_easy_getinfo(easy, CURLINFO_RETRY_AFTER, &retry);
 	http->retry = retry > 0 && retry < LONG_MAX ? (long)retry : 0;
-	curl_multi_remove_handle(http->multi, easy);
+	curl_multi_remove_handle(curl->multi, easy);
 	list_del(&request->hook);
 	if (request->started && http->metrics)
 		hist_record(&http->metrics->run, loop_clock() - request->started);
@@ -144,37 +131,26 @@ http_finish (struct http         *http,
 	curl_easy_cleanup(easy);
 }
 
-static void
-http_check_done (struct http *http)
-{
-	int left;
-	CURLMsg *msg;
-	while ((msg = curl_multi_info_read(http->multi, &left))) {
-		struct http_request *request = nullptr;
-		if (msg->msg == CURLMSG_DONE &&
-		    !curl_easy_getinfo(msg->easy_handle, CURLINFO_PRIVATE, &request) &&
-		    request)
-			http_finish(http, request, msg->data.result);
-	}
-}
-
-/* Have the request of @p easy fail with @p e on a later step. The socket
- * callback cannot remove it, and an error returned there would fail every
- * transfer.
+/* Have @p transfer, a request whose socket cannot be watched, fail with
+ * @p e on a later step, as the socket callback cannot remove it. Without a
+ * transfer, curl could not act on an event, which only the log shows.
  */
 static void
-http_doom (struct http *http,
-           CURL        *easy,
-           int          e)
+http_doom (struct curl_loop *curl,
+           void             *transfer,
+           int               e,
+           char const       *why)
 {
-	struct http_request *request = nullptr;
-	curl_easy_getinfo(easy, CURLINFO_PRIVATE, &request);
-	if (request && !request->fail) {
-		request->fail = e == ENOMEM ? CURLE_OUT_OF_MEMORY : CURLE_COULDNT_CONNECT;
-		util_format(request->error, sizeof request->error,
-		            "cannot watch the socket: %s", strerror(e));
-		loop_ready_bulk(http->loop, &http->fail);
+	struct http_request *request = transfer;
+	if (!request) {
+		LOG(LOG_ERROR, "curl: %s", why);
+		return;
 	}
+	if (request->fail)
+		return;
+	request->fail = e == ENOMEM ? CURLE_OUT_OF_MEMORY : CURLE_COULDNT_CONNECT;
+	util_format(request->error, sizeof request->error, "cannot watch the socket: %s", why);
+	loop_ready_bulk(curl->loop, &container_of(curl, struct http, curl)->fail);
 }
 
 /* Fail one doomed request a step, as it may start or cancel others. */
@@ -189,23 +165,10 @@ http_fail_step (struct loop      *loop,
 		                                           hook);
 		if (request->fail) {
 			loop_ready_bulk(loop, step);
-			http_finish(http, request, request->fail);
+			http_finish(&http->curl, request, request->fail);
 			return;
 		}
 	}
-}
-
-/* Transfers that curl failed end through http_check_done() like any other. */
-static void
-http_action (struct http  *http,
-             curl_socket_t socket,
-             int           what)
-{
-	int running;
-	CURLMcode mc = curl_multi_socket_action(http->multi, socket, what, &running);
-	if (mc != CURLM_OK)
-		LOG(LOG_ERROR, "curl: %s", curl_multi_strerror(mc));
-	http_check_done(http);
 }
 
 /* Hand curl up to START_BATCH queued requests, and have it start them. */
@@ -222,7 +185,7 @@ http_start_step (struct loop      *loop,
 		request->started = loop_clock();
 		if (http->metrics)
 			hist_record(&http->metrics->wait, request->started - request->since);
-		if (curl_multi_add_handle(http->multi, request->easy) != CURLM_OK) {
+		if (curl_multi_add_handle(http->curl.multi, request->easy) != CURLM_OK) {
 			request->started = 0;
 			request->fail = CURLE_FAILED_INIT;
 			loop_ready_bulk(loop, &http->fail);
@@ -230,136 +193,7 @@ http_start_step (struct loop      *loop,
 	}
 	if (!list_is_empty(&http->queued))
 		loop_ready_bulk(loop, step);
-	http_action(http, CURL_SOCKET_TIMEOUT, 0);
-}
-
-static void
-http_socket_event (struct loop     *loop,
-                   struct loop_ref *ref,
-                   uint32_t         events)
-{
-	struct http_socket *hs = ref->owner;
-	if (events & EPOLLIN)
-		hs->what |= CURL_CSELECT_IN;
-	if (events & EPOLLOUT)
-		hs->what |= CURL_CSELECT_OUT;
-	if (events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
-		hs->what |= CURL_CSELECT_ERR;
-	loop_ready_bulk(loop, &hs->step);
-}
-
-static void
-http_socket_step (struct loop      *loop,
-                  struct loop_step *step)
-{
-	(void)loop;
-	struct http_socket *hs = container_of(step, struct http_socket, step);
-	int what = hs->what;
-	hs->what = 0;
-	http_action(hs->http, hs->socket, what);
-}
-
-static void
-http_timer_event (struct loop       *loop,
-                  struct loop_timer *timer)
-{
-	loop_ready_bulk(loop, &container_of(timer, struct http, timer)->timeout);
-}
-
-static void
-http_timeout_step (struct loop      *loop,
-                   struct loop_step *step)
-{
-	(void)loop;
-	http_action(container_of(step, struct http, timeout), CURL_SOCKET_TIMEOUT, 0);
-}
-
-static void
-http_socket_release (struct loop_ref *ref)
-{
-	free(container_of(ref, struct http_socket, ref));
-}
-
-static uint32_t
-http_events (int what)
-{
-	switch (what) {
-	case CURL_POLL_IN:
-		return EPOLLIN | EPOLLRDHUP;
-	case CURL_POLL_OUT:
-		return EPOLLOUT | EPOLLRDHUP;
-	case CURL_POLL_INOUT:
-		return EPOLLIN | EPOLLOUT | EPOLLRDHUP;
-	default:
-		return 0;
-	}
-}
-
-/* Watch @p socket, which curl asks for @p events. */
-static int
-http_watch (struct http   *http,
-            curl_socket_t  socket,
-            uint32_t       events)
-{
-	struct http_socket *hs = malloc(sizeof *hs);
-	if (!hs)
-		return ENOMEM;
-	*hs = (struct http_socket){
-		.step.fn = http_socket_step,
-		.http = http,
-		.socket = socket
-	};
-	int e = loop_watch(http->loop, &hs->ref, socket, events, http_socket_event, hs);
-	if (e) {
-		free(hs);
-		return e;
-	}
-	list_append(&http->sockets, &hs->hook);
-	(void)curl_multi_assign(http->multi, socket, hs);
-	return 0;
-}
-
-static int
-http_socket_cb (CURL          *easy,
-                curl_socket_t  socket,
-                int            what,
-                void          *clientp,
-                void          *socketp)
-{
-	struct http *http = clientp;
-	struct http_socket *hs = socketp;
-
-	if (what == CURL_POLL_REMOVE) {
-		if (hs) {
-			curl_multi_assign(http->multi, socket, nullptr);
-			list_del(&hs->hook);
-			loop_unready(&hs->step);
-			loop_release(http->loop, &hs->ref, http_socket_release);
-		}
-		return 0;
-	}
-
-	uint32_t events = http_events(what);
-	if (!events)
-		return 0;
-	int e = hs ? loop_modify(http->loop, &hs->ref, events)
-	           : http_watch(http, socket, events);
-	if (e)
-		http_doom(http, easy, e);
-	return 0;
-}
-
-/* The timer is in the heap from the start, so setting it cannot fail. */
-static int
-http_timer_cb (CURLM *multi,
-               long   timeout_ms,
-               void  *user)
-{
-	(void)multi;
-	struct http *http = user;
-	(void)loop_timer_set(http->loop, &http->timer, timeout_ms < 0 ? UINT64_MAX
-	                     : loop_clock() + (uint64_t)timeout_ms * MS);
-	return 0;
+	curl_loop_action(&http->curl, CURL_SOCKET_TIMEOUT, 0);
 }
 
 static size_t
@@ -468,7 +302,7 @@ http_queue (struct http         *http,
             struct http_request *request)
 {
 	list_append(&http->queued, &request->hook);
-	loop_ready_bulk(http->loop, &http->start);
+	loop_ready_bulk(http->curl.loop, &http->start);
 }
 
 /* Start @p request, which waited for @p host's addresses, or fail it, saying
@@ -493,7 +327,7 @@ http_host_resume (struct http_host    *host,
 	util_format(request->error, sizeof request->error, "cannot look up %s: %s",
 	            host->key, why);
 	list_append(&http->requests, &request->hook);
-	loop_ready_bulk(http->loop, &http->fail);
+	loop_ready_bulk(http->curl.loop, &http->fail);
 }
 
 /* @p host's lookup @p l has come back: keep the addresses it found, and
@@ -513,7 +347,7 @@ http_host_found (struct http_host   *host,
 		free(host->entry);
 		host->entry = l->entry;
 		l->entry = nullptr;
-		host->expires = http->loop->now + LOOKUP_TTL_NS;
+		host->expires = http->curl.loop->now + LOOKUP_TTL_NS;
 	} else {
 		why = l->job.error ? strerror(l->job.error) : gai_strerror(l->gai);
 		if (host->entry)
@@ -549,7 +383,7 @@ http_host_lookup (struct http_host *host)
 		.job = {
 			.done.fn = http_looked_up,
 			.work = http_look_up,
-			.loop = host->http->loop
+			.loop = host->http->curl.loop
 		},
 		.host = host,
 		.name = host->name,
@@ -638,22 +472,6 @@ http_host_take (struct http_host    *host,
 	return host->lookup ? 0 : http_host_lookup(host);
 }
 
-/* Arm @p http's timer, which stays in the heap from then on, and give curl
- * its callbacks.
- */
-static int
-http_setup (struct http *http)
-{
-	if (!http->multi || loop_timer_set(http->loop, &http->timer, UINT64_MAX))
-		return ENOMEM;
-	if (curl_multi_setopt(http->multi, CURLMOPT_SOCKETFUNCTION, http_socket_cb) != CURLM_OK ||
-	    curl_multi_setopt(http->multi, CURLMOPT_SOCKETDATA, http) != CURLM_OK ||
-	    curl_multi_setopt(http->multi, CURLMOPT_TIMERFUNCTION, http_timer_cb) != CURLM_OK ||
-	    curl_multi_setopt(http->multi, CURLMOPT_TIMERDATA, http) != CURLM_OK)
-		return EIO;
-	return 0;
-}
-
 struct http *
 http_create (struct loop         *loop,
              struct http_metrics *metrics,
@@ -670,19 +488,14 @@ http_create (struct loop         *loop,
 		return nullptr;
 	}
 	*http = (struct http){
-		.timer.fn = http_timer_event,
-		.timeout.fn = http_timeout_step,
 		.start.fn = http_start_step,
 		.fail.fn = http_fail_step,
-		.loop = loop,
-		.metrics = metrics,
-		.multi = curl_multi_init()
+		.metrics = metrics
 	};
 	list_init(&http->queued);
 	list_init(&http->requests);
-	list_init(&http->sockets);
 	list_init(&http->hosts);
-	if ((*e = http_setup(http)))
+	if ((*e = curl_loop_init(&http->curl, loop, http_finish, http_doom)))
 		http_destroy(&http);
 	return http;
 }
@@ -697,7 +510,7 @@ http_cancel (struct http         *http,
 	struct http_request *request = *p_request;
 	*p_request = nullptr;
 	if (request->easy) {
-		curl_multi_remove_handle(http->multi, request->easy);
+		curl_multi_remove_handle(http->curl.multi, request->easy);
 		curl_easy_cleanup(request->easy);
 	}
 	if (request->hook.next && request->hook.prev)
@@ -714,7 +527,7 @@ http_end (struct http         *http,
 {
 	struct http_request *request = *p_request;
 	*p_request = nullptr;
-	http_finish(http, request, result);
+	http_finish(&http->curl, request, result);
 }
 
 CURLcode
@@ -764,8 +577,8 @@ void
 http_connections (struct http *http,
                   long         n)
 {
-	(void)curl_multi_setopt(http->multi, CURLMOPT_MAX_HOST_CONNECTIONS, n);
-	(void)curl_multi_setopt(http->multi, CURLMOPT_MAXCONNECTS, n + 1);
+	(void)curl_multi_setopt(http->curl.multi, CURLMOPT_MAX_HOST_CONNECTIONS, n);
+	(void)curl_multi_setopt(http->curl.multi, CURLMOPT_MAXCONNECTS, n + 1);
 }
 
 void
@@ -806,21 +619,9 @@ http_destroy (struct http **p_http)
 		}
 	}
 
-	/* Cleanup may still invoke the socket and timer callbacks. */
-	if (http->multi)
-		curl_multi_cleanup(http->multi);
-
-	list_foreach_safe (node, tmp, &http->sockets) {
-		struct http_socket *socket = container_of(node, struct http_socket, hook);
-		loop_unready(&socket->step);
-		loop_unwatch(http->loop, &socket->ref);
-		list_del(&socket->hook);
-		free(socket);
-	}
-	loop_unready(&http->timeout);
+	curl_loop_fini(&http->curl);
 	loop_unready(&http->start);
 	loop_unready(&http->fail);
-	loop_timer_stop(http->loop, &http->timer);
 	free(http);
 	curl_global_cleanup();
 }

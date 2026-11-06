@@ -21,6 +21,7 @@ override SRC_askai-cli := \
   cli_tool.c              \
   cli_ui.c                \
   cstr_view.c             \
+  curl_loop.c             \
   dstr.c                  \
   jb.c                    \
   log.c                   \
