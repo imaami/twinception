@@ -1082,8 +1082,7 @@ cli_console_setup_readline (struct cli_console *console)
 }
 
 struct cli_console *
-cli_console_create (bool             simple,
-                    bool             color,
+cli_console_create (uint32_t         flags,
                     struct cli_loop *loop,
                     struct cli_io   *io,
                     int             *e)
@@ -1123,9 +1122,8 @@ cli_console_create (bool             simple,
 		for (size_t row = 0; row < array_size(console->panes[i].rows); ++row)
 			console->panes[i].rows[row] = dstr(nullptr);
 	}
-	bool tty_stdout = isatty(STDOUT_FILENO);
-	console->simple = simple || !tty_stdout || !isatty(STDIN_FILENO);
-	console->palette = cli_style_palette(color && tty_stdout);
+	console->simple = (flags & CLI_CONSOLE_SIMPLE) || !isatty(STDOUT_FILENO) || !isatty(STDIN_FILENO);
+	console->palette = cli_style_palette(flags & CLI_CONSOLE_COLOR);
 	char const *term = getenv("TERM");
 	console->fullscreen = !console->simple && term && *term && strcmp(term, "dumb");
 	struct stat input, output;

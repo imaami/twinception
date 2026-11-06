@@ -148,7 +148,7 @@ int main(int argc, char **argv)
 	int e = cli_loop_init(&driver.loop);
 	struct cli_input input = {};
 	if (!e)
-		driver.console = cli_console_create(simple, false, &driver.loop, nullptr, &e);
+		driver.console = cli_console_create(simple ? CLI_CONSOLE_SIMPLE : 0, &driver.loop, nullptr, &e);
 	if (!e)
 		e = loop_watch(&driver.loop.loop, &driver.signals, signal_fd, EPOLLIN, cli_input_signal,
 		               nullptr);

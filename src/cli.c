@@ -1249,7 +1249,8 @@ cli_run (struct cli_options const *options,
 		cli->client = cli_client(options->socket, options->tool, cli->network, &e);
 	bool color = options->color == CLI_COLOR_ON || (options->color == CLI_COLOR_AUTO && cli->tty && !getenv("NO_COLOR"));
 	if (!e)
-		cli->console = cli_console_create(options->simple || !cli->tty, color, &cli->reactor, cli->io, &e);
+		cli->console = cli_console_create((options->simple ? CLI_CONSOLE_SIMPLE : 0) |
+		                                  (color ? CLI_CONSOLE_COLOR : 0), &cli->reactor, cli->io, &e);
 	if (!e) {
 		cli->client.report = cli_report;
 		cli->reactor.after_turn = cli_service;

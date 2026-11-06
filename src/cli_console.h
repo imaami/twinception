@@ -13,10 +13,17 @@ struct cli_console;
 struct cli_io;
 struct cli_loop;
 
-/** The UI thread owns the console. loop and io outlive it. */
+/** The options of cli_console_create(). */
+enum {
+	CLI_CONSOLE_SIMPLE = 1u << 0,  /**< basic line input, also without a terminal */
+	CLI_CONSOLE_COLOR  = 1u << 1,  /**< terminal colors */
+};
+
+/** Only the UI thread uses the console. loop and io must outlive it. flags
+ *  are the CLI_CONSOLE options.
+ */
 extern struct cli_console *
-cli_console_create (bool             simple,
-                    bool             color,
+cli_console_create (uint32_t         flags,
                     struct cli_loop *loop,
                     struct cli_io   *io,
                     int             *e);

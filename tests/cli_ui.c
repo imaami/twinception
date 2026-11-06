@@ -36,7 +36,7 @@ cli_ui_test_colors (void)
 	struct cli_loop loop = {};
 	assert(!cli_loop_init(&loop));
 	int e;
-	struct cli_console *console = cli_console_create(true, true, &loop, nullptr, &e);
+	struct cli_console *console = cli_console_create(CLI_CONSOLE_SIMPLE | CLI_CONSOLE_COLOR, &loop, nullptr, &e);
 	assert(console && !e);
 	struct cli_ui display = cli_ui(console);
 	assert(!cli_ui_push(&display, true, CSTR_VIEW("first thought\n")));
@@ -101,7 +101,7 @@ int main(void)
 	int e = 0;
 	struct cli_loop loop = {};
 	assert(!cli_loop_init(&loop));
-	struct cli_console *console = cli_console_create(true, false, &loop, nullptr, &e);
+	struct cli_console *console = cli_console_create(CLI_CONSOLE_SIMPLE, &loop, nullptr, &e);
 	assert(console && !e);
 	{
 		struct cli_ui display = cli_ui(console);
