@@ -7833,6 +7833,16 @@ mcp_on_head (void          *ctx,
 		(void)buf_reserve(&req->body, length, length, &(struct span){});
 }
 
+#undef BYTES
+#undef DSTR
+#undef ESC
+#undef ESC_VIEW
+#undef FRAG
+#undef JSON_FIELD
+#undef RAW
+#undef SPAN
+#undef TEXT
+
 static void
 mcp_on_body (struct stream *s,
              struct span    bytes,
