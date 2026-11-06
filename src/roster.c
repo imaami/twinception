@@ -8,32 +8,32 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "htab.h"
 #include "loop.h"
 #include "roster.h"
 
-/* The number of buckets of the table. It is a power of two, because
- * BUCKETS - 1 is the mask that selects a bucket.
- */
+/* The number of buckets of the table, a power of two. */
 enum { BUCKETS = 1024 };
 
-static_assert(!(BUCKETS & (BUCKETS - 1)), "BUCKETS - 1 is a mask");
-
 struct roster {
-	pthread_mutex_t     lock;
-	struct roster_call *buckets[BUCKETS];
+	pthread_mutex_t lock;
+	struct htab     table;
 };
 
 struct roster *
 roster_create (int *e)
 {
-	struct roster *r = malloc(sizeof *r);
-	*e = r ? pthread_mutex_init(&r->lock, nullptr) : ENOMEM;
-	if (*e) {
-		free(r);
+	struct roster *r = calloc(1, sizeof *r);
+	if (!r) {
+		*e = ENOMEM;
 		return nullptr;
 	}
-	memset(r->buckets, 0, sizeof r->buckets);
-	return r;
+	*e = htab_init(&r->table, BUCKETS);
+	if (!*e && !(*e = pthread_mutex_init(&r->lock, nullptr)))
+		return r;
+	htab_fini(&r->table);
+	free(r);
+	return nullptr;
 }
 
 void
@@ -44,6 +44,7 @@ roster_destroy (struct roster **p_roster)
 		return;
 	*p_roster = nullptr;
 	pthread_mutex_destroy(&r->lock);
+	htab_fini(&r->table);
 	free(r);
 }
 
@@ -63,18 +64,16 @@ roster_enter (struct roster  *roster,
 		return nullptr;
 	}
 	c->cancel = (struct msg){ .fn = fn };
+	c->node.hash = hash;
 	c->hit = nullptr;
 	c->loop = loop;
 	c->len = key.len;
-	c->hash = hash;
 	c->who = who;
 	atomic_init(&c->refs, 1);
-	c->asked = false;
+	c->asked = 0;
 	memcpy(c->key, key.ptr, key.len);
-	struct roster_call **bucket = &roster->buckets[hash & (BUCKETS - 1)];
 	pthread_mutex_lock(&roster->lock);
-	c->next = *bucket;
-	*bucket = c;
+	htab_link(&roster->table, &c->node);
 	pthread_mutex_unlock(&roster->lock);
 	*e = 0;
 	return c;
@@ -88,13 +87,22 @@ roster_leave (struct roster       *roster,
 	if (!c)
 		return;
 	*p_call = nullptr;
-	struct roster_call **p = &roster->buckets[c->hash & (BUCKETS - 1)];
 	pthread_mutex_lock(&roster->lock);
-	while (*p != c)
-		p = &(*p)->next;
-	*p = c->next;
+	htab_unlink(&roster->table, &c->node);
 	pthread_mutex_unlock(&roster->lock);
 	roster_call_put(c);
+}
+
+/* Returns true if no client has asked to cancel the call of the record of
+ * @p node yet and the key of the record is @p key, a struct span.
+ */
+static bool
+roster_call_match (struct htab_node const *node,
+                   void const             *key)
+{
+	struct roster_call const *c = container_of(node, struct roster_call const, node);
+	struct span const *k = key;
+	return !c->asked && c->len == k->len && !memcmp(c->key, k->ptr, k->len);
 }
 
 void
@@ -104,11 +112,10 @@ roster_cancel (struct roster *roster,
 {
 	struct roster_call *hits = nullptr;
 	pthread_mutex_lock(&roster->lock);
-	for (struct roster_call *c = roster->buckets[hash & (BUCKETS - 1)]; c; c = c->next) {
-		if (c->asked || c->hash != hash || c->len != key.len ||
-		    memcmp(c->key, key.ptr, key.len))
-			continue;
-		c->asked = true;
+	/* A matched record is asked, so the next search passes it by. */
+	for (struct htab_node *n; (n = *htab_find(&roster->table, hash, roster_call_match, &key)); ) {
+		struct roster_call *c = container_of(n, struct roster_call, node);
+		c->asked = 1;
 		atomic_fetch_add_explicit(&c->refs, 1, memory_order_relaxed);
 		c->hit = hits;
 		hits = c;

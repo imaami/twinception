@@ -31,30 +31,32 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "htab.h"
 #include "loop.h"
 
 struct roster;
 
-/** The record of a call. The members key, len, hash, loop and who do not
- *  change while the record is in the roster, so they are read without the
- *  roster's lock.
+/** The record of a call. The members key, len, node.hash, loop and who do
+ *  not change while the record is in the roster, so they are read without
+ *  the roster's lock.
  */
 struct roster_call {
 	/** The message that roster_cancel() posts to loop when a client asks
 	 *  to cancel the call. Its function drops the reference that
 	 *  roster_cancel() took for the message. */
 	struct msg           cancel;
-	struct roster_call  *next;    /**< the next record in the bucket */
+	struct htab_node     node;    /**< the link in the bucket, and the
+	                                   seeded hash of key */
 	struct roster_call  *hit;     /**< the next record that the same
 	                                   roster_cancel() call matched */
 	struct loop         *loop;    /**< the loop of the call */
 	size_t               len;     /**< the length of key in bytes */
-	uint64_t             hash;    /**< the seeded hash of key */
 	struct handle        who;     /**< the handle of the call's request on
 	                                   loop */
 	_Atomic uint32_t     refs;    /**< the number of references */
-	bool                 asked;   /**< true once a client has asked to
-	                                   cancel the call */
+	uint32_t             asked;   /**< 1 once a client has asked to cancel
+	                                   the call, else 0, written under the
+	                                   roster's lock */
 	unsigned char        key[];   /**< the key, len bytes */
 };
 
