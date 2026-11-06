@@ -1517,8 +1517,8 @@ review_refuse_unread (struct review const               *r,
 
 /**
  * Checks the location @p loc of a finding in the state @p state against
- * the read log of @p r, and stores in @p *logged the logged file that
- * contains all lines of @p loc, or nullptr. A short path that resolves to
+ * the read log of @p r, and stores in @p *commit the commit of the logged
+ * file that contains all lines of @p loc, or an empty one. A short path that resolves to
  * one logged path (review_log_resolve()) is replaced by that path. A
  * state that requires logged lines is refused for a record without
  * REVIEW_READ_LOG, without a location, or for lines that the log does not
@@ -1532,10 +1532,10 @@ review_check_location (struct review const          *r,
                        struct review_location_view  *loc,
                        enum review_state             state,
                        bool                          in_args,
-                       struct review_file const    **logged,
+                       struct oid                   *commit,
                        struct dstr                  *out)
 {
-	*logged = nullptr;
+	*commit = (struct oid){};
 	bool const requires_log = review_state_logged(state);
 	if (requires_log && !(r->flags & REVIEW_READ_LOG))
 		return review_refuse_names(out, CSTR_VIEW("This ask call has no git tool, so a "
@@ -1562,11 +1562,11 @@ review_check_location (struct review const          *r,
 		       ? EINVAL : ENOMEM;
 	}
 	struct review_cover const c = review_log_cover(r, loc);
-	if (c.best && c.end >= loc->last)
-		*logged = c.best;
-	if (*logged || !requires_log)
+	if (c.best && c.end >= loc->last) {
+		*commit = c.best->commit;
 		return 0;
-	return review_refuse_unread(r, loc, state, &c, n, out);
+	}
+	return requires_log ? review_refuse_unread(r, loc, state, &c, n, out) : 0;
 }
 
 /**
@@ -1643,8 +1643,8 @@ review_add (struct review            *r,
 		                           REVIEW_STATES, ~(1U << REVIEW_RETRACTED),
 		                           CSTR_VIEW("; retract a finding with update."));
 	struct review_location_view loc = a->location;
-	struct review_file const *logged;
-	int e = review_check_location(r, &loc, state, true, &logged, out);
+	struct oid commit;
+	int e = review_check_location(r, &loc, state, true, &commit, out);
 	if (e)
 		return e;
 	if (review_state_logged(state) && !a->evidence.len)
@@ -1672,7 +1672,7 @@ review_add (struct review            *r,
 		.old_location = review_location(0, 0),
 		.turn   = turn,
 		.state  = state,
-		.commit = logged ? logged->commit : (struct oid){},
+		.commit = commit,
 	};
 	e = cstr_view_store(a->claim, &f.claim);
 	if (!e)
@@ -1709,8 +1709,8 @@ review_update (struct review            *r,
 	struct review_location_view loc = in_args ? a->location : (struct review_location_view){
 		.path = old_path, .first = f->location.first, .last = f->location.last,
 	};
-	struct review_file const *logged;
-	int e = review_check_location(r, &loc, a->state, in_args, &logged, out);
+	struct oid commit;
+	int e = review_check_location(r, &loc, a->state, in_args, &commit, out);
 	if (e)
 		return e;
 	/* review_check_location() can replace a short path with a logged path.
@@ -1738,7 +1738,7 @@ review_update (struct review            *r,
 		.turn   = turn,
 		.state  = a->state,
 		.moved  = moved,
-		.commit = logged ? logged->commit : (struct oid){},
+		.commit = commit,
 	};
 	struct dstr claim = DSTR_INIT;
 	struct dstr path = DSTR_INIT;
