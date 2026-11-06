@@ -13,6 +13,7 @@
 #include "child.h"
 #include "cstr_view.h"
 #include "hist.h"
+#include "htab.h"
 #include "jb.h"
 #include "list.h"
 #include "log.h"
@@ -88,8 +89,8 @@ struct manual_fetch;
  * goes as man fails for it. The manual's lock guards all but the key.
  */
 struct manual_entry {
-	struct manual_entry *next;                   /* in its bucket */
-	uint64_t             hash;
+	struct htab_node     node;                   /* in the table, by the
+	                                                hash of the key */
 	union {
 		struct {                                     /* a file's */
 			struct manual_page  *page;     /* the manual's reference */
@@ -125,10 +126,8 @@ struct manual_fetch {
 struct manual {
 	pthread_mutex_t       lock;     /* the table's */
 	struct manual_metrics metrics;
-	struct manual_entry **buckets;
+	struct htab           table;    /* the entries */
 	char                 *env[6];   /* man's environment */
-	size_t                mask;     /* the buckets, less 1 */
-	size_t                entries;
 	uint64_t              seed;     /* of the keys' hash */
 	uint64_t              recheck;  /* ns a finding holds */
 };
@@ -172,6 +171,16 @@ manual_page_same (struct manual_page const *page,
 	       page->ctime.tv_nsec == st->st_ctim.tv_nsec;
 }
 
+/* Whether the key of the entry of @p node is the view at @p key. */
+static bool
+manual_match (struct htab_node const *node,
+              void const             *key)
+{
+	struct manual_entry const *e = container_of(node, struct manual_entry, node);
+	return cstr_view_equal((struct cstr_view){ e->key, e->len },
+	                       *(struct cstr_view const *)key);
+}
+
 /* The entry keyed by @p key, of @p len bytes and @p hash; nullptr if none. */
 static struct manual_entry *
 manual_lookup (struct manual const *m,
@@ -179,37 +188,14 @@ manual_lookup (struct manual const *m,
                size_t               len,
                uint64_t             hash)
 {
-	struct manual_entry *e = m->buckets[hash & m->mask];
-	while (e && (e->hash != hash || e->len != len || memcmp(e->key, key, len)))
-		e = e->next;
-	return e;
-}
-
-/* Double the buckets, if memory allows: longer chains are all it costs if
- * not.
- */
-static void
-manual_grow (struct manual *m)
-{
-	size_t n = 2 * (m->mask + 1);
-	struct manual_entry **buckets = calloc(n, sizeof *buckets);
-	if (!buckets)
-		return;
-	for (size_t i = 0; i <= m->mask; ++i) {
-		for (struct manual_entry *e = m->buckets[i]; e; ) {
-			struct manual_entry *next = e->next;
-			e->next = buckets[e->hash & (n - 1)];
-			buckets[e->hash & (n - 1)] = e;
-			e = next;
-		}
-	}
-	free(m->buckets);
-	m->buckets = buckets;
-	m->mask = n - 1;
+	struct cstr_view const k = { key, len };
+	struct htab_node *node = *htab_find(&m->table, hash, manual_match, &k);
+	return node ? container_of(node, struct manual_entry, node) : nullptr;
 }
 
 /* A new entry keyed by @p key, in the table, the buckets doubling once the
- * entries outnumber them; nullptr if out of memory.
+ * entries outnumber them, if memory allows: longer chains are all it costs
+ * if not. nullptr if out of memory.
  */
 static struct manual_entry *
 manual_add (struct manual *m,
@@ -220,14 +206,12 @@ manual_add (struct manual *m,
 	struct manual_entry *e = malloc(sizeof *e + len + 1);
 	if (!e)
 		return nullptr;
-	*e = (struct manual_entry){ .hash = hash, .len = (uint32_t)len };
+	*e = (struct manual_entry){ .node.hash = hash, .len = (uint32_t)len };
 	memcpy(e->key, key, len);
 	e->key[len] = '\0';
-	if (++m->entries > m->mask + 1)
-		manual_grow(m);
-	struct manual_entry **bucket = &m->buckets[hash & m->mask];
-	e->next = *bucket;
-	*bucket = e;
+	if (m->table.n > m->table.mask)
+		(void)htab_grow(&m->table);
+	htab_link(&m->table, &e->node);
 	return e;
 }
 
@@ -236,11 +220,7 @@ static void
 manual_del (struct manual       *m,
             struct manual_entry *a)
 {
-	struct manual_entry **p = &m->buckets[a->hash & m->mask];
-	while (*p != a)
-		p = &(*p)->next;
-	*p = a->next;
-	--m->entries;
+	htab_unlink(&m->table, &a->node);
 	if (a->file)
 		--a->file->aliases;
 	free(a);
@@ -712,11 +692,12 @@ struct manual *
 manual_create (uint32_t  recheck,
                int      *e)
 {
+	struct htab table = {};
 	struct manual *m = malloc(sizeof *m);
-	struct manual_entry **buckets = calloc(BUCKETS, sizeof *buckets);
-	*e = !m || !buckets ? ENOMEM : pthread_mutex_init(&m->lock, nullptr);
+	*e = !m ? ENOMEM : htab_init(&table, BUCKETS);
+	*e = *e ? *e : pthread_mutex_init(&m->lock, nullptr);
 	if (*e) {
-		free(buckets);
+		htab_fini(&table);
 		free(m);
 		return nullptr;
 	}
@@ -731,9 +712,7 @@ manual_create (uint32_t  recheck,
 		util_env(manpath, sizeof manpath - 1)
 	};
 	memcpy(m->env, env, sizeof env);
-	m->buckets = buckets;
-	m->mask = BUCKETS - 1;
-	m->entries = 0;
+	m->table = table;
 	m->seed = util_seed();
 	m->recheck = recheck * NS;
 	struct manual_metrics *mm = &m->metrics;
@@ -753,17 +732,16 @@ manual_destroy (struct manual **p_manual)
 		return;
 	struct manual *m = *p_manual;
 	*p_manual = nullptr;
-	for (size_t i = 0; i <= m->mask; ++i) {
-		for (struct manual_entry *e = m->buckets[i]; e; ) {
-			struct manual_entry *next = e->next;
+	for (size_t i = 0; i <= m->table.mask; ++i) {
+		for (struct htab_node *node = m->table.buckets[i], *next; node; node = next) {
+			next = node->next;
+			struct manual_entry *e = container_of(node, struct manual_entry, node);
 			/* A file's key, a path, holds no '\0'. */
-			if (!memchr(e->key, '\0', e->len))
-				manual_page_put(e->page);
+			manual_page_put(memchr(e->key, '\0', e->len) ? nullptr : e->page);
 			free(e);
-			e = next;
 		}
 	}
-	free(m->buckets);
+	htab_fini(&m->table);
 	pthread_mutex_destroy(&m->lock);
 	free(m);
 }
