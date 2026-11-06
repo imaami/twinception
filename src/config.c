@@ -1059,15 +1059,13 @@ config_safe (struct stat const *st)
 	        (S_ISDIR(st->st_mode) && st->st_mode & S_ISVTX));
 }
 
-/* Whether every directory above @p path is config_safe(); false if that
- * cannot be told.
+/* Whether every directory above @p real, a path that realpath() made, is
+ * config_safe(); false if that cannot be told. The function cuts @p real
+ * short as it goes up.
  */
 static bool
-config_safe_dirs (char const *path)
+config_safe_dirs (char *real)
 {
-	char *real = realpath(path, nullptr);
-	if (!real)
-		return false;
 	bool ok = true;
 	struct stat st;
 	/* Each but the root, from the nearest; the root last. */
@@ -1076,9 +1074,24 @@ config_safe_dirs (char const *path)
 		*slash = '\0';
 		ok = !stat(real, &st) && config_safe(&st);
 	}
-	free(real);
 	return ok && !stat("/", &st) && config_safe(&st);
 }
+
+/* Whether the file at @p path, whose status is @p st, and every directory
+ * above it are config_safe(); false if that cannot be told.
+ */
+static bool
+config_safe_path (char const        *path,
+                  struct stat const *st)
+{
+	char *real = config_safe(st) ? realpath(path, nullptr) : nullptr;
+	bool const ok = real && config_safe_dirs(real);
+	free(real);
+	return ok;
+}
+
+/* The reason to refuse a file that config_safe_path() does not accept. */
+static char const config_unsafe[] = "others than root and askai's user may change it";
 
 /* As config_slurp() says, the file at @p path being open as @p fd. */
 static int
@@ -1097,9 +1110,8 @@ config_slurp_fd (struct config const *cfg,
 		return config_complain(cfg, path, "not a regular file");
 	if (st.st_size > FILE_MAX)
 		return config_complain(cfg, path, "larger than 1 MiB");
-	if (!config_safe(&st) || !config_safe_dirs(path))
-		return config_complain(cfg, path, "others than root and askai's user "
-		                       "may change it");
+	if (!config_safe_path(path, &st))
+		return config_complain(cfg, path, "%s", config_unsafe);
 	if (st.st_mode & hide)
 		return config_complain(cfg, path, "others may read it");
 	char *text = malloc((size_t)st.st_size + 1);
@@ -1561,7 +1573,7 @@ config_check_notes_parent (struct config const *cfg)
 	if (stat(dir, &st))
 		status = config_complain(cfg, nullptr, "--notes: %s: %s", cfg->notes,
 		                         strerror(errno));
-	else if (!S_ISDIR(st.st_mode) || !config_safe(&st) || !config_safe_dirs(dir))
+	else if (!S_ISDIR(st.st_mode) || !config_safe_path(dir, &st))
 		status = config_complain(cfg, nullptr, "--notes: %s: others than root "
 		                         "and askai's user may change the directory it "
 		                         "would be made in", cfg->notes);
@@ -1587,9 +1599,8 @@ config_check_notes (struct config *cfg)
 	if (!S_ISDIR(st.st_mode))
 		return config_complain(cfg, nullptr, "--notes: %s: not a directory",
 		                       path);
-	if (!config_safe(&st) || !config_safe_dirs(path))
-		return config_complain(cfg, nullptr, "--notes: %s: others than root "
-		                       "and askai's user may change it", path);
+	if (!config_safe_path(path, &st))
+		return config_complain(cfg, nullptr, "--notes: %s: %s", path, config_unsafe);
 	return 0;
 }
 
@@ -1897,20 +1908,17 @@ config_check_plugin (struct config const *cfg,
 	char *real = realpath(path, nullptr);
 	if (!real)
 		return config_complain(cfg, path, "cannot open it: %s", strerror(errno));
+	struct stat st;
 	int status = strcmp(real, path)
 	           ? config_complain(cfg, path, "not the file's real path, which "
 	                             "is %s", real)
+	           : stat(path, &st)
+	           ? config_complain(cfg, path, "cannot open it: %s", strerror(errno))
+	           : !config_safe(&st) || !config_safe_dirs(real)
+	           ? config_complain(cfg, path, "%s", config_unsafe)
 	           : 0;
 	free(real);
-	if (status)
-		return status;
-	struct stat st;
-	if (stat(path, &st))
-		return config_complain(cfg, path, "cannot open it: %s", strerror(errno));
-	if (!config_safe(&st) || !config_safe_dirs(path))
-		return config_complain(cfg, path, "others than root and askai's user "
-		                       "may change it");
-	return 0;
+	return status;
 }
 
 /* Loads the plugin of @p v, an element of the configuration file's
