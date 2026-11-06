@@ -408,8 +408,9 @@ struct mcp_static {
 	                                             attached, if the upstream
 	                                             takes files (ai_upload()) */
 	struct dstr               files_url;    /**< the URL of their uploads */
-	char const              **files_lines;  /**< the header lines of their
-	                                             uploads, nullptr-terminated */
+	struct cstr_view         *files_lines;  /**< the header lines of their
+	                                             uploads */
+	size_t                    files_n_lines;
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	uint64_t                  endpoint;     /**< the hash of the URL and the
 	                                             model of ep that a checkpoint
@@ -6717,6 +6718,7 @@ mcp_slot_post_file (struct mcp_slot  *slot,
 		.request = &request,
 		.url = dstr_len(&st->files_url),
 		.accept = sizeof accept - 1,
+		.n_lines = st->files_n_lines,
 		.lines = st->files_lines
 	};
 	return mcp_slot_send(slot, &ask);
@@ -8853,11 +8855,13 @@ mcp_static_uploads (struct mcp_static *st)
 		++n;
 	while (up->lines[m])
 		++m;
-	st->files_lines = malloc((n + m + 1) * sizeof *st->files_lines);
-	if (!st->files_lines)
+	/* Each line is measured once, here, and not for each upload. */
+	st->files_lines = malloc((n + m) * sizeof *st->files_lines);
+	if (n + m && !st->files_lines)
 		return ENOMEM;
-	memcpy(st->files_lines, headers, n * sizeof *st->files_lines);
-	memcpy(st->files_lines + n, up->lines, (m + 1) * sizeof *st->files_lines);
+	for (size_t i = 0; i < n + m; ++i)
+		st->files_lines[i] = cstr_view(i < n ? headers[i] : up->lines[i - n]);
+	st->files_n_lines = n + m;
 	st->uploads = uploads_create(&e);
 	return e;
 }

@@ -788,9 +788,9 @@ web_relieve (struct web        *web,
  * User-Agent, as askai sends its own.
  */
 static bool
-web_line_kept (char const *line)
+web_line_kept (struct cstr_view line)
 {
-	return !cstr_view_starts_case(cstr_view(line), CSTR_VIEW("User-Agent:"));
+	return !cstr_view_starts_case(line, CSTR_VIEW("User-Agent:"));
 }
 
 struct web_wait *
@@ -801,18 +801,17 @@ web_wait_create (struct web           *web,
 	static char const agent[] = "User-Agent: askai";
 	static char const of[] = " (plugin ";
 	static char const accept[] = "Accept: ";
-	static char const *const none[] = { nullptr };
 	struct web_request const *r = ask->request;
-	char const *const *lines = ask->lines ? ask->lines : none;
+	struct cstr_view const *lines = ask->lines;
 	size_t name = ask->plugin ? strlen(ask->plugin) : 0;
 	bool post = r->body.data != nullptr;
 	size_t body = post ? r->body.len : 0;
 	size_t line = sizeof agent - 1 + (name ? sizeof of - 1 + name + 1 : 0) +
 	              (ask->accept ? 1 + sizeof accept - 1 + ask->accept : 0);
 	size_t n = 1 + (ask->accept != 0);
-	for (char const *const *l = lines; *l; ++l) {
-		bool kept = web_line_kept(*l);
-		line += kept ? 1 + strlen(*l) : 0;
+	for (size_t i = 0; i < ask->n_lines; ++i) {
+		bool kept = web_line_kept(lines[i]);
+		line += kept ? 1 + lines[i].len : 0;
 		n += kept;
 	}
 	if (line > UINT16_MAX) {
@@ -847,13 +846,12 @@ web_wait_create (struct web           *web,
 		memcpy(p, r->accept, ask->accept);
 		p += ask->accept;
 	}
-	/* stpcpy() returns the address of the NUL that it writes, which the
-	 * next '\0' overwrites. */
-	for (char const *const *l = lines; *l; ++l) {
-		if (!web_line_kept(*l))
+	for (size_t i = 0; i < ask->n_lines; ++i) {
+		if (!web_line_kept(lines[i]))
 			continue;
 		*p++ = '\0';
-		p = stpcpy(p, *l);
+		memcpy(p, lines[i].data, lines[i].len);
+		p += lines[i].len;
 	}
 	*p++ = '\0';
 	if (body)

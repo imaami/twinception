@@ -136,11 +136,11 @@ struct web_ask {
 	size_t                    url;     /**< the length of request->url */
 	size_t                    accept;  /**< the length of request->accept,
 	                                        or 0 if it is nullptr */
-	char const *const        *lines;   /**< more header lines, which askai
-	                                        checked, nullptr-terminated, or
-	                                        nullptr; a line of User-Agent is
-	                                        left out, as askai sends its
-	                                        own */
+	size_t                    n_lines;
+	struct cstr_view const   *lines;   /**< n_lines more header lines,
+	                                        which askai checked; a line of
+	                                        User-Agent is left out, as askai
+	                                        sends its own */
 	struct handle             who;     /**< names the call on its loop */
 };
 
