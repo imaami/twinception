@@ -47,23 +47,32 @@ static constexpr uint64_t BACKOFF_MIN = NS;
 static constexpr uint64_t BACKOFF_MAX = 60 * NS;
 
 /* What home notes of a job's run, in its flags. */
-enum {
-	OVERFLOW  = 1 << 0,   /* the answer passed MAX_RESPONSE */
-	DROPPED   = 1 << 1,   /* its front let go of it while it ran */
-	RUNNING   = 1 << 3,   /* it holds an upstream slot */
-	PROBE     = 1 << 4,   /* it is the breaker's probe */
-	SEEN      = 1 << 5,   /* its answer has begun */
-	STREAM    = 1 << 6,   /* the answer is an event stream */
-	BACKED    = 1 << 7,   /* held back until its stream is read on */
-	DELIVERED = 1 << 8,   /* libcurl has handed over all of the stream */
-	EVENT     = 1 << 9,   /* an event of it is whole, and is being parsed */
-	TRUNCATED = 1 << 10,  /* its stop reason is the output token limit */
-	ERRED     = 1 << 11,  /* the result says what went wrong upstream */
-	STALLED   = 1 << 12,  /* the chunk timeout ended it */
-	ENDED     = 1 << 13,  /* its stream said the answer has ended */
-	READY     = 1 << 14,  /* a slot was free for it: on a ready list */
-	PREEMPTED = 1 << 15,  /* an interactive job preempted it once, which no
-	                         other may again */
+enum : uint32_t {
+	OVERFLOW      = 1u << 0,   /* the answer passed MAX_RESPONSE */
+	DROPPED       = 1u << 1,   /* its front let go of it while it ran */
+	PROVIDER_DONE = 1u << 2,   /* the provider's native job is in a final
+	                              state */
+	RUNNING       = 1u << 3,   /* it uses one of the upstream slots */
+	PROBE         = 1u << 4,   /* it is the breaker's probe */
+	SEEN          = 1u << 5,   /* its answer has begun */
+	STREAM        = 1u << 6,   /* the answer is an event stream */
+	BACKED        = 1u << 7,   /* held back until its stream is read on */
+	DELIVERED     = 1u << 8,   /* libcurl has handed over all of the stream */
+	EVENT         = 1u << 9,   /* an event of it is whole, and is being
+	                              parsed */
+	TRUNCATED     = 1u << 10,  /* its stop reason is the output token limit */
+	ERRED         = 1u << 11,  /* the result is the text of the upstream's
+	                              error */
+	STALLED       = 1u << 12,  /* the chunk timeout ended it */
+	ENDED         = 1u << 13,  /* an event of its stream marked the end of
+	                              the answer */
+	READY         = 1u << 14,  /* a slot was free for it: on a ready list */
+	PREEMPTED     = 1u << 15,  /* an interactive job preempted it once, which
+	                              no other may again */
+	DELTA_PENDING = 1u << 16,  /* the front has not yet drained the delta
+	                              mailbox */
+	DELTA_ENDED   = 1u << 17,  /* the job has ended, and DONE is posted once
+	                              the front drains the mailbox */
 };
 
 /* The breaker's states, as /metrics gives them. */
@@ -372,7 +381,7 @@ static void
 home_job_drop_answer (struct job *job)
 {
 	job_drop_answer(job);
-	job->delta_pending = job->delta_ended = false;
+	job->flags &= ~(DELTA_PENDING | DELTA_ENDED);
 }
 
 /* Drop @p n references to @p job, and hand it back to its front if they were
@@ -391,14 +400,12 @@ home_job_put (struct job *job,
 /* Forget what home noted of @p job's last run, its flags now @p flags. */
 static void
 home_job_reset (struct job *job,
-                uint16_t    flags)
+                uint32_t    flags)
 {
 	job->flags = flags;
 	job->http = 0;
 	job->ev = job->evlen = job->line = job->scan = job->chunks = job->used = 0;
 	job->reader = (struct ai_reader){};
-	job->provider_done = false;
-	job->delta_pending = job->delta_ended = false;
 	job->reason[0] = '\0';
 }
 
@@ -416,19 +423,20 @@ home_job_end (struct job      *job,
 		job->recovery->ending = true;
 		return;
 	}
-	if (job->delta_pending && !(job->flags & DROPPED)) {
-		job->delta_ended = true;
+	switch (job->flags & (DELTA_PENDING | DROPPED)) {
+	case DELTA_PENDING:
+		job->flags |= DELTA_ENDED;
 		return;
-	}
-	if (job->flags & DROPPED) {
-		home_job_drop_answer(job);
+	case 0:
+		if (status == JOB_CANCELLED)
+			home_job_drop_answer(job);
 		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DONE);
-		home_job_put(job, 1);
 		return;
 	}
-	if (status == JOB_CANCELLED)
-		home_job_drop_answer(job);
+	/* DROPPED: the front reads neither the mailbox nor the result. */
+	home_job_drop_answer(job);
 	job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DONE);
+	home_job_put(job, 1);
 }
 
 /* Have the reap step free the events' values left, if any are. */
@@ -549,7 +557,7 @@ static void
 home_native_cancel (struct home *home,
                     struct job  *job)
 {
-	if (!home_native(home) || !(job->flags & RUNNING) || job->provider_done)
+	if (!home_native(home) || (job->flags & (RUNNING | PROVIDER_DONE)) != RUNNING)
 		return;
 	if (!job->cancel_url && job->recovery && job->recovery->provider_id)
 		(void)home_provider_url(home, job, true, &job->cancel_url);
@@ -776,7 +784,7 @@ home_breaker_probed (struct home *home,
                      bool         failure,
                      long         retry)
 {
-	job->flags &= (uint16_t)~PROBE;
+	job->flags &= ~PROBE;
 	home->probing = false;
 	if (failure) {
 		home_breaker_open(home, retry);
@@ -896,9 +904,9 @@ home_finish (struct home *home,
 		(void)home_explain(home, job, result, error);
 		struct home_recovery const *r = job->recovery;
 		bool resumable = result && result != CURLE_WRITE_ERROR &&
-		                 result != CURLE_OUT_OF_MEMORY && !(job->flags & ERRED) &&
-		                 job->asks & JOB_DURABLE && job->journal && r &&
-		                 r->provider_id && !job->provider_done &&
+		                 result != CURLE_OUT_OF_MEMORY &&
+		                 !(job->flags & (ERRED | PROVIDER_DONE)) &&
+		                 job->asks & JOB_DURABLE && job->journal && r && r->provider_id &&
 		                 home_native(home) &&
 		                 (!job->deadline || home->loop->now < job->deadline);
 		home_end(home, job, resumable ? JOB_SUSPENDED : JOB_FAILED,
@@ -938,7 +946,7 @@ static void
 home_feed (struct home *home,
            struct job  *job)
 {
-	if (job->delta_pending || (job->recovery && job->recovery->pending))
+	if (job->flags & DELTA_PENDING || (job->recovery && job->recovery->pending))
 		return;
 	if (list_is_empty(&job->feed))
 		list_append(&home->feeding, &job->feed);
@@ -959,7 +967,7 @@ home_head (struct home *home,
 	struct cstr_view media = cstr_view(type);
 	(void)cstr_view_cut(&media, ';', &media);
 	job->flags |= SEEN;
-	job->flags &= (uint16_t)~STREAM;
+	job->flags &= ~STREAM;
 	job->http = (uint16_t)status;
 	if (status >= 200 && status < 300 &&
 	    cstr_view_equal_case(cstr_view_trim(media), CSTR_VIEW("text/event-stream")))
@@ -1019,7 +1027,7 @@ home_job_write (char const *data,
 		(void)loop_timer_set(home->loop, &home->quiet, job->active + home->silence);
 	if (!(job->flags & STREAM))
 		return home_receive(home, job, &job->result, data, len);
-	if (job->delta_pending || buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
+	if (job->flags & DELTA_PENDING || buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
 		job->flags |= BACKED;
 		list_del(&job->idle);
 		return CURL_WRITEFUNC_PAUSE;
@@ -1228,7 +1236,7 @@ home_open (struct home *home,
 		headers[kept] = conversation;
 	}
 	struct span body = buf_peek(&job->request);
-	job->flags &= (uint16_t)~(SEEN | DELIVERED);
+	job->flags &= ~(SEEN | DELIVERED);
 	e = http_post_json(home->http, url ? url : ep->url,
 	                   resume ? nullptr : (char const *)body.ptr, resume ? 0 : body.len,
 	                   false, headers ? headers : ep->headers, 0,
@@ -1367,7 +1375,7 @@ home_start_step (struct loop      *loop,
 		if (loop_spent(loop, step, LOOP_REQS))
 			return;
 		if (job->flags & READY) {
-			job->flags &= (uint16_t)~READY;
+			job->flags &= ~READY;
 			--home->readied[home_job_class(job)];
 			list_del(&job->queue);
 		} else {
@@ -1930,7 +1938,7 @@ home_native_event (struct home        *home,
 		status = jb_get(root, "status");
 	if (jb_is(status, "completed") || jb_is(status, "failed") ||
 	    jb_is(status, "cancelled") || jb_is(status, "incomplete"))
-		job->provider_done = true;
+		job->flags |= PROVIDER_DONE;
 	bool created = !job->cancel_url &&
 	               jb_is(kind, responses ? "response.created" : "interaction.created");
 	if (created) {
@@ -1983,14 +1991,12 @@ home_take (struct home        *home,
 	else if (ev.thought)
 		home_job_progress(job, (uint64_t)++job->chunks << 32 | JOB_THINKING);
 	job->used = ev.used ? ev.used : job->used;
-	job->provider_done |= ev.end != 0;
-	job->flags |= (ev.end ? ENDED : 0) | (e == ENOBUFS ? OVERFLOW : 0);
+	job->flags |= (ev.end ? ENDED | PROVIDER_DONE : 0) | (e == ENOBUFS ? OVERFLOW : 0);
 	if (ev.reason) {
 		size_t len = jb_utf8(ev.reason, strnlen(ev.reason, sizeof job->reason - 1));
 		memcpy(job->reason, ev.reason, len);
 		job->reason[len] = '\0';
-		job->flags = (uint16_t)(ev.truncated ? job->flags | TRUNCATED
-		                                     : job->flags & ~TRUNCATED);
+		job->flags = ev.truncated ? job->flags | TRUNCATED : job->flags & ~TRUNCATED;
 	}
 	if (ev.error) {
 		size_t len = strnlen(ev.error, 4096);
@@ -2006,7 +2012,7 @@ home_take (struct home        *home,
 		job->flags |= ERRED;
 	}
 	if (!(job->flags & DROPPED) && buf_peek(&job->delta).len) {
-		job->delta_pending = true;
+		job->flags |= DELTA_PENDING;
 		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DELTA);
 	}
 	return e;
@@ -2071,7 +2077,7 @@ home_read_event (struct home *home,
 		e = home_event(home, job);
 	buf_consume(&job->wire, job->line);
 	job->ev = job->evlen = job->line = job->scan = 0;
-	job->flags &= (uint16_t)~EVENT;
+	job->flags &= ~EVENT;
 	if (job->flags & ERRED) {
 		home_cut(home, job, CURLE_OK);
 		return ECANCELED;
@@ -2164,7 +2170,7 @@ home_drained (struct home *home,
 	if (!(job->flags & DELIVERED)) {
 		list_del(&job->feed);
 		if (job->flags & BACKED) {
-			job->flags &= (uint16_t)~BACKED;
+			job->flags &= ~BACKED;
 			home_hold(home, job);
 		}
 		return ENODATA;
@@ -2197,7 +2203,7 @@ home_read_stream (struct home *home,
                   struct job  *job)
 {
 	for (;;) {
-		if (job->delta_pending || (job->recovery && job->recovery->pending)) {
+		if (job->flags & DELTA_PENDING || (job->recovery && job->recovery->pending)) {
 			list_del(&job->feed);
 			return true;
 		}
@@ -2303,7 +2309,7 @@ home_preempt_step (struct loop      *loop,
 			home_preempt(home, job);
 			continue;
 		}
-		job->flags &= (uint16_t)~PREEMPTED;
+		job->flags &= ~PREEMPTED;
 		list_append(&home->background, &job->queue);
 	}
 }
@@ -2677,11 +2683,10 @@ static void
 home_delta_release (struct job *job)
 {
 	buf_fini(&job->delta);
-	job->delta_pending = false;
-	if (job->delta_ended) {
-		job->delta_ended = false;
+	uint32_t const was = job->flags;
+	job->flags &= ~(DELTA_PENDING | DELTA_ENDED);
+	if (was & DELTA_ENDED)
 		home_job_end(job, job->status);
-	}
 }
 
 /* @p job's front lets go of it: home cancels it if it is in flight, and lets

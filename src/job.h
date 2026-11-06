@@ -219,7 +219,6 @@ struct job {
 	                                         0: never */
 	uint64_t               since;       /**< home's: when it started upstream */
 	uint64_t               active;      /**< home's: when its answer last sent */
-	uint64_t               provider_done; /**< home's: bool, native job is terminal */
 	uint64_t               principal;   /**< the front's, with the key: the hash,
 	                                         seeded, of whom the call is for */
 	struct stream_peer     peer;        /**< the front's: the address of the
@@ -252,12 +251,10 @@ struct job {
 	                                         the upstream's context holds, as
 	                                         /props says; 0: unknown */
 	uint32_t               archive_turn; /**< the front's: provider turn number */
+	uint32_t               flags;       /**< home's: what it notes of the run */
 	struct ai_reader       reader;      /**< home's: of the stream's events */
 	uint16_t               http;        /**< home writes before DONE: the answer's
 	                                         HTTP status */
-	uint16_t               flags;       /**< home's: what it notes of the run */
-	bool                   delta_pending; /**< home only: mailbox awaits its front */
-	bool                   delta_ended; /**< home only: DONE waits for the mailbox */
 	uint8_t                status;      /**< home writes before DONE: enum
 	                                         job_status */
 	uint8_t                asks;        /**< the front's, before SUBMIT: enum
