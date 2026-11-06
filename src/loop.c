@@ -56,19 +56,21 @@ struct loop_slot {
  */
 enum { TIME_TURN, TIME_STEP, TIME_BULK, TIME_LATE, TIMINGS };
 
-/* The statistics since the last report. The histograms come first and the
- * plain counts after them, so that a new window wipes the counts with one
- * memset() and clears the histograms by atomic stores (loop_stats_empty()).
+/* The statistics since the last report, after the metrics, which share
+ * their allocation. The histograms come first and the plain counts after
+ * them, so that a new window wipes the counts with one memset() and clears
+ * the histograms by atomic stores (loop_stats_empty()).
  */
 struct loop_stats {
-	struct hist time[TIMINGS];
-	uint64_t    over[TIMINGS];     /* those over 1 ms, counted exactly, as the
-	                                  histogram's bucket around 1 ms
-	                                  straddles it */
-	uint64_t    work[LOOP_UNITS];  /* the most a step did */
-	uint64_t    events;            /* the most a turn had */
-	uint64_t    timers;
-	uint64_t    steps;
+	struct loop_metrics metrics;           /* loop->metrics points here */
+	struct hist         time[TIMINGS];
+	uint64_t            over[TIMINGS];     /* those over 1 ms, counted exactly,
+	                                          as the histogram's bucket around
+	                                          1 ms straddles it */
+	uint64_t            work[LOOP_UNITS];  /* the most a step did */
+	uint64_t            events;            /* the most a turn had */
+	uint64_t            timers;
+	uint64_t            steps;
 };
 
 #define LOOP_BOUND(id, name, bound) [LOOP_##id] = bound,
@@ -238,9 +240,9 @@ loop_init (struct loop *loop)
 		return e;
 	}
 	loop->stats = malloc(sizeof *loop->stats);
-	loop->metrics = malloc(sizeof *loop->metrics);
-	if (!loop->stats || !loop->metrics)
+	if (!loop->stats)
 		return ENOMEM;
+	loop->metrics = &loop->stats->metrics;
 	loop_stats_empty(loop->stats, true);
 	loop_metrics_init(loop->metrics);
 	return 0;
@@ -332,7 +334,6 @@ loop_fini (struct loop *loop)
 	free(loop->heap);
 	free(loop->slots);
 	free(loop->stats);
-	free(loop->metrics);
 	loop_blank(loop);
 }
 
