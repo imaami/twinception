@@ -245,6 +245,7 @@ web_reply_put (struct web_reply *reply)
 {
 	if (reply && ref_put(&reply->refs, 1)) {
 		free(reply->body);
+		reply->body = nullptr;
 		free(reply);
 	}
 }
@@ -258,6 +259,7 @@ web_run_put (struct web_run *run,
 {
 	if (ref_put(&run->refs, n)) {
 		free(run->body);
+		run->body = nullptr;
 		free(run);
 	}
 }
@@ -272,6 +274,7 @@ web_entries_free (struct htab_node *gone)
 		next = gone->next;
 		struct web_entry *entry = container_of(gone, struct web_entry, node);
 		web_reply_put(entry->reply);
+		entry->reply = nullptr;
 		free(entry);
 	}
 }
@@ -978,6 +981,7 @@ web_wait_leave (struct web_wait **p_wait)
 	*p_wait = nullptr;
 	if (wait->done) {
 		web_reply_put(wait->reply);
+		wait->reply = nullptr;
 		free(wait);
 		return;
 	}
