@@ -244,7 +244,7 @@ notes_create (char const *path,
               size_t      len,
               int        *e)
 {
-	if (!participant || !util_word(participant, strlen(participant), UTIL_WORD_MAX)) {
+	if (!util_word_len(participant, UTIL_WORD_MAX)) {
 		*e = util_refuse(why, len, "the participant must have 1 to 64 ASCII letters, "
 		                 "digits, underscores or hyphens");
 		return nullptr;

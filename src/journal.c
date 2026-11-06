@@ -133,13 +133,6 @@ struct journal {
 };
 
 static bool
-journal_word (char const *word,
-              size_t      max)
-{
-	return word && util_word(word, strnlen(word, max + 1), max);
-}
-
-static bool
 journal_id (char const *id)
 {
 	return id && util_is_hex(id, JOURNAL_ID) && !id[JOURNAL_ID];
@@ -450,7 +443,7 @@ journal_record_read (struct journal         *j,
 	r->len = (size_t)length;
 	memcpy(r->id, header + 24, JOURNAL_ID);
 	memcpy(r->kind, header + 56, JOURNAL_KIND);
-	if (!journal_id(r->id) || !journal_word(r->kind, JOURNAL_KIND)) {
+	if (!journal_id(r->id) || !util_word_len(r->kind, JOURNAL_KIND)) {
 		journal_records_destroy(&r);
 		return EILSEQ;
 	}
@@ -1173,8 +1166,8 @@ journal_submit (struct journal  *j,
 {
 	if (!j)
 		return 0;
-	if (!journal_id(id) || !journal_word(kind, JOURNAL_KIND) ||
-	    (len && !data) || (!!loop != !!done))
+	size_t const kind_len = util_word_len(kind, JOURNAL_KIND);
+	if (!journal_id(id) || !kind_len || (len && !data) || (!!loop != !!done))
 		return EINVAL;
 	if (len > JOURNAL_RECORD_MAX)
 		return EFBIG;
@@ -1197,7 +1190,7 @@ journal_submit (struct journal  *j,
 	memcpy(item->id, id, sizeof item->id);
 	item->record->len = len;
 	memcpy(item->record->id, id, JOURNAL_ID + 1);
-	memcpy(item->record->kind, kind, strlen(kind) + 1);
+	memcpy(item->record->kind, kind, kind_len);
 	if (len)
 		memcpy(item->record->data, data, len);
 	int e = journal_enqueue(j, item);
@@ -1443,7 +1436,7 @@ journal_create (char const *path,
 	/* journal_setup() writes a message of its own for some errors. For
 	 * the others, the message is the text of the error number. */
 	*why = '\0';
-	if (!journal_word(participant, UTIL_WORD_MAX)) {
+	if (!util_word_len(participant, UTIL_WORD_MAX)) {
 		*e = util_refuse(why, why_len, "invalid transcript participant");
 		return nullptr;
 	}

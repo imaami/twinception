@@ -231,6 +231,17 @@ util_word (char const *s,
 	return true;
 }
 
+/** Returns the length of the string @p s if util_word() accepts it as a
+ *  word of 1 to @p max bytes, or 0 if not or if @p s is nullptr.
+ */
+static inline size_t
+util_word_len (char const *s,
+               size_t      max)
+{
+	size_t const n = s ? strnlen(s, max + 1) : 0;
+	return util_word(s, n, max) ? n : 0;
+}
+
 /** The entry "NAME=value" of the process's environment whose "NAME=" is
  *  the @p len bytes at @p name, or nullptr if it has none. Nothing in
  *  askai changes its environment, so the entry lasts.

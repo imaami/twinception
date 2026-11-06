@@ -473,12 +473,6 @@ config_tool_name_valid (char const *name)
 	return n && n <= 128 && !name[n];
 }
 
-static bool
-config_participant_valid (char const *name)
-{
-	return util_word(name, strnlen(name, UTIL_WORD_MAX + 1), UTIL_WORD_MAX);
-}
-
 /* The options without a short form. */
 enum {
 	OPT_TOOL_NAME = 0x100, OPT_TOOL_DESCRIPTION, OPT_MAX_HEAD, OPT_MAX_FIELDS,
@@ -914,7 +908,7 @@ config_apply (struct config *cfg,
 	case OPT_BACKGROUND: ep->background = 1; break;
 	case OPT_NOTES: cfg->notes = arg; break;
 	case OPT_PARTICIPANT:
-		if (!config_participant_valid(arg))
+		if (!util_word_len(arg, UTIL_WORD_MAX))
 			return config_complain(cfg, where, "--participant: use 1-64 of "
 			                       "[A-Za-z0-9_-]: %s", arg);
 		cfg->participant = arg;
@@ -1623,7 +1617,7 @@ config_session (struct config *cfg)
 {
 	if (!cfg->participant)
 		cfg->participant = cfg->tool.name;
-	if (!config_participant_valid(cfg->participant) &&
+	if (!util_word_len(cfg->participant, UTIL_WORD_MAX) &&
 	    (cfg->notes || cfg->transcripts || cfg->ep.background))
 		return config_complain(cfg, nullptr, "--participant: use 1-64 of "
 		                       "[A-Za-z0-9_-]; set it explicitly if --tool-name "
