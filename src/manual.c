@@ -277,7 +277,7 @@ manual_fetch_done (struct manual_fetch *f,
 	struct manual_entry *a = f->alias;
 	struct manual_entry *file = f->file;
 	struct manual_page *old = nullptr;
-	bool rendered = page == f->page;
+	bool const rendered = page == f->page;
 	pthread_mutex_lock(&m->lock);
 	if (rendered) {
 		old = file->page;
@@ -303,14 +303,13 @@ manual_fetch_done (struct manual_fetch *f,
 	if (rendered)
 		LOG(LOG_VERBOSE, old ? "man page %s rendered anew: %zu bytes"
 		                     : "man page %s rendered: %zu bytes", file->key, page->len);
-	manual_page_put(old);
 	for (struct manual_wait *next; w; w = next) {
 		next = w->next;
 		loop_post(w->loop, &w->msg);
 	}
-	/* The fetch's page is this one, or none. */
-	if (!rendered)
-		manual_page_put(page);
+	/* For a page that the fetch rendered, the file's old page goes here,
+	 * and manual_fetch_destroy() puts f->page. Else the page goes. */
+	manual_page_put(rendered ? old : page);
 	manual_fetch_destroy(&f);
 }
 
