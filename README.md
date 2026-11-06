@@ -457,7 +457,7 @@ such as `main..topic` or `main...topic`.
 
 `read` gives numbered lines of a committed file, which the one revision names
 as `commit:path`, from `line` (default 1), `count` of them at most (default as
-many as the caller's window holds):
+many as fit in one result):
 
 ```json
 { "repo": "proj", "command": "read", "revisions": ["HEAD:src/journal.c"],
@@ -468,10 +468,11 @@ The first line of the output names the repository, the file, the full commit
 ID and the lines given:
 `[Repository proj, file src/journal.c at commit ID: lines 120 to 159 of 900.]`.
 Each line follows as its number, a tab and its text. The last line gives the
-revision, with the commit ID, and the `line` to read on from, or says that the
-file ends there. The `commit:path` of a `grep` match is a revision of `read`,
-and its number the `line`. `show` with the same revision gives the file as it
-is.
+revision, with the commit ID in place of a name such as `HEAD`, and the `line`
+to read on from, or says that the file ends there. The next part then comes
+from the same commit, even if `HEAD` has moved. The `commit:path` of a `grep`
+match is a revision of `read`, and its number the `line`. `show` with the same
+revision gives the file as it is.
 
 Use `"help": true` with a command to list its options, source selection and
 argument limits, and the bytes of output that one result of the caller takes

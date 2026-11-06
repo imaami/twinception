@@ -239,9 +239,10 @@ static struct {
 	{ CSTR_VIEW_INIT("read"),      read_options,      { "blob" },
 	  "Numbered lines of a committed file. Give the file as the one revision, "
 	  "commit:path such as HEAD:src/journal.c, the first line as line "
-	  "(default 1) and the most lines as count (default: as many as the window "
-	  "holds). The output's first line names the commit; its last line says "
-	  "where to read on.", END | OBJECT | SINGLE | LINES },
+	  "(default 1) and the most lines as count (default: as many as fit in one "
+	  "result). The output's first line names the commit. Its last line gives "
+	  "the revision and line to read on from; the revision names the commit by "
+	  "its ID, so every part comes from the same commit.", END | OBJECT | SINGLE | LINES },
 	{ CSTR_VIEW_INIT("log"),       log_options,       { "--no-ext-diff", "--no-textconv" },
 	  "Committed history; defaults to HEAD. Paths restrict the history.",
 	  FILES | END | RANGE },
@@ -430,8 +431,8 @@ git_definition (void const *service)
 		"title", json_object_new_string("Git"),
 		"description", json_object_new_string(
 			"Run a read-only git command in one of the repositories of the "
-			"server, and get its output, with its errors, up to 4 MiB. The "
-			"command enum lists the available operations. Use help:true with "
+			"server, and get its output, with its errors, cut at 4 MiB. "
+			"Use help:true with "
 			"any command for its exact options, limits and source selection. "
 			"Only committed contents are visible; the index, working tree, "
 			"untracked and ignored files are unavailable. Commits must be "
@@ -441,12 +442,11 @@ git_definition (void const *service)
 			"To read a file, use read with the file as the revision: "
 			"{\"command\": \"read\", \"revisions\": [\"HEAD:src/journal.c\"], "
 			"\"line\": 120, \"count\": 40} gives lines 120 to 159 with their "
-			"numbers and names the commit. A grep match "
+			"numbers and names the commit. The output's last line gives the next "
+			"call, with the commit's ID in place of HEAD. A grep match "
 			"<commit>:<path>:<line>:<text> reads as \"revisions\": "
-			"[\"<commit>:<path>\"] and \"line\": <line>. Any other commit "
-			"can replace HEAD. Give each option with its value attached "
-			"(--max-count=20, not -n 20). Only the usual read-only options are "
-			"allowed."),
+			"[\"<commit>:<path>\"] and \"line\": <line>. Give each option with "
+			"its value attached (--max-count=20, not -n 20)."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
@@ -461,12 +461,11 @@ git_definition (void const *service)
 					"commit. For read, show and cat-file, HEAD:path names a "
 					"file as of that commit. References and hashes may use "
 					"^/~ ancestry and ^{commit}. Reflogs, stash, index and "
-					"raw blob/tree IDs are excluded. The resolved commit must "
-					"belong to HEAD, branch, tag or remote-tracking history."),
+					"raw blob/tree IDs are excluded."),
 				"paths", schema_array(schema_property("string", nullptr), PATHS,
 					"Paths in the repository, relative to its top. They limit "
 					"the output of a command such as log or diff to those "
-					"paths. They do not read a file."),
+					"paths; blame takes the file as its one path."),
 				"pattern", schema_property("string",
 					"The pattern for grep, an extended regex unless options "
 					"give -G (basic), -F (plain text) or -P (Perl)."),
@@ -476,7 +475,7 @@ git_definition (void const *service)
 					"from 1. The default is 1."),
 				"count", schema_count(1,
 					"For read: the most lines to give. The default is "
-					"as many as the response window holds."),
+					"as many as fit in one result."),
 				nullptr),
 			required, array_size(required)),
 		"annotations", jb_object(
@@ -934,12 +933,12 @@ git_help (struct mcp_slot *slot,
 			"--max-count=20, -n20, -C3. Do not split an option and its value."),
 		"pagination", json_object_new_string(takes & LINES
 			? "The capture limit is 4 MiB. read gives whole lines, each after "
-			  "its number and a tab, as many as count asks and window_bytes "
-			  "holds. The last line of the output gives the revision and line "
-			  "to read on from. Only a line longer than the window is cut, and "
-			  "then its footer gives the next offset."
-			: "The capture limit is 4 MiB. The response window is window_bytes; "
-			  "a longer output ends with a footer that gives the exact next "
+			  "its number and a tab, as many as count asks and as fit in "
+			  "window_bytes. The last line of the output gives the revision and "
+			  "line to read on from. Only a line longer than the window is cut, "
+			  "and then its note gives the next offset."
+			: "The capture limit is 4 MiB. A result takes at most window_bytes; "
+			  "a longer output ends with a note that gives the exact next "
 			  "offset for the same arguments."),
 		"limits", jb_object(
 			"options", json_object_new_int(takes & MODE ? 1 : OPTIONS),

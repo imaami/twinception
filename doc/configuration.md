@@ -1396,7 +1396,7 @@ Every match is numbered: `commit:path:line:text`, with the full commit ID;
 Option values stay attached in one array entry. To read a committed file, use
 `command: "read"` with `"revisions":["HEAD:src/journal.c"]`, and optionally
 `line`, the first line (default 1), and `count`, the most lines (default as
-many as the window holds). Each line comes after its number and a tab. The
+many as fit in one result). Each line comes after its number and a tab. The
 first line of the output names the full commit ID, and the last line gives the
 revision and the `line` to read on from. The `commit:path` of a `grep` match
 reads as the revision, and its number as the `line`. `show` with the same
@@ -1417,11 +1417,11 @@ Revisions are resolved to immutable IDs, and
 attributes and mailmaps use the view's fixed `HEAD`. Repository metadata and
 object storage remain trusted; this is not an operating-system sandbox.
 
-Git output is captured up to 4 MiB. An agent's response window may be
-smaller; `help: true` gives it as `window_bytes`, and the footer of a longer
-output gives the exact next `offset` to use with the same arguments. `read`
-gives the whole lines that fit the window and pages by `line` instead; only a
-line longer than the window is cut by bytes. A
+Git output is captured up to 4 MiB. A result for an agent may take less;
+`help: true` gives the most it takes as `window_bytes`, and the note of a
+longer output gives the exact next `offset` to use with the same arguments.
+`read` gives the whole lines that fit the window and pages by `line`
+instead; only a line longer than the window is cut by bytes. A
 successful search with no matches says `[No matches.]`;
 other nonzero Git exits are reported as errors. A revision that names no
 readable commit gets one text that lists the causes, the same for a hash that

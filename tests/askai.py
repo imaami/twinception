@@ -8741,9 +8741,12 @@ def check_git(binary, up):
             assert schema["properties"]["repo"]["enum"] == ["proj", "other"] and \
                 schema["required"] == ["repo", "command"], schema
             # The description has an example call that reads a file with read
-            # and HEAD:path, so that a model tries that first.
-            assert '"revisions": ["HEAD:src/journal.c"]' in tools[1]["description"] and \
-                "HEAD:path" in schema["properties"]["revisions"]["description"], tools[1]
+            # and HEAD:path, so that a model tries that first, and says that a
+            # read goes on with the commit's ID, not HEAD.
+            described = tools[1]["description"]
+            assert '"revisions": ["HEAD:src/journal.c"]' in described and \
+                "ID in place of HEAD" in described and "cut at 4 MiB" in described and \
+                "HEAD:path" in schema["properties"]["revisions"]["description"], described
             assert {"line", "count"} <= set(schema["properties"]), schema
             assert text_of(call(ai, repo="proj", command="show",
                                 revisions=["HEAD:a.txt"])).startswith("alpha\n"), "show"
@@ -8764,6 +8767,7 @@ def check_git(binary, up):
                 assert help_text["limits"]["window_bytes"] == 16 << 20, result
                 assert help_text["pattern_required"] == (command == "grep"), result
             help_text = json.loads(text_of(call(ai, repo="proj", command="read", help=True)))
+            assert "by its ID" in help_text["description"], help_text
             assert help_text["options"] == [] and help_text["limits"]["revisions"] == 1 and \
                 help_text["limits"]["paths"] == 0, help_text
             # help gives the limits that validation applies.
