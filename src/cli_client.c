@@ -280,6 +280,32 @@ struct cli_client_call {
 	cli_client_done_fn         *done;
 };
 
+/* The timeout of a request in seconds: none for a tool call, 30 for
+ * another call, and 5 for a notification, which is sent without an id.
+ */
+static long
+cli_client_timeout (char const *method,
+                    int64_t     id)
+{
+	return !id ? 5 : strcmp(method, CLI_TOOLS_CALL) ? 30 : 0;
+}
+
+/* Store the id of the next request in *id. Returns 0, or EOVERFLOW after
+ * it releases params, which the request would have consumed.
+ */
+static int
+cli_client_next_id (struct cli_client  *client,
+                    struct json_object *params,
+                    int64_t            *id)
+{
+	if (client->next_id == INT64_MAX) {
+		json_object_put(params);
+		return EOVERFLOW;
+	}
+	*id = ++client->next_id;
+	return 0;
+}
+
 static int cli_client_call_start (struct cli_client *client, char const *method,
                                   struct json_object *params, cli_client_notify_fn *notify,
                                   cli_client_done_fn *done, void *context, int64_t id,
@@ -303,13 +329,13 @@ cli_client_cancel (struct cli_client *client,
                    int64_t            id,
                    bool               wait)
 {
+	static char const method[] = "notifications/cancelled";
 	struct json_object *params = jb_object("requestId", json_object_new_int64(id),
 	                                       "reason", json_object_new_string("Interrupted by the terminal user"), nullptr);
 	struct cli_error error = {};
 	uint64_t request;
-	int e = wait ? cli_client_notification(client, "notifications/cancelled", params, 0, 5, &error)
-	             : cli_client_call_start(client, "notifications/cancelled", params,
-	                                     nullptr, nullptr, nullptr, 0, &request, &error);
+	int e = wait ? cli_client_notification(client, method, params, 0, 5, &error)
+	             : cli_client_call_start(client, method, params, nullptr, nullptr, nullptr, 0, &request, &error);
 	cli_client_report_cancel(client, e, &error);
 }
 
@@ -318,20 +344,21 @@ int cli_client_rpc(struct cli_client *client, char const *method,
                     void *context, struct json_object **result, struct cli_error *error)
 {
 	*result = nullptr;
-	if (client->next_id == INT64_MAX) {
-		json_object_put(params);
-		return EOVERFLOW;
-	}
-	int64_t id = ++client->next_id;
+	int64_t id;
+	int e = cli_client_next_id(client, params, &id);
+	if (e)
+		return e;
 	cli_json_auto message = cli_client_packet(method, params, id);
 	struct cli_client_response response;
 	cli_client_response_init(&response, client, notify, context, id, error);
 	struct cstr_view wire;
-	int e = cli_client_wire(message, JB_WIRE, &wire, error);
-	bool call = !strcmp(method, "tools/call");
+	e = cli_client_wire(message, JB_WIRE, &wire, error);
+	long timeout = cli_client_timeout(method, id);
 	if (!e)
-		e = cli_client_post(client, wire, &response, CLI_NETWORK_INTERRUPTIBLE, call ? 0 : 30);
-	if (e == EINTR && call)
+		e = cli_client_post(client, wire, &response, CLI_NETWORK_INTERRUPTIBLE, timeout);
+	/* Only a tool call runs without a timeout, and AskAI is told when
+	 * one is interrupted. */
+	if (e == EINTR && !timeout)
 		cli_client_cancel(client, id, true);
 	if (!e)
 		e = cli_client_response_result(&response, result);
@@ -409,8 +436,8 @@ cli_client_call_start (struct cli_client    *client,
 	struct cli_client_call *call = cli_client_call_create(client, notify, done, context, id, &e);
 	if (!call)
 		return e;
-	long timeout = !id ? 5 : !strcmp(method, "tools/call") ? 0 : 30;
-	struct cli_network_post const post = cli_client_network_post(client, wire, &call->response, timeout,
+	struct cli_network_post const post = cli_client_network_post(client, wire, &call->response,
+	                                                             cli_client_timeout(method, id),
 	                                                             id ? CLI_NETWORK_INTERRUPTIBLE : 0);
 	e = cli_network_submit(client->network, &post, cli_client_call_done, request);
 	if (e) {
@@ -432,12 +459,13 @@ cli_client_submit (struct cli_client    *client,
                    struct cli_error     *error)
 {
 	*request = 0;
-	if (client->next_id == INT64_MAX || !done) {
+	if (!done) {
 		json_object_put(params);
-		return done ? EOVERFLOW : EINVAL;
+		return EINVAL;
 	}
-	return cli_client_call_start(client, method, params, notify, done, context,
-	                              ++client->next_id, request, error);
+	int64_t id;
+	int e = cli_client_next_id(client, params, &id);
+	return e ? e : cli_client_call_start(client, method, params, notify, done, context, id, request, error);
 }
 
 void
@@ -585,7 +613,7 @@ cli_client_notes (struct cli_client   *client,
                   struct json_object **listing,
                   struct cli_error    *error)
 {
-	int e = cli_client_rpc(client, "tools/call", params, nullptr, nullptr, listing, error);
+	int e = cli_client_rpc(client, CLI_TOOLS_CALL, params, nullptr, nullptr, listing, error);
 	if (e)
 		return e;
 	if (json_object_get_boolean(jb_get(*listing, "isError")))

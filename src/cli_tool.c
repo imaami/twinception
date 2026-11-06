@@ -168,7 +168,7 @@ cli_tool_run (struct cli_tool  *tool,
 	int e = cli_tool_begin(tool);
 	cli_json_auto result = nullptr;
 	if (!e)
-		e = cli_client_rpc(tool->client, "tools/call", json_object_get(tool->params),
+		e = cli_client_rpc(tool->client, CLI_TOOLS_CALL, json_object_get(tool->params),
 		                   cli_stream_notify, &tool->stream, &result, error);
 	return e ? e : cli_tool_result(tool, result, error);
 }
@@ -198,7 +198,7 @@ cli_tool_submit (struct cli_tool  *tool,
 		return EINVAL;
 	int e = cli_tool_begin(tool);
 	if (!e)
-		e = cli_client_submit(tool->client, "tools/call", json_object_get(tool->params),
+		e = cli_client_submit(tool->client, CLI_TOOLS_CALL, json_object_get(tool->params),
 		                      cli_stream_notify, cli_tool_done, &tool->stream, &tool->request, error);
 	if (!e) {
 		cli_client_json_cleanup(&tool->params);

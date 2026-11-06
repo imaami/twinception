@@ -726,7 +726,7 @@ cli_ask (struct cli          *cli,
 	struct cli_stream stream = cli_stream(cli->console, cstr_view_dstr(&cli->client.tool),
 	                                      CSTR_VIEW("cli"), flags);
 	cli_json_auto result = nullptr;
-	int e = cli_client_rpc(&cli->client, "tools/call", json_object_get(params),
+	int e = cli_client_rpc(&cli->client, CLI_TOOLS_CALL, json_object_get(params),
 	                       cli_stream_notify, &stream, &result, error);
 	if (!e)
 		e = cli_stream_result(&stream, result, answer, error);

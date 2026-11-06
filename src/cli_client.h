@@ -15,6 +15,9 @@
 
 enum { CLI_LIMIT = 16 * 1024 * 1024 };
 
+/** The method of a tool call, which may run for long. */
+#define CLI_TOOLS_CALL "tools/call"
+
 /** Optional detail accompanying an error number; no allocation on failure.
  *  With its length, it is 2 KiB.
  */
