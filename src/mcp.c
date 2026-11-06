@@ -739,7 +739,6 @@ struct mcp_req {
 	struct hexid         archive;    /* the id of its job's records in the
 	                                    journal, if any */
 	struct hexid         thread;     /* the id of the thread of the notes */
-	char                 repo[NOTES_REPO];      /* the caller's own notes branch */
 	char                 client[POLICY_WHO];  /* the client for the log,
 	                                             which mcp_begin() writes
 	                                             from its stream; "": an
@@ -3926,18 +3925,24 @@ mcp_history_valid (struct json_object *history)
 	return true;
 }
 
-/** Keep the writer's identity in both initial and compacted prompts. */
+/** Keep the writer's identity in both initial and compacted prompts, if
+ *  the turns are lent the notes tool: the caller's own notes branch.
+ */
 static int
 mcp_req_notes_identity (struct mcp_req *req)
 {
-	if (!*req->repo)
+	struct mcp_static const *st = req->mcp->st;
+	struct notes const *notes = req->lent & st->lending.of[KIND_NOTES]
+	                          ? st->notes_tool.notes : nullptr;
+	if (!notes)
 		return 0;
+	char repo[NOTES_REPO];
+	notes_repo(notes, req->principal, NOTES_UPSTREAM, repo);
 	return dstr_printf(&req->self.answer,
 	                   "\n\n[askai: participant %s. Your writable notebook "
 	                   "is %s. Use notes action notebooks to discover "
 	                   "peers; selectors identify their authors.]\n",
-	                   notes_writer(req->mcp->st->notes_tool.notes),
-	                   notes_selector(req->repo)) ? 0 : ENOMEM;
+	                   notes_writer(notes), notes_selector(repo)) ? 0 : ENOMEM;
 }
 
 /* Create req->review if the tool mask @p lent contains findings. The record
@@ -4015,8 +4020,6 @@ mcp_req_ask (struct mcp_req     *req,
 		              nullptr, 0);
 		return;
 	}
-	if (notes)
-		notes_repo(notes, req->principal, NOTES_UPSTREAM, req->repo);
 	req->asked = ++req->mcp->asked;
 	mcp_req_log_ask(req, prompt, thread != nullptr);
 	mcp_req_wait(req);
@@ -6506,8 +6509,6 @@ mcp_recover_back (struct loop           *loop,
 	req->replay_filed = last_tool_result ? req->filed : 0;
 	/* A saved thread that is not an id, such as "", is no thread. */
 	(void)hexid_init(&req->thread, jb_view(jb_get(state, "thread")));
-	if (st->notes_tool.notes)
-		notes_repo(st->notes_tool.notes, req->principal, NOTES_UPSTREAM, req->repo);
 	req->intents = intents;
 	req->flags |= REQ_RECOVERING;
 	req->asked = ++req->mcp->asked;
