@@ -511,17 +511,18 @@ policy_build_gid (struct policy_build *b,
 	return 0;
 }
 
-/* Read @p spec, "sha256:HEX" or "env:NAME", into @p digest. */
+/* Read @p spec, a string "sha256:HEX" or "env:NAME", into @p digest. */
 static int
 policy_build_token (struct policy_build *b,
                     char const          *who,
-                    char const          *spec,
+                    struct json_object  *spec,
                     unsigned char       *digest)
 {
 	static char const sha[] = "sha256:";
 	static char const env[] = "env:";
-	if (!strncmp(spec, sha, sizeof sha - 1)) {
-		char const *hex = spec + sizeof sha - 1;
+	char const *s = jb_view(spec).data;
+	if (s && !strncmp(s, sha, sizeof sha - 1)) {
+		char const *hex = s + sizeof sha - 1;
 		size_t n = strspn(hex, "0123456789abcdefABCDEF");
 		if (n != 2 * DIGEST || hex[n])
 			return policy_build_fail(b, "identity %s: sha256: needs %d hex digits",
@@ -531,10 +532,10 @@ policy_build_token (struct policy_build *b,
 			                            util_hex_digit(hex[2 * i + 1]));
 		return 0;
 	}
-	if (strncmp(spec, env, sizeof env - 1))
+	if (!s || strncmp(s, env, sizeof env - 1))
 		return policy_build_fail(b, "identity %s: a token is sha256:HEX or env:NAME",
 		                         who);
-	char const *name = spec + sizeof env - 1;
+	char const *name = s + sizeof env - 1;
 	if (!*name)
 		return policy_build_fail(b, "identity %s: env: is not set", who);
 	char const *token = getenv(name);
@@ -719,12 +720,8 @@ policy_build_identity (struct policy_build *b,
 	struct cstr_view const parts[] = { CSTR_VIEW("identity "), { who, len } };
 	struct cstr_view name = policy_build_who(b, array_size(parts), parts);
 	for (size_t i = 0; i < n; ++i) {
-		struct json_object *spec = json_object_array_get_idx(tokens, i);
 		unsigned char digest[DIGEST];
-		if (!json_object_is_type(spec, json_type_string))
-			return policy_build_fail(b, "identity %s: a token is sha256:HEX or "
-			                         "env:NAME", who);
-		int e = policy_build_token(b, who, json_object_get_string(spec), digest);
+		int e = policy_build_token(b, who, json_object_array_get_idx(tokens, i), digest);
 		if (e)
 			return e;
 		policy_token_add(b->p, digest, name, r);
