@@ -90,6 +90,7 @@
 #include "buf.h"
 #include "cstr_view.h"
 #include "hist.h"
+#include "htab.h"
 #include "httpd.h"
 #include "list.h"
 #include "log.h"
@@ -194,7 +195,7 @@ struct httpd_req {
  */
 struct httpd_client {
 	struct list          spare;    /* on home's shelf, once unused */
-	struct httpd_client *next;     /* in its hash chain */
+	struct htab_node     node;     /* in home's table, by addr's hash */
 	struct stream_peer   addr;
 	size_t               conns;
 	_Atomic size_t       held;     /* body bytes counted in hub->bodies; 0 once
@@ -356,6 +357,7 @@ struct httpd_home {
 	struct httpd_hub       *hub;
 	_Atomic uint64_t const *calls;      /* jobs in flight */
 	struct httpd_listener  *listeners;
+	struct htab             clients;    /* the clients' entries */
 	struct ssl_ctx_st      *ctx;        /* a reference: what TLS listeners'
 	                                       clients shake hands by; nullptr:
 	                                       there is none */
@@ -387,7 +389,7 @@ struct httpd_home {
 	int                     spare_fd;   /* given up to accept a client;
 	                                       -1 while given up */
 	uint64_t                flags;      /* enum httpd_home_flag */
-	struct httpd_client    *clients[];  /* CLIENT_SLOTS hash chains */
+	struct htab_node       *buckets[];  /* CLIENT_SLOTS, the table's */
 };
 
 /* Home's door, for the connections given back. */
@@ -793,18 +795,21 @@ httpd_addr_key (struct sockaddr_storage const *ss,
 	memcpy(key->key, a, sizeof a);
 }
 
-/* The link that holds client @p key in home's table, or where it would be
- * appended.
+/* The entry of client @p key in home's table, or nullptr. Stores the hash
+ * of @p key in @p *hash.
  */
-static struct httpd_client **
-httpd_home_client_slot (struct httpd_home  *home,
-                        struct stream_peer  key)
+static struct httpd_client *
+httpd_home_client_find (struct httpd_home const *home,
+                        struct stream_peer       key,
+                        uint64_t                *hash)
 {
-	uint64_t h = util_hash(home->seed, key.key, sizeof key.key);
-	struct httpd_client **p = &home->clients[h & (CLIENT_SLOTS - 1)];
-	while (*p && !stream_peer_equal((*p)->addr, key))
-		p = &(*p)->next;
-	return p;
+	*hash = util_hash(home->seed, key.key, sizeof key.key);
+	for (struct htab_node *n = *htab_bucket(&home->clients, *hash); n; n = n->next) {
+		struct httpd_client *client = container_of(n, struct httpd_client, node);
+		if (n->hash == *hash && stream_peer_equal(client->addr, key))
+			return client;
+	}
+	return nullptr;
 }
 
 /* Count a connection from client @p key, in an entry kept for reuse if
@@ -814,8 +819,8 @@ static struct httpd_client *
 httpd_home_client_get (struct httpd_home  *home,
                        struct stream_peer  key)
 {
-	struct httpd_client **p = httpd_home_client_slot(home, key);
-	struct httpd_client *client = *p;
+	uint64_t hash;
+	struct httpd_client *client = httpd_home_client_find(home, key, &hash);
 	if (client) {
 		++client->conns;
 		return client;
@@ -829,10 +834,10 @@ httpd_home_client_get (struct httpd_home  *home,
 			return nullptr;
 		atomic_init(&client->held, 0);
 	}
-	client->next = nullptr;
+	client->node.hash = hash;
 	client->addr = key;
 	client->conns = 1;
-	*p = client;
+	htab_link(&home->clients, &client->node);
 	return client;
 }
 
@@ -845,7 +850,7 @@ httpd_home_client_put (struct httpd_home   *home,
 {
 	if (--client->conns)
 		return;
-	*httpd_home_client_slot(home, client->addr) = client->next;
+	htab_unlink(&home->clients, &client->node);
 	shelf_put(&home->gone, &client->spare);
 }
 
@@ -2750,7 +2755,8 @@ httpd_home_take (struct httpd_home             *home,
 		addr.key[1] = cred.uid;
 		user = &cred;
 	}
-	struct httpd_client const *client = *httpd_home_client_slot(home, addr);
+	uint64_t hash;
+	struct httpd_client const *client = httpd_home_client_find(home, addr, &hash);
 	if (client && home->cap && client->conns >= home->cap) {
 		static char const busy[] = "HTTP/1.1 503 Service Unavailable\r\n"
 		                           "Retry-After: 1\r\nConnection: close\r\n"
@@ -3211,12 +3217,12 @@ httpd_home_create (struct loop            *loop,
                    _Atomic uint64_t const *calls,
                    int                    *e)
 {
-	struct httpd_home *home = calloc(1, sizeof *home + CLIENT_SLOTS * sizeof *home->clients);
+	struct httpd_home *home = calloc(1, sizeof *home + CLIENT_SLOTS * sizeof *home->buckets);
 	if (!home) {
 		*e = ENOMEM;
 		goto fail;
 	}
-	/* The literal leaves the hash chains, which calloc() zeroed, as they
+	/* The literal leaves the buckets, which calloc() zeroed, as they
 	 * are. */
 	*home = (struct httpd_home){
 		.accept.fn = httpd_home_accept_step,
@@ -3224,6 +3230,7 @@ httpd_home_create (struct loop            *loop,
 		.loop = loop,
 		.hub = hub,
 		.calls = calls,
+		.clients = htab(home->buckets, CLIENT_SLOTS),
 		.ctx = cfg->tls ? tls_ctx_get(cfg->tls) : nullptr,
 		.policy = policy_get(cfg->policy),
 		.rng = loop_clock() | 1,
@@ -3264,11 +3271,10 @@ httpd_home_destroy (struct httpd_home **p_home)
 	(void)httpd_home_relieve(home, BUF_CRITICAL, SIZE_MAX);
 	/* Connections on their way to a loop, or back, count their client
 	 * addresses still; the loops are done with them. */
-	for (size_t i = 0; i < CLIENT_SLOTS; ++i)
-		for (struct httpd_client *c = home->clients[i], *next; c; c = next) {
-			next = c->next;
-			free(c);
-		}
+	for (struct htab_node *node = htab_next(&home->clients, nullptr), *next; node; node = next) {
+		next = htab_next(&home->clients, node);
+		free(container_of(node, struct httpd_client, node));
+	}
 	free(home->listeners);
 	tls_ctx_put(home->ctx);
 	policy_put(home->policy);
