@@ -8,7 +8,6 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
-#include <stdio.h>
 #include <string.h>
 
 #include "config.h"
@@ -56,6 +55,34 @@ tls_alpn (SSL                  *ssl,
 	return SSL_TLSEXT_ERR_ALERT_FATAL;
 }
 
+/* Say in the @p len bytes at @p why that @p what failed, and OpenSSL's
+ * reason, its last error, which the queue then lacks. Returns ENOMEM if
+ * OpenSSL ran out of memory, or reports no error, else EINVAL.
+ */
+static int
+tls_fail (char       *why,
+          size_t      len,
+          char const *what)
+{
+	unsigned long e = 0;
+	bool oom = false;
+	for (unsigned long x; (x = ERR_get_error()); e = x)
+		oom |= ERR_GET_REASON(x) == ERR_R_MALLOC_FAILURE;
+	int lib = ERR_GET_LIB(e);
+	int reason = ERR_GET_REASON(e);
+	char const *text = e ? ERR_reason_error_string(e) : nullptr;
+	if (lib == ERR_LIB_PEM && reason == PEM_R_BAD_PASSWORD_READ)
+		util_format(why, len, "the key is encrypted");
+	else if (lib == ERR_LIB_X509 && (reason == X509_R_KEY_VALUES_MISMATCH ||
+	                                 reason == X509_R_KEY_TYPE_MISMATCH))
+		util_format(why, len, "the key is not the certificate's");
+	else if (text)
+		util_format(why, len, "%s: %s", what, text);
+	else
+		util_format(why, len, "%s", what);
+	return !e || oom ? ENOMEM : EINVAL;
+}
+
 /* What every connection of @p ctx does: TLS 1.3; its records read one a
  * call, never ahead, and the call done after a message of the client's that
  * is not data, such as a key update, as a client could send those without
@@ -63,10 +90,13 @@ tls_alpn (SSL                  *ssl,
  * read ahead lies where epoll does not see it; records written one at a
  * time, from output that may move between tries; one stateless ticket, as
  * no session is cached; a client that closes without close_notify ends its
- * input, as HTTP's framing catches a cut request.
+ * input, as HTTP's framing catches a cut request. Returns 0, or the error
+ * of tls_fail() with what is wrong in the @p len bytes at @p why.
  */
-static bool
-tls_ctx_set_up (SSL_CTX *ctx)
+static int
+tls_ctx_set_up (SSL_CTX *ctx,
+                char    *why,
+                size_t   len)
 {
 	SSL_CTX_set_default_passwd_cb(ctx, tls_no_passphrase);
 	SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS | SSL_MODE_NO_AUTO_CHAIN |
@@ -76,20 +106,24 @@ tls_ctx_set_up (SSL_CTX *ctx)
 	SSL_CTX_set_options(ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
 	SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
 	SSL_CTX_set_alpn_select_cb(ctx, tls_alpn, nullptr);
-	return SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION) &&
-	       SSL_CTX_set_num_tickets(ctx, 1) &&
-	       SSL_CTX_set1_groups_list(ctx, "?X25519MLKEM768:X25519:P-256");
+	bool ok = SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION) &&
+	          SSL_CTX_set_num_tickets(ctx, 1) &&
+	          SSL_CTX_set1_groups_list(ctx, "?X25519MLKEM768:X25519:P-256");
+	return ok ? 0 : tls_fail(why, len, "cannot set TLS up");
 }
 
-/* The certificate chain from @p len bytes of PEM at @p pem: the leaf's, then
- * the others, which are sent as they are (NO_AUTO_CHAIN).
+/* The certificate chain from @p size bytes of PEM at @p pem: the leaf's,
+ * then the others, which are sent as they are (NO_AUTO_CHAIN). Returns 0,
+ * or as tls_ctx_set_up() does.
  */
-static bool
+static int
 tls_ctx_use_chain (SSL_CTX    *ctx,
                    char const *pem,
+                   size_t      size,
+                   char       *why,
                    size_t      len)
 {
-	BIO *bio = len <= INT_MAX ? BIO_new_mem_buf(pem, (int)len) : nullptr;
+	BIO *bio = size <= INT_MAX ? BIO_new_mem_buf(pem, (int)size) : nullptr;
 	X509 *leaf = bio ? PEM_read_bio_X509_AUX(bio, nullptr, tls_no_passphrase, nullptr)
 	                 : nullptr;
 	bool ok = leaf && SSL_CTX_use_certificate(ctx, leaf) == 1;
@@ -101,30 +135,32 @@ tls_ctx_use_chain (SSL_CTX    *ctx,
 			X509_free(ca);
 	}
 	BIO_free(bio);
-	if (!ok)
-		return false;
 	/* No more certificates: the end of the text, or else an error. */
-	unsigned long e = ERR_peek_last_error();
+	unsigned long e = ok ? ERR_peek_last_error() : 0;
 	if (ERR_GET_LIB(e) != ERR_LIB_PEM || ERR_GET_REASON(e) != PEM_R_NO_START_LINE)
-		return false;
+		return tls_fail(why, len, "the certificate chain");
 	ERR_clear_error();
-	return true;
+	return 0;
 }
 
-/* The private key from @p len bytes of PEM at @p pem. */
-static bool
+/* The private key from @p size bytes of PEM at @p pem. Returns 0, or as
+ * tls_ctx_set_up() does.
+ */
+static int
 tls_ctx_use_key (SSL_CTX    *ctx,
                  char const *pem,
+                 size_t      size,
+                 char       *why,
                  size_t      len)
 {
-	BIO *bio = len <= INT_MAX ? BIO_new_mem_buf(pem, (int)len) : nullptr;
+	BIO *bio = size <= INT_MAX ? BIO_new_mem_buf(pem, (int)size) : nullptr;
 	EVP_PKEY *key = bio ? PEM_read_bio_PrivateKey(bio, nullptr, tls_no_passphrase,
 	                                              nullptr)
 	                    : nullptr;
 	BIO_free(bio);
 	bool ok = key && SSL_CTX_use_PrivateKey(ctx, key) == 1;
 	EVP_PKEY_free(key);
-	return ok;
+	return ok ? 0 : tls_fail(why, len, "the key");
 }
 
 /* What is wrong with the type of @p ctx's key, or nullptr: ECDSA on a curve
@@ -155,34 +191,6 @@ tls_ctx_key_type (SSL_CTX             *ctx,
 	return other;
 }
 
-/* Say in the @p len bytes at @p why that @p what failed, and OpenSSL's
- * reason, its last error, which the queue then lacks. Returns ENOMEM if
- * OpenSSL ran out of memory, or reports no error, else EINVAL.
- */
-static int
-tls_fail (char       *why,
-          size_t      len,
-          char const *what)
-{
-	unsigned long e = 0;
-	bool oom = false;
-	for (unsigned long x; (x = ERR_get_error()); e = x)
-		oom |= ERR_GET_REASON(x) == ERR_R_MALLOC_FAILURE;
-	int lib = ERR_GET_LIB(e);
-	int reason = ERR_GET_REASON(e);
-	char const *text = e ? ERR_reason_error_string(e) : nullptr;
-	if (lib == ERR_LIB_PEM && reason == PEM_R_BAD_PASSWORD_READ)
-		util_format(why, len, "the key is encrypted");
-	else if (lib == ERR_LIB_X509 && (reason == X509_R_KEY_VALUES_MISMATCH ||
-	                                 reason == X509_R_KEY_TYPE_MISMATCH))
-		util_format(why, len, "the key is not the certificate's");
-	else if (text)
-		util_format(why, len, "%s: %s", what, text);
-	else
-		util_format(why, len, "%s", what);
-	return !e || oom ? ENOMEM : EINVAL;
-}
-
 /* Set @p ctx up, with the chain and the key, as tls_ctx_create() says. */
 static int
 tls_ctx_load (SSL_CTX             *ctx,
@@ -194,12 +202,11 @@ tls_ctx_load (SSL_CTX             *ctx,
               char                *why,
               size_t               len)
 {
-	if (!tls_ctx_set_up(ctx))
-		return tls_fail(why, len, "cannot set TLS up");
-	if (!tls_ctx_use_chain(ctx, chain, chain_len))
-		return tls_fail(why, len, "the certificate chain");
-	if (!tls_ctx_use_key(ctx, key, key_len))
-		return tls_fail(why, len, "the key");
+	int e = tls_ctx_set_up(ctx, why, len);
+	e = e ? e : tls_ctx_use_chain(ctx, chain, chain_len, why, len);
+	e = e ? e : tls_ctx_use_key(ctx, key, key_len, why, len);
+	if (e)
+		return e;
 	char const *wrong = SSL_CTX_check_private_key(ctx) != 1
 	                  ? "the key is not the certificate's"
 	                  : tls_ctx_key_type(ctx, cfg);
