@@ -352,9 +352,8 @@ notes_tool_failed (struct mcp_slot *slot,
                    int              e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	bool busy = e == EBUSY;
-	if (!busy)
-		LOG(LOG_WARN, "notes: cannot run git: %s", strerror(e));
+	char buf[96];
+	struct cstr_view const why = child_spawn_why(e, "git", buf, sizeof buf);
 	switch (call->fetch & FETCH_KIND) {
 	case FETCH_NEWEST:
 	case FETCH_COMPACT:
@@ -364,10 +363,7 @@ notes_tool_failed (struct mcp_slot *slot,
 		notes_tool_drop(slot);
 		break;
 	}
-	if (busy)
-		mcp_slot_tell(slot, CSTR_VIEW(CHILD_BUSY), TOOL_FAILED);
-	else
-		mcp_slot_tellf(slot, TOOL_FAILED, "The notes cannot be used now: %s.", strerror(e));
+	mcp_slot_tell(slot, why, TOOL_FAILED);
 }
 
 /* Returns the notebook that @p call selected, or else call->repo. */

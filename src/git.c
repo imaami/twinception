@@ -15,7 +15,6 @@
 #include "git.h"
 #include "git_view.h"
 #include "jb.h"
-#include "log.h"
 #include "loop.h"
 #include "mcp.h"
 #include "oid.h"
@@ -1693,12 +1692,8 @@ git_start (struct mcp_slot    *slot,
 		return;
 	}
 	git_call_destroy(&call);
-	if (e == EBUSY) {
-		mcp_slot_tell(slot, CSTR_VIEW(CHILD_BUSY), TOOL_FAILED);
-		return;
-	}
-	LOG(LOG_WARN, "Cannot run git: %s.", strerror(e));
-	mcp_slot_tellf(slot, TOOL_FAILED, "Cannot run git: %s.", strerror(e));
+	char buf[GIT_WHY];
+	mcp_slot_tell(slot, child_spawn_why(e, "git", buf, sizeof buf), TOOL_FAILED);
 }
 
 struct plugin const git_plugin = {

@@ -348,15 +348,8 @@ manual_fetch_run (struct manual_fetch *f,
 		hist_count(runs, 1);
 		return;
 	}
-	if (e == EBUSY) {
-		manual_fetch_fail(f, CSTR_VIEW(CHILD_BUSY));
-		return;
-	}
 	char buf[MANUAL_WHY];
-	struct cstr_view const why = util_format_view(buf, sizeof buf, "Cannot run man: %s.",
-	                                              strerror(e));
-	LOG(LOG_WARN, "%s", buf);
-	manual_fetch_fail(f, why);
+	manual_fetch_fail(f, child_spawn_why(e, "man", buf, sizeof buf));
 }
 
 /* Writes the refusal of the alias @p a, which is not in the manual, to

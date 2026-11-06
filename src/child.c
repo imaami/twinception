@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include "child.h"
+#include "log.h"
 #include "util.h"
 
 /* The children spawned and not yet reaped, of every loop. */
@@ -544,6 +545,20 @@ child_why (struct child const *c,
 	default:
 		return util_format_view(buf, size, "%s was killed by signal %d.", name, c->status);
 	}
+}
+
+struct cstr_view
+child_spawn_why (int         e,
+                 char const *name,
+                 char       *buf,
+                 size_t      size)
+{
+	if (e == EBUSY)
+		return CSTR_VIEW("Too many commands are running; try again in a few seconds.");
+	struct cstr_view const why = util_format_view(buf, size, "Cannot run %s: %s.", name,
+	                                              strerror(e));
+	LOG(LOG_WARN, "%s", buf);
+	return why;
 }
 
 struct child *

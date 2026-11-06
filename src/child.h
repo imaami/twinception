@@ -26,9 +26,6 @@
  */
 enum { CHILD_MAX = 16 };
 
-/** The refusal of a call whose child child_create() refuses with EBUSY. */
-#define CHILD_BUSY "Too many commands are running; try again in a few seconds."
-
 /** How a child is spawned. */
 enum child_flag {
 	CHILD_STDERR = 1u << 0,  /**< its standard error goes to its output too */
@@ -124,6 +121,18 @@ child_why (struct child const *c,
            uint64_t            timeout,
            char               *buf,
            size_t              size);
+
+/**
+ * Writes why child_create() could not spawn @p name, with the error @p e,
+ * into the @p size bytes at @p buf: "Cannot run NAME: ERROR.", which also
+ * goes to the log as a warning. Returns a view of the text, or for EBUSY a
+ * view of a static text that asks to try again.
+ */
+extern struct cstr_view
+child_spawn_why (int         e,
+                 char const *name,
+                 char       *buf,
+                 size_t      size);
 
 /** What a child runs, and how. */
 struct child_cmd {
