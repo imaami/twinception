@@ -129,9 +129,10 @@ struct home_cancellation {
  * the id that lets us cancel the provider's generation.
  */
 struct home_delivery_error {
-	long     retry;
-	CURLcode result;
-	char     message[CURL_ERROR_SIZE];
+	long retry;
+	long result;                   /* a CURLcode, as a long so that the
+	                                  struct has no padding */
+	char message[CURL_ERROR_SIZE];
 };
 
 /* The bits of job->recovery.flags. */

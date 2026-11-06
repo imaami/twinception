@@ -270,9 +270,11 @@ struct job {
 	                                         job_status */
 	uint8_t                asks;        /**< the front's, before SUBMIT: enum
 	                                         job_ask */
-	char                   reason[42];  /**< home's: the answer's stop reason,
-	                                         longer than any the providers
-	                                         name */
+	char                   reason[43];  /**< home's: the answer's stop reason.
+	                                         The array is longer than any
+	                                         reason that the providers name,
+	                                         and its size leaves no padding at
+	                                         the end of the struct. */
 	struct hexid           archive;     /**< the front's: transcript job id */
 };
 
