@@ -14706,7 +14706,9 @@ CE_LANGUAGES = [{"id": "c", "name": "C", "extensions": [".c"], "monaco": "nc",
                 {"id": "none", "name": "No compilers", "extensions": [],
                  "monaco": "none"},
                 {"id": "bad", "name": "Bad default", "extensions": [],
-                 "monaco": "none", "defaultCompiler": "a/b"}]
+                 "monaco": "none", "defaultCompiler": "a/b"},
+                {"id": "keys", "name": "Keys", "extensions": [], "monaco": "none",
+                 "defaultCompiler": "zz"}]
 
 CE_COMPILERS = {
     "c": [ce_compiler("cg142", "x86-64 gcc 14.2", "", ["gcc"], "14.2", "amd64"),
@@ -14956,13 +14958,14 @@ def check_godbolt(binary, up, godbolt):
     checks that askai sends each list once, and checks lists with malformed
     and oversized elements. Then it compiles with several compilers and
     argument strings, refuses ids that are not in the list before it
-    compiles, and checks the bodies of the requests, the records of failed
-    requests, a retry after 429, cut and oversized responses, the end of the
-    output at 14 MiB, a long line, large and odd responses, the stored
-    responses of a call with offset, refused arguments and a cancelled call.
-    It preprocesses, outputs the predefined macros and probes the targets
-    with compilers of each kind of driver. It makes links with each value of
-    the option share. Last, it starts askai with options that the plugin
+    compiles, uses the default compiler of the language without compilers,
+    and checks the bodies of the requests, the records of failed requests,
+    a retry after 429, cut and oversized responses, the end of the output at
+    14 MiB, a long line, large and odd responses, the stored responses of a
+    call with offset, refused arguments and a cancelled call. It
+    preprocesses, outputs the predefined macros and probes the targets with
+    compilers of each kind of driver. It makes links with each value of the
+    option share. Last, it starts askai with options that the plugin
     refuses.
     """
     godbolt = os.path.realpath(godbolt)
@@ -15025,9 +15028,8 @@ def check_godbolt(binary, up, godbolt):
                 assert [t["name"] for t in tools] == \
                     ["ask_ai", "godbolt_catalog", "godbolt_compile", "godbolt_preprocess",
                      "godbolt_macros", "godbolt_targets"], tools
-                assert [t["inputSchema"]["required"] for t in tools[1:]] == \
-                    [["action"], ["compilers", "source"], ["compilers", "source"],
-                     ["compilers"], ["compilers"]], tools
+                assert [t["inputSchema"].get("required") for t in tools[1:]] == \
+                    [["action"], ["source"], ["source"], None, None], tools
                 for tool in tools[1:]:
                     assert f"Compiler Explorer at {ce.url()}" in tool["description"], tool
                     assert tool["inputSchema"]["properties"]["offset"]["description"] == \
@@ -15058,8 +15060,8 @@ def check_godbolt(binary, up, godbolt):
                 # needs for JSON.
                 assert ok(ai, "godbolt_catalog", action="languages") == \
                     "id\tname\tdefault\nc\tC\tcg142\nc++\tC++\tcppg142\nnone\tNo " \
-                    "compilers\tnone\nbad\tBad default\ta/b\nListed 4 of 4 matching " \
-                    "languages. Compiler Explorer has 4 languages.\n"
+                    "compilers\tnone\nbad\tBad default\ta/b\nkeys\tKeys\tzz\nListed 5 " \
+                    "of 5 matching languages. Compiler Explorer has 5 languages.\n"
                 (_, _, query, headers, _), = ce.seen("GET", "/api/languages")
                 assert query == "fields=id,name,defaultCompiler" and \
                     headers["User-Agent"] == "askai (plugin godbolt)" and \
@@ -15217,6 +15219,28 @@ def check_godbolt(binary, up, godbolt):
                 recovered, _ = ce_records(ok(ai, "godbolt_compile", compilers=[compiler],
                                               language=recovery["language"], source=source))
                 assert recovered[0][2] == "exit code 0", recovered
+                # Without compilers, a tool uses the default compiler of the
+                # language from the list of languages. A language without a
+                # valid one, or with one that is not in its list, fails the
+                # call before a compilation is sent.
+                records, _ = ce_records(ok(ai, "godbolt_compile", source=source))
+                assert records == [("cg142", "", "exit code 0", f"--- asm ---\n{asm}")], \
+                    records
+                records, _ = ce_records(ok(ai, "godbolt_macros", language="c++"))
+                assert records == [("cppg142", "", "exit code 0",
+                                    "--- macros ---\n#define __GNUC__ 14\n")] and \
+                    ce.bodies()[-1]["options"]["userArguments"] == "-E -dM", records
+                sent = len(ce.bodies())
+                for language in ("none", "bad", "tags"):
+                    text = refused(ai, "godbolt_compile", language=language, source=source)
+                    assert text == "The list of languages contains no valid default " \
+                        f"compiler for language {language}. Call godbolt_catalog with " \
+                        '{"action":"languages"} for the languages and their default ' \
+                        "compilers.", text
+                text = refused(ai, "godbolt_compile", language="keys", source=source)
+                assert text == "These compiler ids are not in the list of language keys: " \
+                    "zz. " + compiler_hint("keys"), text
+                assert len(ce.bodies()) == sent
                 records, last = ce_records(ok(ai, "godbolt_compile", compilers=["cg142"],
                                               args=["-DFAIL"], source=source))
                 assert records[0][2] == "exit code 1" and \
@@ -15605,13 +15629,14 @@ def check_godbolt(binary, up, godbolt):
         ce.close()
     print("godbolt: tools listed with the configured URL; catalog of languages and "
           "compilers with filters, counts, limit and offset, lists stored, "
-          "malformed and oversized elements; ids checked in the list; compilations "
-          "in order with the site's filters, failed requests as records, 429 sent "
-          "again, cut and oversized responses, the end of the output at 14 MiB, a "
-          "long line in slices, large and odd responses, stored responses for a "
-          "call with offset, refused arguments and options, cancellation; "
-          "preprocessing, predefined macros and target facts with the flags of each "
-          "driver; short links, links to the state and no links: PASS")
+          "malformed and oversized elements; ids checked in the list; default "
+          "compilers; compilations in order with the site's filters, failed "
+          "requests as records, 429 sent again, cut and oversized responses, the "
+          "end of the output at 14 MiB, a long line in slices, large and odd "
+          "responses, stored responses for a call with offset, refused arguments "
+          "and options, cancellation; preprocessing, predefined macros and target "
+          "facts with the flags of each driver; short links, links to the state "
+          "and no links: PASS")
 
 
 def check_classes(binary, up):

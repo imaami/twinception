@@ -441,22 +441,20 @@ static struct godbolt_params const godbolt_params[] = {
 		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
 		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(FILTERS) | GODBOLT_BIT(SHARE) |
 		        GODBOLT_BIT(OFFSET),
-		.needs = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(SOURCE)
+		.needs = GODBOLT_BIT(SOURCE)
 	},
 	[GODBOLT_PREPROCESS] = {
 		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
 		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(SHARE) | GODBOLT_BIT(OFFSET),
-		.needs = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(SOURCE)
+		.needs = GODBOLT_BIT(SOURCE)
 	},
 	[GODBOLT_MACROS] = {
 		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
-		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(SHARE) | GODBOLT_BIT(OFFSET),
-		.needs = GODBOLT_BIT(COMPILERS)
+		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(SHARE) | GODBOLT_BIT(OFFSET)
 	},
 	[GODBOLT_TARGETS] = {
 		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
-		        GODBOLT_BIT(HEADERS) | GODBOLT_BIT(OFFSET),
-		.needs = GODBOLT_BIT(COMPILERS)
+		        GODBOLT_BIT(HEADERS) | GODBOLT_BIT(OFFSET)
 	},
 };
 
@@ -703,6 +701,8 @@ struct godbolt {
 	UTIL_TEXT(GODBOLT_REASON_MAX + 120) why;  /* the reason of a failure,
 	                                             or the status of a
 	                                             compilation */
+	/* The id that args.ids[0] points to in a call without compilers. */
+	char                         default_compiler[GODBOLT_ID_MAX];
 	char                         url[1024];
 	char                         blob[];
 };
@@ -744,6 +744,36 @@ godbolt_or (struct cstr_view t,
             struct cstr_view otherwise)
 {
 	return t.len ? t : otherwise;
+}
+
+/* Returns the string @p v if it is @p min to @p max bytes long, if it
+ * contains no NUL byte, and if each of its bytes is in @p set, unless
+ * @p set is nullptr. Otherwise it returns an empty view whose data is
+ * nullptr.
+ */
+static struct cstr_view
+godbolt_text (struct json_object *v,
+              size_t              min,
+              size_t              max,
+              char const         *set)
+{
+	struct cstr_view const t = jb_view(v);
+	if (!t.data || t.len < min || t.len > max ||
+	    (set ? strspn(t.data, set) : strlen(t.data)) != t.len)
+		return (struct cstr_view){};
+	return t;
+}
+
+/* Returns the string @p v if it is a valid compiler id: 1 to
+ * GODBOLT_ID_MAX bytes of godbolt_id_bytes, other than "." and "..".
+ * Otherwise it returns an empty view whose data is nullptr.
+ */
+static struct cstr_view
+godbolt_id (struct json_object *v)
+{
+	struct cstr_view const id = godbolt_text(v, 1, GODBOLT_ID_MAX, godbolt_id_bytes);
+	return cstr_view_equal(id, CSTR_VIEW(".")) || cstr_view_equal(id, CSTR_VIEW(".."))
+	       ? (struct cstr_view){} : id;
 }
 
 /* Copies @p t to @p d, and returns the end of the copy. */
@@ -1529,6 +1559,39 @@ godbolt_list_send (struct godbolt *call)
 	return godbolt_send(call);
 }
 
+/* If @p element is the call's language, sets args.ids[0] to a copy of its
+ * default compiler if that is a valid id, and ends the parse. Returns 0.
+ */
+static int
+godbolt_default_row (struct godbolt     *call,
+                     struct json_object *element)
+{
+	if (!cstr_view_equal(jb_view(jb_get(element, "id")), call->args.language))
+		return 0;
+	struct cstr_view const id = godbolt_id(jb_get(element, "defaultCompiler"));
+	static_assert(sizeof call->default_compiler >= GODBOLT_ID_MAX);
+	call->args.ids[0] = (struct cstr_view){ call->default_compiler, id.len };
+	godbolt_cat(call->default_compiler, id);
+	call->list = GODBOLT_LIST_END;
+	return 0;
+}
+
+/* Ends the parse of the list of languages. Without a valid default
+ * compiler the call fails, and with one it reads the list of compilers.
+ */
+static enum godbolt_go
+godbolt_default_end (struct godbolt *call)
+{
+	if (!call->args.ids[0].len)
+		return godbolt_refuse(call->slot, "The list of languages contains no valid "
+		                      "default compiler for language %.*s. Call godbolt_catalog "
+		                      "with {\"action\":\"languages\"} for the languages and their "
+		                      "default compilers.", (int)call->args.language.len,
+		                      call->args.language.data);
+	call->args.action = GODBOLT_COMPILERS;
+	return godbolt_list_send(call);
+}
+
 /* The phase GODBOLT_LIST. It reads the response to the request of the
  * list. For godbolt_catalog, it writes the first line of the output.
  */
@@ -1556,24 +1619,35 @@ godbolt_list (struct godbolt *call)
 	                                                                    : GODBOLT_GO;
 }
 
-/* The phase GODBOLT_ROWS. It parses the next elements of the list. After
- * the end of the list, godbolt_catalog ends the call, and the other tools
- * begin to compile.
+/* Indexed by [the tool compiles][the list is the list of languages]. */
+static struct {
+	int             (*row) (struct godbolt     *call,
+	                        struct json_object *element);
+	enum godbolt_go (*end) (struct godbolt *call);
+} const godbolt_lists[2][2] = {
+	{ { godbolt_compiler_row, godbolt_catalog_end },
+	  { godbolt_language_row, godbolt_catalog_end } },
+	{ { godbolt_driver_row, godbolt_drivers_end },
+	  { godbolt_default_row, godbolt_default_end } },
+};
+
+/* The phase GODBOLT_ROWS. It parses the next elements of the list, and
+ * after its end calls the end function of godbolt_lists.
  */
 static enum godbolt_go
 godbolt_rows (struct godbolt *call)
 {
-	bool const catalog = call->tool == GODBOLT_CATALOG;
-	if (godbolt_list_parse(call, !catalog ? godbolt_driver_row
-	                             : call->args.action == GODBOLT_LANGUAGES ? godbolt_language_row
-	                             : godbolt_compiler_row))
+	bool const compiles = call->tool != GODBOLT_CATALOG;
+	bool const languages = call->args.action == GODBOLT_LANGUAGES;
+	typeof(godbolt_lists[0][0]) const *f = &godbolt_lists[compiles][languages];
+	if (godbolt_list_parse(call, f->row))
 		return godbolt_fail(call);
 	if (call->list == GODBOLT_LIST_BAD)
 		return godbolt_refuse(call->slot, "Compiler Explorer sent a list that is not "
 		                      "valid: %s.", call->why.data);
 	if (call->list != GODBOLT_LIST_END)
 		return GODBOLT_GO;
-	return catalog ? godbolt_catalog_end(call) : godbolt_drivers_end(call);
+	return f->end(call);
 }
 
 /* Returns the largest number of bytes that the state of the call can need
@@ -2449,24 +2523,6 @@ godbolt_drop (struct mcp_slot *slot)
 	*own = nullptr;
 }
 
-/* Returns the string @p v if it is @p min to @p max bytes long, if it
- * contains no NUL byte, and if each of its bytes is in @p set, unless
- * @p set is nullptr. Otherwise it returns an empty view whose data is
- * nullptr.
- */
-static struct cstr_view
-godbolt_text (struct json_object *v,
-              size_t              min,
-              size_t              max,
-              char const         *set)
-{
-	struct cstr_view const t = jb_view(v);
-	if (!t.data || t.len < min || t.len > max ||
-	    (set ? strspn(t.data, set) : strlen(t.data)) != t.len)
-		return (struct cstr_view){};
-	return t;
-}
-
 /* Reads the array of ids @p v into a->ids. Returns 0, or EINVAL. */
 static int
 godbolt_args_ids (struct godbolt_args *a,
@@ -2476,10 +2532,8 @@ godbolt_args_ids (struct godbolt_args *a,
 	if (!n || n > array_size(a->ids))
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i) {
-		struct cstr_view const id = godbolt_text(json_object_array_get_idx(v, i), 1,
-		                                         GODBOLT_ID_MAX, godbolt_id_bytes);
-		if (!id.data || cstr_view_equal(id, CSTR_VIEW(".")) ||
-		    cstr_view_equal(id, CSTR_VIEW("..")) || cstr_view_index(a->ids, i, id) < i)
+		struct cstr_view const id = godbolt_id(json_object_array_get_idx(v, i));
+		if (!id.data || cstr_view_index(a->ids, i, id) < i)
 			return EINVAL;
 		a->ids[i] = id;
 	}
@@ -2661,6 +2715,11 @@ godbolt_args_read (struct godbolt_args         *a,
 	if ((uint32_t)a->n_ids * a->n_strings > GODBOLT_JOBS)
 		return util_refuse(why, len, "The number of compilers times the number of "
 		                   "argument strings must be at most 32.");
+	/* ids[0] is filled from the list of languages. */
+	if (tool != GODBOLT_CATALOG && !a->n_ids) {
+		a->n_ids = 1;
+		a->action = GODBOLT_LANGUAGES;
+	}
 	return 0;
 }
 
@@ -2749,8 +2808,7 @@ godbolt_create (struct godbolt_args const *a,
 
 /* Starts a call of the tool @p tool. It checks the arguments and copies
  * them. godbolt_catalog sends the request of its list. The other tools
- * escape the source in their steps first, and then check their compilers
- * and read their kinds in the list of compilers.
+ * escape the source in their steps first, and then read their lists.
  */
 static void
 godbolt_start (struct mcp_slot    *slot,
@@ -2877,9 +2935,10 @@ godbolt_configure (void               *config,
 #define GODBOLT_DEF_COMPILERS                                                   \
         "\"compilers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"     \
         "\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"  \
-        "\"Exact compiler ids from godbolt_catalog, not display names. The "     \
-        "number of ids times the number of argument strings must be at most "    \
-        "32.\"}"
+        "\"Exact compiler ids from godbolt_catalog, not display names. "        \
+        "Without compilers, the call uses the default compiler of the "         \
+        "language. The number of ids times the number of argument strings "     \
+        "must be at most 32.\"}"
 #define GODBOLT_DEF_ARGS                                                        \
         "\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"          \
         "\"minItems\":1,\"maxItems\":8,\"default\":[\"\"],\"description\":"     \
@@ -2967,7 +3026,7 @@ static struct {
 		"Intel syntax and demangled names, and it has no assembler directives, "
 		"no lines with only a comment and no unused labels.\"},"
 		GODBOLT_DEF_OFFSET "},"
-		"\"required\":[\"compilers\",\"source\"],\"additionalProperties\":false},"
+		"\"required\":[\"source\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
 		CSTR_VIEW_INIT("Compiles source code on Compiler Explorer at "),
 		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
@@ -2982,7 +3041,7 @@ static struct {
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
 		GODBOLT_DEF_LANGUAGE("the source", "c or c++") ","
 		GODBOLT_DEF_SOURCE "," GODBOLT_DEF_OFFSET "},"
-		"\"required\":[\"compilers\",\"source\"],\"additionalProperties\":false},"
+		"\"required\":[\"source\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
 		CSTR_VIEW_INIT("Preprocesses source code on Compiler Explorer at "),
 		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
@@ -3000,7 +3059,7 @@ static struct {
 		"macro definitions the output also contains, not a file name. At most 1 "
 		"MiB of UTF-8. The default is no source.\"},"
 		GODBOLT_DEF_OFFSET "},"
-		"\"required\":[\"compilers\"],\"additionalProperties\":false},"
+		"\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
 		CSTR_VIEW_INIT("Outputs the predefined macros of each compiler with each argument "
 		               "string, from Compiler Explorer at "),
@@ -3022,7 +3081,7 @@ static struct {
 		"compilation can then fail if a compiler on Compiler Explorer has no "
 		"headers for its target.\"},"
 		GODBOLT_DEF_OFFSET "},"
-		"\"required\":[\"compilers\"],\"additionalProperties\":false},"
+		"\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
 		CSTR_VIEW_INIT("Preprocesses a fixed probe on Compiler Explorer at "),
 		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "

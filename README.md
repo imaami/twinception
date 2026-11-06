@@ -1362,6 +1362,11 @@ the flags of its driver, such as `/TC /EP`, and the text is in the
 standard output of the compiler. The arguments for every other compiler
 begin with the flags of GCC, such as `-E`.
 
+Without the argument `compilers`, the other tools compile with the
+default compiler of the language, which `godbolt_catalog` lists with the
+action `languages`. A language without a default compiler fails the
+call.
+
 The plugin has two options. `url` is the base URL of the service, and its
 default is `https://godbolt.org`. `share` is `short`, `state` or `off`, and
 its default is `short`.
