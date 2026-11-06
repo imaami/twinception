@@ -914,6 +914,35 @@ notes_file_next (struct span       *out,
 	return 0;
 }
 
+/* Finds the header of the commit before the numstat token at @p stat in
+ * @p out, the output of NOTES_LIST, and stores its commit, time, subject
+ * and end in @p cursor. Returns false if no header precedes @p stat, as in
+ * an output cut short.
+ */
+static bool
+notes_cursor_header (struct span          out,
+                     struct notes_cursor *cursor,
+                     size_t               stat)
+{
+	char const *s = (char const *)out.ptr;
+	for (size_t before = stat; before; ) {
+		size_t token = notes_token(s, before - 1);
+		size_t len = before - 1 - token;
+		char const *space = memchr(s + token, ' ', len);
+		size_t digits = space ? (size_t)(space - s - token) : len;
+		struct cstr_view rest = cstr_view_slice((struct cstr_view){ s + token, len },
+		                                        digits + 1, SIZE_MAX);
+		if (!oid_init_field(&cursor->commit, &rest, ' ') &&
+		    notes_number(s + token, digits, &cursor->time)) {
+			cursor->subject = (struct span){ out.ptr + (rest.data - s), rest.len };
+			cursor->first = before;
+			return true;
+		}
+		before = token;
+	}
+	return false;
+}
+
 bool
 notes_entry_before (struct span          out,
                     struct notes_cursor *cursor,
@@ -945,29 +974,11 @@ notes_entry_before (struct span          out,
 			cursor->first = 0;
 			continue;
 		}
-		if (!cursor->first || stat < cursor->first) {
-			/* Find this commit's header once, then reuse it for the other
-			 * files as the reverse iterator reaches them. */
-			size_t before = stat;
-			while (before) {
-				size_t token = notes_token(s, before - 1);
-				size_t len = before - 1 - token;
-				char const *space = memchr(s + token, ' ', len);
-				size_t digits = space ? (size_t)(space - s - token) : len;
-				struct cstr_view rest = { s + token, len };
-				rest = cstr_view_slice(rest, digits + 1, SIZE_MAX);
-				if (!oid_init_field(&cursor->commit, &rest, ' ') &&
-				    notes_number(s + token, digits, &cursor->time)) {
-					cursor->subject = (struct span){ out.ptr + (rest.data - s),
-					                                 rest.len };
-					cursor->first = before;
-					break;
-				}
-				before = token;
-			}
-			if (!before)
-				break;
-		}
+		/* Find this commit's header once, and reuse it for the other
+		 * files of the commit, which the reverse iterator reads later. */
+		if ((!cursor->first || stat < cursor->first) &&
+		    !notes_cursor_header(out, cursor, stat))
+			break;
 		*entry = (struct notes_entry){
 			.name = { (unsigned char *)(uintptr_t)(name + 1),
 			          (size_t)(s + at - 1 - name - 1) },
