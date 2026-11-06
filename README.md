@@ -1334,8 +1334,6 @@ it. It has these tools:
   architecture. Its filters select compilers by id, kind, family tag,
   architecture, and words in their ids, names, kinds, versions,
   architectures, release tracks and family tags.
-  Unknown compiler IDs produce a catalog lookup for the call's language;
-  use `match` to search, then reuse an exact returned ID.
 - `godbolt_compile` compiles source code once with each of up to 16
   compilers and each of up to 8 argument strings, and at most 32 times in
   all. The output has a record for each compilation, with the exit code,
@@ -1355,11 +1353,14 @@ it. It has these tools:
   The probe and its parser come from godbolt-c, under the MIT license
   (`src/godbolt_probe.c`).
 
-The last three tools read the kind of each compiler from the list of
-compilers. The arguments for an MSVC or clang-cl compiler begin with the
-flags of its driver, such as `/TC /EP`, and the text is in the standard
-output of the compiler. The arguments for every other compiler begin with
-the flags of GCC, such as `-E`.
+The other tools read the list of compilers of the language before they
+compile. A compiler id that is not in the list fails the call before it
+sends a compilation, and the text of the failure contains the call of
+`godbolt_catalog` that lists the ids. The list also contains the kind of
+each compiler. The arguments for an MSVC or clang-cl compiler begin with
+the flags of its driver, such as `/TC /EP`, and the text is in the
+standard output of the compiler. The arguments for every other compiler
+begin with the flags of GCC, such as `-E`.
 
 The plugin has two options. `url` is the base URL of the service, and its
 default is `https://godbolt.org`. `share` is `short`, `state` or `off`, and
@@ -1372,9 +1373,9 @@ its default is `short`.
 
 A call sends the source code and the argument strings to that service. A
 call with the argument `offset` gets the output from that byte on, as a call
-of `man` does. A compilation that fails, for example with an unknown
-compiler id, is a record with the reason, and the call fails only if no
-compilation has a result.
+of `man` does. A compilation that fails, for example with an HTTP error, is
+a record with the reason, and the call fails only if no compilation returns
+a result.
 
 A response to a compilation has at most 4 MiB. The output of a call ends
 at 14 MiB with a note, and the plugin sends no compilation after that. A

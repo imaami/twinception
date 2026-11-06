@@ -847,19 +847,6 @@ godbolt_why (struct godbolt *call,
 			call->why.data[i] = ' ';
 }
 
-/* Stores in call->why @p reason and a hint to look the compilers of the
- * call's language up with godbolt_catalog.
- */
-static void
-godbolt_catalog_hint (struct godbolt *call,
-                      char const     *reason)
-{
-	godbolt_why(call, "%sCall godbolt_catalog with {\"action\":\"compilers\","
-	            "\"language\":\"%.*s\"}. Optional match searches names, versions and "
-	            "family tags. Use exact returned ids.", reason,
-	            (int)call->args.language.len, call->args.language.data);
-}
-
 /* Ends the call in @p slot as failed with a text formatted from the other
  * arguments, as mcp_slot_tellf() does. Evaluates to GODBOLT_ENDED.
  */
@@ -996,17 +983,12 @@ godbolt_resp_doc (struct godbolt *call)
 /* Stores in call->why the reason of the response in call->resp, whose
  * status @p status is an error. The reason is the member message of a
  * JSON object, or else the first line of the body, and it is at most
- * GODBOLT_REASON_MAX bytes long. For a 404 to a compilation, the reason is
- * a hint to call godbolt_catalog.
+ * GODBOLT_REASON_MAX bytes long.
  */
 static void
 godbolt_reason (struct godbolt *call,
                 uint32_t        status)
 {
-	if (call->kind_of == GODBOLT_POST_COMPILE && status == 404) {
-		godbolt_catalog_hint(call, "HTTP 404: Compiler Explorer rejected this compiler id. ");
-		return;
-	}
 	struct json_object *doc = call->resp.len <= LOOP_STEP_PARSE ? godbolt_resp_doc(call)
 	                                                            : nullptr;
 	struct cstr_view text = godbolt_or(jb_view(jb_get(doc, "message")), call->resp);
@@ -1514,19 +1496,19 @@ godbolt_driver_row (struct godbolt     *call,
 }
 
 /* Ends the parse of the list of compilers of a tool that compiles. If a
- * compiler of the call is not in the list, the call fails. Otherwise the
- * next step begins the state of a call with share, or the first
- * compilation.
+ * compiler of the call is not in the list, the call fails before it sends
+ * a compilation. Otherwise the next step begins the state of a call with
+ * share, or the first compilation.
  */
 static enum godbolt_go
 godbolt_drivers_end (struct godbolt *call)
 {
 	if (call->missing) {
-		godbolt_catalog_hint(call, "");
-		return godbolt_refuse(call->slot, "These compiler ids are not in the list of "
-		                      "language %.*s: %s. %s", (int)call->args.language.len,
-		                      call->args.language.data, godbolt_absent(call).ids,
-		                      call->why.data);
+		struct cstr_view const lang = call->args.language;
+		return godbolt_refuse(call->slot, "These compiler ids are not in the list of language "
+		                      "%.*s: %s. Call godbolt_catalog with {\"action\":\"compilers\","
+		                      "\"language\":\"%.*s\"} for the exact ids.", (int)lang.len,
+		                      lang.data, godbolt_absent(call).ids, (int)lang.len, lang.data);
 	}
 	call->phase = call->args.flags & GODBOLT_WITH_SHARE ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
@@ -1639,10 +1621,7 @@ godbolt_escape_source (struct godbolt *call)
 		return godbolt_refuse(call->slot, "The body of a request would be longer than "
 		                      "4 MiB, because the source has %zu bytes as a JSON string.",
 		                      call->head - prefix.len);
-	if (call->tool != GODBOLT_COMPILE)
-		return godbolt_list_send(call);
-	call->phase = call->args.flags & GODBOLT_WITH_SHARE ? GODBOLT_SHARE : GODBOLT_JOB;
-	return GODBOLT_GO;
+	return godbolt_list_send(call);
 }
 
 #undef godbolt_refuse
@@ -2780,9 +2759,8 @@ godbolt_create (struct godbolt_args const *a,
 
 /* Starts a call of the tool @p tool. It checks the arguments and copies
  * them. godbolt_catalog sends the request of its list. The other tools
- * escape the source in their steps first, and godbolt_preprocess,
- * godbolt_macros and godbolt_targets then read the kinds of their
- * compilers from the list of compilers.
+ * escape the source in their steps first, and then check their compilers
+ * and read their kinds in the list of compilers.
  */
 static void
 godbolt_start (struct mcp_slot    *slot,

@@ -14696,7 +14696,8 @@ def ce_compiler(cid, name, kind, families, version, isa, track="stable"):
 
 # The ids of compilers of the mock Compiler Explorer that answer in a way of
 # their own (MockCE.compile). Each of them has the compilerType of GCC.
-CE_SPECIAL = ("gone", "boom", "busy", "later", "slow", "trunc", "big")
+CE_SPECIAL = ("gone", "boom", "busy", "later", "slow", "trunc", "big", "euro",
+              "longline", "labels", "array")
 
 CE_LANGUAGES = [{"id": "c", "name": "C", "extensions": [".c"], "monaco": "nc"},
                 {"id": "c++", "name": "C++", "extensions": [".cpp"],
@@ -14948,15 +14949,16 @@ def check_godbolt(binary, up, godbolt):
     The check lists the plugin's tools, and calls godbolt_catalog with each
     action and its filters. It reads the output of a call from an offset,
     checks that askai sends each list once, and checks lists with malformed
-    and oversized elements. Then it compiles with
-    several compilers and argument strings, and it checks the bodies of the
-    requests, the records of failed requests, a retry after 429, cut and
-    oversized responses, the end of the output at 14 MiB, a long line,
-    large and odd responses, the stored responses of a call with offset,
-    refused arguments and a cancelled call. It preprocesses, outputs the
-    predefined macros and probes the targets with compilers of each kind of
-    driver. It makes links with each value of the option share. Last, it
-    starts askai with options that the plugin refuses.
+    and oversized elements. Then it compiles with several compilers and
+    argument strings, refuses ids that are not in the list before it
+    compiles, and checks the bodies of the requests, the records of failed
+    requests, a retry after 429, cut and oversized responses, the end of the
+    output at 14 MiB, a long line, large and odd responses, the stored
+    responses of a call with offset, refused arguments and a cancelled call.
+    It preprocesses, outputs the predefined macros and probes the targets
+    with compilers of each kind of driver. It makes links with each value of
+    the option share. Last, it starts askai with options that the plugin
+    refuses.
     """
     godbolt = os.path.realpath(godbolt)
     ce = MockCE()
@@ -14999,8 +15001,7 @@ def check_godbolt(binary, up, godbolt):
 
     def compiler_hint(language="c"):
         return 'Call godbolt_catalog with {"action":"compilers","language":' + \
-            json.dumps(language) + '}. Optional match searches names, versions and ' \
-            'family tags. Use exact returned ids.'
+            json.dumps(language) + '} for the exact ids.'
 
     try:
         with tempfile.TemporaryDirectory() as d:
@@ -15062,9 +15063,9 @@ def check_godbolt(binary, up, godbolt):
                         "cg142\tx86-64 gcc 14.2\tdefault\t14.2\tamd64\tstable\tgcc",
                         "cclang19\tx86-64 clang 19.1\tclang\t19.1\tamd64\tstable\tclang,llvm"] \
                     and lines[4] == "cclangcl19\tx64 clang-cl 19.1\tclang-cl\t19.1\tamd64\t" \
-                    "stable\tunknown" and lines[-3:] == [left(1), "Listed 13 of 13 matching "
+                    "stable\tunknown" and lines[-3:] == [left(1), "Listed 17 of 17 matching "
                                                           "compilers. The list of language c "
-                                                          "has 13 compilers.", ""], text
+                                                          "has 17 compilers.", ""], text
 
                 def ids(**arguments):
                     text = ok(ai, "godbolt_catalog", action="compilers", **arguments)
@@ -15091,25 +15092,25 @@ def check_godbolt(binary, up, godbolt):
                 assert refused(ai, "godbolt_catalog", action="languages", kind="x") == \
                     "kind, family and architecture are not valid with the action languages."
                 assert ok(ai, "godbolt_catalog", action="kinds") == \
-                    "kind\tcompilers\nclang\t1\nclang-cl\t1\ndefault\t9\nticlang\t1\n" \
-                    "win32-vc\t1\n" + left(1) + "\nListed 5 of the 5 kinds of the 13 " \
-                    "matching compilers. The list of language c has 13 compilers.\n"
+                    "kind\tcompilers\nclang\t1\nclang-cl\t1\ndefault\t13\nticlang\t1\n" \
+                    "win32-vc\t1\n" + left(1) + "\nListed 5 of the 5 kinds of the 17 " \
+                    "matching compilers. The list of language c has 17 compilers.\n"
                 assert ok(ai, "godbolt_catalog", action="families", limit=2,
                           match="x86-64") == \
                     "family\tcompilers\nclang\t1\ngcc\t2\n" + left(1) + "\nListed 2 of " \
                     "the 3 families of the 3 matching compilers. The list of language c " \
-                    "has 13 compilers.\n"
+                    "has 17 compilers.\n"
                 assert ok(ai, "godbolt_catalog", action="architectures", kind="ticlang") \
                     .endswith("\nListed 1 of the 1 architecture of the 1 matching compiler. "
-                              "The list of language c has 13 compilers.\n")
+                              "The list of language c has 17 compilers.\n")
 
                 # limit cuts the rows, and an offset reads on from a byte.
                 full = ok(ai, "godbolt_catalog", action="compilers", limit=2)
                 assert full.split("\n")[1:5] == [
                     "cg142\tx86-64 gcc 14.2\tdefault\t14.2\tamd64\tstable\tgcc",
                     "cclang19\tx86-64 clang 19.1\tclang\t19.1\tamd64\tstable\tclang,llvm",
-                    left(1), "Listed 2 of 13 matching compilers. The list of language c has "
-                    "13 compilers."], full
+                    left(1), "Listed 2 of 17 matching compilers. The list of language c has "
+                    "17 compilers."], full
                 half = len(full.encode()) // 2
                 assert ok(ai, "godbolt_catalog", action="compilers", limit=2,
                           offset=half) == full.encode()[half:].decode()
@@ -15151,7 +15152,8 @@ def check_godbolt(binary, up, godbolt):
 
                 # Compilations in the order of the compilers, and then of the
                 # argument strings. The bodies have the 11 filters of the
-                # site. No list of compilers is sent.
+                # site. The list of compilers comes from askai's store, so no
+                # request for it is sent.
                 listed = len(ce.seen("GET"))
                 text = ok(ai, "godbolt_compile", compilers=["cg142", "cclang19"],
                           args=["-O2", "-O2 -Wall"], source=source)
@@ -15179,16 +15181,20 @@ def check_godbolt(binary, up, godbolt):
                 records, last = ce_records(ok(ai, "godbolt_compile", source=source,
                                               compilers=["gone", "boom", "cg142"]))
                 assert [r[2] for r in records] == [
-                    "HTTP 404: Compiler Explorer rejected this compiler id. " + compiler_hint(),
-                    "HTTP 500: Something broke", "exit code 0"] and \
+                    "HTTP 404: Not Found", "HTTP 500: Something broke", "exit code 0"] and \
                     last == summary(3, 1, 0, 2, 0), records
                 text = refused(ai, "godbolt_compile", compilers=["gone"], source=source)
                 assert text.endswith(summary(1, 0, 0, 1, 0)), text
+                # An id that is not in the list of the language fails the call
+                # before a compilation is sent, with a hint to the catalog.
+                sent = len(ce.bodies())
                 for language in ("x" * 64, "c++"):
-                    records, _ = ce_records(refused(ai, "godbolt_compile", compilers=["gone"],
-                                                    language=language, source=source))
-                    assert records[0][2].endswith(compiler_hint(language)), records
-                recovery = json.loads(re.search(r"with (\{.*?\})", records[0][2])[1])
+                    text = refused(ai, "godbolt_compile", compilers=["gone"],
+                                   language=language, source=source)
+                    assert text == "These compiler ids are not in the list of language " \
+                        f"{language}: gone. " + compiler_hint(language), text
+                assert len(ce.bodies()) == sent
+                recovery = json.loads(re.search(r"with (\{.*?\})", text)[1])
                 found = ok(ai, "godbolt_catalog", **recovery, match="g++ 14.2 gcc")
                 compiler = found.split("\n")[1].split("\t")[0]
                 assert compiler == "cppg142", found
@@ -15583,13 +15589,13 @@ def check_godbolt(binary, up, godbolt):
         ce.close()
     print("godbolt: tools listed with the configured URL; catalog of languages and "
           "compilers with filters, counts, limit and offset, lists stored, "
-          "malformed and oversized elements; compilations in order with the site's "
-          "filters, failed requests as records, 429 sent again, cut and oversized "
-          "responses, the end of the output at 14 MiB, a long line in slices, "
-          "large and odd responses, stored responses for a call with offset, "
-          "refused arguments and options, cancellation; preprocessing, predefined "
-          "macros and target facts with the flags of each driver; short links, "
-          "links to the state and no links: PASS")
+          "malformed and oversized elements; ids checked in the list; compilations "
+          "in order with the site's filters, failed requests as records, 429 sent "
+          "again, cut and oversized responses, the end of the output at 14 MiB, a "
+          "long line in slices, large and odd responses, stored responses for a "
+          "call with offset, refused arguments and options, cancellation; "
+          "preprocessing, predefined macros and target facts with the flags of each "
+          "driver; short links, links to the state and no links: PASS")
 
 
 def check_classes(binary, up):
