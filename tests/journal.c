@@ -194,6 +194,36 @@ journal_test_run (char const *script,
 	return e;
 }
 
+/* The parts of a path, and journal_open_path(), which opens them in the
+ * repository @p repo: it skips empty parts and ".", and refuses ".." and a
+ * part too long for a file name.
+ */
+static void
+journal_test_path (char const *repo)
+{
+	struct cstr_view rest = CSTR_VIEW("/a//./bc/.../.");
+	struct cstr_view part;
+	assert(!util_path_next(&rest, &part) && cstr_view_equal(part, CSTR_VIEW("a")));
+	assert(!util_path_next(&rest, &part) && cstr_view_equal(part, CSTR_VIEW("bc")));
+	assert(!util_path_next(&rest, &part) && cstr_view_equal(part, CSTR_VIEW("...")));
+	assert(!util_path_next(&rest, &part) && !part.len && !rest.len);
+	rest = CSTR_VIEW("a/..");
+	assert(!util_path_next(&rest, &part) && util_path_next(&rest, &part) == EINVAL);
+	struct journal *j = calloc(1, sizeof *j);
+	char *path = nullptr;
+	assert(j && asprintf(&path, "%s/..", repo) > 0);
+	assert(journal_open_path(j, path) == EINVAL);
+	free(path);
+	assert(asprintf(&path, "%s/%0*d", repo, NAME_MAX + 1, 0) > 0);
+	assert(journal_open_path(j, path) == EINVAL);
+	free(path);
+	assert(asprintf(&path, "/.//%s/./", repo) > 0);
+	assert(!journal_open_path(j, path));
+	free(path);
+	util_close(&j->repo_fd);
+	free(j);
+}
+
 /* child_run(): exit statuses, a death by a signal, and a deadline without
  * a grace, with a grace that the command honors, and with a grace that it
  * ignores.
@@ -238,8 +268,9 @@ main (int argc, char **argv)
 	}
 	assert(j->n_jobs == JOURNAL_JOBS);
 	journal_destroy(&j);
+	journal_test_path(argv[1]);
 	journal_test_child_run();
-	puts("Journal loads, write gaps, legacy migration, reasoning verification "
-	     "and child_run(): PASS");
+	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
+	     "path walks and child_run(): PASS");
 	return 0;
 }

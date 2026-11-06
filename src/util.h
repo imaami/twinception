@@ -281,6 +281,23 @@ util_close (int *fd)
 	*fd = -1;
 }
 
+/** Take the next part of the path @p *rest, between slashes, that is not
+ *  empty and not ".", into @p *part, and leave the bytes after it in
+ *  @p *rest. At the end of the path, @p *part is empty. Returns 0, or
+ *  EINVAL if the part is "..".
+ */
+static inline int
+util_path_next (struct cstr_view *rest,
+                struct cstr_view *part)
+{
+	do {
+		*part = *rest;
+		if (!cstr_view_cut(rest, '/', part))
+			rest->len = 0;
+	} while (part->len ? cstr_view_equal(*part, CSTR_VIEW(".")) : rest->len != 0);
+	return cstr_view_equal(*part, CSTR_VIEW("..")) ? EINVAL : 0;
+}
+
 /** Block every signal but those that faults raise in the calling thread,
  *  whose threads to come inherit its mask, and store the mask before in
  *  @p old. Returns 0, or the error number of pthread_sigmask().

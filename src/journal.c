@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <openssl/evp.h>
 #include <pthread.h>
 #include <signal.h>
@@ -227,26 +228,19 @@ journal_open_path (struct journal *j,
 {
 	if (!path || !*path)
 		return EINVAL;
-	char *copy = strdup(path);
-	if (!copy)
-		return ENOMEM;
 	int fd = open(*path == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	int e = fd < 0 ? errno : 0;
-	char *rest = copy;
-	for (char *part; !e && (part = strsep(&rest, "/")); ) {
-		if (!*part || !strcmp(part, "."))
-			continue;
-		if (!strcmp(part, "..")) {
-			e = EINVAL;
-			break;
-		}
+	struct cstr_view rest = cstr_view(path);
+	struct cstr_view part;
+	while (!e && !(e = util_path_next(&rest, &part)) && part.len) {
+		UTIL_TEXT(NAME_MAX + 1) name;
 		int next = -1;
-		e = journal_directory(fd, part, &next);
+		e = util_text_store(&name, part);
+		if (!e)
+			e = journal_directory(fd, name.data, &next);
 		close(fd);
 		fd = next;
 	}
-	free(copy);
-	copy = nullptr;
 	if (!e)
 		e = journal_private(fd);
 	if (e) {
