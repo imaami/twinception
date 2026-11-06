@@ -18,12 +18,19 @@
 #include <stdint.h>
 
 #include "cstr_view.h"
+#include "util.h"
 
 enum {
 	UPLOADS_MAX    = 128,       /**< files in the table */
-	UPLOADS_URI    = 256,       /**< bytes of a file's URI, at most */
+	UPLOADS_URI    = 256,       /**< bytes of a file's URI and its NUL, at
+	                                 most */
 	UPLOADS_MARGIN = 6 * 3600,  /**< seconds before its expiry from which
 	                                 a file is no longer given out */
+};
+
+/** The URI of a file in the table. */
+struct uploads_uri {
+	UTIL_TEXT(UPLOADS_URI);
 };
 
 struct oid;
@@ -43,20 +50,18 @@ uploads_destroy (struct uploads **p_uploads);
 
 /**
  * Copies the URI of the file of @p owner for the note whose object id is
- * @p id to @p uri, stores its length in @p *len, and stores the size of
- * the file in bytes in @p *bytes. The file must expire more than
- * UPLOADS_MARGIN seconds after @p now, in seconds since the epoch.
- * Returns 0, ENOENT if the table does not contain such a file, or EINVAL
- * if a pointer is nullptr.
+ * @p id to @p uri, and stores the size of the file in bytes in @p *bytes.
+ * The file must expire more than UPLOADS_MARGIN seconds after @p now, in
+ * seconds since the epoch. Returns 0, ENOENT if the table does not contain
+ * such a file, or EINVAL if a pointer is nullptr.
  */
 extern int
-uploads_find (struct uploads   *uploads,
-              uint64_t          owner,
-              struct oid const *id,
-              int64_t           now,
-              char              uri[UPLOADS_URI],
-              size_t           *len,
-              size_t           *bytes);
+uploads_find (struct uploads     *uploads,
+              uint64_t            owner,
+              struct oid const   *id,
+              int64_t             now,
+              struct uploads_uri *uri,
+              size_t             *bytes);
 
 /**
  * Puts into the table the file of @p owner, of @p bytes bytes, whose URI is

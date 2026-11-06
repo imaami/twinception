@@ -6779,18 +6779,17 @@ mcp_slot_attach (struct mcp_slot  *slot,
 			           "note now. Try again later.") ? EAGAIN : ENOMEM;
 		return e ? e : EINPROGRESS;
 	}
-	char uri[UPLOADS_URI];
-	size_t uri_len = 0;
+	struct uploads_uri uri;
 	size_t file_bytes = 0;
-	e = uploads_find(st->uploads, req->owner, id, clk_realtime().tv_sec, uri,
-	                     &uri_len, &file_bytes);
+	e = uploads_find(st->uploads, req->owner, id, clk_realtime().tv_sec, &uri,
+	                 &file_bytes);
 	if (!e)
 		e = mcp_req_fits(req, file_bytes, out);
 	if (e)
 		return e;
-	LOG(LOG_VERBOSE, "upstream file %.*s attached again", (int)uri_len, uri);
+	LOG(LOG_VERBOSE, "upstream file %s attached again", uri.data);
 	*bytes = file_bytes;
-	return mcp_req_attach(req, (struct cstr_view){ uri, uri_len }, file_bytes);
+	return mcp_req_attach(req, util_text_view(&uri), file_bytes);
 }
 
 int
@@ -6814,9 +6813,9 @@ mcp_slot_attached (struct mcp_slot  *slot,
 	e = r.e ? (dstr_cat(&why, r.error) ? EIO : ENOMEM)
 	    : ai_uploaded(st->ep->api, r.status, r.body, &uri, &expires, &why);
 	struct cstr_view const u = cstr_view_dstr(&uri);
-	if (!e && u.len > UPLOADS_URI)
+	if (!e && u.len >= UPLOADS_URI)
 		e = dstr_printf(&why, "The upstream named the file with a URI of more "
-		                "than %d bytes.", UPLOADS_URI) ? EIO : ENOMEM;
+		                "than %d bytes.", UPLOADS_URI - 1) ? EIO : ENOMEM;
 	if (e == EIO)
 		return CAT(out, "The upload of the note as a file failed: ") &&
 		       !cstr_view_cat(cstr_view_dstr(&why), out) ? EIO : ENOMEM;

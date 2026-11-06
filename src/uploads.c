@@ -5,19 +5,18 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "oid.h"
 #include "uploads.h"
+#include "util.h"
 
 /* A file of the table. Its expires is 0 while the place is free. */
 struct uploads_file {
-	int64_t    expires;
-	uint64_t   owner;
-	uint64_t   bytes;
-	uint16_t   uri_len;
-	struct oid id;
-	char       uri[UPLOADS_URI];
+	int64_t            expires;
+	uint64_t           owner;
+	uint64_t           bytes;
+	struct uploads_uri uri;
+	struct oid         id;
 };
 
 struct uploads {
@@ -34,7 +33,7 @@ uploads_create (int *e)
 	*e = u ? pthread_mutex_init(&u->lock, nullptr) : ENOMEM;
 	if (*e) {
 		free(u);
-		return nullptr;
+		u = nullptr;
 	}
 	return u;
 }
@@ -58,7 +57,7 @@ uploads_lookup (struct uploads   *u,
                 uint64_t          owner,
                 struct oid const *id)
 {
-	for (size_t i = 0; i < UPLOADS_MAX; ++i) {
+	for (size_t i = 0; i < array_size(u->files); ++i) {
 		struct uploads_file *f = &u->files[i];
 		if (f->expires && f->owner == owner && oid_equal(&f->id, id))
 			return f;
@@ -66,16 +65,30 @@ uploads_lookup (struct uploads   *u,
 	return nullptr;
 }
 
-int
-uploads_find (struct uploads   *uploads,
-              uint64_t          owner,
-              struct oid const *id,
-              int64_t           now,
-              char              uri[UPLOADS_URI],
-              size_t           *len,
-              size_t           *bytes)
+/* Returns the place in @p u for a new file: a free place, whose expires is
+ * 0, else a file that has expired, which expires before every file that
+ * has not, else the file that expires first. The caller must have locked
+ * u->lock.
+ */
+static struct uploads_file *
+uploads_oldest (struct uploads *u)
 {
-	if (!uploads || !id || !uri || !len || !bytes)
+	struct uploads_file *to = &u->files[0];
+	for (size_t i = 1; i < array_size(u->files); ++i)
+		if (u->files[i].expires < to->expires)
+			to = &u->files[i];
+	return to;
+}
+
+int
+uploads_find (struct uploads     *uploads,
+              uint64_t            owner,
+              struct oid const   *id,
+              int64_t             now,
+              struct uploads_uri *uri,
+              size_t             *bytes)
+{
+	if (!uploads || !id || !uri || !bytes)
 		return EINVAL;
 	if (!oid_len(id))
 		return ENOENT;
@@ -83,8 +96,7 @@ uploads_find (struct uploads   *uploads,
 	pthread_mutex_lock(&uploads->lock);
 	struct uploads_file const *f = uploads_lookup(uploads, owner, id);
 	if (f && f->expires - UPLOADS_MARGIN > now) {
-		memcpy(uri, f->uri, f->uri_len);
-		*len = f->uri_len;
+		*uri = f->uri;
 		*bytes = f->bytes;
 		e = 0;
 	}
@@ -101,25 +113,21 @@ uploads_keep (struct uploads   *uploads,
               int64_t           expires,
               int64_t           now)
 {
-	if (!uploads || !id || !oid_len(id) || !uri.data || !uri.len || uri.len > UPLOADS_URI ||
-	    expires <= now)
+	struct uploads_uri kept;
+	if (!uploads || !id || !oid_len(id) || !uri.data || !uri.len ||
+	    util_text_store(&kept, uri) || expires <= now)
 		return EINVAL;
 	pthread_mutex_lock(&uploads->lock);
 	struct uploads_file *to = uploads_lookup(uploads, owner, id);
-	if (!to) {
-		/* A free place, whose expires is 0, or a file that has expired
-		 * expires before every file that has not. */
-		to = &uploads->files[0];
-		for (size_t i = 1; i < UPLOADS_MAX; ++i)
-			if (uploads->files[i].expires < to->expires)
-				to = &uploads->files[i];
-	}
-	to->expires = expires;
-	to->owner = owner;
-	to->bytes = bytes;
-	to->uri_len = (uint16_t)uri.len;
-	to->id = *id;
-	memcpy(to->uri, uri.data, uri.len);
+	if (!to)
+		to = uploads_oldest(uploads);
+	*to = (struct uploads_file){
+		.expires = expires,
+		.owner = owner,
+		.bytes = bytes,
+		.uri = kept,
+		.id = *id,
+	};
 	pthread_mutex_unlock(&uploads->lock);
 	return 0;
 }
@@ -131,7 +139,7 @@ uploads_forget (struct uploads *uploads,
 	if (!uploads)
 		return;
 	pthread_mutex_lock(&uploads->lock);
-	for (size_t i = 0; i < UPLOADS_MAX; ++i)
+	for (size_t i = 0; i < array_size(uploads->files); ++i)
 		if (uploads->files[i].owner == owner)
 			uploads->files[i].expires = 0;
 	pthread_mutex_unlock(&uploads->lock);
