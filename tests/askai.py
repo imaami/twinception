@@ -8896,8 +8896,8 @@ def check_git(binary, up):
                      "HEAD:path. git read needs the file as its revision, such as "
                      "\"revisions\": [\"HEAD:src/journal.c\"]."),
                     ({"repo": "proj", "command": "read", "revisions": ["HEAD:"]},
-                     "revisions[0]: only read, show and cat-file take commit:path, "
-                     "with a nonempty relative path."),
+                     "revisions[0]: git read needs a nonempty relative path after the "
+                     "colon, with no .. component."),
                     ({"repo": "proj", "command": "read",
                       "revisions": ["HEAD:a.txt", "HEAD:a.txt"]},
                      "git read takes at most one revision."),
@@ -8911,9 +8911,24 @@ def check_git(binary, up):
                       "count": -1}, "The count argument must be a whole number from 1."),
                     ({"repo": "proj", "command": "show", "revisions": ["HEAD:a.txt"],
                       "line": 2}, "Only git read takes line and count."),
+                    # A path in a revision goes where the command takes it.
                     ({"repo": "proj", "command": "log", "revisions": ["HEAD:a.txt"]},
-                     "revisions[0]: only read, show and cat-file take commit:path, "
-                     "with a nonempty relative path.")):
+                     "revisions[0]: git log takes the commit in revisions and the path "
+                     "in paths."),
+                    ({"repo": "proj", "command": "blame", "revisions": ["HEAD:a.txt"],
+                      "paths": ["a.txt"]},
+                     "revisions[0]: git blame takes the commit in revisions and the "
+                     "path in paths."),
+                    ({"repo": "proj", "command": "ls-tree", "revisions": ["HEAD:src"]},
+                     "revisions[0]: git ls-tree takes the commit in revisions and the "
+                     "path in paths."),
+                    ({"repo": "proj", "command": "rev-parse", "revisions": ["HEAD:a.txt"]},
+                     "revisions[0]: git rev-parse takes commits, not commit:path."),
+                    ({"repo": "proj", "command": "rev-parse", "paths": ["a.txt"]},
+                     "git rev-parse takes no paths."),
+                    ({"repo": "proj", "command": "show", "revisions": ["HEAD:"]},
+                     "revisions[0]: git show needs a nonempty relative path after the "
+                     "colon, with no .. component.")):
                 result = call(ai, **arguments) if isinstance(arguments, dict) else \
                     ai.rpc("tools/call", {"name": "git", "arguments": arguments})[2][
                         "result"]

@@ -264,8 +264,9 @@ static struct {
 	  "-L10,30 limits the lines; -s leaves out the author and date.",
 	  FILES | SINGLE | ONEPATH },
 	{ CSTR_VIEW_INIT("ls-tree"),   ls_tree_options,   {},
-	  "Paths in a committed tree; defaults to HEAD. -r recurses.",
-	  FILES | SINGLE },
+	  "Entries of a committed tree; defaults to HEAD. Paths [\"src/\"] list the "
+	  "entries in src, and [\"src\"] only src itself. -r recurses into "
+	  "subtrees, and -d lists only trees.", FILES | SINGLE },
 	{ CSTR_VIEW_INIT("cat-file"),  cat_file_options,  {},
 	  "Inspect a committed object; defaults to HEAD, and commit:path names a "
 	  "file. Give exactly one option: -p for its contents, -t for its type, -s "
@@ -771,8 +772,9 @@ git_call_command (struct git_call  *call,
 		bad = git_wrong(why, "git %.*s takes at most one revision.", (int)cmd.len,
 		                cmd.data);
 	if (lens[GIT_ARG_PATHS] && !(takes & FILES))
-		bad = git_wrong(why, "git %.*s takes no paths. To name a file, give the "
-		                "revision HEAD:path.", (int)cmd.len, cmd.data);
+		bad = git_wrong(why, "git %.*s takes no paths.%s", (int)cmd.len, cmd.data,
+		                takes & OBJECT ? " To name a file, give the revision HEAD:path."
+		                               : "");
 	if ((takes & ONEPATH) && lens[GIT_ARG_PATHS] != 1)
 		bad = git_wrong(why, "git blame needs the file as its one path, such as "
 		                "\"paths\": [\"src/git.c\"].");
@@ -859,8 +861,14 @@ git_call_command (struct git_call  *call,
 			range = nullptr;
 		endpoints += range != nullptr;
 		if (path && (!(takes & OBJECT) || !path[1] || !git_inside(path + 1))) {
-			bad = git_wrong(why, "revisions[%zu]: only read, show and cat-file "
-			                "take commit:path, with a nonempty relative path.", i);
+			bad = git_wrong(why, takes & OBJECT
+			                ? "revisions[%zu]: git %.*s needs a nonempty relative "
+			                  "path after the colon, with no .. component."
+			                : takes & FILES
+			                ? "revisions[%zu]: git %.*s takes the commit in "
+			                  "revisions and the path in paths."
+			                : "revisions[%zu]: git %.*s takes commits, not "
+			                  "commit:path.", i, (int)cmd.len, cmd.data);
 			continue;
 		}
 		if (range && (!(takes & RANGE) || ((takes & PAIR) && listed != 1))) {
