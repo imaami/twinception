@@ -61,8 +61,6 @@ struct cli_network_request {
 	struct cli_network        *network;
 	struct curl_slist         *headers;
 	CURL                      *easy;
-	char                      *socket;
-	char                      *wire;
 	struct cli_network_result  result;
 	int                        error;
 	_Atomic uint16_t           cancelled;
@@ -111,7 +109,7 @@ struct cli_network {
 static void cli_network_progress(struct cli_network *network);
 static void cli_network_call_cancel(struct cli_network *network, struct cli_network_call *call, bool force);
 
-/* Free the transfer and the copies of the request, but not the request. */
+/* Free the transfer and its headers, but not the request. */
 static void
 cli_network_request_release (struct cli_network_request *request)
 {
@@ -119,10 +117,6 @@ cli_network_request_release (struct cli_network_request *request)
 	request->headers = nullptr;
 	curl_easy_cleanup(request->easy);
 	request->easy = nullptr;
-	free(request->socket);
-	request->socket = nullptr;
-	free(request->wire);
-	request->wire = nullptr;
 }
 
 static void
@@ -696,14 +690,7 @@ cli_network_request_create (struct cli_network            *network,
 	request->start.fn = cli_network_start;
 	request->done.fn = cli_network_request_done;
 	request->easy = curl_easy_init();
-	request->socket = strndup(post->socket.data, post->socket.len);
-	request->wire = malloc(post->wire.len ? post->wire.len : 1);
-	*e = request->easy && request->socket && request->wire ? 0 : ENOMEM;
-	if (*e)
-		goto fail;
-	if (post->wire.len)
-		memcpy(request->wire, post->wire.data, post->wire.len);
-	*e = cli_network_add_header(request, "Content-Type: application/json");
+	*e = request->easy ? cli_network_add_header(request, "Content-Type: application/json") : ENOMEM;
 	if (!*e)
 		*e = cli_network_add_header(request, "Accept: application/json, text/event-stream");
 	if (!*e)
@@ -725,7 +712,8 @@ cli_network_request_create (struct cli_network            *network,
                 } \
         } while (0)
 	CLI_NETWORK_OPTION(CURLOPT_URL, "http://localhost/mcp");
-	CLI_NETWORK_OPTION(CURLOPT_UNIX_SOCKET_PATH, request->socket);
+	/* libcurl copies the socket path and, with COPYPOSTFIELDS, the body. */
+	CLI_NETWORK_OPTION(CURLOPT_UNIX_SOCKET_PATH, post->socket.data);
 	CLI_NETWORK_OPTION(CURLOPT_PROXY, "");
 	CLI_NETWORK_OPTION(CURLOPT_NOPROXY, "*");
 	CLI_NETWORK_OPTION(CURLOPT_FOLLOWLOCATION, 0L);
@@ -733,8 +721,8 @@ cli_network_request_create (struct cli_network            *network,
 	CLI_NETWORK_OPTION(CURLOPT_CONNECTTIMEOUT, 10L);
 	CLI_NETWORK_OPTION(CURLOPT_TIMEOUT, post->timeout);
 	CLI_NETWORK_OPTION(CURLOPT_POST, 1L);
-	CLI_NETWORK_OPTION(CURLOPT_POSTFIELDS, request->wire);
 	CLI_NETWORK_OPTION(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)post->wire.len);
+	CLI_NETWORK_OPTION(CURLOPT_COPYPOSTFIELDS, post->wire.len ? post->wire.data : "");
 	CLI_NETWORK_OPTION(CURLOPT_HTTPHEADER, request->headers);
 	CLI_NETWORK_OPTION(CURLOPT_WRITEFUNCTION, cli_network_body);
 	CLI_NETWORK_OPTION(CURLOPT_WRITEDATA, request);
