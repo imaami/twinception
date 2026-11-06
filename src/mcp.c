@@ -527,6 +527,16 @@ struct mcp_slot {
 
 static_assert(TOOL_MAX <= UINT8_MAX, "TOOL_MAX must fit in slot->tool");
 
+/* A tool-result record (mcp_slot_done()) is a window of an output of
+ * LEND_MAX bytes at most, its note, the files that the turn attached, of
+ * a URI and a few bytes of JSON each, and other members of less than
+ * 64 KiB, its text escaped at up to 6 bytes a byte, so it always fits a
+ * journal record.
+ */
+static_assert(6 * (LEND_MAX + sizeof ((struct mcp_slot *)nullptr)->note.data +
+                   JOB_CALLS * (UPLOADS_URI + 256)) + (64 << 10) <= JOURNAL_RECORD_MAX,
+              "a tool-result record must fit a journal record");
+
 struct mcp_agenda;
 
 static void mcp_agenda_destroy (struct mcp_agenda **p_agenda);
@@ -5697,28 +5707,26 @@ mcp_req_intent_saved (struct mcp_req *req,
 }
 
 /* Ends the call in @p slot with the result @p saved that a resumed job
- * stored: the output, whether the call failed, the notebook that the output
- * shows and the numbered lines of a git read. Returns 0, EILSEQ if @p saved
- * is not valid, or ENOMEM.
+ * stored: the bytes of the output that the turn takes, from skip on, the
+ * note after them, whether the call failed, and the numbered lines of a
+ * git read. Returns 0, EILSEQ if @p saved is not valid, or ENOMEM.
  */
 static int
 mcp_slot_replay (struct mcp_slot    *slot,
                  struct json_object *saved)
 {
-	struct cstr_view const notebook = jb_view(jb_get(saved, "notebook"));
 	struct cstr_view const text = jb_view(jb_get(saved, "text"));
 	struct json_object *source = jb_get(saved, "source");
-	char repo[NOTES_REPO];
-	if (notebook.data && notes_select(notebook, repo))
-		return EILSEQ;
-	slot->shows = notebook.data;
-	int e = 0;
-	if (source && slot->req->review)
+	uint64_t const skip = jb_uint(jb_get(saved, "skip"), 0);
+	int e = skip > text.len || util_text_store(&slot->note, jb_view(jb_get(saved, "note")))
+	      ? EILSEQ : 0;
+	if (!e && source && slot->req->review)
 		slot->read = review_read_create_json(source, text, &e);
 	if (e)
 		return e == EINVAL ? EILSEQ : e;
 	slot->start = loop_clock();
-	slot->skip = jb_uint(jb_get(saved, "skip"), 0);
+	slot->skip = skip;
+	slot->window = text.len - skip;
 	mcp_slot_result(slot, text, json_object_get_boolean(jb_get(saved, "failed")));
 	return 0;
 }
@@ -5878,13 +5886,14 @@ static void mcp_agenda_job_done (struct mcp_slot *slot);
 /**
  * Handles the end of the call in @p slot, which is a call of a turn or a
  * job. The call has produced its output or has failed. For a call of a
- * turn, the function records the result in the journal if req->archive is
- * set, sets slot->skip and slot->window to the part of the output that the
- * next upstream request contains, and writes the note about that part into
- * slot->note. Then it queues the step of the request. The step writes the
- * results of the calls into the upstream request in the order of the
- * calls. For a job, the function calls mcp_agenda_job_done(), which adds a
- * notice about the job to the agenda.
+ * turn, the function sets slot->skip and slot->window to the part of the
+ * output that the next upstream request contains, writes the note about
+ * that part into slot->note, and records the result in the journal if
+ * req->archive is set. The window and the note of a call that a resumed
+ * job replays are set already. Then the function queues the step of the
+ * request. The step writes the results of the calls into the upstream
+ * request in the order of the calls. For a job, the function calls
+ * mcp_agenda_job_done(), which adds a notice about the job to the agenda.
  *
  * With --verbose, the function logs one line with the ask call, the turn,
  * the name of the tool, whether the call failed, the time that the call
@@ -5938,31 +5947,46 @@ mcp_slot_done (struct mcp_slot *slot,
 		mcp_agenda_job_done(slot);
 		return;
 	}
-	if (*req->archive.hex && !(tool->kind->flags & KF_RERUN) && !req->saved_tools[k]) {
-		struct span files = buf_peek(&req->attached);
-		struct json_object *result = jb_object(
-			"index", json_object_new_int64(k),
-			"failed", json_object_new_boolean(failed),
-			"skip", json_object_new_uint64(slot->skip),
-			"branch", json_object_new_boolean(req->flags & REQ_BRANCH),
-			"filing", json_object_new_boolean(req->flags & REQ_FILING),
-			"filed", json_object_new_uint64(req->filed),
-			"attached", json_object_new_string_len(files.len ? (char const *)files.ptr : "", (int)files.len),
-			"text", json_object_new_string_len(out.len ? (char const *)out.ptr : "", (int)out.len),
-			nullptr);
-		if (notebook)
-			result = jb_set_or_free(result, "notebook", json_object_new_string(notebook));
-		if (slot->read)
-			result = jb_set_or_free(result, "source", review_read_json(slot->read, &(int){}));
-		int e = mcp_req_archive_put(req, "tool-result", result);
-		if (e)
-			req->archive_error = e;
+	/* The window and the note of a replayed result come from its record. */
+	if (req->saved_tools[k]) {
+		loop_ready_bulk(req->mcp->loop, &req->step);
+		return;
 	}
 	bool past = slot->skip > out.len;
 	mcp_slot_window(slot, out);
 	mcp_slot_note_window(slot, out.len, past);
 	if (notebook)
 		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, notebook);
+	if (*req->archive.hex && !(tool->kind->flags & KF_RERUN)) {
+		/* A resumed turn writes the window and the note again, and adds
+		 * the lines of a review read. So the window is recorded, or for a
+		 * read the whole output, if it is no more than LEND_MAX bytes and
+		 * the window reaches its end, with the size of the output for the
+		 * trace. */
+		bool const lines = slot->read && out.len <= LEND_MAX &&
+		                   slot->skip + slot->window == out.len;
+		size_t const base = lines ? 0 : slot->skip;
+		struct span const files = buf_peek(&req->attached);
+		struct json_object *result = jb_object(
+			"index", json_object_new_int64(k),
+			"failed", json_object_new_boolean(failed),
+			"skip", json_object_new_uint64(slot->skip - base),
+			"bytes", json_object_new_uint64(out.len),
+			"branch", json_object_new_boolean(req->flags & REQ_BRANCH),
+			"filing", json_object_new_boolean(req->flags & REQ_FILING),
+			"filed", json_object_new_uint64(req->filed),
+			"attached", json_object_new_string_len(files.len ? (char const *)files.ptr : "",
+			                                       (int)files.len),
+			"note", jb_string(util_text_view(&slot->note)),
+			"text", json_object_new_string_len(out.len ? (char const *)out.ptr + base : "",
+			                                   (int)(slot->skip + slot->window - base)),
+			nullptr);
+		if (lines)
+			result = jb_set_or_free(result, "source", review_read_json(slot->read, &(int){}));
+		int e = mcp_req_archive_put(req, "tool-result", result);
+		if (e)
+			req->archive_error = e;
+	}
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
@@ -6117,9 +6141,13 @@ mcp_req_result_write (struct mcp_req *req)
 		return;
 	}
 	struct mcp_slot *slot = &req->slots[req->part];
+	/* A replayed result is a part of the output; its record gives the size. */
+	struct json_object *saved = req->saved_tools[req->part];
 	(void)mcp_req_trace(req, &c, req->args[req->part],
 	                    mcp_row_of(mcp_slot_tool(slot))->trace);
-	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, mcp_slot_output(slot).len);
+	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED,
+	                        saved ? jb_uint(jb_get(saved, "bytes"), 0)
+	                              : mcp_slot_output(slot).len);
 	e = mcp_req_shown(req, slot);
 	if (e) {
 		mcp_req_fail(req, e);
@@ -6178,7 +6206,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 	uint64_t now = clk_realtime_ns();
 	req->archive_deadline = st->timeout ? now + st->timeout : 0;
 	struct json_object *state = jb_object(
-		"version", json_object_new_int(1),
+		"version", json_object_new_int(2),
 		"owner", json_object_new_uint64(req->owner),
 		"created", json_object_new_uint64(task ? task->created : now),
 		"tool", jb_string(mcp_static_tool(st, req->self.tool)->name),
@@ -6279,7 +6307,7 @@ mcp_recover_back (struct loop           *loop,
 	struct cstr_view tool = jb_view(jb_get(state, "tool"));
 	struct cstr_view problem =
 		error ? CSTR_VIEW("Cannot read the durable job journal.")
-		: !state || jb_int(jb_get(state, "version"), 0) != 1
+		: !state || jb_int(jb_get(state, "version"), 0) != 2
 		? CSTR_VIEW("No recoverable job of yours has that id.")
 		: jb_uint(jb_get(state, "owner"), 0) != owner ||
 		  !cstr_view_equal(tool, mcp_static_tool(st, req->self.tool)->name)
@@ -6332,7 +6360,8 @@ mcp_recover_back (struct loop           *loop,
 		struct json_object *obj = mcp_archive_json(r);
 		int64_t k = jb_int(jb_get(obj, "index"), 0);
 		problem = !obj || k < 0 || k >= JOB_CALLS ||
-		          (!intent && !jb_view(jb_get(obj, "text")).data)
+		          (!intent && (!jb_view(jb_get(obj, "text")).data ||
+		                       !jb_view(jb_get(obj, "note")).data))
 		        ? CSTR_VIEW("This job's tool journal is invalid; no calls were repeated.")
 		        : intent && json_object_get_boolean(jb_get(obj, "agenda"))
 		        ? CSTR_VIEW("This interrupted turn started or used background tools or "
@@ -6504,7 +6533,12 @@ mcp_req_turn_submit (struct mcp_req *req)
 	}
 	mcp_req_wait(req);
 	int e = req->mcp->st->journal ? mcp_req_checkpoint(req) : mcp_req_submit(req);
-	if (e)
+	/* A checkpoint too large for a journal record (JOURNAL_RECORD_MAX), as
+	 * the conversation is too large, fills the context as an upload past
+	 * UPLOAD_MAX does. */
+	if (e == EFBIG)
+		mcp_req_compact_full(req);
+	else if (e)
 		mcp_req_error(req, 500, INTERNAL_ERROR,
 		              FRAG("Cannot persist or start the upstream request"), nullptr, 0);
 }

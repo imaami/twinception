@@ -2641,8 +2641,12 @@ def check_recovery_notes(binary, up):
                         break
                     at += 120 + size
                 assert saved and at < len(snapshot), snapshot
-                assert (saved["notebook"], saved["text"], saved["skip"]) == \
-                    (selector, original, 5), saved
+                # The saved result is the window from the offset on, its note
+                # with the notebook, and the size of the output.
+                window = saved["text"]
+                assert saved["skip"] == 0 and saved["bytes"] == len(original) and \
+                    window and original[5:5 + len(window)] == window and \
+                    saved["note"].endswith(f"\n\n[askai: notebook {selector}]"), saved
                 with open(checkpoint, "wb") as f:
                     f.write(snapshot[:at])
                 write_note("changed after the crash", ref + "^0")
