@@ -14,6 +14,7 @@
 #include "ai.h"
 #include "buf.h"
 #include "config.h"
+#include "hexid.h"
 #include "hist.h"
 #include "home.h"
 #include "http.h"
@@ -1306,8 +1307,10 @@ home_start (struct home *home,
 	if (resume) {
 		r->restoring = false;
 	} else if (home_llama(home)) {
-		r->provider_id = calloc(1, 33);
-		e = r->provider_id ? util_random_hex(r->provider_id, 16) : ENOMEM;
+		struct hexid id;
+		e = hexid_make(&id);
+		if (!e && !(r->provider_id = strdup(id.hex)))
+			e = ENOMEM;
 	}
 	if (!e)
 		e = home_connect(home, job, resume);
