@@ -79,6 +79,9 @@ struct manual_loop {
 static char const cut[] = "\n\n[The page goes on past the 4 MiB shown.]\n";
 static_assert(TOOL_TEXT_MAX == 4U << 20, "the note says 4 MiB");
 
+/* The reason of a fetch that ran out of memory. */
+static struct cstr_view const manual_oom = CSTR_VIEW_INIT("Out of memory.");
+
 struct manual_fetch;
 
 /*
@@ -430,7 +433,7 @@ manual_fetch_rendered (struct child *c)
 	size_t note = c->flags & CHILD_CUT ? sizeof cut - 1 : 0;
 	struct manual_page *page = malloc(sizeof *page + len + note);
 	if (!page) {
-		manual_fetch_fail(f, CSTR_VIEW("Out of memory."));
+		manual_fetch_fail(f, manual_oom);
 		return;
 	}
 	page->ctime = f->st.st_ctim;
@@ -476,7 +479,7 @@ manual_fetch_found (struct child *c)
 	child_destroy(&f->child);
 	f->file = file;
 	if (!file) {
-		manual_fetch_fail(f, CSTR_VIEW("Out of memory."));
+		manual_fetch_fail(f, manual_oom);
 		return;
 	}
 	if (stat(file->key, &f->st)) {
