@@ -56,7 +56,7 @@ cli_read_file (struct dstr      *text,
 		if (!dstr_cat(&expanded, home) ||
 		    !dstr_cat_n(&expanded, path.data + 1, path.len - 1))
 			return ENOMEM;
-	} else if (!dstr_cat_n(&expanded, path.data, path.len)) {
+	} else if (cstr_view_cat(path, &expanded)) {
 		return ENOMEM;
 	}
 
@@ -91,7 +91,7 @@ cli_read_file (struct dstr      *text,
 	if (!e && result.len && (memchr(result.data, 0, result.len) ||
 	                         jb_utf8(result.data, result.len) != result.len))
 		e = cli_error_set(error, EILSEQ, "Prompt files must contain UTF-8 text without NUL bytes");
-	if (!e && !dstr_cat_n(&contents, result.data, result.len))
+	if (!e && cstr_view_cat(result, &contents))
 		e = ENOMEM;
 	if (!e) {
 		dstr_cleanup(text);
@@ -125,9 +125,9 @@ cli_commands_text (struct dstr *text)
 {
 	for (unsigned i = 0; i < CLI_COMMAND_COUNT; ++i) {
 		struct cli_command const *command = cli_command_at(i);
-		if (!dstr_cat_n(text, command->usage.data, command->usage.len) ||
+		if (cstr_view_cat(command->usage, text) ||
 		    !dstr_cat(text, "  ") ||
-		    !dstr_cat_n(text, command->description.data, command->description.len) ||
+		    cstr_view_cat(command->description, text) ||
 		    !dstr_cat(text, "\n"))
 			return ENOMEM;
 	}
@@ -618,7 +618,7 @@ cli_history_open (struct cli       *cli,
 	struct cstr_view key = options->session_id ? cstr_view(options->session_id)
 	                                           : cstr_view_dstr(&cli->client.session_key);
 	if (key.len) {
-		if (!dstr_cat(&identity, "session=") || !dstr_cat_n(&identity, key.data, key.len))
+		if (!dstr_cat(&identity, "session=") || cstr_view_cat(key, &identity))
 			return ENOMEM;
 	} else {
 		struct cli_path_work work = {.path = options->socket, .identity = &identity};
@@ -633,7 +633,7 @@ cli_history_open (struct cli       *cli,
 		CSTR_VIEW("\0system="), cstr_view(options->system)
 	};
 	for (size_t i = 0; i < array_size(parts); ++i)
-		if (!dstr_cat_n(&identity, parts[i].data, parts[i].len))
+		if (cstr_view_cat(parts[i], &identity))
 			return ENOMEM;
 	struct cli_history_work work = {.operation = CLI_HISTORY_OPEN, .cancel = &cli->cancel_io,
 	                                .path = cstr_view(options->history_repo), .text = cstr_view_dstr(&identity)};
@@ -748,8 +748,8 @@ cli_tools (struct cli       *cli,
 			summary.len = (size_t)(newline - summary.data);
 
 		dstr_clear(&line);
-		if (!dstr_cat_n(&line, entry->name.data, entry->name.len) ||
-		    (summary.len && (!dstr_cat(&line, "  ") || !dstr_cat_n(&line, summary.data, summary.len)))) {
+		if (cstr_view_cat(entry->name, &line) ||
+		    (summary.len && (!dstr_cat(&line, "  ") || cstr_view_cat(summary, &line)))) {
 			ret = ENOMEM;
 			break;
 		}
@@ -835,7 +835,7 @@ cli_names (struct cli *cli)
 		return ENOMEM;
 	for (size_t i = 0; i < count; ++i) {
 		struct cstr_view name = autocomplete_participant_at(cli->client.catalog, i);
-		if (!dstr_cat(&names, " ") || !dstr_cat_n(&names, name.data, name.len))
+		if (!dstr_cat(&names, " ") || cstr_view_cat(name, &names))
 			return ENOMEM;
 	}
 	return cli_ui_message(cli->console, cstr_view_dstr(&names));

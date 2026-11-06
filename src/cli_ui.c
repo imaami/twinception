@@ -124,7 +124,7 @@ cli_ui_progress (struct cli_ui    *ui,
 		return ENOMEM;
 	dstr_clear(&ui->actor);
 	dstr_clear(&ui->status);
-	if (!dstr_cat_n(&ui->actor, actor.data, actor.len) || !dstr_cat_n(&ui->status, text.data, text.len))
+	if (cstr_view_cat(actor, &ui->actor) || cstr_view_cat(text, &ui->status))
 		return ENOMEM;
 	ui->pending = ui->streaming || ui->shown;
 	if (ui->pending)
@@ -171,8 +171,8 @@ cli_ui_error (struct cli_console *console,
               struct cstr_view    detail)
 {
 	dstr_auto line = dstr("Error: ");
-	if (!dstr_cat_n(&line, title.data, title.len) || !dstr_cat(&line, "\n") ||
-	    (detail.len && (!dstr_cat_n(&line, detail.data, detail.len) || !dstr_cat(&line, "\n"))))
+	if (cstr_view_cat(title, &line) || !dstr_cat(&line, "\n") ||
+	    (detail.len && (cstr_view_cat(detail, &line) || !dstr_cat(&line, "\n"))))
 		return ENOMEM;
 	return cli_console_error(console, cstr_view_dstr(&line));
 }

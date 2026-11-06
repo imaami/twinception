@@ -41,6 +41,13 @@ cstr_view (char const *text)
 extern struct cstr_view
 cstr_view_dstr (struct dstr const *text);
 
+/** Append the bytes of text, which must not point into dest, to dest.
+ * Returns 0, or ENOMEM with dest unchanged.
+ */
+extern int
+cstr_view_cat (struct cstr_view  text,
+               struct dstr      *dest);
+
 /** Replace the contents of dest with the bytes of text, which must not
  * point into dest. Returns 0, or ENOMEM with dest left empty.
  */

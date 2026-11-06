@@ -203,7 +203,7 @@ cli_scrollback_append_part (struct cli_scrollback *scrollback,
 		/* The new entry is counted only after the text is appended. */
 		line->styles[line->style_count] = (struct cli_scrollback_style){(uint32_t)old, style};
 	}
-	if (!dstr_cat_n(&line->text, part.data, part.len))
+	if (cstr_view_cat(part, &line->text))
 		return ENOMEM;
 	line->style_count += change;
 	scrollback->styles += change;

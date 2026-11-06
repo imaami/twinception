@@ -94,7 +94,7 @@ cli_tool_begin (struct cli_tool *tool)
 	tool->client->notes_dirty |= (tool->flags & CLI_TOOL_WRITES_NOTES) != 0;
 	struct cstr_view name = cli_tool_name(tool);
 	dstr_auto action = dstr("call ");
-	if (!dstr_cat_n(&action, name.data, name.len))
+	if (cstr_view_cat(name, &action))
 		return ENOMEM;
 	return cli_stream_action(&tool->stream, CSTR_VIEW("you"), cstr_view_dstr(&action));
 }
@@ -119,7 +119,7 @@ cli_tool_content (struct cli_tool    *tool,
 				e = cli_ui_message(tool->stream.ui.console, text);
 			} else {
 				dstr_auto label = dstr("[");
-				if (!dstr_cat_n(&label, kind.data, kind.len) || !dstr_cat(&label, " content]"))
+				if (cstr_view_cat(kind, &label) || !dstr_cat(&label, " content]"))
 					return ENOMEM;
 				e = cli_ui_message(tool->stream.ui.console, cstr_view_dstr(&label));
 			}

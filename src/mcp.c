@@ -4602,11 +4602,12 @@ mcp_agenda_wait_end (struct mcp_agenda *a)
 {
 	struct mcp_slot *slot = a->wait;
 	a->wait = nullptr;
-	bool said = dstr_len(&a->notices)
-	          ? dstr_cat_n(&slot->answer, dstr_get(&a->notices), dstr_len(&a->notices))
-	          : dstr_printf(&slot->answer, "Nothing happened in %" PRIu32 " s.", a->waited);
+	int e = dstr_len(&a->notices)
+	      ? cstr_view_cat(cstr_view_dstr(&a->notices), &slot->answer)
+	      : dstr_printf(&slot->answer, "Nothing happened in %" PRIu32 " s.", a->waited)
+	      ? 0 : ENOMEM;
 	dstr_clear(&a->notices);
-	int e = said ? mcp_agenda_arm(a) : ENOMEM;
+	e = e ? e : mcp_agenda_arm(a);
 	if (e) {
 		mcp_req_fail(a->req, e);
 		return;
@@ -4622,8 +4623,8 @@ static void
 mcp_agenda_wake (struct mcp_agenda *a)
 {
 	struct mcp_req *req = a->req;
-	bool ok = dstr_cat_n(&a->told, dstr_get(&a->notices), dstr_len(&a->notices)) &&
-	          dstr_cat_n(&a->said, dstr_get(&a->told), dstr_len(&a->told)) &&
+	bool ok = !cstr_view_cat(cstr_view_dstr(&a->notices), &a->told) &&
+	          !cstr_view_cat(cstr_view_dstr(&a->told), &a->said) &&
 	          CAT(&a->said, "\n") &&
 	          (req->turn + 1u < req->mcp->st->turns ||
 	           CAT(&a->told, NOTICE_LAST "\n"));
@@ -5932,7 +5933,7 @@ mcp_req_result_begin (struct mcp_req  *req,
 {
 	struct mcp_agenda *a = req->agenda;
 	if (a && dstr_len(&a->notices) && !dstr_len(&a->told)) {
-		if (!dstr_cat_n(&a->told, dstr_get(&a->notices), dstr_len(&a->notices))) {
+		if (cstr_view_cat(cstr_view_dstr(&a->notices), &a->told)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
 		}
@@ -6344,7 +6345,7 @@ mcp_recover_back (struct loop           *loop,
 	}
 	e = buf_put(&req->upload, request.data, request.len, SIZE_MAX);
 	struct cstr_view trace = jb_view(jb_get(state, "trace"));
-	if (!e && trace.len && !dstr_cat_n(&req->trace, trace.data, trace.len))
+	if (!e && trace.len && cstr_view_cat(trace, &req->trace))
 		e = ENOMEM;
 	struct handle who = {};
 	if (!e)
@@ -6543,7 +6544,7 @@ mcp_req_go_on (struct mcp_req   *req,
                struct cstr_view  text)
 {
 	struct dstr *d = &req->self.answer;
-	if (!dstr_cat_n(d, text.data, text.len) ||
+	if (cstr_view_cat(text, d) ||
 	    !CAT(d, "[askai: go on with the task.]")) {
 		mcp_req_fail(req, ENOMEM);
 		return;
@@ -6696,7 +6697,7 @@ mcp_slot_attached (struct mcp_slot  *slot,
 		                "than %d bytes.", UPLOADS_URI) ? EIO : ENOMEM;
 	if (e == EIO)
 		return CAT(out, "The upload of the note as a file failed: ") &&
-		       dstr_cat_n(out, dstr_get(&why), dstr_len(&why)) ? EIO : ENOMEM;
+		       !cstr_view_cat(cstr_view_dstr(&why), out) ? EIO : ENOMEM;
 	if (e)
 		return e;
 	LOG(LOG_VERBOSE, "upstream file %s uploaded: %zu bytes", u.data, bytes);

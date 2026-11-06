@@ -73,7 +73,7 @@ cli_stream_notify (void               *context,
 	if (cstr_view_equal(kind, CSTR_VIEW("text"))) {
 		if (text.len > CLI_LIMIT - dstr_len(&stream->text))
 			return cli_error_set(error, EFBIG, "Assistant turn exceeds the client limit");
-		if (!dstr_cat_n(&stream->text, text.data, text.len))
+		if (cstr_view_cat(text, &stream->text))
 			return ENOMEM;
 		return cli_ui_push(&stream->ui, false, text);
 	}

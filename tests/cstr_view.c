@@ -1,5 +1,6 @@
 /** @file Counted views preserve NULs and clamp slices without overflow. */
 #include <assert.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -69,6 +70,10 @@ main (void)
 	assert(!cstr_view_store(empty, &owned) && !dstr_len(&owned));
 	assert(!cstr_view_store(text, &owned));
 	assert(cstr_view_equal(cstr_view_dstr(&owned), text));
+	assert(!cstr_view_cat(empty, &owned) && !cstr_view_cat(CSTR_VIEW("!"), &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("a\0b!")));
+	assert(cstr_view_cat(text, nullptr) == ENOMEM);
 	dstr_cleanup(&owned);
-	puts("cstr views: empty values, counted NULs, byte order, bounded slices, trims, lookups and stores: PASS");
+	puts("cstr views: empty values, counted NULs, byte order, bounded slices, trims, lookups, "
+	     "stores and appends: PASS");
 }

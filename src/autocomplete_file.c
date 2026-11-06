@@ -69,11 +69,11 @@ autocomplete_file_add (struct autocomplete_file *const file,
 	size_t const cursor = command.len + directory.len + name.len + 1;
 	struct dstr *const lines = &file->lines;
 	char const separator = is_directory ? '/' : ' ';
-	if (!dstr_cat_n(lines, command.data, command.len) ||
-	    !dstr_cat_n(lines, directory.data, directory.len) ||
-	    !dstr_cat_n(lines, name.data, name.len) ||
+	if (cstr_view_cat(command, lines) ||
+	    cstr_view_cat(directory, lines) ||
+	    cstr_view_cat(name, lines) ||
 	    !dstr_cat_n(lines, &separator, 1) ||
-	    !dstr_cat_n(lines, suffix.data, suffix.len) ||
+	    cstr_view_cat(suffix, lines) ||
 	    !dstr_cat_n(lines, "", 1))
 		return ENOMEM;
 	file->matches[index] = (struct autocomplete_match){
@@ -147,11 +147,11 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 			return ENOMEM;
 
 	} else if (home.len && cstr_view_starts(directory, CSTR_VIEW("~/"))) {
-		if (!dstr_cat_n(&file->directory, home.data, home.len) ||
+		if (cstr_view_cat(home, &file->directory) ||
 		    !dstr_cat_n(&file->directory, directory.data + 1, directory.len - 1))
 			return ENOMEM;
 
-	} else if (!dstr_cat_n(&file->directory, directory.data, directory.len)) {
+	} else if (cstr_view_cat(directory, &file->directory)) {
 		return ENOMEM;
 	}
 

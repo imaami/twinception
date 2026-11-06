@@ -1291,7 +1291,7 @@ int cli_console_remember(struct cli_console *console, struct cstr_view text)
 	if (console->simple || !text.len || cstr_view_equal(text, cstr_view_dstr(&console->history_last)))
 		return 0;
 	dstr_auto copy = dstr(nullptr);
-	if (!dstr_cat_n(&copy, text.data, text.len))
+	if (cstr_view_cat(text, &copy))
 		return ENOMEM;
 	/* The console counts the bytes of the submitted entries itself, because
 	 * Readline changes recalled entries in place and offers no function for
@@ -1698,7 +1698,7 @@ cli_console_readline (struct cli_console *console,
 		if (!dstr_reserve(&console->prompt, prefix.len))
 			return ENOMEM;
 		dstr_clear(&console->prompt);
-		if (!dstr_cat_n(&console->prompt, prefix.data, prefix.len))
+		if (cstr_view_cat(prefix, &console->prompt))
 			return ENOMEM;
 		if (console->callback_active && rl_set_prompt(dstr_get(&console->prompt)))
 			return EIO;
@@ -1743,7 +1743,7 @@ cli_console_read_text_simple (struct cli_console *console,
 	struct cstr_view line = {(char const *)bytes.data, bytes.tail};
 	if (!e && line.len && (memchr(line.data, 0, line.len) || jb_utf8(line.data, line.len) != line.len))
 		e = EILSEQ;
-	if (!e && !dstr_cat_n(text, line.data, line.len))
+	if (!e && cstr_view_cat(line, text))
 		e = ENOMEM;
 	buf_fini(&bytes);
 	return e;
@@ -1843,7 +1843,7 @@ cli_console_output_write (struct cli_console_output *state,
 					              (value >= 0x0080 && value <= 0x009f);
 					struct cstr_view bytes = unsafe ? CSTR_VIEW("?") :
 					                        (struct cstr_view){(char const *)state->pending, state->used};
-					if (!dstr_cat_n(dest, bytes.data, bytes.len))
+					if (cstr_view_cat(bytes, dest))
 						return ENOMEM;
 					state->used = 0;
 				}

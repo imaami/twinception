@@ -875,7 +875,7 @@ autocomplete_replacement (struct autocomplete    *ac,
 	if (autocomplete_buffer_reserve(&ac->lines, length + 1))
 		return ENOMEM;
 	(void)dstr_cat_n(&ac->lines, line.data, begin);
-	(void)dstr_cat_n(&ac->lines, value.data, value.len);
+	(void)cstr_view_cat(value, &ac->lines);
 	if (separate)
 		(void)dstr_cat_n(&ac->lines, " ", 1);
 	(void)dstr_cat_n(&ac->lines, line.data + end, line.len - end);
@@ -1135,7 +1135,7 @@ autocomplete_mentions (struct autocomplete *ac,
 		(void)dstr_clear(&ac->quoted);
 		if (mention && !dstr_cat_n(&ac->quoted, "@", 1))
 			return ENOMEM;
-		if (!dstr_cat_n(&ac->quoted, name.data, name.len))
+		if (cstr_view_cat(name, &ac->quoted))
 			return ENOMEM;
 		if (!mention && !begin && separate && !dstr_cat_n(&ac->quoted, ":", 1))
 			return ENOMEM;

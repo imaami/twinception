@@ -14,9 +14,16 @@ cstr_view_dstr (struct dstr const *text)
 }
 
 int
+cstr_view_cat (struct cstr_view  text,
+               struct dstr      *dest)
+{
+	return dstr_cat_n(dest, text.data, text.len) ? 0 : ENOMEM;
+}
+
+int
 cstr_view_store (struct cstr_view  text,
                  struct dstr      *dest)
 {
 	dstr_clear(dest);
-	return dstr_cat_n(dest, text.data, text.len) ? 0 : ENOMEM;
+	return cstr_view_cat(text, dest);
 }
