@@ -1384,6 +1384,10 @@ of `man` does. A compilation that fails, for example with an HTTP error, is
 a record with the reason, and the call fails only if no compilation returns
 a result.
 
+The plugin removes the CSI escape sequences of up to 32 bytes from the
+texts of the records, such as the color codes that GCC and Clang write on
+Compiler Explorer.
+
 A response to a compilation has at most 4 MiB. The output of a call ends
 at 14 MiB with a note, and the plugin sends no compilation after that. A
 list of compilers has at most 4 MiB, and an element of a list at most

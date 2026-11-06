@@ -102,6 +102,9 @@ enum {
 	                                     is the longest URL that the CDN of
 	                                     godbolt.org passes on */
 	GODBOLT_SHORT_MAX    = 512,       /* bytes of a short link */
+	GODBOLT_CSI_MAX      = 32,        /* bytes of the longest escape
+	                                     sequence that godbolt_slice()
+	                                     leaves out */
 	GODBOLT_SKIP         = sizeof GODBOLT_SESSIONS - 1,  /* bytes of the body
 	                                                      before the body of
 	                                                      a compilation */
@@ -2164,11 +2167,30 @@ godbolt_full (struct godbolt *call)
 
 static_assert(GODBOLT_FULL == 14 << 20, "the text of the note has 14 MiB");
 
+/* Returns the length of the CSI escape sequence at the start of @p s, such
+ * as a color code in a message of a compiler, or 0 if @p s does not start
+ * with one of at most GODBOLT_CSI_MAX bytes. A CSI sequence is ESC [, then
+ * bytes from 0x20 to 0x3f, and then a final byte from 0x40 to 0x7e.
+ */
+static size_t
+godbolt_csi (struct cstr_view s)
+{
+	if (!cstr_view_starts(s, CSTR_VIEW("\x1b[")))
+		return 0;
+	size_t const n = s.len < GODBOLT_CSI_MAX ? s.len : GODBOLT_CSI_MAX;
+	size_t i = 2;
+	while (i < n && s.data[i] >= 0x20 && s.data[i] <= 0x3f)
+		++i;
+	return i < n && s.data[i] >= 0x40 && s.data[i] <= 0x7e ? i + 1 : 0;
+}
+
 /* Writes as much of @p s, from call->rec.at.byte on, as the bounds of
  * the step and the room left in the output allow, and advances
- * call->rec.at.byte. If no room is left in the output, or room only for
- * the first bytes of a UTF-8 character, the function ends the record with
- * the note of godbolt_full(). Returns 0, or call->e.
+ * call->rec.at.byte. The function skips each CSI escape sequence
+ * (godbolt_csi()), so a part that it writes ends before the next ESC. If
+ * no room is left in the output, or room only for the first bytes of a
+ * UTF-8 character, the function ends the record with the note of
+ * godbolt_full(). Returns 0, or call->e.
  */
 static int
 godbolt_slice (struct godbolt   *call,
@@ -2179,13 +2201,26 @@ godbolt_slice (struct godbolt   *call,
 			return godbolt_full(call);
 		size_t const left = GODBOLT_FULL - call->written;
 		uint64_t const room = loop_room(call->loop, LOOP_COPY);
-		struct cstr_view const part = cstr_view_slice(s, call->rec.at.byte,
-		                                              room < left ? room : left);
+		struct cstr_view const rest = cstr_view_slice(s, call->rec.at.byte, SIZE_MAX);
+		struct cstr_view part = cstr_view_slice(rest, 0, room < left ? room : left);
 		if (!part.len)
 			return call->e;
+		size_t const csi = godbolt_csi(rest);
+		if (csi) {
+			loop_work(call->loop, LOOP_COPY, csi);
+			call->rec.at.byte += csi;
+			continue;
+		}
+		/* A UTF-8 character cannot contain an ESC, so a part that ends
+		 * before an ESC is written whole, without TOOL_MORE. */
+		char const *esc = memchr(part.data + 1, '\x1b', part.len - 1);
+		uint32_t more = 0;
+		if (esc)
+			part.len = (size_t)(esc - part.data);
+		else if (call->rec.at.byte + part.len < s.len)
+			more = TOOL_MORE;
 		size_t taken = 0;
-		call->e = mcp_slot_write(call->slot, part,
-		                         call->rec.at.byte + part.len < s.len ? TOOL_MORE : 0, &taken);
+		call->e = mcp_slot_write(call->slot, part, more, &taken);
 		call->written += taken;
 		call->rec.at.byte += taken;
 		if (!taken)

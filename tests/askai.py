@@ -14767,8 +14767,11 @@ class MockCE:
     than 4 MiB of assembly, and euro has 3.9 MB of assembly in one string of
     the 3-byte character U+20AC. longline has a message line of 3 MB,
     labels has 200,000 label definitions, and array answers a JSON array.
+    The warning of -Wall and the line of longline contain color codes, as GCC
+    writes them on Compiler Explorer.
     Any other id compiles: each line of the source becomes a line of
-    assembly, -Wall adds a warning, and -DFAIL adds an error and the exit
+    assembly, -Wall adds a warning, -DESC adds a line with escape sequences
+    that are not all color codes, and -DFAIL adds an error and the exit
     code 1. With producePp, the text of the preprocessor is the source
     after a line marker, or a macro with -dM. With /EP or /clang:-dM,
     stdout has the source or a macro. The probe of godbolt_targets gets
@@ -14891,7 +14894,7 @@ class MockCE:
                                    ensure_ascii=False).encode(), ()
         if cid == "longline":
             return 200, {"code": 0, "stdout": [], "asm": [],
-                         "stderr": [{"text": "y" * 3_000_000}]}, ()
+                         "stderr": [{"text": ("y" * 997 + "\x1b[1m") * 3000}]}, ()
         if cid == "labels":
             return 200, {"code": 0, "stdout": [], "stderr": [], "asm": [],
                          "labelDefinitions": {f"L{i}": i for i in range(200_000)}}, ()
@@ -14913,9 +14916,13 @@ class MockCE:
                          "stderr": [], "asm": []}, ()
         stderr = []
         if "-Wall" in args:
-            stderr.append({"text": "<source>:1:1: warning: a warning [-Wall]"})
+            stderr.append({"text": "\x1b[01m\x1b[K<source>:1:1:\x1b[m\x1b[K \x1b[01;35m"
+                                   "\x1b[Kwarning: \x1b[m\x1b[Ka warning [\x1b[01;35m\x1b[K"
+                                   "-Wall\x1b[m\x1b[K]"})
         if "-DFAIL" in args:
             stderr.append({"text": "<source>:1:1: error: FAIL is defined"})
+        if "-DESC" in args:
+            stderr.append({"text": "\x1b(Bkept\x1b[1mbold\x1b[" + "1;" * 16 + "mend\x1b["})
         return 200, {"code": 1 if "-DFAIL" in args else 0, "stdout": [],
                      "stderr": stderr,
                      "asm": [{"text": "asm: " + line, "source": None}
@@ -15249,6 +15256,12 @@ def check_godbolt(binary, up, godbolt):
                 assert records[0][2] == "exit code 1" and \
                     "--- stderr ---\n<source>:1:1: error: FAIL is defined\n" in \
                     records[0][3] and last == summary(1, 0, 1, 0, 0), records
+                # An escape sequence that is not a CSI sequence of at most 32
+                # bytes stays in the record.
+                records, _ = ce_records(ok(ai, "godbolt_compile", compilers=["cg142"],
+                                           args=["-DESC"], source=source))
+                assert records[0][3].endswith("--- stderr ---\n\x1b(Bkeptbold\x1b[" +
+                                              "1;" * 16 + "mend\x1b[\n"), records
 
                 # 429 with Retry-After 1 is sent again after 1 s. With
                 # Retry-After 120 it is a failed request at once.
@@ -15288,12 +15301,12 @@ def check_godbolt(binary, up, godbolt):
                         last == summary(4, 4, 0, 0, 0), (k, text[-300:])
 
                 # A line of 3 MB is written in slices, so that no step copies
-                # more than 1 MiB. A response with many label definitions is
-                # freed in slices, and a response that is not a JSON object is
-                # a failed request.
+                # more than 1 MiB, and without its 3000 color codes. A
+                # response with many label definitions is freed in slices, and
+                # a response that is not a JSON object is a failed request.
                 records, last = ce_records(ok(ai, "godbolt_compile", source=source,
                                               compilers=["longline", "labels", "array"]))
-                assert records[0][2:] == ("exit code 0", "--- stderr ---\n" + "y" * 3_000_000 +
+                assert records[0][2:] == ("exit code 0", "--- stderr ---\n" + "y" * 2_991_000 +
                                           "\n") and \
                     records[1][2:] == ("exit code 0", "") and \
                     records[2][2] == "the response is not a JSON object with an integer " \
@@ -15636,11 +15649,11 @@ def check_godbolt(binary, up, godbolt):
           "malformed and oversized elements; ids checked in the list; default "
           "compilers; compilations in order with the site's filters, failed "
           "requests as records, 429 sent again, cut and oversized responses, the "
-          "end of the output at 14 MiB, a long line in slices, large and odd "
-          "responses, stored responses for a call with offset, refused arguments "
-          "and options, cancellation; preprocessing, predefined macros and target "
-          "facts with the flags of each driver; short links, links to the state "
-          "and no links: PASS")
+          "end of the output at 14 MiB, a long line in slices, color codes left "
+          "out, large and odd responses, stored responses for a call with offset, "
+          "refused arguments and options, cancellation; preprocessing, predefined "
+          "macros and target facts with the flags of each driver; short links, "
+          "links to the state and no links: PASS")
 
 
 def check_classes(binary, up):
