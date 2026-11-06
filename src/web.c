@@ -52,10 +52,13 @@ enum {
 	WEB_BUCKETS   = 1 << 12,   /* of the table */
 };
 
-/* The bits of the message of a run to home. */
+/* The bits of the message of a run to home, and the bit that web_run_mail()
+ * adds once home's loop has stopped.
+ */
 enum {
 	RUN_SUBMIT = 1,  /* send the request */
 	RUN_CANCEL = 2,  /* no call waits for the run, and its keep is 0 */
+	RUN_EXIT   = 4,  /* home's loop has stopped */
 };
 
 /* The error texts of a run that askai ends as it stops, and of a run that
@@ -661,26 +664,24 @@ web_run_mail (struct loop *loop,
 {
 	struct web_run *run = container_of(msg, struct web_run, to_home);
 	struct web *web = run->web;
-	static struct web_response const ends[] = {
-		{ .error = stopping, .e = ESHUTDOWN },
-		{ .error = "",       .e = ECANCELED },
-	};
-	struct web_response const *end = &ends[!(loop->flags & LOOP_EXIT)];
-	uint32_t bits = atomic_exchange(&run->bits, 0);
+	uint32_t bits = atomic_exchange(&run->bits, 0) & (RUN_SUBMIT | RUN_CANCEL);
 
-	switch (bits & (RUN_SUBMIT | RUN_CANCEL)) {
+	switch (bits | (loop->flags & LOOP_EXIT ? RUN_EXIT : 0)) {
 	case RUN_SUBMIT:
-		if (!(loop->flags & LOOP_EXIT)) {
-			web_run_start(web, run);
-			break;
-		}
-		[[fallthrough]];
+		web_run_start(web, run);
+		break;
+
+	case RUN_SUBMIT | RUN_EXIT:
+	case RUN_SUBMIT | RUN_CANCEL | RUN_EXIT:
+		web_run_end(web, run, &(struct web_response){ .error = stopping, .e = ESHUTDOWN });
+		break;
 
 	case RUN_SUBMIT | RUN_CANCEL:
-		web_run_end(web, run, end);
+		web_run_end(web, run, &(struct web_response){ .error = "", .e = ECANCELED });
 		break;
 
 	case RUN_CANCEL:
+	case RUN_CANCEL | RUN_EXIT:
 		if (!list_is_empty(&run->live)) {
 			http_cancel(web->http, &run->transfer);
 			web_run_finish(web, run, &(struct web_response){ .error = "cancelled",
@@ -896,49 +897,46 @@ web_wait_create (struct web           *web,
 	list_init(&wait->hook);
 
 	uint64_t const now = ask->loop->now;
-	struct web_reply *hit = nullptr;
-	struct web_run *join = nullptr;
+	struct web_run *to = run;
 	pthread_mutex_lock(&web->lock);
 	if (r->keep) {
 		struct web_entry *entry = *web_find(web, &run->key, run->data);
-		if (entry && entry->reply->received + r->keep * NS > now)
-			hit = web_reply_get(entry->reply);
-		else
-			join = web_find_run(web, &run->key, run->data, r->timeout);
+		/* Only home changes a wait that is on a run's list, until home
+		 * posts it. So the function changes only a wait that has a
+		 * stored response. */
+		if (entry && entry->reply->received + r->keep * NS > now) {
+			wait->reply = web_reply_get(entry->reply);
+			wait->done = true;
+			to = nullptr;
+		} else {
+			struct web_run *join = web_find_run(web, &run->key, run->data, r->timeout);
+			to = join ? join : run;
+		}
 	}
-	/* Only home changes a wait that is on a run's list, until home posts
-	 * it. So the function changes only a wait that has a stored
-	 * response. */
-	if (hit) {
-		wait->reply = hit;
-		wait->done = true;
-	}
-	bool full = !hit && !join && web->n_runs >= WEB_RUNS;
-	struct web_run *to = hit || full ? nullptr : join ? join : run;
+	bool full = to == run && web->n_runs >= WEB_RUNS;
+	to = full ? nullptr : to;
 	if (to) {
 		list_append(&to->waits, &wait->hook);
 		wait->run = to;
 		to->most = r->keep > to->most ? r->keep : to->most;
 	}
-	if (to == run) {
+	bool fresh = to == run;
+	if (fresh) {
 		++web->n_runs;
 		if (r->keep)
 			list_append(&web->runs, &run->hook);
 	}
 	pthread_mutex_unlock(&web->lock);
 
-	if (to == run) {
+	if (fresh)
 		loop_post(ask->home, &run->to_home);
-		*e = 0;
-		return wait;
-	}
-	free(run);
+	else
+		free(run);
 	if (full) {
 		free(wait);
-		*e = EAGAIN;
-		return nullptr;
+		wait = nullptr;
 	}
-	*e = 0;
+	*e = full ? EAGAIN : 0;
 	return wait;
 }
 
