@@ -296,8 +296,7 @@ git_name (char const *path)
 	    cstr_view_equal(cstr_view_slice(name, name.len - suffix.len, suffix.len), suffix))
 		name.len -= suffix.len;
 	if (!name.len || name.len > 64 || *name.data == '.' ||
-	    strspn(name.data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	                      "0123456789_.-") < name.len)
+	    strspn(name.data, UTIL_ALNUM "_.-") < name.len)
 		return (struct cstr_view){};
 	return name;
 }
@@ -1303,11 +1302,11 @@ git_read_begin (struct git_read       *read,
 	read->rev_len = jb_escape(read->rev, rev.data, rev.len);
 	/* The header contains the repository name, the commit ID and path from
 	 * read->rev, and three numbers. The longest footer contains read->rev
-	 * and one number. A number is at most 20 digits long. */
+	 * and one number. */
 	size_t reserve = sizeof "[Repository , file  at commit : lines  to  of at least .]\n" +
 	                 sizeof "\n\n[To read on, call again with \"revisions\": "
 	                        "[\"\"] and \"line\": .]" +
-	                 repo->name.len + 2 * read->rev_len + 4 * 20;
+	                 repo->name.len + 2 * read->rev_len + 4 * UTIL_DECIMAL;
 	read->room = window > reserve ? window - reserve : 0;
 	read->last = read->line - 1;
 }
@@ -1325,7 +1324,7 @@ git_read_line (struct git_read *read,
 	size_t n = ++read->lines;
 	if (n == read->line)
 		read->from = read->start;
-	char digits[20];
+	char digits[UTIL_DECIMAL];
 	size_t size = n == read->last + 1 && n - read->line < read->count
 	              ? git_digits(digits + sizeof digits, n, 1).len + end - read->start +
 	                !newline
@@ -1390,7 +1389,7 @@ git_read_head (struct git_read const *read,
                struct git_repo const *repo,
                bool                   cut)
 {
-	char lines[sizeof ": lines  to  of at least .]\n" + 3 * 20];
+	char lines[sizeof ": lines  to  of at least .]\n" + 3 * UTIL_DECIMAL];
 	struct cstr_view const p[] = {
 		CSTR_VIEW("[Repository "), repo->name, CSTR_VIEW(", file "),
 		{ read->rev + read->oid_len + 1, read->rev_len - read->oid_len - 1 },
@@ -1415,7 +1414,7 @@ git_read_lines (struct git_read *read,
                 struct span      blob)
 {
 	struct loop *loop = mcp_slot_loop(slot);
-	char digits[21];
+	char digits[UTIL_DECIMAL + 1];
 	char *tab = digits + sizeof digits - 1;
 	*tab = '\t';
 	while (read->at < read->to) {
@@ -1492,7 +1491,7 @@ git_read_foot (struct git_read const *read,
 	bool newline = blob.ptr[read->to - 1] == '\n';
 	size_t kind = read->last < read->total ? 0 : 1 + 2 * cut + !newline;
 	struct cstr_view const *note = notes[kind];
-	char n[20];
+	char n[UTIL_DECIMAL];
 	struct cstr_view const p[] = {
 		newline ? CSTR_VIEW("\n") : CSTR_VIEW("\n\n"),
 		note[0], note[1], note[2],

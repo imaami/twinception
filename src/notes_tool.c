@@ -545,8 +545,8 @@ notes_tool_call_message (struct notes_tool_call const *call,
                          uint64_t                      before,
                          char                          msg[NOTES_MESSAGE])
 {
-	static_assert(sizeof "Restore  from  (18446744073709551615 to 18446744073709551615 "
-	                     "bytes)" + 2 * NOTES_NAME + 2 + NOTES_REPO <= NOTES_MESSAGE);
+	static_assert(sizeof "Restore  from  ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
+	              NOTES_REPO <= NOTES_MESSAGE);
 	uint16_t fetch = notes_tool_actions[call->action].fetch;
 	char const *verb = notes_tool_actions[call->action].verb;
 	char const *from = fetch & FETCH_RESTORE ? notes_revision_from(call->revision)

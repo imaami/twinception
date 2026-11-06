@@ -846,7 +846,7 @@ notes_file_same (struct notes_file const *file,
 		return 0;
 	/* The id of a blob is the digest of "blob SIZE", a NUL and the bytes:
 	 * SHA-1 for 40 digits, SHA-256 for 64. */
-	char head[sizeof "blob 18446744073709551615"];
+	char head[sizeof "blob " + UTIL_DECIMAL];
 	int h = snprintf(head, sizeof head, "blob %zu", data.len);
 	if (h < 0 || h >= (int)sizeof head)
 		return EINVAL;
@@ -875,7 +875,7 @@ notes_add_head (struct buf        *in,
                 struct notes_part *part)
 {
 	static char const m[] = "M 100644 inline \"";
-	char head[sizeof m + 2 * NOTES_NAME + sizeof "\"\ndata 18446744073709551615\n"];
+	char head[sizeof m + 2 * NOTES_NAME + sizeof "\"\ndata \n" + UTIL_DECIMAL];
 	if (!in || !name.data || name.len > NOTES_NAME || !part)
 		return EINVAL;
 	/* The name is quoted as a C string. */
@@ -927,9 +927,8 @@ notes_add_input (struct buf  *in,
                  struct span  file)
 {
 	static char const mark[] = "get-mark :1\n";
-	char head[NOTES_REPO + NOTES_MESSAGE + NOTES_TIP +
-	          sizeof "commit \nmark :1\ncommitter askai <askai> now\n"
-	                 "data 18446744073709551615\n\nfrom \n"];
+	char head[NOTES_REPO + NOTES_MESSAGE + NOTES_TIP + UTIL_DECIMAL +
+	          sizeof "commit \nmark :1\ncommitter askai <askai> now\ndata \n\nfrom \n"];
 	if (!in || !repo || !tip || !message.ptr || message.len >= NOTES_MESSAGE ||
 	    memchr(message.ptr, '\0', message.len))
 		return EINVAL;

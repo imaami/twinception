@@ -1103,7 +1103,7 @@ httpd_conn_head (struct httpd_conn      *conn,
                  size_t                  length)
 {
 	struct httpd_req const *req = &conn->req;
-	char digits[20];
+	char digits[UTIL_DECIMAL];
 	struct cstr_view framing[3] = {};
 	if (length != STREAM_OPEN) {
 		/* A 204 has no body to give the length of. */

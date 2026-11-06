@@ -469,8 +469,7 @@ config_header_valid (char const *line)
 static bool
 config_tool_name_valid (char const *name)
 {
-	size_t n = strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	                        "0123456789_.-");
+	size_t n = strspn(name, UTIL_ALNUM "_.-");
 	return n && n <= 128 && !name[n];
 }
 

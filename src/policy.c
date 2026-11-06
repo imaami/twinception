@@ -160,8 +160,7 @@ struct policy_build {
 static size_t
 policy_name_len (char const *name)
 {
-	size_t n = strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	                        "0123456789_.@-");
+	size_t n = strspn(name, UTIL_ALNUM "_.@-");
 	return n <= POLICY_NAME && !name[n] ? n : 0;
 }
 

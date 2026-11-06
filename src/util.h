@@ -105,8 +105,11 @@ util_hex_digit (unsigned char c)
 	     : lower >= 'a' && lower <= 'f' ? lower - 'a' + 10 : 16;
 }
 
-/** Write @p n in decimal into the bytes before @p end, at most 20 of them.
- *  Returns a pointer to the first digit.
+/** The most digits of a uint64_t in decimal. */
+enum { UTIL_DECIMAL = 20 };
+
+/** Write @p n in decimal into the bytes before @p end, at most UTIL_DECIMAL
+ *  of them. Returns a pointer to the first digit.
  */
 static inline char *
 util_decimal (char     *end,
@@ -204,6 +207,9 @@ util_char_start (char const *s,
 		++off;
 	return off;
 }
+
+/** The ASCII letters and digits, as a string: A to Z, a to z, then 0 to 9. */
+#define UTIL_ALNUM "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 /** The most bytes of a word in askai's Git refs, such as a participant. */
 enum { UTIL_WORD_MAX = 64 };

@@ -810,7 +810,6 @@ static void
 manual_start (struct mcp_slot    *slot,
               struct json_object *args)
 {
-#define ALNUM "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 	struct json_object *section = jb_get(args, "section");
 	struct cstr_view const page = jb_view(jb_get(args, "name"));
 	struct cstr_view sect = jb_view(section);
@@ -822,14 +821,13 @@ manual_start (struct mcp_slot    *slot,
 		sect = (struct cstr_view){ digit, 1 };
 	}
 	struct cstr_view const problem =
-		!manual_word(page, MANUAL_NAME, ALNUM "_.:+@-")
+		!manual_word(page, MANUAL_NAME, UTIL_ALNUM "_.:+@-")
 		? CSTR_VIEW("The name argument must name a manual page: 1 to 128 letters, "
 		            "digits and _.:+@- characters, the first not -.")
-		: section && !(sect.data && (!sect.len || manual_word(sect, MANUAL_SECTION, ALNUM)))
+		: section && !(sect.data && (!sect.len || manual_word(sect, MANUAL_SECTION, UTIL_ALNUM)))
 		? CSTR_VIEW("The section argument must name a section, such as 1, 3 or 3p: "
 		            "1 to 16 letters and digits.")
 		: (struct cstr_view){};
-#undef ALNUM
 	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16, "the problems say");
 	if (problem.data) {
 		mcp_slot_tell(slot, problem, TOOL_FAILED);

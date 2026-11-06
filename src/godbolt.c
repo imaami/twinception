@@ -111,8 +111,7 @@ enum {
         "id,name,compilerType,compilerCategories,semver,instructionSet,releaseTrack"
 
 /* The bytes of a compiler id, and of a language id. */
-static char const godbolt_id_bytes[] =
-	"+-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+static char const godbolt_id_bytes[] = UTIL_ALNUM "+-._";
 static char const godbolt_language_bytes[] =
 	"+-0123456789_abcdefghijklmnopqrstuvwxyz";
 
@@ -1785,8 +1784,7 @@ godbolt_job_body (struct godbolt              *call,
 static int
 godbolt_state_link (struct godbolt *call)
 {
-	static char const digits[] =
-		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	static char const digits[] = UTIL_ALNUM "+/";
 	unsigned char const *s = (unsigned char const *)call->body;
 	size_t const n = call->len;
 	char link[GODBOLT_LINK_MAX];
