@@ -985,6 +985,30 @@ review_put_change (struct dstr                *out,
 	                     PUT(out, "\n"))) ? ENOMEM : 0;
 }
 
+/* Appends the line before the findings of @p r, which has some: their
+ * number, and the number in each state that has any. Returns 0 or ENOMEM.
+ */
+static int
+review_put_counts (struct dstr         *out,
+                   struct review const *r)
+{
+	size_t n[REVIEW_STATES] = {};
+	for (size_t k = 0; k < r->n_findings; ++k)
+		++n[r->findings[k].changes[r->findings[k].n - 1].state];
+	if (!dstr_printf(out, "[askai: your %zu finding%s", r->n_findings, util_s(r->n_findings)))
+		return ENOMEM;
+	char const *sep = ": ";
+	for (size_t k = 0; k < REVIEW_STATES; ++k) {
+		if (!n[k])
+			continue;
+		if (!dstr_printf(out, "%s%zu %s", sep, n[k], review_state_names[k].data))
+			return ENOMEM;
+		sep = ", ";
+	}
+	return PUT(out, ". Call findings with action show and id for the history of one "
+	                "finding:]\n") ? ENOMEM : 0;
+}
+
 /**
  * Appends the item at @p cursor to @p out and moves @p cursor to the next
  * item. The items are the lines of the text of the record @p r, or of the
@@ -998,14 +1022,6 @@ review_put_item (struct dstr         *out,
                  size_t               id,
                  struct tool_cursor  *cursor)
 {
-	static struct cstr_view const heads[] = {
-		CSTR_VIEW_INIT("[askai: your review record, which askai keeps through every "
-		               "compaction of this ask call.]\n[askai: you have recorded no findings; "
-		               "the findings tool records them.]\n"),
-		CSTR_VIEW_INIT("[askai: your review record, which askai keeps through every "
-		               "compaction of this ask call.]\n[askai: your findings; findings action "
-		               "show with an id gives one's history:]\n"),
-	};
 	struct review_finding const *f = id ? &r->findings[id - 1] : nullptr;
 	switch (cursor->section) {
 	case REVIEW_SECTION_HEAD:
@@ -1015,11 +1031,16 @@ review_put_item (struct dstr         *out,
 			       PUT(out, "\nclaim: ") || cstr_view_cat(cstr_view_dstr(&f->claim), out) ||
 			       PUT(out, "\n") ? ENOMEM : 0;
 		}
-		bool const any = r && r->n_findings;
-		*cursor = (struct tool_cursor){
-			.section = any ? REVIEW_SECTION_OPEN : REVIEW_SECTION_LOG,
-		};
-		return cstr_view_cat(heads[any], out);
+		if (PUT(out, "[askai: your review record, which askai keeps through every "
+		             "compaction of this ask call.]\n"))
+			return ENOMEM;
+		if (!r || !r->n_findings) {
+			*cursor = (struct tool_cursor){ .section = REVIEW_SECTION_LOG };
+			return PUT(out, "[askai: you have recorded no findings; the findings tool "
+			                "records them.]\n") ? ENOMEM : 0;
+		}
+		*cursor = (struct tool_cursor){ .section = REVIEW_SECTION_OPEN };
+		return review_put_counts(out, r);
 	case REVIEW_SECTION_OPEN:
 	case REVIEW_SECTION_CLOSED:
 		return review_put_finding(out, r, cursor);

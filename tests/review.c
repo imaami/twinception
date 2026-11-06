@@ -46,7 +46,11 @@ same (char const *file,
                 "this ask call. Keep further findings in your notes or your summary."
 #define NO_ROOM "The record's limit is 4 MiB, and this change does not fit. " \
                 "Keep further findings in your notes or your summary."
-#define FINDINGS "[askai: your findings; findings action show with an id gives one's history:]\n"
+/* The line before the findings, with the counts n, such as
+ * "1 finding: 1 verified".
+ */
+#define FINDINGS(n) "[askai: your " n ". Call findings with action show and id for " \
+                    "the history of one finding:]\n"
 #define READS "[askai: what you read with git read in this call:]\n"
 
 /* A review_kept_fn that drops "[askai: x]", a stand-in for the notices of
@@ -920,7 +924,8 @@ test_pending (void)
 	CHECK(!shown_in(r, "proj", A, "src/a.c", 11, 12, 300, 0, SIZE_MAX, 2));
 	CHECK(!review_pending_log(r));
 	EXPECT(r, verify, 3, 0, "Added finding 1: verified, src/a.c:3 at " A12 ".");
-	RENDER(r, HEADER FINDINGS "1. verified, src/a.c:3 at " A12 "\n   claim: c\n   evidence: e\n"
+	RENDER(r, HEADER FINDINGS("1 finding: 1 verified")
+	          "1. verified, src/a.c:3 at " A12 "\n   claim: c\n   evidence: e\n"
 	          READS "proj " A "\n  src/a.c  lines 1-12: 12 of 300 lines");
 	review_destroy(&r);
 
@@ -1021,9 +1026,10 @@ test_history (void)
 	review_destroy(&r);
 }
 
-/* The render has the open findings with their claims and latest evidence,
- * then the closed ones, a line each, then the read log. A render that
- * goes past its size is cut.
+/* The render contains the header with the number of findings in each
+ * state, the open findings with their claims and latest evidence, then
+ * the closed ones, a line each, then the read log. A render that goes
+ * past its size is cut.
  */
 static void
 test_render (void)
@@ -1050,7 +1056,8 @@ test_render (void)
 	       "Added finding 4: candidate, src/z.c:2-3, not read. Read its lines with git read "
 	       "before you verify it.");
 	char want[2048];
-	snprintf(want, sizeof want, HEADER FINDINGS
+	snprintf(want, sizeof want,
+	         HEADER FINDINGS("4 findings: 1 candidate, 1 verified, 1 disproved, 1 retracted")
 	         "1. verified, src/a.c:3-4 at " A12 "\n   claim: C1\n   evidence: E1\n"
 	         "4. candidate, src/z.c:2-3, not read\n   claim: C4\n"
 	         "2. retracted: first line...\n"
@@ -1317,7 +1324,8 @@ test_no_git (void)
 	CHECK(back && !e && !review_restore(back, obj));
 	struct dstr text = DSTR_INIT;
 	CHECK(!review_render(back, &text, SIZE_MAX));
-	SAME(dstr_get(&text), HEADER FINDINGS "1. verified, src/a.c:3 at " A12 "\n   claim: c\n"
+	SAME(dstr_get(&text), HEADER FINDINGS("1 finding: 1 verified")
+	                      "1. verified, src/a.c:3 at " A12 "\n   claim: c\n"
 	                      "   evidence: e");
 	dstr_cleanup(&text);
 	CHECK(!review_pending_log(back));

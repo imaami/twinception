@@ -397,10 +397,11 @@ until the model retracts it. `askai` leaves its own notices out of the
 end of a claim or of evidence, as it does for the text of a note.
 
 After each compaction, `askai` adds the record to the prompt, after the
-summary and before the notes. The open findings come first, each with its
-claim and its latest evidence, then the closed findings, a line each, and
-then the read log. There the record takes at most the window of a tool
-result in a turn (section [`context`](#context)). If it is longer, its
+summary and before the notes. A line gives the number of findings and the
+number in each state that has findings. The open findings come first, each
+with its claim and its latest evidence, then the closed findings, a line
+each, and then the read log. There the record takes at most the window of a
+tool result in a turn (section [`context`](#context)). If it is longer, its
 last line names the `offset` from which `findings` `show` gives the rest.
 The notice before the record states that `askai` keeps the task word for
 word through every compaction: the system text, the messages of the client

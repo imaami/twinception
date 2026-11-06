@@ -235,7 +235,7 @@ review_call (struct review      *r,
 
 /**
  * Appends to @p out the text of the record @p r, or of an empty record if
- * @p r is nullptr. The text starts with a header line, then lists the
+ * @p r is nullptr. The text starts with two header lines, then lists the
  * findings, then the read log. If the text is longer than @p most bytes,
  * it is cut after its last newline within @p most bytes, and a notice with
  * the offset of the cut for the action show is appended. Returns 0, EFAULT

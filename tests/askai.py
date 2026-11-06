@@ -50,6 +50,15 @@ TASK = ("[askai: askai keeps your task word for word through every compaction of
         "the task into notes or a summary.]\n")
 REVIEW_EMPTY = REVIEW + ("[askai: you have recorded no findings; the findings tool "
                          "records them.]")
+
+
+def findings_head(counts):
+    """The line before the findings of a review record, with the counts, such
+    as "2 findings: 1 candidate, 1 retracted" (src/review.c)."""
+    return (f"[askai: your {counts}. Call findings with action show and id for the "
+            "history of one finding:]\n")
+
+
 # The description of the offset of each tool that pages its output
 # (TOOL_OFFSET_ABOUT, src/tool.h).
 OFFSET_ABOUT = "The byte of the output to start from."
@@ -2983,9 +2992,8 @@ def check_recovery_review(binary, up):
             said = output(creates[2], "update")
             assert said == f"Finding 1 is now verified, src/a.c:5 at {head[:12]}; it was " \
                 "candidate.", said
-            assert output(creates[3], "show") == REVIEW + (
-                "[askai: your findings; findings action show with an id gives one's "
-                f"history:]\n1. verified, src/a.c:5 at {head[:12]}\n   claim: C\n"
+            assert output(creates[3], "show") == REVIEW + findings_head("1 finding: 1 verified") + (
+                f"1. verified, src/a.c:5 at {head[:12]}\n   claim: C\n"
                 "   evidence: E\n[askai: what you read with git read in this call:]\n"
                 f"proj {head}\n  src/a.c  lines 1-20: 20 of 300 lines"), creates[3]
             # The call made again has the turn of the first.
@@ -12543,8 +12551,6 @@ def check_review(binary, up):
     show gives the rest. With tools.upstream.deny, the turns get no
     findings and compaction is unchanged. Without the git tool, findings
     refuses verified and disproved and suggests no git read."""
-    findings_head = ("[askai: your findings; findings action show with an id gives "
-                     "one's history:]\n")
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo = f"{d}/proj"
@@ -12628,7 +12634,8 @@ def check_review(binary, up):
             result = ai.ask("Q")
             sent = up.requests[count:]
             assert len(sent) == 6 and result["content"][0]["text"] == "A", sent
-            first = (findings_head + "1. candidate, src/a.c:3-4, not read\n   claim: C1\n"
+            first = (findings_head("2 findings: 2 candidate") +
+                     "1. candidate, src/a.c:3-4, not read\n   claim: C1\n"
                      "2. candidate\n   claim: C3\n   evidence: E")
             assert results(sent[1]) == [
                 "Added finding 1: candidate, src/a.c:3-4, not read. Read its lines with "
@@ -12646,8 +12653,8 @@ def check_review(binary, up):
                 "The action argument must be add, update or show.",
                 "add takes claim, location, state and evidence, not id.",
                 REVIEW + first], results(sent[1])
-            record = (REVIEW + findings_head + "1. candidate, src/a.c:3-4, not read\n"
-                      "   claim: C1\n2. retracted: C3b")
+            record = (REVIEW + findings_head("2 findings: 1 candidate, 1 retracted") +
+                      "1. candidate, src/a.c:3-4, not read\n   claim: C1\n2. retracted: C3b")
             paged = record
             size = len(record.encode())
             assert results(sent[2]) == [
@@ -12663,8 +12670,9 @@ def check_review(binary, up):
             assert sent[3]["body"]["messages"][1:] == [], sent[3]
             assert prompt(sent[3]) == compacted("S", "\n\n" + TASK + record), prompt(sent[3])
             assert results(sent[4]) == ["Added finding 3: candidate."], results(sent[4])
-            record = (REVIEW + findings_head + "1. candidate, src/a.c:3-4, not read\n"
-                      "   claim: C1\n3. candidate\n   claim: C4\n2. retracted: C3b")
+            record = (REVIEW + findings_head("3 findings: 2 candidate, 1 retracted") +
+                      "1. candidate, src/a.c:3-4, not read\n   claim: C1\n3. candidate\n"
+                      "   claim: C4\n2. retracted: C3b")
             assert prompt(sent[5]) == compacted("T", "\n\n" + TASK + record), prompt(sent[5])
             # The trace names each call's action, and the bytes of its whole
             # output or its failure.
@@ -12705,7 +12713,7 @@ def check_review(binary, up):
             units, _ = work(ai)
             assert all(most <= bound for most, bound in units.values()), units
             assert units["copy"][0] == units["copy"][1], units
-            text = REVIEW + findings_head + "\n".join(
+            text = REVIEW + findings_head("3 findings: 3 candidate") + "\n".join(
                 f"{k + 1}. candidate\n   claim: {k} " + "x" * (600 << 10) for k in range(3))
             shown = results(up.requests[count + 4])[0]
             found = re.fullmatch(r"(.*)\n\n\[Bytes 0 to (\d+) of (\d+): for the rest, call "
@@ -12808,7 +12816,7 @@ def check_review(binary, up):
                 "the whole path.",
                 f"Added finding 4: verified, src/a.c:3 at {later[:12]}.",
                 f"Added finding 5: verified, src/a.c:8 at {head[:12]}.",
-                REVIEW + findings_head +
+                REVIEW + findings_head("5 findings: 4 verified, 1 disproved") +
                 f"1. verified, src/a.c:3-4 at {head[:12]}\n   claim: C1\n   evidence: EC1\n"
                 f"3. verified, src/a.c:3 at {head[:12]}\n   claim: C4\n   evidence: EC4\n"
                 f"4. verified, src/a.c:3 at {later[:12]}\n   claim: C4\n   evidence: EC4\n"
@@ -12919,8 +12927,9 @@ def check_review(binary, up):
             assert shown == [
                 missing("verified", "src/cut.c line 4195 is", "src/cut.c", 4195),
                 f"Added finding 1: verified, src/cut.c:4194 at {later[:12]}.",
-                REVIEW + findings_head + f"1. verified, src/cut.c:4194 at {later[:12]}\n"
-                "   claim: C7\n   evidence: EC7\n[askai: what you read with git read in "
+                REVIEW + findings_head("1 finding: 1 verified") +
+                f"1. verified, src/cut.c:4194 at {later[:12]}\n   claim: C7\n"
+                "   evidence: EC7\n[askai: what you read with git read in "
                 f"this call:]\nproj {later}\n  src/cut.c  lines 4190-4194: 5 of an unknown "
                 "number of lines"], shown
             # A client's read is unchanged.
@@ -12939,7 +12948,7 @@ def check_review(binary, up):
             adds = [{"action": "add", "claim": c} for c in claims]
             script[:] = [turn(*adds[:16]), turn(*adds[16:32]), turn(*adds[32:]),
                          turn({"summary": "S"}, name="compact")]
-            record = REVIEW + findings_head + "".join(
+            record = REVIEW + findings_head("40 findings: 40 candidate") + "".join(
                 f"{k + 1}. candidate\n   claim: {c}\n" for k, c in enumerate(claims))
             record = record[:-1]
             keep = record.rindex("\n", 0, 4000) + 1
