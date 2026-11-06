@@ -56,6 +56,14 @@ struct ledger {
 	struct ledger_owner   *owners[OWNER_BUCKETS];
 };
 
+/* The link to the first owner of the bucket of @p key. */
+static struct ledger_owner **
+ledger_owner_bucket (struct ledger *l,
+                     uint64_t       key)
+{
+	return &l->owners[key & (array_size(l->owners) - 1)];
+}
+
 /* The owner whose key is @p key, the lock held; nullptr if the ledger has
  * no such owner.
  */
@@ -63,7 +71,7 @@ static struct ledger_owner *
 ledger_owner_find (struct ledger *l,
                    uint64_t       key)
 {
-	struct ledger_owner *o = l->owners[key & (OWNER_BUCKETS - 1)];
+	struct ledger_owner *o = *ledger_owner_bucket(l, key);
 	while (o && o->key != key)
 		o = o->next;
 	return o;
@@ -78,7 +86,7 @@ ledger_owner_gc (struct ledger       *l,
 {
 	if (o->n || o->n_waits || ledger_timer_any(o->timers))
 		return;
-	struct ledger_owner **p = &l->owners[o->key & (OWNER_BUCKETS - 1)];
+	struct ledger_owner **p = ledger_owner_bucket(l, o->key);
 	while (*p != o)
 		p = &(*p)->next;
 	*p = o->next;
@@ -94,7 +102,7 @@ static void
 ledger_owner_expire (struct ledger_owner *o,
                      uint64_t             now)
 {
-	for (size_t i = 0; i < LEDGER_TIMERS; ++i) {
+	for (size_t i = 0; i < array_size(o->timers); ++i) {
 		uint64_t due = o->timers[i].due;
 		if (due < now && now - due >= LEDGER_KEEP * NS)
 			o->timers[i].due = 0;
@@ -108,7 +116,7 @@ static void
 ledger_owners_expire (struct ledger *l)
 {
 	uint64_t now = loop_clock();
-	for (size_t i = 0; i < OWNER_BUCKETS; ++i)
+	for (size_t i = 0; i < array_size(l->owners); ++i)
 		for (struct ledger_owner *o = l->owners[i], *next; o; o = next) {
 			next = o->next;
 			ledger_owner_expire(o, now);
@@ -153,7 +161,7 @@ ledger_owner_get (struct ledger *l,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	struct ledger_owner **bucket = &l->owners[key & (OWNER_BUCKETS - 1)];
+	struct ledger_owner **bucket = ledger_owner_bucket(l, key);
 	*o = (struct ledger_owner){ .next = *bucket, .key = key };
 	list_init(&o->records);
 	list_init(&o->waits);
@@ -168,7 +176,7 @@ static struct ledger_timer *
 ledger_owner_timer (struct ledger_owner *o,
                     uint32_t             id)
 {
-	for (size_t i = 0; i < LEDGER_TIMERS; ++i)
+	for (size_t i = 0; i < array_size(o->timers); ++i)
 		if (o->timers[i].due && o->timers[i].id == id)
 			return &o->timers[i];
 	return nullptr;
@@ -233,17 +241,25 @@ ledger_owner_timers (struct ledger_owner *o,
                      bool                 take,
                      struct ledger_look  *out)
 {
-	for (size_t i = 0; i < LEDGER_TIMERS; ++i) {
+	enum { FIRED = 1, TAKE = 2 };
+	for (size_t i = 0; i < array_size(o->timers); ++i) {
 		struct ledger_timer *t = &o->timers[i];
 		if (!t->due)
 			continue;
-		bool fired = t->due <= now;
-		if (!fired && t->due < out->due)
-			out->due = t->due;
-		if (fired || !take)
+		switch ((t->due <= now ? FIRED : 0) | (take ? TAKE : 0)) {
+		case FIRED | TAKE:
 			ledger_look_timer(out, t);
-		if (fired && take)
 			t->due = 0;
+			break;
+		case 0:
+			ledger_look_timer(out, t);
+			[[fallthrough]];
+		case TAKE:
+			out->due = t->due < out->due ? t->due : out->due;
+			break;
+		default:
+			ledger_look_timer(out, t);
+		}
 	}
 }
 
@@ -270,7 +286,7 @@ ledger_owner_tell (struct ledger_owner *o,
                    struct ledger_look  *out)
 {
 	for (struct list *pos = o->records.next;
-	     pos != &o->records && out->n_tasks < LEDGER_MINE; pos = pos->next) {
+	     pos != &o->records && out->n_tasks < array_size(out->tasks); pos = pos->next) {
 		struct ledger_task *t = container_of(pos, struct ledger_task, mine);
 		if (atomic_load_explicit(&t->status, memory_order_relaxed) == LEDGER_WORKING ||
 		    (n && !ledger_listed(ids, n, &t->id)))
@@ -315,7 +331,7 @@ ledger_slot (struct ledger      *l,
              uint64_t            hash,
              struct hexid const *id)
 {
-	struct ledger_task **p = &l->buckets[hash & (BUCKETS - 1)];
+	struct ledger_task **p = &l->buckets[hash & (array_size(l->buckets) - 1)];
 	while (*p && ((*p)->hash != hash || !hexid_equal(&(*p)->id, id)))
 		p = &(*p)->next;
 	return p;
@@ -368,7 +384,7 @@ ledger_owner_most (struct ledger const *l)
 {
 	struct ledger_owner *most = nullptr;
 	uint32_t max = 0;
-	for (size_t i = 0; i < OWNER_BUCKETS; ++i)
+	for (size_t i = 0; i < array_size(l->owners); ++i)
 		for (struct ledger_owner *o = l->owners[i]; o; o = o->next)
 			if (o->n - o->running > max) {
 				max = o->n - o->running;
@@ -429,7 +445,7 @@ ledger_insert (struct ledger       *l,
 	struct ledger_task *old = o->n >= LEDGER_MINE ? ledger_owner_ended(o) : nullptr;
 	if (old)
 		ledger_drop(l, old, gone);
-	struct ledger_task **bucket = &l->buckets[t->hash & (BUCKETS - 1)];
+	struct ledger_task **bucket = &l->buckets[t->hash & (array_size(l->buckets) - 1)];
 	t->next = *bucket;
 	*bucket = t;
 	++l->n;
@@ -460,24 +476,17 @@ ledger_create (int *e)
 {
 	if (!e)
 		return nullptr;
-	struct ledger *l = malloc(sizeof *l);
+	struct ledger *l = calloc(1, sizeof *l);
 	*e = l ? pthread_mutex_init(&l->lock, nullptr) : ENOMEM;
 	if (*e) {
 		free(l);
 		return nullptr;
 	}
 	list_init(&l->ended);
-	l->bytes = 0;
-	l->n = 0;
-	l->n_owners = 0;
-	l->n_anonymous = 0;
-	l->n_timers = 0;
-	memset(l->buckets, 0, sizeof l->buckets);
-	memset(l->owners, 0, sizeof l->owners);
 	struct ledger_metrics *m = &l->metrics;
 	atomic_init(&m->opened, 0);
 	atomic_init(&m->jobs, 0);
-	for (size_t i = 0; i < LEDGER_STATUSES; ++i)
+	for (size_t i = 0; i < array_size(m->ended); ++i)
 		atomic_init(&m->ended[i], 0);
 	atomic_init(&m->gone, 0);
 	atomic_init(&m->full, 0);
@@ -496,13 +505,13 @@ ledger_destroy (struct ledger **p_ledger)
 	if (!l)
 		return;
 	*p_ledger = nullptr;
-	for (size_t i = 0; i < BUCKETS; ++i)
+	for (size_t i = 0; i < array_size(l->buckets); ++i)
 		for (struct ledger_task *t = l->buckets[i], *next; t; t = next) {
 			next = t->next;
 			t->owner = nullptr;
 			ledger_task_put(t);
 		}
-	for (size_t i = 0; i < OWNER_BUCKETS; ++i)
+	for (size_t i = 0; i < array_size(l->owners); ++i)
 		for (struct ledger_owner *o = l->owners[i], *next; o; o = next) {
 			next = o->next;
 			free(o);
@@ -530,10 +539,6 @@ ledger_open (struct ledger    *ledger,
 {
 	if (!e)
 		return nullptr;
-	if (!ledger || !loop || !fn || (kind != LEDGER_TASK && kind != LEDGER_JOB)) {
-		*e = EINVAL;
-		return nullptr;
-	}
 	struct hexid id;
 	if ((*e = hexid_make(&id)))
 		return nullptr;
@@ -930,7 +935,8 @@ ledger_list (struct ledger      *ledger,
 		ledger_owner_expire(o, now);
 		ledger_owner_timers(o, now, false, out);
 		for (struct list *pos = o->records.prev;
-		     pos != &o->records && out->n_tasks < LEDGER_MINE; pos = pos->prev) {
+		     pos != &o->records && out->n_tasks < array_size(out->tasks);
+		     pos = pos->prev) {
 			struct ledger_task *t = container_of(pos, struct ledger_task, mine);
 			atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
 			out->tasks[out->n_tasks++] = t;

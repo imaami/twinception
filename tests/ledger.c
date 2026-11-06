@@ -124,7 +124,7 @@ static size_t
 test_owners (struct ledger const *l)
 {
 	size_t n = 0;
-	for (size_t i = 0; i < OWNER_BUCKETS; ++i)
+	for (size_t i = 0; i < array_size(l->owners); ++i)
 		for (struct ledger_owner const *o = l->owners[i]; o; o = o->next)
 			++n;
 	return n;
