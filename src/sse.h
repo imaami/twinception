@@ -9,6 +9,11 @@
 
 #include "dstr.h"
 
+/** The event callback of a parser. It is called for each event that
+ *  contains at least one data line, with the @p len bytes of the event
+ *  data at @p data. The bytes are not NUL-terminated. A nonzero return
+ *  value is an error, and sse_feed() returns it.
+ */
 typedef int sse_event_cb (char const *data,
                           size_t      len,
                           void       *user);

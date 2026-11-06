@@ -3,11 +3,15 @@
  * Incremental Server-Sent Events framing.
  */
 #include <errno.h>
-#include <string.h>
 
+#include "cstr_view.h"
 #include "dstr.h"
 #include "sse.h"
 
+/* Call the callback with the event data, without the line feed after the
+ * last data line, and then empty the event data. The callback is not
+ * called for an event without data lines.
+ */
 static int
 sse_dispatch (struct sse *sse)
 {
@@ -15,38 +19,24 @@ sse_dispatch (struct sse *sse)
 	if (!len)
 		return 0;
 
-	if (dstr_get(&sse->data)[len - 1] == '\n')
-		dstr_erase(&sse->data, --len, 1);
-
-	int e = sse->event(dstr_get(&sse->data), len, sse->user);
+	int e = sse->event(dstr_get(&sse->data), len - 1, sse->user);
 	dstr_clear(&sse->data);
 	return e;
 }
 
+/* Parse @p line, a line of the stream without its line feed. For a data
+ * line, append its data and a line feed to the event data. For an empty
+ * line, dispatch the event. Ignore other lines.
+ */
 static int
-sse_line (struct sse *sse,
-          char const *line,
-          size_t      len)
+sse_line (struct sse       *sse,
+          struct cstr_view  line)
 {
-	if (len && line[len - 1] == '\r')
-		--len;
+	struct cstr_view const data = cstr_view_sse_data(&line);
+	if (!data.data)
+		return line.len ? 0 : sse_dispatch(sse);
 
-	if (!len)
-		return sse_dispatch(sse);
-
-	static char const field[] = "data:";
-	size_t n = sizeof field - 1;
-	if (len < n || memcmp(line, field, n))
-		return 0;
-
-	line += n;
-	len -= n;
-	if (len && *line == ' ') {
-		++line;
-		--len;
-	}
-
-	return dstr_cat_n(&sse->data, line, len) &&
+	return dstr_cat_n(&sse->data, data.data, data.len) &&
 	       dstr_cat_n(&sse->data, "\n", 1) ? 0 : ENOMEM;
 }
 
@@ -70,24 +60,13 @@ sse_feed (struct sse *sse,
 	if (!dstr_cat_n(&sse->input, data, len))
 		return ENOMEM;
 
-	char const *input = dstr_get(&sse->input);
-	size_t input_len = dstr_len(&sse->input);
-	size_t used = 0;
+	struct cstr_view const input = cstr_view_dstr(&sse->input);
+	struct cstr_view rest = input;
 	int e = 0;
-	while (used < input_len) {
-		char const *line = input + used;
-		char const *nl = memchr(line, '\n', input_len - used);
-		if (!nl)
-			break;
+	for (struct cstr_view line; !e && cstr_view_cut(&rest, '\n', &line);)
+		e = sse_line(sse, line);
 
-		size_t line_len = (size_t)(nl - line);
-		e = sse_line(sse, line, line_len);
-		used += line_len + 1;
-		if (e)
-			break;
-	}
-
-	dstr_erase(&sse->input, 0, used);
+	dstr_erase(&sse->input, 0, input.len - rest.len);
 	return e;
 }
 
