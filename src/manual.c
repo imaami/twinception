@@ -461,18 +461,18 @@ manual_fetch_found (struct child *c)
 		manual_fetch_fail(f, why);
 		return;
 	}
-	struct span out = buf_peek(&c->out);
-	unsigned char const *end = out.len ? memchr(out.ptr, '\n', out.len) : nullptr;
-	size_t len = end ? (size_t)(end - out.ptr) : 0;
-	if (!len || *out.ptr != '/' || memchr(out.ptr, '\0', len)) {
+	struct span const out = buf_peek(&c->out);
+	struct cstr_view path = { (char const *)out.ptr, out.len };
+	if (!cstr_view_cut(&path, '\n', &path) || !cstr_view_starts(path, CSTR_VIEW("/")) ||
+	    memchr(path.data, '\0', path.len)) {
 		manual_fetch_fail(f, CSTR_VIEW("man named no file for the page."));
 		return;
 	}
-	uint64_t hash = util_hash(m->seed, out.ptr, len);
+	uint64_t hash = util_hash(m->seed, path.data, path.len);
 	pthread_mutex_lock(&m->lock);
-	struct manual_entry *file = manual_lookup(m, (char const *)out.ptr, len, hash);
+	struct manual_entry *file = manual_lookup(m, path.data, path.len, hash);
 	if (!file)
-		file = manual_add(m, (char const *)out.ptr, len, hash);
+		file = manual_add(m, path.data, path.len, hash);
 	struct manual_page *page = file && file->page ? manual_page_get(file->page)
 	                                              : nullptr;
 	pthread_mutex_unlock(&m->lock);

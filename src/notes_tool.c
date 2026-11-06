@@ -900,24 +900,17 @@ notes_tool_got_books (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	struct span out = buf_peek(&c->out);
+	struct span const out = buf_peek(&c->out);
 	int e = cstr_view_cat(CSTR_VIEW("Session notebooks (use a selector as "
 	                                "notebook):\n"), call->text);
 	if (!e)
 		e = notes_tool_call_identity(call);
 	struct cstr_view const own = cstr_view(notes_selector(call->repo));
-	while (!e && out.len) {
-		unsigned char const *end = memchr(out.ptr, '\n', out.len);
-		if (!end)
-			break;
-		struct cstr_view const name = { (char const *)out.ptr, (size_t)(end - out.ptr) };
+	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	for (struct cstr_view name; !e && cstr_view_cut(&rest, '\n', &name); )
 		if (!cstr_view_equal(name, own) && !notes_select(name, nullptr))
 			e = dstr_printf(call->text, "%.*s (read-only)\n", (int)name.len, name.data)
 			  ? 0 : ENOMEM;
-		size_t n = name.len + 1;
-		out.ptr += n;
-		out.len -= n;
-	}
 	if (!e && c->flags & CHILD_CUT)
 		e = cstr_view_cat(CSTR_VIEW("[The notebook list is incomplete.]\n"), call->text);
 	notes_tool_end(slot, e, false);

@@ -647,8 +647,6 @@ notes_checked (struct span        out,
 {
 	if (!tip || !note)
 		return EINVAL;
-	char const *p = (char const *)out.ptr;
-	char const *end = p + out.len;
 	*tip = (struct oid){};
 	*note = (struct notes_file){};
 	/* The first line is about the branch, the last line is about the name,
@@ -656,14 +654,14 @@ notes_checked (struct span        out,
 	size_t lines = 0;
 	bool dir_note = false;
 	enum notes_kind kind = KIND_OTHER;
-	char const *line = p;
+	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	struct cstr_view line = {};
 	struct oid oid;
-	for (char const *nl; p < end; p = nl + 1, ++lines) {
-		if (!(nl = memchr(p, '\n', (size_t)(end - p))))
+	for (; rest.len; ++lines) {
+		if (!cstr_view_cut(&rest, '\n', &line))
 			return EIO;
 		dir_note |= lines > 1 && kind == KIND_BLOB;
-		line = p;
-		kind = notes_kind(p, (size_t)(nl - p), &oid);
+		kind = notes_kind(line.data, line.len, &oid);
 		if (lines || kind == KIND_MISSING)
 			continue;
 		if (kind != KIND_COMMIT)
@@ -676,9 +674,10 @@ notes_checked (struct span        out,
 	if (r != EEXIST)
 		return r;
 	/* The last line is "OID blob SIZE". */
-	char const *size = line + oid_len(&oid) + sizeof " blob " - 1;
+	struct cstr_view const size = cstr_view_slice(line, oid_len(&oid) + sizeof " blob " - 1,
+	                                              SIZE_MAX);
 	uint64_t bytes;
-	if (!notes_number(size, (size_t)(end - 1 - size), &bytes))
+	if (!notes_number(size.data, size.len, &bytes))
 		return EIO;
 	*note = (struct notes_file){ .bytes = bytes, .id = oid };
 	return EEXIST;
@@ -834,13 +833,12 @@ notes_read_out (struct span  out,
 	*text = (struct span){};
 	if (id)
 		*id = (struct oid){};
-	char const *line = (char const *)out.ptr;
-	char const *nl = out.len ? memchr(line, '\n', out.len) : nullptr;
-	if (!nl)
+	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	struct cstr_view line;
+	if (!cstr_view_cut(&rest, '\n', &line))
 		return EIO;
-	size_t n = (size_t)(nl - line);
 	struct oid oid;
-	enum notes_kind kind = notes_kind(line, n, &oid);
+	enum notes_kind kind = notes_kind(line.data, line.len, &oid);
 	if (kind == KIND_MISSING)
 		return ENOENT;
 	if (kind == KIND_TREE)
@@ -849,13 +847,12 @@ notes_read_out (struct span  out,
 		return EIO;
 	/* The size of the text is the last word of the line, and a line feed
 	 * comes after the text. */
-	char const *digits = (char const *)memrchr(line, ' ', n) + 1;
+	char const *digits = (char const *)memrchr(line.data, ' ', line.len) + 1;
 	uint64_t size;
-	size_t room = out.len - n - 1;
-	if (!notes_number(digits, (size_t)(nl - digits), &size) || !room || size != room - 1 ||
-	    out.ptr[out.len - 1] != '\n')
+	if (!notes_number(digits, (size_t)(line.data + line.len - digits), &size) ||
+	    !rest.len || size != rest.len - 1 || rest.data[size] != '\n')
 		return EIO;
-	*text = (struct span){ out.ptr + n + 1, (size_t)size };
+	*text = (struct span){ out.ptr + line.len + 1, (size_t)size };
 	if (id)
 		*id = oid;
 	return 0;
