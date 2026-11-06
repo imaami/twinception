@@ -1600,17 +1600,17 @@ review_check_size (struct review const *r,
 	if (size <= TOOL_TEXT_MAX)
 		return 0;
 	if (fixed < TOOL_TEXT_MAX)
-		return REFUSE(out, "The record is full: it holds at most %d MiB. Give a claim and "
+		return REFUSE(out, "The record's limit is %d MiB. Give a claim and "
 		              "evidence of at most %zu bytes together.", mib, TOOL_TEXT_MAX - fixed);
 	/* The smallest change is an update with 1 byte of evidence, charged
 	 * REVIEW_ITEM + 1 bytes. Pending lines can make room: a compaction
 	 * drops them, and the log may charge less for them. Without pending
 	 * lines no room becomes free, and a new read cannot become pending,
 	 * because a read is charged at least 2 * REVIEW_ITEM + 2 bytes. */
-	return REFUSE(out, "The record is full: it holds at most %d MiB and %s; keep further "
+	return REFUSE(out, "The record's limit is %d MiB, and %s. Keep further "
 	              "findings in your notes or your summary.", mib,
 	              r->pending.n || r->size + REVIEW_ITEM < TOOL_TEXT_MAX
-	              ? "has no room for this change" : "takes no more changes in this ask call");
+	              ? "this change does not fit" : "no further change fits in this ask call");
 }
 
 /**

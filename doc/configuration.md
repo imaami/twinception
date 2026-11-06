@@ -407,15 +407,15 @@ through every compaction: the system text, the messages of the client and
 the prompt. So the model need not copy the task into its notes. The
 description of `compact` says this too.
 
-The record holds at most 4 MiB. `askai` counts the bytes of its texts, 64
+The record's limit is 4 MiB. `askai` counts the bytes of its texts, 64
 bytes for each file and range of lines, and the size of its own structure
 for each finding and change. `askai` refuses a call that would take the
 record past 4 MiB, and the answer names the bytes of claim and evidence
-that still fit, or says that the record has no room for the change. A
-read that does not fit is not logged, and the record says from which turn
-on its log can be incomplete. The
-series `askai_turn_tool_calls_total{tool="findings"}` counts the calls of
-`findings`. To turn the record off, deny `findings` to the upstream:
+that still fit, or states that the change does not fit. A read that does
+not fit is not logged, and the record says from which turn on its log can
+be incomplete. The series `askai_turn_tool_calls_total{tool="findings"}`
+counts the calls of `findings`. To turn the record off, deny `findings` to
+the upstream:
 
 ```json
 {

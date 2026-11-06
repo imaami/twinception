@@ -41,8 +41,8 @@ findings_definition (void const *service)
 		"finding's history keeps the old text. verified and disproved need "
 		"the lines of the location in the read log, so they need the git "
 		"tool, and askai records the commit that the lines were read at. show "
-		"gives the record, or with id one finding's history. The record "
-		"holds at most 4 MiB.",
+		"gives the record, or with id one finding's history. The record's "
+		"limit is 4 MiB.",
 		jb_object(
 			"action", schema_enum(
 				schema_names(review_action_names, REVIEW_ACTIONS),

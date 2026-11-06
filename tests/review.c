@@ -42,10 +42,10 @@ same (char const *file,
 #define LATER " The log takes the lines of a read once you have seen them, so call again in " \
               "a later turn."
 #define WHOLE ", where the path is the file's whole path from the top of the repository"
-#define NO_MORE "The record is full: it holds at most 4 MiB and takes no more changes in " \
-                "this ask call; keep further findings in your notes or your summary."
-#define NO_ROOM "The record is full: it holds at most 4 MiB and has no room for this " \
-                "change; keep further findings in your notes or your summary."
+#define NO_MORE "The record's limit is 4 MiB, and no further change fits in " \
+                "this ask call. Keep further findings in your notes or your summary."
+#define NO_ROOM "The record's limit is 4 MiB, and this change does not fit. " \
+                "Keep further findings in your notes or your summary."
 #define FINDINGS "[askai: your findings; findings action show with an id gives one's history:]\n"
 #define READS "[askai: what you read with git read in this call:]\n"
 
@@ -122,7 +122,7 @@ call_long (struct review *r,
 static size_t
 left_in (char const *text)
 {
-	static char const lead[] = "The record is full: it holds at most 4 MiB. Give a claim and "
+	static char const lead[] = "The record's limit is 4 MiB. Give a claim and "
 	                           "evidence of at most ";
 	size_t n = 0;
 	CHECK(text && !strncmp(text, lead, sizeof lead - 1) &&

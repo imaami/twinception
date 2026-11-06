@@ -626,9 +626,9 @@ on, and not at all if a compaction removes the result first.
 After a compaction, the record follows the summary, within a tool's window;
 past that, its last line names the `offset` that `show` reads on from. Its
 header says that the system text, the client's messages and the prompt stay
-word for word, so the model need not copy the task into notes. The record
-holds at most 4 MiB, and a new call starts with an empty one. A background
-job that resumes after a restart gets its record back from its checkpoint.
+word for word, so the model need not copy the task into notes. The record's
+limit is 4 MiB, and a new call starts with an empty one. A background job
+that resumes after a restart gets its record back from its checkpoint.
 
 With `--notes PATH`, the repository at `PATH` is the shared session.
 `askai` creates a bare Git repository there if absent, and also accepts an
