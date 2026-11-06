@@ -35,8 +35,8 @@ static_assert(LEDGER_MINE > 1, "ledger_insert() must not free the owner as it "
 struct ledger_owner {
 	struct list          records;   /* by their member mine, oldest first */
 	struct list          waits;     /* by their member hook */
-	struct ledger_owner *next;      /* in its bucket */
-	uint64_t             key;
+	struct htab_node     node;      /* in the owners' table; node.hash is
+	                                   the key */
 	uint64_t             n_waits;
 	uint32_t             n;         /* records */
 	uint32_t             running;   /* records whose calls run */
@@ -48,22 +48,15 @@ struct ledger {
 	struct list            ended;     /* records whose calls ended, oldest
 	                                     first */
 	struct ledger_metrics  metrics;
+	struct htab            tasks;     /* the records, by the hashes of
+	                                     their ids */
+	struct htab            owners;    /* by their keys */
 	size_t                 bytes;     /* of the ended records' results */
-	uint32_t               n;         /* records in the ledger */
-	uint32_t               n_owners;
 	uint32_t               n_anonymous;  /* owners with LEDGER_ANONYMOUS */
 	uint32_t               n_timers;  /* the number of the last timer set */
-	struct ledger_task    *buckets[BUCKETS];
-	struct ledger_owner   *owners[OWNER_BUCKETS];
+	struct htab_node      *task_buckets[BUCKETS];
+	struct htab_node      *owner_buckets[OWNER_BUCKETS];
 };
-
-/* The link to the first owner of the bucket of @p key. */
-static struct ledger_owner **
-ledger_owner_bucket (struct ledger *l,
-                     uint64_t       key)
-{
-	return &l->owners[key & (array_size(l->owners) - 1)];
-}
 
 /* The owner whose key is @p key, the lock held; nullptr if the ledger has
  * no such owner.
@@ -72,10 +65,8 @@ static struct ledger_owner *
 ledger_owner_find (struct ledger *l,
                    uint64_t       key)
 {
-	struct ledger_owner *o = *ledger_owner_bucket(l, key);
-	while (o && o->key != key)
-		o = o->next;
-	return o;
+	struct htab_node *node = *htab_find(&l->owners, key, nullptr, nullptr);
+	return node ? container_of(node, struct ledger_owner, node) : nullptr;
 }
 
 /* Free @p o, with the lock held, if it contains no records, no waits and
@@ -87,12 +78,8 @@ ledger_owner_gc (struct ledger       *l,
 {
 	if (o->n || o->n_waits || ledger_timer_any(o->timers))
 		return;
-	struct ledger_owner **p = ledger_owner_bucket(l, o->key);
-	while (*p != o)
-		p = &(*p)->next;
-	*p = o->next;
-	l->n_anonymous -= (o->key & LEDGER_ANONYMOUS) != 0;
-	--l->n_owners;
+	htab_unlink(&l->owners, &o->node);
+	l->n_anonymous -= (o->node.hash & LEDGER_ANONYMOUS) != 0;
 	free(o);
 }
 
@@ -117,12 +104,12 @@ static void
 ledger_owners_expire (struct ledger *l)
 {
 	uint64_t now = loop_clock();
-	for (size_t i = 0; i < array_size(l->owners); ++i)
-		for (struct ledger_owner *o = l->owners[i], *next; o; o = next) {
-			next = o->next;
-			ledger_owner_expire(o, now);
-			ledger_owner_gc(l, o);
-		}
+	for (struct htab_node *node = htab_next(&l->owners, nullptr), *next; node; node = next) {
+		next = htab_next(&l->owners, node);
+		struct ledger_owner *o = container_of(node, struct ledger_owner, node);
+		ledger_owner_expire(o, now);
+		ledger_owner_gc(l, o);
+	}
 }
 
 /* Whether the ledger has room for a new owner whose key is @p key, the lock
@@ -133,7 +120,7 @@ static bool
 ledger_owner_room (struct ledger const *l,
                    uint64_t             key)
 {
-	return l->n_owners < LEDGER_OWNERS &&
+	return l->owners.n < LEDGER_OWNERS &&
 	       (!(key & LEDGER_ANONYMOUS) || l->n_anonymous < LEDGER_OWNERS / 2);
 }
 
@@ -162,12 +149,10 @@ ledger_owner_get (struct ledger *l,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	struct ledger_owner **bucket = ledger_owner_bucket(l, key);
-	*o = (struct ledger_owner){ .next = *bucket, .key = key };
+	*o = (struct ledger_owner){ .node.hash = key };
 	list_init(&o->records);
 	list_init(&o->waits);
-	*bucket = o;
-	++l->n_owners;
+	htab_link(&l->owners, &o->node);
 	l->n_anonymous += (key & LEDGER_ANONYMOUS) != 0;
 	return o;
 }
@@ -325,18 +310,14 @@ ledger_owner_ended (struct ledger_owner const *o)
 	return nullptr;
 }
 
-/* The link to the record whose id is @p id and whose hash is @p hash, the
- * lock held, or the link at the end of its bucket if the ledger has none.
+/* Whether the id of the record of @p node is @p id, a struct hexid
+ * (htab_match_fn).
  */
-static struct ledger_task **
-ledger_slot (struct ledger      *l,
-             uint64_t            hash,
-             struct hexid const *id)
+static bool
+ledger_task_match (struct htab_node const *node,
+                   void const             *id)
 {
-	struct ledger_task **p = &l->buckets[hash & (array_size(l->buckets) - 1)];
-	while (*p && ((*p)->hash != hash || !hexid_equal(&(*p)->id, id)))
-		p = &(*p)->next;
-	return p;
+	return hexid_equal(&container_of(node, struct ledger_task const, node)->id, id);
 }
 
 /* The record of the owner @p owner whose id is @p id, the lock held;
@@ -348,23 +329,27 @@ ledger_mine (struct ledger      *l,
              uint64_t            owner,
              struct hexid const *id)
 {
-	struct ledger_task *t = *ledger_slot(l, util_hash(0, id->hex, HEXID_DIGITS), id);
-	return t && t->owner->key == owner ? t : nullptr;
+	uint64_t const hash = util_hash(0, id->hex, HEXID_DIGITS);
+	struct htab_node *node = *htab_find(&l->tasks, hash, ledger_task_match, id);
+	if (!node)
+		return nullptr;
+	struct ledger_task *t = container_of(node, struct ledger_task, node);
+	return t->owner->node.hash == owner ? t : nullptr;
 }
 
 /* Take @p t, an ended record, out of the table, off the ended list and off
  * its owner's list, the lock held, and free the owner if it has no records
- * left. Chains @p t at @p *gone, whose references the caller drops once
- * the lock is not held.
+ * left. Chains @p t at @p *gone by node.next, whose references the caller
+ * drops once the lock is not held.
  */
 static void
-ledger_drop (struct ledger       *l,
-             struct ledger_task  *t,
-             struct ledger_task **gone)
+ledger_drop (struct ledger      *l,
+             struct ledger_task *t,
+             struct htab_node  **gone)
 {
-	*ledger_slot(l, t->hash, &t->id) = t->next;
-	t->next = *gone;
-	*gone = t;
+	htab_unlink(&l->tasks, &t->node);
+	t->node.next = *gone;
+	*gone = &t->node;
 	list_del(&t->hook);
 	list_del(&t->mine);
 	struct ledger_owner *o = t->owner;
@@ -372,7 +357,6 @@ ledger_drop (struct ledger       *l,
 	--o->n;
 	ledger_owner_gc(l, o);
 	l->bytes -= t->size;
-	--l->n;
 	hist_count(&l->metrics.kept, -(uint64_t)1);
 	hist_count(&l->metrics.bytes, -(uint64_t)t->size);
 	hist_count(&l->metrics.gone, 1);
@@ -386,12 +370,14 @@ ledger_owner_most (struct ledger const *l)
 {
 	struct ledger_owner *most = nullptr;
 	uint32_t max = 0;
-	for (size_t i = 0; i < array_size(l->owners); ++i)
-		for (struct ledger_owner *o = l->owners[i]; o; o = o->next)
-			if (o->n - o->running > max) {
-				max = o->n - o->running;
-				most = o;
-			}
+	for (struct htab_node *node = htab_next(&l->owners, nullptr); node;
+	     node = htab_next(&l->owners, node)) {
+		struct ledger_owner *o = container_of(node, struct ledger_owner, node);
+		if (o->n - o->running > max) {
+			max = o->n - o->running;
+			most = o;
+		}
+	}
 	return most;
 }
 
@@ -401,23 +387,23 @@ ledger_owner_most (struct ledger const *l)
  * the ledger is full after that, let go of the oldest ended record of the
  * owner with the most ended records, so that owners with many records do
  * not remove the records of owners with few. The lock held: returns those
- * let go of, chained by next, for their references to be dropped once it
- * is not.
+ * let go of, chained by node.next, for their references to be dropped once
+ * it is not.
  */
-static struct ledger_task *
+static struct htab_node *
 ledger_sweep (struct ledger      *l,
               struct ledger_task *keep,
               bool                room)
 {
 	uint64_t now = loop_clock();
-	struct ledger_task *gone = nullptr;
+	struct htab_node *gone = nullptr;
 	while (!list_is_empty(&l->ended)) {
 		struct ledger_task *t = container_of(l->ended.next, struct ledger_task, hook);
 		if (t == keep || (t->due > now && l->bytes <= LEDGER_BYTES))
 			break;
 		ledger_drop(l, t, &gone);
 	}
-	struct ledger_owner *o = room && l->n == LEDGER_MAX ? ledger_owner_most(l) : nullptr;
+	struct ledger_owner *o = room && l->tasks.n == LEDGER_MAX ? ledger_owner_most(l) : nullptr;
 	/* The owner has an ended record, as o->n - o->running counts them. */
 	if (o)
 		ledger_drop(l, ledger_owner_ended(o), &gone);
@@ -433,9 +419,9 @@ static int
 ledger_insert (struct ledger       *l,
                struct ledger_task  *t,
                uint64_t             key,
-               struct ledger_task **gone)
+               struct htab_node   **gone)
 {
-	if (l->n == LEDGER_MAX)
+	if (l->tasks.n == LEDGER_MAX)
 		return ENOSPC;
 	int e;
 	struct ledger_owner *o = ledger_owner_get(l, key, &e);
@@ -447,10 +433,7 @@ ledger_insert (struct ledger       *l,
 	struct ledger_task *old = o->n >= LEDGER_MINE ? ledger_owner_ended(o) : nullptr;
 	if (old)
 		ledger_drop(l, old, gone);
-	struct ledger_task **bucket = &l->buckets[t->hash & (array_size(l->buckets) - 1)];
-	t->next = *bucket;
-	*bucket = t;
-	++l->n;
+	htab_link(&l->tasks, &t->node);
 	t->owner = o;
 	struct list *pos = o->records.prev;
 	while (pos != &o->records &&
@@ -462,14 +445,13 @@ ledger_insert (struct ledger       *l,
 	return 0;
 }
 
-/* Drop the references to the records chained at @p gone. */
+/* Drop the references to the records chained at @p gone by node.next. */
 static void
-ledger_put_all (struct ledger_task *gone)
+ledger_put_all (struct htab_node *gone)
 {
-	while (gone) {
-		struct ledger_task *next = gone->next;
-		ledger_task_put(gone);
-		gone = next;
+	for (struct htab_node *next; gone; gone = next) {
+		next = gone->next;
+		ledger_task_put(container_of(gone, struct ledger_task, node));
 	}
 }
 
@@ -484,6 +466,8 @@ ledger_create (int *e)
 		free(l);
 		return nullptr;
 	}
+	l->tasks = htab(l->task_buckets, array_size(l->task_buckets));
+	l->owners = htab(l->owner_buckets, array_size(l->owner_buckets));
 	list_init(&l->ended);
 	struct ledger_metrics *m = &l->metrics;
 	atomic_init(&m->opened, 0);
@@ -507,17 +491,16 @@ ledger_destroy (struct ledger **p_ledger)
 	if (!l)
 		return;
 	*p_ledger = nullptr;
-	for (size_t i = 0; i < array_size(l->buckets); ++i)
-		for (struct ledger_task *t = l->buckets[i], *next; t; t = next) {
-			next = t->next;
-			t->owner = nullptr;
-			ledger_task_put(t);
-		}
-	for (size_t i = 0; i < array_size(l->owners); ++i)
-		for (struct ledger_owner *o = l->owners[i], *next; o; o = next) {
-			next = o->next;
-			free(o);
-		}
+	for (struct htab_node *node = htab_next(&l->tasks, nullptr), *next; node; node = next) {
+		next = htab_next(&l->tasks, node);
+		struct ledger_task *t = container_of(node, struct ledger_task, node);
+		t->owner = nullptr;
+		ledger_task_put(t);
+	}
+	for (struct htab_node *node = htab_next(&l->owners, nullptr), *next; node; node = next) {
+		next = htab_next(&l->owners, node);
+		free(container_of(node, struct ledger_owner, node));
+	}
 	pthread_mutex_destroy(&l->lock);
 	free(l);
 }
@@ -602,15 +585,15 @@ ledger_restore (struct ledger      *ledger,
 	t->tool = tool;
 	t->kind = kind;
 	t->id = *id;
-	t->hash = util_hash(0, t->id.hex, HEXID_DIGITS);
+	t->node.hash = util_hash(0, t->id.hex, HEXID_DIGITS);
 
 	struct ledger_metrics *m = &ledger->metrics;
-	struct ledger_task *gone = nullptr;
-	struct ledger_task *excess = nullptr;
+	struct htab_node *gone = nullptr;
+	struct htab_node *excess = nullptr;
 	struct ledger_wait *hits = nullptr;
 	pthread_mutex_lock(&ledger->lock);
 	*e = EEXIST;
-	if (!*ledger_slot(ledger, t->hash, &t->id)) {
+	if (!*htab_find(&ledger->tasks, t->node.hash, ledger_task_match, &t->id)) {
 		gone = ledger_sweep(ledger, nullptr, true);
 		*e = ledger_insert(ledger, t, owner, &gone);
 	}
@@ -685,7 +668,7 @@ ledger_end (struct ledger      *ledger,
 	--task->owner->running;
 	struct ledger_wait *hits = ledger_owner_wake(task->owner);
 	ledger->bytes += task->size;
-	struct ledger_task *gone = ledger_sweep(ledger, task, false);
+	struct htab_node *gone = ledger_sweep(ledger, task, false);
 	pthread_mutex_unlock(&ledger->lock);
 	hist_count(&ledger->metrics.ended[status], 1);
 	hist_count(&ledger->metrics.bytes, task->size);
@@ -701,7 +684,7 @@ ledger_find (struct ledger      *ledger,
 	if (!ledger || !id)
 		return nullptr;
 	pthread_mutex_lock(&ledger->lock);
-	struct ledger_task *gone = ledger_sweep(ledger, nullptr, false);
+	struct htab_node *gone = ledger_sweep(ledger, nullptr, false);
 	struct ledger_task *t = ledger_mine(ledger, owner, id);
 	if (t)
 		ref_get(&t->refs);
@@ -717,7 +700,7 @@ ledger_remove (struct ledger      *ledger,
 {
 	if (!ledger || !id || !*id->hex)
 		return EINVAL;
-	struct ledger_task *gone = nullptr;
+	struct htab_node *gone = nullptr;
 	pthread_mutex_lock(&ledger->lock);
 	struct ledger_task *t = ledger_mine(ledger, owner, id);
 	int e = !t ? ENOENT
@@ -931,7 +914,7 @@ ledger_list (struct ledger      *ledger,
 		return EINVAL;
 	uint64_t now = loop_clock();
 	pthread_mutex_lock(&ledger->lock);
-	struct ledger_task *gone = ledger_sweep(ledger, nullptr, false);
+	struct htab_node *gone = ledger_sweep(ledger, nullptr, false);
 	struct ledger_owner *o = ledger_owner_find(ledger, owner);
 	if (o) {
 		ledger_owner_expire(o, now);

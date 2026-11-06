@@ -124,9 +124,9 @@ static size_t
 test_owners (struct ledger const *l)
 {
 	size_t n = 0;
-	for (size_t i = 0; i < array_size(l->owners); ++i)
-		for (struct ledger_owner const *o = l->owners[i]; o; o = o->next)
-			++n;
+	for (struct htab_node *node = htab_next(&l->owners, nullptr); node;
+	     node = htab_next(&l->owners, node))
+		++n;
 	return n;
 }
 
@@ -203,7 +203,7 @@ test_invalid (struct ledger *l)
 	ledger_wait_put(nullptr);
 	ledger_wait_leave(l, nullptr);
 	ledger_look_put(nullptr);
-	CHECK(!l->n && !test_owners(l) && !l->n_owners);
+	CHECK(!l->tasks.n && !test_owners(l) && !l->owners.n);
 }
 
 /* A restored record preserves its identity, timestamps and copied result.
@@ -248,7 +248,7 @@ test_restore (void)
 	CHECK(!ledger_restore(l, B, LEDGER_JOB, 9, &key, 99, 0, LEDGER_FAILED,
 	                      (struct span){}, nullptr, (struct handle){}, nullptr,
 	                      &e) && e == EEXIST);
-	CHECK(l->n == 1 && done->tool == 7 && done->created == 10 &&
+	CHECK(l->tasks.n == 1 && done->tool == 7 && done->created == 10 &&
 	      ledger_task_status(done) == LEDGER_COMPLETED &&
 	      !ledger_owner_find(l, B));
 
@@ -280,7 +280,7 @@ test_restore (void)
 	clock_ns += (LEDGER_KEEP - 1) * NS;
 	CHECK(test_found(l, A, &done->id));
 	clock_ns += 2 * NS;
-	CHECK(!test_found(l, A, &done->id) && !l->n);
+	CHECK(!test_found(l, A, &done->id) && !l->tasks.n);
 	ledger_task_put(done);
 	ledger_destroy(&l);
 }
@@ -323,7 +323,7 @@ test_restore_limits (void)
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 2, LEDGER_CANCELLED,
 	                      some, nullptr, (struct handle){}, nullptr,
 	                      &e) && e == EINVAL);
-	CHECK(!l->n && !l->n_owners);
+	CHECK(!l->tasks.n && !l->owners.n);
 	struct ledger_task *running[LEDGER_RUNNING];
 	for (size_t k = 0; k < LEDGER_RUNNING; ++k) {
 		key.hex[0] = '0' + k;
@@ -340,7 +340,7 @@ test_restore_limits (void)
 	                                         LEDGER_FAILED, (struct span){}, nullptr,
 	                                         (struct handle){}, nullptr, &e);
 	CHECK(done && !e && ledger_owner_find(l, A)->running == LEDGER_RUNNING &&
-	      l->n == LEDGER_RUNNING + 1);
+	      l->tasks.n == LEDGER_RUNNING + 1);
 	ledger_task_put(done);
 	for (size_t k = 0; k < LEDGER_RUNNING; ++k)
 		test_end(l, running[k]);
@@ -381,14 +381,14 @@ test_remove (void)
 	      ledger_task_status(old) == LEDGER_FAILED &&
 	      dstr_len(&old->result) == body.len && old->size == body.len &&
 	      !memcmp(dstr_get(&old->result), body.ptr, body.len) &&
-	      !l->n && !l->n_owners && !l->bytes);
+	      !l->tasks.n && !l->owners.n && !l->bytes);
 	struct ledger_task *next = ledger_restore(l, A, LEDGER_JOB, 5, &id, old->created, 0,
 	                                         LEDGER_WORKING, (struct span){}, test_loop,
 	                                         (struct handle){}, test_cancel, &e);
 	CHECK(next && !e && next != old && test_found(l, A, &old->id));
 	if (next) {
 		ledger_end(l, next, LEDGER_COMPLETED);
-		CHECK(!ledger_remove(l, A, &id) && !l->n);
+		CHECK(!ledger_remove(l, A, &id) && !l->tasks.n);
 		ledger_task_put(next);
 	}
 	ledger_task_put(reader);
@@ -439,7 +439,7 @@ test_caps (struct ledger *l)
 	 * records whose calls have ended, the oldest first. */
 	while (n < array_size(t) && (t[n] = test_open(l, C, LEDGER_TASK, &e)))
 		++n;
-	CHECK(n == array_size(t) && !e && l->n == LEDGER_MAX && !t[0]->owner &&
+	CHECK(n == array_size(t) && !e && l->tasks.n == LEDGER_MAX && !t[0]->owner &&
 	      !t[LEDGER_RUNNING]->owner);
 	CHECK(!test_open(l, B, LEDGER_TASK, &e) && e == ENOSPC);
 	CHECK(!test_open(l, B, LEDGER_JOB, &e) && e == ENOSPC);
@@ -515,16 +515,16 @@ test_fair (struct ledger *l)
 	for (uint64_t k = 0; k < LEDGER_MAX / LEDGER_MINE; ++k)
 		for (uint64_t i = !k; i < LEDGER_MINE; ++i)
 			test_end(l, test_open(l, 100 + k, LEDGER_TASK, &e));
-	CHECK(l->n == LEDGER_MAX && atomic_load(&m->gone) == gone);
+	CHECK(l->tasks.n == LEDGER_MAX && atomic_load(&m->gone) == gone);
 	for (uint64_t k = 0; k < 100; ++k)
 		test_end(l, test_open(l, 200 + k, LEDGER_JOB, &e));
-	CHECK(!e && l->n == LEDGER_MAX && atomic_load(&m->gone) == gone + 100 &&
+	CHECK(!e && l->tasks.n == LEDGER_MAX && atomic_load(&m->gone) == gone + 100 &&
 	      a->owner && test_found(l, A, &a->id) &&
 	      test_owners(l) == 1 + LEDGER_MAX / LEDGER_MINE + 100);
 	ledger_task_put(a);
 	clock_ns += 2 * LEDGER_KEEP * NS;
 	test_sweep(l);
-	CHECK(!l->n && !test_owners(l));
+	CHECK(!l->tasks.n && !test_owners(l));
 }
 
 /* ledger_find() returns a record only to its owner. The ledger removes
@@ -549,7 +549,7 @@ test_keep (struct ledger *l)
 	ledger_task_put(b);
 	clock_ns += LEDGER_KEEP * NS;
 	test_sweep(l);
-	CHECK(!l->n && !test_owners(l));
+	CHECK(!l->tasks.n && !test_owners(l));
 }
 
 /* An owner has at most LEDGER_TIMERS timers. One counter numbers the
@@ -572,12 +572,12 @@ test_timers (struct ledger *l)
 		CHECK(test_timer(l, A, 10 - k, k == 2 ? "two" : nullptr, &e) == base + k && !e);
 	CHECK(!test_timer(l, A, 5, nullptr, &e) && e == EBUSY);
 	CHECK(atomic_load(&m->timers) == LEDGER_TIMERS && test_owners(l) == 1 &&
-	      l->n_owners == 1);
+	      l->owners.n == 1);
 	uint32_t b = test_timer(l, B, 5, nullptr, &e);
-	CHECK(b == base + LEDGER_TIMERS + 1 && !e && l->n_owners == 2 &&
+	CHECK(b == base + LEDGER_TIMERS + 1 && !e && l->owners.n == 2 &&
 	      ledger_timer_cancel(l, A, b) == ENOENT);
 	CHECK(!ledger_timer_cancel(l, B, b) && ledger_timer_cancel(l, B, b) == ENOENT &&
-	      l->n_owners == 1 && !ledger_owner_find(l, B));
+	      l->owners.n == 1 && !ledger_owner_find(l, B));
 	CHECK(test_timer(l, B, 5, nullptr, &e) == b + 1 && !e &&
 	      !ledger_timer_cancel(l, B, b + 1) && !ledger_owner_find(l, B));
 
@@ -616,7 +616,7 @@ test_timers (struct ledger *l)
 	CHECK(test_timer(l, A, 1, nullptr, &e) == base + LEDGER_TIMERS + 4 && !e &&
 	      !ledger_timer_cancel(l, A, base + LEDGER_TIMERS + 4));
 	CHECK(!ledger_list(l, A, &look) && !look.n_timers && look.due == UINT64_MAX &&
-	      !test_owners(l) && !l->n_owners);
+	      !test_owners(l) && !l->owners.n);
 }
 
 /* A wait gets its message when a record of its owner ends or its owner
@@ -635,7 +635,7 @@ test_waits (struct ledger *l)
 		CHECK((w[k] = test_wait(l, A, &e)) && !e);
 	CHECK(!test_wait(l, A, &e) && e == EBUSY && atomic_load(&m->waits) == LEDGER_WAITS);
 	struct ledger_wait *b = test_wait(l, B, &e);
-	CHECK(b && !e && l->n_owners == 2);
+	CHECK(b && !e && l->owners.n == 2);
 	for (size_t k = 2; k < LEDGER_WAITS; ++k)
 		ledger_wait_leave(l, &w[k]);
 	CHECK(!w[2] && !w[3] && atomic_load(&m->waits) == 3);
@@ -732,7 +732,7 @@ test_owners_table (struct ledger *l)
 	test_end(l, t);
 	clock_ns += (LEDGER_KEEP + 1) * NS;
 	test_sweep(l);
-	CHECK(!l->n && ledger_owner_find(l, C) && l->n_owners == 1);
+	CHECK(!l->tasks.n && ledger_owner_find(l, C) && l->owners.n == 1);
 	ledger_wait_leave(l, &w);
 	CHECK(ledger_owner_find(l, C) && ledger_timer_cancel(l, C, id) == EALREADY);
 	struct ledger_look look;
@@ -744,14 +744,14 @@ test_owners_table (struct ledger *l)
 	CHECK(ledger_timer_cancel(l, C, id) == ENOENT && !ledger_owner_find(l, C));
 	CHECK(!ledger_list(l, C, &look) && !look.n_timers && !ledger_owner_find(l, C));
 	w = test_wait(l, C, &e);
-	CHECK(w && l->n_owners == 1);
+	CHECK(w && l->owners.n == 1);
 	ledger_wait_leave(l, &w);
-	CHECK(!l->n_owners && !test_owners(l));
+	CHECK(!l->owners.n && !test_owners(l));
 
 	uint32_t base = l->n_timers;
 	for (uint32_t k = 0; k < LEDGER_OWNERS; ++k)
 		CHECK(test_timer(l, 100 + k, 1, nullptr, &e) == base + k + 1 && !e);
-	CHECK(l->n_owners == LEDGER_OWNERS && test_owners(l) == LEDGER_OWNERS);
+	CHECK(l->owners.n == LEDGER_OWNERS && test_owners(l) == LEDGER_OWNERS);
 	uint64_t full = atomic_load(&m->full);
 	CHECK(!test_timer(l, A, 1, nullptr, &e) && e == ENOSPC);
 	CHECK(!test_wait(l, A, &e) && e == ENOSPC);
@@ -763,10 +763,10 @@ test_owners_table (struct ledger *l)
 	 * the ledger remove them. Owner 100 has a timer that has not expired. */
 	clock_ns += (LEDGER_KEEP + 1) * NS;
 	CHECK(test_timer(l, A, 1, nullptr, &e) == base + LEDGER_OWNERS + 2 && !e &&
-	      l->n_owners == 2 && ledger_owner_find(l, 100) && !ledger_owner_find(l, 101));
-	CHECK(!ledger_timer_cancel(l, A, base + LEDGER_OWNERS + 2) && l->n_owners == 1);
+	      l->owners.n == 2 && ledger_owner_find(l, 100) && !ledger_owner_find(l, 101));
+	CHECK(!ledger_timer_cancel(l, A, base + LEDGER_OWNERS + 2) && l->owners.n == 1);
 	clock_ns += 10 * NS;
-	CHECK(!ledger_list(l, 100, &look) && !look.n_timers && !l->n_owners &&
+	CHECK(!ledger_list(l, 100, &look) && !look.n_timers && !l->owners.n &&
 	      !test_owners(l));
 }
 
@@ -784,16 +784,16 @@ test_anonymous (struct ledger *l)
 	CHECK(!test_wait(l, LEDGER_ANONYMOUS | k, &e) && e == ENOSPC);
 	CHECK(!test_open(l, LEDGER_ANONYMOUS | k, LEDGER_TASK, &e) && e == ENOSPC);
 	uint32_t id = test_timer(l, B, 1, nullptr, &e);
-	CHECK(id && !e && l->n_owners == LEDGER_OWNERS / 2 + 1 &&
+	CHECK(id && !e && l->owners.n == LEDGER_OWNERS / 2 + 1 &&
 	      l->n_anonymous == LEDGER_OWNERS / 2);
-	CHECK(!ledger_timer_cancel(l, B, id) && l->n_owners == LEDGER_OWNERS / 2);
+	CHECK(!ledger_timer_cancel(l, B, id) && l->owners.n == LEDGER_OWNERS / 2);
 	clock_ns += (LEDGER_KEEP + 1) * NS;
 	CHECK(test_timer(l, LEDGER_ANONYMOUS | k, 1, nullptr, &e) && !e &&
-	      l->n_owners == 1 && l->n_anonymous == 1);
+	      l->owners.n == 1 && l->n_anonymous == 1);
 	clock_ns += (LEDGER_KEEP + 1) * NS;
 	struct ledger_look look;
 	CHECK(!ledger_list(l, LEDGER_ANONYMOUS | k, &look) && !look.n_timers &&
-	      !l->n_owners && !l->n_anonymous && !test_owners(l));
+	      !l->owners.n && !l->n_anonymous && !test_owners(l));
 }
 
 enum {
@@ -905,7 +905,7 @@ main (void)
 	test_caps(l);
 	clock_ns += 2 * LEDGER_KEEP * NS;
 	test_sweep(l);
-	CHECK(!l->n && !test_owners(l));
+	CHECK(!l->tasks.n && !test_owners(l));
 	test_fair(l);
 	test_mine(l);
 	clock_ns += 2 * LEDGER_KEEP * NS;

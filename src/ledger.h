@@ -55,6 +55,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "hexid.h"
+#include "htab.h"
 #include "list.h"
 #include "loop.h"
 
@@ -188,7 +189,9 @@ struct ledger_task {
 	struct list          hook;       /**< the ledger's: on its ended list */
 	struct list          mine;       /**< the ledger's: on its owner's list
 	                                      of records, oldest first */
-	struct ledger_task  *next;       /**< the ledger's: in its bucket */
+	struct htab_node     node;       /**< the ledger's: in its table, by
+	                                      the hash of the id; once out of
+	                                      it, on a chain to drop */
 	struct ledger_owner *owner;      /**< the ledger's, used only under its
 	                                      lock; nullptr once the record is
 	                                      out of the ledger */
@@ -198,7 +201,6 @@ struct ledger_task {
 	                                      (src/mcp.c) */
 	size_t               size;       /**< the bytes of the whole reply, or 0
 	                                      if there is no reply */
-	uint64_t             hash;       /**< of its id */
 	uint64_t             created;    /**< CLOCK_REALTIME ns */
 	uint64_t             ended;      /**< likewise, once its call has */
 	uint64_t             due;        /**< loop_clock() when the ledger
