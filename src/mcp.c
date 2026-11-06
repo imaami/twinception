@@ -79,6 +79,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "agenda.h"
 #include "ai.h"
 #include "buf.h"
 #include "child.h"
@@ -141,7 +142,6 @@ enum {
 	WINDOW_MAX   = 64 << 10,  /* bytes of it that a turn takes, at most */
 	JOBS_MAX     = 8,         /* jobs that an ask call's turns may start */
 	WAIT_MAX     = 600,       /* seconds that a wait may take */
-	WAIT_IDS     = 16,        /* jobs that a client's wait may name */
 	TIMER_MAX    = 3600,      /* seconds that a timer may be set to */
 	TRACE_MAX    = 48,        /* tool calls the trace tells of */
 	TRACE_ARGS   = 200,       /* bytes of a call's arguments in the trace
@@ -816,7 +816,6 @@ static struct cstr_view const not_object = CSTR_VIEW_INIT("The arguments argumen
                                                           "object.");
 static struct cstr_view const still_runs = CSTR_VIEW_INIT("That job still runs: wait for it.");
 static struct cstr_view const was_cancelled = CSTR_VIEW_INIT("That job was cancelled.");
-static struct cstr_view const runs_no_more = CSTR_VIEW_INIT("That job runs no more.");
 static struct cstr_view const bad_action = CSTR_VIEW_INIT("The action argument must be list, "
                                                           "result or cancel.");
 
@@ -3393,6 +3392,25 @@ mcp_slot_from_client (struct mcp_slot const *slot)
 	return slot && slot->role == ROLE_OWN;
 }
 
+struct ledger *
+mcp_slot_ledger (struct mcp_slot const *slot)
+{
+	return slot->req->mcp->st->ledger;
+}
+
+uint64_t
+mcp_slot_owner (struct mcp_slot const *slot)
+{
+	return slot->req->owner;
+}
+
+char const *
+mcp_slot_tool_name (struct mcp_slot const *slot,
+                    uint32_t               id)
+{
+	return mcp_static_tool(slot->req->mcp->st, id)->name.data;
+}
+
 void **
 mcp_slot_own (struct mcp_slot *slot)
 {
@@ -4857,20 +4875,9 @@ mcp_agenda_job_done (struct mcp_slot *slot)
 		mcp_agenda_wake(a);
 }
 
-/* Appends the notice that the timer @p t fired, with its note, to @p d.
- * Returns 0, or ENOMEM.
- */
-static int
-mcp_notice_timer (struct dstr               *d,
-                  struct ledger_timer const *t)
-{
-	return dstr_printf(d, "[askai: timer %" PRIu32 " fired%s%.*s.]\n", t->id,
-	                   t->len ? ": " : "", (int)t->len, t->note) ? 0 : ENOMEM;
-}
-
 /** Handles the alarm @p timer of an agenda. The timers that are due fire,
  *  and the function adds a notice of each to the agenda
- *  (mcp_notice_timer()). A wait ends if a timer fired or if its time is
+ *  (agenda_notice_timer()). A wait ends if a timer fired or if its time is
  *  up. Otherwise a timer that fired wakes the turns if they doze.
  */
 static void
@@ -4885,7 +4892,7 @@ mcp_agenda_alarm (struct loop       *loop,
 			continue;
 		t->due = 0;
 		fired = true;
-		int e = mcp_notice_timer(&a->notices, t);
+		int e = agenda_notice_timer(&a->notices, t);
 		if (e) {
 			mcp_req_fail(a->req, e);
 			return;
@@ -4938,38 +4945,6 @@ mcp_slot_start (struct mcp_slot    *slot,
 		tool->kind->start(slot, args);
 }
 
-/* The answer to a client's call of background, timer or wait that the
- * ledger refuses for want of room.
- */
-static struct cstr_view const no_room = CSTR_VIEW_INIT("askai has no room for more jobs, "
-                                                       "timers or waits now; try again "
-                                                       "later.");
-
-/* Answers a client's call in @p slot that the ledger refused with @p e:
- * with @p busy for EBUSY, and with no_room for ENOSPC. Any other error
- * fails the call.
- */
-static void
-mcp_slot_refused (struct mcp_slot  *slot,
-                  int               e,
-                  struct cstr_view  busy)
-{
-	if (e == EBUSY || e == ENOSPC)
-		mcp_slot_result(slot, e == EBUSY ? busy : no_room, true);
-	else
-		mcp_slot_fail(slot, e);
-}
-
-/* Returns the whole seconds from @p from to @p to, or 0 if @p to is not
- * later.
- */
-static uint64_t
-mcp_seconds_since (uint64_t from,
-                   uint64_t to)
-{
-	return to > from ? (to - from) / NS : 0;
-}
-
 /* Detach a client call of @p tool into the ledger, with its result read
  * through the same tool when it is the request's own, else through jobs.
  */
@@ -4985,8 +4960,8 @@ mcp_req_background (struct mcp_req *req,
 	if (!task)
 		task = mcp_req_record(req, LEDGER_JOB, tool, &e);
 	if (!task) {
-		mcp_slot_refused(&req->self, e, CSTR_VIEW("You have 8 jobs and tasks running, the "
-		                                          "most at once: wait for one to end."));
+		agenda_refused(&req->self, e, CSTR_VIEW("You have 8 jobs and tasks running, the "
+		                                        "most at once: wait for one to end."));
 		return e;
 	}
 	char buf[512];
@@ -5194,89 +5169,12 @@ mcp_slot_turn_cancel (struct mcp_slot    *slot,
 	if (!job)
 		return;
 	if (job->flags & SLOT_DONE) {
-		mcp_slot_result(slot, runs_no_more, true);
+		mcp_slot_result(slot, agenda_runs_no_more, true);
 		return;
 	}
 	mcp_slot_drop(job);
 	job->flags |= SLOT_DONE | SLOT_CANCELLED;
 	mcp_slot_result(slot, CSTR_VIEW("Cancelled the job."), false);
-}
-
-/* Returns a reference to the record that the argument job of @p args
- * names, for a client's call of jobs in @p slot, or of the ask tool, whose
- * calls read only the ask tool's own jobs. If the owner of the call has no
- * such record, returns nullptr, and the call answers why.
- */
-static struct ledger_task *
-mcp_slot_client_find (struct mcp_slot    *slot,
-                      struct json_object *args)
-{
-	struct mcp_req *req = slot->req;
-	bool const own_tool = !(mcp_slot_tool(slot)->kind->flags & KF_AGENDA);
-	struct hexid id;
-	if (hexid_init(&id, jb_view(jb_get(args, "job")))) {
-		mcp_slot_result(slot, CSTR_VIEW("The job argument must be the id of a job of "
-		                                "yours."), true);
-		return nullptr;
-	}
-	struct ledger_task *task = ledger_find(req->mcp->st->ledger, req->owner, &id);
-	if (task && own_tool && task->tool != slot->tool) {
-		ledger_task_put(task);
-		task = nullptr;
-	}
-	if (!task)
-		mcp_slot_result(slot, own_tool
-		                ? CSTR_VIEW("No job of yours from this tool has that id; askai "
-		                            "stores a job for up to an hour after it ends.")
-		                : CSTR_VIEW("No job of yours has that id; askai stores a job for "
-		                            "an hour after it ends."), true);
-	return task;
-}
-
-/* Writes the records and the timers of the owner of a client's call of
- * jobs into the answer of the call's @p slot: the records, the newest
- * first, then the timers. Returns 0, or ENOMEM.
- */
-static int
-mcp_slot_client_list (struct mcp_slot *slot)
-{
-	struct mcp_req *req = slot->req;
-	struct mcp_static const *st = req->mcp->st;
-	struct dstr *d = &slot->answer;
-	struct ledger_look look;
-	int e = ledger_list(st->ledger, req->owner, &look);
-	if (e)
-		return e;
-	uint64_t day = clk_realtime_ns();
-	uint64_t now = loop_clock();
-	bool ok = true;
-	for (uint32_t i = 0; ok && i < look.n_tasks; ++i) {
-		struct ledger_task const *t = look.tasks[i];
-		uint64_t state = atomic_load_explicit(&t->state, memory_order_acquire);
-		enum ledger_status status = state & LEDGER_STATUS;
-		bool told = state & LEDGER_TOLD;
-		ok = dstr_printf(d, "%s %s: %s: ", ledger_kinds[t->kind], t->id.hex,
-		                 mcp_static_tool(st, t->tool)->name.data) &&
-		     (status == LEDGER_WORKING
-		      ? dstr_printf(d, "running for %" PRIu64 " s\n",
-		                    mcp_seconds_since(t->created, day))
-		      : dstr_printf(d, "%s %" PRIu64 " s ago%s\n", ledger_statuses[status].data,
-		                    mcp_seconds_since(t->ended, day), told ? "" : ", unread"));
-	}
-	if (ok && look.more)
-		ok = dstr_printf(d, "and %" PRIu64 " older records\n", look.more);
-	for (uint32_t i = 0; ok && i < look.n_timers; ++i) {
-		struct ledger_timer const *t = &look.timers[i];
-		ok = (t->due > now ? dstr_printf(d, "timer %" PRIu32 ": fires in %" PRIu64 " s",
-		                                 t->id, (t->due - now + NS - 1) / NS)
-		                   : dstr_printf(d, "timer %" PRIu32 ": fired %" PRIu64 " s ago, "
-		                                 "unread", t->id, (now - t->due) / NS)) &&
-		     dstr_printf(d, "%s%.*s\n", t->len ? ": " : "", (int)t->len, t->note);
-	}
-	if (ok && !look.n_tasks && !look.n_timers)
-		ok = CAT(d, "You have no jobs and no timers.");
-	ledger_look_put(&look);
-	return ok ? 0 : ENOMEM;
 }
 
 /* Answers a client's call of jobs in @p slot with the result of the job
@@ -5288,11 +5186,12 @@ mcp_slot_client_result (struct mcp_slot    *slot,
                         struct json_object *args)
 {
 	struct mcp_req *req = slot->req;
-	struct ledger_task *task = mcp_slot_client_find(slot, args);
+	uint32_t const of = mcp_slot_tool(slot)->kind->flags & KF_AGENDA ? TOOL_MAX : slot->tool;
+	struct ledger_task *task = agenda_find(slot, args, of);
 	if (!task)
 		return;
 	enum ledger_status status = ledger_task_status(task);
-	if (!(mcp_slot_tool(slot)->kind->flags & KF_AGENDA) && status == LEDGER_WORKING) {
+	if (of != TOOL_MAX && status == LEDGER_WORKING) {
 		ledger_task_put(task);
 		mcp_slot_result(slot, CSTR_VIEW("That job is still running. Call this same tool "
 		                                "with the same job id in one second for its "
@@ -5329,22 +5228,8 @@ static void
 mcp_slot_client_cancel (struct mcp_slot    *slot,
                         struct json_object *args)
 {
-	struct ledger_task *task = mcp_slot_client_find(slot, args);
-	if (!task)
-		return;
-	bool const runs = ledger_task_status(task) == LEDGER_WORKING;
-	struct cstr_view said = runs_no_more;
-	char text[192];
-	if (runs) {
-		ledger_task_cancel(task);
-		said = util_format_view(text, sizeof text, "askai is cancelling %s %s. %s",
-		                        ledger_kinds[task->kind], task->id.hex,
-		                        !(mcp_slot_tool(slot)->kind->flags & KF_AGENDA)
-		                        ? "Call this same tool with the job id to check its status."
-		                        : "Call wait to wait for its end.");
-	}
-	ledger_task_put(task);
-	mcp_slot_result(slot, said, !runs);
+	agenda_cancel(slot, args,
+	              mcp_slot_tool(slot)->kind->flags & KF_AGENDA ? TOOL_MAX : slot->tool);
 }
 
 /* Cancels the job or the timer of the call's owner that @p args names,
@@ -5390,7 +5275,7 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 	int e = 0;
 	switch (cstr_view_index(actions, ACTIONS, jb_view(jb_get(args, "action")))) {
 	case ACTION_LIST:
-		e = own ? mcp_slot_client_list(slot) : mcp_slot_turn_list(slot);
+		e = own ? agenda_list(slot) : mcp_slot_turn_list(slot);
 		break;
 	case ACTION_RESULT:
 		(own ? mcp_slot_client_result : mcp_slot_turn_result)(slot, args);
@@ -5408,205 +5293,10 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		mcp_slot_respond(slot, false);
 }
 
-/* A client's wait: the own word of the slot of its call of wait. */
-struct mcp_wait {
-	struct loop_timer   alarm;  /* the wait's end, or the time of the first
-	                               timer of the owner that has not fired, if
-	                               that is sooner */
-	struct ledger_wait *wait;   /* the wait in the ledger */
-	struct mcp_slot    *slot;   /* the slot of the call */
-	uint64_t            end;    /* the loop's time when the wait ends */
-	uint32_t            secs;   /* the seconds that the call asked for */
-	uint32_t            n;      /* the ids in ids */
-	struct hexid        ids[WAIT_IDS];  /* the ids of the jobs that the call
-	                                       names, copied, because the call's
-	                                       message is freed as the call
-	                                       parks */
-};
-
-/* Writes the events in @p look, of the client's wait @p w, into the answer
- * of the wait's call: each job that ended and each timer that fired, or
- * else that nothing happened. Returns 0, or ENOMEM.
- */
-static int
-mcp_wait_report (struct mcp_wait const    *w,
-                 struct ledger_look const *look)
-{
-	struct mcp_static const *st = w->slot->req->mcp->st;
-	struct dstr *d = &w->slot->answer;
-	bool ok = true;
-	for (uint32_t i = 0; ok && i < look->n_tasks; ++i) {
-		struct ledger_task const *t = look->tasks[i];
-		enum ledger_status status = ledger_task_status(t);
-		char const *kind = ledger_kinds[t->kind];
-		char const *tool = mcp_static_tool(st, t->tool)->name.data;
-		ok = status == LEDGER_CANCELLED
-		   ? dstr_printf(d, "[askai: %s %s, %s, cancelled.]\n", kind, t->id.hex, tool)
-		   : dstr_printf(d, "[askai: %s %s, %s, %s: call jobs with the action result "
-		                 "and job %s for its result.]\n", kind, t->id.hex, tool,
-		                 ledger_statuses[status].data, t->id.hex);
-	}
-	for (uint32_t i = 0; ok && i < look->n_timers; ++i)
-		ok = !mcp_notice_timer(d, &look->timers[i]);
-	if (ok && !look->n_tasks && !look->n_timers)
-		ok = dstr_printf(d, "Nothing happened in %" PRIu32 " s.", w->secs);
-	return ok ? 0 : ENOMEM;
-}
-
-/* Checks the client's wait @p w. If ledger_tell() returns jobs that ended
- * or timers that fired, or the wait's time is up, the wait's call answers
- * with what happened. Else the wait goes on: its alarm is set for its end,
- * or for the time of the owner's first timer, if that is sooner. On the
- * first check, @p first, the call then parks.
- */
-static void
-mcp_wait_check (struct mcp_wait *w,
-                bool             first)
-{
-	struct mcp_slot *slot = w->slot;
-	struct mcp *mcp = slot->req->mcp;
-	struct ledger_look look;
-	int e = ledger_tell(mcp->st->ledger, w->wait, w->ids, w->n, &look);
-	if (!e && !look.n_tasks && !look.n_timers && mcp->loop->now < w->end) {
-		e = loop_timer_set(mcp->loop, &w->alarm, look.due < w->end ? look.due : w->end);
-		if (!e && first)
-			e = mcp_slot_park(slot);
-		if (!e)
-			return;
-	}
-	loop_timer_stop(mcp->loop, &w->alarm);
-	if (!e)
-		e = mcp_wait_report(w, &look);
-	ledger_look_put(&look);
-	if (e)
-		mcp_slot_fail(slot, e);
-	else
-		mcp_slot_finish(slot, 0);
-}
-
-/* The alarm of a client's wait: its end, or a timer of its owner. */
-static void
-mcp_wait_alarm (struct loop       *loop,
-                struct loop_timer *timer)
-{
-	(void)loop;
-	struct mcp_wait *w = container_of(timer, struct mcp_wait, alarm);
-	if (!(w->slot->flags & SLOT_DONE))
-		mcp_wait_check(w, false);
-}
-
-/* The message of a client's wait, @p msg, which the ledger posts when a
- * record of the wait's owner ends or the owner sets a timer. If the wait's
- * call still runs on @p loop, its step checks the wait again.
- */
-static void
-mcp_on_wake (struct loop *loop,
-             struct msg  *msg)
-{
-	struct ledger_wait *w = container_of(msg, struct ledger_wait, wake);
-	ledger_wait_heard(w);
-	struct mcp_slot *slot = mcp_slot_named(loop, w->who);
-	ledger_wait_put(w);
-	if (slot && !(slot->flags & SLOT_DONE))
-		loop_ready_bulk(loop, &slot->step);
-}
-
-/* A client's call of wait in @p slot, the request's own, for @p secs
- * seconds: until a job of the call's owner ends, of those that @p args
- * names or any, or a timer of the owner fires. A job named that has ended,
- * an ended job that no one has read, or a timer that fired before the call,
- * ends the call at once.
- */
-static void
-mcp_slot_client_wait (struct mcp_slot    *slot,
-                      struct json_object *args,
-                      uint64_t            secs)
-{
-	static_assert(WAIT_IDS == 16 && LEDGER_WAITS == 4, "update the problem texts");
-	static struct cstr_view const bad_list = CSTR_VIEW_INIT("The jobs argument must list at "
-	                                                        "most 16 ids of jobs of yours.");
-	struct mcp_req *req = slot->req;
-	struct mcp *mcp = req->mcp;
-	struct ledger *ledger = mcp->st->ledger;
-	uint64_t owner = req->owner;
-	struct json_object *list = jb_get(args, "jobs");
-	size_t n = !list ? 0 : json_object_is_type(list, json_type_array)
-	         ? json_object_array_length(list) : SIZE_MAX;
-	if (n > WAIT_IDS) {
-		mcp_slot_result(slot, bad_list, true);
-		return;
-	}
-	struct mcp_wait *w = malloc(sizeof *w);
-	if (!w) {
-		mcp_slot_fail(slot, ENOMEM);
-		return;
-	}
-	char why[160];
-	struct cstr_view problem = {};
-	for (size_t i = 0; !problem.data && i < n; ++i) {
-		struct cstr_view const id = jb_view(jb_at(list, i));
-		struct ledger_task *task = hexid_init(&w->ids[i], id) ? nullptr
-		                         : ledger_find(ledger, owner, &w->ids[i]);
-		if (task) {
-			ledger_task_put(task);
-			continue;
-		}
-		problem = !id.data ? bad_list
-		        : util_format_view(why, sizeof why, "No job of yours has the id %.*s; askai "
-		                           "stores a job for an hour after it ends.",
-		                           (int)util_clip(id.data, id.len, HEXID_DIGITS), id.data);
-	}
-	if (problem.data) {
-		free(w);
-		mcp_slot_result(slot, problem, true);
-		return;
-	}
-	w->alarm = (struct loop_timer){ .fn = mcp_wait_alarm };
-	w->slot = slot;
-	w->end = mcp->loop->now + secs * NS;
-	w->secs = (uint32_t)secs;
-	w->n = (uint32_t)n;
-	struct handle who;
-	int e = mcp_slot_name(slot, &who);
-	w->wait = e ? nullptr : ledger_wait_enter(ledger, owner, mcp->loop, who, mcp_on_wake,
-	                                          &e);
-	if (!w->wait) {
-		free(w);
-		mcp_slot_refused(slot, e, CSTR_VIEW("You have 4 waits under way, the most at "
-		                                    "once."));
-		return;
-	}
-	slot->own = w;
-	mcp_wait_check(w, true);
-}
-
-/* The step of a client's call of wait, which the message of its wait
- * queues.
- */
-static void
-mcp_slot_wait_step (struct mcp_slot *slot)
-{
-	if (slot->own && !(slot->flags & SLOT_DONE))
-		mcp_wait_check(slot->own, false);
-}
-
-/* Stops the alarm of the wait of a client's call of wait in @p slot,
- * removes the wait from the ledger and frees it.
- */
-static void
-mcp_slot_wait_drop (struct mcp_slot *slot)
-{
-	struct mcp_wait *w = slot->own;
-	struct mcp *mcp = slot->req->mcp;
-	loop_timer_stop(mcp->loop, &w->alarm);
-	ledger_wait_leave(mcp->st->ledger, &w->wait);
-	free(w);
-}
-
 /* The wait tool's call in @p slot: until a job of those @p args names, or
  * any, finishes, a timer fires, or its seconds are up. What happened and
  * no result said yet ends it at once. A client's call is
- * mcp_slot_client_wait()'s.
+ * agenda_wait_start()'s.
  */
 static void
 mcp_slot_wait (struct mcp_slot    *slot,
@@ -5621,7 +5311,7 @@ mcp_slot_wait (struct mcp_slot    *slot,
 		return;
 	}
 	if (slot->role == ROLE_OWN) {
-		mcp_slot_client_wait(slot, args, secs);
+		agenda_wait_start(slot, args, secs);
 		return;
 	}
 	struct json_object *list = jb_get(args, "jobs");
@@ -5721,7 +5411,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	      ? ledger_timer_set(req->mcp->st->ledger, req->owner, due, note, &id)
 	      : mcp_agenda_timer(req, due, note, &id);
 	if (e) {
-		mcp_slot_refused(slot, e, CSTR_VIEW("You have 8 timers set, the most at once."));
+		agenda_refused(slot, e, CSTR_VIEW("You have 8 timers set, the most at once."));
 		return;
 	}
 	char said[64];
@@ -8366,7 +8056,7 @@ static struct json_object *
 mcp_wait_client_definition (void const *service)
 {
 	(void)service;
-	static_assert(WAIT_MAX == 600 && WAIT_IDS == 16, "update the description");
+	static_assert(WAIT_MAX == 600 && AGENDA_WAIT_IDS == 16, "update the description");
 	return schema_tool("wait",
 		"Wait until one of your jobs ends, of those that you name or any, or "
 		"one of your timers fires, or the seconds pass, whichever comes "
@@ -8535,8 +8225,8 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                      .upstream = mcp_jobs_definition,
 	                      N("jobs"), LEND_DETACH, LENT_JOBS, .option = "--client-jobs" },
 	[KIND_WAIT]       = { { .definition = mcp_wait_client_definition,
-	                        .start = mcp_slot_wait, .step = mcp_slot_wait_step,
-	                        .drop = mcp_slot_wait_drop,
+	                        .start = mcp_slot_wait, .step = agenda_wait_step,
+	                        .drop = agenda_wait_drop,
 	                        .flags = TOOL_STREAM | KF_SERIAL | KF_AGENDA },
 	                      .upstream = mcp_wait_definition,
 	                      N("wait"), LEND_WITH, LENT_WAIT, .option = "--client-jobs" },

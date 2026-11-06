@@ -1,4 +1,5 @@
 override SRC_askai := \
+  agenda.c            \
   ai.c                \
   askai.c             \
   blocker.c           \

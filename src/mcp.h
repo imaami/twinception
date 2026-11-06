@@ -335,6 +335,27 @@ mcp_slot_principal (struct mcp_slot const *slot);
 extern bool
 mcp_slot_from_client (struct mcp_slot const *slot);
 
+/** Returns askai's ledger of tasks, jobs and timers (src/ledger.h). This
+ *  function is not exported.
+ */
+extern struct ledger *
+mcp_slot_ledger (struct mcp_slot const *slot);
+
+/** Returns the owner of the records and the timers in the ledger that the
+ *  call opens and reads: the principal of its user, or for an anonymous
+ *  client a key of its address (src/ledger.h). This function is not
+ *  exported.
+ */
+extern uint64_t
+mcp_slot_owner (struct mcp_slot const *slot);
+
+/** Returns the name of the tool whose id is @p id, as askai offers it.
+ *  This function is not exported.
+ */
+extern char const *
+mcp_slot_tool_name (struct mcp_slot const *slot,
+                    uint32_t               id);
+
 /** Returns the address of the call's own word, a pointer that the kind can
  *  set. The word is nullptr when the call starts. If the kind sets it,
  *  askai calls the kind's drop() when it drops the call. A kind without
