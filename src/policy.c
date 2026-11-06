@@ -29,6 +29,9 @@ enum { DIGEST = SHA256_DIGEST_LENGTH };
  */
 static constexpr uint64_t POLICY_IDENTITY = UINT64_C(1) << 62;
 
+/* The index of no role, of a client that the policy refuses. */
+static constexpr size_t POLICY_NO_ROLE = SIZE_MAX;
+
 /* The members of "anonymous", by the kind of client. */
 static struct cstr_view const policy_kinds[POLICY_KINDS] = {
 	[POLICY_LOOPBACK] = CSTR_VIEW_INIT("loopback"),
@@ -41,7 +44,7 @@ struct policy_token {
 	unsigned char    digest[DIGEST];
 	struct cstr_view who;        /* "identity NAME", for the log */
 	uint64_t         principal;
-	uint64_t         role;
+	size_t           role;
 };
 
 /* A Unix group, by gid first, and its role. */
@@ -90,7 +93,8 @@ struct policy {
 	size_t               n_roles;
 	size_t               n_groups;
 	size_t               n_subuids;
-	int64_t              anonymous[POLICY_KINDS];  /* a role; -1: none */
+	size_t               anonymous[POLICY_KINDS];  /* a role, or
+	                                                  POLICY_NO_ROLE */
 	struct cstr_view     strangers[POLICY_KINDS];  /* the names of anonymous
 	                                                  TCP clients for the
 	                                                  log, "anonymous KIND
@@ -242,24 +246,24 @@ policy_build_who (struct policy_build    *b,
 	return (struct cstr_view){ who, len };
 }
 
-/* Return the index of the role whose name is the string @p name, or -1 if
- * there is no such role.
+/* Return the index of the role whose name is the string @p name, or
+ * POLICY_NO_ROLE if there is no such role.
  */
-static int64_t
+static size_t
 policy_build_role (struct policy_build const *b,
                    struct json_object        *name)
 {
 	char const *s = jb_view(name).data;
 	if (!s || !b->roles)
-		return -1;
-	int64_t i = 0;
+		return POLICY_NO_ROLE;
+	size_t i = 0;
 	struct json_object_iter it;
 	json_object_object_foreachC(b->roles, it) {
 		if (!strcmp(it.key, s))
 			return i;
 		++i;
 	}
-	return -1;
+	return POLICY_NO_ROLE;
 }
 
 /* Append a token of @p digest for the identity @p who of @p role.
@@ -269,7 +273,7 @@ static void
 policy_token_add (struct policy       *p,
                   unsigned char const *digest,
                   struct cstr_view     who,
-                  uint64_t             role)
+                  size_t               role)
 {
 	struct policy_token *t = &p->tokens[p->n_tokens++];
 	memcpy(t->digest, digest, DIGEST);
@@ -709,8 +713,8 @@ policy_build_identity (struct policy_build *b,
 		else
 			return policy_build_fail(b, "identity %s: unknown member %s", who, m.key);
 	}
-	int64_t r = policy_build_role(b, role);
-	if (r < 0)
+	size_t const r = policy_build_role(b, role);
+	if (r == POLICY_NO_ROLE)
 		return policy_build_fail(b, "identity %s: no role %s", who,
 		                         role ? json_object_to_json_string(role) : "named");
 	if (tokens && !json_object_is_type(tokens, json_type_array))
@@ -729,7 +733,7 @@ policy_build_identity (struct policy_build *b,
 		int e = policy_build_token(b, who, json_object_get_string(spec), digest);
 		if (e)
 			return e;
-		policy_token_add(b->p, digest, name, (uint64_t)r);
+		policy_token_add(b->p, digest, name, r);
 	}
 	return 0;
 }
@@ -768,8 +772,8 @@ policy_build_groups (struct policy_build *b,
 	struct policy_gid *g = b->p->groups;
 	struct json_object_iter it;
 	json_object_object_foreachC(groups, it) {
-		int64_t r = policy_build_role(b, it.val);
-		if (r < 0)
+		size_t const r = policy_build_role(b, it.val);
+		if (r == POLICY_NO_ROLE)
 			return policy_build_fail(b, "unix-groups: %s: no role %s", it.key,
 			                         json_object_to_json_string(it.val));
 		int e = policy_build_gid(b, it.key, &g->gid);
@@ -786,7 +790,7 @@ policy_build_groups (struct policy_build *b,
 			return policy_build_fail(b, "unix-groups: %s: gid %" PRIu32 " is a "
 			                         "subordinate id of another user (%s)", it.key,
 			                         g->gid, POLICY_SUBGID);
-		g++->role = (uint32_t)r;
+		g++->role = r;
 		++b->p->n_groups;
 	}
 	return 0;
@@ -799,13 +803,13 @@ static int
 policy_build_kind (struct policy_build *b,
                    char const          *kind,
                    struct json_object  *val,
-                   int64_t             *role)
+                   size_t              *role)
 {
-	*role = -1;
+	*role = POLICY_NO_ROLE;
 	if (!val)
 		return 0;
 	*role = policy_build_role(b, val);
-	if (*role < 0)
+	if (*role == POLICY_NO_ROLE)
 		return policy_build_fail(b, "anonymous: %s: no role %s", kind,
 		                         json_object_to_json_string(val));
 	return 0;
@@ -828,8 +832,8 @@ policy_build_anonymous (struct policy_build *b,
 		int e = policy_build_kind(b, it.key, it.val, &p->anonymous[k]);
 		if (e)
 			return e;
-		int64_t role = p->anonymous[k];
-		if (role < 0)
+		size_t const role = p->anonymous[k];
+		if (role == POLICY_NO_ROLE)
 			continue;
 		struct cstr_view const parts[] = {
 			CSTR_VIEW("anonymous "), policy_kinds[k], CSTR_VIEW(" ("),
@@ -989,7 +993,7 @@ policy_create (struct json_object    *file,
 	p->overflow_errors[1] = policy_read_overflow(POLICY_OVERFLOWGID, &p->overflow_gid);
 	b.names = (char *)(p->subuids + n_subuids);
 	for (size_t k = 0; k < POLICY_KINDS; ++k)
-		p->anonymous[k] = -1;
+		p->anonymous[k] = POLICY_NO_ROLE;
 	b.p = p;
 	if (from_file)
 		*e = policy_build_file(&b, ids, groups, anon);
@@ -1233,8 +1237,9 @@ policy_log (struct policy const   *policy,
 	policy_log_groups(policy, groups);
 	LOG_ALL(LOG_INFO, "anonymous clients:");
 	for (size_t k = 0; k < POLICY_KINDS; ++k) {
-		int64_t role = policy->anonymous[k];
-		struct cstr_view who = role < 0 ? CSTR_VIEW("refused") : policy->roles[role].who;
+		size_t const role = policy->anonymous[k];
+		struct cstr_view who = role == POLICY_NO_ROLE ? CSTR_VIEW("refused")
+		                                              : policy->roles[role].who;
 		LOG_ALL(LOG_INFO, "  %-8s  %.*s", policy_kinds[k].data, (int)who.len, who.data);
 	}
 	tool_mask unlisted = policy->allowed & ~listed & policy_all(reg);
@@ -1288,17 +1293,17 @@ policy_principal_uid (struct policy const *policy,
 }
 
 /* Grant @p role to the client of @p principal, or refuse the client if
- * @p role is negative. The log shows the client as @p who, or as its role
- * if @p who is empty.
+ * @p role is POLICY_NO_ROLE. The log shows the client as @p who, or as its
+ * role if @p who is empty.
  */
 static enum policy_verdict
 policy_grant_role (struct policy const *policy,
-                   int64_t              role,
+                   size_t               role,
                    uint64_t             principal,
                    struct cstr_view     who,
                    struct policy_grant *g)
 {
-	if (role < 0)
+	if (role == POLICY_NO_ROLE)
 		return POLICY_REFUSED;
 	*g = policy->roles[role];
 	g->principal = principal;
@@ -1321,7 +1326,7 @@ policy_grant_token (struct policy const *policy,
 	                                       sizeof *policy->tokens, policy_by_digest);
 	if (!t)
 		return POLICY_REFUSED;
-	return policy_grant_role(policy, (int64_t)t->role, t->principal, t->who, g);
+	return policy_grant_role(policy, t->role, t->principal, t->who, g);
 }
 
 /* Grant Unix user @p peer, who shows no token, the role of the first group
@@ -1334,7 +1339,7 @@ policy_grant_unix (struct policy const      *policy,
                    struct policy_peer const *peer,
                    struct policy_grant      *g)
 {
-	int64_t role = policy->anonymous[POLICY_UNIX];
+	size_t role = policy->anonymous[POLICY_UNIX];
 	for (size_t i = 0; i < policy->n_groups; ++i) {
 		if (bsearch(&policy->groups[i].gid, peer->groups, peer->n_groups,
 		            sizeof *peer->groups, policy_by_id)) {
