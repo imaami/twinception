@@ -22,6 +22,7 @@
 #include "cli_state.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "git.h"
 #include "hexid.h"
 #include "jb.h"
 #include "oid.h"
@@ -47,7 +48,6 @@ struct cli_state {
 	struct dstr             output;
 	struct dstr             tree;
 	struct dstr             metadata;
-	char                  **environment;
 	struct dstr             scratch;
 	size_t                  input_first;
 	size_t                  input_count;
@@ -68,8 +68,6 @@ enum {
 };
 
 static char const cli_state_magic[] = "ASKAI-CLI-1\n";
-
-extern char **environ;
 
 static force_inline int
 cli_state_private (int fd)
@@ -190,10 +188,11 @@ cli_state_git (struct cli_state  *state,
 	int e = child_argv(argv, array_size(argv), prefix, array_size(prefix), args);
 	if (e)
 		return e;
+	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
 	struct child_cmd const cmd = {
 		.file = "git",
 		.argv = argv,
-		.envp = state->environment,
+		.envp = env,
 		.in   = { (unsigned char *)(uintptr_t)input.data, input.len },
 	};
 	struct child_fds fds = child_fds();
@@ -730,22 +729,6 @@ cli_state_create (struct cstr_view    path,
 		         status.st_uid != geteuid())
 			*e = EACCES;
 	}
-	if (!*e) {
-		size_t count = 0;
-		while (environ[count])
-			++count;
-		state->environment = calloc(count + 3, sizeof *state->environment);
-		if (!state->environment)
-			*e = ENOMEM;
-		else {
-			size_t used = 0;
-			for (size_t i = 0; i < count; ++i)
-				if (strncmp(environ[i], "GIT_", 4))
-					state->environment[used++] = environ[i];
-			state->environment[used++] = "GIT_CONFIG_NOSYSTEM=1";
-			state->environment[used] = "GIT_CONFIG_GLOBAL=/dev/null";
-		}
-	}
 	if (!*e)
 		*e = cli_state_repository(state);
 	if (*e)
@@ -790,8 +773,6 @@ cli_state_destroy (struct cli_state **pstate)
 	dstr_cleanup(&state->output);
 	dstr_cleanup(&state->tree);
 	dstr_cleanup(&state->metadata);
-	free(state->environment);
-	state->environment = nullptr;
 	free(state);
 	state = nullptr;
 	*pstate = nullptr;
