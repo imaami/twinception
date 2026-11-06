@@ -5756,7 +5756,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		struct json_object *intent = jb_object(
 			"index", json_object_new_int64(k),
 			"agenda", json_object_new_boolean((flags & KF_AGENDA) != 0),
-			"name", json_object_new_string_len(c.name.data, (int)c.name.len),
+			"name", jb_string(c.name),
 			"arguments", args ? json_object_get(args) : json_object_new_object(),
 			nullptr);
 		int e = mcp_req_archive(req, "tool-intent", intent, mcp_req_intent_saved);
@@ -6173,8 +6173,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 	struct json_object *lent = json_object_new_array();
 	for (uint32_t i = 0; lent && i < st->reg->n_tools; ++i)
 		if (req->lent >> i & 1)
-			lent = jb_push_or_free(lent,
-			                       json_object_new_string(mcp_static_tool(st, i)->name.data));
+			lent = jb_push_or_free(lent, jb_string(mcp_static_tool(st, i)->name));
 	struct span upload = buf_peek(&req->upload);
 	uint64_t now = clk_realtime_ns();
 	req->archive_deadline = st->timeout ? now + st->timeout : 0;
@@ -6182,7 +6181,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"version", json_object_new_int(1),
 		"owner", json_object_new_uint64(req->owner),
 		"created", json_object_new_uint64(task ? task->created : now),
-		"tool", json_object_new_string(mcp_static_tool(st, req->self.tool)->name.data),
+		"tool", jb_string(mcp_static_tool(st, req->self.tool)->name),
 		"api", json_object_new_int(st->ep->api),
 		"provider", json_object_new_int(st->ep->provider),
 		"endpoint", json_object_new_uint64(st->endpoint),
@@ -6193,7 +6192,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"used", json_object_new_int64(req->used),
 		"context", json_object_new_int64(req->context),
 		"traced", json_object_new_int64(req->traced),
-		"trace", json_object_new_string_len(dstr_get(&req->trace), (int)dstr_len(&req->trace)),
+		"trace", jb_string(cstr_view_dstr(&req->trace)),
 		"thread", json_object_new_string(req->thread.hex),
 		"branch", json_object_new_boolean(req->flags & REQ_BRANCH),
 		"filing", json_object_new_boolean(req->flags & REQ_FILING),
