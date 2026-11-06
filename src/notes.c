@@ -891,19 +891,17 @@ notes_file_next (struct span       *out,
 	char const *s = (char const *)out->ptr;
 	char const *nul = memchr(s, '\0', out->len);
 	char const *tab = nul ? memchr(s, '\t', (size_t)(nul - s)) : nullptr;
-	if (!tab || tab - s < (ptrdiff_t)sizeof "100644 blob " ||
-	    memcmp(s + 6, " blob ", 6) || tab + 1 == nul)
-		return EIO;
-	struct cstr_view rest = { s + sizeof "100644 blob " - 1,
-	                          (size_t)(tab - s) - (sizeof "100644 blob " - 1) };
+	/* The record is "MODE blob OID SIZE\tNAME\0", with spaces before SIZE. */
+	struct cstr_view rest = { s, tab ? (size_t)(tab - s) : 0 };
+	struct cstr_view mode, type;
 	struct oid id;
-	if (oid_init_field(&id, &rest, ' '))
+	if (!tab || tab + 1 == nul || !cstr_view_cut(&rest, ' ', &mode) ||
+	    !cstr_view_cut(&rest, ' ', &type) || !cstr_view_equal(type, CSTR_VIEW("blob")) ||
+	    oid_init_field(&id, &rest, ' '))
 		return EIO;
-	char const *size = rest.data;
-	while (size < tab && *size == ' ')
-		++size;
+	struct cstr_view const size = cstr_view_trim(rest);
 	uint64_t bytes;
-	if (!notes_number(size, (size_t)(tab - size), &bytes))
+	if (!notes_number(size.data, size.len, &bytes))
 		return EIO;
 	*file = (struct notes_file){
 		.name = { out->ptr + (tab + 1 - s), (size_t)(nul - tab - 1) },
